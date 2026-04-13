@@ -1,0 +1,14 @@
+# Built binary
+/sabnzbd
+
+# Build / coverage artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Editor / OS metadata
+.idea/
+.vscode/
+.DS_Store
+*.swp
