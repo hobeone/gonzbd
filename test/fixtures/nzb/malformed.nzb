@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <head>
+    <meta type="title">Malformed Segments</meta>
+  </head>
+  <file date="1700000000" subject="Has bad segments">
+    <groups>
+      <group>alt.binaries.test</group>
+    </groups>
+    <segments>
+      <segment bytes="100000" number="3">c3@example.com</segment>
+      <segment bytes="100000" number="1">c1@example.com</segment>
+      <segment bytes="100000" number="2">c2@example.com</segment>
+      <segment bytes="100000" number="2">c2-dup-same@example.com</segment>
+      <segment bytes="100000" number="1">c1@example.com</segment>
+      <segment bytes="0" number="4">c4@example.com</segment>
+      <segment bytes="8388608" number="5">c5@example.com</segment>
+    </segments>
+  </file>
+  <file subject="All bad">
+    <groups>
+      <group>alt.binaries.test</group>
+    </groups>
+    <segments>
+      <segment bytes="0" number="1">skip-me@example.com</segment>
+    </segments>
+  </file>
+</nzb>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd">
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <head>
+    <meta type="title">Simple Test Post</meta>
+    <meta type="category">misc</meta>
+  </head>
+  <file poster="poster@example.com" date="1700000000" subject="[1/1] - &quot;test.bin&quot; yEnc (1/2) 2097152">
+    <groups>
+      <group>alt.binaries.test</group>
+    </groups>
+    <segments>
+      <segment bytes="1048576" number="1">msg-id-1@example.com</segment>
+      <segment bytes="1048576" number="2">msg-id-2@example.com</segment>
+    </segments>
+  </file>
+</nzb>

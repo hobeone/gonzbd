@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="iso-8859-1" ?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <head>
+    <meta type="title">Multi File Post</meta>
+    <meta type="category">tv</meta>
+    <meta type="category">hd</meta>
+    <meta type="password">secret</meta>
+  </head>
+  <file poster="poster@example.com" date="1700000100" subject="File 1">
+    <groups>
+      <group>alt.binaries.tv</group>
+      <group>alt.binaries.misc</group>
+    </groups>
+    <segments>
+      <segment bytes="500000" number="1">a1@example.com</segment>
+      <segment bytes="500000" number="2">a2@example.com</segment>
+    </segments>
+  </file>
+  <file poster="poster@example.com" date="1700000200" subject="File 2">
+    <groups>
+      <group>alt.binaries.tv</group>
+    </groups>
+    <segments>
+      <segment bytes="600000" number="1">b1@example.com</segment>
+    </segments>
+  </file>
+</nzb>
