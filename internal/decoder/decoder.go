@@ -55,29 +55,51 @@ type yencTrailer struct {
 	valid bool // crc field was present
 }
 
+// Article is the result of decoding one yEnc-encoded NNTP article body.
+//
+// For single-part articles Offset is 0 and TotalSize equals len(Data).
+// For multi-part articles (=ypart header present) Offset and TotalSize
+// describe the part's position and the assembled file's size; callers
+// compose the full file by pwriting Data at Offset.
+type Article struct {
+	// Filename is the yEnc name= field declared in =ybegin. May be empty
+	// only on malformed articles, which DecodeArticle would reject earlier.
+	Filename string
+
+	// Offset is the byte position of this part within the assembled file.
+	// Derived from the =ypart begin-1 field (yEnc uses 1-based indexing).
+	Offset int64
+
+	// TotalSize is the full assembled file's size in bytes, from =ybegin.
+	// The same value is declared on every part of a multi-part upload.
+	TotalSize int64
+
+	// Data is the decoded part body. len(Data) is the size of this part.
+	Data []byte
+
+	// CRC is the CRC32 computed over Data. If the trailer's pcrc32/crc32
+	// field was present, DecodeArticle has already verified it matches.
+	CRC uint32
+}
+
 // DecodeArticle decodes a yEnc-encoded NNTP article body. body is the raw
 // response body with dot-stuffing already removed by the NNTP layer.
 //
-// For single-part articles, offset is 0 and length equals len(data).
-// For multi-part articles (=ypart header present), offset and length
-// describe this part's position in the assembled file; the caller
-// composes the full file by pwriting data at offset.
-//
-// crc is the part's CRC32 as declared in the =yend trailer (pcrc32 for
-// multi-part, crc32 for single-part). DecodeArticle verifies the CRC and
-// returns ErrCRCMismatch on failure; the caller can also read the returned
-// crc value directly.
-func DecodeArticle(body []byte) (data []byte, offset, length int64, crc uint32, err error) {
+// Returns ErrCRCMismatch if the trailer declares a CRC that disagrees with
+// the decoded data, ErrSizeMismatch if the declared part size does not match
+// the decoded length, and ErrMissingTrailer / ErrMalformed / ErrNotYEnc on
+// structural problems.
+func DecodeArticle(body []byte) (Article, error) {
 	hdr, bodyStart, err := parseHeader(body)
 	if err != nil {
-		return nil, 0, 0, 0, err
+		return Article{}, err
 	}
 
 	// Locate the =yend trailer before decoding so we know exactly where the
 	// encoded body ends. Search from bodyStart to avoid false matches in data.
 	trailerIdx := bytes.Index(body[bodyStart:], []byte("=yend"))
 	if trailerIdx < 0 {
-		return nil, 0, 0, 0, ErrMissingTrailer
+		return Article{}, ErrMissingTrailer
 	}
 	trailerIdx += bodyStart
 
@@ -87,18 +109,24 @@ func DecodeArticle(body []byte) (data []byte, offset, length int64, crc uint32, 
 
 	trailer, err := parseTrailer(body[trailerIdx:], hdr.isPart)
 	if err != nil {
-		return nil, 0, 0, 0, err
+		return Article{}, err
 	}
 
 	if trailer.size != int64(len(decoded)) {
-		return nil, 0, 0, 0, ErrSizeMismatch
+		return Article{}, ErrSizeMismatch
 	}
 
 	if trailer.valid && computedCRC != trailer.crc {
-		return nil, 0, 0, 0, ErrCRCMismatch
+		return Article{}, ErrCRCMismatch
 	}
 
-	return decoded, hdr.offset, int64(len(decoded)), computedCRC, nil
+	return Article{
+		Filename:  hdr.name,
+		Offset:    hdr.offset,
+		TotalSize: hdr.size,
+		Data:      decoded,
+		CRC:       computedCRC,
+	}, nil
 }
 
 // decodeBody decodes the raw yEnc-encoded body bytes into their original form.

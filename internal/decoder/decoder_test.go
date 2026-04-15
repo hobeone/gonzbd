@@ -84,22 +84,28 @@ func TestDecodeArticle_SinglePart(t *testing.T) {
 	raw := makeRaw(1000)
 	article := yencEncode("test.bin", raw)
 
-	data, offset, length, crc, err := DecodeArticle(article)
+	art, err := DecodeArticle(article)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(data, raw) {
+	if !bytes.Equal(art.Data, raw) {
 		t.Errorf("decoded data does not match original")
 	}
-	if offset != 0 {
-		t.Errorf("expected offset=0, got %d", offset)
+	if art.Offset != 0 {
+		t.Errorf("expected offset=0, got %d", art.Offset)
 	}
-	if length != int64(len(raw)) {
-		t.Errorf("expected length=%d, got %d", len(raw), length)
+	if int64(len(art.Data)) != int64(len(raw)) {
+		t.Errorf("expected len(Data)=%d, got %d", len(raw), len(art.Data))
+	}
+	if art.TotalSize != int64(len(raw)) {
+		t.Errorf("expected TotalSize=%d, got %d", len(raw), art.TotalSize)
+	}
+	if art.Filename != "test.bin" {
+		t.Errorf("Filename = %q, want test.bin", art.Filename)
 	}
 	want := crc32.ChecksumIEEE(raw)
-	if crc != want {
-		t.Errorf("CRC mismatch: got 0x%08x, want 0x%08x", crc, want)
+	if art.CRC != want {
+		t.Errorf("CRC mismatch: got 0x%08x, want 0x%08x", art.CRC, want)
 	}
 }
 
@@ -109,22 +115,25 @@ func TestDecodeArticle_MultiPart(t *testing.T) {
 	fileSize := int64(len(full))
 	article := yencEncodePart("test.bin", 1, 2, part, fileSize, 1, 1000)
 
-	data, offset, length, crc, err := DecodeArticle(article)
+	art, err := DecodeArticle(article)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(data, part) {
+	if !bytes.Equal(art.Data, part) {
 		t.Errorf("decoded data does not match part")
 	}
-	if offset != 0 {
-		t.Errorf("expected offset=0 (begin=1 → 0-based), got %d", offset)
+	if art.Offset != 0 {
+		t.Errorf("expected offset=0 (begin=1 → 0-based), got %d", art.Offset)
 	}
-	if length != int64(len(part)) {
-		t.Errorf("expected length=%d, got %d", len(part), length)
+	if int64(len(art.Data)) != int64(len(part)) {
+		t.Errorf("expected len(Data)=%d, got %d", len(part), len(art.Data))
+	}
+	if art.TotalSize != fileSize {
+		t.Errorf("expected TotalSize=%d, got %d", fileSize, art.TotalSize)
 	}
 	want := crc32.ChecksumIEEE(part)
-	if crc != want {
-		t.Errorf("CRC mismatch: got 0x%08x, want 0x%08x", crc, want)
+	if art.CRC != want {
+		t.Errorf("CRC mismatch: got 0x%08x, want 0x%08x", art.CRC, want)
 	}
 }
 
@@ -134,22 +143,25 @@ func TestDecodeArticle_MultiPart_NonZeroOffset(t *testing.T) {
 	fileSize := int64(len(full))
 	article := yencEncodePart("test.bin", 2, 2, part, fileSize, 1001, 2000)
 
-	data, offset, length, crc, err := DecodeArticle(article)
+	art, err := DecodeArticle(article)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(data, part) {
+	if !bytes.Equal(art.Data, part) {
 		t.Errorf("decoded data does not match part")
 	}
-	if offset != 1000 {
-		t.Errorf("expected offset=1000, got %d", offset)
+	if art.Offset != 1000 {
+		t.Errorf("expected offset=1000, got %d", art.Offset)
 	}
-	if length != int64(len(part)) {
-		t.Errorf("expected length=%d, got %d", len(part), length)
+	if int64(len(art.Data)) != int64(len(part)) {
+		t.Errorf("expected len(Data)=%d, got %d", len(part), len(art.Data))
+	}
+	if art.TotalSize != fileSize {
+		t.Errorf("expected TotalSize=%d, got %d", fileSize, art.TotalSize)
 	}
 	want := crc32.ChecksumIEEE(part)
-	if crc != want {
-		t.Errorf("CRC mismatch: got 0x%08x, want 0x%08x", crc, want)
+	if art.CRC != want {
+		t.Errorf("CRC mismatch: got 0x%08x, want 0x%08x", art.CRC, want)
 	}
 }
 
@@ -185,18 +197,18 @@ func TestDecodeArticle_Byte0xD6(t *testing.T) {
 		t.Fatal("test setup error: escape sequence is not split across line boundary")
 	}
 
-	data, _, _, _, err := DecodeArticle(article)
+	art, err := DecodeArticle(article)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(data, raw) {
+	if !bytes.Equal(art.Data, raw) {
 		for i := range raw {
-			if i < len(data) && data[i] != raw[i] {
-				t.Errorf("first mismatch at byte %d: got 0x%02x, want 0x%02x", i, data[i], raw[i])
+			if i < len(art.Data) && art.Data[i] != raw[i] {
+				t.Errorf("first mismatch at byte %d: got 0x%02x, want 0x%02x", i, art.Data[i], raw[i])
 				break
 			}
 		}
-		t.Errorf("0xd6 cross-line escape decoded incorrectly (len got=%d want=%d)", len(data), len(raw))
+		t.Errorf("0xd6 cross-line escape decoded incorrectly (len got=%d want=%d)", len(art.Data), len(raw))
 	}
 }
 
@@ -233,12 +245,12 @@ func TestDecodeArticle_EscapeAcrossLineBoundary(t *testing.T) {
 
 	article := buf.Bytes()
 
-	data, _, _, _, err := DecodeArticle(article)
+	art, err := DecodeArticle(article)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(data, raw) {
-		t.Errorf("got %v, want %v", data, raw)
+	if !bytes.Equal(art.Data, raw) {
+		t.Errorf("got %v, want %v", art.Data, raw)
 	}
 }
 
@@ -250,18 +262,18 @@ func TestDecodeArticle_AllByteValues(t *testing.T) {
 	}
 	article := yencEncode("allbytes.bin", raw)
 
-	data, _, _, _, err := DecodeArticle(article)
+	art, err := DecodeArticle(article)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !bytes.Equal(data, raw) {
+	if !bytes.Equal(art.Data, raw) {
 		for i := range raw {
-			if i < len(data) && data[i] != raw[i] {
-				t.Errorf("first mismatch at byte %d (0x%02x): got 0x%02x", i, raw[i], data[i])
+			if i < len(art.Data) && art.Data[i] != raw[i] {
+				t.Errorf("first mismatch at byte %d (0x%02x): got 0x%02x", i, raw[i], art.Data[i])
 				break
 			}
 		}
-		t.Errorf("all-bytes round-trip failed (len got=%d want=%d)", len(data), len(raw))
+		t.Errorf("all-bytes round-trip failed (len got=%d want=%d)", len(art.Data), len(raw))
 	}
 }
 
@@ -303,7 +315,7 @@ func TestDecodeArticle_MalformedInputs(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, _, err := DecodeArticle(tc.input)
+			_, err := DecodeArticle(tc.input)
 			if !isErr(err, tc.wantErr) {
 				t.Errorf("got %v, want %v", err, tc.wantErr)
 			}

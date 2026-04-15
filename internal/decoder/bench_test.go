@@ -57,11 +57,11 @@ func BenchmarkDecodeArticle_BestCase(b *testing.B) {
 	b.SetBytes(int64(benchSize))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		data, _, _, _, err := DecodeArticle(benchBestCase)
+		art, err := DecodeArticle(benchBestCase)
 		if err != nil {
 			b.Fatal(err)
 		}
-		if len(data) == 0 {
+		if len(art.Data) == 0 {
 			b.Fatal("empty result")
 		}
 	}
@@ -74,11 +74,11 @@ func BenchmarkDecodeArticle_WorstCase(b *testing.B) {
 	b.SetBytes(int64(benchSize))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		data, _, _, _, err := DecodeArticle(benchWorstCase)
+		art, err := DecodeArticle(benchWorstCase)
 		if err != nil {
 			b.Fatal(err)
 		}
-		if len(data) == 0 {
+		if len(art.Data) == 0 {
 			b.Fatal("empty result")
 		}
 	}
