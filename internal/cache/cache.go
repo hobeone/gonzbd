@@ -3,6 +3,11 @@
 // that would exceed the memory limit are written to disk under the job's admin
 // directory and faulted in on Load.
 //
+// Callers do not pre-reserve space. Save is authoritative: it keeps the
+// article in memory if the limit allows, otherwise spills to disk. CanFit is
+// an advisory predicate for admission control (e.g., deciding whether to
+// accept a new job given its expected total size); it makes no reservation.
+//
 // Key design: sha256 is used to derive disk filenames from Message-IDs rather
 // than hex-encoding the raw bytes. Both approaches are collision-free, but
 // sha256 gives a fixed 64-character hex name regardless of Message-ID length,
@@ -52,11 +57,11 @@ type Cache struct {
 	limit int64 // immutable after New
 
 	mu       sync.Mutex
-	articles map[string]cachedEntry // key → in-memory entry
-	used     int64                  // bytes currently charged (reserved + stored)
+	articles map[string]cachedEntry
+	used     int64
 
-	// usedAtomic mirrors used and is updated under mu. It allows Used() to be
-	// read lock-free by callers that only need an approximate snapshot.
+	// usedAtomic mirrors used and is updated under mu. It allows Used() and
+	// CanFit() to be read lock-free.
 	usedAtomic atomic.Int64
 
 	onPressure func() // may be nil
@@ -74,100 +79,45 @@ func New(opts Options) *Cache {
 	}
 }
 
-// ReserveSpace attempts to reserve size bytes from the memory budget. Returns
-// true on success; the caller must follow up with Save (passing data of length
-// size) or FreeReserved(size) if Save will not happen.
-//
-// ReserveSpace pre-charges c.used by size. Save detects this charge and avoids
-// double-counting.
-func (c *Cache) ReserveSpace(size int64) bool {
+// CanFit reports whether size bytes would currently fit in the memory budget.
+// The value is advisory — no reservation is made and the answer may change
+// before a subsequent Save runs. Returns false when Limit is 0 (no-cache mode).
+func (c *Cache) CanFit(size int64) bool {
 	if c.limit == 0 {
-		// No-cache mode: every article goes to disk, nothing to reserve.
 		return false
 	}
-	c.mu.Lock()
-	newUsed := c.used + size
-	if newUsed > c.limit {
-		c.mu.Unlock()
-		return false
-	}
-	c.used = newUsed
-	c.usedAtomic.Store(newUsed)
-	c.mu.Unlock()
-
-	c.maybePressure(newUsed)
-	return true
+	return c.usedAtomic.Load()+size <= c.limit
 }
 
-// FreeReserved releases size bytes previously acquired by ReserveSpace but not
-// followed by a corresponding Save.
-func (c *Cache) FreeReserved(size int64) {
-	c.mu.Lock()
-	c.used -= size
-	if c.used < 0 {
-		c.used = 0
-	}
-	c.usedAtomic.Store(c.used)
-	c.mu.Unlock()
-}
-
-// Save stores data for key. If the caller previously called
-// ReserveSpace(len(data)) successfully the article is kept in memory.
-// Otherwise it is written to {adminDir}/{sha256(key)}.
-//
-// Counter accounting: ReserveSpace pre-charges c.used by len(data). Save must
-// not charge again. It detects a valid reservation by checking that c.used
-// already accounts for len(data) bytes beyond any existing entry for the same
-// key (c.used − oldEntrySize >= len(data) and c.used <= limit).
-//
-// Idempotent replace: if the key is already in memory, the old entry's bytes
-// are subtracted from c.used. The caller's ReserveSpace call for the new size
-// has already been charged, so net c.used = (c.used − oldSize) stays correct.
+// Save stores data for key. If the memory budget allows, the article is kept
+// in memory; otherwise it is written to {adminDir}/{sha256(key)}. Saving a
+// key already in memory replaces the existing entry and adjusts the counter.
+// Saving over an in-memory entry with data that no longer fits evicts the old
+// entry and spills the new one to disk.
 func (c *Cache) Save(key, adminDir string, data []byte) error {
 	newSize := int64(len(data))
 
 	c.mu.Lock()
-
 	oldSize := int64(0)
 	if existing, ok := c.articles[key]; ok {
 		oldSize = int64(len(existing.data))
 	}
+	newUsed := c.used - oldSize + newSize
 
-	// A valid reservation is in effect when:
-	//   - limit > 0 (memory cache is active)
-	//   - c.used <= c.limit (the reservation did not overflow the budget)
-	//   - (c.used - oldSize) >= newSize (the reservation covers the new data,
-	//     after accounting for the old entry that will be replaced)
-	//
-	// The third condition is the key invariant: ReserveSpace charged newSize
-	// into c.used. If an old entry for the same key exists, its bytes are still
-	// counted in c.used too, so we subtract them to isolate the reservation.
-	hasReservation := c.limit > 0 && c.used <= c.limit && (c.used-oldSize) >= newSize
-
-	if hasReservation {
-		// Move old entry size out of the counter; newSize was already charged by
-		// ReserveSpace, so the net effect is c.used = c.used - oldSize.
-		if oldSize > 0 {
-			delete(c.articles, key)
-			c.used -= oldSize
-		}
+	if c.limit > 0 && newUsed <= c.limit {
 		c.articles[key] = cachedEntry{data: data, adminDir: adminDir}
-		c.usedAtomic.Store(c.used)
-		used := c.used
+		c.used = newUsed
+		c.usedAtomic.Store(newUsed)
 		c.mu.Unlock()
-		c.maybePressure(used)
+		c.maybePressure(newUsed)
 		return nil
 	}
 
-	// No reservation in effect (or limit == 0). Spill to disk.
-	// If an old in-memory entry is being overwritten via a disk-spill Save,
-	// remove it and release its counter charge.
+	// Won't fit. Drop any existing in-memory entry so Load will find the new
+	// disk copy rather than stale memory, then spill to disk.
 	if oldSize > 0 {
 		delete(c.articles, key)
 		c.used -= oldSize
-		if c.used < 0 {
-			c.used = 0
-		}
 		c.usedAtomic.Store(c.used)
 	}
 	c.mu.Unlock()
@@ -193,10 +143,9 @@ func (c *Cache) Load(key, adminDir string) ([]byte, error) {
 	}
 	c.mu.Unlock()
 
-	// Try disk.
 	path := diskPath(adminDir, key)
-	// Path is constructed by diskPath as filepath.Join(adminDir, sha256hex);
-	// adminDir is a trusted caller-supplied directory, not external user input.
+	// adminDir is a trusted caller-supplied directory; the filename component
+	// is a fixed-length sha256 hex string produced by diskPath.
 	//nolint:gosec // G304: path is under caller-controlled adminDir with sha256 filename
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -205,7 +154,6 @@ func (c *Cache) Load(key, adminDir string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("cache: load %s: %w", key, err)
 	}
-	// Remove the file — Load consumes the entry.
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("cache: remove after load %s: %w", key, err)
 	}
@@ -216,7 +164,6 @@ func (c *Cache) Load(key, adminDir string) ([]byte, error) {
 // on shutdown or when direct_write is toggled.
 func (c *Cache) Flush() error {
 	c.mu.Lock()
-	// Snapshot and clear atomically so Load/Save can proceed immediately.
 	snapshot := c.articles
 	c.articles = make(map[string]cachedEntry)
 	c.used = 0
@@ -260,8 +207,7 @@ func (c *Cache) Purge(keys []string, adminDir string) error {
 	return firstErr
 }
 
-// Used returns the current in-memory byte count (reserved + stored). The value
-// is an atomic snapshot and may lag slightly behind the mutex-protected c.used.
+// Used returns the current in-memory byte count.
 func (c *Cache) Used() int64 {
 	return c.usedAtomic.Load()
 }
@@ -272,8 +218,7 @@ func (c *Cache) Limit() int64 {
 }
 
 // maybePressure fires OnPressure in a goroutine if used > 90% of limit.
-// Must be called without mu held to avoid holding the lock across a goroutine
-// launch.
+// Must be called without mu held.
 func (c *Cache) maybePressure(used int64) {
 	if c.onPressure == nil || c.limit == 0 {
 		return
