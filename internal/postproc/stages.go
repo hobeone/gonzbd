@@ -46,6 +46,12 @@ type Job struct {
 	// Queue is the source job from the download queue. Read-only for stages.
 	Queue *queue.Job
 
+	// DownloadDir is the absolute path where the assembler wrote the job's
+	// files — the working directory for in-place stages (par2, unpack,
+	// deobfuscate, pre-sort). Mirrors Python's nzo.download_path. Must be
+	// set by the caller before the job is pushed to the PostProcessor.
+	DownloadDir string
+
 	// DirectUnpack is non-nil when the job was routed via the fast queue.
 	// Nil for slow-queue jobs.
 	DirectUnpack *DirectUnpackState
@@ -58,8 +64,9 @@ type Job struct {
 	FailMsg string
 
 	// ParError and UnpackError are set by the repair and unpack stages
-	// respectively (Steps 5.2/5.3).  Defined here so all stages can read
-	// and set them without a type assertion.
+	// respectively (Steps 5.2/5.3).  Downstream stages (sort, script) read
+	// them; scripts in particular surface these via the pp_status argv and
+	// SAB_PP_STATUS env var.
 	ParError    bool
 	UnpackError bool
 }
