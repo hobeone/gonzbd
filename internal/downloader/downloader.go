@@ -125,6 +125,14 @@ type Downloader struct {
 	tryMu   sync.Mutex
 	tryList map[articleKey]map[string]struct{}
 
+	// inFlight counts outstanding requests per article across all
+	// servers. An article with inFlight > 0 is not re-dispatched even
+	// if its try-list has untried servers remaining; the in-flight
+	// request must resolve first. This prevents speculative fan-out to
+	// multiple servers, which would double-charge paid bandwidth and
+	// produce duplicate completions.
+	inFlight map[articleKey]int
+
 	ctx    context.Context //nolint:containedctx // lifecycle context stored for Stop()
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -159,6 +167,7 @@ func New(q *queue.Queue, servers []*Server, opts Options) *Downloader {
 		dispatchReady: make(chan struct{}, 1),
 		speedCh:       make(chan int64, 4),
 		tryList:       make(map[articleKey]map[string]struct{}),
+		inFlight:      make(map[articleKey]int),
 	}
 	for _, srv := range servers {
 		perServer := opts.PerServerQueue

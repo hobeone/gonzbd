@@ -42,6 +42,11 @@ type mockNNTP struct {
 	requireAuth bool
 	user, pass  string
 
+	// bodyDelay is slept before writing any BODY response (success or
+	// 430). Used to widen the in-flight window so tests can assert the
+	// dispatcher does not speculatively fan out to other servers.
+	bodyDelay time.Duration
+
 	// stats
 	dials      atomic.Int64
 	fetches    atomic.Int64
@@ -62,6 +67,10 @@ func withAuth(user, pass string) mockOption {
 		m.user = user
 		m.pass = pass
 	}
+}
+
+func withBodyDelay(d time.Duration) mockOption {
+	return func(m *mockNNTP) { m.bodyDelay = d }
 }
 
 func newMockNNTP(t *testing.T, opts ...mockOption) *mockNNTP {
@@ -157,6 +166,9 @@ func (ms *mockNNTP) handleConn(c net.Conn) {
 			body, hasBody := ms.bodies[id]
 			rejected := ms.reject[id]
 			ms.bodiesMu.Unlock()
+			if ms.bodyDelay > 0 {
+				time.Sleep(ms.bodyDelay)
+			}
 			if rejected || !hasBody {
 				ms.rejections.Add(1)
 				_ = write("430 no such article\r\n")
@@ -359,6 +371,69 @@ func TestDownloaderFallbackServer(t *testing.T) {
 	}
 	if !bSuccess {
 		t.Error("expected primary success for b@h")
+	}
+}
+
+// TestDownloaderNoSpeculativeFallback verifies that while an article
+// is in-flight on one server, the dispatcher does NOT concurrently
+// send the same article to another server. Fallback happens only
+// after the first server's response resolves.
+//
+// The scenario: primary rejects a@h but takes 200ms to respond.
+// Backup has a@h and responds instantly. If the dispatcher is
+// speculative, backup will be dialed and fetch a@h while primary is
+// still sleeping. If it is sequential (correct), backup sees no
+// requests until primary has rejected.
+func TestDownloaderNoSpeculativeFallback(t *testing.T) {
+	primary := newMockNNTP(t, withBodyDelay(200*time.Millisecond))
+	primary.rejectArticle("a@h")
+
+	backup := newMockNNTP(t)
+	backup.addArticle("a@h", "body-a-backup")
+
+	q := queue.New()
+	_ = q.Add(makeJobWithArticles(t, []string{"a@h"}))
+
+	srvPrimary := testServer(t, "primary", primary.addr)
+	srvBackup := testServer(t, "backup", backup.addr)
+	d := New(q, []*Server{srvPrimary, srvBackup}, Options{})
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = d.Stop() }()
+
+	// 100 ms into primary's 200 ms delay: backup must be untouched.
+	time.Sleep(100 * time.Millisecond)
+	if got := backup.dials.Load(); got != 0 {
+		t.Fatalf("backup was dialed while primary in-flight: %d dials", got)
+	}
+	if got := backup.fetches.Load(); got != 0 {
+		t.Fatalf("backup fetched while primary in-flight: %d fetches", got)
+	}
+
+	// Let primary finish and backup take over.
+	results := collect(t, d.Completions(), 2, 5*time.Second)
+
+	var saw430, sawSuccess bool
+	for _, r := range results {
+		switch {
+		case r.ServerName == "primary" && errors.Is(r.Err, nntp.ErrNoArticle):
+			saw430 = true
+		case r.ServerName == "backup" && r.Err == nil:
+			sawSuccess = true
+		}
+	}
+	if !saw430 {
+		t.Error("expected 430 from primary")
+	}
+	if !sawSuccess {
+		t.Error("expected success from backup")
+	}
+	if got := primary.rejections.Load(); got != 1 {
+		t.Errorf("primary rejections = %d, want 1", got)
+	}
+	if got := backup.fetches.Load(); got != 1 {
+		t.Errorf("backup fetches = %d, want 1", got)
 	}
 }
 

@@ -50,10 +50,17 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 }
 
 // tryDispatch hands the article to the first eligible server with
-// spare capacity. The server is recorded in the try-list atomically
-// with the send, so a later dispatch pass that races ahead of the
-// worker's completion will not re-send the same article to the same
-// server.
+// spare capacity. The server is recorded in the try-list and the
+// article's in-flight counter is incremented atomically with the
+// send, so a later dispatch pass cannot re-send the same article
+// while one is still being fetched.
+//
+// If the article already has an outstanding request on any server,
+// tryDispatch returns immediately. Fallback to another server happens
+// only after the current request resolves (via its worker's
+// signalDispatch). This matches Python's sequential fallback
+// semantics and avoids paying paid-bandwidth twice for the same
+// article.
 //
 // The try-list entry is cleaned up by handleRequest: on success the
 // whole article entry is removed; on retryable connection failure
@@ -73,6 +80,11 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 
 	d.tryMu.Lock()
 	defer d.tryMu.Unlock()
+
+	if d.inFlight[key] > 0 {
+		return
+	}
+
 	tried := d.tryList[key]
 	for _, srv := range d.servers {
 		name := srv.Cfg().Name
@@ -93,6 +105,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 				d.tryList[key] = tried
 			}
 			tried[name] = struct{}{}
+			d.inFlight[key]++
 			return
 		case <-ctx.Done():
 			return
@@ -137,6 +150,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server) {
 // (forcing a re-dial on the next call).
 func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **nntp.Conn, req *articleRequest) {
 	defer d.signalDispatch()
+	defer d.clearInFlight(req.jobID, req.messageID)
 
 	name := srv.Cfg().Name
 
@@ -216,6 +230,21 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 	case d.completions <- res:
 	case <-ctx.Done():
 	}
+}
+
+// clearInFlight decrements the in-flight counter for an article.
+// Called from handleRequest's defer, before signalDispatch, so the
+// next dispatch pass observes the cleared state and can fan out to
+// a fallback server if the try-list allows.
+func (d *Downloader) clearInFlight(jobID, messageID string) {
+	key := articleKey{jobID: jobID, messageID: messageID}
+	d.tryMu.Lock()
+	defer d.tryMu.Unlock()
+	if d.inFlight[key] <= 1 {
+		delete(d.inFlight, key)
+		return
+	}
+	d.inFlight[key]--
 }
 
 // unmarkTried removes serverName from an article's try-list, used
