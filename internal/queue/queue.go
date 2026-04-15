@@ -139,6 +139,88 @@ func (q *Queue) Resume(id string) error {
 	return nil
 }
 
+// UnfinishedArticle is the snapshot record yielded by
+// ForEachUnfinishedArticle. It carries the minimum the dispatcher
+// needs to target a specific article; full Job state stays behind
+// the queue's lock.
+type UnfinishedArticle struct {
+	JobID     string
+	JobStatus constants.Status
+	FileIdx   int
+	MessageID string
+	Bytes     int
+}
+
+// ForEachUnfinishedArticle invokes fn for every not-yet-Done article
+// in the queue, in priority/file/article order. The read lock is
+// held across the whole iteration — fn must not call back into the
+// Queue (e.g. Add, Remove, MarkArticleDone) or it will deadlock.
+//
+// fn returns false to stop iteration early; this mirrors Go's
+// iter.Seq convention and is useful when the caller is bounded (e.g.
+// the dispatcher gives up once all work channels are full).
+//
+// Paused jobs are yielded too; the caller decides whether to skip
+// them. Passing the filter decision to the caller keeps this method
+// oblivious to higher-level policy.
+func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	for _, job := range q.jobs {
+		for fi := range job.Files {
+			file := &job.Files[fi]
+			if file.Complete {
+				continue
+			}
+			for ai := range file.Articles {
+				art := &file.Articles[ai]
+				if art.Done {
+					continue
+				}
+				if !fn(UnfinishedArticle{
+					JobID:     job.ID,
+					JobStatus: job.Status,
+					FileIdx:   fi,
+					MessageID: art.ID,
+					Bytes:     art.Bytes,
+				}) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// MarkArticleDone flips the Done flag on the article with the given
+// Message-ID within jobID. Returns ErrNotFound if either the job or
+// the article is absent.
+//
+// The dispatcher calls this from its worker goroutines as articles
+// complete successfully. Taking the write lock here funnels article
+// state mutation through a single well-known path, keeping callers
+// from holding direct pointers to Job internals.
+//
+// Flag semantics: setting Done on an already-done article is a no-op
+// (idempotent); the method does not track downgrade-from-done because
+// no code path currently needs to undo a completion.
+func (q *Queue) MarkArticleDone(jobID, messageID string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	for fi := range job.Files {
+		for ai := range job.Files[fi].Articles {
+			if job.Files[fi].Articles[ai].ID == messageID {
+				job.Files[fi].Articles[ai].Done = true
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
+}
+
 // PauseAll sets the queue-wide pause flag. Existing downloads
 // currently in flight are not cancelled; the downloader simply stops
 // dispatching new articles.
