@@ -921,6 +921,276 @@ Deliverables:
 
 ---
 
+## Phase 12: Glitter UI Port
+
+Port upstream SABnzbd's Cheetah templates to Go `html/template` so the
+daemon actually serves the Glitter web UI (today it only serves a
+placeholder landing page — see `internal/web/static/index.html`).
+
+Context (measured from `../sabnzbd/interfaces/Glitter/templates/`):
+
+| Template | Lines | Cheetah directives | Notes |
+|---|---:|---:|---|
+| `main.tmpl` | 164 | 21 (`#if`, `#include`, `#set`) | Shell + server-side glue |
+| `include_menu.tmpl` | 118 | 11 (all `#if`) | Feature-flag toggles |
+| `include_overlays.tmpl` | 839 | 2 (`#set`, `#from`) | Modals; otherwise pure HTML + Knockout |
+| `include_queue.tmpl` | 230 | 0 | Pure HTML + Knockout + `$T()` |
+| `include_history.tmpl` | 175 | 0 | Pure HTML + Knockout + `$T()` |
+| `include_messages.tmpl` | 47 | 0 | Pure HTML + Knockout + `$T()` |
+
+Data surface: 22 top-level context variables (`apikey`, `version`,
+`active_lang`, `rtl`, `color_scheme`, `webdir`, `new_release`,
+`new_rel_url`, feature flags `have_logout`/`have_quota`/
+`have_rss_defined`/`have_watched_dir`, etc.). Translation: 236 unique
+`$T('key')` lookups across all templates.
+
+**Strategy**: build the context struct and renderer first, then port
+zero-directive templates to prove the renderer, then the two
+directive-heavy templates, then wire i18n. Ship English-only
+translations in v1; real multi-language is a separate follow-up.
+
+**Validation at each step** (all steps):
+- Quality gates: `go vet ./... && go test -race -count=1 ./... && golangci-lint run ./...`
+- Step-specific: rendered-HTML assertion via `httptest` against known
+  markers (div IDs, `data-bind` attributes, injected JS globals). Failed
+  step = failed commit; move to next step only after green.
+
+### Step 12.1 — Vendor `staticcfg/` icons `[haiku]`
+
+Glitter's `main.tmpl` references `./staticcfg/ico/favicon.ico` and
+seven `apple-touch-icon-*.png` / android / safari mask-icon assets.
+Upstream stores them under `interfaces/Config/templates/staticcfg/`
+(shared across skins), not under Glitter itself.
+
+```
+Deliverables:
+  - internal/web/static/staticcfg/ico/ — copy favicon.ico, apple-touch-icon-*.png,
+    android-192x192.png, safari-pinned-tab.svg from upstream
+  - Update internal/web/server.go routing so /staticcfg/ maps to the
+    embedded staticcfg subtree
+
+Validation:
+  - curl -I http://127.0.0.1:8080/staticcfg/ico/favicon.ico → 200 OK
+  - httptest asserts Content-Type: image/x-icon for favicon, image/png for apple-touch-icons
+```
+
+### Step 12.2 — Render-context struct and template pipeline `[sonnet]`
+
+Build the foundation every template step depends on: the Go struct
+holding all context variables, the `html/template` setup with required
+FuncMap entries, and a handler that renders `main.html.tmpl` from an
+`embed.FS`. Keep the body of `main.html.tmpl` trivial for this step
+(just `<h1>{{.Version}}</h1>`) — the real port is Step 12.4.
+
+```
+Deliverables:
+  - internal/web/render.go — RenderContext struct (api_key, version,
+    active_lang, rtl, color_scheme, webdir, new_release, new_rel_url,
+    bytespersec_list, have_* flags). Builder func takes *config.Config
+    + *queue.Queue + runtime state, returns fully populated context.
+  - internal/web/render.go — template.FuncMap with placeholders: T, staticURL
+  - internal/web/server.go — new renderIndex handler replacing the
+    placeholder; parses main.html.tmpl from embed.FS once at startup
+  - internal/web/templates/main.html.tmpl — minimal stub that
+    references {{.Version}} and {{.APIKey}} to prove data wiring
+  - internal/web/render_test.go — table-driven RenderContext builder tests;
+    httptest asserts rendered HTML contains the expected Version + APIKey
+
+Validation:
+  - GET / returns 200 with text/html
+  - Body contains the configured version string and api_key value
+  - Go quality gates pass
+```
+
+### Step 12.3 — Translation function stub `[haiku]`
+
+Ship `T(key)` returning the key itself (English fallback). This lets
+`$T(...)` porting happen mechanically in Steps 12.4-12.8 without
+blocking on a real i18n catalog. Real translations are a follow-up.
+
+```
+Deliverables:
+  - internal/i18n/catalog.go — type Catalog map[string]string; Lookup(key) string
+    returning the key verbatim when no entry exists
+  - internal/i18n/catalog.go — embed upstream sabnzbd English strings
+    if trivially available (po file or JSON); otherwise ship an empty
+    map and rely on fallback
+  - internal/web/render.go — wire T into the FuncMap so templates can
+    call {{T "post-Paused"}}
+  - internal/i18n/catalog_test.go — Lookup returns key on miss, value on hit
+
+Validation:
+  - Template expression {{T "menu-queue"}} renders the English text
+    (or the key itself if catalog is empty) — not an error
+```
+
+### Step 12.4 — Port `include_messages.tmpl` `[haiku]`
+
+Smallest template (47 lines), zero Cheetah directives. Mechanical
+substitution of `$T('key')` → `{{T "key"}}`. Serves as the reference
+conversion pattern for the other zero-directive templates.
+
+```
+Deliverables:
+  - internal/web/templates/include_messages.html.tmpl
+  - internal/web/templates/messages_test.go — render assertion:
+    output contains #messages root div and expected Knockout
+    data-bind attributes preserved verbatim
+
+Validation:
+  - Rendered output contains every data-bind= attribute from the upstream source
+  - No $T( or $ tokens remain in rendered output
+```
+
+### Step 12.5 — Port `include_queue.tmpl` + `include_history.tmpl` `[haiku]`
+
+Same mechanical pattern as 12.4 scaled up (230 + 175 lines, zero
+directives each). Two templates in one step because the pattern is
+now proven and both are pure `$T()` substitution.
+
+```
+Deliverables:
+  - internal/web/templates/include_queue.html.tmpl
+  - internal/web/templates/include_history.html.tmpl
+  - Tests asserting #queue-tab / #history-tab roots and Knockout
+    bindings survive the port intact
+
+Validation:
+  - grep '\$T\|<!--#' on rendered output returns nothing
+  - The same data-bind attribute set as upstream is present
+```
+
+### Step 12.6 — Port `include_menu.tmpl` `[sonnet]`
+
+First directive-heavy template: 11 `#if` blocks gating menu entries
+on feature flags (`have_logout`, `have_quota`, `have_rss_defined`,
+`have_watched_dir`, etc.). Translation is `#if $flag` → `{{if .Flag}}`.
+
+```
+Deliverables:
+  - internal/web/templates/include_menu.html.tmpl
+  - Table-driven render test: each feature flag on/off produces
+    the expected menu entry present/absent
+
+Validation:
+  - When have_rss_defined=true, #rss-menu-item is in output; when false, it is absent
+  - Same for the other 4 feature flags
+```
+
+### Step 12.7 — Port `include_overlays.tmpl` `[sonnet]`
+
+839 lines but only 2 directives (one `#set` for a helper value, one
+`#from sabnzbd` import that we can skip entirely since we only need
+the rendered HTML). Size drives the model choice, not complexity.
+
+```
+Deliverables:
+  - internal/web/templates/include_overlays.html.tmpl
+  - Render test: at least one representative modal (e.g. #modal_options,
+    #modal_add_nzb, #modal_shutdown) renders with expected structure
+  - Visual sanity test: rendered page includes the expected count of
+    <div class="modal"> elements (~15-20 upstream)
+
+Validation:
+  - All data-bind attributes from upstream preserved
+  - All $T() calls replaced; no $ or <!--# tokens remain
+  - Modal count matches upstream source
+```
+
+### Step 12.8 — Port `main.tmpl` `[sonnet]`
+
+The shell template. Most complex: 21 directives including `#include`
+(replace with `{{template "name" .}}`), `#include raw` for inline JS
+bundles (replace with `<script src="/static/...">` tags — serving JS
+as separate requests is modern best practice and simpler than
+embed-then-inline), and the one `#set $active_lang=...` (do the
+normalization in the Go builder, not the template).
+
+Special handling:
+- `<!--#if $rtl#-->dir="rtl"<!--#end if#-->` → `{{if .RTL}}dir="rtl"{{end}}`
+- Inline JS `var apiKey = "$apikey";` → `var apiKey = {{.APIKey | js}};`
+  (use the `js` template func to ensure proper quoting and escaping)
+- `glitterTranslate.X = "$T('Y')"` → `glitterTranslate.X = {{T "Y" | js}};`
+- 10 `#include raw $webdir + "/..."` for JS bundles → drop from
+  template; add matching `<script src="/static/glitter/...">` tags
+  pointing at the already-embedded assets
+
+```
+Deliverables:
+  - internal/web/templates/main.html.tmpl — the full shell wiring
+    the four include_*.html.tmpl children
+  - internal/web/render.go — update to ParseFS the full template set
+    (template.ParseFS with all include_*.html.tmpl names) so {{template}}
+    resolves across files
+  - Integration test: GET / renders full page; scrape for:
+    * <script> block containing apiKey = "configured-value"
+    * <script src="/static/glitter/javascripts/glitter.js"> tag
+    * All 4 include blocks present (queue, history, messages, overlays)
+    * <html lang="..."> matches configured language
+
+Validation:
+  - go test ./internal/web/ -run TestRenderIndex passes
+  - Visual: user runs ./sabnzbd --serve, opens /, browser dev tools
+    show the Knockout view model bound (ko.observable elements update
+    when /api?mode=queue is polled)
+  - No console errors in browser
+```
+
+### Step 12.9 — Browser smoke test and README restoration `[sonnet]`
+
+Manual validation with a real browser, plus restore the README's
+UI-opening Quickstart step now that it's truthful.
+
+```
+Deliverables:
+  - docs/ui_smoke_checklist.md — step-by-step manual verification:
+    page loads, queue/history/warnings tabs switch, shutdown modal
+    opens, api key prompt works, speed graph renders, refresh works
+  - README.md — add back the "open http://127.0.0.1:8080/ and use the UI"
+    flow; remove the "API-only for now" caveat from Status section
+
+Validation:
+  - All items in docs/ui_smoke_checklist.md pass by user inspection
+  - curl http://127.0.0.1:8080/ | grep 'ko.applyBindings' returns a match
+  - Go quality gates still green
+```
+
+### Model selection rationale
+
+| Step | Model | Why |
+|---|---|---|
+| 12.1 | haiku | File copy + 1-line routing change |
+| 12.2 | sonnet | Data-surface design; every later step depends on the struct shape |
+| 12.3 | haiku | Map wrapper with trivial fallback |
+| 12.4 | haiku | Mechanical `$T()` → `{{T}}` substitution; pattern reference |
+| 12.5 | haiku | Same pattern as 12.4 at larger size |
+| 12.6 | sonnet | 11 `#if` translations need care around Knockout-adjacent markup |
+| 12.7 | sonnet | Size (839 lines) requires judgement on what to test |
+| 12.8 | sonnet | Shell template with nontrivial JS-escaping and `{{template}}` wiring |
+| 12.9 | sonnet | Writes the manual-verification doc and re-verifies README claims |
+
+Opus is intentionally not used in Phase 12: the design work (data
+surface, render pipeline) fits in one Sonnet step once the inventory
+is in hand. Escalate to Opus only if Step 12.2 surfaces an
+architectural ambiguity the plan didn't anticipate.
+
+### Dependencies
+
+```
+12.1 ─┐
+      ├─► 12.2 ─► 12.3 ─► 12.4 ─► 12.5 ─► 12.6 ─► 12.7 ─► 12.8 ─► 12.9
+      │                                                          │
+      └─────────── 12.1 also serves 12.8's <link rel=icon> path ─┘
+```
+
+Each step leaves the daemon in a working state. Stopping at Step 12.5
+already yields three functional panels (queue, history, messages)
+rendered through the new pipeline, with the old placeholder still
+serving when the template falls back. Stop at any step; the
+repository compiles and passes tests.
+
+---
+
 ## Dependency Summary
 
 ```
