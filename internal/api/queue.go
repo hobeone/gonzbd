@@ -316,12 +316,32 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// modeAddURL handles mode=addurl. URL grabbing is not yet implemented.
-// Stub returning 501.
-func (s *Server) modeAddURL(w http.ResponseWriter, _ *http.Request) {
-	respondJSON(w, http.StatusNotImplemented, map[string]any{
-		"status": false,
-		"error":  "addurl not implemented in this build",
+// modeAddURL handles mode=addurl. Fetches the NZB pointed to by `name=`
+// synchronously via the URL grabber and enqueues it.
+//
+// Python's addurl returns immediately and queues the fetch in a worker
+// thread; our implementation blocks until the fetch completes. For small
+// NZBs (<1 MiB) the difference is imperceptible; for very large remote
+// NZBs the client will see a longer response. Revisit if it hurts in
+// practice — a fire-and-forget wrapper is a few lines.
+func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
+	if s.grabber == nil {
+		respondError(w, http.StatusInternalServerError, "url grabber not wired")
+		return
+	}
+	urlStr := formString(r, "name")
+	if urlStr == "" {
+		respondError(w, http.StatusBadRequest, "missing name parameter (URL)")
+		return
+	}
+	n, err := s.grabber.Fetch(r.Context(), urlStr)
+	if err != nil {
+		respondError(w, http.StatusBadGateway, "fetch: "+err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status":  true,
+		"fetched": n,
 	})
 }
 

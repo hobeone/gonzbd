@@ -11,6 +11,7 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/sabnzbd-go/internal/urlgrabber"
 )
 
 // Options configures the API server at construction time.
@@ -35,6 +36,9 @@ type Options struct {
 	// Config is the application configuration. May be nil; handlers that need it
 	// will respond with 500 if it is absent.
 	Config *config.Config
+
+	// Grabber fetches remote NZBs. When nil, mode=addurl returns 501.
+	Grabber *urlgrabber.Grabber
 }
 
 // Server is the HTTP API server. It owns a net/http.Server and the mode
@@ -48,6 +52,7 @@ type Server struct {
 	queue   *queue.Queue
 	history *history.Repository
 	config  *config.Config
+	grabber *urlgrabber.Grabber
 
 	modes modeTable
 	mux   *http.ServeMux
@@ -69,6 +74,7 @@ func New(opts Options) *Server {
 		queue:   opts.Queue,
 		history: opts.History,
 		config:  opts.Config,
+		grabber: opts.Grabber,
 		mux:     http.NewServeMux(),
 	}
 	s.registerModes()

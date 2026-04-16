@@ -25,10 +25,16 @@ import (
 
 	"github.com/hobeone/sabnzbd-go/internal/api"
 	"github.com/hobeone/sabnzbd-go/internal/app"
+	"github.com/hobeone/sabnzbd-go/internal/bpsmeter"
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/dirscanner"
 	"github.com/hobeone/sabnzbd-go/internal/history"
+	"github.com/hobeone/sabnzbd-go/internal/notifier"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/sabnzbd-go/internal/rss"
+	"github.com/hobeone/sabnzbd-go/internal/scheduler"
+	"github.com/hobeone/sabnzbd-go/internal/urlgrabber"
 	"github.com/hobeone/sabnzbd-go/internal/web"
 )
 
@@ -131,6 +137,43 @@ func serveMode(configPath, listenOverride, downloadDirOverride string) error {
 		return fmt.Errorf("start application: %w", err)
 	}
 
+	// Bandwidth meter. State persists across restarts so lifetime totals
+	// aren't reset by a daemon restart. Quota is not yet wired (no config
+	// surface); pass nil into Restore/Capture.
+	meter := bpsmeter.NewMeter(10*time.Second, time.Now)
+	meterStatePath := filepath.Join(adminDir, "bpsmeter.json")
+	if state, err := bpsmeter.LoadState(meterStatePath); err == nil {
+		bpsmeter.Restore(meter, nil, state)
+	}
+
+	// Notifier dispatcher. Sinks (email/apprise/script) are not yet
+	// config-driven; dispatcher stays empty until that config lands.
+	_ = notifier.NewDispatcher(slog.Default()) //nolint:errcheck // placeholder wiring for upcoming sinks
+
+	// Ingest adapter shared by the dir scanner and URL grabber. Both
+	// receive raw NZB bytes and push jobs onto the same queue.
+	ingest := &ingestHandler{queue: application.Queue(), logger: slog.Default()}
+
+	// URL grabber. Used both by the RSS scanner's handler and by the API
+	// (mode=addurl). One instance is enough; Grabber is safe for
+	// concurrent Fetch callers because each call has its own http.Request.
+	grabber := urlgrabber.New(urlgrabber.Config{Logger: slog.Default()}, ingest)
+
+	// Directory scanner. Enabled only when DirscanDir is set.
+	if err := startDirScanner(ctx, cfg, adminDir, ingest); err != nil {
+		return err
+	}
+
+	// Scheduler. Parsed schedules drive periodic pause/resume/etc.
+	if err := startScheduler(ctx, cfg, application.Queue(), cancel); err != nil {
+		return err
+	}
+
+	// RSS scanner. Each accepted item is handed to the URL grabber.
+	if err := startRSSScanner(ctx, cfg, adminDir, grabber); err != nil {
+		return err
+	}
+
 	apiSrv := api.New(api.Options{
 		Auth: api.AuthConfig{
 			APIKey:          cfg.General.APIKey,
@@ -141,6 +184,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride string) error {
 		Queue:   application.Queue(),
 		History: histRepo,
 		Config:  cfg,
+		Grabber: grabber,
 	})
 
 	listen := listenOverride
@@ -179,6 +223,90 @@ func serveMode(configPath, listenOverride, downloadDirOverride string) error {
 	if err := application.Shutdown(); err != nil {
 		slog.Warn("application shutdown", "err", err)
 	}
+	if err := bpsmeter.SaveState(meterStatePath, bpsmeter.Capture(meter, nil)); err != nil {
+		slog.Warn("save bpsmeter state", "err", err)
+	}
+	return nil
+}
+
+// startDirScanner wires the watched-directory scanner when cfg.General.DirscanDir
+// is set. It's a goroutine that lives for the duration of ctx.
+func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h *ingestHandler) error {
+	if cfg.General.DirscanDir == "" {
+		return nil
+	}
+	store, err := dirscanner.OpenStore(filepath.Join(adminDir, "dirscan.json"))
+	if err != nil {
+		return fmt.Errorf("open dirscanner store: %w", err)
+	}
+	interval := time.Duration(cfg.General.DirscanSpeed) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	sc := dirscanner.New(cfg.General.DirscanDir, store, h, slog.Default())
+	go func() {
+		if err := sc.Run(ctx, interval); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("dirscanner", "err", err)
+		}
+	}()
+	slog.Info("dirscanner started", "dir", cfg.General.DirscanDir, "interval", interval)
+	return nil
+}
+
+// startScheduler parses cfg.Schedules, registers the known actions, and
+// launches the scheduler loop. cancel is used by the "shutdown" action
+// to trigger the same shutdown path as SIGINT.
+func startScheduler(ctx context.Context, cfg *config.Config, q *queue.Queue, cancel context.CancelFunc) error {
+	specs, err := schedulesFromConfig(cfg.Schedules)
+	if err != nil {
+		return fmt.Errorf("parse schedules: %w", err)
+	}
+	reg := scheduler.NewRegistry()
+	reg.Register("pause", func(_ context.Context, _ string) error { q.PauseAll(); return nil })
+	reg.Register("resume", func(_ context.Context, _ string) error { q.ResumeAll(); return nil })
+	// speedlimit is logged for now; hooking into a real Limiter requires
+	// the Downloader to take a *bpsmeter.Limiter, which is a later wiring step.
+	reg.Register("speedlimit", func(_ context.Context, arg string) error {
+		slog.Info("scheduler: speedlimit (noop until downloader is wired)", "arg", arg)
+		return nil
+	})
+	reg.Register("shutdown", func(_ context.Context, _ string) error {
+		slog.Info("scheduler: shutdown action fired")
+		cancel()
+		return nil
+	})
+	sch := scheduler.New(specs, reg, slog.Default())
+	go func() {
+		if err := sch.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("scheduler", "err", err)
+		}
+	}()
+	slog.Info("scheduler started", "schedules", len(specs))
+	return nil
+}
+
+// startRSSScanner builds feeds from config, opens the dedup store, and
+// runs a periodic scanner that hands each accepted item to the grabber.
+func startRSSScanner(ctx context.Context, cfg *config.Config, adminDir string, g *urlgrabber.Grabber) error {
+	feeds, err := feedsFromConfig(cfg.RSS)
+	if err != nil {
+		return fmt.Errorf("parse rss feeds: %w", err)
+	}
+	if len(feeds) == 0 {
+		return nil
+	}
+	store, err := rss.OpenStore(filepath.Join(adminDir, "rss-dedup.json"))
+	if err != nil {
+		return fmt.Errorf("open rss store: %w", err)
+	}
+	handler := &rssToURLHandler{grabber: g, logger: slog.Default()}
+	sc := rss.NewScanner(feeds, store, handler, nil, slog.Default())
+	go func() {
+		if err := sc.Run(ctx, 15*time.Minute); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("rss scanner", "err", err)
+		}
+	}()
+	slog.Info("rss scanner started", "feeds", len(feeds))
 	return nil
 }
 

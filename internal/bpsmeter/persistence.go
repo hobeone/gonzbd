@@ -66,22 +66,24 @@ func SaveState(path string, s State) error {
 }
 
 // Capture builds a State from the current Meter and Quota snapshots.
-// Use this before calling SaveState.
+// Use this before calling SaveState. A nil Quota is allowed; the quota
+// fields of State are left zero-valued when no quota is tracked.
 func Capture(m *Meter, q *Quota) State {
 	snap := m.Snapshot()
-	usage, _ := q.UsageAndBudget()
-	ps := q.PeriodStart()
 
 	servers := make(map[string]int64, len(snap.Servers))
 	for name, ss := range snap.Servers {
 		servers[name] = ss.Total
 	}
-	return State{
-		PeriodStart:   ps,
-		PeriodUsage:   usage,
+	s := State{
 		LifetimeTotal: snap.Total,
 		ServerTotals:  servers,
 	}
+	if q != nil {
+		s.PeriodUsage, _ = q.UsageAndBudget()
+		s.PeriodStart = q.PeriodStart()
+	}
+	return s
 }
 
 // Restore applies a previously loaded State to fresh Meter and Quota instances.
@@ -116,13 +118,14 @@ func Restore(m *Meter, q *Quota, s State) {
 	}
 	m.mu.Unlock()
 
-	// Restore quota period usage.
+	if q == nil {
+		return
+	}
 	q.mu.Lock()
 	if !s.PeriodStart.IsZero() {
 		q.periodStart = s.PeriodStart
 	}
 	q.usage = s.PeriodUsage
-	// Re-evaluate exceeded flag without firing handler.
 	if q.cfg.Budget > 0 && q.usage >= q.cfg.Budget {
 		q.exceeded = true
 	}
