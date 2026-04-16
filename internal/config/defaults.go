@@ -38,6 +38,7 @@ func Default() (*Config, error) {
 			CompleteDir:  "Downloads/complete",
 			DirscanSpeed: int(constants.DefaultDirScanRate.Seconds()),
 			AdminDir:     constants.AdminDirName,
+			LogLevel:     "info",
 			Language:     "en",
 		},
 		Downloads: DownloadConfig{

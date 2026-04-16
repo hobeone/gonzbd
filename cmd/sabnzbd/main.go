@@ -63,12 +63,6 @@ func main() {
 		return
 	}
 
-	level := slog.LevelInfo
-	if *verbose {
-		level = slog.LevelDebug
-	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
-
 	if *configPath == "" {
 		usage()
 		os.Exit(2)
@@ -79,12 +73,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "--serve and --nzb are mutually exclusive")
 		os.Exit(2)
 	case *serve:
-		if err := serveMode(*configPath, *listenAddr, *downloadDir, *pidPath); err != nil {
+		if err := serveMode(*configPath, *listenAddr, *downloadDir, *pidPath, *verbose); err != nil {
 			slog.Error("serve failed", "err", err)
 			os.Exit(1)
 		}
 	case *nzbPath != "":
-		if err := run(*configPath, *nzbPath, *downloadDir); err != nil {
+		if err := run(*configPath, *nzbPath, *downloadDir, *verbose); err != nil {
 			slog.Error("download failed", "err", err)
 			os.Exit(1)
 		}
@@ -105,7 +99,7 @@ func usage() {
 // serveMode runs the long-lived daemon: boots the download pipeline, opens
 // the history DB, constructs the API server and web handler, composes them
 // on a single listener, and blocks until SIGINT/SIGTERM.
-func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string) error {
+func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, verbose bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -120,6 +114,32 @@ func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string) 
 	if err := os.MkdirAll(adminDir, 0o750); err != nil {
 		return fmt.Errorf("create admin dir %s: %w", adminDir, err)
 	}
+
+	// Set up structured logging. The -v CLI flag overrides the config level.
+	logLevel, err := cfg.General.ParseLogLevel()
+	if err != nil {
+		return fmt.Errorf("parse log level: %w", err)
+	}
+	if verbose {
+		logLevel = slog.LevelDebug
+	}
+	logFile := ""
+	if cfg.General.LogDir != "" {
+		logFile = filepath.Join(cfg.General.LogDir, "sabnzbd.log")
+	}
+	logger, logCloser, err := app.Setup(app.LoggingOptions{
+		Level:   logLevel,
+		LogFile: logFile,
+	})
+	if err != nil {
+		return fmt.Errorf("setup logging: %w", err)
+	}
+	defer func() {
+		if logCloser != nil {
+			_ = logCloser.Close() //nolint:errcheck // close error not actionable at shutdown
+		}
+	}()
+	_ = logger // installed as slog.Default by Setup
 
 	// Single-instance lock prevents two daemons from corrupting the same
 	// admin dir. Released on every exit path via defer.
@@ -404,7 +424,21 @@ func resolveDirs(cfg *config.Config, downloadDirOverride string) (dlDir, adminDi
 	return dlDir, adminDir, nil
 }
 
-func run(configPath, nzbPath, downloadDirOverride string) error {
+func run(configPath, nzbPath, downloadDirOverride string, verbose bool) error {
+	// One-shot mode: stderr-only logging.
+	logLevel := slog.LevelInfo
+	if verbose {
+		logLevel = slog.LevelDebug
+	}
+	logger, _, err := app.Setup(app.LoggingOptions{
+		Level:   logLevel,
+		LogFile: "", // no file logging for one-shot mode
+	})
+	if err != nil {
+		return fmt.Errorf("setup logging: %w", err)
+	}
+	_ = logger // installed as slog.Default by Setup
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)

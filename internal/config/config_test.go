@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -351,6 +352,55 @@ func TestPercentRange(t *testing.T) {
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("Percent(%q): unexpected error: %v", tc.in, err)
+			}
+		})
+	}
+}
+
+func TestParseLogLevel(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		want       slog.Level
+		wantErr    bool
+		wantErrMsg string
+	}{
+		{"debug", "debug", slog.LevelDebug, false, ""},
+		{"DEBUG uppercase", "DEBUG", slog.LevelDebug, false, ""},
+		{"Debug mixed case", "Debug", slog.LevelDebug, false, ""},
+		{"info", "info", slog.LevelInfo, false, ""},
+		{"INFO uppercase", "INFO", slog.LevelInfo, false, ""},
+		{"Info mixed case", "Info", slog.LevelInfo, false, ""},
+		{"warn", "warn", slog.LevelWarn, false, ""},
+		{"WARN uppercase", "WARN", slog.LevelWarn, false, ""},
+		{"Warn mixed case", "Warn", slog.LevelWarn, false, ""},
+		{"error", "error", slog.LevelError, false, ""},
+		{"ERROR uppercase", "ERROR", slog.LevelError, false, ""},
+		{"Error mixed case", "Error", slog.LevelError, false, ""},
+		{"empty defaults to info", "", slog.LevelInfo, false, ""},
+		{"invalid level", "invalid", 0, true, "invalid log level"},
+		{"trace invalid", "trace", 0, true, "invalid log level"},
+		{"bad input", "foobar", 0, true, "invalid log level"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &GeneralConfig{LogLevel: tt.input}
+			got, err := g.ParseLogLevel()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ParseLogLevel(%q) = %v, want error", tt.input, got)
+				}
+				if !strings.Contains(err.Error(), tt.wantErrMsg) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErrMsg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseLogLevel(%q): unexpected error: %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Errorf("ParseLogLevel(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}

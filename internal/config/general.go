@@ -1,5 +1,11 @@
 package config
 
+import (
+	"fmt"
+	"log/slog"
+	"strings"
+)
+
 // GeneralConfig holds top-level daemon settings: HTTP listen, credentials,
 // directory layout, and language. See spec §9.2.
 type GeneralConfig struct {
@@ -43,7 +49,31 @@ type GeneralConfig struct {
 	LogDir string `yaml:"log_dir"`
 	// AdminDir holds queue / state files.
 	AdminDir string `yaml:"admin_dir"`
+	// LogLevel is the minimum log level: "debug", "info", "warn", or "error".
+	// Empty string defaults to "info".
+	LogLevel string `yaml:"log_level"`
 
 	// Language is the BCP-47 (or shorter) UI language code.
 	Language string `yaml:"language"`
+}
+
+// ParseLogLevel decodes the LogLevel string to an slog.Level.
+// Empty string returns LevelInfo. Accepts case-insensitive "debug",
+// "info", "warn", "error". Returns an error for invalid input.
+func (g *GeneralConfig) ParseLogLevel() (slog.Level, error) {
+	if g.LogLevel == "" {
+		return slog.LevelInfo, nil
+	}
+	switch strings.ToLower(g.LogLevel) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("invalid log level %q (must be debug, info, warn, or error)", g.LogLevel)
+	}
 }
