@@ -181,6 +181,64 @@ func TestHandler_RendersEnglishStrings(t *testing.T) {
 	}
 }
 
+// TestServedGlitterJS_IsAssembled verifies the served glitter.js is the
+// assembled, ready-to-run artifact rather than the upstream Cheetah template
+// (which contains "#include raw $webdir + ..."  directives that the browser
+// parses as JS private-field syntax and rejects).
+//
+// Regression guard for the Step 12.11 fix. Symptom before the fix:
+//
+//	Uncaught SyntaxError: Private field '#include' must be declared in an
+//	enclosing class (at glitter.js:1:1)
+func TestServedGlitterJS_IsAssembled(t *testing.T) {
+	handler := Handler()
+	req := httptest.NewRequest("GET", "/static/glitter/javascripts/glitter.js", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+
+	// No Cheetah #include directives must leak through to the browser.
+	forbidden := []string{
+		"#include raw",
+		"#include ",
+		"$webdir",
+	}
+	for _, bad := range forbidden {
+		if strings.Contains(body, bad) {
+			t.Errorf("glitter.js contains unresolved Cheetah token %q (assembly skipped?)", bad)
+		}
+	}
+
+	// Markers from each of the 5 sub-files must appear, proving they were
+	// inlined rather than referenced.
+	required := []struct {
+		marker string
+		source string
+	}{
+		{"var isMobile", "glitter.basic.js"},
+		{"function ViewModel()", "glitter.main.js"},
+		{"QueueListModel", "glitter.queue.js"},
+		{"HistoryListModel", "glitter.history.js"},
+		{"paginationModel", "glitter.filelist.pagination.js / glitter.queue.js"},
+		{"ko.applyBindings(new ViewModel()", "glitter.js wrapper tail"},
+	}
+	for _, req := range required {
+		if !strings.Contains(body, req.marker) {
+			t.Errorf("glitter.js missing %q (from %s) — sub-file not inlined?", req.marker, req.source)
+		}
+	}
+
+	// The assembled file is large (~3400 lines upstream). Guard against an
+	// accidental regression that commits just the 55-line Cheetah template.
+	if n := strings.Count(body, "\n"); n < 2000 {
+		t.Errorf("glitter.js has only %d newlines; expected thousands (assembled file ~3400 lines)", n)
+	}
+}
+
 func TestHandlerConcurrency(t *testing.T) {
 	// Ensure Handler() can be called multiple times and the handlers
 	// serve concurrently without race conditions.
