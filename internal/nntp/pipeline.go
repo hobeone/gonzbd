@@ -265,44 +265,53 @@ func parseStatus(line string) (code int, text string, err error) {
 // readDotStuffedBody reads a multi-line response body from br per RFC
 // 3977 §3.1.1. The body ends at a line containing only ".". Leading
 // "." characters on other lines are dot-stuffed and must be removed
-// (first byte dropped). CRLF is preserved between lines in the output
-// because callers need the raw bytes for yEnc decoding and CRC
-// verification.
+// (first byte dropped). CRLF on the wire is normalised to LF in the
+// output.
 //
 // Maximum body size: 10 MB. Usenet articles are typically under 800 KB
 // but this leaves generous headroom for oversized posts without risking
 // a malicious server exhausting memory.
+//
+// Implementation: ReadSlice borrows the bufio reader's internal buffer
+// rather than allocating a fresh slice per line, so the only heap
+// traffic per call is the growing output buffer (~log2(body size)
+// allocations from bytes.Buffer, not one per line).
 func readDotStuffedBody(br *bufio.Reader) ([]byte, error) {
 	const maxBody = 10 * 1024 * 1024
 	var buf bytes.Buffer
 	for {
-		line, err := br.ReadBytes('\n')
+		line, err := br.ReadSlice('\n')
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil, io.ErrUnexpectedEOF
 			}
+			if errors.Is(err, bufio.ErrBufferFull) {
+				return nil, fmt.Errorf("nntp: body line exceeds %d bytes", br.Size())
+			}
 			return nil, err
 		}
-		// Normalise CRLF → LF so callers see deterministic bytes
-		// regardless of server quirks. The dot-stuffed terminator is
-		// ".\r\n" in strict servers and ".\n" in loose ones.
-		clean := line
-		if n := len(clean); n >= 2 && clean[n-2] == '\r' {
-			clean = append(clean[:n-2:n-2], '\n')
+		// Strip trailing LF (always present) and optional CR.
+		end := len(line) - 1
+		if end > 0 && line[end-1] == '\r' {
+			end--
 		}
-		if bytes.Equal(clean, []byte(".\n")) {
+		body := line[:end]
+
+		// Terminator is a line whose content is exactly ".".
+		if end == 1 && body[0] == '.' {
 			return buf.Bytes(), nil
 		}
 		// Un-dotstuff: RFC 3977 §3.1.1 requires any line starting
 		// with "." to be prefixed with an extra "." for transport;
 		// strip that extra dot on receipt.
-		if len(clean) > 0 && clean[0] == '.' {
-			clean = clean[1:]
+		if end > 0 && body[0] == '.' {
+			body = body[1:]
 		}
-		if buf.Len()+len(clean) > maxBody {
+		if buf.Len()+len(body)+1 > maxBody {
 			return nil, fmt.Errorf("nntp: body exceeds %d bytes", maxBody)
 		}
-		buf.Write(clean)
+		buf.Write(body)
+		buf.WriteByte('\n')
 	}
 }
 
