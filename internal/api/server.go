@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
@@ -30,6 +31,10 @@ type Options struct {
 	// History is the history repository. May be nil; handlers that need it
 	// will respond with 500 if it is absent.
 	History *history.Repository
+
+	// Config is the application configuration. May be nil; handlers that need it
+	// will respond with 500 if it is absent.
+	Config *config.Config
 }
 
 // Server is the HTTP API server. It owns a net/http.Server and the mode
@@ -42,6 +47,7 @@ type Server struct {
 
 	queue   *queue.Queue
 	history *history.Repository
+	config  *config.Config
 
 	modes modeTable
 	mux   *http.ServeMux
@@ -62,6 +68,7 @@ func New(opts Options) *Server {
 		log:     log,
 		queue:   opts.Queue,
 		history: opts.History,
+		config:  opts.Config,
 		mux:     http.NewServeMux(),
 	}
 	s.registerModes()

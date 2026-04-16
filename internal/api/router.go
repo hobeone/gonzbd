@@ -55,6 +55,30 @@ func (s *Server) registerModes() {
 		"addurl":       {handler: s.modeAddURL, level: LevelProtected},
 		"addlocalfile": {handler: s.modeAddLocalFile, level: LevelProtected},
 		"history":      {handler: s.modeHistory, level: LevelProtected},
+		// Status modes
+		"fullstatus":   {handler: s.modeFullStatus, level: LevelProtected},
+		"status":       {handler: s.modeStatus, level: LevelProtected},
+		"warnings":     {handler: s.modeWarnings, level: LevelProtected},
+		"server_stats": {handler: s.modeServerStats, level: LevelProtected},
+		// Config modes
+		"config":     {handler: s.modeConfig, level: LevelAdmin},
+		"get_config": {handler: s.modeGetConfig, level: LevelAdmin},
+		"set_config": {handler: s.modeSetConfig, level: LevelAdmin},
+		// Control modes
+		"pause":      {handler: s.modePause, level: LevelAdmin},
+		"resume":     {handler: s.modeResume, level: LevelAdmin},
+		"shutdown":   {handler: s.modeShutdown, level: LevelAdmin},
+		"restart":    {handler: s.modeRestart, level: LevelAdmin},
+		"disconnect": {handler: s.modeDisconnect, level: LevelAdmin},
+		"pause_pp":   {handler: s.modePausePP, level: LevelAdmin},
+		"resume_pp":  {handler: s.modeResumePP, level: LevelAdmin},
+		// Misc modes
+		"get_cats":    {handler: s.modeGetCats, level: LevelProtected},
+		"get_scripts": {handler: s.modeGetScripts, level: LevelProtected},
+		"browse":      {handler: s.modeBrowse, level: LevelAdmin},
+		"eval_sort":   {handler: s.modeEvalSort, level: LevelProtected},
+		"watched_now": {handler: s.modeWatchedNow, level: LevelProtected},
+		"rss_now":     {handler: s.modeRssNow, level: LevelProtected},
 	}
 }
 
