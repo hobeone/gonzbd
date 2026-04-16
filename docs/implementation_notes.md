@@ -336,7 +336,9 @@ Anyone touching the surrounding code should be aware:
 | Speedlimit dispatch | Scheduler logs but does not throttle | Downloader must take a `*bpsmeter.Limiter`; every `conn.Read` gates on `limiter.Wait` |
 | Restart / shutdown HTTP modes | Return 501 | Thread a `shutdown func()` into `api.Options` |
 | History DB writes | Opened but never written | No pipeline stage emits history entries yet |
-| Glitter web UI | Static files embedded; placeholder index | Cheetah template engine intentionally not ported; a full HTML build is a later step |
+| Glitter web UI | Phase 12 in progress; templates being ported to `html/template`. Steps 12.1-12.6 done. | Some upstream feature flags do not yet have backing `RenderContext` fields — when porters hit one, the gated upstream content is omitted (not faked-as-true). See deferrals just below. |
+| Glitter `$pp_pause_event` flag | Step 12.6 omitted the gated "Resume post-processing" menu entry | When pp-pause runtime state lands, add `RenderContext.PpPauseEvent`, restore the `{{if .PpPauseEvent}}...{{end}}` block referencing upstream `include_menu.tmpl` |
+| Glitter `$power_options` flag | Step 12.6 omitted shutdown/standby/hibernate `<option>` entries from the menu | When OS-power shims land, add `RenderContext.PowerOptions []string` and restore the gated `<option>` block |
 | RSS scan interval | Hard-coded 15 min in `cmd/sabnzbd/main.go::startRSSScanner` | Promote to `RSSFeedConfig.Interval` when someone needs per-feed tuning |
 | `addurl` sync vs async | Blocks until fetch completes | Python's version returns immediately; revisit if clients complain |
 
