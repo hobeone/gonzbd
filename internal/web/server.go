@@ -5,6 +5,7 @@ package web
 
 import (
 	"embed"
+	"html/template"
 	"io/fs"
 	"net/http"
 )
@@ -12,10 +13,15 @@ import (
 //go:embed static
 var staticFS embed.FS
 
-// Handler returns an http.Handler serving the web UI and static assets.
+//go:embed templates
+var templatesFS embed.FS
+
+// Handler returns an http.Handler serving the web UI and static assets
+// using a zero-value RenderContext. Kept for backward compatibility with
+// tests that do not supply a render context.
 //
 // Routes:
-//   - GET /              → the placeholder index.html (sub-filesystem of static/)
+//   - GET /              → main.html.tmpl rendered with a zero RenderContext
 //   - GET /static/...    → Glitter assets under static/glitter/
 //   - GET /staticcfg/... → shared icons (favicons, apple-touch-icons) under static/staticcfg/.
 //     Mounted at /staticcfg/ rather than /static/staticcfg/ because upstream
@@ -23,16 +29,35 @@ var staticFS embed.FS
 //
 // The handler is stateless and safe to serve concurrently.
 func Handler() http.Handler {
+	return HandlerWithContext(RenderContext{})
+}
+
+// HandlerWithContext returns an http.Handler that renders main.html.tmpl with
+// the supplied RenderContext. The template is parsed once at call time; a
+// parse error panics because it indicates a broken build (the template is
+// embedded at compile time and must be well-formed).
+func HandlerWithContext(rc RenderContext) http.Handler {
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
-		// This can only happen with a broken build — the embed directive
-		// guarantees "static" exists at compile time.
+		// Can only happen with a broken build — the embed directive guarantees
+		// "static" exists at compile time.
 		panic("web: embed subtree 'static' missing: " + err.Error())
 	}
 
 	staticcfgSub, err := fs.Sub(staticFS, "static/staticcfg")
 	if err != nil {
 		panic("web: embed subtree 'static/staticcfg' missing: " + err.Error())
+	}
+
+	// Parse the main template once; use the FuncMap so T/staticURL calls
+	// inside the template resolve at parse time, not render time.
+	tmplData, err := templatesFS.ReadFile("templates/main.html.tmpl")
+	if err != nil {
+		panic("web: main.html.tmpl missing from embed: " + err.Error())
+	}
+	tmpl, err := template.New("main.html.tmpl").Funcs(newFuncMap()).Parse(string(tmplData))
+	if err != nil {
+		panic("web: main.html.tmpl parse error: " + err.Error())
 	}
 
 	mux := http.NewServeMux()
@@ -43,19 +68,18 @@ func Handler() http.Handler {
 	// Serve /staticcfg/ prefix from the staticcfg subtree (matches upstream URL layout).
 	mux.Handle("/staticcfg/", http.StripPrefix("/staticcfg/", http.FileServer(http.FS(staticcfgSub))))
 
-	// Serve index.html at "/".
+	// Render main.html.tmpl at "/".
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		data, err := fs.ReadFile(sub, "index.html")
-		if err != nil {
-			http.Error(w, "index not found", http.StatusInternalServerError)
-			return
+		if err := tmpl.Execute(w, rc); err != nil {
+			// Template execute errors after headers are sent cannot be recovered;
+			// log the error but do not write a second status code.
+			http.Error(w, "template error", http.StatusInternalServerError)
 		}
-		_, _ = w.Write(data) //nolint:errcheck // write to ResponseWriter; error unrecoverable
 	})
 
 	return mux
