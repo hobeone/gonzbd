@@ -8,23 +8,24 @@ Policy: Compatibility Scope*).
 
 ## Status
 
-Core implementation complete **for the backend**. The daemon downloads and
-assembles NZBs end-to-end, runs post-processing (par2 verify + unrar/7z
-unpack + sorters + user scripts), and exposes the full legacy mode-dispatch
-API (`/api?mode=...`) that upstream SABnzbd's UI talks to.
+Core implementation complete for the backend and the Glitter web UI. The
+daemon downloads and assembles NZBs end-to-end, runs post-processing (par2
+verify + unrar/7z unpack + sorters + user scripts), and exposes the full
+legacy mode-dispatch API (`/api?mode=...`) that the UI talks to.
 
-**The Glitter web UI is not yet wired up.** The static assets (JS, CSS,
-Bootstrap, Knockout) are embedded and served under `/static/glitter/`, but
-the Cheetah templates (`main.tmpl`, `include_*.tmpl`) that upstream SABnzbd
-uses to render the page have not been ported to Go's `html/template` yet.
-Opening `http://127.0.0.1:8080/` today shows a placeholder landing page
-linking to a few API endpoints — see
-[`docs/golang_implementation.md`](docs/golang_implementation.md) *Phase 12
-— Glitter UI Port* for the plan to finish this work.
+**The Glitter UI is now served at `/`** with all five partials wired:
+queue, history, messages, overlays, and menu. Opening
+`http://127.0.0.1:8080/` in a browser shows the full Knockout-powered
+interface with Queue, History, and Warnings tabs.
 
-For now, interact with the daemon via the API. See
-[`docs/golang_implementation.md`](docs/golang_implementation.md) for the
-full phase/step breakdown.
+A few upstream features render as inactive UI elements (sysinfo display,
+OS-power options, post-processing pause toggle). These are deliberate
+deferrals — see [`docs/implementation_notes.md`](docs/implementation_notes.md)
+§6 for the full list. For browser-based manual verification steps, see
+[`docs/ui_smoke_checklist.md`](docs/ui_smoke_checklist.md).
+
+See [`docs/golang_implementation.md`](docs/golang_implementation.md) for
+the full phase/step breakdown.
 
 ## Requirements
 
@@ -53,11 +54,10 @@ Versioned build:
 go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cmd/sabnzbd
 ```
 
-## Quickstart — run the daemon (API-only for now)
+## Quickstart — run the daemon
 
-The HTTP API is fully working; the Glitter UI port is not yet finished
-(see [Status](#status)). These steps get you a running daemon you can
-drive via `curl`, a watched folder, or the `--nzb` one-shot flag.
+These steps get you a running daemon you can use via the Glitter web UI,
+`curl`, a watched folder, or the `--nzb` one-shot flag.
 
 1. **Build the binary** (see above) so `./sabnzbd` sits in the repo root.
 
@@ -110,9 +110,12 @@ drive via `curl`, a watched folder, or the `--nzb` one-shot flag.
    Add `-v` for debug-level logging. The server logs `http listener
    starting addr=127.0.0.1:8080 ...` when it's ready.
 
-6. **Verify it's up**. `http://127.0.0.1:8080/` currently serves a
-   placeholder landing page while the Glitter template port is in flight.
-   Hit the API to confirm the daemon is responsive:
+6. **Open the UI**. Navigate to `http://127.0.0.1:8080/` in a browser.
+   The Glitter UI loads with Queue, History, and Warnings tabs. For a
+   full manual verification walkthrough see
+   [`docs/ui_smoke_checklist.md`](docs/ui_smoke_checklist.md).
+
+   If you prefer API-only access, the existing `curl` examples still work:
 
    ```bash
    curl 'http://127.0.0.1:8080/api?mode=version'
