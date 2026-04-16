@@ -106,3 +106,64 @@ func BenchmarkDecodeBody_BestCase(b *testing.B) {
 		}
 	}
 }
+
+// yencEncodeBody produces a properly-escaped yEnc body (without headers/trailer)
+// ready for decodeBody. Special encoded bytes (0x00, '\n', '\r', '=') are
+// escaped per the yEnc spec.
+func yencEncodeBody(raw []byte) (encoded []byte, originalRaw []byte) {
+	encoded = make([]byte, 0, len(raw)+len(raw)/32)
+	for _, c := range raw {
+		enc := byte((int(c) + 42) % 256)
+		if enc == 0 || enc == '\n' || enc == '\r' || enc == '=' {
+			encoded = append(encoded, '=')
+			enc = byte((int(enc) + 64) % 256)
+		}
+		encoded = append(encoded, enc)
+	}
+	return encoded, raw
+}
+
+// BenchmarkDecodeBody_WorstCase counterpart: ~1/64 escape density.
+// Uses properly escaped encoded bytes so decodeBody exercises the escape-handling
+// branch at ~4 out of every 256 bytes — the maximum realistic escape rate.
+func BenchmarkDecodeBody_WorstCase(b *testing.B) {
+	raw := worstCaseRaw(benchSize)
+	encoded, _ := yencEncodeBody(raw)
+	want := crc32.ChecksumIEEE(raw)
+	b.SetBytes(int64(benchSize))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		data, gotCRC := decodeBody(encoded, int64(len(raw)))
+		if gotCRC != want {
+			b.Fatalf("CRC mismatch: 0x%08x != 0x%08x", gotCRC, want)
+		}
+		_ = data
+	}
+}
+
+const smallBenchSize = 64 * 1024 // 64 KB — single article overhead measurement
+
+var benchSmall []byte
+
+func init() {
+	smallRaw := bestCaseRaw(smallBenchSize)
+	benchSmall = yencEncode("bench_small.bin", smallRaw)
+}
+
+// BenchmarkDecodeArticle_Small measures per-article overhead (header/trailer
+// parsing, CRC, allocations) on a 64 KB payload — the minimum realistic
+// Usenet article size, stripped of hot-loop throughput effects.
+func BenchmarkDecodeArticle_Small(b *testing.B) {
+	b.SetBytes(int64(smallBenchSize))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		art, err := DecodeArticle(benchSmall)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(art.Data) == 0 {
+			b.Fatal("empty result")
+		}
+	}
+}
