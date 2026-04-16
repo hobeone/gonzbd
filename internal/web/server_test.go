@@ -23,7 +23,7 @@ func TestHandler(t *testing.T) {
 			wantCTContains: "text/html",
 		},
 		{
-			name:           "GET root contains SABnzbd-Go",
+			name:           "GET root contains SABnzbd",
 			path:           "/",
 			wantStatus:     http.StatusOK,
 			wantBodyPrefix: "", // Will check body content separately
@@ -122,9 +122,11 @@ func TestHandler(t *testing.T) {
 				t.Errorf("body prefix = %q, want %q", body[:len(tt.wantBodyPrefix)], tt.wantBodyPrefix)
 			}
 
-			// Special check: root should contain "SABnzbd-Go"
-			if tt.path == "/" && !strings.Contains(body, "SABnzbd-Go") {
-				t.Errorf("body should contain 'SABnzbd-Go'")
+			// Special check: root should contain "SABnzbd" (the application name in meta/title).
+			// Note: the old stub used "SABnzbd-Go"; the full main.html.tmpl uses "SABnzbd"
+			// to match upstream Glitter. The "-Go" suffix was only in the placeholder stub.
+			if tt.path == "/" && !strings.Contains(body, "SABnzbd") {
+				t.Errorf("body should contain 'SABnzbd'")
 			}
 
 			// Ensure no panic — a 500 would indicate a panic caught by the test framework

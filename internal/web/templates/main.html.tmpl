@@ -1,28 +1,161 @@
 <!DOCTYPE html>
-<html lang="{{.ActiveLang}}">
-<head>
-  <meta charset="utf-8">
-  <title>SABnzbd {{.Version}}</title>
-</head>
-<body>
-  <script type="text/javascript">
-    var apiKey = {{.APIKey | js}};
-    var sabVersion = {{.Version | js}};
-  </script>
+<html lang="{{.ActiveLang}}" {{if .RTL}}dir="rtl"{{end}} id="sabnzbd" data-bind="filedrop: { overlaySelector: '.main-filedrop', onFileDrop: addNZBFromFile }">
+    <head>
+        <!--
+                Glitter V2
+                By Safihre (2016) - safihre@sabnzbd.org
 
-  <h1>SABnzbd-Go {{.Version}}</h1>
+                Code extended from Shiny-template
+                Code examples used from Knockstrap-template
 
-  <div class="container main-navbar">
-    {{template "include_menu.html.tmpl" .}}
-  </div>
+                Many things are inserted on-load, making the
+                output hard to read. If you want to know what's
+                going on, read the main.tmpl file!
+        -->
+        <title data-bind="text: title">SABnzbd</title>
 
-  <div class="container main-content">
-    {{template "include_queue.html.tmpl" .}}
-    {{template "include_messages.html.tmpl" .}}
-    {{template "include_history.html.tmpl" .}}
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, maximum-scale=1" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="application-name" content="SABnzbd">
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-title" content="SABnzbd" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+        <meta name="msapplication-navbutton-color" content="#000000" />
+        <meta name="theme-color" content="#000000" />
 
-    <!-- TODO: Step 12.8 — main.tmpl shell -->
-  </div>
-  {{template "include_overlays.html.tmpl" .}}
-</body>
+        <link rel="apple-touch-icon" sizes="76x76" href="/staticcfg/ico/apple-touch-icon-76x76-precomposed.png" />
+        <link rel="apple-touch-icon" sizes="120x120" href="/staticcfg/ico/apple-touch-icon-120x120-precomposed.png" />
+        <link rel="apple-touch-icon" sizes="152x152" href="/staticcfg/ico/apple-touch-icon-152x152-precomposed.png" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/staticcfg/ico/apple-touch-icon-180x180-precomposed.png" />
+        <link rel="apple-touch-icon" sizes="192x192" href="/staticcfg/ico/android-192x192.png" />
+        <link rel="mask-icon" href="/staticcfg/ico/safari-pinned-tab.svg" color="#383F45">
+        <link rel="shortcut icon" type="image/ico" href="/staticcfg/ico/favicon.ico?v={{.Version}}" data-bind="attr: { 'href': SABIcon }" />
+
+        <link rel="stylesheet" type="text/css" href="/static/glitter/bootstrap/css/bootstrap.min.css?v={{.Version}}" />
+        <link rel="stylesheet" type="text/css" href="/static/glitter/stylesheets/glitter.css?v={{.Version}}" />
+        <link rel="stylesheet" type="text/css" href="/static/glitter/stylesheets/glitter.mobile.css?v={{.Version}}" media="all and (max-width: 768px)" />
+        {{if and .ColorScheme (ne .ColorScheme "Light")}}
+        <link rel="stylesheet" type="text/css" href="/static/glitter/stylesheets/colorschemes/{{.ColorScheme}}.css?v={{.Version}}"/>
+        {{end}}
+
+        <!-- Make translations available in scripts -->
+        <script type="text/javascript">
+            var apiKey = {{.APIKey | js}};
+            var displayLang = {{.ActiveLang | js}};
+            var sabSpeedHistory = {{.BytesPerSecList | js}};
+            var newRelease = {{.NewRelease | js}};
+            var newReleaseUrl = {{.NewRelURL | js}};
+            var glitterIsBeta = ({{.Version | js}}.search(/[develop|Alpha|Beta|RC]/)) > 0;
+
+            var glitterTranslate = new Object();
+            glitterTranslate.paused = {{T "post-Paused" | js}};
+            glitterTranslate.left = {{T "Glitter-left" | js}};
+            glitterTranslate.clearOrphanWarning = {{T "Glitter-clearOrphanWarning" | js}};
+            glitterTranslate.pausePromptFail = {{T "Glitter-pausePromptFail" | js}};
+            glitterTranslate.pauseFor = {{T "pauseFor" | js}};
+            glitterTranslate.minutes = {{T "mins" | js}};
+            glitterTranslate.shutdown = {{T "shutdownOK?" | js}};
+            glitterTranslate.restart = {{T "explain-Restart" | js}} + " " + {{T "explain-needNewLogin" | js}};
+            glitterTranslate.repair = {{T "explain-Repair" | js}};
+            glitterTranslate.confirm = {{T "confirm" | js}};
+            glitterTranslate.markComplete = {{T "button-mark-completed" | js}};
+            glitterTranslate.renameAbort = {{T "Glitter-confirmAbortDirectUnpack" | js}} + "\n" + {{T "confirm" | js}};
+            glitterTranslate.retryAll = {{T "link-retryAll" | js}} + "?";
+            glitterTranslate.fetch = {{T "Glitter-fetch" | js}};
+            glitterTranslate.checking = {{T "post-Checking" | js}};
+            glitterTranslate.misingArt = {{T "missingArt" | js}};
+            glitterTranslate.fetchingURL = {{T "Glitter-addFromURL" | js}};
+            glitterTranslate.chooseFile = {{T "Glitter-chooseFile" | js}};
+            glitterTranslate.orphanedJobsMsg = {{T "explain-orphans" | js}};
+            glitterTranslate.useCache = {{T "explain-cache_limitstr" | js}};
+            glitterTranslate.noLocalStorage = {{T "Glitter-noLocalStorage" | js}};
+            glitterTranslate.glitterTips = {{T "Glitter-glitterTips" | js}};
+            glitterTranslate.updateAvailable = {{T "Glitter-updateAvailable" | js}};
+            glitterTranslate.defaultText = {{T "default" | js}};
+            glitterTranslate.noneText = {{T "None" | js}};
+            glitterTranslate.moreText = {{T "Glitter-more" | js}};
+
+            glitterTranslate.status = [];
+            glitterTranslate.status['DirectUnpack'] = {{T "opt-direct_unpack" | js}};
+            glitterTranslate.status['Completed'] = {{T "post-Completed" | js}};
+            glitterTranslate.status['Failed'] = {{T "post-Failed" | js}};
+            glitterTranslate.status['Queued'] = {{T "post-Queued" | js}};
+            glitterTranslate.status['Repairing...'] = {{T "post-Repairing" | js}};
+            glitterTranslate.status['Extracting...'] = {{T "post-Extracting" | js}};
+            glitterTranslate.status['Moving...'] = {{T "post-Moving" | js}};
+            glitterTranslate.status['Running script...'] = {{T "post-Running" | js}};
+            glitterTranslate.status['Fetching extra blocks...'] = {{T "post-Fetching" | js}};
+            glitterTranslate.status['Quick Check...'] = {{T "post-QuickCheck" | js}};
+            glitterTranslate.status['Verifying...'] = {{T "post-Verifying" | js}};
+            glitterTranslate.status['Checking'] = {{T "post-Checking" | js}};
+            glitterTranslate.status['Download'] = {{T "stage-download" | js}};
+            glitterTranslate.status['Repair'] = {{T "stage-repair" | js}};
+            glitterTranslate.status['Filejoin'] = {{T "stage-filejoin" | js}};
+            glitterTranslate.status['Unpack'] = {{T "stage-unpack" | js}};
+            glitterTranslate.status['Deobfuscate'] = {{T "stage-deobfuscate" | js}};
+            glitterTranslate.status['Script'] = {{T "stage-script" | js}};
+            glitterTranslate.status['RSS'] = {{T "stage-rss" | js}};
+            glitterTranslate.status['Source'] = {{T "stage-source" | js}};
+            glitterTranslate.status['Servers'] = {{T "stage-servers" | js}};
+            glitterTranslate.status['INFO'] = {{T "log-info" | js}};
+            glitterTranslate.status['WARNING'] = {{T "Glitter-warning" | js}};
+            glitterTranslate.status['ERROR'] = {{T "Glitter-error" | js}};
+
+            glitterTranslate.pp = [];
+            glitterTranslate.pp['Download'] = {{T "pp-none" | js}};
+            glitterTranslate.pp['+Repair'] = {{T "pp-repair" | js}};
+            glitterTranslate.pp['+Unpack'] = {{T "pp-unpack" | js}};
+            glitterTranslate.pp['+Delete'] = {{T "pp-delete" | js}};
+
+            glitterTranslate.priority = [];
+            glitterTranslate.priority['Force'] = {{T "pr-force" | js}};
+            glitterTranslate.priority['High'] = {{T "pr-high" | js}};
+            glitterTranslate.priority['Normal'] = {{T "pr-normal" | js}};
+            glitterTranslate.priority['Low'] = {{T "pr-low" | js}};
+            glitterTranslate.priority['Stop'] = {{T "pr-stop" | js}};
+        </script>
+
+        <!-- JS bundles served as external scripts (modern best practice vs inline include) -->
+        <script type="text/javascript" src="/static/glitter/javascripts/jquery-3.5.1.min.js"></script>
+        <script type="text/javascript" src="/static/glitter/javascripts/jquery-ui.min.js"></script>
+        <script type="text/javascript" src="/static/glitter/javascripts/jquery.peity.min.js"></script>
+        <script type="text/javascript" src="/static/glitter/javascripts/jquery.hotkeys.min.js"></script>
+        <script type="text/javascript" src="/static/glitter/javascripts/moment-2.26.0.min.js"></script>
+        <script type="text/javascript" src="/static/glitter/javascripts/knockout-3.5.1.min.js"></script>
+        <script type="text/javascript" src="/static/glitter/javascripts/knockout-extensions.js"></script>
+        <script type="text/javascript" src="/static/glitter/javascripts/search-query-parser.js"></script>
+        <script type="text/javascript" src="/static/glitter/bootstrap/js/bootstrap.min.js"></script>
+        <script type="text/javascript" src="/static/glitter/javascripts/glitter.js"></script>
+        {{if ne .ActiveLang "en"}}
+        <script type="text/javascript" src="/static/glitter/javascripts/momentjs_locale/{{.ActiveLang}}.js"></script>
+        {{end}}
+    </head>
+    <body>
+        <div class="container main-navbar">
+            {{template "include_menu.html.tmpl" .}}
+        </div>
+
+        <div class="container main-content">
+            <div class="history-queue-swicher">
+                <ul class="nav nav-tabs">
+                    <li class="active">
+                        <a href="#queue-tab" data-toggle="tab">{{T "menu-queue"}} <span class="badge" data-bind="text: queue.totalItems"></span></a>
+                    </li>
+                    <li>
+                        <a href="#history-tab" data-toggle="tab">{{T "menu-history"}} <span class="badge badge-info" data-bind="text: history.ppItems, visible: history.ppItems"></span><span class="badge" data-bind="text: history.totalItems"></span></a>
+                    </li>
+                    <li>
+                        <a href="#queue-messages" data-toggle="tab">{{T "warnings"}} <span class="badge" data-bind="text: hasMessages, css: { 'badge-warning':  hasMessages() }"></span></a>
+                    </li>
+                </ul>
+            </div>
+
+            {{template "include_queue.html.tmpl" .}}
+            {{template "include_messages.html.tmpl" .}}
+            {{template "include_history.html.tmpl" .}}
+        </div>
+
+        {{template "include_overlays.html.tmpl" .}}
+    </body>
 </html>
