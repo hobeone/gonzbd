@@ -7,6 +7,9 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/hobeone/sabnzbd-go/internal/history"
+	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
 // Options configures the API server at construction time.
@@ -19,6 +22,14 @@ type Options struct {
 
 	// Logger is the structured logger. Defaults to slog.Default() when nil.
 	Logger *slog.Logger
+
+	// Queue is the download queue singleton. May be nil; handlers that need it
+	// will respond with 500 if it is absent.
+	Queue *queue.Queue
+
+	// History is the history repository. May be nil; handlers that need it
+	// will respond with 500 if it is absent.
+	History *history.Repository
 }
 
 // Server is the HTTP API server. It owns a net/http.Server and the mode
@@ -28,6 +39,9 @@ type Server struct {
 	auth    AuthConfig
 	version string
 	log     *slog.Logger
+
+	queue   *queue.Queue
+	history *history.Repository
 
 	modes modeTable
 	mux   *http.ServeMux
@@ -46,6 +60,8 @@ func New(opts Options) *Server {
 		auth:    opts.Auth,
 		version: opts.Version,
 		log:     log,
+		queue:   opts.Queue,
+		history: opts.History,
 		mux:     http.NewServeMux(),
 	}
 	s.registerModes()

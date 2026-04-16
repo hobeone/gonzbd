@@ -48,8 +48,13 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 // control, and misc mode handlers.
 func (s *Server) registerModes() {
 	s.modes = modeTable{
-		"version": {handler: s.modeVersion, level: LevelOpen},
-		"auth":    {handler: s.modeAuth, level: LevelOpen},
+		"version":      {handler: s.modeVersion, level: LevelOpen},
+		"auth":         {handler: s.modeAuth, level: LevelOpen},
+		"queue":        {handler: s.modeQueue, level: LevelProtected},
+		"addfile":      {handler: s.modeAddFile, level: LevelProtected},
+		"addurl":       {handler: s.modeAddURL, level: LevelProtected},
+		"addlocalfile": {handler: s.modeAddLocalFile, level: LevelProtected},
+		"history":      {handler: s.modeHistory, level: LevelProtected},
 	}
 }
 
