@@ -69,6 +69,32 @@ func TestHandler(t *testing.T) {
 			wantStatus:     http.StatusOK,
 			wantCTContains: "", // Font MIME types vary
 		},
+		{
+			// Step 12.1: main.tmpl references ./staticcfg/ico/favicon.ico
+			// (relative to /, resolves to /staticcfg/ico/...). Mount must
+			// be at /staticcfg/, not nested under /static/.
+			name:           "GET staticcfg favicon returns 200 image",
+			path:           "/staticcfg/ico/favicon.ico",
+			wantStatus:     http.StatusOK,
+			wantCTContains: "image",
+		},
+		{
+			name:           "GET staticcfg apple-touch-icon returns 200 PNG",
+			path:           "/staticcfg/ico/apple-touch-icon-180x180-precomposed.png",
+			wantStatus:     http.StatusOK,
+			wantCTContains: "image/png",
+		},
+		{
+			name:           "GET staticcfg safari mask icon returns 200 SVG",
+			path:           "/staticcfg/ico/safari-pinned-tab.svg",
+			wantStatus:     http.StatusOK,
+			wantCTContains: "image/svg",
+		},
+		{
+			name:       "GET staticcfg nonexistent returns 404",
+			path:       "/staticcfg/ico/does-not-exist.png",
+			wantStatus: http.StatusNotFound,
+		},
 	}
 
 	handler := Handler()

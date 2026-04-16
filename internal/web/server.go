@@ -15,8 +15,11 @@ var staticFS embed.FS
 // Handler returns an http.Handler serving the web UI and static assets.
 //
 // Routes:
-//   - GET /           → the placeholder index.html (sub-filesystem of static/)
-//   - GET /static/... → Glitter assets under static/glitter/
+//   - GET /              → the placeholder index.html (sub-filesystem of static/)
+//   - GET /static/...    → Glitter assets under static/glitter/
+//   - GET /staticcfg/... → shared icons (favicons, apple-touch-icons) under static/staticcfg/.
+//     Mounted at /staticcfg/ rather than /static/staticcfg/ because upstream
+//     SABnzbd's main.tmpl references these via "./staticcfg/ico/..." paths.
 //
 // The handler is stateless and safe to serve concurrently.
 func Handler() http.Handler {
@@ -27,10 +30,18 @@ func Handler() http.Handler {
 		panic("web: embed subtree 'static' missing: " + err.Error())
 	}
 
+	staticcfgSub, err := fs.Sub(staticFS, "static/staticcfg")
+	if err != nil {
+		panic("web: embed subtree 'static/staticcfg' missing: " + err.Error())
+	}
+
 	mux := http.NewServeMux()
 
 	// Serve /static/ prefix — strip the prefix then serve from the embed FS.
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
+
+	// Serve /staticcfg/ prefix from the staticcfg subtree (matches upstream URL layout).
+	mux.Handle("/staticcfg/", http.StripPrefix("/staticcfg/", http.FileServer(http.FS(staticcfgSub))))
 
 	// Serve index.html at "/".
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
