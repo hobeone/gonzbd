@@ -12,8 +12,7 @@ import (
 func BenchmarkParseStatus(b *testing.B) {
 	line := "222 0 <abc@host> body follows"
 	b.SetBytes(int64(len(line)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		code, text, err := parseStatus(line)
 		if err != nil {
 			b.Fatal(err)
@@ -28,7 +27,7 @@ func BenchmarkParseStatus(b *testing.B) {
 // into a single byte slice.
 func buildStatusLines(n int) []byte {
 	var buf bytes.Buffer
-	for i := 0; i < n; i++ {
+	for i := range n {
 		fmt.Fprintf(&buf, "200 Welcome to news server %d\r\n", i)
 	}
 	return buf.Bytes()
@@ -42,11 +41,10 @@ const linesPerInput = 500
 func BenchmarkReadResponseLine(b *testing.B) {
 	bulk := buildStatusLines(linesPerInput)
 	b.SetBytes(int64(len(bulk) / linesPerInput)) // bytes per line
-	b.ResetTimer()
 
 	br := bufio.NewReader(bytes.NewReader(bulk))
 	linesRead := 0
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		line, err := readResponseLine(br)
 		if err != nil {
 			// Exhausted the buffer — re-wrap and continue.
@@ -74,10 +72,7 @@ func buildDotStuffedBody(targetSize int) []byte {
 	lineNum := 0
 	for written < targetSize {
 		remaining := targetSize - written
-		n := lineContent
-		if remaining < n {
-			n = remaining
-		}
+		n := min(lineContent, remaining)
 		// Every 7th line starts with '.' to exercise dot-unstuffing.
 		if lineNum%7 == 0 {
 			buf.WriteByte('.') // extra dot (stuffing)
@@ -86,7 +81,7 @@ func buildDotStuffedBody(targetSize int) []byte {
 				buf.WriteByte(byte('a' + k%26))
 			}
 		} else {
-			for k := 0; k < n; k++ {
+			for k := range n {
 				buf.WriteByte(byte('a' + k%26))
 			}
 		}
@@ -105,8 +100,7 @@ func BenchmarkReadDotStuffedBody_Small(b *testing.B) {
 	const bodySize = 4 * 1024
 	input := buildDotStuffedBody(bodySize)
 	b.SetBytes(int64(bodySize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		br := bufio.NewReader(bytes.NewReader(input))
 		data, err := readDotStuffedBody(br)
 		if err != nil {
@@ -124,8 +118,7 @@ func BenchmarkReadDotStuffedBody_Large(b *testing.B) {
 	const bodySize = 800 * 1024
 	input := buildDotStuffedBody(bodySize)
 	b.SetBytes(int64(bodySize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		br := bufio.NewReader(bytes.NewReader(input))
 		data, err := readDotStuffedBody(br)
 		if err != nil {

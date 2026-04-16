@@ -55,8 +55,7 @@ func init() {
 // require escape processing. This exercises the bytes.IndexByte fast path.
 func BenchmarkDecodeArticle_BestCase(b *testing.B) {
 	b.SetBytes(int64(benchSize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		art, err := DecodeArticle(benchBestCase)
 		if err != nil {
 			b.Fatal(err)
@@ -72,8 +71,7 @@ func BenchmarkDecodeArticle_BestCase(b *testing.B) {
 // handling than a typical article.
 func BenchmarkDecodeArticle_WorstCase(b *testing.B) {
 	b.SetBytes(int64(benchSize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		art, err := DecodeArticle(benchWorstCase)
 		if err != nil {
 			b.Fatal(err)
@@ -95,8 +93,7 @@ func BenchmarkDecodeBody_BestCase(b *testing.B) {
 	}
 	want := crc32.ChecksumIEEE(raw)
 	b.SetBytes(int64(len(encoded)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		data, gotCRC := decodeBody(encoded, int64(len(raw)))
 		if gotCRC != want {
 			b.Fatalf("CRC mismatch: 0x%08x != 0x%08x", gotCRC, want)
@@ -131,8 +128,7 @@ func BenchmarkDecodeBody_WorstCase(b *testing.B) {
 	encoded, _ := yencEncodeBody(raw)
 	want := crc32.ChecksumIEEE(raw)
 	b.SetBytes(int64(benchSize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		data, gotCRC := decodeBody(encoded, int64(len(raw)))
 		if gotCRC != want {
 			b.Fatalf("CRC mismatch: 0x%08x != 0x%08x", gotCRC, want)
@@ -156,8 +152,7 @@ func init() {
 func BenchmarkDecodeArticle_Small(b *testing.B) {
 	b.SetBytes(int64(smallBenchSize))
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		art, err := DecodeArticle(benchSmall)
 		if err != nil {
 			b.Fatal(err)

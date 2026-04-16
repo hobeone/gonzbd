@@ -16,17 +16,17 @@ func buildCorpus(b *testing.B, numJobs, filesPerJob, articlesPerFile int, mostly
 	q := New()
 	now := time.Now().UTC()
 
-	for j := 0; j < numJobs; j++ {
+	for j := range numJobs {
 		parsed := &nzb.NZB{}
 		parsed.Files = make([]nzb.File, filesPerJob)
-		for f := 0; f < filesPerJob; f++ {
+		for f := range filesPerJob {
 			file := nzb.File{
 				Subject: fmt.Sprintf("job%d-file%d.bin (1/1)", j, f),
 				Date:    now,
 				Groups:  []string{"alt.binaries.bench"},
 			}
 			file.Articles = make([]nzb.Article, articlesPerFile)
-			for a := 0; a < articlesPerFile; a++ {
+			for a := range articlesPerFile {
 				file.Articles[a] = nzb.Article{
 					ID:     fmt.Sprintf("art%d-%d-%d@bench.test", j, f, a),
 					Bytes:  65536,
@@ -81,8 +81,7 @@ func BenchmarkForEachUnfinishedArticle_1000x100(b *testing.B) {
 	q := buildCorpus(b, numJobs, filesPerJob, articlesPerFile, false)
 	expectedTotal := numJobs * filesPerJob * articlesPerFile
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		count := 0
 		q.ForEachUnfinishedArticle(func(UnfinishedArticle) bool {
 			count++
@@ -106,8 +105,7 @@ func BenchmarkForEachUnfinishedArticle_EarlyExit(b *testing.B) {
 	)
 	q := buildCorpus(b, numJobs, filesPerJob, articlesPerFile, false)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		count := 0
 		q.ForEachUnfinishedArticle(func(UnfinishedArticle) bool {
 			count++
@@ -127,8 +125,7 @@ func BenchmarkForEachUnfinishedArticle_MostlyComplete(b *testing.B) {
 	)
 	q := buildCorpus(b, numJobs, filesPerJob, articlesPerFile, true)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		q.ForEachUnfinishedArticle(func(UnfinishedArticle) bool {
 			return true
 		})

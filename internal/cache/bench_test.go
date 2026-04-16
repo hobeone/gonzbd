@@ -42,12 +42,13 @@ func BenchmarkCacheSave_Hot(b *testing.B) {
 	keys := makeKeyPool("msg-hot", poolSize)
 
 	b.SetBytes(int64(articleSize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		key := keys[i%poolSize]
 		if err := c.Save(key, adminDir, payload); err != nil {
 			b.Fatal(err)
 		}
+		i++
 	}
 }
 
@@ -62,8 +63,7 @@ func BenchmarkCacheSaveLoad_RoundTrip(b *testing.B) {
 	const rtKey = "msg-roundtrip@bench.test"
 
 	b.SetBytes(int64(articleSize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if err := c.Save(rtKey, adminDir, payload); err != nil {
 			b.Fatal(err)
 		}
@@ -116,11 +116,12 @@ func BenchmarkCacheSave_DiskSpill(b *testing.B) {
 	keys := makeKeyPool("msg-spill", poolSize)
 
 	b.SetBytes(int64(articleSize))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		key := keys[i%poolSize]
 		if err := c.Save(key, adminDir, payload); err != nil {
 			b.Fatal(err)
 		}
+		i++
 	}
 }
