@@ -9,6 +9,15 @@
     var apiKey = {{.APIKey | js}};
     var sabVersion = {{.Version | js}};
   </script>
+
   <h1>SABnzbd-Go {{.Version}}</h1>
+
+  <div class="container main-content">
+    {{template "include_messages.html.tmpl" .}}
+
+    <!-- TODO: Step 12.5 — include_queue.html.tmpl -->
+    <!-- TODO: Step 12.5 — include_history.html.tmpl -->
+    <!-- TODO: Steps 12.6-12.8 — other templates -->
+  </div>
 </body>
 </html>

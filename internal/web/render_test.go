@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -421,5 +422,146 @@ func TestFuncMap_StaticURL(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("staticURL(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+// TestIncludeMessages_RootElementPresent verifies that the rendered output
+// contains the expected messages root element with its data-bind attributes.
+func TestIncludeMessages_RootElementPresent(t *testing.T) {
+	rc := RenderContext{
+		Version:         "1.0.0",
+		ActiveLang:      "en",
+		Webdir:          "/static/glitter",
+		BytesPerSecList: []float64{},
+	}
+
+	handler := HandlerWithContext(rc)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// The root element must be present.
+	if !strings.Contains(body, `id="queue-messages"`) {
+		t.Errorf("body does not contain id=\"queue-messages\"; got:\n%s", body)
+	}
+
+	// The data-bind attribute on the root must be present.
+	if !strings.Contains(body, `data-bind="visible: hasMessages() || displayTabbed()"`) {
+		t.Errorf("body does not contain data-bind=\"visible: hasMessages() || displayTabbed()\"; got:\n%s", body)
+	}
+}
+
+// TestIncludeMessages_DataBindAttributePreservation verifies that all upstream
+// data-bind attributes are present in the rendered output.
+func TestIncludeMessages_DataBindAttributePreservation(t *testing.T) {
+	// Expected data-bind attributes from the upstream include_messages.tmpl:
+	// Line 1: data-bind="visible: hasMessages() || displayTabbed()"
+	// Line 13: data-bind="attr: { 'rowspan': parseInt(nrWarnings())+1 }, click: clearWarnings"
+	// Line 20: data-bind="css: 'label-' + css, text: type"
+	// Line 21: data-bind="text: displayDateTime(timestamp, $parent.dateFormat(), 'X'), attr: { 'data-timestamp': timestamp }"
+	// Line 22: data-bind="html: text"
+	// Line 29: data-bind="attr: { 'colspan': 1 + !$data.hasOwnProperty('clear') }"
+	// Line 30: data-bind="css: 'label-' + css, text: type"
+	// Line 31: data-bind="html: text"
+	// Line 35: data-bind="click: clear"
+	expectedAttributes := []string{
+		`visible: hasMessages() || displayTabbed()`,
+		`attr: { 'rowspan': parseInt(nrWarnings())+1 }, click: clearWarnings`,
+		`css: 'label-' + css, text: type`,
+		`text: displayDateTime(timestamp, $parent.dateFormat(), 'X'), attr: { 'data-timestamp': timestamp }`,
+		`html: text`,
+		`attr: { 'colspan': 1 + !$data.hasOwnProperty('clear') }`,
+		`click: clear`,
+	}
+
+	rc := RenderContext{
+		Version:         "1.0.0",
+		ActiveLang:      "en",
+		Webdir:          "/static/glitter",
+		BytesPerSecList: []float64{},
+	}
+
+	handler := HandlerWithContext(rc)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	for _, attr := range expectedAttributes {
+		if !strings.Contains(body, attr) {
+			t.Errorf("body does not contain data-bind attribute %q; got:\n%s", attr, body)
+		}
+	}
+}
+
+// TestIncludeMessages_NoCheetahTokens verifies that no Cheetah template tokens
+// remain in the rendered output (indicating incomplete porting).
+func TestIncludeMessages_NoCheetahTokens(t *testing.T) {
+	rc := RenderContext{
+		Version:         "1.0.0",
+		ActiveLang:      "en",
+		Webdir:          "/static/glitter",
+		BytesPerSecList: []float64{},
+	}
+
+	handler := HandlerWithContext(rc)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	if strings.Contains(body, "$T(") {
+		t.Errorf("body contains $T( token (incomplete Cheetah->Go conversion)")
+	}
+
+	if strings.Contains(body, "<!--#") {
+		t.Errorf("body contains <!--# token (incomplete Cheetah->Go conversion)")
+	}
+}
+
+// TestIncludeMessages_TranslationResolution verifies that translation keys
+// resolve via the FuncMap when a populated catalog is provided.
+func TestIncludeMessages_TranslationResolution(t *testing.T) {
+	// Use a real key from the upstream file: 'none' (line 42 of upstream).
+	catalog := i18n.Catalog{"none": "Nothing to show"}
+
+	rc := RenderContext{
+		Version:         "1.0.0",
+		ActiveLang:      "en",
+		Webdir:          "/static/glitter",
+		BytesPerSecList: []float64{},
+	}
+
+	// Parse all templates with the populated catalog.
+	tmpl, err := template.New("main.html.tmpl").Funcs(newFuncMap(catalog)).ParseFS(templatesFS, "templates/*.html.tmpl")
+	if err != nil {
+		t.Fatalf("template parse: %v", err)
+	}
+
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, rc); err != nil {
+		t.Fatalf("template execute: %v", err)
+	}
+
+	body := buf.String()
+
+	if !strings.Contains(body, "Nothing to show") {
+		t.Errorf("body does not contain translated value 'Nothing to show'; got:\n%s", body)
 	}
 }

@@ -49,16 +49,13 @@ func HandlerWithContext(rc RenderContext) http.Handler {
 		panic("web: embed subtree 'static/staticcfg' missing: " + err.Error())
 	}
 
-	// Parse the main template once; use the FuncMap so T/staticURL calls
-	// inside the template resolve at parse time, not render time.
+	// Parse all templates from the templates directory using ParseFS.
+	// This loads main.html.tmpl and all partial templates (include_messages.html.tmpl, etc.).
+	// Use the FuncMap so T/staticURL calls inside the templates resolve at parse time.
 	// Pass an empty catalog for English-only (v1 default).
-	tmplData, err := templatesFS.ReadFile("templates/main.html.tmpl")
+	tmpl, err := template.New("main.html.tmpl").Funcs(newFuncMap(nil)).ParseFS(templatesFS, "templates/*.html.tmpl")
 	if err != nil {
-		panic("web: main.html.tmpl missing from embed: " + err.Error())
-	}
-	tmpl, err := template.New("main.html.tmpl").Funcs(newFuncMap(nil)).Parse(string(tmplData))
-	if err != nil {
-		panic("web: main.html.tmpl parse error: " + err.Error())
+		panic("web: template parse error: " + err.Error())
 	}
 
 	mux := http.NewServeMux()
