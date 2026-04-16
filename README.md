@@ -8,10 +8,21 @@ Policy: Compatibility Scope*).
 
 ## Status
 
-Core implementation complete. The daemon serves the bundled Glitter web UI
-over HTTP, downloads and assembles NZBs end-to-end, runs post-processing
-(par2 verify + unrar/7z unpack + sorters + user scripts), and exposes the
-full legacy mode-dispatch API that the UI talks to. See
+Core implementation complete **for the backend**. The daemon downloads and
+assembles NZBs end-to-end, runs post-processing (par2 verify + unrar/7z
+unpack + sorters + user scripts), and exposes the full legacy mode-dispatch
+API (`/api?mode=...`) that upstream SABnzbd's UI talks to.
+
+**The Glitter web UI is not yet wired up.** The static assets (JS, CSS,
+Bootstrap, Knockout) are embedded and served under `/static/glitter/`, but
+the Cheetah templates (`main.tmpl`, `include_*.tmpl`) that upstream SABnzbd
+uses to render the page have not been ported to Go's `html/template` yet.
+Opening `http://127.0.0.1:8080/` today shows a placeholder landing page
+linking to a few API endpoints — see
+[`docs/golang_implementation.md`](docs/golang_implementation.md) *Phase 12
+— Glitter UI Port* for the plan to finish this work.
+
+For now, interact with the daemon via the API. See
 [`docs/golang_implementation.md`](docs/golang_implementation.md) for the
 full phase/step breakdown.
 
@@ -42,7 +53,11 @@ Versioned build:
 go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cmd/sabnzbd
 ```
 
-## Quickstart — get the UI running
+## Quickstart — run the daemon (API-only for now)
+
+The HTTP API is fully working; the Glitter UI port is not yet finished
+(see [Status](#status)). These steps get you a running daemon you can
+drive via `curl`, a watched folder, or the `--nzb` one-shot flag.
 
 1. **Build the binary** (see above) so `./sabnzbd` sits in the repo root.
 
@@ -59,7 +74,7 @@ go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cm
    two servers (`primary` and `backup`) — delete the backup entry if you
    only have one account.
 
-   The two top-level fields that matter for UI access:
+   Other fields worth reviewing:
 
    - `general.host` / `general.port` — the listen address (`127.0.0.1:8080`
      by default).
@@ -95,17 +110,27 @@ go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cm
    Add `-v` for debug-level logging. The server logs `http listener
    starting addr=127.0.0.1:8080 ...` when it's ready.
 
-6. **Open the web UI** at <http://127.0.0.1:8080/>. The Glitter UI will
-   prompt for the API key on first load — paste the value of
-   `general.api_key` from your config. API requests outside the UI take the
-   key via either the `apikey=...` query parameter or a standard header.
+6. **Verify it's up**. `http://127.0.0.1:8080/` currently serves a
+   placeholder landing page while the Glitter template port is in flight.
+   Hit the API to confirm the daemon is responsive:
+
+   ```bash
+   curl 'http://127.0.0.1:8080/api?mode=version'
+   curl 'http://127.0.0.1:8080/api?mode=fullstatus&apikey=YOUR_KEY&output=json'
+   ```
 
 7. **Add an NZB** either by dropping it into the `dirscan_dir` watched
-   folder, using the UI's upload button, or POSTing it to the API:
+   folder or POSTing it to the API:
 
    ```bash
    curl -F 'name=@/path/to/file.nzb' \
         'http://127.0.0.1:8080/api?mode=addfile&apikey=YOUR_KEY&output=json'
+   ```
+
+   Watch progress with:
+
+   ```bash
+   curl 'http://127.0.0.1:8080/api?mode=queue&apikey=YOUR_KEY&output=json'
    ```
 
 Shut down with Ctrl-C (SIGINT); the daemon persists queue state and
