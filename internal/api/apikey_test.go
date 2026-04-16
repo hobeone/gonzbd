@@ -27,7 +27,7 @@ func TestGenerateAPIKeyUniqueness(t *testing.T) {
 	t.Parallel()
 
 	keys := make(map[string]bool)
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		key, err := GenerateAPIKey()
 		if err != nil {
 			t.Fatalf("GenerateAPIKey iteration %d: %v", i, err)
