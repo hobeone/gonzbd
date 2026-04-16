@@ -45,12 +45,18 @@ var Version = "0.0.0-dev"
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	configPath := flag.String("config", "", "path to YAML config file")
+	configPathF := flag.String("f", "", "alias for --config")
 	nzbPath := flag.String("nzb", "", "one-shot: path to NZB file to download (mutually exclusive with --serve)")
 	serve := flag.Bool("serve", false, "run the daemon: HTTP server (API + web UI) blocking until signal")
 	listenAddr := flag.String("listen", "", "override the config's host:port listener (serve mode only)")
 	downloadDir := flag.String("download-dir", "", "override complete-dir from config")
+	pidPath := flag.String("pid", "", "write daemon PID to this path while running (serve mode only)")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
+
+	if *configPath == "" {
+		*configPath = *configPathF
+	}
 
 	if *showVersion {
 		fmt.Println(Version)
@@ -73,7 +79,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "--serve and --nzb are mutually exclusive")
 		os.Exit(2)
 	case *serve:
-		if err := serveMode(*configPath, *listenAddr, *downloadDir); err != nil {
+		if err := serveMode(*configPath, *listenAddr, *downloadDir, *pidPath); err != nil {
 			slog.Error("serve failed", "err", err)
 			os.Exit(1)
 		}
@@ -90,15 +96,16 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  sabnzbd --config <path> --serve [--listen host:port] [--download-dir <path>] [-v]")
+	fmt.Fprintln(os.Stderr, "  sabnzbd --config <path> --serve [--listen host:port] [--download-dir <path>] [--pid <path>] [-v]")
 	fmt.Fprintln(os.Stderr, "  sabnzbd --config <path> --nzb <path> [--download-dir <path>] [-v]")
 	fmt.Fprintln(os.Stderr, "  sabnzbd --version")
+	fmt.Fprintln(os.Stderr, "  -f is an alias for --config")
 }
 
 // serveMode runs the long-lived daemon: boots the download pipeline, opens
 // the history DB, constructs the API server and web handler, composes them
 // on a single listener, and blocks until SIGINT/SIGTERM.
-func serveMode(configPath, listenOverride, downloadDirOverride string) error {
+func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -107,6 +114,37 @@ func serveMode(configPath, listenOverride, downloadDirOverride string) error {
 	dlDir, adminDir, err := resolveDirs(cfg, downloadDirOverride)
 	if err != nil {
 		return err
+	}
+
+	// Admin dir must exist before we can acquire the lockfile inside it.
+	if err := os.MkdirAll(adminDir, 0o750); err != nil {
+		return fmt.Errorf("create admin dir %s: %w", adminDir, err)
+	}
+
+	// Single-instance lock prevents two daemons from corrupting the same
+	// admin dir. Released on every exit path via defer.
+	lock, err := app.AcquireLockfile(filepath.Join(adminDir, "sabnzbd.lock"))
+	if err != nil {
+		if errors.Is(err, app.ErrLocked) {
+			return fmt.Errorf("another sabnzbd instance is running (admin dir %s); aborting", adminDir)
+		}
+		return fmt.Errorf("acquire lockfile: %w", err)
+	}
+	defer func() {
+		if err := lock.Release(); err != nil {
+			slog.Warn("release lockfile", "err", err)
+		}
+	}()
+
+	if pidPath != "" {
+		if err := writePIDFile(pidPath); err != nil {
+			return fmt.Errorf("write pid file: %w", err)
+		}
+		defer func() {
+			if err := os.Remove(pidPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				slog.Warn("remove pid file", "err", err)
+			}
+		}()
 	}
 
 	application, err := app.New(app.Config{
@@ -119,10 +157,8 @@ func serveMode(configPath, listenOverride, downloadDirOverride string) error {
 		return fmt.Errorf("build app: %w", err)
 	}
 
-	// History DB lives under the admin dir so it survives restarts.
-	if err := os.MkdirAll(adminDir, 0o750); err != nil {
-		return fmt.Errorf("create admin dir %s: %w", adminDir, err)
-	}
+	queueStateDir := filepath.Join(adminDir, "queue")
+
 	histDB, err := history.Open(filepath.Join(adminDir, "history.db"))
 	if err != nil {
 		return fmt.Errorf("open history db: %w", err)
@@ -223,8 +259,29 @@ func serveMode(configPath, listenOverride, downloadDirOverride string) error {
 	if err := application.Shutdown(); err != nil {
 		slog.Warn("application shutdown", "err", err)
 	}
+	if err := application.Queue().Save(queueStateDir); err != nil {
+		slog.Warn("save queue state", "err", err)
+	}
 	if err := bpsmeter.SaveState(meterStatePath, bpsmeter.Capture(meter, nil)); err != nil {
 		slog.Warn("save bpsmeter state", "err", err)
+	}
+	return nil
+}
+
+// writePIDFile writes the current process PID to path, atomically. The
+// caller is expected to remove the file on shutdown.
+func writePIDFile(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("mkdir pid parent: %w", err)
+	}
+	tmp := path + ".tmp"
+	data := []byte(strconv.Itoa(os.Getpid()) + "\n")
+	if err := os.WriteFile(tmp, data, 0o644); err != nil { //nolint:gosec // pidfile is world-readable by convention
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp) //nolint:errcheck // best-effort cleanup; rename error takes precedence
+		return fmt.Errorf("rename: %w", err)
 	}
 	return nil
 }
