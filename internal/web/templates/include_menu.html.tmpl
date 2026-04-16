@@ -1,0 +1,115 @@
+{{define "include_menu.html.tmpl"}}
+<nav class="navbar navbar-inverse main-navbar">
+    <div class="navbar-header">
+        <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#navbar-collapse">
+            <span class="icon-bar"></span>
+            <span class="icon-bar"></span>
+            <span class="icon-bar"></span>
+        </button>
+        <a class="navbar-logo" href="./">
+            <img src="{{.Webdir}}/../../Config/templates/staticcfg/images/logo-small.svg" alt="SABnzbd">
+        </a>
+        <div class="btn-group">
+            <div class="btn-group">
+                <button type="button" class="btn btn-default navbar-btn" data-bind="click: pauseToggle, attr: { 'title': downloadsPaused() ? '{{T "link-resume"}}' : '{{T "link-pause"}}' }">
+                    <span class="glyphicon" data-bind="css: { 'glyphicon-play' : downloadsPaused(), 'glyphicon-pause' : !downloadsPaused() }"></span>
+                </button>
+                <button type="button" class="btn btn-default navbar-btn dropdown-toggle" data-toggle="dropdown">
+                    <span class="caret"></span>
+                </button>
+                <ul class="dropdown-menu">
+                    <li><a href="#" data-time="5" data-bind="click: pauseTime">{{T "Glitter-pause5m"}}</a></li>
+                    <li><a href="#" data-time="15" data-bind="click: pauseTime">{{T "Glitter-pause15m"}}</a></li>
+                    <li><a href="#" data-time="30" data-bind="click: pauseTime">{{T "Glitter-pause30m"}}</a></li>
+                    <li><a href="#" data-time="60" data-bind="click: pauseTime">{{T "Glitter-pause1h"}}</a></li>
+                    <li><a href="#" data-time="180" data-bind="click: pauseTime">{{T "Glitter-pause3h"}}</a></li>
+                    <li><a href="#" data-time="360" data-bind="click: pauseTime">{{T "Glitter-pause6h"}}</a></li>
+                    <li class="divider"></li>
+                    <li><a href="#" data-bind="click: openCustomPauseTime">{{T "Glitter-custom"}}</a></li>
+                </ul>
+                <span class="btn btn-default navbar-btn navbar-timeleft" data-bind="text: timeLeft"  data-toggle="dropdown">0:00</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="collapse navbar-collapse {{if .HaveRSSDefined}}navbar-have-rss{{end}}" id="navbar-collapse">
+        <ul class="nav navbar-nav navbar-right">
+            <li class="sparkline-container"><span class="sparkline"></span></li>
+            <li class="speedlimit-dropdown dropdown">
+                <div class="btn-group">
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-default navbar-btn navbar-speed" data-toggle="dropdown">
+                            <span data-bind="text: speedText">0 KB/s</span>
+                        </button>
+                        <button type="button" class="btn btn-default navbar-btn dropdown-toggle" data-toggle="dropdown" onclick="keepOpen(this)">
+                            <span class="caret"></span>
+                        </button>
+                        <a href="#" class="max-speed-input-clear hover-button" data-bind="click: clearSpeedLimit, visible:(speedLimit() < 100 && speedLimit() > 0)" style="display: none;">
+                            <span class="glyphicon glyphicon-link"></span>
+                        </a>
+                        <div class="dropdown-menu max-speed-input">
+                            <div data-bind="visible: !bandwithLimit()">
+                                <a href="./config/general/#bandwidth_max_value">
+                                    <span class="glyphicon glyphicon-cog"></span> {{T "Glitter-setMaxLinespeed"}}
+                                </a>
+                            </div>
+                            <div data-bind="visible: bandwithLimit()">
+                                <div class="max-speed-slider" data-bind="slider: speedLimit, sliderOptions: { min: 1, max: 100, range: 'min', step: 1 }"></div>
+                                <span data-bind="text: speedLimitText"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </li>
+            <li data-tooltip="true" data-placement="bottom" title="{{T "Glitter-addNZB"}}">
+                <a href="#modal-add-nzb" data-toggle="modal"><span class="glyphicon glyphicon-plus-sign"></span></a>
+            </li>
+            <li data-tooltip="true" data-placement="bottom" title="{{T "Glitter-statusInterfaceOptions"}}" data-bind="click: loadStatusInfo">
+                <a href="#modal-options" data-toggle="modal"><span class="glyphicon glyphicon-wrench"></span></a>
+            </li>
+            {{if .HaveRSSDefined}}
+            <li data-tooltip="true" data-placement="bottom" title="{{T "cmenu-rss"}}">
+                <a href="./config/rss/">
+                    <svg class="rss-icon-svg" viewBox="0 0 8 8">
+                        <rect class="rss-button" width="8" height="8" />
+                        <circle class="rss-symbol" cx="2" cy="6" r="1" />
+                        <path class="rss-symbol" d="m 1,4 a 3,3 0 0 1 3,3 h 1 a 4,4 0 0 0 -4,-4 z" />
+                        <path class="rss-symbol" d="m 1,2 a 5,5 0 0 1 5,5 h 1 a 6,6 0 0 0 -6,-6 z" />
+                    </svg>
+                </a>
+            </li>
+            {{end}}
+            <li data-tooltip="true" data-placement="bottom" title="SABnzbd {{T "menu-config"}}">
+                <a href="./config/"><span class="glyphicon glyphicon-cog"></span></a>
+            </li>
+            <li class="dropdown main-menu-link" data-bind="css: { 'active-on-queue-finish-menu': finishaction()}">
+                <a href="#" data-toggle="dropdown"  onclick="keepOpen(this)">
+                    <span class="icon-bar"></span>
+                    <span class="icon-bar"></span>
+                    <span class="icon-bar"></span>
+                </a>
+                <ul class="dropdown-menu menu-options">
+                    <li><a href="#modal-help" data-toggle="modal"><span class="glyphicon glyphicon-question-sign"></span> {{T "menu-help"}}</a></li>
+                    <li><a href="https://sabnzbd.org/donate" target="_blank"><span class="glyphicon glyphicon-heart"></span> {{T "menu-donate"}}</a></li>
+                    {{if or .HaveLogout (or .HaveQuota (or .HaveRSSDefined .HaveWatchedDir))}}<li class="divider"></li>{{end}}
+                    {{if .HaveLogout}}<li><a href="./login/?logout=1"><span class="glyphicon glyphicon-log-out"></span> {{T "logout"}}</a></li>{{end}}
+                    {{if .HaveQuota}}<li><a href="#" data-bind="click: doQueueAction" data-mode="reset_quota">{{T "link-resetQuota"}}</a></li>{{end}}
+                    {{if .HaveRSSDefined}}<li><a href="#" data-bind="click: doQueueAction" data-mode="rss_now">{{T "button-rssNow"}}</a></li>{{end}}
+                    {{if .HaveWatchedDir}}<li><a href="#" data-bind="click: doQueueAction" data-mode="watched_now">{{T "sch-scan_folder"}}</a></li>{{end}}
+                    <li class="divider"></li>
+                    <li><a href="./shutdown/?apikey={{.APIKey}}&amp;pid={{.Pid}}" data-bind="click: shutdownSAB">{{T "shutdownSab"}}</a></li>
+                    <li><a href="#" data-bind="click: restartSAB">{{T "Glitter-restartSab"}}</a></li>
+                    <li class="divider"></li>
+                    <li class="dropdown-header"><span class="glyphicon glyphicon-off"></span> {{T "Glitter-onFinish"}}:</li>
+                    <li>
+                        <select data-bind="value: finishaction, event: { change: setOnQueueFinish }" class="form-control">
+                            <option value=""></option>
+                            <option value="shutdown_program">{{T "shutdownSab"}}</option>
+                        </select>
+                    </li>
+                </ul>
+            </li>
+        </ul>
+    </div>
+</nav>
+{{end}}

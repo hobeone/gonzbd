@@ -12,12 +12,16 @@
 
   <h1>SABnzbd-Go {{.Version}}</h1>
 
+  <div class="container main-navbar">
+    {{template "include_menu.html.tmpl" .}}
+  </div>
+
   <div class="container main-content">
     {{template "include_queue.html.tmpl" .}}
     {{template "include_messages.html.tmpl" .}}
     {{template "include_history.html.tmpl" .}}
 
-    <!-- TODO: Steps 12.6-12.8 — other templates -->
+    <!-- TODO: Steps 12.7-12.8 — other templates -->
   </div>
 </body>
 </html>
