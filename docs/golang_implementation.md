@@ -64,7 +64,6 @@ constraints that aren't actually required.
 | Area | Why required |
 |------|--------------|
 | **Glitter web UI** ↔ HTTP API | The Glitter UI is served as-is from this codebase. Its requests must match the Python API's mode dispatch, parameter names, and response shapes. |
-| **History DB schema** | Existing Python installs have a `history1.db` that users migrate into this build (Phase 10.1). Schema is copied verbatim. |
 | **External script contract** | Post-processing scripts users already wrote depend on the env vars and argv described in spec §8.4. Break this and real workflows break. |
 
 ### Not required (free to modernize)
@@ -73,7 +72,8 @@ constraints that aren't actually required.
 |------|-----------|
 | **TLS certificate algorithm** | Self-signed certs are generated per-install and never shared. Using Ed25519 instead of Python's RSA-4096 costs nothing. |
 | **API key format** | Auto-generated per-install. The plan originally specified 16-char hex for Python parity, but a longer modern token (e.g. 32-byte base64url) would be equally valid — the Python-compat framing was accidental. Leaving the format alone for now, but treat it as a free choice if we ever touch it. |
-| **Config file format** | We already diverged: YAML instead of Python's INI. A one-time migration tool (Phase 10.2) bridges existing installs. |
+| **Config file format** | We already diverged: YAML instead of Python's INI. Fresh installs only — no migration path. |
+| **History DB schema** | Fresh installs only. Schema is Go-native; not read-compatible with Python's `history1.db`. |
 | **Persistence layout for queue state** | Python's pickle files are not read. The plan chose JSON+gzip per-NzbObject for its own reasons (§ Coordination Architecture). |
 | **Internal code structure, goroutine model, concurrency primitives** | A full rewrite — Python threads do not map 1:1 to Go goroutines. |
 
@@ -870,28 +870,17 @@ Deliverables:
 
 ---
 
-## Phase 10: Migration Compatibility
+## Phase 10: Migration Compatibility — **SKIPPED (out of scope)**
 
-### Step 10.1 — History Database Migration `[haiku]`
+Per user direction (2026-04-16), migration from an existing Python SABnzbd install
+is not a goal of this project. The Go reimplementation targets fresh installs only.
+This reverses the earlier "Required compatibility" row for the history DB schema
+in the *Design Policy: Compatibility Scope* section above — history is now
+Go-native only.
 
-The SQLite schema is identical — just open the existing file.
-
-```
-Deliverables:
-  - internal/history/migrate.go — Open existing history1.db, verify schema version, upgrade if needed
-  - internal/history/migrate_test.go — Open sample Python-generated history1.db
-```
-
-### Step 10.2 — Config Migration Tool `[sonnet]`
-
-One-time tool to convert Python INI config to YAML.
-
-```
-Deliverables:
-  - cmd/migrate-config/main.go — Read Python configobj INI, write sabnzbd.yaml
-  - cmd/migrate-config/ini_parser.go — Parse configobj-style INI (nested [[sections]])
-  - cmd/migrate-config/main_test.go — Round-trip with real Python config samples
-```
+Steps 10.1 (History DB Migration) and 10.2 (Config Migration Tool) are intentionally
+left unimplemented. If migration is ever needed, it can be added as a standalone
+tool without affecting the main binary.
 
 ---
 
