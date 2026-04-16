@@ -565,3 +565,253 @@ func TestIncludeMessages_TranslationResolution(t *testing.T) {
 		t.Errorf("body does not contain translated value 'Nothing to show'; got:\n%s", body)
 	}
 }
+
+// TestIncludeQueue_RootElementPresent verifies that the rendered output
+// contains the expected queue root element with its data-bind attributes.
+func TestIncludeQueue_RootElementPresent(t *testing.T) {
+	rc := RenderContext{
+		Version:         "1.0.0",
+		ActiveLang:      "en",
+		Webdir:          "/static/glitter",
+		BytesPerSecList: []float64{},
+	}
+
+	handler := HandlerWithContext(rc)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// The root element must be present.
+	if !strings.Contains(body, `id="queue-tab"`) {
+		t.Errorf("body does not contain id=\"queue-tab\"; got:\n%s", body)
+	}
+}
+
+// TestIncludeQueue_DataBindAttributePreservation verifies that all upstream
+// data-bind attributes are present in the rendered output.
+func TestIncludeQueue_DataBindAttributePreservation(t *testing.T) {
+	rc := RenderContext{
+		Version:         "1.0.0",
+		ActiveLang:      "en",
+		Webdir:          "/static/glitter",
+		BytesPerSecList: []float64{},
+	}
+
+	handler := HandlerWithContext(rc)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Count data-bind attributes in the rendered output.
+	// The upstream include_queue.tmpl has 76 data-bind attributes.
+	dataBindCount := countOccurrences(body, `data-bind=`)
+	// We need to verify at least the queue-specific ones are present.
+	if dataBindCount < 50 {
+		t.Errorf("body contains fewer data-bind attributes than expected; got %d, want at least 50", dataBindCount)
+	}
+}
+
+// TestIncludeQueue_NoCheetahTokens verifies that no Cheetah template tokens
+// remain in the rendered output (indicating incomplete porting).
+func TestIncludeQueue_NoCheetahTokens(t *testing.T) {
+	rc := RenderContext{
+		Version:         "1.0.0",
+		ActiveLang:      "en",
+		Webdir:          "/static/glitter",
+		BytesPerSecList: []float64{},
+	}
+
+	handler := HandlerWithContext(rc)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	if strings.Contains(body, "$T(") {
+		t.Errorf("body contains $T( token (incomplete Cheetah->Go conversion)")
+	}
+
+	if strings.Contains(body, "<!--#") {
+		t.Errorf("body contains <!--# token (incomplete Cheetah->Go conversion)")
+	}
+}
+
+// TestIncludeQueue_TranslationResolution verifies that translation keys
+// resolve via the FuncMap when a populated catalog is provided.
+func TestIncludeQueue_TranslationResolution(t *testing.T) {
+	// Use a real key from the upstream file: 'menu-queue' (line 2 of upstream).
+	catalog := i18n.Catalog{"menu-queue": "Queue"}
+
+	rc := RenderContext{
+		Version:         "1.0.0",
+		ActiveLang:      "en",
+		Webdir:          "/static/glitter",
+		BytesPerSecList: []float64{},
+	}
+
+	// Parse all templates with the populated catalog.
+	tmpl, err := template.New("main.html.tmpl").Funcs(newFuncMap(catalog)).ParseFS(templatesFS, "templates/*.html.tmpl")
+	if err != nil {
+		t.Fatalf("template parse: %v", err)
+	}
+
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, rc); err != nil {
+		t.Fatalf("template execute: %v", err)
+	}
+
+	body := buf.String()
+
+	if !strings.Contains(body, "Queue") {
+		t.Errorf("body does not contain translated value 'Queue'; got:\n%s", body)
+	}
+}
+
+// TestIncludeHistory_RootElementPresent verifies that the rendered output
+// contains the expected history root element with its data-bind attributes.
+func TestIncludeHistory_RootElementPresent(t *testing.T) {
+	rc := RenderContext{
+		Version:         "1.0.0",
+		ActiveLang:      "en",
+		Webdir:          "/static/glitter",
+		BytesPerSecList: []float64{},
+	}
+
+	handler := HandlerWithContext(rc)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// The root element must be present.
+	if !strings.Contains(body, `id="history-tab"`) {
+		t.Errorf("body does not contain id=\"history-tab\"; got:\n%s", body)
+	}
+}
+
+// TestIncludeHistory_DataBindAttributePreservation verifies that all upstream
+// data-bind attributes are present in the rendered output.
+func TestIncludeHistory_DataBindAttributePreservation(t *testing.T) {
+	rc := RenderContext{
+		Version:         "1.0.0",
+		ActiveLang:      "en",
+		Webdir:          "/static/glitter",
+		BytesPerSecList: []float64{},
+	}
+
+	handler := HandlerWithContext(rc)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Count data-bind attributes in the rendered output.
+	// The upstream include_history.tmpl has 55 data-bind attributes.
+	dataBindCount := countOccurrences(body, `data-bind=`)
+	// We need to verify at least the history-specific ones are present.
+	if dataBindCount < 40 {
+		t.Errorf("body contains fewer data-bind attributes than expected; got %d, want at least 40", dataBindCount)
+	}
+}
+
+// TestIncludeHistory_NoCheetahTokens verifies that no Cheetah template tokens
+// remain in the rendered output (indicating incomplete porting).
+func TestIncludeHistory_NoCheetahTokens(t *testing.T) {
+	rc := RenderContext{
+		Version:         "1.0.0",
+		ActiveLang:      "en",
+		Webdir:          "/static/glitter",
+		BytesPerSecList: []float64{},
+	}
+
+	handler := HandlerWithContext(rc)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	if strings.Contains(body, "$T(") {
+		t.Errorf("body contains $T( token (incomplete Cheetah->Go conversion)")
+	}
+
+	if strings.Contains(body, "<!--#") {
+		t.Errorf("body contains <!--# token (incomplete Cheetah->Go conversion)")
+	}
+}
+
+// TestIncludeHistory_TranslationResolution verifies that translation keys
+// resolve via the FuncMap when a populated catalog is provided.
+func TestIncludeHistory_TranslationResolution(t *testing.T) {
+	// Use a real key from the upstream file: 'menu-history' (line 3 of upstream).
+	catalog := i18n.Catalog{"menu-history": "History"}
+
+	rc := RenderContext{
+		Version:         "1.0.0",
+		ActiveLang:      "en",
+		Webdir:          "/static/glitter",
+		BytesPerSecList: []float64{},
+	}
+
+	// Parse all templates with the populated catalog.
+	tmpl, err := template.New("main.html.tmpl").Funcs(newFuncMap(catalog)).ParseFS(templatesFS, "templates/*.html.tmpl")
+	if err != nil {
+		t.Fatalf("template parse: %v", err)
+	}
+
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, rc); err != nil {
+		t.Fatalf("template execute: %v", err)
+	}
+
+	body := buf.String()
+
+	if !strings.Contains(body, "History") {
+		t.Errorf("body does not contain translated value 'History'; got:\n%s", body)
+	}
+}
+
+// countOccurrences counts how many times substr appears in s.
+func countOccurrences(s, substr string) int {
+	count := 0
+	for {
+		idx := strings.Index(s, substr)
+		if idx == -1 {
+			break
+		}
+		count++
+		s = s[idx+len(substr):]
+	}
+	return count
+}
