@@ -7,23 +7,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a Go reimplementation of [SABnzbd](https://sabnzbd.org), the automated Usenet binary newsreader. The reference Python implementation lives at `../sabnzbd/`.
 
 **Module path**: `github.com/hobeone/sabnzbd-go`  
-**Go version**: 1.22+
+**Go version**: 1.25 (toolchain 1.26.2)
 
 ## Reference Materials
 
-Before writing any code, consult these in order:
+Before writing any code, read these in order:
 
-1. **`../sabnzbd/golang_implementation.md`** — The implementation plan. Lists all phases, steps, and which Claude model to use for each. This is the authoritative source for what to build next.
-2. **`../sabnzbd/sabnzbd_spec.md`** — The functional specification. Defines all behaviors, data formats, API endpoints, constants, and protocols.
-3. **`../sabnzbd/sabnzbd/`** — The Python source. Use it to clarify behavior when the spec is ambiguous, **but do not transliterate**. Translate intent into idiomatic Go.
+1. **`docs/implementation_notes.md`** — Cross-session knowledge. Conventions, architecture patterns, known deferrals, gotchas, and testing norms not obvious from the code. **Always read this first.**
+2. **`docs/golang_implementation.md`** — The implementation plan. Lists all phases, steps, and which Claude model to use for each. Authoritative for what to build next.
+3. **`docs/sabnzbd_spec.md`** — The functional specification. Defines all behaviors, data formats, API endpoints, constants, and protocols.
+4. **`../sabnzbd/sabnzbd/`** — The Python source, external to this repo. Consult for clarification of intent when the spec is ambiguous, **but do not transliterate**. Translate intent into idiomatic Go. (The spec has been wrong before — see `implementation_notes.md` §5.3.)
 
 ## Implementation Workflow
 
 ### Per-Step Commit Cycle
 
-Each step in `golang_implementation.md` is a self-contained unit of work. The workflow is:
+Each step in `docs/golang_implementation.md` is a self-contained unit of work. The workflow is:
 
-1. **Read the step** in `golang_implementation.md` and any spec sections it references.
+1. **Read the step** in `docs/golang_implementation.md` and any spec sections it references.
 2. **Implement** the deliverables listed for that step.
 3. **Verify** all quality gates pass (see below).
 4. **Commit** with a message that references the step (e.g., `Step 0.2: constants package`).
@@ -79,7 +80,7 @@ Decisions that don't need to be escalated:
 Decisions that must be escalated:
 - Adding new external dependencies (libraries) not already in the plan
 - Changing public interfaces between packages
-- Departing from the architecture in `golang_implementation.md`
+- Departing from the architecture in `docs/golang_implementation.md`
 - Persistence format changes (file paths, schema, on-disk layout)
 - API behavior changes that affect compatibility with the existing Glitter web UI
 
@@ -107,7 +108,7 @@ Decisions that must be escalated:
 
 The plan establishes specific concurrency patterns. Follow them:
 
-- **Queue → Downloader signaling**: channel-based (`chan struct{}`, cap=1, non-blocking send). NOT `sync.Cond`. Rationale and details in `golang_implementation.md` § Coordination Architecture.
+- **Queue → Downloader signaling**: channel-based (`chan struct{}`, cap=1, non-blocking send). NOT `sync.Cond`. Rationale and details in `docs/golang_implementation.md` § Coordination Architecture.
 - **Queue internal locking**: `sync.RWMutex`. The hot path (`GetArticles`) takes RLock; mutations take full Lock.
 - **Per-NzbObject locking**: `sync.Mutex` per object.
 - **Article cache**: `sync.RWMutex` + `atomic.Int64` for memory tracking.
@@ -122,7 +123,7 @@ If a new component needs coordination, document the choice (mutex vs channel vs 
 - **Config**: YAML via `gopkg.in/yaml.v3`.
 - **Atomic writes**: all file persistence uses temp file + fsync + rename.
 
-Rationale is documented in `golang_implementation.md`. Do not deviate without escalating.
+Rationale is documented in `docs/golang_implementation.md`. Do not deviate without escalating.
 
 ## Library Selection
 
