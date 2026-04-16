@@ -80,10 +80,7 @@ func encodeYEncBytes(raw []byte) []byte {
 // is measured in encoded bytes (after escaping), not raw bytes.
 func writeWrappedLines(buf *bytes.Buffer, encoded []byte, lineWidth int) {
 	for i := 0; i < len(encoded); i += lineWidth {
-		end := i + lineWidth
-		if end > len(encoded) {
-			end = len(encoded)
-		}
+		end := min(i+lineWidth, len(encoded))
 		buf.Write(encoded[i:end])
 		buf.WriteString("\r\n")
 	}

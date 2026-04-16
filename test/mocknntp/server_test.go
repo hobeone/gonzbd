@@ -237,10 +237,8 @@ func TestServerConcurrentFetches(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for i := range n {
+		wg.Go(func() {
 			cfg := makeCfg(srv.Addr())
 			conn, err := nntp.Dial(ctx, cfg)
 			if err != nil {
@@ -256,7 +254,7 @@ func TestServerConcurrentFetches(t *testing.T) {
 			if len(got) == 0 {
 				errs <- errors.New("empty body")
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
