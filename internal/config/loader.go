@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -28,6 +29,7 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: decode %q: %w", path, err)
 	}
+	cfg.ExpandPaths()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config: validate %q: %w", path, err)
 	}
@@ -37,8 +39,16 @@ func Load(path string) (*Config, error) {
 // decode is split out so tests can decode from in-memory buffers without
 // touching disk.
 func decode(r io.Reader) (*Config, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+
+	// Expand environment variables ($VAR or ${VAR}) globally.
+	expanded := os.ExpandEnv(string(b))
+
 	var cfg Config
-	dec := yaml.NewDecoder(r)
+	dec := yaml.NewDecoder(strings.NewReader(expanded))
 	dec.KnownFields(true) // reject unknown keys to catch typos
 	if err := dec.Decode(&cfg); err != nil {
 		if errors.Is(err, io.EOF) {
