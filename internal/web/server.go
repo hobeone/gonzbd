@@ -51,11 +51,12 @@ func HandlerWithContext(rc RenderContext) http.Handler {
 
 	// Parse the main template once; use the FuncMap so T/staticURL calls
 	// inside the template resolve at parse time, not render time.
+	// Pass an empty catalog for English-only (v1 default).
 	tmplData, err := templatesFS.ReadFile("templates/main.html.tmpl")
 	if err != nil {
 		panic("web: main.html.tmpl missing from embed: " + err.Error())
 	}
-	tmpl, err := template.New("main.html.tmpl").Funcs(newFuncMap()).Parse(string(tmplData))
+	tmpl, err := template.New("main.html.tmpl").Funcs(newFuncMap(nil)).Parse(string(tmplData))
 	if err != nil {
 		panic("web: main.html.tmpl parse error: " + err.Error())
 	}

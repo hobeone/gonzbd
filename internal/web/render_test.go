@@ -349,26 +349,56 @@ func TestHandler_BackwardCompat(t *testing.T) {
 	}
 }
 
-// TestFuncMap_T verifies the placeholder T function returns the key verbatim.
+// TestFuncMap_T verifies the T function integrates with i18n catalog.
 func TestFuncMap_T(t *testing.T) {
-	fm := newFuncMap()
-	tFn, ok := fm["T"]
-	if !ok {
-		t.Fatal("FuncMap missing 'T' entry")
+	tests := []struct {
+		name    string
+		catalog interface{} // i18n.Catalog or nil for default empty
+		key     string
+		want    string
+	}{
+		{
+			name:    "T with empty catalog returns key verbatim",
+			catalog: nil,
+			key:     "menu-queue",
+			want:    "menu-queue",
+		},
+		{
+			name:    "T with catalog hit returns translated value",
+			catalog: map[string]string{"menu-queue": "Queue"},
+			key:     "menu-queue",
+			want:    "Queue",
+		},
+		{
+			name:    "T with catalog miss returns key verbatim",
+			catalog: map[string]string{"other": "Other"},
+			key:     "menu-queue",
+			want:    "menu-queue",
+		},
 	}
-	fn, ok := tFn.(func(string) string)
-	if !ok {
-		t.Fatalf("FuncMap['T'] type = %T, want func(string) string", tFn)
-	}
-	got := fn("menu-queue")
-	if got != "menu-queue" {
-		t.Errorf("T(%q) = %q, want %q", "menu-queue", got, "menu-queue")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fm := newFuncMap(tt.catalog)
+			tFn, ok := fm["T"]
+			if !ok {
+				t.Fatal("FuncMap missing 'T' entry")
+			}
+			fn, ok := tFn.(func(string) string)
+			if !ok {
+				t.Fatalf("FuncMap['T'] type = %T, want func(string) string", tFn)
+			}
+			got := fn(tt.key)
+			if got != tt.want {
+				t.Errorf("T(%q) = %q, want %q", tt.key, got, tt.want)
+			}
+		})
 	}
 }
 
 // TestFuncMap_StaticURL verifies the staticURL function prepends /static/glitter/.
 func TestFuncMap_StaticURL(t *testing.T) {
-	fm := newFuncMap()
+	fm := newFuncMap(nil)
 	staticURLFn, ok := fm["staticURL"]
 	if !ok {
 		t.Fatal("FuncMap missing 'staticURL' entry")

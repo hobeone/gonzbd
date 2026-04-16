@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/i18n"
 )
 
 // RenderContext holds all variables passed to every page template. Fields
@@ -111,13 +112,27 @@ func BuildRenderContext(cfg *config.Config, version string) RenderContext {
 }
 
 // newFuncMap returns the html/template FuncMap that must be registered before
-// any template referencing T or staticURL is parsed. Functions here are
-// placeholders; Step 12.3 replaces T with a real i18n lookup.
-func newFuncMap() template.FuncMap {
+// any template referencing T or staticURL is parsed.
+//
+// The T function signature accepts an i18n.Catalog (or nil/map[string]string).
+// If the catalog is nil or implements the Lookup method, it uses that;
+// otherwise it falls back to English-only (key-as-value). This allows for
+// incremental i18n wiring: pass an empty Catalog for English-only templates,
+// or a populated one for translated output.
+func newFuncMap(catInterface interface{}) template.FuncMap {
+	var cat i18n.Catalog
+	switch v := catInterface.(type) {
+	case i18n.Catalog:
+		cat = v
+	case map[string]string:
+		cat = i18n.Catalog(v)
+		// Otherwise cat remains nil, which is safe (Catalog.Lookup handles nil).
+	}
+
 	return template.FuncMap{
-		// T returns the translation key verbatim (English fallback).
-		// Replaced with a real catalog lookup in Step 12.3.
-		"T": func(key string) string { return key },
+		// T looks up a key in the catalog. Missing entries fall back to the key
+		// itself (English fallback).
+		"T": func(key string) string { return cat.Lookup(key) },
 		// staticURL prepends the Glitter asset base path to a relative path.
 		"staticURL": func(path string) string { return "/static/glitter/" + path },
 	}
