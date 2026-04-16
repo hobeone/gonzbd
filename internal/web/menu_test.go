@@ -144,8 +144,11 @@ func TestIncludeMenu_FeatureFlagMatrix(t *testing.T) {
 			flag:      "HaveWatchedDir",
 			setFlag:   func(rc *RenderContext) { rc.HaveWatchedDir = true },
 			clearFlag: func(rc *RenderContext) { rc.HaveWatchedDir = false },
-			probeKey:  "sch-scan_folder",
-			probeText: "ScanFolderNow",
+			// data-mode="watched_now" is unique to the menu's gated <li> — the
+			// notification box in include_overlays uses the same translation key
+			// unconditionally, so we probe the HTML attribute instead.
+			probeKey:  "",
+			probeText: `data-mode="watched_now"`,
 		},
 	}
 
