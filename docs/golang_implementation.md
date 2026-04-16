@@ -53,6 +53,43 @@ Prefer proven libraries over custom implementations:
 
 ---
 
+## Design Policy: Compatibility Scope
+
+Not all "compatibility with Python SABnzbd" carries equal weight. This
+section makes the scope explicit so future steps don't inherit implicit
+constraints that aren't actually required.
+
+### Required compatibility
+
+| Area | Why required |
+|------|--------------|
+| **Glitter web UI** ↔ HTTP API | The Glitter UI is served as-is from this codebase. Its requests must match the Python API's mode dispatch, parameter names, and response shapes. |
+| **History DB schema** | Existing Python installs have a `history1.db` that users migrate into this build (Phase 10.1). Schema is copied verbatim. |
+| **External script contract** | Post-processing scripts users already wrote depend on the env vars and argv described in spec §8.4. Break this and real workflows break. |
+
+### Not required (free to modernize)
+
+| Area | Rationale |
+|------|-----------|
+| **TLS certificate algorithm** | Self-signed certs are generated per-install and never shared. Using Ed25519 instead of Python's RSA-4096 costs nothing. |
+| **API key format** | Auto-generated per-install. The plan originally specified 16-char hex for Python parity, but a longer modern token (e.g. 32-byte base64url) would be equally valid — the Python-compat framing was accidental. Leaving the format alone for now, but treat it as a free choice if we ever touch it. |
+| **Config file format** | We already diverged: YAML instead of Python's INI. A one-time migration tool (Phase 10.2) bridges existing installs. |
+| **Persistence layout for queue state** | Python's pickle files are not read. The plan chose JSON+gzip per-NzbObject for its own reasons (§ Coordination Architecture). |
+| **Internal code structure, goroutine model, concurrency primitives** | A full rewrite — Python threads do not map 1:1 to Go goroutines. |
+
+### Rule of thumb
+
+When a design decision is framed as "match Python because..." ask whether
+the decision has any **cross-install effect**:
+
+- **Yes** (data files, API shape, user scripts, user config semantics): compatibility matters; match Python.
+- **No** (crypto primitives, internal types, concurrency, log format): free choice; pick the best option.
+
+If in doubt, the default is "not required" — constraints should be
+justified, not assumed.
+
+---
+
 ## Configuration Format Decision: YAML
 
 **Choice**: YAML over JSON.
@@ -779,11 +816,17 @@ Self-signed TLS certs for HTTPS UI.
 
 ```
 Deliverables:
-  - internal/app/certgen.go — Generate 4096-bit RSA key + self-signed cert
-    (CN=sabnzbd, SAN=127.0.0.1+localhost, 5-year validity)
-    Use crypto/x509 + crypto/rsa from stdlib.
+  - internal/app/certgen.go — Generate Ed25519 key + self-signed cert
+    (CN=sabnzbd, SAN=127.0.0.1+::1+localhost, 5-year validity)
+    Use crypto/x509 + crypto/ed25519 from stdlib.
   - internal/app/certgen_test.go — Generate and parse cert, verify fields
 ```
+
+Ed25519 is chosen over RSA-4096: 32-byte public key vs 512 bytes, faster
+sign/verify, equivalent-or-better security, and supported by all TLS 1.3
+clients. Python SABnzbd's RSA-4096 default is not a compatibility
+constraint here — self-signed certs are per-install artifacts, so the
+algorithm choice is free. See § Design Policy: Compatibility Scope.
 
 ### Step 8.2 — API Key Management `[haiku]`
 

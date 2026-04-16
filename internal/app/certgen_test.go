@@ -1,7 +1,7 @@
 package app
 
 import (
-	"crypto/rsa"
+	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/pem"
 	"os"
@@ -91,24 +91,28 @@ func TestGenerateSelfSigned(t *testing.T) {
 		t.Fatalf("parse private key: %v", err)
 	}
 
-	// Verify key is RSA
-	rsaKey, ok := privKey.(*rsa.PrivateKey)
+	edKey, ok := privKey.(ed25519.PrivateKey)
 	if !ok {
-		t.Fatalf("private key type = %T; want *rsa.PrivateKey", privKey)
+		t.Fatalf("private key type = %T; want ed25519.PrivateKey", privKey)
 	}
 
-	// Verify key is 4096 bits
-	if rsaKey.N.BitLen() != 4096 {
-		t.Errorf("key size = %d bits; want 4096", rsaKey.N.BitLen())
+	if len(edKey) != ed25519.PrivateKeySize {
+		t.Errorf("key size = %d bytes; want %d", len(edKey), ed25519.PrivateKeySize)
 	}
 
-	// Verify self-signed: signature should verify against public key
+	if cert.SignatureAlgorithm != x509.PureEd25519 {
+		t.Errorf("signature algorithm = %v; want PureEd25519", cert.SignatureAlgorithm)
+	}
+
 	if err := cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature); err != nil {
 		t.Errorf("signature verification failed: %v", err)
 	}
 
-	// Verify cert public key matches private key public key
-	if !cert.PublicKey.(*rsa.PublicKey).Equal(rsaKey.Public()) {
+	certPub, ok := cert.PublicKey.(ed25519.PublicKey)
+	if !ok {
+		t.Fatalf("cert public key type = %T; want ed25519.PublicKey", cert.PublicKey)
+	}
+	if !certPub.Equal(edKey.Public()) {
 		t.Error("certificate public key does not match private key")
 	}
 }
@@ -177,9 +181,8 @@ func TestWriteSelfSigned(t *testing.T) {
 		t.Fatalf("parse key from file: %v", err)
 	}
 
-	// Verify key type
-	if _, ok := privKey.(*rsa.PrivateKey); !ok {
-		t.Fatalf("key type = %T; want *rsa.PrivateKey", privKey)
+	if _, ok := privKey.(ed25519.PrivateKey); !ok {
+		t.Fatalf("key type = %T; want ed25519.PrivateKey", privKey)
 	}
 
 	// Verify file permissions

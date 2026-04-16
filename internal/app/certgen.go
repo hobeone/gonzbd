@@ -1,8 +1,8 @@
 package app
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -14,26 +14,27 @@ import (
 	"time"
 )
 
-// GenerateSelfSigned generates a 4096-bit RSA key and self-signed certificate
+// GenerateSelfSigned generates an Ed25519 key and self-signed certificate
 // suitable for HTTPS. It returns the PEM-encoded certificate and key as byte slices.
+//
+// Ed25519 is chosen over RSA for its smaller key size (32-byte public key vs
+// 512 bytes for RSA-4096), faster signing, and equivalent-or-better security.
+// All TLS 1.3 clients support Ed25519.
 //
 // The certificate has CN=sabnzbd and SANs for 127.0.0.1, ::1, and localhost.
 // Validity is from now-1h (for clock skew) to now+5 years. SerialNumber is a
 // random 128-bit value.
 func GenerateSelfSigned() (certPEM, keyPEM []byte, err error) {
-	// Generate RSA key
-	privKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, nil, fmt.Errorf("generate RSA key: %w", err)
+		return nil, nil, fmt.Errorf("generate ed25519 key: %w", err)
 	}
 
-	// Generate random serial number
 	serialNum, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate serial number: %w", err)
 	}
 
-	// Create certificate template
 	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber: serialNum,
@@ -42,7 +43,7 @@ func GenerateSelfSigned() (certPEM, keyPEM []byte, err error) {
 		},
 		NotBefore: now.Add(-time.Hour), //nolint:gosec // intentional: clock skew mitigation
 		NotAfter:  now.AddDate(5, 0, 0),
-		KeyUsage:  x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		KeyUsage:  x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{
 			x509.ExtKeyUsageServerAuth,
 		},
@@ -55,8 +56,7 @@ func GenerateSelfSigned() (certPEM, keyPEM []byte, err error) {
 		},
 	}
 
-	// Create self-signed certificate
-	certBytes, err := x509.CreateCertificate(rand.Reader, template, template, &privKey.PublicKey, privKey)
+	certBytes, err := x509.CreateCertificate(rand.Reader, template, template, pubKey, privKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create certificate: %w", err)
 	}
