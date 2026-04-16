@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/i18n"
 )
 
 // TestBuildRenderContext_DerivedFields verifies all fields that BuildRenderContext
@@ -353,25 +354,25 @@ func TestHandler_BackwardCompat(t *testing.T) {
 func TestFuncMap_T(t *testing.T) {
 	tests := []struct {
 		name    string
-		catalog interface{} // i18n.Catalog or nil for default empty
+		catalog i18n.Catalog
 		key     string
 		want    string
 	}{
 		{
-			name:    "T with empty catalog returns key verbatim",
+			name:    "T with nil catalog returns key verbatim",
 			catalog: nil,
 			key:     "menu-queue",
 			want:    "menu-queue",
 		},
 		{
 			name:    "T with catalog hit returns translated value",
-			catalog: map[string]string{"menu-queue": "Queue"},
+			catalog: i18n.Catalog{"menu-queue": "Queue"},
 			key:     "menu-queue",
 			want:    "Queue",
 		},
 		{
 			name:    "T with catalog miss returns key verbatim",
-			catalog: map[string]string{"other": "Other"},
+			catalog: i18n.Catalog{"other": "Other"},
 			key:     "menu-queue",
 			want:    "menu-queue",
 		},

@@ -95,8 +95,8 @@ func BuildRenderContext(cfg *config.Config, version string) RenderContext {
 		// RTL: check just the primary subtag (before any hyphen) against the
 		// small known-RTL set. "he-IL" and "he" both map to RTL.
 		primary := lang
-		if idx := strings.IndexByte(lang, '-'); idx >= 0 {
-			primary = lang[:idx]
+		if before, _, found := strings.Cut(lang, "-"); found {
+			primary = before
 		}
 		rc.RTL = rtlLanguages[primary]
 	})
@@ -112,23 +112,10 @@ func BuildRenderContext(cfg *config.Config, version string) RenderContext {
 }
 
 // newFuncMap returns the html/template FuncMap that must be registered before
-// any template referencing T or staticURL is parsed.
-//
-// The T function signature accepts an i18n.Catalog (or nil/map[string]string).
-// If the catalog is nil or implements the Lookup method, it uses that;
-// otherwise it falls back to English-only (key-as-value). This allows for
-// incremental i18n wiring: pass an empty Catalog for English-only templates,
-// or a populated one for translated output.
-func newFuncMap(catInterface interface{}) template.FuncMap {
-	var cat i18n.Catalog
-	switch v := catInterface.(type) {
-	case i18n.Catalog:
-		cat = v
-	case map[string]string:
-		cat = i18n.Catalog(v)
-		// Otherwise cat remains nil, which is safe (Catalog.Lookup handles nil).
-	}
-
+// any template referencing T or staticURL is parsed. A nil catalog is valid
+// and yields English-only output (Catalog.Lookup returns the key when the
+// receiver is nil).
+func newFuncMap(cat i18n.Catalog) template.FuncMap {
 	return template.FuncMap{
 		// T looks up a key in the catalog. Missing entries fall back to the key
 		// itself (English fallback).
