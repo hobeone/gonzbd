@@ -8,6 +8,8 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+
+	"github.com/hobeone/sabnzbd-go/internal/i18n"
 )
 
 //go:embed static
@@ -52,8 +54,9 @@ func HandlerWithContext(rc RenderContext) http.Handler {
 	// Parse all templates from the templates directory using ParseFS.
 	// This loads main.html.tmpl and all partial templates (include_messages.html.tmpl, etc.).
 	// Use the FuncMap so T/staticURL calls inside the templates resolve at parse time.
-	// Pass an empty catalog for English-only (v1 default).
-	tmpl, err := template.New("main.html.tmpl").Funcs(newFuncMap(nil)).ParseFS(templatesFS, "templates/*.html.tmpl")
+	// Load the default English catalog (ported from upstream skintext.SKIN_TEXT)
+	// so translation keys resolve to English text rather than raw keys.
+	tmpl, err := template.New("main.html.tmpl").Funcs(newFuncMap(i18n.DefaultEnglish())).ParseFS(templatesFS, "templates/*.html.tmpl")
 	if err != nil {
 		panic("web: template parse error: " + err.Error())
 	}

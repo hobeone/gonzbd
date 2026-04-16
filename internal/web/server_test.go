@@ -137,6 +137,50 @@ func TestHandler(t *testing.T) {
 	}
 }
 
+// TestHandler_RendersEnglishStrings verifies the production Handler() path
+// resolves translation keys to their English values from the default catalog,
+// not the raw keys. This is the regression guard for the "menu-queue" /
+// "Glitter-fetch" visible-in-UI bug that motivated Step 12.10.
+func TestHandler_RendersEnglishStrings(t *testing.T) {
+	handler := Handler()
+	req := httptest.NewRequest("GET", "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+
+	// Positive probes: these English values must appear (sourced from upstream
+	// skintext.py SKIN_TEXT entries for menu-queue, menu-history). The menu
+	// renders the label followed by a trailing space and a <span> badge, so
+	// the probe matches "<tab-a-href...>Queue <" rather than ">Queue<".
+	wantPresent := []string{
+		">Queue ",   // from {{T "menu-queue"}} in include_menu tab label
+		">History ", // from {{T "menu-history"}} in include_menu tab label
+	}
+	for _, s := range wantPresent {
+		if !strings.Contains(body, s) {
+			t.Errorf("body missing expected English text %q (translation not loaded?)", s)
+		}
+	}
+
+	// Negative probes: raw translation keys must NOT leak through as visible
+	// UI text. A prior bug had these rendering literally to the browser.
+	wantAbsent := []string{
+		">menu-queue<",
+		">menu-history<",
+		">Glitter-fetch<",
+		">Glitter-addNZB<",
+	}
+	for _, s := range wantAbsent {
+		if strings.Contains(body, s) {
+			t.Errorf("body contains raw translation key %q (catalog not wired?)", s)
+		}
+	}
+}
+
 func TestHandlerConcurrency(t *testing.T) {
 	// Ensure Handler() can be called multiple times and the handlers
 	// serve concurrently without race conditions.

@@ -132,41 +132,51 @@ func TestMainTemplate_DisplayLangJSVariable(t *testing.T) {
 }
 
 // TestMainTemplate_GlitterTranslatePopulated verifies that glitterTranslate keys
-// are present in the rendered output. When catalog is empty, values fall back
-// to the key itself. When populated, the translated value appears.
+// are present in the rendered output with their English values. Case A exercises
+// the production handler path (default English catalog loaded); Case B exercises
+// an explicit catalog override.
 func TestMainTemplate_GlitterTranslatePopulated(t *testing.T) {
-	// Layer 2 case A: nil catalog → key as fallback value.
+	// Case A: production handler — default English catalog resolves keys to
+	// their upstream skintext.SKIN_TEXT values.
 	body := renderMain(t, baseMainRC())
 
+	// The glitterTranslate JS object names map to upstream SKIN_TEXT keys.
+	// "paused"→post-Paused→"Paused", "fetch"→Glitter-fetch→"Fetch",
+	// "confirm"→confirm→"Are you sure?".
 	keysToCheck := []struct {
 		jsVar   string
-		keyFall string
+		wantVal string
 	}{
-		{"glitterTranslate.paused", "post-Paused"},
-		{"glitterTranslate.confirm", "confirm"},
-		{"glitterTranslate.fetch", "Glitter-fetch"},
+		{"glitterTranslate.paused", "Paused"},
+		{"glitterTranslate.fetch", "Fetch"},
 	}
 	for _, kv := range keysToCheck {
 		if !strings.Contains(body, kv.jsVar) {
 			t.Errorf("body missing JS variable %q", kv.jsVar)
 		}
-		// With nil catalog, the T function returns the key as the value.
-		if !strings.Contains(body, kv.keyFall) {
-			t.Errorf("body missing fallback key %q as translation value", kv.keyFall)
+		if !strings.Contains(body, kv.wantVal) {
+			t.Errorf("body missing English value %q (for %s)", kv.wantVal, kv.jsVar)
 		}
 	}
 
-	// Layer 2 case B: populated catalog → translated value appears.
+	// Negative check: raw SKIN_TEXT keys must not leak into rendered JS.
+	for _, rawKey := range []string{`"post-Paused"`, `"Glitter-fetch"`} {
+		if strings.Contains(body, rawKey) {
+			t.Errorf("body contains raw translation key %s (catalog not wired?)", rawKey)
+		}
+	}
+
+	// Case B: explicit catalog override — translated value appears, default
+	// English does not (confirms the injected catalog wins).
 	cat := i18n.Catalog{
-		"post-Paused": "Paused",
-		"confirm":     "OK",
+		"post-Paused": "ZZPausedZZ",
 	}
 	bodyTranslated := renderMainWithCatalog(t, baseMainRC(), cat)
 	if !strings.Contains(bodyTranslated, `glitterTranslate.paused`) {
 		t.Errorf("translated body missing glitterTranslate.paused")
 	}
-	if !strings.Contains(bodyTranslated, `"Paused"`) {
-		t.Errorf("translated body missing translated value \"Paused\"")
+	if !strings.Contains(bodyTranslated, `"ZZPausedZZ"`) {
+		t.Errorf("translated body missing overridden value %q", "ZZPausedZZ")
 	}
 }
 
