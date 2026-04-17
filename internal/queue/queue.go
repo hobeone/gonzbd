@@ -172,6 +172,14 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 			if file.Complete {
 				continue
 			}
+			fmt.Printf("Checking %s to see if it has articles to get\n", file.Subject)
+			incomp := 0
+			for _, art := range file.Articles {
+				if !art.Done {
+					incomp++
+				}
+			}
+			fmt.Printf("%s has %d articles to get\n", file.Subject, incomp)
 			for ai := range file.Articles {
 				art := &file.Articles[ai]
 				if art.Done {
@@ -213,12 +221,31 @@ func (q *Queue) MarkArticleDone(jobID, messageID string) error {
 	for fi := range job.Files {
 		for ai := range job.Files[fi].Articles {
 			if job.Files[fi].Articles[ai].ID == messageID {
-				job.Files[fi].Articles[ai].Done = true
+				if !job.Files[fi].Articles[ai].Done {
+					job.Files[fi].Articles[ai].Done = true
+					job.RemainingBytes -= int64(job.Files[fi].Articles[ai].Bytes)
+				}
 				return nil
 			}
 		}
 	}
 	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
+}
+
+// MarkFileComplete marks the file at fileIdx within jobID as fully assembled
+// and complete. Returns ErrNotFound if the job or index is invalid.
+func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if fileIdx < 0 || fileIdx >= len(job.Files) {
+		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
+	}
+	job.Files[fileIdx].Complete = true
+	return nil
 }
 
 // PauseAll sets the queue-wide pause flag. Existing downloads

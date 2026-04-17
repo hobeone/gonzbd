@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 
@@ -61,6 +62,7 @@ type FileComplete struct {
 // shut down with Shutdown. Public methods are safe for concurrent use after
 // Start returns.
 type Application struct {
+	log *slog.Logger
 	mu  sync.Mutex
 	cfg Config
 
@@ -82,13 +84,19 @@ type Application struct {
 // New constructs an Application from cfg. It does not open sockets or start
 // goroutines; call Start to bring subsystems up. Returns an error when the
 // config is structurally invalid (no servers, empty DownloadDir).
-func New(cfg Config) (*Application, error) {
+func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 	if len(cfg.Servers) == 0 {
 		return nil, errors.New("app: at least one server is required")
 	}
 	if cfg.DownloadDir == "" {
 		return nil, errors.New("app: DownloadDir is required")
 	}
+
+	app := &Application{cfg: cfg, log: slog.Default()}
+	for _, o := range opts {
+		o(app)
+	}
+	log := app.log
 
 	q := queue.New()
 	c := cache.New(cache.Options{Limit: cfg.CacheLimit})
@@ -97,41 +105,51 @@ func New(cfg Config) (*Application, error) {
 	for i, sc := range cfg.Servers {
 		servers[i] = downloader.NewServer(sc)
 	}
-	d := downloader.New(q, servers, downloader.Options{})
+	d := downloader.New(q, servers, downloader.Options{}, log)
 
 	fileComplete := make(chan FileComplete, 64)
+	internalFileComplete := make(chan FileComplete, 64)
 
 	p := &pipeline{
-		queue:       q,
-		completions: d.Completions(),
-		downloadDir: cfg.DownloadDir,
-		updateCh:    make(chan (<-chan *downloader.ArticleResult), 1),
-		fileInfo:    make(map[fileKey]assembler.FileInfo),
+		log:          log.With("component", "pipeline"),
+		queue:        q,
+		completions:  d.Completions(),
+		downloadDir:  cfg.DownloadDir,
+		fileComplete: internalFileComplete,
+		updateCh:     make(chan (<-chan *downloader.ArticleResult), 1),
+		fileInfo:     make(map[fileKey]assembler.FileInfo),
 	}
 
-	a := assembler.New(assembler.Options{
+	asm := assembler.New(assembler.Options{
 		FileInfo: p.resolveFileInfo,
 		OnFileComplete: func(jobID string, fileIdx int) {
+			fc := FileComplete{JobID: jobID, FileIdx: fileIdx}
+			// Send to external subscribers
 			select {
-			case fileComplete <- FileComplete{JobID: jobID, FileIdx: fileIdx}:
+			case fileComplete <- fc:
 			default:
-				// Channel full — drop the notification. Consumers that
-				// care about every completion should drain fileComplete
-				// faster than the assembler can produce completions.
+			}
+			// Send to internal pipeline for queue state update
+			select {
+			case internalFileComplete <- fc:
+			default:
 			}
 		},
-	})
-	p.assembler = a
+	}, log)
+	p.assembler = asm
 
-	return &Application{
-		cfg:          cfg,
-		queue:        q,
-		cache:        c,
-		downloader:   d,
-		assembler:    a,
-		pipeline:     p,
-		fileComplete: fileComplete,
-	}, nil
+	app.queue = q
+	app.cache = c
+	app.downloader = d
+	app.assembler = asm
+	app.pipeline = p
+	app.fileComplete = fileComplete
+	return app, nil
+}
+
+// WithLogger sets the logger for the Application and all its subsystems.
+func WithLogger(log *slog.Logger) func(*Application) {
+	return func(a *Application) { a.log = log }
 }
 
 // Queue returns the queue singleton. Callers add jobs via Queue().Add(job).
@@ -167,6 +185,7 @@ func (app *Application) Start(ctx context.Context) error {
 		app.pipeline.run(app.ctx)
 	}()
 
+	app.log.Info("application started", "download_dir", app.cfg.DownloadDir)
 	return nil
 }
 
@@ -226,8 +245,7 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	for i, sc := range scs {
 		servers[i] = downloader.NewServer(sc)
 	}
-	// Use default options for now.
-	newDownloader := downloader.New(app.queue, servers, downloader.Options{})
+	newDownloader := downloader.New(app.queue, servers, downloader.Options{}, app.log)
 
 	// 3. Start the new downloader.
 	if err := newDownloader.Start(app.ctx); err != nil {
