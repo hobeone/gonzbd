@@ -15,7 +15,7 @@ func TestHandler(t *testing.T) {
 		}
 	}()
 
-	handler := Handler()
+	handler := Handler("test-api-key")
 	if handler == nil {
 		t.Fatal("Handler() returned nil")
 	}

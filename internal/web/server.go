@@ -14,12 +14,12 @@ import (
 // Vite-built ui/dist directory embedded in the project.
 //
 // The handler is stateless and safe to serve concurrently.
-func Handler() http.Handler {
+func Handler(apiKey string) http.Handler {
 	dist, err := fs.Sub(ui.DistFS, "dist")
 	if err != nil {
 		// Can only happen if the build process didn't run 'npm run build'
 		// and the ui/dist folder is missing.
 		panic("web: embedded ui/dist subtree missing — run 'cd ui && npm run build' first: " + err.Error())
 	}
-	return NewSPAHandler(dist)
+	return NewSPAHandler(dist, apiKey)
 }

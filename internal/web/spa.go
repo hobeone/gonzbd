@@ -12,12 +12,22 @@ import (
 // Static files that exist in the FS are served directly. Any path that
 // does not match a real file is served as index.html so that the SPA's
 // client-side router can handle it.
-func NewSPAHandler(dist fs.FS) http.Handler {
+//
+// When the root "/" is requested, it sets a "sab_apikey" cookie so the
+// client-side JS can hit the /api without needing an explicit key.
+func NewSPAHandler(dist fs.FS, apiKey string) http.Handler {
 	fileServer := http.FileServerFS(dist)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if path == "/" {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "sab_apikey",
+				Value:    apiKey,
+				Path:     "/",
+				HttpOnly: false, // JS might need to read it (though backend uses it)
+				SameSite: http.SameSiteLaxMode,
+			})
 			fileServer.ServeHTTP(w, r)
 			return
 		}
