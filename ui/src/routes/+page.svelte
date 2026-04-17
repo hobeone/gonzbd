@@ -5,18 +5,20 @@
 	import Navbar from '$lib/components/Navbar.svelte';
 	import QueueTable from '$lib/components/QueueTable.svelte';
 	import HistoryTable from '$lib/components/HistoryTable.svelte';
+	import WarningsPanel from '$lib/components/WarningsPanel.svelte';
 	import StatusBar from '$lib/components/StatusBar.svelte';
+	import Toast from '$lib/components/Toast.svelte';
 	import { Tabs } from 'bits-ui';
 	import { Badge } from '$lib/components/ui/badge';
 	import { onMount, onDestroy } from 'svelte';
 	import { startPolling, stopPolling, isPaused, getSpeedBytesPerSec, formatSpeed } from '$lib/stores/queue.svelte';
 	import { startHistoryPolling, stopHistoryPolling } from '$lib/stores/history.svelte';
+	import { startWarningsPolling, stopWarningsPolling, getWarningCount } from '$lib/stores/warnings.svelte';
 
 	let keyInput = $state('');
 	let connectionStatus = $state<string | null>(null);
 	let connecting = $state(false);
 	let activeTab = $state('queue');
-	let warningCount = $state(0);
 
 	async function connect() {
 		const key = keyInput.trim();
@@ -28,6 +30,7 @@
 			setApiKey(key);
 			startPolling();
 			startHistoryPolling();
+			startWarningsPolling();
 		} catch (e) {
 			connectionStatus = `Failed: ${e instanceof Error ? e.message : String(e)}`;
 		} finally {
@@ -39,12 +42,14 @@
 		if (hasApiKey()) {
 			startPolling();
 			startHistoryPolling();
+			startWarningsPolling();
 		}
 	});
 
 	onDestroy(() => {
 		stopPolling();
 		stopHistoryPolling();
+		stopWarningsPolling();
 	});
 </script>
 
@@ -76,7 +81,7 @@
 		<Navbar paused={isPaused()} speed={formatSpeed(getSpeedBytesPerSec())} onpausetoggle={() => {}} />
 		<StatusBar />
 
-		<div class="mx-auto w-full max-w-7xl px-4 pt-4">
+		<div class="mx-auto w-full max-w-7xl flex-1 px-4 pt-4">
 			<Tabs.Root bind:value={activeTab}>
 				<Tabs.List class="mb-4 flex gap-1 border-b">
 					<Tabs.Trigger
@@ -96,9 +101,9 @@
 						class="relative border-b-2 px-4 py-2 text-sm font-medium transition-colors data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 data-[state=inactive]:border-transparent data-[state=inactive]:text-gray-500 data-[state=inactive]:hover:text-gray-700"
 					>
 						Warnings
-						{#if warningCount > 0}
+						{#if getWarningCount() > 0}
 							<Badge variant="destructive" class="ml-1.5 px-1.5 py-0 text-xs">
-								{warningCount}
+								{getWarningCount()}
 							</Badge>
 						{/if}
 					</Tabs.Trigger>
@@ -113,11 +118,11 @@
 				</Tabs.Content>
 
 				<Tabs.Content value="warnings">
-					<div class="rounded-lg border bg-white p-8 text-center text-gray-500">
-						Warnings panel — Step 13.8
-					</div>
+					<WarningsPanel />
 				</Tabs.Content>
 			</Tabs.Root>
 		</div>
 	</div>
+
+	<Toast />
 {/if}
