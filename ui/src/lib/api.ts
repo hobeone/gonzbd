@@ -60,7 +60,18 @@ export async function setConfig(
 	keyword: string,
 	value: string | number | boolean
 ): Promise<StatusResponse> {
-	return fetchJSON<StatusResponse>(apiUrl('set_config', { section, keyword, value: String(value) }));
+	const form = new FormData();
+	form.append('mode', 'set_config');
+	form.append('output', 'json');
+	form.append('section', section);
+	form.append('keyword', keyword);
+	form.append('value', String(value));
+
+	const res = await fetch(API_BASE, { method: 'POST', body: form });
+	if (!res.ok) {
+		throw new Error(`Set Config ${res.status}: ${res.statusText}`);
+	}
+	return res.json() as Promise<StatusResponse>;
 }
 
 export async function postAction(

@@ -61,8 +61,11 @@ func findFieldByTag(v reflect.Value, tagValue string) reflect.Value {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		tag := field.Tag.Get("yaml")
-		// Split tag into comma-separated parts (e.g. "my_key,omitempty")
+		// Check json tag first, then fallback to yaml
+		tag := field.Tag.Get("json")
+		if tag == "" {
+			tag = field.Tag.Get("yaml")
+		}
 		parts := strings.Split(tag, ",")
 		if parts[0] == tagValue {
 			return v.Field(i)
@@ -76,25 +79,34 @@ func setFieldValue(f reflect.Value, val string) error {
 		return fmt.Errorf("field cannot be set")
 	}
 
-	switch f.Kind() {
-	case reflect.String:
+	// Handle custom types that wrap int/int64
+	kind := f.Kind()
+	type_ := f.Type().String()
+
+	switch {
+	case kind == reflect.String:
 		f.SetString(val)
-	case reflect.Int:
+	case kind == reflect.Int || type_ == "config.Percent":
 		i, err := strconv.Atoi(val)
 		if err != nil {
 			return fmt.Errorf("invalid integer: %w", err)
 		}
 		f.SetInt(int64(i))
-	case reflect.Bool:
+	case kind == reflect.Int64 || type_ == "config.ByteSize":
+		// ByteSize might be sent as a raw byte count (int)
+		i, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid int64: %w", err)
+		}
+		f.SetInt(i)
+	case kind == reflect.Bool:
 		b, err := strconv.ParseBool(val)
 		if err != nil {
 			return fmt.Errorf("invalid boolean: %w", err)
 		}
 		f.SetBool(b)
 	default:
-		// Handle custom types (ByteSize, Percent) via their underlying types
-		// for now, or add explicit support if Kind() is not Int/String.
-		return fmt.Errorf("unsupported field type: %v", f.Kind())
+		return fmt.Errorf("unsupported field type: %v (%s)", kind, type_)
 	}
 	return nil
 }
