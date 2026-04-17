@@ -7,6 +7,11 @@
 coverage.txt
 coverage.html
 
+# SPA build output (embedded by Go at build time)
+ui/dist/
+ui/.svelte-kit/
+ui/node_modules/
+
 # Editor / OS metadata
 .idea/
 .vscode/
