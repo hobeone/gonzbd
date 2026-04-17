@@ -104,14 +104,41 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		//nolint:gosec // G706: slog structured fields are not vulnerable to log injection
-		slog.Info("api",
+
+		mode := r.FormValue("mode")   //nolint:gosec // G120: body already limited above
+		action := r.FormValue("name") //nolint:gosec // G120: body already limited above
+
+		attrs := []any{
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", sw.status,
 			"duration", time.Since(start),
-		)
+		}
+		if mode != "" {
+			attrs = append(attrs, "mode", mode)
+		}
+		if action != "" {
+			attrs = append(attrs, "action", action)
+		}
+		if r.URL.RawQuery != "" {
+			attrs = append(attrs, "query", sanitizeQuery(r.URL.RawQuery))
+		}
+		//nolint:gosec // G706: slog structured fields are not vulnerable to log injection
+		slog.Info("api", attrs...)
 	})
+}
+
+// sanitizeQuery redacts apikey/nzbkey values from the query string so they
+// don't leak into logs. Other parameters are preserved for debugging.
+func sanitizeQuery(raw string) string {
+	parts := strings.Split(raw, "&")
+	for i, p := range parts {
+		if strings.HasPrefix(p, "apikey=") || strings.HasPrefix(p, "nzbkey=") {
+			eq := strings.IndexByte(p, '=')
+			parts[i] = p[:eq+1] + "***"
+		}
+	}
+	return strings.Join(parts, "&")
 }
 
 // statusWriter wraps ResponseWriter to capture the status code for logging.

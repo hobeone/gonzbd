@@ -39,13 +39,13 @@ func TestModeGetConfig_Default(t *testing.T) {
 	}
 }
 
-func TestModeSetConfig_NotImplemented(t *testing.T) {
+func TestModeSetConfig_NoConfigWired(t *testing.T) {
 	t.Parallel()
 	s := testServer()
 
 	rr := apiGet(t, s.Handler(), "/api?mode=set_config&apikey="+testAPIKey)
-	if rr.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d; want 501", rr.Code)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500 (config not wired)", rr.Code)
 	}
 
 	m := decodeJSON(t, rr)
