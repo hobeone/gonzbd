@@ -18,7 +18,7 @@ func testSPAFS() fstest.MapFS {
 }
 
 func TestNewSPAHandler_RootServesIndexHTML(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS())
+	handler := NewSPAHandler(testSPAFS(), "test-key")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 
@@ -31,7 +31,7 @@ func TestNewSPAHandler_RootServesIndexHTML(t *testing.T) {
 }
 
 func TestNewSPAHandler_StaticFileServedDirectly(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS())
+	handler := NewSPAHandler(testSPAFS(), "test-key")
 
 	tests := []struct {
 		path       string
@@ -57,7 +57,7 @@ func TestNewSPAHandler_StaticFileServedDirectly(t *testing.T) {
 }
 
 func TestNewSPAHandler_UnknownPathFallsBackToIndex(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS())
+	handler := NewSPAHandler(testSPAFS(), "test-key")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/some/deep/route", nil))
 

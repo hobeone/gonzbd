@@ -252,7 +252,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, 
 
 	httpSrv := &http.Server{
 		Addr:              listen,
-		Handler:           composeRouter(apiSrv, web.Handler()),
+		Handler:           composeRouter(apiSrv, web.Handler(cfg.General.APIKey)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errCh := make(chan error, 1)

@@ -62,11 +62,18 @@ func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
 //  1. ?apikey= query parameter
 //  2. POST form field "apikey"
 //  3. X-API-Key header
+//  4. "sab_apikey" cookie (set by the SPA handler)
 func apiKeyFromRequest(r *http.Request) string {
 	if k := r.FormValue("apikey"); k != "" {
 		return k
 	}
-	return r.Header.Get("X-API-Key")
+	if k := r.Header.Get("X-API-Key"); k != "" {
+		return k
+	}
+	if c, err := r.Cookie("sab_apikey"); err == nil {
+		return c.Value
+	}
+	return ""
 }
 
 // isLocalhost returns true if the request originates from a loopback
