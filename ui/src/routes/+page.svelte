@@ -1,38 +1,50 @@
 <script lang="ts">
 	import { getApiKey, setApiKey, hasApiKey } from '$lib/stores/apikey.svelte';
-	import { fetchVersion } from '$lib/api';
+	import { fetchVersion, fetchQueue } from '$lib/api';
 	import { Button } from '$lib/components/ui/button';
+	import Navbar from '$lib/components/Navbar.svelte';
+	import { Tabs } from 'bits-ui';
+	import { Badge } from '$lib/components/ui/badge';
+	import { onMount } from 'svelte';
 
 	let keyInput = $state('');
 	let connectionStatus = $state<string | null>(null);
 	let connecting = $state(false);
+	let paused = $state(false);
+	let activeTab = $state('queue');
+	let warningCount = $state(0);
 
 	async function connect() {
 		const key = keyInput.trim();
 		if (!key) return;
-
 		connecting = true;
 		connectionStatus = null;
 		try {
-			const res = await fetchVersion(key);
+			await fetchVersion(key);
 			setApiKey(key);
-			connectionStatus = `Connected — v${res.version}`;
 		} catch (e) {
-			connectionStatus = `Connection failed: ${e instanceof Error ? e.message : String(e)}`;
+			connectionStatus = `Failed: ${e instanceof Error ? e.message : String(e)}`;
 		} finally {
 			connecting = false;
 		}
 	}
+
+	async function refreshStatus() {
+		if (!hasApiKey()) return;
+		try {
+			const res = await fetchQueue(getApiKey());
+			paused = res.queue.paused;
+		} catch {
+			// polling failure — silent until error boundary in 13.11
+		}
+	}
+
+	onMount(() => {
+		if (hasApiKey()) refreshStatus();
+	});
 </script>
 
-{#if hasApiKey()}
-	<main class="flex min-h-screen items-center justify-center bg-gray-50">
-		<div class="text-center">
-			<h1 class="text-4xl font-bold text-gray-900">SABnzbd-Go</h1>
-			<p class="mt-2 text-gray-600">Connected</p>
-		</div>
-	</main>
-{:else}
+{#if !hasApiKey()}
 	<main class="flex min-h-screen items-center justify-center bg-gray-50">
 		<div class="w-full max-w-sm space-y-4 rounded-lg border bg-white p-6 shadow-sm">
 			<h1 class="text-2xl font-bold text-gray-900">SABnzbd-Go</h1>
@@ -48,13 +60,63 @@
 				onkeydown={(e) => e.key === 'Enter' && connect()}
 			/>
 			{#if connectionStatus}
-				<p class="text-sm {connectionStatus.startsWith('Connected') ? 'text-green-600' : 'text-red-600'}">
-					{connectionStatus}
-				</p>
+				<p class="text-sm text-red-600">{connectionStatus}</p>
 			{/if}
 			<Button onclick={connect} disabled={connecting || !keyInput.trim()} class="w-full">
 				{connecting ? 'Connecting...' : 'Connect'}
 			</Button>
 		</div>
 	</main>
+{:else}
+	<div class="flex min-h-screen flex-col bg-gray-50">
+		<Navbar {paused} onpausetoggle={refreshStatus} />
+
+		<div class="mx-auto w-full max-w-7xl px-4 pt-4">
+			<Tabs.Root bind:value={activeTab}>
+				<Tabs.List class="mb-4 flex gap-1 border-b">
+					<Tabs.Trigger
+						value="queue"
+						class="border-b-2 px-4 py-2 text-sm font-medium transition-colors data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 data-[state=inactive]:border-transparent data-[state=inactive]:text-gray-500 data-[state=inactive]:hover:text-gray-700"
+					>
+						Queue
+					</Tabs.Trigger>
+					<Tabs.Trigger
+						value="history"
+						class="border-b-2 px-4 py-2 text-sm font-medium transition-colors data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 data-[state=inactive]:border-transparent data-[state=inactive]:text-gray-500 data-[state=inactive]:hover:text-gray-700"
+					>
+						History
+					</Tabs.Trigger>
+					<Tabs.Trigger
+						value="warnings"
+						class="relative border-b-2 px-4 py-2 text-sm font-medium transition-colors data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 data-[state=inactive]:border-transparent data-[state=inactive]:text-gray-500 data-[state=inactive]:hover:text-gray-700"
+					>
+						Warnings
+						{#if warningCount > 0}
+							<Badge variant="destructive" class="ml-1.5 px-1.5 py-0 text-xs">
+								{warningCount}
+							</Badge>
+						{/if}
+					</Tabs.Trigger>
+				</Tabs.List>
+
+				<Tabs.Content value="queue">
+					<div class="rounded-lg border bg-white p-8 text-center text-gray-500">
+						Queue table — Step 13.4
+					</div>
+				</Tabs.Content>
+
+				<Tabs.Content value="history">
+					<div class="rounded-lg border bg-white p-8 text-center text-gray-500">
+						History table — Step 13.5
+					</div>
+				</Tabs.Content>
+
+				<Tabs.Content value="warnings">
+					<div class="rounded-lg border bg-white p-8 text-center text-gray-500">
+						Warnings panel — Step 13.8
+					</div>
+				</Tabs.Content>
+			</Tabs.Root>
+		</div>
+	</div>
 {/if}
