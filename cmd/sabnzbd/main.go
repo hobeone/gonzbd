@@ -13,6 +13,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -36,6 +37,7 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/scheduler"
 	"github.com/hobeone/sabnzbd-go/internal/urlgrabber"
 	"github.com/hobeone/sabnzbd-go/internal/web"
+	sabnzbdui "github.com/hobeone/sabnzbd-go/ui"
 )
 
 // Version is the build version of the sabnzbd binary. Overridden at build
@@ -250,7 +252,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, 
 
 	httpSrv := &http.Server{
 		Addr:              listen,
-		Handler:           composeRouter(apiSrv, web.Handler()),
+		Handler:           composeRouter(apiSrv, spaHandler()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -385,6 +387,15 @@ func startRSSScanner(ctx context.Context, cfg *config.Config, adminDir string, g
 	}()
 	slog.Info("rss scanner started", "feeds", len(feeds))
 	return nil
+}
+
+// spaHandler builds the SPA web handler from the embedded ui/dist assets.
+func spaHandler() http.Handler {
+	dist, err := fs.Sub(sabnzbdui.DistFS, "dist")
+	if err != nil {
+		panic("ui: embedded dist/ subtree missing — run 'cd ui && npm run build' first: " + err.Error())
+	}
+	return web.NewSPAHandler(dist)
 }
 
 // composeRouter produces the outer HTTP handler that routes /api requests
