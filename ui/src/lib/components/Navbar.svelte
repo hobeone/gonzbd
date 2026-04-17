@@ -2,6 +2,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { postAction } from '$lib/api';
 	import { getApiKey } from '$lib/stores/apikey.svelte';
+	import AddNzbDialog from './AddNzbDialog.svelte';
 
 	let {
 		paused = false,
@@ -14,6 +15,7 @@
 	} = $props();
 
 	let toggling = $state(false);
+	let addDialogOpen = $state(false);
 
 	async function togglePause() {
 		toggling = true;
@@ -61,9 +63,11 @@
 			variant="outline"
 			size="sm"
 			class="border-gray-700 text-white hover:bg-gray-800"
-			disabled
+			onclick={() => (addDialogOpen = true)}
 		>
 			+ Add NZB
 		</Button>
 	</div>
 </nav>
+
+<AddNzbDialog bind:open={addDialogOpen} />
