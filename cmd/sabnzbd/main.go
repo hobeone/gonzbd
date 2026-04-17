@@ -242,6 +242,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, 
 		Config:     cfg,
 		ConfigPath: configPath,
 		Grabber:    grabber,
+		App:        application,
 	})
 
 	listen := listenOverride

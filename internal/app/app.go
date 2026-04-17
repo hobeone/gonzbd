@@ -61,6 +61,7 @@ type FileComplete struct {
 // shut down with Shutdown. Public methods are safe for concurrent use after
 // Start returns.
 type Application struct {
+	mu  sync.Mutex
 	cfg Config
 
 	queue        *queue.Queue
@@ -104,6 +105,7 @@ func New(cfg Config) (*Application, error) {
 		queue:       q,
 		completions: d.Completions(),
 		downloadDir: cfg.DownloadDir,
+		updateCh:    make(chan (<-chan *downloader.ArticleResult), 1),
 		fileInfo:    make(map[fileKey]assembler.FileInfo),
 	}
 
@@ -201,4 +203,40 @@ func (app *Application) Shutdown() error {
 		firstErr = fmt.Errorf("app: flush cache: %w", err)
 	}
 	return firstErr
+}
+
+// ReloadDownloader stops the current downloader and starts a new one with
+// updated server configurations. It re-plumbs the pipeline to use the new
+// downloader's completion channel.
+func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
+	if !app.started.Load() || app.stopped.Load() {
+		return errors.New("app: cannot reload downloader (not running)")
+	}
+
+	// 1. Stop the current downloader.
+	if err := app.downloader.Stop(); err != nil {
+		return fmt.Errorf("stop old downloader: %w", err)
+	}
+
+	// 2. Initialize the new downloader.
+	servers := make([]*downloader.Server, len(scs))
+	for i, sc := range scs {
+		servers[i] = downloader.NewServer(sc)
+	}
+	// Use default options for now.
+	newDownloader := downloader.New(app.queue, servers, downloader.Options{})
+
+	// 3. Start the new downloader.
+	if err := newDownloader.Start(app.ctx); err != nil {
+		return fmt.Errorf("start new downloader: %w", err)
+	}
+
+	// 4. Swap references and re-plumb.
+	app.downloader = newDownloader
+	app.pipeline.setCompletions(newDownloader.Completions())
+
+	return nil
 }

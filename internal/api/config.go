@@ -65,6 +65,21 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Hot-reload core components if their configuration changed.
+	if section == "servers" && s.app != nil {
+		if err := s.app.ReloadDownloader(s.config.Servers); err != nil {
+			s.log.Error("reload servers", "error", err)
+			// Return 200 because the config was saved, but add a warning.
+			respondJSON(w, http.StatusOK, map[string]any{
+				"status":  true,
+				"value":   value,
+				"warning": "config saved but server reload failed: " + err.Error(),
+			})
+			return
+		}
+		s.log.Info("nntp servers reloaded")
+	}
+
 	respondOK(w, "value", value)
 }
 

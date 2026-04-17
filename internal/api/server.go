@@ -43,6 +43,16 @@ type Options struct {
 
 	// Grabber fetches remote NZBs. When nil, mode=addurl returns 501.
 	Grabber *urlgrabber.Grabber
+
+	// App is the top-level application instance. Required for hot-reloading
+	// core components like the downloader.
+	App ApplicationReloader
+}
+
+// ApplicationReloader defines the subset of Application methods needed
+// by the API for hot-reloading.
+type ApplicationReloader interface {
+	ReloadDownloader(scs []config.ServerConfig) error
 }
 
 // Server is the HTTP API server. It owns a net/http.Server and the mode
@@ -58,6 +68,7 @@ type Server struct {
 	config     *config.Config
 	configPath string
 	grabber    *urlgrabber.Grabber
+	app        ApplicationReloader
 
 	modes modeTable
 	mux   *http.ServeMux
@@ -81,6 +92,7 @@ func New(opts Options) *Server {
 		config:     opts.Config,
 		configPath: opts.ConfigPath,
 		grabber:    opts.Grabber,
+		app:        opts.App,
 		mux:        http.NewServeMux(),
 	}
 	s.registerModes()
