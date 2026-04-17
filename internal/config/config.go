@@ -12,14 +12,14 @@ import "sync"
 type Config struct {
 	mu sync.RWMutex
 
-	General    GeneralConfig    `yaml:"general"`
-	Downloads  DownloadConfig   `yaml:"downloads"`
-	PostProc   PostProcConfig   `yaml:"postproc"`
-	Servers    []ServerConfig   `yaml:"servers"`
-	Categories []CategoryConfig `yaml:"categories"`
-	Sorters    []SorterConfig   `yaml:"sorters,omitempty"`
-	Schedules  []ScheduleConfig `yaml:"schedules,omitempty"`
-	RSS        []RSSFeedConfig  `yaml:"rss,omitempty"`
+	General    GeneralConfig    `yaml:"general" json:"general"`
+	Downloads  DownloadConfig   `yaml:"downloads" json:"downloads"`
+	PostProc   PostProcConfig   `yaml:"postproc" json:"postproc"`
+	Servers    []ServerConfig   `yaml:"servers" json:"servers"`
+	Categories []CategoryConfig `yaml:"categories" json:"categories"`
+	Sorters    []SorterConfig   `yaml:"sorters,omitempty" json:"sorters,omitempty"`
+	Schedules  []ScheduleConfig `yaml:"schedules,omitempty" json:"schedules,omitempty"`
+	RSS        []RSSFeedConfig  `yaml:"rss,omitempty" json:"rss,omitempty"`
 }
 
 // WithRead invokes fn with a read lock held. The Config pointer passed to
