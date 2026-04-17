@@ -1,76 +1,64 @@
 import { fetchJSON, setConfig } from '$lib/api';
 
-interface ConfigState {
-	data: Record<string, any> | null;
-	loading: boolean;
-	error: string | null;
-	saving: boolean;
-}
-
-let config = $state<ConfigState>({
-	data: null,
-	loading: false,
-	error: null,
-	saving: false
-});
+let configData = $state<Record<string, any> | null>(null);
+let configLoading = $state(false);
+let configError = $state<string | null>(null);
+let configSaving = $state(false);
 
 export async function loadConfig() {
-	if (config.loading) return;
-	config.loading = true;
-	config.error = null;
+	if (configLoading) return;
+	configLoading = true;
+	configError = null;
 	try {
 		const data = await fetchJSON<any>('/api?mode=get_config&output=json');
-		config.data = data.config ?? data;
+		configData = data.config ?? data;
 	} catch (e) {
-		config.error = e instanceof Error ? e.message : String(e);
+		configError = e instanceof Error ? e.message : String(e);
 	} finally {
-		config.loading = false;
+		configLoading = false;
 	}
 }
 
 export function getConfig() {
-	return config.data;
+	return configData;
 }
 
 export function getConfigLoading() {
-	return config.loading;
+	return configLoading;
 }
 
 export function getConfigError() {
-	return config.error;
+	return configError;
 }
 
 export function isSaving() {
-	return config.saving;
+	return configSaving;
 }
 
 export async function updateField(section: string, keyword: string, value: string | number | boolean) {
-	if (!config.data) return;
+	if (!configData) return;
 
-	// Optimistic update for flat sections
 	let originalValue: any;
-	const isFlat = !Array.isArray(config.data[section]);
+	const isFlat = !Array.isArray(configData[section]);
 
 	if (isFlat) {
-		originalValue = config.data[section][keyword];
-		config.data[section][keyword] = value;
+		originalValue = configData[section][keyword];
+		configData[section][keyword] = value;
 	}
 
-	config.saving = true;
+	configSaving = true;
 
 	try {
 		await setConfig(section, keyword, value);
 		if (!isFlat) {
-			// For non-flat sections (like servers), reload to get the updated state
 			await loadConfig();
 		}
 	} catch (e) {
-		// Revert on failure
 		if (isFlat) {
-			config.data[section][keyword] = originalValue;
+			configData[section][keyword] = originalValue;
 		}
-		config.error = `Failed to save ${keyword || section}: ${e instanceof Error ? e.message : String(e)}`;
+		configError = `Failed to save ${keyword || section}: ${e instanceof Error ? e.message : String(e)}`;
 	} finally {
-		config.saving = false;
+		configSaving = false;
 	}
 }

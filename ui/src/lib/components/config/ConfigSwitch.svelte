@@ -1,23 +1,23 @@
 <script lang="ts">
-	import { updateField } from '$lib/stores/config.svelte';
-
 	let {
 		section,
 		keyword,
 		value,
 		label,
-		description
+		description,
+		onupdate
 	}: {
 		section: string;
 		keyword: string;
 		value: boolean;
 		label: string;
 		description?: string;
+		onupdate?: (section: string, keyword: string, value: boolean) => void;
 	} = $props();
 
 	function handleChange(e: Event) {
 		const checked = (e.target as HTMLInputElement).checked;
-		updateField(section, keyword, checked);
+		onupdate?.(section, keyword, checked);
 	}
 </script>
 

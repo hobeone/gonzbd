@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { Input } from '$lib/components/ui/input';
-	import { updateField } from '$lib/stores/config.svelte';
 
 	let {
 		section,
@@ -8,7 +7,8 @@
 		value,
 		label,
 		description,
-		type = 'text'
+		type = 'text',
+		onupdate
 	}: {
 		section: string;
 		keyword: string;
@@ -16,13 +16,12 @@
 		label: string;
 		description?: string;
 		type?: 'text' | 'number' | 'password';
+		onupdate?: (section: string, keyword: string, value: string | number) => void;
 	} = $props();
 
 	let currentValue = $state<string | number>('');
 	let timer: ReturnType<typeof setTimeout>;
 
-	// When the prop 'value' changes from above (e.g. on load or revert), 
-	// update our local draft value.
 	$effect(() => {
 		if (value !== currentValue && !timer) {
 			currentValue = value;
@@ -33,9 +32,10 @@
 		clearTimeout(timer);
 		timer = setTimeout(() => {
 			if (currentValue !== value) {
-				updateField(section, keyword, type === 'number' ? Number(currentValue) : currentValue);
+				const v = type === 'number' ? Number(currentValue) : currentValue;
+				onupdate?.(section, keyword, v);
 			}
-		}, 500); // 500ms debounce
+		}, 500);
 	}
 </script>
 

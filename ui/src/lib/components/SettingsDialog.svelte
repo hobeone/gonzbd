@@ -3,7 +3,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
 	import { Badge } from '$lib/components/ui/badge';
-	import { loadConfig, getConfig, getConfigLoading, getConfigError, isSaving, updateField } from '$lib/stores/config.svelte';
+	import { setConfig, postAction } from '$lib/api';
 	import ConfigInput from './config/ConfigInput.svelte';
 	import ConfigSwitch from './config/ConfigSwitch.svelte';
 	import ServerEditDialog from './config/ServerEditDialog.svelte';
@@ -12,9 +12,13 @@
 	import ScheduleEditDialog from './config/ScheduleEditDialog.svelte';
 	import RSSEditDialog from './config/RSSEditDialog.svelte';
 	import type { ServerConfig, CategoryConfig, SorterConfig, ScheduleConfig, RSSFeedConfig } from '$lib/types';
-	import { postAction } from '$lib/api';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
+
+	let configData = $state<Record<string, any> | null>(null);
+	let loading = $state(false);
+	let saving = $state(false);
+	let error = $state<string | null>(null);
 
 	let activeSection = $state('general');
 	let serverEditOpen = $state(false);
@@ -43,126 +47,147 @@
 		{ id: 'scheduling', label: 'Scheduling' }
 	];
 
-	async function handleOpenChange(o: boolean) {
-		if (o) {
-			await loadConfig();
+	$effect(() => {
+		if (open && !configData && !loading) {
+			fetchConfig();
 		}
+	});
+
+	function fetchConfig() {
+		loading = true;
+		error = null;
+		fetch('/api?mode=get_config&output=json')
+			.then((res) => {
+				if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+				return res.json();
+			})
+			.then((data) => {
+				configData = data.config ?? data;
+			})
+			.catch((e) => {
+				error = e instanceof Error ? e.message : String(e);
+			})
+			.finally(() => {
+				loading = false;
+			});
 	}
 
-	async function saveServer(s: ServerConfig) {
-		const config = getConfig();
-		if (!config) return;
-
-		let newServers = [...config.servers];
-		const idx = newServers.findIndex((srv) => srv.name === s.name);
-		if (idx !== -1) {
-			newServers[idx] = s;
-		} else {
-			newServers.push(s);
-		}
-
-		// Update the whole servers array
-		await updateField('servers', '', JSON.stringify(newServers));
+	function reloadConfig() {
+		configData = null;
+		fetchConfig();
 	}
 
-	async function deleteServer(name: string) {
-		const config = getConfig();
-		if (!config || !confirm(`Delete server "${name}"?`)) return;
-
-		const newServers = config.servers.filter((s: ServerConfig) => s.name !== name);
-		await updateField('servers', '', JSON.stringify(newServers));
+	function handleFieldUpdate(section: string, keyword: string, value: string | number | boolean) {
+		if (!configData) return;
+		const original = configData[section]?.[keyword];
+		configData[section][keyword] = value;
+		saving = true;
+		setConfig(section, keyword, value)
+			.catch((e) => {
+				if (configData) configData[section][keyword] = original;
+				error = `Failed to save ${keyword}: ${e instanceof Error ? e.message : String(e)}`;
+			})
+			.finally(() => {
+				saving = false;
+			});
 	}
 
-	async function saveCategory(c: CategoryConfig) {
-		const config = getConfig();
-		if (!config) return;
-
-		let newCats = [...config.categories];
-		const idx = newCats.findIndex((cat) => cat.name === c.name);
-		if (idx !== -1) {
-			newCats[idx] = c;
-		} else {
-			newCats.push(c);
-		}
-
-		await updateField('categories', '', JSON.stringify(newCats));
+	function saveServer(s: ServerConfig) {
+		if (!configData) return;
+		const servers = [...(configData.servers ?? [])];
+		const idx = servers.findIndex((srv: ServerConfig) => srv.name === s.name);
+		if (idx !== -1) servers[idx] = s;
+		else servers.push(s);
+		configData = { ...configData, servers };
+		persistAndReload('servers', servers);
 	}
 
-	async function deleteCategory(name: string) {
-		const config = getConfig();
-		if (!config || !confirm(`Delete category "${name}"?`)) return;
-
-		const newCats = config.categories.filter((c: CategoryConfig) => c.name !== name);
-		await updateField('categories', '', JSON.stringify(newCats));
+	function deleteServer(name: string) {
+		if (!configData || !confirm(`Delete server "${name}"?`)) return;
+		const servers = configData.servers.filter((s: ServerConfig) => s.name !== name);
+		configData = { ...configData, servers };
+		persistAndReload('servers', servers);
 	}
 
-	async function saveSorter(s: SorterConfig) {
-		const config = getConfig();
-		if (!config) return;
-
-		let newSorters = [...config.sorters];
-		const idx = newSorters.findIndex((srv) => srv.name === s.name);
-		if (idx !== -1) {
-			newSorters[idx] = s;
-		} else {
-			newSorters.push(s);
-		}
-
-		await updateField('sorters', '', JSON.stringify(newSorters));
+	function saveCategory(c: CategoryConfig) {
+		if (!configData) return;
+		const categories = [...(configData.categories ?? [])];
+		const idx = categories.findIndex((cat: CategoryConfig) => cat.name === c.name);
+		if (idx !== -1) categories[idx] = c;
+		else categories.push(c);
+		configData = { ...configData, categories };
+		persistAndReload('categories', categories);
 	}
 
-	async function deleteSorter(name: string) {
-		const config = getConfig();
-		if (!config || !confirm(`Delete sorter "${name}"?`)) return;
-
-		const newSorters = config.sorters.filter((s: SorterConfig) => s.name !== name);
-		await updateField('sorters', '', JSON.stringify(newSorters));
+	function deleteCategory(name: string) {
+		if (!configData || !confirm(`Delete category "${name}"?`)) return;
+		const categories = configData.categories.filter((c: CategoryConfig) => c.name !== name);
+		configData = { ...configData, categories };
+		persistAndReload('categories', categories);
 	}
 
-	async function saveSchedule(s: ScheduleConfig) {
-		const config = getConfig();
-		if (!config) return;
-
-		let newScheds = [...config.schedules];
-		const idx = newScheds.findIndex((sched) => sched.name === s.name);
-		if (idx !== -1) {
-			newScheds[idx] = s;
-		} else {
-			newScheds.push(s);
-		}
-
-		await updateField('schedules', '', JSON.stringify(newScheds));
+	function saveSorter(s: SorterConfig) {
+		if (!configData) return;
+		const sorters = [...(configData.sorters ?? [])];
+		const idx = sorters.findIndex((srv: SorterConfig) => srv.name === s.name);
+		if (idx !== -1) sorters[idx] = s;
+		else sorters.push(s);
+		configData = { ...configData, sorters };
+		persistAndReload('sorters', sorters);
 	}
 
-	async function deleteSchedule(name: string) {
-		const config = getConfig();
-		if (!config || !confirm(`Delete schedule "${name}"?`)) return;
-
-		const newScheds = config.schedules.filter((s: ScheduleConfig) => s.name !== name);
-		await updateField('schedules', '', JSON.stringify(newScheds));
+	function deleteSorter(name: string) {
+		if (!configData || !confirm(`Delete sorter "${name}"?`)) return;
+		const sorters = configData.sorters.filter((s: SorterConfig) => s.name !== name);
+		configData = { ...configData, sorters };
+		persistAndReload('sorters', sorters);
 	}
 
-	async function saveRSSFeed(f: RSSFeedConfig) {
-		const config = getConfig();
-		if (!config) return;
-
-		let newFeeds = [...config.rss];
-		const idx = newFeeds.findIndex((feed) => feed.name === f.name);
-		if (idx !== -1) {
-			newFeeds[idx] = f;
-		} else {
-			newFeeds.push(f);
-		}
-
-		await updateField('rss', '', JSON.stringify(newFeeds));
+	function saveSchedule(s: ScheduleConfig) {
+		if (!configData) return;
+		const schedules = [...(configData.schedules ?? [])];
+		const idx = schedules.findIndex((sched: ScheduleConfig) => sched.name === s.name);
+		if (idx !== -1) schedules[idx] = s;
+		else schedules.push(s);
+		configData = { ...configData, schedules };
+		persistAndReload('schedules', schedules);
 	}
 
-	async function deleteRSSFeed(name: string) {
-		const config = getConfig();
-		if (!config || !confirm(`Delete RSS feed "${name}"?`)) return;
+	function deleteSchedule(name: string) {
+		if (!configData || !confirm(`Delete schedule "${name}"?`)) return;
+		const schedules = configData.schedules.filter((s: ScheduleConfig) => s.name !== name);
+		configData = { ...configData, schedules };
+		persistAndReload('schedules', schedules);
+	}
 
-		const newFeeds = config.rss.filter((f: RSSFeedConfig) => f.name !== name);
-		await updateField('rss', '', JSON.stringify(newFeeds));
+	function saveRSSFeed(f: RSSFeedConfig) {
+		if (!configData) return;
+		const rss = [...(configData.rss ?? [])];
+		const idx = rss.findIndex((feed: RSSFeedConfig) => feed.name === f.name);
+		if (idx !== -1) rss[idx] = f;
+		else rss.push(f);
+		configData = { ...configData, rss };
+		persistAndReload('rss', rss);
+	}
+
+	function deleteRSSFeed(name: string) {
+		if (!configData || !confirm(`Delete RSS feed "${name}"?`)) return;
+		const rss = configData.rss.filter((f: RSSFeedConfig) => f.name !== name);
+		configData = { ...configData, rss };
+		persistAndReload('rss', rss);
+	}
+
+	function persistAndReload(section: string, items: any[]) {
+		saving = true;
+		setConfig(section, '', JSON.stringify(items))
+			.then(() => reloadConfig())
+			.catch((e) => {
+				error = `Failed to save ${section}: ${e instanceof Error ? e.message : String(e)}`;
+				reloadConfig();
+			})
+			.finally(() => {
+				saving = false;
+			});
 	}
 
 	async function testServer(s: ServerConfig) {
@@ -183,7 +208,7 @@
 	}
 </script>
 
-<Dialog.Root bind:open onOpenChange={handleOpenChange}>
+<Dialog.Root bind:open>
 	<Dialog.Portal>
 		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50" />
 		<Dialog.Content class="fixed left-1/2 top-1/2 z-50 flex h-[85vh] w-full max-w-4xl -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border bg-white shadow-lg">
@@ -206,17 +231,15 @@
 			<!-- Main Content -->
 			<div class="flex flex-1 flex-col overflow-hidden">
 				<div class="flex-1 overflow-y-auto p-8">
-					{#if getConfigLoading()}
+					{#if loading}
 						<div class="flex h-32 items-center justify-center text-sm text-gray-500">
 							Loading configuration...
 						</div>
-					{:else if getConfigError()}
+					{:else if error}
 						<div class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-							{getConfigError()}
+							{error}
 						</div>
-					{:else}
-						{@const configData = getConfig()}
-						{#if configData}
+					{:else if configData}
 							{#if activeSection === 'general'}
 								<section class="space-y-6">
 									<div>
@@ -225,13 +248,13 @@
 									</div>
 									<Separator />
 									<div class="divide-y divide-gray-100">
-										<ConfigInput section="general" keyword="host" label="Host" value={configData.general.host} description="Host or IP to bind the HTTP server to." />
-										<ConfigInput section="general" keyword="port" label="Port" type="number" value={configData.general.port} description="TCP port for the web interface." />
-										<ConfigInput section="general" keyword="api_key" label="API Key" value={configData.general.api_key} description="Full API authentication key." />
-										<ConfigInput section="general" keyword="nzb_key" label="NZB Key" value={configData.general.nzb_key} description="Key for NZB uploads only." />
-										<ConfigInput section="general" keyword="download_dir" label="Download Directory" value={configData.general.download_dir} description="Path for incomplete downloads." />
-										<ConfigInput section="general" keyword="complete_dir" label="Complete Directory" value={configData.general.complete_dir} description="Path for finished downloads." />
-										<ConfigInput section="general" keyword="log_level" label="Log Level" value={configData.general.log_level} description="Minimum level for logging (debug, info, warn, error)." />
+										<ConfigInput section="general" keyword="host" label="Host" value={configData.general.host} description="Host or IP to bind the HTTP server to." onupdate={handleFieldUpdate} />
+										<ConfigInput section="general" keyword="port" label="Port" type="number" value={configData.general.port} description="TCP port for the web interface." onupdate={handleFieldUpdate} />
+										<ConfigInput section="general" keyword="api_key" label="API Key" value={configData.general.api_key} description="Full API authentication key." onupdate={handleFieldUpdate} />
+										<ConfigInput section="general" keyword="nzb_key" label="NZB Key" value={configData.general.nzb_key} description="Key for NZB uploads only." onupdate={handleFieldUpdate} />
+										<ConfigInput section="general" keyword="download_dir" label="Download Directory" value={configData.general.download_dir} description="Path for incomplete downloads." onupdate={handleFieldUpdate} />
+										<ConfigInput section="general" keyword="complete_dir" label="Complete Directory" value={configData.general.complete_dir} description="Path for finished downloads." onupdate={handleFieldUpdate} />
+										<ConfigInput section="general" keyword="log_level" label="Log Level" value={configData.general.log_level} description="Minimum level for logging (debug, info, warn, error)." onupdate={handleFieldUpdate} />
 									</div>
 								</section>
 							{:else if activeSection === 'downloads'}
@@ -242,11 +265,11 @@
 									</div>
 									<Separator />
 									<div class="divide-y divide-gray-100">
-										<ConfigInput section="downloads" keyword="bandwidth_max" label="Maximum Bandwidth" value={configData.downloads.bandwidth_max} description="Absolute ceiling (e.g. 10M, 500K)." />
-										<ConfigInput section="downloads" keyword="min_free_space" label="Minimum Free Space" value={configData.downloads.min_free_space} description="Pause download if disk space drops below this (e.g. 1G)." />
-										<ConfigInput section="downloads" keyword="article_cache_size" label="Article Cache" value={configData.downloads.article_cache_size} description="In-memory cache size (e.g. 500M)." />
-										<ConfigInput section="downloads" keyword="max_art_tries" label="Article Retries" type="number" value={configData.downloads.max_art_tries} description="Max attempts across all servers per article." />
-										<ConfigSwitch section="downloads" keyword="pre_check" label="Pre-check article availability" value={configData.downloads.pre_check} description="STAT check before download (saves bandwidth)." />
+										<ConfigInput section="downloads" keyword="bandwidth_max" label="Maximum Bandwidth" value={configData.downloads.bandwidth_max} description="Absolute ceiling (e.g. 10M, 500K)." onupdate={handleFieldUpdate} />
+										<ConfigInput section="downloads" keyword="min_free_space" label="Minimum Free Space" value={configData.downloads.min_free_space} description="Pause download if disk space drops below this (e.g. 1G)." onupdate={handleFieldUpdate} />
+										<ConfigInput section="downloads" keyword="article_cache_size" label="Article Cache" value={configData.downloads.article_cache_size} description="In-memory cache size (e.g. 500M)." onupdate={handleFieldUpdate} />
+										<ConfigInput section="downloads" keyword="max_art_tries" label="Article Retries" type="number" value={configData.downloads.max_art_tries} description="Max attempts across all servers per article." onupdate={handleFieldUpdate} />
+										<ConfigSwitch section="downloads" keyword="pre_check" label="Pre-check article availability" value={configData.downloads.pre_check} description="STAT check before download (saves bandwidth)." onupdate={handleFieldUpdate} />
 									</div>
 								</section>
 							{:else if activeSection === 'postproc'}
@@ -257,12 +280,12 @@
 									</div>
 									<Separator />
 									<div class="divide-y divide-gray-100">
-										<ConfigSwitch section="postproc" keyword="enable_unrar" label="Enable RAR extraction" value={configData.postproc.enable_unrar} />
-										<ConfigSwitch section="postproc" keyword="enable_7zip" label="Enable 7-Zip extraction" value={configData.postproc.enable_7zip} />
-										<ConfigSwitch section="postproc" keyword="direct_unpack" label="Direct Unpack" value={configData.postproc.direct_unpack} description="Extract files while still downloading." />
-										<ConfigSwitch section="postproc" keyword="enable_par_cleanup" label="Cleanup par2 files" value={configData.postproc.enable_par_cleanup} description="Delete verification files after successful repair." />
-										<ConfigInput section="postproc" keyword="unrar_command" label="UnRAR path" value={configData.postproc.unrar_command} />
-										<ConfigInput section="postproc" keyword="par2_command" label="par2 path" value={configData.postproc.par2_command} />
+										<ConfigSwitch section="postproc" keyword="enable_unrar" label="Enable RAR extraction" value={configData.postproc.enable_unrar} onupdate={handleFieldUpdate} />
+										<ConfigSwitch section="postproc" keyword="enable_7zip" label="Enable 7-Zip extraction" value={configData.postproc.enable_7zip} onupdate={handleFieldUpdate} />
+										<ConfigSwitch section="postproc" keyword="direct_unpack" label="Direct Unpack" value={configData.postproc.direct_unpack} description="Extract files while still downloading." onupdate={handleFieldUpdate} />
+										<ConfigSwitch section="postproc" keyword="enable_par_cleanup" label="Cleanup par2 files" value={configData.postproc.enable_par_cleanup} description="Delete verification files after successful repair." onupdate={handleFieldUpdate} />
+										<ConfigInput section="postproc" keyword="unrar_command" label="UnRAR path" value={configData.postproc.unrar_command} onupdate={handleFieldUpdate} />
+										<ConfigInput section="postproc" keyword="par2_command" label="par2 path" value={configData.postproc.par2_command} onupdate={handleFieldUpdate} />
 										</div>
 										</section>
 						{:else if activeSection === 'servers'}
@@ -503,15 +526,13 @@
 								</div>
 							</section>
 						{/if}
-
-						{/if}
 					{/if}
 				</div>
 
 				<!-- Footer -->
 				<footer class="flex items-center justify-between border-t bg-gray-50 px-8 py-4">
 					<div class="text-xs text-muted-foreground">
-						{#if isSaving()}
+						{#if saving}
 							<span class="flex items-center gap-2">
 								<svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
 								Saving changes...
