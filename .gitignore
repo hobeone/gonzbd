@@ -1,6 +1,9 @@
 # Built binary
 /sabnzbd
 
+# default state directory
+/admin
+
 # Build / coverage artifacts
 *.test
 *.out
