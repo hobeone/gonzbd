@@ -311,26 +311,43 @@
 													<tr>
 														<th class="px-4 py-2">Name</th>
 														<th class="px-4 py-2">Host</th>
-														<th class="px-4 py-2">Priority</th>
+														<th class="px-4 py-2">User</th>
+														<th class="px-4 py-2 text-center">TLS</th>
+														<th class="px-4 py-2 text-center">Priority</th>
+														<th class="px-4 py-2 text-center">Status</th>
 														<th class="px-4 py-2 text-right">Actions</th>
 													</tr>
 												</thead>
 												<tbody class="divide-y">
 													{#each configData.servers as server}
-														<tr class={server.enable ? '' : 'opacity-50'}>
+														<tr class={server.enable ? '' : 'bg-gray-50/50'}>
 															<td class="px-4 py-3 font-medium">
 																{server.displayname || server.name}
-																{#if !server.enable}
-																	<Badge variant="outline" class="ml-2 scale-75">Disabled</Badge>
+															</td>
+															<td class="px-4 py-3 text-gray-600 whitespace-nowrap">{server.host}:{server.port}</td>
+															<td class="px-4 py-3 text-gray-600 truncate max-w-[100px]">{server.username || '—'}</td>
+															<td class="px-4 py-3 text-center">
+																{#if server.ssl}
+																	<Badge variant="outline" class="bg-blue-50 text-blue-700 border-blue-100 py-0 h-4 text-[10px]">SSL</Badge>
+																{:else}
+																	<span class="text-gray-300">—</span>
 																{/if}
 															</td>
-															<td class="px-4 py-3 text-gray-600">{server.host}:{server.port}</td>
-															<td class="px-4 py-3">{server.priority}</td>
+															<td class="px-4 py-3 text-center">
+																<Badge variant="secondary" class="font-mono py-0 h-4 text-[10px]">{server.priority}</Badge>
+															</td>
+															<td class="px-4 py-3 text-center">
+																{#if server.enable}
+																	<Badge class="bg-green-50 text-green-700 border-green-100 py-0 h-4 text-[10px]" variant="outline">Active</Badge>
+																{:else}
+																	<Badge variant="destructive" class="py-0 h-4 text-[10px] opacity-60">Off</Badge>
+																{/if}
+															</td>
 															<td class="px-4 py-3 text-right">
 																<div class="flex justify-end gap-1">
-																	<Button variant="ghost" size="xs" onclick={() => testServer(server)}>Test</Button>
-																	<Button variant="ghost" size="xs" onclick={() => { selectedServer = server; serverEditOpen = true; }}>Edit</Button>
-																	<Button variant="ghost" size="xs" class="text-red-600" onclick={() => deleteServer(server.name)}>Delete</Button>
+																	<Button variant="ghost" size="xs" onclick={() => testServer(server)} title="Test connection">Test</Button>
+																	<Button variant="ghost" size="xs" onclick={() => { selectedServer = server; serverEditOpen = true; }} title="Edit server">Edit</Button>
+																	<Button variant="ghost" size="xs" class="text-red-600" onclick={() => deleteServer(server.name)} title="Delete server">Delete</Button>
 																</div>
 															</td>
 														</tr>
