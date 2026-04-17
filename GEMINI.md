@@ -61,5 +61,16 @@ This file provides foundational context and instructional mandates for the `sabn
 - **API Handlers:** `internal/api/`
 - **Download Engine:** `internal/downloader/`
 - **Queue Logic:** `internal/queue/`
-- **Web UI Assets:** `web/` (Static) and `internal/web/templates/` (Go templates)
+- **Web UI (Svelte SPA):** `ui/` — Svelte 5 + TypeScript + Vite, embedded via `//go:embed all:dist` in `ui/embed.go`
+- **SPA Handler:** `internal/web/` — serves embedded dist with SPA catch-all fallback to index.html
 - **Configuration Schema:** `internal/config/`
+
+## Svelte 5 UI Gotchas
+
+These are hard-won lessons that **must** be followed when editing the Svelte SPA in `ui/`:
+
+1. **Do not use module-level `$state` in `.svelte.ts` stores for data that drives conditional rendering.** Mutations inside async functions in external store modules do not reliably trigger re-renders in consuming components. Instead, declare `$state` inside the component and use `.then()` chains for fetches. See `SettingsDialog.svelte` for the working pattern.
+
+2. **`bits-ui` Dialog `onOpenChange` does not fire when `bind:open` is set by the parent.** Use a `$effect` watching the `open` prop to trigger side effects (like data loading) when a dialog opens.
+
+3. **Child components (ConfigInput, ConfigSwitch) receive `onupdate` callbacks** instead of importing store functions directly. This keeps data flow explicit and avoids the store reactivity issue.
