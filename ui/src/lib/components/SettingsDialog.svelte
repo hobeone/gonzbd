@@ -309,42 +309,48 @@
 											<table class="w-full text-left text-sm">
 												<thead class="bg-gray-50 text-xs uppercase text-gray-500">
 													<tr>
-														<th class="px-4 py-2">Name</th>
-														<th class="px-4 py-2">Host</th>
-														<th class="px-4 py-2">User</th>
-														<th class="px-4 py-2 text-center">TLS</th>
-														<th class="px-4 py-2 text-center">Priority</th>
-														<th class="px-4 py-2 text-center">Status</th>
+														<th class="px-4 py-2">Server / Connection</th>
+														<th class="px-4 py-2">Details</th>
 														<th class="px-4 py-2 text-right">Actions</th>
 													</tr>
 												</thead>
 												<tbody class="divide-y">
 													{#each configData.servers as server}
-														<tr class={server.enable ? '' : 'bg-gray-50/50'}>
-															<td class="px-4 py-3 font-medium">
-																{server.displayname || server.name}
+														<tr class={server.enable ? 'hover:bg-gray-50' : 'bg-gray-50/50 grayscale-[0.5]'}>
+															<td class="px-4 py-3">
+																<div class="flex items-center gap-2 font-medium">
+																	{server.displayname || server.name}
+																	{#if !server.enable}
+																		<Badge variant="destructive" class="py-0 h-3.5 text-[9px] uppercase tracking-tighter opacity-70">Disabled</Badge>
+																	{/if}
+																</div>
+																<div class="mt-0.5 font-mono text-[11px] text-gray-500">
+																	{server.host}:{server.port}
+																	{#if server.ssl}
+																		<span class="ml-1.5 inline-flex items-center rounded bg-blue-50 px-1 py-0 text-[9px] font-bold text-blue-600 ring-1 ring-inset ring-blue-500/20">TLS</span>
+																	{/if}
+																</div>
 															</td>
-															<td class="px-4 py-3 text-gray-600 whitespace-nowrap">{server.host}:{server.port}</td>
-															<td class="px-4 py-3 text-gray-600 truncate max-w-[100px]">{server.username || '—'}</td>
-															<td class="px-4 py-3 text-center">
-																{#if server.ssl}
-																	<Badge variant="outline" class="bg-blue-50 text-blue-700 border-blue-100 py-0 h-4 text-[10px]">SSL</Badge>
-																{:else}
-																	<span class="text-gray-300">—</span>
-																{/if}
-															</td>
-															<td class="px-4 py-3 text-center">
-																<Badge variant="secondary" class="font-mono py-0 h-4 text-[10px]">{server.priority}</Badge>
-															</td>
-															<td class="px-4 py-3 text-center">
-																{#if server.enable}
-																	<Badge class="bg-green-50 text-green-700 border-green-100 py-0 h-4 text-[10px]" variant="outline">Active</Badge>
-																{:else}
-																	<Badge variant="destructive" class="py-0 h-4 text-[10px] opacity-60">Off</Badge>
-																{/if}
+															<td class="px-4 py-3">
+																<div class="flex items-center gap-3 text-[11px] text-gray-600">
+																	<div class="flex items-center gap-1">
+																		<span class="text-gray-400">User:</span>
+																		<span class="truncate max-w-[80px] font-medium">{server.username || 'anonymous'}</span>
+																	</div>
+																	<div class="h-3 w-px bg-gray-200"></div>
+																	<div class="flex items-center gap-1">
+																		<span class="text-gray-400">Priority:</span>
+																		<span class="font-bold">{server.priority}</span>
+																	</div>
+																	<div class="h-3 w-px bg-gray-200"></div>
+																	<div class="flex items-center gap-1">
+																		<span class="text-gray-400">Pool:</span>
+																		<span>{server.connections} conns</span>
+																	</div>
+																</div>
 															</td>
 															<td class="px-4 py-3 text-right">
-																<div class="flex justify-end gap-1">
+																<div class="flex justify-end gap-0.5">
 																	<Button variant="ghost" size="xs" onclick={() => testServer(server)} title="Test connection">Test</Button>
 																	<Button variant="ghost" size="xs" onclick={() => { selectedServer = server; serverEditOpen = true; }} title="Edit server">Edit</Button>
 																	<Button variant="ghost" size="xs" class="text-red-600" onclick={() => deleteServer(server.name)} title="Delete server">Delete</Button>
