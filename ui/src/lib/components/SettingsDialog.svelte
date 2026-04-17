@@ -1,8 +1,6 @@
 <script lang="ts">
 	import { Dialog } from 'bits-ui';
 	import { Button } from '$lib/components/ui/button';
-	import { getApiKey } from '$lib/stores/apikey.svelte';
-
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
 	let config = $state<Record<string, unknown> | null>(null);
@@ -13,7 +11,7 @@
 		loading = true;
 		error = null;
 		try {
-			const url = `/api?mode=get_config&apikey=${encodeURIComponent(getApiKey())}&output=json`;
+			const url = `/api?mode=get_config&output=json`;
 			const res = await fetch(url);
 			if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
 			const data = await res.json();

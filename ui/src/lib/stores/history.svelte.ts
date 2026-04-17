@@ -1,5 +1,4 @@
 import { fetchHistory, postAction } from '$lib/api';
-import { getApiKey, hasApiKey } from '$lib/stores/apikey.svelte';
 import type { HistoryDetail, HistorySlot } from '$lib/types';
 
 const POLL_INTERVAL = 5000;
@@ -9,9 +8,8 @@ let error = $state<string | null>(null);
 let timer: ReturnType<typeof setInterval> | null = null;
 
 async function poll() {
-	if (!hasApiKey()) return;
 	try {
-		const res = await fetchHistory(getApiKey(), 0, 50);
+		const res = await fetchHistory(0, 50);
 		history = res.history;
 		error = null;
 	} catch (e) {
@@ -45,12 +43,12 @@ export function getHistoryError(): string | null {
 }
 
 export async function deleteHistoryItem(nzoId: string) {
-	await postAction(getApiKey(), 'history', { name: 'delete', value: nzoId });
+	await postAction('history', { name: 'delete', value: nzoId });
 	await poll();
 }
 
 export async function purgeHistory(deleteFiles: boolean) {
-	await postAction(getApiKey(), 'history', {
+	await postAction('history', {
 		name: 'delete',
 		value: 'all',
 		del_files: deleteFiles ? '1' : '0'

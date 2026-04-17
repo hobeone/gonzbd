@@ -1,5 +1,4 @@
 import { fetchQueue, postAction } from '$lib/api';
-import { getApiKey, hasApiKey } from '$lib/stores/apikey.svelte';
 import type { QueueDetail, QueueSlot } from '$lib/types';
 
 const POLL_INTERVAL = 2000;
@@ -15,15 +14,9 @@ let prevPollTime = $state<number | null>(null);
 let speedBytesPerSec = $state(0);
 let speedHistory = $state<number[]>([]);
 
-function totalRemainingBytes(): number {
-	if (!queue) return 0;
-	return queue.slots.reduce((sum, s) => sum + s.remaining_bytes, 0);
-}
-
 async function poll() {
-	if (!hasApiKey()) return;
 	try {
-		const res = await fetchQueue(getApiKey(), 0, 50);
+		const res = await fetchQueue(0, 50);
 		const now = Date.now();
 		const newRemaining = res.queue.slots.reduce((sum, s) => sum + s.remaining_bytes, 0);
 
@@ -90,7 +83,8 @@ export function getSpeedHistory(): number[] {
 }
 
 export function getTotalRemainingBytes(): number {
-	return totalRemainingBytes();
+	if (!queue) return 0;
+	return queue.slots.reduce((sum, s) => sum + s.remaining_bytes, 0);
 }
 
 export function formatSpeed(bps: number): string {
@@ -107,16 +101,16 @@ export function formatSize(bytes: number): string {
 }
 
 export async function pauseJob(nzoId: string) {
-	await postAction(getApiKey(), 'queue', { name: 'pause', value: nzoId });
+	await postAction('queue', { name: 'pause', value: nzoId });
 	await poll();
 }
 
 export async function resumeJob(nzoId: string) {
-	await postAction(getApiKey(), 'queue', { name: 'resume', value: nzoId });
+	await postAction('queue', { name: 'resume', value: nzoId });
 	await poll();
 }
 
 export async function deleteJob(nzoId: string) {
-	await postAction(getApiKey(), 'queue', { name: 'delete', value: nzoId });
+	await postAction('queue', { name: 'delete', value: nzoId });
 	await poll();
 }

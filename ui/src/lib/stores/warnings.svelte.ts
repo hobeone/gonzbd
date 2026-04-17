@@ -1,5 +1,4 @@
 import { fetchWarnings, postAction } from '$lib/api';
-import { getApiKey, hasApiKey } from '$lib/stores/apikey.svelte';
 
 const POLL_INTERVAL = 5000;
 
@@ -9,9 +8,8 @@ let timer: ReturnType<typeof setInterval> | null = null;
 let toastMessage = $state<string | null>(null);
 
 async function poll() {
-	if (!hasApiKey()) return;
 	try {
-		const res = await fetchWarnings(getApiKey());
+		const res = await fetchWarnings();
 		const prev = warnings.length;
 		warnings = res.warnings;
 		error = null;
@@ -58,6 +56,6 @@ export function dismissToast() {
 }
 
 export async function clearWarnings() {
-	await postAction(getApiKey(), 'warnings', { name: 'clear' });
+	await postAction('warnings', { name: 'clear' });
 	await poll();
 }

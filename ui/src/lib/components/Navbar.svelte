@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
 	import { postAction } from '$lib/api';
-	import { getApiKey } from '$lib/stores/apikey.svelte';
 	import AddNzbDialog from './AddNzbDialog.svelte';
 	import SettingsDialog from './SettingsDialog.svelte';
 
@@ -22,7 +21,7 @@
 	async function togglePause() {
 		toggling = true;
 		try {
-			await postAction(getApiKey(), paused ? 'resume' : 'pause');
+			await postAction(paused ? 'resume' : 'pause');
 			onpausetoggle?.();
 		} finally {
 			toggling = false;

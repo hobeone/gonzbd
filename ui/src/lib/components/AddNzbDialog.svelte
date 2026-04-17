@@ -3,7 +3,6 @@
 	import { Tabs } from 'bits-ui';
 	import { Button } from '$lib/components/ui/button';
 	import { uploadNzb, postAction } from '$lib/api';
-	import { getApiKey } from '$lib/stores/apikey.svelte';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -27,7 +26,7 @@
 		submitting = true;
 		result = null;
 		try {
-			await uploadNzb(getApiKey(), files[0]);
+			await uploadNzb(files[0]);
 			result = { ok: true, message: `Added ${files[0].name}` };
 			files = null;
 		} catch (e) {
@@ -43,7 +42,7 @@
 		submitting = true;
 		result = null;
 		try {
-			await postAction(getApiKey(), 'addurl', { name: trimmed });
+			await postAction('addurl', { name: trimmed });
 			result = { ok: true, message: 'URL submitted' };
 			url = '';
 		} catch (e) {

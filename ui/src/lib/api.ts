@@ -8,8 +8,8 @@ import type {
 
 const API_BASE = '/api';
 
-function apiUrl(mode: string, apiKey: string, params?: Record<string, string>): string {
-	const search = new URLSearchParams({ mode, apikey: apiKey, output: 'json', ...params });
+function apiUrl(mode: string, params?: Record<string, string>): string {
+	const search = new URLSearchParams({ mode, output: 'json', ...params });
 	return `${API_BASE}?${search}`;
 }
 
@@ -21,46 +21,36 @@ async function fetchJSON<T>(url: string): Promise<T> {
 	return res.json() as Promise<T>;
 }
 
-export async function fetchVersion(apiKey: string): Promise<VersionResponse> {
-	return fetchJSON<VersionResponse>(apiUrl('version', apiKey));
+export async function fetchVersion(): Promise<VersionResponse> {
+	return fetchJSON<VersionResponse>(apiUrl('version'));
 }
 
-export async function fetchQueue(
-	apiKey: string,
-	start = 0,
-	limit = 20
-): Promise<QueueResponse> {
+export async function fetchQueue(start = 0, limit = 20): Promise<QueueResponse> {
 	return fetchJSON<QueueResponse>(
-		apiUrl('queue', apiKey, { start: String(start), limit: String(limit) })
+		apiUrl('queue', { start: String(start), limit: String(limit) })
 	);
 }
 
-export async function fetchHistory(
-	apiKey: string,
-	start = 0,
-	limit = 20
-): Promise<HistoryResponse> {
+export async function fetchHistory(start = 0, limit = 20): Promise<HistoryResponse> {
 	return fetchJSON<HistoryResponse>(
-		apiUrl('history', apiKey, { start: String(start), limit: String(limit) })
+		apiUrl('history', { start: String(start), limit: String(limit) })
 	);
 }
 
-export async function fetchWarnings(apiKey: string): Promise<WarningsResponse> {
-	return fetchJSON<WarningsResponse>(apiUrl('warnings', apiKey));
+export async function fetchWarnings(): Promise<WarningsResponse> {
+	return fetchJSON<WarningsResponse>(apiUrl('warnings'));
 }
 
 export async function postAction(
-	apiKey: string,
 	mode: string,
 	params?: Record<string, string>
 ): Promise<StatusResponse> {
-	return fetchJSON<StatusResponse>(apiUrl(mode, apiKey, params));
+	return fetchJSON<StatusResponse>(apiUrl(mode, params));
 }
 
-export async function uploadNzb(apiKey: string, file: File): Promise<StatusResponse> {
+export async function uploadNzb(file: File): Promise<StatusResponse> {
 	const form = new FormData();
 	form.append('mode', 'addfile');
-	form.append('apikey', apiKey);
 	form.append('output', 'json');
 	form.append('name', file, file.name);
 
