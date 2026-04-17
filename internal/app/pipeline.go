@@ -31,24 +31,36 @@ type pipeline struct {
 	completions <-chan *downloader.ArticleResult
 	downloadDir string
 
+	// updateCh receives a new completions channel to switch to.
+	updateCh chan (<-chan *downloader.ArticleResult)
+
 	mu       sync.RWMutex
 	fileInfo map[fileKey]assembler.FileInfo
 }
 
-// run is the pipeline's sole goroutine. Returns when ctx is cancelled or
-// the Completions channel is closed (which the downloader does on Stop).
+// run is the pipeline's sole goroutine. Returns when ctx is cancelled.
 func (p *pipeline) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case newCh := <-p.updateCh:
+			p.completions = newCh
 		case res, ok := <-p.completions:
 			if !ok {
-				return
+				// Downloader stopped; wait for a new channel or cancellation.
+				// Set completions to nil so we don't busy-spin on a closed channel.
+				p.completions = nil
+				continue
 			}
 			p.handleResult(ctx, res)
 		}
 	}
+}
+
+// setCompletions swaps the source of ArticleResults. Safe for concurrent use.
+func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
+	p.updateCh <- ch
 }
 
 // handleResult processes one downloader output: decodes the body if there
