@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -82,16 +83,24 @@ func isLocalhost(r *http.Request) bool {
 	return ip.IsLoopback()
 }
 
-// maxFormBytes caps the request body for form parsing (query + POST body)
-// to prevent memory exhaustion from oversized uploads. File uploads
-// (addfile) will raise this limit in their handler.
+// maxFormBytes caps the request body for non-upload form parsing to prevent
+// memory exhaustion. Multipart file uploads (Content-Type: multipart/form-data)
+// are exempted here — the upload handler (modeAddFile) sets its own limit
+// via MaxBytesReader before parsing the multipart body.
 const maxFormBytes = 2 * 1024 * 1024 // 2 MiB
+
+func isMultipartUpload(r *http.Request) bool {
+	return r.Method == http.MethodPost &&
+		strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data")
+}
 
 // loggingMiddleware records each request at Info level with method, path,
 // status, and duration.
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
+		if !isMultipartUpload(r) {
+			r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
+		}
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)

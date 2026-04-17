@@ -52,7 +52,7 @@ export async function uploadNzb(file: File): Promise<StatusResponse> {
 	const form = new FormData();
 	form.append('mode', 'addfile');
 	form.append('output', 'json');
-	form.append('name', file, file.name);
+	form.append('nzbfile', file, file.name);
 
 	const res = await fetch(API_BASE, { method: 'POST', body: form });
 	if (!res.ok) {
