@@ -40,8 +40,8 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	keyword := formString(r, "keyword")
 	value := formString(r, "value")
 
-	if section == "" || keyword == "" {
-		respondError(w, http.StatusBadRequest, "missing section or keyword")
+	if section == "" {
+		respondError(w, http.StatusBadRequest, "missing section")
 		return
 	}
 
