@@ -3,18 +3,44 @@ import { getApiKey, hasApiKey } from '$lib/stores/apikey.svelte';
 import type { QueueDetail, QueueSlot } from '$lib/types';
 
 const POLL_INTERVAL = 2000;
+const SPEED_HISTORY_SIZE = 60;
 
 let queue = $state<QueueDetail | null>(null);
 let polling = $state(false);
 let error = $state<string | null>(null);
 let timer: ReturnType<typeof setInterval> | null = null;
 
+let prevRemainingBytes = $state<number | null>(null);
+let prevPollTime = $state<number | null>(null);
+let speedBytesPerSec = $state(0);
+let speedHistory = $state<number[]>([]);
+
+function totalRemainingBytes(): number {
+	if (!queue) return 0;
+	return queue.slots.reduce((sum, s) => sum + s.remaining_bytes, 0);
+}
+
 async function poll() {
 	if (!hasApiKey()) return;
 	try {
 		const res = await fetchQueue(getApiKey(), 0, 50);
+		const now = Date.now();
+		const newRemaining = res.queue.slots.reduce((sum, s) => sum + s.remaining_bytes, 0);
+
+		if (prevRemainingBytes !== null && prevPollTime !== null) {
+			const dt = (now - prevPollTime) / 1000;
+			if (dt > 0) {
+				const bytesDownloaded = prevRemainingBytes - newRemaining;
+				speedBytesPerSec = Math.max(0, bytesDownloaded / dt);
+			}
+		}
+
+		prevRemainingBytes = newRemaining;
+		prevPollTime = now;
 		queue = res.queue;
 		error = null;
+
+		speedHistory = [...speedHistory.slice(-(SPEED_HISTORY_SIZE - 1)), speedBytesPerSec];
 	} catch (e) {
 		error = e instanceof Error ? e.message : String(e);
 	}
@@ -53,6 +79,31 @@ export function getError(): string | null {
 
 export function isPolling(): boolean {
 	return polling;
+}
+
+export function getSpeedBytesPerSec(): number {
+	return speedBytesPerSec;
+}
+
+export function getSpeedHistory(): number[] {
+	return speedHistory;
+}
+
+export function getTotalRemainingBytes(): number {
+	return totalRemainingBytes();
+}
+
+export function formatSpeed(bps: number): string {
+	if (bps < 1024) return `${Math.round(bps)} B/s`;
+	if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
+	return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
+}
+
+export function formatSize(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 export async function pauseJob(nzoId: string) {

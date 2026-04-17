@@ -5,10 +5,11 @@
 	import Navbar from '$lib/components/Navbar.svelte';
 	import QueueTable from '$lib/components/QueueTable.svelte';
 	import HistoryTable from '$lib/components/HistoryTable.svelte';
+	import StatusBar from '$lib/components/StatusBar.svelte';
 	import { Tabs } from 'bits-ui';
 	import { Badge } from '$lib/components/ui/badge';
 	import { onMount, onDestroy } from 'svelte';
-	import { startPolling, stopPolling, isPaused } from '$lib/stores/queue.svelte';
+	import { startPolling, stopPolling, isPaused, getSpeedBytesPerSec, formatSpeed } from '$lib/stores/queue.svelte';
 	import { startHistoryPolling, stopHistoryPolling } from '$lib/stores/history.svelte';
 
 	let keyInput = $state('');
@@ -72,7 +73,8 @@
 	</main>
 {:else}
 	<div class="flex min-h-screen flex-col bg-gray-50">
-		<Navbar paused={isPaused()} onpausetoggle={() => {}} />
+		<Navbar paused={isPaused()} speed={formatSpeed(getSpeedBytesPerSec())} onpausetoggle={() => {}} />
+		<StatusBar />
 
 		<div class="mx-auto w-full max-w-7xl px-4 pt-4">
 			<Tabs.Root bind:value={activeTab}>
