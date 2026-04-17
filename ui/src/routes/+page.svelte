@@ -4,10 +4,12 @@
 	import { Button } from '$lib/components/ui/button';
 	import Navbar from '$lib/components/Navbar.svelte';
 	import QueueTable from '$lib/components/QueueTable.svelte';
+	import HistoryTable from '$lib/components/HistoryTable.svelte';
 	import { Tabs } from 'bits-ui';
 	import { Badge } from '$lib/components/ui/badge';
 	import { onMount, onDestroy } from 'svelte';
 	import { startPolling, stopPolling, isPaused } from '$lib/stores/queue.svelte';
+	import { startHistoryPolling, stopHistoryPolling } from '$lib/stores/history.svelte';
 
 	let keyInput = $state('');
 	let connectionStatus = $state<string | null>(null);
@@ -24,6 +26,7 @@
 			await fetchVersion(key);
 			setApiKey(key);
 			startPolling();
+			startHistoryPolling();
 		} catch (e) {
 			connectionStatus = `Failed: ${e instanceof Error ? e.message : String(e)}`;
 		} finally {
@@ -32,11 +35,15 @@
 	}
 
 	onMount(() => {
-		if (hasApiKey()) startPolling();
+		if (hasApiKey()) {
+			startPolling();
+			startHistoryPolling();
+		}
 	});
 
 	onDestroy(() => {
 		stopPolling();
+		stopHistoryPolling();
 	});
 </script>
 
@@ -100,9 +107,7 @@
 				</Tabs.Content>
 
 				<Tabs.Content value="history">
-					<div class="rounded-lg border bg-white p-8 text-center text-gray-500">
-						History table — Step 13.5
-					</div>
+					<HistoryTable />
 				</Tabs.Content>
 
 				<Tabs.Content value="warnings">
