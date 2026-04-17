@@ -1,6 +1,9 @@
 # Built binary
 /sabnzbd
 
+# config
+sabnzbd.yaml
+
 # default state directory
 /admin
 
