@@ -64,13 +64,39 @@ func TestModeConfig_SpeedlimitNotImplemented(t *testing.T) {
 	}
 }
 
-func TestModeConfig_TestServerNotImplemented(t *testing.T) {
+func TestModeConfig_TestServer_MissingHost(t *testing.T) {
 	t.Parallel()
 	s := testServer()
 
 	rr := apiGet(t, s.Handler(), "/api?mode=config&name=test_server&apikey="+testAPIKey)
-	if rr.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d; want 501", rr.Code)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400", rr.Code)
+	}
+	m := decodeJSON(t, rr)
+	if m["error"] != "missing host parameter" {
+		t.Errorf("error = %v; want 'missing host parameter'", m["error"])
+	}
+}
+
+func TestModeConfig_TestServer_UnreachableHost(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+
+	rr := apiGet(t, s.Handler(), "/api?mode=config&name=test_server&host=192.0.2.1&port=119&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+	m := decodeJSON(t, rr)
+	result, ok := m["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("result missing or not a map: %v", m["result"])
+	}
+	if result["passed"] != false {
+		t.Errorf("passed = %v; want false", result["passed"])
+	}
+	msg, _ := result["message"].(string)
+	if msg == "" {
+		t.Error("message should be non-empty for a failed connection")
 	}
 }
 

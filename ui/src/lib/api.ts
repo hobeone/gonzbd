@@ -14,15 +14,11 @@ function apiUrl(mode: string, params?: Record<string, string>): string {
 }
 
 export async function fetchJSON<T>(url: string): Promise<T> {
-	console.log('fetchJSON:', url);
 	const res = await fetch(url);
 	if (!res.ok) {
-		console.error('fetchJSON error:', res.status, res.statusText);
 		throw new Error(`API ${res.status}: ${res.statusText}`);
 	}
-	const data = await res.json();
-	console.log('fetchJSON data:', data);
-	return data as T;
+	return res.json() as Promise<T>;
 }
 
 export async function fetchVersion(): Promise<VersionResponse> {

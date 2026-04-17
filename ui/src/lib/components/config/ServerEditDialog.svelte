@@ -72,7 +72,6 @@
 		testing = true;
 		testResult = null;
 		try {
-			// mode=config&name=test_server requires all these params
 			const res = await postAction('config', {
 				name: 'test_server',
 				host: draft.host,
@@ -82,7 +81,12 @@
 				ssl: draft.ssl ? '1' : '0',
 				ssl_verify: String(draft.ssl_verify)
 			});
-			testResult = { ok: true, message: 'Connection successful!' };
+			const r = (res as any).result;
+			if (r && typeof r.passed === 'boolean') {
+				testResult = { ok: r.passed, message: r.message };
+			} else {
+				testResult = { ok: true, message: 'Connection successful!' };
+			}
 		} catch (e) {
 			testResult = { ok: false, message: e instanceof Error ? e.message : String(e) };
 		} finally {
