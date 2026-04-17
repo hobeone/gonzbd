@@ -31,7 +31,6 @@ type pipeline struct {
 	assembler    *assembler.Assembler
 	completions  <-chan *downloader.ArticleResult
 	downloadDir  string
-	fileComplete <-chan FileComplete
 
 	// updateCh receives a new completions channel to switch to.
 	updateCh chan (<-chan *downloader.ArticleResult)
@@ -46,12 +45,6 @@ func (p *pipeline) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case fc := <-p.fileComplete:
-			if err := p.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
-				p.log.Warn("failed to mark file complete", "job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
-			} else {
-				p.log.Info("file marked complete in queue", "job", fc.JobID, "fileidx", fc.FileIdx)
-			}
 		case newCh := <-p.updateCh:
 			p.completions = newCh
 		case res, ok := <-p.completions:
