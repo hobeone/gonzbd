@@ -79,6 +79,33 @@ func (b ByteSize) MarshalYAML() (any, error) {
 	return b.String(), nil
 }
 
+// MarshalJSON renders ByteSize as its human-readable string form.
+func (b ByteSize) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + b.String() + `"`), nil
+}
+
+// UnmarshalJSON parses ByteSize from either a JSON string (with suffix)
+// or a raw JSON number (bytes).
+func (b *ByteSize) UnmarshalJSON(data []byte) error {
+	s := string(data)
+	// Handle string form (includes quotes)
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		parsed, err := parseByteSize(s[1 : len(s)-1])
+		if err != nil {
+			return err
+		}
+		*b = parsed
+		return nil
+	}
+	// Handle numeric form
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return fmt.Errorf("ByteSize: %q is not a valid integer: %w", s, err)
+	}
+	*b = ByteSize(n)
+	return nil
+}
+
 // UnmarshalYAML parses ByteSize from a YAML scalar that is either a string
 // with a binary suffix ("10M", "1.5G", "unlimited", "") or a non-negative
 // integer (bytes).
@@ -160,6 +187,25 @@ type Percent int
 
 // MarshalYAML emits the percent as a plain integer.
 func (p Percent) MarshalYAML() (any, error) { return int(p), nil }
+
+// MarshalJSON emits the percent as a plain integer.
+func (p Percent) MarshalJSON() ([]byte, error) {
+	return []byte(strconv.Itoa(int(p))), nil
+}
+
+// UnmarshalJSON parses Percent from a JSON number or string.
+func (p *Percent) UnmarshalJSON(data []byte) error {
+	s := strings.Trim(string(data), `"`)
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("Percent: %q is not a valid integer: %w", s, err)
+	}
+	if n < 0 || n > 100 {
+		return fmt.Errorf("Percent: %d outside [0,100]", n)
+	}
+	*p = Percent(n)
+	return nil
+}
 
 // UnmarshalYAML parses an integer percent and rejects out-of-range values.
 func (p *Percent) UnmarshalYAML(node *yaml.Node) error {
