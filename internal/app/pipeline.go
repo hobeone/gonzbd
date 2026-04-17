@@ -26,10 +26,12 @@ type fileKey struct {
 // populated by run and read concurrently by the assembler worker via
 // resolveFileInfo, so access is protected by mu.
 type pipeline struct {
-	queue       *queue.Queue
-	assembler   *assembler.Assembler
-	completions <-chan *downloader.ArticleResult
-	downloadDir string
+	log          *slog.Logger
+	queue        *queue.Queue
+	assembler    *assembler.Assembler
+	completions  <-chan *downloader.ArticleResult
+	downloadDir  string
+	fileComplete <-chan FileComplete
 
 	// updateCh receives a new completions channel to switch to.
 	updateCh chan (<-chan *downloader.ArticleResult)
@@ -44,12 +46,19 @@ func (p *pipeline) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case fc := <-p.fileComplete:
+			if err := p.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
+				p.log.Warn("failed to mark file complete", "job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
+			} else {
+				p.log.Info("file marked complete in queue", "job", fc.JobID, "fileidx", fc.FileIdx)
+			}
 		case newCh := <-p.updateCh:
 			p.completions = newCh
 		case res, ok := <-p.completions:
 			if !ok {
 				// Downloader stopped; wait for a new channel or cancellation.
 				// Set completions to nil so we don't busy-spin on a closed channel.
+				p.log.Info("Downloader stopped, waiting for new channel")
 				p.completions = nil
 				continue
 			}
@@ -72,20 +81,24 @@ func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
 // Phase 5's problem.
 func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResult) {
 	if res.Err != nil {
-		slog.Debug("pipeline: fetch error",
+		p.log.Info("fetch error",
 			"job", res.JobID, "msgid", res.MessageID, "server", res.ServerName, "err", res.Err)
 		return
 	}
 
 	article, err := decoder.DecodeArticle(res.Body)
 	if err != nil {
-		slog.Warn("pipeline: decode error",
+		p.log.Warn("decode error",
 			"job", res.JobID, "msgid", res.MessageID, "err", err)
 		return
 	}
 
+	p.log.Debug("decoded article",
+		"job", res.JobID, "msgid", res.MessageID, "file", article.Filename,
+		"offset", article.Offset, "bytes", len(article.Data))
+
 	if err := p.registerFile(res.JobID, res.FileIdx, article.Filename); err != nil {
-		slog.Warn("pipeline: register file",
+		p.log.Warn("register file failed",
 			"job", res.JobID, "fileidx", res.FileIdx, "err", err)
 		return
 	}
@@ -97,7 +110,7 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 		Data:    article.Data,
 	})
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
-		slog.Warn("pipeline: write article",
+		p.log.Warn("write article failed",
 			"job", res.JobID, "msgid", res.MessageID, "err", writeErr)
 	}
 }
@@ -142,6 +155,8 @@ func (p *pipeline) registerFile(jobID string, fileIdx int, yencName string) erro
 	// the race between RUnlock and Lock.
 	if _, exists := p.fileInfo[key]; !exists {
 		p.fileInfo[key] = info
+		p.log.Debug("registered file",
+			"job", jobID, "fileidx", fileIdx, "path", info.Path, "parts", info.TotalParts)
 	}
 	p.mu.Unlock()
 	return nil

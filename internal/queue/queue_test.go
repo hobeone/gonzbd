@@ -275,6 +275,26 @@ func TestReorder(t *testing.T) {
 	}
 }
 
+func TestMarkFileComplete(t *testing.T) {
+	q := New()
+	j := makeJob(t, "j", constants.NormalPriority)
+	_ = q.Add(j)
+
+	if err := q.MarkFileComplete(j.ID, 0); err != nil {
+		t.Fatalf("MarkFileComplete: %v", err)
+	}
+
+	got, _ := q.Get(j.ID)
+	if !got.Files[0].Complete {
+		t.Error("File was not marked complete")
+	}
+
+	// Invalid index
+	if err := q.MarkFileComplete(j.ID, 99); err == nil {
+		t.Error("MarkFileComplete(99) should error")
+	}
+}
+
 func TestNotifyCoalesces(t *testing.T) {
 	q := New()
 	for i := 0; i < 5; i++ {
