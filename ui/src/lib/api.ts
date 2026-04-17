@@ -13,7 +13,7 @@ function apiUrl(mode: string, params?: Record<string, string>): string {
 	return `${API_BASE}?${search}`;
 }
 
-async function fetchJSON<T>(url: string): Promise<T> {
+export async function fetchJSON<T>(url: string): Promise<T> {
 	const res = await fetch(url);
 	if (!res.ok) {
 		throw new Error(`API ${res.status}: ${res.statusText}`);
@@ -39,6 +39,24 @@ export async function fetchHistory(start = 0, limit = 20): Promise<HistoryRespon
 
 export async function fetchWarnings(): Promise<WarningsResponse> {
 	return fetchJSON<WarningsResponse>(apiUrl('warnings'));
+}
+
+export async function fetchScripts(): Promise<string[]> {
+	const res = await fetchJSON<{ scripts: string[] }>(apiUrl('get_scripts'));
+	return res.scripts;
+}
+
+export async function fetchCategories(): Promise<string[]> {
+	const res = await fetchJSON<{ categories: string[] }>(apiUrl('get_cats'));
+	return res.categories;
+}
+
+export async function setConfig(
+	section: string,
+	keyword: string,
+	value: string | number | boolean
+): Promise<StatusResponse> {
+	return fetchJSON<StatusResponse>(apiUrl('set_config', { section, keyword, value: String(value) }));
 }
 
 export async function postAction(

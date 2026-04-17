@@ -238,11 +238,12 @@ func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, 
 			NZBKey:          cfg.General.NZBKey,
 			LocalhostBypass: true,
 		},
-		Version: Version,
-		Queue:   application.Queue(),
-		History: histRepo,
-		Config:  cfg,
-		Grabber: grabber,
+		Version:    Version,
+		Queue:      application.Queue(),
+		History:    histRepo,
+		Config:     cfg,
+		ConfigPath: configPath,
+		Grabber:    grabber,
 	})
 
 	listen := listenOverride

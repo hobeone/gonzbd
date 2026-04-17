@@ -75,3 +75,95 @@ export interface VersionResponse {
 	status: boolean;
 	version: string;
 }
+
+export interface ServerConfig {
+	name: string;
+	displayname: string;
+	host: string;
+	port: number;
+	username: string;
+	password: string;
+	connections: number;
+	ssl: boolean;
+	ssl_verify: number;
+	ssl_ciphers: string;
+	priority: number;
+	required: boolean;
+	optional: boolean;
+	retention: number;
+	timeout: number;
+	pipelining_requests: number;
+	enable: boolean;
+}
+
+export interface CategoryConfig {
+	name: string;
+	pp: number;
+	script: string;
+	priority: number;
+	dir: string;
+	order: number;
+}
+
+export interface SorterConfig {
+	name: string;
+	order: number;
+	min_size: number;
+	multipart_label: string;
+	sort_string: string;
+	sort_cats: string[];
+	sort_type: number[];
+	is_active: boolean;
+}
+
+export interface ScheduleConfig {
+	name: string;
+	enabled: boolean;
+	action: string;
+	arguments: string;
+	minute: string;
+	hour: string;
+	dayofweek: string;
+}
+
+export interface RSSFilterConfig {
+	name: string;
+	enabled: boolean;
+	title: string;
+	body: string;
+	cat: string;
+	pp: string;
+	script: string;
+	priority: number;
+	type: string;
+	size_from: number;
+	size_to: number;
+	age: number;
+}
+
+export interface RSSFeedConfig {
+	name: string;
+	uri: string;
+	cat: string;
+	pp: string;
+	script: string;
+	enable: boolean;
+	priority: number;
+	filters: RSSFilterConfig[];
+}
+
+export interface FullConfig {
+	general: Record<string, any>;
+	downloads: Record<string, any>;
+	postproc: Record<string, any>;
+	servers: ServerConfig[];
+	categories: CategoryConfig[];
+	sorters: SorterConfig[];
+	schedules: ScheduleConfig[];
+	rss: RSSFeedConfig[];
+}
+
+export interface ConfigResponse {
+	status: boolean;
+	config: FullConfig;
+}

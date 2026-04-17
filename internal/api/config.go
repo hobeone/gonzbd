@@ -29,10 +29,37 @@ func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
 	respondOK(w, "config", m)
 }
 
-// modeSetConfig sets configuration parameters (not implemented).
+// modeSetConfig sets configuration parameters.
 func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
-	// TODO: Phase 7 work. Requires config reload and persistence hooks.
-	respondError(w, http.StatusNotImplemented, "not implemented in this build: set_config")
+	if s.config == nil {
+		respondError(w, http.StatusInternalServerError, "config not wired")
+		return
+	}
+
+	section := formString(r, "section")
+	keyword := formString(r, "keyword")
+	value := formString(r, "value")
+
+	if section == "" || keyword == "" {
+		respondError(w, http.StatusBadRequest, "missing section or keyword")
+		return
+	}
+
+	if err := s.config.Set(section, keyword, value); err != nil {
+		respondError(w, http.StatusBadRequest, "set config: "+err.Error())
+		return
+	}
+
+	// Persist to disk if path is known.
+	if s.configPath != "" {
+		if err := s.config.Save(s.configPath); err != nil {
+			s.log.Error("persist config", "path", s.configPath, "error", err)
+			respondError(w, http.StatusInternalServerError, "persist config: "+err.Error())
+			return
+		}
+	}
+
+	respondOK(w, "value", value)
 }
 
 // modeConfig handles mode=config with sub-actions via name= parameter.

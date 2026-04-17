@@ -37,6 +37,10 @@ type Options struct {
 	// will respond with 500 if it is absent.
 	Config *config.Config
 
+	// ConfigPath is the filesystem path where the configuration is stored.
+	// Required for mode=set_config to persist changes.
+	ConfigPath string
+
 	// Grabber fetches remote NZBs. When nil, mode=addurl returns 501.
 	Grabber *urlgrabber.Grabber
 }
@@ -49,10 +53,11 @@ type Server struct {
 	version string
 	log     *slog.Logger
 
-	queue   *queue.Queue
-	history *history.Repository
-	config  *config.Config
-	grabber *urlgrabber.Grabber
+	queue      *queue.Queue
+	history    *history.Repository
+	config     *config.Config
+	configPath string
+	grabber    *urlgrabber.Grabber
 
 	modes modeTable
 	mux   *http.ServeMux
@@ -68,14 +73,15 @@ func New(opts Options) *Server {
 	}
 
 	s := &Server{
-		auth:    opts.Auth,
-		version: opts.Version,
-		log:     log,
-		queue:   opts.Queue,
-		history: opts.History,
-		config:  opts.Config,
-		grabber: opts.Grabber,
-		mux:     http.NewServeMux(),
+		auth:       opts.Auth,
+		version:    opts.Version,
+		log:        log,
+		queue:      opts.Queue,
+		history:    opts.History,
+		config:     opts.Config,
+		configPath: opts.ConfigPath,
+		grabber:    opts.Grabber,
+		mux:        http.NewServeMux(),
 	}
 	s.registerModes()
 
