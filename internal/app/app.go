@@ -73,6 +73,10 @@ type Application struct {
 	pipeline     *pipeline
 	fileComplete chan FileComplete
 
+	// internalFileComplete ensures we never miss a queue update due to
+	// a full buffer. The watchCompletions goroutine drains it.
+	internalFileComplete chan FileComplete
+
 	wg     sync.WaitGroup
 	ctx    context.Context //nolint:containedctx // lifecycle context held for Shutdown
 	cancel context.CancelFunc
@@ -111,29 +115,25 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 	internalFileComplete := make(chan FileComplete, 64)
 
 	p := &pipeline{
-		log:          log.With("component", "pipeline"),
-		queue:        q,
-		completions:  d.Completions(),
-		downloadDir:  cfg.DownloadDir,
-		fileComplete: internalFileComplete,
-		updateCh:     make(chan (<-chan *downloader.ArticleResult), 1),
-		fileInfo:     make(map[fileKey]assembler.FileInfo),
+		log:         log.With("component", "pipeline"),
+		queue:       q,
+		completions: d.Completions(),
+		downloadDir: cfg.DownloadDir,
+		updateCh:    make(chan (<-chan *downloader.ArticleResult), 1),
+		fileInfo:    make(map[fileKey]assembler.FileInfo),
 	}
 
 	asm := assembler.New(assembler.Options{
 		FileInfo: p.resolveFileInfo,
 		OnFileComplete: func(jobID string, fileIdx int) {
 			fc := FileComplete{JobID: jobID, FileIdx: fileIdx}
-			// Send to external subscribers
+			// 1. External subscribers (best-effort, non-blocking)
 			select {
 			case fileComplete <- fc:
 			default:
 			}
-			// Send to internal pipeline for queue state update
-			select {
-			case internalFileComplete <- fc:
-			default:
-			}
+			// 2. Internal state update (blocking send guarantees zero dropped events)
+			internalFileComplete <- fc
 		},
 	}, log)
 	p.assembler = asm
@@ -144,6 +144,7 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 	app.assembler = asm
 	app.pipeline = p
 	app.fileComplete = fileComplete
+	app.internalFileComplete = internalFileComplete
 	return app, nil
 }
 
@@ -183,6 +184,12 @@ func (app *Application) Start(ctx context.Context) error {
 	go func() {
 		defer app.wg.Done()
 		app.pipeline.run(app.ctx)
+	}()
+
+	app.wg.Add(1)
+	go func() {
+		defer app.wg.Done()
+		app.watchCompletions(app.ctx)
 	}()
 
 	app.log.Info("application started", "download_dir", app.cfg.DownloadDir)
@@ -257,4 +264,22 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	app.pipeline.setCompletions(newDownloader.Completions())
 
 	return nil
+}
+
+// watchCompletions is a dedicated goroutine that updates the queue state
+// when files complete. It uses a blocking channel read to ensure zero events
+// are dropped.
+func (app *Application) watchCompletions(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case fc := <-app.internalFileComplete:
+			if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
+				app.log.Warn("failed to mark file complete", "job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
+			} else {
+				app.log.Info("file marked complete in queue", "job", fc.JobID, "fileidx", fc.FileIdx)
+			}
+		}
+	}
 }
