@@ -1,16 +1,17 @@
 <script lang="ts">
 	import { getApiKey, setApiKey, hasApiKey } from '$lib/stores/apikey.svelte';
-	import { fetchVersion, fetchQueue } from '$lib/api';
+	import { fetchVersion } from '$lib/api';
 	import { Button } from '$lib/components/ui/button';
 	import Navbar from '$lib/components/Navbar.svelte';
+	import QueueTable from '$lib/components/QueueTable.svelte';
 	import { Tabs } from 'bits-ui';
 	import { Badge } from '$lib/components/ui/badge';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
+	import { startPolling, stopPolling, isPaused } from '$lib/stores/queue.svelte';
 
 	let keyInput = $state('');
 	let connectionStatus = $state<string | null>(null);
 	let connecting = $state(false);
-	let paused = $state(false);
 	let activeTab = $state('queue');
 	let warningCount = $state(0);
 
@@ -22,6 +23,7 @@
 		try {
 			await fetchVersion(key);
 			setApiKey(key);
+			startPolling();
 		} catch (e) {
 			connectionStatus = `Failed: ${e instanceof Error ? e.message : String(e)}`;
 		} finally {
@@ -29,18 +31,12 @@
 		}
 	}
 
-	async function refreshStatus() {
-		if (!hasApiKey()) return;
-		try {
-			const res = await fetchQueue(getApiKey());
-			paused = res.queue.paused;
-		} catch {
-			// polling failure — silent until error boundary in 13.11
-		}
-	}
-
 	onMount(() => {
-		if (hasApiKey()) refreshStatus();
+		if (hasApiKey()) startPolling();
+	});
+
+	onDestroy(() => {
+		stopPolling();
 	});
 </script>
 
@@ -69,7 +65,7 @@
 	</main>
 {:else}
 	<div class="flex min-h-screen flex-col bg-gray-50">
-		<Navbar {paused} onpausetoggle={refreshStatus} />
+		<Navbar paused={isPaused()} onpausetoggle={() => {}} />
 
 		<div class="mx-auto w-full max-w-7xl px-4 pt-4">
 			<Tabs.Root bind:value={activeTab}>
@@ -100,9 +96,7 @@
 				</Tabs.List>
 
 				<Tabs.Content value="queue">
-					<div class="rounded-lg border bg-white p-8 text-center text-gray-500">
-						Queue table — Step 13.4
-					</div>
+					<QueueTable />
 				</Tabs.Content>
 
 				<Tabs.Content value="history">
