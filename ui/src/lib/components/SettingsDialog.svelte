@@ -332,19 +332,17 @@
 																</div>
 															</td>
 															<td class="px-4 py-3">
-																<div class="flex items-center gap-3 text-[11px] text-gray-600">
+																<div class="flex flex-col gap-0.5 text-[11px] text-gray-600">
 																	<div class="flex items-center gap-1">
-																		<span class="text-gray-400">User:</span>
-																		<span class="truncate max-w-[80px] font-medium">{server.username || 'anonymous'}</span>
+																		<span class="text-gray-400 w-12 shrink-0">User:</span>
+																		<span class="truncate max-w-[120px] font-medium">{server.username || 'anonymous'}</span>
 																	</div>
-																	<div class="h-3 w-px bg-gray-200"></div>
 																	<div class="flex items-center gap-1">
-																		<span class="text-gray-400">Priority:</span>
+																		<span class="text-gray-400 w-12 shrink-0">Priority:</span>
 																		<span class="font-bold">{server.priority}</span>
 																	</div>
-																	<div class="h-3 w-px bg-gray-200"></div>
 																	<div class="flex items-center gap-1">
-																		<span class="text-gray-400">Pool:</span>
+																		<span class="text-gray-400 w-12 shrink-0">Pool:</span>
 																		<span>{server.connections} conns</span>
 																	</div>
 																</div>
