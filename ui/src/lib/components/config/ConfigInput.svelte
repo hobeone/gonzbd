@@ -18,7 +18,7 @@
 		type?: 'text' | 'number' | 'password';
 	} = $props();
 
-	let currentValue = $state(value);
+	let currentValue = $state<string | number>('');
 	let timer: ReturnType<typeof setTimeout>;
 
 	// When the prop 'value' changes from above (e.g. on load or revert), 

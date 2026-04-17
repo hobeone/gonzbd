@@ -99,7 +99,7 @@
 				</div>
 
 				<div class="space-y-2">
-					<label class="text-sm font-medium">Post-Processing</label>
+					<span class="text-sm font-medium">Post-Processing</span>
 					<div class="flex flex-wrap gap-4 rounded-md border p-3">
 						<label class="flex items-center gap-2 text-sm cursor-pointer">
 							<input type="checkbox" bind:checked={repair} onchange={updatePP} class="rounded border-gray-300" />

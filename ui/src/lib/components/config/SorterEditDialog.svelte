@@ -95,7 +95,7 @@
 				</div>
 
 				<div class="space-y-2">
-					<label class="text-sm font-medium">Applied Categories</label>
+					<span class="text-sm font-medium">Applied Categories</span>
 					<div class="flex flex-wrap gap-2 rounded-md border p-3">
 						{#each categories as cat}
 							<label class="flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs cursor-pointer transition-colors
