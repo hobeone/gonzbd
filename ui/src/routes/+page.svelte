@@ -11,7 +11,7 @@
 	import { Tabs } from 'bits-ui';
 	import { Badge } from '$lib/components/ui/badge';
 	import { onMount, onDestroy } from 'svelte';
-	import { startPolling, stopPolling, isPaused, getSpeedBytesPerSec, formatSpeed } from '$lib/stores/queue.svelte';
+	import { startPolling, stopPolling, isPaused, getSpeedBytesPerSec, formatSpeed, getQueueSlots, getError } from '$lib/stores/queue.svelte';
 	import { startHistoryPolling, stopHistoryPolling } from '$lib/stores/history.svelte';
 	import { startWarningsPolling, stopWarningsPolling, getWarningCount } from '$lib/stores/warnings.svelte';
 
@@ -53,6 +53,10 @@
 	});
 </script>
 
+<svelte:head>
+	<title>{hasApiKey() ? `${isPaused() ? '⏸' : '▶'} ${getQueueSlots().length} item${getQueueSlots().length !== 1 ? 's' : ''} | SABnzbd-Go` : 'SABnzbd-Go'}</title>
+</svelte:head>
+
 {#if !hasApiKey()}
 	<main class="flex min-h-screen items-center justify-center bg-gray-50">
 		<div class="w-full max-w-sm space-y-4 rounded-lg border bg-white p-6 shadow-sm">
@@ -77,9 +81,17 @@
 		</div>
 	</main>
 {:else}
-	<div class="flex min-h-screen flex-col bg-gray-50">
+	<div class="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950">
 		<Navbar paused={isPaused()} speed={formatSpeed(getSpeedBytesPerSec())} onpausetoggle={() => {}} />
 		<StatusBar />
+
+		{#if getError()}
+			<div class="mx-auto w-full max-w-7xl px-4 pt-2">
+				<div class="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+					API unreachable: {getError()}
+				</div>
+			</div>
+		{/if}
 
 		<div class="mx-auto w-full max-w-7xl flex-1 px-4 pt-4">
 			<Tabs.Root bind:value={activeTab}>

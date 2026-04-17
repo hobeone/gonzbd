@@ -8,20 +8,17 @@ Policy: Compatibility Scope*).
 
 ## Status
 
-Core implementation complete for the backend and the Glitter web UI. The
-daemon downloads and assembles NZBs end-to-end, runs post-processing (par2
+Core implementation complete for the backend and the web UI. The daemon
+downloads and assembles NZBs end-to-end, runs post-processing (par2
 verify + unrar/7z unpack + sorters + user scripts), and exposes the full
 legacy mode-dispatch API (`/api?mode=...`) that the UI talks to.
 
-**The Glitter UI is now served at `/`** with all five partials wired:
-queue, history, messages, overlays, and menu. Opening
-`http://127.0.0.1:8080/` in a browser shows the full Knockout-powered
-interface with Queue, History, and Warnings tabs.
+**The web UI is a Svelte 5 SPA** (TypeScript, Tailwind CSS, shadcn-svelte)
+built with Vite and embedded in the Go binary via `//go:embed`. Opening
+`http://127.0.0.1:8080/` shows the UI with Queue, History, and Warnings
+tabs, real-time speed display, file upload, and a settings viewer.
 
-A few upstream features render as inactive UI elements (sysinfo display,
-OS-power options, post-processing pause toggle). These are deliberate
-deferrals — see [`docs/implementation_notes.md`](docs/implementation_notes.md)
-§6 for the full list. For browser-based manual verification steps, see
+For browser-based manual verification steps, see
 [`docs/ui_smoke_checklist.md`](docs/ui_smoke_checklist.md).
 
 See [`docs/golang_implementation.md`](docs/golang_implementation.md) for
@@ -45,8 +42,12 @@ the full phase/step breakdown.
 ## Build
 
 ```bash
+cd ui && npm install && npm run build && cd ..
 go build ./cmd/sabnzbd
 ```
+
+The first command builds the Svelte SPA into `ui/dist/`; the Go build
+embeds it into the binary. Node.js is only needed at build time.
 
 Versioned build:
 
@@ -56,7 +57,7 @@ go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cm
 
 ## Quickstart — run the daemon
 
-These steps get you a running daemon you can use via the Glitter web UI,
+These steps get you a running daemon you can use via the web UI,
 `curl`, a watched folder, or the `--nzb` one-shot flag.
 
 1. **Build the binary** (see above) so `./sabnzbd` sits in the repo root.
@@ -111,8 +112,9 @@ These steps get you a running daemon you can use via the Glitter web UI,
    starting addr=127.0.0.1:8080 ...` when it's ready.
 
 6. **Open the UI**. Navigate to `http://127.0.0.1:8080/` in a browser.
-   The Glitter UI loads with Queue, History, and Warnings tabs. For a
-   full manual verification walkthrough see
+   Enter your API key (from `sabnzbd.yaml`) when prompted. The UI shows
+   Queue, History, and Warnings tabs with real-time polling. For a full
+   manual verification walkthrough see
    [`docs/ui_smoke_checklist.md`](docs/ui_smoke_checklist.md).
 
    If you prefer API-only access, the existing `curl` examples still work:

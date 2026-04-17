@@ -1,132 +1,106 @@
-# Glitter UI Smoke Checklist
+# UI Smoke Checklist (Svelte SPA)
 
-Manual verification checklist for the Glitter web UI. Run once after a fresh
-build to confirm end-to-end rendering. Takes 5-10 minutes.
+Manual browser verification after building the SPA and Go binary.
 
 ---
 
-## 1. Build and start
+## Prerequisites
 
 ```bash
+cd ui && npm run build && cd ..
 go build ./cmd/sabnzbd
 ./sabnzbd --config ~/.config/sabnzbd-go/sabnzbd.yaml --serve
 ```
 
-Expected log line (stdout, structured):
-
-```
-level=INFO msg="http listener starting" addr=127.0.0.1:8080 ...
-```
-
-If you see an error about missing directories, create them first (see
-README Quickstart step 4).
+Open `http://127.0.0.1:8080/` in a browser.
 
 ---
 
-## 2. Open the UI
+## 1. API Key Prompt
 
-Open `http://127.0.0.1:8080/` in a browser (Chrome, Firefox, or Safari).
+- [ ] First visit shows the API key entry card
+- [ ] Entering a wrong key shows an error message
+- [ ] Entering the correct key (from `sabnzbd.yaml`) connects and shows the main UI
+- [ ] Refreshing the page skips the prompt (key stored in localStorage)
 
-Expected:
-- The page title bar reads **SABnzbd**.
-- The top menu bar appears with speed and queue-size indicators on the right.
-- Three content tabs are visible below the menu: **Queue**, **History**,
-  and **Warnings**.
-- No "cannot GET /" or 404 error page.
+## 2. Navbar
 
----
+- [ ] "SABnzbd" title visible
+- [ ] Speed display shows a value (may be "0 B/s" if nothing is downloading)
+- [ ] Pause/Resume button toggles and reflects state
+- [ ] Settings gear icon opens the settings dialog
+- [ ] "+ Add NZB" button opens the add dialog
 
-## 3. API key
+## 3. Status Bar
 
-Glitter fetches queue data by sending the `apiKey` JS variable (injected
-into the page from your config's `api_key` field) with each API call.
+- [ ] Shows item count, remaining size, ETA
+- [ ] Speed sparkline graph renders (shows flat line if idle)
+- [ ] "PAUSED" indicator appears when paused
 
-On first load: the UI should start polling the API immediately. You will
-not be prompted to enter a key manually — the key is baked into the page
-at render time.
+## 4. Queue Tab
 
-If the network tab shows `401 Unauthorized` responses, check that the
-`api_key` in `sabnzbd.yaml` matches the value that appears when you
-view-source the rendered page and search for `var apiKey`.
+- [ ] Active queue items display in a table with progress bars
+- [ ] Progress bars update on each poll (~2 seconds)
+- [ ] Pause/Resume per-item buttons work
+- [ ] Delete button removes the item from the queue
+- [ ] Empty state shows "Queue is empty" when no items
 
----
+## 5. History Tab
 
-## 4. Tab switching
+- [ ] Completed/failed items display with status badges
+- [ ] "Completed" items show green badge, "Failed" shows red
+- [ ] Delete button removes an item
+- [ ] Completed timestamp is a readable date
+- [ ] Empty state shows "History is empty"
 
-Click each tab in turn:
+## 6. Warnings Tab
 
-- **Queue** — the content area should show the queue pane (empty list if
-  no downloads are active).
-- **History** — the history pane appears.
-- **Warnings** — the warnings/messages pane appears.
+- [ ] Warning count badge appears on the tab when warnings exist
+- [ ] Warning list renders with numbered entries
+- [ ] "Clear all" button clears warnings
+- [ ] Toast notification appears at bottom-right when a new warning arrives
 
-Check the browser console (F12 > Console) after each click. Knockout
-binding errors would appear here as red `TypeError` or `ReferenceError`
-lines. A few yellow warnings about empty observables are expected (see
-section 7 below).
+## 7. Add NZB Dialog
 
----
+- [ ] File tab: drag-and-drop zone accepts .nzb files
+- [ ] File tab: click to browse works
+- [ ] File tab: uploading adds the NZB to the queue
+- [ ] URL tab: pasting a URL and clicking Fetch submits it
+- [ ] Success/error feedback shows inline
 
-## 5. Menu items
+## 8. Settings Dialog
 
-- Click the **gear icon** (top-right menu area). Confirm the Options modal
-  opens showing tabs: General, Servers, Categories, RSS, Scheduling,
-  Notifications, Special.
-- Click the **Add NZB** (plus/upload icon). Confirm the Add NZB modal opens
-  with URL and file-upload fields.
-- Click outside a modal or press Escape to close it.
+- [ ] Opens and loads config from the API
+- [ ] Config sections are collapsible
+- [ ] Values display correctly (strings, booleans, numbers, nested objects)
+- [ ] Close button works
 
----
+## 9. Page Title
 
-## 6. Page refresh
+- [ ] Browser tab title updates with queue status: "▶ 3 items | SABnzbd-Go"
+- [ ] Changes to "⏸" when paused
 
-Reload the page (Ctrl-R / Cmd-R). Confirm:
-- The page loads cleanly a second time.
-- No double-init errors in the console (would look like "ko.applyBindings
-  called twice").
-- The active tab defaults back to Queue after reload (expected behavior).
+## 10. Dark Mode
 
----
-
-## 7. Expected console output (not bugs)
-
-The following are known and harmless:
-
-- **Knockout observable warnings** — the initial API poll may log
-  `TypeError: Cannot read properties of undefined` for queue speed
-  or ETA fields while the first `/api?mode=queue` response is in flight.
-  These resolve once the first poll completes.
-- **Favicon `data-bind` flash** — the favicon `href` starts at
-  `/staticcfg/ico/favicon.ico` and is updated by the `SABIcon` Knockout
-  observable once the status poll returns. A brief "404" for the initial
-  static path before the observable hydrates is normal.
-- **Platform / CPU / SIMD empty rows** — the Options > Status tab shows
-  blank "Platform", "CPU", and "SIMD" rows. These fields are deferred
-  (see `implementation_notes.md` §6 — *Glitter sysinfo*).
-- **Missing 404s for `/staticcfg/...`** — icons and generated assets
-  under `/staticcfg/` are served from the config `admin_dir`. If that
-  directory was not pre-populated with icons, you will see 404s for
-  PNG/SVG files. The UI degrades gracefully (missing icons, not a crash).
+- [ ] If OS is set to dark mode, the page background is dark
 
 ---
 
-## 8. What will not work yet
+## Expected Limitations
 
-These items render as inactive or blank UI elements. They are deliberate
-deferrals, not bugs. See `docs/implementation_notes.md` §6 for the full
-list.
+These are deliberate deferrals, not bugs:
 
-| UI element | Why it is inactive |
+| UI element | Why |
 |---|---|
-| Options > Status: Platform / CPU / SIMD | Sysinfo package not yet wired; fields return empty strings |
-| Shutdown / Standby / Hibernate menu options | OS-power options omitted (`$power_options` deferral); HTTP shutdown returns 501 |
-| "Resume post-processing" menu entry | `$pp_pause_event` flag not yet backed by runtime state |
-| Bandwidth limit slider actually throttling | Scheduler logs the limit but does not pass it to the downloader |
-| History entries persisting across restarts | History DB is opened but no pipeline stage writes entries yet |
-| Speed graph animating | Requires active downloads; empty queue shows flat line |
+| Drag-and-drop queue reordering | Backend `mode=switch` is stubbed (returns 400) |
+| Settings editing | Dialog is read-only; `mode=set_config` wiring is a future step |
+| Keyboard shortcuts | Not yet implemented |
+| Speed display accuracy | Computed from poll deltas, not a dedicated API field |
+| History entries persisting | History DB is opened but no pipeline stage writes entries yet |
+| Bandwidth limit slider | Scheduler logs the limit but does not pass it to the downloader |
 
-If you encounter UI behavior not in this list that appears broken, check
-the browser console for errors and cross-reference the API response with:
+If you encounter behavior not in this list, check the browser console (F12)
+and the API response:
 
 ```bash
 curl 'http://127.0.0.1:8080/api?mode=fullstatus&apikey=YOUR_KEY&output=json'
