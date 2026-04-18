@@ -26,11 +26,11 @@ type fileKey struct {
 // populated by run and read concurrently by the assembler worker via
 // resolveFileInfo, so access is protected by mu.
 type pipeline struct {
-	log          *slog.Logger
-	queue        *queue.Queue
-	assembler    *assembler.Assembler
-	completions  <-chan *downloader.ArticleResult
-	downloadDir  string
+	log         *slog.Logger
+	queue       *queue.Queue
+	assembler   *assembler.Assembler
+	completions <-chan *downloader.ArticleResult
+	downloadDir string
 
 	// updateCh receives a new completions channel to switch to.
 	updateCh chan (<-chan *downloader.ArticleResult)
@@ -74,8 +74,44 @@ func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
 // Phase 5's problem.
 func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResult) {
 	if res.Err != nil {
-		p.log.Info("fetch error",
-			"job", res.JobID, "msgid", res.MessageID, "server", res.ServerName, "err", res.Err)
+		if errors.Is(res.Err, downloader.ErrNoServersLeft) {
+			p.log.Warn("article permanently failed, marking in queue",
+				"job", res.JobID, "msgid", res.MessageID)
+
+			first, err := p.queue.MarkArticleFailed(res.JobID, res.MessageID)
+			if err != nil {
+				p.log.Warn("failed to mark article failed in queue",
+					"job", res.JobID, "msgid", res.MessageID, "err", err)
+				return
+			}
+			if !first {
+				return // Already processed this failure
+			}
+
+			// Find the job/file to get a fallback filename if not yet registered
+			job, err := p.queue.Get(res.JobID)
+			var filename string
+			if err == nil && res.FileIdx >= 0 && res.FileIdx < len(job.Files) {
+				filename = job.Files[res.FileIdx].Subject
+			} else {
+				filename = "unknown_failed_part"
+			}
+
+			if err := p.registerFile(res.JobID, res.FileIdx, filename); err != nil {
+				p.log.Warn("register fallback file failed",
+					"job", res.JobID, "fileidx", res.FileIdx, "err", err)
+			}
+
+			// Notify assembler of the failure so it can count the part for completion
+			_ = p.assembler.WriteArticle(ctx, assembler.WriteRequest{
+				JobID:    res.JobID,
+				FileIdx:  res.FileIdx,
+				FatalErr: res.Err,
+			})
+		} else {
+			p.log.Info("fetch error",
+				"job", res.JobID, "msgid", res.MessageID, "server", res.ServerName, "err", res.Err)
+		}
 		return
 	}
 

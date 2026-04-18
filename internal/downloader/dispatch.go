@@ -38,11 +38,14 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 	}
 	now := time.Now()
 
+	dispatched := 0
 	d.queue.ForEachUnfinishedArticle(func(a queue.UnfinishedArticle) bool {
 		if a.JobStatus == constants.StatusPaused {
 			return true // skip paused jobs, keep iterating
 		}
-		d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, now)
+		if d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, now) {
+			dispatched++
+		}
 		// Always continue — per-article send is non-blocking and
 		// we want to fan out as much as will fit this pass.
 		return ctx.Err() == nil
@@ -69,7 +72,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 //
 // Returns silently if no server accepts — a future dispatchReady
 // signal from any worker will bring us back to re-try.
-func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int, messageID string, bytes int, now time.Time) {
+func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int, messageID string, bytes int, now time.Time) bool {
 	key := articleKey{jobID: jobID, messageID: messageID}
 	req := &articleRequest{
 		jobID:     jobID,
@@ -82,10 +85,11 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 	defer d.tryMu.Unlock()
 
 	if d.inFlight[key] > 0 {
-		return
+		return false
 	}
 
 	tried := d.tryList[key]
+	anyEligible := false
 	for _, srv := range d.servers {
 		name := srv.Cfg().Name
 		if !srv.Active(now) {
@@ -94,6 +98,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 		if _, already := tried[name]; already {
 			continue
 		}
+		anyEligible = true
 		ch, ok := d.workCh[name]
 		if !ok {
 			continue
@@ -106,13 +111,25 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 			}
 			tried[name] = struct{}{}
 			d.inFlight[key]++
-			return
+			return true
 		case <-ctx.Done():
-			return
+			return false
 		default:
 			// server's queue is full; try next server
 		}
 	}
+
+	// If we found no eligible servers to even try (all are in the tryList),
+	// this article is permanently failed for this session.
+	if !anyEligible {
+		d.log.Debug("article failed on all servers", "msgid", messageID, "job", jobID)
+		d.emitResult(ctx, req, "", nil, ErrNoServersLeft)
+		// Return true so ForEachUnfinishedArticle considers this "handled"
+		// and moves to the next article immediately.
+		return true
+	}
+
+	return false
 }
 
 // connWorker is one connection-owning goroutine. It lazily dials its
@@ -132,6 +149,8 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server) {
 
 	name := srv.Cfg().Name
 	workCh := d.workCh[name]
+
+	d.log.Info("Creating server connection", "server", srv.Cfg().Host)
 
 	for {
 		select {
@@ -155,10 +174,13 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	name := srv.Cfg().Name
 
 	if *connPtr == nil {
-		c, err := nntp.Dial(ctx, srv.Cfg())
+		d.log.Info("dialing server", "server", name, "host", srv.Cfg().Host)
+		c, err := nntp.Dial(ctx, srv.Cfg(), d.log)
 		if err != nil {
+			d.log.Warn("dial failed", "server", name, "error", err)
 			srv.RecordBadConnection()
 			if pen := PenaltyFor(err); pen > 0 {
+				d.log.Info("penalty applied", "server", name, "duration", pen)
 				srv.ApplyPenalty(pen)
 			}
 			// Retryable: unmark so another pass can try another
@@ -167,12 +189,14 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 			d.emitResult(ctx, req, name, nil, fmt.Errorf("dial: %w", err))
 			return
 		}
+		d.log.Info("connected", "server", name, "ssl", c.SSLInfo())
 		*connPtr = c
 	}
 
 	body, err := (*connPtr).Fetch(ctx, req.messageID)
 	if err != nil {
 		if errors.Is(err, nntp.ErrNoArticle) {
+			d.log.Debug("article not found", "server", name, "msgid", req.messageID)
 			// The server definitively said no. Try-list entry is
 			// retained so we won't retry here; connection is
 			// healthy — reuse it.
@@ -181,10 +205,12 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 			return
 		}
 		// Connection-level failure: tear down, re-dial later.
+		d.log.Warn("fetch failed", "server", name, "msgid", req.messageID, "error", err)
 		_ = (*connPtr).Close() //nolint:errcheck // discarding a broken conn; underlying error already captured in err
 		*connPtr = nil
 		srv.RecordBadConnection()
 		if pen := PenaltyFor(err); pen > 0 {
+			d.log.Info("penalty applied", "server", name, "duration", pen)
 			srv.ApplyPenalty(pen)
 		}
 		d.unmarkTried(req.jobID, req.messageID, name)
@@ -193,6 +219,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	}
 
 	srv.RecordGoodConnection()
+	d.log.Debug("fetched", "server", name, "msgid", req.messageID, "bytes", len(body))
 
 	// Throttle. WaitN sleeps up to bytes/rate seconds; respects ctx.
 	if lim := d.limiter.Load(); lim != nil {

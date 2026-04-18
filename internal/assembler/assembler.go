@@ -49,6 +49,10 @@ type WriteRequest struct {
 	// Data is the decoded article payload. The assembler takes ownership;
 	// callers must not modify Data after enqueueing.
 	Data []byte
+
+	// FatalErr is set if the article permanently failed to download.
+	// If non-nil, the assembler skips writing and just increments partsWritten.
+	FatalErr error
 }
 
 // FileInfo describes a target file. The assembler requests it from the caller's
@@ -114,6 +118,7 @@ type openFile struct {
 // file-handle bookkeeping. WriteArticle blocks on the channel (backpressure)
 // and is safe to call from multiple goroutines concurrently.
 type Assembler struct {
+	log  *slog.Logger
 	opts Options
 	reqs chan WriteRequest
 
@@ -131,14 +136,18 @@ type Assembler struct {
 }
 
 // New creates an Assembler from opts. It panics if opts.FileInfo is nil.
-func New(opts Options) *Assembler {
+func New(opts Options, log *slog.Logger) *Assembler {
 	if opts.FileInfo == nil {
 		panic("assembler: Options.FileInfo must not be nil")
 	}
 	if opts.QueueSize <= 0 {
 		opts.QueueSize = defaultQueueSize
 	}
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Assembler{
+		log:        log.With("component", "assembler"),
 		opts:       opts,
 		reqs:       make(chan WriteRequest, opts.QueueSize),
 		stopCh:     make(chan struct{}),
@@ -270,7 +279,7 @@ func (a *Assembler) worker() {
 func (a *Assembler) closeAll(open map[fileKey]*openFile) {
 	for _, f := range open {
 		if err := f.handle.Close(); err != nil {
-			slog.Warn("assembler: close partial file on shutdown",
+			a.log.Warn("close partial file on shutdown",
 				"path", f.info.Path,
 				"error", err,
 			)
@@ -288,7 +297,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 	if !ok {
 		info, err := a.opts.FileInfo(req.JobID, req.FileIdx)
 		if err != nil {
-			slog.Warn("assembler: FileInfo resolver failed; discarding article",
+			a.log.Warn("FileInfo resolver failed; discarding article",
 				"jobID", req.JobID,
 				"fileIdx", req.FileIdx,
 				"error", err,
@@ -298,7 +307,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 
 		if dir := filepath.Dir(info.Path); dir != "" {
 			if err := os.MkdirAll(dir, 0o750); err != nil {
-				slog.Error("assembler: mkdir parent",
+				a.log.Error("mkdir parent",
 					"path", info.Path,
 					"error", err,
 				)
@@ -308,7 +317,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 		//nolint:gosec // G304: path is caller-supplied from FileInfo resolver, which is responsible for safe derivation
 		fh, err := os.OpenFile(info.Path, os.O_WRONLY|os.O_CREATE, 0o644)
 		if err != nil {
-			slog.Error("assembler: open target file",
+			a.log.Error("open target file",
 				"path", info.Path,
 				"error", err,
 			)
@@ -318,26 +327,36 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 		open[key] = f
 	}
 
-	if err := writeAll(f.handle, req.Data, req.Offset); err != nil {
-		slog.Error("assembler: write article",
-			"path", f.info.Path,
-			"offset", req.Offset,
-			"error", err,
-		)
-		// Leave the file open; the next article may succeed. The pipeline
-		// (Step 4.1) is responsible for job-level failure detection.
-		return
+	if req.FatalErr != nil {
+		a.log.Debug("skipping disk write for failed article",
+			"job", req.JobID, "fileidx", req.FileIdx, "offset", req.Offset, "error", req.FatalErr)
+	} else {
+		if err := writeAll(f.handle, req.Data, req.Offset); err != nil {
+			a.log.Error("write article",
+				"path", f.info.Path,
+				"offset", req.Offset,
+				"error", err,
+			)
+			// Leave the file open; the next article may succeed. The pipeline
+			// (Step 4.1) is responsible for job-level failure detection.
+			return
+		}
 	}
 
 	f.partsWritten++
+	a.log.Debug("processed part",
+		"job", req.JobID, "fileidx", req.FileIdx,
+		"part", f.partsWritten, "total", f.info.TotalParts,
+		"offset", req.Offset, "bytes", len(req.Data), "failed", req.FatalErr != nil)
 	if f.info.TotalParts > 0 && f.partsWritten >= f.info.TotalParts {
 		if err := f.handle.Close(); err != nil {
-			slog.Warn("assembler: close completed file",
+			a.log.Warn("close completed file",
 				"path", f.info.Path,
 				"error", err,
 			)
 		}
 		delete(open, key)
+		a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
 		if a.opts.OnFileComplete != nil {
 			a.opts.OnFileComplete(req.JobID, req.FileIdx)
 		}
@@ -362,7 +381,7 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 
 		free, err := FreeBytes(dir)
 		if err != nil {
-			slog.Warn("assembler: disk-space check failed", "dir", dir, "error", err)
+			a.log.Warn("disk-space check failed", "dir", dir, "error", err)
 			continue
 		}
 		if free < a.opts.MinFreeBytes {

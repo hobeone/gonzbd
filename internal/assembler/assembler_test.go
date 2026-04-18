@@ -50,7 +50,7 @@ func readFile(t *testing.T, path string) []byte {
 // startAssembler creates, starts, and registers a Stop cleanup.
 func startAssembler(t *testing.T, opts Options) *Assembler {
 	t.Helper()
-	a := New(opts)
+	a := New(opts, nil)
 	if err := a.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestStopDrainsChannel(t *testing.T) {
 	const n = 10
 	path := registerFile(t, dir, files, "job1", 0, n)
 
-	a := New(makeOpts(dir, files))
+	a := New(makeOpts(dir, files), nil)
 	if err := a.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestStopDrainsChannel(t *testing.T) {
 func TestStopBeforeStartIsSafe(t *testing.T) {
 	a := New(Options{
 		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
-	})
+	}, nil)
 	if err := a.Stop(); err != nil {
 		t.Errorf("Stop before Start returned error: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestStopBeforeStartIsSafe(t *testing.T) {
 func TestStopCalledTwiceIsSafe(t *testing.T) {
 	a := New(Options{
 		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
-	})
+	}, nil)
 	if err := a.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestStopCalledTwiceIsSafe(t *testing.T) {
 func TestWriteArticleAfterStopReturnsErrStopped(t *testing.T) {
 	a := New(Options{
 		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
-	})
+	}, nil)
 	if err := a.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestWriteArticleAfterStopReturnsErrStopped(t *testing.T) {
 func TestWriteArticleBeforeStartReturnsErrNotStarted(t *testing.T) {
 	a := New(Options{
 		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
-	})
+	}, nil)
 	err := a.WriteArticle(context.Background(), WriteRequest{})
 	if !errors.Is(err, ErrNotStarted) {
 		t.Errorf("WriteArticle before Start returned %v, want ErrNotStarted", err)
@@ -366,7 +366,7 @@ func TestContextCancelDuringWriteArticleSend(t *testing.T) {
 	opts := makeOpts(dir, files)
 	opts.QueueSize = 1
 
-	a := New(opts)
+	a := New(opts, nil)
 	if err := a.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestContextCancelDuringWriteArticleSend(t *testing.T) {
 			return FileInfo{}, fmt.Errorf("intentional error to discard")
 		},
 	}
-	a2 := New(opts2)
+	a2 := New(opts2, nil)
 	if err := a2.Start(context.Background()); err != nil {
 		t.Fatalf("Start a2: %v", err)
 	}

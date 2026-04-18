@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 
@@ -15,6 +16,10 @@ import (
 // intervening Stop. Callers that want idempotent start/stop should
 // check this explicitly rather than papering over it.
 var ErrAlreadyStarted = errors.New("downloader: already started")
+
+// ErrNoServersLeft is emitted when an article has been tried on all
+// available, eligible servers and failed on all of them.
+var ErrNoServersLeft = errors.New("downloader: article failed on all servers")
 
 // ArticleResult is emitted by the Downloader for every fetched
 // article, successful or not. Consumers (the decoder, future steps)
@@ -95,6 +100,7 @@ type Options struct {
 // the per-server work channels are written by the dispatcher and
 // read by workers; the try-list has its own mutex.
 type Downloader struct {
+	log     *slog.Logger
 	queue   *queue.Queue
 	servers []*Server
 
@@ -149,7 +155,7 @@ type Downloader struct {
 // servers must be non-empty. A zero-length slice is a programming
 // error; New panics to surface it at config time rather than having
 // the dispatch loop silently do nothing.
-func New(q *queue.Queue, servers []*Server, opts Options) *Downloader {
+func New(q *queue.Queue, servers []*Server, opts Options, log *slog.Logger) *Downloader {
 	if q == nil {
 		panic("downloader: queue is nil")
 	}
@@ -159,7 +165,11 @@ func New(q *queue.Queue, servers []*Server, opts Options) *Downloader {
 	if opts.CompletionsBuffer <= 0 {
 		opts.CompletionsBuffer = 256
 	}
+	if log == nil {
+		log = slog.Default()
+	}
 	d := &Downloader{
+		log:           log.With("component", "downloader"),
 		queue:         q,
 		servers:       servers,
 		workCh:        make(map[string]chan *articleRequest, len(servers)),
@@ -200,6 +210,7 @@ func (d *Downloader) Start(ctx context.Context) error {
 
 	// Per-server worker pools — one goroutine per configured
 	// connection, each lazily dials its own *nntp.Conn.
+	totalWorkers := 0
 	for _, srv := range d.servers {
 		conns := srv.Connections()
 		if conns < 1 {
@@ -209,10 +220,14 @@ func (d *Downloader) Start(ctx context.Context) error {
 			d.wg.Add(1)
 			go d.connWorker(d.ctx, srv)
 		}
+		d.log.Debug("server workers started", "server", srv.Cfg().Name, "workers", conns)
+		totalWorkers += conns
 	}
 
 	d.wg.Add(1)
 	go d.run(d.ctx)
+
+	d.log.Info("started", "servers", len(d.servers), "workers", totalWorkers)
 
 	// Kick off an initial dispatch in case the queue was populated
 	// before Start.
@@ -235,9 +250,11 @@ func (d *Downloader) Stop() error {
 	if !d.stopped.CompareAndSwap(false, true) {
 		return nil
 	}
+	d.log.Debug("stopping")
 	d.cancel()
 	d.wg.Wait()
 	close(d.completions)
+	d.log.Info("stopped")
 	return nil
 }
 
