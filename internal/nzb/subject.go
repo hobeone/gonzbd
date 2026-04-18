@@ -8,7 +8,9 @@ import (
 var (
 	reSubjectFilenameQuotes = regexp.MustCompile(`"([^"]*)"`)
 	// reSubjectBasicFilename ports SABnzbd's basic filename extractor.
-	reSubjectBasicFilename = regexp.MustCompile(`\b([\w\-+()' .,]+(?:\[[\w\-/+()' .,]*][\w\-+()' .,]*)*\.[A-Za-z0-9]{2,4})\b`)
+	// We use \p{L}\p{N}_ to match any Unicode letter, number or underscore, matching Python 3's \w behavior.
+	// We ensure it starts with one of these characters to avoid matching leading symbols or spaces.
+	reSubjectBasicFilename = regexp.MustCompile(`([\p{L}\p{N}_][\p{L}\p{N}\-_+()' .,]*(?:\[[\p{L}\p{N}\-_/+()' .,]*][\p{L}\p{N}\-_+()' .,]*)*\.[A-Za-z0-9]{2,4})`)
 )
 
 // ExtractFilenameFromSubject attempts to extract a clean filename from a Usenet subject line.

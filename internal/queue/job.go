@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 )
 
@@ -175,6 +176,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions) (*Job, error) {
 	if name == "" {
 		name = deriveName(opts.Filename)
 	}
+	name = fsutil.SanitizeFolderName(name)
 
 	job := &Job{
 		ID:       id,
