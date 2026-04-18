@@ -133,6 +133,7 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 		downloadDir: cfg.DownloadDir,
 		updateCh:    make(chan (<-chan *downloader.ArticleResult), 1),
 		fileInfo:    make(map[fileKey]assembler.FileInfo),
+		usedPaths:   make(map[string]struct{}),
 	}
 
 	pp := postproc.New(postproc.Options{

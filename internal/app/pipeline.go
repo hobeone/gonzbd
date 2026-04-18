@@ -36,8 +36,9 @@ type pipeline struct {
 	// updateCh receives a new completions channel to switch to.
 	updateCh chan (<-chan *downloader.ArticleResult)
 
-	mu       sync.RWMutex
-	fileInfo map[fileKey]assembler.FileInfo
+	mu        sync.RWMutex
+	fileInfo  map[fileKey]assembler.FileInfo
+	usedPaths map[string]struct{}
 }
 
 // run is the pipeline's sole goroutine. Returns when ctx is cancelled.
@@ -178,20 +179,40 @@ func (p *pipeline) registerFile(jobID string, fileIdx int, yencName string) erro
 		return fmt.Errorf("invalid filename %q", yencName)
 	}
 
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Double-check under the write lock — another goroutine may have won
+	// the race between RUnlock and Lock.
+	if _, exists := p.fileInfo[key]; exists {
+		return nil
+	}
+
+	path := filepath.Join(p.downloadDir, job.Name, filename)
+
+	// Ensure uniqueness within the job.
+	if _, taken := p.usedPaths[path]; taken {
+		ext := filepath.Ext(path)
+		base := path[:len(path)-len(ext)]
+		for i := 1; ; i++ {
+			newPath := fmt.Sprintf("%s.%d%s", base, i, ext)
+			if _, taken := p.usedPaths[newPath]; !taken {
+				path = newPath
+				break
+			}
+		}
+	}
+	p.usedPaths[path] = struct{}{}
+
 	info := assembler.FileInfo{
-		Path:       filepath.Join(p.downloadDir, job.Name, filename),
+		Path:       path,
 		TotalParts: len(job.Files[fileIdx].Articles),
 	}
 
-	p.mu.Lock()
-	// Double-check under the write lock — another goroutine may have won
-	// the race between RUnlock and Lock.
-	if _, exists := p.fileInfo[key]; !exists {
-		p.fileInfo[key] = info
-		p.log.Debug("registered file",
-			"job", jobID, "fileidx", fileIdx, "path", info.Path, "parts", info.TotalParts)
-	}
-	p.mu.Unlock()
+	p.fileInfo[key] = info
+	p.log.Debug("registered file",
+		"job", jobID, "fileidx", fileIdx, "path", info.Path, "parts", info.TotalParts)
+
 	return nil
 }
 
