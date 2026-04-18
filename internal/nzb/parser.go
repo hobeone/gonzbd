@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 )
 
 // maxArticleSize is the upper bound on a plausible NNTP article payload
@@ -280,10 +282,7 @@ type articleCounters struct {
 // model, applying the dedup and size-sanity rules and folding article
 // IDs into digest in source order.
 func convertFile(xf xmlFile, now time.Time, digest hash.Hash) (File, int64, articleCounters) {
-	subject := xf.Subject
-	if subject == "" {
-		subject = "unknown"
-	}
+	subject := fsutil.SanitizeFilename(ExtractFilenameFromSubject(xf.Subject))
 
 	ts := now.Unix()
 	if trimmed := strings.TrimSpace(xf.Date); trimmed != "" {
