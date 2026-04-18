@@ -171,13 +171,19 @@ func (p *pipeline) registerFile(jobID string, fileIdx int, yencName string) erro
 		return fmt.Errorf("fileIdx %d out of range for job with %d files", fileIdx, len(job.Files))
 	}
 
-	// filepath.Base strips any path components from the yEnc name= field,
-	// preventing a malicious article from writing outside downloadDir via
-	// a "../../etc/passwd" style filename.
-	filename := fsutil.SanitizeFilename(filepath.Base(yencName))
-	if filename == "" || filename == "." || filename == "/" || filename == "unknown" || fsutil.IsObfuscated(filename) {
-		// Fallback: use the subject from the NZB (which was already sanitized during parsing).
-		filename = job.Files[fileIdx].Subject
+	// Prioritize the subject from the NZB (which was already sanitized during parsing).
+	filename := job.Files[fileIdx].Subject
+
+	// If the NZB subject is generic or obfuscated, try the yEnc filename.
+	if filename == "" || filename == "unknown" || fsutil.IsObfuscated(filename) {
+		yencSanitized := fsutil.SanitizeFilename(filepath.Base(yencName))
+		if yencSanitized != "" && yencSanitized != "." && yencSanitized != "/" && yencSanitized != "unknown" && !fsutil.IsObfuscated(yencSanitized) {
+			filename = yencSanitized
+		}
+	}
+
+	if filename == "" {
+		filename = "unknown"
 	}
 
 	p.mu.Lock()
