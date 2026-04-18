@@ -197,7 +197,9 @@ func TestE2E_ProvidedNZB(t *testing.T) {
 
 	a, downloadDir := newE2EApp(t, cfg)
 
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "provided.nzb", Name: "provided"})
+	fName := filepath.Base(nzbPath)
+
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: fName})
 	if err != nil {
 		t.Fatalf("queue.NewJob: %v", err)
 	}

@@ -56,6 +56,31 @@ func TestSanitizeFolderName(t *testing.T) {
 	}
 }
 
+func TestIsObfuscated(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{"not obfuscated", "test.bin", false},
+		{"md5", "13a1b10996f866ef04019baea5dbfc81", true},
+		{"sha1", "13a1b10996f866ef04019baea5dbfc819a4ed680", true},
+		{"sha256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", true},
+		{"sha256 with ext", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.rar", true},
+		{"too short", "12345abc", false},
+		{"not hex", "13a1b10996f866ef04019baea5dbfc819a4ed6802d5e826c713365d6dbf9zabc", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsObfuscated(tt.input)
+			if got != tt.expected {
+				t.Errorf("IsObfuscated(%q) = %v; want %v", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestTruncateFilename(t *testing.T) {
 	tests := []struct {
 		name     string
