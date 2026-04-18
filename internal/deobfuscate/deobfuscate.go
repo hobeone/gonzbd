@@ -134,6 +134,12 @@ func IsProbablyObfuscated(filename string) bool {
 		return false
 	}
 
+	// Short simple words (like "alpha", "multi", "test") are not obfuscated.
+	if len(filebasename) >= 3 && len(filebasename) <= 10 && upperchars == 0 && decimals == 0 && spacesdots <= 1 {
+		slog.Debug("deobfuscate: not obfuscated — short simple word")
+		return false
+	}
+
 	slog.Debug("deobfuscate: obfuscated (default)")
 	return true
 }
