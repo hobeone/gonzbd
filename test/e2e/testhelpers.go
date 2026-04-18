@@ -92,8 +92,23 @@ func loadConfig(t *testing.T) *config.Config {
 func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDir string) {
 	t.Helper()
 
-	downloadDir = t.TempDir()
-	adminDir := t.TempDir()
+	keepFiles := os.Getenv("E2E_KEEP_FILES") == "1"
+
+	var err error
+	downloadDir, err = os.MkdirTemp("", "sabnzbd-e2e-download-*")
+	if err != nil {
+		t.Fatalf("os.MkdirTemp: %v", err)
+	}
+	adminDir, err := os.MkdirTemp("", "sabnzbd-e2e-admin-*")
+	if err != nil {
+		t.Fatalf("os.MkdirTemp: %v", err)
+	}
+
+	if keepFiles {
+		t.Logf("E2E_KEEP_FILES=1: leaving files in place:")
+		t.Logf("  downloadDir: %s", downloadDir)
+		t.Logf("  adminDir:    %s", adminDir)
+	}
 
 	appCfg := app.Config{
 		DownloadDir: downloadDir,
@@ -109,7 +124,6 @@ func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDi
 		opts = append(opts, app.WithLogger(debugLogger))
 	}
 
-	var err error
 	a, err = app.New(appCfg, opts...)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
@@ -125,10 +139,15 @@ func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDi
 		if err := a.Shutdown(); err != nil {
 			t.Logf("app.Shutdown: %v", err)
 		}
+		if !keepFiles {
+			_ = os.RemoveAll(downloadDir)
+			_ = os.RemoveAll(adminDir)
+		}
 	})
 
 	return a, downloadDir
 }
+
 
 // e2eMessageID generates a unique message-ID for E2E test articles.
 func e2eMessageID(filename string, partNum int) string {

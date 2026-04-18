@@ -13,6 +13,7 @@
 //	E2E_POST=1 go test -tags=e2e -timeout=10m ./test/e2e/                        # self-post tests
 //	E2E_NZB=/tmp/test.nzb go test -tags=e2e -timeout=10m ./test/e2e/             # download a specific NZB
 //	E2E_POST=1 E2E_DEBUG=1 go test -tags=e2e -timeout=10m -v ./test/e2e/         # with pipeline debug logging
+//	E2E_KEEP_FILES=1 E2E_NZB=... go test -tags=e2e ...                           # leave files in place
 package e2e
 
 import (
@@ -148,6 +149,17 @@ func TestE2E_SelfPost_MultiFile(t *testing.T) {
 		}
 	}
 
+	// Wait for job completion (post-processing triggered)
+	select {
+	case <-a.JobComplete():
+		// fall through
+	case <-ctx.Done():
+		t.Fatalf("timeout waiting for JobComplete")
+	}
+
+	// Small delay to allow PostProcessor stage (unpack) to actually finish
+	time.Sleep(1 * time.Second)
+
 	wantA := sha256.Sum256(payloadA)
 	wantB := sha256.Sum256(payloadB)
 	verifyFileOnDisk(t, downloadDir, "e2e-alpha.bin", wantA[:])
@@ -195,51 +207,21 @@ func TestE2E_ProvidedNZB(t *testing.T) {
 
 	fullPath := filepath.Join(downloadDir, "provided")
 
-	fmt.Printf("Waiting for at least %d files in %s...\n", numFiles, fullPath)
+	fmt.Printf("Waiting for JobComplete for %d files in %s...\n", numFiles, fullPath)
 
-	for {
-		// os.ReadDir is the modern, efficient replacement for ioutil.ReadDir
-		entries, err := os.ReadDir(fullPath)
-		if err != nil {
-			fmt.Printf("failed to read directory: %v, probably doesn't exit yet\n", err)
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
+	defer cancel()
 
-		fileCount := 0
-		for _, entry := range entries {
-			// Ensure we are only counting files, not subdirectories
-			if !entry.IsDir() {
-				fileCount++
-			}
-		}
-
-		// Check if our condition is met
-		if fileCount >= numFiles {
-			fmt.Printf("Condition met! Found %d files.\n", fileCount)
-			break
-		} else {
-			fmt.Printf("Found %d files out of %d\n", fileCount, numFiles)
-		}
-
-		// Pause the loop for the given interval before checking again
-		time.Sleep(1 * time.Second)
+	select {
+	case <-a.JobComplete():
+		// fall through
+	case <-ctx.Done():
+		t.Fatalf("timeout waiting for JobComplete")
 	}
-	fmt.Println("Moving on")
 
-	/*
-		got := make(map[int]bool)
-		for len(got) < numFiles {
-			select {
-			case fc := <-a.FileComplete():
-				if fc.JobID != job.ID {
-					continue
-				}
-				got[fc.FileIdx] = true
-				t.Logf("file %d complete (%d/%d)", fc.FileIdx, len(got), numFiles)
-			case <-ctx.Done():
-				t.Fatalf("timeout: %d/%d files completed", len(got), numFiles)
-			}
-		}
-	*/
+	// Small delay to allow PostProcessor stage (unpack) to actually finish
+	time.Sleep(1 * time.Second)
+
 	// Walk the download dir and verify all output files are non-empty.
 	entries, err := os.ReadDir(downloadDir)
 	if err != nil {
@@ -278,20 +260,34 @@ func TestE2E_ProvidedNZB(t *testing.T) {
 	}
 }
 
-// waitAndVerify waits for a FileComplete signal, then verifies the assembled
-// file has the expected SHA-256 digest.
+// waitAndVerify waits for FileComplete and then JobComplete signals, then
+// verifies the assembled file has the expected SHA-256 digest.
 func waitAndVerify(t *testing.T, a *app.Application, downloadDir, filename string, wantSHA []byte, timeout time.Duration) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	// Wait for file completion (assembly)
 	select {
 	case <-a.FileComplete():
 		// fall through
 	case <-ctx.Done():
 		t.Fatalf("timeout (%v) waiting for FileComplete", timeout)
 	}
+
+	// Wait for job completion (post-processing triggered)
+	select {
+	case <-a.JobComplete():
+		// fall through
+	case <-ctx.Done():
+		t.Fatalf("timeout (%v) waiting for JobComplete", timeout)
+	}
+
+	// Small delay to allow PostProcessor stage (unpack) to actually finish
+	// and write to disk, as JobComplete is fired when post-processing *starts*.
+	// TODO: Phase 5 should probably emit a PostProcComplete signal.
+	time.Sleep(1 * time.Second)
 
 	verifyFileOnDisk(t, downloadDir, filename, wantSHA)
 }

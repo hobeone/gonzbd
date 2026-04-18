@@ -117,6 +117,16 @@ func TestEndToEndDownload(t *testing.T) {
 			}
 		}
 	}
+
+	// Verify JobComplete signal
+	select {
+	case jc := <-application.JobComplete():
+		if jc.JobID != job.ID {
+			t.Fatalf("JobComplete JobID = %s, want %s", jc.JobID, job.ID)
+		}
+	case <-ctx.Done():
+		t.Fatalf("timeout waiting for job completion: %v", ctx.Err())
+	}
 }
 
 // makeDeterministic produces a reproducible byte sequence including every

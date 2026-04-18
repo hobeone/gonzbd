@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/cache"
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/downloader"
+	"github.com/hobeone/sabnzbd-go/internal/postproc"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
@@ -58,6 +60,13 @@ type FileComplete struct {
 	FileIdx int
 }
 
+// JobComplete is emitted on Application.JobComplete() when all files in a
+// job have been successfully assembled and the job is moving to the
+// PostProcessor.
+type JobComplete struct {
+	JobID string
+}
+
 // Application is the wired pipeline. Construct with New, start with Start,
 // shut down with Shutdown. Public methods are safe for concurrent use after
 // Start returns.
@@ -66,12 +75,14 @@ type Application struct {
 	mu  sync.Mutex
 	cfg Config
 
-	queue        *queue.Queue
-	cache        *cache.Cache
-	downloader   *downloader.Downloader
-	assembler    *assembler.Assembler
-	pipeline     *pipeline
-	fileComplete chan FileComplete
+	queue         *queue.Queue
+	cache         *cache.Cache
+	downloader    *downloader.Downloader
+	assembler     *assembler.Assembler
+	postProcessor *postproc.PostProcessor
+	pipeline      *pipeline
+	fileComplete  chan FileComplete
+	jobComplete   chan JobComplete
 
 	// internalFileComplete ensures we never miss a queue update due to
 	// a full buffer. The watchCompletions goroutine drains it.
@@ -112,6 +123,7 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 	d := downloader.New(q, servers, downloader.Options{}, log)
 
 	fileComplete := make(chan FileComplete, 64)
+	jobComplete := make(chan JobComplete, 16)
 	internalFileComplete := make(chan FileComplete, 64)
 
 	p := &pipeline{
@@ -122,6 +134,15 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 		updateCh:    make(chan (<-chan *downloader.ArticleResult), 1),
 		fileInfo:    make(map[fileKey]assembler.FileInfo),
 	}
+
+	pp := postproc.New(postproc.Options{
+		Stages: []postproc.Stage{
+			postproc.NewRepairStage(),
+			postproc.NewUnpackStage(),
+			postproc.NewDeobfuscateStage(),
+		},
+		Logger: log,
+	})
 
 	asm := assembler.New(assembler.Options{
 		FileInfo: p.resolveFileInfo,
@@ -142,8 +163,10 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 	app.cache = c
 	app.downloader = d
 	app.assembler = asm
+	app.postProcessor = pp
 	app.pipeline = p
 	app.fileComplete = fileComplete
+	app.jobComplete = jobComplete
 	app.internalFileComplete = internalFileComplete
 	return app, nil
 }
@@ -164,6 +187,11 @@ func (app *Application) Cache() *cache.Cache { return app.cache }
 // drain slowly will miss events (non-blocking sends are dropped).
 func (app *Application) FileComplete() <-chan FileComplete { return app.fileComplete }
 
+// JobComplete returns the receive-only channel carrying per-job
+// completion notifications. A job is complete when all its files have
+// finished reassembly.
+func (app *Application) JobComplete() <-chan JobComplete { return app.jobComplete }
+
 // Start brings up the assembler, downloader, and pipeline goroutine. The
 // given context is held for the lifetime of the Application; cancelling it
 // is equivalent to calling Shutdown.
@@ -178,6 +206,9 @@ func (app *Application) Start(ctx context.Context) error {
 	}
 	if err := app.downloader.Start(app.ctx); err != nil {
 		return fmt.Errorf("app: start downloader: %w", err)
+	}
+	if err := app.postProcessor.Start(app.ctx); err != nil {
+		return fmt.Errorf("app: start postprocessor: %w", err)
 	}
 
 	app.wg.Add(1)
@@ -220,6 +251,9 @@ func (app *Application) Shutdown() error {
 	var firstErr error
 	if err := app.downloader.Stop(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("app: stop downloader: %w", err)
+	}
+	if err := app.postProcessor.Stop(); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("app: stop postprocessor: %w", err)
 	}
 	app.wg.Wait()
 	if err := app.assembler.Stop(); err != nil && firstErr == nil {
@@ -277,8 +311,32 @@ func (app *Application) watchCompletions(ctx context.Context) {
 		case fc := <-app.internalFileComplete:
 			if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
 				app.log.Warn("failed to mark file complete", "job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
-			} else {
-				app.log.Info("file marked complete in queue", "job", fc.JobID, "fileidx", fc.FileIdx)
+				continue
+			}
+			app.log.Info("file marked complete in queue", "job", fc.JobID, "fileidx", fc.FileIdx)
+
+			// Check if the whole job is now complete.
+			job, err := app.queue.Get(fc.JobID)
+			if err != nil {
+				app.log.Warn("job not found while checking for completion", "job", fc.JobID, "err", err)
+				continue
+			}
+
+			if job.IsComplete() {
+				app.log.Info("job complete, sending to post-processor", "job", job.ID, "name", job.Name)
+
+				// 1. Trigger PostProcessor
+				ppJob := &postproc.Job{
+					Queue:       job,
+					DownloadDir: filepath.Join(app.cfg.DownloadDir, job.Name),
+				}
+				app.postProcessor.Process(ppJob)
+
+				// 2. Notify external subscribers
+				select {
+				case app.jobComplete <- JobComplete{JobID: job.ID}:
+				default:
+				}
 			}
 		}
 	}

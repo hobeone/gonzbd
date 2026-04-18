@@ -216,6 +216,16 @@ func NewJob(parsed *nzb.NZB, opts AddOptions) (*Job, error) {
 	return job, nil
 }
 
+// IsComplete returns true if all files in the job are marked complete.
+func (j *Job) IsComplete() bool {
+	for _, f := range j.Files {
+		if !f.Complete {
+			return false
+		}
+	}
+	return true
+}
+
 // deriveName strips directory components and the extension from path.
 // For "/watch/My.Show.S01E02.nzb" returns "My.Show.S01E02". A ".nzb.gz"
 // or ".nzb.bz2" double extension is collapsed to the bare stem too.
