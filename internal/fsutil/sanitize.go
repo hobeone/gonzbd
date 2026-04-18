@@ -100,6 +100,22 @@ func SanitizeFolderName(foldername string) string {
 	return foldername
 }
 
+// IsObfuscated returns true if the filename looks like an obfuscated hash
+// (e.g., 32, 40, or 64 hex characters).
+func IsObfuscated(name string) bool {
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	l := len(name)
+	if l != 32 && l != 40 && l != 64 && l != 128 {
+		return false
+	}
+	for _, r := range name {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
 func replaceWinDevices(name string) string {
 	lower := strings.ToLower(name)
 	for _, res := range reservedNames {

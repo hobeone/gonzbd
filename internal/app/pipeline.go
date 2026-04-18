@@ -175,7 +175,7 @@ func (p *pipeline) registerFile(jobID string, fileIdx int, yencName string) erro
 	// preventing a malicious article from writing outside downloadDir via
 	// a "../../etc/passwd" style filename.
 	filename := fsutil.SanitizeFilename(filepath.Base(yencName))
-	if filename == "" || filename == "." || filename == "/" || filename == "unknown" {
+	if filename == "" || filename == "." || filename == "/" || filename == "unknown" || fsutil.IsObfuscated(filename) {
 		// Fallback: use the subject from the NZB (which was already sanitized during parsing).
 		filename = job.Files[fileIdx].Subject
 	}
