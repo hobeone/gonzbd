@@ -150,6 +150,7 @@ type UnfinishedArticle struct {
 	FileIdx   int
 	MessageID string
 	Bytes     int
+	Subject   string
 }
 
 // ForEachUnfinishedArticle invokes fn for every not-yet-Done article
@@ -184,6 +185,7 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 					FileIdx:   fi,
 					MessageID: art.ID,
 					Bytes:     art.Bytes,
+					Subject:   file.Subject,
 				}) {
 					return
 				}
@@ -241,7 +243,7 @@ func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
 			if job.Files[fi].Articles[ai].ID == messageID {
 				if !job.Files[fi].Articles[ai].Done {
 					job.Files[fi].Articles[ai].Done = true
-					slog.Debug("article marked FAILED", "msgid", messageID, "job", jobID, "remaining", job.RemainingBytes)
+					slog.Warn("article marked FAILED", "msgid", messageID, "job", jobID, "remaining", job.RemainingBytes)
 					return true, nil
 				}
 				return false, nil

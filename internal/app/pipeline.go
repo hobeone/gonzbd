@@ -76,7 +76,7 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 	if res.Err != nil {
 		if errors.Is(res.Err, downloader.ErrNoServersLeft) {
 			p.log.Warn("article permanently failed, marking in queue",
-				"job", res.JobID, "msgid", res.MessageID)
+				"job", res.JobID, "msgid", res.MessageID, "file", res.Subject)
 
 			first, err := p.queue.MarkArticleFailed(res.JobID, res.MessageID)
 			if err != nil {
@@ -88,13 +88,16 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 				return // Already processed this failure
 			}
 
-			// Find the job/file to get a fallback filename if not yet registered
-			job, err := p.queue.Get(res.JobID)
-			var filename string
-			if err == nil && res.FileIdx >= 0 && res.FileIdx < len(job.Files) {
-				filename = job.Files[res.FileIdx].Subject
-			} else {
-				filename = "unknown_failed_part"
+			// Find the job/file to get a fallback filename if not yet registered.
+			// Prefer res.Subject as it's passed from the NZB parser.
+			filename := res.Subject
+			if filename == "" {
+				job, err := p.queue.Get(res.JobID)
+				if err == nil && res.FileIdx >= 0 && res.FileIdx < len(job.Files) {
+					filename = job.Files[res.FileIdx].Subject
+				} else {
+					filename = "unknown_failed_part"
+				}
 			}
 
 			if err := p.registerFile(res.JobID, res.FileIdx, filename); err != nil {

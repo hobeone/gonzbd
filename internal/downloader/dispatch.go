@@ -43,7 +43,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 		if a.JobStatus == constants.StatusPaused {
 			return true // skip paused jobs, keep iterating
 		}
-		if d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, now) {
+		if d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, a.Subject, now) {
 			dispatched++
 		}
 		// Always continue — per-article send is non-blocking and
@@ -72,13 +72,14 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 //
 // Returns silently if no server accepts — a future dispatchReady
 // signal from any worker will bring us back to re-try.
-func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int, messageID string, bytes int, now time.Time) bool {
+func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int, messageID string, bytes int, subject string, now time.Time) bool {
 	key := articleKey{jobID: jobID, messageID: messageID}
 	req := &articleRequest{
 		jobID:     jobID,
 		messageID: messageID,
 		fileIdx:   fileIdx,
 		bytes:     bytes,
+		subject:   subject,
 	}
 
 	d.tryMu.Lock()
@@ -122,7 +123,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 	// If we found no eligible servers to even try (all are in the tryList),
 	// this article is permanently failed for this session.
 	if !anyEligible {
-		d.log.Debug("article failed on all servers", "msgid", messageID, "job", jobID)
+		d.log.Warn("article failed on all servers", "msgid", messageID, "job", jobID)
 		d.emitResult(ctx, req, "", nil, ErrNoServersLeft)
 		// Return true so ForEachUnfinishedArticle considers this "handled"
 		// and moves to the next article immediately.
@@ -196,7 +197,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	body, err := (*connPtr).Fetch(ctx, req.messageID)
 	if err != nil {
 		if errors.Is(err, nntp.ErrNoArticle) {
-			d.log.Debug("article not found", "server", name, "msgid", req.messageID)
+			d.log.Info("article not found", "server", name, "msgid", req.messageID)
 			// The server definitively said no. Try-list entry is
 			// retained so we won't retry here; connection is
 			// healthy — reuse it.
@@ -249,6 +250,7 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		JobID:      req.jobID,
 		FileIdx:    req.fileIdx,
 		MessageID:  req.messageID,
+		Subject:    req.subject,
 		ServerName: server,
 		Body:       body,
 		Err:        err,

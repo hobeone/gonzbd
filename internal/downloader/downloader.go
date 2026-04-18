@@ -36,6 +36,9 @@ type ArticleResult struct {
 	// file's assembly buffer.
 	FileIdx int
 
+	// Subject is the filename or subject from the NZB for this article's file.
+	Subject string
+
 	// ServerName is the name of the server that served (or failed)
 	// the request. Empty when the article was never dispatched.
 	ServerName string
@@ -64,6 +67,7 @@ type articleRequest struct {
 	messageID string
 	fileIdx   int
 	bytes     int
+	subject   string
 }
 
 // Options tunes Downloader behavior. Defaults (zero values) are

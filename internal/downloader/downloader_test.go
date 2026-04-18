@@ -495,6 +495,9 @@ func TestDownloaderDialFailure(t *testing.T) {
 			t.Errorf("expected dial failure, got success for %s", r.MessageID)
 		}
 	}
+	// Give the server a moment to update stats under its lock
+	time.Sleep(100 * time.Millisecond)
+
 	// Server should have accumulated bad connection count.
 	if srv.BadConnections() < 2 {
 		t.Errorf("BadConnections = %d, want >= 2", srv.BadConnections())
