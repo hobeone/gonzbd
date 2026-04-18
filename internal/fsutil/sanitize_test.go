@@ -32,6 +32,29 @@ func TestSanitizeFilename(t *testing.T) {
 		})
 	}
 }
+func TestSanitizeFolderName(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"empty", "", "unknown"},
+		{"basic", "My Show", "My Show"},
+		{"trailing dots", "My Show...", "My Show"},
+		{"trailing spaces", "My Show   ", "My Show"},
+		{"illegal and trailing", "My:Show?...", "My_Show_"},
+		{"windows device", "CON", "_CON"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeFolderName(tt.input)
+			if got != tt.expected {
+				t.Errorf("SanitizeFolderName(%q) = %q; want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
 
 func TestTruncateFilename(t *testing.T) {
 	tests := []struct {

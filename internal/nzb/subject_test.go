@@ -13,6 +13,7 @@ func TestExtractFilenameFromSubject(t *testing.T) {
 		{"complex", `[#something] "another.file.mkv" [2/5]`, "another.file.mkv"},
 		{"no match", `just some text without extension`, "just some text without extension"},
 		{"brackets", `file_name [with brackets].mp4`, "file_name [with brackets].mp4"},
+		{"unicode", `测试文件.rar (1/10)`, "测试文件.rar"},
 	}
 
 	for _, tt := range tests {

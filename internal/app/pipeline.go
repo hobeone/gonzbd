@@ -176,7 +176,8 @@ func (p *pipeline) registerFile(jobID string, fileIdx int, yencName string) erro
 	// a "../../etc/passwd" style filename.
 	filename := fsutil.SanitizeFilename(filepath.Base(yencName))
 	if filename == "" || filename == "." || filename == "/" || filename == "unknown" {
-		return fmt.Errorf("invalid filename %q", yencName)
+		// Fallback: use the subject from the NZB (which was already sanitized during parsing).
+		filename = job.Files[fileIdx].Subject
 	}
 
 	p.mu.Lock()

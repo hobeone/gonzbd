@@ -32,7 +32,6 @@ func SanitizeFilename(filename string) string {
 	filename = norm.NFC.String(filename)
 
 	// 2. Remove illegal characters (control characters 0-31 and Windows reserved characters)
-	// We are strict by default to ensure portability.
 	illegal := "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f" +
 		"\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f" +
 		`\/:*?"<>|`
@@ -55,6 +54,50 @@ func SanitizeFilename(filename string) string {
 
 	// 4. Truncate length while preserving extension.
 	return truncateFilename(filename, maxFilenameBytes)
+}
+
+// SanitizeFolderName cleans up a folder name to ensure it is safe for all filesystems.
+// It follows the logic of Python SABnzbd's sanitize_foldername.
+func SanitizeFolderName(foldername string) string {
+	if foldername == "" {
+		return "unknown"
+	}
+
+	// 1. NFC Normalization
+	foldername = norm.NFC.String(foldername)
+
+	// 2. Remove illegal characters
+	illegal := "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f" +
+		"\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f" +
+		`\/:*?"<>|`
+
+	foldername = strings.Map(func(r rune) rune {
+		if strings.ContainsRune(illegal, r) {
+			return '_'
+		}
+		return r
+	}, foldername)
+
+	foldername = strings.TrimSpace(foldername)
+
+	// 3. Replace Windows reserved device names
+	foldername = replaceWinDevices(foldername)
+
+	// 4. Truncate length
+	if len(foldername) > maxFilenameBytes {
+		foldername = truncateFilename(foldername, maxFilenameBytes)
+	}
+
+	// 5. Remove trailing dots and spaces (invalid on Windows)
+	for len(foldername) > 0 && (foldername[len(foldername)-1] == '.' || foldername[len(foldername)-1] == ' ') {
+		foldername = strings.TrimRight(foldername, ". ")
+	}
+
+	if foldername == "" {
+		return "unknown"
+	}
+
+	return foldername
 }
 
 func replaceWinDevices(name string) string {
