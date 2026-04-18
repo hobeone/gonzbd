@@ -295,6 +295,37 @@ func TestMarkFileComplete(t *testing.T) {
 	}
 }
 
+func TestMarkArticleFailed(t *testing.T) {
+	q := New()
+	j := makeJob(t, "j", constants.NormalPriority)
+	_ = q.Add(j)
+
+	msgID := j.Files[0].Articles[0].ID
+	initialRemaining := j.RemainingBytes
+
+	first, err := q.MarkArticleFailed(j.ID, msgID)
+	if err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
+	}
+	if !first {
+		t.Error("expected first=true")
+	}
+
+	got, _ := q.Get(j.ID)
+	if !got.Files[0].Articles[0].Done {
+		t.Error("article should be marked Done")
+	}
+	if got.RemainingBytes != initialRemaining {
+		t.Errorf("RemainingBytes changed: got %d, want %d", got.RemainingBytes, initialRemaining)
+	}
+
+	// Repeat failure should return false
+	first, _ = q.MarkArticleFailed(j.ID, msgID)
+	if first {
+		t.Error("expected first=false on repeat")
+	}
+}
+
 func TestNotifyCoalesces(t *testing.T) {
 	q := New()
 	for i := 0; i < 5; i++ {

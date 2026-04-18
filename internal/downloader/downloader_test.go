@@ -280,7 +280,7 @@ func TestDownloaderHappyPath(t *testing.T) {
 	}
 
 	srv := testServer(t, "primary", ms.addr)
-	d := New(q, []*Server{srv}, Options{})
+	d := New(q, []*Server{srv}, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestDownloaderFallbackServer(t *testing.T) {
 
 	srvPrimary := testServer(t, "primary", primary.addr)
 	srvBackup := testServer(t, "backup", backup.addr)
-	d := New(q, []*Server{srvPrimary, srvBackup}, Options{})
+	d := New(q, []*Server{srvPrimary, srvBackup}, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestDownloaderNoSpeculativeFallback(t *testing.T) {
 
 	srvPrimary := testServer(t, "primary", primary.addr)
 	srvBackup := testServer(t, "backup", backup.addr)
-	d := New(q, []*Server{srvPrimary, srvBackup}, Options{})
+	d := New(q, []*Server{srvPrimary, srvBackup}, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestDownloaderPauseResume(t *testing.T) {
 	ms.addArticle("p@h", "body-p")
 
 	q := queue.New()
-	d := New(q, []*Server{testServer(t, "s", ms.addr)}, Options{})
+	d := New(q, []*Server{testServer(t, "s", ms.addr)}, Options{}, nil)
 	d.Pause()
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -482,7 +482,7 @@ func TestDownloaderDialFailure(t *testing.T) {
 		c.Optional = true
 		c.Required = false
 	})
-	d := New(q, []*Server{srv}, Options{})
+	d := New(q, []*Server{srv}, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -513,7 +513,7 @@ func TestDownloaderAuth(t *testing.T) {
 		c.Password = "secret"
 		c.Connections = 1
 	})
-	d := New(q, []*Server{srv}, Options{})
+	d := New(q, []*Server{srv}, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -540,7 +540,7 @@ func TestDownloaderGracefulShutdown(t *testing.T) {
 	}
 	_ = q.Add(makeJobWithArticles(t, ids))
 
-	d := New(q, []*Server{testServer(t, "s", ms.addr)}, Options{})
+	d := New(q, []*Server{testServer(t, "s", ms.addr)}, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -577,7 +577,7 @@ func TestDownloaderSetSpeedLimit(t *testing.T) {
 	q := queue.New()
 	_ = q.Add(makeJobWithArticles(t, []string{"a@h"}))
 
-	d := New(q, []*Server{testServer(t, "s", ms.addr)}, Options{})
+	d := New(q, []*Server{testServer(t, "s", ms.addr)}, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -600,12 +600,12 @@ func TestDownloaderNewPanicsOnEmptyServers(t *testing.T) {
 			t.Error("New with zero servers should panic")
 		}
 	}()
-	_ = New(queue.New(), nil, Options{})
+	_ = New(queue.New(), nil, Options{}, nil)
 }
 
 func TestDownloaderDoubleStart(t *testing.T) {
 	ms := newMockNNTP(t)
-	d := New(queue.New(), []*Server{testServer(t, "s", ms.addr)}, Options{})
+	d := New(queue.New(), []*Server{testServer(t, "s", ms.addr)}, Options{}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

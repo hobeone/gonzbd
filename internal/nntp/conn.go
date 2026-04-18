@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -96,6 +97,7 @@ func classifyStatus(code int) error {
 // is usable only while State() == StateReady. Once Close returns the
 // Conn is inert — discard it and Dial a fresh one to reconnect.
 type Conn struct {
+	log *slog.Logger
 	cfg config.ServerConfig
 
 	nc net.Conn
@@ -216,13 +218,22 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 // On any error during handshake the socket is closed before the error
 // is returned; the caller does not need to Close a *Conn that never
 // escaped Dial.
-func Dial(ctx context.Context, cfg config.ServerConfig) (*Conn, error) {
+func Dial(ctx context.Context, cfg config.ServerConfig, log ...*slog.Logger) (*Conn, error) {
+	var l *slog.Logger
+	if len(log) > 0 && log[0] != nil {
+		l = log[0].With("component", "nntp", "server", cfg.Name, "host", cfg.Host)
+	} else {
+		l = slog.Default().With("component", "nntp", "server", cfg.Name, "host", cfg.Host)
+	}
+
 	opts, err := newDialOptions(cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	addr := net.JoinHostPort(opts.host, strconv.Itoa(opts.port))
+	l.Debug("dialing", "addr", addr, "ssl", opts.useTLS, "timeout", opts.dialer.Timeout)
+
 	var nc net.Conn
 	if opts.useTLS {
 		d := &tls.Dialer{NetDialer: opts.dialer, Config: opts.tlsConfig}
@@ -231,10 +242,13 @@ func Dial(ctx context.Context, cfg config.ServerConfig) (*Conn, error) {
 		nc, err = opts.dialer.DialContext(ctx, "tcp", addr)
 	}
 	if err != nil {
+		l.Debug("dial failed", "addr", addr, "error", err)
 		return nil, fmt.Errorf("nntp: dial %s: %w", addr, err)
 	}
+	l.Debug("TCP connected", "addr", addr)
 
 	c := &Conn{
+		log:        l,
 		cfg:        cfg,
 		nc:         nc,
 		bw:         bufio.NewWriter(nc),
@@ -247,13 +261,16 @@ func Dial(ctx context.Context, cfg config.ServerConfig) (*Conn, error) {
 	if tc, ok := nc.(*tls.Conn); ok {
 		st := tc.ConnectionState()
 		c.sslInfo = fmt.Sprintf("%s / %s", tlsVersionString(st.Version), tls.CipherSuiteName(st.CipherSuite))
+		l.Debug("TLS established", "tls", c.sslInfo)
 	}
 
 	if err := c.handshake(ctx, cfg); err != nil {
+		l.Debug("handshake failed", "error", err)
 		_ = nc.Close() //nolint:errcheck // handshake failed; socket is being torn down regardless
 		return nil, err
 	}
 
+	l.Debug("handshake complete, connection ready")
 	go c.runReader()
 	return c, nil
 }
@@ -263,13 +280,17 @@ func Dial(ctx context.Context, cfg config.ServerConfig) (*Conn, error) {
 // step reads exactly one response with no FIFO bookkeeping.
 func (c *Conn) handshake(ctx context.Context, cfg config.ServerConfig) error {
 	if deadline, ok := ctx.Deadline(); ok {
+		c.log.Debug("handshake: setting deadline", "deadline", deadline)
 		if err := c.nc.SetDeadline(deadline); err != nil {
 			return fmt.Errorf("nntp: set deadline: %w", err)
 		}
 		defer func() { _ = c.nc.SetDeadline(time.Time{}) }() //nolint:errcheck // clearing deadline on path out; any error is cosmetic
+	} else {
+		c.log.Debug("handshake: no context deadline (no timeout on handshake reads)")
 	}
 
 	// Greeting.
+	c.log.Debug("handshake: waiting for greeting")
 	line, err := readResponseLine(c.br)
 	if err != nil {
 		return fmt.Errorf("nntp: read greeting: %w", err)
@@ -278,6 +299,7 @@ func (c *Conn) handshake(ctx context.Context, cfg config.ServerConfig) error {
 	if err != nil {
 		return err
 	}
+	c.log.Debug("handshake: greeting received", "code", code, "text", text)
 	if code != 200 && code != 201 {
 		return &ServerError{Code: code, Text: text}
 	}
@@ -286,14 +308,20 @@ func (c *Conn) handshake(ctx context.Context, cfg config.ServerConfig) error {
 	}
 
 	if cfg.Username != "" {
+		c.log.Debug("handshake: authenticating", "user", cfg.Username)
 		if err := c.authenticate(cfg.Username, cfg.Password); err != nil {
+			c.log.Debug("handshake: auth failed", "error", err)
 			return err
 		}
+		c.log.Debug("handshake: authenticated")
 	}
 
 	// Capability probe is best-effort: servers that refuse it still
 	// work for BODY/STAT via the fallback in capabilities.go.
+	c.log.Debug("handshake: probing capabilities")
 	c.caps = probeCapabilities(c.bw, c.br)
+	c.log.Debug("handshake: capabilities",
+		"body", c.caps.HasBody, "stat", c.caps.HasStat, "compress", c.caps.HasCompress)
 
 	// Whether or not we authenticated, the connection is now dispatch-
 	// ready. Advance to Ready.
@@ -389,20 +417,24 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 	select {
 	case <-pc.done:
 		if pc.result.err != nil {
+			c.log.Debug("fetch error", "msgid", messageID, "error", pc.result.err)
 			return nil, pc.result.err
 		}
 		if sentinel := classifyStatus(pc.result.code); sentinel != nil {
+			c.log.Debug("fetch rejected", "msgid", messageID, "code", pc.result.code)
 			return nil, fmt.Errorf("%w: %d %s", sentinel, pc.result.code, pc.result.line)
 		}
 		if pc.result.code != 222 {
 			return nil, &ServerError{Code: pc.result.code, Text: pc.result.line}
 		}
+		c.log.Debug("fetch ok", "msgid", messageID, "bytes", len(pc.result.body))
 		return pc.result.body, nil
 	case <-ctx.Done():
 		// Mark the pending entry orphaned. The reader goroutine
 		// will still read+discard the response, freeing the
 		// semaphore slot.
 		pc.orphaned.Store(true)
+		c.log.Debug("fetch cancelled", "msgid", messageID)
 		return nil, ctx.Err()
 	}
 }

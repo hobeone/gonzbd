@@ -3,6 +3,7 @@ package queue
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 
@@ -172,14 +173,6 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 			if file.Complete {
 				continue
 			}
-			fmt.Printf("Checking %s to see if it has articles to get\n", file.Subject)
-			incomp := 0
-			for _, art := range file.Articles {
-				if !art.Done {
-					incomp++
-				}
-			}
-			fmt.Printf("%s has %d articles to get\n", file.Subject, incomp)
 			for ai := range file.Articles {
 				art := &file.Articles[ai]
 				if art.Done {
@@ -224,12 +217,38 @@ func (q *Queue) MarkArticleDone(jobID, messageID string) error {
 				if !job.Files[fi].Articles[ai].Done {
 					job.Files[fi].Articles[ai].Done = true
 					job.RemainingBytes -= int64(job.Files[fi].Articles[ai].Bytes)
+					slog.Debug("article done (success)", "msgid", messageID, "job", jobID, "remaining", job.RemainingBytes)
 				}
 				return nil
 			}
 		}
 	}
 	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
+}
+
+// MarkArticleFailed marks an article as Done but does NOT decrement the
+// remaining byte count of the job. Returns (true, nil) if it was the first
+// time this article was marked done.
+func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return false, fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	for fi := range job.Files {
+		for ai := range job.Files[fi].Articles {
+			if job.Files[fi].Articles[ai].ID == messageID {
+				if !job.Files[fi].Articles[ai].Done {
+					job.Files[fi].Articles[ai].Done = true
+					slog.Debug("article marked FAILED", "msgid", messageID, "job", jobID, "remaining", job.RemainingBytes)
+					return true, nil
+				}
+				return false, nil
+			}
+		}
+	}
+	return false, fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 }
 
 // MarkFileComplete marks the file at fileIdx within jobID as fully assembled
