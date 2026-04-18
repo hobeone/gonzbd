@@ -11,6 +11,7 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/assembler"
 	"github.com/hobeone/sabnzbd-go/internal/decoder"
 	"github.com/hobeone/sabnzbd-go/internal/downloader"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
@@ -172,8 +173,8 @@ func (p *pipeline) registerFile(jobID string, fileIdx int, yencName string) erro
 	// filepath.Base strips any path components from the yEnc name= field,
 	// preventing a malicious article from writing outside downloadDir via
 	// a "../../etc/passwd" style filename.
-	filename := filepath.Base(yencName)
-	if filename == "" || filename == "." || filename == "/" {
+	filename := fsutil.SanitizeFilename(filepath.Base(yencName))
+	if filename == "" || filename == "." || filename == "/" || filename == "unknown" {
 		return fmt.Errorf("invalid filename %q", yencName)
 	}
 
