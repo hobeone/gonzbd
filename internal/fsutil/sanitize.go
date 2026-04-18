@@ -1,6 +1,8 @@
 package fsutil
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -103,4 +105,21 @@ func truncateFilename(filename string, maxBytes int) string {
 	}
 
 	return truncatedBase + ext
+}
+
+// GetUniqueFilename returns a unique version of the path by appending .1, .2, etc.
+// if the file already exists on disk.
+func GetUniqueFilename(path string) string {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return path
+	}
+
+	ext := filepath.Ext(path)
+	base := path[:len(path)-len(ext)]
+	for i := 1; ; i++ {
+		newPath := fmt.Sprintf("%s.%d%s", base, i, ext)
+		if _, err := os.Stat(newPath); os.IsNotExist(err) {
+			return newPath
+		}
+	}
 }
