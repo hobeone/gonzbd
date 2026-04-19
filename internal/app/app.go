@@ -118,6 +118,9 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 	if cfg.DownloadDir == "" {
 		return nil, errors.New("app: DownloadDir is required")
 	}
+	if cfg.CompleteDir == "" {
+		return nil, errors.New("app: CompleteDir is required")
+	}
 
 	app := &Application{cfg: cfg, log: slog.Default()}
 	for _, o := range opts {

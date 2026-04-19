@@ -49,7 +49,7 @@ func main() {
 	nzbPath := flag.String("nzb", "", "one-shot: path to NZB file to download (mutually exclusive with --serve)")
 	serve := flag.Bool("serve", false, "run the daemon: HTTP server (API + web UI) blocking until signal")
 	listenAddr := flag.String("listen", "", "override the config's host:port listener (serve mode only)")
-	downloadDir := flag.String("download-dir", "", "override complete-dir from config")
+	downloadDir := flag.String("download-dir", "", "override download-dir (incomplete) from config")
 	pidPath := flag.String("pid", "", "write daemon PID to this path while running (serve mode only)")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
@@ -412,12 +412,12 @@ func keyPrefix(key string) string {
 // resolveDirs computes the effective download and admin directories from
 // the config and optional overrides. Separated from serveMode for reuse.
 func resolveDirs(cfg *config.Config, downloadDirOverride string) (dlDir, adminDir string, err error) {
-	dlDir = cfg.General.CompleteDir
+	dlDir = cfg.General.DownloadDir
 	if downloadDirOverride != "" {
 		dlDir = downloadDirOverride
 	}
 	if dlDir == "" {
-		return "", "", fmt.Errorf("complete directory is empty (set general.complete_dir in config or pass --download-dir)")
+		return "", "", fmt.Errorf("download directory is empty (set general.download_dir in config or pass --download-dir)")
 	}
 
 	adminDir = cfg.General.AdminDir
