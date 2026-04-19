@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/hobeone/sabnzbd-go/internal/deobfuscate"
+	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/par2"
 	"github.com/hobeone/sabnzbd-go/internal/sorting"
 	"github.com/hobeone/sabnzbd-go/internal/unpack"
@@ -32,33 +34,66 @@ func (*RepairStage) Run(ctx context.Context, job *Job) error {
 		job.ParError = true
 		return fmt.Errorf("repair: find par2 sets: %w", err)
 	}
-	if len(sets) == 0 {
-		return nil
-	}
+
+	// Scan for temporary files written by the assembler.
+	tmpFiles, _ := filepath.Glob(filepath.Join(job.DownloadDir, "*.tmp"))
+
 	var firstErr error
-	for _, set := range sets {
-		main := set.MainFile
-		if main == "" && len(set.ExtraFiles) > 0 {
-			main = set.ExtraFiles[0]
-		}
-		if main == "" {
-			continue
-		}
-		res, err := par2.Repair(ctx, main)
-		if err != nil {
-			job.ParError = true
-			if firstErr == nil {
-				firstErr = fmt.Errorf("repair %q: %w", set.Name, err)
+	if len(sets) > 0 {
+		for _, set := range sets {
+			main := set.MainFile
+			if main == "" && len(set.ExtraFiles) > 0 {
+				main = set.ExtraFiles[0]
 			}
-			continue
-		}
-		if !res.Success {
-			job.ParError = true
-			if firstErr == nil {
-				firstErr = fmt.Errorf("repair %q: unsuccessful (exit=%d)", set.Name, res.ExitCode)
+			if main == "" {
+				continue
+			}
+			res, err := par2.Repair(ctx, main, tmpFiles...)
+			if err != nil {
+				job.ParError = true
+				if firstErr == nil {
+					firstErr = fmt.Errorf("repair %q: %w", set.Name, err)
+				}
+				continue
+			}
+			if !res.Success {
+				job.ParError = true
+				if firstErr == nil {
+					firstErr = fmt.Errorf("repair %q: unsuccessful (exit=%d)", set.Name, res.ExitCode)
+				}
 			}
 		}
 	}
+
+	// Fallback: Rename any remaining *.tmp files using NZB metadata/subject.
+	// This handles jobs without PAR2 files and ensures we have correct
+	// filenames for the Unpack stage.
+	remainingTmp, _ := filepath.Glob(filepath.Join(job.DownloadDir, "*.tmp"))
+	for _, tmpPath := range remainingTmp {
+		base := filepath.Base(tmpPath)
+		var fileIdx int
+		if _, err := fmt.Sscanf(base, "%04d.tmp", &fileIdx); err != nil {
+			continue
+		}
+		if fileIdx < 0 || fileIdx >= len(job.Queue.Files) {
+			continue
+		}
+
+		cleanName := nzb.ExtractFilenameFromSubject(job.Queue.Files[fileIdx].Subject)
+		destPath := filepath.Join(job.DownloadDir, cleanName)
+
+		// Don't overwrite existing files
+		if _, err := os.Stat(destPath); err == nil {
+			continue
+		}
+
+		if err := os.Rename(tmpPath, destPath); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("fallback rename %q -> %q: %w", base, cleanName, err)
+			}
+		}
+	}
+
 	return firstErr
 }
 

@@ -7,23 +7,13 @@ import (
 	"time"
 )
 
-// DefaultMaxFastPerCycle mirrors Python's MAX_FAST_JOB_COUNT = 3.
-// Every MaxFastPerCycle fast jobs, the worker pulls one slow job so that
-// slow-queue jobs are never starved indefinitely.
-const DefaultMaxFastPerCycle = 3
-
 // Options configures a PostProcessor at construction time.
 type Options struct {
 	// Stages is the ordered list of post-processing stages.  They run in
 	// slice order for every job.  An empty slice is valid (no-op pipeline).
 	Stages []Stage
 
-	// MaxFastPerCycle is the maximum number of consecutive fast-queue jobs
-	// before the worker pulls one slow-queue job.  Zero means use
-	// DefaultMaxFastPerCycle.
-	MaxFastPerCycle int
-
-	// OnEmpty is called (in the worker goroutine) when both queues drain to
+	// OnEmpty is called (in the worker goroutine) when the queue drains to
 	// empty after processing a job.  Mirrors Python's handle_empty_queue.
 	// May be nil.
 	OnEmpty func()
@@ -37,17 +27,16 @@ type Options struct {
 }
 
 // PostProcessor is the post-processing orchestrator.  It owns a single worker
-// goroutine that dequeues jobs from the fast/slow ppQueue and runs each
+// goroutine that dequeues jobs from the ppQueue and runs each
 // registered Stage in order.
 //
 // Use New to construct; Start to launch the worker; Stop to shut it down
 // gracefully.  All public methods are safe for concurrent use.
 type PostProcessor struct {
-	stages          []Stage
-	maxFastPerCycle int
-	onEmpty         func()
-	onJobDone       func(*Job)
-	log             *slog.Logger
+	stages    []Stage
+	onEmpty   func()
+	onJobDone func(*Job)
+	log       *slog.Logger
 
 	q *ppQueue
 
@@ -79,21 +68,17 @@ type PostProcessor struct {
 // New constructs a PostProcessor from opts.  It does not start the worker;
 // call Start for that.
 func New(opts Options) *PostProcessor {
-	if opts.MaxFastPerCycle <= 0 {
-		opts.MaxFastPerCycle = DefaultMaxFastPerCycle
-	}
 	lg := opts.Logger
 	if lg == nil {
 		lg = slog.Default()
 	}
 	return &PostProcessor{
-		stages:          opts.Stages,
-		maxFastPerCycle: opts.MaxFastPerCycle,
-		onEmpty:         opts.OnEmpty,
-		onJobDone:       opts.OnJobDone,
-		log:             lg,
-		q:               newPPQueue(opts.MaxFastPerCycle),
-		resumeC:         make(chan struct{}),
+		stages:    opts.Stages,
+		onEmpty:   opts.OnEmpty,
+		onJobDone: opts.OnJobDone,
+		log:       lg,
+		q:         newPPQueue(),
+		resumeC:   make(chan struct{}),
 	}
 }
 
@@ -119,16 +104,10 @@ func (p *PostProcessor) Stop() error {
 	return nil
 }
 
-// Process enqueues job for post-processing.  Jobs with a non-nil DirectUnpack
-// go on the fast queue; all others go on the slow queue.
+// Process enqueues job for post-processing.
 func (p *PostProcessor) Process(job *Job) {
-	if job.DirectUnpack != nil && job.DirectUnpack.Active {
-		p.log.Info("postproc: enqueuing on fast queue", "job", job.Queue.ID)
-		p.q.PushFast(job)
-	} else {
-		p.log.Info("postproc: enqueuing on slow queue", "job", job.Queue.ID)
-		p.q.PushSlow(job)
-	}
+	p.log.Info("postproc: enqueuing job", "job", job.Queue.ID)
+	p.q.Push(job)
 }
 
 // Pause halts processing after the current job finishes.  Safe to call
@@ -178,15 +157,15 @@ func closeOnce(ch chan struct{}) {
 	}
 }
 
-// Cancel removes job with jobID from the fast or slow queue.  If the job is
+// Cancel removes job with jobID from the queue.  If the job is
 // currently being processed its context is already managed by Stop/workerCtx;
 // stages must respect ctx.Done() for cancellation during execution.
-// Returns true if the job was found and removed from a queue.
+// Returns true if the job was found and removed from the queue.
 func (p *PostProcessor) Cancel(jobID string) bool {
 	return p.q.Cancel(jobID)
 }
 
-// Empty returns true when both queues are empty and no job is currently being
+// Empty returns true when the queue is empty and no job is currently being
 // processed.
 func (p *PostProcessor) Empty() bool {
 	p.busyMu.Lock()

@@ -39,10 +39,19 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 	now := time.Now()
 
 	dispatched := 0
+	hopelessJobs := make(map[string]struct{})
+
 	d.queue.ForEachUnfinishedArticle(func(a queue.UnfinishedArticle) bool {
 		if a.JobStatus == constants.StatusPaused {
 			return true // skip paused jobs, keep iterating
 		}
+
+		// Early Health Gate: Check if the job is beyond repair.
+		if a.FailedBytes > a.Par2Bytes {
+			hopelessJobs[a.JobID] = struct{}{}
+			return true // Move to next job
+		}
+
 		if d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, a.Subject, now) {
 			dispatched++
 		}
@@ -50,6 +59,12 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 		// we want to fan out as much as will fit this pass.
 		return ctx.Err() == nil
 	})
+
+	// Pause hopeless jobs after the queue read-lock is released.
+	for jobID := range hopelessJobs {
+		d.log.Warn("job beyond repair (failed bytes > par2 bytes), pausing job", "job", jobID)
+		_ = d.queue.Pause(jobID)
+	}
 }
 
 // tryDispatch hands the article to the first eligible server with

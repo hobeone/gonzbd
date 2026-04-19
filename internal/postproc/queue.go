@@ -5,48 +5,29 @@ import (
 	"sync"
 )
 
-// ppQueue is the fast/slow scheduling primitive used by PostProcessor.
+// ppQueue is the scheduling primitive used by PostProcessor.
 // There is exactly one consumer (the PostProcessor worker goroutine) and
 // potentially many producers (Process callers).
 //
-// Scheduling rule (mirrors Python MAX_FAST_JOB_COUNT logic exactly):
-//
-//	On Pop, if fastInRow >= maxFastPerCycle AND slow queue is non-empty
-//	→ pull from slow, reset fastInRow.
-//	Otherwise, prefer fast (increment fastInRow);
-//	if fast is empty, fall back to slow (reset fastInRow).
-//
 // The notifyCh (capacity 1) is signalled on every push; Pop blocks on it
-// when both queues are empty.
+// when the queue is empty.
 type ppQueue struct {
-	mu              sync.Mutex
-	fast            []*Job
-	slow            []*Job
-	fastInRow       int
-	maxFastPerCycle int
-	notifyCh        chan struct{}
+	mu       sync.Mutex
+	jobs     []*Job
+	notifyCh chan struct{}
 }
 
-// newPPQueue constructs an empty ppQueue. maxFastPerCycle must be > 0.
-func newPPQueue(maxFastPerCycle int) *ppQueue {
+// newPPQueue constructs an empty ppQueue.
+func newPPQueue() *ppQueue {
 	return &ppQueue{
-		maxFastPerCycle: maxFastPerCycle,
-		notifyCh:        make(chan struct{}, 1),
+		notifyCh: make(chan struct{}, 1),
 	}
 }
 
-// PushFast enqueues a job onto the fast (DirectUnpack) queue.
-func (q *ppQueue) PushFast(job *Job) {
+// Push enqueues a job onto the queue.
+func (q *ppQueue) Push(job *Job) {
 	q.mu.Lock()
-	q.fast = append(q.fast, job)
-	q.mu.Unlock()
-	q.notify()
-}
-
-// PushSlow enqueues a job onto the slow (standard) queue.
-func (q *ppQueue) PushSlow(job *Job) {
-	q.mu.Lock()
-	q.slow = append(q.slow, job)
+	q.jobs = append(q.jobs, job)
 	q.mu.Unlock()
 	q.notify()
 }
@@ -60,32 +41,28 @@ func (q *ppQueue) notify() {
 	}
 }
 
-// Len returns (fastLen, slowLen) without locking for long — safe to call
+// Len returns the queue length without locking for long — safe to call
 // from the consumer goroutine or from tests.
-func (q *ppQueue) Len() (fast, slow int) {
+func (q *ppQueue) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.fast), len(q.slow)
+	return len(q.jobs)
 }
 
-// Empty returns true when both queues are empty.
+// Empty returns true when the queue is empty.
 func (q *ppQueue) Empty() bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.fast) == 0 && len(q.slow) == 0
+	return len(q.jobs) == 0
 }
 
-// Cancel removes a job with the given ID from either queue.
+// Cancel removes a job with the given ID from the queue.
 // Returns true if the job was found and removed.
 func (q *ppQueue) Cancel(jobID string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if idx := findJob(q.fast, jobID); idx >= 0 {
-		q.fast = append(q.fast[:idx], q.fast[idx+1:]...)
-		return true
-	}
-	if idx := findJob(q.slow, jobID); idx >= 0 {
-		q.slow = append(q.slow[:idx], q.slow[idx+1:]...)
+	if idx := findJob(q.jobs, jobID); idx >= 0 {
+		q.jobs = append(q.jobs[:idx], q.jobs[idx+1:]...)
 		return true
 	}
 	return false
@@ -102,8 +79,7 @@ func findJob(jobs []*Job, id string) int {
 }
 
 // Pop blocks until a job is available or ctx is done.
-// Returns the next job according to the fast/slow scheduling rule and true,
-// or nil and false when ctx is cancelled.
+// Returns the next job and true, or nil and false when ctx is cancelled.
 //
 // Must be called from exactly one goroutine (the worker).
 func (q *ppQueue) Pop(ctx context.Context) (*Job, bool) {
@@ -113,7 +89,7 @@ func (q *ppQueue) Pop(ctx context.Context) (*Job, bool) {
 			return job, true
 		}
 
-		// Both queues empty — wait for a push notification or ctx done.
+		// Queue empty — wait for a push notification or ctx done.
 		select {
 		case <-ctx.Done():
 			return nil, false
@@ -124,38 +100,16 @@ func (q *ppQueue) Pop(ctx context.Context) (*Job, bool) {
 	}
 }
 
-// tryPop applies the scheduling rule and dequeues one job, or returns nil.
+// tryPop dequeues one job, or returns nil.
 func (q *ppQueue) tryPop() *Job {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	hasFast := len(q.fast) > 0
-	hasSlow := len(q.slow) > 0
-
-	if !hasFast && !hasSlow {
+	if len(q.jobs) == 0 {
 		return nil
 	}
 
-	// If we have hit the fast-per-cycle limit and there is a slow job
-	// waiting, pull from slow and reset the counter.
-	if q.fastInRow >= q.maxFastPerCycle && hasSlow {
-		job := q.slow[0]
-		q.slow = q.slow[1:]
-		q.fastInRow = 0
-		return job
-	}
-
-	// Prefer fast queue.
-	if hasFast {
-		job := q.fast[0]
-		q.fast = q.fast[1:]
-		q.fastInRow++
-		return job
-	}
-
-	// Fall back to slow queue.
-	job := q.slow[0]
-	q.slow = q.slow[1:]
-	q.fastInRow = 0
+	job := q.jobs[0]
+	q.jobs = q.jobs[1:]
 	return job
 }

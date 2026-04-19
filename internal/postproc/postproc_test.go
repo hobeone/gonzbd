@@ -26,20 +26,6 @@ func makeJob(t *testing.T, name string) *Job {
 	}
 }
 
-// makeFastJob creates a Job routed to the fast queue.
-func makeFastJob(t *testing.T, name string) *Job {
-	t.Helper()
-	j := makeJob(t, name)
-	j.DirectUnpack = &DirectUnpackState{Active: true}
-	return j
-}
-
-// makeSlowJob creates a Job routed to the slow queue.
-func makeSlowJob(t *testing.T, name string) *Job {
-	t.Helper()
-	return makeJob(t, name)
-}
-
 // recordStage is a mock Stage that appends its name + job name to a shared
 // log each time Run is called.
 type recordStage struct {
@@ -121,10 +107,6 @@ func waitUntil(t *testing.T, cond func() bool, deadline time.Duration, msg strin
 
 // Test 1: Stages run in registered order for a single job.
 func TestStagesRunInOrder(t *testing.T) {
-	s1 := newRecordStage("stage1")
-	s2 := newRecordStage("stage2")
-	s3 := newRecordStage("stage3")
-
 	var orderMu sync.Mutex
 	var order []string
 	makeOrderStage := func(name string) Stage {
@@ -143,11 +125,8 @@ func TestStagesRunInOrder(t *testing.T) {
 			doneMu.Unlock()
 		},
 	})
-	_ = s1
-	_ = s2
-	_ = s3
 
-	job := makeFastJob(t, "myjob")
+	job := makeJob(t, "myjob")
 	p.Process(job)
 
 	waitUntil(t, func() bool {
@@ -184,78 +163,6 @@ func (o *orderCapture) Run(_ context.Context, _ *Job) error {
 	return nil
 }
 
-// Test 2: fast×5 + slow×2 → fast×3, slow×1, fast×2, slow×1.
-func TestFastSlowOrdering(t *testing.T) {
-	var mu sync.Mutex
-	var processed []string
-
-	var wg sync.WaitGroup
-
-	onJobDone := func(j *Job) {
-		mu.Lock()
-		processed = append(processed, j.Queue.Name)
-		mu.Unlock()
-		wg.Done()
-	}
-
-	p := New(Options{
-		MaxFastPerCycle: 3,
-		OnJobDone:       onJobDone,
-	})
-	if err := p.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() {
-		if err := p.Stop(); err != nil {
-			t.Errorf("Stop: %v", err)
-		}
-	}()
-
-	// Enqueue all jobs before the worker can consume them — we pause first.
-	p.Pause()
-
-	// 5 fast jobs + 2 slow jobs.
-	fastNames := []string{"f1", "f2", "f3", "f4", "f5"}
-	slowNames := []string{"s1", "s2"}
-	wg.Add(len(fastNames) + len(slowNames))
-
-	for _, name := range fastNames {
-		p.q.PushFast(&Job{Queue: &queue.Job{ID: name, Name: name}})
-	}
-	for _, name := range slowNames {
-		p.q.PushSlow(&Job{Queue: &queue.Job{ID: name, Name: name}})
-	}
-
-	p.Resume()
-
-	wg.Wait()
-
-	mu.Lock()
-	got := processed
-	mu.Unlock()
-
-	// Expected: f1 f2 f3 s1 f4 f5 s2
-	want := []string{"f1", "f2", "f3", "s1", "f4", "f5", "s2"}
-	if len(got) != len(want) {
-		t.Fatalf("got %v (len %d), want %v (len %d)", got, len(got), want, len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("position %d: got %q, want %q (full: %v)", i, got[i], want[i], got)
-		}
-	}
-}
-
-// Test 3: Empty queues → Empty() returns true, worker blocks.
-func TestEmptyReturnsTrue(t *testing.T) {
-	p := startProcessor(t, Options{})
-	// Give the worker time to start and settle.
-	time.Sleep(20 * time.Millisecond)
-	if !p.Empty() {
-		t.Error("Empty() = false, want true when no jobs enqueued")
-	}
-}
-
 // Test 4: Pause halts processing; Resume continues without losing jobs.
 func TestPauseResume(t *testing.T) {
 	stage := newRecordStage("s")
@@ -279,7 +186,7 @@ func TestPauseResume(t *testing.T) {
 
 	// Enqueue 3 jobs while paused.
 	for i := 0; i < 3; i++ {
-		p.q.PushSlow(&Job{Queue: &queue.Job{ID: "j" + string(rune('0'+i)), Name: "j" + string(rune('0'+i))}})
+		p.q.Push(&Job{Queue: &queue.Job{ID: "j" + string(rune('0'+i)), Name: "j" + string(rune('0'+i))}})
 	}
 
 	// Give the worker a moment to confirm it is not processing.
@@ -307,7 +214,7 @@ func TestStopDuringInFlightStage(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	job := makeFastJob(t, "blocking-job")
+	job := makeJob(t, "blocking-job")
 	p.Process(job)
 
 	// Wait until the blocker stage is actually executing.
@@ -358,7 +265,7 @@ func TestStageErrorContinuesPipeline(t *testing.T) {
 		},
 	})
 
-	p.Process(makeFastJob(t, "erring-job"))
+	p.Process(makeJob(t, "erring-job"))
 	wg.Wait()
 
 	if len(capturedLog) != 2 {
@@ -391,7 +298,7 @@ func TestCancelQueuedJob(t *testing.T) {
 	})
 
 	// First job blocks the worker.
-	first := makeFastJob(t, "first")
+	first := makeJob(t, "first")
 	p.Process(first)
 
 	// Wait for worker to pick up first job.
@@ -403,7 +310,7 @@ func TestCancelQueuedJob(t *testing.T) {
 	}, 2*time.Second, "worker to be busy on first job")
 
 	// Enqueue a second job — it will wait in the queue.
-	second := makeFastJob(t, "second")
+	second := makeJob(t, "second")
 	p.Process(second)
 
 	// Cancel second before it starts.
@@ -452,8 +359,8 @@ func TestOnJobDoneFiredOnce(t *testing.T) {
 		},
 	})
 
-	p.Process(makeFastJob(t, "j1"))
-	p.Process(makeFastJob(t, "j2"))
+	p.Process(makeJob(t, "j1"))
+	p.Process(makeJob(t, "j2"))
 
 	wg.Wait()
 
@@ -494,124 +401,51 @@ func TestNoGoroutineLeak(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ppQueue unit tests (scheduling rule)
+// ppQueue unit tests
 // ---------------------------------------------------------------------------
 
-func TestPPQueueSchedulingRule(t *testing.T) {
-	tests := []struct {
-		name            string
-		maxFastPerCycle int
-		fastNames       []string
-		slowNames       []string
-		wantOrder       []string
-	}{
-		{
-			name:            "all fast no slow",
-			maxFastPerCycle: 3,
-			fastNames:       []string{"f1", "f2", "f3"},
-			slowNames:       nil,
-			wantOrder:       []string{"f1", "f2", "f3"},
-		},
-		{
-			name:            "all slow no fast",
-			maxFastPerCycle: 3,
-			fastNames:       nil,
-			slowNames:       []string{"s1", "s2"},
-			wantOrder:       []string{"s1", "s2"},
-		},
-		{
-			name:            "5 fast 2 slow: fast×3 slow×1 fast×2 slow×1",
-			maxFastPerCycle: 3,
-			fastNames:       []string{"f1", "f2", "f3", "f4", "f5"},
-			slowNames:       []string{"s1", "s2"},
-			wantOrder:       []string{"f1", "f2", "f3", "s1", "f4", "f5", "s2"},
-		},
-		{
-			name:            "maxFastPerCycle=1: alternates fast slow",
-			maxFastPerCycle: 1,
-			fastNames:       []string{"f1", "f2"},
-			slowNames:       []string{"s1", "s2"},
-			wantOrder:       []string{"f1", "s1", "f2", "s2"},
-		},
+func TestPPQueueOrdering(t *testing.T) {
+	q := newPPQueue()
+	names := []string{"j1", "j2", "j3"}
+	for _, n := range names {
+		q.Push(&Job{Queue: &queue.Job{ID: n, Name: n}})
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			q := newPPQueue(tc.maxFastPerCycle)
-			for _, n := range tc.fastNames {
-				q.PushFast(&Job{Queue: &queue.Job{ID: n, Name: n}})
-			}
-			for _, n := range tc.slowNames {
-				q.PushSlow(&Job{Queue: &queue.Job{ID: n, Name: n}})
-			}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-
-			total := len(tc.fastNames) + len(tc.slowNames)
-			got := make([]string, 0, total)
-			for i := 0; i < total; i++ {
-				job, ok := q.Pop(ctx)
-				if !ok {
-					t.Fatalf("Pop returned false at index %d", i)
-				}
-				got = append(got, job.Queue.Name)
-			}
-
-			for i, want := range tc.wantOrder {
-				if i >= len(got) {
-					t.Errorf("got too few results (%d)", len(got))
-					break
-				}
-				if got[i] != want {
-					t.Errorf("position %d: got %q, want %q (full: %v)", i, got[i], want, got)
-				}
-			}
-		})
+	for _, want := range names {
+		job, ok := q.Pop(ctx)
+		if !ok {
+			t.Fatalf("Pop returned false, want job %q", want)
+		}
+		if job.Queue.Name != want {
+			t.Errorf("got job %q, want %q", job.Queue.Name, want)
+		}
 	}
 }
 
 func TestPPQueueCancel(t *testing.T) {
-	t.Run("cancel from fast queue", func(t *testing.T) {
-		q := newPPQueue(3)
-		q.PushFast(&Job{Queue: &queue.Job{ID: "a", Name: "a"}})
-		q.PushFast(&Job{Queue: &queue.Job{ID: "b", Name: "b"}})
-		if !q.Cancel("a") {
-			t.Error("Cancel('a') = false, want true")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		job, ok := q.Pop(ctx)
-		if !ok || job.Queue.ID != "b" {
-			t.Errorf("expected 'b', got ok=%v job=%v", ok, job)
-		}
-	})
+	q := newPPQueue()
+	q.Push(&Job{Queue: &queue.Job{ID: "a", Name: "a"}})
+	q.Push(&Job{Queue: &queue.Job{ID: "b", Name: "b"}})
+	if !q.Cancel("a") {
+		t.Error("Cancel('a') = false, want true")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	job, ok := q.Pop(ctx)
+	if !ok || job.Queue.ID != "b" {
+		t.Errorf("expected 'b', got ok=%v job=%v", ok, job)
+	}
 
-	t.Run("cancel from slow queue", func(t *testing.T) {
-		q := newPPQueue(3)
-		q.PushSlow(&Job{Queue: &queue.Job{ID: "x", Name: "x"}})
-		q.PushSlow(&Job{Queue: &queue.Job{ID: "y", Name: "y"}})
-		if !q.Cancel("x") {
-			t.Error("Cancel('x') = false, want true")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		job, ok := q.Pop(ctx)
-		if !ok || job.Queue.ID != "y" {
-			t.Errorf("expected 'y', got ok=%v job=%v", ok, job)
-		}
-	})
-
-	t.Run("cancel non-existent returns false", func(t *testing.T) {
-		q := newPPQueue(3)
-		if q.Cancel("does-not-exist") {
-			t.Error("Cancel of non-existent job returned true")
-		}
-	})
+	if q.Cancel("does-not-exist") {
+		t.Error("Cancel of non-existent job returned true")
+	}
 }
 
 func TestPPQueuePopCancelledCtx(t *testing.T) {
-	q := newPPQueue(3)
+	q := newPPQueue()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already done
 
@@ -626,24 +460,5 @@ func TestEmptyMethod(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if !p.Empty() {
 		t.Error("Empty() = false on idle processor")
-	}
-}
-
-// TestProcessRouting verifies that Process routes based on DirectUnpack.
-func TestProcessRouting(t *testing.T) {
-	p := New(Options{MaxFastPerCycle: 3})
-
-	fast := makeFastJob(t, "fast")
-	slow := makeSlowJob(t, "slow")
-
-	p.Process(fast)
-	p.Process(slow)
-
-	fLen, sLen := p.q.Len()
-	if fLen != 1 {
-		t.Errorf("fast queue len = %d, want 1", fLen)
-	}
-	if sLen != 1 {
-		t.Errorf("slow queue len = %d, want 1", sLen)
 	}
 }

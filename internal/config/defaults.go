@@ -57,7 +57,6 @@ func Default() (*Config, error) {
 		PostProc: PostProcConfig{
 			EnableUnrar:      true,
 			Enable7zip:       true,
-			DirectUnpack:     false,
 			EnableParCleanup: true,
 			Par2Command:      "par2",
 			UnrarCommand:     "", // auto-detect

@@ -28,17 +28,6 @@ type Stage interface {
 	Run(ctx context.Context, job *Job) error
 }
 
-// DirectUnpackState carries the information the orchestrator needs to decide
-// whether a job belongs on the fast queue. Steps 5.2+ will embed richer state
-// here; for now the single bool is sufficient for routing.
-type DirectUnpackState struct {
-	// Active is true while a DirectUnpack goroutine is still running for
-	// this job, or true when at least one set was successfully unpacked
-	// (mirroring the Python condition:
-	//   nzo.direct_unpacker.success_sets or not nzo.direct_unpacker.killed).
-	Active bool
-}
-
 // Job is the post-processing unit of work.  It wraps the download-queue Job
 // with post-proc-specific state.  The queue.Job must not be mutated here;
 // stages accumulate their results into the fields below.
@@ -51,10 +40,6 @@ type Job struct {
 	// deobfuscate, pre-sort). Mirrors Python's nzo.download_path. Must be
 	// set by the caller before the job is pushed to the PostProcessor.
 	DownloadDir string
-
-	// DirectUnpack is non-nil when the job was routed via the fast queue.
-	// Nil for slow-queue jobs.
-	DirectUnpack *DirectUnpackState
 
 	// StageLog accumulates one entry per stage, in execution order.
 	StageLog []StageLogEntry

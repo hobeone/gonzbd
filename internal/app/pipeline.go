@@ -11,7 +11,6 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/assembler"
 	"github.com/hobeone/sabnzbd-go/internal/decoder"
 	"github.com/hobeone/sabnzbd-go/internal/downloader"
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
@@ -36,9 +35,8 @@ type pipeline struct {
 	// updateCh receives a new completions channel to switch to.
 	updateCh chan (<-chan *downloader.ArticleResult)
 
-	mu        sync.RWMutex
-	fileInfo  map[fileKey]assembler.FileInfo
-	usedPaths map[string]struct{}
+	mu       sync.RWMutex
+	fileInfo map[fileKey]assembler.FileInfo
 }
 
 // run is the pipeline's sole goroutine. Returns when ctx is cancelled.
@@ -90,19 +88,7 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 				return // Already processed this failure
 			}
 
-			// Find the job/file to get a fallback filename if not yet registered.
-			// Prefer res.Subject as it's passed from the NZB parser.
-			filename := res.Subject
-			if filename == "" {
-				job, err := p.queue.Get(res.JobID)
-				if err == nil && res.FileIdx >= 0 && res.FileIdx < len(job.Files) {
-					filename = job.Files[res.FileIdx].Subject
-				} else {
-					filename = "unknown_failed_part"
-				}
-			}
-
-			if err := p.registerFile(res.JobID, res.FileIdx, filename); err != nil {
+			if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
 				p.log.Warn("register fallback file failed",
 					"job", res.JobID, "fileidx", res.FileIdx, "err", err)
 			}
@@ -131,7 +117,7 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 		"job", res.JobID, "msgid", res.MessageID, "file", article.Filename,
 		"offset", article.Offset, "bytes", len(article.Data))
 
-	if err := p.registerFile(res.JobID, res.FileIdx, article.Filename); err != nil {
+	if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
 		p.log.Warn("register file failed",
 			"job", res.JobID, "fileidx", res.FileIdx, "err", err)
 		return
@@ -151,9 +137,9 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 
 // registerFile records the target path and expected part count for a file
 // on first encounter. Subsequent calls for the same (jobID, fileIdx) are
-// no-ops. The filename is taken as filepath.Base to prevent yEnc headers
-// that contain a path from escaping downloadDir.
-func (p *pipeline) registerFile(jobID string, fileIdx int, yencName string) error {
+// no-ops. It uses a deterministic temporary path based on the JobID and
+// file index to handle obfuscated and messy data robustly.
+func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	key := fileKey{jobID: jobID, fileIdx: fileIdx}
 
 	p.mu.RLock()
@@ -171,21 +157,6 @@ func (p *pipeline) registerFile(jobID string, fileIdx int, yencName string) erro
 		return fmt.Errorf("fileIdx %d out of range for job with %d files", fileIdx, len(job.Files))
 	}
 
-	// Prioritize the subject from the NZB (which was already sanitized during parsing).
-	filename := job.Files[fileIdx].Subject
-
-	// If the NZB subject is generic or obfuscated, try the yEnc filename.
-	if filename == "" || filename == "unknown" || fsutil.IsObfuscated(filename) {
-		yencSanitized := fsutil.SanitizeFilename(filepath.Base(yencName))
-		if yencSanitized != "" && yencSanitized != "." && yencSanitized != "/" && yencSanitized != "unknown" && !fsutil.IsObfuscated(yencSanitized) {
-			filename = yencSanitized
-		}
-	}
-
-	if filename == "" {
-		filename = "unknown"
-	}
-
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -195,21 +166,9 @@ func (p *pipeline) registerFile(jobID string, fileIdx int, yencName string) erro
 		return nil
 	}
 
-	path := filepath.Join(p.downloadDir, job.Name, filename)
-
-	// Ensure uniqueness within the job.
-	if _, taken := p.usedPaths[path]; taken {
-		ext := filepath.Ext(path)
-		base := path[:len(path)-len(ext)]
-		for i := 1; ; i++ {
-			newPath := fmt.Sprintf("%s.%d%s", base, i, ext)
-			if _, taken := p.usedPaths[newPath]; !taken {
-				path = newPath
-				break
-			}
-		}
-	}
-	p.usedPaths[path] = struct{}{}
+	// Use job ID and file index for a robust, unique temporary path.
+	// Final naming is deferred until the post-processing (PAR2) phase.
+	path := filepath.Join(p.downloadDir, jobID, fmt.Sprintf("%04d.tmp", fileIdx))
 
 	info := assembler.FileInfo{
 		Path:       path,
@@ -217,7 +176,7 @@ func (p *pipeline) registerFile(jobID string, fileIdx int, yencName string) erro
 	}
 
 	p.fileInfo[key] = info
-	p.log.Debug("registered file",
+	p.log.Debug("registered temporary file",
 		"job", jobID, "fileidx", fileIdx, "path", info.Path, "parts", info.TotalParts)
 
 	return nil

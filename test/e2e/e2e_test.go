@@ -1,5 +1,3 @@
-//go:build e2e
-
 // Package e2e contains end-to-end tests that download real articles from a
 // live Usenet provider. These tests are gated behind the "e2e" build tag
 // and require a configured sabnzbd.yaml with valid server credentials.
@@ -149,16 +147,13 @@ func TestE2E_SelfPost_MultiFile(t *testing.T) {
 		}
 	}
 
-	// Wait for job completion (post-processing triggered)
+	// Wait for job completion (post-processing finished)
 	select {
-	case <-a.JobComplete():
+	case <-a.PostProcComplete():
 		// fall through
 	case <-ctx.Done():
-		t.Fatalf("timeout waiting for JobComplete")
+		t.Fatalf("timeout waiting for PostProcComplete")
 	}
-
-	// Small delay to allow PostProcessor stage (unpack) to actually finish
-	time.Sleep(1 * time.Second)
 
 	wantA := sha256.Sum256(payloadA)
 	wantB := sha256.Sum256(payloadB)
@@ -209,20 +204,17 @@ func TestE2E_ProvidedNZB(t *testing.T) {
 
 	fullPath := filepath.Join(downloadDir, "provided")
 
-	fmt.Printf("Waiting for JobComplete for %d files in %s...\n", numFiles, fullPath)
+	fmt.Printf("Waiting for PostProcComplete for %d files in %s...\n", numFiles, fullPath)
 
 	ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
 	defer cancel()
 
 	select {
-	case <-a.JobComplete():
+	case <-a.PostProcComplete():
 		// fall through
 	case <-ctx.Done():
-		t.Fatalf("timeout waiting for JobComplete")
+		t.Fatalf("timeout waiting for PostProcComplete")
 	}
-
-	// Small delay to allow PostProcessor stage (unpack) to actually finish
-	time.Sleep(1 * time.Second)
 
 	// Walk the download dir and verify all output files are non-empty.
 	entries, err := os.ReadDir(downloadDir)
@@ -262,7 +254,7 @@ func TestE2E_ProvidedNZB(t *testing.T) {
 	}
 }
 
-// waitAndVerify waits for FileComplete and then JobComplete signals, then
+// waitAndVerify waits for FileComplete and then PostProcComplete signals, then
 // verifies the assembled file has the expected SHA-256 digest.
 func waitAndVerify(t *testing.T, a *app.Application, downloadDir, filename string, wantSHA []byte, timeout time.Duration) {
 	t.Helper()
@@ -278,18 +270,13 @@ func waitAndVerify(t *testing.T, a *app.Application, downloadDir, filename strin
 		t.Fatalf("timeout (%v) waiting for FileComplete", timeout)
 	}
 
-	// Wait for job completion (post-processing triggered)
+	// Wait for job completion (post-processing finished)
 	select {
-	case <-a.JobComplete():
+	case <-a.PostProcComplete():
 		// fall through
 	case <-ctx.Done():
-		t.Fatalf("timeout (%v) waiting for JobComplete", timeout)
+		t.Fatalf("timeout (%v) waiting for PostProcComplete", timeout)
 	}
-
-	// Small delay to allow PostProcessor stage (unpack) to actually finish
-	// and write to disk, as JobComplete is fired when post-processing *starts*.
-	// TODO: Phase 5 should probably emit a PostProcComplete signal.
-	time.Sleep(1 * time.Second)
 
 	verifyFileOnDisk(t, downloadDir, filename, wantSHA)
 }

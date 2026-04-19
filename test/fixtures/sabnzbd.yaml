@@ -37,7 +37,6 @@ downloads:
 postproc:
   enable_unrar: true
   enable_7zip: true
-  direct_unpack: false
   enable_par_cleanup: true
   par2_command: par2
   unrar_command: ""
