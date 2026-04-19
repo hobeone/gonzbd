@@ -169,9 +169,11 @@ func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, 
 
 	application, err := app.New(app.Config{
 		DownloadDir: dlDir,
+		CompleteDir: cfg.General.CompleteDir,
 		AdminDir:    adminDir,
 		CacheLimit:  int64(cfg.Downloads.ArticleCacheSize),
 		Servers:     enabledServers(cfg.Servers),
+		Categories:  cfg.Categories,
 	})
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
@@ -452,9 +454,11 @@ func run(configPath, nzbPath, downloadDirOverride string, verbose bool) error {
 
 	application, err := app.New(app.Config{
 		DownloadDir: dlDir,
+		CompleteDir: cfg.General.CompleteDir,
 		AdminDir:    adminDir,
 		CacheLimit:  int64(cfg.Downloads.ArticleCacheSize),
 		Servers:     enabledServers(cfg.Servers),
+		Categories:  cfg.Categories,
 	})
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
