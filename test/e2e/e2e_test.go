@@ -224,7 +224,7 @@ func TestE2E_ProvidedNZB(t *testing.T) {
 	fileCount := 0
 	for _, e := range entries {
 		if e.IsDir() {
-			// Check inside subdirectories (job gets a subdir).
+			// Check inside subdirectories (job gets a subdir named after job.Name).
 			subEntries, err := os.ReadDir(filepath.Join(downloadDir, e.Name()))
 			if err != nil {
 				continue

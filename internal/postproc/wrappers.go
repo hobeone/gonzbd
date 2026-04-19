@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -290,3 +291,123 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	}
 	return nil
 }
+
+// FinalizeStage moves the completed job from job.DownloadDir to job.FinalDir.
+// If FinalDir is not set, it defaults to placing the job folder (named after
+// its ID) in the system's complete directory.
+type FinalizeStage struct{}
+
+// NewFinalizeStage constructs a FinalizeStage.
+func NewFinalizeStage() *FinalizeStage { return &FinalizeStage{} }
+
+// Name returns the stage identifier.
+func (*FinalizeStage) Name() string { return "finalize" }
+
+// Run moves the directory content or the directory itself to its final location.
+func (*FinalizeStage) Run(ctx context.Context, job *Job) error {
+	if job.FinalDir == "" {
+		return fmt.Errorf("finalize: FinalDir not set")
+	}
+
+	if job.DownloadDir == job.FinalDir {
+		return nil // Already there (e.g. one-shot download directly to target)
+	}
+
+	// Create parent directory for final destination
+	if err := os.MkdirAll(filepath.Dir(job.FinalDir), 0o750); err != nil {
+		return fmt.Errorf("finalize: mkdir %s: %w", filepath.Dir(job.FinalDir), err)
+	}
+
+	// If the source directory exists, rename it to the target.
+	// Use sorting.MoveFile for cross-device support.
+	// Since we want to move the WHOLE directory, we'll try os.Rename first.
+	if err := os.Rename(job.DownloadDir, job.FinalDir); err == nil {
+		return nil
+	}
+
+	// Fallback: If os.Rename failed (e.g. cross-device), move file by file.
+	entries, err := os.ReadDir(job.DownloadDir)
+	if err != nil {
+		return fmt.Errorf("finalize: readdir %s: %w", job.DownloadDir, err)
+	}
+
+	if err := os.MkdirAll(job.FinalDir, 0o750); err != nil {
+		return fmt.Errorf("finalize: mkdir %s: %w", job.FinalDir, err)
+	}
+
+	for _, e := range entries {
+		src := filepath.Join(job.DownloadDir, e.Name())
+		dst := filepath.Join(job.FinalDir, e.Name())
+		if err := moveRecursive(ctx, src, dst); err != nil {
+			return fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err)
+		}
+	}
+
+	// Cleanup the empty source directory
+	_ = os.RemoveAll(job.DownloadDir)
+
+	return nil
+}
+
+// moveRecursive handles moving files or directories, with cross-device support.
+func moveRecursive(ctx context.Context, src, dst string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+
+	if !info.IsDir() {
+		return moveFile(src, dst)
+	}
+
+	// It's a directory.
+	if err := os.MkdirAll(dst, 0o750); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, e := range entries {
+		if err := moveRecursive(ctx, filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+			return err
+		}
+	}
+
+	return os.Remove(src)
+}
+
+// moveFile matches the one in sorting package but internal for now to avoid circular deps
+// or excessive exports if we don't want to export moveFile from sorting.
+func moveFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	// Simplified cross-device: copy + delete
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Remove(src)
+}
+

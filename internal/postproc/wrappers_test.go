@@ -230,3 +230,36 @@ func TestScriptStage_AbsolutePathOverridesScriptDir(t *testing.T) {
 		t.Errorf("Run with absolute script path: %v", err)
 	}
 }
+
+func TestFinalizeStage_Name(t *testing.T) {
+	t.Parallel()
+	if got := (&FinalizeStage{}).Name(); got != "finalize" {
+		t.Errorf("Name = %q; want %q", got, "finalize")
+	}
+}
+
+func TestFinalizeStage_Run(t *testing.T) {
+	t.Parallel()
+	job, srcDir := stageJob(t)
+	finalDir := t.TempDir()
+	job.FinalDir = filepath.Join(finalDir, "FinalJobName")
+
+	// Create a dummy file to move.
+	dummyFile := "data.bin"
+	if err := os.WriteFile(filepath.Join(srcDir, dummyFile), []byte("content"), 0o600); err != nil {
+		t.Fatalf("write dummy file: %v", err)
+	}
+
+	if err := NewFinalizeStage().Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Verify file is in new location and old location is gone.
+	if _, err := os.Stat(filepath.Join(job.FinalDir, dummyFile)); err != nil {
+		t.Errorf("file not found in final destination: %v", err)
+	}
+	if _, err := os.Stat(srcDir); !os.IsNotExist(err) {
+		t.Errorf("source directory still exists")
+	}
+}
+

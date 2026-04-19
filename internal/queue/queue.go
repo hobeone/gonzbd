@@ -85,12 +85,32 @@ func (q *Queue) List() []*Job {
 // Add inserts job into the queue. The job is placed at the end of its
 // priority tier (see insertByPriority). Returns an error if the job's
 // ID collides with one already in the queue.
+//
+// If a job with the same Name already exists, the new job is renamed
+// by appending .1, .2, etc. to match Python SABnzbd behavior.
 func (q *Queue) Add(job *Job) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if _, exists := q.byID[job.ID]; exists {
 		return fmt.Errorf("queue: job %q already present", job.ID)
 	}
+
+	// Ensure Name is unique in the queue.
+	baseName := job.Name
+	for i := 1; ; i++ {
+		found := false
+		for _, existing := range q.jobs {
+			if existing.Name == job.Name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			break
+		}
+		job.Name = fmt.Sprintf("%s.%d", baseName, i)
+	}
+
 	q.insertByPriorityLocked(job)
 	q.byID[job.ID] = job
 	q.notifyLocked()

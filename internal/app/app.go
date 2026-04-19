@@ -36,9 +36,11 @@ var ErrAlreadyStarted = errors.New("app: already started")
 // It is a hand-picked subset of the full config.Config surface area; over
 // time Phase 4+ will replace it with a direct *config.Config reference.
 type Config struct {
-	// DownloadDir is the root directory where completed files land. Each
-	// job gets a subdirectory named after the job (config.Job.Name).
+	// DownloadDir is the root directory where incomplete files land.
 	DownloadDir string
+
+	// CompleteDir is the root directory where completed files land.
+	CompleteDir string
 
 	// AdminDir is used for cache disk spill and other per-job transient
 	// state. Must exist or be creatable.
@@ -51,6 +53,9 @@ type Config struct {
 	// Servers lists the upstream NNTP servers, in fallback order.
 	// At least one entry is required.
 	Servers []config.ServerConfig
+
+	// Categories lists the configured categories.
+	Categories []config.CategoryConfig
 }
 
 // FileComplete is emitted on Application.FileComplete() when the assembler
@@ -147,6 +152,7 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 		Stages: []postproc.Stage{
 			postproc.NewRepairStage(),
 			postproc.NewUnpackStage(),
+			postproc.NewFinalizeStage(),
 		},
 		OnJobDone: func(job *postproc.Job) {
 			select {
@@ -344,9 +350,20 @@ func (app *Application) watchCompletions(ctx context.Context) {
 				app.log.Info("job complete, sending to post-processor", "job", job.ID, "name", job.Name)
 
 				// 1. Trigger PostProcessor
+				// Determine FinalDir based on Category
+				catDir := ""
+				for _, cat := range app.cfg.Categories {
+					if cat.Name == job.Category {
+						catDir = cat.Dir
+						break
+					}
+				}
+				finalDir := filepath.Join(app.cfg.CompleteDir, catDir, job.Name)
+
 				ppJob := &postproc.Job{
 					Queue:       job,
-					DownloadDir: filepath.Join(app.cfg.DownloadDir, job.ID),
+					DownloadDir: filepath.Join(app.cfg.DownloadDir, job.Name),
+					FinalDir:    finalDir,
 				}
 				app.postProcessor.Process(ppJob)
 

@@ -166,9 +166,9 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		return nil
 	}
 
-	// Use job ID and file index for a robust, unique temporary path.
-	// Final naming is deferred until the post-processing (PAR2) phase.
-	path := filepath.Join(p.downloadDir, jobID, fmt.Sprintf("%04d.tmp", fileIdx))
+	// Use job Name and file index for a human-readable and robust path.
+	// Final naming of files is deferred until the post-processing (PAR2) phase.
+	path := filepath.Join(p.downloadDir, job.Name, fmt.Sprintf("%04d.tmp", fileIdx))
 
 	info := assembler.FileInfo{
 		Path:       path,

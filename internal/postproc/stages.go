@@ -41,6 +41,11 @@ type Job struct {
 	// set by the caller before the job is pushed to the PostProcessor.
 	DownloadDir string
 
+	// FinalDir is the absolute path where the job's files should end up
+	// after all post-processing stages have finished. Usually a sub-path
+	// of the complete directory named after the job name.
+	FinalDir string
+
 	// StageLog accumulates one entry per stage, in execution order.
 	StageLog []StageLogEntry
 

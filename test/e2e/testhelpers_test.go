@@ -110,9 +110,11 @@ func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDi
 
 	appCfg := app.Config{
 		DownloadDir: downloadDir,
+		CompleteDir: downloadDir,
 		AdminDir:    adminDir,
 		CacheLimit:  64 * 1024 * 1024, // 64 MB
 		Servers:     cfg.Servers,
+		Categories:  cfg.Categories,
 	}
 
 	var opts []func(*app.Application)
