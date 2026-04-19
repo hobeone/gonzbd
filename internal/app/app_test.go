@@ -1,0 +1,285 @@
+package app_test
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"fmt"
+	"hash/crc32"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/hobeone/sabnzbd-go/internal/app"
+	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/nzb"
+	"github.com/hobeone/sabnzbd-go/internal/queue"
+)
+
+func TestFullDownloadLifecycle(t *testing.T) {
+	const (
+		fileSize = 100 * 1024
+		partSize = 50 * 1024
+	)
+	raw := makeDeterministic(fileSize)
+
+	articles := map[string][]byte{
+		"part1@test": yencEncodePart("test.bin", 1, 2, raw[:partSize], fileSize, 1, partSize),
+		"part2@test": yencEncodePart("test.bin", 2, 2, raw[partSize:], fileSize, partSize+1, fileSize),
+	}
+
+	mock := startMockNNTP(t, articles)
+
+	downloadDir := t.TempDir()
+	completeDir := t.TempDir()
+	adminDir := t.TempDir()
+
+	application, err := app.New(app.Config{
+		DownloadDir: downloadDir,
+		CompleteDir: completeDir,
+		AdminDir:    adminDir,
+		CacheLimit:  1 * 1024 * 1024,
+		Servers: []config.ServerConfig{{
+			Name:               "mock",
+			Host:               mock.host,
+			Port:               mock.port,
+			Connections:        1,
+			PipeliningRequests: 1,
+			Timeout:            5,
+			Enable:             true,
+		}},
+		Categories: []config.CategoryConfig{
+			{Name: "Default", Dir: ""},
+			{Name: "movies", Dir: "Movies"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = application.Shutdown()
+	})
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{{
+			Subject: "test.bin",
+			Date:    time.Now().UTC(),
+			Articles: []nzb.Article{
+				{ID: "part1@test", Bytes: partSize, Number: 1},
+				{ID: "part2@test", Bytes: partSize, Number: 2},
+			},
+			Bytes: fileSize,
+		}},
+	}
+	job, err := queue.NewJob(parsed, queue.AddOptions{
+		Filename: "test.nzb",
+		Name:     "testjob",
+		Category: "movies",
+	})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := application.Queue().Add(job); err != nil {
+		t.Fatalf("Queue.Add: %v", err)
+	}
+
+	// 1. Wait for assembly (FileComplete)
+	select {
+	case <-application.FileComplete():
+		// Assemblies should go into DownloadDir/JobName
+		incompletePath := filepath.Join(downloadDir, "testjob", "0000.tmp")
+		if _, err := os.Stat(incompletePath); err != nil {
+			t.Errorf("expected incomplete file at %s, but got error: %v", incompletePath, err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("timeout waiting for file completion: %v", ctx.Err())
+	}
+
+	// 2. Wait for Post-Processing (PostProcComplete)
+	select {
+	case <-application.PostProcComplete():
+		// Files should be moved to CompleteDir/CategoryDir/JobName
+		// Our job category is 'movies' which has Dir 'Movies'
+		// Note: The RepairStage renames 0000.tmp to test.bin via fallback naming.
+		finalPath := filepath.Join(completeDir, "Movies", "testjob", "test.bin")
+		if _, err := os.Stat(finalPath); err != nil {
+			t.Errorf("expected final file at %s, but got error: %v", finalPath, err)
+		}
+
+		// Verify content
+		got, err := os.ReadFile(finalPath)
+		if err != nil {
+			t.Fatalf("read final file: %v", err)
+		}
+		if !bytes.Equal(got, raw) {
+			t.Errorf("content mismatch in final file")
+		}
+
+		// Verify incomplete dir is cleaned up
+		incompleteJobDir := filepath.Join(downloadDir, "testjob")
+		if _, err := os.Stat(incompleteJobDir); !os.IsNotExist(err) {
+			t.Errorf("incomplete directory %s still exists after finalization", incompleteJobDir)
+		}
+
+	case <-ctx.Done():
+		t.Fatalf("timeout waiting for post-proc completion: %v", ctx.Err())
+	}
+}
+
+// Reuse helper functions from integration_test.go logic (re-implemented here
+// to avoid build-tag exclusion issues during unit tests).
+
+func makeDeterministic(n int) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = byte(i * 7 % 256)
+	}
+	return out
+}
+
+func yencEncodePart(name string, partNum, totalParts int, data []byte, fileSize, beginOffset, endOffset int) []byte {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "=ybegin part=%d total=%d line=128 size=%d name=%s\r\n",
+		partNum, totalParts, fileSize, name)
+	fmt.Fprintf(&buf, "=ypart begin=%d end=%d\r\n", beginOffset, endOffset)
+
+	encoded := make([]byte, 0, len(data)+len(data)/32)
+	for _, b := range data {
+		enc := byte((int(b) + 42) % 256)
+		if enc == 0 || enc == '\n' || enc == '\r' || enc == '=' {
+			encoded = append(encoded, '=')
+			enc = byte((int(enc) + 64) % 256)
+		}
+		encoded = append(encoded, enc)
+	}
+	const lineLen = 128
+	for i := 0; i < len(encoded); i += lineLen {
+		end := i + lineLen
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		buf.Write(encoded[i:end])
+		buf.WriteString("\r\n")
+	}
+
+	checksum := crc32.ChecksumIEEE(data)
+	fmt.Fprintf(&buf, "=yend size=%d part=%d pcrc32=%08x\r\n", len(data), partNum, checksum)
+	return buf.Bytes()
+}
+
+type mockNNTP struct {
+	host string
+	port int
+	ln   net.Listener
+
+	bodies map[string][]byte
+	wg     sync.WaitGroup
+}
+
+func startMockNNTP(t *testing.T, bodies map[string][]byte) *mockNNTP {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().(*net.TCPAddr)
+	m := &mockNNTP{
+		host:   addr.IP.String(),
+		port:   addr.Port,
+		ln:     ln,
+		bodies: bodies,
+	}
+	t.Cleanup(func() {
+		_ = ln.Close()
+		m.wg.Wait()
+	})
+	go m.acceptLoop()
+	return m
+}
+
+func (m *mockNNTP) acceptLoop() {
+	for {
+		c, err := m.ln.Accept()
+		if err != nil {
+			return
+		}
+		m.wg.Add(1)
+		go func(c net.Conn) {
+			defer m.wg.Done()
+			defer func() { _ = c.Close() }()
+			m.handleConn(c)
+		}(c)
+	}
+}
+
+func (m *mockNNTP) handleConn(c net.Conn) {
+	r := bufio.NewReader(c)
+	write := func(s string) bool {
+		_, err := c.Write([]byte(s))
+		return err == nil
+	}
+	if !write("200 welcome\r\n") {
+		return
+	}
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return
+		}
+		cmd := strings.TrimRight(line, "\r\n")
+		switch {
+		case cmd == "CAPABILITIES":
+			_ = write("101 capabilities\r\nVERSION 2\r\nREADER\r\n.\r\n")
+		case strings.HasPrefix(cmd, "BODY "):
+			id := strings.Trim(strings.TrimPrefix(cmd, "BODY "), "<>")
+			body, ok := m.bodies[id]
+			if !ok {
+				_ = write("430 no such article\r\n")
+				continue
+			}
+			_ = write(fmt.Sprintf("222 0 <%s> body follows\r\n", id))
+			_ = write(string(dotStuff(body)))
+			_ = write("\r\n.\r\n")
+		case strings.HasPrefix(cmd, "STAT "):
+			id := strings.Trim(strings.TrimPrefix(cmd, "STAT "), "<>")
+			if _, ok := m.bodies[id]; !ok {
+				_ = write("430 no such article\r\n")
+				continue
+			}
+			_ = write(fmt.Sprintf("223 0 <%s>\r\n", id))
+		case cmd == "QUIT":
+			_ = write("205 bye\r\n")
+			return
+		default:
+			_ = write("500 unknown command\r\n")
+		}
+	}
+}
+
+func dotStuff(body []byte) []byte {
+	if !bytes.Contains(body, []byte("\r\n.")) && (len(body) == 0 || body[0] != '.') {
+		return body
+	}
+	var out bytes.Buffer
+	out.Grow(len(body) + 16)
+	atLineStart := true
+	for _, b := range body {
+		if atLineStart && b == '.' {
+			out.WriteByte('.')
+		}
+		out.WriteByte(b)
+		atLineStart = b == '\n'
+	}
+	return out.Bytes()
+}
