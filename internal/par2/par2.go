@@ -158,14 +158,18 @@ func parseStatus(output string) Status {
 	}
 }
 
-// Verify runs `par2 r <parfile>` and parses the output to determine whether
-// the protected files are intact.  It returns a VerifyResult even when par2
-// itself exits with a non-zero code, as long as the process could be started.
-// A returned error indicates a system-level failure (binary not found,
-// context cancelled, etc.).
-func Verify(ctx context.Context, parfile string) (VerifyResult, error) {
+// Verify runs `par2 r <parfile> [extraFiles...]` and parses the output to
+// determine whether the protected files are intact.  It returns a VerifyResult
+// even when par2 itself exits with a non-zero code, as long as the process
+// could be started. A returned error indicates a system-level failure (binary
+// not found, context cancelled, etc.).
+func Verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyResult, error) {
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "par2", "r", parfile) //nolint:gosec // parfile is caller-supplied, not shell-expanded
+	args := []string{"r", parfile}
+	args = append(args, extraFiles...)
+
+	cmd := exec.CommandContext(ctx, "par2", args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	cmd.Dir = filepath.Dir(parfile)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -187,12 +191,16 @@ func Verify(ctx context.Context, parfile string) (VerifyResult, error) {
 	return res, nil
 }
 
-// Repair runs `par2 r <parfile>` and attempts to repair any damaged files.
-// Like Verify, it returns a RepairResult even on non-zero exit codes.  A
-// non-nil error signals a system-level failure.
-func Repair(ctx context.Context, parfile string) (RepairResult, error) {
+// Repair runs `par2 r <parfile> [extraFiles...]` and attempts to repair any
+// damaged files. Like Verify, it returns a RepairResult even on non-zero exit
+// codes.  A non-nil error signals a system-level failure.
+func Repair(ctx context.Context, parfile string, extraFiles ...string) (RepairResult, error) {
 	var combined bytes.Buffer
-	cmd := exec.CommandContext(ctx, "par2", "r", parfile) //nolint:gosec // parfile is caller-supplied, not shell-expanded
+	args := []string{"r", parfile}
+	args = append(args, extraFiles...)
+
+	cmd := exec.CommandContext(ctx, "par2", args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	cmd.Dir = filepath.Dir(parfile)
 	cmd.Stdout = &combined
 	cmd.Stderr = &combined
 
@@ -211,6 +219,6 @@ func Repair(ctx context.Context, parfile string) (RepairResult, error) {
 		}
 	}
 
-	res.Success = strings.Contains(res.Output, "Repair complete")
+	res.Success = strings.Contains(res.Output, "Repair complete") || strings.Contains(res.Output, "All files are correct")
 	return res, nil
 }

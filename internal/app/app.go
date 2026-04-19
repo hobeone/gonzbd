@@ -67,6 +67,12 @@ type JobComplete struct {
 	JobID string
 }
 
+// PostProcComplete is emitted on Application.PostProcComplete() when all
+// post-processing stages for a job have finished.
+type PostProcComplete struct {
+	JobID string
+}
+
 // Application is the wired pipeline. Construct with New, start with Start,
 // shut down with Shutdown. Public methods are safe for concurrent use after
 // Start returns.
@@ -75,14 +81,15 @@ type Application struct {
 	mu  sync.Mutex
 	cfg Config
 
-	queue         *queue.Queue
-	cache         *cache.Cache
-	downloader    *downloader.Downloader
-	assembler     *assembler.Assembler
-	postProcessor *postproc.PostProcessor
-	pipeline      *pipeline
-	fileComplete  chan FileComplete
-	jobComplete   chan JobComplete
+	queue            *queue.Queue
+	cache            *cache.Cache
+	downloader       *downloader.Downloader
+	assembler        *assembler.Assembler
+	postProcessor    *postproc.PostProcessor
+	pipeline         *pipeline
+	fileComplete     chan FileComplete
+	jobComplete      chan JobComplete
+	postProcComplete chan PostProcComplete
 
 	// internalFileComplete ensures we never miss a queue update due to
 	// a full buffer. The watchCompletions goroutine drains it.
@@ -124,6 +131,7 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 
 	fileComplete := make(chan FileComplete, 64)
 	jobComplete := make(chan JobComplete, 16)
+	postProcComplete := make(chan PostProcComplete, 16)
 	internalFileComplete := make(chan FileComplete, 64)
 
 	p := &pipeline{
@@ -133,14 +141,18 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 		downloadDir: cfg.DownloadDir,
 		updateCh:    make(chan (<-chan *downloader.ArticleResult), 1),
 		fileInfo:    make(map[fileKey]assembler.FileInfo),
-		usedPaths:   make(map[string]struct{}),
 	}
 
 	pp := postproc.New(postproc.Options{
 		Stages: []postproc.Stage{
 			postproc.NewRepairStage(),
 			postproc.NewUnpackStage(),
-			postproc.NewDeobfuscateStage(),
+		},
+		OnJobDone: func(job *postproc.Job) {
+			select {
+			case postProcComplete <- PostProcComplete{JobID: job.Queue.ID}:
+			default:
+			}
 		},
 		Logger: log,
 	})
@@ -168,6 +180,7 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 	app.pipeline = p
 	app.fileComplete = fileComplete
 	app.jobComplete = jobComplete
+	app.postProcComplete = postProcComplete
 	app.internalFileComplete = internalFileComplete
 	return app, nil
 }
@@ -192,6 +205,10 @@ func (app *Application) FileComplete() <-chan FileComplete { return app.fileComp
 // completion notifications. A job is complete when all its files have
 // finished reassembly.
 func (app *Application) JobComplete() <-chan JobComplete { return app.jobComplete }
+
+// PostProcComplete returns the receive-only channel carrying notifications
+// when a job's post-processing pipeline has finished.
+func (app *Application) PostProcComplete() <-chan PostProcComplete { return app.postProcComplete }
 
 // Start brings up the assembler, downloader, and pipeline goroutine. The
 // given context is held for the lifetime of the Application; cancelling it
@@ -329,7 +346,7 @@ func (app *Application) watchCompletions(ctx context.Context) {
 				// 1. Trigger PostProcessor
 				ppJob := &postproc.Job{
 					Queue:       job,
-					DownloadDir: filepath.Join(app.cfg.DownloadDir, job.Name),
+					DownloadDir: filepath.Join(app.cfg.DownloadDir, job.ID),
 				}
 				app.postProcessor.Process(ppJob)
 

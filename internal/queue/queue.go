@@ -145,12 +145,14 @@ func (q *Queue) Resume(id string) error {
 // needs to target a specific article; full Job state stays behind
 // the queue's lock.
 type UnfinishedArticle struct {
-	JobID     string
-	JobStatus constants.Status
-	FileIdx   int
-	MessageID string
-	Bytes     int
-	Subject   string
+	JobID       string
+	JobStatus   constants.Status
+	FileIdx     int
+	MessageID   string
+	Bytes       int
+	Subject     string
+	FailedBytes int64
+	Par2Bytes   int64
 }
 
 // ForEachUnfinishedArticle invokes fn for every not-yet-Done article
@@ -175,17 +177,19 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 				continue
 			}
 			for ai := range file.Articles {
-				art := &file.Articles[ai]
+				art := &job.Files[fi].Articles[ai]
 				if art.Done {
 					continue
 				}
 				if !fn(UnfinishedArticle{
-					JobID:     job.ID,
-					JobStatus: job.Status,
-					FileIdx:   fi,
-					MessageID: art.ID,
-					Bytes:     art.Bytes,
-					Subject:   file.Subject,
+					JobID:       job.ID,
+					JobStatus:   job.Status,
+					FileIdx:     fi,
+					MessageID:   art.ID,
+					Bytes:       art.Bytes,
+					Subject:     file.Subject,
+					FailedBytes: job.FailedBytes,
+					Par2Bytes:   job.Par2Bytes,
 				}) {
 					return
 				}
@@ -228,9 +232,10 @@ func (q *Queue) MarkArticleDone(jobID, messageID string) error {
 	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 }
 
-// MarkArticleFailed marks an article as Done but does NOT decrement the
-// remaining byte count of the job. Returns (true, nil) if it was the first
-// time this article was marked done.
+// MarkArticleFailed marks an article as Done and increments the FailedBytes
+// count. It also decrements the remaining byte count of the job so that
+// hopeless jobs can be identified by comparing FailedBytes vs Par2Bytes.
+// Returns (true, nil) if it was the first time this article was marked done.
 func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -240,10 +245,13 @@ func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
 	}
 	for fi := range job.Files {
 		for ai := range job.Files[fi].Articles {
-			if job.Files[fi].Articles[ai].ID == messageID {
-				if !job.Files[fi].Articles[ai].Done {
-					job.Files[fi].Articles[ai].Done = true
-					slog.Warn("article marked FAILED", "msgid", messageID, "job", jobID, "remaining", job.RemainingBytes)
+			art := &job.Files[fi].Articles[ai]
+			if art.ID == messageID {
+				if !art.Done {
+					art.Done = true
+					job.FailedBytes += int64(art.Bytes)
+					job.RemainingBytes -= int64(art.Bytes)
+					slog.Warn("article marked FAILED", "msgid", messageID, "job", jobID, "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
 					return true, nil
 				}
 				return false, nil

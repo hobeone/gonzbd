@@ -1,5 +1,3 @@
-//go:build e2e
-
 package e2e
 
 import (
@@ -148,8 +146,6 @@ func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDi
 	return a, downloadDir
 }
 
-
-// e2eMessageID generates a unique message-ID for E2E test articles.
 func e2eMessageID(filename string, partNum int) string {
 	ts := time.Now().UnixNano()
 	h := sha256.Sum256([]byte(fmt.Sprintf("e2e:%d:%s:%d", ts, filename, partNum)))

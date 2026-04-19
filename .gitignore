@@ -13,6 +13,8 @@ sabnzbd.yaml
 coverage.txt
 coverage.html
 
+/*.nzb
+
 # SPA build output (embedded by Go at build time)
 ui/dist/
 ui/.svelte-kit/

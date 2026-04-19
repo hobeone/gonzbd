@@ -315,8 +315,9 @@ func TestMarkArticleFailed(t *testing.T) {
 	if !got.Files[0].Articles[0].Done {
 		t.Error("article should be marked Done")
 	}
-	if got.RemainingBytes != initialRemaining {
-		t.Errorf("RemainingBytes changed: got %d, want %d", got.RemainingBytes, initialRemaining)
+	wantRemaining := initialRemaining - int64(j.Files[0].Articles[0].Bytes)
+	if got.RemainingBytes != wantRemaining {
+		t.Errorf("RemainingBytes mismatch: got %d, want %d", got.RemainingBytes, wantRemaining)
 	}
 
 	// Repeat failure should return false

@@ -113,9 +113,17 @@ type Job struct {
 	// useful for UI and free-space pre-checks.
 	TotalBytes int64 `json:"total_bytes"`
 
-	// RemainingBytes is TotalBytes minus the sum of completed
+	// RemainingBytes is TotalBytes minus the sum of successfully completed
 	// articles. Decremented as articles download successfully.
 	RemainingBytes int64 `json:"remaining_bytes"`
+
+	// FailedBytes is the sum of articles that failed all retries.
+	// Used by the early health gate to abort hopeless jobs.
+	FailedBytes int64 `json:"failed_bytes"`
+
+	// Par2Bytes is the sum of all articles belonging to par2 files.
+	// Used by the early health gate to determine the maximum repair capacity.
+	Par2Bytes int64 `json:"par2_bytes"`
 }
 
 // JobFile is a single file within a job: its articles, its assembly
@@ -198,6 +206,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions) (*Job, error) {
 
 	job.Files = make([]JobFile, 0, len(parsed.Files))
 	for _, pf := range parsed.Files {
+		isPar2 := strings.Contains(strings.ToLower(pf.Subject), ".par2")
 		jf := JobFile{
 			Subject:  pf.Subject,
 			Date:     pf.Date,
@@ -213,6 +222,9 @@ func NewJob(parsed *nzb.NZB, opts AddOptions) (*Job, error) {
 		}
 		job.Files = append(job.Files, jf)
 		job.TotalBytes += pf.Bytes
+		if isPar2 {
+			job.Par2Bytes += pf.Bytes
+		}
 	}
 	job.RemainingBytes = job.TotalBytes
 	return job, nil

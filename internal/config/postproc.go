@@ -7,9 +7,6 @@ type PostProcConfig struct {
 	EnableUnrar bool `yaml:"enable_unrar" json:"enable_unrar"`
 	// Enable7zip enables 7z extraction.
 	Enable7zip bool `yaml:"enable_7zip" json:"enable_7zip"`
-	// DirectUnpack starts extraction while the download is still in
-	// progress, when feasible.
-	DirectUnpack bool `yaml:"direct_unpack" json:"direct_unpack"`
 	// EnableParCleanup deletes par2 files after a successful repair.
 	EnableParCleanup bool `yaml:"enable_par_cleanup" json:"enable_par_cleanup"`
 
