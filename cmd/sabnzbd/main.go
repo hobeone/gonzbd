@@ -245,6 +245,12 @@ func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, 
 		App:        application,
 	})
 
+	// Check for missing dependencies and surface them via logs and UI warnings.
+	for _, warning := range app.CheckDependencies() {
+		slog.Warn(warning)
+		apiSrv.AddWarning(warning)
+	}
+
 	listen := listenOverride
 	if listen == "" {
 		listen = net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port))

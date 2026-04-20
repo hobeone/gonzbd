@@ -139,6 +139,42 @@ func TestModeWarnings_Clear(t *testing.T) {
 	}
 }
 
+func TestModeWarnings_Populated(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	s.AddWarning("test warning 1")
+	s.AddWarning("test warning 2")
+
+	rr := apiGet(t, s.Handler(), "/api?mode=warnings&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	m := decodeJSON(t, rr)
+	warnings, ok := m["warnings"].([]any)
+	if !ok {
+		t.Fatalf("warnings not an array")
+	}
+	if len(warnings) != 2 {
+		t.Errorf("warnings length = %d; want 2", len(warnings))
+	}
+	if warnings[0] != "test warning 1" || warnings[1] != "test warning 2" {
+		t.Errorf("warnings content mismatch: %v", warnings)
+	}
+
+	// Test clear
+	rr = apiGet(t, s.Handler(), "/api?mode=warnings&name=clear&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clear status = %d; want 200", rr.Code)
+	}
+	rr = apiGet(t, s.Handler(), "/api?mode=warnings&apikey="+testAPIKey)
+	m = decodeJSON(t, rr)
+	warnings = m["warnings"].([]any)
+	if len(warnings) != 0 {
+		t.Errorf("warnings length after clear = %d; want 0", len(warnings))
+	}
+}
+
 func TestModeServerStats_Default(t *testing.T) {
 	t.Parallel()
 	s := testServer()

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
@@ -69,6 +70,9 @@ type Server struct {
 	configPath string
 	grabber    *urlgrabber.Grabber
 	app        ApplicationReloader
+
+	mu       sync.RWMutex
+	warnings []string
 
 	modes modeTable
 	mux   *http.ServeMux
@@ -153,4 +157,27 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // httptest.NewServer in tests (bypasses Start/listener).
 func (s *Server) Handler() http.Handler {
 	return s.srv.Handler
+}
+
+// AddWarning adds a warning message to the internal store.
+func (s *Server) AddWarning(msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.warnings = append(s.warnings, msg)
+}
+
+// ClearWarnings empties the warning list.
+func (s *Server) ClearWarnings() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.warnings = []string{}
+}
+
+// Warnings returns a snapshot of the current warnings.
+func (s *Server) Warnings() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, len(s.warnings))
+	copy(out, s.warnings)
+	return out
 }

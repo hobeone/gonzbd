@@ -42,17 +42,16 @@ func (s *Server) modeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// modeWarnings returns the warning list. Currently always empty (no backend warning store).
+// modeWarnings returns the warning list.
 func (s *Server) modeWarnings(w http.ResponseWriter, r *http.Request) {
 	action := formString(r, "name")
 	if action == "clear" {
-		// Clear warnings: no-op (no backend)
+		s.ClearWarnings()
 		respondOK(w, "warnings", []string{})
 		return
 	}
 
-	// Default: return empty warnings array
-	respondOK(w, "warnings", []string{})
+	respondOK(w, "warnings", s.Warnings())
 }
 
 // modeServerStats returns server connection statistics (stubbed).

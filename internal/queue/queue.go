@@ -160,6 +160,19 @@ func (q *Queue) Resume(id string) error {
 	return nil
 }
 
+// SetStatus updates the status of the job with the given ID. Returns
+// ErrNotFound if the job is absent.
+func (q *Queue) SetStatus(id string, status constants.Status) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[id]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	job.Status = status
+	return nil
+}
+
 // UnfinishedArticle is the snapshot record yielded by
 // ForEachUnfinishedArticle. It carries the minimum the dispatcher
 // needs to target a specific article; full Job state stays behind
