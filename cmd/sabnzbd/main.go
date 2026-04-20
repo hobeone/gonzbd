@@ -167,6 +167,13 @@ func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, 
 		}()
 	}
 
+	histDB, err := history.Open(filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		return fmt.Errorf("open history db: %w", err)
+	}
+	defer func() { _ = histDB.Close() }() //nolint:errcheck // daemon shutdown; close error not actionable
+	histRepo := history.NewRepository(histDB)
+
 	application, err := app.New(app.Config{
 		DownloadDir: dlDir,
 		CompleteDir: cfg.General.CompleteDir,
@@ -174,19 +181,10 @@ func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, 
 		CacheLimit:  int64(cfg.Downloads.ArticleCacheSize),
 		Servers:     enabledServers(cfg.Servers),
 		Categories:  cfg.Categories,
-	})
+	}, histRepo)
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
 	}
-
-	queueStateDir := filepath.Join(adminDir, "queue")
-
-	histDB, err := history.Open(filepath.Join(adminDir, "history.db"))
-	if err != nil {
-		return fmt.Errorf("open history db: %w", err)
-	}
-	defer func() { _ = histDB.Close() }() //nolint:errcheck // daemon shutdown; close error not actionable
-	histRepo := history.NewRepository(histDB)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -281,9 +279,6 @@ func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, 
 	}
 	if err := application.Shutdown(); err != nil {
 		slog.Warn("application shutdown", "err", err)
-	}
-	if err := application.Queue().Save(queueStateDir); err != nil {
-		slog.Warn("save queue state", "err", err)
 	}
 	if err := bpsmeter.SaveState(meterStatePath, bpsmeter.Capture(meter, nil)); err != nil {
 		slog.Warn("save bpsmeter state", "err", err)
@@ -459,7 +454,7 @@ func run(configPath, nzbPath, downloadDirOverride string, verbose bool) error {
 		CacheLimit:  int64(cfg.Downloads.ArticleCacheSize),
 		Servers:     enabledServers(cfg.Servers),
 		Categories:  cfg.Categories,
-	})
+	}, nil)
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
 	}

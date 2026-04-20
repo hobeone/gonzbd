@@ -13,17 +13,20 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/assembler"
 	"github.com/hobeone/sabnzbd-go/internal/cache"
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/downloader"
+	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/postproc"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
@@ -87,6 +90,7 @@ type Application struct {
 	cfg Config
 
 	queue            *queue.Queue
+	historyRepo      *history.Repository
 	cache            *cache.Cache
 	downloader       *downloader.Downloader
 	assembler        *assembler.Assembler
@@ -111,7 +115,7 @@ type Application struct {
 // New constructs an Application from cfg. It does not open sockets or start
 // goroutines; call Start to bring subsystems up. Returns an error when the
 // config is structurally invalid (no servers, empty DownloadDir).
-func New(cfg Config, opts ...func(*Application)) (*Application, error) {
+func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*Application, error) {
 	if len(cfg.Servers) == 0 {
 		return nil, errors.New("app: at least one server is required")
 	}
@@ -122,13 +126,17 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 		return nil, errors.New("app: CompleteDir is required")
 	}
 
-	app := &Application{cfg: cfg, log: slog.Default()}
+	app := &Application{cfg: cfg, historyRepo: repo, log: slog.Default()}
 	for _, o := range opts {
 		o(app)
 	}
 	log := app.log
 
-	q := queue.New()
+	queueStateDir := filepath.Join(cfg.AdminDir, "queue")
+	q, err := queue.Load(queueStateDir)
+	if err != nil {
+		return nil, fmt.Errorf("app: load queue: %w", err)
+	}
 	c := cache.New(cache.Options{Limit: cfg.CacheLimit})
 
 	servers := make([]*downloader.Server, len(cfg.Servers))
@@ -158,6 +166,38 @@ func New(cfg Config, opts ...func(*Application)) (*Application, error) {
 			postproc.NewFinalizeStage(),
 		},
 		OnJobDone: func(job *postproc.Job) {
+			// 1. Record in history
+			stageLogJSON, _ := json.Marshal(job.StageLog)
+			entry := history.Entry{
+				Completed:    time.Now(),
+				Name:         job.Queue.Name,
+				NzbName:      job.Queue.Filename,
+				Category:     job.Queue.Category,
+				Status:       "Completed",
+				NzoID:        job.Queue.ID,
+				Path:         job.FinalDir,
+				DownloadTime: int64(job.Queue.TotalBytes), // placeholder
+				StageLog:     string(stageLogJSON),
+				Bytes:        job.Queue.TotalBytes,
+				TimeAdded:    time.Now(), // TODO: use actual time added
+			}
+			if job.ParError || job.UnpackError || job.FailMsg != "" {
+				entry.Status = "Failed"
+				entry.FailMessage = job.FailMsg
+			}
+
+			if app.historyRepo != nil {
+				if err := app.historyRepo.Add(context.Background(), entry); err != nil {
+					log.Warn("failed to add history entry", "job", job.Queue.ID, "err", err)
+				}
+			}
+
+			// 2. Remove from queue
+			if err := q.Remove(job.Queue.ID); err != nil {
+				log.Warn("failed to remove job from queue after post-proc", "job", job.Queue.ID, "err", err)
+			}
+
+			// 3. Notify external subscribers
 			select {
 			case postProcComplete <- PostProcComplete{JobID: job.Queue.ID}:
 			default:
@@ -288,6 +328,9 @@ func (app *Application) Shutdown() error {
 	}
 	if err := app.cache.Flush(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("app: flush cache: %w", err)
+	}
+	if err := app.queue.Save(filepath.Join(app.cfg.AdminDir, "queue")); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("app: save queue: %w", err)
 	}
 	return firstErr
 }

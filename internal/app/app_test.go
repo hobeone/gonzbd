@@ -16,9 +16,203 @@ import (
 
 	"github.com/hobeone/sabnzbd-go/internal/app"
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
+
+func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
+	downloadDir := t.TempDir()
+	completeDir := t.TempDir()
+	adminDir := t.TempDir()
+
+	const (
+		fileSize = 10 * 1024
+		partSize = 5 * 1024
+	)
+	raw := makeDeterministic(fileSize)
+	articles := map[string][]byte{
+		"p1@t": yencEncodePart("test.bin", 1, 2, raw[:partSize], fileSize, 1, partSize),
+		"p2@t": yencEncodePart("test.bin", 2, 2, raw[partSize:], fileSize, partSize+1, fileSize),
+	}
+	mock := startMockNNTP(t, articles)
+
+	appCfg := app.Config{
+		DownloadDir: downloadDir,
+		CompleteDir: completeDir,
+		AdminDir:    adminDir,
+		CacheLimit:  1 * 1024 * 1024,
+		Servers: []config.ServerConfig{{
+			Name:   "mock",
+			Host:   mock.host,
+			Port:   mock.port,
+			Enable: true,
+		}},
+	}
+
+	// 1. Start app, download job, check it moves to history and is removed from queue
+	{
+		db, err := history.Open(filepath.Join(adminDir, "history.db"))
+		if err != nil {
+			t.Fatalf("history.Open: %v", err)
+		}
+		repo := history.NewRepository(db)
+
+		application, err := app.New(appCfg, repo)
+		if err != nil {
+			t.Fatalf("app.New: %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		if err := application.Start(ctx); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		parsed := &nzb.NZB{
+			Files: []nzb.File{{
+				Subject: "test.bin",
+				Articles: []nzb.Article{
+					{ID: "p1@t", Bytes: partSize, Number: 1},
+					{ID: "p2@t", Bytes: partSize, Number: 2},
+				},
+				Bytes: fileSize,
+			}},
+		}
+		job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "history-test"})
+		jobID := job.ID
+		if err := application.Queue().Add(job); err != nil {
+			t.Fatalf("Queue.Add: %v", err)
+		}
+
+		// Wait for completion
+		select {
+		case <-application.PostProcComplete():
+			// Success
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for download")
+		}
+
+		// Verify it is gone from the active queue
+		if _, err := application.Queue().Get(jobID); err == nil {
+			t.Error("job still in active queue after completion")
+		}
+
+		// Verify it is in history
+		entry, err := repo.Get(context.Background(), jobID)
+		if err != nil {
+			t.Fatalf("job not found in history: %v", err)
+		}
+		if entry.Name != "history-test" {
+			t.Errorf("history entry name = %q, want %q", entry.Name, "history-test")
+		}
+
+		cancel()
+		if err := application.Shutdown(); err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+		_ = db.Close()
+	}
+
+	// 2. Restart app, verify queue remains empty and history still has the job
+	{
+		db, err := history.Open(filepath.Join(adminDir, "history.db"))
+		if err != nil {
+			t.Fatalf("history.Open restart: %v", err)
+		}
+		repo := history.NewRepository(db)
+		defer db.Close()
+
+		application, err := app.New(appCfg, repo)
+		if err != nil {
+			t.Fatalf("app.New restart: %v", err)
+		}
+
+		if application.Queue().Len() != 0 {
+			t.Errorf("Queue length after restart = %d, want 0", application.Queue().Len())
+		}
+
+		entries, err := repo.Search(context.Background(), history.SearchOptions{})
+		if err != nil {
+			t.Fatalf("history search: %v", err)
+		}
+		if len(entries) != 1 {
+			t.Errorf("history entries = %d, want 1", len(entries))
+		}
+	}
+}
+
+func TestQueuePersistenceAcrossRestart(t *testing.T) {
+	downloadDir := t.TempDir()
+	completeDir := t.TempDir()
+	adminDir := t.TempDir()
+
+	mock := startMockNNTP(t, map[string][]byte{})
+
+	appCfg := app.Config{
+		DownloadDir: downloadDir,
+		CompleteDir: completeDir,
+		AdminDir:    adminDir,
+		CacheLimit:  1 * 1024 * 1024,
+		Servers: []config.ServerConfig{{
+			Name:   "mock",
+			Host:   mock.host,
+			Port:   mock.port,
+			Enable: true,
+		}},
+	}
+
+	// 1. Start app, add a job, and stop app (triggering save)
+	{
+		application, err := app.New(appCfg, nil)
+		if err != nil {
+			t.Fatalf("app.New (1): %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		if err := application.Start(ctx); err != nil {
+			t.Fatalf("Start (1): %v", err)
+		}
+
+		parsed := &nzb.NZB{
+			Files: []nzb.File{{
+				Subject:  "test.bin",
+				Articles: []nzb.Article{{ID: "a@t", Bytes: 100}},
+				Bytes:    100,
+			}},
+		}
+		job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "persist-test"})
+		if err := application.Queue().Add(job); err != nil {
+			t.Fatalf("Queue.Add: %v", err)
+		}
+
+		if application.Queue().Len() != 1 {
+			t.Fatalf("Queue length before stop = %d, want 1", application.Queue().Len())
+		}
+
+		cancel()
+		if err := application.Shutdown(); err != nil {
+			t.Fatalf("application.Shutdown: %v", err)
+		}
+	}
+
+	// 2. Start new app instance and check if job is still there
+	{
+		application, err := app.New(appCfg, nil)
+		if err != nil {
+			t.Fatalf("app.New (2): %v", err)
+		}
+
+		// IF IT WAS PERSISTED, IT SHOULD BE LOADED NOW
+		if application.Queue().Len() != 1 {
+			t.Errorf("Queue length after restart = %d, want 1", application.Queue().Len())
+		} else {
+			jobs := application.Queue().List()
+			if jobs[0].Name != "persist-test" {
+				t.Errorf("Job name = %q, want %q", jobs[0].Name, "persist-test")
+			}
+		}
+	}
+}
 
 func TestFullDownloadLifecycle(t *testing.T) {
 	const (
@@ -56,7 +250,7 @@ func TestFullDownloadLifecycle(t *testing.T) {
 			{Name: "Default", Dir: ""},
 			{Name: "movies", Dir: "Movies"},
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
