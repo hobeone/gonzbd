@@ -179,9 +179,27 @@ func TestRemove(t *testing.T) {
 		t.Errorf("Get after Remove should fail")
 	}
 
-	err := q.Remove("nonexistent")
-	if err == nil {
+	if err := q.Remove("nonexistent"); err == nil {
 		t.Errorf("Remove(unknown) should error")
+	}
+}
+
+func TestQueueSetStatus(t *testing.T) {
+	q := New()
+	j := makeJob(t, "j", constants.NormalPriority)
+	_ = q.Add(j)
+
+	if err := q.SetStatus(j.ID, constants.StatusRepairing); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	got, _ := q.Get(j.ID)
+	if got.Status != constants.StatusRepairing {
+		t.Errorf("Status = %q, want %q", got.Status, constants.StatusRepairing)
+	}
+
+	if err := q.SetStatus("nonexistent", constants.StatusRepairing); err == nil {
+		t.Error("SetStatus(nonexistent) should error")
 	}
 }
 

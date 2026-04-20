@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/hobeone/sabnzbd-go/internal/constants"
 )
 
 // Options configures a PostProcessor at construction time.
@@ -22,6 +24,10 @@ type Options struct {
 	// job, with the full StageLog populated.  May be nil.
 	OnJobDone func(*Job)
 
+	// StatusUpdater is called to update the persistent status of the job in
+	// the active queue. Usually maps to queue.SetStatus.
+	StatusUpdater func(string, constants.Status)
+
 	// Logger is the structured logger.  Defaults to slog.Default() when nil.
 	Logger *slog.Logger
 }
@@ -33,10 +39,11 @@ type Options struct {
 // Use New to construct; Start to launch the worker; Stop to shut it down
 // gracefully.  All public methods are safe for concurrent use.
 type PostProcessor struct {
-	stages    []Stage
-	onEmpty   func()
-	onJobDone func(*Job)
-	log       *slog.Logger
+	stages        []Stage
+	onEmpty       func()
+	onJobDone     func(*Job)
+	statusUpdater func(string, constants.Status)
+	log           *slog.Logger
 
 	q *ppQueue
 
@@ -73,12 +80,13 @@ func New(opts Options) *PostProcessor {
 		lg = slog.Default()
 	}
 	return &PostProcessor{
-		stages:    opts.Stages,
-		onEmpty:   opts.OnEmpty,
-		onJobDone: opts.OnJobDone,
-		log:       lg,
-		q:         newPPQueue(),
-		resumeC:   make(chan struct{}),
+		stages:        opts.Stages,
+		onEmpty:       opts.OnEmpty,
+		onJobDone:     opts.OnJobDone,
+		statusUpdater: opts.StatusUpdater,
+		log:           lg,
+		q:             newPPQueue(),
+		resumeC:       make(chan struct{}),
 	}
 }
 
@@ -263,6 +271,21 @@ func (p *PostProcessor) processJob(job *Job) {
 	p.log.Info("postproc: processing job", "job", job.Queue.ID, "name", job.Queue.Name)
 
 	for _, stage := range p.stages {
+		if p.statusUpdater != nil {
+			var status constants.Status
+			switch stage.Name() {
+			case "repair":
+				status = constants.StatusRepairing
+			case "unpack":
+				status = constants.StatusExtracting
+			case "finalize":
+				status = constants.StatusMoving
+			default:
+				status = constants.StatusRunning
+			}
+			p.statusUpdater(job.Queue.ID, status)
+		}
+
 		entry := StageLogEntry{
 			Stage:   stage.Name(),
 			Started: time.Now(),

@@ -25,6 +25,7 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/assembler"
 	"github.com/hobeone/sabnzbd-go/internal/cache"
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/constants"
 	"github.com/hobeone/sabnzbd-go/internal/downloader"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/postproc"
@@ -164,6 +165,9 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			postproc.NewRepairStage(),
 			postproc.NewUnpackStage(),
 			postproc.NewFinalizeStage(),
+		},
+		StatusUpdater: func(jobID string, status constants.Status) {
+			_ = q.SetStatus(jobID, status)
 		},
 		OnJobDone: func(job *postproc.Job) {
 			// 1. Record in history
@@ -405,6 +409,9 @@ func (app *Application) watchCompletions(ctx context.Context) {
 					}
 				}
 				finalDir := filepath.Join(app.cfg.CompleteDir, catDir, job.Name)
+
+				// Set status to Queued (for post-proc) before hand-off
+				_ = app.queue.SetStatus(job.ID, constants.StatusQueued)
 
 				ppJob := &postproc.Job{
 					Queue:       job,

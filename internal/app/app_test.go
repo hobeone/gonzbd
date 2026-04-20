@@ -105,6 +105,9 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 		if entry.Name != "history-test" {
 			t.Errorf("history entry name = %q, want %q", entry.Name, "history-test")
 		}
+		if entry.Status != "Completed" {
+			t.Errorf("history entry status = %q, want %q", entry.Status, "Completed")
+		}
 
 		cancel()
 		if err := application.Shutdown(); err != nil {
