@@ -47,6 +47,11 @@ export async function deleteHistoryItem(nzoId: string) {
 	await poll();
 }
 
+export async function retryHistoryJob(nzoId: string) {
+	await postAction('history', { name: 'retry', value: nzoId });
+	await poll();
+}
+
 export async function purgeHistory(deleteFiles: boolean) {
 	await postAction('history', {
 		name: 'delete',

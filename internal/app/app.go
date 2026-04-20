@@ -339,6 +339,38 @@ func (app *Application) Shutdown() error {
 	return firstErr
 }
 
+// RetryHistoryJob moves a job from the history back to the active queue.
+// It loads the job state from disk, resets its status, and re-adds it.
+func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
+	// 1. Ensure the job is in history
+	_, err := app.historyRepo.Get(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("app: job not in history: %w", err)
+	}
+
+	// 2. Load the job state from disk
+	jobPath := filepath.Join(app.cfg.AdminDir, "queue", "jobs", jobID+".json.gz")
+	job, err := queue.LoadJob(jobPath)
+	if err != nil {
+		return fmt.Errorf("app: load job state: %w", err)
+	}
+
+	// 3. Reset status and re-add to queue
+	job.Status = constants.StatusQueued
+	if err := app.queue.Add(job); err != nil {
+		return fmt.Errorf("app: add to queue: %w", err)
+	}
+
+	// 4. Remove from history
+	if _, err := app.historyRepo.Delete(ctx, jobID); err != nil {
+		// Log but don't fail; the job is already back in the queue
+		app.log.Warn("failed to delete history entry after retry", "job", jobID, "err", err)
+	}
+
+	app.log.Info("job retried from history", "job", jobID, "name", job.Name)
+	return nil
+}
+
 // ReloadDownloader stops the current downloader and starts a new one with
 // updated server configurations. It re-plumbs the pipeline to use the new
 // downloader's completion channel.

@@ -51,9 +51,10 @@ type Options struct {
 }
 
 // ApplicationReloader defines the subset of Application methods needed
-// by the API for hot-reloading.
+// by the API for hot-reloading and job lifecycle management.
 type ApplicationReloader interface {
 	ReloadDownloader(scs []config.ServerConfig) error
+	RetryHistoryJob(ctx context.Context, jobID string) error
 }
 
 // Server is the HTTP API server. It owns a net/http.Server and the mode

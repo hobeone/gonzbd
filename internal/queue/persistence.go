@@ -93,6 +93,15 @@ func Load(dir string) (*Queue, error) {
 	return q, nil
 }
 
+// LoadJob reconstructs a single Job from a .json.gz file at path.
+func LoadJob(path string) (*Job, error) {
+	var job Job
+	if err := readGzJSON(path, &job); err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
 // writeGzJSON encodes v as gzipped JSON and atomically publishes it
 // at path. Uses the same temp+fsync+rename dance as config.Save so a
 // crash at any point leaves either the old file or the new file
