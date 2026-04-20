@@ -16,6 +16,16 @@ function apiUrl(mode: string, params?: Record<string, string>): string {
 export async function fetchJSON<T>(url: string): Promise<T> {
 	const res = await fetch(url);
 	if (!res.ok) {
+		try {
+			const data = await res.json();
+			if (data && data.error) {
+				throw new Error(data.error);
+			}
+		} catch (e) {
+			if (e instanceof Error && e.message !== `API ${res.status}: ${res.statusText}`) {
+				throw e;
+			}
+		}
 		throw new Error(`API ${res.status}: ${res.statusText}`);
 	}
 	return res.json() as Promise<T>;

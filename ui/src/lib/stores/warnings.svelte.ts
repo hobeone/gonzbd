@@ -51,6 +51,13 @@ export function getToastMessage(): string | null {
 	return toastMessage;
 }
 
+export function showToast(message: string) {
+	toastMessage = message;
+	setTimeout(() => {
+		if (toastMessage === message) toastMessage = null;
+	}, 5000);
+}
+
 export function dismissToast() {
 	toastMessage = null;
 }

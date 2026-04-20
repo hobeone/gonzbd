@@ -3,6 +3,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import { deleteHistoryItem, retryHistoryJob } from '$lib/stores/history.svelte';
+	import { showToast } from '$lib/stores/warnings.svelte';
 
 	let { slot }: { slot: HistorySlot } = $props();
 
@@ -23,6 +24,8 @@
 		acting = true;
 		try {
 			await deleteHistoryItem(slot.nzo_id);
+		} catch (e) {
+			showToast(e instanceof Error ? e.message : String(e));
 		} finally {
 			acting = false;
 		}
@@ -32,6 +35,8 @@
 		acting = true;
 		try {
 			await retryHistoryJob(slot.nzo_id);
+		} catch (e) {
+			showToast(e instanceof Error ? e.message : String(e));
 		} finally {
 			acting = false;
 		}

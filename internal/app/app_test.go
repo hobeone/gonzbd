@@ -110,6 +110,12 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 			t.Errorf("history entry status = %q, want %q", entry.Status, "Completed")
 		}
 
+		// Verify job state file exists for retry
+		jobPath := filepath.Join(adminDir, "queue", "jobs", jobID+".json.gz")
+		if _, err := os.Stat(jobPath); err != nil {
+			t.Errorf("expected job state file at %s, but got error: %v", jobPath, err)
+		}
+
 		cancel()
 		if err := application.Shutdown(); err != nil {
 			t.Fatalf("Shutdown: %v", err)
