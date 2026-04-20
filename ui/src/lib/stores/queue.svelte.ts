@@ -39,6 +39,10 @@ async function poll() {
 	}
 }
 
+export async function refreshQueue() {
+	await poll();
+}
+
 export function startPolling() {
 	if (timer) return;
 	polling = true;

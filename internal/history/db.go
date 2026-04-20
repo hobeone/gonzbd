@@ -11,6 +11,7 @@ package history
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	// Register the pure-Go SQLite driver (no CGO required).
 	_ "modernc.org/sqlite"
@@ -33,11 +34,18 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("history: open %q: %w", path, err)
 	}
 
+	if err := sqlDB.Ping(); err != nil {
+		return nil, fmt.Errorf("error pinging database: %s, %w", path, err)
+	}
+
 	// WAL mode allows concurrent readers alongside the writer; foreign keys
 	// are off by default in SQLite and must be enabled per-connection.
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
+		"pragma busy_timeout(5000)",
+		"pragma synchronous(NORMAL)",
+		"pragma foreign_keys(ON)",
 	} {
 		if _, err := sqlDB.Exec(pragma); err != nil {
 			_ = sqlDB.Close() //nolint:errcheck // superseded by open error
@@ -54,6 +62,10 @@ func Open(path string) (*DB, error) {
 		_ = sqlDB.Close() //nolint:errcheck // superseded by vacuum error
 		return nil, fmt.Errorf("history: VACUUM: %w", err)
 	}
+
+	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxIdleConns(25)
+	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
 	return &DB{db: sqlDB}, nil
 }

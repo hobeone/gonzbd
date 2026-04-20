@@ -1,5 +1,6 @@
 import { fetchHistory, postAction } from '$lib/api';
 import type { HistoryDetail, HistorySlot } from '$lib/types';
+import { refreshQueue } from './queue.svelte';
 
 const POLL_INTERVAL = 5000;
 
@@ -49,7 +50,7 @@ export async function deleteHistoryItem(nzoId: string) {
 
 export async function retryHistoryJob(nzoId: string) {
 	await postAction('history', { name: 'retry', value: nzoId });
-	await poll();
+	await Promise.all([poll(), refreshQueue()]);
 }
 
 export async function purgeHistory(deleteFiles: boolean) {
