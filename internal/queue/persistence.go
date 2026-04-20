@@ -102,6 +102,15 @@ func LoadJob(path string) (*Job, error) {
 	return &job, nil
 }
 
+// SaveJob serialises a single Job to a .json.gz file at path.
+func SaveJob(path string, job *Job) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("queue: mkdir %q: %w", dir, err)
+	}
+	return writeGzJSON(path, job)
+}
+
 // writeGzJSON encodes v as gzipped JSON and atomically publishes it
 // at path. Uses the same temp+fsync+rename dance as config.Save so a
 // crash at any point leaves either the old file or the new file

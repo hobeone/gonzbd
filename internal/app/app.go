@@ -196,12 +196,18 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				}
 			}
 
-			// 2. Remove from queue
+			// 2. Save job state one last time to ensure retry works
+			jobPath := filepath.Join(app.cfg.AdminDir, "queue", "jobs", job.Queue.ID+".json.gz")
+			if err := queue.SaveJob(jobPath, job.Queue); err != nil {
+				log.Warn("failed to save final job state", "job", job.Queue.ID, "err", err)
+			}
+
+			// 3. Remove from queue
 			if err := q.Remove(job.Queue.ID); err != nil {
 				log.Warn("failed to remove job from queue after post-proc", "job", job.Queue.ID, "err", err)
 			}
 
-			// 3. Notify external subscribers
+			// 4. Notify external subscribers
 			select {
 			case postProcComplete <- PostProcComplete{JobID: job.Queue.ID}:
 			default:
