@@ -301,7 +301,48 @@ func (app *Application) Start(ctx context.Context) error {
 	}()
 
 	app.log.Info("application started", "download_dir", app.cfg.DownloadDir)
+
+	// Scan for and enqueue any jobs that were already complete (e.g. from
+	// a previous run or a retry).
+	for _, job := range app.queue.List() {
+		if job.IsComplete() {
+			app.sendToPostProcessor(job)
+		}
+	}
+
 	return nil
+}
+
+// sendToPostProcessor calculates final paths and hands the job to the
+// PostProcessor. Must only be called once per job completion.
+func (app *Application) sendToPostProcessor(job *queue.Job) {
+	app.log.Info("sending job to post-processor", "job", job.ID, "name", job.Name)
+
+	// Determine FinalDir based on Category
+	catDir := ""
+	for _, cat := range app.cfg.Categories {
+		if cat.Name == job.Category {
+			catDir = cat.Dir
+			break
+		}
+	}
+	finalDir := filepath.Join(app.cfg.CompleteDir, catDir, job.Name)
+
+	// Set status to Queued (for post-proc) before hand-off
+	_ = app.queue.SetStatus(job.ID, constants.StatusQueued)
+
+	ppJob := &postproc.Job{
+		Queue:       job,
+		DownloadDir: filepath.Join(app.cfg.DownloadDir, job.Name),
+		FinalDir:    finalDir,
+	}
+	app.postProcessor.Process(ppJob)
+
+	// Notify external subscribers
+	select {
+	case app.jobComplete <- JobComplete{JobID: job.ID}:
+	default:
+	}
 }
 
 // Shutdown cancels the lifecycle context, drains the pipeline, and stops
@@ -367,7 +408,12 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		return fmt.Errorf("app: add to queue: %w", err)
 	}
 
-	// 4. Remove from history
+	// 4. Trigger post-processing if already complete (which it should be)
+	if job.IsComplete() {
+		app.sendToPostProcessor(job)
+	}
+
+	// 5. Remove from history
 	if _, err := app.historyRepo.Delete(ctx, jobID); err != nil {
 		// Log but don't fail; the job is already back in the queue
 		app.log.Warn("failed to delete history entry after retry", "job", jobID, "err", err)
@@ -435,34 +481,7 @@ func (app *Application) watchCompletions(ctx context.Context) {
 			}
 
 			if job.IsComplete() {
-				app.log.Info("job complete, sending to post-processor", "job", job.ID, "name", job.Name)
-
-				// 1. Trigger PostProcessor
-				// Determine FinalDir based on Category
-				catDir := ""
-				for _, cat := range app.cfg.Categories {
-					if cat.Name == job.Category {
-						catDir = cat.Dir
-						break
-					}
-				}
-				finalDir := filepath.Join(app.cfg.CompleteDir, catDir, job.Name)
-
-				// Set status to Queued (for post-proc) before hand-off
-				_ = app.queue.SetStatus(job.ID, constants.StatusQueued)
-
-				ppJob := &postproc.Job{
-					Queue:       job,
-					DownloadDir: filepath.Join(app.cfg.DownloadDir, job.Name),
-					FinalDir:    finalDir,
-				}
-				app.postProcessor.Process(ppJob)
-
-				// 2. Notify external subscribers
-				select {
-				case app.jobComplete <- JobComplete{JobID: job.ID}:
-				default:
-				}
+				app.sendToPostProcessor(job)
 			}
 		}
 	}
