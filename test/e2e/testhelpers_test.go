@@ -13,6 +13,7 @@ import (
 
 	"github.com/hobeone/sabnzbd-go/internal/app"
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/nntp"
 	"github.com/hobeone/sabnzbd-go/test/mocknntp"
 )
@@ -124,7 +125,13 @@ func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDi
 		opts = append(opts, app.WithLogger(debugLogger))
 	}
 
-	a, err = app.New(appCfg, opts...)
+	histDB, err := history.Open(filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	repo := history.NewRepository(histDB)
+
+	a, err = app.New(appCfg, repo, opts...)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
@@ -150,7 +157,7 @@ func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDi
 
 func e2eMessageID(filename string, partNum int) string {
 	ts := time.Now().UnixNano()
-	h := sha256.Sum256([]byte(fmt.Sprintf("e2e:%d:%s:%d", ts, filename, partNum)))
+	h := sha256.Sum256(fmt.Appendf(nil, "e2e:%d:%s:%d", ts, filename, partNum))
 	return fmt.Sprintf("%x@e2e.sabnzbd-go.test", h[:16])
 }
 
@@ -250,10 +257,7 @@ func splitParts(payload []byte, partSize int) [][]byte {
 	}
 	var parts [][]byte
 	for off := 0; off < len(payload); off += partSize {
-		end := off + partSize
-		if end > len(payload) {
-			end = len(payload)
-		}
+		end := min(off+partSize, len(payload))
 		parts = append(parts, payload[off:end])
 	}
 	return parts
