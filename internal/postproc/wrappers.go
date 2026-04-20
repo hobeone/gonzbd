@@ -305,6 +305,10 @@ func (*FinalizeStage) Name() string { return "finalize" }
 
 // Run moves the directory content or the directory itself to its final location.
 func (*FinalizeStage) Run(ctx context.Context, job *Job) error {
+	if job.ParError || job.UnpackError || job.FailMsg != "" {
+		return nil // Skip move if failed, so files stay in DownloadDir for retry
+	}
+
 	if job.FinalDir == "" {
 		return fmt.Errorf("finalize: FinalDir not set")
 	}

@@ -22,6 +22,98 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
+func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
+	downloadDir := t.TempDir()
+	completeDir := t.TempDir()
+	adminDir := t.TempDir()
+
+	const (
+		fileSize = 10 * 1024
+		partSize = 5 * 1024
+	)
+	raw := makeDeterministic(fileSize)
+	articles := map[string][]byte{
+		"p1@t": yencEncodePart("test.bin", 1, 2, raw[:partSize], fileSize, 1, partSize),
+		"p2@t": yencEncodePart("test.bin", 2, 2, raw[partSize:], fileSize, partSize+1, fileSize),
+	}
+	mock := startMockNNTP(t, articles)
+
+	appCfg := app.Config{
+		DownloadDir: downloadDir,
+		CompleteDir: completeDir,
+		AdminDir:    adminDir,
+		CacheLimit:  1 * 1024 * 1024,
+		Servers: []config.ServerConfig{{
+			Name:   "mock",
+			Host:   mock.host,
+			Port:   mock.port,
+			Enable: true,
+		}},
+	}
+
+	db, _ := history.Open(filepath.Join(adminDir, "history.db"))
+	repo := history.NewRepository(db)
+	defer db.Close()
+
+	// Intercept post-processor to simulate a failure
+	application, _ := app.New(appCfg, repo, func(a *app.Application) {
+		// Use a custom post-processor or just let the default one fail?
+		// Actually, we can't easily swap the post-processor, but we can
+		// make the RepairStage fail by providing bad par2 files (which we aren't anyway).
+		// A simpler way is to just let the unpack stage fail.
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = application.Start(ctx)
+	defer cancel()
+	defer application.Shutdown()
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{{
+			Subject: "test.rar", // Subject implies rar
+			Articles: []nzb.Article{
+				{ID: "p1@t", Bytes: partSize, Number: 1},
+				{ID: "p2@t", Bytes: partSize, Number: 2},
+			},
+			Bytes: fileSize,
+		}},
+	}
+	// We want to force a failure. If unrar is missing (common in CI), it will fail.
+	// If unrar is present, it will fail because the content is not a real RAR.
+	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "fail-test"})
+	jobID := job.ID
+	_ = application.Queue().Add(job)
+
+	// Wait for completion (it will move to history as Failed)
+	select {
+	case <-application.PostProcComplete():
+		// Success
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for download")
+	}
+
+	// Verify it is in history and failed
+	entry, err := repo.Get(context.Background(), jobID)
+	if err != nil {
+		t.Fatalf("job not found in history: %v", err)
+	}
+	if entry.Status != "Failed" {
+		t.Errorf("status = %q, want Failed", entry.Status)
+	}
+
+	// Verify files are STILL in downloadDir/fail-test
+	incompleteJobDir := filepath.Join(downloadDir, "fail-test")
+	if _, err := os.Stat(incompleteJobDir); err != nil {
+		t.Errorf("expected incomplete directory %s to exist, but got error: %v", incompleteJobDir, err)
+	}
+
+	// Verify files are NOT in completeDir
+	finalJobDir := filepath.Join(completeDir, "fail-test")
+	if _, err := os.Stat(finalJobDir); !os.IsNotExist(err) {
+		t.Errorf("expected final directory %s to NOT exist, but it does", finalJobDir)
+	}
+}
+
 func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
