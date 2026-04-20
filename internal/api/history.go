@@ -22,6 +22,8 @@ func (s *Server) modeHistory(w http.ResponseWriter, r *http.Request) {
 		s.historyList(w, r)
 	case "delete":
 		s.historyDelete(w, r)
+	case "retry":
+		s.historyRetry(w, r)
 	case "mark_as_completed":
 		s.historyMarkCompleted(w, r)
 	default:
@@ -202,6 +204,22 @@ func (s *Server) historyMarkCompleted(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.history.MarkCompleted(r.Context(), nzoID); err != nil {
 		respondError(w, http.StatusInternalServerError, "mark completed: "+err.Error())
+		return
+	}
+	respondStatus(w)
+}
+
+// historyRetry moves an entry from history back to the queue via the retry
+// sub-action. The nzo_id is supplied in the value= parameter.
+func (s *Server) historyRetry(w http.ResponseWriter, r *http.Request) {
+	nzoID := formString(r, "value")
+	if nzoID == "" {
+		respondError(w, http.StatusBadRequest, "missing value parameter")
+		return
+	}
+
+	if err := s.app.RetryHistoryJob(r.Context(), nzoID); err != nil {
+		respondError(w, http.StatusInternalServerError, "retry: "+err.Error())
 		return
 	}
 	respondStatus(w)

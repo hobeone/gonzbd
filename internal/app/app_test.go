@@ -16,6 +16,7 @@ import (
 
 	"github.com/hobeone/sabnzbd-go/internal/app"
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/constants"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
@@ -141,6 +142,86 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 		if len(entries) != 1 {
 			t.Errorf("history entries = %d, want 1", len(entries))
 		}
+	}
+}
+
+func TestRetryHistoryJob(t *testing.T) {
+	downloadDir := t.TempDir()
+	completeDir := t.TempDir()
+	adminDir := t.TempDir()
+
+	mock := startMockNNTP(t, map[string][]byte{})
+
+	appCfg := app.Config{
+		DownloadDir: downloadDir,
+		CompleteDir: completeDir,
+		AdminDir:    adminDir,
+		CacheLimit:  1 * 1024 * 1024,
+		Servers: []config.ServerConfig{{
+			Name:   "mock",
+			Host:   mock.host,
+			Port:   mock.port,
+			Enable: true,
+		}},
+	}
+
+	db, _ := history.Open(filepath.Join(adminDir, "history.db"))
+	repo := history.NewRepository(db)
+	defer db.Close()
+
+	application, _ := app.New(appCfg, repo)
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = application.Start(ctx)
+	defer cancel()
+	defer application.Shutdown()
+
+	// 1. Manually create a "failed" history entry and its job file
+	jobID := "deadbeef12345678"
+	entry := history.Entry{
+		NzoID:  jobID,
+		Name:   "retry-test",
+		Status: "Failed",
+	}
+	_ = repo.Add(ctx, entry)
+
+	job := &queue.Job{
+		ID:     jobID,
+		Name:   "retry-test",
+		Status: constants.StatusFailed,
+		Files: []queue.JobFile{{
+			Subject: "file.bin",
+			Complete: true, // Mark as complete so post-proc triggers immediately
+			Articles: []queue.JobArticle{{ID: "a@t", Done: true}},
+		}},
+	}
+	jobsDir := filepath.Join(adminDir, "queue", "jobs")
+	_ = os.MkdirAll(jobsDir, 0o750)
+	
+	// We need to use the internal writeGzJSON or similar to create the file.
+	// Since it's internal to queue, we'll just use a dummy for now and see if app.RetryHistoryJob works.
+	// Actually, queue.Save is available. Let's use that.
+	q := queue.New()
+	_ = q.Add(job)
+	_ = q.Save(filepath.Join(adminDir, "queue"))
+	_ = q.Remove(jobID) // remove from active queue
+
+	// 2. Trigger Retry
+	if err := application.RetryHistoryJob(ctx, jobID); err != nil {
+		t.Fatalf("RetryHistoryJob: %v", err)
+	}
+
+	// 3. Verify it's back in the queue
+	if application.Queue().Len() != 1 {
+		t.Errorf("Queue length = %d, want 1", application.Queue().Len())
+	}
+	got, _ := application.Queue().Get(jobID)
+	if got.Status != constants.StatusQueued {
+		t.Errorf("Status = %q, want %q", got.Status, constants.StatusQueued)
+	}
+
+	// 4. Verify history entry is gone
+	if _, err := repo.Get(ctx, jobID); err == nil {
+		t.Error("history entry still exists after retry")
 	}
 }
 
