@@ -59,34 +59,35 @@ var abcXyz = regexp.MustCompile(`^abc\.xyz`)
 // argument may be a plain filename or a full path; only the base component
 // is inspected. This is a direct port of Python's is_probably_obfuscated.
 func IsProbablyObfuscated(filename string) bool {
+	log := slog.Default().With("component", "deobfuscate")
 	base := filepath.Base(filename)
 	filebasename := strings.TrimSuffix(base, filepath.Ext(base))
 
-	slog.Debug("deobfuscate: checking", "basename", filebasename)
+	log.Debug("deobfuscate: checking", "basename", filebasename)
 
 	// — certainly obfuscated patterns —
 
 	// Exactly 32 lowercase hex digits.
 	if hex32.MatchString(filebasename) {
-		slog.Debug("deobfuscate: obfuscated — 32 hex digits")
+		log.Debug("deobfuscate: obfuscated — 32 hex digits")
 		return true
 	}
 
 	// 40+ chars of lowercase hex + dots.
 	if hex40plus.MatchString(filebasename) {
-		slog.Debug("deobfuscate: obfuscated — 40+ hex/dot chars")
+		log.Debug("deobfuscate: obfuscated — 40+ hex/dot chars")
 		return true
 	}
 
 	// Square-bracket tokens combined with a 30+ hex run.
 	if hex30.MatchString(filebasename) && len(squareBracketWord.FindAllString(filebasename, -1)) >= 2 {
-		slog.Debug("deobfuscate: obfuscated — square brackets + 30-char hex")
+		log.Debug("deobfuscate: obfuscated — square brackets + 30-char hex")
 		return true
 	}
 
 	// Starts with the literal "abc.xyz" prefix.
 	if abcXyz.MatchString(filebasename) {
-		slog.Debug("deobfuscate: obfuscated — abc.xyz prefix")
+		log.Debug("deobfuscate: obfuscated — abc.xyz prefix")
 		return true
 	}
 
@@ -111,36 +112,36 @@ func IsProbablyObfuscated(filename string) bool {
 
 	// "Great Distro" — mixed case with at least one separator.
 	if upperchars >= 2 && lowerchars >= 2 && spacesdots >= 1 {
-		slog.Debug("deobfuscate: not obfuscated — mixed case + separator")
+		log.Debug("deobfuscate: not obfuscated — mixed case + separator")
 		return false
 	}
 
 	// "this is a download" — three or more separators.
 	if spacesdots >= 3 {
-		slog.Debug("deobfuscate: not obfuscated — 3+ separators")
+		log.Debug("deobfuscate: not obfuscated — 3+ separators")
 		return false
 	}
 
 	// "Beast 2020" — letters + year-like digits + separator.
 	if (upperchars+lowerchars >= 4) && decimals >= 4 && spacesdots >= 1 {
-		slog.Debug("deobfuscate: not obfuscated — letters+digits+sep")
+		log.Debug("deobfuscate: not obfuscated — letters+digits+sep")
 		return false
 	}
 
 	// "Catullus" — starts with capital, overwhelmingly lowercase.
 	if filebasename != "" && filebasename[0] >= 'A' && filebasename[0] <= 'Z' &&
 		lowerchars > 2 && upperchars > 0 && float64(upperchars)/float64(lowerchars) <= 0.25 {
-		slog.Debug("deobfuscate: not obfuscated — capital-start mostly-lowercase")
+		log.Debug("deobfuscate: not obfuscated — capital-start mostly-lowercase")
 		return false
 	}
 
 	// Short simple words (like "alpha", "multi", "test") are not obfuscated.
 	if len(filebasename) >= 3 && len(filebasename) <= 10 && upperchars == 0 && decimals == 0 && spacesdots <= 1 {
-		slog.Debug("deobfuscate: not obfuscated — short simple word")
+		log.Debug("deobfuscate: not obfuscated — short simple word")
 		return false
 	}
 
-	slog.Debug("deobfuscate: obfuscated (default)")
+	log.Debug("deobfuscate: obfuscated (default)")
 	return true
 }
 
@@ -215,6 +216,7 @@ type Rename struct {
 // list of renames actually performed. Returns nil, nil when no rename is
 // needed.
 func Deobfuscate(dir, usefulName string) ([]Rename, error) {
+	log := slog.Default().With("component", "deobfuscate")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("readdir %s: %w", dir, err)
@@ -233,18 +235,18 @@ func Deobfuscate(dir, usefulName string) ([]Rename, error) {
 		return nil, err
 	}
 	if !ok {
-		slog.Debug("deobfuscate: no qualifying biggest file found", "dir", dir)
+		log.Debug("deobfuscate: no qualifying biggest file found", "dir", dir)
 		return nil, nil
 	}
 
 	ext := strings.ToLower(filepath.Ext(bigPath))
 	if excludedExts[ext] {
-		slog.Debug("deobfuscate: biggest file has excluded extension — skipping", "path", bigPath, "ext", ext)
+		log.Debug("deobfuscate: biggest file has excluded extension — skipping", "path", bigPath, "ext", ext)
 		return nil, nil
 	}
 
 	if !IsProbablyObfuscated(bigPath) {
-		slog.Debug("deobfuscate: biggest file not obfuscated — skipping", "path", bigPath)
+		log.Debug("deobfuscate: biggest file not obfuscated — skipping", "path", bigPath)
 		return nil, nil
 	}
 
@@ -258,7 +260,7 @@ func Deobfuscate(dir, usefulName string) ([]Rename, error) {
 	if err := os.Rename(bigPath, newBigPath); err != nil {
 		return nil, fmt.Errorf("rename %s → %s: %w", bigPath, newBigPath, err)
 	}
-	slog.Info("deobfuscate: renamed", "from", bigPath, "to", newBigPath)
+	log.Info("deobfuscate: renamed", "from", bigPath, "to", newBigPath)
 	renames = append(renames, Rename{From: bigPath, To: newBigPath})
 
 	// basedirfile is the path without extension — used to find siblings.
@@ -283,7 +285,7 @@ func Deobfuscate(dir, usefulName string) ([]Rename, error) {
 		if renErr := os.Rename(p, newPath); renErr != nil {
 			return renames, fmt.Errorf("rename sibling %s → %s: %w", p, newPath, renErr)
 		}
-		slog.Info("deobfuscate: renamed sibling", "from", p, "to", newPath)
+		log.Info("deobfuscate: renamed sibling", "from", p, "to", newPath)
 		renames = append(renames, Rename{From: p, To: newPath})
 	}
 

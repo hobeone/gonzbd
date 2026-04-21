@@ -49,12 +49,13 @@ func NewScanner(feeds []Feed, store *Store, handler Handler, client *http.Client
 	if logger == nil {
 		logger = slog.Default()
 	}
+	log := logger.With("component", "rss")
 	return &Scanner{
 		feeds:   feeds,
 		store:   store,
 		handler: handler,
 		client:  client,
-		logger:  logger,
+		logger:  log,
 	}
 }
 

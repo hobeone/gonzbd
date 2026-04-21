@@ -233,12 +233,13 @@ func New(schedules []ScheduleSpec, registry *Registry, logger *slog.Logger) *Sch
 	if logger == nil {
 		logger = slog.Default()
 	}
+	log := logger.With("component", "scheduler")
 	return &Scheduler{
 		schedules: schedules,
 		registry:  registry,
 		oneshots:  NewOneshotQueue(),
 		clock:     time.Now,
-		logger:    logger,
+		logger:    log,
 	}
 }
 

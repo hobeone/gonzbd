@@ -25,6 +25,7 @@ const joinBufSize = 1024 * 1024 // 1 MiB write buffer
 // ctx is checked between parts; cancellation stops the join and removes the
 // partial output file.
 func FileJoin(ctx context.Context, archive Archive, outDir string, _ Options) (Result, error) {
+	log := slog.Default().With("component", "unpack")
 	if archive.Type != SplitArchive {
 		return Result{Err: fmt.Errorf("filejoin: archive type is not SplitArchive")},
 			fmt.Errorf("filejoin: archive type is not SplitArchive")
@@ -47,7 +48,7 @@ func FileJoin(ctx context.Context, archive Archive, outDir string, _ Options) (R
 			fmt.Errorf("filejoin: output file already exists: %s", outPath)
 	}
 
-	slog.Info("filejoin: starting join",
+	log.Info("filejoin: starting join",
 		"name", archive.Name,
 		"parts", len(archive.Parts),
 		"outPath", outPath,
@@ -88,7 +89,7 @@ func FileJoin(ctx context.Context, archive Archive, outDir string, _ Options) (R
 		return Result{Err: err}, fmt.Errorf("filejoin: close output: %w", err)
 	}
 
-	slog.Info("filejoin: join complete", "outPath", outPath, "parts", len(archive.Parts))
+	log.Info("filejoin: join complete", "outPath", outPath, "parts", len(archive.Parts))
 	return Result{ExtractedFiles: []string{outPath}}, nil
 }
 

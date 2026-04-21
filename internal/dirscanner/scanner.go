@@ -30,11 +30,12 @@ func New(dir string, store *Store, h Handler, logger *slog.Logger) *Scanner {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	log := logger.With("component", "dirscanner")
 	return &Scanner{
 		dir:     dir,
 		store:   store,
 		handler: h,
-		logger:  logger,
+		logger:  log,
 	}
 }
 

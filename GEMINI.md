@@ -42,7 +42,7 @@ This file provides foundational context and instructional mandates for the `sabn
 ### 2. Coding Standards
 - **Idioms:** "Accept interfaces, return structs." Define interfaces at the consumer side.
 - **Context:** Every blocking operation **must** accept `context.Context` as the first parameter.
-- **Logging:** Pass `*slog.Logger` via constructors. **Never** use a package-level global logger.
+- **Logging:** Pass `*slog.Logger` via constructors. **Never** use a package-level global logger. All loggers MUST be component-scoped using `.With("component", "name")` to support log filtering.
 - **Errors:** Wrap errors with `fmt.Errorf("...: %w", err)`. Never use `%v` for errors.
 - **Concurrency:** Prefer channels for signaling (e.g., `chan struct{}`) over `sync.Cond`. Use `sync.RWMutex` for hot-path memory state.
 - **No hacks:** No `init()` functions for setup, no `panic` for control flow, and no `time.Sleep` in tests for synchronization.

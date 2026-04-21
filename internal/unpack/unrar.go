@@ -48,6 +48,7 @@ type Result struct {
 // prompt when no password is supplied, preventing the subprocess from
 // blocking on stdin.
 func UnRAR(ctx context.Context, archive Archive, outDir string, opts Options) (Result, error) {
+	log := slog.Default().With("component", "unpack")
 	mode := "x"
 	if opts.OneFolder {
 		mode = "e"
@@ -67,7 +68,7 @@ func UnRAR(ctx context.Context, archive Archive, outDir string, opts Options) (R
 		outDir + "/", // unrar expects a trailing slash on the output directory
 	}
 
-	slog.Info("unrar: starting extraction",
+	log.Info("unrar: starting extraction",
 		"archive", archive.MainFile,
 		"outDir", outDir,
 		"oneFolder", opts.OneFolder,
@@ -90,14 +91,14 @@ func UnRAR(ctx context.Context, archive Archive, outDir string, opts Options) (R
 		if errors.As(runErr, &exitErr) {
 			res.ExitCode = exitErr.ExitCode()
 			res.Err = fmt.Errorf("unrar exited %d: %w", res.ExitCode, runErr)
-			slog.Error("unrar: extraction failed",
+			log.Error("unrar: extraction failed",
 				"archive", archive.MainFile,
 				"exitCode", res.ExitCode,
 				"output", res.Output,
 			)
 		} else {
 			res.Err = fmt.Errorf("unrar: %w", runErr)
-			slog.Error("unrar: failed to start process",
+			log.Error("unrar: failed to start process",
 				"archive", archive.MainFile,
 				"err", runErr,
 			)
@@ -106,6 +107,6 @@ func UnRAR(ctx context.Context, archive Archive, outDir string, opts Options) (R
 		return res, res.Err
 	}
 
-	slog.Info("unrar: extraction succeeded", "archive", archive.MainFile)
+	log.Info("unrar: extraction succeeded", "archive", archive.MainFile)
 	return res, nil
 }
