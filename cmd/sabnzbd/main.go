@@ -220,16 +220,16 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 
 	// Notifier dispatcher. Sinks (email/apprise/script) are not yet
 	// config-driven; dispatcher stays empty until that config lands.
-	_ = notifier.NewDispatcher(slog.Default()) //nolint:errcheck // placeholder wiring for upcoming sinks
+	_ = notifier.NewDispatcher(slog.Default().With("component", "notifier")) //nolint:errcheck // placeholder wiring for upcoming sinks
 
 	// Ingest adapter shared by the dir scanner and URL grabber. Both
 	// receive raw NZB bytes and push jobs onto the same queue.
-	ingest := &ingestHandler{queue: application.Queue(), logger: slog.Default()}
+	ingest := &ingestHandler{queue: application.Queue(), logger: slog.Default().With("component", "ingest")}
 
 	// URL grabber. Used both by the RSS scanner's handler and by the API
 	// (mode=addurl). One instance is enough; Grabber is safe for
 	// concurrent Fetch callers because each call has its own http.Request.
-	grabber := urlgrabber.New(urlgrabber.Config{Logger: slog.Default()}, ingest)
+	grabber := urlgrabber.New(urlgrabber.Config{Logger: slog.Default().With("component", "urlgrabber")}, ingest)
 
 	// Directory scanner. Enabled only when DirscanDir is set.
 	if err := startDirScanner(ctx, cfg, adminDir, ingest); err != nil {
@@ -340,7 +340,7 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
-	sc := dirscanner.New(cfg.General.DirscanDir, store, h, slog.Default())
+	sc := dirscanner.New(cfg.General.DirscanDir, store, h, slog.Default().With("component", "dirscanner"))
 	go func() {
 		if err := sc.Run(ctx, interval); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Error("dirscanner", "err", err)
@@ -372,7 +372,7 @@ func startScheduler(ctx context.Context, cfg *config.Config, q *queue.Queue, can
 		cancel()
 		return nil
 	})
-	sch := scheduler.New(specs, reg, slog.Default())
+	sch := scheduler.New(specs, reg, slog.Default().With("component", "scheduler"))
 	go func() {
 		if err := sch.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Error("scheduler", "err", err)
@@ -396,8 +396,8 @@ func startRSSScanner(ctx context.Context, cfg *config.Config, adminDir string, g
 	if err != nil {
 		return fmt.Errorf("open rss store: %w", err)
 	}
-	handler := &rssToURLHandler{grabber: g, logger: slog.Default()}
-	sc := rss.NewScanner(feeds, store, handler, nil, slog.Default())
+	handler := &rssToURLHandler{grabber: g, logger: slog.Default().With("component", "rss")}
+	sc := rss.NewScanner(feeds, store, handler, nil, slog.Default().With("component", "rss"))
 	go func() {
 		if err := sc.Run(ctx, 15*time.Minute); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Error("rss scanner", "err", err)

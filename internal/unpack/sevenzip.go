@@ -42,6 +42,7 @@ func sevenZipBin() (string, error) {
 // progress streams to keep the captured output clean.  -p with an empty value
 // is safe for 7zz — it does not prompt on stdin when -p is supplied.
 func SevenZip(ctx context.Context, archive Archive, outDir string, opts Options) (Result, error) {
+	log := slog.Default().With("component", "unpack")
 	bin, err := sevenZipBin()
 	if err != nil {
 		return Result{Err: err}, err
@@ -59,7 +60,7 @@ func SevenZip(ctx context.Context, archive Archive, outDir string, opts Options)
 		"-o" + outDir, // no space between -o and the path
 	}
 
-	slog.Info("7zip: starting extraction",
+	log.Info("7zip: starting extraction",
 		"binary", bin,
 		"archive", archive.MainFile,
 		"outDir", outDir,
@@ -82,14 +83,14 @@ func SevenZip(ctx context.Context, archive Archive, outDir string, opts Options)
 		if errors.As(runErr, &exitErr) {
 			res.ExitCode = exitErr.ExitCode()
 			res.Err = fmt.Errorf("7zip exited %d: %w", res.ExitCode, runErr)
-			slog.Error("7zip: extraction failed",
+			log.Error("7zip: extraction failed",
 				"archive", archive.MainFile,
 				"exitCode", res.ExitCode,
 				"output", res.Output,
 			)
 		} else {
 			res.Err = fmt.Errorf("7zip: %w", runErr)
-			slog.Error("7zip: failed to start process",
+			log.Error("7zip: failed to start process",
 				"archive", archive.MainFile,
 				"err", runErr,
 			)
@@ -98,6 +99,6 @@ func SevenZip(ctx context.Context, archive Archive, outDir string, opts Options)
 		return res, res.Err
 	}
 
-	slog.Info("7zip: extraction succeeded", "archive", archive.MainFile)
+	log.Info("7zip: extraction succeeded", "archive", archive.MainFile)
 	return res, nil
 }

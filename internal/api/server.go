@@ -87,6 +87,7 @@ func New(opts Options) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
+	log = log.With("component", "api")
 
 	s := &Server{
 		auth:       opts.Auth,

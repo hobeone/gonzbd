@@ -132,6 +132,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	for _, o := range opts {
 		o(app)
 	}
+	app.log = app.log.With("component", "app")
 	log := app.log
 
 	queueStateDir := filepath.Join(cfg.AdminDir, "queue")

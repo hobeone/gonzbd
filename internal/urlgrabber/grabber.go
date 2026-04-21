@@ -65,6 +65,7 @@ func New(cfg Config, h Handler) *Grabber {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	log := cfg.Logger.With("component", "urlgrabber")
 
 	client := cfg.HTTPClient
 	if client == nil {
@@ -75,7 +76,7 @@ func New(cfg Config, h Handler) *Grabber {
 		cfg:     cfg,
 		handler: h,
 		client:  client,
-		logger:  cfg.Logger,
+		logger:  log,
 	}
 }
 

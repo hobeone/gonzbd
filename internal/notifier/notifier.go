@@ -75,7 +75,11 @@ type Dispatcher struct {
 
 // NewDispatcher creates a Dispatcher that logs via logger.
 func NewDispatcher(logger *slog.Logger) *Dispatcher {
-	return &Dispatcher{logger: logger}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	log := logger.With("component", "notifier")
+	return &Dispatcher{logger: log}
 }
 
 // Register adds n to the set of notifiers consulted on each Dispatch call.

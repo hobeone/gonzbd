@@ -38,7 +38,8 @@ func (h *ingestHandler) HandleNZB(_ context.Context, filename string, data []byt
 	if err := h.queue.Add(job); err != nil {
 		return fmt.Errorf("enqueue %q: %w", filename, err)
 	}
-	h.logger.Info("ingested nzb", "filename", filename, "files", len(job.Files), "bytes", job.TotalBytes)
+	log := h.logger.With("component", "ingest")
+	log.Info("ingested nzb", "filename", filename, "files", len(job.Files), "bytes", job.TotalBytes)
 	return nil
 }
 
@@ -50,7 +51,8 @@ type rssToURLHandler struct {
 }
 
 func (h *rssToURLHandler) HandleItem(ctx context.Context, item rss.Item, feed *rss.Feed) error {
-	h.logger.Info("rss dispatch", "feed", feed.Name, "title", item.Title, "url", item.URL)
+	log := h.logger.With("component", "rss_adapter")
+	log.Info("rss dispatch", "feed", feed.Name, "title", item.Title, "url", item.URL)
 	_, err := h.grabber.Fetch(ctx, item.URL)
 	return err
 }

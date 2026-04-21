@@ -79,12 +79,13 @@ func New(opts Options) *PostProcessor {
 	if lg == nil {
 		lg = slog.Default()
 	}
+	log := lg.With("component", "postproc")
 	return &PostProcessor{
 		stages:        opts.Stages,
 		onEmpty:       opts.OnEmpty,
 		onJobDone:     opts.OnJobDone,
 		statusUpdater: opts.StatusUpdater,
-		log:           lg,
+		log:           log,
 		q:             newPPQueue(),
 		resumeC:       make(chan struct{}),
 	}

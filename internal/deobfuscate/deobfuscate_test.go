@@ -27,8 +27,8 @@ func TestIsProbablyObfuscated(t *testing.T) {
 		{"letters+digits+sep", "Beast 2020.mkv", false},
 		{"capital start mostly lowercase", "Catullus.mkv", false},
 		{"tv show name", "The.Good.Place.S01E01.1080p.mkv", false},
-		// Default obfuscated (pure lowercase, no separators)
-		{"all lowercase no sep short", "abcdefghij.mkv", true},
+		// Default obfuscated (pure lowercase, no separators, long)
+		{"all lowercase no sep long", "abcdefghijk.mkv", true},
 		// Path is handled correctly (only basename checked)
 		{"full path not obfuscated", "/some/dir/My.Great.Show.S02E05.mkv", false},
 		{"full path obfuscated", "/some/dir/b082fa0beaa644d3aa01045d5b8d0b36.mkv", true},
