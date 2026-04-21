@@ -116,6 +116,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		action := r.FormValue("name") //nolint:gosec // G120: body already limited above
 
 		attrs := []any{
+			"component", "api",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", sw.status,

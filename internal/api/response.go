@@ -51,7 +51,7 @@ func respondStatus(w http.ResponseWriter) {
 // code is the HTTP status code (typically 400, 401, 403, or 500).
 func respondError(w http.ResponseWriter, code int, msg string) {
 	if code >= 500 {
-		slog.Error("api response error", "status", code, "error", msg)
+		slog.Error("api response error", "component", "api", "status", code, "error", msg)
 	}
 	respondJSON(w, code, map[string]any{
 		"status": false,
