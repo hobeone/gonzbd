@@ -84,6 +84,10 @@ type Options struct {
 	// giving up more in-flight articles on shutdown. Zero picks a
 	// default of 2× connections.
 	PerServerQueue int
+
+	// OnJobHopeless is called when a job's health drops below the
+	// mathematical threshold for repair.
+	OnJobHopeless func(jobID string)
 }
 
 // Downloader orchestrates article dispatch across a set of NNTP
@@ -107,6 +111,8 @@ type Downloader struct {
 	log     *slog.Logger
 	queue   *queue.Queue
 	servers []*Server
+
+	onJobHopeless func(jobID string)
 
 	// workCh routes requests to per-server worker pools. Keyed by
 	// server name (cfg.Name). Created once in New and not resized.
@@ -176,6 +182,7 @@ func New(q *queue.Queue, servers []*Server, opts Options, log *slog.Logger) *Dow
 		log:           log.With("component", "downloader"),
 		queue:         q,
 		servers:       servers,
+		onJobHopeless: opts.OnJobHopeless,
 		workCh:        make(map[string]chan *articleRequest, len(servers)),
 		completions:   make(chan *ArticleResult, opts.CompletionsBuffer),
 		dispatchReady: make(chan struct{}, 1),

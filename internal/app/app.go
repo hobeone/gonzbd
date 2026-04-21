@@ -145,7 +145,16 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	for i, sc := range cfg.Servers {
 		servers[i] = downloader.NewServer(sc)
 	}
-	d := downloader.New(q, servers, downloader.Options{}, log)
+	d := downloader.New(q, servers, downloader.Options{
+		OnJobHopeless: func(jobID string) {
+			job, err := q.Get(jobID)
+			if err != nil {
+				return
+			}
+			_ = q.SetStatus(jobID, constants.StatusFailed)
+			app.sendToPostProcessor(job, "Aborted: Too many articles failed, job is beyond repair")
+		},
+	}, log)
 
 	fileComplete := make(chan FileComplete, 64)
 	jobComplete := make(chan JobComplete, 16)
@@ -355,7 +364,7 @@ func (app *Application) Start(ctx context.Context) error {
 	// a previous run or a retry).
 	for _, job := range app.queue.List() {
 		if job.IsComplete() {
-			app.sendToPostProcessor(job)
+			app.sendToPostProcessor(job, "")
 		}
 	}
 
@@ -364,8 +373,8 @@ func (app *Application) Start(ctx context.Context) error {
 
 // sendToPostProcessor calculates final paths and hands the job to the
 // PostProcessor. Must only be called once per job completion.
-func (app *Application) sendToPostProcessor(job *queue.Job) {
-	app.log.Info("sending job to post-processor", "job", job.ID, "name", job.Name)
+func (app *Application) sendToPostProcessor(job *queue.Job, failMsg string) {
+	app.log.Info("sending job to post-processor", "job", job.ID, "name", job.Name, "fail_msg", failMsg)
 
 	// Determine FinalDir based on Category
 	catDir := ""
@@ -384,6 +393,7 @@ func (app *Application) sendToPostProcessor(job *queue.Job) {
 		Queue:       job,
 		DownloadDir: filepath.Join(app.cfg.DownloadDir, job.Name),
 		FinalDir:    finalDir,
+		FailMsg:     failMsg,
 	}
 	app.postProcessor.Process(ppJob)
 
@@ -459,7 +469,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 
 	// 4. Trigger post-processing if already complete (which it should be)
 	if job.IsComplete() {
-		app.sendToPostProcessor(job)
+		app.sendToPostProcessor(job, "")
 	}
 
 	// 5. Remove from history
@@ -530,7 +540,7 @@ func (app *Application) watchCompletions(ctx context.Context) {
 			}
 
 			if job.IsComplete() {
-				app.sendToPostProcessor(job)
+				app.sendToPostProcessor(job, "")
 			}
 		}
 	}

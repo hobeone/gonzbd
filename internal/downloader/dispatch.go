@@ -60,10 +60,14 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 		return ctx.Err() == nil
 	})
 
-	// Pause hopeless jobs after the queue read-lock is released.
+	// Handle hopeless jobs after the queue read-lock is released.
 	for jobID := range hopelessJobs {
-		d.log.Warn("job beyond repair (failed bytes > par2 bytes), pausing job", "job", jobID)
-		_ = d.queue.Pause(jobID)
+		d.log.Warn("job beyond repair (failed bytes > par2 bytes), marking FAILED", "job", jobID)
+		if d.onJobHopeless != nil {
+			d.onJobHopeless(jobID)
+		} else {
+			_ = d.queue.Pause(jobID) // Fallback if no callback
+		}
 	}
 }
 
