@@ -1,11 +1,6 @@
-package history
-
-// schema is applied once when the database is first created. Column names,
-// types, order, and defaults are intentionally identical to the upstream
-// Python sabnzbd schema so that users can point the Go daemon at an existing
-// history1.db without a migration step.
-const schema = `
-CREATE TABLE IF NOT EXISTS history (
+-- +goose Up
+-- +goose StatementBegin
+CREATE TABLE history (
     id              INTEGER PRIMARY KEY,
     completed       INTEGER,
     name            TEXT,
@@ -38,6 +33,11 @@ CREATE TABLE IF NOT EXISTS history (
     time_added      INTEGER
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_history_nzo_id ON history(nzo_id);
-CREATE INDEX IF NOT EXISTS idx_history_archive_completed ON history(archive, completed DESC);
-`
+CREATE UNIQUE INDEX idx_history_nzo_id ON history(nzo_id);
+CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+DROP TABLE history;
+-- +goose StatementEnd

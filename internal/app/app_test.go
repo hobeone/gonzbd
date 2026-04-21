@@ -389,6 +389,10 @@ func TestRetryHistoryJob(t *testing.T) {
 	_ = q.Save(filepath.Join(adminDir, "queue"))
 	_ = q.Remove(jobID) // remove from active queue
 
+	// Pause post-processing so we can verify the state before it finishes again
+	application.PausePostProcessor()
+	defer application.ResumePostProcessor()
+
 	// 2. Trigger Retry
 	if err := application.RetryHistoryJob(ctx, jobID); err != nil {
 		t.Fatalf("RetryHistoryJob: %v", err)
@@ -398,15 +402,23 @@ func TestRetryHistoryJob(t *testing.T) {
 	if application.Queue().Len() != 1 {
 		t.Errorf("Queue length = %d, want 1", application.Queue().Len())
 	}
-	got, _ := application.Queue().Get(jobID)
-	// It might already be Repairing because it started immediately
-	if got.Status != constants.StatusQueued && got.Status != constants.StatusRepairing {
-		t.Errorf("Status = %q, want %q or %q", got.Status, constants.StatusQueued, constants.StatusRepairing)
+	status, _ := application.Queue().GetJobStatus(jobID)
+	// Since post-processing is paused, it should be in Queued state
+	if status != constants.StatusQueued {
+		t.Errorf("Status = %q, want %q (paused)", status, constants.StatusQueued)
 	}
 
 	// 4. Verify history entry is gone
 	if _, err := repo.Get(ctx, jobID); err == nil {
 		t.Error("history entry still exists after retry")
+	}
+
+	// 5. Resume and wait for it to finish to be clean
+	application.ResumePostProcessor()
+	select {
+	case <-application.PostProcComplete():
+	case <-time.After(5 * time.Second):
+		t.Error("timeout waiting for post-proc to complete after resume")
 	}
 }
 
