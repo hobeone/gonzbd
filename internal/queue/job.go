@@ -173,6 +173,8 @@ type JobArticle struct {
 	Bytes  int    `json:"bytes"`
 	Number int    `json:"number"`
 	Done   bool   `json:"done,omitempty"`
+	// Failed is set to true if the article failed on all servers.
+	Failed bool `json:"failed,omitempty"`
 }
 
 // AddOptions carries the call-site arguments for NewJob. Zero values

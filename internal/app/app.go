@@ -493,6 +493,27 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 
 	// 3. Reset status and re-add to queue
 	job.Status = constants.StatusQueued
+	job.PostProc = false
+
+	// Reset failed articles so they can be tried again
+	job.FailedBytes = 0
+	for fi := range job.Files {
+		file := &job.Files[fi]
+		anyReset := false
+		for ai := range file.Articles {
+			art := &file.Articles[ai]
+			if art.Failed {
+				art.Done = false
+				art.Failed = false
+				job.RemainingBytes += int64(art.Bytes)
+				anyReset = true
+			}
+		}
+		if anyReset {
+			file.Complete = false
+		}
+	}
+
 	if err := app.queue.Add(job); err != nil {
 		return fmt.Errorf("app: add to queue: %w", err)
 	}

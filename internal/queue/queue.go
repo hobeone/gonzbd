@@ -341,6 +341,7 @@ func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
 			if art.ID == messageID {
 				if !art.Done {
 					art.Done = true
+					art.Failed = true
 					job.FailedBytes += int64(art.Bytes)
 					job.RemainingBytes -= int64(art.Bytes)
 					slog.Warn("article marked FAILED", "msgid", messageID, "job", jobID, "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
