@@ -219,3 +219,56 @@ func TestSetupAddSource(t *testing.T) {
 		t.Errorf("log does not contain filename when AddSource=true: %s", string(data))
 	}
 }
+
+func TestSetupFiltering(t *testing.T) {
+	tmpdir := t.TempDir()
+	logFile := filepath.Join(tmpdir, "test.log")
+
+	tests := []struct {
+		name      string
+		allow     []string
+		deny      []string
+		component string
+		wantLog   bool
+	}{
+		{"allow-match", []string{"downloader"}, nil, "downloader", true},
+		{"allow-no-match", []string{"downloader"}, nil, "assembler", false},
+		{"deny-match", nil, []string{"downloader"}, "downloader", false},
+		{"deny-no-match", nil, []string{"downloader"}, "assembler", true},
+		{"both-match-deny-wins", []string{"downloader"}, []string{"downloader"}, "downloader", false},
+		{"no-filter-match", nil, nil, "downloader", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_ = os.Remove(logFile) // clean up from prev subtest
+			opts := app.LoggingOptions{
+				Level:   slog.LevelInfo,
+				LogFile: logFile,
+				Allow:   tt.allow,
+				Deny:    tt.deny,
+			}
+			logger, closer, err := app.Setup(opts)
+			if err != nil {
+				t.Fatalf("Setup failed: %v", err)
+			}
+			defer func() {
+				if closer != nil {
+					_ = closer.Close() //nolint:errcheck
+				}
+			}()
+
+			msg := "test message for " + tt.name
+			logger.Info(msg, "component", tt.component)
+
+			_ = closer.Close() // flush
+
+			data, _ := os.ReadFile(logFile)
+			gotLog := bytes.Contains(data, []byte(msg))
+			if gotLog != tt.wantLog {
+				t.Errorf("gotLog = %v, want %v (allow=%v, deny=%v, component=%v)",
+					gotLog, tt.wantLog, tt.allow, tt.deny, tt.component)
+			}
+		})
+	}
+}

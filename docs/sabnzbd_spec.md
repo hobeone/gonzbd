@@ -632,6 +632,9 @@ Key design: Configuration parameters are typed objects with validators. Config r
 | `script_dir` | path | | Directory containing user scripts |
 | `email_dir` | path | | Email template directory |
 | `log_dir` | path | | Log file directory |
+| `log_level` | string | `info` | Minimum log level (debug, info, warn, error) |
+| `log_allow` | list | | Only log messages from these components |
+| `log_deny` | list | | Suppress log messages from these components |
 | `admin_dir` | path | | Admin/state file directory |
 | `language` | string | `en` | UI language |
 

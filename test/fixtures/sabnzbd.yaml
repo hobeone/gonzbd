@@ -19,6 +19,9 @@ general:
   email_dir: ""
   log_dir: logs
   admin_dir: admin
+  log_level: info
+  log_allow: ["downloader", "assembler"]
+  log_deny: ["api"]
   language: en
 
 downloads:
