@@ -83,7 +83,6 @@ export interface VersionResponse {
 
 export interface ServerConfig {
 	name: string;
-	displayname: string;
 	host: string;
 	port: number;
 	username: string;
