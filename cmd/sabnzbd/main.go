@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -50,6 +51,8 @@ func main() {
 	serve := flag.Bool("serve", false, "run the daemon: HTTP server (API + web UI) blocking until signal")
 	listenAddr := flag.String("listen", "", "override the config's host:port listener (serve mode only)")
 	downloadDir := flag.String("download-dir", "", "override download-dir (incomplete) from config")
+	logAllow := flag.String("log-allow", "", "comma-separated list of components to log (overrides config)")
+	logDeny := flag.String("log-deny", "", "comma-separated list of components to suppress (overrides config)")
 	pidPath := flag.String("pid", "", "write daemon PID to this path while running (serve mode only)")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
@@ -73,12 +76,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "--serve and --nzb are mutually exclusive")
 		os.Exit(2)
 	case *serve:
-		if err := serveMode(*configPath, *listenAddr, *downloadDir, *pidPath, *verbose); err != nil {
+		if err := serveMode(*configPath, *listenAddr, *downloadDir, *logAllow, *logDeny, *pidPath, *verbose); err != nil {
 			slog.Error("serve failed", "err", err)
 			os.Exit(1)
 		}
 	case *nzbPath != "":
-		if err := run(*configPath, *nzbPath, *downloadDir, *verbose); err != nil {
+		if err := run(*configPath, *nzbPath, *downloadDir, *logAllow, *logDeny, *verbose); err != nil {
 			slog.Error("download failed", "err", err)
 			os.Exit(1)
 		}
@@ -90,8 +93,8 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  sabnzbd --config <path> --serve [--listen host:port] [--download-dir <path>] [--pid <path>] [-v]")
-	fmt.Fprintln(os.Stderr, "  sabnzbd --config <path> --nzb <path> [--download-dir <path>] [-v]")
+	fmt.Fprintln(os.Stderr, "  sabnzbd --config <path> --serve [--listen host:port] [--download-dir <path>] [--log-allow <list>] [--log-deny <list>] [--pid <path>] [-v]")
+	fmt.Fprintln(os.Stderr, "  sabnzbd --config <path> --nzb <path> [--download-dir <path>] [--log-allow <list>] [--log-deny <list>] [-v]")
 	fmt.Fprintln(os.Stderr, "  sabnzbd --version")
 	fmt.Fprintln(os.Stderr, "  -f is an alias for --config")
 }
@@ -99,7 +102,7 @@ func usage() {
 // serveMode runs the long-lived daemon: boots the download pipeline, opens
 // the history DB, constructs the API server and web handler, composes them
 // on a single listener, and blocks until SIGINT/SIGTERM.
-func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, verbose bool) error {
+func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride, logDenyOverride, pidPath string, verbose bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -123,6 +126,17 @@ func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, 
 	if verbose {
 		logLevel = slog.LevelDebug
 	}
+
+	// Log filtering overrides
+	allow := cfg.General.LogAllow
+	if logAllowOverride != "" {
+		allow = strings.Split(logAllowOverride, ",")
+	}
+	deny := cfg.General.LogDeny
+	if logDenyOverride != "" {
+		deny = strings.Split(logDenyOverride, ",")
+	}
+
 	logFile := ""
 	if cfg.General.LogDir != "" {
 		logFile = filepath.Join(cfg.General.LogDir, "sabnzbd.log")
@@ -130,6 +144,8 @@ func serveMode(configPath, listenOverride, downloadDirOverride, pidPath string, 
 	logger, logCloser, err := app.Setup(app.LoggingOptions{
 		Level:   logLevel,
 		LogFile: logFile,
+		Allow:   allow,
+		Deny:    deny,
 	})
 	if err != nil {
 		return fmt.Errorf("setup logging: %w", err)
@@ -428,25 +444,38 @@ func resolveDirs(cfg *config.Config, downloadDirOverride string) (dlDir, adminDi
 	return dlDir, adminDir, nil
 }
 
-func run(configPath, nzbPath, downloadDirOverride string, verbose bool) error {
+func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOverride string, verbose bool) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
 	// One-shot mode: stderr-only logging.
 	logLevel := slog.LevelInfo
 	if verbose {
 		logLevel = slog.LevelDebug
 	}
+
+	// Log filtering overrides
+	allow := cfg.General.LogAllow
+	if logAllowOverride != "" {
+		allow = strings.Split(logAllowOverride, ",")
+	}
+	deny := cfg.General.LogDeny
+	if logDenyOverride != "" {
+		deny = strings.Split(logDenyOverride, ",")
+	}
+
 	logger, _, err := app.Setup(app.LoggingOptions{
 		Level:   logLevel,
 		LogFile: "", // no file logging for one-shot mode
+		Allow:   allow,
+		Deny:    deny,
 	})
 	if err != nil {
 		return fmt.Errorf("setup logging: %w", err)
 	}
 	_ = logger // installed as slog.Default by Setup
-
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
 
 	dlDir, adminDir, err := resolveDirs(cfg, downloadDirOverride)
 	if err != nil {

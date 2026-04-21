@@ -53,6 +53,12 @@ type GeneralConfig struct {
 	// Empty string defaults to "info".
 	LogLevel string `yaml:"log_level" json:"log_level"`
 
+	// LogAllow restricts logging to only these components (e.g., "downloader").
+	// Empty means all components are allowed.
+	LogAllow []string `yaml:"log_allow" json:"log_allow"`
+	// LogDeny suppresses logging from these components.
+	LogDeny []string `yaml:"log_deny" json:"log_deny"`
+
 	// Language is the BCP-47 (or shorter) UI language code.
 	Language string `yaml:"language" json:"language"`
 }
