@@ -41,13 +41,43 @@
 			acting = false;
 		}
 	}
+
+	let expanded = $state(false);
+
+	function toggle() {
+		expanded = !expanded;
+	}
+
+	function formatSpeed(bytes: number, seconds: number): string {
+		if (seconds <= 0) return '0 B/s';
+		const bps = bytes / seconds;
+		if (bps < 1024) return `${Math.round(bps)} B/s`;
+		if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
+		return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
+	}
+
+	function formatDuration(seconds: number): string {
+		if (seconds < 60) return `${seconds}s`;
+		const mins = Math.floor(seconds / 60);
+		const secs = seconds % 60;
+		if (mins < 60) return `${mins}m ${secs}s`;
+		const hours = Math.floor(mins / 60);
+		const remainingMins = mins % 60;
+		return `${hours}h ${remainingMins}m`;
+	}
 </script>
 
-<tr class="border-b hover:bg-gray-50">
+<tr class="border-b hover:bg-gray-50 cursor-pointer" onclick={toggle}>
 	<td class="px-4 py-3">
-		<div class="font-medium text-gray-900">{slot.name}</div>
+		<div class="flex items-center gap-2">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4 text-gray-400 transition-transform {expanded ? 'rotate-90' : ''}">
+				<path d="M5.75 3a.75.75 0 0 0-.75.75v8.5c0 .414.336.75.75.75h.5a.75.75 0 0 0 .75-.75V3.75a.75.75 0 0 0-.75-.75h-.5ZM10.25 3a.75.75 0 0 0-.75.75v8.5c0 .414.336.75.75.75h.5a.75.75 0 0 0 .75-.75V3.75a.75.75 0 0 0-.75-.75h-.5Z" class="hidden" />
+				<path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
+			</svg>
+			<div class="font-medium text-gray-900">{slot.name}</div>
+		</div>
 		{#if slot.fail_message}
-			<div class="mt-0.5 text-xs text-red-600">{slot.fail_message}</div>
+			<div class="ml-6 mt-0.5 text-xs text-red-600">{slot.fail_message}</div>
 		{/if}
 	</td>
 	<td class="px-4 py-3 text-sm text-gray-600">{slot.size}</td>
@@ -58,7 +88,7 @@
 	</td>
 	<td class="px-4 py-3 text-sm text-gray-600">{slot.category || '*'}</td>
 	<td class="px-4 py-3 text-sm text-gray-600">{completedDate()}</td>
-	<td class="px-4 py-3 flex gap-1">
+	<td class="px-4 py-3 flex gap-1" onclick={(e) => e.stopPropagation()}>
 		{#if slot.status === 'Failed'}
 			<Button variant="ghost" size="icon-xs" onclick={retry} disabled={acting} title="Retry">
 				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3.5 text-blue-600">
@@ -73,3 +103,46 @@
 		</Button>
 	</td>
 </tr>
+
+{#if expanded}
+	<tr class="bg-gray-50/50">
+		<td colspan="6" class="px-4 py-4">
+			<div class="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
+				<div class="space-y-3">
+					<div>
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Source</div>
+						<div class="mt-1 font-mono text-xs text-gray-700">{slot.nzb_name}</div>
+					</div>
+					<div>
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Path</div>
+						<div class="mt-1 font-mono text-xs text-gray-700 break-all">{slot.path}</div>
+					</div>
+					<div>
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Repair Summary</div>
+						<div class="mt-1 text-gray-700">{slot.url_info || 'N/A'}</div>
+					</div>
+				</div>
+				<div class="space-y-3">
+					<div>
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Download Stats</div>
+						<div class="mt-1 text-gray-700">
+							Downloaded in {formatDuration(slot.download_time)} at {formatSpeed(slot.bytes, slot.download_time)}
+						</div>
+					</div>
+					<div>
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Usenet Information</div>
+						<div class="mt-1 text-gray-700">
+							{slot.storage} old
+						</div>
+					</div>
+					<div>
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Servers</div>
+						<div class="mt-1 text-gray-700 italic">
+							{slot.meta || 'N/A'}
+						</div>
+					</div>
+				</div>
+			</div>
+		</td>
+	</tr>
+{/if}

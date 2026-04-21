@@ -88,6 +88,14 @@ type Job struct {
 	// Added is the wall-clock time when the job entered the queue.
 	Added time.Time `json:"added"`
 
+	// DownloadStarted is the wall-clock time when the first article
+	// began downloading. Zero if the job hasn't started yet.
+	DownloadStarted time.Time `json:"download_started,omitempty"`
+
+	// ServerStats tracks successfully downloaded bytes per server.
+	// Map: ServerName -> Bytes.
+	ServerStats map[string]int64 `json:"server_stats,omitempty"`
+
 	// Meta carries <meta> tags parsed from the NZB, preserved as a
 	// slice-per-key to match the Python parser's multi-value semantics.
 	Meta map[string][]string `json:"meta,omitempty"`

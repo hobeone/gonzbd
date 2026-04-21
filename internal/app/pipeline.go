@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/assembler"
 	"github.com/hobeone/sabnzbd-go/internal/decoder"
@@ -112,6 +113,10 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 			"job", res.JobID, "msgid", res.MessageID, "err", err)
 		return
 	}
+
+	// Record download stats
+	p.queue.MarkJobStarted(res.JobID, time.Now())
+	p.queue.RecordDownload(res.JobID, res.ServerName, len(article.Data))
 
 	p.log.Debug("decoded article",
 		"job", res.JobID, "msgid", res.MessageID, "file", article.Filename,

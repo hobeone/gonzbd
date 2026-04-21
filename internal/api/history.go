@@ -34,18 +34,23 @@ func (s *Server) modeHistory(w http.ResponseWriter, r *http.Request) {
 // historySlot is the per-entry JSON shape expected by clients.
 // Field names must match Python's build_history response exactly.
 type historySlot struct {
-	NzoID      string `json:"nzo_id"`
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	Category   string `json:"category"`
-	Script     string `json:"script"`
-	FailMsg    string `json:"fail_message"`
-	Storage    string `json:"storage"`
-	Size       string `json:"size"`
-	Bytes      int64  `json:"bytes"`
-	Completed  int64  `json:"completed"`
-	ScriptLog  string `json:"script_log"`
-	ScriptLine string `json:"script_line"`
+	NzoID        string `json:"nzo_id"`
+	Name         string `json:"name"`
+	NZBName      string `json:"nzb_name"`
+	Status       string `json:"status"`
+	Category     string `json:"category"`
+	Script       string `json:"script"`
+	FailMsg      string `json:"fail_message"`
+	Storage      string `json:"storage"`
+	Path         string `json:"path"`
+	Size         string `json:"size"`
+	Bytes        int64  `json:"bytes"`
+	DownloadTime int64  `json:"download_time"`
+	Completed    int64  `json:"completed"`
+	ScriptLog    string `json:"script_log"`
+	ScriptLine   string `json:"script_line"`
+	Meta         string `json:"meta"`
+	URLInfo      string `json:"url_info"`
 }
 
 // historyResponse is the outer JSON object returned for history listings.
@@ -109,18 +114,23 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 		}
 		totalBytes += e.Bytes
 		slots = append(slots, historySlot{
-			NzoID:      e.NzoID,
-			Name:       e.Name,
-			Status:     e.Status,
-			Category:   e.Category,
-			Script:     e.Script,
-			FailMsg:    e.FailMessage,
-			Storage:    e.Storage,
-			Size:       formatBytes(e.Bytes),
-			Bytes:      e.Bytes,
-			Completed:  toUnixTS(e.Completed),
-			ScriptLog:  string(e.ScriptLog),
-			ScriptLine: e.ScriptLine,
+			NzoID:        e.NzoID,
+			Name:         e.Name,
+			NZBName:      e.NzbName,
+			Status:       e.Status,
+			Category:     e.Category,
+			Script:       e.Script,
+			FailMsg:      e.FailMessage,
+			Storage:      e.Storage,
+			Path:         e.Path,
+			Size:         formatBytes(e.Bytes),
+			Bytes:        e.Bytes,
+			DownloadTime: e.DownloadTime,
+			Completed:    toUnixTS(e.Completed),
+			ScriptLog:    string(e.ScriptLog),
+			ScriptLine:   e.ScriptLine,
+			Meta:         e.Meta,
+			URLInfo:      e.URLInfo,
 		})
 	}
 
