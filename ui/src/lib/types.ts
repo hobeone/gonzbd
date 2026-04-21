@@ -38,16 +38,21 @@ export interface QueueResponse {
 export interface HistorySlot {
 	nzo_id: string;
 	name: string;
+	nzb_name: string;
 	status: string;
 	category: string;
 	script: string;
 	fail_message: string;
 	storage: string;
+	path: string;
 	size: string;
 	bytes: number;
+	download_time: number;
 	completed: number;
 	script_log: string;
 	script_line: string;
+	meta: string;
+	url_info: string;
 }
 
 export interface HistoryDetail {

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/constants"
 )
@@ -171,6 +172,34 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 	}
 	job.Status = status
 	return nil
+}
+
+// MarkJobStarted records the start time of the first download for a job.
+// It is a no-op if the job already has a start time.
+func (q *Queue) MarkJobStarted(id string, t time.Time) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[id]
+	if !ok {
+		return
+	}
+	if job.DownloadStarted.IsZero() {
+		job.DownloadStarted = t
+	}
+}
+
+// RecordDownload increments the per-server byte count for a job.
+func (q *Queue) RecordDownload(id string, server string, bytes int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[id]
+	if !ok {
+		return
+	}
+	if job.ServerStats == nil {
+		job.ServerStats = make(map[string]int64)
+	}
+	job.ServerStats[server] += int64(bytes)
 }
 
 // UnfinishedArticle is the snapshot record yielded by

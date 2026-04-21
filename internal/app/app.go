@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -172,6 +173,50 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		OnJobDone: func(job *postproc.Job) {
 			// 1. Record in history
 			stageLogJSON, _ := json.Marshal(job.StageLog)
+
+			// Calculate download duration and server stats string
+			var downloadDuration int64
+			if !job.Queue.DownloadStarted.IsZero() {
+				downloadDuration = int64(time.Since(job.Queue.DownloadStarted).Seconds())
+			}
+			if downloadDuration == 0 {
+				downloadDuration = 1 // avoid div by zero
+			}
+
+			var serverStatsParts []string
+			for s, b := range job.Queue.ServerStats {
+				serverStatsParts = append(serverStatsParts, fmt.Sprintf("%s=%.1f MB", s, float64(b)/(1024*1024)))
+			}
+			serverStats := strings.Join(serverStatsParts, ", ")
+
+			// Age of the post in days
+			ageDays := 0
+			if !job.Queue.AvgAge.IsZero() {
+				ageDays = int(time.Since(job.Queue.AvgAge).Hours() / 24)
+			}
+
+			// Build repair summary from StageLog
+			repairSummary := ""
+			for _, entry := range job.StageLog {
+				if entry.Stage == "repair" {
+					if entry.Err != nil {
+						repairSummary = fmt.Sprintf("Repair failed: %v", entry.Err)
+					} else {
+						repairSummary = "Repair OK"
+						// If we have detailed lines (from par2 output), we could extract more,
+						// but "Repair OK" or the error is a good start.
+						if len(entry.Lines) > 0 {
+							// Just take the first line as a summary if available
+							repairSummary = entry.Lines[0]
+						}
+					}
+					break
+				}
+			}
+			if repairSummary == "" {
+				repairSummary = "No repair needed"
+			}
+
 			entry := history.Entry{
 				Completed:    time.Now(),
 				Name:         job.Queue.Name,
@@ -180,11 +225,15 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				Status:       "Completed",
 				NzoID:        job.Queue.ID,
 				Path:         job.FinalDir,
-				DownloadTime: int64(job.Queue.TotalBytes), // placeholder
+				DownloadTime: downloadDuration,
 				StageLog:     string(stageLogJSON),
 				Bytes:        job.Queue.TotalBytes,
-				TimeAdded:    time.Now(), // TODO: use actual time added
+				TimeAdded:    job.Queue.Added,
+				Storage:      fmt.Sprintf("%dd", ageDays),
+				URLInfo:      repairSummary,
+				Meta:         serverStats,
 			}
+
 			if job.ParError || job.UnpackError || job.FailMsg != "" {
 				entry.Status = "Failed"
 				entry.FailMessage = job.FailMsg
