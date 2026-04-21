@@ -51,7 +51,6 @@ postproc:
 
 servers:
   - name: primary
-    displayname: My Primary Server
     host: news.example.com
     port: 563
     username: user
@@ -68,7 +67,6 @@ servers:
     pipelining_requests: 2
     enable: true
   - name: backup
-    displayname: Backup Server
     host: backup.example.com
     port: 563
     username: user2

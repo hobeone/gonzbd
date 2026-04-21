@@ -308,7 +308,7 @@ Running, QuickCheck, Completed, Failed, Deleted, Idle
 
 ### 4.6 Article Assignment to Servers
 
-Servers are sorted by `(priority ASC, displayname ASC)`. Priority 0 is highest (lowest number = highest priority).
+Servers are sorted by `(priority ASC, name ASC)`. Priority 0 is highest (lowest number = highest priority).
 
 `get_articles(server)` in the queue:
 1. Iterate NzbObjects in priority order
@@ -325,8 +325,7 @@ An article is assignable to `server` if:
 
 ```
 Server:
-  id          string   # "host:port"
-  displayname string
+  name        string   # unique ID
   host        string
   port        int      # Default: 119 (plain), 563 (SSL)
   username    string
@@ -694,7 +693,6 @@ Each server is a subsection of `[servers]`:
 ```
 [servers]
 [[servername]]
-  displayname = "My Server"
   host = news.example.com
   port = 563
   username = user

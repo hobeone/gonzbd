@@ -13,12 +13,11 @@
 	}: {
 		open?: boolean;
 		server?: ServerConfig | null;
-		onsave: (s: ServerConfig) => void;
+		onsave: (s: ServerConfig, originalName?: string) => void;
 	} = $props();
 
 	let draft = $state<ServerConfig>({
 		name: '',
-		displayname: '',
 		host: '',
 		port: 119,
 		username: '',
@@ -36,6 +35,7 @@
 		enable: true
 	});
 
+	let originalName = '';
 	let testing = $state(false);
 	let testResult = $state<{ ok: boolean; message: string } | null>(null);
 
@@ -43,10 +43,11 @@
 		if (open) {
 			if (server) {
 				draft = { ...server };
+				originalName = server.name;
 			} else {
+				originalName = '';
 				draft = {
 					name: '',
-					displayname: '',
 					host: '',
 					port: 119,
 					username: '',
@@ -96,7 +97,7 @@
 
 	function handleSave() {
 		if (!draft.host || !draft.name) return;
-		onsave(draft);
+		onsave(draft, originalName);
 		open = false;
 	}
 </script>
@@ -112,8 +113,7 @@
 			<div class="mt-4 grid grid-cols-2 gap-4">
 				<div class="col-span-2 space-y-1.5">
 					<label for="server-name" class="text-sm font-medium">Server Name</label>
-					<Input id="server-name" bind:value={draft.name} placeholder="e.g. NewsgroupDirect" disabled={!!server} />
-					<p class="text-[10px] text-muted-foreground uppercase font-bold">Unique identifier</p>
+					<Input id="server-name" bind:value={draft.name} placeholder="e.g. NewsgroupDirect" />
 				</div>
 
 				<div class="space-y-1.5">

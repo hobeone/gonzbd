@@ -7,8 +7,6 @@ type ServerConfig struct {
 	// the lookup key by other subsystems (try-lists, penalty tracking).
 	// Required.
 	Name string `yaml:"name" json:"name"`
-	// DisplayName is the user-facing label; falls back to Name when empty.
-	DisplayName string `yaml:"displayname" json:"displayname"`
 
 	// Host is the hostname or IP literal.
 	Host string `yaml:"host" json:"host"`

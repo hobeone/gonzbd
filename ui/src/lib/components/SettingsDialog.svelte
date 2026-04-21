@@ -92,10 +92,11 @@
 			});
 	}
 
-	function saveServer(s: ServerConfig) {
+	function saveServer(s: ServerConfig, originalName?: string) {
 		if (!configData) return;
 		const servers = [...(configData.servers ?? [])];
-		const idx = servers.findIndex((srv: ServerConfig) => srv.name === s.name);
+		const lookupName = originalName || s.name;
+		const idx = servers.findIndex((srv: ServerConfig) => srv.name === lookupName);
 		if (idx !== -1) servers[idx] = s;
 		else servers.push(s);
 		configData = { ...configData, servers };
@@ -319,7 +320,7 @@
 														<tr class={server.enable ? 'hover:bg-gray-50' : 'bg-gray-50/50 grayscale-[0.5]'}>
 															<td class="px-4 py-3">
 																<div class="flex items-center gap-2 font-medium">
-																	{server.displayname || server.name}
+																	{server.name}
 																	{#if !server.enable}
 																		<Badge variant="destructive" class="py-0 h-3.5 text-[9px] uppercase tracking-tighter opacity-70">Disabled</Badge>
 																	{/if}

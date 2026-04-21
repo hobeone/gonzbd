@@ -446,7 +446,6 @@ func DefaultEnglish() Catalog {
 		"opt-fail_hopeless_jobs":                  "Abort jobs that cannot be completed",
 		"explain-fail_hopeless_jobs":              "When during download it becomes clear that too much data is missing, abort the job",
 		"addServer":                               "Add Server",
-		"srv-displayname":                         "Server description",
 		"srv-host":                                "Host",
 		"srv-port":                                "Port",
 		"srv-username":                            "Username",
