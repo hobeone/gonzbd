@@ -46,6 +46,7 @@ This file provides foundational context and instructional mandates for the `sabn
 - **Errors:** Wrap errors with `fmt.Errorf("...: %w", err)`. Never use `%v` for errors.
 - **Concurrency:** Prefer channels for signaling (e.g., `chan struct{}`) over `sync.Cond`. Use `sync.RWMutex` for hot-path memory state.
 - **No hacks:** No `init()` functions for setup, no `panic` for control flow, and no `time.Sleep` in tests for synchronization.
+- **Database Migrations:** All schema changes MUST be implemented as a new `goose` migration file in `internal/history/migrations/`. Never modify existing migration files.
 
 ### 3. Workflow & Quality Gates
 - **Per-Step Commits:** Implement one step from `docs/golang_implementation.md` at a time.

@@ -152,7 +152,6 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			if err != nil {
 				return
 			}
-			_ = q.SetStatus(jobID, constants.StatusFailed)
 			app.sendToPostProcessor(job, "Aborted: Too many articles failed, job is beyond repair")
 		},
 	}, log)
@@ -328,6 +327,19 @@ func (app *Application) JobComplete() <-chan JobComplete { return app.jobComplet
 // when a job's post-processing pipeline has finished.
 func (app *Application) PostProcComplete() <-chan PostProcComplete { return app.postProcComplete }
 
+// PausePostProcessor halts the post-processing worker after it finishes
+// its current job. New completions will be queued but not processed until
+// ResumePostProcessor is called.
+func (app *Application) PausePostProcessor() {
+	app.postProcessor.Pause()
+}
+
+// ResumePostProcessor continues processing queued jobs in the
+// post-processing pipeline.
+func (app *Application) ResumePostProcessor() {
+	app.postProcessor.Resume()
+}
+
 // Start brings up the assembler, downloader, and pipeline goroutine. The
 // given context is held for the lifetime of the Application; cancelling it
 // is equivalent to calling Shutdown.
@@ -365,16 +377,36 @@ func (app *Application) Start(ctx context.Context) error {
 	// a previous run or a retry).
 	for _, job := range app.queue.List() {
 		if job.IsComplete() {
-			app.sendToPostProcessor(job, "")
+			app.sendToPostProcessor(job, failMsgForJob(job))
 		}
 	}
 
 	return nil
 }
 
+func failMsgForJob(job *queue.Job) string {
+	if job.FailedBytes > job.Par2Bytes {
+		return "Aborted: Too many articles failed, job is beyond repair"
+	}
+	return ""
+}
+
 // sendToPostProcessor calculates final paths and hands the job to the
 // PostProcessor. Must only be called once per job completion.
 func (app *Application) sendToPostProcessor(job *queue.Job, failMsg string) {
+	started, err := app.queue.SetPostProcStarted(job.ID)
+	if err != nil {
+		app.log.Warn("failed to mark post-proc started", "job", job.ID, "err", err)
+		return
+	}
+	if !started {
+		// If this is a call with a failure message, we might want to update the existing ppJob,
+		// but the PostProcessor doesn't support that easily. For now, we rely on the first
+		// trigger being the authoritative one (usually OnJobHopeless for failures).
+		app.log.Debug("job already in post-processing, skipping duplicate handoff", "job", job.ID, "name", job.Name)
+		return
+	}
+
 	app.log.Info("sending job to post-processor", "job", job.ID, "name", job.Name, "fail_msg", failMsg)
 
 	// Determine FinalDir based on Category
@@ -386,9 +418,6 @@ func (app *Application) sendToPostProcessor(job *queue.Job, failMsg string) {
 		}
 	}
 	finalDir := filepath.Join(app.cfg.CompleteDir, catDir, job.Name)
-
-	// Set status to Queued (for post-proc) before hand-off
-	_ = app.queue.SetStatus(job.ID, constants.StatusQueued)
 
 	ppJob := &postproc.Job{
 		Queue:       job,
@@ -468,20 +497,20 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		return fmt.Errorf("app: add to queue: %w", err)
 	}
 
-	// 4. Trigger post-processing if already complete (which it should be)
-	if job.IsComplete() {
-		app.sendToPostProcessor(job, "")
-	}
-
-	// 5. Remove from history
+	// 4. Remove from history
 	if _, err := app.historyRepo.Delete(ctx, jobID); err != nil {
 		// Log but don't fail; the job is already back in the queue
 		app.log.Warn("failed to delete history entry after retry", "job", jobID, "err", err)
 	}
 
+	// 5. Trigger post-processing if already complete (which it should be)
+	if job.IsComplete() {
+		app.sendToPostProcessor(job, failMsgForJob(job))
+	}
+
 	app.log.Info("job retried from history", "job", jobID, "name", job.Name)
 	return nil
-}
+	}
 
 // ReloadDownloader stops the current downloader and starts a new one with
 // updated server configurations. It re-plumbs the pipeline to use the new
@@ -541,7 +570,7 @@ func (app *Application) watchCompletions(ctx context.Context) {
 			}
 
 			if job.IsComplete() {
-				app.sendToPostProcessor(job, "")
+				app.sendToPostProcessor(job, failMsgForJob(job))
 			}
 		}
 	}

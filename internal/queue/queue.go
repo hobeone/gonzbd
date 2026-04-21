@@ -71,6 +71,18 @@ func (q *Queue) Get(id string) (*Job, error) {
 	return job, nil
 }
 
+// GetJobStatus returns the lifecycle state of the job with the given
+// ID. Returns ErrNotFound if the job is absent. Safe for concurrent use.
+func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	job, ok := q.byID[id]
+	if !ok {
+		return "", fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	return job.Status, nil
+}
+
 // List returns a snapshot slice of the queue's jobs in current order.
 // The returned slice is a fresh allocation; callers can iterate it
 // without holding the queue lock. The *Job pointers inside alias the
@@ -172,6 +184,24 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 	}
 	job.Status = status
 	return nil
+}
+
+// SetPostProcStarted marks the job as being in post-processing.
+// Returns true if the flag was successfully set (first time), false
+// if it was already set.
+func (q *Queue) SetPostProcStarted(id string) (bool, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[id]
+	if !ok {
+		return false, fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	if job.PostProc {
+		return false, nil
+	}
+	job.PostProc = true
+	job.Status = constants.StatusQueued
+	return true, nil
 }
 
 // MarkJobStarted records the start time of the first download for a job.

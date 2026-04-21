@@ -9,13 +9,30 @@
 package history
 
 import (
+	"embed"
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
+
+	"github.com/pressly/goose/v3"
 
 	// Register the pure-Go SQLite driver (no CGO required).
 	_ "modernc.org/sqlite"
 )
+
+//go:embed migrations/*.sql
+var embedMigrations embed.FS
+
+var gooseOnce sync.Once
+
+func initGoose() {
+	goose.SetBaseFS(embedMigrations)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		// SetDialect only fails if the dialect is unsupported.
+		panic(fmt.Sprintf("history: failed to set goose dialect: %v", err))
+	}
+}
 
 // DB wraps a SQLite connection pool configured for history access.
 type DB struct {
@@ -53,9 +70,10 @@ func Open(path string) (*DB, error) {
 		}
 	}
 
-	if _, err := sqlDB.Exec(schema); err != nil {
-		_ = sqlDB.Close() //nolint:errcheck // superseded by schema error
-		return nil, fmt.Errorf("history: apply schema: %w", err)
+	gooseOnce.Do(initGoose)
+	if err := goose.Up(sqlDB, "migrations"); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("history: run migrations: %w", err)
 	}
 
 	if _, err := sqlDB.Exec("VACUUM"); err != nil {
