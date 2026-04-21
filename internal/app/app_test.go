@@ -374,9 +374,10 @@ func TestRetryHistoryJob(t *testing.T) {
 		Status: constants.StatusFailed,
 		Files: []queue.JobFile{{
 			Subject: "file.bin",
-			Complete: true, // Mark as complete so post-proc triggers immediately
-			Articles: []queue.JobArticle{{ID: "a@t", Done: true}},
+			Complete: false, // Will be re-completed after articles retry
+			Articles: []queue.JobArticle{{ID: "a@t", Done: true, Failed: true, Bytes: 1024}},
 		}},
+		FailedBytes: 1024,
 	}
 	jobsDir := filepath.Join(adminDir, "queue", "jobs")
 	_ = os.MkdirAll(jobsDir, 0o750)
