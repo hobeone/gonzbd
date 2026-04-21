@@ -22,6 +22,92 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
+func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
+	downloadDir := t.TempDir()
+	completeDir := t.TempDir()
+	adminDir := t.TempDir()
+
+	const (
+		fileSize = 10 * 1024
+		partSize = 5 * 1024
+	)
+	// No articles in mock, so they all fail
+	mock := startMockNNTP(t, map[string][]byte{})
+
+	appCfg := app.Config{
+		DownloadDir: downloadDir,
+		CompleteDir: completeDir,
+		AdminDir:    adminDir,
+		CacheLimit:  1 * 1024 * 1024,
+		Servers: []config.ServerConfig{{
+			Name:   "mock",
+			Host:   mock.host,
+			Port:   mock.port,
+			Enable: true,
+		}},
+	}
+
+	db, _ := history.Open(filepath.Join(adminDir, "history.db"))
+	repo := history.NewRepository(db)
+	defer db.Close()
+
+	application, _ := app.New(appCfg, repo)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = application.Start(ctx)
+	defer cancel()
+	defer application.Shutdown()
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{{
+			Subject: "test.par2", // Subject implies par2 so we get some Par2Bytes
+			Articles: []nzb.Article{
+				{ID: "p1@t", Bytes: partSize, Number: 1},
+				{ID: "p2@t", Bytes: partSize, Number: 2},
+			},
+			Bytes: fileSize,
+		}},
+	}
+	// Total bytes is 10k. Failed bytes will reach 10k quickly.
+	// If it's a .par2 file, it might not count toward recovery budget in the same way,
+	// but currently NewJob calculates Par2Bytes from .par2 articles.
+	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "hopeless-test"})
+	// Force Par2Bytes to be small so it triggers quickly
+	// Actually, let's just make it a normal file and it will have 0 Par2Bytes.
+	// 0 failed bytes > 0 par2 bytes is NOT true.
+	// 1 failed byte > 0 par2 bytes IS true.
+	parsed.Files[0].Subject = "test.bin"
+	job, _ = queue.NewJob(parsed, queue.AddOptions{Name: "hopeless-test"})
+	
+	jobID := job.ID
+	_ = application.Queue().Add(job)
+
+	// Wait for completion (it should move to history as Failed)
+	select {
+	case <-application.PostProcComplete():
+		// Success
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for download to fail")
+	}
+
+	// Verify it is gone from the active queue
+	if _, err := application.Queue().Get(jobID); err == nil {
+		t.Error("job still in active queue after being hopeless")
+	}
+
+	// Verify it is in history and failed
+	entry, err := repo.Get(context.Background(), jobID)
+	if err != nil {
+		t.Fatalf("job not found in history: %v", err)
+	}
+	if entry.Status != "Failed" {
+		t.Errorf("status = %q, want Failed", entry.Status)
+	}
+	if !strings.Contains(entry.FailMessage, "beyond repair") {
+		t.Errorf("fail message %q does not contain 'beyond repair'", entry.FailMessage)
+	}
+}
+
 func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
@@ -313,8 +399,9 @@ func TestRetryHistoryJob(t *testing.T) {
 		t.Errorf("Queue length = %d, want 1", application.Queue().Len())
 	}
 	got, _ := application.Queue().Get(jobID)
-	if got.Status != constants.StatusQueued {
-		t.Errorf("Status = %q, want %q", got.Status, constants.StatusQueued)
+	// It might already be Repairing because it started immediately
+	if got.Status != constants.StatusQueued && got.Status != constants.StatusRepairing {
+		t.Errorf("Status = %q, want %q or %q", got.Status, constants.StatusQueued, constants.StatusRepairing)
 	}
 
 	// 4. Verify history entry is gone
