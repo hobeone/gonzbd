@@ -33,7 +33,25 @@ type indexFile struct {
 // first so that a crash between them and the index leaves recoverable
 // state: the stale index points at jobs that now exist, and
 // unreferenced job files are ignored by Load.
+//
+// The dirty flag is swapped to false before the write begins. Any
+// concurrent mutation that fires after the swap sets dirty=true again,
+// so the next checkpoint will pick it up. If the save itself fails,
+// dirty is set back to true so the next tick retries.
 func (q *Queue) Save(dir string) error {
+	// Swap dirty=false before writing. Any mutation that races this
+	// will set dirty=true again; if the save fails we restore it so
+	// the next checkpoint tick retries rather than skipping.
+	q.dirty.Store(false)
+
+	if err := q.saveInner(dir); err != nil {
+		q.dirty.Store(true)
+		return err
+	}
+	return nil
+}
+
+func (q *Queue) saveInner(dir string) error {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 

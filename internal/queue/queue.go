@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/constants"
@@ -32,7 +33,19 @@ type Queue struct {
 	// can safely call notifyLocked while holding mu; a slow consumer
 	// can coalesce multiple signals into one wake-up.
 	notifyCh chan struct{}
+
+	// dirty is set to true by the five article/file mutation methods
+	// (MarkArticleDone, MarkArticleFailed, MarkFileComplete,
+	// MarkArticlesDone, MarkArticlesFailed) and cleared by Save on a
+	// successful write. The periodic checkpoint ticker no-ops when
+	// dirty is false, avoiding unnecessary I/O on idle queues.
+	dirty atomic.Bool
 }
+
+// IsDirty reports whether the queue has unsaved mutations. It is safe
+// for concurrent use and is used by the periodic checkpoint ticker to
+// skip unnecessary saves.
+func (q *Queue) IsDirty() bool { return q.dirty.Load() }
 
 // New returns an empty, unpaused queue.
 func New() *Queue {
@@ -317,6 +330,7 @@ func (q *Queue) MarkArticleDone(jobID, messageID string) error {
 					job.RemainingBytes -= int64(job.Files[fi].Articles[ai].Bytes)
 					slog.Debug("article done (success)", "msgid", messageID, "job", jobID, "remaining", job.RemainingBytes)
 				}
+				q.dirty.Store(true)
 				return nil
 			}
 		}
@@ -375,8 +389,10 @@ func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
 					job.FailedBytes += int64(art.Bytes)
 					job.RemainingBytes -= int64(art.Bytes)
 					slog.Warn("article marked FAILED", "msgid", messageID, "job", jobID, "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
+					q.dirty.Store(true)
 					return true, nil
 				}
+				q.dirty.Store(true)
 				return false, nil
 			}
 		}
@@ -428,6 +444,7 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 	for id := range want {
 		slog.Warn("MarkArticlesDone: article not found", "job", jobID, "msgid", id)
 	}
+	q.dirty.Store(true)
 	return nil
 }
 
@@ -476,6 +493,7 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 	if len(firstTime) > 0 {
 		slog.Warn("articles marked FAILED", "job", jobID, "count", len(firstTime), "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
 	}
+	q.dirty.Store(true)
 	return firstTime, nil
 }
 
@@ -492,6 +510,7 @@ func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
 	}
 	job.Files[fileIdx].Complete = true
+	q.dirty.Store(true)
 	return nil
 }
 

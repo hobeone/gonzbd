@@ -530,6 +530,88 @@ func TestConcurrentAddRemove(t *testing.T) {
 	}
 }
 
+// TestIsDirty verifies the dirty-flag lifecycle: fresh queue is clean,
+// mutations set dirty, Save clears it.
+func TestIsDirty(t *testing.T) {
+	dir := t.TempDir()
+	q := New()
+
+	if q.IsDirty() {
+		t.Fatal("new queue should not be dirty")
+	}
+
+	j := makeJob(t, "dirty-test", constants.NormalPriority)
+	_ = q.Add(j)
+
+	// Add does not set dirty (it is not one of the five listed mutators).
+	if q.IsDirty() {
+		t.Error("Add should not set dirty")
+	}
+
+	// MarkArticleDone sets dirty.
+	msgID := j.Files[0].Articles[0].ID
+	if err := q.MarkArticleDone(j.ID, msgID); err != nil {
+		t.Fatalf("MarkArticleDone: %v", err)
+	}
+	if !q.IsDirty() {
+		t.Error("MarkArticleDone should set dirty")
+	}
+
+	// Save clears dirty.
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if q.IsDirty() {
+		t.Error("Save should clear dirty")
+	}
+
+	// MarkArticleFailed sets dirty.
+	msgID2 := j.Files[0].Articles[1].ID
+	first, err := q.MarkArticleFailed(j.ID, msgID2)
+	if err != nil {
+		t.Fatalf("MarkArticleFailed: %v", err)
+	}
+	if !first {
+		t.Fatal("expected first=true")
+	}
+	if !q.IsDirty() {
+		t.Error("MarkArticleFailed should set dirty")
+	}
+	_ = q.Save(dir)
+
+	// MarkFileComplete sets dirty.
+	if err := q.MarkFileComplete(j.ID, 0); err != nil {
+		t.Fatalf("MarkFileComplete: %v", err)
+	}
+	if !q.IsDirty() {
+		t.Error("MarkFileComplete should set dirty")
+	}
+	_ = q.Save(dir)
+
+	// MarkArticlesDone sets dirty.
+	j2 := makeJob(t, "batch-done", constants.NormalPriority)
+	_ = q.Add(j2)
+	ids2 := []string{j2.Files[0].Articles[0].ID, j2.Files[0].Articles[1].ID}
+	if err := q.MarkArticlesDone(j2.ID, ids2); err != nil {
+		t.Fatalf("MarkArticlesDone: %v", err)
+	}
+	if !q.IsDirty() {
+		t.Error("MarkArticlesDone should set dirty")
+	}
+	_ = q.Save(dir)
+
+	// MarkArticlesFailed sets dirty.
+	j3 := makeJob(t, "batch-fail", constants.NormalPriority)
+	_ = q.Add(j3)
+	ids3 := []string{j3.Files[0].Articles[0].ID}
+	if _, err := q.MarkArticlesFailed(j3.ID, ids3); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+	if !q.IsDirty() {
+		t.Error("MarkArticlesFailed should set dirty")
+	}
+}
+
 func ids(js []*Job) []string {
 	out := make([]string, len(js))
 	for i, j := range js {
