@@ -286,8 +286,8 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 
 	asm := assembler.New(assembler.Options{
 		FileInfo:          p.resolveFileInfo,
-		MarkArticleDone:   q.MarkArticleDone,
-		MarkArticleFailed: q.MarkArticleFailed,
+		MarkArticlesDone:   q.MarkArticlesDone,
+		MarkArticlesFailed: q.MarkArticlesFailed,
 		OnFileComplete: func(jobID string, fileIdx int) {
 			fc := FileComplete{JobID: jobID, FileIdx: fileIdx}
 			// 1. External subscribers (best-effort, non-blocking)

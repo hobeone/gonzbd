@@ -279,8 +279,16 @@ func (p *PostProcessor) popWithPause() (*Job, bool) {
 			return nil, false
 		}
 
-		// Re-check pause: Resume may have been called just after Pop returned
-		// but we honour the job we already pulled.
+		// Re-check pause after Pop returns: a Pause may have landed while we
+		// were blocked in Pop, or between paused==false and the Pop return.
+		// If paused, put the job back at the head and loop to wait on resumeC.
+		p.pauseMu.Lock()
+		stillPaused := p.paused
+		p.pauseMu.Unlock()
+		if stillPaused {
+			p.q.PushHead(job)
+			continue
+		}
 		return job, true
 	}
 }

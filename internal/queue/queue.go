@@ -384,6 +384,101 @@ func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
 	return false, fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 }
 
+// MarkArticlesDone is the batched form of MarkArticleDone. It flips
+// Done on every article in messageIDs for jobID under a single write
+// lock. Articles already Done are skipped (no double-decrement of
+// RemainingBytes). Missing message-IDs are logged but do not abort the
+// batch; the method only errors if the job itself is not found.
+//
+// The single-lock-per-batch is the whole point: under a heavy
+// completions firehose the assembler previously took the queue write
+// lock once per article, serialising the hot path against every
+// RLock-reader (UI snapshots, dispatcher iteration). B.7 amortises
+// that to one lock acquisition per flush.
+func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
+	if len(messageIDs) == 0 {
+		return nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	// Build a quick lookup so we scan the job's articles once rather
+	// than len(messageIDs) times.
+	want := make(map[string]struct{}, len(messageIDs))
+	for _, id := range messageIDs {
+		want[id] = struct{}{}
+	}
+	for fi := range job.Files {
+		for ai := range job.Files[fi].Articles {
+			art := &job.Files[fi].Articles[ai]
+			if _, ok := want[art.ID]; !ok {
+				continue
+			}
+			delete(want, art.ID)
+			if art.Done {
+				continue
+			}
+			art.Done = true
+			job.RemainingBytes -= int64(art.Bytes)
+		}
+	}
+	for id := range want {
+		slog.Warn("MarkArticlesDone: article not found", "job", jobID, "msgid", id)
+	}
+	return nil
+}
+
+// MarkArticlesFailed is the batched form of MarkArticleFailed. Like
+// MarkArticlesDone it takes the queue write lock exactly once. The
+// returned firstTimeIDs lists message-IDs that actually flipped from
+// not-Done to Done-Failed this call — callers that need the
+// "first-time failure" semantics of the singular form (e.g. for event
+// emission) should consult that list; duplicate or unknown IDs are
+// silently dropped from it.
+func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string, error) {
+	if len(messageIDs) == 0 {
+		return nil, nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	want := make(map[string]struct{}, len(messageIDs))
+	for _, id := range messageIDs {
+		want[id] = struct{}{}
+	}
+	firstTime := make([]string, 0, len(messageIDs))
+	for fi := range job.Files {
+		for ai := range job.Files[fi].Articles {
+			art := &job.Files[fi].Articles[ai]
+			if _, ok := want[art.ID]; !ok {
+				continue
+			}
+			delete(want, art.ID)
+			if art.Done {
+				continue
+			}
+			art.Done = true
+			art.Failed = true
+			job.FailedBytes += int64(art.Bytes)
+			job.RemainingBytes -= int64(art.Bytes)
+			firstTime = append(firstTime, art.ID)
+		}
+	}
+	for id := range want {
+		slog.Warn("MarkArticlesFailed: article not found", "job", jobID, "msgid", id)
+	}
+	if len(firstTime) > 0 {
+		slog.Warn("articles marked FAILED", "job", jobID, "count", len(firstTime), "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
+	}
+	return firstTime, nil
+}
+
 // MarkFileComplete marks the file at fileIdx within jobID as fully assembled
 // and complete. Returns ErrNotFound if the job or index is invalid.
 func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
