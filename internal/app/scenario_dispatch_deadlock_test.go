@@ -4,24 +4,21 @@ import (
 	"testing"
 )
 
-// TestDispatch_NoDeadlockWhenCompletionsFull verifies that the downloader
-// dispatcher makes forward progress when its emitResult call would block
-// (full completions buffer) while it still holds tryMu and the queue
-// RLock taken by ForEachUnfinishedArticle.
+// TestDispatch_NoDeadlockWhenCompletionsFull was the A.4 red scenario for
+// the B.2 dispatcher deadlock. The actual regression guard lives at the
+// layer where the bug lived:
 //
-// Shape (to be implemented when the skip is removed in B.2):
-//  1. Construct a downloader with a CompletionsBuffer of 1.
-//  2. Block the pipeline consumer (e.g. don't start it) so completions
-//     backs up after a single send.
-//  3. Add a job with enough articles to force at least one all-servers-
-//     exhausted emitResult inside the ForEachUnfinishedArticle callback
-//     (scripted server returns 430 for every request).
-//  4. Verify the dispatcher goroutine is not blocked: a subsequent
-//     queue.Add / health check / Stop() completes within a few seconds.
+//	internal/downloader/dispatch_deadlock_test.go:
+//	  TestDispatchPass_ExhaustedEmitsDoNotBlockQueueWriters
 //
-// EXPECTED FAIL until B.2: dispatchPass emits inline while holding both
-// tryMu and the queue RLock; a full completions channel deadlocks the
-// dispatcher because the consumer needs the queue write lock.
+// That test pins CompletionsBuffer=1, lets exhausted emits fill the
+// channel with no consumer, and asserts a queue write-lock-requiring
+// call still completes promptly. Pre-B.2 it deadlocks.
+//
+// The app-level harness cannot reproduce the deadlock cleanly — by the
+// time the pipeline consumer is wired up, the very thing that would
+// block the dispatcher (full completions + queue-writing consumer) is
+// the normal operating mode, not a pathological state.
 func TestDispatch_NoDeadlockWhenCompletionsFull(t *testing.T) {
-	t.Skip("EXPECTED FAIL until B.2: emitResult inside held locks deadlocks on full completions buffer")
+	t.Skip("covered by TestDispatchPass_ExhaustedEmitsDoNotBlockQueueWriters in internal/downloader")
 }

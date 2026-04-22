@@ -40,6 +40,13 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 
 	dispatched := 0
 	hopelessJobs := make(map[string]struct{})
+	// exhausted accumulates articles that had no eligible server this
+	// pass. Emitting their ErrNoServersLeft results inline would require
+	// sending on the completions channel while tryMu and the queue
+	// RLock (from ForEachUnfinishedArticle) are both held — a deadlock
+	// when the pipeline consumer itself needs the queue write lock.
+	// We drain this list after the iterator returns.
+	var exhausted []*articleRequest
 
 	d.queue.ForEachUnfinishedArticle(func(a queue.UnfinishedArticle) bool {
 		if a.JobStatus == constants.StatusPaused {
@@ -52,13 +59,24 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 			return true // Move to next job
 		}
 
-		if d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, a.Subject, now) {
+		handled, exReq := d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, a.Subject, now)
+		if handled {
 			dispatched++
+		}
+		if exReq != nil {
+			exhausted = append(exhausted, exReq)
 		}
 		// Always continue — per-article send is non-blocking and
 		// we want to fan out as much as will fit this pass.
 		return ctx.Err() == nil
 	})
+
+	// Queue RLock and tryMu are both released here. Safe to block on
+	// completions; the pipeline consumer can now take the queue write
+	// lock.
+	for _, req := range exhausted {
+		d.emitResult(ctx, req, "", nil, ErrNoServersLeft)
+	}
 
 	// Handle hopeless jobs after the queue read-lock is released.
 	for jobID := range hopelessJobs {
@@ -89,9 +107,21 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 // the current server is unmarked; on a definitive 430 the entry
 // stays so the article falls through to the next server.
 //
-// Returns silently if no server accepts — a future dispatchReady
-// signal from any worker will bring us back to re-try.
-func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int, messageID string, bytes int, subject string, now time.Time) bool {
+// Returns (handled, exhausted):
+//   - handled=true means the caller should treat the article as done for
+//     this pass (either because we fanned it out to a server or because
+//     every server is already in its try-list).
+//   - exhausted is non-nil when every server has been tried and the
+//     article is permanently failed for this session. The caller must
+//     emit ErrNoServersLeft for it *after* releasing any locks held
+//     across the dispatchPass iteration — emitting inline would deadlock
+//     the dispatcher if the completions channel is full, because the
+//     consumer needs the queue write lock that dispatchPass is currently
+//     holding via ForEachUnfinishedArticle.
+//
+// A future dispatchReady signal from any worker will bring us back to
+// re-try articles that returned (false, nil).
+func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int, messageID string, bytes int, subject string, now time.Time) (bool, *articleRequest) {
 	key := articleKey{jobID: jobID, messageID: messageID}
 	req := &articleRequest{
 		jobID:     jobID,
@@ -105,7 +135,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 	defer d.tryMu.Unlock()
 
 	if d.inFlight[key] > 0 {
-		return false
+		return false, nil
 	}
 
 	tried := d.tryList[key]
@@ -131,25 +161,24 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 			}
 			tried[name] = struct{}{}
 			d.inFlight[key]++
-			return true
+			return true, nil
 		case <-ctx.Done():
-			return false
+			return false, nil
 		default:
 			// server's queue is full; try next server
 		}
 	}
 
-	// If we found no eligible servers to even try (all are in the tryList),
-	// this article is permanently failed for this session.
+	// If we found no eligible servers to even try (all are in the
+	// tryList), this article is permanently failed for this session.
+	// Return the req so dispatchPass can emit ErrNoServersLeft after
+	// locks are released.
 	if !anyEligible {
 		d.log.Warn("article failed on all servers", "msgid", messageID, "job", jobID)
-		d.emitResult(ctx, req, "", nil, ErrNoServersLeft)
-		// Return true so ForEachUnfinishedArticle considers this "handled"
-		// and moves to the next article immediately.
-		return true
+		return true, req
 	}
 
-	return false
+	return false, nil
 }
 
 // connWorker is one connection-owning goroutine. It lazily dials its
