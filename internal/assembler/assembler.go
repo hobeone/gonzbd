@@ -41,6 +41,11 @@ type WriteRequest struct {
 	// file this article belongs to.
 	FileIdx int
 
+	// MessageID is the article's NNTP Message-ID. The assembler uses it to
+	// mark the article Done (on success, after fsync) or Failed (on FatalErr)
+	// in the queue. Required.
+	MessageID string
+
 	// Offset is the byte position within the target file where Data should
 	// be written. The caller (decoder) derives this from the article's
 	// yBegin/yPart headers.
@@ -51,7 +56,10 @@ type WriteRequest struct {
 	Data []byte
 
 	// FatalErr is set if the article permanently failed to download.
-	// If non-nil, the assembler skips writing and just increments partsWritten.
+	// If non-nil, the assembler skips writing and counts the part toward
+	// file completion. Duplicate failures are deduplicated via the
+	// MarkArticleFailed callback's first-return so partsWritten does not
+	// overshoot.
 	FatalErr error
 }
 
@@ -97,6 +105,20 @@ type Options struct {
 
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.
 	MinFreeBytes int64
+
+	// MarkArticleDone is called on the worker goroutine after a successful
+	// pwrite + fsync has made the article's bytes durable. Establishing this
+	// strict ordering is the purpose of this callback: the queue must never
+	// observe an article as Done until its bytes are on stable storage.
+	// Required when articles must survive a crash.
+	MarkArticleDone func(jobID, messageID string) error
+
+	// MarkArticleFailed is called on the worker goroutine for each FatalErr
+	// WriteRequest. The returned first bool gates the completion-count
+	// increment: duplicate failures (first==false) are suppressed so
+	// partsWritten does not overshoot TotalParts. Required when FatalErr
+	// requests are used.
+	MarkArticleFailed func(jobID, messageID string) (first bool, err error)
 }
 
 // fileKey uniquely identifies a target file within the assembler.
@@ -330,6 +352,18 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 	if req.FatalErr != nil {
 		a.log.Info("counting failed article toward completion (skipping disk write)",
 			"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", req.FatalErr)
+		if a.opts.MarkArticleFailed != nil {
+			first, err := a.opts.MarkArticleFailed(req.JobID, req.MessageID)
+			if err != nil {
+				a.log.Warn("mark article failed",
+					"job", req.JobID, "msgid", req.MessageID, "error", err)
+				return
+			}
+			if !first {
+				// Duplicate failure — do not double-count toward completion.
+				return
+			}
+		}
 	} else {
 		if err := writeAll(f.handle, req.Data, req.Offset); err != nil {
 			a.log.Error("write article",
@@ -340,6 +374,21 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 			// Leave the file open; the next article may succeed. The pipeline
 			// (Step 4.1) is responsible for job-level failure detection.
 			return
+		}
+		// Durability: fsync the fd before marking Done. If fsync fails we
+		// must not mark Done — a later restart would see Done=true with
+		// no bytes on disk.
+		if err := f.handle.Sync(); err != nil {
+			a.log.Error("fsync article",
+				"path", f.info.Path, "offset", req.Offset, "error", err)
+			return
+		}
+		if a.opts.MarkArticleDone != nil {
+			if err := a.opts.MarkArticleDone(req.JobID, req.MessageID); err != nil {
+				a.log.Warn("mark article done",
+					"job", req.JobID, "msgid", req.MessageID, "error", err)
+				return
+			}
 		}
 	}
 

@@ -175,6 +175,12 @@ type JobArticle struct {
 	Done   bool   `json:"done,omitempty"`
 	// Failed is set to true if the article failed on all servers.
 	Failed bool `json:"failed,omitempty"`
+	// Emitted is a transient, in-memory flag: the downloader has handed
+	// a result (success or permanent failure) to the pipeline, but the
+	// assembler has not yet made the outcome durable (Done/Failed).
+	// Excluded from JSON persistence so a restart re-dispatches articles
+	// whose bytes hadn't reached stable storage before the crash.
+	Emitted bool `json:"-"`
 }
 
 // AddOptions carries the call-site arguments for NewJob. Zero values

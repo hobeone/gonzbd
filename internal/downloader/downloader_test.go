@@ -286,14 +286,29 @@ func TestDownloaderHappyPath(t *testing.T) {
 	}
 	defer func() { _ = d.Stop() }()
 
-	results := collect(t, d.Completions(), 3, 5*time.Second)
+	// Per B.6: the downloader no longer marks articles Done. The assembler
+	// does it after pwrite+fsync. Simulate that here by marking each
+	// successful result Done as it arrives, so the dispatcher doesn't
+	// re-dispatch articles on its next pass.
 	got := make(map[string]string)
-	for _, r := range results {
-		if r.Err != nil {
-			t.Errorf("unexpected err for %s: %v", r.MessageID, r.Err)
-			continue
+	deadline := time.After(5 * time.Second)
+	for len(got) < 3 {
+		select {
+		case r, ok := <-d.Completions():
+			if !ok {
+				t.Fatalf("completions closed early; got=%d", len(got))
+			}
+			if r.Err != nil {
+				t.Errorf("unexpected err for %s: %v", r.MessageID, r.Err)
+				continue
+			}
+			got[r.MessageID] = string(r.Body)
+			if err := q.MarkArticleDone(r.JobID, r.MessageID); err != nil {
+				t.Fatalf("MarkArticleDone: %v", err)
+			}
+		case <-deadline:
+			t.Fatalf("timeout waiting for completions; got=%d", len(got))
 		}
-		got[r.MessageID] = string(r.Body)
 	}
 	want := map[string]string{
 		"a@h": "body-a\n",
@@ -303,14 +318,6 @@ func TestDownloaderHappyPath(t *testing.T) {
 	for id, wantBody := range want {
 		if got[id] != wantBody {
 			t.Errorf("%s: got %q, want %q", id, got[id], wantBody)
-		}
-	}
-
-	// Queue state reflects the successful completions.
-	after, _ := q.Get(job.ID)
-	for _, art := range after.Files[0].Articles {
-		if !art.Done {
-			t.Errorf("article %s not marked Done", art.ID)
 		}
 	}
 }
