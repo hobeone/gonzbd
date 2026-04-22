@@ -32,6 +32,17 @@ func (q *ppQueue) Push(job *Job) {
 	q.notify()
 }
 
+// PushHead prepends a job to the front of the queue. Used by popWithPause
+// to unpop a job when Pause is observed after Pop has already returned
+// it — without this, a job popped just before the pause check would leak
+// past the pause. No notify: the worker that's putting the job back is
+// about to go wait on resumeC, not on notifyCh.
+func (q *ppQueue) PushHead(job *Job) {
+	q.mu.Lock()
+	q.jobs = append([]*Job{job}, q.jobs...)
+	q.mu.Unlock()
+}
+
 // notify sends to notifyCh non-blockingly; the cap-1 channel coalesces
 // multiple rapid pushes into a single wakeup.
 func (q *ppQueue) notify() {

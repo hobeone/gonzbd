@@ -8,10 +8,19 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // defaultQueueSize mirrors DEF_MAX_ASSEMBLER_QUEUE from the Python source.
 const defaultQueueSize = 12
+
+// defaultDoneFlushInterval is how often the worker flushes its pending
+// Done/Failed batches to the queue when no OnFileComplete has fired
+// recently. Short enough to keep UI progress lively on long-running
+// files; long enough to collapse bursts of small-article completions
+// into a single queue lock acquisition. 250ms is comfortably below
+// human reaction time for progress updates.
+const defaultDoneFlushInterval = 250 * time.Millisecond
 
 // diskCheckInterval is how many WriteRequests the worker processes between
 // disk-space checks. Checking every request would dominate the syscall budget
@@ -57,9 +66,8 @@ type WriteRequest struct {
 
 	// FatalErr is set if the article permanently failed to download.
 	// If non-nil, the assembler skips writing and counts the part toward
-	// file completion. Duplicate failures are deduplicated via the
-	// MarkArticleFailed callback's first-return so partsWritten does not
-	// overshoot.
+	// file completion. Duplicate failures are deduplicated locally
+	// (per-file seen-set) so partsWritten does not overshoot TotalParts.
 	FatalErr error
 }
 
@@ -106,19 +114,28 @@ type Options struct {
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.
 	MinFreeBytes int64
 
-	// MarkArticleDone is called on the worker goroutine after a successful
-	// pwrite + fsync has made the article's bytes durable. Establishing this
-	// strict ordering is the purpose of this callback: the queue must never
-	// observe an article as Done until its bytes are on stable storage.
-	// Required when articles must survive a crash.
-	MarkArticleDone func(jobID, messageID string) error
+	// MarkArticlesDone is the batched durability callback: the assembler
+	// accumulates message-IDs of successfully fsynced articles and hands
+	// them to this function in groups, either when a file completes, on
+	// a periodic flush timer (DoneFlushInterval), or at Stop. Taking the
+	// queue write lock once per batch (instead of once per article) is
+	// the whole point — a completions firehose would otherwise serialise
+	// against every RLock-reader. Required when articles must survive a
+	// crash.
+	MarkArticlesDone func(jobID string, messageIDs []string) error
 
-	// MarkArticleFailed is called on the worker goroutine for each FatalErr
-	// WriteRequest. The returned first bool gates the completion-count
-	// increment: duplicate failures (first==false) are suppressed so
-	// partsWritten does not overshoot TotalParts. Required when FatalErr
-	// requests are used.
-	MarkArticleFailed func(jobID, messageID string) (first bool, err error)
+	// MarkArticlesFailed is the batched form of the FatalErr callback.
+	// The returned firstTimeIDs slice is informational (consumers that
+	// care about first-time failure events can use it); the assembler
+	// itself dedupes locally via a per-file seen-set, so partsWritten
+	// tracking does not depend on this return value.
+	MarkArticlesFailed func(jobID string, messageIDs []string) (firstTimeIDs []string, err error)
+
+	// DoneFlushInterval overrides the default 250ms flush cadence for
+	// pending Done/Failed batches. Zero selects the default; negative
+	// disables the timer (flush only on file completion or Stop — useful
+	// for benchmarks that want to measure pure batching behaviour).
+	DoneFlushInterval time.Duration
 }
 
 // fileKey uniquely identifies a target file within the assembler.
@@ -132,6 +149,10 @@ type openFile struct {
 	handle       *os.File
 	info         FileInfo
 	partsWritten int
+	// seenFailed dedupes FatalErr requests by Message-ID so a duplicate
+	// emission (shouldn't happen under B.6's Emitted gate, but defence
+	// in depth) cannot double-count a part toward TotalParts.
+	seenFailed map[string]struct{}
 }
 
 // Assembler receives decoded article data and writes it to target files using
@@ -155,6 +176,17 @@ type Assembler struct {
 	// cause a panic. The worker drains reqs after seeing stopCh is closed.
 	stopCh     chan struct{}
 	workerDone chan struct{}
+
+	// flushInterval is the computed interval for the periodic batch
+	// flush. A non-positive value disables the timer entirely (flush
+	// only on file completion or Stop).
+	flushInterval time.Duration
+
+	// pendingDone and pendingFailed are per-job batches accumulated by
+	// the worker goroutine between flushes. Exclusively owned by the
+	// worker — no locking.
+	pendingDone   map[string][]string
+	pendingFailed map[string][]string
 }
 
 // New creates an Assembler from opts. It panics if opts.FileInfo is nil.
@@ -168,12 +200,19 @@ func New(opts Options, log *slog.Logger) *Assembler {
 	if log == nil {
 		log = slog.Default()
 	}
+	flushInterval := opts.DoneFlushInterval
+	if flushInterval == 0 {
+		flushInterval = defaultDoneFlushInterval
+	}
 	return &Assembler{
-		log:        log.With("component", "assembler"),
-		opts:       opts,
-		reqs:       make(chan WriteRequest, opts.QueueSize),
-		stopCh:     make(chan struct{}),
-		workerDone: make(chan struct{}),
+		log:           log.With("component", "assembler"),
+		opts:          opts,
+		reqs:          make(chan WriteRequest, opts.QueueSize),
+		stopCh:        make(chan struct{}),
+		workerDone:    make(chan struct{}),
+		flushInterval: flushInterval,
+		pendingDone:   make(map[string][]string),
+		pendingFailed: make(map[string][]string),
 	}
 }
 
@@ -248,15 +287,26 @@ func (a *Assembler) WriteArticle(ctx context.Context, req WriteRequest) error {
 // worker is the single goroutine that owns all file handles and performs disk
 // I/O. It runs until stopCh is closed and the request channel is drained.
 //
-// No batching or flush timer: unlike the Python assembler, which uses a 5-second
-// write-interval timer as a handoff optimization between articlecache and
-// assembler, Go's os.File.WriteAt issues a single pwrite syscall per call.
-// Per-article writes are already optimal — there is nothing to batch.
+// Batching: successful fsyncs and FatalErr accounting are collected into
+// pendingDone / pendingFailed maps and flushed to the queue in groups —
+// either when a file completes (inside processRequest, before the
+// OnFileComplete callback), when the flush ticker fires, or at Stop.
+// The per-article pwrite + fsync remains serial; only the queue-mutation
+// path is batched. See B.7 in docs/state_machine_hardening_plan.md.
 func (a *Assembler) worker() {
 	defer close(a.workerDone)
 
 	open := make(map[fileKey]*openFile)
 	reqCount := 0
+
+	// A nil channel blocks forever in select; that's how we disable the
+	// flush timer when DoneFlushInterval < 0 (benchmark mode).
+	var tickC <-chan time.Time
+	if a.flushInterval > 0 {
+		t := time.NewTicker(a.flushInterval)
+		defer t.Stop()
+		tickC = t.C
+	}
 
 	for {
 		select {
@@ -264,6 +314,7 @@ func (a *Assembler) worker() {
 			if !ok {
 				// Channel was closed; this path is not taken in normal operation
 				// (we never close reqs), but defend against it.
+				a.flush()
 				a.closeAll(open)
 				return
 			}
@@ -272,6 +323,9 @@ func (a *Assembler) worker() {
 			if a.opts.MinFreeBytes > 0 && reqCount%diskCheckInterval == 0 {
 				a.checkDiskSpace(open)
 			}
+
+		case <-tickC:
+			a.flush()
 
 		case <-a.stopCh:
 			// Drain any requests that were already in the channel before stopCh
@@ -286,13 +340,46 @@ func (a *Assembler) worker() {
 						a.checkDiskSpace(open)
 					}
 				default:
-					// Channel drained.
+					// Channel drained. Final flush before closing files so the
+					// queue sees every Done/Failed that made it to disk.
+					a.flush()
 					a.closeAll(open)
 					return
 				}
 			}
 		}
 	}
+}
+
+// flush drains the pending Done and Failed batches to the queue. Called
+// on the worker goroutine (no locking on a.pending*). Errors are logged
+// and swallowed: the queue mutation is best-effort once bytes are on
+// disk, and the next completion will retry implicitly (partsWritten
+// tracking is local to the assembler).
+func (a *Assembler) flush() {
+	if len(a.pendingDone) == 0 && len(a.pendingFailed) == 0 {
+		return
+	}
+	if a.opts.MarkArticlesDone != nil {
+		for jobID, msgIDs := range a.pendingDone {
+			if err := a.opts.MarkArticlesDone(jobID, msgIDs); err != nil {
+				a.log.Warn("batch mark articles done",
+					"job", jobID, "count", len(msgIDs), "error", err)
+			}
+		}
+	}
+	if a.opts.MarkArticlesFailed != nil {
+		for jobID, msgIDs := range a.pendingFailed {
+			if _, err := a.opts.MarkArticlesFailed(jobID, msgIDs); err != nil {
+				a.log.Warn("batch mark articles failed",
+					"job", jobID, "count", len(msgIDs), "error", err)
+			}
+		}
+	}
+	// Reset the maps. Reuse the backing allocation where reasonable by
+	// clearing rather than reallocating (Go 1.21+ `clear` semantics).
+	clear(a.pendingDone)
+	clear(a.pendingFailed)
 }
 
 // closeAll closes all remaining open file handles. Called on worker exit.
@@ -352,18 +439,15 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 	if req.FatalErr != nil {
 		a.log.Info("counting failed article toward completion (skipping disk write)",
 			"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", req.FatalErr)
-		if a.opts.MarkArticleFailed != nil {
-			first, err := a.opts.MarkArticleFailed(req.JobID, req.MessageID)
-			if err != nil {
-				a.log.Warn("mark article failed",
-					"job", req.JobID, "msgid", req.MessageID, "error", err)
-				return
-			}
-			if !first {
-				// Duplicate failure — do not double-count toward completion.
-				return
-			}
+		if f.seenFailed == nil {
+			f.seenFailed = make(map[string]struct{})
 		}
+		if _, dup := f.seenFailed[req.MessageID]; dup {
+			// Duplicate failure — don't double-count toward completion.
+			return
+		}
+		f.seenFailed[req.MessageID] = struct{}{}
+		a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
 	} else {
 		if err := writeAll(f.handle, req.Data, req.Offset); err != nil {
 			a.log.Error("write article",
@@ -375,21 +459,15 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 			// (Step 4.1) is responsible for job-level failure detection.
 			return
 		}
-		// Durability: fsync the fd before marking Done. If fsync fails we
-		// must not mark Done — a later restart would see Done=true with
-		// no bytes on disk.
+		// Durability: fsync the fd before recording Done. If fsync fails
+		// we must not record Done — a later restart would see Done=true
+		// with no bytes on disk.
 		if err := f.handle.Sync(); err != nil {
 			a.log.Error("fsync article",
 				"path", f.info.Path, "offset", req.Offset, "error", err)
 			return
 		}
-		if a.opts.MarkArticleDone != nil {
-			if err := a.opts.MarkArticleDone(req.JobID, req.MessageID); err != nil {
-				a.log.Warn("mark article done",
-					"job", req.JobID, "msgid", req.MessageID, "error", err)
-				return
-			}
-		}
+		a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
 	}
 
 	f.partsWritten++
@@ -406,6 +484,11 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 		}
 		delete(open, key)
 		a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
+		// Flush pending Done/Failed before firing the callback. The
+		// pipeline's watchCompletions must not observe IsComplete()==true
+		// on a file whose articles are not yet marked Done in the queue,
+		// or it will race job-completion logic ahead of durability state.
+		a.flush()
 		if a.opts.OnFileComplete != nil {
 			a.opts.OnFileComplete(req.JobID, req.FileIdx)
 		}
