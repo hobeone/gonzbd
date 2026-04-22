@@ -37,6 +37,14 @@ import (
 // Application.
 var ErrAlreadyStarted = errors.New("app: already started")
 
+// defaultCheckpointInterval is the fallback when Config.CheckpointInterval
+// is zero. 30 s is the value proposed in the state-machine hardening plan
+// (docs/state_machine_hardening_plan.md §B.4 "Open decisions").
+//
+// TODO: wire this through the top-level config.Config once the full
+// config integration is in scope (Phase 4+).
+const defaultCheckpointInterval = 30 * time.Second
+
 // Config is the minimal configuration required to construct an Application.
 // It is a hand-picked subset of the full config.Config surface area; over
 // time Phase 4+ will replace it with a direct *config.Config reference.
@@ -61,6 +69,13 @@ type Config struct {
 
 	// Categories lists the configured categories.
 	Categories []config.CategoryConfig
+
+	// CheckpointInterval is how often the queue is persisted to disk
+	// during an active download. A value of 0 uses defaultCheckpointInterval
+	// (30 s). The ticker only fires a Save when the queue is dirty
+	// (i.e. has unsaved article/file mutations), so idle queues incur
+	// no I/O. Clean shutdowns always call Save regardless of this setting.
+	CheckpointInterval time.Duration
 }
 
 // FileComplete is emitted on Application.FileComplete() when the assembler
@@ -391,7 +406,17 @@ func (app *Application) Start(ctx context.Context) error {
 		app.watchCompletions(app.ctx)
 	}()
 
-	app.log.Info("application started", "download_dir", app.cfg.DownloadDir)
+	interval := app.cfg.CheckpointInterval
+	if interval <= 0 {
+		interval = defaultCheckpointInterval
+	}
+	app.wg.Add(1)
+	go func() {
+		defer app.wg.Done()
+		app.runCheckpoint(app.ctx, interval)
+	}()
+
+	app.log.Info("application started", "download_dir", app.cfg.DownloadDir, "checkpoint_interval", interval)
 
 	// Scan for and enqueue any jobs that were already complete (e.g. from
 	// a previous run or a retry).
@@ -628,6 +653,36 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	app.pipeline.setCompletions(newDownloader.Completions())
 
 	return nil
+}
+
+// runCheckpoint is a goroutine that periodically persists the queue to disk.
+// It fires every interval, but only calls Save when the queue is dirty
+// (i.e. has unsaved article/file state mutations). The goroutine exits cleanly
+// when ctx is cancelled (the same signal Shutdown sends).
+//
+// Coalescing with the Shutdown save: Shutdown calls app.cancel() before
+// wg.Wait(), so this goroutine exits before the post-wg.Wait Save in
+// Shutdown runs. The Shutdown Save is therefore always the last write and
+// captures any final mutations that landed after the last tick.
+func (app *Application) runCheckpoint(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !app.queue.IsDirty() {
+				continue
+			}
+			dir := filepath.Join(app.cfg.AdminDir, "queue")
+			if err := app.queue.Save(dir); err != nil {
+				app.log.Error("periodic queue checkpoint failed", "err", err)
+			} else {
+				app.log.Debug("periodic queue checkpoint saved")
+			}
+		}
+	}
 }
 
 // watchCompletions is a dedicated goroutine that updates the queue state
