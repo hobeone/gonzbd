@@ -513,6 +513,13 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	job.Status = constants.StatusQueued
 	job.PostProc = false
 
+	// Reset transient download bookkeeping so post-proc duration and
+	// per-server byte counters start fresh on the retried attempt;
+	// otherwise OnJobDone's duration math uses the original start
+	// timestamp and history shows bogus stats.
+	job.DownloadStarted = time.Time{}
+	job.ServerStats = nil
+
 	// Reset failed articles so they can be tried again
 	job.FailedBytes = 0
 	for fi := range job.Files {
