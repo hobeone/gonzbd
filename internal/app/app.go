@@ -158,7 +158,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			if err != nil {
 				return
 			}
-			app.sendToPostProcessor(job, "Aborted: Too many articles failed, job is beyond repair")
+			app.maybeFinalize(job, "Aborted: Too many articles failed, job is beyond repair")
 		},
 	}, log)
 
@@ -393,10 +393,33 @@ func (app *Application) Start(ctx context.Context) error {
 
 	// Scan for and enqueue any jobs that were already complete (e.g. from
 	// a previous run or a retry).
+	//
+	// Jobs with PostProc=true are the crash-recovery case: the previous
+	// run handed them off to the post-processor but the process died
+	// before OnJobDone's history.Add + queue.Remove finished. Routing
+	// them through maybeFinalize would hit SetPostProcStarted, see the
+	// flag already true, and silently skip — stranding the job forever.
+	// Instead we bypass the CAS and hand them straight to the
+	// post-processor, gated on Has() so we don't double-enqueue if
+	// something else already pushed the same job in this run.
+	//
+	// The CAS bypass is safe because no other goroutine in this process
+	// can race us: a successful Start is single-entry (ErrAlreadyStarted
+	// guards re-entry), and the downloader/assembler cannot resurface a
+	// completed job into PostProc territory.
 	for _, job := range app.queue.List() {
-		if job.IsComplete() {
-			app.sendToPostProcessor(job, failMsgForJob(job))
+		if !job.IsComplete() {
+			continue
 		}
+		failMsg := failMsgForJob(job)
+		if job.PostProc {
+			if app.postProcessor.Has(job.ID) {
+				continue
+			}
+			app.enqueuePostProc(job, failMsg)
+			continue
+		}
+		app.maybeFinalize(job, failMsg)
 	}
 
 	return nil
@@ -409,22 +432,34 @@ func failMsgForJob(job *queue.Job) string {
 	return ""
 }
 
-// sendToPostProcessor calculates final paths and hands the job to the
-// PostProcessor. Must only be called once per job completion.
-func (app *Application) sendToPostProcessor(job *queue.Job, failMsg string) {
+// maybeFinalize is the single funnel every caller goes through to hand a
+// completed job to the post-processor during normal operation. It CASes
+// the PostProc flag via SetPostProcStarted; the first caller wins and
+// drives the handoff, subsequent callers (duplicate completion paths)
+// observe the flag already set and return silently.
+//
+// Does NOT finalise jobs whose PostProc flag was already persisted —
+// that case is crash recovery and is handled by Start's rescan, which
+// calls enqueuePostProc directly.
+func (app *Application) maybeFinalize(job *queue.Job, failMsg string) {
 	started, err := app.queue.SetPostProcStarted(job.ID)
 	if err != nil {
 		app.log.Warn("failed to mark post-proc started", "job", job.ID, "err", err)
 		return
 	}
 	if !started {
-		// If this is a call with a failure message, we might want to update the existing ppJob,
-		// but the PostProcessor doesn't support that easily. For now, we rely on the first
-		// trigger being the authoritative one (usually OnJobHopeless for failures).
 		app.log.Debug("job already in post-processing, skipping duplicate handoff", "job", job.ID, "name", job.Name)
 		return
 	}
+	app.enqueuePostProc(job, failMsg)
+}
 
+// enqueuePostProc builds the postproc.Job and hands it to the
+// PostProcessor. Callers must have ensured exclusive handoff — either by
+// a successful SetPostProcStarted CAS (the normal path via
+// maybeFinalize) or by checking postProcessor.Has (the Start rescan
+// crash-recovery path).
+func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	app.log.Info("sending job to post-processor", "job", job.ID, "name", job.Name, "fail_msg", failMsg)
 
 	// Determine FinalDir based on Category
@@ -551,7 +586,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 
 	// 5. Trigger post-processing if already complete (which it should be)
 	if job.IsComplete() {
-		app.sendToPostProcessor(job, failMsgForJob(job))
+		app.maybeFinalize(job, failMsgForJob(job))
 	}
 
 	app.log.Info("job retried from history", "job", jobID, "name", job.Name)
@@ -616,7 +651,7 @@ func (app *Application) watchCompletions(ctx context.Context) {
 			}
 
 			if job.IsComplete() {
-				app.sendToPostProcessor(job, failMsgForJob(job))
+				app.maybeFinalize(job, failMsgForJob(job))
 			}
 		}
 	}

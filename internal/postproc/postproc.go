@@ -64,8 +64,12 @@ type PostProcessor struct {
 	wg sync.WaitGroup
 
 	// busy is true while a job's stages are executing.
-	busyMu sync.Mutex
-	busy   bool
+	// currentJobID is the ID of the in-flight job (empty when not busy).
+	// Both are guarded by busyMu so Has can atomically observe the
+	// "queued-or-running" set.
+	busyMu       sync.Mutex
+	busy         bool
+	currentJobID string
 
 	// history tracks all completed jobs for the UI.
 	historyMu sync.RWMutex
@@ -183,6 +187,21 @@ func (p *PostProcessor) Empty() bool {
 	return !busy && p.q.Empty()
 }
 
+// Has reports whether a job with jobID is either pending in the queue or
+// currently being processed by the worker. Callers use this as a
+// deduplication gate when bypassing the regular handoff path (e.g. the
+// Application startup rescan for jobs whose PostProc flag persisted
+// across a crash).
+func (p *PostProcessor) Has(jobID string) bool {
+	p.busyMu.Lock()
+	current := p.currentJobID
+	p.busyMu.Unlock()
+	if current == jobID {
+		return true
+	}
+	return p.q.Has(jobID)
+}
+
 // History returns a snapshot of all jobs that have passed through the
 // post-processor (including currently in-flight jobs).
 func (p *PostProcessor) History() []*Job {
@@ -220,10 +239,10 @@ func (p *PostProcessor) run() {
 			p.onEmpty()
 		}
 
-		p.setBusy(true)
+		p.setBusyWithJob(true, job.Queue.ID)
 		p.addHistory(job)
 		p.processJob(job)
-		p.setBusy(false)
+		p.setBusyWithJob(false, "")
 
 		if p.onJobDone != nil {
 			p.onJobDone(job)
@@ -335,6 +354,16 @@ func (p *PostProcessor) processJob(job *Job) {
 func (p *PostProcessor) setBusy(v bool) {
 	p.busyMu.Lock()
 	p.busy = v
+	p.busyMu.Unlock()
+}
+
+// setBusyWithJob updates busy and currentJobID atomically. Used by the
+// worker around each processJob call so Has can observe the in-flight
+// job ID without racing the busy flag.
+func (p *PostProcessor) setBusyWithJob(v bool, jobID string) {
+	p.busyMu.Lock()
+	p.busy = v
+	p.currentJobID = jobID
 	p.busyMu.Unlock()
 }
 
