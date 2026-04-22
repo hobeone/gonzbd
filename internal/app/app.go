@@ -112,6 +112,12 @@ type Application struct {
 
 	started atomic.Bool
 	stopped atomic.Bool
+
+	// customStages, when non-nil, overrides the default repair/unpack/finalize
+	// stage sequence. Set via WithPostProcStages. Intended for tests that want
+	// deterministic post-processing without invoking par2/unrar on synthetic
+	// article bodies.
+	customStages []postproc.Stage
 }
 
 // New constructs an Application from cfg. It does not open sockets or start
@@ -170,12 +176,16 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		fileInfo:    make(map[fileKey]assembler.FileInfo),
 	}
 
-	pp := postproc.New(postproc.Options{
-		Stages: []postproc.Stage{
+	stages := app.customStages
+	if stages == nil {
+		stages = []postproc.Stage{
 			postproc.NewRepairStage(),
 			postproc.NewUnpackStage(),
 			postproc.NewFinalizeStage(),
-		},
+		}
+	}
+	pp := postproc.New(postproc.Options{
+		Stages: stages,
 		StatusUpdater: func(jobID string, status constants.Status) {
 			_ = q.SetStatus(jobID, status)
 		},
@@ -305,6 +315,14 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 // WithLogger sets the logger for the Application and all its subsystems.
 func WithLogger(log *slog.Logger) func(*Application) {
 	return func(a *Application) { a.log = log }
+}
+
+// WithPostProcStages overrides the default repair/unpack/finalize stage
+// sequence with the provided stages. Intended for tests that want
+// deterministic post-processing without invoking par2/unrar on synthetic
+// article bodies. Passing nil is a no-op (defaults apply).
+func WithPostProcStages(stages []postproc.Stage) func(*Application) {
+	return func(a *Application) { a.customStages = stages }
 }
 
 // Queue returns the queue singleton. Callers add jobs via Queue().Add(job).
