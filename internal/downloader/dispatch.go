@@ -75,6 +75,14 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 	// completions; the pipeline consumer can now take the queue write
 	// lock.
 	for _, req := range exhausted {
+		// Mark Emitted before emitting so a concurrent dispatch pass
+		// triggered by another worker's signalDispatch doesn't re-see
+		// the article as dispatchable (all try-list entries would still
+		// be present, so it would keep re-emitting ErrNoServersLeft in
+		// a tight loop until the assembler finally marked it Failed).
+		if err := d.queue.MarkArticleEmitted(req.jobID, req.messageID); err != nil {
+			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
+		}
 		d.emitResult(ctx, req, "", nil, ErrNoServersLeft)
 	}
 
@@ -280,11 +288,16 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		}
 	}
 
-	if err := d.queue.MarkArticleDone(req.jobID, req.messageID); err != nil {
-		// Queue may have removed the job since dispatch. Emit the
-		// body anyway — the consumer will drop it.
-		d.emitResult(ctx, req, name, body, fmt.Errorf("mark done: %w", err))
-		return
+	// Durability (B.6): the article is not marked Done here. The assembler
+	// calls MarkArticleDone after pwrite + fsync so that Done => bytes on disk.
+	//
+	// MarkArticleEmitted (transient, not persisted) keeps the dispatcher
+	// from re-picking this article between now and the assembler's Done
+	// write. If the process crashes before fsync, Emitted is lost on
+	// restart, so the article is re-dispatched — matching the B.6
+	// invariant that Done means "bytes on stable storage".
+	if err := d.queue.MarkArticleEmitted(req.jobID, req.messageID); err != nil {
+		d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 	}
 	d.emitResult(ctx, req, name, body, nil)
 }

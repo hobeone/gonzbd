@@ -76,29 +76,22 @@ func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
 func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResult) {
 	if res.Err != nil {
 		if errors.Is(res.Err, downloader.ErrNoServersLeft) {
-			p.log.Warn("article permanently failed, marking in queue",
+			p.log.Warn("article permanently failed, handing to assembler",
 				"job", res.JobID, "msgid", res.MessageID, "file", res.Subject)
-
-			first, err := p.queue.MarkArticleFailed(res.JobID, res.MessageID)
-			if err != nil {
-				p.log.Warn("failed to mark article failed in queue",
-					"job", res.JobID, "msgid", res.MessageID, "err", err)
-				return
-			}
-			if !first {
-				return // Already processed this failure
-			}
 
 			if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
 				p.log.Warn("register fallback file failed",
 					"job", res.JobID, "fileidx", res.FileIdx, "err", err)
 			}
 
-			// Notify assembler of the failure so it can count the part for completion
+			// The assembler marks the article Failed in the queue (with dup
+			// suppression) so failure and completion accounting stay ordered
+			// with file writes on the single worker goroutine.
 			_ = p.assembler.WriteArticle(ctx, assembler.WriteRequest{
-				JobID:    res.JobID,
-				FileIdx:  res.FileIdx,
-				FatalErr: res.Err,
+				JobID:     res.JobID,
+				FileIdx:   res.FileIdx,
+				MessageID: res.MessageID,
+				FatalErr:  res.Err,
 			})
 		} else {
 			p.log.Info("fetch error",
@@ -129,10 +122,11 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 	}
 
 	writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
-		JobID:   res.JobID,
-		FileIdx: res.FileIdx,
-		Offset:  article.Offset,
-		Data:    article.Data,
+		JobID:     res.JobID,
+		FileIdx:   res.FileIdx,
+		MessageID: res.MessageID,
+		Offset:    article.Offset,
+		Data:      article.Data,
 	})
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 		p.log.Warn("write article failed",

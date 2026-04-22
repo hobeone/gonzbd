@@ -270,7 +270,7 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 			}
 			for ai := range file.Articles {
 				art := &job.Files[fi].Articles[ai]
-				if art.Done {
+				if art.Done || art.Emitted {
 					continue
 				}
 				if !fn(UnfinishedArticle{
@@ -317,6 +317,36 @@ func (q *Queue) MarkArticleDone(jobID, messageID string) error {
 					job.RemainingBytes -= int64(job.Files[fi].Articles[ai].Bytes)
 					slog.Debug("article done (success)", "msgid", messageID, "job", jobID, "remaining", job.RemainingBytes)
 				}
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
+}
+
+// MarkArticleEmitted flags an article as having a result in flight from the
+// downloader to the assembler. This is a transient, in-memory-only bit
+// (see JobArticle.Emitted): its purpose is to prevent the dispatcher from
+// re-dispatching the same article between the moment the downloader sends
+// a result on the completions channel and the moment the assembler makes
+// the outcome durable (MarkArticleDone / MarkArticleFailed). On restart
+// the flag is lost, so any article whose bytes weren't fsynced is
+// re-downloaded — that's the B.6 durability invariant.
+//
+// Idempotent: setting Emitted on an article that is already Emitted, Done,
+// or Failed is a no-op. Returns ErrNotFound if the job/article is absent.
+func (q *Queue) MarkArticleEmitted(jobID, messageID string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	for fi := range job.Files {
+		for ai := range job.Files[fi].Articles {
+			art := &job.Files[fi].Articles[ai]
+			if art.ID == messageID {
+				art.Emitted = true
 				return nil
 			}
 		}
