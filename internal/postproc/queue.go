@@ -68,6 +68,15 @@ func (q *ppQueue) Cancel(jobID string) bool {
 	return false
 }
 
+// Has reports whether a job with the given ID is currently queued.
+// Does not inspect the in-flight job (if any); callers that need to
+// know about the active job should check that separately.
+func (q *ppQueue) Has(jobID string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return findJob(q.jobs, jobID) >= 0
+}
+
 // findJob returns the index of the job with the given ID, or -1.
 func findJob(jobs []*Job, id string) int {
 	for i, j := range jobs {
