@@ -269,16 +269,16 @@ table at the bottom.
 
 | Order | Step | What lands | Model  | Effort       | Turns green |
 |-------|------|------------|--------|--------------|-------------|
-| 1     | A.1  | `queue.Snapshot()` helper                   | Haiku  | low          | —           |
-| 2     | A.2  | Fake NNTP server (skip if exists)           | Sonnet | medium       | —           |
-| 3     | A.3  | Test orchestrator                           | Opus   | medium       | —           |
-| 4     | A.4  | Six red scenario tests                      | Sonnet | medium       | — (red)     |
-| 5     | B.2  | `emitResult` deadlock fix                   | Sonnet | low          | A.4 #2      |
-| 6     | B.3  | `RetryHistoryJob` reset                     | Haiku  | low          | A.4 #3      |
-| 7     | B.1  | Completion funnel + restart recovery        | Opus   | medium       | A.4 #1      |
-| 8     | B.6  | Article durability (bug fix)                | Opus   | medium-high  | A.4 #6 (and likely #5) |
-| 9     | B.7  | Batch Done/Failed writes                    | Opus   | medium       | —           |
-| 10    | B.4  | Periodic queue checkpoint                   | Sonnet | low-medium   | A.4 #4      |
+| 1     | A.1  | `queue.Snapshot()` helper                   | Haiku  | low          | [DONE]      |
+| 2     | A.2  | Fake NNTP server (skip if exists)           | Sonnet | medium       | [DONE]      |
+| 3     | A.3  | Test orchestrator                           | Opus   | medium       | [DONE]      |
+| 4     | A.4  | Six red scenario tests                      | Sonnet | medium       | [DONE]      |
+| 5     | B.2  | `emitResult` deadlock fix                   | Sonnet | low          | [DONE]      |
+| 6     | B.3  | `RetryHistoryJob` reset                     | Haiku  | low          | [DONE]      |
+| 7     | B.1  | Completion funnel + restart recovery        | Opus   | medium       | [DONE]      |
+| 8     | B.6  | Article durability (bug fix)                | Opus   | medium-high  | [DONE]      |
+| 9     | B.7  | Batch Done/Failed writes                    | Opus   | medium       | [DONE]      |
+| 10    | B.4  | Periodic queue checkpoint                   | Sonnet | low-medium   | [DONE]      |
 | 11    | B.5  | Reload downloader (verify)                  | Opus   | low          | A.4 #5 (if not already) |
 | 12    | C.1  | Fault-injection integration suite           | Sonnet | high         | —           |
 | 13    | C.2  | State diagram                               | Haiku  | low          | —           |

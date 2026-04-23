@@ -394,3 +394,37 @@ When the answer isn't in the code, consult in this order:
 If all three disagree, surface the conflict to the user before
 picking. The spec is authoritative, but the spec has been wrong
 before.
+
+---
+
+## 8. State Transitions
+
+The following diagram illustrates the legal state transitions for an NZB job
+within the system, from initial addition to final history entry.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Queued: Add(NZB)
+    Queued --> Dispatched: downloader.dispatchPass
+    Dispatched --> Queued: Network error (unmarkTried)
+    Dispatched --> Done: nntp.Fetch + assembler.WriteArticle
+    Dispatched --> Failed: ErrNoServersLeft + assembler.WriteArticle(FatalErr)
+    
+    state "Job Processing" as JP {
+        Done --> FileComplete: All articles in file Done
+        Failed --> FileComplete: All articles in file Done/Failed
+        FileComplete --> JobComplete: All files in job Complete
+    }
+
+    JobComplete --> PostProcStarted: SetPostProcStarted (CAS)
+    PostProcStarted --> PostProcDone: postproc.run stages
+    PostProcDone --> History: history.Add + queue.Remove
+    History --> [*]
+
+    Queued --> PostProcStarted: downloader health gate (OnJobHopeless)
+    Queued --> PostProcStarted: Startup rescan (job.PostProc == true)
+    History --> Queued: RetryHistoryJob (history.Delete + queue.Add)
+```
+
+Updating this diagram is required when modifying any state-mutating methods
+in the `queue` or `app` packages.
