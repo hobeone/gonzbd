@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -284,7 +286,13 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close() //nolint:errcheck // multipart cleanup
 
-	parsed, err := nzb.Parse(f)
+	data, err := io.ReadAll(f)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "read upload: "+err.Error())
+		return
+	}
+
+	parsed, err := nzb.Parse(bytes.NewReader(data))
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "parse NZB: "+err.Error())
 		return
@@ -305,7 +313,7 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
 		return
 	}
-	if err := s.queue.Add(job); err != nil {
+	if err := s.app.AddJob(r.Context(), job, data); err != nil {
 		respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}
@@ -384,7 +392,13 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close() //nolint:errcheck // read-only file cleanup
 
-	parsed, err := nzb.Parse(f)
+	data, err := io.ReadAll(f)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "read file: "+err.Error())
+		return
+	}
+
+	parsed, err := nzb.Parse(bytes.NewReader(data))
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "parse NZB: "+err.Error())
 		return
@@ -405,7 +419,7 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
 		return
 	}
-	if err := s.queue.Add(job); err != nil {
+	if err := s.app.AddJob(r.Context(), job, data); err != nil {
 		respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}

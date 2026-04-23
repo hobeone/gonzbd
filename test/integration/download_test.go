@@ -18,7 +18,8 @@ import (
 	"github.com/hobeone/sabnzbd-go/test/mocknntp"
 )
 
-// addNZBJob parses rawNZB, creates a Job, and adds it to the application queue.
+// addNZBJob parses rawNZB, creates a Job, and adds it to the application
+// queue via Application.AddJob (triggering duplicate and collision logic).
 func addNZBJob(t *testing.T, a *app.Application, rawNZB []byte, name string) *queue.Job {
 	t.Helper()
 	parsed, err := nzb.Parse(bytes.NewReader(rawNZB))
@@ -29,8 +30,8 @@ func addNZBJob(t *testing.T, a *app.Application, rawNZB []byte, name string) *qu
 	if err != nil {
 		t.Fatalf("queue.NewJob: %v", err)
 	}
-	if err := a.Queue().Add(job); err != nil {
-		t.Fatalf("queue.Add: %v", err)
+	if err := a.AddJob(context.Background(), job, rawNZB); err != nil {
+		t.Fatalf("app.AddJob: %v", err)
 	}
 	return job
 }

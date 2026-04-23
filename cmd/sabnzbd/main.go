@@ -224,7 +224,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 
 	// Ingest adapter shared by the dir scanner and URL grabber. Both
 	// receive raw NZB bytes and push jobs onto the same queue.
-	ingest := &ingestHandler{queue: application.Queue(), logger: slog.Default().With("component", "ingest")}
+	ingest := &ingestHandler{app: application, logger: slog.Default().With("component", "ingest")}
 
 	// URL grabber. Used both by the RSS scanner's handler and by the API
 	// (mode=addurl). One instance is enough; Grabber is safe for

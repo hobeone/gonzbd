@@ -55,6 +55,7 @@ type Options struct {
 type ApplicationReloader interface {
 	ReloadDownloader(scs []config.ServerConfig) error
 	RetryHistoryJob(ctx context.Context, jobID string) error
+	AddJob(ctx context.Context, job *queue.Job, rawNZB []byte) error
 }
 
 // Server is the HTTP API server. It owns a net/http.Server and the mode

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/hobeone/sabnzbd-go/internal/app"
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
@@ -20,13 +21,14 @@ import (
 )
 
 // ingestHandler satisfies both dirscanner.Handler and urlgrabber.Handler.
-// It takes raw NZB bytes produced by either source and enqueues a job.
+// It takes raw NZB bytes produced by either source and enqueues a job via
+// the application orchestrator to handle duplicate detection and collisions.
 type ingestHandler struct {
-	queue  *queue.Queue
+	app    *app.Application
 	logger *slog.Logger
 }
 
-func (h *ingestHandler) HandleNZB(_ context.Context, filename string, data []byte) error {
+func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []byte) error {
 	parsed, err := nzb.Parse(bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("parse nzb %q: %w", filename, err)
@@ -35,8 +37,8 @@ func (h *ingestHandler) HandleNZB(_ context.Context, filename string, data []byt
 	if err != nil {
 		return fmt.Errorf("create job %q: %w", filename, err)
 	}
-	if err := h.queue.Add(job); err != nil {
-		return fmt.Errorf("enqueue %q: %w", filename, err)
+	if err := h.app.AddJob(ctx, job, data); err != nil {
+		return fmt.Errorf("add job %q: %w", filename, err)
 	}
 	log := h.logger.With("component", "ingest")
 	log.Info("ingested nzb", "filename", filename, "files", len(job.Files), "bytes", job.TotalBytes)
