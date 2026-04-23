@@ -504,6 +504,14 @@ func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteF
 	return err
 }
 
+// GetHistory retrieves a single job entry from the history database.
+func (app *Application) GetHistory(ctx context.Context, id string) (*history.Entry, error) {
+	if app.historyRepo == nil {
+		return nil, errors.New("history repository not wired")
+	}
+	return app.historyRepo.Get(ctx, id)
+}
+
 // Cache returns the article cache. Exposed for future direct-unpack wiring.
 func (app *Application) Cache() *cache.Cache { return app.cache }
 
