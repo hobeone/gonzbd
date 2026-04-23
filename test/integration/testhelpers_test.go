@@ -6,12 +6,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/app"
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/test/mocknntp"
 )
 
@@ -161,6 +163,7 @@ func buildAppConfig(mockAddr, downloadDir string) app.Config {
 	}
 	return app.Config{
 		DownloadDir: downloadDir,
+		CompleteDir: downloadDir,
 		AdminDir:    downloadDir,
 		CacheLimit:  0,
 		Servers: []config.ServerConfig{
@@ -183,7 +186,13 @@ func NewTestApp(t *testing.T, mockAddr string) *app.Application {
 	dir := t.TempDir()
 	cfg := buildAppConfig(mockAddr, dir)
 
-	a, err := app.New(cfg)
+	db, err := history.Open(filepath.Join(dir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	repo := history.NewRepository(db)
+
+	a, err := app.New(cfg, repo)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
@@ -199,6 +208,7 @@ func NewTestApp(t *testing.T, mockAddr string) *app.Application {
 		if err := a.Shutdown(); err != nil {
 			t.Logf("app.Shutdown: %v", err)
 		}
+		db.Close()
 	})
 
 	return a

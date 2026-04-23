@@ -69,3 +69,17 @@ func (q *Queue) SnapshotJob(id string) *Job {
 	}
 	return cloneJob(j)
 }
+
+// SnapshotJobByName returns a point-in-time, deep-copied view of a single
+// job by its human-readable name. Returns nil if the job is not found.
+func (q *Queue) SnapshotJobByName(name string) *Job {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	for _, j := range q.jobs {
+		if j.Name == name {
+			return cloneJob(j)
+		}
+	}
+	return nil
+}
