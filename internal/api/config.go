@@ -145,8 +145,9 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), testServerTimeout)
 	defer cancel()
 
-	conn, err := nntp.Dial(ctx, cfg)
+	conn, err := nntp.Dial(ctx, cfg, nntp.WithLogger(s.log))
 	if err != nil {
+
 		s.log.Warn("test_server failed", "host", host, "port", port, "error", err)
 		respondOK(w, "result", map[string]any{
 			"passed":  false,

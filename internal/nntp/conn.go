@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"strconv"
@@ -16,6 +17,25 @@ import (
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
 )
+
+// ... (keep sentinel errors and ServerError)
+
+type limitReader struct {
+	r   io.Reader
+	lim RateLimiter
+}
+
+func (lr *limitReader) Read(p []byte) (int, error) {
+	n, err := lr.r.Read(p)
+	if n > 0 && lr.lim != nil {
+		// Wait after reading. This introduces minimal overhead
+		// because it is invoked by bufio.Reader which chunks reads.
+		// We use context.Background() because rate.Wait only blocks
+		// based on tokens, and the lifecycle is owned by the Conn.
+		_ = lr.lim.Wait(context.Background(), n)
+	}
+	return n, err
+}
 
 // Sentinel errors. Callers can errors.Is against these to branch on
 // error class without string matching.
@@ -158,6 +178,30 @@ func (c *Conn) setState(next State) error {
 	return nil
 }
 
+// RateLimiter is the interface for an external bandwidth shaper.
+// Dial accepts one via WithLimiter.
+type RateLimiter interface {
+	Wait(ctx context.Context, n int) error
+}
+
+// DialOption tunes NNTP connection establishment.
+type DialOption func(*dialOptions)
+
+// WithLimiter attaches an external bandwidth shaper to the connection.
+// All Read calls on the resulting Conn gate on the limiter.
+func WithLimiter(l RateLimiter) DialOption {
+	return func(o *dialOptions) {
+		o.limiter = l
+	}
+}
+
+// WithLogger attaches a custom logger to the connection.
+func WithLogger(l *slog.Logger) DialOption {
+	return func(o *dialOptions) {
+		o.log = l
+	}
+}
+
 // dialOptions are the knobs Dial tunes internally. They live in a
 // struct instead of separate Dial arguments so callers don't have to
 // care about defaults — ServerConfig carries everything.
@@ -169,6 +213,8 @@ type dialOptions struct {
 	dialer     *net.Dialer
 	pipelining int
 	readBuf    int
+	limiter    RateLimiter
+	log        *slog.Logger
 }
 
 // newDialOptions derives the per-dial knobs from a ServerConfig,
@@ -198,6 +244,7 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 		dialer:     &net.Dialer{Timeout: timeout},
 		pipelining: pipe,
 		readBuf:    256 * 1024,
+		log:        slog.Default(),
 	}
 	if cfg.SSL {
 		tc, err := buildTLSConfig(cfg.Host, cfg.SSLVerify, cfg.SSLCiphers)
@@ -218,28 +265,26 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 // On any error during handshake the socket is closed before the error
 // is returned; the caller does not need to Close a *Conn that never
 // escaped Dial.
-func Dial(ctx context.Context, cfg config.ServerConfig, log ...*slog.Logger) (*Conn, error) {
-	var l *slog.Logger
-	if len(log) > 0 && log[0] != nil {
-		l = log[0].With("component", "nntp", "server", cfg.Name, "host", cfg.Host)
-	} else {
-		l = slog.Default().With("component", "nntp", "server", cfg.Name, "host", cfg.Host)
-	}
-
-	opts, err := newDialOptions(cfg)
+func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Conn, error) {
+	dopts, err := newDialOptions(cfg)
 	if err != nil {
 		return nil, err
 	}
+	for _, opt := range opts {
+		opt(dopts)
+	}
 
-	addr := net.JoinHostPort(opts.host, strconv.Itoa(opts.port))
-	l.Debug("dialing", "addr", addr, "ssl", opts.useTLS, "timeout", opts.dialer.Timeout)
+	l := dopts.log.With("component", "nntp", "server", cfg.Name, "host", cfg.Host)
+
+	addr := net.JoinHostPort(dopts.host, strconv.Itoa(dopts.port))
+	l.Debug("dialing", "addr", addr, "ssl", dopts.useTLS, "timeout", dopts.dialer.Timeout)
 
 	var nc net.Conn
-	if opts.useTLS {
-		d := &tls.Dialer{NetDialer: opts.dialer, Config: opts.tlsConfig}
+	if dopts.useTLS {
+		d := &tls.Dialer{NetDialer: dopts.dialer, Config: dopts.tlsConfig}
 		nc, err = d.DialContext(ctx, "tcp", addr)
 	} else {
-		nc, err = opts.dialer.DialContext(ctx, "tcp", addr)
+		nc, err = dopts.dialer.DialContext(ctx, "tcp", addr)
 	}
 	if err != nil {
 		l.Debug("dial failed", "addr", addr, "error", err)
@@ -247,14 +292,19 @@ func Dial(ctx context.Context, cfg config.ServerConfig, log ...*slog.Logger) (*C
 	}
 	l.Debug("TCP connected", "addr", addr)
 
+	var br io.Reader = nc
+	if dopts.limiter != nil {
+		br = &limitReader{r: nc, lim: dopts.limiter}
+	}
+
 	c := &Conn{
 		log:        l,
 		cfg:        cfg,
 		nc:         nc,
 		bw:         bufio.NewWriter(nc),
-		br:         bufio.NewReaderSize(nc, opts.readBuf),
+		br:         bufio.NewReaderSize(br, dopts.readBuf),
 		state:      StateDisconnected,
-		sem:        make(chan struct{}, opts.pipelining),
+		sem:        make(chan struct{}, dopts.pipelining),
 		readerDone: make(chan struct{}),
 	}
 
