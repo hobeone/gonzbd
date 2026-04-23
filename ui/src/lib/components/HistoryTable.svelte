@@ -1,9 +1,35 @@
 <script lang="ts">
-	import { getHistorySlots, getHistory, getHistoryError } from '$lib/stores/history.svelte';
+	import { getHistorySlots, getHistory, getHistoryError, deleteHistoryItem } from '$lib/stores/history.svelte';
+	import { Dialog } from 'bits-ui';
+	import { Button } from '$lib/components/ui/button';
 	import HistoryRow from './HistoryRow.svelte';
+	import type { HistorySlot } from '$lib/types';
+	import { showToast } from '$lib/stores/warnings.svelte';
 
 	function slots() {
 		return getHistorySlots();
+	}
+
+	let deleteTarget = $state<HistorySlot | null>(null);
+	let showDeleteConfirm = $state(false);
+	let acting = $state(false);
+
+	function openDelete(slot: HistorySlot) {
+		deleteTarget = slot;
+		showDeleteConfirm = true;
+	}
+
+	async function remove() {
+		if (!deleteTarget) return;
+		acting = true;
+		try {
+			await deleteHistoryItem(deleteTarget.nzo_id);
+			showDeleteConfirm = false;
+		} catch (e) {
+			showToast(e instanceof Error ? e.message : String(e));
+		} finally {
+			acting = false;
+		}
 	}
 </script>
 
@@ -34,7 +60,7 @@
 			</thead>
 			<tbody>
 				{#each slots() as slot (slot.nzo_id)}
-					<HistoryRow {slot} />
+					<HistoryRow {slot} onremove={() => openDelete(slot)} />
 				{/each}
 			</tbody>
 		</table>
@@ -45,3 +71,28 @@
 		</p>
 	{/if}
 {/if}
+
+<Dialog.Root bind:open={showDeleteConfirm}>
+	<Dialog.Portal>
+		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+		<Dialog.Content
+			class="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white p-6 shadow-lg outline-none"
+		>
+			<div class="mb-4">
+				<Dialog.Title class="text-lg font-bold">Delete History Item</Dialog.Title>
+				<Dialog.Description class="mt-2 text-sm text-gray-500">
+					Are you sure you want to delete <span class="font-semibold text-gray-900"
+						>{deleteTarget?.name}</span
+					> from history?
+				</Dialog.Description>
+			</div>
+
+						<div class="mt-6 flex justify-end gap-3">
+							<Button variant="outline" onclick={() => (showDeleteConfirm = false)}>Cancel</Button>
+							<Button variant="destructive" onclick={remove} disabled={acting}>
+								{acting ? 'Deleting...' : 'Delete Item'}
+							</Button>
+						</div>
+		</Dialog.Content>
+	</Dialog.Portal>
+</Dialog.Root>
