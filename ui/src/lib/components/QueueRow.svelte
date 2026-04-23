@@ -42,7 +42,17 @@
 
 <tr class="border-b hover:bg-gray-50">
 	<td class="px-4 py-3">
-		<div class="font-medium text-gray-900">{slot.name || slot.filename}</div>
+		<div class="flex items-center gap-2">
+			<div class="font-medium text-gray-900">{slot.name || slot.filename}</div>
+			{#if slot.warning}
+				<div class="flex items-center text-amber-600" title={slot.warning}>
+					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4">
+						<path fill-rule="evenodd" d="M6.701 2.25c.577-1 1.419-1 1.998 0l5.156 8.93c.577 1 .158 1.82-1 1.82H3.145c-1.158 0-1.577-.82-1-1.82l5.156-8.93ZM8 5.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 5.5Zm0 6a.625.625 0 1 0 0-1.25.625.625 0 0 0 0 1.25Z" clip-rule="evenodd" />
+					</svg>
+					<span class="ml-1 text-xs font-semibold">{slot.warning}</span>
+				</div>
+			{/if}
+		</div>
 		<div class="mt-1 flex items-center gap-2">
 			<Progress value={pct()} max={100} class="h-2 flex-1" />
 			<span class="text-xs font-mono text-gray-500">{slot.percentage}%</span>

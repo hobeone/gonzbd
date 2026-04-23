@@ -77,6 +77,7 @@ type queueSlot struct {
 	RemainingBytes int64   `json:"remaining_bytes"`
 	Percentage     string  `json:"percentage"`
 	PP             string  `json:"pp"`
+	Warning        string  `json:"warning,omitempty"`
 }
 
 // queueResponse is the outer JSON object returned for default queue listings.
@@ -148,6 +149,7 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 			RemainingBytes: j.RemainingBytes,
 			Percentage:     pct,
 			PP:             strconv.Itoa(j.PP),
+			Warning:        j.Warning,
 		})
 	}
 

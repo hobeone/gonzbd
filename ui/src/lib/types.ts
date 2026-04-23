@@ -18,6 +18,7 @@ export interface QueueSlot {
 	remaining_bytes: number;
 	percentage: string;
 	pp: string;
+	warning?: string;
 }
 
 export interface QueueDetail {

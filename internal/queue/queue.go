@@ -207,6 +207,7 @@ func (q *Queue) Resume(id string) error {
 	}
 	if job.Status == constants.StatusPaused {
 		job.Status = constants.StatusQueued
+		job.Warning = ""
 	}
 	q.notifyLocked()
 	return nil
