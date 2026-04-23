@@ -7,8 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"golang.org/x/time/rate"
-
+	"github.com/hobeone/sabnzbd-go/internal/bpsmeter"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
@@ -127,11 +126,7 @@ type Downloader struct {
 	// like queue.Notify.
 	dispatchReady chan struct{}
 
-	// speedCh is the update channel for the rate limiter. The main
-	// loop applies updates; workers read the limiter via the atomic
-	// pointer below.
-	speedCh chan int64
-	limiter atomic.Pointer[rate.Limiter]
+	limiter *bpsmeter.Limiter
 
 	// paused short-circuits the dispatch pass without tearing down
 	// worker goroutines. Independent of queue.IsPaused (either flag
@@ -186,7 +181,7 @@ func New(q *queue.Queue, servers []*Server, opts Options, log *slog.Logger) *Dow
 		workCh:        make(map[string]chan *articleRequest, len(servers)),
 		completions:   make(chan *ArticleResult, opts.CompletionsBuffer),
 		dispatchReady: make(chan struct{}, 1),
-		speedCh:       make(chan int64, 4),
+		limiter:       bpsmeter.NewLimiter(0),
 		tryList:       make(map[articleKey]map[string]struct{}),
 		inFlight:      make(map[articleKey]int),
 	}
@@ -290,10 +285,7 @@ func (d *Downloader) Resume() {
 // the NNTP read path; that is deliberately deferred until the decoder
 // integration step so the limiter can account for yEnc overhead too.
 func (d *Downloader) SetSpeedLimit(bytesPerSec int64) {
-	select {
-	case d.speedCh <- bytesPerSec:
-	case <-d.ctx.Done():
-	}
+	d.limiter.SetRate(float64(bytesPerSec))
 }
 
 // IsPaused reports the downloader's own pause flag. Orthogonal to
@@ -309,13 +301,12 @@ func (d *Downloader) signalDispatch() {
 	}
 }
 
-// run is the main dispatcher loop. One goroutine. Selects on four
+// run is the main dispatcher loop. One goroutine. Selects on three
 // sources:
 //
 //   - ctx.Done       — begin shutdown
 //   - queue.Notify   — new work was added / resumed / reordered
 //   - dispatchReady  — a worker freed up
-//   - speedCh        — SetSpeedLimit was called
 //
 // The loop must stay tight: all heavy lifting (per-article iteration,
 // send to workCh) happens inside dispatchPass, which itself must not
@@ -331,24 +322,6 @@ func (d *Downloader) run(ctx context.Context) {
 			d.dispatchPass(ctx)
 		case <-d.dispatchReady:
 			d.dispatchPass(ctx)
-		case bps := <-d.speedCh:
-			d.updateLimiter(bps)
 		}
 	}
-}
-
-// updateLimiter installs a new rate limiter (or clears it). Called
-// only on the main loop goroutine; workers read via Load() so the
-// swap is race-free.
-//
-// Burst is set to 10 MiB to match the NNTP body-size cap — WaitN
-// rejects n > burst outright, and we need a single article's worth
-// of bytes to always fit in one bucket.
-func (d *Downloader) updateLimiter(bps int64) {
-	const burst = 10 * 1024 * 1024
-	if bps <= 0 {
-		d.limiter.Store(nil)
-		return
-	}
-	d.limiter.Store(rate.NewLimiter(rate.Limit(bps), burst))
 }

@@ -232,7 +232,10 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 
 	if *connPtr == nil {
 		d.log.Info("dialing server", "server", name, "host", srv.Cfg().Host)
-		c, err := nntp.Dial(ctx, srv.Cfg(), d.log)
+		c, err := nntp.Dial(ctx, srv.Cfg(),
+			nntp.WithLimiter(d.limiter),
+			nntp.WithLogger(d.log),
+		)
 		if err != nil {
 			d.log.Warn("dial failed", "server", name, "error", err)
 			srv.RecordBadConnection()
@@ -277,16 +280,6 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 
 	srv.RecordGoodConnection()
 	d.log.Debug("fetched", "server", name, "msgid", req.messageID, "bytes", len(body))
-
-	// Throttle. WaitN sleeps up to bytes/rate seconds; respects ctx.
-	if lim := d.limiter.Load(); lim != nil {
-		if err := lim.WaitN(ctx, len(body)); err != nil {
-			// ctx was cancelled mid-wait; still emit the body so
-			// the consumer can decide what to do.
-			d.emitResult(ctx, req, name, body, err)
-			return
-		}
-	}
 
 	// Durability (B.6): the article is not marked Done here. The assembler
 	// calls MarkArticleDone after pwrite + fsync so that Done => bytes on disk.
