@@ -202,7 +202,7 @@ func startMockNNTP(t *testing.T, bodies map[string][]byte) *mockNNTP {
 		_ = ln.Close()
 		m.wg.Wait()
 	})
-	go m.acceptLoop()
+	m.wg.Go(m.acceptLoop)
 	return m
 }
 
@@ -212,12 +212,10 @@ func (m *mockNNTP) acceptLoop() {
 		if err != nil {
 			return
 		}
-		m.wg.Add(1)
-		go func(c net.Conn) {
-			defer m.wg.Done()
+		m.wg.Go(func() {
 			defer func() { _ = c.Close() }()
 			m.handleConn(c)
-		}(c)
+		})
 	}
 }
 

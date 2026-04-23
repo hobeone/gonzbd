@@ -223,15 +223,17 @@ func (d *Downloader) Start(ctx context.Context) error {
 			conns = 1
 		}
 		for i := 0; i < conns; i++ {
-			d.wg.Add(1)
-			go d.connWorker(d.ctx, srv)
+			d.wg.Go(func() {
+				d.connWorker(d.ctx, srv)
+			})
 		}
 		d.log.Debug("server workers started", "server", srv.Cfg().Name, "workers", conns)
 		totalWorkers += conns
 	}
 
-	d.wg.Add(1)
-	go d.run(d.ctx)
+	d.wg.Go(func() {
+		d.run(d.ctx)
+	})
 
 	d.log.Info("started", "servers", len(d.servers), "workers", totalWorkers)
 
@@ -313,7 +315,6 @@ func (d *Downloader) signalDispatch() {
 // block. Blocking the main loop stalls rate-limit updates and
 // shutdown.
 func (d *Downloader) run(ctx context.Context) {
-	defer d.wg.Done()
 	for {
 		select {
 		case <-ctx.Done():

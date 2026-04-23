@@ -394,27 +394,21 @@ func (app *Application) Start(ctx context.Context) error {
 		return fmt.Errorf("app: start postprocessor: %w", err)
 	}
 
-	app.wg.Add(1)
-	go func() {
-		defer app.wg.Done()
+	app.wg.Go(func() {
 		app.pipeline.run(app.ctx)
-	}()
+	})
 
-	app.wg.Add(1)
-	go func() {
-		defer app.wg.Done()
+	app.wg.Go(func() {
 		app.watchCompletions(app.ctx)
-	}()
+	})
 
 	interval := app.cfg.CheckpointInterval
 	if interval <= 0 {
 		interval = defaultCheckpointInterval
 	}
-	app.wg.Add(1)
-	go func() {
-		defer app.wg.Done()
+	app.wg.Go(func() {
 		app.runCheckpoint(app.ctx, interval)
-	}()
+	})
 
 	app.log.Info("application started", "download_dir", app.cfg.DownloadDir, "checkpoint_interval", interval)
 

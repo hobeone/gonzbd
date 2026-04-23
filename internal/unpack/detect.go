@@ -4,11 +4,12 @@
 package unpack
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -161,7 +162,7 @@ func groupArchives(files []string) []Archive {
 
 	// New-style multi-part RARs.
 	for name, s := range newStyleRar {
-		sort.Strings(s.parts)
+		slices.Sort(s.parts)
 		archives = append(archives, Archive{
 			Type:     RarArchive,
 			Name:     name,
@@ -172,7 +173,7 @@ func groupArchives(files []string) []Archive {
 
 	// Legacy RARs.
 	for name, s := range legacyRar {
-		sort.Strings(s.parts)
+		slices.Sort(s.parts)
 		main := s.main
 		if main == "" && len(s.parts) > 0 {
 			main = s.parts[0]
@@ -187,7 +188,7 @@ func groupArchives(files []string) []Archive {
 
 	// Split 7z volumes.
 	for name, parts := range sevenSplit {
-		sort.Strings(parts)
+		slices.Sort(parts)
 		archives = append(archives, Archive{
 			Type:     SevenZipArchive,
 			Name:     name,
@@ -220,7 +221,7 @@ func groupArchives(files []string) []Archive {
 		sorted, err := sortedNumericParts(parts)
 		if err != nil {
 			// Non-contiguous — still emit; FileJoin will return a proper error.
-			sort.Strings(parts)
+			slices.Sort(parts)
 			archives = append(archives, Archive{
 				Type:     SplitArchive,
 				Name:     name,
@@ -238,7 +239,7 @@ func groupArchives(files []string) []Archive {
 	}
 
 	// Stable sort by Name for deterministic output.
-	sort.Slice(archives, func(i, j int) bool { return archives[i].Name < archives[j].Name })
+	slices.SortFunc(archives, func(a, b Archive) int { return cmp.Compare(a.Name, b.Name) })
 
 	return archives
 }
@@ -274,7 +275,7 @@ func sortedNumericParts(parts []string) ([]string, error) {
 		}
 		ns = append(ns, numbered{n, p})
 	}
-	sort.Slice(ns, func(i, j int) bool { return ns[i].n < ns[j].n })
+	slices.SortFunc(ns, func(a, b numbered) int { return cmp.Compare(a.n, b.n) })
 
 	for i, item := range ns {
 		if item.n != i+1 {

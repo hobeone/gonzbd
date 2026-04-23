@@ -65,7 +65,7 @@ func TestHistoryDefault_EmptyRepo(t *testing.T) {
 		Status  bool `json:"status"`
 		History struct {
 			NoOfSlots int           `json:"noofslots"`
-			Slots     []interface{} `json:"slots"`
+			Slots     []any `json:"slots"`
 			TotalSize string        `json:"total_size"`
 		} `json:"history"`
 	}

@@ -100,8 +100,9 @@ func New(opts Options) *PostProcessor {
 // worker is already running.
 func (p *PostProcessor) Start(ctx context.Context) error {
 	p.workerCtx, p.workerCancel = context.WithCancel(ctx)
-	p.wg.Add(1)
-	go p.run()
+	p.wg.Go(func() {
+		p.run()
+	})
 	return nil
 }
 
@@ -214,8 +215,6 @@ func (p *PostProcessor) History() []*Job {
 
 // run is the worker goroutine body.
 func (p *PostProcessor) run() {
-	defer p.wg.Done()
-
 	prevJobDone := false
 	for {
 		p.setBusy(false)

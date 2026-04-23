@@ -195,8 +195,6 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 // re-dialled for the next request. The goroutine exits when ctx is
 // cancelled.
 func (d *Downloader) connWorker(ctx context.Context, srv *Server) {
-	defer d.wg.Done()
-
 	var conn *nntp.Conn
 	defer func() {
 		if conn != nil {
