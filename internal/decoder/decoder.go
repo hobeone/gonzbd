@@ -210,9 +210,11 @@ func indexSpecial(b []byte) int {
 // parseHeader parses the =ybegin line and the optional =ypart line.
 // It returns the parsed header and the byte offset where the encoded body begins.
 func parseHeader(body []byte) (yencHeader, int, error) {
-	if !bytes.HasPrefix(body, []byte("=ybegin")) {
+	start := bytes.Index(body, []byte("=ybegin"))
+	if start < 0 {
 		return yencHeader{}, 0, ErrNotYEnc
 	}
+	body = body[start:]
 
 	ybeginEnd := bytes.IndexByte(body, '\n')
 	if ybeginEnd < 0 {
@@ -238,15 +240,15 @@ func parseHeader(body []byte) (yencHeader, int, error) {
 		}
 	})
 
-	bodyStart := ybeginEnd + 1
+	bodyStart := start + ybeginEnd + 1
 
 	// Parse optional =ypart line.
-	if bytes.HasPrefix(body[bodyStart:], []byte("=ypart")) {
-		ypartEnd := bytes.IndexByte(body[bodyStart:], '\n')
+	if bytes.HasPrefix(body[ybeginEnd+1:], []byte("=ypart")) {
+		ypartEnd := bytes.IndexByte(body[ybeginEnd+1:], '\n')
 		if ypartEnd < 0 {
 			return yencHeader{}, 0, ErrMalformed
 		}
-		ypartLine := body[bodyStart : bodyStart+ypartEnd]
+		ypartLine := body[ybeginEnd+1 : ybeginEnd+1+ypartEnd]
 		var beginVal int64
 		parseKeyValues(ypartLine, func(k, v string) {
 			if k == "begin" {

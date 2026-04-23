@@ -29,6 +29,7 @@ func testHistoryServer(t *testing.T) (*Server, *history.Repository) {
 		},
 		Version: "1.0.0-test",
 		History: repo,
+		App:     mockApp{h: repo},
 	})
 	return s, repo
 }
