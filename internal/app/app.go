@@ -481,6 +481,29 @@ func (app *Application) RemoveJob(id string, deleteFiles bool) error {
 	return app.queue.Remove(id)
 }
 
+// RemoveHistoryJob drops a job from history and optionally deletes its
+// downloaded files from disk.
+func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error {
+	if app.historyRepo == nil {
+		return errors.New("history repository not wired")
+	}
+
+	entry, err := app.historyRepo.Get(ctx, id)
+	if err != nil {
+		return fmt.Errorf("app: get history: %w", err)
+	}
+
+	if deleteFiles && entry.Path != "" {
+		app.log.Info("deleting history files from disk", "job", id, "path", entry.Path)
+		if err := os.RemoveAll(entry.Path); err != nil {
+			app.log.Warn("failed to delete history files", "job", id, "path", entry.Path, "err", err)
+		}
+	}
+
+	_, err = app.historyRepo.Delete(ctx, id)
+	return err
+}
+
 // Cache returns the article cache. Exposed for future direct-unpack wiring.
 func (app *Application) Cache() *cache.Cache { return app.cache }
 
