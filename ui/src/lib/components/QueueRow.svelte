@@ -3,7 +3,7 @@
 	import { Progress } from '$lib/components/ui/progress';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
-	import * as Dialog from '$lib/components/ui/dialog';
+	import { Dialog } from 'bits-ui';
 	import { pauseJob, resumeJob, deleteJob } from '$lib/stores/queue.svelte';
 
 	let { slot }: { slot: QueueSlot } = $props();
@@ -11,6 +11,12 @@
 	let acting = $state(false);
 	let showDeleteConfirm = $state(false);
 	let deleteFiles = $state(false);
+
+	$effect(() => {
+		if (showDeleteConfirm) {
+			deleteFiles = false;
+		}
+	});
 
 	function pct(): number {
 		return parseFloat(slot.percentage) || 0;
@@ -44,10 +50,10 @@
 	}
 </script>
 
-<tr class="border-b hover:bg-gray-50">
+<tr class="border-b hover:bg-gray-50 text-gray-900 dark:text-gray-100">
 	<td class="px-4 py-3">
 		<div class="flex items-center gap-2">
-			<div class="font-medium text-gray-900">{slot.name || slot.filename}</div>
+			<div class="font-medium">{slot.name || slot.filename}</div>
 			{#if slot.warning}
 				<div class="flex items-center text-amber-600" title={slot.warning}>
 					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4">
@@ -66,14 +72,14 @@
 			<span class="text-xs font-mono text-gray-500">{slot.percentage}%</span>
 		</div>
 	</td>
-	<td class="px-4 py-3 text-sm text-gray-600">{slot.size}</td>
-	<td class="px-4 py-3 text-sm text-gray-600">{slot.sizeleft}</td>
+	<td class="px-4 py-3 text-sm">{slot.size}</td>
+	<td class="px-4 py-3 text-sm">{slot.sizeleft}</td>
 	<td class="px-4 py-3">
 		<Badge variant={isPaused() ? 'outline' : 'default'} class="text-xs">
 			{slot.status}
 		</Badge>
 	</td>
-	<td class="px-4 py-3 text-sm text-gray-600">{slot.category || '*'}</td>
+	<td class="px-4 py-3 text-sm">{slot.category || '*'}</td>
 	<td class="px-4 py-3">
 		<div class="flex gap-1">
 			<Button variant="ghost" size="icon-xs" onclick={togglePause} disabled={acting} title={isPaused() ? 'Resume' : 'Pause'}>
@@ -101,28 +107,33 @@
 					</svg>
 				</Button>
 
-				<Dialog.Content class="max-w-md">
-					<Dialog.Header>
-						<Dialog.Title>Delete Job</Dialog.Title>
-						<Dialog.Description>
-							Are you sure you want to delete <span class="font-semibold text-gray-900">{slot.name || slot.filename}</span>?
-						</Dialog.Description>
-					</Dialog.Header>
+				<Dialog.Portal>
+					<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+					<Dialog.Content
+						class="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white p-6 shadow-lg outline-none"
+					>
+						<div class="mb-4">
+							<Dialog.Title class="text-lg font-bold">Delete Job</Dialog.Title>
+							<Dialog.Description class="mt-2 text-sm text-gray-500">
+								Are you sure you want to delete <span class="font-semibold text-gray-900">{slot.name || slot.filename}</span>?
+							</Dialog.Description>
+						</div>
 
-					<div class="py-4">
-						<label class="flex cursor-pointer items-center gap-2 text-sm">
-							<input type="checkbox" bind:checked={deleteFiles} class="size-4 rounded border-gray-300 text-red-600 focus:ring-red-500" />
-							<span>Also delete downloaded files from disk</span>
-						</label>
-					</div>
+						<div class="py-4 text-gray-900">
+							<label class="flex cursor-pointer items-center gap-2 text-sm">
+								<input type="checkbox" bind:checked={deleteFiles} class="size-4 rounded border-gray-300 text-red-600 focus:ring-red-500" />
+								<span>Also delete downloaded files from disk</span>
+							</label>
+						</div>
 
-					<Dialog.Footer>
-						<Button variant="outline" onclick={() => (showDeleteConfirm = false)}>Cancel</Button>
-						<Button variant="destructive" onclick={remove} disabled={acting}>
-							{acting ? 'Deleting...' : 'Delete Job'}
-						</Button>
-					</Dialog.Footer>
-				</Dialog.Content>
+						<div class="mt-6 flex justify-end gap-3">
+							<Button variant="outline" onclick={() => (showDeleteConfirm = false)}>Cancel</Button>
+							<Button variant="destructive" onclick={remove} disabled={acting}>
+								{acting ? 'Deleting...' : 'Delete Job'}
+							</Button>
+						</div>
+					</Dialog.Content>
+				</Dialog.Portal>
 			</Dialog.Root>
 		</div>
 	</td>
