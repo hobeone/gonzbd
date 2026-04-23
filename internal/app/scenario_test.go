@@ -152,6 +152,35 @@ func (h *scenarioHarness) AddSimpleJob(name string, raw []byte) *queue.Job {
 	return job
 }
 
+// AddOneShotJob is like AddSimpleJob but uses Application.AddJob, which
+// triggers duplicate detection and renaming logic.
+func (h *scenarioHarness) AddOneShotJob(name string, raw []byte, force bool) *queue.Job {
+	h.t.Helper()
+	msgID := randomMsgID(h.t)
+
+	body := yencSinglePart(name+".bin", raw)
+	h.server.AddArticle(msgID, body)
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{{
+			Subject:  fmt.Sprintf(`"%s.bin" yEnc (1/1)`, name),
+			Articles: []nzb.Article{{ID: msgID, Bytes: len(raw), Number: 1}},
+			Bytes:    int64(len(raw)),
+		}},
+	}
+	// We must supply a Filename to trigger duplicate detection
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: name, Filename: name + ".nzb"})
+	if err != nil {
+		h.t.Fatalf("scenario: NewJob: %v", err)
+	}
+
+	// We pass rawNZB as dummy XML since we are simulating the ingestion of the NZB.
+	if err := h.app.AddJob(context.Background(), job, []byte("<nzb/>"), force); err != nil {
+		h.t.Fatalf("scenario: AddJob: %v", err)
+	}
+	return job
+}
+
 // InjectFailure wires a one-shot failure on the scripted server for msgID.
 func (h *scenarioHarness) InjectFailure(msgID string, mode nntptest.FailureMode) {
 	h.server.InjectFailure(msgID, mode)

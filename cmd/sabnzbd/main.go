@@ -516,7 +516,7 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 		return fmt.Errorf("NZB %s contains no usable files", nzbPath)
 	}
 
-	if err := application.AddJob(ctx, job, rawNZB); err != nil {
+	if err := application.AddJob(ctx, job, rawNZB, true); err != nil {
 		return fmt.Errorf("enqueue job: %w", err)
 	}
 

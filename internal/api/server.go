@@ -55,7 +55,7 @@ type Options struct {
 type ApplicationReloader interface {
 	ReloadDownloader(scs []config.ServerConfig) error
 	RetryHistoryJob(ctx context.Context, jobID string) error
-	AddJob(ctx context.Context, job *queue.Job, rawNZB []byte) error
+	AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error
 	RemoveJob(id string, deleteFiles bool) error
 	RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error
 }

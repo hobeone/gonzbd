@@ -48,7 +48,7 @@ func addJob(t *testing.T, a *app.Application, rawNZB []byte, name string) *queue
 	if err != nil {
 		t.Fatalf("queue.NewJob: %v", err)
 	}
-	if err := a.AddJob(context.Background(), job, rawNZB); err != nil {
+	if err := a.AddJob(context.Background(), job, rawNZB, false); err != nil {
 		t.Fatalf("app.AddJob: %v", err)
 	}
 	return job

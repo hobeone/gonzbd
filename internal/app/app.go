@@ -356,7 +356,10 @@ func (app *Application) Queue() *queue.Queue { return app.queue }
 // 2. Directory collision avoidance (appending .1, .2... to job name).
 // 3. Backup of the raw NZB to admin/nzb/ named after the resolved job name.
 // 4. Enqueuing the job via Queue.Add.
-func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte) error {
+//
+// If force is true, duplicate detection still runs (and logs) but the
+// job is NOT paused, ensuring one-shot mode continues as expected.
+func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
 	nzbDir := filepath.Join(app.cfg.AdminDir, "nzb")
 	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
 		return fmt.Errorf("app: mkdir admin nzb: %w", err)
@@ -390,9 +393,13 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	}
 
 	if isDuplicate {
-		app.log.Info("duplicate NZB detected", "filename", job.Filename, "md5", job.MD5, "reason", dupReason)
-		job.Status = constants.StatusPaused
-		job.Warning = "Duplicate NZB"
+		app.log.Info("duplicate NZB detected", "filename", job.Filename, "md5", job.MD5, "reason", dupReason, "forced", force)
+		if !force {
+			job.Status = constants.StatusPaused
+			job.Warning = "Duplicate NZB"
+		} else {
+			job.Warning = "Duplicate NZB (Forced)"
+		}
 	} else {
 		app.log.Debug("duplicate check passed", "filename", job.Filename, "md5", job.MD5)
 	}

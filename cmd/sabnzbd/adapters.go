@@ -41,7 +41,7 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 	log := h.logger.With("component", "ingest")
 	log.Debug("processing nzb", "filename", filename, "md5", job.MD5)
 
-	if err := h.app.AddJob(ctx, job, data); err != nil {
+	if err := h.app.AddJob(ctx, job, data, false); err != nil {
 		return fmt.Errorf("add job %q: %w", filename, err)
 	}
 	log.Info("ingested nzb", "filename", filename, "files", len(job.Files), "bytes", job.TotalBytes, "id", job.ID)

@@ -25,7 +25,7 @@ type mockApp struct {
 
 func (m mockApp) ReloadDownloader([]config.ServerConfig) error { return nil }
 func (m mockApp) RetryHistoryJob(context.Context, string) error { return nil }
-func (m mockApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte) error {
+func (m mockApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
 	if m.q == nil {
 		return fmt.Errorf("queue not wired to mockApp")
 	}
