@@ -114,7 +114,11 @@ export async function resumeJob(nzoId: string) {
 	await poll();
 }
 
-export async function deleteJob(nzoId: string) {
-	await postAction('queue', { name: 'delete', value: nzoId });
+export async function deleteJob(nzoId: string, deleteFiles = false) {
+	const params: Record<string, string> = { name: 'delete', value: nzoId };
+	if (deleteFiles) {
+		params.delete_files = '1';
+	}
+	await postAction('queue', params);
 	await poll();
 }

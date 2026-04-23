@@ -459,6 +459,28 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	return nil
 }
 
+// RemoveJob drops a job from the queue and optionally deletes its
+// partial downloads from disk.
+func (app *Application) RemoveJob(id string, deleteFiles bool) error {
+	job, err := app.queue.Get(id)
+	if err != nil {
+		return err
+	}
+
+	if deleteFiles {
+		// Calculate the download directory for the job.
+		// Note: we don't delete from CompleteDir because the job is
+		// still in the active queue (not yet finished).
+		path := filepath.Join(app.cfg.DownloadDir, job.Name)
+		app.log.Info("deleting job files from disk", "job", id, "path", path)
+		if err := os.RemoveAll(path); err != nil {
+			app.log.Warn("failed to delete job files", "job", id, "path", path, "err", err)
+		}
+	}
+
+	return app.queue.Remove(id)
+}
+
 // Cache returns the article cache. Exposed for future direct-unpack wiring.
 func (app *Application) Cache() *cache.Cache { return app.cache }
 

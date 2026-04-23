@@ -190,7 +190,8 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// queueDelete removes jobs by ID. value= may be a CSV list or "all".
+// queueDelete removes specific jobs by ID (CSV in value=) or all jobs if value=all.
+// If delete_files=1 is present, also deletes partial downloads from disk.
 //
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
@@ -199,6 +200,8 @@ func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "missing value parameter")
 		return
 	}
+
+	deleteFiles := r.FormValue("delete_files") == "1"
 
 	var ids []string
 	if value == "all" {
@@ -211,7 +214,7 @@ func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 
 	var removed []string
 	for _, id := range ids {
-		if err := s.queue.Remove(id); err == nil {
+		if err := s.app.RemoveJob(id, deleteFiles); err == nil {
 			removed = append(removed, id)
 		}
 	}
