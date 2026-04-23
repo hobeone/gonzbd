@@ -271,6 +271,9 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			if job.ParError || job.UnpackError || job.FailMsg != "" {
 				entry.Status = "Failed"
 				entry.FailMessage = job.FailMsg
+				// Use DownloadDir for failed jobs because FinalizeStage skips the
+				// move to FinalDir (the "complete" folder) on failure.
+				entry.Path = job.DownloadDir
 			}
 
 			if app.historyRepo != nil {

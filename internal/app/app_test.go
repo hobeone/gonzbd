@@ -103,6 +103,10 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 	if entry.Status != "Failed" {
 		t.Errorf("status = %q, want Failed", entry.Status)
 	}
+	wantPath := filepath.Join(downloadDir, "hopeless-test")
+	if entry.Path != wantPath {
+		t.Errorf("path = %q, want %q (failed jobs stay in DownloadDir)", entry.Path, wantPath)
+	}
 	if !strings.Contains(entry.FailMessage, "beyond repair") {
 		t.Errorf("fail message %q does not contain 'beyond repair'", entry.FailMessage)
 	}
