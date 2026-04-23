@@ -150,12 +150,15 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 
 // historyDelete removes history entries. value= may be a CSV of NZO IDs,
 // or one of the special tokens: "all", "failed", "completed".
+// If delete_files=1 is present, also deletes downloaded files from disk.
 func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 	value := formString(r, "value")
 	if value == "" {
 		respondError(w, http.StatusBadRequest, "missing value parameter")
 		return
 	}
+
+	deleteFiles := r.FormValue("delete_files") == "1"
 
 	var ids []string
 
@@ -191,15 +194,16 @@ func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 		ids = splitCSV(value)
 	}
 
-	n, err := s.history.Delete(r.Context(), ids...)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "history delete: "+err.Error())
-		return
+	var deleted int
+	for _, id := range ids {
+		if err := s.app.RemoveHistoryJob(r.Context(), id, deleteFiles); err == nil {
+			deleted++
+		}
 	}
 
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":  true,
-		"deleted": n,
+		"deleted": deleted,
 	})
 }
 

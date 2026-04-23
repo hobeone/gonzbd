@@ -12,7 +12,14 @@
 
 	let deleteTarget = $state<HistorySlot | null>(null);
 	let showDeleteConfirm = $state(false);
+	let deleteFiles = $state(false);
 	let acting = $state(false);
+
+	$effect(() => {
+		if (showDeleteConfirm) {
+			deleteFiles = false;
+		}
+	});
 
 	function openDelete(slot: HistorySlot) {
 		deleteTarget = slot;
@@ -23,7 +30,7 @@
 		if (!deleteTarget) return;
 		acting = true;
 		try {
-			await deleteHistoryItem(deleteTarget.nzo_id);
+			await deleteHistoryItem(deleteTarget.nzo_id, deleteFiles);
 			showDeleteConfirm = false;
 		} catch (e) {
 			showToast(e instanceof Error ? e.message : String(e));
@@ -85,10 +92,20 @@
 						>{deleteTarget?.name}</span
 					> from history?
 				</Dialog.Description>
-			</div>
+				</div>
 
-						<div class="mt-6 flex justify-end gap-3">
-							<Button variant="outline" onclick={() => (showDeleteConfirm = false)}>Cancel</Button>
+				<div class="py-4 text-gray-900">
+				<label class="flex cursor-pointer items-center gap-2 text-sm">
+					<input
+						type="checkbox"
+						bind:checked={deleteFiles}
+						class="size-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+					/>
+					<span>Also delete downloaded files from disk</span>
+				</label>
+				</div>
+
+				<div class="mt-6 flex justify-end gap-3">							<Button variant="outline" onclick={() => (showDeleteConfirm = false)}>Cancel</Button>
 							<Button variant="destructive" onclick={remove} disabled={acting}>
 								{acting ? 'Deleting...' : 'Delete Item'}
 							</Button>

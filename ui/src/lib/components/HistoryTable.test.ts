@@ -49,7 +49,21 @@ describe('HistoryTable', () => {
 		expect(matches.length).toBeGreaterThan(1);
 	});
 
-	it('calls deleteHistoryItem when confirmed', async () => {
+	it('calls deleteHistoryItem with deleteFiles=true when checkbox is checked', async () => {
+		render(HistoryTable);
+		
+		await fireEvent.click(screen.getByTitle('Delete'));
+
+		const checkbox = screen.getByLabelText('Also delete downloaded files from disk');
+		await fireEvent.click(checkbox);
+		
+		const confirmBtn = screen.getByRole('button', { name: 'Delete Item' });
+		await fireEvent.click(confirmBtn);
+
+		expect(deleteHistoryItem).toHaveBeenCalledWith('456', true);
+	});
+
+	it('calls deleteHistoryItem with deleteFiles=false when NOT checked', async () => {
 		render(HistoryTable);
 		
 		await fireEvent.click(screen.getByTitle('Delete'));
@@ -57,6 +71,6 @@ describe('HistoryTable', () => {
 		const confirmBtn = screen.getByRole('button', { name: 'Delete Item' });
 		await fireEvent.click(confirmBtn);
 
-		expect(deleteHistoryItem).toHaveBeenCalledWith('456');
+		expect(deleteHistoryItem).toHaveBeenCalledWith('456', false);
 	});
 });

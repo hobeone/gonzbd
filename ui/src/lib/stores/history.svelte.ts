@@ -43,8 +43,12 @@ export function getHistoryError(): string | null {
 	return error;
 }
 
-export async function deleteHistoryItem(nzoId: string) {
-	await postAction('history', { name: 'delete', value: nzoId });
+export async function deleteHistoryItem(nzoId: string, deleteFiles = false) {
+	const params: Record<string, string> = { name: 'delete', value: nzoId };
+	if (deleteFiles) {
+		params.delete_files = '1';
+	}
+	await postAction('history', params);
 	await poll();
 }
 
@@ -57,7 +61,7 @@ export async function purgeHistory(deleteFiles: boolean) {
 	await postAction('history', {
 		name: 'delete',
 		value: 'all',
-		del_files: deleteFiles ? '1' : '0'
+		delete_files: deleteFiles ? '1' : '0'
 	});
 	await poll();
 }
