@@ -16,6 +16,7 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/nntp"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/sabnzbd-go/test/mocknntp"
 )
 
 // mockNNTP is a test-only NNTP server that accepts any number of
@@ -269,9 +270,9 @@ func collect(t *testing.T, ch <-chan *ArticleResult, n int, timeout time.Duratio
 
 func TestDownloaderHappyPath(t *testing.T) {
 	ms := newMockNNTP(t)
-	ms.addArticle("a@h", "body-a")
-	ms.addArticle("b@h", "body-b")
-	ms.addArticle("c@h", "body-c")
+	ms.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a"))))
+	ms.addArticle("b@h", string(mocknntp.EncodeYEnc("b.bin", []byte("body-b"))))
+	ms.addArticle("c@h", string(mocknntp.EncodeYEnc("c.bin", []byte("body-c"))))
 
 	q := queue.New()
 	job := makeJobWithArticles(t, []string{"a@h", "b@h", "c@h"})
@@ -302,7 +303,7 @@ func TestDownloaderHappyPath(t *testing.T) {
 				t.Errorf("unexpected err for %s: %v", r.MessageID, r.Err)
 				continue
 			}
-			got[r.MessageID] = string(r.Body)
+			got[r.MessageID] = string(r.Data)
 			if err := q.MarkArticleDone(r.JobID, r.MessageID); err != nil {
 				t.Fatalf("MarkArticleDone: %v", err)
 			}
@@ -311,9 +312,9 @@ func TestDownloaderHappyPath(t *testing.T) {
 		}
 	}
 	want := map[string]string{
-		"a@h": "body-a\n",
-		"b@h": "body-b\n",
-		"c@h": "body-c\n",
+		"a@h": "body-a",
+		"b@h": "body-b",
+		"c@h": "body-c",
 	}
 	for id, wantBody := range want {
 		if got[id] != wantBody {
@@ -326,12 +327,12 @@ func TestDownloaderFallbackServer(t *testing.T) {
 	// Primary rejects 'a@h'; backup has it. Downloader should flip
 	// to backup via the try-list.
 	primary := newMockNNTP(t)
-	primary.addArticle("b@h", "body-b") // primary has b only
-	primary.rejectArticle("a@h")        // simulate article missing
+	primary.addArticle("b@h", string(mocknntp.EncodeYEnc("b.bin", []byte("body-b")))) // primary has b only
+	primary.rejectArticle("a@h")                                                    // simulate article missing
 
 	backup := newMockNNTP(t)
-	backup.addArticle("a@h", "body-a-backup")
-	backup.addArticle("b@h", "body-b-backup")
+	backup.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a-backup"))))
+	backup.addArticle("b@h", string(mocknntp.EncodeYEnc("b.bin", []byte("body-b-backup"))))
 
 	q := queue.New()
 	_ = q.Add(makeJobWithArticles(t, []string{"a@h", "b@h"}))
@@ -355,8 +356,8 @@ func TestDownloaderFallbackServer(t *testing.T) {
 		switch {
 		case r.MessageID == "a@h" && r.Err == nil:
 			aSuccess = true
-			if string(r.Body) != "body-a-backup\n" {
-				t.Errorf("a@h body = %q, want backup body", r.Body)
+			if string(r.Data) != "body-a-backup" {
+				t.Errorf("a@h body = %q, want backup body", r.Data)
 			}
 			if r.ServerName != "backup" {
 				t.Errorf("a@h served by %q, want backup", r.ServerName)
@@ -396,7 +397,7 @@ func TestDownloaderNoSpeculativeFallback(t *testing.T) {
 	primary.rejectArticle("a@h")
 
 	backup := newMockNNTP(t)
-	backup.addArticle("a@h", "body-a-backup")
+	backup.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a-backup"))))
 
 	q := queue.New()
 	_ = q.Add(makeJobWithArticles(t, []string{"a@h"}))
@@ -446,7 +447,7 @@ func TestDownloaderNoSpeculativeFallback(t *testing.T) {
 
 func TestDownloaderPauseResume(t *testing.T) {
 	ms := newMockNNTP(t)
-	ms.addArticle("p@h", "body-p")
+	ms.addArticle("p@h", string(mocknntp.EncodeYEnc("p.bin", []byte("body-p"))))
 
 	q := queue.New()
 	d := New(q, []*Server{testServer(t, "s", ms.addr)}, Options{}, nil)
@@ -513,7 +514,7 @@ func TestDownloaderDialFailure(t *testing.T) {
 
 func TestDownloaderAuth(t *testing.T) {
 	ms := newMockNNTP(t, withAuth("alice", "secret"))
-	ms.addArticle("a@h", "body-a")
+	ms.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a"))))
 
 	q := queue.New()
 	_ = q.Add(makeJobWithArticles(t, []string{"a@h"}))
@@ -533,15 +534,15 @@ func TestDownloaderAuth(t *testing.T) {
 	if results[0].Err != nil {
 		t.Fatalf("auth fetch err: %v", results[0].Err)
 	}
-	if string(results[0].Body) != "body-a\n" {
-		t.Errorf("body = %q, want %q", results[0].Body, "body-a\n")
+	if string(results[0].Data) != "body-a" {
+		t.Errorf("body = %q, want %q", results[0].Data, "body-a")
 	}
 }
 
 func TestDownloaderGracefulShutdown(t *testing.T) {
 	ms := newMockNNTP(t)
 	for i := 0; i < 10; i++ {
-		ms.addArticle(fmt.Sprintf("a%d@h", i), fmt.Sprintf("body-%d", i))
+		ms.addArticle(fmt.Sprintf("a%d@h", i), string(mocknntp.EncodeYEnc("a.bin", []byte(fmt.Sprintf("body-%d", i)))))
 	}
 	q := queue.New()
 	ids := make([]string, 10)
@@ -582,7 +583,7 @@ func TestDownloaderGracefulShutdown(t *testing.T) {
 
 func TestDownloaderSetSpeedLimit(t *testing.T) {
 	ms := newMockNNTP(t)
-	ms.addArticle("a@h", "body-a")
+	ms.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a"))))
 
 	q := queue.New()
 	_ = q.Add(makeJobWithArticles(t, []string{"a@h"}))

@@ -11,8 +11,10 @@ import (
 	"time"
 )
 
-// defaultQueueSize mirrors DEF_MAX_ASSEMBLER_QUEUE from the Python source.
-const defaultQueueSize = 12
+// defaultQueueSize is the capacity of the internal write-request channel.
+// Increased from the Python source's 12 to 2048 to absorb disk I/O spikes 
+// on high-speed (1Gbps+) connections.
+const defaultQueueSize = 2048
 
 // defaultDoneFlushInterval is how often the worker flushes its pending
 // Done/Failed batches to the queue when no OnFileComplete has fired
@@ -93,7 +95,7 @@ type FileInfo struct {
 // Options configures an Assembler.
 type Options struct {
 	// QueueSize is the capacity of the internal write-request channel.
-	// Zero selects the default (12, matching DEF_MAX_ASSEMBLER_QUEUE).
+	// Zero selects the default (2048).
 	QueueSize int
 
 	// FileInfo is called once per (JobID, FileIdx) pair to obtain the target
@@ -459,14 +461,9 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 			// (Step 4.1) is responsible for job-level failure detection.
 			return
 		}
-		// Durability: fsync the fd before recording Done. If fsync fails
-		// we must not record Done — a later restart would see Done=true
-		// with no bytes on disk.
-		if err := f.handle.Sync(); err != nil {
-			a.log.Error("fsync article",
-				"path", f.info.Path, "offset", req.Offset, "error", err)
-			return
-		}
+		// Note: f.handle.Sync() removed from here to improve throughput.
+		// Durability is handled by syncing on file completion and 
+		// periodic queue checkpoints.
 		a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
 	}
 
@@ -476,6 +473,13 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 		"part", f.partsWritten, "total", f.info.TotalParts,
 		"offset", req.Offset, "bytes", len(req.Data), "failed", req.FatalErr != nil)
 	if f.info.TotalParts > 0 && f.partsWritten >= f.info.TotalParts {
+		// Durability: fsync before closing and reporting completion.
+		if err := f.handle.Sync(); err != nil {
+			a.log.Error("fsync completed file",
+				"path", f.info.Path,
+				"error", err,
+			)
+		}
 		if err := f.handle.Close(); err != nil {
 			a.log.Warn("close completed file",
 				"path", f.info.Path,

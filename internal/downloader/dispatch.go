@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/sabnzbd-go/internal/decoder"
 	"github.com/hobeone/sabnzbd-go/internal/nntp"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
@@ -83,7 +84,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 		if err := d.queue.MarkArticleEmitted(req.jobID, req.messageID); err != nil {
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 		}
-		d.emitResult(ctx, req, "", nil, ErrNoServersLeft)
+		d.emitResult(ctx, req, "", nil, 0, ErrNoServersLeft)
 	}
 
 	// Handle hopeless jobs after the queue read-lock is released.
@@ -244,7 +245,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 			// Retryable: unmark so another pass can try another
 			// server (or this one again after the penalty).
 			d.unmarkTried(req.jobID, req.messageID, name)
-			d.emitResult(ctx, req, name, nil, fmt.Errorf("dial: %w", err))
+			d.emitResult(ctx, req, name, nil, 0, fmt.Errorf("dial: %w", err))
 			return
 		}
 		d.log.Info("connected", "server", name, "ssl", c.SSLInfo())
@@ -259,7 +260,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 			// retained so we won't retry here; connection is
 			// healthy — reuse it.
 			srv.RecordGoodConnection()
-			d.emitResult(ctx, req, name, nil, err)
+			d.emitResult(ctx, req, name, nil, 0, err)
 			return
 		}
 		// Connection-level failure: tear down, re-dial later.
@@ -272,12 +273,40 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 			srv.ApplyPenalty(pen)
 		}
 		d.unmarkTried(req.jobID, req.messageID, name)
-		d.emitResult(ctx, req, name, nil, err)
+		d.emitResult(ctx, req, name, nil, 0, err)
 		return
 	}
 
 	srv.RecordGoodConnection()
 	d.log.Debug("fetched", "server", name, "msgid", req.messageID, "bytes", len(body))
+
+	// Decoding (Step 3: Parallelize Decoding): Decode article payload 
+	// directly in the connection goroutine to utilize all CPU cores.
+	var decodedData []byte
+	var offset int64
+	article, decErr := decoder.DecodeArticle(body)
+	switch {
+	case decErr == nil:
+		decodedData = article.Data
+		offset = article.Offset
+	case errors.Is(decErr, decoder.ErrNotYEnc):
+		// Fallback to UU decoding.
+		data, _, uuErr := decoder.DecodeUU(body)
+		if uuErr == nil {
+			decodedData = data
+			offset = 0 // UU encoding usually doesn't have offset info
+		} else {
+			err = decErr
+		}
+	default:
+		err = decErr
+	}
+	if err != nil {
+		d.log.Warn("decode error", "msgid", req.messageID, "err", err)
+		// Decode error is treated as a fatal failure for this attempt.
+		d.emitResult(ctx, req, name, nil, 0, err)
+		return
+	}
 
 	// Durability (B.6): the article is not marked Done here. The assembler
 	// calls MarkArticleDone after pwrite + fsync so that Done => bytes on disk.
@@ -290,21 +319,22 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	if err := d.queue.MarkArticleEmitted(req.jobID, req.messageID); err != nil {
 		d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 	}
-	d.emitResult(ctx, req, name, body, nil)
+	d.emitResult(ctx, req, name, decodedData, offset, nil)
 }
 
 // emitResult publishes an ArticleResult on the completions channel.
 // Blocks until the consumer reads or ctx fires; the signalDispatch
 // in handleRequest's defer ensures the dispatcher wakes up regardless
 // of outcome.
-func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server string, body []byte, err error) {
+func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server string, data []byte, offset int64, err error) {
 	res := &ArticleResult{
 		JobID:      req.jobID,
 		FileIdx:    req.fileIdx,
 		MessageID:  req.messageID,
 		Subject:    req.subject,
 		ServerName: server,
-		Body:       body,
+		Data:       data,
+		Offset:     offset,
 		Err:        err,
 	}
 	select {

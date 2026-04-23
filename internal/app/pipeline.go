@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/assembler"
-	"github.com/hobeone/sabnzbd-go/internal/decoder"
 	"github.com/hobeone/sabnzbd-go/internal/downloader"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
@@ -100,49 +99,13 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 		return
 	}
 
-	var encoding string
-	article, err := decoder.DecodeArticle(res.Body)
-	if err == nil {
-		encoding = "yenc"
-	} else if errors.Is(err, decoder.ErrNotYEnc) {
-		// Fallback to UU decoding.
-		data, _, uuErr := decoder.DecodeUU(res.Body)
-		if uuErr == nil {
-			article = decoder.Article{
-				Data:      data,
-				TotalSize: int64(len(data)),
-			}
-			err = nil
-			encoding = "uuencode"
-		}
-	}
-
-	if err != nil {
-		p.log.Warn("decode error, marking article as failed",
-			"job", res.JobID, "msgid", res.MessageID, "err", err)
-
-		if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
-			p.log.Warn("register fallback file failed",
-				"job", res.JobID, "fileidx", res.FileIdx, "err", err)
-		}
-
-		_ = p.assembler.WriteArticle(ctx, assembler.WriteRequest{
-			JobID:     res.JobID,
-			FileIdx:   res.FileIdx,
-			MessageID: res.MessageID,
-			FatalErr:  err,
-		})
-		return
-	}
-
 	// Record download stats
 	p.queue.MarkJobStarted(res.JobID, time.Now())
-	p.queue.RecordDownload(res.JobID, res.ServerName, len(article.Data))
+	p.queue.RecordDownload(res.JobID, res.ServerName, len(res.Data))
 
-	p.log.Debug("decoded article",
-		"job", res.JobID, "msgid", res.MessageID, "file", article.Filename,
-		"offset", article.Offset, "bytes", len(article.Data),
-		"encoding", encoding)
+	p.log.Debug("decoded article received",
+		"job", res.JobID, "msgid", res.MessageID,
+		"offset", res.Offset, "bytes", len(res.Data))
 
 	if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
 		p.log.Warn("register file failed",
@@ -154,8 +117,8 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 		JobID:     res.JobID,
 		FileIdx:   res.FileIdx,
 		MessageID: res.MessageID,
-		Offset:    article.Offset,
-		Data:      article.Data,
+		Offset:    res.Offset,
+		Data:      res.Data,
 	})
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 		p.log.Warn("write article failed",
