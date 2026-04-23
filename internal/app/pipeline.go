@@ -100,8 +100,11 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 		return
 	}
 
+	var encoding string
 	article, err := decoder.DecodeArticle(res.Body)
-	if err != nil && errors.Is(err, decoder.ErrNotYEnc) {
+	if err == nil {
+		encoding = "yenc"
+	} else if errors.Is(err, decoder.ErrNotYEnc) {
 		// Fallback to UU decoding.
 		data, _, uuErr := decoder.DecodeUU(res.Body)
 		if uuErr == nil {
@@ -110,6 +113,7 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 				TotalSize: int64(len(data)),
 			}
 			err = nil
+			encoding = "uuencode"
 		}
 	}
 
@@ -137,7 +141,8 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 
 	p.log.Debug("decoded article",
 		"job", res.JobID, "msgid", res.MessageID, "file", article.Filename,
-		"offset", article.Offset, "bytes", len(article.Data))
+		"offset", article.Offset, "bytes", len(article.Data),
+		"encoding", encoding)
 
 	if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
 		p.log.Warn("register file failed",
