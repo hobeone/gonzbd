@@ -1,10 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
 const (
@@ -12,7 +17,27 @@ const (
 	testNZBKey = "fedcba9876543210"
 )
 
+type mockApp struct {
+	q *queue.Queue
+}
+
+func (m mockApp) ReloadDownloader([]config.ServerConfig) error { return nil }
+func (m mockApp) RetryHistoryJob(context.Context, string) error { return nil }
+func (m mockApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte) error {
+	if m.q == nil {
+		return fmt.Errorf("queue not wired to mockApp")
+	}
+	return m.q.Add(job)
+}
+func (m mockApp) RemoveJob(id string, deleteFiles bool) error {
+	if m.q == nil {
+		return fmt.Errorf("queue not wired to mockApp")
+	}
+	return m.q.Remove(id)
+}
+
 func testServer() *Server {
+	q := queue.New()
 	return New(Options{
 		Auth: AuthConfig{
 			APIKey:          testAPIKey,
@@ -20,6 +45,8 @@ func testServer() *Server {
 			LocalhostBypass: false,
 		},
 		Version: "1.0.0-test",
+		Queue:   q,
+		App:     mockApp{q: q},
 	})
 }
 

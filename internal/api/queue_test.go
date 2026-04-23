@@ -45,6 +45,7 @@ func testQueueServer(t *testing.T) (*Server, *queue.Queue) {
 		},
 		Version: "1.0.0-test",
 		Queue:   q,
+		App:     mockApp{q: q},
 	})
 	return s, q
 }
