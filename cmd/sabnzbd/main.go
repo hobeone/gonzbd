@@ -525,21 +525,32 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 		"job", job.Name, "files", totalFiles, "bytes", job.TotalBytes)
 
 	// Wait for the job to reach History (indicates post-processing is complete).
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("interrupted: %w", ctx.Err())
-	case ppc := <-application.PostProcComplete():
-		if ppc.JobID != job.ID {
-			// This shouldn't happen in one-shot mode with a single job,
-			// but handle it to be safe.
-			for ppc.JobID != job.ID {
-				ppc = <-application.PostProcComplete()
+	slog.Info("waiting for job to complete", "job", job.Name, "id", job.ID)
+	
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("interrupted: %w", ctx.Err())
+		case ppc := <-application.PostProcComplete():
+			if ppc.JobID == job.ID {
+				goto done
 			}
+		case <-tick.C:
+			// Secondary check: has it already reached history?
+			// This covers the case where PostProcComplete fired before we started selecting.
+			if h, err := application.GetHistory(ctx, job.ID); err == nil {
+				slog.Info("job found in history", "job", job.Name, "status", h.Status)
+				goto done
+			}
+		case <-time.After(60 * time.Minute):
+			return fmt.Errorf("no completion in 60 minutes; aborting")
 		}
-	case <-time.After(60 * time.Minute):
-		return fmt.Errorf("no completion in 60 minutes; aborting")
 	}
 
+done:
 	duration := time.Since(start)
 	hist, err := application.GetHistory(ctx, job.ID)
 	if err != nil {
