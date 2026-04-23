@@ -35,8 +35,8 @@ Do not batch multiple steps into one commit. If a step is too large, split it â€
 ### Quality Gates (must pass before commit)
 
 ```bash
+./scripts/run_tests.sh                # Must pass (full Go + UI suite)
 go vet ./...                          # Must pass
-go test -race ./...                   # Must pass with race detector
 golangci-lint run ./...               # Must pass (no new issues)
 ```
 

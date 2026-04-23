@@ -52,11 +52,15 @@ This file provides foundational context and instructional mandates for the `sabn
 - **Per-Step Commits:** Implement one step from `docs/golang_implementation.md` at a time.
 - **Verification:** Before every commit, you **must** pass:
     ```bash
+    ./scripts/run_tests.sh
     go vet ./...
-    go test -race ./...
     golangci-lint run ./...
     ```
 - **Ambiguity Protocol:** If the spec or plan is unclear, investigate the Python source (`../sabnzbd/`), form an opinion, and present it to the user using the "Decision Needed" format defined in `CLAUDE.md`.
+
+## Go Coding Guidelines
+You are working in a Go codebase. Whenever you create, edit, or refactor a `.go` file, you MUST immediately use your shell tools to execute the following command to format the code and resolve imports:
+`goimports -w <filename>`
 
 ## Key File Locations
 - **API Handlers:** `internal/api/`
