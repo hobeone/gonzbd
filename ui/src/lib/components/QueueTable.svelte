@@ -54,6 +54,7 @@
 			<thead class="border-b bg-gray-50 text-xs uppercase text-gray-500">
 				<tr>
 					<th class="px-4 py-3">Name</th>
+					<th class="px-4 py-3">Progress</th>
 					<th class="px-4 py-3">Size</th>
 					<th class="px-4 py-3">Left</th>
 					<th class="px-4 py-3">Status</th>
