@@ -108,6 +108,19 @@ func (q *Queue) List() []*Job {
 	return out
 }
 
+// ExistsByName reports whether a job with the given name is present in
+// the queue. Case-sensitive.
+func (q *Queue) ExistsByName(name string) bool {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	for _, j := range q.jobs {
+		if j.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Add inserts job into the queue. The job is placed at the end of its
 // priority tier (see insertByPriority). Returns an error if the job's
 // ID collides with one already in the queue.

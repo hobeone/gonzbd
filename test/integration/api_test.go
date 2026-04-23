@@ -30,6 +30,12 @@ type nopNZBHandler struct{}
 
 func (nopNZBHandler) HandleNZB(_ context.Context, _ string, _ []byte) error { return nil }
 
+type nopApp struct{}
+
+func (nopApp) ReloadDownloader([]config.ServerConfig) error    { return nil }
+func (nopApp) RetryHistoryJob(context.Context, string) error   { return nil }
+func (nopApp) AddJob(context.Context, *queue.Job, []byte) error { return nil }
+
 const (
 	integrationAPIKey = "aabbccddeeff0011"
 	integrationNZBKey = "1100ffeeddccbbaa"
@@ -66,6 +72,7 @@ func buildAPIServer(t *testing.T) (*api.Server, *httptest.Server) {
 		History: repo,
 		Config:  cfg,
 		Grabber: grabber,
+		App:     nopApp{},
 	})
 
 	ts := httptest.NewServer(srv.Handler())

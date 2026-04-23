@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -345,8 +346,91 @@ func WithPostProcStages(stages []postproc.Stage) func(*Application) {
 	return func(a *Application) { a.customStages = stages }
 }
 
-// Queue returns the queue singleton. Callers add jobs via Queue().Add(job).
+// Queue returns the queue singleton. Callers add jobs via AddJob or
+// reach directly to Queue().Add(job) if they want to bypass the
+// duplicate detection and filesystem collision checks.
 func (app *Application) Queue() *queue.Queue { return app.queue }
+
+// AddJob orchestrates the addition of an NZB to the queue. It performs:
+// 1. Duplicate detection (checking admin/nzb/ for the original filename).
+// 2. Directory collision avoidance (appending .1, .2... to job name).
+// 3. Backup of the raw NZB to admin/nzb/ named after the resolved job name.
+// 4. Enqueuing the job via Queue.Add.
+func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte) error {
+	nzbDir := filepath.Join(app.cfg.AdminDir, "nzb")
+	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
+		return fmt.Errorf("app: mkdir admin nzb: %w", err)
+	}
+
+	// 1. Detect Duplicate
+	// Check if the original filename already exists in the backup dir.
+	if job.Filename != "" {
+		if _, err := os.Stat(filepath.Join(nzbDir, job.Filename)); err == nil {
+			app.log.Info("duplicate NZB detected", "filename", job.Filename)
+			job.Status = constants.StatusPaused
+			job.Warning = "Duplicate NZB"
+		}
+	}
+
+	// 2. Directory Collision Avoidance
+	// Ensure job.Name is unique across: the active queue, DownloadDir,
+	// and CompleteDir.
+	baseName := job.Name
+	for i := 1; ; i++ {
+		collision := false
+
+		// Collision in active queue?
+		if app.queue.ExistsByName(job.Name) {
+			collision = true
+		}
+
+		// Collision in incomplete directory?
+		if !collision {
+			if _, err := os.Stat(filepath.Join(app.cfg.DownloadDir, job.Name)); err == nil {
+				collision = true
+			}
+		}
+
+		// Collision in complete directory?
+		if !collision {
+			// Check root complete dir and any category subdirectories
+			if _, err := os.Stat(filepath.Join(app.cfg.CompleteDir, job.Name)); err == nil {
+				collision = true
+			}
+			if !collision {
+				for _, cat := range app.cfg.Categories {
+					if cat.Dir == "" {
+						continue
+					}
+					if _, err := os.Stat(filepath.Join(app.cfg.CompleteDir, cat.Dir, job.Name)); err == nil {
+						collision = true
+						break
+					}
+				}
+			}
+		}
+
+		if !collision {
+			break
+		}
+		job.Name = fmt.Sprintf("%s.%d", baseName, i)
+	}
+
+	// 3. Save NZB Backup
+	// Use job.Name so we keep duplicates separately if desired.
+	backupPath := filepath.Join(nzbDir, job.Name+".nzb")
+	if err := os.WriteFile(backupPath, rawNZB, 0o600); err != nil {
+		app.log.Warn("failed to save NZB backup", "path", backupPath, "err", err)
+	}
+
+	// 4. Enqueue
+	if err := app.queue.Add(job); err != nil {
+		return fmt.Errorf("app: add to queue: %w", err)
+	}
+
+	app.log.Info("job added", "name", job.Name, "id", job.ID, "status", job.Status)
+	return nil
+}
 
 // Cache returns the article cache. Exposed for future direct-unpack wiring.
 func (app *Application) Cache() *cache.Cache { return app.cache }

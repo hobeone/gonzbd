@@ -136,6 +136,10 @@ type Job struct {
 	// PostProc is set to true when the job is handed off to the
 	// post-processor to prevent double-enqueuing.
 	PostProc bool `json:"post_proc,omitempty"`
+
+	// Warning holds a human-readable warning message (e.g. "Duplicate NZB").
+	// Usually accompanied by StatusPaused.
+	Warning string `json:"warning,omitempty"`
 }
 
 // GetStatus returns the current lifecycle state of the job. It is safe
