@@ -483,6 +483,14 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 		return err
 	}
 
+	// Open history repo (needed for summary at the end)
+	db, err := history.Open(filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		return fmt.Errorf("open history db: %w", err)
+	}
+	defer db.Close()
+	repo := history.NewRepository(db)
+
 	application, err := app.New(app.Config{
 		DownloadDir: dlDir,
 		CompleteDir: cfg.General.CompleteDir,
@@ -490,7 +498,7 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 		CacheLimit:  int64(cfg.Downloads.ArticleCacheSize),
 		Servers:     enabledServers(cfg.Servers),
 		Categories:  cfg.Categories,
-	}, nil)
+	}, repo)
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
 	}
