@@ -4,23 +4,22 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import { pauseJob, resumeJob } from '$lib/stores/queue.svelte';
+	import { cn } from '$lib/utils';
 
 	let { slot, onremove }: { slot: QueueSlot; onremove: () => void } = $props();
 
 	let acting = $state(false);
 
-	function pct(): number {
-		return parseFloat(slot.percentage) || 0;
-	}
-
-	function isPaused(): boolean {
-		return slot.status === 'Paused';
-	}
+	let percentage = $derived(parseFloat(slot.percentage) || 0);
+	let isPaused = $derived(slot.status === 'Paused');
+	let isActive = $derived(
+		slot.status !== 'Queued' && slot.status !== 'Paused' && slot.status !== 'Idle'
+	);
 
 	async function togglePause() {
 		acting = true;
 		try {
-			if (isPaused()) {
+			if (isPaused) {
 				await resumeJob(slot.nzo_id);
 			} else {
 				await pauseJob(slot.nzo_id);
@@ -34,9 +33,11 @@
 <tr class="border-b hover:bg-gray-50 text-gray-900 dark:text-gray-100">
 	<td class="px-4 py-3">
 		<div class="flex items-center gap-2">
-			<div class="font-medium">{slot.name || slot.filename}</div>
+			<div class="font-medium truncate max-w-md" title={slot.name || slot.filename}>
+				{slot.name || slot.filename}
+			</div>
 			{#if slot.warning}
-				<div class="flex items-center text-amber-600" title={slot.warning}>
+				<div class="flex items-center text-amber-600 shrink-0" title={slot.warning}>
 					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4">
 						<path
 							fill-rule="evenodd"
@@ -48,25 +49,39 @@
 				</div>
 			{/if}
 		</div>
-		<div class="mt-1 flex items-center gap-2">
-			<Progress value={pct()} max={100} class="h-2 flex-1" />
-			<span class="text-xs font-mono text-gray-500">{slot.percentage}%</span>
+	</td>
+	<td class="px-4 py-3">
+		<div class="flex w-32 items-center gap-2">
+			<Progress
+				value={percentage}
+				max={100}
+				class={cn('h-2 flex-1', isActive && 'animate-pulse')}
+			/>
+			<span class="text-xs font-mono text-gray-500 w-9 text-right">{slot.percentage}%</span>
 		</div>
 	</td>
-	<td class="px-4 py-3 text-sm">{slot.size}</td>
-	<td class="px-4 py-3 text-sm">{slot.sizeleft}</td>
+	<td class="px-4 py-3 text-sm whitespace-nowrap">{slot.size}</td>
+	<td class="px-4 py-3 text-sm whitespace-nowrap">{slot.sizeleft}</td>
 	<td class="px-4 py-3">
-		<Badge variant={isPaused() ? 'outline' : 'default'} class="text-xs">
+		<Badge variant={isPaused ? 'outline' : 'default'} class="text-xs">
 			{slot.status}
 		</Badge>
 	</td>
 	<td class="px-4 py-3 text-sm">{slot.category || '*'}</td>
 	<td class="px-4 py-3">
 		<div class="flex gap-1">
-			<Button variant="ghost" size="icon-xs" onclick={togglePause} disabled={acting} title={isPaused() ? 'Resume' : 'Pause'}>
-				{#if isPaused()}
+			<Button
+				variant="ghost"
+				size="icon-xs"
+				onclick={togglePause}
+				disabled={acting}
+				title={isPaused ? 'Resume' : 'Pause'}
+			>
+				{#if isPaused}
 					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3.5">
-						<path d="M4.5 2A1.5 1.5 0 0 0 3 3.5v9a1.5 1.5 0 0 0 2.3 1.27l7-4.5a1.5 1.5 0 0 0 0-2.54l-7-4.5A1.5 1.5 0 0 0 4.5 2Z" />
+						<path
+							d="M4.5 2A1.5 1.5 0 0 0 3 3.5v9a1.5 1.5 0 0 0 2.3 1.27l7-4.5a1.5 1.5 0 0 0 0-2.54l-7-4.5A1.5 1.5 0 0 0 4.5 2Z"
+						/>
 					</svg>
 				{:else}
 					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3.5">
@@ -78,7 +93,12 @@
 			</Button>
 
 			<Button variant="ghost" size="icon-xs" onclick={onremove} disabled={acting} title="Delete">
-				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3.5 text-red-500">
+				<svg
+					xmlns="http://www.w3.org/2000/svg"
+					viewBox="0 0 16 16"
+					fill="currentColor"
+					class="size-3.5 text-red-500"
+				>
 					<path
 						fill-rule="evenodd"
 						d="M5 3.25V4H2.75a.75.75 0 0 0 0 1.5h.3l.815 8.15A1.5 1.5 0 0 0 5.357 15h5.285a1.5 1.5 0 0 0 1.493-1.35l.815-8.15h.3a.75.75 0 0 0 0-1.5H11v-.75A2.25 2.25 0 0 0 8.75 1h-1.5A2.25 2.25 0 0 0 5 3.25Zm2.25-.75a.75.75 0 0 0-.75.75V4h3v-.75a.75.75 0 0 0-.75-.75h-1.5ZM6.05 6a.75.75 0 0 1 .787.713l.275 5.5a.75.75 0 0 1-1.498.075l-.275-5.5A.75.75 0 0 1 6.05 6Zm3.9 0a.75.75 0 0 1 .712.787l-.275 5.5a.75.75 0 0 1-1.498-.075l.275-5.5a.75.75 0 0 1 .786-.711Z"
