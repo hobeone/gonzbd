@@ -121,6 +121,19 @@ func (q *Queue) ExistsByName(name string) bool {
 	return false
 }
 
+// ExistsByMD5 reports whether a job with the given MD5 is present in
+// the queue.
+func (q *Queue) ExistsByMD5(md5 string) bool {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	for _, j := range q.jobs {
+		if j.MD5 == md5 {
+			return true
+		}
+	}
+	return false
+}
+
 // Add inserts job into the queue. The job is placed at the end of its
 // priority tier (see insertByPriority). Returns an error if the job's
 // ID collides with one already in the queue.

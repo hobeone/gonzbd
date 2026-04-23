@@ -76,6 +76,8 @@ type SearchOptions struct {
 	Limit int
 	// ArchiveOnly restricts results to rows where archive != 0.
 	ArchiveOnly bool
+	// MD5Sum filters by exact MD5 hash string. Empty means no filter.
+	MD5Sum string
 }
 
 // Repository provides CRUD access to the history table. A zero-value
@@ -158,6 +160,10 @@ func (r *Repository) Search(ctx context.Context, opts SearchOptions) ([]Entry, e
 		where = append(where, "(name LIKE ? OR nzb_name LIKE ?)")
 		like := "%" + opts.Search + "%"
 		args = append(args, like, like)
+	}
+	if opts.MD5Sum != "" {
+		where = append(where, "md5sum = ?")
+		args = append(args, opts.MD5Sum)
 	}
 
 	q := "SELECT " + allColumns + " FROM history"
