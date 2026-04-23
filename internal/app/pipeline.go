@@ -101,6 +101,18 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 	}
 
 	article, err := decoder.DecodeArticle(res.Body)
+	if err != nil && errors.Is(err, decoder.ErrNotYEnc) {
+		// Fallback to UU decoding.
+		data, _, uuErr := decoder.DecodeUU(res.Body)
+		if uuErr == nil {
+			article = decoder.Article{
+				Data:      data,
+				TotalSize: int64(len(data)),
+			}
+			err = nil
+		}
+	}
+
 	if err != nil {
 		p.log.Warn("decode error, marking article as failed",
 			"job", res.JobID, "msgid", res.MessageID, "err", err)

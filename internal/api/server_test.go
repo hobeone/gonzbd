@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
@@ -19,6 +20,7 @@ const (
 
 type mockApp struct {
 	q *queue.Queue
+	h *history.Repository
 }
 
 func (m mockApp) ReloadDownloader([]config.ServerConfig) error { return nil }
@@ -34,6 +36,13 @@ func (m mockApp) RemoveJob(id string, deleteFiles bool) error {
 		return fmt.Errorf("queue not wired to mockApp")
 	}
 	return m.q.Remove(id)
+}
+func (m mockApp) RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error {
+	if m.h == nil {
+		return fmt.Errorf("history not wired to mockApp")
+	}
+	_, err := m.h.Delete(ctx, id)
+	return err
 }
 
 func testServer() *Server {
