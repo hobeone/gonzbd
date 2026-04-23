@@ -21,7 +21,7 @@ var ErrAlreadyStarted = errors.New("downloader: already started")
 var ErrNoServersLeft = errors.New("downloader: article failed on all servers")
 
 // ArticleResult is emitted by the Downloader for every fetched
-// article, successful or not. Consumers (the decoder, future steps)
+// article, successful or not. Consumers (the assembler, future steps)
 // read from Completions() and process in order of arrival — the
 // dispatch loop makes no ordering promises across articles or
 // servers.
@@ -30,9 +30,7 @@ type ArticleResult struct {
 	JobID     string
 	MessageID string
 
-	// FileIdx is the index into the owning job's Files slice. The
-	// decoder uses it to route yEnc-decoded bytes back to the right
-	// file's assembly buffer.
+	// FileIdx is the index into the owning job's Files slice.
 	FileIdx int
 
 	// Subject is the filename or subject from the NZB for this article's file.
@@ -42,10 +40,13 @@ type ArticleResult struct {
 	// the request. Empty when the article was never dispatched.
 	ServerName string
 
-	// Body is the raw NNTP response body, with dot-stuffing removed
-	// but yEnc/UU decoding still to happen downstream. Nil when Err
-	// is non-nil.
-	Body []byte
+	// Data is the decoded article payload (after yEnc/UU decoding).
+	// Nil when Err is non-nil.
+	Data []byte
+
+	// Offset is the byte position within the target file where Data should
+	// be written. Derived from yEnc/UU headers during decoding.
+	Offset int64
 
 	// Err is the dispatch outcome. nil = success. errors.Is against
 	// sentinels in internal/nntp to classify failures.
