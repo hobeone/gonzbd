@@ -319,7 +319,7 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
 		return
 	}
-	if err := s.app.AddJob(r.Context(), job, data); err != nil {
+	if err := s.app.AddJob(r.Context(), job, data, false); err != nil {
 		respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}
@@ -425,7 +425,7 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
 		return
 	}
-	if err := s.app.AddJob(r.Context(), job, data); err != nil {
+	if err := s.app.AddJob(r.Context(), job, data, false); err != nil {
 		respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}
