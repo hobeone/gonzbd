@@ -31,6 +31,15 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 	if job2.Warning != "Duplicate NZB" {
 		t.Errorf("duplicate job warning = %q, want 'Duplicate NZB'", job2.Warning)
 	}
+
+	// 4. Add same NZB again with DIFFERENT filename (MD5 trigger)
+	job3 := addNZBJob(t, a, rawNZB, "duplicate-renamed")
+	if job3.Status != constants.StatusPaused {
+		t.Errorf("MD5 duplicate job status = %q, want Paused", job3.Status)
+	}
+	if job3.Warning != "Duplicate NZB" {
+		t.Errorf("MD5 duplicate job warning = %q, want 'Duplicate NZB'", job3.Warning)
+	}
 }
 
 func TestIntegration_DirectoryCollision(t *testing.T) {

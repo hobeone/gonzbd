@@ -352,7 +352,7 @@ func WithPostProcStages(stages []postproc.Stage) func(*Application) {
 func (app *Application) Queue() *queue.Queue { return app.queue }
 
 // AddJob orchestrates the addition of an NZB to the queue. It performs:
-// 1. Duplicate detection (checking admin/nzb/ for the original filename).
+// 1. Duplicate detection (checking queue and history by MD5, falling back to admin/nzb/ by filename).
 // 2. Directory collision avoidance (appending .1, .2... to job name).
 // 3. Backup of the raw NZB to admin/nzb/ named after the resolved job name.
 // 4. Enqueuing the job via Queue.Add.
@@ -363,13 +363,38 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	}
 
 	// 1. Detect Duplicate
-	// Check if the original filename already exists in the backup dir.
-	if job.Filename != "" {
-		if _, err := os.Stat(filepath.Join(nzbDir, job.Filename)); err == nil {
-			app.log.Info("duplicate NZB detected", "filename", job.Filename)
-			job.Status = constants.StatusPaused
-			job.Warning = "Duplicate NZB"
+	isDuplicate := false
+	dupReason := ""
+
+	// A. Check active queue by MD5
+	if app.queue.ExistsByMD5(job.MD5) {
+		isDuplicate = true
+		dupReason = "found in active queue (MD5)"
+	}
+
+	// B. Check history DB by MD5
+	if !isDuplicate && app.historyRepo != nil {
+		results, err := app.historyRepo.Search(ctx, history.SearchOptions{MD5Sum: job.MD5})
+		if err == nil && len(results) > 0 {
+			isDuplicate = true
+			dupReason = fmt.Sprintf("found in history DB (MD5: %q)", results[0].NzoID)
 		}
+	}
+
+	// C. Fallback: Check admin/nzb/ by original filename
+	if !isDuplicate && job.Filename != "" {
+		if _, err := os.Stat(filepath.Join(nzbDir, job.Filename)); err == nil {
+			isDuplicate = true
+			dupReason = "found in admin/nzb/ backup dir (filename)"
+		}
+	}
+
+	if isDuplicate {
+		app.log.Info("duplicate NZB detected", "filename", job.Filename, "md5", job.MD5, "reason", dupReason)
+		job.Status = constants.StatusPaused
+		job.Warning = "Duplicate NZB"
+	} else {
+		app.log.Debug("duplicate check passed", "filename", job.Filename, "md5", job.MD5)
 	}
 
 	// 2. Directory Collision Avoidance
