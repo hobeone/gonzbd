@@ -441,11 +441,13 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 		job.Name = fmt.Sprintf("%s.%d", baseName, i)
 	}
 
-	// 3. Save NZB Backup
-	// Use job.Name so we keep duplicates separately if desired.
-	backupPath := filepath.Join(nzbDir, job.Name+".nzb")
-	if err := os.WriteFile(backupPath, rawNZB, 0o600); err != nil {
-		app.log.Warn("failed to save NZB backup", "path", backupPath, "err", err)
+	// 3. Save NZB Backup (only for non-duplicates)
+	// We only save one copy in the admin directory under the original filename.
+	if !isDuplicate && job.Filename != "" {
+		backupPath := filepath.Join(nzbDir, job.Filename)
+		if err := os.WriteFile(backupPath, rawNZB, 0o600); err != nil {
+			app.log.Warn("failed to save NZB backup", "path", backupPath, "err", err)
+		}
 	}
 
 	// 4. Enqueue
