@@ -104,8 +104,7 @@ func (s *Server) Start() error {
 	}
 	s.ln = ln
 	s.addr = ln.Addr().String()
-	s.wg.Add(1)
-	go s.acceptLoop()
+	s.wg.Go(s.acceptLoop)
 	return nil
 }
 
@@ -128,7 +127,6 @@ func (s *Server) Close() error {
 // acceptLoop runs in a goroutine and accepts connections until the listener
 // is closed. Each connection is handled in its own goroutine tracked by wg.
 func (s *Server) acceptLoop() {
-	defer s.wg.Done()
 	for {
 		c, err := s.ln.Accept()
 		if err != nil {
@@ -142,8 +140,9 @@ func (s *Server) acceptLoop() {
 				return
 			}
 		}
-		s.wg.Add(1)
-		go s.serveConn(c)
+		s.wg.Go(func() {
+			s.serveConn(c)
+		})
 	}
 }
 
@@ -156,7 +155,6 @@ type connState struct {
 // serveConn drives the NNTP state machine for a single client connection.
 // It exits when the client disconnects, sends QUIT, or when done is closed.
 func (s *Server) serveConn(c net.Conn) {
-	defer s.wg.Done()
 	defer func() { _ = c.Close() }() //nolint:errcheck // read-only cleanup path
 
 	// Respect server Close: when done closes, the Read on the next command

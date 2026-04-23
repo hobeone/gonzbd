@@ -85,7 +85,7 @@ func TestQueueDefault_EmptyQueue(t *testing.T) {
 			NoOfSlots      int           `json:"noofslots"`
 			NoOfSlotsTotal int           `json:"noofslots_total"`
 			Paused         bool          `json:"paused"`
-			Slots          []interface{} `json:"slots"`
+			Slots          []any `json:"slots"`
 		} `json:"queue"`
 	}
 	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {

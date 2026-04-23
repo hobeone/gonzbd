@@ -1,11 +1,12 @@
 package par2_test
 
 import (
+	"cmp"
 	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/hobeone/sabnzbd-go/internal/par2"
@@ -116,7 +117,7 @@ func TestFindPar2Files(t *testing.T) {
 			}
 
 			// Sort returned sets for stable comparison.
-			sort.Slice(sets, func(i, j int) bool { return sets[i].Name < sets[j].Name })
+			slices.SortFunc(sets, func(a, b par2.Set) int { return cmp.Compare(a.Name, b.Name) })
 
 			if tc.wantNames != nil {
 				for i, s := range sets {

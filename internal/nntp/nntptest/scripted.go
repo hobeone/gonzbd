@@ -78,8 +78,7 @@ func New(t testing.TB) *Scripted {
 		closed:   make(chan struct{}),
 	}
 	t.Cleanup(s.Close)
-	s.wg.Add(1)
-	go s.accept()
+	s.wg.Go(s.accept)
 	return s
 }
 
@@ -143,19 +142,18 @@ func (s *Scripted) Close() {
 }
 
 func (s *Scripted) accept() {
-	defer s.wg.Done()
 	for {
 		c, err := s.ln.Accept()
 		if err != nil {
 			return
 		}
-		s.wg.Add(1)
-		go s.serve(c)
+		s.wg.Go(func() {
+			s.serve(c)
+		})
 	}
 }
 
 func (s *Scripted) serve(c net.Conn) {
-	defer s.wg.Done()
 	defer closeConn(c)
 
 	w := bufio.NewWriter(c)

@@ -2,11 +2,12 @@ package unpack_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/hobeone/sabnzbd-go/internal/unpack"
@@ -196,7 +197,7 @@ func TestScan(t *testing.T) {
 				t.Fatalf("Scan returned %d archives, want %d: %+v", len(archives), tc.wantLen, archives)
 			}
 
-			sort.Slice(archives, func(i, j int) bool { return archives[i].Name < archives[j].Name })
+			slices.SortFunc(archives, func(a, b unpack.Archive) int { return cmp.Compare(a.Name, b.Name) })
 
 			for i, name := range tc.wantNames {
 				if archives[i].Name != name {

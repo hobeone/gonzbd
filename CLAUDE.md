@@ -102,7 +102,7 @@ Decisions that must be escalated:
 - **No `time.Sleep` in tests** for synchronization. Use channels, `sync.WaitGroup`, or `chan struct{}` signals.
 - **No `init()` functions** for non-trivial setup. Use explicit `New*` constructors called from `main`.
 - **No global mutable state.** Configuration, loggers, and dependencies are passed explicitly.
-- **No `interface{}` / `any`** in new code unless absolutely required (e.g., generic JSON handling). Prefer concrete types or generics.
+- **No `interface{}` / `any`** in new code unless absolutely required (e.g., generic JSON handling). Prefer concrete types or generics. When a dynamic type is necessary, prefer `any` over `interface{}`.
 
 ### Concurrency Architecture (Decided)
 
