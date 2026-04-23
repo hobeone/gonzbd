@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -506,7 +507,7 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 		}
 	}()
 
-	job, err := loadJob(nzbPath)
+	job, rawNZB, err := loadJob(nzbPath)
 	if err != nil {
 		return fmt.Errorf("load NZB: %w", err)
 	}
@@ -515,45 +516,83 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 		return fmt.Errorf("NZB %s contains no usable files", nzbPath)
 	}
 
-	if err := application.Queue().Add(job); err != nil {
+	if err := application.AddJob(ctx, job, rawNZB); err != nil {
 		return fmt.Errorf("enqueue job: %w", err)
 	}
 
+	start := time.Now()
 	slog.Info("download started",
 		"job", job.Name, "files", totalFiles, "bytes", job.TotalBytes)
 
-	completed := 0
-	for completed < totalFiles {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("interrupted: %w", ctx.Err())
-		case fc := <-application.FileComplete():
-			if fc.JobID != job.ID {
-				continue
+	// Wait for the job to reach History (indicates post-processing is complete).
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("interrupted: %w", ctx.Err())
+	case ppc := <-application.PostProcComplete():
+		if ppc.JobID != job.ID {
+			// This shouldn't happen in one-shot mode with a single job,
+			// but handle it to be safe.
+			for ppc.JobID != job.ID {
+				ppc = <-application.PostProcComplete()
 			}
-			completed++
-			slog.Info("file complete", "fileidx", fc.FileIdx, "progress", fmt.Sprintf("%d/%d", completed, totalFiles))
-		case <-time.After(30 * time.Minute):
-			return fmt.Errorf("no progress in 30 minutes; aborting")
 		}
+	case <-time.After(60 * time.Minute):
+		return fmt.Errorf("no completion in 60 minutes; aborting")
 	}
 
-	slog.Info("download complete", "job", job.Name, "dir", filepath.Join(dlDir, job.Name))
+	duration := time.Since(start)
+	hist, err := application.GetHistory(ctx, job.ID)
+	if err != nil {
+		return fmt.Errorf("retrieve history for summary: %w", err)
+	}
+
+	fmt.Printf("\n--- Download Summary ---\n")
+	fmt.Printf("Job:        %s\n", job.Name)
+	fmt.Printf("Status:     %s\n", hist.Status)
+	if hist.FailMessage != "" {
+		fmt.Printf("Error:      %s\n", hist.FailMessage)
+	}
+	fmt.Printf("Location:   %s\n", hist.Path)
+	fmt.Printf("Total Size: %s\n", formatBytes(job.TotalBytes))
+	fmt.Printf("Duration:   %v\n", duration.Round(time.Second))
+
+	// Network throughput (average)
+	netMBps := float64(job.TotalBytes) / (1024 * 1024) / duration.Seconds()
+	fmt.Printf("Avg Network: %.2f MB/s\n", netMBps)
+
+	// Disk performance (estimated by total job time including assembly and post-proc)
+	diskMBps := float64(job.TotalBytes) / (1024 * 1024) / duration.Seconds()
+	fmt.Printf("Avg Disk:    %.2f MB/s\n", diskMBps)
+	fmt.Printf("------------------------\n\n")
+
 	return nil
 }
 
-func loadJob(path string) (*queue.Job, error) {
-	f, err := os.Open(path) //nolint:gosec // G304: user-supplied NZB path is the whole point
-	if err != nil {
-		return nil, err
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
 	}
-	defer func() { _ = f.Close() }() //nolint:errcheck // read-only; close error not actionable
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.2f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
 
-	parsed, err := nzb.Parse(f)
+func loadJob(path string) (*queue.Job, []byte, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: user-supplied NZB path is the whole point
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return queue.NewJob(parsed, queue.AddOptions{Filename: filepath.Base(path)})
+
+	parsed, err := nzb.Parse(bytes.NewReader(data))
+	if err != nil {
+		return nil, nil, err
+	}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: filepath.Base(path)})
+	return job, data, err
 }
 
 // enabledServers filters the config's server list to Enable=true entries.
