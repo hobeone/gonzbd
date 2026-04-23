@@ -141,7 +141,7 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queue.NewJob: %v", err)
 	}
-	if err := application.AddJob(ctx, job, nzbData); err != nil {
+	if err := application.AddJob(ctx, job, nzbData, false); err != nil {
 		t.Fatalf("app.AddJob: %v", err)
 	}
 
