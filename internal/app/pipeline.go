@@ -102,8 +102,20 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 
 	article, err := decoder.DecodeArticle(res.Body)
 	if err != nil {
-		p.log.Warn("decode error",
+		p.log.Warn("decode error, marking article as failed",
 			"job", res.JobID, "msgid", res.MessageID, "err", err)
+
+		if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
+			p.log.Warn("register fallback file failed",
+				"job", res.JobID, "fileidx", res.FileIdx, "err", err)
+		}
+
+		_ = p.assembler.WriteArticle(ctx, assembler.WriteRequest{
+			JobID:     res.JobID,
+			FileIdx:   res.FileIdx,
+			MessageID: res.MessageID,
+			FatalErr:  err,
+		})
 		return
 	}
 
