@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -230,7 +231,7 @@ func (s *Server) queuePurge(w http.ResponseWriter, r *http.Request) {
 	// Treat purge as delete-all.
 	r2 := r.Clone(r.Context())
 	if r2.Form == nil {
-		r2.Form = make(map[string][]string)
+		r2.Form = make(url.Values)
 	}
 	r2.Form.Set("value", "all")
 	s.queueDelete(w, r2)
