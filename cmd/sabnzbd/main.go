@@ -251,7 +251,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		Auth: api.AuthConfig{
 			APIKey:          cfg.General.APIKey,
 			NZBKey:          cfg.General.NZBKey,
-			LocalhostBypass: true,
+			LocalhostBypass: cfg.General.LocalhostBypass,
 		},
 		Version:    Version,
 		Queue:      application.Queue(),
@@ -261,6 +261,11 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		Grabber:    grabber,
 		App:        application,
 	})
+
+	// Inject the WebSocket broadcaster from the API server into the
+	// application so it can fire real-time events.
+	application.SetEmitter(wsAdapter{apiSrv.EventBroadcaster()})
+
 
 	// Check for missing dependencies and surface them via logs and UI warnings.
 	for _, warning := range app.CheckDependencies() {
@@ -623,4 +628,16 @@ func enabledServers(all []config.ServerConfig) []config.ServerConfig {
 		}
 	}
 	return out
+}
+
+type wsAdapter struct {
+	b *api.Broadcaster
+}
+
+func (w wsAdapter) Broadcast(e app.Event) {
+	w.b.Broadcast(api.Event{
+		Type:      e.Type,
+		Speed:     e.Speed,
+		Remaining: e.Remaining,
+	})
 }

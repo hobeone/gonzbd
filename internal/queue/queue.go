@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -22,6 +24,8 @@ type Queue struct {
 	mu   sync.RWMutex
 	jobs []*Job          // ordered: priority-descending at Add time; Reorder may violate
 	byID map[string]*Job // ID -> *Job for O(1) lookup
+
+	stateDir string // Root directory for persistent state (admin/queue)
 
 	// paused is a queue-wide pause flag. Independent of per-job
 	// Status == StatusPaused: when paused=true the downloader should
@@ -169,9 +173,7 @@ func (q *Queue) Add(job *Job) error {
 	return nil
 }
 
-// Remove drops the job from the queue. No-op on the notify channel
-// because removal reduces work; downloaders that were already waiting
-// don't need to be woken to discover less to do.
+// Remove drops the job from the queue and deletes its persistent state file.
 func (q *Queue) Remove(id string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -181,6 +183,11 @@ func (q *Queue) Remove(id string) error {
 	}
 	q.jobs = append(q.jobs[:idx], q.jobs[idx+1:]...)
 	delete(q.byID, id)
+
+	if q.stateDir != "" {
+		jobPath := filepath.Join(q.stateDir, "jobs", id+".json.gz")
+		_ = os.Remove(jobPath)
+	}
 	return nil
 }
 
@@ -393,6 +400,17 @@ func (q *Queue) MarkArticleEmitted(jobID, messageID string) error {
 		}
 	}
 	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
+}
+
+// TotalRemainingBytes returns the sum of RemainingBytes across all jobs.
+func (q *Queue) TotalRemainingBytes() int64 {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	var total int64
+	for _, job := range q.byID {
+		total += job.RemainingBytes
+	}
+	return total
 }
 
 // MarkArticleFailed marks an article as Done and increments the FailedBytes

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bufio"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -169,4 +171,13 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 		w.wroteHeader = true
 	}
 	return w.ResponseWriter.Write(b)
+}
+
+// Hijack implements the http.Hijacker interface.
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("underlying ResponseWriter does not implement http.Hijacker")
+	}
+	return h.Hijack()
 }

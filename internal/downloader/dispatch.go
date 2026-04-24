@@ -278,6 +278,9 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	}
 
 	srv.RecordGoodConnection()
+	if d.meter != nil {
+		d.meter.Record(name, int64(len(body)))
+	}
 	d.log.Debug("fetched", "server", name, "msgid", req.messageID, "bytes", len(body))
 
 	// Decoding (Step 3: Parallelize Decoding): Decode article payload 

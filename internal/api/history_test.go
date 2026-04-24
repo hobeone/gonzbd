@@ -151,17 +151,22 @@ func TestHistoryDefault_Pagination(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rr.Code)
 	}
-	var resp struct {
+	var res struct {
 		History struct {
-			NoOfSlots int `json:"noofslots"`
+			NoOfSlots int           `json:"noofslots"`
+			Slots     []historySlot `json:"slots"`
 		} `json:"history"`
 	}
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+	if err := json.NewDecoder(rr.Body).Decode(&res); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.History.NoOfSlots != 3 {
-		t.Errorf("noofslots = %d; want 3 (paginated)", resp.History.NoOfSlots)
+	if res.History.NoOfSlots != 6 {
+		t.Errorf("noofslots = %d; want 6 (total count for pagination)", res.History.NoOfSlots)
 	}
+	if len(res.History.Slots) != 3 {
+		t.Errorf("len(slots) = %d; want 3 (paginated)", len(res.History.Slots))
+	}
+
 }
 
 func TestHistoryDefault_StatusFilter(t *testing.T) {

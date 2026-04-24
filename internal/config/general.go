@@ -24,6 +24,9 @@ type GeneralConfig struct {
 	APIKey string `yaml:"api_key" json:"api_key"`
 	// NZBKey authenticates NZB-upload API requests. 16-character lowercase hex.
 	NZBKey string `yaml:"nzb_key" json:"nzb_key"`
+	// LocalhostBypass, when true, grants LevelAdmin to any request from
+	// 127.0.0.0/8 or ::1.
+	LocalhostBypass bool `yaml:"localhost_bypass" json:"localhost_bypass"`
 	// Username for the web UI. Empty disables basic auth.
 	Username string `yaml:"username" json:"username"`
 	// Password for the web UI. Stored as a hashed value (format set by

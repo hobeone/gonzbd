@@ -1,8 +1,21 @@
 <script lang="ts">
-	import { getQueueSlots, getQueue, getError, deleteJob } from '$lib/stores/queue.svelte';
+	import { untrack } from 'svelte';
+	import {
+		getQueueSlots,
+		getQueue,
+		getError,
+		deleteJob,
+		getQueuePage,
+		getQueueLimit,
+		setQueuePage,
+		getQueueSearch,
+		setQueueSearch
+	} from '$lib/stores/queue.svelte';
 	import { Dialog } from 'bits-ui';
 	import { Button } from '$lib/components/ui/button';
+	import { Input } from '$lib/components/ui/input';
 	import QueueRow from './QueueRow.svelte';
+	import Pagination from './Pagination.svelte';
 	import type { QueueSlot } from '$lib/types';
 
 	function slots() {
@@ -34,7 +47,44 @@
 			acting = false;
 		}
 	}
+
+	let localSearch = $state(getQueueSearch());
+
+	$effect(() => {
+		const current = localSearch;
+		const timeout = setTimeout(() => {
+			untrack(() => {
+				if (current !== getQueueSearch()) {
+					setQueueSearch(current);
+				}
+			});
+		}, 300);
+		return () => clearTimeout(timeout);
+	});
 </script>
+
+<div class="mb-4">
+	<div class="relative w-full max-w-sm">
+		<svg
+			xmlns="http://www.w3.org/2000/svg"
+			viewBox="0 0 16 16"
+			fill="currentColor"
+			class="absolute left-2.5 top-2.5 size-4 text-gray-400"
+		>
+			<path
+				fill-rule="evenodd"
+				d="M9.965 11.026a5 5 0 1 1 1.06-1.06l2.755 2.754a.75.75 0 1 1-1.06 1.06l-2.755-2.754ZM10.5 7a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z"
+				clip-rule="evenodd"
+			/>
+		</svg>
+		<Input
+			type="search"
+			placeholder="Search queue..."
+			class="pl-8"
+			bind:value={localSearch}
+		/>
+	</div>
+</div>
 
 {#if getError()}
 	<div class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
@@ -69,11 +119,13 @@
 			</tbody>
 		</table>
 	</div>
-	{#if totalSlots() > slots().length}
-		<p class="mt-2 text-center text-xs text-gray-500">
-			Showing {slots().length} of {totalSlots()} items
-		</p>
-	{/if}
+
+	<Pagination
+		total={totalSlots()}
+		limit={getQueueLimit()}
+		page={getQueuePage()}
+		onPageChange={setQueuePage}
+	/>
 {/if}
 
 <Dialog.Root bind:open={showDeleteConfirm}>

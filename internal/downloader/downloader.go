@@ -111,6 +111,7 @@ type Downloader struct {
 	log     *slog.Logger
 	queue   *queue.Queue
 	servers []*Server
+	meter   *bpsmeter.Meter
 
 	onJobHopeless func(jobID string)
 
@@ -161,7 +162,7 @@ type Downloader struct {
 // servers must be non-empty. A zero-length slice is a programming
 // error; New panics to surface it at config time rather than having
 // the dispatch loop silently do nothing.
-func New(q *queue.Queue, servers []*Server, opts Options, log *slog.Logger) *Downloader {
+func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options, log *slog.Logger) *Downloader {
 	if q == nil {
 		panic("downloader: queue is nil")
 	}
@@ -178,6 +179,7 @@ func New(q *queue.Queue, servers []*Server, opts Options, log *slog.Logger) *Dow
 		log:           log.With("component", "downloader"),
 		queue:         q,
 		servers:       servers,
+		meter:         meter,
 		onJobHopeless: opts.OnJobHopeless,
 		workCh:        make(map[string]chan *articleRequest, len(servers)),
 		completions:   make(chan *ArticleResult, opts.CompletionsBuffer),
@@ -204,6 +206,11 @@ func New(q *queue.Queue, servers []*Server, opts Options, log *slog.Logger) *Dow
 // channel. The channel is closed by Stop after all workers have
 // drained.
 func (d *Downloader) Completions() <-chan *ArticleResult { return d.completions }
+
+// Speed returns the current download speed in bytes per second.
+func (d *Downloader) Speed() float64 {
+	return d.meter.BPS("")
+}
 
 // Start launches all worker and dispatcher goroutines. The returned
 // context cancel is accessible via Stop; callers do not need to hold

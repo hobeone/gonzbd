@@ -198,6 +198,46 @@ func (r *Repository) Search(ctx context.Context, opts SearchOptions) ([]Entry, e
 	return out, nil
 }
 
+// Count returns the total number of entries matching opts, ignoring Start and Limit.
+func (r *Repository) Count(ctx context.Context, opts SearchOptions) (int, error) {
+	var (
+		where []string
+		args  []any
+	)
+
+	if opts.ArchiveOnly {
+		where = append(where, "archive != 0")
+	}
+	if opts.Status != "" {
+		where = append(where, "status = ?")
+		args = append(args, opts.Status)
+	}
+	if opts.Category != "" {
+		where = append(where, "category = ?")
+		args = append(args, opts.Category)
+	}
+	if opts.Search != "" {
+		where = append(where, "(name LIKE ? OR nzb_name LIKE ?)")
+		like := "%" + opts.Search + "%"
+		args = append(args, like, like)
+	}
+	if opts.MD5Sum != "" {
+		where = append(where, "md5sum = ?")
+		args = append(args, opts.MD5Sum)
+	}
+
+	q := "SELECT COUNT(*) FROM history"
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+
+	var count int
+	if err := r.db.QueryRowContext(ctx, q, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("history: count: %w", err)
+	}
+	return count, nil
+}
+
 // Delete removes the entries identified by nzoIDs. It returns the number of
 // rows actually deleted (IDs not present in the database are silently ignored).
 // When multiple IDs are supplied the deletion is atomic.

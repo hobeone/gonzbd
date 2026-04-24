@@ -198,13 +198,12 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 	value := r.FormValue("value")
 	if value == "" {
-		respondError(w, http.StatusBadRequest, "missing value parameter")
+		respondError(w, http.StatusBadRequest, "missing value")
 		return
 	}
 
-	deleteFiles := r.FormValue("delete_files") == "1"
-
 	var ids []string
+
 	if value == "all" {
 		for _, j := range s.queue.List() {
 			ids = append(ids, j.ID)
@@ -215,7 +214,7 @@ func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 
 	var removed []string
 	for _, id := range ids {
-		if err := s.app.RemoveJob(id, deleteFiles); err == nil {
+		if err := s.app.RemoveJob(id); err == nil {
 			removed = append(removed, id)
 		}
 	}

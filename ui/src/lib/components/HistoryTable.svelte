@@ -1,8 +1,23 @@
 <script lang="ts">
-	import { getHistorySlots, getHistory, getHistoryError, deleteHistoryItem } from '$lib/stores/history.svelte';
+	import { untrack } from 'svelte';
+	import {
+		getHistorySlots,
+		getHistory,
+		getHistoryError,
+		deleteHistoryItem,
+		getHistoryPage,
+		getHistoryLimit,
+		setHistoryPage,
+		getHistoryFailedOnly,
+		setHistoryFailedOnly,
+		getHistorySearch,
+		setHistorySearch
+	} from '$lib/stores/history.svelte';
 	import { Dialog } from 'bits-ui';
 	import { Button } from '$lib/components/ui/button';
+	import { Input } from '$lib/components/ui/input';
 	import HistoryRow from './HistoryRow.svelte';
+	import Pagination from './Pagination.svelte';
 	import type { HistorySlot } from '$lib/types';
 	import { showToast } from '$lib/stores/warnings.svelte';
 
@@ -38,7 +53,58 @@
 			acting = false;
 		}
 	}
+
+	let localSearch = $state(getHistorySearch());
+
+	$effect(() => {
+		// Only trigger when localSearch changes
+		const current = localSearch;
+		
+		const timeout = setTimeout(() => {
+			untrack(() => {
+				if (current !== getHistorySearch()) {
+					setHistorySearch(current);
+				}
+			});
+		}, 300);
+		return () => clearTimeout(timeout);
+	});
 </script>
+
+<div class="mb-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+	<div class="relative w-full max-w-sm">
+		<svg
+			xmlns="http://www.w3.org/2000/svg"
+			viewBox="0 0 16 16"
+			fill="currentColor"
+			class="absolute left-2.5 top-2.5 size-4 text-gray-400"
+		>
+			<path
+				fill-rule="evenodd"
+				d="M9.965 11.026a5 5 0 1 1 1.06-1.06l2.755 2.754a.75.75 0 1 1-1.06 1.06l-2.755-2.754ZM10.5 7a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z"
+				clip-rule="evenodd"
+			/>
+		</svg>
+		<Input
+			type="search"
+			placeholder="Search history..."
+			class="pl-8"
+			bind:value={localSearch}
+		/>
+	</div>
+
+	<div class="flex items-center gap-4">
+		<label class="flex cursor-pointer items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+			<input
+				type="checkbox"
+				checked={getHistoryFailedOnly()}
+				onchange={(e) => setHistoryFailedOnly(e.currentTarget.checked)}
+				class="size-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+			/>
+			<span>Failed only</span>
+		</label>
+	</div>
+</div>
 
 {#if getHistoryError()}
 	<div class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
@@ -72,11 +138,13 @@
 			</tbody>
 		</table>
 	</div>
-	{#if (getHistory()?.noofslots ?? 0) > slots().length}
-		<p class="mt-2 text-center text-xs text-gray-500">
-			Showing {slots().length} of {getHistory()?.noofslots} items
-		</p>
-	{/if}
+
+	<Pagination
+		total={getHistory()?.noofslots ?? 0}
+		limit={getHistoryLimit()}
+		page={getHistoryPage()}
+		onPageChange={setHistoryPage}
+	/>
 {/if}
 
 <Dialog.Root bind:open={showDeleteConfirm}>
