@@ -98,6 +98,12 @@
   }
 }
 
+@layer components {
+  .nav-chip {
+    @apply flex items-center gap-2 rounded-md bg-gray-800 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-gray-700;
+  }
+}
+
 @layer base {
   * {
     @apply border-border;
