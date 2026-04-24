@@ -100,5 +100,20 @@ describe('QueueTable', () => {
 		expect(setQueueSearch).toHaveBeenCalledWith('q-test');
 		vi.useRealTimers();
 	});
+
+	it('shows empty state when no slots', () => {
+		vi.mocked(getQueueSlots).mockReturnValue([]);
+		vi.mocked(getQueue).mockReturnValue({ noofslots_total: 0 } as any);
+		render(QueueTable);
+
+		expect(screen.getByText(/Queue is empty/i)).toBeInTheDocument();
+	});
+
+	it('shows error banner when getError returns non-null', () => {
+		vi.mocked(getError).mockReturnValue('Connection refused');
+		render(QueueTable);
+
+		expect(screen.getByText(/Connection refused/)).toBeInTheDocument();
+	});
 	});
 

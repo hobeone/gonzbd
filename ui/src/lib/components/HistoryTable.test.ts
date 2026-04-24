@@ -132,6 +132,20 @@ describe('HistoryTable', () => {
 		await fireEvent.click(checkbox);
 
 		expect(setHistoryFailedOnly).toHaveBeenCalledWith(true);
-		});
-		});
+	});
 
+	it('shows empty state when no history', () => {
+		vi.mocked(getHistorySlots).mockReturnValue([]);
+		vi.mocked(getHistory).mockReturnValue({ noofslots: 0 } as any);
+		render(HistoryTable);
+
+		expect(screen.getByText(/History is empty/i)).toBeInTheDocument();
+	});
+
+	it('shows error banner when getHistoryError returns non-null', () => {
+		vi.mocked(getHistoryError).mockReturnValue('Database locked');
+		render(HistoryTable);
+
+		expect(screen.getByText(/Database locked/)).toBeInTheDocument();
+	});
+	});

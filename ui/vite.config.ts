@@ -11,7 +11,13 @@ export default defineConfig({
 		include: ['src/**/*.{test,spec}.{js,ts}'],
 		environment: 'jsdom',
 		globals: true,
-		setupFiles: ['./src/setupTests.ts']
+		setupFiles: ['./src/setupTests.ts'],
+		coverage: {
+			provider: 'v8',
+			reporter: ['text', 'html'],
+			include: ['src/lib/**'],
+			exclude: ['src/lib/components/ui/**']
+		}
 	},
 	server: {
 		proxy: {

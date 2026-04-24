@@ -10,7 +10,9 @@
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-		"test": "vitest run"
+		"test": "vitest run",
+		"test:coverage": "vitest run --coverage",
+		"test:watch": "vitest"
 	},
 	"devDependencies": {
 		"@lucide/svelte": "^1.8.0",
@@ -21,6 +23,7 @@
 		"@tailwindcss/vite": "^4.2.2",
 		"@testing-library/jest-dom": "^6.9.1",
 		"@testing-library/svelte": "^5.3.1",
+		"@vitest/coverage-v8": "^4.1.5",
 		"@vitest/ui": "^4.1.5",
 		"bits-ui": "^2.17.3",
 		"clsx": "^2.1.1",
@@ -31,7 +34,7 @@
 		"tailwind-variants": "^3.2.2",
 		"tailwindcss": "^4.2.2",
 		"typescript": "^6.0.2",
-		"vite": "^8.0.7",
+		"vite": "^8.0.10",
 		"vitest": "^4.1.5"
 	}
 }

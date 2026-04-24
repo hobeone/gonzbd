@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/svelte';
-import { describe, it, expect } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/svelte';
+import { describe, it, expect, vi } from 'vitest';
 import QueueRow from './QueueRow.svelte';
 import type { QueueSlot } from '$lib/types';
 
@@ -57,5 +57,46 @@ describe('QueueRow', () => {
 		
 		const progress = container.querySelector('[data-slot="progress"]');
 		expect(progress?.className).not.toContain('animate-pulse');
+	});
+
+	it('renders job name', () => {
+		const { container } = render(QueueRow, { slot: baseSlot, onremove: () => {} });
+		expect(container.textContent).toContain('Test.NZB');
+	});
+
+	it('renders category', () => {
+		const { container } = render(QueueRow, { slot: baseSlot, onremove: () => {} });
+		expect(container.textContent).toContain('TV');
+	});
+
+	it('renders size', () => {
+		const { container } = render(QueueRow, { slot: baseSlot, onremove: () => {} });
+		expect(container.textContent).toContain('100 MB');
+	});
+
+	it('renders size left', () => {
+		const { container } = render(QueueRow, { slot: baseSlot, onremove: () => {} });
+		expect(container.textContent).toContain('50 MB');
+	});
+
+	it('delete button triggers onremove callback', async () => {
+		const onremove = vi.fn();
+		render(QueueRow, { slot: baseSlot, onremove });
+
+		const deleteBtn = screen.getByTitle('Delete');
+		await fireEvent.click(deleteBtn);
+
+		expect(onremove).toHaveBeenCalled();
+	});
+
+	it('shows pause button title for active jobs', () => {
+		render(QueueRow, { slot: baseSlot, onremove: () => {} });
+		expect(screen.getByTitle('Pause')).toBeInTheDocument();
+	});
+
+	it('shows resume button title for paused jobs', () => {
+		const pausedSlot = { ...baseSlot, status: 'Paused' };
+		render(QueueRow, { slot: pausedSlot, onremove: () => {} });
+		expect(screen.getByTitle('Resume')).toBeInTheDocument();
 	});
 });
