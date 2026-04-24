@@ -33,7 +33,7 @@
 	<div class="mx-auto flex h-14 max-w-7xl items-center gap-4 px-4">
 		<h1 class="text-lg font-bold tracking-tight">SABnzbd</h1>
 
-		<div class="flex items-center gap-2 rounded-md bg-gray-800 px-3 py-1.5 text-sm">
+		<div class="nav-chip">
 			<span class="text-gray-400">Speed</span>
 			<span class="font-mono font-medium">{speed}</span>
 		</div>
@@ -73,9 +73,8 @@
 		</Button>
 
 		<Button
-			variant="outline"
-			size="sm"
-			class="border-gray-700 text-white hover:bg-gray-800"
+			variant="ghost"
+			class="nav-chip"
 			onclick={() => (addDialogOpen = true)}
 		>
 			+ Add NZB
