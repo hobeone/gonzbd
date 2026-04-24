@@ -14,6 +14,7 @@ coverage.txt
 coverage.html
 
 /*.nzb
+/*.nzb.gz
 
 # SPA build output (embedded by Go at build time)
 ui/dist/
@@ -25,3 +26,4 @@ ui/node_modules/
 .vscode/
 .DS_Store
 *.swp
+scripts/populate_fake_data.go
