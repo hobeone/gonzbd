@@ -1,11 +1,15 @@
 <script lang="ts">
 	import { Dialog } from 'bits-ui';
 	import { Button } from '$lib/components/ui/button';
-	import { Separator } from '$lib/components/ui/separator';
-	import { Badge } from '$lib/components/ui/badge';
 	import { setConfig, postAction } from '$lib/api';
-	import ConfigInput from './config/ConfigInput.svelte';
-	import ConfigSwitch from './config/ConfigSwitch.svelte';
+	import GeneralSection from './config/GeneralSection.svelte';
+	import DownloadsSection from './config/DownloadsSection.svelte';
+	import PostProcSection from './config/PostProcSection.svelte';
+	import ServersSection from './config/ServersSection.svelte';
+	import CategoriesSection from './config/CategoriesSection.svelte';
+	import SortersSection from './config/SortersSection.svelte';
+	import RSSSection from './config/RSSSection.svelte';
+	import SchedulingSection from './config/SchedulingSection.svelte';
 	import ServerEditDialog from './config/ServerEditDialog.svelte';
 	import CategoryEditDialog from './config/CategoryEditDialog.svelte';
 	import SorterEditDialog from './config/SorterEditDialog.svelte';
@@ -241,312 +245,48 @@
 							{error}
 						</div>
 					{:else if configData}
-							{#if activeSection === 'general'}
-								<section class="space-y-6">
-									<div>
-										<h3 class="text-lg font-medium">General Settings</h3>
-										<p class="text-sm text-muted-foreground">Server connectivity and basic daemon tuning.</p>
-									</div>
-									<Separator />
-									<div class="divide-y divide-gray-100">
-										<ConfigInput section="general" keyword="host" label="Host" value={configData.general.host} description="Host or IP to bind the HTTP server to." onupdate={handleFieldUpdate} />
-										<ConfigInput section="general" keyword="port" label="Port" type="number" value={configData.general.port} description="TCP port for the web interface." onupdate={handleFieldUpdate} />
-										<ConfigInput section="general" keyword="api_key" label="API Key" value={configData.general.api_key} description="Full API authentication key." onupdate={handleFieldUpdate} />
-										<ConfigInput section="general" keyword="nzb_key" label="NZB Key" value={configData.general.nzb_key} description="Key for NZB uploads only." onupdate={handleFieldUpdate} />
-										<ConfigInput section="general" keyword="download_dir" label="Download Directory" value={configData.general.download_dir} description="Path for incomplete downloads." onupdate={handleFieldUpdate} />
-										<ConfigInput section="general" keyword="complete_dir" label="Complete Directory" value={configData.general.complete_dir} description="Path for finished downloads." onupdate={handleFieldUpdate} />
-										<ConfigInput section="general" keyword="log_level" label="Log Level" value={configData.general.log_level} description="Minimum level for logging (debug, info, warn, error)." onupdate={handleFieldUpdate} />
-									</div>
-								</section>
-							{:else if activeSection === 'downloads'}
-								<section class="space-y-6">
-									<div>
-										<h3 class="text-lg font-medium">Download Settings</h3>
-										<p class="text-sm text-muted-foreground">Throttling, disk guards, and retry behavior.</p>
-									</div>
-									<Separator />
-									<div class="divide-y divide-gray-100">
-										<ConfigInput section="downloads" keyword="bandwidth_max" label="Maximum Bandwidth" value={configData.downloads.bandwidth_max} description="Absolute ceiling (e.g. 10M, 500K)." onupdate={handleFieldUpdate} />
-										<ConfigInput section="downloads" keyword="min_free_space" label="Minimum Free Space" value={configData.downloads.min_free_space} description="Pause download if disk space drops below this (e.g. 1G)." onupdate={handleFieldUpdate} />
-										<ConfigInput section="downloads" keyword="article_cache_size" label="Article Cache" value={configData.downloads.article_cache_size} description="In-memory cache size (e.g. 500M)." onupdate={handleFieldUpdate} />
-										<ConfigInput section="downloads" keyword="max_art_tries" label="Article Retries" type="number" value={configData.downloads.max_art_tries} description="Max attempts across all servers per article." onupdate={handleFieldUpdate} />
-										<ConfigSwitch section="downloads" keyword="pre_check" label="Pre-check article availability" value={configData.downloads.pre_check} description="STAT check before download (saves bandwidth)." onupdate={handleFieldUpdate} />
-									</div>
-								</section>
-							{:else if activeSection === 'postproc'}
-								<section class="space-y-6">
-									<div>
-										<h3 class="text-lg font-medium">Post-Processing</h3>
-										<p class="text-sm text-muted-foreground">Archive extraction and par2 repair behavior.</p>
-									</div>
-									<Separator />
-									<div class="divide-y divide-gray-100">
-										<ConfigSwitch section="postproc" keyword="enable_unrar" label="Enable RAR extraction" value={configData.postproc.enable_unrar} onupdate={handleFieldUpdate} />
-										<ConfigSwitch section="postproc" keyword="enable_7zip" label="Enable 7-Zip extraction" value={configData.postproc.enable_7zip} onupdate={handleFieldUpdate} />
-										<ConfigSwitch section="postproc" keyword="direct_unpack" label="Direct Unpack" value={configData.postproc.direct_unpack} description="Extract files while still downloading." onupdate={handleFieldUpdate} />
-										<ConfigSwitch section="postproc" keyword="enable_par_cleanup" label="Cleanup par2 files" value={configData.postproc.enable_par_cleanup} description="Delete verification files after successful repair." onupdate={handleFieldUpdate} />
-										<ConfigInput section="postproc" keyword="unrar_command" label="UnRAR path" value={configData.postproc.unrar_command} onupdate={handleFieldUpdate} />
-										<ConfigInput section="postproc" keyword="par2_command" label="par2 path" value={configData.postproc.par2_command} onupdate={handleFieldUpdate} />
-										</div>
-										</section>
+						{#if activeSection === 'general'}
+							<GeneralSection {configData} onFieldUpdate={handleFieldUpdate} />
+						{:else if activeSection === 'downloads'}
+							<DownloadsSection {configData} onFieldUpdate={handleFieldUpdate} />
+						{:else if activeSection === 'postproc'}
+							<PostProcSection {configData} onFieldUpdate={handleFieldUpdate} />
 						{:else if activeSection === 'servers'}
-							<section class="space-y-6">
-								<div class="flex items-center justify-between">
-									<div>
-										<h3 class="text-lg font-medium">Usenet Servers</h3>
-										<p class="text-sm text-muted-foreground">Manage your NNTP server connections.</p>
-									</div>
-									<Button size="sm" onclick={() => { selectedServer = null; serverEditOpen = true; }}>+ Add Server</Button>
-								</div>
-								<Separator />
-								
-								<div class="space-y-4">
-									{#if configData.servers.length === 0}
-										<div class="rounded-lg border border-dashed p-8 text-center text-sm text-gray-500">
-											No servers configured.
-										</div>
-									{:else}
-										<div class="overflow-hidden rounded-md border">
-											<table class="w-full text-left text-sm">
-												<thead class="bg-gray-50 text-xs uppercase text-gray-500">
-													<tr>
-														<th class="px-4 py-2">Server / Connection</th>
-														<th class="px-4 py-2">Details</th>
-														<th class="px-4 py-2 text-right">Actions</th>
-													</tr>
-												</thead>
-												<tbody class="divide-y">
-													{#each configData.servers as server}
-														<tr class={server.enable ? 'hover:bg-gray-50' : 'bg-gray-50/50 grayscale-[0.5]'}>
-															<td class="px-4 py-3">
-																<div class="flex items-center gap-2 font-medium">
-																	{server.name}
-																	{#if !server.enable}
-																		<Badge variant="destructive" class="py-0 h-3.5 text-[9px] uppercase tracking-tighter opacity-70">Disabled</Badge>
-																	{/if}
-																</div>
-																<div class="mt-0.5 font-mono text-[11px] text-gray-500">
-																	{server.host}:{server.port}
-																	{#if server.ssl}
-																		<span class="ml-1.5 inline-flex items-center rounded bg-blue-50 px-1 py-0 text-[9px] font-bold text-blue-600 ring-1 ring-inset ring-blue-500/20">TLS</span>
-																	{/if}
-																</div>
-															</td>
-															<td class="px-4 py-3">
-																<div class="flex flex-col gap-0.5 text-[11px] text-gray-600">
-																	<div class="flex items-center gap-1">
-																		<span class="text-gray-400 w-12 shrink-0">User:</span>
-																		<span class="truncate max-w-[120px] font-medium">{server.username || 'anonymous'}</span>
-																	</div>
-																	<div class="flex items-center gap-1">
-																		<span class="text-gray-400 w-12 shrink-0">Priority:</span>
-																		<span class="font-bold">{server.priority}</span>
-																	</div>
-																	<div class="flex items-center gap-1">
-																		<span class="text-gray-400 w-12 shrink-0">Pool:</span>
-																		<span>{server.connections} conns</span>
-																	</div>
-																</div>
-															</td>
-															<td class="px-4 py-3 text-right">
-																<div class="flex justify-end gap-0.5">
-																	<Button variant="ghost" size="xs" onclick={() => testServer(server)} title="Test connection">Test</Button>
-																	<Button variant="ghost" size="xs" onclick={() => { selectedServer = server; serverEditOpen = true; }} title="Edit server">Edit</Button>
-																	<Button variant="ghost" size="xs" class="text-red-600" onclick={() => deleteServer(server.name)} title="Delete server">Delete</Button>
-																</div>
-															</td>
-														</tr>
-													{/each}
-												</tbody>
-											</table>
-										</div>
-									{/if}
-								</div>
-							</section>
+							<ServersSection
+								{configData}
+								onAddServer={() => { selectedServer = null; serverEditOpen = true; }}
+								onEditServer={(s) => { selectedServer = s; serverEditOpen = true; }}
+								onDeleteServer={deleteServer}
+								onTestServer={testServer}
+							/>
 						{:else if activeSection === 'categories'}
-							<section class="space-y-6">
-								<div class="flex items-center justify-between">
-									<div>
-										<h3 class="text-lg font-medium">Categories</h3>
-										<p class="text-sm text-muted-foreground">Define how different types of downloads are handled.</p>
-									</div>
-									<Button size="sm" onclick={() => { selectedCategory = null; categoryEditOpen = true; }}>+ Add Category</Button>
-								</div>
-								<Separator />
-								
-								<div class="space-y-4">
-									<div class="overflow-hidden rounded-md border">
-										<table class="w-full text-left text-sm">
-											<thead class="bg-gray-50 text-xs uppercase text-gray-500">
-												<tr>
-													<th class="px-4 py-2">Name</th>
-													<th class="px-4 py-2">Path</th>
-													<th class="px-4 py-2">PP</th>
-													<th class="px-4 py-2 text-right">Actions</th>
-												</tr>
-											</thead>
-											<tbody class="divide-y">
-												{#each configData.categories as cat}
-													<tr>
-														<td class="px-4 py-3 font-medium">{cat.name}</td>
-														<td class="px-4 py-3 text-gray-600">{cat.dir || '(default)'}</td>
-														<td class="px-4 py-3">
-															<div class="flex gap-1">
-																{#if cat.pp & 1}<Badge variant="outline" class="px-1 py-0 text-[10px]">R</Badge>{/if}
-																{#if cat.pp & 2}<Badge variant="outline" class="px-1 py-0 text-[10px]">U</Badge>{/if}
-																{#if cat.pp & 4}<Badge variant="outline" class="px-1 py-0 text-[10px]">D</Badge>{/if}
-															</div>
-														</td>
-														<td class="px-4 py-3 text-right">
-															<div class="flex justify-end gap-1">
-																<Button variant="ghost" size="xs" onclick={() => { selectedCategory = cat; categoryEditOpen = true; }}>Edit</Button>
-																<Button variant="ghost" size="xs" class="text-red-600" disabled={cat.name === '*' || cat.name === 'Default'} onclick={() => deleteCategory(cat.name)}>Delete</Button>
-															</div>
-														</td>
-													</tr>
-												{/each}
-											</tbody>
-										</table>
-									</div>
-								</div>
-							</section>
+							<CategoriesSection
+								{configData}
+								onAddCategory={() => { selectedCategory = null; categoryEditOpen = true; }}
+								onEditCategory={(c) => { selectedCategory = c; categoryEditOpen = true; }}
+								onDeleteCategory={deleteCategory}
+							/>
 						{:else if activeSection === 'sorters'}
-							<section class="space-y-6">
-								<div class="flex items-center justify-between">
-									<div>
-										<h3 class="text-lg font-medium">Sorters</h3>
-										<p class="text-sm text-muted-foreground">Automated file renaming based on media metadata.</p>
-									</div>
-									<Button size="sm" onclick={() => { selectedSorter = null; sorterEditOpen = true; }}>+ Add Sorter</Button>
-								</div>
-								<Separator />
-								
-								<div class="space-y-4">
-									{#if configData.sorters.length === 0}
-										<div class="rounded-lg border border-dashed p-8 text-center text-sm text-gray-500">
-											No sorters configured.
-										</div>
-									{:else}
-										<div class="overflow-hidden rounded-md border">
-											<table class="w-full text-left text-sm">
-												<thead class="bg-gray-50 text-xs uppercase text-gray-500">
-													<tr>
-														<th class="px-4 py-2">Name</th>
-														<th class="px-4 py-2">Template</th>
-														<th class="px-4 py-2 text-right">Actions</th>
-													</tr>
-												</thead>
-												<tbody class="divide-y">
-													{#each configData.sorters as sorter}
-														<tr class={sorter.is_active ? '' : 'opacity-50'}>
-															<td class="px-4 py-3 font-medium">{sorter.name}</td>
-															<td class="px-4 py-3 font-mono text-xs text-gray-600 truncate max-w-xs">{sorter.sort_string}</td>
-															<td class="px-4 py-3 text-right">
-																<div class="flex justify-end gap-1">
-																	<Button variant="ghost" size="xs" onclick={() => { selectedSorter = sorter; sorterEditOpen = true; }}>Edit</Button>
-																	<Button variant="ghost" size="xs" class="text-red-600" onclick={() => deleteSorter(sorter.name)}>Delete</Button>
-																</div>
-															</td>
-														</tr>
-													{/each}
-												</tbody>
-											</table>
-										</div>
-									{/if}
-								</div>
-							</section>
+							<SortersSection
+								{configData}
+								onAddSorter={() => { selectedSorter = null; sorterEditOpen = true; }}
+								onEditSorter={(s) => { selectedSorter = s; sorterEditOpen = true; }}
+								onDeleteSorter={deleteSorter}
+							/>
 						{:else if activeSection === 'rss'}
-							<section class="space-y-6">
-								<div class="flex items-center justify-between">
-									<div>
-										<h3 class="text-lg font-medium">RSS Feeds</h3>
-										<p class="text-sm text-muted-foreground">Automated downloads from indexers.</p>
-									</div>
-									<Button size="sm" onclick={() => { selectedFeed = null; rssEditOpen = true; }}>+ Add Feed</Button>
-								</div>
-								<Separator />
-								
-								<div class="space-y-4">
-									{#if configData.rss.length === 0}
-										<div class="rounded-lg border border-dashed p-8 text-center text-sm text-gray-500">
-											No feeds configured.
-										</div>
-									{:else}
-										<div class="overflow-hidden rounded-md border">
-											<table class="w-full text-left text-sm">
-												<thead class="bg-gray-50 text-xs uppercase text-gray-500">
-													<tr>
-														<th class="px-4 py-2">Name</th>
-														<th class="px-4 py-2">URI</th>
-														<th class="px-4 py-2 text-right">Actions</th>
-													</tr>
-												</thead>
-												<tbody class="divide-y">
-													{#each configData.rss as feed}
-														<tr class={feed.enable ? '' : 'opacity-50'}>
-															<td class="px-4 py-3 font-medium">{feed.name}</td>
-															<td class="px-4 py-3 text-gray-600 truncate max-w-xs">{feed.uri}</td>
-															<td class="px-4 py-3 text-right">
-																<div class="flex justify-end gap-1">
-																	<Button variant="ghost" size="xs" onclick={() => { selectedFeed = feed; rssEditOpen = true; }}>Edit</Button>
-																	<Button variant="ghost" size="xs" class="text-red-600" onclick={() => deleteRSSFeed(feed.name)}>Delete</Button>
-																</div>
-															</td>
-														</tr>
-													{/each}
-												</tbody>
-											</table>
-										</div>
-									{/if}
-								</div>
-							</section>
+							<RSSSection
+								{configData}
+								onAddFeed={() => { selectedFeed = null; rssEditOpen = true; }}
+								onEditFeed={(f) => { selectedFeed = f; rssEditOpen = true; }}
+								onDeleteFeed={deleteRSSFeed}
+							/>
 						{:else if activeSection === 'scheduling'}
-							<section class="space-y-6">
-								<div class="flex items-center justify-between">
-									<div>
-										<h3 class="text-lg font-medium">Schedules</h3>
-										<p class="text-sm text-muted-foreground">Automated actions based on time.</p>
-									</div>
-									<Button size="sm" onclick={() => { selectedSchedule = null; scheduleEditOpen = true; }}>+ Add Schedule</Button>
-								</div>
-								<Separator />
-								
-								<div class="space-y-4">
-									{#if configData.schedules.length === 0}
-										<div class="rounded-lg border border-dashed p-8 text-center text-sm text-gray-500">
-											No schedules configured.
-										</div>
-									{:else}
-										<div class="overflow-hidden rounded-md border">
-											<table class="w-full text-left text-sm">
-												<thead class="bg-gray-50 text-xs uppercase text-gray-500">
-													<tr>
-														<th class="px-4 py-2">Name</th>
-														<th class="px-4 py-2">Time</th>
-														<th class="px-4 py-2">Action</th>
-														<th class="px-4 py-2 text-right">Actions</th>
-													</tr>
-												</thead>
-												<tbody class="divide-y">
-													{#each configData.schedules as sched}
-														<tr class={sched.enabled ? '' : 'opacity-50'}>
-															<td class="px-4 py-3 font-medium">{sched.name}</td>
-															<td class="px-4 py-3 text-gray-600 font-mono text-xs">{sched.hour}:{sched.minute} ({sched.dayofweek})</td>
-															<td class="px-4 py-3 uppercase text-xs font-bold">{sched.action}</td>
-															<td class="px-4 py-3 text-right">
-																<div class="flex justify-end gap-1">
-																	<Button variant="ghost" size="xs" onclick={() => { selectedSchedule = sched; scheduleEditOpen = true; }}>Edit</Button>
-																	<Button variant="ghost" size="xs" class="text-red-600" onclick={() => deleteSchedule(sched.name)}>Delete</Button>
-																</div>
-															</td>
-														</tr>
-													{/each}
-												</tbody>
-											</table>
-										</div>
-									{/if}
-								</div>
-							</section>
+							<SchedulingSection
+								{configData}
+								onAddSchedule={() => { selectedSchedule = null; scheduleEditOpen = true; }}
+								onEditSchedule={(s) => { selectedSchedule = s; scheduleEditOpen = true; }}
+								onDeleteSchedule={deleteSchedule}
+							/>
 						{/if}
 					{/if}
 				</div>

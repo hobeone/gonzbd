@@ -132,18 +132,7 @@ export const getSpeedBytesPerSec = () => store.speedBytesPerSec;
 export const getSpeedHistory = () => store.speedHistory;
 export const getTotalRemainingBytes = () => store.totalRemainingBytes;
 
-export function formatSpeed(bps: number): string {
-	if (bps < 1024) return `${Math.round(bps)} B/s`;
-	if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
-	return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
-}
-
-export function formatSize(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-	return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
+export { formatSpeed, formatSize } from '$lib/utils';
 
 export const pauseJob = (id: string) => store.pauseJob(id);
 export const resumeJob = (id: string) => store.resumeJob(id);
