@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/dirscanner"
+	"github.com/hobeone/sabnzbd-go/internal/types"
 )
 
 const (
@@ -42,7 +43,7 @@ type Config struct {
 
 // Handler defines the interface for consuming NZB payloads fetched by the Grabber.
 type Handler interface {
-	HandleNZB(ctx context.Context, filename string, data []byte) error
+	HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) error
 }
 
 // Grabber fetches URLs pointing to NZBs (or NZB archives), decompresses them,
@@ -86,7 +87,7 @@ func New(cfg Config, h Handler) *Grabber {
 // Fetch reuses decompression logic from dirscanner by writing the fetched body
 // to a temp file. This keeps the API clean and avoids duplicating archive
 // handling code, at a negligible performance cost.
-func (g *Grabber) Fetch(ctx context.Context, urlStr string) (int, error) {
+func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOptions) (int, error) {
 	if urlStr == "" {
 		return 0, fmt.Errorf("URL is empty")
 	}
@@ -180,7 +181,7 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string) (int, error) {
 			nzbFilename = fmt.Sprintf("%s_%d.nzb", base, i)
 		}
 
-		if err := g.handler.HandleNZB(ctx, nzbFilename, nzbData); err != nil {
+		if err := g.handler.HandleNZB(ctx, nzbFilename, nzbData, opts); err != nil {
 			return count, fmt.Errorf("handler failed for %s: %w", nzbFilename, err)
 		}
 		count++

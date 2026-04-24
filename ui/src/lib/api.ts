@@ -95,11 +95,20 @@ export async function postAction(
 	return fetchJSON<StatusResponse>(apiUrl(mode, params));
 }
 
-export async function uploadNzb(file: File): Promise<StatusResponse> {
+export async function uploadNzb(
+	file: File,
+	params?: Record<string, string>
+): Promise<StatusResponse> {
 	const form = new FormData();
 	form.append('mode', 'addfile');
 	form.append('output', 'json');
 	form.append('nzbfile', file, file.name);
+
+	if (params) {
+		for (const [k, v] of Object.entries(params)) {
+			form.append(k, v);
+		}
+	}
 
 	const res = await fetch(API_BASE, { method: 'POST', body: form });
 	if (!res.ok) {

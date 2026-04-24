@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/hobeone/sabnzbd-go/internal/types"
 )
 
 // MockHandler records all HandleNZB calls for verification.
@@ -22,14 +24,15 @@ type MockHandler struct {
 type HandlerCall struct {
 	Filename string
 	Data     []byte
+	Opts     types.FetchOptions
 }
 
-func (m *MockHandler) HandleNZB(ctx context.Context, filename string, data []byte) error {
+func (m *MockHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) error {
 	if err, ok := m.failFor[filename]; ok {
 		m.lastError = err
 		return err
 	}
-	m.calls = append(m.calls, HandlerCall{Filename: filename, Data: data})
+	m.calls = append(m.calls, HandlerCall{Filename: filename, Data: data, Opts: opts})
 	return nil
 }
 

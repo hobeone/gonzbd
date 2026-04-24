@@ -2,20 +2,37 @@
 	import { Dialog } from 'bits-ui';
 	import { Tabs } from 'bits-ui';
 	import { Button } from '$lib/components/ui/button';
-	import { uploadNzb, postAction } from '$lib/api';
+	import { Input } from '$lib/components/ui/input';
+	import { uploadNzb, postAction, fetchCategories } from '$lib/api';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
 	let activeTab = $state('file');
 	let url = $state('');
+	let category = $state('*');
+	let password = $state('');
+	let categories = $state.raw<string[]>(['*']);
 	let files = $state<FileList | null>(null);
 	let dragging = $state(false);
 	let submitting = $state(false);
 	let result = $state<{ ok: boolean; message: string } | null>(null);
 
+	$effect(() => {
+		if (open) {
+			fetchCategories().then((cats) => {
+				console.log('Fetched categories:', cats);
+				// Don't re-add * if it's already there from backend
+				const filtered = cats.filter(c => c !== '*');
+				categories = ['*', ...filtered];
+			});
+		}
+	});
+
 	function reset() {
 		url = '';
 		files = null;
+		category = '*';
+		password = '';
 		dragging = false;
 		submitting = false;
 		result = null;
@@ -26,9 +43,12 @@
 		submitting = true;
 		result = null;
 		try {
-			await uploadNzb(files[0]);
-			result = { ok: true, message: `Added ${files[0].name}` };
-			files = null;
+			const params: Record<string, string> = {};
+			if (category !== '*') params.cat = category;
+			if (password) params.password = password;
+
+			await uploadNzb(files[0], params);
+			open = false;
 		} catch (e) {
 			result = { ok: false, message: e instanceof Error ? e.message : String(e) };
 		} finally {
@@ -42,9 +62,12 @@
 		submitting = true;
 		result = null;
 		try {
-			await postAction('addurl', { name: trimmed });
-			result = { ok: true, message: 'URL submitted' };
-			url = '';
+			const params: Record<string, string> = { name: trimmed };
+			if (category !== '*') params.cat = category;
+			if (password) params.password = password;
+
+			await postAction('addurl', params);
+			open = false;
 		} catch (e) {
 			result = { ok: false, message: e instanceof Error ? e.message : String(e) };
 		} finally {
@@ -96,6 +119,31 @@
 						URL
 					</Tabs.Trigger>
 				</Tabs.List>
+
+				<div class="mt-4 grid grid-cols-2 gap-4">
+					<div class="space-y-1.5">
+						<label for="category" class="text-xs font-medium text-gray-500">Category</label>
+						<select
+							id="category"
+							bind:value={category}
+							class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+						>
+							{#each categories as cat (cat)}
+								<option value={cat}>{cat}</option>
+							{/each}
+						</select>
+					</div>
+					<div class="space-y-1.5">
+						<label for="password" class="text-xs font-medium text-gray-500">Password</label>
+						<Input
+							id="password"
+							type="text"
+							placeholder="Optional"
+							bind:value={password}
+							class="h-9"
+						/>
+					</div>
+				</div>
 
 				<Tabs.Content value="file" class="mt-4">
 					<label

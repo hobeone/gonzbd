@@ -17,6 +17,7 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 	"github.com/hobeone/sabnzbd-go/internal/rss"
 	"github.com/hobeone/sabnzbd-go/internal/scheduler"
+	"github.com/hobeone/sabnzbd-go/internal/types"
 	"github.com/hobeone/sabnzbd-go/internal/urlgrabber"
 )
 
@@ -28,12 +29,16 @@ type ingestHandler struct {
 	logger *slog.Logger
 }
 
-func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []byte) error {
+func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) error {
 	parsed, err := nzb.Parse(bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("parse nzb %q: %w", filename, err)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: filename})
+	job, err := queue.NewJob(parsed, queue.AddOptions{
+		Filename: filename,
+		Category: opts.Category,
+		Password: opts.Password,
+	})
 	if err != nil {
 		return fmt.Errorf("create job %q: %w", filename, err)
 	}
@@ -58,7 +63,7 @@ type rssToURLHandler struct {
 func (h *rssToURLHandler) HandleItem(ctx context.Context, item rss.Item, feed *rss.Feed) error {
 	log := h.logger.With("component", "rss_adapter")
 	log.Info("rss dispatch", "feed", feed.Name, "title", item.Title, "url", item.URL)
-	_, err := h.grabber.Fetch(ctx, item.URL)
+	_, err := h.grabber.Fetch(ctx, item.URL, types.FetchOptions{})
 	return err
 }
 

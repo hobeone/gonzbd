@@ -8,12 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/hobeone/sabnzbd-go/internal/types"
 )
 
 // Handler defines the interface for consuming NZB payloads extracted by the scanner.
 // It receives the original filename and the decompressed NZB data.
 type Handler interface {
-	HandleNZB(ctx context.Context, filename string, data []byte) error
+	HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) error
 }
 
 // Scanner watches a directory for stable NZB files and decompressed archives,
@@ -156,7 +158,7 @@ func (s *Scanner) handleStableFile(ctx context.Context, path, filename string) e
 			label = fmt.Sprintf("%s[%d]", filename, i+1)
 		}
 
-		if err := s.handler.HandleNZB(ctx, label, nzbData); err != nil {
+		if err := s.handler.HandleNZB(ctx, label, nzbData, types.FetchOptions{}); err != nil {
 			s.logger.Warn("handler failed for NZB", "label", label, "err", err)
 			lastErr = err
 			continue

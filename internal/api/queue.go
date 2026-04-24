@@ -15,6 +15,7 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/constants"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/sabnzbd-go/internal/types"
 )
 
 // maxUploadBytes is the maximum allowed NZB upload body size (50 MiB).
@@ -347,7 +348,11 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "missing name parameter (URL)")
 		return
 	}
-	n, err := s.grabber.Fetch(r.Context(), urlStr)
+	opts := types.FetchOptions{
+		Category: r.FormValue("cat"),
+		Password: r.FormValue("password"),
+	}
+	n, err := s.grabber.Fetch(r.Context(), urlStr, opts)
 	if err != nil {
 		respondError(w, http.StatusBadGateway, "fetch: "+err.Error())
 		return
