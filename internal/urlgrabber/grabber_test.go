@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/hobeone/sabnzbd-go/internal/types"
 )
 
 // MockHandler captures NZBs and errors for testing.
@@ -21,7 +23,7 @@ type MockHandler struct {
 	count   int
 }
 
-func (m *MockHandler) HandleNZB(ctx context.Context, filename string, data []byte) error {
+func (m *MockHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.nzbs == nil {
@@ -56,7 +58,7 @@ func TestFetchPlainNZB(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb")
+	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
@@ -95,7 +97,7 @@ func TestFetchFilenameFromContentDisposition(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/file")
+	count, err := grabber.Fetch(context.Background(), server.URL+"/file", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
@@ -129,7 +131,7 @@ func TestFetchFilenameFallbackToURLPath(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/path/myfile.nzb")
+	count, err := grabber.Fetch(context.Background(), server.URL+"/path/myfile.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
@@ -161,7 +163,7 @@ func TestFetchHTMLRejected(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb")
+	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected error for HTML content, got none")
 	}
@@ -190,7 +192,7 @@ func TestFetchSizeCapExceeded(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{MaxBytes: 100}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb")
+	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected error for size cap exceeded, got none")
 	}
@@ -225,7 +227,7 @@ func TestFetchHTTPBasicAuthViaConfig(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{Username: "user", Password: "pass"}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb")
+	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
@@ -253,7 +255,7 @@ func TestFetchHTTPBasicAuthViaURL(t *testing.T) {
 	grabber := New(Config{}, handler)
 
 	urlWithAuth := strings.Replace(server.URL, "http://", "http://user:pass@", 1)
-	count, err := grabber.Fetch(context.Background(), urlWithAuth+"/test.nzb")
+	count, err := grabber.Fetch(context.Background(), urlWithAuth+"/test.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
@@ -281,7 +283,7 @@ func TestFetchHTTPBasicAuthConfigOverridesURL(t *testing.T) {
 	grabber := New(Config{Username: "config_user", Password: "config_pass"}, handler)
 
 	urlWithAuth := strings.Replace(server.URL, "http://", "http://url_user:url_pass@", 1)
-	count, err := grabber.Fetch(context.Background(), urlWithAuth+"/test.nzb")
+	count, err := grabber.Fetch(context.Background(), urlWithAuth+"/test.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
@@ -310,7 +312,7 @@ func TestFetchRedirect(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), redirectServer.URL+"/redirect.nzb")
+	count, err := grabber.Fetch(context.Background(), redirectServer.URL+"/redirect.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
@@ -329,7 +331,7 @@ func TestFetchServer404(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/notfound.nzb")
+	count, err := grabber.Fetch(context.Background(), server.URL+"/notfound.nzb", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected error for 404, got none")
 	}
@@ -356,7 +358,7 @@ func TestFetchContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	count, err := grabber.Fetch(ctx, server.URL+"/test.nzb")
+	count, err := grabber.Fetch(ctx, server.URL+"/test.nzb", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected error for cancelled context, got none")
 	}
@@ -376,7 +378,7 @@ func TestFetchTimeout(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{Timeout: 50 * time.Millisecond}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb")
+	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected timeout error, got none")
 	}
@@ -402,7 +404,7 @@ func TestFetchGzipNZB(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb.gz")
+	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb.gz", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
@@ -436,7 +438,7 @@ func TestFetchEmptyURL(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), "")
+	count, err := grabber.Fetch(context.Background(), "", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected error for empty URL, got none")
 	}
@@ -458,7 +460,7 @@ func TestFetchHandlerError(t *testing.T) {
 	handler := &MockHandler{lastErr: fmt.Errorf("handler error")}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb")
+	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected error from handler, got none")
 	}
@@ -484,7 +486,7 @@ func TestExtractFilenameWithNoExtension(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/myfile")
+	count, err := grabber.Fetch(context.Background(), server.URL+"/myfile", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
@@ -523,7 +525,7 @@ func TestFetchRaceCondition(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb")
+			_, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 			if err != nil {
 				t.Errorf("concurrent Fetch failed: %v", err)
 			}

@@ -22,21 +22,22 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/sabnzbd-go/internal/types"
 	"github.com/hobeone/sabnzbd-go/internal/urlgrabber"
 )
 
 // nopNZBHandler is a no-op urlgrabber.Handler used in tests.
 type nopNZBHandler struct{}
 
-func (nopNZBHandler) HandleNZB(_ context.Context, _ string, _ []byte) error { return nil }
+func (nopNZBHandler) HandleNZB(context.Context, string, []byte, types.FetchOptions) error { return nil }
 
 type nopApp struct{}
 
-func (nopApp) ReloadDownloader([]config.ServerConfig) error                 { return nil }
-func (nopApp) RetryHistoryJob(context.Context, string) error                { return nil }
-func (nopApp) AddJob(context.Context, *queue.Job, []byte, bool) error       { return nil }
-func (nopApp) RemoveJob(string) error                                       { return nil }
-func (nopApp) RemoveHistoryJob(context.Context, string, bool) error         { return nil }
+func (nopApp) ReloadDownloader([]config.ServerConfig) error           { return nil }
+func (nopApp) RetryHistoryJob(context.Context, string) error          { return nil }
+func (nopApp) AddJob(context.Context, *queue.Job, []byte, bool) error { return nil }
+func (nopApp) RemoveJob(string) error                                 { return nil }
+func (nopApp) RemoveHistoryJob(context.Context, string, bool) error   { return nil }
 
 const (
 	integrationAPIKey = "aabbccddeeff0011"
