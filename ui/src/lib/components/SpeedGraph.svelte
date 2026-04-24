@@ -5,20 +5,20 @@
 		height?: number;
 	} = $props();
 
-	function polyline(): string {
+	let points = $derived.by(() => {
 		if (data.length < 2) return '';
 		const max = Math.max(...data, 1);
 		const step = width / (data.length - 1);
 		return data
 			.map((v, i) => `${i * step},${height - (v / max) * (height - 2)}`)
 			.join(' ');
-	}
+	});
 </script>
 
 <svg {width} {height} class="overflow-visible">
 	{#if data.length >= 2}
 		<polyline
-			points={polyline()}
+			{points}
 			fill="none"
 			stroke="currentColor"
 			stroke-width="1.5"

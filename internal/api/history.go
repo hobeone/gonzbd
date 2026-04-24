@@ -95,6 +95,13 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// We need total count for pagination.
+	totalCount, err := s.history.Count(r.Context(), opts)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "history count: "+err.Error())
+		return
+	}
+
 	// Optional post-filter on specific nzo_ids.
 	var nzoIDSet map[string]struct{}
 	if nzoIDs != "" {
@@ -141,7 +148,7 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, historyResponse{
 		Status: true,
 		History: historyDetail{
-			NoOfSlots: len(slots),
+			NoOfSlots: totalCount,
 			TotalSize: formatBytes(totalBytes),
 			Slots:     slots,
 		},

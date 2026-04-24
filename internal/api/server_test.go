@@ -31,7 +31,7 @@ func (m mockApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, forc
 	}
 	return m.q.Add(job)
 }
-func (m mockApp) RemoveJob(id string, deleteFiles bool) error {
+func (m mockApp) RemoveJob(id string) error {
 	if m.q == nil {
 		return fmt.Errorf("queue not wired to mockApp")
 	}

@@ -35,7 +35,7 @@ type nopApp struct{}
 func (nopApp) ReloadDownloader([]config.ServerConfig) error                 { return nil }
 func (nopApp) RetryHistoryJob(context.Context, string) error                { return nil }
 func (nopApp) AddJob(context.Context, *queue.Job, []byte, bool) error       { return nil }
-func (nopApp) RemoveJob(string, bool) error                                 { return nil }
+func (nopApp) RemoveJob(string) error                                       { return nil }
 func (nopApp) RemoveHistoryJob(context.Context, string, bool) error         { return nil }
 
 const (

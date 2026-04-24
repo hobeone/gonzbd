@@ -32,7 +32,7 @@ func TestDispatchPass_ExhaustedEmitsDoNotBlockQueueWriters(t *testing.T) {
 	}
 
 	srv := testServer(t, "only", ms.addr)
-	d := New(q, []*Server{srv}, Options{CompletionsBuffer: 1}, nil)
+	d := New(q, []*Server{srv}, nil, Options{CompletionsBuffer: 1}, nil)
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

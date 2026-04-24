@@ -1,14 +1,29 @@
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import QueueTable from './QueueTable.svelte';
-import { getQueueSlots, getQueue, getError, deleteJob } from '$lib/stores/queue.svelte';
+import {
+	getQueueSlots,
+	getQueue,
+	getError,
+	deleteJob,
+	getQueuePage,
+	getQueueLimit,
+	setQueuePage,
+	getQueueSearch,
+	setQueueSearch
+} from '$lib/stores/queue.svelte';
 
 // Mock the queue store
 vi.mock('$lib/stores/queue.svelte', () => ({
 	getQueueSlots: vi.fn(),
 	getQueue: vi.fn(),
 	getError: vi.fn(),
-	deleteJob: vi.fn()
+	deleteJob: vi.fn(),
+	getQueuePage: vi.fn().mockReturnValue(0),
+	getQueueLimit: vi.fn().mockReturnValue(10),
+	setQueuePage: vi.fn(),
+	getQueueSearch: vi.fn().mockReturnValue(''),
+	setQueueSearch: vi.fn()
 }));
 
 describe('QueueTable', () => {
@@ -34,10 +49,13 @@ describe('QueueTable', () => {
 	];
 
 	beforeEach(() => {
-		vi.mocked(getQueueSlots).mockReturnValue(mockSlots);
+		vi.clearAllMocks();
+		vi.mocked(getQueueSlots).mockReturnValue(mockSlots as any);
 		vi.mocked(getQueue).mockReturnValue({ noofslots_total: 1 } as any);
 		vi.mocked(getError).mockReturnValue(null);
+		vi.mocked(getQueueSearch).mockReturnValue('');
 	});
+
 
 	it('opens delete confirmation dialog when row delete is clicked', async () => {
 		render(QueueTable);
@@ -56,15 +74,31 @@ describe('QueueTable', () => {
 
 	it('calls deleteJob with correct parameters from the table dialog', async () => {
 		render(QueueTable);
-		
+
 		await fireEvent.click(screen.getByTitle('Delete'));
 
 		const checkbox = screen.getByLabelText('Also delete downloaded files from disk');
 		await fireEvent.click(checkbox);
-		
+
 		const confirmBtn = screen.getByRole('button', { name: 'Delete Job' });
 		await fireEvent.click(confirmBtn);
 
 		expect(deleteJob).toHaveBeenCalledWith('123', true);
 	});
-});
+
+	it('updates search automatically after typing (debounced)', async () => {
+		vi.useFakeTimers();
+		render(QueueTable);
+
+		const searchInput = screen.getByPlaceholderText('Search queue...');
+		await fireEvent.input(searchInput, { target: { value: 'q-test' } });
+
+		expect(setQueueSearch).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(300);
+
+		expect(setQueueSearch).toHaveBeenCalledWith('q-test');
+		vi.useRealTimers();
+	});
+	});
+

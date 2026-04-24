@@ -40,27 +40,27 @@ func TestRemoveJob(t *testing.T) {
 	dummyFile := filepath.Join(jobDir, "data.bin")
 	_ = os.WriteFile(dummyFile, []byte("data"), 0o600)
 
-	// 1. Remove WITHOUT deleting files
-	err = a.RemoveJob(job.ID, false)
+	// 1. Remove (always deletes files in our current implementation)
+	err = a.RemoveJob(job.ID)
 	if err != nil {
 		t.Fatalf("RemoveJob failed: %v", err)
 	}
 	if a.queue.Len() != 0 {
 		t.Errorf("queue len = %d, want 0", a.queue.Len())
 	}
-	if _, err := os.Stat(jobDir); os.IsNotExist(err) {
-		t.Errorf("job directory was deleted but should not have been")
+	if _, err := os.Stat(jobDir); !os.IsNotExist(err) {
+		t.Errorf("job directory was NOT deleted but should have been")
 	}
 
-	// 2. Add again and remove WITH deleting files
+	// 2. Add again and remove
 	job2, _ := queue.NewJob(parsed, queue.AddOptions{Name: "to-delete-files"})
 	_ = a.queue.Add(job2)
 	jobDir2 := filepath.Join(downloadDir, "to-delete-files")
 	_ = os.MkdirAll(jobDir2, 0o750)
 
-	err = a.RemoveJob(job2.ID, true)
+	err = a.RemoveJob(job2.ID)
 	if err != nil {
-		t.Fatalf("RemoveJob (deleteFiles=true) failed: %v", err)
+		t.Fatalf("RemoveJob failed: %v", err)
 	}
 	if _, err := os.Stat(jobDir2); !os.IsNotExist(err) {
 		t.Errorf("job directory still exists but should have been deleted")

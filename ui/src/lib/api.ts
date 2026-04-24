@@ -35,15 +35,23 @@ export async function fetchVersion(): Promise<VersionResponse> {
 	return fetchJSON<VersionResponse>(apiUrl('version'));
 }
 
-export async function fetchQueue(start = 0, limit = 20): Promise<QueueResponse> {
+export async function fetchQueue(
+	start = 0,
+	limit = 10,
+	params?: Record<string, string>
+): Promise<QueueResponse> {
 	return fetchJSON<QueueResponse>(
-		apiUrl('queue', { start: String(start), limit: String(limit) })
+		apiUrl('queue', { start: String(start), limit: String(limit), ...params })
 	);
 }
 
-export async function fetchHistory(start = 0, limit = 20): Promise<HistoryResponse> {
+export async function fetchHistory(
+	start = 0,
+	limit = 10,
+	params?: Record<string, string>
+): Promise<HistoryResponse> {
 	return fetchJSON<HistoryResponse>(
-		apiUrl('history', { start: String(start), limit: String(limit) })
+		apiUrl('history', { start: String(start), limit: String(limit), ...params })
 	);
 }
 

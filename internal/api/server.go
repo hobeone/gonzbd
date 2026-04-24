@@ -56,7 +56,7 @@ type ApplicationReloader interface {
 	ReloadDownloader(scs []config.ServerConfig) error
 	RetryHistoryJob(ctx context.Context, jobID string) error
 	AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error
-	RemoveJob(id string, deleteFiles bool) error
+	RemoveJob(id string) error
 	RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error
 }
 
@@ -74,6 +74,7 @@ type Server struct {
 	configPath string
 	grabber    *urlgrabber.Grabber
 	app        ApplicationReloader
+	events     *Broadcaster
 
 	mu       sync.RWMutex
 	warnings []string
@@ -102,12 +103,16 @@ func New(opts Options) *Server {
 		configPath: opts.ConfigPath,
 		grabber:    opts.Grabber,
 		app:        opts.App,
+		events:     NewBroadcaster(),
 		mux:        http.NewServeMux(),
 	}
 	s.registerModes()
 
 	// /api handles all API calls via mode= dispatch.
 	s.mux.HandleFunc("/api", s.handleAPI)
+
+	// /api/ws handles real-time events.
+	s.mux.HandleFunc("/api/ws", s.handleWS)
 
 	// Wrap the mux with logging middleware. Auth is checked per-mode
 	// inside handleAPI (each mode has its own access level), not as
@@ -164,6 +169,15 @@ func (s *Server) Handler() http.Handler {
 	return s.srv.Handler
 }
 
+func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
+	// LevelProtected is required for real-time events.
+	if callerLevel(r, s.auth) < LevelProtected {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	s.events.Handle(w, r)
+}
+
 // AddWarning adds a warning message to the internal store.
 func (s *Server) AddWarning(msg string) {
 	s.mu.Lock()
@@ -185,4 +199,9 @@ func (s *Server) Warnings() []string {
 	out := make([]string, len(s.warnings))
 	copy(out, s.warnings)
 	return out
+}
+
+// EventBroadcaster returns the WebSocket event broadcaster.
+func (s *Server) EventBroadcaster() *Broadcaster {
+	return s.events
 }

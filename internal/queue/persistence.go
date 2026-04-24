@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // persistenceVersion identifies the on-disk format. Bump when a
@@ -98,6 +100,7 @@ func Load(dir string) (*Queue, error) {
 	}
 
 	q := New()
+	q.stateDir = dir
 	q.paused = idx.Paused
 	jobsDir := filepath.Join(dir, "jobs")
 	for _, id := range idx.JobIDs {
@@ -108,7 +111,39 @@ func Load(dir string) (*Queue, error) {
 		q.jobs = append(q.jobs, &job)
 		q.byID[id] = &job
 	}
+	q.Prune()
 	return q, nil
+}
+
+// Prune removes orphaned job files in stateDir/jobs/ that are no longer present
+// in the queue's index.
+func (q *Queue) Prune() {
+	if q.stateDir == "" {
+		return
+	}
+	jobsDir := filepath.Join(q.stateDir, "jobs")
+	entries, err := os.ReadDir(jobsDir)
+	if err != nil {
+		return
+	}
+
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".json.gz") {
+			continue
+		}
+		id := strings.TrimSuffix(name, ".json.gz")
+		if _, ok := q.byID[id]; !ok {
+			slog.Info("pruning orphaned job state", "id", id)
+			_ = os.Remove(filepath.Join(jobsDir, name))
+		}
+	}
 }
 
 // LoadJob reconstructs a single Job from a .json.gz file at path.
