@@ -137,7 +137,7 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 	}()
 
 	// Enqueue the job
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "chaos-job"})
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "chaos-job"}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("queue.NewJob: %v", err)
 	}

@@ -26,7 +26,7 @@ func addNZBJob(t *testing.T, a *app.Application, rawNZB []byte, name string) *qu
 	if err != nil {
 		t.Fatalf("nzb.Parse: %v", err)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: name + ".nzb", Name: name})
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: name + ".nzb", Name: name}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("queue.NewJob: %v", err)
 	}

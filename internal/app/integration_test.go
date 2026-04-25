@@ -81,7 +81,7 @@ func TestEndToEndDownload(t *testing.T) {
 			Bytes: fileSize,
 		}},
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "test.nzb", Name: "testjob"})
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "test.nzb", Name: "testjob"}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
 	}

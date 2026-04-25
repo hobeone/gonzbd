@@ -1,0 +1,2 @@
+Watch folder should look in subfolders which map to categories
+Downloads should download to a categoy directory
