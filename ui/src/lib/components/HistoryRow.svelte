@@ -57,16 +57,16 @@
 </script>
 
 <tr class="border-b hover:bg-gray-50 cursor-pointer text-gray-900 dark:text-gray-100" onclick={toggle}>
-	<td class="px-4 py-3">
+	<td class="px-4 py-3 max-w-[200px] sm:max-w-xs md:max-w-sm lg:max-w-md xl:max-w-lg">
 		<div class="flex items-center gap-2">
-			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4 text-gray-400 transition-transform {expanded ? 'rotate-90' : ''}">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4 shrink-0 text-gray-400 transition-transform {expanded ? 'rotate-90' : ''}">
 				<path d="M5.75 3a.75.75 0 0 0-.75.75v8.5c0 .414.336.75.75.75h.5a.75.75 0 0 0 .75-.75V3.75a.75.75 0 0 0-.75-.75h-.5ZM10.25 3a.75.75 0 0 0-.75.75v8.5c0 .414.336.75.75.75h.5a.75.75 0 0 0 .75-.75V3.75a.75.75 0 0 0-.75-.75h-.5Z" class="hidden" />
 				<path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
 			</svg>
-			<div class="font-medium">{slot.name}</div>
+			<div class="font-medium truncate" title={slot.name}>{slot.name}</div>
 		</div>
 		{#if slot.fail_message}
-			<div class="ml-6 mt-0.5 text-xs text-red-600">{slot.fail_message}</div>
+			<div class="ml-6 mt-0.5 text-xs text-red-600 truncate" title={slot.fail_message}>{slot.fail_message}</div>
 		{/if}
 	</td>
 	<td class="px-4 py-3 text-sm">{slot.size}</td>
@@ -100,7 +100,7 @@
 				<div class="space-y-3">
 					<div>
 						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Source</div>
-						<div class="mt-1 font-mono text-xs text-gray-700">{slot.nzb_name}</div>
+						<div class="mt-1 font-mono text-xs text-gray-700 break-all">{slot.nzb_name}</div>
 					</div>
 					<div>
 						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Path</div>
@@ -108,7 +108,7 @@
 					</div>
 					<div>
 						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Repair Summary</div>
-						<div class="mt-1 text-gray-700">{slot.url_info || 'N/A'}</div>
+						<div class="mt-1 text-gray-700 break-all">{slot.url_info || 'N/A'}</div>
 					</div>
 				</div>
 				<div class="space-y-3">
@@ -126,7 +126,7 @@
 					</div>
 					<div>
 						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Servers</div>
-						<div class="mt-1 text-gray-700 italic">
+						<div class="mt-1 text-gray-700 italic break-all">
 							{slot.meta || 'N/A'}
 						</div>
 					</div>
