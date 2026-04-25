@@ -9,6 +9,7 @@ import (
 
 	"github.com/hobeone/sabnzbd-go/internal/app"
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
@@ -55,7 +56,7 @@ func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, 
 			Bytes: 1024,
 		}},
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "checkpoint-test"})
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "checkpoint-test"}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("queue.NewJob: %v", err)
 	}
