@@ -328,7 +328,7 @@ func TestDownloaderFallbackServer(t *testing.T) {
 	// to backup via the try-list.
 	primary := newMockNNTP(t)
 	primary.addArticle("b@h", string(mocknntp.EncodeYEnc("b.bin", []byte("body-b")))) // primary has b only
-	primary.rejectArticle("a@h")                                                    // simulate article missing
+	primary.rejectArticle("a@h")                                                      // simulate article missing
 
 	backup := newMockNNTP(t)
 	backup.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a-backup"))))

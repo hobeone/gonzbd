@@ -9,7 +9,7 @@ func TestCheckDependencies(t *testing.T) {
 	// This test depends on the environment, but we can at least verify it returns
 	// something.
 	warnings := CheckDependencies()
-	
+
 	// We don't necessarily want to fail if dependencies are missing on the build
 	// machine, but we can log what was found.
 	for _, w := range warnings {

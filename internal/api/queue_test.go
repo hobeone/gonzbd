@@ -83,9 +83,9 @@ func TestQueueDefault_EmptyQueue(t *testing.T) {
 	var resp struct {
 		Status bool `json:"status"`
 		Queue  struct {
-			NoOfSlots      int           `json:"noofslots"`
-			NoOfSlotsTotal int           `json:"noofslots_total"`
-			Paused         bool          `json:"paused"`
+			NoOfSlots      int   `json:"noofslots"`
+			NoOfSlotsTotal int   `json:"noofslots_total"`
+			Paused         bool  `json:"paused"`
 			Slots          []any `json:"slots"`
 		} `json:"queue"`
 	}

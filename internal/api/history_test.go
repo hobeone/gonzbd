@@ -65,9 +65,9 @@ func TestHistoryDefault_EmptyRepo(t *testing.T) {
 	var resp struct {
 		Status  bool `json:"status"`
 		History struct {
-			NoOfSlots int           `json:"noofslots"`
-			Slots     []any `json:"slots"`
-			TotalSize string        `json:"total_size"`
+			NoOfSlots int    `json:"noofslots"`
+			Slots     []any  `json:"slots"`
+			TotalSize string `json:"total_size"`
 		} `json:"history"`
 	}
 	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {

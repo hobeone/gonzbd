@@ -12,7 +12,7 @@ import (
 )
 
 // defaultQueueSize is the capacity of the internal write-request channel.
-// Increased from the Python source's 12 to 2048 to absorb disk I/O spikes 
+// Increased from the Python source's 12 to 2048 to absorb disk I/O spikes
 // on high-speed (1Gbps+) connections.
 const defaultQueueSize = 2048
 
@@ -462,7 +462,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 			return
 		}
 		// Note: f.handle.Sync() removed from here to improve throughput.
-		// Durability is handled by syncing on file completion and 
+		// Durability is handled by syncing on file completion and
 		// periodic queue checkpoints.
 		a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
 	}

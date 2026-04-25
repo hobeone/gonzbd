@@ -9,8 +9,8 @@
 package history
 
 import (
-	"embed"
 	"database/sql"
+	"embed"
 	"fmt"
 	"sync"
 	"time"

@@ -131,15 +131,15 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 	sslVerify, _ := strconv.Atoi(formString(r, "ssl_verify"))
 
 	cfg := config.ServerConfig{
-		Name:     "test",
-		Host:     host,
-		Port:     port,
-		Username: formString(r, "username"),
-		Password: formString(r, "password"),
-		SSL:      ssl,
-		SSLVerify: config.SSLVerify(sslVerify),
+		Name:        "test",
+		Host:        host,
+		Port:        port,
+		Username:    formString(r, "username"),
+		Password:    formString(r, "password"),
+		SSL:         ssl,
+		SSLVerify:   config.SSLVerify(sslVerify),
 		Connections: 1,
-		Timeout:  int(testServerTimeout.Seconds()),
+		Timeout:     int(testServerTimeout.Seconds()),
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), testServerTimeout)
