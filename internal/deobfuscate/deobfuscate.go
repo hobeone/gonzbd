@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 )
 
 // excludedExts lists file extensions that are never renamed, matching Python's
@@ -265,10 +267,7 @@ func Deobfuscate(dir, usefulName string) ([]Rename, error) {
 	var renames []Rename
 
 	// Rename the biggest file.
-	newBigPath, err := uniqueName(filepath.Join(dir, usefulName+filepath.Ext(bigPath)))
-	if err != nil {
-		return nil, err
-	}
+	newBigPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(filepath.Dir(dir), filepath.Base(dir), usefulName+filepath.Ext(bigPath)))
 	if err := os.Rename(bigPath, newBigPath); err != nil {
 		return nil, fmt.Errorf("rename %s → %s: %w", bigPath, newBigPath, err)
 	}
@@ -290,10 +289,7 @@ func Deobfuscate(dir, usefulName string) ([]Rename, error) {
 			continue
 		}
 		remainingSuffix := strings.TrimPrefix(p, baseDirFile)
-		newPath, nameErr := uniqueName(filepath.Join(dir, usefulName+remainingSuffix))
-		if nameErr != nil {
-			return renames, nameErr
-		}
+		newPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(filepath.Dir(dir), filepath.Base(dir), usefulName+remainingSuffix))
 		if renErr := os.Rename(p, newPath); renErr != nil {
 			return renames, fmt.Errorf("rename sibling %s → %s: %w", p, newPath, renErr)
 		}
@@ -302,21 +298,4 @@ func Deobfuscate(dir, usefulName string) ([]Rename, error) {
 	}
 
 	return renames, nil
-}
-
-// uniqueName returns candidate if it does not exist, otherwise appends an
-// incrementing counter until it finds a free name.
-func uniqueName(candidate string) (string, error) {
-	if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
-		return candidate, nil
-	}
-	ext := filepath.Ext(candidate)
-	base := strings.TrimSuffix(candidate, ext)
-	for i := 1; i < 10000; i++ {
-		name := fmt.Sprintf("%s.%d%s", base, i, ext)
-		if _, err := os.Stat(name); errors.Is(err, os.ErrNotExist) {
-			return name, nil
-		}
-	}
-	return "", fmt.Errorf("could not find unique name for %s", candidate)
 }

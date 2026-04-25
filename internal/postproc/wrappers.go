@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/hobeone/sabnzbd-go/internal/deobfuscate"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/par2"
 	"github.com/hobeone/sabnzbd-go/internal/sorting"
@@ -37,7 +38,7 @@ func (*RepairStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// Scan for temporary files written by the assembler.
-	tmpFiles, _ := filepath.Glob(filepath.Join(job.DownloadDir, "*.tmp"))
+	tmpFiles, _ := filepath.Glob(filepath.Join(job.DownloadDir, "*.nzf"))
 
 	var firstErr error
 	if len(sets) > 0 {
@@ -66,14 +67,14 @@ func (*RepairStage) Run(ctx context.Context, job *Job) error {
 		}
 	}
 
-	// Fallback: Rename any remaining *.tmp files using NZB metadata/subject.
+	// Fallback: Rename any remaining *.nzf files using NZB metadata/subject.
 	// This handles jobs without PAR2 files and ensures we have correct
 	// filenames for the Unpack stage.
-	remainingTmp, _ := filepath.Glob(filepath.Join(job.DownloadDir, "*.tmp"))
+	remainingTmp, _ := filepath.Glob(filepath.Join(job.DownloadDir, "*.nzf"))
 	for _, tmpPath := range remainingTmp {
 		base := filepath.Base(tmpPath)
 		var fileIdx int
-		if _, err := fmt.Sscanf(base, "%04d.tmp", &fileIdx); err != nil {
+		if _, err := fmt.Sscanf(base, "%04d.nzf", &fileIdx); err != nil {
 			continue
 		}
 		if fileIdx < 0 || fileIdx >= len(job.Queue.Files) {
@@ -81,7 +82,7 @@ func (*RepairStage) Run(ctx context.Context, job *Job) error {
 		}
 
 		cleanName := nzb.ExtractFilenameFromSubject(job.Queue.Files[fileIdx].Subject)
-		destPath := filepath.Join(job.DownloadDir, cleanName)
+		destPath := fsutil.JoinSafe(job.DownloadDir, "", cleanName)
 
 		// Don't overwrite existing files
 		if _, err := os.Stat(destPath); err == nil {
@@ -341,7 +342,7 @@ func (*FinalizeStage) Run(ctx context.Context, job *Job) error {
 
 	for _, e := range entries {
 		src := filepath.Join(job.DownloadDir, e.Name())
-		dst := filepath.Join(job.FinalDir, e.Name())
+		dst := fsutil.JoinSafe(job.FinalDir, "", e.Name())
 		if err := moveRecursive(ctx, src, dst); err != nil {
 			return fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err)
 		}

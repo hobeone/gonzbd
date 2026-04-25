@@ -10,6 +10,10 @@ import (
 
 func TestPar2Rename(t *testing.T) {
 	tmpDir := t.TempDir()
+	jobDir := filepath.Join(tmpDir, "job_folder")
+	if err := os.MkdirAll(jobDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 
 	// 1. Create an obfuscated file.
 	fileName := "original.mkv"
@@ -19,13 +23,13 @@ func TestPar2Rename(t *testing.T) {
 	hash16k := [16]byte{}
 	copy(hash16k[:], h.Sum(nil))
 
-	obfPath := filepath.Join(tmpDir, "abcdef1234567890.mkv")
+	obfPath := filepath.Join(jobDir, "abcdef1234567890.mkv")
 	if err := os.WriteFile(obfPath, fileData, 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
 	// 2. Create a PAR2 file that maps the hash to the original filename.
-	parPath := filepath.Join(tmpDir, "test.par2")
+	parPath := filepath.Join(jobDir, "test.par2")
 
 	fileNameBytes := []byte(fileName)
 	padding := (4 - (len(fileNameBytes) % 4)) % 4
@@ -48,7 +52,7 @@ func TestPar2Rename(t *testing.T) {
 	}
 
 	// 3. Run Par2Rename.
-	renames, err := Par2Rename(tmpDir)
+	renames, err := Par2Rename(jobDir)
 	if err != nil {
 		t.Fatalf("Par2Rename: %v", err)
 	}
@@ -61,7 +65,7 @@ func TestPar2Rename(t *testing.T) {
 		t.Errorf("rename.From = %q; want %q", renames[0].From, obfPath)
 	}
 
-	wantTo := filepath.Join(tmpDir, fileName)
+	wantTo := filepath.Join(jobDir, fileName)
 	if renames[0].To != wantTo {
 		t.Errorf("rename.To = %q; want %q", renames[0].To, wantTo)
 	}
@@ -74,3 +78,4 @@ func TestPar2Rename(t *testing.T) {
 		t.Errorf("Obf file %q still exists", obfPath)
 	}
 }
+

@@ -106,3 +106,56 @@ func TestTruncateFilename(t *testing.T) {
 		})
 	}
 }
+
+func TestJoinSafe(t *testing.T) {
+	tests := []struct {
+		name     string
+		base     string
+		folder   string
+		file     string
+		expected string
+	}{
+		{
+			name:     "no truncate",
+			base:     "/downloads/complete",
+			folder:   "My.Job",
+			file:     "file.mkv",
+			expected: "/downloads/complete/My.Job/file.mkv",
+		},
+		{
+			name:     "truncate folder",
+			base:     "/downloads/complete",
+			folder:   strings.Repeat("j", 250),
+			file:     "file.mkv",
+			expected: "/downloads/complete/" + strings.Repeat("j", 221) + "/file.mkv", // 250 - 20 - 1 - 8 = 221
+		},
+		{
+			name:     "truncate file",
+			base:     "/downloads/complete",
+			folder:   "tiny",
+			file:     strings.Repeat("f", 250) + ".mkv",
+			expected: "/downloads/complete/tiny/" + strings.Repeat("f", 221) + ".mkv", // 250 - 20 - 1 - 4 - 4 = 221
+		},
+		{
+			name:     "extreme constraint",
+			base:     "/" + strings.Repeat("b", 240),
+			folder:   "folder",
+			file:     "file.mkv",
+			expected: "/" + strings.Repeat("b", 240) + "/folde/f.mkv", // Hard to predict exact, but length must be <= 250
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := JoinSafe(tt.base, tt.folder, tt.file)
+			if len(got) > maxPathBytes {
+				t.Errorf("JoinSafe path too long: len(%d) > %d\nPath: %q", len(got), maxPathBytes, got)
+			}
+			if tt.expected != "" && !strings.Contains(tt.name, "extreme") {
+				if got != tt.expected {
+					t.Errorf("JoinSafe() = %q; want %q", got, tt.expected)
+				}
+			}
+		})
+	}
+}

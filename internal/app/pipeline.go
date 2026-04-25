@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/assembler"
 	"github.com/hobeone/sabnzbd-go/internal/downloader"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
@@ -159,7 +159,8 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 
 	// Use job Name and file index for a human-readable and robust path.
 	// Final naming of files is deferred until the post-processing (PAR2) phase.
-	path := filepath.Join(p.downloadDir, job.Name, fmt.Sprintf("%04d.tmp", fileIdx))
+	// We use JoinSafe to ensure the absolute path does not exceed OS limits.
+	path := fsutil.JoinSafe(p.downloadDir, job.Name, fmt.Sprintf("%04d.nzf", fileIdx))
 
 	info := assembler.FileInfo{
 		Path:       path,

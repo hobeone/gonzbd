@@ -19,7 +19,84 @@ var reservedNames = []string{
 const (
 	maxFilenameBytes = 245
 	maxExtensionLen  = 20
+	maxPathBytes     = 250 // Safe limit for Windows (260) and others
 )
+
+// JoinSafe joins a base directory, folder name, and filename into a single
+// absolute path, ensuring that the result does not exceed maxPathBytes.
+// If the path is too long, it truncates the folder name first, then the
+// filename if necessary.
+func JoinSafe(base, folder, file string) string {
+	// 1. Sanitize the components first.
+	if folder != "" {
+		folder = SanitizeFolderName(folder)
+	}
+	if file != "" {
+		file = SanitizeFilename(file)
+	}
+
+	// 2. Initial path.
+	var fullPath string
+	if folder != "" && file != "" {
+		fullPath = filepath.Join(base, folder, file)
+	} else if folder != "" {
+		fullPath = filepath.Join(base, folder)
+	} else if file != "" {
+		fullPath = filepath.Join(base, file)
+	} else {
+		return base
+	}
+
+	if len(fullPath) <= maxPathBytes {
+		return fullPath
+	}
+
+	// 3. We are over the limit. Try truncating the folder name first.
+	if folder != "" {
+		// Calculate space remaining for folder.
+		var overhead int
+		if file != "" {
+			overhead = len(filepath.Join(base, "", file)) + 1
+		} else {
+			overhead = len(base) + 1
+		}
+		maxFolderLen := maxPathBytes - overhead
+
+		if maxFolderLen >= 10 {
+			folder = truncateFilename(folder, maxFolderLen)
+			if file != "" {
+				fullPath = filepath.Join(base, folder, file)
+			} else {
+				fullPath = filepath.Join(base, folder)
+			}
+			if len(fullPath) <= maxPathBytes {
+				return fullPath
+			}
+		}
+	}
+
+	// 4. Folder truncation wasn't enough, or folder is empty/already tiny.
+	// Truncate the file name to fit in the remaining space.
+	if file != "" {
+		var currentBaseAndFolder string
+		if folder != "" {
+			currentBaseAndFolder = filepath.Join(base, folder)
+		} else {
+			currentBaseAndFolder = base
+		}
+
+		maxFileLen := maxPathBytes - len(currentBaseAndFolder) - 1
+		if maxFileLen < 5 {
+			// Path is extremely constrained. Hard truncate to survive.
+			return fullPath[:maxPathBytes]
+		}
+
+		file = truncateFilename(file, maxFileLen)
+		return filepath.Join(currentBaseAndFolder, file)
+	}
+
+	return fullPath[:maxPathBytes]
+}
 
 // SanitizeFilename cleans up a filename to ensure it is safe for all filesystems.
 // It follows the logic of Python SABnzbd's sanitize_filename.
