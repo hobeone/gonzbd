@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -30,6 +31,7 @@ type SanitizeOptions struct {
 	ReplaceIllegalWith string
 	ReplaceSpacesWith  string
 	StripDiacritics    bool
+	CleanupList        []string
 }
 
 // JoinSafe joins a base directory, folder name, and filename into a single
@@ -218,6 +220,22 @@ func stripDiacritics(s string) string {
 	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
 	result, _, _ := transform.String(t, s) //nolint:errcheck // best-effort stripping
 	return result
+}
+
+// CleanupName removes common spammy prefixes and suffixes from a job name.
+// It iterates through the provided regex patterns and strips any matches.
+func CleanupName(name string, patterns []string) string {
+	for _, pat := range patterns {
+		re, err := regexp.Compile(pat)
+		if err != nil {
+			// Skip malformed patterns — we'll rely on the config loader to validate
+			// them in a future step, but for now we're defensive.
+			continue
+		}
+		// We use "" as replacement to strip the pattern.
+		name = re.ReplaceAllString(name, "")
+	}
+	return strings.TrimSpace(name)
 }
 
 // IsObfuscated returns true if the filename looks like an obfuscated hash

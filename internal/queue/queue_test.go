@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 )
 
@@ -41,7 +42,7 @@ func makeJob(t *testing.T, name string, pri constants.Priority) *Job {
 	job, err := NewJob(parsed, AddOptions{
 		Filename: name + ".nzb",
 		Priority: pri,
-	})
+	}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestNewJobDerivesName(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.filename, func(t *testing.T) {
-			j, err := NewJob(makeParsed(t, 1), AddOptions{Filename: tc.filename})
+			j, err := NewJob(makeParsed(t, 1), AddOptions{Filename: tc.filename}, fsutil.SanitizeOptions{})
 			if err != nil {
 				t.Fatalf("NewJob: %v", err)
 			}
@@ -75,7 +76,7 @@ func TestNewJobDerivesName(t *testing.T) {
 func TestNewJobAssignsUniqueID(t *testing.T) {
 	seen := make(map[string]struct{})
 	for i := 0; i < 100; i++ {
-		j, err := NewJob(makeParsed(t, 1), AddOptions{Filename: "f.nzb"})
+		j, err := NewJob(makeParsed(t, 1), AddOptions{Filename: "f.nzb"}, fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatalf("NewJob: %v", err)
 		}
@@ -91,7 +92,7 @@ func TestNewJobAssignsUniqueID(t *testing.T) {
 
 func TestNewJobCopiesArticleState(t *testing.T) {
 	parsed := makeParsed(t, 2)
-	j, err := NewJob(parsed, AddOptions{Filename: "f.nzb"})
+	j, err := NewJob(parsed, AddOptions{Filename: "f.nzb"}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
 	}

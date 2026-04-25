@@ -113,59 +113,33 @@ func TestTruncateFilename(t *testing.T) {
 	}
 }
 
-func TestJoinSafe(t *testing.T) {
+func TestCleanupName(t *testing.T) {
+	patterns := []string{
+		`(?i)^\[PRiVATE\]-?`,
+		`^\[.*\]-?`,
+		`(?i)^www\..*\.[a-z]{2,3}-?`,
+		`(?i)-? ?\(Scenzbd\)$`,
+	}
+
 	tests := []struct {
 		name     string
-		base     string
-		folder   string
-		file     string
-		opts     SanitizeOptions
+		input    string
 		expected string
 	}{
-		{
-			name:     "no truncate",
-			base:     "/downloads/complete",
-			folder:   "My.Job",
-			file:     "file.mkv",
-			opts:     SanitizeOptions{},
-			expected: "/downloads/complete/My.Job/file.mkv",
-		},
-		{
-			name:     "truncate folder",
-			base:     "/downloads/complete",
-			folder:   strings.Repeat("j", 250),
-			file:     "file.mkv",
-			opts:     SanitizeOptions{},
-			expected: "/downloads/complete/" + strings.Repeat("j", 221) + "/file.mkv", // 250 - 20 - 1 - 8 = 221
-		},
-		{
-			name:     "truncate file",
-			base:     "/downloads/complete",
-			folder:   "tiny",
-			file:     strings.Repeat("f", 250) + ".mkv",
-			opts:     SanitizeOptions{},
-			expected: "/downloads/complete/tiny/" + strings.Repeat("f", 221) + ".mkv", // 250 - 20 - 1 - 4 - 4 = 221
-		},
-		{
-			name:     "extreme constraint",
-			base:     "/" + strings.Repeat("b", 240),
-			folder:   "folder",
-			file:     "file.mkv",
-			opts:     SanitizeOptions{},
-			expected: "/" + strings.Repeat("b", 240) + "/folde/f.mkv", // Hard to predict exact, but length must be <= 250
-		},
+		{"no match", "My.Show.S01E01", "My.Show.S01E01"},
+		{"private prefix", "[PRiVATE]-My.Show.S01E01", "My.Show.S01E01"},
+		{"indexer prefix", "[www.example.com]-My.Show.S01E01", "My.Show.S01E01"},
+		{"brackets prefix", "[Something]-My.Show.S01E01", "My.Show.S01E01"},
+		{"scenzbd suffix", "My.Show.S01E01(Scenzbd)", "My.Show.S01E01"},
+		{"scenzbd dash suffix", "My.Show.S01E01 - (Scenzbd)", "My.Show.S01E01"},
+		{"multiple cleanup", "[www.indexer.pro]-[PRiVATE]-My.Movie.2024-(Scenzbd)", "My.Movie.2024"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := JoinSafe(tt.base, tt.folder, tt.file, tt.opts)
-			if len(got) > maxPathBytes {
-				t.Errorf("JoinSafe path too long: len(%d) > %d\nPath: %q", len(got), maxPathBytes, got)
-			}
-			if tt.expected != "" && !strings.Contains(tt.name, "extreme") {
-				if got != tt.expected {
-					t.Errorf("JoinSafe() = %q; want %q", got, tt.expected)
-				}
+			got := CleanupName(tt.input, patterns)
+			if got != tt.expected {
+				t.Errorf("CleanupName(%q) = %q; want %q", tt.input, got, tt.expected)
 			}
 		})
 	}

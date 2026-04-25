@@ -13,6 +13,7 @@ import (
 
 	"github.com/hobeone/sabnzbd-go/internal/app"
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 	"github.com/hobeone/sabnzbd-go/internal/rss"
@@ -38,7 +39,7 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 		Filename: filename,
 		Category: opts.Category,
 		Password: opts.Password,
-	})
+	}, fsutil.SanitizeOptions{})
 	if err != nil {
 		return fmt.Errorf("create job %q: %w", filename, err)
 	}
