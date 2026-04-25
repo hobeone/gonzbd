@@ -1,5 +1,7 @@
 package config
 
+import "github.com/hobeone/sabnzbd-go/internal/fsutil"
+
 // DownloadConfig controls bandwidth, retry behavior, and disk-space
 // guards for the download pipeline. See spec §9.3.
 type DownloadConfig struct {
@@ -54,4 +56,19 @@ type DownloadConfig struct {
 	// StripDiacritics, if true, will replace accented characters with their
 	// ASCII equivalents (e.g. é -> e). Defaults to false.
 	StripDiacritics bool `yaml:"strip_diacritics" json:"strip_diacritics"`
+
+	// CleanupList is a list of strings or regex patterns to be removed
+	// from folder and filenames.
+	CleanupList []string `yaml:"cleanup_list" json:"cleanup_list"`
+}
+
+// SanitizeOptions returns the naming and cleanup preferences as a
+// consolidated options struct.
+func (c DownloadConfig) SanitizeOptions() fsutil.SanitizeOptions {
+	return fsutil.SanitizeOptions{
+		ReplaceIllegalWith: c.ReplaceIllegalWith,
+		ReplaceSpacesWith:  c.ReplaceSpacesWith,
+		StripDiacritics:    c.StripDiacritics,
+		CleanupList:        c.CleanupList,
+	}
 }

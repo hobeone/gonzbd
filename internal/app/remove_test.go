@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
@@ -31,7 +32,7 @@ func TestRemoveJob(t *testing.T) {
 	}
 
 	parsed := &nzb.NZB{}
-	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "to-delete"})
+	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "to-delete"}, fsutil.SanitizeOptions{})
 	_ = a.queue.Add(job)
 
 	// Create a dummy download directory
@@ -53,7 +54,7 @@ func TestRemoveJob(t *testing.T) {
 	}
 
 	// 2. Add again and remove
-	job2, _ := queue.NewJob(parsed, queue.AddOptions{Name: "to-delete-files"})
+	job2, _ := queue.NewJob(parsed, queue.AddOptions{Name: "to-delete-files"}, fsutil.SanitizeOptions{})
 	_ = a.queue.Add(job2)
 	jobDir2 := filepath.Join(downloadDir, "to-delete-files")
 	_ = os.MkdirAll(jobDir2, 0o750)

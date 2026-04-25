@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 )
 
@@ -39,7 +40,7 @@ func buildCorpus(b *testing.B, numJobs, filesPerJob, articlesPerFile int, mostly
 
 		job, err := NewJob(parsed, AddOptions{
 			Filename: fmt.Sprintf("bench%d.nzb", j),
-		})
+		}, fsutil.SanitizeOptions{})
 		if err != nil {
 			b.Fatalf("NewJob: %v", err)
 		}

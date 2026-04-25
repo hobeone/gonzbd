@@ -203,6 +203,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 			ReplaceIllegalWith: cfg.Downloads.ReplaceIllegalWith,
 			ReplaceSpacesWith:  cfg.Downloads.ReplaceSpacesWith,
 			StripDiacritics:    cfg.Downloads.StripDiacritics,
+			CleanupList:        cfg.Downloads.CleanupList,
 		},
 	}, histRepo)
 	if err != nil {
@@ -629,7 +630,7 @@ func loadJob(path string) (*queue.Job, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: filepath.Base(path)})
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: filepath.Base(path)}, fsutil.SanitizeOptions{})
 	return job, data, err
 }
 
