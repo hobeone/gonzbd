@@ -97,4 +97,3 @@ func TestScenario_DecodeJunkRecovery(t *testing.T) {
 		t.Errorf("history status = %q, want Completed (junk recovery failed)", hist.Status)
 	}
 }
-

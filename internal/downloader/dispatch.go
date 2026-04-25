@@ -283,7 +283,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	}
 	d.log.Debug("fetched", "server", name, "msgid", req.messageID, "bytes", len(body))
 
-	// Decoding (Step 3: Parallelize Decoding): Decode article payload 
+	// Decoding (Step 3: Parallelize Decoding): Decode article payload
 	// directly in the connection goroutine to utilize all CPU cores.
 	var decodedData []byte
 	var offset int64

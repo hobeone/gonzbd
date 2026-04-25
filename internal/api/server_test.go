@@ -23,7 +23,7 @@ type mockApp struct {
 	h *history.Repository
 }
 
-func (m mockApp) ReloadDownloader([]config.ServerConfig) error { return nil }
+func (m mockApp) ReloadDownloader([]config.ServerConfig) error  { return nil }
 func (m mockApp) RetryHistoryJob(context.Context, string) error { return nil }
 func (m mockApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
 	if m.q == nil {

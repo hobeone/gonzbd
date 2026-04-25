@@ -78,7 +78,7 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 	// 1 failed byte > 0 par2 bytes IS true.
 	parsed.Files[0].Subject = "test.bin"
 	job, _ = queue.NewJob(parsed, queue.AddOptions{Name: "hopeless-test"})
-	
+
 	jobID := job.ID
 	_ = application.Queue().Add(job)
 
@@ -377,7 +377,7 @@ func TestRetryHistoryJob(t *testing.T) {
 		Name:   "retry-test",
 		Status: constants.StatusFailed,
 		Files: []queue.JobFile{{
-			Subject: "file.bin",
+			Subject:  "file.bin",
 			Complete: false, // Will be re-completed after articles retry
 			Articles: []queue.JobArticle{{ID: "a@t", Done: true, Failed: true, Bytes: 1024}},
 		}},
@@ -385,7 +385,7 @@ func TestRetryHistoryJob(t *testing.T) {
 	}
 	jobsDir := filepath.Join(adminDir, "queue", "jobs")
 	_ = os.MkdirAll(jobsDir, 0o750)
-	
+
 	// We need to use the internal writeGzJSON or similar to create the file.
 	// Since it's internal to queue, we'll just use a dummy for now and see if app.RetryHistoryJob works.
 	// Actually, queue.Save is available. Let's use that.
