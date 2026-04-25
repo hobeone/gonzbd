@@ -16,7 +16,7 @@ import (
 
 // Par2Rename scans dir for .par2 files, builds a mapping of 16KB MD5 hashes
 // to original filenames, and renames any obfuscated files that match.
-func Par2Rename(dir string) ([]Rename, error) {
+func Par2Rename(dir string, opts fsutil.SanitizeOptions) ([]Rename, error) {
 	log := slog.Default().With("component", "deobfuscate")
 
 	entries, err := os.ReadDir(dir)
@@ -84,7 +84,7 @@ func Par2Rename(dir string) ([]Rename, error) {
 			}
 
 			// Perform rename.
-			newPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(filepath.Dir(dir), filepath.Base(dir), trueName))
+			newPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(filepath.Dir(dir), filepath.Base(dir), trueName, opts))
 
 			if err := os.Rename(path, newPath); err != nil {
 				return renames, fmt.Errorf("rename %s → %s: %w", path, newPath, err)

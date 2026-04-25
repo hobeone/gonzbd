@@ -53,6 +53,8 @@ func Default() (*Config, error) {
 			NoPenalties:         false,
 			PreCheck:            false,
 			PropagationDelay:    0,
+			ReplaceIllegalWith:  "_",
+			ReplaceSpacesWith:   "",
 		},
 		PostProc: PostProcConfig{
 			EnableUnrar:      true,

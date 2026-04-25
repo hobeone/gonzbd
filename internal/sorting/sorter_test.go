@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/sorting"
 )
 
@@ -204,10 +205,10 @@ func TestExpandTemplate(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := sorting.ExpandTemplate(tc.nzfl, info, tc.ext)
+			got := sorting.ExpandTemplate(tc.tmpl, info, tc.ext)
 			if got != tc.wantOut {
 				t.Errorf("ExpandTemplate(%q, ..., %q)\n  got  %q\n  want %q",
-					tc.nzfl, tc.ext, got, tc.wantOut)
+					tc.tmpl, tc.ext, got, tc.wantOut)
 			}
 		})
 	}
@@ -244,6 +245,7 @@ func TestApply(t *testing.T) {
 			5100,
 			rules,
 			destRoot,
+			fsutil.SanitizeOptions{},
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -295,6 +297,7 @@ func TestApply(t *testing.T) {
 			1000,
 			rules,
 			destRoot,
+			fsutil.SanitizeOptions{},
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -325,7 +328,7 @@ func TestApply(t *testing.T) {
 		result, err := sorting.Apply(
 			context.Background(),
 			srcDir, "", "Blade.Runner.2049",
-			1000, rules, destRoot,
+			1000, rules, destRoot, fsutil.SanitizeOptions{},
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -354,7 +357,7 @@ func TestApply(t *testing.T) {
 		result, err := sorting.Apply(
 			context.Background(),
 			srcDir, "", "Blade.Runner.2049",
-			1000, rules, destRoot,
+			1000, rules, destRoot, fsutil.SanitizeOptions{},
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -383,7 +386,7 @@ func TestApply(t *testing.T) {
 		result, err := sorting.Apply(
 			context.Background(),
 			srcDir, "tv", "Blade.Runner.2049",
-			1000, rules, destRoot,
+			1000, rules, destRoot, fsutil.SanitizeOptions{},
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -397,7 +400,7 @@ func TestApply(t *testing.T) {
 		result2, err := sorting.Apply(
 			context.Background(),
 			srcDir, "movies", "Blade.Runner.2049",
-			1000, rules, destRoot,
+			1000, rules, destRoot, fsutil.SanitizeOptions{},
 		)
 		if err != nil {
 			t.Fatal(err)

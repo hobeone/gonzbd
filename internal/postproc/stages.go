@@ -8,6 +8,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
@@ -45,6 +46,9 @@ type Job struct {
 	// after all post-processing stages have finished. Usually a sub-path
 	// of the complete directory named after the job name.
 	FinalDir string
+
+	// Sanitize defines the naming replacement options for this job.
+	Sanitize fsutil.SanitizeOptions
 
 	// StageLog accumulates one entry per stage, in execution order.
 	StageLog []StageLogEntry

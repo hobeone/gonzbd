@@ -19,14 +19,15 @@ import (
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/assembler"
+	"github.com/hobeone/sabnzbd-go/internal/bpsmeter"
 	"github.com/hobeone/sabnzbd-go/internal/cache"
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/constants"
 	"github.com/hobeone/sabnzbd-go/internal/downloader"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/postproc"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
-	"github.com/hobeone/sabnzbd-go/internal/bpsmeter"
 )
 
 // ErrAlreadyStarted is returned by Start on the second call to a live
@@ -37,13 +38,14 @@ const defaultCheckpointInterval = 30 * time.Second
 
 // Config is the minimal configuration required to construct an Application.
 type Config struct {
-	DownloadDir string
-	CompleteDir string
-	AdminDir    string
-	CacheLimit  int64
-	Servers     []config.ServerConfig
-	Categories  []config.CategoryConfig
+	DownloadDir        string
+	CompleteDir        string
+	AdminDir           string
+	CacheLimit         int64
+	Servers            []config.ServerConfig
+	Categories         []config.CategoryConfig
 	CheckpointInterval time.Duration
+	Sanitize           fsutil.SanitizeOptions
 }
 
 // FileComplete is emitted on Application.FileComplete() when a file is done.
@@ -184,6 +186,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		queue:       q,
 		completions: d.Completions(),
 		downloadDir: cfg.DownloadDir,
+		sanitize:    cfg.Sanitize,
 		updateCh:    make(chan (<-chan *downloader.ArticleResult), 1),
 		fileInfo:    make(map[fileKey]assembler.FileInfo),
 	}
@@ -281,7 +284,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	app.postProcessor = pp
 
 	asm := assembler.New(assembler.Options{
-		FileInfo:          p.resolveFileInfo,
+		FileInfo:           p.resolveFileInfo,
 		MarkArticlesDone:   q.MarkArticlesDone,
 		MarkArticlesFailed: q.MarkArticlesFailed,
 		OnFileComplete: func(jobID string, fileIdx int) {
@@ -338,15 +341,23 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	baseName := job.Name
 	for i := 1; ; i++ {
 		collision := false
-		if app.queue.ExistsByName(job.Name) { collision = true }
-		if !collision {
-			if _, err := os.Stat(filepath.Join(app.cfg.DownloadDir, job.Name)); err == nil { collision = true }
+		if app.queue.ExistsByName(job.Name) {
+			collision = true
 		}
 		if !collision {
-			if _, err := os.Stat(filepath.Join(app.cfg.CompleteDir, job.Name)); err == nil { collision = true }
+			if _, err := os.Stat(filepath.Join(app.cfg.DownloadDir, job.Name)); err == nil {
+				collision = true
+			}
+		}
+		if !collision {
+			if _, err := os.Stat(filepath.Join(app.cfg.CompleteDir, job.Name)); err == nil {
+				collision = true
+			}
 			if !collision {
 				for _, cat := range app.cfg.Categories {
-					if cat.Dir == "" { continue }
+					if cat.Dir == "" {
+						continue
+					}
 					if _, err := os.Stat(filepath.Join(app.cfg.CompleteDir, cat.Dir, job.Name)); err == nil {
 						collision = true
 						break
@@ -354,7 +365,9 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 				}
 			}
 		}
-		if !collision { break }
+		if !collision {
+			break
+		}
 		job.Name = fmt.Sprintf("%s.%d", baseName, i)
 	}
 	if !isDuplicate && job.Filename != "" {
@@ -371,43 +384,67 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 
 func (app *Application) RemoveJob(id string) error {
 	job, err := app.queue.Get(id)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	path := filepath.Join(app.cfg.DownloadDir, job.Name)
 	_ = os.RemoveAll(path)
-	if err := app.queue.Remove(id); err != nil { return err }
+	if err := app.queue.Remove(id); err != nil {
+		return err
+	}
 	app.emitter.Broadcast(Event{Type: "queue_updated"})
 	return nil
 }
 
 func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error {
-	if app.historyRepo == nil { return errors.New("history repository not wired") }
+	if app.historyRepo == nil {
+		return errors.New("history repository not wired")
+	}
 	entry, err := app.historyRepo.Get(ctx, id)
-	if err != nil { return fmt.Errorf("app: get history: %w", err) }
-	if deleteFiles && entry.Path != "" { _ = os.RemoveAll(entry.Path) }
-	if _, err := app.historyRepo.Delete(ctx, id); err != nil { return err }
+	if err != nil {
+		return fmt.Errorf("app: get history: %w", err)
+	}
+	if deleteFiles && entry.Path != "" {
+		_ = os.RemoveAll(entry.Path)
+	}
+	if _, err := app.historyRepo.Delete(ctx, id); err != nil {
+		return err
+	}
 	app.emitter.Broadcast(Event{Type: "history_updated"})
 	return nil
 }
 
 func (app *Application) GetHistory(ctx context.Context, id string) (*history.Entry, error) {
-	if app.historyRepo == nil { return nil, errors.New("history repository not wired") }
+	if app.historyRepo == nil {
+		return nil, errors.New("history repository not wired")
+	}
 	return app.historyRepo.Get(ctx, id)
 }
 
-func (app *Application) FileComplete() <-chan FileComplete { return app.fileComplete }
-func (app *Application) JobComplete() <-chan JobComplete { return app.jobComplete }
+func (app *Application) FileComplete() <-chan FileComplete         { return app.fileComplete }
+func (app *Application) JobComplete() <-chan JobComplete           { return app.jobComplete }
 func (app *Application) PostProcComplete() <-chan PostProcComplete { return app.postProcComplete }
 
 func (app *Application) Start(ctx context.Context) error {
-	if !app.started.CompareAndSwap(false, true) { return ErrAlreadyStarted }
+	if !app.started.CompareAndSwap(false, true) {
+		return ErrAlreadyStarted
+	}
 	app.ctx, app.cancel = context.WithCancel(ctx)
-	if err := app.assembler.Start(app.ctx); err != nil { return err }
-	if err := app.downloader.Start(app.ctx); err != nil { return err }
-	if err := app.postProcessor.Start(app.ctx); err != nil { return err }
+	if err := app.assembler.Start(app.ctx); err != nil {
+		return err
+	}
+	if err := app.downloader.Start(app.ctx); err != nil {
+		return err
+	}
+	if err := app.postProcessor.Start(app.ctx); err != nil {
+		return err
+	}
 	app.wg.Go(func() { app.pipeline.run(app.ctx) })
 	app.wg.Go(func() { app.watchCompletions(app.ctx) })
 	interval := app.cfg.CheckpointInterval
-	if interval <= 0 { interval = defaultCheckpointInterval }
+	if interval <= 0 {
+		interval = defaultCheckpointInterval
+	}
 	app.wg.Go(func() { app.runCheckpoint(app.ctx, interval) })
 	app.wg.Go(func() { app.runMetricsPush(app.ctx) })
 	app.log.Info("application started")
@@ -436,7 +473,8 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 	var lastRemaining int64
 	for {
 		select {
-		case <-ctx.Done(): return
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
 			remaining := app.queue.TotalRemainingBytes()
 			if remaining > 0 || lastRemaining > 0 {
@@ -454,7 +492,9 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 }
 
 func (app *Application) Shutdown() error {
-	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) { return nil }
+	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) {
+		return nil
+	}
 	app.cancel()
 	_ = app.downloader.Stop()
 	_ = app.postProcessor.Stop()
@@ -470,9 +510,12 @@ func (app *Application) runCheckpoint(ctx context.Context, interval time.Duratio
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done(): return
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
-			if !app.queue.IsDirty() { continue }
+			if !app.queue.IsDirty() {
+				continue
+			}
 			_ = app.queue.Save(filepath.Join(app.cfg.AdminDir, "queue"))
 		}
 	}
@@ -481,9 +524,12 @@ func (app *Application) runCheckpoint(ctx context.Context, interval time.Duratio
 func (app *Application) watchCompletions(ctx context.Context) {
 	for {
 		select {
-		case <-ctx.Done(): return
+		case <-ctx.Done():
+			return
 		case fc := <-app.internalFileComplete:
-			if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil { continue }
+			if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
+				continue
+			}
 			app.emitter.Broadcast(Event{Type: "queue_updated"})
 			job, err := app.queue.Get(fc.JobID)
 			if err == nil && job.IsComplete() {
@@ -503,12 +549,16 @@ func (app *Application) maybeFinalize(job *queue.Job, failMsg string) {
 func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	catDir := ""
 	for _, cat := range app.cfg.Categories {
-		if cat.Name == job.Category { catDir = cat.Dir; break }
+		if cat.Name == job.Category {
+			catDir = cat.Dir
+			break
+		}
 	}
 	app.postProcessor.Process(&postproc.Job{
 		Queue:       job,
 		DownloadDir: filepath.Join(app.cfg.DownloadDir, job.Name),
 		FinalDir:    filepath.Join(app.cfg.CompleteDir, catDir, job.Name),
+		Sanitize:    app.cfg.Sanitize,
 		FailMsg:     failMsg,
 	})
 	select {
@@ -527,10 +577,14 @@ func (app *Application) ResumePostProcessor() {
 
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
 	_, err := app.historyRepo.Get(ctx, jobID)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	jobPath := filepath.Join(app.cfg.AdminDir, "queue", "jobs", jobID+".json.gz")
 	job, err := queue.LoadJob(jobPath)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	job.Status = constants.StatusQueued
 	job.PostProc = false
 	job.DownloadStarted = time.Time{}
@@ -548,23 +602,35 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 				anyReset = true
 			}
 		}
-		if anyReset { file.Complete = false }
+		if anyReset {
+			file.Complete = false
+		}
 	}
-	if err := app.queue.Add(job); err != nil { return err }
+	if err := app.queue.Add(job); err != nil {
+		return err
+	}
 	_, _ = app.historyRepo.Delete(ctx, jobID)
-	if job.IsComplete() { app.maybeFinalize(job, failMsgForJob(job)) }
+	if job.IsComplete() {
+		app.maybeFinalize(job, failMsgForJob(job))
+	}
 	return nil
 }
 
 func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	if !app.started.Load() || app.stopped.Load() { return errors.New("app: not running") }
+	if !app.started.Load() || app.stopped.Load() {
+		return errors.New("app: not running")
+	}
 	_ = app.downloader.Stop()
 	servers := make([]*downloader.Server, len(scs))
-	for i, sc := range scs { servers[i] = downloader.NewServer(sc) }
+	for i, sc := range scs {
+		servers[i] = downloader.NewServer(sc)
+	}
 	newDownloader := downloader.New(app.queue, servers, app.meter, downloader.Options{}, app.log)
-	if err := newDownloader.Start(app.ctx); err != nil { return err }
+	if err := newDownloader.Start(app.ctx); err != nil {
+		return err
+	}
 	app.downloader = newDownloader
 	app.pipeline.setCompletions(newDownloader.Completions())
 	return nil
@@ -583,6 +649,8 @@ func WithPostProcStages(stages []postproc.Stage) func(*Application) {
 }
 
 func failMsgForJob(job *queue.Job) string {
-	if job.FailedBytes > job.Par2Bytes { return "Aborted: Too many articles failed, job is beyond repair" }
+	if job.FailedBytes > job.Par2Bytes {
+		return "Aborted: Too many articles failed, job is beyond repair"
+	}
 	return ""
 }

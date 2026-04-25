@@ -282,7 +282,8 @@ type articleCounters struct {
 // model, applying the dedup and size-sanity rules and folding article
 // IDs into digest in source order.
 func convertFile(xf xmlFile, now time.Time, digest hash.Hash) (File, int64, articleCounters) {
-	subject := fsutil.SanitizeFilename(ExtractFilenameFromSubject(xf.Subject))
+	// Since we don't have user config here, we use default options.
+	subject := fsutil.SanitizeFilename(ExtractFilenameFromSubject(xf.Subject), fsutil.SanitizeOptions{})
 
 	ts := now.Unix()
 	if trimmed := strings.TrimSpace(xf.Date); trimmed != "" {

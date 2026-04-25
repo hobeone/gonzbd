@@ -217,11 +217,11 @@ type Rename struct {
 // it falls back to the "biggest file" heuristic and renames it (and any
 // same-stem siblings) to usefulName + original extension. Returns the list
 // of renames actually performed. Returns nil, nil when no rename is needed.
-func Deobfuscate(dir, usefulName string) ([]Rename, error) {
+func Deobfuscate(dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename, error) {
 	log := slog.Default().With("component", "deobfuscate")
 
 	// 1. Attempt PAR2-based deobfuscation first.
-	parRenames, err := Par2Rename(dir)
+	parRenames, err := Par2Rename(dir, opts)
 	if err != nil {
 		log.Warn("deobfuscate: par2 deobfuscation encountered an error", "dir", dir, "err", err)
 	}
@@ -267,7 +267,7 @@ func Deobfuscate(dir, usefulName string) ([]Rename, error) {
 	var renames []Rename
 
 	// Rename the biggest file.
-	newBigPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(filepath.Dir(dir), filepath.Base(dir), usefulName+filepath.Ext(bigPath)))
+	newBigPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(filepath.Dir(dir), filepath.Base(dir), usefulName+filepath.Ext(bigPath), opts))
 	if err := os.Rename(bigPath, newBigPath); err != nil {
 		return nil, fmt.Errorf("rename %s → %s: %w", bigPath, newBigPath, err)
 	}
@@ -289,7 +289,7 @@ func Deobfuscate(dir, usefulName string) ([]Rename, error) {
 			continue
 		}
 		remainingSuffix := strings.TrimPrefix(p, baseDirFile)
-		newPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(filepath.Dir(dir), filepath.Base(dir), usefulName+remainingSuffix))
+		newPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(filepath.Dir(dir), filepath.Base(dir), usefulName+remainingSuffix, opts))
 		if renErr := os.Rename(p, newPath); renErr != nil {
 			return renames, fmt.Errorf("rename sibling %s → %s: %w", p, newPath, renErr)
 		}

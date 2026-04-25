@@ -43,4 +43,11 @@ type DownloadConfig struct {
 	// before downloading begins, allowing articles to propagate to
 	// backup servers. 0 disables.
 	PropagationDelay int `yaml:"propagation_delay" json:"propagation_delay"`
+
+	// ReplaceIllegalWith is the string used to replace illegal filesystem
+	// characters (e.g. \/:*?"<>|). Defaults to "_".
+	ReplaceIllegalWith string `yaml:"replace_illegal_with" json:"replace_illegal_with"`
+	// ReplaceSpacesWith is the string used to replace spaces in folder and
+	// filenames. Defaults to "" (keep spaces).
+	ReplaceSpacesWith string `yaml:"replace_spaces_with" json:"replace_spaces_with"`
 }

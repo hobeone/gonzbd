@@ -31,6 +31,7 @@ type pipeline struct {
 	assembler   *assembler.Assembler
 	completions <-chan *downloader.ArticleResult
 	downloadDir string
+	sanitize    fsutil.SanitizeOptions
 
 	// updateCh receives a new completions channel to switch to.
 	updateCh chan (<-chan *downloader.ArticleResult)
@@ -160,7 +161,7 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	// Use job Name and file index for a human-readable and robust path.
 	// Final naming of files is deferred until the post-processing (PAR2) phase.
 	// We use JoinSafe to ensure the absolute path does not exceed OS limits.
-	path := fsutil.JoinSafe(p.downloadDir, job.Name, fmt.Sprintf("%04d.nzf", fileIdx))
+	path := fsutil.JoinSafe(p.downloadDir, job.Name, fmt.Sprintf("%04d.nzf", fileIdx), p.sanitize)
 
 	info := assembler.FileInfo{
 		Path:       path,

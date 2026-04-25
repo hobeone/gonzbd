@@ -75,6 +75,7 @@ func Apply(
 	totalBytes int64,
 	rules []SorterRule,
 	destRoot string,
+	opts fsutil.SanitizeOptions,
 ) (ApplyResult, error) {
 	info := Parse(jobName)
 	if info.Title == "" {
@@ -127,8 +128,16 @@ func Apply(
 	slog.Info("sorting: matched rule", "rule", matched.Name, "job", jobName)
 
 	subpath := ExpandTemplate(matched.SortString, info, ext)
-	// subpath is something like "TV/Show Name/Season 01/Show.S01E01.mkv"
-	destDir := fsutil.JoinSafe(destRoot, filepath.Dir(subpath), "")
+	// subpath is something like "TV/%t/Season %0s" -> "TV/Show Name/Season 01"
+	// We must join each component separately so JoinSafe doesn't underscores the slashes.
+	parts := strings.Split(filepath.ToSlash(subpath), "/")
+	destDir := destRoot
+	for _, p := range parts {
+		if p == "" || p == "." {
+			continue
+		}
+		destDir = fsutil.JoinSafe(destDir, p, "", opts)
+	}
 
 	if err := os.MkdirAll(destDir, 0o750); err != nil {
 		return ApplyResult{}, fmt.Errorf("apply: mkdir %s: %w", destDir, err)
@@ -141,14 +150,15 @@ func Apply(
 			return result, err
 		}
 
-		// If subpath looks like a full file path, use its base name.
+		// If subpath looks like a full file path (not just a directory), use its base name.
 		// Otherwise use the source file's base name.
 		targetName := filepath.Base(src)
-		if filepath.Base(subpath) != "." && filepath.Base(subpath) != "/" {
+		if !strings.HasSuffix(matched.SortString, "/") && !strings.Contains(filepath.Base(subpath), " ") && filepath.Ext(subpath) != "" {
 			targetName = filepath.Base(subpath)
 		}
 
-		dst := fsutil.JoinSafe(destDir, "", targetName)
+		dst := fsutil.JoinSafe(destDir, "", targetName, opts)
+
 		if moveErr := moveFile(src, dst); moveErr != nil {
 			return result, fmt.Errorf("apply: move %s → %s: %w", src, dst, moveErr)
 		}
