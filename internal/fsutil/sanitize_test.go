@@ -115,10 +115,15 @@ func TestTruncateFilename(t *testing.T) {
 
 func TestCleanupName(t *testing.T) {
 	patterns := []string{
-		`(?i)^\[PRiVATE\]-?`,
+		`^(?i)\[PRiVATE\]-?`,
+		`^(?i)\[nzbndx\]-?`,
+		`^(?i)\[DrunkenSlug\]-?`,
+		`^(?i)\[Geek\]-?`,
 		`^\[.*\]-?`,
-		`(?i)^www\..*\.[a-z]{2,3}-?`,
+		`^(?i)www\..*\.[a-z]{2,3}-?`,
 		`(?i)-? ?\(Scenzbd\)$`,
+		`(?i)-? ?\(Obfuscated\)$`,
+		`(?i)-? ?\(NZBGeek\)$`,
 	}
 
 	tests := []struct {
@@ -129,9 +134,11 @@ func TestCleanupName(t *testing.T) {
 		{"no match", "My.Show.S01E01", "My.Show.S01E01"},
 		{"private prefix", "[PRiVATE]-My.Show.S01E01", "My.Show.S01E01"},
 		{"indexer prefix", "[www.example.com]-My.Show.S01E01", "My.Show.S01E01"},
+		{"drunken slug prefix", "[DrunkenSlug] My.Show.S01E01", "My.Show.S01E01"},
 		{"brackets prefix", "[Something]-My.Show.S01E01", "My.Show.S01E01"},
 		{"scenzbd suffix", "My.Show.S01E01(Scenzbd)", "My.Show.S01E01"},
-		{"scenzbd dash suffix", "My.Show.S01E01 - (Scenzbd)", "My.Show.S01E01"},
+		{"obfuscated suffix", "My.Show.S01E01-(Obfuscated)", "My.Show.S01E01"},
+		{"geek suffix", "My.Show.S01E01-(NZBGeek)", "My.Show.S01E01"},
 		{"multiple cleanup", "[www.indexer.pro]-[PRiVATE]-My.Movie.2024-(Scenzbd)", "My.Movie.2024"},
 	}
 

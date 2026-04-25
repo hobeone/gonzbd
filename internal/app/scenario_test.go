@@ -16,6 +16,7 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/app"
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/nntp/nntptest"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
@@ -142,7 +143,7 @@ func (h *scenarioHarness) AddSimpleJob(name string, raw []byte) *queue.Job {
 			Bytes:    int64(len(raw)),
 		}},
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: name})
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: name}, fsutil.SanitizeOptions{})
 	if err != nil {
 		h.t.Fatalf("scenario: NewJob: %v", err)
 	}
@@ -169,7 +170,7 @@ func (h *scenarioHarness) AddOneShotJob(name string, raw []byte, force bool) *qu
 		}},
 	}
 	// We must supply a Filename to trigger duplicate detection
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: name, Filename: name + ".nzb"})
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: name, Filename: name + ".nzb"}, fsutil.SanitizeOptions{})
 	if err != nil {
 		h.t.Fatalf("scenario: NewJob: %v", err)
 	}
