@@ -155,7 +155,7 @@
 							<path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
 						</svg>
 						{#if files && files.length > 0}
-							<span class="text-sm font-medium text-gray-900">{files[0].name}</span>
+							<span class="block w-full max-w-[200px] sm:max-w-xs text-sm font-medium text-gray-900 truncate text-center" title={files[0].name}>{files[0].name}</span>
 							<span class="mt-1 text-xs text-gray-500">{(files[0].size / 1024).toFixed(1)} KB</span>
 						{:else}
 							<span class="text-sm text-gray-600">Drop NZB file here or click to browse</span>
