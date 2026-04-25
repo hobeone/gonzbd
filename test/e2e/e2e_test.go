@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/app"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
@@ -44,7 +45,7 @@ func addJob(t *testing.T, a *app.Application, rawNZB []byte, name string) *queue
 	if err != nil {
 		t.Fatalf("nzb.Parse: %v", err)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: name + ".nzb", Name: name})
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: name + ".nzb", Name: name}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("queue.NewJob: %v", err)
 	}
@@ -195,7 +196,7 @@ func TestE2E_ProvidedNZB(t *testing.T) {
 
 	fName := filepath.Base(nzbPath)
 
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: fName})
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: fName}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("queue.NewJob: %v", err)
 	}

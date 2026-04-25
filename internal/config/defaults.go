@@ -56,6 +56,13 @@ func Default() (*Config, error) {
 			ReplaceIllegalWith:  "_",
 			ReplaceSpacesWith:   "",
 			StripDiacritics:     false,
+			CleanupList: []string{
+				`^\[PRiVATE\]-`,
+				`^\[.*\]-`,
+				`^www\..*\.[a-z]{2,3}-`,
+				`\(Scenzbd\)$`,
+				`- (Scenzbd)$`,
+			},
 		},
 		PostProc: PostProcConfig{
 			EnableUnrar:      true,

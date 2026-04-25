@@ -13,6 +13,7 @@ import (
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/nntp"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
@@ -244,7 +245,7 @@ func makeJobWithArticles(t *testing.T, msgIDs []string) *queue.Job {
 	job, err := queue.NewJob(parsed, queue.AddOptions{
 		Filename: "test.nzb",
 		Priority: constants.NormalPriority,
-	})
+	}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
 	}

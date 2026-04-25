@@ -14,6 +14,7 @@ import (
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
@@ -59,7 +60,7 @@ func addTestJob(t *testing.T, q *queue.Queue, opts queue.AddOptions) *queue.Job 
 	if opts.Filename == "" {
 		opts.Filename = "test.nzb"
 	}
-	job, err := queue.NewJob(parsed, opts)
+	job, err := queue.NewJob(parsed, opts, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
 	}

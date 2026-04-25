@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/nntp/nntptest"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
@@ -40,7 +41,7 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 	}
 
 	parsed := &nzb.NZB{Files: files}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "reload-test"})
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "reload-test"}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
 	}

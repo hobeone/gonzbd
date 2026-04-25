@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 	"github.com/hobeone/sabnzbd-go/internal/types"
@@ -318,7 +319,11 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 		Priority: priorityParam(r),
 	}
 
-	job, err := queue.NewJob(parsed, opts)
+	sOpts := fsutil.SanitizeOptions{}
+	if s.config != nil {
+		sOpts = s.config.Downloads.SanitizeOptions()
+	}
+	job, err := queue.NewJob(parsed, opts, sOpts)
 	if err != nil {
 		s.respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
 		return
@@ -428,7 +433,11 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 		Priority: priorityParam(r),
 	}
 
-	job, err := queue.NewJob(parsed, opts)
+	sOpts := fsutil.SanitizeOptions{}
+	if s.config != nil {
+		sOpts = s.config.Downloads.SanitizeOptions()
+	}
+	job, err := queue.NewJob(parsed, opts, sOpts)
 	if err != nil {
 		s.respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
 		return

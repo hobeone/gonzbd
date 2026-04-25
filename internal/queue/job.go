@@ -198,7 +198,7 @@ type AddOptions struct {
 //
 // Returns an error only if the OS entropy source fails — treat that
 // as fatal; the daemon has no safe fallback.
-func NewJob(parsed *nzb.NZB, opts AddOptions) (*Job, error) {
+func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Job, error) {
 	id, err := newJobID()
 	if err != nil {
 		return nil, err
@@ -208,8 +208,12 @@ func NewJob(parsed *nzb.NZB, opts AddOptions) (*Job, error) {
 	if name == "" {
 		name = deriveName(opts.Filename)
 	}
-	// Since we don't have user config here, we use default options.
-	name = fsutil.SanitizeFolderName(name, fsutil.SanitizeOptions{})
+
+	// 1. Apply regex-based cleanup (strip spam prefixes/suffixes)
+	name = fsutil.CleanupName(name, sOpts.CleanupList)
+
+	// 2. Apply filesystem sanitization rules.
+	name = fsutil.SanitizeFolderName(name, sOpts)
 
 	job := &Job{
 		ID:       id,
