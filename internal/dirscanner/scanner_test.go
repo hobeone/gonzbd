@@ -45,7 +45,7 @@ func TestStabilityDetection(t *testing.T) {
 	}
 
 	handler := &MockHandler{failFor: make(map[string]error)}
-	scanner := New(tmpDir, store, handler, nil)
+	scanner := New(tmpDir, store, handler, nil, nil)
 
 	// Create a test NZB file.
 	nzbPath := filepath.Join(tmpDir, "test.nzb")
@@ -105,7 +105,7 @@ func TestStabilityResetOnChange(t *testing.T) {
 	}
 
 	handler := &MockHandler{failFor: make(map[string]error)}
-	scanner := New(tmpDir, store, handler, nil)
+	scanner := New(tmpDir, store, handler, nil, nil)
 
 	nzbPath := filepath.Join(tmpDir, "test.nzb")
 	originalContent := []byte("<?xml version=\"1.0\" ?>")
@@ -198,7 +198,7 @@ func TestHandlerError(t *testing.T) {
 
 	handler := &MockHandler{failFor: make(map[string]error)}
 	handler.failFor["test.nzb"] = fmt.Errorf("simulated handler failure")
-	scanner := New(tmpDir, store, handler, nil)
+	scanner := New(tmpDir, store, handler, nil, nil)
 
 	nzbPath := filepath.Join(tmpDir, "test.nzb")
 	nzbContent := []byte("<?xml version=\"1.0\" ?>")
@@ -289,7 +289,7 @@ func TestDotfilesSkipped(t *testing.T) {
 	}
 
 	handler := &MockHandler{failFor: make(map[string]error)}
-	scanner := New(tmpDir, store, handler, nil)
+	scanner := New(tmpDir, store, handler, nil, nil)
 
 	// Create a dotfile.
 	dotfilePath := filepath.Join(tmpDir, ".test.nzb")
@@ -321,7 +321,7 @@ func TestInvalidExtensionsSkipped(t *testing.T) {
 	}
 
 	handler := &MockHandler{failFor: make(map[string]error)}
-	scanner := New(tmpDir, store, handler, nil)
+	scanner := New(tmpDir, store, handler, nil, nil)
 
 	// Create a file with invalid extension.
 	invalidPath := filepath.Join(tmpDir, "test.txt")
@@ -409,7 +409,7 @@ func TestScanDirectoryNotFound(t *testing.T) {
 	}
 
 	handler := &MockHandler{failFor: make(map[string]error)}
-	scanner := New("/nonexistent/dir", store, handler, nil)
+	scanner := New("/nonexistent/dir", store, handler, nil, nil)
 
 	_, err = scanner.ScanOnce(context.Background())
 	if err == nil {
@@ -447,5 +447,202 @@ func TestDecompressSizeLimitGZ(t *testing.T) {
 	_, err := ExtractNZBs(gzPath)
 	if err == nil {
 		t.Errorf("expected error for oversized gzip file")
+	}
+}
+
+// --- Category subdirectory tests ---
+
+func TestCategorySubdirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+	store, err := OpenStore(stateFile)
+	if err != nil {
+		t.Fatalf("OpenStore failed: %v", err)
+	}
+
+	handler := &MockHandler{failFor: make(map[string]error)}
+	catFn := func() []string { return []string{"tv", "movies"} }
+	scanner := New(tmpDir, store, handler, catFn, nil)
+
+	// Create category subdirectories and an unrecognized one.
+	for _, dir := range []string{"tv", "Movies", "random"} {
+		if err := os.MkdirAll(filepath.Join(tmpDir, dir), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	nzbContent := []byte("<?xml version=\"1.0\" ?>")
+
+	// Place NZBs in root, tv/, Movies/, random/.
+	for _, rel := range []string{"root.nzb", "tv/show.nzb", "Movies/film.nzb", "random/other.nzb"} {
+		if err := os.WriteFile(filepath.Join(tmpDir, rel), nzbContent, 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	// First scan: records all files.
+	count, err := scanner.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("first ScanOnce: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("first scan should process 0, got %d", count)
+	}
+
+	// Second scan: stable files are processed.
+	count, err = scanner.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("second ScanOnce: %v", err)
+	}
+
+	// Should process: root.nzb, tv/show.nzb, Movies/film.nzb (3 files).
+	// random/other.nzb should be ignored (not a known category).
+	if count != 3 {
+		t.Errorf("expected 3 processed, got %d", count)
+	}
+	if len(handler.calls) != 3 {
+		t.Fatalf("expected 3 handler calls, got %d", len(handler.calls))
+	}
+
+	// Build a map of filename → category for verification.
+	gotCats := make(map[string]string)
+	for _, c := range handler.calls {
+		gotCats[c.Filename] = c.Opts.Category
+	}
+
+	// Root file: no category.
+	if cat, ok := gotCats["root.nzb"]; !ok {
+		t.Error("root.nzb not processed")
+	} else if cat != "" {
+		t.Errorf("root.nzb: expected empty category, got %q", cat)
+	}
+
+	// tv/ subdir: exact match.
+	if cat, ok := gotCats["show.nzb"]; !ok {
+		t.Error("show.nzb not processed")
+	} else if cat != "tv" {
+		t.Errorf("show.nzb: expected category 'tv', got %q", cat)
+	}
+
+	// Movies/ subdir: case-insensitive match to "movies".
+	if cat, ok := gotCats["film.nzb"]; !ok {
+		t.Error("film.nzb not processed")
+	} else if cat != "movies" {
+		t.Errorf("film.nzb: expected category 'movies', got %q", cat)
+	}
+
+	// random/other.nzb should NOT have been processed.
+	if _, ok := gotCats["other.nzb"]; ok {
+		t.Error("other.nzb should not have been processed (unrecognized subdir)")
+	}
+}
+
+func TestCategorySubdirStability(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+	store, err := OpenStore(stateFile)
+	if err != nil {
+		t.Fatalf("OpenStore failed: %v", err)
+	}
+
+	handler := &MockHandler{failFor: make(map[string]error)}
+	catFn := func() []string { return []string{"tv"} }
+	scanner := New(tmpDir, store, handler, catFn, nil)
+
+	// Create category subdir with an NZB.
+	tvDir := filepath.Join(tmpDir, "tv")
+	if err := os.MkdirAll(tvDir, 0o755); err != nil {
+		t.Fatalf("mkdir tv: %v", err)
+	}
+	nzbPath := filepath.Join(tvDir, "show.nzb")
+	if err := os.WriteFile(nzbPath, []byte("<?xml version=\"1.0\" ?>"), 0o644); err != nil {
+		t.Fatalf("write show.nzb: %v", err)
+	}
+
+	// First scan: record only.
+	count, err := scanner.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("first scan: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("first scan should process 0, got %d", count)
+	}
+	if len(handler.calls) != 0 {
+		t.Errorf("first scan should not invoke handler, got %d", len(handler.calls))
+	}
+
+	// Second scan: file is stable, should be processed.
+	count, err = scanner.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("second scan should process 1, got %d", count)
+	}
+	if len(handler.calls) != 1 {
+		t.Fatalf("expected 1 handler call, got %d", len(handler.calls))
+	}
+	if handler.calls[0].Opts.Category != "tv" {
+		t.Errorf("expected category 'tv', got %q", handler.calls[0].Opts.Category)
+	}
+}
+
+func TestDynamicCategoryUpdate(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+	store, err := OpenStore(stateFile)
+	if err != nil {
+		t.Fatalf("OpenStore failed: %v", err)
+	}
+
+	handler := &MockHandler{failFor: make(map[string]error)}
+
+	// Start with no categories.
+	categories := []string{}
+	catFn := func() []string { return categories }
+	scanner := New(tmpDir, store, handler, catFn, nil)
+
+	// Create a "tv" subdir with an NZB.
+	tvDir := filepath.Join(tmpDir, "tv")
+	if err := os.MkdirAll(tvDir, 0o755); err != nil {
+		t.Fatalf("mkdir tv: %v", err)
+	}
+	nzbPath := filepath.Join(tvDir, "show.nzb")
+	if err := os.WriteFile(nzbPath, []byte("<?xml version=\"1.0\" ?>"), 0o644); err != nil {
+		t.Fatalf("write show.nzb: %v", err)
+	}
+
+	// First two scans with no categories: subdir is ignored.
+	if _, err := scanner.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("scan 1: %v", err)
+	}
+	count, err := scanner.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("scan 2: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("no categories configured: expected 0 processed, got %d", count)
+	}
+
+	// Now add "tv" to categories — scanner should pick it up.
+	categories = []string{"tv"}
+
+	// Need two more scans: first to record (first sighting in subdir),
+	// second to process (stable).
+	if _, err := scanner.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("scan 3: %v", err)
+	}
+	count, err = scanner.ScanOnce(context.Background())
+	if err != nil {
+		t.Fatalf("scan 4: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("after adding 'tv' category: expected 1 processed, got %d", count)
+	}
+	if len(handler.calls) != 1 {
+		t.Fatalf("expected 1 handler call, got %d", len(handler.calls))
+	}
+	if handler.calls[0].Opts.Category != "tv" {
+		t.Errorf("expected category 'tv', got %q", handler.calls[0].Opts.Category)
 	}
 }

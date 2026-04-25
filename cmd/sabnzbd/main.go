@@ -351,7 +351,17 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
-	sc := dirscanner.New(cfg.General.DirscanDir, store, h, slog.Default().With("component", "dirscanner"))
+	catFn := func() []string {
+		var names []string
+		cfg.WithRead(func(c *config.Config) {
+			names = make([]string, len(c.Categories))
+			for i, cat := range c.Categories {
+				names[i] = cat.Name
+			}
+		})
+		return names
+	}
+	sc := dirscanner.New(cfg.General.DirscanDir, store, h, catFn, slog.Default().With("component", "dirscanner"))
 	go func() {
 		if err := sc.Run(ctx, interval); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Error("dirscanner", "err", err)
