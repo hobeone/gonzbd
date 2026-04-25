@@ -93,7 +93,7 @@ func (s *Scanner) ScanOnce(ctx context.Context) (int, error) {
 		}
 
 		// File was seen before. Check if it's stable (same size+mtime).
-		if priorState.Size != currentScan[path].Size || priorState.MTime != currentScan[path].MTime {
+		if priorState.Size != currentScan[path].Size || !priorState.MTime.Equal(currentScan[path].MTime) {
 			// File changed: reset the stable timer by updating its recorded state.
 			s.store.Set(path, currentScan[path])
 			s.logger.Debug("file changed, resetting stability timer", "path", path)
