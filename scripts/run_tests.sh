@@ -39,6 +39,9 @@ else
     echo -e "\n[3/4] Skipping UI Tests (ui/ directory not found)"
 fi
 
+# Run: go test -tags=uitest -v ./test/uitest/...
+# Prerequisites: cd ui && npm run build; playwright install chromium")
+
 # 4. UI E2E Tests (requires built UI + Playwright browsers)
 if [ -f "ui/dist/index.html" ]; then
     echo -e "\n[4/4] Running UI E2E Tests..."
@@ -51,4 +54,3 @@ fi
 echo -e "\n${GREEN}===================================================="
 echo "ALL TESTS PASSED SUCCESSFULLY"
 echo -e "====================================================${NC}"
-
