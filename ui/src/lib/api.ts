@@ -16,17 +16,16 @@ function apiUrl(mode: string, params?: Record<string, string>): string {
 export async function fetchJSON<T>(url: string): Promise<T> {
 	const res = await fetch(url);
 	if (!res.ok) {
+		let message = `API ${res.status}: ${res.statusText}`;
 		try {
 			const data = await res.json();
 			if (data && data.error) {
-				throw new Error(data.error);
+				message = data.error;
 			}
 		} catch (e) {
-			if (e instanceof Error && e.message !== `API ${res.status}: ${res.statusText}`) {
-				throw e;
-			}
+			// ignore parse errors
 		}
-		throw new Error(`API ${res.status}: ${res.statusText}`);
+		throw new Error(message);
 	}
 	return res.json() as Promise<T>;
 }
@@ -83,7 +82,16 @@ export async function setConfig(
 
 	const res = await fetch(API_BASE, { method: 'POST', body: form });
 	if (!res.ok) {
-		throw new Error(`Set Config ${res.status}: ${res.statusText}`);
+		let message = `Set Config ${res.status}: ${res.statusText}`;
+		try {
+			const data = await res.json();
+			if (data && data.error) {
+				message = data.error;
+			}
+		} catch (e) {
+			// ignore parse errors
+		}
+		throw new Error(message);
 	}
 	return res.json() as Promise<StatusResponse>;
 }

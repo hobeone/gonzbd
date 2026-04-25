@@ -23,6 +23,7 @@
 	let loading = $state(false);
 	let saving = $state(false);
 	let error = $state<string | null>(null);
+	let dirtyFields = $state<{ section: string; keyword: string; value: string | number | boolean }[]>([]);
 
 	let activeSection = $state('general');
 	let serverEditOpen = $state(false);
@@ -78,22 +79,50 @@
 
 	function reloadConfig() {
 		configData = null;
+		dirtyFields = [];
+		error = null;
 		fetchConfig();
 	}
 
 	function handleFieldUpdate(section: string, keyword: string, value: string | number | boolean) {
 		if (!configData) return;
-		const original = configData[section]?.[keyword];
 		configData[section][keyword] = value;
+
+		// Track as dirty field
+		const idx = dirtyFields.findIndex((f) => f.section === section && f.keyword === keyword);
+		if (idx !== -1) {
+			dirtyFields[idx].value = value;
+		} else {
+			dirtyFields.push({ section, keyword, value });
+		}
+	}
+
+	async function saveAll() {
+		if (dirtyFields.length === 0) return;
 		saving = true;
-		setConfig(section, keyword, value)
-			.catch((e) => {
-				if (configData) configData[section][keyword] = original;
-				error = `Failed to save ${keyword}: ${e instanceof Error ? e.message : String(e)}`;
-			})
-			.finally(() => {
-				saving = false;
-			});
+		error = null;
+
+		let currentField = '';
+		try {
+			// Save fields sequentially to handle errors properly
+			for (const field of [...dirtyFields]) {
+				await setConfig(field.section, field.keyword, field.value);
+				// Remove from dirty if successful
+				dirtyFields = dirtyFields.filter((f) => f !== field);
+			}
+			// All saved successfully
+			dirtyFields = [];
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			saving = false;
+		}
+	}
+
+	function discardChanges() {
+		if (dirtyFields.length > 0) {
+			reloadConfig();
+		}
 	}
 
 	function saveServer(s: ServerConfig, originalName?: string) {
@@ -185,10 +214,12 @@
 	function persistAndReload(section: string, items: any[]) {
 		saving = true;
 		setConfig(section, '', JSON.stringify(items))
-			.then(() => reloadConfig())
+			.then(() => {
+				error = null;
+				reloadConfig();
+			})
 			.catch((e) => {
 				error = `Failed to save ${section}: ${e instanceof Error ? e.message : String(e)}`;
-				reloadConfig();
 			})
 			.finally(() => {
 				saving = false;
@@ -221,7 +252,7 @@
 			<aside class="w-64 shrink-0 border-r bg-gray-50/50 p-4">
 				<Dialog.Title class="px-2 text-lg font-bold tracking-tight">Settings</Dialog.Title>
 				<nav class="mt-6 space-y-1">
-					{#each sections as section}
+					{#each sections as section (section.id)}
 						<button
 							onclick={() => (activeSection = section.id)}
 							class="w-full rounded-md px-3 py-2 text-left text-sm font-medium transition-colors
@@ -236,13 +267,25 @@
 			<!-- Main Content -->
 			<div class="flex flex-1 flex-col overflow-hidden">
 				<div class="flex-1 overflow-y-auto p-8">
+					{#if error}
+						<div class="mb-6 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+							<div class="flex items-center gap-2">
+								<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4">
+									<path fill-rule="evenodd" d="M8 15A7 7 0 1 0 8 1a7 7 0 0 0 0 14ZM8 4a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-1.5 0v-3A.75.75 0 0 1 8 4Zm0 8a.908.908 0 1 1 0-1.817.908.908 0 0 1 0 1.817Z" clip-rule="evenodd" />
+								</svg>
+								<span>{error}</span>
+							</div>
+							<button onclick={() => (error = null)} class="text-red-900 hover:text-red-700" aria-label="Dismiss error">
+								<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4">
+									<path d="M5.28 4.22a.75.75 0 0 0-1.06 1.06L6.94 8l-2.72 2.72a.75.75 0 1 0 1.06 1.06L8 9.06l2.72 2.72a.75.75 0 1 0 1.06-1.06L9.06 8l2.72-2.72a.75.75 0 0 0-1.06-1.06L8 6.94 5.28 4.22Z" />
+								</svg>
+							</button>
+						</div>
+					{/if}
+
 					{#if loading}
 						<div class="flex h-32 items-center justify-center text-sm text-gray-500">
 							Loading configuration...
-						</div>
-					{:else if error}
-						<div class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-							{error}
 						</div>
 					{:else if configData}
 						{#if activeSection === 'general'}
@@ -299,11 +342,27 @@
 								<svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
 								Saving changes...
 							</span>
+						{:else if dirtyFields.length > 0}
+							<span class="font-medium text-amber-600">{dirtyFields.length} unsaved changes</span>
 						{:else}
-							Changes are saved automatically.
+							All changes are synced with the server.
 						{/if}
 					</div>
-					<Button variant="outline" onclick={() => (open = false)}>Close</Button>
+					<div class="flex gap-3">
+						{#if dirtyFields.length > 0}
+							<Button variant="ghost" onclick={discardChanges} disabled={saving}>Discard</Button>
+							<Button onclick={saveAll} disabled={saving}>Save Changes</Button>
+						{/if}
+						<Button
+							variant="outline"
+							onclick={() => {
+								if (dirtyFields.length > 0 && !confirm('You have unsaved changes. Close anyway?')) return;
+								open = false;
+							}}
+						>
+							Close
+						</Button>
+					</div>
 				</footer>
 			</div>
 		</Dialog.Content>

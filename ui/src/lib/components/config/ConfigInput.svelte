@@ -28,14 +28,17 @@
 		}
 	});
 
+	function commit() {
+		clearTimeout(timer);
+		if (currentValue !== value) {
+			const v = type === 'number' ? Number(currentValue) : currentValue;
+			onupdate?.(section, keyword, v);
+		}
+	}
+
 	function handleInput() {
 		clearTimeout(timer);
-		timer = setTimeout(() => {
-			if (currentValue !== value) {
-				const v = type === 'number' ? Number(currentValue) : currentValue;
-				onupdate?.(section, keyword, v);
-			}
-		}, 500);
+		timer = setTimeout(commit, 500);
 	}
 </script>
 
@@ -50,6 +53,7 @@
 		{type}
 		bind:value={currentValue}
 		oninput={handleInput}
+		onblur={commit}
 		class="max-w-md"
 	/>
 	{#if description}
