@@ -52,6 +52,8 @@ func respondStatus(w http.ResponseWriter) {
 func respondError(w http.ResponseWriter, code int, msg string) {
 	if code >= 500 {
 		slog.Error("api response error", "component", "api", "status", code, "error", msg)
+	} else if code != http.StatusOK {
+		slog.Warn("api response warning", "component", "api", "status", code, "error", msg)
 	}
 	respondJSON(w, code, map[string]any{
 		"status": false,
