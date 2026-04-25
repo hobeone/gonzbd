@@ -156,7 +156,7 @@
 			<div class="mb-4">
 				<Dialog.Title class="text-lg font-bold">Delete History Item</Dialog.Title>
 				<Dialog.Description class="mt-2 text-sm text-gray-500">
-					Are you sure you want to delete <span class="font-semibold text-gray-900"
+					Are you sure you want to delete <span class="inline-block max-w-[200px] sm:max-w-xs align-bottom font-semibold text-gray-900 truncate" title={deleteTarget?.name}
 						>{deleteTarget?.name}</span
 					> from history?
 				</Dialog.Description>
