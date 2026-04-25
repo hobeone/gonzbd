@@ -80,4 +80,26 @@ describe('ConfigInput', () => {
 
 		vi.useRealTimers();
 	});
+
+	it('commits changes immediately on blur', async () => {
+		const onupdate = vi.fn();
+
+		render(ConfigInput, {
+			section: 'general',
+			keyword: 'host',
+			value: '0.0.0.0',
+			label: 'Host',
+			onupdate
+		});
+
+		const input = screen.getByLabelText('Host');
+		await fireEvent.input(input, { target: { value: '127.0.0.1' } });
+
+		// Should not be called immediately on input
+		expect(onupdate).not.toHaveBeenCalled();
+
+		// Should be called immediately on blur
+		await fireEvent.blur(input);
+		expect(onupdate).toHaveBeenCalledWith('general', 'host', '127.0.0.1');
+	});
 });
