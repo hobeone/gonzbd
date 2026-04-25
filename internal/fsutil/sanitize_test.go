@@ -18,6 +18,8 @@ func TestSanitizeFilename(t *testing.T) {
 		{"control chars", "test\x01file.bin", SanitizeOptions{}, "test_file.bin"},
 		{"custom illegal", "test?file.bin", SanitizeOptions{ReplaceIllegalWith: "!"}, "test!file.bin"},
 		{"custom spaces", "my file.bin", SanitizeOptions{ReplaceSpacesWith: "."}, "my.file.bin"},
+		{"strip diacritics", "éöñ.bin", SanitizeOptions{StripDiacritics: true}, "eon.bin"},
+		{"preserve emoji with diacritics", "é🚀ñ.bin", SanitizeOptions{StripDiacritics: true}, "e🚀n.bin"},
 		{"windows device", "CON.txt", SanitizeOptions{}, "_CON.txt"},
 		{"windows device prefix", "prn", SanitizeOptions{}, "_prn"},
 		{"windows device case", "aux.bin", SanitizeOptions{}, "_aux.bin"},
