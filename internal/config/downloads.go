@@ -50,4 +50,8 @@ type DownloadConfig struct {
 	// ReplaceSpacesWith is the string used to replace spaces in folder and
 	// filenames. Defaults to "" (keep spaces).
 	ReplaceSpacesWith string `yaml:"replace_spaces_with" json:"replace_spaces_with"`
+
+	// StripDiacritics, if true, will replace accented characters with their
+	// ASCII equivalents (e.g. é -> e). Defaults to false.
+	StripDiacritics bool `yaml:"strip_diacritics" json:"strip_diacritics"`
 }

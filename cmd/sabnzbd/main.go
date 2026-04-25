@@ -1,9 +1,9 @@
 // Command sabnzbd runs the SABnzbd-Go daemon. Two run modes:
 //
-//      --serve          Start the HTTP server (API + web UI) and block
-//                       until SIGINT/SIGTERM. The long-running daemon mode.
-//      --nzb <path>     One-shot mode: download a single NZB file and exit.
-//                       Step 4.1 proof-of-life; still useful for smoke tests.
+//	--serve          Start the HTTP server (API + web UI) and block
+//	                 until SIGINT/SIGTERM. The long-running daemon mode.
+//	--nzb <path>     One-shot mode: download a single NZB file and exit.
+//	                 Step 4.1 proof-of-life; still useful for smoke tests.
 //
 // Exactly one of --serve or --nzb must be supplied.
 package main
@@ -30,6 +30,7 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/bpsmeter"
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/dirscanner"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/notifier"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
@@ -198,6 +199,11 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		CacheLimit:  int64(cfg.Downloads.ArticleCacheSize),
 		Servers:     enabledServers(cfg.Servers),
 		Categories:  cfg.Categories,
+		Sanitize: fsutil.SanitizeOptions{
+			ReplaceIllegalWith: cfg.Downloads.ReplaceIllegalWith,
+			ReplaceSpacesWith:  cfg.Downloads.ReplaceSpacesWith,
+			StripDiacritics:    cfg.Downloads.StripDiacritics,
+		},
 	}, histRepo)
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
@@ -265,7 +271,6 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	// Inject the WebSocket broadcaster from the API server into the
 	// application so it can fire real-time events.
 	application.SetEmitter(wsAdapter{apiSrv.EventBroadcaster()})
-
 
 	// Check for missing dependencies and surface them via logs and UI warnings.
 	for _, warning := range app.CheckDependencies() {
@@ -539,7 +544,7 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 
 	// Wait for the job to reach History (indicates post-processing is complete).
 	slog.Info("waiting for job to complete", "job", job.Name, "id", job.ID)
-	
+
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
 

@@ -5,8 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -26,6 +29,7 @@ const (
 type SanitizeOptions struct {
 	ReplaceIllegalWith string
 	ReplaceSpacesWith  string
+	StripDiacritics    bool
 }
 
 // JoinSafe joins a base directory, folder name, and filename into a single
@@ -113,10 +117,15 @@ func SanitizeFilename(filename string, opts SanitizeOptions) string {
 		return "unknown"
 	}
 
-	// 1. NFC Normalization
+	// 1. NFC Normalization (standard first step)
 	filename = norm.NFC.String(filename)
 
-	// 2. Remove illegal characters (control characters 0-31 and Windows reserved characters)
+	// 2. Strip diacritics if requested
+	if opts.StripDiacritics {
+		filename = stripDiacritics(filename)
+	}
+
+	// 3. Remove illegal characters (control characters 0-31 and Windows reserved characters)
 	illegal := "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f" +
 		"\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f" +
 		`\/:*?"<>|`
@@ -126,8 +135,6 @@ func SanitizeFilename(filename string, opts SanitizeOptions) string {
 		illegalReplacement = "_"
 	}
 
-	// We can't use strings.Map easily with multi-character replacements.
-	// Use a loop or ReplaceAll instead.
 	for _, char := range illegal {
 		filename = strings.ReplaceAll(filename, string(char), illegalReplacement)
 	}
@@ -138,14 +145,19 @@ func SanitizeFilename(filename string, opts SanitizeOptions) string {
 
 	filename = strings.TrimSpace(filename)
 
-	// 3. Replace Windows reserved device names
+	// 4. Replace Windows reserved device names
 	filename = replaceWinDevices(filename)
+
+	// 5. Remove trailing dots and spaces (invalid on Windows)
+	for len(filename) > 0 && (filename[len(filename)-1] == '.' || filename[len(filename)-1] == ' ') {
+		filename = strings.TrimRight(filename, ". ")
+	}
 
 	if filename == "" {
 		return "unknown"
 	}
 
-	// 4. Truncate length while preserving extension.
+	// 6. Truncate length while preserving extension.
 	return truncateFilename(filename, maxFilenameBytes)
 }
 
@@ -159,7 +171,12 @@ func SanitizeFolderName(foldername string, opts SanitizeOptions) string {
 	// 1. NFC Normalization
 	foldername = norm.NFC.String(foldername)
 
-	// 2. Remove illegal characters
+	// 2. Strip diacritics if requested
+	if opts.StripDiacritics {
+		foldername = stripDiacritics(foldername)
+	}
+
+	// 3. Remove illegal characters
 	illegal := "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f" +
 		"\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f" +
 		`\/:*?"<>|`
@@ -179,15 +196,15 @@ func SanitizeFolderName(foldername string, opts SanitizeOptions) string {
 
 	foldername = strings.TrimSpace(foldername)
 
-	// 3. Replace Windows reserved device names
+	// 4. Replace Windows reserved device names
 	foldername = replaceWinDevices(foldername)
 
-	// 4. Truncate length
+	// 5. Truncate length
 	if len(foldername) > maxFilenameBytes {
 		foldername = truncateFilename(foldername, maxFilenameBytes)
 	}
 
-	// 5. Remove trailing dots and spaces (invalid on Windows)
+	// 6. Remove trailing dots and spaces (invalid on Windows)
 	for len(foldername) > 0 && (foldername[len(foldername)-1] == '.' || foldername[len(foldername)-1] == ' ') {
 		foldername = strings.TrimRight(foldername, ". ")
 	}
@@ -197,6 +214,14 @@ func SanitizeFolderName(foldername string, opts SanitizeOptions) string {
 	}
 
 	return foldername
+}
+
+// stripDiacritics replaces accented characters with their ASCII equivalents.
+func stripDiacritics(s string) string {
+	// 1. Decompose into NFD (e.g. é -> e + ´)
+	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
+	result, _, _ := transform.String(t, s) //nolint:errcheck // best-effort stripping
+	return result
 }
 
 // IsObfuscated returns true if the filename looks like an obfuscated hash
