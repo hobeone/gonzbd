@@ -82,7 +82,7 @@ func (*RepairStage) Run(ctx context.Context, job *Job) error {
 		}
 
 		cleanName := nzb.ExtractFilenameFromSubject(job.Queue.Files[fileIdx].Subject)
-		destPath := fsutil.JoinSafe(job.DownloadDir, "", cleanName)
+		destPath := fsutil.JoinSafe(job.DownloadDir, "", cleanName, job.Sanitize)
 
 		// Don't overwrite existing files
 		if _, err := os.Stat(destPath); err == nil {
@@ -173,7 +173,7 @@ func (*DeobfuscateStage) Name() string { return "deobfuscate" }
 
 // Run invokes deobfuscate.Deobfuscate against job.DownloadDir.
 func (*DeobfuscateStage) Run(_ context.Context, job *Job) error {
-	if _, err := deobfuscate.Deobfuscate(job.DownloadDir, job.Queue.Name); err != nil {
+	if _, err := deobfuscate.Deobfuscate(job.DownloadDir, job.Queue.Name, job.Sanitize); err != nil {
 		return fmt.Errorf("deobfuscate: %w", err)
 	}
 	return nil
@@ -209,6 +209,7 @@ func (s *SortStage) Run(ctx context.Context, job *Job) error {
 		job.Queue.TotalBytes,
 		s.Rules,
 		s.DestRoot,
+		job.Sanitize,
 	)
 	if err != nil {
 		return fmt.Errorf("sort: %w", err)
@@ -342,7 +343,7 @@ func (*FinalizeStage) Run(ctx context.Context, job *Job) error {
 
 	for _, e := range entries {
 		src := filepath.Join(job.DownloadDir, e.Name())
-		dst := fsutil.JoinSafe(job.FinalDir, "", e.Name())
+		dst := fsutil.JoinSafe(job.FinalDir, "", e.Name(), job.Sanitize)
 		if err := moveRecursive(ctx, src, dst); err != nil {
 			return fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err)
 		}
@@ -415,4 +416,3 @@ func moveFile(src, dst string) error {
 	}
 	return os.Remove(src)
 }
-

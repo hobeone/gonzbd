@@ -223,7 +223,8 @@ func NewJob(parsed *nzb.NZB, opts AddOptions) (*Job, error) {
 	if name == "" {
 		name = deriveName(opts.Filename)
 	}
-	name = fsutil.SanitizeFolderName(name)
+	// Since we don't have user config here, we use default options.
+	name = fsutil.SanitizeFolderName(name, fsutil.SanitizeOptions{})
 
 	job := &Job{
 		ID:       id,

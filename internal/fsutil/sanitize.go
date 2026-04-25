@@ -22,28 +22,36 @@ const (
 	maxPathBytes     = 250 // Safe limit for Windows (260) and others
 )
 
+// SanitizeOptions defines how to handle illegal characters and spaces.
+type SanitizeOptions struct {
+	ReplaceIllegalWith string
+	ReplaceSpacesWith  string
+}
+
 // JoinSafe joins a base directory, folder name, and filename into a single
 // absolute path, ensuring that the result does not exceed maxPathBytes.
 // If the path is too long, it truncates the folder name first, then the
 // filename if necessary.
-func JoinSafe(base, folder, file string) string {
-	// 1. Sanitize the components first.
+func JoinSafe(base, folder, file string, opts SanitizeOptions) string {
+	// 1. Sanitize the folder and file components first.
+	// Base is assumed to be a trusted absolute path from the caller.
 	if folder != "" {
-		folder = SanitizeFolderName(folder)
+		folder = SanitizeFolderName(folder, opts)
 	}
 	if file != "" {
-		file = SanitizeFilename(file)
+		file = SanitizeFilename(file, opts)
 	}
 
 	// 2. Initial path.
 	var fullPath string
-	if folder != "" && file != "" {
+	switch {
+	case folder != "" && file != "":
 		fullPath = filepath.Join(base, folder, file)
-	} else if folder != "" {
+	case folder != "":
 		fullPath = filepath.Join(base, folder)
-	} else if file != "" {
+	case file != "":
 		fullPath = filepath.Join(base, file)
-	} else {
+	default:
 		return base
 	}
 
@@ -100,7 +108,7 @@ func JoinSafe(base, folder, file string) string {
 
 // SanitizeFilename cleans up a filename to ensure it is safe for all filesystems.
 // It follows the logic of Python SABnzbd's sanitize_filename.
-func SanitizeFilename(filename string) string {
+func SanitizeFilename(filename string, opts SanitizeOptions) string {
 	if filename == "" {
 		return "unknown"
 	}
@@ -113,12 +121,20 @@ func SanitizeFilename(filename string) string {
 		"\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f" +
 		`\/:*?"<>|`
 
-	filename = strings.Map(func(r rune) rune {
-		if strings.ContainsRune(illegal, r) {
-			return '_'
-		}
-		return r
-	}, filename)
+	illegalReplacement := opts.ReplaceIllegalWith
+	if illegalReplacement == "" {
+		illegalReplacement = "_"
+	}
+
+	// We can't use strings.Map easily with multi-character replacements.
+	// Use a loop or ReplaceAll instead.
+	for _, char := range illegal {
+		filename = strings.ReplaceAll(filename, string(char), illegalReplacement)
+	}
+
+	if opts.ReplaceSpacesWith != "" {
+		filename = strings.ReplaceAll(filename, " ", opts.ReplaceSpacesWith)
+	}
 
 	filename = strings.TrimSpace(filename)
 
@@ -135,7 +151,7 @@ func SanitizeFilename(filename string) string {
 
 // SanitizeFolderName cleans up a folder name to ensure it is safe for all filesystems.
 // It follows the logic of Python SABnzbd's sanitize_foldername.
-func SanitizeFolderName(foldername string) string {
+func SanitizeFolderName(foldername string, opts SanitizeOptions) string {
 	if foldername == "" {
 		return "unknown"
 	}
@@ -148,12 +164,18 @@ func SanitizeFolderName(foldername string) string {
 		"\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f" +
 		`\/:*?"<>|`
 
-	foldername = strings.Map(func(r rune) rune {
-		if strings.ContainsRune(illegal, r) {
-			return '_'
-		}
-		return r
-	}, foldername)
+	illegalReplacement := opts.ReplaceIllegalWith
+	if illegalReplacement == "" {
+		illegalReplacement = "_"
+	}
+
+	for _, char := range illegal {
+		foldername = strings.ReplaceAll(foldername, string(char), illegalReplacement)
+	}
+
+	if opts.ReplaceSpacesWith != "" {
+		foldername = strings.ReplaceAll(foldername, " ", opts.ReplaceSpacesWith)
+	}
 
 	foldername = strings.TrimSpace(foldername)
 

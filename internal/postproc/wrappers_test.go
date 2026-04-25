@@ -262,4 +262,3 @@ func TestFinalizeStage_Run(t *testing.T) {
 		t.Errorf("source directory still exists")
 	}
 }
-

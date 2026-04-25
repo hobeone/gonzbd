@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 )
 
 func TestPar2Rename(t *testing.T) {
@@ -52,7 +54,7 @@ func TestPar2Rename(t *testing.T) {
 	}
 
 	// 3. Run Par2Rename.
-	renames, err := Par2Rename(jobDir)
+	renames, err := Par2Rename(jobDir, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("Par2Rename: %v", err)
 	}
@@ -78,4 +80,3 @@ func TestPar2Rename(t *testing.T) {
 		t.Errorf("Obf file %q still exists", obfPath)
 	}
 }
-
