@@ -398,6 +398,46 @@ func TestAddFile_MissingFile(t *testing.T) {
 	}
 }
 
+func TestAddFile_NameField(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+
+	nzbData := makeTestNZB(t)
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	// Using "name" field instead of "nzbfile"
+	fw, err := mw.CreateFormFile("name", "test.nzb")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := fw.Write(nzbData); err != nil {
+		t.Fatalf("write nzb: %v", err)
+	}
+	mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api?mode=addfile&apikey="+testAPIKey, &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Status bool     `json:"status"`
+		NzoIDs []string `json:"nzo_ids"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Status {
+		t.Error("status should be true")
+	}
+	if q.Len() != 1 {
+		t.Errorf("queue len = %d; want 1 after addfile", q.Len())
+	}
+}
+
 // --- AddLocalFile ---
 
 func TestAddLocalFile_HappyPath(t *testing.T) {

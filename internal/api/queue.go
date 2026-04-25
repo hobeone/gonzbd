@@ -287,7 +287,11 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 
 	f, fh, err := r.FormFile("nzbfile")
 	if err != nil {
-		respondError(w, http.StatusBadRequest, "nzbfile field required")
+		// Fallback to "name" field if "nzbfile" is missing.
+		f, fh, err = r.FormFile("name")
+	}
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "nzbfile or name field required")
 		return
 	}
 	defer f.Close() //nolint:errcheck // multipart cleanup
