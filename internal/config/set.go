@@ -84,16 +84,42 @@ func setFieldValue(f reflect.Value, val string) error {
 	type_ := f.Type().String()
 
 	switch {
+	case type_ == "config.ByteSize":
+		b, err := parseByteSize(val)
+		if err != nil {
+			return fmt.Errorf("invalid byte size: %w", err)
+		}
+		f.SetInt(int64(b))
+	case type_ == "config.Percent":
+		i, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid percent: %w", err)
+		}
+		p := Percent(i)
+		// We don't have a validate method on Percent but we can check range
+		if i < 0 || i > 100 {
+			return fmt.Errorf("percent: %d outside [0,100]", i)
+		}
+		f.SetInt(int64(p))
+	case type_ == "config.SSLVerify":
+		i, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid ssl_verify: %w", err)
+		}
+		s := SSLVerify(i)
+		if err := s.validate(); err != nil {
+			return err
+		}
+		f.SetInt(int64(s))
 	case kind == reflect.String:
 		f.SetString(val)
-	case kind == reflect.Int || type_ == "config.Percent":
+	case kind == reflect.Int:
 		i, err := strconv.Atoi(val)
 		if err != nil {
 			return fmt.Errorf("invalid integer: %w", err)
 		}
 		f.SetInt(int64(i))
-	case kind == reflect.Int64 || type_ == "config.ByteSize":
-		// ByteSize might be sent as a raw byte count (int)
+	case kind == reflect.Int64:
 		i, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {
 			return fmt.Errorf("invalid int64: %w", err)
