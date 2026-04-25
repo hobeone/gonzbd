@@ -2,16 +2,15 @@
 // download directories.
 //
 // Scope vs. Python deobfuscate_filenames.py:
-//   - TODO: par2-file-header-based name recovery (Python lines 48-102) is not
-//     implemented; it requires binary parsing of PAR2 packet formats.
 //   - TODO: extension-inference by content sniff (has_popular_extension /
 //     what_is_most_likely_extension) is not implemented; only files that already
 //     carry an extension are acted upon.
 //   - TODO: deobfuscate_subtitles helper is not implemented.
 //   - TODO: IGNORED_MOVIE_FOLDERS (DVD/Bluray) carve-out is not implemented.
 //
-// What IS implemented: IsProbablyObfuscated (full heuristic port), BiggestFile
-// (3× size ratio guard), and Deobfuscate (rename biggest+siblings to usefulName).
+// What IS implemented: Par2-packet-based renaming, IsProbablyObfuscated (full
+// heuristic port), BiggestFile (3× size ratio guard), and Deobfuscate (rename
+// biggest+siblings to usefulName).
 package deobfuscate
 
 import (
@@ -211,12 +210,25 @@ type Rename struct {
 	To   string
 }
 
-// Deobfuscate scans dir for an obfuscated biggest file and renames it (and
-// any same-stem siblings) to usefulName + original extension. Returns the
-// list of renames actually performed. Returns nil, nil when no rename is
-// needed.
+// Deobfuscate scans dir for obfuscated files. It first attempts to use PAR2
+// metadata for renaming. If no PAR2 files are present or no renames occur,
+// it falls back to the "biggest file" heuristic and renames it (and any
+// same-stem siblings) to usefulName + original extension. Returns the list
+// of renames actually performed. Returns nil, nil when no rename is needed.
 func Deobfuscate(dir, usefulName string) ([]Rename, error) {
 	log := slog.Default().With("component", "deobfuscate")
+
+	// 1. Attempt PAR2-based deobfuscation first.
+	parRenames, err := Par2Rename(dir)
+	if err != nil {
+		log.Warn("deobfuscate: par2 deobfuscation encountered an error", "dir", dir, "err", err)
+	}
+	if len(parRenames) > 0 {
+		log.Debug("deobfuscate: par2-based renaming successful — skipping heuristic")
+		return parRenames, nil
+	}
+
+	// 2. Fall back to heuristic: find the qualifying biggest file.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("readdir %s: %w", dir, err)

@@ -165,7 +165,8 @@ func parseStatus(output string) Status {
 // not found, context cancelled, etc.).
 func Verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyResult, error) {
 	var stdout, stderr bytes.Buffer
-	args := []string{"r", parfile}
+	args := make([]string, 0, 2+len(extraFiles))
+	args = append(args, "r", parfile)
 	args = append(args, extraFiles...)
 
 	cmd := exec.CommandContext(ctx, "par2", args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
@@ -196,7 +197,8 @@ func Verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyRe
 // codes.  A non-nil error signals a system-level failure.
 func Repair(ctx context.Context, parfile string, extraFiles ...string) (RepairResult, error) {
 	var combined bytes.Buffer
-	args := []string{"r", parfile}
+	args := make([]string, 0, 2+len(extraFiles))
+	args = append(args, "r", parfile)
 	args = append(args, extraFiles...)
 
 	cmd := exec.CommandContext(ctx, "par2", args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
