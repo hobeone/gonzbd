@@ -183,7 +183,7 @@ func TestStatePersistence(t *testing.T) {
 	if state.Size != testState.Size {
 		t.Errorf("size mismatch: expected %d, got %d", testState.Size, state.Size)
 	}
-	if state.MTime != testTime {
+	if !state.MTime.Equal(testTime) {
 		t.Errorf("mtime mismatch: expected %v, got %v", testTime, state.MTime)
 	}
 }
