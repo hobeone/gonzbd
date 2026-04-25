@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/par2"
 )
 
@@ -83,10 +84,7 @@ func Par2Rename(dir string) ([]Rename, error) {
 			}
 
 			// Perform rename.
-			newPath, err := uniqueName(filepath.Join(dir, trueName))
-			if err != nil {
-				return renames, err
-			}
+			newPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(filepath.Dir(dir), filepath.Base(dir), trueName))
 
 			if err := os.Rename(path, newPath); err != nil {
 				return renames, fmt.Errorf("rename %s → %s: %w", path, newPath, err)

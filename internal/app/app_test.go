@@ -588,7 +588,7 @@ func TestFullDownloadLifecycle(t *testing.T) {
 	case <-application.PostProcComplete():
 		// Files should be moved to CompleteDir/CategoryDir/JobName
 		// Our job category is 'movies' which has Dir 'Movies'
-		// Note: The RepairStage renames 0000.tmp to test.bin via fallback naming.
+		// Note: The RepairStage renames 0000.nzf to test.bin via fallback naming.
 		finalPath := filepath.Join(completeDir, "Movies", "testjob", "test.bin")
 		if _, err := os.Stat(finalPath); err != nil {
 			t.Errorf("expected final file at %s, but got error: %v", finalPath, err)

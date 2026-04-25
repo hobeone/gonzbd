@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 )
 
 // SorterRule describes one user-configured sorting rule. Rules are evaluated
@@ -125,7 +127,8 @@ func Apply(
 	slog.Info("sorting: matched rule", "rule", matched.Name, "job", jobName)
 
 	subpath := ExpandTemplate(matched.SortString, info, ext)
-	destDir := filepath.Join(destRoot, subpath)
+	// subpath is something like "TV/Show Name/Season 01/Show.S01E01.mkv"
+	destDir := fsutil.JoinSafe(destRoot, filepath.Dir(subpath), "")
 
 	if err := os.MkdirAll(destDir, 0o750); err != nil {
 		return ApplyResult{}, fmt.Errorf("apply: mkdir %s: %w", destDir, err)
@@ -138,7 +141,14 @@ func Apply(
 			return result, err
 		}
 
-		dst := filepath.Join(destDir, filepath.Base(src))
+		// If subpath looks like a full file path, use its base name.
+		// Otherwise use the source file's base name.
+		targetName := filepath.Base(src)
+		if filepath.Base(subpath) != "." && filepath.Base(subpath) != "/" {
+			targetName = filepath.Base(subpath)
+		}
+
+		dst := fsutil.JoinSafe(destDir, "", targetName)
 		if moveErr := moveFile(src, dst); moveErr != nil {
 			return result, fmt.Errorf("apply: move %s → %s: %w", src, dst, moveErr)
 		}

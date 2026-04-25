@@ -204,10 +204,10 @@ func TestExpandTemplate(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := sorting.ExpandTemplate(tc.tmpl, info, tc.ext)
+			got := sorting.ExpandTemplate(tc.nzfl, info, tc.ext)
 			if got != tc.wantOut {
 				t.Errorf("ExpandTemplate(%q, ..., %q)\n  got  %q\n  want %q",
-					tc.tmpl, tc.ext, got, tc.wantOut)
+					tc.nzfl, tc.ext, got, tc.wantOut)
 			}
 		})
 	}
