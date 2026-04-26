@@ -94,6 +94,12 @@ func IsProbablyObfuscated(filename string) bool {
 
 	// — signals for non-obfuscated names —
 
+	// Count character categories. Intentionally ASCII-only to match the
+	// Python reference implementation. Non-ASCII runes (unicode letters,
+	// CJK, etc.) are not counted toward any bucket, which means filenames
+	// consisting entirely of non-ASCII won't match the "not obfuscated"
+	// heuristics below and will default to "probably obfuscated" — a
+	// conservative but safe behavior.
 	decimals := 0
 	upperchars := 0
 	lowerchars := 0
