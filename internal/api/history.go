@@ -77,8 +77,6 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	nzoIDs := formString(r, "nzo_ids") // comma-separated IDs to fetch
 
 	opts := history.SearchOptions{
-		Start:    start,
-		Limit:    limit,
 		Search:   search,
 		Category: catFilter,
 	}
@@ -89,13 +87,21 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 		opts.Status = "Failed"
 	}
 
+	// When nzo_ids is specified, we cannot apply LIMIT/OFFSET at the SQL
+	// level because the requested IDs may not fall within the page window.
+	// Instead, fetch all matching entries and post-filter by ID.
+	if nzoIDs == "" {
+		opts.Start = start
+		opts.Limit = limit
+	}
+
 	entries, err := s.history.Search(r.Context(), opts)
 	if err != nil {
 		s.respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
 		return
 	}
 
-	// We need total count for pagination.
+	// Total count for pagination (always reflects the unfiltered-by-ID total).
 	totalCount, err := s.history.Count(r.Context(), opts)
 	if err != nil {
 		s.respondError(w, http.StatusInternalServerError, "history count: "+err.Error())
