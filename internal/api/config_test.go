@@ -24,7 +24,10 @@ func testServerWithConfig(t *testing.T, cfg *config.Config) *Server {
 
 func TestModeGetConfig_Default(t *testing.T) {
 	t.Parallel()
-	cfg := &config.Config{}
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
 	s := testServerWithConfig(t, cfg)
 
 	rr := apiGet(t, s.Handler(), "/api?mode=get_config&apikey="+testAPIKey)
@@ -119,7 +122,10 @@ func TestModeConfig_UnknownAction(t *testing.T) {
 
 func TestGetConfigConcurrentSafe(t *testing.T) {
 	t.Parallel()
-	cfg := &config.Config{}
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
 	s := testServerWithConfig(t, cfg)
 
 	// Run set_config and get_config concurrently to ensure no data races
