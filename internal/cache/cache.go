@@ -164,6 +164,9 @@ func (c *Cache) Load(key, adminDir string) ([]byte, error) {
 
 // Flush writes all in-memory entries to disk and empties the memory map. Called
 // on shutdown or when direct_write is toggled.
+//
+// If a disk write fails, the entry is restored to memory so data is not
+// permanently lost.
 func (c *Cache) Flush() error {
 	c.mu.Lock()
 	snapshot := c.articles
@@ -174,8 +177,16 @@ func (c *Cache) Flush() error {
 
 	var firstErr error
 	for key, entry := range snapshot {
-		if err := c.writeToDisk(key, entry.adminDir, entry.data); err != nil && firstErr == nil {
-			firstErr = err
+		if err := c.writeToDisk(key, entry.adminDir, entry.data); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			// Restore the entry so data isn't permanently lost.
+			c.mu.Lock()
+			c.articles[key] = entry
+			c.used += int64(len(entry.data))
+			c.usedAtomic.Store(c.used)
+			c.mu.Unlock()
 		}
 	}
 	return firstErr
