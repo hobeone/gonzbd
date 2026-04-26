@@ -2,6 +2,7 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import ConfigInput from './ConfigInput.svelte';
 	import ConfigSwitch from './ConfigSwitch.svelte';
+	import ConfigTextarea from './ConfigTextarea.svelte';
 
 	let {
 		configData,
@@ -24,5 +25,15 @@
 		<ConfigInput section="downloads" keyword="article_cache_size" label="Article Cache" value={configData.downloads.article_cache_size} description="In-memory cache size (e.g. 500M)." onupdate={onFieldUpdate} />
 		<ConfigInput section="downloads" keyword="max_art_tries" label="Article Retries" type="number" value={configData.downloads.max_art_tries} description="Max attempts across all servers per article." onupdate={onFieldUpdate} />
 		<ConfigSwitch section="downloads" keyword="pre_check" label="Pre-check article availability" value={configData.downloads.pre_check} description="STAT check before download (saves bandwidth)." onupdate={onFieldUpdate} />
+		<Separator class="my-4" />
+		<div>
+			<h4 class="text-sm font-medium">Naming & Cleanup</h4>
+			<p class="text-xs text-muted-foreground mb-4">Control how folders and files are named on disk.</p>
+		</div>
+		<ConfigInput section="downloads" keyword="replace_illegal_with" label="Replace Illegal Characters With" value={configData.downloads.replace_illegal_with} description="String used to replace invalid filesystem characters (default: _)." onupdate={onFieldUpdate} />
+		<ConfigInput section="downloads" keyword="replace_spaces_with" label="Replace Spaces With" value={configData.downloads.replace_spaces_with} description="String used to replace spaces in names (e.g. _ or .)." onupdate={onFieldUpdate} />
+		<ConfigSwitch section="downloads" keyword="strip_diacritics" label="Strip Diacritics" value={configData.downloads.strip_diacritics} description="Replace accented characters with ASCII (e.g. é -> e)." onupdate={onFieldUpdate} />
+		<ConfigTextarea section="downloads" keyword="cleanup_list" label="Indexer/Spam Cleanup List" value={configData.downloads.cleanup_list} description="Regex patterns to strip from names (one per line).
+		Examples: ^\[PRiVATE\]-? or (?i)-? ?\(Scenzbd\)$" onupdate={onFieldUpdate} />
 	</div>
 </section>

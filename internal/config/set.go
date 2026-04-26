@@ -118,6 +118,12 @@ func setFieldValue(f reflect.Value, val string) error {
 		f.SetInt(int64(s))
 	case f.Kind() == reflect.String:
 		f.SetString(val)
+	case f.Kind() == reflect.Slice && f.Type().Elem().Kind() == reflect.String:
+		var slice []string
+		if err := json.Unmarshal([]byte(val), &slice); err != nil {
+			return fmt.Errorf("invalid string slice JSON: %w", err)
+		}
+		f.Set(reflect.ValueOf(slice))
 	case f.Kind() == reflect.Int:
 		i, err := strconv.Atoi(val)
 		if err != nil {
