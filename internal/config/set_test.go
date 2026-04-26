@@ -118,6 +118,38 @@ func TestConfig_Set(t *testing.T) {
 			true,
 			nil,
 		},
+		{
+			"set string slice (cleanup_list)",
+			"downloads", "cleanup_list", `["a", "b", "c"]`,
+			false,
+			func(t *testing.T, c *Config) {
+				want := []string{"a", "b", "c"}
+				if len(c.Downloads.CleanupList) != 3 {
+					t.Fatalf("len(CleanupList) = %d, want 3", len(c.Downloads.CleanupList))
+				}
+				for i, v := range c.Downloads.CleanupList {
+					if v != want[i] {
+						t.Errorf("CleanupList[%d] = %q, want %q", i, v, want[i])
+					}
+				}
+			},
+		},
+		{
+			"set empty string slice",
+			"downloads", "cleanup_list", `[]`,
+			false,
+			func(t *testing.T, c *Config) {
+				if len(c.Downloads.CleanupList) != 0 {
+					t.Fatalf("len(CleanupList) = %d, want 0", len(c.Downloads.CleanupList))
+				}
+			},
+		},
+		{
+			"set string slice invalid JSON",
+			"downloads", "cleanup_list", `["a", "b", "c`,
+			true,
+			nil,
+		},
 	}
 
 	for _, tc := range tests {
