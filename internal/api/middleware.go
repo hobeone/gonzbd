@@ -60,12 +60,15 @@ func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
 }
 
 // apiKeyFromRequest extracts the API key from (in priority order):
-//  1. ?apikey= query parameter
-//  2. POST form field "apikey"
+//  1. ?apikey= query parameter / POST form field "apikey"
+//  2. ?nzbkey= query parameter / POST form field "nzbkey"
 //  3. X-API-Key header
 //  4. "sab_apikey" cookie (set by the SPA handler)
 func apiKeyFromRequest(r *http.Request) string {
 	if k := r.FormValue("apikey"); k != "" {
+		return k
+	}
+	if k := r.FormValue("nzbkey"); k != "" {
 		return k
 	}
 	if k := r.Header.Get("X-API-Key"); k != "" {
