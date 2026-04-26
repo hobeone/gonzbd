@@ -132,7 +132,11 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 		port = 563
 	}
 
-	sslVerify, _ := strconv.Atoi(formString(r, "ssl_verify"))
+	sslVerifyStr := formString(r, "ssl_verify")
+	sslVerify := int(config.SSLVerifyHostname) // safe default
+	if sslVerifyStr != "" {
+		sslVerify, _ = strconv.Atoi(sslVerifyStr)
+	}
 
 	cfg := config.ServerConfig{
 		Name:        "test",
