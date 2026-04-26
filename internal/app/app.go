@@ -689,8 +689,17 @@ func WithPostProcStages(stages []postproc.Stage) func(*Application) {
 }
 
 func failMsgForJob(job *queue.Job) string {
-	if job.FailedBytes > job.Par2Bytes {
+	if job.FailedBytes == 0 {
+		return ""
+	}
+	// If ALL bytes in the job failed, it's hopeless regardless of PAR2.
+	if job.FailedBytes >= job.TotalBytes {
 		return "Aborted: Too many articles failed, job is beyond repair"
 	}
+	// If PAR2 files exist and the failure exceeds repair capacity, abort.
+	if job.Par2Bytes > 0 && job.FailedBytes > job.Par2Bytes {
+		return "Aborted: Too many articles failed, job is beyond repair"
+	}
+	// Partial failure with no PAR2 — let post-processing attempt extraction.
 	return ""
 }
