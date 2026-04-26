@@ -32,7 +32,6 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/dirscanner"
 	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/history"
-	"github.com/hobeone/sabnzbd-go/internal/notifier"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 	"github.com/hobeone/sabnzbd-go/internal/rss"
@@ -216,6 +215,12 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 			StripDiacritics:    cfg.Downloads.StripDiacritics,
 			CleanupList:        cfg.Downloads.CleanupList,
 		},
+		Sorters:              cfg.Sorters,
+		ScriptDir:            cfg.General.ScriptDir,
+		DeobfuscateFilenames: cfg.PostProc.DeobfuscateFilenames,
+		Version:              Version,
+		APIKey:               cfg.General.APIKey,
+		ListenAddr:           net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port)),
 	}, histRepo)
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
@@ -237,9 +242,10 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		bpsmeter.Restore(meter, nil, state)
 	}
 
-	// Notifier dispatcher. Sinks (email/apprise/script) are not yet
-	// config-driven; dispatcher stays empty until that config lands.
-	_ = notifier.NewDispatcher(slog.Default().With("component", "notifier")) //nolint:errcheck // placeholder wiring for upcoming sinks
+	// Notifier dispatcher. Build from config; sinks are registered
+	// based on the [notifications] config section.
+	notify := app.BuildNotifier(cfg.Notifications)
+	application.SetNotifier(notify)
 
 	// Ingest adapter shared by the dir scanner and URL grabber. Both
 	// receive raw NZB bytes and push jobs onto the same queue.
@@ -256,7 +262,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	}
 
 	// Scheduler. Parsed schedules drive periodic pause/resume/etc.
-	if err := startScheduler(ctx, cfg, application.Queue(), cancel); err != nil {
+	if err := startScheduler(ctx, cfg, application.Queue(), application, cancel); err != nil {
 		return err
 	}
 
@@ -385,7 +391,7 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 // startScheduler parses cfg.Schedules, registers the known actions, and
 // launches the scheduler loop. cancel is used by the "shutdown" action
 // to trigger the same shutdown path as SIGINT.
-func startScheduler(ctx context.Context, cfg *config.Config, q *queue.Queue, cancel context.CancelFunc) error {
+func startScheduler(ctx context.Context, cfg *config.Config, q *queue.Queue, application *app.Application, cancel context.CancelFunc) error {
 	specs, err := schedulesFromConfig(cfg.Schedules)
 	if err != nil {
 		return fmt.Errorf("parse schedules: %w", err)
@@ -393,10 +399,14 @@ func startScheduler(ctx context.Context, cfg *config.Config, q *queue.Queue, can
 	reg := scheduler.NewRegistry()
 	reg.Register("pause", func(_ context.Context, _ string) error { q.PauseAll(); return nil })
 	reg.Register("resume", func(_ context.Context, _ string) error { q.ResumeAll(); return nil })
-	// speedlimit is logged for now; hooking into a real Limiter requires
-	// the Downloader to take a *bpsmeter.Limiter, which is a later wiring step.
 	reg.Register("speedlimit", func(_ context.Context, arg string) error {
-		slog.Info("scheduler: speedlimit (noop until downloader is wired)", "arg", arg)
+		bps, err := strconv.ParseInt(arg, 10, 64)
+		if err != nil {
+			slog.Warn("scheduler: invalid speedlimit arg", "arg", arg, "err", err)
+			return nil // don't fail the scheduler for a bad arg
+		}
+		application.SetSpeedLimit(bps * 1024) // arg is KB/s
+		slog.Info("scheduler: speedlimit set", "kbps", bps)
 		return nil
 	})
 	reg.Register("shutdown", func(_ context.Context, _ string) error {

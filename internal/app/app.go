@@ -27,6 +27,7 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/downloader"
 	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/history"
+	"github.com/hobeone/sabnzbd-go/internal/notifier"
 	"github.com/hobeone/sabnzbd-go/internal/postproc"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
@@ -47,6 +48,16 @@ type Config struct {
 	Categories         []config.CategoryConfig
 	CheckpointInterval time.Duration
 	Sanitize           fsutil.SanitizeOptions
+
+	// PostProc pipeline configuration.
+	Sorters              []config.SorterConfig
+	ScriptDir            string
+	DeobfuscateFilenames bool
+
+	// ScriptStage metadata injected into SAB_* env vars.
+	Version    string
+	APIKey     string
+	ListenAddr string
 }
 
 // FileComplete is emitted on Application.FileComplete() when a file is done.
@@ -100,6 +111,7 @@ type Application struct {
 	fileComplete     chan FileComplete
 	jobComplete      chan JobComplete
 	postProcComplete chan PostProcComplete
+	notifyDispatcher *notifier.Dispatcher
 
 	internalFileComplete chan FileComplete
 
@@ -122,6 +134,13 @@ func (app *Application) SetEmitter(e EventEmitter) {
 		return
 	}
 	app.emitter = e
+}
+
+// SetNotifier injects a notification dispatcher for lifecycle events.
+func (app *Application) SetNotifier(d *notifier.Dispatcher) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	app.notifyDispatcher = d
 }
 
 // New constructs an Application from cfg.
@@ -198,8 +217,23 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		stages = []postproc.Stage{
 			postproc.NewRepairStage(),
 			postproc.NewUnpackStage(),
-			postproc.NewFinalizeStage(),
 		}
+		if cfg.DeobfuscateFilenames {
+			stages = append(stages, postproc.NewDeobfuscateStage())
+		}
+		if len(cfg.Sorters) > 0 {
+			rules := sorterRulesFromConfig(cfg.Sorters)
+			if len(rules) > 0 {
+				stages = append(stages, postproc.NewSortStage(rules, cfg.CompleteDir))
+			}
+		}
+		if cfg.ScriptDir != "" {
+			stages = append(stages, postproc.NewScriptStage(
+				cfg.ScriptDir, cfg.CompleteDir,
+				cfg.Version, cfg.APIKey, cfg.ListenAddr,
+			))
+		}
+		stages = append(stages, postproc.NewFinalizeStage())
 	}
 	pp := postproc.New(postproc.Options{
 		Stages: stages,
@@ -288,6 +322,23 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			default:
 			}
 			app.emitter.Broadcast(Event{Type: "history_updated"})
+
+			// Fire notification event.
+			if app.notifyDispatcher != nil {
+				evtType := notifier.PostProcessingComplete
+				title := "Download completed"
+				if entry.Status == "Failed" {
+					evtType = notifier.PostProcessingFailed
+					title = "Download failed"
+				}
+				app.notifyDispatcher.Dispatch(context.Background(), notifier.Event{
+					Type:      evtType,
+					Title:     title,
+					Body:      entry.Name,
+					JobName:   entry.Name,
+					Timestamp: time.Now(),
+				})
+			}
 		},
 		Logger: log,
 	})
@@ -704,6 +755,20 @@ func WithMeter(m *bpsmeter.Meter) func(*Application) {
 
 func WithPostProcStages(stages []postproc.Stage) func(*Application) {
 	return func(a *Application) { a.customStages = stages }
+}
+
+// WithNotifier injects a notification dispatcher for lifecycle events.
+func WithNotifier(d *notifier.Dispatcher) func(*Application) {
+	return func(a *Application) { a.notifyDispatcher = d }
+}
+
+// SetSpeedLimit updates the download speed limit. bytesPerSec <= 0 means unlimited.
+func (app *Application) SetSpeedLimit(bytesPerSec int64) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.downloader != nil {
+		app.downloader.SetSpeedLimit(bytesPerSec)
+	}
 }
 
 func failMsgForJob(job *queue.Job) string {
