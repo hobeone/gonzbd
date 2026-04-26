@@ -293,7 +293,12 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			case app.fileComplete <- fc:
 			default:
 			}
-			app.internalFileComplete <- fc
+			select {
+			case app.internalFileComplete <- fc:
+			default:
+				// Channel full — spawn goroutine to ensure delivery
+				go func() { app.internalFileComplete <- fc }()
+			}
 		},
 	}, log)
 	app.assembler = asm
