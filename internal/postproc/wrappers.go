@@ -38,7 +38,11 @@ func (*RepairStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// Scan for temporary files written by the assembler.
-	tmpFiles, _ := filepath.Glob(filepath.Join(job.DownloadDir, "*.nzf"))
+	tmpFiles, err := findNZFFiles(job.DownloadDir)
+	if err != nil {
+		job.ParError = true
+		return fmt.Errorf("repair: scan nzf files: %w", err)
+	}
 
 	var firstErr error
 	if len(sets) > 0 {
@@ -70,7 +74,12 @@ func (*RepairStage) Run(ctx context.Context, job *Job) error {
 	// Fallback: Rename any remaining *.nzf files using NZB metadata/subject.
 	// This handles jobs without PAR2 files and ensures we have correct
 	// filenames for the Unpack stage.
-	remainingTmp, _ := filepath.Glob(filepath.Join(job.DownloadDir, "*.nzf"))
+	remainingTmp, err := findNZFFiles(job.DownloadDir)
+	if err != nil {
+		if firstErr == nil {
+			firstErr = fmt.Errorf("repair: rescan nzf files: %w", err)
+		}
+	}
 	for _, tmpPath := range remainingTmp {
 		base := filepath.Base(tmpPath)
 		var fileIdx int
@@ -415,4 +424,21 @@ func moveFile(src, dst string) error {
 		return err
 	}
 	return os.Remove(src)
+}
+
+// findNZFFiles returns the full paths of all .nzf files in dir.
+// Unlike filepath.Glob, this works correctly when dir contains
+// glob metacharacters like '[' or ']'.
+func findNZFFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".nzf" {
+			result = append(result, filepath.Join(dir, e.Name()))
+		}
+	}
+	return result, nil
 }
