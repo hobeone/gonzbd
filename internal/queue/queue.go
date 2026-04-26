@@ -349,35 +349,10 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 // Message-ID within jobID. Returns ErrNotFound if either the job or
 // the article is absent.
 //
-// The dispatcher calls this from its worker goroutines as articles
-// complete successfully. Taking the write lock here funnels article
-// state mutation through a single well-known path, keeping callers
-// from holding direct pointers to Job internals.
-//
-// Flag semantics: setting Done on an already-done article is a no-op
-// (idempotent); the method does not track downgrade-from-done because
-// no code path currently needs to undo a completion.
+// Prefer MarkArticlesDone for batch operations — it takes the write lock
+// once for the entire batch rather than once per article.
 func (q *Queue) MarkArticleDone(jobID, messageID string) error {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	for fi := range job.Files {
-		for ai := range job.Files[fi].Articles {
-			if job.Files[fi].Articles[ai].ID == messageID {
-				if !job.Files[fi].Articles[ai].Done {
-					job.Files[fi].Articles[ai].Done = true
-					job.RemainingBytes -= int64(job.Files[fi].Articles[ai].Bytes)
-					slog.Debug("article done (success)", "msgid", messageID, "job", jobID, "remaining", job.RemainingBytes)
-				}
-				q.dirty.Store(true)
-				return nil
-			}
-		}
-	}
-	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
+	return q.MarkArticlesDone(jobID, []string{messageID})
 }
 
 // MarkArticleEmitted flags an article as having a result in flight from the
