@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -178,6 +179,12 @@ type Assembler struct {
 	stopCh     chan struct{}
 	workerDone chan struct{}
 
+	// inFlight tracks the number of WriteArticle goroutines that have
+	// passed the stopped check but have not yet completed their channel
+	// send. Stop() waits for this to reach zero before closing stopCh,
+	// so no writes are lost in the shutdown window.
+	inFlight atomic.Int32
+
 	// flushInterval is the computed interval for the periodic batch
 	// flush. A non-positive value disables the timer entirely (flush
 	// only on file completion or Stop).
@@ -249,12 +256,19 @@ func (a *Assembler) Stop() error {
 		return nil
 	}
 	a.stopped = true
+	a.mu.Unlock()
+
+	// Wait for any in-flight WriteArticle goroutines to finish their
+	// channel send. After this returns, no new items will enter a.reqs.
+	for a.inFlight.Load() > 0 {
+		time.Sleep(time.Microsecond)
+	}
+
 	// Signal the worker by closing stopCh. The worker will drain reqs and exit.
 	// We do NOT close reqs here: WriteArticle goroutines may still be executing
 	// their channel-send select, and closing a channel that has concurrent
 	// senders in flight causes a panic.
 	close(a.stopCh)
-	a.mu.Unlock()
 
 	<-a.workerDone
 	return nil
@@ -273,7 +287,11 @@ func (a *Assembler) WriteArticle(ctx context.Context, req WriteRequest) error {
 		a.mu.Unlock()
 		return ErrStopped
 	}
+	// Track this sender so Stop() waits for us before closing stopCh.
+	a.inFlight.Add(1)
 	a.mu.Unlock()
+
+	defer a.inFlight.Add(-1)
 
 	select {
 	case a.reqs <- req:
