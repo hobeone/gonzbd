@@ -261,8 +261,8 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 
 // IsComplete returns true if all files in the job are marked complete.
 func (j *Job) IsComplete() bool {
-	for _, f := range j.Files {
-		if !f.Complete {
+	for i := range j.Files {
+		if !j.Files[i].Complete {
 			return false
 		}
 	}

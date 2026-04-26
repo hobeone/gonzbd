@@ -4,7 +4,6 @@ package urlgrabber
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -114,8 +113,7 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 	}
 
 	if username != "" || password != "" {
-		auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
-		req.Header.Set("Authorization", "Basic "+auth)
+		req.SetBasicAuth(username, password)
 	}
 
 	resp, err := g.client.Do(req)

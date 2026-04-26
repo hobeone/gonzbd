@@ -415,14 +415,13 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 			return
 		}
 
-		if dir := filepath.Dir(info.Path); dir != "" {
-			if err := os.MkdirAll(dir, 0o750); err != nil {
-				a.log.Error("mkdir parent",
-					"path", info.Path,
-					"error", err,
-				)
-				return
-			}
+		dir := filepath.Dir(info.Path)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			a.log.Error("mkdir parent",
+				"path", info.Path,
+				"error", err,
+			)
+			return
 		}
 		//nolint:gosec // G304: path is caller-supplied from FileInfo resolver, which is responsible for safe derivation
 		fh, err := os.OpenFile(info.Path, os.O_WRONLY|os.O_CREATE, 0o644)
