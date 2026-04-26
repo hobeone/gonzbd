@@ -23,6 +23,7 @@ import (
 type limitReader struct {
 	r   io.Reader
 	lim RateLimiter
+	ctx context.Context
 }
 
 func (lr *limitReader) Read(p []byte) (int, error) {
@@ -30,9 +31,8 @@ func (lr *limitReader) Read(p []byte) (int, error) {
 	if n > 0 && lr.lim != nil {
 		// Wait after reading. This introduces minimal overhead
 		// because it is invoked by bufio.Reader which chunks reads.
-		// We use context.Background() because rate.Wait only blocks
-		// based on tokens, and the lifecycle is owned by the Conn.
-		_ = lr.lim.Wait(context.Background(), n)
+		// We use the connection context to unblock if the socket closes.
+		_ = lr.lim.Wait(lr.ctx, n)
 	}
 	return n, err
 }
@@ -142,6 +142,9 @@ type Conn struct {
 	readerDone chan struct{}
 
 	caps *Capabilities
+
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	// sslInfo is the negotiated TLS protocol+cipher for UI display.
 	// Empty for plain-text connections.
@@ -292,9 +295,11 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 	}
 	l.Debug("TCP connected", "addr", addr)
 
+	ctxConn, cancelConn := context.WithCancel(context.Background())
+
 	var br io.Reader = nc
 	if dopts.limiter != nil {
-		br = &limitReader{r: nc, lim: dopts.limiter}
+		br = &limitReader{r: nc, lim: dopts.limiter, ctx: ctxConn}
 	}
 
 	c := &Conn{
@@ -306,6 +311,8 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		state:      StateDisconnected,
 		sem:        make(chan struct{}, dopts.pipelining),
 		readerDone: make(chan struct{}),
+		ctx:        ctxConn,
+		cancel:     cancelConn,
 	}
 
 	if tc, ok := nc.(*tls.Conn); ok {
@@ -543,12 +550,18 @@ func (c *Conn) Stat(ctx context.Context, messageID string) error {
 func (c *Conn) Close() error {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
+		if c.cancel != nil {
+			c.cancel()
+		}
 		// Best-effort polite QUIT. Swallow errors — we're tearing
 		// down anyway.
 		if c.state == StateReady {
-			_ = c.nc.SetWriteDeadline(time.Now().Add(2 * time.Second)) //nolint:errcheck // best-effort during teardown
-			_, _ = c.bw.WriteString("QUIT\r\n")                        //nolint:errcheck // best-effort
-			_ = c.bw.Flush()                                           //nolint:errcheck // best-effort
+			if c.sendLock.TryLock() {
+				_ = c.nc.SetWriteDeadline(time.Now().Add(2 * time.Second)) //nolint:errcheck // best-effort during teardown
+				_, _ = c.bw.WriteString("QUIT\r\n")                        //nolint:errcheck // best-effort
+				_ = c.bw.Flush()                                           //nolint:errcheck // best-effort
+				c.sendLock.Unlock()
+			}
 		}
 		_ = c.nc.Close()            //nolint:errcheck // caller gets closeErr via return below
 		_ = c.setState(StateClosed) //nolint:errcheck // terminal transition; ignore invalid-state error if already closed

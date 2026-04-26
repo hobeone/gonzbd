@@ -7,7 +7,7 @@ import (
 // modeFullStatus returns a full status snapshot including queue paused state and slot count.
 func (s *Server) modeFullStatus(w http.ResponseWriter, r *http.Request) {
 	if s.queue == nil {
-		respondError(w, http.StatusInternalServerError, "queue not wired")
+		s.respondError(w, http.StatusInternalServerError, "queue not wired")
 		return
 	}
 
@@ -36,9 +36,9 @@ func (s *Server) modeStatus(w http.ResponseWriter, r *http.Request) {
 	// All sub-actions (unblock_server, delete_orphan, etc.) are not implemented
 	switch action {
 	case "unblock_server", "delete_orphan", "delete_all_orphan", "add_orphan", "add_all_orphan":
-		respondError(w, http.StatusNotImplemented, "not implemented in this build: "+action)
+		s.respondError(w, http.StatusNotImplemented, "not implemented in this build: "+action)
 	default:
-		respondError(w, http.StatusBadRequest, "unknown status action: "+action)
+		s.respondError(w, http.StatusBadRequest, "unknown status action: "+action)
 	}
 }
 

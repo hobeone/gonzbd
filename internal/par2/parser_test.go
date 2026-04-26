@@ -57,3 +57,22 @@ func TestParseFileDescriptions(t *testing.T) {
 		t.Errorf("ParseFileDescriptions = %v; want %v", got, want)
 	}
 }
+
+func TestParseFileDescriptions_MalformedLength(t *testing.T) {
+	tmpDir := t.TempDir()
+	parPath := filepath.Join(tmpDir, "test.par2")
+
+	packetLen := uint64(1024 * 1024 * 1024) // 1GB
+	buf := make([]byte, 64)
+	copy(buf[0:8], magic)
+	binary.LittleEndian.PutUint64(buf[8:16], packetLen)
+
+	if err := os.WriteFile(parPath, buf, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := ParseFileDescriptions(parPath)
+	if err == nil {
+		t.Fatal("ParseFileDescriptions expected error on massive packetLen, got nil")
+	}
+}

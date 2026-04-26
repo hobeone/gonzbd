@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 )
 
@@ -23,10 +24,7 @@ func testHistoryServer(t *testing.T) (*Server, *history.Repository) {
 	repo := history.NewRepository(db)
 
 	s := New(Options{
-		Auth: AuthConfig{
-			APIKey: testAPIKey,
-			NZBKey: testNZBKey,
-		},
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
 		Version: "1.0.0-test",
 		History: repo,
 		App:     mockApp{h: repo},
@@ -362,7 +360,7 @@ func TestHistoryMarkCompleted(t *testing.T) {
 func TestHistoryNilGuard(t *testing.T) {
 	t.Parallel()
 	s := New(Options{
-		Auth:    AuthConfig{APIKey: testAPIKey},
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
 		Version: "1.0.0-test",
 		// History intentionally nil.
 	})

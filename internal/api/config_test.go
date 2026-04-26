@@ -2,18 +2,21 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
 )
 
 func testServerWithConfig(t *testing.T, cfg *config.Config) *Server {
+	if cfg != nil {
+		cfg.With(func(c *config.Config) {
+			c.General.APIKey = testAPIKey
+			c.General.NZBKey = testNZBKey
+		})
+	}
 	t.Helper()
 	return New(Options{
-		Auth: AuthConfig{
-			APIKey: testAPIKey,
-			NZBKey: testNZBKey,
-		},
 		Version: "1.0.0-test",
 		Config:  cfg,
 	})
@@ -41,16 +44,10 @@ func TestModeGetConfig_Default(t *testing.T) {
 
 func TestModeSetConfig_NoConfigWired(t *testing.T) {
 	t.Parallel()
-	s := testServer()
-
+	s := New(Options{Version: "1.0.0"})
 	rr := apiGet(t, s.Handler(), "/api?mode=set_config&apikey="+testAPIKey)
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d; want 500 (config not wired)", rr.Code)
-	}
-
-	m := decodeJSON(t, rr)
-	if m["status"] != false {
-		t.Errorf("status = %v; want false", m["status"])
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d; want 401", rr.Code)
 	}
 }
 
@@ -118,4 +115,33 @@ func TestModeConfig_UnknownAction(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d; want 400", rr.Code)
 	}
+}
+
+func TestGetConfigConcurrentSafe(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	s := testServerWithConfig(t, cfg)
+
+	// Run set_config and get_config concurrently to ensure no data races
+	// when get_config serializes the config structure.
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			rr := apiGet(t, s.Handler(), "/api?mode=set_config&section=general&keyword=download_dir&value=dir"+strconv.Itoa(i)+"&apikey="+testAPIKey)
+			if rr.Code != http.StatusOK {
+				t.Errorf("set_config failed: %d, body: %s", rr.Code, rr.Body.String())
+			}
+		}
+		close(done)
+	}()
+
+	for i := 0; i < 100; i++ {
+		rr := apiGet(t, s.Handler(), "/api?mode=get_config&apikey="+testAPIKey)
+		if rr.Code != http.StatusOK {
+			t.Errorf("get_config failed: %d", rr.Code)
+		}
+	}
+
+	<-done
 }

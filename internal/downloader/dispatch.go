@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/constants"
@@ -197,7 +198,13 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 // cancelled.
 func (d *Downloader) connWorker(ctx context.Context, srv *Server) {
 	var conn *nntp.Conn
+	var connMu sync.Mutex
+	var workerWg sync.WaitGroup
+
 	defer func() {
+		workerWg.Wait()
+		connMu.Lock()
+		defer connMu.Unlock()
 		if conn != nil {
 			_ = conn.Close() //nolint:errcheck // shutdown path; close error not actionable
 		}
@@ -208,12 +215,24 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server) {
 
 	d.log.Info("Creating server connection", "server", srv.Cfg().Host)
 
+	pipelineDepth := srv.Cfg().PipeliningRequests
+	if pipelineDepth < 1 {
+		pipelineDepth = 1
+	}
+	sem := make(chan struct{}, pipelineDepth)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case req := <-workCh:
-			d.handleRequest(ctx, srv, &conn, req)
+			sem <- struct{}{}
+			workerWg.Add(1)
+			go func(req *articleRequest) {
+				defer workerWg.Done()
+				defer func() { <-sem }()
+				d.handleRequest(ctx, srv, &conn, &connMu, req)
+			}(req)
 		}
 	}
 }
@@ -223,12 +242,13 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server) {
 // emission. The *nntp.Conn pointer is passed by reference so the
 // function can replace it with nil on connection-level failure
 // (forcing a re-dial on the next call).
-func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **nntp.Conn, req *articleRequest) {
+func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **nntp.Conn, connMu *sync.Mutex, req *articleRequest) {
 	defer d.signalDispatch()
 	defer d.clearInFlight(req.jobID, req.messageID)
 
 	name := srv.Cfg().Name
 
+	connMu.Lock()
 	if *connPtr == nil {
 		d.log.Info("dialing server", "server", name, "host", srv.Cfg().Host)
 		c, err := nntp.Dial(ctx, srv.Cfg(),
@@ -236,6 +256,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 			nntp.WithLogger(d.log),
 		)
 		if err != nil {
+			connMu.Unlock()
 			d.log.Warn("dial failed", "server", name, "error", err)
 			srv.RecordBadConnection()
 			if pen := PenaltyFor(err); pen > 0 {
@@ -251,8 +272,10 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		d.log.Info("connected", "server", name, "ssl", c.SSLInfo())
 		*connPtr = c
 	}
+	c := *connPtr
+	connMu.Unlock()
 
-	body, err := (*connPtr).Fetch(ctx, req.messageID)
+	body, err := c.Fetch(ctx, req.messageID)
 	if err != nil {
 		if errors.Is(err, nntp.ErrNoArticle) {
 			d.log.Info("article not found", "server", name, "msgid", req.messageID)
@@ -265,8 +288,14 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		}
 		// Connection-level failure: tear down, re-dial later.
 		d.log.Warn("fetch failed", "server", name, "msgid", req.messageID, "error", err)
-		_ = (*connPtr).Close() //nolint:errcheck // discarding a broken conn; underlying error already captured in err
-		*connPtr = nil
+
+		connMu.Lock()
+		if *connPtr == c {
+			_ = c.Close() //nolint:errcheck // discarding a broken conn; underlying error already captured in err
+			*connPtr = nil
+		}
+		connMu.Unlock()
+
 		srv.RecordBadConnection()
 		if pen := PenaltyFor(err); pen > 0 {
 			d.log.Info("penalty applied", "server", name, "duration", pen)

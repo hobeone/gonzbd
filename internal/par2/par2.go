@@ -7,9 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -93,17 +95,17 @@ func isVolume(name string) bool {
 // error) when no par2 files are found.  The returned slice is ordered by set
 // name.
 func FindPar2Files(dir string) ([]Set, error) {
-	entries, err := filepath.Glob(filepath.Join(dir, "*.par2"))
+	dirEntries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("par2 find: %w", err)
 	}
 
-	// Also catch upper-case variants (.PAR2).
-	upper, err := filepath.Glob(filepath.Join(dir, "*.PAR2"))
-	if err != nil {
-		return nil, fmt.Errorf("par2 find: %w", err)
+	var entries []string
+	for _, de := range dirEntries {
+		if !de.IsDir() && strings.EqualFold(filepath.Ext(de.Name()), ".par2") {
+			entries = append(entries, filepath.Join(dir, de.Name()))
+		}
 	}
-	entries = append(entries, upper...)
 
 	byName := make(map[string]*Set)
 
@@ -129,12 +131,9 @@ func FindPar2Files(dir string) ([]Set, error) {
 		result = append(result, *s)
 	}
 
-	// Stable sort by name for deterministic output.
-	for i := 1; i < len(result); i++ {
-		for j := i; j > 0 && result[j].Name < result[j-1].Name; j-- {
-			result[j], result[j-1] = result[j-1], result[j]
-		}
-	}
+	slices.SortFunc(result, func(a, b Set) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 
 	return result, nil
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/constants"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
@@ -39,10 +40,7 @@ func testQueueServer(t *testing.T) (*Server, *queue.Queue) {
 	t.Helper()
 	q := queue.New()
 	s := New(Options{
-		Auth: AuthConfig{
-			APIKey: testAPIKey,
-			NZBKey: testNZBKey,
-		},
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
 		Version: "1.0.0-test",
 		Queue:   q,
 		App:     mockApp{q: q},
@@ -534,7 +532,7 @@ func TestQueueStub_Rename(t *testing.T) {
 func TestQueueNilGuard(t *testing.T) {
 	t.Parallel()
 	s := New(Options{
-		Auth:    AuthConfig{APIKey: testAPIKey},
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
 		Version: "1.0.0-test",
 		// Queue intentionally nil.
 	})

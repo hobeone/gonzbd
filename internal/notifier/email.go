@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/smtp"
 	"strings"
 	"time"
@@ -56,13 +57,14 @@ func (e *EmailNotifier) Send(ctx context.Context, ev Event) error {
 	if e.cfg.UseSSL {
 		return e.sendImplicitTLS(ctx, addr, auth, msg)
 	}
-	return e.sendPlainOrSTARTTLS(addr, auth, msg)
+	return e.sendPlainOrSTARTTLS(ctx, addr, auth, msg)
 }
 
-func (e *EmailNotifier) sendImplicitTLS(_ context.Context, addr string, auth smtp.Auth, msg []byte) error {
+func (e *EmailNotifier) sendImplicitTLS(ctx context.Context, addr string, auth smtp.Auth, msg []byte) error {
 	//nolint:gosec // G402: InsecureSkipVerify intentionally false; no flag exposed yet
 	tlsCfg := &tls.Config{ServerName: e.cfg.Host, InsecureSkipVerify: false}
-	conn, err := tls.Dial("tcp", addr, tlsCfg)
+	dialer := &tls.Dialer{NetDialer: &net.Dialer{}, Config: tlsCfg}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("email: tls dial %s: %w", addr, err)
 	}
@@ -73,10 +75,15 @@ func (e *EmailNotifier) sendImplicitTLS(_ context.Context, addr string, auth smt
 	return e.finishSend(c, auth, msg)
 }
 
-func (e *EmailNotifier) sendPlainOrSTARTTLS(addr string, auth smtp.Auth, msg []byte) error {
-	c, err := smtp.Dial(addr)
+func (e *EmailNotifier) sendPlainOrSTARTTLS(ctx context.Context, addr string, auth smtp.Auth, msg []byte) error {
+	dialer := &net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("email: smtp dial %s: %w", addr, err)
+	}
+	c, err := smtp.NewClient(conn, e.cfg.Host)
+	if err != nil {
+		return fmt.Errorf("email: smtp client on plain conn: %w", err)
 	}
 	if e.cfg.UseTLS {
 		//nolint:gosec // G402: InsecureSkipVerify intentionally false; no flag exposed yet

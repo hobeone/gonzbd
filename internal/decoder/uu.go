@@ -78,17 +78,17 @@ func DecodeUU(body []byte) (data []byte, filename string, err error) {
 func decodeUULine(enc []byte, rawLen int) []byte {
 	out := make([]byte, 0, rawLen)
 
-	for i := 0; len(out) < rawLen; i += 4 {
-		if i+4 > len(enc) {
-			// Pad short lines with spaces (0x20 → 0x00).
-			padded := make([]byte, 4)
-			copy(padded, enc[i:])
-			for j := len(enc) - i; j < 4; j++ {
-				padded[j] = 0x20
-			}
-			enc = append(enc, padded[len(enc)-i:]...)
+	needed := ((rawLen + 2) / 3) * 4
+	if len(enc) < needed {
+		padded := make([]byte, needed)
+		copy(padded, enc)
+		for i := len(enc); i < needed; i++ {
+			padded[i] = ' '
 		}
+		enc = padded
+	}
 
+	for i := 0; len(out) < rawLen; i += 4 {
 		a := (enc[i] - 0x20) & 0x3f
 		b := (enc[i+1] - 0x20) & 0x3f
 		c := (enc[i+2] - 0x20) & 0x3f

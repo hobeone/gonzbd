@@ -542,11 +542,7 @@ func TestIsDirty(t *testing.T) {
 
 	j := makeJob(t, "dirty-test", constants.NormalPriority)
 	_ = q.Add(j)
-
-	// Add does not set dirty (it is not one of the five listed mutators).
-	if q.IsDirty() {
-		t.Error("Add should not set dirty")
-	}
+	_ = q.Save(dir)
 
 	// MarkArticleDone sets dirty.
 	msgID := j.Files[0].Articles[0].ID
@@ -609,6 +605,82 @@ func TestIsDirty(t *testing.T) {
 	}
 	if !q.IsDirty() {
 		t.Error("MarkArticlesFailed should set dirty")
+	}
+}
+
+func TestDirtyFlagOnMutations(t *testing.T) {
+	dir := t.TempDir()
+	q := New()
+
+	// 1. Add
+	j1 := makeJob(t, "job1", constants.NormalPriority)
+	if err := q.Add(j1); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if !q.IsDirty() {
+		t.Error("Add should set dirty")
+	}
+	_ = q.Save(dir)
+
+	// 2. Pause
+	if err := q.Pause(j1.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if !q.IsDirty() {
+		t.Error("Pause should set dirty")
+	}
+	_ = q.Save(dir)
+
+	// 3. Resume
+	if err := q.Resume(j1.ID); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !q.IsDirty() {
+		t.Error("Resume should set dirty")
+	}
+	_ = q.Save(dir)
+
+	// 4. SetStatus
+	if err := q.SetStatus(j1.ID, constants.StatusRepairing); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	if !q.IsDirty() {
+		t.Error("SetStatus should set dirty")
+	}
+	_ = q.Save(dir)
+
+	// 5. Reorder
+	j2 := makeJob(t, "job2", constants.NormalPriority)
+	_ = q.Add(j2)
+	_ = q.Save(dir)
+	if err := q.Reorder(j1.ID, 1); err != nil {
+		t.Fatalf("Reorder: %v", err)
+	}
+	if !q.IsDirty() {
+		t.Error("Reorder should set dirty")
+	}
+	_ = q.Save(dir)
+
+	// 6. PauseAll
+	q.PauseAll()
+	if !q.IsDirty() {
+		t.Error("PauseAll should set dirty")
+	}
+	_ = q.Save(dir)
+
+	// 7. ResumeAll
+	q.ResumeAll()
+	if !q.IsDirty() {
+		t.Error("ResumeAll should set dirty")
+	}
+	_ = q.Save(dir)
+
+	// 8. Remove
+	if err := q.Remove(j1.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if !q.IsDirty() {
+		t.Error("Remove should set dirty")
 	}
 }
 

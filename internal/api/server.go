@@ -17,9 +17,6 @@ import (
 
 // Options configures the API server at construction time.
 type Options struct {
-	// Auth configures API key authentication.
-	Auth AuthConfig
-
 	// Version is the application version string returned by mode=version.
 	Version string
 
@@ -64,7 +61,6 @@ type ApplicationReloader interface {
 // dispatch table. Construct with New, start with Start, shut down with
 // Shutdown.
 type Server struct {
-	auth    AuthConfig
 	version string
 	log     *slog.Logger
 
@@ -94,7 +90,6 @@ func New(opts Options) *Server {
 	log = log.With("component", "api")
 
 	s := &Server{
-		auth:       opts.Auth,
 		version:    opts.Version,
 		log:        log,
 		queue:      opts.Queue,
@@ -103,7 +98,7 @@ func New(opts Options) *Server {
 		configPath: opts.ConfigPath,
 		grabber:    opts.Grabber,
 		app:        opts.App,
-		events:     NewBroadcaster(),
+		events:     NewBroadcaster(log),
 		mux:        http.NewServeMux(),
 	}
 	s.registerModes()
@@ -117,7 +112,7 @@ func New(opts Options) *Server {
 	// Wrap the mux with logging middleware. Auth is checked per-mode
 	// inside handleAPI (each mode has its own access level), not as
 	// blanket middleware on the mux.
-	handler := loggingMiddleware(s.mux)
+	handler := s.loggingMiddleware(s.mux)
 
 	s.srv = &http.Server{
 		Handler:           handler,
@@ -171,7 +166,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// LevelProtected is required for real-time events.
-	if callerLevel(r, s.auth) < LevelProtected {
+	if callerLevel(r, s.getAuth()) < LevelProtected {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -204,4 +199,18 @@ func (s *Server) Warnings() []string {
 // EventBroadcaster returns the WebSocket event broadcaster.
 func (s *Server) EventBroadcaster() *Broadcaster {
 	return s.events
+}
+
+// getAuth returns a snapshot of the current authentication configuration.
+func (s *Server) getAuth() AuthConfig {
+	if s.config == nil {
+		return AuthConfig{}
+	}
+	var auth AuthConfig
+	s.config.WithRead(func(cfg *config.Config) {
+		auth.APIKey = cfg.General.APIKey
+		auth.NZBKey = cfg.General.NZBKey
+		auth.LocalhostBypass = cfg.General.LocalhostBypass
+	})
+	return auth
 }

@@ -12,7 +12,7 @@ import (
 // Mirrors Python's _api_history and _api_history_table dispatch.
 func (s *Server) modeHistory(w http.ResponseWriter, r *http.Request) {
 	if s.history == nil {
-		respondError(w, http.StatusInternalServerError, "history not wired")
+		s.respondError(w, http.StatusInternalServerError, "history not wired")
 		return
 	}
 
@@ -27,7 +27,7 @@ func (s *Server) modeHistory(w http.ResponseWriter, r *http.Request) {
 	case "mark_as_completed":
 		s.historyMarkCompleted(w, r)
 	default:
-		respondError(w, http.StatusBadRequest, "unknown history action: "+action)
+		s.respondError(w, http.StatusBadRequest, "unknown history action: "+action)
 	}
 }
 
@@ -91,14 +91,14 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := s.history.Search(r.Context(), opts)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
+		s.respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
 		return
 	}
 
 	// We need total count for pagination.
 	totalCount, err := s.history.Count(r.Context(), opts)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "history count: "+err.Error())
+		s.respondError(w, http.StatusInternalServerError, "history count: "+err.Error())
 		return
 	}
 
@@ -161,7 +161,7 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 	value := formString(r, "value")
 	if value == "" {
-		respondError(w, http.StatusBadRequest, "missing value parameter")
+		s.respondError(w, http.StatusBadRequest, "missing value parameter")
 		return
 	}
 
@@ -173,7 +173,7 @@ func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 	case "all":
 		entries, err := s.history.Search(r.Context(), history.SearchOptions{})
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
+			s.respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
 			return
 		}
 		for _, e := range entries {
@@ -182,7 +182,7 @@ func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 	case "failed":
 		entries, err := s.history.Search(r.Context(), history.SearchOptions{Status: "Failed"})
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
+			s.respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
 			return
 		}
 		for _, e := range entries {
@@ -191,7 +191,7 @@ func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 	case "completed":
 		entries, err := s.history.Search(r.Context(), history.SearchOptions{Status: "Completed"})
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
+			s.respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
 			return
 		}
 		for _, e := range entries {
@@ -219,12 +219,12 @@ func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 func (s *Server) historyMarkCompleted(w http.ResponseWriter, r *http.Request) {
 	nzoID := formString(r, "value")
 	if nzoID == "" {
-		respondError(w, http.StatusBadRequest, "missing value parameter")
+		s.respondError(w, http.StatusBadRequest, "missing value parameter")
 		return
 	}
 
 	if err := s.history.MarkCompleted(r.Context(), nzoID); err != nil {
-		respondError(w, http.StatusInternalServerError, "mark completed: "+err.Error())
+		s.respondError(w, http.StatusInternalServerError, "mark completed: "+err.Error())
 		return
 	}
 	respondStatus(w)
@@ -235,12 +235,12 @@ func (s *Server) historyMarkCompleted(w http.ResponseWriter, r *http.Request) {
 func (s *Server) historyRetry(w http.ResponseWriter, r *http.Request) {
 	nzoID := formString(r, "value")
 	if nzoID == "" {
-		respondError(w, http.StatusBadRequest, "missing value parameter")
+		s.respondError(w, http.StatusBadRequest, "missing value parameter")
 		return
 	}
 
 	if err := s.app.RetryHistoryJob(r.Context(), nzoID); err != nil {
-		respondError(w, http.StatusInternalServerError, "retry: "+err.Error())
+		s.respondError(w, http.StatusInternalServerError, "retry: "+err.Error())
 		return
 	}
 	respondStatus(w)

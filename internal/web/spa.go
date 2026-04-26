@@ -18,16 +18,20 @@ import (
 func NewSPAHandler(dist fs.FS, apiKey string) http.Handler {
 	fileServer := http.FileServerFS(dist)
 
+	setApiKeyCookie := func(w http.ResponseWriter) {
+		http.SetCookie(w, &http.Cookie{
+			Name:     "sab_apikey",
+			Value:    apiKey,
+			Path:     "/",
+			HttpOnly: false, // JS might need to read it (though backend uses it)
+			SameSite: http.SameSiteLaxMode,
+		})
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if path == "/" {
-			http.SetCookie(w, &http.Cookie{
-				Name:     "sab_apikey",
-				Value:    apiKey,
-				Path:     "/",
-				HttpOnly: false, // JS might need to read it (though backend uses it)
-				SameSite: http.SameSiteLaxMode,
-			})
+			setApiKeyCookie(w)
 			fileServer.ServeHTTP(w, r)
 			return
 		}
@@ -41,6 +45,7 @@ func NewSPAHandler(dist fs.FS, apiKey string) http.Handler {
 
 		// SPA catch-all: serve index.html for client-side routing.
 		r.URL.Path = "/"
+		setApiKeyCookie(w)
 		fileServer.ServeHTTP(w, r)
 	})
 }

@@ -25,6 +25,9 @@ type Config struct {
 // WithRead invokes fn with a read lock held. The Config pointer passed to
 // fn must not be retained or mutated. It exists so callers can read several
 // related fields without races against concurrent Save/Reload.
+//
+// WARNING: The callback MUST NOT call any other Config methods that acquire
+// the lock (such as Set) as this will cause an immediate deadlock.
 func (c *Config) WithRead(fn func(*Config)) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -35,6 +38,10 @@ func (c *Config) WithRead(fn func(*Config)) {
 // embedded fields. After fn returns, the caller is responsible for
 // triggering any change-notification callbacks (the callback subsystem is
 // added when the first subscriber appears; see the package doc).
+//
+// WARNING: The callback MUST NOT call any other Config methods that acquire
+// the lock (such as Set or WithRead) as this will cause an immediate deadlock.
+// If you need to mutate configuration via reflection, use SetLocked instead.
 func (c *Config) With(fn func(*Config)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

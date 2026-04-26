@@ -169,6 +169,7 @@ func (q *Queue) Add(job *Job) error {
 
 	q.insertByPriorityLocked(job)
 	q.byID[job.ID] = job
+	q.dirty.Store(true)
 	q.notifyLocked()
 	return nil
 }
@@ -188,6 +189,7 @@ func (q *Queue) Remove(id string) error {
 		jobPath := filepath.Join(q.stateDir, "jobs", id+".json.gz")
 		_ = os.Remove(jobPath)
 	}
+	q.dirty.Store(true)
 	return nil
 }
 
@@ -201,6 +203,7 @@ func (q *Queue) Pause(id string) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	job.Status = constants.StatusPaused
+	q.dirty.Store(true)
 	return nil
 }
 
@@ -216,6 +219,7 @@ func (q *Queue) Resume(id string) error {
 		job.Status = constants.StatusQueued
 		job.Warning = ""
 	}
+	q.dirty.Store(true)
 	q.notifyLocked()
 	return nil
 }
@@ -230,6 +234,7 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	job.Status = status
+	q.dirty.Store(true)
 	return nil
 }
 
@@ -248,6 +253,7 @@ func (q *Queue) SetPostProcStarted(id string) (bool, error) {
 	}
 	job.PostProc = true
 	job.Status = constants.StatusQueued
+	q.dirty.Store(true)
 	return true, nil
 }
 
@@ -262,6 +268,7 @@ func (q *Queue) MarkJobStarted(id string, t time.Time) {
 	}
 	if job.DownloadStarted.IsZero() {
 		job.DownloadStarted = t
+		q.dirty.Store(true)
 	}
 }
 
@@ -277,6 +284,7 @@ func (q *Queue) RecordDownload(id string, server string, bytes int) {
 		job.ServerStats = make(map[string]int64)
 	}
 	job.ServerStats[server] += int64(bytes)
+	q.dirty.Store(true)
 }
 
 // UnfinishedArticle is the snapshot record yielded by
@@ -566,6 +574,7 @@ func (q *Queue) PauseAll() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.paused = true
+	q.dirty.Store(true)
 }
 
 // ResumeAll clears the queue-wide pause flag and signals the
@@ -574,6 +583,7 @@ func (q *Queue) ResumeAll() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.paused = false
+	q.dirty.Store(true)
 	q.notifyLocked()
 }
 
@@ -602,6 +612,7 @@ func (q *Queue) Reorder(id string, newIndex int) error {
 	job := q.jobs[idx]
 	q.jobs = append(q.jobs[:idx], q.jobs[idx+1:]...)
 	q.jobs = append(q.jobs[:newIndex], append([]*Job{job}, q.jobs[newIndex:]...)...)
+	q.dirty.Store(true)
 	q.notifyLocked()
 	return nil
 }

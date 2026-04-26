@@ -147,6 +147,34 @@ func TestFindPar2Files(t *testing.T) {
 	}
 }
 
+func TestFindPar2Files_GlobMetachars(t *testing.T) {
+	dir := t.TempDir()
+	// Create a directory with glob metacharacters: '[' and ']'
+	metaDir := filepath.Join(dir, "movie[1080p]")
+	if err := os.MkdirAll(metaDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	touch(t, filepath.Join(metaDir, "movie.par2"))
+	touch(t, filepath.Join(metaDir, "movie.vol000+01.par2"))
+
+	sets, err := par2.FindPar2Files(metaDir)
+	if err != nil {
+		t.Fatalf("FindPar2Files: %v", err)
+	}
+
+	if len(sets) != 1 {
+		t.Fatalf("got %d sets, want 1", len(sets))
+	}
+
+	if sets[0].Name != "movie" {
+		t.Errorf("got set name %q, want \"movie\"", sets[0].Name)
+	}
+	if len(sets[0].ExtraFiles) != 1 {
+		t.Errorf("got %d extra files, want 1", len(sets[0].ExtraFiles))
+	}
+}
+
 // ---- Integration tests (require par2 binary) ------------------------------
 
 func TestVerifyAndRepair(t *testing.T) {

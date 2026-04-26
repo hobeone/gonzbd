@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
@@ -11,10 +12,7 @@ import (
 func testServerWithQueue(t *testing.T, q *queue.Queue) *Server {
 	t.Helper()
 	return New(Options{
-		Auth: AuthConfig{
-			APIKey: testAPIKey,
-			NZBKey: testNZBKey,
-		},
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
 		Version: "1.0.0-test",
 		Queue:   q,
 	})

@@ -254,11 +254,6 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	}
 
 	apiSrv := api.New(api.Options{
-		Auth: api.AuthConfig{
-			APIKey:          cfg.General.APIKey,
-			NZBKey:          cfg.General.NZBKey,
-			LocalhostBypass: cfg.General.LocalhostBypass,
-		},
 		Version:    Version,
 		Queue:      application.Queue(),
 		History:    histRepo,

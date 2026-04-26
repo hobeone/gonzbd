@@ -47,12 +47,9 @@ func (m mockApp) RemoveHistoryJob(ctx context.Context, id string, deleteFiles bo
 
 func testServer() *Server {
 	q := queue.New()
+	cfg := &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}
 	return New(Options{
-		Auth: AuthConfig{
-			APIKey:          testAPIKey,
-			NZBKey:          testNZBKey,
-			LocalhostBypass: false,
-		},
+		Config:  cfg,
 		Version: "1.0.0-test",
 		Queue:   q,
 		App:     mockApp{q: q},
@@ -97,7 +94,8 @@ func TestRespondOK_WithKeyword(t *testing.T) {
 func TestRespondError(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
-	respondError(rr, http.StatusBadRequest, "bad mode")
+	s := testServer()
+	s.respondError(rr, http.StatusBadRequest, "bad mode")
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status = %d; want 400", rr.Code)
 	}
@@ -354,5 +352,45 @@ func TestServer_StartShutdown(t *testing.T) {
 
 	if err := s.Shutdown(t.Context()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
+func TestAuthConfigDynamic(t *testing.T) {
+	t.Parallel()
+	q := queue.New()
+	cfg := &config.Config{
+		General: config.GeneralConfig{
+			APIKey: "old-key",
+		},
+	}
+	s := New(Options{
+		Config:  cfg,
+		Version: "1.0.0-test",
+		Queue:   q,
+		App:     mockApp{q: q},
+	})
+
+	// Authenticate with old-key works
+	rr := apiGet(t, s.Handler(), "/api?mode=version&apikey=old-key")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 with old key, got %d", rr.Code)
+	}
+
+	// Update key via config
+	cfg.With(func(c *config.Config) {
+		c.General.APIKey = "new-key"
+	})
+
+	// Old key should now fail (for protected routes)
+	// Actually, mode=version is LevelOpen, so we need a protected route
+	rr = apiGet(t, s.Handler(), "/api?mode=queue&apikey=old-key")
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with old key after update, got %d", rr.Code)
+	}
+
+	// New key should work
+	rr = apiGet(t, s.Handler(), "/api?mode=queue&apikey=new-key")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 with new key, got %d", rr.Code)
 	}
 }

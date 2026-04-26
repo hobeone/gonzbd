@@ -37,18 +37,18 @@ func (s *Server) modeGetScripts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) modeBrowse(w http.ResponseWriter, r *http.Request) {
 	dirPath := formString(r, "name")
 	if dirPath == "" {
-		respondError(w, http.StatusBadRequest, "missing name parameter (path)")
+		s.respondError(w, http.StatusBadRequest, "missing name parameter (path)")
 		return
 	}
 
 	// Validate: must be absolute, no ".." after cleaning
 	cleaned := filepath.Clean(dirPath)
 	if !filepath.IsAbs(cleaned) {
-		respondError(w, http.StatusBadRequest, "path must be absolute")
+		s.respondError(w, http.StatusBadRequest, "path must be absolute")
 		return
 	}
 	if strings.Contains(cleaned, "..") {
-		respondError(w, http.StatusBadRequest, "path traversal not allowed")
+		s.respondError(w, http.StatusBadRequest, "path traversal not allowed")
 		return
 	}
 
@@ -57,7 +57,7 @@ func (s *Server) modeBrowse(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := os.ReadDir(cleaned)
 	if err != nil {
-		respondError(w, http.StatusBadRequest, "cannot read directory: "+err.Error())
+		s.respondError(w, http.StatusBadRequest, "cannot read directory: "+err.Error())
 		return
 	}
 
@@ -101,7 +101,7 @@ func (s *Server) modeEvalSort(w http.ResponseWriter, r *http.Request) {
 	jobName := formString(r, "job_name")
 
 	if sortString == "" || jobName == "" {
-		respondError(w, http.StatusBadRequest, "missing sort_string or job_name parameter")
+		s.respondError(w, http.StatusBadRequest, "missing sort_string or job_name parameter")
 		return
 	}
 
@@ -117,11 +117,11 @@ func (s *Server) modeEvalSort(w http.ResponseWriter, r *http.Request) {
 // modeWatchedNow triggers a manual scan of watched directories (not implemented).
 func (s *Server) modeWatchedNow(w http.ResponseWriter, r *http.Request) {
 	// TODO: Requires DirScanner integration.
-	respondError(w, http.StatusNotImplemented, "not implemented in this build: watched_now")
+	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: watched_now")
 }
 
 // modeRssNow triggers a manual RSS feed refresh (not implemented).
 func (s *Server) modeRssNow(w http.ResponseWriter, r *http.Request) {
 	// TODO: Requires RSS feed processor integration.
-	respondError(w, http.StatusNotImplemented, "not implemented in this build: rss_now")
+	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: rss_now")
 }
