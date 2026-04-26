@@ -215,7 +215,6 @@ func (p *PostProcessor) History() []*Job {
 
 // run is the worker goroutine body.
 func (p *PostProcessor) run() {
-	prevJobDone := false
 	for {
 		p.setBusy(false)
 
@@ -233,11 +232,6 @@ func (p *PostProcessor) run() {
 			return
 		}
 
-		// If a job just completed and both queues are now empty, call OnEmpty.
-		if prevJobDone && p.q.Empty() && p.onEmpty != nil {
-			p.onEmpty()
-		}
-
 		p.setBusyWithJob(true, job.Queue.ID)
 		p.addHistory(job)
 		p.processJob(job)
@@ -246,7 +240,11 @@ func (p *PostProcessor) run() {
 		if p.onJobDone != nil {
 			p.onJobDone(job)
 		}
-		prevJobDone = true
+
+		// If the queue is empty after processing this job, call OnEmpty.
+		if p.q.Empty() && p.onEmpty != nil {
+			p.onEmpty()
+		}
 	}
 }
 
