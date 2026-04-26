@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -180,4 +181,38 @@ func TestConfig_SetSSLVerify(t *testing.T) {
 	// flat sections or the entire slice via JSON.
 	// But let's verify if we can set it if it was a flat field (it's not currently,
 	// but we added support in setFieldValue).
+}
+
+// TestConfig_SetValidationRollback verifies that Set rejects changes
+// that would make the config invalid and rolls back to the previous value.
+func TestConfig_SetValidationRollback(t *testing.T) {
+	cfg, err := Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+
+	// Capture the valid port before mutation.
+	origPort := cfg.General.Port
+
+	// Attempt to set port to an invalid value (negative).
+	err = cfg.Set("general", "port", "-5")
+	if err == nil {
+		t.Fatal("expected validation error for negative port, got nil")
+	}
+	if !strings.Contains(err.Error(), "validation failed") {
+		t.Errorf("error should mention validation failed: %v", err)
+	}
+
+	// Port should be rolled back to the original value.
+	if cfg.General.Port != origPort {
+		t.Errorf("Port = %d after rollback, want %d", cfg.General.Port, origPort)
+	}
+
+	// A valid change should still work.
+	if err := cfg.Set("general", "port", "9999"); err != nil {
+		t.Fatalf("valid Set failed: %v", err)
+	}
+	if cfg.General.Port != 9999 {
+		t.Errorf("Port = %d, want 9999", cfg.General.Port)
+	}
 }
