@@ -50,7 +50,7 @@ func (m *mockApp) AddJob(_ context.Context, job *queue.Job, _ []byte, _ bool) er
 	return nil
 }
 
-func (m *mockApp) RemoveJob(id string) error {
+func (m *mockApp) RemoveJob(id string, deleteFiles bool) error {
 	if m.q != nil {
 		return m.q.Remove(id)
 	}
