@@ -2,9 +2,7 @@ package sorting
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -159,7 +157,7 @@ func Apply(
 
 		dst := fsutil.JoinSafe(destDir, "", targetName, opts)
 
-		if moveErr := moveFile(src, dst); moveErr != nil {
+		if moveErr := fsutil.MoveFile(src, dst); moveErr != nil {
 			return result, fmt.Errorf("apply: move %s → %s: %w", src, dst, moveErr)
 		}
 		slog.Info("sorting: moved", "from", src, "to", dst)
@@ -205,48 +203,4 @@ func containsType(ts []MediaType, t MediaType) bool {
 		}
 	}
 	return false
-}
-
-// moveFile moves src to dst. If os.Rename fails with a cross-device error
-// (EXDEV), it falls back to copy+remove.
-func moveFile(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	} else if !errors.Is(err, crossDeviceErr()) {
-		return err
-	}
-	// Cross-device fallback.
-	return copyAndRemove(src, dst)
-}
-
-// copyAndRemove copies src to dst then removes src.
-func copyAndRemove(src, dst string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	mode := info.Mode()
-
-	in, err := os.Open(src) //nolint:gosec // src is a path from os.ReadDir within a known dir
-	if err != nil {
-		return err
-	}
-	defer in.Close() //nolint:errcheck // read-only file, close error ignorable
-
-	out, err := os.Create(dst) //nolint:gosec // dst is constructed from destRoot + filepath.Base
-	if err != nil {
-		return err
-	}
-
-	if _, err = io.Copy(out, in); err != nil {
-		out.Close() //nolint:errcheck // cleanup on error path
-		return err
-	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(dst, mode); err != nil {
-		return err
-	}
-	return os.Remove(src)
 }
