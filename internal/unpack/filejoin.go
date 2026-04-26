@@ -42,20 +42,20 @@ func FileJoin(ctx context.Context, archive Archive, outDir string, _ Options) (R
 
 	outPath := filepath.Join(outDir, archive.Name)
 
-	// Refuse to overwrite an existing file.
-	if _, err := os.Stat(outPath); err == nil {
-		return Result{Err: fmt.Errorf("filejoin: output file already exists: %s", outPath)},
-			fmt.Errorf("filejoin: output file already exists: %s", outPath)
-	}
-
 	log.Info("filejoin: starting join",
 		"name", archive.Name,
 		"parts", len(archive.Parts),
 		"outPath", outPath,
 	)
 
-	outFile, err := os.Create(outPath) //nolint:gosec // outPath is constructed from caller-supplied outDir and archive.Name
+	// O_EXCL atomically refuses to create the file if it already exists,
+	// avoiding the TOCTOU race of a separate Stat check.
+	outFile, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666) //nolint:gosec // outPath is constructed from caller-supplied outDir and archive.Name
 	if err != nil {
+		if os.IsExist(err) {
+			return Result{Err: fmt.Errorf("filejoin: output file already exists: %s", outPath)},
+				fmt.Errorf("filejoin: output file already exists: %s", outPath)
+		}
 		return Result{Err: err}, fmt.Errorf("filejoin: create output: %w", err)
 	}
 
