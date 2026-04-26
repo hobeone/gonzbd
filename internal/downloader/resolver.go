@@ -8,10 +8,7 @@ import (
 	"time"
 )
 
-// Resolve performs an asynchronous DNS lookup for host, returning all
-// resolved IP addresses. The lookup runs in a goroutine so the caller
-// can apply its own context deadline without blocking a thread for the
-// duration of the OS resolver call.
+// Resolve performs a DNS lookup for host, returning all resolved IP addresses.
 //
 // Spec §3.7: "Fastest address selected (first successful probe), cached
 // per-server for the session, re-resolved on reconnect after timeout."
@@ -26,28 +23,13 @@ import (
 // On success the result is cached on s and the addresses are returned.
 // On error s's cache is not updated and the error is returned.
 func Resolve(ctx context.Context, s *Server, host string) ([]netip.Addr, error) {
-	type result struct {
-		addrs []netip.Addr
-		err   error
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("downloader: resolve %s: %w", host, err)
 	}
-
-	ch := make(chan result, 1)
-	go func() {
-		addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-		ch <- result{addrs: addrs, err: err}
-	}()
-
-	select {
-	case r := <-ch:
-		if r.err != nil {
-			return nil, fmt.Errorf("downloader: resolve %s: %w", host, r.err)
-		}
-		if len(r.addrs) == 0 {
-			return nil, fmt.Errorf("downloader: resolve %s: no addresses returned", host)
-		}
-		s.SetResolvedAddrs(r.addrs, time.Now())
-		return r.addrs, nil
-	case <-ctx.Done():
-		return nil, fmt.Errorf("downloader: resolve %s: %w", host, ctx.Err())
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("downloader: resolve %s: no addresses returned", host)
 	}
+	s.SetResolvedAddrs(addrs, time.Now())
+	return addrs, nil
 }
