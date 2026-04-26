@@ -142,21 +142,6 @@ type Job struct {
 	Warning string `json:"warning,omitempty"`
 }
 
-// GetStatus returns the current lifecycle state of the job. It is safe
-// for concurrent use.
-func (j *Job) GetStatus() constants.Status {
-	// Status is a string, which is not atomically loadable in Go.
-	// However, the Queue lock protects it during mutation.
-	// Tests and other subsystems that have a pointer to the Job
-	// should generally use Queue.Get(id) to see a consistent view,
-	// but for status specifically we could use an atomic value if
-	// the race is a problem.
-	//
-	// For now, the race in tests is because the test holds a pointer
-	// and reads the field while the background worker calls SetStatus.
-	return j.Status
-}
-
 // JobFile is a single file within a job: its articles, its assembly
 // state, and the metadata needed to write it out.
 type JobFile struct {
