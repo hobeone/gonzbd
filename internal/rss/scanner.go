@@ -97,6 +97,11 @@ func (sc *Scanner) ScanOnce(ctx context.Context) error {
 		}
 	}
 
+	// Prune entries older than 30 days to prevent unbounded growth.
+	if n := sc.store.Prune(30 * 24 * time.Hour); n > 0 {
+		sc.logger.Info("rss: pruned old dedup entries", slog.Int("count", n))
+	}
+
 	if err := sc.store.Save(); err != nil {
 		return fmt.Errorf("rss: save dedup store: %w", err)
 	}
