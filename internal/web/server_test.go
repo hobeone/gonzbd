@@ -9,13 +9,10 @@ import (
 func TestHandler(t *testing.T) {
 	// Handler() should not panic if ui/dist is correctly populated.
 	// In a real build environment, this is guaranteed by the build script.
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("Handler() panicked: %v", r)
-		}
-	}()
-
-	handler := Handler("test-api-key")
+	handler, err := Handler("test-api-key")
+	if err != nil {
+		t.Fatalf("Handler() returned error: %v", err)
+	}
 	if handler == nil {
 		t.Fatal("Handler() returned nil")
 	}

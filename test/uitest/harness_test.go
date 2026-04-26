@@ -114,7 +114,11 @@ func newTestEnv(t *testing.T) *testEnv {
 	mux := http.NewServeMux()
 	mux.Handle("/api", apiSrv.Handler())
 	mux.Handle("/api/ws", apiSrv.Handler())
-	mux.Handle("/", web.Handler(testAPIKey))
+	webHandler, err := web.Handler(testAPIKey)
+	if err != nil {
+		t.Fatalf("web.Handler: %v", err)
+	}
+	mux.Handle("/", webHandler)
 
 	ts := httptest.NewServer(mux)
 
