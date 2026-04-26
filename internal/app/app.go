@@ -214,7 +214,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			if downloadDuration == 0 {
 				downloadDuration = 1
 			}
-			var serverStatsParts []string
+			serverStatsParts := make([]string, 0, len(job.Queue.ServerStats))
 			for s, b := range job.Queue.ServerStats {
 				serverStatsParts = append(serverStatsParts, fmt.Sprintf("%s=%.1f MB", s, float64(b)/(1024*1024)))
 			}
