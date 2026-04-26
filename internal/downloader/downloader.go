@@ -291,13 +291,10 @@ func (d *Downloader) Resume() {
 
 // SetSpeedLimit sets the aggregate byte-rate cap in bytes per second.
 // Zero or negative disables throttling. The value takes effect on
-// the next article completion across all workers.
+// the next article fetch across all workers.
 //
-// The throttle is coarse-grained: it delays workers between fetches
-// based on body size, rather than shaping the wire-level byte stream.
-// Fine-grained byte-level shaping requires pushing the limiter into
-// the NNTP read path; that is deliberately deferred until the decoder
-// integration step so the limiter can account for yEnc overhead too.
+// The limiter is integrated at the NNTP connection level via
+// WithLimiter, providing byte-level rate shaping on the read path.
 func (d *Downloader) SetSpeedLimit(bytesPerSec int64) {
 	d.limiter.SetRate(float64(bytesPerSec))
 }
