@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -87,9 +88,13 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 		b.log.Info("WebSocket client disconnected", "remote", r.RemoteAddr)
 	}()
 
-	// Read loop (keep-alive/wait for close)
-	ctx := r.Context()
+	// Read loop (keep-alive/wait for close). Cancels ctx when the
+	// client disconnects so the write loop exits promptly.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
 	go func() {
+		defer cancel() // signal write loop on disconnect
 		for {
 			_, _, err := conn.Read(ctx)
 			if err != nil {
