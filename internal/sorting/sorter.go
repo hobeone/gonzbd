@@ -143,15 +143,32 @@ func Apply(
 
 	result := ApplyResult{MatchedRule: matched.Name}
 
+	// Determine if the sort string specifies a filename (not just a directory).
+	// When it does, only the biggest file gets the template-derived name;
+	// all other files keep their original names to prevent overwrites.
+	templateSpecifiesFile := !strings.HasSuffix(matched.SortString, "/") &&
+		filepath.Ext(subpath) != ""
+
+	// Find the biggest file path so we know which one gets the template name.
+	var biggestFile string
+	if templateSpecifiesFile {
+		var biggestSize int64
+		for _, p := range filePaths {
+			if fi, err := os.Stat(p); err == nil && fi.Size() > biggestSize {
+				biggestSize = fi.Size()
+				biggestFile = p
+			}
+		}
+	}
+
 	for _, src := range filePaths {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
 
-		// If subpath looks like a full file path (not just a directory), use its base name.
-		// Otherwise use the source file's base name.
 		targetName := filepath.Base(src)
-		if !strings.HasSuffix(matched.SortString, "/") && !strings.Contains(filepath.Base(subpath), " ") && filepath.Ext(subpath) != "" {
+		if templateSpecifiesFile && src == biggestFile {
+			// The biggest file gets the template-derived name (with correct ext).
 			targetName = filepath.Base(subpath)
 		}
 
