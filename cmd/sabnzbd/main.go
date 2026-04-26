@@ -278,9 +278,13 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		listen = net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port))
 	}
 
+	webHandler, err := web.Handler(cfg.General.APIKey)
+	if err != nil {
+		return fmt.Errorf("web handler: %w", err)
+	}
 	httpSrv := &http.Server{
 		Addr:              listen,
-		Handler:           composeRouter(apiSrv, web.Handler(cfg.General.APIKey)),
+		Handler:           composeRouter(apiSrv, webHandler),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errCh := make(chan error, 1)
