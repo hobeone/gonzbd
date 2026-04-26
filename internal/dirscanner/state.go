@@ -32,13 +32,14 @@ func OpenStore(path string) (*Store, error) {
 		states: make(map[string]FileState),
 	}
 
-	if _, err := os.Stat(path); err == nil {
-		// Potential file inclusion is expected: we're reading from a known path
-		//nolint:gosec // G304: opening path provided by caller/config
-		data, err := os.ReadFile(path)
-		if err != nil {
+	// Potential file inclusion is expected: we're reading from a known path
+	//nolint:gosec // G304: opening path provided by caller/config
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("failed to read state file: %w", err)
 		}
+	} else {
 		if err := json.Unmarshal(data, &store.states); err != nil {
 			return nil, fmt.Errorf("failed to parse state file: %w", err)
 		}

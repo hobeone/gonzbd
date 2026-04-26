@@ -140,23 +140,23 @@ func (c *Conn) submit(pc *pendingCmd, cmd []byte) error {
 	c.pendingLock.Unlock()
 
 	if _, err := c.bw.Write(cmd); err != nil {
-		c.unappendPendingLocked(pc)
+		c.unappendPending(pc)
 		c.releaseSem()
 		return fmt.Errorf("nntp: write: %w", err)
 	}
 	if err := c.bw.Flush(); err != nil {
-		c.unappendPendingLocked(pc)
+		c.unappendPending(pc)
 		c.releaseSem()
 		return fmt.Errorf("nntp: flush: %w", err)
 	}
 	return nil
 }
 
-// unappendPendingLocked removes pc from the pending FIFO, used when a
+// unappendPending removes pc from the pending FIFO, used when a
 // write fails after the append. pc is expected to be the most recent
 // entry; if it isn't, something has gone very wrong and we leave the
 // FIFO alone rather than scrambling the order.
-func (c *Conn) unappendPendingLocked(pc *pendingCmd) {
+func (c *Conn) unappendPending(pc *pendingCmd) {
 	c.pendingLock.Lock()
 	defer c.pendingLock.Unlock()
 	n := len(c.pending)

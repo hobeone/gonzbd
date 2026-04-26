@@ -14,6 +14,8 @@
 // imported freely.
 package constants
 
+import "strconv"
+
 // Priority is the scheduling priority of a job in the download queue. Higher
 // numeric values are scheduled before lower ones. Values are not contiguous —
 // PausedPriority and StopPriority are sentinels used internally rather than
@@ -84,30 +86,6 @@ func (p Priority) String() string {
 	case DefaultPriority:
 		return "Default"
 	default:
-		return "Priority(" + itoa(int(p)) + ")"
+		return "Priority(" + strconv.Itoa(int(p)) + ")"
 	}
-}
-
-// itoa is a tiny dependency-free integer formatter to avoid importing the
-// strconv (and indirectly fmt) package from this leaf-level package.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [12]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }
