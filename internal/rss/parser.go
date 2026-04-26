@@ -5,6 +5,7 @@ package rss
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -101,10 +102,14 @@ func normalizeItem(fi *gofeed.Item) Item {
 }
 
 // parseEnclosureLength converts an enclosure length string to int64.
+// Caps at math.MaxInt64 to prevent overflow from maliciously long digit strings.
 func parseEnclosureLength(s string) int64 {
 	var n int64
 	for _, c := range s {
 		if c >= '0' && c <= '9' {
+			if n > math.MaxInt64/10 {
+				return math.MaxInt64 // cap to prevent overflow
+			}
 			n = n*10 + int64(c-'0')
 		} else {
 			break
