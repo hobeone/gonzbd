@@ -198,7 +198,12 @@ func (s *Scanner) scanDir(ctx context.Context, dir, category string) (map[string
 
 		// File is stable. Extract, handle, and clean up.
 		if err := s.handleStableFile(ctx, path, entry.Name(), category); err != nil {
-			s.logger.Warn("failed to handle file", "path", path, "err", err)
+			s.logger.Warn("failed to handle file, marking as failed", "path", path, "err", err)
+			failedPath := path + ".failed"
+			if renameErr := os.Rename(path, failedPath); renameErr != nil {
+				s.logger.Warn("failed to rename file", "path", path, "err", renameErr)
+			}
+			s.store.Delete(path)
 			continue
 		}
 
@@ -279,6 +284,5 @@ func isValidExtension(filename string) bool {
 	return strings.HasSuffix(lower, ".nzb") ||
 		strings.HasSuffix(lower, ".nzb.gz") ||
 		strings.HasSuffix(lower, ".nzb.bz2") ||
-		strings.HasSuffix(lower, ".zip") ||
-		strings.HasSuffix(lower, ".rar")
+		strings.HasSuffix(lower, ".zip")
 }

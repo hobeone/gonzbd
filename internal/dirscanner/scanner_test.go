@@ -646,3 +646,89 @@ func TestDynamicCategoryUpdate(t *testing.T) {
 		t.Errorf("expected category 'tv', got %q", handler.calls[0].Opts.Category)
 	}
 }
+
+func TestRarFilesIgnored(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+	store, err := OpenStore(stateFile)
+	if err != nil {
+		t.Fatalf("OpenStore failed: %v", err)
+	}
+
+	handler := &MockHandler{failFor: make(map[string]error)}
+	scanner := New(tmpDir, store, handler, nil, nil)
+
+	// Create a .rar file — should be ignored by isValidExtension.
+	if err := os.WriteFile(filepath.Join(tmpDir, "test.rar"), []byte("fake rar data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Scan 1: observe
+	if _, _, err := scanner.scanDir(ctx, tmpDir, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Scan 2: should still not process .rar
+	_, count, err := scanner.scanDir(ctx, tmpDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 processed for .rar file, got %d", count)
+	}
+	if len(handler.calls) != 0 {
+		t.Errorf("expected no handler calls for .rar, got %d", len(handler.calls))
+	}
+}
+
+func TestCorruptedFileRenamedToFailed(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+	store, err := OpenStore(stateFile)
+	if err != nil {
+		t.Fatalf("OpenStore failed: %v", err)
+	}
+
+	handler := &MockHandler{failFor: make(map[string]error)}
+	scanner := New(tmpDir, store, handler, nil, nil)
+
+	// Create a .zip file with corrupted contents.
+	corruptedFile := filepath.Join(tmpDir, "bad.zip")
+	if err := os.WriteFile(corruptedFile, []byte("this is not a zip file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Scan 1: observe the file.
+	if _, _, err := scanner.scanDir(ctx, tmpDir, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Scan 2: file is stable, extraction fails, should be renamed to .failed.
+	_, count, err := scanner.scanDir(ctx, tmpDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 processed for corrupted file, got %d", count)
+	}
+
+	// Verify original file is gone and .failed file exists.
+	if _, err := os.Stat(corruptedFile); !os.IsNotExist(err) {
+		t.Error("corrupted file should have been renamed away")
+	}
+	if _, err := os.Stat(corruptedFile + ".failed"); err != nil {
+		t.Errorf("expected .failed file to exist: %v", err)
+	}
+
+	// Scan 3: .failed file should NOT be picked up again.
+	_, count, err = scanner.scanDir(ctx, tmpDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 processed on third scan, got %d", count)
+	}
+}
