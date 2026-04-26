@@ -68,6 +68,7 @@ func (e *EmailNotifier) sendImplicitTLS(ctx context.Context, addr string, auth s
 	if err != nil {
 		return fmt.Errorf("email: tls dial %s: %w", addr, err)
 	}
+	setConnDeadline(ctx, conn)
 	c, err := smtp.NewClient(conn, e.cfg.Host)
 	if err != nil {
 		return fmt.Errorf("email: smtp client on tls conn: %w", err)
@@ -81,6 +82,7 @@ func (e *EmailNotifier) sendPlainOrSTARTTLS(ctx context.Context, addr string, au
 	if err != nil {
 		return fmt.Errorf("email: smtp dial %s: %w", addr, err)
 	}
+	setConnDeadline(ctx, conn)
 	c, err := smtp.NewClient(conn, e.cfg.Host)
 	if err != nil {
 		return fmt.Errorf("email: smtp client on plain conn: %w", err)
@@ -93,6 +95,16 @@ func (e *EmailNotifier) sendPlainOrSTARTTLS(ctx context.Context, addr string, au
 		}
 	}
 	return e.finishSend(c, auth, msg)
+}
+
+// setConnDeadline applies the context's deadline (if any) to the
+// connection. Without this, smtp.Client operations (Auth, Mail, Rcpt,
+// Data) perform undeadlined reads/writes, hanging indefinitely on
+// slow or tarpitting SMTP servers.
+func setConnDeadline(ctx context.Context, conn net.Conn) {
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	}
 }
 
 func (e *EmailNotifier) finishSend(c *smtp.Client, auth smtp.Auth, msg []byte) error {
@@ -130,10 +142,14 @@ func (e *EmailNotifier) finishSend(c *smtp.Client, auth smtp.Auth, msg []byte) e
 // FormatMessage builds a minimal RFC 822 message. Exported so tests can
 // verify message structure without requiring a live SMTP server.
 func (e *EmailNotifier) FormatMessage(ev Event) []byte {
+	// Sanitize title to prevent SMTP header injection via \r\n in
+	// NZB/job names (which may come from untrusted RSS feeds).
+	safeTitle := strings.NewReplacer("\r", "", "\n", "").Replace(ev.Title)
+
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "From: %s\r\n", e.cfg.From)
 	fmt.Fprintf(&buf, "To: %s\r\n", strings.Join(e.cfg.To, ", "))
-	fmt.Fprintf(&buf, "Subject: SABnzbd: %s\r\n", ev.Title)
+	fmt.Fprintf(&buf, "Subject: SABnzbd: %s\r\n", safeTitle)
 	fmt.Fprintf(&buf, "Date: %s\r\n", ev.Timestamp.UTC().Format(time.RFC1123Z))
 	fmt.Fprintf(&buf, "\r\n%s", ev.Body)
 	return buf.Bytes()
