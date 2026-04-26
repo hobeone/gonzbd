@@ -8,6 +8,19 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/constants"
 )
 
+// DefaultCleanupList is the list of regex patterns used to strip spam from job names.
+var DefaultCleanupList = []string{
+	`^(?i)\[PRiVATE\]-?`,
+	`^(?i)\[nzbndx\]-?`,
+	`^(?i)\[DrunkenSlug\]-?`,
+	`^(?i)\[Geek\]-?`,
+	`^\[.*\]-?`,
+	`^(?i)www\..*\.[a-z]{2,3}-?`,
+	`(?i)-? ?\(Scenzbd\)$`,
+	`(?i)-? ?\(Obfuscated\)$`,
+	`(?i)-? ?\(NZBGeek\)$`,
+}
+
 // Default returns a fully populated Config suitable for first-run use.
 // Generated secrets (api_key, nzb_key) are filled with cryptographically
 // random 16-character hex strings. Callers that intend to persist the
@@ -56,17 +69,7 @@ func Default() (*Config, error) {
 			ReplaceIllegalWith:  "_",
 			ReplaceSpacesWith:   "",
 			StripDiacritics:     false,
-			CleanupList: []string{
-				`^(?i)\[PRiVATE\]-?`,
-				`^(?i)\[nzbndx\]-?`,
-				`^(?i)\[DrunkenSlug\]-?`,
-				`^(?i)\[Geek\]-?`,
-				`^\[.*\]-?`,
-				`^(?i)www\..*\.[a-z]{2,3}-?`,
-				`(?i)-? ?\(Scenzbd\)$`,
-				`(?i)-? ?\(Obfuscated\)$`,
-				`(?i)-? ?\(NZBGeek\)$`,
-			},
+			CleanupList:         DefaultCleanupList,
 		},
 		PostProc: PostProcConfig{
 			EnableUnrar:      true,
