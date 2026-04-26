@@ -645,7 +645,19 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 		return errors.New("app: not running")
 	}
 	_ = app.downloader.Stop()
+
+	// Wait for the pipeline to drain all buffered results from the old
+	// downloader's (now-closed) completions channel. setCompletions
+	// blocks until the pipeline's run() loop receives the update, which
+	// only happens after the pipeline has finished processing all
+	// buffered results and detected the channel close.
+	app.pipeline.setCompletions(nil)
+
+	// Now it's safe to clear emitted: no more MarkArticleDone calls
+	// from old results, so notifyCh won't be consumed between clear
+	// and the new downloader's first dispatch pass.
 	app.queue.ClearAllEmitted()
+
 	servers := make([]*downloader.Server, len(scs))
 	for i, sc := range scs {
 		servers[i] = downloader.NewServer(sc)

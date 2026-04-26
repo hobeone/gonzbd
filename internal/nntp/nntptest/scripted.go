@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
@@ -59,7 +60,15 @@ type Scripted struct {
 	wg        sync.WaitGroup
 	closed    chan struct{}
 	closeOnce sync.Once
+
+	// stallCount tracks how many FailureStall failures have fired.
+	// Tests can poll StallCount to wait until stalls are active.
+	stallCount atomic.Int64
 }
+
+// StallCount returns the number of FailureStall failures that have
+// fired since the server was created.
+func (s *Scripted) StallCount() int64 { return s.stallCount.Load() }
 
 // New starts a Scripted server bound to 127.0.0.1 on an ephemeral
 // port. Call AddArticle to populate the corpus and ServerConfig to
@@ -225,6 +234,7 @@ func (s *Scripted) handleBody(w *bufio.Writer, c net.Conn, cmd string) bool {
 		return false
 	case FailureStall:
 		send(w, fmt.Sprintf("222 0 <%s> body follows\r\n", id))
+		s.stallCount.Add(1)
 		<-s.closed
 		return false
 	}
