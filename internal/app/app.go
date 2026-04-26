@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -215,7 +216,14 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				downloadDuration = 1
 			}
 			serverStatsParts := make([]string, 0, len(job.Queue.ServerStats))
-			for s, b := range job.Queue.ServerStats {
+			// Sort keys for deterministic output in history entries.
+			serverNames := make([]string, 0, len(job.Queue.ServerStats))
+			for s := range job.Queue.ServerStats {
+				serverNames = append(serverNames, s)
+			}
+			sort.Strings(serverNames)
+			for _, s := range serverNames {
+				b := job.Queue.ServerStats[s]
 				serverStatsParts = append(serverStatsParts, fmt.Sprintf("%s=%.1f MB", s, float64(b)/(1024*1024)))
 			}
 			serverStats := strings.Join(serverStatsParts, ", ")
@@ -262,9 +270,11 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				entry.Path = job.DownloadDir
 			}
 			if app.historyRepo != nil {
-				if err := app.historyRepo.Add(context.Background(), entry); err != nil {
+				dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := app.historyRepo.Add(dbCtx, entry); err != nil {
 					log.Warn("failed to add history entry", "job", job.Queue.ID, "err", err)
 				}
+				dbCancel()
 			}
 			jobPath := filepath.Join(app.cfg.AdminDir, "queue", "jobs", job.Queue.ID+".json.gz")
 			if err := queue.SaveJob(jobPath, job.Queue); err != nil {

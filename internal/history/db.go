@@ -62,7 +62,6 @@ func Open(path string) (*DB, error) {
 		"PRAGMA foreign_keys=ON",
 		"pragma busy_timeout(5000)",
 		"pragma synchronous(NORMAL)",
-		"pragma foreign_keys(ON)",
 	} {
 		if _, err := sqlDB.Exec(pragma); err != nil {
 			_ = sqlDB.Close() //nolint:errcheck // superseded by open error
