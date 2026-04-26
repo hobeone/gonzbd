@@ -140,31 +140,7 @@ func (r *Repository) Get(ctx context.Context, nzoID string) (*Entry, error) {
 // are ordered by completed DESC (most-recent first), matching the upstream
 // API's default sort for the history endpoint (spec §10).
 func (r *Repository) Search(ctx context.Context, opts SearchOptions) ([]Entry, error) {
-	var (
-		where []string
-		args  []any
-	)
-
-	if opts.ArchiveOnly {
-		where = append(where, "archive != 0")
-	}
-	if opts.Status != "" {
-		where = append(where, "status = ?")
-		args = append(args, opts.Status)
-	}
-	if opts.Category != "" {
-		where = append(where, "category = ?")
-		args = append(args, opts.Category)
-	}
-	if opts.Search != "" {
-		where = append(where, "(name LIKE ? OR nzb_name LIKE ?)")
-		like := "%" + opts.Search + "%"
-		args = append(args, like, like)
-	}
-	if opts.MD5Sum != "" {
-		where = append(where, "md5sum = ?")
-		args = append(args, opts.MD5Sum)
-	}
+	where, args := buildWhereClause(opts)
 
 	q := "SELECT " + allColumns + " FROM history"
 	if len(where) > 0 {
@@ -198,13 +174,14 @@ func (r *Repository) Search(ctx context.Context, opts SearchOptions) ([]Entry, e
 	return out, nil
 }
 
-// Count returns the total number of entries matching opts, ignoring Start and Limit.
-func (r *Repository) Count(ctx context.Context, opts SearchOptions) (int, error) {
+// buildWhereClause constructs the WHERE predicates and args for Search/Count
+// queries from SearchOptions. Centralizes filter logic so new filters only
+// need to be added in one place.
+func buildWhereClause(opts SearchOptions) ([]string, []any) {
 	var (
 		where []string
 		args  []any
 	)
-
 	if opts.ArchiveOnly {
 		where = append(where, "archive != 0")
 	}
@@ -225,6 +202,12 @@ func (r *Repository) Count(ctx context.Context, opts SearchOptions) (int, error)
 		where = append(where, "md5sum = ?")
 		args = append(args, opts.MD5Sum)
 	}
+	return where, args
+}
+
+// Count returns the total number of entries matching opts, ignoring Start and Limit.
+func (r *Repository) Count(ctx context.Context, opts SearchOptions) (int, error) {
+	where, args := buildWhereClause(opts)
 
 	q := "SELECT COUNT(*) FROM history"
 	if len(where) > 0 {
