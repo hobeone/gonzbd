@@ -138,10 +138,19 @@ func extractZip(path string) ([][]byte, error) {
 	}
 	defer reader.Close() //nolint:errcheck // cleanup of zip reader
 
+	const (
+		maxNZBsPerZip      = 1000              // sane upper bound for NZBs in one archive
+		maxCumulativeBytes = 500 * 1024 * 1024 // 500 MiB total across all NZBs
+	)
+
 	var result [][]byte
+	var cumulative int64
 	for _, file := range reader.File {
 		if !strings.HasSuffix(strings.ToLower(file.Name), ".nzb") {
 			continue
+		}
+		if len(result) >= maxNZBsPerZip {
+			return nil, fmt.Errorf("zip contains more than %d NZB files", maxNZBsPerZip)
 		}
 
 		rc, err := file.Open()
@@ -158,6 +167,11 @@ func extractZip(path string) ([][]byte, error) {
 
 		if len(data) > MaxDecompressSize {
 			return nil, fmt.Errorf("zip member %s exceeds maximum size (%d > %d)", file.Name, len(data), MaxDecompressSize)
+		}
+
+		cumulative += int64(len(data))
+		if cumulative > maxCumulativeBytes {
+			return nil, fmt.Errorf("cumulative decompressed size exceeds %d bytes", maxCumulativeBytes)
 		}
 
 		result = append(result, data)
