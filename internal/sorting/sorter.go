@@ -129,8 +129,25 @@ func Apply(
 	// subpath is something like "TV/%t/Season %0s" -> "TV/Show Name/Season 01"
 	// We must join each component separately so JoinSafe doesn't underscores the slashes.
 	parts := strings.Split(filepath.ToSlash(subpath), "/")
+
+	// Determine if the sort string specifies a filename (not just a directory).
+	// When it does, only the biggest file gets the template-derived name;
+	// all other files keep their original names to prevent overwrites.
+	// We check this early so we can exclude the filename part from the
+	// directory construction below.
+	templateSpecifiesFile := !strings.HasSuffix(matched.SortString, "/") &&
+		filepath.Ext(subpath) != ""
+
+	// When the template specifies a filename, the last part of subpath IS
+	// the desired filename, not a directory. Exclude it from MkdirAll to
+	// avoid creating a directory named after the file (e.g. "Show.S01E01.mkv/").
+	dirParts := parts
+	if templateSpecifiesFile && len(parts) > 0 {
+		dirParts = parts[:len(parts)-1]
+	}
+
 	destDir := destRoot
-	for _, p := range parts {
+	for _, p := range dirParts {
 		if p == "" || p == "." {
 			continue
 		}
@@ -142,12 +159,6 @@ func Apply(
 	}
 
 	result := ApplyResult{MatchedRule: matched.Name}
-
-	// Determine if the sort string specifies a filename (not just a directory).
-	// When it does, only the biggest file gets the template-derived name;
-	// all other files keep their original names to prevent overwrites.
-	templateSpecifiesFile := !strings.HasSuffix(matched.SortString, "/") &&
-		filepath.Ext(subpath) != ""
 
 	// Find the biggest file path so we know which one gets the template name.
 	var biggestFile string
