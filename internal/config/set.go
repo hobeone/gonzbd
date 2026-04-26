@@ -22,6 +22,10 @@ func (c *Config) Set(section, keyword, value string) error {
 
 // SetLocked updates a single configuration value like Set, but assumes the
 // caller already holds the write lock (e.g. from within a With callback).
+//
+// After applying the change, Validate() is run against the full config. If
+// validation fails, the previous value is restored and the validation error
+// is returned, ensuring invalid state is never persisted.
 func (c *Config) SetLocked(section, keyword, value string) error {
 
 	// 1. Find the section field
@@ -33,7 +37,17 @@ func (c *Config) SetLocked(section, keyword, value string) error {
 
 	// 2. Handle array-based sections (Servers, Categories) via JSON
 	if keyword == "" && sectionField.Kind() == reflect.Slice {
-		return setSliceValue(sectionField, value)
+		prev := reflect.New(sectionField.Type()).Elem()
+		prev.Set(sectionField)
+
+		if err := setSliceValue(sectionField, value); err != nil {
+			return err
+		}
+		if err := c.validateLocked(); err != nil {
+			sectionField.Set(prev) // rollback
+			return fmt.Errorf("config: validation failed: %w", err)
+		}
+		return nil
 	}
 
 	// 3. Handle flat sections (General, Downloads, PostProc)
@@ -42,10 +56,27 @@ func (c *Config) SetLocked(section, keyword, value string) error {
 		if !field.IsValid() {
 			return fmt.Errorf("config: invalid keyword %q in section %q", keyword, section)
 		}
-		return setFieldValue(field, value)
+
+		prev := reflect.New(field.Type()).Elem()
+		prev.Set(field)
+
+		if err := setFieldValue(field, value); err != nil {
+			return err
+		}
+		if err := c.validateLocked(); err != nil {
+			field.Set(prev) // rollback
+			return fmt.Errorf("config: validation failed: %w", err)
+		}
+		return nil
 	}
 
 	return fmt.Errorf("config: section %q (kind %v) does not support Set with keyword %q", section, sectionField.Kind(), keyword)
+}
+
+// validateLocked runs Validate without re-acquiring the mutex.
+// Validate only reads fields so this is safe under the write lock.
+func (c *Config) validateLocked() error {
+	return c.Validate()
 }
 
 func setSliceValue(f reflect.Value, val string) error {
