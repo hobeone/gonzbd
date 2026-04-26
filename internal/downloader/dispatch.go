@@ -151,12 +151,18 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 
 	tried := d.tryList[key]
 	anyEligible := false
+	allTried := true // assume all tried until proven otherwise
 	for _, srv := range d.servers {
 		name := srv.Cfg().Name
-		if !srv.Active(now) {
+		if _, already := tried[name]; already {
 			continue
 		}
-		if _, already := tried[name]; already {
+		// This server hasn't been tried yet.
+		if !srv.Active(now) {
+			// Server is penalized/inactive but not yet tried.
+			// Don't declare the article permanently failed — the
+			// penalty will expire and we'll get another chance.
+			allTried = false
 			continue
 		}
 		anyEligible = true
@@ -184,7 +190,12 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 	// tryList), this article is permanently failed for this session.
 	// Return the req so dispatchPass can emit ErrNoServersLeft after
 	// locks are released.
-	if !anyEligible {
+	//
+	// Crucially: only declare exhausted when all enabled servers have
+	// been definitively tried (allTried). If some servers are merely
+	// penalized (allTried=false), the article should wait for penalty
+	// expiry rather than being permanently failed.
+	if !anyEligible && allTried {
 		d.log.Warn("article failed on all servers", "msgid", messageID, "job", jobID)
 		return true, req
 	}
