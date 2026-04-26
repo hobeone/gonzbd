@@ -3,21 +3,17 @@
 package app_test
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"fmt"
-	"hash/crc32"
-	"net"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/app"
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
+	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
@@ -42,6 +38,9 @@ func TestEndToEndDownload(t *testing.T) {
 	downloadDir := t.TempDir()
 	adminDir := t.TempDir()
 
+	db, _ := history.Open(filepath.Join(adminDir, "history.db"))
+	repo := history.NewRepository(db)
+
 	application, err := app.New(app.Config{
 		DownloadDir: downloadDir,
 		AdminDir:    adminDir,
@@ -55,7 +54,7 @@ func TestEndToEndDownload(t *testing.T) {
 			Timeout:            5,
 			Enable:             true,
 		}},
-	})
+	}, repo)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
@@ -129,155 +128,6 @@ func TestEndToEndDownload(t *testing.T) {
 	}
 }
 
-// makeDeterministic produces a reproducible byte sequence including every
-// byte value 0x00–0xff, giving decoder coverage of escape bytes in the
-// end-to-end flow.
-func makeDeterministic(n int) []byte {
-	out := make([]byte, n)
-	for i := range out {
-		out[i] = byte(i * 7 % 256)
-	}
-	return out
-}
-
-// yencEncodePart builds a multi-part yEnc article body (no dot-stuffing;
-// the mock NNTP server applies that at the wire level).
-func yencEncodePart(name string, partNum, totalParts int, data []byte, fileSize, beginOffset, endOffset int) []byte {
-	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "=ybegin part=%d total=%d line=128 size=%d name=%s\r\n",
-		partNum, totalParts, fileSize, name)
-	fmt.Fprintf(&buf, "=ypart begin=%d end=%d\r\n", beginOffset, endOffset)
-
-	encoded := make([]byte, 0, len(data)+len(data)/32)
-	for _, b := range data {
-		enc := byte((int(b) + 42) % 256)
-		if enc == 0 || enc == '\n' || enc == '\r' || enc == '=' {
-			encoded = append(encoded, '=')
-			enc = byte((int(enc) + 64) % 256)
-		}
-		encoded = append(encoded, enc)
-	}
-	const lineLen = 128
-	for i := 0; i < len(encoded); i += lineLen {
-		end := i + lineLen
-		if end > len(encoded) {
-			end = len(encoded)
-		}
-		buf.Write(encoded[i:end])
-		buf.WriteString("\r\n")
-	}
-
-	checksum := crc32.ChecksumIEEE(data)
-	fmt.Fprintf(&buf, "=yend size=%d part=%d pcrc32=%08x\r\n", len(data), partNum, checksum)
-	return buf.Bytes()
-}
-
-// mockNNTP is a minimal RFC 3977-shaped server for integration tests.
-// It speaks only the verbs the downloader issues: the greeting,
-// CAPABILITIES, BODY, STAT, QUIT. No auth, no TLS.
-type mockNNTP struct {
-	host string
-	port int
-	ln   net.Listener
-
-	bodies map[string][]byte // keyed by message-id (no angle brackets)
-
-	wg sync.WaitGroup
-}
-
-func startMockNNTP(t *testing.T, bodies map[string][]byte) *mockNNTP {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := ln.Addr().(*net.TCPAddr)
-	m := &mockNNTP{
-		host:   addr.IP.String(),
-		port:   addr.Port,
-		ln:     ln,
-		bodies: bodies,
-	}
-	t.Cleanup(func() {
-		_ = ln.Close()
-		m.wg.Wait()
-	})
-	m.wg.Go(m.acceptLoop)
-	return m
-}
-
-func (m *mockNNTP) acceptLoop() {
-	for {
-		c, err := m.ln.Accept()
-		if err != nil {
-			return
-		}
-		m.wg.Go(func() {
-			defer func() { _ = c.Close() }()
-			m.handleConn(c)
-		})
-	}
-}
-
-func (m *mockNNTP) handleConn(c net.Conn) {
-	r := bufio.NewReader(c)
-	write := func(s string) bool {
-		_, err := c.Write([]byte(s))
-		return err == nil
-	}
-	if !write("200 welcome\r\n") {
-		return
-	}
-	for {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			return
-		}
-		cmd := strings.TrimRight(line, "\r\n")
-		switch {
-		case cmd == "CAPABILITIES":
-			_ = write("101 capabilities\r\nVERSION 2\r\nREADER\r\n.\r\n")
-		case strings.HasPrefix(cmd, "BODY "):
-			id := strings.Trim(strings.TrimPrefix(cmd, "BODY "), "<>")
-			body, ok := m.bodies[id]
-			if !ok {
-				_ = write("430 no such article\r\n")
-				continue
-			}
-			// 222 response then dot-stuffed body then ".\r\n".
-			_ = write(fmt.Sprintf("222 0 <%s> body follows\r\n", id))
-			_ = write(string(dotStuff(body)))
-			_ = write("\r\n.\r\n")
-		case strings.HasPrefix(cmd, "STAT "):
-			id := strings.Trim(strings.TrimPrefix(cmd, "STAT "), "<>")
-			if _, ok := m.bodies[id]; !ok {
-				_ = write("430 no such article\r\n")
-				continue
-			}
-			_ = write(fmt.Sprintf("223 0 <%s>\r\n", id))
-		case cmd == "QUIT":
-			_ = write("205 bye\r\n")
-			return
-		default:
-			_ = write("500 unknown command\r\n")
-		}
-	}
-}
-
-// dotStuff doubles any leading '.' on a line, per RFC 3977 §3.1.1.
-func dotStuff(body []byte) []byte {
-	if !bytes.Contains(body, []byte("\r\n.")) && (len(body) == 0 || body[0] != '.') {
-		return body
-	}
-	var out bytes.Buffer
-	out.Grow(len(body) + 16)
-	atLineStart := true
-	for _, b := range body {
-		if atLineStart && b == '.' {
-			out.WriteByte('.')
-		}
-		out.WriteByte(b)
-		atLineStart = b == '\n'
-	}
-	return out.Bytes()
-}
+// NOTE: Helper functions (makeDeterministic, yencEncodePart, mockNNTP,
+// startMockNNTP, dotStuff) are defined in app_test.go and shared across
+// both unit and integration test files via the same test package.

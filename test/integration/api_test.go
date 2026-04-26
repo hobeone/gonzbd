@@ -61,15 +61,12 @@ func buildAPIServer(t *testing.T) (*api.Server, *httptest.Server) {
 	repo := history.NewRepository(db)
 
 	cfg := &config.Config{}
+	cfg.General.APIKey = integrationAPIKey
+	cfg.General.NZBKey = integrationNZBKey
 
 	grabber := urlgrabber.New(urlgrabber.Config{}, nopNZBHandler{})
 
 	srv := api.New(api.Options{
-		Auth: api.AuthConfig{
-			APIKey:          integrationAPIKey,
-			NZBKey:          integrationNZBKey,
-			LocalhostBypass: false,
-		},
 		Version: "integration-test",
 		Queue:   q,
 		History: repo,

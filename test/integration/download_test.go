@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/app"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
