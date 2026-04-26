@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { Input } from '$lib/components/ui/input';
 
 	let {
@@ -19,7 +20,7 @@
 		onupdate?: (section: string, keyword: string, value: string | number) => void;
 	} = $props();
 
-	let currentValue = $state<string | number>('');
+	let currentValue = $state<string | number>(value);
 	let timer: ReturnType<typeof setTimeout>;
 
 	$effect(() => {

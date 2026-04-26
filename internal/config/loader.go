@@ -47,16 +47,34 @@ func decode(r io.Reader) (*Config, error) {
 	// Expand environment variables ($VAR or ${VAR}) globally.
 	expanded := os.ExpandEnv(string(b))
 
-	var cfg Config
+	// Initialize with defaults so that missing fields in YAML stay at default.
+	cfg, err := Default()
+	if err != nil {
+		return nil, err
+	}
+
 	dec := yaml.NewDecoder(strings.NewReader(expanded))
 	dec.KnownFields(true) // reject unknown keys to catch typos
-	if err := dec.Decode(&cfg); err != nil {
+	if err := dec.Decode(cfg); err != nil {
 		if errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("file is empty")
+			// Empty file? Just return the defaults.
+			return cfg, nil
 		}
 		return nil, err
 	}
-	return &cfg, nil
+
+	// Sticky defaults: if these fields are empty after decoding, it means
+	// they were either missing from the YAML or explicitly set to empty.
+	// We restore defaults for critical naming options to ensure the UI
+	// and system work correctly for existing users.
+	if cfg.Downloads.ReplaceIllegalWith == "" {
+		cfg.Downloads.ReplaceIllegalWith = "_"
+	}
+	if len(cfg.Downloads.CleanupList) == 0 {
+		cfg.Downloads.CleanupList = DefaultCleanupList
+	}
+
+	return cfg, nil
 }
 
 // Save writes the configuration to path atomically: the YAML is rendered
