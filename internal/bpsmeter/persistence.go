@@ -87,34 +87,18 @@ func Capture(m *Meter, q *Quota) State {
 }
 
 // Restore applies a previously loaded State to fresh Meter and Quota instances.
-// It records the persisted byte counts without affecting the rolling-window BPS
-// (which starts fresh because historical samples are not stored).
+// It sets the persisted lifetime totals directly without affecting the
+// rolling-window BPS (which starts fresh because historical samples are not
+// stored).
 func Restore(m *Meter, q *Quota, s State) {
-	// Replay lifetime totals into Meter via Record so the internal maps are populated.
-	// We record all bytes at once; BPS will be 0 until fresh traffic arrives.
-	if s.LifetimeTotal > 0 {
-		m.Record("", s.LifetimeTotal)
-	}
-	// Subtract the aggregate we just added because Record also adds to aggregate;
-	// instead build it per-server and let aggregate accumulate naturally.
-	// Reset aggregate to avoid double-counting: re-create meter state directly.
-	// Simpler: use internal lock to set lifetime directly.
+	// Set lifetime totals directly — avoids routing through Record, which
+	// would pollute rolling-window buckets and require an immediate undo.
 	m.mu.Lock()
-	// Reset what Record just wrote to aggregate.
-	m.servers[""].lifetime = s.LifetimeTotal
-	// Remove the bucket bytes Record added (avoid phantom BPS spike on restore).
-	agg := m.servers[""]
-	for i := range agg.buckets {
-		agg.buckets[i] = bucket{}
-	}
-	// Restore per-server totals.
+	agg := m.getOrCreate("")
+	agg.lifetime = s.LifetimeTotal
 	for srv, total := range s.ServerTotals {
 		ss := m.getOrCreate(srv)
 		ss.lifetime = total
-		// Clear any buckets written by concurrent code during restore.
-		for i := range ss.buckets {
-			ss.buckets[i] = bucket{}
-		}
 	}
 	m.mu.Unlock()
 
