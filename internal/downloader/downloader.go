@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/bpsmeter"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
@@ -324,6 +325,12 @@ func (d *Downloader) signalDispatch() {
 // block. Blocking the main loop stalls rate-limit updates and
 // shutdown.
 func (d *Downloader) run(ctx context.Context) {
+	// Periodic ticker ensures the dispatcher wakes up to discover
+	// expired server penalties even when no workers are active (all
+	// servers penalized → no dispatchReady signals arriving).
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -331,6 +338,8 @@ func (d *Downloader) run(ctx context.Context) {
 		case <-d.queue.Notify():
 			d.dispatchPass(ctx)
 		case <-d.dispatchReady:
+			d.dispatchPass(ctx)
+		case <-ticker.C:
 			d.dispatchPass(ctx)
 		}
 	}
