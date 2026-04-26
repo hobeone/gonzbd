@@ -149,9 +149,7 @@ func SanitizeFilename(filename string, opts SanitizeOptions) string {
 	filename = replaceWinDevices(filename)
 
 	// 5. Remove trailing dots and spaces (invalid on Windows)
-	for len(filename) > 0 && (filename[len(filename)-1] == '.' || filename[len(filename)-1] == ' ') {
-		filename = strings.TrimRight(filename, ". ")
-	}
+	filename = strings.TrimRight(filename, ". ")
 
 	if filename == "" {
 		return "unknown"
@@ -205,9 +203,7 @@ func SanitizeFolderName(foldername string, opts SanitizeOptions) string {
 	}
 
 	// 6. Remove trailing dots and spaces (invalid on Windows)
-	for len(foldername) > 0 && (foldername[len(foldername)-1] == '.' || foldername[len(foldername)-1] == ' ') {
-		foldername = strings.TrimRight(foldername, ". ")
-	}
+	foldername = strings.TrimRight(foldername, ". ")
 
 	if foldername == "" {
 		return "unknown"
