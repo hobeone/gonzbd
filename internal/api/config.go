@@ -71,7 +71,12 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Hot-reload core components if their configuration changed.
 	if section == "servers" && s.app != nil {
-		if err := s.app.ReloadDownloader(s.config.Servers); err != nil {
+		var servers []config.ServerConfig
+		s.config.WithRead(func(cfg *config.Config) {
+			servers = make([]config.ServerConfig, len(cfg.Servers))
+			copy(servers, cfg.Servers)
+		})
+		if err := s.app.ReloadDownloader(servers); err != nil {
 			s.log.Error("reload servers", "error", err)
 			// Return 200 because the config was saved, but add a warning.
 			respondJSON(w, http.StatusOK, map[string]any{
