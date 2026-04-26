@@ -402,6 +402,14 @@ func (q *Queue) ClearAllEmitted() {
 			}
 		}
 	}
+	// Drain any stale notification (e.g. from MarkArticleDone calls during
+	// pipeline drain of the old downloader's buffered results) so our fresh
+	// notification is guaranteed to be delivered.
+	select {
+	case <-q.notifyCh:
+	default:
+	}
+	q.notifyLocked()
 }
 
 // TotalRemainingBytes returns the sum of RemainingBytes across all jobs.
