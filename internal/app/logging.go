@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/lmittmann/tint"
@@ -200,7 +201,7 @@ func (f *filterHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		next:         f.next.WithAttrs(attrs),
 		allow:        f.allow,
 		deny:         f.deny,
-		currentAttrs: append(f.currentAttrs, attrs...),
+		currentAttrs: append(slices.Clone(f.currentAttrs), attrs...),
 	}
 }
 
