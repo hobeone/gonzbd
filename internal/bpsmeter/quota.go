@@ -132,22 +132,25 @@ func (q *Quota) maybeRollover() {
 // crossed since the last call, the running total is reset before adding.
 // If the new total crosses cfg.Budget, the ExceedHandler fires (once per period).
 func (q *Quota) Add(n int64) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+	var callExceed ExceedHandler
+	var usage, budget int64
 
+	q.mu.Lock()
 	q.maybeRollover()
 	q.usage += n
 
 	if q.cfg.Budget > 0 && !q.exceeded && q.usage >= q.cfg.Budget {
 		q.exceeded = true
-		if q.onExceed != nil {
-			// Call without lock — handler must not re-enter Quota.
-			usage := q.usage
-			budget := q.cfg.Budget
-			q.mu.Unlock()
-			q.onExceed(usage, budget)
-			q.mu.Lock()
-		}
+		callExceed = q.onExceed
+		usage = q.usage
+		budget = q.cfg.Budget
+	}
+	q.mu.Unlock()
+
+	// Call outside the lock — handler must not re-enter Quota, but a
+	// panic here no longer corrupts the mutex state.
+	if callExceed != nil {
+		callExceed(usage, budget)
 	}
 }
 
