@@ -52,6 +52,13 @@ func SaveState(path string, s State) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("SaveState write: %w", err)
 	}
+	if err = tmp.Sync(); err != nil {
+		//nolint:errcheck // best-effort cleanup; sync error takes precedence
+		_ = tmp.Close()
+		//nolint:errcheck // best-effort cleanup
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("SaveState sync: %w", err)
+	}
 	if err = tmp.Close(); err != nil {
 		//nolint:errcheck // best-effort cleanup; close error takes precedence
 		_ = os.Remove(tmpName)
