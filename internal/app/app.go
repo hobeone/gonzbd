@@ -342,7 +342,7 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 		}
 	}
 	if !isDuplicate && job.Filename != "" {
-		if _, err := os.Stat(filepath.Join(nzbDir, job.Filename)); err == nil {
+		if _, err := os.Stat(filepath.Join(nzbDir, filepath.Base(job.Filename))); err == nil {
 			isDuplicate = true
 			dupReason = "found in admin/nzb/ backup dir (filename)"
 		}
@@ -389,7 +389,7 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 		job.Name = fmt.Sprintf("%s.%d", baseName, i)
 	}
 	if !isDuplicate && job.Filename != "" {
-		backupPath := filepath.Join(nzbDir, job.Filename)
+		backupPath := filepath.Join(nzbDir, filepath.Base(job.Filename))
 		_ = os.WriteFile(backupPath, rawNZB, 0o600)
 	}
 	if err := app.queue.Add(job); err != nil {

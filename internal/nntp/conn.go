@@ -329,6 +329,7 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 
 	if err := c.handshake(ctx, cfg); err != nil {
 		l.Debug("handshake failed", "error", err)
+		cancelConn()   // release context resources on handshake failure
 		_ = nc.Close() //nolint:errcheck // handshake failed; socket is being torn down regardless
 		return nil, err
 	}

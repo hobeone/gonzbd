@@ -149,6 +149,8 @@ func (r *Repository) Search(ctx context.Context, opts SearchOptions) ([]Entry, e
 	q += " ORDER BY completed DESC"
 	if opts.Limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", opts.Limit) //nolint:gosec // integer, not user string
+	} else if opts.Start > 0 {
+		q += " LIMIT -1" // SQLite requires LIMIT when OFFSET is used; -1 means unlimited
 	}
 	if opts.Start > 0 {
 		q += fmt.Sprintf(" OFFSET %d", opts.Start) //nolint:gosec // integer, not user string

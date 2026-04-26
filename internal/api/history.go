@@ -86,19 +86,43 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	if failedOnly {
 		opts.Status = "Failed"
 	}
+	var entries []history.Entry
 
-	// When nzo_ids is specified, we cannot apply LIMIT/OFFSET at the SQL
-	// level because the requested IDs may not fall within the page window.
-	// Instead, fetch all matching entries and post-filter by ID.
-	if nzoIDs == "" {
+	if nzoIDs != "" {
+		// Fetch individual IDs directly instead of loading the entire
+		// table — avoids memory exhaustion for large history DBs.
+		for _, id := range splitCSV(nzoIDs) {
+			e, err := s.history.Get(r.Context(), id)
+			if err != nil || e == nil {
+				continue
+			}
+			if catFilter != "" && e.Category != catFilter {
+				continue
+			}
+			if statusFilter != "" && e.Status != statusFilter {
+				continue
+			}
+			if failedOnly && e.Status != "Failed" {
+				continue
+			}
+			if search != "" {
+				sLower := strings.ToLower(search)
+				if !strings.Contains(strings.ToLower(e.Name), sLower) &&
+					!strings.Contains(strings.ToLower(e.NzbName), sLower) {
+					continue
+				}
+			}
+			entries = append(entries, *e)
+		}
+	} else {
 		opts.Start = start
 		opts.Limit = limit
-	}
-
-	entries, err := s.history.Search(r.Context(), opts)
-	if err != nil {
-		s.respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
-		return
+		var err error
+		entries, err = s.history.Search(r.Context(), opts)
+		if err != nil {
+			s.respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
+			return
+		}
 	}
 
 	// Total count for pagination (always reflects the unfiltered-by-ID total).
@@ -108,23 +132,9 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Optional post-filter on specific nzo_ids.
-	var nzoIDSet map[string]struct{}
-	if nzoIDs != "" {
-		nzoIDSet = make(map[string]struct{})
-		for _, id := range splitCSV(nzoIDs) {
-			nzoIDSet[id] = struct{}{}
-		}
-	}
-
 	var slots []historySlot
 	var totalBytes int64
 	for _, e := range entries {
-		if nzoIDSet != nil {
-			if _, ok := nzoIDSet[e.NzoID]; !ok {
-				continue
-			}
-		}
 		totalBytes += e.Bytes
 		slots = append(slots, historySlot{
 			NzoID:        e.NzoID,

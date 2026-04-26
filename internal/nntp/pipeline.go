@@ -187,6 +187,9 @@ func (c *Conn) popPending() *pendingCmd {
 func (c *Conn) finishReader(err error) {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
+		if c.cancel != nil {
+			c.cancel() // release context resources; prevents leak when Close() is never called
+		}
 		c.closeErr = err
 		_ = c.nc.Close() //nolint:errcheck // best-effort cleanup; underlying error already captured in c.closeErr
 

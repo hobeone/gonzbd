@@ -302,16 +302,23 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		d.log.Warn("fetch failed", "server", name, "msgid", req.messageID, "error", err)
 
 		connMu.Lock()
-		if *connPtr == c {
+		isFirstNotifier := *connPtr == c
+		if isFirstNotifier {
 			_ = c.Close() //nolint:errcheck // discarding a broken conn; underlying error already captured in err
 			*connPtr = nil
 		}
 		connMu.Unlock()
 
-		srv.RecordBadConnection()
-		if pen := PenaltyFor(err); pen > 0 {
-			d.log.Info("penalty applied", "server", name, "duration", pen)
-			srv.ApplyPenalty(pen)
+		// Only the first goroutine to detect the broken connection should
+		// record the failure and apply a penalty. Otherwise, N pipelined
+		// requests on a single dropped connection would inflate badConns
+		// by N×, prematurely deactivating optional servers.
+		if isFirstNotifier {
+			srv.RecordBadConnection()
+			if pen := PenaltyFor(err); pen > 0 {
+				d.log.Info("penalty applied", "server", name, "duration", pen)
+				srv.ApplyPenalty(pen)
+			}
 		}
 		d.unmarkTried(req.jobID, req.messageID, name)
 		d.emitResult(ctx, req, name, nil, 0, err)

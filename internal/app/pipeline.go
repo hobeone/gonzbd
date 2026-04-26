@@ -112,12 +112,19 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 			// The assembler marks the article Failed in the queue (with dup
 			// suppression) so failure and completion accounting stay ordered
 			// with file writes on the single worker goroutine.
-			_ = p.assembler.WriteArticle(ctx, assembler.WriteRequest{
+			writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
 				JobID:     res.JobID,
 				FileIdx:   res.FileIdx,
 				MessageID: res.MessageID,
 				FatalErr:  res.Err,
 			})
+			// If the assembler couldn't accept the request, clear Emitted
+			// so the dispatcher can retry the article.
+			if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
+				p.log.Warn("write fatal article failed, returning to dispatch pool",
+					"job", res.JobID, "msgid", res.MessageID, "err", writeErr)
+				_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
+			}
 		} else {
 			// Retryable error (connection drop, 430 from one server).
 			// Clear the Emitted flag so the dispatcher re-dispatches this
@@ -153,8 +160,9 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 		Data:      res.Data,
 	})
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
-		p.log.Warn("write article failed",
+		p.log.Warn("write article failed, returning to dispatch pool",
 			"job", res.JobID, "msgid", res.MessageID, "err", writeErr)
+		_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
 	}
 }
 
