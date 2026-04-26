@@ -411,7 +411,7 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close() //nolint:errcheck // read-only file cleanup
 
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(io.LimitReader(f, maxUploadBytes))
 	if err != nil {
 		s.respondError(w, http.StatusInternalServerError, "read file: "+err.Error())
 		return

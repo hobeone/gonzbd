@@ -100,9 +100,13 @@ func isLocalhost(r *http.Request) bool {
 // via MaxBytesReader before parsing the multipart body.
 const maxFormBytes = 2 * 1024 * 1024 // 2 MiB
 
+// isMultipartUpload returns true only for NZB file upload requests.
+// The body limit bypass is restricted to mode=addfile to prevent disk/memory
+// exhaustion attacks on other endpoints that happen to use multipart encoding.
 func isMultipartUpload(r *http.Request) bool {
 	return r.Method == http.MethodPost &&
-		strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data")
+		strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") &&
+		r.URL.Query().Get("mode") == "addfile"
 }
 
 // loggingMiddleware records each request at Info level with method, path,
