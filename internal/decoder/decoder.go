@@ -155,15 +155,19 @@ func decodeBody(encoded []byte, sizeHint int64) (out []byte, checksum uint32) {
 			next := indexSpecial(remaining)
 			if next < 0 {
 				// No special bytes remain; decode the entire tail at once.
-				for _, c := range remaining {
-					out = append(out, c-42)
+				base := len(out)
+				out = append(out, remaining...)
+				for i := base; i < len(out); i++ {
+					out[i] -= 42
 				}
 				break
 			}
 			if next > 0 {
 				// Bulk-decode the safe prefix.
-				for _, c := range remaining[:next] {
-					out = append(out, c-42)
+				base := len(out)
+				out = append(out, remaining[:next]...)
+				for i := base; i < len(out); i++ {
+					out[i] -= 42
 				}
 				remaining = remaining[next:]
 			}
