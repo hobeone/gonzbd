@@ -15,49 +15,45 @@ type tokenEntry struct {
 // e.g. %ext is tested before %e, and %0s before %s. The order of entries
 // determines which token wins when one is a prefix of another — first match
 // at any given % position wins.
-var tokens []tokenEntry
-
-func init() {
-	tokens = []tokenEntry{
-		// Extension — must come before %e (Python's special-case comment).
-		{"%ext", func(info MediaInfo, ext string) string { return strings.TrimPrefix(ext, ".") }},
-		// Episode name variants — must come before bare %e.
-		{"%e.n", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.EpisodeName, " ", ".") }},
-		{"%e_n", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.EpisodeName, " ", "_") }},
-		{"%en", func(info MediaInfo, _ string) string { return info.EpisodeName }},
-		// Episode number — after episode-name tokens.
-		{"%0e", func(info MediaInfo, _ string) string { return fmt.Sprintf("%02d", info.Episode) }},
-		{"%e", func(info MediaInfo, _ string) string { return fmt.Sprintf("%d", info.Episode) }},
-		// Title variants.
-		{"%_.t", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", "_") }},
-		{"%.t", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", ".") }},
-		{"%_t", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", "_") }},
-		{"%t", func(info MediaInfo, _ string) string { return info.Title }},
-		// Year and decade.
-		{"%decade", func(info MediaInfo, _ string) string {
-			if info.Year == 0 {
-				return ""
-			}
-			return fmt.Sprintf("%ds", (info.Year/10)*10)
-		}},
-		{"%y", func(info MediaInfo, _ string) string {
-			if info.Year == 0 {
-				return ""
-			}
-			return fmt.Sprintf("%d", info.Year)
-		}},
-		// Season.
-		{"%0s", func(info MediaInfo, _ string) string { return fmt.Sprintf("%02d", info.Season) }},
-		{"%s", func(info MediaInfo, _ string) string { return fmt.Sprintf("%d", info.Season) }},
-		// Month.
-		{"%0m", func(info MediaInfo, _ string) string { return fmt.Sprintf("%02d", info.Month) }},
-		{"%m", func(info MediaInfo, _ string) string { return fmt.Sprintf("%d", info.Month) }},
-		// Day.
-		{"%0d", func(info MediaInfo, _ string) string { return fmt.Sprintf("%02d", info.Day) }},
-		{"%d", func(info MediaInfo, _ string) string { return fmt.Sprintf("%d", info.Day) }},
-		// Resolution.
-		{"%r", func(info MediaInfo, _ string) string { return info.Resolution }},
-	}
+var tokens = []tokenEntry{
+	// Extension — must come before %e (Python's special-case comment).
+	{"%ext", func(info MediaInfo, ext string) string { return strings.TrimPrefix(ext, ".") }},
+	// Episode name variants — must come before bare %e.
+	{"%e.n", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.EpisodeName, " ", ".") }},
+	{"%e_n", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.EpisodeName, " ", "_") }},
+	{"%en", func(info MediaInfo, _ string) string { return info.EpisodeName }},
+	// Episode number — after episode-name tokens.
+	{"%0e", func(info MediaInfo, _ string) string { return fmt.Sprintf("%02d", info.Episode) }},
+	{"%e", func(info MediaInfo, _ string) string { return fmt.Sprintf("%d", info.Episode) }},
+	// Title variants.
+	{"%_.t", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", "_") }},
+	{"%.t", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", ".") }},
+	{"%_t", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", "_") }},
+	{"%t", func(info MediaInfo, _ string) string { return info.Title }},
+	// Year and decade.
+	{"%decade", func(info MediaInfo, _ string) string {
+		if info.Year == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%ds", (info.Year/10)*10)
+	}},
+	{"%y", func(info MediaInfo, _ string) string {
+		if info.Year == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%d", info.Year)
+	}},
+	// Season.
+	{"%0s", func(info MediaInfo, _ string) string { return fmt.Sprintf("%02d", info.Season) }},
+	{"%s", func(info MediaInfo, _ string) string { return fmt.Sprintf("%d", info.Season) }},
+	// Month.
+	{"%0m", func(info MediaInfo, _ string) string { return fmt.Sprintf("%02d", info.Month) }},
+	{"%m", func(info MediaInfo, _ string) string { return fmt.Sprintf("%d", info.Month) }},
+	// Day.
+	{"%0d", func(info MediaInfo, _ string) string { return fmt.Sprintf("%02d", info.Day) }},
+	{"%d", func(info MediaInfo, _ string) string { return fmt.Sprintf("%d", info.Day) }},
+	// Resolution.
+	{"%r", func(info MediaInfo, _ string) string { return info.Resolution }},
 }
 
 // ExpandTemplate substitutes sort-string tokens in template with values
