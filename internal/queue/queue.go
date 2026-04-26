@@ -182,7 +182,9 @@ func (q *Queue) Remove(id string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	q.jobs = append(q.jobs[:idx], q.jobs[idx+1:]...)
+	copy(q.jobs[idx:], q.jobs[idx+1:])
+	q.jobs[len(q.jobs)-1] = nil // allow GC of removed *Job
+	q.jobs = q.jobs[:len(q.jobs)-1]
 	delete(q.byID, id)
 
 	if q.stateDir != "" {
