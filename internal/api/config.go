@@ -135,7 +135,9 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 	sslVerifyStr := formString(r, "ssl_verify")
 	sslVerify := int(config.SSLVerifyHostname) // safe default
 	if sslVerifyStr != "" {
-		sslVerify, _ = strconv.Atoi(sslVerifyStr)
+		if v, err := strconv.Atoi(sslVerifyStr); err == nil {
+			sslVerify = v
+		}
 	}
 
 	cfg := config.ServerConfig{
