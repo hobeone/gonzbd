@@ -86,17 +86,16 @@ func setFieldValue(f reflect.Value, val string) error {
 	}
 
 	// Handle custom types that wrap int/int64
-	kind := f.Kind()
-	type_ := f.Type().String()
+	ft := f.Type()
 
 	switch {
-	case type_ == "config.ByteSize":
+	case ft == reflect.TypeOf(ByteSize(0)):
 		b, err := parseByteSize(val)
 		if err != nil {
 			return fmt.Errorf("invalid byte size: %w", err)
 		}
 		f.SetInt(int64(b))
-	case type_ == "config.Percent":
+	case ft == reflect.TypeOf(Percent(0)):
 		i, err := strconv.Atoi(val)
 		if err != nil {
 			return fmt.Errorf("invalid percent: %w", err)
@@ -107,7 +106,7 @@ func setFieldValue(f reflect.Value, val string) error {
 			return fmt.Errorf("percent: %d outside [0,100]", i)
 		}
 		f.SetInt(int64(p))
-	case type_ == "config.SSLVerify":
+	case ft == reflect.TypeOf(SSLVerify(0)):
 		i, err := strconv.Atoi(val)
 		if err != nil {
 			return fmt.Errorf("invalid ssl_verify: %w", err)
@@ -117,28 +116,28 @@ func setFieldValue(f reflect.Value, val string) error {
 			return err
 		}
 		f.SetInt(int64(s))
-	case kind == reflect.String:
+	case f.Kind() == reflect.String:
 		f.SetString(val)
-	case kind == reflect.Int:
+	case f.Kind() == reflect.Int:
 		i, err := strconv.Atoi(val)
 		if err != nil {
 			return fmt.Errorf("invalid integer: %w", err)
 		}
 		f.SetInt(int64(i))
-	case kind == reflect.Int64:
+	case f.Kind() == reflect.Int64:
 		i, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {
 			return fmt.Errorf("invalid int64: %w", err)
 		}
 		f.SetInt(i)
-	case kind == reflect.Bool:
+	case f.Kind() == reflect.Bool:
 		b, err := strconv.ParseBool(val)
 		if err != nil {
 			return fmt.Errorf("invalid boolean: %w", err)
 		}
 		f.SetBool(b)
 	default:
-		return fmt.Errorf("unsupported field type: %v (%s)", kind, type_)
+		return fmt.Errorf("unsupported field type: %v (%s)", f.Kind(), ft)
 	}
 	return nil
 }
