@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -63,7 +64,11 @@ func (a *AppriseNotifier) Send(ctx context.Context, e Event) error {
 		return fmt.Errorf("apprise: http post: %w", err)
 	}
 	defer func() {
-		//nolint:errcheck // body drain is best-effort; error is unrecoverable here
+		// Drain the body so the underlying TCP connection can be reused by
+		// the http.Client's connection pool. Without draining, the transport
+		// must close the connection.
+		//nolint:errcheck // body drain and close are best-effort cleanup
+		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}()
 
