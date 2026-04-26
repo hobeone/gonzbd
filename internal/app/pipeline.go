@@ -5,14 +5,35 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/assembler"
 	"github.com/hobeone/sabnzbd-go/internal/downloader"
 	"github.com/hobeone/sabnzbd-go/internal/fsutil"
+	"github.com/hobeone/sabnzbd-go/internal/nntp"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
+
+// isRetryableDownloaderError returns true for transient errors where the
+// dispatcher will retry the article (on the same or another server):
+//   - 430 / ErrNoArticle: not on this server, try fallback
+//   - Dial errors: server temporarily unreachable
+//   - Connection-level I/O failures
+//
+// Terminal errors (decode failures, etc.) return false and should be
+// routed through the assembler's FatalErr path for failure accounting.
+func isRetryableDownloaderError(err error) bool {
+	if errors.Is(err, nntp.ErrNoArticle) {
+		return true
+	}
+	// Dial errors are wrapped as "dial: <inner>" by handleRequest.
+	msg := err.Error()
+	return strings.HasPrefix(msg, "dial:") ||
+		strings.Contains(msg, "connection") ||
+		strings.Contains(msg, "i/o timeout")
+}
 
 // fileKey uniquely identifies a file within a job.
 type fileKey struct {
@@ -75,9 +96,13 @@ func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
 // Phase 5's problem.
 func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResult) {
 	if res.Err != nil {
-		if errors.Is(res.Err, downloader.ErrNoServersLeft) {
+		if errors.Is(res.Err, downloader.ErrNoServersLeft) ||
+			!isRetryableDownloaderError(res.Err) {
+			// Terminal failure (all servers exhausted or unrecoverable
+			// decode error). Hand to the assembler so it can mark the
+			// article Failed in the queue.
 			p.log.Warn("article permanently failed, handing to assembler",
-				"job", res.JobID, "msgid", res.MessageID, "file", res.Subject)
+				"job", res.JobID, "msgid", res.MessageID, "file", res.Subject, "err", res.Err)
 
 			if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
 				p.log.Warn("register fallback file failed",
@@ -94,6 +119,8 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 				FatalErr:  res.Err,
 			})
 		} else {
+			// Retryable error (connection drop, 430 from one server).
+			// The dispatcher will retry on the next pass.
 			p.log.Info("fetch error",
 				"job", res.JobID, "msgid", res.MessageID, "server", res.ServerName, "err", res.Err)
 		}
