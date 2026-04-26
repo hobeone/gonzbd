@@ -75,6 +75,7 @@ func (s *Store) Save() error {
 		s.mu.Unlock()
 		return nil
 	}
+	s.dirty = false
 	snapshot := make(map[string]time.Time, len(s.seen))
 	for k, v := range s.seen {
 		snapshot[k] = v
@@ -83,20 +84,26 @@ func (s *Store) Save() error {
 
 	data, err := json.Marshal(storeFile{Seen: snapshot})
 	if err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
 		return fmt.Errorf("rss: encode store: %w", err)
 	}
 
 	tmp := s.path + ".tmp"
 	//nolint:gosec // G306: config/state file; group+world read is intentional
 	if err = os.WriteFile(tmp, data, 0o644); err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
 		return fmt.Errorf("rss: write store tmp: %w", err)
 	}
 	if err = os.Rename(tmp, s.path); err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
 		return fmt.Errorf("rss: rename store: %w", err)
 	}
-	s.mu.Lock()
-	s.dirty = false
-	s.mu.Unlock()
 	return nil
 }
 

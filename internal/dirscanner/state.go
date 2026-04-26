@@ -75,15 +75,19 @@ func (s *Store) Delete(path string) {
 // Save persists all states to the JSON file. Uses atomic writes (temp + rename).
 // If no state has changed since the last Save (or since load), this is a no-op.
 func (s *Store) Save() error {
-	s.mu.RLock()
+	s.mu.Lock()
 	if !s.dirty {
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return nil
 	}
+	s.dirty = false
 	data, err := json.MarshalIndent(s.states, "", "  ")
-	s.mu.RUnlock()
+	s.mu.Unlock()
 
 	if err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
@@ -91,17 +95,19 @@ func (s *Store) Save() error {
 
 	//nolint:gosec // G304: writing to path provided by caller/config
 	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
 		return fmt.Errorf("failed to write temporary state file: %w", err)
 	}
 
 	if err := os.Rename(tmpFile, s.path); err != nil {
 		_ = os.Remove(tmpFile) //nolint:errcheck // cleanup of temp file
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
-
-	s.mu.Lock()
-	s.dirty = false
-	s.mu.Unlock()
 
 	return nil
 }
