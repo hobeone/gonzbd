@@ -387,6 +387,31 @@ func (q *Queue) MarkArticleEmitted(jobID, messageID string) error {
 	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 }
 
+// ClearArticleEmitted resets the transient Emitted flag on a single article,
+// allowing the dispatcher to re-dispatch it. This is used when the pipeline
+// receives a retryable download error: the article was emitted but did not
+// succeed on this attempt, so it must be returned to the dispatch pool.
+// Wakes the dispatcher so the article is picked up on the next pass.
+func (q *Queue) ClearArticleEmitted(jobID, messageID string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	for fi := range job.Files {
+		for ai := range job.Files[fi].Articles {
+			art := &job.Files[fi].Articles[ai]
+			if art.ID == messageID {
+				art.Emitted = false
+				q.notifyLocked()
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
+}
+
 // ClearAllEmitted resets the transient Emitted flag on every article in the
 // queue. This must be called when the downloader is reloaded: articles that
 // were Emitted by the old downloader but never completed (because the old

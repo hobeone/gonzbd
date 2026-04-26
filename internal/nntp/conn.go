@@ -90,6 +90,12 @@ func (e *ServerError) Error() string {
 	return fmt.Sprintf("nntp: server responded %d %s", e.Code, e.Text)
 }
 
+// Unwrap returns the sentinel error for this status code so
+// errors.Is(err, ErrServerUnavailable) etc. work correctly.
+func (e *ServerError) Unwrap() error {
+	return classifyStatus(e.Code)
+}
+
 // classifyStatus maps an NNTP status code onto one of the sentinel
 // errors so callers can branch without knowing the wire codes.
 func classifyStatus(code int) error {
@@ -343,7 +349,19 @@ func (c *Conn) handshake(ctx context.Context, cfg config.ServerConfig) error {
 		}
 		defer func() { _ = c.nc.SetDeadline(time.Time{}) }() //nolint:errcheck // clearing deadline on path out; any error is cosmetic
 	} else {
-		c.log.Debug("handshake: no context deadline (no timeout on handshake reads)")
+		c.log.Debug("handshake: no context deadline, watching for cancellation")
+		// Without a deadline, a server that accepts TCP but never sends a
+		// greeting would block readResponseLine forever. Watch the context
+		// and force-expire the socket so the read unblocks.
+		handshakeDone := make(chan struct{})
+		defer close(handshakeDone)
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = c.nc.SetDeadline(time.Now()) //nolint:errcheck // best-effort unblock
+			case <-handshakeDone:
+			}
+		}()
 	}
 
 	// Greeting.
