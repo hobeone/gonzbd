@@ -73,12 +73,14 @@ func (s *Scanner) buildCategoryMap() map[string]string {
 // file. Returns the number of files processed.
 func (s *Scanner) ScanOnce(ctx context.Context) (int, error) {
 	catMap := s.buildCategoryMap()
+	scannedDirs := make(map[string]bool)
 
 	// Scan root directory (no category).
 	currentScan, processed, err := s.scanDir(ctx, s.dir, "")
 	if err != nil {
 		return 0, err
 	}
+	scannedDirs[filepath.Clean(s.dir)] = true
 
 	// Scan category subdirectories.
 	if catMap != nil {
@@ -106,6 +108,7 @@ func (s *Scanner) ScanOnce(ctx context.Context) (int, error) {
 				continue
 			}
 			processed += subProcessed
+			scannedDirs[filepath.Clean(subDir)] = true
 
 			// Merge subdir scan results into the combined map.
 			for k, v := range subScan {
@@ -119,7 +122,9 @@ func (s *Scanner) ScanOnce(ctx context.Context) (int, error) {
 	s.store.mu.RLock()
 	for storedPath := range s.store.states {
 		if _, exists := currentScan[storedPath]; !exists {
-			toDelete = append(toDelete, storedPath)
+			if scannedDirs[filepath.Dir(storedPath)] {
+				toDelete = append(toDelete, storedPath)
+			}
 		}
 	}
 	s.store.mu.RUnlock()
