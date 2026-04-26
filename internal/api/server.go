@@ -78,6 +78,7 @@ type Server struct {
 	modes modeTable
 	mux   *http.ServeMux
 	srv   *http.Server
+	ln    net.Listener // set by Start; read by Addr
 }
 
 // New constructs an API Server. It does not bind or listen; call Start
@@ -126,13 +127,10 @@ func New(opts Options) *Server {
 // Addr returns the listener address after Start succeeds. Useful in tests
 // to discover the ephemeral port when ":0" is passed to Start.
 func (s *Server) Addr() net.Addr {
-	if s.srv == nil {
+	if s.ln == nil {
 		return nil
 	}
-	// The address is captured by the listener in Start; retrieve it via
-	// a stored reference. For now, the caller can use the addr returned
-	// from StartOnListener.
-	return nil
+	return s.ln.Addr()
 }
 
 // Start binds to addr and serves HTTP until Shutdown is called. It
@@ -144,6 +142,7 @@ func (s *Server) Start(addr string) (net.Addr, error) {
 	if err != nil {
 		return nil, fmt.Errorf("api: listen %s: %w", addr, err)
 	}
+	s.ln = ln
 	go func() {
 		if err := s.srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			s.log.Error("api: serve", "error", err)
