@@ -391,16 +391,20 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 }
 
 // RemoveJob cancels and removes a job from the queue, deleting its download directory.
-func (app *Application) RemoveJob(id string) error {
+func (app *Application) RemoveJob(id string, deleteFiles bool) error {
 	job, err := app.queue.Get(id)
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(app.cfg.DownloadDir, job.Name)
-	_ = os.RemoveAll(path)
+	if deleteFiles {
+		path := filepath.Join(app.cfg.DownloadDir, job.Name)
+		_ = os.RemoveAll(path)
+	}
 	if err := app.queue.Remove(id); err != nil {
 		return err
 	}
+	// Release cached file info for this job to prevent memory leaks.
+	app.pipeline.forgetJob(id)
 	app.emitter.Broadcast(Event{Type: "queue_updated"})
 	return nil
 }
@@ -568,6 +572,10 @@ func (app *Application) maybeFinalize(job *queue.Job, failMsg string) {
 }
 
 func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
+	// Release cached file info for this job; the assembler no longer
+	// needs it, and keeping it around leaks memory across many downloads.
+	app.pipeline.forgetJob(job.ID)
+
 	catDir := ""
 	for _, cat := range app.cfg.Categories {
 		if cat.Name == job.Category {

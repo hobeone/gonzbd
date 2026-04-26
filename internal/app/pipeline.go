@@ -215,3 +215,16 @@ func (p *pipeline) resolveFileInfo(jobID string, fileIdx int) (assembler.FileInf
 	}
 	return info, nil
 }
+
+// forgetJob removes all cached fileInfo entries for jobID. Called when
+// a job is fully assembled (or cancelled) to prevent the map from growing
+// unboundedly across many completed downloads. Safe for concurrent use.
+func (p *pipeline) forgetJob(jobID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key := range p.fileInfo {
+		if key.jobID == jobID {
+			delete(p.fileInfo, key)
+		}
+	}
+}
