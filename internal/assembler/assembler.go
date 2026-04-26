@@ -3,7 +3,6 @@ package assembler
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -451,7 +450,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 		f.seenFailed[req.MessageID] = struct{}{}
 		a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
 	} else {
-		if err := writeAll(f.handle, req.Data, req.Offset); err != nil {
+		if _, err := f.handle.WriteAt(req.Data, req.Offset); err != nil {
 			a.log.Error("write article",
 				"path", f.info.Path,
 				"offset", req.Offset,
@@ -509,7 +508,7 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 	// share the same directory (the common case).
 	seen := make(map[string]struct{}, len(open))
 	for _, f := range open {
-		dir := parentDir(f.info.Path)
+		dir := filepath.Dir(f.info.Path)
 		if _, already := seen[dir]; already {
 			continue
 		}
@@ -524,30 +523,4 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 			a.opts.OnLowDisk(dir, free)
 		}
 	}
-}
-
-// writeAll writes all of data to f at offset, retrying partial writes.
-// os.File.WriteAt does not guarantee a full write in a single call (analogous
-// to Python's non-buffered os.write needing a loop for partial writes).
-func writeAll(f *os.File, data []byte, offset int64) error {
-	written := 0
-	for written < len(data) {
-		n, err := f.WriteAt(data[written:], offset+int64(written))
-		if err != nil {
-			return fmt.Errorf("writeAt offset %d: %w", offset+int64(written), err)
-		}
-		written += n
-	}
-	return nil
-}
-
-// parentDir returns the directory portion of path. Equivalent to
-// filepath.Dir but avoids importing path/filepath for this single use.
-func parentDir(path string) string {
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' || path[i] == '\\' {
-			return path[:i]
-		}
-	}
-	return "."
 }
