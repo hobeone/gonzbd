@@ -11,9 +11,10 @@ import (
 // Store tracks item IDs that have been seen so the scanner does not dispatch
 // the same item twice. IDs are persisted to a JSON file between process restarts.
 type Store struct {
-	mu   sync.Mutex
-	path string
-	seen map[string]time.Time // ID → first-seen UTC timestamp
+	mu    sync.Mutex
+	path  string
+	seen  map[string]time.Time // ID → first-seen UTC timestamp
+	dirty bool
 }
 
 // storeFile is the on-disk representation.
@@ -62,12 +63,18 @@ func (s *Store) Record(id string) {
 	defer s.mu.Unlock()
 	if _, ok := s.seen[id]; !ok {
 		s.seen[id] = time.Now().UTC()
+		s.dirty = true
 	}
 }
 
 // Save flushes the current state to disk atomically (write-then-rename).
+// If no state has changed since the last Save, this is a no-op.
 func (s *Store) Save() error {
 	s.mu.Lock()
+	if !s.dirty {
+		s.mu.Unlock()
+		return nil
+	}
 	snapshot := make(map[string]time.Time, len(s.seen))
 	for k, v := range s.seen {
 		snapshot[k] = v
@@ -87,6 +94,9 @@ func (s *Store) Save() error {
 	if err = os.Rename(tmp, s.path); err != nil {
 		return fmt.Errorf("rss: rename store: %w", err)
 	}
+	s.mu.Lock()
+	s.dirty = false
+	s.mu.Unlock()
 	return nil
 }
 
@@ -103,6 +113,9 @@ func (s *Store) Prune(older time.Duration) int {
 			delete(s.seen, id)
 			removed++
 		}
+	}
+	if removed > 0 {
+		s.dirty = true
 	}
 	return removed
 }

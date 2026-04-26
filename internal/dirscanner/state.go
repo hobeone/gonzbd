@@ -21,6 +21,7 @@ type Store struct {
 	mu     sync.RWMutex
 	path   string
 	states map[string]FileState
+	dirty  bool
 }
 
 // OpenStore opens or creates a JSON state file at the given path. If the file
@@ -59,18 +60,26 @@ func (s *Store) Set(path string, state FileState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.states[path] = state
+	s.dirty = true
 }
 
-// Delete removes a file path from the state map.
 func (s *Store) Delete(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.states, path)
+	if _, ok := s.states[path]; ok {
+		delete(s.states, path)
+		s.dirty = true
+	}
 }
 
 // Save persists all states to the JSON file. Uses atomic writes (temp + rename).
+// If no state has changed since the last Save (or since load), this is a no-op.
 func (s *Store) Save() error {
 	s.mu.RLock()
+	if !s.dirty {
+		s.mu.RUnlock()
+		return nil
+	}
 	data, err := json.MarshalIndent(s.states, "", "  ")
 	s.mu.RUnlock()
 
@@ -89,6 +98,10 @@ func (s *Store) Save() error {
 		_ = os.Remove(tmpFile) //nolint:errcheck // cleanup of temp file
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
+
+	s.mu.Lock()
+	s.dirty = false
+	s.mu.Unlock()
 
 	return nil
 }

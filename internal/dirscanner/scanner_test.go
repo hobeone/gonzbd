@@ -220,14 +220,21 @@ func TestHandlerError(t *testing.T) {
 		t.Errorf("scan with handler error should not count as processed, got %d", count)
 	}
 
-	// File should still exist.
-	if _, err := os.Stat(nzbPath); os.IsNotExist(err) {
-		t.Errorf("file should not be deleted on handler error")
+	// On handler failure the scanner renames the file to .failed and removes
+	// its state entry (not retried automatically).
+	failedPath := nzbPath + ".failed"
+	if _, err := os.Stat(failedPath); os.IsNotExist(err) {
+		t.Errorf("file should be renamed to .failed on handler error")
 	}
 
-	// State should still reference the file (for retry).
-	if _, ok := store.Get(nzbPath); !ok {
-		t.Errorf("file state should be preserved for retry")
+	// Original file should be gone (renamed).
+	if _, err := os.Stat(nzbPath); !os.IsNotExist(err) {
+		t.Errorf("original file should not exist after handler error (it gets renamed)")
+	}
+
+	// State entry should be removed.
+	if _, ok := store.Get(nzbPath); ok {
+		t.Errorf("file state should be removed after handler error")
 	}
 }
 
