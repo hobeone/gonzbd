@@ -382,5 +382,17 @@ func (p *PostProcessor) setBusyWithJob(v bool, jobID string) {
 func (p *PostProcessor) addHistory(job *Job) {
 	p.historyMu.Lock()
 	p.history = append(p.history, job)
+	// Cap in-memory history to prevent unbounded growth in long-running
+	// daemons. The authoritative history lives in the SQLite DB; this
+	// slice is only for the API's "recent postproc" view.
+	const maxHistory = 1000
+	if len(p.history) > maxHistory {
+		// Drop the oldest entries and nil out for GC.
+		excess := len(p.history) - maxHistory
+		for i := 0; i < excess; i++ {
+			p.history[i] = nil
+		}
+		p.history = p.history[excess:]
+	}
 	p.historyMu.Unlock()
 }

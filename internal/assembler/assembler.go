@@ -35,11 +35,6 @@ var (
 
 	// ErrStopped is returned by WriteArticle after Stop has been called.
 	ErrStopped = errors.New("assembler: stopped")
-
-	// ErrFileInfo is returned by the worker when the FileInfo resolver fails.
-	// The caller's WriteArticle call has already returned nil (the request was
-	// enqueued); this error is logged inside the worker, not propagated upstream.
-	ErrFileInfo = errors.New("assembler: FileInfo resolver failed")
 )
 
 // WriteRequest is the unit of work sent to the assembler. Each request
@@ -491,7 +486,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 			// (Step 4.1) is responsible for job-level failure detection.
 			return
 		}
-		if req.MessageID != "" && f.seenDone != nil {
+		if req.MessageID != "" {
 			f.seenDone[req.MessageID] = struct{}{}
 		}
 		// Note: f.handle.Sync() removed from here to improve throughput.

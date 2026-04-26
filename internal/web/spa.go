@@ -44,8 +44,11 @@ func NewSPAHandler(dist fs.FS, apiKey string) http.Handler {
 		}
 
 		// SPA catch-all: serve index.html for client-side routing.
-		r.URL.Path = "/"
+		// Clone the request so the original path is preserved for
+		// upstream logging middleware.
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/"
 		setApiKeyCookie(w)
-		fileServer.ServeHTTP(w, r)
+		fileServer.ServeHTTP(w, r2)
 	})
 }

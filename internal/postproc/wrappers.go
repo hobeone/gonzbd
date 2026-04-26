@@ -210,7 +210,7 @@ func (*SortStage) Name() string { return "sort" }
 
 // Run picks the first matching rule and applies it.
 func (s *SortStage) Run(ctx context.Context, job *Job) error {
-	_, err := sorting.Apply(ctx,
+	res, err := sorting.Apply(ctx,
 		job.DownloadDir,
 		job.Queue.Category,
 		job.Queue.Name,
@@ -221,6 +221,14 @@ func (s *SortStage) Run(ctx context.Context, job *Job) error {
 	)
 	if err != nil {
 		return fmt.Errorf("sort: %w", err)
+	}
+	// If sorting moved files, update FinalDir so FinalizeStage won't
+	// redundantly move the (now-empty) DownloadDir.
+	if len(res.Moved) > 0 {
+		job.FinalDir = filepath.Dir(res.Moved[0].To)
+		// Point DownloadDir at the destination so downstream stages
+		// (script, deobfuscate) operate on the actual files.
+		job.DownloadDir = job.FinalDir
 	}
 	return nil
 }

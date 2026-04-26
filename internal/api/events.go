@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -107,7 +108,9 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case msg := <-c.send:
-			err := conn.Write(ctx, websocket.MessageText, msg)
+			writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
+			err := conn.Write(writeCtx, websocket.MessageText, msg)
+			writeCancel()
 			if err != nil {
 				return
 			}

@@ -73,7 +73,9 @@ func (q *ppQueue) Cancel(jobID string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if idx := findJob(q.jobs, jobID); idx >= 0 {
-		q.jobs = append(q.jobs[:idx], q.jobs[idx+1:]...)
+		copy(q.jobs[idx:], q.jobs[idx+1:])
+		q.jobs[len(q.jobs)-1] = nil // allow GC
+		q.jobs = q.jobs[:len(q.jobs)-1]
 		return true
 	}
 	return false
@@ -130,6 +132,7 @@ func (q *ppQueue) tryPop() *Job {
 	}
 
 	job := q.jobs[0]
+	q.jobs[0] = nil // allow GC of old pointer
 	q.jobs = q.jobs[1:]
 	return job
 }

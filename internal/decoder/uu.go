@@ -33,11 +33,12 @@ func DecodeUU(body []byte) (data []byte, filename string, err error) {
 	}
 
 	// Parse "begin <mode> <filename>"
-	fields := strings.Fields(string(line))
-	if len(fields) < 3 || fields[0] != "begin" {
+	// Use SplitN to preserve spaces in filenames (Fields would truncate).
+	parts := strings.SplitN(strings.TrimRight(string(line), "\r "), " ", 3)
+	if len(parts) < 3 || parts[0] != "begin" {
 		return nil, "", ErrNotUU
 	}
-	filename = fields[2]
+	filename = parts[2]
 
 	out := make([]byte, 0, len(body)/4*3)
 

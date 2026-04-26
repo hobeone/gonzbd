@@ -156,9 +156,9 @@ func (c *Cache) Load(key, adminDir string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("cache: load %s: %w", key, err)
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("cache: remove after load %s: %w", key, err)
-	}
+	// Best-effort cleanup — the data was successfully read, so don't
+	// fail the load if removal fails (e.g. transient filesystem lock).
+	_ = os.Remove(path) //nolint:errcheck
 	return data, nil
 }
 
@@ -181,11 +181,14 @@ func (c *Cache) Flush() error {
 			if firstErr == nil {
 				firstErr = err
 			}
-			// Restore the entry so data isn't permanently lost.
+			// Restore the entry so data isn't permanently lost, but only
+			// if a concurrent Save() hasn't already inserted a newer entry.
 			c.mu.Lock()
-			c.articles[key] = entry
-			c.used += int64(len(entry.data))
-			c.usedAtomic.Store(c.used)
+			if _, exists := c.articles[key]; !exists {
+				c.articles[key] = entry
+				c.used += int64(len(entry.data))
+				c.usedAtomic.Store(c.used)
+			}
 			c.mu.Unlock()
 		}
 	}
