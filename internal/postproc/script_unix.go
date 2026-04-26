@@ -3,6 +3,7 @@
 package postproc
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 )
@@ -26,4 +27,10 @@ func killProcessGroup(cmd *exec.Cmd) {
 	// Negative pid targets the process group.
 	//nolint:errcheck // best-effort kill; process may have already exited
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+}
+
+// isETXTBSY reports whether err wraps the ETXTBSY ("text file busy") errno.
+// This transient error occurs when exec races with a recently-written file.
+func isETXTBSY(err error) bool {
+	return errors.Is(err, syscall.ETXTBSY)
 }

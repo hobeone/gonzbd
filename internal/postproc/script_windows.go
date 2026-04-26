@@ -14,3 +14,6 @@ func killProcessGroup(cmd *exec.Cmd) {
 		_ = cmd.Process.Kill()
 	}
 }
+
+// isETXTBSY always returns false on Windows; ETXTBSY is a Unix-only errno.
+func isETXTBSY(_ error) bool { return false }
