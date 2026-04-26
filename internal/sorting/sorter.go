@@ -221,6 +221,12 @@ func moveFile(src, dst string) error {
 
 // copyAndRemove copies src to dst then removes src.
 func copyAndRemove(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	mode := info.Mode()
+
 	in, err := os.Open(src) //nolint:gosec // src is a path from os.ReadDir within a known dir
 	if err != nil {
 		return err
@@ -237,6 +243,9 @@ func copyAndRemove(src, dst string) error {
 		return err
 	}
 	if err := out.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(dst, mode); err != nil {
 		return err
 	}
 	return os.Remove(src)
