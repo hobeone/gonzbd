@@ -155,6 +155,8 @@ type openFile struct {
 	// emission (shouldn't happen under B.6's Emitted gate, but defence
 	// in depth) cannot double-count a part toward TotalParts.
 	seenFailed map[string]struct{}
+	// seenDone dedupes successful writes symmetrically with seenFailed.
+	seenDone map[string]struct{}
 }
 
 // Assembler receives decoded article data and writes it to target files using
@@ -467,6 +469,18 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 		f.seenFailed[req.MessageID] = struct{}{}
 		a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
 	} else {
+		// Deduplicate successful writes (defence in depth — the upstream
+		// queue gate should prevent this, but an overlapping retry could
+		// slip through). Only dedup when MessageID is set (always true in
+		// production; may be empty in unit tests).
+		if req.MessageID != "" {
+			if f.seenDone == nil {
+				f.seenDone = make(map[string]struct{})
+			}
+			if _, dup := f.seenDone[req.MessageID]; dup {
+				return
+			}
+		}
 		if _, err := f.handle.WriteAt(req.Data, req.Offset); err != nil {
 			a.log.Error("write article",
 				"path", f.info.Path,
@@ -476,6 +490,9 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 			// Leave the file open; the next article may succeed. The pipeline
 			// (Step 4.1) is responsible for job-level failure detection.
 			return
+		}
+		if req.MessageID != "" && f.seenDone != nil {
+			f.seenDone[req.MessageID] = struct{}{}
 		}
 		// Note: f.handle.Sync() removed from here to improve throughput.
 		// Durability is handled by syncing on file completion and

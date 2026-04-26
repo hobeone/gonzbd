@@ -160,11 +160,7 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 		return 0, fmt.Errorf("failed to write temp file: %w", err)
 	}
 
-	// Detect archive type and extract NZBs.
-	if _, err := dirscanner.DetectType(tmpPath); err != nil {
-		return 0, fmt.Errorf("failed to detect archive type: %w", err)
-	}
-
+	// Extract NZBs. ExtractNZBs internally detects the archive type.
 	nzbs, err := dirscanner.ExtractNZBs(tmpPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to extract NZBs: %w", err)

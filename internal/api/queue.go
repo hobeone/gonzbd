@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/constants"
 	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
@@ -323,7 +324,9 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 
 	sOpts := fsutil.SanitizeOptions{}
 	if s.config != nil {
-		sOpts = s.config.Downloads.SanitizeOptions()
+		s.config.WithRead(func(cfg *config.Config) {
+			sOpts = cfg.Downloads.SanitizeOptions()
+		})
 	}
 	job, err := queue.NewJob(parsed, opts, sOpts)
 	if err != nil {
@@ -437,7 +440,9 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 
 	sOpts := fsutil.SanitizeOptions{}
 	if s.config != nil {
-		sOpts = s.config.Downloads.SanitizeOptions()
+		s.config.WithRead(func(cfg *config.Config) {
+			sOpts = cfg.Downloads.SanitizeOptions()
+		})
 	}
 	job, err := queue.NewJob(parsed, opts, sOpts)
 	if err != nil {
