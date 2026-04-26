@@ -324,6 +324,51 @@ func TestDownloaderHappyPath(t *testing.T) {
 	}
 }
 
+func TestDownloaderTryListCleanedOnSuccess(t *testing.T) {
+	ms := newMockNNTP(t)
+	ms.addArticle("a@h", string(mocknntp.EncodeYEnc("a.bin", []byte("body-a"))))
+	ms.addArticle("b@h", string(mocknntp.EncodeYEnc("b.bin", []byte("body-b"))))
+
+	q := queue.New()
+	job := makeJobWithArticles(t, []string{"a@h", "b@h"})
+	if err := q.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+
+	srv := testServer(t, "primary", ms.addr, func(c *config.ServerConfig) {
+		c.Connections = 1
+	})
+	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = d.Stop() }()
+
+	results := collect(t, d.Completions(), 2, 5*time.Second)
+	for _, r := range results {
+		if r.Err != nil {
+			t.Fatalf("unexpected err for %s: %v", r.MessageID, r.Err)
+		}
+		if err := q.MarkArticleDone(r.JobID, r.MessageID); err != nil {
+			t.Fatalf("MarkArticleDone: %v", err)
+		}
+	}
+
+	// After all articles are successfully processed, tryList and
+	// inFlight should be empty — no leaked entries.
+	d.tryMu.Lock()
+	tryListLen := len(d.tryList)
+	inFlightLen := len(d.inFlight)
+	d.tryMu.Unlock()
+
+	if tryListLen != 0 {
+		t.Errorf("tryList has %d entries after completion, want 0 (memory leak)", tryListLen)
+	}
+	if inFlightLen != 0 {
+		t.Errorf("inFlight has %d entries after completion, want 0 (memory leak)", inFlightLen)
+	}
+}
+
 func TestDownloaderFallbackServer(t *testing.T) {
 	// Primary rejects 'a@h'; backup has it. Downloader should flip
 	// to backup via the try-list.
@@ -649,7 +694,6 @@ func TestDownloaderPipeliningConcurrency(t *testing.T) {
 
 	d := New(q, []*Server{srv}, nil, Options{}, nil)
 
-	
 	if err := d.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

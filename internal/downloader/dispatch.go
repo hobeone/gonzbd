@@ -85,6 +85,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 		if err := d.queue.MarkArticleEmitted(req.jobID, req.messageID); err != nil {
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 		}
+		d.clearTried(req.jobID, req.messageID)
 		d.emitResult(ctx, req, "", nil, 0, ErrNoServersLeft)
 	}
 
@@ -336,6 +337,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	if err != nil {
 		d.log.Warn("decode error", "msgid", req.messageID, "err", err)
 		// Decode error is treated as a fatal failure for this attempt.
+		d.clearTried(req.jobID, req.messageID)
 		d.emitResult(ctx, req, name, nil, 0, err)
 		return
 	}
@@ -351,6 +353,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	if err := d.queue.MarkArticleEmitted(req.jobID, req.messageID); err != nil {
 		d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 	}
+	d.clearTried(req.jobID, req.messageID)
 	d.emitResult(ctx, req, name, decodedData, offset, nil)
 }
 
@@ -406,4 +409,15 @@ func (d *Downloader) unmarkTried(jobID, messageID, serverName string) {
 	if len(set) == 0 {
 		delete(d.tryList, key)
 	}
+}
+
+// clearTried removes an article's entire try-list entry, freeing
+// memory. Called when an article reaches a terminal state (success,
+// decode error, or ErrNoServersLeft) and will never be dispatched
+// again.
+func (d *Downloader) clearTried(jobID, messageID string) {
+	key := articleKey{jobID: jobID, messageID: messageID}
+	d.tryMu.Lock()
+	defer d.tryMu.Unlock()
+	delete(d.tryList, key)
 }
