@@ -23,8 +23,8 @@ func NewSPAHandler(dist fs.FS, apiKey string) http.Handler {
 			Name:     "sab_apikey",
 			Value:    apiKey,
 			Path:     "/",
-			HttpOnly: false, // JS might need to read it (though backend uses it)
-			SameSite: http.SameSiteLaxMode,
+			HttpOnly: false, // JS reads it to attach as X-API-Key header
+			SameSite: http.SameSiteStrictMode,
 		})
 	}
 
