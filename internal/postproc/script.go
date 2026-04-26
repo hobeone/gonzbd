@@ -1,7 +1,6 @@
 package postproc
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -264,11 +263,50 @@ func RunScript(ctx context.Context, scriptPath string, in ScriptInput) ScriptRes
 	cmd.Stderr = cw
 
 	started := time.Now()
-	if err := cmd.Start(); err != nil {
+
+	// Retry on ETXTBSY ("text file busy"). On Linux, this transient error
+	// occurs when exec races with a recently-written file whose fd has not
+	// yet been fully released. Back off briefly and rebuild the command.
+	const maxRetries = 5
+	var startErr error
+	for attempt := range maxRetries {
+		if attempt > 0 {
+			// Exponential backoff: 1ms, 2ms, 4ms, 8ms, 16ms.
+			time.Sleep(time.Millisecond << uint(attempt-1))
+
+			// Rebuild the command because exec.Cmd is not reusable after Start.
+			//nolint:gosec // G204: script path is operator-configured
+			cmd = exec.CommandContext(ctx, scriptPath, argv...)
+			cmd.Env = buildEnv(in)
+			if in.FinalDir != "" {
+				cmd.Dir = in.FinalDir
+			}
+			setProcessGroup(cmd)
+			cmd.Cancel = func() error {
+				killProcessGroup(cmd)
+				return nil
+			}
+			cw = &cappedWriter{buf: &bytes.Buffer{}, cap: MaxLogBytes}
+			cmd.Stdout = cw
+			cmd.Stderr = cw
+		}
+		startErr = cmd.Start()
+		if startErr == nil {
+			break
+		}
+		if !isETXTBSY(startErr) {
+			return ScriptResult{
+				ExitCode: -1,
+				Duration: time.Since(started),
+				Err:      fmt.Errorf("RunScript: failed to start %q: %w", scriptPath, startErr),
+			}
+		}
+	}
+	if startErr != nil {
 		return ScriptResult{
 			ExitCode: -1,
 			Duration: time.Since(started),
-			Err:      fmt.Errorf("RunScript: failed to start %q: %w", scriptPath, err),
+			Err:      fmt.Errorf("RunScript: failed to start %q after %d retries: %w", scriptPath, maxRetries, startErr),
 		}
 	}
 
@@ -315,7 +353,3 @@ func buildEnvMap(in ScriptInput) map[string]string {
 	}
 	return m
 }
-
-// Ensure bufio is used (needed by an alternative scanning approach kept for
-// future reference). Remove if unused after final review.
-var _ = bufio.NewScanner

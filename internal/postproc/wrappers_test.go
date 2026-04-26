@@ -10,6 +10,41 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
 
+// writeScript creates an executable script file at path. To avoid the
+// transient ETXTBSY ("text file busy") error that occurs when fork/exec
+// races with a recently-written file (particularly under the race
+// detector), we write to a temporary file in the same directory and
+// then rename it into place. The exec target was never open for
+// writing in this process, so the kernel cannot return ETXTBSY.
+func writeScript(t *testing.T, path string, content []byte) {
+	t.Helper()
+	dir := filepath.Dir(path)
+	//nolint:gosec // G306: test-only script needs exec bit
+	f, err := os.CreateTemp(dir, ".script-*.tmp")
+	if err != nil {
+		t.Fatalf("create temp script: %v", err)
+	}
+	tmpName := f.Name()
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		os.Remove(tmpName)
+		t.Fatalf("write script: %v", err)
+	}
+	if err := f.Chmod(0o755); err != nil {
+		f.Close()
+		os.Remove(tmpName)
+		t.Fatalf("chmod script: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpName)
+		t.Fatalf("close script: %v", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		t.Fatalf("rename script: %v", err)
+	}
+}
+
 // stageJob builds a *Job with a fresh tmp DownloadDir and a minimal
 // queue.Job. Tests that need files in the DownloadDir can add them via
 // the returned path.
@@ -144,9 +179,7 @@ func TestScriptStage_SuccessfulScript(t *testing.T) {
 
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "ok.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { //nolint:gosec // G306: test-only script needs exec bit
-		t.Fatalf("write script: %v", err)
-	}
+	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 0\n"))
 
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "key", "http://x")
 	if err := stage.Run(t.Context(), job); err != nil {
@@ -164,9 +197,7 @@ func TestScriptStage_FailingScript(t *testing.T) {
 
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "fail.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 7\n"), 0o755); err != nil { //nolint:gosec // G306: test-only script needs exec bit
-		t.Fatalf("write script: %v", err)
-	}
+	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 7\n"))
 
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
 	err := stage.Run(t.Context(), job)
@@ -188,9 +219,7 @@ func TestScriptStage_StatusFlagsFromJob(t *testing.T) {
 	scriptPath := filepath.Join(scriptDir, "capture.sh")
 	outPath := filepath.Join(scriptDir, "status.out")
 	script := "#!/bin/sh\necho \"$SAB_PP_STATUS\" > " + outPath + "\n"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil { //nolint:gosec // G306: test-only script needs exec bit
-		t.Fatalf("write: %v", err)
-	}
+	writeScript(t, scriptPath, []byte(script))
 
 	job, _ := stageJob(t)
 	job.Queue.Script = "capture.sh"
@@ -220,9 +249,7 @@ func TestScriptStage_AbsolutePathOverridesScriptDir(t *testing.T) {
 	// Script field is an absolute path; ScriptDir (intentionally bogus)
 	// must not be prepended.
 	scriptPath := filepath.Join(t.TempDir(), "abs.sh")
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { //nolint:gosec // G306: test-only script needs exec bit
-		t.Fatalf("write: %v", err)
-	}
+	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 0\n"))
 	job.Queue.Script = scriptPath
 
 	stage := NewScriptStage("/nonexistent-dir", "/tmp/complete", "test", "", "")
