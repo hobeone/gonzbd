@@ -333,10 +333,13 @@ func (*FinalizeStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// If the source directory exists, rename it to the target.
-	// Use sorting.MoveFile for cross-device support.
-	// Since we want to move the WHOLE directory, we'll try os.Rename first.
+	// Only fall back to file-by-file move on cross-device errors (EXDEV).
+	// Other errors (ENOTEMPTY, EPERM) must be reported — silently merging
+	// into an existing destination would overwrite files.
 	if err := os.Rename(job.DownloadDir, job.FinalDir); err == nil {
 		return nil
+	} else if !fsutil.IsCrossDeviceError(err) {
+		return fmt.Errorf("finalize: rename %s -> %s: %w", job.DownloadDir, job.FinalDir, err)
 	}
 
 	// Fallback: If os.Rename failed (e.g. cross-device), move file by file.
