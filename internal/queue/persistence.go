@@ -127,9 +127,9 @@ func (q *Queue) Prune() {
 		return
 	}
 
+	// Collect orphan paths under the lock, then release before disk I/O.
+	var toRemove []string
 	q.mu.RLock()
-	defer q.mu.RUnlock()
-
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -140,9 +140,14 @@ func (q *Queue) Prune() {
 		}
 		id := strings.TrimSuffix(name, ".json.gz")
 		if _, ok := q.byID[id]; !ok {
-			slog.Info("pruning orphaned job state", "id", id)
-			_ = os.Remove(filepath.Join(jobsDir, name))
+			toRemove = append(toRemove, filepath.Join(jobsDir, name))
 		}
+	}
+	q.mu.RUnlock()
+
+	for _, p := range toRemove {
+		slog.Info("pruning orphaned job state", "path", p)
+		_ = os.Remove(p)
 	}
 }
 

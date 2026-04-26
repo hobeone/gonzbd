@@ -203,13 +203,20 @@ func (p *PostProcessor) Has(jobID string) bool {
 	return p.q.Has(jobID)
 }
 
-// History returns a snapshot of all jobs that have passed through the
-// post-processor (including currently in-flight jobs).
+// History returns a deep-copy snapshot of all jobs that have passed through
+// the post-processor (including currently in-flight jobs). The copies prevent
+// data races between the worker mutating StageLog and callers reading the
+// snapshot.
 func (p *PostProcessor) History() []*Job {
 	p.historyMu.RLock()
 	defer p.historyMu.RUnlock()
 	out := make([]*Job, len(p.history))
-	copy(out, p.history)
+	for i, j := range p.history {
+		cp := *j
+		cp.StageLog = make([]StageLogEntry, len(j.StageLog))
+		copy(cp.StageLog, j.StageLog)
+		out[i] = &cp
+	}
 	return out
 }
 

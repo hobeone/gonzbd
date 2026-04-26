@@ -200,6 +200,11 @@ func BiggestFile(paths []string) (path string, ok bool, err error) {
 		return biggest.path, true, nil
 	}
 
+	// All files are zero bytes — there is no meaningful biggest file.
+	if biggest.size == 0 {
+		return "", false, nil
+	}
+
 	if second.size == 0 {
 		// Avoid division by zero; treat as "clearly biggest".
 		return biggest.path, true, nil
