@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 
@@ -376,7 +375,7 @@ func moveRecursive(ctx context.Context, src, dst string) error {
 	}
 
 	if !info.IsDir() {
-		return moveFile(src, dst)
+		return fsutil.MoveFile(src, dst)
 	}
 
 	// It's a directory.
@@ -395,44 +394,6 @@ func moveRecursive(ctx context.Context, src, dst string) error {
 		}
 	}
 
-	return os.Remove(src)
-}
-
-// moveFile matches the one in sorting package but internal for now to avoid circular deps
-// or excessive exports if we don't want to export moveFile from sorting.
-func moveFile(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	}
-
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	mode := info.Mode()
-
-	// Simplified cross-device: copy + delete
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(dst, mode); err != nil {
-		return err
-	}
 	return os.Remove(src)
 }
 

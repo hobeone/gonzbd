@@ -1,6 +1,6 @@
 //go:build !windows
 
-package sorting
+package fsutil
 
 import "syscall"
 
