@@ -21,22 +21,17 @@ func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
 	// TODO: Implement filtering by section= and keyword= query params.
 	// For now, return the full config.
 	// Marshal the config to JSON for return.
-	var data []byte
+	var raw json.RawMessage
 	var marshalErr error
 	s.config.WithRead(func(cfg *config.Config) {
-		data, marshalErr = json.Marshal(cfg)
+		raw, marshalErr = json.Marshal(cfg)
 	})
 	if marshalErr != nil {
 		s.respondError(w, http.StatusInternalServerError, "marshal config: "+marshalErr.Error())
 		return
 	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		s.respondError(w, http.StatusInternalServerError, "unmarshal config: "+err.Error())
-		return
-	}
 
-	respondOK(w, "config", m)
+	respondOK(w, "config", raw)
 }
 
 // modeSetConfig sets configuration parameters.
