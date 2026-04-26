@@ -72,16 +72,17 @@ func Default() (*Config, error) {
 			CleanupList:         DefaultCleanupList,
 		},
 		PostProc: PostProcConfig{
-			EnableUnrar:      true,
-			Enable7zip:       true,
-			EnableParCleanup: true,
-			Par2Command:      "par2",
-			UnrarCommand:     "", // auto-detect
-			SevenzCommand:    "", // auto-detect
-			Par2Turbo:        false,
-			IgnoreUnrarDates: false,
-			OverwriteFiles:   false,
-			FlatUnpack:       false,
+			EnableUnrar:          true,
+			Enable7zip:           true,
+			EnableParCleanup:     true,
+			Par2Command:          "par2",
+			UnrarCommand:         "", // auto-detect
+			SevenzCommand:        "", // auto-detect
+			Par2Turbo:            false,
+			IgnoreUnrarDates:     false,
+			OverwriteFiles:       false,
+			FlatUnpack:           false,
+			DeobfuscateFilenames: true,
 		},
 		Servers: nil, // user must add at least one before download is possible
 		Categories: []CategoryConfig{

@@ -32,4 +32,8 @@ type PostProcConfig struct {
 	// FlatUnpack writes all extracted files to the job root, ignoring
 	// archive-internal directories.
 	FlatUnpack bool `yaml:"flat_unpack" json:"flat_unpack"`
+
+	// DeobfuscateFilenames renames obfuscated files (random hex/UUIDs)
+	// to use the job name as a base. Defaults to true.
+	DeobfuscateFilenames bool `yaml:"deobfuscate_filenames" json:"deobfuscate_filenames"`
 }
