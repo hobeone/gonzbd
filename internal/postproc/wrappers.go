@@ -404,6 +404,13 @@ func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
 	}
+
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	mode := info.Mode()
+
 	// Simplified cross-device: copy + delete
 	in, err := os.Open(src)
 	if err != nil {
@@ -421,6 +428,9 @@ func moveFile(src, dst string) error {
 		return err
 	}
 	if err := out.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(dst, mode); err != nil {
 		return err
 	}
 	return os.Remove(src)
