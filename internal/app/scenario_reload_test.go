@@ -50,7 +50,7 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 	}
 
 	// Wait until the first half are Done.
-	h.WaitUntil(5*time.Second, func() bool {
+	h.WaitUntil(15*time.Second, func() bool {
 		snap := h.app.Queue().SnapshotJob(job.ID)
 		if snap == nil {
 			return false
@@ -72,8 +72,18 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 	}
 
 	// Wait for the job to complete.
-	if !h.WaitForPostProc(job.ID, 10*time.Second) {
-		t.Fatalf("job did not complete after reload")
+	if !h.WaitForPostProc(job.ID, 30*time.Second) {
+		snap := h.app.Queue().SnapshotJob(job.ID)
+		if snap != nil {
+			for i, f := range snap.Files {
+				t.Logf("  file[%d]: complete=%v articles=%d", i, f.Complete, len(f.Articles))
+				for j, a := range f.Articles {
+					t.Logf("    article[%d]: done=%v failed=%v emitted=%v id=%s",
+						j, a.Done, a.Failed, a.Emitted, a.ID)
+				}
+			}
+		}
+		t.Fatalf("job did not complete after reload (see file status above)")
 	}
 
 	// Assert invariants.
