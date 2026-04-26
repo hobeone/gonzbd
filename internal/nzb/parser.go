@@ -50,6 +50,7 @@ type latin1Reader struct {
 	src     io.Reader
 	pending byte // 0 when no pending output byte; otherwise the trailing UTF-8 byte
 	hasPend bool
+	buf     [4096]byte
 }
 
 func (r *latin1Reader) Read(p []byte) (int, error) {
@@ -71,7 +72,10 @@ func (r *latin1Reader) Read(p []byte) (int, error) {
 	if readLen == 0 {
 		return n, nil
 	}
-	buf := make([]byte, readLen)
+	if readLen > len(r.buf) {
+		readLen = len(r.buf)
+	}
+	buf := r.buf[:readLen]
 	m, err := r.src.Read(buf)
 	for i := 0; i < m; i++ {
 		b := buf[i]
