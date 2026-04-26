@@ -14,6 +14,7 @@ import (
 
 	"github.com/hobeone/sabnzbd-go/internal/app"
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/nntp/nntptest"
 	"github.com/hobeone/sabnzbd-go/internal/nzb"
@@ -25,7 +26,7 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 	// Setup app and fake server
 	server := nntptest.New(t)
 	dir := t.TempDir()
-	
+
 	// Create required directories
 	downloadDir := filepath.Join(dir, "download")
 	completeDir := filepath.Join(dir, "complete")
@@ -98,7 +99,7 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 			for i := range payload {
 				payload[i] = byte(i % 256)
 			}
-			
+
 			// We use multi-part encoding if it's not the only article in the file.
 			var body []byte
 			if len(f.Articles) == 1 {
