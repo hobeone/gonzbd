@@ -64,7 +64,8 @@ type Cache struct {
 	// CanFit() to be read lock-free.
 	usedAtomic atomic.Int64
 
-	onPressure func() // may be nil
+	onPressure     func() // may be nil
+	pressureActive atomic.Bool
 }
 
 // New creates a Cache from opts. It panics if opts.Limit is negative.
@@ -218,6 +219,7 @@ func (c *Cache) Limit() int64 {
 }
 
 // maybePressure fires OnPressure in a goroutine if used > 90% of limit.
+// Uses an atomic flag to coalesce: at most one goroutine runs at a time.
 // Must be called without mu held.
 func (c *Cache) maybePressure(used int64) {
 	if c.onPressure == nil || c.limit == 0 {
@@ -225,7 +227,12 @@ func (c *Cache) maybePressure(used int64) {
 	}
 	// Integer arithmetic: used*10 > limit*9  ⟺  used/limit > 0.9.
 	if used*10 > c.limit*9 {
-		go c.onPressure()
+		if c.pressureActive.CompareAndSwap(false, true) {
+			go func() {
+				defer c.pressureActive.Store(false)
+				c.onPressure()
+			}()
+		}
 	}
 }
 
