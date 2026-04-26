@@ -191,7 +191,11 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 	for _, srv := range servers {
 		perServer := opts.PerServerQueue
 		if perServer <= 0 {
-			perServer = 2 * srv.Connections()
+			pipelineDepth := srv.Cfg().PipeliningRequests
+			if pipelineDepth < 1 {
+				pipelineDepth = 1
+			}
+			perServer = 2 * srv.Connections() * pipelineDepth
 		}
 		if perServer < 1 {
 			perServer = 1

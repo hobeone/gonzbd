@@ -626,3 +626,49 @@ func TestDownloaderDoubleStart(t *testing.T) {
 		t.Errorf("second Start = %v, want ErrAlreadyStarted", err)
 	}
 }
+
+func TestDownloaderPipeliningConcurrency(t *testing.T) {
+	ms := newMockNNTP(t)
+
+	var articles []string
+	for i := 0; i < 5; i++ {
+		msgid := fmt.Sprintf("pipe%d@h", i)
+		articles = append(articles, msgid)
+		ms.addArticle(msgid, string(mocknntp.EncodeYEnc("a.bin", []byte("body"))))
+	}
+
+	q := queue.New()
+	job := makeJobWithArticles(t, articles)
+	_ = q.Add(job)
+
+	srv := testServer(t, "pipe", ms.addr, func(c *config.ServerConfig) {
+		c.Connections = 1
+		c.PipeliningRequests = 5
+	})
+
+	d := New(q, []*Server{srv}, nil, Options{}, nil)
+
+	
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = d.Stop() }()
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 5; i++ {
+			res := <-d.Completions()
+			if res.Err != nil {
+				t.Errorf("unexpected error for %s: %v", res.MessageID, res.Err)
+			}
+			_ = q.MarkArticleDone(res.JobID, res.MessageID)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for pipelined fetches")
+	}
+}

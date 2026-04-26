@@ -14,21 +14,25 @@ import (
 // modeGetConfig returns the current configuration as JSON.
 func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
 	if s.config == nil {
-		respondError(w, http.StatusInternalServerError, "config not wired")
+		s.respondError(w, http.StatusInternalServerError, "config not wired")
 		return
 	}
 
 	// TODO: Implement filtering by section= and keyword= query params.
 	// For now, return the full config.
 	// Marshal the config to JSON for return.
-	data, err := json.Marshal(s.config)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "marshal config: "+err.Error())
+	var data []byte
+	var marshalErr error
+	s.config.WithRead(func(cfg *config.Config) {
+		data, marshalErr = json.Marshal(cfg)
+	})
+	if marshalErr != nil {
+		s.respondError(w, http.StatusInternalServerError, "marshal config: "+marshalErr.Error())
 		return
 	}
 	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil {
-		respondError(w, http.StatusInternalServerError, "unmarshal config: "+err.Error())
+		s.respondError(w, http.StatusInternalServerError, "unmarshal config: "+err.Error())
 		return
 	}
 
@@ -38,7 +42,7 @@ func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
 // modeSetConfig sets configuration parameters.
 func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	if s.config == nil {
-		respondError(w, http.StatusInternalServerError, "config not wired")
+		s.respondError(w, http.StatusInternalServerError, "config not wired")
 		return
 	}
 
@@ -47,12 +51,12 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	value := formString(r, "value")
 
 	if section == "" {
-		respondError(w, http.StatusBadRequest, "missing section")
+		s.respondError(w, http.StatusBadRequest, "missing section")
 		return
 	}
 
 	if err := s.config.Set(section, keyword, value); err != nil {
-		respondError(w, http.StatusBadRequest, "set config: "+err.Error())
+		s.respondError(w, http.StatusBadRequest, "set config: "+err.Error())
 		return
 	}
 
@@ -60,7 +64,7 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	if s.configPath != "" {
 		if err := s.config.Save(s.configPath); err != nil {
 			s.log.Error("persist config", "path", s.configPath, "error", err)
-			respondError(w, http.StatusInternalServerError, "persist config: "+err.Error())
+			s.respondError(w, http.StatusInternalServerError, "persist config: "+err.Error())
 			return
 		}
 	}
@@ -89,20 +93,20 @@ func (s *Server) modeConfig(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "speedlimit":
 		// TODO: Requires Downloader interface with LimitSpeed.
-		respondError(w, http.StatusNotImplemented, "not implemented in this build: speedlimit")
+		s.respondError(w, http.StatusNotImplemented, "not implemented in this build: speedlimit")
 	case "set_pause":
 		// Not in spec
-		respondError(w, http.StatusBadRequest, "unknown config action: "+action)
+		s.respondError(w, http.StatusBadRequest, "unknown config action: "+action)
 	case "set_apikey", "set_nzbkey":
 		// Not in spec for get_config/set_config modes
-		respondError(w, http.StatusBadRequest, "unknown config action: "+action)
+		s.respondError(w, http.StatusBadRequest, "unknown config action: "+action)
 	case "test_server":
 		s.configTestServer(w, r)
 	case "create_backup":
 		// TODO: Requires backup mechanism.
-		respondError(w, http.StatusNotImplemented, "not implemented in this build: create_backup")
+		s.respondError(w, http.StatusNotImplemented, "not implemented in this build: create_backup")
 	default:
-		respondError(w, http.StatusBadRequest, "unknown config action: "+action)
+		s.respondError(w, http.StatusBadRequest, "unknown config action: "+action)
 	}
 }
 
@@ -115,7 +119,7 @@ const testServerTimeout = 15 * time.Second
 func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 	host := formString(r, "host")
 	if host == "" {
-		respondError(w, http.StatusBadRequest, "missing host parameter")
+		s.respondError(w, http.StatusBadRequest, "missing host parameter")
 		return
 	}
 

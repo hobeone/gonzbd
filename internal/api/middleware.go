@@ -3,7 +3,6 @@ package api
 import (
 	"bufio"
 	"errors"
-	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -105,7 +104,7 @@ func isMultipartUpload(r *http.Request) bool {
 
 // loggingMiddleware records each request at Info level with method, path,
 // status, and duration.
-func loggingMiddleware(next http.Handler) http.Handler {
+func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isMultipartUpload(r) {
 			r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
@@ -118,7 +117,6 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		action := r.FormValue("name") //nolint:gosec // G120: body already limited above
 
 		attrs := []any{
-			"component", "api",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", sw.status,
@@ -134,7 +132,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 			attrs = append(attrs, "query", sanitizeQuery(r.URL.RawQuery))
 		}
 		//nolint:gosec // G706: slog structured fields are not vulnerable to log injection
-		slog.Info("api", attrs...)
+		s.log.Info("api", attrs...)
 	})
 }
 

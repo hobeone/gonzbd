@@ -20,6 +20,7 @@ type Event struct {
 type Broadcaster struct {
 	mu      sync.RWMutex
 	clients map[*client]struct{}
+	log     *slog.Logger
 }
 
 type client struct {
@@ -27,9 +28,10 @@ type client struct {
 }
 
 // NewBroadcaster constructs a new event Broadcaster.
-func NewBroadcaster() *Broadcaster {
+func NewBroadcaster(log *slog.Logger) *Broadcaster {
 	return &Broadcaster{
 		clients: make(map[*client]struct{}),
+		log:     log,
 	}
 }
 
@@ -44,7 +46,7 @@ func (b *Broadcaster) Broadcast(event Event) {
 	defer b.mu.RUnlock()
 
 	if len(b.clients) > 0 {
-		slog.Info("WebSocket broadcast", "event", event.Type, "clients", len(b.clients))
+		b.log.Info("WebSocket broadcast", "event", event.Type, "clients", len(b.clients))
 	}
 
 	for c := range b.clients {
@@ -63,7 +65,7 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	conn, err := websocket.Accept(w, r, opts)
 	if err != nil {
-		slog.Error("WebSocket accept failed", "err", err)
+		b.log.Error("WebSocket accept failed", "err", err)
 		return
 	}
 	defer conn.Close(websocket.StatusInternalError, "closing")
@@ -76,13 +78,13 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 	b.clients[c] = struct{}{}
 	b.mu.Unlock()
 
-	slog.Info("WebSocket client connected", "remote", r.RemoteAddr)
+	b.log.Info("WebSocket client connected", "remote", r.RemoteAddr)
 
 	defer func() {
 		b.mu.Lock()
 		delete(b.clients, c)
 		b.mu.Unlock()
-		slog.Info("WebSocket client disconnected", "remote", r.RemoteAddr)
+		b.log.Info("WebSocket client disconnected", "remote", r.RemoteAddr)
 	}()
 
 	// Read loop (keep-alive/wait for close)

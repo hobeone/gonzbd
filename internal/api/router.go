@@ -20,22 +20,22 @@ type modeTable map[string]modeEntry
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	mode := r.FormValue("mode") //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 	if mode == "" {
-		respondError(w, http.StatusBadRequest, "missing mode parameter")
+		s.respondError(w, http.StatusBadRequest, "missing mode parameter")
 		return
 	}
 
 	entry, ok := s.modes[mode]
 	if !ok {
-		respondError(w, http.StatusBadRequest, "unknown mode: "+mode)
+		s.respondError(w, http.StatusBadRequest, "unknown mode: "+mode)
 		return
 	}
 
-	level := callerLevel(r, s.auth)
+	level := callerLevel(r, s.getAuth())
 	if level < entry.level {
 		if level == 0 {
-			respondError(w, http.StatusUnauthorized, "API key required")
+			s.respondError(w, http.StatusUnauthorized, "API key required")
 		} else {
-			respondError(w, http.StatusForbidden, "insufficient access level")
+			s.respondError(w, http.StatusForbidden, "insufficient access level")
 		}
 		return
 	}
@@ -96,10 +96,11 @@ func (s *Server) modeAuth(w http.ResponseWriter, r *http.Request) {
 		respondOK(w, "auth", "apikey")
 		return
 	}
+	auth := s.getAuth()
 	switch key {
-	case s.auth.APIKey:
+	case auth.APIKey:
 		respondOK(w, "auth", "apikey")
-	case s.auth.NZBKey:
+	case auth.NZBKey:
 		respondOK(w, "auth", "nzbkey")
 	default:
 		respondOK(w, "auth", "badkey")

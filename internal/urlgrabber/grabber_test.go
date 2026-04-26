@@ -119,6 +119,41 @@ func TestFetchFilenameFromContentDisposition(t *testing.T) {
 	}
 }
 
+func TestContentDispositionPathTraversal(t *testing.T) {
+	nzbData := []byte(`<?xml version="1.0" encoding="UTF-8"?><nzb/>`)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-nzb")
+		w.Header().Set("Content-Disposition", `attachment; filename="../../etc/passwd.nzb"`)
+		w.Write(nzbData)
+	}))
+	defer server.Close()
+
+	handler := &MockHandler{}
+	grabber := New(Config{}, handler)
+
+	count, err := grabber.Fetch(context.Background(), server.URL+"/file", types.FetchOptions{})
+	if err != nil {
+		t.Fatalf("Fetch failed: %v", err)
+	}
+
+	if count != 1 {
+		t.Fatalf("expected 1 NZB, got %d", count)
+	}
+
+	nzbs := handler.NZBs()
+	var found bool
+	for filename := range nzbs {
+		if strings.HasPrefix(filename, "passwd.nzb") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected filename starting with 'passwd.nzb', got keys: %v", nzbs)
+	}
+}
+
 func TestFetchFilenameFallbackToURLPath(t *testing.T) {
 	nzbData := []byte(`<?xml version="1.0" encoding="UTF-8"?><nzb/>`)
 

@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -90,18 +91,24 @@ func (d *Dispatcher) Register(n Notifier) {
 // Dispatch sends e to every registered notifier that accepts e.Type.
 // Failures from individual notifiers are logged; Dispatch never returns an error.
 func (d *Dispatcher) Dispatch(ctx context.Context, e Event) {
+	var wg sync.WaitGroup
 	for _, n := range d.notifiers {
 		if !n.Accepts(e.Type) {
 			continue
 		}
-		if err := n.Send(ctx, e); err != nil {
-			d.logger.Error("notifier send failed",
-				slog.String("notifier", n.Name()),
-				slog.String("event", e.Type.String()),
-				slog.Any("err", err),
-			)
-		}
+		wg.Add(1)
+		go func(n Notifier) {
+			defer wg.Done()
+			if err := n.Send(ctx, e); err != nil {
+				d.logger.Error("notifier send failed",
+					slog.String("notifier", n.Name()),
+					slog.String("event", e.Type.String()),
+					slog.Any("err", err),
+				)
+			}
+		}(n)
 	}
+	wg.Wait()
 }
 
 // acceptsAny returns true if t is present in mask.

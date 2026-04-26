@@ -6,7 +6,6 @@ package api
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 )
 
@@ -49,11 +48,11 @@ func respondStatus(w http.ResponseWriter) {
 //	{"status": false, "error": "<msg>"}
 //
 // code is the HTTP status code (typically 400, 401, 403, or 500).
-func respondError(w http.ResponseWriter, code int, msg string) {
+func (s *Server) respondError(w http.ResponseWriter, code int, msg string) {
 	if code >= 500 {
-		slog.Error("api response error", "component", "api", "status", code, "error", msg)
+		s.log.Error("api response error", "status", code, "error", msg)
 	} else if code != http.StatusOK {
-		slog.Warn("api response warning", "component", "api", "status", code, "error", msg)
+		s.log.Warn("api response warning", "status", code, "error", msg)
 	}
 	respondJSON(w, code, map[string]any{
 		"status": false,

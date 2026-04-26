@@ -421,3 +421,32 @@ func uuEncode(filename string, data []byte) []byte {
 	buf.WriteString("`\nend\n")
 	return buf.Bytes()
 }
+
+func TestDecodeUUShortLinePadding(t *testing.T) {
+	body := []byte("begin 644 test.txt\n" +
+		"!00\n" + // short line: 1 byte of payload ('A'), only 2 encoded chars
+		"#04%!\n" + // another line: 3 bytes payload ("AAA"), 4 encoded chars
+		"`\n" +
+		"end\n")
+
+	originalBody := make([]byte, len(body))
+	copy(originalBody, body)
+
+	data, filename, err := DecodeUU(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if filename != "test.txt" {
+		t.Errorf("expected filename %q, got %q", "test.txt", filename)
+	}
+
+	expectedData := []byte{'A', 'A', 'A', 'A'}
+	if !bytes.Equal(data, expectedData) {
+		t.Errorf("expected data %q, got %q", expectedData, data)
+	}
+
+	if !bytes.Equal(body, originalBody) {
+		t.Errorf("input buffer was corrupted!\noriginal: %q\ncurrent:  %q", originalBody, body)
+	}
+}

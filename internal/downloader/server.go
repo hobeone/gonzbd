@@ -81,7 +81,10 @@ func (s *Server) GoodConnections() int64 { return s.goodConns.Load() }
 func (s *Server) RecordBadConnection() { s.badConns.Add(1) }
 
 // RecordGoodConnection increments the good-connection counter. Thread-safe.
-func (s *Server) RecordGoodConnection() { s.goodConns.Add(1) }
+func (s *Server) RecordGoodConnection() {
+	s.goodConns.Add(1)
+	s.badConns.Store(0)
+}
 
 // ApplyPenalty sets the penalty-expiry to now+d and, when
 // shouldDeactivateOptional returns true, marks the server as
@@ -116,11 +119,19 @@ func (s *Server) Active(now time.Time) bool {
 		return false
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.deactivated {
-		return !s.penaltyExpiry.IsZero() && now.After(s.penaltyExpiry)
+	deactivated := s.deactivated
+	penaltyExpiry := s.penaltyExpiry
+	s.mu.RUnlock()
+
+	expired := !penaltyExpiry.IsZero() && now.After(penaltyExpiry)
+	if deactivated {
+		if expired {
+			s.ClearDeactivation()
+			return true
+		}
+		return false
 	}
-	return s.penaltyExpiry.IsZero() || now.After(s.penaltyExpiry)
+	return penaltyExpiry.IsZero() || expired
 }
 
 // ClearDeactivation lifts the deactivated flag when the penalty has

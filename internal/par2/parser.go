@@ -29,6 +29,12 @@ func ParseFileDescriptions(path string) ([]FileDesc, error) {
 	}
 	defer f.Close() //nolint:errcheck // read-only file
 
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	fileSize := uint64(fi.Size())
+
 	var descs []FileDesc
 
 	for {
@@ -51,7 +57,7 @@ func ParseFileDescriptions(path string) ([]FileDesc, error) {
 		}
 
 		packetLen := binary.LittleEndian.Uint64(header[8:16])
-		if packetLen < 64 {
+		if packetLen < 64 || packetLen > fileSize {
 			return nil, fmt.Errorf("invalid packet length: %d", packetLen)
 		}
 

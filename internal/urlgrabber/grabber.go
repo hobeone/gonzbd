@@ -156,6 +156,7 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 	}
 	defer os.RemoveAll(tmpDir) //nolint:errcheck // cleanup of temp directory
 
+	filename = filepath.Base(filename)
 	tmpPath := filepath.Join(tmpDir, filename)
 	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return 0, fmt.Errorf("failed to write temp file: %w", err)

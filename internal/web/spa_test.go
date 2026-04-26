@@ -68,3 +68,58 @@ func TestNewSPAHandler_UnknownPathFallsBackToIndex(t *testing.T) {
 		t.Errorf("SPA catch-all body missing 'SABnzbd-Go' (should serve index.html)")
 	}
 }
+
+func TestSPACookieOnRoot(t *testing.T) {
+	handler := NewSPAHandler(testSPAFS(), "test-key")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+	cookies := rr.Result().Cookies()
+	var found *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "sab_apikey" {
+			found = c
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("GET / did not set sab_apikey cookie")
+	}
+	if found.Value != "test-key" {
+		t.Errorf("cookie value = %q, want 'test-key'", found.Value)
+	}
+}
+
+func TestSPACookieOnDeepLink(t *testing.T) {
+	handler := NewSPAHandler(testSPAFS(), "test-key")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/config/general", nil))
+
+	cookies := rr.Result().Cookies()
+	var found *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "sab_apikey" {
+			found = c
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("GET /config/general did not set sab_apikey cookie")
+	}
+	if found.Value != "test-key" {
+		t.Errorf("cookie value = %q, want 'test-key'", found.Value)
+	}
+}
+
+func TestStaticAssetNoCookie(t *testing.T) {
+	handler := NewSPAHandler(testSPAFS(), "test-key")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/_app/test.js", nil))
+
+	cookies := rr.Result().Cookies()
+	for _, c := range cookies {
+		if c.Name == "sab_apikey" {
+			t.Errorf("GET /_app/test.js should not set sab_apikey cookie")
+		}
+	}
+}

@@ -17,6 +17,12 @@ import (
 func (c *Config) Set(section, keyword, value string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.SetLocked(section, keyword, value)
+}
+
+// SetLocked updates a single configuration value like Set, but assumes the
+// caller already holds the write lock (e.g. from within a With callback).
+func (c *Config) SetLocked(section, keyword, value string) error {
 
 	// 1. Find the section field
 	v := reflect.ValueOf(c).Elem()

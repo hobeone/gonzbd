@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -545,5 +546,75 @@ func TestReadDotStuffedBody(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+type blockLimiter struct {
+	enabled atomic.Bool
+	blocked chan struct{}
+	once    sync.Once
+}
+
+func (l *blockLimiter) Wait(ctx context.Context, n int) error {
+	if !l.enabled.Load() {
+		return nil
+	}
+	l.once.Do(func() { close(l.blocked) })
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestCloseUnblocksRateLimiter(t *testing.T) {
+	ms := newMockServer(t, func(c *mockConn) {
+		c.send("200 welcome")
+		c.expect("CAPABILITIES")
+		c.sendCaps()
+		c.expect("BODY <test@host>")
+		c.send("222 0 <test@host> body follows")
+		// Send a byte to trigger a Read
+		c.sendRaw("abc\r\n")
+		// Wait indefinitely so the socket stays open, preventing socket-close from unblocking the read
+		time.Sleep(2 * time.Second)
+	})
+
+	lim := &blockLimiter{blocked: make(chan struct{})}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	conn, err := Dial(ctx, makeCfg(ms.addr), WithLimiter(lim))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	// Enable the limiter now that handshake is done.
+	lim.enabled.Store(true)
+
+	go func() {
+		// This will trigger a Read which will block in the limiter's Wait
+		_, _ = conn.Fetch(ctx, "test@host")
+	}()
+
+	// Wait until the reader enters the limiter
+	select {
+	case <-lim.blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for limiter to block")
+	}
+
+	// Call Close; it should cancel the context and unblock Wait
+	errc := make(chan error, 1)
+	go func() {
+		errc <- conn.Close()
+	}()
+
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Close deadlocked, limiter did not unblock")
 	}
 }

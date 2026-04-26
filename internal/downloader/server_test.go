@@ -112,8 +112,8 @@ func TestRecordConnections(t *testing.T) {
 	s.RecordBadConnection()
 	s.RecordGoodConnection()
 
-	if got := s.BadConnections(); got != 2 {
-		t.Errorf("BadConnections() = %d; want 2", got)
+	if got := s.BadConnections(); got != 0 {
+		t.Errorf("BadConnections() = %d; want 0", got)
 	}
 	if got := s.GoodConnections(); got != 1 {
 		t.Errorf("GoodConnections() = %d; want 1", got)
@@ -365,12 +365,88 @@ func TestConcurrentRecordConnections(t *testing.T) {
 	}
 	wg.Wait()
 
-	wantBad := int64(goroutines * ops)
 	wantGood := int64(goroutines * ops)
-	if got := s.BadConnections(); got != wantBad {
-		t.Errorf("BadConnections() = %d; want %d", got, wantBad)
+
+	if got := s.BadConnections(); got < 0 {
+		t.Errorf("BadConnections() = %d; want >= 0", got)
 	}
 	if got := s.GoodConnections(); got != wantGood {
 		t.Errorf("GoodConnections() = %d; want %d", got, wantGood)
+	}
+}
+
+func TestBadConnsResetsOnGood(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(config.ServerConfig{})
+
+	// Record several bad connections.
+	s.RecordBadConnection()
+	s.RecordBadConnection()
+	s.RecordBadConnection()
+
+	if s.BadConnections() != 3 {
+		t.Fatalf("expected 3 bad connections, got %d", s.BadConnections())
+	}
+
+	// Record a good connection, which should reset the consecutive bad connections count.
+	s.RecordGoodConnection()
+
+	if s.BadConnections() != 0 {
+		t.Errorf("expected bad connections to reset to 0, got %d", s.BadConnections())
+	}
+	if s.GoodConnections() != 1 {
+		t.Errorf("expected 1 good connection, got %d", s.GoodConnections())
+	}
+}
+
+func TestDeactivationAutoClears(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(config.ServerConfig{
+		Enable:      true,
+		Optional:    true,
+		Required:    false,
+		Connections: 10,
+	})
+
+	// Force deactivation by recording enough bad connections to exceed OptionalDeactivationThreshold
+	for i := 0; i < 4; i++ {
+		s.RecordBadConnection()
+	}
+
+	// Apply a short penalty that also triggers deactivation due to badConns ratio.
+	shortPenalty := 10 * time.Millisecond
+	s.ApplyPenalty(shortPenalty)
+
+	// Verify the server is deactivated immediately.
+	now := time.Now()
+	if s.Active(now) {
+		t.Fatal("expected server to be inactive immediately after penalty+deactivation")
+	}
+	s.mu.RLock()
+	deactivated := s.deactivated
+	s.mu.RUnlock()
+	if !deactivated {
+		t.Fatal("expected server to be marked deactivated")
+	}
+
+	// Advance time past the penalty expiry.
+	future := now.Add(shortPenalty + time.Millisecond)
+
+	// Calling Active with a time after the penalty should return true AND clear deactivation.
+	if !s.Active(future) {
+		t.Fatal("expected server to be active after penalty expiry")
+	}
+
+	// Verify internal state is cleared.
+	s.mu.RLock()
+	deactivatedAfter := s.deactivated
+	expiryAfter := s.penaltyExpiry
+	s.mu.RUnlock()
+
+	if deactivatedAfter {
+		t.Error("expected deactivated flag to be cleared")
+	}
+	if !expiryAfter.IsZero() {
+		t.Error("expected penaltyExpiry to be reset")
 	}
 }

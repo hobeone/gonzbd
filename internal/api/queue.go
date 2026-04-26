@@ -28,7 +28,7 @@ const maxUploadBytes = 50 * 1024 * 1024
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 	if s.queue == nil {
-		respondError(w, http.StatusInternalServerError, "queue not wired")
+		s.respondError(w, http.StatusInternalServerError, "queue not wired")
 		return
 	}
 
@@ -53,9 +53,9 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 	// Stubbed: no backing implementation yet.
 	case "rename", "priority", "sort", "delete_nzf", "change_complete_action",
 		"change_name", "change_cat", "change_script", "change_opts":
-		respondError(w, http.StatusBadRequest, "not implemented in this build: "+action)
+		s.respondError(w, http.StatusBadRequest, "not implemented in this build: "+action)
 	default:
-		respondError(w, http.StatusBadRequest, "unknown queue action: "+action)
+		s.respondError(w, http.StatusBadRequest, "unknown queue action: "+action)
 	}
 }
 
@@ -199,7 +199,7 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 	value := r.FormValue("value")
 	if value == "" {
-		respondError(w, http.StatusBadRequest, "missing value")
+		s.respondError(w, http.StatusBadRequest, "missing value")
 		return
 	}
 
@@ -243,7 +243,7 @@ func (s *Server) queuePurge(w http.ResponseWriter, r *http.Request) {
 func (s *Server) queuePauseJobs(w http.ResponseWriter, r *http.Request) {
 	value := r.FormValue("value")
 	if value == "" {
-		respondError(w, http.StatusBadRequest, "missing value parameter")
+		s.respondError(w, http.StatusBadRequest, "missing value parameter")
 		return
 	}
 	ids := splitCSV(value)
@@ -259,7 +259,7 @@ func (s *Server) queuePauseJobs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
 	value := r.FormValue("value")
 	if value == "" {
-		respondError(w, http.StatusBadRequest, "missing value parameter")
+		s.respondError(w, http.StatusBadRequest, "missing value parameter")
 		return
 	}
 	ids := splitCSV(value)
@@ -274,14 +274,14 @@ func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
 // upload should require at least NZB-key-level auth in our unified model).
 func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 	if s.queue == nil {
-		respondError(w, http.StatusInternalServerError, "queue not wired")
+		s.respondError(w, http.StatusInternalServerError, "queue not wired")
 		return
 	}
 
 	// Raise the body limit for file uploads above the middleware default.
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
-		respondError(w, http.StatusBadRequest, "parse multipart: "+err.Error())
+		s.respondError(w, http.StatusBadRequest, "parse multipart: "+err.Error())
 		return
 	}
 
@@ -291,20 +291,20 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 		f, fh, err = r.FormFile("name")
 	}
 	if err != nil {
-		respondError(w, http.StatusBadRequest, "nzbfile or name field required")
+		s.respondError(w, http.StatusBadRequest, "nzbfile or name field required")
 		return
 	}
 	defer f.Close() //nolint:errcheck // multipart cleanup
 
 	data, err := io.ReadAll(f)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "read upload: "+err.Error())
+		s.respondError(w, http.StatusInternalServerError, "read upload: "+err.Error())
 		return
 	}
 
 	parsed, err := nzb.Parse(bytes.NewReader(data))
 	if err != nil {
-		respondError(w, http.StatusBadRequest, "parse NZB: "+err.Error())
+		s.respondError(w, http.StatusBadRequest, "parse NZB: "+err.Error())
 		return
 	}
 
@@ -320,11 +320,11 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 
 	job, err := queue.NewJob(parsed, opts)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
+		s.respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
 		return
 	}
 	if err := s.app.AddJob(r.Context(), job, data, false); err != nil {
-		respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
+		s.respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}
 
@@ -344,12 +344,12 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 // practice — a fire-and-forget wrapper is a few lines.
 func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 	if s.grabber == nil {
-		respondError(w, http.StatusInternalServerError, "url grabber not wired")
+		s.respondError(w, http.StatusInternalServerError, "url grabber not wired")
 		return
 	}
 	urlStr := formString(r, "name")
 	if urlStr == "" {
-		respondError(w, http.StatusBadRequest, "missing name parameter (URL)")
+		s.respondError(w, http.StatusBadRequest, "missing name parameter (URL)")
 		return
 	}
 	opts := types.FetchOptions{
@@ -358,7 +358,7 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := s.grabber.Fetch(r.Context(), urlStr, opts)
 	if err != nil {
-		respondError(w, http.StatusBadGateway, "fetch: "+err.Error())
+		s.respondError(w, http.StatusBadGateway, "fetch: "+err.Error())
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{
@@ -378,43 +378,43 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 	if s.queue == nil {
-		respondError(w, http.StatusInternalServerError, "queue not wired")
+		s.respondError(w, http.StatusInternalServerError, "queue not wired")
 		return
 	}
 
 	rawPath := r.FormValue("name")
 	if rawPath == "" {
-		respondError(w, http.StatusBadRequest, "missing name parameter")
+		s.respondError(w, http.StatusBadRequest, "missing name parameter")
 		return
 	}
 	// Reject non-absolute paths.
 	if !filepath.IsAbs(rawPath) {
-		respondError(w, http.StatusBadRequest, "name must be an absolute path")
+		s.respondError(w, http.StatusBadRequest, "name must be an absolute path")
 		return
 	}
 	// Reject path traversal attempts after cleaning.
 	clean := filepath.Clean(rawPath)
 	if strings.Contains(clean, "..") {
-		respondError(w, http.StatusBadRequest, "path traversal not allowed")
+		s.respondError(w, http.StatusBadRequest, "path traversal not allowed")
 		return
 	}
 
 	f, err := openFile(clean)
 	if err != nil {
-		respondError(w, http.StatusBadRequest, fmt.Sprintf("open %q: %s", clean, err.Error()))
+		s.respondError(w, http.StatusBadRequest, fmt.Sprintf("open %q: %s", clean, err.Error()))
 		return
 	}
 	defer f.Close() //nolint:errcheck // read-only file cleanup
 
 	data, err := io.ReadAll(f)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "read file: "+err.Error())
+		s.respondError(w, http.StatusInternalServerError, "read file: "+err.Error())
 		return
 	}
 
 	parsed, err := nzb.Parse(bytes.NewReader(data))
 	if err != nil {
-		respondError(w, http.StatusBadRequest, "parse NZB: "+err.Error())
+		s.respondError(w, http.StatusBadRequest, "parse NZB: "+err.Error())
 		return
 	}
 
@@ -430,11 +430,11 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 
 	job, err := queue.NewJob(parsed, opts)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
+		s.respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
 		return
 	}
 	if err := s.app.AddJob(r.Context(), job, data, false); err != nil {
-		respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
+		s.respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}
 

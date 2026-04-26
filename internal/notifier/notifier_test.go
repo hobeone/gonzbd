@@ -61,11 +61,12 @@ func TestEventTypeString(t *testing.T) {
 // ----- Dispatcher routing -----
 
 type fakeNotifier struct {
-	mu       sync.Mutex
-	name     string
-	mask     []EventType
-	received []Event
-	failOn   EventType
+	mu        sync.Mutex
+	name      string
+	mask      []EventType
+	received  []Event
+	failOn    EventType
+	sendDelay time.Duration
 }
 
 func (f *fakeNotifier) Name() string { return f.name }
@@ -77,7 +78,15 @@ func (f *fakeNotifier) Accepts(t EventType) bool {
 	}
 	return false
 }
-func (f *fakeNotifier) Send(_ context.Context, e Event) error {
+func (f *fakeNotifier) Send(ctx context.Context, e Event) error {
+	if f.sendDelay > 0 {
+		select {
+		case <-time.After(f.sendDelay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failOn == e.Type {
@@ -335,5 +344,66 @@ func TestEmailFormatMessage(t *testing.T) {
 		if !strings.Contains(s, c.want) {
 			t.Errorf("%s: want %q in message:\n%s", c.label, c.want, s)
 		}
+	}
+}
+
+func TestEmailDialRespectsContext(t *testing.T) {
+	t.Parallel()
+	// Use a non-routable IP to simulate a dial timeout (TEST-NET-1).
+	n := NewEmailNotifier(EmailConfig{
+		Host:      "192.0.2.1",
+		Port:      25,
+		From:      "test@example.com",
+		To:        []string{"user@example.com"},
+		EventMask: []EventType{Warning},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := n.Send(ctx, Event{Type: Warning, Timestamp: time.Now()})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected dial error, got nil")
+	}
+	if elapsed > 1*time.Second {
+		t.Fatalf("send blocked for %v, expected ~100ms", elapsed)
+	}
+}
+
+func TestDispatchConcurrent(t *testing.T) {
+	t.Parallel()
+	logger := newTestLogger(t)
+	d := NewDispatcher(logger)
+
+	n1 := &fakeNotifier{
+		name:      "delay100ms",
+		mask:      []EventType{DownloadComplete},
+		sendDelay: 100 * time.Millisecond,
+	}
+	n2 := &fakeNotifier{
+		name:      "delay200ms",
+		mask:      []EventType{DownloadComplete},
+		sendDelay: 200 * time.Millisecond,
+	}
+	d.Register(n1)
+	d.Register(n2)
+
+	ctx := context.Background()
+	start := time.Now()
+	d.Dispatch(ctx, Event{Type: DownloadComplete, Timestamp: time.Now()})
+	elapsed := time.Since(start)
+
+	if elapsed > 300*time.Millisecond {
+		t.Errorf("dispatch blocked for sum of delays: %v", elapsed)
+	}
+	if elapsed < 150*time.Millisecond {
+		t.Errorf("dispatch returned before all finished: %v", elapsed)
+	}
+
+	if len(n1.events()) != 1 || len(n2.events()) != 1 {
+		t.Errorf("expected both to receive event")
 	}
 }
