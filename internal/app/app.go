@@ -645,6 +645,7 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 		return errors.New("app: not running")
 	}
 	_ = app.downloader.Stop()
+	app.queue.ClearAllEmitted()
 	servers := make([]*downloader.Server, len(scs))
 	for i, sc := range scs {
 		servers[i] = downloader.NewServer(sc)

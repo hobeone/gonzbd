@@ -385,6 +385,25 @@ func (q *Queue) MarkArticleEmitted(jobID, messageID string) error {
 	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 }
 
+// ClearAllEmitted resets the transient Emitted flag on every article in the
+// queue. This must be called when the downloader is reloaded: articles that
+// were Emitted by the old downloader but never completed (because the old
+// downloader was stopped) would otherwise be permanently skipped by
+// ForEachUnfinishedArticle. Since Emitted is an in-memory-only flag (not
+// persisted to disk), clearing it is safe — it simply allows the new
+// downloader to re-dispatch those articles.
+func (q *Queue) ClearAllEmitted() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, job := range q.jobs {
+		for fi := range job.Files {
+			for ai := range job.Files[fi].Articles {
+				job.Files[fi].Articles[ai].Emitted = false
+			}
+		}
+	}
+}
+
 // TotalRemainingBytes returns the sum of RemainingBytes across all jobs.
 func (q *Queue) TotalRemainingBytes() int64 {
 	q.mu.RLock()
