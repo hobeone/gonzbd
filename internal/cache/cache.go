@@ -19,6 +19,7 @@ package cache
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -254,5 +255,5 @@ func (c *Cache) writeToDisk(key, adminDir string, data []byte) error {
 // raw Message-ID (slashes, nulls, colons) cannot escape the admin directory.
 func diskPath(adminDir, key string) string {
 	sum := sha256.Sum256([]byte(key))
-	return filepath.Join(adminDir, fmt.Sprintf("%x", sum))
+	return filepath.Join(adminDir, hex.EncodeToString(sum[:]))
 }
