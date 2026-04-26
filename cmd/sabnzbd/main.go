@@ -107,7 +107,18 @@ func usage() {
 func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride, logDenyOverride, pidPath string, verbose bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			slog.Info("config file not found; creating default", "path", configPath)
+			cfg, err = config.Default()
+			if err != nil {
+				return fmt.Errorf("create default config: %w", err)
+			}
+			if err := cfg.Save(configPath); err != nil {
+				return fmt.Errorf("save default config: %w", err)
+			}
+		} else {
+			return fmt.Errorf("load config: %w", err)
+		}
 	}
 
 	dlDir, adminDir, err := resolveDirs(cfg, downloadDirOverride)
@@ -468,7 +479,15 @@ func resolveDirs(cfg *config.Config, downloadDirOverride string) (dlDir, adminDi
 func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOverride string, verbose bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			slog.Info("config file not found; using defaults", "path", configPath)
+			cfg, err = config.Default()
+			if err != nil {
+				return fmt.Errorf("create default config: %w", err)
+			}
+		} else {
+			return fmt.Errorf("load config: %w", err)
+		}
 	}
 
 	// One-shot mode: stderr-only logging.

@@ -13,7 +13,11 @@ describe('DownloadsSection', () => {
 			min_free_space: '1G',
 			article_cache_size: '500M',
 			max_art_tries: 3,
-			pre_check: true
+			pre_check: true,
+			replace_illegal_with: '_',
+			replace_spaces_with: '.',
+			strip_diacritics: true,
+			cleanup_list: ['^abc', 'xyz$']
 		}
 	};
 
@@ -29,5 +33,10 @@ describe('DownloadsSection', () => {
 		expect(screen.getByText('Article Cache')).toBeInTheDocument();
 		expect(screen.getByText('Article Retries')).toBeInTheDocument();
 		expect(screen.getByText('Pre-check article availability')).toBeInTheDocument();
+		expect(screen.getByText('Naming & Cleanup')).toBeInTheDocument();
+		expect(screen.getByText('Replace Illegal Characters With')).toBeInTheDocument();
+		expect(screen.getByText('Replace Spaces With')).toBeInTheDocument();
+		expect(screen.getByText('Strip Diacritics')).toBeInTheDocument();
+		expect(screen.getByText('Indexer/Spam Cleanup List')).toBeInTheDocument();
 	});
 });
