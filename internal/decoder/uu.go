@@ -27,7 +27,7 @@ var (
 // DecodeUU does not wire into DecodeArticle; the caller decides which format
 // to try (typically by checking whether DecodeArticle returns ErrNotYEnc).
 func DecodeUU(body []byte) (data []byte, filename string, err error) {
-	line, rest, ok := cutLine(body)
+	line, rest, ok := bytes.Cut(body, []byte("\n"))
 	if !ok {
 		return nil, "", ErrNotUU
 	}
@@ -42,7 +42,7 @@ func DecodeUU(body []byte) (data []byte, filename string, err error) {
 	out := make([]byte, 0, len(body)/4*3)
 
 	for {
-		line, rest, ok = cutLine(rest)
+		line, rest, ok = bytes.Cut(rest, []byte("\n"))
 		if !ok {
 			// Ran out of input without an "end" line; return what we have.
 			break
@@ -104,14 +104,4 @@ func decodeUULine(enc []byte, rawLen int) []byte {
 	}
 
 	return out[:rawLen]
-}
-
-// cutLine returns the content before the first '\n', the remainder after it,
-// and true. If no '\n' is found it returns the full slice, nil, false.
-func cutLine(b []byte) (line, rest []byte, ok bool) {
-	idx := bytes.IndexByte(b, '\n')
-	if idx < 0 {
-		return b, nil, false
-	}
-	return b[:idx], b[idx+1:], true
 }
