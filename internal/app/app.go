@@ -302,8 +302,11 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	return app, nil
 }
 
+// Queue returns the application's download queue.
 func (app *Application) Queue() *queue.Queue { return app.queue }
 
+// AddJob validates, deduplicates, and enqueues a new download job. If force
+// is false and a duplicate is detected, the job is added in a paused state.
 func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
 	nzbDir := filepath.Join(app.cfg.AdminDir, "nzb")
 	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
@@ -382,6 +385,7 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	return nil
 }
 
+// RemoveJob cancels and removes a job from the queue, deleting its download directory.
 func (app *Application) RemoveJob(id string) error {
 	job, err := app.queue.Get(id)
 	if err != nil {
@@ -396,6 +400,8 @@ func (app *Application) RemoveJob(id string) error {
 	return nil
 }
 
+// RemoveHistoryJob deletes a completed job from history. If deleteFiles is true,
+// the job's output directory is also removed.
 func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error {
 	if app.historyRepo == nil {
 		return errors.New("history repository not wired")
@@ -414,6 +420,7 @@ func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteF
 	return nil
 }
 
+// GetHistory retrieves a single history entry by ID.
 func (app *Application) GetHistory(ctx context.Context, id string) (*history.Entry, error) {
 	if app.historyRepo == nil {
 		return nil, errors.New("history repository not wired")
@@ -421,10 +428,17 @@ func (app *Application) GetHistory(ctx context.Context, id string) (*history.Ent
 	return app.historyRepo.Get(ctx, id)
 }
 
-func (app *Application) FileComplete() <-chan FileComplete         { return app.fileComplete }
-func (app *Application) JobComplete() <-chan JobComplete           { return app.jobComplete }
+// FileComplete returns the channel signalled when a file finishes assembly.
+func (app *Application) FileComplete() <-chan FileComplete { return app.fileComplete }
+
+// JobComplete returns the channel signalled when all files in a job are done.
+func (app *Application) JobComplete() <-chan JobComplete { return app.jobComplete }
+
+// PostProcComplete returns the channel signalled when post-processing finishes.
 func (app *Application) PostProcComplete() <-chan PostProcComplete { return app.postProcComplete }
 
+// Start launches the download pipeline, assembler, and background goroutines.
+// It blocks until all components are running. Call Shutdown to stop.
 func (app *Application) Start(ctx context.Context) error {
 	if !app.started.CompareAndSwap(false, true) {
 		return ErrAlreadyStarted
@@ -491,6 +505,8 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 	}
 }
 
+// Shutdown stops the downloader, post-processor, and assembler, flushes the
+// cache, and persists the queue to disk. Safe to call multiple times.
 func (app *Application) Shutdown() error {
 	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) {
 		return nil
@@ -567,14 +583,18 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	}
 }
 
+// PausePostProcessor pauses the post-processing pipeline.
 func (app *Application) PausePostProcessor() {
 	app.postProcessor.Pause()
 }
 
+// ResumePostProcessor resumes the post-processing pipeline.
 func (app *Application) ResumePostProcessor() {
 	app.postProcessor.Resume()
 }
 
+// RetryHistoryJob re-enqueues a completed/failed history job for re-download.
+// Failed articles are reset; the history entry is deleted on success.
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
 	_, err := app.historyRepo.Get(ctx, jobID)
 	if err != nil {
@@ -616,6 +636,8 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	return nil
 }
 
+// ReloadDownloader stops the current downloader and starts a new one with
+// the given server configurations. Used when server settings change at runtime.
 func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	app.mu.Lock()
 	defer app.mu.Unlock()
