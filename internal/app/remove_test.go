@@ -41,8 +41,8 @@ func TestRemoveJob(t *testing.T) {
 	dummyFile := filepath.Join(jobDir, "data.bin")
 	_ = os.WriteFile(dummyFile, []byte("data"), 0o600)
 
-	// 1. Remove (always deletes files in our current implementation)
-	err = a.RemoveJob(job.ID)
+	// 1. Remove with deleteFiles=true
+	err = a.RemoveJob(job.ID, true)
 	if err != nil {
 		t.Fatalf("RemoveJob failed: %v", err)
 	}
@@ -59,11 +59,11 @@ func TestRemoveJob(t *testing.T) {
 	jobDir2 := filepath.Join(downloadDir, "to-delete-files")
 	_ = os.MkdirAll(jobDir2, 0o750)
 
-	err = a.RemoveJob(job2.ID)
+	err = a.RemoveJob(job2.ID, false)
 	if err != nil {
 		t.Fatalf("RemoveJob failed: %v", err)
 	}
-	if _, err := os.Stat(jobDir2); !os.IsNotExist(err) {
-		t.Errorf("job directory still exists but should have been deleted")
+	if _, err := os.Stat(jobDir2); os.IsNotExist(err) {
+		t.Errorf("job directory was deleted but should have been kept (deleteFiles=false)")
 	}
 }
