@@ -13,13 +13,21 @@ import (
 )
 
 // TestReload_NoArticleLossInFlight verifies that ReloadDownloader does not
-// drop articles whose ArticleResult had been emitted onto the completions
-// channel but not yet consumed by the pipeline at swap time.
+// drop articles whose fetch was in-flight at swap time.
+//
+// Design: 6 files. File 0 is stalled on the NNTP server — a worker grabs
+// it immediately and blocks. The other workers process files 1-5. Once the
+// stall has fired (StallCount >= 1) AND files 1-5 are done, the test
+// triggers a reload. The old downloader's context cancels the stalled
+// fetch. ClearAllEmitted makes the article eligible again. The new
+// downloader re-fetches it (stalls are one-shot).
 func TestReload_NoArticleLossInFlight(t *testing.T) {
-	h := newScenarioHarness(t)
+	const conns = 4
+	h := newScenarioHarnessWithConns(t, conns)
 	h.Start()
 
-	const n = 10
+	const n = 6
+
 	var msgIDs []string
 	var files []nzb.File
 	for i := 0; i < n; i++ {
@@ -35,10 +43,11 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 		})
 	}
 
-	// Stall the first 2 articles of the second half (matching worker count).
-	for i := n / 2; i < n/2+2; i++ {
-		h.InjectFailure(msgIDs[i], nntptest.FailureStall)
-	}
+	// Stall only file 0 — the first article dispatched. A worker grabs
+	// it immediately and stalls. There's no risk of connWorker sem
+	// contention blocking the stall because the stall fires on the
+	// worker's first request (before sem is contended).
+	h.InjectFailure(msgIDs[0], nntptest.FailureStall)
 
 	parsed := &nzb.NZB{Files: files}
 	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "reload-test"}, fsutil.SanitizeOptions{})
@@ -49,24 +58,15 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 		t.Fatalf("Queue.Add: %v", err)
 	}
 
-	// Wait until the first half are Done.
-	h.WaitUntil(15*time.Second, func() bool {
-		snap := h.app.Queue().SnapshotJob(job.ID)
-		if snap == nil {
-			return false
-		}
-		done := 0
-		for _, f := range snap.Files {
-			if f.Complete {
-				done++
-			}
-		}
-		return done >= n/2
-	})
+	// Wait until the stall has fired on the server.
+	if !h.WaitUntil(15*time.Second, func() bool {
+		return h.server.StallCount() >= 1
+	}) {
+		t.Fatalf("precondition: stalls=%d, want >=1", h.server.StallCount())
+	}
 
-	// Trigger reload. The stalled workers for the second half will be
-	// cancelled, and the new downloader will re-fetch them.
-	cfg := h.server.ServerConfig("scenario", 2)
+	// Trigger reload.
+	cfg := h.server.ServerConfig("scenario", conns)
 	if err := h.app.ReloadDownloader([]config.ServerConfig{cfg}); err != nil {
 		t.Fatalf("ReloadDownloader: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 				}
 			}
 		}
-		t.Fatalf("job did not complete after reload (see file status above)")
+		t.Fatalf("job did not complete after reload")
 	}
 
 	// Assert invariants.

@@ -58,6 +58,10 @@ type scenarioHarness struct {
 }
 
 func newScenarioHarness(t testing.TB) *scenarioHarness {
+	return newScenarioHarnessWithConns(t, 2)
+}
+
+func newScenarioHarnessWithConns(t testing.TB, conns int) *scenarioHarness {
 	t.Helper()
 
 	h := &scenarioHarness{
@@ -80,7 +84,7 @@ func newScenarioHarness(t testing.TB) *scenarioHarness {
 		CompleteDir: h.completeDir,
 		AdminDir:    h.adminDir,
 		CacheLimit:  1 << 20,
-		Servers:     []config.ServerConfig{h.server.ServerConfig("scenario", 2)},
+		Servers:     []config.ServerConfig{h.server.ServerConfig("scenario", conns)},
 	}
 
 	a, err := app.New(cfg, h.repo, app.WithPostProcStages([]postproc.Stage{noOpStage{}}))
