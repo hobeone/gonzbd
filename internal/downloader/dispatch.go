@@ -329,14 +329,18 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 			decodedData = data
 			offset = 0 // UU encoding usually doesn't have offset info
 		} else {
-			err = decErr
+			err = fmt.Errorf("yenc: %w; uu fallback: %w", decErr, uuErr)
 		}
 	default:
 		err = decErr
 	}
 	if err != nil {
 		d.log.Warn("decode error", "msgid", req.messageID, "err", err)
-		// Decode error is treated as a fatal failure for this attempt.
+		// Decode error is a terminal failure — mark Emitted so the
+		// dispatcher never re-picks this article, then clear the tryList.
+		if markErr := d.queue.MarkArticleEmitted(req.jobID, req.messageID); markErr != nil {
+			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", markErr)
+		}
 		d.clearTried(req.jobID, req.messageID)
 		d.emitResult(ctx, req, name, nil, 0, err)
 		return
