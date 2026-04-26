@@ -157,7 +157,7 @@ func parseStatus(output string) Status {
 	}
 }
 
-// Verify runs `par2 r <parfile> [extraFiles...]` and parses the output to
+// Verify runs `par2 v <parfile> [extraFiles...]` and parses the output to
 // determine whether the protected files are intact.  It returns a VerifyResult
 // even when par2 itself exits with a non-zero code, as long as the process
 // could be started. A returned error indicates a system-level failure (binary
@@ -165,7 +165,7 @@ func parseStatus(output string) Status {
 func Verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyResult, error) {
 	var stdout, stderr bytes.Buffer
 	args := make([]string, 0, 2+len(extraFiles))
-	args = append(args, "r", parfile)
+	args = append(args, "v", parfile)
 	args = append(args, extraFiles...)
 
 	cmd := exec.CommandContext(ctx, "par2", args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
