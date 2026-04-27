@@ -82,7 +82,7 @@
 <Dialog.Root bind:open>
 	<Dialog.Portal>
 		<Dialog.Overlay class="fixed inset-0 z-[60] bg-black/50" />
-		<Dialog.Content class="fixed left-1/2 top-1/2 z-[70] flex h-[90vh] w-full max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border bg-white shadow-xl overflow-hidden">
+		<Dialog.Content class="fixed left-1/2 top-1/2 z-[70] flex h-[90vh] w-full max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border bg-white dark:bg-gray-900 shadow-xl overflow-hidden">
 			<div class="p-6 border-b">
 				<Dialog.Title class="text-lg font-semibold">
 					{feed ? 'Edit RSS Feed' : 'Add RSS Feed'}
@@ -126,20 +126,20 @@
 				<!-- Filters Section -->
 				<div class="space-y-4">
 					<div class="flex items-center justify-between">
-						<h4 class="text-sm font-bold uppercase tracking-wider text-gray-500">Filters</h4>
+						<h4 class="text-sm font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Filters</h4>
 						<Button size="sm" variant="outline" onclick={addFilter}>+ Add Filter</Button>
 					</div>
 
 					{#if draft.filters.length === 0}
-						<div class="rounded-md border border-dashed p-8 text-center text-sm text-gray-400 italic">
+						<div class="rounded-md border border-dashed p-8 text-center text-sm text-gray-400 dark:text-gray-500 italic">
 							No filters defined. Items will be accepted based on feed defaults.
 						</div>
 					{:else}
 						<div class="space-y-4">
 							{#each draft.filters as filter, i}
-								<div class="rounded-lg border bg-gray-50/50 p-4 space-y-3 relative">
+								<div class="rounded-lg border bg-gray-50/50 dark:bg-gray-800/50 p-4 space-y-3 relative">
 									<button 
-										class="absolute top-2 right-2 text-gray-400 hover:text-red-500"
+										class="absolute top-2 right-2 text-gray-400 dark:text-gray-500 hover:text-red-500"
 										onclick={() => removeFilter(i)}
 										title="Remove filter"
 									>
@@ -150,24 +150,24 @@
 
 									<div class="grid grid-cols-3 gap-3">
 										<div class="col-span-2 space-y-1">
-											<label for="filter-name-{i}" class="text-[10px] font-bold uppercase text-gray-400">Filter Name / Label</label>
+											<label for="filter-name-{i}" class="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Filter Name / Label</label>
 											<Input id="filter-name-{i}" bind:value={filter.name} class="h-8 text-xs" />
 										</div>
 										<div class="space-y-1">
-											<label for="filter-type-{i}" class="text-[10px] font-bold uppercase text-gray-400">Match Type</label>
-											<select id="filter-type-{i}" bind:value={filter.type} class="w-full h-8 rounded-md border border-input bg-white px-2 py-0 text-xs">
+											<label for="filter-type-{i}" class="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Match Type</label>
+											<select id="filter-type-{i}" bind:value={filter.type} class="w-full h-8 rounded-md border border-input bg-white dark:bg-gray-900 px-2 py-0 text-xs">
 												<option value="require">Require</option>
 												<option value="must_not_match">Exclude</option>
 												<option value="ignore">Ignore</option>
 											</select>
 										</div>
 										<div class="col-span-3 space-y-1">
-											<label for="filter-title-{i}" class="text-[10px] font-bold uppercase text-gray-400">Regex (Title)</label>
+											<label for="filter-title-{i}" class="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Regex (Title)</label>
 											<Input id="filter-title-{i}" bind:value={filter.title} placeholder="Regex to match against title" class="h-8 text-xs" />
 										</div>
 										<div class="space-y-1">
-											<label for="filter-cat-{i}" class="text-[10px] font-bold uppercase text-gray-400">Category</label>
-											<select id="filter-cat-{i}" bind:value={filter.cat} class="w-full h-8 rounded-md border border-input bg-white px-2 py-0 text-xs">
+											<label for="filter-cat-{i}" class="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Category</label>
+											<select id="filter-cat-{i}" bind:value={filter.cat} class="w-full h-8 rounded-md border border-input bg-white dark:bg-gray-900 px-2 py-0 text-xs">
 												<option value="">(Inherit)</option>
 												{#each categories as cat}
 													<option value={cat}>{cat}</option>
@@ -175,8 +175,8 @@
 											</select>
 										</div>
 										<div class="space-y-1">
-											<label for="filter-priority-{i}" class="text-[10px] font-bold uppercase text-gray-400">Priority</label>
-											<select id="filter-priority-{i}" bind:value={filter.priority} class="w-full h-8 rounded-md border border-input bg-white px-2 py-0 text-xs">
+											<label for="filter-priority-{i}" class="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500">Priority</label>
+											<select id="filter-priority-{i}" bind:value={filter.priority} class="w-full h-8 rounded-md border border-input bg-white dark:bg-gray-900 px-2 py-0 text-xs">
 												<option value={-100}>(Inherit)</option>
 												<option value={2}>Force</option>
 												<option value={1}>High</option>
@@ -186,7 +186,7 @@
 										</div>
 										<div class="flex items-end pb-1.5">
 											<label class="flex items-center gap-2 text-xs font-medium cursor-pointer">
-												<input type="checkbox" bind:checked={filter.enabled} class="rounded border-gray-300" />
+												<input type="checkbox" bind:checked={filter.enabled} class="rounded border-gray-300 dark:border-gray-600" />
 												Active
 											</label>
 										</div>
@@ -198,7 +198,7 @@
 				</div>
 			</div>
 
-			<div class="p-6 border-t bg-gray-50 flex justify-end gap-3">
+			<div class="p-6 border-t bg-gray-50 dark:bg-gray-800 flex justify-end gap-3">
 				<Button variant="ghost" onclick={() => (open = false)}>Cancel</Button>
 				<Button onclick={handleSave} disabled={!draft.name || !draft.uri}>Save Feed</Button>
 			</div>

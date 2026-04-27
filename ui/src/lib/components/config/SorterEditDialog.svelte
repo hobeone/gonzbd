@@ -66,7 +66,7 @@
 <Dialog.Root bind:open>
 	<Dialog.Portal>
 		<Dialog.Overlay class="fixed inset-0 z-[60] bg-black/50" />
-		<Dialog.Content class="fixed left-1/2 top-1/2 z-[70] w-full max-w-xl -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white p-6 shadow-xl overflow-y-auto max-h-[90vh]">
+		<Dialog.Content class="fixed left-1/2 top-1/2 z-[70] w-full max-w-xl -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white dark:bg-gray-900 p-6 shadow-xl overflow-y-auto max-h-[90vh]">
 			<Dialog.Title class="text-lg font-semibold">
 				{sorter ? 'Edit Sorter' : 'Add Sorter'}
 			</Dialog.Title>
@@ -99,7 +99,7 @@
 					<div class="flex flex-wrap gap-2 rounded-md border p-3">
 						{#each categories as cat}
 							<label class="flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs cursor-pointer transition-colors
-								{draft.sort_cats.includes(cat) ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'}">
+								{draft.sort_cats.includes(cat) ? 'bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300' : 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'}">
 								<input
 									type="checkbox"
 									class="hidden"
@@ -110,13 +110,13 @@
 							</label>
 						{/each}
 						{#if categories.length === 0}
-							<span class="text-xs text-gray-400 italic">No categories found</span>
+							<span class="text-xs text-gray-400 dark:text-gray-500 italic">No categories found</span>
 						{/if}
 					</div>
 				</div>
 
 				<div class="flex items-center gap-2 py-2">
-					<input id="sorter-active" type="checkbox" bind:checked={draft.is_active} class="rounded border-gray-300" />
+					<input id="sorter-active" type="checkbox" bind:checked={draft.is_active} class="rounded border-gray-300 dark:border-gray-600" />
 					<label for="sorter-active" class="text-sm font-medium cursor-pointer">Sorter Active</label>
 				</div>
 			</div>

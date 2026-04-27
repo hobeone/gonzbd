@@ -247,16 +247,16 @@
 <Dialog.Root bind:open>
 	<Dialog.Portal>
 		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50" />
-		<Dialog.Content class="fixed left-1/2 top-1/2 z-50 flex h-[85vh] w-full max-w-4xl -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border bg-white shadow-lg">
+		<Dialog.Content class="fixed left-1/2 top-1/2 z-50 flex h-[85vh] w-full max-w-4xl -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border bg-white dark:bg-gray-900 shadow-lg">
 			<!-- Sidebar -->
-			<aside class="w-64 shrink-0 border-r bg-gray-50/50 p-4">
+			<aside class="w-64 shrink-0 border-r bg-gray-50/50 dark:bg-gray-800/50 p-4">
 				<Dialog.Title class="px-2 text-lg font-bold tracking-tight">Settings</Dialog.Title>
 				<nav class="mt-6 space-y-1">
 					{#each sections as section (section.id)}
 						<button
 							onclick={() => (activeSection = section.id)}
 							class="w-full rounded-md px-3 py-2 text-left text-sm font-medium transition-colors
-							{activeSection === section.id ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}"
+							{activeSection === section.id ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}"
 						>
 							{section.label}
 						</button>
@@ -268,14 +268,14 @@
 			<div class="flex flex-1 flex-col overflow-hidden">
 				<div class="flex-1 overflow-y-auto p-8">
 					{#if error}
-						<div class="mb-6 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+						<div class="mb-6 flex items-center justify-between rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950 p-4 text-sm text-red-700 dark:text-red-300">
 							<div class="flex items-center gap-2">
 								<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4">
 									<path fill-rule="evenodd" d="M8 15A7 7 0 1 0 8 1a7 7 0 0 0 0 14ZM8 4a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-1.5 0v-3A.75.75 0 0 1 8 4Zm0 8a.908.908 0 1 1 0-1.817.908.908 0 0 1 0 1.817Z" clip-rule="evenodd" />
 								</svg>
 								<span>{error}</span>
 							</div>
-							<button onclick={() => (error = null)} class="text-red-900 hover:text-red-700" aria-label="Dismiss error">
+							<button onclick={() => (error = null)} class="text-red-900 dark:text-red-100 hover:text-red-700 dark:hover:text-red-300" aria-label="Dismiss error">
 								<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4">
 									<path d="M5.28 4.22a.75.75 0 0 0-1.06 1.06L6.94 8l-2.72 2.72a.75.75 0 1 0 1.06 1.06L8 9.06l2.72 2.72a.75.75 0 1 0 1.06-1.06L9.06 8l2.72-2.72a.75.75 0 0 0-1.06-1.06L8 6.94 5.28 4.22Z" />
 								</svg>
@@ -284,7 +284,7 @@
 					{/if}
 
 					{#if loading}
-						<div class="flex h-32 items-center justify-center text-sm text-gray-500">
+						<div class="flex h-32 items-center justify-center text-sm text-gray-500 dark:text-gray-400">
 							Loading configuration...
 						</div>
 					{:else if configData}
@@ -335,7 +335,7 @@
 				</div>
 
 				<!-- Footer -->
-				<footer class="flex items-center justify-between border-t bg-gray-50 px-8 py-4">
+				<footer class="flex items-center justify-between border-t bg-gray-50 dark:bg-gray-800/50 px-8 py-4">
 					<div class="text-xs text-muted-foreground">
 						{#if saving}
 							<span class="flex items-center gap-2">
@@ -343,7 +343,7 @@
 								Saving changes...
 							</span>
 						{:else if dirtyFields.length > 0}
-							<span class="font-medium text-amber-600">{dirtyFields.length} unsaved changes</span>
+							<span class="font-medium text-amber-600 dark:text-amber-400">{dirtyFields.length} unsaved changes</span>
 						{:else}
 							All changes are synced with the server.
 						{/if}

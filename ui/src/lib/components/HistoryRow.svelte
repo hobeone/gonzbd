@@ -56,7 +56,7 @@
 	}
 </script>
 
-<tr class="border-b hover:bg-gray-50 cursor-pointer text-gray-900 dark:text-gray-100" onclick={toggle}>
+<tr class="border-b hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer text-gray-900 dark:text-gray-100" onclick={toggle}>
 	<td class="px-4 py-3 max-w-[200px] sm:max-w-xs md:max-w-sm lg:max-w-md xl:max-w-lg">
 		<div class="flex items-center gap-2">
 			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4 shrink-0 text-gray-400 transition-transform {expanded ? 'rotate-90' : ''}">
@@ -94,39 +94,39 @@
 </tr>
 
 {#if expanded}
-	<tr class="bg-gray-50/50">
+	<tr class="bg-gray-50/50 dark:bg-gray-900/50">
 		<td colspan="6" class="px-4 py-4">
 			<div class="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
 				<div class="space-y-3">
 					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Source</div>
-						<div class="mt-1 font-mono text-xs text-gray-700 break-all">{slot.nzb_name}</div>
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Source</div>
+						<div class="mt-1 font-mono text-xs text-gray-700 dark:text-gray-300 break-all">{slot.nzb_name}</div>
 					</div>
 					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Path</div>
-						<div class="mt-1 font-mono text-xs text-gray-700 break-all">{slot.path}</div>
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Path</div>
+						<div class="mt-1 font-mono text-xs text-gray-700 dark:text-gray-300 break-all">{slot.path}</div>
 					</div>
 					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Repair Summary</div>
-						<div class="mt-1 text-gray-700 break-all">{slot.url_info || 'N/A'}</div>
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Repair Summary</div>
+						<div class="mt-1 text-gray-700 dark:text-gray-300 break-all">{slot.url_info || 'N/A'}</div>
 					</div>
 				</div>
 				<div class="space-y-3">
 					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Download Stats</div>
-						<div class="mt-1 text-gray-700">
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Download Stats</div>
+						<div class="mt-1 text-gray-700 dark:text-gray-300">
 							Downloaded in {formatDuration(slot.download_time)} at {formatSpeed(slot.bytes, slot.download_time)}
 						</div>
 					</div>
 					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Usenet Information</div>
-						<div class="mt-1 text-gray-700">
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Usenet Information</div>
+						<div class="mt-1 text-gray-700 dark:text-gray-300">
 							{slot.storage} old
 						</div>
 					</div>
 					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500">Servers</div>
-						<div class="mt-1 text-gray-700 italic break-all">
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Servers</div>
+						<div class="mt-1 text-gray-700 dark:text-gray-300 italic break-all">
 							{slot.meta || 'N/A'}
 						</div>
 					</div>

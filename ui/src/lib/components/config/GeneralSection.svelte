@@ -17,7 +17,7 @@
 		<p class="text-sm text-muted-foreground">Server connectivity and basic daemon tuning.</p>
 	</div>
 	<Separator />
-	<div class="divide-y divide-gray-100">
+	<div class="divide-y divide-gray-100 dark:divide-gray-800">
 		<ConfigInput section="general" keyword="host" label="Host" value={configData.general.host} description="Host or IP to bind the HTTP server to." onupdate={onFieldUpdate} />
 		<ConfigInput section="general" keyword="port" label="Port" type="number" value={configData.general.port} description="TCP port for the web interface." onupdate={onFieldUpdate} />
 		<ConfigInput section="general" keyword="api_key" label="API Key" value={configData.general.api_key} description="Full API authentication key." onupdate={onFieldUpdate} />

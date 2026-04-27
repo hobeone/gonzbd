@@ -18,7 +18,7 @@
 		<p class="text-sm text-muted-foreground">Archive extraction and par2 repair behavior.</p>
 	</div>
 	<Separator />
-	<div class="divide-y divide-gray-100">
+	<div class="divide-y divide-gray-100 dark:divide-gray-800">
 		<ConfigSwitch section="postproc" keyword="enable_unrar" label="Enable RAR extraction" value={configData.postproc.enable_unrar} onupdate={onFieldUpdate} />
 		<ConfigSwitch section="postproc" keyword="enable_7zip" label="Enable 7-Zip extraction" value={configData.postproc.enable_7zip} onupdate={onFieldUpdate} />
 		<ConfigSwitch section="postproc" keyword="direct_unpack" label="Direct Unpack" value={configData.postproc.direct_unpack} description="Extract files while still downloading." onupdate={onFieldUpdate} />
