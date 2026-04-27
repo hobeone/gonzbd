@@ -581,7 +581,7 @@ func TestExtractFromContentDisposition(t *testing.T) {
 		{`inline; filename="file with spaces.nzb"`, "file with spaces.nzb"},
 		{`attachment; filename=""; other=value`, ""},
 		{`attachment`, ""},
-		{`filename="only.nzb"`, "only.nzb"},
+		{`filename="only.nzb"`, ""}, // malformed: no media type prefix
 	}
 
 	for _, tt := range tests {

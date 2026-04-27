@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"errors"
 	"net"
 	"net/http"
@@ -47,14 +48,20 @@ func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
 	if cfg.LocalhostBypass && isLocalhost(r) && !isCrossOrigin(r) {
 		return LevelAdmin
 	}
-	key := apiKeyFromRequest(r)
+	key, fromCookie := apiKeyFromRequest(r)
 	if key == "" {
 		return 0
 	}
-	if key == cfg.APIKey {
+	// If the key came from a cookie, enforce cross-origin check for
+	// defense-in-depth (cookie SameSite may be insufficient on older browsers).
+	if fromCookie && isCrossOrigin(r) {
+		return 0
+	}
+	// Use constant-time comparison to prevent timing attacks.
+	if subtle.ConstantTimeCompare([]byte(key), []byte(cfg.APIKey)) == 1 {
 		return LevelAdmin
 	}
-	if key == cfg.NZBKey {
+	if subtle.ConstantTimeCompare([]byte(key), []byte(cfg.NZBKey)) == 1 {
 		return LevelProtected
 	}
 	return 0
@@ -65,20 +72,20 @@ func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
 //  2. ?nzbkey= query parameter / POST form field "nzbkey"
 //  3. X-API-Key header
 //  4. "sab_apikey" cookie (set by the SPA handler)
-func apiKeyFromRequest(r *http.Request) string {
+func apiKeyFromRequest(r *http.Request) (string, bool) {
 	if k := r.FormValue("apikey"); k != "" {
-		return k
+		return k, false
 	}
 	if k := r.FormValue("nzbkey"); k != "" {
-		return k
+		return k, false
 	}
 	if k := r.Header.Get("X-API-Key"); k != "" {
-		return k
+		return k, false
 	}
 	if c, err := r.Cookie("sab_apikey"); err == nil {
-		return c.Value
+		return c.Value, true
 	}
-	return ""
+	return "", false
 }
 
 // isLocalhost returns true if the request originates from a loopback

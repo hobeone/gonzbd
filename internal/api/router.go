@@ -91,7 +91,7 @@ func (s *Server) modeVersion(w http.ResponseWriter, _ *http.Request) {
 // Matches Python's _api_auth behavior: returns "apikey", "nzbkey", or
 // "badkey" depending on what was supplied.
 func (s *Server) modeAuth(w http.ResponseWriter, r *http.Request) {
-	key := apiKeyFromRequest(r)
+	key, _ := apiKeyFromRequest(r)
 	if key == "" {
 		respondOK(w, "auth", "apikey")
 		return

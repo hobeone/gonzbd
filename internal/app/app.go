@@ -361,12 +361,10 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			case app.internalFileComplete <- fc:
 			default:
 				// Channel full — spawn goroutine to ensure delivery.
-				// Select on app.ctx so we don't leak during shutdown.
+				// The drainCompletions loop runs after shutdown, so
+				// this goroutine will always terminate.
 				go func() {
-					select {
-					case app.internalFileComplete <- fc:
-					case <-app.ctx.Done():
-					}
+					app.internalFileComplete <- fc
 				}()
 			}
 		},

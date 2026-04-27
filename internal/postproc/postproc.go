@@ -140,15 +140,12 @@ func (p *PostProcessor) Pause() {
 // Resume continues processing after a Pause.  Safe to call when not paused.
 func (p *PostProcessor) Resume() {
 	p.pauseMu.Lock()
+	defer p.pauseMu.Unlock()
 	if !p.paused {
-		p.pauseMu.Unlock()
 		return
 	}
 	p.paused = false
-	ch := p.resumeC
-	p.pauseMu.Unlock()
-	// Close outside the lock to avoid holding it while waking the worker.
-	closeOnce(ch)
+	close(p.resumeC)
 	p.log.Info("postproc: resumed")
 }
 
@@ -156,18 +153,12 @@ func (p *PostProcessor) Resume() {
 // Used by Stop so that a paused worker can observe ctx cancellation.
 func (p *PostProcessor) signalResume() {
 	p.pauseMu.Lock()
-	ch := p.resumeC
-	p.pauseMu.Unlock()
-	closeOnce(ch)
-}
-
-// closeOnce closes ch if it is not already closed.
-func closeOnce(ch chan struct{}) {
+	defer p.pauseMu.Unlock()
 	select {
-	case <-ch:
+	case <-p.resumeC:
 		// already closed
 	default:
-		close(ch)
+		close(p.resumeC)
 	}
 }
 
@@ -239,6 +230,8 @@ func (p *PostProcessor) run() {
 			return
 		}
 
+		// Set busy immediately after pop to prevent Empty() from
+		// observing the intermediate state (queue empty, not busy).
 		p.setBusyWithJob(true, job.Queue.ID)
 		p.processJob(job)
 		p.addHistory(job)

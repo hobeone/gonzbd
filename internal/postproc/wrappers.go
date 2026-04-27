@@ -220,12 +220,8 @@ func (s *SortStage) Run(ctx context.Context, job *Job) error {
 		s.DestRoot,
 		job.Sanitize,
 	)
-	if err != nil {
-		return fmt.Errorf("sort: %w", err)
-	}
-	// If sorting moved files, update FinalDir so FinalizeStage won't
-	// redundantly move the (now-empty) DownloadDir. Clean up the
-	// original directory to prevent disk leaks from unmoved files.
+	// Process partial results even on error — if some files were moved,
+	// downstream stages must know where they are.
 	if len(res.Moved) > 0 {
 		origDir := job.DownloadDir
 		job.FinalDir = filepath.Dir(res.Moved[0].To)
@@ -240,6 +236,9 @@ func (s *SortStage) Run(ctx context.Context, job *Job) error {
 		if cleanOrig != cleanFinal && !strings.HasPrefix(cleanFinal, cleanOrig+string(filepath.Separator)) {
 			_ = os.RemoveAll(origDir) // Clean up unmoved files/archives
 		}
+	}
+	if err != nil {
+		return fmt.Errorf("sort: %w", err)
 	}
 	return nil
 }
