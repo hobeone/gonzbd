@@ -41,14 +41,10 @@ func (s *Server) modeBrowse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate: must be absolute, no ".." after cleaning
+	// Validate: must be absolute.
 	cleaned := filepath.Clean(dirPath)
 	if !filepath.IsAbs(cleaned) {
 		s.respondError(w, http.StatusBadRequest, "path must be absolute")
-		return
-	}
-	if strings.Contains(cleaned, "..") {
-		s.respondError(w, http.StatusBadRequest, "path traversal not allowed")
 		return
 	}
 

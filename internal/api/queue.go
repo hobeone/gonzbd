@@ -407,12 +407,8 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, http.StatusBadRequest, "name must be an absolute path")
 		return
 	}
-	// Reject path traversal attempts after cleaning.
+	// Clean the path (resolves any '..', '//', trailing slashes).
 	clean := filepath.Clean(rawPath)
-	if strings.Contains(clean, "..") {
-		s.respondError(w, http.StatusBadRequest, "path traversal not allowed")
-		return
-	}
 
 	f, err := openFile(clean)
 	if err != nil {
