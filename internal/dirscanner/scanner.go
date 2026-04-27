@@ -122,7 +122,13 @@ func (s *Scanner) ScanOnce(ctx context.Context) (int, error) {
 	s.store.mu.RLock()
 	for storedPath := range s.store.states {
 		if _, exists := currentScan[storedPath]; !exists {
-			if scannedDirs[filepath.Dir(storedPath)] {
+			dir := filepath.Dir(storedPath)
+			if scannedDirs[dir] {
+				// Directory was scanned but file is gone — prune.
+				toDelete = append(toDelete, storedPath)
+			} else if _, err := os.Stat(dir); os.IsNotExist(err) {
+				// Directory no longer exists (category removed or
+				// folder deleted) — prune to prevent unbounded growth.
 				toDelete = append(toDelete, storedPath)
 			}
 		}

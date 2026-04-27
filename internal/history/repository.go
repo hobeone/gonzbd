@@ -176,6 +176,36 @@ func (r *Repository) Search(ctx context.Context, opts SearchOptions) ([]Entry, e
 	return out, nil
 }
 
+// ListIDs returns just the nzo_id values matching opts, avoiding the cost of
+// loading full Entry structs. Used by bulk delete operations.
+func (r *Repository) ListIDs(ctx context.Context, opts SearchOptions) ([]string, error) {
+	where, args := buildWhereClause(opts)
+
+	q := "SELECT nzo_id FROM history"
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("history: list ids: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck // read-only result set
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("history: list ids scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("history: list ids rows: %w", err)
+	}
+	return ids, nil
+}
+
 // buildWhereClause constructs the WHERE predicates and args for Search/Count
 // queries from SearchOptions. Centralizes filter logic so new filters only
 // need to be added in one place.
