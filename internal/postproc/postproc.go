@@ -240,8 +240,8 @@ func (p *PostProcessor) run() {
 		}
 
 		p.setBusyWithJob(true, job.Queue.ID)
-		p.addHistory(job)
 		p.processJob(job)
+		p.addHistory(job)
 		p.setBusyWithJob(false, "")
 
 		if p.onJobDone != nil {
