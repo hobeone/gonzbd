@@ -60,6 +60,7 @@ func Open(path string) (*DB, error) {
 	sqlDB.SetMaxOpenConns(4)
 
 	if err := sqlDB.Ping(); err != nil {
+		_ = sqlDB.Close() //nolint:errcheck // superseded by ping error
 		return nil, fmt.Errorf("error pinging database: %s, %w", path, err)
 	}
 

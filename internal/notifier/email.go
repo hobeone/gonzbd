@@ -112,6 +112,7 @@ func (e *EmailNotifier) finishSend(c *smtp.Client, auth smtp.Auth, msg []byte) e
 	defer func() {
 		//nolint:errcheck // best-effort close; connection already done at this point
 		_ = c.Quit()
+		_ = c.Close() // Quit may fail without closing the underlying TCP conn
 	}()
 
 	if auth != nil {

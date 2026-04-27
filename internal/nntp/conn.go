@@ -310,8 +310,11 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 	ctxConn, cancelConn := context.WithCancel(context.Background())
 
 	var br io.Reader = nc
+	if dopts.dialer.Timeout > 0 {
+		br = &idleTimeoutReader{nc: nc, timeout: dopts.dialer.Timeout}
+	}
 	if dopts.limiter != nil {
-		br = &limitReader{r: nc, lim: dopts.limiter, ctx: ctxConn}
+		br = &limitReader{r: br, lim: dopts.limiter, ctx: ctxConn}
 	}
 
 	c := &Conn{
@@ -325,7 +328,7 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 		readerDone:  make(chan struct{}),
 		ctx:         ctxConn,
 		cancel:      cancelConn,
-		readTimeout: dopts.dialer.Timeout,
+		readTimeout: dopts.dialer.Timeout, // kept for reference; actual idle enforced by idleTimeoutReader
 	}
 
 	if tc, ok := nc.(*tls.Conn); ok {
@@ -625,4 +628,19 @@ func tlsVersionString(v uint16) string {
 		return "TLSv1.0"
 	}
 	return fmt.Sprintf("TLS(0x%04x)", v)
+}
+
+// idleTimeoutReader wraps a net.Conn and resets the read deadline before
+// every Read call, turning an absolute socket deadline into an idle
+// timeout. This is critical when speed limiting is active: a large
+// article body may take many minutes to transfer, but each individual
+// Read should complete within the timeout period.
+type idleTimeoutReader struct {
+	nc      net.Conn
+	timeout time.Duration
+}
+
+func (r *idleTimeoutReader) Read(p []byte) (int, error) {
+	_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout))
+	return r.nc.Read(p)
 }
