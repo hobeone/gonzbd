@@ -209,12 +209,18 @@ func (s *Scanner) scanDir(ctx context.Context, dir, category string) (map[string
 
 		// File is stable. Extract, handle, and clean up.
 		if err := s.handleStableFile(ctx, path, entry.Name(), category); err != nil {
-			s.logger.Warn("failed to handle file, marking as failed", "path", path, "err", err)
-			failedPath := path + ".failed"
-			if renameErr := os.Rename(path, failedPath); renameErr != nil {
-				s.logger.Warn("failed to rename file", "path", path, "err", renameErr)
+			s.logger.Warn("failed to handle file", "path", path, "err", err)
+			// Only leave for retry if some NZBs succeeded (partial
+			// success). If all failed or extraction itself failed,
+			// permanently mark as .failed.
+			isPartialSuccess := strings.HasPrefix(err.Error(), "partial:")
+			if !isPartialSuccess {
+				failedPath := path + ".failed"
+				if renameErr := os.Rename(path, failedPath); renameErr != nil {
+					s.logger.Warn("failed to rename file", "path", path, "err", renameErr)
+				}
+				s.store.Delete(path)
 			}
-			s.store.Delete(path)
 			continue
 		}
 
@@ -255,6 +261,10 @@ func (s *Scanner) handleStableFile(ctx context.Context, path, filename, category
 	// leaves the archive for the next scan cycle so the failed NZBs can
 	// be retried (e.g. after a transient DB lock or config reload).
 	if lastErr != nil {
+		if successCount > 0 {
+			// Some NZBs imported — leave the archive for retry.
+			return fmt.Errorf("partial: %d of %d NZBs failed: %w", len(nzbs)-successCount, len(nzbs), lastErr)
+		}
 		return fmt.Errorf("%d of %d NZBs failed: %w", len(nzbs)-successCount, len(nzbs), lastErr)
 	}
 	if successCount == 0 {

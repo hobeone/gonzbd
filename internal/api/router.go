@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"net/http"
 )
 
@@ -97,12 +98,13 @@ func (s *Server) modeAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth := s.getAuth()
-	switch key {
-	case auth.APIKey:
+	// Use constant-time comparison to prevent timing attacks.
+	// This endpoint is LevelOpen (unauthenticated).
+	if subtle.ConstantTimeCompare([]byte(key), []byte(auth.APIKey)) == 1 {
 		respondOK(w, "auth", "apikey")
-	case auth.NZBKey:
+	} else if subtle.ConstantTimeCompare([]byte(key), []byte(auth.NZBKey)) == 1 {
 		respondOK(w, "auth", "nzbkey")
-	default:
+	} else {
 		respondOK(w, "auth", "badkey")
 	}
 }
