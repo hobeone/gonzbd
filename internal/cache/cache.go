@@ -115,16 +115,28 @@ func (c *Cache) Save(key, adminDir string, data []byte) error {
 		return nil
 	}
 
-	// Won't fit. Drop any existing in-memory entry so Load will find the new
-	// disk copy rather than stale memory, then spill to disk.
-	if oldSize > 0 {
-		delete(c.articles, key)
-		c.used -= oldSize
-		c.usedAtomic.Store(c.used)
-	}
+	// Won't fit in memory. Write to disk first, then remove the old
+	// in-memory entry. This ordering prevents a window where the article
+	// is neither in memory nor on disk (which would cause concurrent
+	// Load to return ErrNotFound).
 	c.mu.Unlock()
 
-	return c.writeToDisk(key, adminDir, data)
+	if err := c.writeToDisk(key, adminDir, data); err != nil {
+		return err
+	}
+
+	// Now that the disk copy is durable, remove any stale memory entry.
+	if oldSize > 0 {
+		c.mu.Lock()
+		// Re-check: a concurrent Save might have placed a newer entry.
+		if cur, ok := c.articles[key]; ok && len(cur.data) == int(oldSize) {
+			delete(c.articles, key)
+			c.used -= oldSize
+			c.usedAtomic.Store(c.used)
+		}
+		c.mu.Unlock()
+	}
+	return nil
 }
 
 // Load retrieves an article. Memory is checked first; on miss the disk copy at
@@ -201,8 +213,8 @@ func (c *Cache) Flush() error {
 		c.mu.Lock()
 		cur, exists := c.articles[key]
 		switch {
-		case exists && len(cur.data) == len(entry.data):
-			// Entry unchanged — consume it.
+		case exists && len(cur.data) > 0 && len(entry.data) > 0 && &cur.data[0] == &entry.data[0]:
+			// Entry unchanged (same backing array) — consume it.
 			delete(c.articles, key)
 			c.used -= int64(len(entry.data))
 			if c.used < 0 {
