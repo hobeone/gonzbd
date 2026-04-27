@@ -232,6 +232,14 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	if err := application.Start(ctx); err != nil {
 		return fmt.Errorf("start application: %w", err)
 	}
+	// Safety net: ensures Shutdown runs even if a startup step after
+	// Start() fails (e.g., startScheduler). Shutdown is idempotent;
+	// the normal shutdown path also calls it explicitly for ordering.
+	defer func() {
+		if err := application.Shutdown(); err != nil {
+			slog.Warn("application shutdown (deferred)", "err", err)
+		}
+	}()
 
 	// Bandwidth meter. State persists across restarts so lifetime totals
 	// aren't reset by a daemon restart. Quota is not yet wired (no config
