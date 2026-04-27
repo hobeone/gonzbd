@@ -323,7 +323,8 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			}
 			app.emitter.Broadcast(Event{Type: "history_updated"})
 
-			// Fire notification event.
+			// Fire notification event with a bounded timeout so a
+			// misbehaving sink can't hang the postproc worker forever.
 			if app.notifyDispatcher != nil {
 				evtType := notifier.PostProcessingComplete
 				title := "Download completed"
@@ -331,13 +332,15 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 					evtType = notifier.PostProcessingFailed
 					title = "Download failed"
 				}
-				app.notifyDispatcher.Dispatch(context.Background(), notifier.Event{
+				notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				app.notifyDispatcher.Dispatch(notifyCtx, notifier.Event{
 					Type:      evtType,
 					Title:     title,
 					Body:      entry.Name,
 					JobName:   entry.Name,
 					Timestamp: time.Now(),
 				})
+				notifyCancel()
 			}
 		},
 		Logger: log,
@@ -357,8 +360,14 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			select {
 			case app.internalFileComplete <- fc:
 			default:
-				// Channel full — spawn goroutine to ensure delivery
-				go func() { app.internalFileComplete <- fc }()
+				// Channel full — spawn goroutine to ensure delivery.
+				// Select on app.ctx so we don't leak during shutdown.
+				go func() {
+					select {
+					case app.internalFileComplete <- fc:
+					case <-app.ctx.Done():
+					}
+				}()
 			}
 		},
 	}, log)
@@ -457,15 +466,16 @@ func (app *Application) RemoveJob(id string, deleteFiles bool) error {
 	if err != nil {
 		return err
 	}
+	// Remove from queue and pipeline first so no more articles are
+	// dispatched or written before we delete files on disk.
+	if err := app.queue.Remove(id); err != nil {
+		return err
+	}
+	app.pipeline.forgetJob(id)
 	if deleteFiles {
 		path := filepath.Join(app.cfg.DownloadDir, job.Name)
 		_ = os.RemoveAll(path)
 	}
-	if err := app.queue.Remove(id); err != nil {
-		return err
-	}
-	// Release cached file info for this job to prevent memory leaks.
-	app.pipeline.forgetJob(id)
 	app.emitter.Broadcast(Event{Type: "queue_updated"})
 	return nil
 }

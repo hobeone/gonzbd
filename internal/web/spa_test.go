@@ -18,7 +18,7 @@ func testSPAFS() fstest.MapFS {
 }
 
 func TestNewSPAHandler_RootServesIndexHTML(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), "test-key")
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 
@@ -31,7 +31,7 @@ func TestNewSPAHandler_RootServesIndexHTML(t *testing.T) {
 }
 
 func TestNewSPAHandler_StaticFileServedDirectly(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), "test-key")
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
 
 	tests := []struct {
 		path       string
@@ -57,7 +57,7 @@ func TestNewSPAHandler_StaticFileServedDirectly(t *testing.T) {
 }
 
 func TestNewSPAHandler_UnknownPathFallsBackToIndex(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), "test-key")
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/some/deep/route", nil))
 
@@ -70,7 +70,7 @@ func TestNewSPAHandler_UnknownPathFallsBackToIndex(t *testing.T) {
 }
 
 func TestSPACookieOnRoot(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), "test-key")
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 
@@ -91,7 +91,7 @@ func TestSPACookieOnRoot(t *testing.T) {
 }
 
 func TestSPACookieOnDeepLink(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), "test-key")
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/config/general", nil))
 
@@ -112,7 +112,7 @@ func TestSPACookieOnDeepLink(t *testing.T) {
 }
 
 func TestStaticAssetNoCookie(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), "test-key")
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/_app/test.js", nil))
 

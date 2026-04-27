@@ -223,12 +223,15 @@ func (s *SortStage) Run(ctx context.Context, job *Job) error {
 		return fmt.Errorf("sort: %w", err)
 	}
 	// If sorting moved files, update FinalDir so FinalizeStage won't
-	// redundantly move the (now-empty) DownloadDir.
+	// redundantly move the (now-empty) DownloadDir. Clean up the
+	// original directory to prevent disk leaks from unmoved files.
 	if len(res.Moved) > 0 {
+		origDir := job.DownloadDir
 		job.FinalDir = filepath.Dir(res.Moved[0].To)
 		// Point DownloadDir at the destination so downstream stages
 		// (script, deobfuscate) operate on the actual files.
 		job.DownloadDir = job.FinalDir
+		_ = os.RemoveAll(origDir) // Clean up unmoved files/archives
 	}
 	return nil
 }
@@ -389,8 +392,8 @@ func moveRecursive(ctx context.Context, src, dst string) error {
 		return fsutil.MoveFile(src, dst)
 	}
 
-	// It's a directory.
-	if err := os.MkdirAll(dst, 0o750); err != nil {
+	// It's a directory — preserve source permissions.
+	if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
 		return err
 	}
 
