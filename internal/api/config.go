@@ -133,11 +133,15 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sslVerifyStr := formString(r, "ssl_verify")
-	sslVerify := int(config.SSLVerifyHostname) // safe default
+	sslVerify := config.SSLVerifyHostname // safe default
 	if sslVerifyStr != "" {
 		if v, err := strconv.Atoi(sslVerifyStr); err == nil {
-			sslVerify = v
+			sslVerify = config.SSLVerify(v)
 		}
+	}
+	if err := sslVerify.Validate(); err != nil {
+		s.respondError(w, http.StatusBadRequest, "invalid ssl_verify value: "+err.Error())
+		return
 	}
 
 	cfg := config.ServerConfig{
@@ -147,7 +151,7 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 		Username:    formString(r, "username"),
 		Password:    formString(r, "password"),
 		SSL:         ssl,
-		SSLVerify:   config.SSLVerify(sslVerify),
+		SSLVerify:   sslVerify,
 		Connections: 1,
 		Timeout:     int(testServerTimeout.Seconds()),
 	}

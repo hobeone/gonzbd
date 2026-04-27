@@ -221,7 +221,7 @@ func (s *ServerConfig) validate() error {
 	if err := positive("connections", s.Connections); err != nil {
 		errs = append(errs, err)
 	}
-	if err := s.SSLVerify.validate(); err != nil {
+	if err := s.SSLVerify.Validate(); err != nil {
 		errs = append(errs, err)
 	}
 	if err := nonNegative("priority", s.Priority); err != nil {
