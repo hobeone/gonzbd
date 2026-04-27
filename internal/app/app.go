@@ -306,7 +306,12 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			if app.historyRepo != nil {
 				dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				if err := app.historyRepo.Add(dbCtx, entry); err != nil {
-					log.Warn("failed to add history entry", "job", job.Queue.ID, "err", err)
+					log.Error("failed to add history entry; keeping job in queue for recovery",
+						"job", job.Queue.ID, "err", err)
+					dbCancel()
+					// Don't remove from queue — the job stays recoverable.
+					app.emitter.Broadcast(Event{Type: "queue_updated"})
+					return
 				}
 				dbCancel()
 			}
@@ -470,8 +475,11 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	if snap == nil {
 		return fmt.Errorf("job %q not found", id)
 	}
-	// Remove from queue and pipeline first so no more articles are
-	// dispatched or written before we delete files on disk.
+	// Cancel in-flight post-processing and assembler file handles before
+	// removing files to prevent the PP from operating on a deleted directory.
+	app.postProcessor.Cancel(id)
+	_ = app.assembler.CancelJob(ctx, id)
+	// Remove from queue and pipeline so no more articles are dispatched.
 	if err := app.queue.Remove(id); err != nil {
 		return err
 	}
@@ -532,9 +540,12 @@ func (app *Application) Start(ctx context.Context) error {
 		return err
 	}
 	if err := app.downloader.Start(app.ctx); err != nil {
+		_ = app.assembler.Stop()
 		return err
 	}
 	if err := app.postProcessor.Start(app.ctx); err != nil {
+		_ = app.downloader.Stop()
+		_ = app.assembler.Stop()
 		return err
 	}
 	app.wg.Go(func() { app.pipeline.run(app.ctx) })
@@ -554,16 +565,18 @@ func (app *Application) Start(ctx context.Context) error {
 		failMsg := failMsgForJob(snap)
 		if snap.PostProc {
 			// Crash recovery: PostProc was already set before the process
-			// died. The post-processor needs the raw job pointer, and we
-			// bypass SetPostProcStarted since it's already true.
+			// died. We snapshot the job to decouple the post-processor
+			// from the queue's live pointer (preventing data races with
+			// concurrent API mutations). SetPostProcStarted is bypassed
+			// since it's already true.
 			if app.postProcessor.Has(snap.ID) {
 				continue
 			}
-			job, err := app.queue.Get(snap.ID)
-			if err != nil {
+			jobSnap := app.queue.SnapshotJob(snap.ID)
+			if jobSnap == nil {
 				continue
 			}
-			app.enqueuePostProc(job, failMsg)
+			app.enqueuePostProc(jobSnap, failMsg)
 			continue
 		}
 		app.maybeFinalize(snap.ID, failMsg)
@@ -677,13 +690,16 @@ func (app *Application) drainCompletions() {
 func (app *Application) maybeFinalize(jobID string, failMsg string) {
 	started, err := app.queue.SetPostProcStarted(jobID)
 	if err == nil && started {
-		// We need the raw pointer for post-processor mutation.
-		job, err := app.queue.Get(jobID)
-		if err != nil {
-			app.log.Warn("maybeFinalize: job disappeared", "job", jobID, "err", err)
+		// Snapshot the job to decouple the post-processor from the
+		// queue's live pointer. The PP may hold this for minutes during
+		// repair/unpack; if the API mutates the queue's copy (Pause,
+		// Resume), the snapshot is unaffected, preventing data races.
+		snap := app.queue.SnapshotJob(jobID)
+		if snap == nil {
+			app.log.Warn("maybeFinalize: job disappeared", "job", jobID)
 			return
 		}
-		app.enqueuePostProc(job, failMsg)
+		app.enqueuePostProc(snap, failMsg)
 	}
 }
 

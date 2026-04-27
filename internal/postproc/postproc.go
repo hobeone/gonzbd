@@ -233,6 +233,18 @@ func (p *PostProcessor) run() {
 		// setBusyWithJob was already called inside popWithPause to
 		// eliminate the race window between pop and busy-set.
 		p.processJob(job)
+
+		// If the worker context was cancelled (shutdown), the job was only
+		// partially processed. Skip onJobDone so it remains in the active
+		// queue. On the next startup, crash recovery will find it with
+		// PostProc=true and re-enqueue it for post-processing.
+		if p.workerCtx.Err() != nil {
+			p.setBusyWithJob(false, "")
+			p.log.Info("postproc: shutdown interrupted job, preserving for recovery",
+				"job", job.Queue.ID)
+			return
+		}
+
 		p.addHistory(job)
 		p.setBusyWithJob(false, "")
 
