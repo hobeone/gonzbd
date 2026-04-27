@@ -343,6 +343,11 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 	for _, job := range q.jobs {
+		// Skip jobs already handed to post-processing or fully complete.
+		// Without this, aborted/hopeless jobs continue wasting bandwidth.
+		if job.PostProc {
+			continue
+		}
 		for fi := range job.Files {
 			file := &job.Files[fi]
 			if file.Complete {

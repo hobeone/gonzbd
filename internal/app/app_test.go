@@ -294,7 +294,7 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 		}
 
 		// Verify job state file exists for retry
-		jobPath := filepath.Join(adminDir, "queue", "jobs", jobID+".json.gz")
+		jobPath := filepath.Join(adminDir, "history", "jobs", jobID+".json.gz")
 		if _, err := os.Stat(jobPath); err != nil {
 			t.Errorf("expected job state file at %s, but got error: %v", jobPath, err)
 		}
@@ -384,16 +384,14 @@ func TestRetryHistoryJob(t *testing.T) {
 		}},
 		FailedBytes: 1024,
 	}
-	jobsDir := filepath.Join(adminDir, "queue", "jobs")
+	jobsDir := filepath.Join(adminDir, "history", "jobs")
 	_ = os.MkdirAll(jobsDir, 0o750)
 
-	// We need to use the internal writeGzJSON or similar to create the file.
-	// Since it's internal to queue, we'll just use a dummy for now and see if app.RetryHistoryJob works.
-	// Actually, queue.Save is available. Let's use that.
-	q := queue.New()
-	_ = q.Add(job)
-	_ = q.Save(filepath.Join(adminDir, "queue"))
-	_ = q.Remove(jobID) // remove from active queue
+	// Save the job directly to the history jobs directory (where
+	// OnJobDone now writes).
+	if err := queue.SaveJob(filepath.Join(jobsDir, jobID+".json.gz"), job); err != nil {
+		t.Fatalf("queue.SaveJob: %v", err)
+	}
 
 	// Pause post-processing so we can verify the state before it finishes again
 	application.PausePostProcessor()
