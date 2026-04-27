@@ -54,11 +54,19 @@ type pipeline struct {
 	downloadDir string
 	sanitize    fsutil.SanitizeOptions
 
-	// updateCh receives a new completions channel to switch to.
-	updateCh chan (<-chan *downloader.ArticleResult)
+	// updateCh receives a swap request with a done channel for ack.
+	updateCh chan completionSwap
 
 	mu       sync.RWMutex
 	fileInfo map[fileKey]assembler.FileInfo
+}
+
+// completionSwap bundles a new completions channel with a done channel.
+// The run loop closes done after fully switching, letting setCompletions
+// block until the old channel is drained.
+type completionSwap struct {
+	ch   <-chan *downloader.ArticleResult
+	done chan struct{}
 }
 
 // run is the pipeline's sole goroutine. Returns when ctx is cancelled.
@@ -67,8 +75,27 @@ func (p *pipeline) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case newCh := <-p.updateCh:
-			p.completions = newCh
+		case swap := <-p.updateCh:
+			// Drain any remaining results from the old channel before
+			// switching. This prevents lost ArticleResults when the
+			// old downloader's completions channel still has buffered
+			// items after Stop().
+			if p.completions != nil {
+				for {
+					select {
+					case res, ok := <-p.completions:
+						if !ok {
+							goto drained
+						}
+						p.handleResult(ctx, res)
+					default:
+						goto drained
+					}
+				}
+			}
+		drained:
+			p.completions = swap.ch
+			close(swap.done)
 		case res, ok := <-p.completions:
 			if !ok {
 				// Downloader stopped; wait for a new channel or cancellation.
@@ -82,9 +109,13 @@ func (p *pipeline) run(ctx context.Context) {
 	}
 }
 
-// setCompletions swaps the source of ArticleResults. Safe for concurrent use.
+// setCompletions swaps the source of ArticleResults. Blocks until the
+// pipeline's run loop has drained any remaining results from the old
+// channel and acknowledged the swap.
 func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
-	p.updateCh <- ch
+	done := make(chan struct{})
+	p.updateCh <- completionSwap{ch: ch, done: done}
+	<-done
 }
 
 // handleResult processes one downloader output: decodes the body if there
@@ -180,12 +211,12 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		return nil
 	}
 
-	job, err := p.queue.Get(jobID)
-	if err != nil {
-		return fmt.Errorf("queue lookup: %w", err)
+	snap := p.queue.SnapshotJob(jobID)
+	if snap == nil {
+		return fmt.Errorf("queue lookup: job %q not found", jobID)
 	}
-	if fileIdx < 0 || fileIdx >= len(job.Files) {
-		return fmt.Errorf("fileIdx %d out of range for job with %d files", fileIdx, len(job.Files))
+	if fileIdx < 0 || fileIdx >= len(snap.Files) {
+		return fmt.Errorf("fileIdx %d out of range for job with %d files", fileIdx, len(snap.Files))
 	}
 
 	p.mu.Lock()
@@ -200,7 +231,7 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	// Use job Name and file index for a human-readable and robust path.
 	// Final naming of files is deferred until the post-processing (PAR2) phase.
 	// We use JoinSafe to ensure the absolute path does not exceed OS limits.
-	path := fsutil.JoinSafe(p.downloadDir, job.Name, fmt.Sprintf("%04d.nzf", fileIdx), p.sanitize)
+	path := fsutil.JoinSafe(p.downloadDir, snap.Name, fmt.Sprintf("%04d.nzf", fileIdx), p.sanitize)
 
 	// Count only unfinished articles — on resume/retry, already-done
 	// articles won't be re-dispatched, so TotalParts must match the

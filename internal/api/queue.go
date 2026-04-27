@@ -111,7 +111,7 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	catFilter := r.FormValue("cat")
 	statusFilter := r.FormValue("status")
 
-	jobs := s.queue.List()
+	jobs := s.queue.Snapshot()
 	paused := s.queue.IsPaused()
 
 	// Build slots applying filters.
@@ -211,7 +211,7 @@ func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 	var ids []string
 
 	if value == "all" {
-		for _, j := range s.queue.List() {
+		for _, j := range s.queue.Snapshot() {
 			ids = append(ids, j.ID)
 		}
 	} else {
