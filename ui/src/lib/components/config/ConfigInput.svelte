@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
 	import { Input } from '$lib/components/ui/input';
 
 	let {
@@ -20,24 +19,29 @@
 		onupdate?: (section: string, keyword: string, value: string | number) => void;
 	} = $props();
 
-	let currentValue = $state<string | number>(value);
+	// Tracks the prop reactively; updates whenever the parent changes it.
+	let propValue = $derived(value);
+
+	// Non-null only while the user is actively typing (debounce in progress).
+	let editingValue = $state<string | number | null>(null);
 	let timer: ReturnType<typeof setTimeout>;
 
-	$effect(() => {
-		if (value !== currentValue && !timer) {
-			currentValue = value;
-		}
-	});
+	// Displayed value: local edit override, or the prop.
+	let currentValue = $derived(editingValue ?? propValue);
 
 	function commit() {
 		clearTimeout(timer);
-		if (currentValue !== value) {
-			const v = type === 'number' ? Number(currentValue) : currentValue;
+		const pending = editingValue;
+		editingValue = null;
+		if (pending != null && pending !== value) {
+			const v = type === 'number' ? Number(pending) : pending;
 			onupdate?.(section, keyword, v);
 		}
 	}
 
-	function handleInput() {
+	function handleInput(e: Event) {
+		const target = e.target as HTMLInputElement;
+		editingValue = type === 'number' ? target.value : target.value;
 		clearTimeout(timer);
 		timer = setTimeout(commit, 500);
 	}
@@ -52,7 +56,7 @@
 	<Input
 		id="{section}-{keyword}"
 		{type}
-		bind:value={currentValue}
+		value={currentValue}
 		oninput={handleInput}
 		onblur={commit}
 		class="max-w-md"
