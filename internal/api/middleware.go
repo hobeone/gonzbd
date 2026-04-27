@@ -155,16 +155,19 @@ func isMultipartUpload(r *http.Request) bool {
 // status, and duration.
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+
 		// Apply body-size limits before any form parsing. Multipart
 		// uploads (NZB files) get a higher limit; all other requests
 		// are capped to a small form size to prevent DoS.
+		// Pass sw (not w) so MaxBytesReader's 413 response is captured
+		// by the status logger.
 		if isMultipartUpload(r) {
-			r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+			r.Body = http.MaxBytesReader(sw, r.Body, maxUploadBytes)
 		} else {
-			r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
+			r.Body = http.MaxBytesReader(sw, r.Body, maxFormBytes)
 		}
 		start := time.Now()
-		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
 
 		mode := r.URL.Query().Get("mode")

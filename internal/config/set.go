@@ -47,6 +47,7 @@ func (c *Config) SetLocked(section, keyword, value string) error {
 			sectionField.Set(prev) // rollback
 			return fmt.Errorf("config: validation failed: %w", err)
 		}
+		c.ExpandPaths()
 		return nil
 	}
 
@@ -67,6 +68,7 @@ func (c *Config) SetLocked(section, keyword, value string) error {
 			field.Set(prev) // rollback
 			return fmt.Errorf("config: validation failed: %w", err)
 		}
+		c.ExpandPaths()
 		return nil
 	}
 

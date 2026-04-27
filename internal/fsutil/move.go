@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"syscall"
 )
 
 // MoveFile moves src to dst. If os.Rename fails with a cross-device error
@@ -24,6 +25,14 @@ func MoveFile(src, dst string) error {
 // ERROR_NOT_SAME_DEVICE on Windows).
 func IsCrossDeviceError(err error) bool {
 	return errors.Is(err, crossDeviceErr())
+}
+
+// IsRenameMergeNeeded reports whether err from os.Rename indicates that
+// a file-by-file fallback move is required. This is true for both
+// cross-device renames (EXDEV) and destination-not-empty renames
+// (ENOTEMPTY / EEXIST), which occur when merging into existing dirs.
+func IsRenameMergeNeeded(err error) bool {
+	return IsCrossDeviceError(err) || errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
 }
 
 // copyAndRemove copies src to dst, preserving the original file mode,
