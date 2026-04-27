@@ -101,9 +101,9 @@ func Default() (*Config, error) {
 				Order:    1,
 			},
 		},
-		Sorters:   nil,
-		Schedules: nil,
-		RSS:       nil,
+		Sorters:   []SorterConfig{},
+		Schedules: []ScheduleConfig{},
+		RSS:       []RSSFeedConfig{},
 	}, nil
 }
 
