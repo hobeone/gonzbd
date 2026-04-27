@@ -484,11 +484,14 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 		return nil, err
 	}
 
-	// Acquire a pipelining slot.
+	// Acquire a pipelining slot. Also watch c.ctx so we unblock if
+	// the connection dies (runReader exits without draining sem).
 	select {
 	case c.sem <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case <-c.ctx.Done():
+		return nil, ErrClosed
 	}
 
 	pc := &pendingCmd{kind: cmdBody, done: make(chan struct{})}
@@ -542,6 +545,8 @@ func (c *Conn) Stat(ctx context.Context, messageID string) error {
 	case c.sem <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-c.ctx.Done():
+		return ErrClosed
 	}
 
 	pc := &pendingCmd{kind: cmdStat, done: make(chan struct{})}
