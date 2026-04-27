@@ -285,9 +285,11 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Raise the body limit for file uploads above the middleware default.
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
-	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+	// Body is already size-limited by the middleware's MaxBytesReader.
+	// Use a reasonable in-memory limit for multipart parsing; files
+	// larger than this are spilled to temp files on disk.
+	const maxMultipartMemory = 10 * 1024 * 1024 // 10 MiB
+	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil {
 		s.respondError(w, http.StatusBadRequest, "parse multipart: "+err.Error())
 		return
 	}

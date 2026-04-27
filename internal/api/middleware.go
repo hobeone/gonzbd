@@ -95,25 +95,28 @@ func isLocalhost(r *http.Request) bool {
 }
 
 // maxFormBytes caps the request body for non-upload form parsing to prevent
-// memory exhaustion. Multipart file uploads (Content-Type: multipart/form-data)
-// are exempted here — the upload handler (modeAddFile) sets its own limit
-// via MaxBytesReader before parsing the multipart body.
+// memory exhaustion. Multipart file uploads use maxUploadBytes (defined in
+// queue.go) instead.
 const maxFormBytes = 2 * 1024 * 1024 // 2 MiB
 
-// isMultipartUpload returns true only for NZB file upload requests.
-// The body limit bypass is restricted to mode=addfile to prevent disk/memory
-// exhaustion attacks on other endpoints that happen to use multipart encoding.
+// isMultipartUpload returns true for any multipart/form-data request.
+// These are given a higher body-size limit (maxUploadBytes) than regular
+// form requests (maxFormBytes) since they may carry NZB file payloads.
 func isMultipartUpload(r *http.Request) bool {
 	return r.Method == http.MethodPost &&
-		strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") &&
-		r.URL.Query().Get("mode") == "addfile"
+		strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data")
 }
 
 // loggingMiddleware records each request at Info level with method, path,
 // status, and duration.
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isMultipartUpload(r) {
+		// Apply body-size limits before any form parsing. Multipart
+		// uploads (NZB files) get a higher limit; all other requests
+		// are capped to a small form size to prevent DoS.
+		if isMultipartUpload(r) {
+			r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+		} else {
 			r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
 		}
 		start := time.Now()
