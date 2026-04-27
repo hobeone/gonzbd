@@ -100,6 +100,29 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 	return job.Status, nil
 }
 
+// CountUnfinishedArticles returns the number of articles in the given file
+// that are not yet Done. Used by the pipeline to set TotalParts for the
+// assembler correctly on resume/retry — only undone articles will be
+// dispatched, so TotalParts must match that count.
+func (q *Queue) CountUnfinishedArticles(jobID string, fileIdx int) (int, error) {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return 0, fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if fileIdx < 0 || fileIdx >= len(job.Files) {
+		return 0, fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
+	}
+	var count int
+	for ai := range job.Files[fileIdx].Articles {
+		if !job.Files[fileIdx].Articles[ai].Done {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // List returns a snapshot slice of the queue's jobs in current order.
 // The returned slice is a fresh allocation; callers can iterate it
 // without holding the queue lock. The *Job pointers inside alias the
