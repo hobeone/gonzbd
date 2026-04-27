@@ -15,13 +15,15 @@ import (
 //
 // When the root "/" is requested, it sets a "sab_apikey" cookie so the
 // client-side JS can hit the /api without needing an explicit key.
-func NewSPAHandler(dist fs.FS, apiKey string) http.Handler {
+// apiKeyFn is called on each request to get the current key, ensuring
+// config changes take effect without a server restart.
+func NewSPAHandler(dist fs.FS, apiKeyFn func() string) http.Handler {
 	fileServer := http.FileServerFS(dist)
 
 	setApiKeyCookie := func(w http.ResponseWriter) {
 		http.SetCookie(w, &http.Cookie{
 			Name:     "sab_apikey",
-			Value:    apiKey,
+			Value:    apiKeyFn(),
 			Path:     "/",
 			HttpOnly: false, // JS reads it to attach as X-API-Key header
 			SameSite: http.SameSiteStrictMode,

@@ -165,6 +165,9 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Paginate.
+	if start < 0 {
+		start = 0
+	}
 	if start > len(slots) {
 		start = len(slots)
 	}
