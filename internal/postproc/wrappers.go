@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/hobeone/sabnzbd-go/internal/deobfuscate"
 	"github.com/hobeone/sabnzbd-go/internal/fsutil"
@@ -231,7 +232,14 @@ func (s *SortStage) Run(ctx context.Context, job *Job) error {
 		// Point DownloadDir at the destination so downstream stages
 		// (script, deobfuscate) operate on the actual files.
 		job.DownloadDir = job.FinalDir
-		_ = os.RemoveAll(origDir) // Clean up unmoved files/archives
+		// Only remove origDir if FinalDir is NOT inside it. If the
+		// sorter moved files to a subdirectory of origDir, RemoveAll
+		// would recursively delete the successfully moved files.
+		cleanOrig, _ := filepath.Abs(origDir)
+		cleanFinal, _ := filepath.Abs(job.FinalDir)
+		if cleanOrig != cleanFinal && !strings.HasPrefix(cleanFinal, cleanOrig+string(filepath.Separator)) {
+			_ = os.RemoveAll(origDir) // Clean up unmoved files/archives
+		}
 	}
 	return nil
 }
