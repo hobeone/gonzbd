@@ -463,8 +463,19 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 			a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
 			return
 		}
+		// Cross-check: if this MessageID was already counted as a success,
+		// don't increment partsWritten again — just record the failure ack.
+		alreadyCounted := false
+		if f.seenDone != nil {
+			if _, was := f.seenDone[req.MessageID]; was {
+				alreadyCounted = true
+			}
+		}
 		f.seenFailed[req.MessageID] = struct{}{}
 		a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
+		if alreadyCounted {
+			return
+		}
 	} else {
 		// Deduplicate successful writes (defence in depth — the upstream
 		// queue gate should prevent this, but an overlapping retry could
@@ -480,6 +491,19 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 				// dropped the original acknowledgment.
 				a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
 				return
+			}
+			// Cross-check: if this MessageID was already counted as a failure,
+			// write the data (overwrite the hole) but don't count again.
+			if f.seenFailed != nil {
+				if _, was := f.seenFailed[req.MessageID]; was {
+					// Write the data but skip partsWritten increment.
+					if _, err := f.handle.WriteAt(req.Data, req.Offset); err != nil {
+						a.log.Error("write article (recovery)", "path", f.info.Path, "error", err)
+					}
+					f.seenDone[req.MessageID] = struct{}{}
+					a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
+					return
+				}
 			}
 		}
 		if _, err := f.handle.WriteAt(req.Data, req.Offset); err != nil {
