@@ -305,6 +305,20 @@ func (a *Assembler) WriteArticle(ctx context.Context, req WriteRequest) error {
 // is removed from the queue while articles are still being assembled.
 // Blocks until the message is accepted or ctx is cancelled.
 func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
+	a.mu.Lock()
+	if !a.started {
+		a.mu.Unlock()
+		return ErrNotStarted
+	}
+	if a.stopped {
+		a.mu.Unlock()
+		return ErrStopped
+	}
+	a.inFlight.Add(1)
+	a.mu.Unlock()
+
+	defer a.inFlight.Add(-1)
+
 	// Control message convention: JobID="" and FileIdx=-1, with the
 	// real job ID in MessageID.
 	control := WriteRequest{
