@@ -219,22 +219,34 @@ func (c *Cache) Flush() error {
 		}
 		c.mu.Unlock()
 
-		if err := c.writeToDisk(key, entry.adminDir, entry.data); err != nil {
+		// Phase 1: Write data to a temp file (outside lock).
+		tmpName, err := c.writeTempFile(key, entry.adminDir, entry.data)
+		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue // Leave in memory so data isn't lost.
 		}
 
-		// Remove from memory only after successful disk write. Guard
-		// against a concurrent Save that replaced the entry with newer
-		// data while we were writing: only delete if the data length
-		// still matches what we wrote.
+		// Phase 2: Under the lock, verify the entry hasn't been replaced
+		// or consumed, then atomically rename the temp file into place.
+		// This prevents the race where a concurrent Save writes newer
+		// data to disk between our writeTempFile and rename.
 		c.mu.Lock()
 		cur, exists := c.articles[key]
 		switch {
 		case exists && sameSlice(cur.data, entry.data):
-			// Entry unchanged (same backing array) — consume it.
+			// Entry unchanged (same backing array) — commit to disk
+			// and remove from memory.
+			path := diskPath(entry.adminDir, key)
+			if err := os.Rename(tmpName, path); err != nil {
+				c.mu.Unlock()
+				_ = os.Remove(tmpName)
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
 			delete(c.articles, key)
 			c.used -= int64(len(entry.data))
 			if c.used < 0 {
@@ -242,9 +254,13 @@ func (c *Cache) Flush() error {
 			}
 			c.usedAtomic.Store(c.used)
 		case !exists:
-			// A concurrent Load consumed the entry from memory while we
-			// were writing to disk. Clean up the now-orphaned disk file.
-			_ = os.Remove(diskPath(entry.adminDir, key))
+			// A concurrent Load consumed the entry from memory.
+			// Discard the temp file — the data has already been served.
+			_ = os.Remove(tmpName)
+		default:
+			// Entry was replaced by a concurrent Save with different
+			// data — discard our stale temp file.
+			_ = os.Remove(tmpName)
 		}
 		c.mu.Unlock()
 	}
@@ -307,35 +323,44 @@ func (c *Cache) maybePressure(used int64) {
 	}
 }
 
-// writeToDisk persists data to {adminDir}/{sha256(key)} atomically.
-// Writes to a temporary file first, then renames, so concurrent Load
-// never observes a partial file.
-func (c *Cache) writeToDisk(key, adminDir string, data []byte) error {
+// writeTempFile persists data to a temporary file under adminDir.
+// Returns the temp file path on success. Caller is responsible for
+// renaming or removing the temp file.
+func (c *Cache) writeTempFile(key, adminDir string, data []byte) (string, error) {
 	if err := os.MkdirAll(adminDir, 0o750); err != nil {
-		return fmt.Errorf("cache: mkdir %s: %w", adminDir, err)
+		return "", fmt.Errorf("cache: mkdir %s: %w", adminDir, err)
 	}
-	path := diskPath(adminDir, key)
-	// Use a unique temp file to prevent races when concurrent goroutines
-	// write the same key to disk simultaneously.
 	tmp, err := os.CreateTemp(adminDir, ".cache-*.tmp")
 	if err != nil {
-		return fmt.Errorf("cache: create temp %s: %w", key, err)
+		return "", fmt.Errorf("cache: create temp %s: %w", key, err)
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return fmt.Errorf("cache: write %s: %w", key, err)
+		return "", fmt.Errorf("cache: write %s: %w", key, err)
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return fmt.Errorf("cache: sync %s: %w", key, err)
+		return "", fmt.Errorf("cache: sync %s: %w", key, err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
-		return fmt.Errorf("cache: close temp %s: %w", key, err)
+		return "", fmt.Errorf("cache: close temp %s: %w", key, err)
 	}
+	return tmpName, nil
+}
+
+// writeToDisk persists data to {adminDir}/{sha256(key)} atomically.
+// Writes to a temporary file first, then renames, so concurrent Load
+// never observes a partial file.
+func (c *Cache) writeToDisk(key, adminDir string, data []byte) error {
+	tmpName, err := c.writeTempFile(key, adminDir, data)
+	if err != nil {
+		return err
+	}
+	path := diskPath(adminDir, key)
 	if err := os.Rename(tmpName, path); err != nil {
 		os.Remove(tmpName) // clean up on rename failure
 		return fmt.Errorf("cache: rename %s: %w", key, err)
