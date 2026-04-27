@@ -143,7 +143,8 @@ func Load(dir string) (*Queue, error) {
 }
 
 // Prune removes orphaned job files in stateDir/jobs/ that are no longer present
-// in the queue's index.
+// in the queue's index. It also cleans up crash-orphaned temporary files left
+// by writeGzJSONRaw's atomic write pattern (temp+fsync+rename).
 func (q *Queue) Prune() {
 	if q.stateDir == "" {
 		return
@@ -162,6 +163,11 @@ func (q *Queue) Prune() {
 			continue
 		}
 		name := e.Name()
+		// Clean up crash-orphaned temp files from atomic writes.
+		if strings.Contains(name, ".tmp") {
+			toRemove = append(toRemove, filepath.Join(jobsDir, name))
+			continue
+		}
 		if !strings.HasSuffix(name, ".json.gz") {
 			continue
 		}
