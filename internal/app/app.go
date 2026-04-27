@@ -310,7 +310,11 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				}
 				dbCancel()
 			}
-			jobPath := filepath.Join(app.cfg.AdminDir, "queue", "jobs", job.Queue.ID+".json.gz")
+			histJobsDir := filepath.Join(app.cfg.AdminDir, "history", "jobs")
+			if err := os.MkdirAll(histJobsDir, 0o750); err != nil {
+				log.Warn("failed to create history jobs dir", "err", err)
+			}
+			jobPath := filepath.Join(histJobsDir, job.Queue.ID+".json.gz")
 			if err := queue.SaveJob(jobPath, job.Queue); err != nil {
 				log.Warn("failed to save final job state", "job", job.Queue.ID, "err", err)
 			}
@@ -712,7 +716,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	if err != nil {
 		return err
 	}
-	jobPath := filepath.Join(app.cfg.AdminDir, "queue", "jobs", jobID+".json.gz")
+	jobPath := filepath.Join(app.cfg.AdminDir, "history", "jobs", jobID+".json.gz")
 	job, err := queue.LoadJob(jobPath)
 	if err != nil {
 		return err

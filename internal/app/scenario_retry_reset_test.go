@@ -57,7 +57,7 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 		}},
 		FailedBytes: 1024,
 	}
-	jobPath := filepath.Join(h.adminDir, "queue", "jobs", jobID+".json.gz")
+	jobPath := filepath.Join(h.adminDir, "history", "jobs", jobID+".json.gz")
 	if err := queue.SaveJob(jobPath, persisted); err != nil {
 		t.Fatalf("queue.SaveJob: %v", err)
 	}
