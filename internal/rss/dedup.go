@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -90,15 +91,32 @@ func (s *Store) Save() error {
 		return fmt.Errorf("rss: encode store: %w", err)
 	}
 
-	tmp := s.path + ".tmp"
-	//nolint:gosec // G306: config/state file; group+world read is intentional
-	if err = os.WriteFile(tmp, data, 0o644); err != nil {
+	tmpFile, err := os.CreateTemp(filepath.Dir(s.path), ".rss-dedup-*.tmp")
+	if err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+		return fmt.Errorf("rss: create temp store: %w", err)
+	}
+	tmpName := tmpFile.Name()
+	if _, err = tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpName)
 		s.mu.Lock()
 		s.dirty = true
 		s.mu.Unlock()
 		return fmt.Errorf("rss: write store tmp: %w", err)
 	}
-	if err = os.Rename(tmp, s.path); err != nil {
+	if err = tmpFile.Close(); err != nil {
+		os.Remove(tmpName)
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+		return fmt.Errorf("rss: close store tmp: %w", err)
+	}
+
+	if err = os.Rename(tmpName, s.path); err != nil {
+		os.Remove(tmpName)
 		s.mu.Lock()
 		s.dirty = true
 		s.mu.Unlock()

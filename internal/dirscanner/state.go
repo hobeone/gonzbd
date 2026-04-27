@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -92,18 +93,32 @@ func (s *Store) Save() error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	tmpFile := s.path + ".tmp"
-
-	//nolint:gosec // G304: writing to path provided by caller/config
-	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
+	tmpFile, err := os.CreateTemp(filepath.Dir(s.path), ".dirscanner-*.tmp")
+	if err != nil {
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+		return fmt.Errorf("failed to create temporary state file: %w", err)
+	}
+	tmpName := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpName)
 		s.mu.Lock()
 		s.dirty = true
 		s.mu.Unlock()
 		return fmt.Errorf("failed to write temporary state file: %w", err)
 	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpName)
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+		return fmt.Errorf("failed to close temporary state file: %w", err)
+	}
 
-	if err := os.Rename(tmpFile, s.path); err != nil {
-		_ = os.Remove(tmpFile) //nolint:errcheck // cleanup of temp file
+	if err := os.Rename(tmpName, s.path); err != nil {
+		_ = os.Remove(tmpName) //nolint:errcheck // cleanup of temp file
 		s.mu.Lock()
 		s.dirty = true
 		s.mu.Unlock()
