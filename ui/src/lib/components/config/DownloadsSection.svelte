@@ -19,7 +19,7 @@
 		<p class="text-sm text-muted-foreground">Throttling, disk guards, and retry behavior.</p>
 	</div>
 	<Separator />
-	<div class="divide-y divide-gray-100">
+	<div class="divide-y divide-gray-100 dark:divide-gray-800">
 		<ConfigInput section="downloads" keyword="bandwidth_max" label="Maximum Bandwidth" value={configData.downloads.bandwidth_max} description="Absolute ceiling (e.g. 10M, 500K)." onupdate={onFieldUpdate} />
 		<ConfigInput section="downloads" keyword="min_free_space" label="Minimum Free Space" value={configData.downloads.min_free_space} description="Pause download if disk space drops below this (e.g. 1G)." onupdate={onFieldUpdate} />
 		<ConfigInput section="downloads" keyword="article_cache_size" label="Article Cache" value={configData.downloads.article_cache_size} description="In-memory cache size (e.g. 500M)." onupdate={onFieldUpdate} />

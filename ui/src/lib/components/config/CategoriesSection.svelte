@@ -30,7 +30,7 @@
 	<div class="space-y-4">
 		<div class="overflow-hidden rounded-md border">
 			<table class="w-full text-left text-sm">
-				<thead class="bg-gray-50 text-xs uppercase text-gray-500">
+				<thead class="bg-gray-50 dark:bg-gray-800 text-xs uppercase text-gray-500 dark:text-gray-400">
 					<tr>
 						<th class="px-4 py-2">Name</th>
 						<th class="px-4 py-2">Path</th>
@@ -42,7 +42,7 @@
 					{#each configData.categories as cat}
 						<tr>
 							<td class="px-4 py-3 font-medium">{cat.name}</td>
-							<td class="px-4 py-3 text-gray-600">{cat.dir || '(default)'}</td>
+							<td class="px-4 py-3 text-gray-600 dark:text-gray-400">{cat.dir || '(default)'}</td>
 							<td class="px-4 py-3">
 								<div class="flex gap-1">
 									{#if cat.pp & 1}<Badge variant="outline" class="px-1 py-0 text-[10px]">R</Badge>{/if}
@@ -53,7 +53,7 @@
 							<td class="px-4 py-3 text-right">
 								<div class="flex justify-end gap-1">
 									<Button variant="ghost" size="xs" onclick={() => onEditCategory(cat)}>Edit</Button>
-									<Button variant="ghost" size="xs" class="text-red-600" disabled={cat.name === '*' || cat.name === 'Default'} onclick={() => onDeleteCategory(cat.name)}>Delete</Button>
+									<Button variant="ghost" size="xs" class="text-red-600 dark:text-red-400" disabled={cat.name === '*' || cat.name === 'Default'} onclick={() => onDeleteCategory(cat.name)}>Delete</Button>
 								</div>
 							</td>
 						</tr>

@@ -105,7 +105,7 @@
 <Dialog.Root bind:open>
 	<Dialog.Portal>
 		<Dialog.Overlay class="fixed inset-0 z-[60] bg-black/50" />
-		<Dialog.Content class="fixed left-1/2 top-1/2 z-[70] w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white p-6 shadow-xl">
+		<Dialog.Content class="fixed left-1/2 top-1/2 z-[70] w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white dark:bg-gray-900 p-6 shadow-xl">
 			<Dialog.Title class="text-lg font-semibold">
 				{server ? 'Edit Server' : 'Add Server'}
 			</Dialog.Title>
@@ -148,18 +148,18 @@
 
 				<div class="col-span-2 flex items-center gap-6 py-2">
 					<label class="flex items-center gap-2 text-sm font-medium cursor-pointer">
-						<input type="checkbox" bind:checked={draft.ssl} class="rounded border-gray-300" />
+						<input type="checkbox" bind:checked={draft.ssl} class="rounded border-gray-300 dark:border-gray-600" />
 						SSL / TLS
 					</label>
 					<label class="flex items-center gap-2 text-sm font-medium cursor-pointer">
-						<input type="checkbox" bind:checked={draft.enable} class="rounded border-gray-300" />
+						<input type="checkbox" bind:checked={draft.enable} class="rounded border-gray-300 dark:border-gray-600" />
 						Enabled
 					</label>
 				</div>
 			</div>
 
 			{#if testResult}
-				<div class="mt-4 rounded-md p-3 text-sm {testResult.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}">
+				<div class="mt-4 rounded-md p-3 text-sm {testResult.ok ? 'bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300' : 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300'}">
 					{testResult.message}
 				</div>
 			{/if}
