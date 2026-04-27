@@ -629,16 +629,36 @@ func (app *Application) watchCompletions(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// Drain any pending completions so they're applied to
+			// the queue before it's saved to disk during shutdown.
+			app.drainCompletions()
 			return
 		case fc := <-app.internalFileComplete:
-			if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
-				continue
-			}
-			app.emitter.Broadcast(Event{Type: "queue_updated"})
-			job, err := app.queue.Get(fc.JobID)
-			if err == nil && job.IsComplete() {
-				app.maybeFinalize(job, failMsgForJob(job))
-			}
+			app.handleFileComplete(fc)
+		}
+	}
+}
+
+// handleFileComplete processes a single file completion event.
+func (app *Application) handleFileComplete(fc FileComplete) {
+	if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
+		return
+	}
+	app.emitter.Broadcast(Event{Type: "queue_updated"})
+	job, err := app.queue.Get(fc.JobID)
+	if err == nil && job.IsComplete() {
+		app.maybeFinalize(job, failMsgForJob(job))
+	}
+}
+
+// drainCompletions processes all buffered events on internalFileComplete.
+func (app *Application) drainCompletions() {
+	for {
+		select {
+		case fc := <-app.internalFileComplete:
+			app.handleFileComplete(fc)
+		default:
+			return
 		}
 	}
 }

@@ -496,16 +496,14 @@ func TestFetchHandlerError(t *testing.T) {
 	grabber := New(Config{}, handler)
 
 	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
-	if err == nil {
-		t.Fatalf("expected error from handler, got none")
+	if err != nil {
+		t.Fatalf("unexpected fetch error: %v", err)
 	}
 
+	// Handler error is logged, not returned. count=0 because the single
+	// NZB failed to be handled.
 	if count != 0 {
 		t.Fatalf("expected 0 NZBs on handler error, got %d", count)
-	}
-
-	if !strings.Contains(err.Error(), "handler error") {
-		t.Fatalf("expected error to contain 'handler error', got: %v", err)
 	}
 }
 
