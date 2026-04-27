@@ -18,7 +18,7 @@ type modeTable map[string]modeEntry
 // query/form, looks it up in the mode table, enforces auth, and
 // dispatches to the handler.
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
-	mode := r.FormValue("mode") //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
+	mode := r.URL.Query().Get("mode")
 	if mode == "" {
 		s.respondError(w, http.StatusBadRequest, "missing mode parameter")
 		return
