@@ -278,7 +278,7 @@ func Deobfuscate(dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename,
 	var renames []Rename
 
 	// Rename the biggest file.
-	newBigPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(filepath.Dir(dir), filepath.Base(dir), usefulName+filepath.Ext(bigPath), opts))
+	newBigPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(dir, "", usefulName+filepath.Ext(bigPath), opts))
 	if err := os.Rename(bigPath, newBigPath); err != nil {
 		return nil, fmt.Errorf("rename %s → %s: %w", bigPath, newBigPath, err)
 	}
@@ -300,7 +300,7 @@ func Deobfuscate(dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename,
 			continue
 		}
 		remainingSuffix := strings.TrimPrefix(p, baseDirFile)
-		newPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(filepath.Dir(dir), filepath.Base(dir), usefulName+remainingSuffix, opts))
+		newPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(dir, "", usefulName+remainingSuffix, opts))
 		if renErr := os.Rename(p, newPath); renErr != nil {
 			return renames, fmt.Errorf("rename sibling %s → %s: %w", p, newPath, renErr)
 		}

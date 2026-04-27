@@ -84,7 +84,7 @@ func Par2Rename(dir string, opts fsutil.SanitizeOptions) ([]Rename, error) {
 			}
 
 			// Perform rename.
-			newPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(filepath.Dir(dir), filepath.Base(dir), trueName, opts))
+			newPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(dir, "", trueName, opts))
 
 			if err := os.Rename(path, newPath); err != nil {
 				return renames, fmt.Errorf("rename %s → %s: %w", path, newPath, err)

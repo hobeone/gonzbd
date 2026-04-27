@@ -55,7 +55,12 @@ func (b *Broadcaster) Broadcast(event Event) {
 		select {
 		case c.send <- data:
 		default:
-			// Client's buffer is full; they will be cleaned up in Handle.
+			// Client's buffer is full — close the channel to force the
+			// write loop to exit and the client to reconnect. This
+			// prevents permanent UI desync from silently dropped events.
+			close(c.send)
+			delete(b.clients, c)
+			b.log.Warn("WebSocket client buffer full, disconnecting")
 		}
 	}
 }
@@ -107,7 +112,13 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 	// Write loop
 	for {
 		select {
-		case msg := <-c.send:
+		case msg, ok := <-c.send:
+			if !ok {
+				// Channel closed by Broadcast (buffer overflow) —
+				// close connection so UI reconnects.
+				_ = conn.Close(websocket.StatusGoingAway, "buffer overflow")
+				return
+			}
 			writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
 			err := conn.Write(writeCtx, websocket.MessageText, msg)
 			writeCancel()

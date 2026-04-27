@@ -121,11 +121,18 @@ func isCrossOrigin(r *http.Request) bool {
 		// No Sec-Fetch-Site or same-origin/same-site/none → allow.
 		return false
 	}
-	// Parse the origin and check if it's local.
+	// Parse the origin and check if it matches the request's Host.
 	u, err := url.Parse(origin)
 	if err != nil {
 		return true // malformed → treat as cross-origin
 	}
+
+	// Same-host check: if Origin matches the request's Host header,
+	// this is a same-origin request regardless of IP (covers LAN access).
+	if strings.EqualFold(u.Host, r.Host) {
+		return false
+	}
+
 	host := u.Hostname()
 	ip := net.ParseIP(host)
 	if ip != nil && ip.IsLoopback() {
