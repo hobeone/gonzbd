@@ -18,10 +18,11 @@ import (
 // UI was not built before compiling).
 //
 // The handler is stateless and safe to serve concurrently.
-func Handler(apiKeyFn func() string) (http.Handler, error) {
+// authCheck is called before serving navigation pages; nil means no auth.
+func Handler(apiKeyFn func() string, authCheck AuthCheck) (http.Handler, error) {
 	dist, err := fs.Sub(ui.DistFS, "dist")
 	if err != nil {
 		return nil, fmt.Errorf("web: embedded ui/dist subtree missing — run 'cd ui && npm run build' first: %w", err)
 	}
-	return NewSPAHandler(dist, apiKeyFn), nil
+	return NewSPAHandler(dist, apiKeyFn, authCheck), nil
 }
