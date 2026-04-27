@@ -143,7 +143,7 @@ func setFieldValue(f reflect.Value, val string) error {
 			return fmt.Errorf("invalid ssl_verify: %w", err)
 		}
 		s := SSLVerify(i)
-		if err := s.validate(); err != nil {
+		if err := s.Validate(); err != nil {
 			return err
 		}
 		f.SetInt(int64(s))
