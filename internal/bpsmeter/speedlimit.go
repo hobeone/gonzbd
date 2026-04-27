@@ -33,9 +33,8 @@ func NewLimiter(bytesPerSec float64) *Limiter {
 	return l
 }
 
-// SetRate changes the allowed bytes/sec. A value <= 0 disables limiting.
-// Active WaitN callers are not cancelled; they complete against the new
-// effective rate when the next token becomes available.
+// SetRate changes the allowed bytes/sec. A value <= 0 disables limiting;
+// any goroutines currently blocked in WaitN are unblocked immediately.
 //
 // Burst is set to max(bytesPerSec, minBurst) so that a single large read
 // (e.g. a full NZB article) does not stall unnecessarily when the rate is
