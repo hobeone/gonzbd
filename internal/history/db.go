@@ -45,28 +45,29 @@ type DB struct {
 //
 // The returned *DB must be closed when the caller is done with it.
 func Open(path string) (*DB, error) {
-	// The modernc driver name is "sqlite".
-	sqlDB, err := sql.Open("sqlite", path)
+	// Connection-scoped pragmas MUST be in the DSN for modernc.org/sqlite
+	// so they apply to every connection in the pool, not just one random
+	// checkout. journal_mode=WAL is database-scoped (persists on disk)
+	// and only needs to run once via Exec.
+	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("history: open %q: %w", path, err)
 	}
+
+	// Bound the pool — SQLite serializes writes anyway, and keeping
+	// many idle connections just wastes file descriptors.
+	sqlDB.SetMaxOpenConns(4)
 
 	if err := sqlDB.Ping(); err != nil {
 		return nil, fmt.Errorf("error pinging database: %s, %w", path, err)
 	}
 
-	// WAL mode allows concurrent readers alongside the writer; foreign keys
-	// are off by default in SQLite and must be enabled per-connection.
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA foreign_keys=ON",
-		"pragma busy_timeout(5000)",
-		"pragma synchronous(NORMAL)",
-	} {
-		if _, err := sqlDB.Exec(pragma); err != nil {
-			_ = sqlDB.Close() //nolint:errcheck // superseded by open error
-			return nil, fmt.Errorf("history: %s: %w", pragma, err)
-		}
+	// WAL mode is database-scoped (persists on disk) — only needs
+	// to run once, not per-connection.
+	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		_ = sqlDB.Close() //nolint:errcheck // superseded by open error
+		return nil, fmt.Errorf("history: PRAGMA journal_mode=WAL: %w", err)
 	}
 
 	gooseOnce.Do(initGoose)
