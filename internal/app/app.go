@@ -303,25 +303,33 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				entry.FailMessage = job.FailMsg
 				entry.Path = job.DownloadDir
 			}
-			if app.historyRepo != nil {
-				dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := app.historyRepo.Add(dbCtx, entry); err != nil {
-					log.Error("failed to add history entry; keeping job in queue for recovery",
-						"job", job.Queue.ID, "err", err)
-					dbCancel()
-					// Don't remove from queue — the job stays recoverable.
-					app.emitter.Broadcast(Event{Type: "queue_updated"})
-					return
-				}
-				dbCancel()
-			}
+			// Save the full job payload first — RetryHistoryJob needs
+			// this file to re-enqueue. If this fails, don't commit
+			// to the DB or remove from queue.
 			histJobsDir := filepath.Join(app.cfg.AdminDir, "history", "jobs")
 			if err := os.MkdirAll(histJobsDir, 0o750); err != nil {
 				log.Warn("failed to create history jobs dir", "err", err)
 			}
 			jobPath := filepath.Join(histJobsDir, job.Queue.ID+".json.gz")
 			if err := queue.SaveJob(jobPath, job.Queue); err != nil {
-				log.Warn("failed to save final job state", "job", job.Queue.ID, "err", err)
+				log.Error("failed to save final job state; keeping job in queue",
+					"job", job.Queue.ID, "err", err)
+				app.emitter.Broadcast(Event{Type: "queue_updated"})
+				return
+			}
+			if app.historyRepo != nil {
+				dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := app.historyRepo.Add(dbCtx, entry); err != nil {
+					log.Error("failed to add history entry; keeping job in queue for recovery",
+						"job", job.Queue.ID, "err", err)
+					dbCancel()
+					// Clean up the orphaned payload file.
+					_ = os.Remove(jobPath)
+					// Don't remove from queue — the job stays recoverable.
+					app.emitter.Broadcast(Event{Type: "queue_updated"})
+					return
+				}
+				dbCancel()
 			}
 			if err := q.Remove(job.Queue.ID); err != nil {
 				log.Warn("failed to remove job from queue after post-proc", "job", job.Queue.ID, "err", err)

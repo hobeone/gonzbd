@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -19,16 +20,28 @@ import (
 // isRetryableDownloaderError returns true for transient errors where the
 // dispatcher will retry the article (on the same or another server):
 //   - 430 / ErrNoArticle: not on this server, try fallback
-//   - Dial errors: server temporarily unreachable
-//   - Connection-level I/O failures
+//   - 480 / ErrAuthRequired: connection needs re-auth (dispatcher cycles conn)
+//   - 502/503 / ErrServerUnavailable: server temporarily refusing service
+//   - 4xx / ErrTransient: generic NNTP transient error
+//   - ErrClosed: connection was torn down (server disconnect, timeout)
+//   - io.ErrUnexpectedEOF: premature server disconnect mid-transfer
+//   - Dial errors / connection resets / I/O timeouts
 //
-// Terminal errors (decode failures, etc.) return false and should be
-// routed through the assembler's FatalErr path for failure accounting.
+// Terminal errors (decode failures, ErrAuthRejected, etc.) return false
+// and should be routed through the assembler's FatalErr path for failure
+// accounting.
 func isRetryableDownloaderError(err error) bool {
-	if errors.Is(err, nntp.ErrNoArticle) {
+	// Sentinel-based checks (preferred — no string fragility).
+	if errors.Is(err, nntp.ErrNoArticle) ||
+		errors.Is(err, nntp.ErrServerUnavailable) ||
+		errors.Is(err, nntp.ErrAuthRequired) ||
+		errors.Is(err, nntp.ErrTransient) ||
+		errors.Is(err, nntp.ErrClosed) ||
+		errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
-	// Dial errors are wrapped as "dial: <inner>" by handleRequest.
+	// Fallback: dial errors are wrapped as "dial: <inner>" by handleRequest,
+	// and net.OpError contains "connection" or "i/o timeout".
 	msg := err.Error()
 	return strings.HasPrefix(msg, "dial:") ||
 		strings.Contains(msg, "connection") ||
