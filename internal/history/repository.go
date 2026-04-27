@@ -255,11 +255,14 @@ func (r *Repository) Count(ctx context.Context, opts SearchOptions) (int, error)
 
 // Delete removes the entries identified by nzoIDs. It returns the number of
 // rows actually deleted (IDs not present in the database are silently ignored).
-// When multiple IDs are supplied the deletion is atomic.
+// When multiple IDs are supplied the deletion is atomic. Large batches are
+// chunked to stay under SQLite's SQLITE_MAX_VARIABLE_NUMBER limit.
 func (r *Repository) Delete(ctx context.Context, nzoIDs ...string) (int, error) {
 	if len(nzoIDs) == 0 {
 		return 0, nil
 	}
+
+	const chunkSize = 999 // SQLite safe limit for host parameters
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -267,29 +270,39 @@ func (r *Repository) Delete(ctx context.Context, nzoIDs ...string) (int, error) 
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // superseded by Commit error
 
-	placeholders := strings.Repeat("?,", len(nzoIDs))
-	placeholders = placeholders[:len(placeholders)-1] // trim trailing comma
+	totalDeleted := 0
+	for i := 0; i < len(nzoIDs); i += chunkSize {
+		end := i + chunkSize
+		if end > len(nzoIDs) {
+			end = len(nzoIDs)
+		}
+		chunk := nzoIDs[i:end]
 
-	args := make([]any, len(nzoIDs))
-	for i, id := range nzoIDs {
-		args[i] = id
-	}
+		placeholders := strings.Repeat("?,", len(chunk))
+		placeholders = placeholders[:len(placeholders)-1] // trim trailing comma
 
-	res, err := tx.ExecContext(ctx,
-		"DELETE FROM history WHERE nzo_id IN ("+placeholders+")", args...) //nolint:gosec // placeholders is only "?,?,?" — no user data
-	if err != nil {
-		return 0, fmt.Errorf("history: delete: %w", err)
-	}
+		args := make([]any, len(chunk))
+		for j, id := range chunk {
+			args[j] = id
+		}
 
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("history: delete rows affected: %w", err)
+		res, err := tx.ExecContext(ctx,
+			"DELETE FROM history WHERE nzo_id IN ("+placeholders+")", args...) //nolint:gosec // placeholders is only "?,?,?" — no user data
+		if err != nil {
+			return 0, fmt.Errorf("history: delete: %w", err)
+		}
+
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("history: delete rows affected: %w", err)
+		}
+		totalDeleted += int(n)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("history: delete commit: %w", err)
 	}
-	return int(n), nil
+	return totalDeleted, nil
 }
 
 // MarkCompleted sets status = 'Completed' and completed = now for the entry
