@@ -231,18 +231,21 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server) {
 	if pipelineDepth < 1 {
 		pipelineDepth = 1
 	}
-	sem := make(chan struct{}, pipelineDepth)
+	// NOTE: We do NOT maintain a local semaphore here. nntp.Conn.Fetch
+	// has its own internal semaphore (c.sem) that bounds wire-level
+	// pipelining to PipeliningRequests. A local sem here would also
+	// bound CPU-bound decoding against the wire limit, starving the
+	// socket when goroutines are busy decoding.
+	_ = pipelineDepth // used by nntp.Conn internally
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case req := <-workCh:
-			sem <- struct{}{}
 			workerWg.Add(1)
 			go func(req *articleRequest) {
 				defer workerWg.Done()
-				defer func() { <-sem }()
 				d.handleRequest(ctx, srv, &conn, &connMu, req)
 			}(req)
 		}
