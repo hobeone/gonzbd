@@ -9,7 +9,7 @@ import (
 func TestHandler(t *testing.T) {
 	// Handler() should not panic if ui/dist is correctly populated.
 	// In a real build environment, this is guaranteed by the build script.
-	handler, err := Handler(func() string { return "test-api-key" })
+	handler, err := Handler(func() string { return "test-api-key" }, nil)
 	if err != nil {
 		t.Fatalf("Handler() returned error: %v", err)
 	}

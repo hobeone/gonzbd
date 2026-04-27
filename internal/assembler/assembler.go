@@ -349,7 +349,8 @@ func (a *Assembler) worker() {
 	defer close(a.workerDone)
 
 	open := make(map[fileKey]*openFile)
-	completed := make(map[fileKey]struct{}) // tombstone set for finished files
+	completed := make(map[fileKey]struct{})    // tombstone set for finished files
+	cancelledJobs := make(map[string]struct{}) // tombstone set for cancelled jobs
 	reqCount := 0
 
 	// A nil channel blocks forever in select; that's how we disable the
@@ -375,6 +376,7 @@ func (a *Assembler) worker() {
 				// Control message: cancel a job. Close and remove all
 				// open files for the job encoded in MessageID.
 				cancelID := req.MessageID
+				cancelledJobs[cancelID] = struct{}{}
 				for k, f := range open {
 					if k.jobID == cancelID {
 						_ = f.handle.Close()
@@ -386,6 +388,10 @@ func (a *Assembler) worker() {
 						completed[k] = struct{}{}
 					}
 				}
+				continue
+			}
+			// Skip articles for cancelled jobs.
+			if _, cancelled := cancelledJobs[req.JobID]; cancelled {
 				continue
 			}
 			a.processRequest(req, open, completed)
@@ -566,6 +572,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 					// Write the data but skip partsWritten increment.
 					if _, err := f.handle.WriteAt(req.Data, req.Offset); err != nil {
 						a.log.Error("write article (recovery)", "path", f.info.Path, "error", err)
+						return // Don't mark as done — the data wasn't persisted.
 					}
 					f.seenDone[req.MessageID] = struct{}{}
 					a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)

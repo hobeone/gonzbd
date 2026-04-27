@@ -68,15 +68,20 @@ func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
 }
 
 // apiKeyFromRequest extracts the API key from (in priority order):
-//  1. ?apikey= query parameter / POST form field "apikey"
-//  2. ?nzbkey= query parameter / POST form field "nzbkey"
+//  1. ?apikey= URL query parameter
+//  2. ?nzbkey= URL query parameter
 //  3. X-API-Key header
 //  4. "sab_apikey" cookie (set by the SPA handler)
+//
+// Intentionally uses r.URL.Query() instead of r.FormValue() to avoid
+// triggering implicit multipart body parsing (which would use the 32MiB
+// default memory limit, defeating our 10MiB cap in modeAddFile).
 func apiKeyFromRequest(r *http.Request) (string, bool) {
-	if k := r.FormValue("apikey"); k != "" {
+	q := r.URL.Query()
+	if k := q.Get("apikey"); k != "" {
 		return k, false
 	}
-	if k := r.FormValue("nzbkey"); k != "" {
+	if k := q.Get("nzbkey"); k != "" {
 		return k, false
 	}
 	if k := r.Header.Get("X-API-Key"); k != "" {

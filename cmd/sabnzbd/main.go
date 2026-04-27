@@ -296,11 +296,48 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		listen = net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port))
 	}
 
+	// Build the web UI auth check. If the config has username/password set,
+	// require HTTP Basic Auth before serving the SPA or issuing the apikey
+	// cookie. Localhost bypass and existing valid apikey cookie are also
+	// accepted without a password prompt.
+	var authCheck web.AuthCheck
+	if cfg.General.Username != "" && cfg.General.Password != "" {
+		cfgRef := cfg // capture for closure
+		authCheck = func(w http.ResponseWriter, r *http.Request) bool {
+			// Accept existing valid apikey cookie (already authenticated).
+			if c, err := r.Cookie("sab_apikey"); err == nil && c.Value != "" {
+				var apiKey string
+				cfgRef.WithRead(func(c *config.Config) { apiKey = c.General.APIKey })
+				if c.Value == apiKey {
+					return true
+				}
+			}
+			// Check HTTP Basic Auth.
+			user, pass, ok := r.BasicAuth()
+			if !ok {
+				w.Header().Set("WWW-Authenticate", `Basic realm="SABnzbd"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return false
+			}
+			var wantUser, wantPass string
+			cfgRef.WithRead(func(c *config.Config) {
+				wantUser = c.General.Username
+				wantPass = c.General.Password
+			})
+			if user != wantUser || pass != wantPass {
+				w.Header().Set("WWW-Authenticate", `Basic realm="SABnzbd"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return false
+			}
+			return true
+		}
+	}
+
 	webHandler, err := web.Handler(func() string {
 		var key string
 		cfg.WithRead(func(c *config.Config) { key = c.General.APIKey })
 		return key
-	})
+	}, authCheck)
 	if err != nil {
 		return fmt.Errorf("web handler: %w", err)
 	}
