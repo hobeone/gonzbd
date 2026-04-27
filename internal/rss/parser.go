@@ -107,7 +107,7 @@ func parseEnclosureLength(s string) int64 {
 	var n int64
 	for _, c := range s {
 		if c >= '0' && c <= '9' {
-			if n > math.MaxInt64/10 {
+			if n > math.MaxInt64/10 || (n == math.MaxInt64/10 && c > '7') {
 				return math.MaxInt64 // cap to prevent overflow
 			}
 			n = n*10 + int64(c-'0')

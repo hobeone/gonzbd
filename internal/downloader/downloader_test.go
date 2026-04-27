@@ -552,9 +552,11 @@ func TestDownloaderDialFailure(t *testing.T) {
 	// Give the server a moment to update stats under its lock
 	time.Sleep(100 * time.Millisecond)
 
-	// Server should have accumulated bad connection count.
-	if srv.BadConnections() < 2 {
-		t.Errorf("BadConnections = %d, want >= 2", srv.BadConnections())
+	// Server should have accumulated at least one bad connection count.
+	// After the srv.Active() pre-dial check (R10 fix), subsequent workers
+	// skip dialing a penalized server, so we may see exactly 1.
+	if srv.BadConnections() < 1 {
+		t.Errorf("BadConnections = %d, want >= 1", srv.BadConnections())
 	}
 }
 

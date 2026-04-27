@@ -202,9 +202,17 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	// We use JoinSafe to ensure the absolute path does not exceed OS limits.
 	path := fsutil.JoinSafe(p.downloadDir, job.Name, fmt.Sprintf("%04d.nzf", fileIdx), p.sanitize)
 
+	// Count only unfinished articles — on resume/retry, already-done
+	// articles won't be re-dispatched, so TotalParts must match the
+	// number the assembler will actually receive.
+	totalParts, err := p.queue.CountUnfinishedArticles(jobID, fileIdx)
+	if err != nil {
+		return fmt.Errorf("count unfinished articles: %w", err)
+	}
+
 	info := assembler.FileInfo{
 		Path:       path,
-		TotalParts: len(job.Files[fileIdx].Articles),
+		TotalParts: totalParts,
 	}
 
 	p.fileInfo[key] = info
