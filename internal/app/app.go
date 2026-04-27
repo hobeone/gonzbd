@@ -587,15 +587,23 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 
 // Shutdown stops the downloader, post-processor, and assembler, flushes the
 // cache, and persists the queue to disk. Safe to call multiple times.
+//
+// Ordering matters:
+//  1. Stop the downloader — no new articles are dispatched.
+//  2. Stop the assembler — drains in-flight writes and delivers any remaining
+//     OnFileComplete events to watchCompletions, which is still running.
+//  3. Cancel the context — watchCompletions exits.
+//  4. Wait for background goroutines to finish.
+//  5. Stop the post-processor, flush cache, save queue.
 func (app *Application) Shutdown() error {
 	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) {
 		return nil
 	}
-	app.cancel()
 	_ = app.downloader.Stop()
-	_ = app.postProcessor.Stop()
-	app.wg.Wait()
 	_ = app.assembler.Stop()
+	app.cancel()
+	app.wg.Wait()
+	_ = app.postProcessor.Stop()
 	_ = app.cache.Flush()
 	_ = app.queue.Save(filepath.Join(app.cfg.AdminDir, "queue"))
 	return nil
