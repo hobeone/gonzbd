@@ -584,22 +584,31 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 			}
 		}
 		if _, err := f.handle.WriteAt(req.Data, req.Offset); err != nil {
-			a.log.Error("write article",
+			a.log.Error("write article (treating as failed)",
 				"path", f.info.Path,
 				"offset", req.Offset,
 				"error", err,
 			)
-			// Leave the file open; the next article may succeed. The pipeline
-			// (Step 4.1) is responsible for job-level failure detection.
-			return
+			// Treat the I/O error as a failed article so partsWritten
+			// still increments. Without this, the job stalls forever
+			// because TotalParts is never reached. The job will
+			// eventually go hopeless if enough articles fail.
+			if req.MessageID != "" {
+				if f.seenFailed == nil {
+					f.seenFailed = make(map[string]struct{})
+				}
+				f.seenFailed[req.MessageID] = struct{}{}
+				a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
+			}
+		} else {
+			if req.MessageID != "" {
+				f.seenDone[req.MessageID] = struct{}{}
+			}
+			// Note: f.handle.Sync() removed from here to improve throughput.
+			// Durability is handled by syncing on file completion and
+			// periodic queue checkpoints.
+			a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
 		}
-		if req.MessageID != "" {
-			f.seenDone[req.MessageID] = struct{}{}
-		}
-		// Note: f.handle.Sync() removed from here to improve throughput.
-		// Durability is handled by syncing on file completion and
-		// periodic queue checkpoints.
-		a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
 	}
 
 	f.partsWritten++
