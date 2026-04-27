@@ -30,7 +30,7 @@
 	}
 </script>
 
-<tr class="border-b hover:bg-gray-50 text-gray-900 dark:text-gray-100">
+<tr class="border-b hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-900 dark:text-gray-100">
 	<td class="px-4 py-3 max-w-[200px] sm:max-w-xs md:max-w-sm lg:max-w-md xl:max-w-lg">
 		<div class="flex items-center gap-2">
 			<div class="font-medium truncate" title={slot.name || slot.filename}>
@@ -57,7 +57,7 @@
 				max={100}
 				class={cn('h-2 flex-1', isActive && 'animate-pulse')}
 			/>
-			<span class="text-xs font-mono text-gray-500 w-9 text-right">{slot.percentage}%</span>
+			<span class="text-xs font-mono text-gray-500 dark:text-gray-400 w-9 text-right">{slot.percentage}%</span>
 		</div>
 	</td>
 	<td class="px-4 py-3 text-sm whitespace-nowrap">{slot.size}</td>

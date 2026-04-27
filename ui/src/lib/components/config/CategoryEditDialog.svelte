@@ -73,7 +73,7 @@
 <Dialog.Root bind:open>
 	<Dialog.Portal>
 		<Dialog.Overlay class="fixed inset-0 z-[60] bg-black/50" />
-		<Dialog.Content class="fixed left-1/2 top-1/2 z-[70] w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white p-6 shadow-xl">
+		<Dialog.Content class="fixed left-1/2 top-1/2 z-[70] w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white dark:bg-gray-900 p-6 shadow-xl">
 			<Dialog.Title class="text-lg font-semibold">
 				{category ? 'Edit Category' : 'Add Category'}
 			</Dialog.Title>
@@ -102,15 +102,15 @@
 					<span class="text-sm font-medium">Post-Processing</span>
 					<div class="flex flex-wrap gap-4 rounded-md border p-3">
 						<label class="flex items-center gap-2 text-sm cursor-pointer">
-							<input type="checkbox" bind:checked={repair} onchange={updatePP} class="rounded border-gray-300" />
+							<input type="checkbox" bind:checked={repair} onchange={updatePP} class="rounded border-gray-300 dark:border-gray-600" />
 							Repair
 						</label>
 						<label class="flex items-center gap-2 text-sm cursor-pointer">
-							<input type="checkbox" bind:checked={unpack} onchange={updatePP} class="rounded border-gray-300" />
+							<input type="checkbox" bind:checked={unpack} onchange={updatePP} class="rounded border-gray-300 dark:border-gray-600" />
 							Unpack
 						</label>
 						<label class="flex items-center gap-2 text-sm cursor-pointer">
-							<input type="checkbox" bind:checked={del} onchange={updatePP} class="rounded border-gray-300" />
+							<input type="checkbox" bind:checked={del} onchange={updatePP} class="rounded border-gray-300 dark:border-gray-600" />
 							Delete
 						</label>
 					</div>

@@ -27,18 +27,18 @@
 	});
 </script>
 
-<div class="flex items-center gap-4 border-t bg-white px-4 py-2 text-sm text-gray-600">
+<div class="flex items-center gap-4 border-t bg-white dark:bg-gray-900 px-4 py-2 text-sm text-gray-600 dark:text-gray-400">
 	<div class="flex items-center gap-2">
 		<SpeedGraph data={history} />
-		<span class="font-mono font-medium text-gray-900">{formatSpeed(speed)}</span>
+		<span class="font-mono font-medium text-gray-900 dark:text-gray-100">{formatSpeed(speed)}</span>
 	</div>
-	<div class="h-4 w-px bg-gray-200"></div>
+	<div class="h-4 w-px bg-gray-200 dark:bg-gray-700"></div>
 	<span>{itemCount} item{itemCount !== 1 ? 's' : ''}</span>
-	<div class="h-4 w-px bg-gray-200"></div>
+	<div class="h-4 w-px bg-gray-200 dark:bg-gray-700"></div>
 	<span>{formatSize(remaining)} left</span>
-	<div class="h-4 w-px bg-gray-200"></div>
+	<div class="h-4 w-px bg-gray-200 dark:bg-gray-700"></div>
 	<span>ETA: {eta}</span>
 	{#if paused}
-		<span class="ml-auto font-medium text-yellow-600">PAUSED</span>
+		<span class="ml-auto font-medium text-yellow-600 dark:text-yellow-400">PAUSED</span>
 	{/if}
 </div>

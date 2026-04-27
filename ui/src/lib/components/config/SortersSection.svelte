@@ -28,13 +28,13 @@
 
 	<div class="space-y-4">
 		{#if configData.sorters.length === 0}
-			<div class="rounded-lg border border-dashed p-8 text-center text-sm text-gray-500">
+			<div class="rounded-lg border border-dashed p-8 text-center text-sm text-gray-500 dark:text-gray-400">
 				No sorters configured.
 			</div>
 		{:else}
 			<div class="overflow-hidden rounded-md border">
 				<table class="w-full text-left text-sm">
-					<thead class="bg-gray-50 text-xs uppercase text-gray-500">
+					<thead class="bg-gray-50 dark:bg-gray-800 text-xs uppercase text-gray-500 dark:text-gray-400">
 						<tr>
 							<th class="px-4 py-2">Name</th>
 							<th class="px-4 py-2">Template</th>
@@ -45,11 +45,11 @@
 						{#each configData.sorters as sorter}
 							<tr class={sorter.is_active ? '' : 'opacity-50'}>
 								<td class="px-4 py-3 font-medium">{sorter.name}</td>
-								<td class="px-4 py-3 font-mono text-xs text-gray-600 truncate max-w-xs">{sorter.sort_string}</td>
+								<td class="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400 truncate max-w-xs">{sorter.sort_string}</td>
 								<td class="px-4 py-3 text-right">
 									<div class="flex justify-end gap-1">
 										<Button variant="ghost" size="xs" onclick={() => onEditSorter(sorter)}>Edit</Button>
-										<Button variant="ghost" size="xs" class="text-red-600" onclick={() => onDeleteSorter(sorter.name)}>Delete</Button>
+										<Button variant="ghost" size="xs" class="text-red-600 dark:text-red-400" onclick={() => onDeleteSorter(sorter.name)}>Delete</Button>
 									</div>
 								</td>
 							</tr>

@@ -31,13 +31,13 @@
 
 	<div class="space-y-4">
 		{#if configData.servers.length === 0}
-			<div class="rounded-lg border border-dashed p-8 text-center text-sm text-gray-500">
+			<div class="rounded-lg border border-dashed p-8 text-center text-sm text-gray-500 dark:text-gray-400">
 				No servers configured.
 			</div>
 		{:else}
 			<div class="overflow-hidden rounded-md border">
 				<table class="w-full text-left text-sm">
-					<thead class="bg-gray-50 text-xs uppercase text-gray-500">
+					<thead class="bg-gray-50 dark:bg-gray-800 text-xs uppercase text-gray-500 dark:text-gray-400">
 						<tr>
 							<th class="px-4 py-2">Server / Connection</th>
 							<th class="px-4 py-2">Details</th>
@@ -46,7 +46,7 @@
 					</thead>
 					<tbody class="divide-y">
 						{#each configData.servers as server}
-							<tr class={server.enable ? 'hover:bg-gray-50' : 'bg-gray-50/50 grayscale-[0.5]'}>
+							<tr class={server.enable ? 'hover:bg-gray-50 dark:hover:bg-gray-800' : 'bg-gray-50/50 dark:bg-gray-800/50 grayscale-[0.5]'}>
 								<td class="px-4 py-3">
 									<div class="flex items-center gap-2 font-medium">
 										{server.name}
@@ -54,25 +54,25 @@
 											<Badge variant="destructive" class="py-0 h-3.5 text-[9px] uppercase tracking-tighter opacity-70">Disabled</Badge>
 										{/if}
 									</div>
-									<div class="mt-0.5 font-mono text-[11px] text-gray-500">
+									<div class="mt-0.5 font-mono text-[11px] text-gray-500 dark:text-gray-400">
 										{server.host}:{server.port}
 										{#if server.ssl}
-											<span class="ml-1.5 inline-flex items-center rounded bg-blue-50 px-1 py-0 text-[9px] font-bold text-blue-600 ring-1 ring-inset ring-blue-500/20">TLS</span>
+											<span class="ml-1.5 inline-flex items-center rounded bg-blue-50 dark:bg-blue-950 px-1 py-0 text-[9px] font-bold text-blue-600 dark:text-blue-400 ring-1 ring-inset ring-blue-500/20">TLS</span>
 										{/if}
 									</div>
 								</td>
 								<td class="px-4 py-3">
-									<div class="flex flex-col gap-0.5 text-[11px] text-gray-600">
+									<div class="flex flex-col gap-0.5 text-[11px] text-gray-600 dark:text-gray-400">
 										<div class="flex items-center gap-1">
-											<span class="text-gray-400 w-12 shrink-0">User:</span>
+											<span class="text-gray-400 dark:text-gray-500 w-12 shrink-0">User:</span>
 											<span class="truncate max-w-[120px] font-medium">{server.username || 'anonymous'}</span>
 										</div>
 										<div class="flex items-center gap-1">
-											<span class="text-gray-400 w-12 shrink-0">Priority:</span>
+											<span class="text-gray-400 dark:text-gray-500 w-12 shrink-0">Priority:</span>
 											<span class="font-bold">{server.priority}</span>
 										</div>
 										<div class="flex items-center gap-1">
-											<span class="text-gray-400 w-12 shrink-0">Pool:</span>
+											<span class="text-gray-400 dark:text-gray-500 w-12 shrink-0">Pool:</span>
 											<span>{server.connections} conns</span>
 										</div>
 									</div>
@@ -81,7 +81,7 @@
 									<div class="flex justify-end gap-0.5">
 										<Button variant="ghost" size="xs" onclick={() => onTestServer(server)} title="Test connection">Test</Button>
 										<Button variant="ghost" size="xs" onclick={() => onEditServer(server)} title="Edit server">Edit</Button>
-										<Button variant="ghost" size="xs" class="text-red-600" onclick={() => onDeleteServer(server.name)} title="Delete server">Delete</Button>
+										<Button variant="ghost" size="xs" class="text-red-600 dark:text-red-400" onclick={() => onDeleteServer(server.name)} title="Delete server">Delete</Button>
 									</div>
 								</td>
 							</tr>
