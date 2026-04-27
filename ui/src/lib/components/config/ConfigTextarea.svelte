@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
 	import { Textarea } from '$lib/components/ui/textarea';
 
 	let {
@@ -18,21 +17,23 @@
 		onupdate?: (section: string, keyword: string, value: string) => void;
 	} = $props();
 
-	let currentValue = $state<string>((value || []).join('\n'));
+	// Tracks the prop reactively as a newline-joined string.
+	let propValue = $derived((value || []).join('\n'));
+
+	// Non-null only while the user is actively typing (debounce in progress).
+	let editingValue = $state<string | null>(null);
 	let timer: ReturnType<typeof setTimeout>;
 
-	// When props value (array) changes, update our local string value
-	// unless we are currently debouncing a user change.
-	$effect(() => {
-		const vString = (value || []).join('\n');
-		if (vString !== currentValue && !timer) {
-			currentValue = vString;
-		}
-	});
+	// Displayed value: local edit override, or the prop.
+	let currentValue = $derived(editingValue ?? propValue);
 
 	function commit() {
 		clearTimeout(timer);
-		const currentArray = currentValue
+		const pending = editingValue;
+		editingValue = null;
+		if (pending == null) return;
+
+		const currentArray = pending
 			.split('\n')
 			.map((s) => s.trim())
 			.filter((s) => s !== '');
@@ -44,7 +45,9 @@
 		}
 	}
 
-	function handleInput() {
+	function handleInput(e: Event) {
+		const target = e.target as HTMLTextAreaElement;
+		editingValue = target.value;
 		clearTimeout(timer);
 		timer = setTimeout(commit, 1000); // Longer delay for textarea
 	}
@@ -58,7 +61,7 @@
 	</div>
 	<Textarea
 		id="{section}-{keyword}"
-		bind:value={currentValue}
+		value={currentValue}
 		oninput={handleInput}
 		onblur={commit}
 		class="max-w-md font-mono text-xs"
