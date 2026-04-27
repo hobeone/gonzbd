@@ -268,14 +268,21 @@ func (c *Cache) maybePressure(used int64) {
 	}
 }
 
-// writeToDisk persists data to {adminDir}/{sha256(key)}.
+// writeToDisk persists data to {adminDir}/{sha256(key)} atomically.
+// Writes to a temporary file first, then renames, so concurrent Load
+// never observes a partial file.
 func (c *Cache) writeToDisk(key, adminDir string, data []byte) error {
 	if err := os.MkdirAll(adminDir, 0o750); err != nil {
 		return fmt.Errorf("cache: mkdir %s: %w", adminDir, err)
 	}
 	path := diskPath(adminDir, key)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("cache: write %s: %w", key, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp) // clean up on rename failure
+		return fmt.Errorf("cache: rename %s: %w", key, err)
 	}
 	return nil
 }
