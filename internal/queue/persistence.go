@@ -128,6 +128,11 @@ func Load(dir string) (*Queue, error) {
 	for _, id := range idx.JobIDs {
 		var job Job
 		if err := readGzJSON(filepath.Join(jobsDir, id+".json.gz"), &job); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// Job file was removed but the index wasn't saved before
+				// a crash. Skip the orphaned entry; Prune will clean up.
+				continue
+			}
 			return nil, fmt.Errorf("queue: load job %s: %w", id, err)
 		}
 		q.jobs = append(q.jobs, &job)
