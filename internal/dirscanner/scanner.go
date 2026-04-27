@@ -245,19 +245,20 @@ func (s *Scanner) handleStableFile(ctx context.Context, path, filename, category
 		successCount++
 	}
 
-	// If at least one succeeded, delete the file. Otherwise, leave it for retry.
-	if successCount > 0 {
-		if err := os.Remove(path); err != nil {
-			s.logger.Warn("failed to delete file after successful handling", "path", path, "err", err)
-		}
-		return nil
+	// Only delete the source file if ALL NZBs succeeded. Partial success
+	// leaves the archive for the next scan cycle so the failed NZBs can
+	// be retried (e.g. after a transient DB lock or config reload).
+	if lastErr != nil {
+		return fmt.Errorf("%d of %d NZBs failed: %w", len(nzbs)-successCount, len(nzbs), lastErr)
+	}
+	if successCount == 0 {
+		return fmt.Errorf("no NZBs processed")
 	}
 
-	// All handlers failed.
-	if lastErr != nil {
-		return lastErr
+	if err := os.Remove(path); err != nil {
+		s.logger.Warn("failed to delete file after successful handling", "path", path, "err", err)
 	}
-	return fmt.Errorf("no NZBs processed")
+	return nil
 }
 
 // Run starts a long-lived loop that scans the directory at regular intervals
