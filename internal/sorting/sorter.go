@@ -203,6 +203,7 @@ func Apply(
 		}
 
 		dst := fsutil.JoinSafe(moveDir, "", targetName, opts)
+		dst = fsutil.GetUniqueFilename(dst)
 
 		if moveErr := fsutil.MoveFile(src, dst); moveErr != nil {
 			return result, fmt.Errorf("apply: move %s → %s: %w", src, dst, moveErr)

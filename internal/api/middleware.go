@@ -115,9 +115,26 @@ func isLocalhost(r *http.Request) bool {
 func isCrossOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
-		// No Origin header — check Sec-Fetch-Site if present.
+		// No Origin header — fall back to Referer and Sec-Fetch-Site.
 		// Cross-origin GET requests (via <img>, <form method=GET>) don't
 		// send Origin, but modern browsers do send Sec-Fetch-Site.
+
+		// Check Referer first: if it's present and from a non-local host,
+		// treat as cross-origin to block CSRF via embedded resources.
+		if ref := r.Header.Get("Referer"); ref != "" {
+			if u, err := url.Parse(ref); err == nil && u.Host != "" {
+				if !strings.EqualFold(u.Host, r.Host) {
+					host := u.Hostname()
+					ip := net.ParseIP(host)
+					if ip == nil || !ip.IsLoopback() {
+						if !strings.EqualFold(host, "localhost") {
+							return true
+						}
+					}
+				}
+			}
+		}
+
 		// Block if explicitly cross-site/cross-origin.
 		sfs := r.Header.Get("Sec-Fetch-Site")
 		if sfs == "cross-site" || sfs == "cross-origin" {
