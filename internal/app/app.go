@@ -192,11 +192,11 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	}
 	d := downloader.New(q, servers, app.meter, downloader.Options{
 		OnJobHopeless: func(jobID string) {
-			job, err := q.Get(jobID)
-			if err != nil {
+			snap := q.SnapshotJob(jobID)
+			if snap == nil {
 				return
 			}
-			app.maybeFinalize(job, "Aborted: Too many articles failed, job is beyond repair")
+			app.maybeFinalize(jobID, "Aborted: Too many articles failed, job is beyond repair")
 		},
 	}, log)
 	app.downloader = d
@@ -207,7 +207,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		completions: d.Completions(),
 		downloadDir: cfg.DownloadDir,
 		sanitize:    cfg.Sanitize,
-		updateCh:    make(chan (<-chan *downloader.ArticleResult), 1),
+		updateCh:    make(chan completionSwap, 1),
 		fileInfo:    make(map[fileKey]assembler.FileInfo),
 	}
 	app.pipeline = p
@@ -466,9 +466,9 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 
 // RemoveJob cancels and removes a job from the queue, deleting its download directory.
 func (app *Application) RemoveJob(id string, deleteFiles bool) error {
-	job, err := app.queue.Get(id)
-	if err != nil {
-		return err
+	snap := app.queue.SnapshotJob(id)
+	if snap == nil {
+		return fmt.Errorf("job %q not found", id)
 	}
 	// Remove from queue and pipeline first so no more articles are
 	// dispatched or written before we delete files on disk.
@@ -477,7 +477,7 @@ func (app *Application) RemoveJob(id string, deleteFiles bool) error {
 	}
 	app.pipeline.forgetJob(id)
 	if deleteFiles {
-		path := filepath.Join(app.cfg.DownloadDir, job.Name)
+		path := filepath.Join(app.cfg.DownloadDir, snap.Name)
 		_ = os.RemoveAll(path)
 	}
 	app.emitter.Broadcast(Event{Type: "queue_updated"})
@@ -547,19 +547,26 @@ func (app *Application) Start(ctx context.Context) error {
 	app.wg.Go(func() { app.runMetricsPush(app.ctx) })
 	app.log.Info("application started")
 
-	for _, job := range app.queue.List() {
-		if !job.IsComplete() {
+	for _, snap := range app.queue.Snapshot() {
+		if !snap.IsComplete() {
 			continue
 		}
-		failMsg := failMsgForJob(job)
-		if job.PostProc {
-			if app.postProcessor.Has(job.ID) {
+		failMsg := failMsgForJob(snap)
+		if snap.PostProc {
+			// Crash recovery: PostProc was already set before the process
+			// died. The post-processor needs the raw job pointer, and we
+			// bypass SetPostProcStarted since it's already true.
+			if app.postProcessor.Has(snap.ID) {
+				continue
+			}
+			job, err := app.queue.Get(snap.ID)
+			if err != nil {
 				continue
 			}
 			app.enqueuePostProc(job, failMsg)
 			continue
 		}
-		app.maybeFinalize(job, failMsg)
+		app.maybeFinalize(snap.ID, failMsg)
 	}
 
 	return nil
@@ -649,9 +656,9 @@ func (app *Application) handleFileComplete(fc FileComplete) {
 		return
 	}
 	app.emitter.Broadcast(Event{Type: "queue_updated"})
-	job, err := app.queue.Get(fc.JobID)
-	if err == nil && job.IsComplete() {
-		app.maybeFinalize(job, failMsgForJob(job))
+	snap := app.queue.SnapshotJob(fc.JobID)
+	if snap != nil && snap.IsComplete() {
+		app.maybeFinalize(fc.JobID, failMsgForJob(snap))
 	}
 }
 
@@ -667,9 +674,15 @@ func (app *Application) drainCompletions() {
 	}
 }
 
-func (app *Application) maybeFinalize(job *queue.Job, failMsg string) {
-	started, err := app.queue.SetPostProcStarted(job.ID)
+func (app *Application) maybeFinalize(jobID string, failMsg string) {
+	started, err := app.queue.SetPostProcStarted(jobID)
 	if err == nil && started {
+		// We need the raw pointer for post-processor mutation.
+		job, err := app.queue.Get(jobID)
+		if err != nil {
+			app.log.Warn("maybeFinalize: job disappeared", "job", jobID, "err", err)
+			return
+		}
 		app.enqueuePostProc(job, failMsg)
 	}
 }
@@ -746,8 +759,9 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		return err
 	}
 	_, _ = app.historyRepo.Delete(ctx, jobID)
-	if job.IsComplete() {
-		app.maybeFinalize(job, failMsgForJob(job))
+	snap := app.queue.SnapshotJob(jobID)
+	if snap != nil && snap.IsComplete() {
+		app.maybeFinalize(jobID, failMsgForJob(snap))
 	}
 	return nil
 }
