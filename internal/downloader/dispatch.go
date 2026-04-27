@@ -269,6 +269,12 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		)
 		if err != nil {
 			connMu.Unlock()
+			// Context cancellation means shutdown or pause — not a server fault.
+			if ctx.Err() != nil {
+				d.unmarkTried(req.jobID, req.messageID, name)
+				d.emitResult(ctx, req, name, nil, 0, fmt.Errorf("dial: %w", err))
+				return
+			}
 			d.log.Warn("dial failed", "server", name, "error", err)
 			srv.RecordBadConnection()
 			if pen := PenaltyFor(err); pen > 0 {
@@ -309,11 +315,9 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		}
 		connMu.Unlock()
 
-		// Only the first goroutine to detect the broken connection should
-		// record the failure and apply a penalty. Otherwise, N pipelined
-		// requests on a single dropped connection would inflate badConns
-		// by N×, prematurely deactivating optional servers.
-		if isFirstNotifier {
+		// Context cancellation means shutdown or pause — not a server fault.
+		// Don't record bad connections or apply penalties.
+		if ctx.Err() == nil && isFirstNotifier {
 			srv.RecordBadConnection()
 			if pen := PenaltyFor(err); pen > 0 {
 				d.log.Info("penalty applied", "server", name, "duration", pen)
