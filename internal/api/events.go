@@ -109,7 +109,12 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Write loop
+	// Write loop with periodic pings to detect dead connections.
+	// Without pings, a dead TCP connection (no FIN) keeps the read
+	// goroutine and client struct alive indefinitely.
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
+
 	for {
 		select {
 		case msg, ok := <-c.send:
@@ -123,6 +128,14 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 			err := conn.Write(writeCtx, websocket.MessageText, msg)
 			writeCancel()
 			if err != nil {
+				return
+			}
+		case <-pingTicker.C:
+			pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
+			err := conn.Ping(pingCtx)
+			pingCancel()
+			if err != nil {
+				b.log.Debug("WebSocket ping failed, closing", "err", err)
 				return
 			}
 		case <-ctx.Done():

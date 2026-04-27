@@ -25,8 +25,15 @@ type GeneralConfig struct {
 	// NZBKey authenticates NZB-upload API requests. 16-character lowercase hex.
 	NZBKey string `yaml:"nzb_key" json:"nzb_key"`
 	// LocalhostBypass, when true, grants LevelAdmin to any request from
-	// 127.0.0.0/8 or ::1.
+	// 127.0.0.0/8 or ::1. Automatically disabled when InetExposure is
+	// set to "inet" (behind a reverse proxy).
 	LocalhostBypass bool `yaml:"localhost_bypass" json:"localhost_bypass"`
+	// InetExposure describes how the server is exposed. When set to
+	// "inet", the server is assumed to be behind a reverse proxy and
+	// LocalhostBypass is forcibly disabled (since RemoteAddr would be
+	// the proxy's loopback, not the real client's IP).
+	// Valid values: "" (default/local), "inet".
+	InetExposure string `yaml:"inet_exposure" json:"inet_exposure"`
 	// Username for the web UI. Empty disables basic auth.
 	Username string `yaml:"username" json:"username"`
 	// Password for the web UI. Stored as a hashed value (format set by
