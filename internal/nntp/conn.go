@@ -586,7 +586,7 @@ func (c *Conn) Close() error {
 		}
 		// Best-effort polite QUIT. Swallow errors — we're tearing
 		// down anyway.
-		if c.state == StateReady {
+		if c.State() == StateReady {
 			if c.sendLock.TryLock() {
 				_ = c.nc.SetWriteDeadline(time.Now().Add(2 * time.Second)) //nolint:errcheck // best-effort during teardown
 				_, _ = c.bw.WriteString("QUIT\r\n")                        //nolint:errcheck // best-effort
