@@ -54,27 +54,49 @@ func (q *Queue) Save(dir string) error {
 }
 
 func (q *Queue) saveInner(dir string) error {
+	// Snapshot job data under RLock, then release before disk I/O.
+	// Holding the lock during writeGzJSON would block the entire
+	// pipeline (MarkArticleDone, Add, etc.) for the duration of
+	// checkpointing — potentially seconds on large queues.
 	q.mu.RLock()
-	defer q.mu.RUnlock()
+	type jobSnapshot struct {
+		id   string
+		data []byte
+	}
+	snapshots := make([]jobSnapshot, 0, len(q.jobs))
+	jobIDs := make([]string, len(q.jobs))
+	paused := q.paused
+
+	for i, job := range q.jobs {
+		jobIDs[i] = job.ID
+		// Marshal to JSON under the lock so we capture a consistent
+		// view. The actual disk I/O happens after unlock.
+		data, err := json.Marshal(job)
+		if err != nil {
+			q.mu.RUnlock()
+			return fmt.Errorf("queue: marshal job %s: %w", job.ID, err)
+		}
+		snapshots = append(snapshots, jobSnapshot{id: job.ID, data: data})
+	}
+	q.mu.RUnlock()
+
+	// --- No lock held below this line ---
 
 	jobsDir := filepath.Join(dir, "jobs")
 	if err := os.MkdirAll(jobsDir, 0o750); err != nil {
 		return fmt.Errorf("queue: mkdir %q: %w", jobsDir, err)
 	}
 
-	for _, job := range q.jobs {
-		if err := writeGzJSON(filepath.Join(jobsDir, job.ID+".json.gz"), job); err != nil {
-			return fmt.Errorf("queue: save job %s: %w", job.ID, err)
+	for _, snap := range snapshots {
+		if err := writeGzJSONRaw(filepath.Join(jobsDir, snap.id+".json.gz"), snap.data); err != nil {
+			return fmt.Errorf("queue: save job %s: %w", snap.id, err)
 		}
 	}
 
 	idx := indexFile{
 		Version: persistenceVersion,
-		JobIDs:  make([]string, len(q.jobs)),
-		Paused:  q.paused,
-	}
-	for i, j := range q.jobs {
-		idx.JobIDs[i] = j.ID
+		JobIDs:  jobIDs,
+		Paused:  paused,
 	}
 	if err := writeGzJSON(filepath.Join(dir, "queue.json.gz"), &idx); err != nil {
 		return fmt.Errorf("queue: save index: %w", err)
@@ -194,6 +216,49 @@ func writeGzJSON(path string, v any) error {
 	if err := enc.Encode(v); err != nil {
 		cleanup()
 		return fmt.Errorf("encode: %w", err)
+	}
+	if err := gz.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close gzip: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("fsync: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
+		return fmt.Errorf("close temp: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
+}
+
+// writeGzJSONRaw writes pre-marshalled JSON data to a gzipped file at path.
+// Uses the same atomic temp+fsync+rename dance as writeGzJSON. This variant
+// is used when JSON marshalling is done separately (e.g. under a lock) from
+// the disk I/O.
+func writeGzJSONRaw(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+
+	tmp, err := os.CreateTemp(dir, base+".tmp.*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	cleanup := func() {
+		_ = tmp.Close()        //nolint:errcheck // best-effort cleanup on error path
+		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
+	}
+
+	gz := gzip.NewWriter(tmp)
+	if _, err := gz.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("write gzip: %w", err)
 	}
 	if err := gz.Close(); err != nil {
 		cleanup()
