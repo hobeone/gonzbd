@@ -364,6 +364,10 @@ func (a *Assembler) worker() {
 				for k, f := range open {
 					if k.jobID == cancelID {
 						_ = f.handle.Close()
+						if err := os.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
+							a.log.Warn("failed to remove cancelled file",
+								"path", f.info.Path, "error", err)
+						}
 						delete(open, k)
 						completed[k] = struct{}{}
 					}
