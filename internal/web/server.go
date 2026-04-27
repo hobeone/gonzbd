@@ -18,10 +18,10 @@ import (
 // UI was not built before compiling).
 //
 // The handler is stateless and safe to serve concurrently.
-func Handler(apiKey string) (http.Handler, error) {
+func Handler(apiKeyFn func() string) (http.Handler, error) {
 	dist, err := fs.Sub(ui.DistFS, "dist")
 	if err != nil {
 		return nil, fmt.Errorf("web: embedded ui/dist subtree missing — run 'cd ui && npm run build' first: %w", err)
 	}
-	return NewSPAHandler(dist, apiKey), nil
+	return NewSPAHandler(dist, apiKeyFn), nil
 }

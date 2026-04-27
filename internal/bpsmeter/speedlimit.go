@@ -45,6 +45,10 @@ func (l *Limiter) SetRate(bytesPerSec float64) {
 	defer l.mu.Unlock()
 
 	if bytesPerSec <= 0 {
+		// Unblock any active WaitN callers before dropping the limiter.
+		if l.lim != nil {
+			l.lim.SetLimit(rate.Inf)
+		}
 		l.lim = nil
 		return
 	}

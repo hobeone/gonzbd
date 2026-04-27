@@ -296,7 +296,11 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		listen = net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port))
 	}
 
-	webHandler, err := web.Handler(cfg.General.APIKey)
+	webHandler, err := web.Handler(func() string {
+		var key string
+		cfg.WithRead(func(c *config.Config) { key = c.General.APIKey })
+		return key
+	})
 	if err != nil {
 		return fmt.Errorf("web handler: %w", err)
 	}

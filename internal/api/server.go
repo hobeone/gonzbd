@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/constants"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 	"github.com/hobeone/sabnzbd-go/internal/urlgrabber"
@@ -173,10 +174,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 // AddWarning adds a warning message to the internal store.
+// Old warnings are dropped when the limit is exceeded.
 func (s *Server) AddWarning(msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.warnings = append(s.warnings, msg)
+	if len(s.warnings) > constants.MaxWarnings {
+		s.warnings = s.warnings[len(s.warnings)-constants.MaxWarnings:]
+	}
 }
 
 // ClearWarnings empties the warning list.

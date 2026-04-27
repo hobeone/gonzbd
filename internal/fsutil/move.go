@@ -27,13 +27,27 @@ func IsCrossDeviceError(err error) bool {
 }
 
 // copyAndRemove copies src to dst, preserving the original file mode,
-// then removes src. If the copy fails, any partial destination file is
-// cleaned up before returning the error.
+// then removes src. Symlinks are recreated at the destination rather than
+// having their target content copied. If the copy fails, any partial
+// destination file is cleaned up before returning the error.
 func copyAndRemove(src, dst string) error {
-	info, err := os.Stat(src)
+	info, err := os.Lstat(src)
 	if err != nil {
 		return err
 	}
+
+	// Symlinks: recreate at destination rather than copying target content.
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(src)
+		if err != nil {
+			return err
+		}
+		if err := os.Symlink(target, dst); err != nil {
+			return err
+		}
+		return os.Remove(src)
+	}
+
 	mode := info.Mode()
 
 	in, err := os.Open(src)
