@@ -182,17 +182,19 @@ describe('API Wrappers', () => {
 	// ── setConfig ─────────────────────────────────────────
 
 	describe('setConfig', () => {
-		it('sends POST with FormData containing section/keyword/value', async () => {
+		it('sends POST with mode in URL and data in FormData', async () => {
 			mockOk({ status: true });
 			await setConfig('general', 'host', '0.0.0.0');
 
 			expect(mockFetch).toHaveBeenCalledTimes(1);
 			const [url, opts] = mockFetch.mock.calls[0];
-			expect(url).toBe('/api');
+			// mode must be in the URL query string for the backend router
+			const parsed = new URL(url, 'http://localhost');
+			expect(parsed.searchParams.get('mode')).toBe('set_config');
 			expect(opts.method).toBe('POST');
 
 			const body = opts.body as FormData;
-			expect(body.get('mode')).toBe('set_config');
+			expect(body.get('mode')).toBeNull();
 			expect(body.get('section')).toBe('general');
 			expect(body.get('keyword')).toBe('host');
 			expect(body.get('value')).toBe('0.0.0.0');
@@ -248,7 +250,7 @@ describe('API Wrappers', () => {
 	// ── uploadNzb ─────────────────────────────────────────
 
 	describe('uploadNzb', () => {
-		it('sends POST with file in FormData', async () => {
+		it('sends POST with mode in URL and file in FormData', async () => {
 			mockOk({ status: true });
 			const file = new File(['<nzb>test</nzb>'], 'test.nzb', {
 				type: 'application/x-nzb'
@@ -258,12 +260,13 @@ describe('API Wrappers', () => {
 
 			expect(mockFetch).toHaveBeenCalledTimes(1);
 			const [url, opts] = mockFetch.mock.calls[0];
-			expect(url).toBe('/api');
+			// mode must be in the URL query string for the backend router
+			const parsed = new URL(url, 'http://localhost');
+			expect(parsed.searchParams.get('mode')).toBe('addfile');
 			expect(opts.method).toBe('POST');
 
 			const body = opts.body as FormData;
-			expect(body.get('mode')).toBe('addfile');
-			expect(body.get('output')).toBe('json');
+			expect(body.get('mode')).toBeNull();
 			expect(body.get('nzbfile')).toBeInstanceOf(File);
 		});
 
