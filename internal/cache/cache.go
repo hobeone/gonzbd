@@ -199,13 +199,20 @@ func (c *Cache) Flush() error {
 		// data while we were writing: only delete if the data length
 		// still matches what we wrote.
 		c.mu.Lock()
-		if cur, exists := c.articles[key]; exists && len(cur.data) == len(entry.data) {
+		cur, exists := c.articles[key]
+		switch {
+		case exists && len(cur.data) == len(entry.data):
+			// Entry unchanged — consume it.
 			delete(c.articles, key)
 			c.used -= int64(len(entry.data))
 			if c.used < 0 {
 				c.used = 0
 			}
 			c.usedAtomic.Store(c.used)
+		case !exists:
+			// A concurrent Load consumed the entry from memory while we
+			// were writing to disk. Clean up the now-orphaned disk file.
+			_ = os.Remove(diskPath(entry.adminDir, key))
 		}
 		c.mu.Unlock()
 	}
