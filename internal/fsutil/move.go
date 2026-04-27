@@ -54,18 +54,21 @@ func copyAndRemove(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
 
 	out, err := os.Create(dst)
 	if err != nil {
+		in.Close()
 		return err
 	}
 
 	if _, err = io.Copy(out, in); err != nil {
+		in.Close()
 		out.Close()
 		os.Remove(dst) // clean up partial file
 		return err
 	}
+	// Close source before removing it — on Windows, Remove fails on open files.
+	in.Close()
 	if err := out.Close(); err != nil {
 		os.Remove(dst) // clean up partial file
 		return err
