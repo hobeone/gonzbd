@@ -44,8 +44,8 @@ func (b *Broadcaster) Broadcast(event Event) {
 		return
 	}
 
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	if len(b.clients) > 0 {
 		b.log.Info("WebSocket broadcast", "event", event.Type, "clients", len(b.clients))

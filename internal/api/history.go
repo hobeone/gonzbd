@@ -181,7 +181,7 @@ func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deleteFiles := r.FormValue("delete_files") == "1"
+	deleteFiles := r.FormValue("delete_files") == "1" || r.FormValue("del_files") == "1"
 
 	var ids []string
 
