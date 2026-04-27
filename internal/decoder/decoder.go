@@ -113,7 +113,16 @@ func DecodeArticle(body []byte) (Article, error) {
 
 	decoded, computedCRC := decodeBody(encoded, hdr.size)
 
-	trailer, err := parseTrailer(body[trailerIdx:], hdr.isPart)
+	// Slice to just the =yend line — content after it (signatures,
+	// empty lines, dot-stuffing leftovers) would corrupt parseKeyValues.
+	trailerLine := body[trailerIdx:]
+	if nl := bytes.IndexByte(trailerLine, '\n'); nl >= 0 {
+		trailerLine = trailerLine[:nl]
+	}
+	// Also strip trailing \r if present.
+	trailerLine = bytes.TrimRight(trailerLine, "\r")
+
+	trailer, err := parseTrailer(trailerLine, hdr.isPart)
 	if err != nil {
 		return Article{}, err
 	}
