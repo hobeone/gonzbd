@@ -514,7 +514,12 @@ func formString(r *http.Request, key string) string {
 }
 
 // priorityParam reads the priority= query parameter and maps it to a Priority constant.
+// Returns DefaultPriority (inherit from category) when the parameter is absent.
 func priorityParam(r *http.Request) constants.Priority {
+	s := r.FormValue("priority") //nolint:gosec // G120: body already limited
+	if s == "" {
+		return constants.DefaultPriority
+	}
 	return constants.Priority(int8(intParam(r, "priority"))) //nolint:gosec // G115: priority values fit in int8 by design
 }
 
