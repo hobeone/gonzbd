@@ -222,7 +222,7 @@ func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 
 	var removed []string
 	for _, id := range ids {
-		if err := s.app.RemoveJob(id, deleteFiles); err == nil {
+		if err := s.app.RemoveJob(r.Context(), id, deleteFiles); err == nil {
 			removed = append(removed, id)
 		}
 	}

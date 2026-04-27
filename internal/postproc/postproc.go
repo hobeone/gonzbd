@@ -230,9 +230,8 @@ func (p *PostProcessor) run() {
 			return
 		}
 
-		// Set busy immediately after pop to prevent Empty() from
-		// observing the intermediate state (queue empty, not busy).
-		p.setBusyWithJob(true, job.Queue.ID)
+		// setBusyWithJob was already called inside popWithPause to
+		// eliminate the race window between pop and busy-set.
 		p.processJob(job)
 		p.addHistory(job)
 		p.setBusyWithJob(false, "")
@@ -286,6 +285,10 @@ func (p *PostProcessor) popWithPause() (*Job, bool) {
 			p.q.PushHead(job)
 			continue
 		}
+
+		// Set busy atomically before returning so Has()/Empty() never
+		// see the intermediate state (queue empty, not busy).
+		p.setBusyWithJob(true, job.Queue.ID)
 		return job, true
 	}
 }
