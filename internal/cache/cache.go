@@ -165,32 +165,49 @@ func (c *Cache) Load(key, adminDir string) ([]byte, error) {
 // Flush writes all in-memory entries to disk and empties the memory map. Called
 // on shutdown or when direct_write is toggled.
 //
-// If a disk write fails, the entry is restored to memory so data is not
-// permanently lost.
+// Entries remain visible in memory until their disk write completes, so
+// concurrent Load calls never see an invisible window.
 func (c *Cache) Flush() error {
+	// Snapshot the keys under the lock, but leave the data in the map.
 	c.mu.Lock()
-	snapshot := c.articles
-	c.articles = make(map[string]cachedEntry)
-	c.used = 0
-	c.usedAtomic.Store(0)
+	keys := make([]string, 0, len(c.articles))
+	for k := range c.articles {
+		keys = append(keys, k)
+	}
 	c.mu.Unlock()
 
 	var firstErr error
-	for key, entry := range snapshot {
+	for _, key := range keys {
+		c.mu.Lock()
+		entry, ok := c.articles[key]
+		if !ok {
+			// A concurrent Load consumed it — nothing to flush.
+			c.mu.Unlock()
+			continue
+		}
+		c.mu.Unlock()
+
 		if err := c.writeToDisk(key, entry.adminDir, entry.data); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
-			// Restore the entry so data isn't permanently lost, but only
-			// if a concurrent Save() hasn't already inserted a newer entry.
-			c.mu.Lock()
-			if _, exists := c.articles[key]; !exists {
-				c.articles[key] = entry
-				c.used += int64(len(entry.data))
-				c.usedAtomic.Store(c.used)
-			}
-			c.mu.Unlock()
+			continue // Leave in memory so data isn't lost.
 		}
+
+		// Remove from memory only after successful disk write. Guard
+		// against a concurrent Save that replaced the entry with newer
+		// data while we were writing: only delete if the data length
+		// still matches what we wrote.
+		c.mu.Lock()
+		if cur, exists := c.articles[key]; exists && len(cur.data) == len(entry.data) {
+			delete(c.articles, key)
+			c.used -= int64(len(entry.data))
+			if c.used < 0 {
+				c.used = 0
+			}
+			c.usedAtomic.Store(c.used)
+		}
+		c.mu.Unlock()
 	}
 	return firstErr
 }
