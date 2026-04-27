@@ -458,7 +458,9 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 			f.seenFailed = make(map[string]struct{})
 		}
 		if _, dup := f.seenFailed[req.MessageID]; dup {
-			// Duplicate failure — don't double-count toward completion.
+			// Already recorded — re-emit the ack so the queue
+			// receives it even if a prior flush dropped it.
+			a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
 			return
 		}
 		f.seenFailed[req.MessageID] = struct{}{}
@@ -473,6 +475,10 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 				f.seenDone = make(map[string]struct{})
 			}
 			if _, dup := f.seenDone[req.MessageID]; dup {
+				// Already written to disk — re-emit the ack so
+				// the queue receives it even if a prior flush
+				// dropped the original acknowledgment.
+				a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
 				return
 			}
 		}

@@ -44,7 +44,7 @@ type Scanner struct {
 // If logger is nil, slog.Default() is used.
 func NewScanner(feeds []Feed, store *Store, handler Handler, client *http.Client, logger *slog.Logger) *Scanner {
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: 60 * time.Second}
 	}
 	if logger == nil {
 		logger = slog.Default()
