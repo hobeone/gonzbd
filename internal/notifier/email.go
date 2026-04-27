@@ -63,7 +63,7 @@ func (e *EmailNotifier) Send(ctx context.Context, ev Event) error {
 func (e *EmailNotifier) sendImplicitTLS(ctx context.Context, addr string, auth smtp.Auth, msg []byte) error {
 	//nolint:gosec // G402: InsecureSkipVerify intentionally false; no flag exposed yet
 	tlsCfg := &tls.Config{ServerName: e.cfg.Host, InsecureSkipVerify: false}
-	dialer := &tls.Dialer{NetDialer: &net.Dialer{}, Config: tlsCfg}
+	dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: smtpDialTimeout}, Config: tlsCfg}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("email: tls dial %s: %w", addr, err)
@@ -77,7 +77,7 @@ func (e *EmailNotifier) sendImplicitTLS(ctx context.Context, addr string, auth s
 }
 
 func (e *EmailNotifier) sendPlainOrSTARTTLS(ctx context.Context, addr string, auth smtp.Auth, msg []byte) error {
-	dialer := &net.Dialer{}
+	dialer := &net.Dialer{Timeout: smtpDialTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("email: smtp dial %s: %w", addr, err)
@@ -98,13 +98,22 @@ func (e *EmailNotifier) sendPlainOrSTARTTLS(ctx context.Context, addr string, au
 	return e.finishSend(c, auth, msg)
 }
 
+// smtpDialTimeout is the maximum time allowed for TCP + TLS handshake.
+const smtpDialTimeout = 30 * time.Second
+
+// smtpOperationTimeout is the fallback deadline for SMTP operations when
+// the caller's context has no explicit deadline.
+const smtpOperationTimeout = 60 * time.Second
+
 // setConnDeadline applies the context's deadline (if any) to the
-// connection. Without this, smtp.Client operations (Auth, Mail, Rcpt,
-// Data) perform undeadlined reads/writes, hanging indefinitely on
+// connection. If the context has no deadline, a fallback of
+// smtpOperationTimeout is used to prevent indefinite hangs on
 // slow or tarpitting SMTP servers.
 func setConnDeadline(ctx context.Context, conn net.Conn) {
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
+	} else {
+		_ = conn.SetDeadline(time.Now().Add(smtpOperationTimeout))
 	}
 }
 
