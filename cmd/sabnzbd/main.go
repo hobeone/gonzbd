@@ -299,6 +299,14 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		apiSrv.AddWarning(warning)
 	}
 
+	// Warn when no NNTP servers are configured. The app runs but cannot
+	// download until a server is added via the settings UI.
+	if len(enabledServers(cfg.Servers)) == 0 {
+		const msg = "No news servers configured — add one in Config → Servers to start downloading"
+		slog.Warn(msg)
+		apiSrv.AddWarning(msg)
+	}
+
 	listen := listenOverride
 	if listen == "" {
 		listen = net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port))
@@ -588,6 +596,10 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 	}
 	defer db.Close()
 	repo := history.NewRepository(db)
+
+	if len(enabledServers(cfg.Servers)) == 0 {
+		return fmt.Errorf("no news servers configured — add at least one server to your config file")
+	}
 
 	application, err := app.New(app.Config{
 		DownloadDir: dlDir,
