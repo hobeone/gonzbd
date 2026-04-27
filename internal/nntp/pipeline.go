@@ -8,6 +8,7 @@ import (
 	"io"
 	"strconv"
 	"sync/atomic"
+	"time"
 )
 
 // cmdKind distinguishes what kind of response the caller expects so the
@@ -76,6 +77,11 @@ func (c *Conn) runReader() {
 	defer close(c.readerDone)
 
 	for {
+		// Set a read deadline so silently-dead connections don't block
+		// runReader forever, permanently wedging the semaphore slot.
+		if c.readTimeout > 0 {
+			_ = c.nc.SetReadDeadline(time.Now().Add(c.readTimeout))
+		}
 		line, err := readResponseLine(c.br)
 		if err != nil {
 			c.finishReader(err)

@@ -155,6 +155,12 @@ type Conn struct {
 	// sslInfo is the negotiated TLS protocol+cipher for UI display.
 	// Empty for plain-text connections.
 	sslInfo string
+
+	// readTimeout is the idle read deadline applied before each response
+	// read. If no data arrives within this period, the socket errors and
+	// the connection is torn down. Prevents runReader from blocking
+	// indefinitely on silently-dead connections.
+	readTimeout time.Duration
 }
 
 // State returns the current lifecycle state. The value is a snapshot;
@@ -309,16 +315,17 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 	}
 
 	c := &Conn{
-		log:        l,
-		cfg:        cfg,
-		nc:         nc,
-		bw:         bufio.NewWriter(nc),
-		br:         bufio.NewReaderSize(br, dopts.readBuf),
-		state:      StateDisconnected,
-		sem:        make(chan struct{}, dopts.pipelining),
-		readerDone: make(chan struct{}),
-		ctx:        ctxConn,
-		cancel:     cancelConn,
+		log:         l,
+		cfg:         cfg,
+		nc:          nc,
+		bw:          bufio.NewWriter(nc),
+		br:          bufio.NewReaderSize(br, dopts.readBuf),
+		state:       StateDisconnected,
+		sem:         make(chan struct{}, dopts.pipelining),
+		readerDone:  make(chan struct{}),
+		ctx:         ctxConn,
+		cancel:      cancelConn,
+		readTimeout: dopts.dialer.Timeout,
 	}
 
 	if tc, ok := nc.(*tls.Conn); ok {
