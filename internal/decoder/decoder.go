@@ -96,12 +96,18 @@ func DecodeArticle(body []byte) (Article, error) {
 	}
 
 	// Locate the =yend trailer before decoding so we know exactly where the
-	// encoded body ends. Search from bodyStart to avoid false matches in data.
-	trailerIdx := bytes.Index(body[bodyStart:], []byte("=yend"))
-	if trailerIdx < 0 {
+	// encoded body ends. The yEnc spec requires =yend at the start of a line,
+	// so search for "\n=yend" to avoid false matches from encoded body data
+	// that happens to contain the byte sequence "=yend".
+	trailerIdx := bytes.Index(body[bodyStart:], []byte("\n=yend"))
+	if trailerIdx >= 0 {
+		trailerIdx += bodyStart + 1 // skip the \n, point at '='
+	} else if bytes.HasPrefix(body[bodyStart:], []byte("=yend")) {
+		// Edge case: empty encoded body — trailer starts immediately.
+		trailerIdx = bodyStart
+	} else {
 		return Article{}, ErrMissingTrailer
 	}
-	trailerIdx += bodyStart
 
 	encoded := body[bodyStart:trailerIdx]
 
