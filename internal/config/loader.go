@@ -44,16 +44,17 @@ func decode(r io.Reader) (*Config, error) {
 		return nil, err
 	}
 
-	// Expand environment variables ($VAR or ${VAR}) globally.
-	expanded := os.ExpandEnv(string(b))
-
 	// Initialize with defaults so that missing fields in YAML stay at default.
 	cfg, err := Default()
 	if err != nil {
 		return nil, err
 	}
 
-	dec := yaml.NewDecoder(strings.NewReader(expanded))
+	// NOTE: We intentionally do NOT call os.ExpandEnv on the raw YAML.
+	// Doing so would silently corrupt any value containing '$' characters
+	// (passwords, API keys, regex patterns). Environment variable expansion
+	// for path fields is handled post-parse by cfg.ExpandPaths().
+	dec := yaml.NewDecoder(strings.NewReader(string(b)))
 	dec.KnownFields(true) // reject unknown keys to catch typos
 	if err := dec.Decode(cfg); err != nil {
 		if errors.Is(err, io.EOF) {

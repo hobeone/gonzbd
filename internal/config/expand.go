@@ -13,26 +13,38 @@ func (c *Config) ExpandPaths() {
 }
 
 func (g *GeneralConfig) expandPaths() {
-	g.HTTPSCert = expandHome(g.HTTPSCert)
-	g.HTTPSKey = expandHome(g.HTTPSKey)
-	g.DownloadDir = expandHome(g.DownloadDir)
-	g.CompleteDir = expandHome(g.CompleteDir)
-	g.DirscanDir = expandHome(g.DirscanDir)
-	g.ScriptDir = expandHome(g.ScriptDir)
-	g.EmailDir = expandHome(g.EmailDir)
-	g.LogDir = expandHome(g.LogDir)
-	g.AdminDir = expandHome(g.AdminDir)
+	g.HTTPSCert = expandPath(g.HTTPSCert)
+	g.HTTPSKey = expandPath(g.HTTPSKey)
+	g.DownloadDir = expandPath(g.DownloadDir)
+	g.CompleteDir = expandPath(g.CompleteDir)
+	g.DirscanDir = expandPath(g.DirscanDir)
+	g.ScriptDir = expandPath(g.ScriptDir)
+	g.EmailDir = expandPath(g.EmailDir)
+	g.LogDir = expandPath(g.LogDir)
+	g.AdminDir = expandPath(g.AdminDir)
 }
 
 func (p *PostProcConfig) expandPaths() {
-	p.Par2Command = expandHome(p.Par2Command)
-	p.UnrarCommand = expandHome(p.UnrarCommand)
-	p.SevenzCommand = expandHome(p.SevenzCommand)
+	p.Par2Command = expandPath(p.Par2Command)
+	p.UnrarCommand = expandPath(p.UnrarCommand)
+	p.SevenzCommand = expandPath(p.SevenzCommand)
 }
 
-// expandHome replaces a leading "~" or "~/" with the user's home directory.
-// If expansion fails (e.g. HOME not set), the path is returned unchanged.
-func expandHome(path string) string {
+// expandPath expands environment variables ($VAR, ${VAR}) and replaces
+// a leading "~" or "~/" with the user's home directory.
+// If home expansion fails (e.g. HOME not set), the path is returned
+// with only env-var expansion applied.
+func expandPath(path string) string {
+	if path == "" {
+		return path
+	}
+
+	// First, expand environment variables in path fields only.
+	// This is intentionally NOT done globally on the raw YAML to
+	// avoid corrupting non-path values containing '$' (passwords,
+	// API keys, regex patterns).
+	path = os.ExpandEnv(path)
+
 	if path == "" || path[0] != '~' {
 		return path
 	}
