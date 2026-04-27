@@ -123,8 +123,8 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
 
-		mode := r.FormValue("mode")   //nolint:gosec // G120: body already limited above
-		action := r.FormValue("name") //nolint:gosec // G120: body already limited above
+		mode := r.URL.Query().Get("mode")
+		action := r.URL.Query().Get("name")
 
 		attrs := []any{
 			"method", r.Method,
