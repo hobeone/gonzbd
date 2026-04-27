@@ -370,6 +370,10 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 	opts := types.FetchOptions{
 		Category: r.FormValue("cat"),
 		Password: r.FormValue("password"),
+		NzbName:  r.FormValue("nzbname"),
+		PP:       ppParam(r),
+		Script:   r.FormValue("script"),
+		Priority: priorityParam(r),
 	}
 	n, err := s.grabber.Fetch(r.Context(), urlStr, opts)
 	if err != nil {
@@ -521,6 +525,16 @@ func priorityParam(r *http.Request) constants.Priority {
 		return constants.DefaultPriority
 	}
 	return constants.Priority(int8(intParam(r, "priority"))) //nolint:gosec // G115: priority values fit in int8 by design
+}
+
+// ppParam extracts the post-processing level from the request.
+// Returns types.PPInherit (-1) when absent, meaning "inherit from category".
+func ppParam(r *http.Request) int {
+	s := r.FormValue("pp") //nolint:gosec // G120: body already limited
+	if s == "" {
+		return types.PPInherit
+	}
+	return intParam(r, "pp")
 }
 
 // openFile wraps os.Open so the G304 gosec finding is isolated to one place.
