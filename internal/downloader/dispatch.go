@@ -157,6 +157,11 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 		if _, already := tried[name]; already {
 			continue
 		}
+		// Permanently disabled servers are not candidates — skip them
+		// entirely so they don't prevent allTried from becoming true.
+		if !srv.Cfg().Enable {
+			continue
+		}
 		// This server hasn't been tried yet.
 		if !srv.Active(now) {
 			// Server is penalized/inactive but not yet tried.
@@ -231,23 +236,31 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server) {
 	if pipelineDepth < 1 {
 		pipelineDepth = 1
 	}
-	// NOTE: We do NOT maintain a local semaphore here. nntp.Conn.Fetch
-	// has its own internal semaphore (c.sem) that bounds wire-level
-	// pipelining to PipeliningRequests. A local sem here would also
-	// bound CPU-bound decoding against the wire limit, starving the
-	// socket when goroutines are busy decoding.
-	_ = pipelineDepth // used by nntp.Conn internally
+	// Bound outstanding goroutines per connection to prevent one fast
+	// connWorker from eagerly draining the entire workCh. We size
+	// the limit to pipelineDepth*2 to allow decode overlap: up to
+	// pipelineDepth requests can be on the wire (bounded by
+	// nntp.Conn.sem), while another pipelineDepth can be decoding.
+	maxOutstanding := pipelineDepth * 2
+	sem := make(chan struct{}, maxOutstanding)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case req := <-workCh:
-			workerWg.Add(1)
-			go func(req *articleRequest) {
-				defer workerWg.Done()
-				d.handleRequest(ctx, srv, &conn, &connMu, req)
-			}(req)
+		case sem <- struct{}{}:
+			// We have capacity — now wait for work.
+			select {
+			case <-ctx.Done():
+				return
+			case req := <-workCh:
+				workerWg.Add(1)
+				go func(req *articleRequest) {
+					defer workerWg.Done()
+					defer func() { <-sem }()
+					d.handleRequest(ctx, srv, &conn, &connMu, req)
+				}(req)
+			}
 		}
 	}
 }
