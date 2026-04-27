@@ -264,9 +264,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			return ctx.Err()
 		case tick := <-timer.C:
 			s.Tick(ctx, tick)
-			// Schedule the next tick exactly one minute after the last aligned
-			// boundary, guarding against drift.
-			next = tick.Truncate(time.Minute).Add(time.Minute)
+			// Compute next from the wall clock *after* Tick completes.
+			// If Tick took >1 minute, using tick.Truncate would yield a
+			// past time, making time.Until(next) negative and causing an
+			// immediate re-fire. Using s.clock() ensures we always sleep
+			// until the next whole minute boundary.
+			now := s.clock()
+			next = now.Truncate(time.Minute).Add(time.Minute)
 			timer.Reset(time.Until(next))
 		}
 	}

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,7 +43,7 @@ func TestRemoveJob(t *testing.T) {
 	_ = os.WriteFile(dummyFile, []byte("data"), 0o600)
 
 	// 1. Remove with deleteFiles=true
-	err = a.RemoveJob(job.ID, true)
+	err = a.RemoveJob(context.Background(), job.ID, true)
 	if err != nil {
 		t.Fatalf("RemoveJob failed: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestRemoveJob(t *testing.T) {
 	jobDir2 := filepath.Join(downloadDir, "to-delete-files")
 	_ = os.MkdirAll(jobDir2, 0o750)
 
-	err = a.RemoveJob(job2.ID, false)
+	err = a.RemoveJob(context.Background(), job2.ID, false)
 	if err != nil {
 		t.Fatalf("RemoveJob failed: %v", err)
 	}

@@ -465,7 +465,7 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 }
 
 // RemoveJob cancels and removes a job from the queue, deleting its download directory.
-func (app *Application) RemoveJob(id string, deleteFiles bool) error {
+func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
 	snap := app.queue.SnapshotJob(id)
 	if snap == nil {
 		return fmt.Errorf("job %q not found", id)
