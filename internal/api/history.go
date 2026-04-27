@@ -70,6 +70,16 @@ type historyDetail struct {
 func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	start := intParam(r, "start")
 	limit := intParam(r, "limit")
+	// Default limit prevents loading the entire DB into memory.
+	// Max cap prevents OOM from adversarial limit= values.
+	const defaultLimit = 50
+	const maxLimit = 10_000
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
 	search := formString(r, "search")
 	catFilter := formString(r, "cat")
 	statusFilter := formString(r, "status")
