@@ -127,21 +127,25 @@ func DecodeArticle(body []byte) (Article, error) {
 		return Article{}, err
 	}
 
-	if trailer.size != int64(len(decoded)) {
-		return Article{}, ErrSizeMismatch
-	}
-
-	if trailer.valid && computedCRC != trailer.crc {
-		return Article{}, ErrCRCMismatch
-	}
-
-	return Article{
+	// Build the article struct before validation so callers (especially
+	// PAR2 repair) can still use the decoded data even if it's corrupt.
+	art := Article{
 		Filename:  hdr.name,
 		Offset:    hdr.offset,
 		TotalSize: hdr.size,
 		Data:      decoded,
 		CRC:       computedCRC,
-	}, nil
+	}
+
+	if trailer.size != int64(len(decoded)) {
+		return art, ErrSizeMismatch
+	}
+
+	if trailer.valid && computedCRC != trailer.crc {
+		return art, ErrCRCMismatch
+	}
+
+	return art, nil
 }
 
 // decodeBody decodes the raw yEnc-encoded body bytes into their original form.
