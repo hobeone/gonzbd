@@ -74,13 +74,14 @@ export async function setConfig(
 	value: string | number | boolean
 ): Promise<StatusResponse> {
 	const form = new FormData();
-	form.append('mode', 'set_config');
-	form.append('output', 'json');
 	form.append('section', section);
 	form.append('keyword', keyword);
 	form.append('value', String(value));
 
-	const res = await fetch(API_BASE, { method: 'POST', body: form });
+	// mode must be in the URL query string — the backend routes on
+	// r.URL.Query().Get("mode"), not FormValue.
+	const url = apiUrl('set_config');
+	const res = await fetch(url, { method: 'POST', body: form });
 	if (!res.ok) {
 		let message = `Set Config ${res.status}: ${res.statusText}`;
 		try {
@@ -108,8 +109,6 @@ export async function uploadNzb(
 	params?: Record<string, string>
 ): Promise<StatusResponse> {
 	const form = new FormData();
-	form.append('mode', 'addfile');
-	form.append('output', 'json');
 	form.append('nzbfile', file, file.name);
 
 	if (params) {
@@ -118,7 +117,10 @@ export async function uploadNzb(
 		}
 	}
 
-	const res = await fetch(API_BASE, { method: 'POST', body: form });
+	// mode must be in the URL query string — the backend routes on
+	// r.URL.Query().Get("mode"), not FormValue.
+	const url = apiUrl('addfile');
+	const res = await fetch(url, { method: 'POST', body: form });
 	if (!res.ok) {
 		throw new Error(`Upload ${res.status}: ${res.statusText}`);
 	}
