@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -43,7 +44,7 @@ type AuthConfig struct {
 // callerLevel determines the highest access level the caller can reach
 // based on the supplied credentials and source address.
 func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
-	if cfg.LocalhostBypass && isLocalhost(r) {
+	if cfg.LocalhostBypass && isLocalhost(r) && !isCrossOrigin(r) {
 		return LevelAdmin
 	}
 	key := apiKeyFromRequest(r)
@@ -92,6 +93,35 @@ func isLocalhost(r *http.Request) bool {
 		return false
 	}
 	return ip.IsLoopback()
+}
+
+// isCrossOrigin returns true if the request carries an Origin header
+// from a non-local origin. Browsers send Origin on cross-origin requests
+// (POST, PUT, DELETE, and fetch/XHR GET). We use this to reject CSRF
+// attempts that abuse the LocalhostBypass feature — a malicious website
+// cannot forge the Origin header.
+func isCrossOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// No Origin header — same-origin navigation, <img>, <script>,
+		// or a non-browser client. Allow.
+		return false
+	}
+	// Parse the origin and check if it's local.
+	u, err := url.Parse(origin)
+	if err != nil {
+		return true // malformed → treat as cross-origin
+	}
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return false // localhost origin
+	}
+	// Also allow "localhost" by name (not just IP).
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	return true
 }
 
 // maxFormBytes caps the request body for non-upload form parsing to prevent
