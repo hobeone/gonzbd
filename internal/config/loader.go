@@ -75,6 +75,25 @@ func decode(r io.Reader) (*Config, error) {
 		cfg.Downloads.CleanupList = DefaultCleanupList
 	}
 
+	// Normalize nil slices to empty so JSON serialization produces []
+	// instead of null. YAML unmarshal can overwrite Default()'s empty
+	// slices with nil when the key is present but has no items.
+	if cfg.Servers == nil {
+		cfg.Servers = []ServerConfig{}
+	}
+	if cfg.Categories == nil {
+		cfg.Categories = []CategoryConfig{}
+	}
+	if cfg.Sorters == nil {
+		cfg.Sorters = []SorterConfig{}
+	}
+	if cfg.Schedules == nil {
+		cfg.Schedules = []ScheduleConfig{}
+	}
+	if cfg.RSS == nil {
+		cfg.RSS = []RSSFeedConfig{}
+	}
+
 	return cfg, nil
 }
 
