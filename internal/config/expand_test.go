@@ -28,24 +28,22 @@ func TestExpandHome(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.in, func(t *testing.T) {
-			got := expandHome(tc.in)
+			got := expandPath(tc.in)
 			if got != tc.want {
-				t.Errorf("expandHome(%q) = %q, want %q", tc.in, got, tc.want)
+				t.Errorf("expandPath(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
 }
 
 func TestConfigExpandEnv(t *testing.T) {
-	os.Setenv("TEST_PORT", "9999")
 	os.Setenv("TEST_DIR", "/tmp/sabnzbd")
-	defer os.Unsetenv("TEST_PORT")
 	defer os.Unsetenv("TEST_DIR")
 
 	yml := `
 general:
   host: "127.0.0.1"
-  port: ${TEST_PORT}
+  port: 9999
   download_dir: "$TEST_DIR/incomplete"
   complete_dir: "~/Downloads"
   api_key: "0123456789abcdef"
@@ -55,11 +53,18 @@ general:
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+
+	// Before ExpandPaths, raw values should be preserved (no global expansion).
+	if cfg.General.DownloadDir != "$TEST_DIR/incomplete" {
+		t.Errorf("before ExpandPaths: DownloadDir = %q, want $TEST_DIR/incomplete (raw)", cfg.General.DownloadDir)
+	}
+
 	cfg.ExpandPaths()
 
 	if cfg.General.Port != 9999 {
 		t.Errorf("Port = %d, want 9999", cfg.General.Port)
 	}
+	// After ExpandPaths, env vars in path fields should be expanded.
 	if cfg.General.DownloadDir != "/tmp/sabnzbd/incomplete" {
 		t.Errorf("DownloadDir = %q, want /tmp/sabnzbd/incomplete", cfg.General.DownloadDir)
 	}
@@ -68,6 +73,36 @@ general:
 	wantComplete := filepath.Join(home, "Downloads")
 	if cfg.General.CompleteDir != wantComplete {
 		t.Errorf("CompleteDir = %q, want %q", cfg.General.CompleteDir, wantComplete)
+	}
+}
+
+// TestConfigDollarInPassword verifies that passwords containing $ are
+// not corrupted by env var expansion (the bug fixed by removing global
+// os.ExpandEnv from decode).
+func TestConfigDollarInPassword(t *testing.T) {
+	yml := `
+general:
+  host: "127.0.0.1"
+  port: 8080
+  download_dir: "/tmp"
+  complete_dir: "/tmp"
+  api_key: "0123456789abcdef"
+  nzb_key: "0123456789abcdef"
+servers:
+  - name: "test"
+    host: "news.example.com"
+    port: 563
+    username: "user"
+    password: "p$ss$w0rd"
+    ssl: true
+    connections: 1
+`
+	cfg, err := decode(strings.NewReader(yml))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cfg.Servers[0].Password != "p$ss$w0rd" {
+		t.Errorf("password corrupted: got %q, want %q", cfg.Servers[0].Password, "p$ss$w0rd")
 	}
 }
 
