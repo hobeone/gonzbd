@@ -145,9 +145,6 @@ func (app *Application) SetNotifier(d *notifier.Dispatcher) {
 
 // New constructs an Application from cfg.
 func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*Application, error) {
-	if len(cfg.Servers) == 0 {
-		return nil, errors.New("app: at least one server is required")
-	}
 	if cfg.DownloadDir == "" {
 		return nil, errors.New("app: DownloadDir is required")
 	}

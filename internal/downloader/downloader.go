@@ -160,15 +160,11 @@ type Downloader struct {
 // sockets open. Servers are iterated in slice order as the fallback
 // preference — callers should sort by priority before passing.
 //
-// servers must be non-empty. A zero-length slice is a programming
-// error; New panics to surface it at config time rather than having
-// the dispatch loop silently do nothing.
+// An empty server slice is allowed — the downloader will start but
+// dispatch nothing until servers are added via ReloadDownloader.
 func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options, log *slog.Logger) *Downloader {
 	if q == nil {
 		panic("downloader: queue is nil")
-	}
-	if len(servers) == 0 {
-		panic("downloader: at least one server is required")
 	}
 	if opts.CompletionsBuffer <= 0 {
 		opts.CompletionsBuffer = 256

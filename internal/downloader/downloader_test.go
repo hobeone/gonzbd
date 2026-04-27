@@ -653,13 +653,20 @@ func TestDownloaderSetSpeedLimit(t *testing.T) {
 	}
 }
 
-func TestDownloaderNewPanicsOnEmptyServers(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("New with zero servers should panic")
-		}
-	}()
-	_ = New(queue.New(), nil, nil, Options{}, nil)
+func TestDownloaderNewAcceptsEmptyServers(t *testing.T) {
+	// An empty server list produces a valid downloader that starts
+	// and stops cleanly but dispatches nothing.
+	q := queue.New()
+	d := New(q, nil, nil, Options{}, nil)
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start with no servers: %v", err)
+	}
+	// Add work — nothing should be dispatched since there are no servers.
+	_ = q.Add(makeJobWithArticles(t, []string{"a@h"}))
+	time.Sleep(100 * time.Millisecond)
+	if err := d.Stop(); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
 }
 
 func TestDownloaderDoubleStart(t *testing.T) {
