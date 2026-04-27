@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -219,19 +220,11 @@ func extractFilename(resp *http.Response, parsedURL *url.URL) string {
 }
 
 // extractFromContentDisposition extracts the filename from a Content-Disposition header value.
-// Handles the format: attachment; filename="name.nzb"
+// Uses mime.ParseMediaType to correctly handle quoted semicolons and RFC 2231 encoding.
 func extractFromContentDisposition(disposition string) string {
-	parts := strings.Split(disposition, ";")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "filename=") {
-			filename := strings.TrimPrefix(part, "filename=")
-			// Remove quotes if present.
-			filename = strings.Trim(filename, `"`)
-			if filename != "" {
-				return filename
-			}
-		}
+	_, params, err := mime.ParseMediaType(disposition)
+	if err != nil {
+		return ""
 	}
-	return ""
+	return params["filename"]
 }

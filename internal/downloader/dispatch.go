@@ -278,6 +278,14 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 
 	connMu.Lock()
 	if *connPtr == nil {
+		// If the server was penalized by a previous failed dial,
+		// skip re-dialing to prevent sequential stalls.
+		if !srv.Active(time.Now()) {
+			connMu.Unlock()
+			d.unmarkTried(req.jobID, req.messageID, name)
+			d.emitResult(ctx, req, name, nil, 0, errors.New("server penalized"))
+			return
+		}
 		d.log.Info("dialing server", "server", name, "host", srv.Cfg().Host)
 		c, err := nntp.Dial(ctx, srv.Cfg(),
 			nntp.WithLimiter(d.limiter),

@@ -295,12 +295,24 @@ func (c *Cache) writeToDisk(key, adminDir string, data []byte) error {
 		return fmt.Errorf("cache: mkdir %s: %w", adminDir, err)
 	}
 	path := diskPath(adminDir, key)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	// Use a unique temp file to prevent races when concurrent goroutines
+	// write the same key to disk simultaneously.
+	tmp, err := os.CreateTemp(adminDir, ".cache-*.tmp")
+	if err != nil {
+		return fmt.Errorf("cache: create temp %s: %w", key, err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
 		return fmt.Errorf("cache: write %s: %w", key, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp) // clean up on rename failure
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("cache: close temp %s: %w", key, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName) // clean up on rename failure
 		return fmt.Errorf("cache: rename %s: %w", key, err)
 	}
 	return nil

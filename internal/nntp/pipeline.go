@@ -136,12 +136,15 @@ func (c *Conn) submit(pc *pendingCmd, cmd []byte) error {
 	c.sendLock.Lock()
 	defer c.sendLock.Unlock()
 
+	// Check closed inside pendingLock to prevent a race with
+	// finishReader: if finishReader sets closed=true and drains
+	// pending, a concurrent submit must not re-append after the drain.
+	c.pendingLock.Lock()
 	if c.closed.Load() {
+		c.pendingLock.Unlock()
 		c.releaseSem()
 		return c.closeError()
 	}
-
-	c.pendingLock.Lock()
 	c.pending = append(c.pending, pc)
 	c.pendingLock.Unlock()
 
@@ -192,11 +195,13 @@ func (c *Conn) popPending() *pendingCmd {
 // the reader goroutine; idempotent via closeOnce.
 func (c *Conn) finishReader(err error) {
 	c.closeOnce.Do(func() {
+		// Set closeErr BEFORE the atomic flag so that any concurrent
+		// reader of c.closed sees a valid closeErr.
+		c.closeErr = err
 		c.closed.Store(true)
 		if c.cancel != nil {
 			c.cancel() // release context resources; prevents leak when Close() is never called
 		}
-		c.closeErr = err
 		_ = c.nc.Close() //nolint:errcheck // best-effort cleanup; underlying error already captured in c.closeErr
 
 		c.pendingLock.Lock()

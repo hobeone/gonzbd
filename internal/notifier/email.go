@@ -91,6 +91,7 @@ func (e *EmailNotifier) sendPlainOrSTARTTLS(ctx context.Context, addr string, au
 		//nolint:gosec // G402: InsecureSkipVerify intentionally false; no flag exposed yet
 		tlsCfg := &tls.Config{ServerName: e.cfg.Host, InsecureSkipVerify: false}
 		if err := c.StartTLS(tlsCfg); err != nil {
+			c.Close() // prevent TCP/fd leak
 			return fmt.Errorf("email: starttls: %w", err)
 		}
 	}
