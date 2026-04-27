@@ -187,31 +187,25 @@ func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 
 	switch strings.ToLower(value) {
 	case "all":
-		entries, err := s.history.Search(r.Context(), history.SearchOptions{})
+		var err error
+		ids, err = s.history.ListIDs(r.Context(), history.SearchOptions{})
 		if err != nil {
-			s.respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
+			s.respondError(w, http.StatusInternalServerError, "history list ids: "+err.Error())
 			return
-		}
-		for _, e := range entries {
-			ids = append(ids, e.NzoID)
 		}
 	case "failed":
-		entries, err := s.history.Search(r.Context(), history.SearchOptions{Status: "Failed"})
+		var err error
+		ids, err = s.history.ListIDs(r.Context(), history.SearchOptions{Status: "Failed"})
 		if err != nil {
-			s.respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
+			s.respondError(w, http.StatusInternalServerError, "history list ids: "+err.Error())
 			return
-		}
-		for _, e := range entries {
-			ids = append(ids, e.NzoID)
 		}
 	case "completed":
-		entries, err := s.history.Search(r.Context(), history.SearchOptions{Status: "Completed"})
+		var err error
+		ids, err = s.history.ListIDs(r.Context(), history.SearchOptions{Status: "Completed"})
 		if err != nil {
-			s.respondError(w, http.StatusInternalServerError, "history search: "+err.Error())
+			s.respondError(w, http.StatusInternalServerError, "history list ids: "+err.Error())
 			return
-		}
-		for _, e := range entries {
-			ids = append(ids, e.NzoID)
 		}
 	default:
 		ids = splitCSV(value)

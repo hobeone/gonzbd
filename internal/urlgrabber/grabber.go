@@ -177,7 +177,11 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 		}
 
 		if err := g.handler.HandleNZB(ctx, nzbFilename, nzbData, opts); err != nil {
-			return count, fmt.Errorf("handler failed for %s: %w", nzbFilename, err)
+			g.logger.Error("urlgrabber: handler failed for NZB in archive",
+				slog.String("filename", nzbFilename),
+				slog.Any("err", err),
+			)
+			continue
 		}
 		count++
 	}
