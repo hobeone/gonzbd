@@ -235,6 +235,8 @@ func (a *Assembler) Start(_ context.Context) error {
 	}
 
 	a.started = true
+	// Reset inFlightOnce/inFlightZero for clean Start after construction.
+	// (Only relevant if an Assembler is ever re-used, but safe regardless.)
 	go a.worker()
 	return nil
 }
@@ -255,17 +257,18 @@ func (a *Assembler) Stop() error {
 	a.stopped = true
 	a.mu.Unlock()
 
-	// Wait for any in-flight WriteArticle goroutines to finish their
-	// channel send. After this returns, no new items will enter a.reqs.
+	// Close stopCh first to unblock any WriteArticle goroutines stuck in
+	// their select (e.g. waiting for channel capacity). They will see
+	// <-a.stopCh and return ErrStopped, decrementing inFlight. If the
+	// request channel has capacity, their send may also succeed — the
+	// worker will drain those items before exiting.
+	close(a.stopCh)
+
+	// Now wait for all in-flight goroutines to complete their defers.
+	// They are guaranteed to exit promptly since stopCh is now closed.
 	for a.inFlight.Load() > 0 {
 		time.Sleep(time.Microsecond)
 	}
-
-	// Signal the worker by closing stopCh. The worker will drain reqs and exit.
-	// We do NOT close reqs here: WriteArticle goroutines may still be executing
-	// their channel-send select, and closing a channel that has concurrent
-	// senders in flight causes a panic.
-	close(a.stopCh)
 
 	<-a.workerDone
 	return nil
