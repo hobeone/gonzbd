@@ -351,12 +351,12 @@ func (*FinalizeStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// If the source directory exists, rename it to the target.
-	// Only fall back to file-by-file move on cross-device errors (EXDEV).
-	// Other errors (ENOTEMPTY, EPERM) must be reported — silently merging
-	// into an existing destination would overwrite files.
+	// Fall back to file-by-file move on cross-device (EXDEV) or
+	// not-empty (ENOTEMPTY/EEXIST) errors — the latter allows
+	// merging files into an existing destination directory.
 	if err := os.Rename(job.DownloadDir, job.FinalDir); err == nil {
 		return nil
-	} else if !fsutil.IsCrossDeviceError(err) {
+	} else if !fsutil.IsRenameMergeNeeded(err) {
 		return fmt.Errorf("finalize: rename %s -> %s: %w", job.DownloadDir, job.FinalDir, err)
 	}
 

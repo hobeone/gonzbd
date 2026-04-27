@@ -300,6 +300,28 @@ func (a *Assembler) WriteArticle(ctx context.Context, req WriteRequest) error {
 	}
 }
 
+// CancelJob sends a control message to the worker goroutine to close all
+// open file handles for the given job. This prevents FD leaks when a job
+// is removed from the queue while articles are still being assembled.
+// Blocks until the message is accepted or ctx is cancelled.
+func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
+	// Control message convention: JobID="" and FileIdx=-1, with the
+	// real job ID in MessageID.
+	control := WriteRequest{
+		JobID:     "",
+		FileIdx:   -1,
+		MessageID: jobID,
+	}
+	select {
+	case a.reqs <- control:
+		return nil
+	case <-a.stopCh:
+		return ErrStopped
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // worker is the single goroutine that owns all file handles and performs disk
 // I/O. It runs until stopCh is closed and the request channel is drained.
 //
@@ -313,6 +335,7 @@ func (a *Assembler) worker() {
 	defer close(a.workerDone)
 
 	open := make(map[fileKey]*openFile)
+	completed := make(map[fileKey]struct{}) // tombstone set for finished files
 	reqCount := 0
 
 	// A nil channel blocks forever in select; that's how we disable the
@@ -334,7 +357,20 @@ func (a *Assembler) worker() {
 				a.closeAll(open)
 				return
 			}
-			a.processRequest(req, open)
+			if req.JobID == "" && req.FileIdx == -1 {
+				// Control message: cancel a job. Close and remove all
+				// open files for the job encoded in MessageID.
+				cancelID := req.MessageID
+				for k, f := range open {
+					if k.jobID == cancelID {
+						_ = f.handle.Close()
+						delete(open, k)
+						completed[k] = struct{}{}
+					}
+				}
+				continue
+			}
+			a.processRequest(req, open, completed)
 			reqCount++
 			if a.opts.MinFreeBytes > 0 && reqCount%diskCheckInterval == 0 {
 				a.checkDiskSpace(open)
@@ -350,7 +386,7 @@ func (a *Assembler) worker() {
 			for {
 				select {
 				case req := <-a.reqs:
-					a.processRequest(req, open)
+					a.processRequest(req, open, completed)
 					reqCount++
 					if a.opts.MinFreeBytes > 0 && reqCount%diskCheckInterval == 0 {
 						a.checkDiskSpace(open)
@@ -415,8 +451,21 @@ func (a *Assembler) closeAll(open map[fileKey]*openFile) {
 // processRequest performs the WriteAt for a single WriteRequest. It resolves
 // the target file on first encounter, caches the handle, and fires
 // OnFileComplete when all TotalParts have been written.
-func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile) {
+func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile, completed map[fileKey]struct{}) {
 	key := fileKey{jobID: req.JobID, fileIdx: req.FileIdx}
+
+	// Reject late duplicates for already-completed files.
+	if _, done := completed[key]; done {
+		a.log.Debug("ignoring late article for completed file",
+			"job", req.JobID, "fileidx", req.FileIdx, "msgid", req.MessageID)
+		// Still ack so the queue doesn't re-dispatch.
+		if req.FatalErr != nil {
+			a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
+		} else {
+			a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
+		}
+		return
+	}
 
 	f, ok := open[key]
 	if !ok {
@@ -545,6 +594,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile)
 			)
 		}
 		delete(open, key)
+		completed[key] = struct{}{} // tombstone: reject late duplicates
 		a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
 		// Flush pending Done/Failed before firing the callback. The
 		// pipeline's watchCompletions must not observe IsComplete()==true

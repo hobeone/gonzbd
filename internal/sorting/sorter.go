@@ -80,17 +80,21 @@ func Apply(
 		info.Title = jobName
 	}
 
-	// Find the biggest file to determine extension.
-	entries, err := os.ReadDir(srcDir)
-	if err != nil {
-		return ApplyResult{}, fmt.Errorf("apply: readdir %s: %w", srcDir, err)
-	}
-
+	// Recursively collect all regular files — archives may extract into
+	// subdirectories, and we must move everything to prevent data loss
+	// when origDir is cleaned up after sorting.
 	var filePaths []string
-	for _, e := range entries {
-		if e.Type().IsRegular() {
-			filePaths = append(filePaths, filepath.Join(srcDir, e.Name()))
+	err := filepath.WalkDir(srcDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
+		if d.Type().IsRegular() {
+			filePaths = append(filePaths, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return ApplyResult{}, fmt.Errorf("apply: walk %s: %w", srcDir, err)
 	}
 
 	ext := biggestExt(filePaths)
@@ -163,7 +167,7 @@ func Apply(
 	// Find the biggest file path so we know which one gets the template name.
 	var biggestFile string
 	if templateSpecifiesFile {
-		var biggestSize int64
+		biggestSize := int64(-1)
 		for _, p := range filePaths {
 			if fi, err := os.Stat(p); err == nil && fi.Size() > biggestSize {
 				biggestSize = fi.Size()
@@ -183,7 +187,22 @@ func Apply(
 			targetName = filepath.Base(subpath)
 		}
 
-		dst := fsutil.JoinSafe(destDir, "", targetName, opts)
+		// For files in subdirectories, preserve relative structure
+		// under destDir to avoid name collisions.
+		relDir := ""
+		if rel, err := filepath.Rel(srcDir, filepath.Dir(src)); err == nil && rel != "." {
+			relDir = rel
+		}
+
+		moveDir := destDir
+		if relDir != "" {
+			moveDir = filepath.Join(destDir, relDir)
+			if mkErr := os.MkdirAll(moveDir, 0o750); mkErr != nil {
+				return result, fmt.Errorf("apply: mkdir %s: %w", moveDir, mkErr)
+			}
+		}
+
+		dst := fsutil.JoinSafe(moveDir, "", targetName, opts)
 
 		if moveErr := fsutil.MoveFile(src, dst); moveErr != nil {
 			return result, fmt.Errorf("apply: move %s → %s: %w", src, dst, moveErr)
@@ -198,7 +217,7 @@ func Apply(
 // biggestExt returns the file extension (including leading dot) of the largest
 // file in paths. Returns "" when paths is empty.
 func biggestExt(paths []string) string {
-	var bigSize int64
+	bigSize := int64(-1)
 	var bigExt string
 	for _, p := range paths {
 		fi, err := os.Stat(p)
