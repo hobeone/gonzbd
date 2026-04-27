@@ -243,9 +243,9 @@ const (
 	SSLVerifyStrict SSLVerify = 3
 )
 
-// validSSLVerify returns the canonical error reported when an SSLVerify
+// Validate returns the canonical error reported when an SSLVerify
 // value is outside the documented range.
-func (s SSLVerify) validate() error {
+func (s SSLVerify) Validate() error {
 	if s < SSLVerifyNone || s > SSLVerifyStrict {
 		return fmt.Errorf("ssl_verify: %d outside [0,3]", s)
 	}
