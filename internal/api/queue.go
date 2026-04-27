@@ -218,7 +218,7 @@ func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 		ids = splitCSV(value)
 	}
 
-	deleteFiles := r.FormValue("delete_files") == "1"
+	deleteFiles := r.FormValue("delete_files") == "1" || r.FormValue("del_files") == "1"
 
 	var removed []string
 	for _, id := range ids {
@@ -417,7 +417,18 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close() //nolint:errcheck // read-only file cleanup
 
-	data, err := io.ReadAll(io.LimitReader(f, maxUploadBytes))
+	fi, err := f.Stat()
+	if err != nil {
+		s.respondError(w, http.StatusInternalServerError, "stat file: "+err.Error())
+		return
+	}
+	if fi.Size() > maxUploadBytes {
+		s.respondError(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("file too large: %d bytes (max %d)", fi.Size(), maxUploadBytes))
+		return
+	}
+
+	data, err := io.ReadAll(f)
 	if err != nil {
 		s.respondError(w, http.StatusInternalServerError, "read file: "+err.Error())
 		return

@@ -19,7 +19,7 @@ type modeTable map[string]modeEntry
 // query/form, looks it up in the mode table, enforces auth, and
 // dispatches to the handler.
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
-	mode := r.URL.Query().Get("mode")
+	mode := r.FormValue("mode")
 	if mode == "" {
 		s.respondError(w, http.StatusBadRequest, "missing mode parameter")
 		return
