@@ -191,16 +191,21 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 }
 
 // sanitizeQuery redacts apikey/nzbkey values from the query string so they
-// don't leak into logs. Other parameters are preserved for debugging.
+// don't leak into logs. Uses url.ParseQuery to handle URL-encoded parameter
+// names (e.g. %61pikey → apikey) that would bypass a raw string prefix check.
 func sanitizeQuery(raw string) string {
-	parts := strings.Split(raw, "&")
-	for i, p := range parts {
-		if strings.HasPrefix(p, "apikey=") || strings.HasPrefix(p, "nzbkey=") {
-			eq := strings.IndexByte(p, '=')
-			parts[i] = p[:eq+1] + "***"
+	parsed, err := url.ParseQuery(raw)
+	if err != nil {
+		// Unparseable query — redact entirely to be safe.
+		return "***"
+	}
+	for key := range parsed {
+		lower := strings.ToLower(key)
+		if lower == "apikey" || lower == "nzbkey" {
+			parsed.Set(key, "***")
 		}
 	}
-	return strings.Join(parts, "&")
+	return parsed.Encode()
 }
 
 // statusWriter wraps ResponseWriter to capture the status code for logging.
