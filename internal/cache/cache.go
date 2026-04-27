@@ -91,6 +91,19 @@ func (c *Cache) CanFit(size int64) bool {
 	return c.usedAtomic.Load()+size <= c.limit
 }
 
+// sameSlice returns true if a and b share the same backing array
+// (or are both nil). Used to distinguish identity from equality when
+// deciding whether a concurrent Save replaced the entry.
+func sameSlice(a, b []byte) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return cap(a) == 0 && cap(b) == 0 // both nil
+	}
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	return &a[0] == &b[0]
+}
+
 // Save stores data for key. If the memory budget allows, the article is kept
 // in memory; otherwise it is written to {adminDir}/{sha256(key)}. Saving a
 // key already in memory replaces the existing entry and adjusts the counter.
@@ -101,8 +114,12 @@ func (c *Cache) Save(key, adminDir string, data []byte) error {
 
 	c.mu.Lock()
 	oldSize := int64(0)
+	var oldData []byte
+	hadOld := false
 	if existing, ok := c.articles[key]; ok {
 		oldSize = int64(len(existing.data))
+		oldData = existing.data
+		hadOld = true
 	}
 	newUsed := c.used - oldSize + newSize
 
@@ -126,10 +143,13 @@ func (c *Cache) Save(key, adminDir string, data []byte) error {
 	}
 
 	// Now that the disk copy is durable, remove any stale memory entry.
-	if oldSize > 0 {
+	if hadOld {
 		c.mu.Lock()
 		// Re-check: a concurrent Save might have placed a newer entry.
-		if cur, ok := c.articles[key]; ok && len(cur.data) == int(oldSize) {
+		// Compare slice backing array identity, not length, to avoid
+		// deleting a concurrent replacement that happens to have the
+		// same byte count.
+		if cur, ok := c.articles[key]; ok && sameSlice(cur.data, oldData) {
 			delete(c.articles, key)
 			c.used -= oldSize
 			c.usedAtomic.Store(c.used)
@@ -213,7 +233,7 @@ func (c *Cache) Flush() error {
 		c.mu.Lock()
 		cur, exists := c.articles[key]
 		switch {
-		case exists && len(cur.data) > 0 && len(entry.data) > 0 && &cur.data[0] == &entry.data[0]:
+		case exists && sameSlice(cur.data, entry.data):
 			// Entry unchanged (same backing array) — consume it.
 			delete(c.articles, key)
 			c.used -= int64(len(entry.data))
@@ -306,6 +326,11 @@ func (c *Cache) writeToDisk(key, adminDir string, data []byte) error {
 		tmp.Close()
 		os.Remove(tmpName)
 		return fmt.Errorf("cache: write %s: %w", key, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("cache: sync %s: %w", key, err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
