@@ -90,7 +90,7 @@ func (b *ByteSize) UnmarshalJSON(data []byte) error {
 	s := string(data)
 	// Handle string form (includes quotes)
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		parsed, err := parseByteSize(s[1 : len(s)-1])
+		parsed, err := ParseByteSize(s[1 : len(s)-1])
 		if err != nil {
 			return err
 		}
@@ -113,7 +113,7 @@ func (b *ByteSize) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.ScalarNode {
 		return fmt.Errorf("ByteSize: expected scalar, got kind %d at line %d", node.Kind, node.Line)
 	}
-	parsed, err := parseByteSize(node.Value)
+	parsed, err := ParseByteSize(node.Value)
 	if err != nil {
 		return fmt.Errorf("ByteSize at line %d: %w", node.Line, err)
 	}
@@ -121,9 +121,9 @@ func (b *ByteSize) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// parseByteSize parses a single ByteSize string. Exposed (lowercase) for
-// reuse by package-level helpers and tests.
-func parseByteSize(raw string) (ByteSize, error) {
+// ParseByteSize parses a single ByteSize string. Accepts human-readable
+// forms like "1M", "500K", "1.5G" and plain integers (bytes).
+func ParseByteSize(raw string) (ByteSize, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" || strings.EqualFold(s, "unlimited") {
 		return 0, nil

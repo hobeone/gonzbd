@@ -72,9 +72,9 @@ func TestByteSize_UnmarshalJSON_Invalid(t *testing.T) {
 
 func TestParseByteSize_Unlimited(t *testing.T) {
 	t.Parallel()
-	b, err := parseByteSize("unlimited")
+	b, err := ParseByteSize("unlimited")
 	if err != nil {
-		t.Fatalf("parseByteSize: %v", err)
+		t.Fatalf("ParseByteSize: %v", err)
 	}
 	if b != 0 {
 		t.Errorf("got %d, want 0 for unlimited", b)
@@ -83,9 +83,9 @@ func TestParseByteSize_Unlimited(t *testing.T) {
 
 func TestParseByteSize_Empty(t *testing.T) {
 	t.Parallel()
-	b, err := parseByteSize("")
+	b, err := ParseByteSize("")
 	if err != nil {
-		t.Fatalf("parseByteSize: %v", err)
+		t.Fatalf("ParseByteSize: %v", err)
 	}
 	if b != 0 {
 		t.Errorf("got %d, want 0 for empty", b)
@@ -94,7 +94,7 @@ func TestParseByteSize_Empty(t *testing.T) {
 
 func TestParseByteSize_Negative(t *testing.T) {
 	t.Parallel()
-	_, err := parseByteSize("-100")
+	_, err := ParseByteSize("-100")
 	if err == nil {
 		t.Error("expected error for negative value")
 	}
@@ -102,7 +102,7 @@ func TestParseByteSize_Negative(t *testing.T) {
 
 func TestParseByteSize_NegativeWithSuffix(t *testing.T) {
 	t.Parallel()
-	_, err := parseByteSize("-1G")
+	_, err := ParseByteSize("-1G")
 	if err == nil {
 		t.Error("expected error for negative value with suffix")
 	}
@@ -110,7 +110,7 @@ func TestParseByteSize_NegativeWithSuffix(t *testing.T) {
 
 func TestParseByteSize_MissingSuffix(t *testing.T) {
 	t.Parallel()
-	_, err := parseByteSize("M")
+	_, err := ParseByteSize("M")
 	if err == nil {
 		t.Error("expected error for suffix without number")
 	}
@@ -118,9 +118,9 @@ func TestParseByteSize_MissingSuffix(t *testing.T) {
 
 func TestParseByteSize_Fractional(t *testing.T) {
 	t.Parallel()
-	b, err := parseByteSize("1.5G")
+	b, err := ParseByteSize("1.5G")
 	if err != nil {
-		t.Fatalf("parseByteSize: %v", err)
+		t.Fatalf("ParseByteSize: %v", err)
 	}
 	want := ByteSize(1.5 * 1073741824)
 	if b != want {

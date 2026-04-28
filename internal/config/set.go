@@ -123,7 +123,7 @@ func setFieldValue(f reflect.Value, val string) error {
 
 	switch {
 	case ft == reflect.TypeOf(ByteSize(0)):
-		b, err := parseByteSize(val)
+		b, err := ParseByteSize(val)
 		if err != nil {
 			return fmt.Errorf("invalid byte size: %w", err)
 		}
