@@ -23,6 +23,7 @@
 		<ConfigSwitch section="postproc" keyword="enable_7zip" label="Enable 7-Zip extraction" value={configData.postproc.enable_7zip} onupdate={onFieldUpdate} />
 		<ConfigSwitch section="postproc" keyword="direct_unpack" label="Direct Unpack" value={configData.postproc.direct_unpack} description="Extract files while still downloading." onupdate={onFieldUpdate} />
 		<ConfigSwitch section="postproc" keyword="enable_par_cleanup" label="Cleanup par2 files" value={configData.postproc.enable_par_cleanup} description="Delete verification files after successful repair." onupdate={onFieldUpdate} />
+		<ConfigSwitch section="postproc" keyword="enable_rar_cleanup" label="Cleanup archive files" value={configData.postproc.enable_rar_cleanup} description="Delete source RAR/7z/split files after successful extraction." onupdate={onFieldUpdate} />
 		<ConfigInput section="postproc" keyword="unrar_command" label="UnRAR path" value={configData.postproc.unrar_command} onupdate={onFieldUpdate} />
 		<ConfigInput section="postproc" keyword="par2_command" label="par2 path" value={configData.postproc.par2_command} onupdate={onFieldUpdate} />
 	</div>

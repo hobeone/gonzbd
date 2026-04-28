@@ -40,6 +40,7 @@ postproc:
   enable_unrar: true
   enable_7zip: true
   enable_par_cleanup: true
+  enable_rar_cleanup: true
   par2_command: par2
   unrar_command: ""
   sevenz_command: ""

@@ -13,6 +13,7 @@ describe('PostProcSection', () => {
 			enable_7zip: false,
 			direct_unpack: true,
 			enable_par_cleanup: true,
+			enable_rar_cleanup: true,
 			unrar_command: '/usr/bin/unrar',
 			par2_command: '/usr/bin/par2'
 		}
@@ -29,6 +30,7 @@ describe('PostProcSection', () => {
 		expect(screen.getByText('Enable 7-Zip extraction')).toBeInTheDocument();
 		expect(screen.getByText('Direct Unpack')).toBeInTheDocument();
 		expect(screen.getByText('Cleanup par2 files')).toBeInTheDocument();
+		expect(screen.getByText('Cleanup archive files')).toBeInTheDocument();
 		expect(screen.getByText('UnRAR path')).toBeInTheDocument();
 		expect(screen.getByText('par2 path')).toBeInTheDocument();
 	});

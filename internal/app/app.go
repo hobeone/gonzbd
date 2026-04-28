@@ -69,6 +69,7 @@ type Config struct {
 	EnableUnrar          bool
 	Enable7zip           bool
 	EnableParCleanup     bool
+	EnableRarCleanup     bool
 	Par2Command          string
 	Par2Turbo            bool
 	UnrarCommand         string
@@ -265,7 +266,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				OverwriteFiles:   cfg.OverwriteFiles,
 				IgnoreUnrarDates: cfg.IgnoreUnrarDates,
 				OneFolder:        cfg.FlatUnpack,
-			}))
+			}, cfg.EnableRarCleanup))
 		}
 
 		if cfg.DeobfuscateFilenames {
