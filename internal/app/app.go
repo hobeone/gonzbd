@@ -528,11 +528,12 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 		backupPath := filepath.Join(nzbDir, filepath.Base(job.Filename))
 		_ = os.WriteFile(backupPath, rawNZB, 0o600)
 	}
+	addStatus := job.Status // snapshot before q.Add notifies the dispatcher
 	if err := app.queue.Add(job); err != nil {
 		return fmt.Errorf("app: add to queue: %w", err)
 	}
 	app.emitter.Broadcast(Event{Type: "queue_updated"})
-	app.log.Info("job added", "name", job.Name, "id", job.ID, "status", job.Status)
+	app.log.Info("job added", "name", job.Name, "id", job.ID, "status", addStatus)
 	return nil
 }
 
@@ -606,6 +607,10 @@ func (app *Application) Start(ctx context.Context) error {
 	if err := app.assembler.Start(app.ctx); err != nil {
 		return err
 	}
+	// Reset transient download state: Downloading → Queued, Emitted → false.
+	// On a cold restart these flags are stale — the old downloader's
+	// in-flight articles are long gone.
+	app.queue.ClearAllEmitted()
 	if err := app.downloader.Start(app.ctx); err != nil {
 		_ = app.assembler.Stop()
 		return err

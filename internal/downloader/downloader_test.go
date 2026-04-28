@@ -519,6 +519,86 @@ func TestDownloaderPauseResume(t *testing.T) {
 	}
 }
 
+// TestDownloaderPerJobPauseResume verifies that pausing a *specific job*
+// (via queue.Pause) and then resuming it (via queue.Resume) results in
+// the downloader picking up the remaining articles. This exercises a
+// different path than TestDownloaderPauseResume, which tests the global
+// downloader pause flag.
+func TestDownloaderPerJobPauseResume(t *testing.T) {
+	ms := newMockNNTP(t, withBodyDelay(100*time.Millisecond))
+	// 10 articles with a single connection — ensures serialized fetches
+	// so pausing mid-stream leaves plenty undone.
+	ids := make([]string, 10)
+	for i := range ids {
+		id := fmt.Sprintf("art%d@h", i)
+		ids[i] = id
+		ms.addArticle(id, string(mocknntp.EncodeYEnc(
+			fmt.Sprintf("f%d.bin", i), []byte(fmt.Sprintf("body-%d", i)))))
+	}
+
+	q := queue.New()
+	job := makeJobWithArticles(t, ids)
+	_ = q.Add(job)
+
+	// Single connection to serialize fetches.
+	d := New(q, []*Server{testServer(t, "s", ms.addr, func(c *config.ServerConfig) {
+		c.Connections = 1
+		c.PipeliningRequests = 1
+	})}, nil, Options{}, nil)
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = d.Stop() }()
+
+	// Let 2 articles complete to confirm download is active.
+	results := collect(t, d.Completions(), 2, 10*time.Second)
+	for i, r := range results {
+		if r.Err != nil {
+			t.Fatalf("pre-pause article %d err: %v", i, r.Err)
+		}
+	}
+	collected := 2
+
+	// Pause the specific job.
+	if err := q.Pause(job.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	// Drain any results that were in-flight during the pause.
+	time.Sleep(300 * time.Millisecond)
+	for {
+		select {
+		case r := <-d.Completions():
+			_ = r
+			collected++
+		default:
+			goto doneDrain
+		}
+	}
+doneDrain:
+	t.Logf("collected %d articles total before resume", collected)
+
+	remaining := len(ids) - collected
+	if remaining <= 0 {
+		t.Logf("all articles completed during/before pause")
+		return
+	}
+	t.Logf("expecting %d articles after resume", remaining)
+
+	// Resume the job. Remaining articles should now be fetched.
+	if err := q.Resume(job.ID); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	results = collect(t, d.Completions(), remaining, 30*time.Second)
+	for i, r := range results {
+		if r.Err != nil {
+			t.Errorf("post-resume article %d err: %v", i, r.Err)
+		}
+	}
+	t.Logf("all %d articles completed successfully", len(ids))
+}
+
 func TestDownloaderDialFailure(t *testing.T) {
 	// Point the server config at a listener we immediately close,
 	// so every Dial attempt fails. The server should accumulate bad
