@@ -117,4 +117,92 @@ describe('websocket store', () => {
 
 		unsub();
 	});
+
+	it('getWSStatus returns true after open', async () => {
+		const { subscribeWS, getWSStatus } = await import('./websocket.svelte');
+		const handler = vi.fn();
+
+		const unsub = subscribeWS(handler);
+		expect(getWSStatus()).toBe(false);
+
+		MockWebSocket.instances[0].simulateOpen();
+		expect(getWSStatus()).toBe(true);
+
+		unsub();
+	});
+
+	it('schedules reconnect on close', async () => {
+		const { subscribeWS, getWSStatus } = await import('./websocket.svelte');
+		const handler = vi.fn();
+
+		const unsub = subscribeWS(handler);
+		const ws = MockWebSocket.instances[0];
+		ws.simulateOpen();
+		expect(getWSStatus()).toBe(true);
+
+		// Simulate disconnect.
+		ws.close();
+		expect(getWSStatus()).toBe(false);
+
+		// After reconnect delay, a new connection should be attempted.
+		vi.advanceTimersByTime(1000);
+		expect(MockWebSocket.instances.length).toBe(2);
+
+		unsub();
+	});
+
+	it('error triggers close', async () => {
+		const { subscribeWS } = await import('./websocket.svelte');
+		const handler = vi.fn();
+
+		const unsub = subscribeWS(handler);
+		const ws = MockWebSocket.instances[0];
+		ws.simulateOpen();
+
+		// Simulate error — should trigger close.
+		if (ws.onerror) {
+			ws.onerror(new Event('error'));
+		}
+		expect(ws.readyState).toBe(3); // closed
+
+		unsub();
+	});
+
+	it('ignores invalid JSON messages', async () => {
+		const { subscribeWS } = await import('./websocket.svelte');
+		const handler = vi.fn();
+
+		const unsub = subscribeWS(handler);
+		const ws = MockWebSocket.instances[0];
+		ws.simulateOpen();
+
+		// Send invalid JSON — should not throw or call handler.
+		if (ws.onmessage) {
+			ws.onmessage(new MessageEvent('message', { data: 'not-json{' }));
+		}
+		expect(handler).not.toHaveBeenCalled();
+
+		unsub();
+	});
+
+	it('clears reconnect timeout on last unsubscribe', async () => {
+		const { subscribeWS } = await import('./websocket.svelte');
+		const handler = vi.fn();
+
+		const unsub = subscribeWS(handler);
+		const ws = MockWebSocket.instances[0];
+		ws.simulateOpen();
+
+		// Close to trigger reconnect scheduling.
+		ws.close();
+
+		// Unsub before reconnect fires — should cancel the reconnect.
+		unsub();
+
+		// Advance past the reconnect delay.
+		vi.advanceTimersByTime(5000);
+
+		// No new socket should have been created (only the original).
+		expect(MockWebSocket.instances.length).toBe(1);
+	});
 });
