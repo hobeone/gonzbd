@@ -223,7 +223,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 // fetches. On a connection-level failure the conn is closed and
 // re-dialled for the next request. The goroutine exits when ctx is
 // cancelled.
-func (d *Downloader) connWorker(ctx context.Context, srv *Server) {
+func (d *Downloader) connWorker(ctx context.Context, srv *Server, workerID string) {
 	var conn *nntp.Conn
 	var connMu sync.Mutex
 	var workerWg sync.WaitGroup
@@ -268,7 +268,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server) {
 				go func(req *articleRequest) {
 					defer workerWg.Done()
 					defer func() { <-sem }()
-					d.handleRequest(ctx, srv, &conn, &connMu, req)
+					d.handleRequest(ctx, srv, &conn, &connMu, req, workerID)
 				}(req)
 			}
 		}
@@ -280,7 +280,9 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server) {
 // emission. The *nntp.Conn pointer is passed by reference so the
 // function can replace it with nil on connection-level failure
 // (forcing a re-dial on the next call).
-func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **nntp.Conn, connMu *sync.Mutex, req *articleRequest) {
+func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **nntp.Conn, connMu *sync.Mutex, req *articleRequest, workerID string) {
+	d.setConnActivity(workerID, req)
+	defer d.clearConnActivity(workerID)
 	defer d.signalDispatch()
 	defer d.clearInFlight(req.jobID, req.messageID)
 

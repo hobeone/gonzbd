@@ -806,3 +806,182 @@ func TestDownloaderPipeliningConcurrency(t *testing.T) {
 		t.Fatal("timeout waiting for pipelined fetches")
 	}
 }
+
+// --- Connection activity and ServerStatus tests ---
+
+func TestConnActivity_SetAndClear(t *testing.T) {
+	t.Parallel()
+	q := queue.New()
+	srv := NewServer(config.ServerConfig{
+		Name:        "test-srv",
+		Host:        "news.example.com",
+		Port:        563,
+		Connections: 2,
+		Enable:      true,
+		SSL:         true,
+	})
+	d := New(q, []*Server{srv}, nil, Options{}, nil)
+
+	wid := "test-srv#0"
+
+	// Initially idle.
+	d.connActivityMu.RLock()
+	ca := d.connActivity[wid]
+	d.connActivityMu.RUnlock()
+	if ca == nil {
+		t.Fatal("connActivity entry not found for", wid)
+	}
+	if ca.ArticleID != "" {
+		t.Errorf("initial ArticleID = %q; want empty", ca.ArticleID)
+	}
+
+	// Set activity.
+	req := &articleRequest{
+		jobID:     "job1",
+		messageID: "art@example.com",
+		subject:   "My File.rar",
+		bytes:     5000,
+	}
+	d.setConnActivity(wid, req)
+
+	d.connActivityMu.RLock()
+	ca = d.connActivity[wid]
+	d.connActivityMu.RUnlock()
+	if ca.ArticleID != "art@example.com" {
+		t.Errorf("ArticleID = %q; want art@example.com", ca.ArticleID)
+	}
+	if ca.Subject != "My File.rar" {
+		t.Errorf("Subject = %q; want My File.rar", ca.Subject)
+	}
+	if ca.Bytes != 5000 {
+		t.Errorf("Bytes = %d; want 5000", ca.Bytes)
+	}
+	if ca.Since.IsZero() {
+		t.Error("Since should be set")
+	}
+
+	// Clear activity.
+	d.clearConnActivity(wid)
+
+	d.connActivityMu.RLock()
+	ca = d.connActivity[wid]
+	d.connActivityMu.RUnlock()
+	if ca.ArticleID != "" {
+		t.Errorf("cleared ArticleID = %q; want empty", ca.ArticleID)
+	}
+	if !ca.Since.IsZero() {
+		t.Error("cleared Since should be zero")
+	}
+}
+
+func TestServerStatus_SnapshotFields(t *testing.T) {
+	t.Parallel()
+	q := queue.New()
+	srv := NewServer(config.ServerConfig{
+		Name:        "primary",
+		Host:        "news.example.com",
+		Port:        563,
+		Connections: 3,
+		Enable:      true,
+		SSL:         true,
+		Priority:    0,
+		Required:    true,
+	})
+	srv.RecordGoodConnection()
+	srv.RecordGoodConnection()
+	srv.RecordBadConnection()
+
+	d := New(q, []*Server{srv}, nil, Options{}, nil)
+
+	// Simulate one connection active.
+	d.setConnActivity("primary#1", &articleRequest{
+		messageID: "article@test",
+		subject:   "test.rar",
+		bytes:     1234,
+	})
+
+	snaps := d.ServerStatus()
+	if len(snaps) != 1 {
+		t.Fatalf("len(snaps) = %d; want 1", len(snaps))
+	}
+	s := snaps[0]
+	if s.Name != "primary" {
+		t.Errorf("Name = %q; want primary", s.Name)
+	}
+	if s.Host != "news.example.com" {
+		t.Errorf("Host = %q", s.Host)
+	}
+	if s.Port != 563 {
+		t.Errorf("Port = %d", s.Port)
+	}
+	if !s.SSL {
+		t.Error("SSL should be true")
+	}
+	if !s.Enabled {
+		t.Error("Enabled should be true")
+	}
+	if !s.Required {
+		t.Error("Required should be true")
+	}
+	if s.MaxConnections != 3 {
+		t.Errorf("MaxConnections = %d; want 3", s.MaxConnections)
+	}
+	if s.ActiveConns != 1 {
+		t.Errorf("ActiveConns = %d; want 1", s.ActiveConns)
+	}
+	if s.BadConnections != 1 {
+		t.Errorf("BadConnections = %d; want 1", s.BadConnections)
+	}
+	if s.GoodConnections != 2 {
+		t.Errorf("GoodConnections = %d; want 2", s.GoodConnections)
+	}
+	if len(s.Connections) != 3 {
+		t.Fatalf("Connections len = %d; want 3", len(s.Connections))
+	}
+
+	// Verify the active connection details are present.
+	var active *ConnSnapshot
+	for i := range s.Connections {
+		if s.Connections[i].ArticleID == "article@test" {
+			active = &s.Connections[i]
+			break
+		}
+	}
+	if active == nil {
+		t.Fatal("active connection not found in snapshot")
+	}
+	if active.Subject != "test.rar" {
+		t.Errorf("active.Subject = %q; want test.rar", active.Subject)
+	}
+	if active.Bytes != 1234 {
+		t.Errorf("active.Bytes = %d; want 1234", active.Bytes)
+	}
+	if active.SinceUnix == 0 {
+		t.Error("active.SinceUnix should be set")
+	}
+}
+
+func TestServerStatus_PenaltyField(t *testing.T) {
+	t.Parallel()
+	q := queue.New()
+	srv := NewServer(config.ServerConfig{
+		Name:        "penalized",
+		Host:        "slow.example.com",
+		Port:        119,
+		Connections: 1,
+		Enable:      true,
+	})
+	srv.ApplyPenalty(10 * time.Minute)
+
+	d := New(q, []*Server{srv}, nil, Options{}, nil)
+	snaps := d.ServerStatus()
+	if len(snaps) != 1 {
+		t.Fatalf("len(snaps) = %d; want 1", len(snaps))
+	}
+	if snaps[0].PenaltyUntil == 0 {
+		t.Error("PenaltyUntil should be set for penalized server")
+	}
+	if snaps[0].Active {
+		t.Error("Active should be false for penalized server")
+	}
+}
