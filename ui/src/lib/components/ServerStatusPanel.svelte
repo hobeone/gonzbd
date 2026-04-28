@@ -127,6 +127,7 @@
 			</div>
 			<button
 				onclick={() => (open = false)}
+				aria-label="Close"
 				class="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
 			>
 				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-5">
