@@ -54,13 +54,24 @@ func TestModeSetConfig_NoConfigWired(t *testing.T) {
 	}
 }
 
-func TestModeConfig_SpeedlimitNotImplemented(t *testing.T) {
+func TestModeConfig_Speedlimit(t *testing.T) {
 	t.Parallel()
 	s := testServer()
 
+	// Plain number → KiB/s convention (500 → 512000 B/s).
 	rr := apiGet(t, s.Handler(), "/api?mode=config&name=speedlimit&value=500&apikey="+testAPIKey)
-	if rr.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d; want 501", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	m := decodeJSON(t, rr)
+	if v, _ := m["value"].(float64); v != 500*1024 {
+		t.Errorf("value = %v; want %d", m["value"], 500*1024)
+	}
+
+	// Disable limiting.
+	rr = apiGet(t, s.Handler(), "/api?mode=config&name=speedlimit&value=0&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
 	}
 }
 

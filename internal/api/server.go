@@ -56,6 +56,7 @@ type ApplicationReloader interface {
 	AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error
 	RemoveJob(ctx context.Context, id string, deleteFiles bool) error
 	RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error
+	SetSpeedLimit(bytesPerSec int64)
 }
 
 // Server is the HTTP API server. It owns a net/http.Server and the mode

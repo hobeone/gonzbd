@@ -84,7 +84,28 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 		s.log.Info("nntp servers reloaded")
 	}
 
+	// Hot-apply bandwidth limit changes without requiring a restart.
+	if section == "downloads" && s.app != nil && (keyword == "bandwidth_max" || keyword == "bandwidth_perc") {
+		s.applySpeedLimit()
+	}
+
 	respondOK(w, "value", value)
+}
+
+// applySpeedLimit reads bandwidth_max and bandwidth_perc from the live
+// config and pushes the computed limit to the running downloader.
+func (s *Server) applySpeedLimit() {
+	var bytesPerSec int64
+	s.config.WithRead(func(cfg *config.Config) {
+		max := int64(cfg.Downloads.BandwidthMax)
+		perc := cfg.Downloads.BandwidthPerc
+		if perc <= 0 || perc > 100 {
+			perc = 100
+		}
+		bytesPerSec = max * int64(perc) / 100
+	})
+	s.app.SetSpeedLimit(bytesPerSec)
+	s.log.Info("speed limit applied", "bytes_per_sec", bytesPerSec)
 }
 
 // modeConfig handles mode=config with sub-actions via name= parameter.
@@ -92,8 +113,7 @@ func (s *Server) modeConfig(w http.ResponseWriter, r *http.Request) {
 	action := formString(r, "name")
 	switch action {
 	case "speedlimit":
-		// TODO: Requires Downloader interface with LimitSpeed.
-		s.respondError(w, http.StatusNotImplemented, "not implemented in this build: speedlimit")
+		s.configSpeedLimit(w, r)
 	case "set_pause":
 		// Not in spec
 		s.respondError(w, http.StatusBadRequest, "unknown config action: "+action)
@@ -108,6 +128,55 @@ func (s *Server) modeConfig(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.respondError(w, http.StatusBadRequest, "unknown config action: "+action)
 	}
+}
+
+// configSpeedLimit handles mode=config&name=speedlimit&value=N.
+//
+// The value parameter follows the SABnzbd convention:
+//   - An integer is interpreted as KiB/s (e.g. "500" → 512000 B/s).
+//   - A suffixed string is parsed as an absolute byte rate (e.g. "1M").
+//   - "0" or empty disables limiting.
+//
+// The limit is applied immediately to the running downloader and also
+// persisted to the config so it survives a restart.
+func (s *Server) configSpeedLimit(w http.ResponseWriter, r *http.Request) {
+	if s.app == nil {
+		s.respondError(w, http.StatusServiceUnavailable, "application not running")
+		return
+	}
+	raw := formString(r, "value")
+	if raw == "" {
+		raw = "0"
+	}
+
+	// SABnzbd convention: plain numbers are KiB/s.
+	var bytesPerSec int64
+	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		bytesPerSec = n * 1024
+	} else {
+		parsed, parseErr := config.ParseByteSize(raw)
+		if parseErr != nil {
+			s.respondError(w, http.StatusBadRequest, "invalid speed limit: "+parseErr.Error())
+			return
+		}
+		bytesPerSec = int64(parsed)
+	}
+
+	s.app.SetSpeedLimit(bytesPerSec)
+
+	// Persist as the new bandwidth_max so restarts honour the change.
+	if s.config != nil {
+		bsVal := config.ByteSize(bytesPerSec)
+		_ = s.config.Set("downloads", "bandwidth_max", bsVal.String())
+		if s.configPath != "" {
+			if err := s.config.Save(s.configPath); err != nil {
+				s.log.Error("persist speed limit", "error", err)
+			}
+		}
+	}
+
+	s.log.Info("speed limit set", "bytes_per_sec", bytesPerSec)
+	respondOK(w, "value", bytesPerSec)
 }
 
 const testServerTimeout = 15 * time.Second
