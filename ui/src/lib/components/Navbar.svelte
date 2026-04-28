@@ -33,8 +33,7 @@
 
 		<Button
 			variant="ghost"
-			size="sm"
-			class="text-white hover:bg-gray-800"
+			class="nav-chip"
 			onclick={togglePause}
 			disabled={toggling}
 		>
