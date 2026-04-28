@@ -57,6 +57,8 @@ type ApplicationReloader interface {
 	RemoveJob(ctx context.Context, id string, deleteFiles bool) error
 	RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error
 	SetSpeedLimit(bytesPerSec int64)
+	PauseDownloads()
+	ResumeDownloads()
 }
 
 // Server is the HTTP API server. It owns a net/http.Server and the mode
