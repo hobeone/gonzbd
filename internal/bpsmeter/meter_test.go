@@ -352,3 +352,43 @@ func TestMeterRecordBytes(t *testing.T) {
 		t.Fatalf("RecordBytes BPS should be positive, got %f", bps)
 	}
 }
+
+func TestLimiterRate_Unlimited(t *testing.T) {
+	t.Parallel()
+	l := NewLimiter(0) // unlimited
+	if r := l.Rate(); r != 0 {
+		t.Fatalf("Rate() = %f; want 0 for unlimited limiter", r)
+	}
+}
+
+func TestLimiterRate_Active(t *testing.T) {
+	t.Parallel()
+	const bps = 1_000_000 // 1 MB/s
+	l := NewLimiter(bps)
+	if r := l.Rate(); r != bps {
+		t.Fatalf("Rate() = %f; want %d", r, bps)
+	}
+}
+
+func TestLimiterRate_AfterSetRate(t *testing.T) {
+	t.Parallel()
+	l := NewLimiter(1000)
+
+	// Increase rate.
+	l.SetRate(5_000_000)
+	if r := l.Rate(); r != 5_000_000 {
+		t.Fatalf("Rate() after increase = %f; want 5000000", r)
+	}
+
+	// Disable.
+	l.SetRate(0)
+	if r := l.Rate(); r != 0 {
+		t.Fatalf("Rate() after disable = %f; want 0", r)
+	}
+
+	// Re-enable.
+	l.SetRate(2048)
+	if r := l.Rate(); r != 2048 {
+		t.Fatalf("Rate() after re-enable = %f; want 2048", r)
+	}
+}
