@@ -1,0 +1,65 @@
+import { render, screen, fireEvent } from '@testing-library/svelte';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import SettingsDialog from './SettingsDialog.svelte';
+
+// Mock all config section components to avoid deep render trees.
+vi.mock('./config/GeneralSection.svelte', () => ({ default: function() {} }));
+vi.mock('./config/DownloadsSection.svelte', () => ({ default: function() {} }));
+vi.mock('./config/PostProcSection.svelte', () => ({ default: function() {} }));
+vi.mock('./config/ServersSection.svelte', () => ({ default: function() {} }));
+vi.mock('./config/CategoriesSection.svelte', () => ({ default: function() {} }));
+vi.mock('./config/SortersSection.svelte', () => ({ default: function() {} }));
+vi.mock('./config/RSSSection.svelte', () => ({ default: function() {} }));
+vi.mock('./config/SchedulingSection.svelte', () => ({ default: function() {} }));
+vi.mock('./config/ServerEditDialog.svelte', () => ({ default: function() {} }));
+vi.mock('./config/CategoryEditDialog.svelte', () => ({ default: function() {} }));
+vi.mock('./config/SorterEditDialog.svelte', () => ({ default: function() {} }));
+vi.mock('./config/ScheduleEditDialog.svelte', () => ({ default: function() {} }));
+vi.mock('./config/RSSEditDialog.svelte', () => ({ default: function() {} }));
+
+vi.mock('$lib/api', () => ({
+	setConfig: vi.fn().mockResolvedValue({ status: true }),
+	postAction: vi.fn().mockResolvedValue({ status: true })
+}));
+
+// Mock fetch — return a never-resolving promise to keep dialog in loading state
+// which avoids triggering the $effect reactive chain.
+vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})));
+
+describe('SettingsDialog', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	it('renders Settings title when open', () => {
+		render(SettingsDialog, { props: { open: true } });
+		expect(screen.getByText('Settings')).toBeInTheDocument();
+	});
+
+	it('renders all sidebar navigation items', () => {
+		render(SettingsDialog, { props: { open: true } });
+		expect(screen.getByText('General')).toBeInTheDocument();
+		expect(screen.getByText('Downloads')).toBeInTheDocument();
+		expect(screen.getByText('Post-Processing')).toBeInTheDocument();
+		expect(screen.getByText('Servers')).toBeInTheDocument();
+		expect(screen.getByText('Categories')).toBeInTheDocument();
+		expect(screen.getByText('Sorters')).toBeInTheDocument();
+		expect(screen.getByText('RSS')).toBeInTheDocument();
+		expect(screen.getByText('Scheduling')).toBeInTheDocument();
+	});
+
+	it('renders Close button and synced status in footer', () => {
+		render(SettingsDialog, { props: { open: true } });
+		expect(screen.getByText('Close')).toBeInTheDocument();
+	});
+
+	it('does not render when closed', () => {
+		render(SettingsDialog, { props: { open: false } });
+		expect(screen.queryByText('Settings')).not.toBeInTheDocument();
+	});
+
+	it('shows loading state initially', () => {
+		render(SettingsDialog, { props: { open: true } });
+		expect(screen.getByText('Loading configuration...')).toBeInTheDocument();
+	});
+});
