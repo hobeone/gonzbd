@@ -12,6 +12,9 @@ func (s *Server) modePause(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.queue.PauseAll()
+	if s.app != nil {
+		s.app.PauseDownloads()
+	}
 	s.log.Info("downloads paused")
 	respondStatus(w)
 }
@@ -24,6 +27,9 @@ func (s *Server) modeResume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.queue.ResumeAll()
+	if s.app != nil {
+		s.app.ResumeDownloads()
+	}
 	s.log.Info("downloads resumed")
 	respondStatus(w)
 }

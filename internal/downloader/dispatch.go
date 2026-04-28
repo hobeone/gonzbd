@@ -302,6 +302,15 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		return
 	}
 
+	// Global pause check: same as above but for app-wide pause.
+	// The pauseCtx cancellation aborts in-flight reads, but articles
+	// sitting in the workCh buffer still need to be drained.
+	if d.paused.Load() || d.queue.IsPaused() {
+		d.unmarkTried(req.jobID, req.messageID, name)
+		_ = d.queue.ClearArticleEmitted(req.jobID, req.messageID)
+		return
+	}
+
 	connMu.Lock()
 	if *connPtr == nil {
 		// If the server was penalized by a previous failed dial,
