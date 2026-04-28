@@ -9,14 +9,21 @@
 		onAddServer,
 		onEditServer,
 		onDeleteServer,
-		onTestServer
+		onTestServer,
+		onToggleServer
 	}: {
 		configData: Record<string, any>;
 		onAddServer: () => void;
 		onEditServer: (server: ServerConfig) => void;
 		onDeleteServer: (name: string) => void;
 		onTestServer: (server: ServerConfig) => void;
+		onToggleServer: (server: ServerConfig, enabled: boolean) => void;
 	} = $props();
+
+	function allDisabled(): boolean {
+		const servers: ServerConfig[] = configData.servers ?? [];
+		return servers.length > 0 && servers.every((s) => !s.enable);
+	}
 </script>
 
 <section class="space-y-6">
@@ -29,6 +36,15 @@
 	</div>
 	<Separator />
 
+	{#if allDisabled()}
+		<div class="flex items-center gap-2.5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4 flex-shrink-0 text-amber-500 dark:text-amber-400">
+				<path fill-rule="evenodd" d="M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.3-2.25l5.197-9ZM8 5a.75.75 0 0 1 .75.75v2a.75.75 0 0 1-1.5 0v-2A.75.75 0 0 1 8 5Zm0 6.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" clip-rule="evenodd" />
+			</svg>
+			<span>All servers are disabled. Downloads will not start until at least one server is enabled.</span>
+		</div>
+	{/if}
+
 	<div class="space-y-4">
 		{#if configData.servers.length === 0}
 			<div class="rounded-lg border border-dashed p-8 text-center text-sm text-gray-500 dark:text-gray-400">
@@ -39,6 +55,7 @@
 				<table class="w-full text-left text-sm">
 					<thead class="bg-gray-50 dark:bg-gray-800 text-xs uppercase text-gray-500 dark:text-gray-400">
 						<tr>
+							<th class="w-10 px-4 py-2"></th>
 							<th class="px-4 py-2">Server / Connection</th>
 							<th class="px-4 py-2">Details</th>
 							<th class="px-4 py-2 text-right">Actions</th>
@@ -46,7 +63,17 @@
 					</thead>
 					<tbody class="divide-y">
 						{#each configData.servers as server}
-							<tr class={server.enable ? 'hover:bg-gray-50 dark:hover:bg-gray-800' : 'bg-gray-50/50 dark:bg-gray-800/50 grayscale-[0.5]'}>
+							<tr class={server.enable ? 'hover:bg-gray-50 dark:hover:bg-gray-800' : 'bg-gray-50/50 dark:bg-gray-800/50 opacity-60'}>
+								<td class="px-4 py-3">
+									<label class="flex items-center cursor-pointer" title={server.enable ? 'Disable server' : 'Enable server'}>
+										<input
+											type="checkbox"
+											checked={server.enable}
+											onchange={() => onToggleServer(server, !server.enable)}
+											class="size-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 cursor-pointer"
+										/>
+									</label>
+								</td>
 								<td class="px-4 py-3">
 									<div class="flex items-center gap-2 font-medium">
 										{server.name}
