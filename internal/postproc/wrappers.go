@@ -138,21 +138,22 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 //
 // Destination is the same DownloadDir — extracted files land alongside
 // the archives, matching Python's in-place unpack layout before the sort
-// stage moves them. The caller is expected to clean archive files after
-// the pipeline completes if they want Python's delete-originals behavior;
-// UnpackStage itself never deletes.
+// stage moves them. When Cleanup is true, source archive files are
+// deleted after successful extraction (matching Python's PP bit 2).
 type UnpackStage struct {
 	// BaseOpts holds config-driven extraction options (tool paths, flags).
 	// The job's password is merged at runtime.
 	BaseOpts unpack.Options
+	// Cleanup deletes source archive files after successful extraction.
+	Cleanup bool
 }
 
 // NewUnpackStage constructs an UnpackStage with default settings.
 func NewUnpackStage() *UnpackStage { return &UnpackStage{} }
 
 // NewUnpackStageWith constructs an UnpackStage with the given base options.
-func NewUnpackStageWith(opts unpack.Options) *UnpackStage {
-	return &UnpackStage{BaseOpts: opts}
+func NewUnpackStageWith(opts unpack.Options, cleanup bool) *UnpackStage {
+	return &UnpackStage{BaseOpts: opts, Cleanup: cleanup}
 }
 
 // Name returns the stage identifier.
@@ -173,6 +174,8 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	opts := u.BaseOpts
 	opts.Password = job.Queue.Password
 	var firstErr error
+	// Track which archives extracted successfully for cleanup.
+	var successfulArchives []unpack.Archive
 	for _, a := range archives {
 		var res unpack.Result
 		var err error
@@ -198,8 +201,20 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("unpack %q: %w", a.Name, res.Err)
 			}
+			continue
+		}
+		successfulArchives = append(successfulArchives, a)
+	}
+
+	// Delete source archive files after successful extraction.
+	if u.Cleanup && len(successfulArchives) > 0 {
+		for _, a := range successfulArchives {
+			for _, part := range a.Parts {
+				_ = os.Remove(part)
+			}
 		}
 	}
+
 	return firstErr
 }
 

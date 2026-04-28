@@ -234,6 +234,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		EnableUnrar:          cfg.PostProc.EnableUnrar,
 		Enable7zip:           cfg.PostProc.Enable7zip,
 		EnableParCleanup:     cfg.PostProc.EnableParCleanup,
+		EnableRarCleanup:     cfg.PostProc.EnableRarCleanup,
 		Par2Command:          cfg.PostProc.Par2Command,
 		Par2Turbo:            cfg.PostProc.Par2Turbo,
 		UnrarCommand:         cfg.PostProc.UnrarCommand,

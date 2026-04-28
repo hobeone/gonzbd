@@ -75,6 +75,7 @@ func Default() (*Config, error) {
 			EnableUnrar:          true,
 			Enable7zip:           true,
 			EnableParCleanup:     true,
+			EnableRarCleanup:     true,
 			Par2Command:          "par2",
 			UnrarCommand:         "", // auto-detect
 			SevenzCommand:        "", // auto-detect
