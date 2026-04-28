@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/sabnzbd-go/internal/downloader"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 )
@@ -31,6 +32,7 @@ func (m mockApp) RetryHistoryJob(context.Context, string) error { return nil }
 func (m mockApp) SetSpeedLimit(int64)                           {}
 func (m mockApp) PauseDownloads()                               {}
 func (m mockApp) ResumeDownloads()                              {}
+func (m mockApp) ServerStatus() []downloader.ServerSnapshot     { return nil }
 func (m mockApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
 	if m.q == nil {
 		return fmt.Errorf("queue not wired to mockApp")

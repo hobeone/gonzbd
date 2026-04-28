@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -132,6 +133,49 @@ type Options struct {
 // atomic rate-limiter pointer are read by workers without locking;
 // the per-server work channels are written by the dispatcher and
 // read by workers; the try-list has its own mutex.
+// ConnActivity describes what a single NNTP connection worker is doing
+// right now. Written only by the owning connWorker goroutine; read by
+// ServerStatus() under connActivityMu.RLock.
+type ConnActivity struct {
+	ServerName string
+	ConnIndex  int
+	ArticleID  string    // message-id being fetched; "" = idle
+	Subject    string    // human-friendly file subject
+	Bytes      int       // expected article size
+	Since      time.Time // when this fetch started; zero = idle
+}
+
+// ConnSnapshot is the JSON-serialisable view of a single connection.
+type ConnSnapshot struct {
+	Index     int    `json:"index"`
+	ArticleID string `json:"article_id"`
+	Subject   string `json:"subject"`
+	Bytes     int    `json:"bytes"`
+	SinceUnix int64  `json:"since_unix"`
+}
+
+// ServerSnapshot is a point-in-time view of a single NNTP server,
+// combining config, health, metrics, and per-connection activity.
+type ServerSnapshot struct {
+	Name            string         `json:"name"`
+	Host            string         `json:"host"`
+	Port            int            `json:"port"`
+	SSL             bool           `json:"ssl"`
+	Priority        int            `json:"priority"`
+	MaxConnections  int            `json:"max_connections"`
+	ActiveConns     int            `json:"active_conns"`
+	Active          bool           `json:"active"`
+	Enabled         bool           `json:"enabled"`
+	Optional        bool           `json:"optional"`
+	Required        bool           `json:"required"`
+	BadConnections  int64          `json:"bad_connections"`
+	GoodConnections int64          `json:"good_connections"`
+	PenaltyUntil    int64          `json:"penalty_until"`
+	BPS             float64        `json:"bps"`
+	TotalBytes      int64          `json:"total_bytes"`
+	Connections     []ConnSnapshot `json:"connections"`
+}
+
 type Downloader struct {
 	log     *slog.Logger
 	queue   *queue.Queue
@@ -179,6 +223,12 @@ type Downloader struct {
 	// produce duplicate completions.
 	inFlight map[articleKey]int
 
+	// connActivityMu guards connActivity. Workers write their own
+	// entry via setConnActivity/clearConnActivity; ServerStatus()
+	// reads all entries under RLock.
+	connActivityMu sync.RWMutex
+	connActivity   map[string]*ConnActivity // key: "serverName#connIndex"
+
 	ctx    context.Context //nolint:containedctx // lifecycle context stored for Stop()
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -217,8 +267,10 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		limiter:       bpsmeter.NewLimiter(0),
 		tryList:       make(map[articleKey]map[string]struct{}),
 		inFlight:      make(map[articleKey]int),
+		connActivity:  make(map[string]*ConnActivity),
 	}
 	for _, srv := range servers {
+		name := srv.Cfg().Name
 		perServer := opts.PerServerQueue
 		if perServer <= 0 {
 			pipelineDepth := srv.Cfg().PipeliningRequests
@@ -230,7 +282,20 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		if perServer < 1 {
 			perServer = 1
 		}
-		d.workCh[srv.Cfg().Name] = make(chan *articleRequest, perServer)
+		d.workCh[name] = make(chan *articleRequest, perServer)
+
+		// Pre-populate connection activity entries (all idle).
+		conns := srv.Connections()
+		if conns < 1 {
+			conns = 1
+		}
+		for i := 0; i < conns; i++ {
+			wid := fmt.Sprintf("%s#%d", name, i)
+			d.connActivity[wid] = &ConnActivity{
+				ServerName: name,
+				ConnIndex:  i,
+			}
+		}
 	}
 	return d
 }
@@ -265,8 +330,9 @@ func (d *Downloader) Start(ctx context.Context) error {
 			conns = 1
 		}
 		for i := 0; i < conns; i++ {
+			wid := fmt.Sprintf("%s#%d", srv.Cfg().Name, i)
 			d.wg.Go(func() {
-				d.connWorker(d.ctx, srv)
+				d.connWorker(d.ctx, srv, wid)
 			})
 		}
 		d.log.Debug("server workers started", "server", srv.Cfg().Name, "workers", conns)
@@ -371,6 +437,115 @@ func (d *Downloader) SetSpeedLimit(bytesPerSec int64) {
 // IsPaused reports the downloader's own pause flag. Orthogonal to
 // queue.IsPaused; either being true suppresses dispatch.
 func (d *Downloader) IsPaused() bool { return d.paused.Load() }
+
+// setConnActivity records that the worker identified by workerID is
+// now fetching the given article. Called at the start of handleRequest.
+func (d *Downloader) setConnActivity(workerID string, req *articleRequest) {
+	d.connActivityMu.Lock()
+	if ca, ok := d.connActivity[workerID]; ok {
+		ca.ArticleID = req.messageID
+		ca.Subject = req.subject
+		ca.Bytes = req.bytes
+		ca.Since = time.Now()
+	}
+	d.connActivityMu.Unlock()
+}
+
+// clearConnActivity marks the worker as idle. Called via defer at the
+// end of handleRequest.
+func (d *Downloader) clearConnActivity(workerID string) {
+	d.connActivityMu.Lock()
+	if ca, ok := d.connActivity[workerID]; ok {
+		ca.ArticleID = ""
+		ca.Subject = ""
+		ca.Bytes = 0
+		ca.Since = time.Time{}
+	}
+	d.connActivityMu.Unlock()
+}
+
+// ServerStatus returns a point-in-time snapshot of all servers,
+// including per-connection activity. Safe for concurrent use.
+func (d *Downloader) ServerStatus() []ServerSnapshot {
+	now := time.Now()
+
+	// Grab meter snapshot once.
+	var meterSnap bpsmeter.MeterSnapshot
+	if d.meter != nil {
+		meterSnap = d.meter.Snapshot()
+	}
+
+	// Snapshot connection activity.
+	d.connActivityMu.RLock()
+	activityByServer := make(map[string][]ConnSnapshot)
+	for _, ca := range d.connActivity {
+		var sinceUnix int64
+		if !ca.Since.IsZero() {
+			sinceUnix = ca.Since.Unix()
+		}
+		activityByServer[ca.ServerName] = append(activityByServer[ca.ServerName], ConnSnapshot{
+			Index:     ca.ConnIndex,
+			ArticleID: ca.ArticleID,
+			Subject:   ca.Subject,
+			Bytes:     ca.Bytes,
+			SinceUnix: sinceUnix,
+		})
+	}
+	d.connActivityMu.RUnlock()
+
+	snapshots := make([]ServerSnapshot, 0, len(d.servers))
+	for _, srv := range d.servers {
+		cfg := srv.Cfg()
+		name := cfg.Name
+
+		var penaltyUnix int64
+		if pe := srv.PenaltyExpiry(); !pe.IsZero() && pe.After(now) {
+			penaltyUnix = pe.Unix()
+		}
+
+		var bps float64
+		var totalBytes int64
+		if meterSnap.Servers != nil {
+			if ss, ok := meterSnap.Servers[name]; ok {
+				bps = ss.BPS
+				totalBytes = ss.Total
+			}
+		}
+
+		conns := activityByServer[name]
+		if conns == nil {
+			conns = []ConnSnapshot{}
+		}
+
+		activeCount := 0
+		for _, c := range conns {
+			if c.ArticleID != "" {
+				activeCount++
+			}
+		}
+
+		snapshots = append(snapshots, ServerSnapshot{
+			Name:            name,
+			Host:            cfg.Host,
+			Port:            cfg.Port,
+			SSL:             cfg.SSL,
+			Priority:        cfg.Priority,
+			MaxConnections:  cfg.Connections,
+			ActiveConns:     activeCount,
+			Active:          srv.Active(now),
+			Enabled:         cfg.Enable,
+			Optional:        cfg.Optional,
+			Required:        cfg.Required,
+			BadConnections:  srv.BadConnections(),
+			GoodConnections: srv.GoodConnections(),
+			PenaltyUntil:    penaltyUnix,
+			BPS:             bps,
+			TotalBytes:      totalBytes,
+			Connections:     conns,
+		})
+	}
+	return snapshots
+}
 
 // SpeedLimit returns the current speed limit in bytes/sec.
 // Returns 0 when unlimited.

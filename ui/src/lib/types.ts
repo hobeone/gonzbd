@@ -172,3 +172,36 @@ export interface ConfigResponse {
 	status: boolean;
 	config: FullConfig;
 }
+
+// Server status debug panel types
+export interface ConnSnapshot {
+	index: number;
+	article_id: string;
+	subject: string;
+	bytes: number;
+	since_unix: number;
+}
+
+export interface ServerSnapshot {
+	name: string;
+	host: string;
+	port: number;
+	ssl: boolean;
+	priority: number;
+	max_connections: number;
+	active_conns: number;
+	active: boolean;
+	enabled: boolean;
+	optional: boolean;
+	required: boolean;
+	bad_connections: number;
+	good_connections: number;
+	penalty_until: number;
+	bps: number;
+	total_bytes: number;
+	connections: ConnSnapshot[];
+}
+
+export interface ServerStatsResponse {
+	servers: ServerSnapshot[];
+}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/sabnzbd-go/internal/downloader"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 	"github.com/hobeone/sabnzbd-go/internal/urlgrabber"
@@ -59,6 +60,7 @@ type ApplicationReloader interface {
 	SetSpeedLimit(bytesPerSec int64)
 	PauseDownloads()
 	ResumeDownloads()
+	ServerStatus() []downloader.ServerSnapshot
 }
 
 // Server is the HTTP API server. It owns a net/http.Server and the mode
