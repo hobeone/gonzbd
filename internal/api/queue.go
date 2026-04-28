@@ -144,13 +144,22 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 			pct = "0.0"
 		}
 
+		// Display override: when the queue is globally paused, jobs
+		// that were mid-download should appear as "Paused" in the UI
+		// rather than "Downloading". The internal state is unchanged
+		// so resume picks up instantly.
+		slotStatus := string(j.Status)
+		if paused && j.Status == constants.StatusDownloading {
+			slotStatus = string(constants.StatusPaused)
+		}
+
 		slots = append(slots, queueSlot{
 			NzoID:          j.ID,
 			Filename:       j.Filename,
 			Name:           j.Name,
 			Category:       j.Category,
 			Priority:       j.Priority.String(),
-			Status:         string(j.Status),
+			Status:         slotStatus,
 			Script:         nonEmpty(j.Script, "none"),
 			Password:       j.Password,
 			Size:           formatBytes(j.TotalBytes),
