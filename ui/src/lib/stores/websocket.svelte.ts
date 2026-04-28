@@ -6,6 +6,7 @@ export interface WSEvent {
 	event: string;
 	speed?: number;
 	remaining?: number;
+	speed_limit?: number;
 }
 
 type Handler = (event: WSEvent) => void;

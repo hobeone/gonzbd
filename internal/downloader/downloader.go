@@ -372,6 +372,10 @@ func (d *Downloader) SetSpeedLimit(bytesPerSec int64) {
 // queue.IsPaused; either being true suppresses dispatch.
 func (d *Downloader) IsPaused() bool { return d.paused.Load() }
 
+// SpeedLimit returns the current speed limit in bytes/sec.
+// Returns 0 when unlimited.
+func (d *Downloader) SpeedLimit() int64 { return int64(d.limiter.Rate()) }
+
 // signalDispatch non-blocking-pokes the main loop. Coalesces rapid
 // signals (cap-1 channel); callers never block.
 func (d *Downloader) signalDispatch() {

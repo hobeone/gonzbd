@@ -19,6 +19,7 @@ class QueueStore {
 	#speedBytesPerSec = $state(0);
 	#speedHistory = $state<number[]>([]);
 	#totalRemainingBytes = $state(0);
+	#speedLimitBytesPerSec = $state(0);
 
 	get queue() { return this.#queue; }
 	get error() { return this.#error; }
@@ -29,6 +30,7 @@ class QueueStore {
 	get speedBytesPerSec() { return this.#speedBytesPerSec; }
 	get speedHistory() { return this.#speedHistory; }
 	get totalRemainingBytes() { return this.#totalRemainingBytes; }
+	get speedLimitBytesPerSec() { return this.#speedLimitBytesPerSec; }
 
 	async poll() {
 		try {
@@ -55,6 +57,7 @@ class QueueStore {
 			} else if (event.event === 'metrics') {
 				this.#speedBytesPerSec = event.speed ?? 0;
 				this.#totalRemainingBytes = event.remaining ?? 0;
+				this.#speedLimitBytesPerSec = event.speed_limit ?? 0;
 				this.#speedHistory = [...this.#speedHistory.slice(-(SPEED_HISTORY_SIZE - 1)), this.#speedBytesPerSec];
 			}
 		});
@@ -109,6 +112,10 @@ class QueueStore {
 		await postAction('queue', params);
 		await this.poll();
 	}
+
+	async setSpeedLimit(kibPerSec: number) {
+		await postAction('config', { name: 'speedlimit', value: String(kibPerSec) });
+	}
 }
 
 const store = new QueueStore();
@@ -131,6 +138,8 @@ export const refreshQueue = () => store.poll();
 export const getSpeedBytesPerSec = () => store.speedBytesPerSec;
 export const getSpeedHistory = () => store.speedHistory;
 export const getTotalRemainingBytes = () => store.totalRemainingBytes;
+export const getSpeedLimitBytesPerSec = () => store.speedLimitBytesPerSec;
+export const setSpeedLimit = (kib: number) => store.setSpeedLimit(kib);
 
 export { formatSpeed, formatSize } from '$lib/utils';
 
