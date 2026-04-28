@@ -48,9 +48,11 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 		s.queueResumeJobs(w, r)
 	case "pause_all":
 		s.queue.PauseAll()
+		s.log.Info("downloads paused")
 		respondStatus(w)
 	case "resume_all":
 		s.queue.ResumeAll()
+		s.log.Info("downloads resumed")
 		respondStatus(w)
 	// Stubbed: no backing implementation yet.
 	case "rename", "priority", "sort", "delete_nzf", "change_complete_action",
@@ -256,6 +258,9 @@ func (s *Server) queuePauseJobs(w http.ResponseWriter, r *http.Request) {
 	ids := splitCSV(value)
 	for _, id := range ids {
 		_ = s.queue.Pause(id) //nolint:errcheck // not-found silently ignored
+		if job, err := s.queue.Get(id); err == nil {
+			s.log.Info("job paused", "job", id, "name", job.Name)
+		}
 	}
 	respondStatus(w)
 }
@@ -272,6 +277,9 @@ func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
 	ids := splitCSV(value)
 	for _, id := range ids {
 		_ = s.queue.Resume(id) //nolint:errcheck // not-found silently ignored
+		if job, err := s.queue.Get(id); err == nil {
+			s.log.Info("job resumed", "job", id, "name", job.Name)
+		}
 	}
 	respondStatus(w)
 }
