@@ -3,7 +3,8 @@ import type {
 	HistoryResponse,
 	WarningsResponse,
 	StatusResponse,
-	VersionResponse
+	VersionResponse,
+	ServerStatsResponse
 } from './types';
 
 const API_BASE = '/api';
@@ -125,4 +126,8 @@ export async function uploadNzb(
 		throw new Error(`Upload ${res.status}: ${res.statusText}`);
 	}
 	return res.json() as Promise<StatusResponse>;
+}
+
+export async function fetchServerStats(): Promise<ServerStatsResponse> {
+	return fetchJSON<ServerStatsResponse>(apiUrl('server_stats'));
 }

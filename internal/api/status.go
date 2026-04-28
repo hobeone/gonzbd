@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/hobeone/sabnzbd-go/internal/downloader"
 )
 
 // modeFullStatus returns a full status snapshot including queue paused state and slot count.
@@ -54,11 +56,18 @@ func (s *Server) modeWarnings(w http.ResponseWriter, r *http.Request) {
 	respondOK(w, "warnings", s.Warnings())
 }
 
-// modeServerStats returns server connection statistics (stubbed).
+// modeServerStats returns per-server connection statistics including
+// health, BPS, penalty state, and per-connection article activity.
 func (s *Server) modeServerStats(w http.ResponseWriter, r *http.Request) {
-	respondOK(w, "", map[string]any{
-		"status":  true,
-		"total":   0,
-		"servers": map[string]any{},
+	if s.app == nil {
+		s.respondError(w, http.StatusInternalServerError, "app not wired")
+		return
+	}
+	servers := s.app.ServerStatus()
+	if servers == nil {
+		servers = []downloader.ServerSnapshot{}
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"servers": servers,
 	})
 }

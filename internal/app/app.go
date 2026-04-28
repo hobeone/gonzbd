@@ -938,6 +938,18 @@ func (app *Application) ResumeDownloads() {
 	}
 }
 
+// ServerStatus returns a snapshot of all NNTP server connection state,
+// including per-connection article activity. Returns nil when the
+// downloader is not running.
+func (app *Application) ServerStatus() []downloader.ServerSnapshot {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.downloader != nil {
+		return app.downloader.ServerStatus()
+	}
+	return nil
+}
+
 func failMsgForJob(job *queue.Job) string {
 	if job.FailedBytes == 0 {
 		return ""

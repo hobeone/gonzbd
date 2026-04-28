@@ -183,19 +183,13 @@ func TestModeServerStats_Default(t *testing.T) {
 	}
 
 	m := decodeJSON(t, rr)
-	if m["status"] != true {
-		t.Errorf("status = %v; want true", m["status"])
-	}
 
-	if total, ok := m["total"].(float64); !ok {
-		t.Errorf("total not a number")
-	} else if total != 0 {
-		t.Errorf("total = %v; want 0", total)
+	// servers is now an array (empty when mockApp returns nil).
+	servers, ok := m["servers"].([]any)
+	if !ok {
+		t.Fatalf("servers not an array; got %T", m["servers"])
 	}
-
-	if servers, ok := m["servers"].(map[string]any); !ok {
-		t.Errorf("servers not an object")
-	} else if len(servers) != 0 {
+	if len(servers) != 0 {
 		t.Errorf("servers length = %d; want 0", len(servers))
 	}
 }

@@ -3,6 +3,7 @@
 	import { postAction } from '$lib/api';
 	import AddNzbDialog from './AddNzbDialog.svelte';
 	import SettingsDialog from './SettingsDialog.svelte';
+	import ServerStatusPanel from './ServerStatusPanel.svelte';
 
 	let {
 		paused = false,
@@ -15,6 +16,7 @@
 	let toggling = $state(false);
 	let addDialogOpen = $state(false);
 	let settingsOpen = $state(false);
+	let serverStatusOpen = $state(false);
 
 	async function togglePause() {
 		toggling = true;
@@ -56,6 +58,18 @@
 			variant="ghost"
 			size="icon-sm"
 			class="text-gray-400 hover:bg-gray-800 hover:text-white"
+			onclick={() => (serverStatusOpen = true)}
+			title="Server Status"
+		>
+			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-5">
+				<path d="M1 4.75C1 3.784 1.784 3 2.75 3h14.5c.966 0 1.75.784 1.75 1.75v10.515a1.75 1.75 0 0 1-1.75 1.75h-1.5c-.078 0-.155-.005-.23-.015H4.48c-.075.01-.152.015-.23.015h-1.5A1.75 1.75 0 0 1 1 15.265V4.75Zm1.5 0v2.5h15v-2.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Zm0 4v5.5h2v-5.5h-2Zm3.5 0v5.5h4v-5.5H6Zm5.5 0v5.5h4v-5.5h-4Z" />
+			</svg>
+		</Button>
+
+		<Button
+			variant="ghost"
+			size="icon-sm"
+			class="text-gray-400 hover:bg-gray-800 hover:text-white"
 			onclick={() => (settingsOpen = true)}
 			title="Settings"
 		>
@@ -76,3 +90,4 @@
 
 <AddNzbDialog bind:open={addDialogOpen} />
 <SettingsDialog bind:open={settingsOpen} />
+<ServerStatusPanel bind:open={serverStatusOpen} />
