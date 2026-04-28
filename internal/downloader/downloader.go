@@ -319,6 +319,7 @@ func (d *Downloader) Stop() error {
 // re-dispatched (their Emitted flag is cleared, and context
 // cancellation is not penalized).
 func (d *Downloader) Pause() {
+	d.log.Info("pausing")
 	d.paused.Store(true)
 	d.pauseMu.Lock()
 	if d.pauseCancel != nil {
@@ -349,6 +350,7 @@ func (d *Downloader) Resume() {
 	d.pauseCtx, d.pauseCancel = context.WithCancel(parent)
 	d.pauseMu.Unlock()
 	d.paused.Store(false)
+	d.log.Info("resumed")
 	d.signalDispatch()
 }
 
