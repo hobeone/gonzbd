@@ -11,7 +11,8 @@ describe('ServersSection', () => {
 		onAddServer: vi.fn(),
 		onEditServer: vi.fn(),
 		onDeleteServer: vi.fn(),
-		onTestServer: vi.fn()
+		onTestServer: vi.fn(),
+		onToggleServer: vi.fn()
 	};
 
 	const emptyConfig = { servers: [] };
@@ -97,5 +98,30 @@ describe('ServersSection', () => {
 		const testButtons = screen.getAllByTitle('Test connection');
 		await fireEvent.click(testButtons[0]);
 		expect(onTestServer).toHaveBeenCalledWith(populatedConfig.servers[0]);
+	});
+
+	it('calls onToggleServer when checkbox is clicked', async () => {
+		const onToggleServer = vi.fn();
+		render(ServersSection, { configData: populatedConfig, ...defaultCallbacks, onToggleServer });
+		const checkboxes = screen.getAllByRole('checkbox');
+		// First checkbox is Eweka (enabled), clicking should toggle to false
+		await fireEvent.click(checkboxes[0]);
+		expect(onToggleServer).toHaveBeenCalledWith(populatedConfig.servers[0], false);
+	});
+
+	it('shows warning when all servers are disabled', () => {
+		const allDisabledConfig = {
+			servers: [
+				{ ...populatedConfig.servers[0], enable: false },
+				{ ...populatedConfig.servers[1], enable: false }
+			]
+		};
+		render(ServersSection, { configData: allDisabledConfig, ...defaultCallbacks });
+		expect(screen.getByText(/All servers are disabled/)).toBeInTheDocument();
+	});
+
+	it('does not show warning when at least one server is enabled', () => {
+		render(ServersSection, { configData: populatedConfig, ...defaultCallbacks });
+		expect(screen.queryByText(/All servers are disabled/)).not.toBeInTheDocument();
 	});
 });
