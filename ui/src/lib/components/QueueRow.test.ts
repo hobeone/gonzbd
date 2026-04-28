@@ -1,7 +1,14 @@
 import { render, screen, fireEvent } from '@testing-library/svelte';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import QueueRow from './QueueRow.svelte';
 import type { QueueSlot } from '$lib/types';
+
+vi.mock('$lib/stores/queue.svelte', () => ({
+	pauseJob: vi.fn().mockResolvedValue(undefined),
+	resumeJob: vi.fn().mockResolvedValue(undefined)
+}));
+
+import { pauseJob, resumeJob } from '$lib/stores/queue.svelte';
 
 describe('QueueRow', () => {
 	const baseSlot: QueueSlot = {
@@ -22,6 +29,8 @@ describe('QueueRow', () => {
 		script: 'none',
 		password: ''
 	};
+
+	beforeEach(() => vi.clearAllMocks());
 
 	it('renders progress bar and percentage', () => {
 		render(QueueRow, { slot: baseSlot, onremove: () => {} });
@@ -59,6 +68,14 @@ describe('QueueRow', () => {
 		expect(progress?.className).not.toContain('animate-pulse');
 	});
 
+	it('does not apply pulse animation for idle jobs', () => {
+		const idleSlot = { ...baseSlot, status: 'Idle' };
+		const { container } = render(QueueRow, { slot: idleSlot, onremove: () => {} });
+
+		const progress = container.querySelector('[data-slot="progress"]');
+		expect(progress?.className).not.toContain('animate-pulse');
+	});
+
 	it('renders job name', () => {
 		const { container } = render(QueueRow, { slot: baseSlot, onremove: () => {} });
 		expect(container.textContent).toContain('Test.NZB');
@@ -67,6 +84,12 @@ describe('QueueRow', () => {
 	it('renders category', () => {
 		const { container } = render(QueueRow, { slot: baseSlot, onremove: () => {} });
 		expect(container.textContent).toContain('TV');
+	});
+
+	it('shows * for empty category', () => {
+		const slot = { ...baseSlot, category: '' };
+		const { container } = render(QueueRow, { slot, onremove: () => {} });
+		expect(container.textContent).toContain('*');
 	});
 
 	it('renders size', () => {
@@ -98,5 +121,50 @@ describe('QueueRow', () => {
 		const pausedSlot = { ...baseSlot, status: 'Paused' };
 		render(QueueRow, { slot: pausedSlot, onremove: () => {} });
 		expect(screen.getByTitle('Resume')).toBeInTheDocument();
+	});
+
+	// ── togglePause ──
+
+	it('clicking pause button calls pauseJob for active jobs', async () => {
+		render(QueueRow, { slot: baseSlot, onremove: vi.fn() });
+
+		const pauseBtn = screen.getByTitle('Pause');
+		await fireEvent.click(pauseBtn);
+
+		expect(pauseJob).toHaveBeenCalledWith('123');
+		expect(resumeJob).not.toHaveBeenCalled();
+	});
+
+	it('clicking resume button calls resumeJob for paused jobs', async () => {
+		const pausedSlot = { ...baseSlot, status: 'Paused' };
+		render(QueueRow, { slot: pausedSlot, onremove: vi.fn() });
+
+		const resumeBtn = screen.getByTitle('Resume');
+		await fireEvent.click(resumeBtn);
+
+		expect(resumeJob).toHaveBeenCalledWith('123');
+		expect(pauseJob).not.toHaveBeenCalled();
+	});
+
+	// ── Warning display ──
+
+	it('shows warning icon and text when slot.warning is set', () => {
+		const warnSlot = { ...baseSlot, warning: 'Missing articles' };
+		const { container } = render(QueueRow, { slot: warnSlot, onremove: vi.fn() });
+		expect(container.textContent).toContain('Missing articles');
+	});
+
+	it('does not show warning icon when slot.warning is empty', () => {
+		const { container } = render(QueueRow, { slot: baseSlot, onremove: vi.fn() });
+		// No warning text or icon.
+		expect(container.querySelector('.text-amber-600')).not.toBeInTheDocument();
+	});
+
+	// ── Fallback to filename ──
+
+	it('uses filename when name is empty', () => {
+		const slot = { ...baseSlot, name: '', filename: 'fallback.nzb' };
+		const { container } = render(QueueRow, { slot, onremove: vi.fn() });
+		expect(container.textContent).toContain('fallback.nzb');
 	});
 });
