@@ -143,6 +143,10 @@
 		persistAndReload('servers', servers);
 	}
 
+	function toggleServer(s: ServerConfig, enabled: boolean) {
+		saveServer({ ...s, enable: enabled });
+	}
+
 	function saveCategory(c: CategoryConfig) {
 		if (!configData) return;
 		const categories = [...(configData.categories ?? [])];
@@ -301,6 +305,7 @@
 								onEditServer={(s) => { selectedServer = s; serverEditOpen = true; }}
 								onDeleteServer={deleteServer}
 								onTestServer={testServer}
+								onToggleServer={toggleServer}
 							/>
 						{:else if activeSection === 'categories'}
 							<CategoriesSection
