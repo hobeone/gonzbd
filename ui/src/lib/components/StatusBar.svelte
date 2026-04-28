@@ -103,7 +103,7 @@
 
 				{#if showPopover}
 					<div
-						class="absolute bottom-full left-0 z-50 mb-2 w-56 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800"
+						class="absolute top-full left-0 z-50 mt-2 w-56 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800"
 						role="menu"
 					>
 						<div class="border-b border-gray-100 px-3 py-2 dark:border-gray-700">

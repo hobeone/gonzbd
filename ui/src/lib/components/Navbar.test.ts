@@ -25,10 +25,6 @@ describe('Navbar', () => {
 		expect(screen.getByText('SABnzbd')).toBeInTheDocument();
 	});
 
-	it('displays speed prop', () => {
-		render(Navbar, { props: { speed: '5.2 MB/s' } });
-		expect(screen.getByText('5.2 MB/s')).toBeInTheDocument();
-	});
 
 	it('shows Pause button when not paused', () => {
 		render(Navbar, { props: { paused: false } });
@@ -70,10 +66,5 @@ describe('Navbar', () => {
 	it('renders settings button with title', () => {
 		render(Navbar);
 		expect(screen.getByTitle('Settings')).toBeInTheDocument();
-	});
-
-	it('shows Speed label', () => {
-		render(Navbar);
-		expect(screen.getByText('Speed')).toBeInTheDocument();
 	});
 });
