@@ -270,7 +270,7 @@
 									Connections
 								</div>
 								<div class="space-y-1">
-									{#each server.connections.sort((a, b) => a.index - b.index) as conn (conn.index)}
+									{#each server.connections.toSorted((a, b) => a.index - b.index) as conn (conn.index)}
 										<div class="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs {conn.article_id ? 'bg-white dark:bg-gray-900' : 'bg-transparent'}">
 											<span class="w-6 flex-shrink-0 font-mono text-gray-400 dark:text-gray-500">#{conn.index}</span>
 											{#if conn.article_id}
