@@ -28,8 +28,10 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/fsutil"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/notifier"
+	"github.com/hobeone/sabnzbd-go/internal/par2"
 	"github.com/hobeone/sabnzbd-go/internal/postproc"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/sabnzbd-go/internal/unpack"
 )
 
 // ErrAlreadyStarted is returned by Start on the second call to a live
@@ -49,10 +51,31 @@ type Config struct {
 	CheckpointInterval time.Duration
 	Sanitize           fsutil.SanitizeOptions
 
+	// Download tuning.
+	BandwidthMax     int64 // bytes/sec; 0 = unlimited
+	BandwidthPerc    int   // 0-100; percentage of BandwidthMax
+	MinFreeSpace     int64 // bytes; 0 = disabled
+	MaxArtTries      int   // per-article retry cap across all servers
+	MaxArtOpt        int   // per-article retry cap on optional servers
+	TopOnly          bool  // restrict dispatch to highest-priority server
+	NoPenalties      bool  // use short penalties for testing
+	PreCheck         bool  // STAT before BODY
+	PropagationDelay int   // minutes to hold new jobs before downloading
+
 	// PostProc pipeline configuration.
 	Sorters              []config.SorterConfig
 	ScriptDir            string
 	DeobfuscateFilenames bool
+	EnableUnrar          bool
+	Enable7zip           bool
+	EnableParCleanup     bool
+	Par2Command          string
+	Par2Turbo            bool
+	UnrarCommand         string
+	SevenzCommand        string
+	IgnoreUnrarDates     bool
+	OverwriteFiles       bool
+	FlatUnpack           bool
 
 	// ScriptStage metadata injected into SAB_* env vars.
 	Version    string
@@ -188,6 +211,12 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		servers[i] = downloader.NewServer(sc)
 	}
 	d := downloader.New(q, servers, app.meter, downloader.Options{
+		MaxArtTries:      cfg.MaxArtTries,
+		MaxArtOpt:        cfg.MaxArtOpt,
+		TopOnly:          cfg.TopOnly,
+		NoPenalties:      cfg.NoPenalties,
+		PreCheck:         cfg.PreCheck,
+		PropagationDelay: time.Duration(cfg.PropagationDelay) * time.Minute,
 		OnJobHopeless: func(jobID string) {
 			snap := q.SnapshotJob(jobID)
 			if snap == nil {
@@ -197,6 +226,15 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		},
 	}, log)
 	app.downloader = d
+
+	// Apply initial bandwidth limit from config.
+	if cfg.BandwidthMax > 0 {
+		perc := cfg.BandwidthPerc
+		if perc <= 0 || perc > 100 {
+			perc = 100
+		}
+		d.SetSpeedLimit(cfg.BandwidthMax * int64(perc) / 100)
+	}
 
 	p := &pipeline{
 		log:         log.With("component", "pipeline"),
@@ -211,26 +249,42 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 
 	stages := app.customStages
 	if stages == nil {
-		stages = []postproc.Stage{
-			postproc.NewRepairStage(),
-			postproc.NewUnpackStage(),
+		var stageList []postproc.Stage
+
+		// Repair stage: configurable par2 binary, turbo mode, and cleanup.
+		stageList = append(stageList, postproc.NewRepairStageWith(
+			par2.RunOptions{Command: cfg.Par2Command, Turbo: cfg.Par2Turbo},
+			cfg.EnableParCleanup,
+		))
+
+		// Unpack stage: conditionally included based on enable flags.
+		if cfg.EnableUnrar || cfg.Enable7zip {
+			stageList = append(stageList, postproc.NewUnpackStageWith(unpack.Options{
+				UnrarCommand:     cfg.UnrarCommand,
+				SevenZipCommand:  cfg.SevenzCommand,
+				OverwriteFiles:   cfg.OverwriteFiles,
+				IgnoreUnrarDates: cfg.IgnoreUnrarDates,
+				OneFolder:        cfg.FlatUnpack,
+			}))
 		}
+
 		if cfg.DeobfuscateFilenames {
-			stages = append(stages, postproc.NewDeobfuscateStage())
+			stageList = append(stageList, postproc.NewDeobfuscateStage())
 		}
 		if len(cfg.Sorters) > 0 {
 			rules := sorterRulesFromConfig(cfg.Sorters)
 			if len(rules) > 0 {
-				stages = append(stages, postproc.NewSortStage(rules, cfg.CompleteDir))
+				stageList = append(stageList, postproc.NewSortStage(rules, cfg.CompleteDir))
 			}
 		}
 		if cfg.ScriptDir != "" {
-			stages = append(stages, postproc.NewScriptStage(
+			stageList = append(stageList, postproc.NewScriptStage(
 				cfg.ScriptDir, cfg.CompleteDir,
 				cfg.Version, cfg.APIKey, cfg.ListenAddr,
 			))
 		}
-		stages = append(stages, postproc.NewFinalizeStage())
+		stageList = append(stageList, postproc.NewFinalizeStage())
+		stages = stageList
 	}
 	pp := postproc.New(postproc.Options{
 		Stages: stages,
@@ -365,6 +419,13 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		FileInfo:           p.resolveFileInfo,
 		MarkArticlesDone:   q.MarkArticlesDone,
 		MarkArticlesFailed: q.MarkArticlesFailed,
+		MinFreeBytes:       cfg.MinFreeSpace,
+		OnLowDisk: func(dir string, freeBytes int64) {
+			app.downloader.Pause()
+			app.log.Warn("low disk space, downloads paused",
+				"dir", dir,
+				"freeMB", freeBytes/(1024*1024))
+		},
 		OnFileComplete: func(jobID string, fileIdx int) {
 			fc := FileComplete{JobID: jobID, FileIdx: fileIdx}
 			select {

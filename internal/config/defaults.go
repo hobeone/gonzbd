@@ -91,14 +91,12 @@ func Default() (*Config, error) {
 				PP:       3, // Repair + Unpack
 				Script:   "None",
 				Priority: int(constants.NormalPriority),
-				Order:    0,
 			},
 			{
 				Name:     "*",
 				PP:       3,
 				Script:   "None",
 				Priority: int(constants.NormalPriority),
-				Order:    1,
 			},
 		},
 		Sorters:   []SorterConfig{},

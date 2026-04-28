@@ -20,17 +20,27 @@ import (
 // the job's DownloadDir. A set with status RepairNotPossible or an exec
 // failure sets job.ParError; the pipeline continues (unpack may still
 // succeed on an intact archive).
-type RepairStage struct{}
+type RepairStage struct {
+	// Par2Opts configures the par2 binary path and turbo mode.
+	Par2Opts par2.RunOptions
+	// Cleanup deletes all .par2 files after a successful repair.
+	Cleanup bool
+}
 
-// NewRepairStage constructs a RepairStage.
+// NewRepairStage constructs a RepairStage with default settings.
 func NewRepairStage() *RepairStage { return &RepairStage{} }
+
+// NewRepairStageWith constructs a RepairStage with the given options.
+func NewRepairStageWith(par2Opts par2.RunOptions, cleanup bool) *RepairStage {
+	return &RepairStage{Par2Opts: par2Opts, Cleanup: cleanup}
+}
 
 // Name returns the stage identifier.
 func (*RepairStage) Name() string { return "repair" }
 
 // Run finds par2 sets in job.DownloadDir and repairs each. No-op when the
 // job has no par2 files.
-func (*RepairStage) Run(ctx context.Context, job *Job) error {
+func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	sets, err := par2.FindPar2Files(job.DownloadDir)
 	if err != nil {
 		job.ParError = true
@@ -45,6 +55,7 @@ func (*RepairStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	var firstErr error
+	repairSucceeded := true
 	if len(sets) > 0 {
 		for _, set := range sets {
 			main := set.MainFile
@@ -54,9 +65,10 @@ func (*RepairStage) Run(ctx context.Context, job *Job) error {
 			if main == "" {
 				continue
 			}
-			res, err := par2.Repair(ctx, main, tmpFiles...)
+			res, err := par2.RepairWith(ctx, s.Par2Opts, main, tmpFiles...)
 			if err != nil {
 				job.ParError = true
+				repairSucceeded = false
 				if firstErr == nil {
 					firstErr = fmt.Errorf("repair %q: %w", set.Name, err)
 				}
@@ -64,9 +76,22 @@ func (*RepairStage) Run(ctx context.Context, job *Job) error {
 			}
 			if !res.Success {
 				job.ParError = true
+				repairSucceeded = false
 				if firstErr == nil {
 					firstErr = fmt.Errorf("repair %q: unsuccessful (exit=%d)", set.Name, res.ExitCode)
 				}
+			}
+		}
+	}
+
+	// Delete par2 files after successful repair when cleanup is enabled.
+	if s.Cleanup && repairSucceeded && len(sets) > 0 {
+		for _, set := range sets {
+			if set.MainFile != "" {
+				_ = os.Remove(set.MainFile)
+			}
+			for _, ef := range set.ExtraFiles {
+				_ = os.Remove(ef)
 			}
 		}
 	}
@@ -116,17 +141,26 @@ func (*RepairStage) Run(ctx context.Context, job *Job) error {
 // stage moves them. The caller is expected to clean archive files after
 // the pipeline completes if they want Python's delete-originals behavior;
 // UnpackStage itself never deletes.
-type UnpackStage struct{}
+type UnpackStage struct {
+	// BaseOpts holds config-driven extraction options (tool paths, flags).
+	// The job's password is merged at runtime.
+	BaseOpts unpack.Options
+}
 
-// NewUnpackStage constructs an UnpackStage.
+// NewUnpackStage constructs an UnpackStage with default settings.
 func NewUnpackStage() *UnpackStage { return &UnpackStage{} }
+
+// NewUnpackStageWith constructs an UnpackStage with the given base options.
+func NewUnpackStageWith(opts unpack.Options) *UnpackStage {
+	return &UnpackStage{BaseOpts: opts}
+}
 
 // Name returns the stage identifier.
 func (*UnpackStage) Name() string { return "unpack" }
 
 // Run scans job.DownloadDir, routes each archive to the right unpack
 // function, and captures any failures on job.UnpackError.
-func (*UnpackStage) Run(ctx context.Context, job *Job) error {
+func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	archives, err := unpack.Scan(job.DownloadDir)
 	if err != nil {
 		job.UnpackError = true
@@ -135,9 +169,9 @@ func (*UnpackStage) Run(ctx context.Context, job *Job) error {
 	if len(archives) == 0 {
 		return nil
 	}
-	opts := unpack.Options{
-		Password: job.Queue.Password,
-	}
+	// Merge config-level options with per-job password.
+	opts := u.BaseOpts
+	opts.Password = job.Queue.Password
 	var firstErr error
 	for _, a := range archives {
 		var res unpack.Result

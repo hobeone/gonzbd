@@ -28,12 +28,4 @@ type CategoryConfig struct {
 	// Dir is a subdirectory within complete_dir to receive output for
 	// this category. Empty writes directly to complete_dir.
 	Dir string `yaml:"dir" json:"dir"`
-
-	// Newzbin is a legacy field retained for round-trip compatibility
-	// with imported Python configs; new configurations should leave it
-	// empty.
-	Newzbin string `yaml:"newzbin,omitempty" json:"newzbin,omitempty"`
-
-	// Order controls UI display ordering only.
-	Order int `yaml:"order" json:"order"`
 }

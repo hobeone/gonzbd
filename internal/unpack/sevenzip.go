@@ -12,12 +12,16 @@ import (
 
 // sevenZipBin returns the path to the 7-zip binary to use.
 // Resolution order:
-//  1. SABNZBD_SEVENZIP_BIN environment variable (if set and non-empty).
-//  2. "7zz" (preferred upstream binary name).
-//  3. "7z" (common distro package name).
+//  1. Explicit command from Options (SevenZipCommand).
+//  2. SABNZBD_SEVENZIP_BIN environment variable (if set and non-empty).
+//  3. "7zz" (preferred upstream binary name).
+//  4. "7z" (common distro package name).
 //
-// Returns an error if neither binary is found in PATH.
-func sevenZipBin() (string, error) {
+// Returns an error if no binary is found.
+func sevenZipBin(opts Options) (string, error) {
+	if opts.SevenZipCommand != "" {
+		return opts.SevenZipCommand, nil
+	}
 	if env := os.Getenv("SABNZBD_SEVENZIP_BIN"); env != "" {
 		return env, nil
 	}
@@ -27,7 +31,7 @@ func sevenZipBin() (string, error) {
 	if path, err := exec.LookPath("7z"); err == nil {
 		return path, nil
 	}
-	return "", fmt.Errorf("7-zip binary not found; install 7zz or 7z, or set SABNZBD_SEVENZIP_BIN")
+	return "", fmt.Errorf("7-zip binary not found; install 7zz or 7z, set SABNZBD_SEVENZIP_BIN, or configure sevenz_command")
 }
 
 // SevenZip extracts archive.MainFile into outDir by shelling out to the 7-zip
@@ -43,7 +47,7 @@ func sevenZipBin() (string, error) {
 // is safe for 7zz — it does not prompt on stdin when -p is supplied.
 func SevenZip(ctx context.Context, archive Archive, outDir string, opts Options) (Result, error) {
 	log := slog.Default().With("component", "unpack")
-	bin, err := sevenZipBin()
+	bin, err := sevenZipBin(opts)
 	if err != nil {
 		return Result{Err: err}, err
 	}
@@ -56,9 +60,19 @@ func SevenZip(ctx context.Context, archive Archive, outDir string, opts Options)
 		"-bso0", // suppress standard output stream
 		"-bsp0", // suppress progress stream
 		pwFlag,
-		archive.MainFile,
-		"-o" + outDir, // no space between -o and the path
 	}
+
+	// Overwrite behavior.
+	if opts.OverwriteFiles {
+		args = append(args, "-aoa") // overwrite all existing files
+	} else {
+		args = append(args, "-aos") // skip existing files
+	}
+
+	args = append(args,
+		archive.MainFile,
+		"-o"+outDir, // no space between -o and the path
+	)
 
 	log.Info("7zip: starting extraction",
 		"binary", bin,
