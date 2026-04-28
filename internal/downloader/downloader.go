@@ -89,6 +89,30 @@ type Options struct {
 	// OnJobHopeless is called when a job's health drops below the
 	// mathematical threshold for repair.
 	OnJobHopeless func(jobID string)
+
+	// MaxArtTries caps the total number of download attempts for a
+	// single article across all servers. Zero means unlimited.
+	MaxArtTries int
+
+	// MaxArtOpt caps the number of attempts on optional (backup)
+	// servers per article. Zero means unlimited.
+	MaxArtOpt int
+
+	// TopOnly restricts article dispatch to the highest-priority server
+	// group. When true, backup servers are never tried.
+	TopOnly bool
+
+	// NoPenalties disables long server penalties; all penalties become
+	// a short fixed duration instead of the class-specific defaults.
+	NoPenalties bool
+
+	// PreCheck sends a STAT command before BODY to verify article
+	// existence on the server, avoiding wasted bandwidth on 430s.
+	PreCheck bool
+
+	// PropagationDelay is the minimum age a job must have before its
+	// articles are dispatched. Zero means no delay.
+	PropagationDelay time.Duration
 }
 
 // Downloader orchestrates article dispatch across a set of NNTP
@@ -113,6 +137,7 @@ type Downloader struct {
 	queue   *queue.Queue
 	servers []*Server
 	meter   *bpsmeter.Meter
+	opts    Options
 
 	onJobHopeless func(jobID string)
 
@@ -177,6 +202,7 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		queue:         q,
 		servers:       servers,
 		meter:         meter,
+		opts:          opts,
 		onJobHopeless: opts.OnJobHopeless,
 		workCh:        make(map[string]chan *articleRequest, len(servers)),
 		completions:   make(chan *ArticleResult, opts.CompletionsBuffer),

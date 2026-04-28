@@ -21,6 +21,26 @@ type Options struct {
 	// after a successful extraction.  The unpack functions themselves never
 	// delete files; deletion is the caller's responsibility.
 	KeepOriginals bool
+
+	// UnrarCommand overrides the unrar binary path. Empty defaults to "unrar".
+	UnrarCommand string
+	// SevenZipCommand overrides the 7z binary path. Empty uses auto-detection.
+	SevenZipCommand string
+	// OverwriteFiles controls whether extraction overwrites existing files.
+	// true = overwrite (-o+ for unrar, -aoa for 7z); false = skip (-o- for unrar, -aos for 7z).
+	// Default (false) preserves existing files.
+	OverwriteFiles bool
+	// IgnoreUnrarDates discards in-archive timestamps and uses extraction time.
+	// Adds -ts0 to unrar arguments.
+	IgnoreUnrarDates bool
+}
+
+// unrarBin returns the configured unrar binary, defaulting to "unrar".
+func (o Options) unrarBin() string {
+	if o.UnrarCommand != "" {
+		return o.UnrarCommand
+	}
+	return "unrar"
 }
 
 // Result holds the outcome of an extraction attempt.
@@ -64,18 +84,32 @@ func UnRAR(ctx context.Context, archive Archive, outDir string, opts Options) (R
 		"-y",   // assume yes to all prompts
 		"-idp", // disable progress display
 		pwFlag,
-		archive.MainFile,
-		outDir + "/", // unrar expects a trailing slash on the output directory
 	}
 
+	// Extraction flags from config.
+	if opts.OverwriteFiles {
+		args = append(args, "-o+")
+	} else {
+		args = append(args, "-o-")
+	}
+	if opts.IgnoreUnrarDates {
+		args = append(args, "-ts0") // discard in-archive timestamps
+	}
+
+	args = append(args, archive.MainFile)
+	args = append(args, outDir+"/") // unrar expects a trailing slash on the output directory
+
+	bin := opts.unrarBin()
+
 	log.Info("unrar: starting extraction",
+		"binary", bin,
 		"archive", archive.MainFile,
 		"outDir", outDir,
 		"oneFolder", opts.OneFolder,
 		"hasPassword", opts.Password != "",
 	)
 
-	cmd := exec.CommandContext(ctx, "unrar", args...) //nolint:gosec // args are caller-supplied, not shell-expanded
+	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // args are caller-supplied, not shell-expanded
 	var combined bytes.Buffer
 	cmd.Stdout = &combined
 	cmd.Stderr = &combined
