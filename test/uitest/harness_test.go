@@ -22,10 +22,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/hobeone/sabnzbd-go/internal/api"
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 	"github.com/hobeone/sabnzbd-go/internal/web"
 	"github.com/hobeone/sabnzbd-go/ui"
@@ -67,6 +69,8 @@ type testEnv struct {
 	BaseURL string
 	Queue   *queue.Queue
 	APISrv  *api.Server
+	HistDB  *history.DB
+	HistR   *history.Repository
 	PW      *playwright.Playwright
 	Browser playwright.Browser
 }
@@ -83,6 +87,13 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	q := queue.New()
 	ma := &mockApp{q: q}
+
+	// In-memory history database.
+	histDB, err := history.Open(":memory:")
+	if err != nil {
+		t.Fatalf("history.Open(:memory:): %v", err)
+	}
+	histR := history.NewRepository(histDB)
 
 	// Provide a minimal Config so get_config doesn't return 500.
 	// Initialize all slices to non-nil so JSON encodes as [] not null.
@@ -105,6 +116,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Queue:   q,
 		Config:  cfg,
 		App:     ma,
+		History: histR,
 		Logger:  slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 	})
 
@@ -141,6 +153,8 @@ func newTestEnv(t *testing.T) *testEnv {
 		BaseURL: ts.URL,
 		Queue:   q,
 		APISrv:  apiSrv,
+		HistDB:  histDB,
+		HistR:   histR,
 		PW:      pw,
 		Browser: browser,
 	}
@@ -149,6 +163,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		_ = browser.Close()
 		_ = pw.Stop()
 		ts.Close()
+		_ = histDB.Close()
 	})
 
 	return env
@@ -195,4 +210,72 @@ func (e *testEnv) seedQueue(t *testing.T, n int) {
 			t.Fatalf("queue.Add: %v", err)
 		}
 	}
+}
+
+// seedHistory adds n history entries with the given status.
+func (e *testEnv) seedHistory(t *testing.T, n int, status string) {
+	t.Helper()
+	for i := range n {
+		entry := history.Entry{
+			NzoID:        fmt.Sprintf("hist-%04d", i),
+			Name:         fmt.Sprintf("History.Item.%d.x264-GROUP", i),
+			NzbName:      fmt.Sprintf("hist_%d.nzb", i),
+			Category:     "Movies",
+			Status:       status,
+			Bytes:        int64((i + 1) * 200 * 1024 * 1024),
+			DownloadTime: 120,
+			Completed:    time.Now().Add(-time.Duration(i) * time.Hour),
+		}
+		if status == "Failed" {
+			entry.FailMessage = fmt.Sprintf("Unpacking failed for item %d", i)
+		}
+		if err := e.HistR.Add(context.Background(), entry); err != nil {
+			t.Fatalf("history.Add: %v", err)
+		}
+	}
+}
+
+// seedHistoryWithPrefix adds n history entries with a custom ID/name prefix
+// to avoid NzoID collisions when seeding both completed and failed entries
+// in the same test.
+func (e *testEnv) seedHistoryWithPrefix(t *testing.T, n int, status, prefix string) {
+	t.Helper()
+	for i := range n {
+		entry := history.Entry{
+			NzoID:        fmt.Sprintf("%s-%04d", prefix, i),
+			Name:         fmt.Sprintf("%s.History.%d.x264-GROUP", prefix, i),
+			NzbName:      fmt.Sprintf("%s_%d.nzb", prefix, i),
+			Category:     "Movies",
+			Status:       status,
+			Bytes:        int64((i + 1) * 200 * 1024 * 1024),
+			DownloadTime: 120,
+			Completed:    time.Now().Add(-time.Duration(i) * time.Hour),
+		}
+		if status == "Failed" {
+			entry.FailMessage = fmt.Sprintf("Unpacking failed for %s item %d", prefix, i)
+		}
+		if err := e.HistR.Add(context.Background(), entry); err != nil {
+			t.Fatalf("history.Add: %v", err)
+		}
+	}
+}
+
+// screenshotOnFailure registers a cleanup that captures a full-page screenshot
+// when the test fails. Screenshots are saved to test/uitest/screenshots/.
+func screenshotOnFailure(t *testing.T, page playwright.Page) {
+	t.Helper()
+	t.Cleanup(func() {
+		if t.Failed() {
+			_ = os.MkdirAll("screenshots", 0o755)
+			path := fmt.Sprintf("screenshots/%s.png", t.Name())
+			if _, err := page.Screenshot(playwright.PageScreenshotOptions{
+				Path:     playwright.String(path),
+				FullPage: playwright.Bool(true),
+			}); err != nil {
+				t.Logf("screenshot failed: %v", err)
+			} else {
+				t.Logf("Screenshot saved: %s", path)
+			}
+		}
+	})
 }

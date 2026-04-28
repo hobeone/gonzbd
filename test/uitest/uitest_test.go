@@ -4,6 +4,7 @@ package uitest
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/playwright-community/playwright-go"
@@ -17,6 +18,7 @@ func TestPageLoads(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 	page := env.newPage(t)
+	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
 
 	title, err := page.Title()
@@ -41,18 +43,17 @@ func TestEmptyState(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 	page := env.newPage(t)
+	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
 
-	// With no queue items, the page should show empty state.
-	// Wait for the queue data to load.
-	emptyText := page.GetByText("No items in queue")
+	// With no queue items, the page should show "Queue is empty".
+	emptyText := page.GetByText("Queue is empty")
 	err := emptyText.WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
 	})
 	if err != nil {
-		// Might be phrased differently. Check for the table being empty.
-		t.Logf("empty state text not found (may use different wording): %v", err)
+		t.Errorf("empty state text 'Queue is empty' not found: %v", err)
 	}
 }
 
@@ -68,6 +69,7 @@ func TestQueueDisplaysItems(t *testing.T) {
 	env.seedQueue(t, 3)
 
 	page := env.newPage(t)
+	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
 
 	// Wait for queue data to render.
@@ -88,6 +90,7 @@ func TestQueuePauseResume(t *testing.T) {
 	env.seedQueue(t, 1)
 
 	page := env.newPage(t)
+	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
 
 	// Scope to the navbar to avoid matching per-job pause buttons.
@@ -142,6 +145,333 @@ func TestQueuePauseResume(t *testing.T) {
 	}
 }
 
+func TestQueueJobPauseResume(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	env.seedQueue(t, 1)
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	// Wait for the job row to render.
+	jobText := page.GetByText("Test.Download.0.x264-GROUP")
+	if err := jobText.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("job not visible: %v", err)
+	}
+
+	// Find the per-job pause button (inside the table row, not navbar).
+	row := page.Locator("tr", playwright.PageLocatorOptions{
+		HasText: "Test.Download.0",
+	})
+	pauseBtn := row.GetByTitle("Pause")
+	if err := pauseBtn.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		t.Fatalf("per-job Pause button not visible: %v", err)
+	}
+
+	if err := pauseBtn.Click(); err != nil {
+		t.Fatalf("click per-job Pause: %v", err)
+	}
+
+	// Reload and verify the button changed to Resume.
+	if _, err := page.Reload(playwright.PageReloadOptions{
+		WaitUntil: playwright.WaitUntilStateNetworkidle,
+	}); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	row2 := page.Locator("tr", playwright.PageLocatorOptions{
+		HasText: "Test.Download.0",
+	})
+	resumeBtn := row2.GetByTitle("Resume")
+	if err := resumeBtn.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Errorf("per-job Resume button not visible after pause: %v", err)
+	}
+}
+
+func TestQueueDeleteJob(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	env.seedQueue(t, 2)
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	// Wait for both jobs.
+	for i := range 2 {
+		name := page.GetByText(fmt.Sprintf("Test.Download.%d.x264-GROUP", i))
+		if err := name.First().WaitFor(playwright.LocatorWaitForOptions{
+			State:   playwright.WaitForSelectorStateVisible,
+			Timeout: playwright.Float(5000),
+		}); err != nil {
+			t.Fatalf("job %d not visible: %v", i, err)
+		}
+	}
+
+	// Click the delete button on the first job (opens confirmation dialog).
+	row := page.Locator("tr", playwright.PageLocatorOptions{
+		HasText: "Test.Download.0",
+	})
+	deleteBtn := row.GetByTitle("Delete")
+	if err := deleteBtn.Click(); err != nil {
+		t.Fatalf("click Delete icon: %v", err)
+	}
+
+	// The confirmation dialog should appear with a "Delete Job" button.
+	confirmBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Delete Job"})
+	if err := confirmBtn.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		t.Fatalf("Delete Job confirmation button not visible: %v", err)
+	}
+	if err := confirmBtn.Click(); err != nil {
+		t.Fatalf("click Delete Job confirm: %v", err)
+	}
+
+	// Reload to force the SPA to re-fetch queue state.
+	if _, err := page.Reload(playwright.PageReloadOptions{
+		WaitUntil: playwright.WaitUntilStateNetworkidle,
+	}); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	// Job 1 should still be visible.
+	name1 := page.GetByText("Test.Download.1.x264-GROUP")
+	if err := name1.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Errorf("job 1 should still be visible: %v", err)
+	}
+
+	// Job 0 should be gone.
+	name0 := page.GetByText("Test.Download.0.x264-GROUP")
+	if err := name0.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateHidden,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		t.Errorf("job 0 should be gone after delete: %v", err)
+	}
+}
+
+func TestQueueSearch(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	env.seedQueue(t, 5)
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	// Wait for all items to render.
+	name4 := page.GetByText("Test.Download.4.x264-GROUP")
+	if err := name4.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("jobs not visible: %v", err)
+	}
+
+	// Find search input. The queue table has a search input.
+	searchInput := page.GetByPlaceholder("Search")
+	if err := searchInput.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		t.Skipf("search input not found (may not be implemented): %v", err)
+	}
+
+	// Type a search term.
+	if err := searchInput.First().Fill("Download.3"); err != nil {
+		t.Fatalf("fill search: %v", err)
+	}
+
+	// Give the SPA time to filter (debounce + re-render).
+	page.WaitForTimeout(1000)
+
+	// Job 3 should still be visible.
+	name3 := page.GetByText("Test.Download.3.x264-GROUP")
+	if err := name3.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		t.Errorf("job 3 should be visible after search: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// History Operations
+// ---------------------------------------------------------------------------
+
+func TestHistoryDisplaysItems(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	env.seedHistory(t, 3, "Completed")
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	// History is a section on the main page (not a separate tab).
+	// Wait for history items to render.
+	for i := range 3 {
+		name := page.GetByText(fmt.Sprintf("History.Item.%d.x264-GROUP", i))
+		if err := name.First().WaitFor(playwright.LocatorWaitForOptions{
+			State:   playwright.WaitForSelectorStateVisible,
+			Timeout: playwright.Float(10000),
+		}); err != nil {
+			t.Errorf("history item %d not visible: %v", i, err)
+		}
+	}
+}
+
+func TestHistoryShowsCategory(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	env.seedHistory(t, 1, "Completed")
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	// Wait for history item.
+	name := page.GetByText("History.Item.0.x264-GROUP")
+	if err := name.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(10000),
+	}); err != nil {
+		t.Fatalf("history item not visible: %v", err)
+	}
+
+	// Category "Movies" should be visible in the row.
+	category := page.GetByText("Movies")
+	if err := category.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		t.Errorf("category 'Movies' not visible: %v", err)
+	}
+}
+
+func TestHistoryEmptyState(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	// Don't seed any history.
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	// History section should show "History is empty".
+	emptyText := page.GetByText("History is empty")
+	if err := emptyText.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Errorf("history empty state text not found: %v", err)
+	}
+}
+
+func TestHistoryFailedFilter(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	// Seed 2 completed + 1 failed, using unique ID prefixes.
+	env.seedHistoryWithPrefix(t, 2, "Completed", "comp")
+	env.seedHistoryWithPrefix(t, 1, "Failed", "fail")
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	// Wait for all history items to load.
+	compItem := page.GetByText("comp.History.0.x264-GROUP")
+	if err := compItem.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(10000),
+	}); err != nil {
+		t.Fatalf("completed history items not loaded: %v", err)
+	}
+
+	// Click "Failed only" checkbox.
+	failedCheckbox := page.GetByText("Failed only")
+	if err := failedCheckbox.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		t.Skipf("'Failed only' label not found: %v", err)
+	}
+	if err := failedCheckbox.Click(); err != nil {
+		t.Fatalf("click 'Failed only': %v", err)
+	}
+
+	// Give the SPA time to re-fetch with filter.
+	page.WaitForTimeout(1500)
+
+	// The failed item should be visible.
+	failItem := page.GetByText("fail.History.0.x264-GROUP")
+	if err := failItem.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Errorf("failed item should be visible after filter: %v", err)
+	}
+}
+
+func TestHistorySearch(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	env.seedHistory(t, 5, "Completed")
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	// Wait for history to load.
+	item0 := page.GetByText("History.Item.0.x264-GROUP")
+	if err := item0.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(10000),
+	}); err != nil {
+		t.Fatalf("history not loaded: %v", err)
+	}
+
+	// Find the history search input (placeholder "Search history...").
+	searchInput := page.GetByPlaceholder("Search history")
+	if err := searchInput.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		t.Skipf("history search not found: %v", err)
+	}
+
+	if err := searchInput.First().Fill("Item.3"); err != nil {
+		t.Fatalf("fill history search: %v", err)
+	}
+
+	// Give debounce + re-fetch time.
+	page.WaitForTimeout(1500)
+
+	// Item 3 should be visible.
+	item3 := page.GetByText("History.Item.3.x264-GROUP")
+	if err := item3.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Errorf("history item 3 should be visible after search: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Settings Dialog
 // ---------------------------------------------------------------------------
@@ -150,6 +480,7 @@ func TestSettingsOpensAndLoadsConfig(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 	page := env.newPage(t)
+	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
 
 	// Look for the settings/gear button.
@@ -179,6 +510,7 @@ func TestSettingsTabNavigation(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 	page := env.newPage(t)
+	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
 
 	// Open settings.
@@ -232,16 +564,19 @@ func TestSettingsTabNavigation(t *testing.T) {
 // Status Bar
 // ---------------------------------------------------------------------------
 
-func TestStatusBarDisplays(t *testing.T) {
+func TestStatusBarDisplaysData(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 	env.seedQueue(t, 2)
 
 	page := env.newPage(t)
+	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
 
-	// The status bar should show some indication of items/speed.
-	// Look for "items" or similar text.
+	// The status bar should show the item count.
+	page.WaitForTimeout(1000)
+
+	// Look for status bar content showing queue info.
 	statusArea := page.Locator("[class*='status'], footer, [data-testid='status-bar']")
 	if err := statusArea.First().WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
@@ -249,16 +584,104 @@ func TestStatusBarDisplays(t *testing.T) {
 	}); err != nil {
 		t.Logf("status bar area not found by class/testid: %v", err)
 	}
+
+	// Verify actual content.
+	text, err := statusArea.First().TextContent()
+	if err != nil {
+		t.Logf("could not read status bar text: %v", err)
+	} else if text == "" {
+		t.Error("status bar text is empty")
+	} else {
+		t.Logf("status bar content: %q", text)
+	}
 }
 
 // ---------------------------------------------------------------------------
-// API endpoint (verify backend serves correctly)
+// Warning Banner
+// ---------------------------------------------------------------------------
+
+func TestWarningBannerDisplays(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Inject a warning via the API server.
+	env.APISrv.AddWarning("Test warning: disk space low")
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	// Wait for the warning poll to pick it up.
+	warningText := page.GetByText("disk space low")
+	if err := warningText.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(10000),
+	}); err != nil {
+		t.Errorf("warning banner not visible: %v", err)
+	}
+}
+
+func TestWarningBannerClear(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+
+	// Inject warnings.
+	env.APISrv.AddWarning("Warning 1")
+	env.APISrv.AddWarning("Warning 2")
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	// Wait for warnings to appear.
+	warningText := page.GetByText("Warning 1")
+	if err := warningText.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(10000),
+	}); err != nil {
+		t.Skipf("warning banner not visible, skipping clear test: %v", err)
+	}
+
+	// Click "Clear all" or dismiss button.
+	clearBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Clear"})
+	if err := clearBtn.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		t.Skipf("Clear button not found: %v", err)
+	}
+	if err := clearBtn.First().Click(); err != nil {
+		t.Fatalf("click Clear: %v", err)
+	}
+
+	// After clearing, reload and verify warnings are gone.
+	if _, err := page.Reload(playwright.PageReloadOptions{
+		WaitUntil: playwright.WaitUntilStateNetworkidle,
+	}); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	page.WaitForTimeout(2000)
+
+	// Verify the warning text is no longer visible.
+	warningText2 := page.GetByText("Warning 1")
+	if err := warningText2.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateHidden,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Errorf("warning should be cleared: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// API endpoints (verify backend serves correctly)
 // ---------------------------------------------------------------------------
 
 func TestAPIVersionEndpoint(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 	page := env.newPage(t)
+	screenshotOnFailure(t, page)
 
 	// Direct API call via browser.
 	resp, err := page.Request().Get(env.BaseURL + "/api?mode=version")
@@ -276,6 +699,9 @@ func TestAPIVersionEndpoint(t *testing.T) {
 	if body == "" {
 		t.Error("empty API response body")
 	}
+	if !strings.Contains(body, "test-uitest") {
+		t.Errorf("version response should contain 'test-uitest'; got: %s", body)
+	}
 	t.Logf("API version response: %s", body)
 }
 
@@ -285,6 +711,7 @@ func TestAPIQueueEndpoint(t *testing.T) {
 	env.seedQueue(t, 2)
 
 	page := env.newPage(t)
+	screenshotOnFailure(t, page)
 
 	resp, err := page.Request().Get(env.BaseURL + "/api?mode=queue&apikey=" + testAPIKey)
 	if err != nil {
@@ -298,7 +725,36 @@ func TestAPIQueueEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
+	// Verify actual content, not just non-empty.
+	if !strings.Contains(body, "Test.Download.0") {
+		t.Errorf("queue response should contain seeded job name; got: %.500s", body)
+	}
 	t.Logf("Queue response (first 500 chars): %.500s", body)
+}
+
+func TestAPIHistoryEndpoint(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	env.seedHistory(t, 2, "Completed")
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+
+	resp, err := page.Request().Get(env.BaseURL + "/api?mode=history&apikey=" + testAPIKey)
+	if err != nil {
+		t.Fatalf("API request: %v", err)
+	}
+	if resp.Status() != 200 {
+		t.Errorf("API status = %d; want 200", resp.Status())
+	}
+
+	body, err := resp.Text()
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(body, "History.Item.0") {
+		t.Errorf("history response should contain seeded entry; got: %.500s", body)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +765,7 @@ func TestSPASetsAPIKeyCookie(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
 	page := env.newPage(t)
+	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
 
 	cookies, err := page.Context().Cookies(env.BaseURL)
