@@ -6,7 +6,7 @@
 	import StatusBar from '$lib/components/StatusBar.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import { onMount, onDestroy } from 'svelte';
-	import { startPolling, stopPolling, isPaused, getSpeedBytesPerSec, formatSpeed, getQueueSlots, getError } from '$lib/stores/queue.svelte';
+	import { startPolling, stopPolling, isPaused, getQueueSlots, getError } from '$lib/stores/queue.svelte';
 	import { startHistoryPolling, stopHistoryPolling } from '$lib/stores/history.svelte';
 	import { startWarningsPolling, stopWarningsPolling } from '$lib/stores/warnings.svelte';
 
@@ -28,7 +28,7 @@
 </svelte:head>
 
 <div class="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950">
-	<Navbar paused={isPaused()} speed={formatSpeed(getSpeedBytesPerSec())} onpausetoggle={() => {}} />
+	<Navbar paused={isPaused()} onpausetoggle={() => {}} />
 	<StatusBar />
 
 	{#if getError()}
