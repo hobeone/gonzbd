@@ -263,6 +263,26 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 	return nil
 }
 
+// SetStatusIf conditionally updates a job's status. The status is only
+// changed if the current status matches ifCurrent. This is used by the
+// dispatcher to flip Queued → Downloading without accidentally
+// overwriting a Paused or PostProcessing status set concurrently.
+// Returns ErrNotFound if the job is absent; returns nil even if the
+// condition didn't match (no error, just a no-op).
+func (q *Queue) SetStatusIf(id string, newStatus, ifCurrent constants.Status) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[id]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	if job.Status == ifCurrent {
+		job.Status = newStatus
+		q.dirty.Store(true)
+	}
+	return nil
+}
+
 // SetPostProcStarted marks the job as being in post-processing.
 // Returns true if the flag was successfully set (first time), false
 // if it was already set.
@@ -451,6 +471,12 @@ func (q *Queue) ClearAllEmitted() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for _, job := range q.jobs {
+		// Reset Downloading → Queued: the old downloader is gone, so no
+		// articles are actually in-flight. The new downloader's first
+		// dispatch pass will transition back to Downloading.
+		if job.Status == constants.StatusDownloading {
+			job.Status = constants.StatusQueued
+		}
 		for fi := range job.Files {
 			for ai := range job.Files[fi].Articles {
 				job.Files[fi].Articles[ai].Emitted = false

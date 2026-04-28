@@ -409,9 +409,10 @@ func TestRetryHistoryJob(t *testing.T) {
 		t.Errorf("Queue length = %d, want 1", application.Queue().Len())
 	}
 	status, _ := application.Queue().GetJobStatus(jobID)
-	// Since post-processing is paused, it should be in Queued state
-	if status != constants.StatusQueued {
-		t.Errorf("Status = %q, want %q (paused)", status, constants.StatusQueued)
+	// The job should be in an active download state — either Queued (initial)
+	// or Downloading (dispatcher already picked it up).
+	if status != constants.StatusQueued && status != constants.StatusDownloading {
+		t.Errorf("Status = %q, want Queued or Downloading", status)
 	}
 
 	// 4. Verify history entry is gone
