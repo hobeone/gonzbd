@@ -86,3 +86,14 @@ func (l *Limiter) Wait(ctx context.Context, n int) error {
 	}
 	return lim.WaitN(ctx, n) //nolint:wrapcheck // pass through context error unchanged
 }
+
+// Rate returns the current limit in bytes/sec. Returns 0 when unlimited.
+func (l *Limiter) Rate() float64 {
+	l.mu.RLock()
+	lim := l.lim
+	l.mu.RUnlock()
+	if lim == nil {
+		return 0
+	}
+	return float64(lim.Limit())
+}

@@ -107,9 +107,10 @@ type EventEmitter interface {
 
 // Event represents a real-time notification sent to the UI.
 type Event struct {
-	Type      string `json:"event"`
-	Speed     int64  `json:"speed,omitempty"`
-	Remaining int64  `json:"remaining,omitempty"`
+	Type       string `json:"event"`
+	Speed      int64  `json:"speed,omitempty"`
+	Remaining  int64  `json:"remaining,omitempty"`
+	SpeedLimit int64  `json:"speed_limit"`
 }
 
 type dummyEmitter struct{}
@@ -667,9 +668,10 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 		case <-ticker.C:
 			remaining := app.queue.TotalRemainingBytes()
 			app.emitter.Broadcast(Event{
-				Type:      "metrics",
-				Speed:     int64(app.downloader.Speed()),
-				Remaining: remaining,
+				Type:       "metrics",
+				Speed:      int64(app.downloader.Speed()),
+				Remaining:  remaining,
+				SpeedLimit: app.downloader.SpeedLimit(),
 			})
 			// Trigger a table refresh only while actively downloading so
 			// individual job percentages update, but avoid pointless
