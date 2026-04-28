@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/subtle"
 	"net/http"
+	"strings"
 )
 
 // modeEntry binds a handler function to its required access level.
@@ -16,10 +17,21 @@ type modeEntry struct {
 type modeTable map[string]modeEntry
 
 // handleAPI is the single /api endpoint. It extracts mode= from the
-// query/form, looks it up in the mode table, enforces auth, and
-// dispatches to the handler.
+// query string or POST form body, looks it up in the mode table,
+// enforces auth, and dispatches to the handler.
+//
+// Third-party apps (Sonarr, Radarr, NZB360, etc.) may send mode as a
+// POST form field rather than a URL query parameter. The body-size
+// limit is already enforced by the middleware's MaxBytesReader, so
+// parsing the form body here is safe from DoS.
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	mode := r.URL.Query().Get("mode")
+	if mode == "" && r.Method == http.MethodPost {
+		// Fall back to the POST form body. For multipart uploads
+		// ParseMultipartForm reads the body under MaxBytesReader's
+		// limit. For url-encoded forms, ParseForm is lightweight.
+		mode = formValue(r, "mode")
+	}
 	if mode == "" {
 		s.respondError(w, http.StatusBadRequest, "missing mode parameter")
 		return
@@ -42,6 +54,34 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entry.handler(w, r)
+}
+
+// formValue extracts a non-file form field from a POST request body.
+// It handles both url-encoded and multipart/form-data content types.
+// Unlike r.FormValue(), it does not fall back to query parameters
+// (the caller handles that separately) and uses our controlled memory
+// limits for multipart parsing.
+func formValue(r *http.Request, key string) string {
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		// Parse multipart with our limit. If already parsed,
+		// ParseMultipartForm is a no-op.
+		const maxMem = 10 * 1024 * 1024 // 10 MiB
+		if err := r.ParseMultipartForm(maxMem); err != nil {
+			return ""
+		}
+		if r.MultipartForm != nil {
+			if vs := r.MultipartForm.Value[key]; len(vs) > 0 {
+				return vs[0]
+			}
+		}
+		return ""
+	}
+	// URL-encoded form body — ParseForm handles this.
+	if err := r.ParseForm(); err != nil {
+		return ""
+	}
+	return r.PostFormValue(key)
 }
 
 // registerModes populates the mode dispatch table with the built-in
