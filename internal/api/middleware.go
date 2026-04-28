@@ -72,10 +72,13 @@ func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
 //  2. ?nzbkey= URL query parameter
 //  3. X-API-Key header
 //  4. "sab_apikey" cookie (set by the SPA handler)
+//  5. POST form body: apikey or nzbkey field (third-party app compat)
 //
-// Intentionally uses r.URL.Query() instead of r.FormValue() to avoid
-// triggering implicit multipart body parsing (which would use the 32MiB
-// default memory limit, defeating our 10MiB cap in modeAddFile).
+// Steps 1-4 intentionally use r.URL.Query() and headers instead of
+// r.FormValue() to avoid triggering implicit multipart body parsing
+// before authentication is checked. Step 5 only fires for POST
+// requests after the body-size limit is already enforced by
+// the middleware's MaxBytesReader.
 func apiKeyFromRequest(r *http.Request) (string, bool) {
 	q := r.URL.Query()
 	if k := q.Get("apikey"); k != "" {
@@ -89,6 +92,16 @@ func apiKeyFromRequest(r *http.Request) (string, bool) {
 	}
 	if c, err := r.Cookie("sab_apikey"); err == nil {
 		return c.Value, true
+	}
+	// Fall back to POST form body for third-party app compatibility.
+	// Body-size limits are already enforced by the middleware.
+	if r.Method == http.MethodPost {
+		if k := formValue(r, "apikey"); k != "" {
+			return k, false
+		}
+		if k := formValue(r, "nzbkey"); k != "" {
+			return k, false
+		}
 	}
 	return "", false
 }

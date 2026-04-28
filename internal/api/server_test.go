@@ -1,11 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/sabnzbd-go/internal/config"
@@ -392,5 +395,115 @@ func TestAuthConfigDynamic(t *testing.T) {
 	rr = apiGet(t, s.Handler(), "/api?mode=queue&apikey=new-key")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200 with new key, got %d", rr.Code)
+	}
+}
+
+// --- Third-party app compatibility: mode/apikey in POST form body ---
+
+func TestModeFromURLEncodedFormBody(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	// POST with mode=version in URL-encoded form body, no query param.
+	body := strings.NewReader("mode=version")
+	req := httptest.NewRequest(http.MethodPost, "/api", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	m := decodeJSON(t, rr)
+	if m["version"] != "1.0.0-test" {
+		t.Errorf("version = %v; want 1.0.0-test", m["version"])
+	}
+}
+
+func TestModeFromMultipartFormBody(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	// POST with mode=version as a multipart form field.
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("mode", "version"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	m := decodeJSON(t, rr)
+	if m["version"] != "1.0.0-test" {
+		t.Errorf("version = %v; want 1.0.0-test", m["version"])
+	}
+}
+
+func TestAPIKeyFromURLEncodedFormBody(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	// POST with both mode and apikey in URL-encoded form body.
+	body := strings.NewReader("mode=queue&apikey=" + testAPIKey)
+	req := httptest.NewRequest(http.MethodPost, "/api", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAPIKeyFromMultipartFormBody(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	// POST with mode and apikey as multipart form fields.
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("mode", "queue"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("apikey", testAPIKey); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+func TestModeQueryParamTakesPrecedence(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	// If mode is in BOTH query string and form body, query wins.
+	body := strings.NewReader("mode=shutdown")
+	req := httptest.NewRequest(http.MethodPost, "/api?mode=version", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+	m := decodeJSON(t, rr)
+	// Should be version response, not shutdown (which requires admin auth).
+	if _, ok := m["version"]; !ok {
+		t.Errorf("expected version response, got: %v", m)
+	}
+}
+
+func TestMissingMode_GETStillFails(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	// GET without mode= should still fail (form body fallback is POST-only).
+	rr := apiGet(t, s.Handler(), "/api")
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d; want 400", rr.Code)
 	}
 }

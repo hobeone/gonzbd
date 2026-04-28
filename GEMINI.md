@@ -139,7 +139,7 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 ### 4. HTTP API & Security
 
-- **Use `r.URL.Query().Get("mode")` for routing, never `r.FormValue()`.** `FormValue` triggers `ParseMultipartForm` which reads the entire request body before authentication, enabling unauthenticated DoS via large uploads.
+- **Extract `mode` and `apikey` from query params first, form body second.** For routing (`mode=`) and authentication (`apikey=`/`nzbkey=`), always check `r.URL.Query()` first. For POST requests, fall back to the form body using `formValue()` (which respects `MaxBytesReader`). This supports third-party apps (Sonarr, Radarr, NZB360) that send parameters as form fields. Never use `r.FormValue()` directly in routing/auth — it triggers implicit `ParseMultipartForm` with Go's default 32MiB limit.
 
 - **Always apply `http.MaxBytesReader` in middleware, not in individual handlers.** Create the `statusWriter` before `MaxBytesReader` so 413 responses are logged correctly. Use `maxUploadBytes` for `multipart/form-data`, `maxFormBytes` for everything else.
 
