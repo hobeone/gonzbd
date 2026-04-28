@@ -95,4 +95,64 @@ describe('HistoryRow', () => {
 
 		expect(retryHistoryJob).toHaveBeenCalledWith('456');
 	});
+
+	// ── Edge cases ──
+
+	it('shows * for empty category', () => {
+		const slot = { ...baseSlot, category: '' };
+		const { container } = render(HistoryRow, { slot, onremove: vi.fn() });
+		expect(container.textContent).toContain('*');
+	});
+
+	it('shows -- when completed is 0', () => {
+		const slot = { ...baseSlot, completed: 0 };
+		const { container } = render(HistoryRow, { slot, onremove: vi.fn() });
+		expect(container.textContent).toContain('--');
+	});
+
+	// ── Expanded detail view ──
+
+	it('clicking the row expands detail panel', async () => {
+		const { container } = render(HistoryRow, { slot: baseSlot, onremove: vi.fn() });
+		const row = container.querySelector('tr')!;
+		await fireEvent.click(row);
+
+		// Expanded detail should show source info.
+		expect(container.textContent).toContain('Source');
+		expect(container.textContent).toContain('Completed.NZB');
+	});
+
+	it('expanded view shows path', async () => {
+		const { container } = render(HistoryRow, { slot: baseSlot, onremove: vi.fn() });
+		const row = container.querySelector('tr')!;
+		await fireEvent.click(row);
+		expect(container.textContent).toContain('/data/completed/job');
+	});
+
+	it('expanded view shows download stats', async () => {
+		const { container } = render(HistoryRow, { slot: baseSlot, onremove: vi.fn() });
+		const row = container.querySelector('tr')!;
+		await fireEvent.click(row);
+		expect(container.textContent).toContain('Download Stats');
+		// 209715200 bytes / 120s = 1.7 MB/s
+		expect(container.textContent).toContain('MB/s');
+	});
+
+	it('double-clicking the row collapses detail panel', async () => {
+		const { container } = render(HistoryRow, { slot: baseSlot, onremove: vi.fn() });
+		const row = container.querySelector('tr')!;
+		await fireEvent.click(row);
+		expect(container.textContent).toContain('Source');
+
+		await fireEvent.click(row);
+		expect(container.textContent).not.toContain('Source');
+	});
+
+	it('expanded view shows repair summary as N/A when empty', async () => {
+		const { container } = render(HistoryRow, { slot: baseSlot, onremove: vi.fn() });
+		const row = container.querySelector('tr')!;
+		await fireEvent.click(row);
+		expect(container.textContent).toContain('Repair Summary');
+		expect(container.textContent).toContain('N/A');
+	});
 });
