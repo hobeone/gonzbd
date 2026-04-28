@@ -655,23 +655,23 @@ func (app *Application) Start(ctx context.Context) error {
 func (app *Application) runMetricsPush(ctx context.Context) {
 	ticker := time.NewTicker(1000 * time.Millisecond)
 	defer ticker.Stop()
-	var lastRemaining int64
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			remaining := app.queue.TotalRemainingBytes()
-			if remaining > 0 || lastRemaining > 0 {
-				app.emitter.Broadcast(Event{
-					Type:      "metrics",
-					Speed:     int64(app.downloader.Speed()),
-					Remaining: remaining,
-				})
-				// Trigger a table refresh to update individual job percentages
+			app.emitter.Broadcast(Event{
+				Type:      "metrics",
+				Speed:     int64(app.downloader.Speed()),
+				Remaining: remaining,
+			})
+			// Trigger a table refresh only while actively downloading so
+			// individual job percentages update, but avoid pointless
+			// refreshes when idle.
+			if remaining > 0 {
 				app.emitter.Broadcast(Event{Type: "queue_updated"})
 			}
-			lastRemaining = remaining
 		}
 	}
 }
