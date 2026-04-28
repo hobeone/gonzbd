@@ -6,11 +6,9 @@
 
 	let {
 		paused = false,
-		speed = '--',
 		onpausetoggle
 	}: {
 		paused?: boolean;
-		speed?: string;
 		onpausetoggle?: () => void;
 	} = $props();
 
@@ -32,11 +30,6 @@
 <nav class="border-b bg-gray-900 text-white">
 	<div class="mx-auto flex h-14 max-w-7xl items-center gap-4 px-4">
 		<h1 class="text-lg font-bold tracking-tight">SABnzbd</h1>
-
-		<div class="nav-chip">
-			<span class="text-gray-400">Speed</span>
-			<span class="font-mono font-medium">{speed}</span>
-		</div>
 
 		<Button
 			variant="ghost"
