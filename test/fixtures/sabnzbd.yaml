@@ -16,7 +16,6 @@ general:
   dirscan_dir: Downloads/watch
   dirscan_speed: 5
   script_dir: scripts
-  email_dir: ""
   log_dir: logs
   admin_dir: admin
   log_level: info
@@ -89,19 +88,16 @@ categories:
     script: None
     priority: 0
     dir: ""
-    order: 0
   - name: "*"
     pp: 3
     script: None
     priority: 0
     dir: ""
-    order: 1
   - name: tv
     pp: 3
     script: None
     priority: 0
     dir: TV
-    order: 2
 
 sorters:
   - name: tv-sorter

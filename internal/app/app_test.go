@@ -134,6 +134,8 @@ func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 		CompleteDir: completeDir,
 		AdminDir:    adminDir,
 		CacheLimit:  1 * 1024 * 1024,
+		EnableUnrar: true,
+		Enable7zip:  true,
 		Servers: []config.ServerConfig{{
 			Name:   "mock",
 			Host:   mock.host,

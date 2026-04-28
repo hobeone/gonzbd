@@ -89,6 +89,9 @@ These steps get you a running daemon you can use via the web UI,
      Paste the output into the `api_key:` field. (The same format is
      accepted for `nzb_key:`.)
 
+   - `general.https_port` — set to a port (e.g., `8443`) to enable
+     HTTPS alongside the HTTP listener. See [HTTPS](#https) below.
+
 4. **Create the directories the config references**. By default the sample
    expects the following tree relative to the working directory you start
    the daemon from:
@@ -183,6 +186,81 @@ docs/               Spec, implementation plan, cross-session notes
 
 No `Makefile` is provided; standard `go` tooling is the supported build
 interface.
+
+## HTTPS
+
+To enable HTTPS, set three fields in your config file:
+
+```yaml
+general:
+  https_port: 8443
+  https_cert: /path/to/server.crt
+  https_key:  /path/to/server.key
+```
+
+- `https_port` — The TLS listen port. `0` (default) disables HTTPS.
+- `https_cert` / `https_key` — Paths to PEM-encoded certificate and
+  private key files.
+
+**Auto-generated self-signed certificate**: If `https_port` is set but
+the cert/key files don't exist on disk, the daemon automatically
+generates a self-signed Ed25519 certificate and writes it to the
+configured paths. This is convenient for local development but browsers
+will show a security warning. For production use, provide a real
+certificate (e.g., from Let's Encrypt).
+
+Both the HTTP and HTTPS listeners serve the same API and web UI. They
+share the same authentication (API key, HTTP Basic Auth) and are shut
+down gracefully on SIGINT/SIGTERM.
+
+## Unimplemented Config Fields
+
+The following config fields exist in the schema (and are accepted by the
+YAML parser) but are **not yet wired** to operational logic. They are
+preserved for forward compatibility with planned features.
+
+### GeneralConfig
+
+| Field | Notes |
+|-------|-------|
+| `language` | The `internal/i18n` package exists but the UI doesn't use it for locale selection yet. |
+
+### DownloadConfig
+
+| Field | Notes |
+|-------|-------|
+| `min_free_space_cleanup` | Post-processing cleanup target. Depends on `min_free_space` guard (which _is_ wired). |
+
+### CategoryConfig
+
+| Field | Notes |
+|-------|-------|
+| `pp` | Per-category post-processing level. Not resolved during job ingestion. |
+| `script` | Per-category post-processing script. Not resolved during job ingestion. |
+| `priority` | Per-category download priority. Not resolved during job ingestion. |
+
+### RSSFeedConfig / RSSFilterConfig
+
+| Field | Notes |
+|-------|-------|
+| `RSSFeedConfig.cat` | Feed-level default category. Not copied to `rss.Feed`. |
+| `RSSFeedConfig.pp` | Feed-level default PP level. Not copied. |
+| `RSSFeedConfig.script` | Feed-level default script. Not copied. |
+| `RSSFeedConfig.priority` | Feed-level default priority. Not copied. |
+| `RSSFilterConfig.body` | Body regex matching. Only title regex is compiled. |
+| `RSSFilterConfig.cat` | Per-filter category override. Not copied to `rss.Filter`. |
+| `RSSFilterConfig.pp` | Per-filter PP override. Not copied. |
+| `RSSFilterConfig.script` | Per-filter script override. Not copied. |
+| `RSSFilterConfig.priority` | Per-filter priority override. Not copied. |
+| `RSSFilterConfig.size_from` | Min size filter. `rss.Feed` has `MinBytes` but never populated from config. |
+| `RSSFilterConfig.size_to` | Max size filter. Same. |
+| `RSSFilterConfig.age` | Max age filter. Same. |
+
+### SorterConfig
+
+| Field | Notes |
+|-------|-------|
+| `multipart_label` | Multi-part label expansion. Not read in `sorterRulesFromConfig()`. |
 
 ## License
 

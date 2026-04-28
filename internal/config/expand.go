@@ -19,7 +19,6 @@ func (g *GeneralConfig) expandPaths() {
 	g.CompleteDir = expandPath(g.CompleteDir)
 	g.DirscanDir = expandPath(g.DirscanDir)
 	g.ScriptDir = expandPath(g.ScriptDir)
-	g.EmailDir = expandPath(g.EmailDir)
 	g.LogDir = expandPath(g.LogDir)
 	g.AdminDir = expandPath(g.AdminDir)
 }

@@ -65,6 +65,23 @@ type RepairResult struct {
 	Output string
 }
 
+// RunOptions configures the par2 binary invocation.
+type RunOptions struct {
+	// Command is the path to the par2 binary. Empty defaults to "par2".
+	Command string
+	// Turbo enables par2cmdline-turbo arguments (-t+) for faster
+	// multi-threaded repair when the binary supports them.
+	Turbo bool
+}
+
+// command returns the configured par2 binary, defaulting to "par2".
+func (o RunOptions) command() string {
+	if o.Command != "" {
+		return o.Command
+	}
+	return "par2"
+}
+
 // volPattern matches the volume suffix of a par2 filename, e.g. ".vol000+01".
 var volPattern = regexp.MustCompile(`(?i)\.vol\d+\+\d+$`)
 
@@ -163,12 +180,21 @@ func parseStatus(output string) Status {
 // could be started. A returned error indicates a system-level failure (binary
 // not found, context cancelled, etc.).
 func Verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyResult, error) {
+	return VerifyWith(ctx, RunOptions{}, parfile, extraFiles...)
+}
+
+// VerifyWith is like Verify but uses the given RunOptions for binary selection.
+func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (VerifyResult, error) {
 	var stdout, stderr bytes.Buffer
-	args := make([]string, 0, 2+len(extraFiles))
-	args = append(args, "v", parfile)
+	args := make([]string, 0, 3+len(extraFiles))
+	args = append(args, "v")
+	if opts.Turbo {
+		args = append(args, "-t+")
+	}
+	args = append(args, parfile)
 	args = append(args, extraFiles...)
 
-	cmd := exec.CommandContext(ctx, "par2", args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	cmd := exec.CommandContext(ctx, opts.command(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	cmd.Dir = filepath.Dir(parfile)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -195,12 +221,21 @@ func Verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyRe
 // damaged files. Like Verify, it returns a RepairResult even on non-zero exit
 // codes.  A non-nil error signals a system-level failure.
 func Repair(ctx context.Context, parfile string, extraFiles ...string) (RepairResult, error) {
+	return RepairWith(ctx, RunOptions{}, parfile, extraFiles...)
+}
+
+// RepairWith is like Repair but uses the given RunOptions for binary selection.
+func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (RepairResult, error) {
 	var combined bytes.Buffer
-	args := make([]string, 0, 2+len(extraFiles))
-	args = append(args, "r", parfile)
+	args := make([]string, 0, 3+len(extraFiles))
+	args = append(args, "r")
+	if opts.Turbo {
+		args = append(args, "-t+")
+	}
+	args = append(args, parfile)
 	args = append(args, extraFiles...)
 
-	cmd := exec.CommandContext(ctx, "par2", args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	cmd := exec.CommandContext(ctx, opts.command(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	cmd.Dir = filepath.Dir(parfile)
 	cmd.Stdout = &combined
 	cmd.Stderr = &combined

@@ -53,8 +53,6 @@ type GeneralConfig struct {
 	DirscanSpeed int `yaml:"dirscan_speed" json:"dirscan_speed"`
 	// ScriptDir holds user post-processing scripts.
 	ScriptDir string `yaml:"script_dir" json:"script_dir"`
-	// EmailDir holds notification email templates.
-	EmailDir string `yaml:"email_dir" json:"email_dir"`
 	// LogDir holds the server's own log files.
 	LogDir string `yaml:"log_dir" json:"log_dir"`
 	// AdminDir holds queue / state files.

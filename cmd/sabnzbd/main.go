@@ -215,12 +215,36 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 			StripDiacritics:    cfg.Downloads.StripDiacritics,
 			CleanupList:        cfg.Downloads.CleanupList,
 		},
+
+		// Download tuning.
+		BandwidthMax:     int64(cfg.Downloads.BandwidthMax),
+		BandwidthPerc:    int(cfg.Downloads.BandwidthPerc),
+		MinFreeSpace:     int64(cfg.Downloads.MinFreeSpace),
+		MaxArtTries:      cfg.Downloads.MaxArtTries,
+		MaxArtOpt:        cfg.Downloads.MaxArtOpt,
+		TopOnly:          cfg.Downloads.TopOnly,
+		NoPenalties:      cfg.Downloads.NoPenalties,
+		PreCheck:         cfg.Downloads.PreCheck,
+		PropagationDelay: cfg.Downloads.PropagationDelay,
+
+		// PostProc pipeline.
 		Sorters:              cfg.Sorters,
 		ScriptDir:            cfg.General.ScriptDir,
 		DeobfuscateFilenames: cfg.PostProc.DeobfuscateFilenames,
-		Version:              Version,
-		APIKey:               cfg.General.APIKey,
-		ListenAddr:           net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port)),
+		EnableUnrar:          cfg.PostProc.EnableUnrar,
+		Enable7zip:           cfg.PostProc.Enable7zip,
+		EnableParCleanup:     cfg.PostProc.EnableParCleanup,
+		Par2Command:          cfg.PostProc.Par2Command,
+		Par2Turbo:            cfg.PostProc.Par2Turbo,
+		UnrarCommand:         cfg.PostProc.UnrarCommand,
+		SevenzCommand:        cfg.PostProc.SevenzCommand,
+		IgnoreUnrarDates:     cfg.PostProc.IgnoreUnrarDates,
+		OverwriteFiles:       cfg.PostProc.OverwriteFiles,
+		FlatUnpack:           cfg.PostProc.FlatUnpack,
+
+		Version:    Version,
+		APIKey:     cfg.General.APIKey,
+		ListenAddr: net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port)),
 	}, histRepo)
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
@@ -357,12 +381,16 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	if err != nil {
 		return fmt.Errorf("web handler: %w", err)
 	}
+	handler := composeRouter(apiSrv, webHandler)
+
 	httpSrv := &http.Server{
 		Addr:              listen,
-		Handler:           composeRouter(apiSrv, webHandler),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	errCh := make(chan error, 1)
+	// errCh sized to 2 so both HTTP and HTTPS goroutines can report
+	// without blocking each other if both fail simultaneously.
+	errCh := make(chan error, 2)
 	go func() {
 		slog.Info("http listener starting", "addr", listen, "api_key_prefix", keyPrefix(cfg.General.APIKey))
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -370,11 +398,42 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		}
 	}()
 
+	// HTTPS listener — started when https_port > 0.
+	var httpsSrv *http.Server
+	if cfg.General.HTTPSPort > 0 {
+		httpsListen := net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.HTTPSPort))
+		certFile := cfg.General.HTTPSCert
+		keyFile := cfg.General.HTTPSKey
+
+		// Auto-generate self-signed certificate if the files don't exist.
+		if !fileExists(certFile) || !fileExists(keyFile) {
+			slog.Info("https: cert/key not found, generating self-signed certificate",
+				"cert", certFile, "key", keyFile)
+			if err := app.WriteSelfSigned(certFile, keyFile); err != nil {
+				return fmt.Errorf("generate self-signed cert: %w", err)
+			}
+			slog.Info("https: self-signed certificate written",
+				"cert", certFile, "key", keyFile)
+		}
+
+		httpsSrv = &http.Server{
+			Addr:              httpsListen,
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			slog.Info("https listener starting", "addr", httpsListen)
+			if err := httpsSrv.ListenAndServeTLS(certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+			}
+		}()
+	}
+
 	select {
 	case <-ctx.Done():
 		slog.Info("shutdown signal received")
 	case err := <-errCh:
-		slog.Error("http listener failed", "err", err)
+		slog.Error("listener failed", "err", err)
 	}
 
 	// Best-effort graceful shutdown. 5s is enough for in-flight API calls
@@ -383,6 +442,11 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	defer shutdownCancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		slog.Warn("http shutdown", "err", err)
+	}
+	if httpsSrv != nil {
+		if err := httpsSrv.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("https shutdown", "err", err)
+		}
 	}
 	if err := application.Shutdown(); err != nil {
 		slog.Warn("application shutdown", "err", err)
@@ -409,6 +473,12 @@ func writePIDFile(path string) error {
 		return fmt.Errorf("rename: %w", err)
 	}
 	return nil
+}
+
+// fileExists returns true if path names a regular file (or symlink to one).
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // startDirScanner wires the watched-directory scanner when cfg.General.DirscanDir
