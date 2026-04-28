@@ -9,6 +9,10 @@ type PostProcConfig struct {
 	Enable7zip bool `yaml:"enable_7zip" json:"enable_7zip"`
 	// EnableParCleanup deletes par2 files after a successful repair.
 	EnableParCleanup bool `yaml:"enable_par_cleanup" json:"enable_par_cleanup"`
+	// EnableRarCleanup deletes source archive files (RAR, 7z, split)
+	// after a successful extraction. Mirrors Python SABnzbd's behavior
+	// where PP bit 2 (delete) removes originals.
+	EnableRarCleanup bool `yaml:"enable_rar_cleanup" json:"enable_rar_cleanup"`
 
 	// Par2Command is the path to the par2 binary. May be a bare
 	// executable name resolved via PATH.
