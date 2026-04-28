@@ -213,7 +213,95 @@ func TestQueueDefault_Pagination(t *testing.T) {
 	}
 }
 
-// --- Pause / Resume ---
+// --- Paused status override ---
+
+func TestQueueList_GlobalPauseOverridesDownloadingToPaused(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+
+	// Simulate the dispatcher having marked this job as Downloading.
+	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+		t.Fatalf("SetStatusIf: %v", err)
+	}
+
+	// Globally pause the queue.
+	q.PauseAll()
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+	var resp struct {
+		Queue struct {
+			Status string `json:"status"`
+			Paused bool   `json:"paused"`
+			Slots  []struct {
+				Status string `json:"status"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if !resp.Queue.Paused {
+		t.Error("queue.paused should be true")
+	}
+	if resp.Queue.Status != "Paused" {
+		t.Errorf("queue.status = %q; want Paused", resp.Queue.Status)
+	}
+	if len(resp.Queue.Slots) != 1 {
+		t.Fatalf("slots len = %d; want 1", len(resp.Queue.Slots))
+	}
+	if resp.Queue.Slots[0].Status != "Paused" {
+		t.Errorf("slot status = %q; want Paused (overridden from Downloading)", resp.Queue.Slots[0].Status)
+	}
+
+	// Verify internal state is still Downloading (not mutated).
+	j, err := q.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if j.Status != constants.StatusDownloading {
+		t.Errorf("internal status = %q; want Downloading (should not be mutated)", j.Status)
+	}
+}
+
+func TestQueueList_NotPausedKeepsDownloadingStatus(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+
+	// Simulate the dispatcher having marked this job as Downloading.
+	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+		t.Fatalf("SetStatusIf: %v", err)
+	}
+
+	// Queue is NOT paused — status should remain Downloading.
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+	var resp struct {
+		Queue struct {
+			Slots []struct {
+				Status string `json:"status"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Queue.Slots) != 1 {
+		t.Fatalf("slots len = %d; want 1", len(resp.Queue.Slots))
+	}
+	if resp.Queue.Slots[0].Status != "Downloading" {
+		t.Errorf("slot status = %q; want Downloading (not paused)", resp.Queue.Slots[0].Status)
+	}
+}
+
+
 
 func TestQueuePause(t *testing.T) {
 	t.Parallel()
