@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const defaultWindow = 10 * time.Second
+const defaultWindow = 1 * time.Second
 
 // bucket holds the bytes received and the second-aligned timestamp it belongs to.
 type bucket struct {
@@ -105,6 +105,28 @@ func (m *Meter) Record(server string, n int64) {
 		m.record(m.getOrCreate(server), now, n)
 	}
 	m.record(m.servers[""], now, n)
+}
+
+// Flush zeroes every bucket in every server's ring buffer so that BPS
+// immediately returns 0. Lifetime totals are preserved. Call this when
+// the speed limit changes or the downloader pauses so the UI graph
+// reflects reality instantly instead of decaying over the window.
+func (m *Meter) Flush() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.servers {
+		for i := range s.buckets {
+			s.buckets[i] = bucket{}
+		}
+		s.head = 0
+	}
+}
+
+// RecordBytes is an alias for Record that satisfies the nntp.ByteRecorder
+// interface. It is called from the NNTP limitReader on every TCP read
+// (~1.5 KiB) to provide real-time speed updates to the UI.
+func (m *Meter) RecordBytes(server string, n int64) {
+	m.Record(server, n)
 }
 
 // bps computes the rolling BPS for the given serverState at time now.
