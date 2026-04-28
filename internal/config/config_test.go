@@ -123,18 +123,18 @@ func TestParseByteSize(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.in, func(t *testing.T) {
-			got, err := parseByteSize(tc.in)
+			got, err := ParseByteSize(tc.in)
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("parseByteSize(%q) = %d, want error", tc.in, got)
+					t.Fatalf("ParseByteSize(%q) = %d, want error", tc.in, got)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("parseByteSize(%q): unexpected error: %v", tc.in, err)
+				t.Fatalf("ParseByteSize(%q): unexpected error: %v", tc.in, err)
 			}
 			if got != tc.want {
-				t.Fatalf("parseByteSize(%q) = %d, want %d", tc.in, got, tc.want)
+				t.Fatalf("ParseByteSize(%q) = %d, want %d", tc.in, got, tc.want)
 			}
 		})
 	}

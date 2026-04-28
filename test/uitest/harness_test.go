@@ -63,6 +63,8 @@ func (m *mockApp) RemoveHistoryJob(_ context.Context, _ string, _ bool) error {
 	return nil
 }
 
+func (m *mockApp) SetSpeedLimit(_ int64) {}
+
 // testEnv bundles everything needed for a UI test.
 type testEnv struct {
 	Server  *httptest.Server
