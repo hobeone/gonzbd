@@ -76,7 +76,7 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	if len(snap.ServerStats) != 0 {
 		t.Errorf("ServerStats = %v, want empty", snap.ServerStats)
 	}
-	if snap.Status != constants.StatusQueued {
-		t.Errorf("Status = %q, want %q", snap.Status, constants.StatusQueued)
+	if snap.Status != constants.StatusQueued && snap.Status != constants.StatusDownloading {
+		t.Errorf("Status = %q, want Queued or Downloading", snap.Status)
 	}
 }

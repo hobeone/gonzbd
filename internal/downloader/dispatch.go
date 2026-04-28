@@ -42,6 +42,10 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 
 	dispatched := 0
 	hopelessJobs := make(map[string]struct{})
+	// activeJobs collects job IDs that had at least one article dispatched
+	// this pass. After the iterator releases the queue RLock, we flip
+	// their status from Queued → Downloading so the UI reflects progress.
+	activeJobs := make(map[string]struct{})
 	// exhausted accumulates articles that had no eligible server this
 	// pass. Emitting their ErrNoServersLeft results inline would require
 	// sending on the completions channel while tryMu and the queue
@@ -64,6 +68,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 		handled, exReq := d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, a.Subject, now)
 		if handled {
 			dispatched++
+			activeJobs[a.JobID] = struct{}{}
 		}
 		if exReq != nil {
 			exhausted = append(exhausted, exReq)
@@ -87,6 +92,11 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 		}
 		d.clearTried(req.jobID, req.messageID)
 		d.emitResult(ctx, req, "", nil, 0, ErrNoServersLeft)
+	}
+
+	// Transition Queued → Downloading for jobs that had articles dispatched.
+	for jobID := range activeJobs {
+		_ = d.queue.SetStatusIf(jobID, constants.StatusDownloading, constants.StatusQueued)
 	}
 
 	// Handle hopeless jobs after the queue read-lock is released.
