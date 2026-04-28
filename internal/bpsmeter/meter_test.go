@@ -276,3 +276,79 @@ func TestLimiterSetRate(t *testing.T) {
 		t.Fatalf("after SetRate to fast, Wait took too long: %v", elapsed)
 	}
 }
+
+func TestMeterFlush(t *testing.T) {
+	t.Parallel()
+	clk, _ := fixedClock(time.Now())
+	m := NewMeter(5*time.Second, clk)
+
+	m.Record("s1", 10000)
+	m.Record("s2", 20000)
+
+	if bps := m.BPS(""); bps <= 0 {
+		t.Fatalf("pre-flush BPS should be positive, got %f", bps)
+	}
+
+	m.Flush()
+
+	if bps := m.BPS(""); bps != 0 {
+		t.Fatalf("post-flush aggregate BPS should be 0, got %f", bps)
+	}
+	if bps := m.BPS("s1"); bps != 0 {
+		t.Fatalf("post-flush s1 BPS should be 0, got %f", bps)
+	}
+
+	// Lifetime totals are preserved.
+	if total := m.Total(""); total != 30000 {
+		t.Fatalf("post-flush aggregate total should be 30000, got %d", total)
+	}
+	if total := m.Total("s1"); total != 10000 {
+		t.Fatalf("post-flush s1 total should be 10000, got %d", total)
+	}
+}
+
+func TestLimiterRateDecreaseResetsTokens(t *testing.T) {
+	t.Parallel()
+	// Start with a fast rate so the burst bucket is large.
+	l := NewLimiter(10_000_000) // 10 MB/s, burst = 10 MB
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Decrease to 10 KB/s. The old limiter had ~10 MB of tokens;
+	// the new one should start fresh with burst = 256 KiB.
+	l.SetRate(10_000) // 10 KB/s
+
+	// Drain the initial burst (256 KiB at minBurst).
+	if err := l.Wait(ctx, minBurst); err != nil {
+		t.Fatalf("first Wait after decrease: %v", err)
+	}
+
+	// The next Wait should block because tokens are exhausted.
+	// At 10 KB/s, 256 KiB takes ~26 seconds — way longer than our
+	// 100ms deadline, so we expect a timeout error.
+	fastCtx, fastCancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer fastCancel()
+
+	err := l.Wait(fastCtx, minBurst)
+	if err == nil {
+		t.Fatal("expected Wait to block after rate decrease + burst drain, but it returned nil")
+	}
+}
+
+func TestMeterRecordBytes(t *testing.T) {
+	t.Parallel()
+	clk, _ := fixedClock(time.Now())
+	m := NewMeter(5*time.Second, clk)
+
+	// RecordBytes should behave identically to Record.
+	m.RecordBytes("s1", 1000)
+	m.RecordBytes("s1", 2000)
+
+	if total := m.Total("s1"); total != 3000 {
+		t.Fatalf("RecordBytes total: want 3000, got %d", total)
+	}
+	if bps := m.BPS("s1"); bps <= 0 {
+		t.Fatalf("RecordBytes BPS should be positive, got %f", bps)
+	}
+}

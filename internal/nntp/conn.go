@@ -21,18 +21,25 @@ import (
 // ... (keep sentinel errors and ServerError)
 
 type limitReader struct {
-	r   io.Reader
-	lim RateLimiter
-	ctx context.Context
+	r      io.Reader
+	lim    RateLimiter
+	ctx    context.Context
+	rec    ByteRecorder
+	server string
 }
 
 func (lr *limitReader) Read(p []byte) (int, error) {
 	n, err := lr.r.Read(p)
-	if n > 0 && lr.lim != nil {
-		// Wait after reading. This introduces minimal overhead
-		// because it is invoked by bufio.Reader which chunks reads.
-		// We use the connection context to unblock if the socket closes.
-		_ = lr.lim.Wait(lr.ctx, n)
+	if n > 0 {
+		if lr.rec != nil {
+			lr.rec.RecordBytes(lr.server, int64(n))
+		}
+		if lr.lim != nil {
+			// Wait after reading. This introduces minimal overhead
+			// because it is invoked by bufio.Reader which chunks reads.
+			// We use the connection context to unblock if the socket closes.
+			_ = lr.lim.Wait(lr.ctx, n)
+		}
 	}
 	return n, err
 }
@@ -199,6 +206,14 @@ type RateLimiter interface {
 	Wait(ctx context.Context, n int) error
 }
 
+// ByteRecorder receives byte counts as they are read from the wire.
+// Dial accepts one via WithRecorder. The meter records each TCP
+// read chunk (~1.5 KiB) immediately, giving the UI a smooth
+// real-time speed display.
+type ByteRecorder interface {
+	RecordBytes(server string, n int64)
+}
+
 // DialOption tunes NNTP connection establishment.
 type DialOption func(*dialOptions)
 
@@ -207,6 +222,16 @@ type DialOption func(*dialOptions)
 func WithLimiter(l RateLimiter) DialOption {
 	return func(o *dialOptions) {
 		o.limiter = l
+	}
+}
+
+// WithRecorder attaches a byte recorder to the connection. Each TCP
+// read is reported to the recorder with the given server name so
+// the UI speed graph updates in real-time.
+func WithRecorder(r ByteRecorder, server string) DialOption {
+	return func(o *dialOptions) {
+		o.recorder = r
+		o.recorderServer = server
 	}
 }
 
@@ -221,15 +246,17 @@ func WithLogger(l *slog.Logger) DialOption {
 // struct instead of separate Dial arguments so callers don't have to
 // care about defaults — ServerConfig carries everything.
 type dialOptions struct {
-	host       string
-	port       int
-	useTLS     bool
-	tlsConfig  *tls.Config
-	dialer     *net.Dialer
-	pipelining int
-	readBuf    int
-	limiter    RateLimiter
-	log        *slog.Logger
+	host           string
+	port           int
+	useTLS         bool
+	tlsConfig      *tls.Config
+	dialer         *net.Dialer
+	pipelining     int
+	readBuf        int
+	limiter        RateLimiter
+	recorder       ByteRecorder
+	recorderServer string
+	log            *slog.Logger
 }
 
 // newDialOptions derives the per-dial knobs from a ServerConfig,
@@ -313,8 +340,14 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 	if dopts.dialer.Timeout > 0 {
 		br = &idleTimeoutReader{nc: nc, timeout: dopts.dialer.Timeout}
 	}
-	if dopts.limiter != nil {
-		br = &limitReader{r: br, lim: dopts.limiter, ctx: ctxConn}
+	if dopts.limiter != nil || dopts.recorder != nil {
+		br = &limitReader{
+			r:      br,
+			lim:    dopts.limiter,
+			ctx:    ctxConn,
+			rec:    dopts.recorder,
+			server: dopts.recorderServer,
+		}
 	}
 
 	c := &Conn{

@@ -284,6 +284,13 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	defer d.signalDispatch()
 	defer d.clearInFlight(req.jobID, req.messageID)
 
+	// Snapshot the current pause context. If Pause() is called while
+	// we're mid-Fetch, this context gets cancelled immediately,
+	// aborting the TCP read.
+	d.pauseMu.RLock()
+	fetchCtx := d.pauseCtx
+	d.pauseMu.RUnlock()
+
 	name := srv.Cfg().Name
 
 	connMu.Lock()
@@ -297,14 +304,18 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 			return
 		}
 		d.log.Info("dialing server", "server", name, "host", srv.Cfg().Host)
-		c, err := nntp.Dial(ctx, srv.Cfg(),
+		dialOpts := []nntp.DialOption{
 			nntp.WithLimiter(d.limiter),
 			nntp.WithLogger(d.log),
-		)
+		}
+		if d.meter != nil {
+			dialOpts = append(dialOpts, nntp.WithRecorder(d.meter, name))
+		}
+		c, err := nntp.Dial(fetchCtx, srv.Cfg(), dialOpts...)
 		if err != nil {
 			connMu.Unlock()
 			// Context cancellation means shutdown or pause — not a server fault.
-			if ctx.Err() != nil {
+			if fetchCtx.Err() != nil {
 				d.unmarkTried(req.jobID, req.messageID, name)
 				d.emitResult(ctx, req, name, nil, 0, fmt.Errorf("dial: %w", err))
 				return
@@ -327,7 +338,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	c := *connPtr
 	connMu.Unlock()
 
-	body, err := c.Fetch(ctx, req.messageID)
+	body, err := c.Fetch(fetchCtx, req.messageID)
 	if err != nil {
 		if errors.Is(err, nntp.ErrNoArticle) {
 			d.log.Info("article not found", "server", name, "msgid", req.messageID)
@@ -351,7 +362,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 
 		// Context cancellation means shutdown or pause — not a server fault.
 		// Don't record bad connections or apply penalties.
-		if ctx.Err() == nil && isFirstNotifier {
+		if ctx.Err() == nil && fetchCtx.Err() == nil && isFirstNotifier {
 			srv.RecordBadConnection()
 			if pen := PenaltyFor(err); pen > 0 {
 				d.log.Info("penalty applied", "server", name, "duration", pen)
@@ -364,9 +375,6 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	}
 
 	srv.RecordGoodConnection()
-	if d.meter != nil {
-		d.meter.Record(name, int64(len(body)))
-	}
 	d.log.Debug("fetched", "server", name, "msgid", req.messageID, "bytes", len(body))
 
 	// Decoding (Step 3: Parallelize Decoding): Decode article payload

@@ -161,6 +161,13 @@ type Downloader struct {
 	// suppresses dispatch).
 	paused atomic.Bool
 
+	// pauseMu protects pauseCtx/pauseCancel. Workers snapshot pauseCtx
+	// under RLock before each fetch; Pause() cancels and replaces it
+	// under Lock.
+	pauseMu     sync.RWMutex
+	pauseCtx    context.Context //nolint:containedctx // pause lifecycle
+	pauseCancel context.CancelFunc
+
 	tryMu   sync.Mutex
 	tryList map[articleKey]map[string]struct{}
 
@@ -270,6 +277,11 @@ func (d *Downloader) Start(ctx context.Context) error {
 		d.run(d.ctx)
 	})
 
+	// Initialize the pause context — not paused at start.
+	d.pauseMu.Lock()
+	d.pauseCtx, d.pauseCancel = context.WithCancel(d.ctx)
+	d.pauseMu.Unlock()
+
 	d.log.Info("started", "servers", len(d.servers), "workers", totalWorkers)
 
 	// Kick off an initial dispatch in case the queue was populated
@@ -301,25 +313,57 @@ func (d *Downloader) Stop() error {
 	return nil
 }
 
-// Pause suspends dispatch. Workers currently mid-Fetch run to
-// completion; no new requests are handed out until Resume.
-func (d *Downloader) Pause() { d.paused.Store(true) }
+// Pause suspends dispatch and cancels all in-flight Fetch calls so
+// bandwidth drops to zero immediately. Workers stay alive and will
+// re-dial on Resume. Articles whose fetch was cancelled will be
+// re-dispatched (their Emitted flag is cleared, and context
+// cancellation is not penalized).
+func (d *Downloader) Pause() {
+	d.paused.Store(true)
+	d.pauseMu.Lock()
+	if d.pauseCancel != nil {
+		d.pauseCancel()
+	}
+	// Replace with a pre-cancelled context so any new fetches
+	// attempted before Resume() fail immediately.
+	parent := d.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(parent)
+	d.pauseCancel() // cancel immediately — we're paused
+	d.pauseMu.Unlock()
+	if d.meter != nil {
+		d.meter.Flush()
+	}
+}
 
-// Resume clears the pause flag and pokes the main loop so any
-// queued work is re-considered immediately.
+// Resume clears the pause flag, creates a fresh fetch context, and
+// pokes the main loop so queued work is re-considered immediately.
 func (d *Downloader) Resume() {
+	d.pauseMu.Lock()
+	parent := d.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(parent)
+	d.pauseMu.Unlock()
 	d.paused.Store(false)
 	d.signalDispatch()
 }
 
 // SetSpeedLimit sets the aggregate byte-rate cap in bytes per second.
 // Zero or negative disables throttling. The value takes effect on
-// the next article fetch across all workers.
+// the next article fetch across all workers. The meter is flushed so
+// the UI graph reflects the new rate immediately.
 //
 // The limiter is integrated at the NNTP connection level via
 // WithLimiter, providing byte-level rate shaping on the read path.
 func (d *Downloader) SetSpeedLimit(bytesPerSec int64) {
 	d.limiter.SetRate(float64(bytesPerSec))
+	if d.meter != nil {
+		d.meter.Flush()
+	}
 }
 
 // IsPaused reports the downloader's own pause flag. Orthogonal to
