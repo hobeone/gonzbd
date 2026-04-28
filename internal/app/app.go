@@ -915,6 +915,27 @@ func (app *Application) SetSpeedLimit(bytesPerSec int64) {
 	}
 }
 
+// PauseDownloads cancels all in-flight fetch operations and flushes the
+// speed meter so the UI graph drops to zero immediately. Call this in
+// addition to queue.PauseAll() which only prevents new dispatch.
+func (app *Application) PauseDownloads() {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.downloader != nil {
+		app.downloader.Pause()
+	}
+}
+
+// ResumeDownloads creates a fresh fetch context so workers can dial and
+// fetch again, then pokes the dispatch loop.
+func (app *Application) ResumeDownloads() {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.downloader != nil {
+		app.downloader.Resume()
+	}
+}
+
 func failMsgForJob(job *queue.Job) string {
 	if job.FailedBytes == 0 {
 		return ""

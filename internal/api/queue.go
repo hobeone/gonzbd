@@ -48,10 +48,16 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 		s.queueResumeJobs(w, r)
 	case "pause_all":
 		s.queue.PauseAll()
+		if s.app != nil {
+			s.app.PauseDownloads()
+		}
 		s.log.Info("downloads paused")
 		respondStatus(w)
 	case "resume_all":
 		s.queue.ResumeAll()
+		if s.app != nil {
+			s.app.ResumeDownloads()
+		}
 		s.log.Info("downloads resumed")
 		respondStatus(w)
 	// Stubbed: no backing implementation yet.
