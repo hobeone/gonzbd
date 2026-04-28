@@ -293,6 +293,15 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 
 	name := srv.Cfg().Name
 
+	// Per-job pause check: the article was queued into workCh before
+	// the user clicked pause on this specific job. Check now before
+	// starting any network I/O.
+	if status, err := d.queue.GetJobStatus(req.jobID); err == nil && status == constants.StatusPaused {
+		d.unmarkTried(req.jobID, req.messageID, name)
+		_ = d.queue.ClearArticleEmitted(req.jobID, req.messageID)
+		return
+	}
+
 	connMu.Lock()
 	if *connPtr == nil {
 		// If the server was penalized by a previous failed dial,
