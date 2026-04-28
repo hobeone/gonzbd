@@ -16,7 +16,7 @@ export default defineConfig({
 			provider: 'v8',
 			reporter: ['text', 'html'],
 			include: ['src/lib/**'],
-			exclude: ['src/lib/components/ui/**']
+			exclude: ['src/lib/components/ui/**', 'src/lib/types.ts']
 		}
 	},
 	server: {
