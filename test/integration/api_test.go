@@ -30,7 +30,9 @@ import (
 // nopNZBHandler is a no-op urlgrabber.Handler used in tests.
 type nopNZBHandler struct{}
 
-func (nopNZBHandler) HandleNZB(context.Context, string, []byte, types.FetchOptions) error { return nil }
+func (nopNZBHandler) HandleNZB(context.Context, string, []byte, types.FetchOptions) (string, error) {
+	return "", nil
+}
 
 type nopApp struct{}
 

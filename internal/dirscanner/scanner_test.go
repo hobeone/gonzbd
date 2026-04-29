@@ -27,13 +27,13 @@ type HandlerCall struct {
 	Opts     types.FetchOptions
 }
 
-func (m *MockHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) error {
+func (m *MockHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) (string, error) {
 	if err, ok := m.failFor[filename]; ok {
 		m.lastError = err
-		return err
+		return "", err
 	}
 	m.calls = append(m.calls, HandlerCall{Filename: filename, Data: data, Opts: opts})
-	return nil
+	return "", nil
 }
 
 func TestStabilityDetection(t *testing.T) {

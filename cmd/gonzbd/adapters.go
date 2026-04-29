@@ -30,10 +30,10 @@ type ingestHandler struct {
 	logger *slog.Logger
 }
 
-func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) error {
+func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) (string, error) {
 	parsed, err := nzb.Parse(bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("parse nzb %q: %w", filename, err)
+		return "", fmt.Errorf("parse nzb %q: %w", filename, err)
 	}
 	job, err := queue.NewJob(parsed, queue.AddOptions{
 		Filename: filename,
@@ -45,17 +45,17 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 		Priority: opts.Priority,
 	}, fsutil.SanitizeOptions{})
 	if err != nil {
-		return fmt.Errorf("create job %q: %w", filename, err)
+		return "", fmt.Errorf("create job %q: %w", filename, err)
 	}
 
 	log := h.logger.With("component", "ingest")
 	log.Debug("processing nzb", "filename", filename, "md5", job.MD5)
 
 	if err := h.app.AddJob(ctx, job, data, false); err != nil {
-		return fmt.Errorf("add job %q: %w", filename, err)
+		return "", fmt.Errorf("add job %q: %w", filename, err)
 	}
 	log.Info("ingested nzb", "filename", filename, "files", len(job.Files), "bytes", job.TotalBytes, "id", job.ID)
-	return nil
+	return job.ID, nil
 }
 
 // rssToURLHandler turns accepted RSS items into URL-grabber fetches. It

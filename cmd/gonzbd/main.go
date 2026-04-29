@@ -42,7 +42,7 @@ import (
 
 // Version is the build version of the gonzbd binary. Overridden at build
 // time via -ldflags="-X main.Version=<value>".
-var Version = "0.0.0-dev"
+var Version = "5.0.0"
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")

@@ -60,8 +60,10 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 		}
 		s.log.Info("downloads resumed")
 		respondStatus(w)
+	case "priority":
+		s.queuePriority(w, r)
 	// Stubbed: no backing implementation yet.
-	case "rename", "priority", "sort", "delete_nzf", "change_complete_action",
+	case "rename", "sort", "delete_nzf", "change_complete_action",
 		"change_name", "change_cat", "change_script", "change_opts":
 		s.respondError(w, http.StatusBadRequest, "not implemented in this build: "+action)
 	default:
@@ -73,23 +75,25 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 // Field names must match the Python build_queue response exactly so that
 // existing third-party clients (Sonarr, Radarr, etc.) parse them correctly.
 type queueSlot struct {
-	NzoID          string  `json:"nzo_id"`
-	Filename       string  `json:"filename"`
-	Name           string  `json:"name"`
-	Category       string  `json:"category"`
-	Priority       string  `json:"priority"`
-	Status         string  `json:"status"`
-	Script         string  `json:"script"`
-	Password       string  `json:"password"`
-	Size           string  `json:"size"`
-	SizeLeft       string  `json:"sizeleft"`
-	MB             float64 `json:"mb"`
-	MBLeft         float64 `json:"mbleft"`
-	Bytes          int64   `json:"bytes"`
-	RemainingBytes int64   `json:"remaining_bytes"`
-	Percentage     string  `json:"percentage"`
-	PP             string  `json:"pp"`
-	Warning        string  `json:"warning,omitempty"`
+	NzoID          string `json:"nzo_id"`
+	Filename       string `json:"filename"`
+	Name           string `json:"name"`
+	Category       string `json:"category"`
+	Priority       string `json:"priority"`
+	Status         string `json:"status"`
+	Script         string `json:"script"`
+	Password       string `json:"password"`
+	Size           string `json:"size"`
+	SizeLeft       string `json:"sizeleft"`
+	MB             string `json:"mb"`
+	MBLeft         string `json:"mbleft"`
+	Bytes          int64  `json:"bytes"`
+	RemainingBytes int64  `json:"remaining_bytes"`
+	Percentage     string `json:"percentage"`
+	Timeleft       string `json:"timeleft"`
+	ETA            string `json:"eta"`
+	PP             string `json:"pp"`
+	Warning        string `json:"warning,omitempty"`
 }
 
 // queueResponse is the outer JSON object returned for default queue listings.
@@ -102,6 +106,13 @@ type queueResponse struct {
 type queueDetail struct {
 	Status         string      `json:"status"`
 	Paused         bool        `json:"paused"`
+	Speed          string      `json:"speed"`
+	KBPerSec       string      `json:"kbpersec"`
+	MB             string      `json:"mb"`
+	MBLeft         string      `json:"mbleft"`
+	Size           string      `json:"size"`
+	SizeLeft       string      `json:"sizeleft"`
+	Timeleft       string      `json:"timeleft"`
 	NoOfSlots      int         `json:"noofslots"`
 	NoOfSlotsTotal int         `json:"noofslots_total"`
 	Limit          int         `json:"limit"`
@@ -164,11 +175,13 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 			Password:       j.Password,
 			Size:           formatBytes(j.TotalBytes),
 			SizeLeft:       formatBytes(j.RemainingBytes),
-			MB:             toMB(j.TotalBytes),
-			MBLeft:         toMB(j.RemainingBytes),
+			MB:             toMBString(j.TotalBytes),
+			MBLeft:         toMBString(j.RemainingBytes),
 			Bytes:          j.TotalBytes,
 			RemainingBytes: j.RemainingBytes,
 			Percentage:     pct,
+			Timeleft:       "0:00:00",
+			ETA:            "unknown",
 			PP:             strconv.Itoa(j.PP),
 			Warning:        j.Warning,
 		})
@@ -200,11 +213,25 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 		qStatus = "Downloading"
 	}
 
+	// Compute queue-level aggregates.
+	var totalQueueBytes, remainQueueBytes int64
+	for _, sl := range slots {
+		totalQueueBytes += sl.Bytes
+		remainQueueBytes += sl.RemainingBytes
+	}
+
 	respondJSON(w, http.StatusOK, queueResponse{
 		Status: true,
 		Queue: queueDetail{
 			Status:         qStatus,
 			Paused:         paused,
+			Speed:          "0",
+			KBPerSec:       "0",
+			MB:             toMBString(totalQueueBytes),
+			MBLeft:         toMBString(remainQueueBytes),
+			Size:           formatBytes(totalQueueBytes),
+			SizeLeft:       formatBytes(remainQueueBytes),
+			Timeleft:       "0:00:00",
 			NoOfSlots:      len(slots),
 			NoOfSlotsTotal: total,
 			Limit:          limit,
@@ -297,6 +324,32 @@ func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	respondStatus(w)
+}
+
+// queuePriority handles name=priority. SABnzbd convention:
+// value = nzo_id, value2 = numeric priority.
+func (s *Server) queuePriority(w http.ResponseWriter, r *http.Request) {
+	nzoID := r.FormValue("value")
+	if nzoID == "" {
+		s.respondError(w, http.StatusBadRequest, "missing value parameter (nzo_id)")
+		return
+	}
+	priStr := r.FormValue("value2")
+	if priStr == "" {
+		s.respondError(w, http.StatusBadRequest, "missing value2 parameter (priority)")
+		return
+	}
+	pri := constants.Priority(int8(intParam(r, "value2"))) //nolint:gosec // G115: priority values fit in int8
+	if err := s.queue.SetPriority(nzoID, pri); err != nil {
+		s.respondError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	s.log.Info("job priority changed", "job", nzoID, "priority", pri.String())
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status":   true,
+		"nzo_ids":  []string{nzoID},
+		"position": 0,
+	})
 }
 
 // modeAddFile handles mode=addfile. Accepts multipart NZB uploads.
@@ -398,14 +451,17 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 		Script:   r.FormValue("script"),
 		Priority: priorityParam(r),
 	}
-	n, err := s.grabber.Fetch(r.Context(), urlStr, opts)
+	ids, err := s.grabber.Fetch(r.Context(), urlStr, opts)
 	if err != nil {
 		s.respondError(w, http.StatusBadGateway, "fetch: "+err.Error())
 		return
 	}
+	if ids == nil {
+		ids = []string{}
+	}
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":  true,
-		"fetched": n,
+		"nzo_ids": ids,
 	})
 }
 
@@ -518,6 +574,11 @@ func formatBytes(n int64) string {
 // toMB converts bytes to megabytes as a float64, rounded to 1 decimal.
 func toMB(n int64) float64 {
 	return math.Round(float64(n)/float64(1<<20)*10) / 10
+}
+
+// toMBString formats bytes as a megabyte string like "1024.00" for SABnzbd API compatibility.
+func toMBString(n int64) string {
+	return strconv.FormatFloat(float64(n)/float64(1<<20), 'f', 2, 64)
 }
 
 // intParam reads a query parameter as int, returning 0 if absent or unparseable.

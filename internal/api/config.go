@@ -13,16 +13,34 @@ import (
 	"github.com/hobeone/gonzbd/internal/nntp"
 )
 
+// sabSectionAlias maps SABnzbd section names to our internal section names.
+// SABnzbd uses "misc" for the catch-all general settings section; we use
+// "general" internally. Sonarr/Radarr call get_config and expect
+// config.misc.complete_dir to exist, so we must accept and emit "misc".
+var sabSectionAlias = map[string]string{
+	"misc": "general",
+}
+
+// sabSectionReverse maps our internal section names to SABnzbd names for
+// JSON output. Inverse of sabSectionAlias.
+var sabSectionReverse = map[string]string{
+	"general": "misc",
+}
+
 // modeGetConfig returns the current configuration as JSON.
+//
+// The response uses SABnzbd-compatible section names so that third-party
+// clients (Sonarr, Radarr, NZB360) can read expected paths like
+// config.misc.complete_dir without error.
 func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
 	if s.config == nil {
 		s.respondError(w, http.StatusInternalServerError, "config not wired")
 		return
 	}
 
-	// TODO: Implement filtering by section= and keyword= query params.
-	// For now, return the full config.
-	// Marshal the config to JSON for return.
+	section := formString(r, "section")
+
+	// Marshal the config to JSON first, then optionally filter by section.
 	var raw json.RawMessage
 	var marshalErr error
 	s.config.WithRead(func(cfg *config.Config) {
@@ -33,7 +51,38 @@ func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondOK(w, "config", raw)
+	// Unmarshal into a generic map so we can remap section names.
+	var full map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &full); err != nil {
+		s.respondError(w, http.StatusInternalServerError, "unmarshal config: "+err.Error())
+		return
+	}
+
+	// Remap internal section names → SABnzbd names (e.g. "general" → "misc").
+	remapped := make(map[string]json.RawMessage, len(full))
+	for k, v := range full {
+		if sabName, ok := sabSectionReverse[k]; ok {
+			remapped[sabName] = v
+		} else {
+			remapped[k] = v
+		}
+	}
+
+	if section != "" {
+		// Resolve SABnzbd aliases: "misc" → look up "general" data
+		// (which is now stored under "misc" in remapped).
+		sectionData, ok := remapped[section]
+		if !ok {
+			// Section not found — return empty object rather than error,
+			// matching SABnzbd behavior.
+			respondOK(w, "config", json.RawMessage("{}"))
+			return
+		}
+		respondOK(w, "config", sectionData)
+		return
+	}
+
+	respondOK(w, "config", remapped)
 }
 
 // modeSetConfig sets configuration parameters.
@@ -46,6 +95,11 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	section := formString(r, "section")
 	keyword := formString(r, "keyword")
 	value := formString(r, "value")
+
+	// Resolve SABnzbd section aliases (e.g. "misc" → "general").
+	if internal, ok := sabSectionAlias[section]; ok {
+		section = internal
+	}
 
 	if section == "" {
 		s.respondError(w, http.StatusBadRequest, "missing section")
