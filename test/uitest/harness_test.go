@@ -70,6 +70,10 @@ func (m *mockApp) SetBandwidthMax(_ int64) {}
 
 func (m *mockApp) SetBandwidthPerc(_ int) {}
 
+func (m *mockApp) SetDownloadDir(_ string) {}
+
+func (m *mockApp) SetCompleteDir(_ string) {}
+
 func (m *mockApp) PauseDownloads() {}
 
 func (m *mockApp) ResumeDownloads() {}
