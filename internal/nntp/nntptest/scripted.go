@@ -23,7 +23,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // FailureMode is a scripted failure applied on the next Fetch of a

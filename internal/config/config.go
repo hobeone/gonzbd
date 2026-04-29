@@ -2,7 +2,7 @@ package config
 
 import "sync"
 
-// Config is the deserialized form of sabnzbd.yaml. It is the single source
+// Config is the deserialized form of gonzbd.yaml. It is the single source
 // of truth for runtime tuning parameters; all other packages receive a
 // reference to it via constructor injection rather than reading a global.
 //

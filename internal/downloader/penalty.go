@@ -4,8 +4,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/constants"
-	"github.com/hobeone/sabnzbd-go/internal/nntp"
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/nntp"
 )
 
 // PenaltyFor maps an error returned by an NNTP operation to the

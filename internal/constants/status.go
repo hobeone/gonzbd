@@ -1,7 +1,7 @@
 package constants
 
 // Status is the lifecycle state of a job (NzbObject) as exposed to the API
-// and rendered in the web UI. Values match the upstream sabnzbd Status class
+// and rendered in the web UI. Values match the upstream SABnzbd Status class
 // (see Python sabnzbd/constants.py) verbatim, because external clients —
 // including third-party apps — pattern-match on these strings.
 type Status string

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
-	"github.com/hobeone/sabnzbd-go/internal/sorting"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/sorting"
 )
 
 // ---- TestParse ----

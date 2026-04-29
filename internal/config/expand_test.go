@@ -37,7 +37,7 @@ func TestExpandHome(t *testing.T) {
 }
 
 func TestConfigExpandEnv(t *testing.T) {
-	os.Setenv("TEST_DIR", "/tmp/sabnzbd")
+	os.Setenv("TEST_DIR", "/tmp/gonzbd")
 	defer os.Unsetenv("TEST_DIR")
 
 	yml := `
@@ -65,8 +65,8 @@ general:
 		t.Errorf("Port = %d, want 9999", cfg.General.Port)
 	}
 	// After ExpandPaths, env vars in path fields should be expanded.
-	if cfg.General.DownloadDir != "/tmp/sabnzbd/incomplete" {
-		t.Errorf("DownloadDir = %q, want /tmp/sabnzbd/incomplete", cfg.General.DownloadDir)
+	if cfg.General.DownloadDir != "/tmp/gonzbd/incomplete" {
+		t.Errorf("DownloadDir = %q, want /tmp/gonzbd/incomplete", cfg.General.DownloadDir)
 	}
 
 	home, _ := os.UserHomeDir()

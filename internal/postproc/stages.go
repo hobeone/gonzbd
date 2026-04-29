@@ -1,4 +1,4 @@
-// Package postproc implements the post-processing orchestrator for SABnzbd-Go.
+// Package postproc implements the post-processing orchestrator for gonzbd.
 // It mirrors the Python sabnzbd/postproc.py behaviour: a single-worker pipeline
 // with a fast queue (for DirectUnpack-assisted jobs) and a slow queue, running
 // registered Stage implementations in order for each job.
@@ -8,8 +8,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // Stage is the interface every post-processing stage must implement.

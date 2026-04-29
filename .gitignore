@@ -1,8 +1,8 @@
 # Built binary
-/sabnzbd
+/gonzbd
 
 # config
-sabnzbd.yaml
+gonzbd.yaml
 
 # default state directory
 /admin

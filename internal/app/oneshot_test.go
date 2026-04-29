@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 // TestScenario_OneShotDuplicateNeverPaused verifies that if we add the same

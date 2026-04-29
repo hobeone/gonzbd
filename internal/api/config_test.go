@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 func testServerWithConfig(t *testing.T, cfg *config.Config) *Server {

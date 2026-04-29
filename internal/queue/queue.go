@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 // ErrNotFound is returned by Queue methods when the given job ID is

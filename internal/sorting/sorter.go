@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // SorterRule describes one user-configured sorting rule. Rules are evaluated

@@ -9,7 +9,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/par2"
+	"github.com/hobeone/gonzbd/internal/par2"
 )
 
 // hasPar2 returns true and the path to the par2 binary if it is installed.

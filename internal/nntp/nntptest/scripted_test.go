@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/nntp"
-	"github.com/hobeone/sabnzbd-go/internal/nntp/nntptest"
+	"github.com/hobeone/gonzbd/internal/nntp"
+	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
 )
 
 func TestScripted_FetchHappyPath(t *testing.T) {

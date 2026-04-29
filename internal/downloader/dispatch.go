@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/constants"
-	"github.com/hobeone/sabnzbd-go/internal/decoder"
-	"github.com/hobeone/sabnzbd-go/internal/nntp"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/decoder"
+	"github.com/hobeone/gonzbd/internal/nntp"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // dispatchPass walks the queue once and tries to feed every not-yet-

@@ -1,6 +1,6 @@
 //go:build integration
 
-// Package integration contains end-to-end integration tests for the SABnzbd-go daemon.
+// Package integration contains end-to-end integration tests for the gonzbd daemon.
 // Tests in this package require external dependencies (mock NNTP server, real HTTP,
 // optional par2/unrar binaries) and are gated behind the "integration" build tag.
 package integration
@@ -18,12 +18,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/api"
-	"github.com/hobeone/sabnzbd-go/internal/config"
-	"github.com/hobeone/sabnzbd-go/internal/history"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
-	"github.com/hobeone/sabnzbd-go/internal/types"
-	"github.com/hobeone/sabnzbd-go/internal/urlgrabber"
+	"github.com/hobeone/gonzbd/internal/api"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
+	"github.com/hobeone/gonzbd/internal/urlgrabber"
 )
 
 // nopNZBHandler is a no-op urlgrabber.Handler used in tests.
@@ -38,6 +39,12 @@ func (nopApp) RetryHistoryJob(context.Context, string) error          { return n
 func (nopApp) AddJob(context.Context, *queue.Job, []byte, bool) error { return nil }
 func (nopApp) RemoveJob(context.Context, string, bool) error          { return nil }
 func (nopApp) RemoveHistoryJob(context.Context, string, bool) error   { return nil }
+func (nopApp) SetSpeedLimit(int64)                                    {}
+func (nopApp) SetBandwidthMax(int64)                                  {}
+func (nopApp) SetBandwidthPerc(int)                                   {}
+func (nopApp) PauseDownloads()                                        {}
+func (nopApp) ResumeDownloads()                                       {}
+func (nopApp) ServerStatus() []downloader.ServerSnapshot              { return nil }
 
 const (
 	integrationAPIKey = "aabbccddeeff0011"

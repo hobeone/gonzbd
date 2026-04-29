@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/constants"
-	"github.com/hobeone/sabnzbd-go/internal/history"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // TestRetry_ResetsDownloadStats verifies that RetryHistoryJob clears the

@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Context
 
-This is a Go reimplementation of [SABnzbd](https://sabnzbd.org), the automated Usenet binary newsreader. The reference Python implementation lives at `../sabnzbd/`.
+GoNZBD is a Go reimplementation of [SABnzbd](https://sabnzbd.org), the automated Usenet binary newsreader. The reference Python implementation lives at `../sabnzbd/`.
 
-**Module path**: `github.com/hobeone/sabnzbd-go`  
+**Module path**: `github.com/hobeone/gonzbd`  
 **Go version**: 1.25 (toolchain 1.26.2)
 
 ## Reference Materials
@@ -151,7 +151,7 @@ When evaluating a new library not in the plan:
 No Makefile. Standard Go tooling only:
 
 ```bash
-go build ./cmd/sabnzbd                # Build the binary
+go build ./cmd/gonzbd                # Build the binary
 go test ./...                         # Run all unit tests
 go test -race ./...                   # With race detector (use this for CI)
 go test -run TestFoo ./internal/nzb/  # Run a single test

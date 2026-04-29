@@ -49,7 +49,7 @@ func TestRoundTripDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Default(): %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "sabnzbd.yaml")
+	path := filepath.Join(t.TempDir(), "gonzbd.yaml")
 	if err := original.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestRoundTripFixture(t *testing.T) {
 		t.Fatalf("getwd: %v", err)
 	}
 	// cwd is .../internal/config; module root is two levels up.
-	fixture := filepath.Join(cwd, "..", "..", "test", "fixtures", "sabnzbd.yaml")
+	fixture := filepath.Join(cwd, "..", "..", "test", "fixtures", "gonzbd.yaml")
 	if _, err := os.Stat(fixture); err != nil {
 		t.Skipf("fixture not present at %s: %v", fixture, err)
 	}
@@ -286,7 +286,7 @@ func TestValidateAcceptsAValidServer(t *testing.T) {
 
 func TestSaveAtomicReplacesExisting(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "sabnzbd.yaml")
+	path := filepath.Join(dir, "gonzbd.yaml")
 
 	first, err := Default()
 	if err != nil {

@@ -12,12 +12,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
-	"github.com/hobeone/sabnzbd-go/internal/constants"
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
-	"github.com/hobeone/sabnzbd-go/internal/nzb"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
-	"github.com/hobeone/sabnzbd-go/internal/types"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // maxUploadBytes is the maximum allowed NZB upload body size (50 MiB).

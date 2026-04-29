@@ -3,7 +3,7 @@ package queue
 import (
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 func TestQueue_Snapshot(t *testing.T) {

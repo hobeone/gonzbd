@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // maxArticleSize is the upper bound on a plausible NNTP article payload

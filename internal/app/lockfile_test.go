@@ -13,7 +13,7 @@ import (
 
 func TestAcquireLockfileRoundTrip(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "sabnzbd.lock")
+	path := filepath.Join(t.TempDir(), "gonzbd.lock")
 
 	lf, err := AcquireLockfile(path)
 	if err != nil {
@@ -46,7 +46,7 @@ func TestAcquireLockfileRoundTrip(t *testing.T) {
 
 func TestAcquireLockfileSecondFails(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "sabnzbd.lock")
+	path := filepath.Join(t.TempDir(), "gonzbd.lock")
 
 	first, err := AcquireLockfile(path)
 	if err != nil {
@@ -61,7 +61,7 @@ func TestAcquireLockfileSecondFails(t *testing.T) {
 
 func TestAcquireLockfileReacquiresAfterRelease(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "sabnzbd.lock")
+	path := filepath.Join(t.TempDir(), "gonzbd.lock")
 
 	first, err := AcquireLockfile(path)
 	if err != nil {
@@ -80,7 +80,7 @@ func TestAcquireLockfileReacquiresAfterRelease(t *testing.T) {
 
 func TestAcquireLockfileMissingDir(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "missing-dir", "sabnzbd.lock")
+	path := filepath.Join(t.TempDir(), "missing-dir", "gonzbd.lock")
 
 	_, err := AcquireLockfile(path)
 	if err == nil {

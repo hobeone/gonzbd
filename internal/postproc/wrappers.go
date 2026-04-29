@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/hobeone/sabnzbd-go/internal/deobfuscate"
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
-	"github.com/hobeone/sabnzbd-go/internal/nzb"
-	"github.com/hobeone/sabnzbd-go/internal/par2"
-	"github.com/hobeone/sabnzbd-go/internal/sorting"
-	"github.com/hobeone/sabnzbd-go/internal/unpack"
+	"github.com/hobeone/gonzbd/internal/deobfuscate"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/par2"
+	"github.com/hobeone/gonzbd/internal/sorting"
+	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // RepairStage runs par2 verify+repair against every par2 set it finds in

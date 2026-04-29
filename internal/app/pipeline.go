@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/assembler"
-	"github.com/hobeone/sabnzbd-go/internal/downloader"
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
-	"github.com/hobeone/sabnzbd-go/internal/nntp"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/assembler"
+	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nntp"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // isRetryableDownloaderError returns true for transient errors where the

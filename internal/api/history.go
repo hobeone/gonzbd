@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/history"
+	"github.com/hobeone/gonzbd/internal/history"
 )
 
 // modeHistory handles mode=history with sub-actions via the name= parameter.

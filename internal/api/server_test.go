@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
-	"github.com/hobeone/sabnzbd-go/internal/downloader"
-	"github.com/hobeone/sabnzbd-go/internal/history"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 const (

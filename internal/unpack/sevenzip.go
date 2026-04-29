@@ -13,7 +13,7 @@ import (
 // sevenZipBin returns the path to the 7-zip binary to use.
 // Resolution order:
 //  1. Explicit command from Options (SevenZipCommand).
-//  2. SABNZBD_SEVENZIP_BIN environment variable (if set and non-empty).
+//  2. GONZBD_SEVENZIP_BIN environment variable (if set and non-empty).
 //  3. "7zz" (preferred upstream binary name).
 //  4. "7z" (common distro package name).
 //
@@ -22,7 +22,7 @@ func sevenZipBin(opts Options) (string, error) {
 	if opts.SevenZipCommand != "" {
 		return opts.SevenZipCommand, nil
 	}
-	if env := os.Getenv("SABNZBD_SEVENZIP_BIN"); env != "" {
+	if env := os.Getenv("GONZBD_SEVENZIP_BIN"); env != "" {
 		return env, nil
 	}
 	if path, err := exec.LookPath("7zz"); err == nil {
@@ -31,7 +31,7 @@ func sevenZipBin(opts Options) (string, error) {
 	if path, err := exec.LookPath("7z"); err == nil {
 		return path, nil
 	}
-	return "", fmt.Errorf("7-zip binary not found; install 7zz or 7z, set SABNZBD_SEVENZIP_BIN, or configure sevenz_command")
+	return "", fmt.Errorf("7-zip binary not found; install 7zz or 7z, set GONZBD_SEVENZIP_BIN, or configure sevenz_command")
 }
 
 // SevenZip extracts archive.MainFile into outDir by shelling out to the 7-zip

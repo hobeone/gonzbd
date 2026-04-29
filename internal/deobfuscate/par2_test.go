@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 func TestPar2Rename(t *testing.T) {

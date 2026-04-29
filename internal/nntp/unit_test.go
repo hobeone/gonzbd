@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // ---------- classifyStatus ----------

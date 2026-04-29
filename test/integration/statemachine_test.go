@@ -12,14 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/app"
-	"github.com/hobeone/sabnzbd-go/internal/config"
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
-	"github.com/hobeone/sabnzbd-go/internal/history"
-	"github.com/hobeone/sabnzbd-go/internal/nntp/nntptest"
-	"github.com/hobeone/sabnzbd-go/internal/nzb"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
-	"github.com/hobeone/sabnzbd-go/test/mocknntp"
+	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
 func TestIntegration_StateMachineChaos(t *testing.T) {

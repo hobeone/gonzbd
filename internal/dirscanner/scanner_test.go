@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/types"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // MockHandler records all HandleNZB calls for verification.

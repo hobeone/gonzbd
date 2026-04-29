@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/types"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // Handler defines the interface for consuming NZB payloads extracted by the scanner.

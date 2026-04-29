@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // ---------------------------------------------------------------------------

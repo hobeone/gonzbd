@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 // Options configures a PostProcessor at construction time.

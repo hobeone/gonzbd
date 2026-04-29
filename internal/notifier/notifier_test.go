@@ -21,7 +21,7 @@ import (
 
 	"log/slog"
 
-	. "github.com/hobeone/sabnzbd-go/internal/notifier"
+	. "github.com/hobeone/gonzbd/internal/notifier"
 )
 
 func newTestLogger(t *testing.T) *slog.Logger {
@@ -337,7 +337,7 @@ func TestEmailFormatMessage(t *testing.T) {
 	}{
 		{"From header", "From: sab@example.com"},
 		{"To header", "To: user@example.com, admin@example.com"},
-		{"Subject header", "Subject: SABnzbd: My Download"},
+		{"Subject header", "Subject: GoNZBD: My Download"},
 		{"body text", "Finished successfully."},
 	}
 	for _, c := range checks {

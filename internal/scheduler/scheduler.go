@@ -1,10 +1,10 @@
-// Package scheduler provides a cron-like scheduler that parses SABnzbd's
+// Package scheduler provides a cron-like scheduler that parses gonzbd's
 // 5-field schedule format and dispatches registered action handlers at the
 // appropriate minute boundaries.
 //
 // Supported field syntax per position: * (any), integer, a,b,c (comma list),
 // a-b (inclusive range), */n (stride). Month and day-of-month fields are
-// accepted but always match (SABnzbd schedules use minute/hour/dow only in
+// accepted but always match (schedules use minute/hour/dow only in
 // practice; those fields are parsed for completeness).
 //
 // Not supported: named day/month values (e.g. "Mon", "Jan"), L/W/# modifiers,
@@ -188,7 +188,7 @@ func (s ScheduleSpec) Matches(t time.Time) bool {
 		matchesDOW(s.DaysOfWeek, t.Weekday())
 }
 
-// matchesDOW maps time.Weekday (0=Sun … 6=Sat) to SABnzbd's convention
+// matchesDOW maps time.Weekday (0=Sun … 6=Sat) to the SABnzbd convention
 // (1=Mon … 7=Sun; 0 also accepted as Sunday for cron compat) and checks.
 func matchesDOW(dow []int, wd time.Weekday) bool {
 	// SABnzbd: 1=Mon, 2=Tue, … 6=Sat, 7=Sun
