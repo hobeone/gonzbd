@@ -27,6 +27,7 @@ import (
 	"github.com/hobeone/sabnzbd-go/internal/api"
 	"github.com/hobeone/sabnzbd-go/internal/config"
 	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/sabnzbd-go/internal/downloader"
 	"github.com/hobeone/sabnzbd-go/internal/history"
 	"github.com/hobeone/sabnzbd-go/internal/queue"
 	"github.com/hobeone/sabnzbd-go/internal/web"
@@ -65,9 +66,15 @@ func (m *mockApp) RemoveHistoryJob(_ context.Context, _ string, _ bool) error {
 
 func (m *mockApp) SetSpeedLimit(_ int64) {}
 
+func (m *mockApp) SetBandwidthMax(_ int64) {}
+
+func (m *mockApp) SetBandwidthPerc(_ int) {}
+
 func (m *mockApp) PauseDownloads() {}
 
 func (m *mockApp) ResumeDownloads() {}
+
+func (m *mockApp) ServerStatus() []downloader.ServerSnapshot { return nil }
 
 // testEnv bundles everything needed for a UI test.
 type testEnv struct {
