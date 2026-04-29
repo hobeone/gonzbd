@@ -24,8 +24,8 @@ func TestCheckDependencies_Missing(t *testing.T) {
 	defer os.Setenv("PATH", oldPath)
 
 	warnings := CheckDependencies()
-	// Should have at least 3 warnings (unrar, 7-zip, par2)
-	if len(warnings) < 3 {
-		t.Errorf("Expected at least 3 warnings, got %d", len(warnings))
+	// Should have 2 warnings: par2 missing + neither 7zip nor unrar found.
+	if len(warnings) < 2 {
+		t.Errorf("Expected at least 2 warnings, got %d: %v", len(warnings), warnings)
 	}
 }
