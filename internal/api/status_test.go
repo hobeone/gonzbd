@@ -193,3 +193,44 @@ func TestModeServerStats_Default(t *testing.T) {
 		t.Errorf("servers length = %d; want 0", len(servers))
 	}
 }
+
+// --- Sonarr compatibility tests ---
+
+// TestFullStatus_SonarrCompleteDir verifies fullstatus includes the
+// completedir field that Sonarr reads to resolve category paths.
+func TestFullStatus_SonarrCompleteDir(t *testing.T) {
+	t.Parallel()
+	q := queue.New()
+	s := New(Options{
+		Config: &config.Config{General: config.GeneralConfig{
+			APIKey:      testAPIKey,
+			NZBKey:      testNZBKey,
+			CompleteDir: "/data/complete",
+		}},
+		Version: "1.0.0-test",
+		Queue:   q,
+	})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=fullstatus&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	m := decodeJSON(t, rr)
+	statusVal, ok := m["status"]
+	if !ok {
+		t.Fatal("status field missing")
+	}
+	statusData, ok := statusVal.(map[string]any)
+	if !ok {
+		t.Fatalf("status is not an object (got %T)", statusVal)
+	}
+
+	completeDir, ok := statusData["completedir"].(string)
+	if !ok {
+		t.Fatal("completedir field missing or not a string in fullstatus response")
+	}
+	if completeDir != "/data/complete" {
+		t.Errorf("completedir = %q; want %q", completeDir, "/data/complete")
+	}
+}

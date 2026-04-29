@@ -118,7 +118,7 @@ func TestQueueDefault_WithJobs(t *testing.T) {
 			Slots     []struct {
 				NzoID    string `json:"nzo_id"`
 				Filename string `json:"filename"`
-				Category string `json:"category"`
+				Category string `json:"cat"`
 				Priority string `json:"priority"`
 				Status   string `json:"status"`
 				PP       string `json:"pp"`
@@ -805,4 +805,136 @@ func TestQueuePriority_MissingParams(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("no value2: status = %d; want 400", rr.Code)
 	}
+}
+
+// --- Sonarr compatibility tests ---
+// These verify the exact JSON field names and types that Sonarr's C# client
+// deserializes (SabnzbdQueueItem). Any mismatch will silently break the
+// integration because .NET's JSON deserializer returns defaults for unknown keys.
+
+// TestQueueSlot_SonarrCatField verifies the category field is emitted as "cat"
+// (not "category"). Sonarr's SabnzbdQueueItem has [JsonProperty("cat")].
+func TestQueueSlot_SonarrCatField(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	addTestJob(t, q, queue.AddOptions{Filename: "test.nzb", Category: "tv"})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	slot := extractFirstSlot(t, rr.Body.Bytes())
+
+	// "cat" must be present; "category" must NOT be present.
+	if _, ok := slot["cat"]; !ok {
+		t.Error("expected field 'cat' in queue slot (Sonarr reads 'cat')")
+	}
+	if _, ok := slot["category"]; ok {
+		t.Error("field 'category' should not exist in queue slot; Sonarr ignores it")
+	}
+
+	// Verify the value is correct.
+	var catVal string
+	if err := json.Unmarshal(slot["cat"], &catVal); err != nil {
+		t.Fatalf("unmarshal cat: %v", err)
+	}
+	if catVal != "tv" {
+		t.Errorf("cat = %q; want %q", catVal, "tv")
+	}
+}
+
+// TestQueueSlot_SonarrPercentageIsInt verifies percentage is a JSON number
+// (not a string). Sonarr deserializes it as C# int.
+func TestQueueSlot_SonarrPercentageIsInt(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	addTestJob(t, q, queue.AddOptions{Filename: "test.nzb"})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	slot := extractFirstSlot(t, rr.Body.Bytes())
+
+	pctRaw, ok := slot["percentage"]
+	if !ok {
+		t.Fatal("field 'percentage' missing from queue slot")
+	}
+
+	// JSON numbers start with a digit or '-'; strings start with '"'.
+	if len(pctRaw) == 0 || pctRaw[0] == '"' {
+		t.Errorf("percentage = %s; want a JSON number (Sonarr reads as int), got string", pctRaw)
+	}
+}
+
+// TestQueueSlot_SonarrIndexField verifies the index field is present and is an integer.
+func TestQueueSlot_SonarrIndexField(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	addTestJob(t, q, queue.AddOptions{Filename: "first.nzb"})
+	addTestJob(t, q, queue.AddOptions{Filename: "second.nzb"})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	slots := extractAllSlots(t, rr.Body.Bytes())
+	if len(slots) < 2 {
+		t.Fatalf("expected at least 2 slots, got %d", len(slots))
+	}
+
+	for i, slot := range slots {
+		idxRaw, ok := slot["index"]
+		if !ok {
+			t.Errorf("slot[%d]: field 'index' missing", i)
+			continue
+		}
+		var idx int
+		if err := json.Unmarshal(idxRaw, &idx); err != nil {
+			t.Errorf("slot[%d]: index unmarshal: %v (raw=%s)", i, err, idxRaw)
+			continue
+		}
+		if idx != i {
+			t.Errorf("slot[%d]: index = %d; want %d", i, idx, i)
+		}
+	}
+}
+
+// extractFirstSlot parses a queue response and returns the first slot as a raw JSON map.
+func extractFirstSlot(t *testing.T, body []byte) map[string]json.RawMessage {
+	t.Helper()
+	slots := extractAllSlots(t, body)
+	if len(slots) == 0 {
+		t.Fatal("expected at least one slot")
+	}
+	return slots[0]
+}
+
+// extractAllSlots parses a queue response and returns all slots as raw JSON maps.
+func extractAllSlots(t *testing.T, body []byte) []map[string]json.RawMessage {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("unmarshal root: %v", err)
+	}
+	var queueRaw map[string]json.RawMessage
+	if err := json.Unmarshal(raw["queue"], &queueRaw); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
+	var slotsRaw []json.RawMessage
+	if err := json.Unmarshal(queueRaw["slots"], &slotsRaw); err != nil {
+		t.Fatalf("unmarshal slots: %v", err)
+	}
+	var result []map[string]json.RawMessage
+	for _, s := range slotsRaw {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(s, &m); err != nil {
+			t.Fatalf("unmarshal slot: %v", err)
+		}
+		result = append(result, m)
+	}
+	return result
 }
