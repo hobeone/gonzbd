@@ -812,8 +812,11 @@ type wsAdapter struct {
 
 func (w wsAdapter) Broadcast(e app.Event) {
 	w.b.Broadcast(api.Event{
-		Type:      e.Type,
-		Speed:     e.Speed,
-		Remaining: e.Remaining,
+		Type:          e.Type,
+		Speed:         e.Speed,
+		Remaining:     e.Remaining,
+		SpeedLimit:    e.SpeedLimit,
+		BandwidthMax:  e.BandwidthMax,
+		BandwidthPerc: e.BandwidthPerc,
 	})
 }

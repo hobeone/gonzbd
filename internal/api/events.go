@@ -13,9 +13,12 @@ import (
 
 // Event represents a message sent over the WebSocket.
 type Event struct {
-	Type      string `json:"event"`
-	Speed     int64  `json:"speed,omitempty"`
-	Remaining int64  `json:"remaining,omitempty"`
+	Type          string `json:"event"`
+	Speed         int64  `json:"speed,omitempty"`
+	Remaining     int64  `json:"remaining,omitempty"`
+	SpeedLimit    int64  `json:"speed_limit"`
+	BandwidthMax  int64  `json:"bandwidth_max"`
+	BandwidthPerc int    `json:"bandwidth_perc"`
 }
 
 // Broadcaster manages active WebSocket connections and distributes events.
