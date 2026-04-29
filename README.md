@@ -1,32 +1,31 @@
-# gonzbd
+# GoNZBD
 
-GoNZBD is heavily inspired by [SABnzbd](https://sabnzbd.org). It is a Go
-reimplementation of the automated Usenet binary newsreader. Fresh-install
-target — not a drop-in replacement for an existing Python SABnzbd install
-(see [`docs/golang_implementation.md`](docs/golang_implementation.md)
-*Design Policy: Compatibility Scope*).
+A high-performance Usenet binary newsreader written in Go, heavily inspired
+by [SABnzbd](https://sabnzbd.org). GoNZBD targets fresh installations — it
+is not a drop-in replacement for an existing Python SABnzbd install.
 
-## Status
+## Features
 
-Core implementation complete for the backend and the web UI. The daemon
-downloads and assembles NZBs end-to-end, runs post-processing (par2
-verify + unrar/7z unpack + sorters + user scripts), and exposes the full
-legacy mode-dispatch API (`/api?mode=...`) that the UI talks to.
-
-**The web UI is a Svelte 5 SPA** (TypeScript, Tailwind CSS, shadcn-svelte)
-built with Vite and embedded in the Go binary via `//go:embed`. Opening
-`http://127.0.0.1:8080/` shows the UI with Queue, History, and Warnings
-tabs, real-time speed display, file upload, and a settings viewer.
-
-For browser-based manual verification steps, see
-[`docs/ui_smoke_checklist.md`](docs/ui_smoke_checklist.md).
-
-See [`docs/golang_implementation.md`](docs/golang_implementation.md) for
-the full phase/step breakdown.
+- **Full download pipeline** — NZB parsing, NNTP article fetching with
+  multi-server failover, yEnc decoding, and file assembly.
+- **Post-processing** — par2 verify/repair, RAR/7z extraction, file
+  deobfuscation, sorting rules, and user scripts.
+- **Web UI** — Svelte 5 SPA (TypeScript, Tailwind CSS, shadcn-svelte)
+  embedded in the binary. Queue, History, Warnings tabs with real-time
+  WebSocket updates, speed display, bandwidth limiting, and settings editor.
+- **Legacy API** — Full `/api?mode=...` dispatch compatible with tools like
+  Sonarr, Radarr, and NZB360.
+- **RSS feeds** — Configurable feed polling with regex filters.
+- **Watched folders** — Directory scanner for automatic NZB ingestion.
+- **HTTPS** — Optional TLS listener with auto-generated self-signed certs.
+- **Single binary** — The UI is embedded via `//go:embed`; no external
+  assets or runtime dependencies beyond optional `par2`/`unrar`/`7z`.
+- **Pure Go** — No CGO dependencies. SQLite via `modernc.org/sqlite`.
 
 ## Requirements
 
 - Go 1.25 or later (see `go.mod`).
+- Node.js 18+ (build-time only, for the Svelte UI).
 - Optional at runtime:
   - `par2` — parity verify and repair.
   - `unrar` — archive extraction.
@@ -56,9 +55,6 @@ go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cm
 ```
 
 ## Quickstart — run the daemon
-
-These steps get you a running daemon you can use via the web UI,
-`curl`, a watched folder, or the `--nzb` one-shot flag.
 
 1. **Build the binary** (see above) so `./gonzbd` sits in the repo root.
 
@@ -92,42 +88,29 @@ These steps get you a running daemon you can use via the web UI,
    - `general.https_port` — set to a port (e.g., `8443`) to enable
      HTTPS alongside the HTTP listener. See [HTTPS](#https) below.
 
-4. **Create the directories the config references**. By default the sample
-   expects the following tree relative to the working directory you start
-   the daemon from:
-
-   ```bash
-   mkdir -p Downloads/incomplete Downloads/complete Downloads/watch \
-            scripts logs admin
-   ```
-
-   Or edit `general.download_dir`, `general.complete_dir`,
-   `general.dirscan_dir`, `general.log_dir`, and `general.admin_dir` to
-   absolute paths you prefer.
-
-5. **Start the daemon**:
+4. **Start the daemon**:
 
    ```bash
    ./gonzbd --config ~/.config/gonzbd/gonzbd.yaml --serve
    ```
 
-   Add `-v` for debug-level logging. The server logs `http listener
-   starting addr=127.0.0.1:8080 ...` when it's ready.
+   The daemon automatically creates `download_dir`, `complete_dir`, and
+   `admin_dir` on startup if they don't exist. Add `-v` for debug-level
+   logging. The server logs `http listener starting addr=127.0.0.1:8080 ...`
+   when it's ready.
 
-6. **Open the UI**. Navigate to `http://127.0.0.1:8080/` in a browser.
+5. **Open the UI**. Navigate to `http://127.0.0.1:8080/` in a browser.
    Enter your API key (from `gonzbd.yaml`) when prompted. The UI shows
-   Queue, History, and Warnings tabs with real-time polling. For a full
-   manual verification walkthrough see
-   [`docs/ui_smoke_checklist.md`](docs/ui_smoke_checklist.md).
+   Queue, History, and Warnings tabs with real-time updates.
 
-   If you prefer API-only access, the existing `curl` examples still work:
+   If you prefer API-only access:
 
    ```bash
    curl 'http://127.0.0.1:8080/api?mode=version'
    curl 'http://127.0.0.1:8080/api?mode=fullstatus&apikey=YOUR_KEY&output=json'
    ```
 
-7. **Add an NZB** either by dropping it into the `dirscan_dir` watched
+6. **Add an NZB** either by dropping it into the `dirscan_dir` watched
    folder or POSTing it to the API:
 
    ```bash
@@ -156,12 +139,16 @@ exit without starting the HTTP server:
 ## Test
 
 ```bash
-go test ./...                                   # unit tests
-go test -race ./...                             # with race detector
-go test -run TestFoo ./internal/nzb/            # single test
-go test -bench=. ./internal/decoder/            # benchmarks for one package
-go test -tags=integration ./test/integration/...  # integration tests
+go test ./...                                     # unit tests
+go test -race ./...                               # with race detector
+go test -run TestFoo ./internal/nzb/              # single test
+go test -bench=. ./internal/decoder/              # benchmarks for one package
+go test -tags=integration ./test/integration/...  # integration tests (API)
+./scripts/run_tests.sh                            # full suite (Go + UI + E2E)
 ```
+
+The full test script runs Go unit tests, Vitest component tests for the
+Svelte UI, and Playwright-based end-to-end browser tests.
 
 ## Lint and static analysis
 
@@ -176,12 +163,16 @@ These checks must pass before each commit. See
 ## Repository layout
 
 ```
-cmd/gonzbd/        Main binary entry point
+cmd/gonzbd/         Main binary entry point
 internal/           Internal packages (api, app, downloader, queue, ...)
+ui/                 Svelte 5 SPA (TypeScript, Vite, Tailwind CSS)
+docs/               Architecture docs and SABnzbd spec reference
+scripts/            Build and test helper scripts
+test/e2e/           End-to-end download pipeline tests
+test/fixtures/      Sample config, NZB fixtures
+test/integration/   Integration tests (API, //go:build integration)
 test/mocknntp/      Configurable NNTP server for integration tests
-test/integration/   Integration tests gated by //go:build integration
-test/fixtures/      Sample config, NZB fixtures, etc.
-docs/               Spec, implementation plan, cross-session notes
+test/uitest/        Playwright browser tests for the web UI
 ```
 
 No `Makefile` is provided; standard `go` tooling is the supported build
@@ -261,6 +252,14 @@ preserved for forward compatibility with planned features.
 | Field | Notes |
 |-------|-------|
 | `multipart_label` | Multi-part label expansion. Not read in `sorterRulesFromConfig()`. |
+
+## Acknowledgements
+
+GoNZBD is heavily inspired by [SABnzbd](https://sabnzbd.org), the
+original Python-based automated Usenet binary newsreader. The design,
+API schema, and behavioral spec were studied from the SABnzbd source
+code and documentation. GoNZBD is not affiliated with or endorsed by
+the SABnzbd project.
 
 ## License
 
