@@ -153,6 +153,12 @@
 				</div>
 
 				<div class="space-y-1.5">
+					<label for="server-pipelining" class="text-sm font-medium">Pipeline Depth</label>
+					<Input id="server-pipelining" type="number" bind:value={draft.pipelining_requests} min="1" max="10" />
+					<p class="text-xs text-gray-500 dark:text-gray-400">Commands in-flight per connection</p>
+				</div>
+
+				<div class="space-y-1.5">
 					<label for="server-priority" class="text-sm font-medium">Priority</label>
 					<Input id="server-priority" type="number" bind:value={draft.priority} min="0" />
 				</div>
