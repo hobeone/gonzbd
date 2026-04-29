@@ -64,7 +64,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/hobeone/sabnzbd-go
+        - github.com/hobeone/gonzbd
 
 issues:
   max-issues-per-linter: 0

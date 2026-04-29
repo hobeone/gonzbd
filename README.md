@@ -1,10 +1,10 @@
-# sabnzbd-go
+# gonzbd
 
-A Go reimplementation of [SABnzbd](https://sabnzbd.org), the automated Usenet
-binary newsreader. Fresh-install target — not a drop-in replacement for an
-existing Python SABnzbd install (see
-[`docs/golang_implementation.md`](docs/golang_implementation.md) *Design
-Policy: Compatibility Scope*).
+GoNZBD is heavily inspired by [SABnzbd](https://sabnzbd.org). It is a Go
+reimplementation of the automated Usenet binary newsreader. Fresh-install
+target — not a drop-in replacement for an existing Python SABnzbd install
+(see [`docs/golang_implementation.md`](docs/golang_implementation.md)
+*Design Policy: Compatibility Scope*).
 
 ## Status
 
@@ -43,7 +43,7 @@ the full phase/step breakdown.
 
 ```bash
 cd ui && npm install && npm run build && cd ..
-go build ./cmd/sabnzbd
+go build ./cmd/gonzbd
 ```
 
 The first command builds the Svelte SPA into `ui/dist/`; the Go build
@@ -52,7 +52,7 @@ embeds it into the binary. Node.js is only needed at build time.
 Versioned build:
 
 ```bash
-go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cmd/sabnzbd
+go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cmd/gonzbd
 ```
 
 ## Quickstart — run the daemon
@@ -60,16 +60,16 @@ go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cm
 These steps get you a running daemon you can use via the web UI,
 `curl`, a watched folder, or the `--nzb` one-shot flag.
 
-1. **Build the binary** (see above) so `./sabnzbd` sits in the repo root.
+1. **Build the binary** (see above) so `./gonzbd` sits in the repo root.
 
 2. **Create a config directory and copy the sample config**:
 
    ```bash
-   mkdir -p ~/.config/sabnzbd-go
-   cp test/fixtures/sabnzbd.yaml ~/.config/sabnzbd-go/sabnzbd.yaml
+   mkdir -p ~/.config/gonzbd
+   cp test/fixtures/gonzbd.yaml ~/.config/gonzbd/gonzbd.yaml
    ```
 
-3. **Edit `~/.config/sabnzbd-go/sabnzbd.yaml`**. At minimum, replace the
+3. **Edit `~/.config/gonzbd/gonzbd.yaml`**. At minimum, replace the
    example upstream news server block under `servers:` with your provider's
    real `host`, `port`, `username`, and `password`. The sample config has
    two servers (`primary` and `backup`) — delete the backup entry if you
@@ -108,14 +108,14 @@ These steps get you a running daemon you can use via the web UI,
 5. **Start the daemon**:
 
    ```bash
-   ./sabnzbd --config ~/.config/sabnzbd-go/sabnzbd.yaml --serve
+   ./gonzbd --config ~/.config/gonzbd/gonzbd.yaml --serve
    ```
 
    Add `-v` for debug-level logging. The server logs `http listener
    starting addr=127.0.0.1:8080 ...` when it's ready.
 
 6. **Open the UI**. Navigate to `http://127.0.0.1:8080/` in a browser.
-   Enter your API key (from `sabnzbd.yaml`) when prompted. The UI shows
+   Enter your API key (from `gonzbd.yaml`) when prompted. The UI shows
    Queue, History, and Warnings tabs with real-time polling. For a full
    manual verification walkthrough see
    [`docs/ui_smoke_checklist.md`](docs/ui_smoke_checklist.md).
@@ -150,7 +150,7 @@ For smoke-testing or scripted use, the daemon can download a single NZB and
 exit without starting the HTTP server:
 
 ```bash
-./sabnzbd --config ~/.config/sabnzbd-go/sabnzbd.yaml --nzb /path/to/file.nzb
+./gonzbd --config ~/.config/gonzbd/gonzbd.yaml --nzb /path/to/file.nzb
 ```
 
 ## Test
@@ -176,7 +176,7 @@ These checks must pass before each commit. See
 ## Repository layout
 
 ```
-cmd/sabnzbd/        Main binary entry point
+cmd/gonzbd/        Main binary entry point
 internal/           Internal packages (api, app, downloader, queue, ...)
 test/mocknntp/      Configurable NNTP server for integration tests
 test/integration/   Integration tests gated by //go:build integration

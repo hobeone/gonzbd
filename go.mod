@@ -1,4 +1,4 @@
-module github.com/hobeone/sabnzbd-go
+module github.com/hobeone/gonzbd
 
 go 1.25.7
 

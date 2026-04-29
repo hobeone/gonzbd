@@ -31,7 +31,7 @@
 
 <nav class="border-b bg-gray-900 text-white">
 	<div class="mx-auto flex h-14 max-w-7xl items-center gap-4 px-4">
-		<h1 class="text-lg font-bold tracking-tight">SABnzbd</h1>
+		<h1 class="text-lg font-bold tracking-tight">GoNZBD</h1>
 
 		<Button
 			variant="ghost"

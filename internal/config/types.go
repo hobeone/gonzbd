@@ -1,5 +1,5 @@
 // Package config defines the on-disk configuration model and load/save
-// machinery for the sabnzbd-go daemon.
+// machinery for the gonzbd daemon.
 //
 // # Format
 //
@@ -39,7 +39,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 // ByteSize is a non-negative byte count expressed in the YAML config as a

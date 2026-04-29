@@ -1,10 +1,10 @@
-# SABnzbd-Go Architecture & Design
+# GoNZBD Architecture & Design
 
-This document provides a detailed overview of the architecture, design, and implementation of `sabnzbd-go`, a high-performance Go reimplementation of [SABnzbd](https://sabnzbd.org).
+This document provides a detailed overview of the architecture, design, and implementation of GoNZBD, a high-performance Go reimplementation of [SABnzbd](https://sabnzbd.org).
 
 ## Project Overview
 
-`sabnzbd-go` is designed as a long-running daemon that automates the Usenet download lifecycle: ingestion (NZB files), downloading (NNTP), decoding (yEnc), assembly, and post-processing. It emphasizes high performance, modern Go idioms, and a self-contained binary (including the web UI).
+GoNZBD is designed as a long-running daemon that automates the Usenet download lifecycle: ingestion (NZB files), downloading (NNTP), decoding (yEnc), assembly, and post-processing. It emphasizes high performance, modern Go idioms, and a self-contained binary (including the web UI).
 
 ---
 
@@ -12,7 +12,7 @@ This document provides a detailed overview of the architecture, design, and impl
 
 The project follows a standard Go project layout:
 
-- `cmd/sabnzbd/`: The application entry point. Handles CLI flags, configuration loading, and service orchestration.
+- `cmd/gonzbd/`: The application entry point. Handles CLI flags, configuration loading, and service orchestration.
 - `internal/`: Core application logic, restricted from external import.
     - `api/`: Implementation of the legacy SABnzbd HTTP API (`/api?mode=...`) and modern WebSocket events.
     - `app/`: The central orchestrator (`Application`) and the download pipeline bridge.
@@ -56,7 +56,7 @@ Data flows through the system in a multi-stage pipeline designed for maximum con
 
 ### Concurrency Model
 
-Unlike the original Python implementation's single-threaded selector loop, `sabnzbd-go` leverages Go's native concurrency:
+Unlike the original Python implementation's single-threaded selector loop, GoNZBD leverages Go's native concurrency:
 
 - **Goroutine per Connection**: Each NNTP connection runs in its own goroutine, allowing for massive parallelism across servers.
 - **Channels for Signaling**: Channels are used to stream `ArticleResult`s from the downloader to the pipeline and assembler.
@@ -88,15 +88,15 @@ Unlike the original Python implementation's single-threaded selector loop, `sabn
 ### Persistence (`internal/history`, `internal/config`)
 
 - **SQLite History**: Completed jobs are stored in `history.db`. The schema is maintained via `goose` migrations and is designed to be byte-for-byte compatible with the original Python implementation's history database.
-- **YAML Configuration**: The application uses a YAML configuration (`sabnzbd.yaml`). The `config` package handles loading, validation, and atomic saves (write to temp file and rename). Environment variable expansion is supported within the YAML.
+- **YAML Configuration**: The application uses a YAML configuration (`gonzbd.yaml`). The `config` package handles loading, validation, and atomic saves (write to temp file and rename). Environment variable expansion is supported within the YAML.
 
 ---
 
 ## Startup Sequence
 
-When running in daemon mode (`--serve`), the application follows this sequence in `cmd/sabnzbd/main.go`:
+When running in daemon mode (`--serve`), the application follows this sequence in `cmd/gonzbd/main.go`:
 
-1.  **Configuration**: Loads `sabnzbd.yaml` and resolves directory paths.
+1.  **Configuration**: Loads `gonzbd.yaml` and resolves directory paths.
 2.  **Logging**: Initializes structured logging (`log/slog`) with optional component-level filtering.
 3.  **Locking**: Acquires a filesystem lock to ensure only one instance runs per admin directory.
 4.  **Persistence**: Opens the SQLite history database and runs any pending migrations.
@@ -109,7 +109,7 @@ When running in daemon mode (`--serve`), the application follows this sequence i
 
 ## API & Web Integration
 
-The `sabnzbd-go` binary serves both the functional API and the modern web UI from a single port:
+The GoNZBD binary serves both the functional API and the modern web UI from a single port:
 
 - **HTTP API**: Located at `/api`, it implements the SABnzbd legacy mode-dispatch system. Each `mode` (e.g., `queue`, `history`, `config`) is mapped to a handler with a specific `AccessLevel` (Open, Protected, Admin).
 - **Error Logging**: All non-200 API responses are automatically logged. Status codes 500 and above are logged as errors, while other non-200 codes (4xx) are logged as warnings, including the explanation of what went wrong.
@@ -119,6 +119,6 @@ The `sabnzbd-go` binary serves both the functional API and the modern web UI fro
 ### Svelte 5 Development Caveats
 
 When contributing to the UI, keep the following hard-won lessons in mind:
-1. **Reactivity**: Do not use module-level `$state` in `.svelte.ts` stores for data that drives conditional rendering. Keep `$state` inside components for reliable re-renders during async operations.
-2. **Dialogs**: `bits-ui` Dialog components may not fire `onOpenChange` when their state is bound from a parent. Use `$effect` to watch the `open` prop instead.
-3. **Data Flow**: Child components should use `onupdate` callbacks rather than importing store functions directly to maintain explicit data flow.
+1. **Reactivity**: Do not use module-level $state in .svelte.ts stores for data that drives conditional rendering. Keep $state inside components for reliable re-renders during async operations.
+2. **Dialogs**: bits-ui Dialog components may not fire onOpenChange when their state is bound from a parent. Use $effect to watch the open prop instead.
+3. **Data Flow**: Child components should use onupdate callbacks rather than importing store functions directly to maintain explicit data flow.

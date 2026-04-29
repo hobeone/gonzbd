@@ -1,4 +1,4 @@
-# SABnzbd Go Reimplementation Specification
+# GoNZBD Specification
 
 **Source**: SABnzbd v5.x (Python 3.9+)  
 **Purpose**: Automated Usenet binary newsreader — downloads NZB files, verifies, repairs, and extracts archives with zero human interaction.

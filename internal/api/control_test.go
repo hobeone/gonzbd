@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 func TestModePause_OK(t *testing.T) {

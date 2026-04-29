@@ -303,7 +303,7 @@ func TestPersistenceNames(t *testing.T) {
 		"JobAdminDirName":  "__ADMIN__",
 		"VerifiedFileName": "__verified__",
 		"RenamesFileName":  "__renames__",
-		"AttribFileName":   "SABnzbd_attrib",
+		"AttribFileName":   "gonzbd_attrib",
 	}
 	for name, got := range tests {
 		t.Run(name, func(t *testing.T) {

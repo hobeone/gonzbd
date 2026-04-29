@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
-	"github.com/hobeone/sabnzbd-go/internal/nntp"
-	"github.com/hobeone/sabnzbd-go/test/mocknntp"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/nntp"
+	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
 // makeCfg builds a ServerConfig pointing at the given host:port.

@@ -98,11 +98,11 @@ const (
 // allow append-suffixes such as "_UNPACK_" or ".1" / ".2" disambiguators.
 const (
 	// MaxFolderNameLen is the maximum length of a folder name created by
-	// sabnzbd. Python: DEF_FOLDER_MAX = 256 - 10.
+	// gonzbd. Python: DEF_FOLDER_MAX = 256 - 10.
 	MaxFolderNameLen = 256 - 10
 
 	// MaxFileNameLen is the maximum length of a file name created by
-	// sabnzbd. Python: DEF_FILE_MAX = 255 - 10.
+	// gonzbd. Python: DEF_FILE_MAX = 255 - 10.
 	MaxFileNameLen = 255 - 10
 
 	// MaxFileExtensionLen is the maximum length of a file extension
@@ -149,5 +149,5 @@ const (
 	RenamesFileName = "__renames__"
 
 	// AttribFileName stores per-folder attribute metadata for a job.
-	AttribFileName = "SABnzbd_attrib"
+	AttribFileName = "gonzbd_attrib"
 )

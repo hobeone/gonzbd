@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/dirscanner"
-	"github.com/hobeone/sabnzbd-go/internal/types"
+	"github.com/hobeone/gonzbd/internal/dirscanner"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 const (

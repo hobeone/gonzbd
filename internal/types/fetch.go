@@ -1,6 +1,6 @@
 package types
 
-import "github.com/hobeone/sabnzbd-go/internal/constants"
+import "github.com/hobeone/gonzbd/internal/constants"
 
 // PPInherit is the sentinel value for FetchOptions.PP meaning
 // "inherit from the job's category". This mirrors Python SABnzbd's -1.

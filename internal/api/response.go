@@ -1,4 +1,4 @@
-// Package api implements SABnzbd's HTTP API server. All API calls are
+// Package api implements GoNZBD's HTTP API server. All API calls are
 // GET or POST to /api with a mode= query parameter that selects the
 // handler. This mirrors the Python SABnzbd API exactly so that existing
 // clients (Sonarr, Radarr, mobile apps, user scripts) work unchanged.

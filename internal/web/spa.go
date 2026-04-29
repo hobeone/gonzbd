@@ -20,7 +20,7 @@ type AuthCheck func(w http.ResponseWriter, r *http.Request) bool
 // client-side router can handle it.
 //
 // When the root "/" is requested and auth succeeds, it sets a
-// "sab_apikey" cookie so the client-side JS can hit the /api without
+// "gonzbd_apikey" cookie so the client-side JS can hit the /api without
 // needing an explicit key.
 //
 // authCheck is called on every navigation request (root and SPA
@@ -32,7 +32,7 @@ func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http
 
 	setApiKeyCookie := func(w http.ResponseWriter) {
 		http.SetCookie(w, &http.Cookie{
-			Name:     "sab_apikey",
+			Name:     "gonzbd_apikey",
 			Value:    apiKeyFn(),
 			Path:     "/",
 			HttpOnly: false, // JS reads it to attach as X-API-Key header

@@ -1,6 +1,6 @@
 //go:build uitest
 
-// Package uitest provides browser-based integration tests for the sabnzbd-go
+// Package uitest provides browser-based integration tests for the gonzbd
 // web UI using Playwright. Tests exercise the full stack: Go backend serving
 // the embedded Svelte SPA, interacted with via a real Chromium browser.
 //
@@ -24,14 +24,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/api"
-	"github.com/hobeone/sabnzbd-go/internal/config"
-	"github.com/hobeone/sabnzbd-go/internal/constants"
-	"github.com/hobeone/sabnzbd-go/internal/downloader"
-	"github.com/hobeone/sabnzbd-go/internal/history"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
-	"github.com/hobeone/sabnzbd-go/internal/web"
-	"github.com/hobeone/sabnzbd-go/ui"
+	"github.com/hobeone/gonzbd/internal/api"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/web"
+	"github.com/hobeone/gonzbd/ui"
 	"github.com/playwright-community/playwright-go"
 )
 

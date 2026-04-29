@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/constants"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // TestDispatchPass_ExhaustedEmitsDoNotBlockQueueWriters is the regression

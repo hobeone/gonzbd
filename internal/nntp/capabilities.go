@@ -106,7 +106,7 @@ func parseCapabilities(body string) *Capabilities {
 	// If neither BODY nor STAT was enumerated but READER was not
 	// present either, still fall back to the defaults. RFC 3977
 	// guarantees these verbs when the server is in READER mode,
-	// and SABnzbd has no use for a server that lacks them.
+	// and gonzbd has no use for a server that lacks them.
 	if !caps.HasBody {
 		caps.HasBody = true
 	}

@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/app"
-	"github.com/hobeone/sabnzbd-go/internal/config"
-	"github.com/hobeone/sabnzbd-go/internal/constants"
-	"github.com/hobeone/sabnzbd-go/internal/history"
-	"github.com/hobeone/sabnzbd-go/internal/nntp/nntptest"
-	"github.com/hobeone/sabnzbd-go/internal/postproc"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
+	"github.com/hobeone/gonzbd/internal/postproc"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // TestRecovery_PostProcTrueOnRestart verifies that Application.Start

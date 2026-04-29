@@ -154,10 +154,10 @@ func (g *GeneralConfig) validate() error {
 		}
 	}
 	if !apiKeyPattern.MatchString(g.APIKey) {
-		errs = append(errs, fmt.Errorf("api_key: must be 16 lowercase hex characters; regenerate via `sabnzbd init`"))
+		errs = append(errs, fmt.Errorf("api_key: must be 16 lowercase hex characters; regenerate via `gonzbd init`"))
 	}
 	if !apiKeyPattern.MatchString(g.NZBKey) {
-		errs = append(errs, fmt.Errorf("nzb_key: must be 16 lowercase hex characters; regenerate via `sabnzbd init`"))
+		errs = append(errs, fmt.Errorf("nzb_key: must be 16 lowercase hex characters; regenerate via `gonzbd init`"))
 	}
 	if strings.TrimSpace(g.DownloadDir) == "" {
 		errs = append(errs, fmt.Errorf("download_dir: %w", errEmpty))

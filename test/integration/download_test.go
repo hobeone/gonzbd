@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/app"
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
-	"github.com/hobeone/sabnzbd-go/internal/history"
-	"github.com/hobeone/sabnzbd-go/internal/nzb"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
-	"github.com/hobeone/sabnzbd-go/test/mocknntp"
+	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
 // addNZBJob parses rawNZB, creates a Job, and adds it to the application

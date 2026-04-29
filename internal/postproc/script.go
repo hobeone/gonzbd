@@ -80,7 +80,7 @@ type ScriptInput struct {
 	// URL is the source URL if download came from URL (SAB_URL env-only — from ENV_NZO_FIELDS).
 	URL string
 
-	// Version is the sabnzbd-go version string (SAB_VERSION env-only).
+	// Version is the gonzbd version string (SAB_VERSION env-only).
 	Version string
 
 	// APIKey is the API key (SAB_API_KEY env-only).

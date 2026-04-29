@@ -10,7 +10,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/unpack"
+	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // ---- helpers -----------------------------------------------------------------

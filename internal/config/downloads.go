@@ -1,6 +1,6 @@
 package config
 
-import "github.com/hobeone/sabnzbd-go/internal/fsutil"
+import "github.com/hobeone/gonzbd/internal/fsutil"
 
 // DownloadConfig controls bandwidth, retry behavior, and disk-space
 // guards for the download pipeline. See spec §9.3.

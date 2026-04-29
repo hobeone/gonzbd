@@ -1,4 +1,4 @@
-// Package web serves the Svelte 5 SPA for the SABnzbd-Go web interface.
+// Package web serves the Svelte 5 SPA for the GoNZBD web interface.
 // Static assets are embedded at build time via //go:embed so the binary
 // is self-contained.
 package web
@@ -8,7 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 
-	"github.com/hobeone/sabnzbd-go/ui"
+	"github.com/hobeone/gonzbd/ui"
 )
 
 // Handler returns an http.Handler serving the Svelte 5 SPA from the

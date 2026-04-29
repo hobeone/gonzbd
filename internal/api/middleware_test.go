@@ -199,7 +199,7 @@ func TestApiKeyFromRequest_Header(t *testing.T) {
 func TestApiKeyFromRequest_Cookie(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.AddCookie(&http.Cookie{Name: "sab_apikey", Value: "cookie000"})
+	r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: "cookie000"})
 	key, fromCookie := apiKeyFromRequest(r)
 	if key != "cookie000" || !fromCookie {
 		t.Errorf("got (%q, %v), want (cookie000, true)", key, fromCookie)
@@ -211,7 +211,7 @@ func TestApiKeyFromRequest_Priority(t *testing.T) {
 	// Query param takes priority over header and cookie.
 	r := httptest.NewRequest("GET", "/api?apikey=query", nil)
 	r.Header.Set("X-API-Key", "header")
-	r.AddCookie(&http.Cookie{Name: "sab_apikey", Value: "cookie"})
+	r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: "cookie"})
 	key, _ := apiKeyFromRequest(r)
 	if key != "query" {
 		t.Errorf("got %q, want query param to take priority", key)
@@ -298,7 +298,7 @@ func TestCallerLevel_CookieBlockedByCrossOrigin(t *testing.T) {
 	r := httptest.NewRequest("GET", "/api", nil)
 	r.RemoteAddr = "192.168.1.1:12345"
 	r.Host = "localhost:8080"
-	r.AddCookie(&http.Cookie{Name: "sab_apikey", Value: "0123456789abcdef"})
+	r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: "0123456789abcdef"})
 	r.Header.Set("Origin", "http://evil.com")
 	if got := callerLevel(r, cfg); got != 0 {
 		t.Errorf("cookie + cross-origin: got %d, want 0", got)

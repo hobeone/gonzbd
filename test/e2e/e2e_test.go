@@ -1,6 +1,6 @@
 // Package e2e contains end-to-end tests that download real articles from a
 // live Usenet provider. These tests are gated behind the "e2e" build tag
-// and require a configured sabnzbd.yaml with valid server credentials.
+// and require a configured gonzbd.yaml with valid server credentials.
 //
 // Self-posting tests (POST articles then download them) require E2E_POST=1.
 // Provided-NZB test requires E2E_NZB=/path/to/file.nzb.
@@ -24,10 +24,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/app"
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
-	"github.com/hobeone/sabnzbd-go/internal/nzb"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 func requireSelfPost(t *testing.T) {

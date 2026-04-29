@@ -22,7 +22,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // excludedExts lists file extensions that are never renamed, matching Python's
