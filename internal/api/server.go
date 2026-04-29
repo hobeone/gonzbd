@@ -60,6 +60,8 @@ type ApplicationReloader interface {
 	SetSpeedLimit(bytesPerSec int64)
 	SetBandwidthMax(bytesPerSec int64)
 	SetBandwidthPerc(perc int)
+	SetDownloadDir(dir string)
+	SetCompleteDir(dir string)
 	PauseDownloads()
 	ResumeDownloads()
 	ServerStatus() []downloader.ServerSnapshot
