@@ -1,0 +1,73 @@
+# Docker Compose configuration for GoNZBD
+#
+# Quick start:
+#   1. Copy this file to your preferred location
+#   2. Edit the volumes and environment below
+#   3. Run: docker compose up -d
+#
+# First run creates a default config at /config/gonzbd.yaml inside the
+# container. Edit it (or the mounted host copy) to add your news servers,
+# then restart: docker compose restart gonzbd
+
+services:
+  gonzbd:
+    image: gonzbd:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "1.0.0"
+    container_name: gonzbd
+    restart: unless-stopped
+
+    ports:
+      # Web UI + API
+      - "8080:8080"
+      # HTTPS (optional — enable https_port in gonzbd.yaml)
+      # - "9090:9090"
+
+    volumes:
+      # Config file — persists your settings across container rebuilds.
+      # On first run, gonzbd creates a default config here automatically.
+      - ./config:/config
+
+      # Download directories — these should be on fast storage.
+      # incomplete: active downloads (high I/O, temporary files)
+      # complete:   finished downloads moved here after post-processing
+      - ./downloads/incomplete:/data/downloads
+      - ./downloads/complete:/data/complete
+
+      # Admin directory — internal state (queue, history DB, locks).
+      # Small but important — back this up to preserve download history.
+      - ./admin:/data/admin
+
+      # Watched folder (optional) — drop .nzb files here to auto-download.
+      # Uncomment and set dirscan_dir in gonzbd.yaml to /data/watch
+      # - ./watch:/data/watch
+
+      # Scripts (optional) — post-processing scripts.
+      # Uncomment and set script_dir in gonzbd.yaml to /data/scripts
+      # - ./scripts:/data/scripts
+
+    environment:
+      # Timezone — used for scheduled actions and log timestamps.
+      - TZ=America/Los_Angeles
+
+      # Uncomment to override the config file location:
+      # - GONZBD_CONFIG=/config/gonzbd.yaml
+
+    # Resource limits (optional but recommended)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2G
+    #     reservations:
+    #       memory: 512M
+
+    # Health check — verifies the API is responding.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api?mode=version&output=json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

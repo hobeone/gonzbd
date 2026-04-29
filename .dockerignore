@@ -1,0 +1,36 @@
+# Build artifacts
+gonzbd
+*.exe
+
+# UI build artifacts (rebuilt in Docker)
+ui/node_modules/
+ui/dist/
+ui/.svelte-kit/
+
+# Test fixtures and data
+test/
+*.test
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Docker
+docker-compose*.yml
+Dockerfile
+
+# Docs (not needed in the image)
+docs/
+*.md
+!README.md
+
+# Config/state (user data, not part of build)
+admin/
+downloads/
+config/
