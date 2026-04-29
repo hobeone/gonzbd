@@ -100,8 +100,8 @@ go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cm
    when it's ready.
 
 5. **Open the UI**. Navigate to `http://127.0.0.1:8080/` in a browser.
-   Enter your API key (from `gonzbd.yaml`) when prompted. The UI shows
-   Queue, History, and Warnings tabs with real-time updates.
+   The API key is set automatically via a cookie — no manual entry needed.
+   The UI shows Queue, History, and Warnings tabs with real-time updates.
 
    If you prefer API-only access:
 
