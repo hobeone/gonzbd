@@ -19,7 +19,7 @@ is not a drop-in replacement for an existing Python SABnzbd install.
 - **Watched folders** — Directory scanner for automatic NZB ingestion.
 - **HTTPS** — Optional TLS listener with auto-generated self-signed certs.
 - **Single binary** — The UI is embedded via `//go:embed`; no external
-  assets or runtime dependencies beyond optional `par2`/`unrar`/`7z`.
+  assets or runtime dependencies beyond optional `par2` and `7z`.
 - **Pure Go** — No CGO dependencies. SQLite via `modernc.org/sqlite`.
 
 ## Requirements
@@ -28,8 +28,9 @@ is not a drop-in replacement for an existing Python SABnzbd install.
 - Node.js 18+ (build-time only, for the Svelte UI).
 - Optional at runtime:
   - `par2` — parity verify and repair.
-  - `unrar` — archive extraction.
-  - `7z` or `7zz` — archive extraction (alternative to unrar).
+  - `7z` or `7zz` — archive extraction (7z, zip, RAR, and more).
+  - `unrar` — preferred for RAR extraction if available; otherwise
+    7zip handles RAR natively as a fallback.
 
   If these binaries are not on `PATH`, the corresponding post-processing
   steps are skipped with a logged warning. The core download pipeline
@@ -58,7 +59,8 @@ go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cm
 
 Docker is the recommended way to run GoNZBD. The image is based on
 Alpine Linux and includes all post-processing dependencies (`par2`,
-`unrar`, `7z`).
+`7z`). Install `unrar` on the host if you prefer it over 7zip for
+RAR extraction.
 
 ### Quick start with Docker Compose
 
