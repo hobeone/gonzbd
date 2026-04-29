@@ -137,7 +137,7 @@
 	}
 
 	function deleteServer(name: string) {
-		if (!configData || !confirm(`Delete server "${name}"?`)) return;
+		if (!configData) return;
 		const servers = configData.servers.filter((s: ServerConfig) => s.name !== name);
 		configData = { ...configData, servers };
 		persistAndReload('servers', servers);
@@ -230,9 +230,9 @@
 			});
 	}
 
-	async function testServer(s: ServerConfig) {
+	async function testServer(s: ServerConfig): Promise<{ ok: boolean; message: string }> {
 		try {
-			await postAction('config', {
+			const res = await postAction('config', {
 				name: 'test_server',
 				host: s.host,
 				port: String(s.port),
@@ -241,9 +241,13 @@
 				ssl: s.ssl ? '1' : '0',
 				ssl_verify: String(s.ssl_verify)
 			});
-			alert('Connection successful!');
+			const r = (res as any).result;
+			if (r && typeof r.passed === 'boolean') {
+				return { ok: r.passed, message: r.message || (r.passed ? 'Connection successful!' : 'Connection failed.') };
+			}
+			return { ok: true, message: 'Connection successful!' };
 		} catch (e) {
-			alert('Connection failed: ' + (e instanceof Error ? e.message : String(e)));
+			return { ok: false, message: e instanceof Error ? e.message : String(e) };
 		}
 	}
 </script>
@@ -303,7 +307,6 @@
 								{configData}
 								onAddServer={() => { selectedServer = null; serverEditOpen = true; }}
 								onEditServer={(s) => { selectedServer = s; serverEditOpen = true; }}
-								onDeleteServer={deleteServer}
 								onTestServer={testServer}
 								onToggleServer={toggleServer}
 							/>
@@ -378,6 +381,7 @@
 	bind:open={serverEditOpen}
 	server={selectedServer}
 	onsave={saveServer}
+	ondelete={deleteServer}
 />
 
 <CategoryEditDialog

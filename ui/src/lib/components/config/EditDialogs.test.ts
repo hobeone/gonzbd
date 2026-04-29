@@ -90,6 +90,76 @@ describe('ServerEditDialog', () => {
 		});
 		expect(screen.queryByText('Add Server')).not.toBeInTheDocument();
 	});
+
+	it('does not show Delete button when adding a new server', () => {
+		render(ServerEditDialog, {
+			props: { open: true, onsave: vi.fn(), ondelete: vi.fn() }
+		});
+		expect(screen.queryByText('Delete')).not.toBeInTheDocument();
+	});
+
+	it('shows Delete button when editing an existing server', () => {
+		render(ServerEditDialog, {
+			props: {
+				open: true,
+				server: {
+					name: 'TestSrv', host: 'news.test.com', port: 119,
+					username: '', password: '', connections: 8, ssl: false,
+					ssl_verify: 2, ssl_ciphers: '', priority: 0,
+					required: false, optional: true, retention: 0,
+					timeout: 60, pipelining_requests: 2, enable: true
+				},
+				onsave: vi.fn(),
+				ondelete: vi.fn()
+			}
+		});
+		expect(screen.getByText('Delete')).toBeInTheDocument();
+	});
+
+	it('calls ondelete after confirmation', async () => {
+		const ondelete = vi.fn();
+		render(ServerEditDialog, {
+			props: {
+				open: true,
+				server: {
+					name: 'TestSrv', host: 'news.test.com', port: 119,
+					username: '', password: '', connections: 8, ssl: false,
+					ssl_verify: 2, ssl_ciphers: '', priority: 0,
+					required: false, optional: true, retention: 0,
+					timeout: 60, pipelining_requests: 2, enable: true
+				},
+				onsave: vi.fn(),
+				ondelete
+			}
+		});
+		await fireEvent.click(screen.getByText('Delete'));
+		expect(screen.getByText('Yes, delete')).toBeInTheDocument();
+		await fireEvent.click(screen.getByText('Yes, delete'));
+		expect(ondelete).toHaveBeenCalledWith('TestSrv');
+	});
+
+	it('dismisses delete confirmation when No is clicked', async () => {
+		render(ServerEditDialog, {
+			props: {
+				open: true,
+				server: {
+					name: 'TestSrv', host: 'news.test.com', port: 119,
+					username: '', password: '', connections: 8, ssl: false,
+					ssl_verify: 2, ssl_ciphers: '', priority: 0,
+					required: false, optional: true, retention: 0,
+					timeout: 60, pipelining_requests: 2, enable: true
+				},
+				onsave: vi.fn(),
+				ondelete: vi.fn()
+			}
+		});
+		await fireEvent.click(screen.getByText('Delete'));
+		expect(screen.getByText('Yes, delete')).toBeInTheDocument();
+		await fireEvent.click(screen.getByText('No'));
+		expect(screen.queryByText('Yes, delete')).not.toBeInTheDocument();
+		// Delete button should be back
+		expect(screen.getByText('Delete')).toBeInTheDocument();
+	});
 });
 
 describe('CategoryEditDialog', () => {
