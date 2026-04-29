@@ -29,3 +29,5 @@ ui/node_modules/
 scripts/populate_fake_data.go
 test/uitest/screenshots/
 ui/coverage/
+
+/Downloads
