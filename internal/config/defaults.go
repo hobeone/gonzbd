@@ -93,12 +93,6 @@ func Default() (*Config, error) {
 				Script:   "None",
 				Priority: int(constants.NormalPriority),
 			},
-			{
-				Name:     "*",
-				PP:       3,
-				Script:   "None",
-				Priority: int(constants.NormalPriority),
-			},
 		},
 		Sorters:   []SorterConfig{},
 		Schedules: []ScheduleConfig{},
