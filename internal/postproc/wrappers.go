@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -186,7 +187,17 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		var err error
 		switch a.Type {
 		case unpack.RarArchive:
-			res, err = unpack.UnRAR(ctx, a, job.DownloadDir, opts)
+			// Prefer unrar, but fall back to 7zip (which handles RAR
+			// natively) when the unrar binary isn't available.
+			unrarBin := opts.UnrarCommand
+			if unrarBin == "" {
+				unrarBin = "unrar"
+			}
+			if _, lookErr := exec.LookPath(unrarBin); lookErr == nil {
+				res, err = unpack.UnRAR(ctx, a, job.DownloadDir, opts)
+			} else {
+				res, err = unpack.SevenZip(ctx, a, job.DownloadDir, opts)
+			}
 		case unpack.SevenZipArchive:
 			res, err = unpack.SevenZip(ctx, a, job.DownloadDir, opts)
 		case unpack.SplitArchive:

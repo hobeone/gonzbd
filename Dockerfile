@@ -24,16 +24,14 @@ RUN CGO_ENABLED=0 go build \
 FROM alpine:3.22
 
 # Install post-processing dependencies:
-#   par2cmdline - PAR2 repair
-#   unrar       - RAR extraction
-#   7zip        - 7z/zip extraction
+#   par2cmdline     - PAR2 repair
+#   7zip            - archive extraction (7z, zip, RAR, and more)
 #   ca-certificates - TLS connections to news servers
-#   tzdata      - timezone support for schedules
-#   su-exec     - lightweight privilege drop (like gosu)
-#   shadow      - usermod/groupmod for PUID/PGID support
+#   tzdata          - timezone support for schedules
+#   su-exec         - lightweight privilege drop (like gosu)
+#   shadow          - usermod/groupmod for PUID/PGID support
 RUN apk add --no-cache \
     par2cmdline \
-    unrar \
     7zip \
     ca-certificates \
     tzdata \
