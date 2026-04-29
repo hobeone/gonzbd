@@ -78,7 +78,8 @@ type queueSlot struct {
 	NzoID          string `json:"nzo_id"`
 	Filename       string `json:"filename"`
 	Name           string `json:"name"`
-	Category       string `json:"category"`
+	Category       string `json:"cat"`
+	Index          int    `json:"index"`
 	Priority       string `json:"priority"`
 	Status         string `json:"status"`
 	Script         string `json:"script"`
@@ -89,7 +90,7 @@ type queueSlot struct {
 	MBLeft         string `json:"mbleft"`
 	Bytes          int64  `json:"bytes"`
 	RemainingBytes int64  `json:"remaining_bytes"`
-	Percentage     string `json:"percentage"`
+	Percentage     int    `json:"percentage"`
 	Timeleft       string `json:"timeleft"`
 	ETA            string `json:"eta"`
 	PP             string `json:"pp"`
@@ -147,12 +148,9 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		var pct string
+		var pct int
 		if j.TotalBytes > 0 {
-			p := 100.0 * float64(j.TotalBytes-j.RemainingBytes) / float64(j.TotalBytes)
-			pct = strconv.FormatFloat(p, 'f', 1, 64)
-		} else {
-			pct = "0.0"
+			pct = int(100 * (j.TotalBytes - j.RemainingBytes) / j.TotalBytes)
 		}
 
 		// Display override: when the queue is globally paused, jobs
@@ -169,6 +167,7 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 			Filename:       j.Filename,
 			Name:           j.Name,
 			Category:       j.Category,
+			Index:          len(slots),
 			Priority:       j.Priority.String(),
 			Status:         slotStatus,
 			Script:         nonEmpty(j.Script, "none"),

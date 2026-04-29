@@ -277,7 +277,10 @@ func (s *Server) historyRetry(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, http.StatusInternalServerError, "retry: "+err.Error())
 		return
 	}
-	respondStatus(w)
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status": true,
+		"nzo_id": nzoID,
+	})
 }
 
 // toUnixTS returns t.Unix() or 0 for zero times.

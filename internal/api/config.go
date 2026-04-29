@@ -68,6 +68,43 @@ func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Inject SABnzbd-specific fields into the "misc" section that Sonarr
+	// reads but we don't store natively (sorting, retention, pre_check).
+	// Without these, Sonarr's category validation produces spurious warnings.
+	if miscRaw, ok := remapped["misc"]; ok {
+		var miscMap map[string]json.RawMessage
+		if err := json.Unmarshal(miscRaw, &miscMap); err == nil {
+			sabDefaults := map[string]any{
+				"pre_check":                false,
+				"enable_tv_sorting":        false,
+				"tv_categories":            []string{},
+				"enable_movie_sorting":     false,
+				"movie_categories":         []string{},
+				"enable_date_sorting":      false,
+				"date_categories":          []string{},
+				"history_retention":        "",
+				"history_retention_option": "all",
+				"history_retention_number": 0,
+			}
+			for field, val := range sabDefaults {
+				if _, exists := miscMap[field]; !exists {
+					if b, err := json.Marshal(val); err == nil {
+						miscMap[field] = b
+					}
+				}
+			}
+			if b, err := json.Marshal(miscMap); err == nil {
+				remapped["misc"] = b
+			}
+		}
+	}
+
+	// Ensure "sorters" is always present as an empty array, never omitted.
+	// Sonarr iterates config.Sorters and will NRE if the key is absent.
+	if _, ok := remapped["sorters"]; !ok {
+		remapped["sorters"] = json.RawMessage("[]")
+	}
+
 	if section != "" {
 		// Resolve SABnzbd aliases: "misc" → look up "general" data
 		// (which is now stored under "misc" in remapped).

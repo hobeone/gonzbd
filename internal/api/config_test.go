@@ -305,3 +305,86 @@ func TestGetConfig_SectionNotFound(t *testing.T) {
 		t.Errorf("unknown section should return empty config, got %v", cfgMap)
 	}
 }
+
+// --- Sonarr compatibility tests ---
+
+// TestGetConfig_SonarrMiscFields verifies the misc section includes all fields
+// that Sonarr reads: sorting toggles, retention settings, and pre_check.
+func TestGetConfig_SonarrMiscFields(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	s := testServerWithConfig(t, cfg)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=get_config&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	m := decodeJSON(t, rr)
+	cfgMap := m["config"].(map[string]any)
+	misc := cfgMap["misc"].(map[string]any)
+
+	// These fields must be present for Sonarr's category validation and
+	// RemovesCompletedDownloads check.
+	requiredFields := []string{
+		"pre_check",
+		"enable_tv_sorting",
+		"tv_categories",
+		"enable_movie_sorting",
+		"movie_categories",
+		"enable_date_sorting",
+		"date_categories",
+		"history_retention",
+		"history_retention_option",
+		"history_retention_number",
+		"complete_dir",
+	}
+
+	for _, field := range requiredFields {
+		if _, ok := misc[field]; !ok {
+			t.Errorf("misc.%s missing from config response (Sonarr reads this)", field)
+		}
+	}
+
+	// Sorting must be disabled by default.
+	for _, field := range []string{"enable_tv_sorting", "enable_movie_sorting", "enable_date_sorting", "pre_check"} {
+		if val, ok := misc[field].(bool); ok && val {
+			t.Errorf("misc.%s = true; want false (default)", field)
+		}
+	}
+}
+
+// TestGetConfig_SortersAlwaysPresent verifies the sorters key is always an
+// array (never omitted). Sonarr iterates config.Sorters.
+func TestGetConfig_SortersAlwaysPresent(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	s := testServerWithConfig(t, cfg)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=get_config&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	m := decodeJSON(t, rr)
+	cfgMap := m["config"].(map[string]any)
+
+	sorters, ok := cfgMap["sorters"]
+	if !ok {
+		t.Fatal("sorters key missing from config response (Sonarr iterates this)")
+	}
+	arr, ok := sorters.([]any)
+	if !ok {
+		t.Fatalf("sorters is %T; want array", sorters)
+	}
+	// Default config has no sorters; should be empty array not null.
+	if arr == nil {
+		t.Error("sorters should be empty array, not null")
+	}
+}
