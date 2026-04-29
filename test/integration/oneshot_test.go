@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/nntp/nntptest"
-	"github.com/hobeone/sabnzbd-go/test/mocknntp"
+	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
+	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
 func TestIntegration_OneShotCLI(t *testing.T) {
@@ -60,14 +60,14 @@ servers:
     pipelining_requests: 1
     enable: true
 `
-	configPath := filepath.Join(dir, "sabnzbd.yaml")
+	configPath := filepath.Join(dir, "gonzbd.yaml")
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("failed to write dummy config: %v", err)
 	}
 
 	// 3. Build and run the binary
-	binary := filepath.Join(dir, "sabnzbd")
-	buildCmd := exec.Command("go", "build", "-o", binary, "../../cmd/sabnzbd")
+	binary := filepath.Join(dir, "gonzbd")
+	buildCmd := exec.Command("go", "build", "-o", binary, "../../cmd/gonzbd")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed to build binary: %v\n%s", err, out)
 	}

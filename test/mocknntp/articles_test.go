@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/decoder"
-	"github.com/hobeone/sabnzbd-go/test/mocknntp"
+	"github.com/hobeone/gonzbd/internal/decoder"
+	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
 func TestEncodeYEnc_RoundTrip(t *testing.T) {

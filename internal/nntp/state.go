@@ -1,4 +1,4 @@
-// Package nntp implements a minimal NNTP client tailored to SABnzbd's
+// Package nntp implements a minimal NNTP client tailored to GoNZBD's
 // binary-download workload: fetch-by-Message-ID, aggressive pipelining,
 // strict state machine, and fine-grained TLS verification control.
 //

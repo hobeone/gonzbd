@@ -3,8 +3,8 @@ package app
 import (
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
-	"github.com/hobeone/sabnzbd-go/internal/notifier"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/notifier"
 )
 
 // ---------- parseEventMask ----------

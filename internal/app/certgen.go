@@ -21,7 +21,7 @@ import (
 // 512 bytes for RSA-4096), faster signing, and equivalent-or-better security.
 // All TLS 1.3 clients support Ed25519.
 //
-// The certificate has CN=sabnzbd and SANs for 127.0.0.1, ::1, and localhost.
+// The certificate has CN=gonzbd and SANs for 127.0.0.1, ::1, and localhost.
 // Validity is from now-1h (for clock skew) to now+5 years. SerialNumber is a
 // random 128-bit value.
 func GenerateSelfSigned() (certPEM, keyPEM []byte, err error) {
@@ -39,7 +39,7 @@ func GenerateSelfSigned() (certPEM, keyPEM []byte, err error) {
 	template := &x509.Certificate{
 		SerialNumber: serialNum,
 		Subject: pkix.Name{
-			CommonName: "sabnzbd",
+			CommonName: "gonzbd",
 		},
 		NotBefore: now.Add(-time.Hour), //nolint:gosec // intentional: clock skew mitigation
 		NotAfter:  now.AddDate(5, 0, 0),

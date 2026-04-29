@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/hobeone/sabnzbd-go/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/downloader"
 )
 
 // modeFullStatus returns a full status snapshot including queue paused state and slot count.

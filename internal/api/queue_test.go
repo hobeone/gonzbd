@@ -12,11 +12,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
-	"github.com/hobeone/sabnzbd-go/internal/constants"
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
-	"github.com/hobeone/sabnzbd-go/internal/nzb"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // makeTestNZB returns a minimal valid NZB XML document as a byte slice.
@@ -300,8 +300,6 @@ func TestQueueList_NotPausedKeepsDownloadingStatus(t *testing.T) {
 		t.Errorf("slot status = %q; want Downloading (not paused)", resp.Queue.Slots[0].Status)
 	}
 }
-
-
 
 func TestQueuePause(t *testing.T) {
 	t.Parallel()

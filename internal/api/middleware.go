@@ -71,7 +71,7 @@ func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
 //  1. ?apikey= URL query parameter
 //  2. ?nzbkey= URL query parameter
 //  3. X-API-Key header
-//  4. "sab_apikey" cookie (set by the SPA handler)
+//  4. "gonzbd_apikey" cookie (set by the SPA handler)
 //  5. POST form body: apikey or nzbkey field (third-party app compat)
 //
 // Steps 1-4 intentionally use r.URL.Query() and headers instead of
@@ -90,7 +90,7 @@ func apiKeyFromRequest(r *http.Request) (string, bool) {
 	if k := r.Header.Get("X-API-Key"); k != "" {
 		return k, false
 	}
-	if c, err := r.Cookie("sab_apikey"); err == nil {
+	if c, err := r.Cookie("gonzbd_apikey"); err == nil {
 		return c.Value, true
 	}
 	// Fall back to POST form body for third-party app compatibility.

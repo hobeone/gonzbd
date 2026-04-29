@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 func TestModeGetCats_WithConfig(t *testing.T) {

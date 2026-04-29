@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/app"
+	"github.com/hobeone/gonzbd/internal/app"
 )
 
 func TestSetupStderr(t *testing.T) {

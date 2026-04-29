@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/par2"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/par2"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // writeScript creates an executable script file at path. To avoid the

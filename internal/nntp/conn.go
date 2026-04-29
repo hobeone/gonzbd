@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // ... (keep sentinel errors and ServerError)

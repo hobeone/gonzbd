@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // postArticle connects to the NNTP server described by cfg and posts a single
@@ -122,7 +122,7 @@ func postArticle(cfg config.ServerConfig, messageID, newsgroup, subject string, 
 func buildArticleMessage(messageID, newsgroup, subject string, body []byte) []byte {
 	var buf bytes.Buffer
 
-	fmt.Fprintf(&buf, "From: e2e-test@sabnzbd-go.test\r\n")
+	fmt.Fprintf(&buf, "From: e2e-test@gonzbd.test\r\n")
 	fmt.Fprintf(&buf, "Newsgroups: %s\r\n", newsgroup)
 	fmt.Fprintf(&buf, "Subject: %s\r\n", subject)
 	fmt.Fprintf(&buf, "Message-ID: <%s>\r\n", messageID)

@@ -10,7 +10,7 @@ import (
 
 func testSPAFS() fstest.MapFS {
 	return fstest.MapFS{
-		"index.html":   {Data: []byte(`<!DOCTYPE html><html><body>SABnzbd-Go</body></html>`)},
+		"index.html":   {Data: []byte(`<!DOCTYPE html><html><body>GoNZBD</body></html>`)},
 		"_app/test.js": {Data: []byte(`console.log("test")`)},
 		"robots.txt":   {Data: []byte("User-agent: *\nDisallow:")},
 		"favicon.ico":  {Data: []byte("fake-icon-bytes")},
@@ -25,8 +25,8 @@ func TestNewSPAHandler_RootServesIndexHTML(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET / status = %d, want 200", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), "SABnzbd-Go") {
-		t.Errorf("GET / body missing 'SABnzbd-Go'")
+	if !strings.Contains(rr.Body.String(), "GoNZBD") {
+		t.Errorf("GET / body missing 'GoNZBD'")
 	}
 }
 
@@ -64,8 +64,8 @@ func TestNewSPAHandler_UnknownPathFallsBackToIndex(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET /some/deep/route status = %d, want 200 (SPA catch-all)", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), "SABnzbd-Go") {
-		t.Errorf("SPA catch-all body missing 'SABnzbd-Go' (should serve index.html)")
+	if !strings.Contains(rr.Body.String(), "GoNZBD") {
+		t.Errorf("SPA catch-all body missing 'GoNZBD' (should serve index.html)")
 	}
 }
 
@@ -77,13 +77,13 @@ func TestSPACookieOnRoot(t *testing.T) {
 	cookies := rr.Result().Cookies()
 	var found *http.Cookie
 	for _, c := range cookies {
-		if c.Name == "sab_apikey" {
+		if c.Name == "gonzbd_apikey" {
 			found = c
 			break
 		}
 	}
 	if found == nil {
-		t.Fatalf("GET / did not set sab_apikey cookie")
+		t.Fatalf("GET / did not set gonzbd_apikey cookie")
 	}
 	if found.Value != "test-key" {
 		t.Errorf("cookie value = %q, want 'test-key'", found.Value)
@@ -98,13 +98,13 @@ func TestSPACookieOnDeepLink(t *testing.T) {
 	cookies := rr.Result().Cookies()
 	var found *http.Cookie
 	for _, c := range cookies {
-		if c.Name == "sab_apikey" {
+		if c.Name == "gonzbd_apikey" {
 			found = c
 			break
 		}
 	}
 	if found == nil {
-		t.Fatalf("GET /config/general did not set sab_apikey cookie")
+		t.Fatalf("GET /config/general did not set gonzbd_apikey cookie")
 	}
 	if found.Value != "test-key" {
 		t.Errorf("cookie value = %q, want 'test-key'", found.Value)
@@ -118,8 +118,8 @@ func TestStaticAssetNoCookie(t *testing.T) {
 
 	cookies := rr.Result().Cookies()
 	for _, c := range cookies {
-		if c.Name == "sab_apikey" {
-			t.Errorf("GET /_app/test.js should not set sab_apikey cookie")
+		if c.Name == "gonzbd_apikey" {
+			t.Errorf("GET /_app/test.js should not set gonzbd_apikey cookie")
 		}
 	}
 }

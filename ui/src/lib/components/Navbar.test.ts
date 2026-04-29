@@ -20,9 +20,9 @@ describe('Navbar', () => {
 		vi.clearAllMocks();
 	});
 
-	it('renders SABnzbd title', () => {
+	it('renders GoNZBD title', () => {
 		render(Navbar);
-		expect(screen.getByText('SABnzbd')).toBeInTheDocument();
+		expect(screen.getByText('GoNZBD')).toBeInTheDocument();
 	});
 
 

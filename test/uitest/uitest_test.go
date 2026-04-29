@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/api"
+	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/playwright-community/playwright-go"
 )
 
@@ -899,16 +899,16 @@ func TestSPASetsAPIKeyCookie(t *testing.T) {
 
 	var found bool
 	for _, c := range cookies {
-		if c.Name == "sab_apikey" {
+		if c.Name == "gonzbd_apikey" {
 			found = true
 			if c.Value != testAPIKey {
-				t.Errorf("sab_apikey cookie = %q; want %q", c.Value, testAPIKey)
+				t.Errorf("gonzbd_apikey cookie = %q; want %q", c.Value, testAPIKey)
 			}
 			break
 		}
 	}
 	if !found {
-		t.Error("sab_apikey cookie not set by SPA handler")
+		t.Error("gonzbd_apikey cookie not set by SPA handler")
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/constants"
+	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 func TestIntegration_DuplicateDetection(t *testing.T) {
@@ -22,7 +22,7 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 
 	// 1. Add first NZB
 	addNZBJob(t, a, rawNZB, "duplicate")
-	
+
 	// Verify NZB backup exists under the original filename
 	nzbBackupDir := filepath.Join(dir, "admin", "queue", "nzb")
 	// Wait, newTestAppWithDir sets AdminDir = downloadDir (which is 'dir' here)
@@ -58,7 +58,7 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 	if job3.Status != constants.StatusPaused {
 		t.Errorf("MD5 duplicate job status = %q, want Paused", job3.Status)
 	}
-	
+
 	thirdBackupPath := filepath.Join(nzbBackupDir, "duplicate-renamed.nzb")
 	if _, err := os.Stat(thirdBackupPath); err == nil {
 		t.Errorf("unexpected backup created for MD5 duplicate: %s", thirdBackupPath)
@@ -68,7 +68,7 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 func TestIntegration_DirectoryCollision(t *testing.T) {
 	srv := newMockServer(t, nil)
 	dir := t.TempDir()
-	
+
 	// Pre-create a directory that would collide
 	collidingDir := filepath.Join(dir, "collision")
 	if err := os.MkdirAll(collidingDir, 0755); err != nil {

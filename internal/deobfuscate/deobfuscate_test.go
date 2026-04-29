@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/deobfuscate"
-	"github.com/hobeone/sabnzbd-go/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/deobfuscate"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 func TestIsProbablyObfuscated(t *testing.T) {

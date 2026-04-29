@@ -35,9 +35,9 @@ func TestGenerateSelfSigned(t *testing.T) {
 		t.Fatalf("parse certificate: %v", err)
 	}
 
-	// Verify CN is "sabnzbd"
-	if cert.Subject.CommonName != "sabnzbd" {
-		t.Errorf("CN = %q; want sabnzbd", cert.Subject.CommonName)
+	// Verify CN is "gonzbd"
+	if cert.Subject.CommonName != "gonzbd" {
+		t.Errorf("CN = %q; want gonzbd", cert.Subject.CommonName)
 	}
 
 	// Verify DNS SANs
@@ -166,8 +166,8 @@ func TestWriteSelfSigned(t *testing.T) {
 	}
 
 	// Basic sanity check
-	if cert.Subject.CommonName != "sabnzbd" {
-		t.Errorf("CN from file = %q; want sabnzbd", cert.Subject.CommonName)
+	if cert.Subject.CommonName != "gonzbd" {
+		t.Errorf("CN from file = %q; want gonzbd", cert.Subject.CommonName)
 	}
 
 	// Verify key file exists and can be parsed

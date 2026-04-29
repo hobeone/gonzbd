@@ -24,7 +24,7 @@
 </script>
 
 <svelte:head>
-	<title>{isPaused() ? '⏸' : '▶'} {getQueueSlots().length} item{getQueueSlots().length !== 1 ? 's' : ''} | SABnzbd-Go</title>
+	<title>{isPaused() ? '⏸' : '▶'} {getQueueSlots().length} item{getQueueSlots().length !== 1 ? 's' : ''} | GoNZBD</title>
 </svelte:head>
 
 <div class="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950">

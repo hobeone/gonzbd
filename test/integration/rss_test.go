@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/rss"
+	"github.com/hobeone/gonzbd/internal/rss"
 )
 
 // collectHandler records all items dispatched to it; safe for concurrent use.
@@ -352,4 +352,4 @@ func TestRSS_MaxAge(t *testing.T) {
 // full app.Application instance to the grabber, which substantially increases
 // test complexity without testing different code from TestDownload_*. The
 // composition is tested by TestAPI_AddURL; the RSS→grabber adapter is tested
-// by cmd/sabnzbd/adapters.go at the integration level when running the daemon.
+// by cmd/gonzbd/adapters.go at the integration level when running the daemon.

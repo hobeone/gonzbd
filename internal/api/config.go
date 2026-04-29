@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
-	"github.com/hobeone/sabnzbd-go/internal/nntp"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/nntp"
 )
 
 // modeGetConfig returns the current configuration as JSON.

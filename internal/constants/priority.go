@@ -1,4 +1,4 @@
-// Package constants holds the static, plan-mandated constants of the SABnzbd
+// Package constants holds the static, plan-mandated constants of the gonzbd
 // Go reimplementation: priorities, statuses, penalty durations, and buffer
 // limits. Values mirror the Python reference implementation
 // (sabnzbd/constants.py) and the functional specification.

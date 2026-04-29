@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/bpsmeter"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/bpsmeter"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // ErrAlreadyStarted is returned by Start when called twice without an

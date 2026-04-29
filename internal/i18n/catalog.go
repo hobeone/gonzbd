@@ -1,4 +1,4 @@
-// Package i18n provides translation/localization support for SABnzbd-Go.
+// Package i18n provides translation/localization support for GoNZBD.
 // The catalog is a simple key-value map that returns the key itself when
 // a translation is not found (English fallback).
 package i18n

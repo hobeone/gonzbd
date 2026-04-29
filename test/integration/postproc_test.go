@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/par2"
+	"github.com/hobeone/gonzbd/internal/par2"
 )
 
 // TestPostProc_Par2VerifyOK generates a par2 set for a known-good file,

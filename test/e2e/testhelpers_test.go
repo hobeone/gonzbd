@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/sabnzbd-go/internal/app"
-	"github.com/hobeone/sabnzbd-go/internal/config"
-	"github.com/hobeone/sabnzbd-go/internal/history"
-	"github.com/hobeone/sabnzbd-go/internal/nntp"
-	"github.com/hobeone/sabnzbd-go/test/mocknntp"
+	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/nntp"
+	"github.com/hobeone/gonzbd/test/mocknntp"
 )
 
 const (
@@ -43,15 +43,15 @@ type File struct {
 
 // loadConfig loads the NNTP server configuration for E2E tests.
 // It checks E2E_CONFIG env var first, then falls back to the project's
-// sabnzbd.yaml. Skips the test if no config is found or has no servers.
+// gonzbd.yaml. Skips the test if no config is found or has no servers.
 func loadConfig(t *testing.T) *config.Config {
 	t.Helper()
 
 	path := os.Getenv("E2E_CONFIG")
 	if path == "" {
 		candidates := []string{
-			"../../sabnzbd.yaml",
-			filepath.Join(os.Getenv("HOME"), "software", "sabnzbd-go", "sabnzbd.yaml"),
+			"../../gonzbd.yaml",
+			filepath.Join(os.Getenv("HOME"), "software", "gonzbd", "gonzbd.yaml"),
 		}
 		for _, c := range candidates {
 			if _, err := os.Stat(c); err == nil { //nolint:gosec // G703: test code; path is test-controlled
@@ -61,7 +61,7 @@ func loadConfig(t *testing.T) *config.Config {
 		}
 	}
 	if path == "" {
-		t.Skip("no config found: set E2E_CONFIG or place sabnzbd.yaml in project root")
+		t.Skip("no config found: set E2E_CONFIG or place gonzbd.yaml in project root")
 	}
 
 	cfg, err := config.Load(path)
@@ -94,11 +94,11 @@ func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDi
 	keepFiles := os.Getenv("E2E_KEEP_FILES") == "1"
 
 	var err error
-	downloadDir, err = os.MkdirTemp("", "sabnzbd-e2e-download-*")
+	downloadDir, err = os.MkdirTemp("", "gonzbd-e2e-download-*")
 	if err != nil {
 		t.Fatalf("os.MkdirTemp: %v", err)
 	}
-	adminDir, err := os.MkdirTemp("", "sabnzbd-e2e-admin-*")
+	adminDir, err := os.MkdirTemp("", "gonzbd-e2e-admin-*")
 	if err != nil {
 		t.Fatalf("os.MkdirTemp: %v", err)
 	}
@@ -158,7 +158,7 @@ func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDi
 func e2eMessageID(filename string, partNum int) string {
 	ts := time.Now().UnixNano()
 	h := sha256.Sum256(fmt.Appendf(nil, "e2e:%d:%s:%d", ts, filename, partNum))
-	return fmt.Sprintf("%x@e2e.sabnzbd-go.test", h[:16])
+	return fmt.Sprintf("%x@e2e.gonzbd.test", h[:16])
 }
 
 // postAndBuildNZB posts all articles for the given files to the server,
@@ -233,7 +233,7 @@ func buildNZB(files []postedFile) []byte {
 
 		subject := fmt.Sprintf("[1/%d] - &quot;%s&quot; yEnc (1/%d) %d",
 			totalParts, f.name, totalParts, totalSize)
-		fmt.Fprintf(&sb, "  <file poster=\"e2e-test@sabnzbd-go.test\" date=\"%d\" subject=\"%s\">\n", now, subject)
+		fmt.Fprintf(&sb, "  <file poster=\"e2e-test@gonzbd.test\" date=\"%d\" subject=\"%s\">\n", now, subject)
 		fmt.Fprintf(&sb, "    <groups><group>%s</group></groups>\n", e2eNewsgroup)
 		sb.WriteString("    <segments>\n")
 

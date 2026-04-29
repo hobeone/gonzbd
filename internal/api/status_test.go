@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/hobeone/sabnzbd-go/internal/config"
-	"github.com/hobeone/sabnzbd-go/internal/queue"
+	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // testServerWithQueue builds a Server wired with a queue.
