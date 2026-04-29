@@ -2,7 +2,7 @@
 #
 # Quick start:
 #   1. Copy this file to your preferred location
-#   2. Edit the volumes and environment below
+#   2. Edit the volumes, PUID/PGID, and TZ below
 #   3. Run: docker compose up -d
 #
 # First run creates a default config at /config/gonzbd.yaml inside the
@@ -20,11 +20,15 @@ services:
     container_name: gonzbd
     restart: unless-stopped
 
+    # Port mapping: <host>:<container>
+    # Change the left side to use a different host port.
+    # The container listens on GONZBD_PORT (default 8080).
     ports:
       # Web UI + API
       - "8080:8080"
-      # HTTPS (optional — enable https_port in gonzbd.yaml)
-      # - "9090:9090"
+      # HTTPS — uncomment and set https_port + https_cert/https_key
+      # in gonzbd.yaml. Pick any host port you like.
+      # - "8443:8443"
 
     volumes:
       # Config file — persists your settings across container rebuilds.
@@ -50,11 +54,18 @@ services:
       # - ./scripts:/data/scripts
 
     environment:
+      # Run as this user/group ID. Set these to match your host user
+      # so downloaded files have the correct ownership. Find your IDs
+      # with: id $USER
+      - PUID=1000
+      - PGID=1000
+
       # Timezone — used for scheduled actions and log timestamps.
       - TZ=America/Los_Angeles
 
-      # Uncomment to override the config file location:
-      # - GONZBD_CONFIG=/config/gonzbd.yaml
+      # Internal listen port (default 8080). Change this if you need
+      # a different container-side port. Must match the right side of ports:.
+      # - GONZBD_PORT=8080
 
     # Resource limits (optional but recommended)
     # deploy:

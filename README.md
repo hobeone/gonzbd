@@ -85,11 +85,72 @@ restart:
 docker compose restart gonzbd
 ```
 
+### User / group identifiers
+
+The container supports `PUID` and `PGID` environment variables to
+control which user/group ID the process runs as. This is important
+when sharing download volumes with other containers (Plex, Sonarr,
+Radarr) or the host filesystem — files will be owned by the specified
+UID/GID.
+
+Find your user's IDs with:
+
+```bash
+id $USER
+# uid=1000(you) gid=1000(you) ...
+```
+
+Then set them in your compose file:
+
+```yaml
+environment:
+  - PUID=1000
+  - PGID=1000
+```
+
+If not specified, both default to `1000`.
+
+### Ports
+
+Port mapping has two levels:
+
+1. **`GONZBD_PORT`** (environment variable, default `8080`) — the port
+   gonzbd listens on *inside* the container. The entrypoint passes
+   `--listen 0.0.0.0:$GONZBD_PORT` automatically.
+2. **`ports:`** in docker-compose (or `-p` in `docker run`) — maps the
+   container port to a host port.
+
+Most users only need to change the compose `ports:` mapping:
+
+```yaml
+ports:
+  # Map host port 6789 → container port 8080
+  - "6789:8080"
+```
+
+To change the internal port too (e.g., if another process inside the
+container uses 8080):
+
+```yaml
+environment:
+  - GONZBD_PORT=9090
+ports:
+  - "8080:9090"
+```
+
+For HTTPS, set `https_port` in `gonzbd.yaml` and add a second port
+mapping:
+
+```yaml
+ports:
+  - "8080:8080"      # HTTP
+  - "8443:8443"      # HTTPS (must match https_port in gonzbd.yaml)
+```
+
 ### Docker Compose reference
 
 The included [`docker-compose.yml`](docker-compose.yml) provides a
-fully documented starting point. Here is the complete service
-definition with all options:
+fully documented starting point:
 
 ```yaml
 services:
@@ -104,29 +165,20 @@ services:
     restart: unless-stopped
 
     ports:
-      # Web UI + API
       - "8080:8080"
-      # HTTPS (uncomment + set https_port in gonzbd.yaml)
-      # - "9090:9090"
+      # - "8443:8443"  # HTTPS
 
     volumes:
-      # Config — persists settings across container rebuilds.
       - ./config:/config
-
-      # Download directories — use fast storage for these.
-      - ./downloads/incomplete:/data/downloads   # active downloads
-      - ./downloads/complete:/data/complete       # finished downloads
-
-      # Admin — queue state, history DB, locks. Back this up.
+      - ./downloads/incomplete:/data/downloads
+      - ./downloads/complete:/data/complete
       - ./admin:/data/admin
-
-      # Watched folder (optional) — auto-imports .nzb files
-      # - ./watch:/data/watch
-
-      # Scripts (optional) — post-processing scripts
-      # - ./scripts:/data/scripts
+      # - ./watch:/data/watch      # watched folder
+      # - ./scripts:/data/scripts  # post-processing scripts
 
     environment:
+      - PUID=1000
+      - PGID=1000
       - TZ=America/Los_Angeles
 
     healthcheck:
@@ -203,10 +255,9 @@ categories:
     dir: Movies
 ```
 
-> **Note**: The `--listen 0.0.0.0:8080` flag is set automatically in
-> the Docker image, so the `host` field in the config is overridden.
-> You only need to set it explicitly if you are not using the default
-> Docker entrypoint.
+> **Note**: The entrypoint automatically passes
+> `--listen 0.0.0.0:$GONZBD_PORT` (default 8080), so the `host` field
+> in the config is overridden inside Docker.
 
 ### Volumes
 
@@ -242,6 +293,8 @@ docker run -d \
   -v ./downloads/incomplete:/data/downloads \
   -v ./downloads/complete:/data/complete \
   -v ./admin:/data/admin \
+  -e PUID=1000 \
+  -e PGID=1000 \
   -e TZ=America/Los_Angeles \
   --restart unless-stopped \
   gonzbd:latest

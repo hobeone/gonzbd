@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 RUN apk add --no-cache git nodejs npm
 
@@ -29,31 +29,26 @@ FROM alpine:3.22
 #   7zip        - 7z/zip extraction
 #   ca-certificates - TLS connections to news servers
 #   tzdata      - timezone support for schedules
+#   su-exec     - lightweight privilege drop (like gosu)
+#   shadow      - usermod/groupmod for PUID/PGID support
 RUN apk add --no-cache \
     par2cmdline \
     unrar \
     7zip \
     ca-certificates \
-    tzdata
-
-# Create a non-root user for the daemon.
-RUN addgroup -S gonzbd && adduser -S -G gonzbd gonzbd
+    tzdata \
+    su-exec \
+    shadow
 
 # Default directories. Users should mount volumes over these.
-RUN mkdir -p /data/downloads /data/complete /data/admin /config \
-    && chown -R gonzbd:gonzbd /data /config
+RUN mkdir -p /data/downloads /data/complete /data/admin /config
 
 COPY --from=builder /gonzbd /usr/local/bin/gonzbd
+COPY entrypoint.sh /entrypoint.sh
 
-# HTTP API + Web UI
-EXPOSE 8080
-# HTTPS (optional, enable via config)
-EXPOSE 9090
-
-USER gonzbd
-
-# Default config location; overridable via --config flag.
+# Default config location and port; overridable via environment.
 ENV GONZBD_CONFIG=/config/gonzbd.yaml
+ENV GONZBD_PORT=8080
 
-ENTRYPOINT ["gonzbd"]
-CMD ["--config", "/config/gonzbd.yaml", "--serve", "--listen", "0.0.0.0:8080"]
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["gonzbd", "--config", "/config/gonzbd.yaml", "--serve"]
