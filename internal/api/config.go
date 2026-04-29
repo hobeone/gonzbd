@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -87,6 +89,34 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	// Hot-apply bandwidth limit changes without requiring a restart.
 	if section == "downloads" && s.app != nil && (keyword == "bandwidth_max" || keyword == "bandwidth_perc") {
 		s.applySpeedLimit()
+	}
+
+	// Hot-apply directory changes: create the directory and push it to the
+	// running application so future jobs use the new path immediately.
+	if section == "general" && s.app != nil && (keyword == "download_dir" || keyword == "complete_dir") {
+		var dir string
+		s.config.WithRead(func(cfg *config.Config) {
+			if keyword == "download_dir" {
+				dir = cfg.General.DownloadDir
+			} else {
+				dir = cfg.General.CompleteDir
+			}
+		})
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			s.log.Error("create directory", "keyword", keyword, "dir", dir, "error", err)
+			respondJSON(w, http.StatusOK, map[string]any{
+				"status":  true,
+				"value":   value,
+				"warning": fmt.Sprintf("config saved but could not create %s: %v", dir, err),
+			})
+			return
+		}
+		if keyword == "download_dir" {
+			s.app.SetDownloadDir(dir)
+		} else {
+			s.app.SetCompleteDir(dir)
+		}
+		s.log.Info("directory updated", "keyword", keyword, "dir", dir)
 	}
 
 	respondOK(w, "value", value)

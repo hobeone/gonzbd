@@ -125,6 +125,17 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		return err
 	}
 
+	// Ensure download and complete directories exist. Creating them early
+	// gives the user immediate feedback (at startup) if a path is invalid
+	// (e.g., typo, unmounted filesystem) instead of failing silently when
+	// the first download tries to write hours later.
+	if err := os.MkdirAll(dlDir, 0o750); err != nil {
+		return fmt.Errorf("create download dir %s: %w", dlDir, err)
+	}
+	if err := os.MkdirAll(cfg.General.CompleteDir, 0o750); err != nil {
+		return fmt.Errorf("create complete dir %s: %w", cfg.General.CompleteDir, err)
+	}
+
 	// Admin dir must exist before we can acquire the lockfile inside it.
 	if err := os.MkdirAll(adminDir, 0o750); err != nil {
 		return fmt.Errorf("create admin dir %s: %w", adminDir, err)
@@ -658,6 +669,17 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 	dlDir, adminDir, err := resolveDirs(cfg, downloadDirOverride)
 	if err != nil {
 		return err
+	}
+
+	// Create directories eagerly — fail fast on bad paths.
+	for _, d := range []struct{ name, path string }{
+		{"download", dlDir},
+		{"complete", cfg.General.CompleteDir},
+		{"admin", adminDir},
+	} {
+		if err := os.MkdirAll(d.path, 0o750); err != nil {
+			return fmt.Errorf("create %s dir %s: %w", d.name, d.path, err)
+		}
 	}
 
 	// Open history repo (needed for summary at the end)

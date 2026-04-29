@@ -42,6 +42,8 @@ func (nopApp) RemoveHistoryJob(context.Context, string, bool) error   { return n
 func (nopApp) SetSpeedLimit(int64)                                    {}
 func (nopApp) SetBandwidthMax(int64)                                  {}
 func (nopApp) SetBandwidthPerc(int)                                   {}
+func (nopApp) SetDownloadDir(string)                                  {}
+func (nopApp) SetCompleteDir(string)                                  {}
 func (nopApp) PauseDownloads()                                        {}
 func (nopApp) ResumeDownloads()                                       {}
 func (nopApp) ServerStatus() []downloader.ServerSnapshot              { return nil }

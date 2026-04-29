@@ -936,6 +936,31 @@ func (app *Application) SetBandwidthPerc(perc int) {
 	app.bandwidthPerc.Store(int32(perc))
 }
 
+// SetDownloadDir updates the download directory used for new jobs.
+// Already-queued jobs are unaffected since their paths were computed at
+// enqueue time. The caller is responsible for creating the directory.
+func (app *Application) SetDownloadDir(dir string) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	app.cfg.DownloadDir = dir
+	if app.pipeline != nil {
+		app.pipeline.mu.Lock()
+		app.pipeline.downloadDir = dir
+		app.pipeline.mu.Unlock()
+	}
+	app.log.Info("download dir updated", "dir", dir)
+}
+
+// SetCompleteDir updates the complete directory used for new jobs.
+// Already-queued jobs are unaffected since their FinalDir was computed at
+// enqueue time. The caller is responsible for creating the directory.
+func (app *Application) SetCompleteDir(dir string) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	app.cfg.CompleteDir = dir
+	app.log.Info("complete dir updated", "dir", dir)
+}
+
 // PauseDownloads cancels all in-flight fetch operations and flushes the
 // speed meter so the UI graph drops to zero immediately. Call this in
 // addition to queue.PauseAll() which only prevents new dispatch.
