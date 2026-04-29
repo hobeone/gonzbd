@@ -23,7 +23,7 @@ type MockHandler struct {
 	count   int
 }
 
-func (m *MockHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) error {
+func (m *MockHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.nzbs == nil {
@@ -31,7 +31,7 @@ func (m *MockHandler) HandleNZB(ctx context.Context, filename string, data []byt
 	}
 	m.count++
 	m.nzbs[fmt.Sprintf("%s_%d", filename, m.count)] = data
-	return m.lastErr
+	return fmt.Sprintf("mock_nzo_%d", m.count), m.lastErr
 }
 
 func (m *MockHandler) NZBs() map[string][]byte {
@@ -58,13 +58,13 @@ func TestFetchPlainNZB(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
 
-	if count != 1 {
-		t.Fatalf("expected 1 NZB, got %d", count)
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 NZB, got %d", len(ids))
 	}
 
 	nzbs := handler.NZBs()
@@ -97,13 +97,13 @@ func TestFetchFilenameFromContentDisposition(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/file", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), server.URL+"/file", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
 
-	if count != 1 {
-		t.Fatalf("expected 1 NZB, got %d", count)
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 NZB, got %d", len(ids))
 	}
 
 	nzbs := handler.NZBs()
@@ -132,13 +132,13 @@ func TestContentDispositionPathTraversal(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/file", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), server.URL+"/file", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
 
-	if count != 1 {
-		t.Fatalf("expected 1 NZB, got %d", count)
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 NZB, got %d", len(ids))
 	}
 
 	nzbs := handler.NZBs()
@@ -166,13 +166,13 @@ func TestFetchFilenameFallbackToURLPath(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/path/myfile.nzb", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), server.URL+"/path/myfile.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
 
-	if count != 1 {
-		t.Fatalf("expected 1 NZB, got %d", count)
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 NZB, got %d", len(ids))
 	}
 
 	nzbs := handler.NZBs()
@@ -198,13 +198,13 @@ func TestFetchHTMLRejected(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected error for HTML content, got none")
 	}
 
-	if count != 0 {
-		t.Fatalf("expected 0 NZBs for HTML error, got %d", count)
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 NZBs for HTML error, got %d", len(ids))
 	}
 
 	if !strings.Contains(err.Error(), "HTML") {
@@ -227,13 +227,13 @@ func TestFetchSizeCapExceeded(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{MaxBytes: 100}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected error for size cap exceeded, got none")
 	}
 
-	if count != 0 {
-		t.Fatalf("expected 0 NZBs for size error, got %d", count)
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 NZBs for size error, got %d", len(ids))
 	}
 
 	if !strings.Contains(err.Error(), "exceeds maximum size") {
@@ -262,13 +262,13 @@ func TestFetchHTTPBasicAuthViaConfig(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{Username: "user", Password: "pass"}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
 
-	if count != 1 {
-		t.Fatalf("expected 1 NZB, got %d", count)
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 NZB, got %d", len(ids))
 	}
 }
 
@@ -290,13 +290,13 @@ func TestFetchHTTPBasicAuthViaURL(t *testing.T) {
 	grabber := New(Config{}, handler)
 
 	urlWithAuth := strings.Replace(server.URL, "http://", "http://user:pass@", 1)
-	count, err := grabber.Fetch(context.Background(), urlWithAuth+"/test.nzb", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), urlWithAuth+"/test.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
 
-	if count != 1 {
-		t.Fatalf("expected 1 NZB, got %d", count)
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 NZB, got %d", len(ids))
 	}
 }
 
@@ -318,13 +318,13 @@ func TestFetchHTTPBasicAuthConfigOverridesURL(t *testing.T) {
 	grabber := New(Config{Username: "config_user", Password: "config_pass"}, handler)
 
 	urlWithAuth := strings.Replace(server.URL, "http://", "http://url_user:url_pass@", 1)
-	count, err := grabber.Fetch(context.Background(), urlWithAuth+"/test.nzb", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), urlWithAuth+"/test.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
 
-	if count != 1 {
-		t.Fatalf("expected 1 NZB, got %d", count)
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 NZB, got %d", len(ids))
 	}
 }
 
@@ -347,13 +347,13 @@ func TestFetchRedirect(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), redirectServer.URL+"/redirect.nzb", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), redirectServer.URL+"/redirect.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
 
-	if count != 1 {
-		t.Fatalf("expected 1 NZB, got %d", count)
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 NZB, got %d", len(ids))
 	}
 }
 
@@ -366,13 +366,13 @@ func TestFetchServer404(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/notfound.nzb", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), server.URL+"/notfound.nzb", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected error for 404, got none")
 	}
 
-	if count != 0 {
-		t.Fatalf("expected 0 NZBs for 404 error, got %d", count)
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 NZBs for 404 error, got %d", len(ids))
 	}
 
 	if !strings.Contains(err.Error(), "404") {
@@ -393,13 +393,13 @@ func TestFetchContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	count, err := grabber.Fetch(ctx, server.URL+"/test.nzb", types.FetchOptions{})
+	ids, err := grabber.Fetch(ctx, server.URL+"/test.nzb", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected error for cancelled context, got none")
 	}
 
-	if count != 0 {
-		t.Fatalf("expected 0 NZBs for cancelled context, got %d", count)
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 NZBs for cancelled context, got %d", len(ids))
 	}
 }
 
@@ -413,13 +413,13 @@ func TestFetchTimeout(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{Timeout: 50 * time.Millisecond}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected timeout error, got none")
 	}
 
-	if count != 0 {
-		t.Fatalf("expected 0 NZBs for timeout, got %d", count)
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 NZBs for timeout, got %d", len(ids))
 	}
 }
 
@@ -439,13 +439,13 @@ func TestFetchGzipNZB(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb.gz", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb.gz", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
 
-	if count != 1 {
-		t.Fatalf("expected 1 NZB, got %d", count)
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 NZB, got %d", len(ids))
 	}
 
 	nzbs := handler.NZBs()
@@ -473,13 +473,13 @@ func TestFetchEmptyURL(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), "", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), "", types.FetchOptions{})
 	if err == nil {
 		t.Fatalf("expected error for empty URL, got none")
 	}
 
-	if count != 0 {
-		t.Fatalf("expected 0 NZBs for empty URL, got %d", count)
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 NZBs for empty URL, got %d", len(ids))
 	}
 }
 
@@ -495,15 +495,15 @@ func TestFetchHandlerError(t *testing.T) {
 	handler := &MockHandler{lastErr: fmt.Errorf("handler error")}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("unexpected fetch error: %v", err)
 	}
 
 	// Handler error is logged, not returned. count=0 because the single
 	// NZB failed to be handled.
-	if count != 0 {
-		t.Fatalf("expected 0 NZBs on handler error, got %d", count)
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 NZBs on handler error, got %d", len(ids))
 	}
 }
 
@@ -519,13 +519,13 @@ func TestExtractFilenameWithNoExtension(t *testing.T) {
 	handler := &MockHandler{}
 	grabber := New(Config{}, handler)
 
-	count, err := grabber.Fetch(context.Background(), server.URL+"/myfile", types.FetchOptions{})
+	ids, err := grabber.Fetch(context.Background(), server.URL+"/myfile", types.FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
 
-	if count != 1 {
-		t.Fatalf("expected 1 NZB, got %d", count)
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 NZB, got %d", len(ids))
 	}
 
 	nzbs := handler.NZBs()

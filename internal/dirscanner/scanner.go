@@ -14,8 +14,9 @@ import (
 
 // Handler defines the interface for consuming NZB payloads extracted by the scanner.
 // It receives the original filename and the decompressed NZB data.
+// Returns the created job ID (or empty string) and an error.
 type Handler interface {
-	HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) error
+	HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) (string, error)
 }
 
 // CategoryFunc returns the current set of configured category names.
@@ -248,7 +249,7 @@ func (s *Scanner) handleStableFile(ctx context.Context, path, filename, category
 			label = fmt.Sprintf("%s[%d]", filename, i+1)
 		}
 
-		if err := s.handler.HandleNZB(ctx, label, nzbData, types.FetchOptions{Category: category}); err != nil {
+		if _, err := s.handler.HandleNZB(ctx, label, nzbData, types.FetchOptions{Category: category}); err != nil {
 			s.logger.Warn("handler failed for NZB", "label", label, "err", err)
 			lastErr = err
 			continue

@@ -249,6 +249,29 @@ func (q *Queue) Resume(id string) error {
 	return nil
 }
 
+// SetPriority changes a job's priority and re-slots it within the queue.
+// The job is removed from its current position and re-inserted at the end
+// of the new priority tier, matching SABnzbd's "priority" API action.
+func (q *Queue) SetPriority(id string, pri constants.Priority) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	idx, ok := q.indexOfLocked(id)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	job := q.jobs[idx]
+	job.Priority = pri
+	// Remove from current position.
+	copy(q.jobs[idx:], q.jobs[idx+1:])
+	q.jobs[len(q.jobs)-1] = nil
+	q.jobs = q.jobs[:len(q.jobs)-1]
+	// Re-insert at the correct position for the new priority.
+	q.insertByPriorityLocked(job)
+	q.dirty.Store(true)
+	q.notifyLocked()
+	return nil
+}
+
 // SetStatus updates the status of the job with the given ID. Returns
 // ErrNotFound if the job is absent.
 func (q *Queue) SetStatus(id string, status constants.Status) error {

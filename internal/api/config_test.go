@@ -162,3 +162,146 @@ func TestGetConfigConcurrentSafe(t *testing.T) {
 
 	<-done
 }
+
+// --- Sonarr/Radarr compatibility: section filtering ---
+
+// TestGetConfig_SectionFilter verifies that section=misc returns the
+// general config section (remapped for SABnzbd compatibility).
+func TestGetConfig_SectionFilter(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	s := testServerWithConfig(t, cfg)
+
+	// SABnzbd uses "misc" for the general settings section.
+	// Sonarr/Radarr request section=misc to find complete_dir.
+	rr := apiGet(t, s.Handler(), "/api?mode=get_config&section=misc&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	m := decodeJSON(t, rr)
+	configVal, ok := m["config"]
+	if !ok {
+		t.Fatal("config key missing from response")
+	}
+	// The section value should be a map (the general config object).
+	cfgMap, ok := configVal.(map[string]any)
+	if !ok {
+		t.Fatalf("config value is %T; want map[string]any", configVal)
+	}
+	// Should contain fields from GeneralConfig (like "host", "complete_dir").
+	if _, hasHost := cfgMap["host"]; !hasHost {
+		t.Error("section=misc should contain 'host' field")
+	}
+	if _, hasCompleteDir := cfgMap["complete_dir"]; !hasCompleteDir {
+		t.Error("section=misc should contain 'complete_dir' field (Sonarr reads this)")
+	}
+	// Should NOT contain top-level fields like "servers" (that's a separate section).
+	if _, hasServers := cfgMap["servers"]; hasServers {
+		t.Error("section=misc should NOT contain 'servers' (that's the full config, not a section)")
+	}
+}
+
+// TestGetConfig_FullResponseUsesMisc verifies that the full get_config
+// response uses "misc" instead of "general" in the JSON keys.
+func TestGetConfig_FullResponseUsesMisc(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	s := testServerWithConfig(t, cfg)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=get_config&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	m := decodeJSON(t, rr)
+	configVal, ok := m["config"]
+	if !ok {
+		t.Fatal("config key missing from response")
+	}
+	cfgMap, ok := configVal.(map[string]any)
+	if !ok {
+		t.Fatalf("config value is %T; want map[string]any", configVal)
+	}
+
+	// Must have "misc", not "general".
+	if _, hasMisc := cfgMap["misc"]; !hasMisc {
+		t.Error("full config response should have 'misc' key (SABnzbd-compatible)")
+	}
+	if _, hasGeneral := cfgMap["general"]; hasGeneral {
+		t.Error("full config response should NOT have 'general' key (remapped to 'misc')")
+	}
+	// Other sections should be unchanged.
+	if _, hasServers := cfgMap["servers"]; !hasServers {
+		t.Error("full config response should have 'servers' key")
+	}
+	if _, hasCategories := cfgMap["categories"]; !hasCategories {
+		t.Error("full config response should have 'categories' key")
+	}
+}
+
+// TestGetConfig_SectionGeneralReturnsEmpty verifies that the old
+// "general" section name returns empty (since it was remapped to "misc").
+func TestGetConfig_SectionGeneralReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	s := testServerWithConfig(t, cfg)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=get_config&section=general&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	m := decodeJSON(t, rr)
+	configVal, ok := m["config"]
+	if !ok {
+		t.Fatal("config key missing from response")
+	}
+	cfgMap, ok := configVal.(map[string]any)
+	if !ok {
+		t.Fatalf("config value is %T; want map[string]any", configVal)
+	}
+	// "general" is no longer a valid section name — it was remapped to "misc".
+	// Should return an empty object.
+	if len(cfgMap) != 0 {
+		t.Errorf("section=general should return empty config (remapped to misc), got %v", cfgMap)
+	}
+}
+
+// TestGetConfig_SectionNotFound verifies that a nonexistent section returns
+// an empty object rather than an error.
+func TestGetConfig_SectionNotFound(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	s := testServerWithConfig(t, cfg)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=get_config&section=nonexistent_section&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (even for unknown section)", rr.Code)
+	}
+
+	m := decodeJSON(t, rr)
+	configVal, ok := m["config"]
+	if !ok {
+		t.Fatal("config key missing from response")
+	}
+	cfgMap, ok := configVal.(map[string]any)
+	if !ok {
+		t.Fatalf("config value is %T; want map[string]any (empty object)", configVal)
+	}
+	if len(cfgMap) != 0 {
+		t.Errorf("unknown section should return empty config, got %v", cfgMap)
+	}
+}
