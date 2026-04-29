@@ -9,12 +9,16 @@
 	let {
 		open = $bindable(false),
 		server = null,
-		onsave
+		onsave,
+		ondelete
 	}: {
 		open?: boolean;
 		server?: ServerConfig | null;
 		onsave: (s: ServerConfig, originalName?: string) => void;
+		ondelete?: (name: string) => void;
 	} = $props();
+
+	let confirmingDelete = $state(false);
 
 	let draft = $state<ServerConfig>({
 		name: '',
@@ -35,12 +39,13 @@
 		enable: true
 	});
 
-	let originalName = '';
+	let originalName = $state('');
 	let testing = $state(false);
 	let testResult = $state<{ ok: boolean; message: string } | null>(null);
 
 	$effect(() => {
 		if (open) {
+			confirmingDelete = false;
 			if (server) {
 				draft = { ...server };
 				originalName = server.name;
@@ -68,6 +73,12 @@
 			testResult = null;
 		}
 	});
+
+	function handleDelete() {
+		if (!ondelete || !originalName) return;
+		ondelete(originalName);
+		open = false;
+	}
 
 	async function testServer() {
 		testing = true;
@@ -164,11 +175,28 @@
 				</div>
 			{/if}
 
-			<div class="mt-6 flex justify-between gap-3">
-				<Button variant="outline" onclick={testServer} disabled={testing || !draft.host}>
-					{testing ? 'Testing...' : 'Test Server'}
-				</Button>
-				<div class="flex gap-3">
+			{#if confirmingDelete}
+				<div class="mt-6 flex items-center justify-between rounded-md bg-red-50 dark:bg-red-950 px-3 py-2">
+					<span class="text-sm text-red-700 dark:text-red-300">Delete <strong>{originalName}</strong>?</span>
+					<div class="flex gap-2">
+						<Button variant="ghost" size="xs" onclick={() => (confirmingDelete = false)}>No</Button>
+						<Button variant="destructive" size="xs" onclick={handleDelete}>Yes, delete</Button>
+					</div>
+				</div>
+			{/if}
+
+			<div class="mt-4 flex items-center">
+				<div class="flex-1">
+					<Button variant="outline" onclick={testServer} disabled={testing || !draft.host}>
+						{testing ? 'Testing...' : 'Test Server'}
+					</Button>
+				</div>
+
+				{#if server && ondelete && !confirmingDelete}
+					<Button variant="ghost" size="sm" class="text-red-600 dark:text-red-400" onclick={() => (confirmingDelete = true)}>Delete</Button>
+				{/if}
+
+				<div class="flex flex-1 justify-end gap-3">
 					<Button variant="ghost" onclick={() => (open = false)}>Cancel</Button>
 					<Button onclick={handleSave} disabled={!draft.host || !draft.name}>Save</Button>
 				</div>
