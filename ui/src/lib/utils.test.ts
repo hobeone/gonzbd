@@ -79,23 +79,23 @@ describe('getCookie', () => {
 	});
 
 	it('returns value when cookie exists', () => {
-		document.cookie = 'sab_apikey=abc123';
-		expect(getCookie('sab_apikey')).toBe('abc123');
+		document.cookie = 'gonzbd_apikey=abc123';
+		expect(getCookie('gonzbd_apikey')).toBe('abc123');
 	});
 
 	it('returns null when cookie does not exist', () => {
 		document.cookie = 'other=value';
-		expect(getCookie('sab_apikey')).toBeNull();
+		expect(getCookie('gonzbd_apikey')).toBeNull();
 	});
 
 	it('returns null when no cookies exist', () => {
 		document.cookie = '';
-		expect(getCookie('sab_apikey')).toBeNull();
+		expect(getCookie('gonzbd_apikey')).toBeNull();
 	});
 
 	it('handles multiple cookies correctly', () => {
-		document.cookie = 'first=one; sab_apikey=abc123; third=three';
-		expect(getCookie('sab_apikey')).toBe('abc123');
+		document.cookie = 'first=one; gonzbd_apikey=abc123; third=three';
+		expect(getCookie('gonzbd_apikey')).toBe('abc123');
 	});
 
 	it('handles cookie value containing equals sign', () => {
@@ -104,7 +104,7 @@ describe('getCookie', () => {
 	});
 
 	it('does not match partial cookie names', () => {
-		document.cookie = 'my_sab_apikey=wrong';
-		expect(getCookie('sab_apikey')).toBeNull();
+		document.cookie = 'my_gonzbd_apikey=wrong';
+		expect(getCookie('gonzbd_apikey')).toBeNull();
 	});
 });

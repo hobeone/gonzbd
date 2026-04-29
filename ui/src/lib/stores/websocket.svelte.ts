@@ -25,7 +25,7 @@ function connect() {
 	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 	let url = `${protocol}//${window.location.host}/api/ws`;
 
-	const apikey = getCookie('sab_apikey');
+	const apikey = getCookie('gonzbd_apikey');
 	if (apikey) {
 		url += `?apikey=${apikey}`;
 	}
