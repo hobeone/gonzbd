@@ -321,10 +321,6 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				serverStatsParts = append(serverStatsParts, fmt.Sprintf("%s=%.1f MB", s, float64(b)/(1024*1024)))
 			}
 			serverStats := strings.Join(serverStatsParts, ", ")
-			ageDays := 0
-			if !job.Queue.AvgAge.IsZero() {
-				ageDays = int(time.Since(job.Queue.AvgAge).Hours() / 24)
-			}
 			repairSummary := ""
 			for _, entry := range job.StageLog {
 				if entry.Stage == "repair" {
@@ -349,12 +345,12 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				Category:     job.Queue.Category,
 				Status:       "Completed",
 				NzoID:        job.Queue.ID,
+				Storage:      job.FinalDir,
 				Path:         job.FinalDir,
 				DownloadTime: downloadDuration,
 				StageLog:     string(stageLogJSON),
 				Bytes:        job.Queue.TotalBytes,
 				TimeAdded:    job.Queue.Added,
-				Storage:      fmt.Sprintf("%dd", ageDays),
 				URLInfo:      repairSummary,
 				Meta:         serverStats,
 			}
