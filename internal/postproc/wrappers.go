@@ -84,18 +84,6 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		}
 	}
 
-	// Delete par2 files after successful repair when cleanup is enabled.
-	if s.Cleanup && repairSucceeded && len(sets) > 0 {
-		for _, set := range sets {
-			if set.MainFile != "" {
-				_ = os.Remove(set.MainFile)
-			}
-			for _, ef := range set.ExtraFiles {
-				_ = os.Remove(ef)
-			}
-		}
-	}
-
 	// Fallback: Rename any remaining *.nzf files using NZB metadata/subject.
 	// This handles jobs without PAR2 files and ensures we have correct
 	// filenames for the Unpack stage.
@@ -126,6 +114,23 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		if err := os.Rename(tmpPath, destPath); err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("fallback rename %q -> %q: %w", base, cleanName, err)
+			}
+		}
+	}
+
+	// Par2 cleanup: scan after all renames are done so we find par2 files
+	// regardless of whether they started as .nzf temps or already had
+	// their real names.
+	if s.Cleanup && repairSucceeded {
+		cleanupSets, err := par2.FindPar2Files(job.DownloadDir)
+		if err == nil {
+			for _, set := range cleanupSets {
+				if set.MainFile != "" {
+					_ = os.Remove(set.MainFile)
+				}
+				for _, ef := range set.ExtraFiles {
+					_ = os.Remove(ef)
+				}
 			}
 		}
 	}
