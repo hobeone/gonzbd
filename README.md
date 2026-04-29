@@ -184,8 +184,7 @@ services:
       - TZ=America/Los_Angeles
 
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q",
-             "http://localhost:8080/api?mode=version&output=json"]
+      test: wget --spider -q http://localhost:$${GONZBD_PORT:-8080}/api?mode=version&output=json
       interval: 30s
       timeout: 5s
       retries: 3
