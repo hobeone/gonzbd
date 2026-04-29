@@ -10,8 +10,7 @@ describe('ServersSection', () => {
 	const defaultCallbacks = {
 		onAddServer: vi.fn(),
 		onEditServer: vi.fn(),
-		onDeleteServer: vi.fn(),
-		onTestServer: vi.fn(),
+		onTestServer: vi.fn().mockResolvedValue({ ok: true, message: 'Connection successful!' }),
 		onToggleServer: vi.fn()
 	};
 
@@ -84,20 +83,33 @@ describe('ServersSection', () => {
 		expect(onAddServer).toHaveBeenCalled();
 	});
 
-	it('calls onDeleteServer when Delete button clicked', async () => {
-		const onDeleteServer = vi.fn();
-		render(ServersSection, { configData: populatedConfig, ...defaultCallbacks, onDeleteServer });
-		const deleteButtons = screen.getAllByTitle('Delete server');
-		await fireEvent.click(deleteButtons[0]);
-		expect(onDeleteServer).toHaveBeenCalledWith('Eweka');
-	});
-
 	it('calls onTestServer when Test button clicked', async () => {
-		const onTestServer = vi.fn();
+		const onTestServer = vi.fn().mockResolvedValue({ ok: true, message: 'Connection successful!' });
 		render(ServersSection, { configData: populatedConfig, ...defaultCallbacks, onTestServer });
 		const testButtons = screen.getAllByTitle('Test connection');
 		await fireEvent.click(testButtons[0]);
 		expect(onTestServer).toHaveBeenCalledWith(populatedConfig.servers[0]);
+	});
+
+	it('shows inline success result after test', async () => {
+		const onTestServer = vi.fn().mockResolvedValue({ ok: true, message: 'Connection successful!' });
+		render(ServersSection, { configData: populatedConfig, ...defaultCallbacks, onTestServer });
+		const testButtons = screen.getAllByTitle('Test connection');
+		await fireEvent.click(testButtons[0]);
+		// Wait for the promise to resolve and re-render
+		await vi.waitFor(() => {
+			expect(screen.getByText('Connection successful!')).toBeInTheDocument();
+		});
+	});
+
+	it('shows inline failure result after test', async () => {
+		const onTestServer = vi.fn().mockResolvedValue({ ok: false, message: 'Connection refused' });
+		render(ServersSection, { configData: populatedConfig, ...defaultCallbacks, onTestServer });
+		const testButtons = screen.getAllByTitle('Test connection');
+		await fireEvent.click(testButtons[0]);
+		await vi.waitFor(() => {
+			expect(screen.getByText('Connection refused')).toBeInTheDocument();
+		});
 	});
 
 	it('calls onToggleServer when checkbox is clicked', async () => {
