@@ -58,6 +58,8 @@ type ApplicationReloader interface {
 	RemoveJob(ctx context.Context, id string, deleteFiles bool) error
 	RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error
 	SetSpeedLimit(bytesPerSec int64)
+	SetBandwidthMax(bytesPerSec int64)
+	SetBandwidthPerc(perc int)
 	PauseDownloads()
 	ResumeDownloads()
 	ServerStatus() []downloader.ServerSnapshot

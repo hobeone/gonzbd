@@ -107,10 +107,12 @@ type EventEmitter interface {
 
 // Event represents a real-time notification sent to the UI.
 type Event struct {
-	Type       string `json:"event"`
-	Speed      int64  `json:"speed,omitempty"`
-	Remaining  int64  `json:"remaining,omitempty"`
-	SpeedLimit int64  `json:"speed_limit"`
+	Type          string `json:"event"`
+	Speed         int64  `json:"speed,omitempty"`
+	Remaining     int64  `json:"remaining,omitempty"`
+	SpeedLimit    int64  `json:"speed_limit"`
+	BandwidthMax  int64  `json:"bandwidth_max"`
+	BandwidthPerc int    `json:"bandwidth_perc"`
 }
 
 type dummyEmitter struct{}
@@ -146,6 +148,9 @@ type Application struct {
 
 	started atomic.Bool
 	stopped atomic.Bool
+
+	bandwidthMax  atomic.Int64 // configured bandwidth ceiling in bytes/sec
+	bandwidthPerc atomic.Int32 // configured bandwidth percentage (1-100)
 
 	customStages []postproc.Stage
 }
@@ -230,11 +235,13 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	app.downloader = d
 
 	// Apply initial bandwidth limit from config.
+	app.bandwidthMax.Store(cfg.BandwidthMax)
+	perc := cfg.BandwidthPerc
+	if perc <= 0 || perc > 100 {
+		perc = 100
+	}
+	app.bandwidthPerc.Store(int32(perc))
 	if cfg.BandwidthMax > 0 {
-		perc := cfg.BandwidthPerc
-		if perc <= 0 || perc > 100 {
-			perc = 100
-		}
 		d.SetSpeedLimit(cfg.BandwidthMax * int64(perc) / 100)
 	}
 
@@ -668,10 +675,12 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 		case <-ticker.C:
 			remaining := app.queue.TotalRemainingBytes()
 			app.emitter.Broadcast(Event{
-				Type:       "metrics",
-				Speed:      int64(app.downloader.Speed()),
-				Remaining:  remaining,
-				SpeedLimit: app.downloader.SpeedLimit(),
+				Type:          "metrics",
+				Speed:         int64(app.downloader.Speed()),
+				Remaining:     remaining,
+				SpeedLimit:    app.downloader.SpeedLimit(),
+				BandwidthMax:  app.bandwidthMax.Load(),
+				BandwidthPerc: int(app.bandwidthPerc.Load()),
 			})
 			// Trigger a table refresh only while actively downloading so
 			// individual job percentages update, but avoid pointless
@@ -915,6 +924,16 @@ func (app *Application) SetSpeedLimit(bytesPerSec int64) {
 	if app.downloader != nil {
 		app.downloader.SetSpeedLimit(bytesPerSec)
 	}
+}
+
+// SetBandwidthMax updates the configured bandwidth ceiling reported to the UI.
+func (app *Application) SetBandwidthMax(bytesPerSec int64) {
+	app.bandwidthMax.Store(bytesPerSec)
+}
+
+// SetBandwidthPerc updates the configured bandwidth percentage reported to the UI.
+func (app *Application) SetBandwidthPerc(perc int) {
+	app.bandwidthPerc.Store(int32(perc))
 }
 
 // PauseDownloads cancels all in-flight fetch operations and flushes the

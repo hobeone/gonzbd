@@ -20,6 +20,8 @@ class QueueStore {
 	#speedHistory = $state<number[]>([]);
 	#totalRemainingBytes = $state(0);
 	#speedLimitBytesPerSec = $state(0);
+	#bandwidthMaxBytesPerSec = $state(0);
+	#bandwidthPerc = $state(100);
 
 	get queue() { return this.#queue; }
 	get error() { return this.#error; }
@@ -31,6 +33,8 @@ class QueueStore {
 	get speedHistory() { return this.#speedHistory; }
 	get totalRemainingBytes() { return this.#totalRemainingBytes; }
 	get speedLimitBytesPerSec() { return this.#speedLimitBytesPerSec; }
+	get bandwidthMaxBytesPerSec() { return this.#bandwidthMaxBytesPerSec; }
+	get bandwidthPerc() { return this.#bandwidthPerc; }
 
 	async poll() {
 		try {
@@ -58,6 +62,8 @@ class QueueStore {
 				this.#speedBytesPerSec = event.speed ?? 0;
 				this.#totalRemainingBytes = event.remaining ?? 0;
 				this.#speedLimitBytesPerSec = event.speed_limit ?? 0;
+				this.#bandwidthMaxBytesPerSec = event.bandwidth_max ?? 0;
+				this.#bandwidthPerc = event.bandwidth_perc ?? 100;
 				this.#speedHistory = [...this.#speedHistory.slice(-(SPEED_HISTORY_SIZE - 1)), this.#speedBytesPerSec];
 			}
 		});
@@ -113,8 +119,8 @@ class QueueStore {
 		await this.poll();
 	}
 
-	async setSpeedLimit(kibPerSec: number) {
-		await postAction('config', { name: 'speedlimit', value: String(kibPerSec) });
+	async setBandwidthPerc(perc: number) {
+		await postAction('set_config', { section: 'downloads', keyword: 'bandwidth_perc', value: String(perc) });
 	}
 }
 
@@ -139,7 +145,9 @@ export const getSpeedBytesPerSec = () => store.speedBytesPerSec;
 export const getSpeedHistory = () => store.speedHistory;
 export const getTotalRemainingBytes = () => store.totalRemainingBytes;
 export const getSpeedLimitBytesPerSec = () => store.speedLimitBytesPerSec;
-export const setSpeedLimit = (kib: number) => store.setSpeedLimit(kib);
+export const getBandwidthMaxBytesPerSec = () => store.bandwidthMaxBytesPerSec;
+export const getBandwidthPerc = () => store.bandwidthPerc;
+export const setBandwidthPerc = (perc: number) => store.setBandwidthPerc(perc);
 
 export { formatSpeed, formatSize } from '$lib/utils';
 

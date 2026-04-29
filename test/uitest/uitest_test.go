@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/sabnzbd-go/internal/api"
 	"github.com/playwright-community/playwright-go"
 )
 
@@ -593,6 +594,129 @@ func TestStatusBarDisplaysData(t *testing.T) {
 		t.Error("status bar text is empty")
 	} else {
 		t.Logf("status bar content: %q", text)
+	}
+}
+
+func TestSpeedLimitSliderShowsWithBandwidthMax(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	// Push a metrics event with a configured bandwidth max of 10 MiB/s.
+	env.APISrv.EventBroadcaster().Broadcast(api.Event{
+		Type:          "metrics",
+		Speed:         500000,
+		SpeedLimit:    10 * 1024 * 1024,
+		BandwidthMax:  10 * 1024 * 1024,
+		BandwidthPerc: 100,
+	})
+
+	page.WaitForTimeout(1500)
+
+	// Click the speed display to open the popover.
+	speedBtn := page.Locator("button[title='Click to set speed limit']")
+	if err := speedBtn.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("speed button not visible: %v", err)
+	}
+	if err := speedBtn.Click(); err != nil {
+		t.Fatalf("click speed button: %v", err)
+	}
+
+	// The popover dialog should appear.
+	dialog := page.Locator("[role='dialog']")
+	if err := dialog.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		t.Fatalf("speed limit popover not visible: %v", err)
+	}
+
+	// Should show the max bandwidth.
+	maxLabel := page.GetByText("Max:")
+	if err := maxLabel.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(2000),
+	}); err != nil {
+		t.Fatalf("Max label not visible: %v", err)
+	}
+
+	// Should contain a range slider.
+	slider := dialog.Locator("input[type='range']")
+	if err := slider.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(2000),
+	}); err != nil {
+		t.Fatalf("slider not visible: %v", err)
+	}
+
+	// Should show the current percentage.
+	percText := page.GetByText("100%")
+	if err := percText.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(2000),
+	}); err != nil {
+		t.Errorf("100%% label not visible: %v", err)
+	}
+}
+
+func TestSpeedLimitSliderHiddenWhenNoBandwidthMax(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	// Push metrics with bandwidth_max=0 (no limit configured).
+	env.APISrv.EventBroadcaster().Broadcast(api.Event{
+		Type:          "metrics",
+		Speed:         0,
+		BandwidthMax:  0,
+		BandwidthPerc: 100,
+	})
+
+	page.WaitForTimeout(1500)
+
+	// Click the speed display.
+	speedBtn := page.Locator("button[title='Click to set speed limit']")
+	if err := speedBtn.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("speed button not visible: %v", err)
+	}
+	if err := speedBtn.Click(); err != nil {
+		t.Fatalf("click speed button: %v", err)
+	}
+
+	dialog := page.Locator("[role='dialog']")
+	if err := dialog.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(3000),
+	}); err != nil {
+		t.Fatalf("speed limit popover not visible: %v", err)
+	}
+
+	// Should show "No bandwidth limit set" message.
+	noLimitMsg := page.GetByText("No bandwidth limit set")
+	if err := noLimitMsg.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(2000),
+	}); err != nil {
+		t.Errorf("'No bandwidth limit set' message not visible: %v", err)
+	}
+
+	// Slider should NOT be present.
+	slider := dialog.Locator("input[type='range']")
+	count, _ := slider.Count()
+	if count > 0 {
+		t.Errorf("slider should not be visible when bandwidth_max=0")
 	}
 }
 

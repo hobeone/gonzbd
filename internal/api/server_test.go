@@ -30,6 +30,8 @@ type mockApp struct {
 func (m mockApp) ReloadDownloader([]config.ServerConfig) error  { return nil }
 func (m mockApp) RetryHistoryJob(context.Context, string) error { return nil }
 func (m mockApp) SetSpeedLimit(int64)                           {}
+func (m mockApp) SetBandwidthMax(int64)                         {}
+func (m mockApp) SetBandwidthPerc(int)                          {}
 func (m mockApp) PauseDownloads()                               {}
 func (m mockApp) ResumeDownloads()                              {}
 func (m mockApp) ServerStatus() []downloader.ServerSnapshot     { return nil }

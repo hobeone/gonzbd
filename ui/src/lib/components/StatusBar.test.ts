@@ -6,7 +6,9 @@ import {
 	getSpeedHistory,
 	getTotalRemainingBytes,
 	getSpeedLimitBytesPerSec,
-	setSpeedLimit,
+	getBandwidthMaxBytesPerSec,
+	getBandwidthPerc,
+	setBandwidthPerc,
 	formatSpeed,
 	formatSize,
 	getQueueSlots,
@@ -18,7 +20,9 @@ vi.mock('$lib/stores/queue.svelte', () => ({
 	getSpeedHistory: vi.fn(),
 	getTotalRemainingBytes: vi.fn(),
 	getSpeedLimitBytesPerSec: vi.fn(),
-	setSpeedLimit: vi.fn(),
+	getBandwidthMaxBytesPerSec: vi.fn(),
+	getBandwidthPerc: vi.fn(),
+	setBandwidthPerc: vi.fn(),
 	formatSpeed: vi.fn(),
 	formatSize: vi.fn(),
 	getQueueSlots: vi.fn(),
@@ -37,7 +41,9 @@ describe('StatusBar', () => {
 		vi.mocked(getSpeedHistory).mockReturnValue([]);
 		vi.mocked(getTotalRemainingBytes).mockReturnValue(104857600);
 		vi.mocked(getSpeedLimitBytesPerSec).mockReturnValue(0);
-		vi.mocked(setSpeedLimit).mockResolvedValue(undefined as any);
+		vi.mocked(getBandwidthMaxBytesPerSec).mockReturnValue(10 * 1024 * 1024);
+		vi.mocked(getBandwidthPerc).mockReturnValue(100);
+		vi.mocked(setBandwidthPerc).mockResolvedValue(undefined as any);
 		vi.mocked(formatSpeed).mockReturnValue('1.0 MB/s');
 		vi.mocked(formatSize).mockReturnValue('100.0 MB');
 		vi.mocked(getQueueSlots).mockReturnValue([{ nzo_id: '1' }, { nzo_id: '2' }, { nzo_id: '3' }] as any);

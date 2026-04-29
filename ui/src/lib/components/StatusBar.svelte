@@ -4,7 +4,9 @@
 		getSpeedHistory,
 		getTotalRemainingBytes,
 		getSpeedLimitBytesPerSec,
-		setSpeedLimit,
+		getBandwidthMaxBytesPerSec,
+		getBandwidthPerc,
+		setBandwidthPerc,
 		formatSpeed,
 		formatSize,
 		getQueueSlots,
@@ -18,6 +20,8 @@
 	let paused = $derived(isPaused());
 	let itemCount = $derived(getQueueSlots().length);
 	let speedLimit = $derived(getSpeedLimitBytesPerSec());
+	let bandwidthMax = $derived(getBandwidthMaxBytesPerSec());
+	let bandwidthPerc = $derived(getBandwidthPerc());
 
 	let eta = $derived.by(() => {
 		if (speed <= 0 || remaining <= 0) return '--';
@@ -29,52 +33,68 @@
 		return `${h}h ${m}m`;
 	});
 
-	let speedLimitLabel = $derived(speedLimit > 0 ? formatSpeed(speedLimit) : 'Unlimited');
-
-	// Speed limit popover state
+	// Slider popover state
 	let showPopover = $state(false);
-	let customValue = $state('');
 	let popoverEl: HTMLDivElement | undefined = $state();
+	let sliderValue = $state(100);
+	let isDragging = $state(false);
 
-	const presets = [
-		{ label: 'Unlimited', kib: 0 },
-		{ label: '100 KB/s', kib: 100 },
-		{ label: '500 KB/s', kib: 500 },
-		{ label: '1 MB/s', kib: 1024 },
-		{ label: '5 MB/s', kib: 5120 },
-		{ label: '10 MB/s', kib: 10240 },
-		{ label: '25 MB/s', kib: 25600 },
-		{ label: '50 MB/s', kib: 51200 },
-		{ label: '100 MB/s', kib: 102400 }
-	];
+	// Pick the best unit for the max bandwidth
+	function formatWithUnit(bytes: number): { value: string; unit: string } {
+		if (bytes >= 1024 * 1024 * 1024) return { value: (bytes / (1024 * 1024 * 1024)).toFixed(1), unit: 'GB/s' };
+		if (bytes >= 1024 * 1024) return { value: (bytes / (1024 * 1024)).toFixed(1), unit: 'MB/s' };
+		if (bytes >= 1024) return { value: (bytes / 1024).toFixed(1), unit: 'KB/s' };
+		return { value: bytes.toFixed(0), unit: 'B/s' };
+	}
+
+	// The max bandwidth formatted in its natural unit
+	let maxFormatted = $derived(formatWithUnit(bandwidthMax));
+
+	// The effective speed at the current slider position
+	let effectiveBytes = $derived(bandwidthMax * (isDragging ? sliderValue : bandwidthPerc) / 100);
+	let effectiveFormatted = $derived(formatWithUnit(effectiveBytes));
+	let displayPerc = $derived(isDragging ? sliderValue : bandwidthPerc);
+
+	// Compact limit label: "10M", "500K", "1G", or "Unlim"
+	function formatCompact(bytes: number): string {
+		if (bytes <= 0) return 'Unlim';
+		if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(bytes % (1024 * 1024 * 1024) === 0 ? 0 : 1)}G`;
+		if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(bytes % (1024 * 1024) === 0 ? 0 : 1)}M`;
+		if (bytes >= 1024) return `${(bytes / 1024).toFixed(bytes % 1024 === 0 ? 0 : 1)}K`;
+		return `${bytes}B`;
+	}
+
+	let limitLabel = $derived(
+		bandwidthMax > 0 && bandwidthPerc < 100
+			? formatCompact(bandwidthMax * bandwidthPerc / 100)
+			: formatCompact(bandwidthMax)
+	);
 
 	function togglePopover() {
+		if (!showPopover) {
+			// Initialize slider to current percentage
+			sliderValue = bandwidthPerc;
+		}
 		showPopover = !showPopover;
-		customValue = '';
 	}
 
-	async function applyPreset(kib: number) {
-		showPopover = false;
-		await setSpeedLimit(kib);
+	function onSliderInput(e: Event) {
+		isDragging = true;
+		sliderValue = parseInt((e.target as HTMLInputElement).value);
 	}
 
-	async function applyCustom() {
-		const num = parseFloat(customValue);
-		if (isNaN(num) || num < 0) return;
-		showPopover = false;
-		// Custom value is in MB/s → convert to KiB/s
-		await setSpeedLimit(Math.round(num * 1024));
-	}
-
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Enter') applyCustom();
-		if (e.key === 'Escape') showPopover = false;
+	async function onSliderChange(e: Event) {
+		const value = parseInt((e.target as HTMLInputElement).value);
+		isDragging = false;
+		sliderValue = value;
+		await setBandwidthPerc(value);
 	}
 
 	// Close on outside click
 	function handleWindowClick(e: MouseEvent) {
 		if (showPopover && popoverEl && !popoverEl.contains(e.target as Node)) {
 			showPopover = false;
+			isDragging = false;
 		}
 	}
 </script>
@@ -85,17 +105,17 @@
 	<div class="mx-auto flex max-w-7xl items-center gap-4 px-4 py-2 text-sm text-gray-600 dark:text-gray-400">
 		<div class="flex items-center gap-2">
 			<SpeedGraph data={history} />
-			<!-- Clickable speed display -->
+			<!-- Speed display (read-only) -->
+			<span class="font-mono font-medium text-gray-900 dark:text-gray-100">{formatSpeed(speed)}</span>
+			<!-- Clickable limit label -->
 			<div class="relative" bind:this={popoverEl}>
 				<button
 					onclick={togglePopover}
-					class="group flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
+					class="group flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
 					title="Click to set speed limit"
 				>
-					<span class="font-mono font-medium text-gray-900 dark:text-gray-100">{formatSpeed(speed)}</span>
-					{#if speedLimit > 0}
-						<span class="text-xs text-amber-600 dark:text-amber-400">⏬ {speedLimitLabel}</span>
-					{/if}
+					<span class="text-gray-500 dark:text-gray-400">Limit:</span>
+					<span class="font-medium" class:text-amber-600={bandwidthMax > 0 && bandwidthPerc < 100} class:dark:text-amber-400={bandwidthMax > 0 && bandwidthPerc < 100} class:text-gray-700={!(bandwidthMax > 0 && bandwidthPerc < 100)} class:dark:text-gray-300={!(bandwidthMax > 0 && bandwidthPerc < 100)}>{limitLabel}</span>
 					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100">
 						<path fill-rule="evenodd" d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" />
 					</svg>
@@ -103,50 +123,61 @@
 
 				{#if showPopover}
 					<div
-						class="absolute top-full left-0 z-50 mt-2 w-56 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800"
-						role="menu"
+						class="absolute top-full left-0 z-50 mt-2 w-72 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800"
+						role="dialog"
+						aria-label="Bandwidth limit"
 					>
-						<div class="border-b border-gray-100 px-3 py-2 dark:border-gray-700">
-							<p class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Speed Limit</p>
-						</div>
-						<div class="max-h-52 overflow-y-auto py-1">
-							{#each presets as preset}
-								<button
-									class="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm transition-colors hover:bg-gray-50 dark:hover:bg-gray-700"
-									class:text-blue-600={speedLimit === preset.kib * 1024}
-									class:dark:text-blue-400={speedLimit === preset.kib * 1024}
-									class:font-medium={speedLimit === preset.kib * 1024}
-									class:text-gray-700={speedLimit !== preset.kib * 1024}
-									class:dark:text-gray-300={speedLimit !== preset.kib * 1024}
-									onclick={() => applyPreset(preset.kib)}
-									role="menuitem"
-								>
-									{preset.label}
-									{#if speedLimit === preset.kib * 1024}
-										<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4">
-											<path fill-rule="evenodd" d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z" clip-rule="evenodd" />
-										</svg>
-									{/if}
-								</button>
-							{/each}
-						</div>
-						<div class="border-t border-gray-100 p-2 dark:border-gray-700">
-							<div class="flex items-center gap-1.5">
-								<input
-									type="text"
-									bind:value={customValue}
-									onkeydown={handleKeydown}
-									placeholder="Custom (MB/s)"
-									class="h-7 flex-1 rounded border border-gray-300 bg-transparent px-2 text-xs text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-500"
-								/>
-								<button
-									onclick={applyCustom}
-									class="h-7 rounded bg-blue-600 px-2.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
-								>
-									Set
-								</button>
+						{#if bandwidthMax > 0}
+							<!-- Header -->
+							<div class="border-b border-gray-100 px-4 py-2.5 dark:border-gray-700">
+								<p class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Bandwidth Limit</p>
+								<p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">Max: {maxFormatted.value} {maxFormatted.unit}</p>
 							</div>
-						</div>
+
+							<!-- Slider -->
+							<div class="px-4 py-4">
+								<!-- Live value display -->
+								<div class="mb-3 flex items-baseline justify-between">
+									<span class="text-2xl font-bold tabular-nums text-gray-900 dark:text-gray-100">{displayPerc}%</span>
+									<span class="text-sm font-medium text-gray-500 dark:text-gray-400">{effectiveFormatted.value} {effectiveFormatted.unit}</span>
+								</div>
+
+								<!-- Range input -->
+								<input
+									type="range"
+									min="1"
+									max="100"
+									step="1"
+									value={isDragging ? sliderValue : bandwidthPerc}
+									oninput={onSliderInput}
+									onchange={onSliderChange}
+									class="slider w-full"
+									aria-label="Bandwidth percentage"
+								/>
+
+								<!-- Scale markers -->
+								<div class="mt-1 flex justify-between text-[10px] text-gray-400 dark:text-gray-500">
+									<span>1%</span>
+									<span>25%</span>
+									<span>50%</span>
+									<span>75%</span>
+									<span>100%</span>
+								</div>
+							</div>
+						{:else}
+							<!-- No bandwidth limit configured -->
+							<div class="px-4 py-5 text-center">
+								<div class="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-700">
+									<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-5 text-gray-400">
+										<path fill-rule="evenodd" d="M8.34 1.804A1 1 0 0 1 9.32 1h1.36a1 1 0 0 1 .98.804l.295 1.473c.497.144.971.342 1.416.587l1.25-.834a1 1 0 0 1 1.262.125l.962.962a1 1 0 0 1 .125 1.262l-.834 1.25c.245.445.443.919.587 1.416l1.473.294a1 1 0 0 1 .804.98v1.362a1 1 0 0 1-.804.98l-1.473.295a6.95 6.95 0 0 1-.587 1.416l.834 1.25a1 1 0 0 1-.125 1.262l-.962.962a1 1 0 0 1-1.262.125l-1.25-.834a6.953 6.953 0 0 1-1.416.587l-.294 1.473a1 1 0 0 1-.98.804H9.32a1 1 0 0 1-.98-.804l-.295-1.473a6.957 6.957 0 0 1-1.416-.587l-1.25.834a1 1 0 0 1-1.262-.125l-.962-.962a1 1 0 0 1-.125-1.262l.834-1.25a6.957 6.957 0 0 1-.587-1.416l-1.473-.294A1 1 0 0 1 1 10.68V9.32a1 1 0 0 1 .804-.98l1.473-.295c.144-.497.342-.971.587-1.416l-.834-1.25a1 1 0 0 1 .125-1.262l.962-.962A1 1 0 0 1 5.38 3.03l1.25.834a6.957 6.957 0 0 1 1.416-.587l.294-1.473ZM13 10a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" clip-rule="evenodd" />
+									</svg>
+								</div>
+								<p class="text-sm font-medium text-gray-700 dark:text-gray-300">No bandwidth limit set</p>
+								<p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+									Set a limit in Settings → Downloads
+								</p>
+							</div>
+						{/if}
 					</div>
 				{/if}
 			</div>
@@ -162,3 +193,68 @@
 		{/if}
 	</div>
 </div>
+
+<style>
+	/* Custom range slider styling */
+	.slider {
+		-webkit-appearance: none;
+		appearance: none;
+		height: 6px;
+		border-radius: 3px;
+		background: linear-gradient(to right, #3b82f6, #60a5fa);
+		outline: none;
+		cursor: pointer;
+	}
+
+	.slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 20px;
+		height: 20px;
+		border-radius: 50%;
+		background: #3b82f6;
+		border: 3px solid white;
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+		cursor: grab;
+		transition: transform 0.15s ease, box-shadow 0.15s ease;
+	}
+
+	.slider::-webkit-slider-thumb:hover {
+		transform: scale(1.15);
+		box-shadow: 0 2px 6px rgba(59, 130, 246, 0.4);
+	}
+
+	.slider::-webkit-slider-thumb:active {
+		cursor: grabbing;
+		transform: scale(1.1);
+		box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+	}
+
+	.slider::-moz-range-thumb {
+		width: 20px;
+		height: 20px;
+		border-radius: 50%;
+		background: #3b82f6;
+		border: 3px solid white;
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+		cursor: grab;
+	}
+
+	.slider::-moz-range-thumb:active {
+		cursor: grabbing;
+	}
+
+	.slider::-moz-range-track {
+		height: 6px;
+		border-radius: 3px;
+		background: linear-gradient(to right, #3b82f6, #60a5fa);
+	}
+
+	/* Dark mode thumb */
+	:global(.dark) .slider::-webkit-slider-thumb {
+		border-color: #1f2937;
+	}
+	:global(.dark) .slider::-moz-range-thumb {
+		border-color: #1f2937;
+	}
+</style>

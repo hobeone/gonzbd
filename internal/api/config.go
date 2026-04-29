@@ -96,16 +96,20 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 // config and pushes the computed limit to the running downloader.
 func (s *Server) applySpeedLimit() {
 	var bytesPerSec int64
+	var maxBytes int64
+	var perc int
 	s.config.WithRead(func(cfg *config.Config) {
-		max := int64(cfg.Downloads.BandwidthMax)
-		perc := cfg.Downloads.BandwidthPerc
+		maxBytes = int64(cfg.Downloads.BandwidthMax)
+		perc = int(cfg.Downloads.BandwidthPerc)
 		if perc <= 0 || perc > 100 {
 			perc = 100
 		}
-		bytesPerSec = max * int64(perc) / 100
+		bytesPerSec = maxBytes * int64(perc) / 100
 	})
 	s.app.SetSpeedLimit(bytesPerSec)
-	s.log.Info("speed limit applied", "bytes_per_sec", bytesPerSec)
+	s.app.SetBandwidthMax(maxBytes)
+	s.app.SetBandwidthPerc(perc)
+	s.log.Info("speed limit applied", "bytes_per_sec", bytesPerSec, "bandwidth_max", maxBytes, "bandwidth_perc", perc)
 }
 
 // modeConfig handles mode=config with sub-actions via name= parameter.
