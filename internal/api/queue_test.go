@@ -116,14 +116,14 @@ func TestQueueDefault_WithJobs(t *testing.T) {
 		Queue struct {
 			NoOfSlots int `json:"noofslots"`
 			Slots     []struct {
-				NzoID    string  `json:"nzo_id"`
-				Filename string  `json:"filename"`
-				Category string  `json:"category"`
-				Priority string  `json:"priority"`
-				Status   string  `json:"status"`
-				PP       string  `json:"pp"`
-				MB       float64 `json:"mb"`
-				Bytes    int64   `json:"bytes"`
+				NzoID    string `json:"nzo_id"`
+				Filename string `json:"filename"`
+				Category string `json:"category"`
+				Priority string `json:"priority"`
+				Status   string `json:"status"`
+				PP       string `json:"pp"`
+				MB       string `json:"mb"`
+				Bytes    int64  `json:"bytes"`
 			} `json:"slots"`
 		} `json:"queue"`
 	}
@@ -626,5 +626,183 @@ func TestQueueNilGuard(t *testing.T) {
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d; want 500 when queue is nil", rr.Code)
+	}
+}
+
+// --- Sonarr/Radarr compatibility tests ---
+
+// TestQueueSlot_MBIsString verifies that the queue slot "mb" and "mbleft"
+// fields are JSON strings (e.g. "0.00") not bare numbers. Sonarr/Radarr
+// parse them as strings and would choke on a numeric literal.
+func TestQueueSlot_MBIsString(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	addTestJob(t, q, queue.AddOptions{Filename: "test.nzb"})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	// Parse the raw JSON to inspect field types.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal root: %v", err)
+	}
+	var queueRaw map[string]json.RawMessage
+	if err := json.Unmarshal(raw["queue"], &queueRaw); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
+	var slots []json.RawMessage
+	if err := json.Unmarshal(queueRaw["slots"], &slots); err != nil {
+		t.Fatalf("unmarshal slots: %v", err)
+	}
+	if len(slots) == 0 {
+		t.Fatal("expected at least one slot")
+	}
+
+	var slot map[string]json.RawMessage
+	if err := json.Unmarshal(slots[0], &slot); err != nil {
+		t.Fatalf("unmarshal slot: %v", err)
+	}
+
+	// JSON strings start with '"'; numbers start with a digit.
+	for _, field := range []string{"mb", "mbleft"} {
+		v, ok := slot[field]
+		if !ok {
+			t.Errorf("field %q missing from slot", field)
+			continue
+		}
+		if len(v) == 0 || v[0] != '"' {
+			t.Errorf("field %q = %s; want a JSON string (starts with '\"')", field, v)
+		}
+	}
+}
+
+// TestQueueSlot_TimeleftAndETA verifies timeleft and eta are present.
+func TestQueueSlot_TimeleftAndETA(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	addTestJob(t, q, queue.AddOptions{Filename: "test.nzb"})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+	var resp struct {
+		Queue struct {
+			Slots []struct {
+				Timeleft string `json:"timeleft"`
+				ETA      string `json:"eta"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Queue.Slots) == 0 {
+		t.Fatal("expected at least one slot")
+	}
+	if resp.Queue.Slots[0].Timeleft == "" {
+		t.Error("timeleft should not be empty")
+	}
+	if resp.Queue.Slots[0].ETA == "" {
+		t.Error("eta should not be empty")
+	}
+}
+
+// TestQueueAggregates verifies queue-level aggregate fields that Sonarr reads.
+func TestQueueAggregates(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	addTestJob(t, q, queue.AddOptions{Filename: "a.nzb"})
+	addTestJob(t, q, queue.AddOptions{Filename: "b.nzb"})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+	var resp struct {
+		Queue struct {
+			Speed    string `json:"speed"`
+			KBPerSec string `json:"kbpersec"`
+			MB       string `json:"mb"`
+			MBLeft   string `json:"mbleft"`
+			Size     string `json:"size"`
+			SizeLeft string `json:"sizeleft"`
+			Timeleft string `json:"timeleft"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// All aggregate fields should be present (non-empty strings).
+	for _, tc := range []struct {
+		name, val string
+	}{
+		{"speed", resp.Queue.Speed},
+		{"kbpersec", resp.Queue.KBPerSec},
+		{"mb", resp.Queue.MB},
+		{"mbleft", resp.Queue.MBLeft},
+		{"size", resp.Queue.Size},
+		{"sizeleft", resp.Queue.SizeLeft},
+		{"timeleft", resp.Queue.Timeleft},
+	} {
+		if tc.val == "" {
+			t.Errorf("queue-level %q should not be empty", tc.name)
+		}
+	}
+}
+
+// TestQueuePriority_Action verifies the priority API action.
+func TestQueuePriority_Action(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	job := addTestJob(t, q, queue.AddOptions{Filename: "test.nzb"})
+
+	url := fmt.Sprintf("/api?mode=queue&name=priority&value=%s&value2=1&apikey=%s",
+		job.ID, testAPIKey)
+	rr := apiGet(t, s.Handler(), url)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Status bool     `json:"status"`
+		NzoIDs []string `json:"nzo_ids"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Status {
+		t.Error("status should be true")
+	}
+	if len(resp.NzoIDs) != 1 || resp.NzoIDs[0] != job.ID {
+		t.Errorf("nzo_ids = %v; want [%s]", resp.NzoIDs, job.ID)
+	}
+	// Verify priority actually changed.
+	updated, err := q.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if updated.Priority != constants.HighPriority {
+		t.Errorf("priority = %d; want %d (HighPriority)", updated.Priority, constants.HighPriority)
+	}
+}
+
+// TestQueuePriority_MissingParams verifies error handling.
+func TestQueuePriority_MissingParams(t *testing.T) {
+	t.Parallel()
+	s, _ := testQueueServer(t)
+
+	// Missing value= (nzo_id)
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=priority&apikey="+testAPIKey)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("no value: status = %d; want 400", rr.Code)
+	}
+
+	// Missing value2= (priority)
+	rr = apiGet(t, s.Handler(), "/api?mode=queue&name=priority&value=someid&apikey="+testAPIKey)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("no value2: status = %d; want 400", rr.Code)
 	}
 }

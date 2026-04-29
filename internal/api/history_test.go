@@ -369,3 +369,84 @@ func TestHistoryNilGuard(t *testing.T) {
 		t.Errorf("status = %d; want 500 when history is nil", rr.Code)
 	}
 }
+
+// --- Sonarr/Radarr compatibility tests ---
+
+// TestHistoryLimitZero verifies that limit=0 returns all entries (Sonarr sends this).
+func TestHistoryLimitZero(t *testing.T) {
+	t.Parallel()
+	s, repo := testHistoryServer(t)
+
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		seedEntry(t, repo, fmt.Sprintf("Job%d", i), "Completed", "tv", now.Add(-time.Duration(i)*time.Hour))
+	}
+
+	rr := apiGet(t, s.Handler(), "/api?mode=history&limit=0&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+	var resp struct {
+		History struct {
+			NoOfSlots int           `json:"noofslots"`
+			Slots     []historySlot `json:"slots"`
+		} `json:"history"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.History.NoOfSlots != 5 {
+		t.Errorf("noofslots = %d; want 5", resp.History.NoOfSlots)
+	}
+	if len(resp.History.Slots) != 5 {
+		t.Errorf("slots len = %d; want 5 (limit=0 should return all)", len(resp.History.Slots))
+	}
+}
+
+// TestHistoryStageLog verifies that stage_log is present and is an empty
+// array (not null). Sonarr iterates over it and crashes on null.
+func TestHistoryStageLog(t *testing.T) {
+	t.Parallel()
+	s, repo := testHistoryServer(t)
+
+	seedEntry(t, repo, "TestJob", "Completed", "tv", time.Now())
+
+	rr := apiGet(t, s.Handler(), "/api?mode=history&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	// Parse raw JSON to check stage_log type.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal root: %v", err)
+	}
+	var histRaw map[string]json.RawMessage
+	if err := json.Unmarshal(raw["history"], &histRaw); err != nil {
+		t.Fatalf("unmarshal history: %v", err)
+	}
+	var slots []json.RawMessage
+	if err := json.Unmarshal(histRaw["slots"], &slots); err != nil {
+		t.Fatalf("unmarshal slots: %v", err)
+	}
+	if len(slots) == 0 {
+		t.Fatal("expected at least one slot")
+	}
+
+	var slot map[string]json.RawMessage
+	if err := json.Unmarshal(slots[0], &slot); err != nil {
+		t.Fatalf("unmarshal slot: %v", err)
+	}
+
+	stageLog, ok := slot["stage_log"]
+	if !ok {
+		t.Fatal("stage_log field missing from history slot")
+	}
+	// Must be "[]" not "null".
+	if string(stageLog) == "null" {
+		t.Error("stage_log is null; must be [] (empty array)")
+	}
+	if string(stageLog) != "[]" {
+		t.Errorf("stage_log = %s; want []", stageLog)
+	}
+}

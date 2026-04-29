@@ -704,3 +704,58 @@ func equalSlice(a, b []string) bool {
 	}
 	return true
 }
+
+func TestSetPriority(t *testing.T) {
+	q := New()
+	jHigh := makeJob(t, "high", constants.HighPriority)
+	jNorm := makeJob(t, "normal", constants.NormalPriority)
+	jLow := makeJob(t, "low", constants.LowPriority)
+	for _, j := range []*Job{jHigh, jNorm, jLow} {
+		if err := q.Add(j); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+
+	// Verify initial order: high, normal, low.
+	got := ids(q.List())
+	want := []string{jHigh.ID, jNorm.ID, jLow.ID}
+	if !equalSlice(got, want) {
+		t.Fatalf("initial order = %v, want %v", got, want)
+	}
+
+	// Clear dirty flag to verify SetPriority sets it.
+	q.dirty.Store(false)
+
+	// Promote low to high priority.
+	if err := q.SetPriority(jLow.ID, constants.HighPriority); err != nil {
+		t.Fatalf("SetPriority: %v", err)
+	}
+
+	// Verify dirty flag was set.
+	if !q.IsDirty() {
+		t.Error("SetPriority should set dirty flag")
+	}
+
+	// Verify the job's Priority field was updated.
+	updated, err := q.Get(jLow.ID)
+	if err != nil {
+		t.Fatalf("Get after SetPriority: %v", err)
+	}
+	if updated.Priority != constants.HighPriority {
+		t.Errorf("Priority = %d, want %d (HighPriority)", updated.Priority, constants.HighPriority)
+	}
+
+	// Verify order: jHigh, jLow (now high, end of tier), jNorm.
+	got = ids(q.List())
+	want = []string{jHigh.ID, jLow.ID, jNorm.ID}
+	if !equalSlice(got, want) {
+		t.Errorf("order after promote = %v, want %v", got, want)
+	}
+
+	// Error on nonexistent ID.
+	if err := q.SetPriority("nonexistent", constants.NormalPriority); err == nil {
+		t.Error("SetPriority(unknown) should error")
+	} else if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, want 'not found'", err)
+	}
+}

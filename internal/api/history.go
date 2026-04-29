@@ -34,23 +34,30 @@ func (s *Server) modeHistory(w http.ResponseWriter, r *http.Request) {
 // historySlot is the per-entry JSON shape expected by clients.
 // Field names must match Python's build_history response exactly.
 type historySlot struct {
-	NzoID        string `json:"nzo_id"`
-	Name         string `json:"name"`
-	NZBName      string `json:"nzb_name"`
-	Status       string `json:"status"`
-	Category     string `json:"category"`
-	Script       string `json:"script"`
-	FailMsg      string `json:"fail_message"`
-	Storage      string `json:"storage"`
-	Path         string `json:"path"`
-	Size         string `json:"size"`
-	Bytes        int64  `json:"bytes"`
-	DownloadTime int64  `json:"download_time"`
-	Completed    int64  `json:"completed"`
-	ScriptLog    string `json:"script_log"`
-	ScriptLine   string `json:"script_line"`
-	Meta         string `json:"meta"`
-	URLInfo      string `json:"url_info"`
+	NzoID        string          `json:"nzo_id"`
+	Name         string          `json:"name"`
+	NZBName      string          `json:"nzb_name"`
+	Status       string          `json:"status"`
+	Category     string          `json:"category"`
+	Script       string          `json:"script"`
+	FailMsg      string          `json:"fail_message"`
+	Storage      string          `json:"storage"`
+	Path         string          `json:"path"`
+	Size         string          `json:"size"`
+	Bytes        int64           `json:"bytes"`
+	DownloadTime int64           `json:"download_time"`
+	Completed    int64           `json:"completed"`
+	StageLog     []stageLogEntry `json:"stage_log"`
+	ScriptLog    string          `json:"script_log"`
+	ScriptLine   string          `json:"script_line"`
+	Meta         string          `json:"meta"`
+	URLInfo      string          `json:"url_info"`
+}
+
+// stageLogEntry represents a post-processing stage result (Repair, Unpack, etc.).
+type stageLogEntry struct {
+	Name    string   `json:"name"`
+	Actions []string `json:"actions"`
 }
 
 // historyResponse is the outer JSON object returned for history listings.
@@ -69,22 +76,28 @@ type historyDetail struct {
 // historyList returns a paginated, filtered history listing.
 func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	start := intParam(r, "start")
+	rawLimit := formString(r, "limit")
 	limit := intParam(r, "limit")
-	// Default limit prevents loading the entire DB into memory.
-	// Max cap prevents OOM from adversarial limit= values.
-	const defaultLimit = 50
-	const maxLimit = 10_000
-	if limit <= 0 {
-		limit = defaultLimit
-	}
-	if limit > maxLimit {
-		limit = maxLimit
-	}
 	search := formString(r, "search")
 	catFilter := formString(r, "cat")
 	statusFilter := formString(r, "status")
 	failedOnly := formString(r, "failed_only") == "1"
 	nzoIDs := formString(r, "nzo_ids") // comma-separated IDs to fetch
+
+	// Default limit prevents loading the entire DB into memory.
+	// Max cap prevents OOM from adversarial limit= values.
+	const defaultLimit = 50
+	const maxLimit = 10_000
+	if rawLimit == "" {
+		// No limit param at all → use default.
+		limit = defaultLimit
+	} else if limit <= 0 {
+		// limit=0 means "return all" (Sonarr sends this).
+		limit = maxLimit
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
 
 	opts := history.SearchOptions{
 		Search:   search,
@@ -160,6 +173,7 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 			Bytes:        e.Bytes,
 			DownloadTime: e.DownloadTime,
 			Completed:    toUnixTS(e.Completed),
+			StageLog:     []stageLogEntry{},
 			ScriptLog:    string(e.ScriptLog),
 			ScriptLine:   e.ScriptLine,
 			Meta:         e.Meta,

@@ -42,8 +42,9 @@ type Config struct {
 }
 
 // Handler defines the interface for consuming NZB payloads fetched by the Grabber.
+// HandleNZB returns the created job ID (or empty string if not applicable) and an error.
 type Handler interface {
-	HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) error
+	HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) (string, error)
 }
 
 // Grabber fetches URLs pointing to NZBs (or NZB archives), decompresses them,
@@ -82,25 +83,25 @@ func New(cfg Config, h Handler) *Grabber {
 }
 
 // Fetch downloads the URL, decompresses if needed, and invokes the handler for
-// each NZB found. Returns the number of NZBs handled.
+// each NZB found. Returns the job IDs of created jobs.
 //
 // Fetch reuses decompression logic from dirscanner by writing the fetched body
 // to a temp file. This keeps the API clean and avoids duplicating archive
 // handling code, at a negligible performance cost.
-func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOptions) (int, error) {
+func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOptions) ([]string, error) {
 	if urlStr == "" {
-		return 0, fmt.Errorf("URL is empty")
+		return nil, fmt.Errorf("URL is empty")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, http.NoBody)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Parse URL to extract embedded credentials and set auth header if provided.
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse URL: %w", err)
+		return nil, fmt.Errorf("failed to parse URL: %w", err)
 	}
 
 	// Use configured credentials if provided, otherwise try URL userinfo.
@@ -119,18 +120,18 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 
 	resp, err := g.client.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("failed to fetch URL: %w", err)
+		return nil, fmt.Errorf("failed to fetch URL: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck // cleanup of response body
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	// Reject HTML responses (likely a login page or error page).
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
 	if strings.HasPrefix(ct, "text/html") {
-		return 0, fmt.Errorf("received HTML content type, not NZB")
+		return nil, fmt.Errorf("received HTML content type, not NZB")
 	}
 
 	// Extract filename from Content-Disposition header or URL path.
@@ -140,35 +141,35 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 	limitedBody := io.LimitReader(resp.Body, g.cfg.MaxBytes+1)
 	data, err := io.ReadAll(limitedBody)
 	if err != nil {
-		return 0, fmt.Errorf("failed to read response body: %w", err)
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	if int64(len(data)) > g.cfg.MaxBytes {
-		return 0, fmt.Errorf("response body exceeds maximum size limit (%d > %d)", len(data), g.cfg.MaxBytes)
+		return nil, fmt.Errorf("response body exceeds maximum size limit (%d > %d)", len(data), g.cfg.MaxBytes)
 	}
 
 	// Write to a temp file with a proper extension for archive detection.
 	// Use the filename's extension to help dirscanner.DetectType() work correctly.
 	tmpDir, err := os.MkdirTemp("", "urlgrabber-")
 	if err != nil {
-		return 0, fmt.Errorf("failed to create temp directory: %w", err)
+		return nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 	defer os.RemoveAll(tmpDir) //nolint:errcheck // cleanup of temp directory
 
 	filename = filepath.Base(filename)
 	tmpPath := filepath.Join(tmpDir, filename)
 	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
-		return 0, fmt.Errorf("failed to write temp file: %w", err)
+		return nil, fmt.Errorf("failed to write temp file: %w", err)
 	}
 
 	// Extract NZBs. ExtractNZBs internally detects the archive type.
 	nzbs, err := dirscanner.ExtractNZBs(tmpPath)
 	if err != nil {
-		return 0, fmt.Errorf("failed to extract NZBs: %w", err)
+		return nil, fmt.Errorf("failed to extract NZBs: %w", err)
 	}
 
 	// Invoke handler for each NZB found.
-	count := 0
+	var ids []string
 	for i, nzbData := range nzbs {
 		// Derive a per-NZB filename if multiple found (e.g., from a zip).
 		nzbFilename := filename
@@ -177,17 +178,20 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 			nzbFilename = fmt.Sprintf("%s_%d.nzb", base, i)
 		}
 
-		if err := g.handler.HandleNZB(ctx, nzbFilename, nzbData, opts); err != nil {
+		id, err := g.handler.HandleNZB(ctx, nzbFilename, nzbData, opts)
+		if err != nil {
 			g.logger.Error("urlgrabber: handler failed for NZB in archive",
 				slog.String("filename", nzbFilename),
 				slog.Any("err", err),
 			)
 			continue
 		}
-		count++
+		if id != "" {
+			ids = append(ids, id)
+		}
 	}
 
-	return count, nil
+	return ids, nil
 }
 
 // extractFilename extracts the filename from the Content-Disposition header,
