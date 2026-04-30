@@ -92,6 +92,11 @@ type Job struct {
 	// began downloading. Zero if the job hasn't started yet.
 	DownloadStarted time.Time `json:"download_started,omitempty"`
 
+	// DownloadFinished is the wall-clock time when the download phase
+	// completed (all articles received). Zero until the download finishes.
+	// Used to calculate download speed excluding post-processing time.
+	DownloadFinished time.Time `json:"download_finished,omitempty"`
+
 	// ServerStats tracks successfully downloaded bytes per server.
 	// Map: ServerName -> Bytes.
 	ServerStats map[string]int64 `json:"server_stats,omitempty"`
