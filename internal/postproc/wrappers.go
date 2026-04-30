@@ -190,20 +190,30 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		var err error
 		switch a.Type {
 		case unpack.RarArchive:
-			// Prefer unrar, but fall back to 7zip (which handles RAR
-			// natively) when the unrar binary isn't available.
-			unrarBin := opts.UnrarCommand
-			if unrarBin == "" {
-				unrarBin = "unrar"
+			// Use 7z when preferred, or fall back to it when unrar
+			// isn't available.
+			use7z := opts.Prefer7zip
+			if !use7z {
+				unrarBin := opts.UnrarCommand
+				if unrarBin == "" {
+					unrarBin = "unrar"
+				}
+				if _, lookErr := exec.LookPath(unrarBin); lookErr != nil {
+					use7z = true // unrar not found, fall back to 7z
+				}
 			}
-			if _, lookErr := exec.LookPath(unrarBin); lookErr == nil {
+			if use7z {
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("Running: 7z x %s", filepath.Base(a.MainFile)))
+				res, err = unpack.SevenZip(ctx, a, job.DownloadDir, opts)
+			} else {
+				unrarBin := opts.UnrarCommand
+				if unrarBin == "" {
+					unrarBin = "unrar"
+				}
 				job.OutputLines = append(job.OutputLines,
 					fmt.Sprintf("Running: %s x %s", unrarBin, filepath.Base(a.MainFile)))
 				res, err = unpack.UnRAR(ctx, a, job.DownloadDir, opts)
-			} else {
-				job.OutputLines = append(job.OutputLines,
-					fmt.Sprintf("Running: 7z x %s (unrar not found)", filepath.Base(a.MainFile)))
-				res, err = unpack.SevenZip(ctx, a, job.DownloadDir, opts)
 			}
 		case unpack.SevenZipArchive:
 			job.OutputLines = append(job.OutputLines,

@@ -33,6 +33,9 @@ type Options struct {
 	// IgnoreUnrarDates discards in-archive timestamps and uses extraction time.
 	// Adds -ts0 to unrar arguments.
 	IgnoreUnrarDates bool
+	// Prefer7zip uses 7z instead of unrar for RAR extraction even when
+	// unrar is available. 7z often handles edge-case RARs more reliably.
+	Prefer7zip bool
 }
 
 // unrarBin returns the configured unrar binary, defaulting to "unrar".

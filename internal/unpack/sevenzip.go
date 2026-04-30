@@ -57,6 +57,7 @@ func SevenZip(ctx context.Context, archive Archive, outDir string, opts Options)
 	args := []string{
 		"x",
 		"-y",    // assume yes
+		"-bd",   // disable progress percentage indicator
 		"-bsp0", // suppress progress stream (keep stdout for stage log)
 		pwFlag,
 	}

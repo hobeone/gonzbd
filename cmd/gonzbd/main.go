@@ -257,6 +257,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		IgnoreUnrarDates:     cfg.PostProc.IgnoreUnrarDates,
 		OverwriteFiles:       cfg.PostProc.OverwriteFiles,
 		FlatUnpack:           cfg.PostProc.FlatUnpack,
+		Prefer7zip:           cfg.PostProc.Prefer7zip,
 
 		Version:    Version,
 		APIKey:     cfg.General.APIKey,
