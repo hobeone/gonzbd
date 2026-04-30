@@ -54,6 +54,13 @@
 		const remainingMins = mins % 60;
 		return `${hours}h ${remainingMins}m`;
 	}
+
+	function formatSize(bytes: number): string {
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+		return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+	}
 </script>
 
 <tr class="border-b hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer text-gray-900 dark:text-gray-100" onclick={toggle}>
@@ -107,6 +114,24 @@
 						<div class="mt-1 font-mono text-xs text-gray-700 dark:text-gray-300 break-all">{slot.path}</div>
 					</div>
 					<div>
+						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Download Health</div>
+						<div class="mt-1 flex items-center gap-2">
+							{#if slot.completeness > 0}
+								<div class="flex h-2 w-24 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+									<div
+										class="h-full rounded-full transition-all {slot.completeness >= 100 ? 'bg-green-500' : slot.completeness >= 95 ? 'bg-yellow-500' : 'bg-red-500'}"
+										style="width: {slot.completeness}%"
+									></div>
+								</div>
+								<span class="text-xs font-medium {slot.completeness >= 100 ? 'text-green-600 dark:text-green-400' : slot.completeness >= 95 ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}">
+									{slot.completeness}%
+								</span>
+							{:else}
+								<span class="text-xs text-gray-500 dark:text-gray-400">N/A</span>
+							{/if}
+						</div>
+					</div>
+					<div>
 						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Repair Summary</div>
 						<div class="mt-1 text-gray-700 dark:text-gray-300 break-all">{slot.url_info || 'N/A'}</div>
 					</div>
@@ -117,13 +142,20 @@
 						<div class="mt-1 text-gray-700 dark:text-gray-300">
 							Downloaded in {formatDuration(slot.download_time)} at {formatSpeed(slot.bytes, slot.download_time)}
 						</div>
+						{#if slot.downloaded > 0 && slot.downloaded !== slot.bytes}
+							<div class="text-xs text-gray-500 dark:text-gray-400">
+								{formatSize(slot.downloaded)} of {formatSize(slot.bytes)} received
+							</div>
+						{/if}
 					</div>
-					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Usenet Information</div>
-						<div class="mt-1 text-gray-700 dark:text-gray-300">
-							{slot.storage} old
+					{#if slot.postproc_time > 0}
+						<div>
+							<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Post-Processing</div>
+							<div class="mt-1 text-gray-700 dark:text-gray-300">
+								Completed in {formatDuration(slot.postproc_time)}
+							</div>
 						</div>
-					</div>
+					{/if}
 					<div>
 						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Servers</div>
 						<div class="mt-1 text-gray-700 dark:text-gray-300 italic break-all">
@@ -132,6 +164,26 @@
 					</div>
 				</div>
 			</div>
+
+			{#if slot.stage_log.length > 0}
+				<div class="mt-4 border-t border-gray-200 dark:border-gray-700 pt-3">
+					<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">Processing Stages</div>
+					<div class="space-y-2">
+						{#each slot.stage_log as stage}
+							<div class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2">
+								<div class="text-xs font-semibold capitalize text-gray-700 dark:text-gray-300">{stage.name}</div>
+								{#if stage.actions.length > 0}
+									<div class="mt-1 space-y-0.5">
+										{#each stage.actions as action}
+											<div class="text-xs text-gray-500 dark:text-gray-400 {action.startsWith('Error:') ? 'text-red-600 dark:text-red-400 font-medium' : ''}">{action}</div>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
 		</td>
 	</tr>
 {/if}

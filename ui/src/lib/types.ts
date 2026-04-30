@@ -36,6 +36,11 @@ export interface QueueResponse {
 	queue: QueueDetail;
 }
 
+export interface HistoryStageLog {
+	name: string;
+	actions: string[];
+}
+
 export interface HistorySlot {
 	nzo_id: string;
 	name: string;
@@ -48,8 +53,12 @@ export interface HistorySlot {
 	path: string;
 	size: string;
 	bytes: number;
+	downloaded: number;
+	completeness: number;
 	download_time: number;
+	postproc_time: number;
 	completed: number;
+	stage_log: HistoryStageLog[];
 	script_log: string;
 	script_line: string;
 	meta: string;
