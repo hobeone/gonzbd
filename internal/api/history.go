@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -45,7 +47,10 @@ type historySlot struct {
 	Path         string          `json:"path"`
 	Size         string          `json:"size"`
 	Bytes        int64           `json:"bytes"`
+	Downloaded   int64           `json:"downloaded"`
+	Completeness int64           `json:"completeness"`
 	DownloadTime int64           `json:"download_time"`
+	PostprocTime int64           `json:"postproc_time"`
 	Completed    int64           `json:"completed"`
 	StageLog     []stageLogEntry `json:"stage_log"`
 	ScriptLog    string          `json:"script_log"`
@@ -159,6 +164,11 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	var totalBytes int64
 	for _, e := range entries {
 		totalBytes += e.Bytes
+
+		// Deserialize the stored stage log JSON. Fall back to an empty
+		// array on any error (legacy entries may have empty or invalid JSON).
+		stages := parseStageLog(e.StageLog)
+
 		slots = append(slots, historySlot{
 			NzoID:        e.NzoID,
 			Name:         e.Name,
@@ -171,9 +181,12 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 			Path:         e.Path,
 			Size:         formatBytes(e.Bytes),
 			Bytes:        e.Bytes,
+			Downloaded:   e.Downloaded,
+			Completeness: e.Completeness,
 			DownloadTime: e.DownloadTime,
+			PostprocTime: e.PostprocTime,
 			Completed:    toUnixTS(e.Completed),
-			StageLog:     []stageLogEntry{},
+			StageLog:     stages,
 			ScriptLog:    string(e.ScriptLog),
 			ScriptLine:   e.ScriptLine,
 			Meta:         e.Meta,
@@ -289,4 +302,59 @@ func toUnixTS(t time.Time) int64 {
 		return 0
 	}
 	return t.Unix()
+}
+
+// internalStageLogEntry mirrors the postproc.StageLogEntry struct for
+// JSON deserialization of the stored stage log. We define a separate
+// type here to avoid importing the postproc package and to handle the
+// error-as-string conversion.
+type internalStageLogEntry struct {
+	Stage   string   `json:"Stage"`
+	Elapsed float64  `json:"Elapsed"` // nanoseconds (time.Duration)
+	Err     *string  `json:"Err"`     // nil or error string
+	Lines   []string `json:"Lines"`
+}
+
+// parseStageLog deserializes the JSON-encoded stage log string from the
+// database into API-friendly stageLogEntry values. Returns an empty (non-nil)
+// slice on any error or empty input.
+func parseStageLog(raw string) []stageLogEntry {
+	if raw == "" || raw == "null" {
+		return []stageLogEntry{}
+	}
+
+	var internal []internalStageLogEntry
+	if err := json.Unmarshal([]byte(raw), &internal); err != nil {
+		return []stageLogEntry{}
+	}
+
+	result := make([]stageLogEntry, 0, len(internal))
+	for _, e := range internal {
+		actions := make([]string, 0, len(e.Lines)+1)
+
+		// Add duration as the first action line.
+		elapsedSec := e.Elapsed / 1e9 // nanoseconds → seconds
+		if elapsedSec >= 60 {
+			mins := int(elapsedSec) / 60
+			secs := int(elapsedSec) % 60
+			actions = append(actions, fmt.Sprintf("Completed in %dm %ds", mins, secs))
+		} else if elapsedSec > 0 {
+			actions = append(actions, fmt.Sprintf("Completed in %.1fs", elapsedSec))
+		}
+
+		if e.Err != nil && *e.Err != "" {
+			actions = append(actions, "Error: "+*e.Err)
+		}
+		actions = append(actions, e.Lines...)
+
+		result = append(result, stageLogEntry{
+			Name:    e.Stage,
+			Actions: actions,
+		})
+	}
+
+	if len(result) == 0 {
+		return []stageLogEntry{}
+	}
+	return result
 }

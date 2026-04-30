@@ -22,7 +22,10 @@ describe('HistoryRow', () => {
 		size: '200 MB',
 		completed: 1700000000,
 		download_time: 120,
+		postproc_time: 30,
 		bytes: 209715200,
+		downloaded: 209715200,
+		completeness: 100,
 		path: '/data/completed/job',
 		fail_message: '',
 		storage: '30 days',
@@ -30,7 +33,8 @@ describe('HistoryRow', () => {
 		script_log: '',
 		script_line: '',
 		meta: '',
-		url_info: ''
+		url_info: '',
+		stage_log: []
 	};
 
 	beforeEach(() => {
@@ -154,5 +158,48 @@ describe('HistoryRow', () => {
 		await fireEvent.click(row);
 		expect(container.textContent).toContain('Repair Summary');
 		expect(container.textContent).toContain('N/A');
+	});
+
+	it('expanded view shows download health percentage', async () => {
+		const slot = { ...baseSlot, completeness: 98 };
+		const { container } = render(HistoryRow, { slot, onremove: vi.fn() });
+		const row = container.querySelector('tr')!;
+		await fireEvent.click(row);
+		expect(container.textContent).toContain('Download Health');
+		expect(container.textContent).toContain('98%');
+	});
+
+	it('expanded view shows stage log when present', async () => {
+		const slot = {
+			...baseSlot,
+			stage_log: [
+				{ name: 'repair', actions: ['Completed in 2.5s', 'All files are correct'] },
+				{ name: 'unpack', actions: ['Completed in 5.3s'] }
+			]
+		};
+		const { container } = render(HistoryRow, { slot, onremove: vi.fn() });
+		const row = container.querySelector('tr')!;
+		await fireEvent.click(row);
+		expect(container.textContent).toContain('Processing Stages');
+		expect(container.textContent).toContain('repair');
+		expect(container.textContent).toContain('unpack');
+		expect(container.textContent).toContain('All files are correct');
+	});
+
+	it('expanded view shows post-processing time when > 0', async () => {
+		const slot = { ...baseSlot, postproc_time: 45 };
+		const { container } = render(HistoryRow, { slot, onremove: vi.fn() });
+		const row = container.querySelector('tr')!;
+		await fireEvent.click(row);
+		expect(container.textContent).toContain('Post-Processing');
+		expect(container.textContent).toContain('45s');
+	});
+
+	it('expanded view hides post-processing time when 0', async () => {
+		const slot = { ...baseSlot, postproc_time: 0 };
+		const { container } = render(HistoryRow, { slot, onremove: vi.fn() });
+		const row = container.querySelector('tr')!;
+		await fireEvent.click(row);
+		expect(container.textContent).not.toContain('Post-Processing');
 	});
 });
