@@ -203,8 +203,6 @@ export interface ServerSnapshot {
 	enabled: boolean;
 	optional: boolean;
 	required: boolean;
-	bad_connections: number;
-	good_connections: number;
 	penalty_until: number;
 	bps: number;
 	total_bytes: number;

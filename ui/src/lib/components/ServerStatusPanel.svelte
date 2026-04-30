@@ -234,20 +234,10 @@
 					<!-- Expanded details -->
 					{#if isExpanded}
 						<div class="border-t border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/30">
-							<!-- Stats grid -->
-							<div class="grid grid-cols-3 gap-2 px-4 py-3 text-xs">
-								<div>
-									<span class="text-gray-500 dark:text-gray-400">Good:</span>
-									<span class="ml-1 font-medium text-emerald-600 dark:text-emerald-400">{server.good_connections}</span>
-								</div>
-								<div>
-									<span class="text-gray-500 dark:text-gray-400">Bad:</span>
-									<span class="ml-1 font-medium text-red-600 dark:text-red-400">{server.bad_connections}</span>
-								</div>
-								<div>
-									<span class="text-gray-500 dark:text-gray-400">Total:</span>
-									<span class="ml-1 font-medium text-gray-900 dark:text-gray-100">{formatBytes(server.total_bytes)}</span>
-								</div>
+							<!-- Stats -->
+							<div class="px-4 py-3 text-xs">
+								<span class="text-gray-500 dark:text-gray-400">Total Downloaded:</span>
+								<span class="ml-1 font-medium text-gray-900 dark:text-gray-100">{formatBytes(server.total_bytes)}</span>
 							</div>
 
 							{#if penalty}
