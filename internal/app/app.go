@@ -303,8 +303,8 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		OnJobDone: func(job *postproc.Job) {
 			stageLogJSON, _ := json.Marshal(job.StageLog)
 			var downloadDuration int64
-			if !job.Queue.DownloadStarted.IsZero() {
-				downloadDuration = int64(time.Since(job.Queue.DownloadStarted).Seconds())
+			if !job.Queue.DownloadStarted.IsZero() && !job.Queue.DownloadFinished.IsZero() {
+				downloadDuration = int64(job.Queue.DownloadFinished.Sub(job.Queue.DownloadStarted).Seconds())
 			}
 			if downloadDuration == 0 {
 				downloadDuration = 1
@@ -783,6 +783,10 @@ func (app *Application) maybeFinalize(jobID string, failMsg string) {
 }
 
 func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
+	// Mark the download phase as finished so OnJobDone can compute
+	// download duration accurately, excluding post-processing time.
+	job.DownloadFinished = time.Now()
+
 	// Release cached file info for this job; the assembler no longer
 	// needs it, and keeping it around leaks memory across many downloads.
 	app.pipeline.forgetJob(job.ID)
@@ -832,6 +836,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	job.Status = constants.StatusQueued
 	job.PostProc = false
 	job.DownloadStarted = time.Time{}
+	job.DownloadFinished = time.Time{}
 	job.ServerStats = nil
 	job.FailedBytes = 0
 	for fi := range job.Files {

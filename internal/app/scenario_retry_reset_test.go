@@ -44,12 +44,14 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	}
 
 	started := time.Now().Add(-10 * time.Minute)
+	finished := started.Add(5 * time.Minute)
 	persisted := &queue.Job{
-		ID:              jobID,
-		Name:            "retry-reset",
-		Status:          constants.StatusFailed,
-		DownloadStarted: started,
-		ServerStats:     map[string]int64{"mock": 123456},
+		ID:               jobID,
+		Name:             "retry-reset",
+		Status:           constants.StatusFailed,
+		DownloadStarted:  started,
+		DownloadFinished: finished,
+		ServerStats:      map[string]int64{"mock": 123456},
 		Files: []queue.JobFile{{
 			Subject:  "file.bin",
 			Complete: false,
@@ -72,6 +74,9 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	}
 	if !snap.DownloadStarted.IsZero() {
 		t.Errorf("DownloadStarted = %v, want zero", snap.DownloadStarted)
+	}
+	if !snap.DownloadFinished.IsZero() {
+		t.Errorf("DownloadFinished = %v, want zero", snap.DownloadFinished)
 	}
 	if len(snap.ServerStats) != 0 {
 		t.Errorf("ServerStats = %v, want empty", snap.ServerStats)
