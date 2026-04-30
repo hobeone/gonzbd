@@ -12,7 +12,6 @@
 </script>
 
 <svelte:head>
-	<link rel="icon" href="/favicon.ico" />
 	<meta name="application-name" content="GoNZBD" />
 </svelte:head>
 
