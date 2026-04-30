@@ -143,6 +143,7 @@ type ConnActivity struct {
 	Subject    string    // human-friendly file subject
 	Bytes      int       // expected article size
 	Since      time.Time // when this fetch started; zero = idle
+	Connected  bool      // true when the underlying TCP connection exists
 }
 
 // ConnSnapshot is the JSON-serialisable view of a single connection.
@@ -152,6 +153,7 @@ type ConnSnapshot struct {
 	Subject   string `json:"subject"`
 	Bytes     int    `json:"bytes"`
 	SinceUnix int64  `json:"since_unix"`
+	Connected bool   `json:"connected"`
 }
 
 // ServerSnapshot is a point-in-time view of a single NNTP server,
@@ -162,6 +164,7 @@ type ServerSnapshot struct {
 	Port           int            `json:"port"`
 	SSL            bool           `json:"ssl"`
 	Priority       int            `json:"priority"`
+	Pipelining     int            `json:"pipelining"`
 	MaxConnections int            `json:"max_connections"`
 	ActiveConns    int            `json:"active_conns"`
 	Active         bool           `json:"active"`
@@ -492,6 +495,16 @@ func (d *Downloader) clearConnActivity(workerID string) {
 	d.connActivityMu.Unlock()
 }
 
+// setConnConnected updates the Connected flag for the given worker.
+// Called by connWorker when a TCP connection is established or closed.
+func (d *Downloader) setConnConnected(workerID string, connected bool) {
+	d.connActivityMu.Lock()
+	if ca, ok := d.connActivity[workerID]; ok {
+		ca.Connected = connected
+	}
+	d.connActivityMu.Unlock()
+}
+
 // ServerStatus returns a point-in-time snapshot of all servers,
 // including per-connection activity. Safe for concurrent use.
 func (d *Downloader) ServerStatus() []ServerSnapshot {
@@ -517,6 +530,7 @@ func (d *Downloader) ServerStatus() []ServerSnapshot {
 			Subject:   ca.Subject,
 			Bytes:     ca.Bytes,
 			SinceUnix: sinceUnix,
+			Connected: ca.Connected,
 		})
 	}
 	d.connActivityMu.RUnlock()
@@ -558,6 +572,7 @@ func (d *Downloader) ServerStatus() []ServerSnapshot {
 			Port:           cfg.Port,
 			SSL:            cfg.SSL,
 			Priority:       cfg.Priority,
+			Pipelining:     cfg.PipeliningRequests,
 			MaxConnections: cfg.Connections,
 			ActiveConns:    activeCount,
 			Active:         srv.Active(now),

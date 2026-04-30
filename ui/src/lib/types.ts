@@ -189,6 +189,7 @@ export interface ConnSnapshot {
 	subject: string;
 	bytes: number;
 	since_unix: number;
+	connected: boolean;
 }
 
 export interface ServerSnapshot {
@@ -197,6 +198,7 @@ export interface ServerSnapshot {
 	port: number;
 	ssl: boolean;
 	priority: number;
+	pipelining: number;
 	max_connections: number;
 	active_conns: number;
 	active: boolean;
