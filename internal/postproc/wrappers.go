@@ -275,7 +275,12 @@ func (*DeobfuscateStage) Name() string { return "deobfuscate" }
 
 // Run invokes deobfuscate.Deobfuscate against job.DownloadDir.
 func (*DeobfuscateStage) Run(_ context.Context, job *Job) error {
-	if _, err := deobfuscate.Deobfuscate(job.DownloadDir, job.Queue.Name, job.Sanitize); err != nil {
+	renames, err := deobfuscate.Deobfuscate(job.DownloadDir, job.Queue.Name, job.Sanitize)
+	for _, r := range renames {
+		job.OutputLines = append(job.OutputLines,
+			fmt.Sprintf("%s → %s", filepath.Base(r.From), filepath.Base(r.To)))
+	}
+	if err != nil {
 		return fmt.Errorf("deobfuscate: %w", err)
 	}
 	return nil
@@ -448,6 +453,8 @@ func (*FinalizeStage) Run(ctx context.Context, job *Job) error {
 	// not-empty (ENOTEMPTY/EEXIST) errors — the latter allows
 	// merging files into an existing destination directory.
 	if err := os.Rename(job.DownloadDir, job.FinalDir); err == nil {
+		job.OutputLines = append(job.OutputLines,
+			fmt.Sprintf("%s → %s", job.DownloadDir, job.FinalDir))
 		return nil
 	} else if !fsutil.IsRenameMergeNeeded(err) {
 		return fmt.Errorf("finalize: rename %s -> %s: %w", job.DownloadDir, job.FinalDir, err)
@@ -469,6 +476,8 @@ func (*FinalizeStage) Run(ctx context.Context, job *Job) error {
 		if err := moveRecursive(ctx, src, dst); err != nil {
 			return fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err)
 		}
+		job.OutputLines = append(job.OutputLines,
+			fmt.Sprintf("%s → %s", filepath.Base(src), dst))
 	}
 
 	// Cleanup the empty source directory
