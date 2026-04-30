@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // testHistoryServer builds a Server wired with an in-memory history repository.
@@ -564,5 +566,138 @@ func TestHistorySlot_CompletenessAndDownloaded(t *testing.T) {
 	}
 	if slot.PostprocTime != 15 {
 		t.Errorf("postproc_time = %d; want 15", slot.PostprocTime)
+	}
+}
+
+// --- PostProc injection into history ---
+
+// TestHistoryList_PostProcJobsInjected verifies that jobs currently in
+// post-processing (from the queue with PostProc=true) appear in the
+// history listing as synthetic entries, matching SABnzbd lifecycle (§11.3).
+func TestHistoryList_PostProcJobsInjected(t *testing.T) {
+	t.Parallel()
+
+	// Build a server with both a queue and a history repo.
+	dbPath := filepath.Join(t.TempDir(), "hist.db")
+	db, err := history.Open(dbPath)
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+
+	q := queue.New()
+	s := New(Options{
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+		Version: "1.0.0-test",
+		Queue:   q,
+		History: repo,
+		App:     mockApp{q: q, h: repo},
+	})
+
+	// Seed a completed history entry.
+	seedEntry(t, repo, "Completed.Job", "Completed", "tv", time.Now().Add(-time.Hour))
+
+	// Add a post-processing job to the queue.
+	ppJob := addTestJob(t, q, queue.AddOptions{Filename: "postproc.nzb"})
+	ppJob.Status = constants.StatusRepairing
+	_, err = q.SetPostProcStarted(ppJob.ID)
+	if err != nil {
+		t.Fatalf("SetPostProcStarted: %v", err)
+	}
+	// Set status after SetPostProcStarted (which resets to Queued).
+	if err := q.SetStatus(ppJob.ID, constants.StatusRepairing); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	rr := apiGet(t, s.Handler(), "/api?mode=history&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	var resp struct {
+		History struct {
+			NoOfSlots int `json:"noofslots"`
+			Slots     []struct {
+				NzoID  string `json:"nzo_id"`
+				Name   string `json:"name"`
+				Status string `json:"status"`
+			} `json:"slots"`
+		} `json:"history"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Should have 2 slots: the PP job (first) + the completed entry.
+	if resp.History.NoOfSlots != 2 {
+		t.Errorf("noofslots = %d; want 2", resp.History.NoOfSlots)
+	}
+	if len(resp.History.Slots) != 2 {
+		t.Fatalf("got %d slots; want 2", len(resp.History.Slots))
+	}
+
+	// The post-processing job should be first with dynamic status.
+	ppSlot := resp.History.Slots[0]
+	if ppSlot.NzoID != ppJob.ID {
+		t.Errorf("pp slot nzo_id = %s; want %s", ppSlot.NzoID, ppJob.ID)
+	}
+	if ppSlot.Status != "Repairing" {
+		t.Errorf("pp slot status = %s; want Repairing", ppSlot.Status)
+	}
+
+	// The completed DB entry should be second.
+	dbSlot := resp.History.Slots[1]
+	if dbSlot.Status != "Completed" {
+		t.Errorf("db slot status = %s; want Completed", dbSlot.Status)
+	}
+}
+
+// TestHistoryList_PostProcNotInjectedForNzoIDs verifies that synthetic
+// PP entries are NOT injected when the client requests specific nzo_ids.
+func TestHistoryList_PostProcNotInjectedForNzoIDs(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "hist.db")
+	db, err := history.Open(dbPath)
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+
+	q := queue.New()
+	s := New(Options{
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+		Version: "1.0.0-test",
+		Queue:   q,
+		History: repo,
+		App:     mockApp{q: q, h: repo},
+	})
+
+	// Add a PP job to the queue.
+	ppJob := addTestJob(t, q, queue.AddOptions{Filename: "pp.nzb"})
+	_, _ = q.SetPostProcStarted(ppJob.ID)
+
+	// Request the PP job by nzo_id — should NOT find it (it's not in history DB).
+	rr := apiGet(t, s.Handler(), fmt.Sprintf("/api?mode=history&apikey=%s&nzo_ids=%s", testAPIKey, ppJob.ID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	var resp struct {
+		History struct {
+			Slots []struct {
+				NzoID string `json:"nzo_id"`
+			} `json:"slots"`
+		} `json:"history"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// nzo_ids lookup goes to DB only, so no PP injection.
+	if len(resp.History.Slots) != 0 {
+		t.Errorf("got %d slots; want 0 (nzo_ids should skip PP injection)", len(resp.History.Slots))
 	}
 }

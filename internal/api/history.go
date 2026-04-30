@@ -162,6 +162,58 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 
 	var slots []historySlot
 	var totalBytes int64
+
+	// Inject currently-post-processing jobs from the queue as synthetic
+	// history entries. SABnzbd moves jobs to history when post-processing
+	// starts (spec §11.3); third-party clients expect this lifecycle.
+	// Only inject for paginated listings (not nzo_ids lookups).
+	if nzoIDs == "" && s.queue != nil {
+		ppJobs := s.queue.Snapshot()
+		for _, j := range ppJobs {
+			if !j.PostProc {
+				continue
+			}
+			// Apply the same filters as regular history entries.
+			if catFilter != "" && j.Category != catFilter {
+				continue
+			}
+			ppStatus := string(j.Status)
+			if failedOnly {
+				continue // PP jobs are not yet failed
+			}
+			if statusFilter != "" && ppStatus != statusFilter {
+				continue
+			}
+			if search != "" {
+				sLower := strings.ToLower(search)
+				if !strings.Contains(strings.ToLower(j.Name), sLower) &&
+					!strings.Contains(strings.ToLower(j.Filename), sLower) {
+					continue
+				}
+			}
+
+			var dlTime int64
+			if !j.DownloadStarted.IsZero() && !j.DownloadFinished.IsZero() {
+				dlTime = int64(j.DownloadFinished.Sub(j.DownloadStarted).Seconds())
+			}
+
+			totalBytes += j.TotalBytes
+			slots = append(slots, historySlot{
+				NzoID:        j.ID,
+				Name:         j.Name,
+				NZBName:      j.Filename,
+				Status:       ppStatus,
+				Category:     j.Category,
+				Size:         formatBytes(j.TotalBytes),
+				Bytes:        j.TotalBytes,
+				Downloaded:   j.TotalBytes - j.FailedBytes,
+				DownloadTime: dlTime,
+				Completed:    0, // not yet completed
+			})
+			totalCount++ // include in total for pagination
+		}
+	}
+
 	for _, e := range entries {
 		totalBytes += e.Bytes
 
