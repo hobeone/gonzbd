@@ -33,6 +33,9 @@ type PostProcConfig struct {
 	// OverwriteFiles allows extraction to clobber existing files in
 	// the destination.
 	OverwriteFiles bool `yaml:"overwrite_files" json:"overwrite_files"`
+	// Prefer7zip uses 7z instead of unrar for RAR extraction even when
+	// unrar is available. 7z often handles edge-case RARs more reliably.
+	Prefer7zip bool `yaml:"prefer_7zip" json:"prefer_7zip"`
 	// FlatUnpack writes all extracted files to the job root, ignoring
 	// archive-internal directories.
 	FlatUnpack bool `yaml:"flat_unpack" json:"flat_unpack"`

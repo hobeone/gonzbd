@@ -78,6 +78,7 @@ type Config struct {
 	IgnoreUnrarDates     bool
 	OverwriteFiles       bool
 	FlatUnpack           bool
+	Prefer7zip           bool
 
 	// ScriptStage metadata injected into SAB_* env vars.
 	Version    string
@@ -275,6 +276,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				OverwriteFiles:   cfg.OverwriteFiles,
 				IgnoreUnrarDates: cfg.IgnoreUnrarDates,
 				OneFolder:        cfg.FlatUnpack,
+				Prefer7zip:       cfg.Prefer7zip,
 			}, cfg.EnableRarCleanup))
 		}
 
