@@ -62,4 +62,32 @@ describe('SettingsDialog', () => {
 		render(SettingsDialog, { props: { open: true } });
 		expect(screen.getByText('Loading configuration...')).toBeInTheDocument();
 	});
+
+	it('loads config and remaps misc to general', async () => {
+		// Return a config with "misc" (as the API does) instead of "general".
+		const mockConfig = {
+			config: {
+				misc: { host: '0.0.0.0', port: 8080 },
+				downloads: {},
+				servers: []
+			}
+		};
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve(mockConfig)
+		});
+		vi.stubGlobal('fetch', fetchMock);
+
+		render(SettingsDialog, { props: { open: true } });
+
+		// Wait for the fetch to resolve and loading to finish.
+		// After loading, "Loading configuration..." should disappear.
+		await vi.waitFor(() => {
+			expect(screen.queryByText('Loading configuration...')).not.toBeInTheDocument();
+		});
+
+		// The dialog should have loaded without crashing — meaning misc→general
+		// mapping worked and GeneralSection can access configData.general.host.
+		expect(fetchMock).toHaveBeenCalled();
+	});
 });

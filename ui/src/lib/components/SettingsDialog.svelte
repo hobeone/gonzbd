@@ -67,7 +67,15 @@
 				return res.json();
 			})
 			.then((data) => {
-				configData = data.config ?? data;
+				const cfg = data.config ?? data;
+				// The API remaps "general" → "misc" for SABnzbd compatibility
+				// (Sonarr reads config.misc.complete_dir). Reverse-map it so
+				// the UI can reference configData.general.* consistently.
+				if (cfg.misc && !cfg.general) {
+					cfg.general = cfg.misc;
+					delete cfg.misc;
+				}
+				configData = cfg;
 			})
 			.catch((e) => {
 				error = e instanceof Error ? e.message : String(e);
