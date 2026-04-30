@@ -502,13 +502,18 @@ func (q *Queue) ClearArticleEmitted(jobID, messageID string) error {
 	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 }
 
-// ClearAllEmitted resets the transient Emitted flag on every article in the
-// queue. This must be called when the downloader is reloaded: articles that
-// were Emitted by the old downloader but never completed (because the old
+// ClearAllEmitted resets transient article state for a downloader reload.
+// This must be called when the downloader is reloaded: articles that were
+// Emitted by the old downloader but never completed (because the old
 // downloader was stopped) would otherwise be permanently skipped by
-// ForEachUnfinishedArticle. Since Emitted is an in-memory-only flag (not
-// persisted to disk), clearing it is safe — it simply allows the new
-// downloader to re-dispatch those articles.
+// ForEachUnfinishedArticle.
+//
+// Additionally, articles marked Failed during the old downloader's
+// teardown (e.g. from context cancellation) are reset to retryable
+// state. Without this, a late assembler flush could race ahead and
+// permanently mark articles as Done+Failed, preventing re-dispatch.
+// Only articles with Failed=true are reset; successfully completed
+// articles (Done=true, Failed=false) are preserved.
 func (q *Queue) ClearAllEmitted() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -521,7 +526,18 @@ func (q *Queue) ClearAllEmitted() {
 		}
 		for fi := range job.Files {
 			for ai := range job.Files[fi].Articles {
-				job.Files[fi].Articles[ai].Emitted = false
+				art := &job.Files[fi].Articles[ai]
+				art.Emitted = false
+				// Reset articles that were marked Failed during the old
+				// downloader's teardown so they can be retried by the
+				// new downloader. Successfully completed articles
+				// (Done && !Failed) are left untouched.
+				if art.Failed {
+					job.FailedBytes -= int64(art.Bytes)
+					job.RemainingBytes += int64(art.Bytes)
+					art.Done = false
+					art.Failed = false
+				}
 			}
 		}
 	}

@@ -37,7 +37,9 @@ func isRetryableDownloaderError(err error) bool {
 		errors.Is(err, nntp.ErrAuthRequired) ||
 		errors.Is(err, nntp.ErrTransient) ||
 		errors.Is(err, nntp.ErrClosed) ||
-		errors.Is(err, io.ErrUnexpectedEOF) {
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 	// Fallback: dial errors are wrapped as "dial: <inner>" by handleRequest,

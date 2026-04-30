@@ -442,7 +442,10 @@ func (a *Assembler) flush() {
 	if a.opts.MarkArticlesDone != nil {
 		for jobID, msgIDs := range a.pendingDone {
 			if err := a.opts.MarkArticlesDone(jobID, msgIDs); err != nil {
-				a.log.Warn("batch mark articles done",
+				// "job not found" is benign: the job completed and was
+				// removed from the queue before this flush. The data
+				// is already on disk; the ack is a no-op.
+				a.log.Debug("batch mark articles done (job already removed)",
 					"job", jobID, "count", len(msgIDs), "error", err)
 			}
 		}
@@ -450,7 +453,7 @@ func (a *Assembler) flush() {
 	if a.opts.MarkArticlesFailed != nil {
 		for jobID, msgIDs := range a.pendingFailed {
 			if _, err := a.opts.MarkArticlesFailed(jobID, msgIDs); err != nil {
-				a.log.Warn("batch mark articles failed",
+				a.log.Debug("batch mark articles failed (job already removed)",
 					"job", jobID, "count", len(msgIDs), "error", err)
 			}
 		}
