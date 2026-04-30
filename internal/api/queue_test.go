@@ -938,3 +938,45 @@ func extractAllSlots(t *testing.T, body []byte) []map[string]json.RawMessage {
 	}
 	return result
 }
+
+// --- PostProc filtering ---
+
+// TestQueueList_PostProcJobsExcluded verifies that jobs in post-processing
+// (PostProc=true) are excluded from the queue listing. These jobs should
+// appear in the history listing instead, matching SABnzbd lifecycle (§11.3).
+func TestQueueList_PostProcJobsExcluded(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+
+	// Add two jobs: one normal, one in post-processing.
+	normalJob := addTestJob(t, q, queue.AddOptions{Filename: "normal.nzb"})
+	ppJob := addTestJob(t, q, queue.AddOptions{Filename: "postproc.nzb"})
+	ppJob.Status = constants.StatusVerifying
+
+	// Mark ppJob as post-processing.
+	_, err := q.SetPostProcStarted(ppJob.ID)
+	if err != nil {
+		t.Fatalf("SetPostProcStarted: %v", err)
+	}
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	var resp queueResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Only the normal job should appear.
+	if resp.Queue.NoOfSlotsTotal != 1 {
+		t.Errorf("noofslots_total = %d; want 1", resp.Queue.NoOfSlotsTotal)
+	}
+	if len(resp.Queue.Slots) != 1 {
+		t.Fatalf("got %d slots; want 1", len(resp.Queue.Slots))
+	}
+	if resp.Queue.Slots[0].NzoID != normalJob.ID {
+		t.Errorf("slot nzo_id = %s; want %s (normal job)", resp.Queue.Slots[0].NzoID, normalJob.ID)
+	}
+}

@@ -335,6 +335,12 @@ func (p *PostProcessor) processJob(job *Job) {
 		entry.Elapsed = time.Since(entry.Started)
 		entry.Err = err
 
+		// Capture any tool output lines the stage deposited.
+		if len(job.OutputLines) > 0 {
+			entry.Lines = append(entry.Lines, job.OutputLines...)
+			job.OutputLines = job.OutputLines[:0]
+		}
+
 		if err != nil {
 			p.log.Warn("postproc: stage error (continuing)",
 				"stage", stage.Name(),

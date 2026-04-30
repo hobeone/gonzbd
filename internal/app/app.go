@@ -6,6 +6,7 @@
 package app
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -511,9 +512,14 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 		}
 	}
 	if !isDuplicate && job.Filename != "" {
-		if _, err := os.Stat(filepath.Join(nzbDir, filepath.Base(job.Filename))); err == nil {
+		base := filepath.Base(job.Filename)
+		// Check for gzipped backup (current format) and uncompressed (legacy).
+		if _, err := os.Stat(filepath.Join(nzbDir, base+".gz")); err == nil {
 			isDuplicate = true
 			dupReason = "found in admin/nzb/ backup dir (filename)"
+		} else if _, err := os.Stat(filepath.Join(nzbDir, base)); err == nil {
+			isDuplicate = true
+			dupReason = "found in admin/nzb/ backup dir (filename, legacy)"
 		}
 	}
 	if isDuplicate {
@@ -558,8 +564,10 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 		job.Name = fmt.Sprintf("%s.%d", baseName, i)
 	}
 	if !isDuplicate && job.Filename != "" {
-		backupPath := filepath.Join(nzbDir, filepath.Base(job.Filename))
-		_ = os.WriteFile(backupPath, rawNZB, 0o600)
+		backupPath := filepath.Join(nzbDir, filepath.Base(job.Filename)+".gz")
+		if err := writeGzFile(backupPath, rawNZB); err != nil {
+			app.log.Warn("failed to write gzipped NZB backup", "path", backupPath, "err", err)
+		}
 	}
 	addStatus := job.Status // snapshot before q.Add notifies the dispatcher
 	if err := app.queue.Add(job); err != nil {
@@ -1038,4 +1046,45 @@ func failMsgForJob(job *queue.Job) string {
 	}
 	// Partial failure with no PAR2 — let post-processing attempt extraction.
 	return ""
+}
+
+// writeGzFile writes data to path as a gzip-compressed file using atomic
+// temp+fsync+rename to prevent corruption on crash.
+func writeGzFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+
+	tmp, err := os.CreateTemp(dir, base+".tmp.*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}
+
+	gz := gzip.NewWriter(tmp)
+	if _, err := gz.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("gzip write: %w", err)
+	}
+	if err := gz.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("gzip close: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("fsync: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("close temp: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
 }

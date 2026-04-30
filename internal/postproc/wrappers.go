@@ -67,6 +67,13 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				continue
 			}
 			res, err := par2.RepairWith(ctx, s.Par2Opts, main, tmpFiles...)
+			// Capture par2 tool output for the stage log.
+			if res.Output != "" {
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("[par2] %s", set.Name))
+				job.OutputLines = append(job.OutputLines,
+					toolOutputLines(res.Output)...)
+			}
 			if err != nil {
 				job.ParError = true
 				repairSucceeded = false
@@ -210,6 +217,13 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("unpack %q: %w", a.Name, err)
 			}
+			// Capture tool output even on error.
+			if res.Output != "" {
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
+				job.OutputLines = append(job.OutputLines,
+					toolOutputLines(res.Output)...)
+			}
 			continue
 		}
 		if res.Err != nil {
@@ -217,7 +231,21 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("unpack %q: %w", a.Name, res.Err)
 			}
+			// Capture tool output even on error.
+			if res.Output != "" {
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
+				job.OutputLines = append(job.OutputLines,
+					toolOutputLines(res.Output)...)
+			}
 			continue
+		}
+		// Capture tool output on success.
+		if res.Output != "" {
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("[%s] %s", archiveTypeName(a.Type), a.Name))
+			job.OutputLines = append(job.OutputLines,
+				toolOutputLines(res.Output)...)
 		}
 		successfulArchives = append(successfulArchives, a)
 	}
@@ -498,4 +526,32 @@ func findNZFFiles(dir string) ([]string, error) {
 		}
 	}
 	return result, nil
+}
+
+// toolOutputLines splits raw tool output (stdout/stderr) into individual
+// non-empty, trimmed lines suitable for the stage log.
+func toolOutputLines(raw string) []string {
+	lines := strings.Split(raw, "\n")
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		l = strings.TrimRight(l, "\r \t")
+		if l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// archiveTypeName returns a human-readable label for an ArchiveType constant.
+func archiveTypeName(t unpack.ArchiveType) string {
+	switch t {
+	case unpack.RarArchive:
+		return "unrar"
+	case unpack.SevenZipArchive:
+		return "7zip"
+	case unpack.SplitArchive:
+		return "filejoin"
+	default:
+		return "unpack"
+	}
 }
