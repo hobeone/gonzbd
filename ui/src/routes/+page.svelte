@@ -6,9 +6,10 @@
 	import StatusBar from '$lib/components/StatusBar.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import { onMount, onDestroy } from 'svelte';
-	import { startPolling, stopPolling, isPaused, getQueueSlots, getError } from '$lib/stores/queue.svelte';
+	import { startPolling, stopPolling, isPaused, getQueueSlots, getError, getSpeedBytesPerSec } from '$lib/stores/queue.svelte';
 	import { startHistoryPolling, stopHistoryPolling } from '$lib/stores/history.svelte';
 	import { startWarningsPolling, stopWarningsPolling } from '$lib/stores/warnings.svelte';
+	import { faviconForState, type AppState } from '$lib/favicon';
 
 	onMount(() => {
 		startPolling();
@@ -21,10 +22,23 @@
 		stopHistoryPolling();
 		stopWarningsPolling();
 	});
+
+	const appState = $derived.by((): AppState => {
+		if (isPaused()) return 'paused';
+		if (getSpeedBytesPerSec() > 0 || getQueueSlots().some(s => s.status === 'Downloading')) return 'downloading';
+		return 'idle';
+	});
+
+	const titleEmoji = $derived(
+		appState === 'downloading' ? '⬇' : appState === 'paused' ? '⏸' : '●'
+	);
+
+	const faviconHref = $derived(faviconForState(appState));
 </script>
 
 <svelte:head>
-	<title>{isPaused() ? '⏸' : '▶'} {getQueueSlots().length} item{getQueueSlots().length !== 1 ? 's' : ''} | GoNZBD</title>
+	<title>{titleEmoji} {getQueueSlots().length} item{getQueueSlots().length !== 1 ? 's' : ''} | GoNZBD</title>
+	<link rel="icon" type="image/svg+xml" href={faviconHref} />
 </svelte:head>
 
 <div class="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950">
