@@ -72,7 +72,8 @@
 
 	function connStatusLabel(c: ConnSnapshot): string {
 		if (c.article_id) return c.subject || c.article_id;
-		return 'Idle';
+		if (c.connected) return 'Idle';
+		return 'Disconnected';
 	}
 
 	function connDuration(c: ConnSnapshot): string {
@@ -235,9 +236,15 @@
 					{#if isExpanded}
 						<div class="border-t border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/30">
 							<!-- Stats -->
-							<div class="px-4 py-3 text-xs">
-								<span class="text-gray-500 dark:text-gray-400">Total Downloaded:</span>
-								<span class="ml-1 font-medium text-gray-900 dark:text-gray-100">{formatBytes(server.total_bytes)}</span>
+							<div class="grid grid-cols-2 gap-x-4 gap-y-1 px-4 py-3 text-xs">
+								<div>
+									<span class="text-gray-500 dark:text-gray-400">Total Downloaded:</span>
+									<span class="ml-1 font-medium text-gray-900 dark:text-gray-100">{formatBytes(server.total_bytes)}</span>
+								</div>
+								<div>
+									<span class="text-gray-500 dark:text-gray-400">Pipelining:</span>
+									<span class="ml-1 font-medium text-gray-900 dark:text-gray-100">{server.pipelining || 1}</span>
+								</div>
 							</div>
 
 							{#if penalty}
@@ -271,9 +278,12 @@
 												</span>
 												<span class="flex-shrink-0 text-gray-400 dark:text-gray-500">{formatBytes(conn.bytes)}</span>
 												<span class="flex-shrink-0 font-mono text-gray-400 dark:text-gray-500">{connDuration(conn)}</span>
+											{:else if conn.connected}
+												<div class="size-1.5 flex-shrink-0 rounded-full bg-blue-400 dark:bg-blue-500"></div>
+												<span class="text-gray-400 dark:text-gray-500">Idle</span>
 											{:else}
 												<div class="size-1.5 flex-shrink-0 rounded-full bg-gray-300 dark:bg-gray-600"></div>
-												<span class="text-gray-400 dark:text-gray-500">Idle</span>
+												<span class="text-gray-400 dark:text-gray-500">Disconnected</span>
 											{/if}
 										</div>
 									{/each}

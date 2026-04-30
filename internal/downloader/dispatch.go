@@ -235,6 +235,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, workerID strin
 		if conn != nil {
 			d.log.Info("disconnected from server", "server", srv.Cfg().Name, "worker", workerID, "reason", "shutdown")
 			_ = conn.Close() //nolint:errcheck // shutdown path; close error not actionable
+			d.setConnConnected(workerID, false)
 		}
 	}()
 
@@ -276,6 +277,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, workerID strin
 					d.log.Info("disconnected from server", "server", name, "worker", workerID, "reason", "idle")
 					_ = conn.Close()
 					conn = nil
+					d.setConnConnected(workerID, false)
 				}
 				connMu.Unlock()
 				// Loop back to wait for new work; will re-dial lazily.
@@ -379,6 +381,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		}
 		d.log.Info("connected", "server", name, "ssl", c.SSLInfo())
 		*connPtr = c
+		d.setConnConnected(workerID, true)
 	}
 	c := *connPtr
 	connMu.Unlock()
@@ -402,6 +405,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		if isFirstNotifier {
 			_ = c.Close() //nolint:errcheck // discarding a broken conn; underlying error already captured in err
 			*connPtr = nil
+			d.setConnConnected(workerID, false)
 		}
 		connMu.Unlock()
 
