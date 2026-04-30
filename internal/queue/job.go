@@ -138,6 +138,9 @@ type Job struct {
 	// Used by the early health gate to determine the maximum repair capacity.
 	Par2Bytes int64 `json:"par2_bytes"`
 
+	// Par2Files is the count of par2 files in the NZB.
+	Par2Files int `json:"par2_files"`
+
 	// PostProc is set to true when the job is handed off to the
 	// post-processor to prevent double-enqueuing.
 	PostProc bool `json:"post_proc,omitempty"`
@@ -258,6 +261,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 		job.TotalBytes += pf.Bytes
 		if isPar2 {
 			job.Par2Bytes += pf.Bytes
+			job.Par2Files++
 		}
 	}
 	job.RemainingBytes = job.TotalBytes

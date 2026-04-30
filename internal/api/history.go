@@ -206,7 +206,7 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 				Category:     j.Category,
 				Size:         formatBytes(j.TotalBytes),
 				Bytes:        j.TotalBytes,
-				Downloaded:   j.TotalBytes - j.FailedBytes,
+				Downloaded:   j.TotalBytes - j.FailedBytes - j.RemainingBytes,
 				DownloadTime: dlTime,
 				Completed:    0, // not yet completed
 			})
