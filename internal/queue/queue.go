@@ -339,7 +339,7 @@ func (q *Queue) SetPostProcStarted(id string) (bool, error) {
 		return false, nil
 	}
 	job.PostProc = true
-	job.Status = constants.StatusQueued
+	job.Status = constants.StatusVerifying
 	q.dirty.Store(true)
 	return true, nil
 }

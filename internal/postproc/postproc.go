@@ -315,7 +315,7 @@ func (p *PostProcessor) processJob(job *Job) {
 			var status constants.Status
 			switch stage.Name() {
 			case "repair":
-				status = constants.StatusRepairing
+				status = constants.StatusVerifying
 			case "unpack":
 				status = constants.StatusExtracting
 			case "finalize":
