@@ -12,6 +12,9 @@
 
 	let percentage = $derived(parseFloat(slot.percentage) || 0);
 	let isPaused = $derived(slot.status === 'Paused');
+	let isPostProc = $derived(
+		['Verifying', 'Repairing', 'Extracting', 'Moving', 'Running'].includes(slot.status)
+	);
 	let isActive = $derived(
 		slot.status !== 'Queued' && slot.status !== 'Paused' && slot.status !== 'Idle'
 	);
@@ -63,7 +66,7 @@
 	<td class="px-4 py-3 text-sm whitespace-nowrap">{slot.size}</td>
 	<td class="px-4 py-3 text-sm whitespace-nowrap">{slot.sizeleft}</td>
 	<td class="px-4 py-3">
-		<Badge variant={isPaused ? 'outline' : 'default'} class="text-xs">
+		<Badge variant={isPaused ? 'outline' : isPostProc ? 'secondary' : 'default'} class="text-xs">
 			{slot.status}
 		</Badge>
 	</td>

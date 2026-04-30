@@ -130,9 +130,9 @@ func TestStatusUpdater_CalledPerStage(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	// Should have seen StatusRepairing, StatusExtracting, StatusMoving, StatusRunning
+	// Should have seen StatusVerifying, StatusExtracting, StatusMoving, StatusRunning
 	for _, want := range []constants.Status{
-		constants.StatusRepairing,
+		constants.StatusVerifying,
 		constants.StatusExtracting,
 		constants.StatusMoving,
 		constants.StatusRunning,

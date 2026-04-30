@@ -939,24 +939,28 @@ func extractAllSlots(t *testing.T, body []byte) []map[string]json.RawMessage {
 	return result
 }
 
-// --- PostProc filtering ---
+// --- PostProc visibility ---
 
-// TestQueueList_PostProcJobsExcluded verifies that jobs in post-processing
-// (PostProc=true) are excluded from the queue listing. These jobs should
-// appear in the history listing instead, matching SABnzbd lifecycle (§11.3).
-func TestQueueList_PostProcJobsExcluded(t *testing.T) {
+// TestQueueList_PostProcJobsVisible verifies that jobs in post-processing
+// (PostProc=true) remain visible in the queue listing with their current
+// status (Verifying, Extracting, etc.) so users can track progress.
+func TestQueueList_PostProcJobsVisible(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
 
 	// Add two jobs: one normal, one in post-processing.
 	normalJob := addTestJob(t, q, queue.AddOptions{Filename: "normal.nzb"})
 	ppJob := addTestJob(t, q, queue.AddOptions{Filename: "postproc.nzb"})
-	ppJob.Status = constants.StatusVerifying
 
-	// Mark ppJob as post-processing.
+	// Mark ppJob as post-processing (sets PostProc=true, Status=Verifying).
 	_, err := q.SetPostProcStarted(ppJob.ID)
 	if err != nil {
 		t.Fatalf("SetPostProcStarted: %v", err)
+	}
+
+	// Update status to Extracting to simulate unpack stage.
+	if err := q.SetStatus(ppJob.ID, constants.StatusExtracting); err != nil {
+		t.Fatalf("SetStatus: %v", err)
 	}
 
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
@@ -969,14 +973,30 @@ func TestQueueList_PostProcJobsExcluded(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	// Only the normal job should appear.
-	if resp.Queue.NoOfSlotsTotal != 1 {
-		t.Errorf("noofslots_total = %d; want 1", resp.Queue.NoOfSlotsTotal)
+	// Both jobs should appear.
+	if resp.Queue.NoOfSlotsTotal != 2 {
+		t.Errorf("noofslots_total = %d; want 2", resp.Queue.NoOfSlotsTotal)
 	}
-	if len(resp.Queue.Slots) != 1 {
-		t.Fatalf("got %d slots; want 1", len(resp.Queue.Slots))
+	if len(resp.Queue.Slots) != 2 {
+		t.Fatalf("got %d slots; want 2", len(resp.Queue.Slots))
 	}
-	if resp.Queue.Slots[0].NzoID != normalJob.ID {
-		t.Errorf("slot nzo_id = %s; want %s (normal job)", resp.Queue.Slots[0].NzoID, normalJob.ID)
+
+	// Find the post-proc slot and verify its status.
+	var found bool
+	for _, slot := range resp.Queue.Slots {
+		if slot.NzoID == ppJob.ID {
+			found = true
+			if slot.Status != "Extracting" {
+				t.Errorf("pp slot status = %q; want Extracting", slot.Status)
+			}
+		}
+		if slot.NzoID == normalJob.ID {
+			if slot.Status != "Queued" {
+				t.Errorf("normal slot status = %q; want Queued", slot.Status)
+			}
+		}
+	}
+	if !found {
+		t.Error("post-processing job should be visible in queue")
 	}
 }
