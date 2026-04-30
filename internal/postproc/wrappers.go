@@ -175,6 +175,15 @@ func (*UnpackStage) Name() string { return "unpack" }
 // Run scans job.DownloadDir, routes each archive to the right unpack
 // function, and captures any failures on job.UnpackError.
 func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
+	// Skip extraction when repair has already failed — the archives are
+	// corrupt and unpacking would produce garbage. Matches Python's
+	// safe_postproc gate: "if all_ok: ... unpacker()".
+	if job.ParError {
+		job.OutputLines = append(job.OutputLines,
+			"Skipped: repair failed, archives may be corrupt")
+		return nil
+	}
+
 	archives, err := unpack.Scan(job.DownloadDir)
 	if err != nil {
 		job.UnpackError = true
@@ -309,6 +318,15 @@ func (*SortStage) Name() string { return "sort" }
 
 // Run picks the first matching rule and applies it.
 func (s *SortStage) Run(ctx context.Context, job *Job) error {
+	// Skip sorting when earlier stages have failed — the files may be
+	// incomplete or corrupt, and moving them to a "complete" directory
+	// would be misleading. Matches Python's "if all_ok:" gate.
+	if job.ParError || job.UnpackError {
+		job.OutputLines = append(job.OutputLines,
+			"Skipped: earlier stage failed")
+		return nil
+	}
+
 	res, err := sorting.Apply(ctx,
 		job.DownloadDir,
 		job.Queue.Category,

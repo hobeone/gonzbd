@@ -256,3 +256,64 @@ func TestDeobfuscateStage_WithFiles(t *testing.T) {
 		t.Errorf("Deobfuscate: %v", err)
 	}
 }
+
+// ---------- UnpackStage skip on ParError ----------
+
+func TestUnpackStage_SkipsOnParError(t *testing.T) {
+	t.Parallel()
+	job, _ := stageJob(t)
+	job.ParError = true
+
+	err := NewUnpackStage().Run(t.Context(), job)
+	if err != nil {
+		t.Errorf("expected nil for ParError job, got %v", err)
+	}
+	if len(job.OutputLines) == 0 {
+		t.Error("expected OutputLines to contain skip message")
+	}
+	if job.UnpackError {
+		t.Error("UnpackError should not be set when skipped")
+	}
+}
+
+// ---------- SortStage skip on failure ----------
+
+func TestSortStage_SkipsOnParError(t *testing.T) {
+	t.Parallel()
+	job := &Job{
+		Queue: &queue.Job{
+			ID:   "sort-par-err",
+			Name: "sort-par-err",
+		},
+		DownloadDir: t.TempDir(),
+		ParError:    true,
+	}
+	stage := NewSortStage(nil, t.TempDir())
+	err := stage.Run(t.Context(), job)
+	if err != nil {
+		t.Errorf("expected nil for ParError job, got %v", err)
+	}
+	if len(job.OutputLines) == 0 {
+		t.Error("expected OutputLines to contain skip message")
+	}
+}
+
+func TestSortStage_SkipsOnUnpackError(t *testing.T) {
+	t.Parallel()
+	job := &Job{
+		Queue: &queue.Job{
+			ID:   "sort-unpack-err",
+			Name: "sort-unpack-err",
+		},
+		DownloadDir: t.TempDir(),
+		UnpackError: true,
+	}
+	stage := NewSortStage(nil, t.TempDir())
+	err := stage.Run(t.Context(), job)
+	if err != nil {
+		t.Errorf("expected nil for UnpackError job, got %v", err)
+	}
+	if len(job.OutputLines) == 0 {
+		t.Error("expected OutputLines to contain skip message")
+	}
+}
