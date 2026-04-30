@@ -52,6 +52,17 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	if len(sets) > 0 {
 		job.OutputLines = append(job.OutputLines,
 			fmt.Sprintf("Found %d par2 set(s)", len(sets)))
+
+		// Collect all non-par2 files in the download directory to pass as
+		// extra arguments. This lets par2 checksum-match files even when
+		// their names don't match the par2 set's expectations (e.g.
+		// obfuscated or renamed files).
+		dataFiles, scanErr := listNonPar2Files(job.DownloadDir)
+		if scanErr != nil {
+			job.ParError = true
+			return fmt.Errorf("repair: scan data files: %w", scanErr)
+		}
+
 		for _, set := range sets {
 			main := set.MainFile
 			if main == "" && len(set.ExtraFiles) > 0 {
@@ -65,8 +76,8 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				par2Bin = "par2"
 			}
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("Running: %s r %s", par2Bin, filepath.Base(main)))
-			res, err := par2.RepairWith(ctx, s.Par2Opts, main)
+				fmt.Sprintf("Running: %s r %s (+%d data files)", par2Bin, filepath.Base(main), len(dataFiles)))
+			res, err := par2.RepairWith(ctx, s.Par2Opts, main, dataFiles...)
 			// Capture par2 tool output for the stage log.
 			if res.Output != "" {
 				job.OutputLines = append(job.OutputLines,
@@ -557,6 +568,28 @@ func moveRecursive(ctx context.Context, src, dst string) error {
 	}
 
 	return os.Remove(src)
+}
+
+// listNonPar2Files returns the full paths of all regular (non-directory)
+// files in dir that are not .par2 files. These are passed as extra
+// arguments to par2 repair so it can checksum-match files regardless of
+// whether their names match the par2 set's file list.
+func listNonPar2Files(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var result []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(e.Name()), ".par2") {
+			continue
+		}
+		result = append(result, filepath.Join(dir, e.Name()))
+	}
+	return result, nil
 }
 
 // toolOutputLines splits raw tool output (stdout/stderr) into individual
