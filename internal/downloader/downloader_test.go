@@ -622,21 +622,26 @@ func TestDownloaderDialFailure(t *testing.T) {
 	}
 	defer func() { _ = d.Stop() }()
 
-	// Collect at least 2 results; each should be an error.
-	results := collect(t, d.Completions(), 2, 5*time.Second)
-	for _, r := range results {
-		if r.Err == nil {
-			t.Errorf("expected dial failure, got success for %s", r.MessageID)
+	// Dial failures no longer emit results — the article is silently
+	// returned to the dispatch pool. Wait for the server to record
+	// at least one bad connection (the dial is attempted on the
+	// first dispatch pass).
+	deadline := time.After(5 * time.Second)
+	for srv.BadConnections() < 1 {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout waiting for bad connection to be recorded")
+		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	// Give the server a moment to update stats under its lock
-	time.Sleep(100 * time.Millisecond)
 
-	// Server should have accumulated at least one bad connection count.
-	// After the srv.Active() pre-dial check (R10 fix), subsequent workers
-	// skip dialing a penalized server, so we may see exactly 1.
-	if srv.BadConnections() < 1 {
-		t.Errorf("BadConnections = %d, want >= 1", srv.BadConnections())
+	// No results should appear on the completions channel for
+	// connection-level failures.
+	select {
+	case r := <-d.Completions():
+		t.Errorf("unexpected result on completions: msgid=%s err=%v", r.MessageID, r.Err)
+	case <-time.After(200 * time.Millisecond):
+		// Expected: no result emitted.
 	}
 }
 
