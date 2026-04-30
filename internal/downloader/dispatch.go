@@ -335,7 +335,12 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		if !srv.Active(time.Now()) {
 			connMu.Unlock()
 			d.unmarkTried(req.jobID, req.messageID, name)
-			d.emitResult(ctx, req, name, nil, 0, errors.New("server penalized"))
+			// Don't emit a result — the article is returned to the
+			// dispatch pool silently. The deferred signalDispatch
+			// triggers a new pass where it can be tried on another
+			// server or wait for this server's penalty to expire.
+			// Emitting "server penalized" here would cause the
+			// pipeline to misclassify it as a terminal failure.
 			return
 		}
 		d.log.Info("dialing server", "server", name, "host", srv.Cfg().Host)
@@ -349,10 +354,18 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		c, err := nntp.Dial(fetchCtx, srv.Cfg(), dialOpts...)
 		if err != nil {
 			connMu.Unlock()
-			// Context cancellation means shutdown or pause — not a server fault.
+			d.unmarkTried(req.jobID, req.messageID, name)
+			// Don't emit a result for dial failures. These are
+			// connection-level errors, not article-level failures.
+			// The deferred signalDispatch triggers a new pass where
+			// the article can be tried on another server (or this
+			// one again after the penalty expires). Emitting would
+			// risk the pipeline misclassifying the error as a
+			// terminal article failure, inflating FailedBytes.
 			if fetchCtx.Err() != nil {
-				d.unmarkTried(req.jobID, req.messageID, name)
-				d.emitResult(ctx, req, name, nil, 0, fmt.Errorf("dial: %w", err))
+				// Context cancelled = shutdown or pause. Silently
+				// return; the article will be re-dispatched after
+				// the reload/unpause via ClearAllEmitted.
 				return
 			}
 			d.log.Warn("dial failed", "server", name, "error", err)
@@ -361,10 +374,6 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 				d.log.Info("penalty applied", "server", name, "duration", pen)
 				srv.ApplyPenalty(pen)
 			}
-			// Retryable: unmark so another pass can try another
-			// server (or this one again after the penalty).
-			d.unmarkTried(req.jobID, req.messageID, name)
-			d.emitResult(ctx, req, name, nil, 0, fmt.Errorf("dial: %w", err))
 			return
 		}
 		d.log.Info("connected", "server", name, "ssl", c.SSLInfo())
@@ -405,7 +414,12 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 			}
 		}
 		d.unmarkTried(req.jobID, req.messageID, name)
-		d.emitResult(ctx, req, name, nil, 0, err)
+		// Don't emit a result for connection-level failures. The
+		// article is returned to the dispatch pool via unmarkTried;
+		// the deferred signalDispatch triggers retry on another
+		// server or this one after penalty expiry. Emitting would
+		// risk the pipeline misclassifying the error and inflating
+		// FailedBytes for what is a transient server issue.
 		return
 	}
 
