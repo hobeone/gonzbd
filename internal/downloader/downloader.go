@@ -411,6 +411,9 @@ func (d *Downloader) Pause() {
 	if d.meter != nil {
 		d.meter.Flush()
 	}
+	// Close all idle connections. There's no point keeping sockets
+	// open while paused; they'll reconnect lazily on Resume.
+	d.DisconnectAll()
 }
 
 // Resume clears the pause flag, creates a fresh fetch context, and
