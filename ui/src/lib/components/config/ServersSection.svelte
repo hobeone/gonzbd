@@ -75,7 +75,7 @@
 	{/if}
 
 	<div class="space-y-3">
-		{#if configData.servers.length === 0}
+		{#if !configData.servers || configData.servers.length === 0}
 			<div class="rounded-lg border border-dashed p-8 text-center text-sm text-gray-500 dark:text-gray-400">
 				No servers configured.
 			</div>
