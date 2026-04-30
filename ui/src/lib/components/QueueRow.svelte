@@ -9,6 +9,7 @@
 	let { slot, onremove }: { slot: QueueSlot; onremove: () => void } = $props();
 
 	let acting = $state(false);
+	let expanded = $state(false);
 
 	let percentage = $derived(parseFloat(slot.percentage) || 0);
 	let isPaused = $derived(slot.status === 'Paused');
@@ -18,6 +19,7 @@
 	let isActive = $derived(
 		slot.status !== 'Queued' && slot.status !== 'Paused' && slot.status !== 'Idle'
 	);
+	let hasFailed = $derived(slot.failed_bytes > 0);
 
 	async function togglePause() {
 		acting = true;
@@ -31,11 +33,46 @@
 			acting = false;
 		}
 	}
+
+	function formatBytes(b: number): string {
+		if (b < 1024) return `${b} B`;
+		if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+		if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+		return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+	}
+
+	/** Health indicator: can par2 cover the damage? */
+	function healthLabel(): { text: string; color: string } {
+		if (slot.failed_bytes === 0) return { text: 'Healthy', color: 'text-emerald-600 dark:text-emerald-400' };
+		if (slot.par2_bytes === 0) return { text: 'No repair data', color: 'text-red-600 dark:text-red-400' };
+		if (slot.failed_bytes <= slot.par2_bytes) return { text: 'Repairable', color: 'text-amber-600 dark:text-amber-400' };
+		return { text: 'Beyond repair', color: 'text-red-600 dark:text-red-400' };
+	}
 </script>
 
-<tr class="border-b hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-900 dark:text-gray-100">
+<tr
+	class={cn(
+		'border-b hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-900 dark:text-gray-100',
+		hasFailed && 'cursor-pointer'
+	)}
+	onclick={() => { if (hasFailed) expanded = !expanded; }}
+>
 	<td class="px-4 py-3 max-w-[200px] sm:max-w-xs md:max-w-sm lg:max-w-md xl:max-w-lg">
 		<div class="flex items-center gap-2">
+			{#if hasFailed}
+				<svg
+					xmlns="http://www.w3.org/2000/svg"
+					viewBox="0 0 16 16"
+					fill="currentColor"
+					class={cn('size-4 shrink-0 transition-transform', expanded && 'rotate-90')}
+				>
+					<path
+						fill-rule="evenodd"
+						d="M6.22 4.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06-1.06L8.94 8 6.22 5.28a.75.75 0 0 1 0-1.06Z"
+						clip-rule="evenodd"
+					/>
+				</svg>
+			{/if}
 			<div class="font-medium truncate" title={slot.name || slot.filename}>
 				{slot.name || slot.filename}
 			</div>
@@ -50,6 +87,11 @@
 					</svg>
 					<span class="ml-1 text-xs font-semibold truncate">{slot.warning}</span>
 				</div>
+			{/if}
+			{#if hasFailed}
+				<span class="shrink-0 text-xs font-medium text-red-500 dark:text-red-400" title="Failed download bytes">
+					✗ {formatBytes(slot.failed_bytes)}
+				</span>
 			{/if}
 		</div>
 	</td>
@@ -73,10 +115,11 @@
 	<td class="px-4 py-3 text-sm">{slot.category || '*'}</td>
 	<td class="px-4 py-3">
 		<div class="flex gap-1">
+			<!-- svelte-ignore a11y_click_events_have_key_events -->
 			<Button
 				variant="ghost"
 				size="icon-xs"
-				onclick={togglePause}
+				onclick={(e: MouseEvent) => { e.stopPropagation(); togglePause(); }}
 				disabled={acting}
 				title={isPaused ? 'Resume' : 'Pause'}
 			>
@@ -95,7 +138,7 @@
 				{/if}
 			</Button>
 
-			<Button variant="ghost" size="icon-xs" onclick={onremove} disabled={acting} title="Delete">
+			<Button variant="ghost" size="icon-xs" onclick={(e: MouseEvent) => { e.stopPropagation(); onremove(); }} disabled={acting} title="Delete">
 				<svg
 					xmlns="http://www.w3.org/2000/svg"
 					viewBox="0 0 16 16"
@@ -112,3 +155,35 @@
 		</div>
 	</td>
 </tr>
+
+{#if expanded && hasFailed}
+	<tr class="border-b bg-gray-50/50 dark:bg-gray-800/50">
+		<td colspan="7" class="px-6 py-3">
+			<div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+				<div>
+					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Failed</span>
+					<div class="font-medium text-red-600 dark:text-red-400">{formatBytes(slot.failed_bytes)}</div>
+				</div>
+				<div>
+					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Par2 Recovery</span>
+					<div class="font-medium">
+						{#if slot.par2_bytes > 0}
+							{formatBytes(slot.par2_bytes)}
+							<span class="text-gray-400 text-xs">({slot.par2_files} file{slot.par2_files !== 1 ? 's' : ''})</span>
+						{:else}
+							<span class="text-gray-400">None</span>
+						{/if}
+					</div>
+				</div>
+				<div>
+					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Health</span>
+					<div class={cn('font-medium', healthLabel().color)}>{healthLabel().text}</div>
+				</div>
+				<div>
+					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Downloaded</span>
+					<div class="font-medium">{formatBytes(slot.bytes - slot.remaining_bytes)} of {slot.size}</div>
+				</div>
+			</div>
+		</td>
+	</tr>
+{/if}
