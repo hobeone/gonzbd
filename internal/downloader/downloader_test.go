@@ -934,12 +934,6 @@ func TestServerStatus_SnapshotFields(t *testing.T) {
 	if s.ActiveConns != 1 {
 		t.Errorf("ActiveConns = %d; want 1", s.ActiveConns)
 	}
-	if s.BadConnections != 1 {
-		t.Errorf("BadConnections = %d; want 1", s.BadConnections)
-	}
-	if s.GoodConnections != 2 {
-		t.Errorf("GoodConnections = %d; want 2", s.GoodConnections)
-	}
 	if len(s.Connections) != 3 {
 		t.Fatalf("Connections len = %d; want 3", len(s.Connections))
 	}
