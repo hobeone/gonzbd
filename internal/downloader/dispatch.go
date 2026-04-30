@@ -259,10 +259,25 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, workerID strin
 		case <-ctx.Done():
 			return
 		case sem <- struct{}{}:
-			// We have capacity — now wait for work.
+			// We have capacity — now wait for work or disconnect signal.
+			disconnectCh := d.disconnectSnapshot()
 			select {
 			case <-ctx.Done():
 				return
+			case <-disconnectCh:
+				// DisconnectAll was called — close idle connection.
+				// Release our semaphore slot and wait for any in-flight
+				// handleRequest goroutines to finish before closing.
+				<-sem
+				workerWg.Wait()
+				connMu.Lock()
+				if conn != nil {
+					d.log.Debug("disconnect: closing idle connection", "server", name, "worker", workerID)
+					_ = conn.Close()
+					conn = nil
+				}
+				connMu.Unlock()
+				// Loop back to wait for new work; will re-dial lazily.
 			case req := <-workCh:
 				workerWg.Add(1)
 				go func(req *articleRequest) {

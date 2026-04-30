@@ -135,6 +135,25 @@ func (q *Queue) List() []*Job {
 	return out
 }
 
+// HasDownloadableJobs reports whether any job in the queue is still
+// actively downloading or waiting to download (i.e. not paused, not in
+// post-processing, and not yet complete). Used to decide when NNTP
+// connections can be closed.
+func (q *Queue) HasDownloadableJobs() bool {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	for _, j := range q.jobs {
+		if j.PostProc {
+			continue
+		}
+		if j.Status == constants.StatusPaused {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 // ExistsByName reports whether a job with the given name is present in
 // the queue. Case-sensitive.
 func (q *Queue) ExistsByName(name string) bool {
