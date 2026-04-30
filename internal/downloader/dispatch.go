@@ -233,6 +233,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, workerID strin
 		connMu.Lock()
 		defer connMu.Unlock()
 		if conn != nil {
+			d.log.Info("disconnected from server", "server", srv.Cfg().Name, "worker", workerID, "reason", "shutdown")
 			_ = conn.Close() //nolint:errcheck // shutdown path; close error not actionable
 		}
 	}()
@@ -272,7 +273,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, workerID strin
 				workerWg.Wait()
 				connMu.Lock()
 				if conn != nil {
-					d.log.Debug("disconnect: closing idle connection", "server", name, "worker", workerID)
+					d.log.Info("disconnected from server", "server", name, "worker", workerID, "reason", "idle")
 					_ = conn.Close()
 					conn = nil
 				}
