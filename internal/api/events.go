@@ -51,7 +51,7 @@ func (b *Broadcaster) Broadcast(event Event) {
 	defer b.mu.Unlock()
 
 	if len(b.clients) > 0 {
-		b.log.Info("WebSocket broadcast", "event", event.Type, "clients", len(b.clients))
+		b.log.Debug("WebSocket broadcast", "event", event.Type, "clients", len(b.clients))
 	}
 
 	for c := range b.clients {
