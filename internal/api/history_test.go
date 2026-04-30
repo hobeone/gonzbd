@@ -450,3 +450,119 @@ func TestHistoryStageLog(t *testing.T) {
 		t.Errorf("stage_log = %s; want []", stageLog)
 	}
 }
+
+func TestParseStageLog_Empty(t *testing.T) {
+	result := parseStageLog("")
+	if len(result) != 0 {
+		t.Errorf("parseStageLog(\"\") returned %d entries; want 0", len(result))
+	}
+}
+
+func TestParseStageLog_Null(t *testing.T) {
+	result := parseStageLog("null")
+	if len(result) != 0 {
+		t.Errorf("parseStageLog(\"null\") returned %d entries; want 0", len(result))
+	}
+}
+
+func TestParseStageLog_InvalidJSON(t *testing.T) {
+	result := parseStageLog("{broken")
+	if len(result) != 0 {
+		t.Errorf("parseStageLog(broken) returned %d entries; want 0", len(result))
+	}
+}
+
+func TestParseStageLog_ValidEntries(t *testing.T) {
+	input := `[{"Stage":"repair","Elapsed":2500000000,"Err":null,"Lines":["All files are correct"]},{"Stage":"unpack","Elapsed":5300000000,"Err":null,"Lines":["Extracted: movie.mkv"]}]`
+	result := parseStageLog(input)
+	if len(result) != 2 {
+		t.Fatalf("parseStageLog returned %d entries; want 2", len(result))
+	}
+	if result[0].Name != "repair" {
+		t.Errorf("result[0].Name = %q; want %q", result[0].Name, "repair")
+	}
+	if result[1].Name != "unpack" {
+		t.Errorf("result[1].Name = %q; want %q", result[1].Name, "unpack")
+	}
+	// First action should be the duration, second the par2 output line.
+	if len(result[0].Actions) < 2 {
+		t.Fatalf("result[0].Actions has %d entries; want >= 2", len(result[0].Actions))
+	}
+	if result[0].Actions[0] != "Completed in 2.5s" {
+		t.Errorf("result[0].Actions[0] = %q; want %q", result[0].Actions[0], "Completed in 2.5s")
+	}
+	if result[0].Actions[1] != "All files are correct" {
+		t.Errorf("result[0].Actions[1] = %q; want %q", result[0].Actions[1], "All files are correct")
+	}
+}
+
+func TestParseStageLog_WithError(t *testing.T) {
+	errMsg := "repair failed: too many blocks missing"
+	input := fmt.Sprintf(`[{"Stage":"repair","Elapsed":1000000000,"Err":%q,"Lines":[]}]`, errMsg)
+	result := parseStageLog(input)
+	if len(result) != 1 {
+		t.Fatalf("parseStageLog returned %d entries; want 1", len(result))
+	}
+	found := false
+	for _, a := range result[0].Actions {
+		if a == "Error: "+errMsg {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error action in %v", result[0].Actions)
+	}
+}
+
+func TestHistorySlot_CompletenessAndDownloaded(t *testing.T) {
+	t.Parallel()
+	s, repo := testHistoryServer(t)
+
+	e := history.Entry{
+		NzoID:        "completeness-test-001",
+		Name:         "Test.Job",
+		Status:       "Completed",
+		Completed:    time.Now(),
+		Bytes:        100_000_000,
+		Downloaded:   99_000_000,
+		Completeness: 98,
+		DownloadTime: 60,
+		PostprocTime: 15,
+	}
+	if err := repo.Add(t.Context(), e); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	rr := apiGet(t, s.Handler(), fmt.Sprintf("/api?mode=history&apikey=%s&nzo_ids=%s", testAPIKey, e.NzoID))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	var resp struct {
+		History struct {
+			Slots []struct {
+				Completeness int64 `json:"completeness"`
+				Downloaded   int64 `json:"downloaded"`
+				PostprocTime int64 `json:"postproc_time"`
+			} `json:"slots"`
+		} `json:"history"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.History.Slots) != 1 {
+		t.Fatalf("got %d slots; want 1", len(resp.History.Slots))
+	}
+
+	slot := resp.History.Slots[0]
+	if slot.Completeness != 98 {
+		t.Errorf("completeness = %d; want 98", slot.Completeness)
+	}
+	if slot.Downloaded != 99_000_000 {
+		t.Errorf("downloaded = %d; want 99000000", slot.Downloaded)
+	}
+	if slot.PostprocTime != 15 {
+		t.Errorf("postproc_time = %d; want 15", slot.PostprocTime)
+	}
+}

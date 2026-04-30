@@ -309,6 +309,32 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			if downloadDuration == 0 {
 				downloadDuration = 1
 			}
+
+			// Compute post-processing duration from stage log.
+			var postprocDuration int64
+			for _, se := range job.StageLog {
+				postprocDuration += int64(se.Elapsed.Seconds())
+			}
+
+			// Compute article-level completion stats.
+			var totalArticles, doneArticles, failedArticles int
+			for fi := range job.Queue.Files {
+				for ai := range job.Queue.Files[fi].Articles {
+					totalArticles++
+					a := &job.Queue.Files[fi].Articles[ai]
+					if a.Done {
+						doneArticles++
+					} else if a.Failed {
+						failedArticles++
+					}
+				}
+			}
+			var completeness int64
+			if totalArticles > 0 {
+				completeness = int64((float64(doneArticles) / float64(totalArticles)) * 100)
+			}
+			downloaded := job.Queue.TotalBytes - job.Queue.FailedBytes
+
 			serverStatsParts := make([]string, 0, len(job.Queue.ServerStats))
 			// Sort keys for deterministic output in history entries.
 			serverNames := make([]string, 0, len(job.Queue.ServerStats))
@@ -348,8 +374,11 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				Storage:      job.FinalDir,
 				Path:         job.FinalDir,
 				DownloadTime: downloadDuration,
+				PostprocTime: postprocDuration,
 				StageLog:     string(stageLogJSON),
 				Bytes:        job.Queue.TotalBytes,
+				Downloaded:   downloaded,
+				Completeness: completeness,
 				TimeAdded:    job.Queue.Added,
 				URLInfo:      repairSummary,
 				Meta:         serverStats,
