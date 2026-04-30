@@ -230,7 +230,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			if snap == nil {
 				return
 			}
-			app.maybeFinalize(jobID, "Aborted: Too many articles failed, job is beyond repair")
+			app.maybeFinalize(jobID, failMsgForJob(snap))
 		},
 	}, log)
 	app.downloader = d
@@ -334,7 +334,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			if totalArticles > 0 {
 				completeness = int64((float64(doneArticles) / float64(totalArticles)) * 100)
 			}
-			downloaded := job.Queue.TotalBytes - job.Queue.FailedBytes
+			downloaded := job.Queue.TotalBytes - job.Queue.FailedBytes - job.Queue.RemainingBytes
 
 			serverStatsParts := make([]string, 0, len(job.Queue.ServerStats))
 			// Sort keys for deterministic output in history entries.
@@ -1049,15 +1049,35 @@ func failMsgForJob(job *queue.Job) string {
 	if job.FailedBytes == 0 {
 		return ""
 	}
+
+	failedMB := float64(job.FailedBytes) / (1024 * 1024)
+
 	// If ALL bytes in the job failed, it's hopeless regardless of PAR2.
 	if job.FailedBytes >= job.TotalBytes {
-		return "Aborted: Too many articles failed, job is beyond repair"
+		return fmt.Sprintf(
+			"Aborted: All articles failed (%.1f MB). Job is beyond repair",
+			failedMB,
+		)
 	}
+
 	// If PAR2 files exist and the failure exceeds repair capacity, abort.
 	if job.Par2Bytes > 0 && job.FailedBytes > job.Par2Bytes {
-		return "Aborted: Too many articles failed, job is beyond repair"
+		par2MB := float64(job.Par2Bytes) / (1024 * 1024)
+		return fmt.Sprintf(
+			"Aborted: %.1f MB failed, exceeds repair capacity of %.1f MB (%d par2 files). Job is beyond repair",
+			failedMB, par2MB, job.Par2Files,
+		)
 	}
-	// Partial failure with no PAR2 — let post-processing attempt extraction.
+
+	// No PAR2 files at all and there are failures — can't repair.
+	if job.Par2Bytes == 0 && job.FailedBytes > 0 {
+		return fmt.Sprintf(
+			"Aborted: %.1f MB failed with no par2 files available. Job is beyond repair",
+			failedMB,
+		)
+	}
+
+	// Partial failure within repair capacity — let post-processing try.
 	return ""
 }
 

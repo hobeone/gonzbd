@@ -140,11 +140,11 @@
 					<div>
 						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Download Stats</div>
 						<div class="mt-1 text-gray-700 dark:text-gray-300">
-							Downloaded in {formatDuration(slot.download_time)} at {formatSpeed(slot.bytes, slot.download_time)}
+							Downloaded in {formatDuration(slot.download_time)} at {formatSpeed(slot.downloaded > 0 ? slot.downloaded : slot.bytes, slot.download_time)}
 						</div>
 						{#if slot.downloaded > 0 && slot.downloaded !== slot.bytes}
 							<div class="text-xs text-gray-500 dark:text-gray-400">
-								{formatSize(slot.downloaded)} of {formatSize(slot.bytes)} received
+								{formatSize(slot.downloaded)} of {formatSize(slot.bytes)} received ({formatSize(slot.bytes - slot.downloaded)} failed)
 							</div>
 						{/if}
 					</div>
