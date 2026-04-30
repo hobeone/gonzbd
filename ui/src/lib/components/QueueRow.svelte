@@ -51,28 +51,23 @@
 </script>
 
 <tr
-	class={cn(
-		'border-b hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-900 dark:text-gray-100',
-		hasFailed && 'cursor-pointer'
-	)}
-	onclick={() => { if (hasFailed) expanded = !expanded; }}
+	class="border-b hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-900 dark:text-gray-100 cursor-pointer"
+	onclick={() => { expanded = !expanded; }}
 >
 	<td class="px-4 py-3 max-w-[200px] sm:max-w-xs md:max-w-sm lg:max-w-md xl:max-w-lg">
 		<div class="flex items-center gap-2">
-			{#if hasFailed}
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 16 16"
-					fill="currentColor"
-					class={cn('size-4 shrink-0 transition-transform', expanded && 'rotate-90')}
-				>
-					<path
-						fill-rule="evenodd"
-						d="M6.22 4.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06-1.06L8.94 8 6.22 5.28a.75.75 0 0 1 0-1.06Z"
-						clip-rule="evenodd"
-					/>
-				</svg>
-			{/if}
+			<svg
+				xmlns="http://www.w3.org/2000/svg"
+				viewBox="0 0 16 16"
+				fill="currentColor"
+				class={cn('size-4 shrink-0 transition-transform', expanded && 'rotate-90')}
+			>
+				<path
+					fill-rule="evenodd"
+					d="M6.22 4.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06-1.06L8.94 8 6.22 5.28a.75.75 0 0 1 0-1.06Z"
+					clip-rule="evenodd"
+				/>
+			</svg>
 			<div class="font-medium truncate" title={slot.name || slot.filename}>
 				{slot.name || slot.filename}
 			</div>
@@ -156,13 +151,17 @@
 	</td>
 </tr>
 
-{#if expanded && hasFailed}
+{#if expanded}
 	<tr class="border-b bg-gray-50/50 dark:bg-gray-800/50">
 		<td colspan="7" class="px-6 py-3">
 			<div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
 				<div>
 					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Failed</span>
-					<div class="font-medium text-red-600 dark:text-red-400">{formatBytes(slot.failed_bytes)}</div>
+					{#if slot.failed_bytes > 0}
+						<div class="font-medium text-red-600 dark:text-red-400">{formatBytes(slot.failed_bytes)}</div>
+					{:else}
+						<div class="font-medium text-emerald-600 dark:text-emerald-400">None</div>
+					{/if}
 				</div>
 				<div>
 					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Par2 Recovery</span>
