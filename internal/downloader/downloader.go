@@ -229,6 +229,12 @@ type Downloader struct {
 	connActivityMu sync.RWMutex
 	connActivity   map[string]*ConnActivity // key: "serverName#connIndex"
 
+	// disconnectMu protects disconnectCh. DisconnectAll closes the
+	// current channel (broadcasting to all connWorkers) and replaces
+	// it with a fresh one.
+	disconnectMu sync.Mutex
+	disconnectCh chan struct{}
+
 	ctx    context.Context //nolint:containedctx // lifecycle context stored for Stop()
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -268,6 +274,7 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		tryList:       make(map[articleKey]map[string]struct{}),
 		inFlight:      make(map[articleKey]int),
 		connActivity:  make(map[string]*ConnActivity),
+		disconnectCh:  make(chan struct{}),
 	}
 	for _, srv := range servers {
 		name := srv.Cfg().Name
@@ -437,6 +444,29 @@ func (d *Downloader) SetSpeedLimit(bytesPerSec int64) {
 // IsPaused reports the downloader's own pause flag. Orthogonal to
 // queue.IsPaused; either being true suppresses dispatch.
 func (d *Downloader) IsPaused() bool { return d.paused.Load() }
+
+// DisconnectAll signals all connWorker goroutines to close their idle
+// NNTP connections. Workers remain alive and will lazily reconnect when
+// new work arrives. This is a no-op if no connections are open.
+//
+// Used when the download queue empties to free server resources.
+func (d *Downloader) DisconnectAll() {
+	d.disconnectMu.Lock()
+	close(d.disconnectCh)
+	d.disconnectCh = make(chan struct{})
+	d.disconnectMu.Unlock()
+	d.log.Info("disconnect: signaled all connections to close")
+}
+
+// disconnectSnapshot returns the current disconnect channel. Workers
+// snapshot this before blocking on the work channel; when DisconnectAll
+// closes it, the select unblocks and the worker closes its connection.
+func (d *Downloader) disconnectSnapshot() <-chan struct{} {
+	d.disconnectMu.Lock()
+	ch := d.disconnectCh
+	d.disconnectMu.Unlock()
+	return ch
+}
 
 // setConnActivity records that the worker identified by workerID is
 // now fetching the given article. Called at the start of handleRequest.
