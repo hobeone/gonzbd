@@ -188,45 +188,6 @@ func TestMoveRecursive_SourceNotExist(t *testing.T) {
 	}
 }
 
-// ---------- findNZFFiles ----------
-
-func TestFindNZFFiles(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	// Create mix of .nzf and non-.nzf files.
-	os.WriteFile(filepath.Join(dir, "0000.nzf"), []byte("a"), 0o644)
-	os.WriteFile(filepath.Join(dir, "0001.nzf"), []byte("b"), 0o644)
-	os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("c"), 0o644)
-	os.MkdirAll(filepath.Join(dir, "subdir.nzf"), 0o755) // directory, should skip
-
-	files, err := findNZFFiles(dir)
-	if err != nil {
-		t.Fatalf("findNZFFiles: %v", err)
-	}
-	if len(files) != 2 {
-		t.Errorf("found %d .nzf files, want 2: %v", len(files), files)
-	}
-}
-
-func TestFindNZFFiles_EmptyDir(t *testing.T) {
-	t.Parallel()
-	files, err := findNZFFiles(t.TempDir())
-	if err != nil {
-		t.Fatalf("findNZFFiles: %v", err)
-	}
-	if len(files) != 0 {
-		t.Errorf("expected 0 files, got %d", len(files))
-	}
-}
-
-func TestFindNZFFiles_NonexistentDir(t *testing.T) {
-	t.Parallel()
-	_, err := findNZFFiles("/nonexistent/path")
-	if err == nil {
-		t.Error("expected error for nonexistent directory")
-	}
-}
-
 // ---------- SortStage edge cases ----------
 
 func TestSortStage_EmptyDownloadDir(t *testing.T) {

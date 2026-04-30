@@ -14,6 +14,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -214,8 +215,9 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 
 // registerFile records the target path and expected part count for a file
 // on first encounter. Subsequent calls for the same (jobID, fileIdx) are
-// no-ops. It uses a deterministic temporary path based on the JobID and
-// file index to handle obfuscated and messy data robustly.
+// no-ops. It extracts the real filename from the NZB subject line (matching
+// Python SABnzbd's approach) so par2 files already have their .par2
+// extension when the repair stage scans the directory.
 func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	key := fileKey{jobID: jobID, fileIdx: fileIdx}
 
@@ -243,10 +245,17 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		return nil
 	}
 
-	// Use job Name and file index for a human-readable and robust path.
-	// Final naming of files is deferred until the post-processing (PAR2) phase.
-	// We use JoinSafe to ensure the absolute path does not exceed OS limits.
-	path := fsutil.JoinSafe(p.downloadDir, snap.Name, fmt.Sprintf("%04d.nzf", fileIdx), p.sanitize)
+	// Extract the real filename from the NZB subject line. This gives
+	// par2 files their .par2 extension and RAR files their .rar extension
+	// at download time, so the repair and unpack stages can identify them
+	// by extension without an intermediate rename step.
+	filename := nzb.ExtractFilenameFromSubject(snap.Files[fileIdx].Subject)
+
+	// GetUniqueFilename appends ".1", ".2" etc. when the path already
+	// exists, handling obfuscated NZBs where multiple files may have
+	// identical or unparseable subjects.
+	path := fsutil.GetUniqueFilename(
+		fsutil.JoinSafe(p.downloadDir, snap.Name, filename, p.sanitize))
 
 	// Count only unfinished articles — on resume/retry, already-done
 	// articles won't be re-dispatched, so TotalParts must match the
@@ -262,7 +271,7 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	}
 
 	p.fileInfo[key] = info
-	p.log.Debug("registered temporary file",
+	p.log.Debug("registered file",
 		"job", jobID, "fileidx", fileIdx, "path", info.Path, "parts", info.TotalParts)
 
 	return nil

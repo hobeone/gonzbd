@@ -11,7 +11,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/deobfuscate"
 	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/sorting"
 	"github.com/hobeone/gonzbd/internal/unpack"
@@ -48,13 +47,6 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		return fmt.Errorf("repair: find par2 sets: %w", err)
 	}
 
-	// Scan for temporary files written by the assembler.
-	tmpFiles, err := findNZFFiles(job.DownloadDir)
-	if err != nil {
-		job.ParError = true
-		return fmt.Errorf("repair: scan nzf files: %w", err)
-	}
-
 	var firstErr error
 	repairSucceeded := true
 	if len(sets) > 0 {
@@ -74,7 +66,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 			}
 			job.OutputLines = append(job.OutputLines,
 				fmt.Sprintf("Running: %s r %s", par2Bin, filepath.Base(main)))
-			res, err := par2.RepairWith(ctx, s.Par2Opts, main, tmpFiles...)
+			res, err := par2.RepairWith(ctx, s.Par2Opts, main)
 			// Capture par2 tool output for the stage log.
 			if res.Output != "" {
 				job.OutputLines = append(job.OutputLines,
@@ -102,46 +94,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		job.OutputLines = append(job.OutputLines, "No par2 files found")
 	}
 
-	// Fallback: Rename any remaining *.nzf files using NZB metadata/subject.
-	// This handles jobs without PAR2 files and ensures we have correct
-	// filenames for the Unpack stage.
-	remainingTmp, err := findNZFFiles(job.DownloadDir)
-	if err != nil {
-		if firstErr == nil {
-			firstErr = fmt.Errorf("repair: rescan nzf files: %w", err)
-		}
-	}
-	for _, tmpPath := range remainingTmp {
-		base := filepath.Base(tmpPath)
-		var fileIdx int
-		if _, err := fmt.Sscanf(base, "%04d.nzf", &fileIdx); err != nil {
-			continue
-		}
-		if fileIdx < 0 || fileIdx >= len(job.Queue.Files) {
-			continue
-		}
-
-		cleanName := nzb.ExtractFilenameFromSubject(job.Queue.Files[fileIdx].Subject)
-		destPath := fsutil.JoinSafe(job.DownloadDir, "", cleanName, job.Sanitize)
-
-		// Don't overwrite existing files
-		if _, err := os.Stat(destPath); err == nil {
-			continue
-		}
-
-		if err := os.Rename(tmpPath, destPath); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("fallback rename %q -> %q: %w", base, cleanName, err)
-			}
-		} else {
-			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("%s → %s", base, cleanName))
-		}
-	}
-
-	// Par2 cleanup: scan after all renames are done so we find par2 files
-	// regardless of whether they started as .nzf temps or already had
-	// their real names.
+	// Par2 cleanup: delete par2 files after successful repair.
 	if s.Cleanup && repairSucceeded {
 		cleanupSets, err := par2.FindPar2Files(job.DownloadDir)
 		if err == nil {
@@ -604,23 +557,6 @@ func moveRecursive(ctx context.Context, src, dst string) error {
 	}
 
 	return os.Remove(src)
-}
-
-// findNZFFiles returns the full paths of all .nzf files in dir.
-// Unlike filepath.Glob, this works correctly when dir contains
-// glob metacharacters like '[' or ']'.
-func findNZFFiles(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-	var result []string
-	for _, e := range entries {
-		if !e.IsDir() && filepath.Ext(e.Name()) == ".nzf" {
-			result = append(result, filepath.Join(dir, e.Name()))
-		}
-	}
-	return result, nil
 }
 
 // toolOutputLines splits raw tool output (stdout/stderr) into individual
