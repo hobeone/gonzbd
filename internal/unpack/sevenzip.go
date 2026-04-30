@@ -39,12 +39,12 @@ func sevenZipBin(opts Options) (string, error) {
 //
 // Argv construction:
 //
-//	7zz x -y -bso0 -bsp0 -p<pw> <mainfile> -o<outdir>
+//	7zz x -y -bsp0 -p<pw> <mainfile> -o<outdir>
 //
 // The 'x' command is used unconditionally because it preserves directory
-// structure; 'e' would flatten paths.  -bso0 and -bsp0 suppress output and
-// progress streams to keep the captured output clean.  -p with an empty value
-// is safe for 7zz — it does not prompt on stdin when -p is supplied.
+// structure; 'e' would flatten paths.  -bsp0 suppresses the progress stream
+// to keep output clean.  -p with an empty value is safe for 7zz — it does
+// not prompt on stdin when -p is supplied.
 func SevenZip(ctx context.Context, archive Archive, outDir string, opts Options) (Result, error) {
 	log := slog.Default().With("component", "unpack")
 	bin, err := sevenZipBin(opts)
@@ -57,8 +57,7 @@ func SevenZip(ctx context.Context, archive Archive, outDir string, opts Options)
 	args := []string{
 		"x",
 		"-y",    // assume yes
-		"-bso0", // suppress standard output stream
-		"-bsp0", // suppress progress stream
+		"-bsp0", // suppress progress stream (keep stdout for stage log)
 		pwFlag,
 	}
 

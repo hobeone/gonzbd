@@ -137,6 +137,11 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	// Build slots applying filters.
 	var slots []queueSlot
 	for _, j := range jobs {
+		// Post-processing jobs appear in history, not in queue
+		// (matches SABnzbd lifecycle per spec §11.3).
+		if j.PostProc {
+			continue
+		}
 		if catFilter != "" && j.Category != catFilter {
 			continue
 		}
@@ -208,11 +213,12 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	qStatus := "Idle"
 	if paused {
 		qStatus = "Paused"
-	} else if len(jobs) > 0 {
+	} else if total > 0 {
 		qStatus = "Downloading"
 	}
 
-	// Compute queue-level aggregates.
+	// Compute queue-level aggregates across ALL filtered slots
+	// (not just the paginated page).
 	var totalQueueBytes, remainQueueBytes int64
 	for _, sl := range slots {
 		totalQueueBytes += sl.Bytes

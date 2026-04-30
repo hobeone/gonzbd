@@ -63,6 +63,13 @@ type Job struct {
 	// SAB_PP_STATUS env var.
 	ParError    bool
 	UnpackError bool
+
+	// OutputLines is a scratch buffer that stages populate with tool output
+	// lines (e.g. par2 stdout, unrar output). processJob moves these into
+	// StageLogEntry.Lines after each stage runs and clears the buffer.
+	// Stages should append to this slice rather than writing to Lines
+	// directly, since StageLogEntry is created by the orchestrator.
+	OutputLines []string
 }
 
 // StageLogEntry records the outcome of a single stage execution.

@@ -30,9 +30,9 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 	// AdminDir: downloadDir
 	// And AddJob uses filepath.Join(app.cfg.AdminDir, "nzb")
 	nzbBackupDir = filepath.Join(dir, "nzb")
-	backupPath := filepath.Join(nzbBackupDir, "duplicate.nzb")
+	backupPath := filepath.Join(nzbBackupDir, "duplicate.nzb.gz")
 	if _, err := os.Stat(backupPath); err != nil {
-		t.Errorf("NZB backup missing: %v", err)
+		t.Errorf("NZB gzip backup missing: %v", err)
 	}
 
 	// 2. Add same NZB again (same filename trigger)
@@ -47,7 +47,7 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 	}
 
 	// Verify NO new copy was created for the duplicate (job2.Name would be duplicate.1)
-	secondBackupPath := filepath.Join(nzbBackupDir, job2.Name+".nzb")
+	secondBackupPath := filepath.Join(nzbBackupDir, job2.Name+".nzb.gz")
 	if _, err := os.Stat(secondBackupPath); err == nil {
 		t.Errorf("unexpected backup created for duplicate: %s", secondBackupPath)
 	}
@@ -59,7 +59,7 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 		t.Errorf("MD5 duplicate job status = %q, want Paused", job3.Status)
 	}
 
-	thirdBackupPath := filepath.Join(nzbBackupDir, "duplicate-renamed.nzb")
+	thirdBackupPath := filepath.Join(nzbBackupDir, "duplicate-renamed.nzb.gz")
 	if _, err := os.Stat(thirdBackupPath); err == nil {
 		t.Errorf("unexpected backup created for MD5 duplicate: %s", thirdBackupPath)
 	}
