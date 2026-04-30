@@ -58,6 +58,8 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	var firstErr error
 	repairSucceeded := true
 	if len(sets) > 0 {
+		job.OutputLines = append(job.OutputLines,
+			fmt.Sprintf("Found %d par2 set(s)", len(sets)))
 		for _, set := range sets {
 			main := set.MainFile
 			if main == "" && len(set.ExtraFiles) > 0 {
@@ -66,6 +68,12 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 			if main == "" {
 				continue
 			}
+			par2Bin := s.Par2Opts.Command
+			if par2Bin == "" {
+				par2Bin = "par2"
+			}
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("Running: %s r %s", par2Bin, filepath.Base(main)))
 			res, err := par2.RepairWith(ctx, s.Par2Opts, main, tmpFiles...)
 			// Capture par2 tool output for the stage log.
 			if res.Output != "" {
@@ -90,6 +98,8 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				}
 			}
 		}
+	} else {
+		job.OutputLines = append(job.OutputLines, "No par2 files found")
 	}
 
 	// Fallback: Rename any remaining *.nzf files using NZB metadata/subject.
@@ -123,6 +133,9 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("fallback rename %q -> %q: %w", base, cleanName, err)
 			}
+		} else {
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("%s → %s", base, cleanName))
 		}
 	}
 
@@ -132,13 +145,20 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	if s.Cleanup && repairSucceeded {
 		cleanupSets, err := par2.FindPar2Files(job.DownloadDir)
 		if err == nil {
+			var cleaned int
 			for _, set := range cleanupSets {
 				if set.MainFile != "" {
 					_ = os.Remove(set.MainFile)
+					cleaned++
 				}
 				for _, ef := range set.ExtraFiles {
 					_ = os.Remove(ef)
+					cleaned++
 				}
+			}
+			if cleaned > 0 {
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("Cleaned up %d par2 file(s)", cleaned))
 			}
 		}
 	}
@@ -190,8 +210,11 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		return fmt.Errorf("unpack: scan: %w", err)
 	}
 	if len(archives) == 0 {
+		job.OutputLines = append(job.OutputLines, "No archives found")
 		return nil
 	}
+	job.OutputLines = append(job.OutputLines,
+		fmt.Sprintf("Found %d archive(s)", len(archives)))
 	// Merge config-level options with per-job password.
 	opts := u.BaseOpts
 	opts.Password = job.Queue.Password
@@ -210,13 +233,21 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 				unrarBin = "unrar"
 			}
 			if _, lookErr := exec.LookPath(unrarBin); lookErr == nil {
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("Running: %s x %s", unrarBin, filepath.Base(a.MainFile)))
 				res, err = unpack.UnRAR(ctx, a, job.DownloadDir, opts)
 			} else {
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("Running: 7z x %s (unrar not found)", filepath.Base(a.MainFile)))
 				res, err = unpack.SevenZip(ctx, a, job.DownloadDir, opts)
 			}
 		case unpack.SevenZipArchive:
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("Running: 7z x %s", filepath.Base(a.MainFile)))
 			res, err = unpack.SevenZip(ctx, a, job.DownloadDir, opts)
 		case unpack.SplitArchive:
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts)))
 			res, err = unpack.FileJoin(ctx, a, job.DownloadDir, opts)
 		default:
 			continue
@@ -261,10 +292,16 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 
 	// Delete source archive files after successful extraction.
 	if u.Cleanup && len(successfulArchives) > 0 {
+		var cleaned int
 		for _, a := range successfulArchives {
 			for _, part := range a.Parts {
 				_ = os.Remove(part)
+				cleaned++
 			}
+		}
+		if cleaned > 0 {
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("Cleaned up %d archive file(s)", cleaned))
 		}
 	}
 
@@ -285,9 +322,15 @@ func (*DeobfuscateStage) Name() string { return "deobfuscate" }
 // Run invokes deobfuscate.Deobfuscate against job.DownloadDir.
 func (*DeobfuscateStage) Run(_ context.Context, job *Job) error {
 	renames, err := deobfuscate.Deobfuscate(job.DownloadDir, job.Queue.Name, job.Sanitize)
-	for _, r := range renames {
+	if len(renames) == 0 {
+		job.OutputLines = append(job.OutputLines, "No files needed deobfuscation")
+	} else {
 		job.OutputLines = append(job.OutputLines,
-			fmt.Sprintf("%s → %s", filepath.Base(r.From), filepath.Base(r.To)))
+			fmt.Sprintf("Deobfuscated %d file(s)", len(renames)))
+		for _, r := range renames {
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("%s → %s", filepath.Base(r.From), filepath.Base(r.To)))
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("deobfuscate: %w", err)
@@ -336,9 +379,20 @@ func (s *SortStage) Run(ctx context.Context, job *Job) error {
 		s.DestRoot,
 		job.Sanitize,
 	)
+	// Log sorting results.
+	if res.MatchedRule != "" {
+		job.OutputLines = append(job.OutputLines,
+			fmt.Sprintf("Matched rule: %s", res.MatchedRule))
+	} else {
+		job.OutputLines = append(job.OutputLines, "No sorting rule matched")
+	}
 	// Process partial results even on error — if some files were moved,
 	// downstream stages must know where they are.
 	if len(res.Moved) > 0 {
+		for _, m := range res.Moved {
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("%s → %s", filepath.Base(m.From), m.To))
+		}
 		origDir := job.DownloadDir
 		job.FinalDir = filepath.Dir(res.Moved[0].To)
 		// Point DownloadDir at the destination so downstream stages
@@ -409,6 +463,9 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		status = 1
 	}
 
+	job.OutputLines = append(job.OutputLines,
+		fmt.Sprintf("Running: %s", scriptPath))
+
 	in := ScriptInput{
 		FinalDir:    job.DownloadDir,
 		CompleteDir: s.CompleteDir,
@@ -427,6 +484,15 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	res := RunScript(ctx, scriptPath, in)
+
+	// Capture script output for the stage log.
+	if res.LogBody != "" {
+		job.OutputLines = append(job.OutputLines,
+			toolOutputLines(res.LogBody)...)
+	}
+	job.OutputLines = append(job.OutputLines,
+		fmt.Sprintf("Exit code: %d (%.1fs)", res.ExitCode, res.Duration.Seconds()))
+
 	if res.Err != nil {
 		if errors.Is(res.Err, ErrNonZeroExit) {
 			return fmt.Errorf("script %q exited %d", name, res.ExitCode)
@@ -450,6 +516,8 @@ func (*FinalizeStage) Name() string { return "finalize" }
 // Run moves the directory content or the directory itself to its final location.
 func (*FinalizeStage) Run(ctx context.Context, job *Job) error {
 	if job.ParError || job.UnpackError || job.FailMsg != "" {
+		job.OutputLines = append(job.OutputLines,
+			"Skipped: files remain in download directory for retry")
 		return nil // Skip move if failed, so files stay in DownloadDir for retry
 	}
 
