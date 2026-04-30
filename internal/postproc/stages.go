@@ -6,6 +6,7 @@ package postproc
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -90,4 +91,31 @@ type StageLogEntry struct {
 	// Stages append to this slice via the helper below; the orchestrator
 	// passes a *StageLogEntry to each stage (Steps 5.2+).
 	Lines []string
+}
+
+// stageLogJSON is the JSON-safe representation of StageLogEntry.
+// The error interface is serialized as a *string because
+// json.Marshal(error) produces "{}" (empty object), which the
+// history API deserializer cannot parse as a string.
+type stageLogJSON struct {
+	Stage   string        `json:"Stage"`
+	Started time.Time     `json:"Started"`
+	Elapsed time.Duration `json:"Elapsed"`
+	Err     *string       `json:"Err"`
+	Lines   []string      `json:"Lines"`
+}
+
+// MarshalJSON implements json.Marshaler for StageLogEntry.
+func (e StageLogEntry) MarshalJSON() ([]byte, error) {
+	j := stageLogJSON{
+		Stage:   e.Stage,
+		Started: e.Started,
+		Elapsed: e.Elapsed,
+		Lines:   e.Lines,
+	}
+	if e.Err != nil {
+		s := e.Err.Error()
+		j.Err = &s
+	}
+	return json.Marshal(j)
 }

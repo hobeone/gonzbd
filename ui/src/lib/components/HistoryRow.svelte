@@ -103,6 +103,12 @@
 {#if expanded}
 	<tr class="bg-gray-50/50 dark:bg-gray-900/50">
 		<td colspan="6" class="px-4 py-4">
+			{#if slot.fail_message}
+				<div class="mb-4 rounded-md border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 px-4 py-3">
+					<div class="text-xs font-semibold uppercase tracking-wider text-red-600 dark:text-red-400">Failure Reason</div>
+					<div class="mt-1 text-sm text-red-700 dark:text-red-300">{slot.fail_message}</div>
+				</div>
+			{/if}
 			<div class="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
 				<div class="space-y-3">
 					<div>
@@ -175,7 +181,7 @@
 								{#if stage.actions.length > 0}
 									<div class="mt-1 space-y-0.5">
 										{#each stage.actions as action}
-											<div class="text-xs text-gray-500 dark:text-gray-400 {action.startsWith('Error:') ? 'text-red-600 dark:text-red-400 font-medium' : ''}">{action}</div>
+											<div class="text-xs {action.startsWith('Error:') ? 'text-red-600 dark:text-red-400 font-medium' : action.startsWith('Skipped:') ? 'text-yellow-600 dark:text-yellow-400 font-medium' : 'text-gray-500 dark:text-gray-400'}">{action}</div>
 										{/each}
 									</div>
 								{/if}
@@ -187,3 +193,4 @@
 		</td>
 	</tr>
 {/if}
+
