@@ -95,6 +95,9 @@ type queueSlot struct {
 	ETA            string `json:"eta"`
 	PP             string `json:"pp"`
 	Warning        string `json:"warning,omitempty"`
+	FailedBytes    int64  `json:"failed_bytes"`
+	Par2Bytes      int64  `json:"par2_bytes"`
+	Par2Files      int    `json:"par2_files"`
 }
 
 // queueResponse is the outer JSON object returned for default queue listings.
@@ -186,6 +189,9 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 			ETA:            "unknown",
 			PP:             strconv.Itoa(j.PP),
 			Warning:        j.Warning,
+			FailedBytes:    j.FailedBytes,
+			Par2Bytes:      j.Par2Bytes,
+			Par2Files:      j.Par2Files,
 		})
 	}
 
