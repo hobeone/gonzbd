@@ -19,6 +19,9 @@ export interface QueueSlot {
 	percentage: string;
 	pp: string;
 	warning?: string;
+	failed_bytes: number;
+	par2_bytes: number;
+	par2_files: number;
 }
 
 export interface QueueDetail {
