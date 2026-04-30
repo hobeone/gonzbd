@@ -137,11 +137,9 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	// Build slots applying filters.
 	var slots []queueSlot
 	for _, j := range jobs {
-		// Post-processing jobs appear in history, not in queue
-		// (matches SABnzbd lifecycle per spec §11.3).
-		if j.PostProc {
-			continue
-		}
+		// Post-processing jobs remain in the queue with their current
+		// status (Verifying, Repairing, Extracting, etc.) until
+		// OnJobDone removes them and moves them to history.
 		if catFilter != "" && j.Category != catFilter {
 			continue
 		}

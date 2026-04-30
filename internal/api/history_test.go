@@ -605,7 +605,7 @@ func TestHistoryList_PostProcJobsInjected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetPostProcStarted: %v", err)
 	}
-	// Set status after SetPostProcStarted (which resets to Queued).
+	// Set status after SetPostProcStarted (which resets to Verifying).
 	if err := q.SetStatus(ppJob.ID, constants.StatusRepairing); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
