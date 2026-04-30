@@ -157,23 +157,21 @@ type ConnSnapshot struct {
 // ServerSnapshot is a point-in-time view of a single NNTP server,
 // combining config, health, metrics, and per-connection activity.
 type ServerSnapshot struct {
-	Name            string         `json:"name"`
-	Host            string         `json:"host"`
-	Port            int            `json:"port"`
-	SSL             bool           `json:"ssl"`
-	Priority        int            `json:"priority"`
-	MaxConnections  int            `json:"max_connections"`
-	ActiveConns     int            `json:"active_conns"`
-	Active          bool           `json:"active"`
-	Enabled         bool           `json:"enabled"`
-	Optional        bool           `json:"optional"`
-	Required        bool           `json:"required"`
-	BadConnections  int64          `json:"bad_connections"`
-	GoodConnections int64          `json:"good_connections"`
-	PenaltyUntil    int64          `json:"penalty_until"`
-	BPS             float64        `json:"bps"`
-	TotalBytes      int64          `json:"total_bytes"`
-	Connections     []ConnSnapshot `json:"connections"`
+	Name           string         `json:"name"`
+	Host           string         `json:"host"`
+	Port           int            `json:"port"`
+	SSL            bool           `json:"ssl"`
+	Priority       int            `json:"priority"`
+	MaxConnections int            `json:"max_connections"`
+	ActiveConns    int            `json:"active_conns"`
+	Active         bool           `json:"active"`
+	Enabled        bool           `json:"enabled"`
+	Optional       bool           `json:"optional"`
+	Required       bool           `json:"required"`
+	PenaltyUntil   int64          `json:"penalty_until"`
+	BPS            float64        `json:"bps"`
+	TotalBytes     int64          `json:"total_bytes"`
+	Connections    []ConnSnapshot `json:"connections"`
 }
 
 type Downloader struct {
@@ -555,23 +553,21 @@ func (d *Downloader) ServerStatus() []ServerSnapshot {
 		}
 
 		snapshots = append(snapshots, ServerSnapshot{
-			Name:            name,
-			Host:            cfg.Host,
-			Port:            cfg.Port,
-			SSL:             cfg.SSL,
-			Priority:        cfg.Priority,
-			MaxConnections:  cfg.Connections,
-			ActiveConns:     activeCount,
-			Active:          srv.Active(now),
-			Enabled:         cfg.Enable,
-			Optional:        cfg.Optional,
-			Required:        cfg.Required,
-			BadConnections:  srv.BadConnections(),
-			GoodConnections: srv.GoodConnections(),
-			PenaltyUntil:    penaltyUnix,
-			BPS:             bps,
-			TotalBytes:      totalBytes,
-			Connections:     conns,
+			Name:           name,
+			Host:           cfg.Host,
+			Port:           cfg.Port,
+			SSL:            cfg.SSL,
+			Priority:       cfg.Priority,
+			MaxConnections: cfg.Connections,
+			ActiveConns:    activeCount,
+			Active:         srv.Active(now),
+			Enabled:        cfg.Enable,
+			Optional:       cfg.Optional,
+			Required:       cfg.Required,
+			PenaltyUntil:   penaltyUnix,
+			BPS:            bps,
+			TotalBytes:     totalBytes,
+			Connections:    conns,
 		})
 	}
 	return snapshots
