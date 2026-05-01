@@ -465,16 +465,12 @@ func (q *Queue) MarkArticleEmitted(jobID, messageID string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	for fi := range job.Files {
-		for ai := range job.Files[fi].Articles {
-			art := &job.Files[fi].Articles[ai]
-			if art.ID == messageID {
-				art.Emitted = true
-				return nil
-			}
-		}
+	art := job.articleByID(messageID)
+	if art == nil {
+		return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 	}
-	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
+	art.Emitted = true
+	return nil
 }
 
 // ClearArticleEmitted resets the transient Emitted flag on a single article,
@@ -489,17 +485,13 @@ func (q *Queue) ClearArticleEmitted(jobID, messageID string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	for fi := range job.Files {
-		for ai := range job.Files[fi].Articles {
-			art := &job.Files[fi].Articles[ai]
-			if art.ID == messageID {
-				art.Emitted = false
-				q.notifyLocked()
-				return nil
-			}
-		}
+	art := job.articleByID(messageID)
+	if art == nil {
+		return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 	}
-	return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
+	art.Emitted = false
+	q.notifyLocked()
+	return nil
 }
 
 // ClearAllEmitted resets transient article state for a downloader reload.
@@ -573,25 +565,21 @@ func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
 	if !ok {
 		return false, fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	for fi := range job.Files {
-		for ai := range job.Files[fi].Articles {
-			art := &job.Files[fi].Articles[ai]
-			if art.ID == messageID {
-				if !art.Done {
-					art.Done = true
-					art.Failed = true
-					job.FailedBytes += int64(art.Bytes)
-					job.RemainingBytes -= int64(art.Bytes)
-					slog.Warn("article marked FAILED", "msgid", messageID, "job", jobID, "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
-					q.dirty.Store(true)
-					return true, nil
-				}
-				q.dirty.Store(true)
-				return false, nil
-			}
-		}
+	art := job.articleByID(messageID)
+	if art == nil {
+		return false, fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 	}
-	return false, fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
+	if !art.Done {
+		art.Done = true
+		art.Failed = true
+		job.FailedBytes += int64(art.Bytes)
+		job.RemainingBytes -= int64(art.Bytes)
+		slog.Warn("article marked FAILED", "msgid", messageID, "job", jobID, "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
+		q.dirty.Store(true)
+		return true, nil
+	}
+	q.dirty.Store(true)
+	return false, nil
 }
 
 // MarkArticlesDone is the batched form of MarkArticleDone. It flips
@@ -615,28 +603,17 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	// Build a quick lookup so we scan the job's articles once rather
-	// than len(messageIDs) times.
-	want := make(map[string]struct{}, len(messageIDs))
 	for _, id := range messageIDs {
-		want[id] = struct{}{}
-	}
-	for fi := range job.Files {
-		for ai := range job.Files[fi].Articles {
-			art := &job.Files[fi].Articles[ai]
-			if _, ok := want[art.ID]; !ok {
-				continue
-			}
-			delete(want, art.ID)
-			if art.Done {
-				continue
-			}
-			art.Done = true
-			job.RemainingBytes -= int64(art.Bytes)
+		art := job.articleByID(id)
+		if art == nil {
+			slog.Warn("MarkArticlesDone: article not found", "job", jobID, "msgid", id)
+			continue
 		}
-	}
-	for id := range want {
-		slog.Warn("MarkArticlesDone: article not found", "job", jobID, "msgid", id)
+		if art.Done {
+			continue
+		}
+		art.Done = true
+		job.RemainingBytes -= int64(art.Bytes)
 	}
 	q.dirty.Store(true)
 	return nil
@@ -659,30 +636,21 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	want := make(map[string]struct{}, len(messageIDs))
-	for _, id := range messageIDs {
-		want[id] = struct{}{}
-	}
 	firstTime := make([]string, 0, len(messageIDs))
-	for fi := range job.Files {
-		for ai := range job.Files[fi].Articles {
-			art := &job.Files[fi].Articles[ai]
-			if _, ok := want[art.ID]; !ok {
-				continue
-			}
-			delete(want, art.ID)
-			if art.Done {
-				continue
-			}
-			art.Done = true
-			art.Failed = true
-			job.FailedBytes += int64(art.Bytes)
-			job.RemainingBytes -= int64(art.Bytes)
-			firstTime = append(firstTime, art.ID)
+	for _, id := range messageIDs {
+		art := job.articleByID(id)
+		if art == nil {
+			slog.Warn("MarkArticlesFailed: article not found", "job", jobID, "msgid", id)
+			continue
 		}
-	}
-	for id := range want {
-		slog.Warn("MarkArticlesFailed: article not found", "job", jobID, "msgid", id)
+		if art.Done {
+			continue
+		}
+		art.Done = true
+		art.Failed = true
+		job.FailedBytes += int64(art.Bytes)
+		job.RemainingBytes -= int64(art.Bytes)
+		firstTime = append(firstTime, art.ID)
 	}
 	if len(firstTime) > 0 {
 		slog.Warn("articles marked FAILED", "job", jobID, "count", len(firstTime), "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
