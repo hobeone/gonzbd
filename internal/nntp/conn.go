@@ -38,7 +38,9 @@ func (lr *limitReader) Read(p []byte) (int, error) {
 			// Wait after reading. This introduces minimal overhead
 			// because it is invoked by bufio.Reader which chunks reads.
 			// We use the connection context to unblock if the socket closes.
-			_ = lr.lim.Wait(lr.ctx, n)
+			if err := lr.lim.Wait(lr.ctx, n); err != nil {
+				return n, err
+			}
 		}
 	}
 	return n, err
@@ -428,7 +430,7 @@ func (c *Conn) setupHandshakeDeadline(ctx context.Context) (func(), error) {
 		if err := c.nc.SetDeadline(deadline); err != nil {
 			return nil, fmt.Errorf("nntp: set deadline: %w", err)
 		}
-		return func() { _ = c.nc.SetDeadline(time.Time{}) }, nil
+		return func() { _ = c.nc.SetDeadline(time.Time{}) }, nil //nolint:errcheck // best-effort; socket might be closed
 	}
 
 	c.log.Debug("handshake: no context deadline, watching for cancellation")
@@ -436,7 +438,7 @@ func (c *Conn) setupHandshakeDeadline(ctx context.Context) (func(), error) {
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = c.nc.SetDeadline(time.Now())
+			_ = c.nc.SetDeadline(time.Now()) //nolint:errcheck // best-effort unblock
 		case <-done:
 		}
 	}()
@@ -667,6 +669,6 @@ type idleTimeoutReader struct {
 }
 
 func (r *idleTimeoutReader) Read(p []byte) (int, error) {
-	_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout))
+	_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout)) //nolint:errcheck // best-effort; actual idle enforced by Read
 	return r.nc.Read(p)
 }
