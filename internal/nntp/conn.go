@@ -386,43 +386,13 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 // reader loop starts. That simplifies the auth/caps sequence: each
 // step reads exactly one response with no FIFO bookkeeping.
 func (c *Conn) handshake(ctx context.Context, cfg config.ServerConfig) error {
-	if deadline, ok := ctx.Deadline(); ok {
-		c.log.Debug("handshake: setting deadline", "deadline", deadline)
-		if err := c.nc.SetDeadline(deadline); err != nil {
-			return fmt.Errorf("nntp: set deadline: %w", err)
-		}
-		defer func() { _ = c.nc.SetDeadline(time.Time{}) }() //nolint:errcheck // clearing deadline on path out; any error is cosmetic
-	} else {
-		c.log.Debug("handshake: no context deadline, watching for cancellation")
-		// Without a deadline, a server that accepts TCP but never sends a
-		// greeting would block readResponseLine forever. Watch the context
-		// and force-expire the socket so the read unblocks.
-		handshakeDone := make(chan struct{})
-		defer close(handshakeDone)
-		go func() {
-			select {
-			case <-ctx.Done():
-				_ = c.nc.SetDeadline(time.Now()) //nolint:errcheck // best-effort unblock
-			case <-handshakeDone:
-			}
-		}()
-	}
-
-	// Greeting.
-	c.log.Debug("handshake: waiting for greeting")
-	line, err := readResponseLine(c.br)
-	if err != nil {
-		return fmt.Errorf("nntp: read greeting: %w", err)
-	}
-	code, text, err := parseStatus(line)
+	cleanup, err := c.setupHandshakeDeadline(ctx)
 	if err != nil {
 		return err
 	}
-	c.log.Debug("handshake: greeting received", "code", code, "text", text)
-	if code != 200 && code != 201 {
-		return &ServerError{Code: code, Text: text}
-	}
-	if err := c.setState(StateConnected); err != nil {
+	defer cleanup()
+
+	if err := c.expectGreeting(); err != nil {
 		return err
 	}
 
@@ -448,6 +418,48 @@ func (c *Conn) handshake(ctx context.Context, cfg config.ServerConfig) error {
 		return err
 	}
 	return nil
+}
+
+// expectGreeting reads the server greeting and advances to StateConnected.
+func (c *Conn) expectGreeting() error {
+	c.log.Debug("handshake: waiting for greeting")
+	line, err := readResponseLine(c.br)
+	if err != nil {
+		return fmt.Errorf("nntp: read greeting: %w", err)
+	}
+	code, text, err := parseStatus(line)
+	if err != nil {
+		return err
+	}
+	c.log.Debug("handshake: greeting received", "code", code, "text", text)
+	if code != 200 && code != 201 {
+		return &ServerError{Code: code, Text: text}
+	}
+	return c.setState(StateConnected)
+}
+
+// setupHandshakeDeadline applies the context deadline to the socket, or
+// starts a background watcher to force-close it if the context is
+// cancelled. Returns a cleanup function to be deferred by the caller.
+func (c *Conn) setupHandshakeDeadline(ctx context.Context) (func(), error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		c.log.Debug("handshake: setting deadline", "deadline", deadline)
+		if err := c.nc.SetDeadline(deadline); err != nil {
+			return nil, fmt.Errorf("nntp: set deadline: %w", err)
+		}
+		return func() { _ = c.nc.SetDeadline(time.Time{}) }, nil
+	}
+
+	c.log.Debug("handshake: no context deadline, watching for cancellation")
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = c.nc.SetDeadline(time.Now())
+		case <-done:
+		}
+	}()
+	return func() { close(done) }, nil
 }
 
 // authenticate drives the AUTHINFO USER / AUTHINFO PASS dance
