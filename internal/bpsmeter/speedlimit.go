@@ -57,16 +57,17 @@ func (l *Limiter) SetRate(bytesPerSec float64) {
 		burst = minBurst
 	}
 
-	if l.lim == nil {
+	switch {
+	case l.lim == nil:
 		l.lim = rate.NewLimiter(rate.Limit(bytesPerSec), burst)
-	} else if rate.Limit(bytesPerSec) < l.lim.Limit() {
+	case rate.Limit(bytesPerSec) < l.lim.Limit():
 		// Rate decreased: create a fresh limiter to flush pre-loaded
 		// tokens. The old limiter's WaitN callers will see Inf (which
 		// unblocks them), then pick up the new limiter on the next
 		// Wait call via the RWMutex snapshot in Wait().
 		l.lim.SetLimit(rate.Inf) // unblock any active waiters on old limiter
 		l.lim = rate.NewLimiter(rate.Limit(bytesPerSec), burst)
-	} else {
+	default:
 		// Rate increased or unchanged: update in-place so existing
 		// waiters may unblock sooner.
 		l.lim.SetLimit(rate.Limit(bytesPerSec))
