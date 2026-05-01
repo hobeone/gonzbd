@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
 // isRetryableDownloaderError returns true for transient errors where the
@@ -58,10 +60,10 @@ type fileKey struct {
 }
 
 // pipeline plumbs Downloader.Completions() → decoder → assembler.
-// Exactly one goroutine runs pipeline.run; all public methods used by that
-// goroutine are single-writer. The fileInfo map is the exception — it is
-// populated by run and read concurrently by the assembler worker via
-// resolveFileInfo, so access is protected by mu.
+// The reader goroutine (run) fans out ArticleResults to a pool of worker
+// goroutines that call handleResult concurrently. The fileInfo map is
+// populated by workers and read by the assembler worker via resolveFileInfo,
+// so access is protected by mu.
 type pipeline struct {
 	log         *slog.Logger
 	queue       *queue.Queue
@@ -69,6 +71,7 @@ type pipeline struct {
 	completions <-chan *downloader.ArticleResult
 	downloadDir string
 	sanitize    fsutil.SanitizeOptions
+	numWorkers  int // concurrent handleResult workers; 0 defaults to GOMAXPROCS
 
 	// updateCh receives a swap request with a done channel for ack.
 	updateCh chan completionSwap
@@ -85,8 +88,36 @@ type completionSwap struct {
 	done chan struct{}
 }
 
-// run is the pipeline's sole goroutine. Returns when ctx is cancelled.
+// run is the pipeline's reader goroutine. It reads from p.completions
+// and fans out to a pool of worker goroutines via a work channel.
+// Returns when ctx is cancelled.
 func (p *pipeline) run(ctx context.Context) {
+	nw := p.numWorkers
+	if nw <= 0 {
+		nw = runtime.GOMAXPROCS(0)
+		if nw < 2 {
+			nw = 2
+		}
+	}
+
+	work := make(chan *downloader.ArticleResult, nw*2)
+	var wg sync.WaitGroup
+	for range nw {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for res := range work {
+				p.handleResult(ctx, res)
+			}
+		}()
+	}
+	defer func() {
+		close(work)
+		wg.Wait()
+	}()
+
+	p.log.Info("pipeline workers started", "workers", nw)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -103,7 +134,7 @@ func (p *pipeline) run(ctx context.Context) {
 						if !ok {
 							goto drained
 						}
-						p.handleResult(ctx, res)
+						work <- res
 					default:
 						goto drained
 					}
@@ -120,7 +151,7 @@ func (p *pipeline) run(ctx context.Context) {
 				p.completions = nil
 				continue
 			}
-			p.handleResult(ctx, res)
+			work <- res
 		}
 	}
 }
@@ -142,6 +173,8 @@ func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
 // handling (marking the NzbObject failed, pushing to post-processor) is
 // Phase 5's problem.
 func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResult) {
+	telemetry.ArticlesReceived.Add(1)
+
 	if res.Err != nil {
 		if errors.Is(res.Err, downloader.ErrNoServersLeft) ||
 			!isRetryableDownloaderError(res.Err) {
@@ -172,6 +205,7 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 					"job", res.JobID, "msgid", res.MessageID, "err", writeErr)
 				_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
 			}
+			telemetry.ArticlesFailed.Add(1)
 		} else {
 			// Retryable error (connection drop, 430 from one server).
 			// Clear the Emitted flag so the dispatcher re-dispatches this
@@ -181,6 +215,7 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 			if err := p.queue.ClearArticleEmitted(res.JobID, res.MessageID); err != nil {
 				p.log.Warn("clear emitted failed", "job", res.JobID, "msgid", res.MessageID, "err", err)
 			}
+			telemetry.ArticlesRetried.Add(1)
 		}
 		return
 	}
@@ -210,6 +245,8 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 		p.log.Warn("write article failed, returning to dispatch pool",
 			"job", res.JobID, "msgid", res.MessageID, "err", writeErr)
 		_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
+	} else if writeErr == nil {
+		telemetry.ArticlesWritten.Add(1)
 	}
 }
 
