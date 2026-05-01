@@ -3,6 +3,7 @@ package web
 import (
 	"io/fs"
 	"net/http"
+	"strings"
 )
 
 // AuthCheck is called before serving the SPA. It returns true if the
@@ -30,12 +31,13 @@ type AuthCheck func(w http.ResponseWriter, r *http.Request) bool
 func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http.Handler {
 	fileServer := http.FileServerFS(dist)
 
-	setApiKeyCookie := func(w http.ResponseWriter) {
-		http.SetCookie(w, &http.Cookie{
+	setAPIKeyCookie := func(w http.ResponseWriter, req *http.Request) {
+		http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly is intentionally false so JS can read it for X-API-Key headers
 			Name:     "gonzbd_apikey",
 			Value:    apiKeyFn(),
 			Path:     "/",
 			HttpOnly: false, // JS reads it to attach as X-API-Key header
+			Secure:   req.TLS != nil,
 			SameSite: http.SameSiteStrictMode,
 		})
 	}
@@ -46,13 +48,13 @@ func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http
 			if authCheck != nil && !authCheck(w, r) {
 				return
 			}
-			setApiKeyCookie(w)
+			setAPIKeyCookie(w, r)
 			fileServer.ServeHTTP(w, r)
 			return
 		}
 
 		// Strip leading slash for fs.Stat lookup.
-		clean := path[1:]
+		clean := strings.TrimPrefix(path, "/")
 		if _, err := fs.Stat(dist, clean); err == nil {
 			// Known static asset — serve without auth check.
 			fileServer.ServeHTTP(w, r)
@@ -67,7 +69,7 @@ func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http
 		// upstream logging middleware.
 		r2 := r.Clone(r.Context())
 		r2.URL.Path = "/"
-		setApiKeyCookie(w)
+		setAPIKeyCookie(w, r)
 		fileServer.ServeHTTP(w, r2)
 	})
 }
