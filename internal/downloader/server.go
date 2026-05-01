@@ -35,10 +35,6 @@ type Server struct {
 	// cfg is the immutable configuration for this server.
 	cfg config.ServerConfig
 
-	// index is the position of this server in the Downloader's list.
-	// Used for bitmask lookup in tryList.
-	index int
-
 	// badConns and goodConns are updated atomically. Using atomic.Int64
 	// for both avoids lock contention on the hot path (every article
 	// completion updates one of these).
