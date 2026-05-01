@@ -390,25 +390,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 
 	// Decoding (Step 3: Parallelize Decoding): Decode article payload
 	// directly in the connection goroutine to utilize all CPU cores.
-	var decodedData []byte
-	var offset int64
-	article, decErr := decoder.DecodeArticle(body)
-	switch {
-	case decErr == nil:
-		decodedData = article.Data
-		offset = article.Offset
-	case errors.Is(decErr, decoder.ErrNotYEnc):
-		// Fallback to UU decoding.
-		data, _, uuErr := decoder.DecodeUU(body)
-		if uuErr == nil {
-			decodedData = data
-			offset = 0 // UU encoding usually doesn't have offset info
-		} else {
-			err = fmt.Errorf("yenc: %w; uu fallback: %w", decErr, uuErr)
-		}
-	default:
-		err = decErr
-	}
+	decodedData, offset, err := decodePayload(body)
 	if err != nil {
 		d.log.Warn("decode error", "msgid", req.messageID, "err", err)
 		// Decode error is a terminal failure — mark Emitted so the
@@ -531,7 +513,7 @@ func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, worke
 	if d.meter != nil {
 		dialOpts = append(dialOpts, nntp.WithRecorder(d.meter, name))
 	}
-	
+
 	c, err := nntp.Dial(ctx, srv.Cfg(), dialOpts...)
 	if err != nil {
 		return nil, err
@@ -565,4 +547,23 @@ func (m *managedConn) DropIfMatches(c *nntp.Conn, d *Downloader, workerID string
 		return true
 	}
 	return false
+}
+
+// decodePayload decodes an article body using yEnc first, with a
+// fallback to UU decoding if the payload is not yEnc encoded.
+func decodePayload(body []byte) ([]byte, int64, error) {
+	article, decErr := decoder.DecodeArticle(body)
+	switch {
+	case decErr == nil:
+		return article.Data, article.Offset, nil
+	case errors.Is(decErr, decoder.ErrNotYEnc):
+		// Fallback to UU decoding.
+		data, _, uuErr := decoder.DecodeUU(body)
+		if uuErr == nil {
+			return data, 0, nil // UU encoding usually doesn't have offset info
+		}
+		return nil, 0, fmt.Errorf("yenc: %w; uu fallback: %w", decErr, uuErr)
+	default:
+		return nil, 0, decErr
+	}
 }
