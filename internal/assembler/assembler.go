@@ -140,6 +140,13 @@ type Options struct {
 	// disables the timer (flush only on file completion or Stop — useful
 	// for benchmarks that want to measure pure batching behaviour).
 	DoneFlushInterval time.Duration
+
+	// WriteCacheBytes is the memory limit for the write coalescing cache.
+	// When positive, decoded articles are buffered in memory and flushed
+	// as larger contiguous writes, reducing syscall count and improving
+	// sequential write patterns. Zero disables caching (each article is
+	// written individually, which is the pre-5.0 behavior).
+	WriteCacheBytes int64
 }
 
 // fileKey uniquely identifies a target file within the assembler.
@@ -362,6 +369,7 @@ func (a *Assembler) worker() {
 	completed := make(map[fileKey]struct{})    // tombstone set for finished files
 	cancelledJobs := make(map[string]struct{}) // tombstone set for cancelled jobs
 	reqCount := 0
+	wc := newWriteCache(a.opts.WriteCacheBytes)
 
 	// A nil channel blocks forever in select; that's how we disable the
 	// flush timer when DoneFlushInterval < 0 (benchmark mode).
@@ -396,6 +404,7 @@ func (a *Assembler) worker() {
 						}
 						delete(open, k)
 						completed[k] = struct{}{}
+						wc.forget(k) // discard cached articles for cancelled file
 					}
 				}
 				continue
@@ -404,7 +413,7 @@ func (a *Assembler) worker() {
 			if _, cancelled := cancelledJobs[req.JobID]; cancelled {
 				continue
 			}
-			a.processRequest(req, open, completed)
+			a.processRequest(req, open, completed, wc)
 			reqCount++
 			if a.opts.MinFreeBytes > 0 && reqCount%diskCheckInterval == 0 {
 				a.checkDiskSpace(open)
@@ -420,12 +429,14 @@ func (a *Assembler) worker() {
 			for {
 				select {
 				case req := <-a.reqs:
-					a.processRequest(req, open, completed)
+					a.processRequest(req, open, completed, wc)
 					reqCount++
 					if a.opts.MinFreeBytes > 0 && reqCount%diskCheckInterval == 0 {
 						a.checkDiskSpace(open)
 					}
 				default:
+					// Drain all cached articles to disk before shutdown.
+					a.flushWriteCache(wc, open)
 					// Channel drained. Final flush before closing files so the
 					// queue sees every Done/Failed that made it to disk.
 					a.flush()
@@ -487,8 +498,10 @@ func (a *Assembler) closeAll(open map[fileKey]*openFile) {
 
 // processRequest performs the WriteAt for a single WriteRequest. It resolves
 // the target file on first encounter, caches the handle, and fires
-// OnFileComplete when all TotalParts have been written.
-func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile, completed map[fileKey]struct{}) {
+// OnFileComplete when all TotalParts have been written. When write coalescing
+// is enabled (wc.enabled()), articles are buffered in memory and flushed as
+// larger contiguous writes; otherwise each article is written individually.
+func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile, completed map[fileKey]struct{}, wc *writeCache) {
 	key := fileKey{jobID: req.JobID, fileIdx: req.FileIdx}
 
 	// Reject late duplicates for already-completed files.
@@ -595,23 +608,15 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 			if f.seenFailed != nil {
 				if _, was := f.seenFailed[req.MessageID]; was {
 					// Write the data but skip partsWritten increment.
-					if _, err := f.handle.WriteAt(req.Data, req.Offset); err != nil {
-						a.log.Error("write article (recovery)", "path", f.info.Path, "error", err)
-						return // Don't mark as done — the data wasn't persisted.
-					}
+					a.writeArticleOrBuffer(f, key, req, wc, open)
 					f.seenDone[req.MessageID] = struct{}{}
 					a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
 					return
 				}
 			}
 		}
-		if _, err := f.handle.WriteAt(req.Data, req.Offset); err != nil {
-			a.log.Error("write article (treating as failed)",
-				"path", f.info.Path,
-				"offset", req.Offset,
-				"error", err,
-			)
-			// Treat the I/O error as a failed article so partsWritten
+		if !a.writeArticleOrBuffer(f, key, req, wc, open) {
+			// Write failed — treat as a failed article so partsWritten
 			// still increments. Without this, the job stalls forever
 			// because TotalParts is never reached. The job will
 			// eventually go hopeless if enough articles fail.
@@ -626,9 +631,6 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 			if req.MessageID != "" {
 				f.seenDone[req.MessageID] = struct{}{}
 			}
-			// Note: f.handle.Sync() removed from here to improve throughput.
-			// Durability is handled by syncing on file completion and
-			// periodic queue checkpoints.
 			a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
 		}
 	}
@@ -639,6 +641,8 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		"part", f.partsWritten, "total", f.info.TotalParts,
 		"offset", req.Offset, "bytes", len(req.Data), "failed", req.FatalErr != nil)
 	if f.info.TotalParts > 0 && f.partsWritten >= f.info.TotalParts {
+		// Drain any remaining cached articles for this file before close.
+		a.drainCacheForFile(wc, f, key)
 		// Durability: fsync before closing and reporting completion.
 		if err := f.handle.Sync(); err != nil {
 			a.log.Error("fsync completed file",
@@ -689,6 +693,124 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 		}
 		if free < a.opts.MinFreeBytes {
 			a.opts.OnLowDisk(dir, free)
+		}
+	}
+}
+
+// writeArticleOrBuffer either buffers the article in the write cache (if
+// enabled and coalescing is active) or writes it directly to disk. Returns
+// true if the data was successfully written or buffered, false on I/O error.
+//
+// When caching is enabled, the article is buffered in memory. After each
+// buffer insertion, contiguous runs are checked and flushed as a single
+// coalesced WriteAt. Under memory pressure (>90% of limit), the file with
+// the most buffered data is force-flushed.
+func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequest, wc *writeCache, open map[fileKey]*openFile) bool {
+	if wc.buffer(key, req.Offset, req.Data) {
+		// Article buffered. Check for a flushable contiguous run.
+		if run := wc.flushContiguous(key); run != nil {
+			if _, err := f.handle.WriteAt(run.data, run.offset); err != nil {
+				a.log.Error("write coalesced run",
+					"path", f.info.Path,
+					"offset", run.offset,
+					"bytes", len(run.data),
+					"error", err,
+				)
+			}
+		}
+		// Relieve memory pressure if needed.
+		for wc.pressure() {
+			a.flushPressure(wc, open)
+		}
+		return true
+	}
+	// Caching disabled — write directly.
+	if _, err := f.handle.WriteAt(req.Data, req.Offset); err != nil {
+		a.log.Error("write article",
+			"path", f.info.Path,
+			"offset", req.Offset,
+			"error", err,
+		)
+		return false
+	}
+	return true
+}
+
+// flushPressure force-flushes the file with the most buffered data to
+// relieve memory pressure. Called from writeArticleOrBuffer when the
+// cache exceeds 90% of its limit.
+func (a *Assembler) flushPressure(wc *writeCache, open map[fileKey]*openFile) {
+	fk, arts := wc.forceFlushLargest()
+	if len(arts) == 0 {
+		return
+	}
+	f, ok := open[fk]
+	if !ok {
+		a.log.Warn("pressure flush for unknown file",
+			"jobID", fk.jobID, "fileIdx", fk.fileIdx,
+			"articles", len(arts),
+		)
+		return
+	}
+	a.log.Debug("write cache pressure flush",
+		"path", f.info.Path,
+		"articles", len(arts),
+		"used", wc.used,
+		"limit", wc.limit,
+	)
+	for _, art := range arts {
+		if _, err := f.handle.WriteAt(art.data, art.offset); err != nil {
+			a.log.Error("pressure flush write",
+				"path", f.info.Path,
+				"offset", art.offset,
+				"error", err,
+			)
+		}
+	}
+}
+
+// drainCacheForFile writes all remaining cached articles for a file
+// directly to disk. Called just before file completion/close.
+func (a *Assembler) drainCacheForFile(wc *writeCache, f *openFile, key fileKey) {
+	if !wc.enabled() {
+		return
+	}
+	_, arts := wc.drainFile(key)
+	for _, art := range arts {
+		if _, err := f.handle.WriteAt(art.data, art.offset); err != nil {
+			a.log.Error("drain cached article to disk",
+				"path", f.info.Path,
+				"offset", art.offset,
+				"error", err,
+			)
+		}
+	}
+}
+
+// flushWriteCache drains all cached articles across all files to disk.
+// Called on assembler shutdown.
+func (a *Assembler) flushWriteCache(wc *writeCache, open map[fileKey]*openFile) {
+	if !wc.enabled() {
+		return
+	}
+	allArts := wc.drainAll()
+	for key, arts := range allArts {
+		f, ok := open[key]
+		if !ok {
+			a.log.Warn("cached articles for unknown file on shutdown",
+				"jobID", key.jobID, "fileIdx", key.fileIdx,
+				"articles", len(arts),
+			)
+			continue
+		}
+		for _, art := range arts {
+			if _, err := f.handle.WriteAt(art.data, art.offset); err != nil {
+				a.log.Error("flush cached article on shutdown",
+					"path", f.info.Path,
+					"offset", art.offset,
+					"error", err,
+				)
+			}
 		}
 	}
 }

@@ -22,6 +22,13 @@ type DownloadConfig struct {
 	// constants.MaxArticleCacheBytes.
 	ArticleCacheSize ByteSize `yaml:"article_cache_size" json:"article_cache_size"`
 
+	// WriteCacheSize is the memory budget for write coalescing in the
+	// assembler. When positive, decoded articles are buffered in memory
+	// and flushed as larger contiguous writes, reducing I/O syscall
+	// count and improving sequential write patterns. Zero disables
+	// coalescing (each article is written individually).
+	WriteCacheSize ByteSize `yaml:"write_cache_size" json:"write_cache_size"`
+
 	// MaxArtTries is the per-article attempt count across all servers
 	// before the article is marked bad. Must be >= 1.
 	MaxArtTries int `yaml:"max_art_tries" json:"max_art_tries"`

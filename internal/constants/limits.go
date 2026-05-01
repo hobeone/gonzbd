@@ -29,6 +29,12 @@ const (
 	// to disk to free memory. Python:
 	// ARTICLE_CACHE_NON_CONTIGUOUS_FLUSH_PERCENTAGE = 0.9.
 	ArticleCacheNonContiguousFlushPercentage = 0.9
+
+	// DefaultWriteCacheBytes is the default assembler write coalescing
+	// cache size. Buffered articles are flushed as larger contiguous
+	// writes, reducing I/O syscall count. 64 MiB holds ~90 typical
+	// articles (700KB each).
+	DefaultWriteCacheBytes int64 = 64 * MiB
 )
 
 // Assembler / decoder limits.

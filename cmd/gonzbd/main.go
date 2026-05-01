@@ -218,12 +218,13 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	histRepo := history.NewRepository(histDB)
 
 	application, err := app.New(app.Config{
-		DownloadDir: dlDir,
-		CompleteDir: cfg.General.CompleteDir,
-		AdminDir:    adminDir,
-		CacheLimit:  int64(cfg.Downloads.ArticleCacheSize),
-		Servers:     enabledServers(cfg.Servers),
-		Categories:  cfg.Categories,
+		DownloadDir:     dlDir,
+		CompleteDir:     cfg.General.CompleteDir,
+		AdminDir:        adminDir,
+		CacheLimit:      int64(cfg.Downloads.ArticleCacheSize),
+		WriteCacheBytes: int64(cfg.Downloads.WriteCacheSize),
+		Servers:         enabledServers(cfg.Servers),
+		Categories:      cfg.Categories,
 		Sanitize: fsutil.SanitizeOptions{
 			ReplaceIllegalWith: cfg.Downloads.ReplaceIllegalWith,
 			ReplaceSpacesWith:  cfg.Downloads.ReplaceSpacesWith,
@@ -702,12 +703,13 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 	}
 
 	application, err := app.New(app.Config{
-		DownloadDir: dlDir,
-		CompleteDir: cfg.General.CompleteDir,
-		AdminDir:    adminDir,
-		CacheLimit:  int64(cfg.Downloads.ArticleCacheSize),
-		Servers:     enabledServers(cfg.Servers),
-		Categories:  cfg.Categories,
+		DownloadDir:     dlDir,
+		CompleteDir:     cfg.General.CompleteDir,
+		AdminDir:        adminDir,
+		CacheLimit:      int64(cfg.Downloads.ArticleCacheSize),
+		WriteCacheBytes: int64(cfg.Downloads.WriteCacheSize),
+		Servers:         enabledServers(cfg.Servers),
+		Categories:      cfg.Categories,
 	}, repo)
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
