@@ -616,6 +616,19 @@ func (d *Downloader) signalDispatch() {
 	}
 }
 
+func (d *Downloader) checkExpiredPenalties() {
+	now := time.Now()
+	for _, srv := range d.servers {
+		// Active returns true if the server is enabled and has no active penalty.
+		// By clearing deactivation on all active servers, we ensure any expired
+		// penalties are completely erased from the state, making Server.Active()
+		// side-effect free.
+		if srv.Active(now) {
+			srv.ClearDeactivation()
+		}
+	}
+}
+
 // run is the main dispatcher loop. One goroutine. Selects on three
 // sources:
 //
@@ -639,10 +652,13 @@ func (d *Downloader) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-d.queue.Notify():
+			d.checkExpiredPenalties()
 			d.dispatchPass(ctx)
 		case <-d.dispatchReady:
+			d.checkExpiredPenalties()
 			d.dispatchPass(ctx)
 		case <-ticker.C:
+			d.checkExpiredPenalties()
 			d.dispatchPass(ctx)
 		}
 	}

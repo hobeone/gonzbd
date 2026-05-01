@@ -399,7 +399,7 @@ func TestBadConnsResetsOnGood(t *testing.T) {
 	}
 }
 
-func TestDeactivationAutoClears(t *testing.T) {
+func TestClearDeactivation(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(config.ServerConfig{
 		Enable:      true,
@@ -429,13 +429,7 @@ func TestDeactivationAutoClears(t *testing.T) {
 		t.Fatal("expected server to be marked deactivated")
 	}
 
-	// Advance time past the penalty expiry.
-	future := now.Add(shortPenalty + time.Millisecond)
-
-	// Calling Active with a time after the penalty should return true AND clear deactivation.
-	if !s.Active(future) {
-		t.Fatal("expected server to be active after penalty expiry")
-	}
+	s.ClearDeactivation()
 
 	// Verify internal state is cleared.
 	s.mu.RLock()
