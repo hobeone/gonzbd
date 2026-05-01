@@ -149,6 +149,12 @@ type Job struct {
 	// Usually accompanied by StatusPaused.
 	Warning string `json:"warning,omitempty"`
 
+	// PendingArticles is the count of articles across all files that are
+	// not Done and not Emitted. Maintained by queue mutation methods;
+	// recomputed on load. Allows ForEachUnfinishedArticle to skip entire
+	// jobs in O(1) when all articles are complete.
+	PendingArticles int `json:"-"`
+
 	// artIdx is a transient, in-memory index from messageID → *JobArticle
 	// for O(1) lookups. Built lazily by articleByID and not serialised
 	// (article slice addresses change on deserialisation anyway).
@@ -161,15 +167,44 @@ type Job struct {
 // Must be called under the queue's lock (read or write).
 func (j *Job) articleByID(messageID string) *JobArticle {
 	if j.artIdx == nil {
-		j.artIdx = make(map[string]*JobArticle)
-		for fi := range j.Files {
-			for ai := range j.Files[fi].Articles {
-				art := &j.Files[fi].Articles[ai]
-				j.artIdx[art.ID] = art
-			}
-		}
+		j.buildArtIndex()
 	}
 	return j.artIdx[messageID]
+}
+
+// buildArtIndex populates the messageID→*JobArticle index and sets
+// FileIdx on each article for back-reference to the containing file.
+func (j *Job) buildArtIndex() {
+	j.artIdx = make(map[string]*JobArticle)
+	for fi := range j.Files {
+		for ai := range j.Files[fi].Articles {
+			art := &j.Files[fi].Articles[ai]
+			art.FileIdx = fi
+			j.artIdx[art.ID] = art
+		}
+	}
+}
+
+// recomputePending recalculates Pending on every file and
+// PendingArticles on the job from the ground truth (article Done/Emitted
+// flags). Called on Load and ClearAllEmitted where batch state changes
+// make incremental tracking impractical. Also builds the artIdx if not
+// yet populated.
+func (j *Job) recomputePending() {
+	total := 0
+	for fi := range j.Files {
+		n := 0
+		for ai := range j.Files[fi].Articles {
+			art := &j.Files[fi].Articles[ai]
+			art.FileIdx = fi
+			if !art.Done && !art.Emitted {
+				n++
+			}
+		}
+		j.Files[fi].Pending = n
+		total += n
+	}
+	j.PendingArticles = total
 }
 
 // JobFile is a single file within a job: its articles, its assembly
@@ -182,6 +217,11 @@ type JobFile struct {
 	// Complete is set once all articles have downloaded and the file
 	// has been assembled on disk.
 	Complete bool `json:"complete,omitempty"`
+	// Pending is the count of articles in this file that are not Done
+	// and not Emitted. Maintained by queue mutation methods; recomputed
+	// on load. Allows ForEachUnfinishedArticle to skip completed files
+	// in O(1). Excluded from JSON since it's derived state.
+	Pending int `json:"-"`
 }
 
 // JobArticle is a single NNTP article. The structural fields (ID,
@@ -200,6 +240,11 @@ type JobArticle struct {
 	// Excluded from JSON persistence so a restart re-dispatches articles
 	// whose bytes hadn't reached stable storage before the crash.
 	Emitted bool `json:"-"`
+	// FileIdx is the index of the containing JobFile within Job.Files.
+	// Set by buildArtIndex/recomputePending; used by mutation methods
+	// to update the per-file Pending counter in O(1) without scanning
+	// for the parent file.
+	FileIdx int `json:"-"`
 }
 
 // AddOptions carries the call-site arguments for NewJob. Zero values

@@ -114,6 +114,12 @@ func (q *Queue) CountUnfinishedArticles(jobID string, fileIdx int) (int, error) 
 	if fileIdx < 0 || fileIdx >= len(job.Files) {
 		return 0, fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
 	}
+	// Count from the article state directly rather than using
+	// file.Pending. Pending tracks !Done && !Emitted, but this
+	// method counts !Done (including Emitted articles). The
+	// difference matters for resume where Emitted articles
+	// shouldn't be counted as "unfinished" yet haven't been
+	// durably committed.
 	var count int
 	for ai := range job.Files[fileIdx].Articles {
 		if !job.Files[fileIdx].Articles[ai].Done {
@@ -208,6 +214,11 @@ func (q *Queue) Add(job *Job) error {
 		}
 		job.Name = fmt.Sprintf("%s.%d", baseName, i)
 	}
+
+	// Initialize pending counters and article index from the fresh
+	// job's article state (all articles start with Done=false,
+	// Emitted=false so Pending == len(Articles) per file).
+	job.recomputePending()
 
 	q.insertByPriorityLocked(job)
 	q.byID[job.ID] = job
@@ -407,12 +418,12 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 	for _, job := range q.jobs {
 		// Skip jobs already handed to post-processing or fully complete.
 		// Without this, aborted/hopeless jobs continue wasting bandwidth.
-		if job.PostProc {
+		if job.PostProc || job.PendingArticles == 0 {
 			continue
 		}
 		for fi := range job.Files {
 			file := &job.Files[fi]
-			if file.Complete {
+			if file.Complete || file.Pending == 0 {
 				continue
 			}
 			for ai := range file.Articles {
@@ -469,7 +480,11 @@ func (q *Queue) MarkArticleEmitted(jobID, messageID string) error {
 	if art == nil {
 		return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 	}
-	art.Emitted = true
+	if !art.Emitted && !art.Done {
+		art.Emitted = true
+		job.Files[art.FileIdx].Pending--
+		job.PendingArticles--
+	}
 	return nil
 }
 
@@ -489,7 +504,11 @@ func (q *Queue) ClearArticleEmitted(jobID, messageID string) error {
 	if art == nil {
 		return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 	}
-	art.Emitted = false
+	if art.Emitted {
+		art.Emitted = false
+		job.Files[art.FileIdx].Pending++
+		job.PendingArticles++
+	}
 	q.notifyLocked()
 	return nil
 }
@@ -532,6 +551,10 @@ func (q *Queue) ClearAllEmitted() {
 				}
 			}
 		}
+		// Recompute pending counters from ground truth after bulk
+		// state reset. Incremental tracking is fragile here because
+		// both Emitted and Failed flags are being cleared in bulk.
+		job.recomputePending()
 	}
 	// Drain any stale notification (e.g. from MarkArticleDone calls during
 	// pipeline drain of the old downloader's buffered results) so our fresh
@@ -570,6 +593,13 @@ func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
 		return false, fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 	}
 	if !art.Done {
+		// Article was either pending (!Emitted) or in-flight (Emitted).
+		// If it was Emitted, Pending was already decremented by
+		// MarkArticleEmitted; if not, decrement now.
+		if !art.Emitted {
+			job.Files[art.FileIdx].Pending--
+			job.PendingArticles--
+		}
 		art.Done = true
 		art.Failed = true
 		job.FailedBytes += int64(art.Bytes)
@@ -612,6 +642,12 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 		if art.Done {
 			continue
 		}
+		// If the article was Emitted, Pending was already decremented;
+		// if it was still pending (!Emitted), decrement now.
+		if !art.Emitted {
+			job.Files[art.FileIdx].Pending--
+			job.PendingArticles--
+		}
 		art.Done = true
 		job.RemainingBytes -= int64(art.Bytes)
 	}
@@ -645,6 +681,10 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 		}
 		if art.Done {
 			continue
+		}
+		if !art.Emitted {
+			job.Files[art.FileIdx].Pending--
+			job.PendingArticles--
 		}
 		art.Done = true
 		art.Failed = true
