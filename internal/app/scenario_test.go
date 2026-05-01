@@ -83,7 +83,6 @@ func newScenarioHarnessWithConns(t testing.TB, conns int) *scenarioHarness {
 		DownloadDir: h.downloadDir,
 		CompleteDir: h.completeDir,
 		AdminDir:    h.adminDir,
-		CacheLimit:  1 << 20,
 		Servers:     []config.ServerConfig{h.server.ServerConfig("scenario", conns)},
 	}
 

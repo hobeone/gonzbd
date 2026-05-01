@@ -165,7 +165,6 @@ func buildAppConfig(mockAddr, downloadDir string) app.Config {
 		DownloadDir: downloadDir,
 		CompleteDir: downloadDir,
 		AdminDir:    downloadDir,
-		CacheLimit:  0,
 		Servers: []config.ServerConfig{
 			{
 				Name:        "test",

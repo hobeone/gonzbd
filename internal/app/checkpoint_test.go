@@ -31,7 +31,6 @@ func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, 
 		DownloadDir:        downloadDir,
 		CompleteDir:        completeDir,
 		AdminDir:           adminDir,
-		CacheLimit:         1 * 1024 * 1024,
 		CheckpointInterval: interval,
 		Servers: []config.ServerConfig{{
 			Name:   "mock",

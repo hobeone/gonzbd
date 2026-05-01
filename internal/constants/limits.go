@@ -13,23 +13,9 @@ const (
 	TiB int64 = 1 << 40
 )
 
-// Article cache limits. The cache holds decoded article bodies in memory
-// between the decoder and the assembler, with optional disk spill.
+// Write cache limits. The write coalescing cache buffers decoded articles
+// in the assembler and flushes them as larger contiguous writes.
 const (
-	// DefaultArticleCacheBytes is the default in-memory article cache size.
-	// Python: DEF_ARTICLE_CACHE_DEFAULT = "500M".
-	DefaultArticleCacheBytes int64 = 500 * MiB
-
-	// MaxArticleCacheBytes is the upper bound on the configurable cache
-	// size. Python: DEF_ARTICLE_CACHE_MAX = "1G".
-	MaxArticleCacheBytes int64 = 1 * GiB
-
-	// ArticleCacheNonContiguousFlushPercentage is the cache-fill fraction
-	// at which non-contiguous (gap-leaving) article runs are forced out
-	// to disk to free memory. Python:
-	// ARTICLE_CACHE_NON_CONTIGUOUS_FLUSH_PERCENTAGE = 0.9.
-	ArticleCacheNonContiguousFlushPercentage = 0.9
-
 	// DefaultWriteCacheBytes is the default assembler write coalescing
 	// cache size. Buffered articles are flushed as larger contiguous
 	// writes, reducing I/O syscall count. 64 MiB holds ~90 typical
