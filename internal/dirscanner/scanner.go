@@ -154,7 +154,7 @@ func (s *Scanner) ScanOnce(ctx context.Context) (int, error) {
 //
 // Returns the set of files observed (for store cleanup) and the number
 // of files that were successfully processed.
-func (s *Scanner) scanDir(ctx context.Context, dir, category string) (map[string]FileState, int, error) {
+func (s *Scanner) scanDir(ctx context.Context, dir, category string) (files map[string]FileState, nzbCount int, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to read directory: %w", err)

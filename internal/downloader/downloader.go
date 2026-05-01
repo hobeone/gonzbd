@@ -130,6 +130,7 @@ type Options struct {
 // atomic rate-limiter pointer are read by workers without locking;
 // the per-server work channels are written by the dispatcher and
 // read by workers; the try-list has its own mutex.
+
 // ConnActivity describes what a single NNTP connection worker is doing
 // right now. Written only by the owning connWorker goroutine; read by
 // ServerStatus() under connActivityMu.RLock.
@@ -174,6 +175,7 @@ type ServerSnapshot struct {
 	Connections    []ConnSnapshot `json:"connections"`
 }
 
+// Downloader orchestrates article dispatch across a set of NNTP servers.
 type Downloader struct {
 	log     *slog.Logger
 	queue   *queue.Queue
