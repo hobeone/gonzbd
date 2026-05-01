@@ -137,6 +137,11 @@ func Load(dir string) (*Queue, error) {
 		}
 		q.jobs = append(q.jobs, &job)
 		q.byID[id] = &job
+		// Initialize transient state (pending counters, artIdx,
+		// FileIdx back-pointers) from the loaded article flags.
+		// These fields are excluded from JSON (json:"-") and must
+		// be recomputed after every deserialisation.
+		job.recomputePending()
 	}
 	q.Prune()
 	return q, nil

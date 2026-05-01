@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/nntp"
@@ -54,6 +55,14 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 	// We drain this list after the iterator returns.
 	var exhausted []*articleRequest
 
+	// Snapshot server configs once per pass. srv.Cfg() returns a
+	// by-value struct copy; calling it per-article per-server was
+	// 0.69s in the pprof (lines 185/191). Cache here.
+	serverCfgs := make([]config.ServerConfig, len(d.servers))
+	for i, srv := range d.servers {
+		serverCfgs[i] = srv.Cfg()
+	}
+
 	d.queue.ForEachUnfinishedArticle(func(a queue.UnfinishedArticle) bool {
 		if a.JobStatus == constants.StatusPaused {
 			return true // skip paused jobs, keep iterating
@@ -65,7 +74,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 			return true // Move to next job
 		}
 
-		handled, exReq := d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, a.Subject, now)
+		handled, exReq := d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, a.Subject, now, serverCfgs)
 		if handled {
 			dispatched++
 			activeJobs[a.JobID] = struct{}{}
@@ -151,7 +160,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 //
 // A future dispatchReady signal from any worker will bring us back to
 // re-try articles that returned (false, nil).
-func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int, messageID string, bytes int, subject string, now time.Time) (bool, *articleRequest) {
+func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int, messageID string, bytes int, subject string, now time.Time, serverCfgs []config.ServerConfig) (bool, *articleRequest) {
 	key := articleKey(messageID)
 
 	d.tryMu.Lock()
@@ -182,13 +191,13 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 	anyEligible := false
 	allTried := true // assume all tried until proven otherwise
 	for idx, srv := range d.servers {
-		name := srv.Cfg().Name
+		cfg := &serverCfgs[idx]
 		if hasTried && mask.has(idx) {
 			continue
 		}
 		// Permanently disabled servers are not candidates — skip them
 		// entirely so they don't prevent allTried from becoming true.
-		if !srv.Cfg().Enable {
+		if !cfg.Enable {
 			continue
 		}
 		// This server hasn't been tried yet.
@@ -200,7 +209,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 			continue
 		}
 		anyEligible = true
-		ch, ok := d.workCh[name]
+		ch, ok := d.workCh[cfg.Name]
 		if !ok {
 			continue
 		}
