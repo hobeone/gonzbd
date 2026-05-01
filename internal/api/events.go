@@ -78,7 +78,7 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 		b.log.Error("WebSocket accept failed", "err", err)
 		return
 	}
-	defer conn.Close(websocket.StatusInternalError, "closing")
+	defer conn.Close(websocket.StatusInternalError, "closing") //nolint:errcheck // best-effort close on exit
 
 	c := &client{
 		send: make(chan []byte, 16),
@@ -124,7 +124,7 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				// Channel closed by Broadcast (buffer overflow) —
 				// close connection so UI reconnects.
-				_ = conn.Close(websocket.StatusGoingAway, "buffer overflow")
+				_ = conn.Close(websocket.StatusGoingAway, "buffer overflow") //nolint:errcheck // best-effort close on disconnect
 				return
 			}
 			writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)

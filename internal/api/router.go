@@ -140,11 +140,12 @@ func (s *Server) modeAuth(w http.ResponseWriter, r *http.Request) {
 	auth := s.getAuth()
 	// Use constant-time comparison to prevent timing attacks.
 	// This endpoint is LevelOpen (unauthenticated).
-	if subtle.ConstantTimeCompare([]byte(key), []byte(auth.APIKey)) == 1 {
+	switch {
+	case subtle.ConstantTimeCompare([]byte(key), []byte(auth.APIKey)) == 1:
 		respondOK(w, "auth", "apikey")
-	} else if subtle.ConstantTimeCompare([]byte(key), []byte(auth.NZBKey)) == 1 {
+	case subtle.ConstantTimeCompare([]byte(key), []byte(auth.NZBKey)) == 1:
 		respondOK(w, "auth", "nzbkey")
-	} else {
+	default:
 		respondOK(w, "auth", "badkey")
 	}
 }

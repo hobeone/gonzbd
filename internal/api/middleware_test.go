@@ -411,9 +411,3 @@ func TestStatusWriter_DoubleWriteHeader(t *testing.T) {
 		t.Errorf("first status should win: got %d, want 201", sw.status)
 	}
 }
-
-// Helper: checks if a query string contains a literal value.
-func containsValue(query, val string) bool {
-	// Simple substring check.
-	return len(query) > 0 && len(val) > 0 && (query == val || len(query) > len(val))
-}
