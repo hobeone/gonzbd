@@ -99,8 +99,7 @@ func UnRAR(ctx context.Context, archive Archive, outDir string, opts Options) (R
 		args = append(args, "-ts0") // discard in-archive timestamps
 	}
 
-	args = append(args, archive.MainFile)
-	args = append(args, outDir+"/") // unrar expects a trailing slash on the output directory
+	args = append(args, archive.MainFile, outDir+"/") // unrar expects a trailing slash on the output directory
 
 	bin := opts.unrarBin()
 
