@@ -22,6 +22,9 @@ var ErrAlreadyStarted = errors.New("downloader: already started")
 // available, eligible servers and failed on all of them.
 var ErrNoServersLeft = errors.New("downloader: article failed on all servers")
 
+// errServerPenalized is used internally when dialing a penalized server.
+var errServerPenalized = errors.New("server penalized")
+
 // ArticleResult is emitted by the Downloader for every fetched
 // article, successful or not. Consumers (the assembler, future steps)
 // read from Completions() and process in order of arrival — the
