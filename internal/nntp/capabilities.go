@@ -2,6 +2,7 @@ package nntp
 
 import (
 	"bufio"
+	"log/slog"
 	"strings"
 )
 
@@ -37,33 +38,36 @@ type Capabilities struct {
 
 // probeCapabilities issues CAPABILITIES and parses the dot-terminated
 // response. Any protocol failure (including 5xx "unknown command")
-// yields a conservative default: HasBody=true, HasStat=true. The
-// function only reports an error by returning nil, which callers may
-// treat as "probe failed, use defaults" — see Dial's handling.
+// yields a conservative default: HasBody=true, HasStat=true.
 //
 // Writes go through bw (which the caller must flush-safely own) and
 // responses come from br. Used synchronously during handshake, before
 // the reader goroutine starts, so no pending-FIFO bookkeeping is
 // required.
-func probeCapabilities(bw *bufio.Writer, br *bufio.Reader) *Capabilities {
+func probeCapabilities(log *slog.Logger, bw *bufio.Writer, br *bufio.Reader) *Capabilities {
 	if _, err := bw.WriteString("CAPABILITIES\r\n"); err != nil {
+		log.Debug("probeCapabilities: write failed", "error", err)
 		return defaultCapabilities()
 	}
 	if err := bw.Flush(); err != nil {
+		log.Debug("probeCapabilities: flush failed", "error", err)
 		return defaultCapabilities()
 	}
 	line, err := readResponseLine(br)
 	if err != nil {
+		log.Debug("probeCapabilities: read greeting failed", "error", err)
 		return defaultCapabilities()
 	}
-	code, _, err := parseStatus(line)
+	code, text, err := parseStatus(line)
 	if err != nil || code != 101 {
 		// Either the server refused or sent garbage. Fall back to
 		// the RFC-mandated defaults.
+		log.Debug("probeCapabilities: server rejected or malformed response", "code", code, "text", text, "error", err)
 		return defaultCapabilities()
 	}
 	body, err := readDotStuffedBody(br)
 	if err != nil {
+		log.Debug("probeCapabilities: read body failed", "error", err)
 		return defaultCapabilities()
 	}
 	return parseCapabilities(string(body))
