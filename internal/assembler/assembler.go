@@ -398,16 +398,17 @@ func (a *Assembler) worker() {
 				cancelID := req.MessageID
 				cancelledJobs[cancelID] = struct{}{}
 				for k, f := range open {
-					if k.jobID == cancelID {
-						_ = f.handle.Close() //nolint:errcheck // best-effort; file is immediately removed
-						if err := os.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
-							a.log.Warn("failed to remove cancelled file",
-								"path", f.info.Path, "error", err)
-						}
-						delete(open, k)
-						completed[k] = struct{}{}
-						wc.forget(k) // discard cached articles for cancelled file
+					if k.jobID != cancelID {
+						continue
 					}
+					_ = f.handle.Close() //nolint:errcheck // best-effort; file is immediately removed
+					if err := os.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
+						a.log.Warn("failed to remove cancelled file",
+							"path", f.info.Path, "error", err)
+					}
+					delete(open, k)
+					completed[k] = struct{}{}
+					wc.forget(k) // discard cached articles for cancelled file
 				}
 				continue
 			}

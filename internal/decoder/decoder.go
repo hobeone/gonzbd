@@ -100,6 +100,7 @@ func DecodeArticle(body []byte) (Article, error) {
 	// so search for "\n=yend" to avoid false matches from encoded body data
 	// that happens to contain the byte sequence "=yend".
 	trailerIdx := bytes.Index(body[bodyStart:], []byte("\n=yend"))
+	//nolint:gocritic // ifElseChain: retained because trailerIdx is mutated across branches
 	if trailerIdx >= 0 {
 		trailerIdx += bodyStart + 1 // skip the \n, point at '='
 	} else if bytes.HasPrefix(body[bodyStart:], []byte("=yend")) {
