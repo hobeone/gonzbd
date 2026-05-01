@@ -69,7 +69,7 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 		t.Fatalf("app.New: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if err := application.Start(ctx); err != nil {
 		t.Fatalf("app.Start: %v", err)

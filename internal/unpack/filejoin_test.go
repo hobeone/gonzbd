@@ -34,7 +34,7 @@ func TestFileJoin_Success(t *testing.T) {
 		},
 	}
 
-	res, err := FileJoin(context.Background(), archive, outDir, Options{})
+	res, err := FileJoin(t.Context(), archive, outDir, Options{})
 	if err != nil {
 		t.Fatalf("FileJoin: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestFileJoin_Success(t *testing.T) {
 func TestFileJoin_WrongArchiveType(t *testing.T) {
 	t.Parallel()
 	archive := Archive{Type: RarArchive, Name: "wrong"}
-	_, err := FileJoin(context.Background(), archive, t.TempDir(), Options{})
+	_, err := FileJoin(t.Context(), archive, t.TempDir(), Options{})
 	if err == nil {
 		t.Error("expected error for wrong archive type")
 	}
@@ -63,7 +63,7 @@ func TestFileJoin_WrongArchiveType(t *testing.T) {
 func TestFileJoin_NoParts(t *testing.T) {
 	t.Parallel()
 	archive := Archive{Type: SplitArchive, Name: "empty", Parts: nil}
-	_, err := FileJoin(context.Background(), archive, t.TempDir(), Options{})
+	_, err := FileJoin(t.Context(), archive, t.TempDir(), Options{})
 	if err == nil {
 		t.Error("expected error for no parts")
 	}
@@ -86,7 +86,7 @@ func TestFileJoin_OutputAlreadyExists(t *testing.T) {
 		Parts:    []string{partPath},
 	}
 
-	_, err := FileJoin(context.Background(), archive, outDir, Options{})
+	_, err := FileJoin(t.Context(), archive, outDir, Options{})
 	if err == nil {
 		t.Error("expected error when output file already exists")
 	}
@@ -109,7 +109,7 @@ func TestFileJoin_ContextCancel(t *testing.T) {
 		Parts:    []string{filepath.Join(dir, "cancel.001"), filepath.Join(dir, "cancel.002")},
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	_, err := FileJoin(ctx, archive, outDir, Options{})
@@ -138,7 +138,7 @@ func TestFileJoin_NonContiguousParts(t *testing.T) {
 		Parts:    []string{filepath.Join(dir, "gap.001"), filepath.Join(dir, "gap.003")},
 	}
 
-	_, err := FileJoin(context.Background(), archive, t.TempDir(), Options{})
+	_, err := FileJoin(t.Context(), archive, t.TempDir(), Options{})
 	if err == nil {
 		t.Error("expected error for non-contiguous parts")
 	}
@@ -159,7 +159,7 @@ func TestFileJoin_MissingPartFile(t *testing.T) {
 		Parts:    []string{filepath.Join(dir, "miss.001"), filepath.Join(dir, "miss.002")},
 	}
 
-	_, err := FileJoin(context.Background(), archive, outDir, Options{})
+	_, err := FileJoin(t.Context(), archive, outDir, Options{})
 	if err == nil {
 		t.Error("expected error for missing part file")
 	}

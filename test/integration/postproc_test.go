@@ -31,7 +31,7 @@ func TestPostProc_Par2VerifyOK(t *testing.T) {
 
 	// Create par2 set using the binary (test setup only).
 	parFile := filepath.Join(dir, "data.par2")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
 	//nolint:gosec // G204: par2 binary called with test-generated paths under TempDir
@@ -73,7 +73,7 @@ func TestPostProc_Par2VerifyAndRepair(t *testing.T) {
 		t.Fatalf("write data file: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 
 	// Create par2 set.
@@ -154,7 +154,7 @@ func TestPostProc_UnrarExtract(t *testing.T) {
 
 	dir := t.TempDir()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
 	// Use unrar directly since the unpack package's integration point is the

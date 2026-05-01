@@ -76,7 +76,7 @@ func (s *recordStage) Calls() []string {
 func startProcessor(t *testing.T, opts Options) *PostProcessor {
 	t.Helper()
 	p := New(opts)
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() {
@@ -185,7 +185,7 @@ func TestPauseResume(t *testing.T) {
 	p.Pause()
 
 	// Enqueue 3 jobs while paused.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		p.q.Push(&Job{Queue: &queue.Job{ID: "j" + string(rune('0'+i)), Name: "j" + string(rune('0'+i))}})
 	}
 
@@ -210,7 +210,7 @@ func TestStopDuringInFlightStage(t *testing.T) {
 	blocker := &recordStage{name: "blocker", block: block}
 
 	p := New(Options{Stages: []Stage{blocker}})
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -382,7 +382,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 	before := runtime.NumGoroutine()
 
 	p := New(Options{})
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	// Give the worker goroutine time to start.
@@ -411,7 +411,7 @@ func TestPPQueueOrdering(t *testing.T) {
 		q.Push(&Job{Queue: &queue.Job{ID: n, Name: n}})
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 
 	for _, want := range names {
@@ -432,7 +432,7 @@ func TestPPQueueCancel(t *testing.T) {
 	if !q.Cancel("a") {
 		t.Error("Cancel('a') = false, want true")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	job, ok := q.Pop(ctx)
 	if !ok || job.Queue.ID != "b" {
@@ -446,7 +446,7 @@ func TestPPQueueCancel(t *testing.T) {
 
 func TestPPQueuePopCancelledCtx(t *testing.T) {
 	q := newPPQueue()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // already done
 
 	_, ok := q.Pop(ctx)

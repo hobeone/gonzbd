@@ -277,7 +277,7 @@ func TestPipelinedFetches(t *testing.T) {
 		// the interleaving from the client side, only the order of
 		// requests-received, which the protocol guarantees matches
 		// the order of responses-sent.
-		for i := 0; i < n; i++ {
+		for range n {
 			line := c.readLine()
 			id := strings.TrimSuffix(strings.TrimPrefix(line, "BODY <"), ">")
 			c.send(fmt.Sprintf("222 0 <%s> body follows", id))
@@ -294,7 +294,7 @@ func TestPipelinedFetches(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

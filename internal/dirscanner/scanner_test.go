@@ -55,7 +55,7 @@ func TestStabilityDetection(t *testing.T) {
 	}
 
 	// First scan: file is recorded but not processed.
-	count, err := scanner.ScanOnce(context.Background())
+	count, err := scanner.ScanOnce(t.Context())
 	if err != nil {
 		t.Fatalf("first ScanOnce failed: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestStabilityDetection(t *testing.T) {
 	}
 
 	// Second scan without changes: file should be processed.
-	count, err = scanner.ScanOnce(context.Background())
+	count, err = scanner.ScanOnce(t.Context())
 	if err != nil {
 		t.Fatalf("second ScanOnce failed: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestStabilityResetOnChange(t *testing.T) {
 	}
 
 	// First scan records the file.
-	if _, err := scanner.ScanOnce(context.Background()); err != nil {
+	if _, err := scanner.ScanOnce(t.Context()); err != nil {
 		t.Fatalf("first ScanOnce failed: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestStabilityResetOnChange(t *testing.T) {
 	}
 
 	// Second scan should detect the change and reset stability.
-	count, err := scanner.ScanOnce(context.Background())
+	count, err := scanner.ScanOnce(t.Context())
 	if err != nil {
 		t.Fatalf("second ScanOnce failed: %v", err)
 	}
@@ -207,12 +207,12 @@ func TestHandlerError(t *testing.T) {
 	}
 
 	// First scan records the file.
-	if _, err := scanner.ScanOnce(context.Background()); err != nil {
+	if _, err := scanner.ScanOnce(t.Context()); err != nil {
 		t.Fatalf("first ScanOnce failed: %v", err)
 	}
 
 	// Second scan: handler fails but scan itself doesn't error (it logs).
-	count, err := scanner.ScanOnce(context.Background())
+	count, err := scanner.ScanOnce(t.Context())
 	if err != nil {
 		t.Errorf("ScanOnce should not error on handler failure: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestDotfilesSkipped(t *testing.T) {
 		t.Fatalf("failed to write dotfile: %v", err)
 	}
 
-	count, err := scanner.ScanOnce(context.Background())
+	count, err := scanner.ScanOnce(t.Context())
 	if err != nil {
 		t.Fatalf("ScanOnce failed: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestInvalidExtensionsSkipped(t *testing.T) {
 		t.Fatalf("failed to write invalid file: %v", err)
 	}
 
-	count, err := scanner.ScanOnce(context.Background())
+	count, err := scanner.ScanOnce(t.Context())
 	if err != nil {
 		t.Fatalf("ScanOnce failed: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestStoreSaveAndLoad(t *testing.T) {
 	}
 
 	// Add multiple entries.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		path := fmt.Sprintf("/path%d", i)
 		store.Set(path, FileState{Size: int64(i * 100), MTime: time.Now()})
 	}
@@ -418,7 +418,7 @@ func TestScanDirectoryNotFound(t *testing.T) {
 	handler := &MockHandler{failFor: make(map[string]error)}
 	scanner := New("/nonexistent/dir", store, handler, nil, nil)
 
-	_, err = scanner.ScanOnce(context.Background())
+	_, err = scanner.ScanOnce(t.Context())
 	if err == nil {
 		t.Errorf("expected error for nonexistent directory")
 	}
@@ -488,7 +488,7 @@ func TestCategorySubdirectory(t *testing.T) {
 	}
 
 	// First scan: records all files.
-	count, err := scanner.ScanOnce(context.Background())
+	count, err := scanner.ScanOnce(t.Context())
 	if err != nil {
 		t.Fatalf("first ScanOnce: %v", err)
 	}
@@ -497,7 +497,7 @@ func TestCategorySubdirectory(t *testing.T) {
 	}
 
 	// Second scan: stable files are processed.
-	count, err = scanner.ScanOnce(context.Background())
+	count, err = scanner.ScanOnce(t.Context())
 	if err != nil {
 		t.Fatalf("second ScanOnce: %v", err)
 	}
@@ -567,7 +567,7 @@ func TestCategorySubdirStability(t *testing.T) {
 	}
 
 	// First scan: record only.
-	count, err := scanner.ScanOnce(context.Background())
+	count, err := scanner.ScanOnce(t.Context())
 	if err != nil {
 		t.Fatalf("first scan: %v", err)
 	}
@@ -579,7 +579,7 @@ func TestCategorySubdirStability(t *testing.T) {
 	}
 
 	// Second scan: file is stable, should be processed.
-	count, err = scanner.ScanOnce(context.Background())
+	count, err = scanner.ScanOnce(t.Context())
 	if err != nil {
 		t.Fatalf("second scan: %v", err)
 	}
@@ -620,10 +620,10 @@ func TestDynamicCategoryUpdate(t *testing.T) {
 	}
 
 	// First two scans with no categories: subdir is ignored.
-	if _, err := scanner.ScanOnce(context.Background()); err != nil {
+	if _, err := scanner.ScanOnce(t.Context()); err != nil {
 		t.Fatalf("scan 1: %v", err)
 	}
-	count, err := scanner.ScanOnce(context.Background())
+	count, err := scanner.ScanOnce(t.Context())
 	if err != nil {
 		t.Fatalf("scan 2: %v", err)
 	}
@@ -636,10 +636,10 @@ func TestDynamicCategoryUpdate(t *testing.T) {
 
 	// Need two more scans: first to record (first sighting in subdir),
 	// second to process (stable).
-	if _, err := scanner.ScanOnce(context.Background()); err != nil {
+	if _, err := scanner.ScanOnce(t.Context()); err != nil {
 		t.Fatalf("scan 3: %v", err)
 	}
-	count, err = scanner.ScanOnce(context.Background())
+	count, err = scanner.ScanOnce(t.Context())
 	if err != nil {
 		t.Fatalf("scan 4: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestRarFilesIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Scan 1: observe
 	if _, _, err := scanner.scanDir(ctx, tmpDir, ""); err != nil {
@@ -706,7 +706,7 @@ func TestCorruptedFileRenamedToFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Scan 1: observe the file.
 	if _, _, err := scanner.scanDir(ctx, tmpDir, ""); err != nil {

@@ -136,7 +136,7 @@ func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDi
 		t.Fatalf("app.New: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	if err := a.Start(ctx); err != nil {
 		cancel()
 		t.Fatalf("app.Start: %v", err)
@@ -272,7 +272,7 @@ func waitForArticle(t *testing.T, cfg config.ServerConfig, messageID string, tim
 	interval := 2 * time.Second
 
 	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		conn, err := nntp.Dial(ctx, cfg)
 		cancel()
 		if err != nil {
@@ -281,7 +281,7 @@ func waitForArticle(t *testing.T, cfg config.ServerConfig, messageID string, tim
 			continue
 		}
 
-		ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx2, cancel2 := context.WithTimeout(t.Context(), 10*time.Second)
 		err = conn.Stat(ctx2, messageID)
 		cancel2()
 		_ = conn.Close() //nolint:errcheck // test polling; close error is irrelevant

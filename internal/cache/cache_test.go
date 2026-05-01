@@ -440,11 +440,11 @@ func TestConcurrentAccess(t *testing.T) {
 	dir := t.TempDir()
 
 	var wg sync.WaitGroup
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for i := 0; i < articlesEach; i++ {
+			for i := range articlesEach {
 				key := fmt.Sprintf("g%d-art%d", g, i)
 				data := make([]byte, articleSize)
 				for j := range data {
@@ -461,11 +461,11 @@ func TestConcurrentAccess(t *testing.T) {
 	var totalLoaded int64
 	var mu sync.Mutex
 	var lwg sync.WaitGroup
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		lwg.Add(1)
 		go func(g int) {
 			defer lwg.Done()
-			for i := 0; i < articlesEach; i++ {
+			for i := range articlesEach {
 				key := fmt.Sprintf("g%d-art%d", g, i)
 				data, err := c.Load(key, dir)
 				if err != nil {

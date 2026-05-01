@@ -1,7 +1,6 @@
 package app_test
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -34,7 +33,7 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	// persisted job carries the stats a real post-processed job would
 	// have recorded: a non-zero DownloadStarted and at least one
 	// ServerStats entry.
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := h.repo.Add(ctx, history.Entry{
 		NzoID:  jobID,
 		Name:   "retry-reset",

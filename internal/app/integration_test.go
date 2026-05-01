@@ -43,6 +43,7 @@ func TestEndToEndDownload(t *testing.T) {
 
 	application, err := app.New(app.Config{
 		DownloadDir: downloadDir,
+		CompleteDir: t.TempDir(),
 		AdminDir:    adminDir,
 		CacheLimit:  1 * 1024 * 1024,
 		Servers: []config.ServerConfig{{

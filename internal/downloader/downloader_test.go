@@ -795,7 +795,7 @@ func TestDownloaderPipeliningConcurrency(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			res := <-d.Completions()
 			if res.Err != nil {
 				t.Errorf("unexpected error for %s: %v", res.MessageID, res.Err)

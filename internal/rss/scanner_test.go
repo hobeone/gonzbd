@@ -377,7 +377,7 @@ func TestScannerScanOnce(t *testing.T) {
 	}
 
 	sc := NewScanner(feeds, store, handler, srv.Client(), nil)
-	if err := sc.ScanOnce(context.Background()); err != nil {
+	if err := sc.ScanOnce(t.Context()); err != nil {
 		t.Fatalf("ScanOnce: %v", err)
 	}
 
@@ -394,7 +394,7 @@ func TestScannerScanOnce(t *testing.T) {
 	// Second scan — all items already seen, handler must not be called again.
 	handler2 := &collectHandler{}
 	sc2 := NewScanner(feeds, store, handler2, srv.Client(), nil)
-	if err := sc2.ScanOnce(context.Background()); err != nil {
+	if err := sc2.ScanOnce(t.Context()); err != nil {
 		t.Fatalf("ScanOnce (2nd): %v", err)
 	}
 	if got := handler2.collected(); len(got) != 0 {
@@ -417,7 +417,7 @@ func TestScannerDisabledFeed(t *testing.T) {
 	feeds := []Feed{{Name: "disabled", URL: srv.URL, Enabled: false}}
 
 	sc := NewScanner(feeds, store, handler, srv.Client(), nil)
-	if err := sc.ScanOnce(context.Background()); err != nil {
+	if err := sc.ScanOnce(t.Context()); err != nil {
 		t.Fatalf("ScanOnce: %v", err)
 	}
 	if called {
@@ -435,7 +435,7 @@ func TestScannerContextCancel(t *testing.T) {
 	feeds := []Feed{{Name: "empty", URL: "http://127.0.0.1:0/nonexistent", Enabled: true}}
 
 	sc := NewScanner(feeds, store, handler, nil, nil)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // cancel immediately
 
 	err := sc.Run(ctx, 100*time.Millisecond)

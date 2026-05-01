@@ -77,7 +77,7 @@ func (r *latin1Reader) Read(p []byte) (int, error) {
 	}
 	buf := r.buf[:readLen]
 	m, err := r.src.Read(buf)
-	for i := 0; i < m; i++ {
+	for i := range m {
 		b := buf[i]
 		if b < 0x80 {
 			p[n] = b

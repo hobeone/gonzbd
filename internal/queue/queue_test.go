@@ -22,7 +22,7 @@ func makeParsed(t *testing.T, nFiles int) *nzb.NZB {
 		Groups: []string{"alt.binaries.test"},
 		AvgAge: time.Unix(1700000000, 0),
 	}
-	for i := 0; i < nFiles; i++ {
+	for range nFiles {
 		parsed.Files = append(parsed.Files, nzb.File{
 			Subject: "file.bin",
 			Date:    time.Unix(1700000000, 0),
@@ -75,7 +75,7 @@ func TestNewJobDerivesName(t *testing.T) {
 
 func TestNewJobAssignsUniqueID(t *testing.T) {
 	seen := make(map[string]struct{})
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		j, err := NewJob(makeParsed(t, 1), AddOptions{Filename: "f.nzb"}, fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatalf("NewJob: %v", err)
@@ -348,7 +348,7 @@ func TestMarkArticleFailed(t *testing.T) {
 
 func TestNotifyCoalesces(t *testing.T) {
 	q := New()
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_ = q.Add(makeJob(t, "j", constants.NormalPriority))
 	}
 	// Five Adds, one buffered signal.
@@ -498,11 +498,11 @@ func TestConcurrentAddRemove(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(workers)
-	for w := 0; w < workers; w++ {
+	for range workers {
 		go func() {
 			defer wg.Done()
 			jobs := make([]*Job, 0, perWorker)
-			for i := 0; i < perWorker; i++ {
+			for range perWorker {
 				j := makeJob(t, "x", constants.NormalPriority)
 				if err := q.Add(j); err != nil {
 					t.Errorf("Add: %v", err)
