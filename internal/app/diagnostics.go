@@ -29,13 +29,13 @@ func CheckDependencies() []string {
 		hasUnrar = true
 	}
 
-	if !has7zip && !hasUnrar {
+	switch {
+	case !has7zip && !hasUnrar:
 		warnings = append(warnings, "Neither \"7-zip\" nor \"unrar\" found in PATH. Archive extraction will fail.")
-	} else if !has7zip {
+	case !has7zip:
 		warnings = append(warnings, "External program \"7-zip\" not found in PATH. 7z/zip extraction will fail. RAR extraction will use unrar.")
-	} else if !hasUnrar {
+	case !hasUnrar:
 		// Not a warning — 7zip covers RAR extraction as a fallback.
-		_ = hasUnrar
 	}
 
 	return warnings

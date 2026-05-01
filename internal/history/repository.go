@@ -209,11 +209,7 @@ func (r *Repository) ListIDs(ctx context.Context, opts SearchOptions) ([]string,
 // buildWhereClause constructs the WHERE predicates and args for Search/Count
 // queries from SearchOptions. Centralizes filter logic so new filters only
 // need to be added in one place.
-func buildWhereClause(opts SearchOptions) ([]string, []any) {
-	var (
-		where []string
-		args  []any
-	)
+func buildWhereClause(opts SearchOptions) (where []string, args []any) {
 	if opts.ArchiveOnly {
 		where = append(where, "archive != 0")
 	}

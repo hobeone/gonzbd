@@ -953,14 +953,17 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	return nil
 }
 
+// WithLogger returns an option that overrides the Application's logger.
 func WithLogger(log *slog.Logger) func(*Application) {
 	return func(a *Application) { a.log = log }
 }
 
+// WithMeter returns an option that overrides the Application's bandwidth meter.
 func WithMeter(m *bpsmeter.Meter) func(*Application) {
 	return func(a *Application) { a.meter = m }
 }
 
+// WithPostProcStages returns an option that overrides the post-processing stages.
 func WithPostProcStages(stages []postproc.Stage) func(*Application) {
 	return func(a *Application) { a.customStages = stages }
 }
