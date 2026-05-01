@@ -741,9 +741,7 @@ func (q *Queue) Reorder(id string, newIndex int) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	if newIndex < 0 {
-		newIndex = 0
-	}
+	newIndex = max(0, newIndex)
 	if newIndex >= len(q.jobs) {
 		newIndex = len(q.jobs) - 1
 	}

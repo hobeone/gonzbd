@@ -100,9 +100,7 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 		// limit=0 means "return all" (Sonarr sends this).
 		limit = maxLimit
 	}
-	if limit > maxLimit {
-		limit = maxLimit
-	}
+	limit = min(limit, maxLimit)
 
 	opts := history.SearchOptions{
 		Search:   search,

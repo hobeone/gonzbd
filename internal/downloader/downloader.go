@@ -281,15 +281,10 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		name := srv.Cfg().Name
 		perServer := opts.PerServerQueue
 		if perServer <= 0 {
-			pipelineDepth := srv.Cfg().PipeliningRequests
-			if pipelineDepth < 1 {
-				pipelineDepth = 1
-			}
+			pipelineDepth := max(1, srv.Cfg().PipeliningRequests)
 			perServer = 2 * srv.Connections() * pipelineDepth
 		}
-		if perServer < 1 {
-			perServer = 1
-		}
+		perServer = max(1, perServer)
 		d.workCh[name] = make(chan *articleRequest, perServer)
 
 		// Pre-populate connection activity entries (all idle).

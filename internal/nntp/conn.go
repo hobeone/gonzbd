@@ -253,10 +253,7 @@ func newDialOptions(cfg config.ServerConfig) (*dialOptions, error) {
 			port = 119
 		}
 	}
-	pipe := cfg.PipeliningRequests
-	if pipe < 1 {
-		pipe = 1
-	}
+	pipe := max(1, cfg.PipeliningRequests)
 	timeout := time.Duration(cfg.Timeout) * time.Second
 	if cfg.Timeout <= 0 {
 		timeout = 60 * time.Second
