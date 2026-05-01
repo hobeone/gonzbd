@@ -508,6 +508,20 @@ func (d *Downloader) setConnConnected(workerID string, connected bool) {
 	d.connActivityMu.Unlock()
 }
 
+// hasActiveConnections reports whether any connection worker currently
+// has an open TCP connection (idle or busy). Used as a guard to avoid
+// calling DisconnectAll repeatedly when connections are already closed.
+func (d *Downloader) hasActiveConnections() bool {
+	d.connActivityMu.RLock()
+	defer d.connActivityMu.RUnlock()
+	for _, ca := range d.connActivity {
+		if ca.Connected {
+			return true
+		}
+	}
+	return false
+}
+
 // ServerStatus returns a point-in-time snapshot of all servers,
 // including per-connection activity. Safe for concurrent use.
 func (d *Downloader) ServerStatus() []ServerSnapshot {
