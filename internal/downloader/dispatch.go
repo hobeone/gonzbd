@@ -168,12 +168,12 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 		return false, nil
 	}
 
-	tried := d.tryList[key]
+	mask, hasTried := d.tryList[key]
 	anyEligible := false
 	allTried := true // assume all tried until proven otherwise
-	for _, srv := range d.servers {
+	for idx, srv := range d.servers {
 		name := srv.Cfg().Name
-		if _, already := tried[name]; already {
+		if hasTried && mask.has(idx) {
 			continue
 		}
 		// Permanently disabled servers are not candidates — skip them
@@ -196,11 +196,8 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 		}
 		select {
 		case ch <- req:
-			if tried == nil {
-				tried = make(map[string]struct{})
-				d.tryList[key] = tried
-			}
-			tried[name] = struct{}{}
+			mask.set(idx)
+			d.tryList[key] = mask
 			d.inFlight[key]++
 			return true, nil
 		case <-ctx.Done():
@@ -232,7 +229,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 // fetches. On a connection-level failure the conn is closed and
 // re-dialled for the next request. The goroutine exits when ctx is
 // cancelled.
-func (d *Downloader) connWorker(ctx context.Context, srv *Server, workerID string) {
+func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int, workerID string) {
 	var conn *nntp.Conn
 	var connMu sync.Mutex
 	var workerWg sync.WaitGroup
@@ -295,7 +292,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, workerID strin
 				go func(req *articleRequest) {
 					defer workerWg.Done()
 					defer func() { <-sem }()
-					d.handleRequest(ctx, srv, &conn, &connMu, req, workerID)
+					d.handleRequest(ctx, srv, serverIdx, &conn, &connMu, req, workerID)
 				}(req)
 			}
 		}
@@ -307,7 +304,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, workerID strin
 // emission. The *nntp.Conn pointer is passed by reference so the
 // function can replace it with nil on connection-level failure
 // (forcing a re-dial on the next call).
-func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **nntp.Conn, connMu *sync.Mutex, req *articleRequest, workerID string) {
+func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx int, connPtr **nntp.Conn, connMu *sync.Mutex, req *articleRequest, workerID string) {
 	d.setConnActivity(workerID, req)
 	defer d.clearConnActivity(workerID)
 	defer d.signalDispatch()
@@ -326,7 +323,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	// the user clicked pause on this specific job. Check now before
 	// starting any network I/O.
 	if status, err := d.queue.GetJobStatus(req.jobID); err == nil && status == constants.StatusPaused {
-		d.unmarkTried(req.jobID, req.messageID, name)
+		d.unmarkTried(req.jobID, req.messageID, serverIdx)
 		_ = d.queue.ClearArticleEmitted(req.jobID, req.messageID)
 		return
 	}
@@ -335,7 +332,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 	// The pauseCtx cancellation aborts in-flight reads, but articles
 	// sitting in the workCh buffer still need to be drained.
 	if d.paused.Load() || d.queue.IsPaused() {
-		d.unmarkTried(req.jobID, req.messageID, name)
+		d.unmarkTried(req.jobID, req.messageID, serverIdx)
 		_ = d.queue.ClearArticleEmitted(req.jobID, req.messageID)
 		return
 	}
@@ -346,7 +343,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		// skip re-dialing to prevent sequential stalls.
 		if !srv.Active(time.Now()) {
 			connMu.Unlock()
-			d.unmarkTried(req.jobID, req.messageID, name)
+			d.unmarkTried(req.jobID, req.messageID, serverIdx)
 			// Don't emit a result — the article is returned to the
 			// dispatch pool silently. The deferred signalDispatch
 			// triggers a new pass where it can be tried on another
@@ -366,7 +363,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 		c, err := nntp.Dial(fetchCtx, srv.Cfg(), dialOpts...)
 		if err != nil {
 			connMu.Unlock()
-			d.unmarkTried(req.jobID, req.messageID, name)
+			d.unmarkTried(req.jobID, req.messageID, serverIdx)
 			// Don't emit a result for dial failures. These are
 			// connection-level errors, not article-level failures.
 			// The deferred signalDispatch triggers a new pass where
@@ -427,7 +424,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, connPtr **n
 				srv.ApplyPenalty(pen)
 			}
 		}
-		d.unmarkTried(req.jobID, req.messageID, name)
+		d.unmarkTried(req.jobID, req.messageID, serverIdx)
 		// Don't emit a result for connection-level failures. The
 		// article is returned to the dispatch pool via unmarkTried;
 		// the deferred signalDispatch triggers retry on another
@@ -524,21 +521,23 @@ func (d *Downloader) clearInFlight(jobID, messageID string) {
 	d.inFlight[key]--
 }
 
-// unmarkTried removes serverName from an article's try-list, used
+// unmarkTried removes serverIdx from an article's try-list, used
 // after a retryable failure (dial error, mid-stream disconnect) so
 // the dispatcher can hand the article back to the same server once
 // it recovers, or bounce it to another.
-func (d *Downloader) unmarkTried(jobID, messageID, serverName string) {
+func (d *Downloader) unmarkTried(jobID, messageID string, serverIdx int) {
 	d.tryMu.Lock()
 	defer d.tryMu.Unlock()
 	key := articleKey{jobID: jobID, messageID: messageID}
-	set, ok := d.tryList[key]
+	mask, ok := d.tryList[key]
 	if !ok {
 		return
 	}
-	delete(set, serverName)
-	if len(set) == 0 {
+	mask.unset(serverIdx)
+	if mask.isEmpty() {
 		delete(d.tryList, key)
+	} else {
+		d.tryList[key] = mask
 	}
 }
 
