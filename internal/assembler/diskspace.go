@@ -25,5 +25,5 @@ func FreeBytes(dir string) (int64, error) {
 	// Bavail is the number of blocks available to unprivileged processes (uint64).
 	// Bsize is the fundamental block size in bytes (int64 on Linux).
 	// The product fits in int64 for any sane filesystem size.
-	return int64(st.Bavail) * int64(st.Bsize), nil //nolint:gosec // G115: Bavail is filesystem metadata, not user input
+	return int64(st.Bavail) * int64(st.Bsize), nil //nolint:gosec,unconvert // G115: Bavail is filesystem metadata; unconvert: Bsize type varies by OS
 }
