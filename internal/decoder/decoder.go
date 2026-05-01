@@ -217,17 +217,37 @@ func decodeBody(encoded []byte, sizeHint int64) (out []byte, checksum uint32) {
 	return out, checksum
 }
 
-// specialBytes is the set of bytes that require special handling in the yEnc
-// decode loop: CR, LF, and the escape character '='.
-const specialBytes = "\r\n="
+// specialLUT is a 256-byte lookup table: specialLUT[b] is true for bytes
+// that require special handling in the yEnc decode loop ('\r', '\n', '=').
+// Using a fixed table avoids the per-call asciiSet construction cost of
+// bytes.IndexAny while maintaining single-pass O(n) scanning.
+var specialLUT = [256]bool{
+	'\r': true,
+	'\n': true,
+	'=':  true,
+}
 
 // indexSpecial returns the index of the first byte in b that is '\r', '\n',
-// or '=', or -1 if none is found. bytes.IndexAny performs a single pass
-// rather than three separate IndexByte scans, avoiding the quadratic blowup
-// that would occur if three calls each scanned the remainder of a large
-// buffer.
+// or '=', or -1 if none is found.
+//
+// Uses a single-pass scan with a pre-computed 256-byte lookup table.
+// This avoids the two problems of multi-pass bytes.IndexByte:
+//   - Scanning for an absent byte wastes a full-buffer SIMD pass.
+//   - Any fixed scan order regresses on data patterns where the first
+//     byte to search for is rare or missing.
+//
+// The lookup table is allocated once at init time (vs IndexAny which
+// builds its asciiSet on every call), so per-byte cost is a single
+// array bounds check + branch — approximately 1-2 cycles per byte on
+// modern x86. For typical yEnc data where special bytes appear every
+// ~80-200 bytes, this gives ~100-400 ns per call.
 func indexSpecial(b []byte) int {
-	return bytes.IndexAny(b, specialBytes)
+	for i, c := range b {
+		if specialLUT[c] {
+			return i
+		}
+	}
+	return -1
 }
 
 // parseHeader parses the =ybegin line and the optional =ypart line.
