@@ -10,7 +10,7 @@ package downloader
 // For the pathological case where a user has > 64 servers, it falls back
 // to allocating a dynamic slice.
 //
-// Because it is used as a value type in a map (map[articleKey]serverMask),
+// Because it is used as a value type in a map (map[string]serverMask),
 // mutation requires a copy-update-replace pattern:
 //
 //	mask := tryList[key]

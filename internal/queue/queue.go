@@ -371,7 +371,7 @@ func (q *Queue) MarkJobStarted(id string, t time.Time) {
 }
 
 // RecordDownload increments the per-server byte count for a job.
-func (q *Queue) RecordDownload(id string, server string, bytes int) {
+func (q *Queue) RecordDownload(id, server string, bytes int) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	job, ok := q.byID[id]
