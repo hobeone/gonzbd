@@ -818,7 +818,7 @@ func (app *Application) drainCompletions() {
 	}
 }
 
-func (app *Application) maybeFinalize(jobID string, failMsg string) {
+func (app *Application) maybeFinalize(jobID, failMsg string) {
 	started, err := app.queue.SetPostProcStarted(jobID)
 	if err == nil && started {
 		// Snapshot the job to decouple the post-processor from the

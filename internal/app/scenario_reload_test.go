@@ -28,8 +28,8 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 
 	const n = 6
 
-	var msgIDs []string
-	var files []nzb.File
+	msgIDs := make([]string, 0, n)
+	files := make([]nzb.File, 0, n)
 	for i := range n {
 		msgID := randomMsgID(t)
 		msgIDs = append(msgIDs, msgID)

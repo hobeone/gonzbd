@@ -71,13 +71,13 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 	// Total bytes is 10k. Failed bytes will reach 10k quickly.
 	// If it's a .par2 file, it might not count toward recovery budget in the same way,
 	// but currently NewJob calculates Par2Bytes from .par2 articles.
-	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "hopeless-test"}, fsutil.SanitizeOptions{})
+	_, _ = queue.NewJob(parsed, queue.AddOptions{Name: "hopeless-test"}, fsutil.SanitizeOptions{})
 	// Force Par2Bytes to be small so it triggers quickly
 	// Actually, let's just make it a normal file and it will have 0 Par2Bytes.
 	// 0 failed bytes > 0 par2 bytes is NOT true.
 	// 1 failed byte > 0 par2 bytes IS true.
 	parsed.Files[0].Subject = "test.bin"
-	job, _ = queue.NewJob(parsed, queue.AddOptions{Name: "hopeless-test"}, fsutil.SanitizeOptions{})
+	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "hopeless-test"}, fsutil.SanitizeOptions{})
 
 	jobID := job.ID
 	_ = application.Queue().Add(job)
