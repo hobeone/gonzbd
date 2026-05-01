@@ -160,3 +160,49 @@ These rules are distilled from real bugs found across dozens of audit and harden
 - **SQLite per-connection pragmas belong in the DSN, not in post-connect hooks.** `journal_mode=WAL` and `busy_timeout` set via `_pragma=` in the DSN ensure every connection (including pool-created ones) has them from the start.
 
 - **Batch large deletions to avoid unbounded transactions.** Deleting thousands of history records in a single `DELETE ... WHERE id IN (...)` can lock the database. Use chunked deletes with a reasonable batch size.
+
+### 6. Performance & Hot-Path Discipline
+
+These rules were learned from production pprof profiling at 2 Gbps. The download pipeline processes ~330 articles/second; any per-article overhead multiplies fast.
+
+#### Dispatch Loop (`internal/downloader/dispatch.go`)
+
+- **Never iterate all articles to find pending work.** `ForEachUnfinishedArticle` uses `Pending` counters on `JobFile` and `PendingArticles` on `Job` to skip completed files/jobs in O(1). Any new code that walks articles must respect these counters — do not introduce new linear scans over the article slice.
+
+- **Maintain pending counters on every state mutation.** When changing `art.Done`, `art.Emitted`, or `art.Failed`, you **must** update `job.Files[art.FileIdx].Pending` and `job.PendingArticles`. The pattern: decrement when an article leaves the pending state (Emitted, Done, or Failed for the first time); increment when it returns (ClearArticleEmitted). If a bulk operation makes incremental tracking fragile, call `job.recomputePending()` instead. See `MarkArticleEmitted`, `MarkArticlesDone`, `ClearAllEmitted` for canonical examples.
+
+- **Cache per-server data once per dispatch pass, not per article.** `srv.Cfg()` returns a by-value struct copy. Calling it per-article per-server cost 0.69s in production profiles. The `serverCfgs []config.ServerConfig` slice in `dispatchPass` caches these. Any new per-server state queries (e.g., `Active()`, penalty checks) should follow the same pattern: snapshot once, pass the slice to `tryDispatch`.
+
+- **Use 2-case selects (send/default), not 3-case (send/default/ctx.Done).** `runtime.selectgo` is significantly cheaper with 2 cases. Check `ctx.Err()` once before the server loop instead.
+
+- **Defer heap allocations past early-exit checks.** `articleRequest` is allocated only after confirming the article is not already in-flight. Moving the alloc before the `inFlight` check wasted 1.9s/10s on objects immediately discarded.
+
+#### Decoder (`internal/decoder/decoder.go`)
+
+- **Use the LUT for `indexSpecial`, not `bytes.IndexAny`.** The 256-byte lookup table `specialLUT` identifies CR, LF, and `=` bytes in O(1) per byte. `bytes.IndexAny` performed O(N×M) string scanning and was the #1 decoder bottleneck. Do not replace the LUT with standard library functions.
+
+- **`sub42Span` fuses copy + subtract into one pass.** The yEnc subtract-42 operation and the output append are combined into a single unrolled scalar loop for L1 cache efficiency. Do not split this back into `copy` + loop, and do not add bounds checks inside the inner loop (the capacity pre-check at the top ensures safety).
+
+- **The LUT must be a compile-time constant array, not built in `init()`.** `init()` functions are forbidden by project convention, and the LUT values are known at compile time.
+
+#### NNTP I/O (`internal/nntp/io.go`)
+
+- **Pre-size `readDotStuffedBody`'s buffer to 768 KB.** Without this, `bytes.Buffer` grows incrementally, causing `memclrNoHeapPointers` (4.1%) and `memmove` (2.6%) to dominate the profile. The 768 KB value matches a typical yEnc article (~750 KB payload).
+
+#### Queue (`internal/queue/`)
+
+- **Use `job.articleByID()` for O(1) lookups, never linear scans.** The `artIdx` map is built lazily on first access. All queue mutation methods (`MarkArticlesDone`, `MarkArticleFailed`, `MarkArticleEmitted`, etc.) must use this, not nested `for fi / for ai` loops.
+
+- **`JobArticle.FileIdx` is a back-pointer set by `recomputePending` / `buildArtIndex`.** It allows mutation methods to update per-file `Pending` without scanning for the parent file. This field is `json:"-"` (not persisted) — it must be recomputed on load.
+
+- **All transient fields (`Pending`, `PendingArticles`, `FileIdx`, `artIdx`, `Emitted`) are `json:"-"`.** They are recomputed by `recomputePending()` on load and `ClearAllEmitted`. If you add new transient state, follow this pattern and ensure it is initialized in both `Add` and `Load`.
+
+- **`ClearAllEmitted` is the self-healing reset.** It calls `recomputePending()` to rebuild all counters from ground truth. If you suspect counter drift during development, calling `recomputePending()` on a job will correct it. The `pending_test.go` `verifyPending` helper validates counters against ground truth.
+
+#### General Performance Rules
+
+- **Profile before optimizing.** Use `go tool pprof` with production workloads. Synthetic benchmarks miss real bottlenecks (e.g., `selectgo` overhead only appears under multi-server dispatch contention).
+
+- **String map keys for message-IDs are expensive.** NNTP message-IDs are long strings (40-80 bytes); `aeshashbody` for these keys costs 1.15s/10s at 2 Gbps. Avoid adding new `map[string]` lookups in the per-article hot path. If you must, consider integer keys or pre-hashed values.
+
+- **`sync.Pool` is usually not worth it in this codebase.** The `articleRequest` allocation (0.3s at steady-state) is small enough that pool overhead (Put/Get synchronization) would offset the savings. Only pool objects that are large and allocated at >10K/sec.
