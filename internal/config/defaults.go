@@ -60,6 +60,7 @@ func Default() (*Config, error) {
 			MinFreeSpace:        ByteSize(1024 * constants.MiB),
 			MinFreeSpaceCleanup: ByteSize(2048 * constants.MiB),
 			ArticleCacheSize:    ByteSize(constants.DefaultArticleCacheBytes),
+			WriteCacheSize:      ByteSize(constants.DefaultWriteCacheBytes),
 			MaxArtTries:         3,
 			MaxArtOpt:           1,
 			TopOnly:             false,
