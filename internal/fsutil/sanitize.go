@@ -1,3 +1,5 @@
+// Package fsutil provides filesystem utilities: path sanitization,
+// cross-device file moves, and obfuscation detection.
 package fsutil
 
 import (

@@ -41,7 +41,7 @@ import (
 
 	// Side-effect imports: register pprof handlers and expvar counters
 	// on http.DefaultServeMux (routed via /debug/ in composeRouter).
-	_ "net/http/pprof"
+	_ "net/http/pprof" //nolint:gosec // G108: intentionally exposed on /debug/ behind auth
 
 	_ "github.com/hobeone/gonzbd/internal/telemetry"
 )
@@ -707,7 +707,7 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 	if err != nil {
 		return fmt.Errorf("open history db: %w", err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck // best-effort cleanup at exit
 	repo := history.NewRepository(db)
 
 	if len(enabledServers(cfg.Servers)) == 0 {
