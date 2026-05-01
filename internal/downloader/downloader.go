@@ -214,7 +214,7 @@ type Downloader struct {
 	pauseCancel context.CancelFunc
 
 	tryMu   sync.Mutex
-	tryList map[articleKey]map[string]struct{}
+	tryList map[articleKey]serverMask
 
 	// inFlight counts outstanding requests per article across all
 	// servers. An article with inFlight > 0 is not re-dispatched even
@@ -272,7 +272,7 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		completions:   make(chan *ArticleResult, opts.CompletionsBuffer),
 		dispatchReady: make(chan struct{}, 1),
 		limiter:       bpsmeter.NewLimiter(0),
-		tryList:       make(map[articleKey]map[string]struct{}),
+		tryList:       make(map[articleKey]serverMask),
 		inFlight:      make(map[articleKey]int),
 		connActivity:  make(map[string]*ConnActivity),
 		disconnectCh:  make(chan struct{}),
@@ -327,15 +327,15 @@ func (d *Downloader) Start(ctx context.Context) error {
 	// Per-server worker pools — one goroutine per configured
 	// connection, each lazily dials its own *nntp.Conn.
 	totalWorkers := 0
-	for _, srv := range d.servers {
+	for i, srv := range d.servers {
 		conns := srv.Connections()
 		if conns < 1 {
 			conns = 1
 		}
-		for i := range conns {
-			wid := fmt.Sprintf("%s#%d", srv.Cfg().Name, i)
+		for j := range conns {
+			wid := fmt.Sprintf("%s#%d", srv.Cfg().Name, j)
 			d.wg.Go(func() {
-				d.connWorker(d.ctx, srv, wid)
+				d.connWorker(d.ctx, srv, i, wid)
 			})
 		}
 		d.log.Debug("server workers started", "server", srv.Cfg().Name, "workers", conns)
