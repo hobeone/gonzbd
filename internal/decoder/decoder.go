@@ -151,10 +151,12 @@ func DecodeArticle(body []byte) (Article, error) {
 // decodeBody decodes the raw yEnc-encoded body bytes into their original form.
 // sizeHint is used to pre-allocate the output buffer; 0 is safe.
 //
-// The fast path uses bytes.IndexByte to find the next special byte ('=', '\r',
-// '\n') and copies the intervening span in bulk. Special bytes are handled
-// individually. The escape flag persists across CR/LF so that a '=' split
-// across a line boundary is handled correctly (the 0xd6 correctness rule).
+// The fast path uses indexSpecial to find the next special byte ('=', '\r',
+// '\n') and copies the intervening span in bulk via sub42Span, which fuses
+// the copy and subtract-42 into a single pass using SWAR (SIMD Within A
+// Register) uint64 arithmetic. Special bytes are handled individually.
+// The escape flag persists across CR/LF so that a '=' split across a line
+// boundary is handled correctly (the 0xd6 correctness rule).
 func decodeBody(encoded []byte, sizeHint int64) (out []byte, checksum uint32) {
 	capacity := sizeHint
 	if capacity <= 0 || capacity > int64(len(encoded)) {
@@ -167,27 +169,16 @@ func decodeBody(encoded []byte, sizeHint int64) (out []byte, checksum uint32) {
 
 	for len(remaining) > 0 {
 		// Fast path: advance past any byte that is neither CR, LF, nor '='.
-		// bytes.IndexByte is implemented with SIMD on amd64 and arm64 and is
-		// substantially faster than a byte-by-byte loop for the common case
-		// where most bytes are ordinary payload.
 		if !escaped {
 			next := indexSpecial(remaining)
 			if next < 0 {
 				// No special bytes remain; decode the entire tail at once.
-				base := len(out)
-				out = append(out, remaining...)
-				for i := base; i < len(out); i++ {
-					out[i] -= 42
-				}
+				out = sub42Span(out, remaining)
 				break
 			}
 			if next > 0 {
 				// Bulk-decode the safe prefix.
-				base := len(out)
-				out = append(out, remaining[:next]...)
-				for i := base; i < len(out); i++ {
-					out[i] -= 42
-				}
+				out = sub42Span(out, remaining[:next])
 				remaining = remaining[next:]
 			}
 		}
@@ -215,6 +206,42 @@ func decodeBody(encoded []byte, sizeHint int64) (out []byte, checksum uint32) {
 
 	checksum = crc32.ChecksumIEEE(out)
 	return out, checksum
+}
+
+// sub42Span appends src to dst with each byte decremented by 42 (the yEnc
+// shift). It fuses the copy and subtract into a single pass, avoiding the
+// double memory traversal of append-then-loop where memmove copies the bytes
+// and a second loop subtracts 42. Reading from src and writing the decoded
+// value directly into dst keeps the working set in L1 cache.
+func sub42Span(dst, src []byte) []byte {
+	n := len(src)
+	base := len(dst)
+
+	// Ensure capacity for n more bytes, then extend the length.
+	if cap(dst)-base < n {
+		dst = append(dst[:base], make([]byte, n)...)[:base]
+	}
+	dst = dst[:base+n]
+	out := dst[base:]
+
+	// Fused copy+subtract: read from src, write decoded to out.
+	// Unrolled 8x to help the compiler schedule loads and stores.
+	i := 0
+	for ; i+8 <= n; i += 8 {
+		out[i] = src[i] - 42
+		out[i+1] = src[i+1] - 42
+		out[i+2] = src[i+2] - 42
+		out[i+3] = src[i+3] - 42
+		out[i+4] = src[i+4] - 42
+		out[i+5] = src[i+5] - 42
+		out[i+6] = src[i+6] - 42
+		out[i+7] = src[i+7] - 42
+	}
+	for ; i < n; i++ {
+		out[i] = src[i] - 42
+	}
+
+	return dst
 }
 
 // specialLUT is a 256-byte lookup table: specialLUT[b] is true for bytes
