@@ -1,0 +1,224 @@
+package assembler
+
+import (
+	"sort"
+)
+
+// writeCache is a memory-bounded article buffer that coalesces contiguous
+// articles into larger writes. It runs exclusively on the assembler's single
+// worker goroutine, so it requires no locking.
+//
+// Design:
+//   - Articles are buffered by (fileKey, offset).
+//   - When a contiguous run from offset 0 (or the file's current write cursor)
+//     reaches a threshold size, the run is flushed as a single WriteAt.
+//   - When total memory exceeds 90% of the limit, the file with the most
+//     buffered data is force-flushed regardless of contiguity.
+//   - When a file completes, all its buffered articles are flushed.
+type writeCache struct {
+	limit int64 // max bytes to buffer; 0 disables caching
+	used  int64 // current buffered bytes
+
+	// perFile tracks buffered articles grouped by file.
+	perFile map[fileKey]*fileBuf
+}
+
+// fileBuf holds buffered articles for a single file.
+type fileBuf struct {
+	// articles maps byte offset → decoded article data.
+	articles map[int64][]byte
+	// writeCursor tracks the next expected contiguous offset for this file.
+	// Initially 0; advances as contiguous runs are flushed.
+	writeCursor int64
+	// totalBytes is the sum of len(data) for all buffered articles.
+	totalBytes int64
+}
+
+// bufferedArticle is a flushable article with its offset and data.
+type bufferedArticle struct {
+	offset int64
+	data   []byte
+}
+
+// flushRun is a contiguous run of articles that can be written as a single WriteAt.
+type flushRun struct {
+	offset int64  // starting byte offset
+	data   []byte // coalesced data
+}
+
+// newWriteCache creates a write cache with the given memory limit.
+// A limit of 0 disables caching (all articles pass through immediately).
+func newWriteCache(limit int64) *writeCache {
+	return &writeCache{
+		limit:   limit,
+		perFile: make(map[fileKey]*fileBuf),
+	}
+}
+
+// enabled reports whether write coalescing is active.
+func (wc *writeCache) enabled() bool {
+	return wc.limit > 0
+}
+
+// buffer adds an article to the cache. Returns true if the article was
+// buffered, false if caching is disabled (caller should write immediately).
+func (wc *writeCache) buffer(key fileKey, offset int64, data []byte) bool {
+	if !wc.enabled() {
+		return false
+	}
+	fb, ok := wc.perFile[key]
+	if !ok {
+		fb = &fileBuf{articles: make(map[int64][]byte)}
+		wc.perFile[key] = fb
+	}
+	// If this offset already exists (shouldn't happen in practice due to
+	// upstream dedup), replace it and adjust accounting.
+	if existing, dup := fb.articles[offset]; dup {
+		wc.used -= int64(len(existing))
+		fb.totalBytes -= int64(len(existing))
+	}
+	fb.articles[offset] = data
+	size := int64(len(data))
+	fb.totalBytes += size
+	wc.used += size
+	return true
+}
+
+// contiguousRunSize is the minimum coalesced write size before we flush
+// a contiguous run. Writes below this threshold stay buffered to accumulate
+// more contiguous data. 512KB is a good balance: large enough to amortize
+// syscall overhead, small enough to flush frequently.
+const contiguousRunSize = 512 * 1024
+
+// flushContiguous checks if there's a contiguous run from the file's write
+// cursor that exceeds the threshold. If so, it returns the coalesced data
+// and advances the cursor. Returns nil if no run is ready.
+func (wc *writeCache) flushContiguous(key fileKey) *flushRun {
+	fb, ok := wc.perFile[key]
+	if !ok {
+		return nil
+	}
+	return wc.buildContiguousRun(fb, contiguousRunSize)
+}
+
+// buildContiguousRun scans from fb.writeCursor for a contiguous run of
+// articles. If the run's total size >= minSize, it coalesces the data,
+// removes the articles from the buffer, and returns the run. Returns nil
+// if the run is too small.
+func (wc *writeCache) buildContiguousRun(fb *fileBuf, minSize int64) *flushRun {
+	if len(fb.articles) == 0 {
+		return nil
+	}
+
+	// Collect offsets starting from writeCursor.
+	cursor := fb.writeCursor
+	var runArticles []bufferedArticle
+	var runSize int64
+
+	for {
+		data, ok := fb.articles[cursor]
+		if !ok {
+			break
+		}
+		runArticles = append(runArticles, bufferedArticle{offset: cursor, data: data})
+		runSize += int64(len(data))
+		cursor += int64(len(data))
+	}
+
+	if runSize < minSize {
+		return nil
+	}
+
+	// Coalesce into a single buffer.
+	coalesced := make([]byte, 0, runSize)
+	startOffset := fb.writeCursor
+	for _, art := range runArticles {
+		coalesced = append(coalesced, art.data...)
+		delete(fb.articles, art.offset)
+		fb.totalBytes -= int64(len(art.data))
+		wc.used -= int64(len(art.data))
+	}
+	fb.writeCursor = cursor
+
+	return &flushRun{offset: startOffset, data: coalesced}
+}
+
+// pressure reports whether memory usage exceeds 90% of the limit.
+func (wc *writeCache) pressure() bool {
+	if wc.limit <= 0 {
+		return false
+	}
+	return wc.used*10 > wc.limit*9
+}
+
+// forceFlushLargest returns all buffered articles for the file with the
+// most buffered data (regardless of contiguity). Used to relieve memory
+// pressure. Returns nil if the cache is empty.
+func (wc *writeCache) forceFlushLargest() (key fileKey, articles []bufferedArticle) {
+	var largest fileKey
+	var largestBytes int64
+
+	for k, fb := range wc.perFile {
+		if fb.totalBytes > largestBytes {
+			largest = k
+			largestBytes = fb.totalBytes
+		}
+	}
+	if largestBytes == 0 {
+		return fileKey{}, nil
+	}
+
+	return wc.drainFile(largest)
+}
+
+// drainFile removes and returns all buffered articles for a file, sorted
+// by offset. Used for force-flush and file completion.
+func (wc *writeCache) drainFile(key fileKey) (fileKey, []bufferedArticle) {
+	fb, ok := wc.perFile[key]
+	if !ok {
+		return key, nil
+	}
+
+	articles := make([]bufferedArticle, 0, len(fb.articles))
+	for offset, data := range fb.articles {
+		articles = append(articles, bufferedArticle{offset: offset, data: data})
+		wc.used -= int64(len(data))
+	}
+	// Sort by offset for sequential write ordering.
+	sort.Slice(articles, func(i, j int) bool {
+		return articles[i].offset < articles[j].offset
+	})
+
+	delete(wc.perFile, key)
+	return key, articles
+}
+
+// drainAll removes and returns all buffered articles across all files.
+// Used on assembler shutdown.
+func (wc *writeCache) drainAll() map[fileKey][]bufferedArticle {
+	result := make(map[fileKey][]bufferedArticle, len(wc.perFile))
+	for key := range wc.perFile {
+		_, arts := wc.drainFile(key)
+		if len(arts) > 0 {
+			result[key] = arts
+		}
+	}
+	return result
+}
+
+// forget removes tracking for a file without returning data. Used when
+// a file's cache has already been drained through contiguous flushes.
+func (wc *writeCache) forget(key fileKey) {
+	if fb, ok := wc.perFile[key]; ok {
+		wc.used -= fb.totalBytes
+		delete(wc.perFile, key)
+	}
+}
+
+// bytesFor returns the total buffered bytes for a specific file.
+func (wc *writeCache) bytesFor(key fileKey) int64 {
+	if fb, ok := wc.perFile[key]; ok {
+		return fb.totalBytes
+	}
+	return 0
+}

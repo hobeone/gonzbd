@@ -47,6 +47,7 @@ type Config struct {
 	CompleteDir        string
 	AdminDir           string
 	CacheLimit         int64
+	WriteCacheBytes    int64
 	Servers            []config.ServerConfig
 	Categories         []config.CategoryConfig
 	CheckpointInterval time.Duration
@@ -218,6 +219,11 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		log.Warn(msg)
 	} else {
 		log.Info(msg)
+	}
+
+	if cfg.WriteCacheBytes > 0 {
+		log.Info("write coalescing enabled",
+			"cacheMiB", cfg.WriteCacheBytes/(1024*1024))
 	}
 
 	c := cache.New(cache.Options{Limit: cfg.CacheLimit})
@@ -465,6 +471,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		MarkArticlesDone:   q.MarkArticlesDone,
 		MarkArticlesFailed: q.MarkArticlesFailed,
 		MinFreeBytes:       cfg.MinFreeSpace,
+		WriteCacheBytes:    cfg.WriteCacheBytes,
 		OnLowDisk: func(dir string, freeBytes int64) {
 			app.downloader.Pause()
 			app.log.Warn("low disk space, downloads paused",
