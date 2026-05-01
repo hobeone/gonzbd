@@ -67,9 +67,10 @@ func benchBatched(b *testing.B, partsPerFile int) {
 	// 4-byte "articles" — the pathological tiny-article case.
 	payload := []byte("AAAA")
 
-	b.ResetTimer()
-	for i := range b.N {
+	i := 0
+	for b.Loop() {
 		jobID := fmt.Sprintf("j%d", i)
+		i++
 		for p := range partsPerFile {
 			req := WriteRequest{
 				JobID:     jobID,
@@ -86,7 +87,6 @@ func benchBatched(b *testing.B, partsPerFile int) {
 	if err := a.Stop(); err != nil {
 		b.Fatalf("Stop: %v", err)
 	}
-	b.StopTimer()
 
 	// Ratio should be ~partsPerFile: one batch per file, not one per article.
 	if arts, bs := articles.Load(), batches.Load(); bs > 0 {
