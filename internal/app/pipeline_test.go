@@ -120,10 +120,7 @@ func TestPipelineWorkerPool(t *testing.T) {
 
 	// Wait for the assembler to process all articles.
 	deadline := time.After(5 * time.Second)
-	for {
-		if telemetry.ArticlesWritten.Value() >= numArticles {
-			break
-		}
+	for telemetry.ArticlesWritten.Value() < numArticles {
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for articles: received=%d written=%d",
@@ -227,10 +224,7 @@ func TestPipelineWorkerPoolConcurrency(t *testing.T) {
 
 	// Wait for all articles to be written.
 	deadline := time.After(5 * time.Second)
-	for {
-		if telemetry.ArticlesWritten.Value() >= numFiles {
-			break
-		}
+	for telemetry.ArticlesWritten.Value() < numFiles {
 		select {
 		case <-deadline:
 			t.Fatalf("timed out: written=%d", telemetry.ArticlesWritten.Value())

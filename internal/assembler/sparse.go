@@ -23,8 +23,8 @@ func SupportsSparse(dir string) bool {
 		return false // can't create files → can't test
 	}
 	name := tmp.Name()
-	defer os.Remove(name)
-	defer tmp.Close()
+	defer os.Remove(name) //nolint:errcheck // best-effort cleanup
+	defer tmp.Close()     //nolint:errcheck // best-effort cleanup
 
 	if err := tmp.Truncate(probeSize); err != nil {
 		return false

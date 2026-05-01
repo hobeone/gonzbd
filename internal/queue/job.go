@@ -60,7 +60,7 @@ type Job struct {
 
 	// Password is the archive password extracted from the filename or
 	// supplied by the user. Empty if the job is unencrypted.
-	Password string `json:"password,omitempty"`
+	Password string `json:"password,omitempty"` //nolint:gosec // G117: NZB archive password, not a credential
 
 	// URL is the origin URL for URL-grabbed NZBs; empty for uploaded
 	// or watched-dir NZBs.

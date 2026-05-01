@@ -100,15 +100,15 @@ func (s *Store) Save() error {
 	}
 	tmpName := tmpFile.Name()
 	if _, err = tmpFile.Write(data); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpName)
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpName)
 		s.mu.Lock()
 		s.dirty = true
 		s.mu.Unlock()
 		return fmt.Errorf("rss: write store tmp: %w", err)
 	}
 	if err = tmpFile.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		s.mu.Lock()
 		s.dirty = true
 		s.mu.Unlock()
@@ -116,7 +116,7 @@ func (s *Store) Save() error {
 	}
 
 	if err = os.Rename(tmpName, s.path); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		s.mu.Lock()
 		s.dirty = true
 		s.mu.Unlock()

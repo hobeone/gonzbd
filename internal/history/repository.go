@@ -183,7 +183,7 @@ func (r *Repository) ListIDs(ctx context.Context, opts SearchOptions) ([]string,
 
 	q := "SELECT nzo_id FROM history"
 	if len(where) > 0 {
-		q += " WHERE " + strings.Join(where, " AND ")
+		q += " WHERE " + strings.Join(where, " AND ") //nolint:gosec // G202: clauses are internally built, not user input
 	}
 
 	rows, err := r.db.QueryContext(ctx, q, args...)

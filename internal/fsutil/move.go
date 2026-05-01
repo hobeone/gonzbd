@@ -59,31 +59,31 @@ func copyAndRemove(src, dst string) error {
 
 	mode := info.Mode()
 
-	in, err := os.Open(src)
+	in, err := os.Open(src) //nolint:gosec // G304: path from caller, not user input
 	if err != nil {
 		return err
 	}
 
-	out, err := os.Create(dst)
+	out, err := os.Create(dst) //nolint:gosec // G304: path from caller, not user input
 	if err != nil {
-		in.Close()
+		_ = in.Close()
 		return err
 	}
 
 	if _, err = io.Copy(out, in); err != nil {
-		in.Close()
-		out.Close()
-		os.Remove(dst) // clean up partial file
+		_ = in.Close()
+		_ = out.Close()
+		_ = os.Remove(dst) // clean up partial file
 		return err
 	}
 	// Close source before removing it — on Windows, Remove fails on open files.
-	in.Close()
+	_ = in.Close()
 	if err := out.Close(); err != nil {
-		os.Remove(dst) // clean up partial file
+		_ = os.Remove(dst) // clean up partial file
 		return err
 	}
 	if err := os.Chmod(dst, mode); err != nil {
-		os.Remove(dst) // clean up partial file
+		_ = os.Remove(dst) // clean up partial file
 		return err
 	}
 	return os.Remove(src)
