@@ -460,7 +460,7 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 // Called from handleRequest's defer, before signalDispatch, so the
 // next dispatch pass observes the cleared state and can fan out to
 // a fallback server if the try-list allows.
-func (d *Downloader) clearInFlight(jobID, messageID string) {
+func (d *Downloader) clearInFlight(jobID, messageID string) { //nolint:unparam // jobID kept for future per-job tracking
 	key := messageID
 	d.tryMu.Lock()
 	defer d.tryMu.Unlock()
@@ -475,7 +475,7 @@ func (d *Downloader) clearInFlight(jobID, messageID string) {
 // after a retryable failure (dial error, mid-stream disconnect) so
 // the dispatcher can hand the article back to the same server once
 // it recovers, or bounce it to another.
-func (d *Downloader) unmarkTried(jobID, messageID string, serverIdx int) {
+func (d *Downloader) unmarkTried(jobID, messageID string, serverIdx int) { //nolint:unparam // jobID kept for future per-job tracking
 	d.tryMu.Lock()
 	defer d.tryMu.Unlock()
 	key := messageID
@@ -495,7 +495,7 @@ func (d *Downloader) unmarkTried(jobID, messageID string, serverIdx int) {
 // memory. Called when an article reaches a terminal state (success,
 // decode error, or ErrNoServersLeft) and will never be dispatched
 // again.
-func (d *Downloader) clearTried(jobID, messageID string) {
+func (d *Downloader) clearTried(jobID, messageID string) { //nolint:unparam // jobID kept for future per-job tracking
 	key := messageID
 	d.tryMu.Lock()
 	defer d.tryMu.Unlock()
@@ -568,7 +568,7 @@ func (m *managedConn) DropIfMatches(c *nntp.Conn, d *Downloader, workerID string
 
 // decodePayload decodes an article body using yEnc first, with a
 // fallback to UU decoding if the payload is not yEnc encoded.
-func decodePayload(body []byte) ([]byte, int64, error) {
+func decodePayload(body []byte) (decoded []byte, offset int64, err error) {
 	article, decErr := decoder.DecodeArticle(body)
 	switch {
 	case decErr == nil:

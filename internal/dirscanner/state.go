@@ -65,6 +65,7 @@ func (s *Store) Set(path string, state FileState) {
 	s.dirty = true
 }
 
+// Delete removes the state entry for the given path.
 func (s *Store) Delete(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
