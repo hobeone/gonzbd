@@ -201,21 +201,6 @@ func TestBinaryUnits(t *testing.T) {
 	}
 }
 
-func TestCacheLimits(t *testing.T) {
-	if DefaultArticleCacheBytes != 500*MiB {
-		t.Errorf("DefaultArticleCacheBytes = %d, want %d", DefaultArticleCacheBytes, 500*MiB)
-	}
-	if MaxArticleCacheBytes != GiB {
-		t.Errorf("MaxArticleCacheBytes = %d, want %d", MaxArticleCacheBytes, GiB)
-	}
-	if ArticleCacheNonContiguousFlushPercentage != 0.9 {
-		t.Errorf("ArticleCacheNonContiguousFlushPercentage = %v, want 0.9", ArticleCacheNonContiguousFlushPercentage)
-	}
-	if DefaultArticleCacheBytes > MaxArticleCacheBytes {
-		t.Errorf("default cache (%d) > max cache (%d)", DefaultArticleCacheBytes, MaxArticleCacheBytes)
-	}
-}
-
 func TestAssemblerLimits(t *testing.T) {
 	if MaxAssemblerQueue != 12 {
 		t.Errorf("MaxAssemblerQueue = %d, want 12", MaxAssemblerQueue)

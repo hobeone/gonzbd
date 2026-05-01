@@ -45,7 +45,6 @@ func TestEndToEndDownload(t *testing.T) {
 		DownloadDir: downloadDir,
 		CompleteDir: t.TempDir(),
 		AdminDir:    adminDir,
-		CacheLimit:  1 * 1024 * 1024,
 		Servers: []config.ServerConfig{{
 			Name:               "mock",
 			Host:               mock.host,

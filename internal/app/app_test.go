@@ -39,7 +39,6 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 		DownloadDir: downloadDir,
 		CompleteDir: completeDir,
 		AdminDir:    adminDir,
-		CacheLimit:  1 * 1024 * 1024,
 		Servers: []config.ServerConfig{{
 			Name:   "mock",
 			Host:   mock.host,
@@ -133,7 +132,6 @@ func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 		DownloadDir: downloadDir,
 		CompleteDir: completeDir,
 		AdminDir:    adminDir,
-		CacheLimit:  1 * 1024 * 1024,
 		EnableUnrar: true,
 		Enable7zip:  true,
 		Servers: []config.ServerConfig{{
@@ -227,7 +225,6 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 		DownloadDir: downloadDir,
 		CompleteDir: completeDir,
 		AdminDir:    adminDir,
-		CacheLimit:  1 * 1024 * 1024,
 		Servers: []config.ServerConfig{{
 			Name:   "mock",
 			Host:   mock.host,
@@ -347,7 +344,6 @@ func TestRetryHistoryJob(t *testing.T) {
 		DownloadDir: downloadDir,
 		CompleteDir: completeDir,
 		AdminDir:    adminDir,
-		CacheLimit:  1 * 1024 * 1024,
 		Servers: []config.ServerConfig{{
 			Name:   "mock",
 			Host:   mock.host,
@@ -440,7 +436,6 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 		DownloadDir: downloadDir,
 		CompleteDir: completeDir,
 		AdminDir:    adminDir,
-		CacheLimit:  1 * 1024 * 1024,
 		Servers: []config.ServerConfig{{
 			Name:   "mock",
 			Host:   mock.host,
@@ -524,7 +519,6 @@ func TestFullDownloadLifecycle(t *testing.T) {
 		DownloadDir: downloadDir,
 		CompleteDir: completeDir,
 		AdminDir:    adminDir,
-		CacheLimit:  1 * 1024 * 1024,
 		Servers: []config.ServerConfig{{
 			Name:               "mock",
 			Host:               mock.host,
