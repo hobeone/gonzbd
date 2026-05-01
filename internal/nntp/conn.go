@@ -389,7 +389,7 @@ func (c *Conn) handshake(ctx context.Context, cfg config.ServerConfig) error {
 	// Capability probe is best-effort: servers that refuse it still
 	// work for BODY/STAT via the fallback in capabilities.go.
 	c.log.Debug("handshake: probing capabilities")
-	c.caps = probeCapabilities(c.bw, c.br)
+	c.caps = probeCapabilities(c.log, c.bw, c.br)
 	c.log.Debug("handshake: capabilities",
 		"body", c.caps.HasBody, "stat", c.caps.HasStat, "compress", c.caps.HasCompress)
 
