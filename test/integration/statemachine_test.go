@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"testing"
@@ -117,7 +117,6 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 	chaosCtx, chaosCancel := context.WithCancel(ctx)
 	defer chaosCancel()
 	go func() {
-		r := rand.New(rand.NewSource(time.Now().UnixNano()))
 		modes := []nntptest.FailureMode{
 			nntptest.FailureNotFound,
 			nntptest.FailureDropMidBody,
@@ -130,8 +129,8 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 			case <-chaosCtx.Done():
 				return
 			case <-ticker.C:
-				msgID := msgIDs[r.Intn(len(msgIDs))]
-				mode := modes[r.Intn(len(modes))]
+				msgID := msgIDs[rand.IntN(len(msgIDs))]
+				mode := modes[rand.IntN(len(modes))]
 				server.InjectFailure(msgID, mode)
 			}
 		}
