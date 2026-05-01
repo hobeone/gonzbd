@@ -108,6 +108,15 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 			_ = d.queue.Pause(jobID) // Fallback if no callback
 		}
 	}
+
+	// Idle disconnect: if nothing was dispatched and no downloadable
+	// work remains, close all NNTP connections. This catches the
+	// scenario where in-flight articles for a hopeless/completed job
+	// finish after DisconnectAll was already called (those workers
+	// missed the earlier signal because they were busy).
+	if dispatched == 0 && !d.queue.HasDownloadableJobs() && d.hasActiveConnections() {
+		d.DisconnectAll()
+	}
 }
 
 // tryDispatch hands the article to the first eligible server with

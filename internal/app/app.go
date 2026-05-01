@@ -853,14 +853,6 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	case app.jobComplete <- JobComplete{JobID: job.ID}:
 	default:
 	}
-
-	// If no downloadable jobs remain, disconnect all NNTP servers.
-	// Connections are no longer needed and will lazily reconnect
-	// when new work is added to the queue.
-	if !app.queue.HasDownloadableJobs() {
-		app.log.Info("no downloadable jobs remaining, disconnecting NNTP servers")
-		app.downloader.DisconnectAll()
-	}
 }
 
 // PausePostProcessor pauses the post-processing pipeline.
