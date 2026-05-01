@@ -289,7 +289,7 @@ func (e *wrappedErr) Unwrap() error { return e.inner }
 func TestResolveLocalhost(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(config.ServerConfig{})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	addrs, err := Resolve(ctx, s, "localhost")
 	if err != nil {
@@ -319,7 +319,7 @@ func TestResolveContextCancellation(t *testing.T) {
 
 	// Use an already-cancelled context; the resolver goroutine will get
 	// it and the select should return the ctx.Done() branch.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	_, err := Resolve(ctx, s, "localhost")
@@ -409,7 +409,7 @@ func TestDeactivationAutoClears(t *testing.T) {
 	})
 
 	// Force deactivation by recording enough bad connections to exceed OptionalDeactivationThreshold
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		s.RecordBadConnection()
 	}
 

@@ -269,7 +269,7 @@ func TestRunScript_ContextCancel(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := makeScript(t, dir, "sleep.sh", "sleep 30")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()

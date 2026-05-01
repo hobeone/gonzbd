@@ -188,7 +188,7 @@ func TestQueueDefault_Filtering(t *testing.T) {
 func TestQueueDefault_Pagination(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		addTestJob(t, q, queue.AddOptions{Filename: fmt.Sprintf("job%d.nzb", i)})
 	}
 

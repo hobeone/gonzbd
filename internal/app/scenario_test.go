@@ -101,7 +101,7 @@ func newScenarioHarnessWithConns(t testing.TB, conns int) *scenarioHarness {
 // channels into the harness event logs.
 func (h *scenarioHarness) Start() {
 	h.t.Helper()
-	h.ctx, h.cancel = context.WithCancel(context.Background())
+	h.ctx, h.cancel = context.WithCancel(h.t.Context())
 	if err := h.app.Start(h.ctx); err != nil {
 		h.t.Fatalf("scenario: app.Start: %v", err)
 	}
@@ -180,7 +180,7 @@ func (h *scenarioHarness) AddOneShotJob(name string, raw []byte, force bool) *qu
 	}
 
 	// We pass rawNZB as dummy XML since we are simulating the ingestion of the NZB.
-	if err := h.app.AddJob(context.Background(), job, []byte("<nzb/>"), force); err != nil {
+	if err := h.app.AddJob(h.t.Context(), job, []byte("<nzb/>"), force); err != nil {
 		h.t.Fatalf("scenario: AddJob: %v", err)
 	}
 	return job
@@ -209,7 +209,7 @@ func (h *scenarioHarness) WaitForPostProc(jobID string, timeout time.Duration) b
 // WaitForHistory blocks until the history repository contains jobID.
 func (h *scenarioHarness) WaitForHistory(jobID string, timeout time.Duration) bool {
 	return h.waitFor(timeout, func() bool {
-		_, err := h.repo.Get(context.Background(), jobID)
+		_, err := h.repo.Get(h.t.Context(), jobID)
 		return err == nil
 	})
 }

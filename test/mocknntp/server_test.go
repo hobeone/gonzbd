@@ -61,7 +61,7 @@ func TestServerGreetingAndCapabilities(t *testing.T) {
 
 	srv := startServer(t, mocknntp.Config{})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	conn, err := nntp.Dial(ctx, makeCfg(srv.Addr()))
@@ -91,7 +91,7 @@ func TestServerBody(t *testing.T) {
 	srv := startServer(t, mocknntp.Config{})
 	srv.AddArticle("msg1@host", body)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	conn, err := nntp.Dial(ctx, makeCfg(srv.Addr()))
@@ -123,7 +123,7 @@ func TestServerBodyUnregisteredID(t *testing.T) {
 
 	srv := startServer(t, mocknntp.Config{})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	conn, err := nntp.Dial(ctx, makeCfg(srv.Addr()))
@@ -147,7 +147,7 @@ func TestServerAuthRequired_NoCreds(t *testing.T) {
 	})
 	srv.AddArticle("auth-test@host", []byte("body"))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	// Connect without credentials; Dial succeeds but Fetch should return 480.
@@ -175,7 +175,7 @@ func TestServerAuthRequired_WithCreds(t *testing.T) {
 	})
 	srv.AddArticle("auth-test@host", body)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	cfg := makeCfg(srv.Addr())
@@ -205,7 +205,7 @@ func TestServerAuthRejected_WrongPassword(t *testing.T) {
 		Users:       map[string]string{"alice": "secret"},
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	cfg := makeCfg(srv.Addr())
@@ -232,7 +232,7 @@ func TestServerConcurrentFetches(t *testing.T) {
 		srv.AddArticle(id, body)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -288,7 +288,7 @@ func TestServerCustomGreeting201(t *testing.T) {
 		Greeting: "201 mocknntp no posting",
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	// Dial should succeed on a 201 greeting (posting not allowed but reading ok).

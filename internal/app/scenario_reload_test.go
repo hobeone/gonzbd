@@ -30,7 +30,7 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 
 	var msgIDs []string
 	var files []nzb.File
-	for i := 0; i < n; i++ {
+	for i := range n {
 		msgID := randomMsgID(t)
 		msgIDs = append(msgIDs, msgID)
 		raw := []byte(fmt.Sprintf("content %d", i))

@@ -292,7 +292,7 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		if conns < 1 {
 			conns = 1
 		}
-		for i := 0; i < conns; i++ {
+		for i := range conns {
 			wid := fmt.Sprintf("%s#%d", name, i)
 			d.connActivity[wid] = &ConnActivity{
 				ServerName: name,
@@ -332,7 +332,7 @@ func (d *Downloader) Start(ctx context.Context) error {
 		if conns < 1 {
 			conns = 1
 		}
-		for i := 0; i < conns; i++ {
+		for i := range conns {
 			wid := fmt.Sprintf("%s#%d", srv.Cfg().Name, i)
 			d.wg.Go(func() {
 				d.connWorker(d.ctx, srv, wid)

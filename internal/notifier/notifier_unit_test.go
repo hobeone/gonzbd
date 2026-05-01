@@ -83,7 +83,7 @@ func TestDispatcher_DispatchFilters(t *testing.T) {
 	d.Register(n1)
 	d.Register(n2)
 
-	d.Dispatch(context.Background(), Event{
+	d.Dispatch(t.Context(), Event{
 		Type:  DownloadComplete,
 		Title: "Job Done",
 	})
@@ -100,7 +100,7 @@ func TestDispatcher_DispatchNoNotifiers(t *testing.T) {
 	t.Parallel()
 	d := NewDispatcher(nil)
 	// Should not panic.
-	d.Dispatch(context.Background(), Event{Type: Warning, Title: "test"})
+	d.Dispatch(t.Context(), Event{Type: Warning, Title: "test"})
 }
 
 func TestDispatcher_DispatchErrorSwallowed(t *testing.T) {
@@ -114,7 +114,7 @@ func TestDispatcher_DispatchErrorSwallowed(t *testing.T) {
 	d.Register(failing)
 
 	// Should not panic; errors are logged but swallowed.
-	d.Dispatch(context.Background(), Event{Type: Error, Title: "bad"})
+	d.Dispatch(t.Context(), Event{Type: Error, Title: "bad"})
 }
 
 // ---------- ScriptNotifier ----------

@@ -2,7 +2,6 @@ package par2_test
 
 import (
 	"cmp"
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -214,7 +213,7 @@ func TestVerifyAndRepair(t *testing.T) {
 		mainFile = sets[0].ExtraFiles[0]
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("verify_good_set", func(t *testing.T) {
 		res, err := par2.Verify(ctx, mainFile)

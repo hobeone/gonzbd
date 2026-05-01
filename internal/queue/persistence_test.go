@@ -341,7 +341,7 @@ func TestSaveJob_NoLeftoverTempFiles(t *testing.T) {
 	path := filepath.Join(jobsDir, j.ID+".json.gz")
 
 	// Save multiple times.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if err := SaveJob(path, j); err != nil {
 			t.Fatalf("SaveJob %d: %v", i, err)
 		}

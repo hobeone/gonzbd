@@ -51,7 +51,7 @@ func readFile(t *testing.T, path string) []byte {
 func startAssembler(t *testing.T, opts Options) *Assembler {
 	t.Helper()
 	a := New(opts, nil)
-	if err := a.Start(context.Background()); err != nil {
+	if err := a.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() { _ = a.Stop() })
@@ -85,7 +85,7 @@ func TestOutOfOrderAssembly(t *testing.T) {
 
 	for _, art := range art {
 		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: art.offset, Data: art.data}
-		if err := a.WriteArticle(context.Background(), req); err != nil {
+		if err := a.WriteArticle(t.Context(), req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -118,7 +118,7 @@ func TestFileCompleteCallbackFiresExactlyOnce(t *testing.T) {
 
 	for i := range 3 {
 		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("XXXX")}
-		if err := a.WriteArticle(context.Background(), req); err != nil {
+		if err := a.WriteArticle(t.Context(), req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -156,7 +156,7 @@ func TestMultipleFilesInterleaved(t *testing.T) {
 		{JobID: "job1", FileIdx: 1, Offset: 2, Data: []byte("YY")},
 	}
 	for _, r := range reqs {
-		if err := a.WriteArticle(context.Background(), r); err != nil {
+		if err := a.WriteArticle(t.Context(), r); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -192,7 +192,7 @@ func TestFileInfoError(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("data")}
-	if err := a.WriteArticle(context.Background(), req); err != nil {
+	if err := a.WriteArticle(t.Context(), req); err != nil {
 		t.Fatalf("WriteArticle: %v", err)
 	}
 
@@ -223,7 +223,7 @@ func TestLowDiskCallback(t *testing.T) {
 
 	for i := range total {
 		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("XXXX")}
-		if err := a.WriteArticle(context.Background(), req); err != nil {
+		if err := a.WriteArticle(t.Context(), req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -252,7 +252,7 @@ func TestLowDiskCallbackDisabledWhenZero(t *testing.T) {
 
 	for i := range total {
 		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("XXXX")}
-		if err := a.WriteArticle(context.Background(), req); err != nil {
+		if err := a.WriteArticle(t.Context(), req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -273,14 +273,14 @@ func TestStopDrainsChannel(t *testing.T) {
 	path := registerFile(t, dir, files, "job1", 0, n)
 
 	a := New(makeOpts(dir, files), nil)
-	if err := a.Start(context.Background()); err != nil {
+	if err := a.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
 	// Enqueue n writes before stopping.
 	for i := range n {
 		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("WXYZ")}
-		if err := a.WriteArticle(context.Background(), req); err != nil {
+		if err := a.WriteArticle(t.Context(), req); err != nil {
 			t.Fatalf("WriteArticle: %v", err)
 		}
 	}
@@ -319,7 +319,7 @@ func TestStopCalledTwiceIsSafe(t *testing.T) {
 	a := New(Options{
 		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
-	if err := a.Start(context.Background()); err != nil {
+	if err := a.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if err := a.Stop(); err != nil {
@@ -334,13 +334,13 @@ func TestWriteArticleAfterStopReturnsErrStopped(t *testing.T) {
 	a := New(Options{
 		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
-	if err := a.Start(context.Background()); err != nil {
+	if err := a.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if err := a.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	err := a.WriteArticle(context.Background(), WriteRequest{})
+	err := a.WriteArticle(t.Context(), WriteRequest{})
 	if !errors.Is(err, ErrStopped) {
 		t.Errorf("WriteArticle after Stop returned %v, want ErrStopped", err)
 	}
@@ -350,7 +350,7 @@ func TestWriteArticleBeforeStartReturnsErrNotStarted(t *testing.T) {
 	a := New(Options{
 		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
-	err := a.WriteArticle(context.Background(), WriteRequest{})
+	err := a.WriteArticle(t.Context(), WriteRequest{})
 	if !errors.Is(err, ErrNotStarted) {
 		t.Errorf("WriteArticle before Start returned %v, want ErrNotStarted", err)
 	}
@@ -367,7 +367,7 @@ func TestContextCancelDuringWriteArticleSend(t *testing.T) {
 	opts.QueueSize = 1
 
 	a := New(opts, nil)
-	if err := a.Start(context.Background()); err != nil {
+	if err := a.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = a.Stop() }()
@@ -395,14 +395,14 @@ func TestContextCancelDuringWriteArticleSend(t *testing.T) {
 		},
 	}
 	a2 := New(opts2, nil)
-	if err := a2.Start(context.Background()); err != nil {
+	if err := a2.Start(t.Context()); err != nil {
 		t.Fatalf("Start a2: %v", err)
 	}
 	defer func() { _ = a2.Stop() }()
 
 	// Send first request; the worker will call FileInfo and block.
 	go func() {
-		_ = a2.WriteArticle(context.Background(), WriteRequest{JobID: "j", FileIdx: 0, Offset: 0, Data: []byte("x")})
+		_ = a2.WriteArticle(t.Context(), WriteRequest{JobID: "j", FileIdx: 0, Offset: 0, Data: []byte("x")})
 	}()
 
 	// Wait for the worker to enter FileInfo (channel drained, worker blocked).
@@ -411,12 +411,12 @@ func TestContextCancelDuringWriteArticleSend(t *testing.T) {
 
 	// Now the queue is empty but the worker is blocked in FileInfo.
 	// Fill the queue (cap 1) with another request.
-	fillCtx, fillCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	fillCtx, fillCancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer fillCancel()
 	_ = a2.WriteArticle(fillCtx, WriteRequest{JobID: "j", FileIdx: 1, Offset: 0, Data: []byte("y")})
 
 	// Now try to enqueue with a cancellable context — should get ctx.Err() or ErrStopped.
-	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancelCtx, cancel := context.WithCancel(t.Context())
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- a2.WriteArticle(cancelCtx, WriteRequest{JobID: "j", FileIdx: 2, Offset: 0, Data: []byte("z")})
@@ -493,7 +493,7 @@ func TestConcurrentWriteArticle(t *testing.T) {
 				end = len(allReqs)
 			}
 			for _, req := range allReqs[start:end] {
-				if err := a.WriteArticle(context.Background(), req); err != nil {
+				if err := a.WriteArticle(t.Context(), req); err != nil {
 					t.Errorf("WriteArticle: %v", err)
 				}
 			}

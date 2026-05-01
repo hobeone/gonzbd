@@ -125,7 +125,7 @@ func TestMoveRecursive_SingleFile(t *testing.T) {
 	dst := filepath.Join(dir, "dst.txt")
 	os.WriteFile(src, []byte("hello"), 0o644)
 
-	if err := moveRecursive(context.Background(), src, dst); err != nil {
+	if err := moveRecursive(t.Context(), src, dst); err != nil {
 		t.Fatalf("moveRecursive: %v", err)
 	}
 	got, _ := os.ReadFile(dst)
@@ -146,7 +146,7 @@ func TestMoveRecursive_Directory(t *testing.T) {
 	os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("A"), 0o644)
 	os.WriteFile(filepath.Join(srcDir, "inner", "b.txt"), []byte("B"), 0o644)
 
-	if err := moveRecursive(context.Background(), srcDir, dstDir); err != nil {
+	if err := moveRecursive(t.Context(), srcDir, dstDir); err != nil {
 		t.Fatalf("moveRecursive: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestMoveRecursive_ContextCancelled(t *testing.T) {
 	dst := filepath.Join(dir, "dst.txt")
 	os.WriteFile(src, []byte("data"), 0o644)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	err := moveRecursive(ctx, src, dst)
@@ -182,7 +182,7 @@ func TestMoveRecursive_ContextCancelled(t *testing.T) {
 func TestMoveRecursive_SourceNotExist(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	err := moveRecursive(context.Background(), filepath.Join(dir, "nope"), filepath.Join(dir, "dst"))
+	err := moveRecursive(t.Context(), filepath.Join(dir, "nope"), filepath.Join(dir, "dst"))
 	if err == nil {
 		t.Error("expected error for nonexistent source")
 	}

@@ -1,7 +1,6 @@
 package assembler
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -60,7 +59,7 @@ func benchBatched(b *testing.B, partsPerFile int) {
 	}
 
 	a := New(opts, nil)
-	if err := a.Start(context.Background()); err != nil {
+	if err := a.Start(b.Context()); err != nil {
 		b.Fatalf("Start: %v", err)
 	}
 
@@ -79,7 +78,7 @@ func benchBatched(b *testing.B, partsPerFile int) {
 				Offset:    int64(p * 4),
 				Data:      append([]byte(nil), payload...),
 			}
-			if err := a.WriteArticle(context.Background(), req); err != nil {
+			if err := a.WriteArticle(b.Context(), req); err != nil {
 				b.Fatalf("WriteArticle: %v", err)
 			}
 		}
@@ -120,7 +119,7 @@ func BenchmarkTimerDrivenFlush(b *testing.B) {
 	}
 
 	a := New(opts, nil)
-	if err := a.Start(context.Background()); err != nil {
+	if err := a.Start(b.Context()); err != nil {
 		b.Fatalf("Start: %v", err)
 	}
 	payload := []byte("AAAA")
@@ -138,7 +137,7 @@ func BenchmarkTimerDrivenFlush(b *testing.B) {
 				Offset:    int64(p * 4),
 				Data:      append([]byte(nil), payload...),
 			}
-			if err := a.WriteArticle(context.Background(), req); err != nil {
+			if err := a.WriteArticle(b.Context(), req); err != nil {
 				b.Fatalf("WriteArticle: %v", err)
 			}
 		}
@@ -170,15 +169,15 @@ func BenchmarkDiskThroughput(b *testing.B) {
 	}
 
 	a := New(opts, nil)
-	if err := a.Start(context.Background()); err != nil {
+	if err := a.Start(b.Context()); err != nil {
 		b.Fatalf("Start: %v", err)
 	}
 	payload := make([]byte, articleSize)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		jobID := fmt.Sprintf("j%d", i)
-		for p := 0; p < partsPerFile; p++ {
+		for p := range partsPerFile {
 			req := WriteRequest{
 				JobID:     jobID,
 				FileIdx:   0,
@@ -186,7 +185,7 @@ func BenchmarkDiskThroughput(b *testing.B) {
 				Offset:    int64(p * articleSize),
 				Data:      payload, // Shared payload is fine for throughput test
 			}
-			if err := a.WriteArticle(context.Background(), req); err != nil {
+			if err := a.WriteArticle(b.Context(), req); err != nil {
 				b.Fatalf("WriteArticle: %v", err)
 			}
 		}
