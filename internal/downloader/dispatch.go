@@ -152,7 +152,17 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 // A future dispatchReady signal from any worker will bring us back to
 // re-try articles that returned (false, nil).
 func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int, messageID string, bytes int, subject string, now time.Time) (bool, *articleRequest) {
-	key := articleKey{jobID: jobID, messageID: messageID}
+	key := articleKey(messageID)
+
+	d.tryMu.Lock()
+	defer d.tryMu.Unlock()
+
+	if d.inFlight[key] > 0 {
+		return false, nil
+	}
+
+	// Allocate the request only after confirming the article is not
+	// already in flight — avoids heap churn for the common skip path.
 	req := &articleRequest{
 		jobID:     jobID,
 		messageID: messageID,
@@ -161,10 +171,10 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 		subject:   subject,
 	}
 
-	d.tryMu.Lock()
-	defer d.tryMu.Unlock()
-
-	if d.inFlight[key] > 0 {
+	// Check context once before the server loop rather than inside
+	// a 3-case select per server. A 2-case select (send/default) is
+	// substantially cheaper in runtime.selectgo.
+	if ctx.Err() != nil {
 		return false, nil
 	}
 
@@ -200,8 +210,6 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 			d.tryList[key] = mask
 			d.inFlight[key]++
 			return true, nil
-		case <-ctx.Done():
-			return false, nil
 		default:
 			// server's queue is full; try next server
 		}
@@ -444,7 +452,7 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 // next dispatch pass observes the cleared state and can fan out to
 // a fallback server if the try-list allows.
 func (d *Downloader) clearInFlight(jobID, messageID string) {
-	key := articleKey{jobID: jobID, messageID: messageID}
+	key := articleKey(messageID)
 	d.tryMu.Lock()
 	defer d.tryMu.Unlock()
 	if d.inFlight[key] <= 1 {
@@ -461,7 +469,7 @@ func (d *Downloader) clearInFlight(jobID, messageID string) {
 func (d *Downloader) unmarkTried(jobID, messageID string, serverIdx int) {
 	d.tryMu.Lock()
 	defer d.tryMu.Unlock()
-	key := articleKey{jobID: jobID, messageID: messageID}
+	key := articleKey(messageID)
 	mask, ok := d.tryList[key]
 	if !ok {
 		return
@@ -479,7 +487,7 @@ func (d *Downloader) unmarkTried(jobID, messageID string, serverIdx int) {
 // decode error, or ErrNoServersLeft) and will never be dispatched
 // again.
 func (d *Downloader) clearTried(jobID, messageID string) {
-	key := articleKey{jobID: jobID, messageID: messageID}
+	key := articleKey(messageID)
 	d.tryMu.Lock()
 	defer d.tryMu.Unlock()
 	delete(d.tryList, key)
