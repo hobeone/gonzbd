@@ -85,6 +85,13 @@ type FileInfo struct {
 	// to overshoot TotalParts and suppressing the completion callback. The queue
 	// layer (Step 4.1) deduplicates via the article Done flag before enqueuing.
 	TotalParts int
+
+	// ExpectedSize is the NZB's claimed total decoded size for this file
+	// (sum of article byte counts). When positive, the assembler
+	// pre-allocates the file at this size on first open, reducing
+	// per-write filesystem metadata overhead and fragmentation.
+	// Zero disables pre-allocation.
+	ExpectedSize int64
 }
 
 // Options configures an Assembler.
@@ -525,6 +532,18 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 				"error", err,
 			)
 			return
+		}
+		// Pre-allocate the file at the expected size. This reduces
+		// per-write extent allocation overhead (ext4/xfs) and helps
+		// the filesystem lay out contiguous blocks.
+		if info.ExpectedSize > 0 {
+			if err := preallocateFile(fh, info.ExpectedSize); err != nil {
+				a.log.Warn("file pre-allocation failed, continuing without",
+					"path", info.Path,
+					"size", info.ExpectedSize,
+					"error", err,
+				)
+			}
 		}
 		f = &openFile{handle: fh, info: info}
 		open[key] = f
