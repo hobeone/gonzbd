@@ -121,7 +121,7 @@ func TestRepairStage_CleanupWithRealNames(t *testing.T) {
 	// The data file should still exist regardless.
 	if _, err := os.Stat(filepath.Join(dir, "movie.mkv")); err != nil {
 		entries, _ := os.ReadDir(dir)
-		var names []string
+		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
