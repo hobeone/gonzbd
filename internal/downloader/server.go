@@ -123,19 +123,13 @@ func (s *Server) Active(now time.Time) bool {
 		return false
 	}
 	s.mu.RLock()
-	deactivated := s.deactivated
-	penaltyExpiry := s.penaltyExpiry
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
 
-	expired := !penaltyExpiry.IsZero() && now.After(penaltyExpiry)
-	if deactivated {
-		if expired {
-			s.ClearDeactivation()
-			return true
-		}
-		return false
+	expired := !s.penaltyExpiry.IsZero() && now.After(s.penaltyExpiry)
+	if s.deactivated {
+		return expired
 	}
-	return penaltyExpiry.IsZero() || expired
+	return s.penaltyExpiry.IsZero() || expired
 }
 
 // ClearDeactivation lifts the deactivated flag when the penalty has
