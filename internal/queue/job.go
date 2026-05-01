@@ -148,6 +148,28 @@ type Job struct {
 	// Warning holds a human-readable warning message (e.g. "Duplicate NZB").
 	// Usually accompanied by StatusPaused.
 	Warning string `json:"warning,omitempty"`
+
+	// artIdx is a transient, in-memory index from messageID → *JobArticle
+	// for O(1) lookups. Built lazily by articleByID and not serialised
+	// (article slice addresses change on deserialisation anyway).
+	artIdx map[string]*JobArticle `json:"-"`
+}
+
+// articleByID returns the article with the given messageID, or nil if
+// not found. On first call it lazily builds an index over all articles
+// in the job so subsequent lookups are O(1) instead of O(files×articles).
+// Must be called under the queue's lock (read or write).
+func (j *Job) articleByID(messageID string) *JobArticle {
+	if j.artIdx == nil {
+		j.artIdx = make(map[string]*JobArticle)
+		for fi := range j.Files {
+			for ai := range j.Files[fi].Articles {
+				art := &j.Files[fi].Articles[ai]
+				j.artIdx[art.ID] = art
+			}
+		}
+	}
+	return j.artIdx[messageID]
 }
 
 // JobFile is a single file within a job: its articles, its assembly

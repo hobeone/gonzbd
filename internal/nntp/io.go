@@ -67,6 +67,11 @@ const MaxBodySize = 10 * 1024 * 1024
 // allocations from bytes.Buffer, not one per line).
 func readDotStuffedBody(br *bufio.Reader) ([]byte, error) {
 	var buf bytes.Buffer
+	// Pre-size for a typical ~750 KB article to avoid repeated grow +
+	// memclr + memmove cycles during buffer expansion. At 2 Gbps the
+	// profile showed memclrNoHeapPointers (4.1%) and memmove (2.6%)
+	// almost entirely caused by incremental buffer growth here.
+	buf.Grow(768 * 1024)
 	for {
 		line, err := br.ReadSlice('\n')
 		if err != nil {

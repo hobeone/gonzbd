@@ -59,10 +59,9 @@ type ArticleResult struct {
 }
 
 // articleKey identifies an article globally, for try-list tracking.
-type articleKey struct {
-	jobID     string
-	messageID string
-}
+// NNTP message-IDs are globally unique, so using messageID alone as
+// the key halves the map hash cost compared to a two-string struct.
+type articleKey = string
 
 // articleRequest is the unit of work flowing from the dispatcher to
 // a per-server worker. Kept small because these are allocated every
