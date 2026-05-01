@@ -3,7 +3,7 @@
 /sabnzbd
 
 # config
-gonzbd.yaml
+/gonzbd.yaml
 
 # default state directory
 /admin
