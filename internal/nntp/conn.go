@@ -103,25 +103,6 @@ func (e *ServerError) Unwrap() error {
 	return classifyStatus(e.Code)
 }
 
-// classifyStatus maps an NNTP status code onto one of the sentinel
-// errors so callers can branch without knowing the wire codes.
-func classifyStatus(code int) error {
-	switch code {
-	case 430, 423:
-		return ErrNoArticle
-	case 480:
-		return ErrAuthRequired
-	case 481, 482:
-		return ErrAuthRejected
-	case 502, 503:
-		return ErrServerUnavailable
-	}
-	if code >= 400 && code < 600 {
-		return ErrTransient
-	}
-	return nil
-}
-
 // Conn is a live connection to a single NNTP server. It is safe for
 // concurrent use by multiple goroutines. See the package doc for the
 // overall concurrency model.
