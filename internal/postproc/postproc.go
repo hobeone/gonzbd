@@ -307,8 +307,25 @@ func (p *PostProcessor) popWithPause() (*Job, bool) {
 
 // processJob runs all registered stages in order for job.
 // Stage errors are recorded but do not abort the pipeline.
+//
+// If the job already carries a FailMsg (e.g. "beyond repair" from the
+// download health gate), all processing stages are skipped. The job
+// still flows through to history so the user sees the failure.
 func (p *PostProcessor) processJob(job *Job) {
 	p.log.Info("postproc: processing job", "job", job.Queue.ID, "name", job.Queue.Name)
+
+	if job.FailMsg != "" {
+		p.log.Warn("postproc: skipping all stages — job already failed",
+			"job", job.Queue.ID,
+			"reason", job.FailMsg,
+		)
+		job.StageLog = append(job.StageLog, StageLogEntry{
+			Stage:   "skipped",
+			Started: time.Now(),
+			Lines:   []string{"Post-processing skipped: " + job.FailMsg},
+		})
+		return
+	}
 
 	for _, stage := range p.stages {
 		if p.statusUpdater != nil {
