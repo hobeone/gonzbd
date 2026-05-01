@@ -1,7 +1,8 @@
 package app
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/sorting"
@@ -18,7 +19,7 @@ func sorterRulesFromConfig(cfgs []config.SorterConfig) []sorting.SorterRule {
 			active = append(active, c)
 		}
 	}
-	sort.Slice(active, func(i, j int) bool { return active[i].Order < active[j].Order })
+	slices.SortFunc(active, func(a, b config.SorterConfig) int { return cmp.Compare(a.Order, b.Order) })
 
 	rules := make([]sorting.SorterRule, 0, len(active))
 	for _, c := range active {
