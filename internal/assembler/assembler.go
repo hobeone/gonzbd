@@ -382,7 +382,7 @@ func (a *Assembler) worker() {
 				cancelledJobs[cancelID] = struct{}{}
 				for k, f := range open {
 					if k.jobID == cancelID {
-						_ = f.handle.Close()
+						_ = f.handle.Close() //nolint:errcheck // best-effort; file is immediately removed
 						if err := os.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
 							a.log.Warn("failed to remove cancelled file",
 								"path", f.info.Path, "error", err)
