@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
 // helper: build Options with a simple in-memory FileInfo resolver.
@@ -552,4 +554,111 @@ func TestFreeBytes(t *testing.T) {
 		t.Errorf("FreeBytes returned %d, want > 0", free)
 	}
 	t.Logf("FreeBytes(%s) = %d", dir, free)
+}
+
+// ---- Telemetry tests -------------------------------------------------------
+
+func TestTelemetryDiskWriteCounters(t *testing.T) {
+	telemetry.Reset()
+
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 3)
+
+	opts := makeOpts(dir, files)
+	a := startAssembler(t, opts)
+
+	// Write 3 articles of 4 bytes each — no write cache, so each should
+	// be a direct WriteAt call.
+	for i := range 3 {
+		req := WriteRequest{
+			JobID:   "job1",
+			FileIdx: 0,
+			Offset:  int64(i * 4),
+			Data:    []byte("XXXX"),
+		}
+		if err := a.WriteArticle(t.Context(), req); err != nil {
+			t.Fatalf("WriteArticle: %v", err)
+		}
+	}
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if got := telemetry.DiskWrites.Value(); got != 3 {
+		t.Errorf("DiskWrites = %d, want 3", got)
+	}
+	if got := telemetry.DiskWriteBytes.Value(); got != 12 {
+		t.Errorf("DiskWriteBytes = %d, want 12", got)
+	}
+}
+
+func TestTelemetryFileCompleted(t *testing.T) {
+	telemetry.Reset()
+
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 2)
+	registerFile(t, dir, files, "job1", 1, 1)
+
+	opts := makeOpts(dir, files)
+	a := startAssembler(t, opts)
+
+	// Complete file 0 (2 parts).
+	for i := range 2 {
+		req := WriteRequest{
+			JobID: "job1", FileIdx: 0,
+			Offset: int64(i * 4), Data: []byte("AAAA"),
+		}
+		if err := a.WriteArticle(t.Context(), req); err != nil {
+			t.Fatalf("WriteArticle: %v", err)
+		}
+	}
+
+	// Complete file 1 (1 part).
+	req := WriteRequest{
+		JobID: "job1", FileIdx: 1,
+		Offset: 0, Data: []byte("BBBB"),
+	}
+	if err := a.WriteArticle(t.Context(), req); err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if got := telemetry.FilesCompleted.Value(); got != 2 {
+		t.Errorf("FilesCompleted = %d, want 2", got)
+	}
+}
+
+func TestTelemetryPreallocCalls(t *testing.T) {
+	telemetry.Reset()
+
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	// File with ExpectedSize > 0 triggers pre-allocation.
+	path := filepath.Join(dir, "job1_0.dat")
+	files["job1:0"] = FileInfo{Path: path, TotalParts: 1, ExpectedSize: 4096}
+
+	opts := makeOpts(dir, files)
+	a := startAssembler(t, opts)
+
+	req := WriteRequest{
+		JobID: "job1", FileIdx: 0,
+		Offset: 0, Data: []byte("DATA"),
+	}
+	if err := a.WriteArticle(t.Context(), req); err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if got := telemetry.PreallocCalls.Value(); got != 1 {
+		t.Errorf("PreallocCalls = %d, want 1", got)
+	}
 }
