@@ -23,6 +23,10 @@ class QueueStore {
 	#bandwidthMaxBytesPerSec = $state(0);
 	#bandwidthPerc = $state(100);
 
+	// Debounce: prevent overlapping poll() calls from piling up.
+	#pollInFlight = false;
+	#pollDirty = false;
+
 	get queue() { return this.#queue; }
 	get error() { return this.#error; }
 	get isPolling() { return this.#polling; }
@@ -37,6 +41,14 @@ class QueueStore {
 	get bandwidthPerc() { return this.#bandwidthPerc; }
 
 	async poll() {
+		// If a poll is already in-flight, mark dirty so we re-poll when
+		// the current one finishes. This prevents request pile-up from
+		// rapid WebSocket events while ensuring data stays fresh.
+		if (this.#pollInFlight) {
+			this.#pollDirty = true;
+			return;
+		}
+		this.#pollInFlight = true;
 		try {
 			const params: Record<string, string> = {};
 			if (this.#searchText) params.search = this.#searchText;
@@ -47,6 +59,13 @@ class QueueStore {
 			this.#error = null;
 		} catch (e) {
 			this.#error = e instanceof Error ? e.message : String(e);
+		} finally {
+			this.#pollInFlight = false;
+			// If new events arrived during the fetch, do one more poll.
+			if (this.#pollDirty) {
+				this.#pollDirty = false;
+				this.poll();
+			}
 		}
 	}
 
