@@ -143,7 +143,7 @@ func TestHistoryDefault_Pagination(t *testing.T) {
 	s, repo := testHistoryServer(t)
 
 	now := time.Now()
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		seedEntry(t, repo, fmt.Sprintf("Job%d", i), "Completed", "tv", now.Add(-time.Duration(i)*time.Hour))
 	}
 
@@ -380,7 +380,7 @@ func TestHistoryLimitZero(t *testing.T) {
 	s, repo := testHistoryServer(t)
 
 	now := time.Now()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		seedEntry(t, repo, fmt.Sprintf("Job%d", i), "Completed", "tv", now.Add(-time.Duration(i)*time.Hour))
 	}
 

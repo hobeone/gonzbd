@@ -49,7 +49,7 @@ func addJob(t *testing.T, a *app.Application, rawNZB []byte, name string) *queue
 	if err != nil {
 		t.Fatalf("queue.NewJob: %v", err)
 	}
-	if err := a.AddJob(context.Background(), job, rawNZB, false); err != nil {
+	if err := a.AddJob(t.Context(), job, rawNZB, false); err != nil {
 		t.Fatalf("app.AddJob: %v", err)
 	}
 	return job
@@ -132,7 +132,7 @@ func TestE2E_SelfPost_MultiFile(t *testing.T) {
 	a, downloadDir := newE2EApp(t, cfg)
 	job := addJob(t, a, nzbXML, "e2e-multi-file")
 
-	ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), downloadTimeout)
 	defer cancel()
 
 	got := make(map[int]bool)
@@ -208,7 +208,7 @@ func TestE2E_ProvidedNZB(t *testing.T) {
 
 	fmt.Printf("Waiting for PostProcComplete for %d files in %s...\n", numFiles, fullPath)
 
-	ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), downloadTimeout)
 	defer cancel()
 
 	select {
@@ -261,7 +261,7 @@ func TestE2E_ProvidedNZB(t *testing.T) {
 func waitAndVerify(t *testing.T, a *app.Application, downloadDir, filename string, wantSHA []byte, timeout time.Duration) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 
 	// Wait for file completion (assembly)

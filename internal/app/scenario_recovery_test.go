@@ -84,7 +84,7 @@ func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 		t.Fatalf("app.New: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(func() {
 		cancel()
 		_ = a.Shutdown()
@@ -97,7 +97,7 @@ func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 	go drainAny(ctx, a.PostProcComplete())
 
 	if !waitUntil(10*time.Second, func() bool {
-		_, err := repo.Get(context.Background(), jobID)
+		_, err := repo.Get(t.Context(), jobID)
 		return err == nil
 	}) {
 		t.Fatalf("timeout waiting for job %s to reach history after recovery", jobID)

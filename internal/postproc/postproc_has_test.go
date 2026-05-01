@@ -69,7 +69,7 @@ func TestPushHead_SetsFirstInQueue(t *testing.T) {
 	q.Push(&Job{Queue: &queue.Job{ID: "b"}})
 	q.PushHead(&Job{Queue: &queue.Job{ID: "head"}})
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 
 	first, ok := q.Pop(ctx)
@@ -233,7 +233,7 @@ func TestHistory_DeepCopy(t *testing.T) {
 func TestHistory_CapMaxEntries(t *testing.T) {
 	// addHistory caps at 1000 entries. Process a few extra and verify.
 	p := New(Options{})
-	for i := 0; i < 1005; i++ {
+	for range 1005 {
 		p.addHistory(&Job{Queue: &queue.Job{ID: "j"}})
 	}
 	h := p.History()
@@ -275,7 +275,7 @@ func TestPauseWhileIdle(t *testing.T) {
 
 func TestStopWhilePaused(t *testing.T) {
 	p := New(Options{Stages: []Stage{newRecordStage("s")}})
-	_ = p.Start(context.Background())
+	_ = p.Start(t.Context())
 	time.Sleep(10 * time.Millisecond)
 	p.Pause()
 	time.Sleep(10 * time.Millisecond)
@@ -296,7 +296,7 @@ func TestStopWhilePaused(t *testing.T) {
 // ---------- Context cancellation in processJob ----------
 
 func TestProcessJob_ContextCancelled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	s1 := newRecordStage("first")
 	s2 := newRecordStage("second")
 

@@ -420,7 +420,7 @@ func (p *PostProcessor) addHistory(job *Job) {
 	if len(p.history) > maxHistory {
 		// Drop the oldest entries and nil out for GC.
 		excess := len(p.history) - maxHistory
-		for i := 0; i < excess; i++ {
+		for i := range excess {
 			p.history[i] = nil
 		}
 		p.history = p.history[excess:]

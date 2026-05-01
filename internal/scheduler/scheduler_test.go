@@ -206,7 +206,7 @@ func TestTickDispatch(t *testing.T) {
 	matchTime := time.Date(2024, 4, 15, 14, 30, 0, 0, time.UTC) // Mon
 	missTime := time.Date(2024, 4, 15, 14, 29, 0, 0, time.UTC)
 
-	sched.Tick(context.Background(), missTime)
+	sched.Tick(t.Context(), missTime)
 	mu.Lock()
 	if len(calls["speedlimit"]) != 0 {
 		mu.Unlock()
@@ -215,7 +215,7 @@ func TestTickDispatch(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sched.Tick(context.Background(), matchTime)
+	sched.Tick(t.Context(), matchTime)
 	mu.Lock()
 	if len(calls["speedlimit"]) != 1 || calls["speedlimit"][0] != "1000" {
 		mu.Unlock()
@@ -269,7 +269,7 @@ func TestOneshotDispatchedViaScheduler(t *testing.T) {
 	fireAt := time.Date(2024, 4, 15, 10, 0, 0, 0, time.UTC)
 	sched.Oneshots().Add(Oneshot{FireAt: fireAt, Action: "resume", Arg: "server1"})
 
-	sched.Tick(context.Background(), fireAt)
+	sched.Tick(t.Context(), fireAt)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -311,7 +311,7 @@ func TestHandlerErrorDoesNotBlockOthers(t *testing.T) {
 
 	sched := New([]ScheduleSpec{failSpec, okSpec}, reg, slog.Default())
 	tick := time.Date(2024, 4, 15, 10, 0, 0, 0, time.UTC)
-	sched.Tick(context.Background(), tick)
+	sched.Tick(t.Context(), tick)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -326,7 +326,7 @@ func TestUnknownActionReturnsError(t *testing.T) {
 	t.Parallel()
 
 	reg := NewRegistry()
-	err := reg.Dispatch(context.Background(), "nonexistent", "")
+	err := reg.Dispatch(t.Context(), "nonexistent", "")
 	if err == nil {
 		t.Fatal("expected error for unknown action, got nil")
 	}
@@ -359,7 +359,7 @@ func TestUnknownActionViaSchedulerContinues(t *testing.T) {
 	}
 
 	sched := New([]ScheduleSpec{unknownSpec, knownSpec}, reg, slog.Default())
-	sched.Tick(context.Background(), time.Date(2024, 4, 15, 10, 0, 0, 0, time.UTC))
+	sched.Tick(t.Context(), time.Date(2024, 4, 15, 10, 0, 0, 0, time.UTC))
 
 	mu.Lock()
 	defer mu.Unlock()

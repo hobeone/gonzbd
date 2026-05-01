@@ -54,7 +54,7 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 
 	application, _ := app.New(appCfg, repo)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	_ = application.Start(ctx)
 	defer cancel()
 	defer application.Shutdown()
@@ -97,7 +97,7 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 	}
 
 	// Verify it is in history and failed
-	entry, err := repo.Get(context.Background(), jobID)
+	entry, err := repo.Get(t.Context(), jobID)
 	if err != nil {
 		t.Fatalf("job not found in history: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 		// A simpler way is to just let the unpack stage fail.
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	_ = application.Start(ctx)
 	defer cancel()
 	defer application.Shutdown()
@@ -186,7 +186,7 @@ func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 	}
 
 	// Verify it is in history and failed
-	entry, err := repo.Get(context.Background(), jobID)
+	entry, err := repo.Get(t.Context(), jobID)
 	if err != nil {
 		t.Fatalf("job not found in history: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 			t.Fatalf("app.New: %v", err)
 		}
 
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		if err := application.Start(ctx); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
@@ -284,7 +284,7 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 		}
 
 		// Verify it is in history
-		entry, err := repo.Get(context.Background(), jobID)
+		entry, err := repo.Get(t.Context(), jobID)
 		if err != nil {
 			t.Fatalf("job not found in history: %v", err)
 		}
@@ -326,7 +326,7 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 			t.Errorf("Queue length after restart = %d, want 0", application.Queue().Len())
 		}
 
-		entries, err := repo.Search(context.Background(), history.SearchOptions{})
+		entries, err := repo.Search(t.Context(), history.SearchOptions{})
 		if err != nil {
 			t.Fatalf("history search: %v", err)
 		}
@@ -361,7 +361,7 @@ func TestRetryHistoryJob(t *testing.T) {
 	defer db.Close()
 
 	application, _ := app.New(appCfg, repo)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	_ = application.Start(ctx)
 	defer cancel()
 	defer application.Shutdown()
@@ -456,7 +456,7 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 			t.Fatalf("app.New (1): %v", err)
 		}
 
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		if err := application.Start(ctx); err != nil {
 			t.Fatalf("Start (1): %v", err)
 		}
@@ -543,7 +543,7 @@ func TestFullDownloadLifecycle(t *testing.T) {
 		t.Fatalf("app.New: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	if err := application.Start(ctx); err != nil {

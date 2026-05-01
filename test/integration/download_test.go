@@ -31,7 +31,7 @@ func addNZBJob(t *testing.T, a *app.Application, rawNZB []byte, name string) *qu
 	if err != nil {
 		t.Fatalf("queue.NewJob: %v", err)
 	}
-	if err := a.AddJob(context.Background(), job, rawNZB, false); err != nil {
+	if err := a.AddJob(t.Context(), job, rawNZB, false); err != nil {
 		t.Fatalf("app.AddJob: %v", err)
 	}
 	return job
@@ -65,7 +65,7 @@ func newTestAppWithDir(t *testing.T, mockAddr, downloadDir string) *app.Applicat
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	if err := a.Start(ctx); err != nil {
 		cancel()
 		t.Fatalf("app.Start: %v", err)
@@ -143,7 +143,7 @@ func TestDownload_MultiFile(t *testing.T) {
 	rawNZB := BuildNZB(files)
 	job := addNZBJob(t, a, rawNZB, "multi-file")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
 	// Wait for the job to complete post-processing.
@@ -199,7 +199,7 @@ func TestDownload_MissingArticle(t *testing.T) {
 	addNZBJob(t, a, rawNZB, "missing-article")
 
 	// Assert FileComplete DOES fire (because all articles are accounted for).
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	select {
@@ -247,7 +247,7 @@ func waitForHistory(t *testing.T, a *app.Application, name string, timeout time.
 func waitAndVerifySHA256(t *testing.T, a *app.Application, downloadDir, filename string, wantSHA []byte, timeout time.Duration) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 
 	select {

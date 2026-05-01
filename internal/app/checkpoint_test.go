@@ -71,7 +71,7 @@ func TestCheckpointFires_AfterMutation(t *testing.T) {
 	const checkInterval = 20 * time.Millisecond
 	application, job, adminDir := makeCheckpointApp(t, checkInterval)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if err := application.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -107,7 +107,7 @@ func TestCheckpointSkips_WhenClean(t *testing.T) {
 	const checkInterval = 20 * time.Millisecond
 	application, job, adminDir := makeCheckpointApp(t, checkInterval)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	if err := application.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)

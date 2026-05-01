@@ -113,7 +113,7 @@ func TestDispatcherRouting(t *testing.T) {
 	d.Register(nA)
 	d.Register(nB)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	evComplete := Event{Type: DownloadComplete, Title: "done", Body: "ok", Timestamp: time.Now()}
 	evQueue := Event{Type: QueueDone, Title: "queue", Body: "empty", Timestamp: time.Now()}
 
@@ -138,7 +138,7 @@ func TestDispatcherFailureDoesNotBlockOthers(t *testing.T) {
 	d.Register(nFail)
 	d.Register(nOK)
 
-	d.Dispatch(context.Background(), Event{Type: DownloadComplete, Timestamp: time.Now()})
+	d.Dispatch(t.Context(), Event{Type: DownloadComplete, Timestamp: time.Now()})
 
 	if got := nOK.events(); len(got) != 1 {
 		t.Errorf("nOK should still receive event despite nFail failing, got %v", got)
@@ -181,7 +181,7 @@ func TestAppriseTypeMapping(t *testing.T) {
 			}, srv.Client())
 
 			ev := Event{Type: tc.et, Title: "t", Body: "b", Timestamp: time.Now()}
-			if err := n.Send(context.Background(), ev); err != nil {
+			if err := n.Send(t.Context(), ev); err != nil {
 				t.Fatalf("Send: %v", err)
 			}
 			if got := received["type"]; got != tc.wantType {
@@ -208,7 +208,7 @@ func TestAppriseJSONShape(t *testing.T) {
 	}, srv.Client())
 
 	ev := Event{Type: DownloadComplete, Title: "My Title", Body: "My Body", Timestamp: time.Now()}
-	if err := n.Send(context.Background(), ev); err != nil {
+	if err := n.Send(t.Context(), ev); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	if body["urls"] != "slack://token" {
@@ -237,7 +237,7 @@ func TestAppriseNonOKStatus(t *testing.T) {
 		EventMask: []EventType{Warning},
 	}, srv.Client())
 
-	err := n.Send(context.Background(), Event{Type: Warning, Timestamp: time.Now()})
+	err := n.Send(t.Context(), Event{Type: Warning, Timestamp: time.Now()})
 	if err == nil {
 		t.Fatal("expected error on 500 response")
 	}
@@ -265,7 +265,7 @@ func TestScriptSuccess(t *testing.T) {
 		EventMask: []EventType{DownloadComplete},
 	})
 	ev := Event{Type: DownloadComplete, Title: "title", Body: "body", Timestamp: time.Now()}
-	if err := n.Send(context.Background(), ev); err != nil {
+	if err := n.Send(t.Context(), ev); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 }
@@ -280,7 +280,7 @@ func TestScriptNonZeroExit(t *testing.T) {
 		Timeout:   5 * time.Second,
 		EventMask: []EventType{DownloadFailed},
 	})
-	err := n.Send(context.Background(), Event{Type: DownloadFailed, Timestamp: time.Now()})
+	err := n.Send(t.Context(), Event{Type: DownloadFailed, Timestamp: time.Now()})
 	if err == nil {
 		t.Fatal("expected error for exit 1")
 	}
@@ -300,7 +300,7 @@ func TestScriptTimeout(t *testing.T) {
 		EventMask: []EventType{QueueDone},
 	})
 	start := time.Now()
-	err := n.Send(context.Background(), Event{Type: QueueDone, Timestamp: time.Now()})
+	err := n.Send(t.Context(), Event{Type: QueueDone, Timestamp: time.Now()})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -358,7 +358,7 @@ func TestEmailDialRespectsContext(t *testing.T) {
 		EventMask: []EventType{Warning},
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
@@ -391,7 +391,7 @@ func TestDispatchConcurrent(t *testing.T) {
 	d.Register(n1)
 	d.Register(n2)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	start := time.Now()
 	d.Dispatch(ctx, Event{Type: DownloadComplete, Timestamp: time.Now()})
 	elapsed := time.Since(start)

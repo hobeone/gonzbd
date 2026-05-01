@@ -144,7 +144,7 @@ func TestGetConfigConcurrentSafe(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			rr := apiGet(t, s.Handler(), "/api?mode=set_config&section=general&keyword=download_dir&value=dir"+strconv.Itoa(i)+"&apikey="+testAPIKey)
 			if rr.Code != http.StatusOK {
 				t.Errorf("set_config failed: %d, body: %s", rr.Code, rr.Body.String())
@@ -153,7 +153,7 @@ func TestGetConfigConcurrentSafe(t *testing.T) {
 		close(done)
 	}()
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		rr := apiGet(t, s.Handler(), "/api?mode=get_config&apikey="+testAPIKey)
 		if rr.Code != http.StatusOK {
 			t.Errorf("get_config failed: %d", rr.Code)

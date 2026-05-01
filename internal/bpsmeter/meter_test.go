@@ -217,7 +217,7 @@ func TestLimiterDisabled(t *testing.T) {
 	t.Parallel()
 	l := NewLimiter(0)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
@@ -237,7 +237,7 @@ func TestLimiterActive(t *testing.T) {
 	const bps = 256 * 1024 // 256 KiB/s
 	l := NewLimiter(bps)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	// Drain the initial burst.
@@ -265,7 +265,7 @@ func TestLimiterSetRate(t *testing.T) {
 	// Bump to a fast rate.
 	l.SetRate(10_000_000) // 10 MB/s
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
@@ -312,7 +312,7 @@ func TestLimiterRateDecreaseResetsTokens(t *testing.T) {
 	// Start with a fast rate so the burst bucket is large.
 	l := NewLimiter(10_000_000) // 10 MB/s, burst = 10 MB
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 
 	// Decrease to 10 KB/s. The old limiter had ~10 MB of tokens;

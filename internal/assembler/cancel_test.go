@@ -36,10 +36,10 @@ func TestCancelJob_ClosesOpenFileHandles(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// Write one article per file to open the file handles.
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("hello"),
 	})
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job1", FileIdx: 1, Offset: 0, Data: []byte("world"),
 	})
 
@@ -55,7 +55,7 @@ func TestCancelJob_ClosesOpenFileHandles(t *testing.T) {
 	}
 
 	// Cancel the job — both files should be closed and removed.
-	if err := a.CancelJob(context.Background(), "job1"); err != nil {
+	if err := a.CancelJob(t.Context(), "job1"); err != nil {
 		t.Fatalf("CancelJob: %v", err)
 	}
 
@@ -85,14 +85,14 @@ func TestCancelJob_RejectsLateArticles(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// Write one article then cancel.
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("data"),
 	})
-	_ = a.CancelJob(context.Background(), "job1")
+	_ = a.CancelJob(t.Context(), "job1")
 
 	// Send more articles after cancellation — they should be silently dropped.
 	for i := 1; i < 5; i++ {
-		_ = a.WriteArticle(context.Background(), WriteRequest{
+		_ = a.WriteArticle(t.Context(), WriteRequest{
 			JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("late"),
 		})
 	}
@@ -119,18 +119,18 @@ func TestCancelJob_DoesNotAffectOtherJobs(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// Write to both jobs.
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("AAAA"),
 	})
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job2", FileIdx: 0, Offset: 0, Data: []byte("XXXX"),
 	})
 
 	// Cancel only job1.
-	_ = a.CancelJob(context.Background(), "job1")
+	_ = a.CancelJob(t.Context(), "job1")
 
 	// Finish job2.
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job2", FileIdx: 0, Offset: 4, Data: []byte("YYYY"),
 	})
 
@@ -151,7 +151,7 @@ func TestCancelJob_BeforeStartReturnsError(t *testing.T) {
 	a := New(Options{
 		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
-	err := a.CancelJob(context.Background(), "job1")
+	err := a.CancelJob(t.Context(), "job1")
 	if !errors.Is(err, ErrNotStarted) {
 		t.Errorf("CancelJob before Start = %v, want ErrNotStarted", err)
 	}
@@ -161,9 +161,9 @@ func TestCancelJob_AfterStopReturnsError(t *testing.T) {
 	a := New(Options{
 		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
-	_ = a.Start(context.Background())
+	_ = a.Start(t.Context())
 	_ = a.Stop()
-	err := a.CancelJob(context.Background(), "job1")
+	err := a.CancelJob(t.Context(), "job1")
 	if !errors.Is(err, ErrStopped) {
 		t.Errorf("CancelJob after Stop = %v, want ErrStopped", err)
 	}
@@ -180,7 +180,7 @@ func TestCancelJob_ContextCancel(t *testing.T) {
 		},
 	}
 	a := New(opts, nil)
-	_ = a.Start(context.Background())
+	_ = a.Start(t.Context())
 	defer func() {
 		close(blockCh)
 		_ = a.Stop()
@@ -188,21 +188,21 @@ func TestCancelJob_ContextCancel(t *testing.T) {
 
 	// Fill the queue with a request that blocks the worker.
 	go func() {
-		_ = a.WriteArticle(context.Background(), WriteRequest{
+		_ = a.WriteArticle(t.Context(), WriteRequest{
 			JobID: "block", FileIdx: 0, Data: []byte("x"),
 		})
 	}()
 	time.Sleep(5 * time.Millisecond)
 
 	// Fill the queue (cap 1).
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	_ = a.WriteArticle(ctx, WriteRequest{
 		JobID: "fill", FileIdx: 0, Data: []byte("y"),
 	})
 
 	// Now CancelJob with an already-cancelled context.
-	cancelledCtx, cancel2 := context.WithCancel(context.Background())
+	cancelledCtx, cancel2 := context.WithCancel(t.Context())
 	cancel2()
 	err := a.CancelJob(cancelledCtx, "some-job")
 	if err == nil {
@@ -238,15 +238,15 @@ func TestFatalErrCountsTowardCompletion(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// 2 good articles, 1 fatal.
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("AAAA"),
 		MessageID: "good1",
 	})
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job1", FileIdx: 0, Offset: 4, Data: []byte("BBBB"),
 		MessageID: "good2",
 	})
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job1", FileIdx: 0,
 		MessageID: "fail1",
 		FatalErr:  fmt.Errorf("article not found on any server"),
@@ -285,15 +285,15 @@ func TestFatalErrDuplicate(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// Send the same FatalErr twice — only one should count.
-	for i := 0; i < 2; i++ {
-		_ = a.WriteArticle(context.Background(), WriteRequest{
+	for range 2 {
+		_ = a.WriteArticle(t.Context(), WriteRequest{
 			JobID: "job1", FileIdx: 0,
 			MessageID: "dup-fail",
 			FatalErr:  fmt.Errorf("gone"),
 		})
 	}
 	// Send one good article to complete the file (total=2 parts).
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("AAAA"),
 		MessageID: "good1",
 	})
@@ -325,8 +325,8 @@ func TestBatchFlushOnFileComplete(t *testing.T) {
 
 	a := startAssembler(t, opts)
 
-	for i := 0; i < 3; i++ {
-		_ = a.WriteArticle(context.Background(), WriteRequest{
+	for i := range 3 {
+		_ = a.WriteArticle(t.Context(), WriteRequest{
 			JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("XXXX"),
 			MessageID: fmt.Sprintf("msg%d", i),
 		})
@@ -361,8 +361,8 @@ func TestBatchFlushOnStop(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// Write 2 of 10 articles — file won't complete.
-	for i := 0; i < 2; i++ {
-		_ = a.WriteArticle(context.Background(), WriteRequest{
+	for i := range 2 {
+		_ = a.WriteArticle(t.Context(), WriteRequest{
 			JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("YYYY"),
 			MessageID: fmt.Sprintf("stop-msg%d", i),
 		})
@@ -398,17 +398,17 @@ func TestLateDuplicateForCompletedFile(t *testing.T) {
 	a := startAssembler(t, opts)
 
 	// Complete the file.
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("AA"),
 		MessageID: "msg1",
 	})
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job1", FileIdx: 0, Offset: 2, Data: []byte("BB"),
 		MessageID: "msg2",
 	})
 
 	// Send a late duplicate — should be rejected (tombstone set).
-	_ = a.WriteArticle(context.Background(), WriteRequest{
+	_ = a.WriteArticle(t.Context(), WriteRequest{
 		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("XX"),
 		MessageID: "msg1-late",
 	})
@@ -426,11 +426,11 @@ func TestDoubleStartReturnsError(t *testing.T) {
 	a := New(Options{
 		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
 	}, nil)
-	if err := a.Start(context.Background()); err != nil {
+	if err := a.Start(t.Context()); err != nil {
 		t.Fatalf("first Start: %v", err)
 	}
 	defer func() { _ = a.Stop() }()
-	if err := a.Start(context.Background()); err == nil {
+	if err := a.Start(t.Context()); err == nil {
 		t.Error("second Start should return an error")
 	}
 }

@@ -197,7 +197,7 @@ func NewTestApp(t *testing.T, mockAddr string) *app.Application {
 		t.Fatalf("app.New: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	if err := a.Start(ctx); err != nil {
 		cancel()
 		t.Fatalf("app.Start: %v", err)

@@ -135,7 +135,7 @@ func TestRSS_IncludeExcludeFilters(t *testing.T) {
 	}
 
 	scanner := rss.NewScanner([]rss.Feed{feed}, store, handler, nil, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	if err := scanner.ScanOnce(ctx); err != nil {
@@ -180,7 +180,7 @@ func TestRSS_ExcludeFilter(t *testing.T) {
 	}
 
 	scanner := rss.NewScanner([]rss.Feed{feed}, store, handler, nil, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	if err := scanner.ScanOnce(ctx); err != nil {
@@ -220,7 +220,7 @@ func TestRSS_SizeBounds(t *testing.T) {
 	}
 
 	scanner := rss.NewScanner([]rss.Feed{feed}, store, handler, nil, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	if err := scanner.ScanOnce(ctx); err != nil {
@@ -257,7 +257,7 @@ func TestRSS_Dedup(t *testing.T) {
 	}
 
 	scanner := rss.NewScanner([]rss.Feed{feed}, store, handler, nil, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	// First scan — item should be dispatched once.
@@ -296,7 +296,7 @@ func TestRSS_DisabledFeed(t *testing.T) {
 	}
 
 	scanner := rss.NewScanner([]rss.Feed{feed}, store, handler, nil, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	if err := scanner.ScanOnce(ctx); err != nil {
@@ -330,7 +330,7 @@ func TestRSS_MaxAge(t *testing.T) {
 	}
 
 	scanner := rss.NewScanner([]rss.Feed{feed}, store, handler, nil, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	if err := scanner.ScanOnce(ctx); err != nil {

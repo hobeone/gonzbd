@@ -1,7 +1,6 @@
 package history
 
 import (
-	"context"
 	"testing"
 	"time"
 )
@@ -10,7 +9,7 @@ import (
 
 func TestListIDs_ReturnsAll(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	repo.Add(ctx, sampleEntry("nzo_1", "Job1", "Completed", "TV"))
 	repo.Add(ctx, sampleEntry("nzo_2", "Job2", "Failed", "Movies"))
@@ -27,7 +26,7 @@ func TestListIDs_ReturnsAll(t *testing.T) {
 
 func TestListIDs_Filtered(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	repo.Add(ctx, sampleEntry("nzo_a", "A", "Completed", "TV"))
 	repo.Add(ctx, sampleEntry("nzo_b", "B", "Failed", "Movies"))
@@ -46,7 +45,7 @@ func TestListIDs_Filtered(t *testing.T) {
 
 func TestListIDs_Empty(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	ids, err := repo.ListIDs(ctx, SearchOptions{})
 	if err != nil {
@@ -61,7 +60,7 @@ func TestListIDs_Empty(t *testing.T) {
 
 func TestCount_All(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	repo.Add(ctx, sampleEntry("nzo_1", "J1", "Completed", "TV"))
 	repo.Add(ctx, sampleEntry("nzo_2", "J2", "Failed", "Movies"))
@@ -78,7 +77,7 @@ func TestCount_All(t *testing.T) {
 
 func TestCount_Filtered(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	repo.Add(ctx, sampleEntry("nzo_1", "J1", "Completed", "TV"))
 	repo.Add(ctx, sampleEntry("nzo_2", "J2", "Failed", "Movies"))
@@ -94,7 +93,7 @@ func TestCount_Filtered(t *testing.T) {
 
 func TestCount_Category(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	repo.Add(ctx, sampleEntry("nzo_1", "J1", "Completed", "TV"))
 	repo.Add(ctx, sampleEntry("nzo_2", "J2", "Completed", "Movies"))
@@ -111,7 +110,7 @@ func TestCount_Category(t *testing.T) {
 
 func TestCount_Empty(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	count, err := repo.Count(ctx, SearchOptions{})
 	if err != nil {
@@ -126,7 +125,7 @@ func TestCount_Empty(t *testing.T) {
 
 func TestSearch_ArchiveOnly(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	e1 := sampleEntry("nzo_1", "Normal", "Completed", "TV")
 	e1.Archive = 0
@@ -150,7 +149,7 @@ func TestSearch_ArchiveOnly(t *testing.T) {
 
 func TestSearch_MD5Sum(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	e1 := sampleEntry("nzo_1", "J1", "Completed", "TV")
 	e1.MD5Sum = "abc123"
@@ -174,9 +173,9 @@ func TestSearch_MD5Sum(t *testing.T) {
 
 func TestSearch_Pagination(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		e := sampleEntry("nzo_"+string(rune('a'+i)), "Job", "Completed", "TV")
 		e.Completed = time.Now().Add(-time.Duration(i) * time.Hour).Truncate(time.Second).UTC()
 		repo.Add(ctx, e)
@@ -194,9 +193,9 @@ func TestSearch_Pagination(t *testing.T) {
 
 func TestSearch_OffsetWithoutLimit(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		e := sampleEntry("nzo_"+string(rune('a'+i)), "Job", "Completed", "TV")
 		e.Completed = time.Now().Add(-time.Duration(i) * time.Hour).Truncate(time.Second).UTC()
 		repo.Add(ctx, e)
@@ -255,7 +254,7 @@ func TestToUnix_RoundTrip(t *testing.T) {
 
 func TestMarkCompleted_NotFound(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := repo.MarkCompleted(ctx, "nonexistent_nzo")
 	if err == nil {

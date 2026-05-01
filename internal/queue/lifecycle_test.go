@@ -20,12 +20,12 @@ func makeMultiFileJob(t *testing.T, name string, nFiles, nArticles int) *Job {
 		Groups: []string{"alt.binaries.test"},
 		AvgAge: time.Unix(1700000000, 0),
 	}
-	for fi := 0; fi < nFiles; fi++ {
+	for fi := range nFiles {
 		f := nzb.File{
 			Subject: name + " - file " + string(rune('A'+fi)),
 			Date:    time.Unix(1700000000, 0),
 		}
-		for ai := 0; ai < nArticles; ai++ {
+		for ai := range nArticles {
 			art := nzb.Article{
 				ID:     articleID(fi, ai),
 				Bytes:  100_000,
@@ -917,12 +917,11 @@ func TestConcurrentArticleLifecycle(t *testing.T) {
 
 	// Simulate concurrent workers completing articles.
 	var wg sync.WaitGroup
-	for fi := 0; fi < nFiles; fi++ {
-		fi := fi
+	for fi := range nFiles {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for ai := 0; ai < nArticles; ai++ {
+			for ai := range nArticles {
 				msgID := articleID(fi, ai)
 				_ = q.MarkArticleEmitted(j.ID, msgID)
 				_ = q.MarkArticleDone(j.ID, msgID)

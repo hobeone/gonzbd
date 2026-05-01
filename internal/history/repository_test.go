@@ -1,7 +1,6 @@
 package history
 
 import (
-	"context"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -50,7 +49,7 @@ func sampleEntry(nzoID, name, status, category string) Entry {
 
 func TestAddGetRoundTrip(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	want := sampleEntry("SABnzbd_nzo_abc123", "My Show S01E01", "Completed", "TV")
 	if err := repo.Add(ctx, want); err != nil {
@@ -93,7 +92,7 @@ func TestAddGetRoundTrip(t *testing.T) {
 
 func TestAddDuplicateNzoIDErrors(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	e := sampleEntry("dup_id", "show", "Completed", "TV")
 	if err := repo.Add(ctx, e); err != nil {
@@ -107,7 +106,7 @@ func TestAddDuplicateNzoIDErrors(t *testing.T) {
 
 func TestGetMissingReturnsErrNotFound(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	_, err := repo.Get(ctx, "does_not_exist")
 	if !errors.Is(err, ErrNotFound) {
@@ -117,7 +116,7 @@ func TestGetMissingReturnsErrNotFound(t *testing.T) {
 
 func TestSearchByStatus(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	entries := []Entry{
 		sampleEntry("id1", "show1", "Completed", "TV"),
@@ -155,7 +154,7 @@ func TestSearchByStatus(t *testing.T) {
 
 func TestSearchByCategory(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, e := range []Entry{
 		sampleEntry("c1", "show1", "Completed", "TV"),
@@ -178,7 +177,7 @@ func TestSearchByCategory(t *testing.T) {
 
 func TestSearchBySubstring(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for _, e := range []Entry{
 		sampleEntry("s1", "Breaking Bad S01E01", "Completed", "TV"),
@@ -214,7 +213,7 @@ func TestSearchBySubstring(t *testing.T) {
 
 func TestSearchPagination(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for i := range 10 {
 		e := sampleEntry(
@@ -254,7 +253,7 @@ func TestSearchPagination(t *testing.T) {
 
 func TestDeleteSingle(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	e := sampleEntry("del1", "show", "Completed", "TV")
 	if err := repo.Add(ctx, e); err != nil {
@@ -277,7 +276,7 @@ func TestDeleteSingle(t *testing.T) {
 
 func TestDeleteMultiple(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	ids := []string{"dm1", "dm2", "dm3"}
 	for _, id := range ids {
@@ -303,7 +302,7 @@ func TestDeleteMultiple(t *testing.T) {
 
 func TestDeleteUnknownIDsReturnsZero(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	n, err := repo.Delete(ctx, "ghost1", "ghost2")
 	if err != nil {
@@ -316,7 +315,7 @@ func TestDeleteUnknownIDsReturnsZero(t *testing.T) {
 
 func TestDeleteNoIDsIsNoop(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	n, err := repo.Delete(ctx)
 	if err != nil {
@@ -329,7 +328,7 @@ func TestDeleteNoIDsIsNoop(t *testing.T) {
 
 func TestMarkCompleted(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	before := time.Now().Truncate(time.Second)
 	e := sampleEntry("mc1", "show", "Failed", "TV")
@@ -356,7 +355,7 @@ func TestMarkCompleted(t *testing.T) {
 
 func TestMarkCompletedMissingReturnsErrNotFound(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := repo.MarkCompleted(ctx, "no_such_id")
 	if !errors.Is(err, ErrNotFound) {
@@ -366,7 +365,7 @@ func TestMarkCompletedMissingReturnsErrNotFound(t *testing.T) {
 
 func TestPruneRespectsRetainDays(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	old := sampleEntry("old1", "old show", "Completed", "TV")
 	old.Completed = time.Now().AddDate(0, 0, -10) // 10 days ago
@@ -397,7 +396,7 @@ func TestPruneRespectsRetainDays(t *testing.T) {
 
 func TestPruneRespectsRetainFailedDays(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	oldFailed := sampleEntry("of1", "old failed", "Failed", "TV")
 	oldFailed.Completed = time.Now().AddDate(0, 0, -20)
@@ -435,7 +434,7 @@ func TestPruneRespectsRetainFailedDays(t *testing.T) {
 
 func TestPruneZeroZeroIsNoop(t *testing.T) {
 	_, repo := openTestDB(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	e := sampleEntry("noop1", "show", "Completed", "TV")
 	e.Completed = time.Now().AddDate(0, 0, -100)
