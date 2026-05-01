@@ -58,11 +58,6 @@ type ArticleResult struct {
 	Err error
 }
 
-// articleKey identifies an article globally, for try-list tracking.
-// NNTP message-IDs are globally unique, so using messageID alone as
-// the key halves the map hash cost compared to a two-string struct.
-type articleKey = string
-
 // articleRequest is the unit of work flowing from the dispatcher to
 // a per-server worker. Kept small because these are allocated every
 // dispatch pass; heap churn shows up in benchmarks.
@@ -216,7 +211,7 @@ type Downloader struct {
 	pauseCancel context.CancelFunc
 
 	tryMu   sync.Mutex
-	tryList map[articleKey]serverMask
+	tryList map[string]serverMask
 
 	// inFlight counts outstanding requests per article across all
 	// servers. An article with inFlight > 0 is not re-dispatched even
@@ -224,7 +219,7 @@ type Downloader struct {
 	// request must resolve first. This prevents speculative fan-out to
 	// multiple servers, which would double-charge paid bandwidth and
 	// produce duplicate completions.
-	inFlight map[articleKey]int
+	inFlight map[string]int
 
 	// connActivityMu guards connActivity. Workers write their own
 	// entry via setConnActivity/clearConnActivity; ServerStatus()
@@ -273,8 +268,8 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		completions:   make(chan *ArticleResult, opts.CompletionsBuffer),
 		dispatchReady: make(chan struct{}, 1),
 		limiter:       bpsmeter.NewLimiter(0),
-		tryList:       make(map[articleKey]serverMask),
-		inFlight:      make(map[articleKey]int),
+		tryList:       make(map[string]serverMask),
+		inFlight:      make(map[string]int),
 		connActivity:  make(map[string]*ConnActivity),
 	}
 	ch := make(chan struct{})

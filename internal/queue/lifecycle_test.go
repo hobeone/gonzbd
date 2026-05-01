@@ -406,7 +406,7 @@ func TestForEachUnfinishedArticle(t *testing.T) {
 	t.Run("skips complete files", func(t *testing.T) {
 		_ = q.MarkFileComplete(j.ID, 0)
 		var count int
-		var seenFileIdx int = -1
+		seenFileIdx := -1
 		q.ForEachUnfinishedArticle(func(ua UnfinishedArticle) bool {
 			count++
 			seenFileIdx = ua.FileIdx
