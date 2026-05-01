@@ -230,19 +230,13 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 // re-dialled for the next request. The goroutine exits when ctx is
 // cancelled.
 func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int, workerID string) {
-	var conn *nntp.Conn
-	var connMu sync.Mutex
+	mc := &managedConn{}
 	var workerWg sync.WaitGroup
 
 	defer func() {
 		workerWg.Wait()
-		connMu.Lock()
-		defer connMu.Unlock()
-		if conn != nil {
-			d.log.Info("disconnected from server", "server", srv.Cfg().Name, "worker", workerID, "reason", "shutdown")
-			_ = conn.Close() //nolint:errcheck // shutdown path; close error not actionable
-			d.setConnConnected(workerID, false)
-		}
+		d.log.Info("disconnected from server", "server", srv.Cfg().Name, "worker", workerID, "reason", "shutdown")
+		mc.Close(d, workerID)
 	}()
 
 	name := srv.Cfg().Name
@@ -278,21 +272,15 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 				// handleRequest goroutines to finish before closing.
 				<-sem
 				workerWg.Wait()
-				connMu.Lock()
-				if conn != nil {
-					d.log.Info("disconnected from server", "server", name, "worker", workerID, "reason", "idle")
-					_ = conn.Close()
-					conn = nil
-					d.setConnConnected(workerID, false)
-				}
-				connMu.Unlock()
+				d.log.Info("disconnected from server", "server", name, "worker", workerID, "reason", "idle")
+				mc.Close(d, workerID)
 				// Loop back to wait for new work; will re-dial lazily.
 			case req := <-workCh:
 				workerWg.Add(1)
 				go func(req *articleRequest) {
 					defer workerWg.Done()
 					defer func() { <-sem }()
-					d.handleRequest(ctx, srv, serverIdx, &conn, &connMu, req, workerID)
+					d.handleRequest(ctx, srv, serverIdx, mc, req, workerID)
 				}(req)
 			}
 		}
@@ -304,7 +292,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 // emission. The *nntp.Conn pointer is passed by reference so the
 // function can replace it with nil on connection-level failure
 // (forcing a re-dial on the next call).
-func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx int, connPtr **nntp.Conn, connMu *sync.Mutex, req *articleRequest, workerID string) {
+func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx int, mc *managedConn, req *articleRequest, workerID string) {
 	d.setConnActivity(workerID, req)
 	defer d.clearConnActivity(workerID)
 	defer d.signalDispatch()
@@ -337,60 +325,30 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 		return
 	}
 
-	connMu.Lock()
-	if *connPtr == nil {
-		// If the server was penalized by a previous failed dial,
-		// skip re-dialing to prevent sequential stalls.
-		if !srv.Active(time.Now()) {
-			connMu.Unlock()
-			d.unmarkTried(req.jobID, req.messageID, serverIdx)
+	c, err := mc.Get(fetchCtx, d, srv, workerID)
+	if err != nil {
+		d.unmarkTried(req.jobID, req.messageID, serverIdx)
+		if errors.Is(err, errServerPenalized) {
 			// Don't emit a result — the article is returned to the
 			// dispatch pool silently. The deferred signalDispatch
 			// triggers a new pass where it can be tried on another
 			// server or wait for this server's penalty to expire.
-			// Emitting "server penalized" here would cause the
-			// pipeline to misclassify it as a terminal failure.
 			return
 		}
-		d.log.Info("dialing server", "server", name, "host", srv.Cfg().Host)
-		dialOpts := []nntp.DialOption{
-			nntp.WithLimiter(d.limiter),
-			nntp.WithLogger(d.log),
-		}
-		if d.meter != nil {
-			dialOpts = append(dialOpts, nntp.WithRecorder(d.meter, name))
-		}
-		c, err := nntp.Dial(fetchCtx, srv.Cfg(), dialOpts...)
-		if err != nil {
-			connMu.Unlock()
-			d.unmarkTried(req.jobID, req.messageID, serverIdx)
-			// Don't emit a result for dial failures. These are
-			// connection-level errors, not article-level failures.
-			// The deferred signalDispatch triggers a new pass where
-			// the article can be tried on another server (or this
-			// one again after the penalty expires). Emitting would
-			// risk the pipeline misclassifying the error as a
-			// terminal article failure, inflating FailedBytes.
-			if fetchCtx.Err() != nil {
-				// Context cancelled = shutdown or pause. Silently
-				// return; the article will be re-dispatched after
-				// the reload/unpause via ClearAllEmitted.
-				return
-			}
-			d.log.Warn("dial failed", "server", name, "error", err)
-			srv.RecordBadConnection()
-			if pen := PenaltyFor(err); pen > 0 {
-				d.log.Info("penalty applied", "server", name, "duration", pen)
-				srv.ApplyPenalty(pen)
-			}
+		if fetchCtx.Err() != nil {
+			// Context cancelled = shutdown or pause. Silently
+			// return; the article will be re-dispatched after
+			// the reload/unpause via ClearAllEmitted.
 			return
 		}
-		d.log.Info("connected", "server", name, "ssl", c.SSLInfo())
-		*connPtr = c
-		d.setConnConnected(workerID, true)
+		d.log.Warn("dial failed", "server", name, "error", err)
+		srv.RecordBadConnection()
+		if pen := PenaltyFor(err); pen > 0 {
+			d.log.Info("penalty applied", "server", name, "duration", pen)
+			srv.ApplyPenalty(pen)
+		}
+		return
 	}
-	c := *connPtr
-	connMu.Unlock()
 
 	body, err := c.Fetch(fetchCtx, req.messageID)
 	if err != nil {
@@ -406,14 +364,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 		// Connection-level failure: tear down, re-dial later.
 		d.log.Warn("fetch failed", "server", name, "msgid", req.messageID, "error", err)
 
-		connMu.Lock()
-		isFirstNotifier := *connPtr == c
-		if isFirstNotifier {
-			_ = c.Close() //nolint:errcheck // discarding a broken conn; underlying error already captured in err
-			*connPtr = nil
-			d.setConnConnected(workerID, false)
-		}
-		connMu.Unlock()
+		isFirstNotifier := mc.DropIfMatches(c, d, workerID)
 
 		// Context cancellation means shutdown or pause — not a server fault.
 		// Don't record bad connections or apply penalties.
@@ -550,4 +501,68 @@ func (d *Downloader) clearTried(jobID, messageID string) {
 	d.tryMu.Lock()
 	defer d.tryMu.Unlock()
 	delete(d.tryList, key)
+}
+
+// managedConn encapsulates an NNTP connection and the synchronization
+// required to lazily dial, use, and safely tear down the connection.
+type managedConn struct {
+	mu   sync.Mutex
+	conn *nntp.Conn
+}
+
+func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, workerID string) (*nntp.Conn, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.conn != nil {
+		return m.conn, nil
+	}
+
+	name := srv.Cfg().Name
+	if !srv.Active(time.Now()) {
+		return nil, errServerPenalized
+	}
+
+	d.log.Info("dialing server", "server", name, "host", srv.Cfg().Host)
+	dialOpts := []nntp.DialOption{
+		nntp.WithLimiter(d.limiter),
+		nntp.WithLogger(d.log),
+	}
+	if d.meter != nil {
+		dialOpts = append(dialOpts, nntp.WithRecorder(d.meter, name))
+	}
+	
+	c, err := nntp.Dial(ctx, srv.Cfg(), dialOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	d.log.Info("connected", "server", name, "ssl", c.SSLInfo())
+	m.conn = c
+	d.setConnConnected(workerID, true)
+	return c, nil
+}
+
+func (m *managedConn) Close(d *Downloader, workerID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.conn != nil {
+		_ = m.conn.Close() //nolint:errcheck // discarding a broken conn
+		m.conn = nil
+		d.setConnConnected(workerID, false)
+	}
+}
+
+// DropIfMatches closes the connection if the given connection matches
+// the current connection. Returns true if it was dropped by this call.
+func (m *managedConn) DropIfMatches(c *nntp.Conn, d *Downloader, workerID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.conn != nil && m.conn == c {
+		_ = m.conn.Close() //nolint:errcheck // discarding a broken conn
+		m.conn = nil
+		d.setConnConnected(workerID, false)
+		return true
+	}
+	return false
 }
