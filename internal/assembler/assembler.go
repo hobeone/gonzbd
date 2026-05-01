@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
 // defaultQueueSize is the capacity of the internal write-request channel.
@@ -550,6 +552,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		// per-write extent allocation overhead (ext4/xfs) and helps
 		// the filesystem lay out contiguous blocks.
 		if info.ExpectedSize > 0 {
+			telemetry.PreallocCalls.Add(1)
 			if err := preallocateFile(fh, info.ExpectedSize); err != nil {
 				a.log.Warn("file pre-allocation failed, continuing without",
 					"path", info.Path,
@@ -658,6 +661,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		}
 		delete(open, key)
 		completed[key] = struct{}{} // tombstone: reject late duplicates
+		telemetry.FilesCompleted.Add(1)
 		a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
 		// Flush pending Done/Failed before firing the callback. The
 		// pipeline's watchCompletions must not observe IsComplete()==true
@@ -707,8 +711,13 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 // the most buffered data is force-flushed.
 func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequest, wc *writeCache, open map[fileKey]*openFile) bool {
 	if wc.buffer(key, req.Offset, req.Data) {
+		telemetry.CacheHits.Add(1)
 		// Article buffered. Check for a flushable contiguous run.
 		if run := wc.flushContiguous(key); run != nil {
+			telemetry.CacheFlushes.Add(1)
+			telemetry.CacheFlushBytes.Add(int64(len(run.data)))
+			telemetry.DiskWrites.Add(1)
+			telemetry.DiskWriteBytes.Add(int64(len(run.data)))
 			if _, err := f.handle.WriteAt(run.data, run.offset); err != nil {
 				a.log.Error("write coalesced run",
 					"path", f.info.Path,
@@ -720,11 +729,14 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 		}
 		// Relieve memory pressure if needed.
 		for wc.pressure() {
+			telemetry.CachePressureFlushes.Add(1)
 			a.flushPressure(wc, open)
 		}
 		return true
 	}
 	// Caching disabled — write directly.
+	telemetry.DiskWrites.Add(1)
+	telemetry.DiskWriteBytes.Add(int64(len(req.Data)))
 	if _, err := f.handle.WriteAt(req.Data, req.Offset); err != nil {
 		a.log.Error("write article",
 			"path", f.info.Path,
