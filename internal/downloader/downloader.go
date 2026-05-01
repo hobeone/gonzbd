@@ -233,11 +233,10 @@ type Downloader struct {
 	connActivityMu sync.RWMutex
 	connActivity   map[string]*ConnActivity // key: "serverName#connIndex"
 
-	// disconnectMu protects disconnectCh. DisconnectAll closes the
-	// current channel (broadcasting to all connWorkers) and replaces
-	// it with a fresh one.
-	disconnectMu sync.Mutex
-	disconnectCh chan struct{}
+	// disconnectPtr holds the current disconnect channel. DisconnectAll
+	// closes the current channel (broadcasting to all connWorkers) and
+	// replaces it with a fresh one using atomic load/store.
+	disconnectPtr atomic.Pointer[chan struct{}]
 
 	ctx    context.Context //nolint:containedctx // lifecycle context stored for Stop()
 	cancel context.CancelFunc
@@ -278,8 +277,9 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		tryList:       make(map[articleKey]serverMask),
 		inFlight:      make(map[articleKey]int),
 		connActivity:  make(map[string]*ConnActivity),
-		disconnectCh:  make(chan struct{}),
 	}
+	ch := make(chan struct{})
+	d.disconnectPtr.Store(&ch)
 	for _, srv := range servers {
 		name := srv.Cfg().Name
 		perServer := opts.PerServerQueue
@@ -453,10 +453,11 @@ func (d *Downloader) IsPaused() bool { return d.paused.Load() }
 //
 // Used when the download queue empties to free server resources.
 func (d *Downloader) DisconnectAll() {
-	d.disconnectMu.Lock()
-	close(d.disconnectCh)
-	d.disconnectCh = make(chan struct{})
-	d.disconnectMu.Unlock()
+	newCh := make(chan struct{})
+	oldCh := d.disconnectPtr.Swap(&newCh)
+	if oldCh != nil {
+		close(*oldCh)
+	}
 	d.log.Info("disconnect: signaled all connections to close")
 }
 
@@ -464,10 +465,11 @@ func (d *Downloader) DisconnectAll() {
 // snapshot this before blocking on the work channel; when DisconnectAll
 // closes it, the select unblocks and the worker closes its connection.
 func (d *Downloader) disconnectSnapshot() <-chan struct{} {
-	d.disconnectMu.Lock()
-	ch := d.disconnectCh
-	d.disconnectMu.Unlock()
-	return ch
+	ch := d.disconnectPtr.Load()
+	if ch != nil {
+		return *ch
+	}
+	return nil
 }
 
 // setConnActivity records that the worker identified by workerID is
