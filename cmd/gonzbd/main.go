@@ -38,6 +38,12 @@ import (
 	"github.com/hobeone/gonzbd/internal/scheduler"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 	"github.com/hobeone/gonzbd/internal/web"
+
+	// Side-effect imports: register pprof handlers and expvar counters
+	// on http.DefaultServeMux (routed via /debug/ in composeRouter).
+	_ "net/http/pprof"
+
+	_ "github.com/hobeone/gonzbd/internal/telemetry"
 )
 
 // Version is the build version of the gonzbd binary. Overridden at build
@@ -595,11 +601,18 @@ func startRSSScanner(ctx context.Context, cfg *config.Config, adminDir string, g
 }
 
 // composeRouter produces the outer HTTP handler that routes /api requests
-// to the API server and everything else to the web UI handler.
+// to the API server, /debug/ to profiling/telemetry handlers, and
+// everything else to the web UI handler.
 func composeRouter(apiSrv *api.Server, webHandler http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api", apiSrv.Handler())
 	mux.Handle("/api/", apiSrv.Handler())
+
+	// Profiling and telemetry — net/http/pprof registers its handlers
+	// on http.DefaultServeMux, so route /debug/pprof/ there. expvar
+	// registers /debug/vars on DefaultServeMux too.
+	mux.Handle("/debug/", http.DefaultServeMux)
+
 	mux.Handle("/", webHandler)
 	return mux
 }
