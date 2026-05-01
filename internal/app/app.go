@@ -212,6 +212,14 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	}
 	app.queue = q
 
+	// Probe sparse file support on the download directory. Pre-allocation
+	// uses fallocate/ftruncate which benefits from sparse-capable filesystems.
+	if supported, msg := assembler.CheckSparseSupport(cfg.DownloadDir); !supported {
+		log.Warn(msg)
+	} else {
+		log.Info(msg)
+	}
+
 	c := cache.New(cache.Options{Limit: cfg.CacheLimit})
 	app.cache = c
 
