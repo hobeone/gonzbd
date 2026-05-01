@@ -928,7 +928,7 @@ func extractAllSlots(t *testing.T, body []byte) []map[string]json.RawMessage {
 	if err := json.Unmarshal(queueRaw["slots"], &slotsRaw); err != nil {
 		t.Fatalf("unmarshal slots: %v", err)
 	}
-	var result []map[string]json.RawMessage
+	result := make([]map[string]json.RawMessage, 0, len(slotsRaw))
 	for _, s := range slotsRaw {
 		var m map[string]json.RawMessage
 		if err := json.Unmarshal(s, &m); err != nil {

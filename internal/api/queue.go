@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -578,11 +577,6 @@ func formatBytes(n int64) string {
 	default:
 		return strconv.FormatInt(n, 10) + " B"
 	}
-}
-
-// toMB converts bytes to megabytes as a float64, rounded to 1 decimal.
-func toMB(n int64) float64 {
-	return math.Round(float64(n)/float64(1<<20)*10) / 10
 }
 
 // toMBString formats bytes as a megabyte string like "1024.00" for SABnzbd API compatibility.

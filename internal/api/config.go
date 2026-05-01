@@ -292,7 +292,7 @@ func (s *Server) configSpeedLimit(w http.ResponseWriter, r *http.Request) {
 	// Persist as the new bandwidth_max so restarts honour the change.
 	if s.config != nil {
 		bsVal := config.ByteSize(bytesPerSec)
-		_ = s.config.Set("downloads", "bandwidth_max", bsVal.String())
+		_ = s.config.Set("downloads", "bandwidth_max", bsVal.String()) //nolint:errcheck // in-memory update failure is ignored; Save will catch disk errors
 		if s.configPath != "" {
 			if err := s.config.Save(s.configPath); err != nil {
 				s.log.Error("persist speed limit", "error", err)
@@ -317,7 +317,7 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	port, _ := strconv.Atoi(formString(r, "port"))
+	port, _ := strconv.Atoi(formString(r, "port")) //nolint:errcheck // handled by port == 0 check
 	if port == 0 {
 		port = 119
 	}
@@ -329,7 +329,7 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 	sslVerifyStr := formString(r, "ssl_verify")
 	sslVerify := config.SSLVerifyHostname // safe default
 	if sslVerifyStr != "" {
-		if v, err := strconv.Atoi(sslVerifyStr); err == nil {
+		if v, err := strconv.ParseInt(sslVerifyStr, 10, 8); err == nil {
 			sslVerify = config.SSLVerify(v)
 		}
 	}
