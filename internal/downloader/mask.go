@@ -74,19 +74,3 @@ func (m *serverMask) isEmpty() bool {
 	}
 	return true
 }
-
-// allTried checks if all servers in a given range [0, count) have been tried.
-// Used to quickly determine if an article has exhausted all eligible servers.
-// To support disabled/unavailable servers efficiently without complex mask logic,
-// we just iterate using has(). Since count is almost always small, this is fast.
-func (m *serverMask) allTried(count int, active func(idx int) bool) bool {
-	for i := range count {
-		if !active(i) {
-			continue // skip servers that aren't eligible anyway
-		}
-		if !m.has(i) {
-			return false
-		}
-	}
-	return true
-}
