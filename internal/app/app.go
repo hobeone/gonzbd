@@ -22,7 +22,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
-	"github.com/hobeone/gonzbd/internal/cache"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/downloader"
@@ -46,7 +45,6 @@ type Config struct {
 	DownloadDir        string
 	CompleteDir        string
 	AdminDir           string
-	CacheLimit         int64
 	WriteCacheBytes    int64
 	Servers            []config.ServerConfig
 	Categories         []config.CategoryConfig
@@ -133,7 +131,6 @@ type Application struct {
 
 	queue            *queue.Queue
 	historyRepo      *history.Repository
-	cache            *cache.Cache
 	downloader       *downloader.Downloader
 	assembler        *assembler.Assembler
 	postProcessor    *postproc.PostProcessor
@@ -225,9 +222,6 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		log.Info("write coalescing enabled",
 			"cacheMiB", cfg.WriteCacheBytes/(1024*1024))
 	}
-
-	c := cache.New(cache.Options{Limit: cfg.CacheLimit})
-	app.cache = c
 
 	servers := make([]*downloader.Server, len(cfg.Servers))
 	for i, sc := range cfg.Servers {
@@ -756,7 +750,7 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 //     OnFileComplete events to watchCompletions, which is still running.
 //  3. Cancel the context — watchCompletions exits.
 //  4. Wait for background goroutines to finish.
-//  5. Stop the post-processor, flush cache, save queue.
+//  5. Stop the post-processor, save queue.
 func (app *Application) Shutdown() error {
 	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) {
 		return nil
@@ -766,7 +760,6 @@ func (app *Application) Shutdown() error {
 	app.cancel()
 	app.wg.Wait()
 	_ = app.postProcessor.Stop()
-	_ = app.cache.Flush()
 	_ = app.queue.Save(filepath.Join(app.cfg.AdminDir, "queue"))
 	return nil
 }

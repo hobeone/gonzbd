@@ -59,7 +59,6 @@ func Default() (*Config, error) {
 			BandwidthPerc:       100,
 			MinFreeSpace:        ByteSize(1024 * constants.MiB),
 			MinFreeSpaceCleanup: ByteSize(2048 * constants.MiB),
-			ArticleCacheSize:    ByteSize(constants.DefaultArticleCacheBytes),
 			WriteCacheSize:      ByteSize(constants.DefaultWriteCacheBytes),
 			MaxArtTries:         3,
 			MaxArtOpt:           1,

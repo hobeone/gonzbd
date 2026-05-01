@@ -18,10 +18,6 @@ type DownloadConfig struct {
 	// cleanup completes. Must be >= MinFreeSpace.
 	MinFreeSpaceCleanup ByteSize `yaml:"min_free_space_cleanup" json:"min_free_space_cleanup"`
 
-	// ArticleCacheSize is the in-memory article cache budget. Capped at
-	// constants.MaxArticleCacheBytes.
-	ArticleCacheSize ByteSize `yaml:"article_cache_size" json:"article_cache_size"`
-
 	// WriteCacheSize is the memory budget for write coalescing in the
 	// assembler. When positive, decoded articles are buffered in memory
 	// and flushed as larger contiguous writes, reducing I/O syscall

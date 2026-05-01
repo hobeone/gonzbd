@@ -71,7 +71,6 @@ func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 		DownloadDir: downloadDir,
 		CompleteDir: completeDir,
 		AdminDir:    adminDir,
-		CacheLimit:  1 << 20,
 		// The job is already complete; the downloader should never
 		// actually be asked to fetch anything. Provide a scripted
 		// server purely to satisfy app.New's at-least-one-server
