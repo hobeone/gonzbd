@@ -33,7 +33,10 @@ func ParseFileDescriptions(path string) ([]FileDesc, error) {
 	if err != nil {
 		return nil, err
 	}
-	fileSize := uint64(fi.Size())
+	if fi.Size() < 0 {
+		return nil, fmt.Errorf("negative file size: %d", fi.Size())
+	}
+	fileSize := uint64(fi.Size()) //nolint:gosec // G115: guarded above
 
 	var descs []FileDesc
 

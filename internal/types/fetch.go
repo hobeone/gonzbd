@@ -1,3 +1,4 @@
+// Package types defines shared data types used across internal packages.
 package types
 
 import "github.com/hobeone/gonzbd/internal/constants"

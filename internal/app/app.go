@@ -143,7 +143,7 @@ type Application struct {
 	internalFileComplete chan FileComplete
 
 	wg     sync.WaitGroup
-	ctx    context.Context //nolint:containedctx
+	ctx    context.Context //nolint:containedctx // ctx is the app's lifecycle context, stored by design
 	cancel context.CancelFunc
 
 	started atomic.Bool
@@ -989,7 +989,7 @@ func (app *Application) SetBandwidthMax(bytesPerSec int64) {
 
 // SetBandwidthPerc updates the configured bandwidth percentage reported to the UI.
 func (app *Application) SetBandwidthPerc(perc int) {
-	app.bandwidthPerc.Store(int32(perc))
+	app.bandwidthPerc.Store(int32(perc)) //nolint:gosec // G115: perc is bounded 0-100
 }
 
 // SetDownloadDir updates the download directory used for new jobs.

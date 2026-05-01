@@ -144,7 +144,7 @@ func setFieldValue(f reflect.Value, val string) error {
 		if err != nil {
 			return fmt.Errorf("invalid ssl_verify: %w", err)
 		}
-		s := SSLVerify(i)
+		s := SSLVerify(i) //nolint:gosec // G115: validated via s.Validate() below
 		if err := s.Validate(); err != nil {
 			return err
 		}

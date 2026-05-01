@@ -71,7 +71,7 @@ func (q *Queue) saveInner(dir string) error {
 		jobIDs[i] = job.ID
 		// Marshal to JSON under the lock so we capture a consistent
 		// view. The actual disk I/O happens after unlock.
-		data, err := json.Marshal(job)
+		data, err := json.Marshal(job) //nolint:gosec // G117: Job.Password is an archive password, not a credential
 		if err != nil {
 			q.mu.RUnlock()
 			return fmt.Errorf("queue: marshal job %s: %w", job.ID, err)
