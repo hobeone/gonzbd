@@ -210,10 +210,10 @@ describe('API Wrappers', () => {
 
 		it('converts numeric value to string', async () => {
 			mockOk({ status: true });
-			await setConfig('general', 'port', 8080);
+			await setConfig('general', 'port', 4289);
 
 			const body = mockFetch.mock.calls[0][1].body as FormData;
-			expect(body.get('value')).toBe('8080');
+			expect(body.get('value')).toBe('4289');
 		});
 
 		it('throws on non-ok response', async () => {

@@ -22,10 +22,10 @@ services:
 
     # Port mapping: <host>:<container>
     # Change the left side to use a different host port.
-    # The container listens on GONZBD_PORT (default 8080).
+    # The container listens on GONZBD_PORT (default 4289).
     ports:
       # Web UI + API
-      - "8080:8080"
+      - "4289:4289"
       # HTTPS — uncomment and set https_port + https_cert/https_key
       # in gonzbd.yaml. Pick any host port you like.
       # - "8443:8443"
@@ -63,9 +63,9 @@ services:
       # Timezone — used for scheduled actions and log timestamps.
       - TZ=America/Los_Angeles
 
-      # Internal listen port (default 8080). Change this if you need
+      # Internal listen port (default 4289). Change this if you need
       # a different container-side port. Must match the right side of ports:.
-      # - GONZBD_PORT=8080
+      # - GONZBD_PORT=4289
 
     # Resource limits (optional but recommended)
     # deploy:
@@ -78,7 +78,7 @@ services:
     # Health check — verifies the API is responding.
     # Uses shell form so $GONZBD_PORT is expanded at runtime.
     healthcheck:
-      test: wget --spider -q http://localhost:$${GONZBD_PORT:-8080}/api?mode=version&output=json
+      test: wget --spider -q http://localhost:$${GONZBD_PORT:-4289}/api?mode=version&output=json
       interval: 30s
       timeout: 5s
       retries: 3

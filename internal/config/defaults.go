@@ -43,7 +43,7 @@ func Default() (*Config, error) {
 	return &Config{
 		General: GeneralConfig{
 			Host:         "127.0.0.1",
-			Port:         8080,
+			Port:         4289,
 			HTTPSPort:    0,
 			APIKey:       apiKey,
 			NZBKey:       nzbKey,

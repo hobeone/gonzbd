@@ -83,7 +83,7 @@ func TestConfigDollarInPassword(t *testing.T) {
 	yml := `
 general:
   host: "127.0.0.1"
-  port: 8080
+  port: 4289
   download_dir: "/tmp"
   complete_dir: "/tmp"
   api_key: "0123456789abcdef"

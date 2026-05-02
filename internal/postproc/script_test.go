@@ -55,7 +55,7 @@ func fullInput(t *testing.T) ScriptInput {
 		URL:             "https://source.example.com/nzb",
 		Version:         "5.6.0",
 		APIKey:          "secret-key",
-		APIURL:          "http://localhost:8080/api",
+		APIURL:          "http://localhost:4289/api",
 		Bytes:           1073741824,
 		BytesDownloaded: 1000000000,
 		AvgBPS:          2000000,

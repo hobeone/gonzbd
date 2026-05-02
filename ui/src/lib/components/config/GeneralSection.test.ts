@@ -11,7 +11,7 @@ describe('GeneralSection', () => {
 	const mockConfig = {
 		general: {
 			host: '0.0.0.0',
-			port: 8080,
+			port: 4289,
 			api_key: 'test-key-123',
 			nzb_key: 'nzb-key-456',
 			download_dir: '/tmp/incomplete',

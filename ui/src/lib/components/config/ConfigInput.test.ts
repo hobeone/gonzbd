@@ -66,7 +66,7 @@ describe('ConfigInput', () => {
 		render(ConfigInput, {
 			section: 'general',
 			keyword: 'port',
-			value: 8080,
+			value: 4289,
 			label: 'Port',
 			type: 'number',
 			onupdate

@@ -117,7 +117,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	cfg := &config.Config{
 		General: config.GeneralConfig{
 			Host:            "0.0.0.0",
-			Port:            8080,
+			Port:            4289,
 			APIKey:          testAPIKey,
 			LocalhostBypass: true,
 		},
