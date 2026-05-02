@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { fetchServerStats } from '$lib/api';
 	import type { ServerSnapshot, ConnSnapshot } from '$lib/types';
+	import { formatSize as formatBytes, formatSpeed as formatBps } from '$lib/utils';
 	import { onDestroy } from 'svelte';
 
 	let {
@@ -47,20 +48,6 @@
 		expandedServers = next;
 	}
 
-	function formatBytes(bytes: number): string {
-		if (bytes === 0) return '0 B';
-		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-		const i = Math.floor(Math.log(bytes) / Math.log(1024));
-		return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-	}
-
-	function formatBps(bps: number): string {
-		if (bps === 0) return '0 B/s';
-		const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-		const i = Math.floor(Math.log(bps) / Math.log(1024));
-		return `${(bps / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-	}
-
 	function formatPenalty(unixTs: number): string {
 		if (!unixTs) return '';
 		const remaining = Math.max(0, unixTs - Math.floor(Date.now() / 1000));
@@ -68,12 +55,6 @@
 		const mins = Math.floor(remaining / 60);
 		const secs = remaining % 60;
 		return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-	}
-
-	function connStatusLabel(c: ConnSnapshot): string {
-		if (c.article_id) return c.subject || c.article_id;
-		if (c.connected) return 'Idle';
-		return 'Disconnected';
 	}
 
 	function connDuration(c: ConnSnapshot): string {

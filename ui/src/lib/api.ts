@@ -4,7 +4,8 @@ import type {
 	WarningsResponse,
 	StatusResponse,
 	VersionResponse,
-	ServerStatsResponse
+	ServerStatsResponse,
+	ConfigResponse
 } from './types';
 
 const API_BASE = '/api';
@@ -130,4 +131,8 @@ export async function uploadNzb(
 
 export async function fetchServerStats(): Promise<ServerStatsResponse> {
 	return fetchJSON<ServerStatsResponse>(apiUrl('server_stats'));
+}
+
+export async function fetchConfig(): Promise<ConfigResponse> {
+	return fetchJSON<ConfigResponse>(apiUrl('get_config'));
 }
