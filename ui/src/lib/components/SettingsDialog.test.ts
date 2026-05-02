@@ -19,12 +19,11 @@ vi.mock('./config/RSSEditDialog.svelte', () => ({ default: function() {} }));
 
 vi.mock('$lib/api', () => ({
 	setConfig: vi.fn().mockResolvedValue({ status: true }),
-	postAction: vi.fn().mockResolvedValue({ status: true })
+	postAction: vi.fn().mockResolvedValue({ status: true }),
+	fetchConfig: vi.fn().mockReturnValue(new Promise(() => {}))
 }));
 
-// Mock fetch — return a never-resolving promise to keep dialog in loading state
-// which avoids triggering the $effect reactive chain.
-vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})));
+import { fetchConfig } from '$lib/api';
 
 describe('SettingsDialog', () => {
 	beforeEach(() => {
@@ -66,17 +65,14 @@ describe('SettingsDialog', () => {
 	it('loads config and remaps misc to general', async () => {
 		// Return a config with "misc" (as the API does) instead of "general".
 		const mockConfig = {
+			status: true,
 			config: {
 				misc: { host: '0.0.0.0', port: 8080 },
 				downloads: {},
 				servers: []
 			}
 		};
-		const fetchMock = vi.fn().mockResolvedValue({
-			ok: true,
-			json: () => Promise.resolve(mockConfig)
-		});
-		vi.stubGlobal('fetch', fetchMock);
+		vi.mocked(fetchConfig).mockResolvedValue(mockConfig as any);
 
 		render(SettingsDialog, { props: { open: true } });
 
@@ -88,6 +84,6 @@ describe('SettingsDialog', () => {
 
 		// The dialog should have loaded without crashing — meaning misc→general
 		// mapping worked and GeneralSection can access configData.general.host.
-		expect(fetchMock).toHaveBeenCalled();
+		expect(fetchConfig).toHaveBeenCalled();
 	});
 });
