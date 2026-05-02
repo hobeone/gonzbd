@@ -3,7 +3,7 @@
 # stays stable.
 general:
   host: 127.0.0.1
-  port: 8080
+  port: 4289
   https_port: 0
   https_cert: ""
   https_key: ""

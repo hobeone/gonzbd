@@ -616,7 +616,7 @@ Key design: Configuration parameters are typed objects with validators. Config r
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `host` | string | `127.0.0.1` | HTTP bind address |
-| `port` | int | `8080` | HTTP port |
+| `port` | int | `4289` | HTTP port |
 | `https_port` | int | `0` | HTTPS port (0=disabled) |
 | `https_cert` | path | | TLS certificate path |
 | `https_key` | path | | TLS key path |

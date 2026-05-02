@@ -12,7 +12,7 @@ import (
 func TestIsCrossOrigin_NoHeaders(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:8080"
+	r.Host = "localhost:4289"
 	if isCrossOrigin(r) {
 		t.Error("no headers should not be cross-origin")
 	}
@@ -21,8 +21,8 @@ func TestIsCrossOrigin_NoHeaders(t *testing.T) {
 func TestIsCrossOrigin_SameOrigin(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:8080"
-	r.Header.Set("Origin", "http://localhost:8080")
+	r.Host = "localhost:4289"
+	r.Header.Set("Origin", "http://localhost:4289")
 	if isCrossOrigin(r) {
 		t.Error("same-host Origin should not be cross-origin")
 	}
@@ -31,8 +31,8 @@ func TestIsCrossOrigin_SameOrigin(t *testing.T) {
 func TestIsCrossOrigin_LoopbackOrigin(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:8080"
-	r.Header.Set("Origin", "http://127.0.0.1:8080")
+	r.Host = "localhost:4289"
+	r.Header.Set("Origin", "http://127.0.0.1:4289")
 	if isCrossOrigin(r) {
 		t.Error("loopback IP origin should not be cross-origin")
 	}
@@ -41,7 +41,7 @@ func TestIsCrossOrigin_LoopbackOrigin(t *testing.T) {
 func TestIsCrossOrigin_LocalhostName(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "127.0.0.1:8080"
+	r.Host = "127.0.0.1:4289"
 	r.Header.Set("Origin", "http://localhost:9090")
 	if isCrossOrigin(r) {
 		t.Error("localhost name origin should not be cross-origin")
@@ -51,7 +51,7 @@ func TestIsCrossOrigin_LocalhostName(t *testing.T) {
 func TestIsCrossOrigin_ExternalOrigin(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:8080"
+	r.Host = "localhost:4289"
 	r.Header.Set("Origin", "http://evil.example.com")
 	if !isCrossOrigin(r) {
 		t.Error("external origin MUST be cross-origin")
@@ -61,7 +61,7 @@ func TestIsCrossOrigin_ExternalOrigin(t *testing.T) {
 func TestIsCrossOrigin_MalformedOrigin(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:8080"
+	r.Host = "localhost:4289"
 	r.Header.Set("Origin", "://bad")
 	if !isCrossOrigin(r) {
 		t.Error("malformed origin should be treated as cross-origin")
@@ -71,7 +71,7 @@ func TestIsCrossOrigin_MalformedOrigin(t *testing.T) {
 func TestIsCrossOrigin_SecFetchSiteCrossSite(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:8080"
+	r.Host = "localhost:4289"
 	r.Header.Set("Sec-Fetch-Site", "cross-site")
 	if !isCrossOrigin(r) {
 		t.Error("Sec-Fetch-Site: cross-site MUST be cross-origin")
@@ -81,7 +81,7 @@ func TestIsCrossOrigin_SecFetchSiteCrossSite(t *testing.T) {
 func TestIsCrossOrigin_SecFetchSiteCrossOrigin(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:8080"
+	r.Host = "localhost:4289"
 	r.Header.Set("Sec-Fetch-Site", "cross-origin")
 	if !isCrossOrigin(r) {
 		t.Error("Sec-Fetch-Site: cross-origin MUST be cross-origin")
@@ -91,7 +91,7 @@ func TestIsCrossOrigin_SecFetchSiteCrossOrigin(t *testing.T) {
 func TestIsCrossOrigin_SecFetchSiteSameOrigin(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:8080"
+	r.Host = "localhost:4289"
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	if isCrossOrigin(r) {
 		t.Error("Sec-Fetch-Site: same-origin should not be cross-origin")
@@ -101,7 +101,7 @@ func TestIsCrossOrigin_SecFetchSiteSameOrigin(t *testing.T) {
 func TestIsCrossOrigin_RefererCrossOrigin(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:8080"
+	r.Host = "localhost:4289"
 	r.Header.Set("Referer", "http://evil.com/page")
 	if !isCrossOrigin(r) {
 		t.Error("non-local Referer MUST be cross-origin")
@@ -111,8 +111,8 @@ func TestIsCrossOrigin_RefererCrossOrigin(t *testing.T) {
 func TestIsCrossOrigin_RefererSameHost(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:8080"
-	r.Header.Set("Referer", "http://localhost:8080/config")
+	r.Host = "localhost:4289"
+	r.Header.Set("Referer", "http://localhost:4289/config")
 	if isCrossOrigin(r) {
 		t.Error("same-host Referer should not be cross-origin")
 	}
@@ -121,8 +121,8 @@ func TestIsCrossOrigin_RefererSameHost(t *testing.T) {
 func TestIsCrossOrigin_RefererLoopback(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:8080"
-	r.Header.Set("Referer", "http://127.0.0.1:8080/page")
+	r.Host = "localhost:4289"
+	r.Header.Set("Referer", "http://127.0.0.1:4289/page")
 	if isCrossOrigin(r) {
 		t.Error("loopback Referer should not be cross-origin")
 	}
@@ -234,7 +234,7 @@ func TestCallerLevel_LocalhostBypassGrants(t *testing.T) {
 	cfg := AuthConfig{APIKey: "0123456789abcdef", LocalhostBypass: true}
 	r := httptest.NewRequest("GET", "/api", nil)
 	r.RemoteAddr = "127.0.0.1:12345"
-	r.Host = "localhost:8080"
+	r.Host = "localhost:4289"
 	if got := callerLevel(r, cfg); got != LevelAdmin {
 		t.Errorf("localhost bypass: got %d, want LevelAdmin", got)
 	}
@@ -245,7 +245,7 @@ func TestCallerLevel_LocalhostBypassBlockedByCrossOrigin(t *testing.T) {
 	cfg := AuthConfig{APIKey: "0123456789abcdef", LocalhostBypass: true}
 	r := httptest.NewRequest("GET", "/api", nil)
 	r.RemoteAddr = "127.0.0.1:12345"
-	r.Host = "localhost:8080"
+	r.Host = "localhost:4289"
 	r.Header.Set("Origin", "http://evil.com")
 	if got := callerLevel(r, cfg); got == LevelAdmin {
 		t.Error("cross-origin request from localhost should NOT get admin")
@@ -297,7 +297,7 @@ func TestCallerLevel_CookieBlockedByCrossOrigin(t *testing.T) {
 	cfg := AuthConfig{APIKey: "0123456789abcdef"}
 	r := httptest.NewRequest("GET", "/api", nil)
 	r.RemoteAddr = "192.168.1.1:12345"
-	r.Host = "localhost:8080"
+	r.Host = "localhost:4289"
 	r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: "0123456789abcdef"})
 	r.Header.Set("Origin", "http://evil.com")
 	if got := callerLevel(r, cfg); got != 0 {
