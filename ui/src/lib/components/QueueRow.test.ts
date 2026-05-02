@@ -27,7 +27,10 @@ describe('QueueRow', () => {
 		mbleft: 50,
 		pp: '3',
 		script: 'none',
-		password: ''
+		password: '',
+		failed_bytes: 0,
+		par2_bytes: 0,
+		par2_files: 0
 	};
 
 	beforeEach(() => vi.clearAllMocks());

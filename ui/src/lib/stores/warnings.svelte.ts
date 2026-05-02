@@ -2,67 +2,71 @@ import { fetchWarnings, postAction } from '$lib/api';
 
 const POLL_INTERVAL = 5000;
 
-let warnings = $state<string[]>([]);
-let error = $state<string | null>(null);
-let timer: ReturnType<typeof setInterval> | null = null;
-let toastMessage = $state<string | null>(null);
+class WarningStore {
+	#warnings = $state<string[]>([]);
+	#error = $state<string | null>(null);
+	#toastMessage = $state<string | null>(null);
+	#timer: ReturnType<typeof setInterval> | null = null;
 
-async function poll() {
-	try {
-		const res = await fetchWarnings();
-		const prev = warnings.length;
-		warnings = res.warnings;
-		error = null;
-		if (warnings.length > prev && prev > 0) {
-			toastMessage = warnings[warnings.length - 1];
-			setTimeout(() => (toastMessage = null), 5000);
+	get warnings() { return this.#warnings; }
+	get warningCount() { return this.#warnings.length; }
+	get error() { return this.#error; }
+	get toastMessage() { return this.#toastMessage; }
+
+	async poll() {
+		try {
+			const res = await fetchWarnings();
+			const prev = this.#warnings.length;
+			this.#warnings = res.warnings;
+			this.#error = null;
+			if (this.#warnings.length > prev && prev > 0) {
+				this.#toastMessage = this.#warnings[this.#warnings.length - 1];
+				setTimeout(() => (this.#toastMessage = null), 5000);
+			}
+		} catch (e) {
+			this.#error = e instanceof Error ? e.message : String(e);
 		}
-	} catch (e) {
-		error = e instanceof Error ? e.message : String(e);
+	}
+
+	start() {
+		if (this.#timer) return;
+		this.poll();
+		this.#timer = setInterval(() => this.poll(), POLL_INTERVAL);
+	}
+
+	stop() {
+		if (this.#timer) {
+			clearInterval(this.#timer);
+			this.#timer = null;
+		}
+	}
+
+	showToast(message: string) {
+		this.#toastMessage = message;
+		setTimeout(() => {
+			if (this.#toastMessage === message) this.#toastMessage = null;
+		}, 5000);
+	}
+
+	dismissToast() {
+		this.#toastMessage = null;
+	}
+
+	async clear() {
+		await postAction('warnings', { name: 'clear' });
+		await this.poll();
 	}
 }
 
-export function startWarningsPolling() {
-	if (timer) return;
-	poll();
-	timer = setInterval(poll, POLL_INTERVAL);
-}
+const store = new WarningStore();
 
-export function stopWarningsPolling() {
-	if (timer) {
-		clearInterval(timer);
-		timer = null;
-	}
-}
-
-export function getWarnings(): string[] {
-	return warnings;
-}
-
-export function getWarningCount(): number {
-	return warnings.length;
-}
-
-export function getWarningsError(): string | null {
-	return error;
-}
-
-export function getToastMessage(): string | null {
-	return toastMessage;
-}
-
-export function showToast(message: string) {
-	toastMessage = message;
-	setTimeout(() => {
-		if (toastMessage === message) toastMessage = null;
-	}, 5000);
-}
-
-export function dismissToast() {
-	toastMessage = null;
-}
-
-export async function clearWarnings() {
-	await postAction('warnings', { name: 'clear' });
-	await poll();
-}
+// Exported wrapper functions to maintain API compatibility with components
+export const startWarningsPolling = () => store.start();
+export const stopWarningsPolling = () => store.stop();
+export const getWarnings = () => store.warnings;
+export const getWarningCount = () => store.warningCount;
+export const getWarningsError = () => store.error;
+export const getToastMessage = () => store.toastMessage;
+export const showToast = (message: string) => store.showToast(message);
+export const dismissToast = () => store.dismissToast();
+export const clearWarnings = () => store.clear();
