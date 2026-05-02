@@ -4,7 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import { pauseJob, resumeJob } from '$lib/stores/queue.svelte';
-	import { cn } from '$lib/utils';
+	import { cn, formatSize as formatBytes } from '$lib/utils';
 
 	let { slot, onremove }: { slot: QueueSlot; onremove: () => void } = $props();
 
@@ -32,13 +32,6 @@
 		} finally {
 			acting = false;
 		}
-	}
-
-	function formatBytes(b: number): string {
-		if (b < 1024) return `${b} B`;
-		if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-		if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
-		return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 	}
 
 	/** Health indicator: can par2 cover the damage? */

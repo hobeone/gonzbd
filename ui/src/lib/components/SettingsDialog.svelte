@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Dialog } from 'bits-ui';
 	import { Button } from '$lib/components/ui/button';
-	import { setConfig, postAction } from '$lib/api';
+	import { setConfig, postAction, fetchConfig } from '$lib/api';
 	import GeneralSection from './config/GeneralSection.svelte';
 	import DownloadsSection from './config/DownloadsSection.svelte';
 	import PostProcSection from './config/PostProcSection.svelte';
@@ -54,20 +54,16 @@
 
 	$effect(() => {
 		if (open && !configData && !loading) {
-			fetchConfig();
+			loadConfig();
 		}
 	});
 
-	function fetchConfig() {
+	function loadConfig() {
 		loading = true;
 		error = null;
-		fetch('/api?mode=get_config&output=json')
+		fetchConfig()
 			.then((res) => {
-				if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
-				return res.json();
-			})
-			.then((data) => {
-				const cfg = data.config ?? data;
+				const cfg: Record<string, any> = res.config ?? res;
 				// The API remaps "general" → "misc" for SABnzbd compatibility
 				// (Sonarr reads config.misc.complete_dir). Reverse-map it so
 				// the UI can reference configData.general.* consistently.
@@ -89,7 +85,7 @@
 		configData = null;
 		dirtyFields = [];
 		error = null;
-		fetchConfig();
+		loadConfig();
 	}
 
 	function handleFieldUpdate(section: string, keyword: string, value: string | number | boolean) {
