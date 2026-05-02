@@ -67,7 +67,7 @@ describe('SettingsDialog', () => {
 		const mockConfig = {
 			status: true,
 			config: {
-				misc: { host: '0.0.0.0', port: 8080 },
+				misc: { host: '0.0.0.0', port: 4289 },
 				downloads: {},
 				servers: []
 			}

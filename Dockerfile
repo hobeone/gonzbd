@@ -46,7 +46,7 @@ COPY entrypoint.sh /entrypoint.sh
 
 # Default config location and port; overridable via environment.
 ENV GONZBD_CONFIG=/config/gonzbd.yaml
-ENV GONZBD_PORT=8080
+ENV GONZBD_PORT=4289
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["gonzbd", "--config", "/config/gonzbd.yaml", "--serve"]
