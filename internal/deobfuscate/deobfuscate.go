@@ -5,12 +5,11 @@
 //   - TODO: extension-inference by content sniff (has_popular_extension /
 //     what_is_most_likely_extension) is not implemented; only files that already
 //     carry an extension are acted upon.
-//   - TODO: deobfuscate_subtitles helper is not implemented.
-//   - TODO: IGNORED_MOVIE_FOLDERS (DVD/Bluray) carve-out is not implemented.
 //
 // What IS implemented: Par2-packet-based renaming, IsProbablyObfuscated (full
-// heuristic port), BiggestFile (3× size ratio guard), and Deobfuscate (rename
-// biggest+siblings to usefulName).
+// heuristic port), BiggestFile (3× size ratio guard), Deobfuscate (rename
+// biggest+siblings to usefulName), DeobfuscateSubtitles (align .srt names
+// to main video), and DVD/Bluray directory skip.
 package deobfuscate
 
 import (
@@ -39,6 +38,16 @@ var excludedExts = map[string]bool{
 	".mpls": true,
 	".bdm":  true,
 	".bdmv": true,
+}
+
+// ignoredMovieFolders contains directory names whose presence in a download
+// indicates a DVD or Bluray disc structure. Deobfuscation is skipped entirely
+// when any of these directories are found, because renaming files inside a
+// disc structure would break playback. Matches Python IGNORED_MOVIE_FOLDERS.
+var ignoredMovieFolders = map[string]bool{
+	"video_ts": true,
+	"audio_ts": true,
+	"bdmv":     true,
 }
 
 // hex32 matches a basename that is exactly 32 lowercase hex digits.
@@ -228,8 +237,17 @@ type Rename struct {
 // it falls back to the "biggest file" heuristic and renames it (and any
 // same-stem siblings) to usefulName + original extension. Returns the list
 // of renames actually performed. Returns nil, nil when no rename is needed.
+//
+// Deobfuscation is skipped entirely when the download contains DVD/Bluray
+// disc structure directories (VIDEO_TS, AUDIO_TS, BDMV).
 func Deobfuscate(dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename, error) {
 	log := slog.Default().With("component", "deobfuscate")
+
+	// 0. Skip deobfuscation for DVD/Bluray disc structures.
+	if containsIgnoredMovieFolder(dir) {
+		log.Info("deobfuscate: skipping — DVD/Bluray directory detected", "dir", dir)
+		return nil, nil
+	}
 
 	// 1. Attempt PAR2-based deobfuscation first.
 	parRenames, err := Par2Rename(dir, opts)
@@ -255,27 +273,45 @@ func Deobfuscate(dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename,
 		paths = append(paths, filepath.Join(dir, e.Name()))
 	}
 
+	// 2b. Fix extensions by content sniffing. Files with non-popular
+	// extensions get their real type detected via magic bytes.
+	var allRenames []Rename
+	for i, p := range paths {
+		if !HasPopularExtension(p) {
+			r, fixErr := FixExtension(p)
+			if fixErr != nil {
+				log.Warn("deobfuscate: extension fix error", "path", p, "err", fixErr)
+				continue
+			}
+			if r.From != "" {
+				allRenames = append(allRenames, r)
+				log.Info("deobfuscate: fixed extension", "from", r.From, "to", r.To)
+				paths[i] = r.To // Update path for BiggestFile
+			}
+		}
+	}
+
 	bigPath, ok, err := BiggestFile(paths)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		log.Debug("deobfuscate: no qualifying biggest file found", "dir", dir)
-		return nil, nil
+		return allRenames, nil
 	}
 
 	ext := strings.ToLower(filepath.Ext(bigPath))
 	if excludedExts[ext] {
 		log.Debug("deobfuscate: biggest file has excluded extension — skipping", "path", bigPath, "ext", ext)
-		return nil, nil
+		return allRenames, nil
 	}
 
 	if !IsProbablyObfuscated(bigPath) {
 		log.Debug("deobfuscate: biggest file not obfuscated — skipping", "path", bigPath)
-		return nil, nil
+		return allRenames, nil
 	}
 
-	var renames []Rename
+	renames := allRenames
 
 	// Rename the biggest file.
 	newBigPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(dir, "", usefulName+filepath.Ext(bigPath), opts))
@@ -306,6 +342,91 @@ func Deobfuscate(dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename,
 		}
 		log.Info("deobfuscate: renamed sibling", "from", p, "to", newPath)
 		renames = append(renames, Rename{From: p, To: newPath})
+	}
+
+	return renames, nil
+}
+
+// containsIgnoredMovieFolder walks one level of subdirectories under dir and
+// returns true if any match an ignored DVD/Bluray folder name.
+func containsIgnoredMovieFolder(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() && ignoredMovieFolders[strings.ToLower(e.Name())] {
+			return true
+		}
+	}
+	return false
+}
+
+// Subtitles renames .srt subtitle files to match the dominant
+// video file in dir. This ensures media players auto-detect subtitles.
+//
+// For example:
+//
+//	Some_Big_Movie.mkv    →  (unchanged)
+//	14_English.srt         →  Some_Big_Movie.14_English.srt
+//	dut.srt                →  Some_Big_Movie.dut.srt
+//	Some_Big_Movie.srt     →  (unchanged — already matches)
+//
+// Only acts when there is a clearly biggest file (3× ratio) and at least
+// one .srt file whose name doesn't already share the video's basename.
+func Subtitles(dir string) ([]Rename, error) {
+	log := slog.Default().With("component", "deobfuscate")
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("deobfuscate subtitles: readdir %s: %w", dir, err)
+	}
+
+	var paths []string
+	var srtFiles []string
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		paths = append(paths, p)
+		if strings.EqualFold(filepath.Ext(p), ".srt") {
+			srtFiles = append(srtFiles, p)
+		}
+	}
+
+	if len(srtFiles) == 0 {
+		return nil, nil
+	}
+
+	biggest, ok, err := BiggestFile(paths)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		log.Debug("deobfuscate subtitles: no clearly biggest file")
+		return nil, nil
+	}
+
+	// bigBase is e.g. "/path/to/Some_Big_Movie" (no extension).
+	bigBase := strings.TrimSuffix(biggest, filepath.Ext(biggest))
+
+	var renames []Rename
+	for _, srt := range srtFiles {
+		srtBase := strings.TrimSuffix(srt, filepath.Ext(srt))
+		// Skip if the .srt already shares the video's basename prefix.
+		if strings.HasPrefix(srtBase, bigBase) {
+			continue
+		}
+
+		// Construct new name: <bigBase>.<srt_filename>
+		srtName := filepath.Base(srt)
+		newPath := fsutil.GetUniqueFilename(bigBase + "." + srtName)
+		if renErr := os.Rename(srt, newPath); renErr != nil {
+			return renames, fmt.Errorf("rename subtitle %s → %s: %w", srt, newPath, renErr)
+		}
+		log.Info("deobfuscate: renamed subtitle", "from", srt, "to", newPath)
+		renames = append(renames, Rename{From: srt, To: newPath})
 	}
 
 	return renames, nil

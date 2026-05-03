@@ -22,6 +22,12 @@ var ErrAlreadyStarted = errors.New("downloader: already started")
 // available, eligible servers and failed on all of them.
 var ErrNoServersLeft = errors.New("downloader: article failed on all servers")
 
+// ErrArticleRemoved is emitted when an article body contains DMCA/takedown
+// keywords, indicating the content was removed by the provider. Unlike
+// transient decode errors, removed articles should not be retried on
+// backup servers — the content is definitively unavailable.
+var ErrArticleRemoved = errors.New("downloader: article removed (DMCA/takedown)")
+
 // errServerPenalized is used internally when dialing a penalized server.
 var errServerPenalized = errors.New("server penalized")
 
