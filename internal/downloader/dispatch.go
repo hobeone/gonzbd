@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -568,6 +569,10 @@ func (m *managedConn) DropIfMatches(c *nntp.Conn, d *Downloader, workerID string
 
 // decodePayload decodes an article body using yEnc first, with a
 // fallback to UU decoding if the payload is not yEnc encoded.
+//
+// When neither yEnc nor UU decoding succeeds, the raw body is scanned
+// for DMCA/takedown keywords. If found, ErrArticleRemoved is returned
+// so the caller does not waste bandwidth retrying on backup servers.
 func decodePayload(body []byte) (decoded []byte, offset int64, err error) {
 	article, decErr := decoder.DecodeArticle(body)
 	switch {
@@ -579,8 +584,47 @@ func decodePayload(body []byte) (decoded []byte, offset int64, err error) {
 		if uuErr == nil {
 			return data, 0, nil // UU encoding usually doesn't have offset info
 		}
+
+		// Neither yEnc nor UU. Check for DMCA/takedown notices:
+		// removed articles are typically replaced with a plaintext
+		// notice by the provider.
+		if isDMCA(body) {
+			return nil, 0, ErrArticleRemoved
+		}
 		return nil, 0, fmt.Errorf("yenc: %w; uu fallback: %w", decErr, uuErr)
 	default:
 		return nil, 0, decErr
 	}
+}
+
+// dmcaKeywords are lowercase strings that, when present in a non-header
+// line of a fetched article body, indicate the article was removed by the
+// provider (DMCA takedown, copyright claim, etc). Matches the Python
+// SABnzbd check in decoder.py:123.
+var dmcaKeywords = [][]byte{
+	[]byte("dmca"),
+	[]byte("removed"),
+	[]byte("cancel"),
+	[]byte("blocked"),
+}
+
+// isDMCA returns true when the article body appears to be a
+// DMCA/takedown replacement notice. We scan non-header lines
+// (those not starting with "x-") for the keywords. Only called
+// after yEnc/UU decode has already failed, so the body is likely
+// a plaintext notice rather than binary data.
+func isDMCA(body []byte) bool {
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		lower := bytes.ToLower(bytes.TrimRight(line, "\r"))
+		// Skip NNTP extension headers (X-*).
+		if bytes.HasPrefix(lower, []byte("x-")) {
+			continue
+		}
+		for _, kw := range dmcaKeywords {
+			if bytes.Contains(lower, kw) {
+				return true
+			}
+		}
+	}
+	return false
 }
