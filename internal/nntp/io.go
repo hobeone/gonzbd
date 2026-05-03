@@ -50,10 +50,10 @@ func parseStatus(line string) (code int, text string, err error) {
 	return code, line[4:], nil
 }
 
-// MaxBodySize is the maximum size of an un-dotstuffed NNTP body we
+// maxBodySize is the maximum size of an un-dotstuffed NNTP body we
 // are willing to buffer in memory (10 MB). Usenet articles are
 // typically under 800 KB but this leaves generous headroom.
-const MaxBodySize = 10 * 1024 * 1024
+const maxBodySize = 10 * 1024 * 1024
 
 // readDotStuffedBody reads a multi-line response body from br per RFC
 // 3977 §3.1.1. The body ends at a line containing only ".". Leading
@@ -100,8 +100,8 @@ func readDotStuffedBody(br *bufio.Reader) ([]byte, error) {
 		if end > 0 && body[0] == '.' {
 			body = body[1:]
 		}
-		if buf.Len()+len(body)+1 > MaxBodySize {
-			return nil, fmt.Errorf("nntp: body exceeds %d bytes", MaxBodySize)
+		if buf.Len()+len(body)+1 > maxBodySize {
+			return nil, fmt.Errorf("nntp: body exceeds %d bytes", maxBodySize)
 		}
 		buf.Write(body)
 		buf.WriteByte('\n')
