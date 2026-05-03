@@ -72,32 +72,26 @@ func SaveState(path string, s State) error {
 	return nil
 }
 
-// Capture builds a State from the current Meter and Quota snapshots.
-// Use this before calling SaveState. A nil Quota is allowed; the quota
-// fields of State are left zero-valued when no quota is tracked.
-func Capture(m *Meter, q *Quota) State {
+// Capture builds a State from the current Meter snapshot.
+// Use this before calling SaveState.
+func Capture(m *Meter) State {
 	snap := m.Snapshot()
 
 	servers := make(map[string]int64, len(snap.Servers))
 	for name, ss := range snap.Servers {
 		servers[name] = ss.Total
 	}
-	s := State{
+	return State{
 		LifetimeTotal: snap.Total,
 		ServerTotals:  servers,
 	}
-	if q != nil {
-		s.PeriodUsage, _ = q.UsageAndBudget()
-		s.PeriodStart = q.PeriodStart()
-	}
-	return s
 }
 
-// Restore applies a previously loaded State to fresh Meter and Quota instances.
+// Restore applies a previously loaded State to a fresh Meter.
 // It sets the persisted lifetime totals directly without affecting the
 // rolling-window BPS (which starts fresh because historical samples are not
 // stored).
-func Restore(m *Meter, q *Quota, s State) {
+func Restore(m *Meter, s State) {
 	// Set lifetime totals directly — avoids routing through Record, which
 	// would pollute rolling-window buckets and require an immediate undo.
 	m.mu.Lock()
@@ -108,17 +102,4 @@ func Restore(m *Meter, q *Quota, s State) {
 		ss.lifetime = total
 	}
 	m.mu.Unlock()
-
-	if q == nil {
-		return
-	}
-	q.mu.Lock()
-	if !s.PeriodStart.IsZero() {
-		q.periodStart = s.PeriodStart
-	}
-	q.usage = s.PeriodUsage
-	if q.cfg.Budget > 0 && q.usage >= q.cfg.Budget {
-		q.exceeded = true
-	}
-	q.mu.Unlock()
 }

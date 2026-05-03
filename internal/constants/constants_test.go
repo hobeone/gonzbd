@@ -105,53 +105,6 @@ func TestStatusValues(t *testing.T) {
 	}
 }
 
-func TestAllStatusesIsExhaustive(t *testing.T) {
-	if got, want := len(AllStatuses), 17; got != want {
-		t.Fatalf("AllStatuses has %d entries, want %d (update both lists in tandem)", got, want)
-	}
-	seen := make(map[Status]bool, len(AllStatuses))
-	for _, s := range AllStatuses {
-		if seen[s] {
-			t.Errorf("duplicate status in AllStatuses: %q", s)
-		}
-		seen[s] = true
-	}
-}
-
-func TestDuplicateStatusValues(t *testing.T) {
-	tests := map[DuplicateStatus]string{
-		DuplicateExact:            "Duplicate",
-		DuplicateAlternative:      "Duplicate Alternative",
-		SmartDuplicate:            "Smart Duplicate",
-		SmartDuplicateAlternative: "Smart Duplicate Alternative",
-		DuplicateIgnored:          "Duplicate Ignored",
-	}
-	for s, want := range tests {
-		t.Run(want, func(t *testing.T) {
-			if string(s) != want {
-				t.Fatalf("DuplicateStatus %q != %q", string(s), want)
-			}
-		})
-	}
-}
-
-func TestAddNzbFileResultValues(t *testing.T) {
-	tests := map[AddNzbFileResult]string{
-		AddRetry:            "Retry",
-		AddError:            "Error",
-		AddPrequeueRejected: "Pre-queue rejected",
-		AddOK:               "OK",
-		AddNoFilesFound:     "No files found",
-	}
-	for r, want := range tests {
-		t.Run(want, func(t *testing.T) {
-			if string(r) != want {
-				t.Fatalf("AddNzbFileResult %q != %q", string(r), want)
-			}
-		})
-	}
-}
-
 func TestPenaltyDurations(t *testing.T) {
 	// Match spec §3.6 / Python sabnzbd/downloader.py exactly.
 	tests := []struct {

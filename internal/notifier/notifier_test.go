@@ -2,7 +2,7 @@
 // execution, and email message formatting.
 //
 // Email dial/TLS paths are not tested here — they require a live SMTP server.
-// The formatMessage helper is tested directly as a white-box unit test.
+// The FormatMessage helper is tested directly as a white-box unit test.
 package notifier_test
 
 import (
