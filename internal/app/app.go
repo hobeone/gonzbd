@@ -958,19 +958,9 @@ func WithLogger(log *slog.Logger) func(*Application) {
 	return func(a *Application) { a.log = log }
 }
 
-// WithMeter returns an option that overrides the Application's bandwidth meter.
-func WithMeter(m *bpsmeter.Meter) func(*Application) {
-	return func(a *Application) { a.meter = m }
-}
-
 // WithPostProcStages returns an option that overrides the post-processing stages.
 func WithPostProcStages(stages []postproc.Stage) func(*Application) {
 	return func(a *Application) { a.customStages = stages }
-}
-
-// WithNotifier injects a notification dispatcher for lifecycle events.
-func WithNotifier(d *notifier.Dispatcher) func(*Application) {
-	return func(a *Application) { a.notifyDispatcher = d }
 }
 
 // SetSpeedLimit updates the download speed limit. bytesPerSec <= 0 means unlimited.

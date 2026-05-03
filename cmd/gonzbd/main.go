@@ -289,12 +289,11 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	}()
 
 	// Bandwidth meter. State persists across restarts so lifetime totals
-	// aren't reset by a daemon restart. Quota is not yet wired (no config
-	// surface); pass nil into Restore/Capture.
+	// aren't reset by a daemon restart.
 	meter := bpsmeter.NewMeter(10*time.Second, time.Now)
 	meterStatePath := filepath.Join(adminDir, "bpsmeter.json")
 	if state, err := bpsmeter.LoadState(meterStatePath); err == nil {
-		bpsmeter.Restore(meter, nil, state)
+		bpsmeter.Restore(meter, state)
 	}
 
 	// Notifier dispatcher. Build from config; sinks are registered
@@ -474,7 +473,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	if err := application.Shutdown(); err != nil {
 		slog.Warn("application shutdown", "err", err)
 	}
-	if err := bpsmeter.SaveState(meterStatePath, bpsmeter.Capture(meter, nil)); err != nil {
+	if err := bpsmeter.SaveState(meterStatePath, bpsmeter.Capture(meter)); err != nil {
 		slog.Warn("save bpsmeter state", "err", err)
 	}
 	return nil

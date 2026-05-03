@@ -25,19 +25,19 @@ var (
 	// ErrNotYEnc is returned when the body does not begin with a =ybegin line.
 	ErrNotYEnc = errors.New("decoder: not a yEnc article")
 
-	// ErrMalformed is returned when the header or trailer is structurally invalid.
-	ErrMalformed = errors.New("decoder: malformed yEnc article")
+	// errMalformed is returned when the header or trailer is structurally invalid.
+	errMalformed = errors.New("decoder: malformed yEnc article")
 
-	// ErrCRCMismatch is returned when the decoded data's CRC32 disagrees with
+	// errCRCMismatch is returned when the decoded data's CRC32 disagrees with
 	// the value declared in the =yend trailer.
-	ErrCRCMismatch = errors.New("decoder: CRC mismatch")
+	errCRCMismatch = errors.New("decoder: CRC mismatch")
 
-	// ErrMissingTrailer is returned when no =yend line is found.
-	ErrMissingTrailer = errors.New("decoder: missing =yend trailer")
+	// errMissingTrailer is returned when no =yend line is found.
+	errMissingTrailer = errors.New("decoder: missing =yend trailer")
 
-	// ErrSizeMismatch is returned when the declared size in the trailer does
+	// errSizeMismatch is returned when the declared size in the trailer does
 	// not equal the number of bytes decoded.
-	ErrSizeMismatch = errors.New("decoder: declared size does not match decoded length")
+	errSizeMismatch = errors.New("decoder: declared size does not match decoded length")
 )
 
 // yencHeader holds the fields parsed from a =ybegin / =ypart line pair.
@@ -85,9 +85,9 @@ type Article struct {
 // DecodeArticle decodes a yEnc-encoded NNTP article body. body is the raw
 // response body with dot-stuffing already removed by the NNTP layer.
 //
-// Returns ErrCRCMismatch if the trailer declares a CRC that disagrees with
-// the decoded data, ErrSizeMismatch if the declared part size does not match
-// the decoded length, and ErrMissingTrailer / ErrMalformed / ErrNotYEnc on
+// Returns errCRCMismatch if the trailer declares a CRC that disagrees with
+// the decoded data, errSizeMismatch if the declared part size does not match
+// the decoded length, and errMissingTrailer / errMalformed / ErrNotYEnc on
 // structural problems.
 func DecodeArticle(body []byte) (Article, error) {
 	hdr, bodyStart, err := parseHeader(body)
@@ -107,7 +107,7 @@ func DecodeArticle(body []byte) (Article, error) {
 		// Edge case: empty encoded body — trailer starts immediately.
 		trailerIdx = bodyStart
 	} else {
-		return Article{}, ErrMissingTrailer
+		return Article{}, errMissingTrailer
 	}
 
 	encoded := body[bodyStart:trailerIdx]
@@ -139,11 +139,11 @@ func DecodeArticle(body []byte) (Article, error) {
 	}
 
 	if trailer.size != int64(len(decoded)) {
-		return art, ErrSizeMismatch
+		return art, errSizeMismatch
 	}
 
 	if trailer.valid && computedCRC != trailer.crc {
-		return art, ErrCRCMismatch
+		return art, errCRCMismatch
 	}
 
 	return art, nil
@@ -289,7 +289,7 @@ func parseHeader(body []byte) (yencHeader, int, error) {
 
 	ybeginEnd := bytes.IndexByte(body, '\n')
 	if ybeginEnd < 0 {
-		return yencHeader{}, 0, ErrMalformed
+		return yencHeader{}, 0, errMalformed
 	}
 
 	hdr := yencHeader{}
@@ -317,7 +317,7 @@ func parseHeader(body []byte) (yencHeader, int, error) {
 	if bytes.HasPrefix(body[ybeginEnd+1:], []byte("=ypart")) {
 		ypartEnd := bytes.IndexByte(body[ybeginEnd+1:], '\n')
 		if ypartEnd < 0 {
-			return yencHeader{}, 0, ErrMalformed
+			return yencHeader{}, 0, errMalformed
 		}
 		ypartLine := body[ybeginEnd+1 : ybeginEnd+1+ypartEnd]
 		var beginVal int64
@@ -344,7 +344,7 @@ func parseHeader(body []byte) (yencHeader, int, error) {
 // crc32 is used as the authoritative checksum field.
 func parseTrailer(line []byte, isPart bool) (yencTrailer, error) {
 	if !bytes.HasPrefix(line, []byte("=yend")) {
-		return yencTrailer{}, ErrMissingTrailer
+		return yencTrailer{}, errMissingTrailer
 	}
 
 	trailer := yencTrailer{}

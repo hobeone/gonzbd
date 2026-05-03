@@ -86,82 +86,6 @@ func TestMeterPerServer(t *testing.T) {
 	}
 }
 
-// --- Quota tests -------------------------------------------------------------
-
-func TestQuotaRollover(t *testing.T) {
-	t.Parallel()
-	// Start clock at 23:59 on some day.
-	start := time.Date(2024, 3, 15, 23, 59, 0, 0, time.UTC)
-	clk, adv := fixedClock(start)
-
-	cfg := QuotaConfig{
-		Period:    DailyPeriod,
-		Budget:    1_000_000,
-		StartHour: 0,
-		Location:  time.UTC,
-	}
-	q := NewQuota(cfg, clk, nil)
-
-	q.Add(1000)
-	usage, _ := q.UsageAndBudget()
-	if usage != 1000 {
-		t.Fatalf("pre-rollover usage: want 1000, got %d", usage)
-	}
-
-	// Advance past midnight.
-	adv(2 * time.Minute)
-
-	q.Add(500)
-	usage, _ = q.UsageAndBudget()
-	if usage != 500 {
-		t.Fatalf("post-rollover usage: want 500 (reset), got %d", usage)
-	}
-}
-
-func TestQuotaExceedCallback(t *testing.T) {
-	t.Parallel()
-	clk, _ := fixedClock(time.Now().UTC())
-
-	var callCount int
-	var lastUsage, lastBudget int64
-	handler := func(usage, budget int64) {
-		callCount++
-		lastUsage = usage
-		lastBudget = budget
-	}
-
-	cfg := QuotaConfig{
-		Period:   MonthlyPeriod,
-		Budget:   1000,
-		Location: time.UTC,
-	}
-	q := NewQuota(cfg, clk, handler)
-
-	q.Add(600) // 600 — no callback
-	if callCount != 0 {
-		t.Fatal("callback fired too early")
-	}
-
-	q.Add(300) // 900 — still under budget
-	if callCount != 0 {
-		t.Fatal("callback fired at 900/1000")
-	}
-
-	q.Add(200) // 1100 — crosses 1000
-	if callCount != 1 {
-		t.Fatalf("callback should fire once, fired %d times", callCount)
-	}
-	if lastUsage != 1100 || lastBudget != 1000 {
-		t.Fatalf("callback args: want usage=1100 budget=1000, got usage=%d budget=%d", lastUsage, lastBudget)
-	}
-
-	// Further adds in same period must NOT re-fire.
-	q.Add(500)
-	if callCount != 1 {
-		t.Fatalf("callback re-fired; count=%d", callCount)
-	}
-}
-
 // --- Persistence tests -------------------------------------------------------
 
 func TestPersistenceRoundTrip(t *testing.T) {
@@ -174,11 +98,7 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	m1.Record("s1", 1000)
 	m1.Record("s2", 2000)
 
-	cfg := QuotaConfig{Period: MonthlyPeriod, Budget: 1_000_000, Location: time.UTC}
-	q1 := NewQuota(cfg, clk, nil)
-	q1.Add(3000)
-
-	state := Capture(m1, q1)
+	state := Capture(m1)
 	if err := SaveState(path, state); err != nil {
 		t.Fatalf("SaveState: %v", err)
 	}
@@ -189,8 +109,7 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	}
 
 	m2 := NewMeter(10*time.Second, clk)
-	q2 := NewQuota(cfg, clk, nil)
-	Restore(m2, q2, loaded)
+	Restore(m2, loaded)
 
 	if m2.Total("") != 3000 {
 		t.Fatalf("restored lifetime total: want 3000, got %d", m2.Total(""))
@@ -200,14 +119,6 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	}
 	if m2.Total("s2") != 2000 {
 		t.Fatalf("restored s2 total: want 2000, got %d", m2.Total("s2"))
-	}
-
-	usage, _ := q2.UsageAndBudget()
-	if usage != 3000 {
-		t.Fatalf("restored quota usage: want 3000, got %d", usage)
-	}
-	if !q2.PeriodStart().Equal(q1.PeriodStart()) {
-		t.Fatalf("period start mismatch: %v vs %v", q2.PeriodStart(), q1.PeriodStart())
 	}
 }
 
