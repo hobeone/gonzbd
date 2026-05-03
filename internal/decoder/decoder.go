@@ -409,7 +409,7 @@ func parseKeyValues(line []byte, fn func(k, v string)) {
 		if key == "name" {
 			// Strip trailing \r if present.
 			val := bytes.TrimRight(rest, "\r\n")
-			fn(key, string(val))
+			fn(key, latin1ToUTF8(val))
 			break
 		}
 
@@ -425,4 +425,29 @@ func parseKeyValues(line []byte, fn func(k, v string)) {
 		}
 		fn(key, string(val))
 	}
+}
+
+// latin1ToUTF8 converts a Latin1 (ISO-8859-1) byte slice to a UTF-8 string.
+// It pre-checks for pure ASCII to avoid allocation when no conversion is needed.
+func latin1ToUTF8(b []byte) string {
+	isASCII := true
+	for _, c := range b {
+		if c >= 128 {
+			isASCII = false
+			break
+		}
+	}
+	if isASCII {
+		return string(b)
+	}
+
+	out := make([]byte, 0, len(b)*2)
+	for _, c := range b {
+		if c < 128 {
+			out = append(out, c)
+		} else {
+			out = append(out, 0xC0|(c>>6), 0x80|(c&0x3F))
+		}
+	}
+	return string(out)
 }
