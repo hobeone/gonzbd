@@ -306,8 +306,23 @@ func (*DeobfuscateStage) Run(_ context.Context, job *Job) error {
 				fmt.Sprintf("%s → %s", filepath.Base(r.From), filepath.Base(r.To)))
 		}
 	}
+
+	// Subtitle alignment: rename .srt files to match the dominant video.
+	subRenames, subErr := deobfuscate.Subtitles(job.DownloadDir)
+	if len(subRenames) > 0 {
+		job.OutputLines = append(job.OutputLines,
+			fmt.Sprintf("Renamed %d subtitle file(s)", len(subRenames)))
+		for _, r := range subRenames {
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("%s → %s", filepath.Base(r.From), filepath.Base(r.To)))
+		}
+	}
+	// Prefer to report the primary deobfuscation error if both failed.
 	if err != nil {
 		return fmt.Errorf("deobfuscate: %w", err)
+	}
+	if subErr != nil {
+		return fmt.Errorf("deobfuscate subtitles: %w", subErr)
 	}
 	return nil
 }
