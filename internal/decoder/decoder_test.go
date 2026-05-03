@@ -307,10 +307,10 @@ func TestDecodeArticle_MalformedInputs(t *testing.T) {
 	}{
 		{"empty", []byte{}, ErrNotYEnc},
 		{"garbage", []byte("this is not yenc data"), ErrNotYEnc},
-		{"truncated_header", []byte("=ybegin line=128 siz"), ErrMalformed},
-		{"missing_yend", []byte("=ybegin line=128 size=3 name=x\r\nabc\r\n"), ErrMissingTrailer},
-		{"corrupt_crc", corruptCRC, ErrCRCMismatch},
-		{"size_mismatch", sizeMismatch, ErrSizeMismatch},
+		{"truncated_header", []byte("=ybegin line=128 siz"), errMalformed},
+		{"missing_yend", []byte("=ybegin line=128 size=3 name=x\r\nabc\r\n"), errMissingTrailer},
+		{"corrupt_crc", corruptCRC, errCRCMismatch},
+		{"size_mismatch", sizeMismatch, errSizeMismatch},
 	}
 
 	for _, tc := range cases {
