@@ -567,7 +567,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	}
 
 	if req.FatalErr != nil {
-		a.log.Info("counting failed article toward completion (skipping disk write)",
+		a.log.Debug("counting failed article toward completion (skipping disk write)",
 			"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", req.FatalErr)
 		if f.seenFailed == nil {
 			f.seenFailed = make(map[string]struct{})
