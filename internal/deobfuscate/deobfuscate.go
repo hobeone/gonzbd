@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/rarheader"
 )
 
 // excludedExts lists file extensions that are never renamed, matching Python's
@@ -259,7 +260,14 @@ func Deobfuscate(dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename,
 		return parRenames, nil
 	}
 
-	// 2. Fall back to heuristic: find the qualifying biggest file.
+	// 2. Attempt RAR-header-based deobfuscation.
+	rarName := extractRARUsefulName(dir, log)
+	if rarName != "" {
+		log.Info("deobfuscate: RAR headers suggest useful name", "name", rarName)
+		usefulName = rarName
+	}
+
+	// 3. Fall back to heuristic: find the qualifying biggest file.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("readdir %s: %w", dir, err)
@@ -430,4 +438,76 @@ func Subtitles(dir string) ([]Rename, error) {
 	}
 
 	return renames, nil
+}
+
+// extractRARUsefulName scans dir for RAR archives (by magic bytes, not just
+// extension) and inspects their headers to extract internal filenames. Returns
+// the stem of the most common internal filename, or "" if no useful name can
+// be determined.
+//
+// This catches two key scenarios:
+//  1. Cloaked RARs: files with .001/.xyz/no extension that are actually RAR volumes
+//  2. Obfuscated outer names: e.g. "a1b2c3d4.rar" containing "Movie.Name.2024.mkv"
+func extractRARUsefulName(dir string, log *slog.Logger) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+
+	// Collect internal filenames from all RAR files in the directory.
+	var internalNames []string
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+
+		isRAR, err := rarheader.IsRAR(path)
+		if err != nil || !isRAR {
+			continue
+		}
+
+		info, err := rarheader.Inspect(path)
+		if err != nil {
+			log.Debug("deobfuscate: RAR inspect failed", "path", path, "err", err)
+			continue
+		}
+
+		if info.HeaderEncrypted {
+			log.Info("deobfuscate: RAR has encrypted headers — cannot extract names", "path", path)
+			continue
+		}
+
+		internalNames = append(internalNames, info.Filenames...)
+	}
+
+	if len(internalNames) == 0 {
+		return ""
+	}
+
+	// Find the most common filename stem across all archives.
+	// This handles split volumes where each part contains the same file list.
+	stemCounts := make(map[string]int)
+	for _, name := range internalNames {
+		// RAR internal paths use '/' as separator. Take the basename.
+		base := filepath.Base(name)
+		stem := strings.TrimSuffix(base, filepath.Ext(base))
+		if stem != "" && !IsProbablyObfuscated(stem) {
+			stemCounts[stem]++
+		}
+	}
+
+	if len(stemCounts) == 0 {
+		return ""
+	}
+
+	var bestStem string
+	var bestCount int
+	for stem, count := range stemCounts {
+		if count > bestCount {
+			bestStem = stem
+			bestCount = count
+		}
+	}
+	return bestStem
 }

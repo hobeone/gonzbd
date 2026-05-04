@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/h2non/filetype"
+
+	"github.com/hobeone/gonzbd/internal/rarheader"
 )
 
 // popularExts is a set of file extensions (with leading dot, lowercase) that
@@ -62,6 +64,20 @@ func FixExtension(path string) (Rename, error) {
 	}
 
 	if kind == filetype.Unknown {
+		// Fallback: check if it's a RAR archive by magic signature.
+		// filetype may not recognize all RAR variants.
+		isRAR, _ := rarheader.IsRAR(path)
+		if isRAR {
+			currentExt := strings.ToLower(filepath.Ext(path))
+			if currentExt == ".rar" {
+				return Rename{}, nil
+			}
+			newPath := path + ".rar"
+			if err := os.Rename(path, newPath); err != nil {
+				return Rename{}, err
+			}
+			return Rename{From: path, To: newPath}, nil
+		}
 		return Rename{}, nil
 	}
 
