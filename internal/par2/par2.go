@@ -187,7 +187,7 @@ func Verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyRe
 func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (VerifyResult, error) {
 	var stdout, stderr bytes.Buffer
 	args := make([]string, 0, 3+len(extraFiles))
-	args = append(args, "v")
+	args = append(args, "v", "-q")
 	if opts.Turbo {
 		args = append(args, "-t+")
 	}
@@ -228,7 +228,7 @@ func Repair(ctx context.Context, parfile string, extraFiles ...string) (RepairRe
 func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (RepairResult, error) {
 	var combined bytes.Buffer
 	args := make([]string, 0, 3+len(extraFiles))
-	args = append(args, "r")
+	args = append(args, "r", "-q")
 	if opts.Turbo {
 		args = append(args, "-t+")
 	}

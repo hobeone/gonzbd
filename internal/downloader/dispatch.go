@@ -371,7 +371,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 	body, err := c.Fetch(fetchCtx, req.messageID)
 	if err != nil {
 		if errors.Is(err, nntp.ErrNoArticle) {
-			d.log.Info("article not found", "server", name, "msgid", req.messageID)
+			d.log.Debug("article not found", "server", name, "msgid", req.messageID)
 			// The server definitively said no. Try-list entry is
 			// retained so we won't retry here; connection is
 			// healthy — reuse it.
