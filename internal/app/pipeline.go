@@ -210,10 +210,10 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 			// Retryable error (connection drop, 430 from one server).
 			// Clear the Emitted flag so the dispatcher re-dispatches this
 			// article on the next pass.
-			p.log.Info("fetch error, returning to dispatch pool",
+			p.log.Debug("fetch error, returning to dispatch pool",
 				"job", res.JobID, "msgid", res.MessageID, "server", res.ServerName, "err", res.Err)
 			if err := p.queue.ClearArticleEmitted(res.JobID, res.MessageID); err != nil {
-				p.log.Warn("clear emitted failed", "job", res.JobID, "msgid", res.MessageID, "err", err)
+				p.log.Debug("clear emitted failed, this typically happens when a job has already been stopped", "job", res.JobID, "msgid", res.MessageID, "err", err)
 			}
 			telemetry.ArticlesRetried.Add(1)
 		}
