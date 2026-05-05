@@ -293,10 +293,7 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		d.workCh[name] = make(chan *articleRequest, perServer)
 
 		// Pre-populate connection activity entries (all idle).
-		conns := srv.Connections()
-		if conns < 1 {
-			conns = 1
-		}
+		conns := max(srv.Connections(), 1)
 		for i := range conns {
 			wid := fmt.Sprintf("%s#%d", name, i)
 			d.connActivity[wid] = &ConnActivity{
@@ -333,10 +330,7 @@ func (d *Downloader) Start(ctx context.Context) error {
 	// connection, each lazily dials its own *nntp.Conn.
 	totalWorkers := 0
 	for i, srv := range d.servers {
-		conns := srv.Connections()
-		if conns < 1 {
-			conns = 1
-		}
+		conns := max(srv.Connections(), 1)
 		for j := range conns {
 			wid := fmt.Sprintf("%s#%d", srv.Cfg().Name, j)
 			d.wg.Go(func() {

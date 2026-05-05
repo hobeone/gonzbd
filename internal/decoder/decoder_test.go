@@ -25,10 +25,7 @@ func yencEncode(name string, raw []byte) []byte {
 		encoded = append(encoded, enc)
 	}
 	for i := 0; i < len(encoded); i += lineLen {
-		end := i + lineLen
-		if end > len(encoded) {
-			end = len(encoded)
-		}
+		end := min(i+lineLen, len(encoded))
 		buf.Write(encoded[i:end])
 		buf.WriteString("\r\n")
 	}
@@ -57,10 +54,7 @@ func yencEncodePart(name string, partNum, totalParts int, raw []byte, fileSize, 
 		encoded = append(encoded, enc)
 	}
 	for i := 0; i < len(encoded); i += lineLen {
-		end := i + lineLen
-		if end > len(encoded) {
-			end = len(encoded)
-		}
+		end := min(i+lineLen, len(encoded))
 		buf.Write(encoded[i:end])
 		buf.WriteString("\r\n")
 	}
@@ -215,8 +209,8 @@ func TestDecodeArticle_Byte0xD6(t *testing.T) {
 // containsEscapeAcrossLine returns true if a '=' character is the last
 // non-CRLF byte before a CRLF in the yEnc body.
 func containsEscapeAcrossLine(article []byte) bool {
-	lines := bytes.Split(article, []byte("\r\n"))
-	for _, line := range lines {
+	lines := bytes.SplitSeq(article, []byte("\r\n"))
+	for line := range lines {
 		if len(line) > 0 && line[len(line)-1] == '=' {
 			return true
 		}
@@ -286,17 +280,17 @@ func TestDecodeArticle_MalformedInputs(t *testing.T) {
 	corruptCRC := yencEncode("bad.bin", raw)
 	// Replace the crc32 value in the =yend line with a wrong value.
 	corruptCRC = bytes.Replace(corruptCRC,
-		[]byte(fmt.Sprintf("crc32=%08x", checksum)),
+		fmt.Appendf(nil, "crc32=%08x", checksum),
 		[]byte("crc32=deadbeef"),
 		1)
 
 	// Build a size-mismatch variant: declare size=99 but encode 100 bytes.
 	sizeMismatch := bytes.Replace(good,
-		[]byte(fmt.Sprintf("=ybegin line=128 size=%d", len(raw))),
+		fmt.Appendf(nil, "=ybegin line=128 size=%d", len(raw)),
 		[]byte("=ybegin line=128 size=99"),
 		1)
 	sizeMismatch = bytes.Replace(sizeMismatch,
-		[]byte(fmt.Sprintf("=yend size=%d", len(raw))),
+		fmt.Appendf(nil, "=yend size=%d", len(raw)),
 		[]byte("=yend size=99"),
 		1)
 
@@ -394,10 +388,7 @@ func uuEncode(filename string, data []byte) []byte {
 
 	lineSize := 45
 	for i := 0; i < len(data); i += lineSize {
-		end := i + lineSize
-		if end > len(data) {
-			end = len(data)
-		}
+		end := min(i+lineSize, len(data))
 		chunk := data[i:end]
 		// Length character.
 		buf.WriteByte(byte(len(chunk)) + 0x20)

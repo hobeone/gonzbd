@@ -382,11 +382,11 @@ func parseTrailer(line []byte, isPart bool) (yencTrailer, error) {
 // spaces and is treated as extending to the end of the line.
 func parseKeyValues(line []byte, fn func(k, v string)) {
 	// Strip the leading directive (=ybegin, =ypart, =yend).
-	sp := bytes.IndexByte(line, ' ')
-	if sp < 0 {
+	_, after, ok := bytes.Cut(line, []byte{' '})
+	if !ok {
 		return
 	}
-	rest := line[sp+1:]
+	rest := after
 
 	for len(rest) > 0 {
 		// Consume leading spaces.

@@ -1,5 +1,7 @@
 package queue
 
+import "maps"
+
 // Snapshot returns a point-in-time, deep-copied view of all jobs in the
 // queue. It is intended for testing and consistent-read views (e.g. for
 // API responses).
@@ -23,9 +25,7 @@ func cloneJob(j *Job) *Job {
 	// Deep copy maps
 	if j.ServerStats != nil {
 		cp.ServerStats = make(map[string]int64, len(j.ServerStats))
-		for k, v := range j.ServerStats {
-			cp.ServerStats[k] = v
-		}
+		maps.Copy(cp.ServerStats, j.ServerStats)
 	}
 	if j.Meta != nil {
 		cp.Meta = make(map[string][]string, len(j.Meta))

@@ -476,7 +476,7 @@ func TestConcurrentWriteArticle(t *testing.T) {
 				JobID:   "job1",
 				FileIdx: fi,
 				Offset:  int64(part * articleSize),
-				Data:    []byte(fmt.Sprintf("%04d%04d", fi, part)),
+				Data:    fmt.Appendf(nil, "%04d%04d", fi, part),
 			})
 		}
 	}

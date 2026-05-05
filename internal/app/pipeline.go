@@ -94,22 +94,17 @@ type completionSwap struct {
 func (p *pipeline) run(ctx context.Context) {
 	nw := p.numWorkers
 	if nw <= 0 {
-		nw = runtime.GOMAXPROCS(0)
-		if nw < 2 {
-			nw = 2
-		}
+		nw = max(runtime.GOMAXPROCS(0), 2)
 	}
 
 	work := make(chan *downloader.ArticleResult, nw*2)
 	var wg sync.WaitGroup
 	for range nw {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for res := range work {
 				p.handleResult(ctx, res)
 			}
-		}()
+		})
 	}
 	defer func() {
 		close(work)

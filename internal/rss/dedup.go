@@ -3,6 +3,7 @@ package rss
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -78,9 +79,7 @@ func (s *Store) Save() error {
 	}
 	s.dirty = false
 	snapshot := make(map[string]time.Time, len(s.seen))
-	for k, v := range s.seen {
-		snapshot[k] = v
-	}
+	maps.Copy(snapshot, s.seen)
 	s.mu.Unlock()
 
 	data, err := json.Marshal(storeFile{Seen: snapshot})
