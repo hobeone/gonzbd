@@ -918,16 +918,14 @@ func TestConcurrentArticleLifecycle(t *testing.T) {
 	// Simulate concurrent workers completing articles.
 	var wg sync.WaitGroup
 	for fi := range nFiles {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for ai := range nArticles {
 				msgID := articleID(fi, ai)
 				_ = q.MarkArticleEmitted(j.ID, msgID)
 				_ = q.MarkArticleDone(j.ID, msgID)
 			}
 			_ = q.MarkFileComplete(j.ID, fi)
-		}()
+		})
 	}
 	wg.Wait()
 

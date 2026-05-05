@@ -122,13 +122,13 @@ func setFieldValue(f reflect.Value, val string) error {
 	ft := f.Type()
 
 	switch {
-	case ft == reflect.TypeOf(ByteSize(0)):
+	case ft == reflect.TypeFor[ByteSize]():
 		b, err := ParseByteSize(val)
 		if err != nil {
 			return fmt.Errorf("invalid byte size: %w", err)
 		}
 		f.SetInt(int64(b))
-	case ft == reflect.TypeOf(Percent(0)):
+	case ft == reflect.TypeFor[Percent]():
 		i, err := strconv.Atoi(val)
 		if err != nil {
 			return fmt.Errorf("invalid percent: %w", err)
@@ -139,7 +139,7 @@ func setFieldValue(f reflect.Value, val string) error {
 			return fmt.Errorf("percent: %d outside [0,100]", i)
 		}
 		f.SetInt(int64(p))
-	case ft == reflect.TypeOf(SSLVerify(0)):
+	case ft == reflect.TypeFor[SSLVerify]():
 		i, err := strconv.Atoi(val)
 		if err != nil {
 			return fmt.Errorf("invalid ssl_verify: %w", err)

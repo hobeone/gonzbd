@@ -295,9 +295,7 @@ func TestPipelinedFetches(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
 	for i := range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			id := fmt.Sprintf("m%d@h", i)
 			body, err := conn.Fetch(ctx, id)
 			if err != nil {
@@ -308,7 +306,7 @@ func TestPipelinedFetches(t *testing.T) {
 			if string(body) != want {
 				errs <- fmt.Errorf("body for %s = %q, want %q", id, body, want)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)

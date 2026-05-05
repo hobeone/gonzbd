@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -505,13 +506,7 @@ func TestParseStageLog_WithError(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("parseStageLog returned %d entries; want 1", len(result))
 	}
-	found := false
-	for _, a := range result[0].Actions {
-		if a == "Error: "+errMsg {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(result[0].Actions, "Error: "+errMsg)
 	if !found {
 		t.Errorf("expected error action in %v", result[0].Actions)
 	}

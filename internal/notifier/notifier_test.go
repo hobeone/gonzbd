@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -71,12 +72,7 @@ type fakeNotifier struct {
 
 func (f *fakeNotifier) Name() string { return f.name }
 func (f *fakeNotifier) Accepts(t EventType) bool {
-	for _, m := range f.mask {
-		if m == t {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(f.mask, t)
 }
 func (f *fakeNotifier) Send(ctx context.Context, e Event) error {
 	if f.sendDelay > 0 {

@@ -52,10 +52,7 @@ func (l *Limiter) SetRate(bytesPerSec float64) {
 		return
 	}
 
-	burst := int(math.Ceil(bytesPerSec))
-	if burst < minBurst {
-		burst = minBurst
-	}
+	burst := max(int(math.Ceil(bytesPerSec)), minBurst)
 
 	switch {
 	case l.lim == nil:

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,9 +39,7 @@ func (m *MockHandler) NZBs() map[string][]byte {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := make(map[string][]byte)
-	for k, v := range m.nzbs {
-		result[k] = v
-	}
+	maps.Copy(result, m.nzbs)
 	return result
 }
 
@@ -555,14 +554,12 @@ func TestFetchRaceCondition(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 10 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_, err := grabber.Fetch(t.Context(), server.URL+"/test.nzb", types.FetchOptions{})
 			if err != nil {
 				t.Errorf("concurrent Fetch failed: %v", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

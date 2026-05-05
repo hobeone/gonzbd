@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -100,7 +101,7 @@ func Parse(line string) (ScheduleSpec, error) {
 func parseField(token string, fieldMin, fieldMax int) ([]int, error) {
 	var result []int
 
-	for _, segment := range strings.Split(token, ",") {
+	for segment := range strings.SplitSeq(token, ",") {
 		vals, err := parseSegment(segment, fieldMin, fieldMax)
 		if err != nil {
 			return nil, err
@@ -127,14 +128,14 @@ func parseSegment(seg string, fieldMin, fieldMax int) ([]int, error) {
 	stride := 1
 	base := seg
 
-	if idx := strings.Index(seg, "/"); idx >= 0 {
-		strideStr := seg[idx+1:]
+	if before, after, ok := strings.Cut(seg, "/"); ok {
+		strideStr := after
 		var err error
 		stride, err = strconv.Atoi(strideStr)
 		if err != nil || stride < 1 {
 			return nil, fmt.Errorf("invalid stride %q", strideStr)
 		}
-		base = seg[:idx]
+		base = before
 	}
 
 	var lo, hi int
@@ -209,12 +210,7 @@ func matchesDOW(dow []int, wd time.Weekday) bool {
 }
 
 func contains(vals []int, v int) bool {
-	for _, x := range vals {
-		if x == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(vals, v)
 }
 
 // Scheduler owns the periodic tick loop and dispatches actions.

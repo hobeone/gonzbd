@@ -99,11 +99,9 @@ func TestPipelineWorkerPool(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		p.run(ctx)
-	}()
+	})
 
 	// Send 5 articles to the pipeline.
 	const numArticles = 5
@@ -204,11 +202,9 @@ func TestPipelineWorkerPoolConcurrency(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		p.run(ctx)
-	}()
+	})
 
 	// Send 1 article per file.
 	for i := range numFiles {
@@ -300,11 +296,9 @@ func TestPipelineRetryTelemetry(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		p.run(ctx)
-	}()
+	})
 
 	// Send 1 success + 2 retryable errors + 1 fatal error.
 	completions <- &downloader.ArticleResult{
