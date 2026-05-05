@@ -276,18 +276,18 @@ func truncateFilename(filename string, maxBytes int) string {
 	}
 
 	// Truncate base to maxBaseBytes, ensuring we don't break a multi-byte UTF-8 character.
-	truncatedBase := ""
+	var truncatedBase strings.Builder
 	currentBytes := 0
 	for _, r := range base {
 		rLen := utf8.RuneLen(r)
 		if currentBytes+rLen > maxBaseBytes {
 			break
 		}
-		truncatedBase += string(r)
+		truncatedBase.WriteString(string(r))
 		currentBytes += rLen
 	}
 
-	return truncatedBase + ext
+	return truncatedBase.String() + ext
 }
 
 // GetUniqueFilename returns a unique version of the path by appending .1, .2, etc.

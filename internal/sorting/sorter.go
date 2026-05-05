@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -245,10 +246,5 @@ func containsStr(ss []string, s string) bool {
 
 // containsType reports whether ts contains t.
 func containsType(ts []MediaType, t MediaType) bool {
-	for _, v := range ts {
-		if v == t {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ts, t)
 }

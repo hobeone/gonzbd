@@ -41,9 +41,9 @@ func makeTestJob(id string, nFiles, nArtsPerFile int) *Job {
 		ID:   id,
 		Name: id,
 	}
-	for fi := 0; fi < nFiles; fi++ {
+	for fi := range nFiles {
 		file := JobFile{Subject: "file"}
-		for ai := 0; ai < nArtsPerFile; ai++ {
+		for ai := range nArtsPerFile {
 			file.Articles = append(file.Articles, JobArticle{
 				ID:    artID(fi, ai),
 				Bytes: 1000,

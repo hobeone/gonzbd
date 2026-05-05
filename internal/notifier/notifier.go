@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 )
@@ -113,10 +114,5 @@ func (d *Dispatcher) Dispatch(ctx context.Context, e Event) {
 
 // acceptsAny returns true if t is present in mask.
 func acceptsAny(mask []EventType, t EventType) bool {
-	for _, m := range mask {
-		if m == t {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(mask, t)
 }

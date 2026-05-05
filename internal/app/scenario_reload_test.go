@@ -33,7 +33,7 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 	for i := range n {
 		msgID := randomMsgID(t)
 		msgIDs = append(msgIDs, msgID)
-		raw := []byte(fmt.Sprintf("content %d", i))
+		raw := fmt.Appendf(nil, "content %d", i)
 		h.server.AddArticle(msgID, yencSinglePart(fmt.Sprintf("file%d.bin", i), raw))
 
 		files = append(files, nzb.File{

@@ -5,13 +5,13 @@ package config
 // disable that sink. See spec §9.8.
 type NotificationConfig struct {
 	// Email holds SMTP settings for email notifications.
-	Email EmailNotificationConfig `yaml:"email,omitempty" json:"email,omitempty"`
+	Email EmailNotificationConfig `yaml:"email,omitempty" json:"email"`
 
 	// Apprise holds settings for an Apprise API endpoint.
-	Apprise AppriseNotificationConfig `yaml:"apprise,omitempty" json:"apprise,omitempty"`
+	Apprise AppriseNotificationConfig `yaml:"apprise,omitempty" json:"apprise"`
 
 	// Script holds settings for a notification script.
-	Script ScriptNotificationConfig `yaml:"script,omitempty" json:"script,omitempty"`
+	Script ScriptNotificationConfig `yaml:"script,omitempty" json:"script"`
 }
 
 // EmailNotificationConfig maps to notifier.EmailConfig.
