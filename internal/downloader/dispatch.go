@@ -262,10 +262,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 
 	d.log.Info("Creating server connection", "server", srv.Cfg().Host)
 
-	pipelineDepth := srv.Cfg().PipeliningRequests
-	if pipelineDepth < 1 {
-		pipelineDepth = 1
-	}
+	pipelineDepth := max(srv.Cfg().PipeliningRequests, 1)
 	// Bound outstanding goroutines per connection to prevent one fast
 	// connWorker from eagerly draining the entire workCh. We size
 	// the limit to pipelineDepth*2 to allow decode overlap: up to
@@ -614,7 +611,7 @@ var dmcaKeywords = [][]byte{
 // after yEnc/UU decode has already failed, so the body is likely
 // a plaintext notice rather than binary data.
 func isDMCA(body []byte) bool {
-	for _, line := range bytes.Split(body, []byte("\n")) {
+	for line := range bytes.SplitSeq(body, []byte("\n")) {
 		lower := bytes.ToLower(bytes.TrimRight(line, "\r"))
 		// Skip NNTP extension headers (X-*).
 		if bytes.HasPrefix(lower, []byte("x-")) {

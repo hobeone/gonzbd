@@ -258,7 +258,7 @@ func collect(t *testing.T, ch <-chan *ArticleResult, n int, timeout time.Duratio
 	results := make([]*ArticleResult, 0, n)
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
-	for i := 0; i < n; i++ {
+	for range n {
 		select {
 		case r := <-ch:
 			results = append(results, r)
@@ -533,7 +533,7 @@ func TestDownloaderPerJobPauseResume(t *testing.T) {
 		id := fmt.Sprintf("art%d@h", i)
 		ids[i] = id
 		ms.addArticle(id, string(mocknntp.EncodeYEnc(
-			fmt.Sprintf("f%d.bin", i), []byte(fmt.Sprintf("body-%d", i)))))
+			fmt.Sprintf("f%d.bin", i), fmt.Appendf(nil, "body-%d", i))))
 	}
 
 	q := queue.New()
@@ -674,8 +674,8 @@ func TestDownloaderAuth(t *testing.T) {
 
 func TestDownloaderGracefulShutdown(t *testing.T) {
 	ms := newMockNNTP(t)
-	for i := 0; i < 10; i++ {
-		ms.addArticle(fmt.Sprintf("a%d@h", i), string(mocknntp.EncodeYEnc("a.bin", []byte(fmt.Sprintf("body-%d", i)))))
+	for i := range 10 {
+		ms.addArticle(fmt.Sprintf("a%d@h", i), string(mocknntp.EncodeYEnc("a.bin", fmt.Appendf(nil, "body-%d", i))))
 	}
 	q := queue.New()
 	ids := make([]string, 10)
@@ -771,7 +771,7 @@ func TestDownloaderPipeliningConcurrency(t *testing.T) {
 	ms := newMockNNTP(t)
 
 	var articles []string
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		msgid := fmt.Sprintf("pipe%d@h", i)
 		articles = append(articles, msgid)
 		ms.addArticle(msgid, string(mocknntp.EncodeYEnc("a.bin", []byte("body"))))

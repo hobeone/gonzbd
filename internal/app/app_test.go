@@ -638,10 +638,7 @@ func yencEncodePart(name string, partNum, totalParts int, data []byte, fileSize,
 	}
 	const lineLen = 128
 	for i := 0; i < len(encoded); i += lineLen {
-		end := i + lineLen
-		if end > len(encoded) {
-			end = len(encoded)
-		}
+		end := min(i+lineLen, len(encoded))
 		buf.Write(encoded[i:end])
 		buf.WriteString("\r\n")
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,9 +113,7 @@ func (s *Scanner) ScanOnce(ctx context.Context) (int, error) {
 			scannedDirs[filepath.Clean(subDir)] = true
 
 			// Merge subdir scan results into the combined map.
-			for k, v := range subScan {
-				currentScan[k] = v
-			}
+			maps.Copy(currentScan, subScan)
 		}
 	}
 

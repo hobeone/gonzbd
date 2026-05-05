@@ -268,10 +268,7 @@ func (r *Repository) Delete(ctx context.Context, nzoIDs ...string) (int, error) 
 
 	totalDeleted := 0
 	for i := 0; i < len(nzoIDs); i += chunkSize {
-		end := i + chunkSize
-		if end > len(nzoIDs) {
-			end = len(nzoIDs)
-		}
+		end := min(i+chunkSize, len(nzoIDs))
 		chunk := nzoIDs[i:end]
 
 		placeholders := strings.Repeat("?,", len(chunk))

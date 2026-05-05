@@ -84,7 +84,7 @@ func defaultCapabilities() *Capabilities {
 // Unknown verbs are preserved in Raw for diagnostic logging.
 func parseCapabilities(body string) *Capabilities {
 	caps := &Capabilities{}
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		line = strings.TrimRight(line, "\r")
 		line = strings.TrimSpace(line)
 		if line == "" {

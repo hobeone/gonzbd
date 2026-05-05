@@ -173,20 +173,12 @@ func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
 	// Only apply filters if a component was identified.
 	if component != "" {
 		// Deny list takes precedence.
-		for _, d := range f.deny {
-			if d == component {
-				return nil
-			}
+		if slices.Contains(f.deny, component) {
+			return nil
 		}
 		// If allow list is present, component MUST be in it.
 		if len(f.allow) > 0 {
-			found := false
-			for _, a := range f.allow {
-				if a == component {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(f.allow, component)
 			if !found {
 				return nil
 			}
