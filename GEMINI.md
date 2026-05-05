@@ -50,6 +50,7 @@ GoNZBD is a high-performance Go reimplementation of [SABnzbd](https://sabnzbd.or
 - **Per-Step Commits:** Implement one step from `docs/golang_implementation.md` at a time.
 - **Verification:** Before every commit, you **must** pass:
     ```bash
+    go fix ./...
     ./scripts/run_tests.sh
     go vet ./...
     golangci-lint run ./...
@@ -57,8 +58,9 @@ GoNZBD is a high-performance Go reimplementation of [SABnzbd](https://sabnzbd.or
 - **Ambiguity Protocol:** If the spec or plan is unclear, investigate the Python source (`../sabnzbd/`), form an opinion, and present it to the user using the "Decision Needed" format defined in `CLAUDE.md`.
 
 ## Go Coding Guidelines
-You are working in a Go codebase. Whenever you create, edit, or refactor a `.go` file, you MUST immediately use your shell tools to execute the following command to format the code and resolve imports:
-`goimports -w <filename>`
+You are working in a Go codebase. Whenever you create, edit, or refactor a `.go` file, you MUST immediately use your shell tools to execute the following commands:
+1. Format the code and resolve imports: `goimports -w <filename>`
+2. Apply Go toolchain modernizations: `go fix ./...` — this automatically adopts new language features (e.g., `min`/`max` builtins, `slices.Contains`, `wg.Go()`) and keeps the codebase current with the Go version declared in `go.mod`.
 
 ## Key File Locations
 - **API Handlers:** `internal/api/`
