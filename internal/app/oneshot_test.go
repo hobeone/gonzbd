@@ -33,11 +33,10 @@ func TestScenario_OneShotDuplicateNeverPaused(t *testing.T) {
 		t.Fatalf("failed to get job status: %v", err)
 	}
 
+	// The real invariant: the duplicate must NOT be paused. It should be
+	// Queued, but under -race the downloader goroutine may pick it up
+	// before we check, transitioning it to Downloading — that's fine too.
 	if status == constants.StatusPaused {
-		t.Errorf("job was added as Paused (duplicate), but one-shot mode requires it to be Queued")
-	}
-
-	if status != constants.StatusQueued {
-		t.Errorf("job status = %q, want Queued", status)
+		t.Errorf("job was added as Paused (duplicate), but one-shot mode requires it to be active")
 	}
 }
