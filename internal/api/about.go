@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -48,6 +49,7 @@ func (s *Server) modeAbout(w http.ResponseWriter, _ *http.Request) {
 		"version":      s.version,
 		"commit":       s.commit,
 		"build_date":   s.date,
+		"go_version":   runtime.Version(),
 		"local_ipv4":   localIPv4(),
 		"public_ipv4":  publicIP("https://api.ipify.org?format=text"),
 		"public_ipv6":  publicIP("https://api6.ipify.org?format=text"),
