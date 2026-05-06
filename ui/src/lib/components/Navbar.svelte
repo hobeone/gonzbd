@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
 	import { postAction } from '$lib/api';
+	import { registerShortcuts } from '$lib/shortcuts.svelte';
+	import { onMount } from 'svelte';
 	import AddNzbDialog from './AddNzbDialog.svelte';
 	import SettingsDialog from './SettingsDialog.svelte';
 	import ServerStatusPanel from './ServerStatusPanel.svelte';
@@ -27,6 +29,16 @@
 			toggling = false;
 		}
 	}
+
+	onMount(() => {
+		return registerShortcuts([
+			{ key: ' ', description: 'Pause / Resume', action: togglePause },
+			{ key: 'a', description: 'Add NZB', action: () => (addDialogOpen = true) },
+			{ key: 'n', mod: 'ctrl', description: 'Add NZB', action: () => (addDialogOpen = true) },
+			{ key: 's', description: 'Settings', action: () => (settingsOpen = true) },
+			{ key: 'v', description: 'Server Status', action: () => (serverStatusOpen = true) }
+		]);
+	});
 </script>
 
 <nav class="border-b bg-gray-900 text-white">

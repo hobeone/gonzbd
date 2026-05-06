@@ -5,16 +5,26 @@
 	import WarningsBanner from '$lib/components/WarningsBanner.svelte';
 	import StatusBar from '$lib/components/StatusBar.svelte';
 	import Toast from '$lib/components/Toast.svelte';
+	import ShortcutHelp from '$lib/components/ShortcutHelp.svelte';
 	import { onMount, onDestroy } from 'svelte';
 	import { startPolling, stopPolling, isPaused, getQueueSlots, getError, getSpeedBytesPerSec } from '$lib/stores/queue.svelte';
 	import { startHistoryPolling, stopHistoryPolling } from '$lib/stores/history.svelte';
 	import { startWarningsPolling, stopWarningsPolling } from '$lib/stores/warnings.svelte';
 	import { faviconForState, type AppState } from '$lib/favicon';
+	import { handleGlobalShortcut, registerShortcut } from '$lib/shortcuts.svelte';
+
+	let helpOpen = $state(false);
 
 	onMount(() => {
 		startPolling();
 		startHistoryPolling();
 		startWarningsPolling();
+
+		return registerShortcut({
+			key: '?',
+			description: 'Show keyboard shortcuts',
+			action: () => (helpOpen = true)
+		});
 	});
 
 	onDestroy(() => {
@@ -40,6 +50,8 @@
 	<title>{titleEmoji} {getQueueSlots().length} item{getQueueSlots().length !== 1 ? 's' : ''} | GoNZBD</title>
 	<link rel="icon" type="image/svg+xml" href={faviconHref} />
 </svelte:head>
+
+<svelte:window onkeydown={handleGlobalShortcut} />
 
 <div class="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950">
 	<Navbar paused={isPaused()} onpausetoggle={() => {}} />
@@ -75,3 +87,5 @@
 </div>
 
 <Toast />
+<ShortcutHelp bind:open={helpOpen} />
+
