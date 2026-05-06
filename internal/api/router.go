@@ -114,6 +114,7 @@ func (s *Server) registerModes() {
 		"pause_pp":   {handler: s.modePausePP, level: LevelAdmin},
 		"resume_pp":  {handler: s.modeResumePP, level: LevelAdmin},
 		// Misc modes
+		"about":       {handler: s.modeAbout, level: LevelProtected},
 		"get_cats":    {handler: s.modeGetCats, level: LevelProtected},
 		"get_scripts": {handler: s.modeGetScripts, level: LevelProtected},
 		"browse":      {handler: s.modeBrowse, level: LevelAdmin},
