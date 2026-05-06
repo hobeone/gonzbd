@@ -23,7 +23,7 @@
 		return registerShortcut({
 			key: '?',
 			description: 'Show keyboard shortcuts',
-			action: () => (helpOpen = true)
+			action: () => (helpOpen = !helpOpen)
 		});
 	});
 
