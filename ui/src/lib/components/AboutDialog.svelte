@@ -8,6 +8,7 @@
 		version: string;
 		commit: string;
 		build_date: string;
+		go_version: string;
 		local_ipv4: string;
 		public_ipv4: string;
 		public_ipv6: string;
@@ -64,6 +65,7 @@
 					...(info.build_date && info.build_date !== 'unknown'
 						? [{ label: 'Built', value: info.build_date }]
 						: []),
+					{ label: 'Go', value: info.go_version },
 					{ label: 'Hostname', value: info.hostname },
 					{ label: 'Local IP', value: info.local_ipv4 || '—' },
 					{ label: 'Public IPv4', value: info.public_ipv4 || '(unavailable)' },
