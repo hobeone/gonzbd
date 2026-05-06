@@ -46,6 +46,8 @@ func (s *Server) modeAbout(w http.ResponseWriter, _ *http.Request) {
 
 	about := map[string]string{
 		"version":      s.version,
+		"commit":       s.commit,
+		"build_date":   s.date,
 		"local_ipv4":   localIPv4(),
 		"public_ipv4":  publicIP("https://api.ipify.org?format=text"),
 		"public_ipv6":  publicIP("https://api6.ipify.org?format=text"),

@@ -6,6 +6,8 @@
 
 	interface AboutInfo {
 		version: string;
+		commit: string;
+		build_date: string;
 		local_ipv4: string;
 		public_ipv4: string;
 		public_ipv6: string;
@@ -56,6 +58,12 @@
 				title: 'System',
 				rows: [
 					{ label: 'Version', value: info.version },
+					...(info.commit && info.commit !== 'unknown'
+						? [{ label: 'Commit', value: info.commit, mono: true }]
+						: []),
+					...(info.build_date && info.build_date !== 'unknown'
+						? [{ label: 'Built', value: info.build_date }]
+						: []),
 					{ label: 'Hostname', value: info.hostname },
 					{ label: 'Local IP', value: info.local_ipv4 || '—' },
 					{ label: 'Public IPv4', value: info.public_ipv4 || '(unavailable)' },

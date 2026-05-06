@@ -46,9 +46,14 @@ import (
 	_ "github.com/hobeone/gonzbd/internal/telemetry"
 )
 
-// Version is the build version of the gonzbd binary. Overridden at build
-// time via -ldflags="-X main.Version=<value>".
-var Version = "5.0.0"
+// Build metadata. Overridden at build time via:
+//
+//	go build -ldflags="-X main.Version=v0.1.0 -X main.Commit=abc1234 -X main.Date=2026-05-06T14:00:00Z"
+var (
+	Version = "dev"     // semver tag (e.g. "v0.3.0"), or "dev" for local builds
+	Commit  = "unknown" // short git SHA
+	Date    = "unknown" // RFC-3339 build timestamp
+)
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -69,7 +74,7 @@ func main() {
 	}
 
 	if *showVersion {
-		fmt.Println(Version)
+		fmt.Printf("gonzbd %s (commit %s, built %s)\n", Version, Commit, Date)
 		return
 	}
 
@@ -327,6 +332,8 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 
 	apiSrv := api.New(api.Options{
 		Version:    Version,
+		Commit:     Commit,
+		Date:       Date,
 		Queue:      application.Queue(),
 		History:    histRepo,
 		Config:     cfg,
