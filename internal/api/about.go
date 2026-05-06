@@ -47,7 +47,8 @@ func (s *Server) modeAbout(w http.ResponseWriter, _ *http.Request) {
 	about := map[string]string{
 		"version":      s.version,
 		"local_ipv4":   localIPv4(),
-		"public_ipv4":  publicIPv4(),
+		"public_ipv4":  publicIP("https://api.ipify.org?format=text"),
+		"public_ipv6":  publicIP("https://api6.ipify.org?format=text"),
 		"hostname":     hostname,
 		"config_path":  s.configPath,
 		"download_dir": downloadDir,
@@ -85,14 +86,15 @@ func localIPv4() string {
 	return ""
 }
 
-// publicIPv4 queries an external service to determine the host's public
-// IPv4 address. This is best-effort: on any failure (timeout, network
-// error, non-200 response) it returns "".
-func publicIPv4() string {
+// publicIP queries an external service URL to determine a public IP
+// address. This is best-effort: on any failure (timeout, network error,
+// non-200 response) it returns "". Used with api.ipify.org for IPv4 and
+// api6.ipify.org for IPv6.
+func publicIP(url string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org?format=text", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return ""
 	}
@@ -107,7 +109,7 @@ func publicIPv4() string {
 		return ""
 	}
 
-	// Public IPv4 addresses are at most 15 bytes ("xxx.xxx.xxx.xxx").
+	// IP addresses are at most 45 bytes (full IPv6 with zones).
 	// Read a small bounded amount to avoid unbounded memory usage.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64))
 	if err != nil {
