@@ -1,0 +1,152 @@
+# Release workflow — triggered by pushing a semver tag (e.g. v0.3.0).
+#
+# Steps:
+#   1. Run the full test suite (Go + UI).
+#   2. Build the Docker image with version/commit/date baked in.
+#   3. Push the image to GHCR with version tags (v0.3.0, v0.3, latest).
+#   4. Create a GitHub Release with the Go binary attached.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write     # create GitHub Releases and upload assets
+  packages: write     # push to GHCR
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Go tests
+        run: go test -race ./...
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: UI install
+        working-directory: ui
+        run: npm ci
+
+      - name: UI tests
+        working-directory: ui
+        run: npx vitest run
+
+      - name: UI build
+        working-directory: ui
+        run: npm run build
+
+  release:
+    name: Build & Release
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for git describe fallback
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build UI
+        working-directory: ui
+        run: npm ci && npm run build
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}  # strip leading 'v' for semver
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "build_date=$BUILD_DATE" >> "$GITHUB_OUTPUT"
+          # Major.minor for the floating tag (e.g. "0.3")
+          MINOR_TAG=$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+')
+          echo "minor_tag=$MINOR_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build Go binary (linux/amd64)
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build \
+            -ldflags="-s -w -X main.Version=${{ steps.meta.outputs.version }} -X main.Commit=${{ steps.meta.outputs.commit }} -X main.Date=${{ steps.meta.outputs.build_date }}" \
+            -o gonzbd-linux-amd64 \
+            ./cmd/gonzbd
+
+      - name: Build Go binary (linux/arm64)
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          go build \
+            -ldflags="-s -w -X main.Version=${{ steps.meta.outputs.version }} -X main.Commit=${{ steps.meta.outputs.commit }} -X main.Date=${{ steps.meta.outputs.build_date }}" \
+            -o gonzbd-linux-arm64 \
+            ./cmd/gonzbd
+
+      # --- Docker ---
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ steps.meta.outputs.commit }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.minor_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      # --- GitHub Release ---
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            gonzbd-linux-amd64
+            gonzbd-linux-arm64

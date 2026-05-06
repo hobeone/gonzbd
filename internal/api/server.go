@@ -21,6 +21,10 @@ import (
 type Options struct {
 	// Version is the application version string returned by mode=version.
 	Version string
+	// Commit is the short git SHA of the build.
+	Commit string
+	// Date is the RFC-3339 build timestamp.
+	Date string
 
 	// Logger is the structured logger. Defaults to slog.Default() when nil.
 	Logger *slog.Logger
@@ -72,6 +76,8 @@ type ApplicationReloader interface {
 // Shutdown.
 type Server struct {
 	version string
+	commit  string
+	date    string
 	log     *slog.Logger
 
 	queue      *queue.Queue
@@ -102,6 +108,8 @@ func New(opts Options) *Server {
 
 	s := &Server{
 		version:    opts.Version,
+		commit:     opts.Commit,
+		date:       opts.Date,
 		log:        log,
 		queue:      opts.Queue,
 		history:    opts.History,

@@ -16,12 +16,26 @@ RUN npm ci && npm run build
 # Build the Go binary (pure Go, no CGo needed)
 WORKDIR /src
 ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
 RUN CGO_ENABLED=0 go build \
-    -ldflags="-s -w -X main.Version=${VERSION}" \
+    -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.Date=${BUILD_DATE}" \
     -o /gonzbd ./cmd/gonzbd
 
 # ---- Runtime stage ----
 FROM alpine:3.22
+
+# OCI image metadata — queryable via `docker inspect`.
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="GoNZBD"
+LABEL org.opencontainers.image.description="A Go reimplementation of SABnzbd"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${COMMIT}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+LABEL org.opencontainers.image.source="https://github.com/hobeone/gonzbd"
+LABEL org.opencontainers.image.licenses="MIT"
 
 # Install post-processing dependencies:
 #   par2cmdline     - PAR2 repair
