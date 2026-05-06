@@ -8,6 +8,7 @@
 		version: string;
 		local_ipv4: string;
 		public_ipv4: string;
+		public_ipv6: string;
 		hostname: string;
 		config_path: string;
 		download_dir: string;
@@ -57,7 +58,8 @@
 					{ label: 'Version', value: info.version },
 					{ label: 'Hostname', value: info.hostname },
 					{ label: 'Local IP', value: info.local_ipv4 || '—' },
-					{ label: 'Public IP', value: info.public_ipv4 || '(unavailable)' }
+					{ label: 'Public IPv4', value: info.public_ipv4 || '(unavailable)' },
+					{ label: 'Public IPv6', value: info.public_ipv6 || '(unavailable)' }
 				]
 			},
 			{
