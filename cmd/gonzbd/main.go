@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -74,7 +75,7 @@ func main() {
 	}
 
 	if *showVersion {
-		fmt.Printf("gonzbd %s (commit %s, built %s)\n", Version, Commit, Date)
+		fmt.Printf("gonzbd %s (commit %s, built %s, %s)\n", Version, Commit, Date, runtime.Version())
 		return
 	}
 
