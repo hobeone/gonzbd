@@ -35,11 +35,11 @@
 	onMount(() => {
 		return registerShortcuts([
 			{ key: ' ', description: 'Pause / Resume', action: togglePause },
-			{ key: 'a', description: 'Add NZB', action: () => (addDialogOpen = true) },
-			{ key: 'n', mod: 'ctrl', description: 'Add NZB', action: () => (addDialogOpen = true) },
-			{ key: 's', description: 'Settings', action: () => (settingsOpen = true) },
-			{ key: 'v', description: 'Server Status', action: () => (serverStatusOpen = true) },
-			{ key: 'i', description: 'About', action: () => (aboutOpen = true) }
+			{ key: 'a', description: 'Add NZB', action: () => (addDialogOpen = !addDialogOpen) },
+			{ key: 'n', mod: 'ctrl', description: 'Add NZB', action: () => (addDialogOpen = !addDialogOpen) },
+			{ key: 's', description: 'Settings', action: () => (settingsOpen = !settingsOpen) },
+			{ key: 'v', description: 'Server Status', action: () => (serverStatusOpen = !serverStatusOpen) },
+			{ key: 'i', description: 'About', action: () => (aboutOpen = !aboutOpen) }
 		]);
 	});
 </script>
