@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/deobfuscate"
@@ -139,11 +140,75 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				logf(log, job, slog.LevelInfo, "Cleaned up %d par2 file(s)", cleaned)
 			}
 		}
+
+		// Par2 repair creates backup copies of damaged files by appending
+		// ".1", ".2" etc. (e.g. "movie.part01.rar" → "movie.part01.rar.1").
+		// These orphaned backups confuse later stages (deobfuscate sees
+		// RAR magic bytes in a ".1" file and incorrectly appends ".rar").
+		// Clean them up after successful repair.
+		backups := cleanupPar2Backups(job.DownloadDir, log)
+		if backups > 0 {
+			logf(log, job, slog.LevelInfo, "Cleaned up %d par2 backup file(s)", backups)
+		}
 	} else if s.Cleanup && !repairSucceeded {
 		logf(log, job, slog.LevelInfo, "Keeping par2 files (repair failed)")
 	}
 
 	return firstErr
+}
+
+// par2BackupRe matches files that par2 creates as backups during repair:
+// a known archive/data extension followed by ".N" (e.g. ".rar.1", ".mkv.2").
+var par2BackupRe = regexp.MustCompile(`(?i)\.(rar|r\d+|7z|zip|mkv|avi|mp4|flac|mp3|srt|nfo)\.\d{1,3}$`)
+
+// cleanupPar2Backups removes backup files created by par2 during repair.
+// When par2 repairs a damaged file "movie.rar", it renames the damaged
+// original to "movie.rar.1" and writes the repaired data to "movie.rar".
+// This function finds and removes those ".N" backup files, but only when
+// the corresponding repaired file exists (safety check).
+func cleanupPar2Backups(dir string, log *slog.Logger) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+
+	// Build a set of existing filenames for the safety check.
+	existing := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		existing[e.Name()] = true
+	}
+
+	var removed int
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !par2BackupRe.MatchString(name) {
+			continue
+		}
+		// Extract the original filename by stripping the trailing ".N" suffix.
+		// e.g. "movie.part01.rar.1" → "movie.part01.rar"
+		lastDot := strings.LastIndex(name, ".")
+		if lastDot <= 0 {
+			continue
+		}
+		originalName := name[:lastDot]
+		// Only delete if the repaired original exists alongside the backup.
+		if !existing[originalName] {
+			log.Info("repair: keeping par2 backup (repaired file missing)",
+				"backup", name, "expected", originalName)
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if err := os.Remove(path); err != nil {
+			log.Warn("repair: failed to remove par2 backup", "file", name, "err", err)
+			continue
+		}
+		log.Info("repair: removed par2 backup", "file", name)
+		removed++
+	}
+	return removed
 }
 
 // UnpackStage extracts every archive it finds in job.DownloadDir,
