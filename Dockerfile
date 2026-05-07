@@ -13,22 +13,29 @@ COPY . .
 WORKDIR /src/ui
 RUN npm ci && npm run build
 
-# Build the Go binary (pure Go, no CGo needed)
+# Build the Go binary (pure Go, no CGo needed).
+# When VERSION/COMMIT/BUILD_DATE are not passed via --build-arg,
+# auto-derive them from git so local builds are properly stamped.
 WORKDIR /src
-ARG VERSION=dev
-ARG COMMIT=unknown
-ARG BUILD_DATE=unknown
-RUN CGO_ENABLED=0 go build \
-    -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.Date=${BUILD_DATE}" \
-    -o /gonzbd ./cmd/gonzbd
+ARG VERSION=
+ARG COMMIT=
+ARG BUILD_DATE=
+RUN VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}" && \
+    COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}" && \
+    BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
+    CGO_ENABLED=0 go build \
+      -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.Date=${BUILD_DATE}" \
+      -o /gonzbd ./cmd/gonzbd
 
 # ---- Runtime stage ----
 FROM alpine:3.22
 
 # OCI image metadata — queryable via `docker inspect`.
-ARG VERSION=dev
-ARG COMMIT=unknown
-ARG BUILD_DATE=unknown
+# When building locally without --build-arg, these default to empty.
+# The binary itself always has correct values from the build stage.
+ARG VERSION
+ARG COMMIT
+ARG BUILD_DATE
 LABEL org.opencontainers.image.title="GoNZBD"
 LABEL org.opencontainers.image.description="A Go reimplementation of SABnzbd"
 LABEL org.opencontainers.image.version="${VERSION}"
