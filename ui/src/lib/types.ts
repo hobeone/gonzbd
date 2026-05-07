@@ -5,7 +5,7 @@ export interface QueueSlot {
 	nzo_id: string;
 	filename: string;
 	name: string;
-	category: string;
+	cat: string;
 	priority: string;
 	status: string;
 	script: string;

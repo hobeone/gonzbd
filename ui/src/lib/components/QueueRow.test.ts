@@ -15,7 +15,7 @@ describe('QueueRow', () => {
 		nzo_id: '123',
 		name: 'Test.NZB',
 		filename: 'Test.NZB',
-		category: 'TV',
+		cat: 'TV',
 		priority: 'Normal',
 		status: 'Downloading',
 		size: '100 MB',
@@ -90,7 +90,7 @@ describe('QueueRow', () => {
 	});
 
 	it('shows * for empty category', () => {
-		const slot = { ...baseSlot, category: '' };
+		const slot = { ...baseSlot, cat: '' };
 		const { container } = render(QueueRow, { slot, onremove: () => {} });
 		expect(container.textContent).toContain('*');
 	});
