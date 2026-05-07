@@ -1,5 +1,8 @@
+# All Alpine-based stages use the same version for consistency.
+ARG ALPINE_VERSION=3.21
+
 # ---- Build UI ----
-FROM node:22-alpine AS ui-builder
+FROM node:22-alpine${ALPINE_VERSION} AS ui-builder
 WORKDIR /src/ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
@@ -7,7 +10,7 @@ COPY ui/ .
 RUN npm run build
 
 # ---- Build Go binary ----
-FROM golang:1.26-alpine AS go-builder
+FROM golang:1.26-alpine${ALPINE_VERSION} AS go-builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -28,7 +31,7 @@ RUN CGO_ENABLED=0 go build \
       -o /gonzbd ./cmd/gonzbd
 
 # ---- Build par2cmdline-turbo ----
-FROM alpine:3.21 AS par2-builder
+FROM alpine:${ALPINE_VERSION} AS par2-builder
 ARG PAR2_VERSION=v1.4.0
 RUN apk add --no-cache autoconf automake build-base curl \
  && mkdir /tmp/par2 \
@@ -41,7 +44,7 @@ RUN apk add --no-cache autoconf automake build-base curl \
 # ---- Runtime ----
 FROM ghcr.io/linuxserver/unrar:latest AS unrar
 
-FROM alpine:3.21
+FROM alpine:${ALPINE_VERSION}
 
 ARG VERSION=dev
 ARG COMMIT=unknown
