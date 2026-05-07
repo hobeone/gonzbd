@@ -17,8 +17,7 @@ test/
 *.swp
 *.swo
 
-# Git
-.git/
+# Git (keep .git/ for commit/date stamping in the build)
 .gitignore
 
 # Docker
