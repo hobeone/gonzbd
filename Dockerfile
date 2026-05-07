@@ -1,106 +1,79 @@
-# ---- Build stage ----
-FROM golang:1.26-alpine AS builder
+# ---- Build UI ----
+FROM node:22-alpine AS ui-builder
+WORKDIR /src/ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+COPY ui/ .
+RUN npm run build
 
-RUN apk add --no-cache git nodejs npm
-
+# ---- Build Go binary ----
+FROM golang:1.26-alpine AS go-builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-
 COPY . .
+COPY --from=ui-builder /src/ui/dist ui/dist
 
-# Build the Svelte UI
-WORKDIR /src/ui
-RUN npm ci && npm run build
-
-# Build the Go binary (pure Go, no CGo needed).
-# When VERSION/COMMIT/BUILD_DATE are not passed via --build-arg,
-# auto-derive them from git so local builds are properly stamped.
-WORKDIR /src
-ARG VERSION=
-ARG COMMIT=
-ARG BUILD_DATE=
-RUN VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}" && \
-    COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}" && \
-    BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
-    CGO_ENABLED=0 go build \
-      -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.Date=${BUILD_DATE}" \
+# Pure Go, no CGo needed.
+# VERSION/COMMIT/BUILD_DATE must be passed via --build-arg (CI does this
+# automatically; for local builds use the docker-build script).
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+RUN CGO_ENABLED=0 go build \
+      -ldflags="-s -w \
+        -X main.Version=${VERSION} \
+        -X main.Commit=${COMMIT} \
+        -X main.Date=${BUILD_DATE}" \
       -o /gonzbd ./cmd/gonzbd
 
-# Download and build par2cmdline-turbo
-WORKDIR /
-RUN \
-  echo "**** install packages ****" && \
-  apk add -U --update --no-cache --virtual=build-dependencies \
-    autoconf \
-    automake \
-    build-base \
-    libffi-dev \
-    openssl-dev \
-    python3-dev \
-    curl
+# ---- Build par2cmdline-turbo ----
+FROM alpine:3.21 AS par2-builder
+ARG PAR2_VERSION=v1.4.0
+RUN apk add --no-cache autoconf automake build-base curl \
+ && mkdir /tmp/par2 \
+ && curl -L "https://github.com/animetosho/par2cmdline-turbo/archive/${PAR2_VERSION}.tar.gz" \
+    | tar xz -C /tmp/par2 --strip-components=1 \
+ && cd /tmp/par2 \
+ && ./automake.sh && ./configure && make -j"$(nproc)" && make install \
+ && rm -rf /tmp/par2
 
-RUN echo "**** install par2cmdline-turbo from source ****"
-RUN PAR2_VERSION=$(curl -s https://api.github.com/repos/animetosho/par2cmdline-turbo/releases/latest \
-    | awk '/tag_name/{print $4;exit}' FS='[""]'); \
-    mkdir /tmp/par2cmdline && \
-    curl -o /tmp/par2cmdline.tar.gz -L \
-    "https://github.com/animetosho/par2cmdline-turbo/archive/${PAR2_VERSION}.tar.gz"
-RUN tar xf /tmp/par2cmdline.tar.gz -C /tmp/par2cmdline --strip-components=1
-WORKDIR /tmp/par2cmdline
-RUN ./automake.sh
-RUN ./configure
-RUN make
-RUN make check
-RUN make install
-
-# ---- Runtime stage ----
-
+# ---- Runtime ----
 FROM ghcr.io/linuxserver/unrar:latest AS unrar
 
-FROM alpine:latest
+FROM alpine:3.21
 
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="GoNZBD" \
+      org.opencontainers.image.description="A Go reimplementation of SABnzbd" \
+      org.opencontainers.image.version=${VERSION} \
+      org.opencontainers.image.revision=${COMMIT} \
+      org.opencontainers.image.created=${BUILD_DATE} \
+      org.opencontainers.image.source="https://github.com/hobeone/gonzbd" \
+      org.opencontainers.image.licenses="MIT"
 
-# OCI image metadata — queryable via `docker inspect`.
-# When building locally without --build-arg, these default to empty.
-# The binary itself always has correct values from the build stage.
-ARG VERSION
-ARG COMMIT
-ARG BUILD_DATE
-LABEL org.opencontainers.image.title="GoNZBD"
-LABEL org.opencontainers.image.description="A Go reimplementation of SABnzbd"
-LABEL org.opencontainers.image.version="${VERSION}"
-LABEL org.opencontainers.image.revision="${COMMIT}"
-LABEL org.opencontainers.image.created="${BUILD_DATE}"
-LABEL org.opencontainers.image.source="https://github.com/hobeone/gonzbd"
-LABEL org.opencontainers.image.licenses="MIT"
-
-# Install post-processing dependencies:
+# Post-processing dependencies:
 #   7zip            - archive extraction (7z, zip, RAR, and more)
 #   ca-certificates - TLS connections to news servers
 #   tzdata          - timezone support for schedules
 #   su-exec         - lightweight privilege drop (like gosu)
 #   shadow          - usermod/groupmod for PUID/PGID support
-RUN apk add -U --update --no-cache \
+RUN apk add --no-cache \
     7zip \
     ca-certificates \
     tzdata \
     su-exec \
     shadow
 
-# Default directories. Users should mount volumes over these.
-RUN mkdir -p /data/downloads /data/complete /data/admin /config
-
-COPY --from=builder /gonzbd /usr/local/bin/gonzbd
-COPY --from=builder /usr/local/bin/par2 /usr/local/bin/par2
-COPY entrypoint.sh /entrypoint.sh
-
-# add unrar
+COPY --from=go-builder /gonzbd /usr/local/bin/gonzbd
+COPY --from=par2-builder /usr/local/bin/par2 /usr/local/bin/par2
 COPY --from=unrar /usr/bin/unrar-alpine /usr/bin/unrar
+COPY --chmod=755 entrypoint.sh /entrypoint.sh
 
-# Default config location and port; overridable via environment.
-ENV GONZBD_CONFIG=/config/gonzbd.yaml
 ENV GONZBD_PORT=4289
+EXPOSE 4289
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["gonzbd", "--config", "/config/gonzbd.yaml", "--serve"]
