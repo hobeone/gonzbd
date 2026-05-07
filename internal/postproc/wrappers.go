@@ -234,21 +234,21 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			}
 			if use7z {
 				logf(log, job, slog.LevelInfo, "Running: 7z x %s", filepath.Base(a.MainFile))
-				res, err = unpack.SevenZip(ctx, a, job.DownloadDir, opts)
+				res, err = unpack.SevenZip(ctx, log, a, job.DownloadDir, opts)
 			} else {
 				unrarBin := opts.UnrarCommand
 				if unrarBin == "" {
 					unrarBin = "unrar"
 				}
 				logf(log, job, slog.LevelInfo, "Running: %s x %s", unrarBin, filepath.Base(a.MainFile))
-				res, err = unpack.UnRAR(ctx, a, job.DownloadDir, opts)
+				res, err = unpack.UnRAR(ctx, log, a, job.DownloadDir, opts)
 			}
 		case unpack.SevenZipArchive:
 			logf(log, job, slog.LevelInfo, "Running: 7z x %s", filepath.Base(a.MainFile))
-			res, err = unpack.SevenZip(ctx, a, job.DownloadDir, opts)
+			res, err = unpack.SevenZip(ctx, log, a, job.DownloadDir, opts)
 		case unpack.SplitArchive:
 			logf(log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
-			res, err = unpack.FileJoin(ctx, a, job.DownloadDir, opts)
+			res, err = unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
 		default:
 			continue
 		}
@@ -334,7 +334,7 @@ func (d *DeobfuscateStage) Run(_ context.Context, job *Job) error {
 
 	logf(log, job, slog.LevelInfo, "Starting deobfuscation in %s (useful name: %s)", job.DownloadDir, job.Queue.Name)
 
-	renames, err := deobfuscate.Deobfuscate(job.DownloadDir, job.Queue.Name, job.Sanitize)
+	renames, err := deobfuscate.Deobfuscate(log, job.DownloadDir, job.Queue.Name, job.Sanitize)
 	if len(renames) == 0 {
 		logf(log, job, slog.LevelInfo, "No files needed deobfuscation")
 	} else {
@@ -345,7 +345,7 @@ func (d *DeobfuscateStage) Run(_ context.Context, job *Job) error {
 	}
 
 	// Subtitle alignment: rename .srt files to match the dominant video.
-	subRenames, subErr := deobfuscate.Subtitles(job.DownloadDir)
+	subRenames, subErr := deobfuscate.Subtitles(log, job.DownloadDir)
 	if len(subRenames) > 0 {
 		logf(log, job, slog.LevelInfo, "Renamed %d subtitle file(s)", len(subRenames))
 		for _, r := range subRenames {
@@ -415,6 +415,7 @@ func (s *SortStage) Run(ctx context.Context, job *Job) error {
 		job.Queue.Category, job.Queue.Name, job.Queue.TotalBytes, len(s.Rules))
 
 	res, err := sorting.Apply(ctx,
+		log,
 		job.DownloadDir,
 		job.Queue.Category,
 		job.Queue.Name,

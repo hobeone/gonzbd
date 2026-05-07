@@ -70,6 +70,7 @@ type Move struct {
 //   - destRoot: absolute root under which the sorted sub-directory is created.
 func Apply(
 	ctx context.Context,
+	log *slog.Logger,
 	srcDir, jobCategory, jobName string,
 	totalBytes int64,
 	rules []SorterRule,
@@ -105,18 +106,23 @@ func Apply(
 	for i := range rules {
 		r := &rules[i]
 		if !r.Enabled {
+			log.Debug("sorting: rule skipped (disabled)", "rule", r.Name)
 			continue
 		}
 		if len(r.Categories) > 0 && !containsStr(r.Categories, jobCategory) {
+			log.Debug("sorting: rule skipped (category mismatch)", "rule", r.Name, "want", r.Categories, "got", jobCategory)
 			continue
 		}
 		if len(r.Types) > 0 && !containsType(r.Types, info.Type) {
+			log.Debug("sorting: rule skipped (type mismatch)", "rule", r.Name, "want", r.Types, "got", info.Type)
 			continue
 		}
 		if r.Min > 0 && totalBytes < r.Min {
+			log.Debug("sorting: rule skipped (below min size)", "rule", r.Name, "min", r.Min, "size", totalBytes)
 			continue
 		}
 		if r.Max > 0 && totalBytes > r.Max {
+			log.Debug("sorting: rule skipped (above max size)", "rule", r.Name, "max", r.Max, "size", totalBytes)
 			continue
 		}
 		matched = r
@@ -124,13 +130,16 @@ func Apply(
 	}
 
 	if matched == nil {
-		slog.Debug("sorting: no rule matched", "job", jobName)
+		log.Debug("sorting: no rule matched", "job", jobName)
 		return ApplyResult{}, nil
 	}
 
-	slog.Info("sorting: matched rule", "rule", matched.Name, "job", jobName)
+	log.Info("sorting: matched rule", "rule", matched.Name, "job", jobName,
+		"title", info.Title, "season", info.Season, "episode", info.Episode,
+		"year", info.Year, "type", info.Type)
 
 	subpath := ExpandTemplate(matched.SortString, info, ext)
+	log.Info("sorting: template expanded", "template", matched.SortString, "result", subpath)
 	// subpath is something like "TV/%t/Season %0s" -> "TV/Show Name/Season 01"
 	// We must join each component separately so JoinSafe doesn't underscores the slashes.
 	parts := strings.Split(filepath.ToSlash(subpath), "/")
@@ -209,7 +218,7 @@ func Apply(
 		if moveErr := fsutil.MoveFile(src, dst); moveErr != nil {
 			return result, fmt.Errorf("apply: move %s → %s: %w", src, dst, moveErr)
 		}
-		slog.Info("sorting: moved", "from", src, "to", dst)
+		log.Info("sorting: moved", "from", src, "to", dst)
 		result.Moved = append(result.Moved, Move{From: src, To: dst})
 	}
 

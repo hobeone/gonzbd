@@ -70,8 +70,7 @@ type Result struct {
 // (preserve paths) otherwise.  -p- suppresses the interactive password
 // prompt when no password is supplied, preventing the subprocess from
 // blocking on stdin.
-func UnRAR(ctx context.Context, archive Archive, outDir string, opts Options) (Result, error) {
-	log := slog.Default().With("component", "unpack")
+func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
 	mode := "x"
 	if opts.OneFolder {
 		mode = "e"
