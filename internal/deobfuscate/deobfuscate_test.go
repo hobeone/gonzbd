@@ -1,6 +1,7 @@
 package deobfuscate_test
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,7 +39,7 @@ func TestIsProbablyObfuscated(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := deobfuscate.IsProbablyObfuscated(tc.filename)
+			got := deobfuscate.IsProbablyObfuscated(slog.Default(), tc.filename)
 			if got != tc.want {
 				t.Errorf("IsProbablyObfuscated(%q) = %v, want %v", tc.filename, got, tc.want)
 			}
@@ -124,7 +125,7 @@ func TestDeobfuscate(t *testing.T) {
 		big := createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv", 9001)
 		small := createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.nfo", 100)
 
-		renames, err := deobfuscate.Deobfuscate(dir, "Cool.Show.S01E01", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "Cool.Show.S01E01", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -150,7 +151,7 @@ func TestDeobfuscate(t *testing.T) {
 		createFile(t, dir, "Great.Show.S01E01.1080p.mkv", 9001)
 		createFile(t, dir, "other.nfo", 100)
 
-		renames, err := deobfuscate.Deobfuscate(dir, "SomeName", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -165,7 +166,7 @@ func TestDeobfuscate(t *testing.T) {
 		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv", 5000)
 		createFile(t, dir, "abcdefghijklmnopqrstuvwxyz012345.mkv", 4500)
 
-		renames, err := deobfuscate.Deobfuscate(dir, "SomeName", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -180,7 +181,7 @@ func TestDeobfuscate(t *testing.T) {
 		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.rar", 9001)
 		createFile(t, dir, "tiny.nfo", 10)
 
-		renames, err := deobfuscate.Deobfuscate(dir, "SomeName", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}

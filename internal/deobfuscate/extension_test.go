@@ -1,6 +1,7 @@
 package deobfuscate_test
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -189,7 +190,7 @@ func TestDeobfuscateSubtitles(t *testing.T) {
 		// Small non-srt file
 		createFile(t, dir, "info.nfo", 50)
 
-		renames, err := deobfuscate.Subtitles(dir)
+		renames, err := deobfuscate.Subtitles(slog.Default(), dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -212,7 +213,7 @@ func TestDeobfuscateSubtitles(t *testing.T) {
 		createFile(t, dir, "video.mkv", 10000)
 		createFile(t, dir, "info.nfo", 50)
 
-		renames, err := deobfuscate.Subtitles(dir)
+		renames, err := deobfuscate.Subtitles(slog.Default(), dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -228,7 +229,7 @@ func TestDeobfuscateSubtitles(t *testing.T) {
 		createFile(t, dir, "b.mkv", 900)
 		createFile(t, dir, "14_English.srt", 50)
 
-		renames, err := deobfuscate.Subtitles(dir)
+		renames, err := deobfuscate.Subtitles(slog.Default(), dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -244,7 +245,7 @@ func TestDeobfuscateSubtitles(t *testing.T) {
 		createFile(t, dir, "eng.srt", 100)
 		createFile(t, dir, "dut.srt", 100)
 
-		renames, err := deobfuscate.Subtitles(dir)
+		renames, err := deobfuscate.Subtitles(slog.Default(), dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -264,7 +265,7 @@ func TestDeobfuscate_DVDBluraySkip(t *testing.T) {
 		os.MkdirAll(filepath.Join(dir, "VIDEO_TS"), 0o755)
 		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.vob", 9001)
 
-		renames, err := deobfuscate.Deobfuscate(dir, "Movie", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "Movie", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -279,7 +280,7 @@ func TestDeobfuscate_DVDBluraySkip(t *testing.T) {
 		os.MkdirAll(filepath.Join(dir, "BDMV"), 0o755)
 		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.m2ts", 9001)
 
-		renames, err := deobfuscate.Deobfuscate(dir, "Movie", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "Movie", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -294,7 +295,7 @@ func TestDeobfuscate_DVDBluraySkip(t *testing.T) {
 		os.MkdirAll(filepath.Join(dir, "bdmv"), 0o755)
 		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.m2ts", 9001)
 
-		renames, err := deobfuscate.Deobfuscate(dir, "Movie", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "Movie", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
