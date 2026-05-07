@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -268,7 +269,7 @@ func TestFileJoin(t *testing.T) {
 		},
 	}
 
-	res, err := unpack.FileJoin(t.Context(), archive, outDir, unpack.Options{})
+	res, err := unpack.FileJoin(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
 	if err != nil {
 		t.Fatalf("FileJoin: %v", err)
 	}
@@ -290,7 +291,7 @@ func TestFileJoin_WrongType(t *testing.T) {
 	t.Parallel()
 
 	archive := unpack.Archive{Type: unpack.RarArchive, Name: "x"}
-	_, err := unpack.FileJoin(t.Context(), archive, t.TempDir(), unpack.Options{})
+	_, err := unpack.FileJoin(t.Context(), slog.Default(), archive, t.TempDir(), unpack.Options{})
 	if err == nil {
 		t.Fatal("expected error for non-SplitArchive, got nil")
 	}
@@ -313,7 +314,7 @@ func TestFileJoin_ExistingOutputRefused(t *testing.T) {
 		MainFile: filepath.Join(dir, "x.001"),
 		Parts:    []string{filepath.Join(dir, "x.001"), filepath.Join(dir, "x.002")},
 	}
-	_, err := unpack.FileJoin(t.Context(), archive, outDir, unpack.Options{})
+	_, err := unpack.FileJoin(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
 	if err == nil {
 		t.Fatal("expected error when output file already exists, got nil")
 	}
@@ -338,7 +339,7 @@ func TestFileJoin_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // cancel immediately
 
-	_, err := unpack.FileJoin(ctx, archive, outDir, unpack.Options{})
+	_, err := unpack.FileJoin(ctx, slog.Default(), archive, outDir, unpack.Options{})
 	if err == nil {
 		t.Fatal("expected error on cancelled context, got nil")
 	}
@@ -370,7 +371,7 @@ func TestUnRAR_Integration(t *testing.T) {
 		Parts:    []string{rarPath},
 	}
 
-	res, err := unpack.UnRAR(t.Context(), archive, outDir, unpack.Options{})
+	res, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
 	if err != nil {
 		t.Fatalf("UnRAR error: %v\nOutput:\n%s", err, res.Output)
 	}
@@ -402,7 +403,7 @@ func TestSevenZip_Integration(t *testing.T) {
 		Parts:    []string{szPath},
 	}
 
-	res, err := unpack.SevenZip(t.Context(), archive, outDir, unpack.Options{})
+	res, err := unpack.SevenZip(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
 	if err != nil {
 		t.Fatalf("SevenZip error: %v\nOutput:\n%s", err, res.Output)
 	}

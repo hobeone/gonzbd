@@ -69,8 +69,7 @@ var abcXyz = regexp.MustCompile(`^abc\.xyz`)
 // IsProbablyObfuscated returns true if filename looks obfuscated. The
 // argument may be a plain filename or a full path; only the base component
 // is inspected. This is a direct port of Python's is_probably_obfuscated.
-func IsProbablyObfuscated(filename string) bool {
-	log := slog.Default().With("component", "deobfuscate")
+func IsProbablyObfuscated(log *slog.Logger, filename string) bool {
 	base := filepath.Base(filename)
 	filebasename := strings.TrimSuffix(base, filepath.Ext(base))
 
@@ -241,8 +240,7 @@ type Rename struct {
 //
 // Deobfuscation is skipped entirely when the download contains DVD/Bluray
 // disc structure directories (VIDEO_TS, AUDIO_TS, BDMV).
-func Deobfuscate(dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename, error) {
-	log := slog.Default().With("component", "deobfuscate")
+func Deobfuscate(log *slog.Logger, dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename, error) {
 
 	// 0. Skip deobfuscation for DVD/Bluray disc structures.
 	if containsIgnoredMovieFolder(dir) {
@@ -251,7 +249,7 @@ func Deobfuscate(dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename,
 	}
 
 	// 1. Attempt PAR2-based deobfuscation first.
-	parRenames, err := Par2Rename(dir, opts)
+	parRenames, err := Par2Rename(log, dir, opts)
 	if err != nil {
 		log.Warn("deobfuscate: par2 deobfuscation encountered an error", "dir", dir, "err", err)
 	}
@@ -314,7 +312,7 @@ func Deobfuscate(dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename,
 		return allRenames, nil
 	}
 
-	if !IsProbablyObfuscated(bigPath) {
+	if !IsProbablyObfuscated(log, bigPath) {
 		log.Debug("deobfuscate: biggest file not obfuscated — skipping", "path", bigPath)
 		return allRenames, nil
 	}
@@ -382,8 +380,7 @@ func containsIgnoredMovieFolder(dir string) bool {
 //
 // Only acts when there is a clearly biggest file (3× ratio) and at least
 // one .srt file whose name doesn't already share the video's basename.
-func Subtitles(dir string) ([]Rename, error) {
-	log := slog.Default().With("component", "deobfuscate")
+func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -492,7 +489,7 @@ func extractRARUsefulName(dir string, log *slog.Logger) string {
 		// RAR internal paths use '/' as separator. Take the basename.
 		base := filepath.Base(name)
 		stem := strings.TrimSuffix(base, filepath.Ext(base))
-		if stem != "" && !IsProbablyObfuscated(stem) {
+		if stem != "" && !IsProbablyObfuscated(log, stem) {
 			stemCounts[stem]++
 		}
 	}
