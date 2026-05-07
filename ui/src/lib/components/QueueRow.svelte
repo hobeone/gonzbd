@@ -100,7 +100,7 @@
 			{slot.status}
 		</Badge>
 	</td>
-	<td class="px-4 py-3 text-sm">{slot.category || '*'}</td>
+	<td class="px-4 py-3 text-sm">{slot.cat || '*'}</td>
 	<td class="px-4 py-3">
 		<div class="flex gap-1">
 			<!-- svelte-ignore a11y_click_events_have_key_events -->
