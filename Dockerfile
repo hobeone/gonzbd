@@ -2,7 +2,7 @@
 ARG ALPINE_VERSION=3.23
 
 # ---- Build UI ----
-FROM node:22-alpine${ALPINE_VERSION} AS ui-builder
+FROM node:26-alpine${ALPINE_VERSION} AS ui-builder
 WORKDIR /src/ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
