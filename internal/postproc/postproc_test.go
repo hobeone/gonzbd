@@ -132,7 +132,7 @@ func TestStagesRunInOrder(t *testing.T) {
 	waitUntil(t, func() bool {
 		doneMu.Lock()
 		defer doneMu.Unlock()
-		return len(done) == 4 // A, B, C + summary
+		return len(done) == 5 // download + A + B + C + summary
 	}, 2*time.Second, "job to complete")
 
 	orderMu.Lock()
@@ -268,14 +268,14 @@ func TestStageErrorContinuesPipeline(t *testing.T) {
 	p.Process(makeJob(t, "erring-job"))
 	wg.Wait()
 
-	if len(capturedLog) != 3 { // fail + next + summary
-		t.Fatalf("StageLog has %d entries, want 3", len(capturedLog))
+	if len(capturedLog) != 4 { // download + fail + next + summary
+		t.Fatalf("StageLog has %d entries, want 4", len(capturedLog))
 	}
-	if capturedLog[0].Err == nil {
-		t.Error("first stage log entry should have Err set")
+	if capturedLog[1].Err == nil {
+		t.Error("fail stage log entry should have Err set")
 	}
-	if capturedLog[1].Err != nil {
-		t.Errorf("second stage log entry should have nil Err, got %v", capturedLog[1].Err)
+	if capturedLog[2].Err != nil {
+		t.Errorf("next stage log entry should have nil Err, got %v", capturedLog[2].Err)
 	}
 	if nextStage.CallCount() != 1 {
 		t.Errorf("next stage called %d times, want 1", nextStage.CallCount())
@@ -371,8 +371,8 @@ func TestOnJobDoneFiredOnce(t *testing.T) {
 		if firings[id] != 1 {
 			t.Errorf("OnJobDone fired %d times for %s, want 1", firings[id], id)
 		}
-		if len(logs[id]) != 3 { // a + b + summary
-			t.Errorf("job %s StageLog has %d entries, want 3", id, len(logs[id]))
+		if len(logs[id]) != 4 { // download + a + b + summary
+			t.Errorf("job %s StageLog has %d entries, want 4", id, len(logs[id]))
 		}
 	}
 }
