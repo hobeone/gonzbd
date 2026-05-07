@@ -65,7 +65,7 @@ func TestNormalizeItem_EnclosureURL(t *testing.T) {
 		Enclosures: []*gofeed.Enclosure{
 			{URL: "http://download.com/file.nzb", Length: "5000"},
 		},
-		PublishedParsed: timePtr(time.Now()),
+		PublishedParsed: new(time.Now()),
 	}
 	item := normalizeItem(fi)
 	if item.URL != "http://download.com/file.nzb" {
@@ -85,7 +85,7 @@ func TestNormalizeItem_FallbackToLink(t *testing.T) {
 		Title:           "Test",
 		Link:            "http://example.com/page",
 		GUID:            "guid-456",
-		PublishedParsed: timePtr(time.Now()),
+		PublishedParsed: new(time.Now()),
 	}
 	item := normalizeItem(fi)
 	if item.URL != "http://example.com/page" {
@@ -98,7 +98,7 @@ func TestNormalizeItem_NoGUID(t *testing.T) {
 	fi := &gofeed.Item{
 		Title:           "Test",
 		Link:            "http://example.com/link",
-		PublishedParsed: timePtr(time.Now()),
+		PublishedParsed: new(time.Now()),
 	}
 	item := normalizeItem(fi)
 	if item.ID != "http://example.com/link" {
@@ -112,7 +112,7 @@ func TestNormalizeItem_InfoURL(t *testing.T) {
 		Title:           "Test",
 		Link:            "http://download.com/file.nzb",
 		GUID:            "http://info.example.com/details",
-		PublishedParsed: timePtr(time.Now()),
+		PublishedParsed: new(time.Now()),
 	}
 	item := normalizeItem(fi)
 	if item.InfoURL != "http://info.example.com/details" {
@@ -152,7 +152,7 @@ func TestNormalizeItem_Category(t *testing.T) {
 		Title:           "Test",
 		Link:            "http://example.com",
 		Categories:      []string{"TV", "HD"},
-		PublishedParsed: timePtr(time.Now()),
+		PublishedParsed: new(time.Now()),
 	}
 	item := normalizeItem(fi)
 	if item.Category != "TV" {
@@ -168,7 +168,7 @@ func TestNormalizeItem_EmptyEnclosure(t *testing.T) {
 		Enclosures: []*gofeed.Enclosure{
 			{URL: ""}, // empty URL should be skipped
 		},
-		PublishedParsed: timePtr(time.Now()),
+		PublishedParsed: new(time.Now()),
 	}
 	item := normalizeItem(fi)
 	if item.URL != "http://example.com" {
@@ -275,4 +275,5 @@ func TestStore_Prune(t *testing.T) {
 	}
 }
 
-func timePtr(t time.Time) *time.Time { return &t }
+//go:fix inline
+func timePtr(t time.Time) *time.Time { return new(t) }

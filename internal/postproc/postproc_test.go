@@ -132,7 +132,7 @@ func TestStagesRunInOrder(t *testing.T) {
 	waitUntil(t, func() bool {
 		doneMu.Lock()
 		defer doneMu.Unlock()
-		return len(done) == 3
+		return len(done) == 4 // A, B, C + summary
 	}, 2*time.Second, "job to complete")
 
 	orderMu.Lock()
@@ -268,8 +268,8 @@ func TestStageErrorContinuesPipeline(t *testing.T) {
 	p.Process(makeJob(t, "erring-job"))
 	wg.Wait()
 
-	if len(capturedLog) != 2 {
-		t.Fatalf("StageLog has %d entries, want 2", len(capturedLog))
+	if len(capturedLog) != 3 { // fail + next + summary
+		t.Fatalf("StageLog has %d entries, want 3", len(capturedLog))
 	}
 	if capturedLog[0].Err == nil {
 		t.Error("first stage log entry should have Err set")
@@ -371,8 +371,8 @@ func TestOnJobDoneFiredOnce(t *testing.T) {
 		if firings[id] != 1 {
 			t.Errorf("OnJobDone fired %d times for %s, want 1", firings[id], id)
 		}
-		if len(logs[id]) != 2 {
-			t.Errorf("job %s StageLog has %d entries, want 2", id, len(logs[id]))
+		if len(logs[id]) != 3 { // a + b + summary
+			t.Errorf("job %s StageLog has %d entries, want 3", id, len(logs[id]))
 		}
 	}
 }
