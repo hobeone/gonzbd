@@ -347,7 +347,9 @@ func (p *PostProcessor) processJob(job *Job) {
 		return
 	}
 
-	for _, stage := range p.stages {
+	var failedAt int = -1 // index of first failed stage, or -1
+
+	for i, stage := range p.stages {
 		if p.statusUpdater != nil {
 			var status constants.Status
 			switch stage.Name() {
@@ -379,19 +381,21 @@ func (p *PostProcessor) processJob(job *Job) {
 		}
 
 		if err != nil {
-			p.log.Warn("postproc: stage error (continuing)",
+			p.log.Warn("postproc: stage failed, aborting pipeline",
 				"stage", stage.Name(),
 				"job", job.Queue.ID,
 				"err", err,
 			)
-		} else {
-			p.log.Info("postproc: stage done",
-				"stage", stage.Name(),
-				"job", job.Queue.ID,
-				"elapsed", entry.Elapsed,
-			)
+			job.StageLog = append(job.StageLog, entry)
+			failedAt = i
+			break
 		}
 
+		p.log.Info("postproc: stage done",
+			"stage", stage.Name(),
+			"job", job.Queue.ID,
+			"elapsed", entry.Elapsed,
+		)
 		job.StageLog = append(job.StageLog, entry)
 
 		// If the worker context was cancelled mid-stage, stop running further
@@ -404,6 +408,18 @@ func (p *PostProcessor) processJob(job *Job) {
 			)
 			return
 		default:
+		}
+	}
+
+	// Record remaining stages as skipped if the pipeline was aborted.
+	if failedAt >= 0 {
+		failedName := p.stages[failedAt].Name()
+		for _, stage := range p.stages[failedAt+1:] {
+			job.StageLog = append(job.StageLog, StageLogEntry{
+				Stage:   stage.Name(),
+				Started: time.Now(),
+				Lines:   []string{fmt.Sprintf("Skipped: %s stage failed", failedName)},
+			})
 		}
 	}
 
