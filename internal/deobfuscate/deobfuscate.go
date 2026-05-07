@@ -278,20 +278,22 @@ func Deobfuscate(log *slog.Logger, dir, usefulName string, opts fsutil.SanitizeO
 		}
 		paths = append(paths, filepath.Join(dir, e.Name()))
 	}
+	log.Info("deobfuscate: found files for heuristic", "count", len(paths))
 
 	// 2b. Fix extensions by content sniffing. Files with non-popular
 	// extensions get their real type detected via magic bytes.
 	var allRenames []Rename
 	for i, p := range paths {
 		if !HasPopularExtension(p) {
-			r, fixErr := FixExtension(p)
+			r, fixErr := FixExtension(log, p)
 			if fixErr != nil {
 				log.Warn("deobfuscate: extension fix error", "path", p, "err", fixErr)
 				continue
 			}
 			if r.From != "" {
 				allRenames = append(allRenames, r)
-				log.Info("deobfuscate: fixed extension", "from", r.From, "to", r.To)
+				log.Info("deobfuscate: fixed extension",
+					"from", filepath.Base(r.From), "to", filepath.Base(r.To))
 				paths[i] = r.To // Update path for BiggestFile
 			}
 		}
@@ -302,20 +304,25 @@ func Deobfuscate(log *slog.Logger, dir, usefulName string, opts fsutil.SanitizeO
 		return nil, err
 	}
 	if !ok {
-		log.Debug("deobfuscate: no qualifying biggest file found", "dir", dir)
+		log.Info("deobfuscate: no qualifying biggest file found (no file 3× larger than next)", "dir", dir)
 		return allRenames, nil
 	}
+	log.Info("deobfuscate: biggest file candidate", "path", filepath.Base(bigPath))
 
 	ext := strings.ToLower(filepath.Ext(bigPath))
 	if excludedExts[ext] {
-		log.Debug("deobfuscate: biggest file has excluded extension — skipping", "path", bigPath, "ext", ext)
+		log.Info("deobfuscate: biggest file has excluded extension, skipping rename",
+			"file", filepath.Base(bigPath), "ext", ext)
 		return allRenames, nil
 	}
 
 	if !IsProbablyObfuscated(log, bigPath) {
-		log.Debug("deobfuscate: biggest file not obfuscated — skipping", "path", bigPath)
+		log.Info("deobfuscate: biggest file name is not obfuscated, skipping rename",
+			"file", filepath.Base(bigPath))
 		return allRenames, nil
 	}
+	log.Info("deobfuscate: biggest file is obfuscated, will rename",
+		"file", filepath.Base(bigPath), "useful_name", usefulName)
 
 	renames := allRenames
 

@@ -25,6 +25,15 @@ func TestHasPopularExtension(t *testing.T) {
 		{"case insensitive", "VIDEO.MKV", true},
 		{"jpg popular", "photo.jpg", true},
 		{"random gibberish ext", "file.asdfgh", false},
+		// Collision suffixes — popular ext + short numeric suffix.
+		{"rar.1 collision", "movie.part01.rar.1", true},
+		{"rar.01 collision", "movie.rar.01", true},
+		{"mkv.2 collision", "video.mkv.2", true},
+		{"7z.1 collision", "archive.7z.1", true},
+		{"flac.1 collision", "album.flac.1", true},
+		// NOT collision suffixes — numeric suffix too long or not popular base.
+		{"xyz.1 not popular base", "file.xyz.1", false},
+		{"rar.1234 too long", "file.rar.1234", false},
 	}
 
 	for _, tc := range cases {
@@ -40,6 +49,7 @@ func TestHasPopularExtension(t *testing.T) {
 
 func TestFixExtension(t *testing.T) {
 	t.Parallel()
+	log := slog.Default()
 
 	t.Run("jpg content with xyz extension", func(t *testing.T) {
 		t.Parallel()
@@ -51,7 +61,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(path)
+		rename, err := deobfuscate.FixExtension(log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -76,7 +86,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(path)
+		rename, err := deobfuscate.FixExtension(log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -97,7 +107,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(path)
+		rename, err := deobfuscate.FixExtension(log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -115,7 +125,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(path)
+		rename, err := deobfuscate.FixExtension(log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -132,7 +142,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(path)
+		rename, err := deobfuscate.FixExtension(log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -162,7 +172,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(path)
+		rename, err := deobfuscate.FixExtension(log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -171,6 +181,66 @@ func TestFixExtension(t *testing.T) {
 		}
 		if rename.To != filepath.Join(dir, "obfuscated.asdf.mkv") {
 			t.Errorf("expected .asdf.mkv, got %q", rename.To)
+		}
+	})
+
+	t.Run("collision suffix rar.1 is not renamed", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "LOVEBITES.part01.rar.1")
+		// RAR5 magic bytes
+		content := []byte{'R', 'a', 'r', '!', 0x1A, 0x07, 0x01, 0x00}
+		content = append(content, make([]byte, 256)...) // pad
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		rename, err := deobfuscate.FixExtension(log, path)
+		if err != nil {
+			t.Fatalf("FixExtension error: %v", err)
+		}
+		if rename.From != "" {
+			t.Errorf("expected no rename for collision-suffixed .rar.1 file, got %+v", rename)
+		}
+		// Verify the original file is untouched.
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("original file should still exist: %v", err)
+		}
+	})
+
+	t.Run("collision suffix mkv.2 is not renamed", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "video.mkv.2")
+		content := []byte("some video content")
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		rename, err := deobfuscate.FixExtension(log, path)
+		if err != nil {
+			t.Fatalf("FixExtension error: %v", err)
+		}
+		if rename.From != "" {
+			t.Errorf("expected no rename for collision-suffixed .mkv.2 file, got %+v", rename)
+		}
+	})
+
+	t.Run("nil logger accepted", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "test_nil.xyz")
+		content := []byte("random data")
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		rename, err := deobfuscate.FixExtension(nil, path)
+		if err != nil {
+			t.Fatalf("FixExtension error with nil logger: %v", err)
+		}
+		if rename.From != "" {
+			t.Errorf("expected no rename, got %+v", rename)
 		}
 	})
 }
