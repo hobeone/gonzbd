@@ -196,6 +196,13 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	}()
 	_ = logger // installed as slog.Default by Setup
 
+	slog.Info("gonzbd starting",
+		"version", Version,
+		"commit", Commit,
+		"built", Date,
+		"go", runtime.Version(),
+	)
+
 	// Single-instance lock prevents two daemons from corrupting the same
 	// admin dir. Released on every exit path via defer.
 	lock, err := app.AcquireLockfile(filepath.Join(adminDir, "gonzbd.lock"))
