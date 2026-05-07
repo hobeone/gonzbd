@@ -1,8 +1,11 @@
 package deobfuscate
 
 import (
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/h2non/filetype"
@@ -17,7 +20,8 @@ var popularExts = map[string]bool{
 	".3g2": true, ".3gp": true, ".7z": true, ".aac": true, ".avi": true,
 	".bmp": true, ".bz2": true, ".cab": true, ".css": true, ".csv": true,
 	".dat": true, ".db": true, ".deb": true, ".dll": true, ".dmg": true,
-	".doc": true, ".docx": true, ".epub": true, ".exe": true, ".flv": true,
+	".doc": true, ".docx": true, ".epub": true, ".exe": true, ".flac": true,
+	".flv": true,
 	".gif": true, ".gz": true, ".h264": true, ".htm": true, ".html": true,
 	".ico": true, ".iso": true, ".jar": true, ".jpg": true, ".jpeg": true,
 	".js": true, ".json": true, ".log": true, ".m4a": true, ".m4v": true,
@@ -34,24 +38,69 @@ var popularExts = map[string]bool{
 	".xml": true, ".xz": true, ".zip": true,
 }
 
-// HasPopularExtension returns true if the file's extension is in the popular set.
+// collisionSuffixRe matches a popular extension followed by a short numeric
+// suffix: ".rar.1", ".mkv.2", ".7z.01", etc. These are created by the OS or
+// assembler to avoid filename collisions (e.g. duplicate NZB segments) and
+// should NOT be treated as unknown extensions.
+var collisionSuffixRe = regexp.MustCompile(`(?i)(\.[a-z0-9]{2,5})\.(\d{1,3})$`)
+
+// HasPopularExtension returns true if the file's extension is in the popular
+// set, OR if the filename has a collision suffix (e.g. ".rar.1").
 func HasPopularExtension(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
-	return popularExts[ext]
+	if popularExts[ext] {
+		return true
+	}
+	// Check for collision suffix: "movie.rar.1" → real ext is ".rar".
+	return hasCollisionSuffix(filename)
+}
+
+// hasCollisionSuffix returns true if the filename ends with a popular
+// extension followed by a short numeric suffix (e.g. ".rar.1", ".mkv.02").
+// This pattern occurs when the filesystem or assembler appends a number to
+// avoid overwriting an existing file with the same name.
+func hasCollisionSuffix(filename string) bool {
+	m := collisionSuffixRe.FindStringSubmatch(filename)
+	if m == nil {
+		return false
+	}
+	realExt := strings.ToLower(m[1])
+	return popularExts[realExt]
 }
 
 // FixExtension inspects the file at path. If its current extension is not
-// popular, it reads the first 262 bytes and uses github.com/h2non/filetype
-// to detect the file type by magic bytes. This detects 100+ formats
-// including MKV, AVI, RAR, 7z, FLAC, ISO, and other types that the stdlib
-// net/http.DetectContentType misses.
+// popular (and not a collision-suffixed popular extension), it reads magic
+// bytes to detect the file type. If a better extension can be determined,
+// the file is renamed by appending the correct extension.
 //
-// If a better extension can be determined, the file is renamed by appending
-// the correct extension. Returns zero-value Rename and nil error if no fix
-// is needed.
-func FixExtension(path string) (Rename, error) {
-	if HasPopularExtension(path) {
+// The log parameter is used for diagnostic output explaining why each file
+// is or isn't being renamed. Pass nil for silent operation.
+//
+// Returns zero-value Rename and nil error if no fix is needed.
+func FixExtension(log *slog.Logger, path string) (Rename, error) {
+	base := filepath.Base(path)
+	ext := strings.ToLower(filepath.Ext(path))
+
+	if popularExts[ext] {
+		if log != nil {
+			log.Debug("deobfuscate: extension already popular, skipping",
+				"file", base, "ext", ext)
+		}
 		return Rename{}, nil
+	}
+
+	if hasCollisionSuffix(path) {
+		if log != nil {
+			m := collisionSuffixRe.FindStringSubmatch(path)
+			log.Info("deobfuscate: file has collision suffix, skipping extension fix",
+				"file", base, "real_ext", m[1], "suffix", m[2])
+		}
+		return Rename{}, nil
+	}
+
+	if log != nil {
+		log.Debug("deobfuscate: extension not popular, sniffing magic bytes",
+			"file", base, "ext", ext)
 	}
 
 	kind, err := filetype.MatchFile(path)
@@ -68,15 +117,26 @@ func FixExtension(path string) (Rename, error) {
 		// filetype may not recognize all RAR variants.
 		isRAR, _ := rarheader.IsRAR(path)
 		if isRAR {
-			currentExt := strings.ToLower(filepath.Ext(path))
-			if currentExt == ".rar" {
+			if ext == ".rar" {
+				if log != nil {
+					log.Debug("deobfuscate: RAR content with .rar extension, no fix needed",
+						"file", base)
+				}
 				return Rename{}, nil
 			}
 			newPath := path + ".rar"
+			if log != nil {
+				log.Info("deobfuscate: RAR content detected by magic bytes, appending .rar",
+					"file", base, "current_ext", ext)
+			}
 			if err := os.Rename(path, newPath); err != nil {
-				return Rename{}, err
+				return Rename{}, fmt.Errorf("rename %s → %s: %w", path, newPath, err)
 			}
 			return Rename{From: path, To: newPath}, nil
+		}
+		if log != nil {
+			log.Debug("deobfuscate: unknown content type, no extension fix",
+				"file", base)
 		}
 		return Rename{}, nil
 	}
@@ -84,14 +144,21 @@ func FixExtension(path string) (Rename, error) {
 	detectedExt := "." + kind.Extension
 
 	// Don't rename if the current extension already matches the detected type.
-	currentExt := strings.ToLower(filepath.Ext(path))
-	if currentExt == detectedExt {
+	if ext == detectedExt {
+		if log != nil {
+			log.Debug("deobfuscate: extension matches detected type, no fix needed",
+				"file", base, "ext", ext)
+		}
 		return Rename{}, nil
 	}
 
 	newPath := path + detectedExt
+	if log != nil {
+		log.Info("deobfuscate: content type detected, appending correct extension",
+			"file", base, "current_ext", ext, "detected_ext", detectedExt)
+	}
 	if err := os.Rename(path, newPath); err != nil {
-		return Rename{}, err
+		return Rename{}, fmt.Errorf("rename %s → %s: %w", path, newPath, err)
 	}
 	return Rename{From: path, To: newPath}, nil
 }
