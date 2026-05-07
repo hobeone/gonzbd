@@ -2,6 +2,7 @@ package postproc
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -392,6 +393,44 @@ func (p *PostProcessor) processJob(job *Job) {
 		"stages", len(job.StageLog),
 		"fail_msg", job.FailMsg,
 	)
+
+	// Build a synthetic "summary" stage for the history/UI. This gives the
+	// expanded history row a final card showing the pipeline at a glance.
+	var summaryLines []string
+	var pipelineStart, pipelineEnd time.Time
+	for _, sl := range job.StageLog {
+		// Track overall pipeline start/end from individual stage timings.
+		if pipelineStart.IsZero() || sl.Started.Before(pipelineStart) {
+			pipelineStart = sl.Started
+		}
+		stageEnd := sl.Started.Add(sl.Elapsed)
+		if stageEnd.After(pipelineEnd) {
+			pipelineEnd = stageEnd
+		}
+		symbol := "✓"
+		detail := fmt.Sprintf("%.1fs", sl.Elapsed.Seconds())
+		if sl.Err != nil {
+			symbol = "✗"
+			detail += " — " + sl.Err.Error()
+		}
+		summaryLines = append(summaryLines, fmt.Sprintf("%s %s (%s)", symbol, sl.Stage, detail))
+	}
+	totalDuration := pipelineEnd.Sub(pipelineStart)
+	finalStatus := "Completed"
+	if job.FailMsg != "" || job.ParError || job.UnpackError {
+		finalStatus = "Failed"
+	}
+	header := fmt.Sprintf("Pipeline %s in %.1fs", finalStatus, totalDuration.Seconds())
+	if job.FinalDir != "" {
+		header += " → " + job.FinalDir
+	}
+	summaryLines = append([]string{header}, summaryLines...)
+	job.StageLog = append(job.StageLog, StageLogEntry{
+		Stage:   "summary",
+		Started: pipelineEnd,
+		Elapsed: totalDuration,
+		Lines:   summaryLines,
+	})
 }
 
 func (p *PostProcessor) setBusy(v bool) {
