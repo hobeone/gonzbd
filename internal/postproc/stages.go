@@ -15,8 +15,8 @@ import (
 
 // Stage is the interface every post-processing stage must implement.
 // Stages are registered once at construction time and run in that order
-// for every job. A stage that returns an error does NOT abort the pipeline;
-// the error is captured in StageLog and subsequent stages still run.
+// for every job. A stage that returns an error aborts the pipeline;
+// subsequent stages are recorded as "Skipped" in the StageLog.
 type Stage interface {
 	// Name returns a short, stable identifier used in log output and the
 	// StageLog.  It should be lowercase with no spaces (e.g. "repair",
@@ -25,8 +25,8 @@ type Stage interface {
 
 	// Run executes the stage.  The supplied ctx is cancelled when the
 	// PostProcessor is stopped; stages MUST respect it and return promptly.
-	// Returning a non-nil error records the failure but does not halt the
-	// pipeline.
+	// Returning a non-nil error aborts the pipeline; subsequent stages are
+	// skipped and recorded as such in the StageLog.
 	Run(ctx context.Context, job *Job) error
 }
 

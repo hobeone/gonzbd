@@ -247,9 +247,9 @@ func TestStopDuringInFlightStage(t *testing.T) {
 	}
 }
 
-// Test 6: Stage returning an error is recorded in StageLog but does not abort
-// the pipeline; subsequent stages still run.
-func TestStageErrorContinuesPipeline(t *testing.T) {
+// Test 6: Stage returning an error aborts the pipeline; subsequent stages are
+// recorded as "Skipped" in StageLog and never run.
+func TestStageErrorAbortsPipeline(t *testing.T) {
 	errStage := &recordStage{name: "fail", returnErr: errors.New("boom")}
 	nextStage := newRecordStage("next")
 
@@ -268,17 +268,22 @@ func TestStageErrorContinuesPipeline(t *testing.T) {
 	p.Process(makeJob(t, "erring-job"))
 	wg.Wait()
 
-	if len(capturedLog) != 4 { // download + fail + next + summary
+	// download + fail + next(skipped) + summary = 4
+	if len(capturedLog) != 4 {
 		t.Fatalf("StageLog has %d entries, want 4", len(capturedLog))
 	}
 	if capturedLog[1].Err == nil {
 		t.Error("fail stage log entry should have Err set")
 	}
-	if capturedLog[2].Err != nil {
-		t.Errorf("next stage log entry should have nil Err, got %v", capturedLog[2].Err)
+	// The "next" stage should be recorded as skipped, not actually run.
+	if capturedLog[2].Stage != "next" {
+		t.Errorf("expected skipped stage name 'next', got %q", capturedLog[2].Stage)
 	}
-	if nextStage.CallCount() != 1 {
-		t.Errorf("next stage called %d times, want 1", nextStage.CallCount())
+	if len(capturedLog[2].Lines) == 0 || capturedLog[2].Lines[0] != "Skipped: fail stage failed" {
+		t.Errorf("expected skip message, got lines: %v", capturedLog[2].Lines)
+	}
+	if nextStage.CallCount() != 0 {
+		t.Errorf("next stage called %d times, want 0 (should be skipped)", nextStage.CallCount())
 	}
 }
 
