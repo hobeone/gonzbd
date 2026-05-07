@@ -1,6 +1,7 @@
 package sorting_test
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -240,6 +241,7 @@ func TestApply(t *testing.T) {
 
 		result, err := sorting.Apply(
 			t.Context(),
+			slog.Default(),
 			srcDir, "tv", "The.Good.Place.S02E04.1080p",
 			5100,
 			rules,
@@ -292,6 +294,7 @@ func TestApply(t *testing.T) {
 		// TV job should not match movie rule.
 		result, err := sorting.Apply(
 			t.Context(),
+			slog.Default(),
 			srcDir, "video", "Breaking.Bad.S01E01",
 			1000,
 			rules,
@@ -326,6 +329,7 @@ func TestApply(t *testing.T) {
 
 		result, err := sorting.Apply(
 			t.Context(),
+			slog.Default(),
 			srcDir, "", "Blade.Runner.2049",
 			1000, rules, destRoot, fsutil.SanitizeOptions{},
 		)
@@ -355,6 +359,7 @@ func TestApply(t *testing.T) {
 
 		result, err := sorting.Apply(
 			t.Context(),
+			slog.Default(),
 			srcDir, "", "Blade.Runner.2049",
 			1000, rules, destRoot, fsutil.SanitizeOptions{},
 		)
@@ -384,6 +389,7 @@ func TestApply(t *testing.T) {
 
 		result, err := sorting.Apply(
 			t.Context(),
+			slog.Default(),
 			srcDir, "tv", "Blade.Runner.2049",
 			1000, rules, destRoot, fsutil.SanitizeOptions{},
 		)
@@ -398,6 +404,7 @@ func TestApply(t *testing.T) {
 		writeFile(t, srcDir, "movie.mkv", 1000) // restore since it wasn't moved
 		result2, err := sorting.Apply(
 			t.Context(),
+			slog.Default(),
 			srcDir, "movies", "Blade.Runner.2049",
 			1000, rules, destRoot, fsutil.SanitizeOptions{},
 		)
