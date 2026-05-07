@@ -27,8 +27,39 @@ RUN VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || ec
       -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.Date=${BUILD_DATE}" \
       -o /gonzbd ./cmd/gonzbd
 
+# Download and build par2cmdline-turbo
+WORKDIR /
+RUN \
+  echo "**** install packages ****" && \
+  apk add -U --update --no-cache --virtual=build-dependencies \
+    autoconf \
+    automake \
+    build-base \
+    libffi-dev \
+    openssl-dev \
+    python3-dev \
+    curl
+
+RUN echo "**** install par2cmdline-turbo from source ****"
+RUN PAR2_VERSION=$(curl -s https://api.github.com/repos/animetosho/par2cmdline-turbo/releases/latest \
+    | awk '/tag_name/{print $4;exit}' FS='[""]'); \
+    mkdir /tmp/par2cmdline && \
+    curl -o /tmp/par2cmdline.tar.gz -L \
+    "https://github.com/animetosho/par2cmdline-turbo/archive/${PAR2_VERSION}.tar.gz"
+RUN tar xf /tmp/par2cmdline.tar.gz -C /tmp/par2cmdline --strip-components=1
+WORKDIR /tmp/par2cmdline
+RUN ./automake.sh
+RUN ./configure
+RUN make
+RUN make check
+RUN make install
+
 # ---- Runtime stage ----
-FROM alpine:3.22
+
+FROM ghcr.io/linuxserver/unrar:latest AS unrar
+
+FROM alpine:latest
+
 
 # OCI image metadata — queryable via `docker inspect`.
 # When building locally without --build-arg, these default to empty.
@@ -45,14 +76,12 @@ LABEL org.opencontainers.image.source="https://github.com/hobeone/gonzbd"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # Install post-processing dependencies:
-#   par2cmdline     - PAR2 repair
 #   7zip            - archive extraction (7z, zip, RAR, and more)
 #   ca-certificates - TLS connections to news servers
 #   tzdata          - timezone support for schedules
 #   su-exec         - lightweight privilege drop (like gosu)
 #   shadow          - usermod/groupmod for PUID/PGID support
-RUN apk add --no-cache \
-    par2cmdline \
+RUN apk add -U --update --no-cache \
     7zip \
     ca-certificates \
     tzdata \
@@ -63,7 +92,11 @@ RUN apk add --no-cache \
 RUN mkdir -p /data/downloads /data/complete /data/admin /config
 
 COPY --from=builder /gonzbd /usr/local/bin/gonzbd
+COPY --from=builder /usr/local/bin/par2 /usr/local/bin/par2
 COPY entrypoint.sh /entrypoint.sh
+
+# add unrar
+COPY --from=unrar /usr/bin/unrar-alpine /usr/bin/unrar
 
 # Default config location and port; overridable via environment.
 ENV GONZBD_CONFIG=/config/gonzbd.yaml
