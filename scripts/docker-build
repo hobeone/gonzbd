@@ -1,0 +1,27 @@
+#!/bin/sh
+# docker-build — stamps version info into a local Docker build.
+# Usage: ./scripts/docker-build [extra docker build args...]
+#
+# Examples:
+#   ./scripts/docker-build
+#   ./scripts/docker-build --no-cache
+#   ./scripts/docker-build --platform linux/arm64
+
+set -e
+
+VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+echo "Building gonzbd Docker image"
+echo "  VERSION:    ${VERSION}"
+echo "  COMMIT:     ${COMMIT}"
+echo "  BUILD_DATE: ${BUILD_DATE}"
+
+exec docker build \
+  --build-arg VERSION="${VERSION}" \
+  --build-arg COMMIT="${COMMIT}" \
+  --build-arg BUILD_DATE="${BUILD_DATE}" \
+  -t gonzbd:latest \
+  -t "gonzbd:${VERSION}" \
+  "$@" .
