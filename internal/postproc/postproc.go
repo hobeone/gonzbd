@@ -315,6 +315,25 @@ func (p *PostProcessor) popWithPause() (*Job, bool) {
 func (p *PostProcessor) processJob(job *Job) {
 	p.log.Info("postproc: processing job", "job", job.Queue.ID, "name", job.Queue.Name)
 
+	// Build a synthetic "download" stage that captures the files present
+	// in the download directory before any stages run. This gives the
+	// history UI a clear view of the starting state for debugging.
+	var dlElapsed time.Duration
+	dlStarted := job.Queue.DownloadStarted
+	if dlStarted.IsZero() {
+		dlStarted = time.Now()
+	}
+	if !job.Queue.DownloadFinished.IsZero() {
+		dlElapsed = job.Queue.DownloadFinished.Sub(dlStarted)
+	}
+	dlLines := buildDownloadFileList(job)
+	job.StageLog = append(job.StageLog, StageLogEntry{
+		Stage:   "download",
+		Started: dlStarted,
+		Elapsed: dlElapsed,
+		Lines:   dlLines,
+	})
+
 	if job.FailMsg != "" {
 		p.log.Warn("postproc: skipping all stages — job already failed",
 			"job", job.Queue.ID,
@@ -425,6 +444,14 @@ func (p *PostProcessor) processJob(job *Job) {
 		header += " → " + job.FinalDir
 	}
 	summaryLines = append([]string{header}, summaryLines...)
+
+	// Append the final file listing so the user can see what ended up
+	// in the output directory.
+	if finalFiles := buildFinalFileList(job); len(finalFiles) > 0 {
+		summaryLines = append(summaryLines, "") // blank separator
+		summaryLines = append(summaryLines, finalFiles...)
+	}
+
 	job.StageLog = append(job.StageLog, StageLogEntry{
 		Stage:   "summary",
 		Started: pipelineEnd,
