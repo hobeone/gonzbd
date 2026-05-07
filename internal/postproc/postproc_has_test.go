@@ -225,8 +225,8 @@ func TestHistory_DeepCopy(t *testing.T) {
 	// StageLog IS deep-copied — mutating it should not affect internal state.
 	h[0].StageLog = append(h[0].StageLog, StageLogEntry{Stage: "injected"})
 	h2 := p.History()
-	if len(h2[0].StageLog) != 1 {
-		t.Errorf("StageLog mutation leaked: len = %d, want 1", len(h2[0].StageLog))
+	if len(h2[0].StageLog) != 2 { // s + summary
+		t.Errorf("StageLog mutation leaked: len = %d, want 2", len(h2[0].StageLog))
 	}
 }
 

@@ -269,41 +269,54 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	stages := app.customStages
 	if stages == nil {
 		var stageList []postproc.Stage
+		ppLog := log.With("component", "postproc")
 
 		// Repair stage: configurable par2 binary, turbo mode, and cleanup.
-		stageList = append(stageList, postproc.NewRepairStageWith(
+		repairStage := postproc.NewRepairStageWith(
 			par2.RunOptions{Command: cfg.Par2Command, Turbo: cfg.Par2Turbo},
 			cfg.EnableParCleanup,
-		))
+		)
+		repairStage.Log = ppLog
+		stageList = append(stageList, repairStage)
 
 		// Unpack stage: conditionally included based on enable flags.
 		if cfg.EnableUnrar || cfg.Enable7zip {
-			stageList = append(stageList, postproc.NewUnpackStageWith(unpack.Options{
+			unpackStage := postproc.NewUnpackStageWith(unpack.Options{
 				UnrarCommand:     cfg.UnrarCommand,
 				SevenZipCommand:  cfg.SevenzCommand,
 				OverwriteFiles:   cfg.OverwriteFiles,
 				IgnoreUnrarDates: cfg.IgnoreUnrarDates,
 				OneFolder:        cfg.FlatUnpack,
 				Prefer7zip:       cfg.Prefer7zip,
-			}, cfg.EnableRarCleanup))
+			}, cfg.EnableRarCleanup)
+			unpackStage.Log = ppLog
+			stageList = append(stageList, unpackStage)
 		}
 
 		if cfg.DeobfuscateFilenames {
-			stageList = append(stageList, postproc.NewDeobfuscateStage())
+			deobStage := postproc.NewDeobfuscateStage()
+			deobStage.Log = ppLog
+			stageList = append(stageList, deobStage)
 		}
 		if len(cfg.Sorters) > 0 {
 			rules := sorterRulesFromConfig(cfg.Sorters)
 			if len(rules) > 0 {
-				stageList = append(stageList, postproc.NewSortStage(rules, cfg.CompleteDir))
+				sortStage := postproc.NewSortStage(rules, cfg.CompleteDir)
+				sortStage.Log = ppLog
+				stageList = append(stageList, sortStage)
 			}
 		}
 		if cfg.ScriptDir != "" {
-			stageList = append(stageList, postproc.NewScriptStage(
+			scriptStage := postproc.NewScriptStage(
 				cfg.ScriptDir, cfg.CompleteDir,
 				cfg.Version, cfg.APIKey, cfg.ListenAddr,
-			))
+			)
+			scriptStage.Log = ppLog
+			stageList = append(stageList, scriptStage)
 		}
-		stageList = append(stageList, postproc.NewFinalizeStage())
+		finalizeStage := postproc.NewFinalizeStage()
+		finalizeStage.Log = ppLog
+		stageList = append(stageList, finalizeStage)
 		stages = stageList
 	}
 	pp := postproc.New(postproc.Options{
@@ -843,6 +856,44 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// needs it, and keeping it around leaks memory across many downloads.
 	app.pipeline.forgetJob(job.ID)
 
+	downloadDir := filepath.Join(app.cfg.DownloadDir, job.Name)
+
+	// Log the handoff from download → postproc. This is the "entering
+	// postproc" bookend; processJob logs the "exiting" bookend.
+	var dlDuration time.Duration
+	if !job.DownloadStarted.IsZero() {
+		dlDuration = job.DownloadFinished.Sub(job.DownloadStarted)
+	}
+	app.log.Info("postproc: job entering pipeline",
+		"job", job.ID,
+		"name", job.Name,
+		"category", job.Category,
+		"download_dir", downloadDir,
+		"download_duration", dlDuration.Round(time.Second),
+		"total_bytes", job.TotalBytes,
+		"failed_bytes", job.FailedBytes,
+		"fail_msg", failMsg,
+	)
+
+	// Log all files in the download directory so the history record
+	// captures the exact starting state before any postproc stages.
+	entries, err := os.ReadDir(downloadDir)
+	if err == nil {
+		for _, e := range entries {
+			info, _ := e.Info()
+			var sz int64
+			if info != nil {
+				sz = info.Size()
+			}
+			app.log.Info("postproc: download file",
+				"job", job.ID,
+				"file", e.Name(),
+				"size", sz,
+				"dir", e.IsDir(),
+			)
+		}
+	}
+
 	catDir := ""
 	for _, cat := range app.cfg.Categories {
 		if cat.Name == job.Category {
@@ -852,7 +903,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	}
 	app.postProcessor.Process(&postproc.Job{
 		Queue:       job,
-		DownloadDir: filepath.Join(app.cfg.DownloadDir, job.Name),
+		DownloadDir: downloadDir,
 		FinalDir:    filepath.Join(app.cfg.CompleteDir, catDir, job.Name),
 		Sanitize:    app.cfg.Sanitize,
 		FailMsg:     failMsg,
