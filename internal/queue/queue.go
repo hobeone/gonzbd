@@ -44,6 +44,8 @@ type Queue struct {
 	// successful write. The periodic checkpoint ticker no-ops when
 	// dirty is false, avoiding unnecessary I/O on idle queues.
 	dirty atomic.Bool
+
+	log *slog.Logger
 }
 
 // IsDirty reports whether the queue has unsaved mutations. It is safe
@@ -56,6 +58,7 @@ func New() *Queue {
 	return &Queue{
 		byID:     make(map[string]*Job),
 		notifyCh: make(chan struct{}, 1),
+		log:      slog.Default().With("component", "queue"),
 	}
 }
 
@@ -604,7 +607,7 @@ func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
 		art.Failed = true
 		job.FailedBytes += int64(art.Bytes)
 		job.RemainingBytes -= int64(art.Bytes)
-		slog.Warn("article marked FAILED", "msgid", messageID, "job", jobID, "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
+		q.log.Warn("article marked FAILED", "msgid", messageID, "job", jobID, "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
 		q.dirty.Store(true)
 		return true, nil
 	}
@@ -636,7 +639,7 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 	for _, id := range messageIDs {
 		art := job.articleByID(id)
 		if art == nil {
-			slog.Warn("MarkArticlesDone: article not found", "job", jobID, "msgid", id)
+			q.log.Warn("MarkArticlesDone: article not found", "job", jobID, "msgid", id)
 			continue
 		}
 		if art.Done {
@@ -676,7 +679,7 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 	for _, id := range messageIDs {
 		art := job.articleByID(id)
 		if art == nil {
-			slog.Warn("MarkArticlesFailed: article not found", "job", jobID, "msgid", id)
+			q.log.Warn("MarkArticlesFailed: article not found", "job", jobID, "msgid", id)
 			continue
 		}
 		if art.Done {
@@ -693,7 +696,7 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 		firstTime = append(firstTime, art.ID)
 	}
 	if len(firstTime) > 0 {
-		slog.Warn("articles marked FAILED", "job", jobID, "count", len(firstTime), "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
+		q.log.Warn("articles marked FAILED", "job", jobID, "count", len(firstTime), "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
 	}
 	q.dirty.Store(true)
 	return firstTime, nil
