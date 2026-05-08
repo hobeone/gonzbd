@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/svelte';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, cleanup } from '@testing-library/svelte';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import AddNzbDialog from './AddNzbDialog.svelte';
 
 vi.mock('$lib/api', () => ({
@@ -10,7 +10,17 @@ vi.mock('$lib/api', () => ({
 
 describe('AddNzbDialog', () => {
 	beforeEach(() => {
+		vi.useFakeTimers();
 		vi.clearAllMocks();
+	});
+
+	afterEach(() => {
+		// Flush the 24ms body-scroll-lock cleanup timer that bits-ui
+		// Dialog schedules on destroy. Without this, the timer fires
+		// after JSDOM teardown → "document is not defined".
+		cleanup();
+		vi.runAllTimers();
+		vi.useRealTimers();
 	});
 
 	it('renders dialog title when open', () => {
