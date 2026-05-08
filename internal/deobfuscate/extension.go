@@ -78,6 +78,10 @@ func hasCollisionSuffix(filename string) bool {
 //
 // Returns zero-value Rename and nil error if no fix is needed.
 func FixExtension(log *slog.Logger, path string) (Rename, error) {
+	if log == nil {
+		log = slog.Default()
+	}
+	log = log.With("component", "deobfuscate")
 	base := filepath.Base(path)
 	ext := strings.ToLower(filepath.Ext(path))
 

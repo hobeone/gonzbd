@@ -154,7 +154,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		if err := os.MkdirAll(d.path, 0o750); err != nil {
 			return fmt.Errorf("create %s dir %s: %w", d.name, absPath, err)
 		}
-		slog.Info("directory ready", "role", d.name, "path", absPath)
+		slog.Info("directory ready", "role", d.name, "path", absPath) // pre-logger setup; slog.Default not yet configured
 	}
 
 	// Set up structured logging. The -v CLI flag overrides the config level.
@@ -195,8 +195,9 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		}
 	}()
 	_ = logger // installed as slog.Default by Setup
+	log := slog.Default().With("component", "main")
 
-	slog.Info("gonzbd starting",
+	log.Info("gonzbd starting",
 		"version", Version,
 		"commit", Commit,
 		"built", Date,
@@ -214,7 +215,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	}
 	defer func() {
 		if err := lock.Release(); err != nil {
-			slog.Warn("release lockfile", "err", err)
+			log.Warn("release lockfile", "err", err)
 		}
 	}()
 
@@ -224,7 +225,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		}
 		defer func() {
 			if err := os.Remove(pidPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				slog.Warn("remove pid file", "err", err)
+				log.Warn("remove pid file", "err", err)
 			}
 		}()
 	}
@@ -297,7 +298,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	// the normal shutdown path also calls it explicitly for ordering.
 	defer func() {
 		if err := application.Shutdown(); err != nil {
-			slog.Warn("application shutdown (deferred)", "err", err)
+			log.Warn("application shutdown (deferred)", "err", err)
 		}
 	}()
 
@@ -324,17 +325,17 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	grabber := urlgrabber.New(urlgrabber.Config{Logger: slog.Default().With("component", "urlgrabber")}, ingest)
 
 	// Directory scanner. Enabled only when DirscanDir is set.
-	if err := startDirScanner(ctx, cfg, adminDir, ingest); err != nil {
+	if err := startDirScanner(ctx, cfg, adminDir, ingest, log); err != nil {
 		return err
 	}
 
 	// Scheduler. Parsed schedules drive periodic pause/resume/etc.
-	if err := startScheduler(ctx, cfg, application.Queue(), application, cancel); err != nil {
+	if err := startScheduler(ctx, cfg, application.Queue(), application, cancel, log); err != nil {
 		return err
 	}
 
 	// RSS scanner. Each accepted item is handed to the URL grabber.
-	if err := startRSSScanner(ctx, cfg, adminDir, grabber); err != nil {
+	if err := startRSSScanner(ctx, cfg, adminDir, grabber, log); err != nil {
 		return err
 	}
 
@@ -356,7 +357,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 
 	// Check for missing dependencies and surface them via logs and UI warnings.
 	for _, warning := range app.CheckDependencies() {
-		slog.Warn(warning)
+		log.Warn(warning)
 		apiSrv.AddWarning(warning)
 	}
 
@@ -364,7 +365,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	// download until a server is added via the settings UI.
 	if len(enabledServers(cfg.Servers)) == 0 {
 		const msg = "No news servers configured — add one in Config → Servers to start downloading"
-		slog.Warn(msg)
+		log.Warn(msg)
 		apiSrv.AddWarning(msg)
 	}
 
@@ -429,7 +430,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	// without blocking each other if both fail simultaneously.
 	errCh := make(chan error, 2)
 	go func() {
-		slog.Info("http listener starting", "addr", listen, "api_key_prefix", keyPrefix(cfg.General.APIKey))
+		log.Info("http listener starting", "addr", listen, "api_key_prefix", keyPrefix(cfg.General.APIKey))
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -444,12 +445,12 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 
 		// Auto-generate self-signed certificate if the files don't exist.
 		if !fileExists(certFile) || !fileExists(keyFile) {
-			slog.Info("https: cert/key not found, generating self-signed certificate",
+			log.Info("https: cert/key not found, generating self-signed certificate",
 				"cert", certFile, "key", keyFile)
 			if err := app.WriteSelfSigned(certFile, keyFile); err != nil {
 				return fmt.Errorf("generate self-signed cert: %w", err)
 			}
-			slog.Info("https: self-signed certificate written",
+			log.Info("https: self-signed certificate written",
 				"cert", certFile, "key", keyFile)
 		}
 
@@ -459,7 +460,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
-			slog.Info("https listener starting", "addr", httpsListen)
+			log.Info("https listener starting", "addr", httpsListen)
 			if err := httpsSrv.ListenAndServeTLS(certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- err
 			}
@@ -468,9 +469,9 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 
 	select {
 	case <-ctx.Done():
-		slog.Info("shutdown signal received")
+		log.Info("shutdown signal received")
 	case err := <-errCh:
-		slog.Error("listener failed", "err", err)
+		log.Error("listener failed", "err", err)
 	}
 
 	// Best-effort graceful shutdown. 5s is enough for in-flight API calls
@@ -478,18 +479,18 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		slog.Warn("http shutdown", "err", err)
+		log.Warn("http shutdown", "err", err)
 	}
 	if httpsSrv != nil {
 		if err := httpsSrv.Shutdown(shutdownCtx); err != nil {
-			slog.Warn("https shutdown", "err", err)
+			log.Warn("https shutdown", "err", err)
 		}
 	}
 	if err := application.Shutdown(); err != nil {
-		slog.Warn("application shutdown", "err", err)
+		log.Warn("application shutdown", "err", err)
 	}
 	if err := bpsmeter.SaveState(meterStatePath, bpsmeter.Capture(meter)); err != nil {
-		slog.Warn("save bpsmeter state", "err", err)
+		log.Warn("save bpsmeter state", "err", err)
 	}
 	return nil
 }
@@ -520,7 +521,7 @@ func fileExists(path string) bool {
 
 // startDirScanner wires the watched-directory scanner when cfg.General.DirscanDir
 // is set. It's a goroutine that lives for the duration of ctx.
-func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h *ingestHandler) error {
+func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h *ingestHandler, log *slog.Logger) error {
 	if cfg.General.DirscanDir == "" {
 		return nil
 	}
@@ -545,17 +546,17 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 	sc := dirscanner.New(cfg.General.DirscanDir, store, h, catFn, slog.Default().With("component", "dirscanner"))
 	go func() {
 		if err := sc.Run(ctx, interval); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("dirscanner", "err", err)
+			log.Error("dirscanner", "err", err)
 		}
 	}()
-	slog.Info("dirscanner started", "dir", cfg.General.DirscanDir, "interval", interval)
+	log.Info("dirscanner started", "dir", cfg.General.DirscanDir, "interval", interval)
 	return nil
 }
 
 // startScheduler parses cfg.Schedules, registers the known actions, and
 // launches the scheduler loop. cancel is used by the "shutdown" action
 // to trigger the same shutdown path as SIGINT.
-func startScheduler(ctx context.Context, cfg *config.Config, q *queue.Queue, application *app.Application, cancel context.CancelFunc) error {
+func startScheduler(ctx context.Context, cfg *config.Config, q *queue.Queue, application *app.Application, cancel context.CancelFunc, log *slog.Logger) error {
 	specs, err := schedulesFromConfig(cfg.Schedules)
 	if err != nil {
 		return fmt.Errorf("parse schedules: %w", err)
@@ -566,31 +567,31 @@ func startScheduler(ctx context.Context, cfg *config.Config, q *queue.Queue, app
 	reg.Register("speedlimit", func(_ context.Context, arg string) error {
 		bps, err := strconv.ParseInt(arg, 10, 64)
 		if err != nil {
-			slog.Warn("scheduler: invalid speedlimit arg", "arg", arg, "err", err)
+			log.Warn("scheduler: invalid speedlimit arg", "arg", arg, "err", err)
 			return nil // don't fail the scheduler for a bad arg
 		}
 		application.SetSpeedLimit(bps * 1024) // arg is KB/s
-		slog.Info("scheduler: speedlimit set", "kbps", bps)
+		log.Info("scheduler: speedlimit set", "kbps", bps)
 		return nil
 	})
 	reg.Register("shutdown", func(_ context.Context, _ string) error {
-		slog.Info("scheduler: shutdown action fired")
+		log.Info("scheduler: shutdown action fired")
 		cancel()
 		return nil
 	})
 	sch := scheduler.New(specs, reg, slog.Default().With("component", "scheduler"))
 	go func() {
 		if err := sch.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("scheduler", "err", err)
+			log.Error("scheduler", "err", err)
 		}
 	}()
-	slog.Info("scheduler started", "schedules", len(specs))
+	log.Info("scheduler started", "schedules", len(specs))
 	return nil
 }
 
 // startRSSScanner builds feeds from config, opens the dedup store, and
 // runs a periodic scanner that hands each accepted item to the grabber.
-func startRSSScanner(ctx context.Context, cfg *config.Config, adminDir string, g *urlgrabber.Grabber) error {
+func startRSSScanner(ctx context.Context, cfg *config.Config, adminDir string, g *urlgrabber.Grabber, log *slog.Logger) error {
 	feeds, err := feedsFromConfig(cfg.RSS)
 	if err != nil {
 		return fmt.Errorf("parse rss feeds: %w", err)
@@ -606,10 +607,10 @@ func startRSSScanner(ctx context.Context, cfg *config.Config, adminDir string, g
 	sc := rss.NewScanner(feeds, store, handler, nil, slog.Default().With("component", "rss"))
 	go func() {
 		if err := sc.Run(ctx, 15*time.Minute); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Error("rss scanner", "err", err)
+			log.Error("rss scanner", "err", err)
 		}
 	}()
-	slog.Info("rss scanner started", "feeds", len(feeds))
+	log.Info("rss scanner started", "feeds", len(feeds))
 	return nil
 }
 
@@ -697,6 +698,7 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 		return fmt.Errorf("setup logging: %w", err)
 	}
 	_ = logger // installed as slog.Default by Setup
+	log := slog.Default().With("component", "main")
 
 	dlDir, adminDir, err := resolveDirs(cfg, downloadDirOverride)
 	if err != nil {
@@ -713,7 +715,7 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 		if err := os.MkdirAll(d.path, 0o750); err != nil {
 			return fmt.Errorf("create %s dir %s: %w", d.name, absPath, err)
 		}
-		slog.Info("directory ready", "role", d.name, "path", absPath)
+		log.Info("directory ready", "role", d.name, "path", absPath)
 	}
 
 	// Open history repo (needed for summary at the end)
@@ -748,7 +750,7 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 	}
 	defer func() {
 		if err := application.Shutdown(); err != nil {
-			slog.Warn("shutdown", "err", err)
+			log.Warn("shutdown", "err", err)
 		}
 	}()
 
@@ -766,11 +768,11 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 	}
 
 	start := time.Now()
-	slog.Info("download started",
+	log.Info("download started",
 		"job", job.Name, "files", totalFiles, "bytes", job.TotalBytes)
 
 	// Wait for the job to reach History (indicates post-processing is complete).
-	slog.Info("waiting for job to complete", "job", job.Name, "id", job.ID)
+	log.Info("waiting for job to complete", "job", job.Name, "id", job.ID)
 
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
@@ -787,7 +789,7 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 			// Secondary check: has it already reached history?
 			// This covers the case where PostProcComplete fired before we started selecting.
 			if h, err := application.GetHistory(ctx, job.ID); err == nil {
-				slog.Info("job found in history", "job", job.Name, "status", h.Status)
+				log.Info("job found in history", "job", job.Name, "status", h.Status)
 				goto done
 			}
 		case <-time.After(60 * time.Minute):

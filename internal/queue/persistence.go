@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,7 +183,7 @@ func (q *Queue) Prune() {
 	q.mu.RUnlock()
 
 	for _, p := range toRemove {
-		slog.Info("pruning orphaned job state", "path", p)
+		q.log.Info("pruning orphaned job state", "path", p)
 		_ = os.Remove(p)
 	}
 }
