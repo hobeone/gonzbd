@@ -25,7 +25,15 @@
 		<ConfigSwitch section="postproc" keyword="direct_unpack" label="Direct Unpack" value={configData.postproc.direct_unpack} description="Extract files while still downloading." onupdate={onFieldUpdate} />
 		<ConfigSwitch section="postproc" keyword="enable_par_cleanup" label="Cleanup par2 files" value={configData.postproc.enable_par_cleanup} description="Delete verification files after successful repair." onupdate={onFieldUpdate} />
 		<ConfigSwitch section="postproc" keyword="enable_rar_cleanup" label="Cleanup archive files" value={configData.postproc.enable_rar_cleanup} description="Delete source RAR/7z/split files after successful extraction." onupdate={onFieldUpdate} />
-		<ConfigInput section="postproc" keyword="unrar_command" label="UnRAR path" value={configData.postproc.unrar_command} onupdate={onFieldUpdate} />
-		<ConfigInput section="postproc" keyword="par2_command" label="par2 path" value={configData.postproc.par2_command} onupdate={onFieldUpdate} />
+
+		<div class="py-3">
+			<p class="text-sm text-muted-foreground">
+				Leave paths empty to auto-detect programs from the system PATH. Set an explicit path only when the program is installed outside the normal search path.
+			</p>
+		</div>
+
+		<ConfigInput section="postproc" keyword="par2_command" label="par2 path" placeholder="auto-detect from PATH" value={configData.postproc.par2_command} onupdate={onFieldUpdate} />
+		<ConfigInput section="postproc" keyword="unrar_command" label="UnRAR path" placeholder="auto-detect from PATH" value={configData.postproc.unrar_command} onupdate={onFieldUpdate} />
+		<ConfigInput section="postproc" keyword="sevenz_command" label="7-Zip path" placeholder="auto-detect from PATH (7zz or 7z)" value={configData.postproc.sevenz_command} onupdate={onFieldUpdate} />
 	</div>
 </section>
