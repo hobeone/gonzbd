@@ -7,6 +7,7 @@
 		value,
 		label,
 		description,
+		placeholder,
 		type = 'text',
 		onupdate
 	}: {
@@ -15,6 +16,7 @@
 		value: string | number;
 		label: string;
 		description?: string;
+		placeholder?: string;
 		type?: 'text' | 'number' | 'password';
 		onupdate?: (section: string, keyword: string, value: string | number) => void;
 	} = $props();
@@ -57,6 +59,7 @@
 		id="{section}-{keyword}"
 		{type}
 		value={currentValue}
+		{placeholder}
 		oninput={handleInput}
 		onblur={commit}
 		class="max-w-md"
