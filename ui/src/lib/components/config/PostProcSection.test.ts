@@ -15,7 +15,8 @@ describe('PostProcSection', () => {
 			enable_par_cleanup: true,
 			enable_rar_cleanup: true,
 			unrar_command: '/usr/bin/unrar',
-			par2_command: '/usr/bin/par2'
+			par2_command: '/usr/bin/par2',
+			sevenz_command: '/usr/bin/7zz'
 		}
 	};
 
@@ -33,5 +34,11 @@ describe('PostProcSection', () => {
 		expect(screen.getByText('Cleanup archive files')).toBeInTheDocument();
 		expect(screen.getByText('UnRAR path')).toBeInTheDocument();
 		expect(screen.getByText('par2 path')).toBeInTheDocument();
+		expect(screen.getByText('7-Zip path')).toBeInTheDocument();
+	});
+
+	it('renders auto-detect help text', () => {
+		render(PostProcSection, { configData: mockConfig, onFieldUpdate: vi.fn() });
+		expect(screen.getByText(/Leave paths empty to auto-detect/)).toBeInTheDocument();
 	});
 });
