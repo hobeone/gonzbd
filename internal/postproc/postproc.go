@@ -347,7 +347,7 @@ func (p *PostProcessor) processJob(job *Job) {
 		return
 	}
 
-	var failedAt int = -1 // index of first failed stage, or -1
+	var failedAt = -1 // index of first failed stage, or -1
 
 	for i, stage := range p.stages {
 		if p.statusUpdater != nil {

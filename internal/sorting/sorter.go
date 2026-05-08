@@ -77,6 +77,7 @@ func Apply(
 	destRoot string,
 	opts fsutil.SanitizeOptions,
 ) (ApplyResult, error) {
+	log = log.With("component", "sorting")
 	info := Parse(jobName)
 	if info.Title == "" {
 		info.Title = jobName
