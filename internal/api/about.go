@@ -122,25 +122,32 @@ func publicIP(url string) string {
 	return strings.TrimSpace(string(body))
 }
 
-// resolveBinary resolves a binary path. If cfgPath is non-empty it is
-// returned directly (user-configured override). Otherwise the fallback
-// name is looked up on PATH via exec.LookPath. Returns "" if not found.
+// resolveBinary resolves a binary path for display. When cfgPath is set,
+// it is resolved via exec.LookPath so that bare names (e.g. "par2") are
+// expanded to their full PATH-resolved location (e.g. "/usr/bin/par2").
+// When cfgPath is empty, the fallback name is used instead.
+// Returns "" if the binary cannot be found.
 func resolveBinary(cfgPath, fallback string) string {
-	if cfgPath != "" {
-		return cfgPath
+	name := cfgPath
+	if name == "" {
+		name = fallback
 	}
-	p, err := exec.LookPath(fallback)
+	p, err := exec.LookPath(name)
 	if err != nil {
 		return ""
 	}
 	return p
 }
 
-// resolve7z resolves the 7z binary. It first checks the config override,
-// then tries "7zz" (modern standalone), then "7z" (classic) via PATH.
+// resolve7z resolves the 7z binary. It first checks the config override
+// (resolved via LookPath), then tries "7zz" (modern standalone), then
+// "7z" (classic) via PATH.
 func resolve7z(cfgPath string) string {
 	if cfgPath != "" {
-		return cfgPath
+		if p, err := exec.LookPath(cfgPath); err == nil {
+			return p
+		}
+		return ""
 	}
 	if p, err := exec.LookPath("7zz"); err == nil {
 		return p

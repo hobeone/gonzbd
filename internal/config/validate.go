@@ -201,9 +201,8 @@ func (d *DownloadConfig) validate() error {
 }
 
 func (p *PostProcConfig) validate() error {
-	if strings.TrimSpace(p.Par2Command) == "" {
-		return fmt.Errorf("par2_command: %w", errEmpty)
-	}
+	// All command fields are optional — empty means auto-detect via PATH.
+	// The par2 package defaults to "par2" when RunOptions.Command is empty.
 	return nil
 }
 
