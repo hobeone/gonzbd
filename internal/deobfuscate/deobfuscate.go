@@ -70,6 +70,10 @@ var abcXyz = regexp.MustCompile(`^abc\.xyz`)
 // argument may be a plain filename or a full path; only the base component
 // is inspected. This is a direct port of Python's is_probably_obfuscated.
 func IsProbablyObfuscated(log *slog.Logger, filename string) bool {
+	if log == nil {
+		log = slog.Default()
+	}
+	log = log.With("component", "deobfuscate")
 	base := filepath.Base(filename)
 	filebasename := strings.TrimSuffix(base, filepath.Ext(base))
 
@@ -241,6 +245,10 @@ type Rename struct {
 // Deobfuscation is skipped entirely when the download contains DVD/Bluray
 // disc structure directories (VIDEO_TS, AUDIO_TS, BDMV).
 func Deobfuscate(log *slog.Logger, dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename, error) {
+	if log == nil {
+		log = slog.Default()
+	}
+	log = log.With("component", "deobfuscate")
 
 	// 0. Skip deobfuscation for DVD/Bluray disc structures.
 	if containsIgnoredMovieFolder(dir) {
@@ -388,6 +396,10 @@ func containsIgnoredMovieFolder(dir string) bool {
 // Only acts when there is a clearly biggest file (3× ratio) and at least
 // one .srt file whose name doesn't already share the video's basename.
 func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
+	if log == nil {
+		log = slog.Default()
+	}
+	log = log.With("component", "deobfuscate")
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -453,6 +465,10 @@ func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 //  1. Cloaked RARs: files with .001/.xyz/no extension that are actually RAR volumes
 //  2. Obfuscated outer names: e.g. "a1b2c3d4.rar" containing "Movie.Name.2024.mkv"
 func extractRARUsefulName(dir string, log *slog.Logger) string {
+	if log == nil {
+		log = slog.Default()
+	}
+	log = log.With("component", "deobfuscate")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""

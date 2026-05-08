@@ -71,6 +71,7 @@ type Result struct {
 // prompt when no password is supplied, preventing the subprocess from
 // blocking on stdin.
 func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+	log = log.With("component", "unpack/unrar")
 	mode := "x"
 	if opts.OneFolder {
 		mode = "e"
