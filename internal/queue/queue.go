@@ -653,6 +653,10 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 		}
 		art.Done = true
 		job.RemainingBytes -= int64(art.Bytes)
+		// Per-file progress: only count successful completions.
+		// MarkArticlesFailed sets Failed before reaching its own block,
+		// so this method's articles are by definition successful.
+		job.Files[art.FileIdx].BytesDownloaded += int64(art.Bytes)
 	}
 	q.dirty.Store(true)
 	return nil

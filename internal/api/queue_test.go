@@ -500,6 +500,145 @@ func TestQueueList_StageMapping(t *testing.T) {
 	}
 }
 
+// --- Issue #4: per-file detail endpoint ---
+
+func TestQueueDetail_FilesIncludedWhenRequested(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	job := addLargeTestJob(t, q, 4) // 4 segments × 1 MiB
+
+	// Mark 2 of 4 articles done so file shows partial progress.
+	jobInternal, err := q.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(jobInternal.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(jobInternal.Files))
+	}
+	doneIDs := []string{
+		jobInternal.Files[0].Articles[0].ID,
+		jobInternal.Files[0].Articles[1].ID,
+	}
+	if err := q.MarkArticlesDone(job.ID, doneIDs); err != nil {
+		t.Fatalf("MarkArticlesDone: %v", err)
+	}
+
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&nzo_id="+job.ID+"&files=1&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	var resp struct {
+		Queue struct {
+			Slots []struct {
+				NzoID string `json:"nzo_id"`
+				Files []struct {
+					Name            string `json:"name"`
+					Bytes           int64  `json:"bytes"`
+					BytesDownloaded int64  `json:"bytes_downloaded"`
+					State           string `json:"state"`
+				} `json:"files"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Queue.Slots) != 1 {
+		t.Fatalf("slots len = %d; want 1", len(resp.Queue.Slots))
+	}
+	slot := resp.Queue.Slots[0]
+	if slot.NzoID != job.ID {
+		t.Errorf("nzo_id = %q; want %q", slot.NzoID, job.ID)
+	}
+	if len(slot.Files) != 1 {
+		t.Fatalf("files len = %d; want 1", len(slot.Files))
+	}
+	f := slot.Files[0]
+	if f.Bytes != 4*1024*1024 {
+		t.Errorf("file bytes = %d; want %d (4 MiB)", f.Bytes, 4*1024*1024)
+	}
+	if f.BytesDownloaded != 2*1024*1024 {
+		t.Errorf("file bytes_downloaded = %d; want %d (2 MiB)", f.BytesDownloaded, 2*1024*1024)
+	}
+	if f.State != "downloading" {
+		t.Errorf("file state = %q; want downloading", f.State)
+	}
+	if f.Name == "" {
+		t.Errorf("file name should not be empty")
+	}
+}
+
+func TestQueueDetail_DefaultListingExcludesFiles(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	addLargeTestJob(t, q, 2)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	// The default listing must not include per-file arrays — the JSON
+	// must omit the "files" key (omitempty) so payloads stay small.
+	body := rr.Body.String()
+	if strings.Contains(body, `"files":`) {
+		t.Errorf("default listing must omit files key, body contains it:\n%s", body)
+	}
+}
+
+func TestQueueDetail_UnknownNzoIDReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	s, _ := testQueueServer(t)
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&nzo_id=does-not-exist&files=1&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+	var resp struct {
+		Queue struct {
+			Slots []any `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Queue.Slots) != 0 {
+		t.Errorf("slots len = %d; want 0 for unknown nzo_id", len(resp.Queue.Slots))
+	}
+}
+
+func TestQueueDetail_FileStateClassification(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		setup func(*queue.JobFile)
+		want  string
+	}{
+		{"queued", func(*queue.JobFile) {}, "queued"},
+		{"downloading", func(f *queue.JobFile) { f.BytesDownloaded = 100 }, "downloading"},
+		{"done", func(f *queue.JobFile) {
+			f.Complete = true
+			f.BytesDownloaded = 1000
+		}, "done"},
+		{"failed", func(f *queue.JobFile) {
+			f.Complete = true
+			f.Articles = []queue.JobArticle{{ID: "x", Bytes: 100, Done: true, Failed: true}}
+		}, "failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := &queue.JobFile{Bytes: 1000}
+			tt.setup(f)
+			if got := fileState(f); got != tt.want {
+				t.Errorf("fileState = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestQueuePause(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
