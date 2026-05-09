@@ -30,7 +30,11 @@ describe('QueueRow', () => {
 		password: '',
 		failed_bytes: 0,
 		par2_bytes: 0,
-		par2_files: 0
+		par2_files: 0,
+		current_stage: 'download',
+		articles_remaining: 100,
+		eta_seconds: 0,
+		current_file: ''
 	};
 
 	beforeEach(() => vi.clearAllMocks());

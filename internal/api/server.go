@@ -69,6 +69,9 @@ type ApplicationReloader interface {
 	PauseDownloads()
 	ResumeDownloads()
 	ServerStatus() []downloader.ServerSnapshot
+	// Speed returns the current aggregate download speed in bytes/sec.
+	// Used to compute per-job ETA in the queue listing.
+	Speed() float64
 }
 
 // Server is the HTTP API server. It owns a net/http.Server and the mode

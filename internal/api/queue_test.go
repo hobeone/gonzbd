@@ -301,6 +301,205 @@ func TestQueueList_NotPausedKeepsDownloadingStatus(t *testing.T) {
 	}
 }
 
+// --- Issue #3: in-progress state fields ---
+
+// testQueueServerWithSpeed mirrors testQueueServer but plumbs a configurable
+// download speed through mockApp so ETA computation can be exercised.
+func testQueueServerWithSpeed(t *testing.T, speed float64) (*Server, *queue.Queue) {
+	t.Helper()
+	q := queue.New()
+	s := New(Options{
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+		Version: "1.0.0-test",
+		Queue:   q,
+		App:     mockApp{q: q, speed: speed},
+	})
+	return s, q
+}
+
+// makeLargeTestNZB builds an NZB with a single file split across numSegs
+// segments of 1 MiB each. Used to exercise ETA arithmetic where the default
+// 1024-byte fixture rounds to zero seconds. Segment size stays under the
+// parser's per-article 8 MiB cap.
+func makeLargeTestNZB(t *testing.T, numSegs int) []byte {
+	t.Helper()
+	const segBytes = 1024 * 1024 // 1 MiB; well below maxArticleSize (8 MiB)
+	var segs strings.Builder
+	for i := 1; i <= numSegs; i++ {
+		fmt.Fprintf(&segs, `      <segment bytes="%d" number="%d">big-article-%03d@example.com</segment>`+"\n",
+			segBytes, i, i)
+	}
+	return fmt.Appendf(nil, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd">
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file poster="test@example.com" date="1609459200" subject="big.bin (1/%d)">
+    <groups>
+      <group>alt.binaries.test</group>
+    </groups>
+    <segments>
+%s    </segments>
+  </file>
+</nzb>`, numSegs, segs.String())
+}
+
+// addLargeTestJob enqueues a job with numSegs × 1 MiB segments.
+func addLargeTestJob(t *testing.T, q *queue.Queue, numSegs int) *queue.Job {
+	t.Helper()
+	parsed, err := nzb.Parse(bytes.NewReader(makeLargeTestNZB(t, numSegs)))
+	if err != nil {
+		t.Fatalf("parse large NZB: %v", err)
+	}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "big.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+	return job
+}
+
+func TestQueueList_InProgressFields_Downloading(t *testing.T) {
+	t.Parallel()
+	// 1 MiB/s and a 10-segment (10 MiB) job → ETA = 10 s.
+	const speed = 1024.0 * 1024.0
+	s, q := testQueueServerWithSpeed(t, speed)
+	job := addLargeTestJob(t, q, 10)
+	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+		t.Fatalf("SetStatusIf: %v", err)
+	}
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+	var resp struct {
+		Queue struct {
+			Slots []struct {
+				Status            string `json:"status"`
+				CurrentStage      string `json:"current_stage"`
+				ArticlesRemaining int    `json:"articles_remaining"`
+				ETASeconds        int    `json:"eta_seconds"`
+				CurrentFile       string `json:"current_file"`
+				RemainingBytes    int64  `json:"remaining_bytes"`
+				Timeleft          string `json:"timeleft"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Queue.Slots) != 1 {
+		t.Fatalf("slots len = %d; want 1", len(resp.Queue.Slots))
+	}
+	slot := resp.Queue.Slots[0]
+	if slot.CurrentStage != "download" {
+		t.Errorf("current_stage = %q; want download", slot.CurrentStage)
+	}
+	if slot.ArticlesRemaining <= 0 {
+		t.Errorf("articles_remaining = %d; want > 0 for in-progress job", slot.ArticlesRemaining)
+	}
+	wantETA := int(float64(slot.RemainingBytes) / speed)
+	if slot.ETASeconds != wantETA {
+		t.Errorf("eta_seconds = %d; want %d (speed=%.0f, remaining=%d)",
+			slot.ETASeconds, wantETA, speed, slot.RemainingBytes)
+	}
+	if wantETA > 0 && slot.Timeleft == "0:00:00" {
+		t.Errorf("timeleft should be populated when ETA is computable, got %q", slot.Timeleft)
+	}
+	if slot.CurrentFile == "" {
+		t.Errorf("current_file should be the first incomplete file's subject, got empty")
+	}
+}
+
+func TestQueueList_InProgressFields_PausedSuppressesETA(t *testing.T) {
+	t.Parallel()
+	const speed = 1024.0 * 1024.0
+	s, q := testQueueServerWithSpeed(t, speed)
+	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+		t.Fatalf("SetStatusIf: %v", err)
+	}
+	q.PauseAll()
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	var resp struct {
+		Queue struct {
+			Slots []struct {
+				CurrentStage string `json:"current_stage"`
+				ETASeconds   int    `json:"eta_seconds"`
+				Timeleft     string `json:"timeleft"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Queue.Slots) != 1 {
+		t.Fatalf("slots len = %d; want 1", len(resp.Queue.Slots))
+	}
+	slot := resp.Queue.Slots[0]
+	if slot.ETASeconds != 0 {
+		t.Errorf("eta_seconds = %d; want 0 when paused", slot.ETASeconds)
+	}
+	if slot.Timeleft != "0:00:00" {
+		t.Errorf("timeleft = %q; want 0:00:00 when paused", slot.Timeleft)
+	}
+	// current_stage reflects the paused override (not "download").
+	if slot.CurrentStage != "paused" {
+		t.Errorf("current_stage = %q; want paused", slot.CurrentStage)
+	}
+}
+
+func TestQueueList_InProgressFields_NoSpeedSuppressesETA(t *testing.T) {
+	t.Parallel()
+	// Speed below noiseFloor (1 KiB/s) — ETA should be zero, not absurd.
+	s, q := testQueueServerWithSpeed(t, 100.0)
+	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+		t.Fatalf("SetStatusIf: %v", err)
+	}
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	var resp struct {
+		Queue struct {
+			Slots []struct {
+				ETASeconds int `json:"eta_seconds"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Queue.Slots[0].ETASeconds != 0 {
+		t.Errorf("eta_seconds = %d; want 0 when speed below noise floor", resp.Queue.Slots[0].ETASeconds)
+	}
+}
+
+func TestQueueList_StageMapping(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		status    constants.Status
+		wantStage string
+	}{
+		{constants.StatusDownloading, "download"},
+		{constants.StatusVerifying, "repair"},
+		{constants.StatusRepairing, "repair"},
+		{constants.StatusExtracting, "unpack"},
+		{constants.StatusMoving, "move"},
+		{constants.StatusQueued, "queued"},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.status), func(t *testing.T) {
+			t.Parallel()
+			got := stageFromStatus(tt.status)
+			if got != tt.wantStage {
+				t.Errorf("stageFromStatus(%q) = %q; want %q", tt.status, got, tt.wantStage)
+			}
+		})
+	}
+}
+
 func TestQueuePause(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)

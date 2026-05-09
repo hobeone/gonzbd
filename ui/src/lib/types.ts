@@ -22,6 +22,10 @@ export interface QueueSlot {
 	failed_bytes: number;
 	par2_bytes: number;
 	par2_files: number;
+	current_stage: string;
+	articles_remaining: number;
+	eta_seconds: number;
+	current_file: string;
 }
 
 export interface QueueDetail {
