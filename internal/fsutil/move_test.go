@@ -259,10 +259,11 @@ func TestJoinSafe_TruncatesLongFolder(t *testing.T) {
 	base := "/dl"
 	longFolder := strings.Repeat("A", 300)
 	got := JoinSafe(base, longFolder, "f.txt", SanitizeOptions{})
-	if len(got) > maxPathBytes {
-		t.Errorf("path length %d exceeds max %d", len(got), maxPathBytes)
+	// Folder component must fit within NAME_MAX (255 bytes).
+	folderComponent := filepath.Base(filepath.Dir(got))
+	if len(folderComponent) > maxFilenameBytes {
+		t.Errorf("folder component length %d exceeds max %d", len(folderComponent), maxFilenameBytes)
 	}
-	// Should still end with the filename.
 	if !strings.HasSuffix(got, "f.txt") {
 		t.Errorf("path should end with filename, got %q", got)
 	}
@@ -273,8 +274,33 @@ func TestJoinSafe_TruncatesLongFile(t *testing.T) {
 	base := "/dl"
 	longFile := strings.Repeat("B", 300) + ".rar"
 	got := JoinSafe(base, "folder", longFile, SanitizeOptions{})
-	if len(got) > maxPathBytes {
-		t.Errorf("path length %d exceeds max %d", len(got), maxPathBytes)
+	// File component must fit within NAME_MAX (255 bytes).
+	fileComponent := filepath.Base(got)
+	if len(fileComponent) > maxFilenameBytes {
+		t.Errorf("file component length %d exceeds max %d", len(fileComponent), maxFilenameBytes)
+	}
+	if !strings.HasSuffix(got, ".rar") {
+		t.Errorf("file extension should be preserved, got %q", got)
+	}
+}
+
+// TestJoinSafe_FolderStableAcrossFiles verifies that the folder component
+// is identical regardless of filename length — files in the same job must
+// land in the same directory. Regression test for a bug where per-call
+// path-budget arithmetic produced a different truncated folder per file.
+func TestJoinSafe_FolderStableAcrossFiles(t *testing.T) {
+	t.Parallel()
+	base := "/dl"
+	folder := "Daemons.of.the.Shadow.Realm.S01E06.The.Kagemori.Clan.and.the.Unknown.Assailants.1080p.NF.WEB-DL.JPN.AAC2.0.H.264.MSubs-ToonsHub"
+	shortFile := "x.par2"
+	longFile := folder + ".part01.rar"
+
+	gotShort := JoinSafe(base, folder, shortFile, SanitizeOptions{})
+	gotLong := JoinSafe(base, folder, longFile, SanitizeOptions{})
+
+	if filepath.Dir(gotShort) != filepath.Dir(gotLong) {
+		t.Errorf("folder differs between files:\n  short: %s\n  long:  %s",
+			filepath.Dir(gotShort), filepath.Dir(gotLong))
 	}
 }
 
