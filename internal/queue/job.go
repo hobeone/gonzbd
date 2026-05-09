@@ -194,14 +194,19 @@ func (j *Job) recomputePending() {
 	total := 0
 	for fi := range j.Files {
 		n := 0
+		var downloaded int64
 		for ai := range j.Files[fi].Articles {
 			art := &j.Files[fi].Articles[ai]
 			art.FileIdx = fi
 			if !art.Done && !art.Emitted {
 				n++
 			}
+			if art.Done && !art.Failed {
+				downloaded += int64(art.Bytes)
+			}
 		}
 		j.Files[fi].Pending = n
+		j.Files[fi].BytesDownloaded = downloaded
 		total += n
 	}
 	j.PendingArticles = total
@@ -222,6 +227,11 @@ type JobFile struct {
 	// on load. Allows ForEachUnfinishedArticle to skip completed files
 	// in O(1). Excluded from JSON since it's derived state.
 	Pending int `json:"-"`
+	// BytesDownloaded is the sum of byte counts for articles that have
+	// completed successfully (Done && !Failed). Maintained incrementally
+	// by mutation methods and recomputed by recomputePending on load.
+	// Drives per-file progress in the UI's queue-row drawer.
+	BytesDownloaded int64 `json:"-"`
 }
 
 // JobArticle is a single NNTP article. The structural fields (ID,
