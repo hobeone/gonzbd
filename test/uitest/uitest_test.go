@@ -290,7 +290,7 @@ func TestQueueSearch(t *testing.T) {
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(3000),
 	}); err != nil {
-		t.Skipf("search input not found (may not be implemented): %v", err)
+		t.Fatalf("search input not visible: %v", err)
 	}
 
 	// Type a search term.
@@ -410,7 +410,7 @@ func TestHistoryFailedFilter(t *testing.T) {
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(3000),
 	}); err != nil {
-		t.Skipf("'Failed only' label not found: %v", err)
+		t.Fatalf("'Failed only' label not visible: %v", err)
 	}
 	if err := failedCheckbox.Click(); err != nil {
 		t.Fatalf("click 'Failed only': %v", err)
@@ -453,7 +453,7 @@ func TestHistorySearch(t *testing.T) {
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(3000),
 	}); err != nil {
-		t.Skipf("history search not found: %v", err)
+		t.Fatalf("history search input not visible: %v", err)
 	}
 
 	if err := searchInput.First().Fill("Item.3"); err != nil {
@@ -490,7 +490,7 @@ func TestSettingsOpensAndLoadsConfig(t *testing.T) {
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
 	}); err != nil {
-		t.Skipf("Settings button not found (UI may not have it yet): %v", err)
+		t.Fatalf("Settings button not visible: %v", err)
 	}
 
 	if err := settingsBtn.First().Click(); err != nil {
@@ -520,7 +520,7 @@ func TestSettingsTabNavigation(t *testing.T) {
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
 	}); err != nil {
-		t.Skipf("Settings button not found: %v", err)
+		t.Fatalf("Settings button not visible: %v", err)
 	}
 	if err := settingsBtn.First().Click(); err != nil {
 		t.Fatalf("click Settings: %v", err)
@@ -578,19 +578,20 @@ func TestStatusBarDisplaysData(t *testing.T) {
 	page.WaitForTimeout(1000)
 
 	// Look for status bar content showing queue info.
-	statusArea := page.Locator("[class*='status'], footer, [data-testid='status-bar']")
+	statusArea := page.Locator("[data-testid='status-bar']")
 	if err := statusArea.First().WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
 	}); err != nil {
-		t.Logf("status bar area not found by class/testid: %v", err)
+		t.Fatalf("status bar not visible: %v", err)
 	}
 
 	// Verify actual content.
 	text, err := statusArea.First().TextContent()
 	if err != nil {
-		t.Logf("could not read status bar text: %v", err)
-	} else if text == "" {
+		t.Fatalf("could not read status bar text: %v", err)
+	}
+	if text == "" {
 		t.Error("status bar text is empty")
 	} else {
 		t.Logf("status bar content: %q", text)
@@ -763,7 +764,7 @@ func TestWarningBannerClear(t *testing.T) {
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(10000),
 	}); err != nil {
-		t.Skipf("warning banner not visible, skipping clear test: %v", err)
+		t.Fatalf("warning banner not visible: %v", err)
 	}
 
 	// Click "Clear all" or dismiss button.
@@ -772,7 +773,7 @@ func TestWarningBannerClear(t *testing.T) {
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(3000),
 	}); err != nil {
-		t.Skipf("Clear button not found: %v", err)
+		t.Fatalf("Clear button not visible: %v", err)
 	}
 	if err := clearBtn.First().Click(); err != nil {
 		t.Fatalf("click Clear: %v", err)
