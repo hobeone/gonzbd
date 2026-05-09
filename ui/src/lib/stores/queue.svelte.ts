@@ -77,6 +77,23 @@ class QueueStore {
 		this.#wsCleanup = subscribeWS((event) => {
 			if (event.event === 'queue_updated') {
 				this.poll();
+			} else if (event.event === 'job_finalized') {
+				// Job moved from queue → history. Optimistically drop
+				// the slot so the row disappears immediately, then refetch
+				// for an authoritative view (other slots may have shifted
+				// pages, status counts changed, etc.).
+				if (event.nzo_id && this.#queue) {
+					const before = this.#queue.slots.length;
+					this.#queue = {
+						...this.#queue,
+						slots: this.#queue.slots.filter((s) => s.nzo_id !== event.nzo_id)
+					};
+					if (this.#queue.slots.length !== before) {
+						this.#totalRemainingBytes = this.#queue.slots.reduce(
+							(sum, s) => sum + s.remaining_bytes, 0);
+					}
+				}
+				this.poll();
 			} else if (event.event === 'metrics') {
 				this.#speedBytesPerSec = event.speed ?? 0;
 				this.#totalRemainingBytes = event.remaining ?? 0;

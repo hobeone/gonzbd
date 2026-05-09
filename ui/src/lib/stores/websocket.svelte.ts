@@ -8,6 +8,7 @@ export interface WSEvent {
 	speed_limit?: number;
 	bandwidth_max?: number;
 	bandwidth_perc?: number;
+	nzo_id?: string;
 }
 
 type Handler = (event: WSEvent) => void;
