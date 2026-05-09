@@ -114,6 +114,9 @@ type Event struct {
 	SpeedLimit    int64  `json:"speed_limit"`
 	BandwidthMax  int64  `json:"bandwidth_max"`
 	BandwidthPerc int    `json:"bandwidth_perc"`
+	// NzoID is set on per-job events (currently job_finalized) so clients
+	// can target a specific row without a full refetch.
+	NzoID string `json:"nzo_id,omitempty"`
 }
 
 type dummyEmitter struct{}
@@ -447,7 +450,10 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			case app.postProcComplete <- PostProcComplete{JobID: job.Queue.ID}:
 			default:
 			}
-			app.emitter.Broadcast(Event{Type: "history_updated"})
+			// job_finalized signals a queue→history transition: both
+			// stores subscribe to it and refresh from a single trigger,
+			// so they reach the new state together.
+			app.emitter.Broadcast(Event{Type: "job_finalized", NzoID: job.Queue.ID})
 
 			// Fire notification event with a bounded timeout so a
 			// misbehaving sink can't hang the postproc worker forever.

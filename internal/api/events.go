@@ -19,6 +19,7 @@ type Event struct {
 	SpeedLimit    int64  `json:"speed_limit"`
 	BandwidthMax  int64  `json:"bandwidth_max"`
 	BandwidthPerc int    `json:"bandwidth_perc"`
+	NzoID         string `json:"nzo_id,omitempty"`
 }
 
 // Broadcaster manages active WebSocket connections and distributes events.
