@@ -46,6 +46,16 @@ export async function fetchQueue(
 	);
 }
 
+/**
+ * Fetch a single queue job's detail (slot fields plus per-file breakdown).
+ * Used by the QueueRow expansion drawer to render per-file progress. The
+ * default `mode=queue` listing does NOT include file arrays — this endpoint
+ * is the only way to retrieve them.
+ */
+export async function fetchQueueJobDetail(nzoId: string): Promise<QueueResponse> {
+	return fetchJSON<QueueResponse>(apiUrl('queue', { nzo_id: nzoId, files: '1' }));
+}
+
 export async function fetchHistory(
 	start = 0,
 	limit = 10,

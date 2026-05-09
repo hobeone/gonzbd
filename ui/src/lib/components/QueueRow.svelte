@@ -1,15 +1,27 @@
 <script lang="ts">
-	import type { QueueSlot } from '$lib/types';
+	import type { QueueSlot, QueueFile } from '$lib/types';
 	import { Progress } from '$lib/components/ui/progress';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import { pauseJob, resumeJob } from '$lib/stores/queue.svelte';
+	import { fetchQueueJobDetail } from '$lib/api';
+	import { subscribeWS } from '$lib/stores/websocket.svelte';
 	import { cn, formatSize as formatBytes, formatETA } from '$lib/utils';
 
 	let { slot, onremove }: { slot: QueueSlot; onremove: () => void } = $props();
 
 	let acting = $state(false);
 	let expanded = $state(false);
+
+	// Per-file detail: only fetched while the drawer is open. Refetched
+	// on queue_updated events (throttled) so per-file percent updates
+	// while the row is expanded; cleared when the drawer closes.
+	let files = $state<QueueFile[] | null>(null);
+	let filesLoading = $state(false);
+	let filesError = $state<string | null>(null);
+	const FILES_REFRESH_MS = 1000;
+	let lastFilesFetch = 0;
+	let pendingFilesRefresh: ReturnType<typeof setTimeout> | null = null;
 
 	let percentage = $derived(parseFloat(slot.percentage) || 0);
 	let isPaused = $derived(slot.status === 'Paused');
@@ -22,6 +34,73 @@
 	let hasFailed = $derived(slot.failed_bytes > 0);
 	let etaText = $derived(formatETA(slot.eta_seconds ?? 0));
 	let isDownloading = $derived(slot.current_stage === 'download');
+
+	function loadFiles() {
+		filesLoading = true;
+		filesError = null;
+		lastFilesFetch = Date.now();
+		fetchQueueJobDetail(slot.nzo_id)
+			.then((res) => {
+				files = res.queue.slots[0]?.files ?? [];
+			})
+			.catch((e) => {
+				filesError = e instanceof Error ? e.message : String(e);
+			})
+			.finally(() => {
+				filesLoading = false;
+			});
+	}
+
+	/**
+	 * Throttle drawer refreshes: at most one fetch per FILES_REFRESH_MS.
+	 * Coalesces a burst of queue_updated events (which fire at 1 Hz from
+	 * the metrics push) into a single trailing fetch.
+	 */
+	function scheduleFilesRefresh() {
+		if (!expanded) return;
+		const since = Date.now() - lastFilesFetch;
+		if (since >= FILES_REFRESH_MS) {
+			loadFiles();
+			return;
+		}
+		if (pendingFilesRefresh) return;
+		pendingFilesRefresh = setTimeout(() => {
+			pendingFilesRefresh = null;
+			if (expanded) loadFiles();
+		}, FILES_REFRESH_MS - since);
+	}
+
+	$effect(() => {
+		if (expanded) {
+			loadFiles();
+			const unsub = subscribeWS((event) => {
+				if (event.event === 'queue_updated') scheduleFilesRefresh();
+			});
+			return () => {
+				unsub();
+				if (pendingFilesRefresh) {
+					clearTimeout(pendingFilesRefresh);
+					pendingFilesRefresh = null;
+				}
+				files = null;
+				filesError = null;
+			};
+		}
+	});
+
+	function filePct(f: QueueFile): number {
+		if (f.bytes <= 0) return 0;
+		return Math.min(100, Math.round((f.bytes_downloaded / f.bytes) * 100));
+	}
+
+	function fileStateColor(state: string): string {
+		switch (state) {
+			case 'done': return 'text-emerald-600 dark:text-emerald-400';
+			case 'failed': return 'text-red-600 dark:text-red-400';
+			case 'downloading': return 'text-blue-600 dark:text-blue-400';
+			default: return 'text-gray-500 dark:text-gray-400';
+		}
+	}
 
 	async function togglePause() {
 		acting = true;
@@ -211,6 +290,55 @@
 							<div class="font-medium font-mono text-xs truncate" title={slot.current_file}>{slot.current_file}</div>
 						</div>
 					{/if}
+				{/if}
+			</div>
+
+			<!-- Per-file breakdown: lazy-fetched while the drawer is open. -->
+			<div class="mt-4">
+				<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide mb-2">
+					Files
+					{#if files}
+						<span class="ml-1 text-gray-400">({files.length})</span>
+					{/if}
+				</div>
+				{#if filesLoading && !files}
+					<div class="text-xs text-gray-500 dark:text-gray-400">Loading file list…</div>
+				{:else if filesError}
+					<div class="text-xs text-red-600 dark:text-red-400" title={filesError}>
+						Failed to load file list: {filesError}
+					</div>
+				{:else if files && files.length > 0}
+					<div class="overflow-x-auto">
+						<table class="w-full text-xs">
+							<thead class="text-gray-500 dark:text-gray-400">
+								<tr class="border-b border-gray-200 dark:border-gray-700">
+									<th class="text-left py-1 pr-4 font-medium">File</th>
+									<th class="text-right py-1 pr-4 font-medium whitespace-nowrap">Size</th>
+									<th class="text-right py-1 pr-4 font-medium whitespace-nowrap">Done</th>
+									<th class="text-left py-1 pr-4 font-medium w-32">Progress</th>
+									<th class="text-left py-1 font-medium">State</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each files as f (f.name)}
+									<tr class="border-b border-gray-100 dark:border-gray-800 last:border-0">
+										<td class="py-1 pr-4 font-mono truncate max-w-xs" title={f.name}>{f.name}</td>
+										<td class="py-1 pr-4 text-right font-mono whitespace-nowrap">{formatBytes(f.bytes)}</td>
+										<td class="py-1 pr-4 text-right font-mono whitespace-nowrap">{formatBytes(f.bytes_downloaded)}</td>
+										<td class="py-1 pr-4">
+											<div class="flex items-center gap-2">
+												<Progress value={filePct(f)} max={100} class="h-1.5 flex-1" />
+												<span class="font-mono text-gray-500 w-9 text-right">{filePct(f)}%</span>
+											</div>
+										</td>
+										<td class={cn('py-1 capitalize', fileStateColor(f.state))}>{f.state}</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{:else if files}
+					<div class="text-xs text-gray-500 dark:text-gray-400">No files in this job.</div>
 				{/if}
 			</div>
 		</td>

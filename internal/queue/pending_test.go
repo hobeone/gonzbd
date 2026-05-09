@@ -4,9 +4,9 @@ import (
 	"testing"
 )
 
-// verifyPending checks that Pending and PendingArticles match the
-// ground truth computed from article flags. Call after every state
-// mutation in tests to detect counter drift.
+// verifyPending checks that Pending, PendingArticles, and
+// BytesDownloaded match the ground truth computed from article flags.
+// Call after every state mutation in tests to detect counter drift.
 func verifyPending(t *testing.T, q *Queue, label string) {
 	t.Helper()
 	q.mu.RLock()
@@ -15,15 +15,23 @@ func verifyPending(t *testing.T, q *Queue, label string) {
 		wantJob := 0
 		for fi := range job.Files {
 			wantFile := 0
+			var wantDownloaded int64
 			for ai := range job.Files[fi].Articles {
 				art := &job.Files[fi].Articles[ai]
 				if !art.Done && !art.Emitted {
 					wantFile++
 				}
+				if art.Done && !art.Failed {
+					wantDownloaded += int64(art.Bytes)
+				}
 			}
 			if job.Files[fi].Pending != wantFile {
 				t.Errorf("%s: job %s file %d: Pending=%d want %d",
 					label, job.ID, fi, job.Files[fi].Pending, wantFile)
+			}
+			if job.Files[fi].BytesDownloaded != wantDownloaded {
+				t.Errorf("%s: job %s file %d: BytesDownloaded=%d want %d",
+					label, job.ID, fi, job.Files[fi].BytesDownloaded, wantDownloaded)
 			}
 			wantJob += wantFile
 		}
@@ -278,5 +286,68 @@ func TestPendingCounter_PersistenceRoundTrip(t *testing.T) {
 	}
 	if job.Files[1].Pending != 3 {
 		t.Errorf("file 1 Pending=%d want 3", job.Files[1].Pending)
+	}
+}
+
+func TestBytesDownloaded_TrackedByMarkArticlesDone(t *testing.T) {
+	q := New()
+	job := makeTestJob("j1", 2, 3) // 6 articles × 1000 bytes = 6000 bytes total
+	_ = q.Add(job)
+
+	// Complete two articles in file 0.
+	if err := q.MarkArticlesDone("j1", []string{artID(0, 0), artID(0, 1)}); err != nil {
+		t.Fatal(err)
+	}
+	verifyPending(t, q, "after partial done")
+
+	if got := job.Files[0].BytesDownloaded; got != 2000 {
+		t.Errorf("file 0 BytesDownloaded = %d; want 2000 (2×1000)", got)
+	}
+	if got := job.Files[1].BytesDownloaded; got != 0 {
+		t.Errorf("file 1 BytesDownloaded = %d; want 0 (no completions)", got)
+	}
+
+	// Failed articles do NOT add to BytesDownloaded — they failed,
+	// they weren't actually written.
+	if _, err := q.MarkArticleFailed("j1", artID(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	verifyPending(t, q, "after one failure")
+	if got := job.Files[1].BytesDownloaded; got != 0 {
+		t.Errorf("file 1 BytesDownloaded = %d; want 0 (failed article excluded)", got)
+	}
+
+	// Re-marking an already-done article is a no-op (idempotent).
+	if err := q.MarkArticlesDone("j1", []string{artID(0, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := job.Files[0].BytesDownloaded; got != 2000 {
+		t.Errorf("file 0 BytesDownloaded = %d; want 2000 (idempotent)", got)
+	}
+}
+
+func TestBytesDownloaded_RecomputeAfterLoad(t *testing.T) {
+	dir := t.TempDir()
+	q := New()
+	job := makeTestJob("j1", 2, 2)
+	_ = q.Add(job)
+	_ = q.MarkArticlesDone("j1", []string{artID(0, 0), artID(1, 0)})
+
+	if err := q.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	q2, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyPending(t, q2, "after Load")
+
+	loaded := q2.jobs[0]
+	if got := loaded.Files[0].BytesDownloaded; got != 1000 {
+		t.Errorf("file 0 BytesDownloaded = %d; want 1000 (recomputed on load)", got)
+	}
+	if got := loaded.Files[1].BytesDownloaded; got != 1000 {
+		t.Errorf("file 1 BytesDownloaded = %d; want 1000 (recomputed on load)", got)
 	}
 }
