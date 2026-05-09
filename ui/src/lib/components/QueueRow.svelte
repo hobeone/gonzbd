@@ -4,7 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import { pauseJob, resumeJob } from '$lib/stores/queue.svelte';
-	import { cn, formatSize as formatBytes } from '$lib/utils';
+	import { cn, formatSize as formatBytes, formatETA } from '$lib/utils';
 
 	let { slot, onremove }: { slot: QueueSlot; onremove: () => void } = $props();
 
@@ -20,6 +20,8 @@
 		slot.status !== 'Queued' && slot.status !== 'Paused' && slot.status !== 'Idle'
 	);
 	let hasFailed = $derived(slot.failed_bytes > 0);
+	let etaText = $derived(formatETA(slot.eta_seconds ?? 0));
+	let isDownloading = $derived(slot.current_stage === 'download');
 
 	async function togglePause() {
 		acting = true;
@@ -61,8 +63,18 @@
 					clip-rule="evenodd"
 				/>
 			</svg>
-			<div class="font-medium truncate" title={slot.name || slot.filename}>
-				{slot.name || slot.filename}
+			<div class="min-w-0 flex-1">
+				<div class="font-medium truncate" title={slot.name || slot.filename}>
+					{slot.name || slot.filename}
+				</div>
+				{#if isDownloading && slot.current_file}
+					<div
+						class="text-xs text-gray-500 dark:text-gray-400 truncate font-mono"
+						title={slot.current_file}
+					>
+						↓ {slot.current_file}
+					</div>
+				{/if}
 			</div>
 			{#if slot.warning}
 				<div class="flex items-center text-amber-600 shrink-0 max-w-[100px]" title={slot.warning}>
@@ -94,7 +106,14 @@
 		</div>
 	</td>
 	<td class="px-4 py-3 text-sm whitespace-nowrap">{slot.size}</td>
-	<td class="px-4 py-3 text-sm whitespace-nowrap">{slot.sizeleft}</td>
+	<td class="px-4 py-3 text-sm whitespace-nowrap">
+		{slot.sizeleft}
+		{#if etaText && isDownloading}
+			<span class="ml-1 text-xs text-gray-500 dark:text-gray-400" title="Estimated time remaining">
+				· {etaText}
+			</span>
+		{/if}
+	</td>
 	<td class="px-4 py-3">
 		<Badge variant={isPaused ? 'outline' : isPostProc ? 'secondary' : 'default'} class="text-xs">
 			{slot.status}
@@ -175,6 +194,24 @@
 					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Downloaded</span>
 					<div class="font-medium">{formatBytes(slot.bytes - slot.remaining_bytes)} of {slot.size}</div>
 				</div>
+				{#if isActive}
+					<div>
+						<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Articles Left</span>
+						<div class="font-medium font-mono">{slot.articles_remaining ?? 0}</div>
+					</div>
+					{#if etaText}
+						<div>
+							<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">ETA</span>
+							<div class="font-medium font-mono">{etaText}</div>
+						</div>
+					{/if}
+					{#if slot.current_file}
+						<div class="col-span-2 md:col-span-4">
+							<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Current File</span>
+							<div class="font-medium font-mono text-xs truncate" title={slot.current_file}>{slot.current_file}</div>
+						</div>
+					{/if}
+				{/if}
 			</div>
 		</td>
 	</tr>

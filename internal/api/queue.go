@@ -97,6 +97,27 @@ type queueSlot struct {
 	FailedBytes    int64  `json:"failed_bytes"`
 	Par2Bytes      int64  `json:"par2_bytes"`
 	Par2Files      int    `json:"par2_files"`
+
+	// CurrentStage is a lowercase machine-readable stage identifier
+	// derived from Status (download, repair, unpack, sort, move, ...).
+	// Distinct from Status (which is the human-readable label) so the UI
+	// can switch on stage without case- or text-fragility.
+	CurrentStage string `json:"current_stage"`
+
+	// ArticlesRemaining is the count of articles not yet completed.
+	// Reflects job.PendingArticles, which is updated on every state
+	// mutation (downloaded, failed, retried).
+	ArticlesRemaining int `json:"articles_remaining"`
+
+	// ETASeconds is RemainingBytes divided by current aggregate speed.
+	// Zero when paused, idle, or speed is below a noise floor.
+	ETASeconds int `json:"eta_seconds"`
+
+	// CurrentFile is the subject of the first incomplete file in the
+	// job — best-effort indicator of which file is actively being
+	// assembled. Empty when the job has no incomplete files (e.g. in
+	// post-processing) or when the subject is unparseable.
+	CurrentFile string `json:"current_file"`
 }
 
 // queueResponse is the outer JSON object returned for default queue listings.
@@ -123,6 +144,48 @@ type queueDetail struct {
 	Slots          []queueSlot `json:"slots"`
 }
 
+// stageFromStatus maps the human-readable Status string to a lowercase
+// machine-readable stage identifier for the UI to switch on. Unknown
+// statuses fall through unchanged (lowercased).
+func stageFromStatus(status constants.Status) string {
+	switch status {
+	case constants.StatusDownloading, constants.StatusFetching, constants.StatusGrabbing:
+		return "download"
+	case constants.StatusVerifying, constants.StatusRepairing, constants.StatusChecking, constants.StatusQuickCheck:
+		return "repair"
+	case constants.StatusExtracting:
+		return "unpack"
+	case constants.StatusMoving:
+		return "move"
+	case constants.StatusRunning:
+		return "script"
+	case constants.StatusPaused:
+		return "paused"
+	case constants.StatusQueued, constants.StatusIdle:
+		return "queued"
+	case constants.StatusPropagating:
+		return "propagating"
+	case constants.StatusCompleted:
+		return "completed"
+	case constants.StatusFailed:
+		return "failed"
+	case constants.StatusDeleted:
+		return "deleted"
+	}
+	return strings.ToLower(string(status))
+}
+
+// firstIncompleteFile returns the subject of the first not-yet-complete
+// file in the job, or empty if every file is complete.
+func firstIncompleteFile(j *queue.Job) string {
+	for i := range j.Files {
+		if !j.Files[i].Complete {
+			return j.Files[i].Subject
+		}
+	}
+	return ""
+}
+
 // queueList returns the paginated, filtered queue listing.
 //
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
@@ -135,6 +198,17 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 
 	jobs := s.queue.Snapshot()
 	paused := s.queue.IsPaused()
+
+	// Snapshot speed once per request so every slot's ETA is computed
+	// from the same denominator. A speed below noiseFloor is treated as
+	// zero — random fluctuations in BPS would otherwise produce wildly
+	// varying ETAs (e.g. 100 hours when the meter dips to 1 KB/s for a
+	// moment).
+	const noiseFloor = 1024.0 // 1 KiB/s
+	var speed float64
+	if s.app != nil {
+		speed = s.app.Speed()
+	}
 
 	// Build slots applying filters.
 	var slots []queueSlot
@@ -161,36 +235,55 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 		// Display override: when the queue is globally paused, jobs
 		// that were mid-download should appear as "Paused" in the UI
 		// rather than "Downloading". The internal state is unchanged
-		// so resume picks up instantly.
-		slotStatus := string(j.Status)
+		// so resume picks up instantly. current_stage tracks the same
+		// override so the UI stage icon stays consistent with the badge.
+		displayStatus := j.Status
 		if paused && j.Status == constants.StatusDownloading {
-			slotStatus = string(constants.StatusPaused)
+			displayStatus = constants.StatusPaused
+		}
+		slotStatus := string(displayStatus)
+
+		// Compute ETA only when actively downloading and speed is
+		// above the noise floor. Post-proc stages don't have a useful
+		// ETA from BPS, so leave them at zero.
+		var etaSeconds int
+		timeleft := "0:00:00"
+		etaStr := "unknown"
+		if !paused && j.Status == constants.StatusDownloading &&
+			speed > noiseFloor && j.RemainingBytes > 0 {
+			etaSeconds = int(float64(j.RemainingBytes) / speed)
+			timeleft = formatDuration(etaSeconds)
+			etaStr = timeleft
 		}
 
 		slots = append(slots, queueSlot{
-			NzoID:          j.ID,
-			Filename:       j.Filename,
-			Name:           j.Name,
-			Category:       j.Category,
-			Index:          len(slots),
-			Priority:       j.Priority.String(),
-			Status:         slotStatus,
-			Script:         nonEmpty(j.Script, "none"),
-			Password:       j.Password,
-			Size:           formatBytes(j.TotalBytes),
-			SizeLeft:       formatBytes(j.RemainingBytes),
-			MB:             toMBString(j.TotalBytes),
-			MBLeft:         toMBString(j.RemainingBytes),
-			Bytes:          j.TotalBytes,
-			RemainingBytes: j.RemainingBytes,
-			Percentage:     pct,
-			Timeleft:       "0:00:00",
-			ETA:            "unknown",
-			PP:             strconv.Itoa(j.PP),
-			Warning:        j.Warning,
-			FailedBytes:    j.FailedBytes,
-			Par2Bytes:      j.Par2Bytes,
-			Par2Files:      j.Par2Files,
+			NzoID:             j.ID,
+			Filename:          j.Filename,
+			Name:              j.Name,
+			Category:          j.Category,
+			Index:             len(slots),
+			Priority:          j.Priority.String(),
+			Status:            slotStatus,
+			Script:            nonEmpty(j.Script, "none"),
+			Password:          j.Password,
+			Size:              formatBytes(j.TotalBytes),
+			SizeLeft:          formatBytes(j.RemainingBytes),
+			MB:                toMBString(j.TotalBytes),
+			MBLeft:            toMBString(j.RemainingBytes),
+			Bytes:             j.TotalBytes,
+			RemainingBytes:    j.RemainingBytes,
+			Percentage:        pct,
+			Timeleft:          timeleft,
+			ETA:               etaStr,
+			PP:                strconv.Itoa(j.PP),
+			Warning:           j.Warning,
+			FailedBytes:       j.FailedBytes,
+			Par2Bytes:         j.Par2Bytes,
+			Par2Files:         j.Par2Files,
+			CurrentStage:      stageFromStatus(displayStatus),
+			ArticlesRemaining: j.PendingArticles,
+			ETASeconds:        etaSeconds,
+			CurrentFile:       firstIncompleteFile(j),
 		})
 	}
 
@@ -648,4 +741,16 @@ func nonEmpty(s, fallback string) string {
 		return fallback
 	}
 	return s
+}
+
+// formatDuration renders a non-negative whole-second duration as h:mm:ss
+// (matching Python SABnzbd's timeleft format).
+func formatDuration(seconds int) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	h := seconds / 3600
+	m := (seconds % 3600) / 60
+	s := seconds % 60
+	return fmt.Sprintf("%d:%02d:%02d", h, m, s)
 }
