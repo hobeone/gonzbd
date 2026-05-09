@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -432,5 +434,98 @@ func TestPipelineShutdownDrainsWorkers(t *testing.T) {
 	// All articles should have been processed before shutdown.
 	if got := telemetry.ArticlesReceived.Value(); got != 3 {
 		t.Errorf("ArticlesReceived = %d, want 3", got)
+	}
+}
+
+// TestPipelineRegisterFile_FolderStableAcrossFiles is the integration-level
+// regression test for the bug where files within the same job were scattered
+// across multiple truncated folder variants. All registered files for a
+// single job must land under the same directory regardless of filename
+// length, otherwise post-processing (which derives the job dir from the
+// un-truncated job.Name) cannot find them.
+func TestPipelineRegisterFile_FolderStableAcrossFiles(t *testing.T) {
+	t.Parallel()
+
+	// Use the exact production folder name from the bug report.
+	jobName := "Daemons.of.the.Shadow.Realm.S01E06.The.Kagemori.Clan.and.the.Unknown.Assailants.1080p.NF.WEB-DL.JPN.AAC2.0.H.264.MSubs-ToonsHub"
+
+	// Files with deliberately varying subject/filename lengths — short
+	// ".par2", medium ".rar", and a very long obfuscated-style name that
+	// would exhaust any per-file path budget.
+	subjects := []string{
+		`"x.par2" yEnc (1/1)`,
+		`"` + jobName + `.part01.rar" yEnc (1/1)`,
+		`"` + jobName + `.vol000+01.par2" yEnc (1/1)`,
+		`"` + jobName + `.sample.mkv" yEnc (1/1)`,
+		`"` + strings.Repeat("Q", 200) + `.rar" yEnc (1/1)`,
+	}
+
+	q, err := queue.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("queue.Load: %v", err)
+	}
+	job := &queue.Job{
+		ID:       "jobX",
+		Name:     jobName,
+		Filename: "test.nzb",
+		Status:   "Queued",
+	}
+	for i, subj := range subjects {
+		job.Files = append(job.Files, queue.JobFile{
+			Subject: subj,
+			Bytes:   1024,
+			Articles: []queue.JobArticle{
+				{ID: fmt.Sprintf("<art-%d@test>", i), Bytes: 1024, Number: 1},
+			},
+		})
+		job.TotalBytes += 1024
+	}
+	job.RemainingBytes = job.TotalBytes
+	if err := q.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+
+	// Use a deep base path comparable to the production NAS mount, so any
+	// path-budget pressure that would have triggered per-file folder
+	// shrinking is exercised here too.
+	deepBase := filepath.Join(t.TempDir(), "mnt", "nas", "public", "usenet", "incomplete")
+
+	p := &pipeline{
+		log:         slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+		queue:       q,
+		downloadDir: deepBase,
+		sanitize:    fsutil.SanitizeOptions{},
+		fileInfo:    make(map[fileKey]assembler.FileInfo),
+	}
+
+	for i := range subjects {
+		if err := p.registerFile("jobX", i); err != nil {
+			t.Fatalf("registerFile(%d): %v", i, err)
+		}
+	}
+
+	// Collect the directory of every registered path.
+	dirs := make(map[int]string, len(subjects))
+	for i := range subjects {
+		fi, ok := p.fileInfo[fileKey{jobID: "jobX", fileIdx: i}]
+		if !ok {
+			t.Fatalf("fileInfo missing for fileIdx=%d", i)
+		}
+		dirs[i] = filepath.Dir(fi.Path)
+	}
+
+	// All files must share a single directory.
+	for i := 1; i < len(subjects); i++ {
+		if dirs[i] != dirs[0] {
+			t.Errorf("file %d landed in %q, file 0 landed in %q (subjects: %q vs %q)",
+				i, dirs[i], dirs[0], subjects[i], subjects[0])
+		}
+	}
+
+	// And that directory must match what enqueuePostProc derives, i.e.
+	// filepath.Join(downloadDir, job.Name).
+	want := filepath.Join(deepBase, jobName)
+	if dirs[0] != want {
+		t.Errorf("download directory %q does not match postproc-derived %q", dirs[0], want)
 	}
 }
