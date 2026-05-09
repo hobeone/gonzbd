@@ -42,6 +42,8 @@ fi
 # Run: go test -tags=uitest -v ./test/uitest/...
 # Prerequisites: cd ui && npm run build; playwright install chromium")
 
+cd ui && npm run build && cd ..
+
 # 4. UI E2E Tests (requires built UI + Playwright browsers)
 if [ -f "ui/dist/index.html" ]; then
     echo -e "\n[4/4] Running UI E2E Tests..."
