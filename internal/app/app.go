@@ -520,6 +520,15 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 // Queue returns the application's download queue.
 func (app *Application) Queue() *queue.Queue { return app.queue }
 
+// Speed returns the current aggregate download speed in bytes/sec, or 0
+// when downloading is idle or the downloader has not been wired yet.
+func (app *Application) Speed() float64 {
+	if app.downloader == nil {
+		return 0
+	}
+	return app.downloader.Speed()
+}
+
 // AddJob validates, deduplicates, and enqueues a new download job. If force
 // is false and a duplicate is detected, the job is added in a paused state.
 func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {

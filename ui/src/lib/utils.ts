@@ -21,6 +21,25 @@ export function formatSize(bytes: number): string {
 	return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+/**
+ * Format a non-negative whole-second duration as a compact ETA string.
+ * Examples: 45 → "45s", 130 → "2m 10s", 7320 → "2h 2m".
+ * Returns "" for zero or negative input so callers render nothing when
+ * ETA is unknown.
+ */
+export function formatETA(seconds: number): string {
+	if (!seconds || seconds < 0) return '';
+	if (seconds < 60) return `${Math.floor(seconds)}s`;
+	if (seconds < 3600) {
+		const m = Math.floor(seconds / 60);
+		const s = Math.floor(seconds % 60);
+		return s > 0 ? `${m}m ${s}s` : `${m}m`;
+	}
+	const h = Math.floor(seconds / 3600);
+	const m = Math.floor((seconds % 3600) / 60);
+	return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
 export function cn(...inputs: ClassValue[]) {
 	return twMerge(clsx(inputs));
 }
