@@ -101,7 +101,7 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<div class="border-t bg-white dark:bg-gray-900">
+<div data-testid="status-bar" class="border-t bg-white dark:bg-gray-900">
 	<div class="mx-auto flex max-w-7xl items-center gap-4 px-4 py-2 text-sm text-gray-600 dark:text-gray-400">
 		<div class="flex items-center gap-2">
 			<SpeedGraph data={history} />
