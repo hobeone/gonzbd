@@ -876,5 +876,6 @@ func (w wsAdapter) Broadcast(e app.Event) {
 		SpeedLimit:    e.SpeedLimit,
 		BandwidthMax:  e.BandwidthMax,
 		BandwidthPerc: e.BandwidthPerc,
+		NzoID:         e.NzoID,
 	})
 }

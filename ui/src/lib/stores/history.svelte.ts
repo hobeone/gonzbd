@@ -42,7 +42,10 @@ class HistoryStore {
 		this.poll();
 
 		this.#wsCleanup = subscribeWS((event) => {
-			if (event.event === 'history_updated') {
+			// history_updated covers in-history mutations (delete, retry, etc.).
+			// job_finalized is the queue→history transition; both stores
+			// subscribe to it so they refresh from a single trigger.
+			if (event.event === 'history_updated' || event.event === 'job_finalized') {
 				this.poll();
 			}
 		});

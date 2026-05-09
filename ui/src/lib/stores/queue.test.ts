@@ -6,8 +6,13 @@ vi.mock('$lib/api', () => ({
 	postAction: vi.fn()
 }));
 
+// Captures the handler passed to subscribeWS so tests can simulate WS events.
+let capturedWSHandler: ((event: any) => void) | null = null;
 vi.mock('./websocket.svelte', () => ({
-	subscribeWS: vi.fn().mockReturnValue(vi.fn())
+	subscribeWS: vi.fn((handler: (event: any) => void) => {
+		capturedWSHandler = handler;
+		return vi.fn();
+	})
 }));
 
 import {
@@ -273,5 +278,63 @@ describe('Queue Store', () => {
 		await vi.advanceTimersByTimeAsync(0);
 
 		expect(isPaused()).toBe(true);
+	});
+
+	// ── job_finalized event ──
+
+	it('job_finalized optimistically drops the matching slot before refetch', async () => {
+		mockQueueOk();
+		startPolling();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(getQueueSlots()).toHaveLength(2);
+
+		// Make the next fetch hang so we can assert the optimistic update
+		// happened *before* the refetch resolved.
+		let resolveFetch: (v: any) => void = () => {};
+		vi.mocked(fetchQueue).mockReturnValue(new Promise((r) => { resolveFetch = r; }));
+
+		expect(capturedWSHandler).not.toBeNull();
+		capturedWSHandler!({ event: 'job_finalized', nzo_id: 'nzo_1' });
+
+		// Slot was dropped synchronously, even though refetch is still pending.
+		expect(getQueueSlots()).toHaveLength(1);
+		expect(getQueueSlots()[0].nzo_id).toBe('nzo_2');
+		// totalRemainingBytes recomputed from the surviving slot.
+		expect(getTotalRemainingBytes()).toBe(2000);
+
+		resolveFetch({
+			status: true,
+			queue: { slots: [{ nzo_id: 'nzo_2', name: 'Job2', remaining_bytes: 2000 }], noofslots: 1, paused: false }
+		});
+		await vi.advanceTimersByTimeAsync(0);
+	});
+
+	it('job_finalized triggers a refetch', async () => {
+		mockQueueOk();
+		startPolling();
+		await vi.advanceTimersByTimeAsync(0);
+		vi.clearAllMocks();
+		mockQueueOk();
+
+		capturedWSHandler!({ event: 'job_finalized', nzo_id: 'nzo_1' });
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(fetchQueue).toHaveBeenCalledTimes(1);
+	});
+
+	it('job_finalized with unknown nzo_id leaves slots unchanged then refetches', async () => {
+		mockQueueOk();
+		startPolling();
+		await vi.advanceTimersByTimeAsync(0);
+		const slotsBefore = getQueueSlots();
+		vi.clearAllMocks();
+		mockQueueOk();
+
+		capturedWSHandler!({ event: 'job_finalized', nzo_id: 'nzo_does_not_exist' });
+
+		// Slots unchanged synchronously (same length, same ids).
+		expect(getQueueSlots()).toHaveLength(slotsBefore.length);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(fetchQueue).toHaveBeenCalledTimes(1);
 	});
 });

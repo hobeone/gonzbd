@@ -6,8 +6,13 @@ vi.mock('$lib/api', () => ({
 	postAction: vi.fn()
 }));
 
+// Captures the handler passed to subscribeWS so tests can simulate WS events.
+let capturedWSHandler: ((event: any) => void) | null = null;
 vi.mock('./websocket.svelte', () => ({
-	subscribeWS: vi.fn().mockReturnValue(vi.fn())
+	subscribeWS: vi.fn((handler: (event: any) => void) => {
+		capturedWSHandler = handler;
+		return vi.fn();
+	})
 }));
 
 vi.mock('./queue.svelte', () => ({
@@ -283,6 +288,35 @@ describe('History Store', () => {
 		await vi.advanceTimersByTimeAsync(0);
 
 		// Only 1 poll from the first start.
+		expect(fetchHistory).toHaveBeenCalledTimes(1);
+	});
+
+	// ── job_finalized event ──
+
+	it('job_finalized triggers a refetch (queue→history transition)', async () => {
+		mockHistoryOk();
+		startHistoryPolling();
+		await vi.advanceTimersByTimeAsync(0);
+		vi.clearAllMocks();
+		mockHistoryOk();
+
+		expect(capturedWSHandler).not.toBeNull();
+		capturedWSHandler!({ event: 'job_finalized', nzo_id: 'nzo_1' });
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(fetchHistory).toHaveBeenCalledTimes(1);
+	});
+
+	it('history_updated still triggers a refetch (in-history mutations)', async () => {
+		mockHistoryOk();
+		startHistoryPolling();
+		await vi.advanceTimersByTimeAsync(0);
+		vi.clearAllMocks();
+		mockHistoryOk();
+
+		capturedWSHandler!({ event: 'history_updated' });
+		await vi.advanceTimersByTimeAsync(0);
+
 		expect(fetchHistory).toHaveBeenCalledTimes(1);
 	});
 });
