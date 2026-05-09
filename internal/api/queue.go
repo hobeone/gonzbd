@@ -118,6 +118,22 @@ type queueSlot struct {
 	// assembled. Empty when the job has no incomplete files (e.g. in
 	// post-processing) or when the subject is unparseable.
 	CurrentFile string `json:"current_file"`
+
+	// Files is the per-file breakdown for the row's expansion drawer.
+	// Only populated when the caller requests it via files=1; otherwise
+	// nil and omitted from JSON to keep default queue payloads small.
+	Files []queueFile `json:"files,omitempty"`
+}
+
+// queueFile is the per-file shape returned in the expansion-drawer
+// detail response. Subjects are pre-sanitized (stripped of yEnc tags
+// etc.) so the UI can render them directly.
+type queueFile struct {
+	Name            string `json:"name"`
+	Bytes           int64  `json:"bytes"`
+	BytesDownloaded int64  `json:"bytes_downloaded"`
+	// State is one of "queued", "downloading", "done", "failed".
+	State string `json:"state"`
 }
 
 // queueResponse is the outer JSON object returned for default queue listings.
@@ -186,10 +202,125 @@ func firstIncompleteFile(j *queue.Job) string {
 	return ""
 }
 
+// fileState classifies a JobFile into a coarse UI state. "downloading"
+// fires once any article in the file has completed; before that the
+// file is "queued". "failed" wins over "done" when any article failed.
+func fileState(f *queue.JobFile) string {
+	if f.Complete {
+		anyFailed := false
+		for ai := range f.Articles {
+			if f.Articles[ai].Failed {
+				anyFailed = true
+				break
+			}
+		}
+		if anyFailed {
+			return "failed"
+		}
+		return "done"
+	}
+	// Not Complete: any successful article downloads makes us
+	// "downloading"; otherwise still "queued".
+	if f.BytesDownloaded > 0 {
+		return "downloading"
+	}
+	return "queued"
+}
+
+// buildQueueFiles converts a Job's file slice into the API per-file
+// shape for the expansion drawer.
+func buildQueueFiles(j *queue.Job) []queueFile {
+	out := make([]queueFile, 0, len(j.Files))
+	for fi := range j.Files {
+		f := &j.Files[fi]
+		out = append(out, queueFile{
+			Name:            f.Subject,
+			Bytes:           f.Bytes,
+			BytesDownloaded: f.BytesDownloaded,
+			State:           fileState(f),
+		})
+	}
+	return out
+}
+
+// noiseFloorBPS is the speed below which ETA computation is suppressed
+// (returns 0). Random fluctuations in BPS would otherwise produce wildly
+// varying ETAs (e.g. 100 hours when the meter dips for a moment).
+const noiseFloorBPS = 1024.0 // 1 KiB/s
+
+// buildSlot renders one Job into the API queueSlot shape. paused is the
+// queue-wide pause flag; speed is the snapshot aggregate BPS used for
+// ETA. index is the slot's display index in the listing (0 for the
+// detail endpoint).
+func buildSlot(j *queue.Job, paused bool, speed float64, index int) queueSlot {
+	var pct int
+	if j.TotalBytes > 0 {
+		pct = int(100 * (j.TotalBytes - j.RemainingBytes) / j.TotalBytes)
+	}
+
+	displayStatus := j.Status
+	if paused && j.Status == constants.StatusDownloading {
+		displayStatus = constants.StatusPaused
+	}
+
+	var etaSeconds int
+	timeleft := "0:00:00"
+	etaStr := "unknown"
+	if !paused && j.Status == constants.StatusDownloading &&
+		speed > noiseFloorBPS && j.RemainingBytes > 0 {
+		etaSeconds = int(float64(j.RemainingBytes) / speed)
+		timeleft = formatDuration(etaSeconds)
+		etaStr = timeleft
+	}
+
+	return queueSlot{
+		NzoID:             j.ID,
+		Filename:          j.Filename,
+		Name:              j.Name,
+		Category:          j.Category,
+		Index:             index,
+		Priority:          j.Priority.String(),
+		Status:            string(displayStatus),
+		Script:            nonEmpty(j.Script, "none"),
+		Password:          j.Password,
+		Size:              formatBytes(j.TotalBytes),
+		SizeLeft:          formatBytes(j.RemainingBytes),
+		MB:                toMBString(j.TotalBytes),
+		MBLeft:            toMBString(j.RemainingBytes),
+		Bytes:             j.TotalBytes,
+		RemainingBytes:    j.RemainingBytes,
+		Percentage:        pct,
+		Timeleft:          timeleft,
+		ETA:               etaStr,
+		PP:                strconv.Itoa(j.PP),
+		Warning:           j.Warning,
+		FailedBytes:       j.FailedBytes,
+		Par2Bytes:         j.Par2Bytes,
+		Par2Files:         j.Par2Files,
+		CurrentStage:      stageFromStatus(displayStatus),
+		ArticlesRemaining: j.PendingArticles,
+		ETASeconds:        etaSeconds,
+		CurrentFile:       firstIncompleteFile(j),
+	}
+}
+
 // queueList returns the paginated, filtered queue listing.
+//
+// When called with nzo_id=<id>&files=1, returns a single-job detail
+// response with the same slot fields plus a per-file breakdown for the
+// row's expansion drawer.
 //
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
+	// Detail fast-path: the UI requests this when a row drawer is
+	// open. We deliberately don't include the files array in the
+	// default listing — it would balloon payloads for clients that
+	// aren't viewing any drawer.
+	if nzoID := r.FormValue("nzo_id"); nzoID != "" && r.FormValue("files") == "1" {
+		s.queueJobDetail(w, r, nzoID)
+		return
+	}
+
 	start := intParam(r, "start")
 	limit := intParam(r, "limit")
 	search := r.FormValue("search")
@@ -200,11 +331,7 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	paused := s.queue.IsPaused()
 
 	// Snapshot speed once per request so every slot's ETA is computed
-	// from the same denominator. A speed below noiseFloor is treated as
-	// zero — random fluctuations in BPS would otherwise produce wildly
-	// varying ETAs (e.g. 100 hours when the meter dips to 1 KB/s for a
-	// moment).
-	const noiseFloor = 1024.0 // 1 KiB/s
+	// from the same denominator.
 	var speed float64
 	if s.app != nil {
 		speed = s.app.Speed()
@@ -227,64 +354,7 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		var pct int
-		if j.TotalBytes > 0 {
-			pct = int(100 * (j.TotalBytes - j.RemainingBytes) / j.TotalBytes)
-		}
-
-		// Display override: when the queue is globally paused, jobs
-		// that were mid-download should appear as "Paused" in the UI
-		// rather than "Downloading". The internal state is unchanged
-		// so resume picks up instantly. current_stage tracks the same
-		// override so the UI stage icon stays consistent with the badge.
-		displayStatus := j.Status
-		if paused && j.Status == constants.StatusDownloading {
-			displayStatus = constants.StatusPaused
-		}
-		slotStatus := string(displayStatus)
-
-		// Compute ETA only when actively downloading and speed is
-		// above the noise floor. Post-proc stages don't have a useful
-		// ETA from BPS, so leave them at zero.
-		var etaSeconds int
-		timeleft := "0:00:00"
-		etaStr := "unknown"
-		if !paused && j.Status == constants.StatusDownloading &&
-			speed > noiseFloor && j.RemainingBytes > 0 {
-			etaSeconds = int(float64(j.RemainingBytes) / speed)
-			timeleft = formatDuration(etaSeconds)
-			etaStr = timeleft
-		}
-
-		slots = append(slots, queueSlot{
-			NzoID:             j.ID,
-			Filename:          j.Filename,
-			Name:              j.Name,
-			Category:          j.Category,
-			Index:             len(slots),
-			Priority:          j.Priority.String(),
-			Status:            slotStatus,
-			Script:            nonEmpty(j.Script, "none"),
-			Password:          j.Password,
-			Size:              formatBytes(j.TotalBytes),
-			SizeLeft:          formatBytes(j.RemainingBytes),
-			MB:                toMBString(j.TotalBytes),
-			MBLeft:            toMBString(j.RemainingBytes),
-			Bytes:             j.TotalBytes,
-			RemainingBytes:    j.RemainingBytes,
-			Percentage:        pct,
-			Timeleft:          timeleft,
-			ETA:               etaStr,
-			PP:                strconv.Itoa(j.PP),
-			Warning:           j.Warning,
-			FailedBytes:       j.FailedBytes,
-			Par2Bytes:         j.Par2Bytes,
-			Par2Files:         j.Par2Files,
-			CurrentStage:      stageFromStatus(displayStatus),
-			ArticlesRemaining: j.PendingArticles,
-			ETASeconds:        etaSeconds,
-			CurrentFile:       firstIncompleteFile(j),
-		})
+		slots = append(slots, buildSlot(j, paused, speed, len(slots)))
 	}
 
 	total := len(slots)
@@ -338,6 +408,47 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 			Limit:          limit,
 			Start:          start,
 			Slots:          slots,
+		},
+	})
+}
+
+// queueJobDetail returns a single-job slot with the per-file breakdown
+// populated. Invoked from queueList when nzo_id and files=1 are both
+// present. Response shape mirrors the standard queue listing so the
+// frontend can reuse the same parser; Slots will contain exactly one
+// entry (or zero if the job has been removed).
+func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID string) {
+	job := s.queue.SnapshotJob(nzoID)
+	if job == nil {
+		respondJSON(w, http.StatusOK, queueResponse{
+			Status: true,
+			Queue: queueDetail{
+				Status:    "Idle",
+				Paused:    s.queue.IsPaused(),
+				NoOfSlots: 0,
+				Slots:     []queueSlot{},
+			},
+		})
+		return
+	}
+
+	paused := s.queue.IsPaused()
+	var speed float64
+	if s.app != nil {
+		speed = s.app.Speed()
+	}
+
+	slot := buildSlot(job, paused, speed, 0)
+	slot.Files = buildQueueFiles(job)
+
+	respondJSON(w, http.StatusOK, queueResponse{
+		Status: true,
+		Queue: queueDetail{
+			Status:         slot.Status,
+			Paused:         paused,
+			NoOfSlots:      1,
+			NoOfSlotsTotal: 1,
+			Slots:          []queueSlot{slot},
 		},
 	})
 }

@@ -26,6 +26,14 @@ export interface QueueSlot {
 	articles_remaining: number;
 	eta_seconds: number;
 	current_file: string;
+	files?: QueueFile[];
+}
+
+export interface QueueFile {
+	name: string;
+	bytes: number;
+	bytes_downloaded: number;
+	state: 'queued' | 'downloading' | 'done' | 'failed';
 }
 
 export interface QueueDetail {
