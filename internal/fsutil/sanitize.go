@@ -23,9 +23,11 @@ var reservedNames = []string{
 }
 
 const (
-	maxFilenameBytes = 245
+	// maxFilenameBytes is the per-component limit. NAME_MAX is 255 bytes on
+	// ext4/xfs/btrfs/zfs; exceeding it causes ENAMETOOLONG. We don't enforce
+	// a total-path budget — modern Linux has no hard PATH_MAX in the VFS.
+	maxFilenameBytes = 255
 	maxExtensionLen  = 20
-	maxPathBytes     = 250 // Safe limit for Windows (260) and others
 )
 
 // SanitizeOptions defines how to handle illegal characters and spaces.
@@ -37,11 +39,11 @@ type SanitizeOptions struct {
 }
 
 // JoinSafe joins a base directory, folder name, and filename into a single
-// absolute path, ensuring that the result does not exceed maxPathBytes.
-// If the path is too long, it truncates the folder name first, then the
-// filename if necessary.
+// absolute path. Each component is sanitized and capped at maxFilenameBytes
+// (the per-component NAME_MAX limit). No total-path budget is enforced —
+// folder names are stable across calls regardless of filename length, so all
+// files in a job land in the same directory.
 func JoinSafe(base, folder, file string, opts SanitizeOptions) string {
-	// 1. Sanitize the folder and file components first.
 	// Base is assumed to be a trusted absolute path from the caller.
 	if folder != "" {
 		folder = SanitizeFolderName(folder, opts)
@@ -50,68 +52,16 @@ func JoinSafe(base, folder, file string, opts SanitizeOptions) string {
 		file = SanitizeFilename(file, opts)
 	}
 
-	// 2. Initial path.
-	var fullPath string
 	switch {
 	case folder != "" && file != "":
-		fullPath = filepath.Join(base, folder, file)
+		return filepath.Join(base, folder, file)
 	case folder != "":
-		fullPath = filepath.Join(base, folder)
+		return filepath.Join(base, folder)
 	case file != "":
-		fullPath = filepath.Join(base, file)
+		return filepath.Join(base, file)
 	default:
 		return base
 	}
-
-	if len(fullPath) <= maxPathBytes {
-		return fullPath
-	}
-
-	// 3. We are over the limit. Try truncating the folder name first.
-	if folder != "" {
-		// Calculate space remaining for folder.
-		var overhead int
-		if file != "" {
-			overhead = len(filepath.Join(base, "", file)) + 1
-		} else {
-			overhead = len(base) + 1
-		}
-		maxFolderLen := maxPathBytes - overhead
-
-		if maxFolderLen >= 10 {
-			folder = truncateFilename(folder, maxFolderLen)
-			if file != "" {
-				fullPath = filepath.Join(base, folder, file)
-			} else {
-				fullPath = filepath.Join(base, folder)
-			}
-			if len(fullPath) <= maxPathBytes {
-				return fullPath
-			}
-		}
-	}
-
-	// 4. Folder truncation wasn't enough, or folder is empty/already tiny.
-	// Truncate the file name to fit in the remaining space.
-	if file != "" {
-		var currentBaseAndFolder string
-		if folder != "" {
-			currentBaseAndFolder = filepath.Join(base, folder)
-		} else {
-			currentBaseAndFolder = base
-		}
-
-		maxFileLen := maxPathBytes - len(currentBaseAndFolder) - 1
-		if maxFileLen < 5 {
-			// Path is extremely constrained. Hard truncate to survive.
-			return fullPath[:maxPathBytes]
-		}
-
-		file = truncateFilename(file, maxFileLen)
-		return filepath.Join(currentBaseAndFolder, file)
-	}
-
-	return fullPath[:maxPathBytes]
 }
 
 // SanitizeFilename cleans up a filename to ensure it is safe for all filesystems.

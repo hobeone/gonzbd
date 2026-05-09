@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -283,11 +284,18 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	// by extension without an intermediate rename step.
 	filename := nzb.ExtractFilenameFromSubject(snap.Files[fileIdx].Subject)
 
+	// Compute the job directory once from the already-sanitized job name
+	// (queue.NewJob runs SanitizeFolderName at admission), then sanitize
+	// only the filename per call. This guarantees every file in a job
+	// lands in the same directory — postproc derives the same path via
+	// filepath.Join(DownloadDir, job.Name) when scanning for par2 sets.
+	jobDir := filepath.Join(p.downloadDir, snap.Name)
+
 	// GetUniqueFilename appends ".1", ".2" etc. when the path already
 	// exists, handling obfuscated NZBs where multiple files may have
 	// identical or unparseable subjects.
 	path := fsutil.GetUniqueFilename(
-		fsutil.JoinSafe(p.downloadDir, snap.Name, filename, p.sanitize))
+		fsutil.JoinSafe(jobDir, "", filename, p.sanitize))
 
 	// Count only unfinished articles — on resume/retry, already-done
 	// articles won't be re-dispatched, so TotalParts must match the
