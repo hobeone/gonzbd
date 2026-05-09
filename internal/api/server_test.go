@@ -23,8 +23,9 @@ const (
 )
 
 type mockApp struct {
-	q *queue.Queue
-	h *history.Repository
+	q     *queue.Queue
+	h     *history.Repository
+	speed float64
 }
 
 func (m mockApp) ReloadDownloader([]config.ServerConfig) error  { return nil }
@@ -37,6 +38,7 @@ func (m mockApp) SetCompleteDir(string)                         {}
 func (m mockApp) PauseDownloads()                               {}
 func (m mockApp) ResumeDownloads()                              {}
 func (m mockApp) ServerStatus() []downloader.ServerSnapshot     { return nil }
+func (m mockApp) Speed() float64                                { return m.speed }
 func (m mockApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
 	if m.q == nil {
 		return fmt.Errorf("queue not wired to mockApp")
