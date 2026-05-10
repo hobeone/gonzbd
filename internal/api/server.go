@@ -242,3 +242,10 @@ func (s *Server) getAuth() AuthConfig {
 	})
 	return auth
 }
+
+// TestQueue returns the underlying queue for test use. Do not use in
+// production code — this exists solely so integration tests can add
+// jobs directly to the queue without going through the HTTP handler.
+func (s *Server) TestQueue() *queue.Queue {
+	return s.queue
+}
