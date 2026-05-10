@@ -12,8 +12,16 @@ vi.mock('$lib/api', () => ({
 	fetchQueueJobDetail: vi.fn()
 }));
 
+// Captures the handler passed to subscribeWS so tests can simulate
+// queue_updated events that drive drawer refreshes.
+let capturedWSHandler: ((event: any) => void) | null = null;
 vi.mock('$lib/stores/websocket.svelte', () => ({
-	subscribeWS: vi.fn().mockReturnValue(() => {})
+	subscribeWS: vi.fn((handler: (event: any) => void) => {
+		capturedWSHandler = handler;
+		return () => {
+			capturedWSHandler = null;
+		};
+	})
 }));
 
 import { pauseJob, resumeJob } from '$lib/stores/queue.svelte';
@@ -242,5 +250,135 @@ describe('QueueRow', () => {
 		);
 		expect(svelteErrors).toEqual([]);
 		errSpy.mockRestore();
+	});
+
+	/**
+	 * Refresh-jank fix coverage: when a WS queue_updated event arrives
+	 * and only some files' bytes_downloaded changed, the drawer should
+	 * (a) call the detail endpoint at most once per FILES_REFRESH_MS
+	 *     (currently 2 s) — proving the throttle still works, and
+	 * (b) update the changed cell text without unmounting the row's
+	 *     <tr> DOM node — proving the array is mutated in place rather
+	 *     than wholesale replaced (keyed-each-by-index would reuse the
+	 *     <tr> either way, but in-place update also avoids re-running
+	 *     every cell expression on stable rows).
+	 */
+	it('drawer applies in-place updates without remounting unchanged rows', async () => {
+		vi.useFakeTimers();
+		try {
+			const initialFiles = [
+				{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 100, state: 'downloading' as const },
+				{ name: 'b.mkv', bytes: 1000, bytes_downloaded: 1000, state: 'done' as const }
+			];
+			vi.mocked(fetchQueueJobDetail).mockResolvedValue({
+				status: true,
+				queue: { slots: [{ ...baseSlot, files: initialFiles }] }
+			} as any);
+
+			const { container } = render(QueueRow, { slot: baseSlot, onremove: () => {} });
+
+			const row = container.querySelector('tr[class*="cursor-pointer"]') as HTMLElement;
+			await fireEvent.click(row);
+
+			await vi.waitFor(() => {
+				expect(fetchQueueJobDetail).toHaveBeenCalledTimes(1);
+			});
+			await vi.waitFor(() => {
+				expect(screen.getByText('a.mkv')).toBeInTheDocument();
+			});
+
+			// Capture the file row DOM node BEFORE the refresh.
+			const aRowBefore = screen.getByText('a.mkv').closest('tr');
+			expect(aRowBefore).toBeTruthy();
+
+			// Updated payload: only bytes_downloaded on file[0] moves.
+			vi.mocked(fetchQueueJobDetail).mockResolvedValue({
+				status: true,
+				queue: {
+					slots: [
+						{
+							...baseSlot,
+							files: [
+								{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 500, state: 'downloading' as const },
+								{ name: 'b.mkv', bytes: 1000, bytes_downloaded: 1000, state: 'done' as const }
+							]
+						}
+					]
+				}
+			} as any);
+
+			// Fire a burst of queue_updated events — the throttle must
+			// coalesce them into one trailing fetch after 2 s.
+			expect(capturedWSHandler).not.toBeNull();
+			for (let i = 0; i < 5; i++) {
+				capturedWSHandler!({ event: 'queue_updated' });
+			}
+
+			// Below the throttle window: still only the initial fetch.
+			await vi.advanceTimersByTimeAsync(500);
+			expect(fetchQueueJobDetail).toHaveBeenCalledTimes(1);
+
+			// Cross the throttle window: exactly one additional fetch.
+			await vi.advanceTimersByTimeAsync(2000);
+			await vi.waitFor(() => {
+				expect(fetchQueueJobDetail).toHaveBeenCalledTimes(2);
+			});
+
+			// The new bytes_downloaded value reaches the DOM.
+			await vi.waitFor(() => {
+				// Cell text uses formatSize: 500 bytes → "500 B".
+				expect(screen.getByText('500 B')).toBeInTheDocument();
+			});
+
+			// And the <tr> DOM node for the unchanged row is the same
+			// element reference: in-place mutation preserves identity.
+			const aRowAfter = screen.getByText('a.mkv').closest('tr');
+			expect(aRowAfter).toBe(aRowBefore);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	/**
+	 * Length change between fetches (e.g. NZB metadata corrected) must
+	 * fall back to wholesale replacement; otherwise the in-place loop
+	 * would skip the new entries.
+	 */
+	it('drawer handles file-list length change by replacing the array', async () => {
+		vi.useFakeTimers();
+		try {
+			vi.mocked(fetchQueueJobDetail).mockResolvedValue({
+				status: true,
+				queue: { slots: [{ ...baseSlot, files: [
+					{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 0, state: 'queued' as const }
+				] }] }
+			} as any);
+
+			const { container } = render(QueueRow, { slot: baseSlot, onremove: () => {} });
+			const row = container.querySelector('tr[class*="cursor-pointer"]') as HTMLElement;
+			await fireEvent.click(row);
+			await vi.waitFor(() => expect(fetchQueueJobDetail).toHaveBeenCalledTimes(1));
+			await vi.waitFor(() => expect(screen.getByText('a.mkv')).toBeInTheDocument());
+
+			// Refresh returns three files — length grew.
+			vi.mocked(fetchQueueJobDetail).mockResolvedValue({
+				status: true,
+				queue: { slots: [{ ...baseSlot, files: [
+					{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 0, state: 'queued' as const },
+					{ name: 'b.mkv', bytes: 1000, bytes_downloaded: 0, state: 'queued' as const },
+					{ name: 'c.mkv', bytes: 1000, bytes_downloaded: 0, state: 'queued' as const }
+				] }] }
+			} as any);
+
+			capturedWSHandler!({ event: 'queue_updated' });
+			await vi.advanceTimersByTimeAsync(2500);
+			await vi.waitFor(() => expect(fetchQueueJobDetail).toHaveBeenCalledTimes(2));
+			await vi.waitFor(() => {
+				expect(screen.getByText('b.mkv')).toBeInTheDocument();
+				expect(screen.getByText('c.mkv')).toBeInTheDocument();
+			});
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
