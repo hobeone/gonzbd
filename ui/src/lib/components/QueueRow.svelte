@@ -320,7 +320,14 @@
 								</tr>
 							</thead>
 							<tbody>
-								{#each files as f (f.name)}
+								<!--
+									Keyed on array index, not f.name: NZBs commonly contain
+									multiple files sharing the same subject (e.g. main +
+									sample, or par2 blocks all named after the release).
+									Job.Files order is stable across refreshes (NZB source
+									order), so position is a valid identity.
+								-->
+								{#each files as f, i (i)}
 									<tr class="border-b border-gray-100 dark:border-gray-800 last:border-0">
 										<td class="py-1 pr-4 font-mono truncate max-w-xs" title={f.name}>{f.name}</td>
 										<td class="py-1 pr-4 text-right font-mono whitespace-nowrap">{formatBytes(f.bytes)}</td>
