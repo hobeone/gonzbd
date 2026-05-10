@@ -16,7 +16,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp"
-	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/telemetry"
 )
@@ -278,11 +277,13 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		return nil
 	}
 
-	// Extract the real filename from the NZB subject line. This gives
-	// par2 files their .par2 extension and RAR files their .rar extension
-	// at download time, so the repair and unpack stages can identify them
-	// by extension without an intermediate rename step.
-	filename := nzb.ExtractFilenameFromSubject(snap.Files[fileIdx].Subject)
+	// Use the filename stored in Subject — the NZB parser already ran
+	// ExtractFilenameFromSubject + SanitizeFilename at parse time
+	// (parser.go convertFile), so Subject IS the clean filename with
+	// its real extension (.par2, .rar, etc.). Running the extraction
+	// regex again would break filenames containing characters like '&'
+	// that aren't in the basic-filename regex's character class.
+	filename := snap.Files[fileIdx].Subject
 
 	// Compute the job directory once from the already-sanitized job name
 	// (queue.NewJob runs SanitizeFolderName at admission), then sanitize
