@@ -340,6 +340,66 @@ describe('QueueRow', () => {
 	});
 
 	/**
+	 * Production reproducer for "drawer flashes on every update": when
+	 * the parent QueueTable re-fetches the queue (1 Hz) it passes a new
+	 * `slot` reference to QueueRow, even when the underlying nzo_id is
+	 * unchanged. The drawer's $effect must NOT re-fire its cleanup on
+	 * slot-prop churn — doing so wipes the cached files array and the
+	 * template briefly renders "Loading file list…" before the next
+	 * fetch resolves.
+	 *
+	 * Asserts (a) only the throttled refresh fires fetchQueueJobDetail
+	 * (slot replacements alone must not trigger fetches), and (b) the
+	 * "Loading file list…" placeholder never re-appears once the table
+	 * has rendered for the first time.
+	 */
+	it('drawer does not tear down when parent passes a fresh slot reference', async () => {
+		vi.useFakeTimers();
+		try {
+			vi.mocked(fetchQueueJobDetail).mockResolvedValue({
+				status: true,
+				queue: { slots: [{ ...baseSlot, files: [
+					{ name: 'a.mkv', bytes: 1000, bytes_downloaded: 100, state: 'downloading' as const }
+				] }] }
+			} as any);
+
+			const { container, rerender } = render(QueueRow, {
+				slot: baseSlot,
+				onremove: () => {}
+			});
+			const row = container.querySelector('tr[class*="cursor-pointer"]') as HTMLElement;
+			await fireEvent.click(row);
+
+			await vi.waitFor(() => expect(fetchQueueJobDetail).toHaveBeenCalledTimes(1));
+			await vi.waitFor(() => expect(screen.getByText('a.mkv')).toBeInTheDocument());
+
+			// Simulate three queue-store polls at 1 Hz: each rerenders
+			// QueueRow with a *new slot object* (same nzo_id) just like
+			// the parent's queue.poll() does. No WS event fired, so no
+			// drawer refresh is expected.
+			for (let tick = 0; tick < 3; tick++) {
+				const fresh: QueueSlot = {
+					...baseSlot,
+					remaining_bytes: baseSlot.remaining_bytes - tick * 1000,
+					eta_seconds: 60 - tick
+				};
+				await rerender({ slot: fresh, onremove: () => {} });
+				await vi.advanceTimersByTimeAsync(1000);
+
+				// The table row must still be rendered — the drawer
+				// must not have flashed back to the loading placeholder.
+				expect(screen.queryByText('Loading file list…')).toBeNull();
+				expect(screen.getByText('a.mkv')).toBeInTheDocument();
+			}
+
+			// Slot churn must not have triggered any extra fetches.
+			expect(fetchQueueJobDetail).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	/**
 	 * Length change between fetches (e.g. NZB metadata corrected) must
 	 * fall back to wholesale replacement; otherwise the in-place loop
 	 * would skip the new entries.
