@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/test/mocknntp"
 )
@@ -152,7 +153,7 @@ func replayOneNZB(t *testing.T, nzbPath string) {
 	if err := srv.Start(); err != nil {
 		t.Fatalf("mock server start: %v", err)
 	}
-	t.Cleanup(func() { _ = srv.Close() }) //nolint:errcheck // test cleanup
+	// Don't use t.Cleanup for srv.Close — we close eagerly below.
 
 	// Use os.MkdirTemp instead of t.TempDir() so we can remove the
 	// directory eagerly after verification. t.TempDir() defers cleanup
@@ -160,11 +161,50 @@ func replayOneNZB(t *testing.T, nzbPath string) {
 	// subtests keep all their download dirs alive simultaneously.
 	downloadDir, err := os.MkdirTemp("", "replay-*")
 	if err != nil {
+		_ = srv.Close()
 		t.Fatalf("create temp dir: %v", err)
 	}
-	defer os.RemoveAll(downloadDir) //nolint:errcheck // best-effort cleanup
 
-	application := newTestAppWithDir(t, srv.Addr(), downloadDir)
+	// Build the application manually instead of newTestAppWithDir so we
+	// can shut everything down eagerly. newTestAppWithDir uses t.Cleanup
+	// which defers until the parent test completes — with hundreds of
+	// parallel NZBs that means hundreds of app instances + mock servers
+	// + article maps all alive simultaneously, eating RAM.
+	db, err := history.Open(filepath.Join(downloadDir, "history.db"))
+	if err != nil {
+		_ = srv.Close()
+		_ = os.RemoveAll(downloadDir)
+		t.Fatalf("history.Open: %v", err)
+	}
+	repo := history.NewRepository(db)
+	appCfg := buildAppConfig(srv.Addr(), downloadDir)
+	application, err := app.New(appCfg, repo)
+	if err != nil {
+		_ = db.Close()
+		_ = srv.Close()
+		_ = os.RemoveAll(downloadDir)
+		t.Fatalf("app.New: %v", err)
+	}
+	appCtx, appCancel := context.WithCancel(t.Context())
+	if err := application.Start(appCtx); err != nil {
+		appCancel()
+		_ = db.Close()
+		_ = srv.Close()
+		_ = os.RemoveAll(downloadDir)
+		t.Fatalf("app.Start: %v", err)
+	}
+
+	// cleanup tears down everything eagerly, freeing RAM and disk.
+	cleanup := func() {
+		appCancel()
+		_ = application.Shutdown()
+		_ = db.Close()
+		_ = srv.Close()
+		srv.ClearArticles() // release the article map
+		_ = os.RemoveAll(downloadDir)
+	}
+	// Ensure cleanup runs even on t.Fatal paths.
+	defer cleanup()
 
 	// Add the job with PP=0 (no post-processing) since payloads are fake.
 	job := addNZBJob(t, application, rawNZB, filepath.Base(nzbPath))
@@ -219,8 +259,7 @@ func replayOneNZB(t *testing.T, nzbPath string) {
 	if filesFound == 0 {
 		t.Errorf("no files created on disk for %s", filepath.Base(nzbPath))
 	}
-	// downloadDir is removed by the deferred os.RemoveAll above,
-	// freeing disk space before the next subtest starts.
+	// cleanup() runs via defer, tearing down app + mock server + temp dir.
 }
 
 // TestReplay_ParseCorpus exercises the NZB parser against a directory of
