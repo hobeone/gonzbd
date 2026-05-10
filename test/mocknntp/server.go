@@ -95,6 +95,15 @@ func (s *Server) AddArticle(messageID string, body []byte) {
 	s.articles[messageID] = body
 }
 
+// ClearArticles releases all registered article data, allowing the GC to
+// reclaim the memory. Safe to call after Close; the server will 430 any
+// subsequent BODY requests.
+func (s *Server) ClearArticles() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clear(s.articles)
+}
+
 // Start begins listening on 127.0.0.1:0 and returns when the listener is
 // ready. Call Addr() to discover the ephemeral port.
 func (s *Server) Start() error {
