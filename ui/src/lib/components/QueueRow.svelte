@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { QueueSlot, QueueFile } from '$lib/types';
+	import { untrack } from 'svelte';
 	import { Progress } from '$lib/components/ui/progress';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
@@ -110,8 +111,16 @@
 		}, FILES_REFRESH_MS - since);
 	}
 
+	// IMPORTANT: untrack the body so that the parent passing a fresh
+	// `slot` prop on every queue.poll() (Svelte 5 props are reactive
+	// proxies — even when nzo_id is unchanged, the proxy identity
+	// flips) does not trigger this effect's cleanup. Without untrack,
+	// every parent poll teared down the drawer's subscription and
+	// nulled `files`, briefly flashing "Loading file list…" between
+	// the cleanup and the next fetch's resolution.
 	$effect(() => {
-		if (expanded) {
+		if (!expanded) return;
+		return untrack(() => {
 			loadFiles();
 			const unsub = subscribeWS((event) => {
 				// Skip refreshes when the tab isn't visible — the
@@ -137,7 +146,7 @@
 				files = null;
 				filesError = null;
 			};
-		}
+		});
 	});
 
 	function filePct(f: QueueFile): number {
