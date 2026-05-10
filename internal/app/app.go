@@ -66,6 +66,7 @@ type Config struct {
 	Sorters              []config.SorterConfig
 	ScriptDir            string
 	DeobfuscateFilenames bool
+	IgnoreSamples        bool
 	EnableUnrar          bool
 	Enable7zip           bool
 	EnableParCleanup     bool
@@ -294,6 +295,14 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			}, cfg.EnableRarCleanup)
 			unpackStage.Log = ppLog
 			stageList = append(stageList, unpackStage)
+		}
+
+		// Sample cleanup runs after unpack so it sees both raw and
+		// extracted files (e.g. release.mkv plus extracted-sample.mkv).
+		if cfg.IgnoreSamples {
+			sampleStage := postproc.NewSampleCleanupStage()
+			sampleStage.Log = ppLog
+			stageList = append(stageList, sampleStage)
 		}
 
 		if cfg.DeobfuscateFilenames {
