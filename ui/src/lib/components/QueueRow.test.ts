@@ -8,7 +8,16 @@ vi.mock('$lib/stores/queue.svelte', () => ({
 	resumeJob: vi.fn().mockResolvedValue(undefined)
 }));
 
+vi.mock('$lib/api', () => ({
+	fetchQueueJobDetail: vi.fn()
+}));
+
+vi.mock('$lib/stores/websocket.svelte', () => ({
+	subscribeWS: vi.fn().mockReturnValue(() => {})
+}));
+
 import { pauseJob, resumeJob } from '$lib/stores/queue.svelte';
+import { fetchQueueJobDetail } from '$lib/api';
 
 describe('QueueRow', () => {
 	const baseSlot: QueueSlot = {
@@ -173,5 +182,65 @@ describe('QueueRow', () => {
 		const slot = { ...baseSlot, name: '', filename: 'fallback.nzb' };
 		const { container } = render(QueueRow, { slot, onremove: vi.fn() });
 		expect(container.textContent).toContain('fallback.nzb');
+	});
+
+	// ── Drawer per-file table ──
+
+	/**
+	 * Regression test for the Svelte each_key_duplicate runtime error
+	 * we hit in production: NZBs frequently contain multiple files with
+	 * the same sanitized subject (e.g. main + sample with the same
+	 * release name, or par2 blocks all sharing a single subject after
+	 * sanitization). The drawer's keyed each block must use a stable
+	 * identity that doesn't collide on duplicate names.
+	 */
+	it('drawer renders multiple files with duplicate names without each_key_duplicate', async () => {
+		const dupName = 'Transfixed.25.04.26.Ariel.Demure.Getting.His.Attention.XXX.1080p.MP4-Narcos_[1a57ee682';
+		vi.mocked(fetchQueueJobDetail).mockResolvedValue({
+			status: true,
+			queue: {
+				slots: [
+					{
+						...baseSlot,
+						files: [
+							{ name: dupName, bytes: 1000, bytes_downloaded: 500, state: 'downloading' },
+							{ name: dupName, bytes: 2000, bytes_downloaded: 0, state: 'queued' },
+							{ name: dupName, bytes: 1500, bytes_downloaded: 1500, state: 'done' }
+						]
+					}
+				]
+			}
+		} as any);
+
+		// Capture any console.error from Svelte; if the keyed-each
+		// machinery throws a duplicate-key error in dev mode it lands
+		// here. The fix must keep this empty.
+		const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+		const { container } = render(QueueRow, { slot: baseSlot, onremove: () => {} });
+
+		// Click the row to expand the drawer.
+		const row = container.querySelector('tr[class*="cursor-pointer"]') as HTMLElement;
+		expect(row).toBeTruthy();
+		await fireEvent.click(row);
+
+		// Wait for fetchQueueJobDetail to resolve and the drawer to
+		// re-render. A microtask flush is enough since we mocked the
+		// fetch as immediately-resolved.
+		await vi.waitFor(() => {
+			expect(fetchQueueJobDetail).toHaveBeenCalledWith('123');
+		});
+		await vi.waitFor(() => {
+			// Three rows for three duplicate-named files; without the
+			// fix Svelte either errors out or merges the rows.
+			expect(screen.getAllByText(dupName)).toHaveLength(3);
+		});
+
+		// No each_key_duplicate (or any other Svelte error) was logged.
+		const svelteErrors = errSpy.mock.calls.flat().filter(
+			(arg) => typeof arg === 'string' && arg.includes('each_key_duplicate')
+		);
+		expect(svelteErrors).toEqual([]);
+		errSpy.mockRestore();
 	});
 });
