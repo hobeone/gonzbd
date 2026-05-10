@@ -36,3 +36,4 @@ test/uitest/screenshots/
 ui/coverage/
 
 /Downloads
+/.jet*
