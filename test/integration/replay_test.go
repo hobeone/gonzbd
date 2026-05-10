@@ -154,8 +154,16 @@ func replayOneNZB(t *testing.T, nzbPath string) {
 	}
 	t.Cleanup(func() { _ = srv.Close() }) //nolint:errcheck // test cleanup
 
-	// Start the app.
-	downloadDir := t.TempDir()
+	// Use os.MkdirTemp instead of t.TempDir() so we can remove the
+	// directory eagerly after verification. t.TempDir() defers cleanup
+	// until the parent test returns, which means hundreds of parallel
+	// subtests keep all their download dirs alive simultaneously.
+	downloadDir, err := os.MkdirTemp("", "replay-*")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	defer os.RemoveAll(downloadDir) //nolint:errcheck // best-effort cleanup
+
 	application := newTestAppWithDir(t, srv.Addr(), downloadDir)
 
 	// Add the job with PP=0 (no post-processing) since payloads are fake.
@@ -211,6 +219,8 @@ func replayOneNZB(t *testing.T, nzbPath string) {
 	if filesFound == 0 {
 		t.Errorf("no files created on disk for %s", filepath.Base(nzbPath))
 	}
+	// downloadDir is removed by the deferred os.RemoveAll above,
+	// freeing disk space before the next subtest starts.
 }
 
 // TestReplay_ParseCorpus exercises the NZB parser against a directory of
