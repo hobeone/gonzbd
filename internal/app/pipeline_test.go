@@ -449,15 +449,15 @@ func TestPipelineRegisterFile_FolderStableAcrossFiles(t *testing.T) {
 	// Use the exact production folder name from the bug report.
 	jobName := "Daemons.of.the.Shadow.Realm.S01E06.The.Kagemori.Clan.and.the.Unknown.Assailants.1080p.NF.WEB-DL.JPN.AAC2.0.H.264.MSubs-ToonsHub"
 
-	// Files with deliberately varying subject/filename lengths — short
-	// ".par2", medium ".rar", and a very long obfuscated-style name that
-	// would exhaust any per-file path budget.
+	// Subject fields are pre-extracted filenames — the NZB parser already
+	// ran ExtractFilenameFromSubject + SanitizeFilename, so these are clean
+	// filenames, not raw Usenet subject lines.
 	subjects := []string{
-		`"x.par2" yEnc (1/1)`,
-		`"` + jobName + `.part01.rar" yEnc (1/1)`,
-		`"` + jobName + `.vol000+01.par2" yEnc (1/1)`,
-		`"` + jobName + `.sample.mkv" yEnc (1/1)`,
-		`"` + strings.Repeat("Q", 200) + `.rar" yEnc (1/1)`,
+		"x.par2",
+		jobName + ".part01.rar",
+		jobName + ".vol000+01.par2",
+		jobName + ".sample.mkv",
+		strings.Repeat("Q", 200) + ".rar",
 	}
 
 	q, err := queue.Load(t.TempDir())
@@ -527,5 +527,130 @@ func TestPipelineRegisterFile_FolderStableAcrossFiles(t *testing.T) {
 	want := filepath.Join(deepBase, jobName)
 	if dirs[0] != want {
 		t.Errorf("download directory %q does not match postproc-derived %q", dirs[0], want)
+	}
+}
+
+// TestPipelineRegisterFile_PreservesSpecialCharFilenames is the regression test
+// for the bug where pipeline.registerFile called ExtractFilenameFromSubject a
+// second time on an already-extracted filename. Characters like '&' and ';'
+// (from XML-decoded &amp;amp;amp;) aren't in the basic-filename regex's
+// character class, causing the regex to truncate the filename at the special
+// character and backtrack to an interior dot segment as the "extension".
+//
+// Example: "Mascot.Mayhem&amp;Putt.Up...playWEB.part01.rar" was truncated to
+// "Mascot.Mayh" (52 bytes, treating ".Mayh" as a 4-char extension).
+func TestPipelineRegisterFile_PreservesSpecialCharFilenames(t *testing.T) {
+	t.Parallel()
+
+	// These Subject values simulate what the NZB parser produces after
+	// ExtractFilenameFromSubject + SanitizeFilename. They contain special
+	// characters that would break the basic-filename regex if it were
+	// applied a second time.
+	tests := []struct {
+		name    string
+		subject string
+		wantExt string // the file extension that must be preserved
+	}{
+		{
+			name:    "ampersand_from_xml",
+			subject: "Kamp.Koral.S02E09.Mascot.Mayhem&amp;Putt.Up.1080p.SKST.WEB-DL.DD.2.0.H.264-playWEB.part01.rar",
+			wantExt: ".rar",
+		},
+		{
+			name:    "bare_ampersand",
+			subject: "Show.Name&More.S01E01.part01.rar",
+			wantExt: ".rar",
+		},
+		{
+			name:    "semicolons_in_name",
+			subject: "file;name;test.mkv",
+			wantExt: ".mkv",
+		},
+		{
+			name:    "h264_with_extension",
+			subject: "Show.S01E01.1080p.WEB-DL.DD.2.0.H.264-LAZY.rar",
+			wantExt: ".rar",
+		},
+		{
+			name:    "h264_no_extension",
+			subject: "Show.S01E01.1080p.WEB-DL.DD.2.0.H.264",
+			wantExt: ".264",
+		},
+		{
+			name:    "par2_extension",
+			subject: "release.name.vol000+01.par2",
+			wantExt: ".par2",
+		},
+		{
+			name:    "simple_rar",
+			subject: "normal.file.name.part01.rar",
+			wantExt: ".rar",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			q, err := queue.Load(t.TempDir())
+			if err != nil {
+				t.Fatalf("queue.Load: %v", err)
+			}
+			job := &queue.Job{
+				ID:       "job-" + tt.name,
+				Name:     "test-job",
+				Filename: "test.nzb",
+				Status:   "Queued",
+			}
+			job.Files = append(job.Files, queue.JobFile{
+				Subject: tt.subject,
+				Bytes:   1024,
+				Articles: []queue.JobArticle{
+					{ID: "<art@test>", Bytes: 1024, Number: 1},
+				},
+			})
+			job.TotalBytes = 1024
+			job.RemainingBytes = 1024
+			if err := q.Add(job); err != nil {
+				t.Fatalf("queue.Add: %v", err)
+			}
+
+			dlDir := t.TempDir()
+			p := &pipeline{
+				log:         slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+				queue:       q,
+				downloadDir: dlDir,
+				sanitize:    fsutil.SanitizeOptions{},
+				fileInfo:    make(map[fileKey]assembler.FileInfo),
+			}
+
+			if err := p.registerFile(job.ID, 0); err != nil {
+				t.Fatalf("registerFile: %v", err)
+			}
+
+			fi, ok := p.fileInfo[fileKey{jobID: job.ID, fileIdx: 0}]
+			if !ok {
+				t.Fatal("fileInfo not registered")
+			}
+
+			base := filepath.Base(fi.Path)
+			ext := filepath.Ext(base)
+
+			// The file extension must be preserved — the whole point of
+			// using the pre-extracted Subject is that postproc can identify
+			// par2/rar/mkv files by extension.
+			if ext != tt.wantExt {
+				t.Errorf("extension = %q, want %q (full path basename: %q)",
+					ext, tt.wantExt, base)
+			}
+
+			// The basename must contain most of the original subject's
+			// content (SanitizeFilename may replace illegal chars like &
+			// with _, but must not truncate the filename to 52 bytes).
+			if len(base) < len(tt.subject)/2 {
+				t.Errorf("basename %q (%d bytes) is suspiciously short for subject %q (%d bytes) — possible double-extraction truncation",
+					base, len(base), tt.subject, len(tt.subject))
+			}
+		})
 	}
 }
