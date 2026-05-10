@@ -19,7 +19,9 @@
 	let files = $state<QueueFile[] | null>(null);
 	let filesLoading = $state(false);
 	let filesError = $state<string | null>(null);
-	const FILES_REFRESH_MS = 1000;
+	// 2 s — at 1 s the drawer redraws so often it visibly judders on
+	// large file lists; 2 s feels live without thrashing.
+	const FILES_REFRESH_MS = 2000;
 	let lastFilesFetch = 0;
 	let pendingFilesRefresh: ReturnType<typeof setTimeout> | null = null;
 
@@ -35,13 +37,51 @@
 	let etaText = $derived(formatETA(slot.eta_seconds ?? 0));
 	let isDownloading = $derived(slot.current_stage === 'download');
 
+	/**
+	 * Apply an incoming files array to the reactive `files` state.
+	 *
+	 * On the first load (`files == null`) or when the shape changes
+	 * (length differs, or any name at the same index differs — order
+	 * is normally NZB-stable but we don't want to assume), fall back
+	 * to a full assignment.
+	 *
+	 * Otherwise, mutate fields in place so Svelte 5's deep $state
+	 * reactivity only re-renders the cells that actually changed.
+	 * Most refreshes only touch bytes_downloaded (and occasionally
+	 * `state`) on the actively-downloading file; in-place updates
+	 * leave the other 99 rows untouched.
+	 */
+	function applyFilesUpdate(next: QueueFile[]) {
+		const cur = files;
+		if (!cur || cur.length !== next.length) {
+			files = next;
+			return;
+		}
+		// Detect order/identity change — if any name has shifted, the
+		// in-place mapping isn't valid; fall back to replacement.
+		for (let i = 0; i < next.length; i++) {
+			if (cur[i].name !== next[i].name) {
+				files = next;
+				return;
+			}
+		}
+		// Same shape, same order. Mutate only the fields that moved.
+		for (let i = 0; i < next.length; i++) {
+			const c = cur[i];
+			const n = next[i];
+			if (c.bytes !== n.bytes) c.bytes = n.bytes;
+			if (c.bytes_downloaded !== n.bytes_downloaded) c.bytes_downloaded = n.bytes_downloaded;
+			if (c.state !== n.state) c.state = n.state;
+		}
+	}
+
 	function loadFiles() {
 		filesLoading = true;
 		filesError = null;
 		lastFilesFetch = Date.now();
 		fetchQueueJobDetail(slot.nzo_id)
 			.then((res) => {
-				files = res.queue.slots[0]?.files ?? [];
+				applyFilesUpdate(res.queue.slots[0]?.files ?? []);
 			})
 			.catch((e) => {
 				filesError = e instanceof Error ? e.message : String(e);
@@ -74,10 +114,22 @@
 		if (expanded) {
 			loadFiles();
 			const unsub = subscribeWS((event) => {
-				if (event.event === 'queue_updated') scheduleFilesRefresh();
+				// Skip refreshes when the tab isn't visible — the
+				// drawer reflows on every update, and there's no
+				// point paying that cost (or warming the meter on
+				// the server) when nobody's looking. We refresh once
+				// on visibilitychange when the user returns.
+				if (event.event === 'queue_updated' && !document.hidden) {
+					scheduleFilesRefresh();
+				}
 			});
+			const onVisibility = () => {
+				if (!document.hidden) loadFiles();
+			};
+			document.addEventListener('visibilitychange', onVisibility);
 			return () => {
 				unsub();
+				document.removeEventListener('visibilitychange', onVisibility);
 				if (pendingFilesRefresh) {
 					clearTimeout(pendingFilesRefresh);
 					pendingFilesRefresh = null;
