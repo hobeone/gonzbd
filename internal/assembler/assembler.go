@@ -162,6 +162,13 @@ type openFile struct {
 	handle       *os.File
 	info         FileInfo
 	partsWritten int
+	// maxWritten tracks the highest byte position written (offset + len).
+	// Used to truncate the file to its true decoded size at completion.
+	// Pre-allocation (fallocate/ftruncate) sets the file size to the
+	// NZB-declared encoded size, which is ~2% larger than the actual
+	// decoded content. Without truncation, the trailing zeros cause
+	// par2 to report files as damaged despite 100% download health.
+	maxWritten int64
 	// seenFailed dedupes FatalErr requests by Message-ID so a duplicate
 	// emission (shouldn't happen under B.6's Emitted gate, but defence
 	// in depth) cannot double-count a part toward TotalParts.
@@ -647,6 +654,20 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	if f.info.TotalParts > 0 && f.partsWritten >= f.info.TotalParts {
 		// Drain any remaining cached articles for this file before close.
 		a.drainCacheForFile(wc, f, key)
+		// Truncate to the actual decoded size. Pre-allocation
+		// (fallocate/ftruncate) extends the file to the NZB-declared
+		// encoded size, which includes yEnc overhead (~2% larger).
+		// Without this truncation the file has trailing zero bytes,
+		// which causes par2 to report it as damaged.
+		if f.maxWritten > 0 {
+			if err := f.handle.Truncate(f.maxWritten); err != nil {
+				a.log.Error("truncate completed file to decoded size",
+					"path", f.info.Path,
+					"expected", f.maxWritten,
+					"error", err,
+				)
+			}
+		}
 		// Durability: fsync before closing and reporting completion.
 		if err := f.handle.Sync(); err != nil {
 			a.log.Error("fsync completed file",
@@ -711,6 +732,12 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 // coalesced WriteAt. Under memory pressure (>90% of limit), the file with
 // the most buffered data is force-flushed.
 func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequest, wc *writeCache, open map[fileKey]*openFile) bool {
+	// Track the high-water mark of decoded bytes so we can truncate
+	// the file to its true size at completion (see processRequest).
+	if end := req.Offset + int64(len(req.Data)); end > f.maxWritten {
+		f.maxWritten = end
+	}
+
 	if wc.buffer(key, req.Offset, req.Data) {
 		telemetry.CacheHits.Add(1)
 		// Article buffered. Check for a flushable contiguous run.
