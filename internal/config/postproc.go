@@ -43,4 +43,10 @@ type PostProcConfig struct {
 	// DeobfuscateFilenames renames obfuscated files (random hex/UUIDs)
 	// to use the job name as a base. Defaults to true.
 	DeobfuscateFilenames bool `yaml:"deobfuscate_filenames" json:"deobfuscate_filenames"`
+
+	// IgnoreSamples deletes files matching the SABnzbd sample/proof
+	// regex (case-insensitive `(sample|proof)` with a word boundary)
+	// after a successful unpack. Default false; mirrors Python
+	// SABnzbd's misc.ignore_samples option.
+	IgnoreSamples bool `yaml:"ignore_samples" json:"ignore_samples"`
 }

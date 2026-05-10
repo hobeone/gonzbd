@@ -266,6 +266,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		Sorters:              cfg.Sorters,
 		ScriptDir:            cfg.General.ScriptDir,
 		DeobfuscateFilenames: cfg.PostProc.DeobfuscateFilenames,
+		IgnoreSamples:        cfg.PostProc.IgnoreSamples,
 		EnableUnrar:          cfg.PostProc.EnableUnrar,
 		Enable7zip:           cfg.PostProc.Enable7zip,
 		EnableParCleanup:     cfg.PostProc.EnableParCleanup,
