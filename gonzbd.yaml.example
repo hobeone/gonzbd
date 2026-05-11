@@ -32,7 +32,12 @@ general:
   nzb_key: ""
 
   # When true, requests from 127.0.0.0/8 or ::1 bypass API key checks.
+  # This is only needed for keyless CLI/curl access from localhost
+  # (e.g., "curl http://localhost:4289/api?mode=status" without an
+  # apikey parameter). The web UI does NOT need this — it receives
+  # the API key automatically via a cookie set on page load.
   # Automatically disabled when inet_exposure is set to "inet".
+  # Protected against CSRF via Origin/Sec-Fetch-Site header checks.
   localhost_bypass: false
 
   # How the server is exposed to the network. Set to "inet" when behind
