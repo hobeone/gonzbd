@@ -126,6 +126,37 @@ func TestInspect_NotRAR(t *testing.T) {
 	}
 }
 
+func TestSanitizeName(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "movie.mkv", "movie.mkv"},
+		{"unix_traversal", "../../etc/passwd", "passwd"},
+		{"windows_traversal", `..\..\etc\passwd`, "passwd"},
+		{"deep_traversal", "../../../../../../../tmp/evil.sh", "evil.sh"},
+		{"absolute_unix", "/etc/shadow", "shadow"},
+		{"absolute_windows", `C:\Windows\System32\cmd.exe`, "cmd.exe"},
+		{"mixed_separators", `foo/bar\baz/qux.txt`, "qux.txt"},
+		{"null_bytes", "file\x00name.txt", "file_name.txt"},
+		{"empty", "", "unknown"},
+		{"dot", ".", "unknown"},
+		{"slash", "/", "unknown"},
+		{"just_slashes", "///", "unknown"},
+		{"backslash_only", `\`, "unknown"},
+		{"current_dir_prefix", "./file.txt", "file.txt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeName(tc.in)
+			if got != tc.want {
+				t.Errorf("sanitizeName(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // writeTemp creates a temporary file with the given content and returns its path.
 // The file is cleaned up when the test finishes.
 func writeTemp(t *testing.T, name string, data []byte) string {

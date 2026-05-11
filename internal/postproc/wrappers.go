@@ -348,6 +348,19 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			continue
 		}
 		logf(log, job, slog.LevelInfo, "Extracted %s successfully", a.Name)
+
+		// Post-extraction containment check: verify all extracted files
+		// are inside the output directory. A malicious archive could
+		// contain paths like "../../../etc/crontab" that escape outDir.
+		if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
+			job.UnpackError = true
+			logf(log, job, slog.LevelWarn, "Error: containment violation after extracting %q: %v", a.Name, cErr)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("unpack %q: containment check: %w", a.Name, cErr)
+			}
+			continue
+		}
+
 		// Capture tool output on success.
 		if res.Output != "" {
 			job.OutputLines = append(job.OutputLines,

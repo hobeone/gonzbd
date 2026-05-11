@@ -547,6 +547,33 @@ func TestReadDotStuffedBody(t *testing.T) {
 	}
 }
 
+// TestReadDotStuffedBody_ExceedsMaxSize verifies that readDotStuffedBody
+// returns an error when the total body exceeds maxBodySize (10 MB).
+func TestReadDotStuffedBody_ExceedsMaxSize(t *testing.T) {
+	// Build a reader that produces lines of ~1000 bytes each, exceeding 10 MB
+	// total without a dot-terminator before the limit.
+	lineLen := 1000
+	line := strings.Repeat("A", lineLen) + "\r\n"
+	// We need enough lines to exceed maxBodySize (10*1024*1024 bytes).
+	numLines := (maxBodySize / lineLen) + 10
+	var sb strings.Builder
+	for range numLines {
+		sb.WriteString(line)
+	}
+	// Add the dot-terminator after the limit — it should never be reached.
+	sb.WriteString(".\r\n")
+
+	r := bufio.NewReader(strings.NewReader(sb.String()))
+	_, err := readDotStuffedBody(r)
+	if err == nil {
+		t.Fatal("expected error for body exceeding maxBodySize, got nil")
+	}
+	wantSubstr := fmt.Sprintf("body exceeds %d bytes", maxBodySize)
+	if !strings.Contains(err.Error(), wantSubstr) {
+		t.Errorf("error = %q, want substring %q", err.Error(), wantSubstr)
+	}
+}
+
 type blockLimiter struct {
 	enabled atomic.Bool
 	blocked chan struct{}

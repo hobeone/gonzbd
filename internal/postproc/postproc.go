@@ -2,6 +2,7 @@ package postproc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -66,10 +67,12 @@ type PostProcessor struct {
 
 	// busy is true while a job's stages are executing.
 	// currentJobID is the ID of the in-flight job (empty when not busy).
-	// Both are guarded by busyMu so Has can atomically observe the
+	// started guards against double Start calls.
+	// All three are guarded by busyMu so Has can atomically observe the
 	// "queued-or-running" set.
 	busyMu       sync.Mutex
 	busy         bool
+	started      bool
 	currentJobID string
 
 	// history tracks all completed jobs for the UI.
@@ -96,10 +99,21 @@ func New(opts Options) *PostProcessor {
 	}
 }
 
+// ErrAlreadyStarted is returned by Start when the worker is already running.
+var ErrAlreadyStarted = errors.New("postproc: already started")
+
 // Start launches the worker goroutine.  ctx is the application-level context;
-// the worker also stops when Stop is called.  Returns an error only when the
-// worker is already running.
+// the worker also stops when Stop is called.  Returns ErrAlreadyStarted if
+// the worker is already running.
 func (p *PostProcessor) Start(ctx context.Context) error {
+	p.busyMu.Lock()
+	if p.started {
+		p.busyMu.Unlock()
+		return ErrAlreadyStarted
+	}
+	p.started = true
+	p.busyMu.Unlock()
+
 	p.workerCtx, p.workerCancel = context.WithCancel(ctx)
 	p.wg.Go(func() {
 		p.run()

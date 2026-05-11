@@ -8,6 +8,8 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/mmcdole/gofeed"
@@ -76,13 +78,13 @@ func Parse(ctx context.Context, url string, client *http.Client) ([]Item, error)
 // normalizeItem converts a gofeed.Item to our Item type.
 func normalizeItem(fi *gofeed.Item) Item {
 	item := Item{
-		Title: fi.Title,
+		Title: stripHTMLTags(fi.Title),
 	}
 
 	// Prefer enclosure link for direct NZB/binary downloads.
 	for _, enc := range fi.Enclosures {
 		if enc.URL != "" {
-			item.URL = enc.URL
+			item.URL = sanitizeURL(enc.URL)
 			if enc.Length != "" {
 				item.Size = parseEnclosureLength(enc.Length)
 			}
@@ -90,19 +92,24 @@ func normalizeItem(fi *gofeed.Item) Item {
 		}
 	}
 	if item.URL == "" {
-		item.URL = fi.Link
+		item.URL = sanitizeURL(fi.Link)
 	}
 
 	// Use GUID as stable ID; fall back to link.
 	if fi.GUID != "" {
-		item.ID = fi.GUID
+		// If GUID looks like an HTTP URL keep it; otherwise strip tags.
+		if isSafeURL(fi.GUID) {
+			item.ID = fi.GUID
+		} else {
+			item.ID = stripHTMLTags(fi.GUID)
+		}
 	} else {
 		item.ID = item.URL
 	}
 
 	// InfoURL is the human-facing page when the GUID looks like a URL and
 	// differs from the download link.
-	if fi.GUID != "" && fi.GUID != item.URL && len(fi.GUID) > 4 && fi.GUID[:4] == "http" {
+	if fi.GUID != "" && fi.GUID != item.URL && isSafeURL(fi.GUID) {
 		item.InfoURL = fi.GUID
 	}
 
@@ -120,6 +127,33 @@ func normalizeItem(fi *gofeed.Item) Item {
 	}
 
 	return item
+}
+
+// htmlTagRe matches HTML/XML tags for stripping.
+var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
+
+// stripHTMLTags removes all HTML tags from s.
+func stripHTMLTags(s string) string {
+	return htmlTagRe.ReplaceAllString(s, "")
+}
+
+// isSafeURL returns true if u starts with http:// or https://.
+func isSafeURL(u string) bool {
+	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
+}
+
+// sanitizeURL returns the URL if it uses a safe scheme (http/https),
+// or empty string otherwise. This blocks javascript:, data:, file:///
+// and other dangerous schemes from propagating to the web UI.
+func sanitizeURL(u string) string {
+	if isSafeURL(u) {
+		return u
+	}
+	// Allow empty strings and relative URLs (no scheme).
+	if u == "" || (!strings.Contains(u, ":") && !strings.HasPrefix(u, "//")) {
+		return u
+	}
+	return ""
 }
 
 // parseEnclosureLength converts an enclosure length string to int64.

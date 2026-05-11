@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
+	"strings"
 
 	rardecode "github.com/nwaples/rardecode/v2"
 )
@@ -107,7 +109,7 @@ func Inspect(path string) (Info, error) {
 	}
 
 	for _, f := range files {
-		info.Filenames = append(info.Filenames, f.Name)
+		info.Filenames = append(info.Filenames, sanitizeName(f.Name))
 		if f.Encrypted || f.HeaderEncrypted {
 			info.Encrypted = true
 		}
@@ -141,6 +143,26 @@ func detectVersion(path string) (int, error) {
 	}
 
 	return 0, ErrNotRAR
+}
+
+// sanitizeName strips directory traversal components from an untrusted
+// RAR header filename. It uses path.Base (forward-slash aware, OS-independent)
+// to extract the final path component, replaces null bytes, and falls back
+// to "unknown" for empty results.
+func sanitizeName(name string) string {
+	// Normalize both forward and back slashes to forward slashes.
+	// filepath.ToSlash only converts os.PathSeparator, which on Linux
+	// is already '/'. RAR archives from Windows use '\' as separator,
+	// so we must handle that explicitly.
+	name = strings.ReplaceAll(name, "\\", "/")
+	// Strip null bytes — these can bypass string comparisons.
+	name = strings.ReplaceAll(name, "\x00", "_")
+	// path.Base returns the last element of the path.
+	name = path.Base(name)
+	if name == "" || name == "." || name == "/" {
+		return "unknown"
+	}
+	return name
 }
 
 // bytesEqual compares two byte slices for equality without importing bytes.
