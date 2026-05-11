@@ -5,12 +5,17 @@ package rss
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"time"
 
 	"github.com/mmcdole/gofeed"
 )
+
+// maxFeedSize caps the response body read from an RSS/Atom feed.
+// 10 MiB is generous — real feeds are typically under 1 MiB.
+const maxFeedSize = 10 * 1024 * 1024 // 10 MB
 
 // Item is a normalized feed entry ready for filter evaluation.
 type Item struct {
@@ -32,11 +37,27 @@ type Item struct {
 
 // Parse fetches one feed URL and returns normalized Items.
 // The caller-supplied client controls timeouts and transport options.
+// The response body is capped at maxFeedSize to prevent OOM from
+// maliciously large responses.
 func Parse(ctx context.Context, url string, client *http.Client) ([]Item, error) {
-	fp := gofeed.NewParser()
-	fp.Client = client
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("rss: build request for %q: %w", url, err)
+	}
 
-	feed, err := fp.ParseURLWithContext(url, ctx)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("rss: fetch %q: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("rss: fetch %q: HTTP %d", url, resp.StatusCode)
+	}
+
+	limited := io.LimitReader(resp.Body, maxFeedSize+1)
+	fp := gofeed.NewParser()
+	feed, err := fp.Parse(limited)
 	if err != nil {
 		return nil, fmt.Errorf("rss: parse %q: %w", url, err)
 	}

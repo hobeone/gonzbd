@@ -6,6 +6,8 @@ import (
 	"compress/gzip"
 	"crypto/md5" //nolint:gosec // test mirrors parser's MD5 usage
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -346,6 +348,81 @@ func TestParseMissingSubjectDefaultsToUnknown(t *testing.T) {
 	}
 	if got.Files[0].Subject != "unknown" {
 		t.Errorf("Subject = %q, want %q", got.Files[0].Subject, "unknown")
+	}
+}
+
+// TestParse_InputSizeLimit verifies that an NZB exceeding maxNZBSize is
+// rejected rather than consuming unbounded memory (C5 – XML bomb).
+func TestParse_InputSizeLimit(t *testing.T) {
+	// Use a streaming reader that yields XML content exceeding maxNZBSize
+	// without allocating the full buffer in memory.
+	// Structure: prolog + <nzb><head><meta type="junk"> + N×'A' + </meta></head></nzb>
+	prolog := []byte(`<?xml version="1.0"?><nzb><head><meta type="junk">`)
+	epilog := []byte(`</meta></head></nzb>`)
+
+	// The oversize reader streams: prolog, then maxNZBSize+1024 bytes of 'A', then epilog.
+	r := io.MultiReader(
+		bytes.NewReader(prolog),
+		io.LimitReader(&infiniteAReader{}, maxNZBSize+1024),
+		bytes.NewReader(epilog),
+	)
+
+	_, err := Parse(r)
+	if err == nil {
+		t.Fatal("expected error for NZB exceeding maxNZBSize")
+	}
+}
+
+// infiniteAReader is an io.Reader that yields an endless stream of 'A' bytes.
+type infiniteAReader struct{}
+
+func (infiniteAReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'A'
+	}
+	return len(p), nil
+}
+
+// TestParse_ExcessiveFiles verifies that the parser rejects NZBs with
+// more than maxFiles <file> elements (H2 – unbounded file count).
+func TestParse_ExcessiveFiles(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0"?><nzb>`)
+	for i := range maxFiles + 1 {
+		fmt.Fprintf(&b, `<file subject="f%d" date="1700000000">`+
+			`<groups><group>g</group></groups>`+
+			`<segments><segment bytes="100" number="1">id%d@h</segment></segments>`+
+			`</file>`, i, i)
+	}
+	b.WriteString(`</nzb>`)
+
+	_, err := Parse(strings.NewReader(b.String()))
+	if err == nil {
+		t.Fatal("expected error for excessive file count")
+	}
+	if !strings.Contains(err.Error(), "file count exceeds limit") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestParse_ExcessiveSegments verifies that the parser rejects NZBs with
+// more than maxSegments total segments (H2 – unbounded segment count).
+func TestParse_ExcessiveSegments(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0"?><nzb>`)
+	b.WriteString(`<file subject="big" date="1700000000">`)
+	b.WriteString(`<groups><group>g</group></groups><segments>`)
+	for i := range maxSegments + 1 {
+		fmt.Fprintf(&b, `<segment bytes="100" number="%d">id%d@h</segment>`, i+1, i)
+	}
+	b.WriteString(`</segments></file></nzb>`)
+
+	_, err := Parse(strings.NewReader(b.String()))
+	if err == nil {
+		t.Fatal("expected error for excessive segment count")
+	}
+	if !strings.Contains(err.Error(), "segment count exceeds limit") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
