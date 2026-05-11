@@ -50,6 +50,7 @@ func TestParseFileDescriptions(t *testing.T) {
 		{
 			FileName: fileName,
 			Hash16k:  hash16k,
+			FileSize: 123456,
 		},
 	}
 
