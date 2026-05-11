@@ -59,6 +59,12 @@ type ArticleResult struct {
 	// be written. Derived from yEnc/UU headers during decoding.
 	Offset int64
 
+	// CRC is the CRC32 of the decoded article data, computed by the yEnc
+	// decoder. Used by the assembler to incrementally build a whole-file
+	// CRC for QuickCheck verification. Zero when the article failed or
+	// was UU-encoded (UU does not carry CRC information).
+	CRC uint32
+
 	// Err is the dispatch outcome. nil = success. errors.Is against
 	// sentinels in internal/nntp to classify failures.
 	Err error

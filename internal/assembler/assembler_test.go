@@ -79,7 +79,7 @@ func TestOutOfOrderAssembly(t *testing.T) {
 
 	var completions []string
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(jobID string, fileIdx int) {
+	opts.OnFileComplete = func(jobID string, fileIdx int, _ uint32) {
 		completions = append(completions, fmt.Sprintf("%s:%d", jobID, fileIdx))
 	}
 
@@ -114,7 +114,7 @@ func TestFileCompleteCallbackFiresExactlyOnce(t *testing.T) {
 
 	var count atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { count.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { count.Add(1) }
 
 	a := startAssembler(t, opts)
 
@@ -143,7 +143,7 @@ func TestMultipleFilesInterleaved(t *testing.T) {
 	completed := make(map[string]bool)
 	var mu sync.Mutex
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(jobID string, fileIdx int) {
+	opts.OnFileComplete = func(jobID string, fileIdx int, _ uint32) {
 		mu.Lock()
 		completed[fmt.Sprintf("%s:%d", jobID, fileIdx)] = true
 		mu.Unlock()
@@ -188,7 +188,7 @@ func TestFileInfoError(t *testing.T) {
 		FileInfo: func(_ string, _ int) (FileInfo, error) {
 			return FileInfo{}, fmt.Errorf("no such file")
 		},
-		OnFileComplete: func(_ string, _ int) { completions.Add(1) },
+		OnFileComplete: func(_ string, _ int, _ uint32) { completions.Add(1) },
 	}
 
 	a := startAssembler(t, opts)
@@ -464,7 +464,7 @@ func TestConcurrentWriteArticle(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 

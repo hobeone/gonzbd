@@ -248,6 +248,7 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 		MessageID: res.MessageID,
 		Offset:    res.Offset,
 		Data:      res.Data,
+		CRC:       res.CRC,
 	})
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 		p.log.Warn("write article failed, returning to dispatch pool",
