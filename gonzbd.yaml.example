@@ -100,7 +100,8 @@ general:
   #     nntp: error        # only show NNTP errors
   #     rss: off           # completely silence RSS feed checks
 
-  # UI language code (BCP-47). Default: en.
+  # Reserved for future UI translation support. Currently unused —
+  # the UI is English-only. Default: en.
   language: en
 
 downloads:
