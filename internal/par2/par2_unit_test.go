@@ -282,3 +282,55 @@ func TestFindPar2Files_VolumeOnly(t *testing.T) {
 		t.Errorf("ExtraFiles = %d, want 2", len(sets[0].ExtraFiles))
 	}
 }
+
+// L15: Verify FindPar2Files matches .PAR2 and .Par2 extensions (case-insensitive).
+func TestFindPar2Files_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Mixed case: main file is .PAR2, volume file is .Par2.
+	for _, name := range []string{
+		"album.PAR2",
+		"album.vol000+01.Par2",
+		"album.vol001+02.par2",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("par2"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	sets, err := FindPar2Files(dir)
+	if err != nil {
+		t.Fatalf("FindPar2Files: %v", err)
+	}
+	if len(sets) != 1 {
+		t.Fatalf("expected 1 set for mixed-case .par2 files, got %d", len(sets))
+	}
+	if sets[0].Name != "album" {
+		t.Errorf("Name = %q, want %q", sets[0].Name, "album")
+	}
+	// Should have the main .PAR2 file and 2 volume files.
+	if sets[0].MainFile == "" {
+		t.Error("MainFile should be set for .PAR2 main file")
+	}
+	if len(sets[0].ExtraFiles) != 2 {
+		t.Errorf("ExtraFiles = %d, want 2", len(sets[0].ExtraFiles))
+	}
+}
+
+// L15 follow-up: Ensure all-uppercase .PAR2 extension is recognized by setName.
+func TestSetName_UppercasePAR2(t *testing.T) {
+	t.Parallel()
+	got := setName("data.PAR2")
+	if got != "data" {
+		t.Errorf("setName(%q) = %q, want %q", "data.PAR2", got, "data")
+	}
+}
+
+func TestSetName_MixedCaseVolume(t *testing.T) {
+	t.Parallel()
+	got := setName("data.Vol015+16.Par2")
+	if got != "data" {
+		t.Errorf("setName(%q) = %q, want %q", "data.Vol015+16.Par2", got, "data")
+	}
+}
