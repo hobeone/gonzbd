@@ -17,8 +17,8 @@ type FileDesc struct {
 }
 
 var (
-	magic        = []byte("PAR2\x00\x00\x00\x00")
-	typeFileDesc = [16]byte{'P', 'A', 'R', ' ', '2', '.', '0', '\x00', 'F', 'i', 'l', 'e', 'D', 'e', 's', 'c'}
+	magic        = []byte("PAR2\x00PKT")
+	typeFileDesc = [16]byte{'P', 'A', 'R', ' ', '2', '.', '0', 0x00, 'F', 'i', 'l', 'e', 'D', 'e', 's', 'c'}
 )
 
 // ParseFileDescriptions reads path (a .par2 file) and returns all File Description
