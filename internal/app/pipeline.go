@@ -73,6 +73,10 @@ type pipeline struct {
 	sanitize    fsutil.SanitizeOptions
 	numWorkers  int // concurrent handleResult workers; 0 defaults to GOMAXPROCS
 
+	// ctx is the context passed to run(); stored so setCompletions can
+	// avoid blocking forever if run() has already exited.
+	ctx context.Context
+
 	// updateCh receives a swap request with a done channel for ack.
 	updateCh chan completionSwap
 
@@ -92,6 +96,8 @@ type completionSwap struct {
 // and fans out to a pool of worker goroutines via a work channel.
 // Returns when ctx is cancelled.
 func (p *pipeline) run(ctx context.Context) {
+	p.ctx = ctx
+
 	nw := p.numWorkers
 	if nw <= 0 {
 		nw = max(runtime.GOMAXPROCS(0), 2)
@@ -156,8 +162,15 @@ func (p *pipeline) run(ctx context.Context) {
 // channel and acknowledged the swap.
 func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
 	done := make(chan struct{})
-	p.updateCh <- completionSwap{ch: ch, done: done}
-	<-done
+	select {
+	case p.updateCh <- completionSwap{ch: ch, done: done}:
+	case <-p.ctx.Done():
+		return
+	}
+	select {
+	case <-done:
+	case <-p.ctx.Done():
+	}
 }
 
 // handleResult processes one downloader output: decodes the body if there

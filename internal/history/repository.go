@@ -222,8 +222,8 @@ func buildWhereClause(opts SearchOptions) (where []string, args []any) {
 		args = append(args, opts.Category)
 	}
 	if opts.Search != "" {
-		where = append(where, "(name LIKE ? OR nzb_name LIKE ?)")
-		like := "%" + opts.Search + "%"
+		where = append(where, "(name LIKE ? ESCAPE '\\' OR nzb_name LIKE ? ESCAPE '\\')")
+		like := "%" + escapeLike(opts.Search) + "%"
 		args = append(args, like, like)
 	}
 	if opts.MD5Sum != "" {
@@ -231,6 +231,13 @@ func buildWhereClause(opts SearchOptions) (where []string, args []any) {
 		args = append(args, opts.MD5Sum)
 	}
 	return where, args
+}
+
+// escapeLike escapes SQL LIKE special characters (%, _, \) in s so they
+// are matched literally. The caller must add ESCAPE '\\' to the LIKE clause.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 // Count returns the total number of entries matching opts, ignoring Start and Limit.

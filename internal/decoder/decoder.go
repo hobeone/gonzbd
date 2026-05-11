@@ -38,7 +38,15 @@ var (
 	// errSizeMismatch is returned when the declared size in the trailer does
 	// not equal the number of bytes decoded.
 	errSizeMismatch = errors.New("decoder: declared size does not match decoded length")
+
+	// ErrBodyTooLarge is returned when the input body exceeds maxDecodeSize.
+	ErrBodyTooLarge = errors.New("decoder: body exceeds maximum decode size")
 )
+
+// maxDecodeSize is the maximum allowed input body size for decoding.
+// Matches the NNTP layer's maxBodySize (10 MB). Direct callers that
+// bypass the NNTP layer are still protected from OOM via this cap.
+const maxDecodeSize = 10 * 1024 * 1024 // 10 MB
 
 // yencHeader holds the fields parsed from a =ybegin / =ypart line pair.
 type yencHeader struct {
@@ -90,6 +98,12 @@ type Article struct {
 // the decoded length, and errMissingTrailer / errMalformed / ErrNotYEnc on
 // structural problems.
 func DecodeArticle(body []byte) (Article, error) {
+	// Guard against huge inputs from direct callers that bypass the
+	// NNTP layer's maxBodySize limit.
+	if len(body) > maxDecodeSize {
+		return Article{}, ErrBodyTooLarge
+	}
+
 	hdr, bodyStart, err := parseHeader(body)
 	if err != nil {
 		return Article{}, err
@@ -160,8 +174,12 @@ func DecodeArticle(body []byte) (Article, error) {
 // boundary is handled correctly (the 0xd6 correctness rule).
 func decodeBody(encoded []byte, sizeHint int64) (out []byte, checksum uint32) {
 	capacity := sizeHint
-	if capacity <= 0 || capacity > int64(len(encoded)) {
-		capacity = int64(len(encoded))
+	// Cap the pre-allocation: the decoded output can never exceed
+	// len(encoded), and never exceed maxDecodeSize. This prevents
+	// attacker-controlled =ybegin size= fields from triggering OOM.
+	maxCap := min(int64(len(encoded)), maxDecodeSize)
+	if capacity <= 0 || capacity > maxCap {
+		capacity = maxCap
 	}
 	out = make([]byte, 0, capacity)
 

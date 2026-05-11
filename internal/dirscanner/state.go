@@ -110,6 +110,14 @@ func (s *Store) Save() error {
 		s.mu.Unlock()
 		return fmt.Errorf("failed to write temporary state file: %w", err)
 	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpName)
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+		return fmt.Errorf("failed to fsync temporary state file: %w", err)
+	}
 	if err := tmpFile.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		s.mu.Lock()

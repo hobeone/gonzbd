@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -102,8 +103,24 @@ func decode(r io.Reader) (*Config, error) {
 // Readers always observe either the previous file or the new file, never
 // a half-written one.
 func (c *Config) Save(path string) error {
+	// Snapshot the YAML bytes under RLock, then release before doing I/O.
 	c.mu.RLock()
-	defer c.mu.RUnlock()
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(c); err != nil {
+		c.mu.RUnlock()
+		return fmt.Errorf("config: encode yaml: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		c.mu.RUnlock()
+		return fmt.Errorf("config: close encoder: %w", err)
+	}
+	c.mu.RUnlock()
+
+	// --- No lock held below this line ---
+
+	data := buf.Bytes()
 
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
@@ -113,24 +130,15 @@ func (c *Config) Save(path string) error {
 	}
 	tmpName := tmp.Name()
 
-	// Best-effort cleanup if any subsequent step fails before rename. The
-	// primary error has already been captured by the caller path; a
-	// secondary Close/Remove failure during cleanup adds no actionable
-	// information.
+	// Best-effort cleanup if any subsequent step fails before rename.
 	cleanup := func() {
 		_ = tmp.Close()        //nolint:errcheck // best-effort cleanup on error path
 		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
 	}
 
-	enc := yaml.NewEncoder(tmp)
-	enc.SetIndent(2)
-	if err := enc.Encode(c); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		cleanup()
-		return fmt.Errorf("config: encode yaml: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("config: close encoder: %w", err)
+		return fmt.Errorf("config: write temp file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		cleanup()
