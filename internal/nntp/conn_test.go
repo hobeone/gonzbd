@@ -323,11 +323,13 @@ func TestFetchContextCancel(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	requestReceived := make(chan struct{})
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
 		c.expect("CAPABILITIES")
 		c.sendCaps()
 		c.expect("BODY <slow@host>")
+		close(requestReceived) // signal that the server received the BODY command
 		<-release
 		c.send("222 0 <slow@host> body follows")
 		c.sendRaw("slow\r\n.\r\n")
@@ -350,8 +352,12 @@ func TestFetchContextCancel(t *testing.T) {
 		_, err := conn.Fetch(cancelCtx, "slow@host")
 		done <- err
 	}()
-	// Give the client a moment to submit the request.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the mock server to confirm it received the BODY command.
+	select {
+	case <-requestReceived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for mock to receive BODY request")
+	}
 	cancel()
 
 	if err := <-done; !errors.Is(err, context.Canceled) {
@@ -360,8 +366,8 @@ func TestFetchContextCancel(t *testing.T) {
 
 	// Let the server send the slow response; the reader discards it.
 	releaseFn()
-	// Wait briefly for the reader to consume it.
-	time.Sleep(50 * time.Millisecond)
+	// The reader goroutine will drain the orphaned response in the
+	// background; the next Fetch's timeout provides the safety net.
 
 	ctx2, cancel2 := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel2()
@@ -590,6 +596,7 @@ func (l *blockLimiter) Wait(ctx context.Context, n int) error {
 }
 
 func TestCloseUnblocksRateLimiter(t *testing.T) {
+	mockDone := make(chan struct{})
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
 		c.expect("CAPABILITIES")
@@ -598,8 +605,8 @@ func TestCloseUnblocksRateLimiter(t *testing.T) {
 		c.send("222 0 <test@host> body follows")
 		// Send a byte to trigger a Read
 		c.sendRaw("abc\r\n")
-		// Wait indefinitely so the socket stays open, preventing socket-close from unblocking the read
-		time.Sleep(2 * time.Second)
+		// Block until the test signals completion instead of sleeping.
+		<-mockDone
 	})
 
 	lim := &blockLimiter{blocked: make(chan struct{})}
@@ -611,7 +618,10 @@ func TestCloseUnblocksRateLimiter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() {
+		close(mockDone) // unblock mock server goroutine
+		_ = conn.Close()
+	})
 
 	// Enable the limiter now that handshake is done.
 	lim.enabled.Store(true)

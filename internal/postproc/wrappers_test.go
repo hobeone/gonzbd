@@ -339,3 +339,42 @@ func TestFinalizeStage_Run(t *testing.T) {
 		t.Errorf("source directory still exists")
 	}
 }
+
+// ---------- TestDeobfuscateStage_NoRenames ----------
+
+// TestDeobfuscateStage_NoRenames verifies that deobfuscation is a no-op when
+// files already have recognizable (non-obfuscated) names.
+func TestDeobfuscateStage_NoRenames(t *testing.T) {
+	t.Parallel()
+	job, dir := stageJob(t)
+
+	// Create files with normal, recognizable names.
+	normalFiles := []string{"movie.mkv", "info.nfo", "sample.jpg"}
+	for _, name := range normalFiles {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("content"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	if err := NewDeobfuscateStage().Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Verify all files still exist with their original names.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	got := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		got[e.Name()] = true
+	}
+	for _, want := range normalFiles {
+		if !got[want] {
+			t.Errorf("file %q missing after deobfuscate; got %v", want, got)
+		}
+	}
+	if len(entries) != len(normalFiles) {
+		t.Errorf("file count = %d, want %d", len(entries), len(normalFiles))
+	}
+}

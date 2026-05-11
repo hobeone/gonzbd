@@ -405,3 +405,88 @@ func TestParseLogLevel(t *testing.T) {
 		})
 	}
 }
+
+// M17: Empty file should return defaults (not panic or error).
+func TestLoad_EmptyFileReturnsDefaults(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.yaml")
+	if err := os.WriteFile(path, []byte{}, 0o644); err != nil {
+		t.Fatalf("write empty file: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load empty file: %v", err)
+	}
+	if len(cfg.General.APIKey) != 16 {
+		t.Errorf("APIKey length = %d, want 16", len(cfg.General.APIKey))
+	}
+	if cfg.General.Port == 0 {
+		t.Error("Port should have a default value, got 0")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default config from empty file should validate: %v", err)
+	}
+}
+
+// M18: Empty post-proc paths should validate OK (auto-detect via PATH).
+func TestValidate_PostProcPaths(t *testing.T) {
+	t.Parallel()
+	cfg, err := Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	// Empty all post-processing paths — should be accepted (auto-detect via PATH).
+	cfg.PostProc.Par2Command = ""
+	cfg.PostProc.UnrarCommand = ""
+	cfg.PostProc.SevenzCommand = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("empty PostProc paths should validate OK (auto-detect via PATH): %v", err)
+	}
+}
+
+// M19: Verify that os.ExpandEnv is only applied to path fields, not raw YAML.
+func TestExpandPath_EnvVarInPathOnly(t *testing.T) {
+	// Cannot use t.Parallel() because t.Setenv mutates the process environment.
+	t.Setenv("GONZBD_TEST_EXPAND", "/resolved")
+	got := expandPath("$GONZBD_TEST_EXPAND/downloads")
+	want := "/resolved/downloads"
+	if got != want {
+		t.Errorf("expandPath($GONZBD_TEST_EXPAND/downloads) = %q, want %q", got, want)
+	}
+
+	// Verify that raw YAML decode does NOT expand env vars.
+	// A password containing a $VAR literal should be preserved verbatim.
+	t.Setenv("SECRET", "leaked")
+	yamlData := `
+general:
+  host: 0.0.0.0
+  port: 8080
+  api_key: "0123456789abcdef"
+  nzb_key: "fedcba9876543210"
+  download_dir: "/tmp/dl"
+  complete_dir: "/tmp/complete"
+servers:
+  - name: test
+    host: news.example.com
+    port: 563
+    username: user
+    password: "pass$SECRET"
+    connections: 8
+    ssl: true
+    ssl_verify: 2
+    timeout: 60
+    pipelining_requests: 2
+    enable: true
+`
+	cfg, err := decode(strings.NewReader(yamlData))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The password should NOT have $SECRET expanded.
+	if cfg.Servers[0].Password != "pass$SECRET" {
+		t.Errorf("password = %q, want %q (env var should NOT be expanded in non-path fields)",
+			cfg.Servers[0].Password, "pass$SECRET")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"net"
@@ -751,4 +752,113 @@ func dotStuff(body []byte) []byte {
 		atLineStart = b == '\n'
 	}
 	return out.Bytes()
+}
+
+// ---------- M26: TestStart_DoubleStartReturnsError ----------
+
+// TestStart_DoubleStartReturnsError verifies that calling Start twice returns
+// ErrAlreadyStarted and the first start remains functional.
+func TestStart_DoubleStartReturnsError(t *testing.T) {
+	downloadDir := t.TempDir()
+	completeDir := t.TempDir()
+	adminDir := t.TempDir()
+
+	mock := startMockNNTP(t, nil)
+
+	appCfg := app.Config{
+		DownloadDir: downloadDir,
+		CompleteDir: completeDir,
+		AdminDir:    adminDir,
+		Servers: []config.ServerConfig{{
+			Name:   "mock",
+			Host:   mock.host,
+			Port:   mock.port,
+			Enable: true,
+		}},
+	}
+
+	application, err := app.New(appCfg, nil)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	defer application.Shutdown()
+
+	// Second Start should fail.
+	err = application.Start(ctx)
+	if !errors.Is(err, app.ErrAlreadyStarted) {
+		t.Errorf("second Start = %v, want ErrAlreadyStarted", err)
+	}
+
+	// First start should still be functional — queue operations should work.
+	if application.Queue() == nil {
+		t.Error("Queue() is nil after double Start")
+	}
+}
+
+// ---------- TestReloadDownloader_ServerChanges ----------
+
+// TestReloadDownloader_ServerChanges verifies that ReloadDownloader correctly
+// accepts new server configurations without error.
+func TestReloadDownloader_ServerChanges(t *testing.T) {
+	downloadDir := t.TempDir()
+	completeDir := t.TempDir()
+	adminDir := t.TempDir()
+
+	mock1 := startMockNNTP(t, nil)
+	mock2 := startMockNNTP(t, nil)
+
+	cfg1 := config.ServerConfig{
+		Name:   "server1",
+		Host:   mock1.host,
+		Port:   mock1.port,
+		Enable: true,
+	}
+	cfg2 := config.ServerConfig{
+		Name:   "server2",
+		Host:   mock2.host,
+		Port:   mock2.port,
+		Enable: true,
+	}
+
+	appCfg := app.Config{
+		DownloadDir: downloadDir,
+		CompleteDir: completeDir,
+		AdminDir:    adminDir,
+		Servers:     []config.ServerConfig{cfg1},
+	}
+
+	application, err := app.New(appCfg, nil)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer application.Shutdown()
+
+	// Reload with both servers.
+	if err := application.ReloadDownloader([]config.ServerConfig{cfg1, cfg2}); err != nil {
+		t.Errorf("ReloadDownloader(both): %v", err)
+	}
+
+	// Reload with only server 2.
+	if err := application.ReloadDownloader([]config.ServerConfig{cfg2}); err != nil {
+		t.Errorf("ReloadDownloader(server2 only): %v", err)
+	}
+
+	// Reload back to server 1 only.
+	if err := application.ReloadDownloader([]config.ServerConfig{cfg1}); err != nil {
+		t.Errorf("ReloadDownloader(server1 only): %v", err)
+	}
 }
