@@ -72,6 +72,45 @@ func TestParseStatus_Empty(t *testing.T) {
 	}
 }
 
+// TestParseStatus_FailurePriorityOverSuccess verifies that when par2 output
+// contains both "All files are correct" and a failure message, the failure
+// takes priority. This can happen when par2 checks multiple files and some
+// pass while the overall result is failure.
+func TestParseStatus_FailurePriorityOverSuccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		output string
+		want   Status
+	}{
+		{
+			name:   "repair not possible + all ok",
+			output: "All files are correct\nRepair is not possible.\nYou need 5 more recovery blocks.\n",
+			want:   StatusRepairNotPossible,
+		},
+		{
+			name:   "repair required + all ok",
+			output: "All files are correct\nRepair is required\n2 file(s) are missing.\n",
+			want:   StatusRepairRequired,
+		},
+		{
+			name:   "invalid par2 + all ok",
+			output: "All files are correct\nMain packet not found\n",
+			want:   StatusInvalidPar2,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := parseStatus(tc.output)
+			if got != tc.want {
+				t.Errorf("parseStatus() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------- setName ----------
 
 func TestSetName_MainFile(t *testing.T) {

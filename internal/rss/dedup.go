@@ -106,6 +106,14 @@ func (s *Store) Save() error {
 		s.mu.Unlock()
 		return fmt.Errorf("rss: write store tmp: %w", err)
 	}
+	if err = tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpName)
+		s.mu.Lock()
+		s.dirty = true
+		s.mu.Unlock()
+		return fmt.Errorf("rss: fsync store tmp: %w", err)
+	}
 	if err = tmpFile.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		s.mu.Lock()

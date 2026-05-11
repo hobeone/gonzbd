@@ -27,6 +27,12 @@ var (
 // DecodeUU does not wire into DecodeArticle; the caller decides which format
 // to try (typically by checking whether DecodeArticle returns ErrNotYEnc).
 func DecodeUU(body []byte) (data []byte, filename string, err error) {
+	// Guard against huge inputs from direct callers that bypass the
+	// NNTP layer's maxBodySize limit.
+	if len(body) > maxDecodeSize {
+		return nil, "", ErrBodyTooLarge
+	}
+
 	line, rest, ok := bytes.Cut(body, []byte("\n"))
 	if !ok {
 		return nil, "", ErrNotUU

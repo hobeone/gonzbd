@@ -156,19 +156,22 @@ func FindPar2Files(dir string) ([]Set, error) {
 }
 
 // parseStatus inspects par2 output lines and returns the most specific Status.
+// Failure conditions are checked first so they take priority over success
+// messages when both appear in the output (e.g. a partial repair attempt
+// that prints "All files are correct" for some files but ultimately fails).
 func parseStatus(output string) Status {
 	switch {
-	case strings.Contains(output, "All files are correct"):
-		return StatusAllFilesOK
-	case strings.Contains(output, "Repair is not possible"):
-		return StatusRepairNotPossible
-	case strings.Contains(output, "Repair is possible"):
-		return StatusRepairPossible
-	case strings.Contains(output, "Repair is required"):
-		return StatusRepairRequired
 	case strings.Contains(output, "Main packet not found"),
 		strings.Contains(output, "The recovery file does not exist"):
 		return StatusInvalidPar2
+	case strings.Contains(output, "Repair is not possible"):
+		return StatusRepairNotPossible
+	case strings.Contains(output, "Repair is required"):
+		return StatusRepairRequired
+	case strings.Contains(output, "Repair is possible"):
+		return StatusRepairPossible
+	case strings.Contains(output, "All files are correct"):
+		return StatusAllFilesOK
 	default:
 		return StatusUnknown
 	}

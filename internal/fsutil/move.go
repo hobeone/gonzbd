@@ -2,8 +2,11 @@ package fsutil
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -35,20 +38,29 @@ func IsRenameMergeNeeded(err error) bool {
 	return IsCrossDeviceError(err) || errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
 }
 
+// ErrSymlinkEscape is returned when a symlink target resolves outside
+// the source directory during a cross-device move.
+var ErrSymlinkEscape = errors.New("symlink target escapes source directory")
+
 // copyAndRemove copies src to dst, preserving the original file mode,
-// then removes src. Symlinks are recreated at the destination rather than
-// having their target content copied. If the copy fails, any partial
-// destination file is cleaned up before returning the error.
+// then removes src. Symlinks are validated: if the resolved target is
+// contained within the source file's parent directory, the symlink is
+// recreated at the destination; otherwise ErrSymlinkEscape is returned.
+// If the copy fails, any partial destination file is cleaned up before
+// returning the error.
 func copyAndRemove(src, dst string) error {
 	info, err := os.Lstat(src)
 	if err != nil {
 		return err
 	}
 
-	// Symlinks: recreate at destination rather than copying target content.
+	// Symlinks: validate containment, then recreate at destination.
 	if info.Mode()&os.ModeSymlink != 0 {
 		target, err := os.Readlink(src)
 		if err != nil {
+			return err
+		}
+		if err := checkSymlinkContainment(src, target); err != nil {
 			return err
 		}
 		if err := os.Symlink(target, dst); err != nil {
@@ -87,4 +99,31 @@ func copyAndRemove(src, dst string) error {
 		return err
 	}
 	return os.Remove(src)
+}
+
+// checkSymlinkContainment verifies that the symlink at symlinkPath with
+// the given target does not escape the symlink's parent directory. Both
+// the resolved target and the parent directory are cleaned to absolute
+// paths before comparison.
+func checkSymlinkContainment(symlinkPath, target string) error {
+	srcDir := filepath.Dir(symlinkPath)
+
+	// Resolve target relative to the symlink's directory.
+	resolved := target
+	if !filepath.IsAbs(target) {
+		resolved = filepath.Join(srcDir, target)
+	}
+	resolved = filepath.Clean(resolved)
+
+	// Resolve srcDir to an absolute, symlink-free path.
+	absDir, err := filepath.Abs(srcDir)
+	if err != nil {
+		return fmt.Errorf("resolve source dir: %w", err)
+	}
+
+	// The resolved target must be within absDir.
+	if !strings.HasPrefix(resolved, absDir+string(filepath.Separator)) && resolved != absDir {
+		return fmt.Errorf("%w: %s -> %s escapes %s", ErrSymlinkEscape, symlinkPath, target, absDir)
+	}
+	return nil
 }
