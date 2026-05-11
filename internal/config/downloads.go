@@ -14,9 +14,6 @@ type DownloadConfig struct {
 	// MinFreeSpace is the minimum free disk space on the download
 	// volume. Below this the downloader pauses.
 	MinFreeSpace ByteSize `yaml:"min_free_space" json:"min_free_space"`
-	// MinFreeSpaceCleanup is the free-space target after post-processing
-	// cleanup completes. Must be >= MinFreeSpace.
-	MinFreeSpaceCleanup ByteSize `yaml:"min_free_space_cleanup" json:"min_free_space_cleanup"`
 
 	// WriteCacheSize is the memory budget for write coalescing in the
 	// assembler. When positive, decoded articles are buffered in memory
