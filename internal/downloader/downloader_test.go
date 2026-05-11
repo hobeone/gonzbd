@@ -355,11 +355,26 @@ func TestDownloaderTryListCleanedOnSuccess(t *testing.T) {
 	}
 
 	// After all articles are successfully processed, tryList and
-	// inFlight should be empty — no leaked entries.
-	d.tryMu.Lock()
-	tryListLen := len(d.tryList)
-	inFlightLen := len(d.inFlight)
-	d.tryMu.Unlock()
+	// inFlight should be empty — no leaked entries. We may need to
+	// wait briefly because handleRequest's deferred clearInFlight runs
+	// after emitResult sends the completion to the channel.
+	var tryListLen, inFlightLen int
+	deadline := time.After(2 * time.Second)
+	for {
+		d.tryMu.Lock()
+		tryListLen = len(d.tryList)
+		inFlightLen = len(d.inFlight)
+		d.tryMu.Unlock()
+		if tryListLen == 0 && inFlightLen == 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			goto check
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+check:
 
 	if tryListLen != 0 {
 		t.Errorf("tryList has %d entries after completion, want 0 (memory leak)", tryListLen)
