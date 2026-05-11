@@ -632,8 +632,7 @@ Key design: Configuration parameters are typed objects with validators. Config r
 | `email_dir` | path | | Email template directory |
 | `log_dir` | path | | Log file directory |
 | `log_level` | string | `info` | Minimum log level (debug, info, warn, error) |
-| `log_allow` | list | | Only log messages from these components |
-| `log_deny` | list | | Suppress log messages from these components |
+| `log_levels` | map | | Per-component log level overrides (e.g., `api: warn`, `nntp: error`, `downloader: debug`). Valid levels: debug, info, warn, error, off. Components not listed inherit `log_level`. |
 | `admin_dir` | path | | Admin/state file directory |
 | `language` | string | `en` | UI language |
 

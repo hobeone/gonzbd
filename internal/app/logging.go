@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"time"
 
 	"github.com/lmittmann/tint"
@@ -16,17 +15,18 @@ import (
 
 // LoggingOptions configures structured logging behavior.
 type LoggingOptions struct {
-	// Level is the minimum log level (Debug, Info, Warn, Error).
+	// Level is the global minimum log level (Debug, Info, Warn, Error).
 	Level slog.Level
 	// LogFile is the path to the log file. Empty means stderr only.
 	LogFile string
 	// AddSource adds file:line annotations to each log record.
 	AddSource bool
 
-	// Allow restricts logging to only these components (e.g., "downloader").
-	Allow []string
-	// Deny suppresses logging from these components.
-	Deny []string
+	// ComponentLevels overrides Level for specific components.
+	// Keys are component names (e.g., "api", "downloader").
+	// Values are slog.Level values. Components not listed inherit Level.
+	// Use config.LevelOff to completely silence a component.
+	ComponentLevels map[string]slog.Level
 }
 
 // Setup returns a configured *slog.Logger that writes to stderr and
@@ -42,9 +42,20 @@ func Setup(opts LoggingOptions) (*slog.Logger, io.Closer, error) {
 	var closer io.Closer
 	var handlers []slog.Handler
 
+	// When per-component levels are set, the base handlers must accept
+	// the lowest configured level so that the filterHandler can do
+	// fine-grained suppression. Without this, a component override like
+	// "downloader: debug" would be blocked by a global "info" handler.
+	handlerLevel := opts.Level
+	for _, lvl := range opts.ComponentLevels {
+		if lvl < handlerLevel {
+			handlerLevel = lvl
+		}
+	}
+
 	// 1. Console handler (Colorized)
 	handlers = append(handlers, tint.NewHandler(os.Stderr, &tint.Options{
-		Level:      opts.Level,
+		Level:      handlerLevel,
 		AddSource:  opts.AddSource,
 		TimeFormat: time.TimeOnly,
 	}))
@@ -62,12 +73,12 @@ func Setup(opts LoggingOptions) (*slog.Logger, io.Closer, error) {
 		closer = f
 
 		handlers = append(handlers, slog.NewTextHandler(f, &slog.HandlerOptions{
-			Level:     opts.Level,
+			Level:     handlerLevel,
 			AddSource: opts.AddSource,
 		}))
 	}
 
-	// 3. Combine and wrap with filtering
+	// 3. Combine and wrap with per-component filtering
 	var h slog.Handler
 	if len(handlers) == 1 {
 		h = handlers[0]
@@ -75,11 +86,11 @@ func Setup(opts LoggingOptions) (*slog.Logger, io.Closer, error) {
 		h = &multiHandler{handlers: handlers}
 	}
 
-	if len(opts.Allow) > 0 || len(opts.Deny) > 0 {
+	if len(opts.ComponentLevels) > 0 {
 		h = &filterHandler{
-			next:  h,
-			allow: opts.Allow,
-			deny:  opts.Deny,
+			next:   h,
+			global: opts.Level,
+			levels: opts.ComponentLevels,
 		}
 	}
 
@@ -133,25 +144,59 @@ func (m *multiHandler) WithGroup(name string) slog.Handler {
 	return &multiHandler{handlers: next}
 }
 
-// filterHandler drops log records based on component allow/deny lists.
+// filterHandler applies per-component log level overrides.
+// Records from a component with an entry in the levels map must meet
+// that level to be emitted. Records from unlisted components (or with
+// no component attribute) pass through to the next handler unchanged
+// (subject to its own level check).
 type filterHandler struct {
-	next  slog.Handler
-	allow []string
-	deny  []string
+	next   slog.Handler
+	global slog.Level
+	levels map[string]slog.Level
 
 	// currentAttrs holds the attributes added via WithAttrs.
 	currentAttrs []slog.Attr
 }
 
 func (f *filterHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	// We cannot check the component here (no access to attributes),
+	// so be permissive and let Handle do the filtering.
 	return f.next.Enabled(ctx, level)
 }
 
 func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
-	// Extract "component" from the record or from the handler's fixed attributes.
-	component := ""
+	component := f.extractComponent(r)
 
-	// 1. Check record attributes
+	if component != "" {
+		if lvl, ok := f.levels[component]; ok {
+			// Component has a specific level override.
+			if r.Level < lvl {
+				return nil
+			}
+		} else {
+			// Unlisted component: enforce the global level.
+			// The base handler level may be lower than global (to
+			// accommodate per-component debug overrides), so we must
+			// gate on the global level here.
+			if r.Level < f.global {
+				return nil
+			}
+		}
+	} else {
+		// No component attribute at all: enforce global level.
+		if r.Level < f.global {
+			return nil
+		}
+	}
+
+	return f.next.Handle(ctx, r)
+}
+
+// extractComponent finds the "component" attribute from the record's
+// attributes or from the handler's pre-set attributes (via WithAttrs).
+func (f *filterHandler) extractComponent(r slog.Record) string {
+	// 1. Check record attributes (set per-call)
+	var component string
 	r.Attrs(func(a slog.Attr) bool {
 		if a.Key == "component" {
 			component = a.Value.String()
@@ -160,7 +205,7 @@ func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
 		return true
 	})
 
-	// 2. Check handler attributes if not found in record
+	// 2. Check handler attributes (set via .With("component", "..."))
 	if component == "" {
 		for _, a := range f.currentAttrs {
 			if a.Key == "component" {
@@ -170,30 +215,18 @@ func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
 		}
 	}
 
-	// Only apply filters if a component was identified.
-	if component != "" {
-		// Deny list takes precedence.
-		if slices.Contains(f.deny, component) {
-			return nil
-		}
-		// If allow list is present, component MUST be in it.
-		if len(f.allow) > 0 {
-			found := slices.Contains(f.allow, component)
-			if !found {
-				return nil
-			}
-		}
-	}
-
-	return f.next.Handle(ctx, r)
+	return component
 }
 
 func (f *filterHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newAttrs := make([]slog.Attr, len(f.currentAttrs)+len(attrs))
+	copy(newAttrs, f.currentAttrs)
+	copy(newAttrs[len(f.currentAttrs):], attrs)
 	return &filterHandler{
 		next:         f.next.WithAttrs(attrs),
-		allow:        f.allow,
-		deny:         f.deny,
-		currentAttrs: append(slices.Clone(f.currentAttrs), attrs...),
+		global:       f.global,
+		levels:       f.levels,
+		currentAttrs: newAttrs,
 	}
 }
 
@@ -201,8 +234,8 @@ func (f *filterHandler) WithGroup(name string) slog.Handler {
 	// Groups don't affect component filtering logic.
 	return &filterHandler{
 		next:         f.next.WithGroup(name),
-		allow:        f.allow,
-		deny:         f.deny,
+		global:       f.global,
+		levels:       f.levels,
 		currentAttrs: f.currentAttrs,
 	}
 }
