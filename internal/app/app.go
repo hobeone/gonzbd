@@ -261,6 +261,12 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		var stageList []postproc.Stage
 		ppLog := log.With("component", "postproc")
 
+		// Quick-check stage: relocate flat files into par2-expected subdirs
+		// before repair runs. Must be first so par2 can find files.
+		qcStage := postproc.NewQuickCheckStage()
+		qcStage.Log = ppLog
+		stageList = append(stageList, qcStage)
+
 		// Repair stage: configurable par2 binary, turbo mode, and cleanup.
 		repairStage := postproc.NewRepairStageWith(
 			par2.RunOptions{Command: cfg.Par2Command, Turbo: cfg.Par2Turbo},
