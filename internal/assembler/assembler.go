@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
@@ -68,6 +70,12 @@ type WriteRequest struct {
 	// file completion. Duplicate failures are deduplicated locally
 	// (per-file seen-set) so partsWritten does not overshoot TotalParts.
 	FatalErr error
+
+	// CRC is the CRC32 of the decoded article data. Used to incrementally
+	// build a per-file CRC via crc32util.Combine for QuickCheck
+	// verification against par2 file hashes. Zero when the article failed
+	// or was UU-encoded.
+	CRC uint32
 }
 
 // FileInfo describes a target file. The assembler requests it from the caller's
@@ -108,9 +116,11 @@ type Options struct {
 
 	// OnFileComplete, if non-nil, is called on the worker goroutine when all
 	// TotalParts for a file have been written and its handle has been closed.
-	// The callback should be cheap; expensive work should be dispatched
-	// asynchronously by the callback itself.
-	OnFileComplete func(jobID string, fileIdx int)
+	// fileCRC is the CRC32 of the complete file, computed by combining
+	// per-article CRCs in offset order. It is zero if any articles lacked
+	// CRC information (e.g. UU-encoded or failed). The callback should be
+	// cheap; expensive work should be dispatched asynchronously.
+	OnFileComplete func(jobID string, fileIdx int, fileCRC uint32)
 
 	// OnLowDisk, if non-nil, is called when free space on the target
 	// filesystem falls below MinFreeBytes. It is called on the worker goroutine
@@ -175,6 +185,23 @@ type openFile struct {
 	seenFailed map[string]struct{}
 	// seenDone dedupes successful writes symmetrically with seenFailed.
 	seenDone map[string]struct{}
+	// crcParts accumulates per-article CRC32 values with their offsets.
+	// At file completion, these are sorted by offset and combined using
+	// crc32util.Combine to produce the whole-file CRC32.
+	crcParts []crcPart
+	// crcValid tracks whether all articles had valid CRC values.
+	// If any article had CRC=0 (UU-encoded or failed), this is set
+	// to false and the final file CRC is reported as 0.
+	crcValid bool
+}
+
+// crcPart stores the CRC32 of a single article part along with its
+// byte offset and decoded length. Used to reconstruct the whole-file
+// CRC at completion time by combining parts in offset order.
+type crcPart struct {
+	offset int64
+	crc    uint32
+	len    int64
 }
 
 // Assembler receives decoded article data and writes it to target files using
@@ -586,11 +613,12 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 				)
 			}
 		}
-		f = &openFile{handle: fh, info: info}
+		f = &openFile{handle: fh, info: info, crcValid: true}
 		open[key] = f
 	}
 
 	if req.FatalErr != nil {
+		f.crcValid = false // Failed articles invalidate CRC tracking
 		a.log.Debug("counting failed article toward completion (skipping disk write)",
 			"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", req.FatalErr)
 		if f.seenFailed == nil {
@@ -660,6 +688,18 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 				f.seenDone[req.MessageID] = struct{}{}
 			}
 			a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
+			// Record CRC for this article. Only accumulate when
+			// the decoder provided a non-zero CRC (yEnc articles).
+			if req.CRC != 0 {
+				f.crcParts = append(f.crcParts, crcPart{
+					offset: req.Offset,
+					crc:    req.CRC,
+					len:    int64(len(req.Data)),
+				})
+			} else if len(req.Data) > 0 {
+				// UU-encoded or otherwise CRC-less article.
+				f.crcValid = false
+			}
 		}
 	}
 
@@ -707,8 +747,33 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		// on a file whose articles are not yet marked Done in the queue,
 		// or it will race job-completion logic ahead of durability state.
 		a.flush()
+
+		// Compute the whole-file CRC32 by combining per-article CRCs
+		// in offset order. This produces the same CRC as if the file
+		// were read sequentially, which is what par2 files store.
+		var fileCRC uint32
+		if f.crcValid && len(f.crcParts) > 0 {
+			slices.SortFunc(f.crcParts, func(a, b crcPart) int {
+				if a.offset < b.offset {
+					return -1
+				}
+				if a.offset > b.offset {
+					return 1
+				}
+				return 0
+			})
+			fileCRC = f.crcParts[0].crc
+			for _, p := range f.crcParts[1:] {
+				fileCRC = crc32util.Combine(fileCRC, p.crc, p.len)
+			}
+			a.log.Debug("computed file CRC32",
+				"job", req.JobID, "fileidx", req.FileIdx,
+				"path", f.info.Path, "crc32", fileCRC,
+				"parts", len(f.crcParts))
+		}
+
 		if a.opts.OnFileComplete != nil {
-			a.opts.OnFileComplete(req.JobID, req.FileIdx)
+			a.opts.OnFileComplete(req.JobID, req.FileIdx, fileCRC)
 		}
 	}
 }

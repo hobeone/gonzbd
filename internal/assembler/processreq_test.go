@@ -19,7 +19,7 @@ func TestWriteError_TreatedAsFailed(t *testing.T) {
 	var failedIDs []string
 	var mu sync.Mutex
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
 	opts.MarkArticlesFailed = func(_ string, msgIDs []string) ([]string, error) {
 		mu.Lock()
 		failedIDs = append(failedIDs, msgIDs...)
@@ -78,7 +78,7 @@ func TestDuplicateSuccessDedup(t *testing.T) {
 	var completions atomic.Int32
 	var doneCount atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
 	opts.MarkArticlesDone = func(_ string, msgIDs []string) error {
 		doneCount.Add(int32(len(msgIDs)))
 		return nil
@@ -193,7 +193,7 @@ func TestFailureAfterSuccess_NoDoubleCount(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
 	opts.MarkArticlesDone = func(_ string, _ []string) error { return nil }
 	opts.MarkArticlesFailed = func(_ string, _ []string) ([]string, error) { return nil, nil }
 	opts.DoneFlushInterval = -1
@@ -263,7 +263,7 @@ func TestCloseAll_PartialFilesNoCallback(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
