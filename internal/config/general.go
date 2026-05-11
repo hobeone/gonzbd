@@ -73,7 +73,8 @@ type GeneralConfig struct {
 	//     nntp: error        # only errors from NNTP connections
 	LogLevels map[string]string `yaml:"log_levels" json:"log_levels"`
 
-	// Language is the BCP-47 (or shorter) UI language code.
+	// Language is reserved for future UI translation support.
+	// Currently unused — the UI is English-only. Default: "en".
 	Language string `yaml:"language" json:"language"`
 }
 
