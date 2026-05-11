@@ -29,3 +29,31 @@ type CategoryConfig struct {
 	// this category. Empty writes directly to complete_dir.
 	Dir string `yaml:"dir" json:"dir"`
 }
+
+// FindCategory looks up the CategoryConfig for the given name. If name
+// is empty or not found, it falls back to "Default", then "*". Returns
+// a zero CategoryConfig if no categories are defined at all.
+func FindCategory(cats []CategoryConfig, name string) CategoryConfig {
+	var defaultCat, starCat CategoryConfig
+	var foundDefault, foundStar bool
+	for _, c := range cats {
+		if c.Name == name && name != "" {
+			return c
+		}
+		if c.Name == "Default" {
+			defaultCat = c
+			foundDefault = true
+		}
+		if c.Name == "*" {
+			starCat = c
+			foundStar = true
+		}
+	}
+	if foundDefault {
+		return defaultCat
+	}
+	if foundStar {
+		return starCat
+	}
+	return CategoryConfig{}
+}

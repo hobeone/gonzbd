@@ -913,13 +913,8 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 		}
 	}
 
-	catDir := ""
-	for _, cat := range app.cfg.Categories {
-		if cat.Name == job.Category {
-			catDir = cat.Dir
-			break
-		}
-	}
+	cat := config.FindCategory(app.cfg.Categories, job.Category)
+	catDir := cat.Dir
 	app.postProcessor.Process(&postproc.Job{
 		Queue:       job,
 		DownloadDir: downloadDir,
