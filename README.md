@@ -236,7 +236,7 @@ servers:
 downloads:
   bandwidth_max: 0          # 0 = unlimited; or e.g. "50M" for 50 MB/s
   bandwidth_perc: 100
-  article_cache_size: 500M
+  write_cache_size: 500M
   max_art_tries: 3
 
 postproc:
@@ -462,12 +462,6 @@ preserved for forward compatibility with planned features.
 | Field | Notes |
 |-------|-------|
 | `language` | The `internal/i18n` package exists but the UI doesn't use it for locale selection yet. |
-
-### DownloadConfig
-
-| Field | Notes |
-|-------|-------|
-| `min_free_space_cleanup` | Post-processing cleanup target. Depends on `min_free_space` guard (which _is_ wired). |
 
 ### CategoryConfig
 

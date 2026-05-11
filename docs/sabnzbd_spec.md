@@ -355,7 +355,7 @@ Buffers decoded article data in memory between the decoder and the assembler, wi
 
 | Parameter | Default | Config Key |
 |-----------|---------|-----------|
-| Memory limit | 500 MB | `article_cache_size` |
+| Memory limit | 500 MB | `write_cache_size` |
 | Max configurable | 1 GB | `DEF_ARTICLE_CACHE_MAX` |
 | Flush trigger | 90% full | `ARTICLE_CACHE_NON_CONTIGUOUS_FLUSH_PERCENTAGE` |
 | Flush interval | 0.5 sec | Assembler poll rate |
@@ -643,8 +643,7 @@ Key design: Configuration parameters are typed objects with validators. Config r
 | `bandwidth_max` | string | `` | Max bandwidth (e.g., `10M`, `1G`, `0`=unlimited) |
 | `bandwidth_perc` | int | `100` | Percentage of max to use |
 | `min_free_space` | int | `1024` | Min free disk space in MB before pause |
-| `min_free_space_cleanup` | int | `2048` | Free space needed for post-proc cleanup |
-| `article_cache_size` | int | `500` | Article cache size in MB |
+| `write_cache_size` | string | `500M` | Write coalescing buffer size (e.g., `500M`, `0`=disabled) |
 | `max_art_tries` | int | `3` | Max tries per article before marking bad |
 | `max_art_opt` | int | `1` | Max tries on optional servers |
 | `top_only` | bool | false | Only use top-priority server |
