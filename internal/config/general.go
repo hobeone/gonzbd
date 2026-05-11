@@ -61,24 +61,59 @@ type GeneralConfig struct {
 	// Empty string defaults to "info".
 	LogLevel string `yaml:"log_level" json:"log_level"`
 
-	// LogAllow restricts logging to only these components (e.g., "downloader").
-	// Empty means all components are allowed.
-	LogAllow []string `yaml:"log_allow" json:"log_allow"`
-	// LogDeny suppresses logging from these components.
-	LogDeny []string `yaml:"log_deny" json:"log_deny"`
+	// LogLevels overrides the global LogLevel for specific components.
+	// Keys are component names (e.g., "api", "downloader", "nntp").
+	// Values are log levels: "debug", "info", "warn", "error", or "off".
+	// Components not listed inherit the global LogLevel.
+	//
+	// Example:
+	//   log_levels:
+	//     api: warn          # suppress routine API chatter
+	//     downloader: debug  # verbose downloader output
+	//     nntp: error        # only errors from NNTP connections
+	LogLevels map[string]string `yaml:"log_levels" json:"log_levels"`
 
 	// Language is the BCP-47 (or shorter) UI language code.
 	Language string `yaml:"language" json:"language"`
 }
 
+// LevelOff is a log level that suppresses all output for a component.
+// It is higher than slog.LevelError so no record can pass.
+const LevelOff = slog.Level(99)
+
 // ParseLogLevel decodes the LogLevel string to an slog.Level.
 // Empty string returns LevelInfo. Accepts case-insensitive "debug",
-// "info", "warn", "error". Returns an error for invalid input.
+// "info", "warn", "error", "off". Returns an error for invalid input.
 func (g *GeneralConfig) ParseLogLevel() (slog.Level, error) {
-	if g.LogLevel == "" {
+	return ParseLevel(g.LogLevel)
+}
+
+// ParseLogLevels parses the per-component LogLevels map into a
+// map[string]slog.Level suitable for the filter handler.
+// Returns an error if any value is not a valid log level.
+func (g *GeneralConfig) ParseLogLevels() (map[string]slog.Level, error) {
+	if len(g.LogLevels) == 0 {
+		return nil, nil
+	}
+	m := make(map[string]slog.Level, len(g.LogLevels))
+	for component, levelStr := range g.LogLevels {
+		lvl, err := ParseLevel(levelStr)
+		if err != nil {
+			return nil, err
+		}
+		m[component] = lvl
+	}
+	return m, nil
+}
+
+// ParseLevel decodes a level string. Accepts case-insensitive "debug",
+// "info", "warn", "error", "off". Empty returns LevelInfo.
+// Returns an error for invalid input.
+func ParseLevel(s string) (slog.Level, error) {
+	if s == "" {
 		return slog.LevelInfo, nil
 	}
-	switch strings.ToLower(g.LogLevel) {
+	switch strings.ToLower(s) {
 	case "debug":
 		return slog.LevelDebug, nil
 	case "info":
@@ -87,7 +122,9 @@ func (g *GeneralConfig) ParseLogLevel() (slog.Level, error) {
 		return slog.LevelWarn, nil
 	case "error":
 		return slog.LevelError, nil
+	case "off":
+		return LevelOff, nil
 	default:
-		return 0, fmt.Errorf("invalid log level %q (must be debug, info, warn, or error)", g.LogLevel)
+		return 0, fmt.Errorf("invalid log level %q (must be debug, info, warn, error, or off)", s)
 	}
 }

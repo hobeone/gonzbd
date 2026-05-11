@@ -19,8 +19,10 @@ general:
   log_dir: logs
   admin_dir: admin
   log_level: info
-  log_allow: ["downloader", "assembler"]
-  log_deny: ["api"]
+  log_levels:
+    api: warn
+    downloader: debug
+    assembler: debug
   language: en
 
 downloads:
