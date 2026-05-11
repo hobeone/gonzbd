@@ -279,7 +279,7 @@ func TestAssemblerWithWriteCache_BasicCoalescing(t *testing.T) {
 
 	var completed bool
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completed = true }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completed = true }
 	opts.WriteCacheBytes = 1 << 20 // 1 MiB cache
 
 	a := startAssembler(t, opts)
@@ -317,7 +317,7 @@ func TestAssemblerWithWriteCache_OutOfOrder(t *testing.T) {
 
 	var completed bool
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completed = true }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completed = true }
 	opts.WriteCacheBytes = 1 << 20 // 1 MiB
 
 	a := startAssembler(t, opts)
@@ -363,7 +363,7 @@ func TestAssemblerWithWriteCache_PressureFlush(t *testing.T) {
 
 	var completed bool
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completed = true }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completed = true }
 	opts.WriteCacheBytes = 100 // only 100 bytes — triggers pressure quickly
 
 	a := startAssembler(t, opts)
@@ -408,7 +408,7 @@ func TestAssemblerWithWriteCache_MultipleFiles(t *testing.T) {
 
 	completionCount := 0
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completionCount++ }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completionCount++ }
 	opts.WriteCacheBytes = 1 << 20
 
 	a := startAssembler(t, opts)

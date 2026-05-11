@@ -80,7 +80,7 @@ func TestCancelJob_RejectsLateArticles(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
 
 	a := startAssembler(t, opts)
 
@@ -112,7 +112,7 @@ func TestCancelJob_DoesNotAffectOtherJobs(t *testing.T) {
 
 	var completed sync.Map
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(jobID string, fileIdx int) {
+	opts.OnFileComplete = func(jobID string, fileIdx int, _ uint32) {
 		completed.Store(fmt.Sprintf("%s:%d", jobID, fileIdx), true)
 	}
 
@@ -225,7 +225,7 @@ func TestFatalErrCountsTowardCompletion(t *testing.T) {
 	var failedIDs []string
 	var mu sync.Mutex
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
 	opts.MarkArticlesFailed = func(jobID string, msgIDs []string) ([]string, error) {
 		mu.Lock()
 		failedIDs = append(failedIDs, msgIDs...)
@@ -277,7 +277,7 @@ func TestFatalErrDuplicate(t *testing.T) {
 
 	var completions atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
 	opts.MarkArticlesFailed = func(_ string, _ []string) ([]string, error) { return nil, nil }
 	opts.MarkArticlesDone = func(_ string, _ []string) error { return nil }
 	opts.DoneFlushInterval = -1
@@ -388,7 +388,7 @@ func TestLateDuplicateForCompletedFile(t *testing.T) {
 	var completions atomic.Int32
 	var doneCount atomic.Int32
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completions.Add(1) }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completions.Add(1) }
 	opts.MarkArticlesDone = func(_ string, msgIDs []string) error {
 		doneCount.Add(int32(len(msgIDs)))
 		return nil

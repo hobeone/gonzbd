@@ -90,6 +90,10 @@ type Config struct {
 type FileComplete struct {
 	JobID   string
 	FileIdx int
+	// CRC32 is the whole-file CRC32 computed by the assembler from
+	// per-article CRCs combined in offset order. Zero if unavailable
+	// (e.g. UU-encoded articles or failed articles).
+	CRC32 uint32
 }
 
 // JobComplete is emitted when all files in a job are assembled.
@@ -492,8 +496,8 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				"dir", dir,
 				"freeMB", freeBytes/(1024*1024))
 		},
-		OnFileComplete: func(jobID string, fileIdx int) {
-			fc := FileComplete{JobID: jobID, FileIdx: fileIdx}
+		OnFileComplete: func(jobID string, fileIdx int, fileCRC uint32) {
+			fc := FileComplete{JobID: jobID, FileIdx: fileIdx, CRC32: fileCRC}
 			select {
 			case app.fileComplete <- fc:
 			default:
