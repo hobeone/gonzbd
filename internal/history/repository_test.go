@@ -211,6 +211,47 @@ func TestSearchBySubstring(t *testing.T) {
 	}
 }
 
+// TestSearchBySubstring_LIKEWildcardEscaping verifies that SQL LIKE
+// wildcards (%, _) in user search input are treated as literal characters
+// rather than pattern metacharacters.
+func TestSearchBySubstring_LIKEWildcardEscaping(t *testing.T) {
+	_, repo := openTestDB(t)
+	ctx := t.Context()
+
+	for _, e := range []Entry{
+		sampleEntry("esc1", "100% Complete", "Completed", "TV"),
+		sampleEntry("esc2", "file_name_test", "Completed", "TV"),
+		sampleEntry("esc3", "normal show", "Completed", "TV"),
+	} {
+		if err := repo.Add(ctx, e); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		search string
+		want   int
+	}{
+		{"literal percent", "100%", 1},
+		{"literal underscore", "file_name", 1},
+		{"percent alone matches entry with percent", "%", 1},                    // Matches "100% Complete" which contains a literal "%"
+		{"bare underscore only matches literal underscores", "e_n", 1},          // Without escaping, "e_n" would match "e" + any char + "n" in all entries
+		{"no match for non-existent literal wildcard", "100%xxx", 0},            // No entry matches this
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := repo.Search(ctx, SearchOptions{Search: tc.search})
+			if err != nil {
+				t.Fatalf("Search: %v", err)
+			}
+			if len(got) != tc.want {
+				t.Errorf("len = %d, want %d", len(got), tc.want)
+			}
+		})
+	}
+}
+
 func TestSearchPagination(t *testing.T) {
 	_, repo := openTestDB(t)
 	ctx := t.Context()

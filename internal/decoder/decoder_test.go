@@ -441,3 +441,77 @@ func TestDecodeUUShortLinePadding(t *testing.T) {
 		t.Errorf("input buffer was corrupted!\noriginal: %q\ncurrent:  %q", originalBody, body)
 	}
 }
+
+// TestDecodeArticle_HugeSizeHint verifies that a yEnc article with an
+// inflated size= field in the header does not cause excessive memory
+// allocation. The decoded output is bounded by len(body), not by the
+// attacker-controlled size= value.
+func TestDecodeArticle_HugeSizeHint(t *testing.T) {
+	// Craft a small yEnc article with a wildly inflated size= header.
+	raw := []byte("hello")
+	checksum := crc32.ChecksumIEEE(raw)
+
+	var buf bytes.Buffer
+	// Declare size=999999999 but the actual body is tiny.
+	fmt.Fprintf(&buf, "=ybegin line=128 size=999999999 name=huge.bin\r\n")
+	for _, b := range raw {
+		enc := byte((int(b) + 42) % 256)
+		if enc == 0 || enc == '\n' || enc == '\r' || enc == '=' {
+			buf.WriteByte('=')
+			enc = byte((int(enc) + 64) % 256)
+		}
+		buf.WriteByte(enc)
+	}
+	buf.WriteString("\r\n")
+	// The trailer declares the correct part size.
+	fmt.Fprintf(&buf, "=yend size=%d crc32=%08x\r\n", len(raw), checksum)
+
+	art, err := DecodeArticle(buf.Bytes())
+	// We expect a size mismatch error since trailer size != header size,
+	// but crucially, we should NOT have allocated 999999999 bytes.
+	if err != nil && !errors.Is(err, errSizeMismatch) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(art.Data, raw) {
+		t.Errorf("decoded data does not match: got %q, want %q", art.Data, raw)
+	}
+}
+
+// TestDecodeArticle_ExceedsMaxSize verifies that DecodeArticle rejects
+// bodies larger than maxDecodeSize (10 MB).
+func TestDecodeArticle_ExceedsMaxSize(t *testing.T) {
+	// Create a body that exceeds maxDecodeSize. We don't need valid yEnc
+	// content — the size check happens before parsing.
+	body := make([]byte, maxDecodeSize+1)
+	copy(body, []byte("=ybegin"))
+
+	_, err := DecodeArticle(body)
+	if !errors.Is(err, ErrBodyTooLarge) {
+		t.Errorf("DecodeArticle(body of %d bytes) error = %v, want ErrBodyTooLarge", len(body), err)
+	}
+}
+
+// TestDecodeUU_ExceedsMaxSize verifies that DecodeUU rejects bodies
+// larger than maxDecodeSize (10 MB).
+func TestDecodeUU_ExceedsMaxSize(t *testing.T) {
+	body := make([]byte, maxDecodeSize+1)
+	copy(body, []byte("begin 644 test.bin\n"))
+
+	_, _, err := DecodeUU(body)
+	if !errors.Is(err, ErrBodyTooLarge) {
+		t.Errorf("DecodeUU(body of %d bytes) error = %v, want ErrBodyTooLarge", len(body), err)
+	}
+}
+
+// TestDecodeArticle_AtMaxSize verifies that a body exactly at maxDecodeSize
+// is accepted (boundary condition).
+func TestDecodeArticle_AtMaxSize(t *testing.T) {
+	body := make([]byte, maxDecodeSize)
+	copy(body, []byte("=ybegin"))
+
+	// The body is malformed yEnc, but should NOT trigger ErrBodyTooLarge.
+	_, err := DecodeArticle(body)
+	if errors.Is(err, ErrBodyTooLarge) {
+		t.Errorf("DecodeArticle(body of exactly maxDecodeSize) should not return ErrBodyTooLarge")
+	}
+}
