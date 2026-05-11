@@ -3,8 +3,10 @@ package postproc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -465,5 +467,52 @@ func TestEmptyMethod(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if !p.Empty() {
 		t.Error("Empty() = false on idle processor")
+	}
+}
+
+// ---------- TestPipeline_ConcurrentJobSubmission ----------
+
+// TestPipeline_ConcurrentJobSubmission submits 10 jobs concurrently from
+// separate goroutines and verifies that all 10 complete without panics or
+// data races. This validates that the single-worker ppQueue handles
+// concurrent Process() calls safely.
+func TestPipeline_ConcurrentJobSubmission(t *testing.T) {
+	stage := newRecordStage("s")
+
+	const n = 10
+	var doneCount atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	p := startProcessor(t, Options{
+		Stages: []Stage{stage},
+		OnJobDone: func(_ *Job) {
+			doneCount.Add(1)
+			wg.Done()
+		},
+	})
+
+	// Submit n jobs concurrently.
+	var submitWg sync.WaitGroup
+	for i := range n {
+		submitWg.Go(func() {
+			name := fmt.Sprintf("concurrent-%d", i)
+			p.Process(makeJob(t, name))
+		})
+	}
+	submitWg.Wait()
+
+	// Wait for all jobs to complete.
+	waitUntil(t, func() bool {
+		return doneCount.Load() == n
+	}, 5*time.Second, "all concurrent jobs to complete")
+
+	wg.Wait()
+
+	if got := doneCount.Load(); got != n {
+		t.Errorf("completed %d jobs, want %d", got, n)
+	}
+	if got := stage.CallCount(); got != n {
+		t.Errorf("stage called %d times, want %d", got, n)
 	}
 }

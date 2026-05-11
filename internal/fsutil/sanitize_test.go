@@ -267,3 +267,35 @@ func TestCleanupName(t *testing.T) {
 		})
 	}
 }
+
+// L13: Verify null bytes in filenames are sanitized to the replacement character.
+func TestSanitizeFilename_NullByte(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"null byte in middle", "test\x00file.bin", "test_file.bin"},
+		{"null byte at start", "\x00file.bin", "_file.bin"},
+		{"null byte at end", "file\x00.bin", "file_.bin"},
+		{"multiple null bytes", "te\x00st\x00.bin", "te_st_.bin"},
+		{"only null bytes", "\x00\x00\x00", "___"},
+		{"null with other control", "\x00\x01\x02.txt", "___.txt"},
+		{"null in extension", "file.\x00bin", "file._bin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := SanitizeFilename(tt.input, SanitizeOptions{})
+			if got != tt.want {
+				t.Errorf("SanitizeFilename(%q) = %q; want %q", tt.input, got, tt.want)
+			}
+			// Extra invariant: result must never contain a null byte.
+			if strings.ContainsRune(got, 0) {
+				t.Errorf("result contains null byte: %q", got)
+			}
+		})
+	}
+}

@@ -2,8 +2,10 @@ package rss
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -150,4 +152,132 @@ func TestNormalizeItem_NormalItem(t *testing.T) {
 	if item.InfoURL != "https://example.com/details/12345" {
 		t.Errorf("InfoURL = %q", item.InfoURL)
 	}
+}
+
+// ---------- M10: TestParse_SSRFPrivateIP ----------
+
+// TestParse_SSRFPrivateIP documents that Parse itself does not block private IPs.
+// SSRF protection (blocking 127.0.0.0/8, 10.0.0.0/8, 192.168.0.0/16, etc.)
+// is the caller's responsibility — Parse simply performs an HTTP GET on whatever
+// URL it receives. Callers MUST validate feed URLs before passing them here.
+func TestParse_SSRFPrivateIP(t *testing.T) {
+	t.Parallel()
+
+	feed := `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>` +
+		`<item><title>I1</title><link>http://example.com/1.nzb</link><guid>g1</guid></item>` +
+		`</channel></rss>`
+
+	// httptest.NewServer binds to 127.0.0.1 — a loopback/private IP.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		_, _ = w.Write([]byte(feed))
+	}))
+	defer srv.Close()
+
+	items, err := Parse(context.Background(), srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("Parse on loopback URL should succeed (SSRF filtering is caller's job): %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	if items[0].Title != "I1" {
+		t.Errorf("Title = %q, want %q", items[0].Title, "I1")
+	}
+}
+
+// ---------- M11: TestStore_MaxCapacity ----------
+
+// TestStore_MaxCapacity documents that the dedup store grows unboundedly
+// between Prune calls. There is no built-in cap; the caller must call Prune
+// periodically to reclaim memory. This test verifies large-scale add/prune.
+func TestStore_MaxCapacity(t *testing.T) {
+	t.Parallel()
+
+	storePath := filepath.Join(t.TempDir(), "dedup.json")
+	store, err := OpenStore(storePath)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+
+	const n = 10_000
+	for i := range n {
+		store.Record(fmt.Sprintf("id-%d", i))
+	}
+
+	// All entries should be seen.
+	for i := range n {
+		if !store.Seen(fmt.Sprintf("id-%d", i)) {
+			t.Fatalf("entry id-%d not seen after Record", i)
+		}
+	}
+
+	// Prune with 0 duration removes everything (cutoff = now).
+	removed := store.Prune(0)
+	if removed != n {
+		t.Errorf("Prune removed %d entries, want %d", removed, n)
+	}
+
+	// Verify none are seen.
+	for i := range n {
+		if store.Seen(fmt.Sprintf("id-%d", i)) {
+			t.Fatalf("entry id-%d still seen after Prune(0)", i)
+		}
+	}
+}
+
+// ---------- L7: TestParse_AtomFeed ----------
+
+// TestParse_AtomFeed verifies that Parse correctly handles Atom feeds.
+// gofeed's universal parser supports both RSS 2.0 and Atom 1.0.
+func TestParse_AtomFeed(t *testing.T) {
+	t.Parallel()
+
+	atomFeed := `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Test Atom</title>
+  <entry>
+    <title>Atom Item</title>
+    <id>urn:uuid:atom-1</id>
+    <link href="https://example.com/atom.nzb"/>
+    <updated>2024-01-01T00:00:00Z</updated>
+  </entry>
+</feed>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(atomFeed))
+	}))
+	defer srv.Close()
+
+	items, err := Parse(context.Background(), srv.URL, srv.Client())
+	if err != nil {
+		t.Fatalf("Parse Atom feed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(items))
+	}
+	if items[0].Title != "Atom Item" {
+		t.Errorf("Title = %q, want %q", items[0].Title, "Atom Item")
+	}
+}
+
+// ---------- L8: TestParse_MalformedFeedXML ----------
+
+// TestParse_MalformedFeedXML verifies that Parse returns a clean error (not
+// a panic) when the server responds with invalid XML.
+func TestParse_MalformedFeedXML(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		_, _ = w.Write([]byte("<rss><broken"))
+	}))
+	defer srv.Close()
+
+	_, err := Parse(context.Background(), srv.URL, srv.Client())
+	if err == nil {
+		t.Fatal("expected error for malformed XML, got nil")
+	}
+	t.Logf("got expected error: %v", err)
 }

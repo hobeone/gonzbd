@@ -303,3 +303,87 @@ func TestLimiterRate_AfterSetRate(t *testing.T) {
 		t.Fatalf("Rate() after re-enable = %f; want 2048", r)
 	}
 }
+
+// H14: Wait with n exceeding burst should return an error from x/time/rate.
+// This verifies the limiter doesn't panic or deadlock on oversized requests.
+func TestLimiterWait_ExceedsBurst(t *testing.T) {
+	t.Parallel()
+	// Rate = 1000 B/s, burst = max(1000, 256*1024) = 262144 bytes.
+	l := NewLimiter(1000)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// Request far more tokens than the burst allows. x/time/rate returns
+	// an error immediately for n > burst (no infinite wait).
+	err := l.Wait(ctx, 10_000_000) // 10 MB >> burst of 262144
+	if err == nil {
+		t.Fatal("Wait(n >> burst) should return an error, got nil")
+	}
+}
+
+// H14 follow-up: Wait with n <= burst should succeed when tokens are available.
+func TestLimiterWait_WithinBurst(t *testing.T) {
+	t.Parallel()
+	// Rate = 10 MB/s → burst = max(10_000_000, 256*1024) = 10_000_000.
+	l := NewLimiter(10_000_000)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Request within the burst size — should succeed immediately.
+	if err := l.Wait(ctx, 1024); err != nil {
+		t.Fatalf("Wait(1024) should succeed within burst, got: %v", err)
+	}
+}
+
+// H14: Wait on cancelled context returns context error.
+func TestLimiterWait_CancelledContext(t *testing.T) {
+	t.Parallel()
+	l := NewLimiter(1) // Very low rate (1 B/s) so token acquisition would block.
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancelled
+
+	err := l.Wait(ctx, 1000)
+	if err == nil {
+		t.Fatal("Wait with cancelled context should return error")
+	}
+}
+
+// L10: Record with zero bytes should not panic or corrupt BPS.
+func TestMeterRecord_ZeroBytes(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	clk, adv := fixedClock(start)
+	m := NewMeter(10*time.Second, clk)
+
+	m.Record("", 0)
+	adv(1 * time.Second)
+	bps := m.BPS("")
+	if bps != 0 {
+		t.Errorf("BPS after recording 0 bytes = %f, want 0", bps)
+	}
+}
+
+// L10: Record with negative bytes should not panic or produce negative BPS.
+func TestMeterRecord_NegativeBytes(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	clk, adv := fixedClock(start)
+	m := NewMeter(10*time.Second, clk)
+
+	// Record some positive data first.
+	m.Record("", 5000)
+	adv(1 * time.Second)
+
+	// Record negative bytes — should not panic.
+	m.Record("", -1000)
+	adv(1 * time.Second)
+
+	bps := m.BPS("")
+	// BPS should be non-negative — negative records shouldn't cause negative BPS.
+	if bps < 0 {
+		t.Errorf("BPS after negative record = %f, should not be negative", bps)
+	}
+}
