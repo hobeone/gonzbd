@@ -377,6 +377,8 @@ func TestParseLogLevel(t *testing.T) {
 		{"error", "error", slog.LevelError, false, ""},
 		{"ERROR uppercase", "ERROR", slog.LevelError, false, ""},
 		{"Error mixed case", "Error", slog.LevelError, false, ""},
+		{"off", "off", LevelOff, false, ""},
+		{"OFF uppercase", "OFF", LevelOff, false, ""},
 		{"empty defaults to info", "", slog.LevelInfo, false, ""},
 		{"invalid level", "invalid", 0, true, "invalid log level"},
 		{"trace invalid", "trace", 0, true, "invalid log level"},
@@ -404,6 +406,61 @@ func TestParseLogLevel(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseLogLevels(t *testing.T) {
+	t.Run("nil map returns nil", func(t *testing.T) {
+		g := &GeneralConfig{}
+		got, err := g.ParseLogLevels()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("valid map", func(t *testing.T) {
+		g := &GeneralConfig{
+			LogLevels: map[string]string{
+				"api":        "warn",
+				"downloader": "debug",
+				"nntp":       "error",
+				"rss":        "off",
+			},
+		}
+		got, err := g.ParseLogLevels()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got["api"] != slog.LevelWarn {
+			t.Errorf("api = %v, want %v", got["api"], slog.LevelWarn)
+		}
+		if got["downloader"] != slog.LevelDebug {
+			t.Errorf("downloader = %v, want %v", got["downloader"], slog.LevelDebug)
+		}
+		if got["nntp"] != slog.LevelError {
+			t.Errorf("nntp = %v, want %v", got["nntp"], slog.LevelError)
+		}
+		if got["rss"] != LevelOff {
+			t.Errorf("rss = %v, want %v", got["rss"], LevelOff)
+		}
+	})
+
+	t.Run("invalid level rejects", func(t *testing.T) {
+		g := &GeneralConfig{
+			LogLevels: map[string]string{
+				"api": "bogus",
+			},
+		}
+		_, err := g.ParseLogLevels()
+		if err == nil {
+			t.Fatal("expected error for invalid level")
+		}
+		if !strings.Contains(err.Error(), "invalid log level") {
+			t.Errorf("error %q does not mention 'invalid log level'", err.Error())
+		}
+	})
 }
 
 // M17: Empty file should return defaults (not panic or error).

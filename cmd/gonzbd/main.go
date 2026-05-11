@@ -64,8 +64,7 @@ func main() {
 	serve := flag.Bool("serve", false, "run the daemon: HTTP server (API + web UI) blocking until signal")
 	listenAddr := flag.String("listen", "", "override the config's host:port listener (serve mode only)")
 	downloadDir := flag.String("download-dir", "", "override download-dir (incomplete) from config")
-	logAllow := flag.String("log-allow", "", "comma-separated list of components to log (overrides config)")
-	logDeny := flag.String("log-deny", "", "comma-separated list of components to suppress (overrides config)")
+	logLevelsFlag := flag.String("log-levels", "", "comma-separated component=level overrides (e.g. api=warn,nntp=error)")
 	pidPath := flag.String("pid", "", "write daemon PID to this path while running (serve mode only)")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
@@ -89,12 +88,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "--serve and --nzb are mutually exclusive")
 		os.Exit(2)
 	case *serve:
-		if err := serveMode(*configPath, *listenAddr, *downloadDir, *logAllow, *logDeny, *pidPath, *verbose); err != nil {
+		if err := serveMode(*configPath, *listenAddr, *downloadDir, *logLevelsFlag, *pidPath, *verbose); err != nil {
 			slog.Error("serve failed", "err", err)
 			os.Exit(1)
 		}
 	case *nzbPath != "":
-		if err := run(*configPath, *nzbPath, *downloadDir, *logAllow, *logDeny, *verbose); err != nil {
+		if err := run(*configPath, *nzbPath, *downloadDir, *logLevelsFlag, *verbose); err != nil {
 			slog.Error("download failed", "err", err)
 			os.Exit(1)
 		}
@@ -106,8 +105,8 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  gonzbd --config <path> --serve [--listen host:port] [--download-dir <path>] [--log-allow <list>] [--log-deny <list>] [--pid <path>] [-v]")
-	fmt.Fprintln(os.Stderr, "  gonzbd --config <path> --nzb <path> [--download-dir <path>] [--log-allow <list>] [--log-deny <list>] [-v]")
+	fmt.Fprintln(os.Stderr, "  gonzbd --config <path> --serve [--listen host:port] [--download-dir <path>] [--log-levels api=warn,nntp=error] [--pid <path>] [-v]")
+	fmt.Fprintln(os.Stderr, "  gonzbd --config <path> --nzb <path> [--download-dir <path>] [--log-levels api=warn] [-v]")
 	fmt.Fprintln(os.Stderr, "  gonzbd --version")
 	fmt.Fprintln(os.Stderr, "  -f is an alias for --config")
 }
@@ -115,7 +114,7 @@ func usage() {
 // serveMode runs the long-lived daemon: boots the download pipeline, opens
 // the history DB, constructs the API server and web handler, composes them
 // on a single listener, and blocks until SIGINT/SIGTERM.
-func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride, logDenyOverride, pidPath string, verbose bool) error {
+func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverride, pidPath string, verbose bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -166,14 +165,10 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		logLevel = slog.LevelDebug
 	}
 
-	// Log filtering overrides
-	allow := cfg.General.LogAllow
-	if logAllowOverride != "" {
-		allow = strings.Split(logAllowOverride, ",")
-	}
-	deny := cfg.General.LogDeny
-	if logDenyOverride != "" {
-		deny = strings.Split(logDenyOverride, ",")
+	// Per-component log level overrides. CLI flag takes precedence over config.
+	compLevels, err := resolveLogLevels(cfg, logLevelsOverride)
+	if err != nil {
+		return fmt.Errorf("parse log levels: %w", err)
 	}
 
 	logFile := ""
@@ -181,10 +176,9 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logAllowOverride
 		logFile = filepath.Join(cfg.General.LogDir, "gonzbd.log")
 	}
 	logger, logCloser, err := app.Setup(app.LoggingOptions{
-		Level:   logLevel,
-		LogFile: logFile,
-		Allow:   allow,
-		Deny:    deny,
+		Level:           logLevel,
+		LogFile:         logFile,
+		ComponentLevels: compLevels,
 	})
 	if err != nil {
 		return fmt.Errorf("setup logging: %w", err)
@@ -659,7 +653,43 @@ func resolveDirs(cfg *config.Config, downloadDirOverride string) (dlDir, adminDi
 	return dlDir, adminDir, nil
 }
 
-func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOverride string, verbose bool) error {
+// resolveLogLevels merges per-component log levels from the config file
+// with any CLI overrides. CLI entries take precedence. The override string
+// is comma-separated key=value pairs, e.g. "api=warn,nntp=error".
+func resolveLogLevels(cfg *config.Config, cliOverride string) (map[string]slog.Level, error) {
+	// Start from config.
+	levels, err := cfg.General.ParseLogLevels()
+	if err != nil {
+		return nil, err
+	}
+
+	if cliOverride == "" {
+		return levels, nil
+	}
+
+	// Parse CLI override and merge.
+	if levels == nil {
+		levels = make(map[string]slog.Level)
+	}
+	for _, entry := range strings.Split(cliOverride, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(entry, "=")
+		if !ok {
+			return nil, fmt.Errorf("invalid --log-levels entry %q (expected component=level)", entry)
+		}
+		lvl, parseErr := config.ParseLevel(strings.TrimSpace(v))
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid --log-levels level for %q: %w", k, parseErr)
+		}
+		levels[strings.TrimSpace(k)] = lvl
+	}
+	return levels, nil
+}
+
+func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, verbose bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -679,21 +709,16 @@ func run(configPath, nzbPath, downloadDirOverride, logAllowOverride, logDenyOver
 		logLevel = slog.LevelDebug
 	}
 
-	// Log filtering overrides
-	allow := cfg.General.LogAllow
-	if logAllowOverride != "" {
-		allow = strings.Split(logAllowOverride, ",")
-	}
-	deny := cfg.General.LogDeny
-	if logDenyOverride != "" {
-		deny = strings.Split(logDenyOverride, ",")
+	// Per-component log level overrides.
+	compLevels, err := resolveLogLevels(cfg, logLevelsOverride)
+	if err != nil {
+		return fmt.Errorf("parse log levels: %w", err)
 	}
 
 	logger, _, err := app.Setup(app.LoggingOptions{
-		Level:   logLevel,
-		LogFile: "", // no file logging for one-shot mode
-		Allow:   allow,
-		Deny:    deny,
+		Level:           logLevel,
+		LogFile:         "", // no file logging for one-shot mode
+		ComponentLevels: compLevels,
 	})
 	if err != nil {
 		return fmt.Errorf("setup logging: %w", err)

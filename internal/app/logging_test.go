@@ -220,33 +220,41 @@ func TestSetupAddSource(t *testing.T) {
 	}
 }
 
-func TestSetupFiltering(t *testing.T) {
+func TestSetupComponentLevels(t *testing.T) {
 	tmpdir := t.TempDir()
 	logFile := filepath.Join(tmpdir, "test.log")
 
 	tests := []struct {
 		name      string
-		allow     []string
-		deny      []string
+		global    slog.Level
+		levels    map[string]slog.Level
 		component string
+		logLevel  slog.Level
 		wantLog   bool
 	}{
-		{"allow-match", []string{"downloader"}, nil, "downloader", true},
-		{"allow-no-match", []string{"downloader"}, nil, "assembler", false},
-		{"deny-match", nil, []string{"downloader"}, "downloader", false},
-		{"deny-no-match", nil, []string{"downloader"}, "assembler", true},
-		{"both-match-deny-wins", []string{"downloader"}, []string{"downloader"}, "downloader", false},
-		{"no-filter-match", nil, nil, "downloader", true},
+		// Component with warn override: info should be suppressed.
+		{"api-info-suppressed", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, "api", slog.LevelInfo, false},
+		// Component with warn override: warn should pass.
+		{"api-warn-passes", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, "api", slog.LevelWarn, true},
+		// Component with warn override: error should pass.
+		{"api-error-passes", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, "api", slog.LevelError, true},
+		// Unlisted component inherits global info level.
+		{"unlisted-info-passes", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, "downloader", slog.LevelInfo, true},
+		// Component set to off: nothing passes.
+		{"off-error-suppressed", slog.LevelInfo, map[string]slog.Level{"rss": slog.Level(99)}, "rss", slog.LevelError, false},
+		// Component with debug override: debug should pass even though global is info.
+		{"debug-override-passes", slog.LevelInfo, map[string]slog.Level{"downloader": slog.LevelDebug}, "downloader", slog.LevelDebug, true},
+		// No component levels at all: behaves as global.
+		{"no-overrides", slog.LevelInfo, nil, "api", slog.LevelInfo, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_ = os.Remove(logFile) // clean up from prev subtest
 			opts := app.LoggingOptions{
-				Level:   slog.LevelInfo,
-				LogFile: logFile,
-				Allow:   tt.allow,
-				Deny:    tt.deny,
+				Level:           tt.global,
+				LogFile:         logFile,
+				ComponentLevels: tt.levels,
 			}
 			logger, closer, err := app.Setup(opts)
 			if err != nil {
@@ -259,15 +267,17 @@ func TestSetupFiltering(t *testing.T) {
 			}()
 
 			msg := "test message for " + tt.name
-			logger.Info(msg, "component", tt.component)
+			// Use WithAttrs to set the component (as real code does via .With("component", ...)).
+			compLogger := logger.With("component", tt.component)
+			compLogger.Log(t.Context(), tt.logLevel, msg)
 
 			_ = closer.Close() // flush
 
 			data, _ := os.ReadFile(logFile)
 			gotLog := bytes.Contains(data, []byte(msg))
 			if gotLog != tt.wantLog {
-				t.Errorf("gotLog = %v, want %v (allow=%v, deny=%v, component=%v)",
-					gotLog, tt.wantLog, tt.allow, tt.deny, tt.component)
+				t.Errorf("gotLog = %v, want %v (global=%v, levels=%v, component=%v, logLevel=%v)\nfile content: %s",
+					gotLog, tt.wantLog, tt.global, tt.levels, tt.component, tt.logLevel, string(data))
 			}
 		})
 	}
