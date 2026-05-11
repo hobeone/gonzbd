@@ -495,12 +495,14 @@ func (s *SortStage) Run(ctx context.Context, job *Job) error {
 	} else {
 		logf(log, job, slog.LevelInfo, "No sorting rule matched")
 	}
-	// Process partial results even on error — if some files were moved,
-	// downstream stages must know where they are.
-	if len(res.Moved) > 0 {
-		for _, m := range res.Moved {
-			logf(log, job, slog.LevelInfo, "%s → %s", filepath.Base(m.From), m.To)
-		}
+	// Log all moved files regardless of error.
+	for _, m := range res.Moved {
+		logf(log, job, slog.LevelInfo, "%s → %s", filepath.Base(m.From), m.To)
+	}
+	// Only update paths and clean up origDir when ALL files moved
+	// successfully. A partial move (err != nil) means some files are
+	// stranded in origDir — updating DownloadDir would lose them.
+	if err == nil && len(res.Moved) > 0 {
 		origDir := job.DownloadDir
 		job.FinalDir = filepath.Dir(res.Moved[0].To)
 		// Point DownloadDir at the destination so downstream stages
@@ -702,16 +704,26 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 		return fmt.Errorf("finalize: mkdir %s: %w", job.FinalDir, err)
 	}
 
+	var moveErrors []error
 	for _, e := range entries {
 		src := filepath.Join(job.DownloadDir, e.Name())
 		dst := fsutil.JoinSafe(job.FinalDir, "", e.Name(), job.Sanitize)
 		if err := moveRecursive(ctx, src, dst); err != nil {
-			return fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err)
+			moveErrors = append(moveErrors, fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err))
+			logf(log, job, slog.LevelWarn, "Failed to move %s → %s: %v", filepath.Base(src), dst, err)
+			continue
 		}
 		logf(log, job, slog.LevelInfo, "%s → %s", filepath.Base(src), dst)
 	}
 
-	// Cleanup the empty source directory
+	if len(moveErrors) > 0 {
+		// Some files failed to move — do NOT remove the source directory
+		// to avoid data loss of the unmoved files.
+		logf(log, job, slog.LevelWarn, "Partial move: %d file(s) failed, keeping source directory %s", len(moveErrors), job.DownloadDir)
+		return errors.Join(moveErrors...)
+	}
+
+	// All files moved successfully — clean up the empty source directory.
 	_ = os.RemoveAll(job.DownloadDir)
 	logf(log, job, slog.LevelInfo, "Removed empty source directory: %s", job.DownloadDir)
 

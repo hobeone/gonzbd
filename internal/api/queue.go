@@ -702,8 +702,24 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, http.StatusBadRequest, "name must be an absolute path")
 		return
 	}
-	// Clean the path (resolves any '..', '//', trailing slashes).
+
+	// Reject paths containing ".." to prevent directory traversal.
+	// Check the raw input first, since filepath.Clean resolves ".."
+	// on absolute paths (e.g., "/foo/../../etc/passwd" → "/etc/passwd"),
+	// making a post-Clean check insufficient for catching traversal attempts.
+	if strings.Contains(rawPath, "..") {
+		s.respondError(w, http.StatusBadRequest, "path must not contain '..'")
+		return
+	}
+
+	// Clean the path (resolves any '//', trailing slashes).
 	clean := filepath.Clean(rawPath)
+
+	// Defense-in-depth: reject paths where ".." survives cleaning.
+	if strings.Contains(clean, "..") {
+		s.respondError(w, http.StatusBadRequest, "path must not contain '..'")
+		return
+	}
 
 	f, err := openFile(clean)
 	if err != nil {

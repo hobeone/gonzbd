@@ -23,6 +23,21 @@ import (
 // Matches Python sabnzbd/nzbparser.py which uses `>= 2**23`.
 const maxArticleSize = 1 << 23
 
+const (
+	// maxNZBSize caps the (decompressed) XML input to the NZB parser.
+	// 256 MiB is far beyond any legitimate NZB and prevents billion-laughs
+	// XML bombs and gzip/bzip2 decompression bombs from causing OOM.
+	maxNZBSize = 256 * 1024 * 1024 // 256 MB
+
+	// maxFiles caps the number of <file> elements accepted in a single NZB.
+	// The largest known real-world NZBs have ~5 000 files.
+	maxFiles = 50_000
+
+	// maxSegments caps the total number of <segment> elements across the
+	// entire NZB. At ~1 MB per segment, 500 000 covers ~500 GB downloads.
+	maxSegments = 500_000
+)
+
 // charsetReader lets encoding/xml accept the two charsets that appear
 // in NZB files in the wild: utf-8 (modern) and iso-8859-1 (legacy, still
 // the default in the newzBin DTD). Anything else is refused rather than
@@ -142,9 +157,9 @@ func unwrapEnvelope(br *bufio.Reader, magic []byte) (io.Reader, func() error, er
 		if err != nil {
 			return nil, nil, fmt.Errorf("nzb: gzip envelope: %w", err)
 		}
-		return gz, gz.Close, nil
+		return io.LimitReader(gz, maxNZBSize), gz.Close, nil
 	case magic[0] == 'B' && magic[1] == 'Z':
-		return bzip2.NewReader(br), nil, nil
+		return io.LimitReader(bzip2.NewReader(br), maxNZBSize), nil, nil
 	}
 	return br, nil, nil
 }
@@ -175,7 +190,7 @@ type xmlSegment struct {
 // <head> and <file> subtree with DecodeElement. This keeps memory
 // proportional to the largest single <file>, not the whole document.
 func parseXML(r io.Reader) (*NZB, error) {
-	dec := xml.NewDecoder(r)
+	dec := xml.NewDecoder(io.LimitReader(r, maxNZBSize))
 	// Namespaces are present in real NZBs (xmlns="http://www.newzbin.com/DTD/2003/nzb").
 	// We match by Local name only.
 	dec.CharsetReader = charsetReader
@@ -187,6 +202,7 @@ func parseXML(r io.Reader) (*NZB, error) {
 
 	var ageSum int64
 	var ageCount int
+	var totalSegments int
 
 	for {
 		tok, err := dec.Token()
@@ -208,9 +224,16 @@ func parseXML(r io.Reader) (*NZB, error) {
 				return nil, err
 			}
 		case "file":
-			ts, err := absorbFile(dec, &se, out, digest, seenGroups, now)
+			if len(out.Files)+out.SkippedFiles >= maxFiles {
+				return nil, fmt.Errorf("nzb: file count exceeds limit of %d", maxFiles)
+			}
+			ts, segs, err := absorbFile(dec, &se, out, digest, seenGroups, now)
 			if err != nil {
 				return nil, err
+			}
+			totalSegments += segs
+			if totalSegments > maxSegments {
+				return nil, fmt.Errorf("nzb: segment count exceeds limit of %d", maxSegments)
 			}
 			if ts != 0 {
 				ageSum += ts
@@ -245,6 +268,8 @@ func absorbHead(dec *xml.Decoder, se *xml.StartElement, out *NZB) error {
 // any valid articles. The returned timestamp is zero for skipped files;
 // the caller folds non-zero values into its average-age rolling sum.
 // Matches Python's behavior of excluding skipped files from avg_age.
+// The second return value is the number of raw XML segments in this file
+// (for the caller's total-segment-count budget).
 func absorbFile(
 	dec *xml.Decoder,
 	se *xml.StartElement,
@@ -252,10 +277,10 @@ func absorbFile(
 	digest hash.Hash,
 	seenGroups map[string]struct{},
 	now time.Time,
-) (int64, error) {
+) (int64, int, error) {
 	var xf xmlFile
 	if err := dec.DecodeElement(&xf, se); err != nil {
-		return 0, fmt.Errorf("nzb: decode <file>: %w", err)
+		return 0, 0, fmt.Errorf("nzb: decode <file>: %w", err)
 	}
 
 	file, ts, counters := convertFile(xf, now, digest)
@@ -265,7 +290,7 @@ func absorbFile(
 
 	if len(file.Articles) == 0 {
 		out.SkippedFiles++
-		return 0, nil
+		return 0, len(xf.Segments), nil
 	}
 	for _, g := range file.Groups {
 		if _, dup := seenGroups[g]; dup {
@@ -275,7 +300,7 @@ func absorbFile(
 		out.Groups = append(out.Groups, g)
 	}
 	out.Files = append(out.Files, file)
-	return ts, nil
+	return ts, len(xf.Segments), nil
 }
 
 type articleCounters struct {

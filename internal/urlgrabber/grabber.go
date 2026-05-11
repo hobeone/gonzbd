@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -39,6 +40,9 @@ type Config struct {
 	Password string
 	// Logger is the structured logger. If nil, slog.Default() is used.
 	Logger *slog.Logger
+	// AllowPrivateIPs disables SSRF private-IP blocking. Only set this
+	// in tests; production must always leave it false.
+	AllowPrivateIPs bool
 }
 
 // Handler defines the interface for consuming NZB payloads fetched by the Grabber.
@@ -50,10 +54,11 @@ type Handler interface {
 // Grabber fetches URLs pointing to NZBs (or NZB archives), decompresses them,
 // and invokes a handler for each found NZB.
 type Grabber struct {
-	cfg     Config
-	handler Handler
-	client  *http.Client
-	logger  *slog.Logger
+	cfg             Config
+	handler         Handler
+	client          *http.Client
+	logger          *slog.Logger
+	allowPrivateIPs bool
 }
 
 // New creates a new Grabber with the given config and handler.
@@ -73,12 +78,24 @@ func New(cfg Config, h Handler) *Grabber {
 	if client == nil {
 		client = &http.Client{Timeout: cfg.Timeout}
 	}
+	allowPrivate := cfg.AllowPrivateIPs
+	// Install redirect validation to prevent SSRF via redirect chains.
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		if err := validateURL(req.URL, allowPrivate); err != nil {
+			return fmt.Errorf("redirect target blocked: %w", err)
+		}
+		return nil
+	}
 
 	return &Grabber{
-		cfg:     cfg,
-		handler: h,
-		client:  client,
-		logger:  log,
+		cfg:             cfg,
+		handler:         h,
+		client:          client,
+		logger:          log,
+		allowPrivateIPs: allowPrivate,
 	}
 }
 
@@ -102,6 +119,11 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse URL: %w", err)
+	}
+
+	// Validate the URL to prevent SSRF attacks.
+	if err := validateURL(parsedURL, g.allowPrivateIPs); err != nil {
+		return nil, fmt.Errorf("URL rejected: %w", err)
 	}
 
 	// Use configured credentials if provided, otherwise try URL userinfo.
@@ -231,4 +253,72 @@ func extractFromContentDisposition(disposition string) string {
 		return ""
 	}
 	return params["filename"]
+}
+
+// privateIPNets defines the CIDR ranges considered "private" for SSRF protection.
+var privateIPNets = func() []*net.IPNet {
+	cidrs := []string{
+		"127.0.0.0/8",    // IPv4 loopback
+		"10.0.0.0/8",     // RFC1918
+		"172.16.0.0/12",  // RFC1918
+		"192.168.0.0/16", // RFC1918
+		"169.254.0.0/16", // link-local
+		"::1/128",        // IPv6 loopback
+		"fe80::/10",      // IPv6 link-local
+		"fc00::/7",       // IPv6 unique local
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		_, n, _ := net.ParseCIDR(cidr)
+		nets = append(nets, n)
+	}
+	return nets
+}()
+
+// isPrivateIP returns true if ip falls within any private, loopback, or
+// link-local address range.
+func isPrivateIP(ip net.IP) bool {
+	for _, n := range privateIPNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// validateURL rejects URLs that could be used for SSRF attacks:
+//   - Only http and https schemes are allowed.
+//   - Hosts that resolve to loopback, link-local, or RFC1918 private
+//     addresses are rejected (unless allowPrivateIPs is true).
+//   - The hostname "localhost" is explicitly blocked.
+func validateURL(u *url.URL, allowPrivateIPs bool) error {
+	// Scheme check.
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("unsupported scheme %q: only http and https are allowed", u.Scheme)
+	}
+
+	// Hostname check.
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("localhost URLs are not allowed")
+	}
+
+	if allowPrivateIPs {
+		return nil
+	}
+
+	// Resolve and check all IPs.
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Errorf("failed to resolve host %q: %w", host, err)
+	}
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip != nil && isPrivateIP(ip) {
+			return fmt.Errorf("host %q resolves to private/loopback address %s", host, ipStr)
+		}
+	}
+
+	return nil
 }

@@ -908,6 +908,34 @@ func TestAddLocalFile_Relative(t *testing.T) {
 	}
 }
 
+func TestModeAddLocalFile_RejectsPathTraversal(t *testing.T) {
+	t.Parallel()
+	s, _ := testQueueServer(t)
+
+	// Test that absolute paths with ".." are rejected. filepath.Clean
+	// resolves ".." components on absolute paths, but the explicit
+	// strings.Contains(clean, "..") guard provides defense-in-depth.
+	// Either way, the request must fail (either the ".." check fires,
+	// or the resolved path doesn't exist/isn't a valid NZB).
+	tests := []struct {
+		name    string
+		path    string
+		wantSub string // substring expected in body; "" means any 400 is fine
+	}{
+		{"traversal up from root", "/../../../etc/passwd", ""},
+		{"traversal mid-path", "/safe/../../../etc/passwd", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rr := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name="+tt.path+"&apikey="+testAPIKey)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("status = %d; want 400 for path %q (body: %s)", rr.Code, tt.path, rr.Body.String())
+			}
+		})
+	}
+}
+
 // --- AddURL ---
 
 // When no Grabber is wired into Options, mode=addurl should signal

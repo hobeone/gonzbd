@@ -231,21 +231,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	for i, sc := range cfg.Servers {
 		servers[i] = downloader.NewServer(sc)
 	}
-	d := downloader.New(q, servers, app.meter, downloader.Options{
-		MaxArtTries:      cfg.MaxArtTries,
-		MaxArtOpt:        cfg.MaxArtOpt,
-		TopOnly:          cfg.TopOnly,
-		NoPenalties:      cfg.NoPenalties,
-		PreCheck:         cfg.PreCheck,
-		PropagationDelay: time.Duration(cfg.PropagationDelay) * time.Minute,
-		OnJobHopeless: func(jobID string) {
-			snap := q.SnapshotJob(jobID)
-			if snap == nil {
-				return
-			}
-			app.maybeFinalize(jobID, failMsgForJob(snap))
-		},
-	}, log)
+	d := downloader.New(q, servers, app.meter, app.buildDownloaderOptions(), log)
 	app.downloader = d
 
 	// Apply initial bandwidth limit from config.
@@ -792,13 +778,22 @@ func (app *Application) Shutdown() error {
 	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) {
 		return nil
 	}
-	_ = app.downloader.Stop()
-	_ = app.assembler.Stop()
+	var errs []error
+	if err := app.downloader.Stop(); err != nil {
+		errs = append(errs, fmt.Errorf("downloader stop: %w", err))
+	}
+	if err := app.assembler.Stop(); err != nil {
+		errs = append(errs, fmt.Errorf("assembler stop: %w", err))
+	}
 	app.cancel()
 	app.wg.Wait()
-	_ = app.postProcessor.Stop()
-	_ = app.queue.Save(filepath.Join(app.cfg.AdminDir, "queue"))
-	return nil
+	if err := app.postProcessor.Stop(); err != nil {
+		errs = append(errs, fmt.Errorf("postprocessor stop: %w", err))
+	}
+	if err := app.queue.Save(filepath.Join(app.cfg.AdminDir, "queue")); err != nil {
+		errs = append(errs, fmt.Errorf("queue save: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 func (app *Application) runCheckpoint(ctx context.Context, interval time.Duration) {
@@ -1019,13 +1014,35 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	for i, sc := range scs {
 		servers[i] = downloader.NewServer(sc)
 	}
-	newDownloader := downloader.New(app.queue, servers, app.meter, downloader.Options{}, app.log)
+	newDownloader := downloader.New(app.queue, servers, app.meter, app.buildDownloaderOptions(), app.log)
 	if err := newDownloader.Start(app.ctx); err != nil {
 		return err
 	}
 	app.downloader = newDownloader
 	app.pipeline.setCompletions(newDownloader.Completions())
 	return nil
+}
+
+// buildDownloaderOptions constructs a downloader.Options from the current
+// app config. Used by both New() and ReloadDownloader() to ensure the same
+// options are applied consistently.
+func (app *Application) buildDownloaderOptions() downloader.Options {
+	q := app.queue
+	return downloader.Options{
+		MaxArtTries:      app.cfg.MaxArtTries,
+		MaxArtOpt:        app.cfg.MaxArtOpt,
+		TopOnly:          app.cfg.TopOnly,
+		NoPenalties:      app.cfg.NoPenalties,
+		PreCheck:         app.cfg.PreCheck,
+		PropagationDelay: time.Duration(app.cfg.PropagationDelay) * time.Minute,
+		OnJobHopeless: func(jobID string) {
+			snap := q.SnapshotJob(jobID)
+			if snap == nil {
+				return
+			}
+			app.maybeFinalize(jobID, failMsgForJob(snap))
+		},
+	}
 }
 
 // WithLogger returns an option that overrides the Application's logger.
