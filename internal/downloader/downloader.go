@@ -326,6 +326,13 @@ func (d *Downloader) Start(ctx context.Context) error {
 	}
 	d.ctx, d.cancel = context.WithCancel(ctx)
 
+	// Initialize the pause context before spawning workers — they
+	// snapshot pauseCtx in handleRequest and will panic on nil if we
+	// defer this until after the goroutines are running.
+	d.pauseMu.Lock()
+	d.pauseCtx, d.pauseCancel = context.WithCancel(d.ctx)
+	d.pauseMu.Unlock()
+
 	// Per-server worker pools — one goroutine per configured
 	// connection, each lazily dials its own *nntp.Conn.
 	totalWorkers := 0
@@ -344,11 +351,6 @@ func (d *Downloader) Start(ctx context.Context) error {
 	d.wg.Go(func() {
 		d.run(d.ctx)
 	})
-
-	// Initialize the pause context — not paused at start.
-	d.pauseMu.Lock()
-	d.pauseCtx, d.pauseCancel = context.WithCancel(d.ctx)
-	d.pauseMu.Unlock()
 
 	d.log.Info("started", "servers", len(d.servers), "workers", totalWorkers)
 

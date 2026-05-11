@@ -102,7 +102,13 @@ func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 		t.Fatalf("timeout waiting for job %s to reach history after recovery", jobID)
 	}
 
-	if snap := a.Queue().SnapshotJob(jobID); snap != nil {
+	// Wait for the job to be fully removed from the active queue.
+	// There's a brief window where it appears in history but hasn't
+	// been cleaned from the queue yet (status=Running).
+	if !waitUntil(2*time.Second, func() bool {
+		return a.Queue().SnapshotJob(jobID) == nil
+	}) {
+		snap := a.Queue().SnapshotJob(jobID)
 		t.Errorf("job %s still in active queue after recovery (status=%q)", jobID, snap.Status)
 	}
 }
