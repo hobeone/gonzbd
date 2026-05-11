@@ -27,6 +27,29 @@ categories:
     pp: 7
 ```
 
+## Post-Processing Flags (`pp`)
+
+The `pp` field is a bitmask that controls which post-processing stages run
+before your script is invoked:
+
+| Bit | Value | Stage |
+|-----|-------|-------|
+| 0 | `1` | **Repair** — par2 verify and repair |
+| 1 | `2` | **Unpack** — extract RAR, 7z, and split archives |
+| 2 | `4` | **Delete** — remove par2 and archive files after success |
+
+Common values:
+
+| `pp` | Meaning |
+|------|---------|
+| `0` | Skip all post-processing (script still runs) |
+| `1` | Repair only |
+| `3` | Repair + Unpack |
+| `7` | Repair + Unpack + Delete *(most common)* |
+
+Your script receives this value as `SAB_PP` and can use it to adjust behavior
+(e.g., skip cleanup logic when `pp < 4` since archives weren't deleted).
+
 ## How Scripts Are Invoked
 
 - **No shell**: The script is executed directly (not via `/bin/sh`). Use a
