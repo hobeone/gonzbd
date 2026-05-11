@@ -1,0 +1,306 @@
+# =============================================================================
+# GoNZBD Configuration — Example
+# =============================================================================
+# Copy this file to gonzbd.yaml and customize for your setup.
+# gonzbd will auto-generate API keys on first run if they are empty.
+#
+# Values that accept sizes use K/M/G/T suffixes (base-1024).
+# Path fields support $ENV_VAR expansion.
+# =============================================================================
+
+general:
+  # Bind address for the HTTP listener. Use 0.0.0.0 to listen on all
+  # interfaces, or 127.0.0.1 to restrict to localhost only.
+  host: 0.0.0.0
+
+  # HTTP port. Must be 1-65535. Default: 4289.
+  port: 4289
+
+  # HTTPS port. Set to 0 to disable HTTPS entirely.
+  # When enabled, both https_cert and https_key must be set.
+  https_port: 0
+  https_cert: ""
+  https_key: ""
+
+  # API key for authenticating API requests. 16-character lowercase hex.
+  # Auto-generated on first run. Required for external tools like
+  # Sonarr, Radarr, and NZB360 to communicate with gonzbd.
+  api_key: ""
+
+  # Separate API key for NZB-upload endpoints only. Allows giving
+  # upload-only access to indexers without exposing the full API key.
+  nzb_key: ""
+
+  # When true, requests from 127.0.0.0/8 or ::1 bypass API key checks.
+  # Automatically disabled when inet_exposure is set to "inet".
+  localhost_bypass: false
+
+  # How the server is exposed to the network. Set to "inet" when behind
+  # a reverse proxy to disable localhost_bypass (since RemoteAddr would
+  # be the proxy's loopback, not the real client).
+  inet_exposure: ""
+
+  # Web UI credentials. Leave both empty to disable authentication.
+  # Password is stored as a hash after first login via the UI.
+  username: ""
+  password: ""
+
+  # Working directory for in-progress downloads. Files here are
+  # incomplete and should not be accessed by media scanners.
+  # Created automatically on startup if it does not exist.
+  download_dir: Downloads/incomplete
+
+  # Destination for completed and post-processed jobs. Media scanners
+  # (Plex, Jellyfin, etc.) should point at this directory.
+  complete_dir: Downloads/complete
+
+  # Watched folder for drop-in NZB files. Any .nzb file placed here
+  # is automatically queued for download. Empty disables the scanner.
+  dirscan_dir: ""
+
+  # How often (in seconds) to scan dirscan_dir for new NZB files.
+  # Lower values mean faster pickup but more I/O. Default: 5.
+  dirscan_speed: 5
+
+  # Directory containing user post-processing scripts. Scripts here
+  # are available for selection in category settings. See
+  # docs/post-processing-scripts.md for the script contract.
+  script_dir: ""
+
+  # Directory for gonzbd's own log files (gonzbd.log). Empty means
+  # stderr-only (no file logging). Only used in serve mode.
+  log_dir: ""
+
+  # Directory for queue state and admin data. Stores the persistent
+  # job queue (JSON+gzip) between restarts. Defaults to
+  # <download_dir>/admin if empty.
+  admin_dir: admin
+
+  # Global minimum log level: debug, info, warn, error. Default: info.
+  log_level: info
+
+  # Per-component log level overrides. Components not listed here
+  # inherit the global log_level. Valid levels: debug, info, warn,
+  # error, off. Use this to suppress noisy subsystems while keeping
+  # errors visible.
+  #
+  # Common components: api, main, downloader, assembler, nntp, queue,
+  #   postproc, decoder, dirscanner, rss, sorting, deobfuscate,
+  #   unpack/unrar, unpack/sevenzip, unpack/filejoin
+  #
+  # Example:
+  #   log_levels:
+  #     api: warn          # suppress routine API request logging
+  #     downloader: debug  # verbose download pipeline output
+  #     nntp: error        # only show NNTP errors
+  #     rss: off           # completely silence RSS feed checks
+
+  # UI language code (BCP-47). Default: en.
+  language: en
+
+downloads:
+  # Maximum download bandwidth. Accepts K/M/G suffixes. "0" or empty
+  # means unlimited. This is a hard ceiling; actual throughput is
+  # further limited by bandwidth_perc.
+  bandwidth_max: ""
+
+  # Percentage of bandwidth_max to actually use (0-100). Useful for
+  # throttling without changing the max. Default: 100.
+  bandwidth_perc: 100
+
+  # Minimum free disk space on the download volume. The downloader
+  # pauses when free space drops below this threshold. Accepts K/M/G
+  # suffixes. Default: 1G.
+  min_free_space: 1G
+
+  # Free-space target after post-processing cleanup. Must be >=
+  # min_free_space. When space is low, completed jobs are cleaned up
+  # (oldest first) until this threshold is reached. Default: 2G.
+  min_free_space_cleanup: 2G
+
+  # Memory budget for write coalescing in the assembler. Decoded
+  # articles are buffered and flushed as larger sequential writes,
+  # reducing I/O syscalls. Higher values improve throughput on spinning
+  # disks but consume more RAM. "0" disables coalescing. Default: 500M.
+  write_cache_size: 500M
+
+  # Maximum retry attempts per article across all servers before
+  # marking the article as permanently failed. Must be >= 1.
+  max_art_tries: 3
+
+  # Maximum retry attempts per article on optional (backup) servers
+  # specifically. Must be >= 0.
+  max_art_opt: 1
+
+  # When true, only dispatch articles to the highest-priority server.
+  # Disables fallback to backup servers entirely.
+  top_only: false
+
+  # When true, replace all server penalty durations with a short
+  # constant. Useful for testing/debugging only.
+  no_penalties: false
+
+  # Issue NNTP STAT before BODY to verify article existence. Trades
+  # latency for fewer wasted bytes on missing articles. Useful when
+  # using multiple servers with different retention windows.
+  pre_check: false
+
+  # Minutes to wait after a job is added before downloading begins.
+  # Allows articles to propagate to backup/fill servers. 0 disables.
+  propagation_delay: 0
+
+  # Character used to replace illegal filesystem characters
+  # (\ / : * ? " < > |) in filenames. Default: "_".
+  replace_illegal_with: _
+
+  # Character used to replace spaces in filenames. Empty string means
+  # keep spaces as-is.
+  replace_spaces_with: ""
+
+  # When true, replace accented/diacritical characters with ASCII
+  # equivalents (e.g., é → e, ü → u).
+  strip_diacritics: false
+
+  # Regex patterns removed from job folder names. Applied in order.
+  # Used to strip indexer tags, site names, and obfuscation markers
+  # that indexers prepend/append to NZB names.
+  cleanup_list:
+    - ^(?i)\[PRiVATE\]-?
+    - ^(?i)\[nzbndx\]-?
+    - ^(?i)\[DrunkenSlug\]-?
+    - ^(?i)\[Geek\]-?
+    - ^\[.*\]-?
+    - ^(?i)www\..*\.[a-z]{2,3}-?
+    - (?i)-? ?\(Scenzbd\)$
+    - (?i)-? ?\(Obfuscated\)$
+    - (?i)-? ?\(NZBGeek\)$
+
+postproc:
+  # Enable RAR archive extraction. Requires unrar or 7z on PATH.
+  enable_unrar: true
+
+  # Enable 7z archive extraction. Requires 7z on PATH.
+  enable_7zip: true
+
+  # Delete par2 parity files after a successful repair.
+  enable_par_cleanup: true
+
+  # Delete source archive files (RAR, 7z, split) after successful
+  # extraction. Set to false to keep originals alongside extracted files.
+  enable_rar_cleanup: true
+
+  # Path to the par2 binary. Can be a bare name (resolved via PATH)
+  # or an absolute path. Default: "par2".
+  par2_command: par2
+
+  # Path to the unrar binary. Empty triggers auto-detection on PATH.
+  unrar_command: ""
+
+  # Path to the 7z binary. Empty triggers auto-detection on PATH.
+  sevenz_command: ""
+
+  # Use par2cmdline-turbo invocation arguments when supported by the
+  # par2 binary. Enables multi-threaded repair.
+  par2_turbo: false
+
+  # Discard in-archive timestamps during extraction. Files will use
+  # the extraction time instead of the original creation date.
+  ignore_unrar_dates: false
+
+  # Allow extraction to overwrite existing files in the destination.
+  # When false, existing files are preserved and extraction may fail
+  # if a name collision occurs.
+  overwrite_files: false
+
+  # Write all extracted files flat into the job directory, ignoring
+  # any subdirectory structure inside the archive.
+  flat_unpack: false
+
+  # Rename obfuscated files (random hex strings, UUIDs) to use the
+  # job name as a base. Helps media scanners identify content.
+  deobfuscate_filenames: true
+
+servers:
+  # Each server entry defines an NNTP news server connection.
+  # Multiple servers can be configured for redundancy and fill.
+  # Articles are dispatched to servers in priority order (lower = higher
+  # priority). If a server fails, the next one is tried automatically.
+
+  - # Unique name for this server. Used in logs and penalty tracking.
+    name: my-primary-server
+    # Hostname or IP address of the NNTP server.
+    host: news.example.com
+    # TCP port. Common values: 119 (plain), 443/563 (SSL).
+    port: 563
+    # NNTP authentication credentials.
+    username: your_username
+    password: your_password
+    # Number of simultaneous connections. More connections = faster
+    # downloads, but most providers cap this (check your plan).
+    connections: 30
+    # Enable TLS encryption. Strongly recommended.
+    ssl: true
+    # Certificate verification level:
+    #   0 = none (insecure), 1 = chain only (no hostname check),
+    #   2 = hostname match (recommended), 3 = strict (extra checks).
+    ssl_verify: 2
+    # OpenSSL cipher string. Empty uses system defaults.
+    ssl_ciphers: ""
+    # Dispatch priority. Lower numbers are tried first. Servers with
+    # the same priority are tried in parallel.
+    priority: 0
+    # Required servers are never auto-deactivated under penalty.
+    required: true
+    # Optional (backup) servers can be temporarily deactivated when
+    # their bad-connection ratio exceeds the threshold.
+    optional: false
+    # Article retention in days. Articles older than this are not
+    # requested from this server. 0 = unlimited.
+    retention: 0
+    # Per-request socket timeout in seconds.
+    timeout: 60
+    # Max NNTP commands in-flight per connection. Increase for high-
+    # latency servers. Set to 1 if the server misbehaves.
+    pipelining_requests: 2
+    # Set to false to keep the server configured but skip it entirely.
+    enable: true
+
+categories:
+  # Categories control per-job post-processing and output routing.
+  # Jobs are assigned a category by the API client (Sonarr, Radarr, etc.)
+  # or by the user. The category determines which post-processing stages
+  # run and where completed files land.
+  #
+  # "Default" and "*" are required fallback categories and must always exist.
+
+  - name: Default
+    # Post-processing flags (bitmask):
+    #   0 = nothing, 1 = repair only, 2 = repair + unpack,
+    #   3 = repair + unpack + delete archives,
+    #   7 = all of the above (repair + unpack + delete + deobfuscate)
+    pp: 3
+    # Post-processing script name from script_dir. "None" = no script.
+    script: None
+    # Default job priority. 0 = normal.
+    priority: 0
+    # Subdirectory within complete_dir. Empty = write to complete_dir root.
+    dir: ""
+
+  - name: '*'
+    pp: 3
+    script: None
+    priority: 0
+    dir: ""
+
+  - name: tv
+    pp: 7
+    script: None
+    priority: 0
+    # TV shows land in complete_dir/tv/.
+    dir: tv
+
+  - name: movies
+    pp: 7
+    script: None
+    priority: 0
+    dir: movies
