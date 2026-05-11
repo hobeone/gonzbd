@@ -399,32 +399,7 @@ func (a *Assembler) worker() {
 				a.closeAll(open)
 				return
 			}
-			if req.JobID == "" && req.FileIdx == -1 {
-				// Control message: cancel a job. Close and remove all
-				// open files for the job encoded in MessageID.
-				cancelID := req.MessageID
-				cancelledJobs[cancelID] = struct{}{}
-				for k, f := range open {
-					if k.jobID != cancelID {
-						continue
-					}
-					_ = f.handle.Close() //nolint:errcheck // best-effort; file is immediately removed
-					if err := os.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
-						a.log.Warn("failed to remove cancelled file",
-							"path", f.info.Path, "error", err)
-					}
-					delete(open, k)
-					completed[k] = struct{}{}
-					wc.forget(k) // discard cached articles for cancelled file
-				}
-				continue
-			}
-			// Skip articles for cancelled jobs.
-			if _, cancelled := cancelledJobs[req.JobID]; cancelled {
-				continue
-			}
-			a.processRequest(req, open, completed, wc)
-			reqCount++
+			reqCount += a.dispatchRequest(req, open, completed, cancelledJobs, wc)
 			if a.opts.MinFreeBytes > 0 && reqCount%diskCheckInterval == 0 {
 				a.checkDiskSpace(open)
 			}
@@ -439,8 +414,7 @@ func (a *Assembler) worker() {
 			for {
 				select {
 				case req := <-a.reqs:
-					a.processRequest(req, open, completed, wc)
-					reqCount++
+					reqCount += a.dispatchRequest(req, open, completed, cancelledJobs, wc)
 					if a.opts.MinFreeBytes > 0 && reqCount%diskCheckInterval == 0 {
 						a.checkDiskSpace(open)
 					}
@@ -456,6 +430,49 @@ func (a *Assembler) worker() {
 			}
 		}
 	}
+}
+
+// dispatchRequest handles a single request from the channel. It processes
+// cancel control messages (JobID="" && FileIdx==-1) by closing and removing
+// all open files for the cancelled job, skips articles for already-cancelled
+// jobs, and delegates normal write requests to processRequest. Returns 1 if
+// a normal request was processed (for reqCount tracking), 0 otherwise.
+//
+// This method is called from both the main select loop and the shutdown
+// drain loop to ensure cancel messages are handled correctly in both paths.
+func (a *Assembler) dispatchRequest(
+	req WriteRequest,
+	open map[fileKey]*openFile,
+	completed map[fileKey]struct{},
+	cancelledJobs map[string]struct{},
+	wc *writeCache,
+) int {
+	if req.JobID == "" && req.FileIdx == -1 {
+		// Control message: cancel a job. Close and remove all
+		// open files for the job encoded in MessageID.
+		cancelID := req.MessageID
+		cancelledJobs[cancelID] = struct{}{}
+		for k, f := range open {
+			if k.jobID != cancelID {
+				continue
+			}
+			_ = f.handle.Close() //nolint:errcheck // best-effort; file is immediately removed
+			if err := os.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
+				a.log.Warn("failed to remove cancelled file",
+					"path", f.info.Path, "error", err)
+			}
+			delete(open, k)
+			completed[k] = struct{}{}
+			wc.forget(k) // discard cached articles for cancelled file
+		}
+		return 0
+	}
+	// Skip articles for cancelled jobs.
+	if _, cancelled := cancelledJobs[req.JobID]; cancelled {
+		return 0
+	}
+	a.processRequest(req, open, completed, wc)
+	return 1
 }
 
 // flush drains the pending Done and Failed batches to the queue. Called

@@ -80,7 +80,9 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	if len(snap.ServerStats) != 0 {
 		t.Errorf("ServerStats = %v, want empty", snap.ServerStats)
 	}
-	if snap.Status != constants.StatusQueued && snap.Status != constants.StatusDownloading {
-		t.Errorf("Status = %q, want Queued or Downloading", snap.Status)
+	// The mock server returns 430 instantly, so the job may have progressed
+	// from Queued through Downloading to Verifying before we check.
+	if snap.Status != constants.StatusQueued && snap.Status != constants.StatusDownloading && snap.Status != constants.StatusVerifying {
+		t.Errorf("Status = %q, want Queued, Downloading, or Verifying", snap.Status)
 	}
 }
