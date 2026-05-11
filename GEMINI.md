@@ -45,6 +45,7 @@ GoNZBD is a high-performance Go reimplementation of [SABnzbd](https://sabnzbd.or
 - **Concurrency:** Prefer channels for signaling (e.g., `chan struct{}`) over `sync.Cond`. Use `sync.RWMutex` for hot-path memory state.
 - **No hacks:** No `init()` functions for setup, no `panic` for control flow, and no `time.Sleep` in tests for synchronization.
 - **Database Migrations:** All schema changes MUST be implemented as a new `goose` migration file in `internal/history/migrations/`. Never modify existing migration files.
+- **Config Documentation:** The root `gonzbd.yaml` contains inline comments above every directive documenting its purpose, valid values, and important considerations. When adding, renaming, or removing config fields in `internal/config/`, you MUST update the corresponding comments in `gonzbd.yaml` and `test/fixtures/gonzbd.yaml` to stay in sync. Also update `docs/sabnzbd_spec.md` §9.x tables.
 
 ### 3. Workflow & Quality Gates
 - **Per-Step Commits:** Implement one step from `docs/golang_implementation.md` at a time.
