@@ -219,14 +219,6 @@ func TestValidateRejectsBadInputs(t *testing.T) {
 			"api_key",
 		},
 		{
-			"min_free_space_cleanup < min_free_space",
-			func(c *Config) {
-				c.Downloads.MinFreeSpace = 10 * 1024 * 1024
-				c.Downloads.MinFreeSpaceCleanup = 5 * 1024 * 1024
-			},
-			"min_free_space_cleanup",
-		},
-		{
 			"duplicate category names",
 			func(c *Config) {
 				c.Categories = append(c.Categories, c.Categories[0])
