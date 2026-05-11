@@ -184,10 +184,6 @@ func (d *DownloadConfig) validate() error {
 	if d.MinFreeSpace < 0 {
 		errs = append(errs, fmt.Errorf("min_free_space: %d is negative", d.MinFreeSpace))
 	}
-	if d.MinFreeSpaceCleanup < d.MinFreeSpace {
-		errs = append(errs, fmt.Errorf("min_free_space_cleanup (%s) < min_free_space (%s)",
-			d.MinFreeSpaceCleanup, d.MinFreeSpace))
-	}
 	if err := positive("max_art_tries", d.MaxArtTries); err != nil {
 		errs = append(errs, err)
 	}

@@ -119,11 +119,6 @@ downloads:
   # suffixes. Default: 1G.
   min_free_space: 1G
 
-  # Free-space target after post-processing cleanup. Must be >=
-  # min_free_space. When space is low, completed jobs are cleaned up
-  # (oldest first) until this threshold is reached. Default: 2G.
-  min_free_space_cleanup: 2G
-
   # Memory budget for write coalescing in the assembler. Decoded
   # articles are buffered and flushed as larger sequential writes,
   # reducing I/O syscalls. Higher values improve throughput on spinning
