@@ -405,10 +405,11 @@ func TestRetryHistoryJob(t *testing.T) {
 		t.Errorf("Queue length = %d, want 1", application.Queue().Len())
 	}
 	status, _ := application.Queue().GetJobStatus(jobID)
-	// The job should be in an active download state — either Queued (initial)
-	// or Downloading (dispatcher already picked it up).
-	if status != constants.StatusQueued && status != constants.StatusDownloading {
-		t.Errorf("Status = %q, want Queued or Downloading", status)
+	// The job should be in an active state. The mock server returns 430
+	// instantly, so the job may already have progressed from Queued through
+	// Downloading to Verifying (post-processor is paused).
+	if status != constants.StatusQueued && status != constants.StatusDownloading && status != constants.StatusVerifying {
+		t.Errorf("Status = %q, want Queued, Downloading, or Verifying", status)
 	}
 
 	// 4. Verify history entry is gone

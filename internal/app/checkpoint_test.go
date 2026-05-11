@@ -137,22 +137,47 @@ func TestCheckpointSkips_WhenClean(t *testing.T) {
 		t.Fatalf("baseline checkpoint never wrote %s: %v", indexPath, err)
 	}
 
-	// Record the mtime after the baseline save. The queue is now clean.
-	info1, err := os.Stat(indexPath)
-	if err != nil {
-		t.Fatalf("stat after baseline: %v", err)
+	// Wait for the mtime to stabilize. The download pipeline runs
+	// asynchronously and may mark articles as failed (dirtying the queue)
+	// after our manual MarkArticleDone. We wait until the mtime hasn't
+	// changed for several checkpoint intervals, confirming all async
+	// mutations have been checkpointed and the queue is truly clean.
+	var stableMtime time.Time
+	stabilizeDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(stabilizeDeadline) {
+		info, err := os.Stat(indexPath)
+		if err != nil {
+			t.Fatalf("stat during stabilize: %v", err)
+		}
+		if info.ModTime().Equal(stableMtime) {
+			// mtime unchanged — might be stable. Check again after
+			// several intervals.
+			time.Sleep(5 * checkInterval)
+			info2, err := os.Stat(indexPath)
+			if err != nil {
+				t.Fatalf("stat after stabilize wait: %v", err)
+			}
+			if info2.ModTime().Equal(stableMtime) {
+				break // Stable!
+			}
+		}
+		stableMtime = info.ModTime()
+		time.Sleep(checkInterval)
 	}
-	mtime1 := info1.ModTime()
+	if stableMtime.IsZero() {
+		t.Fatal("mtime never stabilized")
+	}
 
-	// Wait several intervals without mutating; mtime must not change.
+	// Now that the queue is truly clean (no mtime change for 5+ intervals),
+	// wait several more intervals and verify it stays unchanged.
 	time.Sleep(5 * checkInterval)
 
 	info2, err := os.Stat(indexPath)
 	if err != nil {
-		t.Fatalf("stat after wait: %v", err)
+		t.Fatalf("stat after clean wait: %v", err)
 	}
-	if !info2.ModTime().Equal(mtime1) {
+	if !info2.ModTime().Equal(stableMtime) {
 		t.Errorf("queue index was re-written on a clean queue: mtime changed from %v to %v",
-			mtime1, info2.ModTime())
+			stableMtime, info2.ModTime())
 	}
 }
