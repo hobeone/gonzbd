@@ -611,7 +611,7 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 		Category: r.FormValue("cat"),
 		Script:   r.FormValue("script"),
 		Password: r.FormValue("password"),
-		PP:       intParam(r, "pp"),
+		PP:       ppParam(r),
 		Priority: priorityParam(r),
 	}
 
@@ -619,6 +619,7 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 	if s.config != nil {
 		s.config.WithRead(func(cfg *config.Config) {
 			sOpts = cfg.Downloads.SanitizeOptions()
+			opts.Categories = cfg.Categories
 		})
 	}
 	job, err := queue.NewJob(parsed, opts, sOpts)
@@ -757,7 +758,7 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 		Category: r.FormValue("cat"),
 		Script:   r.FormValue("script"),
 		Password: r.FormValue("password"),
-		PP:       intParam(r, "pp"),
+		PP:       ppParam(r),
 		Priority: priorityParam(r),
 	}
 
@@ -765,6 +766,7 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 	if s.config != nil {
 		s.config.WithRead(func(cfg *config.Config) {
 			sOpts = cfg.Downloads.SanitizeOptions()
+			opts.Categories = cfg.Categories
 		})
 	}
 	job, err := queue.NewJob(parsed, opts, sOpts)
