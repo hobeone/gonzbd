@@ -101,7 +101,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 		}
 		d.clearTried(req.jobID, req.messageID)
-		d.emitResult(ctx, req, "", nil, 0, ErrNoServersLeft)
+		d.emitResult(ctx, req, "", nil, 0, 0, ErrNoServersLeft)
 	}
 
 	// Transition Queued → Downloading for jobs that had articles dispatched.
@@ -373,7 +373,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 			// retained so we won't retry here; connection is
 			// healthy — reuse it.
 			srv.RecordGoodConnection()
-			d.emitResult(ctx, req, name, nil, 0, err)
+			d.emitResult(ctx, req, name, nil, 0, 0, err)
 			return
 		}
 		// Connection-level failure: tear down, re-dial later.
@@ -405,7 +405,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 
 	// Decoding (Step 3: Parallelize Decoding): Decode article payload
 	// directly in the connection goroutine to utilize all CPU cores.
-	decodedData, offset, err := decodePayload(body)
+	decodedData, offset, partCRC, err := decodePayload(body)
 	if err != nil {
 		d.log.Warn("decode error", "msgid", req.messageID, "err", err)
 		// Decode error is a terminal failure — mark Emitted so the
@@ -414,7 +414,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", markErr)
 		}
 		d.clearTried(req.jobID, req.messageID)
-		d.emitResult(ctx, req, name, nil, 0, err)
+		d.emitResult(ctx, req, name, nil, 0, 0, err)
 		return
 	}
 
@@ -430,14 +430,14 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 		d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 	}
 	d.clearTried(req.jobID, req.messageID)
-	d.emitResult(ctx, req, name, decodedData, offset, nil)
+	d.emitResult(ctx, req, name, decodedData, offset, partCRC, nil)
 }
 
 // emitResult publishes an ArticleResult on the completions channel.
 // Blocks until the consumer reads or ctx fires; the signalDispatch
 // in handleRequest's defer ensures the dispatcher wakes up regardless
 // of outcome.
-func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server string, data []byte, offset int64, err error) {
+func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server string, data []byte, offset int64, crc uint32, err error) {
 	res := &ArticleResult{
 		JobID:      req.jobID,
 		FileIdx:    req.fileIdx,
@@ -446,6 +446,7 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 		ServerName: server,
 		Data:       data,
 		Offset:     offset,
+		CRC:        crc,
 		Err:        err,
 	}
 	select {
@@ -570,27 +571,27 @@ func (m *managedConn) DropIfMatches(c *nntp.Conn, d *Downloader, workerID string
 // When neither yEnc nor UU decoding succeeds, the raw body is scanned
 // for DMCA/takedown keywords. If found, ErrArticleRemoved is returned
 // so the caller does not waste bandwidth retrying on backup servers.
-func decodePayload(body []byte) (decoded []byte, offset int64, err error) {
+func decodePayload(body []byte) (decoded []byte, offset int64, crc uint32, err error) {
 	article, decErr := decoder.DecodeArticle(body)
 	switch {
 	case decErr == nil:
-		return article.Data, article.Offset, nil
+		return article.Data, article.Offset, article.CRC, nil
 	case errors.Is(decErr, decoder.ErrNotYEnc):
 		// Fallback to UU decoding.
 		data, _, uuErr := decoder.DecodeUU(body)
 		if uuErr == nil {
-			return data, 0, nil // UU encoding usually doesn't have offset info
+			return data, 0, 0, nil // UU encoding usually doesn't have offset info or CRC
 		}
 
 		// Neither yEnc nor UU. Check for DMCA/takedown notices:
 		// removed articles are typically replaced with a plaintext
 		// notice by the provider.
 		if isDMCA(body) {
-			return nil, 0, ErrArticleRemoved
+			return nil, 0, 0, ErrArticleRemoved
 		}
-		return nil, 0, fmt.Errorf("yenc: %w; uu fallback: %w", decErr, uuErr)
+		return nil, 0, 0, fmt.Errorf("yenc: %w; uu fallback: %w", decErr, uuErr)
 	default:
-		return nil, 0, decErr
+		return nil, 0, 0, decErr
 	}
 }
 

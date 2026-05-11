@@ -151,7 +151,7 @@ func TestAssemblyWithPreallocation(t *testing.T) {
 
 	var completed bool
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completed = true }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completed = true }
 
 	a := startAssembler(t, opts)
 
@@ -254,7 +254,7 @@ func TestPreallocationTruncatesToDecodedSize(t *testing.T) {
 
 	var completed bool
 	opts := makeOpts(dir, files)
-	opts.OnFileComplete = func(_ string, _ int) { completed = true }
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completed = true }
 
 	a := startAssembler(t, opts)
 
