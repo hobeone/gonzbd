@@ -18,6 +18,62 @@ import (
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
+// QuickCheckStage parses par2 file manifests and relocates flat-downloaded
+// files into the correct subdirectory structure. This must run BEFORE
+// RepairStage so par2 can find files at their expected relative paths.
+//
+// Downloaded files are stored flat (e.g. "mpv-shot0015.jpg") because
+// SanitizeFilename strips path separators. The par2 manifest preserves
+// the original relative paths (e.g. "Screens/mpv-shot0015.jpg"). This
+// stage matches files by basename, flattened name (Screens_foo.jpg), and
+// hash16k, then moves them into the correct subdirectories.
+type QuickCheckStage struct {
+	// Log is the component-scoped logger for this stage.
+	Log *slog.Logger
+}
+
+// NewQuickCheckStage constructs a QuickCheckStage with default settings.
+func NewQuickCheckStage() *QuickCheckStage { return &QuickCheckStage{} }
+
+// Name returns the stage identifier.
+func (*QuickCheckStage) Name() string { return "quickcheck" }
+
+// Run finds par2 sets and relocates flat files into their par2-specified
+// subdirectory paths. Errors are non-fatal: par2 repair will independently
+// report any files it cannot find.
+func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
+	log := q.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	log = log.With("component", "postproc/quickcheck", "job", job.Queue.ID)
+
+	sets, err := par2.FindPar2Files(job.DownloadDir)
+	if err != nil {
+		logf(log, job, slog.LevelWarn, "quickcheck: failed to find par2 files: %v", err)
+		return nil // non-fatal
+	}
+	if len(sets) == 0 {
+		return nil
+	}
+
+	renames, err := par2.QuickCheck(job.DownloadDir, sets, log)
+	if err != nil {
+		logf(log, job, slog.LevelWarn, "quickcheck: %v", err)
+		return nil // non-fatal
+	}
+
+	if len(renames) > 0 {
+		logf(log, job, slog.LevelInfo, "quickcheck: relocated %d file(s) into subdirectories", len(renames))
+		for _, r := range renames {
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("[quickcheck] %s → %s", r.From, r.To))
+		}
+	}
+
+	return nil
+}
+
 // RepairStage runs par2 verify+repair against every par2 set it finds in
 // the job's DownloadDir. A set with status RepairNotPossible or an exec
 // failure sets job.ParError; the pipeline continues (unpack may still

@@ -13,6 +13,7 @@ import (
 type FileDesc struct {
 	FileName string
 	Hash16k  [16]byte
+	FileSize uint64
 }
 
 var (
@@ -88,10 +89,13 @@ func ParseFileDescriptions(path string) ([]FileDesc, error) {
 			var hash16k [16]byte
 			copy(hash16k[:], body[32:48]) // 96 - 64 = 32
 
+			fileLength := binary.LittleEndian.Uint64(body[48:56]) // 112 - 64 = 48
+
 			fileName := string(bytes.TrimRight(body[56:], "\x00"))
 			descs = append(descs, FileDesc{
 				FileName: fileName,
 				Hash16k:  hash16k,
+				FileSize: fileLength,
 			})
 		} else {
 			// Skip this packet.
