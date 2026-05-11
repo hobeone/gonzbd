@@ -48,18 +48,29 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	}
 	log = log.With("component", "postproc/quickcheck", "job", job.Queue.ID)
 
+	logf(log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)
+
 	sets, err := par2.FindPar2Files(job.DownloadDir)
 	if err != nil {
 		logf(log, job, slog.LevelWarn, "quickcheck: failed to find par2 files: %v", err)
 		return nil // non-fatal
 	}
 	if len(sets) == 0 {
+		logf(log, job, slog.LevelInfo, "quickcheck: no par2 files found, skipping")
+		job.OutputLines = append(job.OutputLines,
+			"[quickcheck] No par2 files found — skipping subdirectory relocation")
 		return nil
 	}
+
+	logf(log, job, slog.LevelInfo, "quickcheck: found %d par2 set(s), checking for subdirectory entries", len(sets))
+	job.OutputLines = append(job.OutputLines,
+		fmt.Sprintf("[quickcheck] Found %d par2 set(s)", len(sets)))
 
 	renames, err := par2.QuickCheck(job.DownloadDir, sets, log)
 	if err != nil {
 		logf(log, job, slog.LevelWarn, "quickcheck: %v", err)
+		job.OutputLines = append(job.OutputLines,
+			fmt.Sprintf("[quickcheck] Error: %v", err))
 		return nil // non-fatal
 	}
 
@@ -69,6 +80,10 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 			job.OutputLines = append(job.OutputLines,
 				fmt.Sprintf("[quickcheck] %s → %s", r.From, r.To))
 		}
+	} else {
+		logf(log, job, slog.LevelInfo, "quickcheck: no files needed relocation")
+		job.OutputLines = append(job.OutputLines,
+			"[quickcheck] No files needed subdirectory relocation")
 	}
 
 	return nil

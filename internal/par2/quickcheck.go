@@ -44,19 +44,36 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 			parFile = set.ExtraFiles[0]
 		}
 		if parFile == "" {
+			log.Info("quickcheck: skipping par2 set with no main file",
+				"set", set.Name)
 			continue
 		}
+		log.Info("quickcheck: parsing par2 manifest",
+			"file", filepath.Base(parFile))
 		descs, err := ParseFileDescriptions(parFile)
 		if err != nil {
 			log.Warn("quickcheck: failed to parse par2 file",
 				"file", filepath.Base(parFile), "err", err)
 			continue
 		}
+		log.Info("quickcheck: par2 manifest entries",
+			"file", filepath.Base(parFile), "entries", len(descs))
 		manifest = append(manifest, descs...)
 	}
 
 	if len(manifest) == 0 {
+		log.Info("quickcheck: no file descriptions found in any par2 set")
 		return nil, nil
+	}
+
+	// Log all manifest entries so we can see exactly what par2 expects.
+	log.Info("quickcheck: total par2 manifest entries", "count", len(manifest))
+	for i, fd := range manifest {
+		log.Info("quickcheck: manifest entry",
+			"idx", i,
+			"filename", fd.FileName,
+			"size", fd.FileSize,
+			"hash16k", fmt.Sprintf("%x", fd.Hash16k))
 	}
 
 	// Filter to entries that have a subdirectory component — only those
@@ -72,11 +89,15 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 	}
 
 	if len(subdirEntries) == 0 {
-		log.Info("quickcheck: no par2 entries with subdirectory paths")
+		log.Info("quickcheck: no par2 entries contain subdirectory paths — all filenames are flat")
 		return nil, nil
 	}
-	log.Info("quickcheck: found par2 entries with subdirectory paths",
+	log.Info("quickcheck: par2 entries with subdirectory paths",
 		"count", len(subdirEntries))
+	for _, fd := range subdirEntries {
+		log.Info("quickcheck: needs relocation",
+			"par2path", fd.FileName, "size", fd.FileSize)
+	}
 
 	// Scan flat files in the download directory (top-level only).
 	dirEntries, err := os.ReadDir(dir)
@@ -91,36 +112,55 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 		flatFiles[de.Name()] = de
 	}
 
+	log.Info("quickcheck: flat files in download dir", "count", len(flatFiles))
+	for name := range flatFiles {
+		log.Debug("quickcheck: flat file", "name", name)
+	}
+
 	var renames []Rename
 	matched := make(map[string]bool)   // flat filenames already consumed
 	relocated := make(map[string]bool) // par2 entries already relocated
 
 	// Phase 1: Basename match.
+	log.Info("quickcheck: Phase 1 — basename matching")
 	for _, fd := range subdirEntries {
 		basename := filepath.Base(fd.FileName)
 		if _, ok := flatFiles[basename]; ok && !matched[basename] {
+			log.Info("quickcheck: phase 1 candidate",
+				"flat", basename, "par2path", fd.FileName)
 			if relocateFile(dir, basename, fd, log) {
 				renames = append(renames, Rename{From: basename, To: fd.FileName})
 				matched[basename] = true
 				relocated[fd.FileName] = true
 			}
+		} else {
+			log.Debug("quickcheck: phase 1 no match",
+				"basename", basename, "par2path", fd.FileName,
+				"exists", flatFiles[basename] != nil, "already_matched", matched[basename])
 		}
 	}
 
 	// Phase 2: Flattened name match.
 	// SanitizeFilename replaces "/" with "_", so "Screens/foo.jpg" becomes
 	// "Screens_foo.jpg" during download.
+	log.Info("quickcheck: Phase 2 — flattened name matching (/ → _)")
 	for _, fd := range subdirEntries {
 		if relocated[fd.FileName] {
 			continue
 		}
 		flattenedName := strings.ReplaceAll(fd.FileName, "/", "_")
 		if _, ok := flatFiles[flattenedName]; ok && !matched[flattenedName] {
+			log.Info("quickcheck: phase 2 candidate",
+				"flat", flattenedName, "par2path", fd.FileName)
 			if relocateFile(dir, flattenedName, fd, log) {
 				renames = append(renames, Rename{From: flattenedName, To: fd.FileName})
 				matched[flattenedName] = true
 				relocated[fd.FileName] = true
 			}
+		} else {
+			log.Debug("quickcheck: phase 2 no match",
+				"flattenedName", flattenedName, "par2path", fd.FileName,
+				"exists", flatFiles[flattenedName] != nil, "already_matched", matched[flattenedName])
 		}
 	}
 
@@ -133,10 +173,16 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 	}
 
 	if len(unmatchedEntries) > 0 {
+		log.Info("quickcheck: Phase 3 — hash16k matching",
+			"unmatched_entries", len(unmatchedEntries))
+
 		// Build hash16k → FileDesc index for unmatched par2 entries.
 		hashIndex := make(map[[16]byte]FileDesc)
 		for _, fd := range unmatchedEntries {
 			hashIndex[fd.Hash16k] = fd
+			log.Info("quickcheck: phase 3 seeking hash16k match",
+				"par2path", fd.FileName,
+				"hash16k", fmt.Sprintf("%x", fd.Hash16k))
 		}
 
 		// Compute hash16k for each unmatched flat file and try to match.
@@ -150,7 +196,9 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 
 			hash, err := computeHash16k(filepath.Join(dir, de.Name()))
 			if err != nil {
-				continue // skip files we can't read
+				log.Debug("quickcheck: phase 3 cannot hash file",
+					"name", name, "err", err)
+				continue
 			}
 
 			if fd, ok := hashIndex[hash]; ok {
@@ -160,8 +208,13 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 					continue
 				}
 				if fd.FileSize > 0 && uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
+					log.Info("quickcheck: phase 3 hash16k matched but size differs",
+						"flat", name, "par2path", fd.FileName,
+						"flatSize", info.Size(), "par2Size", fd.FileSize)
 					continue
 				}
+				log.Info("quickcheck: phase 3 hash16k match found",
+					"flat", name, "par2path", fd.FileName)
 				if relocateFile(dir, name, fd, log) {
 					renames = append(renames, Rename{From: name, To: fd.FileName})
 					matched[name] = true
@@ -169,7 +222,19 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 				}
 			}
 		}
+
+		// Log any entries that remained unmatched after all three phases.
+		for _, fd := range hashIndex {
+			log.Warn("quickcheck: par2 entry unmatched after all phases",
+				"par2path", fd.FileName, "size", fd.FileSize)
+		}
+	} else {
+		log.Info("quickcheck: Phase 3 — skipped, all subdir entries matched")
 	}
+
+	log.Info("quickcheck: complete",
+		"total_renames", len(renames),
+		"total_subdir_entries", len(subdirEntries))
 
 	return renames, nil
 }
