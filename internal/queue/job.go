@@ -34,9 +34,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // Job is a live download job. It starts life when NewJob parses an NZB
@@ -270,11 +272,23 @@ type AddOptions struct {
 	Password string
 	URL      string
 	Category string
-	PP       int
-	Script   string
 
-	// Priority defaults to PriorityNormal when zero-valued.
+	// PP is the post-processing level. types.PPInherit (-1) means
+	// "inherit from the job's category config".
+	PP int
+
+	// Script is the post-processing script name. Empty means
+	// "inherit from the job's category config".
+	Script string
+
+	// Priority defaults to the category's priority when set to
+	// constants.DefaultPriority. Zero means PriorityNormal.
 	Priority constants.Priority
+
+	// Categories is the full category config list, used to resolve
+	// sentinel values for PP, Script, and Priority. May be nil in
+	// tests; sentinels are left as-is when nil.
+	Categories []config.CategoryConfig
 }
 
 // NewJob converts parser output plus caller options into a runtime
@@ -300,6 +314,31 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 	// 2. Apply filesystem sanitization rules.
 	name = fsutil.SanitizeFolderName(name, sOpts)
 
+	// Resolve sentinel values from the matching category config.
+	pp := opts.PP
+	script := opts.Script
+	priority := opts.Priority
+	if opts.Categories != nil {
+		cat := config.FindCategory(opts.Categories, opts.Category)
+		if pp == types.PPInherit {
+			pp = cat.PP
+		}
+		if script == "" {
+			script = cat.Script
+		}
+		if priority == constants.DefaultPriority {
+			priority = constants.Priority(cat.Priority)
+		}
+	}
+	// Clamp remaining sentinels to safe defaults when no categories
+	// were provided (e.g. tests, CLI one-shot mode).
+	if pp == types.PPInherit {
+		pp = 0
+	}
+	if priority == constants.DefaultPriority {
+		priority = constants.NormalPriority
+	}
+
 	job := &Job{
 		ID:       id,
 		Filename: opts.Filename,
@@ -307,10 +346,10 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 		Password: opts.Password,
 		URL:      opts.URL,
 		Category: opts.Category,
-		Priority: opts.Priority,
+		Priority: priority,
 		Status:   constants.StatusQueued,
-		PP:       opts.PP,
-		Script:   opts.Script,
+		PP:       pp,
+		Script:   script,
 		Added:    time.Now().UTC(),
 		Meta:     parsed.Meta,
 		Groups:   parsed.Groups,

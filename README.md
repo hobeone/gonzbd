@@ -463,14 +463,6 @@ preserved for forward compatibility with planned features.
 |-------|-------|
 | `language` | The `internal/i18n` package exists but the UI doesn't use it for locale selection yet. |
 
-### CategoryConfig
-
-| Field | Notes |
-|-------|-------|
-| `pp` | Per-category post-processing level. Not resolved during job ingestion. |
-| `script` | Per-category post-processing script. Not resolved during job ingestion. |
-| `priority` | Per-category download priority. Not resolved during job ingestion. |
-
 ### RSSFeedConfig / RSSFilterConfig
 
 | Field | Notes |
