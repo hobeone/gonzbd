@@ -671,7 +671,7 @@ func resolveLogLevels(cfg *config.Config, cliOverride string) (map[string]slog.L
 	if levels == nil {
 		levels = make(map[string]slog.Level)
 	}
-	for _, entry := range strings.Split(cliOverride, ",") {
+	for entry := range strings.SplitSeq(cliOverride, ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
