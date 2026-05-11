@@ -251,3 +251,46 @@ func TestPersistenceNames(t *testing.T) {
 		})
 	}
 }
+
+// L11: Verify that all Status constants have unique values (no duplicates)
+// and that each value is non-empty.
+func TestStatus_NoDuplicates(t *testing.T) {
+	t.Parallel()
+
+	allStatuses := []Status{
+		StatusIdle,
+		StatusQueued,
+		StatusGrabbing,
+		StatusFetching,
+		StatusDownloading,
+		StatusPaused,
+		StatusPropagating,
+		StatusChecking,
+		StatusQuickCheck,
+		StatusVerifying,
+		StatusRepairing,
+		StatusExtracting,
+		StatusMoving,
+		StatusRunning,
+		StatusCompleted,
+		StatusFailed,
+		StatusDeleted,
+	}
+
+	seen := make(map[Status]bool, len(allStatuses))
+	for _, s := range allStatuses {
+		if s == "" {
+			t.Error("found empty Status constant")
+			continue
+		}
+		if seen[s] {
+			t.Errorf("duplicate Status constant: %q", s)
+		}
+		seen[s] = true
+	}
+
+	// Ensure we checked a reasonable number of constants.
+	if len(allStatuses) < 10 {
+		t.Errorf("only %d status constants — expected at least 10", len(allStatuses))
+	}
+}
