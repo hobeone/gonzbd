@@ -9,14 +9,47 @@ import (
 	"strconv"
 )
 
+// maxResponseLineLen is the maximum number of bytes we accept for a
+// single NNTP response line. RFC 3977 says lines should not exceed
+// ~998 bytes; 2048 provides generous headroom while preventing OOM
+// from a malicious server that never sends '\n'.
+const maxResponseLineLen = 2048
+
 // readResponseLine reads exactly one CRLF-terminated status line from
 // br. Returns the line with CRLF (or bare LF) stripped. An unexpected
 // EOF mid-line is returned as io.ErrUnexpectedEOF to make short-read
-// diagnostics clearer.
+// diagnostics clearer. Lines exceeding maxResponseLineLen bytes are
+// rejected to prevent unbounded memory growth.
 func readResponseLine(br *bufio.Reader) (string, error) {
-	line, err := br.ReadString('\n')
-	if err != nil {
-		if errors.Is(err, io.EOF) && line == "" {
+	var line []byte
+	for {
+		chunk, err := br.ReadSlice('\n')
+		if err == nil {
+			// Found newline. Append final chunk and return.
+			line = append(line, chunk...)
+			if len(line) > maxResponseLineLen {
+				return "", fmt.Errorf("nntp: response line exceeds %d bytes", maxResponseLineLen)
+			}
+			return trimCRLF(string(line)), nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			// No newline yet in the buffer — accumulate and keep reading.
+			line = append(line, chunk...)
+			if len(line) > maxResponseLineLen {
+				// Discard the rest of the oversized line up to '\n' or EOF.
+				for {
+					_, discardErr := br.ReadSlice('\n')
+					if discardErr == nil || !errors.Is(discardErr, bufio.ErrBufferFull) {
+						break
+					}
+				}
+				return "", fmt.Errorf("nntp: response line exceeds %d bytes", maxResponseLineLen)
+			}
+			continue
+		}
+		// Real error (EOF, network, etc.)
+		line = append(line, chunk...)
+		if errors.Is(err, io.EOF) && len(line) == 0 {
 			return "", io.EOF
 		}
 		if errors.Is(err, io.EOF) {
@@ -24,8 +57,6 @@ func readResponseLine(br *bufio.Reader) (string, error) {
 		}
 		return "", err
 	}
-	line = trimCRLF(line)
-	return line, nil
 }
 
 // parseStatus splits "NNN text..." into the numeric code and remaining

@@ -55,7 +55,7 @@ func TestFetchPlainNZB(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err != nil {
@@ -94,7 +94,7 @@ func TestFetchFilenameFromContentDisposition(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), server.URL+"/file", types.FetchOptions{})
 	if err != nil {
@@ -129,7 +129,7 @@ func TestContentDispositionPathTraversal(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), server.URL+"/file", types.FetchOptions{})
 	if err != nil {
@@ -163,7 +163,7 @@ func TestFetchFilenameFallbackToURLPath(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), server.URL+"/path/myfile.nzb", types.FetchOptions{})
 	if err != nil {
@@ -195,7 +195,7 @@ func TestFetchHTMLRejected(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err == nil {
@@ -224,7 +224,7 @@ func TestFetchSizeCapExceeded(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{MaxBytes: 100}, handler)
+	grabber := New(Config{MaxBytes: 100, AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err == nil {
@@ -259,7 +259,7 @@ func TestFetchHTTPBasicAuthViaConfig(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{Username: "user", Password: "pass"}, handler)
+	grabber := New(Config{Username: "user", Password: "pass", AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err != nil {
@@ -286,7 +286,7 @@ func TestFetchHTTPBasicAuthViaURL(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	urlWithAuth := strings.Replace(server.URL, "http://", "http://user:pass@", 1)
 	ids, err := grabber.Fetch(t.Context(), urlWithAuth+"/test.nzb", types.FetchOptions{})
@@ -314,7 +314,7 @@ func TestFetchHTTPBasicAuthConfigOverridesURL(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{Username: "config_user", Password: "config_pass"}, handler)
+	grabber := New(Config{Username: "config_user", Password: "config_pass", AllowPrivateIPs: true}, handler)
 
 	urlWithAuth := strings.Replace(server.URL, "http://", "http://url_user:url_pass@", 1)
 	ids, err := grabber.Fetch(t.Context(), urlWithAuth+"/test.nzb", types.FetchOptions{})
@@ -344,7 +344,7 @@ func TestFetchRedirect(t *testing.T) {
 	defer redirectServer.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), redirectServer.URL+"/redirect.nzb", types.FetchOptions{})
 	if err != nil {
@@ -363,7 +363,7 @@ func TestFetchServer404(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), server.URL+"/notfound.nzb", types.FetchOptions{})
 	if err == nil {
@@ -387,7 +387,7 @@ func TestFetchContextCancellation(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{Timeout: 5 * time.Second}, handler)
+	grabber := New(Config{Timeout: 5 * time.Second, AllowPrivateIPs: true}, handler)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -410,7 +410,7 @@ func TestFetchTimeout(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{Timeout: 50 * time.Millisecond}, handler)
+	grabber := New(Config{Timeout: 50 * time.Millisecond, AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err == nil {
@@ -436,7 +436,7 @@ func TestFetchGzipNZB(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), server.URL+"/test.nzb.gz", types.FetchOptions{})
 	if err != nil {
@@ -470,7 +470,7 @@ func TestFetchGzipNZB(t *testing.T) {
 
 func TestFetchEmptyURL(t *testing.T) {
 	handler := &MockHandler{}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), "", types.FetchOptions{})
 	if err == nil {
@@ -492,7 +492,7 @@ func TestFetchHandlerError(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{lastErr: fmt.Errorf("handler error")}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), server.URL+"/test.nzb", types.FetchOptions{})
 	if err != nil {
@@ -516,7 +516,7 @@ func TestExtractFilenameWithNoExtension(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	ids, err := grabber.Fetch(t.Context(), server.URL+"/myfile", types.FetchOptions{})
 	if err != nil {
@@ -550,7 +550,7 @@ func TestFetchRaceCondition(t *testing.T) {
 	defer server.Close()
 
 	handler := &MockHandler{}
-	grabber := New(Config{}, handler)
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
 
 	var wg sync.WaitGroup
 	for range 10 {
@@ -588,5 +588,86 @@ func TestExtractFromContentDisposition(t *testing.T) {
 				t.Fatalf("expected %q, got %q", tt.expected, result)
 			}
 		})
+	}
+}
+
+// --- SSRF protection tests ---
+
+func TestFetch_RejectsFileScheme(t *testing.T) {
+	handler := &MockHandler{}
+	grabber := New(Config{}, handler)
+
+	ids, err := grabber.Fetch(t.Context(), "file:///etc/passwd", types.FetchOptions{})
+	if err == nil {
+		t.Fatalf("expected error for file:// scheme, got none")
+	}
+	if !strings.Contains(err.Error(), "unsupported scheme") {
+		t.Fatalf("expected 'unsupported scheme' in error, got: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 NZBs for file:// scheme, got %d", len(ids))
+	}
+}
+
+func TestFetch_RejectsPrivateIP(t *testing.T) {
+	handler := &MockHandler{}
+	// AllowPrivateIPs is false (default), so 127.0.0.1 should be blocked.
+	grabber := New(Config{}, handler)
+
+	ids, err := grabber.Fetch(t.Context(), "http://127.0.0.1/foo.nzb", types.FetchOptions{})
+	if err == nil {
+		t.Fatalf("expected error for private IP, got none")
+	}
+	if !strings.Contains(err.Error(), "private") && !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("expected 'private' or 'loopback' in error, got: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 NZBs for private IP, got %d", len(ids))
+	}
+}
+
+func TestFetch_RejectsLocalhostURL(t *testing.T) {
+	handler := &MockHandler{}
+	grabber := New(Config{}, handler)
+
+	ids, err := grabber.Fetch(t.Context(), "http://localhost/foo.nzb", types.FetchOptions{})
+	if err == nil {
+		t.Fatalf("expected error for localhost URL, got none")
+	}
+	if !strings.Contains(err.Error(), "localhost") {
+		t.Fatalf("expected 'localhost' in error, got: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 NZBs for localhost, got %d", len(ids))
+	}
+}
+
+func TestFetch_RejectsRedirectToPrivateIP(t *testing.T) {
+	// Set up an httptest server that redirects to 127.0.0.1.
+	// The initial request targets the httptest server (also 127.0.0.1), so
+	// we must AllowPrivateIPs for the initial URL but rely on the CheckRedirect
+	// to block the redirect target. To test this properly, we configure
+	// AllowPrivateIPs=false and redirect to a literal private IP.
+	//
+	// Since AllowPrivateIPs=false blocks even the initial request to httptest,
+	// we set AllowPrivateIPs=true and verify that the redirect to "localhost"
+	// is caught (localhost is always blocked regardless of AllowPrivateIPs).
+	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://localhost/evil.nzb", http.StatusFound)
+	}))
+	defer redirectServer.Close()
+
+	handler := &MockHandler{}
+	grabber := New(Config{AllowPrivateIPs: true}, handler)
+
+	ids, err := grabber.Fetch(t.Context(), redirectServer.URL+"/redirect.nzb", types.FetchOptions{})
+	if err == nil {
+		t.Fatalf("expected error for redirect to localhost, got none")
+	}
+	if !strings.Contains(err.Error(), "localhost") {
+		t.Fatalf("expected 'localhost' in error, got: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 NZBs for redirect to private IP, got %d", len(ids))
 	}
 }

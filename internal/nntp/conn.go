@@ -84,6 +84,11 @@ var (
 	// more specific meaning. Callers typically retry on another
 	// connection or apply PENALTY_VERYSHORT.
 	ErrTransient = errors.New("nntp: transient server error")
+
+	// ErrInvalidMessageID is returned when a message-ID contains
+	// characters that could inject NNTP commands (CR, LF, null) or
+	// is empty.
+	ErrInvalidMessageID = errors.New("nntp: invalid message-ID")
 )
 
 // ServerError wraps an unexpected NNTP status code so callers can
@@ -511,6 +516,9 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := validateMessageID(messageID); err != nil {
+		return nil, err
+	}
 
 	// Acquire a pipelining slot. Also watch c.ctx so we unblock if
 	// the connection dies (runReader exits without draining sem).
@@ -558,6 +566,24 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 // requires them.
 func trimAngle(r rune) bool { return r == '<' || r == '>' }
 
+// validateMessageID rejects message-IDs that could inject NNTP
+// commands via embedded CR/LF, contain null bytes, embed '>'
+// (which would prematurely close the angle-bracket wrapper), or
+// are empty.
+func validateMessageID(id string) error {
+	raw := strings.TrimFunc(id, trimAngle)
+	if raw == "" {
+		return fmt.Errorf("%w: empty", ErrInvalidMessageID)
+	}
+	for i := range len(raw) {
+		switch raw[i] {
+		case '\r', '\n', 0, '>':
+			return fmt.Errorf("%w: contains 0x%02x at offset %d", ErrInvalidMessageID, raw[i], i)
+		}
+	}
+	return nil
+}
+
 // Stat is BODY's cheap cousin: it asks the server whether an article
 // exists without transferring the body. Returns nil if present,
 // ErrNoArticle (or another sentinel) if not. Useful for capability
@@ -567,6 +593,9 @@ func (c *Conn) Stat(ctx context.Context, messageID string) error {
 		return ErrInvalidState
 	}
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateMessageID(messageID); err != nil {
 		return err
 	}
 	select {
