@@ -248,7 +248,7 @@ func (s *Scanner) handleStableFile(ctx context.Context, path, filename, category
 			label = fmt.Sprintf("%s[%d]", filename, i+1)
 		}
 
-		if _, err := s.handler.HandleNZB(ctx, label, nzbData, types.FetchOptions{Category: category}); err != nil {
+		if _, err := s.handler.HandleNZB(ctx, label, nzbData, types.FetchOptions{Category: category, PP: types.PPInherit}); err != nil {
 			s.logger.Warn("handler failed for NZB", "label", label, "err", err)
 			lastErr = err
 			continue
