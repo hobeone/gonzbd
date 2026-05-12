@@ -297,7 +297,7 @@ func TestFileJoin_WrongType(t *testing.T) {
 	}
 }
 
-func TestFileJoin_ExistingOutputRefused(t *testing.T) {
+func TestFileJoin_ExistingOutputNoOp(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -314,9 +314,17 @@ func TestFileJoin_ExistingOutputRefused(t *testing.T) {
 		MainFile: filepath.Join(dir, "x.001"),
 		Parts:    []string{filepath.Join(dir, "x.001"), filepath.Join(dir, "x.002")},
 	}
-	_, err := unpack.FileJoin(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
-	if err == nil {
-		t.Fatal("expected error when output file already exists, got nil")
+	res, err := unpack.FileJoin(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
+	if err != nil {
+		t.Fatalf("expected no-op success when output exists, got error: %v", err)
+	}
+	if res.Err != nil {
+		t.Fatalf("expected no-op success, got Result.Err: %v", res.Err)
+	}
+	// Existing content should be preserved (not overwritten).
+	got, _ := os.ReadFile(filepath.Join(outDir, "x"))
+	if string(got) != "existing" {
+		t.Errorf("existing file was modified: got %q, want %q", got, "existing")
 	}
 }
 

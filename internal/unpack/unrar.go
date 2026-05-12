@@ -92,6 +92,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 		mode,
 		"-y",   // assume yes to all prompts
 		"-idp", // disable progress display
+		"-scf", // assume UTF-8 filenames (§8.2 — fixes mojibake from Windows-built archives)
 		pwFlag,
 	}
 
