@@ -407,9 +407,20 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 	// directly in the connection goroutine to utilize all CPU cores.
 	decodedData, offset, partCRC, err := decodePayload(body)
 	if err != nil {
+		if errors.Is(err, decoder.ErrCRCMismatch) {
+			// CRC mismatch is retryable: the server delivered data but
+			// it was corrupted. Keep this server in the try-list (don't
+			// unmark — we got bad data from it) and let the dispatcher
+			// try another server. The connection is healthy, though.
+			d.log.Warn("CRC mismatch, will try alternate server",
+				"server", name, "msgid", req.messageID)
+			srv.RecordGoodConnection()
+			d.emitResult(ctx, req, name, nil, 0, 0, err)
+			return
+		}
 		d.log.Warn("decode error", "msgid", req.messageID, "err", err)
-		// Decode error is a terminal failure — mark Emitted so the
-		// dispatcher never re-picks this article, then clear the tryList.
+		// Non-CRC decode errors are terminal failures — mark Emitted so
+		// the dispatcher never re-picks this article, then clear the tryList.
 		if markErr := d.queue.MarkArticleEmitted(req.jobID, req.messageID); markErr != nil {
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", markErr)
 		}
