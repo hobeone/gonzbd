@@ -307,9 +307,26 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			return nil, fmt.Errorf("extra_unrar_params: %w", err)
 		}
 
+		// Detect par2 binary capabilities at startup (SABnzbd does the
+		// same via par2 -h output inspection). Non-fatal: caps is zero-
+		// value on failure, meaning no -N or -B flags.
+		par2Caps := par2.DetectCapabilities(context.Background(), cfg.Par2Command)
+		if par2Caps.IsTurbo && !cfg.Par2Turbo {
+			ppLog.Info("Detected par2cmdline-turbo; consider enabling par2_turbo for faster repair")
+		}
+		if par2Caps.Version != "" {
+			ppLog.Info("Detected par2 binary", "version", par2Caps.Version)
+		}
+
 		// Repair stage: configurable par2 binary, turbo mode, and cleanup.
 		repairStage := postproc.NewRepairStageWith(
-			par2.RunOptions{Command: cfg.Par2Command, Turbo: cfg.Par2Turbo, CmdCfg: cmdCfg, ExtraArgs: extraPar2Args},
+			par2.RunOptions{
+				Command:   cfg.Par2Command,
+				Turbo:     cfg.Par2Turbo,
+				CmdCfg:    cmdCfg,
+				ExtraArgs: extraPar2Args,
+				Caps:      &par2Caps,
+			},
 			cfg.EnableParCleanup,
 		)
 		repairStage.Log = ppLog
