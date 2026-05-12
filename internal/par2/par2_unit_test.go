@@ -148,6 +148,38 @@ func TestParseStatus_CannotRename(t *testing.T) {
 	}
 }
 
+func TestParseStatus_RepairFailed(t *testing.T) {
+	t.Parallel()
+	got := parseStatus("Verifying repaired files:\n\nRepair Failed.\n")
+	if got != StatusRepairFailed {
+		t.Errorf("got %d, want StatusRepairFailed", got)
+	}
+}
+
+func TestParseStatus_BadOption_InvalidOption(t *testing.T) {
+	t.Parallel()
+	got := parseStatus("Invalid option specified: -t+\n")
+	if got != StatusBadOption {
+		t.Errorf("got %d, want StatusBadOption", got)
+	}
+}
+
+func TestParseStatus_BadOption_InvalidThread(t *testing.T) {
+	t.Parallel()
+	got := parseStatus("Invalid thread option: -t+\n")
+	if got != StatusBadOption {
+		t.Errorf("got %d, want StatusBadOption", got)
+	}
+}
+
+func TestParseStatus_NoDetailsAvailable(t *testing.T) {
+	t.Parallel()
+	got := parseStatus("No details available for recoverable file: data.bin\n")
+	if got != StatusRepairNotPossible {
+		t.Errorf("got %d, want StatusRepairNotPossible", got)
+	}
+}
+
 func TestNeedMoreBlocksRE(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
