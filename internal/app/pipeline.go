@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
+	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp"
@@ -28,9 +29,10 @@ import (
 //   - 4xx / ErrTransient: generic NNTP transient error
 //   - ErrClosed: connection was torn down (server disconnect, timeout)
 //   - io.ErrUnexpectedEOF: premature server disconnect mid-transfer
+//   - ErrCRCMismatch: article data CRC doesn't match — try another server
 //   - Dial errors / connection resets / I/O timeouts
 //
-// Terminal errors (decode failures, ErrAuthRejected, etc.) return false
+// Terminal errors (other decode failures, ErrAuthRejected, etc.) return false
 // and should be routed through the assembler's FatalErr path for failure
 // accounting.
 func isRetryableDownloaderError(err error) bool {
@@ -42,7 +44,8 @@ func isRetryableDownloaderError(err error) bool {
 		errors.Is(err, nntp.ErrClosed) ||
 		errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded) {
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, decoder.ErrCRCMismatch) {
 		return true
 	}
 	// Fallback: dial errors are wrapped as "dial: <inner>" by handleRequest,
