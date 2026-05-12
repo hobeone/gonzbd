@@ -79,6 +79,7 @@ type Config struct {
 	OverwriteFiles       bool
 	FlatUnpack           bool
 	Prefer7zip           bool
+	CleanupExtensions    []string
 
 	// ScriptStage metadata injected into SAB_* env vars.
 	Version    string
@@ -325,6 +326,16 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				stageList = append(stageList, sortStage)
 			}
 		}
+
+		// Extension cleanup: delete files with extensions matching the
+		// user's cleanup list (e.g. .nfo, .txt, .sfv). Runs after sorting
+		// but before the final move — mirrors SABnzbd §6.2 stage 9.
+		if len(cfg.CleanupExtensions) > 0 {
+			cleanupStage := postproc.NewExtensionCleanupStage(cfg.CleanupExtensions)
+			cleanupStage.Log = ppLog
+			stageList = append(stageList, cleanupStage)
+		}
+
 		// Finalize stage: move files from download dir to complete dir.
 		// Must run BEFORE script so scripts receive the final directory
 		// path — matches SABnzbd spec §6.2 ordering.
