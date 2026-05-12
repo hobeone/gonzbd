@@ -3,6 +3,7 @@ package par2
 import (
 	"crypto/md5"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"log/slog"
 	"os"
@@ -20,7 +21,7 @@ type Rename struct {
 // relocates them into the correct subdirectory structure. This must run
 // before par2 repair so par2 can find files at their expected relative paths.
 //
-// It runs three matching passes for each par2 entry that contains a
+// It runs four matching passes for each par2 entry that contains a
 // subdirectory component:
 //
 //  1. Basename match: flat file "foo.jpg" matches par2 "Screens/foo.jpg"
@@ -28,6 +29,8 @@ type Rename struct {
 //     because SanitizeFilename replaces "/" with "_" during download
 //  3. Hash16k match: for remaining unmatched entries, compute MD5 of the first
 //     16KB of each unmatched flat file and match against the par2 Hash16k
+//  4. CRC32+Size fallback: compute the full file CRC32 and match against the
+//     par2 (FileCRC32, FileSize) tuple — handles obfuscated names (spec §5.3)
 //
 // Errors during individual renames are logged but don't abort — par2 repair
 // will report any still-missing files.
@@ -226,13 +229,96 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 			}
 		}
 
-		// Log any entries that remained unmatched after all three phases.
+		// Log any entries that remained unmatched after phase 3.
 		for _, fd := range hashIndex {
-			log.Warn("quickcheck: par2 entry unmatched after all phases",
+			log.Debug("quickcheck: phase 3 unmatched, will try CRC fallback",
 				"par2path", fd.FileName, "size", fd.FileSize)
 		}
 	} else {
 		log.Info("quickcheck: Phase 3 — skipped, all subdir entries matched")
+	}
+
+	// Phase 4: CRC32+FileSize fallback (spec §5.3).
+	// For entries still unmatched after hash16k, try matching by the full
+	// file CRC32 and file size tuple. This is the most expensive pass
+	// (requires reading the entire file), but handles cases where:
+	//   - hash16k is ambiguous (HasDuplicate excludes both entries)
+	//   - the file was renamed by the poster
+	var unmatchedPhase4 []FileDesc
+	for _, fd := range subdirEntries {
+		if !relocated[fd.FileName] && fd.FileCRC32 > 0 && fd.FileSize > 0 {
+			unmatchedPhase4 = append(unmatchedPhase4, fd)
+		}
+	}
+
+	if len(unmatchedPhase4) > 0 {
+		log.Info("quickcheck: Phase 4 — CRC32+size fallback matching",
+			"unmatched_entries", len(unmatchedPhase4))
+
+		// Build (crc32, filesize) → FileDesc index.
+		type crcSizeKey struct {
+			crc  uint32
+			size uint64
+		}
+		crcIndex := make(map[crcSizeKey]FileDesc)
+		for _, fd := range unmatchedPhase4 {
+			crcIndex[crcSizeKey{crc: fd.FileCRC32, size: fd.FileSize}] = fd
+		}
+
+		// Compute CRC32 for each unmatched flat file.
+		for name, de := range flatFiles {
+			if matched[name] || len(crcIndex) == 0 {
+				continue
+			}
+			ext := strings.ToLower(filepath.Ext(name))
+			if ext == ".par2" || ext == ".sfv" || ext == ".nfo" {
+				continue
+			}
+
+			info, err := de.Info()
+			if err != nil {
+				continue
+			}
+			fileSize := uint64(info.Size()) //nolint:gosec // size is non-negative
+
+			// Quick pre-check: does any unmatched entry have this file size?
+			sizeMatch := false
+			for k := range crcIndex {
+				if k.size == fileSize {
+					sizeMatch = true
+					break
+				}
+			}
+			if !sizeMatch {
+				continue
+			}
+
+			fileCRC, err := computeFileCRC32(filepath.Join(dir, name))
+			if err != nil {
+				log.Debug("quickcheck: phase 4 cannot compute CRC32",
+					"name", name, "err", err)
+				continue
+			}
+
+			key := crcSizeKey{crc: fileCRC, size: fileSize}
+			if fd, ok := crcIndex[key]; ok {
+				log.Info("quickcheck: phase 4 CRC32+size match found",
+					"flat", name, "par2path", fd.FileName,
+					"crc32", fmt.Sprintf("%08x", fileCRC), "size", fileSize)
+				if relocateFile(dir, name, fd, log) {
+					renames = append(renames, Rename{From: name, To: fd.FileName})
+					matched[name] = true
+					relocated[fd.FileName] = true
+					delete(crcIndex, key)
+				}
+			}
+		}
+
+		// Log any entries that remained unmatched after all four phases.
+		for _, fd := range crcIndex {
+			log.Warn("quickcheck: par2 entry unmatched after all phases",
+				"par2path", fd.FileName, "size", fd.FileSize)
+		}
 	}
 
 	log.Info("quickcheck: complete",
@@ -314,4 +400,20 @@ func computeHash16k(path string) ([16]byte, error) {
 	}
 
 	return md5.Sum(buf[:n]), nil //nolint:gosec // MD5 used for par2 compatibility, not security
+}
+
+// computeFileCRC32 computes the CRC32 (IEEE) of the entire file at path.
+// Used by Phase 4 of QuickCheck for the (CRC32, FileSize) fallback match.
+func computeFileCRC32(path string) (uint32, error) {
+	f, err := os.Open(path) //nolint:gosec // path is constructed from trusted readdir
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close() //nolint:errcheck // read-only
+
+	h := crc32.NewIEEE()
+	if _, err := io.Copy(h, f); err != nil {
+		return 0, err
+	}
+	return h.Sum32(), nil
 }

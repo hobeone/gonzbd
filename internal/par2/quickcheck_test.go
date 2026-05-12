@@ -2,6 +2,7 @@ package par2
 
 import (
 	"crypto/md5"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"testing"
@@ -278,5 +279,84 @@ func TestRelocateFile_CreatesNestedDirs(t *testing.T) {
 	dest := filepath.Join(dir, "a", "b", "c", "pic.jpg")
 	if _, err := os.Stat(dest); err != nil {
 		t.Fatalf("file not at nested path: %v", err)
+	}
+}
+
+func TestComputeFileCRC32(t *testing.T) {
+	dir := t.TempDir()
+
+	// Known CRC32 of "hello world\n" = 0x888b2612 (NOT the value for
+	// "hello world" without newline — use an explicit check).
+	content := []byte("test data for CRC32")
+	path := filepath.Join(dir, "data.bin")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := computeFileCRC32(path)
+	if err != nil {
+		t.Fatalf("computeFileCRC32: %v", err)
+	}
+
+	// Compute expected CRC32 using the same algorithm.
+	h := crc32.NewIEEE()
+	h.Write(content)
+	want := h.Sum32()
+
+	if got != want {
+		t.Errorf("CRC32 mismatch: got %08x, want %08x", got, want)
+	}
+}
+
+func TestComputeFileCRC32_MissingFile(t *testing.T) {
+	_, err := computeFileCRC32("/nonexistent/file")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+// TestQuickCheck_Phase4_CRCSizeFallback tests that Phase 4 (CRC32+Size)
+// correctly relocates an obfuscated file that didn't match in phases 1-3.
+func TestQuickCheck_Phase4_CRCSizeFallback(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create an obfuscated file with content that has a known CRC32.
+	content := make([]byte, 1024)
+	for i := range content {
+		content[i] = byte(i % 137)
+	}
+	obfuscatedName := "deadbeef1234.dat"
+	if err := os.WriteFile(filepath.Join(dir, obfuscatedName), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Compute its CRC32.
+	h := crc32.NewIEEE()
+	h.Write(content)
+	expectedCRC := h.Sum32()
+
+	// Create a FileDesc with a different basename (won't match phase 1),
+	// different flattened name (won't match phase 2), and a unique Hash16k
+	// that doesn't match the file (won't match phase 3), but matching
+	// CRC32+size (will match phase 4).
+	fd := FileDesc{
+		FileName:  "Subs/real_name.dat",
+		FileSize:  uint64(len(content)),
+		Hash16k:   [16]byte{0xff}, // won't match anything
+		FileCRC32: expectedCRC,
+	}
+
+	ok := relocateFile(dir, obfuscatedName, fd, nil)
+	if !ok {
+		t.Fatal("relocateFile should succeed for CRC+size match")
+	}
+
+	dest := filepath.Join(dir, "Subs", "real_name.dat")
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("file not found at expected path %s: %v", dest, err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, obfuscatedName)); !os.IsNotExist(err) {
+		t.Fatal("original file should be gone after relocation")
 	}
 }

@@ -355,6 +355,13 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		finalizeStage.FolderRename = cfg.FolderRename
 		stageList = append(stageList, finalizeStage)
 
+		// Cleanup stage: remove admin sidecar data (__ADMIN__ dir)
+		// from successful jobs. Runs after finalize so the directory
+		// has already been moved to its final location.
+		cleanupAdminStage := postproc.NewCleanupStage()
+		cleanupAdminStage.Log = ppLog
+		stageList = append(stageList, cleanupAdminStage)
+
 		// Script stage: runs AFTER finalize so job.DownloadDir points
 		// to the final complete_dir. This matches SABnzbd's behavior
 		// where $1 is the final directory, not the incomplete path.
