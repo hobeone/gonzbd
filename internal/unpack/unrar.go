@@ -45,6 +45,10 @@ type Options struct {
 	Prefer7zip bool
 	// OnLine is called for each line of subprocess output. May be nil.
 	OnLine func(string) `json:"-"`
+	// OnCommand is called once per subprocess invocation, just before
+	// exec, with the full display-safe command line (passwords redacted).
+	// Lets callers log the actual argv that's about to run. May be nil.
+	OnCommand func(string) `json:"-"`
 }
 
 // unrarBin returns the configured unrar binary, defaulting to "unrar".
@@ -132,6 +136,9 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 	// Emit full command line to the OnLine callback so it appears in the UI.
 	if opts.OnLine != nil {
 		opts.OnLine("Command: " + cmdLine)
+	}
+	if opts.OnCommand != nil {
+		opts.OnCommand(cmdLine)
 	}
 
 	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // args are caller-supplied, not shell-expanded

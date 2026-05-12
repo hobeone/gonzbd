@@ -251,16 +251,14 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 					fmt.Sprintf("[repair] Skipping previously verified set: %s", set.Name))
 				continue
 			}
-			par2Bin := s.Par2Opts.Command
-			if par2Bin == "" {
-				par2Bin = "par2"
-			}
-			logf(log, job, slog.LevelInfo, "Running: %s r %s (+%d data files)", par2Bin, filepath.Base(main), len(dataFiles))
 			repairOpts := s.Par2Opts
 			repairOpts.OnLine = func(line string) {
 				if job.OnOutput != nil {
 					job.OnOutput("par2", line)
 				}
+			}
+			repairOpts.OnCommand = func(cmdLine string) {
+				logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
 			}
 			res, err := par2.RepairWith(ctx, repairOpts, main, dataFiles...)
 			// Capture par2 tool output for the stage log.
@@ -536,20 +534,20 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 							job.OnOutput("7z", line)
 						}
 					}
-					logf(log, job, slog.LevelInfo, "Running: 7z x %s", filepath.Base(a.MainFile))
+					szOpts.OnCommand = func(cmdLine string) {
+						logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+					}
 					res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
 				} else {
-					unrarBin := opts.UnrarCommand
-					if unrarBin == "" {
-						unrarBin = "unrar"
-					}
 					unrarOpts := opts
 					unrarOpts.OnLine = func(line string) {
 						if job.OnOutput != nil {
 							job.OnOutput("unrar", line)
 						}
 					}
-					logf(log, job, slog.LevelInfo, "Running: %s x %s", unrarBin, filepath.Base(a.MainFile))
+					unrarOpts.OnCommand = func(cmdLine string) {
+						logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+					}
 					res, err = unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
 				}
 			case unpack.SevenZipArchive:
@@ -559,7 +557,9 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 						job.OnOutput("7z", line)
 					}
 				}
-				logf(log, job, slog.LevelInfo, "Running: 7z x %s", filepath.Base(a.MainFile))
+				szOpts.OnCommand = func(cmdLine string) {
+					logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+				}
 				res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
 			case unpack.SplitArchive:
 				logf(log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
