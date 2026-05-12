@@ -48,6 +48,10 @@ type Options struct {
 	// extraction subprocess. When non-empty, the command is prepended
 	// with nice and/or ionice. Matches SABnzbd's cfg.nice/cfg.ionice.
 	CmdCfg cmdutil.CmdConfig
+	// ExtraArgs holds additional user-specified command-line arguments
+	// appended to every unrar invocation. Pre-validated by the config
+	// layer to contain only flags starting with '-'.
+	ExtraArgs []string
 	// OnLine is called for each line of subprocess output. May be nil.
 	OnLine func(string) `json:"-"`
 	// OnCommand is called once per subprocess invocation, just before
@@ -124,6 +128,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 	if opts.IgnoreUnrarDates {
 		args = append(args, "-tsm-") // don't restore modification times (matches SABnzbd)
 	}
+	args = append(args, opts.ExtraArgs...) // user-specified extra flags
 
 	args = append(args, archive.MainFile, outDir+"/") // unrar expects a trailing slash on the output directory
 
