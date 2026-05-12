@@ -8,7 +8,7 @@ func TestFindCategory(t *testing.T) {
 	cats := []CategoryConfig{
 		{Name: "*", PP: 1, Script: "star.sh", Priority: -1, Dir: "star"},
 		{Name: "Default", PP: 3, Script: "default.sh", Priority: 0, Dir: ""},
-		{Name: "tv", PP: 7, Script: "tv.sh", Priority: 2, Dir: "TV"},
+		{Name: "tv", PP: 3, Script: "tv.sh", Priority: 2, Dir: "TV"},
 		{Name: "movies", PP: 3, Script: "movies.sh", Priority: 1, Dir: "Movies"},
 	}
 
@@ -19,7 +19,7 @@ func TestFindCategory(t *testing.T) {
 		wantPP   int
 		wantDir  string
 	}{
-		{"exact match", "tv", "tv", 7, "TV"},
+		{"exact match", "tv", "tv", 3, "TV"},
 		{"exact match movies", "movies", "movies", 3, "Movies"},
 		{"fallback to Default", "unknown", "Default", 3, ""},
 		{"empty name falls back to Default", "", "Default", 3, ""},
@@ -45,7 +45,7 @@ func TestFindCategoryFallbackToStar(t *testing.T) {
 	// No "Default" category — should fall back to "*".
 	cats := []CategoryConfig{
 		{Name: "*", PP: 1, Dir: "star"},
-		{Name: "tv", PP: 7, Dir: "TV"},
+		{Name: "tv", PP: 3, Dir: "TV"},
 	}
 	got := FindCategory(cats, "unknown")
 	if got.Name != "*" {
@@ -78,31 +78,31 @@ func TestFindCategoryCaseInsensitive(t *testing.T) {
 		{
 			name: "lowercase default matches as fallback",
 			cats: []CategoryConfig{
-				{Name: "default", PP: 7},
-				{Name: "tv", PP: 7},
+				{Name: "default", PP: 3},
+				{Name: "tv", PP: 3},
 			},
 			lookup:   "",
 			wantName: "default",
-			wantPP:   7,
+			wantPP:   3,
 		},
 		{
 			name: "DEFAULT (upper) matches as fallback",
 			cats: []CategoryConfig{
-				{Name: "DEFAULT", PP: 5},
+				{Name: "DEFAULT", PP: 2},
 			},
 			lookup:   "",
 			wantName: "DEFAULT",
-			wantPP:   5,
+			wantPP:   2,
 		},
 		{
 			name: "explicit-name lookup is case-insensitive",
 			cats: []CategoryConfig{
-				{Name: "TV", PP: 7},
+				{Name: "TV", PP: 3},
 				{Name: "Default", PP: 3},
 			},
 			lookup:   "tv",
 			wantName: "TV",
-			wantPP:   7,
+			wantPP:   3,
 		},
 	}
 	for _, tt := range tests {

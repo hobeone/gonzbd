@@ -21,7 +21,7 @@ func minimalNZB() *nzb.NZB {
 
 func TestNewJob_CategoryPPInherit(t *testing.T) {
 	cats := []config.CategoryConfig{
-		{Name: "tv", PP: 7, Script: "tv.sh", Priority: int(constants.HighPriority)},
+		{Name: "tv", PP: 3, Script: "tv.sh", Priority: int(constants.HighPriority)},
 	}
 	job, err := NewJob(minimalNZB(), AddOptions{
 		Filename:   "test.nzb",
@@ -32,8 +32,8 @@ func TestNewJob_CategoryPPInherit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.PP != 7 {
-		t.Errorf("PP = %d, want 7 (from category)", job.PP)
+	if job.PP != 3 {
+		t.Errorf("PP = %d, want 3 (from category)", job.PP)
 	}
 	if job.Script != "tv.sh" {
 		t.Errorf("Script = %q, want %q (from category)", job.Script, "tv.sh")
@@ -60,7 +60,7 @@ func TestNewJob_CategoryPriorityInherit(t *testing.T) {
 
 func TestNewJob_ExplicitOverridesCategory(t *testing.T) {
 	cats := []config.CategoryConfig{
-		{Name: "tv", PP: 7, Script: "tv.sh", Priority: int(constants.LowPriority)},
+		{Name: "tv", PP: 3, Script: "tv.sh", Priority: int(constants.LowPriority)},
 	}
 	job, err := NewJob(minimalNZB(), AddOptions{
 		Filename:   "test.nzb",
@@ -104,7 +104,7 @@ func TestNewJob_NoCategoriesFallback(t *testing.T) {
 
 func TestNewJob_CategoryFallbackToDefault(t *testing.T) {
 	cats := []config.CategoryConfig{
-		{Name: "Default", PP: 5, Script: "fallback.sh"},
+		{Name: "Default", PP: 2, Script: "fallback.sh"},
 	}
 	job, err := NewJob(minimalNZB(), AddOptions{
 		Filename:   "test.nzb",
@@ -115,8 +115,8 @@ func TestNewJob_CategoryFallbackToDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.PP != 5 {
-		t.Errorf("PP = %d, want 5 (from Default category)", job.PP)
+	if job.PP != 2 {
+		t.Errorf("PP = %d, want 2 (from Default category)", job.PP)
 	}
 	if job.Script != "fallback.sh" {
 		t.Errorf("Script = %q, want %q (from Default category)", job.Script, "fallback.sh")
