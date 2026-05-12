@@ -79,6 +79,11 @@ func TestClassifyUnrarOutput(t *testing.T) {
 			output: "ERROR: some unknown issue\n",
 			want:   FailUnknown,
 		},
+		{
+			name:   "file too large",
+			output: "file.mkv : File too large\n",
+			want:   FailFileTooLarge,
+		},
 	}
 
 	for _, tt := range tests {
@@ -129,6 +134,16 @@ func TestClassify7zOutput(t *testing.T) {
 			output: "Sub items Errors: 1\n",
 			want:   FailUnknown,
 		},
+		{
+			name:   "not an archive - cannot open",
+			output: "ERROR: Cannot open the file as [7z] archive\n",
+			want:   FailNotArchive,
+		},
+		{
+			name:   "not an archive - unsupported",
+			output: "ERROR: file.xyz is not supported archive\n",
+			want:   FailNotArchive,
+		},
 	}
 
 	for _, tt := range tests {
@@ -154,6 +169,7 @@ func TestFailReason_String(t *testing.T) {
 		{FailCorrupt, "corrupt archive"},
 		{FailMissingVolume, "missing volume"},
 		{FailNotArchive, "not an archive"},
+		{FailFileTooLarge, "file too large"},
 	}
 	for _, tt := range tests {
 		if got := tt.r.String(); got != tt.want {

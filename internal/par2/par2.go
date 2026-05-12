@@ -39,6 +39,12 @@ const (
 	StatusInvalidPar2
 	// StatusDiskFull means par2 reported insufficient disk space.
 	StatusDiskFull
+	// StatusRepairFailed means par2 attempted repair but it was unsuccessful.
+	StatusRepairFailed
+	// StatusBadOption means par2 rejected a command-line option (e.g. turbo
+	// flags passed to a non-turbo build). The caller should retry without
+	// the problematic option.
+	StatusBadOption
 )
 
 // Set groups a collection of par2 files that belong to the same repair set.
@@ -90,6 +96,9 @@ type RunOptions struct {
 	// Turbo enables par2cmdline-turbo arguments (-t+) for faster
 	// multi-threaded repair when the binary supports them.
 	Turbo bool
+	// CmdCfg controls nice/ionice process priority wrapping.
+	// Matches SABnzbd's cfg.nice/cfg.ionice.
+	CmdCfg cmdutil.CmdConfig
 	// OnLine is called for each line of output from the par2 subprocess.
 	// May be nil.
 	OnLine func(string) `json:"-"`
@@ -193,14 +202,21 @@ func parseStatus(output string) Status {
 	case strings.Contains(output, "Main packet not found"),
 		strings.Contains(output, "The recovery file does not exist"):
 		return StatusInvalidPar2
+	case strings.Contains(output, "Invalid option specified"),
+		strings.Contains(output, "Invalid thread option"):
+		return StatusBadOption
 	case strings.Contains(output, "not enough space on the disk"),
 		strings.Contains(output, "Insufficient disk space"):
 		return StatusDiskFull
 	case needMoreBlocksRE.MatchString(output):
 		return StatusNeedMoreBlocks
+	case strings.Contains(output, "Repair Failed"):
+		return StatusRepairFailed
 	case strings.Contains(output, "Repair is not possible"):
 		return StatusRepairNotPossible
 	case strings.Contains(output, "cannot be renamed to"):
+		return StatusRepairNotPossible
+	case strings.Contains(output, "No details available for recoverable file"):
 		return StatusRepairNotPossible
 	case strings.Contains(output, "Repair is required"):
 		return StatusRepairRequired
@@ -233,7 +249,7 @@ func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	args = append(args, parfile)
 	args = append(args, extraFiles...)
 
-	cmd := exec.CommandContext(ctx, opts.command(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	cmd := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.command(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	cmd.Dir = filepath.Dir(parfile)
 
 	// Build and emit full command line for UI visibility.
@@ -286,7 +302,7 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	args = append(args, parfile)
 	args = append(args, extraFiles...)
 
-	cmd := exec.CommandContext(ctx, opts.command(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	cmd := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.command(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	cmd.Dir = filepath.Dir(parfile)
 
 	// Build and emit full command line for UI visibility.

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/deobfuscate"
@@ -412,6 +413,10 @@ type UnpackStage struct {
 	BaseOpts unpack.Options
 	// Cleanup deletes source archive files after successful extraction.
 	Cleanup bool
+	// Permissions is an octal string (e.g. "755") applied recursively
+	// after successful extraction. Dirs get the full mode, files get
+	// execute bits stripped. Empty disables chmod.
+	Permissions string
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
@@ -655,7 +660,54 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		}
 	}
 
+	// Apply permissions recursively after extraction.
+	if u.Permissions != "" && len(allSuccessful) > 0 {
+		applied, permErr := applyPermissions(job.DownloadDir, u.Permissions)
+		if permErr != nil {
+			logf(log, job, slog.LevelWarn, "permissions: %v", permErr)
+		} else if applied > 0 {
+			logf(log, job, slog.LevelInfo, "Applied permissions (%s) to %d file(s)/dir(s)", u.Permissions, applied)
+		}
+	}
+
 	return firstErr
+}
+
+// applyPermissions walks dir recursively and applies the given octal
+// permission string. Directories receive the full mode; regular files
+// have execute bits stripped (e.g. "755" → dirs=0755, files=0644).
+// Returns the number of entries changed and any error encountered during
+// permission parsing (walk errors are logged but don't stop traversal).
+func applyPermissions(dir, permStr string) (int, error) {
+	mode, err := strconv.ParseUint(permStr, 8, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid permission string %q: %w", permStr, err)
+	}
+	dirMode := os.FileMode(mode)
+	fileMode := dirMode &^ 0111 // strip execute bits for regular files
+
+	var count int
+	walkErr := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip entries we can't stat
+		}
+		var target os.FileMode
+		if d.IsDir() {
+			target = dirMode
+		} else if d.Type().IsRegular() {
+			target = fileMode
+		} else {
+			return nil // skip symlinks, devices, etc.
+		}
+		if chErr := os.Chmod(path, target); chErr == nil {
+			count++
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return count, fmt.Errorf("walk %s: %w", dir, walkErr)
+	}
+	return count, nil
 }
 
 // RecoverPar2NamesStage renames obfuscated files using par2 metadata

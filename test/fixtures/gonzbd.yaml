@@ -48,6 +48,9 @@ postproc:
   ignore_unrar_dates: false
   overwrite_files: false
   flat_unpack: false
+  nice: ""
+  ionice: ""
+  permissions: ""
 
 servers:
   - name: primary

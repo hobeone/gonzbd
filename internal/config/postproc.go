@@ -64,4 +64,20 @@ type PostProcConfig struct {
 	// media managers (Sonarr, Plex) from importing incomplete downloads.
 	// Mirrors SABnzbd's cfg.folder_rename(). Default false.
 	FolderRename bool `yaml:"folder_rename" json:"folder_rename"`
+
+	// Nice is the argument string for the nice(1) command, prepended to
+	// all external tool invocations (unrar, 7z, par2). Example: "-n 15".
+	// Matches SABnzbd's cfg.nice(). Empty disables nice wrapping.
+	Nice string `yaml:"nice" json:"nice"`
+	// Ionice is the argument string for the ionice(1) command, prepended
+	// to all external tool invocations. Example: "-c2 -n4".
+	// Matches SABnzbd's cfg.ionice(). Empty disables ionice wrapping.
+	Ionice string `yaml:"ionice" json:"ionice"`
+
+	// Permissions is an octal permission string (e.g. "755") applied
+	// recursively to extracted files after successful unpacking.
+	// Directories receive the full permission; files have execute bits
+	// stripped (e.g. "755" → dirs=0755, files=0644).
+	// Matches SABnzbd's cfg.permissions(). Empty disables chmod.
+	Permissions string `yaml:"permissions" json:"permissions"`
 }

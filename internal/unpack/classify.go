@@ -19,6 +19,9 @@ const (
 	FailMissingVolume
 	// FailNotArchive means the file is not a valid archive format.
 	FailNotArchive
+	// FailFileTooLarge means a file in the archive exceeds the
+	// filesystem's or OS's maximum file size.
+	FailFileTooLarge
 )
 
 // String returns a human-readable label for the FailReason.
@@ -34,6 +37,8 @@ func (r FailReason) String() string {
 		return "missing volume"
 	case FailNotArchive:
 		return "not an archive"
+	case FailFileTooLarge:
+		return "file too large"
 	default:
 		return "unknown error"
 	}
@@ -81,6 +86,11 @@ func ClassifyUnrarOutput(output string) FailReason {
 		return FailCorrupt
 	}
 
+	// File too large for the filesystem (e.g. >4 GiB on FAT32).
+	if strings.Contains(lower, "file too large") {
+		return FailFileTooLarge
+	}
+
 	return FailUnknown
 }
 
@@ -111,6 +121,12 @@ func Classify7zOutput(output string) FailReason {
 		if !strings.Contains(lower, "encrypted") {
 			return FailCorrupt
 		}
+	}
+
+	// Not a valid archive.
+	if strings.Contains(lower, "cannot open the file as") ||
+		strings.Contains(lower, "is not supported archive") {
+		return FailNotArchive
 	}
 
 	return FailUnknown
