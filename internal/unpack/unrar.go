@@ -57,6 +57,9 @@ func (o Options) unrarBin() string {
 
 // Result holds the outcome of an extraction attempt.
 type Result struct {
+	// CommandLine is the display-safe command line that was executed.
+	// Passwords are redacted.
+	CommandLine string
 	// ExtractedFiles is a best-effort list of files written by the tool.
 	// TODO: populate by diffing outDir before/after the subprocess call.
 	ExtractedFiles []string
@@ -115,13 +118,20 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 
 	bin := opts.unrarBin()
 
+	// Build a display-safe command line (redact password).
+	cmdLine := formatCmdLine(bin, args, pwFlag)
+
 	log.Info("unrar: starting extraction",
 		"binary", bin,
 		"archive", archive.MainFile,
 		"outDir", outDir,
-		"oneFolder", opts.OneFolder,
-		"hasPassword", opts.Password != "",
+		"cmdline", cmdLine,
 	)
+
+	// Emit full command line to the OnLine callback so it appears in the UI.
+	if opts.OnLine != nil {
+		opts.OnLine("Command: " + cmdLine)
+	}
 
 	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // args are caller-supplied, not shell-expanded
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
@@ -132,7 +142,8 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 	streamer.Flush()
 
 	res := Result{
-		Output: streamer.String(),
+		CommandLine: cmdLine,
+		Output:      streamer.String(),
 	}
 
 	var exitErr *exec.ExitError
