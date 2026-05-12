@@ -54,10 +54,34 @@ func TestFindCategoryFallbackToStar(t *testing.T) {
 }
 
 func TestFindCategoryEmpty(t *testing.T) {
-	// No categories at all — returns zero value.
+	// No categories at all — returns the builtin baseline (never zero).
+	// A zero CategoryConfig would set PP=0 and silently disable
+	// post-processing.
+	want := BuiltinDefaultCategory()
 	got := FindCategory(nil, "anything")
-	if got.Name != "" || got.PP != 0 {
-		t.Errorf("FindCategory(nil) = %+v, want zero", got)
+	if got.Name != want.Name || got.PP != want.PP {
+		t.Errorf("FindCategory(nil) = %+v, want builtin %+v", got, want)
+	}
+	if got.PP == 0 {
+		t.Errorf("FindCategory(nil).PP must not be 0 — that silently disables post-processing")
+	}
+}
+
+// TestFindCategoryNoFallbackHardcodedDefault verifies that even with a
+// non-empty category list that lacks Default and "*", FindCategory
+// returns the hardcoded baseline rather than the zero CategoryConfig.
+func TestFindCategoryNoFallbackHardcodedDefault(t *testing.T) {
+	cats := []CategoryConfig{
+		{Name: "tv", PP: 7},
+		{Name: "movies", PP: 7},
+	}
+	got := FindCategory(cats, "unknown")
+	want := BuiltinDefaultCategory()
+	if got.Name != want.Name {
+		t.Errorf("Name = %q, want %q (builtin baseline)", got.Name, want.Name)
+	}
+	if got.PP != want.PP {
+		t.Errorf("PP = %d, want %d (builtin baseline)", got.PP, want.PP)
 	}
 }
 

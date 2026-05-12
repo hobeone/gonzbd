@@ -374,28 +374,24 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 	name = fsutil.SanitizeFolderName(name, sOpts)
 
 	// Resolve sentinel values from the matching category config.
+	// FindCategory never returns a zero CategoryConfig — when no
+	// match is found it returns config.BuiltinDefaultCategory() with
+	// PP=3, so the inherit path is always safe to take.
 	pp := opts.PP
 	script := opts.Script
 	priority := opts.Priority
+	// FindCategory never returns a zero CategoryConfig — when nothing
+	// matches, it returns config.BuiltinDefaultCategory() (Name="Default",
+	// PP=3). So the inherit path is always safe to take unconditionally
+	// and cat.Name is always a useful value for the resolved-pp log line.
 	ppReason := "explicit"
-	if opts.Categories != nil {
-		cat := config.FindCategory(opts.Categories, opts.Category)
-		if pp == types.PPInherit {
-			pp = cat.PP
-			ppReason = fmt.Sprintf("category %q", cat.Name)
-		}
-		if script == "" {
-			script = cat.Script
-		}
-		if priority == constants.DefaultPriority {
-			priority = constants.Priority(cat.Priority)
-		}
-	}
-	// Clamp remaining sentinels to safe defaults when no categories
-	// were provided (e.g. tests, CLI one-shot mode).
+	cat := config.FindCategory(opts.Categories, opts.Category)
 	if pp == types.PPInherit {
-		pp = 0
-		ppReason = "default (no categories configured)"
+		pp = cat.PP
+		ppReason = fmt.Sprintf("category %q", cat.Name)
+	}
+	if script == "" {
+		script = cat.Script
 	}
 	// Clamp out-of-range PP to valid levels 0–3. SABnzbd's pp_to_opts
 	// treats any value ≥ 3 as 3 (repair+unpack+delete); some configs
@@ -406,7 +402,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 		pp = 0
 	}
 	if priority == constants.DefaultPriority {
-		priority = constants.NormalPriority
+		priority = constants.Priority(cat.Priority)
 	}
 
 	if opts.Logger != nil {

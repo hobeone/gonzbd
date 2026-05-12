@@ -85,7 +85,10 @@ func TestNewJob_ExplicitOverridesCategory(t *testing.T) {
 }
 
 func TestNewJob_NoCategoriesFallback(t *testing.T) {
-	// No Categories: sentinels should clamp to safe defaults.
+	// No Categories: sentinels resolve through FindCategory which
+	// falls back to BuiltinDefaultCategory (PP=3, Priority=Normal).
+	// This must NEVER return PP=0 — that would silently disable
+	// post-processing.
 	job, err := NewJob(minimalNZB(), AddOptions{
 		Filename: "test.nzb",
 		PP:       types.PPInherit,
@@ -94,11 +97,15 @@ func TestNewJob_NoCategoriesFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.PP != 0 {
-		t.Errorf("PP = %d, want 0 (clamped default)", job.PP)
+	want := config.BuiltinDefaultCategory()
+	if job.PP != want.PP {
+		t.Errorf("PP = %d, want %d (builtin baseline)", job.PP, want.PP)
+	}
+	if job.PP == 0 {
+		t.Errorf("PP must not be 0 — that silently disables post-processing")
 	}
 	if job.Priority != constants.NormalPriority {
-		t.Errorf("Priority = %d, want %d (clamped default)", job.Priority, constants.NormalPriority)
+		t.Errorf("Priority = %d, want %d (builtin baseline)", job.Priority, constants.NormalPriority)
 	}
 }
 
