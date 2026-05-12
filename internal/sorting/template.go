@@ -2,6 +2,7 @@ package sorting
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -94,4 +95,56 @@ func ExpandTemplate(template string, info MediaInfo, ext string) string {
 	}
 
 	return out.String()
+}
+
+// CleanTemplatePath cleans up a template-expanded path by stripping leading
+// and trailing whitespace, underscores, and hyphens from each path element,
+// then collapsing runs of repeated dots or underscores. This prevents messy
+// directory names like "Show Name -  /Season 01" when template tokens
+// expand to empty strings. Matches SABnzbd's strip_path_elements.
+//
+// Empty elements (which would create leading or double slashes) are removed.
+func CleanTemplatePath(path string) string {
+	// Work with forward slashes internally.
+	path = filepath.ToSlash(path)
+	parts := strings.Split(path, "/")
+	var clean []string
+	for _, p := range parts {
+		p = stripElement(p)
+		if p != "" {
+			clean = append(clean, p)
+		}
+	}
+	return strings.Join(clean, "/")
+}
+
+// stripElement strips one path element of leading/trailing whitespace,
+// underscores, hyphens, and dots. It also collapses repeated dots (..)
+// and underscores (__) into single characters.
+func stripElement(s string) string {
+	s = strings.TrimFunc(s, func(r rune) bool {
+		return r == ' ' || r == '_' || r == '-'
+	})
+	// Collapse repeated dots and underscores.
+	s = collapseRun(s, '.')
+	s = collapseRun(s, '_')
+	// Strip trailing dots (problematic on Windows and ugly everywhere).
+	s = strings.TrimRight(s, ".")
+	return s
+}
+
+// collapseRun replaces runs of two or more occurrences of c with a single c.
+func collapseRun(s string, c byte) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prev := byte(0)
+	for i := range len(s) {
+		ch := s[i]
+		if ch == c && prev == c {
+			continue
+		}
+		b.WriteByte(ch)
+		prev = ch
+	}
+	return b.String()
 }

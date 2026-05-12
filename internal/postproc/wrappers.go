@@ -813,9 +813,17 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 // FinalizeStage moves the completed job from job.DownloadDir to job.FinalDir.
 // If FinalDir is not set, it defaults to placing the job folder (named after
 // its ID) in the system's complete directory.
+//
+// When FolderRename is true, the destination directory is initially named
+// with an _UNPACK_ prefix (e.g. /complete/_UNPACK_MyRelease). After all
+// post-processing completes, the caller should invoke StripPrefix to rename
+// it to the final name. If processing fails, the prefix is changed to
+// _FAILED_. This mirrors SABnzbd's folder_rename behavior.
 type FinalizeStage struct {
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
+	// FolderRename enables the _UNPACK_/_FAILED_ prefix behavior.
+	FolderRename bool
 }
 
 // NewFinalizeStage constructs a FinalizeStage.
@@ -843,6 +851,20 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 		if job.FailMsg != "" {
 			reasons = append(reasons, job.FailMsg)
 		}
+
+		// When FolderRename is enabled and a job fails, move to
+		// _FAILED_ prefixed directory so users can easily identify it.
+		if f.FolderRename && job.FinalDir != "" && job.DownloadDir != job.FinalDir {
+			failedDir := prefixDirName(job.FinalDir, "_FAILED_")
+			if err := os.MkdirAll(filepath.Dir(failedDir), 0o750); err == nil {
+				if err := os.Rename(job.DownloadDir, failedDir); err == nil {
+					logf(log, job, slog.LevelInfo, "Moved to failed directory: %s", failedDir)
+					job.DownloadDir = failedDir
+					return nil
+				}
+			}
+		}
+
 		logf(log, job, slog.LevelInfo, "Skipped: files remain in download directory (%s)", strings.Join(reasons, "; "))
 		return nil // Skip move if failed, so files stay in DownloadDir for retry
 	}
@@ -856,25 +878,39 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 		return nil // Already there (e.g. one-shot download directly to target)
 	}
 
-	logf(log, job, slog.LevelInfo, "Moving %s → %s", job.DownloadDir, job.FinalDir)
+	// Determine the initial destination — with _UNPACK_ prefix if enabled.
+	dest := job.FinalDir
+	if f.FolderRename {
+		dest = prefixDirName(job.FinalDir, "_UNPACK_")
+	}
+
+	logf(log, job, slog.LevelInfo, "Moving %s → %s", job.DownloadDir, dest)
 
 	// Create parent directory for final destination
-	if err := os.MkdirAll(filepath.Dir(job.FinalDir), 0o750); err != nil {
-		return fmt.Errorf("finalize: mkdir %s: %w", filepath.Dir(job.FinalDir), err)
+	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
+		return fmt.Errorf("finalize: mkdir %s: %w", filepath.Dir(dest), err)
 	}
 
 	// If the source directory exists, rename it to the target.
 	// Fall back to file-by-file move on cross-device (EXDEV) or
 	// not-empty (ENOTEMPTY/EEXIST) errors — the latter allows
 	// merging files into an existing destination directory.
-	if err := os.Rename(job.DownloadDir, job.FinalDir); err == nil {
-		logf(log, job, slog.LevelInfo, "%s → %s (atomic rename)", job.DownloadDir, job.FinalDir)
-		// Update DownloadDir so subsequent stages (script) see the
-		// final location — matches SABnzbd's spec §6.2 ordering.
-		job.DownloadDir = job.FinalDir
+	if err := os.Rename(job.DownloadDir, dest); err == nil {
+		logf(log, job, slog.LevelInfo, "%s → %s (atomic rename)", job.DownloadDir, dest)
+		job.DownloadDir = dest
+		// If FolderRename is active, strip the _UNPACK_ prefix now.
+		if f.FolderRename {
+			if err := os.Rename(dest, job.FinalDir); err != nil {
+				logf(log, job, slog.LevelWarn, "Failed to strip _UNPACK_ prefix: %v", err)
+				// Not fatal — files are in _UNPACK_ dir but accessible.
+			} else {
+				logf(log, job, slog.LevelInfo, "%s → %s (prefix stripped)", dest, job.FinalDir)
+				job.DownloadDir = job.FinalDir
+			}
+		}
 		return nil
 	} else if !fsutil.IsRenameMergeNeeded(err) {
-		return fmt.Errorf("finalize: rename %s -> %s: %w", job.DownloadDir, job.FinalDir, err)
+		return fmt.Errorf("finalize: rename %s -> %s: %w", job.DownloadDir, dest, err)
 	} else {
 		logf(log, job, slog.LevelInfo, "Atomic rename failed (%v), falling back to file-by-file move", err)
 	}
@@ -885,14 +921,14 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 		return fmt.Errorf("finalize: readdir %s: %w", job.DownloadDir, err)
 	}
 
-	if err := os.MkdirAll(job.FinalDir, 0o750); err != nil {
-		return fmt.Errorf("finalize: mkdir %s: %w", job.FinalDir, err)
+	if err := os.MkdirAll(dest, 0o750); err != nil {
+		return fmt.Errorf("finalize: mkdir %s: %w", dest, err)
 	}
 
 	var moveErrors []error
 	for _, e := range entries {
 		src := filepath.Join(job.DownloadDir, e.Name())
-		dst := fsutil.JoinSafe(job.FinalDir, "", e.Name(), job.Sanitize)
+		dst := fsutil.JoinSafe(dest, "", e.Name(), job.Sanitize)
 		if err := moveRecursive(ctx, src, dst); err != nil {
 			moveErrors = append(moveErrors, fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err))
 			logf(log, job, slog.LevelWarn, "Failed to move %s → %s: %v", filepath.Base(src), dst, err)
@@ -912,11 +948,28 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	_ = os.RemoveAll(job.DownloadDir)
 	logf(log, job, slog.LevelInfo, "Removed empty source directory: %s", job.DownloadDir)
 
-	// Update DownloadDir so subsequent stages (script) see the
-	// final location — matches SABnzbd's spec §6.2 ordering.
-	job.DownloadDir = job.FinalDir
+	// Update DownloadDir.
+	job.DownloadDir = dest
+
+	// Strip _UNPACK_ prefix if FolderRename is active.
+	if f.FolderRename {
+		if err := os.Rename(dest, job.FinalDir); err != nil {
+			logf(log, job, slog.LevelWarn, "Failed to strip _UNPACK_ prefix: %v", err)
+		} else {
+			logf(log, job, slog.LevelInfo, "%s → %s (prefix stripped)", dest, job.FinalDir)
+			job.DownloadDir = job.FinalDir
+		}
+	}
 
 	return nil
+}
+
+// prefixDirName prepends a prefix to the last path component of dir.
+// Example: prefixDirName("/complete/movies/MyRelease", "_UNPACK_")
+// returns "/complete/movies/_UNPACK_MyRelease".
+func prefixDirName(dir, prefix string) string {
+	parent, base := filepath.Split(dir)
+	return filepath.Join(parent, prefix+base)
 }
 
 // moveRecursive handles moving files or directories, with cross-device support.
