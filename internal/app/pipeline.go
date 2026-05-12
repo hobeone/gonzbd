@@ -76,6 +76,10 @@ type pipeline struct {
 	sanitize    fsutil.SanitizeOptions
 	numWorkers  int // concurrent handleResult workers; 0 defaults to GOMAXPROCS
 
+	// onJobHopeless is called when a job is detected as beyond repair
+	// (either by byte-level health or early-abort heuristic).
+	onJobHopeless func(jobID string)
+
 	// ctx is the context passed to run(); stored so setCompletions can
 	// avoid blocking forever if run() has already exited.
 	ctx context.Context
@@ -217,6 +221,17 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 				_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
 			}
 			telemetry.ArticlesFailed.Add(1)
+
+			// Early abort: if the first batch of articles is mostly
+			// failures, the job is likely DMCA'd or expired. Abort now
+			// to save bandwidth.
+			if p.queue.CheckEarlyAbort(res.JobID) {
+				p.log.Warn("early abort: 80%+ of first articles failed, job appears DMCA'd/expired",
+					"job", res.JobID)
+				if p.onJobHopeless != nil {
+					p.onJobHopeless(res.JobID)
+				}
+			}
 		} else {
 			// Retryable error (connection drop, 430 from one server).
 			// Clear the Emitted flag so the dispatcher re-dispatches this

@@ -157,6 +157,18 @@ type Job struct {
 	// jobs in O(1) when all articles are complete.
 	PendingArticles int `json:"-"`
 
+	// ArticlesResolved counts articles that have completed (success or
+	// failure) since the job started. Used by the early-abort check.
+	ArticlesResolved int `json:"-"`
+
+	// ArticlesFailed counts articles that permanently failed since the
+	// job started. Used by the early-abort check.
+	ArticlesFailed int `json:"-"`
+
+	// EarlyAborted is set to true when the early-abort check fires,
+	// preventing duplicate abort callbacks.
+	EarlyAborted bool `json:"-"`
+
 	// artIdx is a transient, in-memory index from messageID → *JobArticle
 	// for O(1) lookups. Built lazily by articleByID and not serialised
 	// (article slice addresses change on deserialisation anyway).
@@ -185,6 +197,39 @@ func (j *Job) buildArtIndex() {
 			j.artIdx[art.ID] = art
 		}
 	}
+}
+
+const (
+	// earlyAbortSample is the number of articles that must resolve
+	// before the early-abort heuristic fires. Too small → false
+	// positives on slow starts; too large → wasted bandwidth.
+	earlyAbortSample = 10
+
+	// earlyAbortThreshold is the failure rate (0.0–1.0) above which
+	// the job is considered DMCA'd or expired. 80% matches SABnzbd's
+	// heuristic for fully-removed NZBs.
+	earlyAbortThreshold = 0.80
+)
+
+// IsEarlyAbort returns true if the job should be aborted based on the
+// first-article failure rate. It checks after earlyAbortSample articles
+// have resolved: if 80%+ failed, the download is likely DMCA'd or
+// expired and further downloading wastes bandwidth.
+//
+// Must be called under the queue's lock (read or write).
+func (j *Job) IsEarlyAbort() bool {
+	if j.EarlyAborted {
+		return false // already fired
+	}
+	if j.ArticlesResolved < earlyAbortSample {
+		return false // not enough data yet
+	}
+	rate := float64(j.ArticlesFailed) / float64(j.ArticlesResolved)
+	if rate >= earlyAbortThreshold {
+		j.EarlyAborted = true
+		return true
+	}
+	return false
 }
 
 // recomputePending recalculates Pending on every file and

@@ -364,6 +364,28 @@ func (p *PostProcessor) processJob(job *Job) {
 	var failedAt = -1 // index of first failed stage, or -1
 
 	for i, stage := range p.stages {
+		// PP enforcement (M1): skip stages above the job's post-processing
+		// level. SABnzbd PP levels are cumulative:
+		//   0 = download only (skip repair + unpack)
+		//   1 = +repair (par2 verify/repair)
+		//   2 = +unpack (also does repair)
+		//   3 = +delete (repair + unpack + cleanup)
+		// Quickcheck and repair require PP ≥ 1; unpack requires PP ≥ 2.
+		// Other stages (deobfuscate, sort, finalize, script) always run.
+		if shouldSkipForPP(stage.Name(), job.Queue.PP) {
+			p.log.Info("postproc: skipping stage (PP level)",
+				"stage", stage.Name(),
+				"job", job.Queue.ID,
+				"pp", job.Queue.PP,
+			)
+			job.StageLog = append(job.StageLog, StageLogEntry{
+				Stage:   stage.Name(),
+				Started: time.Now(),
+				Lines:   []string{fmt.Sprintf("Skipped: PP=%d (stage requires higher PP level)", job.Queue.PP)},
+			})
+			continue
+		}
+
 		if p.statusUpdater != nil {
 			var status constants.Status
 			switch stage.Name() {
@@ -522,4 +544,25 @@ func (p *PostProcessor) addHistory(job *Job) {
 		p.history = p.history[excess:]
 	}
 	p.historyMu.Unlock()
+}
+
+// shouldSkipForPP returns true if the named stage should be skipped because
+// the job's PP level is too low. SABnzbd PP levels are cumulative:
+//
+//	0 = download only (no repair, no unpack)
+//	1 = +repair (par2 verify/repair)
+//	2 = +unpack (includes repair)
+//	3 = +delete (includes repair + unpack + archive cleanup)
+//
+// Stages always run: quickcheck (just logging), deobfuscate, sample, sort,
+// finalize, script. Stages gated by PP: repair (≥1), unpack (≥2).
+func shouldSkipForPP(stageName string, pp int) bool {
+	switch stageName {
+	case "quickcheck", "repair":
+		return pp < 1
+	case "unpack":
+		return pp < 2
+	default:
+		return false
+	}
 }

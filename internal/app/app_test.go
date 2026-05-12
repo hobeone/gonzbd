@@ -172,7 +172,7 @@ func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 	}
 	// We want to force a failure. If unrar is missing (common in CI), it will fail.
 	// If unrar is present, it will fail because the content is not a real RAR.
-	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "fail-test"}, fsutil.SanitizeOptions{})
+	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "fail-test", PP: 3}, fsutil.SanitizeOptions{})
 	jobID := job.ID
 	_ = application.Queue().Add(job)
 
