@@ -123,6 +123,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 
 	log.Info("unrar: starting extraction",
 		"binary", bin,
+		"args", args,
 		"archive", archive.MainFile,
 		"outDir", outDir,
 		"cmdline", cmdLine,
