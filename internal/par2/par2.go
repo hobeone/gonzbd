@@ -3,7 +3,6 @@
 package par2
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +12,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
 // Status represents the outcome of a par2 verify or repair operation.
@@ -72,6 +73,9 @@ type RunOptions struct {
 	// Turbo enables par2cmdline-turbo arguments (-t+) for faster
 	// multi-threaded repair when the binary supports them.
 	Turbo bool
+	// OnLine is called for each line of output from the par2 subprocess.
+	// May be nil.
+	OnLine func(string) `json:"-"`
 }
 
 // command returns the configured par2 binary, defaulting to "par2".
@@ -188,7 +192,7 @@ func Verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyRe
 
 // VerifyWith is like Verify but uses the given RunOptions for binary selection.
 func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (VerifyResult, error) {
-	var stdout, stderr bytes.Buffer
+	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	args := make([]string, 0, 3+len(extraFiles))
 	args = append(args, "v", "-q")
 	if opts.Turbo {
@@ -199,17 +203,18 @@ func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 
 	cmd := exec.CommandContext(ctx, opts.command(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	cmd.Dir = filepath.Dir(parfile)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = streamer
+	cmd.Stderr = streamer
 
 	runErr := cmd.Run()
+	streamer.Flush()
 
+	output := streamer.String()
 	res := VerifyResult{
-		Stdout: stdout.String(),
-		Stderr: stderr.String(),
+		Stdout: output,
+		Stderr: "", // combined into Stdout now
 	}
-	combined := res.Stdout + res.Stderr
-	res.Status = parseStatus(combined)
+	res.Status = parseStatus(output)
 
 	// Propagate only system-level errors, not par2's repair-required exit codes.
 	var exitErr *exec.ExitError
@@ -229,7 +234,7 @@ func Repair(ctx context.Context, parfile string, extraFiles ...string) (RepairRe
 
 // RepairWith is like Repair but uses the given RunOptions for binary selection.
 func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (RepairResult, error) {
-	var combined bytes.Buffer
+	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	args := make([]string, 0, 3+len(extraFiles))
 	args = append(args, "r", "-q")
 	if opts.Turbo {
@@ -240,13 +245,14 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 
 	cmd := exec.CommandContext(ctx, opts.command(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	cmd.Dir = filepath.Dir(parfile)
-	cmd.Stdout = &combined
-	cmd.Stderr = &combined
+	cmd.Stdout = streamer
+	cmd.Stderr = streamer
 
 	runErr := cmd.Run()
+	streamer.Flush()
 
 	res := RepairResult{
-		Output: combined.String(),
+		Output: streamer.String(),
 	}
 
 	var exitErr *exec.ExitError

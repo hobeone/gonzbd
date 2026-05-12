@@ -1,12 +1,13 @@
 package unpack
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
+
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
 // Options controls how an extraction tool is invoked.
@@ -42,6 +43,8 @@ type Options struct {
 	// Prefer7zip uses 7z instead of unrar for RAR extraction even when
 	// unrar is available. 7z often handles edge-case RARs more reliably.
 	Prefer7zip bool
+	// OnLine is called for each line of subprocess output. May be nil.
+	OnLine func(string) `json:"-"`
 }
 
 // unrarBin returns the configured unrar binary, defaulting to "unrar".
@@ -121,14 +124,15 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 	)
 
 	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // args are caller-supplied, not shell-expanded
-	var combined bytes.Buffer
-	cmd.Stdout = &combined
-	cmd.Stderr = &combined
+	streamer := cmdutil.NewLineStreamer(opts.OnLine)
+	cmd.Stdout = streamer
+	cmd.Stderr = streamer
 
 	runErr := cmd.Run()
+	streamer.Flush()
 
 	res := Result{
-		Output: combined.String(),
+		Output: streamer.String(),
 	}
 
 	var exitErr *exec.ExitError
