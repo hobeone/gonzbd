@@ -24,6 +24,7 @@ func makeJob(t *testing.T, name string) *Job {
 		Queue: &queue.Job{
 			ID:   name,
 			Name: name,
+			PP:   3, // Repair + Unpack + Delete (production default)
 		},
 	}
 }
@@ -514,5 +515,116 @@ func TestPipeline_ConcurrentJobSubmission(t *testing.T) {
 	}
 	if got := stage.CallCount(); got != n {
 		t.Errorf("stage called %d times, want %d", got, n)
+	}
+}
+
+// ---------- PP enforcement ----------
+
+func TestPPEnforcement_PP0SkipsRepairAndUnpack(t *testing.T) {
+	repair := newRecordStage("repair")
+	unpack := newRecordStage("unpack")
+	finalize := newRecordStage("finalize")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	p := startProcessor(t, Options{
+		Stages:    []Stage{repair, unpack, finalize},
+		OnJobDone: func(_ *Job) { wg.Done() },
+	})
+
+	job := &Job{Queue: &queue.Job{ID: "pp0", Name: "pp0", PP: 0}}
+	p.Process(job)
+	wg.Wait()
+
+	if repair.CallCount() != 0 {
+		t.Errorf("repair ran %d times with PP=0, want 0", repair.CallCount())
+	}
+	if unpack.CallCount() != 0 {
+		t.Errorf("unpack ran %d times with PP=0, want 0", unpack.CallCount())
+	}
+	if finalize.CallCount() != 1 {
+		t.Errorf("finalize ran %d times with PP=0, want 1", finalize.CallCount())
+	}
+}
+
+func TestPPEnforcement_PP1SkipsUnpack(t *testing.T) {
+	repair := newRecordStage("repair")
+	unpack := newRecordStage("unpack")
+	finalize := newRecordStage("finalize")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	p := startProcessor(t, Options{
+		Stages:    []Stage{repair, unpack, finalize},
+		OnJobDone: func(_ *Job) { wg.Done() },
+	})
+
+	job := &Job{Queue: &queue.Job{ID: "pp1", Name: "pp1", PP: 1}}
+	p.Process(job)
+	wg.Wait()
+
+	if repair.CallCount() != 1 {
+		t.Errorf("repair ran %d times with PP=1, want 1", repair.CallCount())
+	}
+	if unpack.CallCount() != 0 {
+		t.Errorf("unpack ran %d times with PP=1, want 0", unpack.CallCount())
+	}
+	if finalize.CallCount() != 1 {
+		t.Errorf("finalize ran %d times with PP=1, want 1", finalize.CallCount())
+	}
+}
+
+func TestPPEnforcement_PP3RunsAll(t *testing.T) {
+	repair := newRecordStage("repair")
+	unpack := newRecordStage("unpack")
+	finalize := newRecordStage("finalize")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	p := startProcessor(t, Options{
+		Stages:    []Stage{repair, unpack, finalize},
+		OnJobDone: func(_ *Job) { wg.Done() },
+	})
+
+	job := &Job{Queue: &queue.Job{ID: "pp3", Name: "pp3", PP: 3}}
+	p.Process(job)
+	wg.Wait()
+
+	if repair.CallCount() != 1 {
+		t.Errorf("repair ran %d times with PP=3, want 1", repair.CallCount())
+	}
+	if unpack.CallCount() != 1 {
+		t.Errorf("unpack ran %d times with PP=3, want 1", unpack.CallCount())
+	}
+	if finalize.CallCount() != 1 {
+		t.Errorf("finalize ran %d times with PP=3, want 1", finalize.CallCount())
+	}
+}
+
+func TestShouldSkipForPP(t *testing.T) {
+	tests := []struct {
+		stage string
+		pp    int
+		want  bool
+	}{
+		{"quickcheck", 0, true},
+		{"quickcheck", 1, false},
+		{"repair", 0, true},
+		{"repair", 1, false},
+		{"repair", 2, false},
+		{"unpack", 0, true},
+		{"unpack", 1, true},
+		{"unpack", 2, false},
+		{"unpack", 3, false},
+		{"finalize", 0, false},
+		{"script", 0, false},
+		{"deobfuscate", 0, false},
+		{"sort", 0, false},
+	}
+	for _, tt := range tests {
+		got := shouldSkipForPP(tt.stage, tt.pp)
+		if got != tt.want {
+			t.Errorf("shouldSkipForPP(%q, %d) = %v, want %v", tt.stage, tt.pp, got, tt.want)
+		}
 	}
 }
