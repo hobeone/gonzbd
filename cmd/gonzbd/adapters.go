@@ -27,6 +27,7 @@ import (
 // the application orchestrator to handle duplicate detection and collisions.
 type ingestHandler struct {
 	app    *app.Application
+	config *config.Config
 	logger *slog.Logger
 }
 
@@ -35,7 +36,7 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 	if err != nil {
 		return "", fmt.Errorf("parse nzb %q: %w", filename, err)
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{
+	addOpts := queue.AddOptions{
 		Filename: filename,
 		Name:     opts.NzbName,
 		Category: opts.Category,
@@ -43,7 +44,15 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 		PP:       opts.PP,
 		Script:   opts.Script,
 		Priority: opts.Priority,
-	}, fsutil.SanitizeOptions{})
+	}
+	sOpts := fsutil.SanitizeOptions{}
+	if h.config != nil {
+		h.config.WithRead(func(cfg *config.Config) {
+			sOpts = cfg.Downloads.SanitizeOptions()
+			addOpts.Categories = cfg.Categories
+		})
+	}
+	job, err := queue.NewJob(parsed, addOpts, sOpts)
 	if err != nil {
 		return "", fmt.Errorf("create job %q: %w", filename, err)
 	}
@@ -68,7 +77,7 @@ type rssToURLHandler struct {
 func (h *rssToURLHandler) HandleItem(ctx context.Context, item rss.Item, feed *rss.Feed) error {
 	log := h.logger.With("component", "rss_adapter")
 	log.Info("rss dispatch", "feed", feed.Name, "title", item.Title, "url", item.URL)
-	_, err := h.grabber.Fetch(ctx, item.URL, types.FetchOptions{})
+	_, err := h.grabber.Fetch(ctx, item.URL, types.FetchOptions{PP: types.PPInherit})
 	return err
 }
 
