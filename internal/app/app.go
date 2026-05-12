@@ -22,6 +22,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/downloader"
@@ -81,6 +82,9 @@ type Config struct {
 	Prefer7zip           bool
 	CleanupExtensions    []string
 	FolderRename         bool
+	Nice                 string
+	Ionice               string
+	Permissions          string
 
 	// ScriptStage metadata injected into SAB_* env vars.
 	Version    string
@@ -287,9 +291,12 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		qcStage.Log = ppLog
 		stageList = append(stageList, qcStage)
 
+		// Build nice/ionice wrapping config for all external tool commands.
+		cmdCfg := cmdutil.CmdConfig{Nice: cfg.Nice, Ionice: cfg.Ionice}
+
 		// Repair stage: configurable par2 binary, turbo mode, and cleanup.
 		repairStage := postproc.NewRepairStageWith(
-			par2.RunOptions{Command: cfg.Par2Command, Turbo: cfg.Par2Turbo},
+			par2.RunOptions{Command: cfg.Par2Command, Turbo: cfg.Par2Turbo, CmdCfg: cmdCfg},
 			cfg.EnableParCleanup,
 		)
 		repairStage.Log = ppLog
@@ -304,7 +311,9 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				IgnoreUnrarDates: cfg.IgnoreUnrarDates,
 				OneFolder:        cfg.FlatUnpack,
 				Prefer7zip:       cfg.Prefer7zip,
+				CmdCfg:           cmdCfg,
 			}, cfg.EnableRarCleanup)
+			unpackStage.Permissions = cfg.Permissions
 			unpackStage.Log = ppLog
 			stageList = append(stageList, unpackStage)
 		}

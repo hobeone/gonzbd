@@ -222,6 +222,26 @@ postproc:
   # job name as a base. Helps media scanners identify content.
   deobfuscate_filenames: true
 
+  # Arguments for nice(1), prepended to all external tool commands
+  # (unrar, 7z, par2). Reduces CPU scheduling priority to keep the
+  # system responsive during post-processing. Recommended: "-n 15".
+  # Matches SABnzbd's cfg.nice(). Empty disables nice wrapping.
+  nice: ""
+
+  # Arguments for ionice(1), prepended to all external tool commands.
+  # Reduces I/O scheduling priority. Recommended: "-c2 -n4"
+  # (best-effort class, priority 4). Only effective on Linux with
+  # CFQ or BFQ I/O schedulers.
+  # Matches SABnzbd's cfg.ionice(). Empty disables ionice wrapping.
+  ionice: ""
+
+  # Octal permission string applied recursively to extracted files
+  # after successful unpacking. Directories receive the full mode;
+  # regular files have execute bits stripped (e.g. "755" gives
+  # dirs 0755, files 0644). Matches SABnzbd's cfg.permissions().
+  # Empty disables permission setting.
+  permissions: ""
+
 servers:
   # Each server entry defines an NNTP news server connection.
   # Multiple servers can be configured for redundancy and fill.
