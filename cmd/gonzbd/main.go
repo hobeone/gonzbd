@@ -279,6 +279,9 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		Nice:                 cfg.PostProc.Nice,
 		Ionice:               cfg.PostProc.Ionice,
 		Permissions:          cfg.PostProc.Permissions,
+		PasswordFile:         cfg.PostProc.PasswordFile,
+		ExtraUnrarParams:     cfg.PostProc.ExtraUnrarParams,
+		ExtraPar2Params:      cfg.PostProc.ExtraPar2Params,
 
 		Version:    Version,
 		APIKey:     cfg.General.APIKey,

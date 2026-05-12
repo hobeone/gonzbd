@@ -112,3 +112,20 @@ func splitFields(s string) []string {
 	}
 	return strings.Fields(s)
 }
+
+// ParseExtraParams splits a whitespace-delimited parameter string into
+// individual args. Each arg must start with '-' (validated). Returns nil
+// for empty input. This validates user-supplied extra_unrar_params and
+// extra_par2_params config values.
+func ParseExtraParams(params string) ([]string, error) {
+	if strings.TrimSpace(params) == "" {
+		return nil, nil
+	}
+	args := strings.Fields(params)
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			return nil, fmt.Errorf("extra parameter %q does not start with '-'", a)
+		}
+	}
+	return args, nil
+}
