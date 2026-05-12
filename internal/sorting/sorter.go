@@ -79,6 +79,7 @@ func Apply(
 ) (ApplyResult, error) {
 	log = log.With("component", "sorting")
 	info := Parse(jobName)
+	info.OriginalJobName = jobName // for %dn template token
 	if info.Title == "" {
 		info.Title = jobName
 	}

@@ -172,6 +172,35 @@ func TestParse(t *testing.T) {
 			wantSeason: 1,
 			wantEp:     1,
 		},
+
+		// M15: Suspicious movie rejection — bare year + no quality/resolution → unknown
+		{
+			name:     "M15 setup.exe with year → unknown",
+			input:    "setup.2024",
+			wantType: sorting.UnknownMedia,
+			wantYear: 2024,
+		},
+		{
+			name:     "M15 password.txt with year → unknown",
+			input:    "password.2023",
+			wantType: sorting.UnknownMedia,
+			wantYear: 2023,
+		},
+		{
+			name:      "M15 real movie with resolution → movie",
+			input:     "Blade.Runner.2049.1080p",
+			wantType:  sorting.MovieMedia,
+			wantTitle: "Blade Runner",
+			wantYear:  2049,
+			wantRes:   "1080p",
+		},
+		{
+			name:      "M15 real movie with quality tag → movie",
+			input:     "Blade.Runner.2049.BluRay",
+			wantType:  sorting.MovieMedia,
+			wantTitle: "Blade Runner",
+			wantYear:  2049,
+		},
 	}
 
 	for _, tc := range cases {
@@ -213,15 +242,16 @@ func TestExpandTemplate(t *testing.T) {
 	t.Parallel()
 
 	info := sorting.MediaInfo{
-		Type:        sorting.TVMedia,
-		Title:       "The Good Place",
-		Year:        2016,
-		Season:      1,
-		Episode:     4,
-		EpisodeName: "Jason Mendoza",
-		Month:       3,
-		Day:         7,
-		Resolution:  "1080p",
+		Type:            sorting.TVMedia,
+		Title:           "The Good Place",
+		Year:            2016,
+		Season:          1,
+		Episode:         4,
+		EpisodeName:     "Jason Mendoza",
+		Month:           3,
+		Day:             7,
+		Resolution:      "1080p",
+		OriginalJobName: "The.Good.Place.S01E04.Jason.Mendoza.1080p.BluRay",
 	}
 
 	cases := []struct {
@@ -255,6 +285,19 @@ func TestExpandTemplate(t *testing.T) {
 		{"unknown token preserved", "%z remains", "", "%z remains"},
 		{"full TV path", "TV/%t/Season %0s/%t S%0sE%0e %en.%ext", ".mkv",
 			"TV/The Good Place/Season 01/The Good Place S01E04 Jason Mendoza.mkv"},
+
+		// M14: New template tokens
+		{"title long-form", "%title", "", "The Good Place"},
+		{"title long-form dot", "%.title", "", "The.Good.Place"},
+		{"title long-form underscore", "%_title", "", "The_Good_Place"},
+		{"sN alias", "%sN", "", "The Good Place"},
+		{"s.N alias", "%s.N", "", "The.Good.Place"},
+		{"s_N alias", "%s_N", "", "The_Good_Place"},
+		{"year long-form", "%year", "", "2016"},
+		{"0decade", "%0decade", "", "2010"},
+		{"dn original job name", "%dn", "", "The.Good.Place.S01E04.Jason.Mendoza.1080p.BluRay"},
+		{"lowercase braces", "{%title}", "", "the good place"},
+		{"lowercase braces mixed", "TV/{%title}/Season %0s", "", "TV/the good place/Season 01"},
 	}
 
 	for _, tc := range cases {
