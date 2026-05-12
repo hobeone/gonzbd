@@ -5,9 +5,20 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import { pauseJob, resumeJob } from '$lib/stores/queue.svelte';
-	import { fetchQueueJobDetail } from '$lib/api';
+	import { fetchQueueJobDetail, postAction } from '$lib/api';
 	import { subscribeWS } from '$lib/stores/websocket.svelte';
 	import { cn, formatSize as formatBytes, formatETA } from '$lib/utils';
+
+	const PP_LABELS: Record<string, string> = {
+		'0': 'Download',
+		'1': '+Repair',
+		'2': '+Unpack',
+		'3': '+Delete',
+	};
+
+	function ppLabel(pp: string): string {
+		return PP_LABELS[pp] ?? `PP${pp}`;
+	}
 
 	let { slot, onremove }: { slot: QueueSlot; onremove: () => void } = $props();
 
@@ -206,6 +217,16 @@
 		}
 	}
 
+	async function changePP(e: Event) {
+		const newPP = (e.target as HTMLSelectElement).value;
+		try {
+			await postAction('queue', { name: 'change_opts', value: slot.nzo_id, value2: newPP });
+			slot.pp = newPP;
+		} catch (err) {
+			console.error('Failed to change PP:', err);
+		}
+	}
+
 	/** Health indicator: can par2 cover the damage? */
 	function healthLabel(): { text: string; color: string } {
 		if (slot.failed_bytes === 0) return { text: 'Healthy', color: 'text-emerald-600 dark:text-emerald-400' };
@@ -370,6 +391,22 @@
 				<div>
 					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Downloaded</span>
 					<div class="font-medium">{formatBytes(slot.bytes - slot.remaining_bytes)} of {slot.size}</div>
+				</div>
+				<div>
+					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Processing</span>
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div onclick={(e: MouseEvent) => e.stopPropagation()}>
+						<select
+							value={slot.pp}
+							onchange={changePP}
+							class="h-7 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+							title="Post-processing level: 0=Download, 1=+Repair, 2=+Unpack, 3=+Delete"
+						>
+							{#each Object.entries(PP_LABELS) as [val, label] (val)}
+								<option value={val}>{label}</option>
+							{/each}
+						</select>
+					</div>
 				</div>
 				{#if isActive}
 					<div>
