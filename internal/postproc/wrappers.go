@@ -755,8 +755,17 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		scriptPath = filepath.Join(s.ScriptDir, name)
 	}
 
+	// SABnzbd script status codes (§6.5):
+	// 0 = success, 1 = repair failed, 2 = unpack failed, 3 = both failed
 	status := 0
-	if job.ParError || job.UnpackError || job.FailMsg != "" {
+	if job.ParError {
+		status |= 1 // bit 0: repair failure
+	}
+	if job.UnpackError {
+		status |= 2 // bit 1: unpack failure
+	}
+	// A general failure message without specific par/unpack flag → status 1
+	if status == 0 && job.FailMsg != "" {
 		status = 1
 	}
 

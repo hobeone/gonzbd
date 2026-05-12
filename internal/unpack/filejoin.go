@@ -53,8 +53,11 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	outFile, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666) //nolint:gosec // outPath is constructed from caller-supplied outDir and archive.Name
 	if err != nil {
 		if os.IsExist(err) {
-			return Result{Err: fmt.Errorf("filejoin: output file already exists: %s", outPath)},
-				fmt.Errorf("filejoin: output file already exists: %s", outPath)
+			// Output already exists — treat as successful no-op (§8.1).
+			// This handles re-runs after a crash where the join completed
+			// but source cleanup didn't finish.
+			log.Info("filejoin: output already exists, skipping join", "outPath", outPath)
+			return Result{ExtractedFiles: []string{outPath}}, nil
 		}
 		return Result{Err: err}, fmt.Errorf("filejoin: create output: %w", err)
 	}
