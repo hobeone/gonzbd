@@ -1,6 +1,31 @@
 package config
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/hobeone/gonzbd/internal/constants"
+)
+
+// BuiltinDefaultCategory returns the hardcoded baseline category used
+// when no Default / "*" / explicit match is found in the loaded config.
+//
+// It exists so that broken or partial configs never silently disable
+// post-processing: returning a zero CategoryConfig{} would set PP=0
+// (download only) and skip Repair/Unpack/Delete, which is almost never
+// what the user intends. PP=3 (Repair + Unpack) matches the value
+// seeded by Default() when a brand-new config is created.
+//
+// Treat the return as immutable; callers must not mutate the returned
+// struct since it is by-value and any mutation would only affect the
+// caller's copy.
+func BuiltinDefaultCategory() CategoryConfig {
+	return CategoryConfig{
+		Name:     "Default",
+		PP:       3, // Repair + Unpack
+		Script:   "None",
+		Priority: int(constants.NormalPriority),
+	}
+}
 
 // CategoryConfig is a per-category override bundle. Jobs added under a
 // category inherit that category's defaults for priority, post-processing
@@ -33,11 +58,14 @@ type CategoryConfig struct {
 }
 
 // FindCategory looks up the CategoryConfig for the given name. If name
-// is empty or not found, it falls back to "Default", then "*". Name
+// is empty or not found, it falls back to "Default", then "*", and
+// finally to BuiltinDefaultCategory() if neither fallback exists. Name
 // matching is case-insensitive: a job tagged "tv" matches a config
 // entry named "TV", and the "Default" / "*" fallbacks match regardless
-// of casing in the YAML. Returns a zero CategoryConfig if no
-// categories are defined at all.
+// of casing in the YAML.
+//
+// FindCategory never returns a zero-value CategoryConfig — callers can
+// rely on the returned PP/Script/Priority being meaningful values.
 func FindCategory(cats []CategoryConfig, name string) CategoryConfig {
 	var defaultCat, starCat CategoryConfig
 	var foundDefault, foundStar bool
@@ -60,5 +88,5 @@ func FindCategory(cats []CategoryConfig, name string) CategoryConfig {
 	if foundStar {
 		return starCat
 	}
-	return CategoryConfig{}
+	return BuiltinDefaultCategory()
 }
