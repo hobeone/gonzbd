@@ -44,6 +44,10 @@ type Options struct {
 	// Prefer7zip uses 7z instead of unrar for RAR extraction even when
 	// unrar is available. 7z often handles edge-case RARs more reliably.
 	Prefer7zip bool
+	// CmdCfg controls nice/ionice process priority wrapping for the
+	// extraction subprocess. When non-empty, the command is prepended
+	// with nice and/or ionice. Matches SABnzbd's cfg.nice/cfg.ionice.
+	CmdCfg cmdutil.CmdConfig
 	// OnLine is called for each line of subprocess output. May be nil.
 	OnLine func(string) `json:"-"`
 	// OnCommand is called once per subprocess invocation, just before
@@ -144,7 +148,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 		opts.OnCommand(cmdLine)
 	}
 
-	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // args are caller-supplied, not shell-expanded
+	cmd := cmdutil.BuildCommand(ctx, opts.CmdCfg, bin, args...) //nolint:gosec // args are caller-supplied, not shell-expanded
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer

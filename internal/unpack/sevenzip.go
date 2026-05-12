@@ -108,7 +108,7 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 		opts.OnCommand(cmdLine)
 	}
 
-	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // bin and args are caller-supplied, not shell-expanded
+	cmd := cmdutil.BuildCommand(ctx, opts.CmdCfg, bin, args...) //nolint:gosec // bin and args are caller-supplied, not shell-expanded
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
