@@ -98,6 +98,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 			assembledFiles = append(assembledFiles, par2.AssembledFile{
 				FileName: jf.Subject,
 				CRC32:    jf.AssembledCRC32,
+				FileSize: jf.Bytes,
 			})
 		}
 
