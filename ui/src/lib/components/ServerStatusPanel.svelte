@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { fetchServerStats } from '$lib/api';
-	import type { ServerSnapshot, ConnSnapshot } from '$lib/types';
+	import { fetchServerStats, fetchConfig, setConfig } from '$lib/api';
+	import type { ServerSnapshot, ConnSnapshot, ServerConfig } from '$lib/types';
 	import { formatSize as formatBytes, formatSpeed as formatBps } from '$lib/utils';
 	import { onDestroy } from 'svelte';
+	import ServerEditDialog from './config/ServerEditDialog.svelte';
 
 	let {
 		open = $bindable(false)
@@ -15,6 +16,57 @@
 	let error = $state('');
 	let expandedServers = $state<Set<string>>(new Set());
 	let intervalId: ReturnType<typeof setInterval> | undefined;
+
+	let editOpen = $state(false);
+	let editServer = $state<ServerConfig | null>(null);
+	let allServerConfigs = $state<ServerConfig[]>([]);
+	let editLoadingFor = $state<string | null>(null);
+
+	async function openServerSettings(name: string) {
+		editLoadingFor = name;
+		try {
+			const cfg = await fetchConfig();
+			const list: ServerConfig[] = cfg.config?.servers ?? [];
+			allServerConfigs = list;
+			const match = list.find((s) => s.name === name) ?? null;
+			if (match) {
+				editServer = match;
+				editOpen = true;
+			} else {
+				error = `Server "${name}" not found in config`;
+			}
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to load server config';
+		} finally {
+			editLoadingFor = null;
+		}
+	}
+
+	async function saveServer(updated: ServerConfig, originalName?: string) {
+		const lookup = originalName || updated.name;
+		const next = [...allServerConfigs];
+		const idx = next.findIndex((s) => s.name === lookup);
+		if (idx === -1) next.push(updated);
+		else next[idx] = updated;
+		try {
+			await setConfig('servers', '', JSON.stringify(next));
+			allServerConfigs = next;
+			await loadData();
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to save server';
+		}
+	}
+
+	async function deleteServer(name: string) {
+		const next = allServerConfigs.filter((s) => s.name !== name);
+		try {
+			await setConfig('servers', '', JSON.stringify(next));
+			allServerConfigs = next;
+			await loadData();
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to delete server';
+		}
+	}
 
 	function startPolling() {
 		loadData();
@@ -150,9 +202,10 @@
 
 				<div class="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
 					<!-- Server header -->
+					<div class="flex items-stretch hover:bg-gray-50 dark:hover:bg-gray-800/50">
 					<button
 						onclick={() => toggleExpanded(server.name)}
-						class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50"
+						class="flex flex-1 min-w-0 items-center gap-3 px-4 py-3 text-left"
 					>
 						<!-- Status dot -->
 						<div class="flex-shrink-0">
@@ -202,6 +255,27 @@
 							<path fill-rule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" />
 						</svg>
 					</button>
+
+					<!-- Settings (gear) button -->
+					<button
+						onclick={() => openServerSettings(server.name)}
+						disabled={editLoadingFor === server.name}
+						title="Server settings"
+						aria-label="Edit {server.name} settings"
+						class="flex flex-shrink-0 items-center justify-center px-3 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-50"
+					>
+						{#if editLoadingFor === server.name}
+							<svg class="size-4 animate-spin" viewBox="0 0 24 24" fill="none">
+								<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+								<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+							</svg>
+						{:else}
+							<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-4">
+								<path fill-rule="evenodd" d="M7.84 1.804A1 1 0 0 1 8.82 1h2.36a1 1 0 0 1 .98.804l.331 1.652a6.993 6.993 0 0 1 1.929 1.115l1.598-.54a1 1 0 0 1 1.186.447l1.18 2.044a1 1 0 0 1-.205 1.251l-1.267 1.113a7.047 7.047 0 0 1 0 2.228l1.267 1.113a1 1 0 0 1 .206 1.25l-1.18 2.045a1 1 0 0 1-1.187.447l-1.598-.54a6.993 6.993 0 0 1-1.929 1.115l-.33 1.652a1 1 0 0 1-.98.804H8.82a1 1 0 0 1-.98-.804l-.331-1.652a6.993 6.993 0 0 1-1.929-1.115l-1.598.54a1 1 0 0 1-1.186-.447l-1.18-2.044a1 1 0 0 1 .205-1.251l1.267-1.114a7.05 7.05 0 0 1 0-2.227L1.821 7.773a1 1 0 0 1-.206-1.25l1.18-2.045a1 1 0 0 1 1.187-.447l1.598.54A6.992 6.992 0 0 1 7.51 3.456l.33-1.652ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" clip-rule="evenodd" />
+							</svg>
+						{/if}
+					</button>
+					</div>
 
 					<!-- Speed proportion bar -->
 					{#if server.enabled && aggrBps > 0}
@@ -291,4 +365,11 @@
 			Auto-refreshing every 2s
 		</div>
 	</div>
+
+	<ServerEditDialog
+		bind:open={editOpen}
+		server={editServer}
+		onsave={saveServer}
+		ondelete={deleteServer}
+	/>
 {/if}
