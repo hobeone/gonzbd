@@ -32,15 +32,16 @@ const (
 // MediaInfo holds parsed metadata extracted from a release name. Fields are
 // best-effort: zero values mean "not detected."
 type MediaInfo struct {
-	Type        MediaType
-	Title       string
-	Year        int    // e.g. 2024
-	Season      int    // e.g. 1 for S01E02
-	Episode     int    // e.g. 2 for S01E02
-	EpisodeName string // e.g. "Pilot" from "Show.S01E01.Pilot.1080p"
-	Month       int    // DatedMedia only
-	Day         int    // DatedMedia only
-	Resolution  string // e.g. "1080p"
+	Type            MediaType
+	Title           string
+	Year            int    // e.g. 2024
+	Season          int    // e.g. 1 for S01E02
+	Episode         int    // e.g. 2 for S01E02
+	EpisodeName     string // e.g. "Pilot" from "Show.S01E01.Pilot.1080p"
+	Month           int    // DatedMedia only
+	Day             int    // DatedMedia only
+	Resolution      string // e.g. "1080p"
+	OriginalJobName string // verbatim job name for %dn token
 }
 
 // Compiled regexes used by Parse.
@@ -178,6 +179,15 @@ func Parse(name string) MediaInfo {
 		if fixApplied {
 			info.Title = strings.TrimPrefix(info.Title, "FIX ")
 		}
+
+		// M15: Guard against false movie classification. SABnzbd downgrades
+		// to "unknown" when the name lacks typical movie indicators (resolution,
+		// quality tag) beyond just a bare year. This catches "setup.2024.exe",
+		// "password.2023.txt", etc.
+		if info.Resolution == "" && !reQuality.MatchString(name) {
+			info.Type = UnknownMedia
+		}
+
 		return info
 	}
 
