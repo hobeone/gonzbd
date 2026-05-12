@@ -204,8 +204,9 @@ postproc:
   # par2 binary. Enables multi-threaded repair.
   par2_turbo: false
 
-  # Discard in-archive timestamps during extraction. Files will use
-  # the extraction time instead of the original creation date.
+  # Discard in-archive modification timestamps during extraction (passes
+  # -tsm- to unrar). Files will use the extraction time instead of the
+  # original modification date.
   ignore_unrar_dates: false
 
   # Allow extraction to overwrite existing files in the destination.
