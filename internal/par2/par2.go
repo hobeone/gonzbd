@@ -99,6 +99,9 @@ type RunOptions struct {
 	// CmdCfg controls nice/ionice process priority wrapping.
 	// Matches SABnzbd's cfg.nice/cfg.ionice.
 	CmdCfg cmdutil.CmdConfig
+	// ExtraArgs holds additional user-specified command-line arguments
+	// appended to every par2 invocation. Pre-validated at config load.
+	ExtraArgs []string
 	// OnLine is called for each line of output from the par2 subprocess.
 	// May be nil.
 	OnLine func(string) `json:"-"`
@@ -246,6 +249,7 @@ func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	if opts.Turbo {
 		args = append(args, "-t+")
 	}
+	args = append(args, opts.ExtraArgs...)
 	args = append(args, parfile)
 	args = append(args, extraFiles...)
 
@@ -299,6 +303,7 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	if opts.Turbo {
 		args = append(args, "-t+")
 	}
+	args = append(args, opts.ExtraArgs...)
 	args = append(args, parfile)
 	args = append(args, extraFiles...)
 

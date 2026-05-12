@@ -51,6 +51,9 @@ postproc:
   nice: ""
   ionice: ""
   permissions: ""
+  password_file: ""
+  extra_unrar_params: ""
+  extra_par2_params: ""
 
 servers:
   - name: primary

@@ -80,4 +80,23 @@ type PostProcConfig struct {
 	// stripped (e.g. "755" → dirs=0755, files=0644).
 	// Matches SABnzbd's cfg.permissions(). Empty disables chmod.
 	Permissions string `yaml:"permissions" json:"permissions"`
+
+	// PasswordFile is the path to a text file containing one password per
+	// line. Blank lines and lines starting with # are skipped.
+	// These passwords are appended after per-job passwords and tried in
+	// order during extraction. Matches SABnzbd's cfg.password_file().
+	// A warning is logged if the file contains >30 passwords.
+	PasswordFile string `yaml:"password_file" json:"password_file"`
+
+	// ExtraUnrarParams holds additional command-line arguments appended to
+	// every unrar invocation. Validated at startup — only flags starting
+	// with '-' are allowed. Example: "-sl100000" (skip files >100KB).
+	// Matches SABnzbd's extra unrar parameters concept.
+	ExtraUnrarParams string `yaml:"extra_unrar_params" json:"extra_unrar_params"`
+
+	// ExtraPar2Params holds additional command-line arguments appended to
+	// every par2 invocation. Validated at startup — only flags starting
+	// with '-' are allowed. Example: "-m512" (limit memory to 512MB).
+	// Matches SABnzbd's cfg.extra_par2_parameters().
+	ExtraPar2Params string `yaml:"extra_par2_params" json:"extra_par2_params"`
 }
