@@ -58,12 +58,17 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 	}
 
 	log := h.logger.With("component", "ingest")
+	catSummary := make([]string, 0, len(addOpts.Categories))
+	for _, c := range addOpts.Categories {
+		catSummary = append(catSummary, fmt.Sprintf("%q(pp=%d)", c.Name, c.PP))
+	}
 	log.Info("resolved job pp",
 		"filename", filename,
 		"category", job.Category,
 		"opts_pp", opts.PP,
 		"resolved_pp", job.PP,
 		"categories_loaded", len(addOpts.Categories),
+		"categories", strings.Join(catSummary, ","),
 	)
 	log.Debug("processing nzb", "filename", filename, "md5", job.MD5)
 
