@@ -224,6 +224,13 @@ type JobFile struct {
 	// Complete is set once all articles have downloaded and the file
 	// has been assembled on disk.
 	Complete bool `json:"complete,omitempty"`
+	// AssembledCRC32 is the CRC32 computed by the assembler over the
+	// fully-written file, derived by combining per-article yEnc CRCs
+	// in offset order. Used by the QuickCheck post-processing stage
+	// to verify file integrity against par2 file hashes without
+	// re-reading the file from disk. Zero if unavailable (e.g. the
+	// file contained UU-encoded or failed articles).
+	AssembledCRC32 uint32 `json:"assembled_crc32,omitempty"`
 	// Pending is the count of articles in this file that are not Done
 	// and not Emitted. Maintained by queue mutation methods; recomputed
 	// on load. Allows ForEachUnfinishedArticle to skip completed files
