@@ -117,9 +117,20 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 								f.FileName, f.AssembledCRC, f.Par2CRC))
 					}
 				}
+			} else if crcResult.Skipped > 0 {
+				// Some files could not be verified (name mismatch between
+				// NZB subject and par2 manifest, no assembled CRC, etc).
+				// Do NOT set QuickCheckPassed — we must run par2 verify
+				// to catch corruption in unverified files.
+				logf(log, job, slog.LevelInfo,
+					"quickcheck: %d/%d verified files have matching CRCs, but %d file(s) could not be verified — par2 repair will run",
+					crcResult.Matched, crcResult.Checked, crcResult.Skipped)
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("[quickcheck] CRC verification: %d matched, %d skipped — par2 verify required",
+						crcResult.Matched, crcResult.Skipped))
 			} else {
 				logf(log, job, slog.LevelInfo,
-					"quickcheck: all %d verified files have matching CRCs", crcResult.Matched)
+					"quickcheck: all %d verified files have matching CRCs — par2 repair can be skipped", crcResult.Matched)
 				job.QuickCheckPassed = true
 			}
 		} else if crcResult.Skipped > 0 {
