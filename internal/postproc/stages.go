@@ -76,6 +76,11 @@ type Job struct {
 	// operations (par2 volumes, joinable split files). Extension cleanup
 	// skips these to prevent deletion of files needed for recovery.
 	ConsumedFiles map[string]struct{}
+
+	// OnOutput is called by stages when a subprocess emits a line of output.
+	// The tool parameter identifies the source (e.g. "par2", "unrar", "7z",
+	// "script"). May be nil (output is still captured in OutputLines).
+	OnOutput func(tool, line string) `json:"-"`
 }
 
 // StageLogEntry records the outcome of a single stage execution.

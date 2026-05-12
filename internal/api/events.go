@@ -20,6 +20,9 @@ type Event struct {
 	BandwidthMax  int64  `json:"bandwidth_max"`
 	BandwidthPerc int    `json:"bandwidth_perc"`
 	NzoID         string `json:"nzo_id,omitempty"`
+	Tool          string `json:"tool,omitempty"`  // subprocess tool name (par2, unrar, 7z, script)
+	Line          string `json:"line,omitempty"`  // single output line from subprocess
+	Stage         string `json:"stage,omitempty"` // pipeline stage name (repair, unpack)
 }
 
 // Broadcaster manages active WebSocket connections and distributes events.

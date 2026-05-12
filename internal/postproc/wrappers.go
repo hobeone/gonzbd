@@ -217,7 +217,13 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				par2Bin = "par2"
 			}
 			logf(log, job, slog.LevelInfo, "Running: %s r %s (+%d data files)", par2Bin, filepath.Base(main), len(dataFiles))
-			res, err := par2.RepairWith(ctx, s.Par2Opts, main, dataFiles...)
+			repairOpts := s.Par2Opts
+			repairOpts.OnLine = func(line string) {
+				if job.OnOutput != nil {
+					job.OnOutput("par2", line)
+				}
+			}
+			res, err := par2.RepairWith(ctx, repairOpts, main, dataFiles...)
 			// Capture par2 tool output for the stage log.
 			if res.Output != "" {
 				job.OutputLines = append(job.OutputLines,
@@ -405,6 +411,11 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 
 	// Merge config-level options with per-job password.
 	opts := u.BaseOpts
+	opts.OnLine = func(line string) {
+		if job.OnOutput != nil {
+			job.OnOutput("unpack", line)
+		}
+	}
 	// Build the password list: per-job password comes first (highest priority),
 	// followed by any config-level global passwords (future: add to Passwords
 	// field). The single Password field is used as a fallback.
@@ -477,19 +488,37 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 					logf(log, job, slog.LevelInfo, "Using 7z for RAR (prefer_7zip=true)")
 				}
 				if use7z {
+					szOpts := opts
+					szOpts.OnLine = func(line string) {
+						if job.OnOutput != nil {
+							job.OnOutput("7z", line)
+						}
+					}
 					logf(log, job, slog.LevelInfo, "Running: 7z x %s", filepath.Base(a.MainFile))
-					res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, opts)
+					res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
 				} else {
 					unrarBin := opts.UnrarCommand
 					if unrarBin == "" {
 						unrarBin = "unrar"
 					}
+					unrarOpts := opts
+					unrarOpts.OnLine = func(line string) {
+						if job.OnOutput != nil {
+							job.OnOutput("unrar", line)
+						}
+					}
 					logf(log, job, slog.LevelInfo, "Running: %s x %s", unrarBin, filepath.Base(a.MainFile))
-					res, err = unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, opts)
+					res, err = unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
 				}
 			case unpack.SevenZipArchive:
+				szOpts := opts
+				szOpts.OnLine = func(line string) {
+					if job.OnOutput != nil {
+						job.OnOutput("7z", line)
+					}
+				}
 				logf(log, job, slog.LevelInfo, "Running: 7z x %s", filepath.Base(a.MainFile))
-				res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, opts)
+				res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
 			case unpack.SplitArchive:
 				logf(log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
 				res, err = unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
@@ -862,6 +891,11 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		APIKey:      s.APIKey,
 		APIURL:      s.APIURL,
 		Bytes:       job.Queue.TotalBytes,
+		OnLine: func(line string) {
+			if job.OnOutput != nil {
+				job.OnOutput("script", line)
+			}
+		},
 	}
 	logf(log, job, slog.LevelInfo, "Script env: dir=%s, category=%s, status=%d, job=%s",
 		in.FinalDir, in.Category, in.Status, in.JobName)

@@ -124,6 +124,9 @@ type Event struct {
 	// NzoID is set on per-job events (currently job_finalized) so clients
 	// can target a specific row without a full refetch.
 	NzoID string `json:"nzo_id,omitempty"`
+	Tool  string `json:"tool,omitempty"`  // subprocess tool name (par2, unrar, 7z, script)
+	Line  string `json:"line,omitempty"`  // single output line from subprocess
+	Stage string `json:"stage,omitempty"` // pipeline stage name (repair, unpack)
 }
 
 type dummyEmitter struct{}
@@ -369,6 +372,14 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		Stages: stages,
 		StatusUpdater: func(jobID string, status constants.Status) {
 			_ = q.SetStatus(jobID, status)
+		},
+		OnOutput: func(jobID, tool, line string) {
+			app.emitter.Broadcast(Event{
+				Type:  "postproc_output",
+				NzoID: jobID,
+				Tool:  tool,
+				Line:  line,
+			})
 		},
 		OnJobDone: func(job *postproc.Job) {
 			stageLogJSON, _ := json.Marshal(job.StageLog)
