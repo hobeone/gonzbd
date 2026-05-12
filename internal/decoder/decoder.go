@@ -28,9 +28,10 @@ var (
 	// errMalformed is returned when the header or trailer is structurally invalid.
 	errMalformed = errors.New("decoder: malformed yEnc article")
 
-	// errCRCMismatch is returned when the decoded data's CRC32 disagrees with
-	// the value declared in the =yend trailer.
-	errCRCMismatch = errors.New("decoder: CRC mismatch")
+	// ErrCRCMismatch is returned when the decoded data's CRC32 disagrees with
+	// the value declared in the =yend trailer. This error is retryable: the
+	// downloader should try fetching from an alternate server before giving up.
+	ErrCRCMismatch = errors.New("decoder: CRC mismatch")
 
 	// errMissingTrailer is returned when no =yend line is found.
 	errMissingTrailer = errors.New("decoder: missing =yend trailer")
@@ -93,7 +94,7 @@ type Article struct {
 // DecodeArticle decodes a yEnc-encoded NNTP article body. body is the raw
 // response body with dot-stuffing already removed by the NNTP layer.
 //
-// Returns errCRCMismatch if the trailer declares a CRC that disagrees with
+// Returns ErrCRCMismatch if the trailer declares a CRC that disagrees with
 // the decoded data, errSizeMismatch if the declared part size does not match
 // the decoded length, and errMissingTrailer / errMalformed / ErrNotYEnc on
 // structural problems.
@@ -157,7 +158,7 @@ func DecodeArticle(body []byte) (Article, error) {
 	}
 
 	if trailer.valid && computedCRC != trailer.crc {
-		return art, errCRCMismatch
+		return art, ErrCRCMismatch
 	}
 
 	return art, nil
