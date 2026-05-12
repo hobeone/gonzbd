@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -370,6 +371,32 @@ func (p *PostProcessor) processJob(job *Job) {
 			Lines:   []string{"Post-processing skipped: " + job.FailMsg},
 		})
 		return
+	}
+
+	// L11: Pre-check — skip processing when the download directory is
+	// empty or doesn't exist. Matches Python SABnzbd's Stage 1 pre-check
+	// (§6.2) which guards against no-op post-processing of empty jobs.
+	// The guard only fires when DownloadDir is set; stages that don't need
+	// a physical directory (unit tests, dry-run pipelines) leave it empty.
+	if job.DownloadDir != "" {
+		if entries, err := os.ReadDir(job.DownloadDir); err != nil || len(entries) == 0 {
+			reason := "download directory is empty"
+			if err != nil {
+				reason = fmt.Sprintf("download directory unavailable: %v", err)
+			}
+			job.FailMsg = reason
+			p.log.Warn("postproc: skipping all stages — empty job",
+				"job", job.Queue.ID,
+				"dir", job.DownloadDir,
+				"reason", reason,
+			)
+			job.StageLog = append(job.StageLog, StageLogEntry{
+				Stage:   "pre-check",
+				Started: time.Now(),
+				Lines:   []string{"Post-processing skipped: " + reason},
+			})
+			return
+		}
 	}
 
 	for _, stage := range p.stages {

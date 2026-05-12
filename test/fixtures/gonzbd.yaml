@@ -54,6 +54,7 @@ postproc:
   password_file: ""
   extra_unrar_params: ""
   extra_par2_params: ""
+  script_can_fail: false
 
 servers:
   - name: primary
