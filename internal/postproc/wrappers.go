@@ -388,7 +388,16 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	}
 	// Merge config-level options with per-job password.
 	opts := u.BaseOpts
-	opts.Password = job.Queue.Password
+	// Build the password list: per-job password comes first (highest priority),
+	// followed by any config-level global passwords (future: add to Passwords
+	// field). The single Password field is used as a fallback.
+	if job.Queue.Password != "" {
+		opts.Passwords = append([]string{job.Queue.Password}, opts.Passwords...)
+	}
+	opts.Password = "" // use Passwords list exclusively
+	if len(opts.Passwords) > 0 {
+		logf(log, job, slog.LevelInfo, "Will try %d password(s) for encrypted archives", len(opts.Passwords))
+	}
 	var firstErr error
 	// Track which archives extracted successfully for cleanup.
 	var successfulArchives []unpack.Archive
@@ -414,18 +423,18 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			}
 			if use7z {
 				logf(log, job, slog.LevelInfo, "Running: 7z x %s", filepath.Base(a.MainFile))
-				res, err = unpack.SevenZip(ctx, log, a, job.DownloadDir, opts)
+				res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, opts)
 			} else {
 				unrarBin := opts.UnrarCommand
 				if unrarBin == "" {
 					unrarBin = "unrar"
 				}
 				logf(log, job, slog.LevelInfo, "Running: %s x %s", unrarBin, filepath.Base(a.MainFile))
-				res, err = unpack.UnRAR(ctx, log, a, job.DownloadDir, opts)
+				res, err = unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, opts)
 			}
 		case unpack.SevenZipArchive:
 			logf(log, job, slog.LevelInfo, "Running: 7z x %s", filepath.Base(a.MainFile))
-			res, err = unpack.SevenZip(ctx, log, a, job.DownloadDir, opts)
+			res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, opts)
 		case unpack.SplitArchive:
 			logf(log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
 			res, err = unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)

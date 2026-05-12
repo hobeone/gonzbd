@@ -12,7 +12,13 @@ import (
 // Options controls how an extraction tool is invoked.
 type Options struct {
 	// Password is the archive password.  Empty means no password.
+	// Deprecated: use Passwords for multi-password iteration.
 	Password string
+	// Passwords is a prioritized list of passwords to try. When an
+	// extraction fails with a "wrong password" error, the next password
+	// in the list is tried. This implements SABnzbd's get_all_passwords()
+	// behavior. The single Password field is appended as a fallback.
+	Passwords []string
 	// OneFolder extracts all files flat into outDir (no path preservation).
 	// For unrar this selects the 'e' command; for 7zz it has no effect because
 	// 7zz 'x' is used unconditionally and path preservation is the default.
