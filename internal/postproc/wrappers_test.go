@@ -165,6 +165,21 @@ func TestUnpackStage_NoKnownArchives(t *testing.T) {
 	}
 }
 
+func TestRecoverPar2NamesStage_Name(t *testing.T) {
+	t.Parallel()
+	if got := (&RecoverPar2NamesStage{}).Name(); got != "recover_par2_names" {
+		t.Errorf("Name = %q; want %q", got, "recover_par2_names")
+	}
+}
+
+func TestRecoverPar2NamesStage_EmptyDir(t *testing.T) {
+	t.Parallel()
+	job, _ := stageJob(t)
+	if err := NewRecoverPar2NamesStage().Run(t.Context(), job); err != nil {
+		t.Fatalf("Run on empty dir: %v", err)
+	}
+}
+
 func TestDeobfuscateStage_Name(t *testing.T) {
 	t.Parallel()
 	if got := (&DeobfuscateStage{}).Name(); got != "deobfuscate" {
