@@ -27,8 +27,9 @@ type PostProcConfig struct {
 	// Par2Turbo selects par2cmdline-turbo invocation arguments when
 	// the binary supports them.
 	Par2Turbo bool `yaml:"par2_turbo" json:"par2_turbo"`
-	// IgnoreUnrarDates discards in-archive timestamps and uses the
-	// extraction time instead.
+	// IgnoreUnrarDates discards in-archive modification timestamps and
+	// uses the extraction time instead. Passes -tsm- to unrar (matches
+	// SABnzbd's behavior).
 	IgnoreUnrarDates bool `yaml:"ignore_unrar_dates" json:"ignore_unrar_dates"`
 	// OverwriteFiles allows extraction to clobber existing files in
 	// the destination.
