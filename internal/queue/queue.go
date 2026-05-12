@@ -580,6 +580,19 @@ func (q *Queue) TotalRemainingBytes() int64 {
 	return total
 }
 
+// CheckEarlyAbort checks whether the job should be aborted based on the
+// first-article failure rate heuristic. Returns true exactly once per
+// job when the threshold is exceeded.
+func (q *Queue) CheckEarlyAbort(jobID string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return false
+	}
+	return job.IsEarlyAbort()
+}
+
 // MarkArticleFailed marks an article as Done and increments the FailedBytes
 // count. It also decrements the remaining byte count of the job so that
 // hopeless jobs can be identified by comparing FailedBytes vs Par2Bytes.
@@ -607,6 +620,8 @@ func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
 		art.Failed = true
 		job.FailedBytes += int64(art.Bytes)
 		job.RemainingBytes -= int64(art.Bytes)
+		job.ArticlesResolved++
+		job.ArticlesFailed++
 		q.log.Warn("article marked FAILED", "msgid", messageID, "job", jobID, "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
 		q.dirty.Store(true)
 		return true, nil
@@ -653,6 +668,7 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 		}
 		art.Done = true
 		job.RemainingBytes -= int64(art.Bytes)
+		job.ArticlesResolved++
 		// Per-file progress: only count successful completions.
 		// MarkArticlesFailed sets Failed before reaching its own block,
 		// so this method's articles are by definition successful.
@@ -697,6 +713,8 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 		art.Failed = true
 		job.FailedBytes += int64(art.Bytes)
 		job.RemainingBytes -= int64(art.Bytes)
+		job.ArticlesResolved++
+		job.ArticlesFailed++
 		firstTime = append(firstTime, art.ID)
 	}
 	if len(firstTime) > 0 {

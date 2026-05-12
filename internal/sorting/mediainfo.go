@@ -54,6 +54,14 @@ var (
 	// reYear matches a standalone 4-digit year in the range 1900–2099.
 	reYear = regexp.MustCompile(`\b(19|20)(\d{2})\b`)
 
+	// reEpOnly matches episode-only patterns (no season), common in anime
+	// releases like "Show.E08.2160p". Requires a delimiter (or start) before E.
+	reEpOnly = regexp.MustCompile(`(?i)(?:^|[._\s])E(\d+)(?:[._\s]|$)`)
+
+	// reBareEp matches a standalone 3-digit number as season (first digit) +
+	// episode (last two digits), e.g. "817" → S08E17. Common in scene naming.
+	reBareEp = regexp.MustCompile(`(?:^|[._\s])(\d)(\d{2})(?:[._\s]|$)`)
+
 	// reRes matches common resolution tags (case-insensitive).
 	reRes = regexp.MustCompile(`(?i)\b(480p|720p|1080p|2160p|4k)\b`)
 
@@ -66,6 +74,14 @@ var (
 // before the first discriminating pattern.
 func Parse(name string) MediaInfo {
 	info := MediaInfo{}
+
+	// H10: names starting with a digit confuse the year regex. Prepend a
+	// sentinel so the digit sequence isn't at a word boundary.
+	fixApplied := false
+	if len(name) > 0 && name[0] >= '0' && name[0] <= '9' {
+		name = "FIX." + name
+		fixApplied = true
+	}
 
 	// Resolution — extract early but don't use it to delimit title.
 	if m := reRes.FindString(name); m != "" {
@@ -94,6 +110,47 @@ func Parse(name string) MediaInfo {
 		if y := reYear.FindString(name[:m[0]]); y != "" {
 			info.Year, _ = strconv.Atoi(y) //nolint:errcheck // regex guarantees digits
 		}
+		if fixApplied {
+			info.Title = strings.TrimPrefix(info.Title, "FIX ")
+		}
+		return info
+	}
+
+	// H9: Episode-only (no season), common in anime — default to Season 1.
+	if m := reEpOnly.FindStringSubmatchIndex(name); m != nil {
+		info.Type = TVMedia
+		info.Season = 1
+		info.Episode, _ = strconv.Atoi(name[m[2]:m[3]]) //nolint:errcheck // regex guarantees digits
+		// Title: everything before the delimiter preceding E.
+		// m[0] points to the delimiter (or start); the E itself is at m[0] or m[0]+1.
+		titleEnd := m[0]
+		info.Title = cleanTitle(name[:titleEnd])
+
+		afterEp := name[m[1]:]
+		info.EpisodeName = extractEpisodeName(afterEp)
+
+		if y := reYear.FindString(name[:titleEnd]); y != "" {
+			info.Year, _ = strconv.Atoi(y) //nolint:errcheck // regex guarantees digits
+		}
+		if fixApplied {
+			info.Title = strings.TrimPrefix(info.Title, "FIX ")
+		}
+		return info
+	}
+
+	// Bare 3-digit season+episode (e.g. "Show.817.hdtv" → S08E17).
+	if m := reBareEp.FindStringSubmatchIndex(name); m != nil {
+		info.Type = TVMedia
+		info.Season, _ = strconv.Atoi(name[m[2]:m[3]])  //nolint:errcheck // regex guarantees digits
+		info.Episode, _ = strconv.Atoi(name[m[4]:m[5]]) //nolint:errcheck // regex guarantees digits
+		titleEnd := m[0]
+		info.Title = cleanTitle(name[:titleEnd])
+
+		afterEp := name[m[1]:]
+		info.EpisodeName = extractEpisodeName(afterEp)
+		if fixApplied {
+			info.Title = strings.TrimPrefix(info.Title, "FIX ")
+		}
 		return info
 	}
 
@@ -107,6 +164,9 @@ func Parse(name string) MediaInfo {
 
 		afterDate := name[m[1]:]
 		info.EpisodeName = extractEpisodeName(afterDate)
+		if fixApplied {
+			info.Title = strings.TrimPrefix(info.Title, "FIX ")
+		}
 		return info
 	}
 
@@ -115,11 +175,17 @@ func Parse(name string) MediaInfo {
 		info.Type = MovieMedia
 		info.Year, _ = strconv.Atoi(name[m[0]:m[1]]) //nolint:errcheck // regex guarantees digits
 		info.Title = cleanTitle(name[:m[0]])
+		if fixApplied {
+			info.Title = strings.TrimPrefix(info.Title, "FIX ")
+		}
 		return info
 	}
 
 	// Fallback: treat the whole name as title, type unknown.
 	info.Title = cleanTitle(name)
+	if fixApplied {
+		info.Title = strings.TrimPrefix(info.Title, "FIX ")
+	}
 	return info
 }
 

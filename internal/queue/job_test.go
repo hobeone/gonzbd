@@ -122,3 +122,53 @@ func TestNewJob_CategoryFallbackToDefault(t *testing.T) {
 		t.Errorf("Script = %q, want %q (from Default category)", job.Script, "fallback.sh")
 	}
 }
+
+// ---------- IsEarlyAbort ----------
+
+func TestIsEarlyAbort_NotEnoughSamples(t *testing.T) {
+	j := &Job{ArticlesResolved: 5, ArticlesFailed: 5}
+	if j.IsEarlyAbort() {
+		t.Error("fired with only 5 resolved articles, need 10")
+	}
+}
+
+func TestIsEarlyAbort_HighFailRate(t *testing.T) {
+	j := &Job{ArticlesResolved: 10, ArticlesFailed: 8} // 80%
+	if !j.IsEarlyAbort() {
+		t.Error("should fire at 80% failure rate with 10 resolved")
+	}
+	if !j.EarlyAborted {
+		t.Error("EarlyAborted flag should be set")
+	}
+}
+
+func TestIsEarlyAbort_UnderThreshold(t *testing.T) {
+	j := &Job{ArticlesResolved: 10, ArticlesFailed: 7} // 70%
+	if j.IsEarlyAbort() {
+		t.Error("should not fire at 70% failure rate")
+	}
+}
+
+func TestIsEarlyAbort_OnlyFiresOnce(t *testing.T) {
+	j := &Job{ArticlesResolved: 10, ArticlesFailed: 10}
+	if !j.IsEarlyAbort() {
+		t.Fatal("first call should fire")
+	}
+	if j.IsEarlyAbort() {
+		t.Error("second call should not fire (already aborted)")
+	}
+}
+
+func TestIsEarlyAbort_ExactThreshold(t *testing.T) {
+	j := &Job{ArticlesResolved: 10, ArticlesFailed: 8} // exactly 80%
+	if !j.IsEarlyAbort() {
+		t.Error("should fire at exactly 80%")
+	}
+}
+
+func TestIsEarlyAbort_AllFailed(t *testing.T) {
+	j := &Job{ArticlesResolved: 10, ArticlesFailed: 10} // 100%
+	if !j.IsEarlyAbort() {
+		t.Error("should fire at 100% failure rate")
+	}
+}
