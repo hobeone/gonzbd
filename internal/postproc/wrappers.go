@@ -354,8 +354,14 @@ func NewUnpackStageWith(opts unpack.Options, cleanup bool) *UnpackStage {
 // Name returns the stage identifier.
 func (*UnpackStage) Name() string { return "unpack" }
 
+// maxUnpackDepth limits recursive unpacking to prevent infinite loops
+// from self-extracting or circular archives. Matches SABnzbd's limit.
+const maxUnpackDepth = 3
+
 // Run scans job.DownloadDir, routes each archive to the right unpack
-// function, and captures any failures on job.UnpackError.
+// function, and captures any failures on job.UnpackError. Implements
+// recursive unpacking: after each extraction pass, re-scans for new
+// archives (up to maxUnpackDepth passes) to handle nested archives.
 func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	log := u.Log
 	if log == nil {
@@ -371,21 +377,6 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		return nil
 	}
 
-	logf(log, job, slog.LevelInfo, "Scanning for archives in %s", job.DownloadDir)
-
-	archives, err := unpack.Scan(job.DownloadDir)
-	if err != nil {
-		job.UnpackError = true
-		return fmt.Errorf("unpack: scan: %w", err)
-	}
-	if len(archives) == 0 {
-		logf(log, job, slog.LevelInfo, "No archives found")
-		return nil
-	}
-	logf(log, job, slog.LevelInfo, "Found %d archive(s)", len(archives))
-	for _, a := range archives {
-		logf(log, job, slog.LevelInfo, "  %s: %s (%d parts)", archiveTypeName(a.Type), a.Name, len(a.Parts))
-	}
 	// Merge config-level options with per-job password.
 	opts := u.BaseOpts
 	// Build the password list: per-job password comes first (highest priority),
@@ -398,107 +389,152 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	if len(opts.Passwords) > 0 {
 		logf(log, job, slog.LevelInfo, "Will try %d password(s) for encrypted archives", len(opts.Passwords))
 	}
+
+	// Track which archives have been processed across all passes to
+	// avoid re-extracting the same archive in a subsequent pass.
+	processed := make(map[string]bool)
+	var allSuccessful []unpack.Archive
 	var firstErr error
-	// Track which archives extracted successfully for cleanup.
-	var successfulArchives []unpack.Archive
-	for _, a := range archives {
-		var res unpack.Result
-		var err error
-		switch a.Type {
-		case unpack.RarArchive:
-			// Use 7z when preferred, or fall back to it when unrar
-			// isn't available.
-			use7z := opts.Prefer7zip
-			if !use7z {
-				unrarBin := opts.UnrarCommand
-				if unrarBin == "" {
-					unrarBin = "unrar"
-				}
-				if _, lookErr := exec.LookPath(unrarBin); lookErr != nil {
-					use7z = true // unrar not found, fall back to 7z
-					logf(log, job, slog.LevelInfo, "%s not found in PATH, falling back to 7z", unrarBin)
-				}
-			} else {
-				logf(log, job, slog.LevelInfo, "Using 7z for RAR (prefer_7zip=true)")
-			}
-			if use7z {
-				logf(log, job, slog.LevelInfo, "Running: 7z x %s", filepath.Base(a.MainFile))
-				res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, opts)
-			} else {
-				unrarBin := opts.UnrarCommand
-				if unrarBin == "" {
-					unrarBin = "unrar"
-				}
-				logf(log, job, slog.LevelInfo, "Running: %s x %s", unrarBin, filepath.Base(a.MainFile))
-				res, err = unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, opts)
-			}
-		case unpack.SevenZipArchive:
-			logf(log, job, slog.LevelInfo, "Running: 7z x %s", filepath.Base(a.MainFile))
-			res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, opts)
-		case unpack.SplitArchive:
-			logf(log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
-			res, err = unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
-		default:
-			continue
-		}
+
+	for depth := range maxUnpackDepth {
+		logf(log, job, slog.LevelInfo, "Scanning for archives in %s (pass %d/%d)", job.DownloadDir, depth+1, maxUnpackDepth)
+
+		archives, err := unpack.Scan(job.DownloadDir)
 		if err != nil {
 			job.UnpackError = true
-			logf(log, job, slog.LevelWarn, "Error: extraction failed for %q (%s): %v", a.Name, archiveTypeName(a.Type), err)
-			if firstErr == nil {
-				firstErr = fmt.Errorf("unpack %q: %w", a.Name, err)
+			return fmt.Errorf("unpack: scan: %w", err)
+		}
+
+		// Filter out already-processed archives.
+		var pending []unpack.Archive
+		for _, a := range archives {
+			if !processed[a.MainFile] {
+				pending = append(pending, a)
 			}
-			// Capture tool output even on error.
+		}
+
+		if len(pending) == 0 {
+			if depth == 0 {
+				logf(log, job, slog.LevelInfo, "No archives found")
+			} else {
+				logf(log, job, slog.LevelInfo, "No new archives found (pass %d)", depth+1)
+			}
+			break
+		}
+
+		logf(log, job, slog.LevelInfo, "Found %d archive(s) (pass %d)", len(pending), depth+1)
+		for _, a := range pending {
+			logf(log, job, slog.LevelInfo, "  %s: %s (%d parts)", archiveTypeName(a.Type), a.Name, len(a.Parts))
+		}
+
+		extractedAny := false
+		for _, a := range pending {
+			processed[a.MainFile] = true
+
+			var res unpack.Result
+			var err error
+			switch a.Type {
+			case unpack.RarArchive:
+				// Use 7z when preferred, or fall back to it when unrar
+				// isn't available.
+				use7z := opts.Prefer7zip
+				if !use7z {
+					unrarBin := opts.UnrarCommand
+					if unrarBin == "" {
+						unrarBin = "unrar"
+					}
+					if _, lookErr := exec.LookPath(unrarBin); lookErr != nil {
+						use7z = true // unrar not found, fall back to 7z
+						logf(log, job, slog.LevelInfo, "%s not found in PATH, falling back to 7z", unrarBin)
+					}
+				} else {
+					logf(log, job, slog.LevelInfo, "Using 7z for RAR (prefer_7zip=true)")
+				}
+				if use7z {
+					logf(log, job, slog.LevelInfo, "Running: 7z x %s", filepath.Base(a.MainFile))
+					res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, opts)
+				} else {
+					unrarBin := opts.UnrarCommand
+					if unrarBin == "" {
+						unrarBin = "unrar"
+					}
+					logf(log, job, slog.LevelInfo, "Running: %s x %s", unrarBin, filepath.Base(a.MainFile))
+					res, err = unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, opts)
+				}
+			case unpack.SevenZipArchive:
+				logf(log, job, slog.LevelInfo, "Running: 7z x %s", filepath.Base(a.MainFile))
+				res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, opts)
+			case unpack.SplitArchive:
+				logf(log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
+				res, err = unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
+			default:
+				continue
+			}
+			if err != nil {
+				job.UnpackError = true
+				logf(log, job, slog.LevelWarn, "Error: extraction failed for %q (%s): %v", a.Name, archiveTypeName(a.Type), err)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("unpack %q: %w", a.Name, err)
+				}
+				// Capture tool output even on error.
+				if res.Output != "" {
+					job.OutputLines = append(job.OutputLines,
+						fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
+					job.OutputLines = append(job.OutputLines,
+						toolOutputLines(res.Output)...)
+				}
+				continue
+			}
+			if res.Err != nil {
+				job.UnpackError = true
+				logf(log, job, slog.LevelWarn, "Error: extraction result error for %q (%s): %v", a.Name, archiveTypeName(a.Type), res.Err)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("unpack %q: %w", a.Name, res.Err)
+				}
+				// Capture tool output even on error.
+				if res.Output != "" {
+					job.OutputLines = append(job.OutputLines,
+						fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
+					job.OutputLines = append(job.OutputLines,
+						toolOutputLines(res.Output)...)
+				}
+				continue
+			}
+			logf(log, job, slog.LevelInfo, "Extracted %s successfully", a.Name)
+
+			// Post-extraction containment check: verify all extracted files
+			// are inside the output directory. A malicious archive could
+			// contain paths like "../../../etc/crontab" that escape outDir.
+			if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
+				job.UnpackError = true
+				logf(log, job, slog.LevelWarn, "Error: containment violation after extracting %q: %v", a.Name, cErr)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("unpack %q: containment check: %w", a.Name, cErr)
+				}
+				continue
+			}
+
+			// Capture tool output on success.
 			if res.Output != "" {
 				job.OutputLines = append(job.OutputLines,
-					fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
+					fmt.Sprintf("[%s] %s", archiveTypeName(a.Type), a.Name))
 				job.OutputLines = append(job.OutputLines,
 					toolOutputLines(res.Output)...)
 			}
-			continue
-		}
-		if res.Err != nil {
-			job.UnpackError = true
-			logf(log, job, slog.LevelWarn, "Error: extraction result error for %q (%s): %v", a.Name, archiveTypeName(a.Type), res.Err)
-			if firstErr == nil {
-				firstErr = fmt.Errorf("unpack %q: %w", a.Name, res.Err)
-			}
-			// Capture tool output even on error.
-			if res.Output != "" {
-				job.OutputLines = append(job.OutputLines,
-					fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
-				job.OutputLines = append(job.OutputLines,
-					toolOutputLines(res.Output)...)
-			}
-			continue
-		}
-		logf(log, job, slog.LevelInfo, "Extracted %s successfully", a.Name)
-
-		// Post-extraction containment check: verify all extracted files
-		// are inside the output directory. A malicious archive could
-		// contain paths like "../../../etc/crontab" that escape outDir.
-		if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
-			job.UnpackError = true
-			logf(log, job, slog.LevelWarn, "Error: containment violation after extracting %q: %v", a.Name, cErr)
-			if firstErr == nil {
-				firstErr = fmt.Errorf("unpack %q: containment check: %w", a.Name, cErr)
-			}
-			continue
+			allSuccessful = append(allSuccessful, a)
+			extractedAny = true
 		}
 
-		// Capture tool output on success.
-		if res.Output != "" {
-			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[%s] %s", archiveTypeName(a.Type), a.Name))
-			job.OutputLines = append(job.OutputLines,
-				toolOutputLines(res.Output)...)
+		// If nothing was extracted this pass, no point re-scanning.
+		if !extractedAny {
+			break
 		}
-		successfulArchives = append(successfulArchives, a)
 	}
 
 	// Delete source archive files after successful extraction.
-	if u.Cleanup && len(successfulArchives) > 0 {
+	if u.Cleanup && len(allSuccessful) > 0 {
 		var cleaned int
-		for _, a := range successfulArchives {
+		for _, a := range allSuccessful {
 			for _, part := range a.Parts {
 				_ = os.Remove(part)
 				cleaned++
