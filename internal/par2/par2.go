@@ -102,6 +102,10 @@ type RunOptions struct {
 	// ExtraArgs holds additional user-specified command-line arguments
 	// appended to every par2 invocation. Pre-validated at config load.
 	ExtraArgs []string
+	// Caps holds detected capabilities of the par2 binary (from
+	// DetectCapabilities at startup). Used to conditionally add -N
+	// and -B flags. May be nil when detection hasn't run.
+	Caps *Par2Caps
 	// OnLine is called for each line of output from the par2 subprocess.
 	// May be nil.
 	OnLine func(string) `json:"-"`
@@ -117,6 +121,22 @@ func (o RunOptions) command() string {
 		return o.Command
 	}
 	return "par2"
+}
+
+// capsArgs returns the conditional flags based on detected binary
+// capabilities. dir is the directory containing the par2 file.
+func capsArgs(caps *Par2Caps, dir string) []string {
+	if caps == nil {
+		return nil
+	}
+	var args []string
+	if caps.SupportsNoDataSkipping {
+		args = append(args, "-N")
+	}
+	if caps.SupportsBasepath && dir != "" {
+		args = append(args, "-B", dir)
+	}
+	return args
 }
 
 // volPattern matches the volume suffix of a par2 filename, e.g. ".vol000+01".
@@ -244,11 +264,12 @@ func Verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyRe
 // VerifyWith is like Verify but uses the given RunOptions for binary selection.
 func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (VerifyResult, error) {
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
-	args := make([]string, 0, 3+len(extraFiles))
+	args := make([]string, 0, 6+len(extraFiles))
 	args = append(args, "v", "-q")
 	if opts.Turbo {
 		args = append(args, "-t+")
 	}
+	args = append(args, capsArgs(opts.Caps, filepath.Dir(parfile))...)
 	args = append(args, opts.ExtraArgs...)
 	args = append(args, parfile)
 	args = append(args, extraFiles...)
@@ -298,11 +319,12 @@ func Repair(ctx context.Context, parfile string, extraFiles ...string) (RepairRe
 // RepairWith is like Repair but uses the given RunOptions for binary selection.
 func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (RepairResult, error) {
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
-	args := make([]string, 0, 3+len(extraFiles))
+	args := make([]string, 0, 6+len(extraFiles))
 	args = append(args, "r", "-q")
 	if opts.Turbo {
 		args = append(args, "-t+")
 	}
+	args = append(args, capsArgs(opts.Caps, filepath.Dir(parfile))...)
 	args = append(args, opts.ExtraArgs...)
 	args = append(args, parfile)
 	args = append(args, extraFiles...)

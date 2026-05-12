@@ -59,6 +59,16 @@ func fullInput(t *testing.T) ScriptInput {
 		Bytes:           1073741824,
 		BytesDownloaded: 1000000000,
 		AvgBPS:          2000000,
+		BytesTried:      1100000000,
+		Password:        "secret123",
+		Encrypted:       1,
+		Priority:        2,
+		Repair:          1,
+		Unpack:          1,
+		Age:             7,
+		Par2Command:     "/usr/bin/par2",
+		UnrarCommand:    "/usr/bin/unrar",
+		SevenzCommand:   "/usr/bin/7z",
 	}
 }
 
@@ -162,6 +172,17 @@ func TestRunScript_EnvVars(t *testing.T) {
 		{"SAB_FINAL_PROCESSING_DIR", in.FinalDir},
 		{"SAB_NZB_NAME", in.NZBName},
 		{"SAB_REPORTNAME", in.ReportName},
+		// Additional SABnzbd-compatible env vars:
+		{"SAB_BYTES_TRIED", fmt.Sprintf("%d", in.BytesTried)},
+		{"SAB_PASSWORD", in.Password},
+		{"SAB_ENCRYPTED", fmt.Sprintf("%d", in.Encrypted)},
+		{"SAB_PRIORITY", fmt.Sprintf("%d", in.Priority)},
+		{"SAB_REPAIR", fmt.Sprintf("%d", in.Repair)},
+		{"SAB_UNPACK", fmt.Sprintf("%d", in.Unpack)},
+		{"SAB_AGE", fmt.Sprintf("%d", in.Age)},
+		{"SAB_PAR2_COMMAND", in.Par2Command},
+		{"SAB_RAR_COMMAND", in.UnrarCommand},
+		{"SAB_7ZIP_COMMAND", in.SevenzCommand},
 	}
 
 	for _, r := range required {
