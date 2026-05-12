@@ -13,6 +13,7 @@ import (
 // Options controls how an extraction tool is invoked.
 type Options struct {
 	// Password is the archive password.  Empty means no password.
+	//
 	// Deprecated: use Passwords for multi-password iteration.
 	Password string
 	// Passwords is a prioritized list of passwords to try. When an
