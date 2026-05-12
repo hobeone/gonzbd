@@ -55,4 +55,12 @@ type PostProcConfig struct {
 	// Common values: "nfo", "txt", "url", "srr", "sfv", "nzb".
 	// Mirrors SABnzbd's cfg.cleanup_list() feature.
 	CleanupExtensions []string `yaml:"cleanup_extensions" json:"cleanup_extensions"`
+
+	// FolderRename enables the _UNPACK_/_FAILED_ prefix on the
+	// destination directory during post-processing. While processing,
+	// the folder is named "_UNPACK_<name>"; on success it becomes
+	// "<name>"; on failure it becomes "_FAILED_<name>". This prevents
+	// media managers (Sonarr, Plex) from importing incomplete downloads.
+	// Mirrors SABnzbd's cfg.folder_rename(). Default false.
+	FolderRename bool `yaml:"folder_rename" json:"folder_rename"`
 }

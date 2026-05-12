@@ -274,6 +274,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		FlatUnpack:           cfg.PostProc.FlatUnpack,
 		Prefer7zip:           cfg.PostProc.Prefer7zip,
 		CleanupExtensions:    cfg.PostProc.CleanupExtensions,
+		FolderRename:         cfg.PostProc.FolderRename,
 
 		Version:    Version,
 		APIKey:     cfg.General.APIKey,

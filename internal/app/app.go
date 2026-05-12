@@ -80,6 +80,7 @@ type Config struct {
 	FlatUnpack           bool
 	Prefer7zip           bool
 	CleanupExtensions    []string
+	FolderRename         bool
 
 	// ScriptStage metadata injected into SAB_* env vars.
 	Version    string
@@ -341,6 +342,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		// path — matches SABnzbd spec §6.2 ordering.
 		finalizeStage := postproc.NewFinalizeStage()
 		finalizeStage.Log = ppLog
+		finalizeStage.FolderRename = cfg.FolderRename
 		stageList = append(stageList, finalizeStage)
 
 		// Script stage: runs AFTER finalize so job.DownloadDir points
