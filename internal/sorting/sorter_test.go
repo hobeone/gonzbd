@@ -269,6 +269,41 @@ func TestExpandTemplate(t *testing.T) {
 	}
 }
 
+// ---- TestCleanTemplatePath ----
+
+func TestCleanTemplatePath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		input   string
+		wantOut string
+	}{
+		{"no change needed", "TV/Show Name/Season 01", "TV/Show Name/Season 01"},
+		{"trailing spaces", "TV/Show Name /Season 01", "TV/Show Name/Season 01"},
+		{"leading underscores", "TV/__Show/Season 01", "TV/Show/Season 01"},
+		{"collapsed dots", "TV/Show..Name/Season 01", "TV/Show.Name/Season 01"},
+		{"collapsed underscores", "TV/Show__Name/Season 01", "TV/Show_Name/Season 01"},
+		{"empty element from empty token", "TV//Season 01", "TV/Season 01"},
+		{"trailing dot", "TV/Show./Season 01", "TV/Show/Season 01"},
+		{"trailing hyphen", "TV/Show -/Season 01", "TV/Show/Season 01"},
+		{"leading hyphen", "TV/- Show/Season 01", "TV/Show/Season 01"},
+		{"mixed junk", "TV/ - __Show.. - /Season 01", "TV/Show/Season 01"},
+		{"single component", "MyFolder", "MyFolder"},
+		{"empty string", "", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sorting.CleanTemplatePath(tc.input)
+			if got != tc.wantOut {
+				t.Errorf("CleanTemplatePath(%q) = %q, want %q", tc.input, got, tc.wantOut)
+			}
+		})
+	}
+}
+
 // ---- TestApply ----
 
 func TestApply(t *testing.T) {

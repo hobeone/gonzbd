@@ -116,6 +116,118 @@ func TestFinalizeStage_MoveNestedDirectories(t *testing.T) {
 	}
 }
 
+func TestFinalizeStage_FolderRename_Success(t *testing.T) {
+	t.Parallel()
+	srcDir := t.TempDir()
+	os.WriteFile(filepath.Join(srcDir, "movie.mkv"), []byte("video"), 0o644)
+
+	baseDir := t.TempDir()
+	finalDir := filepath.Join(baseDir, "MyRelease")
+
+	job := &Job{
+		Queue:       &queue.Job{ID: "fr-ok", Name: "MyRelease"},
+		DownloadDir: srcDir,
+		FinalDir:    finalDir,
+	}
+
+	stage := NewFinalizeStage()
+	stage.FolderRename = true
+
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Final dir should exist (prefix stripped).
+	if _, err := os.Stat(finalDir); err != nil {
+		t.Errorf("FinalDir should exist: %v", err)
+	}
+	// _UNPACK_ dir should NOT exist.
+	unpackDir := filepath.Join(baseDir, "_UNPACK_MyRelease")
+	if _, err := os.Stat(unpackDir); !os.IsNotExist(err) {
+		t.Errorf("_UNPACK_ dir should not persist")
+	}
+	// DownloadDir should point to final location.
+	if job.DownloadDir != finalDir {
+		t.Errorf("DownloadDir = %q, want %q", job.DownloadDir, finalDir)
+	}
+	// File should be there.
+	if _, err := os.Stat(filepath.Join(finalDir, "movie.mkv")); err != nil {
+		t.Errorf("movie.mkv should exist in finalDir")
+	}
+}
+
+func TestFinalizeStage_FolderRename_Failed(t *testing.T) {
+	t.Parallel()
+	srcDir := t.TempDir()
+	os.WriteFile(filepath.Join(srcDir, "movie.mkv"), []byte("video"), 0o644)
+
+	baseDir := t.TempDir()
+	finalDir := filepath.Join(baseDir, "MyRelease")
+
+	job := &Job{
+		Queue:       &queue.Job{ID: "fr-fail", Name: "MyRelease"},
+		DownloadDir: srcDir,
+		FinalDir:    finalDir,
+		ParError:    true,
+	}
+
+	stage := NewFinalizeStage()
+	stage.FolderRename = true
+
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Should be renamed to _FAILED_ directory.
+	failedDir := filepath.Join(baseDir, "_FAILED_MyRelease")
+	if _, err := os.Stat(failedDir); err != nil {
+		t.Errorf("_FAILED_ dir should exist: %v", err)
+	}
+	// DownloadDir should point to _FAILED_ dir.
+	if job.DownloadDir != failedDir {
+		t.Errorf("DownloadDir = %q, want %q", job.DownloadDir, failedDir)
+	}
+	// File should be in _FAILED_ dir.
+	if _, err := os.Stat(filepath.Join(failedDir, "movie.mkv")); err != nil {
+		t.Errorf("movie.mkv should exist in _FAILED_ dir")
+	}
+}
+
+func TestFinalizeStage_FolderRename_Disabled(t *testing.T) {
+	// When FolderRename=false, no prefix is used even on failure.
+	t.Parallel()
+	job, srcDir := stageJob(t)
+	job.ParError = true
+	baseDir := t.TempDir()
+	job.FinalDir = filepath.Join(baseDir, "MyRelease")
+
+	stage := NewFinalizeStage()
+	stage.FolderRename = false
+
+	stage.Run(t.Context(), job)
+
+	// DownloadDir should still be the original (no move on failure).
+	if job.DownloadDir != srcDir {
+		t.Errorf("DownloadDir = %q, want %q", job.DownloadDir, srcDir)
+	}
+}
+
+func TestPrefixDirName(t *testing.T) {
+	tests := []struct {
+		dir, prefix, want string
+	}{
+		{"/complete/movies/MyRelease", "_UNPACK_", "/complete/movies/_UNPACK_MyRelease"},
+		{"/complete/MyRelease", "_FAILED_", "/complete/_FAILED_MyRelease"},
+		{"release", "_UNPACK_", "_UNPACK_release"},
+	}
+	for _, tt := range tests {
+		got := prefixDirName(tt.dir, tt.prefix)
+		if got != tt.want {
+			t.Errorf("prefixDirName(%q, %q) = %q, want %q", tt.dir, tt.prefix, got, tt.want)
+		}
+	}
+}
+
 // ---------- moveRecursive ----------
 
 func TestMoveRecursive_SingleFile(t *testing.T) {
