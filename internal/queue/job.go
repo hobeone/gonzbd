@@ -397,6 +397,14 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 		pp = 0
 		ppReason = "default (no categories configured)"
 	}
+	// Clamp out-of-range PP to valid levels 0–3. SABnzbd's pp_to_opts
+	// treats any value ≥ 3 as 3 (repair+unpack+delete); some configs
+	// have legacy values like 7.
+	if pp > 3 {
+		pp = 3
+	} else if pp < 0 {
+		pp = 0
+	}
 	if priority == constants.DefaultPriority {
 		priority = constants.NormalPriority
 	}
