@@ -33,7 +33,26 @@ func TestHasPopularExtension(t *testing.T) {
 		{"flac.1 collision", "album.flac.1", true},
 		// NOT collision suffixes — numeric suffix too long or not popular base.
 		{"xyz.1 not popular base", "file.xyz.1", false},
-		{"rar.1234 too long", "file.rar.1234", false},
+		// Note: file.rar.1234 now matches as a 4-digit split-part name
+		// (SABnzbd parity — rarVolumeRe accepts \d{3,4}$), even though it
+		// isn't a collision suffix per collisionSuffixRe. Both treat
+		// the file as "known" so the test moves to the rarVolumeRe group.
+		// Multi-volume RAR / 7z naming (mirrors SABnzbd RAR_RE).
+		// User-reported case: NZB subject ".r00" — magic-byte sniffing
+		// would otherwise append ".rar" and break unrar's volume chain.
+		{"legacy r00 volume", "movie.r00", true},
+		{"legacy r99 volume", "movie.r99", true},
+		{"legacy s00 volume", "movie.s00", true},
+		{"legacy v50 volume", "movie.v50", true},
+		{"modern part01.rar", "movie.part01.rar", true},
+		{"modern part123.rar", "movie.part123.rar", true},
+		{"split 001 part", "movie.001", true},
+		{"split 9999 part", "movie.9999", true},
+		{"case insensitive R00", "MOVIE.R00", true},
+		// Should NOT match.
+		{"r9 too short", "file.r9", false},
+		{"r100 wrong shape", "file.r100", false}, // 3 digits but only 1-letter prefix → not a 2-digit volume
+		{"99 too short for split", "file.99", false},
 	}
 
 	for _, tc := range cases {
@@ -181,6 +200,56 @@ func TestFixExtension(t *testing.T) {
 		}
 		if rename.To != filepath.Join(dir, "obfuscated.asdf.mkv") {
 			t.Errorf("expected .asdf.mkv, got %q", rename.To)
+		}
+	})
+
+	t.Run("legacy .r00 volume not renamed", func(t *testing.T) {
+		// User-reported bug: NZB volume "for.all.mankind...r00" had
+		// ".rar" appended after magic-byte sniffing, producing
+		// "for.all.mankind...r00.rar" — which broke unrar because the
+		// rarset's volume manifest names the file ".r00" (no .rar).
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "for.all.mankind.s05e07.french.720p.web.h264-higgsboson.r00")
+		// RAR magic bytes — would otherwise trigger the rename.
+		header := []byte{'R', 'a', 'r', '!', 0x1A, 0x07, 0x00}
+		content := make([]byte, 0, len(header)+256)
+		content = append(content, header...)
+		content = append(content, make([]byte, 256)...)
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		rename, err := deobfuscate.FixExtension(log, path)
+		if err != nil {
+			t.Fatalf("FixExtension error: %v", err)
+		}
+		if rename.From != "" {
+			t.Errorf("expected no rename for legacy RAR volume, got %+v", rename)
+		}
+		// Original path must still exist with its original name.
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("original .r00 should still exist: %v", err)
+		}
+	})
+
+	t.Run("modern partNN.rar volume not renamed", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "movie.part02.rar")
+		header := []byte{'R', 'a', 'r', '!', 0x1A, 0x07, 0x00}
+		content := make([]byte, 0, len(header)+256)
+		content = append(content, header...)
+		content = append(content, make([]byte, 256)...)
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rename, err := deobfuscate.FixExtension(log, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rename.From != "" {
+			t.Errorf("expected no rename for .part02.rar, got %+v", rename)
 		}
 	})
 
