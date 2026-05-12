@@ -37,6 +37,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/rss"
 	"github.com/hobeone/gonzbd/internal/scheduler"
+	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 	"github.com/hobeone/gonzbd/internal/web"
 
@@ -314,7 +315,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 
 	// Ingest adapter shared by the dir scanner and URL grabber. Both
 	// receive raw NZB bytes and push jobs onto the same queue.
-	ingest := &ingestHandler{app: application, logger: slog.Default().With("component", "ingest")}
+	ingest := &ingestHandler{app: application, config: cfg, logger: slog.Default().With("component", "ingest")}
 
 	// URL grabber. Used both by the RSS scanner's handler and by the API
 	// (mode=addurl). One instance is enough; Grabber is safe for
@@ -877,7 +878,7 @@ func loadJob(path string) (*queue.Job, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: filepath.Base(path)}, fsutil.SanitizeOptions{})
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: filepath.Base(path), PP: types.PPInherit}, fsutil.SanitizeOptions{})
 	return job, data, err
 }
 
