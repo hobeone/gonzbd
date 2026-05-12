@@ -44,15 +44,34 @@ var popularExts = map[string]bool{
 // should NOT be treated as unknown extensions.
 var collisionSuffixRe = regexp.MustCompile(`(?i)(\.[a-z0-9]{2,5})\.(\d{1,3})$`)
 
+// rarVolumeRe matches multi-volume RAR and 7z naming conventions that must
+// be treated as "known" extensions even though they aren't in popularExts.
+// Mirrors SABnzbd's RAR_RE in sabnzbd/filesystem.py.
+//
+// Cases handled:
+//   - .rar, .part01.rar, .part123.rar  (modern multi-volume naming)
+//   - .r00..r99                        (legacy first volume continuation)
+//   - .s00..v99                        (legacy continuations after r-series)
+//   - .001..9999                       (split files / 7z parts)
+//
+// Without this, FixExtension would magic-sniff a .r00 file, see RAR header
+// bytes, and append ".rar" — turning "foo.r00" into "foo.r00.rar" and
+// breaking unpacking because the volume name in the rarset metadata is
+// "foo.r00" not "foo.r00.rar".
+var rarVolumeRe = regexp.MustCompile(`(?i)\.(part\d+\.rar|rar|r\d{2}|s\d{2}|t\d{2}|u\d{2}|v\d{2}|\d{3,4})$`)
+
 // HasPopularExtension returns true if the file's extension is in the popular
-// set, OR if the filename has a collision suffix (e.g. ".rar.1").
+// set, has a collision suffix (".rar.1"), or matches a known multi-volume
+// archive naming convention (".r00", ".part01.rar", ".001").
 func HasPopularExtension(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
 	if popularExts[ext] {
 		return true
 	}
-	// Check for collision suffix: "movie.rar.1" → real ext is ".rar".
-	return hasCollisionSuffix(filename)
+	if hasCollisionSuffix(filename) {
+		return true
+	}
+	return rarVolumeRe.MatchString(filename)
 }
 
 // hasCollisionSuffix returns true if the filename ends with a popular
@@ -98,6 +117,14 @@ func FixExtension(log *slog.Logger, path string) (Rename, error) {
 			m := collisionSuffixRe.FindStringSubmatch(path)
 			log.Info("deobfuscate: file has collision suffix, skipping extension fix",
 				"file", base, "real_ext", m[1], "suffix", m[2])
+		}
+		return Rename{}, nil
+	}
+
+	if rarVolumeRe.MatchString(base) {
+		if log != nil {
+			log.Debug("deobfuscate: multi-volume archive name, skipping extension fix",
+				"file", base, "ext", ext)
 		}
 		return Rename{}, nil
 	}
