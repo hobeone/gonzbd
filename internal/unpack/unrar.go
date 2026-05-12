@@ -38,8 +38,8 @@ type Options struct {
 	// true = overwrite (-o+ for unrar, -aoa for 7z); false = skip (-o- for unrar, -aos for 7z).
 	// Default (false) preserves existing files.
 	OverwriteFiles bool
-	// IgnoreUnrarDates discards in-archive timestamps and uses extraction time.
-	// Adds -ts0 to unrar arguments.
+	// IgnoreUnrarDates discards in-archive modification timestamps and uses extraction time.
+	// Adds -tsm- to unrar arguments (matches SABnzbd's behavior).
 	IgnoreUnrarDates bool
 	// Prefer7zip uses 7z instead of unrar for RAR extraction even when
 	// unrar is available. 7z often handles edge-case RARs more reliably.
@@ -116,7 +116,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 		args = append(args, "-o-")
 	}
 	if opts.IgnoreUnrarDates {
-		args = append(args, "-ts0") // discard in-archive timestamps
+		args = append(args, "-tsm-") // don't restore modification times (matches SABnzbd)
 	}
 
 	args = append(args, archive.MainFile, outDir+"/") // unrar expects a trailing slash on the output directory
