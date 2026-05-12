@@ -101,44 +101,61 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 
 		crcResult := par2.VerifyCRCs(assembledFiles, sets, log)
 
+		// How many par2-tracked files could NOT be verified?
+		unverifiable := crcResult.NoCRC + crcResult.Unverified + crcResult.Mismatched
+
 		if crcResult.Checked > 0 {
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[quickcheck] CRC verification: %d/%d files verified OK",
-					crcResult.Matched, crcResult.Checked))
+				fmt.Sprintf("[quickcheck] CRC verification: %d/%d par2-tracked files verified OK",
+					crcResult.Matched, crcResult.Checked+crcResult.NoCRC))
 
 			if crcResult.Mismatched > 0 {
 				logf(log, job, slog.LevelWarn,
-					"quickcheck: CRC MISMATCH detected — %d file(s) may be corrupted",
+					"quickcheck: CRC MISMATCH detected — %d file(s) corrupted",
 					crcResult.Mismatched)
 				for _, f := range crcResult.Files {
 					if !f.Match {
 						job.OutputLines = append(job.OutputLines,
-							fmt.Sprintf("[quickcheck] CRC MISMATCH: %s (assembled=%08x par2=%08x)",
+							fmt.Sprintf("[quickcheck] ✗ %s: CRC mismatch (assembled=%08x par2=%08x)",
 								f.FileName, f.AssembledCRC, f.Par2CRC))
 					}
 				}
-			} else if crcResult.Skipped > 0 {
-				// Some files could not be verified (name mismatch between
-				// NZB subject and par2 manifest, no assembled CRC, etc).
-				// Do NOT set QuickCheckPassed — we must run par2 verify
-				// to catch corruption in unverified files.
-				logf(log, job, slog.LevelInfo,
-					"quickcheck: %d/%d verified files have matching CRCs, but %d file(s) could not be verified — par2 repair will run",
-					crcResult.Matched, crcResult.Checked, crcResult.Skipped)
-				job.OutputLines = append(job.OutputLines,
-					fmt.Sprintf("[quickcheck] CRC verification: %d matched, %d skipped — par2 verify required",
-						crcResult.Matched, crcResult.Skipped))
-			} else {
-				logf(log, job, slog.LevelInfo,
-					"quickcheck: all %d verified files have matching CRCs — par2 repair can be skipped", crcResult.Matched)
-				job.QuickCheckPassed = true
 			}
-		} else if crcResult.Skipped > 0 {
+		}
+
+		// Report par2-tracked files with no CRC (download failures).
+		if crcResult.NoCRC > 0 {
+			for _, name := range crcResult.NoCRCFiles {
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("[quickcheck] ⚠ %s: download had failures, CRC unavailable", name))
+			}
+		}
+
+		// Report par2 entries that couldn't be matched to any assembled file.
+		if crcResult.Unverified > 0 {
+			logf(log, job, slog.LevelWarn,
+				"quickcheck: %d par2-tracked file(s) not found by name",
+				crcResult.Unverified)
+		}
+
+		// Decision: can we skip par2 repair?
+		if unverifiable > 0 {
 			logf(log, job, slog.LevelInfo,
-				"quickcheck: CRC verification skipped for all %d file(s) — no assembled CRCs available",
-				crcResult.Skipped)
+				"quickcheck: %d/%d par2-tracked files verified OK, %d could not be verified — par2 repair will run",
+				crcResult.Matched, crcResult.Matched+unverifiable, unverifiable)
 			job.OutputLines = append(job.OutputLines,
-				"[quickcheck] CRC verification: no assembled CRCs available, skipping")
+				fmt.Sprintf("[quickcheck] %d file(s) need par2 verification — repair stage will run",
+					unverifiable))
+		} else if crcResult.Checked > 0 {
+			logf(log, job, slog.LevelInfo,
+				"quickcheck: all %d par2-tracked files verified OK — skipping par2 repair",
+				crcResult.Matched)
+			job.QuickCheckPassed = true
+		} else {
+			logf(log, job, slog.LevelInfo,
+				"quickcheck: no files could be CRC-verified — par2 repair will run")
+			job.OutputLines = append(job.OutputLines,
+				"[quickcheck] No CRC data available — par2 repair will run")
 		}
 	}
 
@@ -247,9 +264,12 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 			}
 			res, err := par2.RepairWith(ctx, repairOpts, main, dataFiles...)
 			// Capture par2 tool output for the stage log.
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("[par2] %s", set.Name))
+			if res.CommandLine != "" {
+				job.OutputLines = append(job.OutputLines, "Command: "+res.CommandLine)
+			}
 			if res.Output != "" {
-				job.OutputLines = append(job.OutputLines,
-					fmt.Sprintf("[par2] %s", set.Name))
 				job.OutputLines = append(job.OutputLines,
 					toolOutputLines(res.Output)...)
 			}
@@ -553,10 +573,13 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 				if firstErr == nil {
 					firstErr = fmt.Errorf("unpack %q: %w", a.Name, err)
 				}
-				// Capture tool output even on error.
+				// Capture command line and tool output even on error.
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
+				if res.CommandLine != "" {
+					job.OutputLines = append(job.OutputLines, "Command: "+res.CommandLine)
+				}
 				if res.Output != "" {
-					job.OutputLines = append(job.OutputLines,
-						fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
 					job.OutputLines = append(job.OutputLines,
 						toolOutputLines(res.Output)...)
 				}
@@ -568,16 +591,25 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 				if firstErr == nil {
 					firstErr = fmt.Errorf("unpack %q: %w", a.Name, res.Err)
 				}
-				// Capture tool output even on error.
+				// Capture command line and tool output even on error.
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
+				if res.CommandLine != "" {
+					job.OutputLines = append(job.OutputLines, "Command: "+res.CommandLine)
+				}
 				if res.Output != "" {
-					job.OutputLines = append(job.OutputLines,
-						fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
 					job.OutputLines = append(job.OutputLines,
 						toolOutputLines(res.Output)...)
 				}
 				continue
 			}
 			logf(log, job, slog.LevelInfo, "Extracted %s successfully", a.Name)
+			// Record command line in stage log for successful extractions too.
+			if res.CommandLine != "" {
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("[%s] %s", archiveTypeName(a.Type), a.Name))
+				job.OutputLines = append(job.OutputLines, "Command: "+res.CommandLine)
+			}
 
 			// Post-extraction containment check: verify all extracted files
 			// are inside the output directory. A malicious archive could

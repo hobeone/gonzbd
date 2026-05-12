@@ -84,12 +84,20 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 		args = append(args, "-ssc-") // case-insensitive
 	}
 
+	// Build a display-safe command line (redact password).
+	cmdLine := formatCmdLine(bin, args, pwFlag)
+
 	log.Info("7zip: starting extraction",
 		"binary", bin,
 		"archive", archive.MainFile,
 		"outDir", outDir,
-		"hasPassword", opts.Password != "",
+		"cmdline", cmdLine,
 	)
+
+	// Emit full command line to the OnLine callback so it appears in the UI.
+	if opts.OnLine != nil {
+		opts.OnLine("Command: " + cmdLine)
+	}
 
 	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // bin and args are caller-supplied, not shell-expanded
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
@@ -100,7 +108,8 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	streamer.Flush()
 
 	res := Result{
-		Output: streamer.String(),
+		CommandLine: cmdLine,
+		Output:      streamer.String(),
 	}
 
 	var exitErr *exec.ExitError

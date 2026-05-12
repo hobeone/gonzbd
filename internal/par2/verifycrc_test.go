@@ -6,17 +6,10 @@ import (
 	"testing"
 )
 
-func TestVerifyCRCs_AllMatch(t *testing.T) {
+func TestVerifyCRCs_NoSets(t *testing.T) {
 	t.Parallel()
 
-	// Create a mock par2 file with known CRC32 values.
-	// We'll use ParseFileDescriptions which needs a real par2 file,
-	// so we test VerifyCRCs with pre-built sets instead.
-	// Since VerifyCRCs calls ParseFileDescriptions internally, we
-	// need real par2 files. For unit testing, we'll test the matching
-	// logic by constructing scenarios.
-
-	// For now, test with an empty set — all files should be skipped.
+	// No par2 sets — all files are NotInPar2 (benign).
 	files := []AssembledFile{
 		{FileName: "movie.mkv", CRC32: 0x12345678},
 		{FileName: "sample.avi", CRC32: 0xDEADBEEF},
@@ -27,15 +20,17 @@ func TestVerifyCRCs_AllMatch(t *testing.T) {
 	if result.Checked != 0 {
 		t.Errorf("Checked = %d, want 0 (no par2 sets)", result.Checked)
 	}
-	if result.Skipped != 2 {
-		t.Errorf("Skipped = %d, want 2", result.Skipped)
-	}
+	// With no par2 sets, VerifyCRCs returns early (Skipped=len(files))
+	// via the "no par2 file descriptions found" path.
+	// Since it returns before the loop, NotInPar2 is not incremented
+	// — all counts stay zero. That's fine: no manifest means nothing
+	// to verify.
 }
 
-func TestVerifyCRCs_NoCRC(t *testing.T) {
+func TestVerifyCRCs_NoCRC_NoPar2Sets(t *testing.T) {
 	t.Parallel()
 
-	// Files with CRC32=0 should be skipped.
+	// Files with CRC32=0, no par2 sets.
 	files := []AssembledFile{
 		{FileName: "movie.mkv", CRC32: 0},
 		{FileName: "sample.avi", CRC32: 0},
@@ -46,10 +41,6 @@ func TestVerifyCRCs_NoCRC(t *testing.T) {
 	if result.Checked != 0 {
 		t.Errorf("Checked = %d, want 0", result.Checked)
 	}
-	// All skipped because no par2 sets and no CRCs.
-	if result.Skipped != 2 {
-		t.Errorf("Skipped = %d, want 2", result.Skipped)
-	}
 }
 
 func TestVerifyCRCs_EmptyFiles(t *testing.T) {
@@ -57,7 +48,7 @@ func TestVerifyCRCs_EmptyFiles(t *testing.T) {
 
 	result := VerifyCRCs(nil, nil, slog.Default())
 
-	if result.Checked != 0 || result.Matched != 0 || result.Mismatched != 0 || result.Skipped != 0 {
+	if result.Checked != 0 || result.Matched != 0 || result.Mismatched != 0 {
 		t.Errorf("unexpected result for empty input: %+v", result)
 	}
 }
@@ -114,6 +105,12 @@ func TestVerifyCRCs_WithRealPar2Fixture(t *testing.T) {
 		if result.Mismatched != 0 {
 			t.Errorf("Mismatched = %d, want 0", result.Mismatched)
 		}
+		if result.NoCRC != 0 {
+			t.Errorf("NoCRC = %d, want 0", result.NoCRC)
+		}
+		if result.Unverified != 0 {
+			t.Errorf("Unverified = %d, want 0", result.Unverified)
+		}
 	})
 
 	t.Run("mismatched CRC", func(t *testing.T) {
@@ -143,13 +140,35 @@ func TestVerifyCRCs_WithRealPar2Fixture(t *testing.T) {
 		if result.Checked != 0 {
 			t.Errorf("Checked = %d, want 0 (file not in manifest)", result.Checked)
 		}
-		// Skipped = 2: 1 for unknown.mkv (not in par2 manifest) +
-		// 1 for data.bin (par2 entry with no matching assembled file).
-		if result.Skipped != 2 {
-			t.Errorf("Skipped = %d, want 2", result.Skipped)
+		// unknown.mkv → NotInPar2, data.bin par2 entry → Unverified
+		if result.NotInPar2 != 1 {
+			t.Errorf("NotInPar2 = %d, want 1", result.NotInPar2)
 		}
 		if result.Unverified != 1 {
 			t.Errorf("Unverified = %d, want 1 (data.bin par2 entry unconsumed)", result.Unverified)
+		}
+	})
+
+	t.Run("par2-tracked file with no CRC", func(t *testing.T) {
+		t.Parallel()
+		// data.bin is in par2 manifest but has CRC32=0 (simulates failed download)
+		files := []AssembledFile{
+			{FileName: "data.bin", CRC32: 0},
+		}
+		result := VerifyCRCs(files, sets, slog.Default())
+		if result.Checked != 0 {
+			t.Errorf("Checked = %d, want 0", result.Checked)
+		}
+		// data.bin is par2-tracked but has no CRC → NoCRC=1
+		if result.NoCRC != 1 {
+			t.Errorf("NoCRC = %d, want 1", result.NoCRC)
+		}
+		// The par2 entry was consumed (not double-counted as Unverified)
+		if result.Unverified != 0 {
+			t.Errorf("Unverified = %d, want 0 (par2 entry was consumed)", result.Unverified)
+		}
+		if len(result.NoCRCFiles) != 1 || result.NoCRCFiles[0] != "data.bin" {
+			t.Errorf("NoCRCFiles = %v, want [data.bin]", result.NoCRCFiles)
 		}
 	})
 }

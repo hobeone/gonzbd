@@ -32,15 +32,22 @@ type CRCVerifyResult struct {
 	Matched int
 	// Mismatched is the count of files whose CRCs did not match.
 	Mismatched int
-	// Skipped is the count of assembled files that could not be verified
-	// (no assembled CRC, or no par2 entry found by basename).
-	Skipped int
+	// NoCRC is the count of par2-tracked files whose assembled CRC was
+	// unavailable (articles failed during download). These are the most
+	// important files to verify via par2 — they likely have corruption.
+	NoCRC int
+	// NotInPar2 is the count of assembled files not tracked by par2.
+	// This is expected and benign — par2 files, .nfo files, etc.
+	NotInPar2 int
 	// Unverified is the count of par2 manifest entries that had no
 	// corresponding assembled file (name mismatch). These files exist
 	// on disk but weren't verified by CRC — par2 verify must check them.
 	Unverified int
 	// Files holds per-file results for files that were actually checked.
 	Files []CRCResult
+	// NoCRCFiles lists the names of par2-tracked files that could not
+	// be verified because their assembled CRC was 0 (download failures).
+	NoCRCFiles []string
 }
 
 // AssembledFile represents a downloaded file with its assembled CRC32.
@@ -101,7 +108,7 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 
 	if len(par2Index) == 0 {
 		log.Info("verifycrc: no par2 file descriptions found for CRC verification")
-		return CRCVerifyResult{Skipped: len(files)}
+		return CRCVerifyResult{NotInPar2: len(files)}
 	}
 
 	log.Info("verifycrc: par2 manifest loaded",
@@ -111,29 +118,44 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 	var result CRCVerifyResult
 
 	for _, af := range files {
-		// Skip files with no assembled CRC (UU-encoded or failed).
+		// Look up par2 entry first so we can distinguish between
+		// par2-tracked files (important) and non-par2 files (benign).
+		entry, inPar2 := par2Index[af.FileName]
+
+		// Files with no assembled CRC (articles failed during download).
 		if af.CRC32 == 0 {
-			log.Info("verifycrc: no assembled CRC, skipping",
-				"file", af.FileName)
-			result.Skipped++
+			if inPar2 {
+				// This is a par2-tracked file that we can't verify
+				// because articles failed — likely has corruption.
+				entry.consumed = true
+				result.NoCRC++
+				result.NoCRCFiles = append(result.NoCRCFiles, af.FileName)
+				log.Warn("verifycrc: par2-tracked file has no assembled CRC (download had failures)",
+					"file", af.FileName)
+			} else {
+				result.NotInPar2++
+				log.Debug("verifycrc: non-par2 file has no CRC, ignoring",
+					"file", af.FileName)
+			}
 			continue
 		}
 
-		entry, ok := par2Index[af.FileName]
-		if !ok {
+		if !inPar2 {
 			// File not in par2 manifest — this is normal for par2 files
 			// themselves, NZB files, etc.
-			log.Debug("verifycrc: file not in par2 manifest, skipping",
+			result.NotInPar2++
+			log.Debug("verifycrc: file not in par2 manifest, ignoring",
 				"file", af.FileName)
-			result.Skipped++
 			continue
 		}
 
 		if entry.desc.FileCRC32 == 0 {
 			// Par2 file didn't have IFSC data for this file.
-			log.Debug("verifycrc: par2 has no CRC for file, skipping",
+			entry.consumed = true
+			result.NoCRC++
+			result.NoCRCFiles = append(result.NoCRCFiles, af.FileName)
+			log.Warn("verifycrc: par2 has no CRC data for file (no IFSC slices)",
 				"file", af.FileName)
-			result.Skipped++
 			continue
 		}
 
@@ -164,24 +186,27 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 		}
 	}
 
-	// Count par2 entries that had no corresponding assembled file.
-	// These represent files tracked by par2 that we couldn't verify.
+	// Count par2 entries that had no corresponding assembled file at all.
+	// These represent a name mismatch between NZB and par2 manifest.
 	for basename, entry := range par2Index {
 		if !entry.consumed {
 			result.Unverified++
-			result.Skipped++
-			log.Warn("verifycrc: par2-tracked file not verified (no matching assembled file)",
+			log.Warn("verifycrc: par2-tracked file not found in assembled files (name mismatch?)",
 				"par2_basename", basename,
 				"par2_path", entry.desc.FileName)
 		}
 	}
 
+	// Total par2-tracked files in the manifest.
+	totalPar2 := len(par2Index)
 	log.Info("verifycrc: complete",
+		"par2_manifest_files", totalPar2,
 		"checked", result.Checked,
 		"matched", result.Matched,
 		"mismatched", result.Mismatched,
-		"skipped", result.Skipped,
-		"unverified_par2_entries", result.Unverified)
+		"no_crc", result.NoCRC,
+		"unverified", result.Unverified,
+		"not_in_par2", result.NotInPar2)
 
 	return result
 }
