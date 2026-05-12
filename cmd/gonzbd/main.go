@@ -282,6 +282,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		PasswordFile:         cfg.PostProc.PasswordFile,
 		ExtraUnrarParams:     cfg.PostProc.ExtraUnrarParams,
 		ExtraPar2Params:      cfg.PostProc.ExtraPar2Params,
+		ScriptCanFail:        cfg.PostProc.ScriptCanFail,
 
 		Version:    Version,
 		APIKey:     cfg.General.APIKey,

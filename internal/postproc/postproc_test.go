@@ -971,3 +971,112 @@ func TestScriptCanFail_True(t *testing.T) {
 		t.Errorf("script ran %d times, want 1", failScript.CallCount())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// L11: Empty job pre-check tests
+// ---------------------------------------------------------------------------
+
+// TestPreCheck_EmptyDir verifies that a job with an empty download directory
+// is rejected before any stages run, with FailMsg set.
+func TestPreCheck_EmptyDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir() // exists but empty
+
+	stage := newRecordStage("repair")
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var capturedJob *Job
+
+	p := startProcessor(t, Options{
+		Stages: []Stage{stage},
+		OnJobDone: func(j *Job) {
+			capturedJob = j
+			wg.Done()
+		},
+	})
+
+	job := &Job{
+		Queue:       &queue.Job{ID: "empty", Name: "empty", PP: 3},
+		DownloadDir: dir,
+	}
+	p.Process(job)
+	wg.Wait()
+
+	if stage.CallCount() != 0 {
+		t.Errorf("stage ran %d times, want 0 (empty dir should skip)", stage.CallCount())
+	}
+	if capturedJob.FailMsg == "" {
+		t.Error("FailMsg should be set for empty directory")
+	}
+	// StageLog should have download + pre-check + summary.
+	foundPreCheck := false
+	for _, e := range capturedJob.StageLog {
+		if e.Stage == "pre-check" {
+			foundPreCheck = true
+		}
+	}
+	if !foundPreCheck {
+		t.Error("expected 'pre-check' stage in StageLog")
+	}
+}
+
+// TestPreCheck_MissingDir verifies that a job with a non-existent download
+// directory is rejected with FailMsg mentioning "unavailable".
+func TestPreCheck_MissingDir(t *testing.T) {
+	t.Parallel()
+
+	stage := newRecordStage("repair")
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var capturedJob *Job
+
+	p := startProcessor(t, Options{
+		Stages: []Stage{stage},
+		OnJobDone: func(j *Job) {
+			capturedJob = j
+			wg.Done()
+		},
+	})
+
+	job := &Job{
+		Queue:       &queue.Job{ID: "missing", Name: "missing", PP: 3},
+		DownloadDir: "/nonexistent/path/xyz",
+	}
+	p.Process(job)
+	wg.Wait()
+
+	if stage.CallCount() != 0 {
+		t.Errorf("stage ran %d times, want 0 (missing dir should skip)", stage.CallCount())
+	}
+	if capturedJob.FailMsg == "" {
+		t.Error("FailMsg should be set for missing directory")
+	}
+}
+
+// TestPreCheck_UnsetDirSkipsGuard verifies that when DownloadDir is unset
+// (empty string), the pre-check guard is skipped and stages run normally.
+// This supports unit tests and dry-run pipelines that don't need a real dir.
+func TestPreCheck_UnsetDirSkipsGuard(t *testing.T) {
+	t.Parallel()
+
+	stage := newRecordStage("repair")
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	p := startProcessor(t, Options{
+		Stages:    []Stage{stage},
+		OnJobDone: func(_ *Job) { wg.Done() },
+	})
+
+	job := &Job{
+		Queue: &queue.Job{ID: "no-dir", Name: "no-dir", PP: 3},
+		// DownloadDir deliberately empty
+	}
+	p.Process(job)
+	wg.Wait()
+
+	if stage.CallCount() != 1 {
+		t.Errorf("stage ran %d times, want 1 (unset DownloadDir should not trigger pre-check)", stage.CallCount())
+	}
+}
+
