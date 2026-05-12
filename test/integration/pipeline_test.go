@@ -1,0 +1,306 @@
+//go:build integration
+
+package integration
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/test/mocknntp"
+)
+
+const pipelineTimeout = 120 * time.Second
+
+// TestPipeline_Par2VerifyAndUnrar exercises the full pipeline:
+// download → assembly → quickcheck/par2 verify → unrar → final move.
+//
+// Creates a RAR archive + par2 set, serves them via mock NNTP, downloads,
+// and verifies the extracted file ends up in completeDir.
+func TestPipeline_Par2VerifyAndUnrar(t *testing.T) {
+	t.Parallel()
+	requireTool(t, "rar")
+	requireTool(t, "unrar")
+	requireTool(t, "par2")
+
+	// Create a known payload and archive it.
+	srcPayload := bytes.Repeat([]byte("pipeline test content for rar+par2\n"), 100)
+	wantSHA := sha256.Sum256(srcPayload)
+
+	fixtureDir := t.TempDir()
+	createRarFixture(t, fixtureDir, "sample.rar", map[string][]byte{
+		"sample.txt": srcPayload,
+	})
+	// Create par2 set for the rar file.
+	createPar2Fixture(t, fixtureDir, filepath.Join(fixtureDir, "sample.rar"))
+
+	// Read fixture files → TestFile entries → mock NNTP articles.
+	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
+	srv := newMockServerFromFixtures(t, files)
+
+	a, _, completeDir := NewTestAppSeparateDirs(t, srv.Addr(), AppTestOpts{
+		EnableUnrar: true,
+	})
+	rawNZB := BuildNZB(files)
+	// PP=3 enables repair + unpack + cleanup stages.
+	addNZBJobPP(t, a, rawNZB, "rar-par2-test", 3)
+
+	waitForPostProcWithTimeout(t, a, pipelineTimeout)
+
+	// The extracted file should be in the complete directory.
+	extractedPath := filepath.Join(completeDir, "rar-par2-test", "sample.txt")
+	verifyFileAtPath(t, extractedPath, wantSHA[:])
+}
+
+// TestPipeline_Par2RepairThenUnrar corrupts a byte in the RAR archive
+// after creation (simulating download corruption), then lets par2 repair
+// it before unrar extracts.
+func TestPipeline_Par2RepairThenUnrar(t *testing.T) {
+	t.Parallel()
+	requireTool(t, "rar")
+	requireTool(t, "unrar")
+	requireTool(t, "par2")
+
+	srcPayload := bytes.Repeat([]byte("repair pipeline test content\n"), 200)
+	wantSHA := sha256.Sum256(srcPayload)
+
+	fixtureDir := t.TempDir()
+	rarPath := createRarFixture(t, fixtureDir, "repairme.rar", map[string][]byte{
+		"repairme.txt": srcPayload,
+	})
+	createPar2Fixture(t, fixtureDir, rarPath)
+
+	// Corrupt a byte in the RAR archive to test repair.
+	rarData, err := os.ReadFile(rarPath) //nolint:gosec // G304: test code
+	if err != nil {
+		t.Fatalf("read rar: %v", err)
+	}
+	if len(rarData) > 100 {
+		rarData[100] ^= 0xFF
+	}
+	if err := os.WriteFile(rarPath, rarData, 0o600); err != nil {
+		t.Fatalf("corrupt rar: %v", err)
+	}
+
+	// Serve the corrupted RAR + intact par2 files.
+	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
+	srv := newMockServerFromFixtures(t, files)
+
+	a, _, completeDir := NewTestAppSeparateDirs(t, srv.Addr(), AppTestOpts{
+		EnableUnrar: true,
+	})
+	rawNZB := BuildNZB(files)
+	addNZBJobPP(t, a, rawNZB, "repair-test", 3)
+
+	waitForPostProcWithTimeout(t, a, pipelineTimeout)
+
+	// Despite corruption, par2 should repair and unrar should extract.
+	extractedPath := filepath.Join(completeDir, "repair-test", "repairme.txt")
+	verifyFileAtPath(t, extractedPath, wantSHA[:])
+}
+
+// TestPipeline_7zExtract exercises the 7z extraction pipeline:
+// download → assembly → 7z extract → final move.
+func TestPipeline_7zExtract(t *testing.T) {
+	t.Parallel()
+	requireTool(t, "7z")
+
+	srcPayload := bytes.Repeat([]byte("7z pipeline test content\n"), 100)
+	wantSHA := sha256.Sum256(srcPayload)
+
+	fixtureDir := t.TempDir()
+	create7zFixture(t, fixtureDir, "sample.7z", map[string][]byte{
+		"sample.txt": srcPayload,
+	})
+
+	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
+	srv := newMockServerFromFixtures(t, files)
+
+	a, _, completeDir := NewTestAppSeparateDirs(t, srv.Addr(), AppTestOpts{
+		Enable7zip: true,
+	})
+	rawNZB := BuildNZB(files)
+	addNZBJobPP(t, a, rawNZB, "7z-test", 3)
+
+	waitForPostProcWithTimeout(t, a, pipelineTimeout)
+
+	extractedPath := filepath.Join(completeDir, "7z-test", "sample.txt")
+	verifyFileAtPath(t, extractedPath, wantSHA[:])
+}
+
+// TestPipeline_RarVia7z verifies that RAR archives can be extracted using
+// 7z as the backend (Prefer7zip mode).
+func TestPipeline_RarVia7z(t *testing.T) {
+	t.Parallel()
+	requireTool(t, "rar")
+	requireTool(t, "7z")
+
+	srcPayload := bytes.Repeat([]byte("rar-via-7z content\n"), 100)
+	wantSHA := sha256.Sum256(srcPayload)
+
+	fixtureDir := t.TempDir()
+	createRarFixture(t, fixtureDir, "via7z.rar", map[string][]byte{
+		"via7z.txt": srcPayload,
+	})
+
+	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
+	srv := newMockServerFromFixtures(t, files)
+
+	a, _, completeDir := NewTestAppSeparateDirs(t, srv.Addr(), AppTestOpts{
+		Enable7zip: true,
+		Prefer7zip: true,
+	})
+	rawNZB := BuildNZB(files)
+	addNZBJobPP(t, a, rawNZB, "rar7z-test", 3)
+
+	waitForPostProcWithTimeout(t, a, pipelineTimeout)
+
+	extractedPath := filepath.Join(completeDir, "rar7z-test", "via7z.txt")
+	verifyFileAtPath(t, extractedPath, wantSHA[:])
+}
+
+// TestPipeline_MissingTool_Graceful verifies that when a required extraction
+// tool is not found, the job fails gracefully (not panics or hangs) and
+// files remain accessible for retry.
+func TestPipeline_MissingTool_Graceful(t *testing.T) {
+	t.Parallel()
+	requireTool(t, "rar")
+
+	srcPayload := bytes.Repeat([]byte("missing tool content\n"), 100)
+
+	fixtureDir := t.TempDir()
+	createRarFixture(t, fixtureDir, "nounrar.rar", map[string][]byte{
+		"nounrar.txt": srcPayload,
+	})
+
+	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
+	srv := newMockServerFromFixtures(t, files)
+
+	// Use a bogus unrar path so unrar stage fails.
+	downloadDir := filepath.Join(t.TempDir(), "incomplete")
+	completeDir := filepath.Join(t.TempDir(), "complete")
+	adminDir := filepath.Join(t.TempDir(), "admin")
+	for _, d := range []string{downloadDir, completeDir, adminDir} {
+		os.MkdirAll(d, 0o750) //nolint:errcheck // test setup
+	}
+
+	cfg := buildAppConfig(srv.Addr(), downloadDir)
+	cfg.CompleteDir = completeDir
+	cfg.AdminDir = adminDir
+	cfg.EnableUnrar = true
+	cfg.UnrarCommand = "/nonexistent/unrar-missing-binary"
+
+	db, err := history.Open(filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	repo := history.NewRepository(db)
+
+	a, err := app.New(cfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	if err := a.Start(ctx); err != nil {
+		cancel()
+		t.Fatalf("app.Start: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = a.Shutdown()
+		db.Close()
+	})
+
+	rawNZB := BuildNZB(files)
+	// PP=3 so the unpack stage actually runs (and fails).
+	addNZBJobPP(t, a, rawNZB, "missing-tool", 3)
+
+	// Job should complete (possibly with failure) — not hang.
+	waitForPostProcWithTimeout(t, a, pipelineTimeout)
+
+	// The RAR file should still be accessible somewhere for retry.
+	// It may be in downloadDir or completeDir depending on the failure path.
+	found := findFile(t, downloadDir, "nounrar.rar")
+	if found == "" {
+		found = findFile(t, completeDir, "nounrar.rar")
+	}
+	if found == "" {
+		t.Error("RAR file not found in either download or complete dir after tool failure")
+	} else {
+		t.Logf("RAR file preserved at: %s", found)
+	}
+}
+
+// TestPipeline_PlainFile_NoPostProc verifies that a plain file (no rar/par2)
+// downloads and moves to completeDir without errors.
+func TestPipeline_PlainFile_NoPostProc(t *testing.T) {
+	t.Parallel()
+
+	payload := bytes.Repeat([]byte("plain file content\n"), 200)
+	wantSHA := sha256.Sum256(payload)
+	files := []TestFile{
+		{Name: "plain-file.bin", Payload: payload},
+	}
+	srv := newMockServer(t, files)
+
+	a, _, completeDir := NewTestAppSeparateDirs(t, srv.Addr(), AppTestOpts{})
+	rawNZB := BuildNZB(files)
+	addNZBJob(t, a, rawNZB, "plain-test")
+
+	waitForPostProcWithTimeout(t, a, 30*time.Second)
+
+	expectedPath := filepath.Join(completeDir, "plain-test", "plain-file.bin")
+	verifyFileAtPath(t, expectedPath, wantSHA[:])
+}
+
+// TestPipeline_PRiVATE_FullPipeline combines PRiVATE subject naming with
+// RAR extraction to test the full NZB → download → correct filename →
+// unrar → final move chain.
+func TestPipeline_PRiVATE_FullPipeline(t *testing.T) {
+	t.Parallel()
+	requireTool(t, "rar")
+	requireTool(t, "unrar")
+
+	srcPayload := bytes.Repeat([]byte("private pipeline content\n"), 100)
+	wantSHA := sha256.Sum256(srcPayload)
+
+	// Create the RAR archive containing our test file.
+	fixtureDir := t.TempDir()
+	createRarFixture(t, fixtureDir, "show.s01e02.rar", map[string][]byte{
+		"show.s01e02.mkv": srcPayload,
+	})
+
+	// Read fixture → TestFiles with specific filenames matching what the
+	// PRiVATE subject will declare.
+	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
+
+	// Register articles with mock NNTP server.
+	srv := mocknntp.NewServer(mocknntp.Config{})
+	RegisterArticles(srv, files)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("mock server start: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	a, _, completeDir := NewTestAppSeparateDirs(t, srv.Addr(), AppTestOpts{
+		EnableUnrar: true,
+	})
+
+	// Build NZB with PRiVATE subject format.
+	rawNZB := BuildNZBCustomSubject(files, SubjectPRiVATE)
+	// PP=3 to enable unpack.
+	addNZBJobPP(t, a, rawNZB, "private-pipeline", 3)
+
+	waitForPostProcWithTimeout(t, a, pipelineTimeout)
+
+	// The extracted file should be in completeDir.
+	extractedPath := filepath.Join(completeDir, "private-pipeline", "show.s01e02.mkv")
+	verifyFileAtPath(t, extractedPath, wantSHA[:])
+}
