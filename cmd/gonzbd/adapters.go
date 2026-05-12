@@ -36,6 +36,7 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 	if err != nil {
 		return "", fmt.Errorf("parse nzb %q: %w", filename, err)
 	}
+	log := h.logger.With("component", "ingest")
 	addOpts := queue.AddOptions{
 		Filename: filename,
 		Name:     opts.NzbName,
@@ -44,6 +45,7 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 		PP:       opts.PP,
 		Script:   opts.Script,
 		Priority: opts.Priority,
+		Logger:   log,
 	}
 	sOpts := fsutil.SanitizeOptions{}
 	if h.config != nil {
@@ -56,21 +58,6 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 	if err != nil {
 		return "", fmt.Errorf("create job %q: %w", filename, err)
 	}
-
-	log := h.logger.With("component", "ingest")
-	catSummary := make([]string, 0, len(addOpts.Categories))
-	for _, c := range addOpts.Categories {
-		catSummary = append(catSummary, fmt.Sprintf("%q(pp=%d)", c.Name, c.PP))
-	}
-	log.Info("resolved job pp",
-		"filename", filename,
-		"category", job.Category,
-		"opts_pp", opts.PP,
-		"resolved_pp", job.PP,
-		"categories_loaded", len(addOpts.Categories),
-		"categories", strings.Join(catSummary, ","),
-	)
-	log.Debug("processing nzb", "filename", filename, "md5", job.MD5)
 
 	if err := h.app.AddJob(ctx, job, data, false); err != nil {
 		return "", fmt.Errorf("add job %q: %w", filename, err)

@@ -1366,3 +1366,81 @@ func TestQueueList_PostProcJobsVisible(t *testing.T) {
 		t.Error("post-processing job should be visible in queue")
 	}
 }
+
+// --- change_opts (PP change) ---
+
+func TestQueueChangeOpts_Success(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb", PP: 1})
+
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_opts&value="+job.ID+"&value2=3&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Status bool     `json:"status"`
+		NzoIDs []string `json:"nzo_ids"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Status {
+		t.Error("status should be true")
+	}
+	if len(resp.NzoIDs) != 1 || resp.NzoIDs[0] != job.ID {
+		t.Errorf("nzo_ids = %v; want [%s]", resp.NzoIDs, job.ID)
+	}
+
+	// Verify the queue was updated.
+	got, err := q.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.PP != 3 {
+		t.Errorf("PP = %d; want 3", got.PP)
+	}
+}
+
+func TestQueueChangeOpts_MissingValue(t *testing.T) {
+	t.Parallel()
+	s, _ := testQueueServer(t)
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_opts&apikey="+testAPIKey)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d; want 400", rr.Code)
+	}
+}
+
+func TestQueueChangeOpts_MissingValue2(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_opts&value="+job.ID+"&apikey="+testAPIKey)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d; want 400", rr.Code)
+	}
+}
+
+func TestQueueChangeOpts_InvalidPP(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_opts&value="+job.ID+"&value2=5&apikey="+testAPIKey)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d; want 400 for out-of-range PP", rr.Code)
+	}
+}
+
+func TestQueueChangeOpts_UnknownJob(t *testing.T) {
+	t.Parallel()
+	s, _ := testQueueServer(t)
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_opts&value=nonexistent&value2=2&apikey="+testAPIKey)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d; want 404 for unknown job", rr.Code)
+	}
+}
