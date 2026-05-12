@@ -120,6 +120,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 			} else {
 				logf(log, job, slog.LevelInfo,
 					"quickcheck: all %d verified files have matching CRCs", crcResult.Matched)
+				job.QuickCheckPassed = true
 			}
 		} else if crcResult.Skipped > 0 {
 			logf(log, job, slog.LevelInfo,
@@ -167,6 +168,16 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	log = log.With("component", "postproc/repair", "job", job.Queue.ID)
 
 	logf(log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)
+
+	// If QuickCheck already confirmed all files have matching CRCs, skip
+	// the expensive par2 verify+repair subprocess. This saves 10-30s per
+	// healthy job.
+	if job.QuickCheckPassed {
+		logf(log, job, slog.LevelInfo, "QuickCheck verified all CRCs — skipping par2 repair")
+		job.OutputLines = append(job.OutputLines,
+			"[repair] Skipped: QuickCheck already verified all file CRCs")
+		return nil
+	}
 
 	sets, err := par2.FindPar2Files(job.DownloadDir)
 	if err != nil {
@@ -822,6 +833,12 @@ type ScriptStage struct {
 	APIKey  string
 	APIURL  string
 
+	// ScriptCanFail when true causes non-zero script exit codes to be
+	// logged but NOT treated as pipeline errors. This matches Python's
+	// cfg.script_can_fail() behavior. Default false = non-zero exit
+	// is an error.
+	ScriptCanFail bool
+
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
@@ -912,6 +929,11 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	if res.Err != nil {
 		if errors.Is(res.Err, ErrNonZeroExit) {
 			logf(log, job, slog.LevelWarn, "Error: script %q exited %d", name, res.ExitCode)
+			if s.ScriptCanFail {
+				// Log but don't fail the pipeline.
+				logf(log, job, slog.LevelInfo, "script_can_fail=true: ignoring non-zero exit")
+				return nil
+			}
 			return fmt.Errorf("script %q exited %d", name, res.ExitCode)
 		}
 		logf(log, job, slog.LevelWarn, "Error: script %q failed: %v", name, res.Err)
