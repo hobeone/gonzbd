@@ -190,7 +190,10 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 			if matched[name] {
 				continue
 			}
-			if strings.EqualFold(filepath.Ext(name), ".par2") {
+			// Skip verification and metadata files — they're not data files
+			// that need relocation.
+			ext := strings.ToLower(filepath.Ext(name))
+			if ext == ".par2" || ext == ".sfv" || ext == ".nfo" {
 				continue
 			}
 
