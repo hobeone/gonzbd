@@ -139,19 +139,20 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 		}
 
 		// Decision: can we skip par2 repair?
-		if unverifiable > 0 {
+		switch {
+		case unverifiable > 0:
 			logf(log, job, slog.LevelInfo,
 				"quickcheck: %d/%d par2-tracked files verified OK, %d could not be verified — par2 repair will run",
 				crcResult.Matched, crcResult.Matched+unverifiable, unverifiable)
 			job.OutputLines = append(job.OutputLines,
 				fmt.Sprintf("[quickcheck] %d file(s) need par2 verification — repair stage will run",
 					unverifiable))
-		} else if crcResult.Checked > 0 {
+		case crcResult.Checked > 0:
 			logf(log, job, slog.LevelInfo,
 				"quickcheck: all %d par2-tracked files verified OK — skipping par2 repair",
 				crcResult.Matched)
 			job.QuickCheckPassed = true
-		} else {
+		default:
 			logf(log, job, slog.LevelInfo,
 				"quickcheck: no files could be CRC-verified — par2 repair will run")
 			job.OutputLines = append(job.OutputLines,
@@ -462,7 +463,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	if job.Queue.Password != "" {
 		opts.Passwords = append([]string{job.Queue.Password}, opts.Passwords...)
 	}
-	opts.Password = "" // use Passwords list exclusively
+	opts.Password = "" //nolint:staticcheck // SA1019: intentionally zeroed to force Passwords-list iteration
 	if len(opts.Passwords) > 0 {
 		logf(log, job, slog.LevelInfo, "Will try %d password(s) for encrypted archives", len(opts.Passwords))
 	}
@@ -607,8 +608,8 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			// Record command line in stage log for successful extractions too.
 			if res.CommandLine != "" {
 				job.OutputLines = append(job.OutputLines,
-					fmt.Sprintf("[%s] %s", archiveTypeName(a.Type), a.Name))
-				job.OutputLines = append(job.OutputLines, "Command: "+res.CommandLine)
+					fmt.Sprintf("[%s] %s", archiveTypeName(a.Type), a.Name),
+					"Command: "+res.CommandLine)
 			}
 
 			// Post-extraction containment check: verify all extracted files
@@ -657,10 +658,6 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	return firstErr
 }
 
-// DeobfuscateStage renames obfuscated files in place using the job's
-// display name as the rename target. Scope matches the deobfuscate
-// package — see its doc for the skipped Python behaviors.
-//
 // RecoverPar2NamesStage renames obfuscated files using par2 metadata
 // (16K-MD5 matching). This mirrors SABnzbd's recover_par2_names() which
 // runs after unpacking but before heuristic deobfuscation. It is
