@@ -103,6 +103,18 @@ func ParsePar2Set(path string) (*Par2Set, error) {
 	}
 	var ifscPackets []ifscData
 
+	// earlyExitThreshold is the file size above which we stop scanning once all
+	// FileDesc + IFSC packets are seen. Recovery blocks are huge and irrelevant
+	// for rename/CRC purposes. Spec §4.5.
+	const earlyExitThreshold = 10 * 1024 * 1024 // 10 MiB
+
+	var (
+		expectedFiles int // -1 = unknown (Main not yet parsed), 0+ = from Main body
+		seenFileDescs int
+		seenIFSC      int
+	)
+	expectedFiles = -1
+
 	for {
 		header := make([]byte, 64)
 		_, err := io.ReadFull(f, header)
@@ -189,17 +201,25 @@ func ParsePar2Set(path string) (*Par2Set, error) {
 			set.SliceSize = binary.LittleEndian.Uint64(body[0:8])
 			copy(set.SetID[:], header[32:48])
 
+			// Main packet body after sliceSize(8) + recoverySetCount(4) is
+			// an array of 16-byte FileID entries.
+			if len(body) > 12 {
+				expectedFiles = (len(body) - 12) / 16
+			}
+
 		case typeFileDesc:
 			fd := parseFileDescBody(body)
 			if fd == nil {
 				continue
 			}
 			set.Files = append(set.Files, *fd)
+			seenFileDescs++
 
 		case typeIFSC:
 			idata := parseIFSCBody(body)
 			if idata != nil {
 				ifscPackets = append(ifscPackets, *idata)
+				seenIFSC++
 			}
 
 		case typeRecovery:
@@ -207,6 +227,14 @@ func ParsePar2Set(path string) (*Par2Set, error) {
 
 		case typeCreator:
 			set.Creator = string(bytes.TrimRight(body, "\x00"))
+		}
+
+		// Scan optimization (spec §4.5): for large par2 files, stop once
+		// all FileDesc + IFSC packets have been seen. Recovery blocks are
+		// huge and irrelevant for rename/CRC purposes.
+		if expectedFiles > 0 && fileSize > earlyExitThreshold &&
+			seenFileDescs >= expectedFiles && seenIFSC >= expectedFiles {
+			break
 		}
 	}
 
