@@ -30,6 +30,10 @@ type Options struct {
 	// the active queue. Usually maps to queue.SetStatus.
 	StatusUpdater func(string, constants.Status)
 
+	// OnOutput is called when a subprocess emits a line of output during
+	// post-processing. Parameters: jobID, tool name, output line.
+	OnOutput func(jobID, tool, line string)
+
 	// Logger is the structured logger.  Defaults to slog.Default() when nil.
 	Logger *slog.Logger
 }
@@ -45,6 +49,7 @@ type PostProcessor struct {
 	onEmpty       func()
 	onJobDone     func(*Job)
 	statusUpdater func(string, constants.Status)
+	onOutput      func(jobID, tool, line string)
 	log           *slog.Logger
 
 	q *ppQueue
@@ -93,6 +98,7 @@ func New(opts Options) *PostProcessor {
 		onEmpty:       opts.OnEmpty,
 		onJobDone:     opts.OnJobDone,
 		statusUpdater: opts.StatusUpdater,
+		onOutput:      opts.OnOutput,
 		log:           log,
 		q:             newPPQueue(),
 		resumeC:       make(chan struct{}),
@@ -327,6 +333,11 @@ func (p *PostProcessor) popWithPause() (*Job, bool) {
 // download health gate), all processing stages are skipped. The job
 // still flows through to history so the user sees the failure.
 func (p *PostProcessor) processJob(job *Job) {
+	job.OnOutput = func(tool, line string) {
+		if p.onOutput != nil {
+			p.onOutput(job.Queue.ID, tool, line)
+		}
+	}
 	p.log.Info("postproc: processing job", "job", job.Queue.ID, "name", job.Queue.Name)
 
 	// Build a synthetic "download" stage that captures the files present

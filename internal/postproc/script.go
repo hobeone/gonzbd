@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
 // MaxLogBytes caps the captured log to avoid unbounded memory use on a
@@ -97,6 +99,9 @@ type ScriptInput struct {
 
 	// AvgBPS is average bytes/sec during download (SAB_AVG_BPS env-only).
 	AvgBPS int64
+
+	// OnLine is called for each line of subprocess output. May be nil.
+	OnLine func(string)
 }
 
 // ScriptResult captures the outcome of a script invocation.
@@ -258,9 +263,9 @@ func RunScript(ctx context.Context, scriptPath string, in ScriptInput) ScriptRes
 		return nil
 	}
 
-	cw := &cappedWriter{buf: &bytes.Buffer{}, cap: MaxLogBytes}
-	cmd.Stdout = cw
-	cmd.Stderr = cw
+	streamer := cmdutil.NewLineStreamerCapped(in.OnLine, MaxLogBytes)
+	cmd.Stdout = streamer
+	cmd.Stderr = streamer
 
 	started := time.Now()
 
@@ -286,9 +291,9 @@ func RunScript(ctx context.Context, scriptPath string, in ScriptInput) ScriptRes
 				killProcessGroup(cmd)
 				return nil
 			}
-			cw = &cappedWriter{buf: &bytes.Buffer{}, cap: MaxLogBytes}
-			cmd.Stdout = cw
-			cmd.Stderr = cw
+			streamer = cmdutil.NewLineStreamerCapped(in.OnLine, MaxLogBytes)
+			cmd.Stdout = streamer
+			cmd.Stderr = streamer
 		}
 		startErr = cmd.Start()
 		if startErr == nil {
@@ -312,10 +317,10 @@ func RunScript(ctx context.Context, scriptPath string, in ScriptInput) ScriptRes
 
 	waitErr := cmd.Wait()
 	duration := time.Since(started)
-	logBody := cw.buf.String()
+	logBody := streamer.String()
 
 	// Scan log to ensure LogBody ends on a line boundary when truncated.
-	if cw.written >= cw.cap {
+	if len(logBody) >= MaxLogBytes {
 		// Walk backwards to find the last newline so we don't emit a partial line.
 		if idx := strings.LastIndexByte(logBody, '\n'); idx >= 0 {
 			logBody = logBody[:idx+1]
