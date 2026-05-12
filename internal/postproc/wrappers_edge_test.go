@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -158,11 +159,15 @@ func TestFinalizeStage_FolderRename_Success(t *testing.T) {
 
 func TestFinalizeStage_FolderRename_Failed(t *testing.T) {
 	t.Parallel()
-	srcDir := t.TempDir()
+	// Create a download dir with a known parent so we can verify the
+	// _FAILED_ prefix is applied in-place (not moved to complete).
+	parentDir := t.TempDir()
+	srcDir := filepath.Join(parentDir, "MyRelease")
+	os.MkdirAll(srcDir, 0o755)
 	os.WriteFile(filepath.Join(srcDir, "movie.mkv"), []byte("video"), 0o644)
 
-	baseDir := t.TempDir()
-	finalDir := filepath.Join(baseDir, "MyRelease")
+	completeDir := t.TempDir()
+	finalDir := filepath.Join(completeDir, "MyRelease")
 
 	job := &Job{
 		Queue:       &queue.Job{ID: "fr-fail", Name: "MyRelease"},
@@ -178,10 +183,16 @@ func TestFinalizeStage_FolderRename_Failed(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// Should be renamed to _FAILED_ directory.
-	failedDir := filepath.Join(baseDir, "_FAILED_MyRelease")
+	// _FAILED_ dir should be in the download area parent (in-place rename),
+	// NOT in the complete directory.
+	failedDir := filepath.Join(parentDir, "_FAILED_MyRelease")
 	if _, err := os.Stat(failedDir); err != nil {
-		t.Errorf("_FAILED_ dir should exist: %v", err)
+		t.Errorf("_FAILED_ dir should exist in download parent: %v", err)
+	}
+	// Complete directory should NOT have _FAILED_ dir.
+	completeFailedDir := filepath.Join(completeDir, "_FAILED_MyRelease")
+	if _, err := os.Stat(completeFailedDir); !os.IsNotExist(err) {
+		t.Errorf("_FAILED_ dir should NOT be in complete directory")
 	}
 	// DownloadDir should point to _FAILED_ dir.
 	if job.DownloadDir != failedDir {
@@ -190,6 +201,81 @@ func TestFinalizeStage_FolderRename_Failed(t *testing.T) {
 	// File should be in _FAILED_ dir.
 	if _, err := os.Stat(filepath.Join(failedDir, "movie.mkv")); err != nil {
 		t.Errorf("movie.mkv should exist in _FAILED_ dir")
+	}
+}
+
+// TestFinalizeStage_FailedFilesAccessibleForRetry validates the retry invariant:
+// after a failed job (with or without FolderRename), the downloaded files MUST
+// remain accessible at job.DownloadDir, and that path must NOT be under the
+// complete directory. This ensures the retry system can find the files.
+//
+// This is an integration-level contract test. The original _FAILED_ prefix
+// implementation moved files to the complete directory, breaking retry.
+func TestFinalizeStage_FailedFilesAccessibleForRetry(t *testing.T) {
+	t.Parallel()
+
+	incompleteDir := t.TempDir() // simulates the incomplete/download area
+	completeDir := t.TempDir()   // simulates the complete area
+
+	for _, folderRename := range []bool{true, false} {
+		for _, errType := range []string{"par", "unpack", "failmsg"} {
+			name := errType
+			if folderRename {
+				name += "_rename"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				// Create a download directory with files, as the downloader would.
+				srcDir := filepath.Join(incompleteDir, name)
+				os.MkdirAll(srcDir, 0o755)
+				os.WriteFile(filepath.Join(srcDir, "data.rar"), []byte("archive"), 0o644)
+				os.WriteFile(filepath.Join(srcDir, "data.par2"), []byte("parity"), 0o644)
+
+				job := &Job{
+					Queue:       &queue.Job{ID: "retry-" + name, Name: "TestRelease"},
+					DownloadDir: srcDir,
+					FinalDir:    filepath.Join(completeDir, "TestRelease"),
+				}
+
+				switch errType {
+				case "par":
+					job.ParError = true
+				case "unpack":
+					job.UnpackError = true
+				case "failmsg":
+					job.FailMsg = "beyond repair"
+				}
+
+				stage := NewFinalizeStage()
+				stage.FolderRename = folderRename
+
+				if err := stage.Run(t.Context(), job); err != nil {
+					t.Fatalf("Run: %v", err)
+				}
+
+				// INVARIANT 1: job.DownloadDir must exist and contain our files.
+				if _, err := os.Stat(job.DownloadDir); err != nil {
+					t.Fatalf("DownloadDir %q does not exist after failure: %v", job.DownloadDir, err)
+				}
+				for _, f := range []string{"data.rar", "data.par2"} {
+					if _, err := os.Stat(filepath.Join(job.DownloadDir, f)); err != nil {
+						t.Errorf("file %q not found at DownloadDir after failure: %v", f, err)
+					}
+				}
+
+				// INVARIANT 2: files must NOT be in the complete directory.
+				entries, _ := os.ReadDir(completeDir)
+				for _, e := range entries {
+					t.Errorf("complete directory should be empty after failure, but found: %s", e.Name())
+				}
+
+				// INVARIANT 3: DownloadDir must still be under the incomplete area.
+				if !strings.HasPrefix(job.DownloadDir, incompleteDir) {
+					t.Errorf("DownloadDir %q escaped incomplete area %q", job.DownloadDir, incompleteDir)
+				}
+			})
+		}
 	}
 }
 
