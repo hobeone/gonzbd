@@ -84,18 +84,11 @@ func Default() (*Config, error) {
 			FlatUnpack:           false,
 			DeobfuscateFilenames: true,
 		},
-		Servers: nil, // user must add at least one before download is possible
-		Categories: []CategoryConfig{
-			{
-				Name:     "Default",
-				PP:       3, // Repair + Unpack
-				Script:   "None",
-				Priority: int(constants.NormalPriority),
-			},
-		},
-		Sorters:   []SorterConfig{},
-		Schedules: []ScheduleConfig{},
-		RSS:       []RSSFeedConfig{},
+		Servers:    nil, // user must add at least one before download is possible
+		Categories: []CategoryConfig{BuiltinDefaultCategory()},
+		Sorters:    []SorterConfig{},
+		Schedules:  []ScheduleConfig{},
+		RSS:        []RSSFeedConfig{},
 	}, nil
 }
 
