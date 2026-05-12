@@ -90,6 +90,10 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 		if s.SkipNZB && ext == "nzb" {
 			return nil
 		}
+		// M7: protect files consumed by repair/join operations.
+		if _, consumed := job.ConsumedFiles[path]; consumed {
+			return nil
+		}
 
 		if err := os.Remove(path); err != nil {
 			log.Warn("failed to remove file", "path", path, "err", err)
