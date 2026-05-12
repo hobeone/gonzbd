@@ -117,6 +117,61 @@ func TestParse(t *testing.T) {
 			wantEp:     1,
 			wantRes:    "720p",
 		},
+
+		// H9: Anime / episode-only (no season → Season 1 default)
+		{
+			name:       "H9 episode-only anime",
+			input:      "Show.E08.2160p",
+			wantType:   sorting.TVMedia,
+			wantTitle:  "Show",
+			wantSeason: 1,
+			wantEp:     8,
+			wantRes:    "2160p",
+		},
+		{
+			name:       "H9 episode-only with longer name",
+			input:      "Anime.Name.E12.720p.WEB-DL",
+			wantType:   sorting.TVMedia,
+			wantTitle:  "Anime Name",
+			wantSeason: 1,
+			wantEp:     12,
+			wantRes:    "720p",
+		},
+		{
+			name:       "H9 full SxxExx still works",
+			input:      "Show.S02E05.720p",
+			wantType:   sorting.TVMedia,
+			wantTitle:  "Show",
+			wantSeason: 2,
+			wantEp:     5,
+			wantRes:    "720p",
+		},
+
+		// H10: Digit-starting names — FIX prefix applied internally
+		{
+			name:       "H10 digit-starting TV show",
+			input:      "25.817.hdtv-rofl",
+			wantType:   sorting.TVMedia,
+			wantSeason: 8,
+			wantEp:     17,
+		},
+		{
+			name:       "H10 digit-starting with SxxExx",
+			input:      "90210.S01E01.720p",
+			wantType:   sorting.TVMedia,
+			wantTitle:  "90210",
+			wantSeason: 1,
+			wantEp:     1,
+			wantRes:    "720p",
+		},
+		{
+			name:       "H10 normal show no FIX applied",
+			input:      "Normal.Show.S01E01",
+			wantType:   sorting.TVMedia,
+			wantTitle:  "Normal Show",
+			wantSeason: 1,
+			wantEp:     1,
+		},
 	}
 
 	for _, tc := range cases {

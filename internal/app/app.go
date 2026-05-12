@@ -255,8 +255,19 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		completions: d.Completions(),
 		downloadDir: cfg.DownloadDir,
 		sanitize:    cfg.Sanitize,
-		updateCh:    make(chan completionSwap, 1),
-		fileInfo:    make(map[fileKey]assembler.FileInfo),
+		onJobHopeless: func(jobID string) {
+			snap := q.SnapshotJob(jobID)
+			if snap == nil {
+				return
+			}
+			msg := failMsgForJob(snap)
+			if msg == "" {
+				msg = "Aborted: 80%+ of first articles failed (DMCA'd or expired)"
+			}
+			app.maybeFinalize(jobID, msg)
+		},
+		updateCh: make(chan completionSwap, 1),
+		fileInfo: make(map[fileKey]assembler.FileInfo),
 	}
 	app.pipeline = p
 
