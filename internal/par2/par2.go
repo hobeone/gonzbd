@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
@@ -30,8 +31,14 @@ const (
 	StatusRepairPossible
 	// StatusRepairNotPossible means damage exceeds available recovery blocks.
 	StatusRepairNotPossible
+	// StatusNeedMoreBlocks means par2 needs additional recovery blocks to repair.
+	// This triggers the re-add path: the job is pushed back to the download queue
+	// to fetch additional par2 volume files.
+	StatusNeedMoreBlocks
 	// StatusInvalidPar2 means the par2 file itself is missing or corrupt.
 	StatusInvalidPar2
+	// StatusDiskFull means par2 reported insufficient disk space.
+	StatusDiskFull
 )
 
 // Set groups a collection of par2 files that belong to the same repair set.
@@ -64,6 +71,12 @@ type RepairResult struct {
 	ExitCode int
 	// Output is the combined stdout and stderr from par2.
 	Output string
+	// NeedMoreBlocks is true when par2 reported "You need N more recovery blocks".
+	// This indicates the job should be requeued to fetch additional par2 volumes.
+	NeedMoreBlocks bool
+	// BlocksNeeded is the number of additional recovery blocks par2 requires.
+	// Only meaningful when NeedMoreBlocks is true.
+	BlocksNeeded int
 }
 
 // RunOptions configures the par2 binary invocation.
@@ -88,6 +101,10 @@ func (o RunOptions) command() string {
 
 // volPattern matches the volume suffix of a par2 filename, e.g. ".vol000+01".
 var volPattern = regexp.MustCompile(`(?i)\.vol\d+\+\d+$`)
+
+// needMoreBlocksRE extracts the block count from par2's "You need N more
+// recovery blocks" message. Spec §7.3.
+var needMoreBlocksRE = regexp.MustCompile(`You need (\d+) more recovery block`)
 
 // setName derives the set name from a par2 filename (without directory).
 // Examples:
@@ -168,7 +185,14 @@ func parseStatus(output string) Status {
 	case strings.Contains(output, "Main packet not found"),
 		strings.Contains(output, "The recovery file does not exist"):
 		return StatusInvalidPar2
+	case strings.Contains(output, "not enough space on the disk"),
+		strings.Contains(output, "Insufficient disk space"):
+		return StatusDiskFull
+	case needMoreBlocksRE.MatchString(output):
+		return StatusNeedMoreBlocks
 	case strings.Contains(output, "Repair is not possible"):
+		return StatusRepairNotPossible
+	case strings.Contains(output, "cannot be renamed to"):
 		return StatusRepairNotPossible
 	case strings.Contains(output, "Repair is required"):
 		return StatusRepairRequired
@@ -265,5 +289,12 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	}
 
 	res.Success = strings.Contains(res.Output, "Repair complete") || strings.Contains(res.Output, "All files are correct")
+
+	// Parse "You need N more recovery blocks" for the re-add path.
+	if m := needMoreBlocksRE.FindStringSubmatch(res.Output); len(m) == 2 {
+		res.NeedMoreBlocks = true
+		res.BlocksNeeded, _ = strconv.Atoi(m[1])
+	}
+
 	return res, nil
 }

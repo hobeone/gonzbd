@@ -390,3 +390,90 @@ func TestSortStage_SkipsOnUnpackError(t *testing.T) {
 		t.Error("expected OutputLines to contain skip message")
 	}
 }
+
+// ---------- CleanupStage tests ----------
+
+func TestCleanupStage_Name(t *testing.T) {
+	t.Parallel()
+	if got := (&CleanupStage{}).Name(); got != "cleanup" {
+		t.Errorf("Name() = %q, want %q", got, "cleanup")
+	}
+}
+
+func TestCleanupStage_RemovesAdminDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	adminDir := filepath.Join(dir, "__ADMIN__")
+	os.MkdirAll(adminDir, 0o755)
+	os.WriteFile(filepath.Join(adminDir, "gonzbd_verified.json"), []byte(`{}`), 0o644)
+
+	job := &Job{
+		Queue:       &queue.Job{ID: "test-cleanup"},
+		DownloadDir: dir,
+	}
+	stage := NewCleanupStage()
+	if err := stage.Run(context.Background(), job); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+
+	if _, err := os.Stat(adminDir); !os.IsNotExist(err) {
+		t.Error("expected admin dir to be removed after successful cleanup")
+	}
+}
+
+func TestCleanupStage_PreservesOnParError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	adminDir := filepath.Join(dir, "__ADMIN__")
+	os.MkdirAll(adminDir, 0o755)
+	os.WriteFile(filepath.Join(adminDir, "gonzbd_verified.json"), []byte(`{}`), 0o644)
+
+	job := &Job{
+		Queue:       &queue.Job{ID: "test-cleanup-par"},
+		DownloadDir: dir,
+		ParError:    true,
+	}
+	stage := NewCleanupStage()
+	if err := stage.Run(context.Background(), job); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+
+	if _, err := os.Stat(adminDir); os.IsNotExist(err) {
+		t.Error("expected admin dir to be preserved on ParError")
+	}
+}
+
+func TestCleanupStage_PreservesOnUnpackError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	adminDir := filepath.Join(dir, "__ADMIN__")
+	os.MkdirAll(adminDir, 0o755)
+
+	job := &Job{
+		Queue:       &queue.Job{ID: "test-cleanup-unpack"},
+		DownloadDir: dir,
+		UnpackError: true,
+	}
+	stage := NewCleanupStage()
+	if err := stage.Run(context.Background(), job); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+
+	if _, err := os.Stat(adminDir); os.IsNotExist(err) {
+		t.Error("expected admin dir to be preserved on UnpackError")
+	}
+}
+
+func TestCleanupStage_NoAdminDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// No __ADMIN__ dir exists — should succeed gracefully.
+	job := &Job{
+		Queue:       &queue.Job{ID: "test-cleanup-none"},
+		DownloadDir: dir,
+	}
+	stage := NewCleanupStage()
+	if err := stage.Run(context.Background(), job); err != nil {
+		t.Fatalf("Run() = %v, expected nil", err)
+	}
+}
