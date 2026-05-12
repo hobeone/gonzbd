@@ -3,6 +3,7 @@ package sorting
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -26,12 +27,42 @@ var tokens = []tokenEntry{
 	// Episode number — after episode-name tokens.
 	{"%0e", func(info MediaInfo, _ string) string { return fmt.Sprintf("%02d", info.Episode) }},
 	{"%e", func(info MediaInfo, _ string) string { return fmt.Sprintf("%d", info.Episode) }},
-	// Title variants.
+	// Title long-form aliases (SABnzbd %title, %sN, %s.N, %s_N — all map to info.Title).
+	{"%title", func(info MediaInfo, _ string) string { return info.Title }},
+	{"%.title", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", ".") }},
+	{"%_title", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", "_") }},
+	{"%s.N", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", ".") }},
+	{"%s_N", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", "_") }},
+	{"%sN", func(info MediaInfo, _ string) string { return info.Title }},
+	// Title short-form (existing).
 	{"%_.t", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", "_") }},
 	{"%.t", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", ".") }},
 	{"%_t", func(info MediaInfo, _ string) string { return strings.ReplaceAll(info.Title, " ", "_") }},
 	{"%t", func(info MediaInfo, _ string) string { return info.Title }},
-	// Year and decade.
+	// Original job name (SABnzbd %dn).
+	{"%dn", func(info MediaInfo, _ string) string { return info.OriginalJobName }},
+	// Legacy episode name alias (SABnzbd %desc — maps to episode name for date shows, empty otherwise).
+	{"%desc", func(info MediaInfo, _ string) string {
+		if info.Type == DatedMedia {
+			return info.EpisodeName
+		}
+		return ""
+	}},
+	// Year — long-form alias (SABnzbd %year).
+	{"%year", func(info MediaInfo, _ string) string {
+		if info.Year == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%d", info.Year)
+	}},
+	// Decade — zero-padded 4-digit (SABnzbd %0decade, e.g. "2020").
+	{"%0decade", func(info MediaInfo, _ string) string {
+		if info.Year == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%d", (info.Year/10)*10)
+	}},
+	// Decade — short form with 's' suffix (e.g. "2020s").
 	{"%decade", func(info MediaInfo, _ string) string {
 		if info.Year == 0 {
 			return ""
@@ -56,6 +87,9 @@ var tokens = []tokenEntry{
 	// Resolution.
 	{"%r", func(info MediaInfo, _ string) string { return info.Resolution }},
 }
+
+// reLowercaseBraces matches {content} wrappers for lowercasing.
+var reLowercaseBraces = regexp.MustCompile(`\{([^}]*)\}`)
 
 // ExpandTemplate substitutes sort-string tokens in template with values
 // derived from info. Unknown tokens beginning with % are left verbatim.
@@ -94,7 +128,15 @@ func ExpandTemplate(template string, info MediaInfo, ext string) string {
 		}
 	}
 
-	return out.String()
+	result := out.String()
+
+	// SABnzbd {…} lowercase wrapper: lowercase everything inside braces.
+	result = reLowercaseBraces.ReplaceAllStringFunc(result, func(m string) string {
+		// Strip the braces and lowercase the content.
+		return strings.ToLower(m[1 : len(m)-1])
+	})
+
+	return result
 }
 
 // CleanTemplatePath cleans up a template-expanded path by stripping leading
