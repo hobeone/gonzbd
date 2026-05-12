@@ -93,6 +93,10 @@ type RunOptions struct {
 	// OnLine is called for each line of output from the par2 subprocess.
 	// May be nil.
 	OnLine func(string) `json:"-"`
+	// OnCommand is called once per subprocess invocation, just before
+	// exec, with the full command line that's about to run. Lets callers
+	// log the actual argv. May be nil.
+	OnCommand func(string) `json:"-"`
 }
 
 // command returns the configured par2 binary, defaulting to "par2".
@@ -237,6 +241,9 @@ func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	if opts.OnLine != nil {
 		opts.OnLine("Command: " + cmdLine)
 	}
+	if opts.OnCommand != nil {
+		opts.OnCommand(cmdLine)
+	}
 
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
@@ -286,6 +293,9 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	cmdLine := formatParCmdLine(opts.command(), args)
 	if opts.OnLine != nil {
 		opts.OnLine("Command: " + cmdLine)
+	}
+	if opts.OnCommand != nil {
+		opts.OnCommand(cmdLine)
 	}
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
