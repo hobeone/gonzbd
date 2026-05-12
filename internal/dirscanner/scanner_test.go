@@ -538,6 +538,14 @@ func TestCategorySubdirectory(t *testing.T) {
 		t.Errorf("film.nzb: expected category 'movies', got %q", cat)
 	}
 
+	// All handler calls must use PPInherit so NewJob resolves PP from
+	// the category config. A zero value would silently skip post-processing.
+	for _, c := range handler.calls {
+		if c.Opts.PP != types.PPInherit {
+			t.Errorf("%s: expected PP=%d (PPInherit), got %d", c.Filename, types.PPInherit, c.Opts.PP)
+		}
+	}
+
 	// random/other.nzb should NOT have been processed.
 	if _, ok := gotCats["other.nzb"]; ok {
 		t.Error("other.nzb should not have been processed (unrecognized subdir)")
@@ -591,6 +599,11 @@ func TestCategorySubdirStability(t *testing.T) {
 	}
 	if handler.calls[0].Opts.Category != "tv" {
 		t.Errorf("expected category 'tv', got %q", handler.calls[0].Opts.Category)
+	}
+	// PP must be PPInherit (-1) so NewJob resolves it from the category
+	// config. A zero value (0) would silently disable all post-processing.
+	if handler.calls[0].Opts.PP != types.PPInherit {
+		t.Errorf("expected PP=%d (PPInherit), got %d", types.PPInherit, handler.calls[0].Opts.PP)
 	}
 }
 
