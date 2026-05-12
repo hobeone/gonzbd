@@ -22,8 +22,8 @@ type Options struct {
 	// behavior. The single Password field is appended as a fallback.
 	Passwords []string
 	// OneFolder extracts all files flat into outDir (no path preservation).
-	// For unrar this selects the 'e' command; for 7zz it has no effect because
-	// 7zz 'x' is used unconditionally and path preservation is the default.
+	// For unrar this selects the 'e' command; for 7z this selects 'e'
+	// instead of 'x'.
 	OneFolder bool
 	// KeepOriginals controls whether the caller should delete the source Parts
 	// after a successful extraction.  The unpack functions themselves never
@@ -106,6 +106,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 		"-y",   // assume yes to all prompts
 		"-idp", // disable progress display
 		"-scf", // assume UTF-8 filenames (§8.2 — fixes mojibake from Windows-built archives)
+		"-ai",  // ignore file attributes — prevents read-only extracted files (matches SABnzbd)
 		pwFlag,
 	}
 
@@ -113,7 +114,8 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 	if opts.OverwriteFiles {
 		args = append(args, "-o+")
 	} else {
-		args = append(args, "-o-")
+		args = append(args, "-o-") // don't overwrite existing files
+		args = append(args, "-or") // auto-rename on collision (matches SABnzbd)
 	}
 	if opts.IgnoreUnrarDates {
 		args = append(args, "-tsm-") // don't restore modification times (matches SABnzbd)
