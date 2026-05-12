@@ -26,6 +26,11 @@
 	let lastFilesFetch = 0;
 	let pendingFilesRefresh: ReturnType<typeof setTimeout> | null = null;
 
+	// Real-time postproc output lines from subprocess streaming.
+	const MAX_OUTPUT_LINES = 200;
+	let outputLines = $state<string[]>([]);
+	let outputLogEl: HTMLDivElement | undefined = $state();
+
 	let percentage = $derived(parseFloat(slot.percentage) || 0);
 	let isPaused = $derived(slot.status === 'Paused');
 	let isPostProc = $derived(
@@ -149,6 +154,31 @@
 		});
 	});
 
+	// Subscribe to postproc_output events while the job is post-processing.
+	// Lines accumulate in outputLines; the log auto-scrolls to the bottom.
+	$effect(() => {
+		if (!isPostProc) {
+			outputLines = [];
+			return;
+		}
+		const nzoId = slot.nzo_id;
+		const unsub = subscribeWS((event) => {
+			if (event.event === 'postproc_output' && event.nzo_id === nzoId && event.line != null) {
+				const toolPrefix = event.tool ? `[${event.tool}] ` : '';
+				outputLines = [...outputLines.slice(-(MAX_OUTPUT_LINES - 1)), `${toolPrefix}${event.line}`];
+				// Auto-scroll after DOM update.
+				requestAnimationFrame(() => {
+					if (outputLogEl) {
+						outputLogEl.scrollTop = outputLogEl.scrollHeight;
+					}
+				});
+			}
+		});
+		return () => {
+			unsub();
+		};
+	});
+
 	function filePct(f: QueueFile): number {
 		if (f.bytes <= 0) return 0;
 		return Math.min(100, Math.round((f.bytes_downloaded / f.bytes) * 100));
@@ -213,6 +243,13 @@
 						title={slot.current_file}
 					>
 						↓ {slot.current_file}
+					</div>
+				{:else if isPostProc && outputLines.length > 0}
+					<div
+						class="text-xs text-gray-500 dark:text-gray-400 truncate font-mono"
+						title={outputLines[outputLines.length - 1]}
+					>
+						⚙ {outputLines[outputLines.length - 1]}
 					</div>
 				{/if}
 			</div>
@@ -353,6 +390,24 @@
 					{/if}
 				{/if}
 			</div>
+
+			<!-- Real-time postproc output log: visible while post-processing. -->
+			{#if outputLines.length > 0}
+				<div class="mt-4">
+					<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide mb-2">
+						Post-Processing Output
+						<Badge variant="secondary" class="ml-2 text-[10px] py-0 animate-pulse">Live</Badge>
+					</div>
+					<div
+						bind:this={outputLogEl}
+						class="bg-gray-900 text-gray-100 rounded-md p-3 font-mono text-xs leading-relaxed max-h-48 overflow-y-auto scroll-smooth"
+					>
+						{#each outputLines as line, i (i)}
+							<div class="whitespace-pre-wrap break-all">{line}</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
 
 			<!-- Per-file breakdown: lazy-fetched while the drawer is open. -->
 			<div class="mt-4">
