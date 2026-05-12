@@ -88,6 +88,7 @@ type Config struct {
 	PasswordFile         string
 	ExtraUnrarParams     string
 	ExtraPar2Params      string
+	ScriptCanFail        bool
 
 	// ScriptStage metadata injected into SAB_* env vars.
 	Version    string
@@ -433,6 +434,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				cfg.Version, cfg.APIKey, cfg.ListenAddr,
 			)
 			scriptStage.Log = ppLog
+			scriptStage.ScriptCanFail = cfg.ScriptCanFail
 			stageList = append(stageList, scriptStage)
 		}
 		stages = stageList
