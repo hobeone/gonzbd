@@ -174,6 +174,13 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		return fmt.Errorf("repair: find par2 sets: %w", err)
 	}
 
+	vs := NewVerifiedSets(job.DownloadDir)
+	if vs.AllVerified() {
+		logf(log, job, slog.LevelInfo, "All par2 sets previously verified, skipping repair")
+		job.OutputLines = append(job.OutputLines, "[repair] All sets previously verified — skipping")
+		return nil
+	}
+
 	var firstErr error
 	repairSucceeded := true
 	if len(sets) > 0 {
@@ -199,6 +206,12 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				logf(log, job, slog.LevelInfo, "Skipped par2 set %q: no main file", set.Name)
 				continue
 			}
+			if vs.IsVerified(set.Name) {
+				logf(log, job, slog.LevelInfo, "Skipping previously verified set %q", set.Name)
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("[repair] Skipping previously verified set: %s", set.Name))
+				continue
+			}
 			par2Bin := s.Par2Opts.Command
 			if par2Bin == "" {
 				par2Bin = "par2"
@@ -215,6 +228,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 			if err != nil {
 				job.ParError = true
 				repairSucceeded = false
+				vs.MarkVerified(set.Name, false)
 				logf(log, job, slog.LevelWarn, "Error: par2 repair %q failed: %v", set.Name, err)
 				if firstErr == nil {
 					firstErr = fmt.Errorf("repair %q: %w", set.Name, err)
@@ -224,12 +238,24 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 			if !res.Success {
 				job.ParError = true
 				repairSucceeded = false
+				vs.MarkVerified(set.Name, false)
 				logf(log, job, slog.LevelWarn, "Error: par2 repair %q unsuccessful (exit=%d)", set.Name, res.ExitCode)
 				if firstErr == nil {
 					firstErr = fmt.Errorf("repair %q: unsuccessful (exit=%d)", set.Name, res.ExitCode)
 				}
 			} else {
+				vs.MarkVerified(set.Name, true)
 				logf(log, job, slog.LevelInfo, "Par2 repair %q succeeded", set.Name)
+				// M7: record par2 files as consumed for cleanup protection.
+				if job.ConsumedFiles == nil {
+					job.ConsumedFiles = make(map[string]struct{})
+				}
+				if set.MainFile != "" {
+					job.ConsumedFiles[set.MainFile] = struct{}{}
+				}
+				for _, ef := range set.ExtraFiles {
+					job.ConsumedFiles[ef] = struct{}{}
+				}
 			}
 		}
 	} else {

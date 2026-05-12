@@ -71,6 +71,11 @@ type Job struct {
 	// Stages should append to this slice rather than writing to Lines
 	// directly, since StageLogEntry is created by the orchestrator.
 	OutputLines []string
+
+	// ConsumedFiles lists absolute paths of files consumed by repair/join
+	// operations (par2 volumes, joinable split files). Extension cleanup
+	// skips these to prevent deletion of files needed for recovery.
+	ConsumedFiles map[string]struct{}
 }
 
 // StageLogEntry records the outcome of a single stage execution.
