@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/deobfuscate"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
@@ -417,6 +418,9 @@ type UnpackStage struct {
 	// after successful extraction. Dirs get the full mode, files get
 	// execute bits stripped. Empty disables chmod.
 	Permissions string
+	// PasswordFile is the path to a text file with one password per line.
+	// These are appended after per-job passwords during extraction.
+	PasswordFile string
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
@@ -463,10 +467,20 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		}
 	}
 	// Build the password list: per-job password comes first (highest priority),
-	// followed by any config-level global passwords (future: add to Passwords
-	// field). The single Password field is used as a fallback.
+	// followed by any passwords from the config password_file.
 	if job.Queue.Password != "" {
 		opts.Passwords = append([]string{job.Queue.Password}, opts.Passwords...)
+	}
+	if u.PasswordFile != "" {
+		filePws, err := cmdutil.LoadPasswordFile(u.PasswordFile)
+		if err != nil {
+			logf(log, job, slog.LevelWarn, "password file: %v", err)
+		} else {
+			opts.Passwords = append(opts.Passwords, filePws...)
+			if len(filePws) > 30 {
+				logf(log, job, slog.LevelWarn, "password file contains %d entries (>30); extraction may be slow", len(filePws))
+			}
+		}
 	}
 	opts.Password = "" //nolint:staticcheck // SA1019: intentionally zeroed to force Passwords-list iteration
 	if len(opts.Passwords) > 0 {

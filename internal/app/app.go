@@ -85,6 +85,9 @@ type Config struct {
 	Nice                 string
 	Ionice               string
 	Permissions          string
+	PasswordFile         string
+	ExtraUnrarParams     string
+	ExtraPar2Params      string
 
 	// ScriptStage metadata injected into SAB_* env vars.
 	Version    string
@@ -294,9 +297,19 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		// Build nice/ionice wrapping config for all external tool commands.
 		cmdCfg := cmdutil.CmdConfig{Nice: cfg.Nice, Ionice: cfg.Ionice}
 
+		// Parse user-supplied extra params (validated: must start with '-').
+		extraPar2Args, err := cmdutil.ParseExtraParams(cfg.ExtraPar2Params)
+		if err != nil {
+			return nil, fmt.Errorf("extra_par2_params: %w", err)
+		}
+		extraUnrarArgs, err := cmdutil.ParseExtraParams(cfg.ExtraUnrarParams)
+		if err != nil {
+			return nil, fmt.Errorf("extra_unrar_params: %w", err)
+		}
+
 		// Repair stage: configurable par2 binary, turbo mode, and cleanup.
 		repairStage := postproc.NewRepairStageWith(
-			par2.RunOptions{Command: cfg.Par2Command, Turbo: cfg.Par2Turbo, CmdCfg: cmdCfg},
+			par2.RunOptions{Command: cfg.Par2Command, Turbo: cfg.Par2Turbo, CmdCfg: cmdCfg, ExtraArgs: extraPar2Args},
 			cfg.EnableParCleanup,
 		)
 		repairStage.Log = ppLog
@@ -312,8 +325,10 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				OneFolder:        cfg.FlatUnpack,
 				Prefer7zip:       cfg.Prefer7zip,
 				CmdCfg:           cmdCfg,
+				ExtraArgs:        extraUnrarArgs,
 			}, cfg.EnableRarCleanup)
 			unpackStage.Permissions = cfg.Permissions
+			unpackStage.PasswordFile = cfg.PasswordFile
 			unpackStage.Log = ppLog
 			stageList = append(stageList, unpackStage)
 		}
