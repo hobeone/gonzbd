@@ -15,8 +15,8 @@ import (
 
 // Stage is the interface every post-processing stage must implement.
 // Stages are registered once at construction time and run in that order
-// for every job. A stage that returns an error aborts the pipeline;
-// subsequent stages are recorded as "Skipped" in the StageLog.
+// for every job. Stage errors are recorded but the pipeline continues; each
+// stage self-gates based on job flags (ParError, UnpackError).
 type Stage interface {
 	// Name returns a short, stable identifier used in log output and the
 	// StageLog.  It should be lowercase with no spaces (e.g. "repair",
@@ -25,8 +25,8 @@ type Stage interface {
 
 	// Run executes the stage.  The supplied ctx is cancelled when the
 	// PostProcessor is stopped; stages MUST respect it and return promptly.
-	// Returning a non-nil error aborts the pipeline; subsequent stages are
-	// skipped and recorded as such in the StageLog.
+	// Returning a non-nil error records the failure in the StageLog but
+	// does NOT abort the pipeline; subsequent stages still run.
 	Run(ctx context.Context, job *Job) error
 }
 
@@ -64,6 +64,12 @@ type Job struct {
 	// SAB_PP_STATUS env var.
 	ParError    bool
 	UnpackError bool
+
+	// QuickCheckPassed is set by the quickcheck stage when ALL par2-tracked
+	// files have matching CRC32 values. When true, the repair stage skips
+	// the expensive par2 subprocess since verification already confirmed
+	// file integrity.
+	QuickCheckPassed bool
 
 	// OutputLines is a scratch buffer that stages populate with tool output
 	// lines (e.g. par2 stdout, unrar output). processJob moves these into

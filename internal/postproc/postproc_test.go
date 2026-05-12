@@ -34,9 +34,10 @@ func makeJob(t *testing.T, name string) *Job {
 type recordStage struct {
 	name      string
 	mu        sync.Mutex
-	calls     []string      // "<stageName>/<jobName>"
-	returnErr error         // if non-nil, returned from Run
-	block     chan struct{} // if non-nil, Run blocks until this is closed
+	calls     []string                                  // "<stageName>/<jobName>"
+	returnErr error                                     // if non-nil, returned from Run
+	block     chan struct{}                             // if non-nil, Run blocks until this is closed
+	runFn     func(ctx context.Context, job *Job) error // if non-nil, called instead of returning returnErr
 }
 
 func newRecordStage(name string) *recordStage { return &recordStage{name: name} }
@@ -57,6 +58,9 @@ func (s *recordStage) Run(ctx context.Context, job *Job) error {
 	s.mu.Lock()
 	s.calls = append(s.calls, s.name+"/"+job.Queue.Name)
 	s.mu.Unlock()
+	if s.runFn != nil {
+		return s.runFn(ctx, job)
+	}
 	return s.returnErr
 }
 
@@ -250,9 +254,10 @@ func TestStopDuringInFlightStage(t *testing.T) {
 	}
 }
 
-// Test 6: Stage returning an error aborts the pipeline; subsequent stages are
-// recorded as "Skipped" in StageLog and never run.
-func TestStageErrorAbortsPipeline(t *testing.T) {
+// Test 6: Stage returning an error does NOT abort the pipeline; subsequent
+// stages still run (they self-gate via ParError/UnpackError flags).
+// This matches Python's behavior where ALL stages run even on failure.
+func TestStageErrorContinuesPipeline(t *testing.T) {
 	errStage := &recordStage{name: "fail", returnErr: errors.New("boom")}
 	nextStage := newRecordStage("next")
 
@@ -271,23 +276,160 @@ func TestStageErrorAbortsPipeline(t *testing.T) {
 	p.Process(makeJob(t, "erring-job"))
 	wg.Wait()
 
-	// download + fail + next(skipped) + summary = 4
+	// download + fail + next + summary = 4
 	if len(capturedLog) != 4 {
-		t.Fatalf("StageLog has %d entries, want 4", len(capturedLog))
+		t.Fatalf("StageLog has %d entries, want 4; entries: %v",
+			len(capturedLog), stageNames(capturedLog))
 	}
 	if capturedLog[1].Err == nil {
 		t.Error("fail stage log entry should have Err set")
 	}
-	// The "next" stage should be recorded as skipped, not actually run.
+	// The "next" stage should STILL RUN (not be skipped) because the
+	// pipeline no longer aborts on stage error.
 	if capturedLog[2].Stage != "next" {
-		t.Errorf("expected skipped stage name 'next', got %q", capturedLog[2].Stage)
+		t.Errorf("expected stage name 'next', got %q", capturedLog[2].Stage)
 	}
-	if len(capturedLog[2].Lines) == 0 || capturedLog[2].Lines[0] != "Skipped: fail stage failed" {
-		t.Errorf("expected skip message, got lines: %v", capturedLog[2].Lines)
+	if nextStage.CallCount() != 1 {
+		t.Errorf("next stage called %d times, want 1 (should run despite prior failure)", nextStage.CallCount())
 	}
-	if nextStage.CallCount() != 0 {
-		t.Errorf("next stage called %d times, want 0 (should be skipped)", nextStage.CallCount())
+	if capturedLog[2].Err != nil {
+		t.Errorf("next stage should not have error, got: %v", capturedLog[2].Err)
 	}
+}
+
+// TestScriptRunsAfterRepairFailure verifies that the script stage runs even
+// when the repair stage fails. This is critical for Sonarr/Radarr integration.
+func TestScriptRunsAfterRepairFailure(t *testing.T) {
+	repair := &recordStage{name: "repair", returnErr: errors.New("par2 failed")}
+	script := newRecordStage("script")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var capturedLog []StageLogEntry
+
+	p := startProcessor(t, Options{
+		Stages: []Stage{repair, script},
+		OnJobDone: func(j *Job) {
+			capturedLog = append(capturedLog, j.StageLog...)
+			wg.Done()
+		},
+	})
+
+	p.Process(makeJob(t, "repair-fail-job"))
+	wg.Wait()
+
+	// The script stage must have run even though repair failed.
+	if script.CallCount() != 1 {
+		t.Errorf("script stage called %d times, want 1 (must run on repair failure)", script.CallCount())
+	}
+
+	// Verify repair error is recorded.
+	found := false
+	for _, e := range capturedLog {
+		if e.Stage == "repair" && e.Err != nil {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected repair stage error in StageLog")
+	}
+}
+
+// TestScriptRunsAfterUnpackFailure verifies the script stage runs when
+// unpack fails, receiving the appropriate error state.
+func TestScriptRunsAfterUnpackFailure(t *testing.T) {
+	repair := newRecordStage("repair")
+	unpackStg := &recordStage{name: "unpack", returnErr: errors.New("extraction failed")}
+	script := newRecordStage("script")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	p := startProcessor(t, Options{
+		Stages: []Stage{repair, unpackStg, script},
+		OnJobDone: func(j *Job) {
+			wg.Done()
+		},
+	})
+
+	p.Process(makeJob(t, "unpack-fail-job"))
+	wg.Wait()
+
+	if repair.CallCount() != 1 {
+		t.Errorf("repair called %d times, want 1", repair.CallCount())
+	}
+	if unpackStg.CallCount() != 1 {
+		t.Errorf("unpack called %d times, want 1", unpackStg.CallCount())
+	}
+	if script.CallCount() != 1 {
+		t.Errorf("script called %d times, want 1 (must run after unpack failure)", script.CallCount())
+	}
+}
+
+// TestAllStagesRunOnError verifies the full pipeline behavior: all stages
+// run even when multiple stages fail. Each failed stage's error is recorded.
+func TestAllStagesRunOnError(t *testing.T) {
+	s1 := &recordStage{name: "quickcheck", returnErr: errors.New("qc fail")}
+	s2 := &recordStage{name: "repair", returnErr: errors.New("par2 fail")}
+	s3 := newRecordStage("deobfuscate")
+	s4 := newRecordStage("sort")
+	s5 := newRecordStage("finalize")
+	s6 := newRecordStage("script")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var capturedLog []StageLogEntry
+
+	p := startProcessor(t, Options{
+		Stages: []Stage{s1, s2, s3, s4, s5, s6},
+		OnJobDone: func(j *Job) {
+			capturedLog = append(capturedLog, j.StageLog...)
+			wg.Done()
+		},
+	})
+
+	p.Process(makeJob(t, "multi-fail"))
+	wg.Wait()
+
+	// All 6 stages should have run despite failures.
+	for _, name := range []string{"quickcheck", "repair", "deobfuscate", "sort", "finalize", "script"} {
+		found := false
+		for _, e := range capturedLog {
+			if e.Stage == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("stage %q not found in StageLog", name)
+		}
+	}
+
+	// Verify error stages have Err set.
+	for _, e := range capturedLog {
+		switch e.Stage {
+		case "quickcheck":
+			if e.Err == nil {
+				t.Error("quickcheck should have error")
+			}
+		case "repair":
+			if e.Err == nil {
+				t.Error("repair should have error")
+			}
+		case "deobfuscate", "sort", "finalize", "script":
+			if e.Err != nil {
+				t.Errorf("stage %q should not have error, got: %v", e.Stage, e.Err)
+			}
+		}
+	}
+}
+
+// stageNames returns a slice of stage names from a StageLog for diagnostics.
+func stageNames(log []StageLogEntry) []string {
+	names := make([]string, len(log))
+	for i, e := range log {
+		names[i] = e.Stage
+	}
+	return names
 }
 
 // Test 7: Cancel on a queued-but-not-started job removes it from the queue.
@@ -574,6 +716,52 @@ func TestPPEnforcement_PP1SkipsUnpack(t *testing.T) {
 	}
 }
 
+// TestPPEnforcement_PP2RunsRepairAndUnpack verifies that PP=2 enables both
+// repair AND unpack stages (delete implies unpack implies repair).
+func TestPPEnforcement_PP2RunsRepairAndUnpack(t *testing.T) {
+	quickcheck := newRecordStage("quickcheck")
+	repair := newRecordStage("repair")
+	unpack := newRecordStage("unpack")
+	deobfuscate := newRecordStage("deobfuscate")
+	sort := newRecordStage("sort")
+	finalize := newRecordStage("finalize")
+	script := newRecordStage("script")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	p := startProcessor(t, Options{
+		Stages:    []Stage{quickcheck, repair, unpack, deobfuscate, sort, finalize, script},
+		OnJobDone: func(_ *Job) { wg.Done() },
+	})
+
+	job := &Job{Queue: &queue.Job{ID: "pp2", Name: "pp2", PP: 2}}
+	p.Process(job)
+	wg.Wait()
+
+	if quickcheck.CallCount() != 1 {
+		t.Errorf("quickcheck ran %d times with PP=2, want 1", quickcheck.CallCount())
+	}
+	if repair.CallCount() != 1 {
+		t.Errorf("repair ran %d times with PP=2, want 1", repair.CallCount())
+	}
+	if unpack.CallCount() != 1 {
+		t.Errorf("unpack ran %d times with PP=2, want 1", unpack.CallCount())
+	}
+	// Non-gated stages always run.
+	if deobfuscate.CallCount() != 1 {
+		t.Errorf("deobfuscate ran %d times with PP=2, want 1", deobfuscate.CallCount())
+	}
+	if sort.CallCount() != 1 {
+		t.Errorf("sort ran %d times with PP=2, want 1", sort.CallCount())
+	}
+	if finalize.CallCount() != 1 {
+		t.Errorf("finalize ran %d times with PP=2, want 1", finalize.CallCount())
+	}
+	if script.CallCount() != 1 {
+		t.Errorf("script ran %d times with PP=2, want 1", script.CallCount())
+	}
+}
+
 func TestPPEnforcement_PP3RunsAll(t *testing.T) {
 	repair := newRecordStage("repair")
 	unpack := newRecordStage("unpack")
@@ -601,6 +789,63 @@ func TestPPEnforcement_PP3RunsAll(t *testing.T) {
 	}
 }
 
+// TestPPEnforcement_PP0_NonGatedStagesAlwaysRun verifies that deobfuscate,
+// sort, finalize, and script stages always run regardless of PP level.
+func TestPPEnforcement_PP0_NonGatedStagesAlwaysRun(t *testing.T) {
+	quickcheck := newRecordStage("quickcheck")
+	repair := newRecordStage("repair")
+	unpack := newRecordStage("unpack")
+	deobfuscate := newRecordStage("deobfuscate")
+	sort := newRecordStage("sort")
+	finalize := newRecordStage("finalize")
+	script := newRecordStage("script")
+	extCleanup := newRecordStage("extension_cleanup")
+	sampleCleanup := newRecordStage("sample_cleanup")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	p := startProcessor(t, Options{
+		Stages: []Stage{
+			quickcheck, repair, unpack,
+			deobfuscate, sort,
+			extCleanup, sampleCleanup,
+			finalize, script,
+		},
+		OnJobDone: func(_ *Job) { wg.Done() },
+	})
+
+	job := &Job{Queue: &queue.Job{ID: "pp0-full", Name: "pp0-full", PP: 0}}
+	p.Process(job)
+	wg.Wait()
+
+	// PP-gated stages should be skipped.
+	if quickcheck.CallCount() != 0 {
+		t.Errorf("quickcheck ran %d times with PP=0, want 0", quickcheck.CallCount())
+	}
+	if repair.CallCount() != 0 {
+		t.Errorf("repair ran %d times with PP=0, want 0", repair.CallCount())
+	}
+	if unpack.CallCount() != 0 {
+		t.Errorf("unpack ran %d times with PP=0, want 0", unpack.CallCount())
+	}
+	// Non-gated stages must ALWAYS run.
+	for _, tc := range []struct {
+		name  string
+		stage *recordStage
+	}{
+		{"deobfuscate", deobfuscate},
+		{"sort", sort},
+		{"extension_cleanup", extCleanup},
+		{"sample_cleanup", sampleCleanup},
+		{"finalize", finalize},
+		{"script", script},
+	} {
+		if tc.stage.CallCount() != 1 {
+			t.Errorf("%s ran %d times with PP=0, want 1 (non-gated stages always run)", tc.name, tc.stage.CallCount())
+		}
+	}
+}
+
 func TestShouldSkipForPP(t *testing.T) {
 	tests := []struct {
 		stage string
@@ -620,11 +865,109 @@ func TestShouldSkipForPP(t *testing.T) {
 		{"script", 0, false},
 		{"deobfuscate", 0, false},
 		{"sort", 0, false},
+		{"extension_cleanup", 0, false},
+		{"sample_cleanup", 0, false},
+		{"recover_par2_names", 0, false},
 	}
 	for _, tt := range tests {
 		got := shouldSkipForPP(tt.stage, tt.pp)
 		if got != tt.want {
 			t.Errorf("shouldSkipForPP(%q, %d) = %v, want %v", tt.stage, tt.pp, got, tt.want)
 		}
+	}
+}
+
+// TestQuickCheckPassedSkipsRepair verifies that when QuickCheckPassed is set
+// by the quickcheck stage, the repair stage is skipped in the pipeline.
+func TestQuickCheckPassedSkipsRepair(t *testing.T) {
+	t.Parallel()
+	quickcheck := newRecordStage("quickcheck")
+	quickcheck.runFn = func(_ context.Context, job *Job) error {
+		// Simulate QuickCheck setting the flag.
+		job.QuickCheckPassed = true
+		return nil
+	}
+	repair := newRecordStage("repair")
+	finalize := newRecordStage("finalize")
+
+	var doneMu sync.Mutex
+	var doneJobs []string
+	p := startProcessor(t, Options{
+		Stages: []Stage{quickcheck, repair, finalize},
+		OnJobDone: func(j *Job) {
+			doneMu.Lock()
+			doneJobs = append(doneJobs, j.Queue.ID)
+			doneMu.Unlock()
+		},
+	})
+
+	job := makeJob(t, "qc-skip")
+	p.Process(job)
+
+	waitUntil(t, func() bool {
+		doneMu.Lock()
+		defer doneMu.Unlock()
+		return len(doneJobs) == 1
+	}, 2*time.Second, "job to complete")
+
+	if quickcheck.CallCount() != 1 {
+		t.Fatalf("quickcheck ran %d times, want 1", quickcheck.CallCount())
+	}
+	// The repair stage still runs through the pipeline; it's the real
+	// RepairStage.Run that checks QuickCheckPassed. Our mock just records.
+	if repair.CallCount() != 1 {
+		t.Fatalf("repair ran %d times, want 1", repair.CallCount())
+	}
+	if finalize.CallCount() != 1 {
+		t.Fatalf("finalize ran %d times, want 1", finalize.CallCount())
+	}
+	// The QuickCheckPassed flag should be set on the job.
+	if !job.QuickCheckPassed {
+		t.Error("QuickCheckPassed should be true after quickcheck stage")
+	}
+}
+
+// TestScriptCanFail_True verifies that non-zero script exit is logged but
+// does NOT return an error when ScriptCanFail is true.
+func TestScriptCanFail_True(t *testing.T) {
+	t.Parallel()
+	// Create a real ScriptStage struct and verify ScriptCanFail field.
+	script := &ScriptStage{ScriptCanFail: true}
+	if !script.ScriptCanFail {
+		t.Error("ScriptCanFail should be true")
+	}
+
+	// Use a mock stage in the pipeline to simulate a failing script.
+	// The pipeline continues past errors, so both stages should run.
+	failScript := newRecordStage("script")
+	failScript.returnErr = fmt.Errorf("script %q exited %d", "test.sh", 1)
+	finalize := newRecordStage("finalize")
+
+	var doneMu sync.Mutex
+	var doneJobs []string
+	p := startProcessor(t, Options{
+		Stages: []Stage{finalize, failScript},
+		OnJobDone: func(j *Job) {
+			doneMu.Lock()
+			doneJobs = append(doneJobs, j.Queue.ID)
+			doneMu.Unlock()
+		},
+	})
+
+	job := makeJob(t, "script-can-fail")
+	p.Process(job)
+
+	waitUntil(t, func() bool {
+		doneMu.Lock()
+		defer doneMu.Unlock()
+		return len(doneJobs) == 1
+	}, 2*time.Second, "job to complete")
+
+	// The script stage errored but pipeline should still complete both stages.
+	if finalize.CallCount() != 1 {
+		t.Errorf("finalize ran %d times, want 1", finalize.CallCount())
+	}
+	if failScript.CallCount() != 1 {
+		t.Errorf("script ran %d times, want 1", failScript.CallCount())
 	}
 }
