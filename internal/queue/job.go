@@ -365,6 +365,10 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 	name := opts.Name
 	if name == "" {
 		name = deriveName(opts.Filename)
+	} else {
+		// Strip .nzb extension when the caller supplies an explicit name
+		// (e.g. Sonarr's nzbname parameter often includes it).
+		name = stripNZBExt(name)
 	}
 
 	// 1. Apply regex-based cleanup (strip spam prefixes/suffixes)
@@ -475,14 +479,23 @@ func (j *Job) IsComplete() bool {
 // deriveName strips directory components and the extension from path.
 // For "/watch/My.Show.S01E02.nzb" returns "My.Show.S01E02". A ".nzb.gz"
 // or ".nzb.bz2" double extension is collapsed to the bare stem too.
+// stripNZBExt removes .nzb, .nzb.gz, and .nzb.bz2 extensions from name.
+// Used for both explicit names and derived names to prevent download
+// directories like "movie.nzb/".
+func stripNZBExt(name string) string {
+	lower := strings.ToLower(name)
+	for _, suffix := range []string{".nzb.gz", ".nzb.bz2", ".nzb"} {
+		if strings.HasSuffix(lower, suffix) {
+			return name[:len(name)-len(suffix)]
+		}
+	}
+	return name
+}
+
 func deriveName(path string) string {
 	base := filepath.Base(path)
-	// Strip compressed-NZB compound extensions first so "x.nzb.gz"
-	// yields "x" rather than "x.nzb".
-	for _, suffix := range []string{".nzb.gz", ".nzb.bz2"} {
-		if strings.HasSuffix(strings.ToLower(base), suffix) {
-			return base[:len(base)-len(suffix)]
-		}
+	if stripped := stripNZBExt(base); stripped != base {
+		return stripped
 	}
 	if ext := filepath.Ext(base); ext != "" {
 		return base[:len(base)-len(ext)]

@@ -73,6 +73,37 @@ func TestNewJobDerivesName(t *testing.T) {
 	}
 }
 
+// TestNewJobStripsNZBFromExplicitName verifies that .nzb extensions are
+// stripped from explicitly provided Name values (e.g. Sonarr's nzbname
+// parameter). Without this, download directories end up named "movie.nzb/".
+func TestNewJobStripsNZBFromExplicitName(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{"My.Movie.2024.nzb", "My.Movie.2024"},
+		{"My.Movie.2024.NZB", "My.Movie.2024"},
+		{"My.Movie.2024.nzb.gz", "My.Movie.2024"},
+		{"My.Movie.2024.nzb.bz2", "My.Movie.2024"},
+		{"My.Movie.2024", "My.Movie.2024"},         // no extension — unchanged
+		{"My.Movie.2024.mkv", "My.Movie.2024.mkv"}, // non-nzb ext — unchanged
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			j, err := NewJob(makeParsed(t, 1), AddOptions{
+				Name:     tc.name,
+				Filename: "irrelevant.nzb",
+			}, fsutil.SanitizeOptions{})
+			if err != nil {
+				t.Fatalf("NewJob: %v", err)
+			}
+			if j.Name != tc.want {
+				t.Errorf("Name = %q, want %q", j.Name, tc.want)
+			}
+		})
+	}
+}
+
 func TestNewJobAssignsUniqueID(t *testing.T) {
 	seen := make(map[string]struct{})
 	for range 100 {
