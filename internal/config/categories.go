@@ -11,12 +11,12 @@ type CategoryConfig struct {
 	// always exist in a valid configuration.
 	Name string `yaml:"name" json:"name"`
 
-	// PP is the post-processing flag bitmask (see spec §8.2):
-	//   bit 0 (1) = Repair only
-	//   bit 1 (2) = Repair + Unpack
-	//   bit 2 (4) = Repair + Unpack + Delete
-	// Sentinel value 7 means "all of the above"; Python uses raw ints
-	// here, kept as int for round-trip compatibility with external tools.
+	// PP is the post-processing level (cumulative, not a bitmask):
+	//   0 = Download only
+	//   1 = + Repair (par2 verify/repair)
+	//   2 = + Unpack (implies repair)
+	//   3 = + Delete sources (implies unpack + repair)
+	// Values > 3 are treated as 3 for compatibility with SABnzbd configs.
 	PP int `yaml:"pp" json:"pp"`
 
 	// Script is the user post-processing script name to run. The literal

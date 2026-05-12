@@ -766,6 +766,7 @@ func (app *Application) Start(ctx context.Context) error {
 		_ = app.assembler.Stop()
 		return err
 	}
+	app.pipeline.ctx = app.ctx // must be set before goroutine launch (setCompletions reads it)
 	app.wg.Go(func() { app.pipeline.run(app.ctx) })
 	app.wg.Go(func() { app.watchCompletions(app.ctx) })
 	interval := app.cfg.CheckpointInterval

@@ -103,7 +103,6 @@ type completionSwap struct {
 // and fans out to a pool of worker goroutines via a work channel.
 // Returns when ctx is cancelled.
 func (p *pipeline) run(ctx context.Context) {
-	p.ctx = ctx
 
 	nw := p.numWorkers
 	if nw <= 0 {
