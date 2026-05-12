@@ -838,6 +838,14 @@ func (app *Application) watchCompletions(ctx context.Context) {
 
 // handleFileComplete processes a single file completion event.
 func (app *Application) handleFileComplete(fc FileComplete) {
+	// Store the assembled CRC32 on the queue's JobFile so it survives
+	// serialization and is available during post-processing QuickCheck.
+	if fc.CRC32 != 0 {
+		if err := app.queue.SetFileCRC32(fc.JobID, fc.FileIdx, fc.CRC32); err != nil {
+			app.log.Warn("set file CRC32 failed",
+				"job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
+		}
+	}
 	if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
 		return
 	}

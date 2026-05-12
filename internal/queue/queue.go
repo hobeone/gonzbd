@@ -723,6 +723,26 @@ func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
 	return nil
 }
 
+// SetFileCRC32 stores the assembled CRC32 on a JobFile. The CRC is
+// computed by the assembler by combining per-article yEnc CRCs in
+// offset order and represents the CRC32 of the entire file as written
+// to disk. This is used during QuickCheck to verify file integrity
+// against par2 file hashes without re-reading from disk.
+func (q *Queue) SetFileCRC32(jobID string, fileIdx int, crc uint32) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if fileIdx < 0 || fileIdx >= len(job.Files) {
+		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
+	}
+	job.Files[fileIdx].AssembledCRC32 = crc
+	q.dirty.Store(true)
+	return nil
+}
+
 // PauseAll sets the queue-wide pause flag. Existing downloads
 // currently in flight are not cancelled; the downloader simply stops
 // dispatching new articles.
