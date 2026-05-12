@@ -314,6 +314,13 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			stageList = append(stageList, sampleStage)
 		}
 
+		// Par2-based filename recovery runs after unpack/sample cleanup
+		// so it can rename extracted files using par2 16K-MD5 matching.
+		// This is unconditional — it runs even when deobfuscation is off.
+		par2RenameStage := postproc.NewRecoverPar2NamesStage()
+		par2RenameStage.Log = ppLog
+		stageList = append(stageList, par2RenameStage)
+
 		if cfg.DeobfuscateFilenames {
 			deobStage := postproc.NewDeobfuscateStage()
 			deobStage.Log = ppLog
