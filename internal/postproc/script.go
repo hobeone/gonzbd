@@ -100,6 +100,36 @@ type ScriptInput struct {
 	// AvgBPS is average bytes/sec during download (SAB_AVG_BPS env-only).
 	AvgBPS int64
 
+	// BytesTried is total bytes attempted including retries (SAB_BYTES_TRIED).
+	BytesTried int64
+
+	// Password is the per-job password (SAB_PASSWORD env-only).
+	Password string
+
+	// Encrypted indicates whether the archive was encrypted (SAB_ENCRYPTED: 0=unknown, 1=yes).
+	Encrypted int
+
+	// Priority is the job priority (SAB_PRIORITY).
+	Priority int
+
+	// Repair indicates par2 repair was performed (SAB_REPAIR: 0/1).
+	Repair int
+
+	// Unpack indicates unpacking was performed (SAB_UNPACK: 0/1).
+	Unpack int
+
+	// Age is the age of the NZB in days since posting date (SAB_AGE).
+	Age int
+
+	// Par2Command is the par2 binary path (SAB_PAR2_COMMAND).
+	Par2Command string
+
+	// UnrarCommand is the unrar binary path (SAB_RAR_COMMAND).
+	UnrarCommand string
+
+	// SevenzCommand is the 7z binary path (SAB_7ZIP_COMMAND).
+	SevenzCommand string
+
 	// OnLine is called for each line of subprocess output. May be nil.
 	OnLine func(string)
 }
@@ -176,6 +206,18 @@ func buildEnv(in ScriptInput) []string {
 		fmt.Sprintf("SAB_VERSION=%s", in.Version),
 		fmt.Sprintf("SAB_API_KEY=%s", in.APIKey),
 		fmt.Sprintf("SAB_API_URL=%s", in.APIURL),
+
+		// Additional SABnzbd-compatible env vars:
+		fmt.Sprintf("SAB_BYTES_TRIED=%d", in.BytesTried),
+		fmt.Sprintf("SAB_PASSWORD=%s", in.Password),
+		fmt.Sprintf("SAB_ENCRYPTED=%d", in.Encrypted),
+		fmt.Sprintf("SAB_PRIORITY=%d", in.Priority),
+		fmt.Sprintf("SAB_REPAIR=%d", in.Repair),
+		fmt.Sprintf("SAB_UNPACK=%d", in.Unpack),
+		fmt.Sprintf("SAB_AGE=%d", in.Age),
+		fmt.Sprintf("SAB_PAR2_COMMAND=%s", in.Par2Command),
+		fmt.Sprintf("SAB_RAR_COMMAND=%s", in.UnrarCommand),
+		fmt.Sprintf("SAB_7ZIP_COMMAND=%s", in.SevenzCommand),
 
 		// Go-extension env vars (not in Python):
 		fmt.Sprintf("SAB_FINAL_PROCESSING_DIR=%s", in.FinalDir),
