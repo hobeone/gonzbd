@@ -860,6 +860,9 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	// merging files into an existing destination directory.
 	if err := os.Rename(job.DownloadDir, job.FinalDir); err == nil {
 		logf(log, job, slog.LevelInfo, "%s → %s (atomic rename)", job.DownloadDir, job.FinalDir)
+		// Update DownloadDir so subsequent stages (script) see the
+		// final location — matches SABnzbd's spec §6.2 ordering.
+		job.DownloadDir = job.FinalDir
 		return nil
 	} else if !fsutil.IsRenameMergeNeeded(err) {
 		return fmt.Errorf("finalize: rename %s -> %s: %w", job.DownloadDir, job.FinalDir, err)
@@ -899,6 +902,10 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	// All files moved successfully — clean up the empty source directory.
 	_ = os.RemoveAll(job.DownloadDir)
 	logf(log, job, slog.LevelInfo, "Removed empty source directory: %s", job.DownloadDir)
+
+	// Update DownloadDir so subsequent stages (script) see the
+	// final location — matches SABnzbd's spec §6.2 ordering.
+	job.DownloadDir = job.FinalDir
 
 	return nil
 }

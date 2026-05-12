@@ -314,6 +314,16 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				stageList = append(stageList, sortStage)
 			}
 		}
+		// Finalize stage: move files from download dir to complete dir.
+		// Must run BEFORE script so scripts receive the final directory
+		// path — matches SABnzbd spec §6.2 ordering.
+		finalizeStage := postproc.NewFinalizeStage()
+		finalizeStage.Log = ppLog
+		stageList = append(stageList, finalizeStage)
+
+		// Script stage: runs AFTER finalize so job.DownloadDir points
+		// to the final complete_dir. This matches SABnzbd's behavior
+		// where $1 is the final directory, not the incomplete path.
 		if cfg.ScriptDir != "" {
 			scriptStage := postproc.NewScriptStage(
 				cfg.ScriptDir, cfg.CompleteDir,
@@ -322,9 +332,6 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			scriptStage.Log = ppLog
 			stageList = append(stageList, scriptStage)
 		}
-		finalizeStage := postproc.NewFinalizeStage()
-		finalizeStage.Log = ppLog
-		stageList = append(stageList, finalizeStage)
 		stages = stageList
 	}
 	pp := postproc.New(postproc.Options{
