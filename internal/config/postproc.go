@@ -49,4 +49,10 @@ type PostProcConfig struct {
 	// after a successful unpack. Default false; mirrors Python
 	// SABnzbd's misc.ignore_samples option.
 	IgnoreSamples bool `yaml:"ignore_samples" json:"ignore_samples"`
+
+	// CleanupExtensions is a list of file extensions (without leading
+	// dot) to delete from the job directory after a successful unpack.
+	// Common values: "nfo", "txt", "url", "srr", "sfv", "nzb".
+	// Mirrors SABnzbd's cfg.cleanup_list() feature.
+	CleanupExtensions []string `yaml:"cleanup_extensions" json:"cleanup_extensions"`
 }
