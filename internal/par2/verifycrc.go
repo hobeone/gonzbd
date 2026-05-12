@@ -32,9 +32,13 @@ type CRCVerifyResult struct {
 	Matched int
 	// Mismatched is the count of files whose CRCs did not match.
 	Mismatched int
-	// Skipped is the count of files that could not be verified (no
-	// assembled CRC or no par2 entry found).
+	// Skipped is the count of assembled files that could not be verified
+	// (no assembled CRC, or no par2 entry found by basename).
 	Skipped int
+	// Unverified is the count of par2 manifest entries that had no
+	// corresponding assembled file (name mismatch). These files exist
+	// on disk but weren't verified by CRC — par2 verify must check them.
+	Unverified int
 	// Files holds per-file results for files that were actually checked.
 	Files []CRCResult
 }
@@ -109,7 +113,7 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 	for _, af := range files {
 		// Skip files with no assembled CRC (UU-encoded or failed).
 		if af.CRC32 == 0 {
-			log.Debug("verifycrc: no assembled CRC, skipping",
+			log.Info("verifycrc: no assembled CRC, skipping",
 				"file", af.FileName)
 			result.Skipped++
 			continue
@@ -160,11 +164,24 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 		}
 	}
 
+	// Count par2 entries that had no corresponding assembled file.
+	// These represent files tracked by par2 that we couldn't verify.
+	for basename, entry := range par2Index {
+		if !entry.consumed {
+			result.Unverified++
+			result.Skipped++
+			log.Warn("verifycrc: par2-tracked file not verified (no matching assembled file)",
+				"par2_basename", basename,
+				"par2_path", entry.desc.FileName)
+		}
+	}
+
 	log.Info("verifycrc: complete",
 		"checked", result.Checked,
 		"matched", result.Matched,
 		"mismatched", result.Mismatched,
-		"skipped", result.Skipped)
+		"skipped", result.Skipped,
+		"unverified_par2_entries", result.Unverified)
 
 	return result
 }

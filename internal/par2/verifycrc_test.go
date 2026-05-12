@@ -143,8 +143,13 @@ func TestVerifyCRCs_WithRealPar2Fixture(t *testing.T) {
 		if result.Checked != 0 {
 			t.Errorf("Checked = %d, want 0 (file not in manifest)", result.Checked)
 		}
-		if result.Skipped != 1 {
-			t.Errorf("Skipped = %d, want 1", result.Skipped)
+		// Skipped = 2: 1 for unknown.mkv (not in par2 manifest) +
+		// 1 for data.bin (par2 entry with no matching assembled file).
+		if result.Skipped != 2 {
+			t.Errorf("Skipped = %d, want 2", result.Skipped)
+		}
+		if result.Unverified != 1 {
+			t.Errorf("Unverified = %d, want 1 (data.bin par2 entry unconsumed)", result.Unverified)
 		}
 	})
 }
