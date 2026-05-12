@@ -42,13 +42,21 @@ func TestPar2Rename(t *testing.T) {
 	packetLen := 64 + bodyLen
 
 	buf := make([]byte, packetLen)
-	copy(buf[0:8], []byte("PAR2\x00\x00\x00\x00"))
+	// Header: magic[0:8], packetLen[8:16], md5[16:32], setID[32:48], type[48:64]
+	copy(buf[0:8], []byte("PAR2\x00PKT"))
 	binary.LittleEndian.PutUint64(buf[8:16], packetLen)
 	copy(buf[48:64], []byte{'P', 'A', 'R', ' ', '2', '.', '0', '\x00', 'F', 'i', 'l', 'e', 'D', 'e', 's', 'c'})
 
+	// Body: fileID[16] + fullHash[16] + hash16k[16] + fileLen[8] + name[...]
 	copy(buf[64+16+16:64+16+16+16], hash16k[:])
 	binary.LittleEndian.PutUint64(buf[64+16+16+16:64+16+16+16+8], uint64(len(fileData)))
 	copy(buf[64+56:], fileNameBytes)
+
+	// Compute packet MD5 = md5(header[32:64] + body) and store at header[16:32].
+	packetHash := md5.New()
+	packetHash.Write(buf[32:64]) // setID + type
+	packetHash.Write(buf[64:])   // body
+	copy(buf[16:32], packetHash.Sum(nil))
 
 	if err := os.WriteFile(parPath, buf, 0644); err != nil {
 		t.Fatalf("WriteFile PAR2: %v", err)
