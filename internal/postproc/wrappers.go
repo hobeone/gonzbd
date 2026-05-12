@@ -989,11 +989,13 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 // If FinalDir is not set, it defaults to placing the job folder (named after
 // its ID) in the system's complete directory.
 //
-// When FolderRename is true, the destination directory is initially named
-// with an _UNPACK_ prefix (e.g. /complete/_UNPACK_MyRelease). After all
-// post-processing completes, the caller should invoke StripPrefix to rename
-// it to the final name. If processing fails, the prefix is changed to
-// _FAILED_. This mirrors SABnzbd's folder_rename behavior.
+// When FolderRename is true:
+//   - On success: destination gets _UNPACK_ prefix during move, then prefix
+//     is stripped after the rename completes. This prevents media managers
+//     (Sonarr, Plex) from importing incomplete downloads.
+//   - On failure: the download directory is renamed in-place with a _FAILED_
+//     prefix (e.g. /incomplete/MyRelease → /incomplete/_FAILED_MyRelease).
+//     Files stay in the incomplete area so retry can find them.
 type FinalizeStage struct {
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
@@ -1027,20 +1029,21 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 			reasons = append(reasons, job.FailMsg)
 		}
 
-		// When FolderRename is enabled and a job fails, move to
-		// _FAILED_ prefixed directory so users can easily identify it.
-		if f.FolderRename && job.FinalDir != "" && job.DownloadDir != job.FinalDir {
-			failedDir := prefixDirName(job.FinalDir, "_FAILED_")
-			if err := os.MkdirAll(filepath.Dir(failedDir), 0o750); err == nil {
-				if err := os.Rename(job.DownloadDir, failedDir); err == nil {
-					logf(log, job, slog.LevelInfo, "Moved to failed directory: %s", failedDir)
-					job.DownloadDir = failedDir
-					return nil
-				}
+		// When FolderRename is enabled, rename the download directory
+		// in-place with a _FAILED_ prefix so users can visually identify
+		// it. The files stay in the incomplete/download area (NOT moved
+		// to complete) so that retry can find them.
+		if f.FolderRename && job.DownloadDir != "" {
+			failedDir := prefixDirName(job.DownloadDir, "_FAILED_")
+			if err := os.Rename(job.DownloadDir, failedDir); err == nil {
+				logf(log, job, slog.LevelInfo, "Renamed to %s", failedDir)
+				job.DownloadDir = failedDir
+			} else {
+				logf(log, job, slog.LevelWarn, "Failed to add _FAILED_ prefix: %v", err)
 			}
 		}
 
-		logf(log, job, slog.LevelInfo, "Skipped: files remain in download directory (%s)", strings.Join(reasons, "; "))
+		logf(log, job, slog.LevelInfo, "Skipped final move: files remain in download directory (%s)", strings.Join(reasons, "; "))
 		return nil // Skip move if failed, so files stay in DownloadDir for retry
 	}
 
