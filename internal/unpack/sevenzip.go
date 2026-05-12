@@ -18,8 +18,8 @@ import (
 //  2. GONZBD_SEVENZIP_BIN environment variable (if set and non-empty).
 //  3. "7zz" (preferred upstream binary name).
 //  4. "7zzs" (static build — important for Alpine/musl).
-//  5. "7za" (legacy standalone binary).
-//  6. "7z" (common distro package name).
+//  5. "7z" (full 7-Zip — includes RAR5 codec, common distro package).
+//  6. "7za" (standalone 7-Zip — lacks RAR codec, last resort).
 //
 // Returns an error if no binary is found.
 func sevenZipBin(opts Options) (string, error) {
@@ -29,7 +29,7 @@ func sevenZipBin(opts Options) (string, error) {
 	if env := os.Getenv("GONZBD_SEVENZIP_BIN"); env != "" {
 		return env, nil
 	}
-	for _, name := range []string{"7zz", "7zzs", "7za", "7z"} {
+	for _, name := range []string{"7zz", "7zzs", "7z", "7za"} {
 		if path, err := exec.LookPath(name); err == nil {
 			return path, nil
 		}
