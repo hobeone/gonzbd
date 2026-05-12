@@ -61,6 +61,8 @@ type Result struct {
 	Output string
 	// ExitCode is the process exit code (0 on success).
 	ExitCode int
+	// Reason classifies why the extraction failed (only meaningful when Err != nil).
+	Reason FailReason
 	// Err is non-nil when the extraction failed.
 	Err error
 }
@@ -133,10 +135,12 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 	if runErr != nil {
 		if errors.As(runErr, &exitErr) {
 			res.ExitCode = exitErr.ExitCode()
-			res.Err = fmt.Errorf("unrar exited %d: %w", res.ExitCode, runErr)
+			res.Reason = ClassifyUnrarOutput(res.Output)
+			res.Err = fmt.Errorf("unrar exited %d (%s): %w", res.ExitCode, res.Reason, runErr)
 			log.Error("unrar: extraction failed",
 				"archive", archive.MainFile,
 				"exitCode", res.ExitCode,
+				"reason", res.Reason.String(),
 				"output", res.Output,
 			)
 		} else {
