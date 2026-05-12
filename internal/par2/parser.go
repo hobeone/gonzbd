@@ -8,9 +8,32 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"unicode/utf8"
 
 	"github.com/hobeone/gonzbd/internal/crc32util"
+	"golang.org/x/text/unicode/norm"
 )
+
+// correctEncoding converts raw par2 filename bytes to a valid UTF-8 string,
+// NFC-normalized. Par2 files created on Windows often contain ISO-8859-1
+// (Latin-1) encoded filenames rather than UTF-8.
+//
+// The logic mirrors SABnzbd's correct_unknown_encoding():
+//  1. If the bytes are valid UTF-8 → use as-is, NFC-normalize.
+//  2. Otherwise → decode as ISO-8859-1 (each byte maps directly to its
+//     Unicode codepoint U+0000..U+00FF), then NFC-normalize.
+func correctEncoding(raw []byte) string {
+	if utf8.Valid(raw) {
+		return norm.NFC.String(string(raw))
+	}
+	// ISO-8859-1: each byte b maps to rune(b). This is a lossless
+	// superset of ASCII that covers Western European characters.
+	runes := make([]rune, len(raw))
+	for i, b := range raw {
+		runes[i] = rune(b)
+	}
+	return norm.NFC.String(string(runes))
+}
 
 // FileDesc contains metadata about a file protected by a PAR2 set.
 type FileDesc struct {
@@ -216,7 +239,7 @@ func parseFileDescBody(body []byte) *FileDesc {
 	copy(fd.Hash16k[:], body[32:48])
 	fd.FileSize = binary.LittleEndian.Uint64(body[48:56])
 	if len(body) > 56 {
-		fd.FileName = string(bytes.TrimRight(body[56:], "\x00"))
+		fd.FileName = correctEncoding(bytes.TrimRight(body[56:], "\x00"))
 	}
 	return fd
 }
