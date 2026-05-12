@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -750,5 +751,45 @@ func TestCorruptedFileRenamedToFailed(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("expected 0 processed on third scan, got %d", count)
+	}
+}
+
+// TestScanPassesInheritSentinels verifies that the dirscanner emits the
+// "inherit from category" sentinels (PPInherit, DefaultPriority) in
+// FetchOptions, rather than zero values. If this regresses, watched-folder
+// jobs silently downgrade to PP=0 / Priority=Normal even when the category
+// config specifies PP=7 or a non-default priority.
+func TestScanPassesInheritSentinels(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	handler := &MockHandler{failFor: make(map[string]error)}
+	scanner := New(tmpDir, store, handler, nil, nil)
+
+	nzbPath := filepath.Join(tmpDir, "x.nzb")
+	if err := os.WriteFile(nzbPath, []byte("<?xml version=\"1.0\" ?>"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// First scan records, second scan dispatches.
+	if _, err := scanner.ScanOnce(t.Context()); err != nil {
+		t.Fatalf("first ScanOnce: %v", err)
+	}
+	if _, err := scanner.ScanOnce(t.Context()); err != nil {
+		t.Fatalf("second ScanOnce: %v", err)
+	}
+	if len(handler.calls) != 1 {
+		t.Fatalf("expected 1 handler call, got %d", len(handler.calls))
+	}
+	got := handler.calls[0].Opts
+	if got.PP != types.PPInherit {
+		t.Errorf("PP: expected PPInherit (%d), got %d — category PP will be ignored downstream",
+			types.PPInherit, got.PP)
+	}
+	if got.Priority != constants.DefaultPriority {
+		t.Errorf("Priority: expected DefaultPriority (%d), got %d — category Priority will be ignored downstream",
+			constants.DefaultPriority, got.Priority)
 	}
 }
