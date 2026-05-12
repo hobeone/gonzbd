@@ -39,8 +39,10 @@ func NewQuickCheckStage() *QuickCheckStage { return &QuickCheckStage{} }
 func (*QuickCheckStage) Name() string { return "quickcheck" }
 
 // Run finds par2 sets and relocates flat files into their par2-specified
-// subdirectory paths. Errors are non-fatal: par2 repair will independently
-// report any files it cannot find.
+// subdirectory paths. After relocation, it verifies file integrity by
+// comparing assembled CRC32 values (computed during download) against
+// par2 manifest CRC32 values. Errors are non-fatal: par2 repair will
+// independently report any files it cannot find or that are corrupted.
 func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	log := q.Log
 	if log == nil {
@@ -58,7 +60,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	if len(sets) == 0 {
 		logf(log, job, slog.LevelInfo, "quickcheck: no par2 files found, skipping")
 		job.OutputLines = append(job.OutputLines,
-			"[quickcheck] No par2 files found — skipping subdirectory relocation")
+			"[quickcheck] No par2 files found — skipping subdirectory relocation and CRC verification")
 		return nil
 	}
 
@@ -84,6 +86,48 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 		logf(log, job, slog.LevelInfo, "quickcheck: no files needed relocation")
 		job.OutputLines = append(job.OutputLines,
 			"[quickcheck] No files needed subdirectory relocation")
+	}
+
+	// CRC verification: compare assembled CRC32s (from download) against
+	// par2 manifest CRC32s to detect corruption without re-reading files.
+	if job.Queue != nil && len(job.Queue.Files) > 0 {
+		var assembledFiles []par2.AssembledFile
+		for _, jf := range job.Queue.Files {
+			assembledFiles = append(assembledFiles, par2.AssembledFile{
+				FileName: jf.Subject,
+				CRC32:    jf.AssembledCRC32,
+			})
+		}
+
+		crcResult := par2.VerifyCRCs(assembledFiles, sets, log)
+
+		if crcResult.Checked > 0 {
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("[quickcheck] CRC verification: %d/%d files verified OK",
+					crcResult.Matched, crcResult.Checked))
+
+			if crcResult.Mismatched > 0 {
+				logf(log, job, slog.LevelWarn,
+					"quickcheck: CRC MISMATCH detected — %d file(s) may be corrupted",
+					crcResult.Mismatched)
+				for _, f := range crcResult.Files {
+					if !f.Match {
+						job.OutputLines = append(job.OutputLines,
+							fmt.Sprintf("[quickcheck] CRC MISMATCH: %s (assembled=%08x par2=%08x)",
+								f.FileName, f.AssembledCRC, f.Par2CRC))
+					}
+				}
+			} else {
+				logf(log, job, slog.LevelInfo,
+					"quickcheck: all %d verified files have matching CRCs", crcResult.Matched)
+			}
+		} else if crcResult.Skipped > 0 {
+			logf(log, job, slog.LevelInfo,
+				"quickcheck: CRC verification skipped for all %d file(s) — no assembled CRCs available",
+				crcResult.Skipped)
+			job.OutputLines = append(job.OutputLines,
+				"[quickcheck] CRC verification: no assembled CRCs available, skipping")
+		}
 	}
 
 	return nil
