@@ -113,12 +113,20 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
 
+	// Snapshot directory contents before extraction for diff.
+	beforeSnap, _ := snapshotDir(outDir)
+
 	runErr := cmd.Run()
 	streamer.Flush()
 
+	// Diff to find newly created files (best-effort).
+	afterSnap, _ := snapshotDir(outDir)
+	extracted := diffSnapshot(beforeSnap, afterSnap)
+
 	res := Result{
-		CommandLine: cmdLine,
-		Output:      streamer.String(),
+		CommandLine:    cmdLine,
+		Output:         streamer.String(),
+		ExtractedFiles: extracted,
 	}
 
 	var exitErr *exec.ExitError
