@@ -30,6 +30,8 @@ package queue
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
@@ -341,6 +343,11 @@ type AddOptions struct {
 	// sentinel values for PP, Script, and Priority. May be nil in
 	// tests; sentinels are left as-is when nil.
 	Categories []config.CategoryConfig
+
+	// Logger, if non-nil, receives structured log output for PP/script/
+	// priority resolution decisions. Useful for diagnosing "why did this
+	// job get PP=0?" questions.
+	Logger *slog.Logger
 }
 
 // NewJob converts parser output plus caller options into a runtime
@@ -370,10 +377,12 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 	pp := opts.PP
 	script := opts.Script
 	priority := opts.Priority
+	ppReason := "explicit"
 	if opts.Categories != nil {
 		cat := config.FindCategory(opts.Categories, opts.Category)
 		if pp == types.PPInherit {
 			pp = cat.PP
+			ppReason = fmt.Sprintf("category %q", cat.Name)
 		}
 		if script == "" {
 			script = cat.Script
@@ -386,9 +395,22 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 	// were provided (e.g. tests, CLI one-shot mode).
 	if pp == types.PPInherit {
 		pp = 0
+		ppReason = "default (no categories configured)"
 	}
 	if priority == constants.DefaultPriority {
 		priority = constants.NormalPriority
+	}
+
+	if opts.Logger != nil {
+		opts.Logger.Info("job PP resolved",
+			"job_name", name,
+			"category", opts.Category,
+			"requested_pp", opts.PP,
+			"resolved_pp", pp,
+			"reason", ppReason,
+			"script", script,
+			"priority", priority.String(),
+		)
 	}
 
 	job := &Job{

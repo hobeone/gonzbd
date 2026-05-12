@@ -63,8 +63,10 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 		s.queuePriority(w, r)
 	// Stubbed: no backing implementation yet.
 	case "rename", "sort", "delete_nzf", "change_complete_action",
-		"change_name", "change_cat", "change_script", "change_opts":
+		"change_name", "change_cat", "change_script":
 		s.respondError(w, http.StatusBadRequest, "not implemented in this build: "+action)
+	case "change_opts":
+		s.queueChangeOpts(w, r)
 	default:
 		s.respondError(w, http.StatusBadRequest, "unknown queue action: "+action)
 	}
@@ -564,6 +566,37 @@ func (s *Server) queuePriority(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// queueChangeOpts handles name=change_opts. SABnzbd convention:
+// value = nzo_id, value2 = numeric PP level (0–3).
+//
+//nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
+func (s *Server) queueChangeOpts(w http.ResponseWriter, r *http.Request) {
+	nzoID := r.FormValue("value")
+	if nzoID == "" {
+		s.respondError(w, http.StatusBadRequest, "missing value parameter (nzo_id)")
+		return
+	}
+	ppStr := r.FormValue("value2")
+	if ppStr == "" {
+		s.respondError(w, http.StatusBadRequest, "missing value2 parameter (pp level)")
+		return
+	}
+	pp := intParam(r, "value2")
+	if pp < 0 || pp > 3 {
+		s.respondError(w, http.StatusBadRequest, fmt.Sprintf("pp must be 0-3, got %d", pp))
+		return
+	}
+	if err := s.queue.SetPP(nzoID, pp); err != nil {
+		s.respondError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	s.log.Info("job PP changed", "job", nzoID, "pp", pp)
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status":  true,
+		"nzo_ids": []string{nzoID},
+	})
+}
+
 // modeAddFile handles mode=addfile. Accepts multipart NZB uploads.
 // Access level: LevelProtected (deliberate deviation from Python's LevelOpen=1;
 // upload should require at least NZB-key-level auth in our unified model).
@@ -613,6 +646,7 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 		Password: r.FormValue("password"),
 		PP:       ppParam(r),
 		Priority: priorityParam(r),
+		Logger:   s.log,
 	}
 
 	sOpts := fsutil.SanitizeOptions{}
@@ -760,6 +794,7 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 		Password: r.FormValue("password"),
 		PP:       ppParam(r),
 		Priority: priorityParam(r),
+		Logger:   s.log,
 	}
 
 	sOpts := fsutil.SanitizeOptions{}

@@ -305,6 +305,20 @@ func (q *Queue) SetPriority(id string, pri constants.Priority) error {
 	return nil
 }
 
+// SetPP changes a job's post-processing level (0–3).
+// Returns ErrNotFound if the job is absent.
+func (q *Queue) SetPP(id string, pp int) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[id]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	job.PP = pp
+	q.dirty.Store(true)
+	return nil
+}
+
 // SetStatus updates the status of the job with the given ID. Returns
 // ErrNotFound if the job is absent.
 func (q *Queue) SetStatus(id string, status constants.Status) error {

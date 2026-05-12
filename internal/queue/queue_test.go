@@ -759,3 +759,39 @@ func TestSetPriority(t *testing.T) {
 		t.Errorf("error = %v, want 'not found'", err)
 	}
 }
+
+func TestSetPP(t *testing.T) {
+	q := New()
+	j := makeJob(t, "pp-test", constants.NormalPriority)
+	j.PP = 1 // Start with +Repair.
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Clear dirty flag to verify SetPP sets it.
+	q.dirty.Store(false)
+
+	// Change PP to 3 (+Delete).
+	if err := q.SetPP(j.ID, 3); err != nil {
+		t.Fatalf("SetPP: %v", err)
+	}
+
+	if !q.IsDirty() {
+		t.Error("SetPP should set dirty flag")
+	}
+
+	got, err := q.Get(j.ID)
+	if err != nil {
+		t.Fatalf("Get after SetPP: %v", err)
+	}
+	if got.PP != 3 {
+		t.Errorf("PP = %d, want 3", got.PP)
+	}
+
+	// Error on nonexistent ID.
+	if err := q.SetPP("nonexistent", 0); err == nil {
+		t.Error("SetPP(unknown) should error")
+	} else if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, want 'not found'", err)
+	}
+}
