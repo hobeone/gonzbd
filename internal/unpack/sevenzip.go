@@ -17,7 +17,9 @@ import (
 //  1. Explicit command from Options (SevenZipCommand).
 //  2. GONZBD_SEVENZIP_BIN environment variable (if set and non-empty).
 //  3. "7zz" (preferred upstream binary name).
-//  4. "7z" (common distro package name).
+//  4. "7zzs" (static build — important for Alpine/musl).
+//  5. "7za" (legacy standalone binary).
+//  6. "7z" (common distro package name).
 //
 // Returns an error if no binary is found.
 func sevenZipBin(opts Options) (string, error) {
@@ -27,11 +29,10 @@ func sevenZipBin(opts Options) (string, error) {
 	if env := os.Getenv("GONZBD_SEVENZIP_BIN"); env != "" {
 		return env, nil
 	}
-	if path, err := exec.LookPath("7zz"); err == nil {
-		return path, nil
-	}
-	if path, err := exec.LookPath("7z"); err == nil {
-		return path, nil
+	for _, name := range []string{"7zz", "7zzs", "7za", "7z"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return path, nil
+		}
 	}
 	return "", fmt.Errorf("7-zip binary not found; install 7zz or 7z, set GONZBD_SEVENZIP_BIN, or configure sevenz_command")
 }
@@ -41,12 +42,12 @@ func sevenZipBin(opts Options) (string, error) {
 //
 // Argv construction:
 //
-//	7zz x -y -bsp0 -p<pw> <mainfile> -o<outdir>
+//	7zz x|e -y -bsp0 -p<pw> <mainfile> -o<outdir>
 //
-// The 'x' command is used unconditionally because it preserves directory
-// structure; 'e' would flatten paths.  -bsp0 suppresses the progress stream
-// to keep output clean.  -p with an empty value is safe for 7zz — it does
-// not prompt on stdin when -p is supplied.
+// 'x' preserves directory structure; 'e' flattens paths (when opts.OneFolder
+// is true, matching SABnzbd's cfg.flat_unpack).  -bsp0 suppresses the
+// progress stream.  -p with an empty value is safe for 7zz — it does not
+// prompt on stdin when -p is supplied.
 func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
 	log = log.With("component", "unpack/sevenzip")
 	bin, err := sevenZipBin(opts)
@@ -56,8 +57,13 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 
 	pwFlag := "-p" + opts.Password // safe even when Password is ""
 
+	method := "x" // preserve paths
+	if opts.OneFolder {
+		method = "e" // flat extract (matches SABnzbd cfg.flat_unpack)
+	}
+
 	args := []string{
-		"x",
+		method,
 		"-y",    // assume yes
 		"-bd",   // disable progress percentage indicator
 		"-bsp0", // suppress progress stream (keep stdout for stage log)
@@ -68,7 +74,7 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	if opts.OverwriteFiles {
 		args = append(args, "-aoa") // overwrite all existing files
 	} else {
-		args = append(args, "-aos") // skip existing files
+		args = append(args, "-aou") // auto-rename on collision (matches SABnzbd)
 	}
 
 	args = append(args,
