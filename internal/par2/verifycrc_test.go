@@ -2,6 +2,7 @@ package par2
 
 import (
 	"log/slog"
+	"os"
 	"testing"
 )
 
@@ -78,4 +79,72 @@ func TestCRCResult_Fields(t *testing.T) {
 	if cr.FileName != "test.dat" {
 		t.Errorf("FileName = %q, want %q", cr.FileName, "test.dat")
 	}
+}
+
+// P23: VerifyCRCs with real par2 fixture files.
+func TestVerifyCRCs_WithRealPar2Fixture(t *testing.T) {
+	t.Parallel()
+
+	par2Path := "../../test/fixtures/par2/data.par2"
+	if _, err := os.Stat(par2Path); err != nil {
+		t.Skipf("par2 fixture not available: %v", err)
+	}
+
+	sets, err := FindPar2Files("../../test/fixtures/par2")
+	if err != nil {
+		t.Fatalf("FindPar2Files: %v", err)
+	}
+	if len(sets) == 0 {
+		t.Skip("no par2 sets found in fixture")
+	}
+
+	t.Run("matching CRC", func(t *testing.T) {
+		t.Parallel()
+		// data.bin has CRC32 = 0x1068AFA6
+		files := []AssembledFile{
+			{FileName: "data.bin", CRC32: 0x1068AFA6},
+		}
+		result := VerifyCRCs(files, sets, slog.Default())
+		if result.Checked != 1 {
+			t.Errorf("Checked = %d, want 1", result.Checked)
+		}
+		if result.Matched != 1 {
+			t.Errorf("Matched = %d, want 1", result.Matched)
+		}
+		if result.Mismatched != 0 {
+			t.Errorf("Mismatched = %d, want 0", result.Mismatched)
+		}
+	})
+
+	t.Run("mismatched CRC", func(t *testing.T) {
+		t.Parallel()
+		// Wrong CRC for data.bin
+		files := []AssembledFile{
+			{FileName: "data.bin", CRC32: 0xDEADBEEF},
+		}
+		result := VerifyCRCs(files, sets, slog.Default())
+		if result.Checked != 1 {
+			t.Errorf("Checked = %d, want 1", result.Checked)
+		}
+		if result.Matched != 0 {
+			t.Errorf("Matched = %d, want 0", result.Matched)
+		}
+		if result.Mismatched != 1 {
+			t.Errorf("Mismatched = %d, want 1", result.Mismatched)
+		}
+	})
+
+	t.Run("file not in manifest", func(t *testing.T) {
+		t.Parallel()
+		files := []AssembledFile{
+			{FileName: "unknown.mkv", CRC32: 0x12345678},
+		}
+		result := VerifyCRCs(files, sets, slog.Default())
+		if result.Checked != 0 {
+			t.Errorf("Checked = %d, want 0 (file not in manifest)", result.Checked)
+		}
+		if result.Skipped != 1 {
+			t.Errorf("Skipped = %d, want 1", result.Skipped)
+		}
+	})
 }

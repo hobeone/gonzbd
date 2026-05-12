@@ -80,6 +80,58 @@ func TestRepairStage_EmptyDir(t *testing.T) {
 	}
 }
 
+// P22: RepairStage.Run skips par2 when QuickCheckPassed is set.
+func TestRepairStage_SkippedWhenQuickCheckPassed(t *testing.T) {
+	t.Parallel()
+	job, _ := stageJob(t)
+	job.QuickCheckPassed = true
+
+	// Create a par2 file so the stage has something to find, but should skip.
+	os.WriteFile(filepath.Join(job.DownloadDir, "movie.par2"), []byte("fake"), 0o644)
+
+	stage := NewRepairStage()
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The stage should skip — no ParError should be set.
+	if job.ParError {
+		t.Error("ParError should be false when QuickCheckPassed")
+	}
+	// Verify the skip was logged in OutputLines.
+	found := false
+	for _, line := range job.OutputLines {
+		if strings.Contains(line, "QuickCheck") || strings.Contains(line, "skip") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected OutputLines to contain QuickCheck skip message, got %v", job.OutputLines)
+	}
+}
+
+// P22: ScriptStage with ScriptCanFail=true swallows non-zero exit errors.
+func TestScriptStage_ScriptCanFail(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test not portable to Windows")
+	}
+	t.Parallel()
+	job, _ := stageJob(t)
+	job.Queue.Script = "fail.sh"
+
+	scriptDir := t.TempDir()
+	scriptPath := filepath.Join(scriptDir, "fail.sh")
+	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 3\n"))
+
+	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
+	stage.ScriptCanFail = true
+
+	err := stage.Run(t.Context(), job)
+	if err != nil {
+		t.Errorf("Run with ScriptCanFail=true should return nil, got %v", err)
+	}
+}
+
 // TestRepairStage_CleanupWithRealNames verifies that par2 files are cleaned up
 // when files arrive with their real names (extracted from NZB subjects by the
 // pipeline). Par2 repair is skipped (binary doesn't exist) but cleanup should

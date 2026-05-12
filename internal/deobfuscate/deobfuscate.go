@@ -315,6 +315,18 @@ func Deobfuscate(log *slog.Logger, dir, usefulName string, opts fsutil.SanitizeO
 		log.Info("deobfuscate: no qualifying biggest file found (no file 3× larger than next)", "dir", dir)
 		return allRenames, nil
 	}
+
+	// P10: Skip heuristic deobfuscation for files under 10 MiB. Small
+	// files (NFOs, scripts, samples) may look obfuscated but renaming
+	// them is usually wrong. PAR2 and RAR-header renames above have no
+	// size threshold — they use structural metadata, not heuristics.
+	const minDeobfuscateSize = 10 * 1024 * 1024 // 10 MiB
+	if fi, statErr := os.Stat(bigPath); statErr == nil && fi.Size() < minDeobfuscateSize {
+		log.Info("deobfuscate: biggest file under 10 MiB, skipping heuristic rename",
+			"file", filepath.Base(bigPath), "size", fi.Size())
+		return allRenames, nil
+	}
+
 	log.Info("deobfuscate: biggest file candidate", "path", filepath.Base(bigPath))
 
 	ext := strings.ToLower(filepath.Ext(bigPath))
