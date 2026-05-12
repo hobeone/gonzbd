@@ -394,8 +394,11 @@
 				</div>
 				<div>
 					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Processing</span>
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div onclick={(e: MouseEvent) => e.stopPropagation()}>
+					<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+					<div
+						onclick={(e: MouseEvent) => e.stopPropagation()}
+						onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
+					>
 						<select
 							value={slot.pp}
 							onchange={changePP}
