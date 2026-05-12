@@ -257,6 +257,13 @@ postproc:
   # Matches SABnzbd's cfg.extra_par2_parameters().
   extra_par2_params: ""
 
+  # When true, non-zero script exit codes are logged but do NOT mark the
+  # job as failed. This matches SABnzbd's cfg.script_can_fail(). Useful
+  # when scripts return non-zero for informational/partial-failure reasons
+  # that shouldn't prevent the job from being marked as completed.
+  # Default: false
+  script_can_fail: false
+
 servers:
   # Each server entry defines an NNTP news server connection.
   # Multiple servers can be configured for redundancy and fill.
