@@ -60,3 +60,60 @@ func TestFindCategoryEmpty(t *testing.T) {
 		t.Errorf("FindCategory(nil) = %+v, want zero", got)
 	}
 }
+
+// TestFindCategoryCaseInsensitive verifies that category lookup is
+// case-insensitive for both explicit names and the "Default" fallback.
+// Real configs (especially those mutated through the web UI) commonly
+// store the fallback as "default" rather than "Default" — a case-
+// sensitive match would fall through to the zero CategoryConfig and
+// silently apply PP=0, disabling post-processing.
+func TestFindCategoryCaseInsensitive(t *testing.T) {
+	tests := []struct {
+		name     string
+		cats     []CategoryConfig
+		lookup   string
+		wantName string
+		wantPP   int
+	}{
+		{
+			name: "lowercase default matches as fallback",
+			cats: []CategoryConfig{
+				{Name: "default", PP: 7},
+				{Name: "tv", PP: 7},
+			},
+			lookup:   "",
+			wantName: "default",
+			wantPP:   7,
+		},
+		{
+			name: "DEFAULT (upper) matches as fallback",
+			cats: []CategoryConfig{
+				{Name: "DEFAULT", PP: 5},
+			},
+			lookup:   "",
+			wantName: "DEFAULT",
+			wantPP:   5,
+		},
+		{
+			name: "explicit-name lookup is case-insensitive",
+			cats: []CategoryConfig{
+				{Name: "TV", PP: 7},
+				{Name: "Default", PP: 3},
+			},
+			lookup:   "tv",
+			wantName: "TV",
+			wantPP:   7,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FindCategory(tt.cats, tt.lookup)
+			if got.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", got.Name, tt.wantName)
+			}
+			if got.PP != tt.wantPP {
+				t.Errorf("PP = %d, want %d", got.PP, tt.wantPP)
+			}
+		})
+	}
+}

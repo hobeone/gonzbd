@@ -1,5 +1,7 @@
 package config
 
+import "strings"
+
 // CategoryConfig is a per-category override bundle. Jobs added under a
 // category inherit that category's defaults for priority, post-processing
 // flags, and destination subdirectory. See spec §9.5.
@@ -31,16 +33,19 @@ type CategoryConfig struct {
 }
 
 // FindCategory looks up the CategoryConfig for the given name. If name
-// is empty or not found, it falls back to "Default", then "*". Returns
-// a zero CategoryConfig if no categories are defined at all.
+// is empty or not found, it falls back to "Default", then "*". Name
+// matching is case-insensitive: a job tagged "tv" matches a config
+// entry named "TV", and the "Default" / "*" fallbacks match regardless
+// of casing in the YAML. Returns a zero CategoryConfig if no
+// categories are defined at all.
 func FindCategory(cats []CategoryConfig, name string) CategoryConfig {
 	var defaultCat, starCat CategoryConfig
 	var foundDefault, foundStar bool
 	for _, c := range cats {
-		if c.Name == name && name != "" {
+		if name != "" && strings.EqualFold(c.Name, name) {
 			return c
 		}
-		if c.Name == "Default" {
+		if strings.EqualFold(c.Name, "Default") {
 			defaultCat = c
 			foundDefault = true
 		}
