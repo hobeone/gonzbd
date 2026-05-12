@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"runtime"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
@@ -74,6 +75,14 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 		archive.MainFile,
 		"-o"+outDir, // no space between -o and the path
 	)
+
+	// P11: Case-sensitivity flag. Linux filesystems are case-sensitive;
+	// macOS/Windows are not. Matches Python SABnzbd spec §8.3.
+	if runtime.GOOS == "linux" {
+		args = append(args, "-ssc") // case-sensitive
+	} else {
+		args = append(args, "-ssc-") // case-insensitive
+	}
 
 	log.Info("7zip: starting extraction",
 		"binary", bin,

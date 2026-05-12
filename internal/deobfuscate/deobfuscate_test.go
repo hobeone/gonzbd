@@ -121,8 +121,8 @@ func TestDeobfuscate(t *testing.T) {
 	t.Run("renames obfuscated biggest file", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		// Obfuscated name: 32 hex chars
-		big := createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv", 9001)
+		// Obfuscated name: 32 hex chars. Must be >10 MiB for heuristic deobfuscation.
+		big := createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv", 11*1024*1024)
 		small := createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.nfo", 100)
 
 		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "Cool.Show.S01E01", fsutil.SanitizeOptions{})
@@ -148,7 +148,8 @@ func TestDeobfuscate(t *testing.T) {
 	t.Run("no rename when not obfuscated", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		createFile(t, dir, "Great.Show.S01E01.1080p.mkv", 9001)
+		// >10 MiB so heuristic threshold is passed, but name is not obfuscated.
+		createFile(t, dir, "Great.Show.S01E01.1080p.mkv", 11*1024*1024)
 		createFile(t, dir, "other.nfo", 100)
 
 		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
@@ -187,6 +188,42 @@ func TestDeobfuscate(t *testing.T) {
 		}
 		if len(renames) != 0 {
 			t.Errorf("expected no renames for excluded extension, got %d", len(renames))
+		}
+	})
+
+	t.Run("skip deobfuscate when biggest under 10MiB", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		// 5 MiB = well under the 10 MiB threshold
+		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv", 5*1024*1024)
+		createFile(t, dir, "tiny.nfo", 10)
+
+		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(renames) != 0 {
+			t.Errorf("expected no renames for <10 MiB file, got %d", len(renames))
+		}
+		// Verify the original file still exists (not renamed).
+		if _, err := os.Stat(filepath.Join(dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv")); err != nil {
+			t.Errorf("original file should still exist: %v", err)
+		}
+	})
+
+	t.Run("deobfuscate runs when biggest over 10MiB", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		// 11 MiB = above the 10 MiB threshold
+		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv", 11*1024*1024)
+		createFile(t, dir, "tiny.nfo", 10)
+
+		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(renames) == 0 {
+			t.Error("expected rename for >10 MiB obfuscated file")
 		}
 	})
 }

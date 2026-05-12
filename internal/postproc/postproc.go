@@ -372,9 +372,7 @@ func (p *PostProcessor) processJob(job *Job) {
 		return
 	}
 
-	var failedAt = -1 // index of first failed stage, or -1
-
-	for i, stage := range p.stages {
+	for _, stage := range p.stages {
 		// PP enforcement (M1): skip stages above the job's post-processing
 		// level. SABnzbd PP levels are cumulative:
 		//   0 = download only (skip repair + unpack)
@@ -428,26 +426,30 @@ func (p *PostProcessor) processJob(job *Job) {
 		}
 
 		if err != nil {
-			p.log.Warn("postproc: stage failed, aborting pipeline",
+			// Stage errors are recorded but do NOT abort the pipeline.
+			// Each stage self-gates based on job flags (ParError, UnpackError,
+			// FailMsg) to decide whether to skip when a prior stage has failed.
+			// This matches Python's behavior where ALL stages run (including
+			// the user script) even when repair/unpack fails — the script
+			// receives the failure status code so automation tools (Sonarr,
+			// Radarr) can handle the failure.
+			p.log.Warn("postproc: stage failed, continuing pipeline",
 				"stage", stage.Name(),
 				"job", job.Queue.ID,
 				"err", err,
 			)
-			job.StageLog = append(job.StageLog, entry)
-			failedAt = i
-			break
+		} else {
+			p.log.Info("postproc: stage done",
+				"stage", stage.Name(),
+				"job", job.Queue.ID,
+				"elapsed", entry.Elapsed,
+			)
 		}
-
-		p.log.Info("postproc: stage done",
-			"stage", stage.Name(),
-			"job", job.Queue.ID,
-			"elapsed", entry.Elapsed,
-		)
 		job.StageLog = append(job.StageLog, entry)
 
 		// If the worker context was cancelled mid-stage, stop running further
 		// stages — the stage itself should have returned early, but we don't
-		// force it to.
+		// force it to. Context cancellation is the ONLY reason to abort.
 		select {
 		case <-p.workerCtx.Done():
 			p.log.Info("postproc: worker context cancelled, aborting remaining stages",
@@ -455,18 +457,6 @@ func (p *PostProcessor) processJob(job *Job) {
 			)
 			return
 		default:
-		}
-	}
-
-	// Record remaining stages as skipped if the pipeline was aborted.
-	if failedAt >= 0 {
-		failedName := p.stages[failedAt].Name()
-		for _, stage := range p.stages[failedAt+1:] {
-			job.StageLog = append(job.StageLog, StageLogEntry{
-				Stage:   stage.Name(),
-				Started: time.Now(),
-				Lines:   []string{fmt.Sprintf("Skipped: %s stage failed", failedName)},
-			})
 		}
 	}
 

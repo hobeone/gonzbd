@@ -63,6 +63,9 @@ func TestClassify(t *testing.T) {
 		{"archive.7z.002", unpack.SevenZipArchive},
 		{"data.001", unpack.SplitArchive},
 		{"data.002", unpack.SplitArchive},
+		// P21: .ts.NNN files are generic splits — joined by FileJoin
+		{"show.ts.001", unpack.SplitArchive},
+		{"show.ts.002", unpack.SplitArchive},
 		{"readme.txt", unpack.UnknownArchive},
 		{"movie.nfo", unpack.UnknownArchive},
 		{"noext", unpack.UnknownArchive},
@@ -178,6 +181,18 @@ func TestScan(t *testing.T) {
 			},
 			wantLen: 0,
 		},
+		{
+			// P21: .ts.NNN files are generic splits with name "show.ts"
+			name: "ts split files",
+			layout: []string{
+				"show.ts.001",
+				"show.ts.002",
+				"show.ts.003",
+			},
+			wantLen:   1,
+			wantNames: []string{"show.ts"},
+			wantTypes: map[string]unpack.ArchiveType{"show.ts": unpack.SplitArchive},
+		},
 	}
 
 	for _, tc := range tests {
@@ -278,6 +293,51 @@ func TestFileJoin(t *testing.T) {
 	}
 
 	outPath := filepath.Join(outDir, "data")
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("joined output = %q, want %q", got, want)
+	}
+}
+
+// P21: FileJoin with .ts.NNN files produces show.ts as output.
+func TestFileJoin_TSFiles(t *testing.T) {
+	t.Parallel()
+
+	part1 := []byte("TS segment 1 ")
+	part2 := []byte("TS segment 2 ")
+	part3 := []byte("TS segment 3")
+	want := append(append(part1, part2...), part3...)
+
+	dir := t.TempDir()
+	outDir := t.TempDir()
+
+	write(t, filepath.Join(dir, "show.ts.001"), part1)
+	write(t, filepath.Join(dir, "show.ts.002"), part2)
+	write(t, filepath.Join(dir, "show.ts.003"), part3)
+
+	archive := unpack.Archive{
+		Type:     unpack.SplitArchive,
+		Name:     "show.ts",
+		MainFile: filepath.Join(dir, "show.ts.001"),
+		Parts: []string{
+			filepath.Join(dir, "show.ts.001"),
+			filepath.Join(dir, "show.ts.002"),
+			filepath.Join(dir, "show.ts.003"),
+		},
+	}
+
+	res, err := unpack.FileJoin(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
+	if err != nil {
+		t.Fatalf("FileJoin: %v", err)
+	}
+	if res.Err != nil {
+		t.Fatalf("Result.Err: %v", res.Err)
+	}
+
+	outPath := filepath.Join(outDir, "show.ts")
 	got, err := os.ReadFile(outPath)
 	if err != nil {
 		t.Fatalf("read output: %v", err)
