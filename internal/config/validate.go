@@ -235,8 +235,8 @@ func (s *ServerConfig) validate() error {
 }
 
 func (c *CategoryConfig) validate() error {
-	if c.PP < 0 || c.PP > 7 {
-		return fmt.Errorf("pp: %d outside [0,7]", c.PP)
+	if c.PP < 0 || c.PP > 3 {
+		return fmt.Errorf("pp: %d outside [0,3] (0=download, 1=+repair, 2=+unpack, 3=+delete)", c.PP)
 	}
 	return nil
 }
