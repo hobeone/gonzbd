@@ -32,12 +32,23 @@
 		ssl_ciphers: '',
 		priority: 0,
 		required: false,
-		optional: true,
+		optional: false,
 		retention: 0,
 		timeout: 60,
 		pipelining_requests: 2,
 		enable: true
 	});
+
+	type ServerRole = 'primary' | 'backup' | 'required';
+	function roleOf(d: ServerConfig): ServerRole {
+		if (d.required) return 'required';
+		if (d.optional) return 'backup';
+		return 'primary';
+	}
+	function setRole(role: ServerRole) {
+		draft.required = role === 'required';
+		draft.optional = role === 'backup';
+	}
 
 	let originalName = $state('');
 	let testing = $state(false);
@@ -63,7 +74,7 @@
 					ssl_ciphers: '',
 					priority: 0,
 					required: false,
-					optional: true,
+					optional: false,
 					retention: 0,
 					timeout: 60,
 					pipelining_requests: 2,
@@ -172,6 +183,45 @@
 						<input type="checkbox" bind:checked={draft.enable} class="rounded border-gray-300 dark:border-gray-600" />
 						Enabled
 					</label>
+				</div>
+
+				<div class="col-span-2 space-y-1.5">
+					<div class="text-sm font-medium">Role</div>
+					<div class="flex items-center gap-6 text-sm">
+						<label class="flex items-center gap-2 cursor-pointer">
+							<input
+								type="radio"
+								name="server-role"
+								value="primary"
+								checked={roleOf(draft) === 'primary'}
+								onchange={() => setRole('primary')}
+							/>
+							Primary
+						</label>
+						<label class="flex items-center gap-2 cursor-pointer">
+							<input
+								type="radio"
+								name="server-role"
+								value="backup"
+								checked={roleOf(draft) === 'backup'}
+								onchange={() => setRole('backup')}
+							/>
+							Backup
+						</label>
+						<label class="flex items-center gap-2 cursor-pointer">
+							<input
+								type="radio"
+								name="server-role"
+								value="required"
+								checked={roleOf(draft) === 'required'}
+								onchange={() => setRole('required')}
+							/>
+							Required
+						</label>
+					</div>
+					<p class="text-xs text-gray-500 dark:text-gray-400">
+						Backup servers can be auto-disabled when failure rate is high. Required servers are never auto-disabled.
+					</p>
 				</div>
 			</div>
 
