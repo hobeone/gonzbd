@@ -400,13 +400,12 @@
 						onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
 					>
 						<select
-							value={slot.pp}
 							onchange={changePP}
 							class="h-7 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
 							title="Post-processing level: 0=Download, 1=+Repair, 2=+Unpack, 3=+Delete"
 						>
 							{#each Object.entries(PP_LABELS) as [val, label] (val)}
-								<option value={val}>{label}</option>
+								<option value={val} selected={val === slot.pp}>{label}</option>
 							{/each}
 						</select>
 					</div>
