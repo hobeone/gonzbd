@@ -1,0 +1,117 @@
+package unpack
+
+import "strings"
+
+// FailReason classifies why an extraction failed, enabling appropriate user
+// feedback and recovery logic.
+type FailReason int
+
+const (
+	// FailUnknown is the default: the extraction failed for an unspecified reason.
+	FailUnknown FailReason = iota
+	// FailWrongPassword means the archive requires a different password.
+	FailWrongPassword
+	// FailDiskFull means the output device has insufficient space.
+	FailDiskFull
+	// FailCorrupt means the archive data is corrupted (CRC error, bad header, etc.).
+	FailCorrupt
+	// FailMissingVolume means a volume in a multi-part set is missing.
+	FailMissingVolume
+	// FailNotArchive means the file is not a valid archive format.
+	FailNotArchive
+)
+
+// String returns a human-readable label for the FailReason.
+func (r FailReason) String() string {
+	switch r {
+	case FailWrongPassword:
+		return "wrong password"
+	case FailDiskFull:
+		return "disk full"
+	case FailCorrupt:
+		return "corrupt archive"
+	case FailMissingVolume:
+		return "missing volume"
+	case FailNotArchive:
+		return "not an archive"
+	default:
+		return "unknown error"
+	}
+}
+
+// ClassifyUnrarOutput examines unrar's combined stdout+stderr output and
+// returns a FailReason. This matches SABnzbd's unrar output parsing from
+// newsunpack.py (lines 730–860).
+//
+// Only call this when the extraction has already failed (exit code != 0).
+func ClassifyUnrarOutput(output string) FailReason {
+	lower := strings.ToLower(output)
+
+	// Wrong password patterns (most specific — check first).
+	if strings.Contains(lower, "incorrect password") ||
+		strings.Contains(lower, "the specified password is incorrect") ||
+		strings.Contains(lower, "checksum error in the encrypted file") ||
+		// Unrar variants: "Encrypted file:  CRC failed in ..." (variable spacing).
+		(strings.Contains(lower, "encrypted file") && strings.Contains(lower, "crc failed")) {
+		return FailWrongPassword
+	}
+
+	// Disk full.
+	if strings.Contains(lower, "write error") ||
+		strings.Contains(lower, "there is not enough space on the disk") ||
+		strings.Contains(lower, "no space left on device") {
+		return FailDiskFull
+	}
+
+	// Not a RAR archive.
+	if strings.Contains(lower, "is not rar archive") {
+		return FailNotArchive
+	}
+
+	// Missing volume (but not during recovery mode).
+	if strings.Contains(lower, "cannot find volume") &&
+		!strings.Contains(lower, "recovery volumes found") {
+		return FailMissingVolume
+	}
+
+	// CRC / corrupt.
+	if strings.Contains(lower, "checksum error") ||
+		strings.Contains(lower, "unexpected end of archive") ||
+		strings.Contains(lower, "- crc failed") {
+		return FailCorrupt
+	}
+
+	return FailUnknown
+}
+
+// Classify7zOutput examines 7z's combined stdout+stderr output and returns
+// a FailReason. Matches SABnzbd's seven_extract_core parsing.
+//
+// Only call this when the extraction has already failed (exit code != 0).
+func Classify7zOutput(output string) FailReason {
+	lower := strings.ToLower(output)
+
+	// Wrong password.
+	if strings.Contains(lower, "wrong password") ||
+		strings.Contains(lower, "data error in encrypted file") ||
+		strings.Contains(lower, "can not open encrypted archive") {
+		return FailWrongPassword
+	}
+
+	// Disk full.
+	if strings.Contains(lower, "disk full") ||
+		strings.Contains(lower, "no space left on device") {
+		return FailDiskFull
+	}
+
+	// CRC / corrupt.
+	if strings.Contains(lower, "error: crc failed") ||
+		strings.Contains(lower, "data error") {
+		// Exclude "data error in encrypted file" which is already caught above.
+		if !strings.Contains(lower, "encrypted") {
+			return FailCorrupt
+		}
+	}
+
+	return FailUnknown
+}
