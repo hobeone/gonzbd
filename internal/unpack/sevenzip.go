@@ -1,13 +1,14 @@
 package unpack
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
+
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
 // sevenZipBin returns the path to the 7-zip binary to use.
@@ -82,14 +83,15 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	)
 
 	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // bin and args are caller-supplied, not shell-expanded
-	var combined bytes.Buffer
-	cmd.Stdout = &combined
-	cmd.Stderr = &combined
+	streamer := cmdutil.NewLineStreamer(opts.OnLine)
+	cmd.Stdout = streamer
+	cmd.Stderr = streamer
 
 	runErr := cmd.Run()
+	streamer.Flush()
 
 	res := Result{
-		Output: combined.String(),
+		Output: streamer.String(),
 	}
 
 	var exitErr *exec.ExitError
