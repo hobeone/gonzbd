@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
@@ -41,6 +40,8 @@ const (
 	StatusDiskFull
 	// StatusRepairFailed means par2 attempted repair but it was unsuccessful.
 	StatusRepairFailed
+	// StatusRepairComplete means par2 successfully repaired all damaged files.
+	StatusRepairComplete
 	// StatusBadOption means par2 rejected a command-line option (e.g. turbo
 	// flags passed to a non-turbo build). The caller should retry without
 	// the problematic option.
@@ -75,7 +76,7 @@ type VerifyResult struct {
 type RepairResult struct {
 	// CommandLine is the full command that was executed.
 	CommandLine string
-	// Success is true when par2 reported "Repair complete".
+	// Success is true when par2 reported "Repair complete" or "All files are correct".
 	Success bool
 	// ExitCode is the process exit code; 0 on success.
 	ExitCode int
@@ -87,6 +88,10 @@ type RepairResult struct {
 	// BlocksNeeded is the number of additional recovery blocks par2 requires.
 	// Only meaningful when NeedMoreBlocks is true.
 	BlocksNeeded int
+	// Parsed is the fully parsed output state from par2. Contains renames,
+	// used_for_repair/used_joinables, progress, and phase tracking.
+	// Nil if output parsing was not performed.
+	Parsed *RepairOutput
 }
 
 // RunOptions configures the par2 binary invocation.
@@ -245,6 +250,8 @@ func parseStatus(output string) Status {
 		return StatusRepairRequired
 	case strings.Contains(output, "Repair is possible"):
 		return StatusRepairPossible
+	case strings.Contains(output, "Repair complete"):
+		return StatusRepairComplete
 	case strings.Contains(output, "All files are correct"):
 		return StatusAllFilesOK
 	default:
@@ -360,13 +367,12 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 		}
 	}
 
-	res.Success = strings.Contains(res.Output, "Repair complete") || strings.Contains(res.Output, "All files are correct")
-
-	// Parse "You need N more recovery blocks" for the re-add path.
-	if m := needMoreBlocksRE.FindStringSubmatch(res.Output); len(m) == 2 {
-		res.NeedMoreBlocks = true
-		res.BlocksNeeded, _ = strconv.Atoi(m[1])
-	}
+	// Parse the combined output with the streaming state machine.
+	parsed := ParseRepairOutput(res.Output)
+	res.Parsed = parsed
+	res.Success = parsed.Finished
+	res.NeedMoreBlocks = parsed.NeedMoreBlocks
+	res.BlocksNeeded = parsed.BlocksNeeded
 
 	return res, nil
 }
