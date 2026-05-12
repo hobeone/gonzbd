@@ -318,6 +318,27 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			ppLog.Info("Detected par2 binary", "version", par2Caps.Version)
 		}
 
+		// Detect unrar binary version and authenticity.
+		unrarInfo := unpack.DetectUnrar(context.Background(), cfg.UnrarCommand)
+		if unrarInfo.Available {
+			ppLog.Info("Detected unrar binary",
+				"version", unrarInfo.VersionStr,
+				"original", unrarInfo.Original)
+			if unrarInfo.HasProblem {
+				ppLog.Warn("unrar binary may have issues: non-original or version < 5.50")
+			}
+		} else {
+			ppLog.Warn("unrar binary not found; RAR extraction will not be available")
+		}
+
+		// Detect 7z binary.
+		sevenzInfo := unpack.DetectSevenZip(context.Background(), cfg.SevenzCommand)
+		if sevenzInfo.Available {
+			ppLog.Info("Detected 7z binary", "version", sevenzInfo.Version)
+		} else {
+			ppLog.Warn("7z binary not found; 7-Zip extraction will not be available")
+		}
+
 		// Repair stage: configurable par2 binary, turbo mode, and cleanup.
 		repairStage := postproc.NewRepairStageWith(
 			par2.RunOptions{

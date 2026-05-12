@@ -73,8 +73,8 @@ type Result struct {
 	// CommandLine is the display-safe command line that was executed.
 	// Passwords are redacted.
 	CommandLine string
-	// ExtractedFiles is a best-effort list of files written by the tool.
-	// TODO: populate by diffing outDir before/after the subprocess call.
+	// ExtractedFiles lists files created by the extraction, determined by
+	// diffing the output directory before and after the subprocess call.
 	ExtractedFiles []string
 	// Output is the captured stdout+stderr from the subprocess.
 	Output string
@@ -158,12 +158,20 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
 
+	// Snapshot directory contents before extraction for diff.
+	beforeSnap, _ := snapshotDir(outDir)
+
 	runErr := cmd.Run()
 	streamer.Flush()
 
+	// Diff to find newly created files (best-effort).
+	afterSnap, _ := snapshotDir(outDir)
+	extracted := diffSnapshot(beforeSnap, afterSnap)
+
 	res := Result{
-		CommandLine: cmdLine,
-		Output:      streamer.String(),
+		CommandLine:    cmdLine,
+		Output:         streamer.String(),
+		ExtractedFiles: extracted,
 	}
 
 	var exitErr *exec.ExitError
