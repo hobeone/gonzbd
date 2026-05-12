@@ -140,6 +140,7 @@ func Apply(
 		"year", info.Year, "type", info.Type)
 
 	subpath := ExpandTemplate(matched.SortString, info, ext)
+	subpath = CleanTemplatePath(subpath)
 	log.Info("sorting: template expanded", "template", matched.SortString, "result", subpath)
 	// subpath is something like "TV/%t/Season %0s" -> "TV/Show Name/Season 01"
 	// We must join each component separately so JoinSafe doesn't underscores the slashes.
