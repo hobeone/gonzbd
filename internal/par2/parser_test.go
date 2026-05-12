@@ -433,3 +433,72 @@ func TestParsePar2Set_MultiplePacketTypes(t *testing.T) {
 		t.Errorf("Creator = %q, want %q", set.Creator, "GoNZBD")
 	}
 }
+
+func TestCorrectEncoding_UTF8(t *testing.T) {
+	t.Parallel()
+	// Pure ASCII passes through unchanged.
+	got := correctEncoding([]byte("hello.txt"))
+	if got != "hello.txt" {
+		t.Errorf("got %q, want %q", got, "hello.txt")
+	}
+}
+
+func TestCorrectEncoding_ValidUTF8_NFC(t *testing.T) {
+	t.Parallel()
+	// NFD form: 'ü' = U+0075 U+0308 (u + combining diaeresis)
+	nfd := "M\xC3\xBCnchen.txt" // Already NFC 'ü'
+	got := correctEncoding([]byte(nfd))
+	if got != nfd {
+		t.Errorf("got %q, want %q", got, nfd)
+	}
+}
+
+func TestCorrectEncoding_ISO8859_1_Fallback(t *testing.T) {
+	t.Parallel()
+	// ISO-8859-1: 0xFC = 'ü', 0xE9 = 'é'
+	// These bytes are NOT valid UTF-8, so should trigger Latin-1 decode.
+	latin1 := []byte{'M', 0xFC, 'n', 'c', 'h', 'e', 'n', '.', 't', 'x', 't'}
+	got := correctEncoding(latin1)
+	want := "München.txt"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestCorrectEncoding_ISO8859_1_AccentedE(t *testing.T) {
+	t.Parallel()
+	latin1 := []byte{'c', 'a', 'f', 0xE9, '.', 'n', 'z', 'b'}
+	got := correctEncoding(latin1)
+	want := "café.nzb"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestParseFileDescBody_ISO8859_1_FileName(t *testing.T) {
+	t.Parallel()
+	// Create a FileDesc body with ISO-8859-1 filename bytes.
+	fileID := [16]byte{1}
+	fullHash := [16]byte{2}
+	hash16k := [16]byte{3}
+	fileSize := uint64(1000)
+
+	// ISO-8859-1 encoded "Ärger.txt" — 0xC4 = 'Ä' in Latin-1
+	nameBytes := []byte{0xC4, 'r', 'g', 'e', 'r', '.', 't', 'x', 't', 0, 0, 0}
+
+	body := make([]byte, 56+len(nameBytes))
+	copy(body[0:16], fileID[:])
+	copy(body[16:32], fullHash[:])
+	copy(body[32:48], hash16k[:])
+	binary.LittleEndian.PutUint64(body[48:56], fileSize)
+	copy(body[56:], nameBytes)
+
+	fd := parseFileDescBody(body)
+	if fd == nil {
+		t.Fatal("parseFileDescBody returned nil")
+	}
+	want := "Ärger.txt"
+	if fd.FileName != want {
+		t.Errorf("FileName = %q, want %q", fd.FileName, want)
+	}
+}
