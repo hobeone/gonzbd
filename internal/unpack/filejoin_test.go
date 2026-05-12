@@ -87,9 +87,17 @@ func TestFileJoin_OutputAlreadyExists(t *testing.T) {
 		Parts:    []string{partPath},
 	}
 
-	_, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
-	if err == nil {
-		t.Error("expected error when output file already exists")
+	res, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("expected no-op success when output exists, got error: %v", err)
+	}
+	if res.Err != nil {
+		t.Fatalf("expected no-op success, got Result.Err: %v", res.Err)
+	}
+	// Existing content should be preserved (not overwritten).
+	got, _ := os.ReadFile(filepath.Join(outDir, "data"))
+	if string(got) != "existing" {
+		t.Errorf("existing file was modified: got %q, want %q", got, "existing")
 	}
 }
 
