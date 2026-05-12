@@ -55,6 +55,8 @@ type Set struct {
 
 // VerifyResult holds the output of a par2 verify run.
 type VerifyResult struct {
+	// CommandLine is the full command that was executed.
+	CommandLine string
 	// Status is the parsed outcome.
 	Status Status
 	// Stdout is the raw standard output captured from par2.
@@ -65,6 +67,8 @@ type VerifyResult struct {
 
 // RepairResult holds the output of a par2 repair run.
 type RepairResult struct {
+	// CommandLine is the full command that was executed.
+	CommandLine string
 	// Success is true when par2 reported "Repair complete".
 	Success bool
 	// ExitCode is the process exit code; 0 on success.
@@ -227,6 +231,13 @@ func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 
 	cmd := exec.CommandContext(ctx, opts.command(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	cmd.Dir = filepath.Dir(parfile)
+
+	// Build and emit full command line for UI visibility.
+	cmdLine := formatParCmdLine(opts.command(), args)
+	if opts.OnLine != nil {
+		opts.OnLine("Command: " + cmdLine)
+	}
+
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
 
@@ -235,8 +246,9 @@ func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 
 	output := streamer.String()
 	res := VerifyResult{
-		Stdout: output,
-		Stderr: "", // combined into Stdout now
+		CommandLine: cmdLine,
+		Stdout:      output,
+		Stderr:      "", // combined into Stdout now
 	}
 	res.Status = parseStatus(output)
 
@@ -269,6 +281,12 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 
 	cmd := exec.CommandContext(ctx, opts.command(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	cmd.Dir = filepath.Dir(parfile)
+
+	// Build and emit full command line for UI visibility.
+	cmdLine := formatParCmdLine(opts.command(), args)
+	if opts.OnLine != nil {
+		opts.OnLine("Command: " + cmdLine)
+	}
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
 
@@ -276,7 +294,8 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	streamer.Flush()
 
 	res := RepairResult{
-		Output: streamer.String(),
+		CommandLine: cmdLine,
+		Output:      streamer.String(),
 	}
 
 	var exitErr *exec.ExitError
