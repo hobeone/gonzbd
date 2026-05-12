@@ -3,6 +3,7 @@ package par2
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -34,7 +35,7 @@ func TestParseStatus_RepairPossible(t *testing.T) {
 
 func TestParseStatus_RepairNotPossible(t *testing.T) {
 	t.Parallel()
-	got := parseStatus("Repair is not possible.\nYou need 5 more recovery blocks.\n")
+	got := parseStatus("Repair is not possible.\n")
 	if got != StatusRepairNotPossible {
 		t.Errorf("got %d, want StatusRepairNotPossible", got)
 	}
@@ -85,9 +86,9 @@ func TestParseStatus_FailurePriorityOverSuccess(t *testing.T) {
 		want   Status
 	}{
 		{
-			name:   "repair not possible + all ok",
+			name:   "need more blocks + all ok",
 			output: "All files are correct\nRepair is not possible.\nYou need 5 more recovery blocks.\n",
-			want:   StatusRepairNotPossible,
+			want:   StatusNeedMoreBlocks,
 		},
 		{
 			name:   "repair required + all ok",
@@ -106,6 +107,71 @@ func TestParseStatus_FailurePriorityOverSuccess(t *testing.T) {
 			got := parseStatus(tc.output)
 			if got != tc.want {
 				t.Errorf("parseStatus() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseStatus_NeedMoreBlocks(t *testing.T) {
+	t.Parallel()
+	got := parseStatus("Repair is not possible.\nYou need 5 more recovery blocks.\n")
+	if got != StatusNeedMoreBlocks {
+		t.Errorf("got %d, want StatusNeedMoreBlocks", got)
+	}
+}
+
+func TestParseStatus_DiskFull(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{"not enough space", "There is not enough space on the disk\n"},
+		{"insufficient", "Insufficient disk space to write repaired file\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := parseStatus(tc.output)
+			if got != StatusDiskFull {
+				t.Errorf("parseStatus(%q) = %d, want StatusDiskFull", tc.output, got)
+			}
+		})
+	}
+}
+
+func TestParseStatus_CannotRename(t *testing.T) {
+	t.Parallel()
+	got := parseStatus("\"file.dat.1\" cannot be renamed to \"file.dat\"\n")
+	if got != StatusRepairNotPossible {
+		t.Errorf("got %d, want StatusRepairNotPossible", got)
+	}
+}
+
+func TestNeedMoreBlocksRE(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		output string
+		want   int
+	}{
+		{"5 blocks", "You need 5 more recovery blocks to be able to repair.\n", 5},
+		{"1 block", "You need 1 more recovery block to be able to repair.\n", 1},
+		{"25 blocks", "You need 25 more recovery blocks.\n", 25},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := needMoreBlocksRE.FindStringSubmatch(tc.output)
+			if len(m) != 2 {
+				t.Fatalf("no match for %q", tc.output)
+			}
+			got, err := strconv.Atoi(m[1])
+			if err != nil {
+				t.Fatalf("atoi: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %d blocks, want %d", got, tc.want)
 			}
 		})
 	}
