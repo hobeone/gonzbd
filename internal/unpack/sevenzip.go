@@ -96,10 +96,12 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	if runErr != nil {
 		if errors.As(runErr, &exitErr) {
 			res.ExitCode = exitErr.ExitCode()
-			res.Err = fmt.Errorf("7zip exited %d: %w", res.ExitCode, runErr)
+			res.Reason = Classify7zOutput(res.Output)
+			res.Err = fmt.Errorf("7zip exited %d (%s): %w", res.ExitCode, res.Reason, runErr)
 			log.Error("7zip: extraction failed",
 				"archive", archive.MainFile,
 				"exitCode", res.ExitCode,
+				"reason", res.Reason.String(),
 				"output", res.Output,
 			)
 		} else {
