@@ -386,23 +386,6 @@ func TestMoveRecursive_SourceNotExist(t *testing.T) {
 	}
 }
 
-// ---------- SortStage edge cases ----------
-
-func TestSortStage_EmptyDownloadDir(t *testing.T) {
-	t.Parallel()
-	job := &Job{
-		Queue: &queue.Job{
-			ID:   "sort-empty",
-			Name: "sort-empty",
-		},
-		DownloadDir: t.TempDir(),
-	}
-	stage := NewSortStage(nil, t.TempDir())
-	if err := stage.Run(t.Context(), job); err != nil {
-		t.Errorf("Sort with empty dir: %v", err)
-	}
-}
-
 // ---------- DeobfuscateStage with obfuscated file ----------
 
 func TestDeobfuscateStage_WithFiles(t *testing.T) {
@@ -432,48 +415,6 @@ func TestUnpackStage_SkipsOnParError(t *testing.T) {
 	}
 	if job.UnpackError {
 		t.Error("UnpackError should not be set when skipped")
-	}
-}
-
-// ---------- SortStage skip on failure ----------
-
-func TestSortStage_SkipsOnParError(t *testing.T) {
-	t.Parallel()
-	job := &Job{
-		Queue: &queue.Job{
-			ID:   "sort-par-err",
-			Name: "sort-par-err",
-		},
-		DownloadDir: t.TempDir(),
-		ParError:    true,
-	}
-	stage := NewSortStage(nil, t.TempDir())
-	err := stage.Run(t.Context(), job)
-	if err != nil {
-		t.Errorf("expected nil for ParError job, got %v", err)
-	}
-	if len(job.OutputLines) == 0 {
-		t.Error("expected OutputLines to contain skip message")
-	}
-}
-
-func TestSortStage_SkipsOnUnpackError(t *testing.T) {
-	t.Parallel()
-	job := &Job{
-		Queue: &queue.Job{
-			ID:   "sort-unpack-err",
-			Name: "sort-unpack-err",
-		},
-		DownloadDir: t.TempDir(),
-		UnpackError: true,
-	}
-	stage := NewSortStage(nil, t.TempDir())
-	err := stage.Run(t.Context(), job)
-	if err != nil {
-		t.Errorf("expected nil for UnpackError job, got %v", err)
-	}
-	if len(job.OutputLines) == 0 {
-		t.Error("expected OutputLines to contain skip message")
 	}
 }
 

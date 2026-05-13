@@ -2,8 +2,13 @@
 
 **Scope:** Everything that happens after an NNTP article is decoded and handed to the
 assembler: writing to disk, integrity checking, par2 repair, unpack (rar/7z/join),
-deobfuscation/renaming, sorting, and the final move. Hard-won corner cases are
+deobfuscation/renaming, and the final move. Hard-won corner cases are
 called out inline with the test that pins them.
+
+> **Note:** Sorting (TV/movie/date template-based renaming) is **NOT IMPLEMENTED**
+> in GoNZBD. This functionality is handled by external tools such as Sonarr,
+> Radarr, and similar media managers. The sorting section below (§11) is
+> preserved as reference documentation for the original SABnzbd behavior only.
 
 This document is a sibling to `sabnzbd_spec.md` (full system) and goes deeper on the
 post-download pipeline only.
@@ -21,7 +26,7 @@ post-download pipeline only.
 | par2 repair, unrar, 7z, join | `sabnzbd/newsunpack.py` |
 | Concurrent unrar-during-download | `sabnzbd/directunpacker.py` |
 | Obfuscation detection & rename | `sabnzbd/deobfuscate_filenames.py` |
-| TV/movie/date sorter | `sabnzbd/sorting.py` |
+| TV/movie/date sorter | `sabnzbd/sorting.py` | **NOT IMPLEMENTED in GoNZBD** |
 | Path safety, sanitize, rename | `sabnzbd/filesystem.py` |
 | Charset/NFC | `sabnzbd/encoding.py` |
 | History DB | `sabnzbd/database.py` |
@@ -77,8 +82,8 @@ NNTP article ─► Decoder ┤  yEnc/UU     │
             └──────┬───────────┘
                    ▼
             ┌──────────────────┐
-            │ Sorter           │   guessit → tv/movie/date template
-            │ (optional)       │
+            │ Sorter           │   NOT IMPLEMENTED in GoNZBD
+            │ (external tools) │   (Sonarr, Radarr handle this)
             └──────┬───────────┘
                    ▼
             ┌──────────────────┐
@@ -1009,7 +1014,13 @@ Find `.srt` files whose basename ≠ biggest-file basename. Rename to
 
 ---
 
-## 11. Sorting (`sorting.py`)
+## 11. Sorting (`sorting.py`) — NOT IMPLEMENTED IN GONZBD
+
+> **This section is preserved as reference documentation only.** GoNZBD does not
+> implement sorting. File organization by media type (TV, movie, date) is handled
+> by external tools such as Sonarr, Radarr, and similar media managers. The API
+> returns `false` for all sorting-related config toggles to satisfy third-party
+> app compatibility (e.g., Sonarr category validation).
 
 ### 11.1 Activation
 

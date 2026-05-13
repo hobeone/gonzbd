@@ -134,17 +134,6 @@ export interface CategoryConfig {
 	order: number;
 }
 
-export interface SorterConfig {
-	name: string;
-	order: number;
-	min_size: number;
-	multipart_label: string;
-	sort_string: string;
-	sort_cats: string[];
-	sort_type: number[];
-	is_active: boolean;
-}
-
 export interface ScheduleConfig {
 	name: string;
 	enabled: boolean;
@@ -187,7 +176,6 @@ export interface FullConfig {
 	postproc: Record<string, any>;
 	servers: ServerConfig[];
 	categories: CategoryConfig[];
-	sorters: SorterConfig[];
 	schedules: ScheduleConfig[];
 	rss: RSSFeedConfig[];
 }

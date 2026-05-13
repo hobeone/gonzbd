@@ -247,22 +247,6 @@ func TestDeobfuscateStage_EmptyDir(t *testing.T) {
 	}
 }
 
-func TestSortStage_Name(t *testing.T) {
-	t.Parallel()
-	if got := (&SortStage{}).Name(); got != "sort" {
-		t.Errorf("Name = %q; want %q", got, "sort")
-	}
-}
-
-func TestSortStage_NoRules(t *testing.T) {
-	t.Parallel()
-	job, _ := stageJob(t)
-	destRoot := t.TempDir()
-	if err := NewSortStage(nil, destRoot).Run(t.Context(), job); err != nil {
-		t.Fatalf("Run with no rules: %v", err)
-	}
-}
-
 func TestScriptStage_Name(t *testing.T) {
 	t.Parallel()
 	if got := (&ScriptStage{}).Name(); got != "script" {

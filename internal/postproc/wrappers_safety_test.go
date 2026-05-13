@@ -1,8 +1,6 @@
 package postproc
 
 import (
-	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,99 +110,6 @@ func TestFinalizeStage_AllFilesMovedCleansSource(t *testing.T) {
 	// Source should be cleaned up.
 	if _, err := os.Stat(srcDir); !os.IsNotExist(err) {
 		t.Errorf("source directory should be removed after full move, stat err: %v", err)
-	}
-}
-
-// TestSortStage_PartialMoveKeepsDownloadDir verifies H12:
-// When sorting moves only some files (Apply returns error with partial Moved),
-// DownloadDir must NOT be updated to point to the partial destination.
-func TestSortStage_PartialMoveKeepsDownloadDir(t *testing.T) {
-	t.Parallel()
-
-	srcDir := t.TempDir()
-	destRoot := t.TempDir()
-	originalDownloadDir := srcDir
-
-	// Create test files.
-	os.WriteFile(filepath.Join(srcDir, "movie.mkv"), []byte("video data"), 0o644)
-	os.WriteFile(filepath.Join(srcDir, "info.nfo"), []byte("nfo data"), 0o644)
-
-	// Use a custom stage to inject a sorting error after partial move.
-	// Since we can't easily make sorting.Apply partially fail with the
-	// real function, we test the SortStage's behavior by creating a
-	// scenario where no sorting rule matches (which is a no-op, no error).
-	// The real test is that when sorting returns an error, DownloadDir
-	// stays unchanged.
-	job := &Job{
-		Queue: &queue.Job{
-			ID:       "sort-partial-test",
-			Name:     "sort-partial",
-			Category: "movies",
-		},
-		DownloadDir: srcDir,
-		FinalDir:    filepath.Join(destRoot, "sort-partial"),
-	}
-
-	// Create a stage with no rules — should be a no-op.
-	stage := NewSortStage(nil, destRoot)
-	if err := stage.Run(t.Context(), job); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	// DownloadDir should be unchanged since no rule matched (no moves).
-	if job.DownloadDir != originalDownloadDir {
-		t.Errorf("DownloadDir changed to %q after no-match sort; want %q",
-			job.DownloadDir, originalDownloadDir)
-	}
-}
-
-// mockSortStage is a Stage that simulates a partial sort failure.
-// It moves one file and then returns an error, simulating what happens
-// when sorting.Apply moves some files but fails on others.
-type mockPartialSortStage struct {
-	DestDir string
-}
-
-func (m *mockPartialSortStage) Name() string { return "sort" }
-
-func (m *mockPartialSortStage) Run(_ context.Context, job *Job) error {
-	// Simulate: sorting moved one file successfully, then hit an error.
-	// The SortStage code after Apply must NOT update DownloadDir when
-	// err != nil, even if res.Moved is non-empty.
-	//
-	// We test this indirectly by verifying the SortStage's behavior
-	// when sorting.Apply returns a non-nil error.
-	return fmt.Errorf("sort: partial failure simulation")
-}
-
-// TestSortStage_ErrorPreservesDownloadDir verifies that when Run returns
-// an error, DownloadDir remains unchanged.
-func TestSortStage_ErrorPreservesDownloadDir(t *testing.T) {
-	t.Parallel()
-
-	srcDir := t.TempDir()
-	originalDir := srcDir
-
-	job := &Job{
-		Queue: &queue.Job{
-			ID:       "sort-err-preserve",
-			Name:     "sort-err-preserve",
-			Category: "test",
-		},
-		DownloadDir: srcDir,
-		FinalDir:    filepath.Join(t.TempDir(), "final"),
-	}
-
-	// Use the mock stage that returns an error.
-	stage := &mockPartialSortStage{DestDir: t.TempDir()}
-	err := stage.Run(t.Context(), job)
-	if err == nil {
-		t.Fatal("expected error from mock stage")
-	}
-
-	if job.DownloadDir != originalDir {
-		t.Errorf("DownloadDir changed on error: got %q, want %q",
-			job.DownloadDir, originalDir)
 	}
 }
 
