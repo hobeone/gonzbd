@@ -485,6 +485,18 @@ func (p *PostProcessor) processJob(job *Job) {
 			return
 		default:
 		}
+
+		// I3/I4: If the repair stage signaled that the job needs to be
+		// requeued (more blocks needed or corrupt main par2 file), stop
+		// the pipeline. The caller (OnJobDone callback) should check
+		// job.NeedRequeue and push the job back to the download queue.
+		if job.NeedRequeue {
+			p.log.Info("postproc: stopping pipeline — job needs requeue",
+				"job", job.Queue.ID,
+				"reason", job.RequeueReason,
+			)
+			return
+		}
 	}
 
 	p.log.Info("postproc: job complete",
