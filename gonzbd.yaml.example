@@ -242,6 +242,12 @@ postproc:
   # any subdirectory structure inside the archive.
   flat_unpack: false
 
+  # Begin extracting files while the download is still in progress.
+  # The first RAR volume is fed to unrar as soon as it completes, with
+  # subsequent volumes streamed as they arrive. Falls back to standard
+  # unpack on failure. Not yet implemented.
+  direct_unpack: false
+
   # Rename obfuscated files (random hex strings, UUIDs) to use the
   # job name as a base. Helps media scanners identify content.
   deobfuscate_filenames: true
