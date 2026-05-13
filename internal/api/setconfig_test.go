@@ -182,14 +182,12 @@ func TestModeSetConfig_ConcurrentSafe(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for i := range 20 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			rr := apiGet(t, h, "/api?mode=set_config&section=misc&keyword=download_dir&value=/tmp/dir"+strconv.Itoa(i)+"&apikey="+testAPIKey)
 			if rr.Code != http.StatusOK {
 				t.Errorf("concurrent set_config status = %d; body = %s", rr.Code, rr.Body.String())
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
