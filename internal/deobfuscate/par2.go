@@ -1,10 +1,7 @@
 package deobfuscate
 
 import (
-	"crypto/md5" //nolint:gosec // md5 is used for identification by PAR2 spec
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -73,8 +70,8 @@ func Par2Rename(log *slog.Logger, dir string, opts fsutil.SanitizeOptions) ([]Re
 			continue
 		}
 
-		// Calculate 16KB hash.
-		hash, err := hash16k(path)
+		// Calculate 16KB hash using the canonical par2 implementation.
+		hash, err := par2.ComputeHash16k(path)
 		if err != nil {
 			log.Debug("deobfuscate: failed to hash file", "path", path, "err", err)
 			continue
@@ -98,23 +95,4 @@ func Par2Rename(log *slog.Logger, dir string, opts fsutil.SanitizeOptions) ([]Re
 	}
 
 	return renames, nil
-}
-
-// hash16k returns the MD5 hash of the first 16,384 bytes of a file.
-func hash16k(path string) ([16]byte, error) {
-	var result [16]byte
-	f, err := os.Open(path) //nolint:gosec // path is constructed from trusted readdir
-	if err != nil {
-		return result, err
-	}
-	defer f.Close() //nolint:errcheck // read-only file
-
-	h := md5.New() //nolint:gosec // md5 is used for identification by PAR2 spec
-	_, err = io.CopyN(h, f, 16384)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return result, err
-	}
-
-	copy(result[:], h.Sum(nil))
-	return result, nil
 }

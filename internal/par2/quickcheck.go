@@ -200,7 +200,7 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 				continue
 			}
 
-			hash, err := computeHash16k(filepath.Join(dir, de.Name()))
+			hash, err := ComputeHash16k(filepath.Join(dir, de.Name()))
 			if err != nil {
 				log.Debug("quickcheck: phase 3 cannot hash file",
 					"name", name, "err", err)
@@ -382,9 +382,10 @@ func relocateFile(dir, flatName string, fd FileDesc, log *slog.Logger) bool {
 	return true
 }
 
-// computeHash16k computes the MD5 hash of the first 16KB of a file,
+// ComputeHash16k computes the MD5 hash of the first 16KB of a file,
 // matching the Hash16k field in par2 File Description packets.
-func computeHash16k(path string) ([16]byte, error) {
+// This is exported for use by the deobfuscate package.
+func ComputeHash16k(path string) ([16]byte, error) {
 	var zero [16]byte
 
 	f, err := os.Open(path) //nolint:gosec // path is constructed from trusted readdir
