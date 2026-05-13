@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 )
 
@@ -315,6 +316,41 @@ func (q *Queue) SetPP(id string, pp int) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	job.PP = pp
+	q.dirty.Store(true)
+	return nil
+}
+
+// SetCategory changes a job's category and inherits the new category's PP
+// level, script, and priority — matching SABnzbd's change_cat semantics.
+// config.FindCategory resolves name against cats (case-insensitive), falling
+// back to the "Default" or "*" entry, or BuiltinDefaultCategory if neither
+// is present.
+//
+// The job is re-slotted in the queue if the resolved priority differs from
+// the current one, preserving priority-order invariants. Returns ErrNotFound
+// if the job is absent.
+func (q *Queue) SetCategory(id, cat string, cats []config.CategoryConfig) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	idx, ok := q.indexOfLocked(id)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	job := q.jobs[idx]
+	resolved := config.FindCategory(cats, cat)
+	job.Category = resolved.Name
+	job.PP = resolved.PP
+	job.Script = resolved.Script
+	// Re-slot the job when priority changes — mirrors SetPriority.
+	newPri := constants.Priority(int8(resolved.Priority)) //nolint:gosec // priority values fit in int8
+	if newPri != job.Priority {
+		job.Priority = newPri
+		copy(q.jobs[idx:], q.jobs[idx+1:])
+		q.jobs[len(q.jobs)-1] = nil
+		q.jobs = q.jobs[:len(q.jobs)-1]
+		q.insertByPriorityLocked(job)
+		q.notifyLocked()
+	}
 	q.dirty.Store(true)
 	return nil
 }
