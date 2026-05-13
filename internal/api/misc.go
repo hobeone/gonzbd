@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/sorting"
 )
 
 // modeGetCats returns the list of configured categories.
@@ -89,25 +88,6 @@ func (s *Server) modeBrowse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondOK(w, "paths", paths)
-}
-
-// modeEvalSort expands a sort template given a job name.
-func (s *Server) modeEvalSort(w http.ResponseWriter, r *http.Request) {
-	sortString := formString(r, "sort_string")
-	jobName := formString(r, "job_name")
-
-	if sortString == "" || jobName == "" {
-		s.respondError(w, http.StatusBadRequest, "missing sort_string or job_name parameter")
-		return
-	}
-
-	// Parse the job name to extract media info
-	info := sorting.Parse(jobName)
-
-	// Expand the sort template
-	result := sorting.ExpandTemplate(sortString, info, "")
-
-	respondOK(w, "result", result)
 }
 
 // modeWatchedNow triggers a manual scan of watched directories (not implemented).

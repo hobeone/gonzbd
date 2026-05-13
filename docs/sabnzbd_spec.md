@@ -585,7 +585,12 @@ Many Usenet posts use randomized filenames. After extraction, SABnzbd attempts t
 3. Match extracted files to expected filenames using difflib similarity
 4. Rename if confident match found
 
-### 8.7 Sorting / Renaming
+### 8.7 Sorting / Renaming — NOT IMPLEMENTED IN GONZBD
+
+> **GoNZBD does not implement sorting.** File organization by media type (TV,
+> movie, date) is handled by external tools such as Sonarr, Radarr, and similar
+> media managers. The API returns `false` for all sorting-related config toggles
+> to satisfy third-party app compatibility.
 
 Sorters are configured as rules (category + content-type pairs) with rename templates:
 - Content types: TV, Movie, Date, Unknown
@@ -717,7 +722,10 @@ Each server is a subsection of `[servers]`:
   enable = 1
 ```
 
-### 9.7 Sorter Configuration
+### 9.7 Sorter Configuration — NOT IMPLEMENTED IN GONZBD
+
+> **GoNZBD does not implement sorting.** This section documents the original
+> SABnzbd configuration for reference. External tools handle this.
 
 ```
 [sorters]
@@ -894,7 +902,7 @@ Error:
 | `restart_repair` | | status | Restart with queue repair |
 | `shutdown` | | status | Shut down |
 | `browse` | `name=path` | file list | Browse filesystem |
-| `eval_sort` | `job`, `sort_string`, `multipart_label` | result path | Test sorter |
+| `eval_sort` | `job`, `sort_string`, `multipart_label` | result path | Test sorter — **NOT IMPLEMENTED** |
 | `test_email` | | status | Send test email |
 | `test_notif` | `service` | status | Test notification service |
 

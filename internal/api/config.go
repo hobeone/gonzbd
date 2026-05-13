@@ -69,8 +69,9 @@ func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Inject SABnzbd-specific fields into the "misc" section that Sonarr
-	// reads but we don't store natively (sorting, retention, pre_check).
-	// Without these, Sonarr's category validation produces spurious warnings.
+	// reads. Sorting is intentionally not implemented — it is handled by
+	// external apps (Sonarr, Radarr, etc.). These fields return false/empty
+	// so Sonarr doesn't warn about missing configuration.
 	if miscRaw, ok := remapped["misc"]; ok {
 		var miscMap map[string]json.RawMessage
 		if err := json.Unmarshal(miscRaw, &miscMap); err == nil {

@@ -47,15 +47,6 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if err := validateUniqueNames("sorter", sorterNames(c.Sorters)); err != nil {
-		errs = append(errs, err)
-	}
-	for i := range c.Sorters {
-		if err := c.Sorters[i].validate(); err != nil {
-			errs = append(errs, fmt.Errorf("sorters[%d] (%q): %w", i, c.Sorters[i].Name, err))
-		}
-	}
-
 	if err := validateUniqueNames("schedule", scheduleNames(c.Schedules)); err != nil {
 		errs = append(errs, err)
 	}
@@ -241,13 +232,6 @@ func (c *CategoryConfig) validate() error {
 	return nil
 }
 
-func (s *SorterConfig) validate() error {
-	if s.MinSize < 0 {
-		return fmt.Errorf("min_size: %d is negative", s.MinSize)
-	}
-	return nil
-}
-
 func (s *ScheduleConfig) validate() error {
 	var errs []error
 	if strings.TrimSpace(s.Action) == "" {
@@ -325,14 +309,6 @@ func categoryNames(c []CategoryConfig) []string {
 	names := make([]string, len(c))
 	for i := range c {
 		names[i] = c[i].Name
-	}
-	return names
-}
-
-func sorterNames(s []SorterConfig) []string {
-	names := make([]string, len(s))
-	for i := range s {
-		names[i] = s[i].Name
 	}
 	return names
 }

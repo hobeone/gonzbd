@@ -18,7 +18,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/deobfuscate"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
-	"github.com/hobeone/gonzbd/internal/sorting"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
@@ -905,104 +904,6 @@ func (d *DeobfuscateStage) Run(_ context.Context, job *Job) error {
 	if subErr != nil {
 		logf(log, job, slog.LevelWarn, "Error: subtitle alignment failed: %v", subErr)
 		return fmt.Errorf("deobfuscate subtitles: %w", subErr)
-	}
-	return nil
-}
-
-// SortStage applies the first matching SorterRule to the job's files,
-// moving them from job.DownloadDir into a derived path under DestRoot.
-// When no rule matches, the stage is a no-op (files stay in DownloadDir;
-// the caller can move them with a default rename).
-type SortStage struct {
-	// Rules is evaluated in order; first match wins.
-	Rules []sorting.SorterRule
-
-	// DestRoot is the absolute path under which matched rules place files.
-	// The rule's SortString expands into a subpath beneath this.
-	DestRoot string
-
-	// Log is the component-scoped logger for this stage.
-	Log *slog.Logger
-}
-
-// NewSortStage constructs a SortStage with the given rules and destination.
-func NewSortStage(rules []sorting.SorterRule, destRoot string) *SortStage {
-	return &SortStage{Rules: rules, DestRoot: destRoot}
-}
-
-// Name returns the stage identifier.
-func (*SortStage) Name() string { return "sort" }
-
-// Run picks the first matching rule and applies it.
-func (s *SortStage) Run(ctx context.Context, job *Job) error {
-	log := s.Log
-	if log == nil {
-		log = slog.Default()
-	}
-	log = log.With("component", "postproc/sort", "job", job.Queue.ID)
-
-	// Skip sorting when earlier stages have failed — the files may be
-	// incomplete or corrupt, and moving them to a "complete" directory
-	// would be misleading. Matches Python's "if all_ok:" gate.
-	if job.ParError || job.UnpackError {
-		var reasons []string
-		if job.ParError {
-			reasons = append(reasons, "repair failed")
-		}
-		if job.UnpackError {
-			reasons = append(reasons, "unpack failed")
-		}
-		logf(log, job, slog.LevelInfo, "Skipped: %s", strings.Join(reasons, ", "))
-		return nil
-	}
-
-	logf(log, job, slog.LevelInfo, "Sorting: category=%q, name=%q, size=%d bytes, %d rule(s)",
-		job.Queue.Category, job.Queue.Name, job.Queue.TotalBytes, len(s.Rules))
-
-	res, err := sorting.Apply(ctx,
-		log,
-		job.DownloadDir,
-		job.Queue.Category,
-		job.Queue.Name,
-		job.Queue.TotalBytes,
-		s.Rules,
-		s.DestRoot,
-		job.Sanitize,
-	)
-	// Log sorting results.
-	if res.MatchedRule != "" {
-		logf(log, job, slog.LevelInfo, "Matched rule: %s", res.MatchedRule)
-	} else {
-		logf(log, job, slog.LevelInfo, "No sorting rule matched")
-	}
-	// Log all moved files regardless of error.
-	for _, m := range res.Moved {
-		logf(log, job, slog.LevelInfo, "%s → %s", filepath.Base(m.From), m.To)
-	}
-	// Only update paths and clean up origDir when ALL files moved
-	// successfully. A partial move (err != nil) means some files are
-	// stranded in origDir — updating DownloadDir would lose them.
-	if err == nil && len(res.Moved) > 0 {
-		origDir := job.DownloadDir
-		job.FinalDir = filepath.Dir(res.Moved[0].To)
-		// Point DownloadDir at the destination so downstream stages
-		// (script, deobfuscate) operate on the actual files.
-		job.DownloadDir = job.FinalDir
-		logf(log, job, slog.LevelInfo, "Updated paths: downloadDir=%s, finalDir=%s", job.DownloadDir, job.FinalDir)
-		// Only remove origDir if FinalDir is NOT inside it. If the
-		// sorter moved files to a subdirectory of origDir, RemoveAll
-		// would recursively delete the successfully moved files.
-		cleanOrig, _ := filepath.Abs(origDir)
-		cleanFinal, _ := filepath.Abs(job.FinalDir)
-		if cleanOrig != cleanFinal && !strings.HasPrefix(cleanFinal, cleanOrig+string(filepath.Separator)) {
-			logf(log, job, slog.LevelInfo, "Removing original directory: %s", origDir)
-			_ = os.RemoveAll(origDir) // Clean up unmoved files/archives
-		} else {
-			logf(log, job, slog.LevelDebug, "Keeping original directory (final dir is inside it)")
-		}
-	}
-	if err != nil {
-		return fmt.Errorf("sort: %w", err)
 	}
 	return nil
 }

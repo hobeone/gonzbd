@@ -64,7 +64,6 @@ type Config struct {
 	PropagationDelay int   // minutes to hold new jobs before downloading
 
 	// PostProc pipeline configuration.
-	Sorters              []config.SorterConfig
 	ScriptDir            string
 	DeobfuscateFilenames bool
 	IgnoreSamples        bool
@@ -404,18 +403,10 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			deobStage.Log = ppLog
 			stageList = append(stageList, deobStage)
 		}
-		if len(cfg.Sorters) > 0 {
-			rules := sorterRulesFromConfig(cfg.Sorters)
-			if len(rules) > 0 {
-				sortStage := postproc.NewSortStage(rules, cfg.CompleteDir)
-				sortStage.Log = ppLog
-				stageList = append(stageList, sortStage)
-			}
-		}
 
 		// Extension cleanup: delete files with extensions matching the
-		// user's cleanup list (e.g. .nfo, .txt, .sfv). Runs after sorting
-		// but before the final move — mirrors SABnzbd §6.2 stage 9.
+		// user's cleanup list (e.g. .nfo, .txt, .sfv). Runs after
+		// deobfuscation but before the final move.
 		if len(cfg.CleanupExtensions) > 0 {
 			cleanupStage := postproc.NewExtensionCleanupStage(cfg.CleanupExtensions)
 			cleanupStage.Log = ppLog

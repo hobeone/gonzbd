@@ -118,7 +118,6 @@ func (s *Server) registerModes() {
 		"get_cats":    {handler: s.modeGetCats, level: LevelProtected},
 		"get_scripts": {handler: s.modeGetScripts, level: LevelProtected},
 		"browse":      {handler: s.modeBrowse, level: LevelAdmin},
-		"eval_sort":   {handler: s.modeEvalSort, level: LevelProtected},
 		"watched_now": {handler: s.modeWatchedNow, level: LevelProtected},
 		"rss_now":     {handler: s.modeRssNow, level: LevelProtected},
 	}

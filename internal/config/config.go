@@ -17,7 +17,6 @@ type Config struct {
 	PostProc      PostProcConfig     `yaml:"postproc" json:"postproc"`
 	Servers       []ServerConfig     `yaml:"servers" json:"servers"`
 	Categories    []CategoryConfig   `yaml:"categories" json:"categories"`
-	Sorters       []SorterConfig     `yaml:"sorters,omitempty" json:"sorters"`
 	Schedules     []ScheduleConfig   `yaml:"schedules,omitempty" json:"schedules"`
 	RSS           []RSSFeedConfig    `yaml:"rss,omitempty" json:"rss"`
 	Notifications NotificationConfig `yaml:"notifications,omitempty" json:"notifications"`
