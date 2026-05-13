@@ -210,42 +210,6 @@ func TestModeBrowse_ShowFiles(t *testing.T) {
 	}
 }
 
-func TestModeEvalSort_HappyPath(t *testing.T) {
-	t.Parallel()
-	s := testServer()
-
-	// URL encode the sort_string: "%t (%y)" -> "%25t%20(%25y)"
-	rr := apiGet(t, s.Handler(), "/api?mode=eval_sort&sort_string=%25t%20(%25y)&job_name=Movie.2024.1080p.x264&apikey="+testAPIKey)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200", rr.Code)
-	}
-
-	m := decodeJSON(t, rr)
-	if m["status"] != true {
-		t.Errorf("status = %v; want true", m["status"])
-	}
-
-	if result, ok := m["result"].(string); !ok {
-		t.Errorf("result not a string")
-	} else {
-		// Should contain parsed title and year (exact output depends on sorting package)
-		t.Logf("eval_sort result: %s", result)
-		if result == "" {
-			t.Errorf("result is empty")
-		}
-	}
-}
-
-func TestModeEvalSort_MissingParams(t *testing.T) {
-	t.Parallel()
-	s := testServer()
-
-	rr := apiGet(t, s.Handler(), "/api?mode=eval_sort&job_name=Movie.2024&apikey="+testAPIKey)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d; want 400 (missing sort_string)", rr.Code)
-	}
-}
-
 func TestModeWatchedNow_NotImplemented(t *testing.T) {
 	t.Parallel()
 	s := testServer()

@@ -7,15 +7,13 @@
 	import PostProcSection from './config/PostProcSection.svelte';
 	import ServersSection from './config/ServersSection.svelte';
 	import CategoriesSection from './config/CategoriesSection.svelte';
-	import SortersSection from './config/SortersSection.svelte';
 	import RSSSection from './config/RSSSection.svelte';
 	import SchedulingSection from './config/SchedulingSection.svelte';
 	import ServerEditDialog from './config/ServerEditDialog.svelte';
 	import CategoryEditDialog from './config/CategoryEditDialog.svelte';
-	import SorterEditDialog from './config/SorterEditDialog.svelte';
 	import ScheduleEditDialog from './config/ScheduleEditDialog.svelte';
 	import RSSEditDialog from './config/RSSEditDialog.svelte';
-	import type { ServerConfig, CategoryConfig, SorterConfig, ScheduleConfig, RSSFeedConfig } from '$lib/types';
+	import type { ServerConfig, CategoryConfig, ScheduleConfig, RSSFeedConfig } from '$lib/types';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -32,8 +30,6 @@
 	let categoryEditOpen = $state(false);
 	let selectedCategory = $state<CategoryConfig | null>(null);
 
-	let sorterEditOpen = $state(false);
-	let selectedSorter = $state<SorterConfig | null>(null);
 
 	let scheduleEditOpen = $state(false);
 	let selectedSchedule = $state<ScheduleConfig | null>(null);
@@ -47,7 +43,6 @@
 		{ id: 'postproc', label: 'Post-Processing' },
 		{ id: 'servers', label: 'Servers' },
 		{ id: 'categories', label: 'Categories' },
-		{ id: 'sorters', label: 'Sorters' },
 		{ id: 'rss', label: 'RSS' },
 		{ id: 'scheduling', label: 'Scheduling' }
 	];
@@ -168,22 +163,6 @@
 		persistAndReload('categories', categories);
 	}
 
-	function saveSorter(s: SorterConfig) {
-		if (!configData) return;
-		const sorters = [...(configData.sorters ?? [])];
-		const idx = sorters.findIndex((srv: SorterConfig) => srv.name === s.name);
-		if (idx !== -1) sorters[idx] = s;
-		else sorters.push(s);
-		configData = { ...configData, sorters };
-		persistAndReload('sorters', sorters);
-	}
-
-	function deleteSorter(name: string) {
-		if (!configData || !confirm(`Delete sorter "${name}"?`)) return;
-		const sorters = configData.sorters.filter((s: SorterConfig) => s.name !== name);
-		configData = { ...configData, sorters };
-		persistAndReload('sorters', sorters);
-	}
 
 	function saveSchedule(s: ScheduleConfig) {
 		if (!configData) return;
@@ -321,13 +300,6 @@
 								onEditCategory={(c) => { selectedCategory = c; categoryEditOpen = true; }}
 								onDeleteCategory={deleteCategory}
 							/>
-						{:else if activeSection === 'sorters'}
-							<SortersSection
-								{configData}
-								onAddSorter={() => { selectedSorter = null; sorterEditOpen = true; }}
-								onEditSorter={(s) => { selectedSorter = s; sorterEditOpen = true; }}
-								onDeleteSorter={deleteSorter}
-							/>
 						{:else if activeSection === 'rss'}
 							<RSSSection
 								{configData}
@@ -394,11 +366,6 @@
 	onsave={saveCategory}
 />
 
-<SorterEditDialog
-	bind:open={sorterEditOpen}
-	sorter={selectedSorter}
-	onsave={saveSorter}
-/>
 
 <ScheduleEditDialog
 	bind:open={scheduleEditOpen}

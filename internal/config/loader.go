@@ -85,9 +85,6 @@ func decode(r io.Reader) (*Config, error) {
 	if cfg.Categories == nil {
 		cfg.Categories = []CategoryConfig{}
 	}
-	if cfg.Sorters == nil {
-		cfg.Sorters = []SorterConfig{}
-	}
 	if cfg.Schedules == nil {
 		cfg.Schedules = []ScheduleConfig{}
 	}
