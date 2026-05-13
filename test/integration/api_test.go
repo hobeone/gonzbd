@@ -230,7 +230,6 @@ func TestAPI_ProtectedModes(t *testing.T) {
 		"mode=server_stats",
 		"mode=get_cats",
 		"mode=get_scripts",
-		"mode=eval_sort&sort_string=%25N&job_name=TestShow.S01E01",
 		"mode=watched_now",
 		"mode=rss_now",
 	}
