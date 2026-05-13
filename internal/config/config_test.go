@@ -232,6 +232,31 @@ func TestValidateRejectsBadInputs(t *testing.T) {
 			},
 			"pp",
 		},
+		{
+			"bad permissions (non-octal char)",
+			func(c *Config) { c.PostProc.Permissions = "7a5" },
+			"permissions",
+		},
+		{
+			"bad permissions (too short)",
+			func(c *Config) { c.PostProc.Permissions = "75" },
+			"permissions",
+		},
+		{
+			"bad permissions (too long)",
+			func(c *Config) { c.PostProc.Permissions = "17550" },
+			"permissions",
+		},
+		{
+			"extra_unrar_params non-flag",
+			func(c *Config) { c.PostProc.ExtraUnrarParams = "-sl100000 badarg" },
+			"extra_unrar_params",
+		},
+		{
+			"extra_par2_params non-flag",
+			func(c *Config) { c.PostProc.ExtraPar2Params = "notaflag" },
+			"extra_par2_params",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
