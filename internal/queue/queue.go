@@ -757,8 +757,8 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 	}
 	if len(firstTime) > 0 {
 		q.log.Warn("articles marked FAILED", "job", jobID, "count", len(firstTime), "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
+		q.dirty.Store(true)
 	}
-	q.dirty.Store(true)
 	return firstTime, nil
 }
 
