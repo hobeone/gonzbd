@@ -557,10 +557,17 @@ func (q *Queue) ClearArticleEmitted(jobID, messageID string) error {
 	if art == nil {
 		return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 	}
-	if art.Emitted {
+	// Only restore to pending if the article is not already done. An article
+	// can have Emitted=true and Done=true when MarkArticlesDone ran before
+	// ClearArticleEmitted (e.g. a late assembler flush after a downloader
+	// reload). In that case the article is finished and must not be counted
+	// as pending.
+	if art.Emitted && !art.Done {
 		art.Emitted = false
 		job.Files[art.FileIdx].Pending++
 		job.PendingArticles++
+	} else if art.Emitted {
+		art.Emitted = false // clear the stale flag without touching counters
 	}
 	q.notifyLocked()
 	return nil
@@ -689,6 +696,7 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 			job.PendingArticles--
 		}
 		art.Done = true
+		art.Emitted = false // clear so ClearArticleEmitted has no effect on a done article
 		job.RemainingBytes -= int64(art.Bytes)
 		job.ArticlesResolved++
 		// Per-file progress: only count successful completions.
@@ -733,6 +741,7 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 		}
 		art.Done = true
 		art.Failed = true
+		art.Emitted = false // clear so ClearArticleEmitted has no effect on a done article
 		job.FailedBytes += int64(art.Bytes)
 		job.RemainingBytes -= int64(art.Bytes)
 		job.ArticlesResolved++
