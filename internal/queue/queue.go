@@ -252,9 +252,7 @@ func (q *Queue) Remove(id string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	copy(q.jobs[idx:], q.jobs[idx+1:])
-	q.jobs[len(q.jobs)-1] = nil // allow GC of removed *Job
-	q.jobs = q.jobs[:len(q.jobs)-1]
+	q.removeAtLocked(idx)
 	delete(q.byID, id)
 
 	if q.stateDir != "" {
@@ -309,9 +307,7 @@ func (q *Queue) SetPriority(id string, pri constants.Priority) error {
 	job := q.jobs[idx]
 	job.Priority = pri
 	// Remove from current position.
-	copy(q.jobs[idx:], q.jobs[idx+1:])
-	q.jobs[len(q.jobs)-1] = nil
-	q.jobs = q.jobs[:len(q.jobs)-1]
+	q.removeAtLocked(idx)
 	// Re-insert at the correct position for the new priority.
 	q.insertByPriorityLocked(job)
 	q.dirty.Store(true)
@@ -358,9 +354,7 @@ func (q *Queue) SetCategory(id, cat string, cats []config.CategoryConfig) error 
 	newPri := constants.Priority(int8(resolved.Priority)) //nolint:gosec // priority values fit in int8
 	if newPri != job.Priority {
 		job.Priority = newPri
-		copy(q.jobs[idx:], q.jobs[idx+1:])
-		q.jobs[len(q.jobs)-1] = nil
-		q.jobs = q.jobs[:len(q.jobs)-1]
+		q.removeAtLocked(idx)
 		q.insertByPriorityLocked(job)
 		q.notifyLocked()
 	}
@@ -851,6 +845,15 @@ func (q *Queue) Reorder(id string, newIndex int) error {
 	q.dirty.Store(true)
 	q.notifyLocked()
 	return nil
+}
+
+// removeAtLocked removes q.jobs[idx] in O(N), nil-zeroing the vacated slot
+// so the GC can collect the *Job pointer. Assumes q.mu is held for write.
+func (q *Queue) removeAtLocked(idx int) {
+	copy(q.jobs[idx:], q.jobs[idx+1:])
+	last := len(q.jobs) - 1
+	q.jobs[last] = nil // allow GC of removed *Job
+	q.jobs = q.jobs[:last]
 }
 
 // insertByPriorityLocked inserts job at the end of its priority tier.
