@@ -644,40 +644,12 @@ func (q *Queue) CheckEarlyAbort(jobID string) bool {
 }
 
 // MarkArticleFailed marks an article as Done and increments the FailedBytes
-// count. It also decrements the remaining byte count of the job so that
-// hopeless jobs can be identified by comparing FailedBytes vs Par2Bytes.
-// Returns (true, nil) if it was the first time this article was marked done.
+// count. Returns (true, nil) if it was the first time this article was marked
+// done. Delegates to MarkArticlesFailed so both forms share identical counter
+// logic and cannot drift.
 func (q *Queue) MarkArticleFailed(jobID, messageID string) (bool, error) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return false, fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	art := job.articleByID(messageID)
-	if art == nil {
-		return false, fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
-	}
-	if !art.Done {
-		// Article was either pending (!Emitted) or in-flight (Emitted).
-		// If it was Emitted, Pending was already decremented by
-		// MarkArticleEmitted; if not, decrement now.
-		if !art.Emitted {
-			job.Files[art.FileIdx].Pending--
-			job.PendingArticles--
-		}
-		art.Done = true
-		art.Failed = true
-		job.FailedBytes += int64(art.Bytes)
-		job.RemainingBytes -= int64(art.Bytes)
-		job.ArticlesResolved++
-		job.ArticlesFailed++
-		q.log.Warn("article marked FAILED", "msgid", messageID, "job", jobID, "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
-		q.dirty.Store(true)
-		return true, nil
-	}
-	q.dirty.Store(true)
-	return false, nil
+	firstTime, err := q.MarkArticlesFailed(jobID, []string{messageID})
+	return len(firstTime) > 0, err
 }
 
 // MarkArticlesDone is the batched form of MarkArticleDone. It flips
