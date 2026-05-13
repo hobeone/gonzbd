@@ -9,6 +9,7 @@
 package rarheader
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -51,29 +52,12 @@ type Info struct {
 
 // IsRAR checks whether the file at path starts with a RAR3 or RAR5 magic
 // signature. It reads at most 8 bytes and is suitable for fast pre-filtering.
-func IsRAR(path string) (bool, error) {
-	f, err := os.Open(path) //nolint:gosec // path from trusted internal callers
-	if err != nil {
-		return false, fmt.Errorf("rarheader: open %s: %w", path, err)
-	}
-	defer func() { _ = f.Close() }()
-
-	buf := make([]byte, 8)
-	n, err := io.ReadFull(f, buf)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return false, fmt.Errorf("rarheader: read %s: %w", path, err)
-	}
-	if n < len(rar3Sig) {
+func IsRAR(p string) (bool, error) {
+	ver, err := readMagic(p)
+	if errors.Is(err, ErrNotRAR) {
 		return false, nil
 	}
-
-	if bytesEqual(buf[:len(rar3Sig)], rar3Sig) {
-		return true, nil
-	}
-	if n >= len(rar5Sig) && bytesEqual(buf[:len(rar5Sig)], rar5Sig) {
-		return true, nil
-	}
-	return false, nil
+	return ver > 0, err
 }
 
 // Inspect opens the file at path and reads its RAR headers without
@@ -82,11 +66,11 @@ func IsRAR(path string) (bool, error) {
 //
 // Returns ErrNotRAR if the file is not a valid RAR archive.
 // For encrypted-header archives, returns partial Info with HeaderEncrypted=true.
-func Inspect(path string) (Info, error) {
+func Inspect(p string) (Info, error) {
 	var info Info
 
-	// Detect version from magic bytes.
-	ver, err := detectVersion(path)
+	// Detect version from magic bytes (single open + 8-byte read).
+	ver, err := readMagic(p)
 	if err != nil {
 		return info, err
 	}
@@ -96,7 +80,7 @@ func Inspect(path string) (Info, error) {
 	// The library can panic on malformed/truncated archives (e.g. slice
 	// bounds out of range in archive50.readBlockHeader), so we wrap the
 	// call in a recover to convert panics into errors.
-	files, listErr := safeList(path)
+	files, listErr := safeList(p)
 	if listErr != nil {
 		// rardecode returns ErrNoSig for non-RAR files.
 		if errors.Is(listErr, rardecode.ErrNoSig) {
@@ -108,7 +92,7 @@ func Inspect(path string) (Info, error) {
 			info.Encrypted = true
 			return info, nil
 		}
-		return info, fmt.Errorf("rarheader: list %s: %w", path, listErr)
+		return info, fmt.Errorf("rarheader: list %s: %w", p, listErr)
 	}
 
 	for _, f := range files {
@@ -124,8 +108,11 @@ func Inspect(path string) (Info, error) {
 	return info, nil
 }
 
-// detectVersion reads the magic bytes to determine if the archive is RAR3 or RAR5.
-func detectVersion(path string) (int, error) {
+// readMagic opens path, reads up to 8 bytes, and returns the RAR version
+// (3 or 5) based on the magic signature. Returns ErrNotRAR if the file
+// does not start with a valid RAR signature. This is the single point of
+// magic-byte detection — IsRAR and Inspect both delegate here.
+func readMagic(path string) (int, error) {
 	f, err := os.Open(path) //nolint:gosec // path from trusted internal callers
 	if err != nil {
 		return 0, fmt.Errorf("rarheader: open %s: %w", path, err)
@@ -138,10 +125,10 @@ func detectVersion(path string) (int, error) {
 		return 0, fmt.Errorf("rarheader: read %s: %w", path, err)
 	}
 
-	if n >= len(rar5Sig) && bytesEqual(buf[:len(rar5Sig)], rar5Sig) {
+	if n >= len(rar5Sig) && bytes.Equal(buf[:len(rar5Sig)], rar5Sig) {
 		return 5, nil
 	}
-	if n >= len(rar3Sig) && bytesEqual(buf[:len(rar3Sig)], rar3Sig) {
+	if n >= len(rar3Sig) && bytes.Equal(buf[:len(rar3Sig)], rar3Sig) {
 		return 3, nil
 	}
 
@@ -180,17 +167,4 @@ func safeList(path string) (files []*rardecode.File, err error) {
 		}
 	}()
 	return rardecode.List(path)
-}
-
-// bytesEqual compares two byte slices for equality without importing bytes.
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
