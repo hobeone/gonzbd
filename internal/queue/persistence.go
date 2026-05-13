@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // persistenceVersion identifies the on-disk format. Bump when a
@@ -206,92 +208,37 @@ func SaveJob(path string, job *Job) error {
 	return writeGzJSON(path, job)
 }
 
-// writeGzJSON encodes v as gzipped JSON and atomically publishes it
-// at path. Uses the same temp+fsync+rename dance as config.Save so a
-// crash at any point leaves either the old file or the new file
-// intact, never a half-written mix.
+// writeGzJSON encodes v as gzipped JSON and atomically publishes it at path.
 func writeGzJSON(path string, v any) error {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-
-	tmp, err := os.CreateTemp(dir, base+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	cleanup := func() {
-		_ = tmp.Close()        //nolint:errcheck // best-effort cleanup on error path
-		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
-	}
-
-	gz := gzip.NewWriter(tmp)
-	enc := json.NewEncoder(gz)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
-		cleanup()
-		return fmt.Errorf("encode: %w", err)
-	}
-	if err := gz.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("close gzip: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return fmt.Errorf("fsync: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
-		return fmt.Errorf("close temp: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
-		return fmt.Errorf("rename: %w", err)
-	}
-	return nil
+	return fsutil.WriteAtomic(path, func(w io.Writer) error {
+		gz := gzip.NewWriter(w)
+		enc := json.NewEncoder(gz)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(v); err != nil {
+			_ = gz.Close()
+			return fmt.Errorf("encode: %w", err)
+		}
+		if err := gz.Close(); err != nil {
+			return fmt.Errorf("close gzip: %w", err)
+		}
+		return nil
+	})
 }
 
-// writeGzJSONRaw writes pre-marshalled JSON data to a gzipped file at path.
-// Uses the same atomic temp+fsync+rename dance as writeGzJSON. This variant
-// is used when JSON marshalling is done separately (e.g. under a lock) from
-// the disk I/O.
+// writeGzJSONRaw writes pre-marshalled JSON bytes to a gzipped file at path.
+// Used when JSON marshalling happens separately (e.g. under a lock) from disk I/O.
 func writeGzJSONRaw(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-
-	tmp, err := os.CreateTemp(dir, base+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	cleanup := func() {
-		_ = tmp.Close()        //nolint:errcheck // best-effort cleanup on error path
-		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
-	}
-
-	gz := gzip.NewWriter(tmp)
-	if _, err := gz.Write(data); err != nil {
-		cleanup()
-		return fmt.Errorf("write gzip: %w", err)
-	}
-	if err := gz.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("close gzip: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return fmt.Errorf("fsync: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
-		return fmt.Errorf("close temp: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
-		return fmt.Errorf("rename: %w", err)
-	}
-	return nil
+	return fsutil.WriteAtomic(path, func(w io.Writer) error {
+		gz := gzip.NewWriter(w)
+		if _, err := gz.Write(data); err != nil {
+			_ = gz.Close()
+			return fmt.Errorf("write gzip: %w", err)
+		}
+		if err := gz.Close(); err != nil {
+			return fmt.Errorf("close gzip: %w", err)
+		}
+		return nil
+	})
 }
 
 // readGzJSON opens path, gunzips, and decodes JSON into v. Returns
