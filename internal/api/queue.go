@@ -63,10 +63,12 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 		s.queuePriority(w, r)
 	// Stubbed: no backing implementation yet.
 	case "rename", "sort", "delete_nzf", "change_complete_action",
-		"change_name", "change_cat", "change_script":
+		"change_name", "change_script":
 		s.respondError(w, http.StatusBadRequest, "not implemented in this build: "+action)
 	case "change_opts":
 		s.queueChangeOpts(w, r)
+	case "change_cat":
+		s.queueChangeCat(w, r)
 	default:
 		s.respondError(w, http.StatusBadRequest, "unknown queue action: "+action)
 	}
@@ -591,6 +593,44 @@ func (s *Server) queueChangeOpts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("job PP changed", "job", nzoID, "pp", pp)
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status":  true,
+		"nzo_ids": []string{nzoID},
+	})
+}
+
+// queueChangeCat handles name=change_cat.
+// SABnzbd convention: value = nzo_id, value2 = category name.
+// Resolves the category from config and inherits its PP level, script, and
+// priority — matching SABnzbd's NzbQueue.change_cat semantics. An empty
+// value2 resets the job to the configured Default category.
+//
+//nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
+func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
+	nzoID := r.FormValue("value")
+	if nzoID == "" {
+		s.respondError(w, http.StatusBadRequest, "missing value parameter (nzo_id)")
+		return
+	}
+	cat := r.FormValue("value2") // empty string → FindCategory falls back to Default
+
+	var cats []config.CategoryConfig
+	if s.config != nil {
+		s.config.WithRead(func(cfg *config.Config) {
+			cats = cfg.Categories
+		})
+	}
+	if err := s.queue.SetCategory(nzoID, cat, cats); err != nil {
+		s.respondError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	job, err := s.queue.Get(nzoID)
+	if err != nil {
+		s.respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.log.Info("job category changed", "job", nzoID,
+		"cat", job.Category, "pp", job.PP, "script", job.Script, "priority", job.Priority)
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":  true,
 		"nzo_ids": []string{nzoID},

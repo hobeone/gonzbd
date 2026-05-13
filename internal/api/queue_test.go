@@ -1444,3 +1444,164 @@ func TestQueueChangeOpts_UnknownJob(t *testing.T) {
 		t.Errorf("status = %d; want 404 for unknown job", rr.Code)
 	}
 }
+
+// --- change_cat ---
+
+// testQueueServerWithCats builds a Server wired with the given categories.
+func testQueueServerWithCats(t *testing.T, cats []config.CategoryConfig) (*Server, *queue.Queue) {
+	t.Helper()
+	q := queue.New()
+	cfg := &config.Config{
+		General:    config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey},
+		Categories: cats,
+	}
+	s := New(Options{
+		Config:  cfg,
+		Version: "1.0.0-test",
+		Queue:   q,
+		App:     mockApp{q: q},
+	})
+	return s, q
+}
+
+func TestQueueChangeCat_Success(t *testing.T) {
+	t.Parallel()
+	cats := []config.CategoryConfig{
+		{Name: "Default", PP: 3, Script: "", Priority: int(constants.NormalPriority)},
+		{Name: "movies", PP: 2, Script: "movies.sh", Priority: int(constants.HighPriority)},
+	}
+	s, q := testQueueServerWithCats(t, cats)
+	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb", Category: "Default"})
+
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_cat&value="+job.ID+"&value2=movies&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Status bool     `json:"status"`
+		NzoIDs []string `json:"nzo_ids"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Status {
+		t.Error("status should be true")
+	}
+	if len(resp.NzoIDs) != 1 || resp.NzoIDs[0] != job.ID {
+		t.Errorf("nzo_ids = %v; want [%s]", resp.NzoIDs, job.ID)
+	}
+
+	// Verify queue was updated with the new category's inherited settings.
+	got, err := q.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Category != "movies" {
+		t.Errorf("Category = %q; want movies", got.Category)
+	}
+	if got.PP != 2 {
+		t.Errorf("PP = %d; want 2 (from movies category)", got.PP)
+	}
+	if got.Script != "movies.sh" {
+		t.Errorf("Script = %q; want movies.sh", got.Script)
+	}
+	if got.Priority != constants.HighPriority {
+		t.Errorf("Priority = %d; want HighPriority", got.Priority)
+	}
+}
+
+func TestQueueChangeCat_EmptyValue2FallsBackToDefault(t *testing.T) {
+	t.Parallel()
+	cats := []config.CategoryConfig{
+		{Name: "Default", PP: 3, Script: "", Priority: int(constants.NormalPriority)},
+		{Name: "movies", PP: 2, Script: "movies.sh", Priority: int(constants.HighPriority)},
+	}
+	s, q := testQueueServerWithCats(t, cats)
+	// Start with "movies" category.
+	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb", Category: "movies", PP: 2})
+
+	// Send empty value2 → should reset to Default.
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_cat&value="+job.ID+"&value2=&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	got, err := q.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Category != "Default" {
+		t.Errorf("Category = %q; want Default", got.Category)
+	}
+	if got.PP != 3 {
+		t.Errorf("PP = %d; want 3 (Default PP)", got.PP)
+	}
+}
+
+func TestQueueChangeCat_MissingValue(t *testing.T) {
+	t.Parallel()
+	s, _ := testQueueServerWithCats(t, nil)
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_cat&apikey="+testAPIKey)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d; want 400 when value (nzo_id) is missing", rr.Code)
+	}
+}
+
+func TestQueueChangeCat_UnknownJob(t *testing.T) {
+	t.Parallel()
+	s, _ := testQueueServerWithCats(t, nil)
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_cat&value=nonexistent&value2=movies&apikey="+testAPIKey)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d; want 404 for unknown job", rr.Code)
+	}
+}
+
+// TestQueueChangeCat_ListReflectsNewCategory verifies that the queue listing
+// returns the updated category after a successful change_cat call.
+func TestQueueChangeCat_ListReflectsNewCategory(t *testing.T) {
+	t.Parallel()
+	cats := []config.CategoryConfig{
+		{Name: "Default", PP: 3, Script: "", Priority: int(constants.NormalPriority)},
+		{Name: "tv", PP: 1, Script: "", Priority: int(constants.LowPriority)},
+	}
+	s, q := testQueueServerWithCats(t, cats)
+	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb", Category: "Default"})
+
+	// Change to "tv".
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=change_cat&value="+job.ID+"&value2=tv&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("change_cat status = %d", rr.Code)
+	}
+
+	// Confirm via queue listing.
+	rr2 := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("queue list status = %d", rr2.Code)
+	}
+	var resp struct {
+		Queue struct {
+			Slots []struct {
+				NzoID    string `json:"nzo_id"`
+				Category string `json:"cat"`
+				PP       string `json:"pp"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr2.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Queue.Slots) != 1 {
+		t.Fatalf("slots = %d; want 1", len(resp.Queue.Slots))
+	}
+	slot := resp.Queue.Slots[0]
+	if slot.Category != "tv" {
+		t.Errorf("cat = %q; want tv", slot.Category)
+	}
+	if slot.PP != "1" {
+		t.Errorf("pp = %q; want 1 (from tv category)", slot.PP)
+	}
+}
