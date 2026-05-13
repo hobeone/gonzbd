@@ -813,10 +813,21 @@ func (app *Application) PostProcComplete() <-chan PostProcComplete { return app.
 
 // Start launches the download pipeline, assembler, and background goroutines.
 // It blocks until all components are running. Call Shutdown to stop.
+// If Start returns an error it may be retried; the application is left in a
+// clean state with started=false so a subsequent Start call is allowed.
 func (app *Application) Start(ctx context.Context) error {
 	if !app.started.CompareAndSwap(false, true) {
 		return ErrAlreadyStarted
 	}
+	// Reset started on any failure so the caller can retry. The deferred
+	// function is cancelled by setting succeeded=true before returning nil.
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			app.started.Store(false)
+		}
+	}()
+
 	app.ctx, app.cancel = context.WithCancel(ctx)
 	if err := app.assembler.Start(app.ctx); err != nil {
 		return err
@@ -869,6 +880,7 @@ func (app *Application) Start(ctx context.Context) error {
 		app.maybeFinalize(snap.ID, failMsg)
 	}
 
+	succeeded = true
 	return nil
 }
 
