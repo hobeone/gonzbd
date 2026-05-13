@@ -240,6 +240,38 @@ func TestScan_SkipsDirectories(t *testing.T) {
 	}
 }
 
+// TestScan_RecursiveSubdirectory verifies that Scan finds archives inside
+// subdirectories. This is the common Usenet pattern where an NZB downloads
+// files into a release-name subdirectory (e.g. release/movie.rar + movie.r00).
+func TestScan_RecursiveSubdirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create a release subdirectory with a legacy RAR set inside it.
+	sub := filepath.Join(dir, "Release.Name-GROUP")
+	os.MkdirAll(sub, 0o755)
+	os.WriteFile(filepath.Join(sub, "movie.rar"), []byte("main"), 0o644)
+	os.WriteFile(filepath.Join(sub, "movie.r00"), []byte("r00"), 0o644)
+	os.WriteFile(filepath.Join(sub, "movie.r01"), []byte("r01"), 0o644)
+
+	// Also a par2 file at top level (should be ignored by archive scan).
+	os.WriteFile(filepath.Join(dir, "obfuscated.par2"), []byte("par2"), 0o644)
+
+	archives, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(archives) != 1 {
+		t.Fatalf("expected 1 RAR set from subdirectory, got %d: %+v", len(archives), archives)
+	}
+	if archives[0].Type != RarArchive {
+		t.Errorf("type = %d, want RarArchive", archives[0].Type)
+	}
+	if len(archives[0].Parts) != 3 {
+		t.Errorf("parts = %d, want 3", len(archives[0].Parts))
+	}
+}
+
 func TestScan_LegacyRAR(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

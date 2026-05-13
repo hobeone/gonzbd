@@ -78,20 +78,27 @@ func Classify(path string) ArchiveType {
 	}
 }
 
-// Scan returns every Archive found directly in dir (non-recursive).
-// Files that are not recognised archive types are ignored.
+// Scan returns every Archive found in dir, scanning subdirectories
+// recursively. This matches SABnzbd's os.walk()-based archive detection
+// in rar_find_archive_sets / sevenzx_find_archive_sets, which is
+// essential for NZBs that organize files into subdirectories (e.g.
+// release-name/*.rar + Sample/).
 func Scan(dir string) ([]Archive, error) {
-	entries, err := os.ReadDir(dir)
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if path == dir {
+				return err // root dir missing/unreadable is fatal
+			}
+			return nil // skip unreadable child entries
+		}
+		if d.Type().IsRegular() {
+			files = append(files, path)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("unpack scan %s: %w", dir, err)
-	}
-
-	var files []string
-	for _, e := range entries {
-		if !e.Type().IsRegular() {
-			continue
-		}
-		files = append(files, filepath.Join(dir, e.Name()))
 	}
 
 	return groupArchives(files), nil
