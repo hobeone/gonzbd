@@ -99,6 +99,12 @@ func TestParseCapabilities_Reader(t *testing.T) {
 	if caps.HasCompress {
 		t.Error("HasCompress should be false")
 	}
+	if !caps.HasPost {
+		t.Error("HasPost should be true")
+	}
+	if caps.Version != 2 {
+		t.Errorf("Version = %d, want 2", caps.Version)
+	}
 	if len(caps.Raw) != 3 {
 		t.Errorf("Raw has %d lines, want 3", len(caps.Raw))
 	}
@@ -121,12 +127,75 @@ func TestParseCapabilities_ExplicitVerbs(t *testing.T) {
 func TestParseCapabilities_Empty(t *testing.T) {
 	t.Parallel()
 	caps := parseCapabilities("")
-	// Defaults: HasBody and HasStat are forced true even when not listed.
-	if !caps.HasBody {
-		t.Error("HasBody should default to true")
+	// Empty CAPABILITIES response: server responded but advertised nothing.
+	// HasBody and HasStat should be false — the server genuinely doesn't
+	// support them via explicit advertisement.
+	if caps.HasBody {
+		t.Error("HasBody should be false for empty response")
 	}
-	if !caps.HasStat {
-		t.Error("HasStat should default to true")
+	if caps.HasStat {
+		t.Error("HasStat should be false for empty response")
+	}
+}
+
+func TestParseCapabilities_OverHDR(t *testing.T) {
+	t.Parallel()
+	caps := parseCapabilities("VERSION 2\nREADER\nOVER\nHDR\n")
+	if !caps.HasOver {
+		t.Error("HasOver should be true")
+	}
+	if !caps.HasHDR {
+		t.Error("HasHDR should be true")
+	}
+	if !caps.HasBody {
+		t.Error("HasBody should be true (via READER)")
+	}
+}
+
+func TestParseCapabilities_IHave(t *testing.T) {
+	t.Parallel()
+	caps := parseCapabilities("VERSION 2\nIHAVE\n")
+	if !caps.HasIHave {
+		t.Error("HasIHave should be true")
+	}
+	if caps.HasBody {
+		t.Error("HasBody should be false (no READER or BODY)")
+	}
+}
+
+func TestParseCapabilities_RealisticServer(t *testing.T) {
+	t.Parallel()
+	// Realistic Usenet server response.
+	body := "VERSION 2\r\nREADER\r\nOVER\r\nHDR\r\nPOST\r\nLIST ACTIVE NEWSGROUPS OVERVIEW.FMT\r\nXFEATURE-COMPRESS GZIP TERMINATE\r\n"
+	caps := parseCapabilities(body)
+	if !caps.HasBody || !caps.HasStat {
+		t.Error("READER should imply HasBody+HasStat")
+	}
+	if !caps.HasOver {
+		t.Error("HasOver should be true")
+	}
+	if !caps.HasHDR {
+		t.Error("HasHDR should be true")
+	}
+	if !caps.HasPost {
+		t.Error("HasPost should be true")
+	}
+	if !caps.HasCompress {
+		t.Error("HasCompress should be true")
+	}
+	if caps.Version != 2 {
+		t.Errorf("Version = %d, want 2", caps.Version)
+	}
+}
+
+func TestParseCapabilities_VersionMalformed(t *testing.T) {
+	t.Parallel()
+	caps := parseCapabilities("VERSION abc\nREADER\n")
+	if caps.Version != 0 {
+		t.Errorf("Version = %d, want 0 for malformed", caps.Version)
+	}
+	if !caps.HasBody {
+		t.Error("HasBody should still be true via READER")
 	}
 }
 

@@ -523,6 +523,12 @@ func TestParseCapabilities(t *testing.T) {
 	if !caps.HasBody || !caps.HasStat {
 		t.Errorf("READER caps should yield HasBody+HasStat, got %+v", caps)
 	}
+	if !caps.HasPost {
+		t.Error("HasPost should be true")
+	}
+	if caps.Version != 2 {
+		t.Errorf("Version = %d, want 2", caps.Version)
+	}
 	if len(caps.Raw) != 4 {
 		t.Errorf("Raw len = %d, want 4", len(caps.Raw))
 	}
