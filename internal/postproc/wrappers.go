@@ -288,6 +288,34 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				continue
 			}
 			if !res.Success {
+				// I3: Check for "need more blocks" → requeue the job.
+				if res.NeedMoreBlocks {
+					job.NeedRequeue = true
+					job.RequeueBlocksNeeded = res.BlocksNeeded
+					job.RequeueReason = fmt.Sprintf(
+						"par2 needs %d more recovery blocks for %q",
+						res.BlocksNeeded, set.Name)
+					logf(log, job, slog.LevelWarn,
+						"Par2 repair %q needs %d more blocks — requesting requeue",
+						set.Name, res.BlocksNeeded)
+					// Don't mark as ParError — this is a recoverable situation.
+					// Return early so the orchestrator can requeue.
+					return nil
+				}
+
+				// I4: Check for "Main packet not found" → requeue to
+				// re-download the smallest par2 file.
+				if res.Parsed != nil && res.Parsed.Status == par2.StatusInvalidPar2 {
+					job.NeedRequeue = true
+					job.RequeueReason = fmt.Sprintf(
+						"par2 main file corrupt/missing for %q — re-download needed",
+						set.Name)
+					logf(log, job, slog.LevelWarn,
+						"Par2 main file corrupt/missing for %q — requesting requeue",
+						set.Name)
+					return nil
+				}
+
 				job.ParError = true
 				repairSucceeded = false
 				vs.MarkVerified(set.Name, false)
