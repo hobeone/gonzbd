@@ -1,6 +1,7 @@
 package deobfuscate
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -96,7 +97,7 @@ func hasCollisionSuffix(filename string) bool {
 // is or isn't being renamed. Pass nil for silent operation.
 //
 // Returns zero-value Rename and nil error if no fix is needed.
-func FixExtension(log *slog.Logger, path string) (Rename, error) {
+func FixExtension(ctx context.Context, log *slog.Logger, path string) (Rename, error) {
 	if log == nil {
 		log = slog.Default()
 	}

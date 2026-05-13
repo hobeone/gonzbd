@@ -1,6 +1,7 @@
 package deobfuscate_test
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -125,7 +126,7 @@ func TestDeobfuscate(t *testing.T) {
 		big := createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv", 11*1024*1024)
 		small := createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.nfo", 100)
 
-		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "Cool.Show.S01E01", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(context.Background(), slog.Default(), dir, "Cool.Show.S01E01", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,7 +153,7 @@ func TestDeobfuscate(t *testing.T) {
 		createFile(t, dir, "Great.Show.S01E01.1080p.mkv", 11*1024*1024)
 		createFile(t, dir, "other.nfo", 100)
 
-		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(context.Background(), slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -167,7 +168,7 @@ func TestDeobfuscate(t *testing.T) {
 		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv", 5000)
 		createFile(t, dir, "abcdefghijklmnopqrstuvwxyz012345.mkv", 4500)
 
-		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(context.Background(), slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -182,7 +183,7 @@ func TestDeobfuscate(t *testing.T) {
 		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.rar", 9001)
 		createFile(t, dir, "tiny.nfo", 10)
 
-		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(context.Background(), slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -198,7 +199,7 @@ func TestDeobfuscate(t *testing.T) {
 		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv", 5*1024*1024)
 		createFile(t, dir, "tiny.nfo", 10)
 
-		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(context.Background(), slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -218,7 +219,7 @@ func TestDeobfuscate(t *testing.T) {
 		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv", 11*1024*1024)
 		createFile(t, dir, "tiny.nfo", 10)
 
-		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(context.Background(), slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}

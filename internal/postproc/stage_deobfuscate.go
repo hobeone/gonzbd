@@ -21,7 +21,7 @@ func NewDeobfuscateStage() *DeobfuscateStage { return &DeobfuscateStage{} }
 func (*DeobfuscateStage) Name() string { return "deobfuscate" }
 
 // Run invokes deobfuscate.Deobfuscate against job.DownloadDir.
-func (d *DeobfuscateStage) Run(_ context.Context, job *Job) error {
+func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
 	log := d.Log
 	if log == nil {
 		log = slog.Default()
@@ -30,7 +30,7 @@ func (d *DeobfuscateStage) Run(_ context.Context, job *Job) error {
 
 	logf(log, job, slog.LevelInfo, "Starting deobfuscation in %s (useful name: %s)", job.DownloadDir, job.Queue.Name)
 
-	renames, err := deobfuscate.Deobfuscate(log, job.DownloadDir, job.Queue.Name, job.Sanitize)
+	renames, err := deobfuscate.Deobfuscate(ctx, log, job.DownloadDir, job.Queue.Name, job.Sanitize)
 	if len(renames) == 0 {
 		logf(log, job, slog.LevelInfo, "No files needed deobfuscation")
 	} else {
