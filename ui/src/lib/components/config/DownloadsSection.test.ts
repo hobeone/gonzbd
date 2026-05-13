@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/svelte';
+import { render, screen, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, vi } from 'vitest';
 import DownloadsSection from './DownloadsSection.svelte';
 
@@ -38,5 +38,57 @@ describe('DownloadsSection', () => {
 		expect(screen.getByText('Replace Spaces With')).toBeInTheDocument();
 		expect(screen.getByText('Strip Diacritics')).toBeInTheDocument();
 		expect(screen.getByText('Indexer/Spam Cleanup List')).toBeInTheDocument();
+	});
+
+	// Keyword-contract tests: assert every ConfigInput/ConfigSwitch passes the
+	// correct section + keyword to onFieldUpdate. This is the class of bug that
+	// caused 'invalid keyword article_cache_size in section downloads' — the
+	// UI sent a keyword that didn't match the backend's json struct tag.
+	//
+	// For ConfigInput fields: fire an oninput event with a new value, then
+	// onblur to trigger commit() immediately (bypasses the 500ms debounce).
+	// For ConfigSwitch fields: fire onchange on the checkbox.
+	//
+	// Each case only checks section + keyword, not the value — the goal is
+	// to catch name mismatches, not to retest ConfigInput/ConfigSwitch
+	// internals.
+	describe('keyword contracts', () => {
+		const cases: Array<{
+			keyword: string;
+			inputId: string;
+			newValue: string;
+			isSwitch?: boolean;
+		}> = [
+			{ keyword: 'bandwidth_max',        inputId: 'downloads-bandwidth_max',        newValue: '20M'  },
+			{ keyword: 'min_free_space',        inputId: 'downloads-min_free_space',        newValue: '2G'   },
+			{ keyword: 'write_cache_size',      inputId: 'downloads-write_cache_size',      newValue: '750M' },
+			{ keyword: 'max_art_tries',         inputId: 'downloads-max_art_tries',         newValue: '7'    },
+			{ keyword: 'pre_check',             inputId: 'downloads-pre_check',             newValue: '',    isSwitch: true },
+			{ keyword: 'replace_illegal_with',  inputId: 'downloads-replace_illegal_with',  newValue: '-'   },
+			{ keyword: 'replace_spaces_with',   inputId: 'downloads-replace_spaces_with',   newValue: '_'   },
+			{ keyword: 'strip_diacritics',      inputId: 'downloads-strip_diacritics',      newValue: '',    isSwitch: true },
+		];
+
+		cases.forEach(({ keyword, inputId, newValue, isSwitch }) => {
+			it(`fires section="downloads" keyword="${keyword}" on change`, async () => {
+				const onFieldUpdate = vi.fn();
+				const { container } = render(DownloadsSection, { configData: mockConfig, onFieldUpdate });
+
+				const el = container.querySelector(`#${inputId}`) as HTMLElement;
+				expect(el).not.toBeNull();
+
+				if (isSwitch) {
+					await fireEvent.change(el, { target: { checked: false } });
+				} else {
+					await fireEvent.input(el, { target: { value: newValue } });
+					await fireEvent.blur(el);
+				}
+
+				expect(onFieldUpdate).toHaveBeenCalled();
+				const [section, kw] = onFieldUpdate.mock.calls[0];
+				expect(section).toBe('downloads');
+				expect(kw).toBe(keyword);
+			});
+		});
 	});
 });
