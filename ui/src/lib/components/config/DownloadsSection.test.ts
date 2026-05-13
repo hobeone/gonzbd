@@ -11,7 +11,7 @@ describe('DownloadsSection', () => {
 		downloads: {
 			bandwidth_max: '10M',
 			min_free_space: '1G',
-			article_cache_size: '500M',
+			write_cache_size: '500M',
 			max_art_tries: 3,
 			pre_check: true,
 			replace_illegal_with: '_',
