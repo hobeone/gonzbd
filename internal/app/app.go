@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1320,40 +1321,12 @@ func failMsgForJob(job *queue.Job) string {
 // writeGzFile writes data to path as a gzip-compressed file using atomic
 // temp+fsync+rename to prevent corruption on crash.
 func writeGzFile(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-
-	tmp, err := os.CreateTemp(dir, base+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-	}
-
-	gz := gzip.NewWriter(tmp)
-	if _, err := gz.Write(data); err != nil {
-		cleanup()
-		return fmt.Errorf("gzip write: %w", err)
-	}
-	if err := gz.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("gzip close: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return fmt.Errorf("fsync: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("close temp: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("rename: %w", err)
-	}
-	return nil
+	return fsutil.WriteAtomic(path, func(w io.Writer) error {
+		gz := gzip.NewWriter(w)
+		if _, err := gz.Write(data); err != nil {
+			_ = gz.Close()
+			return fmt.Errorf("gzip write: %w", err)
+		}
+		return gz.Close()
+	})
 }

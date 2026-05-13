@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // Load reads, parses, and validates a YAML configuration file. It returns
@@ -117,37 +118,8 @@ func (c *Config) Save(path string) error {
 
 	// --- No lock held below this line ---
 
-	data := buf.Bytes()
-
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-	tmp, err := os.CreateTemp(dir, base+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("config: create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	// Best-effort cleanup if any subsequent step fails before rename.
-	cleanup := func() {
-		_ = tmp.Close()        //nolint:errcheck // best-effort cleanup on error path
-		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
-	}
-
-	if _, err := tmp.Write(data); err != nil {
-		cleanup()
-		return fmt.Errorf("config: write temp file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return fmt.Errorf("config: fsync temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
-		return fmt.Errorf("config: close temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup on error path
-		return fmt.Errorf("config: rename %q -> %q: %w", tmpName, path, err)
+	if err := fsutil.WriteAtomicBytes(path, buf.Bytes()); err != nil {
+		return fmt.Errorf("config: %w", err)
 	}
 	return nil
 }

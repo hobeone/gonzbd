@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // FileState tracks a file's observed size and modification time to detect stability.
@@ -94,45 +95,11 @@ func (s *Store) Save() error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	tmpFile, err := os.CreateTemp(filepath.Dir(s.path), ".dirscanner-*.tmp")
-	if err != nil {
+	if err := fsutil.WriteAtomicBytes(s.path, data); err != nil {
 		s.mu.Lock()
 		s.dirty = true
 		s.mu.Unlock()
-		return fmt.Errorf("failed to create temporary state file: %w", err)
+		return fmt.Errorf("failed to write state file: %w", err)
 	}
-	tmpName := tmpFile.Name()
-	if _, err := tmpFile.Write(data); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpName)
-		s.mu.Lock()
-		s.dirty = true
-		s.mu.Unlock()
-		return fmt.Errorf("failed to write temporary state file: %w", err)
-	}
-	if err := tmpFile.Sync(); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpName)
-		s.mu.Lock()
-		s.dirty = true
-		s.mu.Unlock()
-		return fmt.Errorf("failed to fsync temporary state file: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		s.mu.Lock()
-		s.dirty = true
-		s.mu.Unlock()
-		return fmt.Errorf("failed to close temporary state file: %w", err)
-	}
-
-	if err := os.Rename(tmpName, s.path); err != nil {
-		_ = os.Remove(tmpName) //nolint:errcheck // cleanup of temp file
-		s.mu.Lock()
-		s.dirty = true
-		s.mu.Unlock()
-		return fmt.Errorf("failed to rename state file: %w", err)
-	}
-
 	return nil
 }
