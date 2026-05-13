@@ -5,7 +5,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import { pauseJob, resumeJob } from '$lib/stores/queue.svelte';
-	import { fetchQueueJobDetail, postAction } from '$lib/api';
+	import { fetchQueueJobDetail, fetchCategories, postAction } from '$lib/api';
 	import { subscribeWS } from '$lib/stores/websocket.svelte';
 	import { cn, formatSize as formatBytes, formatETA } from '$lib/utils';
 
@@ -24,6 +24,33 @@
 
 	let acting = $state(false);
 	let expanded = $state(false);
+
+	// Category selector state: lazily loaded from get_cats on first
+	// interaction; shared across collapsed and expanded selectors.
+	let categories = $state<string[]>([]);
+	let catsLoaded = $state(false);
+
+	function ensureCategoriesLoaded() {
+		if (catsLoaded) return;
+		catsLoaded = true;
+		fetchCategories()
+			.then((cats) => { categories = cats; })
+			.catch((err) => { console.error('Failed to load categories:', err); catsLoaded = false; });
+	}
+
+	async function changeCat(e: Event) {
+		const newCat = (e.target as HTMLSelectElement).value;
+		try {
+			await postAction('queue', { name: 'change_cat', value: slot.nzo_id, value2: newCat });
+			slot.cat = newCat;
+			// PP is inherited from the new category on the backend;
+			// the next queue poll will refresh slot.pp. Force an immediate
+			// detail refresh if the drawer is open.
+			if (expanded) loadFiles();
+		} catch (err) {
+			console.error('Failed to change category:', err);
+		}
+	}
 
 	// Per-file detail: only fetched while the drawer is open. Refetched
 	// on queue_updated events (throttled) so per-file percent updates
@@ -317,7 +344,28 @@
 			{slot.status}
 		</Badge>
 	</td>
-	<td class="px-4 py-3 text-sm">{slot.cat || '*'}</td>
+	<td class="px-4 py-3 text-sm">
+		<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+		<div
+			onclick={(e: MouseEvent) => e.stopPropagation()}
+			onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
+		>
+			<select
+				onchange={changeCat}
+				onfocus={ensureCategoriesLoaded}
+				class="h-7 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer max-w-[120px]"
+				title="Category (switching inherits PP, script, and priority)"
+			>
+				{#if categories.length === 0}
+					<option selected>{slot.cat || '*'}</option>
+				{:else}
+					{#each categories as c (c)}
+						<option value={c} selected={c === slot.cat || (c === '*' && !slot.cat)}>{c}</option>
+					{/each}
+				{/if}
+			</select>
+		</div>
+	</td>
 	<td class="px-4 py-3">
 		<div class="flex gap-1">
 			<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -407,6 +455,29 @@
 							{#each Object.entries(PP_LABELS) as [val, label] (val)}
 								<option value={val} selected={val === slot.pp}>{label}</option>
 							{/each}
+						</select>
+					</div>
+				</div>
+				<div>
+					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Category</span>
+					<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+					<div
+						onclick={(e: MouseEvent) => e.stopPropagation()}
+						onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
+					>
+						<select
+							onchange={changeCat}
+							onfocus={ensureCategoriesLoaded}
+							class="h-7 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+							title="Category (switching inherits PP, script, and priority)"
+						>
+							{#if categories.length === 0}
+								<option selected>{slot.cat || '*'}</option>
+							{:else}
+								{#each categories as c (c)}
+									<option value={c} selected={c === slot.cat || (c === '*' && !slot.cat)}>{c}</option>
+								{/each}
+							{/if}
 						</select>
 					</div>
 				</div>

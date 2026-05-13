@@ -141,8 +141,8 @@ func TestAllFlatConfigTagsAreSettable(t *testing.T) {
 
 	for _, sec := range sections {
 		rv := reflect.TypeOf(sec.value)
-		for i := range rv.NumField() {
-			field := rv.Field(i)
+		for field := range rv.Fields() {
+			field := field
 			tag := field.Tag.Get("json")
 			if tag == "" || tag == "-" {
 				continue
