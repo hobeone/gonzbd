@@ -22,6 +22,11 @@ func (q *Queue) Snapshot() []*Job {
 func cloneJob(j *Job) *Job {
 	cp := *j
 
+	// The artIdx map (lazy article-by-ID index) holds pointers into j's
+	// Files slice. We must nil it so the clone rebuilds its own index
+	// lazily, pointing into the clone's own deep-copied Files.
+	cp.artIdx = nil
+
 	// Deep copy maps
 	if j.ServerStats != nil {
 		cp.ServerStats = make(map[string]int64, len(j.ServerStats))

@@ -85,3 +85,54 @@ func TestQueue_SnapshotJob(t *testing.T) {
 		t.Error("SnapshotJob returned non-nil for non-existent ID")
 	}
 }
+
+// TestSnapshotJob_ArtIdxIsolation verifies that the lazy article-by-ID
+// index (artIdx) on a cloned job points into the clone's own Files slice,
+// not the original job's. Before the fix, cloneJob shallow-copied artIdx,
+// which held *JobArticle pointers into the original's slice.
+func TestSnapshotJob_ArtIdxIsolation(t *testing.T) {
+	q := New()
+	job := &Job{
+		ID:   "idx-test",
+		Name: "ArtIdx Isolation",
+		Files: []JobFile{
+			{
+				Subject: "file1",
+				Articles: []JobArticle{
+					{ID: "art-001", Done: false},
+					{ID: "art-002", Done: false},
+				},
+			},
+		},
+	}
+	_ = q.Add(job)
+
+	// Force the original to build its artIdx.
+	origArt := job.articleByID("art-001")
+	if origArt == nil {
+		t.Fatal("articleByID returned nil on original job")
+	}
+
+	// Take a snapshot — artIdx must be rebuilt independently.
+	snap := q.SnapshotJob("idx-test")
+	if snap == nil {
+		t.Fatal("SnapshotJob returned nil")
+	}
+
+	// Access an article on the clone via articleByID.
+	cloneArt := snap.articleByID("art-001")
+	if cloneArt == nil {
+		t.Fatal("articleByID returned nil on cloned job")
+	}
+
+	// Mutate the clone's article.
+	cloneArt.Done = true
+
+	// Verify the original is unchanged.
+	if origArt.Done {
+		t.Error("mutation via clone's articleByID affected original job — artIdx was not isolated")
+	}
+	if job.Files[0].Articles[0].Done {
+		t.Error("mutation via clone's articleByID affected original job's Files slice")
+	}
+}
