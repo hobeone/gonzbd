@@ -802,6 +802,69 @@ func TestStart_DoubleStartReturnsError(t *testing.T) {
 	}
 }
 
+// TestStart_FailedStartResetsStartedFlag verifies that when Start fails (e.g.
+// the assembler can't start), the started flag is reset to false so that:
+// (a) a subsequent Start call is allowed (not rejected with ErrAlreadyStarted)
+// (b) Shutdown is a safe no-op without hanging
+//
+// Before the fix: started was set to true before assembler.Start; a failure
+// left the application permanently stuck in a "started but not running" state.
+func TestStart_FailedStartResetsStartedFlag(t *testing.T) {
+	downloadDir := t.TempDir()
+	completeDir := t.TempDir()
+	adminDir := t.TempDir()
+
+	appCfg := app.Config{
+		DownloadDir: downloadDir,
+		CompleteDir: completeDir,
+		AdminDir:    adminDir,
+		// No servers — Start will reach the assembler step which is what we control.
+	}
+
+	application, err := app.New(appCfg, nil)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	// Force the assembler into a permanently-stopped state so that Start
+	// fails at the assembler.Start step.
+	if err := application.ForceAssemblerStopped(); err != nil {
+		t.Fatalf("ForceAssemblerStopped: %v", err)
+	}
+
+	ctx := t.Context()
+
+	err = application.Start(ctx)
+	if err == nil {
+		application.Shutdown()
+		t.Fatal("expected Start to fail after assembler pre-stop, got nil")
+	}
+	t.Logf("first Start failed as expected: %v", err)
+
+	// (a) started must be false — a second Start must not return ErrAlreadyStarted.
+	err2 := application.Start(ctx)
+	if errors.Is(err2, app.ErrAlreadyStarted) {
+		t.Error("started flag not reset after failed Start — ErrAlreadyStarted returned on retry")
+	}
+	// The retry also fails (assembler is still stopped) — that's expected.
+	// We only care that it's not ErrAlreadyStarted.
+	t.Logf("retry Start result: %v", err2)
+
+	// (b) Shutdown must not hang — it should be a clean no-op when Start never
+	// succeeded. Use a timeout goroutine to detect hangs.
+	done := make(chan struct{})
+	go func() {
+		application.Shutdown()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Shutdown returned cleanly.
+	case <-time.After(3 * time.Second):
+		t.Error("Shutdown hung after failed Start")
+	}
+}
+
 // ---------- TestReloadDownloader_ServerChanges ----------
 
 // TestReloadDownloader_ServerChanges verifies that ReloadDownloader correctly
