@@ -1,0 +1,145 @@
+package postproc
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"path/filepath"
+)
+
+type ScriptStage struct {
+	// ScriptDir is the directory holding user scripts; the job's Script
+	// field is resolved relative to it. May be absolute for portability.
+	ScriptDir string
+
+	// CompleteDir is the root complete directory surfaced to scripts as
+	// SAB_COMPLETE_DIR and argv[1]. Distinct from Job.DownloadDir which
+	// is the per-job incomplete working path.
+	CompleteDir string
+
+	// Version, APIKey, APIURL populate the corresponding SAB_* env vars.
+	Version string
+	APIKey  string
+	APIURL  string
+
+	// ScriptCanFail when true causes non-zero script exit codes to be
+	// logged but NOT treated as pipeline errors. This matches Python's
+	// cfg.script_can_fail() behavior. Default false = non-zero exit
+	// is an error.
+	ScriptCanFail bool
+
+	// Log is the component-scoped logger for this stage.
+	Log *slog.Logger
+}
+
+// NewScriptStage constructs a ScriptStage.
+func NewScriptStage(scriptDir, completeDir, version, apiKey, apiURL string) *ScriptStage {
+	return &ScriptStage{
+		ScriptDir:   scriptDir,
+		CompleteDir: completeDir,
+		Version:     version,
+		APIKey:      apiKey,
+		APIURL:      apiURL,
+	}
+}
+
+// Name returns the stage identifier.
+func (*ScriptStage) Name() string { return "script" }
+
+// Run builds a ScriptInput from the job and invokes RunScript. Returns nil
+// when no script is configured or the script exits 0; wraps the RunScript
+// error otherwise.
+func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
+	log := s.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	log = log.With("component", "postproc/script", "job", job.Queue.ID)
+
+	name := job.Queue.Script
+	if name == "" || name == "None" {
+		logf(log, job, slog.LevelDebug, "No script configured")
+		return nil
+	}
+	scriptPath := name
+	if s.ScriptDir != "" && !filepath.IsAbs(name) {
+		scriptPath = filepath.Join(s.ScriptDir, name)
+	}
+
+	// SABnzbd script status codes (§6.5):
+	// 0 = success, 1 = repair failed, 2 = unpack failed, 3 = both failed
+	status := 0
+	if job.ParError {
+		status |= 1 // bit 0: repair failure
+	}
+	if job.UnpackError {
+		status |= 2 // bit 1: unpack failure
+	}
+	// A general failure message without specific par/unpack flag → status 1
+	if status == 0 && job.FailMsg != "" {
+		status = 1
+	}
+
+	logf(log, job, slog.LevelInfo, "Running: %s", scriptPath)
+
+	in := ScriptInput{
+		FinalDir:    job.DownloadDir,
+		CompleteDir: s.CompleteDir,
+		NZBName:     job.Queue.Filename,
+		JobName:     job.Queue.Name,
+		Category:    job.Queue.Category,
+		Status:      status,
+		PPFlags:     job.Queue.PP,
+		ScriptName:  name,
+		NZOID:       job.Queue.ID,
+		URL:         job.Queue.URL,
+		Version:     s.Version,
+		APIKey:      s.APIKey,
+		APIURL:      s.APIURL,
+		Bytes:       job.Queue.TotalBytes,
+		OnLine: func(line string) {
+			if job.OnOutput != nil {
+				job.OnOutput("script", line)
+			}
+		},
+	}
+	logf(log, job, slog.LevelInfo, "Script env: dir=%s, category=%s, status=%d, job=%s",
+		in.FinalDir, in.Category, in.Status, in.JobName)
+
+	res := RunScript(ctx, scriptPath, in)
+
+	// Capture script output for the stage log.
+	if res.LogBody != "" {
+		job.OutputLines = append(job.OutputLines,
+			toolOutputLines(res.LogBody)...)
+	}
+	logf(log, job, slog.LevelInfo, "Exit code: %d (%.1fs)", res.ExitCode, res.Duration.Seconds())
+
+	if res.Err != nil {
+		if errors.Is(res.Err, ErrNonZeroExit) {
+			logf(log, job, slog.LevelWarn, "Error: script %q exited %d", name, res.ExitCode)
+			if s.ScriptCanFail {
+				// Log but don't fail the pipeline.
+				logf(log, job, slog.LevelInfo, "script_can_fail=true: ignoring non-zero exit")
+				return nil
+			}
+			return fmt.Errorf("script %q exited %d", name, res.ExitCode)
+		}
+		logf(log, job, slog.LevelWarn, "Error: script %q failed: %v", name, res.Err)
+		return fmt.Errorf("script %q: %w", name, res.Err)
+	}
+	return nil
+}
+
+// FinalizeStage moves the completed job from job.DownloadDir to job.FinalDir.
+// If FinalDir is not set, it defaults to placing the job folder (named after
+// its ID) in the system's complete directory.
+//
+// When FolderRename is true:
+//   - On success: destination gets _UNPACK_ prefix during move, then prefix
+//     is stripped after the rename completes. This prevents media managers
+//     (Sonarr, Plex) from importing incomplete downloads.
+//   - On failure: the download directory is renamed in-place with a _FAILED_
+//     prefix (e.g. /incomplete/MyRelease → /incomplete/_FAILED_MyRelease).
+//     Files stay in the incomplete area so retry can find them.
