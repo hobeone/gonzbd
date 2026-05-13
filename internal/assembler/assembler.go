@@ -859,6 +859,21 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 	return true
 }
 
+// writeCachedArticles writes a batch of buffered articles to the given
+// open file. Errors are logged but do not stop the loop — partial
+// writes are better than skipping data entirely.
+func (a *Assembler) writeCachedArticles(f *openFile, arts []bufferedArticle, reason string) {
+	for _, art := range arts {
+		if _, err := f.handle.WriteAt(art.data, art.offset); err != nil {
+			a.log.Error(reason,
+				"path", f.info.Path,
+				"offset", art.offset,
+				"error", err,
+			)
+		}
+	}
+}
+
 // flushPressure force-flushes the file with the most buffered data to
 // relieve memory pressure. Called from writeArticleOrBuffer when the
 // cache exceeds 90% of its limit.
@@ -881,15 +896,7 @@ func (a *Assembler) flushPressure(wc *writeCache, open map[fileKey]*openFile) {
 		"used", wc.used,
 		"limit", wc.limit,
 	)
-	for _, art := range arts {
-		if _, err := f.handle.WriteAt(art.data, art.offset); err != nil {
-			a.log.Error("pressure flush write",
-				"path", f.info.Path,
-				"offset", art.offset,
-				"error", err,
-			)
-		}
-	}
+	a.writeCachedArticles(f, arts, "pressure flush write")
 }
 
 // drainCacheForFile writes all remaining cached articles for a file
@@ -899,15 +906,7 @@ func (a *Assembler) drainCacheForFile(wc *writeCache, f *openFile, key fileKey) 
 		return
 	}
 	_, arts := wc.drainFile(key)
-	for _, art := range arts {
-		if _, err := f.handle.WriteAt(art.data, art.offset); err != nil {
-			a.log.Error("drain cached article to disk",
-				"path", f.info.Path,
-				"offset", art.offset,
-				"error", err,
-			)
-		}
-	}
+	a.writeCachedArticles(f, arts, "drain cached article to disk")
 }
 
 // flushWriteCache drains all cached articles across all files to disk.
@@ -926,14 +925,6 @@ func (a *Assembler) flushWriteCache(wc *writeCache, open map[fileKey]*openFile) 
 			)
 			continue
 		}
-		for _, art := range arts {
-			if _, err := f.handle.WriteAt(art.data, art.offset); err != nil {
-				a.log.Error("flush cached article on shutdown",
-					"path", f.info.Path,
-					"offset", art.offset,
-					"error", err,
-				)
-			}
-		}
+		a.writeCachedArticles(f, arts, "flush cached article on shutdown")
 	}
 }
