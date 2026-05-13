@@ -327,7 +327,12 @@ func Repair(ctx context.Context, parfile string, extraFiles ...string) (RepairRe
 func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (RepairResult, error) {
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	args := make([]string, 0, 6+len(extraFiles))
-	args = append(args, "r", "-q")
+	// I7: Do NOT use -q for repair. Quiet mode suppresses File:/Target:
+	// status lines that ParseRepairOutput needs for rename tracking,
+	// used_joinables detection, and verification progress counting.
+	// SABnzbd also does not use -q for par2. Keep -q on verify-only
+	// calls (VerifyWith) where we only need the aggregate status.
+	args = append(args, "r")
 	if opts.Turbo {
 		args = append(args, "-t+")
 	}
