@@ -657,8 +657,14 @@ Key design: Configuration parameters are typed objects with validators. Config r
 |-----|------|---------|-------------|
 | `enable_unrar` | bool | true | Enable RAR extraction |
 | `enable_7zip` | bool | true | Enable 7z extraction |
+| `enable_filejoin` | bool | true | Enable split file joining (.001/.002) |
+| `enable_tsjoin` | bool | true | Enable TS file joining (.ts.001/.ts.002) |
+| `enable_recursive` | bool | true | Recursive unpack up to 3 levels |
 | `direct_unpack` | bool | false | Extract while downloading |
 | `enable_par_cleanup` | bool | true | Delete par2 after repair |
+| `enable_rar_cleanup` | bool | true | Delete archive files after extraction |
+| `enable_all_par` | bool | false | Download all par2 files before repair |
+| `process_unpacked_par2` | bool | true | Use unpacked par2 for filename recovery |
 | `par2_command` | string | `par2` | par2 binary path |
 | `unrar_command` | string | (auto-detected) | UnRAR binary path |
 | `sevenz_command` | string | (auto-detected) | 7-Zip binary path |
@@ -666,6 +672,9 @@ Key design: Configuration parameters are typed objects with validators. Config r
 | `ignore_unrar_dates` | bool | false | Ignore timestamps in archives |
 | `overwrite_files` | bool | false | Overwrite existing extracted files |
 | `flat_unpack` | bool | false | Extract all to single folder |
+| `extra_unrar_params` | string | `` | Extra unrar flags (allowlist: -mlp, -om*, -ri*) |
+| `extra_par2_params` | string | `` | Extra par2 flags |
+| `script_can_fail` | bool | false | Non-zero script exit = warning not failure |
 
 ### 9.5 Category Configuration
 

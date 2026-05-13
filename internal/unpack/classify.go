@@ -74,8 +74,13 @@ func ClassifyUnrarOutput(output string) FailReason {
 	}
 
 	// Missing volume (but not during recovery mode).
+	// N3: When unrar is reconstructing missing volumes from .rev files,
+	// it prints "Cannot find volume" followed by "Reconstructing" or
+	// "Recovery volumes found". Suppress the error in these cases.
+	// Matches SABnzbd's inrecovery flag behavior.
 	if strings.Contains(lower, "cannot find volume") &&
-		!strings.Contains(lower, "recovery volumes found") {
+		!strings.Contains(lower, "recovery volumes found") &&
+		!strings.Contains(lower, "reconstructing") {
 		return FailMissingVolume
 	}
 

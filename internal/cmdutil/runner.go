@@ -129,3 +129,32 @@ func ParseExtraParams(params string) ([]string, error) {
 	}
 	return args, nil
 }
+
+// unrarAllowedPrefixes defines the parameter prefixes SABnzbd considers
+// safe for user-specified unrar arguments. Only flags matching one of these
+// prefixes are permitted.
+//
+//   - "-mlp"  — use large memory pages
+//   - "-om"   — ignore/set symlinks (e.g. -om-)
+//   - "-ri"   — recovery volume priority and thread count (e.g. -ri10:5)
+var unrarAllowedPrefixes = []string{"-mlp", "-om", "-ri"}
+
+// ValidateUnrarParams checks that each argument in args is in SABnzbd's
+// unrar parameter allowlist. Returns an error describing the first
+// disallowed flag. This prevents users from passing flags that could
+// cause data loss (e.g. -df for delete after extract) or security issues.
+func ValidateUnrarParams(args []string) error {
+	for _, a := range args {
+		allowed := false
+		for _, prefix := range unrarAllowedPrefixes {
+			if strings.HasPrefix(a, prefix) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("unrar parameter %q is not allowed; permitted prefixes: %v", a, unrarAllowedPrefixes)
+		}
+	}
+	return nil
+}

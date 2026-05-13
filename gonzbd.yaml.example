@@ -183,12 +183,36 @@ postproc:
   # Enable 7z archive extraction. Requires 7z on PATH.
   enable_7zip: true
 
+  # Enable split file joining (.001/.002/...). When false, split files
+  # are left as-is. Matches SABnzbd's cfg.enable_filejoin(). Default true.
+  enable_filejoin: true
+
+  # Enable TS file joining (.ts.001/.ts.002/...). TS splits are handled
+  # by the same join logic as numeric splits. Matches SABnzbd's
+  # cfg.enable_tsjoin(). Default true.
+  enable_tsjoin: true
+
+  # Enable recursive unpacking: after each extraction pass, re-scan for
+  # newly extracted archives up to 3 levels deep. Disable to only extract
+  # the outermost archives. Matches SABnzbd's cfg.enable_recursive().
+  enable_recursive: true
+
   # Delete par2 parity files after a successful repair.
   enable_par_cleanup: true
 
   # Delete source archive files (RAR, 7z, split) after successful
   # extraction. Set to false to keep originals alongside extracted files.
   enable_rar_cleanup: true
+
+  # Download ALL par2 files before starting repair, rather than downloading
+  # par2 volumes on demand. Can speed up repair for damaged downloads at
+  # the cost of extra bandwidth. Matches SABnzbd's cfg.enable_all_par().
+  enable_all_par: false
+
+  # Scan extracted archives for par2 files and use them for 16K-MD5
+  # filename recovery. Helps deobfuscate files from nested archives.
+  # Matches SABnzbd's cfg.process_unpacked_par2(). Default true.
+  process_unpacked_par2: true
 
   # Path to the par2 binary. Can be a bare name (resolved via PATH)
   # or an absolute path. Default: "par2".

@@ -60,6 +60,11 @@ func TestClassifyUnrarOutput(t *testing.T) {
 			want:   FailUnknown, // recovery mode suppresses missing vol
 		},
 		{
+			name:   "missing volume during reconstruction ignored",
+			output: "Cannot find volume part2.rar\nReconstructing part2.rar\n",
+			want:   FailUnknown, // N3: reconstruction suppresses missing vol
+		},
+		{
 			name:   "checksum error non-encrypted",
 			output: "foo.mkv  checksum error\n",
 			want:   FailCorrupt,

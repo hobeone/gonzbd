@@ -39,8 +39,13 @@ downloads:
 postproc:
   enable_unrar: true
   enable_7zip: true
+  enable_filejoin: true
+  enable_tsjoin: true
+  enable_recursive: true
   enable_par_cleanup: true
   enable_rar_cleanup: true
+  enable_all_par: false
+  process_unpacked_par2: true
   par2_command: par2
   unrar_command: ""
   sevenz_command: ""

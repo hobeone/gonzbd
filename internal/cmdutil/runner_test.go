@@ -128,3 +128,30 @@ func TestCmdConfigIsEmpty(t *testing.T) {
 		t.Error("CmdConfig with Ionice should not be empty")
 	}
 }
+
+func TestValidateUnrarParams(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr bool
+	}{
+		{"nil", nil, false},
+		{"empty", []string{}, false},
+		{"mlp allowed", []string{"-mlp"}, false},
+		{"om- allowed", []string{"-om-"}, false},
+		{"ri allowed", []string{"-ri10:5"}, false},
+		{"multiple allowed", []string{"-mlp", "-om-", "-ri5"}, false},
+		{"df disallowed", []string{"-df"}, true},
+		{"y disallowed", []string{"-y"}, true},
+		{"mixed", []string{"-mlp", "-df"}, true},
+		{"scf disallowed", []string{"-scf"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateUnrarParams(tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateUnrarParams(%v) error = %v, wantErr %v", tt.args, err, tt.wantErr)
+			}
+		})
+	}
+}
