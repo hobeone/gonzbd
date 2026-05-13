@@ -187,6 +187,8 @@ type AppTestOpts struct {
 	Par2Command  string
 	Prefer7zip   bool
 	FolderRename bool
+	FlatUnpack   bool
+	Nice         string
 }
 
 // NewTestAppSeparateDirs builds and starts an Application with distinct
@@ -211,6 +213,8 @@ func NewTestAppSeparateDirs(t *testing.T, mockAddr string, opts AppTestOpts) (a 
 	cfg.Enable7zip = opts.Enable7zip
 	cfg.Prefer7zip = opts.Prefer7zip
 	cfg.FolderRename = opts.FolderRename
+	cfg.FlatUnpack = opts.FlatUnpack
+	cfg.Nice = opts.Nice
 	if opts.Par2Command != "" {
 		cfg.Par2Command = opts.Par2Command
 	}
