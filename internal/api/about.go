@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -45,14 +46,23 @@ func (s *Server) modeAbout(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 
+	// Fetch public IPv4 and IPv6 concurrently to halve the worst-case
+	// latency from ~6s (two sequential 3s-timeout calls) to ~3s.
+	var publicV4, publicV6 string
+	var ipWG sync.WaitGroup
+	ipWG.Add(2)
+	go func() { defer ipWG.Done(); publicV4 = publicIP("https://api.ipify.org?format=text") }()
+	go func() { defer ipWG.Done(); publicV6 = publicIP("https://api6.ipify.org?format=text") }()
+	ipWG.Wait()
+
 	about := map[string]string{
 		"version":      s.version,
 		"commit":       s.commit,
 		"build_date":   s.date,
 		"go_version":   runtime.Version(),
 		"local_ipv4":   localIPv4(),
-		"public_ipv4":  publicIP("https://api.ipify.org?format=text"),
-		"public_ipv6":  publicIP("https://api6.ipify.org?format=text"),
+		"public_ipv4":  publicV4,
+		"public_ipv6":  publicV6,
 		"hostname":     hostname,
 		"config_path":  s.configPath,
 		"download_dir": downloadDir,
