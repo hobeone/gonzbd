@@ -363,6 +363,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				IgnoreUnrarDates: cfg.IgnoreUnrarDates,
 				OneFolder:        cfg.FlatUnpack,
 				Prefer7zip:       cfg.Prefer7zip,
+				HasProblem:       unrarInfo.HasProblem, // C1: degraded mode for free/old unrar
 				CmdCfg:           cmdCfg,
 				ExtraArgs:        extraUnrarArgs,
 			}, cfg.EnableRarCleanup)
