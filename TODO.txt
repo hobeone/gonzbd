@@ -1,7 +1,3 @@
-I want to remove all sorting & series handling code from the app.  This will
-all be handled by an external app like Sonarr.  Remove all config, packages and
-tests for this functionality.
-
 Examine the end 2 end integration tests and ensure all of the new functionality
 is covered by these tests.  Add more if necessary.
 
