@@ -304,3 +304,64 @@ func TestPipeline_PRiVATE_FullPipeline(t *testing.T) {
 	extractedPath := filepath.Join(completeDir, "private-pipeline", "show.s01e02.mkv")
 	verifyFileAtPath(t, extractedPath, wantSHA[:])
 }
+
+// TestPipeline_SubdirectoryUnrar exercises the full pipeline when RAR archives
+// live inside a subdirectory — the common Usenet pattern where NZBs organize
+// release files into a release-name directory with par2 files at the root:
+//
+//	<job>/
+//	├── Release-GROUP/
+//	│   ├── movie.rar
+//	│   └── movie.r00
+//	├── obfuscated.par2
+//	└── obfuscated.vol00+01.par2
+//
+// This tests that unpack.Scan recursively finds archives in subdirectories
+// (the fix in commit c2a0eba).
+func TestPipeline_SubdirectoryUnrar(t *testing.T) {
+	t.Parallel()
+	requireTool(t, "rar")
+	requireTool(t, "unrar")
+	requireTool(t, "par2")
+
+	// Create a known payload.
+	srcPayload := bytes.Repeat([]byte("subdirectory unrar test content\n"), 100)
+	wantSHA := sha256.Sum256(srcPayload)
+
+	// Build a fixture with archives in a subdirectory and par2 at root.
+	fixtureDir := t.TempDir()
+
+	// Subdirectory for the release files.
+	releaseDir := filepath.Join(fixtureDir, "Release-GROUP")
+	if err := os.MkdirAll(releaseDir, 0o755); err != nil {
+		t.Fatalf("mkdir release dir: %v", err)
+	}
+
+	// Create RAR archive inside the subdirectory.
+	rarPath := createRarFixture(t, releaseDir, "movie.rar", map[string][]byte{
+		"movie.mkv": srcPayload,
+	})
+
+	// Create par2 recovery set at the root level, protecting the RAR.
+	createPar2Fixture(t, fixtureDir, rarPath)
+
+	// Read fixture recursively — file names will include "Release-GROUP/"
+	// prefix, reproducing the real-world subdirectory structure.
+	files := fixtureToTestFilesRecursive(t, fixtureDir, 50*1024)
+	srv := newMockServerFromFixtures(t, files)
+
+	a, _, completeDir := NewTestAppSeparateDirs(t, srv.Addr(), AppTestOpts{
+		EnableUnrar: true,
+	})
+	rawNZB := BuildNZB(files)
+	// PP=3 enables repair + unpack + cleanup.
+	addNZBJobPP(t, a, rawNZB, "subdir-unrar-test", 3)
+
+	waitForPostProcWithTimeout(t, a, pipelineTimeout)
+
+	// The extracted file should be in completeDir. unrar extracts to the
+	// job's download dir (not the subdirectory), so the extracted file
+	// lands at the job level.
+	extractedPath := filepath.Join(completeDir, "subdir-unrar-test", "movie.mkv")
+	verifyFileAtPath(t, extractedPath, wantSHA[:])
+}
