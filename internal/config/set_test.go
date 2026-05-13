@@ -151,8 +151,9 @@ func TestConfig_Set(t *testing.T) {
 			true,
 			nil,
 		},
-		// Every keyword sent by DownloadsSection.svelte must be valid.
-		// These cases prevent UI→backend name mismatches from going undetected.
+		// The cases below verify that Set() correctly converts and persists typed
+		// values (ByteSize, int, bool, string). Keyword existence is enforced
+		// exhaustively in ui_contract_test.go — see TestUIKeywordsAreValidConfigTags.
 		{
 			"set ByteSize (min_free_space)",
 			"downloads", "min_free_space", "5G",
