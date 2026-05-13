@@ -1,6 +1,8 @@
 package queue
 
 import (
+	"fmt"
+	"math/rand/v2"
 	"testing"
 )
 
@@ -349,5 +351,48 @@ func TestBytesDownloaded_RecomputeAfterLoad(t *testing.T) {
 	}
 	if got := loaded.Files[1].BytesDownloaded; got != 1000 {
 		t.Errorf("file 1 BytesDownloaded = %d; want 1000 (recomputed on load)", got)
+	}
+}
+
+// TestCounterConsistencyUnderRandomMutations is a property-style test that
+// applies a randomized sequence of MarkArticle* operations to a 100-article
+// job and calls verifyPending after each step. A fixed seed makes failures
+// deterministic and reproducible. This guards against the counter-drift
+// documented in CLAUDE.md where incremental Pending/BytesDownloaded
+// updates diverge from ground truth over a sequence of mutations.
+func TestCounterConsistencyUnderRandomMutations(t *testing.T) {
+	const seed1, seed2 = 0xdeadbeef, 0xcafef00d
+	rng := rand.New(rand.NewPCG(seed1, seed2))
+
+	const nFiles, nArts = 4, 5
+	q := New()
+	job := makeTestJob("prop", nFiles, nArts)
+	_ = q.Add(job)
+
+	// Collect all article IDs for random selection.
+	ids := make([]string, 0, nFiles*nArts)
+	for fi := range nFiles {
+		for ai := range nArts {
+			ids = append(ids, artID(fi, ai))
+		}
+	}
+	pick := func() string { return ids[rng.IntN(len(ids))] }
+
+	const rounds = 500
+	for i := range rounds {
+		label := fmt.Sprintf("round %d", i)
+		op := rng.IntN(4)
+		id := pick()
+		switch op {
+		case 0: // MarkArticlesDone
+			_ = q.MarkArticlesDone("prop", []string{id})
+		case 1: // MarkArticlesFailed
+			_, _ = q.MarkArticlesFailed("prop", []string{id})
+		case 2: // MarkArticleEmitted (no-op if already Done)
+			_ = q.MarkArticleEmitted("prop", id)
+		case 3: // ClearArticleEmitted
+			_ = q.ClearArticleEmitted("prop", id)
+		}
+		verifyPending(t, q, label)
 	}
 }
