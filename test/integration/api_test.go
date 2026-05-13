@@ -220,7 +220,7 @@ func TestAPI_ProtectedModes(t *testing.T) {
 	_, ts := buildAPIServer(t)
 
 	// Each entry is mode=X plus any extra params needed for the mode to
-	// return a non-400 response. eval_sort requires sort_string and job_name.
+	// return a non-400 response.
 	modeQueries := []string{
 		"mode=queue",
 		"mode=history",
