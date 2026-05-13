@@ -52,6 +52,11 @@ type Options struct {
 	// appended to every unrar invocation. Pre-validated by the config
 	// layer to contain only flags starting with '-'.
 	ExtraArgs []string
+	// HasProblem is true when the detected unrar binary is non-original
+	// (e.g. unrar-free on Debian/Ubuntu) or too old (< 5.50). In this
+	// mode, flags that free/old unrar doesn't support are stripped:
+	// -scf, -or, -ai, -tsm-. Matches SABnzbd's RAR_PROBLEM degraded mode.
+	HasProblem bool
 	// OnLine is called for each line of subprocess output. May be nil.
 	OnLine func(string) `json:"-"`
 	// OnCommand is called once per subprocess invocation, just before
@@ -113,20 +118,30 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 		mode,
 		"-y",   // assume yes to all prompts
 		"-idp", // disable progress display
-		"-scf", // assume UTF-8 filenames (§8.2 — fixes mojibake from Windows-built archives)
-		"-ai",  // ignore file attributes — prevents read-only extracted files (matches SABnzbd)
-		pwFlag,
 	}
+
+	// Normal mode (original unrar >= 5.50): add flags that free/old unrar
+	// doesn't support. Matches SABnzbd's RAR_PROBLEM conditional logic.
+	if !opts.HasProblem {
+		args = append(args,
+			"-scf", // assume UTF-8 filenames (§8.2 — fixes mojibake from Windows-built archives)
+			"-ai",  // ignore file attributes — prevents read-only extracted files
+		)
+	}
+
+	args = append(args, pwFlag)
 
 	// Extraction flags from config.
 	if opts.OverwriteFiles {
 		args = append(args, "-o+")
 	} else {
 		args = append(args, "-o-") // don't overwrite existing files
-		args = append(args, "-or") // auto-rename on collision (matches SABnzbd)
+		if !opts.HasProblem {
+			args = append(args, "-or") // auto-rename on collision (not supported by free unrar)
+		}
 	}
-	if opts.IgnoreUnrarDates {
-		args = append(args, "-tsm-") // don't restore modification times (matches SABnzbd)
+	if opts.IgnoreUnrarDates && !opts.HasProblem {
+		args = append(args, "-tsm-") // don't restore modification times (not supported by free unrar)
 	}
 	args = append(args, opts.ExtraArgs...) // user-specified extra flags
 
