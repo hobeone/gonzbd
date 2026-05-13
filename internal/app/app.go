@@ -8,14 +8,12 @@ package app
 import (
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,17 +21,14 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
-	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/notifier"
-	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
-	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // ErrAlreadyStarted is returned by Start on the second call to a live
@@ -288,160 +283,11 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 
 	stages := app.customStages
 	if stages == nil {
-		var stageList []postproc.Stage
-		ppLog := log.With("component", "postproc")
-
-		// Quick-check stage: relocate flat files into par2-expected subdirs
-		// before repair runs. Must be first so par2 can find files.
-		qcStage := postproc.NewQuickCheckStage()
-		qcStage.Log = ppLog
-		stageList = append(stageList, qcStage)
-
-		// Build nice/ionice wrapping config for all external tool commands.
-		cmdCfg := cmdutil.CmdConfig{Nice: cfg.Nice, Ionice: cfg.Ionice}
-
-		// Parse user-supplied extra params (validated: must start with '-').
-		extraPar2Args, err := cmdutil.ParseExtraParams(cfg.ExtraPar2Params)
+		var err error
+		stages, err = buildStages(cfg, log)
 		if err != nil {
-			return nil, fmt.Errorf("extra_par2_params: %w", err)
+			return nil, err
 		}
-		extraUnrarArgs, err := cmdutil.ParseExtraParams(cfg.ExtraUnrarParams)
-		if err != nil {
-			return nil, fmt.Errorf("extra_unrar_params: %w", err)
-		}
-		// N5: Validate extra unrar params against SABnzbd's allowlist.
-		// Warn instead of hard-fail so existing configs aren't broken.
-		if err := cmdutil.ValidateUnrarParams(extraUnrarArgs); err != nil {
-			ppLog.Warn("extra_unrar_params contains non-standard flags",
-				"err", err,
-				"hint", "SABnzbd only allows: -mlp, -om*, -ri*")
-		}
-
-		// Detect par2 binary capabilities at startup (SABnzbd does the
-		// same via par2 -h output inspection). Non-fatal: caps is zero-
-		// value on failure, meaning no -N or -B flags.
-		par2Caps := par2.DetectCapabilities(context.Background(), cfg.Par2Command)
-		if par2Caps.IsTurbo && !cfg.Par2Turbo {
-			ppLog.Info("Detected par2cmdline-turbo; consider enabling par2_turbo for faster repair")
-		}
-		if par2Caps.Version != "" {
-			ppLog.Info("Detected par2 binary", "version", par2Caps.Version)
-		}
-
-		// Detect unrar binary version and authenticity.
-		unrarInfo := unpack.DetectUnrar(context.Background(), cfg.UnrarCommand)
-		if unrarInfo.Available {
-			ppLog.Info("Detected unrar binary",
-				"version", unrarInfo.VersionStr,
-				"original", unrarInfo.Original)
-			if unrarInfo.HasProblem {
-				ppLog.Warn("unrar binary may have issues: non-original or version < 5.50")
-			}
-		} else {
-			ppLog.Warn("unrar binary not found; RAR extraction will not be available")
-		}
-
-		// Detect 7z binary.
-		sevenzInfo := unpack.DetectSevenZip(context.Background(), cfg.SevenzCommand)
-		if sevenzInfo.Available {
-			ppLog.Info("Detected 7z binary", "version", sevenzInfo.Version)
-		} else {
-			ppLog.Warn("7z binary not found; 7-Zip extraction will not be available")
-		}
-
-		// Repair stage: configurable par2 binary, turbo mode, and cleanup.
-		repairStage := postproc.NewRepairStageWith(
-			par2.RunOptions{
-				Command:   cfg.Par2Command,
-				Turbo:     cfg.Par2Turbo,
-				CmdCfg:    cmdCfg,
-				ExtraArgs: extraPar2Args,
-				Caps:      &par2Caps,
-			},
-			cfg.EnableParCleanup,
-		)
-		repairStage.Log = ppLog
-		stageList = append(stageList, repairStage)
-
-		// Unpack stage: included when any extraction/join feature is enabled.
-		if cfg.EnableUnrar || cfg.Enable7zip || cfg.EnableFileJoin {
-			unpackStage := postproc.NewUnpackStageWith(unpack.Options{
-				UnrarCommand:     cfg.UnrarCommand,
-				SevenZipCommand:  cfg.SevenzCommand,
-				OverwriteFiles:   cfg.OverwriteFiles,
-				IgnoreUnrarDates: cfg.IgnoreUnrarDates,
-				OneFolder:        cfg.FlatUnpack,
-				Prefer7zip:       cfg.Prefer7zip,
-				HasProblem:       unrarInfo.HasProblem, // C1: degraded mode for free/old unrar
-				CmdCfg:           cmdCfg,
-				ExtraArgs:        extraUnrarArgs,
-			}, cfg.EnableRarCleanup)
-			unpackStage.Permissions = cfg.Permissions
-			unpackStage.PasswordFile = cfg.PasswordFile
-			unpackStage.EnableFileJoin = cfg.EnableFileJoin
-			unpackStage.EnableRecursive = cfg.EnableRecursive
-			unpackStage.Log = ppLog
-			stageList = append(stageList, unpackStage)
-		}
-
-		// Sample cleanup runs after unpack so it sees both raw and
-		// extracted files (e.g. release.mkv plus extracted-sample.mkv).
-		if cfg.IgnoreSamples {
-			sampleStage := postproc.NewSampleCleanupStage()
-			sampleStage.Log = ppLog
-			stageList = append(stageList, sampleStage)
-		}
-
-		// Par2-based filename recovery runs after unpack/sample cleanup
-		// so it can rename extracted files using par2 16K-MD5 matching.
-		// This is unconditional — it runs even when deobfuscation is off.
-		par2RenameStage := postproc.NewRecoverPar2NamesStage()
-		par2RenameStage.Log = ppLog
-		stageList = append(stageList, par2RenameStage)
-
-		if cfg.DeobfuscateFilenames {
-			deobStage := postproc.NewDeobfuscateStage()
-			deobStage.Log = ppLog
-			stageList = append(stageList, deobStage)
-		}
-
-		// Extension cleanup: delete files with extensions matching the
-		// user's cleanup list (e.g. .nfo, .txt, .sfv). Runs after
-		// deobfuscation but before the final move.
-		if len(cfg.CleanupExtensions) > 0 {
-			cleanupStage := postproc.NewExtensionCleanupStage(cfg.CleanupExtensions)
-			cleanupStage.Log = ppLog
-			stageList = append(stageList, cleanupStage)
-		}
-
-		// Finalize stage: move files from download dir to complete dir.
-		// Must run BEFORE script so scripts receive the final directory
-		// path — matches SABnzbd spec §6.2 ordering.
-		finalizeStage := postproc.NewFinalizeStage()
-		finalizeStage.Log = ppLog
-		finalizeStage.FolderRename = cfg.FolderRename
-		stageList = append(stageList, finalizeStage)
-
-		// Cleanup stage: remove admin sidecar data (__ADMIN__ dir)
-		// from successful jobs. Runs after finalize so the directory
-		// has already been moved to its final location.
-		cleanupAdminStage := postproc.NewCleanupStage()
-		cleanupAdminStage.Log = ppLog
-		stageList = append(stageList, cleanupAdminStage)
-
-		// Script stage: runs AFTER finalize so job.DownloadDir points
-		// to the final complete_dir. This matches SABnzbd's behavior
-		// where $1 is the final directory, not the incomplete path.
-		if cfg.ScriptDir != "" {
-			scriptStage := postproc.NewScriptStage(
-				cfg.ScriptDir, cfg.CompleteDir,
-				cfg.Version, cfg.APIKey, cfg.ListenAddr,
-			)
-			scriptStage.Log = ppLog
-			scriptStage.ScriptCanFail = cfg.ScriptCanFail
-			stageList = append(stageList, scriptStage)
-		}
-		stages = stageList
 	}
 	pp := postproc.New(postproc.Options{
 		Stages: stages,
@@ -456,155 +302,8 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 				Line:  line,
 			})
 		},
-		OnJobDone: func(job *postproc.Job) {
-			stageLogJSON, _ := json.Marshal(job.StageLog)
-			var downloadDuration int64
-			if !job.Queue.DownloadStarted.IsZero() && !job.Queue.DownloadFinished.IsZero() {
-				downloadDuration = int64(job.Queue.DownloadFinished.Sub(job.Queue.DownloadStarted).Seconds())
-			}
-			if downloadDuration == 0 {
-				downloadDuration = 1
-			}
-
-			// Compute post-processing duration from stage log.
-			var postprocDuration int64
-			for _, se := range job.StageLog {
-				postprocDuration += int64(se.Elapsed.Seconds())
-			}
-
-			// Compute article-level completion stats.
-			var totalArticles, doneArticles, failedArticles int
-			for fi := range job.Queue.Files {
-				for ai := range job.Queue.Files[fi].Articles {
-					totalArticles++
-					a := &job.Queue.Files[fi].Articles[ai]
-					if a.Done {
-						doneArticles++
-					} else if a.Failed {
-						failedArticles++
-					}
-				}
-			}
-			var completeness int64
-			if totalArticles > 0 {
-				completeness = int64((float64(doneArticles) / float64(totalArticles)) * 100)
-			}
-			downloaded := job.Queue.TotalBytes - job.Queue.FailedBytes - job.Queue.RemainingBytes
-
-			serverStatsParts := make([]string, 0, len(job.Queue.ServerStats))
-			// Sort keys for deterministic output in history entries.
-			serverNames := make([]string, 0, len(job.Queue.ServerStats))
-			for s := range job.Queue.ServerStats {
-				serverNames = append(serverNames, s)
-			}
-			sort.Strings(serverNames)
-			for _, s := range serverNames {
-				b := job.Queue.ServerStats[s]
-				serverStatsParts = append(serverStatsParts, fmt.Sprintf("%s=%.1f MB", s, float64(b)/(1024*1024)))
-			}
-			serverStats := strings.Join(serverStatsParts, ", ")
-			repairSummary := ""
-			for _, entry := range job.StageLog {
-				if entry.Stage == "repair" {
-					if entry.Err != nil {
-						repairSummary = fmt.Sprintf("Repair failed: %v", entry.Err)
-					} else {
-						repairSummary = "Repair OK"
-						if len(entry.Lines) > 0 {
-							repairSummary = entry.Lines[0]
-						}
-					}
-					break
-				}
-			}
-			if repairSummary == "" {
-				repairSummary = "No repair needed"
-			}
-			entry := history.Entry{
-				Completed:    time.Now(),
-				Name:         job.Queue.Name,
-				NzbName:      job.Queue.Filename,
-				Category:     job.Queue.Category,
-				Status:       "Completed",
-				NzoID:        job.Queue.ID,
-				Storage:      job.FinalDir,
-				Path:         job.FinalDir,
-				DownloadTime: downloadDuration,
-				PostprocTime: postprocDuration,
-				StageLog:     string(stageLogJSON),
-				Bytes:        job.Queue.TotalBytes,
-				Downloaded:   downloaded,
-				Completeness: completeness,
-				TimeAdded:    job.Queue.Added,
-				URLInfo:      repairSummary,
-				Meta:         serverStats,
-			}
-			if job.ParError || job.UnpackError || job.FailMsg != "" {
-				entry.Status = "Failed"
-				entry.FailMessage = job.FailMsg
-				entry.Path = job.DownloadDir
-			}
-			// Save the full job payload first — RetryHistoryJob needs
-			// this file to re-enqueue. If this fails, don't commit
-			// to the DB or remove from queue.
-			histJobsDir := filepath.Join(app.cfg.AdminDir, "history", "jobs")
-			if err := os.MkdirAll(histJobsDir, 0o750); err != nil {
-				log.Warn("failed to create history jobs dir", "err", err)
-			}
-			jobPath := filepath.Join(histJobsDir, job.Queue.ID+".json.gz")
-			if err := queue.SaveJob(jobPath, job.Queue); err != nil {
-				log.Error("failed to save final job state; keeping job in queue",
-					"job", job.Queue.ID, "err", err)
-				app.emitter.Broadcast(Event{Type: "queue_updated"})
-				return
-			}
-			if app.historyRepo != nil {
-				dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := app.historyRepo.Add(dbCtx, entry); err != nil {
-					log.Error("failed to add history entry; keeping job in queue for recovery",
-						"job", job.Queue.ID, "err", err)
-					dbCancel()
-					// Clean up the orphaned payload file.
-					_ = os.Remove(jobPath)
-					// Don't remove from queue — the job stays recoverable.
-					app.emitter.Broadcast(Event{Type: "queue_updated"})
-					return
-				}
-				dbCancel()
-			}
-			if err := q.Remove(job.Queue.ID); err != nil {
-				log.Warn("failed to remove job from queue after post-proc", "job", job.Queue.ID, "err", err)
-			}
-			select {
-			case app.postProcComplete <- PostProcComplete{JobID: job.Queue.ID}:
-			default:
-			}
-			// job_finalized signals a queue→history transition: both
-			// stores subscribe to it and refresh from a single trigger,
-			// so they reach the new state together.
-			app.emitter.Broadcast(Event{Type: "job_finalized", NzoID: job.Queue.ID})
-
-			// Fire notification event with a bounded timeout so a
-			// misbehaving sink can't hang the postproc worker forever.
-			if app.notifyDispatcher != nil {
-				evtType := notifier.PostProcessingComplete
-				title := "Download completed"
-				if entry.Status == "Failed" {
-					evtType = notifier.PostProcessingFailed
-					title = "Download failed"
-				}
-				notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				app.notifyDispatcher.Dispatch(notifyCtx, notifier.Event{
-					Type:      evtType,
-					Title:     title,
-					Body:      entry.Name,
-					JobName:   entry.Name,
-					Timestamp: time.Now(),
-				})
-				notifyCancel()
-			}
-		},
-		Logger: log,
+		OnJobDone: app.onPostProcDone,
+		Logger:    log,
 	})
 	app.postProcessor = pp
 
