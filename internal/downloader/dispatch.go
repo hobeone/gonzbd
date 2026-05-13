@@ -15,53 +15,26 @@ import (
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
-// dispatchPass walks the queue once and tries to feed every not-yet-
-// done article into an eligible server's work channel.
-//
-// Eligibility rules for a (article, server) pair:
-//  1. Server is Enable && Active(now) (not under penalty / deactivated).
-//  2. The article has not already been definitively rejected by this
-//     server (try-list miss).
-//
-// Sending is non-blocking: if the server's work channel is full, the
-// dispatcher skips to the next server for that article. If no server
-// can accept the article this pass, the article is simply left alone;
-// a future signalDispatch (worker completion) or queue.Notify (queue
-// mutation) will trigger another pass.
-//
-// The pass holds no locks across queue iteration: queue.List returns
-// a snapshot slice and article access is read-only (we dispatch work,
-// we don't mutate state here — success/failure handling is in
-// handleRequest).
-func (d *Downloader) dispatchPass(ctx context.Context) {
-	if d.paused.Load() || d.queue.IsPaused() {
-		return
-	}
-	if err := ctx.Err(); err != nil {
-		return
-	}
-	now := time.Now()
+// dispatchPlan holds the results of one iteration over the unfinished
+// article queue. buildDispatchPlan populates it; dispatchPass applies it.
+// Keeping the two phases separate makes the iteration logic unit-testable
+// without needing to drive goroutines or NNTP connections.
+type dispatchPlan struct {
+	dispatched   int                    // number of articles handed to a server
+	activeJobs   map[string]struct{}    // jobs that got at least one article dispatched
+	hopelessJobs map[string]struct{}    // jobs where failedBytes > par2Bytes
+	exhausted    []*articleRequest      // articles with no eligible server this pass
+}
 
-	dispatched := 0
-	hopelessJobs := make(map[string]struct{})
-	// activeJobs collects job IDs that had at least one article dispatched
-	// this pass. After the iterator releases the queue RLock, we flip
-	// their status from Queued → Downloading so the UI reflects progress.
-	activeJobs := make(map[string]struct{})
-	// exhausted accumulates articles that had no eligible server this
-	// pass. Emitting their ErrNoServersLeft results inline would require
-	// sending on the completions channel while tryMu and the queue
-	// RLock (from ForEachUnfinishedArticle) are both held — a deadlock
-	// when the pipeline consumer itself needs the queue write lock.
-	// We drain this list after the iterator returns.
-	var exhausted []*articleRequest
-
-	// Snapshot server configs once per pass. srv.Cfg() returns a
-	// by-value struct copy; calling it per-article per-server was
-	// 0.69s in the pprof (lines 185/191). Cache here.
-	serverCfgs := make([]config.ServerConfig, len(d.servers))
-	for i, srv := range d.servers {
-		serverCfgs[i] = srv.Cfg()
+// buildDispatchPlan iterates over the unfinished article queue and populates
+// a dispatchPlan. It holds the queue RLock (via ForEachUnfinishedArticle)
+// for the duration and must not block on channels or take any write locks.
+// All side effects (status transitions, result emission, idle disconnect)
+// are deferred to the caller's applyDispatchPlan call.
+func (d *Downloader) buildDispatchPlan(ctx context.Context, now time.Time, serverCfgs []config.ServerConfig) dispatchPlan {
+	plan := dispatchPlan{
+		activeJobs:   make(map[string]struct{}),
+		hopelessJobs: make(map[string]struct{}),
 	}
 
 	d.queue.ForEachUnfinishedArticle(func(a queue.UnfinishedArticle) bool {
@@ -71,27 +44,34 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 
 		// Early Health Gate: Check if the job is beyond repair.
 		if a.FailedBytes > a.Par2Bytes {
-			hopelessJobs[a.JobID] = struct{}{}
-			return true // Move to next job
+			plan.hopelessJobs[a.JobID] = struct{}{}
+			return true
 		}
 
 		handled, exReq := d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, a.Subject, now, serverCfgs)
 		if handled {
-			dispatched++
-			activeJobs[a.JobID] = struct{}{}
+			plan.dispatched++
+			plan.activeJobs[a.JobID] = struct{}{}
 		}
 		if exReq != nil {
-			exhausted = append(exhausted, exReq)
+			plan.exhausted = append(plan.exhausted, exReq)
 		}
 		// Always continue — per-article send is non-blocking and
 		// we want to fan out as much as will fit this pass.
 		return ctx.Err() == nil
 	})
 
-	// Queue RLock and tryMu are both released here. Safe to block on
-	// completions; the pipeline consumer can now take the queue write
-	// lock.
-	for _, req := range exhausted {
+	return plan
+}
+
+// applyDispatchPlan executes the side effects deferred from buildDispatchPlan:
+// drains exhausted articles (must happen after queue RLock is released to
+// avoid deadlock on the completions channel), transitions job statuses,
+// handles hopeless jobs, and triggers idle disconnect.
+func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan) {
+	// Queue RLock and tryMu are both released by now. Safe to block on
+	// completions; the pipeline consumer can take the queue write lock.
+	for _, req := range plan.exhausted {
 		// Mark Emitted before emitting so a concurrent dispatch pass
 		// triggered by another worker's signalDispatch doesn't re-see
 		// the article as dispatchable (all try-list entries would still
@@ -105,12 +85,12 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 	}
 
 	// Transition Queued → Downloading for jobs that had articles dispatched.
-	for jobID := range activeJobs {
+	for jobID := range plan.activeJobs {
 		_ = d.queue.SetStatusIf(jobID, constants.StatusDownloading, constants.StatusQueued)
 	}
 
-	// Handle hopeless jobs after the queue read-lock is released.
-	for jobID := range hopelessJobs {
+	// Handle hopeless jobs.
+	for jobID := range plan.hopelessJobs {
 		d.log.Warn("job beyond repair (failed bytes > par2 bytes), marking FAILED", "job", jobID)
 		if d.onJobHopeless != nil {
 			d.onJobHopeless(jobID)
@@ -124,9 +104,43 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 	// scenario where in-flight articles for a hopeless/completed job
 	// finish after DisconnectAll was already called (those workers
 	// missed the earlier signal because they were busy).
-	if dispatched == 0 && !d.queue.HasDownloadableJobs() && d.hasActiveConnections() {
+	if plan.dispatched == 0 && !d.queue.HasDownloadableJobs() && d.hasActiveConnections() {
 		d.DisconnectAll()
 	}
+}
+
+// dispatchPass walks the queue once and tries to feed every not-yet-done
+// article into an eligible server's work channel.
+//
+// Eligibility rules for a (article, server) pair:
+//  1. Server is Enable && Active(now) (not under penalty / deactivated).
+//  2. The article has not already been definitively rejected by this
+//     server (try-list miss).
+//
+// Sending is non-blocking: if the server's work channel is full, the
+// dispatcher skips to the next server for that article. If no server
+// can accept the article this pass, the article is simply left alone;
+// a future signalDispatch (worker completion) or queue.Notify (queue
+// mutation) will trigger another pass.
+func (d *Downloader) dispatchPass(ctx context.Context) {
+	if d.paused.Load() || d.queue.IsPaused() {
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		return
+	}
+	now := time.Now()
+
+	// Snapshot server configs once per pass. srv.Cfg() returns a
+	// by-value struct copy; calling it per-article per-server was
+	// 0.69s in the pprof. Cache here before acquiring queue RLock.
+	serverCfgs := make([]config.ServerConfig, len(d.servers))
+	for i, srv := range d.servers {
+		serverCfgs[i] = srv.Cfg()
+	}
+
+	plan := d.buildDispatchPlan(ctx, now, serverCfgs)
+	d.applyDispatchPlan(ctx, plan)
 }
 
 // tryDispatch hands the article to the first eligible server with
