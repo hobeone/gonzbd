@@ -151,6 +151,78 @@ func TestConfig_Set(t *testing.T) {
 			true,
 			nil,
 		},
+		// Every keyword sent by DownloadsSection.svelte must be valid.
+		// These cases prevent UI→backend name mismatches from going undetected.
+		{
+			"set ByteSize (min_free_space)",
+			"downloads", "min_free_space", "5G",
+			false,
+			func(t *testing.T, c *Config) {
+				if c.Downloads.MinFreeSpace != 5*1024*1024*1024 {
+					t.Errorf("MinFreeSpace = %v, want 5G", c.Downloads.MinFreeSpace)
+				}
+			},
+		},
+		{
+			"set ByteSize (write_cache_size)",
+			"downloads", "write_cache_size", "500M",
+			false,
+			func(t *testing.T, c *Config) {
+				if c.Downloads.WriteCacheSize != 500*1024*1024 {
+					t.Errorf("WriteCacheSize = %v, want 500M", c.Downloads.WriteCacheSize)
+				}
+			},
+		},
+		{
+			"set int (max_art_tries)",
+			"downloads", "max_art_tries", "5",
+			false,
+			func(t *testing.T, c *Config) {
+				if c.Downloads.MaxArtTries != 5 {
+					t.Errorf("MaxArtTries = %d, want 5", c.Downloads.MaxArtTries)
+				}
+			},
+		},
+		{
+			"set bool (pre_check)",
+			"downloads", "pre_check", "true",
+			false,
+			func(t *testing.T, c *Config) {
+				if !c.Downloads.PreCheck {
+					t.Error("PreCheck is false, want true")
+				}
+			},
+		},
+		{
+			"set string (replace_illegal_with)",
+			"downloads", "replace_illegal_with", ".",
+			false,
+			func(t *testing.T, c *Config) {
+				if c.Downloads.ReplaceIllegalWith != "." {
+					t.Errorf("ReplaceIllegalWith = %q, want .", c.Downloads.ReplaceIllegalWith)
+				}
+			},
+		},
+		{
+			"set string (replace_spaces_with)",
+			"downloads", "replace_spaces_with", "_",
+			false,
+			func(t *testing.T, c *Config) {
+				if c.Downloads.ReplaceSpacesWith != "_" {
+					t.Errorf("ReplaceSpacesWith = %q, want _", c.Downloads.ReplaceSpacesWith)
+				}
+			},
+		},
+		{
+			"set bool (strip_diacritics)",
+			"downloads", "strip_diacritics", "true",
+			false,
+			func(t *testing.T, c *Config) {
+				if !c.Downloads.StripDiacritics {
+					t.Error("StripDiacritics is false, want true")
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
