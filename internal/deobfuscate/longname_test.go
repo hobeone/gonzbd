@@ -1,6 +1,7 @@
 package deobfuscate_test
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ func TestFixExtension_LongFilename(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(log, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -59,7 +60,7 @@ func TestFixExtension_LongFilename(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, err := deobfuscate.FixExtension(log, path)
+		_, err := deobfuscate.FixExtension(context.Background(), log, path)
 		// Appending ".jpg" to a 255-byte filename creates a 259-byte target.
 		// The OS should reject this rename with ENAMETOOLONG.
 		if err == nil {
@@ -78,7 +79,7 @@ func TestFixExtension_LongFilename(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(log, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}

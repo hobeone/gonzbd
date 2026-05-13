@@ -13,6 +13,7 @@
 package deobfuscate
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -244,7 +245,7 @@ type Rename struct {
 //
 // Deobfuscation is skipped entirely when the download contains DVD/Bluray
 // disc structure directories (VIDEO_TS, AUDIO_TS, BDMV).
-func Deobfuscate(log *slog.Logger, dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename, error) {
+func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -257,7 +258,7 @@ func Deobfuscate(log *slog.Logger, dir, usefulName string, opts fsutil.SanitizeO
 	}
 
 	// 1. Attempt PAR2-based deobfuscation first.
-	parRenames, err := Par2Rename(log, dir, opts)
+	parRenames, err := Par2Rename(ctx, log, dir, opts)
 	if err != nil {
 		log.Warn("deobfuscate: par2 deobfuscation encountered an error", "dir", dir, "err", err)
 	}
@@ -293,7 +294,7 @@ func Deobfuscate(log *slog.Logger, dir, usefulName string, opts fsutil.SanitizeO
 	var allRenames []Rename
 	for i, p := range paths {
 		if !HasPopularExtension(p) {
-			r, fixErr := FixExtension(log, p)
+			r, fixErr := FixExtension(ctx, log, p)
 			if fixErr != nil {
 				log.Warn("deobfuscate: extension fix error", "path", p, "err", fixErr)
 				continue

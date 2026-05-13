@@ -1,6 +1,7 @@
 package deobfuscate
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/binary"
 	"log/slog"
@@ -63,7 +64,7 @@ func TestPar2Rename(t *testing.T) {
 	}
 
 	// 3. Run Par2Rename.
-	renames, err := Par2Rename(slog.Default(), jobDir, fsutil.SanitizeOptions{})
+	renames, err := Par2Rename(context.Background(), slog.Default(), jobDir, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("Par2Rename: %v", err)
 	}
