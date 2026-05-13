@@ -1,6 +1,7 @@
 package deobfuscate_test
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -80,7 +81,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(log, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -105,7 +106,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(log, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -126,7 +127,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(log, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -144,7 +145,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(log, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -161,7 +162,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(log, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -191,7 +192,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(log, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -220,7 +221,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(log, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -244,7 +245,7 @@ func TestFixExtension(t *testing.T) {
 		if err := os.WriteFile(path, content, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		rename, err := deobfuscate.FixExtension(log, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -264,7 +265,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(log, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -286,7 +287,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(log, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -304,7 +305,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(nil, path)
+		rename, err := deobfuscate.FixExtension(context.Background(), nil, path)
 		if err != nil {
 			t.Fatalf("FixExtension error with nil logger: %v", err)
 		}
@@ -404,7 +405,7 @@ func TestDeobfuscate_DVDBluraySkip(t *testing.T) {
 		os.MkdirAll(filepath.Join(dir, "VIDEO_TS"), 0o755)
 		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.vob", 9001)
 
-		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "Movie", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(context.Background(), slog.Default(), dir, "Movie", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -419,7 +420,7 @@ func TestDeobfuscate_DVDBluraySkip(t *testing.T) {
 		os.MkdirAll(filepath.Join(dir, "BDMV"), 0o755)
 		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.m2ts", 9001)
 
-		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "Movie", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(context.Background(), slog.Default(), dir, "Movie", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -434,7 +435,7 @@ func TestDeobfuscate_DVDBluraySkip(t *testing.T) {
 		os.MkdirAll(filepath.Join(dir, "bdmv"), 0o755)
 		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.m2ts", 9001)
 
-		renames, err := deobfuscate.Deobfuscate(slog.Default(), dir, "Movie", fsutil.SanitizeOptions{})
+		renames, err := deobfuscate.Deobfuscate(context.Background(), slog.Default(), dir, "Movie", fsutil.SanitizeOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
