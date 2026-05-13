@@ -3,33 +3,49 @@ package nntp
 import (
 	"bufio"
 	"log/slog"
+	"strconv"
 	"strings"
 )
 
 // Capabilities records which optional NNTP commands the server
-// supports. The struct is intentionally tiny: we only care about
-// BODY/STAT fallbacks for now, but other fields can be added as the
-// downloader gains new selection strategies.
+// supports. Populated by probeCapabilities from the server's
+// CAPABILITIES response (RFC 3977 §5.2).
 //
 // A server that returns 5xx to CAPABILITIES produces a Capabilities
 // with HasBody=true and HasStat=true (the conservative default);
-// those commands are mandatory in RFC 3977 so assuming them present
-// is safe.
+// those commands are mandatory in RFC 3977 reader mode, so assuming
+// them present is safe when the server refuses to answer.
 type Capabilities struct {
-	// HasBody reports whether BODY is in the capability list. Always
-	// true for RFC-compliant servers; included so servers that lie
-	// via "READER" + no BODY are visible to the caller.
+	// HasBody reports whether the server supports the BODY command.
+	// True when the CAPABILITIES response contains "READER" (which
+	// implies BODY per RFC 3977 §5.3.2) or "BODY" explicitly.
 	HasBody bool
 
-	// HasStat reports whether STAT is advertised. STAT is cheaper
-	// than BODY for existence probes and enables the duplicate-check
-	// flow.
+	// HasStat reports whether the server supports the STAT command.
+	// True when "READER" or "STAT" appears in CAPABILITIES.
 	HasStat bool
+
+	// HasOver reports whether the server supports OVER/XOVER.
+	// Useful for future header-based filtering.
+	HasOver bool
+
+	// HasHDR reports whether the server supports HDR/XHDR.
+	HasHDR bool
+
+	// HasPost reports whether the server supports POST.
+	HasPost bool
+
+	// HasIHave reports whether the server supports IHAVE.
+	HasIHave bool
 
 	// HasCompress reports whether XFEATURE COMPRESS GZIP is offered.
 	// Not currently used; included because downloader.dispatch may
 	// want it later for bandwidth savings on overview fetches.
 	HasCompress bool
+
+	// Version is the capability version number from the VERSION line.
+	// RFC 3977 mandates VERSION 2.
+	Version int
 
 	// Raw is the verbatim list of capability lines, preserved so
 	// debug logs can show exactly what the server advertised.
@@ -74,14 +90,26 @@ func probeCapabilities(log *slog.Logger, bw *bufio.Writer, br *bufio.Reader) *Ca
 }
 
 // defaultCapabilities returns the conservative assumption used when
-// probing fails: the connection supports the core RFC 3977 verbs.
+// probing fails: the connection supports the core RFC 3977 reader
+// verbs (BODY, STAT). This is the safe default because BODY and STAT
+// are mandatory when the server is in reader mode, and gonzbd only
+// connects to reader-mode servers.
 func defaultCapabilities() *Capabilities {
 	return &Capabilities{HasBody: true, HasStat: true}
 }
 
 // parseCapabilities interprets a CAPABILITIES body. Each line is a
-// verb possibly followed by arguments; we care about the verb only.
-// Unknown verbs are preserved in Raw for diagnostic logging.
+// verb possibly followed by arguments; we parse known verbs and
+// preserve all lines in Raw for diagnostic logging.
+//
+// READER implies BODY + STAT + ARTICLE + HEAD per RFC 3977 §5.3.2.
+// Individual verb lines (BODY, STAT, OVER, etc.) are also parsed so
+// servers that enumerate commands explicitly are handled correctly.
+//
+// Unlike defaultCapabilities(), this function does NOT force-default
+// any capabilities. If a server responds to CAPABILITIES but does not
+// advertise BODY or STAT (and does not advertise READER), those
+// fields remain false — the server genuinely doesn't support them.
 func parseCapabilities(body string) *Capabilities {
 	caps := &Capabilities{}
 	for line := range strings.SplitSeq(body, "\n") {
@@ -91,8 +119,15 @@ func parseCapabilities(body string) *Capabilities {
 			continue
 		}
 		caps.Raw = append(caps.Raw, line)
-		verb := strings.ToUpper(strings.SplitN(line, " ", 2)[0])
+		parts := strings.SplitN(line, " ", 2)
+		verb := strings.ToUpper(parts[0])
 		switch verb {
+		case "VERSION":
+			if len(parts) > 1 {
+				if v, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil {
+					caps.Version = v
+				}
+			}
 		case "READER":
 			// READER implies BODY + STAT + ARTICLE + HEAD per RFC
 			// 3977 §5.3.2. Many servers advertise this in lieu of
@@ -103,19 +138,17 @@ func parseCapabilities(body string) *Capabilities {
 			caps.HasBody = true
 		case "STAT":
 			caps.HasStat = true
+		case "OVER":
+			caps.HasOver = true
+		case "HDR":
+			caps.HasHDR = true
+		case "POST":
+			caps.HasPost = true
+		case "IHAVE":
+			caps.HasIHave = true
 		case "XFEATURE-COMPRESS":
 			caps.HasCompress = true
 		}
-	}
-	// If neither BODY nor STAT was enumerated but READER was not
-	// present either, still fall back to the defaults. RFC 3977
-	// guarantees these verbs when the server is in READER mode,
-	// and gonzbd has no use for a server that lacks them.
-	if !caps.HasBody {
-		caps.HasBody = true
-	}
-	if !caps.HasStat {
-		caps.HasStat = true
 	}
 	return caps
 }
