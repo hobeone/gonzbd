@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // RepairPhase represents the current phase of a par2 repair operation.
@@ -63,6 +64,11 @@ type RepairOutput struct {
 	// RepairPercent is the last reported repair progress percentage.
 	RepairPercent float64
 
+	// RepairStarted is the time the repair phase began. Set when
+	// "Repair is possible" is parsed (phase transition to PhaseRepairing).
+	// Used by ETA() to estimate remaining repair time.
+	RepairStarted time.Time
+
 	// Status is the parsed final status from the output.
 	Status Status
 
@@ -73,6 +79,20 @@ type RepairOutput struct {
 	// filter that excludes "Scanning:", "Loading:", "Solving:",
 	// "Constructing:", "Repairing:").
 	Lines []string
+}
+
+// ETA returns the estimated time remaining for the repair based on the
+// current RepairPercent and elapsed time since RepairStarted. Returns
+// zero if the repair hasn't started or percent is 0. Matches SABnzbd's
+// ETA calculation in par2cmdline_verify.
+func (ro *RepairOutput) ETA() time.Duration {
+	if ro.RepairStarted.IsZero() || ro.RepairPercent <= 0 || ro.RepairPercent >= 100 {
+		return 0
+	}
+	elapsed := time.Since(ro.RepairStarted)
+	// ETA = elapsed * (remaining% / done%)
+	remaining := (100 - ro.RepairPercent) / ro.RepairPercent
+	return time.Duration(float64(elapsed) * remaining)
 }
 
 // Compiled regexes for par2 output line parsing.
@@ -189,6 +209,7 @@ func ParseRepairOutput(output string) *RepairOutput {
 			ro.Status = StatusRepairPossible
 			ro.Phase = PhaseRepairing
 			ro.RepairPercent = 0
+			ro.RepairStarted = time.Now()
 			continue
 		}
 

@@ -483,6 +483,12 @@ type UnpackStage struct {
 	// PasswordFile is the path to a text file with one password per line.
 	// These are appended after per-job passwords during extraction.
 	PasswordFile string
+	// EnableFileJoin enables split file joining (.001/.002).
+	// When false, SplitArchive types are skipped. Default true.
+	EnableFileJoin bool
+	// EnableRecursive enables recursive unpacking (re-scan after each
+	// pass, up to maxUnpackDepth). When false, only one pass runs.
+	EnableRecursive bool
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
@@ -555,7 +561,11 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	var allSuccessful []unpack.Archive
 	var firstErr error
 
-	for depth := range maxUnpackDepth {
+	maxDepth := maxUnpackDepth
+	if !u.EnableRecursive {
+		maxDepth = 1
+	}
+	for depth := range maxDepth {
 		logf(log, job, slog.LevelInfo, "Scanning for archives in %s (pass %d/%d)", job.DownloadDir, depth+1, maxUnpackDepth)
 
 		archives, err := unpack.Scan(job.DownloadDir)
@@ -653,6 +663,10 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 				}
 				res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
 			case unpack.SplitArchive:
+				if !u.EnableFileJoin {
+					logf(log, job, slog.LevelInfo, "Skipping file join (disabled): %s", filepath.Base(a.MainFile))
+					continue
+				}
 				logf(log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
 				res, err = unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
 			default:

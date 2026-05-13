@@ -73,8 +73,13 @@ func Default() (*Config, error) {
 		PostProc: PostProcConfig{
 			EnableUnrar:          true,
 			Enable7zip:           true,
+			EnableFileJoin:       true,
+			EnableTSJoin:         true,
+			EnableRecursive:      true,
 			EnableParCleanup:     true,
 			EnableRarCleanup:     true,
+			EnableAllPar:         false,
+			ProcessUnpackedPar2:  true,
 			Par2Command:          "", // auto-detect
 			UnrarCommand:         "", // auto-detect
 			SevenzCommand:        "", // auto-detect

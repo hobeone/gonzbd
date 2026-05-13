@@ -264,6 +264,8 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		IgnoreSamples:        cfg.PostProc.IgnoreSamples,
 		EnableUnrar:          cfg.PostProc.EnableUnrar,
 		Enable7zip:           cfg.PostProc.Enable7zip,
+		EnableFileJoin:       cfg.PostProc.EnableFileJoin,
+		EnableRecursive:      cfg.PostProc.EnableRecursive,
 		EnableParCleanup:     cfg.PostProc.EnableParCleanup,
 		EnableRarCleanup:     cfg.PostProc.EnableRarCleanup,
 		Par2Command:          cfg.PostProc.Par2Command,
