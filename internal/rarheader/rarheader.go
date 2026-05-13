@@ -93,7 +93,10 @@ func Inspect(path string) (Info, error) {
 	info.Version = ver
 
 	// Use rardecode.List for header-only inspection (no decompression).
-	files, listErr := rardecode.List(path)
+	// The library can panic on malformed/truncated archives (e.g. slice
+	// bounds out of range in archive50.readBlockHeader), so we wrap the
+	// call in a recover to convert panics into errors.
+	files, listErr := safeList(path)
 	if listErr != nil {
 		// rardecode returns ErrNoSig for non-RAR files.
 		if errors.Is(listErr, rardecode.ErrNoSig) {
@@ -163,6 +166,20 @@ func sanitizeName(name string) string {
 		return "unknown"
 	}
 	return name
+}
+
+// safeList wraps rardecode.List with a deferred recover. The rardecode
+// library can panic on malformed or truncated archives (e.g. slice bounds
+// out of range in archive50.readBlockHeader). This function converts such
+// panics into a returned error so callers don't crash.
+func safeList(path string) (files []*rardecode.File, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			files = nil
+			err = fmt.Errorf("rarheader: rardecode panic on %s: %v", path, r)
+		}
+	}()
+	return rardecode.List(path)
 }
 
 // bytesEqual compares two byte slices for equality without importing bytes.
