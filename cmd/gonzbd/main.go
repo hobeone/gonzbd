@@ -258,7 +258,6 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		PropagationDelay: cfg.Downloads.PropagationDelay,
 
 		// PostProc pipeline.
-		Sorters:              cfg.Sorters,
 		ScriptDir:            cfg.General.ScriptDir,
 		DeobfuscateFilenames: cfg.PostProc.DeobfuscateFilenames,
 		IgnoreSamples:        cfg.PostProc.IgnoreSamples,

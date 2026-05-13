@@ -118,18 +118,6 @@ categories:
     priority: 0
     dir: TV
 
-sorters:
-  - name: tv-sorter
-    order: 0
-    min_size: 0
-    multipart_label: ""
-    sort_string: "%t/Season %s/%t - s%0sxe%0e - %en"
-    sort_cats:
-      - tv
-    sort_type:
-      - 1
-    is_active: true
-
 schedules:
   - name: nightly-resume
     enabled: true

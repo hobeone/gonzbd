@@ -30,12 +30,11 @@ The project follows a standard Go project layout:
     - `notifier/`: Dispatcher for user notifications (email, Apprise, scripts).
     - `nzb/`: NZB (XML) parsing and model definitions with input size limits.
     - `par2/`: PAR2 parity verification and repair tool wrapper with structured status parsing.
-    - `postproc/`: Post-processing pipeline: repair, unpack, deobfuscate, sort, script, finalize.
+    - `postproc/`: Post-processing pipeline: repair, unpack, deobfuscate, script, finalize.
     - `queue/`: The active download queue and job state management with lazy article index and transient field recomputation.
     - `rarheader/`: RAR archive header parsing with filename sanitization.
     - `rss/`: RSS/Atom feed processing, filtering, and dedup with bounded fetch sizes.
     - `scheduler/`: Cron-like task scheduling.
-    - `sorting/`: Rule-based file sorting (TV, movie, date patterns) with template-driven rename.
     - `telemetry/`: Runtime metrics collection and export.
     - `types/`: Shared type definitions used across packages.
     - `unpack/`: Archive extraction wrappers for RAR, 7z, and split file joining.
@@ -61,7 +60,7 @@ Data flows through the system in a multi-stage pipeline designed for maximum con
 5.  **Pipeline Bridge**: As articles are downloaded, they are sent through a `pipeline` goroutine (in `internal/app/pipeline.go`).
 6.  **Decoding**: The `pipeline` decodes raw NNTP bodies (usually yEnc) using the `decoder`.
 7.  **Assembly**: Decoded parts are handed to the `assembler`, which writes them to their exact byte offset in the target file using `pwrite`. This allows for out-of-order assembly as segments arrive.
-8.  **Post-Processing**: Once all segments of a job are assembled, the job is handed to the `postproc` package, which runs a configurable chain of stages: repair (PAR2), unpack (RAR/7z/join), deobfuscate, sort, user script, and finalize (move to complete directory).
+8.  **Post-Processing**: Once all segments of a job are assembled, the job is handed to the `postproc` package, which runs a configurable chain of stages: repair (PAR2), unpack (RAR/7z/join), deobfuscate, user script, and finalize (move to complete directory). Sorting/renaming is intentionally not implemented — it is handled by external tools (Sonarr, Radarr, etc.).
 
 ### Concurrency Model
 
@@ -108,9 +107,11 @@ Post-processing runs a chain of `Stage` implementations in order for each comple
 | 1 | `repair` | `par2` | PAR2 verification and repair |
 | 2 | `unpack` | `unpack` | RAR, 7z extraction and split file joining |
 | 3 | `deobfuscate` | `deobfuscate` | Rename obfuscated files using NZB hints and PAR2 filenames |
-| 4 | `sort` | `sorting` | Move files to final locations using category/content-type templates |
-| 5 | `script` | `postproc` | Run user-supplied post-processing script (see `docs/post-processing-scripts.md`) |
-| 6 | `finalize` | `postproc` | Move job from incomplete to complete directory |
+| 4 | `script` | `postproc` | Run user-supplied post-processing script (see `docs/post-processing-scripts.md`) |
+| 5 | `finalize` | `postproc` | Move job from incomplete to complete directory |
+
+> **Note:** Sorting/renaming (TV, movie, date templates) is intentionally not implemented.
+> This functionality is handled by external tools such as Sonarr, Radarr, and similar media managers.
 
 A stage returning an error aborts the pipeline; subsequent stages are recorded as "Skipped" in the `StageLog`. The processor supports pause/resume and ensures idempotent start/stop via `sync.Once` guards.
 

@@ -10,7 +10,6 @@ vi.mock('$lib/api', () => ({
 import ServerEditDialog from './ServerEditDialog.svelte';
 import CategoryEditDialog from './CategoryEditDialog.svelte';
 import ScheduleEditDialog from './ScheduleEditDialog.svelte';
-import SorterEditDialog from './SorterEditDialog.svelte';
 import RSSEditDialog from './RSSEditDialog.svelte';
 
 describe('ServerEditDialog', () => {
@@ -214,31 +213,6 @@ describe('ScheduleEditDialog', () => {
 	});
 });
 
-describe('SorterEditDialog', () => {
-	beforeEach(() => vi.clearAllMocks());
-
-	it('renders Add Sorter title when no sorter prop', () => {
-		render(SorterEditDialog, {
-			props: { open: true, onsave: vi.fn() }
-		});
-		expect(screen.getByText('Add Sorter')).toBeInTheDocument();
-	});
-
-	it('renders Cancel and Save buttons', () => {
-		render(SorterEditDialog, {
-			props: { open: true, onsave: vi.fn() }
-		});
-		expect(screen.getByText('Cancel')).toBeInTheDocument();
-		expect(screen.getByText('Save')).toBeInTheDocument();
-	});
-
-	it('does not render when closed', () => {
-		render(SorterEditDialog, {
-			props: { open: false, onsave: vi.fn() }
-		});
-		expect(screen.queryByText('Add Sorter')).not.toBeInTheDocument();
-	});
-});
 
 describe('RSSEditDialog', () => {
 	beforeEach(() => vi.clearAllMocks());
