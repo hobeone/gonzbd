@@ -378,6 +378,67 @@ func TestMarkArticleFailed(t *testing.T) {
 	}
 }
 
+// TestMarkArticleFailed_ParityWithBatched verifies that the singular
+// MarkArticleFailed produces identical queue state to MarkArticlesFailed with
+// a one-element slice. This guards against the two implementations drifting
+// apart — historically they have diverged (see CLAUDE.md lessons learned).
+func TestMarkArticleFailed_ParityWithBatched(t *testing.T) {
+	// Build two identical queues and apply singular vs batched form to each.
+	buildQ := func(t *testing.T) (*Queue, string, string) {
+		t.Helper()
+		q := New()
+		j := makeJob(t, "j", constants.NormalPriority)
+		_ = q.Add(j)
+		msgID := j.Files[0].Articles[0].ID
+		return q, j.ID, msgID
+	}
+
+	q1, jid1, mid1 := buildQ(t)
+	q2, jid2, mid2 := buildQ(t)
+
+	// Apply singular form to q1.
+	first1, err1 := q1.MarkArticleFailed(jid1, mid1)
+
+	// Apply batched form to q2 (one element).
+	ft, err2 := q2.MarkArticlesFailed(jid2, []string{mid2})
+	first2 := len(ft) > 0
+
+	if err1 != err2 {
+		t.Errorf("error mismatch: singular=%v batched=%v", err1, err2)
+	}
+	if first1 != first2 {
+		t.Errorf("first-time flag mismatch: singular=%v batched=%v", first1, first2)
+	}
+
+	got1, _ := q1.Get(jid1)
+	got2, _ := q2.Get(jid2)
+
+	if got1.PendingArticles != got2.PendingArticles {
+		t.Errorf("PendingArticles: singular=%d batched=%d", got1.PendingArticles, got2.PendingArticles)
+	}
+	if got1.FailedBytes != got2.FailedBytes {
+		t.Errorf("FailedBytes: singular=%d batched=%d", got1.FailedBytes, got2.FailedBytes)
+	}
+	if got1.RemainingBytes != got2.RemainingBytes {
+		t.Errorf("RemainingBytes: singular=%d batched=%d", got1.RemainingBytes, got2.RemainingBytes)
+	}
+	if got1.ArticlesResolved != got2.ArticlesResolved {
+		t.Errorf("ArticlesResolved: singular=%d batched=%d", got1.ArticlesResolved, got2.ArticlesResolved)
+	}
+	if got1.ArticlesFailed != got2.ArticlesFailed {
+		t.Errorf("ArticlesFailed: singular=%d batched=%d", got1.ArticlesFailed, got2.ArticlesFailed)
+	}
+	art1 := got1.Files[0].Articles[0]
+	art2 := got2.Files[0].Articles[0]
+	if art1.Done != art2.Done || art1.Failed != art2.Failed {
+		t.Errorf("article state: singular Done=%v Failed=%v, batched Done=%v Failed=%v",
+			art1.Done, art1.Failed, art2.Done, art2.Failed)
+	}
+	if got1.Files[0].Pending != got2.Files[0].Pending {
+		t.Errorf("Files[0].Pending: singular=%d batched=%d", got1.Files[0].Pending, got2.Files[0].Pending)
+	}
+}
+
 func TestNotifyCoalesces(t *testing.T) {
 	q := New()
 	for range 5 {
