@@ -1,6 +1,7 @@
 package postproc
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -306,6 +308,37 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				for _, ef := range set.ExtraFiles {
 					job.ConsumedFiles[ef] = struct{}{}
 				}
+
+				// I1: Wire par2 renames to Job for downstream deobfuscation.
+				// Matches SABnzbd's nzo.renamed_file(renames) in par2cmdline_verify.
+				if res.Parsed != nil && len(res.Parsed.Renames) > 0 {
+					if job.Par2Renames == nil {
+						job.Par2Renames = make(map[string]string)
+					}
+					for canonical, onDisk := range res.Parsed.Renames {
+						job.Par2Renames[canonical] = onDisk
+						logf(log, job, slog.LevelInfo, "Par2 rename: %q → %q", onDisk, canonical)
+					}
+				}
+
+				// I2: Wire used_joinables and used_for_repair into
+				// ConsumedFiles to prevent premature cleanup deletion.
+				// Matches SABnzbd's used_joinables/used_for_repair tracking.
+				if res.Parsed != nil {
+					for _, jf := range res.Parsed.UsedJoinables {
+						absPath := filepath.Join(job.DownloadDir, jf)
+						job.ConsumedFiles[absPath] = struct{}{}
+					}
+					for _, rf := range res.Parsed.UsedForRepair {
+						absPath := filepath.Join(job.DownloadDir, rf)
+						job.ConsumedFiles[absPath] = struct{}{}
+					}
+					if n := len(res.Parsed.UsedJoinables) + len(res.Parsed.UsedForRepair); n > 0 {
+						logf(log, job, slog.LevelInfo,
+							"Par2 consumed %d joinable(s) + %d repair source(s) → protected from cleanup",
+							len(res.Parsed.UsedJoinables), len(res.Parsed.UsedForRepair))
+					}
+				}
 			}
 		}
 	} else {
@@ -521,6 +554,15 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		}
 
 		logf(log, job, slog.LevelInfo, "Found %d archive(s) (pass %d)", len(pending), depth+1)
+
+		// I5: Sort pending archives so file joins (SplitArchive) run first,
+		// then RAR extraction, then 7z. This matches SABnzbd's unpacker()
+		// order: file_join → rar_unpack → unseven. Without this, joined
+		// output can't be extracted in the same pass.
+		slices.SortStableFunc(pending, func(a, b unpack.Archive) int {
+			return cmp.Compare(archiveTypePriority(a.Type), archiveTypePriority(b.Type))
+		})
+
 		for _, a := range pending {
 			logf(log, job, slog.LevelInfo, "  %s: %s (%d parts)", archiveTypeName(a.Type), a.Name, len(a.Parts))
 		}
@@ -1295,6 +1337,22 @@ func archiveTypeName(t unpack.ArchiveType) string {
 		return "filejoin"
 	default:
 		return "unpack"
+	}
+}
+
+// archiveTypePriority returns a sort key that ensures archives are processed
+// in SABnzbd's order: file joins first (so joined output can be extracted
+// in the same pass), then RAR, then 7z.
+func archiveTypePriority(t unpack.ArchiveType) int {
+	switch t {
+	case unpack.SplitArchive:
+		return 0 // joins first
+	case unpack.RarArchive:
+		return 1 // then RAR
+	case unpack.SevenZipArchive:
+		return 2 // then 7z
+	default:
+		return 3
 	}
 }
 
