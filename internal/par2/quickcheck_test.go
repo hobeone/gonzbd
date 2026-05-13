@@ -110,10 +110,10 @@ func TestQuickCheck_Hash16kMatch(t *testing.T) {
 		Hash16k:  want,
 	}
 
-	// Test computeHash16k.
-	got, err := computeHash16k(filepath.Join(dir, "a1b2c3d4.dat"))
+	// Test ComputeHash16k.
+	got, err := ComputeHash16k(filepath.Join(dir, "a1b2c3d4.dat"))
 	if err != nil {
-		t.Fatalf("computeHash16k: %v", err)
+		t.Fatalf("ComputeHash16k: %v", err)
 	}
 	if got != want {
 		t.Fatalf("hash16k mismatch: got %x, want %x", got, want)
@@ -223,9 +223,9 @@ func TestComputeHash16k_SmallFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := computeHash16k(path)
+	got, err := ComputeHash16k(path)
 	if err != nil {
-		t.Fatalf("computeHash16k: %v", err)
+		t.Fatalf("ComputeHash16k: %v", err)
 	}
 
 	want := md5.Sum(content)
@@ -247,9 +247,9 @@ func TestComputeHash16k_LargeFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := computeHash16k(path)
+	got, err := ComputeHash16k(path)
 	if err != nil {
-		t.Fatalf("computeHash16k: %v", err)
+		t.Fatalf("ComputeHash16k: %v", err)
 	}
 
 	want := md5.Sum(content[:16*1024])
