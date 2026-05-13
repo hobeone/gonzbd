@@ -83,6 +83,12 @@ type Job struct {
 	// skips these to prevent deletion of files needed for recovery.
 	ConsumedFiles map[string]struct{}
 
+	// Par2Renames maps par2's canonical filename → actual on-disk filename.
+	// Populated from par2's "is a match for" output during repair. Used by
+	// downstream stages (deobfuscate, sort) to apply par2-discovered renames.
+	// Matches SABnzbd's nzo.renamed_file(renames) behavior.
+	Par2Renames map[string]string
+
 	// OnOutput is called by stages when a subprocess emits a line of output.
 	// The tool parameter identifies the source (e.g. "par2", "unrar", "7z",
 	// "script"). May be nil (output is still captured in OutputLines).
