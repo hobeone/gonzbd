@@ -7,12 +7,34 @@ type PostProcConfig struct {
 	EnableUnrar bool `yaml:"enable_unrar" json:"enable_unrar"`
 	// Enable7zip enables 7z extraction.
 	Enable7zip bool `yaml:"enable_7zip" json:"enable_7zip"`
+	// EnableFileJoin enables split file joining (.001/.002/...).
+	// Matches SABnzbd's cfg.enable_filejoin(). Default true.
+	EnableFileJoin bool `yaml:"enable_filejoin" json:"enable_filejoin"`
+	// EnableTSJoin enables TS file joining (.ts.001/.ts.002/...).
+	// Matches SABnzbd's cfg.enable_tsjoin(). Default true.
+	EnableTSJoin bool `yaml:"enable_tsjoin" json:"enable_tsjoin"`
+	// EnableRecursive enables recursive unpacking: newly extracted
+	// archives are unpacked up to maxUnpackDepth (3) levels deep.
+	// Matches SABnzbd's cfg.enable_recursive(). Default true.
+	EnableRecursive bool `yaml:"enable_recursive" json:"enable_recursive"`
 	// EnableParCleanup deletes par2 files after a successful repair.
 	EnableParCleanup bool `yaml:"enable_par_cleanup" json:"enable_par_cleanup"`
 	// EnableRarCleanup deletes source archive files (RAR, 7z, split)
 	// after a successful extraction. Mirrors Python SABnzbd's behavior
 	// where PP bit 2 (delete) removes originals.
 	EnableRarCleanup bool `yaml:"enable_rar_cleanup" json:"enable_rar_cleanup"`
+
+	// EnableAllPar when true downloads ALL par2 files before starting
+	// repair, rather than downloading par2 volumes on demand. This can
+	// speed up repair for damaged downloads at the cost of extra
+	// bandwidth. Matches SABnzbd's cfg.enable_all_par(). Default false.
+	EnableAllPar bool `yaml:"enable_all_par" json:"enable_all_par"`
+
+	// ProcessUnpackedPar2 when true scans extracted archives for par2
+	// files and uses them for 16K-MD5 filename recovery. This helps
+	// deobfuscate files from nested archives. Matches SABnzbd's
+	// cfg.process_unpacked_par2(). Default true.
+	ProcessUnpackedPar2 bool `yaml:"process_unpacked_par2" json:"process_unpacked_par2"`
 
 	// Par2Command is the path to the par2 binary. May be a bare
 	// executable name resolved via PATH.

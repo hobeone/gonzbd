@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strings"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
@@ -194,13 +195,31 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 		if errors.As(runErr, &exitErr) {
 			res.ExitCode = exitErr.ExitCode()
 			res.Reason = ClassifyUnrarOutput(res.Output)
-			res.Err = fmt.Errorf("unrar exited %d (%s): %w", res.ExitCode, res.Reason, runErr)
-			log.Error("unrar: extraction failed",
-				"archive", archive.MainFile,
-				"exitCode", res.ExitCode,
-				"reason", res.Reason.String(),
-				"output", res.Output,
-			)
+
+			// N4: When unrar prints "Cannot create" followed by
+			// "Attempting to correct the filename", it auto-fixes
+			// invalid filenames. In this case the extraction usually
+			// succeeds despite the non-zero exit code. Downgrade to
+			// a warning. Matches SABnzbd's handling in newsunpack.py.
+			if strings.Contains(res.Output, "Cannot create") &&
+				strings.Contains(res.Output, "Attempting to correct") &&
+				len(extracted) > 0 {
+				log.Warn("unrar: auto-corrected invalid filename(s)",
+					"archive", archive.MainFile,
+					"extractedCount", len(extracted),
+				)
+				// Clear the error — extraction succeeded with corrections.
+				res.Err = nil
+				res.ExitCode = 0
+			} else {
+				res.Err = fmt.Errorf("unrar exited %d (%s): %w", res.ExitCode, res.Reason, runErr)
+				log.Error("unrar: extraction failed",
+					"archive", archive.MainFile,
+					"exitCode", res.ExitCode,
+					"reason", res.Reason.String(),
+					"output", res.Output,
+				)
+			}
 		} else {
 			res.Err = fmt.Errorf("unrar: %w", runErr)
 			log.Error("unrar: failed to start process",

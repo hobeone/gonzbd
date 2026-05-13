@@ -70,6 +70,8 @@ type Config struct {
 	IgnoreSamples        bool
 	EnableUnrar          bool
 	Enable7zip           bool
+	EnableFileJoin       bool
+	EnableRecursive      bool
 	EnableParCleanup     bool
 	EnableRarCleanup     bool
 	Par2Command          string
@@ -307,6 +309,13 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		if err != nil {
 			return nil, fmt.Errorf("extra_unrar_params: %w", err)
 		}
+		// N5: Validate extra unrar params against SABnzbd's allowlist.
+		// Warn instead of hard-fail so existing configs aren't broken.
+		if err := cmdutil.ValidateUnrarParams(extraUnrarArgs); err != nil {
+			ppLog.Warn("extra_unrar_params contains non-standard flags",
+				"err", err,
+				"hint", "SABnzbd only allows: -mlp, -om*, -ri*")
+		}
 
 		// Detect par2 binary capabilities at startup (SABnzbd does the
 		// same via par2 -h output inspection). Non-fatal: caps is zero-
@@ -354,8 +363,8 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		repairStage.Log = ppLog
 		stageList = append(stageList, repairStage)
 
-		// Unpack stage: conditionally included based on enable flags.
-		if cfg.EnableUnrar || cfg.Enable7zip {
+		// Unpack stage: included when any extraction/join feature is enabled.
+		if cfg.EnableUnrar || cfg.Enable7zip || cfg.EnableFileJoin {
 			unpackStage := postproc.NewUnpackStageWith(unpack.Options{
 				UnrarCommand:     cfg.UnrarCommand,
 				SevenZipCommand:  cfg.SevenzCommand,
@@ -369,6 +378,8 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 			}, cfg.EnableRarCleanup)
 			unpackStage.Permissions = cfg.Permissions
 			unpackStage.PasswordFile = cfg.PasswordFile
+			unpackStage.EnableFileJoin = cfg.EnableFileJoin
+			unpackStage.EnableRecursive = cfg.EnableRecursive
 			unpackStage.Log = ppLog
 			stageList = append(stageList, unpackStage)
 		}

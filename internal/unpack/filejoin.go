@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 )
 
-const joinBufSize = 1024 * 1024 // 1 MiB write buffer
+const joinBufSize = 16 * 1024 * 1024 // 16 MiB write buffer (SABnzbd uses 24 MiB)
 
 // FileJoin concatenates split parts into a single output file.
 //
@@ -69,7 +69,8 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 		_ = os.Remove(outPath) //nolint:errcheck // best-effort cleanup
 	}
 
-	for _, part := range archive.Parts {
+	totalParts := len(archive.Parts)
+	for i, part := range archive.Parts {
 		// Honour context cancellation between parts.
 		if err := ctx.Err(); err != nil {
 			cleanup()
@@ -80,6 +81,16 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 			cleanup()
 			return Result{Err: err}, fmt.Errorf("filejoin: copy %s: %w", part, err)
 		}
+
+		// N2: Report progress after each part (matches SABnzbd's
+		// percentage reporting during file_join).
+		pct := float64(i+1) / float64(totalParts) * 100
+		log.Info("filejoin: progress",
+			"name", archive.Name,
+			"part", i+1,
+			"total", totalParts,
+			"pct", fmt.Sprintf("%.0f%%", pct),
+		)
 	}
 
 	if err := bw.Flush(); err != nil {
