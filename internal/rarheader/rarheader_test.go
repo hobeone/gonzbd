@@ -88,12 +88,12 @@ func TestDetectVersion_RAR3(t *testing.T) {
 	data := append([]byte{}, rar3Sig...)
 	data = append(data, 0x00) // extra byte
 	path := writeTemp(t, "v3.rar", data)
-	ver, err := detectVersion(path)
+	ver, err := readMagic(path)
 	if err != nil {
-		t.Fatalf("detectVersion error: %v", err)
+		t.Fatalf("readMagic error: %v", err)
 	}
 	if ver != 3 {
-		t.Errorf("detectVersion = %d, want 3", ver)
+		t.Errorf("readMagic = %d, want 3", ver)
 	}
 }
 
@@ -101,20 +101,20 @@ func TestDetectVersion_RAR5(t *testing.T) {
 	data := append([]byte{}, rar5Sig...)
 	data = append(data, 0x00) // extra byte
 	path := writeTemp(t, "v5.rar", data)
-	ver, err := detectVersion(path)
+	ver, err := readMagic(path)
 	if err != nil {
-		t.Fatalf("detectVersion error: %v", err)
+		t.Fatalf("readMagic error: %v", err)
 	}
 	if ver != 5 {
-		t.Errorf("detectVersion = %d, want 5", ver)
+		t.Errorf("readMagic = %d, want 5", ver)
 	}
 }
 
 func TestDetectVersion_NotRAR(t *testing.T) {
 	path := writeTemp(t, "text.txt", []byte("hello world"))
-	_, err := detectVersion(path)
+	_, err := readMagic(path)
 	if !errors.Is(err, ErrNotRAR) {
-		t.Errorf("detectVersion error = %v, want ErrNotRAR", err)
+		t.Errorf("readMagic error = %v, want ErrNotRAR", err)
 	}
 }
 
