@@ -58,8 +58,9 @@ func TestUnRAR_CannotCreateAutoFix(t *testing.T) {
 	// 3. Exits with code 1 (non-zero)
 	scriptPath := filepath.Join(dir, "mock-unrar")
 	script := `#!/bin/sh
-# Parse the output dir from args — it's the last argument (with trailing /)
-OUTDIR="${@: -1}"
+# Parse the output dir from args — it's the last argument (with trailing /).
+# Use POSIX eval form because dash doesn't support bash's ${@: -1}.
+eval "OUTDIR=\${$#}"
 echo "Extracting from archive.rar"
 echo "Cannot create file.txt"
 echo "Attempting to correct the filename"
