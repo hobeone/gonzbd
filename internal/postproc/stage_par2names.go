@@ -21,7 +21,7 @@ func (*RecoverPar2NamesStage) Name() string { return "recover_par2_names" }
 
 // Run scans job.DownloadDir for par2 files and renames any files whose
 // 16K-MD5 matches a par2-recorded filename.
-func (r *RecoverPar2NamesStage) Run(_ context.Context, job *Job) error {
+func (r *RecoverPar2NamesStage) Run(ctx context.Context, job *Job) error {
 	log := r.Log
 	if log == nil {
 		log = slog.Default()
@@ -30,7 +30,7 @@ func (r *RecoverPar2NamesStage) Run(_ context.Context, job *Job) error {
 
 	logf(log, job, slog.LevelInfo, "Running par2-based filename recovery in %s", job.DownloadDir)
 
-	renames, err := deobfuscate.Par2Rename(log, job.DownloadDir, job.Sanitize)
+	renames, err := deobfuscate.Par2Rename(ctx, log, job.DownloadDir, job.Sanitize)
 	if len(renames) == 0 {
 		logf(log, job, slog.LevelInfo, "No par2-based renames needed")
 	} else {

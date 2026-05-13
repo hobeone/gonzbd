@@ -1,6 +1,7 @@
 package deobfuscate
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,7 +14,7 @@ import (
 
 // Par2Rename scans dir for .par2 files, builds a mapping of 16KB MD5 hashes
 // to original filenames, and renames any obfuscated files that match.
-func Par2Rename(log *slog.Logger, dir string, opts fsutil.SanitizeOptions) ([]Rename, error) {
+func Par2Rename(ctx context.Context, log *slog.Logger, dir string, opts fsutil.SanitizeOptions) ([]Rename, error) {
 	if log == nil {
 		log = slog.Default()
 	}
