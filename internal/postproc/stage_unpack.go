@@ -218,40 +218,8 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			default:
 				continue
 			}
-			if err != nil {
-				job.UnpackError = true
-				logf(log, job, slog.LevelWarn, "Error: extraction failed for %q (%s): %v", a.Name, archiveTypeName(a.Type), err)
-				if firstErr == nil {
-					firstErr = fmt.Errorf("unpack %q: %w", a.Name, err)
-				}
-				// Capture command line and tool output even on error.
-				job.OutputLines = append(job.OutputLines,
-					fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
-				if res.CommandLine != "" {
-					job.OutputLines = append(job.OutputLines, "Command: "+res.CommandLine)
-				}
-				if res.Output != "" {
-					job.OutputLines = append(job.OutputLines,
-						toolOutputLines(res.Output)...)
-				}
-				continue
-			}
-			if res.Err != nil {
-				job.UnpackError = true
-				logf(log, job, slog.LevelWarn, "Error: extraction result error for %q (%s): %v", a.Name, archiveTypeName(a.Type), res.Err)
-				if firstErr == nil {
-					firstErr = fmt.Errorf("unpack %q: %w", a.Name, res.Err)
-				}
-				// Capture command line and tool output even on error.
-				job.OutputLines = append(job.OutputLines,
-					fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
-				if res.CommandLine != "" {
-					job.OutputLines = append(job.OutputLines, "Command: "+res.CommandLine)
-				}
-				if res.Output != "" {
-					job.OutputLines = append(job.OutputLines,
-						toolOutputLines(res.Output)...)
-				}
+			if failErr := cmp.Or(err, res.Err); failErr != nil {
+				recordUnpackFailure(log, job, a, res, failErr, &firstErr)
 				continue
 			}
 			logf(log, job, slog.LevelInfo, "Extracted %s successfully", a.Name)
@@ -353,6 +321,26 @@ func applyPermissions(dir, permStr string) (int, error) {
 		return count, fmt.Errorf("walk %s: %w", dir, walkErr)
 	}
 	return count, nil
+}
+
+// recordUnpackFailure handles extraction failures by setting job error
+// state, logging the failure, capturing the first error, and appending
+// command/output lines for diagnostics.
+func recordUnpackFailure(log *slog.Logger, job *Job, a unpack.Archive, res unpack.Result, failErr error, firstErr *error) {
+	job.UnpackError = true
+	logf(log, job, slog.LevelWarn, "Error: extraction failed for %q (%s): %v", a.Name, archiveTypeName(a.Type), failErr)
+	if *firstErr == nil {
+		*firstErr = fmt.Errorf("unpack %q: %w", a.Name, failErr)
+	}
+	job.OutputLines = append(job.OutputLines,
+		fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
+	if res.CommandLine != "" {
+		job.OutputLines = append(job.OutputLines, "Command: "+res.CommandLine)
+	}
+	if res.Output != "" {
+		job.OutputLines = append(job.OutputLines,
+			toolOutputLines(res.Output)...)
+	}
 }
 
 // RecoverPar2NamesStage renames obfuscated files using par2 metadata

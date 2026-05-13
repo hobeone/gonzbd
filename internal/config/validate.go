@@ -222,7 +222,7 @@ func validateExtraParams(field, s string) error {
 	if s == "" {
 		return nil
 	}
-	for _, tok := range strings.Fields(s) {
+	for tok := range strings.FieldsSeq(s) {
 		if !strings.HasPrefix(tok, "-") {
 			return fmt.Errorf("%s: token %q does not start with '-'", field, tok)
 		}
