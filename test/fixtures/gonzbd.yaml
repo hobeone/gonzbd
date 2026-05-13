@@ -52,7 +52,13 @@ postproc:
   par2_turbo: false
   ignore_unrar_dates: false
   overwrite_files: false
+  prefer_7zip: false
   flat_unpack: false
+  direct_unpack: false
+  deobfuscate_filenames: true
+  ignore_samples: false
+  cleanup_extensions: []
+  folder_rename: false
   nice: ""
   ionice: ""
   permissions: ""
