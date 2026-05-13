@@ -699,38 +699,32 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 			job.Warning = "Duplicate NZB (Forced)"
 		}
 	}
-	baseName := job.Name
-	for i := 1; ; i++ {
-		collision := false
-		if app.queue.ExistsByName(job.Name) {
-			collision = true
+	// Pick a name not already taken in the queue or on disk. queue.Add
+	// re-checks under its write lock (authoritative), so the small TOCTOU
+	// window here is limited to filesystem collisions which are benign.
+	downloadDir := app.cfg.DownloadDir
+	completeDir := app.cfg.CompleteDir
+	categories := app.cfg.Categories
+	job.Name = queue.UniqueName(job.Name, func(name string) bool {
+		if app.queue.ExistsByName(name) {
+			return true
 		}
-		if !collision {
-			if _, err := os.Stat(filepath.Join(app.cfg.DownloadDir, job.Name)); err == nil {
-				collision = true
+		if _, err := os.Stat(filepath.Join(downloadDir, name)); err == nil {
+			return true
+		}
+		if _, err := os.Stat(filepath.Join(completeDir, name)); err == nil {
+			return true
+		}
+		for _, cat := range categories {
+			if cat.Dir == "" {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(completeDir, cat.Dir, name)); err == nil {
+				return true
 			}
 		}
-		if !collision {
-			if _, err := os.Stat(filepath.Join(app.cfg.CompleteDir, job.Name)); err == nil {
-				collision = true
-			}
-			if !collision {
-				for _, cat := range app.cfg.Categories {
-					if cat.Dir == "" {
-						continue
-					}
-					if _, err := os.Stat(filepath.Join(app.cfg.CompleteDir, cat.Dir, job.Name)); err == nil {
-						collision = true
-						break
-					}
-				}
-			}
-		}
-		if !collision {
-			break
-		}
-		job.Name = fmt.Sprintf("%s.%d", baseName, i)
-	}
+		return false
+	})
 	if !isDuplicate && job.Filename != "" {
 		backupPath := filepath.Join(nzbDir, filepath.Base(job.Filename)+".gz")
 		if err := writeGzFile(backupPath, rawNZB); err != nil {

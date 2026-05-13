@@ -190,6 +190,25 @@ func (q *Queue) ExistsByMD5(md5 string) bool {
 	return false
 }
 
+// UniqueName returns the first name in the sequence base, base.1, base.2, …
+// for which exists(name) returns false. It is used by queue.Add (under the
+// write lock, with an in-queue existence check) and by app.AddJob (outside
+// the lock, with a broader filesystem + queue check) to share the same
+// renaming logic.
+//
+// Note: callers that use UniqueName before acquiring the queue lock accept a
+// small TOCTOU window — another concurrent Add may claim the chosen name
+// between the call and the lock acquisition. queue.Add re-runs the check
+// atomically under its own lock, so the queue is always consistent; the
+// race is limited to filesystem-path collisions which are benign in practice.
+func UniqueName(base string, exists func(string) bool) string {
+	name := base
+	for i := 1; exists(name); i++ {
+		name = fmt.Sprintf("%s.%d", base, i)
+	}
+	return name
+}
+
 // Add inserts job into the queue. The job is placed at the end of its
 // priority tier (see insertByPriority). Returns an error if the job's
 // ID collides with one already in the queue.
@@ -203,21 +222,15 @@ func (q *Queue) Add(job *Job) error {
 		return fmt.Errorf("queue: job %q already present", job.ID)
 	}
 
-	// Ensure Name is unique in the queue.
-	baseName := job.Name
-	for i := 1; ; i++ {
-		found := false
+	// Ensure Name is unique within the queue (authoritative check under lock).
+	job.Name = UniqueName(job.Name, func(name string) bool {
 		for _, existing := range q.jobs {
-			if existing.Name == job.Name {
-				found = true
-				break
+			if existing.Name == name {
+				return true
 			}
 		}
-		if !found {
-			break
-		}
-		job.Name = fmt.Sprintf("%s.%d", baseName, i)
-	}
+		return false
+	})
 
 	// Initialize pending counters and article index from the fresh
 	// job's article state (all articles start with Done=false,
