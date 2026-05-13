@@ -36,6 +36,10 @@ type SanitizeOptions struct {
 	ReplaceSpacesWith  string
 	StripDiacritics    bool
 	CleanupList        []string
+	// CleanupRegexps holds pre-compiled versions of CleanupList patterns.
+	// When non-nil, CleanupName uses these instead of re-compiling on every
+	// call. Use CompileCleanupList to populate this from CleanupList.
+	CleanupRegexps []*regexp.Regexp
 }
 
 // JoinSafe joins a base directory, folder name, and filename into a single
@@ -175,19 +179,32 @@ func stripDiacritics(s string) string {
 }
 
 // CleanupName removes common spammy prefixes and suffixes from a job name.
-// It iterates through the provided regex patterns and strips any matches.
-func CleanupName(name string, patterns []string) string {
-	for _, pat := range patterns {
-		re, err := regexp.Compile(pat)
-		if err != nil {
-			// Skip malformed patterns — we'll rely on the config loader to validate
-			// them in a future step, but for now we're defensive.
-			continue
-		}
-		// We use "" as replacement to strip the pattern.
+// It uses pre-compiled regexes from opts.CleanupRegexps when available,
+// falling back to compiling from opts.CleanupList on each call.
+func CleanupName(name string, opts SanitizeOptions) string {
+	regexps := opts.CleanupRegexps
+	if regexps == nil {
+		// Fallback: compile on each call (legacy callers, tests).
+		regexps = CompileCleanupList(opts.CleanupList)
+	}
+	for _, re := range regexps {
 		name = re.ReplaceAllString(name, "")
 	}
 	return strings.TrimSpace(name)
+}
+
+// CompileCleanupList pre-compiles a list of regex pattern strings.
+// Invalid patterns are silently skipped (config validation catches them).
+func CompileCleanupList(patterns []string) []*regexp.Regexp {
+	var compiled []*regexp.Regexp
+	for _, pat := range patterns {
+		re, err := regexp.Compile(pat)
+		if err != nil {
+			continue
+		}
+		compiled = append(compiled, re)
+	}
+	return compiled
 }
 
 func replaceWinDevices(name string) string {
