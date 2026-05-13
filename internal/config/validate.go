@@ -188,8 +188,45 @@ func (d *DownloadConfig) validate() error {
 }
 
 func (p *PostProcConfig) validate() error {
-	// All command fields are optional — empty means auto-detect via PATH.
-	// The par2 package defaults to "par2" when RunOptions.Command is empty.
+	var errs []error
+
+	// Permissions must be valid 3- or 4-digit octal if set.
+	if p.Permissions != "" {
+		if len(p.Permissions) < 3 || len(p.Permissions) > 4 {
+			errs = append(errs, fmt.Errorf("permissions: %q must be 3 or 4 octal digits (e.g. \"755\")", p.Permissions))
+		} else {
+			for _, c := range p.Permissions {
+				if c < '0' || c > '7' {
+					errs = append(errs, fmt.Errorf("permissions: %q contains non-octal character %q", p.Permissions, c))
+					break
+				}
+			}
+		}
+	}
+
+	// Extra params must be valid flags (each token starts with '-').
+	if err := validateExtraParams("extra_unrar_params", p.ExtraUnrarParams); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateExtraParams("extra_par2_params", p.ExtraPar2Params); err != nil {
+		errs = append(errs, err)
+	}
+
+	return errors.Join(errs...)
+}
+
+// validateExtraParams checks that every whitespace-separated token in s
+// starts with '-'. This prevents accidental injection of non-flag
+// arguments into external tool invocations.
+func validateExtraParams(field, s string) error {
+	if s == "" {
+		return nil
+	}
+	for _, tok := range strings.Fields(s) {
+		if !strings.HasPrefix(tok, "-") {
+			return fmt.Errorf("%s: token %q does not start with '-'", field, tok)
+		}
+	}
 	return nil
 }
 
