@@ -357,3 +357,123 @@ func TestSaveJob_NoLeftoverTempFiles(t *testing.T) {
 		}
 	}
 }
+
+// TestQueueSaveLoad_TransientCountersRecomputed verifies that transient fields
+// excluded from JSON (Pending, PendingArticles, BytesDownloaded, FileIdx,
+// Emitted) are correctly recomputed by recomputePending after a Save+Load
+// cycle. These fields have json:"-" tags and are the canonical in-memory
+// counters that drive dispatch and early-abort checks — if they drift from
+// ground truth after a restart the downloader hangs or over-dispatches.
+//
+// Test state intentionally covers all article lifecycle states:
+//   - Done + !Failed  → counted in BytesDownloaded, not Pending
+//   - Done + Failed   → not in BytesDownloaded, not Pending
+//   - Emitted         → not Pending (Emitted is cleared on load — treated as pending)
+//   - !Done + !Emitted → Pending
+func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Build a 2-file, 3-article-each job so we have room to put every state.
+	q := New()
+	q.stateDir = dir
+	j := makeMultiFileJob(t, "round-trip", 2, 3)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Apply mutations through the public API to establish a known state.
+	//
+	// File 0:
+	//   art[0]: Done (success) → BytesDownloaded += Bytes
+	//   art[1]: Done + Failed  → FailedBytes += Bytes, not BytesDownloaded
+	//   art[2]: Emitted        → not Pending (will be cleared on load → pending after reload)
+	// File 1:
+	//   art[0]: !Done, !Emitted → Pending
+	//   art[1]: !Done, !Emitted → Pending
+	//   art[2]: !Done, !Emitted → Pending
+
+	id := j.ID
+	arts0 := j.Files[0].Articles
+	_ = j.Files[1].Articles // File 1 articles are all left pristine (!Done, !Emitted)
+
+	if err := q.MarkArticlesDone(id, []string{arts0[0].ID}); err != nil {
+		t.Fatalf("MarkArticlesDone: %v", err)
+	}
+	if _, err := q.MarkArticlesFailed(id, []string{arts0[1].ID}); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+	if err := q.MarkArticleEmitted(id, arts0[2].ID); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+
+	// After load, Emitted flags are always cleared (json:"-") so arts0[2]
+	// becomes pending again — it was in-flight and needs to be re-dispatched.
+	// Compute expected post-load counters from first principles:
+	//   File 0: art[0] Done success, art[1] Done failed, art[2] becomes pending
+	//           → Pending=1, BytesDownloaded=art[0].Bytes
+	//   File 1: all 3 articles untouched → Pending=3, BytesDownloaded=0
+	//   PendingArticles = 1 + 3 = 4
+	artBytes := int64(j.Files[0].Articles[0].Bytes) // all articles same size
+	wantPendingFile0 := 1                            // arts0[2] emitted→cleared→pending
+	wantPendingFile1 := 3                            // all pristine
+	wantPendingArticles := 4                         // 1 + 3
+	wantBytesDownloaded0 := artBytes                 // only arts0[0] (successful Done)
+
+	// Persist.
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Reload.
+	q2, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := q2.SnapshotJob(id)
+	if got == nil {
+		t.Fatal("SnapshotJob returned nil after Load")
+	}
+
+	// Emitted must always be cleared on load — ClearAllEmitted is called by
+	// app.Start and recomputePending resets the in-memory bit.
+	for fi := range got.Files {
+		for ai := range got.Files[fi].Articles {
+			if got.Files[fi].Articles[ai].Emitted {
+				t.Errorf("Files[%d].Articles[%d].Emitted survived load (should be cleared)", fi, ai)
+			}
+		}
+	}
+
+	// Transient pending counters must equal the pre-save values.
+	// (The emitted article is now treated as pending since Emitted was cleared.)
+	if got.Files[0].Pending != wantPendingFile0 {
+		t.Errorf("Files[0].Pending: got %d, want %d", got.Files[0].Pending, wantPendingFile0)
+	}
+	if got.Files[1].Pending != wantPendingFile1 {
+		t.Errorf("Files[1].Pending: got %d, want %d", got.Files[1].Pending, wantPendingFile1)
+	}
+	if got.PendingArticles != wantPendingArticles {
+		t.Errorf("PendingArticles: got %d, want %d", got.PendingArticles, wantPendingArticles)
+	}
+
+	// BytesDownloaded: only successful Done articles (not failed ones).
+	if got.Files[0].BytesDownloaded != wantBytesDownloaded0 {
+		t.Errorf("Files[0].BytesDownloaded: got %d, want %d", got.Files[0].BytesDownloaded, wantBytesDownloaded0)
+	}
+	if got.Files[1].BytesDownloaded != 0 {
+		t.Errorf("Files[1].BytesDownloaded: got %d, want 0 (no articles done)", got.Files[1].BytesDownloaded)
+	}
+
+	// FileIdx back-pointers: every article must point to its correct file.
+	// (FileIdx is json:"-", rebuilt by recomputePending via buildArtIndex)
+	for fi := range got.Files {
+		for ai := range got.Files[fi].Articles {
+			art := &got.Files[fi].Articles[ai]
+			if art.FileIdx != fi {
+				t.Errorf("Files[%d].Articles[%d].FileIdx = %d, want %d",
+					fi, ai, art.FileIdx, fi)
+			}
+		}
+	}
+}
