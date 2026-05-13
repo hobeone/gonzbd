@@ -672,44 +672,7 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	parsed, err := nzb.Parse(bytes.NewReader(data))
-	if err != nil {
-		s.respondError(w, http.StatusBadRequest, "parse NZB: "+err.Error())
-		return
-	}
-
-	opts := queue.AddOptions{
-		Filename: fh.Filename,
-		Name:     r.FormValue("nzbname"),
-		Category: r.FormValue("cat"),
-		Script:   r.FormValue("script"),
-		Password: r.FormValue("password"),
-		PP:       ppParam(r),
-		Priority: priorityParam(r),
-		Logger:   s.log,
-	}
-
-	sOpts := fsutil.SanitizeOptions{}
-	if s.config != nil {
-		s.config.WithRead(func(cfg *config.Config) {
-			sOpts = cfg.Downloads.SanitizeOptions()
-			opts.Categories = cfg.Categories
-		})
-	}
-	job, err := queue.NewJob(parsed, opts, sOpts)
-	if err != nil {
-		s.respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
-		return
-	}
-	if err := s.app.AddJob(r.Context(), job, data, false); err != nil {
-		s.respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
-		return
-	}
-
-	respondJSON(w, http.StatusOK, map[string]any{
-		"status":  true,
-		"nzo_ids": []string{job.ID},
-	})
+	s.enqueueNZBData(w, r, data, fh.Filename)
 }
 
 // modeAddURL handles mode=addurl. Fetches the NZB pointed to by `name=`
@@ -820,6 +783,14 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.enqueueNZBData(w, r, data, filepath.Base(clean))
+}
+
+// enqueueNZBData parses raw NZB bytes, creates a job, and enqueues it.
+// filename is the display name attached to the job (e.g. the upload filename
+// or basename of a local path). It writes a JSON response directly and is
+// the shared implementation of modeAddFile and modeAddLocalFile.
+func (s *Server) enqueueNZBData(w http.ResponseWriter, r *http.Request, data []byte, filename string) {
 	parsed, err := nzb.Parse(bytes.NewReader(data))
 	if err != nil {
 		s.respondError(w, http.StatusBadRequest, "parse NZB: "+err.Error())
@@ -827,7 +798,7 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := queue.AddOptions{
-		Filename: filepath.Base(clean),
+		Filename: filename,
 		Name:     r.FormValue("nzbname"),
 		Category: r.FormValue("cat"),
 		Script:   r.FormValue("script"),
@@ -836,7 +807,6 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 		Priority: priorityParam(r),
 		Logger:   s.log,
 	}
-
 	sOpts := fsutil.SanitizeOptions{}
 	if s.config != nil {
 		s.config.WithRead(func(cfg *config.Config) {
@@ -853,7 +823,6 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}
-
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":  true,
 		"nzo_ids": []string{job.ID},
