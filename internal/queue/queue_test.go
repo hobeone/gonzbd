@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -825,4 +826,152 @@ func TestSetPP(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("error = %v, want 'not found'", err)
 	}
+}
+
+func TestSetCategory(t *testing.T) {
+	cats := []config.CategoryConfig{
+		{Name: "Default", PP: 3, Script: "default.sh", Priority: int(constants.NormalPriority)},
+		{Name: "movies", PP: 2, Script: "movies.sh", Priority: int(constants.HighPriority)},
+		{Name: "tv", PP: 1, Script: "tv.sh", Priority: int(constants.LowPriority)},
+	}
+
+	t.Run("inherits PP and script from category", func(t *testing.T) {
+		q := New()
+		j := makeJob(t, "j", constants.NormalPriority)
+		j.Category = "tv"
+		j.PP = 1
+		j.Script = "tv.sh"
+		if err := q.Add(j); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+
+		q.dirty.Store(false)
+		if err := q.SetCategory(j.ID, "movies", cats); err != nil {
+			t.Fatalf("SetCategory: %v", err)
+		}
+
+		got, err := q.Get(j.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Category != "movies" {
+			t.Errorf("Category = %q, want %q", got.Category, "movies")
+		}
+		if got.PP != 2 {
+			t.Errorf("PP = %d, want 2", got.PP)
+		}
+		if got.Script != "movies.sh" {
+			t.Errorf("Script = %q, want %q", got.Script, "movies.sh")
+		}
+		if got.Priority != constants.HighPriority {
+			t.Errorf("Priority = %d, want HighPriority (%d)", got.Priority, constants.HighPriority)
+		}
+		if !q.IsDirty() {
+			t.Error("SetCategory should set dirty flag")
+		}
+	})
+
+	t.Run("priority change re-slots job in queue", func(t *testing.T) {
+		q := New()
+		// Add three jobs: high, normal(target), low.
+		jH := makeJob(t, "high", constants.HighPriority)
+		jN := makeJob(t, "normal", constants.NormalPriority)
+		jL := makeJob(t, "low", constants.LowPriority)
+		jN.Category = "tv"
+		for _, jj := range []*Job{jH, jN, jL} {
+			if err := q.Add(jj); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+		}
+		// Initial order: high, normal, low.
+		got := ids(q.List())
+		want := []string{jH.ID, jN.ID, jL.ID}
+		if !equalSlice(got, want) {
+			t.Fatalf("initial order = %v, want %v", got, want)
+		}
+
+		// Switch jN from "tv"(Low) to "movies"(High) — should move it into the High tier.
+		if err := q.SetCategory(jN.ID, "movies", cats); err != nil {
+			t.Fatalf("SetCategory: %v", err)
+		}
+		got = ids(q.List())
+		// jH was already High; jN (now High) is appended to end of High tier; jL remains Low.
+		wantAfter := []string{jH.ID, jN.ID, jL.ID}
+		if !equalSlice(got, wantAfter) {
+			t.Errorf("order after SetCategory = %v, want %v", got, wantAfter)
+		}
+		// Verify priority was actually updated.
+		updated, _ := q.Get(jN.ID)
+		if updated.Priority != constants.HighPriority {
+			t.Errorf("Priority after SetCategory = %d, want HighPriority", updated.Priority)
+		}
+	})
+
+	t.Run("empty name falls back to Default", func(t *testing.T) {
+		q := New()
+		j := makeJob(t, "j", constants.NormalPriority)
+		j.PP = 0
+		if err := q.Add(j); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		if err := q.SetCategory(j.ID, "", cats); err != nil {
+			t.Fatalf("SetCategory with empty name: %v", err)
+		}
+		got, _ := q.Get(j.ID)
+		// FindCategory("") returns the "Default" entry.
+		if got.Category != "Default" {
+			t.Errorf("Category = %q, want Default", got.Category)
+		}
+		if got.PP != 3 {
+			t.Errorf("PP = %d, want 3 (from Default)", got.PP)
+		}
+	})
+
+	t.Run("unknown name falls back to Default", func(t *testing.T) {
+		q := New()
+		j := makeJob(t, "j", constants.NormalPriority)
+		if err := q.Add(j); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		if err := q.SetCategory(j.ID, "nonexistent-cat", cats); err != nil {
+			t.Fatalf("SetCategory: %v", err)
+		}
+		got, _ := q.Get(j.ID)
+		if got.Category != "Default" {
+			t.Errorf("Category = %q, want Default fallback", got.Category)
+		}
+	})
+
+	t.Run("no priority re-slot when priority unchanged", func(t *testing.T) {
+		// "Default" has NormalPriority; job starts at NormalPriority — no re-slot needed.
+		q := New()
+		jA := makeJob(t, "a", constants.NormalPriority)
+		jB := makeJob(t, "b", constants.NormalPriority)
+		if err := q.Add(jA); err != nil {
+			t.Fatalf("Add jA: %v", err)
+		}
+		if err := q.Add(jB); err != nil {
+			t.Fatalf("Add jB: %v", err)
+		}
+		// Switch jA to Default (also NormalPriority) — order must be unchanged.
+		if err := q.SetCategory(jA.ID, "Default", cats); err != nil {
+			t.Fatalf("SetCategory: %v", err)
+		}
+		got := ids(q.List())
+		want := []string{jA.ID, jB.ID}
+		if !equalSlice(got, want) {
+			t.Errorf("order after same-priority SetCategory = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("ErrNotFound on missing job", func(t *testing.T) {
+		q := New()
+		err := q.SetCategory("nonexistent", "movies", cats)
+		if err == nil {
+			t.Fatal("expected error for missing job")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("error = %v, want 'not found'", err)
+		}
+	})
 }
