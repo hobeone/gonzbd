@@ -2,11 +2,14 @@ package postproc
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // VerifiedSets tracks which par2 sets have been successfully verified/repaired.
@@ -53,11 +56,16 @@ func (v *VerifiedSets) AllVerified() bool {
 }
 
 // MarkVerified records a set as verified (true) or failed (false) and persists.
+// Logs a warning if the state cannot be saved to disk; the in-memory state
+// is always updated regardless.
 func (v *VerifiedSets) MarkVerified(setName string, ok bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.sets[setName] = ok
-	v.save()
+	if err := v.save(); err != nil {
+		slog.Warn("verified: failed to persist par2 verification state",
+			"path", v.path, "err", err)
+	}
 }
 
 func (v *VerifiedSets) load() {
@@ -68,29 +76,14 @@ func (v *VerifiedSets) load() {
 	_ = json.Unmarshal(data, &v.sets)
 }
 
-func (v *VerifiedSets) save() {
+func (v *VerifiedSets) save() error {
 	dir := filepath.Dir(v.path)
-	_ = os.MkdirAll(dir, 0o750)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
 	data, err := json.Marshal(v.sets)
 	if err != nil {
-		return
+		return fmt.Errorf("marshal: %w", err)
 	}
-	// Atomic write: temp → rename.
-	tmp, err := os.CreateTemp(dir, "verified-*.tmp")
-	if err != nil {
-		return
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return
-	}
-	tmp.Close()
-	_ = os.Rename(tmpName, v.path)
+	return fsutil.WriteAtomicBytes(v.path, data)
 }

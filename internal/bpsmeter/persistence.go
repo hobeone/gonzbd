@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // State is the JSON-persisted shape for Quota + Meter lifetime totals.
@@ -30,44 +31,14 @@ func LoadState(path string) (State, error) {
 	return s, nil
 }
 
-// SaveState atomically writes s as JSON to path by writing a temp file in
-// the same directory and renaming it, ensuring readers never see a partial write.
+// SaveState atomically writes s as JSON to path.
 func SaveState(path string, s State) error {
 	data, err := json.Marshal(s)
 	if err != nil {
 		return fmt.Errorf("SaveState: %w", err)
 	}
-
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".bpsmeter-*.tmp")
-	if err != nil {
-		return fmt.Errorf("SaveState create temp: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err = tmp.Write(data); err != nil {
-		//nolint:errcheck // best-effort cleanup; original write error takes precedence
-		_ = tmp.Close()
-		//nolint:errcheck // best-effort cleanup; original write error takes precedence
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("SaveState write: %w", err)
-	}
-	if err = tmp.Sync(); err != nil {
-		//nolint:errcheck // best-effort cleanup; sync error takes precedence
-		_ = tmp.Close()
-		//nolint:errcheck // best-effort cleanup
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("SaveState sync: %w", err)
-	}
-	if err = tmp.Close(); err != nil {
-		//nolint:errcheck // best-effort cleanup; close error takes precedence
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("SaveState close: %w", err)
-	}
-	if err = os.Rename(tmpName, path); err != nil {
-		//nolint:errcheck // best-effort cleanup; rename error takes precedence
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("SaveState rename: %w", err)
+	if err := fsutil.WriteAtomicBytes(path, data); err != nil {
+		return fmt.Errorf("SaveState: %w", err)
 	}
 	return nil
 }
