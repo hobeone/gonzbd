@@ -2,6 +2,7 @@ package dirscanner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -13,6 +14,22 @@ import (
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/types"
 )
+
+// PartialError indicates that some but not all NZBs from an archive were
+// successfully imported. The scanner uses this to decide whether to leave
+// the source file for retry (partial success) or rename it to .failed
+// (total failure).
+type PartialError struct {
+	Failed int
+	Total  int
+	Err    error
+}
+
+func (e *PartialError) Error() string {
+	return fmt.Sprintf("partial: %d of %d NZBs failed: %v", e.Failed, e.Total, e.Err)
+}
+
+func (e *PartialError) Unwrap() error { return e.Err }
 
 // Handler defines the interface for consuming NZB payloads extracted by the scanner.
 // It receives the original filename and the decompressed NZB data.
@@ -214,8 +231,8 @@ func (s *Scanner) scanDir(ctx context.Context, dir, category string) (files map[
 			// Only leave for retry if some NZBs succeeded (partial
 			// success). If all failed or extraction itself failed,
 			// permanently mark as .failed.
-			isPartialSuccess := strings.HasPrefix(err.Error(), "partial:")
-			if !isPartialSuccess {
+			var pe *PartialError
+			if !errors.As(err, &pe) {
 				failedPath := path + ".failed"
 				if renameErr := os.Rename(path, failedPath); renameErr != nil {
 					s.logger.Warn("failed to rename file", "path", path, "err", renameErr)
@@ -269,7 +286,7 @@ func (s *Scanner) handleStableFile(ctx context.Context, path, filename, category
 	if lastErr != nil {
 		if successCount > 0 {
 			// Some NZBs imported — leave the archive for retry.
-			return fmt.Errorf("partial: %d of %d NZBs failed: %w", len(nzbs)-successCount, len(nzbs), lastErr)
+			return &PartialError{Failed: len(nzbs) - successCount, Total: len(nzbs), Err: lastErr}
 		}
 		return fmt.Errorf("%d of %d NZBs failed: %w", len(nzbs)-successCount, len(nzbs), lastErr)
 	}
