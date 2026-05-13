@@ -70,5 +70,6 @@ func (c DownloadConfig) SanitizeOptions() fsutil.SanitizeOptions {
 		ReplaceSpacesWith:  c.ReplaceSpacesWith,
 		StripDiacritics:    c.StripDiacritics,
 		CleanupList:        c.CleanupList,
+		CleanupRegexps:     fsutil.CompileCleanupList(c.CleanupList),
 	}
 }
