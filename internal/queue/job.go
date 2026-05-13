@@ -372,7 +372,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 	}
 
 	// 1. Apply regex-based cleanup (strip spam prefixes/suffixes)
-	name = fsutil.CleanupName(name, sOpts.CleanupList)
+	name = fsutil.CleanupName(name, sOpts)
 
 	// 2. Apply filesystem sanitization rules.
 	name = fsutil.SanitizeFolderName(name, sOpts)
