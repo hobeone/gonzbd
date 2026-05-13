@@ -217,6 +217,34 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+// TestRemove_NilZerosSlotForGC verifies that removeAtLocked nil-zeroes the
+// vacated capacity slot, allowing the GC to collect the removed *Job.
+// Without this, the pointer remains reachable inside the slice's backing
+// array even after the slice is shortened.
+func TestRemove_NilZerosSlotForGC(t *testing.T) {
+	q := New()
+	a := makeJob(t, "a", constants.NormalPriority)
+	b := makeJob(t, "b", constants.NormalPriority)
+	c := makeJob(t, "c", constants.NormalPriority)
+	_ = q.Add(a)
+	_ = q.Add(b)
+	_ = q.Add(c)
+
+	// Remove the middle element.
+	if err := q.Remove(b.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// Peek inside the internal slice: the slot at len must be nil.
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	jobs := q.jobs
+	slack := jobs[:cap(jobs)]
+	if slack[len(jobs)] != nil {
+		t.Error("vacated slot beyond len is not nil — GC cannot collect removed *Job")
+	}
+}
+
 func TestQueueSetStatus(t *testing.T) {
 	q := New()
 	j := makeJob(t, "j", constants.NormalPriority)
