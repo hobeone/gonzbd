@@ -11,6 +11,14 @@ import (
 // exhausted without successful extraction.
 var ErrWrongPassword = errors.New("unpack: wrong password (all passwords exhausted)")
 
+// extractFunc is the signature shared by UnRAR and SevenZip — the
+// tool-specific extraction function called by withPasswords.
+type extractFunc func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error)
+
+// wrongPasswordFunc inspects a tool's exit code and captured output
+// to determine whether the failure was caused by a wrong password.
+type wrongPasswordFunc func(exitCode int, output string) bool
+
 // isUnrarWrongPassword returns true if the unrar output or exit code
 // indicates a wrong password was used.
 // unrar exit code 2 = "fatal error" which covers wrong passwords.
@@ -64,24 +72,32 @@ func allPasswords(opts Options) []string {
 	return result
 }
 
-// UnRARWithPasswords tries extracting with each password in opts.Passwords
-// (and opts.Password) until one succeeds or all are exhausted. If the
-// archive is not password-protected, the first attempt with no password
-// succeeds immediately.
-//
-// When no passwords are configured, this delegates directly to UnRAR.
-func UnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+// withPasswords is the generic password-iteration loop used by both
+// UnRARWithPasswords and SevenZipWithPasswords. It tries each password
+// from allPasswords(opts) in order, calling extract for each attempt.
+// isWrongPW classifies whether a failure was due to a wrong password
+// (retry) vs. something else (abort).
+func withPasswords(
+	ctx context.Context,
+	log *slog.Logger,
+	archive Archive,
+	outDir string,
+	opts Options,
+	extract extractFunc,
+	isWrongPW wrongPasswordFunc,
+	toolName string,
+) (Result, error) {
 	passwords := allPasswords(opts)
 	if len(passwords) == 0 {
-		// No password list — single attempt (may use opts.Password="" for no-password).
-		return UnRAR(ctx, log, archive, outDir, opts)
+		// No password list — single attempt (no-password).
+		return extract(ctx, log, archive, outDir, opts)
 	}
 
 	var lastRes Result
 	for i, pw := range passwords {
 		attempt := opts
 		attempt.Password = pw
-		res, err := UnRAR(ctx, log, archive, outDir, attempt)
+		res, err := extract(ctx, log, archive, outDir, attempt)
 
 		// System-level error (binary not found, context cancelled).
 		if err != nil && res.ExitCode == 0 {
@@ -91,14 +107,14 @@ func UnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, 
 		// Success.
 		if err == nil {
 			if i > 0 {
-				log.Info("unrar: password found", "attempt", i+1, "archive", archive.MainFile)
+				log.Info(toolName+": password found", "attempt", i+1, "archive", archive.MainFile)
 			}
 			return res, nil
 		}
 
 		// Check if wrong password — try next.
-		if isUnrarWrongPassword(res.ExitCode, res.Output) {
-			log.Info("unrar: wrong password, trying next",
+		if isWrongPW(res.ExitCode, res.Output) {
+			log.Info(toolName+": wrong password, trying next",
 				"attempt", i+1, "total", len(passwords), "archive", archive.MainFile)
 			lastRes = res
 			continue
@@ -113,47 +129,20 @@ func UnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, 
 	return lastRes, ErrWrongPassword
 }
 
+// UnRARWithPasswords tries extracting with each password in opts.Passwords
+// (and opts.Password) until one succeeds or all are exhausted. If the
+// archive is not password-protected, the first attempt with no password
+// succeeds immediately.
+//
+// When no passwords are configured, this delegates directly to UnRAR.
+func UnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+	return withPasswords(ctx, log, archive, outDir, opts, UnRAR, isUnrarWrongPassword, "unrar")
+}
+
 // SevenZipWithPasswords tries extracting with each password in opts.Passwords
 // (and opts.Password) until one succeeds or all are exhausted.
 //
 // When no passwords are configured, this delegates directly to SevenZip.
 func SevenZipWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
-	passwords := allPasswords(opts)
-	if len(passwords) == 0 {
-		return SevenZip(ctx, log, archive, outDir, opts)
-	}
-
-	var lastRes Result
-	for i, pw := range passwords {
-		attempt := opts
-		attempt.Password = pw
-		res, err := SevenZip(ctx, log, archive, outDir, attempt)
-
-		// System-level error.
-		if err != nil && res.ExitCode == 0 {
-			return res, err
-		}
-
-		// Success.
-		if err == nil {
-			if i > 0 {
-				log.Info("7zip: password found", "attempt", i+1, "archive", archive.MainFile)
-			}
-			return res, nil
-		}
-
-		// Check if wrong password — try next.
-		if is7zWrongPassword(res.ExitCode, res.Output) {
-			log.Info("7zip: wrong password, trying next",
-				"attempt", i+1, "total", len(passwords), "archive", archive.MainFile)
-			lastRes = res
-			continue
-		}
-
-		// Other extraction error.
-		return res, err
-	}
-
-	lastRes.Err = ErrWrongPassword
-	return lastRes, ErrWrongPassword
+	return withPasswords(ctx, log, archive, outDir, opts, SevenZip, is7zWrongPassword, "7zip")
 }
