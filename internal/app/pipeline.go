@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -48,12 +48,18 @@ func isRetryableDownloaderError(err error) bool {
 		errors.Is(err, decoder.ErrCRCMismatch) {
 		return true
 	}
-	// Fallback: dial errors are wrapped as "dial: <inner>" by handleRequest,
-	// and net.OpError contains "connection" or "i/o timeout".
-	msg := err.Error()
-	return strings.HasPrefix(msg, "dial:") ||
-		strings.Contains(msg, "connection") ||
-		strings.Contains(msg, "i/o timeout")
+	// Network-level errors: op errors (dial, read, write) and timeouts.
+	// Using the type hierarchy is more robust than string-matching against
+	// error messages that can change across Go releases or OS versions.
+	var netErr *net.OpError
+	if errors.As(err, &netErr) {
+		return true
+	}
+	var timeoutErr interface{ Timeout() bool }
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 // fileKey uniquely identifies a file within a job.
