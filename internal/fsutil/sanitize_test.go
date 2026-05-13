@@ -258,11 +258,24 @@ func TestCleanupName(t *testing.T) {
 		{"multiple cleanup", "[www.indexer.pro]-[PRiVATE]-My.Movie.2024-(Scenzbd)", "My.Movie.2024"},
 	}
 
+	opts := SanitizeOptions{CleanupList: patterns}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := CleanupName(tt.input, patterns)
+			got := CleanupName(tt.input, opts)
 			if got != tt.expected {
 				t.Errorf("CleanupName(%q) = %q; want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+
+	// Verify pre-compiled path produces same results.
+	opts.CleanupRegexps = CompileCleanupList(patterns)
+	for _, tt := range tests {
+		t.Run("precompiled/"+tt.name, func(t *testing.T) {
+			got := CleanupName(tt.input, opts)
+			if got != tt.expected {
+				t.Errorf("CleanupName(%q) precompiled = %q; want %q", tt.input, got, tt.expected)
 			}
 		})
 	}
