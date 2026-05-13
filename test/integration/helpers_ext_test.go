@@ -374,6 +374,43 @@ func fixtureToTestFiles(t *testing.T, dir string, partSize int) []TestFile {
 	return files
 }
 
+// fixtureToTestFilesRecursive is like fixtureToTestFiles but walks
+// subdirectories recursively. File names include their relative path
+// (e.g. "Release-GROUP/movie.rar"), which causes the assembler to
+// create matching subdirectories inside the job's download directory.
+// This is essential for testing the common Usenet pattern where NZBs
+// organize files into release-name subdirectories.
+func fixtureToTestFilesRecursive(t *testing.T, dir string, partSize int) []TestFile {
+	t.Helper()
+	var files []TestFile
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			return relErr
+		}
+		data, readErr := os.ReadFile(path) //nolint:gosec // G304: test code
+		if readErr != nil {
+			return readErr
+		}
+		files = append(files, TestFile{
+			Name:     rel,
+			Payload:  data,
+			PartSize: partSize,
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir %s: %v", dir, err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("no files found in fixture dir %s", dir)
+	}
+	return files
+}
+
 // waitForPostProcWithTimeout waits for PostProcComplete or times out.
 func waitForPostProcWithTimeout(t *testing.T, a *app.Application, timeout time.Duration) {
 	t.Helper()
