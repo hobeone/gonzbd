@@ -1,0 +1,137 @@
+package unpack_test
+
+import (
+	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	"github.com/hobeone/gonzbd/internal/unpack"
+)
+
+// writeScript creates an executable script file at path. Uses the
+// atomic temp-file + rename pattern to avoid ETXTBSY under race.
+func writeScript(t *testing.T, path string, content []byte) {
+	t.Helper()
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".script-*.tmp")
+	if err != nil {
+		t.Fatalf("create temp script: %v", err)
+	}
+	tmpName := f.Name()
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		os.Remove(tmpName)
+		t.Fatalf("write script: %v", err)
+	}
+	if err := f.Chmod(0o755); err != nil {
+		f.Close()
+		os.Remove(tmpName)
+		t.Fatalf("chmod script: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpName)
+		t.Fatalf("close script: %v", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		t.Fatalf("rename script: %v", err)
+	}
+}
+
+// TestUnRAR_CannotCreateAutoFix verifies (N4) that when unrar output
+// contains "Cannot create" AND "Attempting to correct" AND files were
+// extracted, the error is downgraded and res.Err is cleared.
+func TestUnRAR_CannotCreateAutoFix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test not portable to Windows")
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+	outDir := t.TempDir()
+
+	// Create a mock unrar script that:
+	// 1. Prints "Cannot create" and "Attempting to correct the filename"
+	// 2. Creates an output file (simulating successful extraction)
+	// 3. Exits with code 1 (non-zero)
+	scriptPath := filepath.Join(dir, "mock-unrar")
+	script := `#!/bin/sh
+# Parse the output dir from args — it's the last argument (with trailing /)
+OUTDIR="${@: -1}"
+echo "Extracting from archive.rar"
+echo "Cannot create file.txt"
+echo "Attempting to correct the filename"
+echo "Creating file_corrected.txt OK"
+# Create a file to simulate extraction
+touch "${OUTDIR}file_corrected.txt"
+exit 1
+`
+	writeScript(t, scriptPath, []byte(script))
+
+	archive := unpack.Archive{
+		Type:     unpack.RarArchive,
+		Name:     "archive",
+		MainFile: filepath.Join(dir, "archive.rar"),
+		Parts:    []string{filepath.Join(dir, "archive.rar")},
+	}
+	// Create a dummy archive file.
+	os.WriteFile(archive.MainFile, []byte("rar"), 0o644)
+
+	res, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, unpack.Options{
+		UnrarCommand: scriptPath,
+	})
+
+	// N4: Error should be cleared because extraction succeeded with corrections.
+	if err != nil {
+		t.Errorf("expected nil error after auto-fix, got: %v", err)
+	}
+	if res.Err != nil {
+		t.Errorf("expected nil res.Err after auto-fix, got: %v", res.Err)
+	}
+	if res.ExitCode != 0 {
+		t.Errorf("expected ExitCode=0 after auto-fix, got: %d", res.ExitCode)
+	}
+	// Verify the extracted file exists.
+	if _, err := os.Stat(filepath.Join(outDir, "file_corrected.txt")); err != nil {
+		t.Errorf("extracted file should exist: %v", err)
+	}
+}
+
+// TestUnRAR_CannotCreateNoAutoFix verifies that "Cannot create"
+// WITHOUT "Attempting to correct" keeps the error.
+func TestUnRAR_CannotCreateNoAutoFix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test not portable to Windows")
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+	outDir := t.TempDir()
+
+	scriptPath := filepath.Join(dir, "mock-unrar")
+	script := `#!/bin/sh
+echo "Cannot create file.txt"
+echo "Permission denied"
+exit 1
+`
+	writeScript(t, scriptPath, []byte(script))
+
+	archive := unpack.Archive{
+		Type:     unpack.RarArchive,
+		Name:     "archive",
+		MainFile: filepath.Join(dir, "archive.rar"),
+		Parts:    []string{filepath.Join(dir, "archive.rar")},
+	}
+	os.WriteFile(archive.MainFile, []byte("rar"), 0o644)
+
+	_, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, unpack.Options{
+		UnrarCommand: scriptPath,
+	})
+
+	// Without "Attempting to correct", the error should NOT be auto-fixed.
+	if err == nil {
+		t.Error("expected error to persist when no auto-correction happened")
+	}
+}
