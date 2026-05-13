@@ -25,8 +25,16 @@ GoNZBD is a high-performance Go reimplementation of [SABnzbd](https://sabnzbd.or
 - **One-shot Download:** `./gonzbd --config <path> --nzb <path>`
 - **Test (Unit):** `go test ./...`
 - **Test (Race):** `go test -race ./...` (Required for CI/commits)
-- **Test (Integration):** `go test -tags=integration ./test/integration/...`
+- **Test (Integration):** `go test -v -tags=integration ./test/integration/...` (requires par2, rar, unrar, 7z)
+- **Test (UI/Playwright):** `go test -v -tags=uitest ./test/uitest/...` (requires pre-built UI + Playwright Chromium)
+- **Test (E2E):** `go test -tags=e2e -timeout=10m ./test/e2e/` (requires live Usenet server)
+- **Test (Config contract):** `go test ./internal/config/ -run 'TestUI|TestAllFlat'`
 - **Lint:** `go vet ./...` and `golangci-lint run ./...`
+
+> **See `docs/TESTING.md` for the full testing guide** — build tags, required
+> tools, per-file descriptions, and a decision guide for which suites to run
+> based on the area of code being changed.
+
 
 ## Development Mandates
 
@@ -34,8 +42,9 @@ GoNZBD is a high-performance Go reimplementation of [SABnzbd](https://sabnzbd.or
 1.  **`GEMINI.md`** (This file) - Foundational mandates and project overview. Read this first for every session.
 2.  **`CLAUDE.md`** - Strict development protocols, quality gates, and the mandatory "Decision Needed" escalation format.
 3.  **`docs/ARCHITECTURE.md`** - Technical overview, architecture patterns, and subsystem deep dives. **Read this for architectural context.**
-4.  **`docs/sabnzbd_spec.md`** - The source of truth for functional behavior. Defines protocols (NNTP), data formats (NZB, persistence), and API endpoint schemas. **Refer here for behavioral truth.**
-5.  **`../sabnzbd/`** - The original Python implementation (external to this repo). Use for intent clarification, but do not transliterate.
+4.  **`docs/TESTING.md`** - Comprehensive testing guide. Covers all test suites (unit, integration, E2E, contract), build tags, required tools, and when to run each. **Read this before running or modifying tests.**
+5.  **`docs/sabnzbd_spec.md`** - The source of truth for functional behavior. Defines protocols (NNTP), data formats (NZB, persistence), and API endpoint schemas. **Refer here for behavioral truth.**
+6.  **`../sabnzbd/`** - The original Python implementation (external to this repo). Use for intent clarification, but do not transliterate.
 
 ### 2. Coding Standards
 - **Idioms:** "Accept interfaces, return structs." Define interfaces at the consumer side.
