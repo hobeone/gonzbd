@@ -395,7 +395,10 @@ func (c *Conn) handshake(ctx context.Context, cfg config.ServerConfig) error {
 	c.log.Debug("handshake: probing capabilities")
 	c.caps = probeCapabilities(c.log, c.bw, c.br)
 	c.log.Debug("handshake: capabilities",
-		"body", c.caps.HasBody, "stat", c.caps.HasStat, "compress", c.caps.HasCompress)
+		"version", c.caps.Version,
+		"body", c.caps.HasBody, "stat", c.caps.HasStat,
+		"over", c.caps.HasOver, "hdr", c.caps.HasHDR,
+		"post", c.caps.HasPost, "compress", c.caps.HasCompress)
 
 	// Whether or not we authenticated, the connection is now dispatch-
 	// ready. Advance to Ready.
