@@ -835,6 +835,7 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 					"bytes", len(run.data),
 					"error", err,
 				)
+				return false
 			}
 		}
 		// Relieve memory pressure if needed.
