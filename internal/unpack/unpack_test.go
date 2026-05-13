@@ -520,6 +520,46 @@ func TestUnRAR_OnCommandFiresBeforeExec(t *testing.T) {
 	}
 }
 
+// TestUnRAR_HasProblemDegradedMode verifies that when HasProblem is true
+// (non-original or old unrar), the flags -scf, -or, -ai, -tsm- are NOT
+// emitted. Matches SABnzbd's RAR_PROBLEM degraded mode.
+func TestUnRAR_HasProblemDegradedMode(t *testing.T) {
+	var captured string
+	archive := unpack.Archive{
+		Type:     unpack.RarArchive,
+		Name:     "test",
+		MainFile: "/tmp/does-not-exist.rar",
+		Parts:    []string{"/tmp/does-not-exist.rar"},
+	}
+	opts := unpack.Options{
+		UnrarCommand:     "/nonexistent/binary",
+		HasProblem:       true,
+		IgnoreUnrarDates: true, // should be suppressed in degraded mode
+		OnCommand: func(cmdLine string) {
+			captured = cmdLine
+		},
+	}
+	_, _ = unpack.UnRAR(t.Context(), slog.Default(), archive, t.TempDir(), opts)
+
+	if captured == "" {
+		t.Fatal("OnCommand was not called")
+	}
+
+	// These flags should be present (always used):
+	for _, flag := range []string{"-y", "-idp", "-o-"} {
+		if !strings.Contains(captured, flag) {
+			t.Errorf("degraded mode: cmdline missing required flag %q: %q", flag, captured)
+		}
+	}
+
+	// These flags should be ABSENT in degraded mode:
+	for _, flag := range []string{"-scf", "-ai", "-or", "-tsm-"} {
+		if strings.Contains(captured, flag) {
+			t.Errorf("degraded mode: cmdline should NOT contain flag %q but does: %q", flag, captured)
+		}
+	}
+}
+
 // TestSevenZip_OnCommandFiresBeforeExec mirrors the unrar test for 7z.
 func TestSevenZip_OnCommandFiresBeforeExec(t *testing.T) {
 	var captured string
