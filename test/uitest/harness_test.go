@@ -125,7 +125,6 @@ func newTestEnv(t *testing.T) *testEnv {
 		},
 		Servers:    []config.ServerConfig{},
 		Categories: []config.CategoryConfig{},
-		Sorters:    []config.SorterConfig{},
 		Schedules:  []config.ScheduleConfig{},
 		RSS:        []config.RSSFeedConfig{},
 	}
