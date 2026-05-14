@@ -51,6 +51,10 @@ type Options struct {
 	// App is the top-level application instance. Required for hot-reloading
 	// core components like the downloader.
 	App ApplicationReloader
+
+	// ShutdownFunc is called by mode=shutdown and mode=restart to initiate
+	// a graceful application exit. When nil, those modes return 501.
+	ShutdownFunc func()
 }
 
 // ApplicationReloader defines the subset of Application methods needed
@@ -95,6 +99,8 @@ type Server struct {
 	app        ApplicationReloader
 	events     *Broadcaster
 
+	shutdownFunc func()
+
 	mu       sync.RWMutex
 	warnings []string
 
@@ -114,18 +120,19 @@ func New(opts Options) *Server {
 	log = log.With("component", "api")
 
 	s := &Server{
-		version:    opts.Version,
-		commit:     opts.Commit,
-		date:       opts.Date,
-		log:        log,
-		queue:      opts.Queue,
-		history:    opts.History,
-		config:     opts.Config,
-		configPath: opts.ConfigPath,
-		grabber:    opts.Grabber,
-		app:        opts.App,
-		events:     NewBroadcaster(log),
-		mux:        http.NewServeMux(),
+		version:      opts.Version,
+		commit:       opts.Commit,
+		date:         opts.Date,
+		log:          log,
+		queue:        opts.Queue,
+		history:      opts.History,
+		config:       opts.Config,
+		configPath:   opts.ConfigPath,
+		grabber:      opts.Grabber,
+		app:          opts.App,
+		shutdownFunc: opts.ShutdownFunc,
+		events:       NewBroadcaster(log),
+		mux:          http.NewServeMux(),
 	}
 	s.registerModes()
 
