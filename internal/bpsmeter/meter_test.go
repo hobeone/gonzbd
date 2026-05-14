@@ -386,4 +386,9 @@ func TestMeterRecord_NegativeBytes(t *testing.T) {
 	if bps < 0 {
 		t.Errorf("BPS after negative record = %f, should not be negative", bps)
 	}
+
+	// Total should reflect net accounting: 5000 + (-1000) = 4000.
+	if got := m.Total(""); got != 4000 {
+		t.Errorf("Total after negative record = %d, want 4000", got)
+	}
 }

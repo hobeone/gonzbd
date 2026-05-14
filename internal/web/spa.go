@@ -48,6 +48,7 @@ func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http
 			if authCheck != nil && !authCheck(w, r) {
 				return
 			}
+			w.Header().Set("Cache-Control", "no-cache")
 			setAPIKeyCookie(w, r)
 			fileServer.ServeHTTP(w, r)
 			return
@@ -57,6 +58,12 @@ func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http
 		clean := strings.TrimPrefix(path, "/")
 		if _, err := fs.Stat(dist, clean); err == nil {
 			// Known static asset — serve without auth check.
+			// Vite-hashed assets (under /assets/) use content-hash
+			// filenames and can be cached indefinitely. Other files
+			// (e.g. favicon.ico) get a short cache.
+			if strings.HasPrefix(clean, "assets/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
 			fileServer.ServeHTTP(w, r)
 			return
 		}
