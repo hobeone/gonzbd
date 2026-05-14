@@ -289,7 +289,7 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	}
 	log.Info("deobfuscate: found files for heuristic", "count", len(paths))
 
-	// 2b. Fix extensions by content sniffing. Files with non-popular
+	// 4. Fix extensions by content sniffing. Files with non-popular
 	// extensions get their real type detected via magic bytes.
 	var allRenames []Rename
 	for i, p := range paths {

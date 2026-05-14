@@ -161,6 +161,10 @@ func (g *GeneralConfig) validate() error {
 			errs = append(errs, err)
 		}
 	}
+	// Validate per-component log level overrides at load time.
+	if _, err := g.ParseLogLevels(); err != nil {
+		errs = append(errs, fmt.Errorf("log_levels: %w", err))
+	}
 	return errors.Join(errs...)
 }
 
