@@ -9,6 +9,7 @@ vi.mock('$lib/utils', () => ({
 // Mock ConnectionStore — WS store reports success/failure to it.
 vi.mock('./connection.svelte', () => ({
 	reportFailure: vi.fn(),
+	reportDisconnect: vi.fn(),
 	reportSuccess: vi.fn(),
 	onReconnected: vi.fn(() => vi.fn())
 }));
