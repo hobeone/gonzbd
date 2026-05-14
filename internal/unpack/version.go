@@ -82,7 +82,7 @@ var sevenzVersionRE = regexp.MustCompile(`(?i)7-Zip\s.*?(\d+\.\d+)`)
 func DetectSevenZip(ctx context.Context, bin string) SevenzInfo {
 	candidates := []string{bin}
 	if bin == "" {
-		candidates = []string{"7zz", "7zzs", "7z", "7za"}
+		candidates = SevenZipBinaries
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)

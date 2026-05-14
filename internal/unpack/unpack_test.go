@@ -450,9 +450,12 @@ func TestUnRAR_Integration(t *testing.T) {
 }
 
 func TestSevenZip_Integration(t *testing.T) {
-	bin, err := exec.LookPath("7zz")
-	if err != nil {
-		bin, err = exec.LookPath("7z")
+	var bin string
+	var err error
+	for _, name := range unpack.SevenZipBinaries {
+		if bin, err = exec.LookPath(name); err == nil {
+			break
+		}
 	}
 	if err != nil || bin == "" {
 		t.Skip("7zz/7z binary not found in PATH; skipping integration test")
