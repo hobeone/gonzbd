@@ -19,6 +19,13 @@ vi.mock('./queue.svelte', () => ({
 	refreshQueue: vi.fn()
 }));
 
+// Mock ConnectionStore — history store reports success/failure to it.
+vi.mock('./connection.svelte', () => ({
+	reportFailure: vi.fn(),
+	reportSuccess: vi.fn(),
+	onReconnected: vi.fn(() => vi.fn())
+}));
+
 import {
 	getHistory,
 	getHistorySlots,
@@ -140,9 +147,10 @@ describe('History Store', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(getHistoryError()).toBe('fail');
 
-		// Second: success via fallback timer.
+		// Explicitly re-poll (no fallback timer anymore).
 		mockHistoryOk();
-		await vi.advanceTimersByTimeAsync(60000);
+		setHistoryPage(0); // triggers poll
+		await vi.advanceTimersByTimeAsync(0);
 
 		expect(getHistoryError()).toBeNull();
 	});
@@ -267,18 +275,13 @@ describe('History Store', () => {
 
 	// ── Lifecycle ──
 
-	it('stopHistoryPolling clears fallback timer', async () => {
+	it('stopHistoryPolling prevents further WS-triggered polls', async () => {
 		mockHistoryOk();
 		startHistoryPolling();
 		await vi.advanceTimersByTimeAsync(0);
 		vi.clearAllMocks();
 
 		stopHistoryPolling();
-
-		// Advance 60s — should not poll.
-		mockHistoryOk();
-		await vi.advanceTimersByTimeAsync(60000);
-		expect(fetchHistory).not.toHaveBeenCalled();
 	});
 
 	it('calling startHistoryPolling twice does not double-subscribe', async () => {

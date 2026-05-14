@@ -6,6 +6,13 @@ vi.mock('$lib/utils', () => ({
 	getCookie: vi.fn().mockReturnValue(null)
 }));
 
+// Mock ConnectionStore — WS store reports success/failure to it.
+vi.mock('./connection.svelte', () => ({
+	reportFailure: vi.fn(),
+	reportSuccess: vi.fn(),
+	onReconnected: vi.fn(() => vi.fn())
+}));
+
 // Create a mock WebSocket class
 class MockWebSocket {
 	static instances: MockWebSocket[] = [];
@@ -131,7 +138,7 @@ describe('websocket store', () => {
 		unsub();
 	});
 
-	it('schedules reconnect on close', async () => {
+	it('reports failure on close (ConnectionStore owns reconnect)', async () => {
 		const { subscribeWS, getWSStatus } = await import('./websocket.svelte');
 		const handler = vi.fn();
 
@@ -140,13 +147,14 @@ describe('websocket store', () => {
 		ws.simulateOpen();
 		expect(getWSStatus()).toBe(true);
 
-		// Simulate disconnect.
+		// Simulate disconnect — WS store no longer self-reconnects.
+		// It reports failure to ConnectionStore which owns retry timing.
 		ws.close();
 		expect(getWSStatus()).toBe(false);
 
-		// After reconnect delay, a new connection should be attempted.
-		vi.advanceTimersByTime(1000);
-		expect(MockWebSocket.instances.length).toBe(2);
+		// No new connection should be created by the WS store itself.
+		vi.advanceTimersByTime(5000);
+		expect(MockWebSocket.instances.length).toBe(1);
 
 		unsub();
 	});
