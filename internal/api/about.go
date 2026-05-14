@@ -74,7 +74,7 @@ func (s *Server) modeAbout(w http.ResponseWriter, _ *http.Request) {
 		"script_dir":   scriptDir,
 		"par2_path":    resolveBinary(par2Cmd, "par2"),
 		"unrar_path":   resolveBinary(unrarCmd, "unrar"),
-		"sevenz_path":  resolve7z(sevenzCmd),
+		"sevenz_path":  resolveBinary(sevenzCmd, unpack.SevenZipBinaries...),
 	}
 
 	respondOK(w, "about", about)
@@ -134,35 +134,22 @@ func publicIP(url string) string {
 }
 
 // resolveBinary resolves a binary path for display. When cfgPath is set,
-// it is resolved via exec.LookPath so that bare names (e.g. "par2") are
-// expanded to their full PATH-resolved location (e.g. "/usr/bin/par2").
-// When cfgPath is empty, the fallback name is used instead.
-// Returns "" if the binary cannot be found.
-func resolveBinary(cfgPath, fallback string) string {
-	name := cfgPath
-	if name == "" {
-		name = fallback
-	}
-	p, err := exec.LookPath(name)
-	if err != nil {
-		return ""
-	}
-	return p
-}
-
-// resolve7z resolves the 7z binary. It first checks the config override
-// (resolved via LookPath), then tries known binary names (7zz, 7zzs, 7z, 7za).
-func resolve7z(cfgPath string) string {
+// it is resolved via exec.LookPath so that the path is validated.
+// When cfgPath is empty, it tries the provided fallbacks in order.
+// Returns "" if no binary can be found.
+func resolveBinary(cfgPath string, fallbacks ...string) string {
 	if cfgPath != "" {
-		if p, err := exec.LookPath(cfgPath); err == nil {
-			return p
+		p, err := exec.LookPath(cfgPath)
+		if err != nil {
+			return ""
 		}
-		return ""
+		return p
 	}
-	for _, name := range unpack.SevenZipBinaries {
+	for _, name := range fallbacks {
 		if p, err := exec.LookPath(name); err == nil {
 			return p
 		}
 	}
 	return ""
 }
+
