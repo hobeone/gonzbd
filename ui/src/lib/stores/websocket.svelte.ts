@@ -1,6 +1,6 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { getCookie } from '$lib/utils';
-import { reportFailure, reportSuccess, onReconnected } from '$lib/stores/connection.svelte';
+import { reportDisconnect, reportSuccess, onReconnected } from '$lib/stores/connection.svelte';
 
 export interface WSEvent {
 	event: string;
@@ -57,8 +57,8 @@ class WebSocketStore {
 			this.#isConnected = false;
 			this.#socket = null;
 			// ConnectionStore owns reconnection timing — we just report
-			// the failure and wait for reconnect() to be called.
-			reportFailure('WebSocket disconnected');
+			// the disconnect and wait for reconnect() to be called.
+			reportDisconnect('WebSocket disconnected');
 		};
 
 		this.#socket.onerror = (err) => {
