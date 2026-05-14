@@ -303,3 +303,53 @@ func TestServerMask_CopyUpdateReplace(t *testing.T) {
 		t.Error("after replace, has(64) = false")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// count
+// ---------------------------------------------------------------------------
+
+func TestServerMask_Count_ZeroValue(t *testing.T) {
+	t.Parallel()
+	var m serverMask
+	if n := m.count(); n != 0 {
+		t.Errorf("count() = %d; want 0", n)
+	}
+}
+
+func TestServerMask_Count_FastPath(t *testing.T) {
+	t.Parallel()
+	var m serverMask
+	m.set(0)
+	m.set(31)
+	m.set(63)
+	if n := m.count(); n != 3 {
+		t.Errorf("count() = %d; want 3", n)
+	}
+}
+
+func TestServerMask_Count_SlowPath(t *testing.T) {
+	t.Parallel()
+	var m serverMask
+	m.set(64)
+	m.set(128)
+	if n := m.count(); n != 2 {
+		t.Errorf("count() = %d; want 2", n)
+	}
+}
+
+func TestServerMask_Count_Mixed(t *testing.T) {
+	t.Parallel()
+	var m serverMask
+	indices := []int{0, 1, 31, 63, 64, 65, 127, 128, 255, 512}
+	for _, idx := range indices {
+		m.set(idx)
+	}
+	if n := m.count(); n != len(indices) {
+		t.Errorf("count() = %d; want %d", n, len(indices))
+	}
+	// Unset one and recount.
+	m.unset(31)
+	if n := m.count(); n != len(indices)-1 {
+		t.Errorf("count() after unset = %d; want %d", n, len(indices)-1)
+	}
+}

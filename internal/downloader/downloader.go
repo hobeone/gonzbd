@@ -102,7 +102,6 @@ type Options struct {
 
 	// MaxArtTries caps the total number of download attempts for a
 	// single article across all servers. Zero means unlimited.
-	// TODO: not yet wired into dispatch logic.
 	MaxArtTries int
 
 	// MaxArtOpt caps the number of attempts on optional (backup)
@@ -111,8 +110,8 @@ type Options struct {
 	MaxArtOpt int
 
 	// TopOnly restricts article dispatch to the highest-priority server
-	// group. When true, backup servers are never tried.
-	// TODO: not yet wired into dispatch logic.
+	// group. When true, only servers at the lowest priority value
+	// (most preferred) are tried.
 	TopOnly bool
 
 	// NoPenalties disables long server penalties; all penalties become
@@ -525,6 +524,20 @@ func (d *Downloader) hasActiveConnections() bool {
 	defer d.connActivityMu.RUnlock()
 	for _, ca := range d.connActivity {
 		if ca.Connected {
+			return true
+		}
+	}
+	return false
+}
+
+// UnblockServer clears any active penalty on the named server, returning
+// it to the dispatch pool immediately. Returns false if the server name
+// is not found.
+func (d *Downloader) UnblockServer(name string) bool {
+	for _, srv := range d.servers {
+		if srv.Cfg().Name == name {
+			srv.ClearDeactivation()
+			d.signalDispatch()
 			return true
 		}
 	}

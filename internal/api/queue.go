@@ -61,9 +61,12 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 		respondStatus(w)
 	case "priority":
 		s.queuePriority(w, r)
+	case "rename", "change_name":
+		s.queueChangeName(w, r)
+	case "change_script":
+		s.queueChangeScript(w, r)
 	// Stubbed: no backing implementation yet.
-	case "rename", "sort", "delete_nzf",
-		"change_name", "change_script":
+	case "sort", "delete_nzf":
 		s.respondError(w, http.StatusBadRequest, "not implemented in this build: "+action)
 	// change_complete_action controls system power management (shutdown,
 	// hibernate after queue empties). GoNZBD does not support this, but
@@ -636,6 +639,54 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("job category changed", "job", nzoID,
 		"cat", job.Category, "pp", job.PP, "script", job.Script, "priority", job.Priority)
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status":  true,
+		"nzo_ids": []string{nzoID},
+	})
+}
+
+// queueChangeName handles name=rename and name=change_name.
+// SABnzbd convention: value = nzo_id, value2 = new name.
+//
+//nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
+func (s *Server) queueChangeName(w http.ResponseWriter, r *http.Request) {
+	nzoID := r.FormValue("value")
+	if nzoID == "" {
+		s.respondError(w, http.StatusBadRequest, "missing value parameter (nzo_id)")
+		return
+	}
+	name := r.FormValue("value2")
+	if name == "" {
+		s.respondError(w, http.StatusBadRequest, "missing value2 parameter (name)")
+		return
+	}
+	if err := s.queue.SetName(nzoID, name); err != nil {
+		s.respondError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	s.log.Info("job renamed", "job", nzoID, "name", name)
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status":  true,
+		"nzo_ids": []string{nzoID},
+	})
+}
+
+// queueChangeScript handles name=change_script.
+// SABnzbd convention: value = nzo_id, value2 = script name.
+//
+//nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
+func (s *Server) queueChangeScript(w http.ResponseWriter, r *http.Request) {
+	nzoID := r.FormValue("value")
+	if nzoID == "" {
+		s.respondError(w, http.StatusBadRequest, "missing value parameter (nzo_id)")
+		return
+	}
+	script := r.FormValue("value2")
+	if err := s.queue.SetScript(nzoID, script); err != nil {
+		s.respondError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	s.log.Info("job script changed", "job", nzoID, "script", script)
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":  true,
 		"nzo_ids": []string{nzoID},

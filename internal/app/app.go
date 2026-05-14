@@ -1147,6 +1147,18 @@ func (app *Application) DisconnectAll() {
 	}
 }
 
+// UnblockServer clears any active penalty on the named server, returning
+// it to the dispatch pool immediately. Returns false if the server is not
+// found or the downloader is not running.
+func (app *Application) UnblockServer(name string) bool {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.downloader != nil {
+		return app.downloader.UnblockServer(name)
+	}
+	return false
+}
+
 // ServerStatus returns a point-in-time snapshot of all servers,
 // including per-connection article activity. Returns nil when the
 // downloader is not running.

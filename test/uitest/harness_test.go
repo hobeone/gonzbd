@@ -88,6 +88,8 @@ func (m *mockApp) PausePostProcessor() {}
 
 func (m *mockApp) ResumePostProcessor() {}
 
+func (m *mockApp) UnblockServer(_ string) bool { return true }
+
 // testEnv bundles everything needed for a UI test.
 type testEnv struct {
 	Server  *httptest.Server
