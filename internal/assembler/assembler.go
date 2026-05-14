@@ -1,6 +1,7 @@
 package assembler
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -754,13 +755,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		var fileCRC uint32
 		if f.crcValid && len(f.crcParts) > 0 {
 			slices.SortFunc(f.crcParts, func(a, b crcPart) int {
-				if a.offset < b.offset {
-					return -1
-				}
-				if a.offset > b.offset {
-					return 1
-				}
-				return 0
+				return cmp.Compare(a.offset, b.offset)
 			})
 			fileCRC = f.crcParts[0].crc
 			for _, p := range f.crcParts[1:] {

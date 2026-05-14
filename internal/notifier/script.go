@@ -3,10 +3,12 @@ package notifier
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -104,5 +106,5 @@ func isETXTBSY(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "text file busy")
+	return errors.Is(err, syscall.ETXTBSY)
 }

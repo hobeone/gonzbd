@@ -24,15 +24,13 @@ import (
 //go:embed migrations/*.sql
 var embedMigrations embed.FS
 
-var gooseOnce sync.Once
-
-func initGoose() {
+var initGooseErr = sync.OnceValue(func() error {
 	goose.SetBaseFS(embedMigrations)
 	if err := goose.SetDialect("sqlite3"); err != nil {
-		// SetDialect only fails if the dialect is unsupported.
-		panic(fmt.Sprintf("history: failed to set goose dialect: %v", err))
+		return fmt.Errorf("history: set goose dialect: %w", err)
 	}
-}
+	return nil
+})
 
 // DB wraps a SQLite connection pool configured for history access.
 type DB struct {
@@ -71,7 +69,10 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("history: PRAGMA journal_mode=WAL: %w", err)
 	}
 
-	gooseOnce.Do(initGoose)
+	if err := initGooseErr(); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
 	if err := goose.Up(sqlDB, "migrations"); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("history: run migrations: %w", err)
