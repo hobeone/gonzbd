@@ -18,11 +18,7 @@ coverage.html
 /*.nzb.gz
 
 # SPA build output (embedded by Go at build time).
-# The placeholder index.html is tracked so //go:embed all:dist always
-# resolves, even before the UI is built. The real build output (which
-# overwrites it) remains ignored.
 ui/dist/*
-!ui/dist/index.html
 ui/.svelte-kit/
 ui/node_modules/
 
