@@ -39,6 +39,7 @@ var uiKeywords = []struct {
 	{"downloads", "min_free_space", "DownloadsSection.svelte"},
 	{"downloads", "write_cache_size", "DownloadsSection.svelte"},
 	{"downloads", "max_art_tries", "DownloadsSection.svelte"},
+	{"downloads", "top_only", "DownloadsSection.svelte"},
 	{"downloads", "pre_check", "DownloadsSection.svelte"},
 	{"downloads", "replace_illegal_with", "DownloadsSection.svelte"},
 	{"downloads", "replace_spaces_with", "DownloadsSection.svelte"},

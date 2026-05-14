@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { fetchServerStats, fetchConfig, setConfig } from '$lib/api';
+	import { fetchServerStats, fetchConfig, setConfig, postAction } from '$lib/api';
 	import type { ServerSnapshot, ConnSnapshot, ServerConfig } from '$lib/types';
 	import { formatSize as formatBytes, formatSpeed as formatBps } from '$lib/utils';
 	import { onDestroy } from 'svelte';
@@ -107,6 +107,15 @@
 		const mins = Math.floor(remaining / 60);
 		const secs = remaining % 60;
 		return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+	}
+
+	async function unblockServer(name: string) {
+		try {
+			await postAction('status', { name: 'unblock_server', value: name });
+			await loadData();
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to unblock server';
+		}
 	}
 
 	function connDuration(c: ConnSnapshot): string {
@@ -308,6 +317,13 @@
 										<path fill-rule="evenodd" d="M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.3-2.25l5.197-9ZM8 5a.75.75 0 0 1 .75.75v2a.75.75 0 0 1-1.5 0v-2A.75.75 0 0 1 8 5Zm0 6.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" clip-rule="evenodd" />
 									</svg>
 									<span class="font-medium text-amber-700 dark:text-amber-300">Penalized — {penalty} remaining</span>
+									<button
+										onclick={() => unblockServer(server.name)}
+										class="ml-auto rounded bg-amber-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-amber-700 dark:bg-amber-500 dark:hover:bg-amber-400 dark:text-gray-900"
+										title="Clear penalty and retry immediately"
+									>
+										Unblock
+									</button>
 								</div>
 							{/if}
 
