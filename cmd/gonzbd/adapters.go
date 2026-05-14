@@ -81,7 +81,7 @@ func (h *rssToURLHandler) HandleItem(ctx context.Context, item rss.Item, feed *r
 }
 
 // schedulesFromConfig builds scheduler.ScheduleSpec values from the
-// config.ScheduleConfig list. Python's ScheduleConfig has only minute/hour/dow
+// config.ScheduleConfig list. ScheduleConfig has only minute/hour/dow
 // fields, so the day-of-month and month fields are synthesized as "*".
 // Disabled schedules are skipped.
 func schedulesFromConfig(scs []config.ScheduleConfig) ([]scheduler.ScheduleSpec, error) {

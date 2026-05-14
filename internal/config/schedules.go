@@ -18,7 +18,7 @@ type ScheduleConfig struct {
 	Minute string `yaml:"minute" json:"minute"`
 	// Hour is the hour spec ("*", "0-23", or comma list).
 	Hour string `yaml:"hour" json:"hour"`
-	// DayOfWeek is the day-of-week spec ("*", "1-7" with 1=Monday, or
-	// comma list).
+	// DayOfWeek is the day-of-week spec ("*", "0-6" with 0=Sunday, or
+	// named days like "MON-FRI").
 	DayOfWeek string `yaml:"dayofweek" json:"dayofweek"`
 }
