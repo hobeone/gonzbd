@@ -162,6 +162,8 @@ func (e *EmailNotifier) FormatMessage(ev Event) []byte {
 	fmt.Fprintf(&buf, "To: %s\r\n", strings.Join(e.cfg.To, ", "))
 	fmt.Fprintf(&buf, "Subject: GoNZBD: %s\r\n", safeTitle)
 	fmt.Fprintf(&buf, "Date: %s\r\n", ev.Timestamp.UTC().Format(time.RFC1123Z))
+	fmt.Fprintf(&buf, "MIME-Version: 1.0\r\n")
+	fmt.Fprintf(&buf, "Content-Type: text/plain; charset=utf-8\r\n")
 	fmt.Fprintf(&buf, "\r\n%s", ev.Body)
 	return buf.Bytes()
 }

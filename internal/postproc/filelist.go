@@ -61,7 +61,7 @@ func buildDownloadFileList(job *Job) []string {
 		for srv, bytes := range job.Queue.ServerStats {
 			parts = append(parts, fmt.Sprintf("%s: %s", srv, formatBytesSI(bytes)))
 		}
-		lines = append(lines, "Servers: "+joinStrings(parts))
+		lines = append(lines, "Servers: "+strings.Join(parts, ", "))
 	}
 
 	return lines
@@ -94,18 +94,6 @@ func formatDurationHuman(d time.Duration) string {
 	h := m / 60
 	m = m % 60
 	return fmt.Sprintf("%dh %dm", h, m)
-}
-
-// joinStrings joins strings with ", ".
-func joinStrings(parts []string) string {
-	var result strings.Builder
-	for i, p := range parts {
-		if i > 0 {
-			result.WriteString(", ")
-		}
-		result.WriteString(p)
-	}
-	return result.String()
 }
 
 // buildFinalFileList creates a file listing of the job's final directory
