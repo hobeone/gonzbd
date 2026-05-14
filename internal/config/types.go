@@ -34,6 +34,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -178,7 +179,7 @@ func ParseByteSize(raw string) (ByteSize, error) {
 	return ByteSize(bytes), nil
 }
 
-const maxInt64 = int64(^uint64(0) >> 1)
+const maxInt64 = int64(math.MaxInt64)
 
 // Percent is an integer in the inclusive range [0, 100]. Validation happens
 // at decode time so out-of-range values produce a clear load-time error

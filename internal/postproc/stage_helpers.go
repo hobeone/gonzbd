@@ -13,5 +13,3 @@ func toolOutputLines(raw string) []string {
 	}
 	return out
 }
-
-// archiveTypeName returns a human-readable label for an ArchiveType constant.

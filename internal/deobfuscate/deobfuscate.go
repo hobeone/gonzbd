@@ -224,8 +224,7 @@ func BiggestFile(paths []string) (path string, ok bool, err error) {
 		return biggest.path, true, nil
 	}
 
-	factor := float64(biggest.size) / float64(second.size)
-	if factor > 3.0 {
+	if biggest.size >= 3*second.size {
 		return biggest.path, true, nil
 	}
 	return "", false, nil

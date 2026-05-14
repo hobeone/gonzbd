@@ -78,11 +78,11 @@ func DetectUnrar(ctx context.Context, bin string) UnrarInfo {
 var sevenzVersionRE = regexp.MustCompile(`(?i)7-Zip\s.*?(\d+\.\d+)`)
 
 // DetectSevenZip probes the 7z binary to determine its version.
-// Tries multiple binary names in order: 7z, 7zzs, 7za.
+// Tries multiple binary names in the same order as sevenZipBin: 7zz, 7zzs, 7z, 7za.
 func DetectSevenZip(ctx context.Context, bin string) SevenzInfo {
 	candidates := []string{bin}
 	if bin == "" {
-		candidates = []string{"7z", "7zzs", "7za"}
+		candidates = []string{"7zz", "7zzs", "7z", "7za"}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
