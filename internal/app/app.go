@@ -134,6 +134,10 @@ type Event struct {
 	Tool  string `json:"tool,omitempty"`  // subprocess tool name (par2, unrar, 7z, script)
 	Line  string `json:"line,omitempty"`  // single output line from subprocess
 	Stage string `json:"stage,omitempty"` // pipeline stage name (repair, unpack)
+	// Servers is populated on "metrics" events with per-server
+	// connection snapshots so the UI can render the server status
+	// panel without a separate HTTP poll.
+	Servers []downloader.ServerSnapshot `json:"servers,omitempty"`
 }
 
 type dummyEmitter struct{}
@@ -758,6 +762,7 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 				SpeedLimit:    app.downloader.SpeedLimit(),
 				BandwidthMax:  app.bandwidthMax.Load(),
 				BandwidthPerc: int(app.bandwidthPerc.Load()),
+				Servers:       app.downloader.ServerStatus(),
 			})
 			if speed > 0 {
 				app.emitter.Broadcast(Event{Type: "queue_updated"})
