@@ -347,15 +347,16 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	}
 
 	apiSrv := api.New(api.Options{
-		Version:    Version,
-		Commit:     Commit,
-		Date:       Date,
-		Queue:      application.Queue(),
-		History:    histRepo,
-		Config:     cfg,
-		ConfigPath: configPath,
-		Grabber:    grabber,
-		App:        application,
+		Version:      Version,
+		Commit:       Commit,
+		Date:         Date,
+		Queue:        application.Queue(),
+		History:      histRepo,
+		Config:       cfg,
+		ConfigPath:   configPath,
+		Grabber:      grabber,
+		App:          application,
+		ShutdownFunc: cancel,
 	})
 
 	// Inject the WebSocket broadcaster from the API server into the
