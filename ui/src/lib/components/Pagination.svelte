@@ -30,7 +30,7 @@
 	}
 </script>
 
-{#if total > 0}
+{#if total > 0 && totalPages > 1}
 	<div class="mt-4 flex items-center justify-between px-2">
 		<div class="text-sm text-gray-500 dark:text-gray-400">
 			Showing <span class="font-medium text-gray-900 dark:text-gray-100">{start}</span>
