@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/humanfmt"
 )
 
 // buildDownloadFileList creates the lines for the synthetic "download"
@@ -22,13 +24,13 @@ func buildDownloadFileList(job *Job) []string {
 		dlDuration = job.Queue.DownloadFinished.Sub(job.Queue.DownloadStarted)
 	}
 	lines = append(lines, fmt.Sprintf("Downloaded %s in %s",
-		formatBytesSI(job.Queue.TotalBytes),
-		formatDurationHuman(dlDuration)))
+		humanfmt.BytesSI(job.Queue.TotalBytes),
+		humanfmt.Duration(dlDuration)))
 
 	// Failed/remaining bytes summary.
 	if job.Queue.FailedBytes > 0 {
 		lines = append(lines, fmt.Sprintf("⚠ %s failed (%.1f%%)",
-			formatBytesSI(job.Queue.FailedBytes),
+			humanfmt.BytesSI(job.Queue.FailedBytes),
 			float64(job.Queue.FailedBytes)/float64(job.Queue.TotalBytes)*100))
 	}
 
@@ -51,7 +53,7 @@ func buildDownloadFileList(job *Job) []string {
 			prefix = "  📁 "
 			lines = append(lines, fmt.Sprintf("%s%s/", prefix, e.Name()))
 		} else {
-			lines = append(lines, fmt.Sprintf("%s%s (%s)", prefix, e.Name(), formatBytesSI(sz)))
+			lines = append(lines, fmt.Sprintf("%s%s (%s)", prefix, e.Name(), humanfmt.BytesSI(sz)))
 		}
 	}
 
@@ -59,41 +61,12 @@ func buildDownloadFileList(job *Job) []string {
 	if len(job.Queue.ServerStats) > 0 {
 		var parts []string
 		for srv, bytes := range job.Queue.ServerStats {
-			parts = append(parts, fmt.Sprintf("%s: %s", srv, formatBytesSI(bytes)))
+			parts = append(parts, fmt.Sprintf("%s: %s", srv, humanfmt.BytesSI(bytes)))
 		}
 		lines = append(lines, "Servers: "+strings.Join(parts, ", "))
 	}
 
 	return lines
-}
-
-// formatBytesSI formats bytes into a human-readable string using SI units.
-func formatBytesSI(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMG"[exp])
-}
-
-// formatDurationHuman produces a human-readable duration string.
-func formatDurationHuman(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%.1fs", d.Seconds())
-	}
-	m := int(d.Minutes())
-	s := int(d.Seconds()) % 60
-	if m < 60 {
-		return fmt.Sprintf("%dm %ds", m, s)
-	}
-	h := m / 60
-	m = m % 60
-	return fmt.Sprintf("%dh %dm", h, m)
 }
 
 // buildFinalFileList creates a file listing of the job's final directory
@@ -122,10 +95,10 @@ func buildFinalFileList(job *Job) []string {
 		if e.IsDir() {
 			lines = append(lines, fmt.Sprintf("  📁 %s/", e.Name()))
 		} else {
-			lines = append(lines, fmt.Sprintf("  %s (%s)", e.Name(), formatBytesSI(sz)))
+			lines = append(lines, fmt.Sprintf("  %s (%s)", e.Name(), humanfmt.BytesSI(sz)))
 		}
 	}
-	lines = append(lines, fmt.Sprintf("Total: %s", formatBytesSI(totalSize)))
+	lines = append(lines, fmt.Sprintf("Total: %s", humanfmt.BytesSI(totalSize)))
 
 	return lines
 }
