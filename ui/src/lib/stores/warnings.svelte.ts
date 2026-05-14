@@ -1,12 +1,13 @@
 import { fetchWarnings, postAction } from '$lib/api';
-
-const POLL_INTERVAL = 5000;
+import { subscribeWS } from './websocket.svelte';
+import { reportFailure, reportSuccess, onReconnected } from './connection.svelte';
 
 class WarningStore {
 	#warnings = $state<string[]>([]);
 	#error = $state<string | null>(null);
 	#toastMessage = $state<string | null>(null);
-	#timer: ReturnType<typeof setInterval> | null = null;
+	#wsCleanup: (() => void) | null = null;
+	#reconnectCleanup: (() => void) | null = null;
 
 	get warnings() { return this.#warnings; }
 	get warningCount() { return this.#warnings.length; }
@@ -19,25 +20,42 @@ class WarningStore {
 			const prev = this.#warnings.length;
 			this.#warnings = res.warnings;
 			this.#error = null;
+			reportSuccess();
 			if (this.#warnings.length > prev && prev > 0) {
 				this.#toastMessage = this.#warnings[this.#warnings.length - 1];
 				setTimeout(() => (this.#toastMessage = null), 5000);
 			}
 		} catch (e) {
-			this.#error = e instanceof Error ? e.message : String(e);
+			const msg = e instanceof Error ? e.message : String(e);
+			this.#error = msg;
+			reportFailure(msg);
 		}
 	}
 
 	start() {
-		if (this.#timer) return;
+		if (this.#wsCleanup) return;
+		// Initial fetch on page load.
 		this.poll();
-		this.#timer = setInterval(() => this.poll(), POLL_INTERVAL);
+
+		// React to WS events instead of polling on a timer.
+		this.#wsCleanup = subscribeWS((event) => {
+			if (event.event === 'warnings_updated') {
+				this.poll();
+			}
+		});
+
+		// When ConnectionStore detects reconnection, refetch immediately.
+		this.#reconnectCleanup = onReconnected(() => this.poll());
 	}
 
 	stop() {
-		if (this.#timer) {
-			clearInterval(this.#timer);
-			this.#timer = null;
+		if (this.#wsCleanup) {
+			this.#wsCleanup();
+			this.#wsCleanup = null;
+		}
+		if (this.#reconnectCleanup) {
+			this.#reconnectCleanup();
+			this.#reconnectCleanup = null;
 		}
 	}
 
