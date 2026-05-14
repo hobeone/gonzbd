@@ -344,13 +344,13 @@
 						/>
 					</div>
 				{:else}
-					<div class="flex items-center gap-1 group/rename">
+					<div class="flex items-center gap-1">
 						<div class="font-medium truncate" title={slot.name || slot.filename}>
 							{slot.name || slot.filename}
 						</div>
 						<button
 							onclick={(e: MouseEvent) => { e.stopPropagation(); startRename(); }}
-							class="shrink-0 opacity-0 group-hover/rename:opacity-100 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-opacity"
+							class="shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-opacity"
 							title="Rename"
 						>
 							<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3">
