@@ -195,13 +195,17 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 // AddWarning adds a warning message to the internal store.
 // Old warnings are dropped when the limit is exceeded.
+// A "warnings_updated" event is broadcast to connected WebSocket clients
+// so the UI can react without polling.
 func (s *Server) AddWarning(msg string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.warnings = append(s.warnings, msg)
 	if len(s.warnings) > constants.MaxWarnings {
 		s.warnings = s.warnings[len(s.warnings)-constants.MaxWarnings:]
 	}
+	s.mu.Unlock()
+
+	s.events.Broadcast(Event{Type: "warnings_updated"})
 }
 
 // ClearWarnings empties the warning list.

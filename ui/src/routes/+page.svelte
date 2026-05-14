@@ -5,9 +5,10 @@
 	import WarningsBanner from '$lib/components/WarningsBanner.svelte';
 	import StatusBar from '$lib/components/StatusBar.svelte';
 	import Toast from '$lib/components/Toast.svelte';
+	import ConnectionOverlay from '$lib/components/ConnectionOverlay.svelte';
 	import ShortcutHelp from '$lib/components/ShortcutHelp.svelte';
 	import { onMount, onDestroy } from 'svelte';
-	import { startPolling, stopPolling, isPaused, getQueueSlots, getError, getSpeedBytesPerSec } from '$lib/stores/queue.svelte';
+	import { startPolling, stopPolling, isPaused, getQueueSlots, getSpeedBytesPerSec } from '$lib/stores/queue.svelte';
 	import { startHistoryPolling, stopHistoryPolling } from '$lib/stores/history.svelte';
 	import { startWarningsPolling, stopWarningsPolling } from '$lib/stores/warnings.svelte';
 	import { faviconForState, type AppState } from '$lib/favicon';
@@ -56,14 +57,7 @@
 <div class="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950">
 	<Navbar paused={isPaused()} onpausetoggle={() => {}} />
 	<StatusBar />
-
-	{#if getError()}
-		<div class="mx-auto w-full max-w-7xl px-4 pt-2">
-			<div class="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-				API unreachable: {getError()}
-			</div>
-		</div>
-	{/if}
+	<ConnectionOverlay />
 
 	<div class="mx-auto w-full max-w-7xl flex-1 space-y-6 px-4 pt-4 pb-8">
 		<WarningsBanner />
