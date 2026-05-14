@@ -36,7 +36,7 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 	if err != nil {
 		return "", fmt.Errorf("parse nzb %q: %w", filename, err)
 	}
-	log := h.logger.With("component", "ingest")
+	log := h.logger
 	addOpts := queue.AddOptions{
 		Filename: filename,
 		Name:     opts.NzbName,
@@ -74,7 +74,7 @@ type rssToURLHandler struct {
 }
 
 func (h *rssToURLHandler) HandleItem(ctx context.Context, item rss.Item, feed *rss.Feed) error {
-	log := h.logger.With("component", "rss_adapter")
+	log := h.logger
 	log.Info("rss dispatch", "feed", feed.Name, "title", item.Title, "url", item.URL)
 	_, err := h.grabber.Fetch(ctx, item.URL, types.FetchOptions{PP: types.PPInherit})
 	return err

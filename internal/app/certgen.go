@@ -127,6 +127,13 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("write: %w", err)
 	}
 
+	if err := tmp.Sync(); err != nil {
+		//nolint:errcheck // best-effort cleanup; sync error takes precedence
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("sync: %w", err)
+	}
+
 	if err := tmp.Close(); err != nil {
 		//nolint:errcheck // best-effort cleanup; close error takes precedence
 		_ = os.Remove(tmpName)

@@ -15,7 +15,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -398,7 +398,7 @@ func (app *Application) finalizeJob(job *postproc.Job) {
 	for s := range job.Queue.ServerStats {
 		serverNames = append(serverNames, s)
 	}
-	sort.Strings(serverNames)
+	slices.Sort(serverNames)
 	for _, s := range serverNames {
 		b := job.Queue.ServerStats[s]
 		serverStatsParts = append(serverStatsParts, fmt.Sprintf("%s=%.1f MB", s, float64(b)/(1024*1024)))

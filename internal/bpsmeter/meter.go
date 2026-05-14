@@ -34,7 +34,7 @@ type serverState struct {
 // of 1-second buckets. Buckets older than Window are ignored, causing BPS to
 // decay naturally to 0 once traffic stops.
 type Meter struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	clock   func() time.Time
 	window  time.Duration
 	bucketN int // number of buckets == ceil(window/s)+1
@@ -145,8 +145,8 @@ func (m *Meter) bps(s *serverState, now time.Time) float64 {
 // BPS returns the current rolling BPS for the named server.
 // Pass "" for the aggregate across all servers.
 func (m *Meter) BPS(server string) float64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	s, ok := m.servers[server]
 	if !ok {
@@ -157,8 +157,8 @@ func (m *Meter) BPS(server string) float64 {
 
 // Total returns lifetime bytes for the named server.
 func (m *Meter) Total(server string) int64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	s, ok := m.servers[server]
 	if !ok {
@@ -183,8 +183,8 @@ type ServerStat struct {
 
 // Snapshot returns a point-in-time view of all per-server totals and current BPS.
 func (m *Meter) Snapshot() MeterSnapshot {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	now := m.clock()
 	agg := m.servers[""]

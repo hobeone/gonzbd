@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -860,12 +859,16 @@ func (q *Queue) insertByPriorityLocked(job *Job) {
 	// lower priority than the new one; insert before it. This places
 	// the new job at the end of its priority tier when the queue is
 	// already sorted.
-	i := sort.Search(len(q.jobs), func(i int) bool {
-		return q.jobs[i].Priority < job.Priority
+	i, _ := slices.BinarySearchFunc(q.jobs, job, func(existing, target *Job) int {
+		// Descending order: higher priority comes first.
+		// Return -1 while existing.Priority >= target.Priority (keep going),
+		// +1 when existing.Priority < target.Priority (insert here).
+		if existing.Priority >= target.Priority {
+			return -1
+		}
+		return 1
 	})
-	q.jobs = append(q.jobs, nil)
-	copy(q.jobs[i+1:], q.jobs[i:])
-	q.jobs[i] = job
+	q.jobs = slices.Insert(q.jobs, i, job)
 }
 
 func (q *Queue) indexOfLocked(id string) (int, bool) {

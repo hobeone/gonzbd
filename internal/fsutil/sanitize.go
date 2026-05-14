@@ -74,46 +74,11 @@ func SanitizeFilename(filename string, opts SanitizeOptions) string {
 	if filename == "" {
 		return "unknown"
 	}
-
-	// 1. NFC Normalization (standard first step)
-	filename = norm.NFC.String(filename)
-
-	// 2. Strip diacritics if requested
-	if opts.StripDiacritics {
-		filename = stripDiacritics(filename)
-	}
-
-	// 3. Remove illegal characters (control characters 0-31 and Windows reserved characters)
-	illegal := "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f" +
-		"\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f" +
-		`\/:*?"<>|`
-
-	illegalReplacement := opts.ReplaceIllegalWith
-	if illegalReplacement == "" {
-		illegalReplacement = "_"
-	}
-
-	for _, char := range illegal {
-		filename = strings.ReplaceAll(filename, string(char), illegalReplacement)
-	}
-
-	if opts.ReplaceSpacesWith != "" {
-		filename = strings.ReplaceAll(filename, " ", opts.ReplaceSpacesWith)
-	}
-
-	filename = strings.TrimSpace(filename)
-
-	// 4. Replace Windows reserved device names
-	filename = replaceWinDevices(filename)
-
-	// 5. Remove trailing dots and spaces (invalid on Windows)
+	filename = sanitizeCore(filename, opts)
 	filename = strings.TrimRight(filename, ". ")
-
 	if filename == "" {
 		return "unknown"
 	}
-
-	// 6. Truncate length while preserving extension.
 	return truncateFilename(filename, maxFilenameBytes)
 }
 
@@ -123,51 +88,55 @@ func SanitizeFolderName(foldername string, opts SanitizeOptions) string {
 	if foldername == "" {
 		return "unknown"
 	}
+	foldername = sanitizeCore(foldername, opts)
+	if len(foldername) > maxFilenameBytes {
+		foldername = truncateFilename(foldername, maxFilenameBytes)
+	}
+	foldername = strings.TrimRight(foldername, ". ")
+	if foldername == "" {
+		return "unknown"
+	}
+	return foldername
+}
 
-	// 1. NFC Normalization
-	foldername = norm.NFC.String(foldername)
+// sanitizeCore applies the shared sanitization steps used by both
+// SanitizeFilename and SanitizeFolderName: NFC normalization, optional
+// diacritics removal, illegal character replacement, space replacement,
+// trimming, and Windows reserved-name handling. The caller is responsible
+// for truncation and trailing-dot policy, which differ between files and
+// folders.
+func sanitizeCore(name string, opts SanitizeOptions) string {
+	// 1. NFC Normalization (standard first step).
+	name = norm.NFC.String(name)
 
-	// 2. Strip diacritics if requested
+	// 2. Strip diacritics if requested.
 	if opts.StripDiacritics {
-		foldername = stripDiacritics(foldername)
+		name = stripDiacritics(name)
 	}
 
-	// 3. Remove illegal characters
+	// 3. Remove illegal characters (control characters 0-31 and Windows reserved characters).
 	illegal := "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f" +
 		"\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f" +
 		`\/:*?"<>|`
-
 	illegalReplacement := opts.ReplaceIllegalWith
 	if illegalReplacement == "" {
 		illegalReplacement = "_"
 	}
-
 	for _, char := range illegal {
-		foldername = strings.ReplaceAll(foldername, string(char), illegalReplacement)
+		name = strings.ReplaceAll(name, string(char), illegalReplacement)
 	}
 
+	// 4. Replace spaces if configured.
 	if opts.ReplaceSpacesWith != "" {
-		foldername = strings.ReplaceAll(foldername, " ", opts.ReplaceSpacesWith)
+		name = strings.ReplaceAll(name, " ", opts.ReplaceSpacesWith)
 	}
 
-	foldername = strings.TrimSpace(foldername)
+	name = strings.TrimSpace(name)
 
-	// 4. Replace Windows reserved device names
-	foldername = replaceWinDevices(foldername)
+	// 5. Replace Windows reserved device names.
+	name = replaceWinDevices(name)
 
-	// 5. Truncate length
-	if len(foldername) > maxFilenameBytes {
-		foldername = truncateFilename(foldername, maxFilenameBytes)
-	}
-
-	// 6. Remove trailing dots and spaces (invalid on Windows)
-	foldername = strings.TrimRight(foldername, ". ")
-
-	if foldername == "" {
-		return "unknown"
-	}
-
-	return foldername
+	return name
 }
 
 // stripDiacritics replaces accented characters with their ASCII equivalents.
