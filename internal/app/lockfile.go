@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"syscall"
 )
 
@@ -17,8 +18,10 @@ var ErrLocked = errors.New("app: lockfile already held")
 // Lockfile is an exclusive advisory lock obtained via flock(2). The lock
 // is released when Release is called or when the process exits.
 type Lockfile struct {
-	path string
-	f    *os.File
+	path       string
+	f          *os.File
+	releaseErr error
+	once       sync.Once
 }
 
 // AcquireLockfile opens or creates path and takes an exclusive,
@@ -59,21 +62,18 @@ func fdOf(f *os.File) int {
 	return int(f.Fd()) //nolint:gosec // G115: fd is a small non-negative integer
 }
 
-// Release unlocks and closes the lockfile. Safe to call multiple times;
-// the second and later calls return nil.
+// Release unlocks and closes the lockfile. Safe to call concurrently
+// and multiple times; the second and later calls return nil.
 func (l *Lockfile) Release() error {
-	if l.f == nil {
-		return nil
-	}
-	f := l.f
-	l.f = nil
-	unlockErr := syscall.Flock(fdOf(f), syscall.LOCK_UN)
-	closeErr := f.Close()
-	switch {
-	case unlockErr != nil:
-		return fmt.Errorf("unlock %s: %w", l.path, unlockErr)
-	case closeErr != nil:
-		return fmt.Errorf("close %s: %w", l.path, closeErr)
-	}
-	return nil
+	l.once.Do(func() {
+		unlockErr := syscall.Flock(fdOf(l.f), syscall.LOCK_UN)
+		closeErr := l.f.Close()
+		switch {
+		case unlockErr != nil:
+			l.releaseErr = fmt.Errorf("unlock %s: %w", l.path, unlockErr)
+		case closeErr != nil:
+			l.releaseErr = fmt.Errorf("close %s: %w", l.path, closeErr)
+		}
+	})
+	return l.releaseErr
 }
