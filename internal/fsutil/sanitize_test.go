@@ -312,3 +312,52 @@ func TestSanitizeFilename_NullByte(t *testing.T) {
 		})
 	}
 }
+
+// T8: Dedicated replaceWinDevices tests covering device names and $mft.
+func TestReplaceWinDevices(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		// Standard reserved device names.
+		{"CON", "CON", "_CON"},
+		{"con lowercase", "con", "_con"},
+		{"PRN", "PRN", "_PRN"},
+		{"AUX", "AUX", "_AUX"},
+		{"NUL", "NUL", "_NUL"},
+		{"COM1", "COM1", "_COM1"},
+		{"COM9", "COM9", "_COM9"},
+		{"LPT1", "LPT1", "_LPT1"},
+		{"LPT9", "LPT9", "_LPT9"},
+
+		// Device name with extension — HasPrefix(lower, resLower+".").
+		{"CON.txt", "CON.txt", "_CON.txt"},
+		{"prn.dat", "prn.dat", "_prn.dat"},
+		{"aux.bin", "aux.bin", "_aux.bin"},
+		{"com1.log", "com1.log", "_com1.log"},
+
+		// $mft special case — replace $ with S.
+		{"$mft", "$mft", "Smft"},
+		{"$MFT", "$MFT", "SMFT"},
+		{"$mft.bin", "$mft.bin", "Smft.bin"},
+
+		// Safe names — should pass through unchanged.
+		{"normal file", "normal.txt", "normal.txt"},
+		{"connect (not CON)", "connect", "connect"},
+		{"concerto", "concerto.mp3", "concerto.mp3"},
+		{"lpt10 (not reserved)", "lpt10", "lpt10"},
+		{"com10", "com10", "com10"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := replaceWinDevices(tt.input)
+			if got != tt.want {
+				t.Errorf("replaceWinDevices(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
