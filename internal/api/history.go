@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/humanfmt"
 )
 
 // modeHistory handles mode=history with sub-actions via the name= parameter.
@@ -202,7 +203,7 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 				NZBName:      j.Filename,
 				Status:       ppStatus,
 				Category:     j.Category,
-				Size:         formatBytes(j.TotalBytes),
+				Size:         humanfmt.Bytes(j.TotalBytes),
 				Bytes:        j.TotalBytes,
 				Downloaded:   j.TotalBytes - j.FailedBytes - j.RemainingBytes,
 				DownloadTime: dlTime,
@@ -229,7 +230,7 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 			FailMsg:      e.FailMessage,
 			Storage:      e.Storage,
 			Path:         e.Path,
-			Size:         formatBytes(e.Bytes),
+			Size:         humanfmt.Bytes(e.Bytes),
 			Bytes:        e.Bytes,
 			Downloaded:   e.Downloaded,
 			Completeness: e.Completeness,
@@ -252,7 +253,7 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 		Status: true,
 		History: historyDetail{
 			NoOfSlots: totalCount,
-			TotalSize: formatBytes(totalBytes),
+			TotalSize: humanfmt.Bytes(totalBytes),
 			Slots:     slots,
 		},
 	})

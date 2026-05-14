@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"strings"
 
 	"github.com/hobeone/gonzbd/internal/config"
 )
@@ -107,13 +108,7 @@ func verifyConnectionIgnoreHostname(cs tls.ConnectionState) error {
 func parseCipherList(s string) ([]uint16, error) {
 	lookup := cipherNameIndex()
 	var out []uint16
-	start := 0
-	for i := 0; i <= len(s); i++ {
-		if i != len(s) && s[i] != ':' {
-			continue
-		}
-		name := s[start:i]
-		start = i + 1
+	for _, name := range strings.Split(s, ":") {
 		if name == "" {
 			continue
 		}
