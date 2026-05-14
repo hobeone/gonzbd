@@ -48,6 +48,9 @@ func (nopApp) SetDownloadDir(string)                                  {}
 func (nopApp) SetCompleteDir(string)                                  {}
 func (nopApp) PauseDownloads()                                        {}
 func (nopApp) ResumeDownloads()                                       {}
+func (nopApp) DisconnectAll()                                         {}
+func (nopApp) PausePostProcessor()                                    {}
+func (nopApp) ResumePostProcessor()                                   {}
 func (nopApp) ServerStatus() []downloader.ServerSnapshot              { return nil }
 func (nopApp) Speed() float64                                         { return 0 }
 
