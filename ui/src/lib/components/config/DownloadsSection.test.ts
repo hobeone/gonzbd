@@ -13,6 +13,7 @@ describe('DownloadsSection', () => {
 			min_free_space: '1G',
 			write_cache_size: '500M',
 			max_art_tries: 3,
+			top_only: false,
 			pre_check: true,
 			replace_illegal_with: '_',
 			replace_spaces_with: '.',
@@ -32,6 +33,7 @@ describe('DownloadsSection', () => {
 		expect(screen.getByText('Minimum Free Space')).toBeInTheDocument();
 		expect(screen.getByText('Article Cache')).toBeInTheDocument();
 		expect(screen.getByText('Article Retries')).toBeInTheDocument();
+		expect(screen.getByText('Top-only server mode')).toBeInTheDocument();
 		expect(screen.getByText('Pre-check article availability')).toBeInTheDocument();
 		expect(screen.getByText('Naming & Cleanup')).toBeInTheDocument();
 		expect(screen.getByText('Replace Illegal Characters With')).toBeInTheDocument();
@@ -63,6 +65,7 @@ describe('DownloadsSection', () => {
 			{ keyword: 'min_free_space',        inputId: 'downloads-min_free_space',        newValue: '2G'   },
 			{ keyword: 'write_cache_size',      inputId: 'downloads-write_cache_size',      newValue: '750M' },
 			{ keyword: 'max_art_tries',         inputId: 'downloads-max_art_tries',         newValue: '7'    },
+			{ keyword: 'top_only',               inputId: 'downloads-top_only',               newValue: '',    isSwitch: true },
 			{ keyword: 'pre_check',             inputId: 'downloads-pre_check',             newValue: '',    isSwitch: true },
 			{ keyword: 'replace_illegal_with',  inputId: 'downloads-replace_illegal_with',  newValue: '-'   },
 			{ keyword: 'replace_spaces_with',   inputId: 'downloads-replace_spaces_with',   newValue: '_'   },
