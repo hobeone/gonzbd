@@ -2,6 +2,8 @@ package app
 
 import (
 	"os/exec"
+
+	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // CheckDependencies verifies that the required external programs (unrar, 7z, par2)
@@ -15,12 +17,13 @@ func CheckDependencies() []string {
 		warnings = append(warnings, "External program \"par2\" not found in PATH. PAR2 repair will fail.")
 	}
 
-	// 7-zip: prefer 7zz, fall back to 7z.
+	// 7-zip: check all known binary names (7zz, 7zzs, 7z, 7za).
 	has7zip := false
-	if _, err := exec.LookPath("7zz"); err == nil {
-		has7zip = true
-	} else if _, err := exec.LookPath("7z"); err == nil {
-		has7zip = true
+	for _, name := range unpack.SevenZipBinaries {
+		if _, err := exec.LookPath(name); err == nil {
+			has7zip = true
+			break
+		}
 	}
 
 	// unrar is optional — 7zip handles RAR3/4/5 natively.

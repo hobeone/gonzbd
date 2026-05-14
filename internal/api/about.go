@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // modeAbout returns system information for the About dialog: version,
@@ -150,8 +151,7 @@ func resolveBinary(cfgPath, fallback string) string {
 }
 
 // resolve7z resolves the 7z binary. It first checks the config override
-// (resolved via LookPath), then tries "7zz" (modern standalone), then
-// "7z" (classic) via PATH.
+// (resolved via LookPath), then tries known binary names (7zz, 7zzs, 7z, 7za).
 func resolve7z(cfgPath string) string {
 	if cfgPath != "" {
 		if p, err := exec.LookPath(cfgPath); err == nil {
@@ -159,11 +159,10 @@ func resolve7z(cfgPath string) string {
 		}
 		return ""
 	}
-	if p, err := exec.LookPath("7zz"); err == nil {
-		return p
-	}
-	if p, err := exec.LookPath("7z"); err == nil {
-		return p
+	for _, name := range unpack.SevenZipBinaries {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
 	}
 	return ""
 }
