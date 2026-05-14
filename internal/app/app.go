@@ -746,19 +746,20 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Trigger a table refresh only while actively downloading so
+			// individual job percentages update, but avoid pointless
+			// refreshes when idle or paused.
 			remaining := app.queue.TotalRemainingBytes()
+			speed := app.downloader.Speed()
 			app.emitter.Broadcast(Event{
 				Type:          "metrics",
-				Speed:         int64(app.downloader.Speed()),
+				Speed:         int64(speed),
 				Remaining:     remaining,
 				SpeedLimit:    app.downloader.SpeedLimit(),
 				BandwidthMax:  app.bandwidthMax.Load(),
 				BandwidthPerc: int(app.bandwidthPerc.Load()),
 			})
-			// Trigger a table refresh only while actively downloading so
-			// individual job percentages update, but avoid pointless
-			// refreshes when idle.
-			if remaining > 0 {
+			if speed > 0 {
 				app.emitter.Broadcast(Event{Type: "queue_updated"})
 			}
 		}

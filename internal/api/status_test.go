@@ -61,7 +61,7 @@ func TestModeStatus_SubActionNotImplemented(t *testing.T) {
 	q := queue.New()
 	s := testServerWithQueue(t, q)
 
-	rr := apiGet(t, s.Handler(), "/api?mode=status&name=unblock_server&apikey="+testAPIKey)
+	rr := apiGet(t, s.Handler(), "/api?mode=status&name=delete_orphan&apikey="+testAPIKey)
 	if rr.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d; want 501", rr.Code)
 	}
