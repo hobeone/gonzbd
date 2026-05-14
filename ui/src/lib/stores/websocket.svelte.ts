@@ -13,6 +13,7 @@ export interface WSEvent {
 	tool?: string;
 	line?: string;
 	stage?: string;
+	servers?: import('$lib/types').ServerSnapshot[];
 }
 
 type Handler = (event: WSEvent) => void;

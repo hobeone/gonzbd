@@ -1,5 +1,5 @@
 import { fetchQueue, postAction } from '$lib/api';
-import type { QueueDetail, QueueSlot } from '$lib/types';
+import type { QueueDetail, QueueSlot, ServerSnapshot } from '$lib/types';
 import { subscribeWS } from './websocket.svelte';
 import { reportFailure, reportSuccess, onReconnected } from './connection.svelte';
 
@@ -22,6 +22,7 @@ class QueueStore {
 	#speedLimitBytesPerSec = $state(0);
 	#bandwidthMaxBytesPerSec = $state(0);
 	#bandwidthPerc = $state(100);
+	#serverStats = $state<ServerSnapshot[]>([]);
 
 	// Debounce: prevent overlapping poll() calls from piling up.
 	#pollInFlight = false;
@@ -39,6 +40,7 @@ class QueueStore {
 	get speedLimitBytesPerSec() { return this.#speedLimitBytesPerSec; }
 	get bandwidthMaxBytesPerSec() { return this.#bandwidthMaxBytesPerSec; }
 	get bandwidthPerc() { return this.#bandwidthPerc; }
+	get serverStats() { return this.#serverStats; }
 
 	async poll() {
 		// If a poll is already in-flight, mark dirty so we re-poll when
@@ -104,6 +106,9 @@ class QueueStore {
 				this.#bandwidthMaxBytesPerSec = event.bandwidth_max ?? 0;
 				this.#bandwidthPerc = event.bandwidth_perc ?? 100;
 				this.#speedHistory = [...this.#speedHistory.slice(-(SPEED_HISTORY_SIZE - 1)), this.#speedBytesPerSec];
+				if (event.servers) {
+					this.#serverStats = event.servers;
+				}
 			}
 		});
 
@@ -187,6 +192,7 @@ export const getTotalRemainingBytes = () => store.totalRemainingBytes;
 export const getSpeedLimitBytesPerSec = () => store.speedLimitBytesPerSec;
 export const getBandwidthMaxBytesPerSec = () => store.bandwidthMaxBytesPerSec;
 export const getBandwidthPerc = () => store.bandwidthPerc;
+export const getServerStats = () => store.serverStats;
 export const setBandwidthPerc = (perc: number) => store.setBandwidthPerc(perc);
 
 export { formatSpeed, formatSize } from '$lib/utils';

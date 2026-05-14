@@ -7,6 +7,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/downloader"
 )
 
 // T10: Test that wsAdapter faithfully forwards all app.Event fields —
@@ -31,6 +32,9 @@ func TestWsAdapter_ForwardsAllFields(t *testing.T) {
 		Tool:          "par2",
 		Line:          "Verifying: myfile.rar",
 		Stage:         "repair",
+		Servers: []downloader.ServerSnapshot{
+			{Name: "news.example.com", Host: "news.example.com", Port: 563, SSL: true},
+		},
 	}
 
 	// Call the adapter to verify it doesn't panic. (No connected
@@ -50,6 +54,7 @@ func TestWsAdapter_ForwardsAllFields(t *testing.T) {
 		Tool:          appEvent.Tool,
 		Line:          appEvent.Line,
 		Stage:         appEvent.Stage,
+		Servers:       appEvent.Servers,
 	}
 
 	data, err := json.Marshal(apiEvent)
@@ -83,5 +88,13 @@ func TestWsAdapter_ForwardsAllFields(t *testing.T) {
 		if c.got != c.want {
 			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
 		}
+	}
+
+	// Verify Servers slice round-trips correctly.
+	if len(decoded.Servers) != 1 {
+		t.Fatalf("Servers length = %d; want 1", len(decoded.Servers))
+	}
+	if decoded.Servers[0].Name != "news.example.com" {
+		t.Errorf("Servers[0].Name = %q; want %q", decoded.Servers[0].Name, "news.example.com")
 	}
 }
