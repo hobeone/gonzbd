@@ -210,6 +210,29 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 	}
 
 	mask, hasTried := d.tryList[key]
+
+	// MaxArtTries: if the article has already been tried on the maximum
+	// number of servers, declare it permanently failed. This prevents
+	// infinite retry loops on articles that consistently fail on all servers.
+	if d.opts.MaxArtTries > 0 && hasTried && mask.count() >= d.opts.MaxArtTries {
+		d.log.Warn("article exceeded max retries", "msgid", messageID, "job", jobID, "tries", mask.count(), "max", d.opts.MaxArtTries)
+		return true, req
+	}
+
+	// TopOnly: find the minimum (most preferred) server priority so we
+	// can skip backup servers when enabled.
+	minPriority := -1
+	if d.opts.TopOnly {
+		for idx := range d.servers {
+			cfg := &serverCfgs[idx]
+			if cfg.Enable {
+				if minPriority < 0 || cfg.Priority < minPriority {
+					minPriority = cfg.Priority
+				}
+			}
+		}
+	}
+
 	anyEligible := false
 	allTried := true // assume all tried until proven otherwise
 	for idx, srv := range d.servers {
@@ -220,6 +243,10 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 		// Permanently disabled servers are not candidates — skip them
 		// entirely so they don't prevent allTried from becoming true.
 		if !cfg.Enable {
+			continue
+		}
+		// TopOnly: skip servers that are not in the primary group.
+		if d.opts.TopOnly && cfg.Priority > minPriority {
 			continue
 		}
 		// This server hasn't been tried yet.

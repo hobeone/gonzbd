@@ -329,6 +329,33 @@ func (q *Queue) SetPP(id string, pp int) error {
 	return nil
 }
 
+// SetName changes a job's display name. Returns ErrNotFound if absent.
+func (q *Queue) SetName(id, name string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[id]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	job.Name = name
+	q.dirty.Store(true)
+	return nil
+}
+
+// SetScript changes a job's post-processing script. Returns ErrNotFound
+// if absent.
+func (q *Queue) SetScript(id, script string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[id]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	job.Script = script
+	q.dirty.Store(true)
+	return nil
+}
+
 // SetCategory changes a job's category and inherits the new category's PP
 // level, script, and priority — matching SABnzbd's change_cat semantics.
 // config.FindCategory resolves name against cats (case-insensitive), falling
