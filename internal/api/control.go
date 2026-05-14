@@ -34,16 +34,24 @@ func (s *Server) modeResume(w http.ResponseWriter, r *http.Request) {
 	respondStatus(w)
 }
 
-// modeShutdown initiates server shutdown (not implemented).
+// modeShutdown initiates a graceful application exit. The process exits
+// cleanly so the process manager (systemd, Docker) can handle restarts.
 func (s *Server) modeShutdown(w http.ResponseWriter, r *http.Request) {
-	// TODO: Requires shutdown hook wired to main server loop.
-	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: shutdown")
+	if s.shutdownFunc == nil {
+		s.respondError(w, http.StatusNotImplemented, "not implemented in this build: shutdown")
+		return
+	}
+	s.log.Info("shutdown requested via API")
+	respondStatus(w)
+	// Call shutdown asynchronously so the HTTP response is sent first.
+	go s.shutdownFunc()
 }
 
-// modeRestart restarts the server (not implemented).
+// modeRestart is an alias for modeShutdown. Go binaries don't self-restart;
+// the process manager (systemd, Docker, etc.) is expected to restart the
+// process after a clean exit.
 func (s *Server) modeRestart(w http.ResponseWriter, r *http.Request) {
-	// TODO: Requires restart mechanism.
-	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: restart")
+	s.modeShutdown(w, r)
 }
 
 // modeDisconnect disconnects all idle NNTP connections. Workers stay alive
