@@ -18,10 +18,10 @@ const (
 	cmdHead
 	cmdStat
 	cmdCapabilities
-	cmdDate
-	cmdQuit
-	cmdAuthInfoUser
-	cmdAuthInfoPass
+	_cmdDate         // reserved: protocol constant, not yet used
+	_cmdQuit         // reserved: protocol constant, not yet used
+	_cmdAuthInfoUser // reserved: protocol constant, not yet used
+	_cmdAuthInfoPass // reserved: protocol constant, not yet used
 )
 
 // pendingCmd is a placeholder entry in the FIFO of outstanding

@@ -219,7 +219,7 @@ func truncateFilename(filename string, maxBytes int) string {
 		if currentBytes+rLen > maxBaseBytes {
 			break
 		}
-		truncatedBase.WriteString(string(r))
+		truncatedBase.WriteRune(r)
 		currentBytes += rLen
 	}
 

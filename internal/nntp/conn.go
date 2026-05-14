@@ -18,8 +18,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
-// ... (keep sentinel errors and ServerError)
-
 type limitReader struct {
 	r      io.Reader
 	lim    RateLimiter

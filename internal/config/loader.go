@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -56,7 +55,7 @@ func decode(r io.Reader) (*Config, error) {
 	// Doing so would silently corrupt any value containing '$' characters
 	// (passwords, API keys, regex patterns). Environment variable expansion
 	// for path fields is handled post-parse by cfg.ExpandPaths().
-	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true) // reject unknown keys to catch typos
 	if err := dec.Decode(cfg); err != nil {
 		if errors.Is(err, io.EOF) {
