@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"golang.org/x/text/encoding/charmap"
 )
 
 // maxArticleSize is the upper bound on a plausible NNTP article payload
@@ -49,70 +50,11 @@ func charsetReader(label string, input io.Reader) (io.Reader, error) {
 	case "", "utf-8", "utf8":
 		return input, nil
 	case "iso-8859-1", "latin1", "latin-1", "iso8859-1":
-		return &latin1Reader{src: input}, nil
+		return charmap.ISO8859_1.NewDecoder().Reader(input), nil
 	}
 	return nil, fmt.Errorf("nzb: unsupported XML charset %q", label)
 }
 
-// latin1Reader re-encodes an ISO-8859-1 byte stream into UTF-8 on the
-// fly. Each input byte is a Unicode codepoint (by construction of
-// latin-1), so we emit either the byte verbatim (0x00-0x7F) or a 2-byte
-// UTF-8 sequence (0x80-0xFF). The implementation keeps no unbounded
-// buffer: if the caller's buffer would be truncated mid-high-byte (where
-// one input byte expands to two), we stash the pending byte and finish
-// on the next Read.
-type latin1Reader struct {
-	src     io.Reader
-	pending byte // 0 when no pending output byte; otherwise the trailing UTF-8 byte
-	hasPend bool
-	buf     [4096]byte
-}
-
-func (r *latin1Reader) Read(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
-	n := 0
-	if r.hasPend {
-		p[0] = r.pending
-		r.hasPend = false
-		n = 1
-		if n == len(p) {
-			return n, nil
-		}
-	}
-	// Read at most half of the remaining space so every high byte has
-	// room for its 2-byte expansion.
-	readLen := (len(p) - n + 1) / 2
-	if readLen == 0 {
-		return n, nil
-	}
-	if readLen > len(r.buf) {
-		readLen = len(r.buf)
-	}
-	buf := r.buf[:readLen]
-	m, err := r.src.Read(buf)
-	for i := range m {
-		b := buf[i]
-		if b < 0x80 {
-			p[n] = b
-			n++
-			continue
-		}
-		// b is 0x80..0xFF; emit as two-byte UTF-8: 110xxxxx 10xxxxxx.
-		p[n] = 0xC0 | (b >> 6)
-		n++
-		lo := 0x80 | (b & 0x3F)
-		if n < len(p) {
-			p[n] = lo
-			n++
-		} else {
-			r.pending = lo
-			r.hasPend = true
-		}
-	}
-	return n, err
-}
 
 // Parse decodes an NZB document from r. Gzip and bzip2 envelopes are
 // detected by magic bytes and transparently unwrapped, so callers can
