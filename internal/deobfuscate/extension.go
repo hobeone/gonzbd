@@ -106,34 +106,26 @@ func FixExtension(ctx context.Context, log *slog.Logger, path string) (Rename, e
 	ext := strings.ToLower(filepath.Ext(path))
 
 	if popularExts[ext] {
-		if log != nil {
-			log.Debug("deobfuscate: extension already popular, skipping",
-				"file", base, "ext", ext)
-		}
+		log.Debug("deobfuscate: extension already popular, skipping",
+			"file", base, "ext", ext)
 		return Rename{}, nil
 	}
 
 	if hasCollisionSuffix(path) {
-		if log != nil {
-			m := collisionSuffixRe.FindStringSubmatch(path)
-			log.Info("deobfuscate: file has collision suffix, skipping extension fix",
-				"file", base, "real_ext", m[1], "suffix", m[2])
-		}
+		m := collisionSuffixRe.FindStringSubmatch(path)
+		log.Info("deobfuscate: file has collision suffix, skipping extension fix",
+			"file", base, "real_ext", m[1], "suffix", m[2])
 		return Rename{}, nil
 	}
 
 	if rarVolumeRe.MatchString(base) {
-		if log != nil {
-			log.Debug("deobfuscate: multi-volume archive name, skipping extension fix",
-				"file", base, "ext", ext)
-		}
+		log.Debug("deobfuscate: multi-volume archive name, skipping extension fix",
+			"file", base, "ext", ext)
 		return Rename{}, nil
 	}
 
-	if log != nil {
-		log.Debug("deobfuscate: extension not popular, sniffing magic bytes",
-			"file", base, "ext", ext)
-	}
+	log.Debug("deobfuscate: extension not popular, sniffing magic bytes",
+		"file", base, "ext", ext)
 
 	kind, err := filetype.MatchFile(path)
 	if err != nil {
@@ -150,26 +142,20 @@ func FixExtension(ctx context.Context, log *slog.Logger, path string) (Rename, e
 		isRAR, _ := rarheader.IsRAR(path)
 		if isRAR {
 			if ext == ".rar" {
-				if log != nil {
-					log.Debug("deobfuscate: RAR content with .rar extension, no fix needed",
-						"file", base)
-				}
+				log.Debug("deobfuscate: RAR content with .rar extension, no fix needed",
+					"file", base)
 				return Rename{}, nil
 			}
 			newPath := path + ".rar"
-			if log != nil {
-				log.Info("deobfuscate: RAR content detected by magic bytes, appending .rar",
-					"file", base, "current_ext", ext)
-			}
+			log.Info("deobfuscate: RAR content detected by magic bytes, appending .rar",
+				"file", base, "current_ext", ext)
 			if err := os.Rename(path, newPath); err != nil {
 				return Rename{}, fmt.Errorf("rename %s → %s: %w", path, newPath, err)
 			}
 			return Rename{From: path, To: newPath}, nil
 		}
-		if log != nil {
-			log.Debug("deobfuscate: unknown content type, no extension fix",
-				"file", base)
-		}
+		log.Debug("deobfuscate: unknown content type, no extension fix",
+			"file", base)
 		return Rename{}, nil
 	}
 
@@ -177,18 +163,14 @@ func FixExtension(ctx context.Context, log *slog.Logger, path string) (Rename, e
 
 	// Don't rename if the current extension already matches the detected type.
 	if ext == detectedExt {
-		if log != nil {
-			log.Debug("deobfuscate: extension matches detected type, no fix needed",
-				"file", base, "ext", ext)
-		}
+		log.Debug("deobfuscate: extension matches detected type, no fix needed",
+			"file", base, "ext", ext)
 		return Rename{}, nil
 	}
 
 	newPath := path + detectedExt
-	if log != nil {
-		log.Info("deobfuscate: content type detected, appending correct extension",
-			"file", base, "current_ext", ext, "detected_ext", detectedExt)
-	}
+	log.Info("deobfuscate: content type detected, appending correct extension",
+		"file", base, "current_ext", ext, "detected_ext", detectedExt)
 	if err := os.Rename(path, newPath); err != nil {
 		return Rename{}, fmt.Errorf("rename %s → %s: %w", path, newPath, err)
 	}
