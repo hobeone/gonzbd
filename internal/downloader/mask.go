@@ -74,3 +74,22 @@ func (m *serverMask) isEmpty() bool {
 	}
 	return true
 }
+
+// count returns the number of servers that have been tried.
+// Uses Brian Kernighan's bit-counting algorithm for O(k) where k is
+// the number of set bits.
+func (m *serverMask) count() int {
+	n := 0
+	v := m.fast[0]
+	for v != 0 {
+		v &= v - 1
+		n++
+	}
+	for _, w := range m.slow {
+		for w != 0 {
+			w &= w - 1
+			n++
+		}
+	}
+	return n
+}

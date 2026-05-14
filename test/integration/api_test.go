@@ -51,6 +51,7 @@ func (nopApp) ResumeDownloads()                                       {}
 func (nopApp) DisconnectAll()                                         {}
 func (nopApp) PausePostProcessor()                                    {}
 func (nopApp) ResumePostProcessor()                                   {}
+func (nopApp) UnblockServer(string) bool                              { return true }
 func (nopApp) ServerStatus() []downloader.ServerSnapshot              { return nil }
 func (nopApp) Speed() float64                                         { return 0 }
 
