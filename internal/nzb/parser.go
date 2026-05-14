@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -361,7 +361,7 @@ func convertFile(xf xmlFile, now time.Time, digest hash.Hash) (File, int64, arti
 	for p := range byPart {
 		parts = append(parts, p)
 	}
-	sort.Ints(parts)
+	slices.Sort(parts)
 
 	file.Articles = make([]Article, 0, len(parts))
 	for _, p := range parts {
