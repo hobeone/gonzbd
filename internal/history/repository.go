@@ -233,11 +233,14 @@ func buildWhereClause(opts SearchOptions) (where []string, args []any) {
 	return where, args
 }
 
-// escapeLike escapes SQL LIKE special characters (%, _, \) in s so they
+// likeReplacer escapes SQL LIKE special characters (%, _, \) so they
+// are matched literally. Built once at package init.
+var likeReplacer = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// escapeLike escapes SQL LIKE special characters in s so they
 // are matched literally. The caller must add ESCAPE '\\' to the LIKE clause.
 func escapeLike(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
-	return r.Replace(s)
+	return likeReplacer.Replace(s)
 }
 
 // Count returns the total number of entries matching opts, ignoring Start and Limit.
