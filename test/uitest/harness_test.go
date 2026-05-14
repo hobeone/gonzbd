@@ -82,6 +82,12 @@ func (m *mockApp) ServerStatus() []downloader.ServerSnapshot { return nil }
 
 func (m *mockApp) Speed() float64 { return 0 }
 
+func (m *mockApp) DisconnectAll() {}
+
+func (m *mockApp) PausePostProcessor() {}
+
+func (m *mockApp) ResumePostProcessor() {}
+
 // testEnv bundles everything needed for a UI test.
 type testEnv struct {
 	Server  *httptest.Server
