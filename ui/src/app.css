@@ -111,4 +111,18 @@
   body {
     @apply bg-background text-foreground;
   }
+  /* Native <select> dropdowns need explicit dark mode colors because
+     browsers render <option> elements with OS-default (white) backgrounds.
+     bg-transparent inherits nothing for the popup. */
+  select {
+    color-scheme: light dark;
+  }
+  .dark select {
+    background-color: #1f2937; /* gray-800 */
+    color: #fafafa;
+  }
+  .dark select option {
+    background-color: #1f2937;
+    color: #fafafa;
+  }
 }
