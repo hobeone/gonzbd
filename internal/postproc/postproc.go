@@ -236,7 +236,6 @@ func (p *PostProcessor) History() []*Job {
 // run is the worker goroutine body.
 func (p *PostProcessor) run() {
 	for {
-		p.setBusy(false)
 
 		// Check for stop before blocking.
 		select {
@@ -550,12 +549,6 @@ func (p *PostProcessor) processJob(job *Job) {
 		Elapsed: totalDuration,
 		Lines:   summaryLines,
 	})
-}
-
-func (p *PostProcessor) setBusy(v bool) {
-	p.busyMu.Lock()
-	p.busy = v
-	p.busyMu.Unlock()
 }
 
 // setBusyWithJob updates busy and currentJobID atomically. Used by the
