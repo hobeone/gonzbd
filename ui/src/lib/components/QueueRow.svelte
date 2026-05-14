@@ -5,7 +5,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import { pauseJob, resumeJob } from '$lib/stores/queue.svelte';
-	import { fetchQueueJobDetail, fetchCategories, postAction } from '$lib/api';
+	import { fetchQueueJobDetail, fetchCategories, fetchScripts, postAction } from '$lib/api';
 	import { subscribeWS } from '$lib/stores/websocket.svelte';
 	import { cn, formatSize as formatBytes, formatETA } from '$lib/utils';
 
@@ -24,11 +24,17 @@
 
 	let acting = $state(false);
 	let expanded = $state(false);
+	let renaming = $state(false);
+	let renameValue = $state('');
 
 	// Category selector state: lazily loaded from get_cats on first
 	// interaction; shared across collapsed and expanded selectors.
 	let categories = $state<string[]>([]);
 	let catsLoaded = $state(false);
+
+	// Script selector state: lazily loaded from get_scripts.
+	let scripts = $state<string[]>([]);
+	let scriptsLoaded = $state(false);
 
 	function ensureCategoriesLoaded() {
 		if (catsLoaded) return;
@@ -36,6 +42,24 @@
 		fetchCategories()
 			.then((cats) => { categories = cats; })
 			.catch((err) => { console.error('Failed to load categories:', err); catsLoaded = false; });
+	}
+
+	function ensureScriptsLoaded() {
+		if (scriptsLoaded) return;
+		scriptsLoaded = true;
+		fetchScripts()
+			.then((s) => { scripts = s; })
+			.catch((err) => { console.error('Failed to load scripts:', err); scriptsLoaded = false; });
+	}
+
+	async function changeScript(e: Event) {
+		const newScript = (e.target as HTMLSelectElement).value;
+		try {
+			await postAction('queue', { name: 'change_script', value: slot.nzo_id, value2: newScript });
+			slot.script = newScript;
+		} catch (err) {
+			console.error('Failed to change script:', err);
+		}
 	}
 
 	async function changeCat(e: Event) {
@@ -254,6 +278,27 @@
 		}
 	}
 
+	function startRename() {
+		renameValue = slot.name || slot.filename;
+		renaming = true;
+	}
+
+	async function commitRename() {
+		const newName = renameValue.trim();
+		renaming = false;
+		if (!newName || newName === (slot.name || slot.filename)) return;
+		try {
+			await postAction('queue', { name: 'rename', value: slot.nzo_id, value2: newName });
+			slot.name = newName;
+		} catch (err) {
+			console.error('Failed to rename job:', err);
+		}
+	}
+
+	function cancelRename() {
+		renaming = false;
+	}
+
 	/** Health indicator: can par2 cover the damage? */
 	function healthLabel(): { text: string; color: string } {
 		if (slot.failed_bytes === 0) return { text: 'Healthy', color: 'text-emerald-600 dark:text-emerald-400' };
@@ -282,9 +327,28 @@
 				/>
 			</svg>
 			<div class="min-w-0 flex-1">
-				<div class="font-medium truncate" title={slot.name || slot.filename}>
-					{slot.name || slot.filename}
-				</div>
+				{#if renaming}
+					<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+					<div onclick={(e: MouseEvent) => e.stopPropagation()}>
+						<input
+							type="text"
+							bind:value={renameValue}
+							onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') commitRename(); else if (e.key === 'Escape') cancelRename(); }}
+							onblur={commitRename}
+							class="w-full rounded border border-blue-400 bg-white px-1.5 py-0.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500 dark:bg-gray-800 dark:border-blue-500"
+							autofocus
+						/>
+					</div>
+				{:else}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div
+						class="font-medium truncate cursor-text"
+						title="{slot.name || slot.filename} (double-click to rename)"
+						ondblclick={(e: MouseEvent) => { e.stopPropagation(); startRename(); }}
+					>
+						{slot.name || slot.filename}
+					</div>
+				{/if}
 				{#if isDownloading && slot.current_file}
 					<div
 						class="text-xs text-gray-500 dark:text-gray-400 truncate font-mono"
@@ -476,6 +540,30 @@
 							{:else}
 								{#each categories as c (c)}
 									<option value={c} selected={c === slot.cat || (c === '*' && !slot.cat)}>{c}</option>
+								{/each}
+							{/if}
+						</select>
+					</div>
+				</div>
+				<div>
+					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Script</span>
+					<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+					<div
+						onclick={(e: MouseEvent) => e.stopPropagation()}
+						onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
+					>
+						<select
+							onchange={changeScript}
+							onfocus={ensureScriptsLoaded}
+							class="h-7 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+							title="Post-processing script"
+						>
+							{#if scripts.length === 0}
+								<option selected>{slot.script || 'None'}</option>
+							{:else}
+								<option value="" selected={!slot.script}>None</option>
+								{#each scripts as s (s)}
+									<option value={s} selected={s === slot.script}>{s}</option>
 								{/each}
 							{/if}
 						</select>
