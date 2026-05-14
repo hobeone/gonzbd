@@ -68,6 +68,9 @@ type ApplicationReloader interface {
 	SetCompleteDir(dir string)
 	PauseDownloads()
 	ResumeDownloads()
+	DisconnectAll()
+	PausePostProcessor()
+	ResumePostProcessor()
 	ServerStatus() []downloader.ServerSnapshot
 	// Speed returns the current aggregate download speed in bytes/sec.
 	// Used to compute per-job ETA in the queue listing.

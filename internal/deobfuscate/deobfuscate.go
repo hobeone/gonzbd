@@ -1,15 +1,15 @@
 // Package deobfuscate detects and renames obfuscated filenames in completed
 // download directories.
 //
-// Scope vs. Python deobfuscate_filenames.py:
-//   - TODO: extension-inference by content sniff (has_popular_extension /
-//     what_is_most_likely_extension) is not implemented; only files that already
-//     carry an extension are acted upon.
-//
-// What IS implemented: Par2-packet-based renaming, IsProbablyObfuscated (full
-// heuristic port), BiggestFile (3× size ratio guard), Deobfuscate (rename
-// biggest+siblings to usefulName), DeobfuscateSubtitles (align .srt names
-// to main video), and DVD/Bluray directory skip.
+// Implemented features:
+//   - Par2-packet-based renaming (recover original filenames from par2 metadata)
+//   - RAR-header-based renaming (extract internal filenames from RAR archives)
+//   - IsProbablyObfuscated (full heuristic port from Python)
+//   - BiggestFile (3× size ratio guard)
+//   - Deobfuscate (rename biggest+siblings to usefulName)
+//   - Subtitles (align .srt names to main video)
+//   - FixExtension (content-sniff files with missing/wrong extensions)
+//   - DVD/Bluray directory skip
 package deobfuscate
 
 import (

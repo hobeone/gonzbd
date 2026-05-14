@@ -20,10 +20,10 @@ import (
 // Keeping the two phases separate makes the iteration logic unit-testable
 // without needing to drive goroutines or NNTP connections.
 type dispatchPlan struct {
-	dispatched   int                    // number of articles handed to a server
-	activeJobs   map[string]struct{}    // jobs that got at least one article dispatched
-	hopelessJobs map[string]struct{}    // jobs where failedBytes > par2Bytes
-	exhausted    []*articleRequest      // articles with no eligible server this pass
+	dispatched   int                 // number of articles handed to a server
+	activeJobs   map[string]struct{} // jobs that got at least one article dispatched
+	hopelessJobs map[string]struct{} // jobs where failedBytes > par2Bytes
+	exhausted    []*articleRequest   // articles with no eligible server this pass
 }
 
 // buildDispatchPlan iterates over the unfinished article queue and populates
@@ -40,6 +40,13 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, now time.Time, serve
 	d.queue.ForEachUnfinishedArticle(func(a queue.UnfinishedArticle) bool {
 		if a.JobStatus == constants.StatusPaused {
 			return true // skip paused jobs, keep iterating
+		}
+
+		// Propagation delay: skip jobs that haven't aged enough.
+		// Posts need time to propagate to all NNTP servers; dispatching
+		// too early causes 430 (article not found) errors on backups.
+		if d.opts.PropagationDelay > 0 && now.Before(a.JobAdded.Add(d.opts.PropagationDelay)) {
+			return true // too young, skip for now
 		}
 
 		// Early Health Gate: Check if the job is beyond repair.
