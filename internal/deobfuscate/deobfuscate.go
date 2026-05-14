@@ -250,13 +250,13 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	}
 	log = log.With("component", "deobfuscate")
 
-	// 0. Skip deobfuscation for DVD/Bluray disc structures.
+	// Skip deobfuscation for DVD/Bluray disc structures.
 	if containsIgnoredMovieFolder(dir) {
 		log.Info("deobfuscate: skipping — DVD/Bluray directory detected", "dir", dir)
 		return nil, nil
 	}
 
-	// 1. Attempt PAR2-based deobfuscation first.
+	// Phase 1: Attempt PAR2-based deobfuscation first.
 	parRenames, err := Par2Rename(ctx, log, dir, opts)
 	if err != nil {
 		log.Warn("deobfuscate: par2 deobfuscation encountered an error", "dir", dir, "err", err)
@@ -266,14 +266,14 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 		return parRenames, nil
 	}
 
-	// 2. Attempt RAR-header-based deobfuscation.
+	// Phase 2: Attempt RAR-header-based deobfuscation.
 	rarName := extractRARUsefulName(dir, log)
 	if rarName != "" {
 		log.Info("deobfuscate: RAR headers suggest useful name", "name", rarName)
 		usefulName = rarName
 	}
 
-	// 3. Fall back to heuristic: find the qualifying biggest file.
+	// Phase 3: Collect regular files and fix extensions before the heuristic.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("readdir %s: %w", dir, err)
@@ -288,7 +288,7 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	}
 	log.Info("deobfuscate: found files for heuristic", "count", len(paths))
 
-	// 4. Fix extensions by content sniffing. Files with non-popular
+	// Fix extensions by content sniffing. Files with non-popular
 	// extensions get their real type detected via magic bytes.
 	var allRenames []Rename
 	for i, p := range paths {
@@ -316,10 +316,11 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 		return allRenames, nil
 	}
 
-	// P10: Skip heuristic deobfuscation for files under 10 MiB. Small
-	// files (NFOs, scripts, samples) may look obfuscated but renaming
-	// them is usually wrong. PAR2 and RAR-header renames above have no
-	// size threshold — they use structural metadata, not heuristics.
+	// Phase 4: Heuristic rename of the biggest file.
+	// Skip files under 10 MiB — small files (NFOs, scripts, samples)
+	// may look obfuscated but renaming them is usually wrong. PAR2 and
+	// RAR-header renames above have no size threshold because they use
+	// structural metadata, not heuristics.
 	const minDeobfuscateSize = 10 * 1024 * 1024 // 10 MiB
 	if fi, statErr := os.Stat(bigPath); statErr == nil && fi.Size() < minDeobfuscateSize {
 		log.Info("deobfuscate: biggest file under 10 MiB, skipping heuristic rename",
