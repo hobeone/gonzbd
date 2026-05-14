@@ -225,27 +225,32 @@ func TestSetupComponentLevels(t *testing.T) {
 	logFile := filepath.Join(tmpdir, "test.log")
 
 	tests := []struct {
-		name      string
-		global    slog.Level
-		levels    map[string]slog.Level
-		component string
-		logLevel  slog.Level
-		wantLog   bool
+		name       string
+		global     slog.Level
+		levels     map[string]slog.Level
+		components []string
+		logLevel   slog.Level
+		wantLog    bool
 	}{
 		// Component with warn override: info should be suppressed.
-		{"api-info-suppressed", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, "api", slog.LevelInfo, false},
+		{"api-info-suppressed", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, []string{"api"}, slog.LevelInfo, false},
 		// Component with warn override: warn should pass.
-		{"api-warn-passes", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, "api", slog.LevelWarn, true},
+		{"api-warn-passes", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, []string{"api"}, slog.LevelWarn, true},
 		// Component with warn override: error should pass.
-		{"api-error-passes", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, "api", slog.LevelError, true},
+		{"api-error-passes", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, []string{"api"}, slog.LevelError, true},
 		// Unlisted component inherits global info level.
-		{"unlisted-info-passes", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, "downloader", slog.LevelInfo, true},
+		{"unlisted-info-passes", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, []string{"downloader"}, slog.LevelInfo, true},
 		// Component set to off: nothing passes.
-		{"off-error-suppressed", slog.LevelInfo, map[string]slog.Level{"rss": slog.Level(99)}, "rss", slog.LevelError, false},
+		{"off-error-suppressed", slog.LevelInfo, map[string]slog.Level{"rss": slog.Level(99)}, []string{"rss"}, slog.LevelError, false},
 		// Component with debug override: debug should pass even though global is info.
-		{"debug-override-passes", slog.LevelInfo, map[string]slog.Level{"downloader": slog.LevelDebug}, "downloader", slog.LevelDebug, true},
+		{"debug-override-passes", slog.LevelInfo, map[string]slog.Level{"downloader": slog.LevelDebug}, []string{"downloader"}, slog.LevelDebug, true},
+		// Nested/Shadowed components: the most specific (last) "component" tag should win.
+		// When we use .With("component", "parent").With("component", "parent/child"), "parent/child" should be the key.
+		{"nested-components", slog.LevelInfo, map[string]slog.Level{"parent/child": slog.LevelDebug}, []string{"parent", "parent/child"}, slog.LevelDebug, true},
+		// Hierarchical inheritance: level set on parent should apply to child.
+		{"hierarchical-inheritance", slog.LevelInfo, map[string]slog.Level{"parent": slog.LevelDebug}, []string{"parent", "parent/child"}, slog.LevelDebug, true},
 		// No component levels at all: behaves as global.
-		{"no-overrides", slog.LevelInfo, nil, "api", slog.LevelInfo, true},
+		{"no-overrides", slog.LevelInfo, nil, []string{"api"}, slog.LevelInfo, true},
 	}
 
 	for _, tt := range tests {
@@ -267,8 +272,11 @@ func TestSetupComponentLevels(t *testing.T) {
 			}()
 
 			msg := "test message for " + tt.name
-			// Use WithAttrs to set the component (as real code does via .With("component", ...)).
-			compLogger := logger.With("component", tt.component)
+			// Apply components in order.
+			compLogger := logger
+			for _, c := range tt.components {
+				compLogger = compLogger.With("component", c)
+			}
 			compLogger.Log(t.Context(), tt.logLevel, msg)
 
 			_ = closer.Close() // flush
@@ -276,8 +284,8 @@ func TestSetupComponentLevels(t *testing.T) {
 			data, _ := os.ReadFile(logFile)
 			gotLog := bytes.Contains(data, []byte(msg))
 			if gotLog != tt.wantLog {
-				t.Errorf("gotLog = %v, want %v (global=%v, levels=%v, component=%v, logLevel=%v)\nfile content: %s",
-					gotLog, tt.wantLog, tt.global, tt.levels, tt.component, tt.logLevel, string(data))
+				t.Errorf("gotLog = %v, want %v (global=%v, levels=%v, components=%v, logLevel=%v)\nfile content: %s",
+					gotLog, tt.wantLog, tt.global, tt.levels, tt.components, tt.logLevel, string(data))
 			}
 		})
 	}
