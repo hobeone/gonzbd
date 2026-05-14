@@ -115,8 +115,8 @@ func ParsePar2Set(path string) (*Par2Set, error) {
 	)
 	expectedFiles = -1
 
+	header := make([]byte, 64)
 	for {
-		header := make([]byte, 64)
 		_, err := io.ReadFull(f, header)
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			break

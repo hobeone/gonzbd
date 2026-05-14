@@ -1,7 +1,8 @@
 package assembler
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 )
 
 // writeCache is a memory-bounded article buffer that coalesces contiguous
@@ -185,8 +186,8 @@ func (wc *writeCache) drainFile(key fileKey) (fileKey, []bufferedArticle) {
 		wc.used -= int64(len(data))
 	}
 	// Sort by offset for sequential write ordering.
-	sort.Slice(articles, func(i, j int) bool {
-		return articles[i].offset < articles[j].offset
+	slices.SortFunc(articles, func(a, b bufferedArticle) int {
+		return cmp.Compare(a.offset, b.offset)
 	})
 
 	delete(wc.perFile, key)

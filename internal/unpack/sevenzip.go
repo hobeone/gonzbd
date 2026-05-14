@@ -72,9 +72,9 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 
 	// Overwrite behavior.
 	if opts.OverwriteFiles {
-		args = append(args, "-aoa") // overwrite all existing files
+		args = append(args, "-aoa") // overwrite all existing files (SABnzbd default)
 	} else {
-		args = append(args, "-aou") // auto-rename on collision (matches SABnzbd)
+		args = append(args, "-aou") // auto-rename on collision (safe default)
 	}
 
 	args = append(args,

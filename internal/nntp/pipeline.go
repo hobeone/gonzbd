@@ -196,16 +196,23 @@ func (c *Conn) finishReader(err error) {
 		}
 		_ = c.nc.Close() //nolint:errcheck // best-effort cleanup; underlying error already captured in c.closeErr
 
-		c.pendingLock.Lock()
-		orphans := c.pending
-		c.pending = nil
-		c.pendingLock.Unlock()
-
-		for _, pc := range orphans {
-			pc.result = cmdResult{err: err}
-			close(pc.done)
-		}
+		c.wakeOrphans(err)
 	})
+}
+
+// wakeOrphans drains the pending FIFO and signals all waiting callers
+// with the given error. Called by both finishReader and Close inside
+// closeOnce.Do, so it runs at most once per connection.
+func (c *Conn) wakeOrphans(err error) {
+	c.pendingLock.Lock()
+	orphans := c.pending
+	c.pending = nil
+	c.pendingLock.Unlock()
+
+	for _, pc := range orphans {
+		pc.result = cmdResult{err: err}
+		close(pc.done)
+	}
 }
 
 // releaseSem returns one slot to the pipelining semaphore. Non-blocking;

@@ -52,11 +52,11 @@ func BuildCommand(ctx context.Context, cfg CmdConfig, name string, args ...strin
 
 	if cfg.Nice != "" {
 		fullArgs = append(fullArgs, "nice")
-		fullArgs = append(fullArgs, splitFields(cfg.Nice)...)
+		fullArgs = append(fullArgs, strings.Fields(cfg.Nice)...)
 	}
 	if cfg.Ionice != "" {
 		fullArgs = append(fullArgs, "ionice")
-		fullArgs = append(fullArgs, splitFields(cfg.Ionice)...)
+		fullArgs = append(fullArgs, strings.Fields(cfg.Ionice)...)
 	}
 
 	fullArgs = append(fullArgs, name)
@@ -75,11 +75,11 @@ func FormatCmdPrefix(cfg CmdConfig) string {
 	var parts []string
 	if cfg.Nice != "" {
 		parts = append(parts, "nice")
-		parts = append(parts, splitFields(cfg.Nice)...)
+		parts = append(parts, strings.Fields(cfg.Nice)...)
 	}
 	if cfg.Ionice != "" {
 		parts = append(parts, "ionice")
-		parts = append(parts, splitFields(cfg.Ionice)...)
+		parts = append(parts, strings.Fields(cfg.Ionice)...)
 	}
 	return strings.Join(parts, " ")
 }
@@ -103,14 +103,6 @@ func ValidatePriorityArgs(kind, args string) error {
 		}
 	}
 	return nil
-}
-
-// splitFields splits s on whitespace, returning nil for empty strings.
-func splitFields(s string) []string {
-	if s == "" {
-		return nil
-	}
-	return strings.Fields(s)
 }
 
 // ParseExtraParams splits a whitespace-delimited parameter string into

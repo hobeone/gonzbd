@@ -182,10 +182,10 @@ func parseSegment(seg string, fieldMin, fieldMax int) ([]int, error) {
 // All non-wildcard fields must match simultaneously. A nil or empty slice
 // for any field means "match all" (produced by * expansion).
 func (s ScheduleSpec) Matches(t time.Time) bool {
-	return contains(s.Minutes, t.Minute()) &&
-		contains(s.Hours, t.Hour()) &&
-		contains(s.DaysOfMonth, t.Day()) &&
-		contains(s.Months, int(t.Month())) &&
+	return slices.Contains(s.Minutes, t.Minute()) &&
+		slices.Contains(s.Hours, t.Hour()) &&
+		slices.Contains(s.DaysOfMonth, t.Day()) &&
+		slices.Contains(s.Months, int(t.Month())) &&
 		matchesDOW(s.DaysOfWeek, t.Weekday())
 }
 
@@ -207,10 +207,6 @@ func matchesDOW(dow []int, wd time.Weekday) bool {
 		}
 	}
 	return false
-}
-
-func contains(vals []int, v int) bool {
-	return slices.Contains(vals, v)
 }
 
 // Scheduler owns the periodic tick loop and dispatches actions.
