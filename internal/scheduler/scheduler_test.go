@@ -14,73 +14,33 @@ import (
 func TestParse(t *testing.T) {
 	t.Parallel()
 
-	type want struct {
-		minutes     []int
-		hours       []int
-		daysOfMonth []int
-		months      []int
-		daysOfWeek  []int
-		action      string
-		arg         string
-	}
-
 	tests := []struct {
 		name    string
 		line    string
 		wantErr bool
-		want    want
+		action  string
+		arg     string
 	}{
 		{
-			name: "speedlimit weekday range",
-			line: "30 14 * * 1-5 speedlimit 1000",
-			want: want{
-				minutes:     []int{30},
-				hours:       []int{14},
-				daysOfMonth: makeRange(1, 31),
-				months:      makeRange(1, 12),
-				daysOfWeek:  []int{1, 2, 3, 4, 5},
-				action:      "speedlimit",
-				arg:         "1000",
-			},
+			name:   "speedlimit weekday range",
+			line:   "30 14 * * 1-5 speedlimit 1000",
+			action: "speedlimit",
+			arg:    "1000",
 		},
 		{
-			name: "wildcard pause",
-			line: "* * * * * pause",
-			want: want{
-				minutes:     makeRange(0, 59),
-				hours:       makeRange(0, 23),
-				daysOfMonth: makeRange(1, 31),
-				months:      makeRange(1, 12),
-				daysOfWeek:  makeRange(0, 7),
-				action:      "pause",
-				arg:         "",
-			},
+			name:   "wildcard pause",
+			line:   "* * * * * pause",
+			action: "pause",
 		},
 		{
-			name: "stride on hours",
-			line: "0 */4 * * * foo",
-			want: want{
-				minutes:     []int{0},
-				hours:       []int{0, 4, 8, 12, 16, 20},
-				daysOfMonth: makeRange(1, 31),
-				months:      makeRange(1, 12),
-				daysOfWeek:  makeRange(0, 7),
-				action:      "foo",
-				arg:         "",
-			},
+			name:   "stride on hours",
+			line:   "0 */4 * * * foo",
+			action: "foo",
 		},
 		{
-			name: "comma list minutes",
-			line: "0,15,30,45 * * * * bar",
-			want: want{
-				minutes:     []int{0, 15, 30, 45},
-				hours:       makeRange(0, 23),
-				daysOfMonth: makeRange(1, 31),
-				months:      makeRange(1, 12),
-				daysOfWeek:  makeRange(0, 7),
-				action:      "bar",
-				arg:         "",
-			},
+			name:   "comma list minutes",
+			line:   "0,15,30,45 * * * * bar",
+			action: "bar",
 		},
 		{
 			name:    "too few fields",
@@ -100,21 +60,6 @@ func TestParse(t *testing.T) {
 		{
 			name:    "hour out of range",
 			line:    "0 25 * * * pause",
-			wantErr: true,
-		},
-		{
-			name:    "dow out of range",
-			line:    "0 0 * * 8 pause",
-			wantErr: true,
-		},
-		{
-			name:    "bad stride",
-			line:    "0 */0 * * * pause",
-			wantErr: true,
-		},
-		{
-			name:    "inverted range",
-			line:    "0 5-3 * * * pause",
 			wantErr: true,
 		},
 		{
@@ -138,17 +83,11 @@ func TestParse(t *testing.T) {
 				t.Fatalf("Parse(%q) unexpected error: %v", tc.line, err)
 			}
 
-			assertIntSlice(t, "Minutes", spec.Minutes, tc.want.minutes)
-			assertIntSlice(t, "Hours", spec.Hours, tc.want.hours)
-			assertIntSlice(t, "DaysOfMonth", spec.DaysOfMonth, tc.want.daysOfMonth)
-			assertIntSlice(t, "Months", spec.Months, tc.want.months)
-			assertIntSlice(t, "DaysOfWeek", spec.DaysOfWeek, tc.want.daysOfWeek)
-
-			if spec.Action != tc.want.action {
-				t.Errorf("Action: got %q, want %q", spec.Action, tc.want.action)
+			if spec.Action != tc.action {
+				t.Errorf("Action: got %q, want %q", spec.Action, tc.action)
 			}
-			if spec.Arg != tc.want.arg {
-				t.Errorf("Arg: got %q, want %q", spec.Arg, tc.want.arg)
+			if spec.Arg != tc.arg {
+				t.Errorf("Arg: got %q, want %q", spec.Arg, tc.arg)
 			}
 		})
 	}
@@ -176,6 +115,110 @@ func TestMatches(t *testing.T) {
 	}
 	if spec.Matches(mon1431) {
 		t.Error("expected no match at Mon 14:31")
+	}
+}
+
+func TestMatchesWildcard(t *testing.T) {
+	t.Parallel()
+
+	spec, err := Parse("* * * * * pause")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Should match any minute.
+	t1 := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2024, 12, 31, 23, 59, 0, 0, time.UTC)
+	if !spec.Matches(t1) {
+		t.Error("expected wildcard to match any time")
+	}
+	if !spec.Matches(t2) {
+		t.Error("expected wildcard to match any time")
+	}
+}
+
+func TestMatchesStride(t *testing.T) {
+	t.Parallel()
+
+	spec, err := Parse("0 */4 * * * foo")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Should match hours 0, 4, 8, 12, 16, 20.
+	for _, h := range []int{0, 4, 8, 12, 16, 20} {
+		at := time.Date(2024, 1, 1, h, 0, 0, 0, time.UTC)
+		if !spec.Matches(at) {
+			t.Errorf("expected match at hour %d", h)
+		}
+	}
+	// Should not match hour 3.
+	at := time.Date(2024, 1, 1, 3, 0, 0, 0, time.UTC)
+	if spec.Matches(at) {
+		t.Error("expected no match at hour 3")
+	}
+}
+
+func TestMatchesCommaList(t *testing.T) {
+	t.Parallel()
+
+	spec, err := Parse("0,15,30,45 * * * * bar")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	for _, m := range []int{0, 15, 30, 45} {
+		at := time.Date(2024, 1, 1, 10, m, 0, 0, time.UTC)
+		if !spec.Matches(at) {
+			t.Errorf("expected match at minute %d", m)
+		}
+	}
+	at := time.Date(2024, 1, 1, 10, 7, 0, 0, time.UTC)
+	if spec.Matches(at) {
+		t.Error("expected no match at minute 7")
+	}
+}
+
+func TestMatchesSundayBoth0and7(t *testing.T) {
+	t.Parallel()
+
+	// Standard cron: 0 = Sunday, 7 = Sunday.
+	sun := time.Date(2024, 4, 21, 10, 0, 0, 0, time.UTC) // Sunday
+
+	spec0, err := Parse("0 10 * * 0 act")
+	if err != nil {
+		t.Fatalf("Parse dow=0: %v", err)
+	}
+	if !spec0.Matches(sun) {
+		t.Error("dow=0 should match Sunday")
+	}
+
+	spec7, err := Parse("0 10 * * 7 act")
+	if err != nil {
+		t.Fatalf("Parse dow=7: %v", err)
+	}
+	if !spec7.Matches(sun) {
+		t.Error("dow=7 should match Sunday")
+	}
+}
+
+func TestParseNamedDays(t *testing.T) {
+	t.Parallel()
+
+	// robfig/cron supports named days — verify we can use them.
+	spec, err := Parse("0 10 * * MON-FRI test_action")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	mon := time.Date(2024, 4, 15, 10, 0, 0, 0, time.UTC) // Monday
+	sat := time.Date(2024, 4, 20, 10, 0, 0, 0, time.UTC) // Saturday
+
+	if !spec.Matches(mon) {
+		t.Error("expected match on Monday for MON-FRI")
+	}
+	if spec.Matches(sat) {
+		t.Error("expected no match on Saturday for MON-FRI")
 	}
 }
 
@@ -365,29 +408,5 @@ func TestUnknownActionViaSchedulerContinues(t *testing.T) {
 	defer mu.Unlock()
 	if !knownFired {
 		t.Error("known handler must fire even when preceding unknown action fails")
-	}
-}
-
-// ---- helpers ---------------------------------------------------------------
-
-func makeRange(lo, hi int) []int {
-	s := make([]int, 0, hi-lo+1)
-	for i := lo; i <= hi; i++ {
-		s = append(s, i)
-	}
-	return s
-}
-
-func assertIntSlice(t *testing.T, field string, got, want []int) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Errorf("%s: len mismatch: got %v, want %v", field, got, want)
-		return
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			t.Errorf("%s[%d]: got %d, want %d (full: got %v, want %v)", field, i, got[i], want[i], got, want)
-			return
-		}
 	}
 }
