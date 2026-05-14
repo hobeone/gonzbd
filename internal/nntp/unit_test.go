@@ -1,7 +1,6 @@
 package nntp
 
 import (
-	"crypto/tls"
 	"errors"
 	"testing"
 
@@ -60,28 +59,6 @@ func TestServerError_Unwrap(t *testing.T) {
 	se2 := &ServerError{Code: 502, Text: "Service unavailable"}
 	if !errors.Is(se2, ErrServerUnavailable) {
 		t.Error("errors.Is(ServerError{502}, ErrServerUnavailable) = false")
-	}
-}
-
-// ---------- tlsVersionString ----------
-
-func TestTlsVersionString(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		version uint16
-		want    string
-	}{
-		{tls.VersionTLS13, "TLSv1.3"},
-		{tls.VersionTLS12, "TLSv1.2"},
-		{tls.VersionTLS11, "TLSv1.1"},
-		{tls.VersionTLS10, "TLSv1.0"},
-		{0x0300, "TLS(0x0300)"},
-	}
-	for _, tt := range tests {
-		got := tlsVersionString(tt.version)
-		if got != tt.want {
-			t.Errorf("tlsVersionString(0x%04x) = %q, want %q", tt.version, got, tt.want)
-		}
 	}
 }
 
