@@ -85,32 +85,47 @@ func TestModeRestart_NotImplemented(t *testing.T) {
 	}
 }
 
-func TestModeDisconnect_NotImplemented(t *testing.T) {
+func TestModeDisconnect_OK(t *testing.T) {
 	t.Parallel()
 	s := testServer()
 
 	rr := apiGet(t, s.Handler(), "/api?mode=disconnect&apikey="+testAPIKey)
-	if rr.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d; want 501", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	m := decodeJSON(t, rr)
+	if m["status"] != true {
+		t.Errorf("status = %v; want true", m["status"])
 	}
 }
 
-func TestModePausePP_NotImplemented(t *testing.T) {
+func TestModePausePP_OK(t *testing.T) {
 	t.Parallel()
 	s := testServer()
 
 	rr := apiGet(t, s.Handler(), "/api?mode=pause_pp&apikey="+testAPIKey)
-	if rr.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d; want 501", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	m := decodeJSON(t, rr)
+	if m["status"] != true {
+		t.Errorf("status = %v; want true", m["status"])
 	}
 }
 
-func TestModeResumePP_NotImplemented(t *testing.T) {
+func TestModeResumePP_OK(t *testing.T) {
 	t.Parallel()
 	s := testServer()
 
 	rr := apiGet(t, s.Handler(), "/api?mode=resume_pp&apikey="+testAPIKey)
-	if rr.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d; want 501", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	m := decodeJSON(t, rr)
+	if m["status"] != true {
+		t.Errorf("status = %v; want true", m["status"])
 	}
 }

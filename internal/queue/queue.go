@@ -452,6 +452,7 @@ func (q *Queue) RecordDownload(id, server string, bytes int) {
 type UnfinishedArticle struct {
 	JobID       string
 	JobStatus   constants.Status
+	JobAdded    time.Time
 	FileIdx     int
 	MessageID   string
 	Bytes       int
@@ -494,6 +495,7 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 				if !fn(UnfinishedArticle{
 					JobID:       job.ID,
 					JobStatus:   job.Status,
+					JobAdded:    job.Added,
 					FileIdx:     fi,
 					MessageID:   art.ID,
 					Bytes:       art.Bytes,
