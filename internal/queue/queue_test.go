@@ -1064,3 +1064,53 @@ func TestSetCategory(t *testing.T) {
 		}
 	})
 }
+
+func TestSetName(t *testing.T) {
+	t.Parallel()
+	q := New()
+	j := makeJob(t, "original", constants.NormalPriority)
+	_ = q.Add(j)
+
+	if err := q.SetName(j.ID, "new-name"); err != nil {
+		t.Fatalf("SetName: %v", err)
+	}
+	got, _ := q.Get(j.ID)
+	if got.Name != "new-name" {
+		t.Errorf("Name = %q, want %q", got.Name, "new-name")
+	}
+	if !q.IsDirty() {
+		t.Error("SetName should set dirty")
+	}
+	if err := q.SetName("nonexistent", "x"); err == nil {
+		t.Error("SetName(unknown) should error")
+	}
+}
+
+func TestSetScript(t *testing.T) {
+	t.Parallel()
+	q := New()
+	j := makeJob(t, "script-test", constants.NormalPriority)
+	_ = q.Add(j)
+
+	if err := q.SetScript(j.ID, "my-script.sh"); err != nil {
+		t.Fatalf("SetScript: %v", err)
+	}
+	got, _ := q.Get(j.ID)
+	if got.Script != "my-script.sh" {
+		t.Errorf("Script = %q, want %q", got.Script, "my-script.sh")
+	}
+	if !q.IsDirty() {
+		t.Error("SetScript should set dirty")
+	}
+	// Empty script clears the field.
+	if err := q.SetScript(j.ID, ""); err != nil {
+		t.Fatalf("SetScript empty: %v", err)
+	}
+	got, _ = q.Get(j.ID)
+	if got.Script != "" {
+		t.Errorf("Script = %q, want empty", got.Script)
+	}
+	if err := q.SetScript("nonexistent", "x"); err == nil {
+		t.Error("SetScript(unknown) should error")
+	}
+}

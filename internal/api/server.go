@@ -71,6 +71,7 @@ type ApplicationReloader interface {
 	DisconnectAll()
 	PausePostProcessor()
 	ResumePostProcessor()
+	UnblockServer(name string) bool
 	ServerStatus() []downloader.ServerSnapshot
 	// Speed returns the current aggregate download speed in bytes/sec.
 	// Used to compute per-job ETA in the queue listing.

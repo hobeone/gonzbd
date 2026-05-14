@@ -40,6 +40,7 @@ func (m mockApp) ResumeDownloads()                              {}
 func (m mockApp) DisconnectAll()                                {}
 func (m mockApp) PausePostProcessor()                           {}
 func (m mockApp) ResumePostProcessor()                          {}
+func (m mockApp) UnblockServer(string) bool                     { return true }
 func (m mockApp) ServerStatus() []downloader.ServerSnapshot     { return nil }
 func (m mockApp) Speed() float64                                { return m.speed }
 func (m mockApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
