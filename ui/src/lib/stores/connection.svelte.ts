@@ -1,0 +1,165 @@
+/**
+ * ConnectionStore — centralized backend connectivity tracker.
+ *
+ * Owns all reconnection logic: when any store (queue, history, warnings)
+ * or the WebSocket reports a failure, ConnectionStore tracks the state,
+ * runs a lightweight health probe with exponential backoff, and signals
+ * all consumers when connectivity is restored.
+ *
+ * Design:
+ *  - 2 consecutive failures → "disconnected" (avoids flashing on a single dropped request)
+ *  - Backoff: 1s → 2s → 4s → 8s → 16s → 32s → 60s (cap) with ±20% jitter
+ *  - Health probe: GET /api?mode=version&output=json (lightweight, side-effect-free)
+ *  - On reconnect: fires all registered onReconnected callbacks
+ */
+
+const MIN_DELAY = 1000;
+const MAX_DELAY = 60000;
+const JITTER = 0.2;
+const FAILURE_THRESHOLD = 2;
+
+type ReconnectCallback = () => void;
+
+class ConnectionStore {
+	#connected = $state(true);
+	#retryCount = $state(0);
+	#lastError = $state<string | null>(null);
+	#nextRetryAt = $state<number | null>(null); // timestamp (Date.now() + delay)
+	#probing = $state(false);
+
+	#retryTimer: ReturnType<typeof setTimeout> | null = null;
+	#consecutiveFailures = 0;
+	#callbacks = new Set<ReconnectCallback>();
+
+	get connected() {
+		return this.#connected;
+	}
+	get retryCount() {
+		return this.#retryCount;
+	}
+	get lastError() {
+		return this.#lastError;
+	}
+	get nextRetryAt() {
+		return this.#nextRetryAt;
+	}
+	get probing() {
+		return this.#probing;
+	}
+
+	/**
+	 * Called by any store when an HTTP fetch or WS connection fails.
+	 */
+	reportFailure(error: string): void {
+		this.#consecutiveFailures++;
+		this.#lastError = error;
+
+		if (this.#consecutiveFailures >= FAILURE_THRESHOLD && this.#connected) {
+			this.#connected = false;
+			this.#startBackoff();
+		}
+	}
+
+	/**
+	 * Called by any store when an HTTP fetch or WS connection succeeds.
+	 */
+	reportSuccess(): void {
+		if (!this.#connected) {
+			this.#connected = true;
+			this.#fireReconnected();
+		}
+		this.#consecutiveFailures = 0;
+		this.#retryCount = 0;
+		this.#lastError = null;
+		this.#nextRetryAt = null;
+		this.#clearTimer();
+	}
+
+	/**
+	 * Manually trigger an immediate reconnection attempt (e.g. "Retry Now" button).
+	 */
+	retryNow(): void {
+		this.#clearTimer();
+		this.#probe();
+	}
+
+	/**
+	 * Register a callback to be fired when connectivity is restored.
+	 * Returns an unsubscribe function.
+	 */
+	onReconnected(callback: ReconnectCallback): () => void {
+		this.#callbacks.add(callback);
+		return () => {
+			this.#callbacks.delete(callback);
+		};
+	}
+
+	#startBackoff(): void {
+		if (this.#retryTimer) return; // already scheduled
+		this.#scheduleProbe();
+	}
+
+	#scheduleProbe(): void {
+		const baseDelay = Math.min(MIN_DELAY * Math.pow(2, this.#retryCount), MAX_DELAY);
+		const jitter = baseDelay * JITTER * (2 * Math.random() - 1); // ±20%
+		const delay = Math.round(baseDelay + jitter);
+
+		this.#nextRetryAt = Date.now() + delay;
+		this.#retryTimer = setTimeout(() => {
+			this.#retryTimer = null;
+			this.#probe();
+		}, delay);
+	}
+
+	async #probe(): Promise<void> {
+		this.#probing = true;
+		this.#nextRetryAt = null;
+
+		try {
+			const res = await fetch('/api?mode=version&output=json');
+			if (res.ok) {
+				this.#probing = false;
+				this.reportSuccess();
+				return;
+			}
+		} catch {
+			// Network error — still disconnected
+		}
+
+		this.#probing = false;
+		this.#retryCount++;
+		// Still disconnected, schedule next probe
+		if (!this.#connected) {
+			this.#scheduleProbe();
+		}
+	}
+
+	#fireReconnected(): void {
+		for (const cb of this.#callbacks) {
+			try {
+				cb();
+			} catch (e) {
+				console.error('onReconnected callback error:', e);
+			}
+		}
+	}
+
+	#clearTimer(): void {
+		if (this.#retryTimer) {
+			clearTimeout(this.#retryTimer);
+			this.#retryTimer = null;
+		}
+	}
+}
+
+const store = new ConnectionStore();
+
+export const isConnected = () => store.connected;
+export const getRetryCount = () => store.retryCount;
+export const getLastError = () => store.lastError;
+export const getNextRetryAt = () => store.nextRetryAt;
+export const isProbing = () => store.probing;
+export const reportFailure = (error: string) => store.reportFailure(error);
+export const reportSuccess = () => store.reportSuccess();
+export const retryNow = () => store.retryNow();
+export const onReconnected = (cb: () => void) => store.onReconnected(cb);

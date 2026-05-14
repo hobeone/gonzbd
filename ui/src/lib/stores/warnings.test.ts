@@ -6,6 +6,22 @@ vi.mock('$lib/api', () => ({
 	postAction: vi.fn()
 }));
 
+// Captures the handler passed to subscribeWS so tests can simulate WS events.
+let capturedWSHandler: ((event: any) => void) | null = null;
+vi.mock('./websocket.svelte', () => ({
+	subscribeWS: vi.fn((handler: (event: any) => void) => {
+		capturedWSHandler = handler;
+		return vi.fn();
+	})
+}));
+
+// Mock ConnectionStore — warnings store reports success/failure to it.
+vi.mock('./connection.svelte', () => ({
+	reportFailure: vi.fn(),
+	reportSuccess: vi.fn(),
+	onReconnected: vi.fn(() => vi.fn())
+}));
+
 // We need to import after mocking
 import {
 	startWarningsPolling,
@@ -83,7 +99,7 @@ describe('warnings store', () => {
 	});
 
 	describe('polling lifecycle', () => {
-		it('startWarningsPolling fetches immediately and sets interval', async () => {
+		it('startWarningsPolling fetches immediately', async () => {
 			vi.mocked(fetchWarnings).mockResolvedValue({ status: true, warnings: ['warn1'] });
 
 			startWarningsPolling();
@@ -95,26 +111,28 @@ describe('warnings store', () => {
 			expect(getWarningCount()).toBe(1);
 		});
 
-		it('polls on interval', async () => {
+		it('re-fetches on warnings_updated WS event', async () => {
 			vi.mocked(fetchWarnings).mockResolvedValue({ status: true, warnings: [] });
 
 			startWarningsPolling();
 			await vi.advanceTimersByTimeAsync(0);
 			expect(fetchWarnings).toHaveBeenCalledTimes(1);
 
-			// Advance past one interval.
-			await vi.advanceTimersByTimeAsync(5000);
+			// Simulate a WS event.
+			vi.mocked(fetchWarnings).mockResolvedValue({ status: true, warnings: ['new'] });
+			capturedWSHandler!({ event: 'warnings_updated' });
+			await vi.advanceTimersByTimeAsync(0);
 			expect(fetchWarnings).toHaveBeenCalledTimes(2);
+			expect(getWarnings()).toEqual(['new']);
 		});
 
-		it('stopWarningsPolling stops the interval', async () => {
+		it('stopWarningsPolling prevents further fetches', async () => {
 			vi.mocked(fetchWarnings).mockResolvedValue({ status: true, warnings: [] });
 
 			startWarningsPolling();
 			await vi.advanceTimersByTimeAsync(0);
 			stopWarningsPolling();
 
-			await vi.advanceTimersByTimeAsync(10000);
 			// Only the initial poll should have happened.
 			expect(fetchWarnings).toHaveBeenCalledTimes(1);
 		});
@@ -142,13 +160,15 @@ describe('warnings store', () => {
 
 		it('clears error on successful fetch after failure', async () => {
 			vi.mocked(fetchWarnings).mockRejectedValueOnce(new Error('fail'));
-			vi.mocked(fetchWarnings).mockResolvedValueOnce({ status: true, warnings: [] });
 
 			startWarningsPolling();
 			await vi.advanceTimersByTimeAsync(0);
 			expect(getWarningsError()).toBe('fail');
 
-			await vi.advanceTimersByTimeAsync(5000);
+			// Simulate WS reconnect triggering a re-poll.
+			vi.mocked(fetchWarnings).mockResolvedValueOnce({ status: true, warnings: [] });
+			capturedWSHandler!({ event: 'warnings_updated' });
+			await vi.advanceTimersByTimeAsync(0);
 			expect(getWarningsError()).toBeNull();
 		});
 
@@ -174,12 +194,13 @@ describe('warnings store', () => {
 			await vi.advanceTimersByTimeAsync(0);
 			expect(getToastMessage()).toBeNull(); // No toast on initial load.
 
-			// Second fetch — a new warning added.
+			// Simulate WS event triggering re-poll with new warning.
 			vi.mocked(fetchWarnings).mockResolvedValueOnce({
 				status: true,
 				warnings: ['old warning', 'new warning']
 			});
-			await vi.advanceTimersByTimeAsync(5000);
+			capturedWSHandler!({ event: 'warnings_updated' });
+			await vi.advanceTimersByTimeAsync(0);
 
 			expect(getToastMessage()).toBe('new warning');
 		});
@@ -196,7 +217,8 @@ describe('warnings store', () => {
 				status: true,
 				warnings: ['w1', 'w2']
 			});
-			await vi.advanceTimersByTimeAsync(5000);
+			capturedWSHandler!({ event: 'warnings_updated' });
+			await vi.advanceTimersByTimeAsync(0);
 			expect(getToastMessage()).toBe('w2');
 
 			vi.advanceTimersByTime(5000);

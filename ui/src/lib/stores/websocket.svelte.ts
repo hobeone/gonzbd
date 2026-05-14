@@ -1,5 +1,6 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { getCookie } from '$lib/utils';
+import { reportFailure, reportSuccess, onReconnected } from '$lib/stores/connection.svelte';
 
 export interface WSEvent {
 	event: string;
@@ -20,13 +21,11 @@ class WebSocketStore {
 	#socket: WebSocket | null = null;
 	#handlers = new SvelteSet<Handler>();
 	#isConnected = $state(false);
-	#reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
-	#retryDelay = 1000;
 
 	get isConnected() { return this.#isConnected; }
 
 	#connect() {
-		if (this.#socket || this.#reconnectTimeout) return;
+		if (this.#socket) return;
 
 		const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 		let url = `${protocol}//${window.location.host}/api/ws`;
@@ -41,7 +40,7 @@ class WebSocketStore {
 		this.#socket.onopen = () => {
 			console.log('WebSocket connected');
 			this.#isConnected = true;
-			this.#retryDelay = 1000;
+			reportSuccess();
 		};
 
 		this.#socket.onmessage = (event) => {
@@ -57,7 +56,9 @@ class WebSocketStore {
 			console.log('WebSocket disconnected');
 			this.#isConnected = false;
 			this.#socket = null;
-			this.#scheduleReconnect();
+			// ConnectionStore owns reconnection timing — we just report
+			// the failure and wait for reconnect() to be called.
+			reportFailure('WebSocket disconnected');
 		};
 
 		this.#socket.onerror = (err) => {
@@ -66,13 +67,18 @@ class WebSocketStore {
 		};
 	}
 
-	#scheduleReconnect() {
-		if (this.#reconnectTimeout) return;
-		this.#reconnectTimeout = setTimeout(() => {
-			this.#reconnectTimeout = null;
-			this.#retryDelay = Math.min(this.#retryDelay * 2, 30000);
+	/**
+	 * Re-establish the WebSocket connection. Called by ConnectionStore
+	 * when the health probe succeeds, or on initial subscribe.
+	 */
+	reconnect() {
+		if (this.#socket) {
+			this.#socket.close();
+			this.#socket = null;
+		}
+		if (this.#handlers.size > 0) {
 			this.#connect();
-		}, this.#retryDelay);
+		}
 	}
 
 	subscribe(handler: Handler) {
@@ -81,10 +87,6 @@ class WebSocketStore {
 		return () => {
 			this.#handlers.delete(handler);
 			if (this.#handlers.size === 0) {
-				if (this.#reconnectTimeout) {
-					clearTimeout(this.#reconnectTimeout);
-					this.#reconnectTimeout = null;
-				}
 				this.#socket?.close();
 				this.#socket = null;
 			}
@@ -93,6 +95,10 @@ class WebSocketStore {
 }
 
 const store = new WebSocketStore();
+
+// Register with ConnectionStore: when connectivity is restored,
+// re-establish the WebSocket.
+onReconnected(() => store.reconnect());
 
 // Exported wrapper functions to maintain API compatibility with components
 export const subscribeWS = (handler: Handler) => store.subscribe(handler);

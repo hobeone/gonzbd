@@ -2,14 +2,13 @@ import { fetchHistory, postAction } from '$lib/api';
 import type { HistoryDetail, HistorySlot } from '$lib/types';
 import { refreshQueue } from './queue.svelte';
 import { subscribeWS } from './websocket.svelte';
-
-const FALLBACK_POLL_INTERVAL = 60000;
+import { reportFailure, reportSuccess, onReconnected } from './connection.svelte';
 
 class HistoryStore {
 	#history = $state<HistoryDetail | null>(null);
 	#error = $state<string | null>(null);
-	#fallbackTimer: ReturnType<typeof setInterval> | null = null;
 	#wsCleanup: (() => void) | null = null;
+	#reconnectCleanup: (() => void) | null = null;
 
 	#historyPage = $state(0);
 	#historyLimit = $state(10);
@@ -32,13 +31,16 @@ class HistoryStore {
 			const res = await fetchHistory(this.#historyPage * this.#historyLimit, this.#historyLimit, params);
 			this.#history = res.history;
 			this.#error = null;
+			reportSuccess();
 		} catch (e) {
-			this.#error = e instanceof Error ? e.message : String(e);
+			const msg = e instanceof Error ? e.message : String(e);
+			this.#error = msg;
+			reportFailure(msg);
 		}
 	}
 
 	start() {
-		if (this.#fallbackTimer) return;
+		if (this.#wsCleanup) return;
 		this.poll();
 
 		this.#wsCleanup = subscribeWS((event) => {
@@ -50,17 +52,18 @@ class HistoryStore {
 			}
 		});
 
-		this.#fallbackTimer = setInterval(() => this.poll(), FALLBACK_POLL_INTERVAL);
+		// When ConnectionStore detects reconnection, refetch immediately.
+		this.#reconnectCleanup = onReconnected(() => this.poll());
 	}
 
 	stop() {
-		if (this.#fallbackTimer) {
-			clearInterval(this.#fallbackTimer);
-			this.#fallbackTimer = null;
-		}
 		if (this.#wsCleanup) {
 			this.#wsCleanup();
 			this.#wsCleanup = null;
+		}
+		if (this.#reconnectCleanup) {
+			this.#reconnectCleanup();
+			this.#reconnectCleanup = null;
 		}
 	}
 

@@ -15,6 +15,13 @@ vi.mock('./websocket.svelte', () => ({
 	})
 }));
 
+// Mock ConnectionStore — queue store reports success/failure to it.
+vi.mock('./connection.svelte', () => ({
+	reportFailure: vi.fn(),
+	reportSuccess: vi.fn(),
+	onReconnected: vi.fn(() => vi.fn())
+}));
+
 import {
 	getQueue,
 	getQueueSlots,
@@ -139,8 +146,11 @@ describe('Queue Store', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(getError()).toBe('fail');
 
+		// Explicitly re-poll (no fallback timer anymore — ConnectionStore
+		// owns reconnection, and WS events trigger refetches).
 		mockQueueOk();
-		await vi.advanceTimersByTimeAsync(30000); // fallback poll
+		await refreshQueue();
+		await vi.advanceTimersByTimeAsync(0);
 
 		expect(getError()).toBeNull();
 	});
@@ -231,7 +241,7 @@ describe('Queue Store', () => {
 
 	// ── Lifecycle ──
 
-	it('stopPolling clears timer and sets isPolling false', async () => {
+	it('stopPolling sets isPolling false', async () => {
 		mockQueueOk();
 		startPolling();
 		await vi.advanceTimersByTimeAsync(0);
@@ -239,11 +249,6 @@ describe('Queue Store', () => {
 
 		stopPolling();
 		expect(isPolling()).toBe(false);
-
-		vi.clearAllMocks();
-		mockQueueOk();
-		await vi.advanceTimersByTimeAsync(30000);
-		expect(fetchQueue).not.toHaveBeenCalled();
 	});
 
 	it('double startPolling is idempotent', async () => {
