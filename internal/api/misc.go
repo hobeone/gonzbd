@@ -24,11 +24,37 @@ func (s *Server) modeGetCats(w http.ResponseWriter, r *http.Request) {
 	respondOK(w, "categories", cats)
 }
 
-// modeGetScripts returns the list of available post-processing scripts.
-// Currently always returns just "None" (no script directory scanning yet).
+// modeGetScripts returns the list of available post-processing scripts by
+// scanning the configured script directory for executable files.
 func (s *Server) modeGetScripts(w http.ResponseWriter, r *http.Request) {
-	// TODO: Scan scripts directory when configured.
 	scripts := []string{"None"}
+
+	var scriptDir string
+	if s.config != nil {
+		s.config.WithRead(func(c *config.Config) {
+			scriptDir = c.General.ScriptDir
+		})
+	}
+
+	if scriptDir != "" {
+		entries, err := os.ReadDir(scriptDir)
+		if err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				info, err := e.Info()
+				if err != nil {
+					continue
+				}
+				// Include files that are executable by the owner.
+				if info.Mode()&0o100 != 0 {
+					scripts = append(scripts, e.Name())
+				}
+			}
+		}
+	}
+
 	respondOK(w, "scripts", scripts)
 }
 
@@ -101,4 +127,3 @@ func (s *Server) modeRssNow(w http.ResponseWriter, r *http.Request) {
 	// TODO: Requires RSS feed processor integration.
 	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: rss_now")
 }
-
