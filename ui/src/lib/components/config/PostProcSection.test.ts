@@ -20,7 +20,6 @@ describe('PostProcSection', () => {
 			overwrite_files: false,
 			ignore_unrar_dates: false,
 			par2_turbo: false,
-			enable_all_par: false,
 			process_unpacked_par2: true,
 			enable_par_cleanup: true,
 			enable_rar_cleanup: true,
@@ -63,7 +62,6 @@ describe('PostProcSection', () => {
 	it('renders par2 repair group labels', () => {
 		render(PostProcSection, { configData: mockConfig, onFieldUpdate: vi.fn() });
 		expect(screen.getByText('Use par2cmdline-turbo')).toBeInTheDocument();
-		expect(screen.getByText('Download all par2 files')).toBeInTheDocument();
 		expect(screen.getByText('Process unpacked par2')).toBeInTheDocument();
 	});
 

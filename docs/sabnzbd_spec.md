@@ -668,7 +668,6 @@ Key design: Configuration parameters are typed objects with validators. Config r
 | `direct_unpack` | bool | false | Extract while downloading |
 | `enable_par_cleanup` | bool | true | Delete par2 after repair |
 | `enable_rar_cleanup` | bool | true | Delete archive files after extraction |
-| `enable_all_par` | bool | false | Download all par2 files before repair |
 | `process_unpacked_par2` | bool | true | Use unpacked par2 for filename recovery |
 | `par2_command` | string | `par2` | par2 binary path |
 | `unrar_command` | string | (auto-detected) | UnRAR binary path |

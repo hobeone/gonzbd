@@ -204,11 +204,6 @@ postproc:
   # extraction. Set to false to keep originals alongside extracted files.
   enable_rar_cleanup: true
 
-  # Download ALL par2 files before starting repair, rather than downloading
-  # par2 volumes on demand. Can speed up repair for damaged downloads at
-  # the cost of extra bandwidth. Matches SABnzbd's cfg.enable_all_par().
-  enable_all_par: false
-
   # Scan extracted archives for par2 files and use them for 16K-MD5
   # filename recovery. Helps deobfuscate files from nested archives.
   # Matches SABnzbd's cfg.process_unpacked_par2(). Default true.
