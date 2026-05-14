@@ -24,12 +24,6 @@ type PostProcConfig struct {
 	// where PP bit 2 (delete) removes originals.
 	EnableRarCleanup bool `yaml:"enable_rar_cleanup" json:"enable_rar_cleanup"`
 
-	// EnableAllPar when true downloads ALL par2 files before starting
-	// repair, rather than downloading par2 volumes on demand. This can
-	// speed up repair for damaged downloads at the cost of extra
-	// bandwidth. Matches SABnzbd's cfg.enable_all_par(). Default false.
-	EnableAllPar bool `yaml:"enable_all_par" json:"enable_all_par"`
-
 	// ProcessUnpackedPar2 when true scans extracted archives for par2
 	// files and uses them for 16K-MD5 filename recovery. This helps
 	// deobfuscate files from nested archives. Matches SABnzbd's

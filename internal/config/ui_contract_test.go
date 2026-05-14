@@ -60,7 +60,6 @@ var uiKeywords = []struct {
 	{"postproc", "ignore_unrar_dates", "PostProcSection.svelte"},
 	// Par2 Repair
 	{"postproc", "par2_turbo", "PostProcSection.svelte"},
-	{"postproc", "enable_all_par", "PostProcSection.svelte"},
 	{"postproc", "process_unpacked_par2", "PostProcSection.svelte"},
 	// Cleanup & Output
 	{"postproc", "enable_par_cleanup", "PostProcSection.svelte"},
