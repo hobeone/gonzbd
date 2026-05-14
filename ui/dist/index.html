@@ -4,13 +4,23 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
-		<link href="/_app/immutable/entry/start.DSprUe28.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/PxRuy7bo.js" rel="modulepreload">
+		<script>
+			// Apply theme before first paint to prevent flash.
+			(function() {
+				var t = localStorage.getItem('theme');
+				if (t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)) {
+					document.documentElement.classList.add('dark');
+				}
+			})();
+		</script>
+		<link href="/_app/immutable/entry/start.D2Pi4euI.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/u_osVD0P.js" rel="modulepreload">
 		<link href="/_app/immutable/chunks/hpawqmsU.js" rel="modulepreload">
-		<link href="/_app/immutable/entry/app.DCqLmdjg.js" rel="modulepreload">
+		<link href="/_app/immutable/entry/app.Bjvjfvvy.js" rel="modulepreload">
 		<link href="/_app/immutable/chunks/Dj6f-nJM.js" rel="modulepreload">
 		<link href="/_app/immutable/chunks/DEDqjojZ.js" rel="modulepreload">
-		<link href="/_app/immutable/nodes/0.BgMfoGU2.js" rel="modulepreload">
+		<link href="/_app/immutable/nodes/0.6SVsjL8W.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BnA-4nwW.js" rel="modulepreload">
 		
 		<link href="/_app/immutable/assets/0.BwKkrBUA.css" rel="stylesheet">
 	</head>
@@ -18,15 +28,15 @@
 		<div style="display: contents">
 			<script>
 				{
-					__sveltekit_1tf2i6v = {
+					__sveltekit_v55g8p = {
 						base: ""
 					};
 
 					const element = document.currentScript.parentElement;
 
 					Promise.all([
-						import("/_app/immutable/entry/start.DSprUe28.js"),
-						import("/_app/immutable/entry/app.DCqLmdjg.js")
+						import("/_app/immutable/entry/start.D2Pi4euI.js"),
+						import("/_app/immutable/entry/app.Bjvjfvvy.js")
 					]).then(([kit, app]) => {
 						kit.start(app, element);
 					});
