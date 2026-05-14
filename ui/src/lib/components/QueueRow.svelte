@@ -328,8 +328,12 @@
 			</svg>
 			<div class="min-w-0 flex-1">
 				{#if renaming}
-					<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-					<div onclick={(e: MouseEvent) => e.stopPropagation()}>
+					<div
+						role="presentation"
+						onclick={(e: MouseEvent) => e.stopPropagation()}
+						onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
+					>
+						<!-- svelte-ignore a11y_autofocus -->
 						<input
 							type="text"
 							bind:value={renameValue}
