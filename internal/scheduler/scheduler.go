@@ -28,7 +28,7 @@ type ScheduleSpec struct {
 // (minute hour dom month dow). Token six is the action name. An optional
 // seventh token (everything after the action) is the argument.
 //
-// Day-of-week values 0 and 7 both mean Sunday (standard cron convention).
+// Day-of-week uses standard cron convention: 0=Sunday … 6=Saturday.
 // Named days (Mon, Tue, …) and months (Jan, Feb, …) are also supported
 // courtesy of robfig/cron.
 func Parse(line string) (ScheduleSpec, error) {
@@ -37,11 +37,6 @@ func Parse(line string) (ScheduleSpec, error) {
 	if len(parts) < 6 {
 		return ScheduleSpec{}, fmt.Errorf("schedule %q: need at least 6 fields (minute hour dom month dow action), got %d", line, len(parts))
 	}
-
-	// Normalize day-of-week: SABnzbd uses 1=Mon … 7=Sun, and standard
-	// cron allows both 0 and 7 for Sunday. robfig/cron only accepts 0-6,
-	// so rewrite any "7" to "0" in the dow field.
-	parts[4] = normalizeDOW(parts[4])
 
 	// Rejoin the first 5 fields as a standard cron expression.
 	cronExpr := strings.Join(parts[:5], " ")
@@ -174,44 +169,4 @@ func (s *Scheduler) Tick(ctx context.Context, t time.Time) {
 			)
 		}
 	}
-}
-
-// normalizeDOW rewrites "7" to "0" in a day-of-week cron field. Both mean
-// Sunday in traditional cron, but robfig/cron only accepts 0-6. This handles
-// bare "7", comma lists like "5,6,7", and ranges like "1-7" (rewritten to
-// "1-6,0" so both the range and Sunday are preserved).
-func normalizeDOW(field string) string {
-	if !strings.Contains(field, "7") {
-		return field
-	}
-
-	segments := strings.Split(field, ",")
-	var out []string
-	addSunday := false
-
-	for _, seg := range segments {
-		if seg == "7" {
-			addSunday = true
-			continue
-		}
-		// Handle ranges like "1-7" → "1-6" + add Sunday.
-		if before, after, ok := strings.Cut(seg, "-"); ok {
-			if after == "7" {
-				out = append(out, before+"-6")
-				addSunday = true
-				continue
-			}
-			if before == "7" {
-				out = append(out, "0-"+after)
-				continue
-			}
-		}
-		// Handle strides like "*/7" — no normalization needed (stride, not value).
-		out = append(out, seg)
-	}
-
-	if addSunday {
-		out = append(out, "0")
-	}
-	return strings.Join(out, ",")
 }

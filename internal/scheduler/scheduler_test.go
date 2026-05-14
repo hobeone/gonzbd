@@ -179,26 +179,22 @@ func TestMatchesCommaList(t *testing.T) {
 	}
 }
 
-func TestMatchesSundayBoth0and7(t *testing.T) {
+func TestMatchesSundayDOW0(t *testing.T) {
 	t.Parallel()
 
-	// Standard cron: 0 = Sunday, 7 = Sunday.
+	// Standard cron: 0 = Sunday.
 	sun := time.Date(2024, 4, 21, 10, 0, 0, 0, time.UTC) // Sunday
+	mon := time.Date(2024, 4, 22, 10, 0, 0, 0, time.UTC) // Monday
 
-	spec0, err := Parse("0 10 * * 0 act")
+	spec, err := Parse("0 10 * * 0 act")
 	if err != nil {
 		t.Fatalf("Parse dow=0: %v", err)
 	}
-	if !spec0.Matches(sun) {
+	if !spec.Matches(sun) {
 		t.Error("dow=0 should match Sunday")
 	}
-
-	spec7, err := Parse("0 10 * * 7 act")
-	if err != nil {
-		t.Fatalf("Parse dow=7: %v", err)
-	}
-	if !spec7.Matches(sun) {
-		t.Error("dow=7 should match Sunday")
+	if spec.Matches(mon) {
+		t.Error("dow=0 should not match Monday")
 	}
 }
 
