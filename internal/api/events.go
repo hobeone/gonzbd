@@ -9,20 +9,23 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/hobeone/gonzbd/internal/downloader"
 )
 
 // Event represents a message sent over the WebSocket.
 type Event struct {
-	Type          string `json:"event"`
-	Speed         int64  `json:"speed,omitempty"`
-	Remaining     int64  `json:"remaining,omitempty"`
-	SpeedLimit    int64  `json:"speed_limit"`
-	BandwidthMax  int64  `json:"bandwidth_max"`
-	BandwidthPerc int    `json:"bandwidth_perc"`
-	NzoID         string `json:"nzo_id,omitempty"`
-	Tool          string `json:"tool,omitempty"`  // subprocess tool name (par2, unrar, 7z, script)
-	Line          string `json:"line,omitempty"`  // single output line from subprocess
-	Stage         string `json:"stage,omitempty"` // pipeline stage name (repair, unpack)
+	Type          string                      `json:"event"`
+	Speed         int64                       `json:"speed,omitempty"`
+	Remaining     int64                       `json:"remaining,omitempty"`
+	SpeedLimit    int64                       `json:"speed_limit"`
+	BandwidthMax  int64                       `json:"bandwidth_max"`
+	BandwidthPerc int                         `json:"bandwidth_perc"`
+	NzoID         string                      `json:"nzo_id,omitempty"`
+	Tool          string                      `json:"tool,omitempty"`  // subprocess tool name (par2, unrar, 7z, script)
+	Line          string                      `json:"line,omitempty"`  // single output line from subprocess
+	Stage         string                      `json:"stage,omitempty"` // pipeline stage name (repair, unpack)
+	Servers       []downloader.ServerSnapshot `json:"servers,omitempty"`
 }
 
 // Broadcaster manages active WebSocket connections and distributes events.
