@@ -504,16 +504,32 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 // writePIDFile writes the current process PID to path, atomically. The
 // caller is expected to remove the file on shutdown.
 func writePIDFile(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("mkdir pid parent: %w", err)
 	}
-	tmp := path + ".tmp"
-	data := []byte(strconv.Itoa(os.Getpid()) + "\n")
-	if err := os.WriteFile(tmp, data, 0o644); err != nil { //nolint:gosec // pidfile is world-readable by convention
-		return fmt.Errorf("write tmp: %w", err)
+	tmp, err := os.CreateTemp(dir, ".pid-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp) //nolint:errcheck // best-effort cleanup; rename error takes precedence
+	tmpName := tmp.Name()
+	data := []byte(strconv.Itoa(os.Getpid()) + "\n")
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("sync: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("close: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("rename: %w", err)
 	}
 	return nil
@@ -814,6 +830,9 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
 
+	deadline := time.NewTimer(60 * time.Minute)
+	defer deadline.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -829,7 +848,7 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 				log.Info("job found in history", "job", job.Name, "status", h.Status)
 				goto done
 			}
-		case <-time.After(60 * time.Minute):
+		case <-deadline.C:
 			return fmt.Errorf("no completion in 60 minutes; aborting")
 		}
 	}
@@ -914,5 +933,8 @@ func (w wsAdapter) Broadcast(e app.Event) {
 		BandwidthMax:  e.BandwidthMax,
 		BandwidthPerc: e.BandwidthPerc,
 		NzoID:         e.NzoID,
+		Tool:          e.Tool,
+		Line:          e.Line,
+		Stage:         e.Stage,
 	})
 }
