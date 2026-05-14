@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -832,16 +833,12 @@ func (q *Queue) Reorder(id string, newIndex int) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	newIndex = max(0, newIndex)
-	if newIndex >= len(q.jobs) {
-		newIndex = len(q.jobs) - 1
-	}
-	if newIndex == idx {
-		return nil
-	}
 	job := q.jobs[idx]
-	q.jobs = append(q.jobs[:idx], q.jobs[idx+1:]...)
-	q.jobs = append(q.jobs[:newIndex], append([]*Job{job}, q.jobs[newIndex:]...)...)
+	q.removeAtLocked(idx)
+	// Clamp after removal so the valid range is [0, len(q.jobs)].
+	// slices.Insert at len(q.jobs) appends to the end.
+	newIndex = max(0, min(newIndex, len(q.jobs)))
+	q.jobs = slices.Insert(q.jobs, newIndex, job)
 	q.dirty.Store(true)
 	q.notifyLocked()
 	return nil
