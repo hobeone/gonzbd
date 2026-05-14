@@ -932,5 +932,6 @@ func (w wsAdapter) Broadcast(e app.Event) {
 		Tool:          e.Tool,
 		Line:          e.Line,
 		Stage:         e.Stage,
+		Servers:       e.Servers,
 	})
 }

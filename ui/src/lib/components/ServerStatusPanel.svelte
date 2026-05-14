@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { fetchServerStats, fetchConfig, setConfig, postAction } from '$lib/api';
+	import { fetchConfig, setConfig, postAction } from '$lib/api';
+	import { getServerStats } from '$lib/stores/queue.svelte';
 	import type { ServerSnapshot, ConnSnapshot, ServerConfig } from '$lib/types';
 	import { formatSize as formatBytes, formatSpeed as formatBps } from '$lib/utils';
-	import { onDestroy } from 'svelte';
 	import ServerEditDialog from './config/ServerEditDialog.svelte';
 
 	let {
@@ -11,16 +11,16 @@
 		open?: boolean;
 	} = $props();
 
-	let servers = $state<ServerSnapshot[]>([]);
-	let loading = $state(false);
 	let error = $state('');
 	let expandedServers = $state<Set<string>>(new Set());
-	let intervalId: ReturnType<typeof setInterval> | undefined;
 
 	let editOpen = $state(false);
 	let editServer = $state<ServerConfig | null>(null);
 	let allServerConfigs = $state<ServerConfig[]>([]);
 	let editLoadingFor = $state<string | null>(null);
+
+	// Server stats come from the queue store's metrics WS event — no polling needed.
+	let servers = $derived(getServerStats());
 
 	async function openServerSettings(name: string) {
 		editLoadingFor = name;
@@ -51,7 +51,6 @@
 		try {
 			await setConfig('servers', '', JSON.stringify(next));
 			allServerConfigs = next;
-			await loadData();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to save server';
 		}
@@ -62,31 +61,8 @@
 		try {
 			await setConfig('servers', '', JSON.stringify(next));
 			allServerConfigs = next;
-			await loadData();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to delete server';
-		}
-	}
-
-	function startPolling() {
-		loadData();
-		intervalId = setInterval(loadData, 2000);
-	}
-
-	function stopPolling() {
-		if (intervalId) {
-			clearInterval(intervalId);
-			intervalId = undefined;
-		}
-	}
-
-	async function loadData() {
-		try {
-			const resp = await fetchServerStats();
-			servers = resp.servers;
-			error = '';
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to fetch';
 		}
 	}
 
@@ -112,7 +88,6 @@
 	async function unblockServer(name: string) {
 		try {
 			await postAction('status', { name: 'unblock_server', value: name });
-			await loadData();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to unblock server';
 		}
@@ -135,16 +110,6 @@
 	function totalMaxConns(): number {
 		return servers.reduce((sum, s) => sum + s.max_connections, 0);
 	}
-
-	$effect(() => {
-		if (open) {
-			startPolling();
-		} else {
-			stopPolling();
-		}
-	});
-
-	onDestroy(() => stopPolling());
 </script>
 
 {#if open}
@@ -366,11 +331,7 @@
 			{:else}
 				{#if !error}
 					<div class="py-12 text-center text-sm text-gray-500 dark:text-gray-400">
-						{#if loading}
-							Loading server status…
-						{:else}
-							No servers configured
-						{/if}
+						No servers configured
 					</div>
 				{/if}
 			{/each}
@@ -378,7 +339,7 @@
 
 		<!-- Footer -->
 		<div class="border-t border-gray-200 bg-gray-50 px-5 py-3 text-xs text-gray-400 dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-500">
-			Auto-refreshing every 2s
+			Auto-updating via WebSocket
 		</div>
 	</div>
 
