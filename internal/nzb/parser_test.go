@@ -351,6 +351,24 @@ func TestParseMissingSubjectDefaultsToUnknown(t *testing.T) {
 	}
 }
 
+func TestParseISO88591(t *testing.T) {
+	// "café" in Latin-1 is "caf\xE9"
+	const doc = `<?xml version="1.0" encoding="iso-8859-1"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file subject="caf` + "\xE9" + `">
+    <groups><group>g</group></groups>
+    <segments><segment bytes="100" number="1">id@h</segment></segments>
+  </file>
+</nzb>`
+	got, err := Parse(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.Files[0].Subject != "café" {
+		t.Errorf("Subject = %q, want %q", got.Files[0].Subject, "café")
+	}
+}
+
 // TestParse_InputSizeLimit verifies that an NZB exceeding maxNZBSize is
 // rejected rather than consuming unbounded memory (C5 – XML bomb).
 func TestParse_InputSizeLimit(t *testing.T) {
