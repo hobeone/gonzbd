@@ -344,13 +344,20 @@
 						/>
 					</div>
 				{:else}
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div
-						class="font-medium truncate cursor-text"
-						title="{slot.name || slot.filename} (double-click to rename)"
-						ondblclick={(e: MouseEvent) => { e.stopPropagation(); startRename(); }}
-					>
-						{slot.name || slot.filename}
+					<div class="flex items-center gap-1 group/rename">
+						<div class="font-medium truncate" title={slot.name || slot.filename}>
+							{slot.name || slot.filename}
+						</div>
+						<button
+							onclick={(e: MouseEvent) => { e.stopPropagation(); startRename(); }}
+							class="shrink-0 opacity-0 group-hover/rename:opacity-100 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-opacity"
+							title="Rename"
+						>
+							<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3">
+								<path d="M13.488 2.513a1.75 1.75 0 0 0-2.475 0L6.75 6.774a2.75 2.75 0 0 0-.596.892l-.848 2.047a.75.75 0 0 0 .98.98l2.047-.848a2.75 2.75 0 0 0 .892-.596l4.261-4.262a1.75 1.75 0 0 0 0-2.474Z" />
+								<path d="M4.75 3.5c-.69 0-1.25.56-1.25 1.25v6.5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V9A.75.75 0 0 1 14 9v2.25A2.75 2.75 0 0 1 11.25 14h-6.5A2.75 2.75 0 0 1 2 11.25v-6.5A2.75 2.75 0 0 1 4.75 2H7a.75.75 0 0 1 0 1.5H4.75Z" />
+							</svg>
+						</button>
 					</div>
 				{/if}
 				{#if isDownloading && slot.current_file}
