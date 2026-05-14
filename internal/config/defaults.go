@@ -78,7 +78,6 @@ func Default() (*Config, error) {
 			EnableRecursive:      true,
 			EnableParCleanup:     true,
 			EnableRarCleanup:     true,
-			EnableAllPar:         false,
 			ProcessUnpackedPar2:  true,
 			Par2Command:          "", // auto-detect
 			UnrarCommand:         "", // auto-detect

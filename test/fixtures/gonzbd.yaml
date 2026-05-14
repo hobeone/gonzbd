@@ -44,7 +44,6 @@ postproc:
   enable_recursive: true
   enable_par_cleanup: true
   enable_rar_cleanup: true
-  enable_all_par: false
   process_unpacked_par2: true
   par2_command: par2
   unrar_command: ""

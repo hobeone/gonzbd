@@ -44,7 +44,6 @@
 		<h4 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2">Par2 Repair</h4>
 		<div class="divide-y divide-gray-100 dark:divide-gray-800">
 			<ConfigSwitch section="postproc" keyword="par2_turbo" label="Use par2cmdline-turbo" value={configData.postproc.par2_turbo} description="Enable multi-threaded repair when the par2 binary supports it." onupdate={onFieldUpdate} />
-			<ConfigSwitch section="postproc" keyword="enable_all_par" label="Download all par2 files" value={configData.postproc.enable_all_par} description="Download every par2 volume before starting repair, instead of on-demand. Uses more bandwidth but can speed up damaged repairs." onupdate={onFieldUpdate} />
 			<ConfigSwitch section="postproc" keyword="process_unpacked_par2" label="Process unpacked par2" value={configData.postproc.process_unpacked_par2} description="Use par2 files found inside extracted archives for filename recovery (deobfuscation)." onupdate={onFieldUpdate} />
 		</div>
 	</div>
