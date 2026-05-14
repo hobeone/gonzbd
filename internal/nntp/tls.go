@@ -108,7 +108,7 @@ func verifyConnectionIgnoreHostname(cs tls.ConnectionState) error {
 func parseCipherList(s string) ([]uint16, error) {
 	lookup := cipherNameIndex()
 	var out []uint16
-	for _, name := range strings.Split(s, ":") {
+	for name := range strings.SplitSeq(s, ":") {
 		if name == "" {
 			continue
 		}
