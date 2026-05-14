@@ -85,8 +85,7 @@ servers:
 		"Job:        test",
 		"Status:     Completed",
 		"Location:",
-		"Avg Network:",
-		"Avg Disk:",
+		"Avg Speed:",
 	}
 
 	for _, line := range expectedLines {
