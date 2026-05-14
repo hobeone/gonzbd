@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/lmittmann/tint"
@@ -167,53 +168,51 @@ func (f *filterHandler) Enabled(ctx context.Context, level slog.Level) bool {
 func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
 	component := f.extractComponent(r)
 
-	if component != "" {
-		if lvl, ok := f.levels[component]; ok {
-			// Component has a specific level override.
-			if r.Level < lvl {
-				return nil
-			}
-		} else {
-			// Unlisted component: enforce the global level.
-			// The base handler level may be lower than global (to
-			// accommodate per-component debug overrides), so we must
-			// gate on the global level here.
-			if r.Level < f.global {
-				return nil
-			}
+	// Determine the effective level. Check hierarchical matches:
+	// "postproc/unpack" -> "postproc/unpack", then "postproc".
+	effectiveLevel := f.global
+	p := component
+	for p != "" {
+		if lvl, ok := f.levels[p]; ok {
+			effectiveLevel = lvl
+			break
 		}
-	} else {
-		// No component attribute at all: enforce global level.
-		if r.Level < f.global {
-			return nil
+		// Try parent component.
+		idx := strings.LastIndex(p, "/")
+		if idx == -1 {
+			break
 		}
+		p = p[:idx]
+	}
+
+	if r.Level < effectiveLevel {
+		return nil
 	}
 
 	return f.next.Handle(ctx, r)
 }
 
-// extractComponent finds the "component" attribute from the record's
-// attributes or from the handler's pre-set attributes (via WithAttrs).
+// extractComponent finds the most recent "component" attribute.
+// Attributes added in the log call itself (r.Attrs) take precedence over
+// attributes added to the logger via .With (f.currentAttrs). Within each,
+// the last occurrence wins.
 func (f *filterHandler) extractComponent(r slog.Record) string {
-	// 1. Check record attributes (set per-call)
 	var component string
+
+	// 1. Check handler attributes (set via .With("component", "..."))
+	for _, a := range f.currentAttrs {
+		if a.Key == "component" {
+			component = a.Value.String()
+		}
+	}
+
+	// 2. Check record attributes (set per-call)
 	r.Attrs(func(a slog.Attr) bool {
 		if a.Key == "component" {
 			component = a.Value.String()
-			return false // stop iteration
 		}
 		return true
 	})
-
-	// 2. Check handler attributes (set via .With("component", "..."))
-	if component == "" {
-		for _, a := range f.currentAttrs {
-			if a.Key == "component" {
-				component = a.Value.String()
-				break
-			}
-		}
-	}
 
 	return component
 }
