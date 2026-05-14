@@ -1137,6 +1137,17 @@ func (app *Application) ResumeDownloads() {
 }
 
 // ServerStatus returns a snapshot of all NNTP server connection state,
+// DisconnectAll drops all idle NNTP connections. Workers stay alive and
+// will re-dial lazily when new work arrives.
+func (app *Application) DisconnectAll() {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.downloader != nil {
+		app.downloader.DisconnectAll()
+	}
+}
+
+// ServerStatus returns a point-in-time snapshot of all servers,
 // including per-connection article activity. Returns nil when the
 // downloader is not running.
 func (app *Application) ServerStatus() []downloader.ServerSnapshot {

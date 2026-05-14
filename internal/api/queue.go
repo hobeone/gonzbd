@@ -62,9 +62,14 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 	case "priority":
 		s.queuePriority(w, r)
 	// Stubbed: no backing implementation yet.
-	case "rename", "sort", "delete_nzf", "change_complete_action",
+	case "rename", "sort", "delete_nzf",
 		"change_name", "change_script":
 		s.respondError(w, http.StatusBadRequest, "not implemented in this build: "+action)
+	// change_complete_action controls system power management (shutdown,
+	// hibernate after queue empties). GoNZBD does not support this, but
+	// returning an error breaks third-party clients — return success silently.
+	case "change_complete_action":
+		respondStatus(w)
 	case "change_opts":
 		s.queueChangeOpts(w, r)
 	case "change_cat":

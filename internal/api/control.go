@@ -46,20 +46,36 @@ func (s *Server) modeRestart(w http.ResponseWriter, r *http.Request) {
 	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: restart")
 }
 
-// modeDisconnect disconnects all NNTP connections (not implemented).
+// modeDisconnect disconnects all idle NNTP connections. Workers stay alive
+// and will re-dial lazily when new work arrives.
 func (s *Server) modeDisconnect(w http.ResponseWriter, r *http.Request) {
-	// TODO: Requires Downloader interface with Disconnect method.
-	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: disconnect")
+	if s.app == nil {
+		s.respondError(w, http.StatusInternalServerError, "app not wired")
+		return
+	}
+	s.app.DisconnectAll()
+	s.log.Info("NNTP connections disconnected")
+	respondStatus(w)
 }
 
-// modePausePP pauses post-processing (not implemented).
+// modePausePP pauses the post-processing pipeline.
 func (s *Server) modePausePP(w http.ResponseWriter, r *http.Request) {
-	// TODO: Requires post-processor pause mechanism.
-	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: pause_pp")
+	if s.app == nil {
+		s.respondError(w, http.StatusInternalServerError, "app not wired")
+		return
+	}
+	s.app.PausePostProcessor()
+	s.log.Info("post-processing paused")
+	respondStatus(w)
 }
 
-// modeResumePP resumes post-processing (not implemented).
+// modeResumePP resumes the post-processing pipeline.
 func (s *Server) modeResumePP(w http.ResponseWriter, r *http.Request) {
-	// TODO: Requires post-processor pause mechanism.
-	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: resume_pp")
+	if s.app == nil {
+		s.respondError(w, http.StatusInternalServerError, "app not wired")
+		return
+	}
+	s.app.ResumePostProcessor()
+	s.log.Info("post-processing resumed")
+	respondStatus(w)
 }

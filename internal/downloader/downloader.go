@@ -127,7 +127,6 @@ type Options struct {
 
 	// PropagationDelay is the minimum age a job must have before its
 	// articles are dispatched. Zero means no delay.
-	// TODO: not yet wired into dispatch logic.
 	PropagationDelay time.Duration
 }
 
