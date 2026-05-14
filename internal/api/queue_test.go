@@ -968,15 +968,34 @@ func TestAddURL_MissingURL(t *testing.T) {
 
 // --- Stub actions ---
 
-func TestQueueStub_Rename(t *testing.T) {
+func TestQueueRename_MissingValue(t *testing.T) {
 	t.Parallel()
 	s, _ := testQueueServer(t)
 	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=rename&apikey="+testAPIKey)
 	if rr.Code != http.StatusBadRequest {
-		t.Errorf("status = %d; want 400 for stubbed action", rr.Code)
+		t.Errorf("status = %d; want 400 for missing value", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), "not implemented") {
-		t.Error("expected 'not implemented' in error message")
+	if !strings.Contains(rr.Body.String(), "missing value") {
+		t.Error("expected 'missing value' in error message")
+	}
+}
+
+func TestQueueRename_Success(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	job := addTestJob(t, q, queue.AddOptions{Filename: "original.nzb"})
+
+	rr := apiGet(t, s.Handler(),
+		"/api?mode=queue&name=rename&value="+job.ID+"&value2=NewName&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	updated, err := q.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if updated.Name != "NewName" {
+		t.Errorf("Name = %q; want %q", updated.Name, "NewName")
 	}
 }
 
