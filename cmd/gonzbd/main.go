@@ -313,7 +313,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	meter := bpsmeter.NewMeter(10*time.Second, time.Now)
 	meterStatePath := filepath.Join(adminDir, "bpsmeter.json")
 	if state, err := bpsmeter.LoadState(meterStatePath); err == nil {
-		bpsmeter.Restore(meter, state)
+		meter.Restore(state)
 	}
 
 	// Notifier dispatcher. Build from config; sinks are registered
@@ -495,7 +495,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	if err := application.Shutdown(); err != nil {
 		log.Warn("application shutdown", "err", err)
 	}
-	if err := bpsmeter.SaveState(meterStatePath, bpsmeter.Capture(meter)); err != nil {
+	if err := bpsmeter.SaveState(meterStatePath, meter.Capture()); err != nil {
 		log.Warn("save bpsmeter state", "err", err)
 	}
 	return nil

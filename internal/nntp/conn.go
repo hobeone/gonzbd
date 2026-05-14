@@ -657,15 +657,7 @@ func (c *Conn) Close() error {
 		_ = c.nc.Close()            //nolint:errcheck // caller gets closeErr via return below
 		_ = c.setState(StateClosed) //nolint:errcheck // terminal transition; ignore invalid-state error if already closed
 
-		// Wake any orphaned callers.
-		c.pendingLock.Lock()
-		orphans := c.pending
-		c.pending = nil
-		c.pendingLock.Unlock()
-		for _, pc := range orphans {
-			pc.result = cmdResult{err: ErrClosed}
-			close(pc.done)
-		}
+		c.wakeOrphans(ErrClosed)
 	})
 	<-c.readerDone
 	return c.closeErr
