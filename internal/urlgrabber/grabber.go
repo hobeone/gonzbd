@@ -255,35 +255,10 @@ func extractFromContentDisposition(disposition string) string {
 	return params["filename"]
 }
 
-// privateIPNets defines the CIDR ranges considered "private" for SSRF protection.
-var privateIPNets = func() []*net.IPNet {
-	cidrs := []string{
-		"127.0.0.0/8",    // IPv4 loopback
-		"10.0.0.0/8",     // RFC1918
-		"172.16.0.0/12",  // RFC1918
-		"192.168.0.0/16", // RFC1918
-		"169.254.0.0/16", // link-local
-		"::1/128",        // IPv6 loopback
-		"fe80::/10",      // IPv6 link-local
-		"fc00::/7",       // IPv6 unique local
-	}
-	nets := make([]*net.IPNet, 0, len(cidrs))
-	for _, cidr := range cidrs {
-		_, n, _ := net.ParseCIDR(cidr)
-		nets = append(nets, n)
-	}
-	return nets
-}()
-
 // isPrivateIP returns true if ip falls within any private, loopback, or
-// link-local address range.
+// link-local address range. Uses stdlib methods available since Go 1.17.
 func isPrivateIP(ip net.IP) bool {
-	for _, n := range privateIPNets {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
 }
 
 // validateURL rejects URLs that could be used for SSRF attacks:

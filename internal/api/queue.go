@@ -14,6 +14,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/humanfmt"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/types"
@@ -295,8 +296,8 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int) queueSlot {
 		Status:            string(displayStatus),
 		Script:            nonEmpty(j.Script, "none"),
 		Password:          j.Password,
-		Size:              formatBytes(j.TotalBytes),
-		SizeLeft:          formatBytes(j.RemainingBytes),
+		Size:              humanfmt.Bytes(j.TotalBytes),
+		SizeLeft:          humanfmt.Bytes(j.RemainingBytes),
 		MB:                toMBString(j.TotalBytes),
 		MBLeft:            toMBString(j.RemainingBytes),
 		Bytes:             j.TotalBytes,
@@ -412,8 +413,8 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 			KBPerSec:       "0",
 			MB:             toMBString(totalQueueBytes),
 			MBLeft:         toMBString(remainQueueBytes),
-			Size:           formatBytes(totalQueueBytes),
-			SizeLeft:       formatBytes(remainQueueBytes),
+			Size:           humanfmt.Bytes(totalQueueBytes),
+			SizeLeft:       humanfmt.Bytes(remainQueueBytes),
 			Timeleft:       "0:00:00",
 			NoOfSlots:      len(slots),
 			NoOfSlotsTotal: total,
@@ -886,20 +887,6 @@ func (s *Server) enqueueNZBData(w http.ResponseWriter, r *http.Request, data []b
 }
 
 // --- Helpers ---
-
-// formatBytes converts a byte count to a human-readable string like "1.23 GB".
-func formatBytes(n int64) string {
-	switch {
-	case n >= 1<<30:
-		return strconv.FormatFloat(float64(n)/float64(1<<30), 'f', 2, 64) + " GB"
-	case n >= 1<<20:
-		return strconv.FormatFloat(float64(n)/float64(1<<20), 'f', 2, 64) + " MB"
-	case n >= 1<<10:
-		return strconv.FormatFloat(float64(n)/float64(1<<10), 'f', 2, 64) + " KB"
-	default:
-		return strconv.FormatInt(n, 10) + " B"
-	}
-}
 
 // toMBString formats bytes as a megabyte string like "1024.00" for SABnzbd API compatibility.
 func toMBString(n int64) string {
