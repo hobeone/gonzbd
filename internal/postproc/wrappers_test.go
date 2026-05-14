@@ -110,6 +110,40 @@ func TestRepairStage_SkippedWhenQuickCheckPassed(t *testing.T) {
 	}
 }
 
+// Regression test: par2 files must be deleted even when QuickCheck passes
+// and repair is skipped. Previously, the cleanup code only ran after a full
+// par2 repair, leaving par2 volumes in the final output.
+func TestRepairStage_CleanupRunsOnQuickCheckPath(t *testing.T) {
+	t.Parallel()
+	job, dir := stageJob(t)
+	job.QuickCheckPassed = true
+
+	// Create data + par2 files.
+	os.WriteFile(filepath.Join(dir, "movie.mkv"), []byte("video"), 0o644)
+	os.WriteFile(filepath.Join(dir, "movie.par2"), []byte("par2 main"), 0o644)
+	os.WriteFile(filepath.Join(dir, "movie.vol00+1.par2"), []byte("par2 vol"), 0o644)
+	os.WriteFile(filepath.Join(dir, "movie.vol01+2.par2"), []byte("par2 vol"), 0o644)
+
+	// Cleanup=true matches the "enable_par_cleanup" config option.
+	stage := NewRepairStageWith(par2.RunOptions{}, true)
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The data file must survive.
+	if _, err := os.Stat(filepath.Join(dir, "movie.mkv")); err != nil {
+		t.Error("movie.mkv should survive cleanup")
+	}
+
+	// All par2 files should be deleted.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasSuffix(strings.ToLower(e.Name()), ".par2") {
+			t.Errorf("par2 file %q should have been cleaned up", e.Name())
+		}
+	}
+}
+
 // P22: ScriptStage with ScriptCanFail=true swallows non-zero exit errors.
 func TestScriptStage_ScriptCanFail(t *testing.T) {
 	if runtime.GOOS == "windows" {
