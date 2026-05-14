@@ -7,7 +7,8 @@
  * all consumers when connectivity is restored.
  *
  * Design:
- *  - 2 consecutive failures → "disconnected" (avoids flashing on a single dropped request)
+ *  - HTTP failures: 2 consecutive → "disconnected" (avoids flashing on a single dropped request)
+ *  - WebSocket close: immediate "disconnected" (authoritative signal)
  *  - Backoff: 1s → 2s → 4s → 8s → 16s → 32s → 60s (cap) with ±20% jitter
  *  - Health probe: GET /api?mode=version&output=json (lightweight, side-effect-free)
  *  - On reconnect: fires all registered onReconnected callbacks
@@ -48,13 +49,28 @@ class ConnectionStore {
 	}
 
 	/**
-	 * Called by any store when an HTTP fetch or WS connection fails.
+	 * Called by any store when an HTTP fetch fails.
+	 * Uses a threshold (2 failures) to avoid flashing on transient errors.
 	 */
 	reportFailure(error: string): void {
 		this.#consecutiveFailures++;
 		this.#lastError = error;
 
 		if (this.#consecutiveFailures >= FAILURE_THRESHOLD && this.#connected) {
+			this.#connected = false;
+			this.#startBackoff();
+		}
+	}
+
+	/**
+	 * Called when the WebSocket closes. This is an authoritative signal
+	 * that the backend is unreachable — bypasses the failure threshold
+	 * and immediately shows the overlay.
+	 */
+	reportDisconnect(error: string): void {
+		this.#lastError = error;
+		this.#consecutiveFailures = FAILURE_THRESHOLD;
+		if (this.#connected) {
 			this.#connected = false;
 			this.#startBackoff();
 		}
@@ -160,6 +176,7 @@ export const getLastError = () => store.lastError;
 export const getNextRetryAt = () => store.nextRetryAt;
 export const isProbing = () => store.probing;
 export const reportFailure = (error: string) => store.reportFailure(error);
+export const reportDisconnect = (error: string) => store.reportDisconnect(error);
 export const reportSuccess = () => store.reportSuccess();
 export const retryNow = () => store.retryNow();
 export const onReconnected = (cb: () => void) => store.onReconnected(cb);
