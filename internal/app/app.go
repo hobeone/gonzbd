@@ -868,6 +868,14 @@ func (app *Application) drainCompletions() {
 func (app *Application) maybeFinalize(jobID, failMsg string) {
 	started, err := app.queue.SetPostProcStarted(jobID)
 	if err == nil && started {
+		// Force an immediate queue save so the PostProc=true flag survives
+		// a crash. Without this, a crash between job completion and the
+		// next periodic checkpoint (~30s) would lose the flag, causing
+		// articles to be re-downloaded on restart instead of entering
+		// post-processing via crash recovery.
+		if saveErr := app.queue.Save(filepath.Join(app.cfg.AdminDir, "queue")); saveErr != nil {
+			app.log.Warn("forced queue save on job completion failed", "job", jobID, "err", saveErr)
+		}
 		// Snapshot the job to decouple the post-processor from the
 		// queue's live pointer. The PP may hold this for minutes during
 		// repair/unpack; if the API mutates the queue's copy (Pause,
