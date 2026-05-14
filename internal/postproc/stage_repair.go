@@ -303,13 +303,9 @@ func cleanupPar2Backups(dir string, log *slog.Logger) int {
 	return removed
 }
 
-// UnpackStage extracts every archive it finds in job.DownloadDir,
-// delegating to the unpack package's per-format functions.
-//
-// Destination is the same DownloadDir — extracted files land alongside
-// the archives, matching Python's in-place unpack layout before the sort
-// stage moves them. When Cleanup is true, source archive files are
-// deleted after successful extraction (matching Python's PP bit 2).
+// listNonPar2Files returns the absolute paths of all non-directory,
+// non-par2 files in dir. These paths are passed to par2 as extra data
+// files for checksum matching.
 func listNonPar2Files(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -327,6 +323,3 @@ func listNonPar2Files(dir string) ([]string, error) {
 	}
 	return result, nil
 }
-
-// toolOutputLines splits raw tool output (stdout/stderr) into individual
-// non-empty, trimmed lines suitable for the stage log.

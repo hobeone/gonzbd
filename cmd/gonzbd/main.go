@@ -872,11 +872,7 @@ done:
 
 	// Network throughput (average)
 	netMBps := float64(job.TotalBytes) / (1024 * 1024) / duration.Seconds()
-	fmt.Printf("Avg Network: %.2f MB/s\n", netMBps)
-
-	// Disk performance (estimated by total job time including assembly and post-proc)
-	diskMBps := float64(job.TotalBytes) / (1024 * 1024) / duration.Seconds()
-	fmt.Printf("Avg Disk:    %.2f MB/s\n", diskMBps)
+	fmt.Printf("Avg Speed:   %.2f MB/s\n", netMBps)
 	fmt.Printf("------------------------\n\n")
 
 	return nil

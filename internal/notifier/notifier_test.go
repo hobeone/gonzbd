@@ -334,6 +334,8 @@ func TestEmailFormatMessage(t *testing.T) {
 		{"From header", "From: sab@example.com"},
 		{"To header", "To: user@example.com, admin@example.com"},
 		{"Subject header", "Subject: GoNZBD: My Download"},
+		{"MIME-Version", "MIME-Version: 1.0"},
+		{"Content-Type", "Content-Type: text/plain; charset=utf-8"},
 		{"body text", "Finished successfully."},
 	}
 	for _, c := range checks {

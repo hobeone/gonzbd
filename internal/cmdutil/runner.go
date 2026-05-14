@@ -48,17 +48,7 @@ func BuildCommand(ctx context.Context, cfg CmdConfig, name string, args ...strin
 		return exec.CommandContext(ctx, name, args...) //nolint:gosec // caller-supplied args
 	}
 
-	var fullArgs []string
-
-	if cfg.Nice != "" {
-		fullArgs = append(fullArgs, "nice")
-		fullArgs = append(fullArgs, strings.Fields(cfg.Nice)...)
-	}
-	if cfg.Ionice != "" {
-		fullArgs = append(fullArgs, "ionice")
-		fullArgs = append(fullArgs, strings.Fields(cfg.Ionice)...)
-	}
-
+	fullArgs := buildPriorityArgs(cfg)
 	fullArgs = append(fullArgs, name)
 	fullArgs = append(fullArgs, args...)
 
@@ -72,6 +62,12 @@ func FormatCmdPrefix(cfg CmdConfig) string {
 	if cfg.IsEmpty() {
 		return ""
 	}
+	return strings.Join(buildPriorityArgs(cfg), " ")
+}
+
+// buildPriorityArgs returns the nice/ionice prefix arguments for the
+// given config. Used by both BuildCommand and FormatCmdPrefix.
+func buildPriorityArgs(cfg CmdConfig) []string {
 	var parts []string
 	if cfg.Nice != "" {
 		parts = append(parts, "nice")
@@ -81,7 +77,7 @@ func FormatCmdPrefix(cfg CmdConfig) string {
 		parts = append(parts, "ionice")
 		parts = append(parts, strings.Fields(cfg.Ionice)...)
 	}
-	return strings.Join(parts, " ")
+	return parts
 }
 
 // ValidatePriorityArgs checks that a nice or ionice argument string
