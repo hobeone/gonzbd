@@ -98,7 +98,7 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	m1.Record("s1", 1000)
 	m1.Record("s2", 2000)
 
-	state := Capture(m1)
+	state := m1.Capture()
 	if err := SaveState(path, state); err != nil {
 		t.Fatalf("SaveState: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	}
 
 	m2 := NewMeter(10*time.Second, clk)
-	Restore(m2, loaded)
+	m2.Restore(loaded)
 
 	if m2.Total("") != 3000 {
 		t.Fatalf("restored lifetime total: want 3000, got %d", m2.Total(""))

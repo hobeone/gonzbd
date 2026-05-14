@@ -45,7 +45,7 @@ func SaveState(path string, s State) error {
 
 // Capture builds a State from the current Meter snapshot.
 // Use this before calling SaveState.
-func Capture(m *Meter) State {
+func (m *Meter) Capture() State {
 	snap := m.Snapshot()
 
 	servers := make(map[string]int64, len(snap.Servers))
@@ -62,15 +62,15 @@ func Capture(m *Meter) State {
 // It sets the persisted lifetime totals directly without affecting the
 // rolling-window BPS (which starts fresh because historical samples are not
 // stored).
-func Restore(m *Meter, s State) {
+func (m *Meter) Restore(s State) {
 	// Set lifetime totals directly — avoids routing through Record, which
 	// would pollute rolling-window buckets and require an immediate undo.
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	agg := m.getOrCreate("")
 	agg.lifetime = s.LifetimeTotal
 	for srv, total := range s.ServerTotals {
 		ss := m.getOrCreate(srv)
 		ss.lifetime = total
 	}
-	m.mu.Unlock()
 }

@@ -240,19 +240,18 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 				entry.consumed = true
 				delete(assembledByCRC, key)
 
-				match := af.CRC32 == entry.desc.FileCRC32
+				// match is guaranteed: the lookup key contains the CRC,
+				// so a successful hit means af.CRC32 == entry.desc.FileCRC32.
 				cr := CRCResult{
 					FileName:     af.FileName,
 					AssembledCRC: af.CRC32,
 					Par2CRC:      entry.desc.FileCRC32,
-					Match:        match,
+					Match:        true,
 					Par2FileName: entry.desc.FileName,
 				}
 				result.Files = append(result.Files, cr)
 				result.Checked++
-				if match {
-					result.Matched++
-				}
+				result.Matched++
 
 				log.Info("verifycrc: CRC+size fallback match",
 					"assembled", af.FileName,
