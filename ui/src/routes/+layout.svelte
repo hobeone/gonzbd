@@ -1,14 +1,11 @@
 <script lang="ts">
 	import '../app.css';
 	import { onMount } from 'svelte';
+	import { initTheme } from '$lib/stores/theme.svelte';
 
 	let { children } = $props();
 
-	onMount(() => {
-		if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
-			document.documentElement.classList.add('dark');
-		}
-	});
+	onMount(() => initTheme());
 </script>
 
 <svelte:head>
