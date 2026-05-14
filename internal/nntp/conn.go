@@ -349,7 +349,7 @@ func Dial(ctx context.Context, cfg config.ServerConfig, opts ...DialOption) (*Co
 
 	if tc, ok := nc.(*tls.Conn); ok {
 		st := tc.ConnectionState()
-		c.sslInfo = fmt.Sprintf("%s / %s", tlsVersionString(st.Version), tls.CipherSuiteName(st.CipherSuite))
+		c.sslInfo = fmt.Sprintf("%s / %s", tls.VersionName(st.Version), tls.CipherSuiteName(st.CipherSuite))
 		l.Debug("TLS established", "tls", c.sslInfo)
 	}
 
@@ -659,22 +659,6 @@ func (c *Conn) Close() error {
 	})
 	<-c.readerDone
 	return c.closeErr
-}
-
-// tlsVersionString maps a tls version constant to a human-readable
-// name for SSLInfo. Unknown versions render as hex.
-func tlsVersionString(v uint16) string {
-	switch v {
-	case tls.VersionTLS13:
-		return "TLSv1.3"
-	case tls.VersionTLS12:
-		return "TLSv1.2"
-	case tls.VersionTLS11:
-		return "TLSv1.1"
-	case tls.VersionTLS10:
-		return "TLSv1.0"
-	}
-	return fmt.Sprintf("TLS(0x%04x)", v)
 }
 
 // idleTimeoutReader wraps a net.Conn and resets the read deadline before
