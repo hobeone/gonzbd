@@ -12,6 +12,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
+var SevenZipBinaries = []string{"7zz", "7zzs", "7z", "7za"}
+
 // sevenZipBin returns the path to the 7-zip binary to use.
 // Resolution order:
 //  1. Explicit command from Options (SevenZipCommand).
@@ -29,7 +31,7 @@ func sevenZipBin(opts Options) (string, error) {
 	if env := os.Getenv("GONZBD_SEVENZIP_BIN"); env != "" {
 		return env, nil
 	}
-	for _, name := range []string{"7zz", "7zzs", "7z", "7za"} {
+	for _, name := range SevenZipBinaries {
 		if path, err := exec.LookPath(name); err == nil {
 			return path, nil
 		}
