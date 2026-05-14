@@ -229,3 +229,64 @@ func TestModeRssNow_NotImplemented(t *testing.T) {
 		t.Fatalf("status = %d; want 501", rr.Code)
 	}
 }
+
+func TestModeBrowse_HiddenFolders(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".hidden_dir"), 0o755); err != nil {
+		t.Fatalf("create hidden dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, "visible_dir"), 0o755); err != nil {
+		t.Fatalf("create visible dir: %v", err)
+	}
+
+	// Without show_hidden_folders: hidden dir should be excluded.
+	rr := apiGet(t, s.Handler(), "/api?mode=browse&name="+tmpDir+"&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+	m := decodeJSON(t, rr)
+	paths := m["paths"].([]any)
+	for _, p := range paths {
+		obj := p.(map[string]any)
+		if obj["name"].(string) == ".hidden_dir" {
+			t.Error("hidden dir should be excluded without show_hidden_folders=1")
+		}
+	}
+	if len(paths) != 1 {
+		t.Errorf("expected 1 visible entry, got %d", len(paths))
+	}
+
+	// With show_hidden_folders=1: hidden dir should be included.
+	rr = apiGet(t, s.Handler(), "/api?mode=browse&name="+tmpDir+"&show_hidden_folders=1&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+	m = decodeJSON(t, rr)
+	paths = m["paths"].([]any)
+	var foundHidden bool
+	for _, p := range paths {
+		obj := p.(map[string]any)
+		if obj["name"].(string) == ".hidden_dir" {
+			foundHidden = true
+		}
+	}
+	if !foundHidden {
+		t.Error("hidden dir should be included with show_hidden_folders=1")
+	}
+	if len(paths) != 2 {
+		t.Errorf("expected 2 entries with hidden shown, got %d", len(paths))
+	}
+}
+
+func TestModeBrowse_NonexistentDir(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+
+	rr := apiGet(t, s.Handler(), "/api?mode=browse&name=/nonexistent_path_abc123&apikey="+testAPIKey)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 for nonexistent dir", rr.Code)
+	}
+}
