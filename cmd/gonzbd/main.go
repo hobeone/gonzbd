@@ -33,6 +33,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/dirscanner"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/humanfmt"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/rss"
@@ -867,7 +868,7 @@ done:
 		fmt.Printf("Error:      %s\n", hist.FailMessage)
 	}
 	fmt.Printf("Location:   %s\n", hist.Path)
-	fmt.Printf("Total Size: %s\n", formatBytes(job.TotalBytes))
+	fmt.Printf("Total Size: %s\n", humanfmt.Bytes(job.TotalBytes))
 	fmt.Printf("Duration:   %v\n", duration.Round(time.Second))
 
 	// Network throughput (average)
@@ -876,19 +877,6 @@ done:
 	fmt.Printf("------------------------\n\n")
 
 	return nil
-}
-
-func formatBytes(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.2f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 func loadJob(path string) (*queue.Job, []byte, error) {
