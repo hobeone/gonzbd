@@ -180,11 +180,11 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			case unpack.RarArchive:
 				// Dispatch order:
 				// 1. prefer_7zip → use 7z
-				// 2. prefer_go_rar → use GoUnRAR (pure-Go, no external binary)
+				// 2. use_go_rar → use GoUnRAR (pure-Go, no external binary)
 				// 3. unrar available → use unrar
 				// 4. unrar not found → fall back to GoUnRAR
 				use7z := opts.Prefer7zip
-				useGoRAR := !use7z && opts.PreferGoRAR
+				useGoRAR := !use7z && opts.UseGoRAR
 
 				if !use7z && !useGoRAR {
 					// Neither preference set — check if unrar is available.

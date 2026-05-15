@@ -88,7 +88,7 @@ func Default() (*Config, error) {
 			FlatUnpack:           false,
 			DeobfuscateFilenames: true,
 			DirectUnpackThreads:  3, // match SABnzbd default
-			PreferGoRAR:          true,
+			UseGoRAR:             true,
 		},
 		Servers:    nil, // user must add at least one before download is possible
 		Categories: []CategoryConfig{BuiltinDefaultCategory()},
