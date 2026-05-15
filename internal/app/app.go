@@ -23,7 +23,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
-	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -985,27 +984,11 @@ func (app *Application) maybeDirectUnpack(fc FileComplete) {
 
 // buildDirectUnpackOpts constructs DirectUnpack options from the app config.
 func (app *Application) buildDirectUnpackOpts() directunpack.Options {
-	var extraArgs []string
-	if app.cfg.ExtraUnrarParams != "" {
-		for arg := range strings.FieldsSeq(app.cfg.ExtraUnrarParams) {
-			if strings.HasPrefix(arg, "-") {
-				extraArgs = append(extraArgs, arg)
-			}
-		}
-	}
-
 	return directunpack.Options{
-		UnrarCommand:     app.cfg.UnrarCommand,
 		Password:         "", // per-job passwords are pre-checked; DU skips password jobs
 		OneFolder:        app.cfg.FlatUnpack,
 		OverwriteFiles:   app.cfg.OverwriteFiles,
 		IgnoreUnrarDates: app.cfg.IgnoreUnrarDates,
-		ExtraArgs:        extraArgs,
-		HasProblem:       app.unrarHasProblem,
-		CmdCfg: cmdutil.CmdConfig{
-			Nice:   app.cfg.Nice,
-			Ionice: app.cfg.Ionice,
-		},
 	}
 }
 
