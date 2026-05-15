@@ -10,6 +10,7 @@ describe('PostProcSection', () => {
 	const mockConfig = {
 		postproc: {
 			enable_unrar: true,
+			use_go_rar: true,
 			enable_7zip: false,
 			prefer_7zip: false,
 			enable_filejoin: true,
@@ -48,6 +49,7 @@ describe('PostProcSection', () => {
 	it('renders extraction group labels', () => {
 		render(PostProcSection, { configData: mockConfig, onFieldUpdate: vi.fn() });
 		expect(screen.getByText('Enable RAR extraction')).toBeInTheDocument();
+		expect(screen.getByText('Use built-in RAR extractor')).toBeInTheDocument();
 		expect(screen.getByText('Enable 7-Zip extraction')).toBeInTheDocument();
 		expect(screen.getByText('Prefer 7-Zip for RAR')).toBeInTheDocument();
 		expect(screen.getByText('Enable file joining')).toBeInTheDocument();
