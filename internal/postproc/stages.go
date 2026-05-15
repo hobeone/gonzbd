@@ -114,6 +114,11 @@ type Job struct {
 	// were already extracted during download. The unpack stage skips these
 	// sets. Nil when DirectUnpack is disabled or didn't run.
 	DirectUnpackSets map[string]directunpack.SuccessSet
+
+	// DirectUnpackFailures holds sets that DirectUnpack attempted but
+	// failed to extract, along with the failure reason. These sets will
+	// be retried by the normal unpack stage.
+	DirectUnpackFailures map[string]directunpack.FailedSet
 }
 
 // StageLogEntry records the outcome of a single stage execution.

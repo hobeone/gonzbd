@@ -359,6 +359,28 @@ func (p *PostProcessor) processJob(job *Job) {
 		Lines:   dlLines,
 	})
 
+	// Direct Unpack stage log: show what was extracted during download
+	// and what failed, so the user can see the outcome in the history UI.
+	if len(job.DirectUnpackSets) > 0 || len(job.DirectUnpackFailures) > 0 {
+		var duLines []string
+		for setname, result := range job.DirectUnpackSets {
+			duLines = append(duLines,
+				fmt.Sprintf("✓ Set %q: extracted %d file(s) from %d volume(s)",
+					setname, len(result.ExtractedFiles), len(result.RarParts)))
+		}
+		for setname, failure := range job.DirectUnpackFailures {
+			duLines = append(duLines,
+				fmt.Sprintf("Error: Set %q failed → %s (will retry in normal unpack)",
+					setname, failure.Reason))
+		}
+		job.StageLog = append(job.StageLog, StageLogEntry{
+			Stage:   "direct unpack",
+			Started: dlStarted,
+			Elapsed: dlElapsed,
+			Lines:   duLines,
+		})
+	}
+
 	if job.FailMsg != "" {
 		p.log.Warn("postproc: skipping all stages — job already failed",
 			"job", job.Queue.ID,
