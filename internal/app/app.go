@@ -1066,6 +1066,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// Collect DirectUnpack results (if any) before enqueuing post-processing.
 	// Wait() blocks until any in-progress extraction finishes.
 	var duResults map[string]directunpack.SuccessSet
+	var duFailures map[string]directunpack.FailedSet
 	app.mu.Lock()
 	du := app.directUnpackers[job.ID]
 	delete(app.directUnpackers, job.ID)
@@ -1073,19 +1074,25 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	if du != nil {
 		du.Wait()
 		duResults = du.Results()
+		duFailures = du.Failures()
 		if len(duResults) > 0 {
 			app.log.Info("directunpack: passing results to postproc",
 				"job", job.ID, "sets", len(duResults))
 		}
+		if len(duFailures) > 0 {
+			app.log.Warn("directunpack: passing failures to postproc",
+				"job", job.ID, "failed_sets", len(duFailures))
+		}
 	}
 
 	app.postProcessor.Process(&postproc.Job{
-		Queue:            job,
-		DownloadDir:      downloadDir,
-		FinalDir:         finalDir,
-		Sanitize:         app.cfg.Sanitize,
-		FailMsg:          failMsg,
-		DirectUnpackSets: duResults,
+		Queue:                job,
+		DownloadDir:          downloadDir,
+		FinalDir:             finalDir,
+		Sanitize:             app.cfg.Sanitize,
+		FailMsg:              failMsg,
+		DirectUnpackSets:     duResults,
+		DirectUnpackFailures: duFailures,
 	})
 	select {
 	case app.jobComplete <- JobComplete{JobID: job.ID}:
