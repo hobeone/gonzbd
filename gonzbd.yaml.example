@@ -247,9 +247,8 @@ postproc:
   direct_unpack: false
 
   # Limit the number of concurrent DirectUnpack workers across all jobs.
-  # 0 means no limit (one per active job). This is a stub for future use
-  # and is currently ignored.
-  direct_unpack_threads: 0
+  # 0 means no limit (one per active job). Default 3 (matching SABnzbd).
+  direct_unpack_threads: 3
 
   # Rename obfuscated files (random hex strings, UUIDs) to use the
   # job name as a base. Helps media scanners identify content.

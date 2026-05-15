@@ -98,8 +98,8 @@ type Config struct {
 	// on any error. Requires EnableUnrar=true and Prefer7zip=false.
 	DirectUnpack bool
 	// DirectUnpackThreads limits the number of concurrent DirectUnpack
-	// workers. 0 means no limit (one per active job). This is a stub
-	// for future use — currently ignored.
+	// workers across all jobs. 0 means no limit (one per active job).
+	// Default 3 (matching SABnzbd).
 	DirectUnpackThreads int
 
 	// ScriptStage metadata injected into SAB_* env vars.
@@ -194,6 +194,10 @@ type Application struct {
 	// directUnpackers maps jobID → active DirectUnpacker for jobs being
 	// extracted during download. Protected by mu.
 	directUnpackers map[string]*directunpack.DirectUnpacker
+
+	// activeDU tracks the number of currently running DirectUnpackers.
+	// Used to enforce DirectUnpackThreads concurrency limit.
+	activeDU atomic.Int32
 
 	// unrarHasProblem caches the result of DetectUnrar at startup.
 	// True when the binary is non-original or too old (< 5.50).
@@ -638,6 +642,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	if du, ok := app.directUnpackers[id]; ok {
 		du.Abort()
 		delete(app.directUnpackers, id)
+		app.activeDU.Add(-1)
 	}
 	app.mu.Unlock()
 
@@ -827,6 +832,7 @@ func (app *Application) Shutdown() error {
 	for id, du := range app.directUnpackers {
 		du.Abort()
 		delete(app.directUnpackers, id)
+		app.activeDU.Add(-1)
 	}
 	app.mu.Unlock()
 
@@ -948,6 +954,14 @@ func (app *Application) maybeDirectUnpack(fc FileComplete) {
 	app.mu.Lock()
 	du, exists := app.directUnpackers[fc.JobID]
 	if !exists {
+		// Enforce concurrency limit: skip if too many DU workers are active.
+		limit := int32(app.cfg.DirectUnpackThreads)
+		if limit > 0 && app.activeDU.Load() >= limit {
+			app.mu.Unlock()
+			app.log.Debug("directunpack: skipping, concurrency limit reached",
+				"job", fc.JobID, "active", app.activeDU.Load(), "limit", limit)
+			return
+		}
 		downloadDir := filepath.Join(app.cfg.DownloadDir, snap.Name)
 		du = directunpack.New(
 			app.log.With("component", "directunpack", "job", fc.JobID),
@@ -961,6 +975,7 @@ func (app *Application) maybeDirectUnpack(fc FileComplete) {
 		}
 		du.SetAllFilenames(allNames)
 		app.directUnpackers[fc.JobID] = du
+		app.activeDU.Add(1)
 	}
 	app.mu.Unlock()
 
@@ -1084,6 +1099,9 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	var duFailures map[string]directunpack.FailedSet
 	app.mu.Lock()
 	du := app.directUnpackers[job.ID]
+	if du != nil {
+		app.activeDU.Add(-1)
+	}
 	delete(app.directUnpackers, job.ID)
 	app.mu.Unlock()
 	if du != nil {

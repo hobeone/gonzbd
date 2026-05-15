@@ -666,7 +666,7 @@ Key design: Configuration parameters are typed objects with validators. Config r
 | `enable_tsjoin` | bool | true | Enable TS file joining (.ts.001/.ts.002) |
 | `enable_recursive` | bool | true | Recursive unpack up to 3 levels |
 | `direct_unpack` | bool | false | Extract RAR volumes during download (requires unrar, incompatible with prefer_7zip) |
-| `direct_unpack_threads` | int | 0 | Max concurrent DirectUnpack workers (0=unlimited; stub, currently ignored) |
+| `direct_unpack_threads` | int | 3 | Max concurrent DirectUnpack workers (0=unlimited) |
 | `enable_par_cleanup` | bool | true | Delete par2 after repair |
 | `enable_rar_cleanup` | bool | true | Delete archive files after extraction |
 | `process_unpacked_par2` | bool | true | Use unpacked par2 for filename recovery |
