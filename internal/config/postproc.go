@@ -56,13 +56,16 @@ type PostProcConfig struct {
 	// FlatUnpack writes all extracted files to the job root, ignoring
 	// archive-internal directories.
 	FlatUnpack bool `yaml:"flat_unpack" json:"flat_unpack"`
-	// DirectUnpack allows extraction to start while the download is still
-	// in progress. The first RAR volume is fed to unrar as soon as it
-	// completes, and subsequent volumes are streamed as they arrive.
-	// This is a large architectural feature (see D1 in remaining_gaps.md)
-	// and is not yet implemented — this field exists so the UI toggle
-	// round-trips correctly. Default false.
+	// DirectUnpack starts extraction while the download is still in
+	// progress. Completed RAR volumes are fed to unrar as they arrive,
+	// overlapping download and extraction I/O. Falls back to standard
+	// extraction on any error. Requires enable_unrar=true and
+	// prefer_7zip=false. Default false.
 	DirectUnpack bool `yaml:"direct_unpack" json:"direct_unpack"`
+	// DirectUnpackThreads limits the number of concurrent DirectUnpack
+	// workers across all jobs. 0 means no limit (one per active job).
+	// This is a stub for future use — currently ignored.
+	DirectUnpackThreads int `yaml:"direct_unpack_threads" json:"direct_unpack_threads"`
 
 	// DeobfuscateFilenames renames obfuscated files (random hex/UUIDs)
 	// to use the job name as a base. Defaults to true.
