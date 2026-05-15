@@ -107,6 +107,25 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	var allSuccessful []unpack.Archive
 	var firstErr error
 
+	// DirectUnpack: if any RAR sets were already extracted during download,
+	// mark their main archive files as processed so Scan → extract skips them.
+	// The archive parts are still recorded in allSuccessful for cleanup.
+	if len(job.DirectUnpackSets) > 0 {
+		for setname, result := range job.DirectUnpackSets {
+			logf(log, job, slog.LevelInfo, "Set %q already extracted by DirectUnpack (%d files, %d parts)",
+				setname, len(result.ExtractedFiles), len(result.RarParts))
+			for _, part := range result.RarParts {
+				processed[part] = true
+				// Also mark by basename so Scan's file-based lookup matches.
+				processed[filepath.Base(part)] = true
+			}
+			allSuccessful = append(allSuccessful, unpack.Archive{
+				Type:  unpack.RarArchive,
+				Parts: result.RarParts,
+			})
+		}
+	}
+
 	maxDepth := maxUnpackDepth
 	if !u.EnableRecursive {
 		maxDepth = 1

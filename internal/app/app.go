@@ -23,8 +23,10 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
@@ -88,6 +90,16 @@ type Config struct {
 	ExtraUnrarParams     string
 	ExtraPar2Params      string
 	ScriptCanFail        bool
+
+	// DirectUnpack enables extraction of RAR archives while the download
+	// is still in progress. Completed volumes are fed to an interactive
+	// unrar subprocess as they arrive. Falls back to standard extraction
+	// on any error. Requires EnableUnrar=true and Prefer7zip=false.
+	DirectUnpack bool
+	// DirectUnpackThreads limits the number of concurrent DirectUnpack
+	// workers. 0 means no limit (one per active job). This is a stub
+	// for future use — currently ignored.
+	DirectUnpackThreads int
 
 	// ScriptStage metadata injected into SAB_* env vars.
 	Version    string
@@ -177,6 +189,10 @@ type Application struct {
 	bandwidthPerc atomic.Int32 // configured bandwidth percentage (1-100)
 
 	customStages []postproc.Stage
+
+	// directUnpackers maps jobID → active DirectUnpacker for jobs being
+	// extracted during download. Protected by mu.
+	directUnpackers map[string]*directunpack.DirectUnpacker
 }
 
 // SetEmitter injects a broadcaster for real-time events.
@@ -214,6 +230,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		internalFileComplete: make(chan FileComplete, 128),
 		jobComplete:          make(chan JobComplete, 8),
 		postProcComplete:     make(chan PostProcComplete, 8),
+		directUnpackers:      make(map[string]*directunpack.DirectUnpacker),
 	}
 	for _, o := range opts {
 		o(app)
@@ -610,6 +627,14 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	if snap == nil {
 		return fmt.Errorf("job %q not found", id)
 	}
+	// Abort any active DirectUnpacker for this job before removing files.
+	app.mu.Lock()
+	if du, ok := app.directUnpackers[id]; ok {
+		du.Abort()
+		delete(app.directUnpackers, id)
+	}
+	app.mu.Unlock()
+
 	// Cancel in-flight post-processing and assembler file handles before
 	// removing files to prevent the PP from operating on a deleted directory.
 	app.postProcessor.Cancel(id)
@@ -789,6 +814,16 @@ func (app *Application) Shutdown() error {
 	if err := app.downloader.Stop(); err != nil {
 		errs = append(errs, fmt.Errorf("downloader stop: %w", err))
 	}
+
+	// Abort all active DirectUnpackers before stopping the assembler.
+	// This kills unrar subprocesses and cleans up partial extracts.
+	app.mu.Lock()
+	for id, du := range app.directUnpackers {
+		du.Abort()
+		delete(app.directUnpackers, id)
+	}
+	app.mu.Unlock()
+
 	if err := app.assembler.Stop(); err != nil {
 		errs = append(errs, fmt.Errorf("assembler stop: %w", err))
 	}
@@ -847,6 +882,13 @@ func (app *Application) handleFileComplete(fc FileComplete) {
 		return
 	}
 	app.emitter.Broadcast(Event{Type: "queue_updated"})
+
+	// DirectUnpack: feed completed RAR volumes to the unpacker for
+	// streaming extraction during download.
+	if app.cfg.DirectUnpack && app.cfg.EnableUnrar && !app.cfg.Prefer7zip {
+		app.maybeDirectUnpack(fc)
+	}
+
 	snap := app.queue.SnapshotJob(fc.JobID)
 	if snap != nil && snap.IsComplete() {
 		app.maybeFinalize(fc.JobID, failMsgForJob(snap))
@@ -862,6 +904,77 @@ func (app *Application) drainCompletions() {
 		default:
 			return
 		}
+	}
+}
+
+// maybeDirectUnpack feeds a completed file to the DirectUnpacker for the
+// job, creating one if this is the first RAR volume for that job.
+func (app *Application) maybeDirectUnpack(fc FileComplete) {
+	snap := app.queue.SnapshotJob(fc.JobID)
+	if snap == nil || snap.PostProc {
+		return
+	}
+	if fc.FileIdx < 0 || fc.FileIdx >= len(snap.Files) {
+		return
+	}
+	filename := snap.Files[fc.FileIdx].Subject
+	_, vol := directunpack.AnalyzeRarFilename(filename)
+	if vol == 0 {
+		return // not a RAR volume
+	}
+
+	// Resolve the on-disk path from the pipeline's file info cache.
+	info, err := app.pipeline.resolveFileInfo(fc.JobID, fc.FileIdx)
+	if err != nil {
+		app.log.Debug("directunpack: cannot resolve file path",
+			"job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
+		return
+	}
+
+	app.mu.Lock()
+	du, exists := app.directUnpackers[fc.JobID]
+	if !exists {
+		downloadDir := filepath.Join(app.cfg.DownloadDir, snap.Name)
+		du = directunpack.New(
+			app.log.With("component", "directunpack", "job", fc.JobID),
+			fc.JobID, downloadDir, downloadDir,
+			app.buildDirectUnpackOpts(),
+		)
+		// Provide all filenames so the DU can compute total volume counts.
+		allNames := make([]string, len(snap.Files))
+		for i := range snap.Files {
+			allNames[i] = snap.Files[i].Subject
+		}
+		du.SetAllFilenames(allNames)
+		app.directUnpackers[fc.JobID] = du
+	}
+	app.mu.Unlock()
+
+	du.Add(app.ctx, filename, info.Path)
+}
+
+// buildDirectUnpackOpts constructs DirectUnpack options from the app config.
+func (app *Application) buildDirectUnpackOpts() directunpack.Options {
+	var extraArgs []string
+	if app.cfg.ExtraUnrarParams != "" {
+		for arg := range strings.FieldsSeq(app.cfg.ExtraUnrarParams) {
+			if strings.HasPrefix(arg, "-") {
+				extraArgs = append(extraArgs, arg)
+			}
+		}
+	}
+
+	return directunpack.Options{
+		UnrarCommand:     app.cfg.UnrarCommand,
+		Password:         "", // per-job passwords handled separately
+		OneFolder:        app.cfg.FlatUnpack,
+		OverwriteFiles:   app.cfg.OverwriteFiles,
+		IgnoreUnrarDates: app.cfg.IgnoreUnrarDates,
+		ExtraArgs:        extraArgs,
+		CmdCfg: cmdutil.CmdConfig{
+			Nice:   app.cfg.Nice,
+			Ionice: app.cfg.Ionice,
+		},
 	}
 }
 
@@ -950,12 +1063,29 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	if flatLayout {
 		finalDir = filepath.Join(app.cfg.CompleteDir, catDir)
 	}
+	// Collect DirectUnpack results (if any) before enqueuing post-processing.
+	// Wait() blocks until any in-progress extraction finishes.
+	var duResults map[string]directunpack.SuccessSet
+	app.mu.Lock()
+	du := app.directUnpackers[job.ID]
+	delete(app.directUnpackers, job.ID)
+	app.mu.Unlock()
+	if du != nil {
+		du.Wait()
+		duResults = du.Results()
+		if len(duResults) > 0 {
+			app.log.Info("directunpack: passing results to postproc",
+				"job", job.ID, "sets", len(duResults))
+		}
+	}
+
 	app.postProcessor.Process(&postproc.Job{
-		Queue:       job,
-		DownloadDir: downloadDir,
-		FinalDir:    finalDir,
-		Sanitize:    app.cfg.Sanitize,
-		FailMsg:     failMsg,
+		Queue:            job,
+		DownloadDir:      downloadDir,
+		FinalDir:         finalDir,
+		Sanitize:         app.cfg.Sanitize,
+		FailMsg:          failMsg,
+		DirectUnpackSets: duResults,
 	})
 	select {
 	case app.jobComplete <- JobComplete{JobID: job.ID}:

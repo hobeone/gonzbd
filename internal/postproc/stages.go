@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
@@ -108,6 +109,11 @@ type Job struct {
 	// The tool parameter identifies the source (e.g. "par2", "unrar", "7z",
 	// "script"). May be nil (output is still captured in OutputLines).
 	OnOutput func(tool, line string) `json:"-"`
+
+	// DirectUnpackSets holds results from DirectUnpack — archive sets that
+	// were already extracted during download. The unpack stage skips these
+	// sets. Nil when DirectUnpack is disabled or didn't run.
+	DirectUnpackSets map[string]directunpack.SuccessSet
 }
 
 // StageLogEntry records the outcome of a single stage execution.
