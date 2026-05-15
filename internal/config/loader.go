@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -26,9 +28,12 @@ func Load(path string) (*Config, error) {
 	//nolint:errcheck // read-only handle: if Decode succeeded the data is already consumed, and if it failed the decode error is the actionable one.
 	defer f.Close()
 
-	cfg, err := decode(f)
+	cfg, unknowns, err := decode(f)
 	if err != nil {
 		return nil, fmt.Errorf("config: decode %q: %w", path, err)
+	}
+	for _, u := range unknowns {
+		slog.Warn("config: unknown field ignored", "detail", u, "path", path)
 	}
 	cfg.ExpandPaths()
 	if err := cfg.Validate(); err != nil {
@@ -39,16 +44,22 @@ func Load(path string) (*Config, error) {
 
 // decode is split out so tests can decode from in-memory buffers without
 // touching disk.
-func decode(r io.Reader) (*Config, error) {
+//
+// The second return value lists any unknown YAML fields encountered (e.g.
+// removed or misspelled keys). The struct is fully populated for all known
+// fields regardless; callers should log the unknowns as warnings rather
+// than treating them as fatal. Real errors (type mismatches, malformed YAML)
+// are returned as the third value and are always fatal.
+func decode(r io.Reader) (*Config, []string, error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Initialize with defaults so that missing fields in YAML stay at default.
 	cfg, err := Default()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// NOTE: We intentionally do NOT call os.ExpandEnv on the raw YAML.
@@ -56,13 +67,32 @@ func decode(r io.Reader) (*Config, error) {
 	// (passwords, API keys, regex patterns). Environment variable expansion
 	// for path fields is handled post-parse by cfg.ExpandPaths().
 	dec := yaml.NewDecoder(bytes.NewReader(b))
-	dec.KnownFields(true) // reject unknown keys to catch typos
+	dec.KnownFields(true) // collect unknown keys; partitioned below
 	if err := dec.Decode(cfg); err != nil {
 		if errors.Is(err, io.EOF) {
-			// Empty file? Just return the defaults.
-			return cfg, nil
+			// Empty file — return defaults.
+			return cfg, nil, nil
 		}
-		return nil, err
+		// yaml.TypeError collects all decode problems. Partition them:
+		// unknown-field errors ("field X not found in type T") are demoted
+		// to warnings because they arise from removed or future config keys.
+		// All other errors (type mismatches, bad YAML syntax) remain fatal.
+		if te, ok := errors.AsType[*yaml.TypeError](err); ok {
+			var unknowns, fatal []string
+			for _, msg := range te.Errors {
+				if strings.Contains(msg, "not found in type") {
+					unknowns = append(unknowns, msg)
+				} else {
+					fatal = append(fatal, msg)
+				}
+			}
+			if len(fatal) > 0 {
+				return nil, unknowns, &yaml.TypeError{Errors: fatal}
+			}
+			// Only unknown fields — struct is fully populated for known fields.
+			return cfg, unknowns, nil
+		}
+		return nil, nil, err
 	}
 
 	// Sticky defaults: if these fields are empty after decoding, it means
@@ -92,7 +122,7 @@ func decode(r io.Reader) (*Config, error) {
 		cfg.RSS = []RSSFeedConfig{}
 	}
 
-	return cfg, nil
+	return cfg, nil, nil
 }
 
 // Save writes the configuration to path atomically: the YAML is rendered
