@@ -166,24 +166,29 @@ func (f *filterHandler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
-	component := f.extractComponent(r)
+	components := f.extractComponents(r)
 
-	// Determine the effective level. Check hierarchical matches:
-	// "postproc/unpack" -> "postproc/unpack", then "postproc".
+	// Determine the effective level by walking components from most-specific
+	// (last) to least-specific (first). For each component, also try
+	// slash-hierarchy parents (e.g. "postproc/unpack" → "postproc").
+	// The first match wins.
 	effectiveLevel := f.global
-	p := component
-	for p != "" {
-		if lvl, ok := f.levels[p]; ok {
-			effectiveLevel = lvl
-			break
+	for i := len(components) - 1; i >= 0; i-- {
+		p := components[i]
+		for p != "" {
+			if lvl, ok := f.levels[p]; ok {
+				effectiveLevel = lvl
+				goto resolved
+			}
+			// Try slash-hierarchy parent.
+			idx := strings.LastIndex(p, "/")
+			if idx == -1 {
+				break
+			}
+			p = p[:idx]
 		}
-		// Try parent component.
-		idx := strings.LastIndex(p, "/")
-		if idx == -1 {
-			break
-		}
-		p = p[:idx]
 	}
+resolved:
 
 	if r.Level < effectiveLevel {
 		return nil
@@ -192,29 +197,29 @@ func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
 	return f.next.Handle(ctx, r)
 }
 
-// extractComponent finds the most recent "component" attribute.
-// Attributes added in the log call itself (r.Attrs) take precedence over
-// attributes added to the logger via .With (f.currentAttrs). Within each,
-// the last occurrence wins.
-func (f *filterHandler) extractComponent(r slog.Record) string {
-	var component string
+// extractComponents collects all "component" attribute values in order.
+// Handler attributes (.With) come first, then record attributes (per-call).
+// The result is ordered from least-specific to most-specific — callers
+// should walk it in reverse to find the most-specific matching rule.
+func (f *filterHandler) extractComponents(r slog.Record) []string {
+	var components []string
 
-	// 1. Check handler attributes (set via .With("component", "..."))
+	// 1. Handler attributes (set via .With("component", "..."))
 	for _, a := range f.currentAttrs {
 		if a.Key == "component" {
-			component = a.Value.String()
+			components = append(components, a.Value.String())
 		}
 	}
 
-	// 2. Check record attributes (set per-call)
+	// 2. Record attributes (set per-call)
 	r.Attrs(func(a slog.Attr) bool {
 		if a.Key == "component" {
-			component = a.Value.String()
+			components = append(components, a.Value.String())
 		}
 		return true
 	})
 
-	return component
+	return components
 }
 
 func (f *filterHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
