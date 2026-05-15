@@ -113,7 +113,9 @@ func withPasswords(
 		}
 
 		// Check if wrong password — try next.
-		if isWrongPW(res.ExitCode, res.Output) {
+		// Check res.Reason first (for GoUnRAR which classifies errors directly),
+		// then fall back to isWrongPW callback (for subprocess output parsing).
+		if res.Reason == FailWrongPassword || isWrongPW(res.ExitCode, res.Output) {
 			log.Info(toolName+": wrong password, trying next",
 				"attempt", i+1, "total", len(passwords), "archive", archive.MainFile)
 			lastRes = res
@@ -137,6 +139,19 @@ func withPasswords(
 // When no passwords are configured, this delegates directly to UnRAR.
 func UnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
 	return withPasswords(ctx, log, archive, outDir, opts, UnRAR, isUnrarWrongPassword, "unrar")
+}
+
+// GoUnRARWithPasswords tries extracting with each password in opts.Passwords
+// (and opts.Password) using the pure-Go rardecode extractor until one
+// succeeds or all are exhausted.
+//
+// When no passwords are configured, this delegates directly to GoUnRAR.
+func GoUnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+	// GoUnRAR has no subprocess output, so isWrongPW always returns false.
+	// Wrong-password detection works via res.Reason == FailWrongPassword
+	// in the withPasswords loop.
+	never := func(int, string) bool { return false }
+	return withPasswords(ctx, log, archive, outDir, opts, GoUnRAR, never, "go_unrar")
 }
 
 // SevenZipWithPasswords tries extracting with each password in opts.Passwords

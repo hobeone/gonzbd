@@ -178,22 +178,28 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			var err error
 			switch a.Type {
 			case unpack.RarArchive:
-				// Use 7z when preferred, or fall back to it when unrar
-				// isn't available.
+				// Dispatch order:
+				// 1. prefer_7zip → use 7z
+				// 2. prefer_go_rar → use GoUnRAR (pure-Go, no external binary)
+				// 3. unrar available → use unrar
+				// 4. unrar not found → fall back to GoUnRAR
 				use7z := opts.Prefer7zip
-				if !use7z {
+				useGoRAR := !use7z && opts.PreferGoRAR
+
+				if !use7z && !useGoRAR {
+					// Neither preference set — check if unrar is available.
 					unrarBin := opts.UnrarCommand
 					if unrarBin == "" {
 						unrarBin = "unrar"
 					}
 					if _, lookErr := exec.LookPath(unrarBin); lookErr != nil {
-						use7z = true // unrar not found, fall back to 7z
-						logf(log, job, slog.LevelInfo, "%s not found in PATH, falling back to 7z", unrarBin)
+						useGoRAR = true // unrar not found, fall back to GoUnRAR
+						logf(log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_unrar", unrarBin)
 					}
-				} else {
-					logf(log, job, slog.LevelInfo, "Using 7z for RAR (prefer_7zip=true)")
 				}
+
 				if use7z {
+					logf(log, job, slog.LevelInfo, "Using 7z for RAR (prefer_7zip=true)")
 					szOpts := opts
 					szOpts.OnLine = func(line string) {
 						if job.OnOutput != nil {
@@ -204,6 +210,15 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 						logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
 					}
 					res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
+				} else if useGoRAR {
+					logf(log, job, slog.LevelInfo, "Using go_unrar for RAR (pure-Go)")
+					goOpts := opts
+					goOpts.OnLine = func(line string) {
+						if job.OnOutput != nil {
+							job.OnOutput("go_unrar", line)
+						}
+					}
+					res, err = unpack.GoUnRARWithPasswords(ctx, log, a, job.DownloadDir, goOpts)
 				} else {
 					unrarOpts := opts
 					unrarOpts.OnLine = func(line string) {

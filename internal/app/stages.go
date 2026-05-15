@@ -97,6 +97,7 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, error) {
 			IgnoreUnrarDates: cfg.IgnoreUnrarDates,
 			OneFolder:        cfg.FlatUnpack,
 			Prefer7zip:       cfg.Prefer7zip,
+			PreferGoRAR:      cfg.PreferGoRAR,
 			HasProblem:       unrarInfo.HasProblem,
 			CmdCfg:           cmdCfg,
 			ExtraArgs:        extraUnrarArgs,
