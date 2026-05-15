@@ -80,7 +80,6 @@ type Config struct {
 	IgnoreUnrarDates     bool
 	OverwriteFiles       bool
 	FlatUnpack           bool
-	Prefer7zip           bool
 	UseGoRAR             bool
 	CleanupExtensions    []string
 	FolderRename         bool
@@ -93,9 +92,9 @@ type Config struct {
 	ScriptCanFail        bool
 
 	// DirectUnpack enables extraction of RAR archives while the download
-	// is still in progress. Completed volumes are fed to an interactive
-	// unrar subprocess as they arrive. Falls back to standard extraction
-	// on any error. Requires EnableUnrar=true and Prefer7zip=false.
+	// is still in progress. Completed volumes are fed to the extractor
+	// as they arrive. Falls back to standard extraction
+	// on any error. Requires EnableUnrar=true.
 	DirectUnpack bool
 	// DirectUnpackThreads limits the number of concurrent DirectUnpack
 	// workers across all jobs. 0 means no limit (one per active job).
@@ -897,7 +896,7 @@ func (app *Application) handleFileComplete(fc FileComplete) {
 
 	// DirectUnpack: feed completed RAR volumes to the unpacker for
 	// streaming extraction during download.
-	if app.cfg.DirectUnpack && app.cfg.EnableUnrar && !app.cfg.Prefer7zip {
+	if app.cfg.DirectUnpack && app.cfg.EnableUnrar {
 		app.maybeDirectUnpack(fc)
 	}
 

@@ -185,7 +185,6 @@ type AppTestOpts struct {
 	EnableUnrar  bool
 	Enable7zip   bool
 	Par2Command  string
-	Prefer7zip   bool
 	FolderRename bool
 	FlatUnpack   bool
 	Nice         string
@@ -211,7 +210,6 @@ func NewTestAppSeparateDirs(t *testing.T, mockAddr string, opts AppTestOpts) (a 
 	cfg.AdminDir = adminDir
 	cfg.EnableUnrar = opts.EnableUnrar
 	cfg.Enable7zip = opts.Enable7zip
-	cfg.Prefer7zip = opts.Prefer7zip
 	cfg.FolderRename = opts.FolderRename
 	cfg.FlatUnpack = opts.FlatUnpack
 	cfg.Nice = opts.Nice

@@ -275,7 +275,6 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		IgnoreUnrarDates:     cfg.PostProc.IgnoreUnrarDates,
 		OverwriteFiles:       cfg.PostProc.OverwriteFiles,
 		FlatUnpack:           cfg.PostProc.FlatUnpack,
-		Prefer7zip:           cfg.PostProc.Prefer7zip,
 		UseGoRAR:             cfg.PostProc.UseGoRAR,
 		CleanupExtensions:    cfg.PostProc.CleanupExtensions,
 		FolderRename:         cfg.PostProc.FolderRename,
@@ -376,15 +375,6 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	// download until a server is added via the settings UI.
 	if len(enabledServers(cfg.Servers)) == 0 {
 		const msg = "No news servers configured — add one in Config → Servers to start downloading"
-		log.Warn(msg)
-		apiSrv.AddWarning(msg)
-	}
-
-	// Warn when DirectUnpack is enabled but will be ineffective because
-	// prefer_7zip is set. 7z does not support unrar's interactive -vp
-	// protocol, so DirectUnpack falls back to standard extraction.
-	if cfg.PostProc.DirectUnpack && cfg.PostProc.Prefer7zip {
-		const msg = "DirectUnpack requires unrar and is incompatible with prefer_7zip — DirectUnpack will be disabled"
 		log.Warn(msg)
 		apiSrv.AddWarning(msg)
 	}
