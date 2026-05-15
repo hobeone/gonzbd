@@ -49,7 +49,7 @@ general:
   api_key: "0123456789abcdef"
   nzb_key: "0123456789abcdef"
 `
-	cfg, err := decode(strings.NewReader(yml))
+	cfg, _, err := decode(strings.NewReader(yml))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -97,7 +97,7 @@ servers:
     ssl: true
     connections: 1
 `
-	cfg, err := decode(strings.NewReader(yml))
+	cfg, _, err := decode(strings.NewReader(yml))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}

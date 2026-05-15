@@ -171,20 +171,44 @@ func TestByteSizeYAMLRoundTrip(t *testing.T) {
 	}
 }
 
-func TestKnownFieldsRejectsTypos(t *testing.T) {
+func TestUnknownFieldsWarn(t *testing.T) {
 	cfg, err := Default()
 	if err != nil {
 		t.Fatalf("Default(): %v", err)
 	}
 	out := marshalForCompare(t, cfg)
+	// Introduce an unknown field (e.g. from a removed or misspelled key).
 	corrupted := bytes.Replace(out, []byte("port:"), []byte("portt:"), 1)
 
-	_, err = decode(bytes.NewReader(corrupted))
-	if err == nil {
-		t.Fatal("decode should reject unknown field 'portt'")
+	// Unknown fields must not cause a fatal error — the config loads successfully.
+	result, unknowns, decErr := decode(bytes.NewReader(corrupted))
+	if decErr != nil {
+		t.Fatalf("decode returned fatal error for unknown field: %v", decErr)
 	}
-	if !strings.Contains(err.Error(), "portt") {
-		t.Errorf("error %q should mention the unknown field name", err.Error())
+	if result == nil {
+		t.Fatal("decode returned nil config for unknown field")
+	}
+	// The unknown field must be reported as a warning, not silently dropped.
+	if len(unknowns) == 0 {
+		t.Fatal("decode should return a warning for unknown field 'portt'")
+	}
+	if !strings.Contains(unknowns[0], "portt") {
+		t.Errorf("warning %q should mention the unknown field name", unknowns[0])
+	}
+}
+
+func TestTypeErrorsRemainFatal(t *testing.T) {
+	// A wrong-type error (string where int expected) must still be fatal,
+	// even though unknown-field errors are demoted to warnings.
+	yml := `
+servers:
+  - host: "news.example.com"
+    port: "not-a-number"
+    connections: 4
+`
+	_, _, err := decode(strings.NewReader(yml))
+	if err == nil {
+		t.Fatal("decode should return fatal error for type mismatch (string into int)")
 	}
 }
 
@@ -554,7 +578,7 @@ servers:
     pipelining_requests: 2
     enable: true
 `
-	cfg, err := decode(strings.NewReader(yamlData))
+	cfg, _, err := decode(strings.NewReader(yamlData))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
