@@ -233,8 +233,9 @@ func (d *DirectUnpacker) buildVolumeMap() {
 	}
 }
 
-// Abort stops the DirectUnpacker, kills the subprocess, and cleans up
-// any extracted files. Safe to call multiple times and concurrently.
+// Abort stops the DirectUnpacker and kills the subprocess. Results are
+// cleared so the fallback unpack stage re-extracts everything.
+// Safe to call multiple times and concurrently.
 func (d *DirectUnpacker) Abort() {
 	d.mu.Lock()
 	if d.killed {
@@ -243,6 +244,14 @@ func (d *DirectUnpacker) Abort() {
 	}
 	d.killed = true
 	d.log.Info("aborting directunpack", "job", d.jobID)
+
+	// Record failures for the current and any queued sets.
+	if d.curSetname != "" {
+		d.recordFailure(d.curSetname, "aborted")
+	}
+	for _, s := range d.nextSets {
+		d.recordFailure(s, "aborted (not started)")
+	}
 
 	// Kill the subprocess.
 	if d.stdin != nil {
@@ -335,6 +344,9 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 		if volPath == "" {
 			// Vol 1 not on disk yet — wait.
 			if err := d.waitForVolume(ctx, setname, 1); err != nil {
+				d.mu.Lock()
+				d.recordFailure(setname, fmt.Sprintf("cancelled waiting for volume 1: %v", err))
+				d.mu.Unlock()
 				return
 			}
 			d.mu.Lock()
@@ -402,11 +414,9 @@ func (d *DirectUnpacker) createUnrarInstance(ctx context.Context, rarFile string
 
 	args = append(args, pwFlag)
 
-	if d.opts.OverwriteFiles {
-		args = append(args, "-o+")
-	} else {
-		args = append(args, "-o+") // DirectUnpack always overwrites (matches SABnzbd)
-	}
+	// DirectUnpack always overwrites (matches SABnzbd). The OverwriteFiles
+	// option is ignored here because partial extracts must be replaceable.
+	args = append(args, "-o+")
 
 	if d.opts.IgnoreUnrarDates && !d.opts.HasProblem {
 		args = append(args, "-tsm-")
@@ -416,7 +426,6 @@ func (d *DirectUnpacker) createUnrarInstance(ctx context.Context, rarFile string
 	args = append(args, rarFile, d.extractDir+"/")
 
 	cmd := cmdutil.BuildCommand(ctx, d.opts.CmdCfg, bin, args...)
-	cmd.Stderr = nil // we read stdout only
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -428,7 +437,9 @@ func (d *DirectUnpacker) createUnrarInstance(ctx context.Context, rarFile string
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
 
-	// Merge stderr into stdout so error messages appear in our reader.
+	// Merge stderr into the stdout pipe so unrar error messages
+	// appear in readUnrarOutput alongside prompts and status lines.
+	// After StdoutPipe(), cmd.Stdout holds the pipe's write end.
 	cmd.Stderr = cmd.Stdout
 
 	d.log.Info("starting unrar",
@@ -459,9 +470,8 @@ func (d *DirectUnpacker) readUnrarOutput(ctx context.Context) {
 	var duplicateCount int
 	var lastPromptLine string
 
-	// Collect extracted file paths and consumed rar parts for this set.
+	// Collect extracted file paths for this set.
 	var extractedFiles []string
-	var rarParts []string
 
 	d.mu.Lock()
 	setname := d.curSetname
@@ -474,11 +484,10 @@ func (d *DirectUnpacker) readUnrarOutput(ctx context.Context) {
 		}
 		line = append(line, buf[0])
 
-		lineStr := string(line)
-
 		// Check for the volume-continue prompt (no trailing newline).
 		if bytes.HasSuffix(line, []byte("[C]ontinue, [Q]uit ")) {
 			// Duplicate prompt detection.
+			lineStr := string(line)
 			if lineStr == lastPromptLine {
 				duplicateCount++
 				if duplicateCount >= maxDuplicatePrompts {
@@ -547,13 +556,15 @@ func (d *DirectUnpacker) readUnrarOutput(ctx context.Context) {
 			if strings.Contains(trimmed, "All OK") {
 				d.log.Info("set extraction complete", "set", setname)
 
-				// Collect all rar parts for this set.
+				// Collect all rar parts from completedVols (the authoritative
+				// source with absolute paths, unlike unrar's relative output).
 				d.mu.Lock()
+				var parts []string
 				for _, path := range d.completedVols[setname] {
-					rarParts = append(rarParts, path)
+					parts = append(parts, path)
 				}
 				d.successSets[setname] = SuccessSet{
-					RarParts:       rarParts,
+					RarParts:       parts,
 					ExtractedFiles: extractedFiles,
 				}
 				d.mu.Unlock()
@@ -566,15 +577,6 @@ func (d *DirectUnpacker) readUnrarOutput(ctx context.Context) {
 				fname = strings.TrimSpace(fname)
 				if fname != "" {
 					extractedFiles = append(extractedFiles, filepath.Join(d.extractDir, fname))
-				}
-			}
-
-			// Track "Extracting from" to know which rar file is active.
-			if after, ok := strings.CutPrefix(trimmed, "Extracting from "); ok {
-				rarFile := after
-				rarFile = strings.TrimSpace(rarFile)
-				if rarFile != "" {
-					rarParts = append(rarParts, rarFile)
 				}
 			}
 
@@ -628,12 +630,4 @@ func (d *DirectUnpacker) waitForVolume(ctx context.Context, setname string, vol 
 			return ctx.Err()
 		}
 	}
-}
-
-// unrarBin returns the configured unrar binary, defaulting to "unrar".
-func (d *DirectUnpacker) unrarBin() string {
-	if d.opts.UnrarCommand != "" {
-		return d.opts.UnrarCommand
-	}
-	return "unrar"
 }

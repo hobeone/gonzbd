@@ -375,9 +375,10 @@ func (p *PostProcessor) processJob(job *Job) {
 		}
 		job.StageLog = append(job.StageLog, StageLogEntry{
 			Stage:   "direct unpack",
-			Started: dlStarted,
-			Elapsed: dlElapsed,
-			Lines:   duLines,
+			Started: time.Now(),
+			// Elapsed is zero — DU ran concurrently with download,
+			// so its wall-clock duration isn't separately tracked.
+			Lines: duLines,
 		})
 	}
 

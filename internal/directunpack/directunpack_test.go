@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -417,6 +418,311 @@ func TestDirectUnpack_AddAfterKilled(t *testing.T) {
 	du.Add(ctx, "movie.part01.rar", "/tmp/movie.part01.rar")
 	if du.started {
 		t.Error("should not start after killed")
+	}
+}
+
+func TestDirectUnpack_ErrorPattern_RecordsFailure(t *testing.T) {
+	dir := t.TempDir()
+	extractDir := filepath.Join(dir, "extract")
+	downloadDir := filepath.Join(dir, "download")
+	_ = os.MkdirAll(extractDir, 0o755)
+	_ = os.MkdirAll(downloadDir, 0o755)
+
+	mockBin := writeMockUnrar(t, dir)
+
+	du := New(
+		testLogger(t),
+		"test-job",
+		downloadDir,
+		extractDir,
+		Options{UnrarCommand: mockBin},
+	)
+
+	du.SetAllFilenames([]string{"movie.part01.rar"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_ = os.WriteFile(filepath.Join(downloadDir, "movie.part01.rar"), []byte("fake"), 0o644)
+
+	t.Setenv("MOCK_VOLUMES", "1")
+	t.Setenv("MOCK_ERROR", "CRC failed in movie.part01.rar")
+
+	du.Add(ctx, "movie.part01.rar", filepath.Join(downloadDir, "movie.part01.rar"))
+	du.Wait()
+
+	results := du.Results()
+	if len(results) != 0 {
+		t.Fatalf("expected 0 success sets, got %d", len(results))
+	}
+
+	failures := du.Failures()
+	if len(failures) != 1 {
+		t.Fatalf("expected 1 failure, got %d: %+v", len(failures), failures)
+	}
+	f, ok := failures["movie"]
+	if !ok {
+		t.Fatalf("expected failure for set 'movie', got: %v", failures)
+	}
+	if !strings.Contains(f.Reason, "CRC failed") {
+		t.Errorf("expected failure reason to mention CRC, got: %q", f.Reason)
+	}
+}
+
+func TestDirectUnpack_RetryAbort_RecordsFailure(t *testing.T) {
+	dir := t.TempDir()
+	extractDir := filepath.Join(dir, "extract")
+	downloadDir := filepath.Join(dir, "download")
+	_ = os.MkdirAll(extractDir, 0o755)
+	_ = os.MkdirAll(downloadDir, 0o755)
+
+	mockBin := writeMockUnrarRetryAbort(t, dir)
+
+	du := New(
+		testLogger(t),
+		"test-job",
+		downloadDir,
+		extractDir,
+		Options{UnrarCommand: mockBin},
+	)
+
+	du.SetAllFilenames([]string{"movie.part01.rar"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_ = os.WriteFile(filepath.Join(downloadDir, "movie.part01.rar"), []byte("fake"), 0o644)
+	t.Setenv("MOCK_VOLUMES", "1")
+
+	du.Add(ctx, "movie.part01.rar", filepath.Join(downloadDir, "movie.part01.rar"))
+	du.Wait()
+
+	failures := du.Failures()
+	if len(failures) != 1 {
+		t.Fatalf("expected 1 failure, got %d: %+v", len(failures), failures)
+	}
+	f := failures["movie"]
+	if !strings.Contains(f.Reason, "I/O") && !strings.Contains(f.Reason, "read error") {
+		t.Errorf("expected I/O error reason, got: %q", f.Reason)
+	}
+}
+
+func TestDirectUnpack_Abort_RecordsFailures(t *testing.T) {
+	dir := t.TempDir()
+	extractDir := filepath.Join(dir, "extract")
+	downloadDir := filepath.Join(dir, "download")
+	_ = os.MkdirAll(extractDir, 0o755)
+	_ = os.MkdirAll(downloadDir, 0o755)
+
+	mockBin := writeMockUnrar(t, dir)
+
+	du := New(
+		testLogger(t),
+		"test-job",
+		downloadDir,
+		extractDir,
+		Options{UnrarCommand: mockBin},
+	)
+
+	du.SetAllFilenames([]string{
+		"movie.part01.rar",
+		"movie.part02.rar",
+		"subs.part01.rar",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for i := 1; i <= 2; i++ {
+		_ = os.WriteFile(filepath.Join(downloadDir, fmtPart(i)), []byte("fake"), 0o644)
+	}
+
+	t.Setenv("MOCK_VOLUMES", "2")
+
+	// Start with vol 1 of movie — subprocess will block for vol 2.
+	du.Add(ctx, "movie.part01.rar", filepath.Join(downloadDir, "movie.part01.rar"))
+
+	// Queue subs set (vol 1 not ready, so it goes to nextSets).
+	du.Add(ctx, "subs.part01.rar", filepath.Join(downloadDir, "subs.part01.rar"))
+
+	// Let subprocess start.
+	time.Sleep(200 * time.Millisecond)
+
+	// Abort — should record failures for both "movie" (active) and "subs" (queued).
+	du.Abort()
+
+	failures := du.Failures()
+	if len(failures) != 2 {
+		t.Fatalf("expected 2 failures (movie + subs), got %d: %+v", len(failures), failures)
+	}
+
+	if f, ok := failures["movie"]; !ok {
+		t.Error("expected failure for 'movie'")
+	} else if !strings.Contains(f.Reason, "aborted") && !strings.Contains(f.Reason, "killed") && !strings.Contains(f.Reason, "cancel") {
+		t.Errorf("expected abort/kill-related reason for movie, got: %q", f.Reason)
+	}
+
+	if f, ok := failures["subs"]; !ok {
+		t.Error("expected failure for 'subs'")
+	} else if !strings.Contains(f.Reason, "aborted") {
+		t.Errorf("expected 'aborted' reason for subs, got: %q", f.Reason)
+	}
+
+	// Results should be empty after abort.
+	results := du.Results()
+	if len(results) != 0 {
+		t.Fatalf("expected empty results after abort, got %d", len(results))
+	}
+}
+
+func TestDirectUnpack_ContextCancel_RecordsFailure(t *testing.T) {
+	dir := t.TempDir()
+	extractDir := filepath.Join(dir, "extract")
+	downloadDir := filepath.Join(dir, "download")
+	_ = os.MkdirAll(extractDir, 0o755)
+	_ = os.MkdirAll(downloadDir, 0o755)
+
+	mockBin := writeMockUnrar(t, dir)
+
+	du := New(
+		testLogger(t),
+		"test-job",
+		downloadDir,
+		extractDir,
+		Options{UnrarCommand: mockBin},
+	)
+
+	du.SetAllFilenames([]string{
+		"movie.part01.rar",
+		"movie.part02.rar",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+	for i := 1; i <= 2; i++ {
+		_ = os.WriteFile(filepath.Join(downloadDir, fmtPart(i)), []byte("fake"), 0o644)
+	}
+
+	t.Setenv("MOCK_VOLUMES", "2")
+
+	du.Add(ctx, "movie.part01.rar", filepath.Join(downloadDir, "movie.part01.rar"))
+
+	// Let subprocess start.
+	time.Sleep(200 * time.Millisecond)
+
+	// Cancel the context.
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		du.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait() did not return after context cancel")
+	}
+
+	failures := du.Failures()
+	if len(failures) == 0 {
+		t.Fatal("expected at least 1 failure after context cancel")
+	}
+	f := failures["movie"]
+	if !strings.Contains(f.Reason, "cancel") {
+		t.Errorf("expected cancel-related reason, got: %q", f.Reason)
+	}
+}
+
+func TestDirectUnpack_MultiSet(t *testing.T) {
+	dir := t.TempDir()
+	extractDir := filepath.Join(dir, "extract")
+	downloadDir := filepath.Join(dir, "download")
+	_ = os.MkdirAll(extractDir, 0o755)
+	_ = os.MkdirAll(downloadDir, 0o755)
+
+	mockBin := writeMockUnrar(t, dir)
+
+	du := New(
+		testLogger(t),
+		"test-job",
+		downloadDir,
+		extractDir,
+		Options{UnrarCommand: mockBin},
+	)
+
+	du.SetAllFilenames([]string{
+		"movie.part01.rar",
+		"subs.part01.rar",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Create all files on disk.
+	_ = os.WriteFile(filepath.Join(downloadDir, "movie.part01.rar"), []byte("fake"), 0o644)
+	_ = os.WriteFile(filepath.Join(downloadDir, "subs.part01.rar"), []byte("fake"), 0o644)
+
+	// Single volume each — both sets complete without prompting.
+	t.Setenv("MOCK_VOLUMES", "1")
+
+	// Feed movie vol 1 → starts subprocess.
+	du.Add(ctx, "movie.part01.rar", filepath.Join(downloadDir, "movie.part01.rar"))
+
+	// Feed subs vol 1 → queued as next set.
+	du.Add(ctx, "subs.part01.rar", filepath.Join(downloadDir, "subs.part01.rar"))
+
+	du.Wait()
+
+	results := du.Results()
+	if _, ok := results["movie"]; !ok {
+		t.Errorf("expected 'movie' in results, got: %v", results)
+	}
+	if _, ok := results["subs"]; !ok {
+		t.Errorf("expected 'subs' in results, got: %v", results)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 success sets, got %d: %v", len(results), results)
+	}
+}
+
+func TestDirectUnpack_OnLineCallback(t *testing.T) {
+	dir := t.TempDir()
+	extractDir := filepath.Join(dir, "extract")
+	downloadDir := filepath.Join(dir, "download")
+	_ = os.MkdirAll(extractDir, 0o755)
+	_ = os.MkdirAll(downloadDir, 0o755)
+
+	mockBin := writeMockUnrar(t, dir)
+
+	var lines []string
+	du := New(
+		testLogger(t),
+		"test-job",
+		downloadDir,
+		extractDir,
+		Options{
+			UnrarCommand: mockBin,
+			OnLine: func(line string) {
+				lines = append(lines, line)
+			},
+		},
+	)
+
+	du.SetAllFilenames([]string{"movie.part01.rar"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_ = os.WriteFile(filepath.Join(downloadDir, "movie.part01.rar"), []byte("fake"), 0o644)
+	t.Setenv("MOCK_VOLUMES", "1")
+
+	du.Add(ctx, "movie.part01.rar", filepath.Join(downloadDir, "movie.part01.rar"))
+	du.Wait()
+
+	if len(lines) == 0 {
+		t.Error("expected OnLine callback to receive output lines")
 	}
 }
 
