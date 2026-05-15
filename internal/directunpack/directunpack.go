@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,12 @@ type SuccessSet struct {
 	RarParts []string
 	// ExtractedFiles lists absolute paths of files created by extraction.
 	ExtractedFiles []string
+}
+
+// FailedSet records a set that DirectUnpack attempted but failed to extract.
+type FailedSet struct {
+	// Reason is a human-readable description of why extraction failed.
+	Reason string
 }
 
 // Options configures a DirectUnpacker instance.
@@ -88,6 +95,7 @@ type DirectUnpacker struct {
 	totalVolumes  map[string]int            // setname → max volume number
 	completedVols map[string]map[int]string // setname → vol → absolute filepath
 	successSets   map[string]SuccessSet     // completed extractions
+	failedSets    map[string]FailedSet      // sets that failed
 	nextSets      []string                  // archive sets waiting to start
 
 	// All files in the job (for initial volume scan).
@@ -117,6 +125,7 @@ func New(log *slog.Logger, jobID, downloadDir, extractDir string, opts Options) 
 		totalVolumes:  make(map[string]int),
 		completedVols: make(map[string]map[int]string),
 		successSets:   make(map[string]SuccessSet),
+		failedSets:    make(map[string]FailedSet),
 		volumeReady:   make(chan struct{}, 1),
 		done:          make(chan struct{}),
 		opts:          opts,
@@ -292,6 +301,22 @@ func (d *DirectUnpacker) Results() map[string]SuccessSet {
 	return out
 }
 
+// Failures returns a copy of the failed sets. The caller should check
+// this after Wait() returns alongside Results().
+func (d *DirectUnpacker) Failures() map[string]FailedSet {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make(map[string]FailedSet, len(d.failedSets))
+	maps.Copy(out, d.failedSets)
+	return out
+}
+
+// recordFailure adds a failure entry for the current set. Must be called
+// with mu held.
+func (d *DirectUnpacker) recordFailure(setname, reason string) {
+	d.failedSets[setname] = FailedSet{Reason: reason}
+}
+
 // run is the main goroutine that manages the interactive unrar subprocess.
 func (d *DirectUnpacker) run(ctx context.Context) {
 	defer close(d.done)
@@ -322,6 +347,7 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 		if err := d.createUnrarInstance(ctx, volPath); err != nil {
 			d.log.Error("failed to create unrar instance", "err", err)
 			d.mu.Lock()
+			d.recordFailure(setname, fmt.Sprintf("failed to start unrar: %v", err))
 			d.killed = true
 			d.mu.Unlock()
 			return
@@ -460,6 +486,7 @@ func (d *DirectUnpacker) readUnrarOutput(ctx context.Context) {
 						"set", setname, "count", duplicateCount)
 					_, _ = d.stdin.Write([]byte("Q\n"))
 					d.mu.Lock()
+					d.recordFailure(setname, "too many duplicate volume prompts (obfuscated filenames?)")
 					d.killed = true
 					d.mu.Unlock()
 					break
@@ -473,6 +500,7 @@ func (d *DirectUnpacker) readUnrarOutput(ctx context.Context) {
 				d.log.Info("wait for next volume cancelled", "err", err)
 				_, _ = d.stdin.Write([]byte("Q\n"))
 				d.mu.Lock()
+				d.recordFailure(setname, fmt.Sprintf("cancelled while waiting for volume: %v", err))
 				d.killed = true
 				d.mu.Unlock()
 				break
@@ -492,6 +520,7 @@ func (d *DirectUnpacker) readUnrarOutput(ctx context.Context) {
 			d.log.Warn("unrar retry/abort prompt, aborting", "set", setname)
 			_, _ = d.stdin.Write([]byte("A\n"))
 			d.mu.Lock()
+			d.recordFailure(setname, "unrar encountered a read error (I/O or corrupt volume)")
 			d.killed = true
 			d.mu.Unlock()
 			break
@@ -507,6 +536,7 @@ func (d *DirectUnpacker) readUnrarOutput(ctx context.Context) {
 					d.log.Warn("unrar error detected", "set", setname, "line", trimmed)
 					_, _ = d.stdin.Write([]byte("Q\n"))
 					d.mu.Lock()
+					d.recordFailure(setname, trimmed)
 					d.killed = true
 					d.mu.Unlock()
 					goto done
