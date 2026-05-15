@@ -301,7 +301,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 
 	defer func() {
 		workerWg.Wait()
-		d.log.Info("disconnected from server", "server", srv.Cfg().Name, "worker", workerID, "reason", "shutdown")
+		d.log.Debug("disconnected from server", "server", srv.Cfg().Name, "worker", workerID, "reason", "shutdown")
 		mc.Close(d, workerID)
 	}()
 
@@ -335,7 +335,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 				// handleRequest goroutines to finish before closing.
 				<-sem
 				workerWg.Wait()
-				d.log.Info("disconnected from server", "server", name, "worker", workerID, "reason", "idle")
+				d.log.Debug("disconnected from server", "server", name, "worker", workerID, "reason", "idle")
 				mc.Close(d, workerID)
 				// Loop back to wait for new work; will re-dial lazily.
 			case req := <-workCh:
