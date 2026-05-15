@@ -87,6 +87,7 @@ func Default() (*Config, error) {
 			OverwriteFiles:       false,
 			FlatUnpack:           false,
 			DeobfuscateFilenames: true,
+			DirectUnpackThreads:  3, // match SABnzbd default
 		},
 		Servers:    nil, // user must add at least one before download is possible
 		Categories: []CategoryConfig{BuiltinDefaultCategory()},

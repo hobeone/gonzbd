@@ -54,7 +54,7 @@ postproc:
   prefer_7zip: false
   flat_unpack: false
   direct_unpack: false
-  direct_unpack_threads: 0
+  direct_unpack_threads: 3
   deobfuscate_filenames: true
   ignore_samples: false
   cleanup_extensions: []
