@@ -1,7 +1,8 @@
 //go:build integration
 
-// Package directunpack integration tests exercise the real unrar binary with
-// multi-volume archives to verify the interactive -vp protocol handling.
+// Package directunpack integration tests exercise pure-Go RAR extraction
+// via rardecode with multi-volume archives to verify WaitFS blocking and
+// volume-boundary handling.
 package integration
 
 import (
@@ -10,7 +11,6 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,16 +18,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
 )
-
-// requireUnrar skips the test if unrar is not available.
-func requireUnrar(t *testing.T) string {
-	t.Helper()
-	path, err := exec.LookPath("unrar")
-	if err != nil {
-		t.Skip("unrar not found in PATH; skipping integration test")
-	}
-	return path
-}
 
 // copyFixtures copies all .rar files from src into dst and returns a
 // slice of the base filenames.
@@ -84,7 +74,6 @@ func expectedSHA256(t *testing.T) string {
 // TestDirectUnpackInOrder feeds volumes 1-6 in order and verifies that
 // the extracted file matches the expected SHA-256.
 func TestDirectUnpackInOrder(t *testing.T) {
-	unrarPath := requireUnrar(t)
 	srcDir := fixtureDir(t)
 	workDir := t.TempDir()
 	extractDir := t.TempDir()
@@ -95,9 +84,7 @@ func TestDirectUnpackInOrder(t *testing.T) {
 	}
 
 	log := slog.Default().With("test", t.Name())
-	du := directunpack.New(log, "test-job", workDir, extractDir, directunpack.Options{
-		UnrarCommand: unrarPath,
-	})
+	du := directunpack.New(log, "test-job", workDir, extractDir, directunpack.Options{})
 
 	du.SetAllFilenames(names)
 
@@ -144,7 +131,6 @@ func TestDirectUnpackInOrder(t *testing.T) {
 // to verify that the DirectUnpacker correctly waits for vol 1 before
 // starting, then handles out-of-order delivery.
 func TestDirectUnpackOutOfOrder(t *testing.T) {
-	unrarPath := requireUnrar(t)
 	srcDir := fixtureDir(t)
 	workDir := t.TempDir()
 	extractDir := t.TempDir()
@@ -155,9 +141,7 @@ func TestDirectUnpackOutOfOrder(t *testing.T) {
 	}
 
 	log := slog.Default().With("test", t.Name())
-	du := directunpack.New(log, "test-job", workDir, extractDir, directunpack.Options{
-		UnrarCommand: unrarPath,
-	})
+	du := directunpack.New(log, "test-job", workDir, extractDir, directunpack.Options{})
 
 	du.SetAllFilenames(names)
 
@@ -200,10 +184,9 @@ func TestDirectUnpackOutOfOrder(t *testing.T) {
 	}
 }
 
-// TestDirectUnpackAbort verifies that Abort() kills the subprocess and
+// TestDirectUnpackAbort verifies that Abort() stops extraction and
 // Results() returns an empty map.
 func TestDirectUnpackAbort(t *testing.T) {
-	unrarPath := requireUnrar(t)
 	srcDir := fixtureDir(t)
 	workDir := t.TempDir()
 	extractDir := t.TempDir()
@@ -211,9 +194,7 @@ func TestDirectUnpackAbort(t *testing.T) {
 	names := copyFixtures(t, srcDir, workDir)
 
 	log := slog.Default().With("test", t.Name())
-	du := directunpack.New(log, "test-job", workDir, extractDir, directunpack.Options{
-		UnrarCommand: unrarPath,
-	})
+	du := directunpack.New(log, "test-job", workDir, extractDir, directunpack.Options{})
 
 	du.SetAllFilenames(names)
 

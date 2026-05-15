@@ -345,14 +345,14 @@ func TestSanitizeArchivePath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := sanitizeArchivePath(tt.input, tt.oneFolder)
+			got, err := SanitizeArchivePath(tt.input, tt.oneFolder)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("sanitizeArchivePath(%q, %v) error = %v, wantErr %v",
+				t.Errorf("SanitizeArchivePath(%q, %v) error = %v, wantErr %v",
 					tt.input, tt.oneFolder, err, tt.wantErr)
 				return
 			}
 			if got != tt.want {
-				t.Errorf("sanitizeArchivePath(%q, %v) = %q, want %q",
+				t.Errorf("SanitizeArchivePath(%q, %v) = %q, want %q",
 					tt.input, tt.oneFolder, got, tt.want)
 			}
 		})
@@ -390,9 +390,9 @@ func TestClassifyRarDecodeError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := classifyRarDecodeError(tt.err)
+			got := ClassifyRarDecodeError(tt.err)
 			if got != tt.want {
-				t.Errorf("classifyRarDecodeError(%v) = %v, want %v", tt.err, got, tt.want)
+				t.Errorf("ClassifyRarDecodeError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

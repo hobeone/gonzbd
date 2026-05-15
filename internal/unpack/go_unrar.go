@@ -43,9 +43,9 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 		rdOpts = append(rdOpts, rardecode.Password(opts.Password))
 	}
 
-	r, err := safeOpenReader(archive.MainFile, rdOpts...)
+	r, err := SafeOpenReader(archive.MainFile, rdOpts...)
 	if err != nil {
-		res.Reason = classifyRarDecodeError(err)
+		res.Reason = ClassifyRarDecodeError(err)
 		return res, fmt.Errorf("go_unrar: open: %w", err)
 	}
 	defer r.Close()
@@ -55,16 +55,16 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 			return res, err
 		}
 
-		hdr, err := safeNext(r)
+		hdr, err := SafeNext(r)
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			res.Reason = classifyRarDecodeError(err)
+			res.Reason = ClassifyRarDecodeError(err)
 			return res, fmt.Errorf("go_unrar: read header: %w", err)
 		}
 
-		destRel, sanitizeErr := sanitizeArchivePath(hdr.Name, opts.OneFolder)
+		destRel, sanitizeErr := SanitizeArchivePath(hdr.Name, opts.OneFolder)
 		if sanitizeErr != nil {
 			log.Warn("go_unrar: skipping entry with bad path",
 				"raw_name", hdr.Name, "err", sanitizeErr)
@@ -75,8 +75,8 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 
 		destPath := filepath.Join(outDir, destRel)
 
-		if err := extractEntry(ctx, outDir, destPath, hdr, r, opts, log); err != nil {
-			res.Reason = classifyRarDecodeError(err)
+		if err := ExtractEntry(ctx, outDir, destPath, hdr, r, opts, log); err != nil {
+			res.Reason = ClassifyRarDecodeError(err)
 			return res, err
 		}
 
@@ -100,9 +100,9 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 	return res, nil
 }
 
-// safeOpenReader wraps rardecode.OpenReader with panic recovery.
+// SafeOpenReader wraps rardecode.OpenReader with panic recovery.
 // Malformed archives can panic inside rardecode's block header parser.
-func safeOpenReader(name string, opts ...rardecode.Option) (r *rardecode.ReadCloser, err error) {
+func SafeOpenReader(name string, opts ...rardecode.Option) (r *rardecode.ReadCloser, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("go_unrar: rardecode panic on open %s: %v", filepath.Base(name), p)
@@ -111,9 +111,9 @@ func safeOpenReader(name string, opts ...rardecode.Option) (r *rardecode.ReadClo
 	return rardecode.OpenReader(name, opts...)
 }
 
-// safeNext wraps r.Next() with panic recovery.
+// SafeNext wraps r.Next() with panic recovery.
 // rardecode may panic on certain malformed file headers.
-func safeNext(r *rardecode.ReadCloser) (hdr *rardecode.FileHeader, err error) {
+func SafeNext(r *rardecode.ReadCloser) (hdr *rardecode.FileHeader, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("go_unrar: rardecode panic on Next(): %v", p)
@@ -122,8 +122,8 @@ func safeNext(r *rardecode.ReadCloser) (hdr *rardecode.FileHeader, err error) {
 	return r.Next()
 }
 
-// extractEntry writes one file from the archive to disk.
-func extractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.FileHeader, r io.Reader, opts Options, log *slog.Logger) error {
+// ExtractEntry writes one file from the archive to disk.
+func ExtractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.FileHeader, r io.Reader, opts Options, log *slog.Logger) error {
 	// Directory entries: create and skip.
 	if hdr.IsDir {
 		return os.MkdirAll(destPath, 0750)
@@ -177,10 +177,10 @@ func extractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.F
 	return nil
 }
 
-// sanitizeArchivePath cleans an archive entry path for safe extraction.
+// SanitizeArchivePath cleans an archive entry path for safe extraction.
 // It prevents directory traversal attacks, rejects null bytes, and optionally
 // flattens paths (OneFolder mode).
-func sanitizeArchivePath(name string, oneFolder bool) (string, error) {
+func SanitizeArchivePath(name string, oneFolder bool) (string, error) {
 	// Normalize separators.
 	name = strings.ReplaceAll(name, "\\", "/")
 
@@ -207,8 +207,8 @@ func sanitizeArchivePath(name string, oneFolder bool) (string, error) {
 	return name, nil
 }
 
-// classifyRarDecodeError maps rardecode errors to FailReason.
-func classifyRarDecodeError(err error) FailReason {
+// ClassifyRarDecodeError maps rardecode errors to FailReason.
+func ClassifyRarDecodeError(err error) FailReason {
 	switch {
 	// Wrong password (RAR5 only — see TODO below).
 	case errors.Is(err, rardecode.ErrBadPassword):
