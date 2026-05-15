@@ -45,6 +45,10 @@ type Options struct {
 	// Prefer7zip uses 7z instead of unrar for RAR extraction even when
 	// unrar is available. 7z often handles edge-case RARs more reliably.
 	Prefer7zip bool
+	// PreferGoRAR uses the pure-Go rardecode library for RAR extraction
+	// instead of shelling out to unrar. No external binary required.
+	// Default true.
+	PreferGoRAR bool
 	// CmdCfg controls nice/ionice process priority wrapping for the
 	// extraction subprocess. When non-empty, the command is prepended
 	// with nice and/or ionice. Matches SABnzbd's cfg.nice/cfg.ionice.

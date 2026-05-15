@@ -237,6 +237,12 @@ postproc:
   # any subdirectory structure inside the archive.
   flat_unpack: false
 
+  # Use the pure-Go rardecode library for RAR extraction instead of
+  # shelling out to the unrar binary. No external binary required.
+  # Falls back to subprocess unrar/7z when set to false or on
+  # extraction error. Default true.
+  prefer_go_rar: true
+
   # Begin extracting files while the download is still in progress.
   # Completed RAR volumes are fed to an interactive unrar subprocess as
   # they arrive, overlapping download and extraction I/O. Falls back to
