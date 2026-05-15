@@ -64,7 +64,7 @@ type PostProcConfig struct {
 	DirectUnpack bool `yaml:"direct_unpack" json:"direct_unpack"`
 	// DirectUnpackThreads limits the number of concurrent DirectUnpack
 	// workers across all jobs. 0 means no limit (one per active job).
-	// This is a stub for future use — currently ignored.
+	// Default 3 (matching SABnzbd).
 	DirectUnpackThreads int `yaml:"direct_unpack_threads" json:"direct_unpack_threads"`
 
 	// DeobfuscateFilenames renames obfuscated files (random hex/UUIDs)
