@@ -179,15 +179,13 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			switch a.Type {
 			case unpack.RarArchive:
 				// Dispatch order:
-				// 1. prefer_7zip → use 7z
-				// 2. use_go_rar → use GoUnRAR (pure-Go, no external binary)
-				// 3. unrar available → use unrar
-				// 4. unrar not found → fall back to GoUnRAR
-				use7z := opts.Prefer7zip
-				useGoRAR := !use7z && opts.UseGoRAR
+				// 1. use_go_rar → use GoUnRAR (pure-Go, no external binary)
+				// 2. unrar available → use unrar subprocess
+				// 3. unrar not found → fall back to GoUnRAR
+				useGoRAR := opts.UseGoRAR
 
-				if !use7z && !useGoRAR {
-					// Neither preference set — check if unrar is available.
+				if !useGoRAR {
+					// Check if unrar is available.
 					unrarBin := opts.UnrarCommand
 					if unrarBin == "" {
 						unrarBin = "unrar"
@@ -198,19 +196,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 					}
 				}
 
-				if use7z {
-					logf(log, job, slog.LevelInfo, "Using 7z for RAR (prefer_7zip=true)")
-					szOpts := opts
-					szOpts.OnLine = func(line string) {
-						if job.OnOutput != nil {
-							job.OnOutput("7z", line)
-						}
-					}
-					szOpts.OnCommand = func(cmdLine string) {
-						logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
-					}
-					res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
-				} else if useGoRAR {
+				if useGoRAR {
 					logf(log, job, slog.LevelInfo, "Using go_unrar for RAR (pure-Go)")
 					goOpts := opts
 					goOpts.OnLine = func(line string) {

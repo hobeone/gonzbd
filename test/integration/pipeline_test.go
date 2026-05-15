@@ -134,37 +134,6 @@ func TestPipeline_7zExtract(t *testing.T) {
 	verifyFileAtPath(t, extractedPath, wantSHA[:])
 }
 
-// TestPipeline_RarVia7z verifies that RAR archives can be extracted using
-// 7z as the backend (Prefer7zip mode).
-func TestPipeline_RarVia7z(t *testing.T) {
-	t.Parallel()
-	requireTool(t, "rar")
-	requireTool(t, "7z")
-
-	srcPayload := bytes.Repeat([]byte("rar-via-7z content\n"), 100)
-	wantSHA := sha256.Sum256(srcPayload)
-
-	fixtureDir := t.TempDir()
-	createRarFixture(t, fixtureDir, "via7z.rar", map[string][]byte{
-		"via7z.txt": srcPayload,
-	})
-
-	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
-	srv := newMockServerFromFixtures(t, files)
-
-	a, _, completeDir := NewTestAppSeparateDirs(t, srv.Addr(), AppTestOpts{
-		Enable7zip: true,
-		Prefer7zip: true,
-	})
-	rawNZB := BuildNZB(files)
-	addNZBJobPP(t, a, rawNZB, "rar7z-test", 3)
-
-	waitForPostProcWithTimeout(t, a, pipelineTimeout)
-
-	extractedPath := filepath.Join(completeDir, "rar7z-test", "via7z.txt")
-	verifyFileAtPath(t, extractedPath, wantSHA[:])
-}
-
 // TestPipeline_MissingTool_Graceful verifies that when a required extraction
 // tool is not found, the job fails gracefully (not panics or hangs) and
 // files remain accessible for retry.
