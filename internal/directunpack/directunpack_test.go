@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -117,14 +118,10 @@ func TestDirectUnpack_SingleSet_HappyPath(t *testing.T) {
 	// Set MOCK_VOLUMES so the mock knows to prompt 3 times.
 	t.Setenv("MOCK_VOLUMES", "3")
 
-	// Feed volumes in order.
+	// Feed all volumes. The DU's waitForNextVolume checks completedVols
+	// before blocking, so pre-registering all volumes is safe.
 	du.Add(ctx, "movie.part01.rar", filepath.Join(downloadDir, "movie.part01.rar"))
-
-	// Small delay to let the subprocess start and hit the first prompt.
-	time.Sleep(100 * time.Millisecond)
 	du.Add(ctx, "movie.part02.rar", filepath.Join(downloadDir, "movie.part02.rar"))
-
-	time.Sleep(100 * time.Millisecond)
 	du.Add(ctx, "movie.part03.rar", filepath.Join(downloadDir, "movie.part03.rar"))
 
 	du.Wait()
@@ -181,16 +178,10 @@ func TestDirectUnpack_OutOfOrder(t *testing.T) {
 
 	t.Setenv("MOCK_VOLUMES", "3")
 
-	// Feed vol 3 first, then vol 1, then vol 2.
+	// Feed vol 3 first, then vol 1, then vol 2. All are pre-registered;
+	// waitForNextVolume finds them in completedVols without blocking.
 	du.Add(ctx, "movie.part03.rar", filepath.Join(downloadDir, "movie.part03.rar"))
-
-	// Vol 1 triggers the start.
 	du.Add(ctx, "movie.part01.rar", filepath.Join(downloadDir, "movie.part01.rar"))
-
-	// Let it hit the prompt for vol 2.
-	time.Sleep(200 * time.Millisecond)
-
-	// Feed vol 2 — should unblock.
 	du.Add(ctx, "movie.part02.rar", filepath.Join(downloadDir, "movie.part02.rar"))
 
 	du.Wait()
@@ -247,12 +238,15 @@ func TestDirectUnpack_Abort(t *testing.T) {
 
 	mockBin := writeMockUnrar(t, dir)
 
+	// Use OnLine to detect when the subprocess is running.
+	onLine, started := waitForStarted()
+
 	du := New(
 		testLogger(t),
 		"test-job",
 		downloadDir,
 		extractDir,
-		Options{UnrarCommand: mockBin},
+		Options{UnrarCommand: mockBin, OnLine: onLine},
 	)
 
 	du.SetAllFilenames([]string{
@@ -272,8 +266,12 @@ func TestDirectUnpack_Abort(t *testing.T) {
 	// Start with vol 1 — subprocess will block waiting for vol 2.
 	du.Add(ctx, "movie.part01.rar", filepath.Join(downloadDir, "movie.part01.rar"))
 
-	// Let it start and hit the prompt.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for subprocess output instead of sleeping.
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("subprocess never started")
+	}
 
 	// Abort instead of feeding vol 2.
 	du.Abort()
@@ -308,12 +306,15 @@ func TestDirectUnpack_ContextCancel(t *testing.T) {
 
 	mockBin := writeMockUnrar(t, dir)
 
+	// Use OnLine to detect when the subprocess is running.
+	onLine, started := waitForStarted()
+
 	du := New(
 		testLogger(t),
 		"test-job",
 		downloadDir,
 		extractDir,
-		Options{UnrarCommand: mockBin},
+		Options{UnrarCommand: mockBin, OnLine: onLine},
 	)
 
 	du.SetAllFilenames([]string{
@@ -331,8 +332,12 @@ func TestDirectUnpack_ContextCancel(t *testing.T) {
 
 	du.Add(ctx, "movie.part01.rar", filepath.Join(downloadDir, "movie.part01.rar"))
 
-	// Let it start.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for subprocess output instead of sleeping.
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("subprocess never started")
+	}
 
 	// Cancel the context — should unblock waitForNextVolume.
 	cancel()
@@ -516,12 +521,15 @@ func TestDirectUnpack_Abort_RecordsFailures(t *testing.T) {
 
 	mockBin := writeMockUnrar(t, dir)
 
+	// Use OnLine to detect when the subprocess is running.
+	onLine, started := waitForStarted()
+
 	du := New(
 		testLogger(t),
 		"test-job",
 		downloadDir,
 		extractDir,
-		Options{UnrarCommand: mockBin},
+		Options{UnrarCommand: mockBin, OnLine: onLine},
 	)
 
 	du.SetAllFilenames([]string{
@@ -545,8 +553,12 @@ func TestDirectUnpack_Abort_RecordsFailures(t *testing.T) {
 	// Queue subs set (vol 1 not ready, so it goes to nextSets).
 	du.Add(ctx, "subs.part01.rar", filepath.Join(downloadDir, "subs.part01.rar"))
 
-	// Let subprocess start.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for subprocess output instead of sleeping.
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("subprocess never started")
+	}
 
 	// Abort — should record failures for both "movie" (active) and "subs" (queued).
 	du.Abort()
@@ -584,12 +596,15 @@ func TestDirectUnpack_ContextCancel_RecordsFailure(t *testing.T) {
 
 	mockBin := writeMockUnrar(t, dir)
 
+	// Use OnLine to detect when the subprocess is running.
+	onLine, started := waitForStarted()
+
 	du := New(
 		testLogger(t),
 		"test-job",
 		downloadDir,
 		extractDir,
-		Options{UnrarCommand: mockBin},
+		Options{UnrarCommand: mockBin, OnLine: onLine},
 	)
 
 	du.SetAllFilenames([]string{
@@ -607,8 +622,12 @@ func TestDirectUnpack_ContextCancel_RecordsFailure(t *testing.T) {
 
 	du.Add(ctx, "movie.part01.rar", filepath.Join(downloadDir, "movie.part01.rar"))
 
-	// Let subprocess start.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for subprocess output instead of sleeping.
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("subprocess never started")
+	}
 
 	// Cancel the context.
 	cancel()
@@ -727,6 +746,18 @@ func TestDirectUnpack_OnLineCallback(t *testing.T) {
 }
 
 // --- helpers ---
+
+// waitForStarted returns an OnLine callback and a channel that is closed
+// when the first line of unrar output is received, indicating the subprocess
+// has started and is processing. This replaces time.Sleep for test
+// synchronization.
+func waitForStarted() (func(string), <-chan struct{}) {
+	ch := make(chan struct{})
+	var once sync.Once
+	return func(string) {
+		once.Do(func() { close(ch) })
+	}, ch
+}
 
 func fmtPart(n int) string {
 	return fmt.Sprintf("movie.part%02d.rar", n)
