@@ -249,6 +249,14 @@ func TestSetupComponentLevels(t *testing.T) {
 		{"nested-components", slog.LevelInfo, map[string]slog.Level{"parent/child": slog.LevelDebug}, []string{"parent", "parent/child"}, slog.LevelDebug, true},
 		// Hierarchical inheritance: level set on parent should apply to child.
 		{"hierarchical-inheritance", slog.LevelInfo, map[string]slog.Level{"parent": slog.LevelDebug}, []string{"parent", "parent/child"}, slog.LevelDebug, true},
+		// Walk-up: child component "assembler" has no rule, but parent
+		// component "app" is set to info. Debug from the assembler should
+		// be suppressed because the filter walks up the component chain.
+		{"walk-up-suppresses-debug", slog.LevelDebug, map[string]slog.Level{"app": slog.LevelInfo}, []string{"app", "assembler"}, slog.LevelDebug, false},
+		// Walk-up: same scenario but info-level should still pass.
+		{"walk-up-passes-info", slog.LevelDebug, map[string]slog.Level{"app": slog.LevelInfo}, []string{"app", "assembler"}, slog.LevelInfo, true},
+		// Walk-up: child has its own explicit rule, overrides parent.
+		{"walk-up-child-overrides", slog.LevelInfo, map[string]slog.Level{"app": slog.LevelWarn, "assembler": slog.LevelDebug}, []string{"app", "assembler"}, slog.LevelDebug, true},
 		// No component levels at all: behaves as global.
 		{"no-overrides", slog.LevelInfo, nil, []string{"api"}, slog.LevelInfo, true},
 	}
