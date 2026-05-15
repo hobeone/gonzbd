@@ -51,7 +51,6 @@ postproc:
   par2_turbo: false
   ignore_unrar_dates: false
   overwrite_files: false
-  prefer_7zip: false
   use_go_rar: true
   flat_unpack: false
   direct_unpack: false

@@ -42,9 +42,6 @@ type Options struct {
 	// IgnoreUnrarDates discards in-archive modification timestamps and uses extraction time.
 	// Adds -tsm- to unrar arguments (matches SABnzbd's behavior).
 	IgnoreUnrarDates bool
-	// Prefer7zip uses 7z instead of unrar for RAR extraction even when
-	// unrar is available. 7z often handles edge-case RARs more reliably.
-	Prefer7zip bool
 	// UseGoRAR uses the pure-Go rardecode library for RAR extraction
 	// instead of shelling out to unrar. No external binary required.
 	// Default true.
