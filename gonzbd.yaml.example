@@ -238,10 +238,18 @@ postproc:
   flat_unpack: false
 
   # Begin extracting files while the download is still in progress.
-  # The first RAR volume is fed to unrar as soon as it completes, with
-  # subsequent volumes streamed as they arrive. Falls back to standard
-  # unpack on failure. Not yet implemented.
+  # Completed RAR volumes are fed to an interactive unrar subprocess as
+  # they arrive, overlapping download and extraction I/O. Falls back to
+  # standard unpack on failure. Requires enable_unrar=true and is
+  # incompatible with prefer_7zip (7z does not support unrar's -vp
+  # interactive protocol). When both are enabled, a startup warning is
+  # logged and DirectUnpack is effectively disabled.
   direct_unpack: false
+
+  # Limit the number of concurrent DirectUnpack workers across all jobs.
+  # 0 means no limit (one per active job). This is a stub for future use
+  # and is currently ignored.
+  direct_unpack_threads: 0
 
   # Rename obfuscated files (random hex strings, UUIDs) to use the
   # job name as a base. Helps media scanners identify content.
