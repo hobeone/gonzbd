@@ -33,6 +33,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // ErrAlreadyStarted is returned by Start on the second call to a live
@@ -193,6 +194,10 @@ type Application struct {
 	// directUnpackers maps jobID → active DirectUnpacker for jobs being
 	// extracted during download. Protected by mu.
 	directUnpackers map[string]*directunpack.DirectUnpacker
+
+	// unrarHasProblem caches the result of DetectUnrar at startup.
+	// True when the binary is non-original or too old (< 5.50).
+	unrarHasProblem bool
 }
 
 // SetEmitter injects a broadcaster for real-time events.
@@ -231,6 +236,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		jobComplete:          make(chan JobComplete, 8),
 		postProcComplete:     make(chan PostProcComplete, 8),
 		directUnpackers:      make(map[string]*directunpack.DirectUnpacker),
+		unrarHasProblem:      unpack.DetectUnrar(context.Background(), cfg.UnrarCommand).HasProblem,
 	}
 	for _, o := range opts {
 		o(app)
@@ -914,6 +920,14 @@ func (app *Application) maybeDirectUnpack(fc FileComplete) {
 	if snap == nil || snap.PostProc {
 		return
 	}
+	// Skip DU for jobs that don't want unpacking (PP < 2) or have
+	// a password (DU would fail on the password and fall back anyway).
+	if snap.PP < 2 {
+		return
+	}
+	if snap.Password != "" {
+		return
+	}
 	if fc.FileIdx < 0 || fc.FileIdx >= len(snap.Files) {
 		return
 	}
@@ -966,11 +980,12 @@ func (app *Application) buildDirectUnpackOpts() directunpack.Options {
 
 	return directunpack.Options{
 		UnrarCommand:     app.cfg.UnrarCommand,
-		Password:         "", // per-job passwords handled separately
+		Password:         "", // per-job passwords are pre-checked; DU skips password jobs
 		OneFolder:        app.cfg.FlatUnpack,
 		OverwriteFiles:   app.cfg.OverwriteFiles,
 		IgnoreUnrarDates: app.cfg.IgnoreUnrarDates,
 		ExtraArgs:        extraArgs,
+		HasProblem:       app.unrarHasProblem,
 		CmdCfg: cmdutil.CmdConfig{
 			Nice:   app.cfg.Nice,
 			Ionice: app.cfg.Ionice,
