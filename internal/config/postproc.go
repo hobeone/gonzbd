@@ -50,22 +50,19 @@ type PostProcConfig struct {
 	// OverwriteFiles allows extraction to clobber existing files in
 	// the destination.
 	OverwriteFiles bool `yaml:"overwrite_files" json:"overwrite_files"`
-	// Prefer7zip uses 7z instead of unrar for RAR extraction even when
-	// unrar is available. 7z often handles edge-case RARs more reliably.
-	Prefer7zip bool `yaml:"prefer_7zip" json:"prefer_7zip"`
 	// UseGoRAR uses the pure-Go rardecode library for RAR extraction
 	// instead of shelling out to unrar. No external binary required.
-	// When false, falls back to subprocess unrar (or 7z if prefer_7zip is set).
+	// When false, falls back to subprocess unrar.
 	// Default true.
 	UseGoRAR bool `yaml:"use_go_rar" json:"use_go_rar"`
 	// FlatUnpack writes all extracted files to the job root, ignoring
 	// archive-internal directories.
 	FlatUnpack bool `yaml:"flat_unpack" json:"flat_unpack"`
 	// DirectUnpack starts extraction while the download is still in
-	// progress. Completed RAR volumes are fed to unrar as they arrive,
-	// overlapping download and extraction I/O. Falls back to standard
-	// extraction on any error. Requires enable_unrar=true and
-	// prefer_7zip=false. Default false.
+	// progress. Completed RAR volumes are fed to the extractor as they
+	// arrive, overlapping download and extraction I/O. Falls back to
+	// standard extraction on any error. Requires enable_unrar=true.
+	// Default false.
 	DirectUnpack bool `yaml:"direct_unpack" json:"direct_unpack"`
 	// DirectUnpackThreads limits the number of concurrent DirectUnpack
 	// workers across all jobs. 0 means no limit (one per active job).

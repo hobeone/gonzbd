@@ -12,7 +12,6 @@ describe('PostProcSection', () => {
 			enable_unrar: true,
 			use_go_rar: true,
 			enable_7zip: false,
-			prefer_7zip: false,
 			enable_filejoin: true,
 			enable_tsjoin: true,
 			enable_recursive: true,
@@ -51,7 +50,6 @@ describe('PostProcSection', () => {
 		expect(screen.getByText('Enable RAR extraction')).toBeInTheDocument();
 		expect(screen.getByText('Use built-in RAR extractor')).toBeInTheDocument();
 		expect(screen.getByText('Enable 7-Zip extraction')).toBeInTheDocument();
-		expect(screen.getByText('Prefer 7-Zip for RAR')).toBeInTheDocument();
 		expect(screen.getByText('Enable file joining')).toBeInTheDocument();
 		expect(screen.getByText('Enable TS joining')).toBeInTheDocument();
 		expect(screen.getByText('Recursive unpacking')).toBeInTheDocument();
