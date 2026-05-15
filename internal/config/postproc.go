@@ -53,6 +53,11 @@ type PostProcConfig struct {
 	// Prefer7zip uses 7z instead of unrar for RAR extraction even when
 	// unrar is available. 7z often handles edge-case RARs more reliably.
 	Prefer7zip bool `yaml:"prefer_7zip" json:"prefer_7zip"`
+	// PreferGoRAR uses the pure-Go rardecode library for RAR extraction
+	// instead of shelling out to unrar. No external binary required.
+	// Falls back to subprocess unrar/7z when set to false or on error.
+	// Default true.
+	PreferGoRAR bool `yaml:"prefer_go_rar" json:"prefer_go_rar"`
 	// FlatUnpack writes all extracted files to the job root, ignoring
 	// archive-internal directories.
 	FlatUnpack bool `yaml:"flat_unpack" json:"flat_unpack"`

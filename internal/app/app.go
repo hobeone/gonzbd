@@ -82,6 +82,7 @@ type Config struct {
 	OverwriteFiles       bool
 	FlatUnpack           bool
 	Prefer7zip           bool
+	PreferGoRAR          bool
 	CleanupExtensions    []string
 	FolderRename         bool
 	Nice                 string
