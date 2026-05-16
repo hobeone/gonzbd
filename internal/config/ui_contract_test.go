@@ -51,6 +51,7 @@ var uiKeywords = []struct {
 	{"postproc", "enable_unrar", "PostProcSection.svelte"},
 	{"postproc", "enable_7zip", "PostProcSection.svelte"},
 	{"postproc", "use_go_rar", "PostProcSection.svelte"},
+	{"postproc", "use_go_7z", "PostProcSection.svelte"},
 	{"postproc", "enable_filejoin", "PostProcSection.svelte"},
 	{"postproc", "enable_tsjoin", "PostProcSection.svelte"},
 	{"postproc", "enable_recursive", "PostProcSection.svelte"},

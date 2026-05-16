@@ -46,6 +46,10 @@ type Options struct {
 	// instead of shelling out to unrar. No external binary required.
 	// Default true.
 	UseGoRAR bool
+	// UseGo7z uses the pure-Go bodgit/sevenzip library for 7z extraction
+	// instead of shelling out to 7zz/7z. No external binary required.
+	// Default true.
+	UseGo7z bool
 	// CmdCfg controls nice/ionice process priority wrapping for the
 	// extraction subprocess. When non-empty, the command is prepended
 	// with nice and/or ionice. Matches SABnzbd's cfg.nice/cfg.ionice.

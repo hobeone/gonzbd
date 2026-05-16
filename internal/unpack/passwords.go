@@ -161,3 +161,15 @@ func GoUnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive
 func SevenZipWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
 	return withPasswords(ctx, log, archive, outDir, opts, SevenZip, is7zWrongPassword, "7zip")
 }
+
+// GoSevenZipWithPasswords tries extracting with each password using the
+// pure-Go sevenzip extractor until one succeeds or all are exhausted.
+//
+// When no passwords are configured, this delegates directly to GoSevenZip.
+func GoSevenZipWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+	// GoSevenZip has no subprocess output, so isWrongPW always returns false.
+	// Wrong-password detection works via res.Reason == FailWrongPassword
+	// in the withPasswords loop.
+	never := func(int, string) bool { return false }
+	return withPasswords(ctx, log, archive, outDir, opts, GoSevenZip, never, "go_7z")
+}

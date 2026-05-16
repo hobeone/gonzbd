@@ -218,16 +218,44 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 					res, err = unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
 				}
 			case unpack.SevenZipArchive:
-				szOpts := opts
-				szOpts.OnLine = func(line string) {
-					if job.OnOutput != nil {
-						job.OnOutput("7z", line)
+				useGo7z := opts.UseGo7z
+
+				if !useGo7z {
+					// Check if 7z is available.
+					szBin := opts.SevenZipCommand
+					if szBin == "" {
+						szBin = "7zz"
+					}
+					if _, lookErr := exec.LookPath(szBin); lookErr != nil {
+						// Try the alternate name.
+						if _, lookErr2 := exec.LookPath("7z"); lookErr2 != nil {
+							useGo7z = true // 7z not found, fall back to GoSevenZip
+							logf(log, job, slog.LevelInfo, "7z binary not found in PATH, falling back to go_7z")
+						}
 					}
 				}
-				szOpts.OnCommand = func(cmdLine string) {
-					logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+
+				if useGo7z {
+					logf(log, job, slog.LevelInfo, "Using go_7z for 7-Zip (pure-Go)")
+					goOpts := opts
+					goOpts.OnLine = func(line string) {
+						if job.OnOutput != nil {
+							job.OnOutput("go_7z", line)
+						}
+					}
+					res, err = unpack.GoSevenZipWithPasswords(ctx, log, a, job.DownloadDir, goOpts)
+				} else {
+					szOpts := opts
+					szOpts.OnLine = func(line string) {
+						if job.OnOutput != nil {
+							job.OnOutput("7z", line)
+						}
+					}
+					szOpts.OnCommand = func(cmdLine string) {
+						logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+					}
+					res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
 				}
-				res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
 			case unpack.SplitArchive:
 				if !u.EnableFileJoin {
 					logf(log, job, slog.LevelInfo, "Skipping file join (disabled): %s", filepath.Base(a.MainFile))

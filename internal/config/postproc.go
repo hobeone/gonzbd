@@ -55,6 +55,11 @@ type PostProcConfig struct {
 	// When false, falls back to subprocess unrar.
 	// Default true.
 	UseGoRAR bool `yaml:"use_go_rar" json:"use_go_rar"`
+	// UseGo7z uses the pure-Go bodgit/sevenzip library for 7z extraction
+	// instead of shelling out to 7zz/7z. No external binary required.
+	// When false, falls back to subprocess 7z.
+	// Default true.
+	UseGo7z bool `yaml:"use_go_7z" json:"use_go_7z"`
 	// FlatUnpack writes all extracted files to the job root, ignoring
 	// archive-internal directories.
 	FlatUnpack bool `yaml:"flat_unpack" json:"flat_unpack"`
