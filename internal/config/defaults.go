@@ -89,6 +89,7 @@ func Default() (*Config, error) {
 			DeobfuscateFilenames: true,
 			DirectUnpackThreads:  3, // match SABnzbd default
 			UseGoRAR:             true,
+			UseGo7z:              true,
 		},
 		Servers:    nil, // user must add at least one before download is possible
 		Categories: []CategoryConfig{BuiltinDefaultCategory()},

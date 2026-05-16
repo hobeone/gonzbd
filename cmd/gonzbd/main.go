@@ -276,6 +276,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		OverwriteFiles:       cfg.PostProc.OverwriteFiles,
 		FlatUnpack:           cfg.PostProc.FlatUnpack,
 		UseGoRAR:             cfg.PostProc.UseGoRAR,
+		UseGo7z:              cfg.PostProc.UseGo7z,
 		CleanupExtensions:    cfg.PostProc.CleanupExtensions,
 		FolderRename:         cfg.PostProc.FolderRename,
 		Nice:                 cfg.PostProc.Nice,
