@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	rardecode "github.com/nwaples/rardecode/v2"
 )
@@ -100,9 +99,8 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 	res.ExtractedFiles = diffSnapshot(before, after)
 	res.CommandLine = fmt.Sprintf("go_unrar %s -> %s", archive.MainFile, outDir)
 
-	log.Info("go_unrar: extraction complete",
-		"extracted", len(res.ExtractedFiles),
-		"archive", archive.MainFile)
+	log.Info("extraction complete",
+		"extracted", len(res.ExtractedFiles))
 
 	return res, nil
 }
@@ -190,9 +188,11 @@ func ExtractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.F
 		_ = os.Chmod(destPath, mode)
 	}
 
-	// Modification time.
+	// Modification time: preserve from archive unless config says ignore.
+	// Use archive mtime for both atime and mtime for consistency with
+	// go_sevenzip (I2 fix).
 	if !opts.IgnoreUnrarDates && !hdr.ModificationTime.IsZero() {
-		_ = os.Chtimes(destPath, time.Now(), hdr.ModificationTime)
+		_ = os.Chtimes(destPath, hdr.ModificationTime, hdr.ModificationTime)
 	}
 
 	return nil
