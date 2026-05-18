@@ -199,8 +199,8 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		"commit", Commit,
 		"built", Date,
 		"go", runtime.Version(),
-		"rardecode", depVersion("github.com/nwaples/rardecode/v2"),
 	)
+	logBuildDeps(log)
 
 	// Single-instance lock prevents two daemons from corrupting the same
 	// admin dir. Released on every exit path via defer.
@@ -910,24 +910,23 @@ func enabledServers(all []config.ServerConfig) []config.ServerConfig {
 	return out
 }
 
-// depVersion returns the version of a Go module dependency as embedded in the
-// binary by the linker. When the module is replaced (e.g. via a go.mod replace
-// directive pointing at a fork), the replacement module's version is returned.
-// Returns "(unknown)" if build info is unavailable or the module is not found.
-func depVersion(modulePath string) string {
+// logBuildDeps logs all Go module dependencies linked into the binary.
+// Replace directives are resolved so the effective (fork) version is shown.
+func logBuildDeps(log *slog.Logger) {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
-		return "(unknown)"
+		return
 	}
+	attrs := make([]slog.Attr, 0, len(bi.Deps))
 	for _, dep := range bi.Deps {
-		if dep.Path == modulePath {
-			if dep.Replace != nil {
-				return dep.Replace.Version
-			}
-			return dep.Version
+		ver := dep.Version
+		if dep.Replace != nil {
+			ver = dep.Replace.Version
 		}
+		attrs = append(attrs, slog.String(dep.Path, ver))
 	}
-	return "(unknown)"
+	log.LogAttrs(context.Background(), slog.LevelInfo, "dependencies",
+		slog.Any("modules", slog.GroupValue(attrs...)))
 }
 
 type wsAdapter struct {
