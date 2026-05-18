@@ -83,7 +83,6 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, error) {
 			ExtraArgs: extraPar2Args,
 			Caps:      &par2Caps,
 		},
-		cfg.EnableParCleanup,
 	)
 	repairStage.Log = ppLog
 	stages = append(stages, repairStage)
@@ -118,9 +117,17 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, error) {
 	}
 
 	// Par2-based filename recovery: unconditional, runs after unpack.
+	// Must run before par2_cleanup since it reads the .par2 files.
 	par2RenameStage := postproc.NewRecoverPar2NamesStage()
 	par2RenameStage.Log = ppLog
 	stages = append(stages, par2RenameStage)
+
+	// Par2 cleanup: delete .par2 files after everything that needs them
+	// has run (repair, unpack, par2 rename). Gated on both repair and
+	// unpack success so par2 files survive for debugging when things fail.
+	par2CleanupStage := postproc.NewPar2CleanupStage(cfg.EnableParCleanup)
+	par2CleanupStage.Log = ppLog
+	stages = append(stages, par2CleanupStage)
 
 	if cfg.DeobfuscateFilenames {
 		deobStage := postproc.NewDeobfuscateStage()

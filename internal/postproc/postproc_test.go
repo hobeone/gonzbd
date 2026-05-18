@@ -868,6 +868,7 @@ func TestShouldSkipForPP(t *testing.T) {
 		{"extension_cleanup", 0, false},
 		{"sample_cleanup", 0, false},
 		{"recover_par2_names", 0, false},
+		{"par2_cleanup", 0, false},
 	}
 	for _, tt := range tests {
 		got := shouldSkipForPP(tt.stage, tt.pp)
