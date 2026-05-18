@@ -142,6 +142,15 @@ func ExtractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.F
 		return fmt.Errorf("go_unrar: mkdir %s: %w", filepath.Dir(destPath), err)
 	}
 
+	// Handle overwrite policy.
+	if !opts.OverwriteFiles {
+		if _, statErr := os.Stat(destPath); statErr == nil {
+			log.Info("go_unrar: skipping existing file", "path", destPath)
+			_, _ = io.Copy(io.Discard, r) // drain the entry to advance the reader
+			return nil
+		}
+	}
+
 	// Write file.
 	out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
