@@ -50,8 +50,7 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 	}
 	defer r.Close()
 
-	log.Info("go_7z: starting extraction",
-		"archive", archive.MainFile,
+	log.Info("starting extraction",
 		"outDir", outDir,
 		"files", len(r.File),
 	)
@@ -95,7 +94,7 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 			continue
 		}
 
-		if err := extractSevenZipFile(ctx, outDir, destPath, f, opts, log); err != nil {
+		if err := extractSevenZipFile(ctx, destPath, f, opts, log); err != nil {
 			res.Reason = classifySevenZipError(err)
 			return res, err
 		}
@@ -113,9 +112,8 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 	res.ExtractedFiles = diffSnapshot(before, after)
 	res.CommandLine = fmt.Sprintf("go_7z %s -> %s", archive.MainFile, outDir)
 
-	log.Info("go_7z: extraction complete",
-		"extracted", len(res.ExtractedFiles),
-		"archive", archive.MainFile)
+	log.Info("extraction complete",
+		"extracted", len(res.ExtractedFiles))
 
 	return res, nil
 }
@@ -123,7 +121,7 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 // extractSevenZipFile extracts a single file from the archive to disk.
 // The file's reader is opened and closed within this function to enable
 // the library's stream reuse optimisation for solid archives.
-func extractSevenZipFile(ctx context.Context, outDir, destPath string, f *sevenzip.File, opts Options, log *slog.Logger) error {
+func extractSevenZipFile(ctx context.Context, destPath string, f *sevenzip.File, opts Options, log *slog.Logger) error {
 	// Create parent directories.
 	if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
 		return fmt.Errorf("go_7z: mkdir %s: %w", filepath.Dir(destPath), err)
@@ -170,7 +168,9 @@ func extractSevenZipFile(ctx context.Context, outDir, destPath string, f *sevenz
 		_ = os.Chmod(destPath, mode)
 	}
 
-	// Modification time: preserve from archive.
+	// Modification time: preserve from archive unless config says ignore.
+	// Note: field is named IgnoreUnrarDates for historical reasons but
+	// applies to all archive types.
 	if !opts.IgnoreUnrarDates && !f.Modified.IsZero() {
 		_ = os.Chtimes(destPath, f.Modified, f.Modified)
 	}
