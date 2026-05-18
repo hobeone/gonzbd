@@ -99,8 +99,13 @@ func withPasswords(
 		attempt.Password = pw
 		res, err := extract(ctx, log, archive, outDir, attempt)
 
-		// System-level error (binary not found, context cancelled).
-		if err != nil && res.ExitCode == 0 {
+		// System-level error: binary not found, context cancelled, etc.
+		// For subprocess extractors, ExitCode==0 with an error means the
+		// process failed to start (not an extraction failure). For Go-native
+		// extractors, ExitCode is always 0, so we must also check res.Reason:
+		// if the extractor already classified the error (e.g. FailWrongPassword,
+		// FailCorrupt), it's an extraction failure, not a system error.
+		if err != nil && res.ExitCode == 0 && res.Reason == FailUnknown {
 			return res, err
 		}
 
