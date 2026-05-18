@@ -354,7 +354,7 @@ func (d *Downloader) Start(ctx context.Context) error {
 				d.connWorker(d.ctx, srv, i, wid)
 			})
 		}
-		d.log.Debug("server workers started", "server", srv.Cfg().Name, "workers", conns)
+		d.log.Info("creating connections", "server", srv.Cfg().Name, "host", srv.Cfg().Host, "connections", conns)
 		totalWorkers += conns
 	}
 
