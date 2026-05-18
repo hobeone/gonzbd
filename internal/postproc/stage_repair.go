@@ -15,8 +15,6 @@ import (
 type RepairStage struct {
 	// Par2Opts configures the par2 binary path and turbo mode.
 	Par2Opts par2.RunOptions
-	// Cleanup deletes all .par2 files after a successful repair.
-	Cleanup bool
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
@@ -25,8 +23,8 @@ type RepairStage struct {
 func NewRepairStage() *RepairStage { return &RepairStage{} }
 
 // NewRepairStageWith constructs a RepairStage with the given options.
-func NewRepairStageWith(par2Opts par2.RunOptions, cleanup bool) *RepairStage {
-	return &RepairStage{Par2Opts: par2Opts, Cleanup: cleanup}
+func NewRepairStageWith(par2Opts par2.RunOptions) *RepairStage {
+	return &RepairStage{Par2Opts: par2Opts}
 }
 
 // Name returns the stage identifier.
@@ -45,12 +43,12 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 
 	// If QuickCheck already confirmed all files have matching CRCs, skip
 	// the expensive par2 verify+repair subprocess. This saves 10-30s per
-	// healthy job. Par2 cleanup still runs below (matching SABnzbd).
+	// healthy job. Par2 cleanup is handled by the separate par2_cleanup
+	// stage that runs after unpack.
 	if job.QuickCheckPassed {
 		logf(log, job, slog.LevelInfo, "QuickCheck verified all CRCs — skipping par2 repair")
 		job.OutputLines = append(job.OutputLines,
 			"[repair] Skipped: QuickCheck already verified all file CRCs")
-		s.cleanupPar2Files(job, log)
 		return nil
 	}
 
@@ -64,12 +62,10 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	if vs.AllVerified() {
 		logf(log, job, slog.LevelInfo, "All par2 sets previously verified, skipping repair")
 		job.OutputLines = append(job.OutputLines, "[repair] All sets previously verified — skipping")
-		s.cleanupPar2Files(job, log)
 		return nil
 	}
 
 	var firstErr error
-	repairSucceeded := true
 	if len(sets) > 0 {
 		logf(log, job, slog.LevelInfo, "Found %d par2 set(s)", len(sets))
 
@@ -121,7 +117,6 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 			}
 			if err != nil {
 				job.ParError = true
-				repairSucceeded = false
 				vs.MarkVerified(set.Name, false)
 				logf(log, job, slog.LevelWarn, "Error: par2 repair %q failed: %v", set.Name, err)
 				if firstErr == nil {
@@ -159,7 +154,6 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				}
 
 				job.ParError = true
-				repairSucceeded = false
 				vs.MarkVerified(set.Name, false)
 				logf(log, job, slog.LevelWarn, "Error: par2 repair %q unsuccessful (exit=%d)", set.Name, res.ExitCode)
 				if firstErr == nil {
@@ -215,53 +209,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		logf(log, job, slog.LevelInfo, "No par2 files found")
 	}
 
-	// Par2 cleanup: delete par2 files after successful repair.
-	if repairSucceeded {
-		s.cleanupPar2Files(job, log)
-	} else if s.Cleanup {
-		logf(log, job, slog.LevelInfo, "Keeping par2 files (repair failed)")
-	}
-
 	return firstErr
-}
-
-// cleanupPar2Files deletes all par2 files and par2 backup files from the
-// job's download directory. Called after any successful verification path:
-// QuickCheck, AllVerified, or a full par2 repair. This matches SABnzbd's
-// enable_par_cleanup behavior which runs cleanup regardless of whether
-// repair was skipped (quickcheck) or performed.
-func (s *RepairStage) cleanupPar2Files(job *Job, log *slog.Logger) {
-	if !s.Cleanup {
-		return
-	}
-
-	cleanupSets, err := par2.FindPar2Files(job.DownloadDir)
-	if err == nil {
-		var cleaned int
-		for _, set := range cleanupSets {
-			if set.MainFile != "" {
-				_ = os.Remove(set.MainFile)
-				cleaned++
-			}
-			for _, ef := range set.ExtraFiles {
-				_ = os.Remove(ef)
-				cleaned++
-			}
-		}
-		if cleaned > 0 {
-			logf(log, job, slog.LevelInfo, "Cleaned up %d par2 file(s)", cleaned)
-		}
-	}
-
-	// Par2 repair creates backup copies of damaged files by appending
-	// ".1", ".2" etc. (e.g. "movie.part01.rar" → "movie.part01.rar.1").
-	// These orphaned backups confuse later stages (deobfuscate sees
-	// RAR magic bytes in a ".1" file and incorrectly appends ".rar").
-	// Clean them up after successful repair.
-	backups := cleanupPar2Backups(job.DownloadDir, log)
-	if backups > 0 {
-		logf(log, job, slog.LevelInfo, "Cleaned up %d par2 backup file(s)", backups)
-	}
 }
 
 // par2BackupRe matches files that par2 creates as backups during repair:
