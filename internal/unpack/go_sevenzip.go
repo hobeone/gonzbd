@@ -70,6 +70,13 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 
 		destPath := filepath.Join(outDir, destRel)
 
+		// In OneFolder mode, different archive paths can flatten to the
+		// same basename. Auto-rename to avoid silent overwrites, matching
+		// 7z's -aou behavior. Skip when OverwriteFiles is true.
+		if opts.OneFolder && !opts.OverwriteFiles {
+			destPath = uniquePath(destPath)
+		}
+
 		if f.FileInfo().IsDir() {
 			if err := os.MkdirAll(destPath, 0750); err != nil {
 				return res, fmt.Errorf("go_7z: mkdir %s: %w", destPath, err)
