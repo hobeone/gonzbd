@@ -21,6 +21,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -198,6 +199,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		"commit", Commit,
 		"built", Date,
 		"go", runtime.Version(),
+		"rardecode", depVersion("github.com/nwaples/rardecode/v2"),
 	)
 
 	// Single-instance lock prevents two daemons from corrupting the same
@@ -906,6 +908,26 @@ func enabledServers(all []config.ServerConfig) []config.ServerConfig {
 		}
 	}
 	return out
+}
+
+// depVersion returns the version of a Go module dependency as embedded in the
+// binary by the linker. When the module is replaced (e.g. via a go.mod replace
+// directive pointing at a fork), the replacement module's version is returned.
+// Returns "(unknown)" if build info is unavailable or the module is not found.
+func depVersion(modulePath string) string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "(unknown)"
+	}
+	for _, dep := range bi.Deps {
+		if dep.Path == modulePath {
+			if dep.Replace != nil {
+				return dep.Replace.Version
+			}
+			return dep.Version
+		}
+	}
+	return "(unknown)"
 }
 
 type wsAdapter struct {
