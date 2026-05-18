@@ -910,23 +910,20 @@ func enabledServers(all []config.ServerConfig) []config.ServerConfig {
 	return out
 }
 
-// logBuildDeps logs all Go module dependencies linked into the binary.
-// Replace directives are resolved so the effective (fork) version is shown.
+// logBuildDeps logs each Go module dependency linked into the binary at Debug
+// level. Replace directives are resolved so the effective (fork) version is shown.
 func logBuildDeps(log *slog.Logger) {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
 		return
 	}
-	attrs := make([]slog.Attr, 0, len(bi.Deps))
 	for _, dep := range bi.Deps {
 		ver := dep.Version
 		if dep.Replace != nil {
 			ver = dep.Replace.Version
 		}
-		attrs = append(attrs, slog.String(dep.Path, ver))
+		log.Debug("dependency", "module", dep.Path, "version", ver)
 	}
-	log.LogAttrs(context.Background(), slog.LevelInfo, "dependencies",
-		slog.Any("modules", slog.GroupValue(attrs...)))
 }
 
 type wsAdapter struct {
