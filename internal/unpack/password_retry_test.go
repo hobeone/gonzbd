@@ -3,6 +3,7 @@ package unpack
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -85,5 +86,45 @@ func TestGoSevenZipWithPasswords_SystemErrorStillEarlyReturns(t *testing.T) {
 	// Should be context error, NOT ErrWrongPassword.
 	if err == ErrWrongPassword {
 		t.Fatal("GoSevenZipWithPasswords: got ErrWrongPassword, expected context error")
+	}
+}
+
+// TestGoSevenZipWithPasswords_CleanupPartialFiles verifies that partial
+// files from failed password attempts are removed before retrying with
+// the next password (S2 fix). Without cleanup, OverwriteFiles=false
+// would skip corrupt partials on the correct password attempt.
+func TestGoSevenZipWithPasswords_CleanupPartialFiles(t *testing.T) {
+	td := sevenZipTestdata(t)
+	outDir := t.TempDir()
+	archive := Archive{
+		Type:     SevenZipArchive,
+		MainFile: filepath.Join(td, "aes7z.7z"),
+	}
+
+	// Use OverwriteFiles=false (the default) which exposes the bug:
+	// without cleanup, partial files from wrong passwords survive and
+	// get skipped by the correct password attempt.
+	opts := Options{
+		Passwords:      []string{"wrong1", "password"},
+		OverwriteFiles: false,
+	}
+
+	res, err := GoSevenZipWithPasswords(context.Background(), slog.Default(), archive, outDir, opts)
+	if err != nil {
+		t.Fatalf("expected success, got error: %v (reason: %v)", err, res.Reason)
+	}
+
+	// Verify all extracted files have non-zero size (i.e. they contain
+	// real data from the correct password, not garbage from the wrong one).
+	for _, rel := range res.ExtractedFiles {
+		full := filepath.Join(outDir, rel)
+		info, err := os.Stat(full)
+		if err != nil {
+			t.Errorf("extracted file %s not found: %v", rel, err)
+			continue
+		}
+		if info.Size() == 0 {
+			t.Errorf("extracted file %s is empty (possible corrupt partial from wrong password)", rel)
+		}
 	}
 }
