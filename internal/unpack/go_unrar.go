@@ -65,8 +65,11 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 
 		destRel, sanitizeErr := SanitizeArchivePath(hdr.Name, opts.OneFolder)
 		if sanitizeErr != nil {
-			log.Warn("go_unrar: skipping entry with bad path",
+			log.Warn("skipping entry with bad path",
 				"raw_name", hdr.Name, "err", sanitizeErr)
+			if opts.OnLine != nil {
+				opts.OnLine("Skipping bad path: " + hdr.Name)
+			}
 			// Drain the reader for this entry to advance to the next.
 			_, _ = io.Copy(io.Discard, r)
 			continue
@@ -161,7 +164,10 @@ func ExtractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.F
 	// Handle overwrite policy.
 	if !opts.OverwriteFiles {
 		if _, statErr := os.Stat(destPath); statErr == nil {
-			log.Info("go_unrar: skipping existing file", "path", destPath)
+			log.Info("skipping existing file", "path", destPath)
+			if opts.OnLine != nil {
+				opts.OnLine("Skipping existing: " + hdr.Name)
+			}
 			_, _ = io.Copy(io.Discard, r) // drain the entry to advance the reader
 			return nil
 		}
