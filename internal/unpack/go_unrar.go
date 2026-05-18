@@ -75,6 +75,13 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 
 		destPath := filepath.Join(outDir, destRel)
 
+		// In OneFolder mode, different archive paths can flatten to the
+		// same basename. Auto-rename to avoid silent overwrites, matching
+		// unrar's -or behavior. Skip when OverwriteFiles is true.
+		if opts.OneFolder && !opts.OverwriteFiles {
+			destPath = uniquePath(destPath)
+		}
+
 		if err := ExtractEntry(ctx, outDir, destPath, hdr, r, opts, log); err != nil {
 			res.Reason = ClassifyRarDecodeError(err)
 			return res, err
