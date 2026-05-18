@@ -163,6 +163,9 @@ func extractSevenZipFile(ctx context.Context, destPath string, f *sevenzip.File,
 	}
 
 	// Permissions: strip executable bits from untrusted archives.
+	// Only keep rw bits (mode & 0666). If the archive entry has an
+	// unusual execute-only mode (0111), the mask produces 0 and the
+	// Chmod is skipped — the file keeps the safer 0600 from OpenFile.
 	mode := f.Mode() & 0666
 	if mode != 0 {
 		_ = os.Chmod(destPath, mode)
