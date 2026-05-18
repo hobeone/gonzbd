@@ -8,11 +8,15 @@ is not a drop-in replacement for an existing Python SABnzbd install.
 
 - **Full download pipeline** — NZB parsing, NNTP article fetching with
   multi-server failover, yEnc decoding, and file assembly.
-- **Post-processing** — par2 verify/repair, RAR/7z extraction, file
-  deobfuscation, sorting rules, and user scripts.
+- **Post-processing** — par2 verify/repair, pure-Go RAR extraction (no
+  external binary required), 7z/zip extraction, DirectUnpack (streaming
+  RAR extraction during download), file deobfuscation, sorting rules, and
+  user scripts.
 - **Web UI** — Svelte 5 SPA (TypeScript, Tailwind CSS, shadcn-svelte)
   embedded in the binary. Queue, History, Warnings tabs with real-time
-  WebSocket updates, speed display, bandwidth limiting, and settings editor.
+  WebSocket push (no polling), speed display, bandwidth limiting, settings
+  editor, three-way theme toggle (light/dark/system), and a connection-loss
+  overlay with auto-reconnect.
 - **Legacy API** — Full `/api?mode=...` dispatch compatible with tools like
   Sonarr, Radarr, and NZB360.
 - **RSS feeds** — Configurable feed polling with regex filters.
@@ -20,7 +24,8 @@ is not a drop-in replacement for an existing Python SABnzbd install.
 - **HTTPS** — Optional TLS listener with auto-generated self-signed certs.
 - **Single binary** — The UI is embedded via `//go:embed`; no external
   assets or runtime dependencies beyond optional `par2` and `7z`.
-- **Pure Go** — No CGO dependencies. SQLite via `modernc.org/sqlite`.
+- **Pure Go** — No CGO dependencies. RAR decoding via `nwaples/rardecode`.
+  SQLite via `modernc.org/sqlite`.
 
 ## Requirements
 
@@ -28,13 +33,17 @@ is not a drop-in replacement for an existing Python SABnzbd install.
 - Node.js 18+ (build-time only, for the Svelte UI).
 - Optional at runtime:
   - `par2` — parity verify and repair.
-  - `7z` or `7zz` — archive extraction (7z, zip, RAR, and more).
-  - `unrar` — preferred for RAR extraction if available; otherwise
-    7zip handles RAR natively as a fallback.
+  - `7z`, `7zz`, `7zzs`, or `7za` — 7-Zip for non-RAR archive extraction
+    (zip, 7z, etc.). GoNZBD probes these names in order; override with
+    `GONZBD_SEVENZIP_BIN` or `postproc.sevenz_command` in config.
+  - `unrar` — only needed if you set `postproc.use_go_rar: false`.
+    GoNZBD defaults to pure-Go RAR extraction (`use_go_rar: true`) which
+    requires no external binary. Disable the Go extractor to fall back to
+    the `unrar` command-line tool.
 
-  If these binaries are not on `PATH`, the corresponding post-processing
-  steps are skipped with a logged warning. The core download pipeline
-  does not require them.
+  If a required binary is not on `PATH` and no override is configured, the
+  corresponding post-processing step is skipped with a logged warning. The
+  core download pipeline does not require any of these.
 
 - For the quality gates (optional for end users, required for contributors):
   [`golangci-lint`](https://golangci-lint.run/) v2.0+.
@@ -59,8 +68,9 @@ go build -ldflags "-X main.Version=$(git describe --tags --always --dirty)" ./cm
 
 Docker is the recommended way to run GoNZBD. The image is based on
 Alpine Linux and includes all post-processing dependencies (`par2`,
-`7z`). Install `unrar` on the host if you prefer it over 7zip for
-RAR extraction.
+`7z`). RAR extraction uses the built-in pure-Go decoder by default;
+no `unrar` binary is needed unless you explicitly set
+`postproc.use_go_rar: false` in your config.
 
 ### Quick start with Docker Compose
 
@@ -243,6 +253,9 @@ postproc:
   enable_unrar: true
   enable_7zip: true
   enable_par_cleanup: true  # delete .par2 files after successful repair
+  use_go_rar: true          # pure-Go RAR extraction — no unrar binary required
+  direct_unpack: false      # stream-extract RAR volumes while downloading
+  direct_unpack_threads: 3  # max concurrent DirectUnpack workers
 
 categories:
   - name: Default
