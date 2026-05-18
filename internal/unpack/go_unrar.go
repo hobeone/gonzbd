@@ -209,9 +209,14 @@ func SanitizeArchivePath(name string, oneFolder bool) (string, error) {
 		// Clean and strip leading traversal components.
 		name = path.Clean(name)
 		name = strings.TrimPrefix(name, "/")
-		// Reject any remaining ../ after clean.
-		if strings.HasPrefix(name, "..") {
-			return "", fmt.Errorf("archive path escapes output directory: %q", name)
+		// Reject any remaining ".." path component after cleaning.
+		// path.Clean resolves internal ".." (a/../b → b), so ".." can
+		// only survive at the start after cleaning. This broader check
+		// is defense-in-depth against exotic path encodings.
+		for _, component := range strings.Split(name, "/") {
+			if component == ".." {
+				return "", fmt.Errorf("archive path escapes output directory: %q", name)
+			}
 		}
 	}
 
