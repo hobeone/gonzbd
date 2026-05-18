@@ -78,9 +78,14 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 			continue
 		}
 
-		// Skip symlinks — untrusted symlink targets can escape outDir.
+		// Skip non-regular files: symlinks can escape outDir via relative
+		// targets; device/pipe/socket entries are meaningless from archives.
 		if f.Mode()&fs.ModeSymlink != 0 {
 			log.Warn("go_7z: skipping symlink entry", "name", f.Name)
+			continue
+		}
+		if !f.FileInfo().Mode().IsRegular() {
+			log.Warn("go_7z: skipping non-regular entry", "name", f.Name, "mode", f.Mode())
 			continue
 		}
 
