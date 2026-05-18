@@ -53,14 +53,12 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, error) {
 		ppLog.Info("Detected par2 binary", "version", par2Caps.Version)
 	}
 
-	// Detect unrar binary version and authenticity.
+	// Detect unrar binary version.
 	unrarInfo := unpack.DetectUnrar(context.Background(), cfg.UnrarCommand)
 	if unrarInfo.Available {
-		ppLog.Info("Detected unrar binary",
-			"version", unrarInfo.VersionStr,
-			"original", unrarInfo.Original)
+		ppLog.Info("Detected unrar binary", "version", unrarInfo.VersionStr)
 		if unrarInfo.HasProblem {
-			ppLog.Warn("unrar binary may have issues: non-original or version < 5.50")
+			ppLog.Warn("unrar binary version < 5.50; some flags will be disabled")
 		}
 	} else {
 		ppLog.Warn("unrar binary not found; RAR extraction will not be available")
