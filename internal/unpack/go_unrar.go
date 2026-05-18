@@ -137,12 +137,18 @@ func ExtractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.F
 	// Skip non-regular files: symlinks can escape outDir via relative
 	// targets; device/pipe/socket entries are meaningless from archives.
 	if hdr.Mode()&fs.ModeSymlink != 0 {
-		log.Warn("go_unrar: skipping symlink entry", "name", hdr.Name)
+		log.Warn("skipping symlink entry", "name", hdr.Name)
+		if opts.OnLine != nil {
+			opts.OnLine("Skipping symlink: " + hdr.Name)
+		}
 		_, _ = io.Copy(io.Discard, r)
 		return nil
 	}
 	if !hdr.Mode().IsRegular() && !hdr.IsDir {
-		log.Warn("go_unrar: skipping non-regular entry", "name", hdr.Name, "mode", hdr.Mode())
+		log.Warn("skipping non-regular entry", "name", hdr.Name, "mode", hdr.Mode())
+		if opts.OnLine != nil {
+			opts.OnLine("Skipping non-regular entry: " + hdr.Name)
+		}
 		_, _ = io.Copy(io.Discard, r)
 		return nil
 	}
