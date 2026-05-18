@@ -35,6 +35,33 @@ type SevenzInfo struct {
 
 var unrarVersionRE = regexp.MustCompile(`(?i)UNRAR\s+(\d+)\.(\d+)`)
 
+// parseUnrarOutput extracts version and authenticity from unrar's stdout/stderr.
+func parseUnrarOutput(output string) UnrarInfo {
+	info := UnrarInfo{Available: true}
+
+	// Check for original unrar (RARLAB / Alexander Roshal).
+	// Older versions used "Alexander L. Roshal"; v7.x dropped the middle initial.
+	// Matching on just the surname is the minimal unique marker for RARLAB's binary.
+	if strings.Contains(output, "Roshal") {
+		info.Original = true
+	}
+
+	// Parse version: "UNRAR 5.50 freeware" or "UNRAR 7.21 freeware"
+	if m := unrarVersionRE.FindStringSubmatch(output); len(m) == 3 {
+		major, _ := strconv.Atoi(m[1])
+		minor, _ := strconv.Atoi(m[2])
+		info.Version = major*100 + minor
+		info.VersionStr = m[1] + "." + m[2]
+	}
+
+	// Flag problems: non-original or version < 5.50.
+	if !info.Original || info.Version < 550 {
+		info.HasProblem = true
+	}
+
+	return info
+}
+
 // DetectUnrar probes the unrar binary to determine version and authenticity.
 // Returns zero-value UnrarInfo if the binary is not available.
 func DetectUnrar(ctx context.Context, bin string) UnrarInfo {
@@ -50,29 +77,8 @@ func DetectUnrar(ctx context.Context, bin string) UnrarInfo {
 		// Binary not found or can't execute.
 		return UnrarInfo{}
 	}
-	output := string(out)
 
-	info := UnrarInfo{Available: true}
-
-	// Check for original unrar (Alexander L. Roshal).
-	if strings.Contains(output, "Alexander L. Roshal") {
-		info.Original = true
-	}
-
-	// Parse version: "UNRAR 5.50 freeware" or "UNRAR 7.10 x64"
-	if m := unrarVersionRE.FindStringSubmatch(output); len(m) == 3 {
-		major, _ := strconv.Atoi(m[1])
-		minor, _ := strconv.Atoi(m[2])
-		info.Version = major*100 + minor
-		info.VersionStr = m[1] + "." + m[2]
-	}
-
-	// Flag problems: non-original or version < 5.50.
-	if !info.Original || info.Version < 550 {
-		info.HasProblem = true
-	}
-
-	return info
+	return parseUnrarOutput(string(out))
 }
 
 var sevenzVersionRE = regexp.MustCompile(`(?i)7-Zip\s.*?(\d+\.\d+)`)
