@@ -180,6 +180,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			case unpack.RarArchive:
 				// Dispatch order:
 				// 1. use_go_rar → use GoUnRAR (pure-Go, no external binary)
+				//    → on failure, fall back to unrar subprocess if available
 				// 2. unrar available → use unrar subprocess
 				// 3. unrar not found → fall back to GoUnRAR
 				useGoRAR := opts.UseGoRAR
@@ -205,6 +206,35 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 						}
 					}
 					res, err = unpack.GoUnRARWithPasswords(ctx, log, a, job.DownloadDir, goOpts)
+
+					// Fallback: if Go-native extraction failed and the
+					// external unrar binary is available, retry with it.
+					// The Go rardecode library doesn't support all RAR
+					// features (some RAR5 encryption, RAR2, etc.).
+					if goErr := cmp.Or(err, res.Err); goErr != nil {
+						unrarBin := opts.UnrarCommand
+						if unrarBin == "" {
+							unrarBin = "unrar"
+						}
+						if _, lookErr := exec.LookPath(unrarBin); lookErr == nil {
+							logf(log, job, slog.LevelWarn,
+								"go_unrar failed (%v), retrying with external %s", goErr, unrarBin)
+							if job.OnOutput != nil {
+								job.OnOutput("go_unrar",
+									fmt.Sprintf("Go-native extraction failed: %v — retrying with %s", goErr, unrarBin))
+							}
+							unrarOpts := opts
+							unrarOpts.OnLine = func(line string) {
+								if job.OnOutput != nil {
+									job.OnOutput("unrar", line)
+								}
+							}
+							unrarOpts.OnCommand = func(cmdLine string) {
+								logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+							}
+							res, err = unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
+						}
+					}
 				} else {
 					unrarOpts := opts
 					unrarOpts.OnLine = func(line string) {
@@ -218,6 +248,11 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 					res, err = unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
 				}
 			case unpack.SevenZipArchive:
+				// Dispatch order:
+				// 1. use_go_7z → use GoSevenZip (pure-Go, no external binary)
+				//    → on failure, fall back to 7z subprocess if available
+				// 2. 7z available → use 7z subprocess
+				// 3. 7z not found → fall back to GoSevenZip
 				useGo7z := opts.UseGo7z
 
 				if !useGo7z {
@@ -244,6 +279,31 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 						}
 					}
 					res, err = unpack.GoSevenZipWithPasswords(ctx, log, a, job.DownloadDir, goOpts)
+
+					// Fallback: if Go-native extraction failed and the
+					// external 7z binary is available, retry with it.
+					if goErr := cmp.Or(err, res.Err); goErr != nil {
+						szBin := find7zBin(opts.SevenZipCommand)
+						if szBin != "" {
+							logf(log, job, slog.LevelWarn,
+								"go_7z failed (%v), retrying with external %s", goErr, szBin)
+							if job.OnOutput != nil {
+								job.OnOutput("go_7z",
+									fmt.Sprintf("Go-native extraction failed: %v — retrying with %s", goErr, szBin))
+							}
+							szOpts := opts
+							szOpts.SevenZipCommand = szBin
+							szOpts.OnLine = func(line string) {
+								if job.OnOutput != nil {
+									job.OnOutput("7z", line)
+								}
+							}
+							szOpts.OnCommand = func(cmdLine string) {
+								logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+							}
+							res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
+						}
+					}
 				} else {
 					szOpts := opts
 					szOpts.OnLine = func(line string) {
@@ -426,6 +486,23 @@ func archiveTypePriority(t unpack.ArchiveType) int {
 	default:
 		return 3
 	}
+}
+
+// find7zBin returns the path to an available 7z binary, checking the
+// configured name first, then "7zz", then "7z". Returns "" if none found.
+func find7zBin(configured string) string {
+	if configured != "" {
+		if _, err := exec.LookPath(configured); err == nil {
+			return configured
+		}
+	}
+	if _, err := exec.LookPath("7zz"); err == nil {
+		return "7zz"
+	}
+	if _, err := exec.LookPath("7z"); err == nil {
+		return "7z"
+	}
+	return ""
 }
 
 // CleanupStage removes temporary admin data from the download directory after
