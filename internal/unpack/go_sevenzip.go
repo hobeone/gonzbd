@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -117,7 +116,7 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 // extractSevenZipFile extracts a single file from the archive to disk.
 // The file's reader is opened and closed within this function to enable
 // the library's stream reuse optimisation for solid archives.
-func extractSevenZipFile(_ context.Context, outDir, destPath string, f *sevenzip.File, opts Options, log *slog.Logger) error {
+func extractSevenZipFile(ctx context.Context, outDir, destPath string, f *sevenzip.File, opts Options, log *slog.Logger) error {
 	// Create parent directories.
 	if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
 		return fmt.Errorf("go_7z: mkdir %s: %w", filepath.Dir(destPath), err)
@@ -146,7 +145,7 @@ func extractSevenZipFile(_ context.Context, outDir, destPath string, f *sevenzip
 	}
 	defer out.Close()
 
-	if _, err := io.Copy(out, rc); err != nil {
+	if _, err := contextCopy(ctx, out, rc); err != nil {
 		var errno syscall.Errno
 		if errors.As(err, &errno) && errno == syscall.ENOSPC {
 			return fmt.Errorf("go_7z: disk full writing %s: %w", destPath, err)
