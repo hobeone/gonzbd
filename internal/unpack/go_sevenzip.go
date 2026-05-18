@@ -62,8 +62,11 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 
 		destRel, sanitizeErr := SanitizeArchivePath(f.Name, opts.OneFolder)
 		if sanitizeErr != nil {
-			log.Warn("go_7z: skipping entry with bad path",
+			log.Warn("skipping entry with bad path",
 				"raw_name", f.Name, "err", sanitizeErr)
+			if opts.OnLine != nil {
+				opts.OnLine("Skipping bad path: " + f.Name)
+			}
 			continue
 		}
 
@@ -145,7 +148,10 @@ func extractSevenZipFile(ctx context.Context, destPath string, f *sevenzip.File,
 	if !opts.OverwriteFiles {
 		// Check if file already exists.
 		if _, statErr := os.Stat(destPath); statErr == nil {
-			log.Info("go_7z: skipping existing file", "path", destPath)
+			log.Info("skipping existing file", "path", destPath)
+			if opts.OnLine != nil {
+				opts.OnLine("Skipping existing: " + f.Name)
+			}
 			return nil
 		}
 	}
