@@ -308,7 +308,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 	name := srv.Cfg().Name
 	workCh := d.workCh[name]
 
-	d.log.Info("Creating server connection", "server", srv.Cfg().Host)
+	d.log.Debug("connection worker started", "server", srv.Cfg().Name, "worker", workerID)
 
 	pipelineDepth := max(srv.Cfg().PipeliningRequests, 1)
 	// Bound outstanding goroutines per connection to prevent one fast
@@ -580,7 +580,7 @@ func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, worke
 		return nil, errServerPenalized
 	}
 
-	d.log.Info("dialing server", "server", name, "host", srv.Cfg().Host)
+	d.log.Debug("dialing", "server", name, "host", srv.Cfg().Host)
 	dialOpts := []nntp.DialOption{
 		nntp.WithLimiter(d.limiter),
 		nntp.WithLogger(d.log),
@@ -594,7 +594,7 @@ func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, worke
 		return nil, err
 	}
 
-	d.log.Info("connected", "server", name, "ssl", c.SSLInfo())
+	d.log.Debug("connected", "server", name, "ssl", c.SSLInfo())
 	m.conn = c
 	d.setConnConnected(workerID, true)
 	return c, nil
