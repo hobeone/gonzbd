@@ -110,13 +110,12 @@ func TestRepairStage_SkippedWhenQuickCheckPassed(t *testing.T) {
 	}
 }
 
-// Regression test: par2 files must be deleted even when QuickCheck passes
-// and repair is skipped. Previously, the cleanup code only ran after a full
-// par2 repair, leaving par2 volumes in the final output.
-func TestRepairStage_CleanupRunsOnQuickCheckPath(t *testing.T) {
+// Regression test: par2 files must be deleted by the par2_cleanup stage
+// after unpack succeeds. Previously cleanup happened inside RepairStage
+// before unpack even ran.
+func TestPar2CleanupStage_RunsAfterSuccessfulUnpack(t *testing.T) {
 	t.Parallel()
 	job, dir := stageJob(t)
-	job.QuickCheckPassed = true
 
 	// Create data + par2 files.
 	os.WriteFile(filepath.Join(dir, "movie.mkv"), []byte("video"), 0o644)
@@ -124,8 +123,8 @@ func TestRepairStage_CleanupRunsOnQuickCheckPath(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "movie.vol00+1.par2"), []byte("par2 vol"), 0o644)
 	os.WriteFile(filepath.Join(dir, "movie.vol01+2.par2"), []byte("par2 vol"), 0o644)
 
-	// Cleanup=true matches the "enable_par_cleanup" config option.
-	stage := NewRepairStageWith(par2.RunOptions{}, true)
+	// Simulate: repair succeeded, unpack succeeded (defaults).
+	stage := NewPar2CleanupStage(true)
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -141,6 +140,64 @@ func TestRepairStage_CleanupRunsOnQuickCheckPath(t *testing.T) {
 		if strings.HasSuffix(strings.ToLower(e.Name()), ".par2") {
 			t.Errorf("par2 file %q should have been cleaned up", e.Name())
 		}
+	}
+}
+
+// Par2 cleanup must be skipped when unpack failed.
+func TestPar2CleanupStage_SkippedOnUnpackError(t *testing.T) {
+	t.Parallel()
+	job, dir := stageJob(t)
+	job.UnpackError = true
+
+	par2File := filepath.Join(dir, "movie.par2")
+	os.WriteFile(par2File, []byte("par2"), 0o644)
+
+	stage := NewPar2CleanupStage(true)
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Par2 file should survive because unpack failed.
+	if _, err := os.Stat(par2File); err != nil {
+		t.Error("par2 file should be preserved when unpack fails")
+	}
+}
+
+// Par2 cleanup must be skipped when repair failed.
+func TestPar2CleanupStage_SkippedOnParError(t *testing.T) {
+	t.Parallel()
+	job, dir := stageJob(t)
+	job.ParError = true
+
+	par2File := filepath.Join(dir, "movie.par2")
+	os.WriteFile(par2File, []byte("par2"), 0o644)
+
+	stage := NewPar2CleanupStage(true)
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Par2 file should survive because repair failed.
+	if _, err := os.Stat(par2File); err != nil {
+		t.Error("par2 file should be preserved when repair fails")
+	}
+}
+
+// Par2 cleanup is a no-op when Cleanup=false.
+func TestPar2CleanupStage_DisabledByConfig(t *testing.T) {
+	t.Parallel()
+	job, dir := stageJob(t)
+
+	par2File := filepath.Join(dir, "movie.par2")
+	os.WriteFile(par2File, []byte("par2"), 0o644)
+
+	stage := NewPar2CleanupStage(false) // cleanup disabled
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if _, err := os.Stat(par2File); err != nil {
+		t.Error("par2 file should be preserved when cleanup is disabled")
 	}
 }
 
@@ -166,15 +223,12 @@ func TestScriptStage_ScriptCanFail(t *testing.T) {
 	}
 }
 
-// TestRepairStage_CleanupWithRealNames verifies that par2 files are cleaned up
-// when files arrive with their real names (extracted from NZB subjects by the
-// pipeline). Par2 repair is skipped (binary doesn't exist) but cleanup should
-// still find and remove par2 files.
-func TestRepairStage_CleanupWithRealNames(t *testing.T) {
+// TestRepairStage_NoCleanupInRepair verifies that the repair stage itself
+// no longer deletes par2 files — that's now Par2CleanupStage's job.
+func TestRepairStage_NoCleanupInRepair(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	// Files arrive with real names (as the pipeline now does).
 	os.WriteFile(filepath.Join(dir, "movie.mkv"), []byte("video data"), 0o644)
 	os.WriteFile(filepath.Join(dir, "movie.par2"), []byte("par2 main"), 0o644)
 	os.WriteFile(filepath.Join(dir, "movie.vol000+01.par2"), []byte("par2 vol"), 0o644)
@@ -187,31 +241,15 @@ func TestRepairStage_CleanupWithRealNames(t *testing.T) {
 		DownloadDir: dir,
 	}
 
-	// Run with cleanup enabled. par2 binary doesn't exist so repair
-	// fails, but cleanup should still run since the failure is at the
-	// tool level — we test that FindPar2Files correctly identifies
-	// the par2 files by extension.
-	//
-	// Note: With a non-existent par2 binary, repairSucceeded stays false
-	// so cleanup won't run. We test the no-error path instead: when
-	// there are par2 files but repair succeeds (simulated by no actual
-	// repair needed), cleanup should delete them.
-	//
-	// For this test we verify par2 files are *found* by checking
-	// the stage ran without error and the data file survives.
-	stage := NewRepairStageWith(par2.RunOptions{Command: "/nonexistent/par2"}, true)
-	// The stage returns an error because par2 binary doesn't exist,
-	// but it should not panic or corrupt state.
+	stage := NewRepairStageWith(par2.RunOptions{Command: "/nonexistent/par2"})
 	_ = stage.Run(t.Context(), job)
 
-	// The data file should still exist regardless.
+	// Par2 files should still exist — repair stage no longer deletes them.
+	if _, err := os.Stat(filepath.Join(dir, "movie.par2")); err != nil {
+		t.Error("movie.par2 should survive repair stage (cleanup moved to par2_cleanup)")
+	}
 	if _, err := os.Stat(filepath.Join(dir, "movie.mkv")); err != nil {
-		entries, _ := os.ReadDir(dir)
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		t.Errorf("movie.mkv should exist; files in dir: %v", names)
+		t.Error("movie.mkv should still exist")
 	}
 }
 
