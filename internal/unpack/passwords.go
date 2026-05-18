@@ -3,6 +3,7 @@ package unpack
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -135,6 +136,9 @@ func withPasswords(
 
 			log.Info(toolName+": wrong password, trying next",
 				"attempt", i+1, "total", len(passwords), "archive", archive.MainFile)
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("Wrong password (attempt %d/%d), trying next…", i+1, len(passwords)))
+			}
 			lastRes = res
 			continue
 		}
