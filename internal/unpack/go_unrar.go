@@ -182,7 +182,11 @@ func ExtractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.F
 	}
 
 	// Permissions: strip executable bits from untrusted archives.
-	// Only keep rw for user/group/other (mode & 0666).
+	// Only keep rw bits (mode & 0666). If the archive entry has an
+	// unusual execute-only mode (0111), the mask produces 0 and the
+	// Chmod is skipped — the file keeps the safer 0600 from OpenFile.
+	// The HostOS guard skips chmod for archives with unknown OS origin,
+	// where the stored mode bits may be meaningless.
 	mode := hdr.Mode() & 0666
 	if mode != 0 && hdr.HostOS != rardecode.HostOSUnknown {
 		_ = os.Chmod(destPath, mode)
