@@ -8,47 +8,41 @@ func TestParseUnrarOutput(t *testing.T) {
 		output      string
 		wantVersion int
 		wantStr     string
-		wantOrig    bool
 		wantProblem bool
 	}{
 		{
-			name:        "v7.21 freeware (no middle initial)",
+			name:        "v7.21 freeware",
 			output:      "UNRAR 7.21 freeware      Copyright (c) 1993-2026 Alexander Roshal",
 			wantVersion: 721,
 			wantStr:     "7.21",
-			wantOrig:    true,
 			wantProblem: false,
 		},
 		{
-			name:        "v5.50 with middle initial (old format)",
+			name:        "v5.50 (minimum supported)",
 			output:      "UNRAR 5.50 freeware      Copyright (c) 1993-2017 Alexander L. Roshal",
 			wantVersion: 550,
 			wantStr:     "5.50",
-			wantOrig:    true,
 			wantProblem: false,
 		},
 		{
-			name:        "v7.10 x64 with middle initial",
+			name:        "v7.10 x64",
 			output:      "UNRAR 7.10 x64   Copyright (c) 1993-2024 Alexander L. Roshal",
 			wantVersion: 710,
 			wantStr:     "7.10",
-			wantOrig:    true,
 			wantProblem: false,
 		},
 		{
-			name:        "too old (< 5.50) — problem even if original",
+			name:        "too old (< 5.50)",
 			output:      "UNRAR 5.21 freeware      Copyright (c) 1993-2015 Alexander L. Roshal",
 			wantVersion: 521,
 			wantStr:     "5.21",
-			wantOrig:    true,
 			wantProblem: true,
 		},
 		{
-			name:        "fork (unar) — no Roshal in output",
+			name:        "fork (unar) — no version line",
 			output:      "The Unarchiver 4.0.0 (Mar 23 2019)",
 			wantVersion: 0,
 			wantStr:     "",
-			wantOrig:    false,
 			wantProblem: true,
 		},
 		{
@@ -56,7 +50,6 @@ func TestParseUnrarOutput(t *testing.T) {
 			output:      "",
 			wantVersion: 0,
 			wantStr:     "",
-			wantOrig:    false,
 			wantProblem: true,
 		},
 	}
@@ -69,9 +62,6 @@ func TestParseUnrarOutput(t *testing.T) {
 			}
 			if got.VersionStr != tc.wantStr {
 				t.Errorf("VersionStr = %q, want %q", got.VersionStr, tc.wantStr)
-			}
-			if got.Original != tc.wantOrig {
-				t.Errorf("Original = %v, want %v", got.Original, tc.wantOrig)
 			}
 			if got.HasProblem != tc.wantProblem {
 				t.Errorf("HasProblem = %v, want %v", got.HasProblem, tc.wantProblem)

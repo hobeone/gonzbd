@@ -5,21 +5,19 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 )
 
 // UnrarInfo describes the installed unrar binary, detected via `unrar` output.
-// SABnzbd checks for Alexander Roshal's original binary and version >= 5.50.
 type UnrarInfo struct {
-	// Version is the parsed version as an integer (e.g. 550 for 5.50, 710 for 7.10).
+	// Version is the parsed version as an integer (e.g. 550 for 5.50, 721 for 7.21).
 	Version int
 	// VersionStr is the raw version string (e.g. "5.50").
 	VersionStr string
-	// Original is true when the binary contains "Alexander L. Roshal"
-	// (the original unrar, not a fork like unar or bsdtar).
-	Original bool
-	// HasProblem is true when the binary is non-original or too old (< 5.50).
+	// HasProblem is true when the binary is too old (< 5.50) or its version
+	// could not be determined. In this mode, flags that old/non-RARLAB unrar
+	// variants don't support are stripped: -scf, -or, -ai, -tsm-.
+	// Matches SABnzbd's RAR_PROBLEM degraded mode.
 	HasProblem bool
 	// Available is true when the binary was found on PATH.
 	Available bool
@@ -35,16 +33,9 @@ type SevenzInfo struct {
 
 var unrarVersionRE = regexp.MustCompile(`(?i)UNRAR\s+(\d+)\.(\d+)`)
 
-// parseUnrarOutput extracts version and authenticity from unrar's stdout/stderr.
+// parseUnrarOutput extracts the version from unrar's stdout/stderr.
 func parseUnrarOutput(output string) UnrarInfo {
 	info := UnrarInfo{Available: true}
-
-	// Check for original unrar (RARLAB / Alexander Roshal).
-	// Older versions used "Alexander L. Roshal"; v7.x dropped the middle initial.
-	// Matching on just the surname is the minimal unique marker for RARLAB's binary.
-	if strings.Contains(output, "Roshal") {
-		info.Original = true
-	}
 
 	// Parse version: "UNRAR 5.50 freeware" or "UNRAR 7.21 freeware"
 	if m := unrarVersionRE.FindStringSubmatch(output); len(m) == 3 {
@@ -54,10 +45,9 @@ func parseUnrarOutput(output string) UnrarInfo {
 		info.VersionStr = m[1] + "." + m[2]
 	}
 
-	// Flag problems: non-original or version < 5.50.
-	if !info.Original || info.Version < 550 {
-		info.HasProblem = true
-	}
+	// Version < 5.50 (or unparseable) means degraded mode: omit flags that
+	// old/non-RARLAB variants don't support.
+	info.HasProblem = info.Version < 550
 
 	return info
 }

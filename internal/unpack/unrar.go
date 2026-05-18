@@ -58,9 +58,9 @@ type Options struct {
 	// appended to every unrar invocation. Pre-validated by the config
 	// layer to contain only flags starting with '-'.
 	ExtraArgs []string
-	// HasProblem is true when the detected unrar binary is non-original
-	// (e.g. unrar-free on Debian/Ubuntu) or too old (< 5.50). In this
-	// mode, flags that free/old unrar doesn't support are stripped:
+	// HasProblem is true when the detected unrar binary is too old (< 5.50)
+	// or its version could not be determined. In this mode, flags that
+	// old/non-RARLAB variants don't support are stripped:
 	// -scf, -or, -ai, -tsm-. Matches SABnzbd's RAR_PROBLEM degraded mode.
 	HasProblem bool
 	// OnLine is called for each line of subprocess output. May be nil.
