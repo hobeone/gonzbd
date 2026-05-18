@@ -321,6 +321,77 @@ func TestGoUnRAR_WithDirs(t *testing.T) {
 	}
 }
 
+// TestGoUnRAR_OverwriteFilesFalse verifies that GoUnRAR skips existing
+// files when OverwriteFiles is false (the default). This is a regression
+// test for C1: GoUnRAR previously always truncated with O_TRUNC.
+func TestGoUnRAR_OverwriteFilesFalse(t *testing.T) {
+	outDir := t.TempDir()
+
+	// Pre-create a file that the archive would extract.
+	preExisting := filepath.Join(outDir, "file1.txt")
+	sentinel := "DO NOT OVERWRITE ME\n"
+	if err := os.WriteFile(preExisting, []byte(sentinel), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := Archive{
+		Type:     RarArchive,
+		Name:     "single_rar5",
+		MainFile: filepath.Join("testdata", "single_rar5.rar"),
+	}
+
+	_, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{
+		OverwriteFiles: false,
+	})
+	if err != nil {
+		t.Fatalf("GoUnRAR() error: %v", err)
+	}
+
+	// The pre-existing file should NOT have been overwritten.
+	data, err := os.ReadFile(preExisting)
+	if err != nil {
+		t.Fatalf("reading pre-existing file: %v", err)
+	}
+	if string(data) != sentinel {
+		t.Errorf("file1.txt was overwritten: got %q, want %q", data, sentinel)
+	}
+}
+
+// TestGoUnRAR_OverwriteFilesTrue verifies that GoUnRAR does overwrite
+// existing files when OverwriteFiles is true.
+func TestGoUnRAR_OverwriteFilesTrue(t *testing.T) {
+	outDir := t.TempDir()
+
+	// Pre-create a file that the archive would extract.
+	preExisting := filepath.Join(outDir, "file1.txt")
+	sentinel := "OVERWRITE ME\n"
+	if err := os.WriteFile(preExisting, []byte(sentinel), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := Archive{
+		Type:     RarArchive,
+		Name:     "single_rar5",
+		MainFile: filepath.Join("testdata", "single_rar5.rar"),
+	}
+
+	_, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{
+		OverwriteFiles: true,
+	})
+	if err != nil {
+		t.Fatalf("GoUnRAR() error: %v", err)
+	}
+
+	// The pre-existing file SHOULD have been overwritten.
+	data, err := os.ReadFile(preExisting)
+	if err != nil {
+		t.Fatalf("reading file: %v", err)
+	}
+	if string(data) == sentinel {
+		t.Error("file1.txt was NOT overwritten when OverwriteFiles=true")
+	}
+}
+
 // --- sanitizeArchivePath tests ---
 
 func TestSanitizeArchivePath(t *testing.T) {
