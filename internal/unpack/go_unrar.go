@@ -163,7 +163,7 @@ func ExtractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.F
 	}
 	defer out.Close()
 
-	if _, err := io.Copy(out, r); err != nil {
+	if _, err := contextCopy(ctx, out, r); err != nil {
 		// Check for disk full.
 		var errno syscall.Errno
 		if errors.As(err, &errno) && errno == syscall.ENOSPC {
