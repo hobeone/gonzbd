@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -97,6 +99,11 @@ func withPasswords(
 	for i, pw := range passwords {
 		attempt := opts
 		attempt.Password = pw
+
+		// Snapshot outDir before attempt so we can clean up partial
+		// files if this password turns out to be wrong (S2 fix).
+		beforeSnap, _ := snapshotDir(outDir)
+
 		res, err := extract(ctx, log, archive, outDir, attempt)
 
 		// System-level error: binary not found, context cancelled, etc.
@@ -121,6 +128,11 @@ func withPasswords(
 		// Check res.Reason first (for GoUnRAR which classifies errors directly),
 		// then fall back to isWrongPW callback (for subprocess output parsing).
 		if res.Reason == FailWrongPassword || isWrongPW(res.ExitCode, res.Output) {
+			// Clean up any partial files from this failed attempt.
+			// Without this, OverwriteFiles=false would skip corrupt
+			// partials on the next attempt with the correct password.
+			cleanupPartialFiles(outDir, beforeSnap, log, toolName, i+1)
+
 			log.Info(toolName+": wrong password, trying next",
 				"attempt", i+1, "total", len(passwords), "archive", archive.MainFile)
 			lastRes = res
@@ -134,6 +146,27 @@ func withPasswords(
 	// All passwords exhausted.
 	lastRes.Err = ErrWrongPassword
 	return lastRes, ErrWrongPassword
+}
+
+// cleanupPartialFiles removes files that were created during a failed
+// password attempt. It diffs the current directory state against the
+// pre-attempt snapshot and removes any new files.
+func cleanupPartialFiles(outDir string, beforeSnap map[string]struct{}, log *slog.Logger, toolName string, attempt int) {
+	afterSnap, err := snapshotDir(outDir)
+	if err != nil {
+		return
+	}
+	newFiles := diffSnapshot(beforeSnap, afterSnap)
+	if len(newFiles) == 0 {
+		return
+	}
+	for _, rel := range newFiles {
+		full := filepath.Join(outDir, rel)
+		if rmErr := os.Remove(full); rmErr == nil {
+			log.Debug(toolName+": removed partial file from wrong password attempt",
+				"file", rel, "attempt", attempt)
+		}
+	}
 }
 
 // UnRARWithPasswords tries extracting with each password in opts.Passwords
