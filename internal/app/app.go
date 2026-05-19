@@ -82,6 +82,7 @@ type Config struct {
 	FlatUnpack           bool
 	UseGoRAR             bool
 	UseGo7z              bool
+	UseGoPar2            bool
 	CleanupExtensions    []string
 	FolderRename         bool
 	Nice                 string

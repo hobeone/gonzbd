@@ -83,6 +83,7 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, error) {
 		},
 	)
 	repairStage.Log = ppLog
+	repairStage.UseGoPar2 = cfg.UseGoPar2
 	stages = append(stages, repairStage)
 
 	// Unpack stage: included when any extraction/join feature is enabled.
