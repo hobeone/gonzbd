@@ -18,8 +18,12 @@ type RepairStage struct {
 	Par2Opts par2.RunOptions
 	// UseGoPar2 enables the native par2engine library for verification
 	// and repair. When true and native repair fails, falls back to the
-	// external par2 binary if available.
+	// external par2 binary if available (subject to GoPar2Fallback).
 	UseGoPar2 bool
+	// GoPar2Fallback allows a failed native par2 repair to retry with the
+	// external par2 binary. Only relevant when UseGoPar2 is true.
+	// Default true.
+	GoPar2Fallback bool
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
@@ -139,7 +143,8 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				// Fallback: if native repair failed and external par2
 				// binary is available, retry with it. The native engine
 				// may not support all edge cases (e.g. rename detection).
-				if err != nil {
+				// Gated on GoPar2Fallback so users can disable the retry.
+				if err != nil && s.GoPar2Fallback {
 					par2Bin := repairOpts.Command
 					if par2Bin == "" {
 						par2Bin = "par2"

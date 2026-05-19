@@ -11,7 +11,10 @@ describe('PostProcSection', () => {
 		postproc: {
 			enable_unrar: true,
 			use_go_rar: true,
+			go_rar_fallback: true,
 			enable_7zip: false,
+			use_go_7z: true,
+			go_7z_fallback: true,
 			enable_filejoin: true,
 			enable_tsjoin: true,
 			enable_recursive: true,
@@ -20,6 +23,8 @@ describe('PostProcSection', () => {
 			overwrite_files: false,
 			ignore_unrar_dates: false,
 			use_go_par2: true,
+			go_par2_fallback: true,
+			enable_quick_check: true,
 			par2_turbo: false,
 			process_unpacked_par2: true,
 			enable_par_cleanup: true,
@@ -50,7 +55,10 @@ describe('PostProcSection', () => {
 		render(PostProcSection, { configData: mockConfig, onFieldUpdate: vi.fn() });
 		expect(screen.getByText('Enable RAR extraction')).toBeInTheDocument();
 		expect(screen.getByText('Use built-in RAR extractor')).toBeInTheDocument();
+		expect(screen.getByText('Fallback to unrar on failure')).toBeInTheDocument();
 		expect(screen.getByText('Enable 7-Zip extraction')).toBeInTheDocument();
+		expect(screen.getByText('Use built-in 7-Zip extractor')).toBeInTheDocument();
+		expect(screen.getByText('Fallback to 7z on failure')).toBeInTheDocument();
 		expect(screen.getByText('Enable file joining')).toBeInTheDocument();
 		expect(screen.getByText('Enable TS joining')).toBeInTheDocument();
 		expect(screen.getByText('Recursive unpacking')).toBeInTheDocument();
@@ -63,6 +71,8 @@ describe('PostProcSection', () => {
 	it('renders par2 repair group labels', () => {
 		render(PostProcSection, { configData: mockConfig, onFieldUpdate: vi.fn() });
 		expect(screen.getByText('Use built-in par2 verifier')).toBeInTheDocument();
+		expect(screen.getByText('Fallback to par2 binary on failure')).toBeInTheDocument();
+		expect(screen.getByText('Enable quick CRC verify')).toBeInTheDocument();
 		expect(screen.getByText('Use par2cmdline-turbo')).toBeInTheDocument();
 		expect(screen.getByText('Process unpacked par2')).toBeInTheDocument();
 	});

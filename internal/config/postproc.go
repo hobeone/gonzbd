@@ -66,6 +66,26 @@ type PostProcConfig struct {
 	// falls back to the external par2 binary if available.
 	// Default true.
 	UseGoPar2 bool `yaml:"use_go_par2" json:"use_go_par2"`
+	// GoRarFallback controls whether a failed pure-Go RAR extraction
+	// automatically retries with the external unrar binary. Only relevant
+	// when UseGoRAR is true. When false, a go_unrar failure is final.
+	// Default true.
+	GoRarFallback bool `yaml:"go_rar_fallback" json:"go_rar_fallback"`
+	// Go7zFallback controls whether a failed pure-Go 7-Zip extraction
+	// automatically retries with the external 7z binary. Only relevant
+	// when UseGo7z is true. When false, a go_7z failure is final.
+	// Default true.
+	Go7zFallback bool `yaml:"go_7z_fallback" json:"go_7z_fallback"`
+	// GoPar2Fallback controls whether a failed native par2 repair
+	// automatically retries with the external par2 binary. Only relevant
+	// when UseGoPar2 is true. When false, a go_par2 failure is final.
+	// Default true.
+	GoPar2Fallback bool `yaml:"go_par2_fallback" json:"go_par2_fallback"`
+	// EnableQuickCheck enables the CRC-based pre-verification pass before
+	// par2 repair. When all file CRCs match, the expensive par2 subprocess
+	// is skipped. Disable to always run the full par2 verify/repair step.
+	// Default true.
+	EnableQuickCheck bool `yaml:"enable_quick_check" json:"enable_quick_check"`
 	// FlatUnpack writes all extracted files to the job root, ignoring
 	// archive-internal directories.
 	FlatUnpack bool `yaml:"flat_unpack" json:"flat_unpack"`
