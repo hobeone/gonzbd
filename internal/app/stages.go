@@ -14,19 +14,20 @@ import (
 // buildStages constructs the post-processing stage list from cfg.
 // Called once during New() when customStages is nil. Separated so the
 // 150-line stage-wiring block doesn't live inside the New() constructor.
-func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, error) {
+// The returned *postproc.QuickCheckStage is held by Application so it can
+// be toggled at runtime via SetQuickCheckEnabled without restart.
+func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, *postproc.QuickCheckStage, error) {
 	ppLog := log.With("component", "postproc")
 	var stages []postproc.Stage
 
 	// Quick-check stage: relocate flat files into par2-expected subdirs
-	// and CRC-verify assembled files before repair runs. Skipped when
-	// SkipQuickCheck=true (enable_quick_check=false in user config), which
-	// forces par2 repair to always run the full verify/repair step.
-	if !cfg.SkipQuickCheck {
-		qcStage := postproc.NewQuickCheckStage()
-		qcStage.Log = ppLog
-		stages = append(stages, qcStage)
-	}
+	// and CRC-verify assembled files before repair runs. The stage is
+	// always in the pipeline so it can be toggled at runtime via
+	// Application.SetQuickCheckEnabled without restarting.
+	qcStage := postproc.NewQuickCheckStage()
+	qcStage.Log = ppLog
+	qcStage.SetEnabled(!cfg.SkipQuickCheck)
+	stages = append(stages, qcStage)
 
 	// Build nice/ionice wrapping config for all external tool commands.
 	cmdCfg := cmdutil.CmdConfig{Nice: cfg.Nice, Ionice: cfg.Ionice}
@@ -34,11 +35,11 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, error) {
 	// Parse user-supplied extra params (validated: must start with '-').
 	extraPar2Args, err := cmdutil.ParseExtraParams(cfg.ExtraPar2Params)
 	if err != nil {
-		return nil, fmt.Errorf("extra_par2_params: %w", err)
+		return nil, nil, fmt.Errorf("extra_par2_params: %w", err)
 	}
 	extraUnrarArgs, err := cmdutil.ParseExtraParams(cfg.ExtraUnrarParams)
 	if err != nil {
-		return nil, fmt.Errorf("extra_unrar_params: %w", err)
+		return nil, nil, fmt.Errorf("extra_unrar_params: %w", err)
 	}
 	// N5: Validate extra unrar params against SABnzbd's allowlist.
 	// Warn instead of hard-fail so existing configs aren't broken.
@@ -172,5 +173,5 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, error) {
 		stages = append(stages, scriptStage)
 	}
 
-	return stages, nil
+	return stages, qcStage, nil
 }
