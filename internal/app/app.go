@@ -196,7 +196,8 @@ type Application struct {
 	bandwidthMax  atomic.Int64 // configured bandwidth ceiling in bytes/sec
 	bandwidthPerc atomic.Int32 // configured bandwidth percentage (1-100)
 
-	customStages []postproc.Stage
+	customStages     []postproc.Stage
+	quickCheckStage  *postproc.QuickCheckStage
 
 	// directUnpackers maps jobID → active DirectUnpacker for jobs being
 	// extracted during download. Protected by mu.
@@ -324,10 +325,12 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	stages := app.customStages
 	if stages == nil {
 		var err error
-		stages, err = buildStages(cfg, log)
+		var qcStage *postproc.QuickCheckStage
+		stages, qcStage, err = buildStages(cfg, log)
 		if err != nil {
 			return nil, err
 		}
+		app.quickCheckStage = qcStage
 	}
 	pp := postproc.New(postproc.Options{
 		Stages: stages,
@@ -1132,6 +1135,14 @@ func (app *Application) PausePostProcessor() {
 // ResumePostProcessor resumes the post-processing pipeline.
 func (app *Application) ResumePostProcessor() {
 	app.postProcessor.Resume()
+}
+
+// SetQuickCheckEnabled enables or disables the CRC pre-verify pass at runtime
+// without restarting. Takes effect for the next job that enters post-processing.
+func (app *Application) SetQuickCheckEnabled(enabled bool) {
+	if app.quickCheckStage != nil {
+		app.quickCheckStage.SetEnabled(enabled)
+	}
 }
 
 // RetryHistoryJob re-enqueues a completed/failed history job for re-download.
