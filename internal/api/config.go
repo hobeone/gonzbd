@@ -183,6 +183,13 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 		s.applySpeedLimit()
 	}
 
+	// Hot-apply postproc toggles that can take effect for the next job.
+	if section == "postproc" && s.app != nil && keyword == "enable_quick_check" {
+		var enabled bool
+		s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.EnableQuickCheck })
+		s.app.SetQuickCheckEnabled(enabled)
+	}
+
 	// Hot-apply directory changes: create the directory and push it to the
 	// running application so future jobs use the new path immediately.
 	if section == "general" && s.app != nil && (keyword == "download_dir" || keyword == "complete_dir") {
