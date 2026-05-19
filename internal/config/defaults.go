@@ -90,6 +90,7 @@ func Default() (*Config, error) {
 			DirectUnpackThreads:  3, // match SABnzbd default
 			UseGoRAR:             true,
 			UseGo7z:              true,
+			UseGoPar2:            true,
 		},
 		Servers:    nil, // user must add at least one before download is possible
 		Categories: []CategoryConfig{BuiltinDefaultCategory()},
