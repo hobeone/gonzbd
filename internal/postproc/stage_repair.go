@@ -182,7 +182,9 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				continue
 			}
 			if !res.Success {
-				// I3: Check for "need more blocks" → requeue the job.
+				// I3: Not enough recovery blocks — record for informational
+				// purposes but treat as a repair failure so the pipeline
+				// continues (unpack, finalize, script still run).
 				if res.NeedMoreBlocks {
 					job.NeedRequeue = true
 					job.RequeueBlocksNeeded = res.BlocksNeeded
@@ -190,24 +192,31 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 						"par2 needs %d more recovery blocks for %q",
 						res.BlocksNeeded, set.Name)
 					logf(log, job, slog.LevelWarn,
-						"Par2 repair %q needs %d more blocks — requesting requeue",
+						"Par2 repair %q needs %d more blocks — repair not possible with current data",
 						set.Name, res.BlocksNeeded)
-					// Don't mark as ParError — this is a recoverable situation.
-					// Return early so the orchestrator can requeue.
-					return nil
+					job.ParError = true
+					vs.MarkVerified(set.Name, false)
+					if firstErr == nil {
+						firstErr = fmt.Errorf("repair %q: need %d more recovery blocks", set.Name, res.BlocksNeeded)
+					}
+					continue
 				}
 
-				// I4: Check for "Main packet not found" → requeue to
-				// re-download the smallest par2 file.
+				// I4: Main par2 file corrupt/missing — record and continue.
 				if res.Parsed != nil && res.Parsed.Status == par2.StatusInvalidPar2 {
 					job.NeedRequeue = true
 					job.RequeueReason = fmt.Sprintf(
 						"par2 main file corrupt/missing for %q — re-download needed",
 						set.Name)
 					logf(log, job, slog.LevelWarn,
-						"Par2 main file corrupt/missing for %q — requesting requeue",
+						"Par2 main file corrupt/missing for %q — repair not possible",
 						set.Name)
-					return nil
+					job.ParError = true
+					vs.MarkVerified(set.Name, false)
+					if firstErr == nil {
+						firstErr = fmt.Errorf("repair %q: main par2 file corrupt or missing", set.Name)
+					}
+					continue
 				}
 
 				job.ParError = true
