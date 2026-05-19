@@ -19,6 +19,7 @@ describe('PostProcSection', () => {
 			flat_unpack: false,
 			overwrite_files: false,
 			ignore_unrar_dates: false,
+			use_go_par2: true,
 			par2_turbo: false,
 			process_unpacked_par2: true,
 			enable_par_cleanup: true,
@@ -61,6 +62,7 @@ describe('PostProcSection', () => {
 
 	it('renders par2 repair group labels', () => {
 		render(PostProcSection, { configData: mockConfig, onFieldUpdate: vi.fn() });
+		expect(screen.getByText('Use built-in par2 verifier')).toBeInTheDocument();
 		expect(screen.getByText('Use par2cmdline-turbo')).toBeInTheDocument();
 		expect(screen.getByText('Process unpacked par2')).toBeInTheDocument();
 	});

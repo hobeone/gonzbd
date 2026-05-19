@@ -44,6 +44,7 @@
 	<div>
 		<h4 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2">Par2 Repair</h4>
 		<div class="divide-y divide-gray-100 dark:divide-gray-800">
+			<ConfigSwitch section="postproc" keyword="use_go_par2" label="Use built-in par2 verifier" value={configData.postproc.use_go_par2} description="Use the native par2 engine for verification and repair instead of the external par2 binary. No external tools required. Disable to fall back to the subprocess par2 command." onupdate={onFieldUpdate} />
 			<ConfigSwitch section="postproc" keyword="par2_turbo" label="Use par2cmdline-turbo" value={configData.postproc.par2_turbo} description="Enable multi-threaded repair when the par2 binary supports it." onupdate={onFieldUpdate} />
 			<ConfigSwitch section="postproc" keyword="process_unpacked_par2" label="Process unpacked par2" value={configData.postproc.process_unpacked_par2} description="Use par2 files found inside extracted archives for filename recovery (deobfuscation)." onupdate={onFieldUpdate} />
 		</div>
