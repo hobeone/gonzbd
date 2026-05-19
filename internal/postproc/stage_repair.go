@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -15,6 +16,10 @@ import (
 type RepairStage struct {
 	// Par2Opts configures the par2 binary path and turbo mode.
 	Par2Opts par2.RunOptions
+	// UseGoPar2 enables the native par2engine library for verification
+	// and repair. When true and native repair fails, falls back to the
+	// external par2 binary if available.
+	UseGoPar2 bool
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
@@ -104,7 +109,54 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 			repairOpts.OnCommand = func(cmdLine string) {
 				logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
 			}
-			res, err := par2.RepairWith(ctx, repairOpts, main, dataFiles...)
+
+			// Dispatch: native par2engine vs external par2 binary.
+			// Follows the same pattern as GoUnRAR/UnRAR in stage_unpack.go.
+			var res par2.RepairResult
+			useGoPar2 := s.UseGoPar2
+
+			if !useGoPar2 {
+				// Check if external par2 binary is available.
+				par2Bin := repairOpts.Command
+				if par2Bin == "" {
+					par2Bin = "par2"
+				}
+				if _, lookErr := exec.LookPath(par2Bin); lookErr != nil {
+					useGoPar2 = true // external not found, fall back to native
+					logf(log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_par2", par2Bin)
+				}
+			}
+
+			if useGoPar2 {
+				logf(log, job, slog.LevelInfo, "Using go_par2 for PAR2 (native Go)")
+				goOnLine := func(line string) {
+					if job.OnOutput != nil {
+						job.OnOutput("go_par2", line)
+					}
+				}
+				res, err = par2.GoRepair(ctx, log, main, goOnLine)
+
+				// Fallback: if native repair failed and external par2
+				// binary is available, retry with it. The native engine
+				// may not support all edge cases (e.g. rename detection).
+				if err != nil {
+					par2Bin := repairOpts.Command
+					if par2Bin == "" {
+						par2Bin = "par2"
+					}
+					if _, lookErr := exec.LookPath(par2Bin); lookErr == nil {
+						logf(log, job, slog.LevelWarn,
+							"go_par2 failed (%v), retrying with external %s", err, par2Bin)
+						if job.OnOutput != nil {
+							job.OnOutput("go_par2",
+								fmt.Sprintf("Native repair failed: %v — retrying with %s", err, par2Bin))
+						}
+						res, err = par2.RepairWith(ctx, repairOpts, main, dataFiles...)
+					}
+				}
+			} else {
+				res, err = par2.RepairWith(ctx, repairOpts, main, dataFiles...)
+			}
 			// Capture par2 tool output for the stage log.
 			job.OutputLines = append(job.OutputLines,
 				fmt.Sprintf("[par2] %s", set.Name))

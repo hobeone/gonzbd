@@ -60,6 +60,12 @@ type PostProcConfig struct {
 	// When false, falls back to subprocess 7z.
 	// Default true.
 	UseGo7z bool `yaml:"use_go_7z" json:"use_go_7z"`
+	// UseGoPar2 uses the native par2engine library for PAR2 verification
+	// and repair instead of shelling out to par2/par2cmdline. No external
+	// binary required. When true and native verification/repair fails,
+	// falls back to the external par2 binary if available.
+	// Default true.
+	UseGoPar2 bool `yaml:"use_go_par2" json:"use_go_par2"`
 	// FlatUnpack writes all extracted files to the job root, ignoring
 	// archive-internal directories.
 	FlatUnpack bool `yaml:"flat_unpack" json:"flat_unpack"`
