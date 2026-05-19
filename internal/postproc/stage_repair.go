@@ -140,21 +140,29 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				}
 				res, err = par2.GoRepair(ctx, log, main, goOnLine)
 
-				// Fallback: if native repair failed and external par2
-				// binary is available, retry with it. The native engine
-				// may not support all edge cases (e.g. rename detection).
+				// Fallback: if native repair failed or returned a non-success
+				// result, retry with the external par2 binary if available.
+				// GoRepair returns err=nil for logical failures like
+				// insufficient blocks (NeedMoreBlocks=true) — the fallback
+				// must check both err and !res.Success so those cases also
+				// reach the external tool, which may succeed where the Go
+				// library gave a false negative.
 				// Gated on GoPar2Fallback so users can disable the retry.
-				if err != nil && s.GoPar2Fallback {
+				if (err != nil || !res.Success) && s.GoPar2Fallback {
 					par2Bin := repairOpts.Command
 					if par2Bin == "" {
 						par2Bin = "par2"
 					}
 					if _, lookErr := exec.LookPath(par2Bin); lookErr == nil {
+						reason := "non-success result"
+						if err != nil {
+							reason = err.Error()
+						}
 						logf(log, job, slog.LevelWarn,
-							"go_par2 failed (%v), retrying with external %s", err, par2Bin)
+							"go_par2 result not successful (%s), retrying with external %s", reason, par2Bin)
 						if job.OnOutput != nil {
 							job.OnOutput("go_par2",
-								fmt.Sprintf("Native repair failed: %v — retrying with %s", err, par2Bin))
+								fmt.Sprintf("Native repair result: %s — retrying with external %s", reason, par2Bin))
 						}
 						res, err = par2.RepairWith(ctx, repairOpts, main, dataFiles...)
 					}
