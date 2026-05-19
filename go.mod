@@ -59,3 +59,5 @@ require (
 )
 
 replace github.com/nwaples/rardecode/v2 => github.com/hobeone/rardecode/v2 v2.2.3-gonzbd.15
+
+replace github.com/hobeone/par2engine => ../par2engine

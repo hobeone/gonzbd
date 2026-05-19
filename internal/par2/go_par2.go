@@ -9,6 +9,11 @@ import (
 	par2engine "github.com/hobeone/par2engine/par2"
 )
 
+// par2FileSizeLimit is the maximum size of a par2 index or volume file that
+// the Go engine will process. The library default (100 MB) is too small for
+// large releases; 1 GB covers all realistic NZB download sizes.
+const par2FileSizeLimit = 1 * 1024 * 1024 * 1024 // 1 GiB
+
 // GoVerify runs a native Go-based PAR2 verification using par2engine.
 // It returns a VerifyResult compatible with the existing par2 package API.
 // onLine is called for progress updates and diagnostic messages (may be nil).
@@ -23,7 +28,7 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile string, onLine func
 
 	engineLog := newPar2UILogger(log.With("component", "go_par2"), onLine)
 
-	d, err := par2engine.NewDecoder(ctx, parfile, 0, 0, engineLog)
+	d, err := par2engine.NewDecoder(ctx, parfile, 0, 0, par2FileSizeLimit, 0, engineLog)
 	if err != nil {
 		res.Status = StatusInvalidPar2
 		return res, fmt.Errorf("go_par2: open decoder: %w", err)
@@ -88,7 +93,7 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile string, onLine func
 
 	engineLog := newPar2UILogger(log.With("component", "go_par2"), onLine)
 
-	d, err := par2engine.NewDecoder(ctx, parfile, 0, 0, engineLog)
+	d, err := par2engine.NewDecoder(ctx, parfile, 0, 0, par2FileSizeLimit, 0, engineLog)
 	if err != nil {
 		return res, fmt.Errorf("go_par2: open decoder: %w", err)
 	}
