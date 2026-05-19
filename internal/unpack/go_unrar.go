@@ -24,6 +24,9 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 		if p := recover(); p != nil {
 			res.Reason = FailCorrupt
 			err = fmt.Errorf("go_unrar: rardecode panic: %v", p)
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("ERROR: rardecode panic: %v", p))
+			}
 		}
 	}()
 
@@ -45,6 +48,9 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 	r, err := SafeOpenReader(archive.MainFile, rdOpts...)
 	if err != nil {
 		res.Reason = ClassifyRarDecodeError(err)
+		if opts.OnLine != nil {
+			opts.OnLine(fmt.Sprintf("ERROR: failed to open archive: %v", err))
+		}
 		return res, fmt.Errorf("go_unrar: open: %w", err)
 	}
 	defer r.Close()
@@ -60,6 +66,9 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 		}
 		if err != nil {
 			res.Reason = ClassifyRarDecodeError(err)
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("ERROR: corrupt archive header: %v", err))
+			}
 			return res, fmt.Errorf("go_unrar: read header: %w", err)
 		}
 
@@ -86,6 +95,9 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 
 		if err := ExtractEntry(ctx, outDir, destPath, hdr, r, opts, log); err != nil {
 			res.Reason = ClassifyRarDecodeError(err)
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", hdr.Name, err))
+			}
 			return res, err
 		}
 

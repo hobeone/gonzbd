@@ -27,6 +27,9 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 		if p := recover(); p != nil {
 			res.Reason = FailCorrupt
 			err = fmt.Errorf("go_7z: sevenzip panic: %v", p)
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("ERROR: sevenzip panic: %v", p))
+			}
 		}
 	}()
 
@@ -46,6 +49,9 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 	}
 	if err != nil {
 		res.Reason = classifySevenZipError(err)
+		if opts.OnLine != nil {
+			opts.OnLine(fmt.Sprintf("ERROR: failed to open archive: %v", err))
+		}
 		return res, fmt.Errorf("go_7z: open: %w", err)
 	}
 	defer r.Close()
@@ -105,6 +111,9 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 
 		if err := extractSevenZipFile(ctx, destPath, f, opts, log); err != nil {
 			res.Reason = classifySevenZipError(err)
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", f.Name, err))
+			}
 			return res, err
 		}
 
