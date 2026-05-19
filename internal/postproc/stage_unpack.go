@@ -211,7 +211,8 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 					// external unrar binary is available, retry with it.
 					// The Go rardecode library doesn't support all RAR
 					// features (some RAR5 encryption, RAR2, etc.).
-					if goErr := cmp.Or(err, res.Err); goErr != nil {
+					// Gated on GoRarFallback so users can disable the retry.
+					if goErr := cmp.Or(err, res.Err); goErr != nil && opts.GoRarFallback {
 						unrarBin := opts.UnrarCommand
 						if unrarBin == "" {
 							unrarBin = "unrar"
@@ -282,7 +283,8 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 
 					// Fallback: if Go-native extraction failed and the
 					// external 7z binary is available, retry with it.
-					if goErr := cmp.Or(err, res.Err); goErr != nil {
+					// Gated on Go7zFallback so users can disable the retry.
+					if goErr := cmp.Or(err, res.Err); goErr != nil && opts.Go7zFallback {
 						szBin := find7zBin(opts.SevenZipCommand)
 						if szBin != "" {
 							logf(log, job, slog.LevelWarn,
