@@ -91,6 +91,10 @@ func Default() (*Config, error) {
 			UseGoRAR:             true,
 			UseGo7z:              true,
 			UseGoPar2:            true,
+			GoRarFallback:        true,
+			Go7zFallback:         true,
+			GoPar2Fallback:       true,
+			EnableQuickCheck:     true,
 		},
 		Servers:    nil, // user must add at least one before download is possible
 		Categories: []CategoryConfig{BuiltinDefaultCategory()},

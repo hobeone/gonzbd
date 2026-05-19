@@ -19,10 +19,14 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, error) {
 	var stages []postproc.Stage
 
 	// Quick-check stage: relocate flat files into par2-expected subdirs
-	// before repair runs. Must be first so par2 can find files.
-	qcStage := postproc.NewQuickCheckStage()
-	qcStage.Log = ppLog
-	stages = append(stages, qcStage)
+	// and CRC-verify assembled files before repair runs. Skipped when
+	// SkipQuickCheck=true (enable_quick_check=false in user config), which
+	// forces par2 repair to always run the full verify/repair step.
+	if !cfg.SkipQuickCheck {
+		qcStage := postproc.NewQuickCheckStage()
+		qcStage.Log = ppLog
+		stages = append(stages, qcStage)
+	}
 
 	// Build nice/ionice wrapping config for all external tool commands.
 	cmdCfg := cmdutil.CmdConfig{Nice: cfg.Nice, Ionice: cfg.Ionice}
@@ -84,6 +88,7 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, error) {
 	)
 	repairStage.Log = ppLog
 	repairStage.UseGoPar2 = cfg.UseGoPar2
+	repairStage.GoPar2Fallback = cfg.GoPar2Fallback
 	stages = append(stages, repairStage)
 
 	// Unpack stage: included when any extraction/join feature is enabled.
@@ -95,7 +100,9 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, error) {
 			IgnoreUnrarDates: cfg.IgnoreUnrarDates,
 			OneFolder:        cfg.FlatUnpack,
 			UseGoRAR:         cfg.UseGoRAR,
+			GoRarFallback:    cfg.GoRarFallback,
 			UseGo7z:          cfg.UseGo7z,
+			Go7zFallback:     cfg.Go7zFallback,
 			HasProblem:       unrarInfo.HasProblem,
 			CmdCfg:           cmdCfg,
 			ExtraArgs:        extraUnrarArgs,
