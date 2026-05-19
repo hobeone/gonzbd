@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/hobeone/gonzbd/internal/par2"
 )
@@ -11,10 +12,17 @@ import (
 type QuickCheckStage struct {
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
+	// disabled is set atomically so SetEnabled can be called from any goroutine
+	// (e.g. the API handler) while a job may be running in the postproc worker.
+	disabled atomic.Bool
 }
 
 // NewQuickCheckStage constructs a QuickCheckStage with default settings.
 func NewQuickCheckStage() *QuickCheckStage { return &QuickCheckStage{} }
+
+// SetEnabled enables or disables the quick-check pass at runtime without
+// requiring a server restart. Thread-safe; may be called from any goroutine.
+func (q *QuickCheckStage) SetEnabled(enabled bool) { q.disabled.Store(!enabled) }
 
 // Name returns the stage identifier.
 func (*QuickCheckStage) Name() string { return "quickcheck" }
@@ -30,6 +38,13 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 		log = slog.Default()
 	}
 	log = log.With("component", "postproc/quickcheck", "job", job.Queue.ID)
+
+	if q.disabled.Load() {
+		logf(log, job, slog.LevelInfo, "quickcheck disabled — skipping CRC pre-verify, par2 repair will run")
+		job.OutputLines = append(job.OutputLines,
+			"[quickcheck] Disabled — par2 repair will run the full verify/repair step")
+		return nil
+	}
 
 	logf(log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)
 
