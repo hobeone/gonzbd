@@ -83,6 +83,12 @@ type Config struct {
 	UseGoRAR             bool
 	UseGo7z              bool
 	UseGoPar2            bool
+	GoRarFallback        bool
+	Go7zFallback         bool
+	GoPar2Fallback       bool
+	// SkipQuickCheck disables the CRC pre-verification pass before par2 repair.
+	// Zero value (false) preserves the existing behavior: quickcheck runs.
+	SkipQuickCheck bool
 	CleanupExtensions    []string
 	FolderRename         bool
 	Nice                 string

@@ -46,10 +46,18 @@ type Options struct {
 	// instead of shelling out to unrar. No external binary required.
 	// Default true.
 	UseGoRAR bool
+	// GoRarFallback allows a failed pure-Go RAR extraction to retry with
+	// the external unrar binary. Only relevant when UseGoRAR is true.
+	// Default true.
+	GoRarFallback bool
 	// UseGo7z uses the pure-Go bodgit/sevenzip library for 7z extraction
 	// instead of shelling out to 7zz/7z. No external binary required.
 	// Default true.
 	UseGo7z bool
+	// Go7zFallback allows a failed pure-Go 7-Zip extraction to retry with
+	// the external 7z binary. Only relevant when UseGo7z is true.
+	// Default true.
+	Go7zFallback bool
 	// CmdCfg controls nice/ionice process priority wrapping for the
 	// extraction subprocess. When non-empty, the command is prepended
 	// with nice and/or ionice. Matches SABnzbd's cfg.nice/cfg.ionice.

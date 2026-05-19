@@ -51,7 +51,9 @@ var uiKeywords = []struct {
 	{"postproc", "enable_unrar", "PostProcSection.svelte"},
 	{"postproc", "enable_7zip", "PostProcSection.svelte"},
 	{"postproc", "use_go_rar", "PostProcSection.svelte"},
+	{"postproc", "go_rar_fallback", "PostProcSection.svelte"},
 	{"postproc", "use_go_7z", "PostProcSection.svelte"},
+	{"postproc", "go_7z_fallback", "PostProcSection.svelte"},
 	{"postproc", "enable_filejoin", "PostProcSection.svelte"},
 	{"postproc", "enable_tsjoin", "PostProcSection.svelte"},
 	{"postproc", "enable_recursive", "PostProcSection.svelte"},
@@ -60,6 +62,9 @@ var uiKeywords = []struct {
 	{"postproc", "overwrite_files", "PostProcSection.svelte"},
 	{"postproc", "ignore_unrar_dates", "PostProcSection.svelte"},
 	// Par2 Repair
+	{"postproc", "use_go_par2", "PostProcSection.svelte"},
+	{"postproc", "go_par2_fallback", "PostProcSection.svelte"},
+	{"postproc", "enable_quick_check", "PostProcSection.svelte"},
 	{"postproc", "par2_turbo", "PostProcSection.svelte"},
 	{"postproc", "process_unpacked_par2", "PostProcSection.svelte"},
 	// Cleanup & Output
