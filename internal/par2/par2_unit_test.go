@@ -1,6 +1,7 @@
 package par2
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -482,5 +483,68 @@ func TestTeeHandler_FormatForUI(t *testing.T) {
 				t.Errorf("formatForUI() ok = %t, want %t", ok, tc.wantOk)
 			}
 		})
+	}
+}
+
+type mockHandler struct {
+	enabled bool
+	handled []slog.Record
+}
+
+func (m *mockHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return m.enabled
+}
+
+func (m *mockHandler) Handle(ctx context.Context, r slog.Record) error {
+	m.handled = append(m.handled, r)
+	return nil
+}
+
+func (m *mockHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return m }
+func (m *mockHandler) WithGroup(name string) slog.Handler       { return m }
+
+func TestTeeHandler_HandleAndEnabled(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockHandler{enabled: false}
+	var uiLogs []string
+	onLine := func(line string) {
+		uiLogs = append(uiLogs, line)
+	}
+
+	h := &teeHandler{
+		Handler: mock,
+		onLine:  onLine,
+	}
+
+	// 1. Test Enabled delegation & overrides
+	ctx := context.Background()
+	if !h.Enabled(ctx, slog.LevelInfo) {
+		t.Error("Enabled(Info) should be true regardless of mock handler")
+	}
+	if !h.Enabled(ctx, slog.LevelWarn) {
+		t.Error("Enabled(Warn) should be true regardless of mock handler")
+	}
+	if h.Enabled(ctx, slog.LevelDebug) {
+		t.Error("Enabled(Debug) should be false since mock is not enabled for it")
+	}
+
+	mock.enabled = true
+	if !h.Enabled(ctx, slog.LevelDebug) {
+		t.Error("Enabled(Debug) should be true since mock is enabled for it")
+	}
+
+	// 2. Test Handle delegation and UI forwarding
+	r := slog.NewRecord(time.Now(), slog.LevelWarn, "Caution!", 0)
+	if err := h.Handle(ctx, r); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	if len(mock.handled) != 1 || mock.handled[0].Message != "Caution!" {
+		t.Errorf("expected record to be delegated to mock, got: %v", mock.handled)
+	}
+
+	if len(uiLogs) != 1 || uiLogs[0] != "[go_par2] WARN: Caution!" {
+		t.Errorf("expected formatted log in UI, got: %v", uiLogs)
 	}
 }
