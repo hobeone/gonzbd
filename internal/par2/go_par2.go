@@ -263,53 +263,10 @@ func (h *teeHandler) WithGroup(name string) slog.Handler {
 	return &teeHandler{Handler: h.Handler.WithGroup(name), onLine: h.onLine}
 }
 
-// noisyMessages contains par2engine messages that are too internal
-// to show in the UI output stream. (SliceByteCount and memory-limited
-// streaming are now Debug level in the library, so they never reach
-// the teeHandler.)
-var noisyMessages = map[string]bool{}
-
-// statusMessages are Info-level messages we always want to show even
-// when they don't carry a file/name/err attribute.
-var statusMessages = map[string]bool{
-	"No repair needed. All files are healthy.": true,
-	"Starting pipelined repair...":             true,
-	"Repair completed successfully!":           true,
-	"Verification summary":                     true,
-	"Repair summary":                           true,
-	"All files resolved by renaming":           true,
-}
-
 // formatForUI decides whether a log record should appear in the UI and formats it.
 func (h *teeHandler) formatForUI(r slog.Record) (string, bool) {
-	if noisyMessages[r.Message] {
+	if r.Level < slog.LevelInfo {
 		return "", false
-	}
-
-	if r.Level < slog.LevelWarn {
-		// For Info: show only if the record has a file/name/path/err/expected/found attribute,
-		// if it's an explicit status message, or if it is a structured candidate/archive/file listing.
-		if !statusMessages[r.Message] {
-			isListMessage := strings.HasPrefix(r.Message, "  ") ||
-				strings.HasPrefix(r.Message, "PAR2 set protects ") ||
-				(strings.HasPrefix(r.Message, "Found ") && strings.Contains(r.Message, " recovery archive")) ||
-				strings.HasPrefix(r.Message, "Candidate file(s) to consider")
-
-			if !isListMessage {
-				hasRelevant := false
-				r.Attrs(func(a slog.Attr) bool {
-					switch a.Key {
-					case "file", "name", "path", "err", "expected", "found":
-						hasRelevant = true
-						return false
-					}
-					return true
-				})
-				if !hasRelevant {
-					return "", false
-				}
-			}
-		}
 	}
 
 	var sb strings.Builder
