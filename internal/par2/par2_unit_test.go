@@ -441,35 +441,46 @@ func TestTeeHandler_FormatForUI(t *testing.T) {
 	h := &teeHandler{}
 
 	tests := []struct {
+		name    string
+		level   slog.Level
 		message string
 		attrs   []slog.Attr
 		wantOk  bool
 	}{
-		// status messages
-		{message: "No repair needed. All files are healthy.", wantOk: true},
-		{message: "Starting pipelined repair...", wantOk: true},
-		// relevant attributes
-		{message: "Some random message", attrs: []slog.Attr{slog.String("file", "foo.bin")}, wantOk: true},
-		{message: "Some random message", attrs: []slog.Attr{slog.String("expected", "foo.bin")}, wantOk: true},
-		// filtered messages (no relevant attributes)
-		{message: "Some random message", attrs: []slog.Attr{slog.String("other", "foo.bin")}, wantOk: false},
-		// list messages (should be allowed even without attributes)
-		{message: "PAR2 set protects 3 file(s):", wantOk: true},
-		{message: "  data.bin (12345 bytes)", wantOk: true},
-		{message: "Found 2 recovery archive(s):", wantOk: true},
-		{message: "  data.vol00+01.par2 (1 recovery blocks)", wantOk: true},
-		{message: "Candidate file(s) to consider (1):", wantOk: true},
-		{message: "  some_candidate.bin", wantOk: true},
+		{
+			name:    "info level logs are allowed",
+			level:   slog.LevelInfo,
+			message: "Some info log",
+			wantOk:  true,
+		},
+		{
+			name:    "warn level logs are allowed",
+			level:   slog.LevelWarn,
+			message: "Some warn log",
+			wantOk:  true,
+		},
+		{
+			name:    "error level logs are allowed",
+			level:   slog.LevelError,
+			message: "Some error log",
+			wantOk:  true,
+		},
+		{
+			name:    "debug level logs are filtered out",
+			level:   slog.LevelDebug,
+			message: "Some debug log",
+			wantOk:  false,
+		},
 	}
 
-	for i, tc := range tests {
-		// Create slog record
-		var r slog.Record
-		r = slog.NewRecord(time.Now(), slog.LevelInfo, tc.message, 0)
-		r.AddAttrs(tc.attrs...)
-		_, ok := h.formatForUI(r)
-		if ok != tc.wantOk {
-			t.Errorf("[%d] formatForUI(%q) ok = %t, want %t", i, tc.message, ok, tc.wantOk)
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := slog.NewRecord(time.Now(), tc.level, tc.message, 0)
+			r.AddAttrs(tc.attrs...)
+			_, ok := h.formatForUI(r)
+			if ok != tc.wantOk {
+				t.Errorf("formatForUI() ok = %t, want %t", ok, tc.wantOk)
+			}
+		})
 	}
 }
