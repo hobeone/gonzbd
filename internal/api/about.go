@@ -152,4 +152,3 @@ func resolveBinary(cfgPath string, fallbacks ...string) string {
 	}
 	return ""
 }
-

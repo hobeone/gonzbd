@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/playwright-community/playwright-go"
+
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -32,7 +34,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/web"
 	"github.com/hobeone/gonzbd/ui"
-	"github.com/playwright-community/playwright-go"
 )
 
 const testAPIKey = "uitest-api-key-1234"

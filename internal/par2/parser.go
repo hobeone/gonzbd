@@ -10,8 +10,9 @@ import (
 	"os"
 	"unicode/utf8"
 
-	"github.com/hobeone/gonzbd/internal/crc32util"
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/hobeone/gonzbd/internal/crc32util"
 )
 
 // correctEncoding converts raw par2 filename bytes to a valid UTF-8 string,

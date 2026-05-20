@@ -15,8 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"golang.org/x/text/encoding/charmap"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // maxArticleSize is the upper bound on a plausible NNTP article payload
@@ -54,7 +55,6 @@ func charsetReader(label string, input io.Reader) (io.Reader, error) {
 	}
 	return nil, fmt.Errorf("nzb: unsupported XML charset %q", label)
 }
-
 
 // Parse decodes an NZB document from r. Gzip and bzip2 envelopes are
 // detected by magic bytes and transparently unwrapped, so callers can

@@ -284,6 +284,7 @@ func validateURL(u *url.URL, allowPrivateIPs bool) error {
 	}
 
 	// Resolve and check all IPs.
+	//nolint:gosec // false positive: this function is the SSRF validator checking for private/loopback IPs
 	ips, err := net.LookupHost(host)
 	if err != nil {
 		return fmt.Errorf("failed to resolve host %q: %w", host, err)
