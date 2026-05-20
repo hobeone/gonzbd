@@ -91,10 +91,20 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile string, onLine func
 		}
 	}()
 
-	engineLog := newPar2UILogger(log.With("component", "go_par2"), onLine)
+	var output strings.Builder
+	accumulate := func(line string) {
+		output.WriteString(line)
+		output.WriteString("\n")
+		if onLine != nil {
+			onLine(line)
+		}
+	}
+
+	engineLog := newPar2UILogger(log.With("component", "go_par2"), accumulate)
 
 	d, err := par2engine.NewDecoder(ctx, parfile, 0, 0, par2FileSizeLimit, 0, engineLog)
 	if err != nil {
+		res.Output = output.String()
 		return res, fmt.Errorf("go_par2: open decoder: %w", err)
 	}
 	defer d.Close() //nolint:errcheck // best-effort close
@@ -102,19 +112,16 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile string, onLine func
 	res.CommandLine = fmt.Sprintf("go_par2 repair %s", parfile)
 
 	// Phase 1: Verify
-	if onLine != nil {
-		onLine("[go_par2] Starting verification...")
-	}
+	accumulate("[go_par2] Starting verification...")
 	verifyProgress := make(chan par2engine.Progress, 100)
 	go func() {
 		for p := range verifyProgress {
-			if onLine != nil {
-				onLine(fmt.Sprintf("[go_par2] Verifying... %.1f%%", p.Percent))
-			}
+			accumulate(fmt.Sprintf("[go_par2] Verifying... %.1f%%", p.Percent))
 		}
 	}()
 
 	if err := d.VerifyScans(ctx, verifyProgress); err != nil {
+		res.Output = output.String()
 		return res, fmt.Errorf("go_par2: verify scan: %w", err)
 	}
 
@@ -122,51 +129,39 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile string, onLine func
 
 	if !counts.RepairNeeded() {
 		res.Success = true
-		res.Output = "All files are correct"
-		if onLine != nil {
-			onLine("[go_par2] All files are correct")
-		}
+		accumulate("[go_par2] All files are correct")
+		res.Output = output.String()
 		return res, nil
 	}
 
 	if !counts.RepairPossible() {
 		res.NeedMoreBlocks = true
 		res.BlocksNeeded = counts.BlocksNeeded()
-		res.Output = fmt.Sprintf("Repair is not possible. You need %d more recovery blocks.", res.BlocksNeeded)
-		if onLine != nil {
-			onLine(fmt.Sprintf("[go_par2] Repair not possible — need %d more recovery blocks", res.BlocksNeeded))
-		}
+		accumulate(fmt.Sprintf("[go_par2] Repair not possible — need %d more recovery blocks", res.BlocksNeeded))
+		res.Output = output.String()
 		return res, nil
 	}
 
 	// Phase 2: Repair
-	if onLine != nil {
-		onLine(fmt.Sprintf("[go_par2] Repair required: %d missing blocks, %d parity available",
-			counts.UnusableDataShardCount, counts.UsableParityShardCount))
-	}
+	accumulate(fmt.Sprintf("[go_par2] Repair required: %d missing blocks, %d parity available",
+		counts.UnusableDataShardCount, counts.UsableParityShardCount))
 	repairProgress := make(chan par2engine.Progress, 100)
 	go func() {
 		for p := range repairProgress {
-			if onLine != nil {
-				onLine(fmt.Sprintf("[go_par2] Repairing... %.1f%%", p.Percent))
-			}
+			accumulate(fmt.Sprintf("[go_par2] Repairing... %.1f%%", p.Percent))
 		}
 	}()
 
 	if err := d.Repair(ctx, repairProgress); err != nil {
 		res.ExitCode = 1
-		res.Output = fmt.Sprintf("Repair Failed: %v", err)
-		if onLine != nil {
-			onLine(fmt.Sprintf("[go_par2] Repair failed: %v", err))
-		}
+		accumulate(fmt.Sprintf("[go_par2] Repair failed: %v", err))
+		res.Output = output.String()
 		return res, fmt.Errorf("go_par2: repair: %w", err)
 	}
 
 	res.Success = true
-	res.Output = "Repair complete"
-	if onLine != nil {
-		onLine("[go_par2] Repair complete")
-	}
+	accumulate("[go_par2] Repair complete")
+	res.Output = output.String()
 
 	return res, nil
 }
@@ -213,10 +208,8 @@ func (h *teeHandler) WithGroup(name string) slog.Handler {
 // noisyMessages contains par2engine Info-level messages that are too internal
 // to show in the UI output stream.
 var noisyMessages = map[string]bool{
-	"Parsed SliceByteCount":                          true,
-	"Configured memory-limited streaming":            true,
-	"skipping packet with mismatching set ID":        true,
-	"skipping volume packet with mismatching set ID": true,
+	"Parsed SliceByteCount":               true,
+	"Configured memory-limited streaming": true,
 }
 
 // statusMessages are Info-level messages we always want to show.
