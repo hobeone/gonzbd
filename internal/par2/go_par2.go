@@ -277,6 +277,7 @@ var statusMessages = map[string]bool{
 	"Repair completed successfully!":           true,
 	"Verification summary":                     true,
 	"Repair summary":                           true,
+	"All files resolved by renaming":           true,
 }
 
 // formatForUI decides whether a log record should appear in the UI and formats it.
@@ -292,7 +293,7 @@ func (h *teeHandler) formatForUI(r slog.Record) (string, bool) {
 			hasRelevant := false
 			r.Attrs(func(a slog.Attr) bool {
 				switch a.Key {
-				case "file", "name", "path", "err":
+				case "file", "name", "path", "err", "expected", "found":
 					hasRelevant = true
 					return false
 				}
