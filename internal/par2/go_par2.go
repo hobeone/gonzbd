@@ -54,16 +54,8 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 	if onLine != nil {
 		onLine("[go_par2] Starting verification...")
 	}
-	progressChan := make(chan par2engine.Progress, 100)
-	go func() {
-		for p := range progressChan {
-			if onLine != nil {
-				onLine(fmt.Sprintf("[go_par2] Verifying... %.1f%%", p.Percent))
-			}
-		}
-	}()
 
-	if err := d.VerifyScans(ctx); err != nil {
+	if err = d.VerifyScans(ctx); err != nil {
 		res.Status = StatusUnknown
 		return res, fmt.Errorf("go_par2: verify scan: %w", err)
 	}
@@ -143,14 +135,8 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 
 	// Phase 1: Verify
 	accumulate("[go_par2] Starting verification...")
-	verifyProgress := make(chan par2engine.Progress, 100)
-	go func() {
-		for p := range verifyProgress {
-			accumulate(fmt.Sprintf("[go_par2] Verifying... %.1f%%", p.Percent))
-		}
-	}()
 
-	if err := d.VerifyScans(ctx); err != nil {
+	if err = d.VerifyScans(ctx); err != nil {
 		res.Output = output.String()
 		return res, fmt.Errorf("go_par2: verify scan: %w", err)
 	}
@@ -176,17 +162,23 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 	accumulate(fmt.Sprintf("[go_par2] Repair required: %d missing blocks, %d parity available",
 		counts.UnusableDataShardCount, counts.UsableParityShardCount))
 	repairProgress := make(chan par2engine.Progress, 100)
+	repairDone := make(chan struct{})
 	go func() {
 		for p := range repairProgress {
 			accumulate(fmt.Sprintf("[go_par2] Repairing... %.1f%%", p.Percent))
 		}
+		close(repairDone)
 	}()
 
-	if err := d.Repair(ctx, repairProgress); err != nil {
+	repairErr := d.Repair(ctx, repairProgress)
+	close(repairProgress)
+	<-repairDone
+
+	if repairErr != nil {
 		res.ExitCode = 1
-		accumulate(fmt.Sprintf("[go_par2] Repair failed: %v", err))
+		accumulate(fmt.Sprintf("[go_par2] Repair failed: %v", repairErr))
 		res.Output = output.String()
-		return res, fmt.Errorf("go_par2: repair: %w", err)
+		return res, fmt.Errorf("go_par2: repair: %w", repairErr)
 	}
 
 	res.Success = true
@@ -246,11 +238,25 @@ type teeHandler struct {
 	onLine func(string)
 }
 
+func (h *teeHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	// Always enable Info level and above because the UI wants to see Info, Warn, and Error.
+	if level >= slog.LevelInfo {
+		return true
+	}
+	if h.Handler != nil {
+		return h.Handler.Enabled(ctx, level)
+	}
+	return false
+}
+
 func (h *teeHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.onLine != nil {
 		if line, ok := h.formatForUI(r); ok {
 			h.onLine(line)
 		}
+	}
+	if h.Handler != nil {
+		return h.Handler.Handle(ctx, r)
 	}
 	return nil
 }
@@ -270,6 +276,7 @@ func (h *teeHandler) formatForUI(r slog.Record) (string, bool) {
 	}
 
 	var sb strings.Builder
+	sb.WriteString("[go_par2] ")
 	switch {
 	case r.Level >= slog.LevelError:
 		sb.WriteString("ERROR: ")
@@ -285,12 +292,12 @@ func (h *teeHandler) formatForUI(r slog.Record) (string, bool) {
 		sb.WriteString(a.Key)
 		sb.WriteString("=")
 		if a.Value.Kind() == slog.KindAny {
-			sb.WriteString(fmt.Sprintf("%v", a.Value.Any()))
+			fmt.Fprintf(&sb, "%v", a.Value.Any())
 		} else {
 			sb.WriteString(a.Value.String())
 		}
 		return true
 	})
 
-	return "[go_par2] " + sb.String(), true
+	return sb.String(), true
 }
