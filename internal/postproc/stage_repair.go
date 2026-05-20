@@ -133,12 +133,9 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 
 			if useGoPar2 {
 				logf(log, job, slog.LevelInfo, "Using go_par2 for PAR2 (native Go)")
-				goOnLine := func(line string) {
-					if job.OnOutput != nil {
-						job.OnOutput("go_par2", line)
-					}
-				}
-				res, err = par2.GoRepair(ctx, log, main, goOnLine)
+				res, err = par2.GoRepair(ctx, log, main, func(line string) {
+					logf(log, job, slog.LevelInfo, "%s", line)
+				})
 
 				// Fallback: if native repair failed or returned a non-success
 				// result, retry with the external par2 binary if available.
