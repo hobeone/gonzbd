@@ -5,7 +5,7 @@ go 1.26.3
 require (
 	github.com/coder/websocket v1.8.14
 	github.com/h2non/filetype v1.1.3
-	github.com/hobeone/par2engine v0.0.7
+	github.com/hobeone/par2engine v0.0.8
 	github.com/lmittmann/tint v1.1.3
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/nwaples/rardecode/v2 v2.2.2
