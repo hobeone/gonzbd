@@ -49,6 +49,8 @@ github.com/hobeone/par2engine v0.0.5 h1:tl+EEMVAsctE9J/pL/8ETGPh02ep0oQg/kIZT/8U
 github.com/hobeone/par2engine v0.0.5/go.mod h1:TX3BqRa43l9W9DA8dFtSxqXp0shQ6L2dxag9WAQqNh8=
 github.com/hobeone/par2engine v0.0.6 h1:pDNKH2ozEzkatf2aL4/xjEXRK+Ey6uJoDXYNVIQAP14=
 github.com/hobeone/par2engine v0.0.6/go.mod h1:TX3BqRa43l9W9DA8dFtSxqXp0shQ6L2dxag9WAQqNh8=
+github.com/hobeone/par2engine v0.0.7 h1:pmlpNcxwDYZ+UeBP7Zetqmj/eXHl6b4HF/SnEs3tgis=
+github.com/hobeone/par2engine v0.0.7/go.mod h1:TX3BqRa43l9W9DA8dFtSxqXp0shQ6L2dxag9WAQqNh8=
 github.com/hobeone/rardecode/v2 v2.2.3-gonzbd.15 h1:EKGx8OlTfrXM+Aosl8hyAVXaHT4rvEmZGSAKR0OM0ug=
 github.com/hobeone/rardecode/v2 v2.2.3-gonzbd.15/go.mod h1:7uz379lSxPe6j9nvzxUZ+n7mnJNgjsRNb6IbvGVHRmw=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
