@@ -1,10 +1,12 @@
 package par2
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // ---------- parseStatus ----------
@@ -430,5 +432,44 @@ func TestSetName_MixedCaseVolume(t *testing.T) {
 	got := setName("data.Vol015+16.Par2")
 	if got != "data" {
 		t.Errorf("setName(%q) = %q, want %q", "data.Vol015+16.Par2", got, "data")
+	}
+}
+
+func TestTeeHandler_FormatForUI(t *testing.T) {
+	t.Parallel()
+
+	h := &teeHandler{}
+
+	tests := []struct {
+		message string
+		attrs   []slog.Attr
+		wantOk  bool
+	}{
+		// status messages
+		{message: "No repair needed. All files are healthy.", wantOk: true},
+		{message: "Starting pipelined repair...", wantOk: true},
+		// relevant attributes
+		{message: "Some random message", attrs: []slog.Attr{slog.String("file", "foo.bin")}, wantOk: true},
+		{message: "Some random message", attrs: []slog.Attr{slog.String("expected", "foo.bin")}, wantOk: true},
+		// filtered messages (no relevant attributes)
+		{message: "Some random message", attrs: []slog.Attr{slog.String("other", "foo.bin")}, wantOk: false},
+		// list messages (should be allowed even without attributes)
+		{message: "PAR2 set protects 3 file(s):", wantOk: true},
+		{message: "  data.bin (12345 bytes)", wantOk: true},
+		{message: "Found 2 recovery archive(s):", wantOk: true},
+		{message: "  data.vol00+01.par2 (1 recovery blocks)", wantOk: true},
+		{message: "Candidate file(s) to consider (1):", wantOk: true},
+		{message: "  some_candidate.bin", wantOk: true},
+	}
+
+	for i, tc := range tests {
+		// Create slog record
+		var r slog.Record
+		r = slog.NewRecord(time.Now(), slog.LevelInfo, tc.message, 0)
+		r.AddAttrs(tc.attrs...)
+		_, ok := h.formatForUI(r)
+		if ok != tc.wantOk {
+			t.Errorf("[%d] formatForUI(%q) ok = %t, want %t", i, tc.message, ok, tc.wantOk)
+		}
 	}
 }
