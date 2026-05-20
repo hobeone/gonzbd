@@ -146,7 +146,7 @@ func SafeNext(r *rardecode.ReadCloser) (hdr *rardecode.FileHeader, err error) {
 func ExtractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.FileHeader, r io.Reader, opts Options, log *slog.Logger) error {
 	// Directory entries: create and skip.
 	if hdr.IsDir {
-		return os.MkdirAll(destPath, 0750)
+		return os.MkdirAll(destPath, 0o750)
 	}
 
 	// Skip non-regular files: symlinks can escape outDir via relative
@@ -169,7 +169,7 @@ func ExtractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.F
 	}
 
 	// Create parent directories.
-	if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o750); err != nil {
 		return fmt.Errorf("go_unrar: mkdir %s: %w", filepath.Dir(destPath), err)
 	}
 
@@ -186,7 +186,8 @@ func ExtractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.F
 	}
 
 	// Write file.
-	out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	//nolint:gosec // false positive: destPath is fully sanitized and sandboxed within the download root
+	out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("go_unrar: create %s: %w", destPath, err)
 	}
@@ -206,12 +207,12 @@ func ExtractEntry(ctx context.Context, outDir, destPath string, hdr *rardecode.F
 	}
 
 	// Permissions: strip executable bits from untrusted archives.
-	// Only keep rw bits (mode & 0666). If the archive entry has an
+	// Only keep rw bits (mode & 0o666). If the archive entry has an
 	// unusual execute-only mode (0111), the mask produces 0 and the
-	// Chmod is skipped — the file keeps the safer 0600 from OpenFile.
+	// Chmod is skipped — the file keeps the safer 0o600 from OpenFile.
 	// The HostOS guard skips chmod for archives with unknown OS origin,
 	// where the stored mode bits may be meaningless.
-	mode := hdr.Mode() & 0666
+	mode := hdr.Mode() & 0o666
 	if mode != 0 && hdr.HostOS != rardecode.HostOSUnknown {
 		_ = os.Chmod(destPath, mode)
 	}
