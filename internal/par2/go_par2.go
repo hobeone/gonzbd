@@ -188,13 +188,12 @@ type teeHandler struct {
 }
 
 func (h *teeHandler) Handle(ctx context.Context, r slog.Record) error {
-	err := h.Handler.Handle(ctx, r)
 	if h.onLine != nil {
 		if line, ok := h.formatForUI(r); ok {
 			h.onLine(line)
 		}
 	}
-	return err
+	return nil
 }
 
 func (h *teeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
