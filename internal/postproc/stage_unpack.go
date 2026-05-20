@@ -407,11 +407,12 @@ func applyPermissions(dir, permStr string) (int, error) {
 		return 0, fmt.Errorf("invalid permission string %q: %w", permStr, err)
 	}
 	dirMode := os.FileMode(mode)
-	fileMode := dirMode &^ 0111 // strip execute bits for regular files
+	fileMode := dirMode &^ 0o111 // strip execute bits for regular files
 
 	var count int
 	walkErr := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			//nolint:nilerr // ignore stat error to continue walking
 			return nil // skip entries we can't stat
 		}
 		var target os.FileMode

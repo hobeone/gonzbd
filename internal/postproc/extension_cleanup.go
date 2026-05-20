@@ -129,7 +129,11 @@ func cleanupEmptyDirs(root string) {
 	// Walk bottom-up by collecting dirs first, then processing in reverse.
 	var dirs []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || !d.IsDir() || path == root {
+		if err != nil {
+			//nolint:nilerr // ignore walk errors to do a best-effort empty directory cleanup
+			return nil
+		}
+		if !d.IsDir() || path == root {
 			return nil
 		}
 		dirs = append(dirs, path)

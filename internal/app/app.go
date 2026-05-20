@@ -964,9 +964,8 @@ func (app *Application) maybeDirectUnpack(fc FileComplete) {
 	app.mu.Lock()
 	du, exists := app.directUnpackers[fc.JobID]
 	if !exists {
-		// Enforce concurrency limit: skip if too many DU workers are active.
-		limit := int32(app.cfg.DirectUnpackThreads)
-		if limit > 0 && app.activeDU.Load() >= limit {
+		limit := app.cfg.DirectUnpackThreads
+		if limit > 0 && int(app.activeDU.Load()) >= limit {
 			app.mu.Unlock()
 			app.log.Debug("directunpack: skipping, concurrency limit reached",
 				"job", fc.JobID, "active", app.activeDU.Load(), "limit", limit)
