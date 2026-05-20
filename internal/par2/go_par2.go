@@ -28,7 +28,10 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile string, onLine func
 
 	engineLog := newPar2UILogger(log.With("component", "go_par2"), onLine)
 
-	d, err := par2engine.NewDecoder(ctx, parfile, 0, 0, par2FileSizeLimit, 0, engineLog)
+	d, err := par2engine.NewDecoder(ctx, parfile, par2engine.DecoderOptions{
+		MaxFileSize: par2FileSizeLimit,
+		Logger:      engineLog,
+	})
 	if err != nil {
 		res.Status = StatusInvalidPar2
 		return res, fmt.Errorf("go_par2: open decoder: %w", err)
@@ -47,7 +50,7 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile string, onLine func
 		}
 	}()
 
-	if err := d.VerifyScans(ctx, progressChan); err != nil {
+	if err := d.VerifyScans(ctx); err != nil {
 		res.Status = StatusUnknown
 		return res, fmt.Errorf("go_par2: verify scan: %w", err)
 	}
@@ -102,7 +105,10 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile string, onLine func
 
 	engineLog := newPar2UILogger(log.With("component", "go_par2"), accumulate)
 
-	d, err := par2engine.NewDecoder(ctx, parfile, 0, 0, par2FileSizeLimit, 0, engineLog)
+	d, err := par2engine.NewDecoder(ctx, parfile, par2engine.DecoderOptions{
+		MaxFileSize: par2FileSizeLimit,
+		Logger:      engineLog,
+	})
 	if err != nil {
 		res.Output = output.String()
 		return res, fmt.Errorf("go_par2: open decoder: %w", err)
@@ -120,7 +126,7 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile string, onLine func
 		}
 	}()
 
-	if err := d.VerifyScans(ctx, verifyProgress); err != nil {
+	if err := d.VerifyScans(ctx); err != nil {
 		res.Output = output.String()
 		return res, fmt.Errorf("go_par2: verify scan: %w", err)
 	}
