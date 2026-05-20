@@ -130,7 +130,10 @@ export const getHistoryError = () => store.error;
 export const startHistoryPolling = () => store.start();
 export const stopHistoryPolling = () => store.stop();
 
-export const retryHistoryJob = (id: string) => store.retryJob(id);
+export async function retryHistoryJob(id: string) {
+	await store.retryJob(id);
+	await refreshQueue();
+}
 
 export async function deleteHistoryItem(nzoId: string, deleteFiles = false) {
 	await store.deleteItem(nzoId, deleteFiles);
