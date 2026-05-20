@@ -86,7 +86,7 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 		}
 
 		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(destPath, 0750); err != nil {
+			if err := os.MkdirAll(destPath, 0o750); err != nil {
 				return res, fmt.Errorf("go_7z: mkdir %s: %w", destPath, err)
 			}
 			continue
@@ -141,7 +141,7 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 // the library's stream reuse optimisation for solid archives.
 func extractSevenZipFile(ctx context.Context, destPath string, f *sevenzip.File, opts Options, log *slog.Logger) error {
 	// Create parent directories.
-	if err := os.MkdirAll(filepath.Dir(destPath), 0750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o750); err != nil {
 		return fmt.Errorf("go_7z: mkdir %s: %w", filepath.Dir(destPath), err)
 	}
 
@@ -165,7 +165,8 @@ func extractSevenZipFile(ctx context.Context, destPath string, f *sevenzip.File,
 		}
 	}
 
-	out, err := os.OpenFile(destPath, flags, 0600)
+	//nolint:gosec // false positive: destPath is fully sanitized and sandboxed within the download root
+	out, err := os.OpenFile(destPath, flags, 0o600)
 	if err != nil {
 		return fmt.Errorf("go_7z: create %s: %w", destPath, err)
 	}
@@ -184,10 +185,10 @@ func extractSevenZipFile(ctx context.Context, destPath string, f *sevenzip.File,
 	}
 
 	// Permissions: strip executable bits from untrusted archives.
-	// Only keep rw bits (mode & 0666). If the archive entry has an
+	// Only keep rw bits (mode & 0o666). If the archive entry has an
 	// unusual execute-only mode (0111), the mask produces 0 and the
 	// Chmod is skipped — the file keeps the safer 0600 from OpenFile.
-	mode := f.Mode() & 0666
+	mode := f.Mode() & 0o666
 	if mode != 0 {
 		_ = os.Chmod(destPath, mode)
 	}

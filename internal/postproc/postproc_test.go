@@ -1080,4 +1080,3 @@ func TestPreCheck_UnsetDirSkipsGuard(t *testing.T) {
 		t.Errorf("stage ran %d times, want 1 (unset DownloadDir should not trigger pre-check)", stage.CallCount())
 	}
 }
-

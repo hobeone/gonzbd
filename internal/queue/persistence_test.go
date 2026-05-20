@@ -415,10 +415,10 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 	//   File 1: all 3 articles untouched → Pending=3, BytesDownloaded=0
 	//   PendingArticles = 1 + 3 = 4
 	artBytes := int64(j.Files[0].Articles[0].Bytes) // all articles same size
-	wantPendingFile0 := 1                            // arts0[2] emitted→cleared→pending
-	wantPendingFile1 := 3                            // all pristine
-	wantPendingArticles := 4                         // 1 + 3
-	wantBytesDownloaded0 := artBytes                 // only arts0[0] (successful Done)
+	wantPendingFile0 := 1                           // arts0[2] emitted→cleared→pending
+	wantPendingFile1 := 3                           // all pristine
+	wantPendingArticles := 4                        // 1 + 3
+	wantBytesDownloaded0 := artBytes                // only arts0[0] (successful Done)
 
 	// Persist.
 	if err := q.Save(dir); err != nil {

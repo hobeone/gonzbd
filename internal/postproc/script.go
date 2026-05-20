@@ -1,7 +1,6 @@
 package postproc
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -151,28 +150,6 @@ type ScriptResult struct {
 
 	// Err is non-nil on exec failure, ctx cancellation, or non-zero exit.
 	Err error
-}
-
-// cappedWriter is an io.Writer that discards bytes written beyond cap bytes.
-// It tracks whether the cap was hit so callers can note truncation.
-type cappedWriter struct {
-	buf     *bytes.Buffer
-	cap     int
-	written int
-}
-
-func (w *cappedWriter) Write(p []byte) (int, error) {
-	n := len(p)
-	remaining := w.cap - w.written
-	if remaining <= 0 {
-		return n, nil // pretend we wrote it, but discard
-	}
-	if len(p) > remaining {
-		p = p[:remaining]
-	}
-	written, err := w.buf.Write(p)
-	w.written += written
-	return n, err
 }
 
 // buildEnv constructs the environment for the script. It starts from the

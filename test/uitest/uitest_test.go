@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/playwright-community/playwright-go"
+
+	"github.com/hobeone/gonzbd/internal/api"
 )
 
 // ---------------------------------------------------------------------------

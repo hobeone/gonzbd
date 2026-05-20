@@ -235,9 +235,9 @@ func TestSearchBySubstring_LIKEWildcardEscaping(t *testing.T) {
 	}{
 		{"literal percent", "100%", 1},
 		{"literal underscore", "file_name", 1},
-		{"percent alone matches entry with percent", "%", 1},                    // Matches "100% Complete" which contains a literal "%"
-		{"bare underscore only matches literal underscores", "e_n", 1},          // Without escaping, "e_n" would match "e" + any char + "n" in all entries
-		{"no match for non-existent literal wildcard", "100%xxx", 0},            // No entry matches this
+		{"percent alone matches entry with percent", "%", 1},           // Matches "100% Complete" which contains a literal "%"
+		{"bare underscore only matches literal underscores", "e_n", 1}, // Without escaping, "e_n" would match "e" + any char + "n" in all entries
+		{"no match for non-existent literal wildcard", "100%xxx", 0},   // No entry matches this
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

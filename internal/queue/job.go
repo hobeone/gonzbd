@@ -406,7 +406,12 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 		pp = 0
 	}
 	if priority == constants.DefaultPriority {
-		priority = constants.Priority(cat.Priority)
+		p := cat.Priority
+		if p < -128 || p > 127 {
+			priority = constants.NormalPriority
+		} else {
+			priority = constants.Priority(p)
+		}
 	}
 
 	if opts.Logger != nil {
