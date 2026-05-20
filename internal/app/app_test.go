@@ -334,6 +334,14 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 	}
 }
 
+type mockEmitter struct {
+	events []app.Event
+}
+
+func (m *mockEmitter) Broadcast(event app.Event) {
+	m.events = append(m.events, event)
+}
+
 func TestRetryHistoryJob(t *testing.T) {
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
@@ -358,6 +366,9 @@ func TestRetryHistoryJob(t *testing.T) {
 	defer db.Close()
 
 	application, _ := app.New(appCfg, repo)
+	emitter := &mockEmitter{}
+	application.SetEmitter(emitter)
+
 	ctx, cancel := context.WithCancel(t.Context())
 	_ = application.Start(ctx)
 	defer cancel()
@@ -416,6 +427,24 @@ func TestRetryHistoryJob(t *testing.T) {
 	// 4. Verify history entry is gone
 	if _, err := repo.Get(ctx, jobID); err == nil {
 		t.Error("history entry still exists after retry")
+	}
+
+	// Verify WebSocket update events were broadcast
+	hasQueueUpdated := false
+	hasHistoryUpdated := false
+	for _, ev := range emitter.events {
+		if ev.Type == "queue_updated" {
+			hasQueueUpdated = true
+		}
+		if ev.Type == "history_updated" {
+			hasHistoryUpdated = true
+		}
+	}
+	if !hasQueueUpdated {
+		t.Error("expected queue_updated event, got none")
+	}
+	if !hasHistoryUpdated {
+		t.Error("expected history_updated event, got none")
 	}
 
 	// 5. Resume and wait for it to finish to be clean
