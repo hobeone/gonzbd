@@ -335,11 +335,22 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 }
 
 type mockEmitter struct {
+	mu     sync.Mutex
 	events []app.Event
 }
 
 func (m *mockEmitter) Broadcast(event app.Event) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.events = append(m.events, event)
+}
+
+func (m *mockEmitter) Events() []app.Event {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	res := make([]app.Event, len(m.events))
+	copy(res, m.events)
+	return res
 }
 
 func TestRetryHistoryJob(t *testing.T) {
@@ -432,7 +443,7 @@ func TestRetryHistoryJob(t *testing.T) {
 	// Verify WebSocket update events were broadcast
 	hasQueueUpdated := false
 	hasHistoryUpdated := false
-	for _, ev := range emitter.events {
+	for _, ev := range emitter.Events() {
 		if ev.Type == "queue_updated" {
 			hasQueueUpdated = true
 		}

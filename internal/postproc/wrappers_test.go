@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
@@ -107,6 +108,46 @@ func TestRepairStage_SkippedWhenQuickCheckPassed(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected OutputLines to contain QuickCheck skip message, got %v", job.OutputLines)
+	}
+}
+
+// TestRepairStage_SkippedWhenDirectUnpackSucceeded verifies that RepairStage.Run skips par2
+// when Direct Unpack successfully extracted all archives.
+func TestRepairStage_SkippedWhenDirectUnpackSucceeded(t *testing.T) {
+	t.Parallel()
+	job, _ := stageJob(t)
+
+	// Populate DirectUnpackSets and keep Failures empty.
+	job.DirectUnpackSets = map[string]directunpack.SuccessSet{
+		"movie": {
+			RarParts:       []string{"movie.part01.rar"},
+			ExtractedFiles: []string{"movie.mkv"},
+		},
+	}
+	job.DirectUnpackFailures = nil
+
+	// Create a par2 file so the stage has something to find, but it should skip before even scanning.
+	os.WriteFile(filepath.Join(job.DownloadDir, "movie.par2"), []byte("fake"), 0o644)
+
+	stage := NewRepairStage()
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The stage should skip — no ParError should be set.
+	if job.ParError {
+		t.Error("ParError should be false when DirectUnpack succeeded")
+	}
+
+	// Verify the skip was logged in OutputLines.
+	found := false
+	for _, line := range job.OutputLines {
+		if strings.Contains(line, "Direct Unpack successfully extracted") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected OutputLines to contain Direct Unpack skip message, got %v", job.OutputLines)
 	}
 }
 
