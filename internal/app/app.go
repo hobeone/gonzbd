@@ -88,16 +88,16 @@ type Config struct {
 	GoPar2Fallback       bool
 	// SkipQuickCheck disables the CRC pre-verification pass before par2 repair.
 	// Zero value (false) preserves the existing behavior: quickcheck runs.
-	SkipQuickCheck bool
-	CleanupExtensions    []string
-	FolderRename         bool
-	Nice                 string
-	Ionice               string
-	Permissions          string
-	PasswordFile         string
-	ExtraUnrarParams     string
-	ExtraPar2Params      string
-	ScriptCanFail        bool
+	SkipQuickCheck    bool
+	CleanupExtensions []string
+	FolderRename      bool
+	Nice              string
+	Ionice            string
+	Permissions       string
+	PasswordFile      string
+	ExtraUnrarParams  string
+	ExtraPar2Params   string
+	ScriptCanFail     bool
 
 	// DirectUnpack enables extraction of RAR archives while the download
 	// is still in progress. Completed volumes are fed to the extractor
@@ -196,8 +196,8 @@ type Application struct {
 	bandwidthMax  atomic.Int64 // configured bandwidth ceiling in bytes/sec
 	bandwidthPerc atomic.Int32 // configured bandwidth percentage (1-100)
 
-	customStages     []postproc.Stage
-	quickCheckStage  *postproc.QuickCheckStage
+	customStages    []postproc.Stage
+	quickCheckStage *postproc.QuickCheckStage
 
 	// directUnpackers maps jobID → active DirectUnpacker for jobs being
 	// extracted during download. Protected by mu.
@@ -1183,6 +1183,8 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		return err
 	}
 	_, _ = app.historyRepo.Delete(ctx, jobID)
+	app.emitter.Broadcast(Event{Type: "queue_updated"})
+	app.emitter.Broadcast(Event{Type: "history_updated"})
 	snap := app.queue.SnapshotJob(jobID)
 	if snap != nil && snap.IsComplete() {
 		app.maybeFinalize(jobID, failMsgForJob(snap))
