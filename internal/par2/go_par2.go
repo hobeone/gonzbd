@@ -263,18 +263,20 @@ func (h *teeHandler) WithGroup(name string) slog.Handler {
 	return &teeHandler{Handler: h.Handler.WithGroup(name), onLine: h.onLine}
 }
 
-// noisyMessages contains par2engine Info-level messages that are too internal
-// to show in the UI output stream.
-var noisyMessages = map[string]bool{
-	"Parsed SliceByteCount":               true,
-	"Configured memory-limited streaming": true,
-}
+// noisyMessages contains par2engine messages that are too internal
+// to show in the UI output stream. (SliceByteCount and memory-limited
+// streaming are now Debug level in the library, so they never reach
+// the teeHandler.)
+var noisyMessages = map[string]bool{}
 
-// statusMessages are Info-level messages we always want to show.
+// statusMessages are Info-level messages we always want to show even
+// when they don't carry a file/name/err attribute.
 var statusMessages = map[string]bool{
 	"No repair needed. All files are healthy.": true,
 	"Starting pipelined repair...":             true,
 	"Repair completed successfully!":           true,
+	"Verification summary":                     true,
+	"Repair summary":                           true,
 }
 
 // formatForUI decides whether a log record should appear in the UI and formats it.
@@ -284,13 +286,13 @@ func (h *teeHandler) formatForUI(r slog.Record) (string, bool) {
 	}
 
 	if r.Level < slog.LevelWarn {
-		// For Info: show only if the record has a file/name/err attribute,
+		// For Info: show only if the record has a file/name/path/err attribute,
 		// or if it's an explicit status message.
 		if !statusMessages[r.Message] {
 			hasRelevant := false
 			r.Attrs(func(a slog.Attr) bool {
 				switch a.Key {
-				case "file", "name", "err":
+				case "file", "name", "path", "err":
 					hasRelevant = true
 					return false
 				}
