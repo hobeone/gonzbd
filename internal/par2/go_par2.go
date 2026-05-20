@@ -287,20 +287,27 @@ func (h *teeHandler) formatForUI(r slog.Record) (string, bool) {
 	}
 
 	if r.Level < slog.LevelWarn {
-		// For Info: show only if the record has a file/name/path/err attribute,
-		// or if it's an explicit status message.
+		// For Info: show only if the record has a file/name/path/err/expected/found attribute,
+		// if it's an explicit status message, or if it is a structured candidate/archive/file listing.
 		if !statusMessages[r.Message] {
-			hasRelevant := false
-			r.Attrs(func(a slog.Attr) bool {
-				switch a.Key {
-				case "file", "name", "path", "err", "expected", "found":
-					hasRelevant = true
-					return false
+			isListMessage := strings.HasPrefix(r.Message, "  ") ||
+				strings.HasPrefix(r.Message, "PAR2 set protects ") ||
+				(strings.HasPrefix(r.Message, "Found ") && strings.Contains(r.Message, " recovery archive")) ||
+				strings.HasPrefix(r.Message, "Candidate file(s) to consider")
+
+			if !isListMessage {
+				hasRelevant := false
+				r.Attrs(func(a slog.Attr) bool {
+					switch a.Key {
+					case "file", "name", "path", "err", "expected", "found":
+						hasRelevant = true
+						return false
+					}
+					return true
+				})
+				if !hasRelevant {
+					return "", false
 				}
-				return true
-			})
-			if !hasRelevant {
-				return "", false
 			}
 		}
 	}
