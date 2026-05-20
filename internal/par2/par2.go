@@ -273,9 +273,6 @@ func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	args := make([]string, 0, 6+len(extraFiles))
 	args = append(args, "v", "-q")
-	if opts.Turbo {
-		args = append(args, "-t+")
-	}
 	args = append(args, capsArgs(opts.Caps, filepath.Dir(parfile))...)
 	args = append(args, opts.ExtraArgs...)
 	args = append(args, parfile)
@@ -333,9 +330,6 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	// SABnzbd also does not use -q for par2. Keep -q on verify-only
 	// calls (VerifyWith) where we only need the aggregate status.
 	args = append(args, "r")
-	if opts.Turbo {
-		args = append(args, "-t+")
-	}
 	args = append(args, capsArgs(opts.Caps, filepath.Dir(parfile))...)
 	args = append(args, opts.ExtraArgs...)
 	args = append(args, parfile)
