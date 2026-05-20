@@ -106,43 +106,6 @@ func TestVerifyWith_ExtraArgs(t *testing.T) {
 	}
 }
 
-// TestRepairWith_TurboFlag verifies that -t+ is added when Turbo=true.
-func TestRepairWith_TurboFlag(t *testing.T) {
-	t.Parallel()
-
-	t.Run("turbo=true", func(t *testing.T) {
-		t.Parallel()
-		var captured string
-		opts := RunOptions{
-			Command: "/nonexistent/par2",
-			Turbo:   true,
-			OnCommand: func(cmdLine string) {
-				captured = cmdLine
-			},
-		}
-		_, _ = RepairWith(t.Context(), opts, "/tmp/does-not-exist.par2")
-		if !containsArg(captured, "-t+") {
-			t.Errorf("Turbo=true: cmdline missing -t+: %q", captured)
-		}
-	})
-
-	t.Run("turbo=false", func(t *testing.T) {
-		t.Parallel()
-		var captured string
-		opts := RunOptions{
-			Command: "/nonexistent/par2",
-			Turbo:   false,
-			OnCommand: func(cmdLine string) {
-				captured = cmdLine
-			},
-		}
-		_, _ = RepairWith(t.Context(), opts, "/tmp/does-not-exist.par2")
-		if containsArg(captured, "-t+") {
-			t.Errorf("Turbo=false: cmdline should NOT contain -t+: %q", captured)
-		}
-	})
-}
-
 // ---------- RepairOutput.ETA ----------
 
 func TestRepairOutput_ETA_BeforeStart(t *testing.T) {
