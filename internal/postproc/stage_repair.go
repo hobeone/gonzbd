@@ -50,6 +50,16 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 
 	logf(log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)
 
+	// If Direct Unpack successfully extracted the archives during download,
+	// we can skip PAR2 repair entirely. The files are already extracted
+	// and healthy, and the source archives will be deleted anyway.
+	if len(job.DirectUnpackSets) > 0 && len(job.DirectUnpackFailures) == 0 {
+		logf(log, job, slog.LevelInfo, "Direct Unpack successfully extracted all sets — skipping par2 repair")
+		job.OutputLines = append(job.OutputLines,
+			"[repair] Skipped: Direct Unpack successfully extracted all archives during download")
+		return nil
+	}
+
 	// If QuickCheck already confirmed all files have matching CRCs, skip
 	// the expensive par2 verify+repair subprocess. This saves 10-30s per
 	// healthy job. Par2 cleanup is handled by the separate par2_cleanup
