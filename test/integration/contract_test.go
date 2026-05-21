@@ -557,7 +557,7 @@ func buildAPIServerWithQueue(t *testing.T) (*api.Server, *httptest.Server) {
 		History: repo,
 		Config:  cfg,
 		Grabber: grabber,
-		App:     nopApp{},
+		App:     api.NopApp{},
 	})
 
 	ts := httptest.NewServer(srv.Handler())
@@ -628,7 +628,7 @@ func buildAPIServerWithValidConfig(t *testing.T) (*api.Server, *httptest.Server)
 		Config:     cfg,
 		ConfigPath: filepath.Join(dir, "gonzbd.yaml"),
 		Grabber:    grabber,
-		App:        nopApp{},
+		App:        api.NopApp{},
 	})
 
 	ts := httptest.NewServer(srv.Handler())

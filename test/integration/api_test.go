@@ -20,7 +20,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/types"
@@ -33,29 +32,6 @@ type nopNZBHandler struct{}
 func (nopNZBHandler) HandleNZB(context.Context, string, []byte, types.FetchOptions) (string, error) {
 	return "", nil
 }
-
-type nopApp struct{}
-
-func (nopApp) ReloadDownloader([]config.ServerConfig) error           { return nil }
-func (nopApp) RetryHistoryJob(context.Context, string) error          { return nil }
-func (nopApp) AddJob(context.Context, *queue.Job, []byte, bool) error { return nil }
-func (nopApp) RemoveJob(context.Context, string, bool) error          { return nil }
-func (nopApp) RemoveHistoryJob(context.Context, string, bool) error   { return nil }
-func (nopApp) SetSpeedLimit(int64)                                    {}
-func (nopApp) SetBandwidthMax(int64)                                  {}
-func (nopApp) SetBandwidthPerc(int)                                   {}
-func (nopApp) SetDownloadDir(string)                                  {}
-func (nopApp) SetCompleteDir(string)                                  {}
-func (nopApp) PauseDownloads()                                        {}
-func (nopApp) ResumeDownloads()                                       {}
-func (nopApp) DisconnectAll()                                         {}
-func (nopApp) PausePostProcessor()                                    {}
-func (nopApp) ResumePostProcessor()                                   {}
-func (nopApp) ReloadPostProcOptions(*config.Config)                   {}
-func (nopApp) ReloadDownloadOptions(*config.Config)                   {}
-func (nopApp) UnblockServer(string) bool                              { return true }
-func (nopApp) ServerStatus() []downloader.ServerSnapshot              { return nil }
-func (nopApp) Speed() float64                                         { return 0 }
 
 const (
 	integrationAPIKey = "aabbccddeeff0011"
@@ -90,7 +66,7 @@ func buildAPIServer(t *testing.T) (*api.Server, *httptest.Server) {
 		History: repo,
 		Config:  cfg,
 		Grabber: grabber,
-		App:     nopApp{},
+		App:     api.NopApp{},
 	})
 
 	ts := httptest.NewServer(srv.Handler())

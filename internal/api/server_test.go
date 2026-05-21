@@ -2,9 +2,7 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -12,8 +10,6 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/downloader"
-	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -22,49 +18,6 @@ const (
 	testNZBKey = "fedcba9876543210"
 )
 
-type mockApp struct {
-	q     *queue.Queue
-	h     *history.Repository
-	speed float64
-}
-
-func (m mockApp) ReloadDownloader([]config.ServerConfig) error  { return nil }
-func (m mockApp) RetryHistoryJob(context.Context, string) error { return nil }
-func (m mockApp) SetSpeedLimit(int64)                           {}
-func (m mockApp) SetBandwidthMax(int64)                         {}
-func (m mockApp) SetBandwidthPerc(int)                          {}
-func (m mockApp) SetDownloadDir(string)                         {}
-func (m mockApp) SetCompleteDir(string)                         {}
-func (m mockApp) PauseDownloads()                               {}
-func (m mockApp) ResumeDownloads()                              {}
-func (m mockApp) DisconnectAll()                                {}
-func (m mockApp) PausePostProcessor()                           {}
-func (m mockApp) ResumePostProcessor()                          {}
-func (m mockApp) ReloadPostProcOptions(*config.Config)          {}
-func (m mockApp) ReloadDownloadOptions(*config.Config)          {}
-func (m mockApp) UnblockServer(string) bool                     { return true }
-func (m mockApp) ServerStatus() []downloader.ServerSnapshot     { return nil }
-func (m mockApp) Speed() float64                                { return m.speed }
-func (m mockApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
-	if m.q == nil {
-		return fmt.Errorf("queue not wired to mockApp")
-	}
-	return m.q.Add(job)
-}
-func (m mockApp) RemoveJob(_ context.Context, id string, deleteFiles bool) error {
-	if m.q == nil {
-		return fmt.Errorf("queue not wired to mockApp")
-	}
-	return m.q.Remove(id)
-}
-func (m mockApp) RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error {
-	if m.h == nil {
-		return fmt.Errorf("history not wired to mockApp")
-	}
-	_, err := m.h.Delete(ctx, id)
-	return err
-}
-
 func testServer() *Server {
 	q := queue.New()
 	cfg := &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}}
@@ -72,7 +25,7 @@ func testServer() *Server {
 		Config:  cfg,
 		Version: "1.0.0-test",
 		Queue:   q,
-		App:     mockApp{q: q},
+		App:     NopApp{Queue: q},
 	})
 }
 
@@ -387,7 +340,7 @@ func TestAuthConfigDynamic(t *testing.T) {
 		Config:  cfg,
 		Version: "1.0.0-test",
 		Queue:   q,
-		App:     mockApp{q: q},
+		App:     NopApp{Queue: q},
 	})
 
 	// Authenticate with old-key works
