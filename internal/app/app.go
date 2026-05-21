@@ -1211,6 +1211,64 @@ func (app *Application) SetSanitizeOptions(opts fsutil.SanitizeOptions) {
 	app.mu.Unlock()
 }
 
+// SetMinFreeSpace updates the low-disk-space threshold. Thread-safe.
+func (app *Application) SetMinFreeSpace(bytes int64) {
+	app.mu.Lock()
+	app.cfg.MinFreeSpace = bytes
+	app.mu.Unlock()
+	if app.assembler != nil {
+		app.assembler.SetMinFreeBytes(bytes)
+	}
+}
+
+// SetMaxArtTries updates per-article retry limit and related dispatch options.
+// Thread-safe; takes effect on the next dispatch pass.
+func (app *Application) SetMaxArtTries(v int) {
+	app.mu.Lock()
+	app.cfg.MaxArtTries = v
+	app.mu.Unlock()
+	app.pushDispatchOptions()
+}
+
+// SetMaxArtOpt updates the backup-server retry limit.
+func (app *Application) SetMaxArtOpt(v int) {
+	app.mu.Lock()
+	app.cfg.MaxArtOpt = v
+	app.mu.Unlock()
+	app.pushDispatchOptions()
+}
+
+// SetTopOnly controls whether dispatch is restricted to the top-priority server.
+func (app *Application) SetTopOnly(v bool) {
+	app.mu.Lock()
+	app.cfg.TopOnly = v
+	app.mu.Unlock()
+	app.pushDispatchOptions()
+}
+
+// SetPropagationDelay updates the delay before new jobs start downloading.
+func (app *Application) SetPropagationDelay(minutes int) {
+	app.mu.Lock()
+	app.cfg.PropagationDelay = minutes
+	app.mu.Unlock()
+	app.pushDispatchOptions()
+}
+
+// pushDispatchOptions reads the current mutable dispatch fields under app.mu
+// and forwards them to the running downloader. Must not be called while
+// holding app.mu.
+func (app *Application) pushDispatchOptions() {
+	app.mu.Lock()
+	maxArtTries := app.cfg.MaxArtTries
+	maxArtOpt := app.cfg.MaxArtOpt
+	topOnly := app.cfg.TopOnly
+	propDelay := time.Duration(app.cfg.PropagationDelay) * time.Minute
+	app.mu.Unlock()
+	if app.downloader != nil {
+		app.downloader.SetDispatchOptions(maxArtTries, maxArtOpt, topOnly, propDelay)
+	}
+}
+
 // RetryHistoryJob re-enqueues a completed/failed history job for re-download.
 // Failed articles are reset; the history entry is deleted on success.
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
