@@ -1,0 +1,95 @@
+package api
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/types"
+)
+
+// toMBString formats bytes as a megabyte string like "1024.00" for SABnzbd API compatibility.
+func toMBString(n int64) string {
+	return strconv.FormatFloat(float64(n)/float64(1<<20), 'f', 2, 64)
+}
+
+// intParam reads a query parameter as int, returning 0 if absent or unparseable.
+func intParam(r *http.Request, key string) int {
+	v := formString(r, key)
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// formString reads a query/form value. Centralizes the //nolint:gosec
+// suppression — the body is size-limited by loggingMiddleware so G120
+// (memory-exhaustion via unbounded form parsing) does not apply.
+func formString(r *http.Request, key string) string {
+	return r.FormValue(key) //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
+}
+
+// priorityParam reads the priority= query parameter and maps it to a Priority constant.
+// Returns DefaultPriority (inherit from category) when the parameter is absent.
+func priorityParam(r *http.Request) constants.Priority {
+	s := r.FormValue("priority") //nolint:gosec // G120: body already limited
+	if s == "" {
+		return constants.DefaultPriority
+	}
+	return constants.Priority(int8(intParam(r, "priority"))) //nolint:gosec // G115: priority values fit in int8 by design
+}
+
+// ppParam extracts the post-processing level from the request.
+// Returns types.PPInherit (-1) when absent, meaning "inherit from category".
+func ppParam(r *http.Request) int {
+	s := r.FormValue("pp") //nolint:gosec // G120: body already limited
+	if s == "" {
+		return types.PPInherit
+	}
+	return intParam(r, "pp")
+}
+
+// openFile wraps os.Open so the G304 gosec finding is isolated to one place.
+// The caller is responsible for validating the path before calling openFile.
+func openFile(path string) (*os.File, error) {
+	return os.Open(path) //nolint:gosec // G304: caller validates path is absolute and traversal-free
+}
+
+// splitCSV splits a comma-separated value string into trimmed non-empty tokens.
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// nonEmpty returns s if non-empty, otherwise fallback.
+func nonEmpty(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+// formatDuration renders a non-negative whole-second duration as h:mm:ss
+// (matching Python SABnzbd's timeleft format).
+func formatDuration(seconds int) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	h := seconds / 3600
+	m := (seconds % 3600) / 60
+	s := seconds % 60
+	return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+}

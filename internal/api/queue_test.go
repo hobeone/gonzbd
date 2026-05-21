@@ -44,7 +44,7 @@ func testQueueServer(t *testing.T) (*Server, *queue.Queue) {
 		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
 		Version: "1.0.0-test",
 		Queue:   q,
-		App:     mockApp{q: q},
+		App:     NopApp{Queue: q},
 	})
 	return s, q
 }
@@ -312,7 +312,7 @@ func testQueueServerWithSpeed(t *testing.T, speed float64) (*Server, *queue.Queu
 		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
 		Version: "1.0.0-test",
 		Queue:   q,
-		App:     mockApp{q: q, speed: speed},
+		App:     NopApp{Queue: q, SpeedVal: speed},
 	})
 	return s, q
 }
@@ -1478,7 +1478,7 @@ func testQueueServerWithCats(t *testing.T, cats []config.CategoryConfig) (*Serve
 		Config:  cfg,
 		Version: "1.0.0-test",
 		Queue:   q,
-		App:     mockApp{q: q},
+		App:     NopApp{Queue: q},
 	})
 	return s, q
 }
