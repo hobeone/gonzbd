@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp"
 )
 
@@ -184,71 +183,13 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 		s.applySpeedLimit()
 	}
 
-	// Hot-apply postproc toggles that can take effect for the next job.
-	if section == "postproc" && s.app != nil {
-		switch keyword {
-		case "enable_quick_check":
-			var enabled bool
-			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.EnableQuickCheck })
-			s.app.SetQuickCheckEnabled(enabled)
-		case "enable_par_cleanup":
-			var enabled bool
-			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.EnableParCleanup })
-			s.app.SetParCleanup(enabled)
-		case "enable_rar_cleanup":
-			var enabled bool
-			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.EnableRarCleanup })
-			s.app.SetRarCleanup(enabled)
-		case "overwrite_files":
-			var enabled bool
-			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.OverwriteFiles })
-			s.app.SetOverwriteFiles(enabled)
-		case "flat_unpack":
-			var enabled bool
-			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.FlatUnpack })
-			s.app.SetFlatUnpack(enabled)
-		case "permissions":
-			var v string
-			s.config.WithRead(func(cfg *config.Config) { v = cfg.PostProc.Permissions })
-			s.app.SetPermissions(v)
-		case "folder_rename":
-			var enabled bool
-			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.FolderRename })
-			s.app.SetFolderRename(enabled)
-		case "script_can_fail":
-			var enabled bool
-			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.ScriptCanFail })
-			s.app.SetScriptCanFail(enabled)
-		}
-	}
-
-	// Hot-apply downloads naming/sanitize options.
-	if section == "downloads" && s.app != nil {
-		switch keyword {
-		case "replace_illegal_with", "replace_spaces_with", "strip_diacritics", "cleanup_list":
-			var opts fsutil.SanitizeOptions
-			s.config.WithRead(func(cfg *config.Config) { opts = cfg.Downloads.SanitizeOptions() })
-			s.app.SetSanitizeOptions(opts)
-		case "min_free_space":
-			var v int64
-			s.config.WithRead(func(cfg *config.Config) { v = int64(cfg.Downloads.MinFreeSpace) })
-			s.app.SetMinFreeSpace(v)
-		case "max_art_tries":
-			var v int
-			s.config.WithRead(func(cfg *config.Config) { v = cfg.Downloads.MaxArtTries })
-			s.app.SetMaxArtTries(v)
-		case "max_art_opt":
-			var v int
-			s.config.WithRead(func(cfg *config.Config) { v = cfg.Downloads.MaxArtOpt })
-			s.app.SetMaxArtOpt(v)
-		case "top_only":
-			var v bool
-			s.config.WithRead(func(cfg *config.Config) { v = cfg.Downloads.TopOnly })
-			s.app.SetTopOnly(v)
-		case "propagation_delay":
-			var v int
-			s.config.WithRead(func(cfg *config.Config) { v = cfg.Downloads.PropagationDelay })
-			s.app.SetPropagationDelay(v)
+	// Hot-apply postproc and download options for the next job.
+	if s.app != nil {
+		switch section {
+		case "postproc":
+			s.config.WithRead(func(cfg *config.Config) { s.app.ReloadPostProcOptions(cfg) })
+		case "downloads":
+			s.config.WithRead(func(cfg *config.Config) { s.app.ReloadDownloadOptions(cfg) })
 		}
 	}
 
