@@ -76,6 +76,8 @@ type ApplicationReloader interface {
 	PausePostProcessor()
 	ResumePostProcessor()
 	SetQuickCheckEnabled(enabled bool)
+	SetParCleanup(enabled bool)
+	SetRarCleanup(enabled bool)
 	UnblockServer(name string) bool
 	ServerStatus() []downloader.ServerSnapshot
 	// Speed returns the current aggregate download speed in bytes/sec.

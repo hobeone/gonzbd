@@ -11,12 +11,21 @@ import (
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
+// builtStages bundles the stage list with the individually addressable stages
+// that need runtime toggling via Application setter methods.
+type builtStages struct {
+	Stages      []postproc.Stage
+	QuickCheck  *postproc.QuickCheckStage
+	Par2Cleanup *postproc.Par2CleanupStage
+	Unpack      *postproc.UnpackStage
+}
+
 // buildStages constructs the post-processing stage list from cfg.
 // Called once during New() when customStages is nil. Separated so the
 // 150-line stage-wiring block doesn't live inside the New() constructor.
-// The returned *postproc.QuickCheckStage is held by Application so it can
-// be toggled at runtime via SetQuickCheckEnabled without restart.
-func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, *postproc.QuickCheckStage, error) {
+// The returned builtStages holds pointers to individually-addressable stages
+// that can be toggled at runtime without restart.
+func buildStages(cfg Config, log *slog.Logger) (builtStages, error) {
 	ppLog := log.With("component", "postproc")
 	var stages []postproc.Stage
 
@@ -35,11 +44,11 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, *postproc.Quic
 	// Parse user-supplied extra params (validated: must start with '-').
 	extraPar2Args, err := cmdutil.ParseExtraParams(cfg.ExtraPar2Params)
 	if err != nil {
-		return nil, nil, fmt.Errorf("extra_par2_params: %w", err)
+		return builtStages{}, fmt.Errorf("extra_par2_params: %w", err)
 	}
 	extraUnrarArgs, err := cmdutil.ParseExtraParams(cfg.ExtraUnrarParams)
 	if err != nil {
-		return nil, nil, fmt.Errorf("extra_unrar_params: %w", err)
+		return builtStages{}, fmt.Errorf("extra_unrar_params: %w", err)
 	}
 	// N5: Validate extra unrar params against SABnzbd's allowlist.
 	// Warn instead of hard-fail so existing configs aren't broken.
@@ -93,8 +102,11 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, *postproc.Quic
 	stages = append(stages, repairStage)
 
 	// Unpack stage: included when any extraction/join feature is enabled.
+	// Declared outside the if-block so it can be returned in builtStages
+	// for runtime toggling via Application.SetRarCleanup.
+	var unpackStage *postproc.UnpackStage
 	if cfg.EnableUnrar || cfg.Enable7zip || cfg.EnableFileJoin {
-		unpackStage := postproc.NewUnpackStageWith(unpack.Options{
+		unpackStage = postproc.NewUnpackStageWith(unpack.Options{
 			UnrarCommand:     cfg.UnrarCommand,
 			SevenZipCommand:  cfg.SevenzCommand,
 			OverwriteFiles:   cfg.OverwriteFiles,
@@ -173,5 +185,10 @@ func buildStages(cfg Config, log *slog.Logger) ([]postproc.Stage, *postproc.Quic
 		stages = append(stages, scriptStage)
 	}
 
-	return stages, qcStage, nil
+	return builtStages{
+		Stages:      stages,
+		QuickCheck:  qcStage,
+		Par2Cleanup: par2CleanupStage,
+		Unpack:      unpackStage,
+	}, nil
 }
