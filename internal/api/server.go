@@ -85,6 +85,11 @@ type ApplicationReloader interface {
 	SetFolderRename(enabled bool)
 	SetScriptCanFail(enabled bool)
 	SetSanitizeOptions(opts fsutil.SanitizeOptions)
+	SetMinFreeSpace(bytes int64)
+	SetMaxArtTries(v int)
+	SetMaxArtOpt(v int)
+	SetTopOnly(v bool)
+	SetPropagationDelay(minutes int)
 	UnblockServer(name string) bool
 	ServerStatus() []downloader.ServerSnapshot
 	// Speed returns the current aggregate download speed in bytes/sec.

@@ -37,6 +37,16 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, now time.Time, serve
 		hopelessJobs: make(map[string]struct{}),
 	}
 
+	// Snapshot mutable dispatch options once per pass under RLock.
+	// tryDispatch reads from these locals, so no lock is held during
+	// the per-article hot path.
+	d.optsMu.RLock()
+	maxArtTries := d.maxArtTries
+	maxArtOpt := d.maxArtOpt
+	topOnly := d.topOnly
+	propDelay := d.propagationDelay
+	d.optsMu.RUnlock()
+
 	d.queue.ForEachUnfinishedArticle(func(a queue.UnfinishedArticle) bool {
 		if a.JobStatus == constants.StatusPaused {
 			return true // skip paused jobs, keep iterating
@@ -45,7 +55,7 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, now time.Time, serve
 		// Propagation delay: skip jobs that haven't aged enough.
 		// Posts need time to propagate to all NNTP servers; dispatching
 		// too early causes 430 (article not found) errors on backups.
-		if d.opts.PropagationDelay > 0 && now.Before(a.JobAdded.Add(d.opts.PropagationDelay)) {
+		if propDelay > 0 && now.Before(a.JobAdded.Add(propDelay)) {
 			return true // too young, skip for now
 		}
 
@@ -55,7 +65,7 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, now time.Time, serve
 			return true
 		}
 
-		handled, exReq := d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, a.Subject, now, serverCfgs)
+		handled, exReq := d.tryDispatch(ctx, a.JobID, a.FileIdx, a.MessageID, a.Bytes, a.Subject, now, serverCfgs, maxArtTries, maxArtOpt, topOnly)
 		if handled {
 			plan.dispatched++
 			plan.activeJobs[a.JobID] = struct{}{}
@@ -182,7 +192,7 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 //
 // A future dispatchReady signal from any worker will bring us back to
 // re-try articles that returned (false, nil).
-func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int, messageID string, bytes int, subject string, now time.Time, serverCfgs []config.ServerConfig) (bool, *articleRequest) {
+func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int, messageID string, bytes int, subject string, now time.Time, serverCfgs []config.ServerConfig, maxArtTries, maxArtOpt int, topOnly bool) (bool, *articleRequest) {
 	key := messageID
 
 	d.tryMu.Lock()
@@ -214,15 +224,15 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 	// MaxArtTries: if the article has already been tried on the maximum
 	// number of servers, declare it permanently failed. This prevents
 	// infinite retry loops on articles that consistently fail on all servers.
-	if d.opts.MaxArtTries > 0 && hasTried && mask.count() >= d.opts.MaxArtTries {
-		d.log.Warn("article exceeded max retries", "msgid", messageID, "job", jobID, "tries", mask.count(), "max", d.opts.MaxArtTries)
+	if maxArtTries > 0 && hasTried && mask.count() >= maxArtTries {
+		d.log.Warn("article exceeded max retries", "msgid", messageID, "job", jobID, "tries", mask.count(), "max", maxArtTries)
 		return true, req
 	}
 
 	// TopOnly: find the minimum (most preferred) server priority so we
 	// can skip backup servers when enabled.
 	minPriority := -1
-	if d.opts.TopOnly {
+	if topOnly {
 		for idx := range d.servers {
 			cfg := &serverCfgs[idx]
 			if cfg.Enable {
@@ -246,7 +256,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, jobID string, fileIdx int,
 			continue
 		}
 		// TopOnly: skip servers that are not in the primary group.
-		if d.opts.TopOnly && cfg.Priority > minPriority {
+		if topOnly && cfg.Priority > minPriority {
 			continue
 		}
 		// This server hasn't been tried yet.

@@ -50,6 +50,11 @@ func (m mockApp) SetPermissions(string)                         {}
 func (m mockApp) SetFolderRename(bool)                          {}
 func (m mockApp) SetScriptCanFail(bool)                         {}
 func (m mockApp) SetSanitizeOptions(fsutil.SanitizeOptions)     {}
+func (m mockApp) SetMinFreeSpace(int64)                         {}
+func (m mockApp) SetMaxArtTries(int)                            {}
+func (m mockApp) SetMaxArtOpt(int)                              {}
+func (m mockApp) SetTopOnly(bool)                               {}
+func (m mockApp) SetPropagationDelay(int)                       {}
 func (m mockApp) UnblockServer(string) bool                     { return true }
 func (m mockApp) ServerStatus() []downloader.ServerSnapshot     { return nil }
 func (m mockApp) Speed() float64                                { return m.speed }

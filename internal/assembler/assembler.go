@@ -215,6 +215,11 @@ type Assembler struct {
 	opts Options
 	reqs chan WriteRequest
 
+	// minFreeBytes is the hot-changeable disk-space threshold. It shadows
+	// opts.MinFreeBytes and is set atomically via SetMinFreeBytes so config
+	// saves from the API goroutine don't race with the worker's disk checks.
+	minFreeBytes atomic.Int64
+
 	// mu guards the started/stopped state and the stopCh channel.
 	mu      sync.Mutex
 	started bool
@@ -260,7 +265,7 @@ func New(opts Options, log *slog.Logger) *Assembler {
 	if flushInterval == 0 {
 		flushInterval = defaultDoneFlushInterval
 	}
-	return &Assembler{
+	a := &Assembler{
 		log:           log.With("component", "assembler"),
 		opts:          opts,
 		reqs:          make(chan WriteRequest, opts.QueueSize),
@@ -270,7 +275,13 @@ func New(opts Options, log *slog.Logger) *Assembler {
 		pendingDone:   make(map[string][]string),
 		pendingFailed: make(map[string][]string),
 	}
+	a.minFreeBytes.Store(opts.MinFreeBytes)
+	return a
 }
+
+// SetMinFreeBytes updates the low-disk threshold without restarting the
+// assembler. Zero disables disk-space checks. Thread-safe.
+func (a *Assembler) SetMinFreeBytes(v int64) { a.minFreeBytes.Store(v) }
 
 // Start launches the worker goroutine. It returns an error if called more than
 // once without an intervening Stop.
@@ -428,7 +439,7 @@ func (a *Assembler) worker() {
 				return
 			}
 			reqCount += a.dispatchRequest(req, open, completed, cancelledJobs, wc)
-			if a.opts.MinFreeBytes > 0 && reqCount%diskCheckInterval == 0 {
+			if a.minFreeBytes.Load() > 0 && reqCount%diskCheckInterval == 0 {
 				a.checkDiskSpace(open)
 			}
 
@@ -443,7 +454,7 @@ func (a *Assembler) worker() {
 				select {
 				case req := <-a.reqs:
 					reqCount += a.dispatchRequest(req, open, completed, cancelledJobs, wc)
-					if a.opts.MinFreeBytes > 0 && reqCount%diskCheckInterval == 0 {
+					if a.minFreeBytes.Load() > 0 && reqCount%diskCheckInterval == 0 {
 						a.checkDiskSpace(open)
 					}
 				default:
@@ -794,7 +805,7 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 			a.log.Warn("disk-space check failed", "dir", dir, "error", err)
 			continue
 		}
-		if free < a.opts.MinFreeBytes {
+		if free < a.minFreeBytes.Load() {
 			a.opts.OnLowDisk(dir, free)
 		}
 	}
