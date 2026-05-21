@@ -75,6 +75,13 @@ services:
     #     reservations:
     #       memory: 512M
 
+    # Lower CPU and I/O scheduling priority (nice & ionice)
+    # Requires SYS_NICE capability. Prepending to entrypoint ensures they run
+    # as root before the entrypoint drops privileges to the gonzbd user.
+    # cap_add:
+    #   - SYS_NICE
+    # entrypoint: ["nice", "-n", "19", "ionice", "-c", "3", "/entrypoint.sh"]
+
     # Health check — verifies the API is responding.
     # Uses shell form so $GONZBD_PORT is expanded at runtime.
     healthcheck:
