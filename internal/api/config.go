@@ -229,6 +229,26 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 			var opts fsutil.SanitizeOptions
 			s.config.WithRead(func(cfg *config.Config) { opts = cfg.Downloads.SanitizeOptions() })
 			s.app.SetSanitizeOptions(opts)
+		case "min_free_space":
+			var v int64
+			s.config.WithRead(func(cfg *config.Config) { v = int64(cfg.Downloads.MinFreeSpace) })
+			s.app.SetMinFreeSpace(v)
+		case "max_art_tries":
+			var v int
+			s.config.WithRead(func(cfg *config.Config) { v = cfg.Downloads.MaxArtTries })
+			s.app.SetMaxArtTries(v)
+		case "max_art_opt":
+			var v int
+			s.config.WithRead(func(cfg *config.Config) { v = cfg.Downloads.MaxArtOpt })
+			s.app.SetMaxArtOpt(v)
+		case "top_only":
+			var v bool
+			s.config.WithRead(func(cfg *config.Config) { v = cfg.Downloads.TopOnly })
+			s.app.SetTopOnly(v)
+		case "propagation_delay":
+			var v int
+			s.config.WithRead(func(cfg *config.Config) { v = cfg.Downloads.PropagationDelay })
+			s.app.SetPropagationDelay(v)
 		}
 	}
 

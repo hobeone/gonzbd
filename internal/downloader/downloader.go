@@ -216,6 +216,16 @@ type Downloader struct {
 
 	limiter *bpsmeter.Limiter
 
+	// optsMu protects the mutable dispatch options below. buildDispatchPlan
+	// takes RLock once per pass and snapshots the values into locals;
+	// SetDispatchOptions takes Lock. The per-article tryDispatch path reads
+	// from locals, so this lock is never held during article processing.
+	optsMu           sync.RWMutex
+	maxArtTries      int
+	maxArtOpt        int
+	topOnly          bool
+	propagationDelay time.Duration
+
 	// paused short-circuits the dispatch pass without tearing down
 	// worker goroutines. Independent of queue.IsPaused (either flag
 	// suppresses dispatch).
@@ -276,19 +286,23 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		log = slog.Default()
 	}
 	d := &Downloader{
-		log:           log.With("component", "downloader"),
-		queue:         q,
-		servers:       servers,
-		meter:         meter,
-		opts:          opts,
-		onJobHopeless: opts.OnJobHopeless,
-		workCh:        make(map[string]chan *articleRequest, len(servers)),
-		completions:   make(chan *ArticleResult, opts.CompletionsBuffer),
-		dispatchReady: make(chan struct{}, 1),
-		limiter:       bpsmeter.NewLimiter(0),
-		tryList:       make(map[string]serverMask),
-		inFlight:      make(map[string]int),
-		connActivity:  make(map[string]*ConnActivity),
+		log:              log.With("component", "downloader"),
+		queue:            q,
+		servers:          servers,
+		meter:            meter,
+		opts:             opts,
+		onJobHopeless:    opts.OnJobHopeless,
+		workCh:           make(map[string]chan *articleRequest, len(servers)),
+		completions:      make(chan *ArticleResult, opts.CompletionsBuffer),
+		dispatchReady:    make(chan struct{}, 1),
+		limiter:          bpsmeter.NewLimiter(0),
+		tryList:          make(map[string]serverMask),
+		inFlight:         make(map[string]int),
+		connActivity:     make(map[string]*ConnActivity),
+		maxArtTries:      opts.MaxArtTries,
+		maxArtOpt:        opts.MaxArtOpt,
+		topOnly:          opts.TopOnly,
+		propagationDelay: opts.PropagationDelay,
 	}
 	ch := make(chan struct{})
 	d.disconnectPtr.Store(&ch)
@@ -449,6 +463,18 @@ func (d *Downloader) SetSpeedLimit(bytesPerSec int64) {
 	if d.meter != nil {
 		d.meter.Flush()
 	}
+}
+
+// SetDispatchOptions updates the mutable dispatch options without restarting
+// the downloader or dropping any connections. Takes effect on the next
+// dispatch pass. Thread-safe.
+func (d *Downloader) SetDispatchOptions(maxArtTries, maxArtOpt int, topOnly bool, propagationDelay time.Duration) {
+	d.optsMu.Lock()
+	d.maxArtTries = maxArtTries
+	d.maxArtOpt = maxArtOpt
+	d.topOnly = topOnly
+	d.propagationDelay = propagationDelay
+	d.optsMu.Unlock()
 }
 
 // IsPaused reports the downloader's own pause flag. Orthogonal to
