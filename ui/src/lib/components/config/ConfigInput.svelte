@@ -9,6 +9,7 @@
 		description,
 		placeholder,
 		type = 'text',
+		requiresRestart = false,
 		onupdate
 	}: {
 		section: string;
@@ -18,6 +19,7 @@
 		description?: string;
 		placeholder?: string;
 		type?: 'text' | 'number' | 'password';
+		requiresRestart?: boolean;
 		onupdate?: (section: string, keyword: string, value: string | number) => void;
 	} = $props();
 
@@ -53,6 +55,9 @@
 	<div class="flex items-center justify-between">
 		<label for="{section}-{keyword}" class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
 			{label}
+			{#if requiresRestart}
+				<span class="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">restart</span>
+			{/if}
 		</label>
 	</div>
 	<Input
