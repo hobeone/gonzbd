@@ -1254,6 +1254,33 @@ func (app *Application) SetPropagationDelay(minutes int) {
 	app.pushDispatchOptions()
 }
 
+// ReloadPostProcOptions applies all hot-applicable postproc settings from cfg
+// to the running pipeline. Called by the API on any postproc config save; it
+// re-applies every setting, not just the one that changed — all setters are
+// idempotent so this is safe. Do not add setters with significant side effects
+// (logging, I/O) without reviewing this call site.
+func (app *Application) ReloadPostProcOptions(cfg *config.Config) {
+	app.SetQuickCheckEnabled(cfg.PostProc.EnableQuickCheck)
+	app.SetParCleanup(cfg.PostProc.EnableParCleanup)
+	app.SetRarCleanup(cfg.PostProc.EnableRarCleanup)
+	app.SetOverwriteFiles(cfg.PostProc.OverwriteFiles)
+	app.SetFlatUnpack(cfg.PostProc.FlatUnpack)
+	app.SetPermissions(cfg.PostProc.Permissions)
+	app.SetFolderRename(cfg.PostProc.FolderRename)
+	app.SetScriptCanFail(cfg.PostProc.ScriptCanFail)
+}
+
+// ReloadDownloadOptions applies all hot-applicable download settings from cfg
+// to the running pipeline. Same idempotency note as ReloadPostProcOptions.
+func (app *Application) ReloadDownloadOptions(cfg *config.Config) {
+	app.SetSanitizeOptions(cfg.Downloads.SanitizeOptions())
+	app.SetMinFreeSpace(int64(cfg.Downloads.MinFreeSpace))
+	app.SetMaxArtTries(cfg.Downloads.MaxArtTries)
+	app.SetMaxArtOpt(cfg.Downloads.MaxArtOpt)
+	app.SetTopOnly(cfg.Downloads.TopOnly)
+	app.SetPropagationDelay(cfg.Downloads.PropagationDelay)
+}
+
 // pushDispatchOptions reads the current mutable dispatch fields under app.mu
 // and forwards them to the running downloader. Must not be called while
 // holding app.mu.

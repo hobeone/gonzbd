@@ -30,7 +30,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/downloader"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/web"
@@ -90,20 +89,8 @@ func (m *mockApp) PausePostProcessor() {}
 
 func (m *mockApp) ResumePostProcessor() {}
 
-func (m *mockApp) SetQuickCheckEnabled(bool)             {}
-func (m *mockApp) SetParCleanup(bool)                    {}
-func (m *mockApp) SetRarCleanup(bool)                    {}
-func (m *mockApp) SetOverwriteFiles(bool)                {}
-func (m *mockApp) SetFlatUnpack(bool)                    {}
-func (m *mockApp) SetPermissions(string)                 {}
-func (m *mockApp) SetFolderRename(bool)                  {}
-func (m *mockApp) SetScriptCanFail(bool)                 {}
-func (m *mockApp) SetSanitizeOptions(fsutil.SanitizeOptions) {}
-func (m *mockApp) SetMinFreeSpace(int64)                 {}
-func (m *mockApp) SetMaxArtTries(int)                    {}
-func (m *mockApp) SetMaxArtOpt(int)                      {}
-func (m *mockApp) SetTopOnly(bool)                       {}
-func (m *mockApp) SetPropagationDelay(int)               {}
+func (m *mockApp) ReloadPostProcOptions(*config.Config) {}
+func (m *mockApp) ReloadDownloadOptions(*config.Config) {}
 
 func (m *mockApp) UnblockServer(_ string) bool { return true }
 
