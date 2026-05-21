@@ -13,6 +13,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
@@ -40,10 +41,16 @@ func (m mockApp) ResumeDownloads()                              {}
 func (m mockApp) DisconnectAll()                                {}
 func (m mockApp) PausePostProcessor()                           {}
 func (m mockApp) ResumePostProcessor()                          {}
-func (m mockApp) SetQuickCheckEnabled(bool) {}
-func (m mockApp) SetParCleanup(bool)        {}
-func (m mockApp) SetRarCleanup(bool)        {}
-func (m mockApp) UnblockServer(string) bool { return true }
+func (m mockApp) SetQuickCheckEnabled(bool)                     {}
+func (m mockApp) SetParCleanup(bool)                            {}
+func (m mockApp) SetRarCleanup(bool)                            {}
+func (m mockApp) SetOverwriteFiles(bool)                        {}
+func (m mockApp) SetFlatUnpack(bool)                            {}
+func (m mockApp) SetPermissions(string)                         {}
+func (m mockApp) SetFolderRename(bool)                          {}
+func (m mockApp) SetScriptCanFail(bool)                         {}
+func (m mockApp) SetSanitizeOptions(fsutil.SanitizeOptions)     {}
+func (m mockApp) UnblockServer(string) bool                     { return true }
 func (m mockApp) ServerStatus() []downloader.ServerSnapshot     { return nil }
 func (m mockApp) Speed() float64                                { return m.speed }
 func (m mockApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
