@@ -21,6 +21,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/types"
@@ -52,6 +53,19 @@ func (nopApp) DisconnectAll()                                         {}
 func (nopApp) PausePostProcessor()                                    {}
 func (nopApp) ResumePostProcessor()                                   {}
 func (nopApp) SetQuickCheckEnabled(bool)                              {}
+func (nopApp) SetParCleanup(bool)                                     {}
+func (nopApp) SetRarCleanup(bool)                                     {}
+func (nopApp) SetOverwriteFiles(bool)                                 {}
+func (nopApp) SetFlatUnpack(bool)                                     {}
+func (nopApp) SetPermissions(string)                                  {}
+func (nopApp) SetFolderRename(bool)                                   {}
+func (nopApp) SetScriptCanFail(bool)                                  {}
+func (nopApp) SetSanitizeOptions(fsutil.SanitizeOptions)              {}
+func (nopApp) SetMinFreeSpace(int64)                                  {}
+func (nopApp) SetMaxArtTries(int)                                     {}
+func (nopApp) SetMaxArtOpt(int)                                       {}
+func (nopApp) SetTopOnly(bool)                                        {}
+func (nopApp) SetPropagationDelay(int)                                {}
 func (nopApp) UnblockServer(string) bool                              { return true }
 func (nopApp) ServerStatus() []downloader.ServerSnapshot              { return nil }
 func (nopApp) Speed() float64                                         { return 0 }
