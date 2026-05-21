@@ -5,7 +5,7 @@ go 1.26.3
 require (
 	github.com/coder/websocket v1.8.14
 	github.com/h2non/filetype v1.1.3
-	github.com/hobeone/par2engine v0.0.11
+	github.com/hobeone/par2engine v0.0.12
 	github.com/lmittmann/tint v1.1.3
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/nwaples/rardecode/v2 v2.2.2
@@ -25,6 +25,7 @@ require (
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
