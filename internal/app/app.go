@@ -196,8 +196,10 @@ type Application struct {
 	bandwidthMax  atomic.Int64 // configured bandwidth ceiling in bytes/sec
 	bandwidthPerc atomic.Int32 // configured bandwidth percentage (1-100)
 
-	customStages    []postproc.Stage
-	quickCheckStage *postproc.QuickCheckStage
+	customStages     []postproc.Stage
+	quickCheckStage  *postproc.QuickCheckStage
+	par2CleanupStage *postproc.Par2CleanupStage
+	unpackStage      *postproc.UnpackStage
 
 	// directUnpackers maps jobID → active DirectUnpacker for jobs being
 	// extracted during download. Protected by mu.
@@ -324,13 +326,14 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 
 	stages := app.customStages
 	if stages == nil {
-		var err error
-		var qcStage *postproc.QuickCheckStage
-		stages, qcStage, err = buildStages(cfg, log)
+		built, err := buildStages(cfg, log)
 		if err != nil {
 			return nil, err
 		}
-		app.quickCheckStage = qcStage
+		stages = built.Stages
+		app.quickCheckStage = built.QuickCheck
+		app.par2CleanupStage = built.Par2Cleanup
+		app.unpackStage = built.Unpack
 	}
 	pp := postproc.New(postproc.Options{
 		Stages: stages,
@@ -1141,6 +1144,23 @@ func (app *Application) ResumePostProcessor() {
 func (app *Application) SetQuickCheckEnabled(enabled bool) {
 	if app.quickCheckStage != nil {
 		app.quickCheckStage.SetEnabled(enabled)
+	}
+}
+
+// SetParCleanup enables or disables par2 file deletion for future jobs.
+// Thread-safe; takes effect immediately without restart.
+func (app *Application) SetParCleanup(enabled bool) {
+	if app.par2CleanupStage != nil {
+		app.par2CleanupStage.SetCleanup(enabled)
+	}
+}
+
+// SetRarCleanup enables or disables archive file deletion for future jobs.
+// Thread-safe; takes effect immediately without restart.
+// No-op when no unpack stage is configured (unrar/7z disabled at startup).
+func (app *Application) SetRarCleanup(enabled bool) {
+	if app.unpackStage != nil {
+		app.unpackStage.SetCleanup(enabled)
 	}
 }
 

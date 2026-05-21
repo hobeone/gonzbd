@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync/atomic"
 
 	"github.com/hobeone/gonzbd/internal/par2"
 )
@@ -14,16 +15,22 @@ import (
 // preserves par2 files for debugging when extraction fails — previously
 // they were deleted inside RepairStage before unpack even ran.
 type Par2CleanupStage struct {
-	// Cleanup controls whether par2 files should be deleted at all.
-	// Maps to the enable_par_cleanup config option.
-	Cleanup bool
+	// cleanup is set atomically so SetCleanup can be called from any goroutine
+	// (e.g. the API handler) while a job may be running in the postproc worker.
+	cleanup atomic.Bool
 	Log     *slog.Logger
 }
 
 // NewPar2CleanupStage constructs a Par2CleanupStage.
 func NewPar2CleanupStage(cleanup bool) *Par2CleanupStage {
-	return &Par2CleanupStage{Cleanup: cleanup}
+	s := &Par2CleanupStage{}
+	s.cleanup.Store(cleanup)
+	return s
 }
+
+// SetCleanup enables or disables par2 file deletion at runtime without
+// requiring a server restart. Thread-safe; may be called from any goroutine.
+func (s *Par2CleanupStage) SetCleanup(enabled bool) { s.cleanup.Store(enabled) }
 
 // Name implements Stage.
 func (*Par2CleanupStage) Name() string { return "par2_cleanup" }
@@ -37,7 +44,7 @@ func (s *Par2CleanupStage) Run(_ context.Context, job *Job) error {
 	}
 	log = log.With("component", "postproc/par2_cleanup", "job", job.Queue.ID)
 
-	if !s.Cleanup {
+	if !s.cleanup.Load() {
 		return nil
 	}
 

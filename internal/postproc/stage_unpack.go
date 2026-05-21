@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -20,8 +21,9 @@ type UnpackStage struct {
 	// BaseOpts holds config-driven extraction options (tool paths, flags).
 	// The job's password is merged at runtime.
 	BaseOpts unpack.Options
-	// Cleanup deletes source archive files after successful extraction.
-	Cleanup bool
+	// cleanup is set atomically so SetCleanup can be called from any goroutine
+	// (e.g. the API handler) while a job may be running in the postproc worker.
+	cleanup atomic.Bool
 	// Permissions is an octal string (e.g. "755") applied recursively
 	// after successful extraction. Dirs get the full mode, files get
 	// execute bits stripped. Empty disables chmod.
@@ -44,8 +46,14 @@ func NewUnpackStage() *UnpackStage { return &UnpackStage{} }
 
 // NewUnpackStageWith constructs an UnpackStage with the given base options.
 func NewUnpackStageWith(opts unpack.Options, cleanup bool) *UnpackStage {
-	return &UnpackStage{BaseOpts: opts, Cleanup: cleanup}
+	s := &UnpackStage{BaseOpts: opts}
+	s.cleanup.Store(cleanup)
+	return s
 }
+
+// SetCleanup enables or disables archive file deletion at runtime without
+// requiring a server restart. Thread-safe; may be called from any goroutine.
+func (u *UnpackStage) SetCleanup(enabled bool) { u.cleanup.Store(enabled) }
 
 // Name returns the stage identifier.
 func (*UnpackStage) Name() string { return "unpack" }
@@ -370,7 +378,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// Delete source archive files after successful extraction.
-	if u.Cleanup && len(allSuccessful) > 0 {
+	if u.cleanup.Load() && len(allSuccessful) > 0 {
 		var cleaned int
 		for _, a := range allSuccessful {
 			for _, part := range a.Parts {

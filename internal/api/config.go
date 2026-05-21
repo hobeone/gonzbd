@@ -184,10 +184,21 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Hot-apply postproc toggles that can take effect for the next job.
-	if section == "postproc" && s.app != nil && keyword == "enable_quick_check" {
-		var enabled bool
-		s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.EnableQuickCheck })
-		s.app.SetQuickCheckEnabled(enabled)
+	if section == "postproc" && s.app != nil {
+		switch keyword {
+		case "enable_quick_check":
+			var enabled bool
+			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.EnableQuickCheck })
+			s.app.SetQuickCheckEnabled(enabled)
+		case "enable_par_cleanup":
+			var enabled bool
+			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.EnableParCleanup })
+			s.app.SetParCleanup(enabled)
+		case "enable_rar_cleanup":
+			var enabled bool
+			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.EnableRarCleanup })
+			s.app.SetRarCleanup(enabled)
+		}
 	}
 
 	// Hot-apply directory changes: create the directory and push it to the
