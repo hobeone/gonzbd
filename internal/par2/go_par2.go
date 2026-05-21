@@ -51,11 +51,25 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 		}
 	}
 
+	var verifyProgress chan par2engine.Progress
+	var verifyDone chan struct{}
 	if onLine != nil {
-		onLine("[go_par2] Starting verification...")
+		verifyProgress = make(chan par2engine.Progress, 100)
+		verifyDone = make(chan struct{})
+		go func() {
+			for p := range verifyProgress {
+				onLine(fmt.Sprintf("[go_par2] Verifying... %.1f%%", p.Percent))
+			}
+			close(verifyDone)
+		}()
 	}
 
-	if err = d.VerifyScans(ctx); err != nil {
+	err = d.VerifyScans(ctx, verifyProgress)
+	if verifyProgress != nil {
+		close(verifyProgress)
+		<-verifyDone
+	}
+	if err != nil {
 		res.Status = StatusUnknown
 		return res, fmt.Errorf("go_par2: verify scan: %w", err)
 	}
@@ -133,10 +147,21 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 
 	res.CommandLine = fmt.Sprintf("go_par2 repair %s", parfile)
 
-	// Phase 1: Verify
-	accumulate("[go_par2] Starting verification...")
+	var verifyProgress chan par2engine.Progress
+	var verifyDone chan struct{}
+	verifyProgress = make(chan par2engine.Progress, 100)
+	verifyDone = make(chan struct{})
+	go func() {
+		for p := range verifyProgress {
+			accumulate(fmt.Sprintf("[go_par2] Verifying... %.1f%%", p.Percent))
+		}
+		close(verifyDone)
+	}()
 
-	if err = d.VerifyScans(ctx); err != nil {
+	err = d.VerifyScans(ctx, verifyProgress)
+	close(verifyProgress)
+	<-verifyDone
+	if err != nil {
 		res.Output = output.String()
 		return res, fmt.Errorf("go_par2: verify scan: %w", err)
 	}
