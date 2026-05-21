@@ -27,7 +27,7 @@ Each logical change is a self-contained unit of work. The workflow is:
 1. **Read** the relevant spec/architecture sections.
 2. **Implement** the change.
 3. **Verify** all quality gates pass (see below).
-4. **Commit** with a clear message (`Fix: …`, `Refactor: …`, or `Step X.Y: …` if working from a phased plan).
+4. **Commit** with a Conventional Commits message (see global CLAUDE.md). Mention the plan step in the body if useful context.
 
 Each commit must leave the repository in a working state (`go build ./... && go test ./...` passes).
 
@@ -172,10 +172,11 @@ golangci-lint run ./...               # Linting
 ## Git Conventions
 
 - **Branch**: work directly on `main` for now (single developer); switch to feature branches when collaboration begins.
-- **Commit messages**: `Step X.Y: <description>` for plan steps, `Fix: <description>` for bug fixes, `Refactor: <description>` for non-functional changes.
 - **One step per commit** (or one logical sub-piece if a step is split).
 - **Never** force-push, rewrite history, or `git reset --hard` without user approval.
 - **Always** run quality gates before committing.
+
+Use Conventional Commits format (defined in the global CLAUDE.md). Scope should be the Go package name or subsystem: `fix(assembler)`, `refactor(queue)`, `feat(nntp)`.
 
 ## Reading Python for Reference
 
