@@ -256,7 +256,7 @@ func TestScriptStage_ScriptCanFail(t *testing.T) {
 	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 3\n"))
 
 	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
-	stage.ScriptCanFail = true
+	stage.SetScriptCanFail(true)
 
 	err := stage.Run(t.Context(), job)
 	if err != nil {

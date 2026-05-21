@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"sync"
 	"sync/atomic"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
@@ -18,16 +19,20 @@ import (
 )
 
 type UnpackStage struct {
+	// mu protects BaseOpts and Permissions, which can be updated via
+	// Set* methods from the API goroutine while a job runs in the
+	// postproc worker. Run() snapshots both under RLock at the start.
+	mu sync.RWMutex
 	// BaseOpts holds config-driven extraction options (tool paths, flags).
 	// The job's password is merged at runtime.
 	BaseOpts unpack.Options
-	// cleanup is set atomically so SetCleanup can be called from any goroutine
-	// (e.g. the API handler) while a job may be running in the postproc worker.
-	cleanup atomic.Bool
 	// Permissions is an octal string (e.g. "755") applied recursively
 	// after successful extraction. Dirs get the full mode, files get
 	// execute bits stripped. Empty disables chmod.
 	Permissions string
+
+	// cleanup is set atomically so SetCleanup can be called from any goroutine.
+	cleanup atomic.Bool
 	// PasswordFile is the path to a text file with one password per line.
 	// These are appended after per-job passwords during extraction.
 	PasswordFile string
@@ -55,6 +60,30 @@ func NewUnpackStageWith(opts unpack.Options, cleanup bool) *UnpackStage {
 // requiring a server restart. Thread-safe; may be called from any goroutine.
 func (u *UnpackStage) SetCleanup(enabled bool) { u.cleanup.Store(enabled) }
 
+// SetOverwriteFiles enables or disables overwriting existing files on extraction.
+// Thread-safe; takes effect for the next job.
+func (u *UnpackStage) SetOverwriteFiles(v bool) {
+	u.mu.Lock()
+	u.BaseOpts.OverwriteFiles = v
+	u.mu.Unlock()
+}
+
+// SetFlatUnpack enables or disables flat extraction (ignore archive directories).
+// Thread-safe; takes effect for the next job.
+func (u *UnpackStage) SetFlatUnpack(v bool) {
+	u.mu.Lock()
+	u.BaseOpts.OneFolder = v
+	u.mu.Unlock()
+}
+
+// SetPermissions updates the octal permission string applied after extraction.
+// Thread-safe; takes effect for the next job.
+func (u *UnpackStage) SetPermissions(v string) {
+	u.mu.Lock()
+	u.Permissions = v
+	u.mu.Unlock()
+}
+
 // Name returns the stage identifier.
 func (*UnpackStage) Name() string { return "unpack" }
 
@@ -81,8 +110,12 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		return nil
 	}
 
-	// Merge config-level options with per-job password.
+	// Snapshot mutable fields under RLock so a concurrent SetOverwriteFiles /
+	// SetFlatUnpack / SetPermissions call doesn't race with this job.
+	u.mu.RLock()
 	opts := u.BaseOpts
+	permissions := u.Permissions
+	u.mu.RUnlock()
 	opts.OnLine = func(line string) {
 		if job.OnOutput != nil {
 			job.OnOutput("unpack", line)
@@ -392,12 +425,12 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// Apply permissions recursively after extraction.
-	if u.Permissions != "" && len(allSuccessful) > 0 {
-		applied, permErr := applyPermissions(job.DownloadDir, u.Permissions)
+	if permissions != "" && len(allSuccessful) > 0 {
+		applied, permErr := applyPermissions(job.DownloadDir, permissions)
 		if permErr != nil {
 			logf(log, job, slog.LevelWarn, "permissions: %v", permErr)
 		} else if applied > 0 {
-			logf(log, job, slog.LevelInfo, "Applied permissions (%s) to %d file(s)/dir(s)", u.Permissions, applied)
+			logf(log, job, slog.LevelInfo, "Applied permissions (%s) to %d file(s)/dir(s)", permissions, applied)
 		}
 	}
 

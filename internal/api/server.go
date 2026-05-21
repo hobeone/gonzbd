@@ -12,6 +12,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
@@ -78,6 +79,12 @@ type ApplicationReloader interface {
 	SetQuickCheckEnabled(enabled bool)
 	SetParCleanup(enabled bool)
 	SetRarCleanup(enabled bool)
+	SetOverwriteFiles(enabled bool)
+	SetFlatUnpack(enabled bool)
+	SetPermissions(v string)
+	SetFolderRename(enabled bool)
+	SetScriptCanFail(enabled bool)
+	SetSanitizeOptions(opts fsutil.SanitizeOptions)
 	UnblockServer(name string) bool
 	ServerStatus() []downloader.ServerSnapshot
 	// Speed returns the current aggregate download speed in bytes/sec.

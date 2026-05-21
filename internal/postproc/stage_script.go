@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync/atomic"
 )
 
 type ScriptStage struct {
@@ -23,15 +24,19 @@ type ScriptStage struct {
 	APIKey  string
 	APIURL  string
 
-	// ScriptCanFail when true causes non-zero script exit codes to be
+	// scriptCanFail when true causes non-zero script exit codes to be
 	// logged but NOT treated as pipeline errors. This matches Python's
 	// cfg.script_can_fail() behavior. Default false = non-zero exit
-	// is an error.
-	ScriptCanFail bool
+	// is an error. Atomic so SetScriptCanFail can be called from any goroutine.
+	scriptCanFail atomic.Bool
 
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
+
+// SetScriptCanFail enables or disables treating non-zero script exit codes as
+// warnings at runtime without restart. Thread-safe.
+func (s *ScriptStage) SetScriptCanFail(v bool) { s.scriptCanFail.Store(v) }
 
 // NewScriptStage constructs a ScriptStage.
 func NewScriptStage(scriptDir, completeDir, version, apiKey, apiURL string) *ScriptStage {
@@ -119,7 +124,7 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	if res.Err != nil {
 		if errors.Is(res.Err, ErrNonZeroExit) {
 			logf(log, job, slog.LevelWarn, "Error: script %q exited %d", name, res.ExitCode)
-			if s.ScriptCanFail {
+			if s.scriptCanFail.Load() {
 				// Log but don't fail the pipeline.
 				logf(log, job, slog.LevelInfo, "script_can_fail=true: ignoring non-zero exit")
 				return nil
