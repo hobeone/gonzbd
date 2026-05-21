@@ -132,7 +132,7 @@ func TestFinalizeStage_FolderRename_Success(t *testing.T) {
 	}
 
 	stage := NewFinalizeStage()
-	stage.FolderRename = true
+	stage.SetFolderRename(true)
 
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -177,7 +177,7 @@ func TestFinalizeStage_FolderRename_Failed(t *testing.T) {
 	}
 
 	stage := NewFinalizeStage()
-	stage.FolderRename = true
+	stage.SetFolderRename(true)
 
 	if err := stage.Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -248,7 +248,7 @@ func TestFinalizeStage_FailedFilesAccessibleForRetry(t *testing.T) {
 				}
 
 				stage := NewFinalizeStage()
-				stage.FolderRename = folderRename
+				stage.SetFolderRename(folderRename)
 
 				if err := stage.Run(t.Context(), job); err != nil {
 					t.Fatalf("Run: %v", err)
@@ -288,7 +288,7 @@ func TestFinalizeStage_FolderRename_Disabled(t *testing.T) {
 	job.FinalDir = filepath.Join(baseDir, "MyRelease")
 
 	stage := NewFinalizeStage()
-	stage.FolderRename = false
+	stage.SetFolderRename(false)
 
 	stage.Run(t.Context(), job)
 

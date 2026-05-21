@@ -18,6 +18,8 @@ type builtStages struct {
 	QuickCheck  *postproc.QuickCheckStage
 	Par2Cleanup *postproc.Par2CleanupStage
 	Unpack      *postproc.UnpackStage
+	Finalize    *postproc.FinalizeStage
+	Script      *postproc.ScriptStage
 }
 
 // buildStages constructs the post-processing stage list from cfg.
@@ -165,7 +167,7 @@ func buildStages(cfg Config, log *slog.Logger) (builtStages, error) {
 	// Must run BEFORE script so scripts receive the final directory path.
 	finalizeStage := postproc.NewFinalizeStage()
 	finalizeStage.Log = ppLog
-	finalizeStage.FolderRename = cfg.FolderRename
+	finalizeStage.SetFolderRename(cfg.FolderRename)
 	stages = append(stages, finalizeStage)
 
 	// Cleanup: remove admin sidecar data (__ADMIN__ dir) from the job dir.
@@ -175,13 +177,15 @@ func buildStages(cfg Config, log *slog.Logger) (builtStages, error) {
 
 	// Script stage: runs AFTER finalize so job.DownloadDir points to the
 	// final complete_dir, matching SABnzbd's $1 convention.
+	// Declared outside the if-block so it can be returned in builtStages.
+	var scriptStage *postproc.ScriptStage
 	if cfg.ScriptDir != "" {
-		scriptStage := postproc.NewScriptStage(
+		scriptStage = postproc.NewScriptStage(
 			cfg.ScriptDir, cfg.CompleteDir,
 			cfg.Version, cfg.APIKey, cfg.ListenAddr,
 		)
 		scriptStage.Log = ppLog
-		scriptStage.ScriptCanFail = cfg.ScriptCanFail
+		scriptStage.SetScriptCanFail(cfg.ScriptCanFail)
 		stages = append(stages, scriptStage)
 	}
 
@@ -190,5 +194,7 @@ func buildStages(cfg Config, log *slog.Logger) (builtStages, error) {
 		QuickCheck:  qcStage,
 		Par2Cleanup: par2CleanupStage,
 		Unpack:      unpackStage,
+		Finalize:    finalizeStage,
+		Script:      scriptStage,
 	}, nil
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
@@ -15,12 +16,17 @@ import (
 type FinalizeStage struct {
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
-	// FolderRename enables the _UNPACK_/_FAILED_ prefix behavior.
-	FolderRename bool
+	// folderRename enables the _UNPACK_/_FAILED_ prefix behavior.
+	// Atomic so SetFolderRename can be called from any goroutine.
+	folderRename atomic.Bool
 }
 
 // NewFinalizeStage constructs a FinalizeStage.
 func NewFinalizeStage() *FinalizeStage { return &FinalizeStage{} }
+
+// SetFolderRename enables or disables the _UNPACK_/_FAILED_ prefix behavior
+// at runtime without restart. Thread-safe.
+func (f *FinalizeStage) SetFolderRename(enabled bool) { f.folderRename.Store(enabled) }
 
 // Name returns the stage identifier.
 func (*FinalizeStage) Name() string { return "finalize" }
@@ -32,6 +38,9 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 		log = slog.Default()
 	}
 	log = log.With("component", "postproc/finalize", "job", job.Queue.ID)
+
+	// Snapshot once; used in multiple branches below.
+	folderRename := f.folderRename.Load()
 
 	if job.ParError || job.UnpackError || job.FailMsg != "" {
 		var reasons []string
@@ -49,7 +58,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 		// in-place with a _FAILED_ prefix so users can visually identify
 		// it. The files stay in the incomplete/download area (NOT moved
 		// to complete) so that retry can find them.
-		if f.FolderRename && job.DownloadDir != "" {
+		if folderRename && job.DownloadDir != "" {
 			failedDir := prefixDirName(job.DownloadDir, "_FAILED_")
 			if err := os.Rename(job.DownloadDir, failedDir); err == nil {
 				logf(log, job, slog.LevelInfo, "Renamed to %s", failedDir)
@@ -74,7 +83,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 
 	// Determine the initial destination — with _UNPACK_ prefix if enabled.
 	dest := job.FinalDir
-	if f.FolderRename {
+	if folderRename {
 		dest = prefixDirName(job.FinalDir, "_UNPACK_")
 	}
 
@@ -93,7 +102,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 		logf(log, job, slog.LevelInfo, "%s → %s (atomic rename)", job.DownloadDir, dest)
 		job.DownloadDir = dest
 		// If FolderRename is active, strip the _UNPACK_ prefix now.
-		if f.FolderRename {
+		if folderRename {
 			if err := os.Rename(dest, job.FinalDir); err != nil {
 				logf(log, job, slog.LevelWarn, "Failed to strip _UNPACK_ prefix: %v", err)
 				// Not fatal — files are in _UNPACK_ dir but accessible.
@@ -146,7 +155,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	job.DownloadDir = dest
 
 	// Strip _UNPACK_ prefix if FolderRename is active.
-	if f.FolderRename {
+	if folderRename {
 		if err := os.Rename(dest, job.FinalDir); err != nil {
 			logf(log, job, slog.LevelWarn, "Failed to strip _UNPACK_ prefix: %v", err)
 		} else {

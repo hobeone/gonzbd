@@ -200,6 +200,8 @@ type Application struct {
 	quickCheckStage  *postproc.QuickCheckStage
 	par2CleanupStage *postproc.Par2CleanupStage
 	unpackStage      *postproc.UnpackStage
+	finalizeStage    *postproc.FinalizeStage
+	scriptStage      *postproc.ScriptStage
 
 	// directUnpackers maps jobID → active DirectUnpacker for jobs being
 	// extracted during download. Protected by mu.
@@ -334,6 +336,8 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		app.quickCheckStage = built.QuickCheck
 		app.par2CleanupStage = built.Par2Cleanup
 		app.unpackStage = built.Unpack
+		app.finalizeStage = built.Finalize
+		app.scriptStage = built.Script
 	}
 	pp := postproc.New(postproc.Options{
 		Stages: stages,
@@ -1162,6 +1166,49 @@ func (app *Application) SetRarCleanup(enabled bool) {
 	if app.unpackStage != nil {
 		app.unpackStage.SetCleanup(enabled)
 	}
+}
+
+// SetOverwriteFiles enables or disables overwriting existing files on extraction.
+func (app *Application) SetOverwriteFiles(enabled bool) {
+	if app.unpackStage != nil {
+		app.unpackStage.SetOverwriteFiles(enabled)
+	}
+}
+
+// SetFlatUnpack enables or disables flat (directory-ignoring) extraction.
+func (app *Application) SetFlatUnpack(enabled bool) {
+	if app.unpackStage != nil {
+		app.unpackStage.SetFlatUnpack(enabled)
+	}
+}
+
+// SetPermissions updates the octal permission string applied after extraction.
+func (app *Application) SetPermissions(v string) {
+	if app.unpackStage != nil {
+		app.unpackStage.SetPermissions(v)
+	}
+}
+
+// SetFolderRename enables or disables the _UNPACK_/_FAILED_ prefix behavior.
+func (app *Application) SetFolderRename(enabled bool) {
+	if app.finalizeStage != nil {
+		app.finalizeStage.SetFolderRename(enabled)
+	}
+}
+
+// SetScriptCanFail controls whether non-zero script exit codes fail the job.
+func (app *Application) SetScriptCanFail(enabled bool) {
+	if app.scriptStage != nil {
+		app.scriptStage.SetScriptCanFail(enabled)
+	}
+}
+
+// SetSanitizeOptions updates the filename sanitization options used for new
+// jobs. Thread-safe; takes effect for the next enqueued job.
+func (app *Application) SetSanitizeOptions(opts fsutil.SanitizeOptions) {
+	app.mu.Lock()
+	app.cfg.Sanitize = opts
+	app.mu.Unlock()
 }
 
 // RetryHistoryJob re-enqueues a completed/failed history job for re-download.
