@@ -36,7 +36,21 @@ func (r *RecoverPar2NamesStage) Run(ctx context.Context, job *Job) error {
 	} else {
 		logf(log, job, slog.LevelInfo, "Par2 renamed %d file(s)", len(renames))
 		for _, ren := range renames {
-			logf(log, job, slog.LevelInfo, "%s → %s", filepath.Base(ren.From), filepath.Base(ren.To))
+			from := filepath.Base(ren.From)
+			to := filepath.Base(ren.To)
+			if ren.TrueName != "" && to != ren.TrueName {
+				// The par2-recorded target already existed; GetUniqueFilename added a
+				// numeric suffix to avoid overwriting it. Log both names so it's clear
+				// why the destination differs from what par2 recorded.
+				log.Warn("par2 rename: target name already existed on disk",
+					"obfuscated", from,
+					"par2_target", ren.TrueName,
+					"renamed_to", to,
+					"note", "existing file was not overwritten",
+				)
+			} else {
+				log.Info("par2 rename", "from", from, "to", to)
+			}
 		}
 	}
 	if err != nil {

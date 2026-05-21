@@ -232,8 +232,9 @@ func BiggestFile(paths []string) (path string, ok bool, err error) {
 
 // Rename describes a single file rename performed by Deobfuscate.
 type Rename struct {
-	From string
-	To   string
+	From     string
+	To       string
+	TrueName string // par2-recorded target name; empty for heuristic renames
 }
 
 // Deobfuscate scans dir for obfuscated files. It first attempts to use PAR2
