@@ -30,7 +30,7 @@ func testHistoryServer(t *testing.T) (*Server, *history.Repository) {
 		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
 		Version: "1.0.0-test",
 		History: repo,
-		App:     mockApp{h: repo},
+		App:     NopApp{History: repo},
 	})
 	return s, repo
 }
@@ -587,7 +587,7 @@ func TestHistoryList_PostProcJobsInjected(t *testing.T) {
 		Version: "1.0.0-test",
 		Queue:   q,
 		History: repo,
-		App:     mockApp{q: q, h: repo},
+		App:     NopApp{Queue: q, History: repo},
 	})
 
 	// Seed a completed history entry.
@@ -667,7 +667,7 @@ func TestHistoryList_PostProcNotInjectedForNzoIDs(t *testing.T) {
 		Version: "1.0.0-test",
 		Queue:   q,
 		History: repo,
-		App:     mockApp{q: q, h: repo},
+		App:     NopApp{Queue: q, History: repo},
 	})
 
 	// Add a PP job to the queue.

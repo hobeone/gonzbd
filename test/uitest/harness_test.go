@@ -14,7 +14,6 @@
 package uitest
 
 import (
-	"context"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -29,7 +28,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/web"
@@ -37,62 +35,6 @@ import (
 )
 
 const testAPIKey = "uitest-api-key-1234"
-
-// mockApp satisfies api.ApplicationReloader for UI tests.
-type mockApp struct {
-	q *queue.Queue
-}
-
-func (m *mockApp) ReloadDownloader(_ []config.ServerConfig) error { return nil }
-
-func (m *mockApp) RetryHistoryJob(_ context.Context, _ string) error { return nil }
-
-func (m *mockApp) AddJob(_ context.Context, job *queue.Job, _ []byte, _ bool) error {
-	if m.q != nil {
-		return m.q.Add(job)
-	}
-	return nil
-}
-
-func (m *mockApp) RemoveJob(_ context.Context, id string, deleteFiles bool) error {
-	if m.q != nil {
-		return m.q.Remove(id)
-	}
-	return nil
-}
-
-func (m *mockApp) RemoveHistoryJob(_ context.Context, _ string, _ bool) error {
-	return nil
-}
-
-func (m *mockApp) SetSpeedLimit(_ int64) {}
-
-func (m *mockApp) SetBandwidthMax(_ int64) {}
-
-func (m *mockApp) SetBandwidthPerc(_ int) {}
-
-func (m *mockApp) SetDownloadDir(_ string) {}
-
-func (m *mockApp) SetCompleteDir(_ string) {}
-
-func (m *mockApp) PauseDownloads() {}
-
-func (m *mockApp) ResumeDownloads() {}
-
-func (m *mockApp) ServerStatus() []downloader.ServerSnapshot { return nil }
-
-func (m *mockApp) Speed() float64 { return 0 }
-
-func (m *mockApp) DisconnectAll() {}
-
-func (m *mockApp) PausePostProcessor() {}
-
-func (m *mockApp) ResumePostProcessor() {}
-
-func (m *mockApp) ReloadPostProcOptions(*config.Config) {}
-func (m *mockApp) ReloadDownloadOptions(*config.Config) {}
-
-func (m *mockApp) UnblockServer(_ string) bool { return true }
 
 // testEnv bundles everything needed for a UI test.
 type testEnv struct {
@@ -117,7 +59,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 
 	q := queue.New()
-	ma := &mockApp{q: q}
+	ma := api.NopApp{Queue: q}
 
 	// In-memory history database.
 	histDB, err := history.Open(":memory:")
