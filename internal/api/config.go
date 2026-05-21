@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp"
 )
 
@@ -198,6 +199,36 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 			var enabled bool
 			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.EnableRarCleanup })
 			s.app.SetRarCleanup(enabled)
+		case "overwrite_files":
+			var enabled bool
+			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.OverwriteFiles })
+			s.app.SetOverwriteFiles(enabled)
+		case "flat_unpack":
+			var enabled bool
+			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.FlatUnpack })
+			s.app.SetFlatUnpack(enabled)
+		case "permissions":
+			var v string
+			s.config.WithRead(func(cfg *config.Config) { v = cfg.PostProc.Permissions })
+			s.app.SetPermissions(v)
+		case "folder_rename":
+			var enabled bool
+			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.FolderRename })
+			s.app.SetFolderRename(enabled)
+		case "script_can_fail":
+			var enabled bool
+			s.config.WithRead(func(cfg *config.Config) { enabled = cfg.PostProc.ScriptCanFail })
+			s.app.SetScriptCanFail(enabled)
+		}
+	}
+
+	// Hot-apply downloads naming/sanitize options.
+	if section == "downloads" && s.app != nil {
+		switch keyword {
+		case "replace_illegal_with", "replace_spaces_with", "strip_diacritics", "cleanup_list":
+			var opts fsutil.SanitizeOptions
+			s.config.WithRead(func(cfg *config.Config) { opts = cfg.Downloads.SanitizeOptions() })
+			s.app.SetSanitizeOptions(opts)
 		}
 	}
 

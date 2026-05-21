@@ -932,9 +932,10 @@ func TestQuickCheckPassedSkipsRepair(t *testing.T) {
 // does NOT return an error when ScriptCanFail is true.
 func TestScriptCanFail_True(t *testing.T) {
 	t.Parallel()
-	// Create a real ScriptStage struct and verify ScriptCanFail field.
-	script := &ScriptStage{ScriptCanFail: true}
-	if !script.ScriptCanFail {
+	// Create a real ScriptStage and verify SetScriptCanFail works.
+	script := &ScriptStage{}
+	script.SetScriptCanFail(true)
+	if !script.scriptCanFail.Load() {
 		t.Error("ScriptCanFail should be true")
 	}
 
