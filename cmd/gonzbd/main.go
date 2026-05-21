@@ -147,11 +147,15 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	// Log the absolute paths so users can verify where data will land,
 	// which is especially useful in Docker where relative paths resolve
 	// relative to the working directory inside the container.
-	for _, d := range []struct{ name, path string }{
+	dirs := []struct{ name, path string }{
 		{"download", dlDir},
 		{"complete", cfg.General.CompleteDir},
 		{"admin", adminDir},
-	} {
+	}
+	if cfg.General.DirscanDir != "" {
+		dirs = append(dirs, struct{ name, path string }{"watch", cfg.General.DirscanDir})
+	}
+	for _, d := range dirs {
 		absPath, _ := filepath.Abs(d.path)
 		if err := os.MkdirAll(d.path, 0o750); err != nil {
 			return fmt.Errorf("create %s dir %s: %w", d.name, absPath, err)
@@ -771,11 +775,15 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 	}
 
 	// Create directories eagerly — fail fast on bad paths.
-	for _, d := range []struct{ name, path string }{
+	runDirs := []struct{ name, path string }{
 		{"download", dlDir},
 		{"complete", cfg.General.CompleteDir},
 		{"admin", adminDir},
-	} {
+	}
+	if cfg.General.DirscanDir != "" {
+		runDirs = append(runDirs, struct{ name, path string }{"watch", cfg.General.DirscanDir})
+	}
+	for _, d := range runDirs {
 		absPath, _ := filepath.Abs(d.path)
 		if err := os.MkdirAll(d.path, 0o750); err != nil {
 			return fmt.Errorf("create %s dir %s: %w", d.name, absPath, err)
