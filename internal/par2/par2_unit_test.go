@@ -544,7 +544,7 @@ func TestTeeHandler_HandleAndEnabled(t *testing.T) {
 		t.Errorf("expected record to be delegated to mock, got: %v", mock.handled)
 	}
 
-	if len(uiLogs) != 1 || uiLogs[0] != "[go_par2] WARN: Caution!" {
+	if len(uiLogs) != 1 || uiLogs[0] != "WARN: Caution!" {
 		t.Errorf("expected formatted log in UI, got: %v", uiLogs)
 	}
 }
