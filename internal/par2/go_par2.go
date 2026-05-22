@@ -301,7 +301,12 @@ func (h *teeHandler) formatForUI(r slog.Record) (string, bool) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("[go_par2] ")
+	// No [go_par2] prefix here — the repair stage already identifies the tool
+	// via job.OnOutput("go_par2", ...). Adding a prefix here would cause
+	// double-prefixing in the live view and would displace any leading
+	// whitespace that par2engine uses for indentation (e.g. the file list
+	// under "PAR2 set protects N file(s):"), preventing correct styling in
+	// the history view.
 	switch {
 	case r.Level >= slog.LevelError:
 		sb.WriteString("ERROR: ")
