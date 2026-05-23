@@ -62,6 +62,9 @@ func (n NopApp) ReloadPostProcOptions(*config.Config) {}
 // ReloadDownloadOptions is a stub.
 func (n NopApp) ReloadDownloadOptions(*config.Config) {}
 
+// ReloadGeneralOptions is a stub.
+func (n NopApp) ReloadGeneralOptions(*config.Config) {}
+
 // UnblockServer is a stub.
 func (n NopApp) UnblockServer(string) bool { return true }
 

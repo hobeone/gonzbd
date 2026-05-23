@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lmittmann/tint"
@@ -30,6 +31,37 @@ type LoggingOptions struct {
 	ComponentLevels map[string]slog.Level
 }
 
+var (
+	globalLevelVar    = &slog.LevelVar{}
+	componentLevelsMu sync.RWMutex
+	componentLevels   = make(map[string]slog.Level)
+)
+
+type dynamicMinLevel struct{}
+
+func (dynamicMinLevel) Level() slog.Level {
+	minLvl := globalLevelVar.Level()
+	componentLevelsMu.RLock()
+	defer componentLevelsMu.RUnlock()
+	for _, lvl := range componentLevels {
+		if lvl < minLvl {
+			minLvl = lvl
+		}
+	}
+	return minLvl
+}
+
+// SetLogLevels updates the global log level and per-component level overrides at runtime.
+func SetLogLevels(global slog.Level, compLevels map[string]slog.Level) {
+	globalLevelVar.Set(global)
+	componentLevelsMu.Lock()
+	componentLevels = make(map[string]slog.Level, len(compLevels))
+	for k, v := range compLevels {
+		componentLevels[k] = v
+	}
+	componentLevelsMu.Unlock()
+}
+
 // Setup returns a configured *slog.Logger that writes to stderr and
 // optionally to a log file. The logger is also installed as slog.Default
 // so that package-level slog.* calls work.
@@ -40,23 +72,19 @@ type LoggingOptions struct {
 // If LogFile is non-empty, Setup creates the parent directory with mode
 // 0o750 and opens the file with O_APPEND|O_CREATE|O_WRONLY, mode 0o640.
 func Setup(opts LoggingOptions) (*slog.Logger, io.Closer, error) {
+	// Initialize global and component level overrides
+	SetLogLevels(opts.Level, opts.ComponentLevels)
+
 	var closer io.Closer
 	var handlers []slog.Handler
 
-	// When per-component levels are set, the base handlers must accept
-	// the lowest configured level so that the filterHandler can do
-	// fine-grained suppression. Without this, a component override like
-	// "downloader: debug" would be blocked by a global "info" handler.
-	handlerLevel := opts.Level
-	for _, lvl := range opts.ComponentLevels {
-		if lvl < handlerLevel {
-			handlerLevel = lvl
-		}
-	}
+	// Use dynamicMinLevel to always pass log messages through to filterHandler
+	// where precise global/component filtering happens.
+	minLevel := dynamicMinLevel{}
 
 	// 1. Console handler (Colorized)
 	handlers = append(handlers, tint.NewHandler(os.Stderr, &tint.Options{
-		Level:      handlerLevel,
+		Level:      minLevel,
 		AddSource:  opts.AddSource,
 		TimeFormat: time.TimeOnly,
 	}))
@@ -74,7 +102,7 @@ func Setup(opts LoggingOptions) (*slog.Logger, io.Closer, error) {
 		closer = f
 
 		handlers = append(handlers, slog.NewTextHandler(f, &slog.HandlerOptions{
-			Level:     handlerLevel,
+			Level:     minLevel,
 			AddSource: opts.AddSource,
 		}))
 	}
@@ -87,12 +115,9 @@ func Setup(opts LoggingOptions) (*slog.Logger, io.Closer, error) {
 		h = &multiHandler{handlers: handlers}
 	}
 
-	if len(opts.ComponentLevels) > 0 {
-		h = &filterHandler{
-			next:   h,
-			global: opts.Level,
-			levels: opts.ComponentLevels,
-		}
+	// Always wrap with filterHandler so overrides can be loaded at runtime
+	h = &filterHandler{
+		next: h,
 	}
 
 	logger := slog.New(h)
@@ -151,9 +176,7 @@ func (m *multiHandler) WithGroup(name string) slog.Handler {
 // no component attribute) pass through to the next handler unchanged
 // (subject to its own level check).
 type filterHandler struct {
-	next   slog.Handler
-	global slog.Level
-	levels map[string]slog.Level
+	next slog.Handler
 
 	// currentAttrs holds the attributes added via WithAttrs.
 	currentAttrs []slog.Attr
@@ -172,11 +195,14 @@ func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
 	// (last) to least-specific (first). For each component, also try
 	// slash-hierarchy parents (e.g. "postproc/unpack" → "postproc").
 	// The first match wins.
-	effectiveLevel := f.global
+	globalLvl := globalLevelVar.Level()
+	effectiveLevel := globalLvl
+
+	componentLevelsMu.RLock()
 	for i := len(components) - 1; i >= 0; i-- {
 		p := components[i]
 		for p != "" {
-			if lvl, ok := f.levels[p]; ok {
+			if lvl, ok := componentLevels[p]; ok {
 				effectiveLevel = lvl
 				goto resolved
 			}
@@ -189,6 +215,7 @@ func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
 		}
 	}
 resolved:
+	componentLevelsMu.RUnlock()
 
 	if r.Level < effectiveLevel {
 		return nil
@@ -228,8 +255,6 @@ func (f *filterHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	copy(newAttrs[len(f.currentAttrs):], attrs)
 	return &filterHandler{
 		next:         f.next.WithAttrs(attrs),
-		global:       f.global,
-		levels:       f.levels,
 		currentAttrs: newAttrs,
 	}
 }
@@ -238,8 +263,6 @@ func (f *filterHandler) WithGroup(name string) slog.Handler {
 	// Groups don't affect component filtering logic.
 	return &filterHandler{
 		next:         f.next.WithGroup(name),
-		global:       f.global,
-		levels:       f.levels,
 		currentAttrs: f.currentAttrs,
 	}
 }

@@ -79,6 +79,8 @@ type ApplicationReloader interface {
 	ReloadPostProcOptions(cfg *config.Config)
 	// ReloadDownloadOptions applies all hot-applicable download settings.
 	ReloadDownloadOptions(cfg *config.Config)
+	// ReloadGeneralOptions applies all hot-applicable general settings.
+	ReloadGeneralOptions(cfg *config.Config)
 	UnblockServer(name string) bool
 	ServerStatus() []downloader.ServerSnapshot
 	// Speed returns the current aggregate download speed in bytes/sec.
