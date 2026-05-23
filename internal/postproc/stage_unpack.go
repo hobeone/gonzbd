@@ -19,9 +19,8 @@ import (
 )
 
 type UnpackStage struct {
-	// mu protects BaseOpts and Permissions, which can be updated via
-	// Set* methods from the API goroutine while a job runs in the
-	// postproc worker. Run() snapshots both under RLock at the start.
+	// mu protects BaseOpts, Permissions, PasswordFile, EnableFileJoin, and EnableRecursive.
+	// Can be updated via Set* methods from the API goroutine while a job runs.
 	mu sync.RWMutex
 	// BaseOpts holds config-driven extraction options (tool paths, flags).
 	// The job's password is merged at runtime.
@@ -31,6 +30,8 @@ type UnpackStage struct {
 	// execute bits stripped. Empty disables chmod.
 	Permissions string
 
+	// disabled controls if the stage is skipped. Thread-safe atomic.
+	disabled atomic.Bool
 	// cleanup is set atomically so SetCleanup can be called from any goroutine.
 	cleanup atomic.Bool
 	// PasswordFile is the path to a text file with one password per line.
@@ -47,7 +48,9 @@ type UnpackStage struct {
 }
 
 // NewUnpackStage constructs an UnpackStage with default settings.
-func NewUnpackStage() *UnpackStage { return &UnpackStage{} }
+func NewUnpackStage() *UnpackStage {
+	return &UnpackStage{}
+}
 
 // NewUnpackStageWith constructs an UnpackStage with the given base options.
 func NewUnpackStageWith(opts unpack.Options, cleanup bool) *UnpackStage {
@@ -56,9 +59,40 @@ func NewUnpackStageWith(opts unpack.Options, cleanup bool) *UnpackStage {
 	return s
 }
 
+// SetEnabled enables or disables the unpack stage at runtime. Thread-safe.
+func (u *UnpackStage) SetEnabled(enabled bool) { u.disabled.Store(!enabled) }
+
 // SetCleanup enables or disables archive file deletion at runtime without
 // requiring a server restart. Thread-safe; may be called from any goroutine.
 func (u *UnpackStage) SetCleanup(enabled bool) { u.cleanup.Store(enabled) }
+
+// SetBaseOpts updates the extraction base options. Thread-safe.
+func (u *UnpackStage) SetBaseOpts(opts unpack.Options) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.BaseOpts = opts
+}
+
+// SetPasswordFile updates the global password file path. Thread-safe.
+func (u *UnpackStage) SetPasswordFile(v string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.PasswordFile = v
+}
+
+// SetEnableFileJoin enables or disables split file joining. Thread-safe.
+func (u *UnpackStage) SetEnableFileJoin(v bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.EnableFileJoin = v
+}
+
+// SetEnableRecursive enables or disables recursive unpacking. Thread-safe.
+func (u *UnpackStage) SetEnableRecursive(v bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.EnableRecursive = v
+}
 
 // SetOverwriteFiles enables or disables overwriting existing files on extraction.
 // Thread-safe; takes effect for the next job.
@@ -84,6 +118,63 @@ func (u *UnpackStage) SetPermissions(v string) {
 	u.mu.Unlock()
 }
 
+// SetUnrarCommand updates the unrar binary path at runtime. Thread-safe.
+func (u *UnpackStage) SetUnrarCommand(v string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.BaseOpts.UnrarCommand = v
+}
+
+// SetSevenZipCommand updates the 7z binary path at runtime. Thread-safe.
+func (u *UnpackStage) SetSevenZipCommand(v string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.BaseOpts.SevenZipCommand = v
+}
+
+// SetUseGoRAR updates built-in RAR extractor toggle at runtime. Thread-safe.
+func (u *UnpackStage) SetUseGoRAR(v bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.BaseOpts.UseGoRAR = v
+}
+
+// SetGoRarFallback updates pure-Go fallback settings at runtime. Thread-safe.
+func (u *UnpackStage) SetGoRarFallback(v bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.BaseOpts.GoRarFallback = v
+}
+
+// SetUseGo7z updates built-in 7z extractor toggle at runtime. Thread-safe.
+func (u *UnpackStage) SetUseGo7z(v bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.BaseOpts.UseGo7z = v
+}
+
+// SetGo7zFallback updates pure-Go 7z fallback settings at runtime. Thread-safe.
+func (u *UnpackStage) SetGo7zFallback(v bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.BaseOpts.Go7zFallback = v
+}
+
+// SetNiceAndIonice updates nice and ionice settings at runtime. Thread-safe.
+func (u *UnpackStage) SetNiceAndIonice(nice, ionice string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.BaseOpts.CmdCfg.Nice = nice
+	u.BaseOpts.CmdCfg.Ionice = ionice
+}
+
+// SetExtraUnrarParams updates unrar extra parameters at runtime. Thread-safe.
+func (u *UnpackStage) SetExtraUnrarParams(args []string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.BaseOpts.ExtraArgs = args
+}
+
 // Name returns the stage identifier.
 func (*UnpackStage) Name() string { return "unpack" }
 
@@ -102,6 +193,11 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	}
 	log = log.With("component", "postproc/unpack", "job", job.Queue.ID)
 
+	if u.disabled.Load() {
+		logf(log, job, slog.LevelInfo, "Unpack stage disabled — skipping")
+		return nil
+	}
+
 	// Skip extraction when repair has already failed — the archives are
 	// corrupt and unpacking would produce garbage. Matches Python's
 	// safe_postproc gate: "if all_ok: ... unpacker()".
@@ -111,10 +207,13 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// Snapshot mutable fields under RLock so a concurrent SetOverwriteFiles /
-	// SetFlatUnpack / SetPermissions call doesn't race with this job.
+	// SetFlatUnpack / SetPermissions / SetPasswordFile / SetEnableFileJoin / SetEnableRecursive call doesn't race.
 	u.mu.RLock()
 	opts := u.BaseOpts
 	permissions := u.Permissions
+	passwordFile := u.PasswordFile
+	enableFileJoin := u.EnableFileJoin
+	enableRecursive := u.EnableRecursive
 	u.mu.RUnlock()
 	opts.OnLine = func(line string) {
 		if job.OnOutput != nil {
@@ -126,8 +225,8 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	if job.Queue.Password != "" {
 		opts.Passwords = append([]string{job.Queue.Password}, opts.Passwords...)
 	}
-	if u.PasswordFile != "" {
-		filePws, err := cmdutil.LoadPasswordFile(u.PasswordFile)
+	if passwordFile != "" {
+		filePws, err := cmdutil.LoadPasswordFile(passwordFile)
 		if err != nil {
 			logf(log, job, slog.LevelWarn, "password file: %v", err)
 		} else {
@@ -168,7 +267,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	maxDepth := maxUnpackDepth
-	if !u.EnableRecursive {
+	if !enableRecursive {
 		maxDepth = 1
 	}
 	for depth := range maxDepth {
@@ -360,7 +459,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 					res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
 				}
 			case unpack.SplitArchive:
-				if !u.EnableFileJoin {
+				if !enableFileJoin {
 					logf(log, job, slog.LevelInfo, "Skipping file join (disabled): %s", filepath.Base(a.MainFile))
 					continue
 				}

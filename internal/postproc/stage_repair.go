@@ -9,11 +9,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
 type RepairStage struct {
+	mu sync.RWMutex
 	// Par2Opts configures the par2 binary path and turbo mode.
 	Par2Opts par2.RunOptions
 	// UseGoPar2 enables the native par2engine library for verification
@@ -26,6 +28,56 @@ type RepairStage struct {
 	GoPar2Fallback bool
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
+}
+
+// SetPar2Opts updates the par2 options at runtime. Thread-safe.
+func (s *RepairStage) SetPar2Opts(opts par2.RunOptions) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Par2Opts = opts
+}
+
+// SetUseGoPar2 enables or disables pure-Go par2 at runtime. Thread-safe.
+func (s *RepairStage) SetUseGoPar2(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.UseGoPar2 = v
+}
+
+// SetGoPar2Fallback updates fallback settings at runtime. Thread-safe.
+func (s *RepairStage) SetGoPar2Fallback(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.GoPar2Fallback = v
+}
+
+// SetPar2Command updates the par2 command path at runtime. Thread-safe.
+func (s *RepairStage) SetPar2Command(v string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Par2Opts.Command = v
+}
+
+// SetPar2Turbo updates turbo settings at runtime. Thread-safe.
+func (s *RepairStage) SetPar2Turbo(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Par2Opts.Turbo = v
+}
+
+// SetNiceAndIonice updates nice and ionice settings at runtime. Thread-safe.
+func (s *RepairStage) SetNiceAndIonice(nice, ionice string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Par2Opts.CmdCfg.Nice = nice
+	s.Par2Opts.CmdCfg.Ionice = ionice
+}
+
+// SetExtraPar2Params updates extra parameters at runtime. Thread-safe.
+func (s *RepairStage) SetExtraPar2Params(args []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Par2Opts.ExtraArgs = args
 }
 
 // NewRepairStage constructs a RepairStage with default settings.
@@ -42,6 +94,12 @@ func (*RepairStage) Name() string { return "repair" }
 // Run finds par2 sets in job.DownloadDir and repairs each. No-op when the
 // job has no par2 files.
 func (s *RepairStage) Run(ctx context.Context, job *Job) error {
+	s.mu.RLock()
+	par2Opts := s.Par2Opts
+	useGoPar2Val := s.UseGoPar2
+	goPar2FallbackVal := s.GoPar2Fallback
+	s.mu.RUnlock()
+
 	log := s.Log
 	if log == nil {
 		log = slog.Default()
@@ -114,7 +172,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 					fmt.Sprintf("[repair] Skipping previously verified set: %s", set.Name))
 				continue
 			}
-			repairOpts := s.Par2Opts
+			repairOpts := par2Opts
 			repairOpts.OnLine = func(line string) {
 				if job.OnOutput != nil {
 					job.OnOutput("par2", line)
@@ -127,7 +185,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 			// Dispatch: native par2engine vs external par2 binary.
 			// Follows the same pattern as GoUnRAR/UnRAR in stage_unpack.go.
 			var res par2.RepairResult
-			useGoPar2 := s.UseGoPar2
+			useGoPar2 := useGoPar2Val
 
 			if !useGoPar2 {
 				// Check if external par2 binary is available.
@@ -158,7 +216,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 				// reach the external tool, which may succeed where the Go
 				// library gave a false negative.
 				// Gated on GoPar2Fallback so users can disable the retry.
-				if (err != nil || !res.Success) && s.GoPar2Fallback {
+				if (err != nil || !res.Success) && goPar2FallbackVal {
 					par2Bin := repairOpts.Command
 					if par2Bin == "" {
 						par2Bin = "par2"
