@@ -28,7 +28,9 @@
 		<label for="{section}-{keyword}" class="text-sm font-medium leading-none">
 			{label}
 			{#if requiresRestart}
-				<span class="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">restart</span>
+				<span class="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5
+        text-[10px] font-medium bg-amber-100 text-amber-800
+        dark:bg-amber-900/40 dark:text-amber-300">requires restart</span>
 			{/if}
 		</label>
 		{#if description}
