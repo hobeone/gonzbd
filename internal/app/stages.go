@@ -14,12 +14,16 @@ import (
 // builtStages bundles the stage list with the individually addressable stages
 // that need runtime toggling via Application setter methods.
 type builtStages struct {
-	Stages      []postproc.Stage
-	QuickCheck  *postproc.QuickCheckStage
-	Par2Cleanup *postproc.Par2CleanupStage
-	Unpack      *postproc.UnpackStage
-	Finalize    *postproc.FinalizeStage
-	Script      *postproc.ScriptStage
+	Stages           []postproc.Stage
+	QuickCheck       *postproc.QuickCheckStage
+	Repair           *postproc.RepairStage
+	Par2Cleanup      *postproc.Par2CleanupStage
+	Unpack           *postproc.UnpackStage
+	Finalize         *postproc.FinalizeStage
+	Script           *postproc.ScriptStage
+	SampleCleanup    *postproc.SampleCleanupStage
+	Deobfuscate      *postproc.DeobfuscateStage
+	ExtensionCleanup *postproc.ExtensionCleanupStage
 }
 
 // buildStages constructs the post-processing stage list from cfg.
@@ -103,39 +107,34 @@ func buildStages(cfg Config, log *slog.Logger) (builtStages, error) {
 	repairStage.GoPar2Fallback = cfg.GoPar2Fallback
 	stages = append(stages, repairStage)
 
-	// Unpack stage: included when any extraction/join feature is enabled.
-	// Declared outside the if-block so it can be returned in builtStages
-	// for runtime toggling via Application.SetRarCleanup.
-	var unpackStage *postproc.UnpackStage
-	if cfg.EnableUnrar || cfg.Enable7zip || cfg.EnableFileJoin {
-		unpackStage = postproc.NewUnpackStageWith(unpack.Options{
-			UnrarCommand:     cfg.UnrarCommand,
-			SevenZipCommand:  cfg.SevenzCommand,
-			OverwriteFiles:   cfg.OverwriteFiles,
-			IgnoreUnrarDates: cfg.IgnoreUnrarDates,
-			OneFolder:        cfg.FlatUnpack,
-			UseGoRAR:         cfg.UseGoRAR,
-			GoRarFallback:    cfg.GoRarFallback,
-			UseGo7z:          cfg.UseGo7z,
-			Go7zFallback:     cfg.Go7zFallback,
-			HasProblem:       unrarInfo.HasProblem,
-			CmdCfg:           cmdCfg,
-			ExtraArgs:        extraUnrarArgs,
-		}, cfg.EnableRarCleanup)
-		unpackStage.Permissions = cfg.Permissions
-		unpackStage.PasswordFile = cfg.PasswordFile
-		unpackStage.EnableFileJoin = cfg.EnableFileJoin
-		unpackStage.EnableRecursive = cfg.EnableRecursive
-		unpackStage.Log = ppLog
-		stages = append(stages, unpackStage)
-	}
+	// Unpack stage: always included in pipeline, enabled dynamically.
+	unpackStage := postproc.NewUnpackStageWith(unpack.Options{
+		UnrarCommand:     cfg.UnrarCommand,
+		SevenZipCommand:  cfg.SevenzCommand,
+		OverwriteFiles:   cfg.OverwriteFiles,
+		IgnoreUnrarDates: cfg.IgnoreUnrarDates,
+		OneFolder:        cfg.FlatUnpack,
+		UseGoRAR:         cfg.UseGoRAR,
+		GoRarFallback:    cfg.GoRarFallback,
+		UseGo7z:          cfg.UseGo7z,
+		Go7zFallback:     cfg.Go7zFallback,
+		HasProblem:       unrarInfo.HasProblem,
+		CmdCfg:           cmdCfg,
+		ExtraArgs:        extraUnrarArgs,
+	}, cfg.EnableRarCleanup)
+	unpackStage.Permissions = cfg.Permissions
+	unpackStage.PasswordFile = cfg.PasswordFile
+	unpackStage.EnableFileJoin = cfg.EnableFileJoin
+	unpackStage.EnableRecursive = cfg.EnableRecursive
+	unpackStage.Log = ppLog
+	unpackStage.SetEnabled(cfg.EnableUnrar || cfg.Enable7zip || cfg.EnableFileJoin)
+	stages = append(stages, unpackStage)
 
 	// Sample cleanup runs after unpack so it sees both raw and extracted files.
-	if cfg.IgnoreSamples {
-		sampleStage := postproc.NewSampleCleanupStage()
-		sampleStage.Log = ppLog
-		stages = append(stages, sampleStage)
-	}
+	sampleStage := postproc.NewSampleCleanupStage()
+	sampleStage.Log = ppLog
+	sampleStage.SetEnabled(cfg.IgnoreSamples)
+	stages = append(stages, sampleStage)
 
 	// Par2-based filename recovery: unconditional, runs after unpack.
 	// Must run before par2_cleanup since it reads the .par2 files.
@@ -150,18 +149,16 @@ func buildStages(cfg Config, log *slog.Logger) (builtStages, error) {
 	par2CleanupStage.Log = ppLog
 	stages = append(stages, par2CleanupStage)
 
-	if cfg.DeobfuscateFilenames {
-		deobStage := postproc.NewDeobfuscateStage()
-		deobStage.Log = ppLog
-		stages = append(stages, deobStage)
-	}
+	// Deobfuscation stage.
+	deobStage := postproc.NewDeobfuscateStage()
+	deobStage.Log = ppLog
+	deobStage.SetEnabled(cfg.DeobfuscateFilenames)
+	stages = append(stages, deobStage)
 
 	// Extension cleanup: delete files matching the user's cleanup list.
-	if len(cfg.CleanupExtensions) > 0 {
-		cleanupStage := postproc.NewExtensionCleanupStage(cfg.CleanupExtensions)
-		cleanupStage.Log = ppLog
-		stages = append(stages, cleanupStage)
-	}
+	cleanupStage := postproc.NewExtensionCleanupStage(cfg.CleanupExtensions)
+	cleanupStage.Log = ppLog
+	stages = append(stages, cleanupStage)
 
 	// Finalize: move files from download dir to complete dir.
 	// Must run BEFORE script so scripts receive the final directory path.
@@ -177,24 +174,24 @@ func buildStages(cfg Config, log *slog.Logger) (builtStages, error) {
 
 	// Script stage: runs AFTER finalize so job.DownloadDir points to the
 	// final complete_dir, matching SABnzbd's $1 convention.
-	// Declared outside the if-block so it can be returned in builtStages.
-	var scriptStage *postproc.ScriptStage
-	if cfg.ScriptDir != "" {
-		scriptStage = postproc.NewScriptStage(
-			cfg.ScriptDir, cfg.CompleteDir,
-			cfg.Version, cfg.APIKey, cfg.ListenAddr,
-		)
-		scriptStage.Log = ppLog
-		scriptStage.SetScriptCanFail(cfg.ScriptCanFail)
-		stages = append(stages, scriptStage)
-	}
+	scriptStage := postproc.NewScriptStage(
+		cfg.ScriptDir, cfg.CompleteDir,
+		cfg.Version, cfg.APIKey, cfg.ListenAddr,
+	)
+	scriptStage.Log = ppLog
+	scriptStage.SetScriptCanFail(cfg.ScriptCanFail)
+	stages = append(stages, scriptStage)
 
 	return builtStages{
-		Stages:      stages,
-		QuickCheck:  qcStage,
-		Par2Cleanup: par2CleanupStage,
-		Unpack:      unpackStage,
-		Finalize:    finalizeStage,
-		Script:      scriptStage,
+		Stages:           stages,
+		QuickCheck:       qcStage,
+		Repair:           repairStage,
+		Par2Cleanup:      par2CleanupStage,
+		Unpack:           unpackStage,
+		Finalize:         finalizeStage,
+		Script:           scriptStage,
+		SampleCleanup:    sampleStage,
+		Deobfuscate:      deobStage,
+		ExtensionCleanup: cleanupStage,
 	}, nil
 }

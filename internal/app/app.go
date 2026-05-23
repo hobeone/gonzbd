@@ -23,6 +23,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -198,10 +199,14 @@ type Application struct {
 
 	customStages     []postproc.Stage
 	quickCheckStage  *postproc.QuickCheckStage
+	repairStage      *postproc.RepairStage
 	par2CleanupStage *postproc.Par2CleanupStage
 	unpackStage      *postproc.UnpackStage
 	finalizeStage    *postproc.FinalizeStage
 	scriptStage      *postproc.ScriptStage
+	sampleStage      *postproc.SampleCleanupStage
+	deobfuscateStage *postproc.DeobfuscateStage
+	cleanupStage     *postproc.ExtensionCleanupStage
 
 	// directUnpackers maps jobID → active DirectUnpacker for jobs being
 	// extracted during download. Protected by mu.
@@ -334,10 +339,14 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		}
 		stages = built.Stages
 		app.quickCheckStage = built.QuickCheck
+		app.repairStage = built.Repair
 		app.par2CleanupStage = built.Par2Cleanup
 		app.unpackStage = built.Unpack
 		app.finalizeStage = built.Finalize
 		app.scriptStage = built.Script
+		app.sampleStage = built.SampleCleanup
+		app.deobfuscateStage = built.Deobfuscate
+		app.cleanupStage = built.ExtensionCleanup
 	}
 	pp := postproc.New(postproc.Options{
 		Stages: stages,
@@ -1203,6 +1212,148 @@ func (app *Application) SetScriptCanFail(enabled bool) {
 	}
 }
 
+// SetUseGoRAR enables or disables pure-Go RAR extraction at runtime.
+func (app *Application) SetUseGoRAR(v bool) {
+	if app.unpackStage != nil {
+		app.unpackStage.SetUseGoRAR(v)
+	}
+}
+
+// SetUseGo7z enables or disables pure-Go 7-Zip extraction at runtime.
+func (app *Application) SetUseGo7z(v bool) {
+	if app.unpackStage != nil {
+		app.unpackStage.SetUseGo7z(v)
+	}
+}
+
+// SetUseGoPar2 enables or disables pure-Go par2 verification/repair at runtime.
+func (app *Application) SetUseGoPar2(v bool) {
+	if app.repairStage != nil {
+		app.repairStage.SetUseGoPar2(v)
+	}
+}
+
+// SetGoRarFallback enables or disables fallback to unrar binary.
+func (app *Application) SetGoRarFallback(v bool) {
+	if app.unpackStage != nil {
+		app.unpackStage.SetGoRarFallback(v)
+	}
+}
+
+// SetGo7zFallback enables or disables fallback to 7z binary.
+func (app *Application) SetGo7zFallback(v bool) {
+	if app.unpackStage != nil {
+		app.unpackStage.SetGo7zFallback(v)
+	}
+}
+
+// SetGoPar2Fallback enables or disables fallback to par2 binary.
+func (app *Application) SetGoPar2Fallback(v bool) {
+	if app.repairStage != nil {
+		app.repairStage.SetGoPar2Fallback(v)
+	}
+}
+
+// SetNiceAndIonice updates nice and ionice command prefixes for external tools.
+func (app *Application) SetNiceAndIonice(nice, ionice string) {
+	if app.repairStage != nil {
+		app.repairStage.SetNiceAndIonice(nice, ionice)
+	}
+	if app.unpackStage != nil {
+		app.unpackStage.SetNiceAndIonice(nice, ionice)
+	}
+}
+
+// SetExternalCommands updates the paths to par2, unrar, and 7z binaries.
+func (app *Application) SetExternalCommands(par2Cmd, unrarCmd, sevenzCmd string) {
+	if app.repairStage != nil {
+		app.repairStage.SetPar2Command(par2Cmd)
+	}
+	if app.unpackStage != nil {
+		app.unpackStage.SetUnrarCommand(unrarCmd)
+		app.unpackStage.SetSevenZipCommand(sevenzCmd)
+	}
+}
+
+// SetExtraParams parses and applies extra command parameters to unrar and par2.
+func (app *Application) SetExtraParams(unrarParams, par2Params string) {
+	if app.repairStage != nil {
+		extraPar2Args, err := cmdutil.ParseExtraParams(par2Params)
+		if err == nil {
+			app.repairStage.SetExtraPar2Params(extraPar2Args)
+		} else {
+			app.log.Warn("Failed to parse extra par2 params", "err", err)
+		}
+	}
+	if app.unpackStage != nil {
+		extraUnrarArgs, err := cmdutil.ParseExtraParams(unrarParams)
+		if err == nil {
+			if err := cmdutil.ValidateUnrarParams(extraUnrarArgs); err != nil {
+				app.log.Warn("extra_unrar_params contains non-standard flags", "err", err)
+			}
+			app.unpackStage.SetExtraUnrarParams(extraUnrarArgs)
+		} else {
+			app.log.Warn("Failed to parse extra unrar params", "err", err)
+		}
+	}
+}
+
+// SetCleanupExtensions updates the file extension cleanup list.
+func (app *Application) SetCleanupExtensions(exts []string) {
+	if app.cleanupStage != nil {
+		app.cleanupStage.SetExtensions(exts)
+	}
+}
+
+// SetDeobfuscate enables or disables filename deobfuscation.
+func (app *Application) SetDeobfuscate(enabled bool) {
+	if app.deobfuscateStage != nil {
+		app.deobfuscateStage.SetEnabled(enabled)
+	}
+}
+
+// SetIgnoreSamples enables or disables automatic sample cleanup.
+func (app *Application) SetIgnoreSamples(enabled bool) {
+	if app.sampleStage != nil {
+		app.sampleStage.SetEnabled(enabled)
+	}
+}
+
+// SetScriptDir updates the user scripts directory.
+func (app *Application) SetScriptDir(dir string) {
+	if app.scriptStage != nil {
+		app.scriptStage.SetScriptDir(dir)
+	}
+}
+
+// SetUnpackEnabled enables or disables the unpack stage at runtime.
+func (app *Application) SetUnpackEnabled(enabled bool) {
+	if app.unpackStage != nil {
+		app.unpackStage.SetEnabled(enabled)
+	}
+}
+
+// SetPasswordFile updates the unpack password file at runtime.
+func (app *Application) SetPasswordFile(v string) {
+	if app.unpackStage != nil {
+		app.unpackStage.SetPasswordFile(v)
+	}
+}
+
+// SetEnableFileJoin enables or disables split file joining at runtime.
+func (app *Application) SetEnableFileJoin(v bool) {
+	if app.unpackStage != nil {
+		app.unpackStage.SetEnableFileJoin(v)
+	}
+}
+
+// SetEnableRecursive enables or disables recursive unpacking at runtime.
+func (app *Application) SetEnableRecursive(v bool) {
+	if app.unpackStage != nil {
+		app.unpackStage.SetEnableRecursive(v)
+	}
+}
+
 // SetSanitizeOptions updates the filename sanitization options used for new
 // jobs. Thread-safe; takes effect for the next enqueued job.
 func (app *Application) SetSanitizeOptions(opts fsutil.SanitizeOptions) {
@@ -1268,6 +1419,25 @@ func (app *Application) ReloadPostProcOptions(cfg *config.Config) {
 	app.SetPermissions(cfg.PostProc.Permissions)
 	app.SetFolderRename(cfg.PostProc.FolderRename)
 	app.SetScriptCanFail(cfg.PostProc.ScriptCanFail)
+
+	// --- NEW HOT-RELOADS ---
+	app.SetUseGoRAR(cfg.PostProc.UseGoRAR)
+	app.SetUseGo7z(cfg.PostProc.UseGo7z)
+	app.SetUseGoPar2(cfg.PostProc.UseGoPar2)
+	app.SetGoRarFallback(cfg.PostProc.GoRarFallback)
+	app.SetGo7zFallback(cfg.PostProc.Go7zFallback)
+	app.SetGoPar2Fallback(cfg.PostProc.GoPar2Fallback)
+	app.SetNiceAndIonice(cfg.PostProc.Nice, cfg.PostProc.Ionice)
+	app.SetExternalCommands(cfg.PostProc.Par2Command, cfg.PostProc.UnrarCommand, cfg.PostProc.SevenzCommand)
+	app.SetExtraParams(cfg.PostProc.ExtraUnrarParams, cfg.PostProc.ExtraPar2Params)
+	app.SetCleanupExtensions(cfg.PostProc.CleanupExtensions)
+	app.SetDeobfuscate(cfg.PostProc.DeobfuscateFilenames)
+	app.SetIgnoreSamples(cfg.PostProc.IgnoreSamples)
+	app.SetScriptDir(cfg.General.ScriptDir)
+	app.SetUnpackEnabled(cfg.PostProc.EnableUnrar || cfg.PostProc.Enable7zip || cfg.PostProc.EnableFileJoin)
+	app.SetPasswordFile(cfg.PostProc.PasswordFile)
+	app.SetEnableFileJoin(cfg.PostProc.EnableFileJoin)
+	app.SetEnableRecursive(cfg.PostProc.EnableRecursive)
 }
 
 // ReloadDownloadOptions applies all hot-applicable download settings from cfg

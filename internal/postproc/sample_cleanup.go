@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 )
 
 // reSample matches files SABnzbd considers samples or proofs. The
@@ -37,11 +38,22 @@ func IsSample(name string) bool {
 // whole release was distributed as a "sample" archive (e.g. a leak)
 // and the user genuinely wants to keep those files.
 type SampleCleanupStage struct {
-	Log *slog.Logger
+	mu       sync.RWMutex
+	disabled bool
+	Log      *slog.Logger
 }
 
 // NewSampleCleanupStage constructs a SampleCleanupStage.
-func NewSampleCleanupStage() *SampleCleanupStage { return &SampleCleanupStage{} }
+func NewSampleCleanupStage() *SampleCleanupStage {
+	return &SampleCleanupStage{}
+}
+
+// SetEnabled enables or disables sample cleanup at runtime. Thread-safe.
+func (s *SampleCleanupStage) SetEnabled(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.disabled = !v
+}
 
 // Name implements Stage.
 func (*SampleCleanupStage) Name() string { return "sample_cleanup" }
@@ -51,6 +63,14 @@ func (*SampleCleanupStage) Name() string { return "sample_cleanup" }
 // fails the pipeline — best-effort cleanup is preferred over a
 // failed-job state since the user data is already extracted.
 func (s *SampleCleanupStage) Run(ctx context.Context, job *Job) error {
+	s.mu.RLock()
+	disabled := s.disabled
+	s.mu.RUnlock()
+
+	if disabled {
+		return nil
+	}
+
 	log := s.logger(job)
 
 	var samples []string
