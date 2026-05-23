@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 )
 
 type ScriptStage struct {
+	mu sync.RWMutex
 	// ScriptDir is the directory holding user scripts; the job's Script
 	// field is resolved relative to it. May be absolute for portability.
 	ScriptDir string
@@ -38,6 +40,13 @@ type ScriptStage struct {
 // warnings at runtime without restart. Thread-safe.
 func (s *ScriptStage) SetScriptCanFail(v bool) { s.scriptCanFail.Store(v) }
 
+// SetScriptDir thread-safely updates the scripts directory path at runtime.
+func (s *ScriptStage) SetScriptDir(dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ScriptDir = dir
+}
+
 // NewScriptStage constructs a ScriptStage.
 func NewScriptStage(scriptDir, completeDir, version, apiKey, apiURL string) *ScriptStage {
 	return &ScriptStage{
@@ -56,6 +65,10 @@ func (*ScriptStage) Name() string { return "script" }
 // when no script is configured or the script exits 0; wraps the RunScript
 // error otherwise.
 func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
+	s.mu.RLock()
+	scriptDir := s.ScriptDir
+	s.mu.RUnlock()
+
 	log := s.Log
 	if log == nil {
 		log = slog.Default()
@@ -68,8 +81,8 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		return nil
 	}
 	scriptPath := name
-	if s.ScriptDir != "" && !filepath.IsAbs(name) {
-		scriptPath = filepath.Join(s.ScriptDir, name)
+	if scriptDir != "" && !filepath.IsAbs(name) {
+		scriptPath = filepath.Join(scriptDir, name)
 	}
 
 	// SABnzbd script status codes (§6.5):
