@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // ExtensionCleanupStage deletes files whose extension matches a user-
@@ -18,6 +19,7 @@ import (
 // dot (e.g. "nfo", "txt", "sfv"). An NZB extension in the cleanup list
 // is skipped because NZBs may be re-queued.
 type ExtensionCleanupStage struct {
+	mu sync.RWMutex
 	// Extensions is the list of extensions (without dot) to delete.
 	Extensions []string
 	// SkipNZB prevents removal of .nzb files even if listed.
@@ -27,6 +29,15 @@ type ExtensionCleanupStage struct {
 
 // NewExtensionCleanupStage constructs an ExtensionCleanupStage.
 func NewExtensionCleanupStage(extensions []string) *ExtensionCleanupStage {
+	s := &ExtensionCleanupStage{
+		SkipNZB: true,
+	}
+	s.SetExtensions(extensions)
+	return s
+}
+
+// SetExtensions thread-safely updates the extensions to be cleaned up.
+func (s *ExtensionCleanupStage) SetExtensions(extensions []string) {
 	// Normalize: lowercase and strip leading dots.
 	normed := make([]string, 0, len(extensions))
 	for _, ext := range extensions {
@@ -37,10 +48,9 @@ func NewExtensionCleanupStage(extensions []string) *ExtensionCleanupStage {
 			normed = append(normed, ext)
 		}
 	}
-	return &ExtensionCleanupStage{
-		Extensions: normed,
-		SkipNZB:    true,
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Extensions = normed
 }
 
 // Name implements Stage.
@@ -53,13 +63,17 @@ func (*ExtensionCleanupStage) Name() string { return "extension_cleanup" }
 func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 	log := s.logger(job)
 
-	if len(s.Extensions) == 0 {
+	s.mu.RLock()
+	extensions := s.Extensions
+	s.mu.RUnlock()
+
+	if len(extensions) == 0 {
 		return nil
 	}
 
 	// Build a set for O(1) lookup.
-	extSet := make(map[string]struct{}, len(s.Extensions))
-	for _, ext := range s.Extensions {
+	extSet := make(map[string]struct{}, len(extensions))
+	for _, ext := range extensions {
 		extSet[ext] = struct{}{}
 	}
 
