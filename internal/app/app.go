@@ -1451,6 +1451,22 @@ func (app *Application) ReloadDownloadOptions(cfg *config.Config) {
 	app.SetPropagationDelay(cfg.Downloads.PropagationDelay)
 }
 
+// ReloadGeneralOptions applies all hot-applicable general settings from cfg
+// to the running logging handlers.
+func (app *Application) ReloadGeneralOptions(cfg *config.Config) {
+	globalLevel, err := cfg.General.ParseLogLevel()
+	if err != nil {
+		app.log.Error("failed to parse global log level on reload", "err", err)
+		return
+	}
+	compLevels, err := cfg.General.ParseLogLevels()
+	if err != nil {
+		app.log.Error("failed to parse component log levels on reload", "err", err)
+		return
+	}
+	SetLogLevels(globalLevel, compLevels)
+}
+
 // pushDispatchOptions reads the current mutable dispatch fields under app.mu
 // and forwards them to the running downloader. Must not be called while
 // holding app.mu.
