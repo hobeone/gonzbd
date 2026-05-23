@@ -190,6 +190,8 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 			s.config.WithRead(func(cfg *config.Config) { s.app.ReloadPostProcOptions(cfg) })
 		case "downloads":
 			s.config.WithRead(func(cfg *config.Config) { s.app.ReloadDownloadOptions(cfg) })
+		case "general":
+			s.config.WithRead(func(cfg *config.Config) { s.app.ReloadGeneralOptions(cfg) })
 		}
 	}
 
