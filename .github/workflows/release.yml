@@ -20,6 +20,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  GOPRIVATE: github.com/hobeone/par2engine
 
 jobs:
   test:
@@ -27,6 +28,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
+      - name: Configure Git for Private Modules
+        run: git config --global url."https://${{ secrets.GOPRIVATE_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - uses: actions/setup-go@v6
         with:
@@ -61,6 +65,9 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0   # full history for git describe fallback
+
+      - name: Configure Git for Private Modules
+        run: git config --global url."https://${{ secrets.GOPRIVATE_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - uses: actions/setup-go@v6
         with:
