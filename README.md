@@ -432,20 +432,27 @@ All pure-Go extractors and repair engines can be toggled in the Web UI (Settings
 ## Upgrading Dependencies
 
 ### Go Dependencies
-To manage and upgrade Go modules:
+Since GoNZBD packages dependencies locally inside the `/vendor` folder (to support secure, offline Docker builds), the Go toolchain operates in vendored mode by default. To query or fetch upgrades from the internet, you **must** explicitly bypass vendoring using the `-mod=mod` flag:
+
 ```bash
-# Upgrade all Go packages to the latest minor/patch versions
-go get -u ./...
+# Upgrade all direct and indirect dependencies to their latest minor/patch versions
+go get -mod=mod -u ./...
 
-# Upgrade a specific package (e.g. native par2engine) to the latest version
-go get -u github.com/hobeone/par2engine
-
-# Clean up unused dependencies in go.mod and go.sum
+# Clean up unused/redundant dependencies in go.mod and go.sum
 go mod tidy
 
-# Package dependencies into the /vendor folder (required for secure Docker release builds)
+# Re-package dependencies into the local vendor folder (CRITICAL after any upgrade)
 go mod vendor
 ```
+
+To upgrade a Go package to a newer **major version** (which typically introduces breaking changes and uses a new import path like `/v2` or `/v3`):
+1. Update the package import paths in your Go source files (e.g., changing `github.com/hobeone/par2engine` to `github.com/hobeone/par2engine/v2`).
+2. Run `go get` with the new import path to fetch the major version, then tidy and vendor:
+   ```bash
+   go get -mod=mod github.com/hobeone/par2engine/v2@latest
+   go mod tidy
+   go mod vendor
+   ```
 
 ### NPM Packages
 To manage and upgrade frontend Svelte dependencies in the `ui/` subdirectory:
@@ -455,10 +462,10 @@ cd ui
 # Upgrade all packages to their latest versions, ignoring semver constraints (may introduce breaking changes)
 npx npm-check-updates -u && npm install
 
-# Upgrade a specific package to the latest version
+# Upgrade a specific package to its latest version (including major/breaking changes)
 npm install <package-name>@latest
 
-# Update all packages according to semver constraints in package.json
+# Update all packages according to semver constraints in package.json (safe minor/patch updates)
 npm update
 
 # Audit and fix vulnerability warnings
