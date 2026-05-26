@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,9 +57,7 @@ func SetLogLevels(global slog.Level, compLevels map[string]slog.Level) {
 	globalLevelVar.Set(global)
 	componentLevelsMu.Lock()
 	componentLevels = make(map[string]slog.Level, len(compLevels))
-	for k, v := range compLevels {
-		componentLevels[k] = v
-	}
+	maps.Copy(componentLevels, compLevels)
 	componentLevelsMu.Unlock()
 }
 
