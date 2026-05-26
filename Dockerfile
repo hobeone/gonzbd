@@ -12,14 +12,13 @@ RUN npm run build
 # ---- Build Go binary ----
 FROM golang:1.26-alpine${ALPINE_VERSION} AS go-builder
 WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
+
+# Install git first so we can auto-derive version info during build.
+RUN apk add --no-cache git
+
 COPY . .
 COPY --from=ui-builder /src/ui/dist ui/dist
 
-# Pure Go, no CGo needed. git is used to auto-derive version info
-# when COMMIT/BUILD_DATE aren't passed via --build-arg.
-RUN apk add --no-cache git
 ARG VERSION=
 ARG COMMIT=
 ARG BUILD_DATE=
@@ -27,6 +26,7 @@ RUN VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || ec
     COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}" && \
     BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
     CGO_ENABLED=0 go build \
+      -mod=vendor \
       -ldflags="-s -w \
         -X main.Version=${VERSION} \
         -X main.Commit=${COMMIT} \
