@@ -434,7 +434,10 @@ All pure-Go extractors and repair engines can be toggled in the Web UI (Settings
 ### Go Dependencies
 To manage and upgrade Go modules:
 ```bash
-# Upgrade a specific package to the latest version
+# Upgrade all Go packages to the latest minor/patch versions
+go get -u ./...
+
+# Upgrade a specific package (e.g. native par2engine) to the latest version
 go get -u github.com/hobeone/par2engine
 
 # Clean up unused dependencies in go.mod and go.sum
@@ -448,6 +451,9 @@ go mod vendor
 To manage and upgrade frontend Svelte dependencies in the `ui/` subdirectory:
 ```bash
 cd ui
+
+# Upgrade all packages to their latest versions, ignoring semver constraints (may introduce breaking changes)
+npx npm-check-updates -u && npm install
 
 # Upgrade a specific package to the latest version
 npm install <package-name>@latest
