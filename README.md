@@ -419,6 +419,46 @@ golangci-lint run ./...
 
 These checks must pass before pushing your changes to the repository.
 
+## Pure-Go Extraction & Repair (Zero-Dependency Mode)
+
+GoNZBD supports **zero-dependency execution** by utilizing native, pure-Go libraries for all core post-processing operations, eliminating the need to install or shell out to external system binaries:
+
+* **Pure-Go RAR Extraction** (`use_go_rar`): Powered by `nwaples/rardecode/v2`. Enabled by default; no `unrar` binary required.
+* **Pure-Go 7-Zip Extraction** (`use_go_7z`): Powered by `bodgit/sevenzip`. Enabled by default; no `7z` binary required.
+* **Pure-Go PAR2 Verification & Repair** (`use_go_par2`): Powered by our high-performance native `github.com/hobeone/par2engine` module. Enabled by default; no `par2cmdline` binary required.
+
+All pure-Go extractors and repair engines can be toggled in the Web UI (Settings -> Post-Processing) or via `gonzbd.yaml`. If any native engine encounters errors, it can automatically fall back to executing local system binaries (`unrar`, `7z`, `par2`) if they are available.
+
+## Upgrading Dependencies
+
+### Go Dependencies
+To manage and upgrade Go modules:
+```bash
+# Upgrade a specific package to the latest version
+go get -u github.com/hobeone/par2engine
+
+# Clean up unused dependencies in go.mod and go.sum
+go mod tidy
+
+# Package dependencies into the /vendor folder (required for secure Docker release builds)
+go mod vendor
+```
+
+### NPM Packages
+To manage and upgrade frontend Svelte dependencies in the `ui/` subdirectory:
+```bash
+cd ui
+
+# Upgrade a specific package to the latest version
+npm install <package-name>@latest
+
+# Update all packages according to semver constraints in package.json
+npm update
+
+# Audit and fix vulnerability warnings
+npm audit fix
+```
+
 ## Repository layout
 
 ```
