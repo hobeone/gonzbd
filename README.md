@@ -432,27 +432,27 @@ All pure-Go extractors and repair engines can be toggled in the Web UI (Settings
 ## Upgrading Dependencies
 
 ### Go Dependencies
-Since GoNZBD packages dependencies locally inside the `/vendor` folder (to support secure, offline Docker builds), the Go toolchain operates in vendored mode by default. To query or fetch upgrades from the internet, you **must** explicitly bypass vendoring using the `-mod=mod` flag:
+Upgrade dependencies using standard Go toolchain commands:
 
 ```bash
 # Upgrade all direct and indirect dependencies to their latest minor/patch versions
-go get -mod=mod -u ./...
+go get -u ./...
 
 # Clean up unused/redundant dependencies in go.mod and go.sum
 go mod tidy
-
-# Re-package dependencies into the local vendor folder (CRITICAL after any upgrade)
-go mod vendor
 ```
 
 To upgrade a Go package to a newer **major version** (which typically introduces breaking changes and uses a new import path like `/v2` or `/v3`):
 1. Update the package import paths in your Go source files (e.g., changing `github.com/hobeone/par2engine` to `github.com/hobeone/par2engine/v2`).
-2. Run `go get` with the new import path to fetch the major version, then tidy and vendor:
+2. Run `go get` with the new import path to fetch the major version, then tidy:
    ```bash
-   go get -mod=mod github.com/hobeone/par2engine/v2@latest
+   go get github.com/hobeone/par2engine/v2@latest
    go mod tidy
-   go mod vendor
    ```
+
+> [!NOTE]
+> GoNZBD's automated CI/CD pipeline packages dependencies into a `/vendor` folder dynamically during Docker image builds to support secure, offline builds. Standard local development does not require maintaining or using a local `vendor/` directory.
+
 
 ### NPM Packages
 To manage and upgrade frontend Svelte dependencies in the `ui/` subdirectory:
