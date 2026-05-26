@@ -8,7 +8,7 @@ require (
 	github.com/hobeone/par2engine v0.0.13
 	github.com/lmittmann/tint v1.1.3
 	github.com/mmcdole/gofeed v1.3.0
-	github.com/nwaples/rardecode/v2 v2.2.2
+	github.com/nwaples/rardecode/v2 v2.2.3
 	github.com/playwright-community/playwright-go v0.5700.1
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/robfig/cron/v3 v3.0.1
