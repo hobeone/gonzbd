@@ -34,3 +34,4 @@ ui/coverage/
 /Downloads
 /.jet*
 .antigravitycli
+/vendor/
