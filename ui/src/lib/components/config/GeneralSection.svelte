@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Separator } from '$lib/components/ui/separator';
 	import ConfigInput from './ConfigInput.svelte';
+	import ConfigSelect from './ConfigSelect.svelte';
 
 	let {
 		configData,
@@ -9,6 +10,13 @@
 		configData: Record<string, any>;
 		onFieldUpdate: (section: string, keyword: string, value: string | number | boolean) => void;
 	} = $props();
+
+	const logOptions = [
+		{ value: 'debug', label: 'Debug' },
+		{ value: 'info', label: 'Info' },
+		{ value: 'warn', label: 'Warning' },
+		{ value: 'error', label: 'Error' }
+	];
 </script>
 
 <section class="space-y-6">
@@ -24,6 +32,6 @@
 		<ConfigInput section="general" keyword="nzb_key" label="NZB Key" value={configData.general.nzb_key} description="Key for NZB uploads only." onupdate={onFieldUpdate} />
 		<ConfigInput section="general" keyword="download_dir" label="Download Directory" value={configData.general.download_dir} description="Path for incomplete downloads." onupdate={onFieldUpdate} />
 		<ConfigInput section="general" keyword="complete_dir" label="Complete Directory" value={configData.general.complete_dir} description="Path for finished downloads." onupdate={onFieldUpdate} />
-		<ConfigInput section="general" keyword="log_level" label="Log Level" value={configData.general.log_level} description="Minimum level for logging (debug, info, warn, error)." onupdate={onFieldUpdate} />
+		<ConfigSelect section="general" keyword="log_level" label="Log Level" value={configData.general.log_level} options={logOptions} description="Minimum baseline log level. For advanced per-component overrides (e.g. downloader: debug, api: warn), please configure the 'log_levels' map directly in the gonzbd.yaml configuration file." onupdate={onFieldUpdate} />
 	</div>
 </section>

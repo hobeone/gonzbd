@@ -106,8 +106,6 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	}
 	log = log.With("component", "postproc/repair", "job", job.Queue.ID)
 
-	logf(log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)
-
 	// If Direct Unpack successfully extracted the archives during download,
 	// we can skip PAR2 repair entirely. The files are already extracted
 	// and healthy, and the source archives will be deleted anyway.
@@ -128,6 +126,8 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 			"[repair] Skipped: QuickCheck already verified all file CRCs")
 		return nil
 	}
+
+	logf(log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)
 
 	sets, err := par2.FindPar2Files(job.DownloadDir)
 	if err != nil {
