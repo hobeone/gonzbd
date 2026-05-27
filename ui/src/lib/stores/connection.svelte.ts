@@ -163,8 +163,16 @@ class ConnectionStore {
 				if (crossOriginRedirect || sameOriginAuthRedirect) {
 					this.#probing = false;
 					this.reportAuthExpired();
+
+					// Rewrite any redirect parameters containing "/api" to point to the current SPA location
+					for (const [key, value] of resURL.searchParams.entries()) {
+						if (value.includes('/api')) {
+							resURL.searchParams.set(key, window.location.href);
+						}
+					}
+
 					setTimeout(() => {
-						window.location.href = res.url;
+						window.location.href = resURL.href;
 					}, 1500);
 					return;
 				}

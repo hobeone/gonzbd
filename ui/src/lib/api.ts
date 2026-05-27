@@ -7,7 +7,7 @@ import type {
 	ServerStatsResponse,
 	ConfigResponse
 } from './types';
-import { reportAuthExpired } from './stores/connection.svelte';
+import { reportAuthExpired, isAuthExpired } from './stores/connection.svelte';
 
 const API_BASE = '/api';
 
@@ -16,10 +16,10 @@ function apiUrl(mode: string, params?: Record<string, string>): string {
 	return `${API_BASE}?${search}`;
 }
 
-export function checkRedirect(res: Response, requestedUrl: string): void {
+export function checkRedirect(res: Response, requestedUrl: string): boolean {
 	// If the response URL is different from the requested URL, fetch followed a redirect.
 	// Since Tinyauth (or other proxies) redirect to a login/auth page, we detect this here.
-	if (!res || !res.url) return;
+	if (!res || !res.url) return false;
 
 	const reqURL = new URL(requestedUrl, window.location.origin);
 	const resURL = new URL(res.url);
@@ -28,17 +28,34 @@ export function checkRedirect(res: Response, requestedUrl: string): void {
 	const sameOriginAuthRedirect = res.redirected && !resURL.pathname.startsWith('/api');
 
 	if (crossOriginRedirect || sameOriginAuthRedirect) {
+		// If we are already handling the redirect, silence subsequent calls
+		if (isAuthExpired()) {
+			return true;
+		}
+
 		reportAuthExpired();
+
+		// Rewrite any redirect parameters containing "/api" to point to the current SPA location
+		for (const [key, value] of resURL.searchParams.entries()) {
+			if (value.includes('/api')) {
+				resURL.searchParams.set(key, window.location.href);
+			}
+		}
+
 		setTimeout(() => {
-			window.location.href = res.url;
+			window.location.href = resURL.href;
 		}, 1500);
-		throw new Error('Authentication expired — redirecting to login');
+		return true;
 	}
+
+	return false;
 }
 
 export async function fetchJSON<T>(url: string): Promise<T> {
 	const res = await fetch(url);
-	checkRedirect(res, url);
+	if (checkRedirect(res, url)) {
+		return new Promise(() => {}); // Never resolve or reject to suppress UI error states/toasts
+	}
 	if (!res.ok) {
 		let message = `API ${res.status}: ${res.statusText}`;
 		try {
@@ -116,7 +133,9 @@ export async function setConfig(
 	// r.URL.Query().Get("mode"), not FormValue.
 	const url = apiUrl('set_config');
 	const res = await fetch(url, { method: 'POST', body: form });
-	checkRedirect(res, url);
+	if (checkRedirect(res, url)) {
+		return new Promise(() => {});
+	}
 	if (!res.ok) {
 		let message = `Set Config ${res.status}: ${res.statusText}`;
 		try {
@@ -156,7 +175,9 @@ export async function uploadNzb(
 	// r.URL.Query().Get("mode"), not FormValue.
 	const url = apiUrl('addfile');
 	const res = await fetch(url, { method: 'POST', body: form });
-	checkRedirect(res, url);
+	if (checkRedirect(res, url)) {
+		return new Promise(() => {});
+	}
 	if (!res.ok) {
 		throw new Error(`Upload ${res.status}: ${res.statusText}`);
 	}
