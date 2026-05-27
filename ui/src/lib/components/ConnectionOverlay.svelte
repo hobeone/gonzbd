@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { isConnected, getLastError, getNextRetryAt, isProbing, retryNow } from '$lib/stores/connection.svelte';
+	import { isConnected, isAuthExpired, getLastError, getNextRetryAt, isProbing, retryNow } from '$lib/stores/connection.svelte';
 
 	// Live countdown: updates every 100ms for smooth countdown display.
 	let now = $state(Date.now());
@@ -48,14 +48,60 @@
 </script>
 
 {#if !isConnected()}
-	<!-- Disconnected banner -->
-	<div
-		class="mx-auto w-full max-w-7xl px-4 pt-2 animate-in fade-in slide-in-from-top-2"
-		role="alert"
-	>
+	{#if isAuthExpired()}
+		<!-- Session Expired banner -->
 		<div
-			class="flex items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 shadow-sm dark:border-amber-700 dark:bg-amber-950"
+			class="mx-auto w-full max-w-7xl px-4 pt-2 animate-in fade-in slide-in-from-top-2"
+			role="alert"
 		>
+			<div
+				class="flex items-center gap-3 rounded-lg border border-purple-500 bg-purple-50 px-4 py-3 shadow-sm dark:border-purple-800 dark:bg-purple-950/40"
+			>
+				<!-- Pulsing lock icon -->
+				<svg
+					xmlns="http://www.w3.org/2000/svg"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					class="size-5 shrink-0 animate-pulse text-purple-600 dark:text-purple-400"
+				>
+					<rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+					<path d="M7 11V7a5 5 0 0 1 10 0v4" />
+				</svg>
+
+				<div class="flex-1 min-w-0">
+					<p class="text-sm font-semibold text-purple-900 dark:text-purple-200">
+						Session Expired
+					</p>
+					<p class="text-xs text-purple-700 dark:text-purple-300 flex items-center gap-1.5">
+						<svg class="animate-spin h-3 w-3 text-purple-600 dark:text-purple-400" fill="none" viewBox="0 0 24 24">
+							<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+							<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+						</svg>
+						Redirecting to login page…
+					</p>
+				</div>
+
+				<button
+					onclick={() => window.location.reload()}
+					class="shrink-0 rounded-md border border-purple-300 bg-purple-100 px-3 py-1.5 text-xs font-medium text-purple-800 transition hover:bg-purple-200 dark:border-purple-700 dark:bg-purple-900/60 dark:text-purple-200 dark:hover:bg-purple-800"
+				>
+					Log In Now
+				</button>
+			</div>
+		</div>
+	{:else}
+		<!-- Disconnected banner -->
+		<div
+			class="mx-auto w-full max-w-7xl px-4 pt-2 animate-in fade-in slide-in-from-top-2"
+			role="alert"
+		>
+			<div
+				class="flex items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 shadow-sm dark:border-amber-700 dark:bg-amber-950"
+			>
 			<!-- Pulsing wifi-off icon -->
 			<svg
 				xmlns="http://www.w3.org/2000/svg"
@@ -100,6 +146,7 @@
 			</button>
 		</div>
 	</div>
+	{/if}
 {:else if showReconnected}
 	<!-- Brief reconnected flash -->
 	<div class="mx-auto w-full max-w-7xl px-4 pt-2 animate-in fade-in">

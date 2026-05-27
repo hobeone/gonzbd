@@ -14,7 +14,7 @@ import {
 
 // Mock global fetch
 const mockFetch = vi.fn();
-global.fetch = mockFetch;
+globalThis.fetch = mockFetch;
 
 function mockOk(data: any) {
 	mockFetch.mockResolvedValue({
