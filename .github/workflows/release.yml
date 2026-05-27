@@ -20,7 +20,6 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  GOPRIVATE: github.com/hobeone/par2engine
 
 jobs:
   test:
@@ -28,9 +27,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - name: Configure Git for Private Modules
-        run: git config --global url."https://${{ secrets.GOPRIVATE_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - uses: actions/setup-go@v6
         with:
@@ -66,15 +62,9 @@ jobs:
         with:
           fetch-depth: 0   # full history for git describe fallback
 
-      - name: Configure Git for Private Modules
-        run: git config --global url."https://${{ secrets.GOPRIVATE_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-
-      - name: Write GOPRIVATE token file
-        run: echo "${{ secrets.GOPRIVATE_TOKEN }}" > /tmp/goprivate_token
 
       - uses: actions/setup-node@v6
         with:
@@ -139,8 +129,6 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          secrets: |
-            GOPRIVATE_TOKEN=/tmp/goprivate_token
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ steps.meta.outputs.commit }}
