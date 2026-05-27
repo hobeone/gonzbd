@@ -23,6 +23,7 @@ type ReconnectCallback = () => void;
 
 class ConnectionStore {
 	#connected = $state(true);
+	#authExpired = $state(false);
 	#retryCount = $state(0);
 	#lastError = $state<string | null>(null);
 	#nextRetryAt = $state<number | null>(null); // timestamp (Date.now() + delay)
@@ -35,6 +36,9 @@ class ConnectionStore {
 	get connected() {
 		return this.#connected;
 	}
+	get authExpired() {
+		return this.#authExpired;
+	}
 	get retryCount() {
 		return this.#retryCount;
 	}
@@ -46,6 +50,14 @@ class ConnectionStore {
 	}
 	get probing() {
 		return this.#probing;
+	}
+
+	reportAuthExpired(): void {
+		this.#authExpired = true;
+		this.#connected = false;
+		this.#lastError = 'Authentication expired';
+		this.#consecutiveFailures = FAILURE_THRESHOLD;
+		this.#clearTimer();
 	}
 
 	/**
@@ -84,6 +96,7 @@ class ConnectionStore {
 			this.#connected = true;
 			this.#fireReconnected();
 		}
+		this.#authExpired = false;
 		this.#consecutiveFailures = 0;
 		this.#retryCount = 0;
 		this.#lastError = null;
@@ -133,7 +146,31 @@ class ConnectionStore {
 
 		try {
 			const res = await fetch('/api?mode=version&output=json');
-			if (res.ok) {
+			
+			if (!res || !res.url) {
+				if (res && res.ok) {
+					this.#probing = false;
+					this.reportSuccess();
+					return;
+				}
+			} else {
+				// Detect redirect on health probe
+				const reqURL = new URL('/api?mode=version&output=json', window.location.origin);
+				const resURL = new URL(res.url);
+				const crossOriginRedirect = resURL.origin !== reqURL.origin;
+				const sameOriginAuthRedirect = res.redirected && !resURL.pathname.startsWith('/api');
+
+				if (crossOriginRedirect || sameOriginAuthRedirect) {
+					this.#probing = false;
+					this.reportAuthExpired();
+					setTimeout(() => {
+						window.location.href = res.url;
+					}, 1500);
+					return;
+				}
+			}
+
+			if (res && res.ok) {
 				this.#probing = false;
 				this.reportSuccess();
 				return;
@@ -171,12 +208,14 @@ class ConnectionStore {
 const store = new ConnectionStore();
 
 export const isConnected = () => store.connected;
+export const isAuthExpired = () => store.authExpired;
 export const getRetryCount = () => store.retryCount;
 export const getLastError = () => store.lastError;
 export const getNextRetryAt = () => store.nextRetryAt;
 export const isProbing = () => store.probing;
 export const reportFailure = (error: string) => store.reportFailure(error);
 export const reportDisconnect = (error: string) => store.reportDisconnect(error);
+export const reportAuthExpired = () => store.reportAuthExpired();
 export const reportSuccess = () => store.reportSuccess();
 export const retryNow = () => store.retryNow();
 export const onReconnected = (cb: () => void) => store.onReconnected(cb);
