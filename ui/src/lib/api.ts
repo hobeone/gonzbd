@@ -7,6 +7,7 @@ import type {
 	ServerStatsResponse,
 	ConfigResponse
 } from './types';
+import { reportAuthExpired } from './stores/connection.svelte';
 
 const API_BASE = '/api';
 
@@ -15,8 +16,29 @@ function apiUrl(mode: string, params?: Record<string, string>): string {
 	return `${API_BASE}?${search}`;
 }
 
+export function checkRedirect(res: Response, requestedUrl: string): void {
+	// If the response URL is different from the requested URL, fetch followed a redirect.
+	// Since Tinyauth (or other proxies) redirect to a login/auth page, we detect this here.
+	if (!res || !res.url) return;
+
+	const reqURL = new URL(requestedUrl, window.location.origin);
+	const resURL = new URL(res.url);
+
+	const crossOriginRedirect = resURL.origin !== reqURL.origin;
+	const sameOriginAuthRedirect = res.redirected && !resURL.pathname.startsWith('/api');
+
+	if (crossOriginRedirect || sameOriginAuthRedirect) {
+		reportAuthExpired();
+		setTimeout(() => {
+			window.location.href = res.url;
+		}, 1500);
+		throw new Error('Authentication expired — redirecting to login');
+	}
+}
+
 export async function fetchJSON<T>(url: string): Promise<T> {
 	const res = await fetch(url);
+	checkRedirect(res, url);
 	if (!res.ok) {
 		let message = `API ${res.status}: ${res.statusText}`;
 		try {
@@ -94,6 +116,7 @@ export async function setConfig(
 	// r.URL.Query().Get("mode"), not FormValue.
 	const url = apiUrl('set_config');
 	const res = await fetch(url, { method: 'POST', body: form });
+	checkRedirect(res, url);
 	if (!res.ok) {
 		let message = `Set Config ${res.status}: ${res.statusText}`;
 		try {
@@ -133,6 +156,7 @@ export async function uploadNzb(
 	// r.URL.Query().Get("mode"), not FormValue.
 	const url = apiUrl('addfile');
 	const res = await fetch(url, { method: 'POST', body: form });
+	checkRedirect(res, url);
 	if (!res.ok) {
 		throw new Error(`Upload ${res.status}: ${res.statusText}`);
 	}
