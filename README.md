@@ -286,26 +286,29 @@ categories:
 
 ### Building the image
 
-Since GoNZBD utilizes private Go modules (e.g. `par2engine`), the Docker build runs in secure, offline mode using `-mod=vendor`. To build the image locally, you **must** package your dependencies on your host first:
+GoNZBD downloads private Go modules (e.g. `par2engine`) inside the Docker
+build using a [build secret](https://docs.docker.com/build/building/secrets/).
+Pass your GitHub PAT so the container can authenticate:
 
 ```bash
-# 1. Sync dependencies into the local vendor folder
-go mod vendor
+# Create a token file (never checked into source control)
+echo "ghp_YourTokenHere" > /tmp/goprivate_token
 
-# 2. Build the image
-docker build -t gonzbd:latest .
-
-# 3. (Optional) Clean up the local vendor folder when done
-rm -rf vendor
+# Build the image
+docker build --secret id=GOPRIVATE_TOKEN,src=/tmp/goprivate_token -t gonzbd:latest .
 ```
 
-Or via Docker Compose:
+Via Docker Compose, add the secret to your `docker-compose.yml` build section
+or invoke manually:
 
 ```bash
-go mod vendor
-docker compose build
-rm -rf vendor
+DOCKER_BUILDKIT=1 docker compose build
 ```
+
+> [!NOTE]
+> In CI, the GitHub Actions release workflow passes `GOPRIVATE_TOKEN`
+> automatically via `docker/build-push-action` secrets. No manual vendoring
+> is needed.
 
 ### Running without Compose
 
@@ -461,7 +464,9 @@ To upgrade a Go package to a newer **major version** (which typically introduces
    ```
 
 > [!NOTE]
-> GoNZBD's automated CI/CD pipeline packages dependencies into a `/vendor` folder dynamically during Docker image builds to support secure, offline builds. Standard local development does not require maintaining or using a local `vendor/` directory.
+> Docker builds download Go modules inside the container using a build secret
+> for private module authentication. No local `vendor/` directory is needed
+> for development or Docker builds. See the [Building the image](#building-the-image) section.
 
 
 ### NPM Packages

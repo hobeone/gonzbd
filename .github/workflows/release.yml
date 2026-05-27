@@ -73,8 +73,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Vendor Go modules
-        run: go mod vendor
+      - name: Write GOPRIVATE token file
+        run: echo "${{ secrets.GOPRIVATE_TOKEN }}" > /tmp/goprivate_token
 
       - uses: actions/setup-node@v6
         with:
@@ -139,6 +139,8 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
+          secrets: |
+            GOPRIVATE_TOKEN=/tmp/goprivate_token
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ steps.meta.outputs.commit }}

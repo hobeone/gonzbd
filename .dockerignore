@@ -1,6 +1,7 @@
 # Build artifacts
 gonzbd
 *.exe
+vendor/
 
 # UI build artifacts (rebuilt in Docker)
 ui/node_modules/
