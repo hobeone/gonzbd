@@ -286,29 +286,17 @@ categories:
 
 ### Building the image
 
-GoNZBD downloads private Go modules (e.g. `par2engine`) inside the Docker
-build using a [build secret](https://docs.docker.com/build/building/secrets/).
-Pass your GitHub PAT so the container can authenticate:
+Standard Docker builds are fully supported. To build the image locally:
 
 ```bash
-# Create a token file (never checked into source control)
-echo "ghp_YourTokenHere" > /tmp/goprivate_token
-
-# Build the image
-docker build --secret id=GOPRIVATE_TOKEN,src=/tmp/goprivate_token -t gonzbd:latest .
+docker build -t gonzbd:latest .
 ```
 
-Via Docker Compose, add the secret to your `docker-compose.yml` build section
-or invoke manually:
+Via Docker Compose:
 
 ```bash
-DOCKER_BUILDKIT=1 docker compose build
+docker compose build
 ```
-
-> [!NOTE]
-> In CI, the GitHub Actions release workflow passes `GOPRIVATE_TOKEN`
-> automatically via `docker/build-push-action` secrets. No manual vendoring
-> is needed.
 
 ### Running without Compose
 
@@ -462,11 +450,6 @@ To upgrade a Go package to a newer **major version** (which typically introduces
    go get github.com/hobeone/par2engine/v2@latest
    go mod tidy
    ```
-
-> [!NOTE]
-> Docker builds download Go modules inside the container using a build secret
-> for private module authentication. No local `vendor/` directory is needed
-> for development or Docker builds. See the [Building the image](#building-the-image) section.
 
 
 ### NPM Packages
