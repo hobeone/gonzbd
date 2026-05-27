@@ -286,15 +286,25 @@ categories:
 
 ### Building the image
 
+Since GoNZBD utilizes private Go modules (e.g. `par2engine`), the Docker build runs in secure, offline mode using `-mod=vendor`. To build the image locally, you **must** package your dependencies on your host first:
+
 ```bash
-# Standard build
+# 1. Sync dependencies into the local vendor folder
+go mod vendor
+
+# 2. Build the image
 docker build -t gonzbd:latest .
 
-# With version tag
-docker build --build-arg VERSION=1.0.0 -t gonzbd:1.0.0 .
+# 3. (Optional) Clean up the local vendor folder when done
+rm -rf vendor
+```
 
-# Or via docker compose
+Or via Docker Compose:
+
+```bash
+go mod vendor
 docker compose build
+rm -rf vendor
 ```
 
 ### Running without Compose
