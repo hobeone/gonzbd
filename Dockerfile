@@ -13,8 +13,19 @@ RUN npm run build
 FROM golang:1.26-alpine${ALPINE_VERSION} AS go-builder
 WORKDIR /src
 
-# Install git first so we can auto-derive version info during build.
+# Git is needed for version stamping and private module access.
 RUN apk add --no-cache git
+
+# Layer cache: copy module files first, vendor, then copy source.
+# This way source changes don't invalidate the expensive vendor layer.
+COPY go.mod go.sum ./
+ARG GOPRIVATE=github.com/hobeone/*
+ENV GONOSUMCHECK=${GOPRIVATE} GONOSUMDB=${GOPRIVATE} GOPRIVATE=${GOPRIVATE}
+RUN --mount=type=secret,id=GOPRIVATE_TOKEN \
+    if [ -f /run/secrets/GOPRIVATE_TOKEN ]; then \
+      git config --global url."https://$(cat /run/secrets/GOPRIVATE_TOKEN)@github.com/".insteadOf "https://github.com/"; \
+    fi && \
+    go mod download
 
 COPY . .
 COPY --from=ui-builder /src/ui/dist ui/dist
@@ -22,11 +33,14 @@ COPY --from=ui-builder /src/ui/dist ui/dist
 ARG VERSION=
 ARG COMMIT=
 ARG BUILD_DATE=
-RUN VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}" && \
+RUN --mount=type=secret,id=GOPRIVATE_TOKEN \
+    if [ -f /run/secrets/GOPRIVATE_TOKEN ]; then \
+      git config --global url."https://$(cat /run/secrets/GOPRIVATE_TOKEN)@github.com/".insteadOf "https://github.com/"; \
+    fi && \
+    VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}" && \
     COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}" && \
     BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
     CGO_ENABLED=0 go build \
-      -mod=vendor \
       -ldflags="-s -w \
         -X main.Version=${VERSION} \
         -X main.Commit=${COMMIT} \
