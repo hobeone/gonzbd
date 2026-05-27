@@ -624,6 +624,10 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 					"error", err,
 				)
 			}
+		} else {
+			a.log.Debug("zero-length expected size for target file",
+				"path", info.Path,
+			)
 		}
 		f = &openFile{handle: fh, info: info, crcValid: true}
 		open[key] = f
@@ -736,6 +740,10 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 					"error", err,
 				)
 			}
+		} else {
+			a.log.Debug("zero-length file completed",
+				"path", f.info.Path,
+			)
 		}
 		// Durability: fsync before closing and reporting completion.
 		if err := f.handle.Sync(); err != nil {
