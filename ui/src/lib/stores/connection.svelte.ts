@@ -52,6 +52,26 @@ class ConnectionStore {
 		return this.#probing;
 	}
 
+	constructor() {
+		if (typeof window !== 'undefined') {
+			document.addEventListener('visibilitychange', () => {
+				if (document.visibilityState === 'visible') {
+					if (!this.#connected) {
+						this.retryNow();
+					} else {
+						this.#checkSession();
+					}
+				}
+			});
+
+			setInterval(() => {
+				if (document.visibilityState === 'visible' && this.#connected) {
+					this.#checkSession();
+				}
+			}, 5 * 60 * 1000);
+		}
+	}
+
 	reportAuthExpired(): void {
 		this.#authExpired = true;
 		this.#connected = false;
@@ -202,6 +222,33 @@ class ConnectionStore {
 			} catch (e) {
 				console.error('onReconnected callback error:', e);
 			}
+		}
+	}
+
+	async #checkSession(): Promise<void> {
+		try {
+			const res = await fetch('/api?mode=version&output=json');
+			if (!res || !res.url) return;
+
+			const reqURL = new URL('/api?mode=version&output=json', window.location.origin);
+			const resURL = new URL(res.url);
+			const crossOriginRedirect = resURL.origin !== reqURL.origin;
+			const sameOriginAuthRedirect = res.redirected && !resURL.pathname.startsWith('/api');
+
+			if (crossOriginRedirect || sameOriginAuthRedirect) {
+				this.reportAuthExpired();
+
+				// Rewrite any redirect parameters containing "/api" to point to the current SPA location
+				for (const [key, value] of resURL.searchParams.entries()) {
+					if (value.includes('/api')) {
+						resURL.searchParams.set(key, window.location.href);
+					}
+				}
+
+				window.location.href = resURL.href;
+			}
+		} catch {
+			// Ignore network errors to avoid false disconnect triggers during transient blips
 		}
 	}
 
