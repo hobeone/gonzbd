@@ -1,8 +1,8 @@
 // Package rarheader provides read-only RAR archive header inspection.
 //
-// It wraps github.com/nwaples/rardecode/v2 to extract file metadata
-// (internal filenames, encryption status, multi-volume flags) from RAR3
-// and RAR5 archives without performing any decompression.
+// It inspects RAR3 and RAR5 archives to extract file metadata
+// (internal filenames, encryption status, multi-volume flags)
+// without performing any decompression.
 //
 // Primary use case: deobfuscation of Usenet downloads where outer filenames
 // are randomized but the RAR headers contain the original content names.
@@ -14,10 +14,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path"
 	"strings"
 
-	rardecode "github.com/nwaples/rardecode/v2"
+	"github.com/hobeone/rarengine"
 )
 
 var (
@@ -67,41 +68,104 @@ func IsRAR(p string) (bool, error) {
 // Returns ErrNotRAR if the file is not a valid RAR archive.
 // For encrypted-header archives, returns partial Info with HeaderEncrypted=true.
 func Inspect(p string) (Info, error) {
-	var info Info
-
-	// Detect version from magic bytes (single open + 8-byte read).
 	ver, err := readMagic(p)
+	if err != nil {
+		return Info{}, err
+	}
+
+	if ver == 5 {
+		info, err := InspectRar5(p)
+		if err == nil {
+			return info, nil
+		}
+		// If it's encrypted header, rarengine will fail with bad header CRC.
+		// Fallback to unrar vt to be absolutely sure.
+	}
+
+	// Fallback to unrar vt for RAR3/4 or if rarengine failed
+	return inspectViaUnrar(p, ver)
+}
+
+func InspectRar5(p string) (info Info, err error) {
+	info.Version = 5
+
+	f, err := os.Open(p)
 	if err != nil {
 		return info, err
 	}
+	defer f.Close()
+
+	volumesChan := make(chan io.ReadCloser, 1)
+	volumesChan <- f
+	close(volumesChan)
+
+	sd := rarengine.NewStreamDecompressor(volumesChan)
+
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("rarheader: rarengine panic: %v", r)
+		}
+	}()
+
+	for {
+		fh, err := sd.Next()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, rarengine.ErrNoNextVolume) {
+				break
+			}
+			return info, err
+		}
+		if !fh.IsDir {
+			info.Filenames = append(info.Filenames, sanitizeName(fh.Name))
+		}
+		if fh.Encrypted {
+			info.Encrypted = true
+		}
+	}
+	return info, nil
+}
+
+func inspectViaUnrar(p string, ver int) (Info, error) {
+	var info Info
 	info.Version = ver
 
-	// Use rardecode.List for header-only inspection (no decompression).
-	// The library can panic on malformed/truncated archives (e.g. slice
-	// bounds out of range in archive50.readBlockHeader), so we wrap the
-	// call in a recover to convert panics into errors.
-	files, listErr := safeList(p)
-	if listErr != nil {
-		// rardecode returns ErrNoSig for non-RAR files.
-		if errors.Is(listErr, rardecode.ErrNoSig) {
-			return info, ErrNotRAR
-		}
-		// Encrypted headers cause errors but we may have partial data.
-		if errors.Is(listErr, rardecode.ErrBadPassword) {
+	cmd := exec.Command("unrar", "vt", "-p-", p)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	output := stdout.String()
+	stderrStr := stderr.String()
+
+	if err != nil {
+		if strings.Contains(output, "Incorrect password") || strings.Contains(stderrStr, "Incorrect password") ||
+			strings.Contains(output, "password") || strings.Contains(stderrStr, "password") {
 			info.HeaderEncrypted = true
 			info.Encrypted = true
 			return info, nil
 		}
-		return info, fmt.Errorf("rarheader: list %s: %w", p, listErr)
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 11 {
+			info.HeaderEncrypted = true
+			info.Encrypted = true
+			return info, nil
+		}
+		return info, fmt.Errorf("rarheader: unrar vt failed: %w (stderr: %q)", err, stderrStr)
 	}
 
-	for _, f := range files {
-		info.Filenames = append(info.Filenames, sanitizeName(f.Name))
-		if f.Encrypted || f.HeaderEncrypted {
-			info.Encrypted = true
-		}
-		if f.HeaderEncrypted {
-			info.HeaderEncrypted = true
+	lines := strings.Split(output, "\n")
+	var currentName string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Name:") {
+			currentName = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
+			info.Filenames = append(info.Filenames, sanitizeName(currentName))
+		} else if strings.HasPrefix(line, "Flags:") {
+			flags := strings.TrimSpace(strings.TrimPrefix(line, "Flags:"))
+			if strings.Contains(flags, "encrypted") {
+				info.Encrypted = true
+			}
 		}
 	}
 
@@ -110,8 +174,7 @@ func Inspect(p string) (Info, error) {
 
 // readMagic opens path, reads up to 8 bytes, and returns the RAR version
 // (3 or 5) based on the magic signature. Returns ErrNotRAR if the file
-// does not start with a valid RAR signature. This is the single point of
-// magic-byte detection — IsRAR and Inspect both delegate here.
+// does not start with a valid RAR signature.
 func readMagic(path string) (int, error) {
 	f, err := os.Open(path) //nolint:gosec // path from trusted internal callers
 	if err != nil {
@@ -136,35 +199,13 @@ func readMagic(path string) (int, error) {
 }
 
 // sanitizeName strips directory traversal components from an untrusted
-// RAR header filename. It uses path.Base (forward-slash aware, OS-independent)
-// to extract the final path component, replaces null bytes, and falls back
-// to "unknown" for empty results.
+// RAR header filename.
 func sanitizeName(name string) string {
-	// Normalize both forward and back slashes to forward slashes.
-	// filepath.ToSlash only converts os.PathSeparator, which on Linux
-	// is already '/'. RAR archives from Windows use '\' as separator,
-	// so we must handle that explicitly.
 	name = strings.ReplaceAll(name, "\\", "/")
-	// Strip null bytes — these can bypass string comparisons.
 	name = strings.ReplaceAll(name, "\x00", "_")
-	// path.Base returns the last element of the path.
 	name = path.Base(name)
 	if name == "" || name == "." || name == "/" {
 		return "unknown"
 	}
 	return name
-}
-
-// safeList wraps rardecode.List with a deferred recover. The rardecode
-// library can panic on malformed or truncated archives (e.g. slice bounds
-// out of range in archive50.readBlockHeader). This function converts such
-// panics into a returned error so callers don't crash.
-func safeList(path string) (files []*rardecode.File, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			files = nil
-			err = fmt.Errorf("rarheader: rardecode panic on %s: %v", path, r)
-		}
-	}()
-	return rardecode.List(path)
 }
