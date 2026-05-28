@@ -58,5 +58,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/nwaples/rardecode/v2 => github.com/hobeone/rardecode/v2 v2.2.3-gonzbd.16
 replace github.com/hobeone/rarengine => ../rarengine

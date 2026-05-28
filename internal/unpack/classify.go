@@ -69,7 +69,7 @@ func ClassifyUnrarOutput(output string) FailReason {
 	}
 
 	// Not a RAR archive.
-	if strings.Contains(lower, "is not rar archive") {
+	if strings.Contains(lower, "is not rar archive") || strings.Contains(lower, "bad archive") {
 		return FailNotArchive
 	}
 
@@ -87,7 +87,9 @@ func ClassifyUnrarOutput(output string) FailReason {
 	// CRC / corrupt.
 	if strings.Contains(lower, "checksum error") ||
 		strings.Contains(lower, "unexpected end of archive") ||
-		strings.Contains(lower, "- crc failed") {
+		strings.Contains(lower, "- crc failed") ||
+		strings.Contains(lower, "corrupt header") ||
+		strings.Contains(lower, "header is corrupt") {
 		return FailCorrupt
 	}
 
