@@ -429,5 +429,3 @@ func TestSanitizeArchivePath(t *testing.T) {
 		})
 	}
 }
-
-
