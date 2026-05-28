@@ -677,7 +677,7 @@ Key design: Configuration parameters are typed objects with validators. Config r
 | `ignore_unrar_dates` | bool | false | Ignore timestamps in archives |
 | `overwrite_files` | bool | false | Overwrite existing extracted files |
 | `flat_unpack` | bool | false | Extract all to single folder |
-| `use_go_rar` | bool | true | Use pure-Go rardecode for RAR extraction (no external binary needed) |
+| `use_go_rar` | bool | true | Use pure-Go rarengine for RAR5 extraction (falls back to external unrar for RAR3/4) |
 | `extra_unrar_params` | string | `` | Extra unrar flags (allowlist: -mlp, -om*, -ri*) |
 | `extra_par2_params` | string | `` | Extra par2 flags |
 | `script_can_fail` | bool | false | Non-zero script exit = warning not failure |

@@ -349,8 +349,8 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 
 					// Fallback: if Go-native extraction failed and the
 					// external unrar binary is available, retry with it.
-					// The Go rardecode library doesn't support all RAR
-					// features (some RAR5 encryption, RAR2, etc.).
+					// rarengine only supports RAR5; RAR3/4 and some
+					// encrypted formats require the external binary.
 					// Gated on GoRarFallback so users can disable the retry.
 					if goErr := cmp.Or(err, res.Err); goErr != nil && opts.GoRarFallback {
 						unrarBin := opts.UnrarCommand
