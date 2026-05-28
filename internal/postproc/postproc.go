@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -367,6 +369,13 @@ func (p *PostProcessor) processJob(job *Job) {
 			duLines = append(duLines,
 				fmt.Sprintf("✓ Set %q: extracted %d file(s) from %d volume(s)",
 					setname, len(result.ExtractedFiles), len(result.RarParts)))
+			for _, f := range result.ExtractedFiles {
+				displayPath := filepath.Base(f)
+				if rel, err := filepath.Rel(job.DownloadDir, f); err == nil && !strings.HasPrefix(rel, "..") {
+					displayPath = rel
+				}
+				duLines = append(duLines, "  Extracting  "+displayPath)
+			}
 		}
 		for setname, failure := range job.DirectUnpackFailures {
 			duLines = append(duLines,
