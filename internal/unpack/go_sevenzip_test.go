@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -34,6 +35,15 @@ func TestGoSevenZip_LZMA2(t *testing.T) {
 	}
 	if len(res.ExtractedFiles) == 0 {
 		t.Fatal("GoSevenZip() extracted no files")
+	}
+	if len(res.Output) == 0 {
+		t.Error("res.Output should be non-empty")
+	}
+	for _, f := range res.ExtractedFiles {
+		wantLine := "Extracting  " + f
+		if !strings.Contains(res.Output, wantLine) {
+			t.Errorf("expected res.Output to contain %q, got: %q", wantLine, res.Output)
+		}
 	}
 	t.Logf("Extracted %d files", len(res.ExtractedFiles))
 }

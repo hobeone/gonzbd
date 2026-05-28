@@ -109,6 +109,20 @@ func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDi
 	res.ExtractedFiles = files
 	res.CommandLine = fmt.Sprintf("go_unrar %s -> %s", archive.MainFile, outDir)
 
+	var outBuf strings.Builder
+	for _, f := range files {
+		displayPath := f
+		if filepath.IsAbs(f) {
+			if rel, err := filepath.Rel(outDir, f); err == nil && !strings.HasPrefix(rel, "..") {
+				displayPath = rel
+			} else {
+				displayPath = filepath.Base(f)
+			}
+		}
+		outBuf.WriteString("Extracting  " + displayPath + "\n")
+	}
+	res.Output = outBuf.String()
+
 	return res, nil
 }
 
