@@ -995,6 +995,8 @@ func TestReloadPostProcOptions(t *testing.T) {
 	cfg.PostProc.Enable7zip = true
 	cfg.PostProc.EnableFileJoin = true
 	cfg.PostProc.EnableRecursive = true
+	cfg.PostProc.Par2Turbo = true
+	cfg.PostProc.IgnoreUnrarDates = true
 
 	application.ReloadPostProcOptions(cfg)
 
@@ -1017,6 +1019,12 @@ func TestReloadPostProcOptions(t *testing.T) {
 	if !currentCfg.EnableRecursive {
 		t.Errorf("EnableRecursive = false, want true")
 	}
+	if !currentCfg.Par2Turbo {
+		t.Errorf("Par2Turbo = false, want true")
+	}
+	if !currentCfg.IgnoreUnrarDates {
+		t.Errorf("IgnoreUnrarDates = false, want true")
+	}
 
 	// Hot-reload config change
 	cfg.PostProc.DirectUnpack = false
@@ -1025,6 +1033,8 @@ func TestReloadPostProcOptions(t *testing.T) {
 	cfg.PostProc.Enable7zip = false
 	cfg.PostProc.EnableFileJoin = false
 	cfg.PostProc.EnableRecursive = false
+	cfg.PostProc.Par2Turbo = false
+	cfg.PostProc.IgnoreUnrarDates = false
 
 	application.ReloadPostProcOptions(cfg)
 
@@ -1046,5 +1056,11 @@ func TestReloadPostProcOptions(t *testing.T) {
 	}
 	if currentCfg.EnableRecursive {
 		t.Errorf("EnableRecursive = true, want false")
+	}
+	if currentCfg.Par2Turbo {
+		t.Errorf("Par2Turbo = true, want false")
+	}
+	if currentCfg.IgnoreUnrarDates {
+		t.Errorf("IgnoreUnrarDates = true, want false")
 	}
 }
