@@ -1,7 +1,7 @@
 //go:build integration
 
 // Package directunpack integration tests exercise pure-Go RAR extraction
-// via rardecode with multi-volume archives to verify WaitFS blocking and
+// via rarengine with multi-volume archives to verify volume streaming and
 // volume-boundary handling.
 package integration
 
