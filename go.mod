@@ -7,7 +7,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/h2non/filetype v1.1.3
 	github.com/hobeone/par2engine v1.0.1
-	github.com/hobeone/rarengine v0.0.0
+	github.com/hobeone/rarengine v0.0.1
 	github.com/lmittmann/tint v1.1.3
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/playwright-community/playwright-go v0.5700.1
@@ -56,5 +56,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/hobeone/rarengine => ../rarengine
