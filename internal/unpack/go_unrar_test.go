@@ -4,16 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
-
-	rardecode "github.com/nwaples/rardecode/v2"
 )
 
 func TestGoUnRAR_SingleVolume(t *testing.T) {
@@ -434,41 +430,4 @@ func TestSanitizeArchivePath(t *testing.T) {
 	}
 }
 
-// --- classifyRarDecodeError tests ---
 
-func TestClassifyRarDecodeError(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want FailReason
-	}{
-		{"nil", nil, FailUnknown},
-		{"bad_password", rardecode.ErrBadPassword, FailWrongPassword},
-		{"archive_encrypted", rardecode.ErrArchiveEncrypted, FailWrongPassword},
-		{"file_encrypted", rardecode.ErrArchivedFileEncrypted, FailWrongPassword},
-		{"bad_checksum", rardecode.ErrBadFileChecksum, FailCorrupt},
-		{"corrupt_block", rardecode.ErrCorruptBlockHeader, FailCorrupt},
-		{"corrupt_file_hdr", rardecode.ErrCorruptFileHeader, FailCorrupt},
-		{"bad_header_crc", rardecode.ErrBadHeaderCRC, FailCorrupt},
-		{"huff_failed", rardecode.ErrHuffDecodeFailed, FailCorrupt},
-		{"corrupt_ppm", rardecode.ErrCorruptPPM, FailCorrupt},
-		{"short_file", rardecode.ErrShortFile, FailCorrupt},
-		{"decoder_ood", rardecode.ErrDecoderOutOfData, FailCorrupt},
-		{"dict_too_large", rardecode.ErrDictionaryTooLarge, FailCorrupt},
-		{"no_sig", rardecode.ErrNoSig, FailNotArchive},
-		{"unknown_ver", rardecode.ErrUnknownVersion, FailNotArchive},
-		{"enospc", syscall.ENOSPC, FailDiskFull},
-		{"not_exist", fs.ErrNotExist, FailMissingVolume},
-		{"wrapped_not_exist", fmt.Errorf("open failed: %w", fs.ErrNotExist), FailMissingVolume},
-		{"generic", errors.New("something else"), FailUnknown},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ClassifyRarDecodeError(tt.err)
-			if got != tt.want {
-				t.Errorf("ClassifyRarDecodeError(%v) = %v, want %v", tt.err, got, tt.want)
-			}
-		})
-	}
-}

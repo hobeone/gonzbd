@@ -5,16 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"sync"
 
-	rardecode "github.com/nwaples/rardecode/v2"
-
 	"github.com/hobeone/gonzbd/internal/unpack"
+	"github.com/hobeone/rarengine"
 )
 
 // SuccessSet records the outcome of a successfully extracted RAR set.
@@ -47,8 +46,7 @@ type Options struct {
 }
 
 // DirectUnpacker manages pure-Go RAR extraction as volumes complete during
-// download. It uses rardecode with a blocking WaitFS so the library
-// naturally pauses at volume boundaries until the next volume arrives.
+// download. It uses rarengine with a blocking volume channel.
 //
 // It is safe for concurrent use by the assembler (calling Add) and the
 // app (calling Abort, Wait, Results).
@@ -72,10 +70,7 @@ type DirectUnpacker struct {
 	// All files in the job (for initial volume scan).
 	allFilenames []string
 
-	// WaitFS coordination: when extractSet() is running, activeWFS is
-	// the WaitFS for the current set, and activeSet is the setname.
-	// Add() forwards new volumes to activeWFS for live streaming.
-	activeWFS *WaitFS
+	// Active volumes coordination.
 	activeSet string
 
 	// Coordination.
@@ -146,10 +141,6 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 		"set", setname, "vol", vol, "path", filepath.Base(path),
 		"total_for_set", d.totalVolumes[setname])
 
-	// Forward to active WaitFS if this volume belongs to the current extraction set.
-	wfs := d.activeWFS
-	activeSet := d.activeSet
-
 	needStart := false
 	if !d.started {
 		// First RAR volume: determine if we can start.
@@ -169,11 +160,6 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 	}
 
 	d.mu.Unlock()
-
-	// Forward to WaitFS outside the lock.
-	if wfs != nil && setname == activeSet {
-		wfs.AddVolume(filename, path)
-	}
 
 	if needStart {
 		go d.run(ctx)
@@ -213,8 +199,7 @@ func (d *DirectUnpacker) buildVolumeMap() {
 	}
 }
 
-// Abort stops the DirectUnpacker. Results are cleared so the fallback
-// unpack stage re-extracts everything.
+// Abort stops the DirectUnpacker. Results are cleared.
 // Safe to call multiple times and concurrently.
 func (d *DirectUnpacker) Abort() {
 	d.mu.Lock()
@@ -233,12 +218,7 @@ func (d *DirectUnpacker) Abort() {
 		d.recordFailure(s, "aborted (not started)")
 	}
 
-	// Close the active WaitFS to unblock extraction.
-	if d.activeWFS != nil {
-		d.activeWFS.Close()
-	}
-
-	// Clear results so fallback unpack runs.
+	// Clear results.
 	d.successSets = make(map[string]SuccessSet)
 	d.nextSets = nil
 	d.mu.Unlock()
@@ -272,7 +252,7 @@ func (d *DirectUnpacker) Done() <-chan struct{} {
 
 // Results returns a copy of the successfully extracted sets. The caller
 // should check this after Wait() returns. An empty map means no sets
-// were successfully extracted (abort/error occurred).
+// were successfully extracted.
 func (d *DirectUnpacker) Results() map[string]SuccessSet {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -302,7 +282,7 @@ func (d *DirectUnpacker) recordFailure(setname, reason string) {
 	d.failedSets[setname] = FailedSet{Reason: reason}
 }
 
-// run is the main goroutine that manages extraction using rardecode + WaitFS.
+// run is the main goroutine that manages extraction.
 func (d *DirectUnpacker) run(ctx context.Context) {
 	defer close(d.done)
 
@@ -341,71 +321,59 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 	}
 }
 
-// extractSet extracts one complete RAR set using rardecode with WaitFS.
-// It waits for volume 1 before starting, then rardecode's Open() calls
-// block inside WaitFS until subsequent volumes arrive.
+// extractSet extracts one complete RAR set using rarengine with sequential volume channel streaming.
 func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr error) {
-	// Top-level recover: rardecode panics on some malformed archives.
 	defer func() {
 		if p := recover(); p != nil {
-			retErr = fmt.Errorf("directunpack: rardecode panic: %v", p)
+			retErr = fmt.Errorf("directunpack: rarengine panic: %v", p)
 		}
 	}()
 
-	// Wait for vol 1 before starting rardecode.
-	if err := d.waitForVolume(ctx, setname, 1); err != nil {
-		return fmt.Errorf("cancelled waiting for volume 1: %w", err)
-	}
-
 	d.mu.Lock()
-	vol1 := d.completedVols[setname][1]
+	maxVol := d.totalVolumes[setname]
 	d.mu.Unlock()
 
-	// Build WaitFS: pre-populate with all already-completed volumes for this set.
-	wfs := NewWaitFS(ctx)
-	d.mu.Lock()
-	for _, path := range d.completedVols[setname] {
-		wfs.AddVolume(filepath.Base(path), path)
+	if maxVol == 0 {
+		maxVol = 100 // fallback safe bound
 	}
-	// Install as active WaitFS so Add() forwards new volumes.
-	d.activeWFS = wfs
-	d.activeSet = setname
-	d.mu.Unlock()
 
-	// Clear active WaitFS when done.
-	defer func() {
-		d.mu.Lock()
-		d.activeWFS = nil
-		d.activeSet = ""
-		d.mu.Unlock()
-		wfs.Close()
+	volumesChan := make(chan io.ReadCloser)
+	feedErrChan := make(chan error, 1)
+
+	// Start a goroutine to sequentially feed volumes to the decompressor
+	go func() {
+		defer close(volumesChan)
+		for vol := 1; vol <= maxVol; vol++ {
+			if err := d.waitForVolume(ctx, setname, vol); err != nil {
+				feedErrChan <- err
+				return
+			}
+			d.mu.Lock()
+			volPath := d.completedVols[setname][vol]
+			d.mu.Unlock()
+
+			f, err := os.Open(volPath)
+			if err != nil {
+				feedErrChan <- err
+				return
+			}
+
+			select {
+			case volumesChan <- f:
+			case <-ctx.Done():
+				_ = f.Close()
+				feedErrChan <- ctx.Err()
+				return
+			}
+		}
 	}()
 
-	d.log.Info("starting extraction for set", "set", setname, "volume", vol1)
-
-	rdOpts := []rardecode.Option{
-		rardecode.FileSystem(wfs),
-		rardecode.MaxDictionarySize(512 << 20), // cap at 512 MiB
-	}
+	sd := rarengine.NewStreamDecompressor(volumesChan)
 	if d.opts.Password != "" {
-		rdOpts = append(rdOpts, rardecode.Password(d.opts.Password))
+		sd.SetPassword(d.opts.Password)
 	}
-
-	r, err := unpack.SafeOpenReader(vol1, rdOpts...)
-	if err != nil {
-		return fmt.Errorf("directunpack: open set %q: %w", setname, err)
-	}
-	defer r.Close()
 
 	var extractedFiles []string
-
-	unpackOpts := unpack.Options{
-		Password:         d.opts.Password,
-		OneFolder:        d.opts.OneFolder,
-		OverwriteFiles:   d.opts.OverwriteFiles,
-		IgnoreUnrarDates: d.opts.IgnoreUnrarDates,
-		OnLine:           d.opts.OnLine,
-	}
 
 	for {
 		if ctx.Err() != nil {
@@ -419,42 +387,48 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr
 			return fmt.Errorf("killed")
 		}
 
-		hdr, err := unpack.SafeNext(r)
-		if errors.Is(err, io.EOF) {
-			break
-		}
+		fh, err := sd.Next()
 		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, rarengine.ErrNoNextVolume) {
+				break
+			}
 			return fmt.Errorf("directunpack: read header: %w", err)
 		}
 
-		destRel, sanitizeErr := unpack.SanitizeArchivePath(hdr.Name, d.opts.OneFolder)
+		destRel, sanitizeErr := unpack.SanitizeArchivePath(fh.Name, d.opts.OneFolder)
 		if sanitizeErr != nil {
-			d.log.Warn("directunpack: skipping entry with bad path",
-				"raw_name", hdr.Name, "err", sanitizeErr)
-			// Drain the reader for this entry to advance to the next.
-			_, _ = io.Copy(io.Discard, r)
+			d.log.Warn("directunpack: skipping entry with bad path", "raw_name", fh.Name, "err", sanitizeErr)
+			_, _ = io.Copy(io.Discard, sd)
 			continue
 		}
 
 		destPath := filepath.Join(d.extractDir, destRel)
 
-		if err := unpack.ExtractEntry(ctx, d.extractDir, destPath, hdr, r, unpackOpts, d.log); err != nil {
-			// Check for fs.ErrNotExist — this means WaitFS was closed
-			// (abort/context cancel) and rardecode got an error trying
-			// to read from the (now-closed) underlying file.
-			if errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("directunpack: volume not available (aborted?): %w", err)
-			}
-			return fmt.Errorf("directunpack: extract %s: %w", hdr.Name, err)
+		unpackOpts := unpack.Options{
+			Password:         d.opts.Password,
+			OneFolder:        d.opts.OneFolder,
+			OverwriteFiles:   d.opts.OverwriteFiles,
+			IgnoreUnrarDates: d.opts.IgnoreUnrarDates,
+			OnLine:           d.opts.OnLine,
 		}
 
-		if !hdr.IsDir {
+		if err := unpack.ExtractEntryRarengine(ctx, d.extractDir, destPath, fh, sd, unpackOpts, d.log); err != nil {
+			return fmt.Errorf("directunpack: extract %s: %w", fh.Name, err)
+		}
+
+		if !fh.IsDir {
 			extractedFiles = append(extractedFiles, destPath)
 		}
 
 		if d.opts.OnLine != nil {
-			d.opts.OnLine("Extracting  " + hdr.Name)
+			d.opts.OnLine("Extracting  " + fh.Name)
 		}
+	}
+
+	select {
+	case feedErr := <-feedErrChan:
+		return feedErr
+	default:
 	}
 
 	// Record success.
