@@ -223,3 +223,69 @@ These rules were learned from production pprof profiling at 2 Gbps. The download
 - **String map keys for message-IDs are expensive.** NNTP message-IDs are long strings (40-80 bytes); `aeshashbody` for these keys costs 1.15s/10s at 2 Gbps. Avoid adding new `map[string]` lookups in the per-article hot path. If you must, consider integer keys or pre-hashed values.
 
 - **`sync.Pool` is usually not worth it in this codebase.** The `articleRequest` allocation (0.3s at steady-state) is small enough that pool overhead (Put/Get synchronization) would offset the savings. Only pool objects that are large and allocated at >10K/sec.
+
+## Standard Go Development Mandates
+
+### Tooling Setup
+
+```bash
+# Install goimports if not present
+go install golang.org/x/tools/cmd/goimports@latest
+
+# Install golangci-lint if not present (see https://golangci-lint.run/welcome/install/)
+```
+
+### Per-File Workflow (after every .go file edit)
+
+```bash
+goimports -w <file>   # format + resolve imports
+go fix ./...          # adopt new language features automatically
+go build ./...        # verify it compiles
+```
+
+### Quality Gate (before every commit)
+
+```bash
+goimports -w .
+go fix ./...
+go vet ./...
+go test -race ./...
+golangci-lint run ./...
+```
+
+All five must pass. Do not commit with failing tests, vet errors, or lint warnings.
+
+### Coding Standards (Canonical Mandates)
+
+- **Idioms:** "Accept interfaces, return structs." Define interfaces at the consumer side.
+- **Context:** Every blocking or cancellable operation **must** accept `context.Context` as the first parameter.
+- **Errors:** Wrap with `fmt.Errorf("component: ...: %w", err)`. Never use `%v` for errors that will be inspected.
+- **No hacks:** No `init()` for setup. No `panic` for control flow. No `time.Sleep` in tests — use channels or `sync.WaitGroup`.
+- **Standard library first:** Prefer `slices`, `maps`, `errors.Is/As`, `min`/`max` builtins over custom helpers or reflection.
+
+### Concurrency & Locking (Canonical Mandates)
+
+- **Never hold a mutex during I/O.** Snapshot under the lock, release, then do I/O.
+- **Always `defer mu.Unlock()`.** Only exception: intentional snapshot-then-release, marked with `// --- no lock held below this line ---`.
+- **Every `select` must watch `ctx.Done()`.** Goroutines blocked without a context escape route leak forever.
+- **Use `sync.Once` or `CompareAndSwap` for idempotent shutdown.** Prevents double-close panics.
+
+### Commit Convention
+
+All commits must follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/):
+
+```
+<type>[optional scope]: <description>
+```
+
+| Type | When to use |
+|------|-------------|
+| `feat` | New user-visible capability |
+| `fix` | Bug patch |
+| `perf` | Performance improvement with benchmark evidence |
+| `refactor` | Code restructuring, no behavior change |
+| `test` | Adding or improving tests |
+| `docs` | Documentation only |
+| `chore` | Build, CI, dependency updates |
+
+Append `!` or add `BREAKING CHANGE:` footer for any public API or wire-format change.
