@@ -158,11 +158,11 @@ func inspectViaUnrar(p string, ver int) (Info, error) {
 	var currentName string
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Name:") {
-			currentName = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
+		if after, ok := strings.CutPrefix(line, "Name:"); ok {
+			currentName = strings.TrimSpace(after)
 			info.Filenames = append(info.Filenames, sanitizeName(currentName))
-		} else if strings.HasPrefix(line, "Flags:") {
-			flags := strings.TrimSpace(strings.TrimPrefix(line, "Flags:"))
+		} else if after, ok := strings.CutPrefix(line, "Flags:"); ok {
+			flags := strings.TrimSpace(after)
 			if strings.Contains(flags, "encrypted") {
 				info.Encrypted = true
 			}
