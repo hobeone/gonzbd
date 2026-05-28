@@ -28,6 +28,14 @@ func TestGoUnRAR_SingleVolume(t *testing.T) {
 		t.Fatal("GoUnRAR() extracted no files")
 	}
 
+	// Verify res.Output contains extraction lines
+	for _, name := range []string{"file1.txt", "file2.txt"} {
+		wantLine := "Extracting  " + name
+		if !strings.Contains(res.Output, wantLine) {
+			t.Errorf("expected res.Output to contain %q, got: %q", wantLine, res.Output)
+		}
+	}
+
 	// Verify expected files exist.
 	for _, name := range []string{"file1.txt", "file2.txt"} {
 		path := filepath.Join(outDir, name)
