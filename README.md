@@ -24,7 +24,7 @@ is not a drop-in replacement for an existing Python SABnzbd install.
 - **HTTPS** — Optional TLS listener with auto-generated self-signed certs.
 - **Single binary** — The UI is embedded via `//go:embed`; no external
   assets or runtime dependencies beyond optional `par2` and `7z`.
-- **Pure Go** — No CGO dependencies. RAR decoding via `nwaples/rardecode`.
+- **Pure Go** — No CGO dependencies. RAR5 decoding via `hobeone/rarengine`.
   SQLite via `modernc.org/sqlite`.
 
 ## Requirements
@@ -424,7 +424,7 @@ These checks must pass before pushing your changes to the repository.
 
 GoNZBD supports **zero-dependency execution** by utilizing native, pure-Go libraries for all core post-processing operations, eliminating the need to install or shell out to external system binaries:
 
-* **Pure-Go RAR Extraction** (`use_go_rar`): Powered by `nwaples/rardecode/v2`. Enabled by default; no `unrar` binary required.
+* **Pure-Go RAR Extraction** (`use_go_rar`): Powered by `hobeone/rarengine` (RAR5). Enabled by default; falls back to external `unrar` for RAR3/4 or unsupported features.
 * **Pure-Go 7-Zip Extraction** (`use_go_7z`): Powered by `bodgit/sevenzip`. Enabled by default; no `7z` binary required.
 * **Pure-Go PAR2 Verification & Repair** (`use_go_par2`): Powered by our high-performance native `github.com/hobeone/par2engine` module. Enabled by default; no `par2cmdline` binary required.
 

@@ -184,7 +184,7 @@ func UnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, 
 }
 
 // GoUnRARWithPasswords tries extracting with each password in opts.Passwords
-// (and opts.Password) using the pure-Go rardecode extractor until one
+// (and opts.Password) using the pure-Go rarengine extractor until one
 // succeeds or all are exhausted.
 //
 // When no passwords are configured, this delegates directly to GoUnRAR.
