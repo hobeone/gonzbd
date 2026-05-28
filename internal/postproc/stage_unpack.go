@@ -175,6 +175,13 @@ func (u *UnpackStage) SetExtraUnrarParams(args []string) {
 	u.BaseOpts.ExtraArgs = args
 }
 
+// SetIgnoreUnrarDates updates ignore archive dates setting at runtime. Thread-safe.
+func (u *UnpackStage) SetIgnoreUnrarDates(v bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.BaseOpts.IgnoreUnrarDates = v
+}
+
 // Name returns the stage identifier.
 func (*UnpackStage) Name() string { return "unpack" }
 
