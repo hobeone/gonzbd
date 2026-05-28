@@ -7,6 +7,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/h2non/filetype v1.1.3
 	github.com/hobeone/par2engine v1.0.1
+	github.com/hobeone/rarengine v0.0.0
 	github.com/lmittmann/tint v1.1.3
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/nwaples/rardecode/v2 v2.2.3
@@ -58,3 +59,4 @@ require (
 )
 
 replace github.com/nwaples/rardecode/v2 => github.com/hobeone/rardecode/v2 v2.2.3-gonzbd.16
+replace github.com/hobeone/rarengine => ../rarengine
