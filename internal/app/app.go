@@ -1388,6 +1388,26 @@ func (app *Application) SetEnable7zip(v bool) {
 	app.mu.Unlock()
 }
 
+// SetPar2Turbo updates par2cmdline-turbo settings at runtime. Thread-safe.
+func (app *Application) SetPar2Turbo(v bool) {
+	app.mu.Lock()
+	app.cfg.Par2Turbo = v
+	app.mu.Unlock()
+	if app.repairStage != nil {
+		app.repairStage.SetPar2Turbo(v)
+	}
+}
+
+// SetIgnoreUnrarDates updates unrar modify timestamps options at runtime. Thread-safe.
+func (app *Application) SetIgnoreUnrarDates(v bool) {
+	app.mu.Lock()
+	app.cfg.IgnoreUnrarDates = v
+	app.mu.Unlock()
+	if app.unpackStage != nil {
+		app.unpackStage.SetIgnoreUnrarDates(v)
+	}
+}
+
 // SetSanitizeOptions updates the filename sanitization options used for new
 // jobs. Thread-safe; takes effect for the next enqueued job.
 func (app *Application) SetSanitizeOptions(opts fsutil.SanitizeOptions) {
@@ -1476,6 +1496,8 @@ func (app *Application) ReloadPostProcOptions(cfg *config.Config) {
 	app.SetDirectUnpackThreads(cfg.PostProc.DirectUnpackThreads)
 	app.SetEnableUnrar(cfg.PostProc.EnableUnrar)
 	app.SetEnable7zip(cfg.PostProc.Enable7zip)
+	app.SetPar2Turbo(cfg.PostProc.Par2Turbo)
+	app.SetIgnoreUnrarDates(cfg.PostProc.IgnoreUnrarDates)
 }
 
 // ReloadDownloadOptions applies all hot-applicable download settings from cfg
