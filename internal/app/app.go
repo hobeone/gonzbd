@@ -1342,6 +1342,9 @@ func (app *Application) SetPasswordFile(v string) {
 
 // SetEnableFileJoin enables or disables split file joining at runtime.
 func (app *Application) SetEnableFileJoin(v bool) {
+	app.mu.Lock()
+	app.cfg.EnableFileJoin = v
+	app.mu.Unlock()
 	if app.unpackStage != nil {
 		app.unpackStage.SetEnableFileJoin(v)
 	}
@@ -1349,9 +1352,40 @@ func (app *Application) SetEnableFileJoin(v bool) {
 
 // SetEnableRecursive enables or disables recursive unpacking at runtime.
 func (app *Application) SetEnableRecursive(v bool) {
+	app.mu.Lock()
+	app.cfg.EnableRecursive = v
+	app.mu.Unlock()
 	if app.unpackStage != nil {
 		app.unpackStage.SetEnableRecursive(v)
 	}
+}
+
+// SetDirectUnpack enables or disables extraction of RAR archives while still downloading.
+func (app *Application) SetDirectUnpack(v bool) {
+	app.mu.Lock()
+	app.cfg.DirectUnpack = v
+	app.mu.Unlock()
+}
+
+// SetDirectUnpackThreads limits the number of concurrent DirectUnpack workers.
+func (app *Application) SetDirectUnpackThreads(v int) {
+	app.mu.Lock()
+	app.cfg.DirectUnpackThreads = v
+	app.mu.Unlock()
+}
+
+// SetEnableUnrar enables or disables standard RAR unpacking at runtime.
+func (app *Application) SetEnableUnrar(v bool) {
+	app.mu.Lock()
+	app.cfg.EnableUnrar = v
+	app.mu.Unlock()
+}
+
+// SetEnable7zip enables or disables standard 7-Zip unpacking at runtime.
+func (app *Application) SetEnable7zip(v bool) {
+	app.mu.Lock()
+	app.cfg.Enable7zip = v
+	app.mu.Unlock()
 }
 
 // SetSanitizeOptions updates the filename sanitization options used for new
@@ -1438,6 +1472,10 @@ func (app *Application) ReloadPostProcOptions(cfg *config.Config) {
 	app.SetPasswordFile(cfg.PostProc.PasswordFile)
 	app.SetEnableFileJoin(cfg.PostProc.EnableFileJoin)
 	app.SetEnableRecursive(cfg.PostProc.EnableRecursive)
+	app.SetDirectUnpack(cfg.PostProc.DirectUnpack)
+	app.SetDirectUnpackThreads(cfg.PostProc.DirectUnpackThreads)
+	app.SetEnableUnrar(cfg.PostProc.EnableUnrar)
+	app.SetEnable7zip(cfg.PostProc.Enable7zip)
 }
 
 // ReloadDownloadOptions applies all hot-applicable download settings from cfg

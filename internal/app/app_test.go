@@ -965,3 +965,86 @@ func TestReloadDownloader_ServerChanges(t *testing.T) {
 		t.Errorf("ReloadDownloader(server1 only): %v", err)
 	}
 }
+
+// TestReloadPostProcOptions verifies that ReloadPostProcOptions successfully
+// propagates hot-reloadable options like DirectUnpack to the application configuration.
+func TestReloadPostProcOptions(t *testing.T) {
+	tmpDir := t.TempDir()
+	appCfg := app.Config{
+		DownloadDir: filepath.Join(tmpDir, "incomplete"),
+		CompleteDir: filepath.Join(tmpDir, "complete"),
+	}
+	if err := os.MkdirAll(appCfg.DownloadDir, 0o750); err != nil {
+		t.Fatalf("Failed to create download dir: %v", err)
+	}
+	if err := os.MkdirAll(appCfg.CompleteDir, 0o750); err != nil {
+		t.Fatalf("Failed to create complete dir: %v", err)
+	}
+
+	application, err := app.New(appCfg, nil)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+	defer application.Shutdown()
+
+	// Initial configuration
+	cfg := &config.Config{}
+	cfg.PostProc.DirectUnpack = true
+	cfg.PostProc.DirectUnpackThreads = 5
+	cfg.PostProc.EnableUnrar = true
+	cfg.PostProc.Enable7zip = true
+	cfg.PostProc.EnableFileJoin = true
+	cfg.PostProc.EnableRecursive = true
+
+	application.ReloadPostProcOptions(cfg)
+
+	currentCfg := application.GetConfig()
+	if !currentCfg.DirectUnpack {
+		t.Errorf("DirectUnpack = false, want true")
+	}
+	if currentCfg.DirectUnpackThreads != 5 {
+		t.Errorf("DirectUnpackThreads = %d, want 5", currentCfg.DirectUnpackThreads)
+	}
+	if !currentCfg.EnableUnrar {
+		t.Errorf("EnableUnrar = false, want true")
+	}
+	if !currentCfg.Enable7zip {
+		t.Errorf("Enable7zip = false, want true")
+	}
+	if !currentCfg.EnableFileJoin {
+		t.Errorf("EnableFileJoin = false, want true")
+	}
+	if !currentCfg.EnableRecursive {
+		t.Errorf("EnableRecursive = false, want true")
+	}
+
+	// Hot-reload config change
+	cfg.PostProc.DirectUnpack = false
+	cfg.PostProc.DirectUnpackThreads = 2
+	cfg.PostProc.EnableUnrar = false
+	cfg.PostProc.Enable7zip = false
+	cfg.PostProc.EnableFileJoin = false
+	cfg.PostProc.EnableRecursive = false
+
+	application.ReloadPostProcOptions(cfg)
+
+	currentCfg = application.GetConfig()
+	if currentCfg.DirectUnpack {
+		t.Errorf("DirectUnpack = true, want false")
+	}
+	if currentCfg.DirectUnpackThreads != 2 {
+		t.Errorf("DirectUnpackThreads = %d, want 2", currentCfg.DirectUnpackThreads)
+	}
+	if currentCfg.EnableUnrar {
+		t.Errorf("EnableUnrar = true, want false")
+	}
+	if currentCfg.Enable7zip {
+		t.Errorf("Enable7zip = true, want false")
+	}
+	if currentCfg.EnableFileJoin {
+		t.Errorf("EnableFileJoin = true, want false")
+	}
+	if currentCfg.EnableRecursive {
+		t.Errorf("EnableRecursive = true, want false")
+	}
+}
