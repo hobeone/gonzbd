@@ -14,3 +14,10 @@ func (a *Application) ForceAssemblerStopped() error {
 	}
 	return a.assembler.Stop()
 }
+
+// GetConfig returns a copy of the application config for white-box testing.
+func (a *Application) GetConfig() Config {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg
+}
