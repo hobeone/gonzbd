@@ -130,6 +130,20 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 	res.ExtractedFiles = diffSnapshot(before, after)
 	res.CommandLine = fmt.Sprintf("go_7z %s -> %s", archive.MainFile, outDir)
 
+	var outBuf strings.Builder
+	for _, f := range res.ExtractedFiles {
+		displayPath := f
+		if filepath.IsAbs(f) {
+			if rel, err := filepath.Rel(outDir, f); err == nil && !strings.HasPrefix(rel, "..") {
+				displayPath = rel
+			} else {
+				displayPath = filepath.Base(f)
+			}
+		}
+		outBuf.WriteString("Extracting  " + displayPath + "\n")
+	}
+	res.Output = outBuf.String()
+
 	log.Info("extraction complete",
 		"extracted", len(res.ExtractedFiles))
 
