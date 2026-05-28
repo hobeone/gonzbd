@@ -7,7 +7,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/h2non/filetype v1.1.3
 	github.com/hobeone/par2engine v1.0.1
-	github.com/hobeone/rarengine v0.0.1
+	github.com/hobeone/rarengine v0.0.3
 	github.com/lmittmann/tint v1.1.3
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/playwright-community/playwright-go v0.5700.1
@@ -17,7 +17,7 @@ require (
 	golang.org/x/text v0.37.0
 	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.50.1
+	modernc.org/sqlite v1.51.0
 )
 
 require (
