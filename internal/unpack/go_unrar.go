@@ -61,67 +61,6 @@ func detectRar5(filename string) (bool, error) {
 	return bytes.Equal(magic[:], expectedMagic), nil
 }
 
-func discoverRar5Volumes(mainFile string) ([]string, error) {
-	if !strings.Contains(mainFile, ".part") {
-		return []string{mainFile}, nil
-	}
-
-	var prefix, suffix string
-	var numStr string
-	var isZeroPadded bool
-
-	idx := strings.Index(mainFile, ".part")
-	if idx == -1 {
-		return []string{mainFile}, nil
-	}
-	prefix = mainFile[:idx+5]
-	remaining := mainFile[idx+5:]
-
-	for i, c := range remaining {
-		if c >= '0' && c <= '9' {
-			numStr += string(c)
-		} else {
-			suffix = remaining[i:]
-			break
-		}
-	}
-
-	if numStr == "" {
-		return []string{mainFile}, nil
-	}
-
-	isZeroPadded = len(numStr) > 1 && numStr[0] == '0'
-
-	var volumes []string
-	partNum := 1
-	for {
-		var volPath string
-		if isZeroPadded {
-			volPath = fmt.Sprintf("%s%0*d%s", prefix, len(numStr), partNum, suffix)
-		} else {
-			volPath = fmt.Sprintf("%s%d%s", prefix, partNum, suffix)
-		}
-
-		if _, err := os.Stat(volPath); err != nil {
-			if os.IsNotExist(err) {
-				if partNum > 1 {
-					break
-				}
-				volPath = mainFile
-				if _, err := os.Stat(volPath); err == nil {
-					volumes = append(volumes, volPath)
-				}
-				break
-			}
-			return nil, err
-		}
-		volumes = append(volumes, volPath)
-		partNum++
-	}
-
-	return volumes, nil
-}
-
 func ClassifyRarEngineError(err error) FailReason {
 	switch {
 	case errors.Is(err, rarengine.ErrRarBombDetected):
@@ -148,91 +87,27 @@ func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDi
 
 	log = log.With("component", "go_unrar_engine", "archive", archive.MainFile)
 
-	before, snapErr := snapshotDir(outDir)
-	if snapErr != nil {
-		return res, fmt.Errorf("go_unrar: snapshot dir: %w", snapErr)
+	unpackOpts := rarengine.UnpackOptions{
+		Password:         opts.Password,
+		Logger:           log,
+		OneFolder:        opts.OneFolder,
+		OverwriteFiles:   opts.OverwriteFiles,
+		IgnoreUnrarDates: opts.IgnoreUnrarDates,
+		OnEntry: func(fh *rarengine.FileHeader) {
+			if opts.OnLine != nil {
+				opts.OnLine("Extracting  " + fh.Name)
+			}
+		},
 	}
 
-	vols, err := discoverRar5Volumes(archive.MainFile)
+	files, err := rarengine.UnpackDir(ctx, archive.MainFile, outDir, unpackOpts)
 	if err != nil {
-		res.Reason = FailMissingVolume
-		return res, fmt.Errorf("go_unrar: discover volumes: %w", err)
+		res.Reason = ClassifyRarEngineError(err)
+		return res, fmt.Errorf("go_unrar: unpack: %w", err)
 	}
 
-	volumesChan := make(chan io.ReadCloser, len(vols))
-	for _, volPath := range vols {
-		vf, err := os.Open(volPath)
-		if err != nil {
-			close(volumesChan)
-			for v := range volumesChan {
-				_ = v.Close()
-			}
-			res.Reason = FailMissingVolume
-			return res, fmt.Errorf("go_unrar: open volume %q: %w", volPath, err)
-		}
-		volumesChan <- vf
-	}
-	close(volumesChan)
-
-	sd := rarengine.NewStreamDecompressor(volumesChan)
-	if opts.Password != "" {
-		sd.SetPassword(opts.Password)
-	}
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return res, err
-		}
-
-		fh, err := sd.Next()
-		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, rarengine.ErrNoNextVolume) {
-				break
-			}
-			res.Reason = ClassifyRarEngineError(err)
-			if opts.OnLine != nil {
-				opts.OnLine(fmt.Sprintf("ERROR: corrupt archive header: %v", err))
-			}
-			return res, fmt.Errorf("go_unrar: read header: %w", err)
-		}
-
-		destRel, sanitizeErr := SanitizeArchivePath(fh.Name, opts.OneFolder)
-		if sanitizeErr != nil {
-			log.Warn("skipping entry with bad path", "raw_name", fh.Name, "err", sanitizeErr)
-			if opts.OnLine != nil {
-				opts.OnLine("Skipping bad path: " + fh.Name)
-			}
-			_, _ = io.Copy(io.Discard, sd)
-			continue
-		}
-
-		destPath := filepath.Join(outDir, destRel)
-
-		if opts.OneFolder && !opts.OverwriteFiles {
-			destPath = uniquePath(destPath)
-		}
-
-		if err := ExtractEntryRarengine(ctx, outDir, destPath, fh, sd, opts, log); err != nil {
-			res.Reason = ClassifyRarEngineError(err)
-			if opts.OnLine != nil {
-				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", fh.Name, err))
-			}
-			return res, err
-		}
-
-		if opts.OnLine != nil {
-			opts.OnLine("Extracting  " + fh.Name)
-		}
-	}
-
-	after, snapErr := snapshotDir(outDir)
-	if snapErr != nil {
-		return res, fmt.Errorf("go_unrar: snapshot after: %w", snapErr)
-	}
-	res.ExtractedFiles = diffSnapshot(before, after)
+	res.ExtractedFiles = files
 	res.CommandLine = fmt.Sprintf("go_unrar %s -> %s", archive.MainFile, outDir)
-
-	log.Info("rarengine: extraction complete", "extracted", len(res.ExtractedFiles))
 
 	return res, nil
 }
