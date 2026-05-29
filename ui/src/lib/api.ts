@@ -4,7 +4,6 @@ import type {
 	WarningsResponse,
 	StatusResponse,
 	VersionResponse,
-	ServerStatsResponse,
 	ConfigResponse
 } from './types';
 import { reportAuthExpired, isAuthExpired } from './stores/connection.svelte';
@@ -16,7 +15,7 @@ function apiUrl(mode: string, params?: Record<string, string>): string {
 	return `${API_BASE}?${search}`;
 }
 
-export function checkRedirect(res: Response, requestedUrl: string): boolean {
+function checkRedirect(res: Response, requestedUrl: string): boolean {
 	// If the response URL is different from the requested URL, fetch followed a redirect.
 	// Since Tinyauth (or other proxies) redirect to a login/auth page, we detect this here.
 	if (!res || !res.url) return false;
@@ -182,10 +181,6 @@ export async function uploadNzb(
 		throw new Error(`Upload ${res.status}: ${res.statusText}`);
 	}
 	return res.json() as Promise<StatusResponse>;
-}
-
-export async function fetchServerStats(): Promise<ServerStatsResponse> {
-	return fetchJSON<ServerStatsResponse>(apiUrl('server_stats'));
 }
 
 export async function fetchConfig(): Promise<ConfigResponse> {

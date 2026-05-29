@@ -7,11 +7,10 @@
 		getBandwidthMaxBytesPerSec,
 		getBandwidthPerc,
 		setBandwidthPerc,
-		formatSpeed,
-		formatSize,
 		getQueueSlots,
 		isPaused
 	} from '$lib/stores/queue.svelte';
+	import { formatSpeed, formatSize } from '$lib/utils';
 	import SpeedGraph from './SpeedGraph.svelte';
 
 	let speed = $derived(getSpeedBytesPerSec());
