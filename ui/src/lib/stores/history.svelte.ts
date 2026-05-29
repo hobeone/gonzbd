@@ -5,7 +5,7 @@ import { subscribeWS } from './websocket.svelte';
 import { reportFailure, reportSuccess, onReconnected } from './connection.svelte';
 
 class HistoryStore {
-	#history = $state<HistoryDetail | null>(null);
+	#history = $state.raw<HistoryDetail | null>(null);
 	#error = $state<string | null>(null);
 	#wsCleanup: (() => void) | null = null;
 	#reconnectCleanup: (() => void) | null = null;

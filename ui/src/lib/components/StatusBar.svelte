@@ -115,7 +115,7 @@
 					title="Click to set speed limit"
 				>
 					<span class="text-gray-500 dark:text-gray-400">Limit:</span>
-					<span class="font-medium" class:text-amber-600={bandwidthMax > 0 && bandwidthPerc < 100} class:dark:text-amber-400={bandwidthMax > 0 && bandwidthPerc < 100} class:text-gray-700={!(bandwidthMax > 0 && bandwidthPerc < 100)} class:dark:text-gray-300={!(bandwidthMax > 0 && bandwidthPerc < 100)}>{limitLabel}</span>
+					<span class="font-medium {bandwidthMax > 0 && bandwidthPerc < 100 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-700 dark:text-gray-300'}">{limitLabel}</span>
 					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100">
 						<path fill-rule="evenodd" d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" />
 					</svg>
