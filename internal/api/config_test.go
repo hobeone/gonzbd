@@ -75,6 +75,29 @@ func TestModeConfig_Speedlimit(t *testing.T) {
 	}
 }
 
+// TestModeSpeedlimit_TopLevel verifies the SABnzbd-compatible top-level
+// mode=speedlimit alias behaves identically to mode=config&name=speedlimit.
+func TestModeSpeedlimit_TopLevel(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+
+	// Plain number → KiB/s convention (500 → 512000 B/s).
+	rr := apiGet(t, s.Handler(), "/api?mode=speedlimit&value=500&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	m := decodeJSON(t, rr)
+	if v, _ := m["value"].(float64); v != 500*1024 {
+		t.Errorf("value = %v; want %d", m["value"], 500*1024)
+	}
+
+	// Without an API key the admin-level mode is rejected.
+	rr = apiGet(t, s.Handler(), "/api?mode=speedlimit&value=0")
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d; want 401 without apikey", rr.Code)
+	}
+}
+
 func TestModeConfig_TestServer_MissingHost(t *testing.T) {
 	t.Parallel()
 	s := testServer()
