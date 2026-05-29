@@ -18,19 +18,23 @@ The project follows a standard Go project layout:
     - `app/`: The central orchestrator (`Application`) and the download pipeline bridge.
     - `assembler/`: Logic for writing decoded article parts to disk using `pwrite`, with a write cache for coalescing contiguous runs.
     - `bpsmeter/`: Bandwidth statistics and speed limiting.
+    - `cmdutil/`: Helpers for building and validating external command invocations (nice/ionice wrapping, extra-param parsing).
     - `config/`: YAML configuration schema, loading, validation, and atomic saves (marshal under RLock, then write lock-free).
     - `constants/`: Shared constants (priorities, statuses) used across packages.
+    - `crc32util/`: CRC-32 utilities used by the quick-check stage.
     - `decoder/`: High-performance yEnc and UU decoding with LUT-based scanning and fused subtract-42 output.
     - `deobfuscate/`: Renames obfuscated filenames using NZB subject hints, PAR2 filenames, and extension detection.
+    - `directunpack/`: In-flight RAR extraction that runs in parallel with downloading.
     - `dirscanner/`: Watches a folder for new NZB files.
     - `downloader/`: The NNTP engine, handling server pools, connection management, and article dispatch with O(1) pending-article tracking.
     - `fsutil/`: File system utilities: path sanitization, atomic writes (temp+fsync+rename), symlink-safe containment checks, and cross-device move.
     - `history/`: Persistence layer for completed jobs using SQLite and `goose` migrations.
+    - `humanfmt/`: Human-readable formatting helpers (sizes, durations) shared across packages.
     - `nntp/`: Low-level NNTP protocol implementation with message-ID validation and bounded response reading.
     - `notifier/`: Dispatcher for user notifications (email, Apprise, scripts).
     - `nzb/`: NZB (XML) parsing and model definitions with input size limits.
     - `par2/`: PAR2 parity verification and repair tool wrapper with structured status parsing.
-    - `postproc/`: Post-processing pipeline: repair, unpack, deobfuscate, script, finalize.
+    - `postproc/`: Post-processing pipeline: quickcheck, repair, unpack, deobfuscate, finalize, script, and supporting stages.
     - `queue/`: The active download queue and job state management with lazy article index and transient field recomputation.
     - `rarheader/`: RAR archive header parsing with filename sanitization.
     - `scheduler/`: Cron-like task scheduling.
@@ -79,7 +83,7 @@ Unlike the original Python implementation's single-threaded selector loop, GoNZB
 - **Downloader Signaling**: The `Queue` provides a `Notify()` channel (cap-1) that wakes up the `downloader` whenever new work is added or a job is resumed.
 - **Batched Updates**: To minimize lock contention on high-speed connections, the `Queue` supports batched updates for article completions (`MarkArticlesDone`, `MarkArticlesFailed`).
 - **O(1) Article Lookup**: The lazy `artIdx` map (built on first access via `articleByID`) provides O(1) article lookups by message-ID, avoiding linear scans. Transient fields like `Pending`, `PendingArticles`, `FileIdx`, and `Emitted` are `json:"-"` and recomputed on load via `recomputePending()`.
-- **Persistence**: Active job state is persisted as gzipped JSON files in `admin/queue/jobs`.
+- **Persistence**: Active job state is persisted as gzipped JSON files under `<AdminDir>/queue/jobs/` (one `<id>.json.gz` per job, plus a `queue.json.gz` index).
 
 ### NNTP & Downloader (`internal/nntp`, `internal/downloader`)
 
@@ -103,21 +107,27 @@ Post-processing runs a chain of `Stage` implementations in order for each comple
 
 | Order | Stage | Package | Description |
 |-------|-------|---------|-------------|
-| 1 | `repair` | `par2` | PAR2 verification and repair |
-| 2 | `unpack` | `unpack` | RAR, 7z extraction and split file joining |
-| 3 | `deobfuscate` | `deobfuscate` | Rename obfuscated files using NZB hints and PAR2 filenames |
-| 4 | `script` | `postproc` | Run user-supplied post-processing script (see `docs/post-processing-scripts.md`) |
-| 5 | `finalize` | `postproc` | Move job from incomplete to complete directory |
+| 1 | `quickcheck` | `postproc` | CRC-verify assembled files against PAR2 metadata; relocate flat files into expected subdirectories |
+| 2 | `repair` | `par2` | PAR2 verification and repair (skipped when quickcheck passes) |
+| 3 | `unpack` | `unpack` | RAR, 7z extraction and split file joining |
+| 4 | `sample_cleanup` | `postproc` | Delete sample video files (when enabled) |
+| 5 | `par2names` | `postproc` | Recover original filenames from PAR2 metadata |
+| 6 | `par2_cleanup` | `postproc` | Delete `.par2` files after repair/rename (when enabled) |
+| 7 | `deobfuscate` | `deobfuscate` | Rename obfuscated files using NZB hints and PAR2 filenames |
+| 8 | `extension_cleanup` | `postproc` | Delete files matching the user's cleanup extension list |
+| 9 | `finalize` | `postproc` | Move job from incomplete to complete directory |
+| 10 | `cleanup` | `postproc` | Remove `__ADMIN__` sidecar directory from the job folder |
+| 11 | `script` | `postproc` | Run user-supplied post-processing script (see `docs/post-processing-scripts.md`) |
 
 > **Note:** Sorting/renaming (TV, movie, date templates) is intentionally not implemented.
 > This functionality is handled by external tools such as Sonarr, Radarr, and similar media managers.
 
-A stage returning an error aborts the pipeline; subsequent stages are recorded as "Skipped" in the `StageLog`. The processor supports pause/resume and ensures idempotent start/stop via `sync.Once` guards.
+Stage errors are recorded in the `StageLog` but do **not** abort the pipeline — subsequent stages still run. Each stage self-gates based on job flags (`ParError`, `UnpackError`, `FailMsg`) to decide whether to skip when a prior stage has failed. The only reason to abort remaining stages is context cancellation (daemon shutdown). The processor supports pause/resume and ensures idempotent start/stop via `sync.Once` guards.
 
 ### Persistence (`internal/history`, `internal/config`)
 
 - **SQLite History**: Completed jobs are stored in `history.db`. The schema is maintained via `goose` migrations and is designed to be byte-for-byte compatible with the original Python implementation's history database.
-- **YAML Configuration**: The application uses a YAML configuration (`gonzbd.yaml`). The `config` package handles loading, validation, and atomic saves (marshal under RLock, release lock, write to temp file, fsync, and rename). Environment variable expansion is supported within the YAML.
+- **YAML Configuration**: The application uses a YAML configuration (`gonzbd.yaml`). The `config` package handles loading, validation, and atomic saves (marshal under RLock, release lock, write to temp file, fsync, and rename). Environment variable expansion (`$VAR`, `${VAR}`) and `~` home-directory expansion are supported in **path-typed fields only** (e.g., `download_dir`, `admin_dir`, `script_dir`); non-path values (passwords, API keys) are intentionally left unexpanded to avoid corrupting values that contain `$`.
 
 ---
 
@@ -126,13 +136,15 @@ A stage returning an error aborts the pipeline; subsequent stages are recorded a
 When running in daemon mode (`--serve`), the application follows this sequence in `cmd/gonzbd/main.go`:
 
 1.  **Configuration**: Loads `gonzbd.yaml` and resolves directory paths.
-2.  **Logging**: Initializes structured logging (`log/slog`) with optional component-level filtering.
-3.  **Locking**: Acquires a filesystem lock to ensure only one instance runs per admin directory.
-4.  **Persistence**: Opens the SQLite history database and runs any pending migrations.
-5.  **Application Core**: Constructs the `app.Application` orchestrator, which initializes the internal `queue`, `downloader`, `assembler`, and `postProcessor`.
-6.  **Subsystem Start**: Invokes `application.Start()`, which boots the background goroutines for the pipeline, downloader, and post-processor.
-7.  **API & Web**: Constructs the `api.Server` and `web.Handler`, binding them to a single HTTP listener.
-8.  **Wait**: Blocks until a termination signal (SIGINT/SIGTERM) is received, then performs a graceful shutdown (stop producers → drain consumers → cancel context → wait → cleanup).
+2.  **Directories**: Creates download, complete, admin, and (optionally) watch directories on disk.
+3.  **Logging**: Initializes structured logging (`log/slog`) with optional component-level filtering.
+4.  **Locking**: Acquires a filesystem lock to ensure only one instance runs per admin directory.
+5.  **Persistence**: Opens the SQLite history database (`history.db`) and runs any pending `goose` migrations.
+6.  **Application Core**: Constructs the `app.Application` orchestrator, which initializes the internal `queue`, `downloader`, `assembler`, and `postProcessor`.
+7.  **Subsystem Start**: Invokes `application.Start()`, which boots the background goroutines for the pipeline, downloader, and post-processor.
+8.  **Ancillary services**: Starts the bandwidth meter (`bpsmeter`), notifier, directory scanner (`dirscanner`), and scheduler.
+9.  **API & Web**: Constructs the `api.Server` and `web.Handler`, binding them to a single HTTP listener (and optionally a separate HTTPS listener).
+10. **Wait**: Blocks until a termination signal (SIGINT/SIGTERM) is received, then performs a graceful shutdown (stop producers → drain consumers → cancel context → wait → cleanup).
 
 ---
 
