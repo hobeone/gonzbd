@@ -80,7 +80,7 @@
 				No servers configured.
 			</div>
 		{:else}
-			{#each configData.servers as server}
+			{#each configData.servers as server (server.name)}
 				{@const isTesting = testingServer === server.name}
 				{@const result = testResults[server.name]}
 
