@@ -8,12 +8,10 @@ vi.mock('./config/DownloadsSection.svelte', () => ({ default: function() {} }));
 vi.mock('./config/PostProcSection.svelte', () => ({ default: function() {} }));
 vi.mock('./config/ServersSection.svelte', () => ({ default: function() {} }));
 vi.mock('./config/CategoriesSection.svelte', () => ({ default: function() {} }));
-vi.mock('./config/RSSSection.svelte', () => ({ default: function() {} }));
 vi.mock('./config/SchedulingSection.svelte', () => ({ default: function() {} }));
 vi.mock('./config/ServerEditDialog.svelte', () => ({ default: function() {} }));
 vi.mock('./config/CategoryEditDialog.svelte', () => ({ default: function() {} }));
 vi.mock('./config/ScheduleEditDialog.svelte', () => ({ default: function() {} }));
-vi.mock('./config/RSSEditDialog.svelte', () => ({ default: function() {} }));
 
 vi.mock('$lib/api', () => ({
 	setConfig: vi.fn().mockResolvedValue({ status: true }),
@@ -40,7 +38,6 @@ describe('SettingsDialog', () => {
 		expect(screen.getByText('Post-Processing')).toBeInTheDocument();
 		expect(screen.getByText('Servers')).toBeInTheDocument();
 		expect(screen.getByText('Categories')).toBeInTheDocument();
-		expect(screen.getByText('RSS')).toBeInTheDocument();
 		expect(screen.getByText('Scheduling')).toBeInTheDocument();
 	});
 

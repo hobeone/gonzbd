@@ -81,7 +81,6 @@ sudo apt install unrar rar par2 p7zip-full
 | `config_pipeline_test.go` | Config-driven pipeline: flat unpack, nice wrapping |
 | `contract_test.go` | API response shape contracts: queue, history, status, config round-trip |
 | `api_test.go` | API auth/mode tests: open modes, protected modes, admin modes, addfile/addurl/addlocalfile |
-| `rss_test.go` | RSS feed processing: max age, dedup, include/exclude filters, size bounds |
 | `statemachine_test.go` | Download state machine chaos testing |
 | `duplicate_test.go` | Duplicate detection |
 | `oneshot_test.go` | One-shot CLI download mode |
@@ -224,5 +223,4 @@ tools — post-processing stages that require `par2`/`unrar`/`7z` are stubbed.
 | Svelte UI components, layout | Add: `go test -v -tags=uitest ./test/uitest/...` |
 | NZB parsing, file naming | Add: `go test -v -tags=integration -run TestNaming ./test/integration/...` |
 | Download pipeline | Add: `go test -v -tags=integration -run TestDownload ./test/integration/...` |
-| RSS feed processing | Add: `go test -v -tags=integration -run TestRSS ./test/integration/...` |
 | Pre-release validation | All: unit + integration + uitest + contract |

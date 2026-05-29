@@ -213,7 +213,6 @@ func TestAPI_ProtectedModes(t *testing.T) {
 		"mode=get_cats",
 		"mode=get_scripts",
 		"mode=watched_now",
-		"mode=rss_now",
 	}
 
 	for _, query := range modeQueries {

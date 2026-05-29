@@ -10,7 +10,6 @@ vi.mock('$lib/api', () => ({
 import ServerEditDialog from './ServerEditDialog.svelte';
 import CategoryEditDialog from './CategoryEditDialog.svelte';
 import ScheduleEditDialog from './ScheduleEditDialog.svelte';
-import RSSEditDialog from './RSSEditDialog.svelte';
 
 describe('ServerEditDialog', () => {
 	beforeEach(() => vi.clearAllMocks());
@@ -210,32 +209,5 @@ describe('ScheduleEditDialog', () => {
 			props: { open: false, onsave: vi.fn() }
 		});
 		expect(screen.queryByText('Add Schedule')).not.toBeInTheDocument();
-	});
-});
-
-
-describe('RSSEditDialog', () => {
-	beforeEach(() => vi.clearAllMocks());
-
-	it('renders Add RSS Feed title when no feed prop', () => {
-		render(RSSEditDialog, {
-			props: { open: true, onsave: vi.fn() }
-		});
-		expect(screen.getByText('Add RSS Feed')).toBeInTheDocument();
-	});
-
-	it('renders Cancel and Save Feed buttons', () => {
-		render(RSSEditDialog, {
-			props: { open: true, onsave: vi.fn() }
-		});
-		expect(screen.getByText('Cancel')).toBeInTheDocument();
-		expect(screen.getByText('Save Feed')).toBeInTheDocument();
-	});
-
-	it('does not render when closed', () => {
-		render(RSSEditDialog, {
-			props: { open: false, onsave: vi.fn() }
-		});
-		expect(screen.queryByText('Add RSS Feed')).not.toBeInTheDocument();
 	});
 });

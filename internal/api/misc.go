@@ -121,9 +121,3 @@ func (s *Server) modeWatchedNow(w http.ResponseWriter, r *http.Request) {
 	// TODO: Requires DirScanner integration.
 	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: watched_now")
 }
-
-// modeRssNow triggers a manual RSS feed refresh (not implemented).
-func (s *Server) modeRssNow(w http.ResponseWriter, r *http.Request) {
-	// TODO: Requires RSS feed processor integration.
-	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: rss_now")
-}
