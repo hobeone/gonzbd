@@ -169,7 +169,7 @@
 						{error}
 					</div>
 				{:else if info}
-					{#each sections as section, i}
+					{#each sections as section, i (section.title)}
 						{#if i > 0}
 							<div class="my-3 h-px bg-gray-100 dark:bg-gray-800"></div>
 						{/if}
@@ -179,7 +179,7 @@
 							{section.title}
 						</h3>
 						<dl class="space-y-1.5">
-							{#each section.rows as row}
+							{#each section.rows as row (row.label)}
 								<div class="flex items-start gap-3">
 									<dt
 										class="w-20 shrink-0 text-xs font-medium text-gray-500 dark:text-gray-400"

@@ -76,7 +76,7 @@
 				<div class="space-y-1.5">
 					<label for="sched-action" class="text-sm font-medium">Action</label>
 					<select id="sched-action" bind:value={draft.action} class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
-						{#each actions as a}
+						{#each actions as a (a.value)}
 							<option value={a.value}>{a.label}</option>
 						{/each}
 					</select>

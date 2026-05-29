@@ -57,7 +57,7 @@
 					<p class="text-sm text-red-600 dark:text-red-400">API error: {getWarningsError()}</p>
 				{:else}
 					<ul class="space-y-1">
-						{#each getWarnings() as warning, i}
+						{#each getWarnings() as warning, i (i)}
 							<li class="text-sm text-amber-800 dark:text-amber-200">
 								<span class="mr-2 font-mono text-xs text-amber-500">#{i + 1}</span>{warning}
 							</li>

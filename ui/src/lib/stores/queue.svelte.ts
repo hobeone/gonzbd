@@ -195,8 +195,6 @@ export const getBandwidthPerc = () => store.bandwidthPerc;
 export const getServerStats = () => store.serverStats;
 export const setBandwidthPerc = (perc: number) => store.setBandwidthPerc(perc);
 
-export { formatSpeed, formatSize } from '$lib/utils';
-
 export const pauseJob = (id: string) => store.pauseJob(id);
 export const resumeJob = (id: string) => store.resumeJob(id);
 export const deleteJob = (id: string, df?: boolean) => store.deleteJob(id, df);

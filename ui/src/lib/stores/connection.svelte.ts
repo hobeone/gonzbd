@@ -264,7 +264,6 @@ const store = new ConnectionStore();
 
 export const isConnected = () => store.connected;
 export const isAuthExpired = () => store.authExpired;
-export const getRetryCount = () => store.retryCount;
 export const getLastError = () => store.lastError;
 export const getNextRetryAt = () => store.nextRetryAt;
 export const isProbing = () => store.probing;

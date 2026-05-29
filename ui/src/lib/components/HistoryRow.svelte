@@ -175,12 +175,12 @@
 				<div class="mt-4 border-t border-gray-200 dark:border-gray-700 pt-3">
 					<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">Processing Stages</div>
 					<div class="space-y-2">
-						{#each slot.stage_log as stage}
+						{#each slot.stage_log as stage (stage.name)}
 							<div class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2">
 								<div class="text-xs font-semibold capitalize text-gray-700 dark:text-gray-300">{stage.name}</div>
 								{#if stage.actions.length > 0}
 									<div class="mt-1 space-y-0.5">
-										{#each stage.actions as action}
+										{#each stage.actions as action, ai (ai)}
 											{#if action === ''}
 												<div class="h-1"></div>
 											{:else}
