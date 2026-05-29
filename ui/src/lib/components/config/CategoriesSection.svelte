@@ -39,7 +39,7 @@
 					</tr>
 				</thead>
 				<tbody class="divide-y">
-					{#each configData.categories as cat}
+					{#each configData.categories as cat (cat.name)}
 						<tr>
 							<td class="px-4 py-3 font-medium">{cat.name}</td>
 							<td class="px-4 py-3 text-gray-600 dark:text-gray-400">{cat.dir || '(default)'}</td>
