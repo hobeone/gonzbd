@@ -27,6 +27,12 @@
 	// Displayed value: local edit override, or the prop.
 	let currentValue = $derived(editingValue ?? propValue);
 
+	$effect(() => {
+		return () => {
+			clearTimeout(timer);
+		};
+	});
+
 	function commit() {
 		clearTimeout(timer);
 		const pending = editingValue;
