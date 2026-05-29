@@ -20,7 +20,6 @@
 	$effect(() => {
 		if (open) {
 			fetchCategories().then((cats) => {
-				console.log('Fetched categories:', cats);
 				// Don't re-add * if it's already there from backend
 				const filtered = cats.filter(c => c !== '*');
 				categories = ['*', ...filtered];
