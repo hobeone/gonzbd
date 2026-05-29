@@ -178,6 +178,12 @@
 		}, FILES_REFRESH_MS - since);
 	}
 
+	function onVisibility() {
+		if (!document.hidden) {
+			loadFiles();
+		}
+	}
+
 	// IMPORTANT: untrack the body so that the parent passing a fresh
 	// `slot` prop on every queue.poll() (Svelte 5 props are reactive
 	// proxies — even when nzo_id is unchanged, the proxy identity
@@ -199,13 +205,8 @@
 					scheduleFilesRefresh();
 				}
 			});
-			const onVisibility = () => {
-				if (!document.hidden) loadFiles();
-			};
-			document.addEventListener('visibilitychange', onVisibility);
 			return () => {
 				unsub();
-				document.removeEventListener('visibilitychange', onVisibility);
 				if (pendingFilesRefresh) {
 					clearTimeout(pendingFilesRefresh);
 					pendingFilesRefresh = null;
@@ -676,3 +677,5 @@
 		</td>
 	</tr>
 {/if}
+
+<svelte:document onvisibilitychange={onVisibility} />
