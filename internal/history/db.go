@@ -1,4 +1,4 @@
-// Package history manages the gonzbd download history database (history1.db).
+// Package history manages the gonzbd download history database (history.db).
 // It provides a thin SQLite-backed store whose schema is byte-for-byte
 // compatible with the upstream Python implementation, so users can run the Go
 // daemon against an existing history file without a migration step.

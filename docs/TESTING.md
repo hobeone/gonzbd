@@ -12,18 +12,28 @@ running or modifying tests.**
 | Unit + race | `go test -race ./...` | none | none | ~100s |
 | Integration | `go test -v -tags=integration ./test/integration/...` | `integration` | par2, rar, unrar, 7z | ~35s |
 | UI (Playwright) | `go test -v -tags=uitest ./test/uitest/...` | `uitest` | Chromium (Playwright), pre-built UI | ~30s |
-| E2E | `go test -tags=e2e -timeout=10m ./test/e2e/` | `e2e` | live Usenet server | ~5min |
+| E2E | `go test -timeout=10m ./test/e2e/` | none (runtime env-var gates) | live Usenet server | ~5min |
 | Config contract | `go test ./internal/config/ -run 'TestUI\|TestAllFlat'` | none | none | <1s |
+
+### Convenience Scripts
+
+Two wrapper scripts in `scripts/` run the full suite with a single command:
+
+| Script | What it does |
+|--------|-------------|
+| `scripts/run_tests.sh` | Runs unit → integration → UI vitest → `npm run build` → uitest sequentially |
+| `scripts/run_tests_parallel.sh` | Same phases, but unit/integration/vitest/build run concurrently; uitest starts once build finishes. Faster on multi-core machines. Per-phase logs written to `logs/`. |
+
+Use `run_tests.sh` as the canonical pre-commit gate (matches CLAUDE.md quality gates). Use `run_tests_parallel.sh` for faster feedback during active development.
 
 ## 1. Unit Tests (`go test ./...`)
 
 **When to run:** Before every commit. Required to pass with `-race`.
 
 Standard Go unit tests across all packages. No external dependencies.
-Includes app-level scenario tests (`internal/app/scenario_test.go`,
-`scenario_recovery_test.go`) which use an in-process mock NNTP server
-to test download → assembly → post-processing flows without shelling
-out to real tools.
+Includes app-level scenario tests (`internal/app/scenario_*.go` — nine files;
+see section 6) which use an in-process mock NNTP server to test
+download → assembly → post-processing flows without shelling out to real tools.
 
 ```bash
 # Standard run (required before every commit)
@@ -86,6 +96,7 @@ sudo apt install unrar rar par2 p7zip-full
 | `oneshot_test.go` | One-shot CLI download mode |
 | `truncation_test.go` | Truncated article handling |
 | `replay_test.go` | Historical NZB replay (requires fixtures) |
+| `directunpack_integration_test.go` | Pure-Go RAR extraction via rarengine: multi-volume streaming and volume-boundary handling |
 
 ### Running
 
@@ -109,14 +120,16 @@ go test -v -race -tags=integration ./test/integration/...
 5. Use `waitForPostProcWithTimeout(t, a, pipelineTimeout)` to wait for completion
 6. Use `verifyFileAtPath(t, path, sha)` for strict path + content verification
 
-## 3. E2E Tests (`-tags=e2e`)
+## 3. E2E Tests
 
 **When to run:** Manually, to validate against a real Usenet provider.
 Not run in CI.
 
 **Location:** `test/e2e/`
 
-**Build tag:** `e2e`
+**Build tag:** none — the package has no `//go:build` constraint and compiles
+unconditionally. Tests skip at runtime based on the env vars below (e.g.,
+`TestE2E_SelfPost_*` skips unless `E2E_POST=1`).
 
 These tests download real articles from a live Usenet server. They require
 a configured `gonzbd.yaml` with valid server credentials.
@@ -133,13 +146,13 @@ a configured `gonzbd.yaml` with valid server credentials.
 
 ```bash
 # Basic
-go test -tags=e2e -timeout=10m ./test/e2e/
+go test -timeout=10m ./test/e2e/
 
 # Self-post + download with debug
-E2E_POST=1 E2E_DEBUG=1 go test -tags=e2e -timeout=10m -v ./test/e2e/
+E2E_POST=1 E2E_DEBUG=1 go test -timeout=10m -v ./test/e2e/
 
 # Download a specific NZB
-E2E_NZB=/tmp/test.nzb go test -tags=e2e -timeout=10m ./test/e2e/
+E2E_NZB=/tmp/test.nzb go test -timeout=10m ./test/e2e/
 ```
 
 ## 4. Config ↔ UI Contract Tests
@@ -155,7 +168,7 @@ These tests validate that every `keyword=` prop used in the Svelte UI
 corresponds to a valid JSON tag in the Go config structs, and vice versa.
 
 ```bash
-go test ./internal/config/ -run 'TestUI|TestAllFlat'
+go test ./internal/config/ -run 'TestUIKeywordsAreValidConfigTags|TestAllFlatConfigTagsAreSettable'
 ```
 
 ## 5. UI Tests (`-tags=uitest`)
@@ -205,7 +218,19 @@ Failed tests automatically capture screenshots to `test/uitest/screenshots/`.
 
 **When to run:** These run as part of `go test ./...`. No special flags needed.
 
-**Location:** `internal/app/scenario_test.go`, `internal/app/scenario_recovery_test.go`
+**Location:** `internal/app/` — nine scenario files:
+
+| File | Focus |
+|------|-------|
+| `scenario_test.go` | Core download → assembly → post-processing lifecycle |
+| `scenario_recovery_test.go` | Recovery after mid-job failures |
+| `scenario_smoke_test.go` | Minimal smoke tests for fast feedback |
+| `scenario_checkpoint_test.go` | Queue checkpoint / persistence under load |
+| `scenario_durability_test.go` | Durability across restarts |
+| `scenario_reload_test.go` | Config reload without restart |
+| `scenario_retry_reset_test.go` | Article retry and reset logic |
+| `scenario_decode_error_test.go` | Decoder error handling paths |
+| `scenario_dispatch_deadlock_test.go` | Dispatch deadlock detection |
 
 These test the full app lifecycle (download → assembly → post-processing)
 using an in-process mock NNTP server. They do **not** shell out to external
@@ -218,8 +243,8 @@ tools — post-processing stages that require `par2`/`unrar`/`7z` are stubbed.
 | Any Go code change | `go test -race ./...` |
 | Post-processing, unpack, par2 | Add: `go test -v -tags=integration ./test/integration/...` |
 | API endpoints | Add: `go test -v -tags=integration -run TestAPI ./test/integration/...` |
-| Config struct fields | Add: `go test ./internal/config/ -run 'TestUI\|TestAllFlat'` |
-| Svelte UI keyword= props | Add: `go test ./internal/config/ -run 'TestUI\|TestAllFlat'` |
+| Config struct fields | Add: `go test ./internal/config/ -run 'TestUIKeywordsAreValidConfigTags\|TestAllFlatConfigTagsAreSettable'` |
+| Svelte UI keyword= props | Add: `go test ./internal/config/ -run 'TestUIKeywordsAreValidConfigTags\|TestAllFlatConfigTagsAreSettable'` |
 | Svelte UI components, layout | Add: `go test -v -tags=uitest ./test/uitest/...` |
 | NZB parsing, file naming | Add: `go test -v -tags=integration -run TestNaming ./test/integration/...` |
 | Download pipeline | Add: `go test -v -tags=integration -run TestDownload ./test/integration/...` |
