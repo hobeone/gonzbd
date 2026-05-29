@@ -6,7 +6,7 @@ import { reportFailure, reportSuccess, onReconnected } from './connection.svelte
 const SPEED_HISTORY_SIZE = 60;
 
 class QueueStore {
-	#queue = $state<QueueDetail | null>(null);
+	#queue = $state.raw<QueueDetail | null>(null);
 	#polling = $state(false);
 	#error = $state<string | null>(null);
 	#wsCleanup: (() => void) | null = null;
