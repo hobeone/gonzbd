@@ -105,6 +105,10 @@ func (s *Server) registerModes() {
 		"config":     {handler: s.modeConfig, level: LevelAdmin},
 		"get_config": {handler: s.modeGetConfig, level: LevelAdmin},
 		"set_config": {handler: s.modeSetConfig, level: LevelAdmin},
+		// speedlimit is a SABnzbd top-level mode alias for
+		// config&name=speedlimit; some clients (e.g. NZB360) call it
+		// directly. Same handler, same behavior.
+		"speedlimit": {handler: s.configSpeedLimit, level: LevelAdmin},
 		// Control modes
 		"pause":      {handler: s.modePause, level: LevelAdmin},
 		"resume":     {handler: s.modeResume, level: LevelAdmin},
