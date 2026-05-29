@@ -18,14 +18,13 @@
 9. [Configuration System](#9-configuration-system)
 10. [HTTP API](#10-http-api)
 11. [History Database](#11-history-database)
-12. [RSS Feed Processor](#12-rss-feed-processor)
-13. [Directory Scanner](#13-directory-scanner)
-14. [Scheduler](#14-scheduler)
-15. [Notifications](#15-notifications)
-16. [Bandwidth Metering and Quotas](#16-bandwidth-metering-and-quotas)
-17. [Data Formats and Types](#17-data-formats-and-types)
-18. [Security](#18-security)
-19. [Suggested Agents for Spec Refinement](#19-suggested-agents-for-spec-refinement)
+12. [Directory Scanner](#12-directory-scanner)
+13. [Scheduler](#13-scheduler)
+14. [Notifications](#14-notifications)
+15. [Bandwidth Metering and Quotas](#15-bandwidth-metering-and-quotas)
+16. [Data Formats and Types](#16-data-formats-and-types)
+17. [Security](#17-security)
+18. [Suggested Agents for Spec Refinement](#18-suggested-agents-for-spec-refinement)
 
 ---
 
@@ -33,7 +32,7 @@
 
 SABnzbd automates the complete lifecycle of Usenet binary downloads:
 
-1. Accept NZB files (via web UI, API, RSS feeds, or watched folder)
+1. Accept NZB files (via web UI, API, or watched folder)
 2. Download article segments from one or more NNTP servers
 3. Decode yEnc/UU-encoded segments
 4. Assemble decoded segments into files
@@ -108,11 +107,10 @@ Queue-modifying operations must: acquire `NZBQUEUE_LOCK`, mutate state, call `DO
 10. Start assembler thread
 11. Start post-processor thread
 12. Start dir scanner
-13. Start RSS scanner
-14. Start downloader (connects to servers)
-15. Start CherryPy HTTP server
-16. (Optional) Launch browser
-17. Enter main event loop
+13. Start downloader (connects to servers)
+14. Start CherryPy HTTP server
+15. (Optional) Launch browser
+16. Enter main event loop
 
 ---
 
@@ -453,7 +451,6 @@ Post-processing runs sequentially through named stages:
 
 | Stage | Index | Description |
 |-------|-------|-------------|
-| RSS | 0 | Mark RSS entry as processed |
 | Source | 1 | Record source URL/metadata |
 | Download | 2 | Record download statistics |
 | Servers | 3 | Record which servers contributed |
@@ -753,33 +750,6 @@ Each server is a subsection of `[servers]`:
   dayofweek = "*"      # 1-7 (1=Mon) or *
   action = "speedlimit" # Action name
 ```
-
-### 9.9 RSS Configuration
-
-```
-[rss]
-[[feedname]]
-  uri = "https://..."
-  cat = ""
-  pp = ""
-  script = ""
-  enable = 1
-  priority = 0
-  
-  [[[filtername]]]
-    enabled = 1
-    title = ""          # Regex match on title
-    body = ""           # Regex match on body
-    cat = ""
-    pp = ""
-    script = ""
-    priority = 0
-    type = "require"    # require, must_not_match, ignore
-    size_from = ""      # e.g., "100M"
-    size_to = ""
-    age = 0             # Max age in days
-```
-
 ---
 
 ## 10. HTTP API
@@ -897,7 +867,6 @@ Error:
 | Mode | Parameters | Response | Description |
 |------|-----------|----------|-------------|
 | `watched_now` | | status | Trigger watched folder scan |
-| `rss_now` | | status | Trigger RSS scan |
 | `reset_quota` | | status | Reset bandwidth quota |
 | `restart` | | status | Restart SABnzbd |
 | `restart_repair` | | status | Restart with queue repair |
@@ -1035,46 +1004,9 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 
 ---
 
-## 12. RSS Feed Processor
-
-### 12.1 Feed Parsing
-
-Uses `feedparser` library. Processes these fields per entry:
-- **Link**: Prefer enclosures with `type=application/x-nzb`; fall back to standard link
-- **Title**: Raw title string
-- **Size**: Extracted via regex from `<description>` or newznab attributes
-- **Date**: `newznab:usenetdate_parsed` > `published_parsed`
-- **Category**: `cattext` attribute > `category` field > newznab category tag
-
-### 12.2 Filter Rules (per feed)
-
-Each feed has ordered filter rules. Rules are evaluated top-to-bottom; first match wins:
-
-| Rule type | Behavior |
-|-----------|----------|
-| `require` | Accept if title matches regex |
-| `must_not_match` | Accept only if title does NOT match regex |
-| `ignore` | Reject if title matches regex |
-| (no match) | Apply feed default settings |
-
-Additional filter criteria: `size_from`, `size_to` (file size bounds), `age` (max days old).
-
-### 12.3 Deduplication
-
-- Each entry has a unique key based on normalized title + feed URI
-- Processed keys stored in `rss_data.sab` (pickle; rewrite as JSON)
-- Entries with duplicate keys are skipped
-- `rss_ent` count per feed tracked; entries older than limit cleaned
-
-### 12.4 Scan Interval
-
-- Default: **60 minutes** (`cfg.rss_rate`)
-- Triggered by scheduler or API (`rss_now` mode)
-- Per-feed: enable/disable independently
-
 ---
 
-## 13. Directory Scanner
+## 12. Directory Scanner
 
 ### 13.1 Purpose
 
@@ -1126,7 +1058,6 @@ Default: **5 seconds** (`dirscan_speed`). Uses asyncio for non-blocking director
 | `enable_server` | `<server_id>` | Re-enable a disabled server |
 | `disable_server` | `<server_id>` | Disable a server |
 | `scan_folder` | | Trigger watched folder scan |
-| `rss_scan` | | Trigger RSS scan |
 | `create_backup` | | Backup config to zip |
 | `remove_failed` | | Delete failed history entries |
 | `remove_completed` | | Delete completed history entries |
@@ -1291,7 +1222,6 @@ API inputs accept: `"500M"`, `"2G"`, `"1024K"` (case-insensitive).
 |------|----------|--------|
 | `queue10.sab` | Download queue | Python pickle + gzip → replace with JSON |
 | `postproc2.sab` | Post-processing queue | Python pickle + gzip → replace with JSON |
-| `rss_data.sab` | RSS processed entries | Python pickle + gzip → replace with JSON |
 | `watched_data2.sab` | Dir scanner state | Python pickle + gzip → replace with JSON |
 | `bpsmeter.sab` | Bandwidth statistics | Python pickle + gzip → replace with JSON |
 | `history1.db` | Completed job history | SQLite → keep as-is |
@@ -1411,7 +1341,7 @@ The following specialized agents or skills would produce a more accurate and com
 ### 19.9 Migration Compatibility Agent
 
 **Purpose**: Real users will migrate from SABnzbd (Python) to the Go reimplementation. This agent should:
-- Document exactly what needs to be migrated: queue format, history DB, config INI, RSS state, bpsmeter stats
+- Document exactly what needs to be migrated: queue format, history DB, config INI, bpsmeter stats
 - Propose migration strategies (converter tool, compatible formats)
 - Identify what can be kept as-is (SQLite history) vs. must be converted (pickle files)
 

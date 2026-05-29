@@ -119,7 +119,6 @@ func (s *Server) registerModes() {
 		"get_scripts": {handler: s.modeGetScripts, level: LevelProtected},
 		"browse":      {handler: s.modeBrowse, level: LevelAdmin},
 		"watched_now": {handler: s.modeWatchedNow, level: LevelProtected},
-		"rss_now":     {handler: s.modeRssNow, level: LevelProtected},
 	}
 }
 

@@ -80,7 +80,6 @@ func newTestEnv(t *testing.T) *testEnv {
 		Servers:    []config.ServerConfig{},
 		Categories: []config.CategoryConfig{},
 		Schedules:  []config.ScheduleConfig{},
-		RSS:        []config.RSSFeedConfig{},
 	}
 
 	apiSrv := api.New(api.Options{

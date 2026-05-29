@@ -19,7 +19,6 @@ is not a drop-in replacement for an existing Python SABnzbd install.
   overlay with auto-reconnect.
 - **Legacy API** — Full `/api?mode=...` dispatch compatible with tools like
   Sonarr, Radarr, and NZB360.
-- **RSS feeds** — Configurable feed polling with regex filters.
 - **Watched folders** — Directory scanner for automatic NZB ingestion.
 - **HTTPS** — Optional TLS listener with auto-generated self-signed certs.
 - **Single binary** — The UI is embedded via `//go:embed`; no external
@@ -525,23 +524,6 @@ preserved for forward compatibility with planned features.
 | Field | Notes |
 |-------|-------|
 | `language` | The `internal/i18n` package exists but the UI doesn't use it for locale selection yet. |
-
-### RSSFeedConfig / RSSFilterConfig
-
-| Field | Notes |
-|-------|-------|
-| `RSSFeedConfig.cat` | Feed-level default category. Not copied to `rss.Feed`. |
-| `RSSFeedConfig.pp` | Feed-level default PP level. Not copied. |
-| `RSSFeedConfig.script` | Feed-level default script. Not copied. |
-| `RSSFeedConfig.priority` | Feed-level default priority. Not copied. |
-| `RSSFilterConfig.body` | Body regex matching. Only title regex is compiled. |
-| `RSSFilterConfig.cat` | Per-filter category override. Not copied to `rss.Filter`. |
-| `RSSFilterConfig.pp` | Per-filter PP override. Not copied. |
-| `RSSFilterConfig.script` | Per-filter script override. Not copied. |
-| `RSSFilterConfig.priority` | Per-filter priority override. Not copied. |
-| `RSSFilterConfig.size_from` | Min size filter. `rss.Feed` has `MinBytes` but never populated from config. |
-| `RSSFilterConfig.size_to` | Max size filter. Same. |
-| `RSSFilterConfig.age` | Max age filter. Same. |
 
 ### SorterConfig
 

@@ -128,24 +128,3 @@ schedules:
     hour: "1"
     dayofweek: "*"
 
-rss:
-  - name: example-feed
-    uri: https://example.com/rss
-    cat: tv
-    pp: ""
-    script: ""
-    enable: true
-    priority: 0
-    filters:
-      - name: tv-only
-        enabled: true
-        title: "(?i)s\\d+e\\d+"
-        body: ""
-        cat: tv
-        pp: ""
-        script: ""
-        priority: 0
-        type: require
-        size_from: 100M
-        size_to: 5G
-        age: 7
