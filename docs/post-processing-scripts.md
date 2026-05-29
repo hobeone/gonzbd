@@ -21,34 +21,31 @@ general:
 categories:
   - name: tv
     script: my_tv_script.sh
-    pp: 7
+    pp: 3
   - name: movies
     script: organize_movie.py
-    pp: 7
+    pp: 3
 ```
 
 ## Post-Processing Flags (`pp`)
 
-The `pp` field is a bitmask that controls which post-processing stages run
-before your script is invoked:
+The `pp` field is a **cumulative level** (not a bitmask) that controls which
+post-processing stages run before your script is invoked. Each level implies
+all lower levels:
 
-| Bit | Value | Stage |
-|-----|-------|-------|
-| 0 | `1` | **Repair** — par2 verify and repair |
-| 1 | `2` | **Unpack** — extract RAR, 7z, and split archives |
-| 2 | `4` | **Delete** — remove par2 and archive files after success |
+| `pp` | Stages enabled |
+|------|----------------|
+| `0` | Download only — skip all post-processing (script still runs) |
+| `1` | + **Repair** — par2 verify and repair |
+| `2` | + **Unpack** — extract RAR, 7z, and split archives (implies repair) |
+| `3` | + **Delete** — remove par2 and archive files after success (implies unpack + repair) |
 
-Common values:
-
-| `pp` | Meaning |
-|------|---------|
-| `0` | Skip all post-processing (script still runs) |
-| `1` | Repair only |
-| `3` | Repair + Unpack |
-| `7` | Repair + Unpack + Delete *(most common)* |
+Values outside `[0, 3]` are clamped: anything ≥ 3 is treated as 3. Legacy
+SABnzbd configs that stored `pp: 7` (a SABnzbd bitmask value) are clamped
+to 3 automatically.
 
 Your script receives this value as `SAB_PP` and can use it to adjust behavior
-(e.g., skip cleanup logic when `pp < 4` since archives weren't deleted).
+(e.g., skip cleanup logic when `pp < 3` since archives weren't deleted).
 
 ## How Scripts Are Invoked
 
@@ -78,7 +75,7 @@ script <complete_dir> <nzb_filename> <final_name> "" <category> <group> <pp_stat
 | `$4` | *(empty — historical placeholder)* | `""` |
 | `$5` | Category | `tv` |
 | `$6` | Usenet group | `alt.binaries.teevee` |
-| `$7` | PP status (0=success, 1=failure) | `0` |
+| `$7` | PP status (0=success, 1=repair failed, 2=unpack failed, 3=both failed) | `0` |
 | `$8` | Failure URL (if any) | `""` |
 
 > **Note:** Positional args are kept for SABnzbd compatibility. Prefer
@@ -99,10 +96,11 @@ scripts. GoNZBD adds a few extensions (marked below).
 | `SAB_NZO_ID` | Internal job ID | `SABnzbd_nzo_abc123` |
 | `SAB_CAT` | Category | `tv` |
 | `SAB_GROUP` | Usenet group | `alt.binaries.teevee` |
-| `SAB_STATUS` | Job status (int) | `0` |
-| `SAB_PP` | Post-processing flags (bitmask) | `7` |
+| `SAB_STATUS` | Job status (same value as `SAB_PP_STATUS`) | `0` |
+| `SAB_PP` | Post-processing level (0–3) | `3` |
 | `SAB_SCRIPT` | Script name | `my_script.sh` |
 | `SAB_URL` | Source URL (if added via URL) | `https://...` |
+| `SAB_PRIORITY` | Job priority | `0` |
 
 ### Directories
 
@@ -117,17 +115,23 @@ scripts. GoNZBD adds a few extensions (marked below).
 |----------|-------------|---------|
 | `SAB_BYTES` | Total job size (bytes) | `1073741824` |
 | `SAB_BYTES_DOWNLOADED` | Bytes actually downloaded | `1073741824` |
+| `SAB_BYTES_TRIED` | Total bytes attempted including retries | `1073741824` |
 | `SAB_DOWNLOAD_TIME` | Download duration (seconds) | `120` |
 | `SAB_AVG_BPS` | Average download speed (bytes/sec) | `8947848` |
+| `SAB_AGE` | Age of NZB in days since posting date | `3` |
 
 ### Status & Errors
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `SAB_PP_STATUS` | Post-processing status (0=OK) | `0` |
+| `SAB_PP_STATUS` | Post-processing status (0=success, 1=repair failed, 2=unpack failed, 3=both failed) | `0` |
+| `SAB_REPAIR` | Whether par2 repair was performed (0=no, 1=yes) | `1` |
+| `SAB_UNPACK` | Whether unpacking was performed (0=no, 1=yes) | `1` |
 | `SAB_FAIL_MSG` | Failure message (empty on success) | `""` |
 | `SAB_FAILURE_URL` | Failure URL (if any) | `""` |
-| `SAB_REPORTNAME` | Report name (usually empty) | `""` |
+| `SAB_REPORTNAME` | Report name (usually empty) *(Go extension)* | `""` |
+| `SAB_ENCRYPTED` | Whether the archive was encrypted (0=unknown, 1=yes) | `0` |
+| `SAB_PASSWORD` | Per-job password | `""` |
 
 ### Server Info
 
@@ -275,7 +279,7 @@ export SAB_VERSION="0.1.0"
 export SAB_API_KEY="test_key"
 export SAB_API_URL="http://localhost:4289/api"
 export SAB_SCRIPT="my_script.sh"
-export SAB_PP="7"
+export SAB_PP="3"
 export SAB_GROUP=""
 export SAB_URL=""
 export SAB_FAIL_MSG=""
@@ -283,6 +287,16 @@ export SAB_FAILURE_URL=""
 export SAB_REPORTNAME=""
 export SAB_STATUS="0"
 export SAB_NZB_NAME="Test.Show.S01E01.nzb"
+export SAB_BYTES_TRIED="1073741824"
+export SAB_PASSWORD=""
+export SAB_ENCRYPTED="0"
+export SAB_PRIORITY="0"
+export SAB_REPAIR="1"
+export SAB_UNPACK="1"
+export SAB_AGE="3"
+export SAB_PAR2_COMMAND=""
+export SAB_RAR_COMMAND=""
+export SAB_7ZIP_COMMAND=""
 
 # Create the test directory structure
 mkdir -p "$SAB_FINAL_PROCESSING_DIR"
@@ -325,7 +339,7 @@ func TestMyScript(t *testing.T) {
         JobName:     "Test.Show.S01E01",
         Category:    "tv",
         Status:      0,
-        PPFlags:     7,
+        PPFlags:     3,
         ScriptName:  "my_script.sh",
         NZOID:       "test_001",
         Version:     "0.1.0",
@@ -367,11 +381,11 @@ post-processing scripts. Key differences:
 | `SAB_NZB_NAME` | Not emitted | ✅ Alias for `SAB_FILENAME` |
 | `SAB_PYTHONUNBUFFERED` | Set for `.py` scripts | Not set |
 | `SAB_PROGRAM_DIR` | Set to SABnzbd install dir | Not set |
-| `SAB_PAR2_COMMAND` | Set | Not set |
-| `SAB_RAR_COMMAND` | Set | Not set |
-| `SAB_7ZIP_COMMAND` | Set | Not set |
+| `SAB_PAR2_COMMAND` | Set | ✅ Set (empty string if not configured) |
+| `SAB_RAR_COMMAND` | Set | ✅ Set (empty string if not configured) |
+| `SAB_7ZIP_COMMAND` | Set | ✅ Set (empty string if not configured) |
 | Script timeout | None (runs forever) | 30 seconds (configurable) |
 | Process group kill | No | Yes — kills entire group |
 
 Most SABnzbd scripts will work unchanged. Scripts that depend on
-`SAB_PROGRAM_DIR` or tool-path variables will need minor adjustments.
+`SAB_PROGRAM_DIR` will need minor adjustments.

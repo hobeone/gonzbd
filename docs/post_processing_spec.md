@@ -366,21 +366,25 @@ fixed in issue #3164.
 ### 4.8 Go data model
 
 ```go
-type Par2FileInfo struct {
-    Filename     string
-    Hash16K      [16]byte  // MD5 of first 16 KB
-    FullHash     [16]byte  // MD5 of file
-    Filesize     uint64
-    FileCRC32    uint32    // reconstructed from slice CRCs; 0 = unknown
-    HasDuplicate bool
+// As implemented in internal/par2/parser.go.
+type FileDesc struct {
+    FileID       [16]byte  // unique file identifier within the recovery set
+    FileName     string
+    FullHash     [16]byte  // MD5 of the entire file
+    Hash16k      [16]byte  // MD5 of first 16 KB
+    FileSize     uint64
+    FileCRC32    uint32    // reconstructed from IFSC slices; 0 = unknown
+    HasDuplicate bool      // true if another FileDesc shares this Hash16k
 }
 
 type Par2Set struct {
-    SetID    [16]byte
-    Files    map[string]*Par2FileInfo  // keyed by filename
-    By16K    map[[16]byte]*Par2FileInfo // for rename lookups (only unique)
-    SliceSize uint64
+    SetID          [16]byte
+    SliceSize      uint64
+    Files          []FileDesc             // all file descriptions (slice, not a map)
+    FilesByID      map[[16]byte]*FileDesc // keyed by FileID for IFSC lookup
+    By16k          map[[16]byte]*FileDesc // keyed by Hash16k (entries removed if HasDuplicate)
     RecoveryBlocks int
+    Creator        string
 }
 ```
 
@@ -472,18 +476,20 @@ return  # don't continue postproc this round
 ### 6.4 Persisted state for crash recovery
 
 - **`save_attribs()`**: `(cat, pp, script, priority, final_name, password, url)` →
-  `<admin>/SABnzbd_nzo_<id>/ATTRIB_FILE`.
-- **`__verified__`** dict (pickled): per-set bool, written to admin dir whenever
-  a par2 set finishes verification. On restart, sets with `True` are not
-  re-verified.
+  GoNZBD writes `<downloadDir>/__ADMIN__/gonzbd_attrib` (SABnzbd used
+  `<admin>/SABnzbd_nzo_<id>/ATTRIB_FILE`).
+- **`__verified__`** map: per-set bool, written whenever a par2 set finishes
+  verification. On restart, sets with `True` are not re-verified. GoNZBD stores
+  this as a JSON file at `<downloadDir>/__ADMIN__/__verified__` (SABnzbd pickled
+  it).
 - **PostProc queue snapshot**: `POSTPROC_QUEUE_FILE_NAME` (pickle v2) is the
   entire history list, written periodically.
 - **DirectUnpacker `success_sets`**: in-memory; on restart, already-extracted
   sets are detected by scanning the work dir and skipped by unrar (overwrite-
   protect).
 
-**Go note:** Use SQLite + WAL for `__verified__`, not pickle. Pickle is a
-landmine in a multi-version environment.
+**Go note:** GoNZBD persists `__verified__` as a small JSON file (not pickle,
+not SQLite). Pickle is a landmine in a multi-version environment.
 
 ### 6.5 Script invocation contract
 
@@ -552,38 +558,55 @@ While work is in progress: directory is named `_UNPACK_<final_name>` (if
 **Category dir trailing `*`**: suppresses the per-job subfolder — files are
 moved directly into the category dir. This is the "flat" layout escape hatch.
 
-### 6.7 History DB schema (sqlite, `history16.db`)
+### 6.7 History DB schema (sqlite, `history.db`)
+
+The schema is managed by goose migrations (`internal/history/migrations/`),
+not a `PRAGMA user_version`. The current schema (`001_initial.sql`) is:
 
 ```sql
 CREATE TABLE history (
-    id            INTEGER PRIMARY KEY,
-    completed     INTEGER,           -- unix ts
-    name          TEXT NOT NULL,
-    nzb_name      TEXT NOT NULL,
-    nzo_id        TEXT UNIQUE,
-    status        TEXT,              -- 'Completed' | 'Failed'
-    path          TEXT,              -- final output path
-    storage       TEXT,              -- incomplete path (for retry)
-    category      TEXT,
-    pp            TEXT,              -- 'R'|'U'|'D'|'X'|''
-    script        TEXT,
-    report        TEXT,
-    url           TEXT,
-    status_text   TEXT,
-    nzo_info_pickle BLOB,
-    stage_log     TEXT,              -- "Repair:::QuickCheck OK\r\n…"
-    script_log    BLOB,              -- zlib-compressed
-    script_line   TEXT,              -- last 150 chars
-    download_time INTEGER,
-    postproc_time INTEGER,
-    bytes         INTEGER,
-    md5sum        TEXT,
-    password      TEXT,
-    fail_message  TEXT,
-    duplicate_key TEXT                -- TV/movie identifier for smart dupes
+    id              INTEGER PRIMARY KEY,
+    completed       INTEGER,           -- unix ts
+    name            TEXT,
+    nzb_name        TEXT,
+    category        TEXT,
+    pp              TEXT,              -- 'R'|'U'|'D'|'X'|''
+    script          TEXT,
+    report          TEXT,
+    url             TEXT,
+    status          TEXT,              -- 'Completed' | 'Failed'
+    nzo_id          TEXT UNIQUE,
+    storage         TEXT,              -- incomplete path (for retry)
+    path            TEXT,              -- final output path
+    script_log      BLOB,              -- zlib-compressed
+    script_line     TEXT,
+    download_time   INTEGER,
+    postproc_time   INTEGER,
+    stage_log       TEXT,              -- "Repair:::QuickCheck OK\r\n…"
+    downloaded      INTEGER,
+    completeness    INTEGER,
+    fail_message    TEXT,
+    url_info        TEXT,
+    bytes           INTEGER,
+    meta            TEXT,
+    series          TEXT,
+    md5sum          TEXT,
+    password        TEXT,
+    duplicate_key   TEXT,              -- TV/movie identifier for smart dupes
+    archive         INTEGER DEFAULT 0,
+    time_added      INTEGER
 );
-PRAGMA user_version = 6;
+CREATE UNIQUE INDEX idx_history_nzo_id ON history(nzo_id);
+CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 ```
+
+> Note: This column set is **identical** (column-for-column, in order) to the
+> upstream SABnzbd v5 schema in `sabnzbd/database.py`, so an existing
+> `history.db` can be opened by either daemon. GoNZBD relaxes a few constraints
+> (no `NOT NULL` on `completed`/`name`/`nzb_name`, `nzo_id` is `UNIQUE`, and two
+> covering indexes are added). An earlier draft of this spec listed
+> `status_text`/`nzo_info_pickle` columns — those never existed in SABnzbd v5
+> and are not in GoNZBD.
 
 `stage_log` format: `Stage:::action1;action2\r\nStage:::…`. Stage names:
 `Source`, `Download`, `Repair`, `Filejoin`, `Unpack`, `Servers`, `Script`,
@@ -719,9 +742,9 @@ sources.
 Binary priority: `unrar` → `rar` → `unrar3` → `rar3` (Linux); bundled on Win/Mac.
 
 Version probe (`unrar_check`): parse `RAR (N)\.(M)` from `unrar` (no args)
-output → `version = major*100 + minor`. Set `RAR_PROBLEM = True` if
-`version < REC_RAR_VERSION` (currently 600) **or** "Alexander Roshal" missing
-(detects unrar-free). RAR_PROBLEM disables `-scf` and `-or`.
+output → `version = major*100 + minor`. GoNZBD sets `HasProblem = true` if
+`version < 550` (RAR 5.50) **or** the version is unparseable
+(see `internal/unpack/version.go`). HasProblem disables `-scf` and `-or`.
 
 Command:
 
@@ -773,8 +796,9 @@ spuriously.
 
 ### 8.3 7-Zip
 
-Binary priority: `7zz` (official, modern) → `7zzs` (static) → `7za` (p7zip) →
-`7z` (p7zip legacy). Version probe: `(\d+\.\d+).*Copyright` regex.
+Binary priority (`internal/unpack/sevenzip.go`): `7zz` (official, modern) →
+`7zzs` (static) → `7z` (p7zip) → `7za` (p7zip legacy). Version probe:
+`(\d+\.\d+).*Copyright` regex.
 
 Command:
 
@@ -951,7 +975,7 @@ better to falsely rename a clean file than leave an obfuscated one.
 
 For each `.par2` file in the dir:
 
-1. Parse → `{filename: Par2FileInfo}` keyed by `md5of16k`.
+1. Parse → `Par2Set` with files indexed `By16k` (keyed by `md5of16k`).
 2. For each non-par2 file in the dir:
    - Read first 16 KB.
    - `key = md5(first_16k)`.
@@ -1130,7 +1154,7 @@ filename to avoid repeated spawns within a job.
    - macOS: also `:` (par2 metadata is colon-separated; preserves quickcheck)
 3. `replace_win_devices()`: prefix with `_` if name is `CON`/`PRN`/`AUX`/`NUL`/
    `COMx`/`LPTx` (or starts with `name.`). Replace leading `$MFT` with `SMFT`.
-4. Truncate to `DEF_FILE_MAX` (255 UTF-8 bytes). Preserve extension —
+4. Truncate to `MaxFileNameLen` (245 UTF-8 bytes, = 255 − 10). Preserve extension —
    `DEF_FILE_EXTENSION_MAX` bytes max for ext, rest is name.
 5. Lowercase `.par2` extension (par2 binary is case-sensitive on Linux).
 
@@ -1292,18 +1316,28 @@ behavior any reimplementation must preserve.**
 
 ## 15. Go reimplementation sketch
 
+> **Status:** This section was the pre-implementation design sketch. The system
+> has since been built; names below have been updated to the realized code. The
+> supervisor type is `postproc.PostProcessor` and the real `postproc.Job` wraps
+> a `*queue.Job` (it does not own the flat field set shown here — the struct
+> below remains only as a conceptual illustration of the inputs). See
+> `internal/postproc/postproc.go` and `internal/app/stages.go` for the actual
+> stage wiring.
+
 ```go
 package postproc
 
-// Pipeline is the post-download supervisor.
-type Pipeline struct {
+// PostProcessor is the post-download supervisor.
+type PostProcessor struct {
     cfg    *Config
     db     *History
     binDir BinaryPaths
     log    *slog.Logger
 }
 
-// Job is the input contract from the downloader.
+// Job (conceptual) is the input contract from the downloader. The real
+// postproc.Job wraps *queue.Job and exposes DownloadDir / FinalDir rather than
+// the flat fields shown here.
 type Job struct {
     NzoID         string
     DownloadPath  string
@@ -1329,34 +1363,40 @@ type JobFile struct {
     Path     string    // absolute, in DownloadPath
 }
 
-func (p *Pipeline) Process(ctx context.Context, j *Job) (*Result, error) {
-    // 1. Save attribs
-    // 2. parring(): quickcheck → repair → (re-add if not enough blocks)
-    // 3. unpack: filejoin → unrar → 7z → ts, depth ≤ 3
-    // 4. recover_par2_names
-    // 5. deobfuscate
-    // 6. sort
-    // 7. cleanup_list + remove_samples
-    // 8. final move
-    // 9. script
-    // 10. history insert
+func (p *PostProcessor) Process(ctx context.Context, j *Job) (*Result, error) {
+    // Realized stage order (internal/app/stages.go buildStages):
+    //  1. quickcheck        (par2 vs assembled CRC; relocate flat files)
+    //  2. repair            (par2 verify/repair)
+    //  3. unpack            (filejoin → unrar → 7z, depth ≤ 3)
+    //  4. sample_cleanup    (remove samples if enabled)
+    //  5. par2names         (recover obfuscated names from par2)
+    //  6. par2_cleanup      (delete .par2 once no longer needed)
+    //  7. deobfuscate       (heuristic rename)
+    //  8. extension_cleanup (delete files matching cleanup list)
+    //  9. finalize          (move to complete dir) — runs BEFORE script
+    // 10. cleanup           (remove __ADMIN__ and temp state)
+    // 11. script            (user post-processing script; sees final dir)
+    // Sorting (TV/movie templates) is NOT implemented — see §11.
+    // Stage errors are recorded in the StageLog but do NOT abort the pipeline.
 }
 ```
 
 Suggested package split:
 
-- `internal/par2` — packet parser, CRC reconstruction (no I/O)
+Realized package split:
+
+- `internal/par2` — packet parser, CRC reconstruction (no I/O); also hosts the
+  quick-check / par2-vs-JobFile match logic (`quickcheck.go`, `verifycrc.go`)
 - `internal/assembler` — write strategy (interface for fs)
-- `internal/quickcheck` — par2 vs JobFile match logic
 - `internal/unpack` — subprocess drivers (`Par2Repair`, `Unrar`, `SevenZip`,
-  `FileJoin`); shared `streamingReader` abstraction
+  `FileJoin`); shared streaming abstraction
 - `internal/directunpack` — concurrent unrar (depends on `unpack.Unrar`)
 - `internal/deobfuscate` — heuristics
-- `internal/sort` — sorter; embeds guessit subprocess wrapper
-- `internal/safefs` — sanitize, rename retries, long-path, collisions
+- `internal/fsutil` — sanitize, rename retries, name-length limits, collisions
+  (no separate `safefs`/`sort` packages; sorting is NOT implemented)
 - `internal/postproc` — the supervisor (ties it together, owns the DB)
 
-Concurrency: one `Pipeline` worker per host (matches SABnzbd's behavior). The
+Concurrency: one `PostProcessor` worker per host (matches SABnzbd's behavior). The
 `DirectUnpacker` is the only concurrent piece and is owned by the downloader,
 not the pipeline. Use `context.Context` for cancel/abort throughout.
 
