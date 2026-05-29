@@ -43,7 +43,7 @@
 						</tr>
 					</thead>
 					<tbody class="divide-y">
-						{#each configData.schedules as sched}
+						{#each configData.schedules as sched (sched.name)}
 							<tr class={sched.enabled ? '' : 'opacity-50'}>
 								<td class="px-4 py-3 font-medium">{sched.name}</td>
 								<td class="px-4 py-3 text-gray-600 dark:text-gray-400 font-mono text-xs">{sched.hour}:{sched.minute} ({sched.dayofweek})</td>
