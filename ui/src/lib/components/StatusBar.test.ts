@@ -9,11 +9,10 @@ import {
 	getBandwidthMaxBytesPerSec,
 	getBandwidthPerc,
 	setBandwidthPerc,
-	formatSpeed,
-	formatSize,
 	getQueueSlots,
 	isPaused
 } from '$lib/stores/queue.svelte';
+import { formatSpeed, formatSize } from '$lib/utils';
 
 vi.mock('$lib/stores/queue.svelte', () => ({
 	getSpeedBytesPerSec: vi.fn(),
@@ -23,11 +22,18 @@ vi.mock('$lib/stores/queue.svelte', () => ({
 	getBandwidthMaxBytesPerSec: vi.fn(),
 	getBandwidthPerc: vi.fn(),
 	setBandwidthPerc: vi.fn(),
-	formatSpeed: vi.fn(),
-	formatSize: vi.fn(),
 	getQueueSlots: vi.fn(),
 	isPaused: vi.fn()
 }));
+
+vi.mock('$lib/utils', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/utils')>();
+	return {
+		...actual,
+		formatSpeed: vi.fn(),
+		formatSize: vi.fn()
+	};
+});
 
 // Mock SpeedGraph to avoid canvas issues in jsdom
 vi.mock('./SpeedGraph.svelte', () => ({

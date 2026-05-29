@@ -39,7 +39,6 @@ class WebSocketStore {
 		this.#socket = new WebSocket(url);
 
 		this.#socket.onopen = () => {
-			console.log('WebSocket connected');
 			this.#isConnected = true;
 			reportSuccess();
 		};
@@ -54,7 +53,6 @@ class WebSocketStore {
 		};
 
 		this.#socket.onclose = () => {
-			console.log('WebSocket disconnected');
 			this.#isConnected = false;
 			this.#socket = null;
 			// ConnectionStore owns reconnection timing — we just report
