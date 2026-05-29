@@ -98,9 +98,9 @@ Queue-modifying operations must: acquire `NZBQUEUE_LOCK`, mutate state, call `DO
 1. Parse command-line flags (`-f configfile`, `-d` daemon, `--server`, `--port`, etc.)
 2. Load configuration INI file
 3. Initialize logging
-4. Acquire `zc.lockfile` lock on config dir (prevent double-start)
-5. Initialize database (`history1.db`)
-6. Load queue from disk (`queue10.sab`)
+4. Acquire `gonzbd.lock` lock on the admin dir (prevent double-start)
+5. Initialize database (`history.db`)
+6. Load queue from disk (`queue/queue.json.gz` + `queue/jobs/<id>.json.gz`)
 7. Start BPS meter thread
 8. Start scheduler
 9. Start article cache thread
@@ -284,9 +284,9 @@ Running, QuickCheck, Completed, Failed, Deleted, Idle
 
 ### 4.4 Queue Persistence
 
-- **Format**: Python pickle + gzip (incompatible with Go; must redesign)
-- **Filename**: `queue10.sab` in admin directory
-- **Postproc queue**: `postproc2.sab`
+- **Format** (SABnzbd): Python pickle + gzip. **GoNZBD**: gzipped JSON.
+- **Filename** (GoNZBD): `queue/queue.json.gz` (index: job order + paused flag) plus one `queue/jobs/<id>.json.gz` per job, under the admin directory. (SABnzbd used a single `queue10.sab`.)
+- **Postproc queue**: in-memory only in GoNZBD (not persisted; in-flight post-processing restarts from scratch after a crash). SABnzbd persisted `postproc2.sab`.
 - **Repair modes** (on startup):
   - Mode 0: Use existing queue as-is
   - Mode 1: Use existing queue, re-add missing work-in-progress folders
@@ -353,7 +353,7 @@ Buffers decoded article data in memory between the decoder and the assembler, wi
 
 | Parameter | Default | Config Key |
 |-----------|---------|-----------|
-| Memory limit | 500 MB | `write_cache_size` |
+| Memory limit | 500 MB (SABnzbd); GoNZBD default 64 MiB, see §9.3 | `write_cache_size` |
 | Max configurable | 1 GB | `DEF_ARTICLE_CACHE_MAX` |
 | Flush trigger | 90% full | `ARTICLE_CACHE_NON_CONTIGUOUS_FLUSH_PERCENTAGE` |
 | Flush interval | 0.5 sec | Assembler poll rate |
@@ -609,9 +609,9 @@ Enable: `cfg.enable_par_cleanup = true`
 
 ### 9.1 Format
 
-INI file (`sabnzbd.ini`) managed by `configobj` library. Go equivalent: `gopkg.in/ini.v1` or a custom INI parser.
+YAML file (`gonzbd.yaml`) parsed by `gopkg.in/yaml.v3`. (SABnzbd used an INI file, `sabnzbd.ini`, managed by `configobj`.)
 
-Key design: Configuration parameters are typed objects with validators. Config reads return the value or default; writes validate before storing. INI file is rewritten atomically on save.
+Key design: Configuration parameters are typed Go structs with validators. Config reads return the value or default; writes validate before storing. The YAML file is rewritten atomically on save (marshal under RLock, release, write temp file, fsync, rename). The internal top-level section is named `general`; the HTTP API accepts and returns `misc` as a SABnzbd-compatible alias for it.
 
 ### 9.2 General Settings
 
@@ -645,7 +645,7 @@ Key design: Configuration parameters are typed objects with validators. Config r
 | `bandwidth_max` | string | `` | Max bandwidth (e.g., `10M`, `1G`, `0`=unlimited) |
 | `bandwidth_perc` | int | `100` | Percentage of max to use |
 | `min_free_space` | int | `1024` | Min free disk space in MB before pause |
-| `write_cache_size` | string | `500M` | Write coalescing buffer size (e.g., `500M`, `0`=disabled) |
+| `write_cache_size` | string | `64M` | Write coalescing buffer size (e.g., `64M`, `0`=disabled) |
 | `max_art_tries` | int | `3` | Max tries per article before marking bad |
 | `max_art_opt` | int | `1` | Max tries on optional servers |
 | `top_only` | bool | false | Only use top-priority server |
@@ -820,7 +820,7 @@ Error:
 | `pause_pp` | | status | Pause post-processor |
 | `resume_pp` | | status | Resume post-processor |
 | `disconnect` | | status | Force disconnect all NNTP |
-| `speedlimit` | `value=bytes_or_perc` | status | Set speed limit |
+| `speedlimit` | `value=bytes_or_perc` | status | Set speed limit (top-level alias for `config&name=speedlimit`; same handler). Plain integers are KiB/s. Admin level. |
 
 #### Status and Information
 
@@ -932,7 +932,7 @@ Error:
         "eta": "0:05:00",
         "timeleft": "0:05:00",
         "percentage": "45",
-        "nzo_id": "SABnzbd_nzo_abc123",
+        "nzo_id": "a1b2c3d47f8e2b09",
         "unpackopts": "7",
         "labels": []
       }
@@ -947,7 +947,7 @@ Error:
 
 ### 11.1 Backend
 
-SQLite. File: `history1.db` in admin directory.
+SQLite. File: `history.db` in the admin directory.
 
 ### 11.2 Schema
 
@@ -1023,11 +1023,11 @@ Watches a configured directory for NZB files and automatically adds them to the 
 
 ### 13.3 Deduplication State
 
-Per file, tracked in `watched_data2.sab`:
-- `inode`: File inode number
+Per file, tracked in `dirscan.json` (GoNZBD; SABnzbd used `watched_data2.sab`). GoNZBD's `FileState` records only:
 - `size`: File size in bytes
 - `mtime`: Modification timestamp
-- `ctime`: Status change timestamp
+
+(SABnzbd additionally tracked `inode` and `ctime`; GoNZBD's stability check needs only size + mtime.)
 
 A file is "stable" (ready to process) when its size, mtime, and ctime haven't changed between two consecutive scans.
 
@@ -1160,7 +1160,7 @@ When quota is reached:
 
 ### 16.4 Statistics Tracking
 
-Per-server cumulative download stats stored in `bpsmeter.sab`:
+Per-server cumulative download stats stored in `bpsmeter.json` (GoNZBD; SABnzbd used `bpsmeter.sab`):
 - `bytes_today`, `bytes_this_week`, `bytes_this_month`, `bytes_total`
 - Broken down per server by server ID
 
@@ -1208,8 +1208,13 @@ Key parsing:
 
 ### 17.2 Internal ID Format
 
-Job IDs: `SABnzbd_nzo_<8_alphanumeric_chars>` (e.g., `SABnzbd_nzo_a1b2c3d4`)
-File IDs: `SABnzbd_nzf_<8_alphanumeric_chars>`
+Job IDs (`nzo_id`): GoNZBD uses a bare 16-character lowercase hex string —
+8 random bytes hex-encoded, no prefix (e.g. `a1b2c3d47f8e2b09`). See
+`internal/queue/job.go` `newJobID`. (SABnzbd used `SABnzbd_nzo_<8 alnum>`,
+e.g. `SABnzbd_nzo_a1b2c3d4`; GoNZBD drops the prefix.)
+
+File IDs: GoNZBD does not expose a per-file `nzf_id` (the `delete_nzf` API
+action is not implemented). SABnzbd used `SABnzbd_nzf_<8 alnum>`.
 
 ### 17.3 Size Notation
 
@@ -1218,14 +1223,17 @@ API inputs accept: `"500M"`, `"2G"`, `"1024K"` (case-insensitive).
 
 ### 17.4 Admin Files (State Persistence)
 
-| File | Contents | Format |
-|------|----------|--------|
-| `queue10.sab` | Download queue | Python pickle + gzip → replace with JSON |
-| `postproc2.sab` | Post-processing queue | Python pickle + gzip → replace with JSON |
-| `watched_data2.sab` | Dir scanner state | Python pickle + gzip → replace with JSON |
-| `bpsmeter.sab` | Bandwidth statistics | Python pickle + gzip → replace with JSON |
-| `history1.db` | Completed job history | SQLite → keep as-is |
-| `sabnzbd.ini` | Configuration | INI (configobj) → keep format or migrate to TOML |
+These are the GoNZBD admin files (the SABnzbd originals are noted for reference).
+
+| File (GoNZBD) | Contents | Format | SABnzbd original |
+|------|----------|--------|------------------|
+| `queue/queue.json.gz` + `queue/jobs/<id>.json.gz` | Download queue (index + per-job) | gzipped JSON | `queue10.sab` (pickle+gzip) |
+| _(none — in-memory only)_ | Post-processing queue | not persisted | `postproc2.sab` |
+| `dirscan.json` | Dir scanner state | JSON | `watched_data2.sab` (pickle+gzip) |
+| `bpsmeter.json` | Bandwidth statistics | JSON | `bpsmeter.sab` (pickle+gzip) |
+| `history.db` | Completed job history | SQLite (goose migrations) | `history1.db` |
+| `gonzbd.yaml` | Configuration | YAML | `sabnzbd.ini` (INI/configobj) |
+| `gonzbd.lock` | Single-instance lock | lockfile | `zc.lockfile` |
 
 ---
 
@@ -1235,7 +1243,7 @@ API inputs accept: `"500M"`, `"2G"`, `"1024K"` (case-insensitive).
 
 - **API key**: 16-character random alphanumeric string, generated on first run
 - **NZB key**: Separate key allowing NZB uploads without full API access
-- Keys stored in `sabnzbd.ini` in plaintext (protect file permissions)
+- Keys stored in `gonzbd.yaml` in plaintext (protect file permissions)
 - Regeneration: POST to `api?mode=config&name=set_apikey`
 
 ### 18.2 Web UI Authentication
