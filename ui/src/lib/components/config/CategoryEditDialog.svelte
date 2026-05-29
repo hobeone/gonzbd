@@ -92,7 +92,7 @@
 				<div class="space-y-1.5">
 					<label for="cat-script" class="text-sm font-medium">Script</label>
 					<select id="cat-script" bind:value={draft.script} class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
-						{#each scripts as s}
+						{#each scripts as s (s)}
 							<option value={s}>{s}</option>
 						{/each}
 					</select>
