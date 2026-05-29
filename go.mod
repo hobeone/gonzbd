@@ -6,7 +6,7 @@ require (
 	github.com/bodgit/sevenzip v1.6.4
 	github.com/coder/websocket v1.8.14
 	github.com/h2non/filetype v1.1.3
-	github.com/hobeone/par2engine v1.0.1
+	github.com/hobeone/par2engine v1.0.2
 	github.com/hobeone/rarengine v0.0.3
 	github.com/lmittmann/tint v1.1.3
 	github.com/mmcdole/gofeed v1.3.0
