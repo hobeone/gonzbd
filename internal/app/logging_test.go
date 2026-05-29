@@ -241,7 +241,7 @@ func TestSetupComponentLevels(t *testing.T) {
 		// Unlisted component inherits global info level.
 		{"unlisted-info-passes", slog.LevelInfo, map[string]slog.Level{"api": slog.LevelWarn}, []string{"downloader"}, slog.LevelInfo, true},
 		// Component set to off: nothing passes.
-		{"off-error-suppressed", slog.LevelInfo, map[string]slog.Level{"rss": slog.Level(99)}, []string{"rss"}, slog.LevelError, false},
+		{"off-error-suppressed", slog.LevelInfo, map[string]slog.Level{"scheduler": slog.Level(99)}, []string{"scheduler"}, slog.LevelError, false},
 		// Component with debug override: debug should pass even though global is info.
 		{"debug-override-passes", slog.LevelInfo, map[string]slog.Level{"downloader": slog.LevelDebug}, []string{"downloader"}, slog.LevelDebug, true},
 		// Nested/Shadowed components: the most specific (last) "component" tag should win.

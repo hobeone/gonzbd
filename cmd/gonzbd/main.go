@@ -37,7 +37,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/humanfmt"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
-	"github.com/hobeone/gonzbd/internal/rss"
 	"github.com/hobeone/gonzbd/internal/scheduler"
 	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
@@ -340,9 +339,8 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	// receive raw NZB bytes and push jobs onto the same queue.
 	ingest := &ingestHandler{app: application, config: cfg, logger: slog.Default().With("component", "ingest")}
 
-	// URL grabber. Used both by the RSS scanner's handler and by the API
-	// (mode=addurl). One instance is enough; Grabber is safe for
-	// concurrent Fetch callers because each call has its own http.Request.
+	// URL grabber. Used by the API (mode=addurl). One instance is enough;
+	// Grabber is safe for concurrent Fetch callers because each call has its own http.Request.
 	grabber := urlgrabber.New(urlgrabber.Config{Logger: slog.Default().With("component", "urlgrabber")}, ingest)
 
 	// Directory scanner. Enabled only when DirscanDir is set.
@@ -352,11 +350,6 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 
 	// Scheduler. Parsed schedules drive periodic pause/resume/etc.
 	if err := startScheduler(ctx, cfg, application.Queue(), application, cancel, log); err != nil {
-		return err
-	}
-
-	// RSS scanner. Each accepted item is handed to the URL grabber.
-	if err := startRSSScanner(ctx, cfg, adminDir, grabber, log); err != nil {
 		return err
 	}
 
@@ -627,30 +620,6 @@ func startScheduler(ctx context.Context, cfg *config.Config, q *queue.Queue, app
 	return nil
 }
 
-// startRSSScanner builds feeds from config, opens the dedup store, and
-// runs a periodic scanner that hands each accepted item to the grabber.
-func startRSSScanner(ctx context.Context, cfg *config.Config, adminDir string, g *urlgrabber.Grabber, log *slog.Logger) error {
-	feeds, err := feedsFromConfig(cfg.RSS)
-	if err != nil {
-		return fmt.Errorf("parse rss feeds: %w", err)
-	}
-	if len(feeds) == 0 {
-		return nil
-	}
-	store, err := rss.OpenStore(filepath.Join(adminDir, "rss-dedup.json"))
-	if err != nil {
-		return fmt.Errorf("open rss store: %w", err)
-	}
-	handler := &rssToURLHandler{grabber: g, logger: slog.Default().With("component", "rss")}
-	sc := rss.NewScanner(feeds, store, handler, nil, slog.Default().With("component", "rss"))
-	go func() {
-		if err := sc.Run(ctx, 15*time.Minute); err != nil && !errors.Is(err, context.Canceled) {
-			log.Error("rss scanner", "err", err)
-		}
-	}()
-	log.Info("rss scanner started", "feeds", len(feeds))
-	return nil
-}
 
 // composeRouter produces the outer HTTP handler that routes /api requests
 // to the API server, /debug/ to profiling/telemetry handlers, and

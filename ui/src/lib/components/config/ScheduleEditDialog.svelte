@@ -31,7 +31,6 @@
 		{ value: 'speedlimit', label: 'Set Speed Limit' },
 		{ value: 'shutdown', label: 'Shutdown' },
 		{ value: 'restart', label: 'Restart' },
-		{ value: 'rss_scan', label: 'Trigger RSS Scan' },
 		{ value: 'scan_folder', label: 'Scan Watched Folder' }
 	];
 

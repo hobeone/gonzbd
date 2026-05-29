@@ -99,7 +99,6 @@ func Default() (*Config, error) {
 		Servers:    nil, // user must add at least one before download is possible
 		Categories: []CategoryConfig{BuiltinDefaultCategory()},
 		Schedules:  []ScheduleConfig{},
-		RSS:        []RSSFeedConfig{},
 	}, nil
 }
 

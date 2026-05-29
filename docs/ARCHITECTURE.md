@@ -33,7 +33,6 @@ The project follows a standard Go project layout:
     - `postproc/`: Post-processing pipeline: repair, unpack, deobfuscate, script, finalize.
     - `queue/`: The active download queue and job state management with lazy article index and transient field recomputation.
     - `rarheader/`: RAR archive header parsing with filename sanitization.
-    - `rss/`: RSS/Atom feed processing, filtering, and dedup with bounded fetch sizes.
     - `scheduler/`: Cron-like task scheduling.
     - `telemetry/`: Runtime metrics collection and export.
     - `types/`: Shared type definitions used across packages.

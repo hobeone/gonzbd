@@ -467,7 +467,6 @@ func TestParseLogLevels(t *testing.T) {
 				"api":        "warn",
 				"downloader": "debug",
 				"nntp":       "error",
-				"rss":        "off",
 			},
 		}
 		got, err := g.ParseLogLevels()
@@ -482,9 +481,6 @@ func TestParseLogLevels(t *testing.T) {
 		}
 		if got["nntp"] != slog.LevelError {
 			t.Errorf("nntp = %v, want %v", got["nntp"], slog.LevelError)
-		}
-		if got["rss"] != LevelOff {
-			t.Errorf("rss = %v, want %v", got["rss"], LevelOff)
 		}
 	})
 
