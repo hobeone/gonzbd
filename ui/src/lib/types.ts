@@ -143,33 +143,6 @@ export interface ScheduleConfig {
 	hour: string;
 	dayofweek: string;
 }
-
-export interface RSSFilterConfig {
-	name: string;
-	enabled: boolean;
-	title: string;
-	body: string;
-	cat: string;
-	pp: string;
-	script: string;
-	priority: number;
-	type: string;
-	size_from: number;
-	size_to: number;
-	age: number;
-}
-
-export interface RSSFeedConfig {
-	name: string;
-	uri: string;
-	cat: string;
-	pp: string;
-	script: string;
-	enable: boolean;
-	priority: number;
-	filters: RSSFilterConfig[];
-}
-
 export interface FullConfig {
 	general: Record<string, any>;
 	downloads: Record<string, any>;
@@ -177,7 +150,6 @@ export interface FullConfig {
 	servers: ServerConfig[];
 	categories: CategoryConfig[];
 	schedules: ScheduleConfig[];
-	rss: RSSFeedConfig[];
 }
 
 export interface ConfigResponse {

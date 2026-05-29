@@ -118,9 +118,6 @@ func decode(r io.Reader) (*Config, []string, error) {
 	if cfg.Schedules == nil {
 		cfg.Schedules = []ScheduleConfig{}
 	}
-	if cfg.RSS == nil {
-		cfg.RSS = []RSSFeedConfig{}
-	}
 
 	return cfg, nil, nil
 }

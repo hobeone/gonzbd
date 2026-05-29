@@ -7,13 +7,11 @@
 	import PostProcSection from './config/PostProcSection.svelte';
 	import ServersSection from './config/ServersSection.svelte';
 	import CategoriesSection from './config/CategoriesSection.svelte';
-	import RSSSection from './config/RSSSection.svelte';
 	import SchedulingSection from './config/SchedulingSection.svelte';
 	import ServerEditDialog from './config/ServerEditDialog.svelte';
 	import CategoryEditDialog from './config/CategoryEditDialog.svelte';
 	import ScheduleEditDialog from './config/ScheduleEditDialog.svelte';
-	import RSSEditDialog from './config/RSSEditDialog.svelte';
-	import type { ServerConfig, CategoryConfig, ScheduleConfig, RSSFeedConfig } from '$lib/types';
+	import type { ServerConfig, CategoryConfig, ScheduleConfig } from '$lib/types';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -34,16 +32,12 @@
 	let scheduleEditOpen = $state(false);
 	let selectedSchedule = $state<ScheduleConfig | null>(null);
 
-	let rssEditOpen = $state(false);
-	let selectedFeed = $state<RSSFeedConfig | null>(null);
-
 	const sections = [
 		{ id: 'general', label: 'General' },
 		{ id: 'downloads', label: 'Downloads' },
 		{ id: 'postproc', label: 'Post-Processing' },
 		{ id: 'servers', label: 'Servers' },
 		{ id: 'categories', label: 'Categories' },
-		{ id: 'rss', label: 'RSS' },
 		{ id: 'scheduling', label: 'Scheduling' }
 	];
 
@@ -181,23 +175,6 @@
 		persistAndReload('schedules', schedules);
 	}
 
-	function saveRSSFeed(f: RSSFeedConfig) {
-		if (!configData) return;
-		const rss = [...(configData.rss ?? [])];
-		const idx = rss.findIndex((feed: RSSFeedConfig) => feed.name === f.name);
-		if (idx !== -1) rss[idx] = f;
-		else rss.push(f);
-		configData = { ...configData, rss };
-		persistAndReload('rss', rss);
-	}
-
-	function deleteRSSFeed(name: string) {
-		if (!configData || !confirm(`Delete RSS feed "${name}"?`)) return;
-		const rss = configData.rss.filter((f: RSSFeedConfig) => f.name !== name);
-		configData = { ...configData, rss };
-		persistAndReload('rss', rss);
-	}
-
 	function persistAndReload(section: string, items: any[]) {
 		saving = true;
 		setConfig(section, '', JSON.stringify(items))
@@ -300,13 +277,6 @@
 								onEditCategory={(c) => { selectedCategory = c; categoryEditOpen = true; }}
 								onDeleteCategory={deleteCategory}
 							/>
-						{:else if activeSection === 'rss'}
-							<RSSSection
-								{configData}
-								onAddFeed={() => { selectedFeed = null; rssEditOpen = true; }}
-								onEditFeed={(f) => { selectedFeed = f; rssEditOpen = true; }}
-								onDeleteFeed={deleteRSSFeed}
-							/>
 						{:else if activeSection === 'scheduling'}
 							<SchedulingSection
 								{configData}
@@ -371,10 +341,4 @@
 	bind:open={scheduleEditOpen}
 	schedule={selectedSchedule}
 	onsave={saveSchedule}
-/>
-
-<RSSEditDialog
-	bind:open={rssEditOpen}
-	feed={selectedFeed}
-	onsave={saveRSSFeed}
 />

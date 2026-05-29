@@ -56,15 +56,6 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if err := validateUniqueNames("rss feed", feedNames(c.RSS)); err != nil {
-		errs = append(errs, err)
-	}
-	for i := range c.RSS {
-		if err := c.RSS[i].validate(); err != nil {
-			errs = append(errs, fmt.Errorf("rss[%d] (%q): %w", i, c.RSS[i].Name, err))
-		}
-	}
-
 	return errors.Join(errs...)
 }
 
@@ -290,51 +281,6 @@ func (s *ScheduleConfig) validate() error {
 	return errors.Join(errs...)
 }
 
-func (f *RSSFeedConfig) validate() error {
-	var errs []error
-	if strings.TrimSpace(f.URI) == "" {
-		errs = append(errs, fmt.Errorf("uri: %w", errEmpty))
-	}
-	for i := range f.Filters {
-		if err := f.Filters[i].validate(); err != nil {
-			errs = append(errs, fmt.Errorf("filters[%d] (%q): %w", i, f.Filters[i].Name, err))
-		}
-	}
-	return errors.Join(errs...)
-}
-
-func (f *RSSFilterConfig) validate() error {
-	var errs []error
-	if f.Title != "" {
-		if _, err := regexp.Compile(f.Title); err != nil {
-			errs = append(errs, fmt.Errorf("title regex: %w", err))
-		}
-	}
-	if f.Body != "" {
-		if _, err := regexp.Compile(f.Body); err != nil {
-			errs = append(errs, fmt.Errorf("body regex: %w", err))
-		}
-	}
-	switch f.Type {
-	case "", "require", "must_not_match", "ignore":
-	default:
-		errs = append(errs, fmt.Errorf("type: %q must be require, must_not_match, or ignore", f.Type))
-	}
-	if f.SizeFrom < 0 {
-		errs = append(errs, fmt.Errorf("size_from: %d is negative", f.SizeFrom))
-	}
-	if f.SizeTo < 0 {
-		errs = append(errs, fmt.Errorf("size_to: %d is negative", f.SizeTo))
-	}
-	if f.SizeFrom > 0 && f.SizeTo > 0 && f.SizeFrom > f.SizeTo {
-		errs = append(errs, fmt.Errorf("size_from (%s) > size_to (%s)", f.SizeFrom, f.SizeTo))
-	}
-	if err := nonNegative("age", f.Age); err != nil {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
-}
-
 // Helpers extract the Name field from each subsection slice for the
 // validateUniqueNames helper.
 
@@ -358,14 +304,6 @@ func scheduleNames(s []ScheduleConfig) []string {
 	names := make([]string, len(s))
 	for i := range s {
 		names[i] = s[i].Name
-	}
-	return names
-}
-
-func feedNames(f []RSSFeedConfig) []string {
-	names := make([]string, len(f))
-	for i := range f {
-		names[i] = f[i].Name
 	}
 	return names
 }

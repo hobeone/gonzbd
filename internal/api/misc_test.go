@@ -220,16 +220,6 @@ func TestModeWatchedNow_NotImplemented(t *testing.T) {
 	}
 }
 
-func TestModeRssNow_NotImplemented(t *testing.T) {
-	t.Parallel()
-	s := testServer()
-
-	rr := apiGet(t, s.Handler(), "/api?mode=rss_now&apikey="+testAPIKey)
-	if rr.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d; want 501", rr.Code)
-	}
-}
-
 func TestModeBrowse_HiddenFolders(t *testing.T) {
 	t.Parallel()
 	s := testServer()

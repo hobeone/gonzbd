@@ -154,7 +154,7 @@ func (e *EmailNotifier) finishSend(c *smtp.Client, auth smtp.Auth, msg []byte) e
 // verify message structure without requiring a live SMTP server.
 func (e *EmailNotifier) FormatMessage(ev Event) []byte {
 	// Sanitize title to prevent SMTP header injection via \r\n in
-	// NZB/job names (which may come from untrusted RSS feeds).
+	// NZB/job names (which may come from untrusted user inputs).
 	safeTitle := strings.NewReplacer("\r", "", "\n", "").Replace(ev.Title)
 
 	var buf bytes.Buffer
