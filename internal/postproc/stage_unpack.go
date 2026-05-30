@@ -19,6 +19,8 @@ import (
 )
 
 type UnpackStage struct {
+	// toggle provides the thread-safe SetEnabled/enabled flag.
+	toggle
 	// mu protects BaseOpts, Permissions, PasswordFile, EnableFileJoin, and EnableRecursive.
 	// Can be updated via Set* methods from the API goroutine while a job runs.
 	mu sync.RWMutex
@@ -30,8 +32,6 @@ type UnpackStage struct {
 	// execute bits stripped. Empty disables chmod.
 	Permissions string
 
-	// disabled controls if the stage is skipped. Thread-safe atomic.
-	disabled atomic.Bool
 	// cleanup is set atomically so SetCleanup can be called from any goroutine.
 	cleanup atomic.Bool
 	// PasswordFile is the path to a text file with one password per line.
@@ -58,9 +58,6 @@ func NewUnpackStageWith(opts unpack.Options, cleanup bool) *UnpackStage {
 	s.cleanup.Store(cleanup)
 	return s
 }
-
-// SetEnabled enables or disables the unpack stage at runtime. Thread-safe.
-func (u *UnpackStage) SetEnabled(enabled bool) { u.disabled.Store(!enabled) }
 
 // SetCleanup enables or disables archive file deletion at runtime without
 // requiring a server restart. Thread-safe; may be called from any goroutine.
@@ -200,7 +197,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	}
 	log = log.With("component", "postproc/unpack", "job", job.Queue.ID)
 
-	if u.disabled.Load() {
+	if !u.enabled() {
 		logf(log, job, slog.LevelInfo, "Unpack stage disabled — skipping")
 		return nil
 	}
