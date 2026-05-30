@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"sync"
 
 	"github.com/hobeone/gonzbd/internal/deobfuscate"
 )
 
 type DeobfuscateStage struct {
-	mu       sync.RWMutex
-	disabled bool
+	// toggle provides the thread-safe SetEnabled/enabled flag.
+	toggle
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
@@ -22,23 +21,12 @@ func NewDeobfuscateStage() *DeobfuscateStage {
 	return &DeobfuscateStage{}
 }
 
-// SetEnabled enables or disables filename deobfuscation at runtime. Thread-safe.
-func (d *DeobfuscateStage) SetEnabled(v bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.disabled = !v
-}
-
 // Name returns the stage identifier.
 func (*DeobfuscateStage) Name() string { return "deobfuscate" }
 
 // Run invokes deobfuscate.Deobfuscate against job.DownloadDir.
 func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
-	d.mu.RLock()
-	disabled := d.disabled
-	d.mu.RUnlock()
-
-	if disabled {
+	if !d.enabled() {
 		return nil
 	}
 
