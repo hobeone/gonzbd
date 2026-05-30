@@ -158,10 +158,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		logf(log, job, slog.LevelInfo, "Found %d non-par2 data file(s) for checksum matching", len(dataFiles))
 
 		for _, set := range sets {
-			main := set.MainFile
-			if main == "" && len(set.ExtraFiles) > 0 {
-				main = set.ExtraFiles[0]
-			}
+			main := set.ParseFile()
 			if main == "" {
 				logf(log, job, slog.LevelInfo, "Skipped par2 set %q: no main file", set.Name)
 				continue

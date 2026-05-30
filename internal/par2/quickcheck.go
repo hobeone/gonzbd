@@ -42,10 +42,7 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 	// Collect all FileDesc entries from all par2 sets.
 	var manifest []FileDesc
 	for _, set := range sets {
-		parFile := set.MainFile
-		if parFile == "" && len(set.ExtraFiles) > 0 {
-			parFile = set.ExtraFiles[0]
-		}
+		parFile := set.ParseFile()
 		if parFile == "" {
 			log.Info("quickcheck: skipping par2 set with no main file",
 				"set", set.Name)
