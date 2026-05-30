@@ -237,6 +237,21 @@ type Rename struct {
 	TrueName string // par2-recorded target name; empty for heuristic renames
 }
 
+// renameRecorded renames src→dst and, on success, logs the move (logMsg with
+// from/to attributes) and returns the recorded Rename. trueName fills
+// Rename.TrueName for par2-driven renames; pass "" for heuristic renames.
+//
+// On failure it returns the raw os.Rename error and a zero Rename, leaving the
+// error context and the abort-vs-continue decision to the caller, which owns
+// the dst computation and the appropriate wrapping message.
+func renameRecorded(log *slog.Logger, src, dst, trueName, logMsg string) (Rename, error) {
+	if err := os.Rename(src, dst); err != nil {
+		return Rename{}, err
+	}
+	log.Info(logMsg, "from", src, "to", dst)
+	return Rename{From: src, To: dst, TrueName: trueName}, nil
+}
+
 // Deobfuscate scans dir for obfuscated files. It first attempts to use PAR2
 // metadata for renaming. If no PAR2 files are present or no renames occur,
 // it falls back to the "biggest file" heuristic and renames it (and any
@@ -350,11 +365,11 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 
 	// Rename the biggest file.
 	newBigPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(dir, "", usefulName+filepath.Ext(bigPath), opts))
-	if err := os.Rename(bigPath, newBigPath); err != nil {
+	r, err := renameRecorded(log, bigPath, newBigPath, "", "deobfuscate: renamed")
+	if err != nil {
 		return nil, fmt.Errorf("rename %s → %s: %w", bigPath, newBigPath, err)
 	}
-	log.Info("deobfuscate: renamed", "from", bigPath, "to", newBigPath)
-	renames = append(renames, Rename{From: bigPath, To: newBigPath})
+	renames = append(renames, r)
 
 	// basedirfile is the path without extension — used to find siblings.
 	baseDirFile := strings.TrimSuffix(bigPath, filepath.Ext(bigPath))
@@ -372,11 +387,11 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 		}
 		remainingSuffix := strings.TrimPrefix(p, baseDirFile)
 		newPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(dir, "", usefulName+remainingSuffix, opts))
-		if renErr := os.Rename(p, newPath); renErr != nil {
+		r, renErr := renameRecorded(log, p, newPath, "", "deobfuscate: renamed sibling")
+		if renErr != nil {
 			return renames, fmt.Errorf("rename sibling %s → %s: %w", p, newPath, renErr)
 		}
-		log.Info("deobfuscate: renamed sibling", "from", p, "to", newPath)
-		renames = append(renames, Rename{From: p, To: newPath})
+		renames = append(renames, r)
 	}
 
 	return renames, nil
@@ -460,11 +475,11 @@ func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 		// Construct new name: <bigBase>.<srt_filename>
 		srtName := filepath.Base(srt)
 		newPath := fsutil.GetUniqueFilename(bigBase + "." + srtName)
-		if renErr := os.Rename(srt, newPath); renErr != nil {
+		r, renErr := renameRecorded(log, srt, newPath, "", "deobfuscate: renamed subtitle")
+		if renErr != nil {
 			return renames, fmt.Errorf("rename subtitle %s → %s: %w", srt, newPath, renErr)
 		}
-		log.Info("deobfuscate: renamed subtitle", "from", srt, "to", newPath)
-		renames = append(renames, Rename{From: srt, To: newPath})
+		renames = append(renames, r)
 	}
 
 	return renames, nil
