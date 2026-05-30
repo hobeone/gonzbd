@@ -117,15 +117,11 @@ func Par2Rename(ctx context.Context, log *slog.Logger, dir string, opts fsutil.S
 				}
 			}
 
-			if err := os.Rename(path, newPath); err != nil {
+			r, err := renameRecorded(log, path, newPath, trueName, "deobfuscate: par2-renamed")
+			if err != nil {
 				return renames, fmt.Errorf("rename %s → %s: %w", path, newPath, err)
 			}
-			log.Info("deobfuscate: par2-renamed",
-				"from", e.Name(),
-				"to", filepath.Base(newPath),
-				"par2_name", trueName,
-			)
-			renames = append(renames, Rename{From: path, To: newPath, TrueName: trueName})
+			renames = append(renames, r)
 		}
 	}
 
