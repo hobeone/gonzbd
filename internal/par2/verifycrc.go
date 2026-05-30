@@ -86,10 +86,7 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 	par2Index := make(map[string]*par2Entry) // basename → entry
 
 	for _, set := range sets {
-		parFile := set.MainFile
-		if parFile == "" && len(set.ExtraFiles) > 0 {
-			parFile = set.ExtraFiles[0]
-		}
+		parFile := set.ParseFile()
 		if parFile == "" {
 			continue
 		}
