@@ -60,6 +60,21 @@ type Set struct {
 	ExtraFiles []string
 }
 
+// ParseFile returns the par2 file to parse for this set: the main
+// (non-volume) file when present, otherwise the first volume file. It
+// returns "" when the set has no .par2 files at all. Callers that need the
+// set's file descriptions resolve the path through this method so the
+// main-or-first-volume fallback lives in one place.
+func (s Set) ParseFile() string {
+	if s.MainFile != "" {
+		return s.MainFile
+	}
+	if len(s.ExtraFiles) > 0 {
+		return s.ExtraFiles[0]
+	}
+	return ""
+}
+
 // VerifyResult holds the output of a par2 verify run.
 type VerifyResult struct {
 	// CommandLine is the full command that was executed.
