@@ -525,12 +525,9 @@ func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
 // queueSetPaused applies action (Pause or Resume) to each job ID in the
 // CSV value= parameter, logging the result with the given verb. Not-found
 // IDs are silently ignored, matching SABnzbd's lenient bulk semantics.
-//
-//nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, action func(string) error, verb string) {
-	value := r.FormValue("value")
-	if value == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value parameter")
+	value, ok := s.requireParam(w, r, "value", "")
+	if !ok {
 		return
 	}
 	for _, id := range splitCSV(value) {
@@ -545,14 +542,11 @@ func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, action f
 // queuePriority handles name=priority. SABnzbd convention:
 // value = nzo_id, value2 = numeric priority.
 func (s *Server) queuePriority(w http.ResponseWriter, r *http.Request) {
-	nzoID := r.FormValue("value")
-	if nzoID == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value parameter (nzo_id)")
+	nzoID, ok := s.requireParam(w, r, "value", "nzo_id")
+	if !ok {
 		return
 	}
-	priStr := r.FormValue("value2")
-	if priStr == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value2 parameter (priority)")
+	if _, ok := s.requireParam(w, r, "value2", "priority"); !ok {
 		return
 	}
 	pri := constants.Priority(int8(intParam(r, "value2"))) //nolint:gosec // G115: priority values fit in int8
@@ -570,17 +564,12 @@ func (s *Server) queuePriority(w http.ResponseWriter, r *http.Request) {
 
 // queueChangeOpts handles name=change_opts. SABnzbd convention:
 // value = nzo_id, value2 = numeric PP level (0–3).
-//
-//nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) queueChangeOpts(w http.ResponseWriter, r *http.Request) {
-	nzoID := r.FormValue("value")
-	if nzoID == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value parameter (nzo_id)")
+	nzoID, ok := s.requireParam(w, r, "value", "nzo_id")
+	if !ok {
 		return
 	}
-	ppStr := r.FormValue("value2")
-	if ppStr == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value2 parameter (pp level)")
+	if _, ok := s.requireParam(w, r, "value2", "pp level"); !ok {
 		return
 	}
 	pp := intParam(r, "value2")
@@ -607,9 +596,8 @@ func (s *Server) queueChangeOpts(w http.ResponseWriter, r *http.Request) {
 //
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
-	nzoID := r.FormValue("value")
-	if nzoID == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value parameter (nzo_id)")
+	nzoID, ok := s.requireParam(w, r, "value", "nzo_id")
+	if !ok {
 		return
 	}
 	cat := r.FormValue("value2") // empty string → FindCategory falls back to Default
@@ -639,17 +627,13 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 
 // queueChangeName handles name=rename and name=change_name.
 // SABnzbd convention: value = nzo_id, value2 = new name.
-//
-//nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) queueChangeName(w http.ResponseWriter, r *http.Request) {
-	nzoID := r.FormValue("value")
-	if nzoID == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value parameter (nzo_id)")
+	nzoID, ok := s.requireParam(w, r, "value", "nzo_id")
+	if !ok {
 		return
 	}
-	name := r.FormValue("value2")
-	if name == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value2 parameter (name)")
+	name, ok := s.requireParam(w, r, "value2", "name")
+	if !ok {
 		return
 	}
 	if err := s.queue.SetName(nzoID, name); err != nil {
@@ -668,9 +652,8 @@ func (s *Server) queueChangeName(w http.ResponseWriter, r *http.Request) {
 //
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) queueChangeScript(w http.ResponseWriter, r *http.Request) {
-	nzoID := r.FormValue("value")
-	if nzoID == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value parameter (nzo_id)")
+	nzoID, ok := s.requireParam(w, r, "value", "nzo_id")
+	if !ok {
 		return
 	}
 	script := r.FormValue("value2")
@@ -736,9 +719,8 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, http.StatusInternalServerError, "url grabber not wired")
 		return
 	}
-	urlStr := formString(r, "name")
-	if urlStr == "" {
-		s.respondError(w, http.StatusBadRequest, "missing name parameter (URL)")
+	urlStr, ok := s.requireParam(w, r, "name", "URL")
+	if !ok {
 		return
 	}
 	opts := types.FetchOptions{
@@ -778,9 +760,8 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawPath := r.FormValue("name")
-	if rawPath == "" {
-		s.respondError(w, http.StatusBadRequest, "missing name parameter")
+	rawPath, ok := s.requireParam(w, r, "name", "")
+	if !ok {
 		return
 	}
 	// Reject non-absolute paths.
