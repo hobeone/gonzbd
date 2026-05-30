@@ -36,6 +36,24 @@ func formString(r *http.Request, key string) string {
 	return r.FormValue(key) //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 }
 
+// requireParam reads the named query/form value. If it is empty, it writes a
+// 400 ("missing <key> parameter") and returns ok=false; the caller should
+// return immediately. An optional label is appended in parentheses to clarify
+// the SABnzbd-positional name the parameter carries, e.g.
+// requireParam(w, r, "value", "nzo_id") → "missing value parameter (nzo_id)".
+func (s *Server) requireParam(w http.ResponseWriter, r *http.Request, key, label string) (string, bool) {
+	v := formString(r, key)
+	if v == "" {
+		msg := "missing " + key + " parameter"
+		if label != "" {
+			msg += " (" + label + ")"
+		}
+		s.respondError(w, http.StatusBadRequest, msg)
+		return "", false
+	}
+	return v, true
+}
+
 // priorityParam reads the priority= query parameter and maps it to a Priority constant.
 // Returns DefaultPriority (inherit from category) when the parameter is absent.
 func priorityParam(r *http.Request) constants.Priority {
