@@ -878,6 +878,11 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 // writes are better than skipping data entirely.
 func (a *Assembler) writeCachedArticles(f *openFile, arts []bufferedArticle, reason string) {
 	for _, art := range arts {
+		// Each drained article is its own WriteAt syscall (drains are not
+		// coalesced), so count one DiskWrite per article — matching the
+		// inline write paths in writeArticleOrBuffer.
+		telemetry.DiskWrites.Add(1)
+		telemetry.DiskWriteBytes.Add(int64(len(art.data)))
 		if _, err := f.handle.WriteAt(art.data, art.offset); err != nil {
 			a.log.Error(reason,
 				"path", f.info.Path,

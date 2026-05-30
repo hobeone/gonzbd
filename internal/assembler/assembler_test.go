@@ -594,6 +594,53 @@ func TestTelemetryDiskWriteCounters(t *testing.T) {
 	}
 }
 
+// TestTelemetryDiskWriteCountersCachedDrain ensures disk-write counters
+// include writes made by the cache-drain path. With the write cache enabled
+// and a small file (below the 512KB coalescing threshold), the articles are
+// buffered as cache hits and only reach disk when drained at file completion
+// via writeCachedArticles. Those WriteAt syscalls must still be counted.
+func TestTelemetryDiskWriteCountersCachedDrain(t *testing.T) {
+	telemetry.Reset()
+
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 3)
+
+	opts := makeOpts(dir, files)
+	opts.WriteCacheBytes = 1 << 20 // 1 MiB — caching enabled
+	a := startAssembler(t, opts)
+
+	// 3 small articles stay buffered (well under the 512KB run threshold)
+	// and are drained to disk when the file completes.
+	for i := range 3 {
+		req := WriteRequest{
+			JobID:   "job1",
+			FileIdx: 0,
+			Offset:  int64(i * 4),
+			Data:    []byte("XXXX"),
+		}
+		if err := a.WriteArticle(t.Context(), req); err != nil {
+			t.Fatalf("WriteArticle: %v", err)
+		}
+	}
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// All 3 were buffered first...
+	if got := telemetry.CacheHits.Value(); got != 3 {
+		t.Errorf("CacheHits = %d, want 3", got)
+	}
+	// ...then drained to disk as 3 individual WriteAt calls totalling 12 bytes.
+	if got := telemetry.DiskWrites.Value(); got != 3 {
+		t.Errorf("DiskWrites = %d, want 3 (cache-drain writes must be counted)", got)
+	}
+	if got := telemetry.DiskWriteBytes.Value(); got != 12 {
+		t.Errorf("DiskWriteBytes = %d, want 12", got)
+	}
+}
+
 func TestTelemetryFileCompleted(t *testing.T) {
 	telemetry.Reset()
 
