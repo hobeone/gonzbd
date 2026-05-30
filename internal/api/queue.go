@@ -513,38 +513,30 @@ func (s *Server) queuePurge(w http.ResponseWriter, r *http.Request) {
 }
 
 // queuePauseJobs pauses specific jobs by ID (CSV in value=).
-//
-//nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) queuePauseJobs(w http.ResponseWriter, r *http.Request) {
-	value := r.FormValue("value")
-	if value == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value parameter")
-		return
-	}
-	ids := splitCSV(value)
-	for _, id := range ids {
-		_ = s.queue.Pause(id) //nolint:errcheck // not-found silently ignored
-		if job, err := s.queue.Get(id); err == nil {
-			s.log.Info("job paused", "job", id, "name", job.Name)
-		}
-	}
-	respondStatus(w)
+	s.queueSetPaused(w, r, s.queue.Pause, "paused")
 }
 
 // queueResumeJobs resumes specific jobs by ID (CSV in value=).
+func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
+	s.queueSetPaused(w, r, s.queue.Resume, "resumed")
+}
+
+// queueSetPaused applies action (Pause or Resume) to each job ID in the
+// CSV value= parameter, logging the result with the given verb. Not-found
+// IDs are silently ignored, matching SABnzbd's lenient bulk semantics.
 //
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
-func (s *Server) queueResumeJobs(w http.ResponseWriter, r *http.Request) {
+func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, action func(string) error, verb string) {
 	value := r.FormValue("value")
 	if value == "" {
 		s.respondError(w, http.StatusBadRequest, "missing value parameter")
 		return
 	}
-	ids := splitCSV(value)
-	for _, id := range ids {
-		_ = s.queue.Resume(id) //nolint:errcheck // not-found silently ignored
+	for _, id := range splitCSV(value) {
+		_ = action(id) //nolint:errcheck // not-found silently ignored
 		if job, err := s.queue.Get(id); err == nil {
-			s.log.Info("job resumed", "job", id, "name", job.Name)
+			s.log.Info("job "+verb, "job", id, "name", job.Name)
 		}
 	}
 	respondStatus(w)
