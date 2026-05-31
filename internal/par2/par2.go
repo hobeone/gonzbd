@@ -162,6 +162,32 @@ func capsArgs(caps *Par2Caps, dir string) []string {
 // volPattern matches the volume suffix of a par2 filename, e.g. ".vol000+01".
 var volPattern = regexp.MustCompile(`(?i)\.vol\d+\+\d+$`)
 
+// recoveryVolumePattern matches the .volNNN+MM.par2 component anywhere in a
+// string. It is intentionally more permissive about surrounding context than
+// volPattern so that it works on raw NZB subject strings such as
+//
+//	[3/12] - "movie.vol000+01.par2" yEnc (1/42)
+//
+// where the filename is wrapped in yEnc tokens rather than appearing as a
+// clean basename.  The word-boundary (\b) after ".par2" anchors on the quote,
+// space, or end-of-string that follows in typical NZB subjects.
+var recoveryVolumePattern = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2\b`)
+
+// IsRecoveryVolume reports whether s refers to a par2 recovery volume
+// (e.g. "movie.vol000+01.par2") rather than the par2 index file
+// (e.g. "movie.par2").
+//
+// s may be a raw NZB subject string such as
+//
+//	[3/12] - "movie.vol000+01.par2" yEnc (1/42)
+//
+// and does not need to be a clean filename.  This is the primary difference
+// from the unexported isVolume helper, which strips the extension with
+// filepath.Ext and therefore only works on a clean basename.
+func IsRecoveryVolume(s string) bool {
+	return recoveryVolumePattern.MatchString(s)
+}
+
 // needMoreBlocksRE extracts the block count from par2's "You need N more
 // recovery blocks" message. Spec §7.3.
 var needMoreBlocksRE = regexp.MustCompile(`You need (\d+) more recovery block`)
