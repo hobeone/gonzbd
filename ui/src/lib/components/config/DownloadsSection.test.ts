@@ -15,6 +15,7 @@ describe('DownloadsSection', () => {
 			max_art_tries: 3,
 			top_only: false,
 			pre_check: true,
+			on_demand_par2: true,
 			replace_illegal_with: '_',
 			replace_spaces_with: '.',
 			strip_diacritics: true,
@@ -35,6 +36,7 @@ describe('DownloadsSection', () => {
 		expect(screen.getByText('Article Retries')).toBeInTheDocument();
 		expect(screen.getByText('Top-only server mode')).toBeInTheDocument();
 		expect(screen.getByText('Pre-check article availability')).toBeInTheDocument();
+		expect(screen.getByText('On-demand par2')).toBeInTheDocument();
 		expect(screen.getByText('Naming & Cleanup')).toBeInTheDocument();
 		expect(screen.getByText('Replace Illegal Characters With')).toBeInTheDocument();
 		expect(screen.getByText('Replace Spaces With')).toBeInTheDocument();
@@ -67,6 +69,7 @@ describe('DownloadsSection', () => {
 			{ keyword: 'max_art_tries',         inputId: 'downloads-max_art_tries',         newValue: '7'    },
 			{ keyword: 'top_only',               inputId: 'downloads-top_only',               newValue: '',    isSwitch: true },
 			{ keyword: 'pre_check',             inputId: 'downloads-pre_check',             newValue: '',    isSwitch: true },
+			{ keyword: 'on_demand_par2',        inputId: 'downloads-on_demand_par2',        newValue: '',    isSwitch: true },
 			{ keyword: 'replace_illegal_with',  inputId: 'downloads-replace_illegal_with',  newValue: '-'   },
 			{ keyword: 'replace_spaces_with',   inputId: 'downloads-replace_spaces_with',   newValue: '_'   },
 			{ keyword: 'strip_diacritics',      inputId: 'downloads-strip_diacritics',      newValue: '',    isSwitch: true },
