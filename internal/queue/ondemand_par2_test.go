@@ -151,6 +151,44 @@ func TestUndeferRecoveryVolumes(t *testing.T) {
 	}
 }
 
+func TestOnDemandPar2_EarlyUndeferOnFailure(t *testing.T) {
+	q := New()
+	job, err := NewJob(par2NZB(), AddOptions{Filename: "m.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatal(err)
+	}
+	if !q.SnapshotJob(job.ID).HasDeferredPar2() {
+		t.Fatal("precondition: recovery volume should start deferred")
+	}
+
+	// A content article permanently fails — proves repair will be needed.
+	if _, err := q.MarkArticlesFailed(job.ID, []string{"c@x"}); err != nil {
+		t.Fatal(err)
+	}
+	verifyPending(t, q, "after data-article failure")
+
+	snap := q.SnapshotJob(job.ID)
+	if snap.HasDeferredPar2() {
+		t.Error("recovery volume should be released early after a data-article failure")
+	}
+	if !snap.Par2Recovered {
+		t.Error("Par2Recovered should be set after early un-defer")
+	}
+	var found bool
+	q.ForEachUnfinishedArticle(func(a UnfinishedArticle) bool {
+		if a.MessageID == "v@x" {
+			found = true
+		}
+		return true
+	})
+	if !found {
+		t.Error("recovery article should be dispatchable after early un-defer")
+	}
+}
+
 func TestUndeferRecoveryVolumes_Edges(t *testing.T) {
 	q := New()
 	if err := q.UndeferRecoveryVolumes("missing", []int{0}); err == nil {
