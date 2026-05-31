@@ -54,6 +54,16 @@ func TestIsRecoveryVolume(t *testing.T) {
 			input: "movie.vol001+02.rar",
 			want:  false,
 		},
+		{
+			name:  "recovery volume with hyphen delimiter",
+			input: "movie.vol03-07.par2",
+			want:  true,
+		},
+		{
+			name:  "recovery volume with hyphen delimiter and uppercase",
+			input: "movie.VOL00-01.PAR2",
+			want:  true,
+		},
 	}
 
 	for _, tc := range tests {
