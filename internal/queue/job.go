@@ -40,6 +40,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -145,6 +146,12 @@ type Job struct {
 	// Par2Files is the count of par2 files in the NZB.
 	Par2Files int `json:"par2_files"`
 
+	// Par2Recovered is set once on-demand par2 has un-deferred the recovery
+	// volumes for this job (because CRC verification or a download failure
+	// indicated repair was needed). It guards the download-complete gate
+	// from re-deferring/re-verifying after the volumes arrive. Persisted.
+	Par2Recovered bool `json:"par2_recovered,omitempty"`
+
 	// PostProc is set to true when the job is handed off to the
 	// post-processor to prevent double-enqueuing.
 	PostProc bool `json:"post_proc,omitempty"`
@@ -244,10 +251,15 @@ func (j *Job) recomputePending() {
 	for fi := range j.Files {
 		n := 0
 		var downloaded int64
+		// Deferred files (on-demand par2 recovery volumes) are not dispatched,
+		// so they contribute zero pending work — but we still set FileIdx on
+		// their articles so the back-pointer is correct if they are later
+		// un-deferred and dispatched.
+		deferred := j.Files[fi].Deferred
 		for ai := range j.Files[fi].Articles {
 			art := &j.Files[fi].Articles[ai]
 			art.FileIdx = fi
-			if !art.Done && !art.Emitted {
+			if !deferred && !art.Done && !art.Emitted {
 				n++
 			}
 			if art.Done && !art.Failed {
@@ -288,6 +300,17 @@ type JobFile struct {
 	// by mutation methods and recomputed by recomputePending on load.
 	// Drives per-file progress in the UI's queue-row drawer.
 	BytesDownloaded int64 `json:"-"`
+
+	// IsPar2Recovery marks a par2 recovery volume (*.volNNN+MM.par2), as
+	// opposed to the par2 index file. Set at add-time. Persisted.
+	IsPar2Recovery bool `json:"is_par2_recovery,omitempty"`
+
+	// Deferred marks a file whose articles are intentionally held back from
+	// dispatch (on-demand par2: recovery volumes not downloaded until repair
+	// is shown to be needed). Deferred files have Pending == 0, are skipped
+	// by ForEachUnfinishedArticle, and do not block IsComplete. Cleared by
+	// UndeferRecoveryVolumes. Persisted so a restart remembers the hold.
+	Deferred bool `json:"deferred,omitempty"`
 }
 
 // JobArticle is a single NNTP article. The structural fields (ID,
@@ -348,6 +371,12 @@ type AddOptions struct {
 	// priority resolution decisions. Useful for diagnosing "why did this
 	// job get PP=0?" questions.
 	Logger *slog.Logger
+
+	// OnDemandPar2, when true, defers par2 recovery volumes at add-time so
+	// they are only downloaded if repair is later shown to be needed. The
+	// par2 index file is always downloaded. Set from
+	// config.DownloadConfig.OnDemandPar2 by the caller.
+	OnDemandPar2 bool
 }
 
 // NewJob converts parser output plus caller options into a runtime
@@ -447,11 +476,21 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 	job.Files = make([]JobFile, 0, len(parsed.Files))
 	for _, pf := range parsed.Files {
 		isPar2 := strings.Contains(strings.ToLower(pf.Subject), ".par2")
+		// A recovery volume (*.volNNN+MM.par2) carries redundancy; the par2
+		// index file (no volume suffix) carries the per-file checksums we
+		// need for verification and is therefore never deferred.
+		isRecovery := isPar2 && par2.IsRecoveryVolume(pf.Subject)
 		jf := JobFile{
-			Subject:  pf.Subject,
-			Date:     pf.Date,
-			Bytes:    pf.Bytes,
-			Articles: make([]JobArticle, 0, len(pf.Articles)),
+			Subject:        pf.Subject,
+			Date:           pf.Date,
+			Bytes:          pf.Bytes,
+			Articles:       make([]JobArticle, 0, len(pf.Articles)),
+			IsPar2Recovery: isRecovery,
+			// On-demand par2: hold recovery volumes back until repair is
+			// shown to be needed. RemainingBytes still counts them (they are
+			// part of the NZB) so the queue-progress denominator is unchanged;
+			// they simply aren't dispatched while Deferred.
+			Deferred: isRecovery && opts.OnDemandPar2,
 		}
 		for _, pa := range pf.Articles {
 			jf.Articles = append(jf.Articles, JobArticle{
@@ -472,13 +511,43 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 }
 
 // IsComplete returns true if all files in the job are marked complete.
+// Deferred files (on-demand par2 recovery volumes held back from download)
+// do not block completion — by design they are only fetched if repair is
+// needed, so a job whose non-deferred files are all complete is "downloaded".
 func (j *Job) IsComplete() bool {
 	for i := range j.Files {
+		if j.Files[i].Deferred {
+			continue
+		}
 		if !j.Files[i].Complete {
 			return false
 		}
 	}
 	return true
+}
+
+// HasDeferredPar2 reports whether the job currently has any deferred par2
+// recovery volume. Safe to call on a snapshot (no lock needed).
+func (j *Job) HasDeferredPar2() bool {
+	for i := range j.Files {
+		if j.Files[i].Deferred {
+			return true
+		}
+	}
+	return false
+}
+
+// DeferredRecoveryIndices returns the file indices of all currently-deferred
+// par2 recovery volumes. Phase 1 un-defers this full set on damage; Phase 2
+// selects a block-covering subset from it. Safe to call on a snapshot.
+func (j *Job) DeferredRecoveryIndices() []int {
+	var idxs []int
+	for i := range j.Files {
+		if j.Files[i].Deferred {
+			idxs = append(idxs, i)
+		}
+	}
+	return idxs
 }
 
 // deriveName strips directory components and the extension from path.
