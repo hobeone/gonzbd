@@ -159,10 +159,10 @@ func capsArgs(caps *Par2Caps, dir string) []string {
 	return args
 }
 
-// volPattern matches the volume suffix of a par2 filename, e.g. ".vol000+01".
-var volPattern = regexp.MustCompile(`(?i)\.vol\d+\+\d+$`)
+// volPattern matches the volume suffix of a par2 filename, e.g. ".vol000+01" or ".vol03-07".
+var volPattern = regexp.MustCompile(`(?i)\.vol\d+[-+]\d+$`)
 
-// recoveryVolumePattern matches the .volNNN+MM.par2 component anywhere in a
+// recoveryVolumePattern matches the .volNNN+MM.par2 or .volNNN-MM.par2 component anywhere in a
 // string. It is intentionally more permissive about surrounding context than
 // volPattern so that it works on raw NZB subject strings such as
 //
@@ -171,7 +171,7 @@ var volPattern = regexp.MustCompile(`(?i)\.vol\d+\+\d+$`)
 // where the filename is wrapped in yEnc tokens rather than appearing as a
 // clean basename.  The word-boundary (\b) after ".par2" anchors on the quote,
 // space, or end-of-string that follows in typical NZB subjects.
-var recoveryVolumePattern = regexp.MustCompile(`(?i)\.vol\d+\+\d+\.par2\b`)
+var recoveryVolumePattern = regexp.MustCompile(`(?i)\.vol\d+[-+]\d+\.par2\b`)
 
 // IsRecoveryVolume reports whether s refers to a par2 recovery volume
 // (e.g. "movie.vol000+01.par2") rather than the par2 index file
