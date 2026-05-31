@@ -977,13 +977,13 @@ func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger) bool
 			"dir", dir, "err", err)
 		return true
 	}
-	assembled := make([]par2.AssembledFile, 0, len(files))
-	for _, jf := range files {
-		assembled = append(assembled, par2.AssembledFile{
+	assembled := make([]par2.AssembledFile, len(files))
+	for i, jf := range files {
+		assembled[i] = par2.AssembledFile{
 			FileName: jf.Subject,
 			CRC32:    jf.AssembledCRC32,
 			FileSize: jf.Bytes,
-		})
+		}
 	}
 	r := par2.VerifyCRCs(assembled, sets, log)
 	return r.Mismatched+r.NoCRC+r.Unverified > 0
