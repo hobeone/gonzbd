@@ -992,6 +992,17 @@ func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger) (boo
 		}
 	}
 	r := par2.VerifyCRCs(assembled, sets, log)
+
+	// If none of our downloaded/assembled files are tracked by the PAR2 set,
+	// then the PAR2 set protects the extracted contents (Layout B)
+	// rather than the RAR files themselves. We cannot verify RARs
+	// against it, so we should skip fetching recovery volumes.
+	if r.Matched == 0 && r.Mismatched == 0 && r.NoCRC == 0 {
+		log.Info("on-demand par2: no downloaded files are tracked by the par2 index; skipping recovery volumes",
+			"dir", dir)
+		return false, ""
+	}
+
 	needsRepair := r.Mismatched+r.NoCRC+r.Unverified > 0
 	if !needsRepair {
 		return false, ""
