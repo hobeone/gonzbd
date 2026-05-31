@@ -152,6 +152,10 @@ type Job struct {
 	// from re-deferring/re-verifying after the volumes arrive. Persisted.
 	Par2Recovered bool `json:"par2_recovered,omitempty"`
 
+	// Par2ReleaseReason explains why deferred recovery volumes were released for
+	// download (e.g. CRC mismatch, missing index, active queue failure).
+	Par2ReleaseReason string `json:"par2_release_reason,omitempty"`
+
 	// PostProc is set to true when the job is handed off to the
 	// post-processor to prevent double-enqueuing.
 	PostProc bool `json:"post_proc,omitempty"`

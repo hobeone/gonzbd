@@ -798,6 +798,7 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 		// fire once; Par2Files>0 skips the scan for jobs without par2.
 		if !job.Par2Recovered && job.Par2Files > 0 {
 			if q.undeferRecoveryLocked(job, job.DeferredRecoveryIndices()) {
+				job.Par2ReleaseReason = "permanent article download failure detected on active queue"
 				q.log.Info("on-demand par2: download failure detected, releasing recovery volumes early", "job", jobID)
 			}
 		}
@@ -824,6 +825,19 @@ func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
 	q.undeferRecoveryLocked(job, fileIdxs)
+	return nil
+}
+
+// SetPar2ReleaseReason sets the Par2ReleaseReason field for the given job.
+func (q *Queue) SetPar2ReleaseReason(jobID string, reason string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	job.Par2ReleaseReason = reason
+	q.dirty.Store(true)
 	return nil
 }
 
