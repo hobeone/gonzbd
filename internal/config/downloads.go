@@ -41,6 +41,12 @@ type DownloadConfig struct {
 	// articles.
 	PreCheck bool `yaml:"pre_check" json:"pre_check"`
 
+	// OnDemandPar2 defers par2 recovery volumes (*.volNNN+MM.par2) and only
+	// downloads them if CRC verification shows the download needs repair. The
+	// par2 index file is always downloaded. Saves bandwidth on intact
+	// downloads. Default: true.
+	OnDemandPar2 bool `yaml:"on_demand_par2" json:"on_demand_par2"`
+
 	// PropagationDelay is the minutes to wait after a job is added
 	// before downloading begins, allowing articles to propagate to
 	// backup servers. 0 disables.

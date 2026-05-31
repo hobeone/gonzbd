@@ -143,9 +143,27 @@ export interface ScheduleConfig {
 	hour: string;
 	dayofweek: string;
 }
+export interface DownloadsConfig {
+	bandwidth_max: string;
+	bandwidth_perc: number;
+	min_free_space: string;
+	write_cache_size: string;
+	max_art_tries: number;
+	max_art_opt: number;
+	top_only: boolean;
+	no_penalties: boolean;
+	pre_check: boolean;
+	on_demand_par2: boolean;
+	propagation_delay: number;
+	replace_illegal_with: string;
+	replace_spaces_with: string;
+	strip_diacritics: boolean;
+	cleanup_list: string[];
+}
+
 export interface FullConfig {
 	general: Record<string, any>;
-	downloads: Record<string, any>;
+	downloads: DownloadsConfig;
 	postproc: Record<string, any>;
 	servers: ServerConfig[];
 	categories: CategoryConfig[];
