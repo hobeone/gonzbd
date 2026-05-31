@@ -75,4 +75,16 @@ func TestPar2NeedsRecovery(t *testing.T) {
 			t.Errorf("expected missing index reason, got: %q", reason)
 		}
 	})
+
+	t.Run("non-matching par2 set protects different files (Layout B) skips recovery", func(t *testing.T) {
+		dir := t.TempDir()
+		copyFixturePar2(t, dir) // protects data.bin
+		files := []queue.JobFile{
+			{Subject: "other.bin", AssembledCRC32: 0x99999999, Bytes: 100},
+			deferredVol,
+		}
+		if got, _ := par2NeedsRecovery(dir, files, log); got {
+			t.Error("par2 protecting different files must NOT trigger recovery-volume download")
+		}
+	})
 }
