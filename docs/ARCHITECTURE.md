@@ -63,7 +63,8 @@ Data flows through the system in a multi-stage pipeline designed for maximum con
 5.  **Pipeline Bridge**: As articles are downloaded, they are sent through a `pipeline` goroutine (in `internal/app/pipeline.go`).
 6.  **Decoding**: The `pipeline` decodes raw NNTP bodies (usually yEnc) using the `decoder`.
 7.  **Assembly**: Decoded parts are handed to the `assembler`, which writes them to their exact byte offset in the target file using `pwrite`. This allows for out-of-order assembly as segments arrive.
-8.  **Post-Processing**: Once all segments of a job are assembled, the job is handed to the `postproc` package, which runs a configurable chain of stages: repair (PAR2), unpack (RAR/7z/join), deobfuscate, user script, and finalize (move to complete directory). Sorting/renaming is intentionally not implemented — it is handled by external tools (Sonarr, Radarr, etc.).
+8.  **On-Demand PAR2 Gate** (optional, default on): when a job's non-deferred files are all assembled, if PAR2 recovery volumes were held back (see *On-Demand PAR2* below), the downloaded data is CRC-verified against the PAR2 index *before* post-processing. Clean ⇒ the job finalizes and the recovery volumes are never downloaded; damaged ⇒ the volumes are un-deferred and fetched via the normal download path, then completion fires again and proceeds to post-processing.
+9.  **Post-Processing**: Once all segments of a job are assembled, the job is handed to the `postproc` package, which runs a configurable chain of stages: repair (PAR2), unpack (RAR/7z/join), deobfuscate, user script, and finalize (move to complete directory). Sorting/renaming is intentionally not implemented — it is handled by external tools (Sonarr, Radarr, etc.).
 
 ### Concurrency Model
 
@@ -84,6 +85,17 @@ Unlike the original Python implementation's single-threaded selector loop, GoNZB
 - **Batched Updates**: To minimize lock contention on high-speed connections, the `Queue` supports batched updates for article completions (`MarkArticlesDone`, `MarkArticlesFailed`).
 - **O(1) Article Lookup**: The lazy `artIdx` map (built on first access via `articleByID`) provides O(1) article lookups by message-ID, avoiding linear scans. Transient fields like `Pending`, `PendingArticles`, `FileIdx`, and `Emitted` are `json:"-"` and recomputed on load via `recomputePending()`.
 - **Persistence**: Active job state is persisted as gzipped JSON files under `<AdminDir>/queue/jobs/` (one `<id>.json.gz` per job, plus a `queue.json.gz` index).
+
+### On-Demand PAR2 (`internal/queue`, `internal/app`, `internal/par2`)
+
+To save bandwidth, PAR2 **recovery volumes** (`*.volNNN+MM.par2`) are downloaded only when repair is actually needed. Controlled by `downloads.on_demand_par2` (default **on**). Design (full detail in `docs/on-demand-par2-plan.md`):
+
+- **Classification & deferral**: at add-time `NewJob` flags recovery volumes (`JobFile.IsPar2Recovery`, via `par2.IsRecoveryVolume`) and marks them `Deferred`. The PAR2 **index** file (no `volNNN+MM` suffix) is never deferred — it carries the per-file checksums used to verify. Both fields are persisted.
+- **Skipped during download**: deferred files have `Pending == 0`, are skipped by `ForEachUnfinishedArticle`, and do not block `IsComplete()` — so a job is "downloaded" once its non-deferred files finish.
+- **Decision = existing CRC oracle**: at download-complete (`handleFileComplete`), `par2NeedsRecovery` runs the same `par2.VerifyCRCs` check as the QuickCheck stage against the on-disk index. Repair is needed iff `Mismatched + NoCRC + Unverified > 0`; a missing/unusable index falls back to fetching all volumes.
+- **Re-activation is download→download, not postproc→download**: on damage, `UndeferRecoveryVolumes(jobID, fileIdxs)` clears `Deferred`, recomputes counters, sets `Par2Recovered` (guards re-firing), and wakes the dispatcher. The job becomes incomplete again and the *normal* download path fetches the volumes — no back-edge from post-processing.
+- **Early un-defer**: a permanent data-article failure during download releases the volumes immediately (`MarkArticlesFailed`), shrinking the window in which the volumes themselves could age off the server.
+- **Phasing**: Phase 1 fetches *all* recovery volumes on damage (the `fileIdxs` selection arg is the seam for Phase 2's block-exact subset selection).
 
 ### NNTP & Downloader (`internal/nntp`, `internal/downloader`)
 
