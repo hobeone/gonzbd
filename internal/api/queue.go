@@ -841,6 +841,7 @@ func (s *Server) enqueueNZBData(w http.ResponseWriter, r *http.Request, data []b
 		s.config.WithRead(func(cfg *config.Config) {
 			sOpts = cfg.Downloads.SanitizeOptions()
 			opts.Categories = cfg.Categories
+			opts.OnDemandPar2 = cfg.Downloads.OnDemandPar2
 		})
 	}
 	job, err := queue.NewJob(parsed, opts, sOpts)

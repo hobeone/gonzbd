@@ -511,7 +511,11 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 		}
 		for fi := range job.Files {
 			file := &job.Files[fi]
-			if file.Complete || file.Pending == 0 {
+			// Deferred files (on-demand par2 recovery volumes) are held back.
+			// They already have Pending == 0 (set by recomputePending), so the
+			// next check skips them too; the explicit guard documents intent
+			// and protects against future counter drift.
+			if file.Complete || file.Pending == 0 || file.Deferred {
 				continue
 			}
 			for ai := range file.Articles {
@@ -789,6 +793,45 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 		q.dirty.Store(true)
 	}
 	return firstTime, nil
+}
+
+// UndeferRecoveryVolumes clears the Deferred flag on the given file indices of
+// jobID, re-activating their articles for dispatch, and recomputes the pending
+// counters from ground truth. It sets Job.Par2Recovered so the on-demand
+// download-complete gate does not re-fire after the volumes arrive. Indices
+// that are out of range or not deferred are ignored. Returns ErrNotFound if
+// the job is absent.
+//
+// The fileIdxs argument is an explicit set so callers control the policy:
+// Phase 1 passes the full deferred set (Job.DeferredRecoveryIndices); Phase 2
+// passes a block-covering subset. The mutation, counter recomputation, and
+// completion semantics are identical for both.
+func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	changed := false
+	for _, fi := range fileIdxs {
+		if fi < 0 || fi >= len(job.Files) {
+			continue
+		}
+		if !job.Files[fi].Deferred {
+			continue
+		}
+		job.Files[fi].Deferred = false
+		changed = true
+	}
+	if changed {
+		job.Par2Recovered = true
+		// Rebuild Pending/PendingArticles from ground truth so the now-active
+		// files are dispatched. RemainingBytes already counted these bytes.
+		job.recomputePending()
+		q.dirty.Store(true)
+	}
+	return nil
 }
 
 // MarkFileComplete marks the file at fileIdx within jobID as fully assembled
