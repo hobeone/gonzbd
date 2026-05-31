@@ -31,6 +31,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/notifier"
+	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/unpack"
@@ -932,8 +933,60 @@ func (app *Application) handleFileComplete(fc FileComplete) {
 
 	snap := app.queue.SnapshotJob(fc.JobID)
 	if snap != nil && snap.IsComplete() {
+		// On-demand par2: before finalizing a job whose recovery volumes were
+		// held back, verify the downloaded data against the par2 index. If it
+		// verifies clean, finalize and skip the recovery volumes entirely
+		// (the bandwidth win). If repair is needed, un-defer the recovery
+		// volumes — the job becomes incomplete again and the normal download
+		// path fetches them, after which Par2Recovered short-circuits this
+		// gate and the job finalizes into post-processing as usual.
+		if snap.HasDeferredPar2() && !snap.Par2Recovered {
+			dir := filepath.Join(app.cfg.DownloadDir, snap.Name)
+			if par2NeedsRecovery(dir, snap.Files, app.log) {
+				idxs := snap.DeferredRecoveryIndices()
+				if err := app.queue.UndeferRecoveryVolumes(fc.JobID, idxs); err != nil {
+					app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
+						"job", fc.JobID, "err", err)
+				} else {
+					app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
+						"job", fc.JobID, "volumes", len(idxs))
+					app.emitter.Broadcast(Event{Type: "queue_updated"})
+					return // job is incomplete again; downloader fetches the volumes
+				}
+			} else {
+				app.log.Info("on-demand par2: verified clean, skipping recovery volumes",
+					"job", fc.JobID)
+			}
+		}
 		app.maybeFinalize(fc.JobID, failMsgForJob(snap))
 	}
+}
+
+// par2NeedsRecovery reports whether a completed job needs its deferred par2
+// recovery volumes downloaded for repair. It mirrors the post-processing
+// QuickCheck stage: it parses the par2 index files already on disk in dir and
+// compares them against the assembled CRC32s captured during download. Repair
+// is needed when any par2-tracked file is corrupt (Mismatched), failed to
+// download (NoCRC), or could not be matched (Unverified). When no usable par2
+// index is on disk (e.g. the index itself failed to download), it returns true
+// so the recovery volumes are fetched — the safe, today's-behaviour fallback.
+func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger) bool {
+	sets, err := par2.FindPar2Files(dir)
+	if err != nil || len(sets) == 0 {
+		log.Info("on-demand par2: no usable par2 index to verify against; fetching recovery volumes",
+			"dir", dir, "err", err)
+		return true
+	}
+	assembled := make([]par2.AssembledFile, 0, len(files))
+	for _, jf := range files {
+		assembled = append(assembled, par2.AssembledFile{
+			FileName: jf.Subject,
+			CRC32:    jf.AssembledCRC32,
+			FileSize: jf.Bytes,
+		})
+	}
+	r := par2.VerifyCRCs(assembled, sets, log)
+	return r.Mismatched+r.NoCRC+r.Unverified > 0
 }
 
 // drainCompletions processes all buffered events on internalFileComplete.
