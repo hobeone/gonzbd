@@ -86,9 +86,12 @@ already an almost-pure function (`files, sets, log`), so this is tractable.
 
 ## 4. Phasing
 
-Phases are built **sequentially but back-to-back** (Phase 2 follows Phase 1
-without a long gap). Phase 1 is still landed and tested on its own first so the
-state-machine changes are de-risked before block-exact selection is added.
+> **Status: Phase 1 shipped. Phase 2 evaluated and deliberately not built — see
+> §12 for the rationale.** The Phase 2 material below is retained as a design
+> record in case a future workload justifies revisiting it.
+
+Phase 1 was landed and tested on its own so the state-machine changes were
+de-risked independently of any block-exact selection work.
 
 ### Phase 1 (foundation)
 
@@ -372,10 +375,25 @@ the stage-log line is sufficient and requires no migration.
 - **Default: ON.** Recovery volumes are deferred by default; users opt out with
   `on_demand_par2: false`. Realised via `config.Default()` + the loader's
   seed-then-decode pattern (§9).
-- **Phasing: sequential but back-to-back.** Phase 1 lands and is tested on its
-  own (de-risks the state machine), then Phase 2 follows immediately.
 - **Index-par2-missing reliability gap is accepted**, mitigated by the
   fall-back-to-all-volumes branch (§8.1) and proactive early un-defer (§8.7).
+- **Phase 1 shipped; Phase 2 (block-exact) evaluated and deliberately NOT
+  built.** During implementation it became clear Phase 2's value is marginal
+  and conflicts with a Phase 1 safety property:
+  - Phase 1 already captures the dominant win — the common case is a *clean*
+    download, which now skips **all** recovery volumes.
+  - Block-exact "just enough" only helps *damaged* downloads (the minority),
+    and the most common damage cause (failed/missing articles) is already
+    handled by the early un-defer (§8.7) fetching **all** volumes to minimise
+    the aging window.
+  - So block-exact only bites on the rare "all articles arrived but a file's
+    CRC is wrong" case — unless the on-failure path is made to fetch "just
+    enough," which trades away the aging safety §8.7 provides.
+  Decision (user, after seeing this interaction): **stop at Phase 1.** If a
+  future workload proves to be dominated by silent corruption rather than
+  article failures, revisit — and if so, keep it download→download (size N from
+  `ParsePar2Set.SliceSize`, select a covering subset, fall back to un-defer-all
+  on any uncertainty) and do **not** add a postproc→download top-up loop.
 
 ## 13. Implementation order
 
@@ -404,7 +422,7 @@ the stage-log line is sufficient and requires no migration.
 8. `docs`: update `ARCHITECTURE.md` (par2/completion sections) and
    `sabnzbd_spec.md` if behaviour is spec-relevant.
 
-### Phase 2 commits (immediately following)
+### Phase 2 commits (NOT built — see §12; retained as a design record)
 
 9. `feat(par2)`: parse `volNNN+MM` block counts; greedy volume selection to
    cover a target block count.
