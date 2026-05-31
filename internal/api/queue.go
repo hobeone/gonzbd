@@ -86,30 +86,31 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 // Field names must match the Python build_queue response exactly so that
 // existing third-party clients (Sonarr, Radarr, etc.) parse them correctly.
 type queueSlot struct {
-	NzoID          string `json:"nzo_id"`
-	Filename       string `json:"filename"`
-	Name           string `json:"name"`
-	Category       string `json:"cat"`
-	Index          int    `json:"index"`
-	Priority       string `json:"priority"`
-	Status         string `json:"status"`
-	Script         string `json:"script"`
-	Password       string `json:"password"`
-	Size           string `json:"size"`
-	SizeLeft       string `json:"sizeleft"`
-	MB             string `json:"mb"`
-	MBLeft         string `json:"mbleft"`
-	Bytes          int64  `json:"bytes"`
-	RemainingBytes int64  `json:"remaining_bytes"`
-	Percentage     int    `json:"percentage"`
-	Timeleft       string `json:"timeleft"`
-	ETA            string `json:"eta"`
-	PP             string `json:"pp"`
-	Warning        string `json:"warning,omitempty"`
-	FailedBytes    int64  `json:"failed_bytes"`
-	Par2Bytes      int64  `json:"par2_bytes"`
-	Par2Files      int    `json:"par2_files"`
-	Par2Held       bool   `json:"par2_held,omitempty"`
+	NzoID             string `json:"nzo_id"`
+	Filename          string `json:"filename"`
+	Name              string `json:"name"`
+	Category          string `json:"cat"`
+	Index             int    `json:"index"`
+	Priority          string `json:"priority"`
+	Status            string `json:"status"`
+	Script            string `json:"script"`
+	Password          string `json:"password"`
+	Size              string `json:"size"`
+	SizeLeft          string `json:"sizeleft"`
+	MB                string `json:"mb"`
+	MBLeft            string `json:"mbleft"`
+	Bytes             int64  `json:"bytes"`
+	RemainingBytes    int64  `json:"remaining_bytes"`
+	Percentage        int    `json:"percentage"`
+	Timeleft          string `json:"timeleft"`
+	ETA               string `json:"eta"`
+	PP                string `json:"pp"`
+	Warning           string `json:"warning,omitempty"`
+	FailedBytes       int64  `json:"failed_bytes"`
+	Par2Bytes         int64  `json:"par2_bytes"`
+	Par2Files         int    `json:"par2_files"`
+	Par2Held          bool   `json:"par2_held,omitempty"`
+	Par2ReleaseReason string `json:"par2_release_reason,omitempty"`
 
 	// CurrentStage is a lowercase machine-readable stage identifier
 	// derived from Status (download, repair, unpack, sort, move, ...).
@@ -318,6 +319,7 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int) queueSlot {
 		ETASeconds:        etaSeconds,
 		CurrentFile:       firstIncompleteFile(j),
 		Par2Held:          j.HasDeferredPar2(),
+		Par2ReleaseReason: j.Par2ReleaseReason,
 	}
 }
 

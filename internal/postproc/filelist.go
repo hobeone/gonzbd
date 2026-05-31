@@ -64,7 +64,11 @@ func buildDownloadFileList(job *Job) []string {
 			heldVols, humanfmt.BytesSI(heldBytes)))
 	case recoveryVols > 0 && job.Queue.Par2Recovered:
 		// Volumes were un-deferred and fetched because repair was needed.
-		lines = append(lines, fmt.Sprintf("⚠ Par2: fetched %d recovery volume(s) for repair", recoveryVols))
+		reasonStr := ""
+		if job.Queue.Par2ReleaseReason != "" {
+			reasonStr = fmt.Sprintf(" (reason: %s)", job.Queue.Par2ReleaseReason)
+		}
+		lines = append(lines, fmt.Sprintf("⚠ Par2: fetched %d recovery volume(s) for repair%s", recoveryVols, reasonStr))
 	}
 
 	// Per-file download completion. Lets the user see exactly which files
