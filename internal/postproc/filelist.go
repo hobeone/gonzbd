@@ -34,6 +34,15 @@ func buildDownloadFileList(job *Job) []string {
 			float64(job.Queue.FailedBytes)/float64(job.Queue.TotalBytes)*100))
 	}
 
+	// Per-file download completion. Lets the user see exactly which files
+	// came up short and reconcile them against the failed-bytes total above
+	// (at post-processing time nothing is still pending, so any file below
+	// 100% is short because some of its articles failed). Percentages are
+	// derived from article byte sums rather than JobFile.Bytes so they are
+	// internally consistent: a file reads 100% only when every article
+	// downloaded successfully.
+	lines = append(lines, buildFileCompletionLines(job)...)
+
 	// Enumerate files in the download directory.
 	entries, err := os.ReadDir(job.DownloadDir)
 	if err != nil {
@@ -67,6 +76,68 @@ func buildDownloadFileList(job *Job) []string {
 	}
 
 	return lines
+}
+
+// buildFileCompletionLines produces one line per job file showing its
+// download completeness, plus a header summarising how many files are
+// incomplete. Complete files are marked "✓ … 100%"; short files are marked
+// "⚠ … N% (X of Y received)" so it is clear which files failed to download
+// in full. A short file is not necessarily a broken file — a later par2
+// repair stage may still recover it; this section reports download
+// completeness only.
+func buildFileCompletionLines(job *Job) []string {
+	files := job.Queue.Files
+	if len(files) == 0 {
+		return nil
+	}
+
+	incomplete := 0
+	fileLines := make([]string, 0, len(files))
+	for fi := range files {
+		f := &files[fi]
+		var downloaded, total int64
+		anyFailed := false
+		for ai := range f.Articles {
+			a := &f.Articles[ai]
+			total += int64(a.Bytes)
+			switch {
+			case a.Failed:
+				anyFailed = true
+			case a.Done:
+				downloaded += int64(a.Bytes)
+			}
+		}
+		pct := completionPct(downloaded, total)
+		if pct >= 100 && !anyFailed {
+			fileLines = append(fileLines, fmt.Sprintf("  ✓ %s — 100%% (%s)",
+				f.Subject, humanfmt.BytesSI(total)))
+			continue
+		}
+		incomplete++
+		fileLines = append(fileLines, fmt.Sprintf("  ⚠ %s — %d%% (%s of %s received)",
+			f.Subject, pct, humanfmt.BytesSI(downloaded), humanfmt.BytesSI(total)))
+	}
+
+	var header string
+	if incomplete > 0 {
+		header = fmt.Sprintf("File completion (%d of %d incomplete):", incomplete, len(files))
+	} else {
+		header = fmt.Sprintf("File completion (%d files, all complete):", len(files))
+	}
+	return append([]string{header}, fileLines...)
+}
+
+// completionPct returns the integer percentage (0-100) of total bytes that
+// downloaded successfully. It floors the result so a file missing any data
+// never rounds up to 100, and returns 0 when total is non-positive.
+func completionPct(downloaded, total int64) int {
+	if total <= 0 {
+		return 0
+	}
+	if downloaded >= total {
+		return 100
+	}
+	return int(float64(downloaded) / float64(total) * 100)
 }
 
 // buildFinalFileList creates a file listing of the job's final directory
