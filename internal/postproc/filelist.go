@@ -18,23 +18,7 @@ import (
 func buildDownloadFileList(job *Job) []string {
 	var lines []string
 
-	// Download duration header.
-	var dlDuration time.Duration
-	if !job.Queue.DownloadStarted.IsZero() && !job.Queue.DownloadFinished.IsZero() {
-		dlDuration = job.Queue.DownloadFinished.Sub(job.Queue.DownloadStarted)
-	}
-	lines = append(lines, fmt.Sprintf("Downloaded %s in %s",
-		humanfmt.BytesSI(job.Queue.TotalBytes),
-		humanfmt.Duration(dlDuration)))
-
-	// Failed/remaining bytes summary.
-	if job.Queue.FailedBytes > 0 {
-		lines = append(lines, fmt.Sprintf("⚠ %s failed (%.1f%%)",
-			humanfmt.BytesSI(job.Queue.FailedBytes),
-			float64(job.Queue.FailedBytes)/float64(job.Queue.TotalBytes)*100))
-	}
-
-	// On-demand par2 summary: were recovery volumes skipped (clean) or fetched (repair)?
+	// On-demand par2 stats: count skipped recovery volumes and bytes saved.
 	var heldVols, recoveryVols int
 	var heldBytes int64
 	for i := range job.Queue.Files {
@@ -48,6 +32,31 @@ func buildDownloadFileList(job *Job) []string {
 			heldBytes += f.Bytes
 		}
 	}
+
+	// Download duration header.
+	var dlDuration time.Duration
+	if !job.Queue.DownloadStarted.IsZero() && !job.Queue.DownloadFinished.IsZero() {
+		dlDuration = job.Queue.DownloadFinished.Sub(job.Queue.DownloadStarted)
+	}
+
+	if heldBytes > 0 {
+		lines = append(lines, fmt.Sprintf("Downloaded %s (saved %s on-demand) in %s",
+			humanfmt.BytesSI(job.Queue.TotalBytes-heldBytes),
+			humanfmt.BytesSI(heldBytes),
+			humanfmt.Duration(dlDuration)))
+	} else {
+		lines = append(lines, fmt.Sprintf("Downloaded %s in %s",
+			humanfmt.BytesSI(job.Queue.TotalBytes),
+			humanfmt.Duration(dlDuration)))
+	}
+
+	// Failed/remaining bytes summary.
+	if job.Queue.FailedBytes > 0 {
+		lines = append(lines, fmt.Sprintf("⚠ %s failed (%.1f%%)",
+			humanfmt.BytesSI(job.Queue.FailedBytes),
+			float64(job.Queue.FailedBytes)/float64(job.Queue.TotalBytes)*100))
+	}
+
 	switch {
 	case heldVols > 0:
 		// Still deferred at finalize => never downloaded => verified clean.
