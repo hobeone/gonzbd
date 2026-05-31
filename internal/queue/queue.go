@@ -791,6 +791,16 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 	if len(firstTime) > 0 {
 		q.log.Warn("articles marked FAILED", "job", jobID, "count", len(firstTime), "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
 		q.dirty.Store(true)
+		// On-demand par2: a permanent data-article failure proves this job
+		// will need repair. Release the deferred recovery volumes now — while
+		// the connection is live and the articles are freshest — rather than
+		// waiting for the download-complete verify. Par2Recovered guards it to
+		// fire once; Par2Files>0 skips the scan for jobs without par2.
+		if !job.Par2Recovered && job.Par2Files > 0 {
+			if q.undeferRecoveryLocked(job, job.DeferredRecoveryIndices()) {
+				q.log.Info("on-demand par2: download failure detected, releasing recovery volumes early", "job", jobID)
+			}
+		}
 	}
 	return firstTime, nil
 }
@@ -813,12 +823,19 @@ func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
+	q.undeferRecoveryLocked(job, fileIdxs)
+	return nil
+}
+
+// undeferRecoveryLocked clears Deferred on the given file indices of job. If
+// any file changed it marks Par2Recovered, recomputes pending counters from
+// ground truth (RemainingBytes already counted these bytes), and wakes the
+// dispatcher. Indices that are out of range or not deferred are ignored.
+// Must be called with q.mu held for writing. Returns true if anything changed.
+func (q *Queue) undeferRecoveryLocked(job *Job, fileIdxs []int) bool {
 	changed := false
 	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= len(job.Files) {
-			continue
-		}
-		if !job.Files[fi].Deferred {
+		if fi < 0 || fi >= len(job.Files) || !job.Files[fi].Deferred {
 			continue
 		}
 		job.Files[fi].Deferred = false
@@ -826,15 +843,11 @@ func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 	}
 	if changed {
 		job.Par2Recovered = true
-		// Rebuild Pending/PendingArticles from ground truth so the now-active
-		// files are dispatched. RemainingBytes already counted these bytes.
 		job.recomputePending()
 		q.dirty.Store(true)
-		// Wake the dispatcher so the re-activated articles are picked up
-		// immediately rather than on the next periodic tick.
 		q.notifyLocked()
 	}
-	return nil
+	return changed
 }
 
 // MarkFileComplete marks the file at fileIdx within jobID as fully assembled
