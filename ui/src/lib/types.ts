@@ -26,6 +26,7 @@ export interface QueueSlot {
 	articles_remaining: number;
 	eta_seconds: number;
 	current_file: string;
+	par2_held?: boolean;
 	files?: QueueFile[];
 }
 
@@ -33,7 +34,7 @@ export interface QueueFile {
 	name: string;
 	bytes: number;
 	bytes_downloaded: number;
-	state: 'queued' | 'downloading' | 'done' | 'failed';
+	state: 'queued' | 'downloading' | 'done' | 'failed' | 'held';
 }
 
 export interface QueueDetail {
