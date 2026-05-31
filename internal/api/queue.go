@@ -109,6 +109,7 @@ type queueSlot struct {
 	FailedBytes    int64  `json:"failed_bytes"`
 	Par2Bytes      int64  `json:"par2_bytes"`
 	Par2Files      int    `json:"par2_files"`
+	Par2Held       bool   `json:"par2_held,omitempty"`
 
 	// CurrentStage is a lowercase machine-readable stage identifier
 	// derived from Status (download, repair, unpack, sort, move, ...).
@@ -218,6 +219,9 @@ func firstIncompleteFile(j *queue.Job) string {
 // fires once any article in the file has completed; before that the
 // file is "queued". "failed" wins over "done" when any article failed.
 func fileState(f *queue.JobFile) string {
+	if f.Deferred {
+		return "held"
+	}
 	if f.Complete {
 		anyFailed := false
 		for ai := range f.Articles {
@@ -313,6 +317,7 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int) queueSlot {
 		ArticlesRemaining: j.PendingArticles,
 		ETASeconds:        etaSeconds,
 		CurrentFile:       firstIncompleteFile(j),
+		Par2Held:          j.HasDeferredPar2(),
 	}
 }
 
