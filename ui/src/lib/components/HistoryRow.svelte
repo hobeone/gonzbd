@@ -61,6 +61,36 @@
 		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 		return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 	}
+
+	// stageLineClass picks the Tailwind classes for a single stage-log line
+	// based on a leading marker. Classification is done on the trimStart()ed
+	// content so a marker keeps its color even on indented sub-items (e.g.
+	// the per-file "  ✓ …"/"  ⚠ …" completion lines, or an indented
+	// "old → new" rename); the literal indentation is preserved visually by
+	// the div's whitespace-pre-wrap. The plain-indent fallback is checked
+	// last so it only catches indented lines with no semantic marker — this
+	// is the ordering that previously mis-colored indented ✓/⚠/→ lines gray.
+	function stageLineClass(action: string): string {
+		const marker = action.trimStart();
+		if (marker.startsWith('Error:')) return 'text-red-600 dark:text-red-400 font-medium';
+		if (marker.startsWith('⚠')) return 'text-amber-600 dark:text-amber-400 font-medium';
+		if (marker.startsWith('✓')) return 'text-green-600 dark:text-green-400 font-medium';
+		if (marker.startsWith('Skipped:')) return 'text-yellow-600 dark:text-yellow-400 font-medium';
+		if (marker.startsWith('Running:')) return 'font-mono text-blue-600 dark:text-blue-400';
+		if (marker.startsWith('Pipeline')) return 'font-semibold text-gray-700 dark:text-gray-300';
+		if (marker.includes('→')) return 'text-emerald-600 dark:text-emerald-400';
+		if (
+			marker.startsWith('Files ') ||
+			marker.startsWith('Final ') ||
+			marker.startsWith('Downloaded ') ||
+			marker.startsWith('Servers:') ||
+			marker.startsWith('Total:')
+		)
+			return 'font-medium text-gray-700 dark:text-gray-300';
+		if (action.startsWith('  ') || action.startsWith('-  '))
+			return 'font-mono text-gray-600 dark:text-gray-400 pl-2';
+		return 'text-gray-500 dark:text-gray-400';
+	}
 </script>
 
 <tr class="border-b hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer text-gray-900 dark:text-gray-100" onclick={toggle}>
@@ -184,7 +214,7 @@
 											{#if action === ''}
 												<div class="h-1"></div>
 											{:else}
-												<div class="whitespace-pre-wrap text-xs {action.startsWith('Error:') ? 'text-red-600 dark:text-red-400 font-medium' : action.startsWith('⚠') ? 'text-amber-600 dark:text-amber-400 font-medium' : action.startsWith('Skipped:') ? 'text-yellow-600 dark:text-yellow-400 font-medium' : action.startsWith('Running:') ? 'font-mono text-blue-600 dark:text-blue-400' : action.startsWith('Pipeline') ? 'font-semibold text-gray-700 dark:text-gray-300' : action.startsWith('  ') || action.startsWith('-  ') ? 'font-mono text-gray-600 dark:text-gray-400 pl-2' : action.startsWith('✓') ? 'text-green-600 dark:text-green-400 font-medium' : action.includes('→') ? 'text-emerald-600 dark:text-emerald-400' : action.startsWith('Files ') || action.startsWith('Final ') || action.startsWith('Downloaded ') || action.startsWith('Servers:') || action.startsWith('Total:') ? 'font-medium text-gray-700 dark:text-gray-300' : 'text-gray-500 dark:text-gray-400'}">{action}</div>
+												<div class="whitespace-pre-wrap text-xs {stageLineClass(action)}">{action}</div>
 											{/if}
 										{/each}
 									</div>

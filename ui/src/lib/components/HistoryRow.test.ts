@@ -186,6 +186,39 @@ describe('HistoryRow', () => {
 		expect(container.textContent).toContain('All files are correct');
 	});
 
+	it('colors per-file completion markers even when indented', async () => {
+		const slot = {
+			...baseSlot,
+			stage_log: [
+				{
+					name: 'download',
+					actions: [
+						'File completion (1 of 2 incomplete):',
+						'  ✓ movie.mkv — 100% (1.3 GB)',
+						'  ⚠ extra.par2 — 66% (6.5 MiB of 9.9 MiB received)',
+						// Indented rename: same bug class — the marker (→) must
+						// win over the leading-whitespace fallback.
+						'  obfuscated.bin → Real.Name.mkv'
+					]
+				}
+			]
+		};
+		const { container } = render(HistoryRow, { slot, onremove: vi.fn() });
+		await fireEvent.click(container.querySelector('tr')!);
+
+		const divs = Array.from(container.querySelectorAll('div'));
+		const doneLine = divs.find((d) => d.textContent === '  ✓ movie.mkv — 100% (1.3 GB)');
+		const shortLine = divs.find(
+			(d) => d.textContent === '  ⚠ extra.par2 — 66% (6.5 MiB of 9.9 MiB received)'
+		);
+		const renameLine = divs.find((d) => d.textContent === '  obfuscated.bin → Real.Name.mkv');
+
+		expect(doneLine?.className).toContain('text-green-600');
+		expect(shortLine?.className).toContain('text-amber-600');
+		// Indented arrow line stays emerald instead of falling through to gray.
+		expect(renameLine?.className).toContain('text-emerald-600');
+	});
+
 	it('expanded view shows post-processing time when > 0', async () => {
 		const slot = { ...baseSlot, postproc_time: 45 };
 		const { container } = render(HistoryRow, { slot, onremove: vi.fn() });
