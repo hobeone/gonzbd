@@ -404,6 +404,20 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	return app, nil
 }
 
+// downloadCompleteness returns the percentage (0-100) of a job's bytes that
+// were successfully retrieved. failedBytes is the number of bytes that could
+// not be fetched from any configured server. Returns 0 when totalBytes is
+// non-positive (nothing downloaded) or when every byte failed.
+func downloadCompleteness(totalBytes, failedBytes int64) int64 {
+	if totalBytes <= 0 || failedBytes >= totalBytes {
+		return 0
+	}
+	if failedBytes < 0 {
+		failedBytes = 0
+	}
+	return int64(float64(totalBytes-failedBytes) / float64(totalBytes) * 100)
+}
+
 // finalizeJob is called by the post-processor when a job is done (success
 // or failure). It builds a history entry, persists the job payload for
 // retry support, writes to the history DB, removes the job from the
@@ -429,24 +443,13 @@ func (app *Application) finalizeJob(job *postproc.Job) {
 		postprocDuration += int64(se.Elapsed.Seconds())
 	}
 
-	// Compute article-level completion stats.
-	var totalArticles, doneArticles, failedArticles int
-	for fi := range job.Queue.Files {
-		for ai := range job.Queue.Files[fi].Articles {
-			totalArticles++
-			a := &job.Queue.Files[fi].Articles[ai]
-			if a.Done {
-				doneArticles++
-			} else if a.Failed {
-				failedArticles++
-			}
-		}
-	}
-	_ = failedArticles // tracked for future use (e.g. health score)
-	var completeness int64
-	if totalArticles > 0 {
-		completeness = int64((float64(doneArticles) / float64(totalArticles)) * 100)
-	}
+	// Download health: the fraction of bytes successfully retrieved.
+	// FailedBytes counts bytes that could not be fetched from any server
+	// (exhausted on all). This is deliberately byte-based rather than
+	// article-based: a failed article is marked both Done and Failed (Done
+	// means "resolved", not "succeeded"), so counting done articles would
+	// always report ~100% on a finished job regardless of missing data.
+	completeness := downloadCompleteness(job.Queue.TotalBytes, job.Queue.FailedBytes)
 	downloaded := job.Queue.TotalBytes - job.Queue.FailedBytes - job.Queue.RemainingBytes
 
 	serverStatsParts := make([]string, 0, len(job.Queue.ServerStats))
