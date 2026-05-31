@@ -40,7 +40,7 @@ func buildDownloadFileList(job *Job) []string {
 	}
 
 	if heldBytes > 0 {
-		lines = append(lines, fmt.Sprintf("Downloaded %s (saved %s on-demand) in %s",
+		lines = append(lines, fmt.Sprintf("Downloaded %s (saved %s by not downloading par2 files) in %s",
 			humanfmt.BytesSI(job.Queue.TotalBytes-heldBytes),
 			humanfmt.BytesSI(heldBytes),
 			humanfmt.Duration(dlDuration)))
