@@ -942,14 +942,16 @@ func (app *Application) handleFileComplete(fc FileComplete) {
 		// gate and the job finalizes into post-processing as usual.
 		if snap.HasDeferredPar2() && !snap.Par2Recovered {
 			dir := filepath.Join(app.cfg.DownloadDir, snap.Name)
-			if par2NeedsRecovery(dir, snap.Files, app.log) {
+			needsRecovery, reason := par2NeedsRecovery(dir, snap.Files, app.log)
+			if needsRecovery {
+				_ = app.queue.SetPar2ReleaseReason(fc.JobID, reason)
 				idxs := snap.DeferredRecoveryIndices()
 				if err := app.queue.UndeferRecoveryVolumes(fc.JobID, idxs); err != nil {
 					app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
 						"job", fc.JobID, "err", err)
 				} else {
 					app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
-						"job", fc.JobID, "volumes", len(idxs))
+						"job", fc.JobID, "volumes", len(idxs), "reason", reason)
 					app.emitter.Broadcast(Event{Type: "queue_updated"})
 					return // job is incomplete again; downloader fetches the volumes
 				}
@@ -970,12 +972,16 @@ func (app *Application) handleFileComplete(fc FileComplete) {
 // download (NoCRC), or could not be matched (Unverified). When no usable par2
 // index is on disk (e.g. the index itself failed to download), it returns true
 // so the recovery volumes are fetched — the safe, today's-behaviour fallback.
-func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger) bool {
+func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger) (bool, string) {
 	sets, err := par2.FindPar2Files(dir)
 	if err != nil || len(sets) == 0 {
+		reason := "no usable par2 index found to verify against"
+		if err != nil {
+			reason = fmt.Sprintf("no usable par2 index found (err: %v)", err)
+		}
 		log.Info("on-demand par2: no usable par2 index to verify against; fetching recovery volumes",
 			"dir", dir, "err", err)
-		return true
+		return true, reason
 	}
 	assembled := make([]par2.AssembledFile, len(files))
 	for i, jf := range files {
@@ -986,7 +992,31 @@ func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger) bool
 		}
 	}
 	r := par2.VerifyCRCs(assembled, sets, log)
-	return r.Mismatched+r.NoCRC+r.Unverified > 0
+	needsRepair := r.Mismatched+r.NoCRC+r.Unverified > 0
+	if !needsRepair {
+		return false, ""
+	}
+
+	var parts []string
+	if r.Mismatched > 0 {
+		var corruptFiles []string
+		for _, f := range r.Files {
+			if !f.Match {
+				corruptFiles = append(corruptFiles, f.FileName)
+			}
+		}
+		parts = append(parts, fmt.Sprintf("corruption/CRC mismatch in %d file(s) (%s)",
+			r.Mismatched, strings.Join(corruptFiles, ", ")))
+	}
+	if r.NoCRC > 0 {
+		parts = append(parts, fmt.Sprintf("failed download in %d file(s) (%s)",
+			r.NoCRC, strings.Join(r.NoCRCFiles, ", ")))
+	}
+	if r.Unverified > 0 {
+		parts = append(parts, fmt.Sprintf("%d file(s) unverified", r.Unverified))
+	}
+
+	return true, strings.Join(parts, "; ")
 }
 
 // drainCompletions processes all buffered events on internalFileComplete.
