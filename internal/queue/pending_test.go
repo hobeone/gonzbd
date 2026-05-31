@@ -18,9 +18,12 @@ func verifyPending(t *testing.T, q *Queue, label string) {
 		for fi := range job.Files {
 			wantFile := 0
 			var wantDownloaded int64
+			// Deferred files (on-demand par2) contribute zero pending work by
+			// design — mirror recomputePending's rule in the ground truth.
+			deferred := job.Files[fi].Deferred
 			for ai := range job.Files[fi].Articles {
 				art := &job.Files[fi].Articles[ai]
-				if !art.Done && !art.Emitted {
+				if !deferred && !art.Done && !art.Emitted {
 					wantFile++
 				}
 				if art.Done && !art.Failed {

@@ -620,7 +620,6 @@ func startScheduler(ctx context.Context, cfg *config.Config, q *queue.Queue, app
 	return nil
 }
 
-
 // composeRouter produces the outer HTTP handler that routes /api requests
 // to the API server, /debug/ to profiling/telemetry handlers, and
 // everything else to the web UI handler.
@@ -796,7 +795,7 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 		}
 	}()
 
-	job, rawNZB, err := loadJob(nzbPath)
+	job, rawNZB, err := loadJob(nzbPath, cfg.Downloads.OnDemandPar2)
 	if err != nil {
 		return fmt.Errorf("load NZB: %w", err)
 	}
@@ -867,7 +866,7 @@ done:
 	return nil
 }
 
-func loadJob(path string) (*queue.Job, []byte, error) {
+func loadJob(path string, onDemandPar2 bool) (*queue.Job, []byte, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: user-supplied NZB path is the whole point
 	if err != nil {
 		return nil, nil, err
@@ -877,7 +876,11 @@ func loadJob(path string) (*queue.Job, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: filepath.Base(path), PP: types.PPInherit}, fsutil.SanitizeOptions{})
+	job, err := queue.NewJob(parsed, queue.AddOptions{
+		Filename:     filepath.Base(path),
+		PP:           types.PPInherit,
+		OnDemandPar2: onDemandPar2,
+	}, fsutil.SanitizeOptions{})
 	return job, data, err
 }
 

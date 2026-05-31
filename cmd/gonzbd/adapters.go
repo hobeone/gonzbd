@@ -48,6 +48,7 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 		h.config.WithRead(func(cfg *config.Config) {
 			sOpts = cfg.Downloads.SanitizeOptions()
 			addOpts.Categories = cfg.Categories
+			addOpts.OnDemandPar2 = cfg.Downloads.OnDemandPar2
 		})
 	}
 	job, err := queue.NewJob(parsed, addOpts, sOpts)
