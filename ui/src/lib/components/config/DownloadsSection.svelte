@@ -26,6 +26,7 @@
 		<ConfigInput section="downloads" keyword="max_art_tries" label="Article Retries" type="number" value={configData.downloads.max_art_tries} description="Max attempts across all servers per article." onupdate={onFieldUpdate} />
 		<ConfigSwitch section="downloads" keyword="top_only" label="Top-only server mode" value={configData.downloads.top_only} description="Only use the highest-priority server group. Backup servers are never tried." onupdate={onFieldUpdate} />
 		<ConfigSwitch section="downloads" keyword="pre_check" label="Pre-check article availability" value={configData.downloads.pre_check} description="STAT check before download (saves bandwidth)." onupdate={onFieldUpdate} />
+		<ConfigSwitch section="downloads" keyword="on_demand_par2" label="On-demand par2" value={configData.downloads.on_demand_par2} description="Only download par2 recovery volumes if the download needs repair. The par2 index is always fetched. Saves bandwidth on intact downloads." onupdate={onFieldUpdate} />
 		<Separator class="my-4" />
 		<div>
 			<h4 class="text-sm font-medium">Naming & Cleanup</h4>
