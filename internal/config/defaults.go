@@ -64,6 +64,7 @@ func Default() (*Config, error) {
 			TopOnly:            false,
 			NoPenalties:        false,
 			PreCheck:           false,
+			OnDemandPar2:       true,
 			PropagationDelay:   0,
 			ReplaceIllegalWith: "_",
 			ReplaceSpacesWith:  "",
