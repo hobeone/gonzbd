@@ -95,6 +95,67 @@ func TestBuildFileCompletionLines(t *testing.T) {
 	})
 }
 
+func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
+	t.Run("clean: deferred volumes skipped", func(t *testing.T) {
+		dir := t.TempDir()
+		job := &Job{
+			DownloadDir: dir,
+			Queue: &queue.Job{
+				TotalBytes: 1000,
+				Files: []queue.JobFile{
+					{Subject: "release.rar", Articles: []queue.JobArticle{art(500, true, false)}},
+					{Subject: "x.vol000+01.par2", IsPar2Recovery: true, Deferred: true, Bytes: 500},
+				},
+			},
+		}
+		got := strings.Join(buildDownloadFileList(job), "\n")
+		if !strings.Contains(got, "✓ Par2: verified clean") {
+			t.Errorf("expected clean par2 line; got:\n%s", got)
+		}
+		if !strings.Contains(got, "skipped") {
+			t.Errorf("expected 'skipped' in par2 line; got:\n%s", got)
+		}
+	})
+
+	t.Run("fetched: repair was needed", func(t *testing.T) {
+		dir := t.TempDir()
+		job := &Job{
+			DownloadDir: dir,
+			Queue: &queue.Job{
+				TotalBytes:    1000,
+				Par2Recovered: true,
+				Files: []queue.JobFile{
+					{Subject: "release.rar", Articles: []queue.JobArticle{art(500, true, false)}},
+					{Subject: "x.vol000+01.par2", IsPar2Recovery: true, Deferred: false, Bytes: 500},
+				},
+			},
+		}
+		got := strings.Join(buildDownloadFileList(job), "\n")
+		if !strings.Contains(got, "⚠ Par2: fetched") {
+			t.Errorf("expected fetched par2 line; got:\n%s", got)
+		}
+	})
+
+	t.Run("off/normal: no on-demand, no summary line", func(t *testing.T) {
+		dir := t.TempDir()
+		job := &Job{
+			DownloadDir: dir,
+			Queue: &queue.Job{
+				TotalBytes:    1000,
+				Par2Recovered: false,
+				Files: []queue.JobFile{
+					{Subject: "release.rar", Articles: []queue.JobArticle{art(500, true, false)}},
+					{Subject: "x.vol000+01.par2", IsPar2Recovery: true, Deferred: false, Bytes: 500},
+				},
+			},
+		}
+		got := strings.Join(buildDownloadFileList(job), "\n")
+		if strings.Contains(got, "Par2:") {
+			t.Errorf("expected no Par2 summary line; got:\n%s", got)
+		}
+	})
+}
+
 // TestBuildDownloadFileListIncludesCompletion verifies the completion section
 // is added alongside (not replacing) the on-disk file listing.
 func TestBuildDownloadFileListIncludesCompletion(t *testing.T) {
