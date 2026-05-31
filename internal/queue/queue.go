@@ -830,6 +830,9 @@ func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 		// files are dispatched. RemainingBytes already counted these bytes.
 		job.recomputePending()
 		q.dirty.Store(true)
+		// Wake the dispatcher so the re-activated articles are picked up
+		// immediately rather than on the next periodic tick.
+		q.notifyLocked()
 	}
 	return nil
 }
