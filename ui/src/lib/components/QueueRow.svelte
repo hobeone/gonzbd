@@ -252,6 +252,7 @@
 			case 'done': return 'text-emerald-600 dark:text-emerald-400';
 			case 'failed': return 'text-red-600 dark:text-red-400';
 			case 'downloading': return 'text-blue-600 dark:text-blue-400';
+			case 'held': return 'text-slate-500 dark:text-slate-400';
 			default: return 'text-gray-500 dark:text-gray-400';
 		}
 	}
@@ -393,6 +394,11 @@
 				<span class="shrink-0 text-xs font-medium text-red-500 dark:text-red-400" title="Failed download bytes">
 					✗ {formatBytes(slot.failed_bytes)}
 				</span>
+			{/if}
+			{#if slot.par2_held}
+				<Badge variant="outline" class="shrink-0 text-xs text-slate-500 dark:text-slate-400 border-slate-300 dark:border-slate-600" title="Par2 recovery volumes are downloaded only if repair is needed">
+					par2 on-demand
+				</Badge>
 			{/if}
 		</div>
 	</td>

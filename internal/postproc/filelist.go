@@ -34,6 +34,30 @@ func buildDownloadFileList(job *Job) []string {
 			float64(job.Queue.FailedBytes)/float64(job.Queue.TotalBytes)*100))
 	}
 
+	// On-demand par2 summary: were recovery volumes skipped (clean) or fetched (repair)?
+	var heldVols, recoveryVols int
+	var heldBytes int64
+	for i := range job.Queue.Files {
+		f := &job.Queue.Files[i]
+		if !f.IsPar2Recovery {
+			continue
+		}
+		recoveryVols++
+		if f.Deferred {
+			heldVols++
+			heldBytes += f.Bytes
+		}
+	}
+	switch {
+	case heldVols > 0:
+		// Still deferred at finalize => never downloaded => verified clean.
+		lines = append(lines, fmt.Sprintf("✓ Par2: verified clean from index — %d recovery volume(s) skipped (saved %s)",
+			heldVols, humanfmt.BytesSI(heldBytes)))
+	case recoveryVols > 0 && job.Queue.Par2Recovered:
+		// Volumes were un-deferred and fetched because repair was needed.
+		lines = append(lines, fmt.Sprintf("⚠ Par2: fetched %d recovery volume(s) for repair", recoveryVols))
+	}
+
 	// Per-file download completion. Lets the user see exactly which files
 	// came up short and reconcile them against the failed-bytes total above
 	// (at post-processing time nothing is still pending, so any file below
