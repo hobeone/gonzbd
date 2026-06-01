@@ -322,146 +322,9 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			var err error
 			switch a.Type {
 			case unpack.RarArchive:
-				// Dispatch order:
-				// 1. use_go_rar → use GoUnRAR (pure-Go, no external binary)
-				//    → on failure, fall back to unrar subprocess if available
-				// 2. unrar available → use unrar subprocess
-				// 3. unrar not found → fall back to GoUnRAR
-				useGoRAR := opts.UseGoRAR
-
-				if !useGoRAR {
-					// Check if unrar is available.
-					unrarBin := opts.UnrarCommand
-					if unrarBin == "" {
-						unrarBin = "unrar"
-					}
-					if _, lookErr := exec.LookPath(unrarBin); lookErr != nil {
-						useGoRAR = true // unrar not found, fall back to GoUnRAR
-						logf(log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_unrar", unrarBin)
-					}
-				}
-
-				if useGoRAR {
-					logf(log, job, slog.LevelInfo, "Using go_unrar for RAR (pure-Go)")
-					goOpts := opts
-					goOpts.OnLine = func(line string) {
-						if job.OnOutput != nil {
-							job.OnOutput("go_unrar", line)
-						}
-					}
-					res, err = unpack.GoUnRARWithPasswords(ctx, log, a, job.DownloadDir, goOpts)
-
-					// Fallback: if Go-native extraction failed and the
-					// external unrar binary is available, retry with it.
-					// rarengine only supports RAR5; RAR3/4 and some
-					// encrypted formats require the external binary.
-					// Gated on GoRarFallback so users can disable the retry.
-					if goErr := cmp.Or(err, res.Err); goErr != nil && opts.GoRarFallback {
-						unrarBin := opts.UnrarCommand
-						if unrarBin == "" {
-							unrarBin = "unrar"
-						}
-						if _, lookErr := exec.LookPath(unrarBin); lookErr == nil {
-							logf(log, job, slog.LevelWarn,
-								"go_unrar failed (%v), retrying with external %s", goErr, unrarBin)
-							if job.OnOutput != nil {
-								job.OnOutput("go_unrar",
-									fmt.Sprintf("Go-native extraction failed: %v — retrying with %s", goErr, unrarBin))
-							}
-							unrarOpts := opts
-							unrarOpts.OnLine = func(line string) {
-								if job.OnOutput != nil {
-									job.OnOutput("unrar", line)
-								}
-							}
-							unrarOpts.OnCommand = func(cmdLine string) {
-								logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
-							}
-							res, err = unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
-						}
-					}
-				} else {
-					unrarOpts := opts
-					unrarOpts.OnLine = func(line string) {
-						if job.OnOutput != nil {
-							job.OnOutput("unrar", line)
-						}
-					}
-					unrarOpts.OnCommand = func(cmdLine string) {
-						logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
-					}
-					res, err = unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
-				}
+				res, err = extractRARArchive(ctx, log, job, a, opts)
 			case unpack.SevenZipArchive:
-				// Dispatch order:
-				// 1. use_go_7z → use GoSevenZip (pure-Go, no external binary)
-				//    → on failure, fall back to 7z subprocess if available
-				// 2. 7z available → use 7z subprocess
-				// 3. 7z not found → fall back to GoSevenZip
-				useGo7z := opts.UseGo7z
-
-				if !useGo7z {
-					// Check if 7z is available.
-					szBin := opts.SevenZipCommand
-					if szBin == "" {
-						szBin = "7zz"
-					}
-					if _, lookErr := exec.LookPath(szBin); lookErr != nil {
-						// Try the alternate name.
-						if _, lookErr2 := exec.LookPath("7z"); lookErr2 != nil {
-							useGo7z = true // 7z not found, fall back to GoSevenZip
-							logf(log, job, slog.LevelInfo, "7z binary not found in PATH, falling back to go_7z")
-						}
-					}
-				}
-
-				if useGo7z {
-					logf(log, job, slog.LevelInfo, "Using go_7z for 7-Zip (pure-Go)")
-					goOpts := opts
-					goOpts.OnLine = func(line string) {
-						if job.OnOutput != nil {
-							job.OnOutput("go_7z", line)
-						}
-					}
-					res, err = unpack.GoSevenZipWithPasswords(ctx, log, a, job.DownloadDir, goOpts)
-
-					// Fallback: if Go-native extraction failed and the
-					// external 7z binary is available, retry with it.
-					// Gated on Go7zFallback so users can disable the retry.
-					if goErr := cmp.Or(err, res.Err); goErr != nil && opts.Go7zFallback {
-						szBin := find7zBin(opts.SevenZipCommand)
-						if szBin != "" {
-							logf(log, job, slog.LevelWarn,
-								"go_7z failed (%v), retrying with external %s", goErr, szBin)
-							if job.OnOutput != nil {
-								job.OnOutput("go_7z",
-									fmt.Sprintf("Go-native extraction failed: %v — retrying with %s", goErr, szBin))
-							}
-							szOpts := opts
-							szOpts.SevenZipCommand = szBin
-							szOpts.OnLine = func(line string) {
-								if job.OnOutput != nil {
-									job.OnOutput("7z", line)
-								}
-							}
-							szOpts.OnCommand = func(cmdLine string) {
-								logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
-							}
-							res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
-						}
-					}
-				} else {
-					szOpts := opts
-					szOpts.OnLine = func(line string) {
-						if job.OnOutput != nil {
-							job.OnOutput("7z", line)
-						}
-					}
-					szOpts.OnCommand = func(cmdLine string) {
-						logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
-					}
-					res, err = unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
-				}
+				res, err = extractSevenZipArchive(ctx, log, job, a, opts)
 			case unpack.SplitArchive:
 				if !enableFileJoin {
 					logf(log, job, slog.LevelInfo, "Skipping file join (disabled): %s", filepath.Base(a.MainFile))
@@ -538,6 +401,151 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	return firstErr
+}
+
+// extractRARArchive dispatches a single RAR archive to either GoUnRAR
+// (pure-Go) or the external unrar binary, following the same priority order
+// as SABnzbd:
+//
+//  1. use_go_rar → GoUnRAR; fall back to unrar subprocess on failure
+//  2. unrar available → unrar subprocess
+//  3. unrar not in PATH → GoUnRAR
+func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options) (unpack.Result, error) {
+	useGoRAR := opts.UseGoRAR
+	if !useGoRAR {
+		unrarBin := opts.UnrarCommand
+		if unrarBin == "" {
+			unrarBin = "unrar"
+		}
+		if _, lookErr := exec.LookPath(unrarBin); lookErr != nil {
+			useGoRAR = true
+			logf(log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_unrar", unrarBin)
+		}
+	}
+
+	if !useGoRAR {
+		unrarOpts := opts
+		unrarOpts.OnLine = func(line string) {
+			if job.OnOutput != nil {
+				job.OnOutput("unrar", line)
+			}
+		}
+		unrarOpts.OnCommand = func(cmdLine string) {
+			logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+		}
+		return unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
+	}
+
+	logf(log, job, slog.LevelInfo, "Using go_unrar for RAR (pure-Go)")
+	goOpts := opts
+	goOpts.OnLine = func(line string) {
+		if job.OnOutput != nil {
+			job.OnOutput("go_unrar", line)
+		}
+	}
+	res, err := unpack.GoUnRARWithPasswords(ctx, log, a, job.DownloadDir, goOpts)
+
+	// Fallback: if Go-native extraction failed and the external unrar binary
+	// is available, retry with it. rarengine only supports RAR5; RAR3/4 and
+	// some encrypted formats require the external binary.
+	// Gated on GoRarFallback so users can disable the retry.
+	if goErr := cmp.Or(err, res.Err); goErr != nil && opts.GoRarFallback {
+		unrarBin := opts.UnrarCommand
+		if unrarBin == "" {
+			unrarBin = "unrar"
+		}
+		if _, lookErr := exec.LookPath(unrarBin); lookErr == nil {
+			logf(log, job, slog.LevelWarn,
+				"go_unrar failed (%v), retrying with external %s", goErr, unrarBin)
+			if job.OnOutput != nil {
+				job.OnOutput("go_unrar",
+					fmt.Sprintf("Go-native extraction failed: %v — retrying with %s", goErr, unrarBin))
+			}
+			unrarOpts := opts
+			unrarOpts.OnLine = func(line string) {
+				if job.OnOutput != nil {
+					job.OnOutput("unrar", line)
+				}
+			}
+			unrarOpts.OnCommand = func(cmdLine string) {
+				logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+			}
+			return unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
+		}
+	}
+	return res, err
+}
+
+// extractSevenZipArchive dispatches a single 7-Zip archive to either
+// GoSevenZip (pure-Go) or the external 7z binary, following the same
+// priority order as SABnzbd:
+//
+//  1. use_go_7z → GoSevenZip; fall back to 7z subprocess on failure
+//  2. 7z available → 7z subprocess
+//  3. 7z not in PATH → GoSevenZip
+func extractSevenZipArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options) (unpack.Result, error) {
+	useGo7z := opts.UseGo7z
+	if !useGo7z {
+		szBin := opts.SevenZipCommand
+		if szBin == "" {
+			szBin = "7zz"
+		}
+		if _, lookErr := exec.LookPath(szBin); lookErr != nil {
+			if _, lookErr2 := exec.LookPath("7z"); lookErr2 != nil {
+				useGo7z = true
+				logf(log, job, slog.LevelInfo, "7z binary not found in PATH, falling back to go_7z")
+			}
+		}
+	}
+
+	if !useGo7z {
+		szOpts := opts
+		szOpts.OnLine = func(line string) {
+			if job.OnOutput != nil {
+				job.OnOutput("7z", line)
+			}
+		}
+		szOpts.OnCommand = func(cmdLine string) {
+			logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+		}
+		return unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
+	}
+
+	logf(log, job, slog.LevelInfo, "Using go_7z for 7-Zip (pure-Go)")
+	goOpts := opts
+	goOpts.OnLine = func(line string) {
+		if job.OnOutput != nil {
+			job.OnOutput("go_7z", line)
+		}
+	}
+	res, err := unpack.GoSevenZipWithPasswords(ctx, log, a, job.DownloadDir, goOpts)
+
+	// Fallback: if Go-native extraction failed and the external 7z binary
+	// is available, retry with it. Gated on Go7zFallback so users can
+	// disable the retry.
+	if goErr := cmp.Or(err, res.Err); goErr != nil && opts.Go7zFallback {
+		szBin := find7zBin(opts.SevenZipCommand)
+		if szBin != "" {
+			logf(log, job, slog.LevelWarn,
+				"go_7z failed (%v), retrying with external %s", goErr, szBin)
+			if job.OnOutput != nil {
+				job.OnOutput("go_7z",
+					fmt.Sprintf("Go-native extraction failed: %v — retrying with %s", goErr, szBin))
+			}
+			szOpts := opts
+			szOpts.SevenZipCommand = szBin
+			szOpts.OnLine = func(line string) {
+				if job.OnOutput != nil {
+					job.OnOutput("7z", line)
+				}
+			}
+			szOpts.OnCommand = func(cmdLine string) {
+				logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+			}
+			return unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
+		}
+	}
+	return res, err
 }
 
 // applyPermissions walks dir recursively and applies the given octal

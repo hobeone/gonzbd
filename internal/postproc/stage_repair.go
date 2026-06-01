@@ -181,60 +181,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 
 			// Dispatch: native par2engine vs external par2 binary.
 			// Follows the same pattern as GoUnRAR/UnRAR in stage_unpack.go.
-			var res par2.RepairResult
-			useGoPar2 := useGoPar2Val
-
-			if !useGoPar2 {
-				// Check if external par2 binary is available.
-				par2Bin := repairOpts.Command
-				if par2Bin == "" {
-					par2Bin = "par2"
-				}
-				if _, lookErr := exec.LookPath(par2Bin); lookErr != nil {
-					useGoPar2 = true // external not found, fall back to native
-					logf(log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_par2", par2Bin)
-				}
-			}
-
-			if useGoPar2 {
-				logf(log, job, slog.LevelInfo, "Using go_par2 for PAR2 (native Go)")
-				res, err = par2.GoRepair(ctx, log, main, job.DownloadDir, func(line string) {
-					log.Info(line)
-					if job.OnOutput != nil {
-						job.OnOutput("par2", line)
-					}
-				})
-
-				// Fallback: if native repair failed or returned a non-success
-				// result, retry with the external par2 binary if available.
-				// GoRepair returns err=nil for logical failures like
-				// insufficient blocks (NeedMoreBlocks=true) — the fallback
-				// must check both err and !res.Success so those cases also
-				// reach the external tool, which may succeed where the Go
-				// library gave a false negative.
-				// Gated on GoPar2Fallback so users can disable the retry.
-				if (err != nil || !res.Success) && goPar2FallbackVal {
-					par2Bin := repairOpts.Command
-					if par2Bin == "" {
-						par2Bin = "par2"
-					}
-					if _, lookErr := exec.LookPath(par2Bin); lookErr == nil {
-						reason := "non-success result"
-						if err != nil {
-							reason = err.Error()
-						}
-						logf(log, job, slog.LevelWarn,
-							"go_par2 result not successful (%s), retrying with external %s", reason, par2Bin)
-						if job.OnOutput != nil {
-							job.OnOutput("go_par2",
-								fmt.Sprintf("Native repair result: %s — retrying with external %s", reason, par2Bin))
-						}
-						res, err = par2.RepairWith(ctx, repairOpts, main, dataFiles...)
-					}
-				}
-			} else {
-				res, err = par2.RepairWith(ctx, repairOpts, main, dataFiles...)
-			}
+			res, err := dispatchRepairTool(ctx, log, job, main, dataFiles, repairOpts, useGoPar2Val, goPar2FallbackVal)
 			// Capture par2 tool output for the stage log.
 			job.OutputLines = append(job.OutputLines,
 				fmt.Sprintf("[par2] %s", set.Name))
@@ -299,49 +246,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 					firstErr = fmt.Errorf("repair %q: unsuccessful (exit=%d)", set.Name, res.ExitCode)
 				}
 			} else {
-				vs.MarkVerified(set.Name, true)
-				logf(log, job, slog.LevelInfo, "Par2 repair %q succeeded", set.Name)
-				// M7: record par2 files as consumed for cleanup protection.
-				if job.ConsumedFiles == nil {
-					job.ConsumedFiles = make(map[string]struct{})
-				}
-				if set.MainFile != "" {
-					job.ConsumedFiles[set.MainFile] = struct{}{}
-				}
-				for _, ef := range set.ExtraFiles {
-					job.ConsumedFiles[ef] = struct{}{}
-				}
-
-				// I1: Wire par2 renames to Job for downstream deobfuscation.
-				// Matches SABnzbd's nzo.renamed_file(renames) in par2cmdline_verify.
-				if res.Parsed != nil && len(res.Parsed.Renames) > 0 {
-					if job.Par2Renames == nil {
-						job.Par2Renames = make(map[string]string)
-					}
-					for canonical, onDisk := range res.Parsed.Renames {
-						job.Par2Renames[canonical] = onDisk
-						logf(log, job, slog.LevelInfo, "Par2 rename: %q → %q", onDisk, canonical)
-					}
-				}
-
-				// I2: Wire used_joinables and used_for_repair into
-				// ConsumedFiles to prevent premature cleanup deletion.
-				// Matches SABnzbd's used_joinables/used_for_repair tracking.
-				if res.Parsed != nil {
-					for _, jf := range res.Parsed.UsedJoinables {
-						absPath := filepath.Join(job.DownloadDir, jf)
-						job.ConsumedFiles[absPath] = struct{}{}
-					}
-					for _, rf := range res.Parsed.UsedForRepair {
-						absPath := filepath.Join(job.DownloadDir, rf)
-						job.ConsumedFiles[absPath] = struct{}{}
-					}
-					if n := len(res.Parsed.UsedJoinables) + len(res.Parsed.UsedForRepair); n > 0 {
-						logf(log, job, slog.LevelInfo,
-							"Par2 consumed %d joinable(s) + %d repair source(s) → protected from cleanup",
-							len(res.Parsed.UsedJoinables), len(res.Parsed.UsedForRepair))
-					}
-				}
+				recordRepairSuccess(log, set, job, vs, res)
 			}
 		}
 	} else {
@@ -349,6 +254,119 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	return firstErr
+}
+
+// dispatchRepairTool selects and runs either the native Go par2engine or the
+// external par2 binary, with optional fallback. It mirrors the
+// GoUnRAR/UnRAR dispatch pattern in stage_unpack.go.
+func dispatchRepairTool(
+	ctx context.Context,
+	log *slog.Logger,
+	job *Job,
+	main string,
+	dataFiles []string,
+	repairOpts par2.RunOptions,
+	useGoPar2, fallback bool,
+) (par2.RepairResult, error) {
+	if !useGoPar2 {
+		par2Bin := repairOpts.Command
+		if par2Bin == "" {
+			par2Bin = "par2"
+		}
+		if _, lookErr := exec.LookPath(par2Bin); lookErr != nil {
+			useGoPar2 = true // external not found, fall back to native
+			logf(log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_par2", par2Bin)
+		}
+	}
+
+	if !useGoPar2 {
+		return par2.RepairWith(ctx, repairOpts, main, dataFiles...)
+	}
+
+	logf(log, job, slog.LevelInfo, "Using go_par2 for PAR2 (native Go)")
+	res, err := par2.GoRepair(ctx, log, main, job.DownloadDir, func(line string) {
+		log.Info(line)
+		if job.OnOutput != nil {
+			job.OnOutput("par2", line)
+		}
+	})
+
+	// Fallback: if native repair failed or returned a non-success result,
+	// retry with the external par2 binary if available.
+	// GoRepair returns err=nil for logical failures like insufficient blocks
+	// (NeedMoreBlocks=true) — fallback must check both err and !res.Success.
+	// Gated on fallback so users can disable the retry.
+	if (err != nil || !res.Success) && fallback {
+		par2Bin := repairOpts.Command
+		if par2Bin == "" {
+			par2Bin = "par2"
+		}
+		if _, lookErr := exec.LookPath(par2Bin); lookErr == nil {
+			reason := "non-success result"
+			if err != nil {
+				reason = err.Error()
+			}
+			logf(log, job, slog.LevelWarn,
+				"go_par2 result not successful (%s), retrying with external %s", reason, par2Bin)
+			if job.OnOutput != nil {
+				job.OnOutput("go_par2",
+					fmt.Sprintf("Native repair result: %s — retrying with external %s", reason, par2Bin))
+			}
+			return par2.RepairWith(ctx, repairOpts, main, dataFiles...)
+		}
+	}
+	return res, err
+}
+
+// recordRepairSuccess updates job state after a successful par2 repair:
+// marks the set verified, records consumed par2 files, wires renames for
+// downstream deobfuscation, and protects joinables and repair sources from
+// premature cleanup deletion.
+func recordRepairSuccess(log *slog.Logger, set par2.Set, job *Job, vs *VerifiedSets, res par2.RepairResult) {
+	vs.MarkVerified(set.Name, true)
+	logf(log, job, slog.LevelInfo, "Par2 repair %q succeeded", set.Name)
+
+	// M7: record par2 files as consumed for cleanup protection.
+	if job.ConsumedFiles == nil {
+		job.ConsumedFiles = make(map[string]struct{})
+	}
+	if set.MainFile != "" {
+		job.ConsumedFiles[set.MainFile] = struct{}{}
+	}
+	for _, ef := range set.ExtraFiles {
+		job.ConsumedFiles[ef] = struct{}{}
+	}
+
+	if res.Parsed == nil {
+		return
+	}
+
+	// I1: Wire par2 renames to Job for downstream deobfuscation.
+	// Matches SABnzbd's nzo.renamed_file(renames) in par2cmdline_verify.
+	if len(res.Parsed.Renames) > 0 {
+		if job.Par2Renames == nil {
+			job.Par2Renames = make(map[string]string)
+		}
+		for canonical, onDisk := range res.Parsed.Renames {
+			job.Par2Renames[canonical] = onDisk
+			logf(log, job, slog.LevelInfo, "Par2 rename: %q → %q", onDisk, canonical)
+		}
+	}
+
+	// I2: Wire used_joinables and used_for_repair into ConsumedFiles to
+	// prevent premature cleanup deletion. Matches SABnzbd's
+	// used_joinables/used_for_repair tracking.
+	for _, jf := range res.Parsed.UsedJoinables {
+		job.ConsumedFiles[filepath.Join(job.DownloadDir, jf)] = struct{}{}
+	}
+	for _, rf := range res.Parsed.UsedForRepair {
+		job.ConsumedFiles[filepath.Join(job.DownloadDir, rf)] = struct{}{}
+	}
+	if n := len(res.Parsed.UsedJoinables) + len(res.Parsed.UsedForRepair); n > 0 {
+		logf(log, job, slog.LevelInfo,
+			"Par2 consumed %d joinable(s) + %d repair source(s) → protected from cleanup",
+			len(res.Parsed.UsedJoinables), len(res.Parsed.UsedForRepair))
+	}
 }
 
 // par2BackupRe matches files that par2 creates as backups during repair:
