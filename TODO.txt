@@ -1,6 +1,0 @@
-Examine the end 2 end integration tests and ensure all of the new functionality
-is covered by these tests.  Add more if necessary.
-
-
-Rerun the analysis from earlier and compare the fixes you have made to the original handling of Sabnzbd: /learn everything you can about ../sabnzbd/sabnzbd/newsunpack.py and document how
-  sabnzbd interacts with external commands, the options it sets and why.  Then examine gonzbd to find where we need to align to the same usage and where we are missing config options
