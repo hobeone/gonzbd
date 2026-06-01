@@ -70,6 +70,27 @@ func TestBuildFileCompletionLines(t *testing.T) {
 		}
 	})
 
+	t.Run("deferred par2 files are marked as not downloaded and omit from incomplete", func(t *testing.T) {
+		job := &Job{Queue: &queue.Job{
+			Files: []queue.JobFile{
+				{Subject: "movie.mkv", Articles: []queue.JobArticle{art(100, true, false)}},
+				{Subject: "extra.par2", IsPar2Recovery: true, Deferred: true, Bytes: 1000},
+			},
+		}}
+		lines := buildFileCompletionLines(job)
+		joined := strings.Join(lines, "\n")
+
+		if !strings.Contains(joined, "File completion (2 files, all complete):") {
+			t.Errorf("expected all-complete header since deferred is not counted as incomplete; got:\n%s", joined)
+		}
+		if !strings.Contains(joined, "  - extra.par2 — not downloaded") {
+			t.Errorf("expected deferred file to be listed as not downloaded; got:\n%s", joined)
+		}
+		if strings.Contains(joined, "⚠") {
+			t.Errorf("no file should be flagged as incomplete; got:\n%s", joined)
+		}
+	})
+
 	t.Run("all complete", func(t *testing.T) {
 		job := &Job{Queue: &queue.Job{
 			Files: []queue.JobFile{
