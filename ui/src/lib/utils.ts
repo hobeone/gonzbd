@@ -49,3 +49,25 @@ export type WithElementRef<T> = T & { ref?: HTMLElement | null };
 export type WithoutChildrenOrChild<T> = Omit<T, 'children' | 'child'>;
 
 export type WithoutChild<T> = Omit<T, 'child'>;
+
+export function getRedirectUrl(res: Response, requestedUrl: string): string | null {
+	if (!res || !res.url) return null;
+
+	const reqURL = new URL(requestedUrl, window.location.origin);
+	const resURL = new URL(res.url);
+
+	const crossOriginRedirect = resURL.origin !== reqURL.origin;
+	const sameOriginAuthRedirect = res.redirected && !resURL.pathname.startsWith('/api');
+
+	if (crossOriginRedirect || sameOriginAuthRedirect) {
+		const targetURL = new URL(res.url);
+		for (const [key, value] of targetURL.searchParams.entries()) {
+			if (value.includes('/api')) {
+				targetURL.searchParams.set(key, window.location.href);
+			}
+		}
+		return targetURL.href;
+	}
+	return null;
+}
+
