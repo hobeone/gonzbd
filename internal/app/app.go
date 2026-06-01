@@ -422,9 +422,19 @@ func downloadCompleteness(totalBytes, failedBytes int64) int64 {
 // This was extracted from the OnJobDone closure in New() to make the
 // history-entry construction and notification logic independently testable.
 func (app *Application) finalizeJob(job *postproc.Job) {
-	log := app.log
+	entry := buildHistoryEntry(job)
+	if err := app.persistAndCommit(app.log, entry, job); err != nil {
+		return
+	}
+	app.fireCompletionNotification(entry)
+}
 
+// buildHistoryEntry is a pure function that computes the history.Entry for a
+// completed post-processing job. It reads only from job and produces no side
+// effects, making it independently testable.
+func buildHistoryEntry(job *postproc.Job) history.Entry {
 	stageLogJSON, _ := json.Marshal(job.StageLog)
+
 	var downloadDuration int64
 	if !job.Queue.DownloadStarted.IsZero() && !job.Queue.DownloadFinished.IsZero() {
 		downloadDuration = int64(job.Queue.DownloadFinished.Sub(job.Queue.DownloadStarted).Seconds())
@@ -433,50 +443,43 @@ func (app *Application) finalizeJob(job *postproc.Job) {
 		downloadDuration = 1
 	}
 
-	// Compute post-processing duration from stage log.
 	var postprocDuration int64
 	for _, se := range job.StageLog {
 		postprocDuration += int64(se.Elapsed.Seconds())
 	}
 
-	// Download health: the fraction of bytes successfully retrieved.
-	// FailedBytes counts bytes that could not be fetched from any server
-	// (exhausted on all). This is deliberately byte-based rather than
-	// article-based: a failed article is marked both Done and Failed (Done
-	// means "resolved", not "succeeded"), so counting done articles would
-	// always report ~100% on a finished job regardless of missing data.
+	// Download health: byte-based rather than article-based because a failed
+	// article is marked both Done and Failed (Done = resolved, not succeeded).
 	completeness := downloadCompleteness(job.Queue.TotalBytes, job.Queue.FailedBytes)
 	downloaded := job.Queue.TotalBytes - job.Queue.FailedBytes - job.Queue.RemainingBytes
 
-	serverStatsParts := make([]string, 0, len(job.Queue.ServerStats))
-	// Sort keys for deterministic output in history entries.
+	// Sort server names for deterministic output in history entries.
 	serverNames := make([]string, 0, len(job.Queue.ServerStats))
 	for s := range job.Queue.ServerStats {
 		serverNames = append(serverNames, s)
 	}
 	slices.Sort(serverNames)
+	serverStatsParts := make([]string, 0, len(serverNames))
 	for _, s := range serverNames {
 		b := job.Queue.ServerStats[s]
 		serverStatsParts = append(serverStatsParts, fmt.Sprintf("%s=%.1f MB", s, float64(b)/(1024*1024)))
 	}
-	serverStats := strings.Join(serverStatsParts, ", ")
-	repairSummary := ""
-	for _, stageEntry := range job.StageLog {
-		if stageEntry.Stage == "repair" {
-			if stageEntry.Err != nil {
-				repairSummary = fmt.Sprintf("Repair failed: %v", stageEntry.Err)
+
+	repairSummary := "No repair needed"
+	for _, se := range job.StageLog {
+		if se.Stage == "repair" {
+			if se.Err != nil {
+				repairSummary = fmt.Sprintf("Repair failed: %v", se.Err)
 			} else {
 				repairSummary = "Repair OK"
-				if len(stageEntry.Lines) > 0 {
-					repairSummary = stageEntry.Lines[0]
+				if len(se.Lines) > 0 {
+					repairSummary = se.Lines[0]
 				}
 			}
 			break
 		}
 	}
-	if repairSummary == "" {
-		repairSummary = "No repair needed"
-	}
+
 	entry := history.Entry{
 		Completed:    time.Now(),
 		Name:         job.Queue.Name,
@@ -494,16 +497,21 @@ func (app *Application) finalizeJob(job *postproc.Job) {
 		Completeness: completeness,
 		TimeAdded:    job.Queue.Added,
 		URLInfo:      repairSummary,
-		Meta:         serverStats,
+		Meta:         strings.Join(serverStatsParts, ", "),
 	}
 	if job.ParError || job.UnpackError || job.FailMsg != "" {
 		entry.Status = "Failed"
 		entry.FailMessage = job.FailMsg
 		entry.Path = job.DownloadDir
 	}
-	// Save the full job payload first — RetryHistoryJob needs
-	// this file to re-enqueue. If this fails, don't commit
-	// to the DB or remove from queue.
+	return entry
+}
+
+// persistAndCommit saves the job payload to disk, writes the history entry to
+// the database, removes the job from the queue, and broadcasts the finalization
+// events. Returns a non-nil error if persistence failed and the job was kept in
+// the queue for recovery (the error is already logged; callers can simply return).
+func (app *Application) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
 	histJobsDir := filepath.Join(app.cfg.AdminDir, "history", "jobs")
 	if err := os.MkdirAll(histJobsDir, 0o750); err != nil {
 		log.Warn("failed to create history jobs dir", "err", err)
@@ -513,7 +521,7 @@ func (app *Application) finalizeJob(job *postproc.Job) {
 		log.Error("failed to save final job state; keeping job in queue",
 			"job", job.Queue.ID, "err", err)
 		app.emitter.Broadcast(Event{Type: "queue_updated"})
-		return
+		return err
 	}
 	if app.historyRepo != nil {
 		dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -521,11 +529,9 @@ func (app *Application) finalizeJob(job *postproc.Job) {
 			log.Error("failed to add history entry; keeping job in queue for recovery",
 				"job", job.Queue.ID, "err", err)
 			dbCancel()
-			// Clean up the orphaned payload file.
-			_ = os.Remove(jobPath)
-			// Don't remove from queue — the job stays recoverable.
+			_ = os.Remove(jobPath) // clean up the orphaned payload file
 			app.emitter.Broadcast(Event{Type: "queue_updated"})
-			return
+			return err
 		}
 		dbCancel()
 	}
@@ -536,30 +542,34 @@ func (app *Application) finalizeJob(job *postproc.Job) {
 	case app.postProcComplete <- PostProcComplete{JobID: job.Queue.ID}:
 	default:
 	}
-	// job_finalized signals a queue→history transition: both
-	// stores subscribe to it and refresh from a single trigger,
-	// so they reach the new state together.
+	// job_finalized signals a queue→history transition so both stores
+	// refresh from a single trigger and reach the new state together.
 	app.emitter.Broadcast(Event{Type: "job_finalized", NzoID: job.Queue.ID})
+	return nil
+}
 
-	// Fire notification event with a bounded timeout so a
-	// misbehaving sink can't hang the postproc worker forever.
-	if app.notifyDispatcher != nil {
-		evtType := notifier.PostProcessingComplete
-		title := "Download completed"
-		if entry.Status == "Failed" {
-			evtType = notifier.PostProcessingFailed
-			title = "Download failed"
-		}
-		notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		app.notifyDispatcher.Dispatch(notifyCtx, notifier.Event{
-			Type:      evtType,
-			Title:     title,
-			Body:      entry.Name,
-			JobName:   entry.Name,
-			Timestamp: time.Now(),
-		})
-		notifyCancel()
+// fireCompletionNotification sends a push notification for a finished job.
+// Runs with a bounded context so a slow notification sink can't block the
+// postproc worker indefinitely.
+func (app *Application) fireCompletionNotification(entry history.Entry) {
+	if app.notifyDispatcher == nil {
+		return
 	}
+	evtType := notifier.PostProcessingComplete
+	title := "Download completed"
+	if entry.Status == "Failed" {
+		evtType = notifier.PostProcessingFailed
+		title = "Download failed"
+	}
+	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	app.notifyDispatcher.Dispatch(notifyCtx, notifier.Event{
+		Type:      evtType,
+		Title:     title,
+		Body:      entry.Name,
+		JobName:   entry.Name,
+		Timestamp: time.Now(),
+	})
+	notifyCancel()
 }
 
 // Queue returns the application's download queue.
@@ -928,35 +938,42 @@ func (app *Application) handleFileComplete(fc FileComplete) {
 
 	snap := app.queue.SnapshotJob(fc.JobID)
 	if snap != nil && snap.IsComplete() {
-		// On-demand par2: before finalizing a job whose recovery volumes were
-		// held back, verify the downloaded data against the par2 index. If it
-		// verifies clean, finalize and skip the recovery volumes entirely
-		// (the bandwidth win). If repair is needed, un-defer the recovery
-		// volumes — the job becomes incomplete again and the normal download
-		// path fetches them, after which Par2Recovered short-circuits this
-		// gate and the job finalizes into post-processing as usual.
-		if snap.HasDeferredPar2() && !snap.Par2Recovered {
-			dir := filepath.Join(app.cfg.DownloadDir, snap.Name)
-			needsRecovery, reason := par2NeedsRecovery(dir, snap.Files, app.log)
-			if needsRecovery {
-				_ = app.queue.SetPar2ReleaseReason(fc.JobID, reason)
-				idxs := snap.DeferredRecoveryIndices()
-				if err := app.queue.UndeferRecoveryVolumes(fc.JobID, idxs); err != nil {
-					app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
-						"job", fc.JobID, "err", err)
-				} else {
-					app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
-						"job", fc.JobID, "volumes", len(idxs), "reason", reason)
-					app.emitter.Broadcast(Event{Type: "queue_updated"})
-					return // job is incomplete again; downloader fetches the volumes
-				}
-			} else {
-				app.log.Info("on-demand par2: verified clean, skipping recovery volumes",
-					"job", fc.JobID)
-			}
+		if app.maybeReleaseRecoveryVolumes(fc.JobID, snap) {
+			return // downloader will fetch recovery volumes
 		}
 		app.maybeFinalize(fc.JobID, failMsgForJob(snap))
 	}
+}
+
+// maybeReleaseRecoveryVolumes checks whether a completed job with deferred par2
+// recovery volumes needs repair. If so it un-defers the volumes, broadcasts a
+// queue update, and returns true — the caller must not finalize yet (the
+// downloader will fetch the volumes and trigger another completion event).
+//
+// Returns false when: there are no deferred volumes, the data verifies clean,
+// or un-deferral itself fails (in which case we fall through to finalize without
+// recovery volumes, matching the pre-on-demand-par2 behaviour).
+func (app *Application) maybeReleaseRecoveryVolumes(jobID string, snap *queue.Job) bool {
+	if !snap.HasDeferredPar2() || snap.Par2Recovered {
+		return false
+	}
+	dir := filepath.Join(app.cfg.DownloadDir, snap.Name)
+	needsRecovery, reason := par2NeedsRecovery(dir, snap.Files, app.log)
+	if !needsRecovery {
+		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
+		return false
+	}
+	_ = app.queue.SetPar2ReleaseReason(jobID, reason)
+	idxs := snap.DeferredRecoveryIndices()
+	if err := app.queue.UndeferRecoveryVolumes(jobID, idxs); err != nil {
+		app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",
+			"job", jobID, "err", err)
+		return false
+	}
+	app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
+		"job", jobID, "volumes", len(idxs), "reason", reason)
+	app.emitter.Broadcast(Event{Type: "queue_updated"})
+	return true
 }
 
 // par2NeedsRecovery reports whether a completed job needs its deferred par2
