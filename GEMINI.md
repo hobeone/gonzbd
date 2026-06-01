@@ -178,6 +178,16 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 - **Batch large deletions to avoid unbounded transactions.** Deleting thousands of history records in a single `DELETE ... WHERE id IN (...)` can lock the database. Use chunked deletes with a reasonable batch size.
 
+### 7. Code Complexity & Hotspot Refactoring
+
+These rules are established from real hotspots targeted by repowise. They ensure cyclomatic complexity remains low, allowing standard linter checks and manual reviews to succeed easily.
+
+- **Simplify Multi-Strategy Fallbacks**: When a method implements multiple fallback, validation, or conditional path strategies (like CSRF `isCrossOrigin` or complex auth logic), extract each strategy into its own focused helper (e.g. `isRefererCrossOrigin`). This drops the parent method's cyclomatic complexity (CCN) and enables targeted, isolated testing.
+
+- **Consolidate Subsystem Boilerplates**: Avoid duplicating decoder setups, channel progress monitoring goroutines, and panic recovery setups across adjacent methods (like `GoVerify` and `GoRepair`). Consolidate these into unified helper methods (e.g. `newDecoderForDir`, `monitorProgress`). This ensures setup bug-fixes propagate globally.
+
+- **Isolate Parsing & Normalization**: Keep primary decoding handlers (like config `decode`) concise. Extract error-type partitioning loops (like parsing `yaml.TypeError`) and struct normalizations (like assigning defaults or converting nil slices) into dedicated helpers.
+
 ### 6. Performance & Hot-Path Discipline
 
 These rules were learned from production pprof profiling at 2 Gbps. The download pipeline processes ~330 articles/second; any per-article overhead multiplies fast.
