@@ -1,0 +1,246 @@
+package postproc
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/unpack"
+)
+
+// unpackFixture returns the absolute path to a file in the shared
+// unpack testdata directory. Go tests run with cwd = package directory,
+// so "../unpack/testdata" is stable and trimpath-safe.
+func unpackFixture(name string) string {
+	return filepath.Join("..", "unpack", "testdata", name)
+}
+
+// copyToDir copies src to dstDir/baseName and returns the destination path.
+func copyToDir(t *testing.T, src, dstDir string) string {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read %s: %v", src, err)
+	}
+	dst := filepath.Join(dstDir, filepath.Base(src))
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		t.Fatalf("write %s: %v", dst, err)
+	}
+	return dst
+}
+
+// enabledUnpackStage builds an UnpackStage that is enabled and uses
+// pure-Go RAR extraction so tests run without an external unrar binary.
+func enabledUnpackStage() *UnpackStage {
+	s := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, false)
+	s.SetEnabled(true)
+	return s
+}
+
+// ---------- Extraction path tests ----------
+
+// TestUnpackStage_ExtractSingleRarGoMode verifies the GoRAR extraction path:
+// a healthy single-volume RAR is extracted and the job has no UnpackError.
+func TestUnpackStage_ExtractSingleRarGoMode(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
+
+	if err := enabledUnpackStage().Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if job.UnpackError {
+		t.Error("UnpackError = true; want false")
+	}
+	// At least the three files from single_rar5.rar must be present after extraction.
+	for _, name := range []string{"file1.txt", "file2.txt"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("extracted file %s not found: %v", name, err)
+		}
+	}
+}
+
+// TestUnpackStage_CleanupDeletesArchiveParts verifies that when cleanup is
+// enabled, the source RAR file is deleted after successful extraction.
+func TestUnpackStage_CleanupDeletesArchiveParts(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	rarPath := copyToDir(t, unpackFixture("single_rar5.rar"), dir)
+
+	s := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true /* cleanup */)
+	s.SetEnabled(true)
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := os.Stat(rarPath); !os.IsNotExist(err) {
+		t.Errorf("archive still exists after cleanup: want removed, got %v", err)
+	}
+}
+
+// TestUnpackStage_CorruptRarGoMode verifies that extracting a corrupt RAR
+// sets job.UnpackError and returns an error.
+func TestUnpackStage_CorruptRarGoMode(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	copyToDir(t, unpackFixture("corrupt.rar"), dir)
+
+	if err := enabledUnpackStage().Run(t.Context(), job); err == nil {
+		t.Fatal("expected error for corrupt RAR, got nil")
+	}
+	if !job.UnpackError {
+		t.Error("UnpackError = false; want true for corrupt RAR")
+	}
+}
+
+// TestUnpackStage_DirectUnpackPrePopulated verifies that RAR parts from
+// DirectUnpackSets are included in allSuccessful so cleanup can remove them.
+func TestUnpackStage_DirectUnpackPrePopulated(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+
+	// Create a fake RAR part on disk (content doesn't matter; cleanup just os.Remove it).
+	fakePart := filepath.Join(dir, "movie.part01.rar")
+	if err := os.WriteFile(fakePart, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write fake part: %v", err)
+	}
+
+	job.DirectUnpackSets = map[string]directunpack.SuccessSet{
+		"movie": {
+			RarParts:       []string{fakePart},
+			ExtractedFiles: []string{filepath.Join(dir, "movie.mkv")},
+		},
+	}
+
+	s := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true /* cleanup */)
+	s.SetEnabled(true)
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Cleanup must have deleted the fake part that DirectUnpack recorded.
+	if _, err := os.Stat(fakePart); !os.IsNotExist(err) {
+		t.Errorf("DirectUnpack part %s still on disk after cleanup", fakePart)
+	}
+}
+
+// TestUnpackStage_DisabledSkips verifies that a disabled stage returns nil
+// immediately and sets no error flags on the job.
+func TestUnpackStage_DisabledSkips(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
+
+	s := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, false)
+	// deliberately NOT calling s.SetEnabled(true)
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if job.UnpackError {
+		t.Error("UnpackError set on disabled stage")
+	}
+	// The archive must still be present (stage did nothing).
+	if _, err := os.Stat(filepath.Join(dir, "single_rar5.rar")); err != nil {
+		t.Errorf("archive removed even though stage is disabled: %v", err)
+	}
+}
+
+// ---------- applyPermissions helper ----------
+
+// TestApplyPermissions_SetsFileModeOnFiles verifies that applyPermissions
+// applies the given mode to files (execute bits stripped) and directories
+// (full mode).
+func TestApplyPermissions_SetsFileModeOnFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "sub")
+	if err := os.Mkdir(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(dir, "data.txt")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := applyPermissions(dir, "755")
+	if err != nil {
+		t.Fatalf("applyPermissions: %v", err)
+	}
+	if count == 0 {
+		t.Error("count = 0; want > 0")
+	}
+
+	fi, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Regular files must have execute bits stripped: 0755 → 0644.
+	if got := fi.Mode().Perm(); got != 0o644 {
+		t.Errorf("file mode = %04o; want 0644", got)
+	}
+
+	di, err := os.Stat(subDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := di.Mode().Perm(); got != 0o755 {
+		t.Errorf("dir mode = %04o; want 0755", got)
+	}
+}
+
+// TestApplyPermissions_BadPermString verifies that an invalid octal string
+// returns an error.
+func TestApplyPermissions_BadPermString(t *testing.T) {
+	t.Parallel()
+
+	_, err := applyPermissions(t.TempDir(), "not-octal")
+	if err == nil {
+		t.Error("expected error for bad perm string, got nil")
+	}
+}
+
+// ---------- archiveTypePriority helper ----------
+
+// TestArchiveTypePriority_SplitFirst verifies the sort invariant:
+// SplitArchive < RarArchive < SevenZipArchive.
+// SABnzbd requires file-join to run before RAR extraction in the same pass
+// so that joined output can be immediately extracted.
+func TestArchiveTypePriority_SplitFirst(t *testing.T) {
+	t.Parallel()
+
+	if archiveTypePriority(unpack.SplitArchive) >= archiveTypePriority(unpack.RarArchive) {
+		t.Error("SplitArchive priority must be less than RarArchive")
+	}
+	if archiveTypePriority(unpack.RarArchive) >= archiveTypePriority(unpack.SevenZipArchive) {
+		t.Error("RarArchive priority must be less than SevenZipArchive")
+	}
+}
+
+// TestArchiveTypeName_KnownTypes verifies that each archive type maps to the
+// correct tool name used in stage log output.
+func TestArchiveTypeName_KnownTypes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		at   unpack.ArchiveType
+		want string
+	}{
+		{unpack.RarArchive, "unrar"},
+		{unpack.SevenZipArchive, "7zip"},
+		{unpack.SplitArchive, "filejoin"},
+		{unpack.UnknownArchive, "unpack"},
+	}
+	for _, tc := range cases {
+		if got := archiveTypeName(tc.at); got != tc.want {
+			t.Errorf("archiveTypeName(%v) = %q, want %q", tc.at, got, tc.want)
+		}
+	}
+}
