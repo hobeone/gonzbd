@@ -42,6 +42,51 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// partitionYAMLErrors splits errors from the YAML decoder. Unknown field errors
+// are returned as warnings (unknowns), whereas type mismatches or other syntax
+// issues are returned as a fatal error.
+func partitionYAMLErrors(err error) (unknowns []string, fatal error) {
+	if errors.Is(err, io.EOF) {
+		return nil, nil
+	}
+	te, ok := errors.AsType[*yaml.TypeError](err)
+	if !ok {
+		return nil, err
+	}
+	var fatals []string
+	for _, msg := range te.Errors {
+		if strings.Contains(msg, "not found in type") {
+			unknowns = append(unknowns, msg)
+		} else {
+			fatals = append(fatals, msg)
+		}
+	}
+	if len(fatals) > 0 {
+		return unknowns, &yaml.TypeError{Errors: fatals}
+	}
+	return unknowns, nil
+}
+
+// applyNormalization sets sticky defaults for critical settings and normalizes
+// nil slices to empty arrays to ensure correct JSON/YAML serialization.
+func (cfg *Config) applyNormalization() {
+	if cfg.Downloads.ReplaceIllegalWith == "" {
+		cfg.Downloads.ReplaceIllegalWith = "_"
+	}
+	if len(cfg.Downloads.CleanupList) == 0 {
+		cfg.Downloads.CleanupList = DefaultCleanupList
+	}
+	if cfg.Servers == nil {
+		cfg.Servers = []ServerConfig{}
+	}
+	if cfg.Categories == nil {
+		cfg.Categories = []CategoryConfig{}
+	}
+	if cfg.Schedules == nil {
+		cfg.Schedules = []ScheduleConfig{}
+	}
+}
+
 // decode is split out so tests can decode from in-memory buffers without
 // touching disk.
 //
@@ -73,51 +118,18 @@ func decode(r io.Reader) (*Config, []string, error) {
 			// Empty file — return defaults.
 			return cfg, nil, nil
 		}
-		// yaml.TypeError collects all decode problems. Partition them:
-		// unknown-field errors ("field X not found in type T") are demoted
-		// to warnings because they arise from removed or future config keys.
-		// All other errors (type mismatches, bad YAML syntax) remain fatal.
-		if te, ok := errors.AsType[*yaml.TypeError](err); ok {
-			var unknowns, fatal []string
-			for _, msg := range te.Errors {
-				if strings.Contains(msg, "not found in type") {
-					unknowns = append(unknowns, msg)
-				} else {
-					fatal = append(fatal, msg)
-				}
-			}
-			if len(fatal) > 0 {
-				return nil, unknowns, &yaml.TypeError{Errors: fatal}
-			}
-			// Only unknown fields — struct is fully populated for known fields.
-			return cfg, unknowns, nil
+		unknowns, fatal := partitionYAMLErrors(err)
+		if fatal != nil {
+			return nil, unknowns, fatal
 		}
-		return nil, nil, err
+		return cfg, unknowns, nil
 	}
 
 	// Sticky defaults: if these fields are empty after decoding, it means
 	// they were either missing from the YAML or explicitly set to empty.
 	// We restore defaults for critical naming options to ensure the UI
 	// and system work correctly for existing users.
-	if cfg.Downloads.ReplaceIllegalWith == "" {
-		cfg.Downloads.ReplaceIllegalWith = "_"
-	}
-	if len(cfg.Downloads.CleanupList) == 0 {
-		cfg.Downloads.CleanupList = DefaultCleanupList
-	}
-
-	// Normalize nil slices to empty so JSON serialization produces []
-	// instead of null. YAML unmarshal can overwrite Default()'s empty
-	// slices with nil when the key is present but has no items.
-	if cfg.Servers == nil {
-		cfg.Servers = []ServerConfig{}
-	}
-	if cfg.Categories == nil {
-		cfg.Categories = []CategoryConfig{}
-	}
-	if cfg.Schedules == nil {
-		cfg.Schedules = []ScheduleConfig{}
-	}
+	cfg.applyNormalization()
 
 	return cfg, nil, nil
 }
