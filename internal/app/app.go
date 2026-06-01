@@ -34,7 +34,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
-	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
 // ErrAlreadyStarted is returned by Start on the second call to a live
@@ -216,10 +215,6 @@ type Application struct {
 	// activeDU tracks the number of currently running DirectUnpackers.
 	// Used to enforce DirectUnpackThreads concurrency limit.
 	activeDU atomic.Int32
-
-	// unrarHasProblem caches the result of DetectUnrar at startup.
-	// True when the binary is non-original or too old (< 5.50).
-	unrarHasProblem bool
 }
 
 // SetEmitter injects a broadcaster for real-time events.
@@ -258,7 +253,6 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		jobComplete:          make(chan JobComplete, 8),
 		postProcComplete:     make(chan PostProcComplete, 8),
 		directUnpackers:      make(map[string]*directunpack.DirectUnpacker),
-		unrarHasProblem:      unpack.DetectUnrar(context.Background(), cfg.UnrarCommand).HasProblem,
 	}
 	for _, o := range opts {
 		o(app)
@@ -334,7 +328,8 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 
 	stages := app.customStages
 	if stages == nil {
-		built, err := buildStages(cfg, log)
+		probe := probeBinaries(context.Background(), cfg, log)
+		built, err := buildStages(cfg, log, probe)
 		if err != nil {
 			return nil, err
 		}
