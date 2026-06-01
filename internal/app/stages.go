@@ -11,6 +11,55 @@ import (
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
+// binaryProbe holds the results of probing external tool binaries at startup.
+// Accepted by buildStages so tests can inject fake results without spawning
+// real processes.
+type binaryProbe struct {
+	Par2Caps   par2.Par2Caps
+	UnrarInfo  unpack.UnrarInfo
+	SevenzInfo unpack.SevenzInfo
+}
+
+// probeBinaries probes the three external tool binaries used by the
+// post-processing pipeline and logs what was found. Separated from
+// buildStages so tests can skip the probe by constructing a binaryProbe
+// directly. Also fixes the accidental double-detection of unrar that
+// previously occurred (once in New() and once in buildStages).
+func probeBinaries(ctx context.Context, cfg Config, log *slog.Logger) binaryProbe {
+	ppLog := log.With("component", "postproc")
+
+	par2Caps := par2.DetectCapabilities(ctx, cfg.Par2Command)
+	if par2Caps.IsTurbo && !cfg.Par2Turbo {
+		ppLog.Info("Detected par2cmdline-turbo; consider enabling par2_turbo for faster repair")
+	}
+	if par2Caps.Version != "" {
+		ppLog.Info("Detected par2 binary", "version", par2Caps.Version)
+	}
+
+	unrarInfo := unpack.DetectUnrar(ctx, cfg.UnrarCommand)
+	if unrarInfo.Available {
+		ppLog.Info("Detected unrar binary", "version", unrarInfo.VersionStr)
+		if unrarInfo.HasProblem {
+			ppLog.Warn("unrar binary version < 5.50; some flags will be disabled")
+		}
+	} else {
+		ppLog.Warn("unrar binary not found; RAR extraction will not be available")
+	}
+
+	sevenzInfo := unpack.DetectSevenZip(ctx, cfg.SevenzCommand)
+	if sevenzInfo.Available {
+		ppLog.Info("Detected 7z binary", "version", sevenzInfo.Version)
+	} else {
+		ppLog.Warn("7z binary not found; 7-Zip extraction will not be available")
+	}
+
+	return binaryProbe{
+		Par2Caps:   par2Caps,
+		UnrarInfo:  unrarInfo,
+		SevenzInfo: sevenzInfo,
+	}
+}
+
 // builtStages bundles the stage list with the individually addressable stages
 // that need runtime toggling via Application setter methods.
 type builtStages struct {
@@ -26,12 +75,12 @@ type builtStages struct {
 	ExtensionCleanup *postproc.ExtensionCleanupStage
 }
 
-// buildStages constructs the post-processing stage list from cfg.
-// Called once during New() when customStages is nil. Separated so the
-// 150-line stage-wiring block doesn't live inside the New() constructor.
+// buildStages constructs the post-processing stage list from cfg and a
+// pre-computed binaryProbe. Called once during New() when customStages is nil.
+// Separated so the stage-wiring block doesn't live inside the New() constructor.
 // The returned builtStages holds pointers to individually-addressable stages
 // that can be toggled at runtime without restart.
-func buildStages(cfg Config, log *slog.Logger) (builtStages, error) {
+func buildStages(cfg Config, log *slog.Logger, probe binaryProbe) (builtStages, error) {
 	ppLog := log.With("component", "postproc")
 	var stages []postproc.Stage
 
@@ -64,34 +113,6 @@ func buildStages(cfg Config, log *slog.Logger) (builtStages, error) {
 			"hint", "SABnzbd only allows: -mlp, -om*, -ri*")
 	}
 
-	// Detect par2 binary capabilities at startup.
-	par2Caps := par2.DetectCapabilities(context.Background(), cfg.Par2Command)
-	if par2Caps.IsTurbo && !cfg.Par2Turbo {
-		ppLog.Info("Detected par2cmdline-turbo; consider enabling par2_turbo for faster repair")
-	}
-	if par2Caps.Version != "" {
-		ppLog.Info("Detected par2 binary", "version", par2Caps.Version)
-	}
-
-	// Detect unrar binary version.
-	unrarInfo := unpack.DetectUnrar(context.Background(), cfg.UnrarCommand)
-	if unrarInfo.Available {
-		ppLog.Info("Detected unrar binary", "version", unrarInfo.VersionStr)
-		if unrarInfo.HasProblem {
-			ppLog.Warn("unrar binary version < 5.50; some flags will be disabled")
-		}
-	} else {
-		ppLog.Warn("unrar binary not found; RAR extraction will not be available")
-	}
-
-	// Detect 7z binary.
-	sevenzInfo := unpack.DetectSevenZip(context.Background(), cfg.SevenzCommand)
-	if sevenzInfo.Available {
-		ppLog.Info("Detected 7z binary", "version", sevenzInfo.Version)
-	} else {
-		ppLog.Warn("7z binary not found; 7-Zip extraction will not be available")
-	}
-
 	// Repair stage.
 	repairStage := postproc.NewRepairStageWith(
 		par2.RunOptions{
@@ -99,7 +120,7 @@ func buildStages(cfg Config, log *slog.Logger) (builtStages, error) {
 			Turbo:     cfg.Par2Turbo,
 			CmdCfg:    cmdCfg,
 			ExtraArgs: extraPar2Args,
-			Caps:      &par2Caps,
+			Caps:      &probe.Par2Caps,
 		},
 	)
 	repairStage.Log = ppLog
@@ -118,7 +139,7 @@ func buildStages(cfg Config, log *slog.Logger) (builtStages, error) {
 		GoRarFallback:    cfg.GoRarFallback,
 		UseGo7z:          cfg.UseGo7z,
 		Go7zFallback:     cfg.Go7zFallback,
-		HasProblem:       unrarInfo.HasProblem,
+		HasProblem:       probe.UnrarInfo.HasProblem,
 		CmdCfg:           cmdCfg,
 		ExtraArgs:        extraUnrarArgs,
 	}, cfg.EnableRarCleanup)

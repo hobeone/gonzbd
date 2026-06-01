@@ -26,3 +26,6 @@ func (t *toggle) SetEnabled(enabled bool) { t.disabled.Store(!enabled) }
 
 // enabled reports whether the stage is currently enabled.
 func (t *toggle) enabled() bool { return !t.disabled.Load() }
+
+// IsEnabled is the exported counterpart of enabled, for use in tests.
+func (t *toggle) IsEnabled() bool { return !t.disabled.Load() }

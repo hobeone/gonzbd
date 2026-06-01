@@ -32,6 +32,9 @@ func NewPar2CleanupStage(cleanup bool) *Par2CleanupStage {
 // requiring a server restart. Thread-safe; may be called from any goroutine.
 func (s *Par2CleanupStage) SetCleanup(enabled bool) { s.cleanup.Store(enabled) }
 
+// CleanupEnabled reports whether par2 file deletion is active. Thread-safe.
+func (s *Par2CleanupStage) CleanupEnabled() bool { return s.cleanup.Load() }
+
 // Name implements Stage.
 func (*Par2CleanupStage) Name() string { return "par2_cleanup" }
 
