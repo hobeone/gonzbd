@@ -16,6 +16,48 @@ import (
 // large releases; 1 GB covers all realistic NZB download sizes.
 const par2FileSizeLimit = 1 * 1024 * 1024 * 1024 // 1 GiB
 
+// newDecoderForDir handles setup and candidate file registration for a PAR2 decoder.
+func newDecoderForDir(ctx context.Context, log *slog.Logger, parfile, candidateDir string, onWarn, onInfo func(string), onUILine func(string)) (*par2engine.Decoder, error) {
+	engineLog := newPar2UILogger(log.With("component", "go_par2"), onUILine)
+
+	d, err := par2engine.NewDecoder(ctx, parfile, par2engine.DecoderOptions{
+		MaxFileSize: par2FileSizeLimit,
+		Logger:      engineLog,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open decoder: %w", err)
+	}
+
+	if candidateDir != "" {
+		if n, addErr := addCandidateFiles(d, candidateDir); addErr != nil {
+			if onWarn != nil {
+				onWarn(fmt.Sprintf("could not register all candidate files: %v", addErr))
+			}
+		} else if n > 0 {
+			if onInfo != nil {
+				onInfo(fmt.Sprintf("registered candidate files count=%d", n))
+			}
+		}
+	}
+
+	return d, nil
+}
+
+// monitorProgress spawns a background goroutine to format and track progress
+// updates from a channel, calling onUpdate with formatted strings. It returns
+// the progress channel and a done channel to await completion.
+func monitorProgress(label string, onUpdate func(string)) (chan par2engine.Progress, chan struct{}) {
+	progress := make(chan par2engine.Progress, 100)
+	done := make(chan struct{})
+	go func() {
+		for p := range progress {
+			onUpdate(fmt.Sprintf("[go_par2] %s... %.1f%%", label, p.Percent))
+		}
+		close(done)
+	}()
+	return progress, done
+}
+
 // GoVerify runs a native Go-based PAR2 verification using par2engine.
 // It returns a VerifyResult compatible with the existing par2 package API.
 // candidateDir is the NZB download directory; every non-par2 file in it is
@@ -31,37 +73,21 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 		}
 	}()
 
-	engineLog := newPar2UILogger(log.With("component", "go_par2"), onLine)
-
-	d, err := par2engine.NewDecoder(ctx, parfile, par2engine.DecoderOptions{
-		MaxFileSize: par2FileSizeLimit,
-		Logger:      engineLog,
-	})
+	d, err := newDecoderForDir(ctx, log, parfile, candidateDir,
+		func(msg string) { log.Warn("go_par2: "+msg, "dir", candidateDir) },
+		func(msg string) { log.Info("go_par2: "+msg, "dir", candidateDir) },
+		onLine,
+	)
 	if err != nil {
 		res.Status = StatusInvalidPar2
-		return res, fmt.Errorf("go_par2: open decoder: %w", err)
+		return res, fmt.Errorf("go_par2: %w", err)
 	}
 	defer d.Close() //nolint:errcheck // best-effort close
-
-	if candidateDir != "" {
-		if n, addErr := addCandidateFiles(d, candidateDir); addErr != nil {
-			log.Warn("go_par2: could not register all candidate files", "dir", candidateDir, "err", addErr)
-		} else if n > 0 {
-			log.Info("go_par2: registered candidate files", "count", n, "dir", candidateDir)
-		}
-	}
 
 	var verifyProgress chan par2engine.Progress
 	var verifyDone chan struct{}
 	if onLine != nil {
-		verifyProgress = make(chan par2engine.Progress, 100)
-		verifyDone = make(chan struct{})
-		go func() {
-			for p := range verifyProgress {
-				onLine(fmt.Sprintf("[go_par2] Verifying... %.1f%%", p.Percent))
-			}
-			close(verifyDone)
-		}()
+		verifyProgress, verifyDone = monitorProgress("Verifying", onLine)
 	}
 
 	err = d.VerifyScans(ctx, verifyProgress)
@@ -125,39 +151,20 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 		}
 	}
 
-	engineLog := newPar2UILogger(log.With("component", "go_par2"), accumulate)
-
-	d, err := par2engine.NewDecoder(ctx, parfile, par2engine.DecoderOptions{
-		MaxFileSize: par2FileSizeLimit,
-		Logger:      engineLog,
-	})
+	d, err := newDecoderForDir(ctx, log, parfile, candidateDir,
+		func(msg string) { accumulate(fmt.Sprintf("[go_par2] WARN: %s", msg)) },
+		func(msg string) { accumulate(fmt.Sprintf("[go_par2] %s", msg)) },
+		accumulate,
+	)
 	if err != nil {
 		res.Output = output.String()
-		return res, fmt.Errorf("go_par2: open decoder: %w", err)
+		return res, fmt.Errorf("go_par2: %w", err)
 	}
 	defer d.Close() //nolint:errcheck // best-effort close
 
-	if candidateDir != "" {
-		if n, addErr := addCandidateFiles(d, candidateDir); addErr != nil {
-			accumulate(fmt.Sprintf("[go_par2] WARN: could not register all candidate files: %v", addErr))
-		} else if n > 0 {
-			accumulate(fmt.Sprintf("[go_par2] Registered %d candidate file(s) for content matching", n))
-		}
-	}
-
 	res.CommandLine = fmt.Sprintf("go_par2 repair %s", parfile)
 
-	var verifyProgress chan par2engine.Progress
-	var verifyDone chan struct{}
-	verifyProgress = make(chan par2engine.Progress, 100)
-	verifyDone = make(chan struct{})
-	go func() {
-		for p := range verifyProgress {
-			accumulate(fmt.Sprintf("[go_par2] Verifying... %.1f%%", p.Percent))
-		}
-		close(verifyDone)
-	}()
-
+	verifyProgress, verifyDone := monitorProgress("Verifying", accumulate)
 	err = d.VerifyScans(ctx, verifyProgress)
 	close(verifyProgress)
 	<-verifyDone
@@ -186,15 +193,8 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 	// Phase 2: Repair
 	accumulate(fmt.Sprintf("[go_par2] Repair required: %d missing blocks, %d parity available",
 		counts.UnusableDataShardCount, counts.UsableParityShardCount))
-	repairProgress := make(chan par2engine.Progress, 100)
-	repairDone := make(chan struct{})
-	go func() {
-		for p := range repairProgress {
-			accumulate(fmt.Sprintf("[go_par2] Repairing... %.1f%%", p.Percent))
-		}
-		close(repairDone)
-	}()
 
+	repairProgress, repairDone := monitorProgress("Repairing", accumulate)
 	repairErr := d.Repair(ctx, repairProgress)
 	close(repairProgress)
 	<-repairDone
