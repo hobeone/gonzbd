@@ -35,3 +35,9 @@ ui/coverage/
 /.jet*
 .antigravitycli
 /vendor/
+
+# repowise
+.repowise/
+.agents/
+.claude/
+.mcp.json
