@@ -250,30 +250,14 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 	// can skip backup servers when enabled.
 	minPriority := -1
 	if opts.topOnly {
-		for idx := range d.servers {
-			cfg := &opts.serverCfgs[idx]
-			if cfg.Enable {
-				if minPriority < 0 || cfg.Priority < minPriority {
-					minPriority = cfg.Priority
-				}
-			}
-		}
+		minPriority = getMinServerPriority(opts.serverCfgs)
 	}
 
 	anyEligible := false
 	allTried := true // assume all tried until proven otherwise
 	for idx, srv := range d.servers {
 		cfg := &opts.serverCfgs[idx]
-		if hasTried && mask.has(idx) {
-			continue
-		}
-		// Permanently disabled servers are not candidates — skip them
-		// entirely so they don't prevent allTried from becoming true.
-		if !cfg.Enable {
-			continue
-		}
-		// TopOnly: skip servers that are not in the primary group.
-		if opts.topOnly && cfg.Priority > minPriority {
+		if !isServerCandidate(cfg, mask, hasTried, idx, opts.topOnly, minPriority) {
 			continue
 		}
 		// This server hasn't been tried yet.
@@ -315,6 +299,38 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 	}
 
 	return false, nil
+}
+
+// getMinServerPriority calculates the minimum (most preferred) priority
+// among all enabled servers.
+func getMinServerPriority(serverCfgs []config.ServerConfig) int {
+	minPriority := -1
+	for idx := range serverCfgs {
+		cfg := &serverCfgs[idx]
+		if cfg.Enable {
+			if minPriority < 0 || cfg.Priority < minPriority {
+				minPriority = cfg.Priority
+			}
+		}
+	}
+	return minPriority
+}
+
+// isServerCandidate evaluates whether a server should be considered for a dispatch try.
+// Checks if the server has already been tried, is disabled, or doesn't meet TopOnly priority.
+func isServerCandidate(cfg *config.ServerConfig, mask serverMask, hasTried bool, idx int, topOnly bool, minPriority int) bool {
+	if hasTried && mask.has(idx) {
+		return false
+	}
+	// Permanently disabled servers are not candidates — skip them entirely
+	if !cfg.Enable {
+		return false
+	}
+	// TopOnly: skip servers that are not in the primary group.
+	if topOnly && cfg.Priority > minPriority {
+		return false
+	}
+	return true
 }
 
 // connWorker is one connection-owning goroutine. It lazily dials its
