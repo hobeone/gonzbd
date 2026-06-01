@@ -7,6 +7,7 @@ import type {
 	ConfigResponse
 } from './types';
 import { reportAuthExpired, isAuthExpired } from './stores/connection.svelte';
+import { getRedirectUrl } from '$lib/utils';
 
 const API_BASE = '/api';
 
@@ -16,33 +17,16 @@ function apiUrl(mode: string, params?: Record<string, string>): string {
 }
 
 function checkRedirect(res: Response, requestedUrl: string): boolean {
-	// If the response URL is different from the requested URL, fetch followed a redirect.
-	// Since Tinyauth (or other proxies) redirect to a login/auth page, we detect this here.
-	if (!res || !res.url) return false;
-
-	const reqURL = new URL(requestedUrl, window.location.origin);
-	const resURL = new URL(res.url);
-
-	const crossOriginRedirect = resURL.origin !== reqURL.origin;
-	const sameOriginAuthRedirect = res.redirected && !resURL.pathname.startsWith('/api');
-
-	if (crossOriginRedirect || sameOriginAuthRedirect) {
-		// If we are already handling the redirect, silence subsequent calls
+	const redirectUrl = getRedirectUrl(res, requestedUrl);
+	if (redirectUrl) {
 		if (isAuthExpired()) {
 			return true;
 		}
 
 		reportAuthExpired();
 
-		// Rewrite any redirect parameters containing "/api" to point to the current SPA location
-		for (const [key, value] of resURL.searchParams.entries()) {
-			if (value.includes('/api')) {
-				resURL.searchParams.set(key, window.location.href);
-			}
-		}
-
 		setTimeout(() => {
-			window.location.href = resURL.href;
+			window.location.href = redirectUrl;
 		}, 1500);
 		return true;
 	}
