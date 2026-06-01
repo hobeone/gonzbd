@@ -1,6 +1,6 @@
 import { fetchQueue, postAction } from '$lib/api';
 import type { QueueDetail, QueueSlot, ServerSnapshot } from '$lib/types';
-import { subscribeWS } from './websocket.svelte';
+import { subscribeWS, type WSEvent } from './websocket.svelte';
 import { reportFailure, reportSuccess, onReconnected } from './connection.svelte';
 
 const SPEED_HISTORY_SIZE = 60;
@@ -79,41 +79,51 @@ class QueueStore {
 		this.#polling = true;
 		this.poll();
 
-		this.#wsCleanup = subscribeWS((event) => {
-			if (event.event === 'queue_updated') {
-				this.poll();
-			} else if (event.event === 'job_finalized') {
-				// Job moved from queue → history. Optimistically drop
-				// the slot so the row disappears immediately, then refetch
-				// for an authoritative view (other slots may have shifted
-				// pages, status counts changed, etc.).
-				if (event.nzo_id && this.#queue) {
-					const before = this.#queue.slots.length;
-					this.#queue = {
-						...this.#queue,
-						slots: this.#queue.slots.filter((s) => s.nzo_id !== event.nzo_id)
-					};
-					if (this.#queue.slots.length !== before) {
-						this.#totalRemainingBytes = this.#queue.slots.reduce(
-							(sum, s) => sum + s.remaining_bytes, 0);
-					}
-				}
-				this.poll();
-			} else if (event.event === 'metrics') {
-				this.#speedBytesPerSec = event.speed ?? 0;
-				this.#totalRemainingBytes = event.remaining ?? 0;
-				this.#speedLimitBytesPerSec = event.speed_limit ?? 0;
-				this.#bandwidthMaxBytesPerSec = event.bandwidth_max ?? 0;
-				this.#bandwidthPerc = event.bandwidth_perc ?? 100;
-				this.#speedHistory = [...this.#speedHistory.slice(-(SPEED_HISTORY_SIZE - 1)), this.#speedBytesPerSec];
-				if (event.servers) {
-					this.#serverStats = event.servers;
-				}
-			}
-		});
+		this.#wsCleanup = subscribeWS((event) => this.#handleWSEvent(event));
 
 		// When ConnectionStore detects reconnection, refetch immediately.
 		this.#reconnectCleanup = onReconnected(() => this.poll());
+	}
+
+	#handleWSEvent(event: WSEvent) {
+		if (event.event === 'queue_updated') {
+			this.poll();
+		} else if (event.event === 'job_finalized') {
+			this.#handleJobFinalized(event.nzo_id);
+		} else if (event.event === 'metrics') {
+			this.#handleMetrics(event);
+		}
+	}
+
+	#handleJobFinalized(nzoId?: string) {
+		// Job moved from queue → history. Optimistically drop
+		// the slot so the row disappears immediately, then refetch
+		// for an authoritative view (other slots may have shifted
+		// pages, status counts changed, etc.).
+		if (nzoId && this.#queue) {
+			const before = this.#queue.slots.length;
+			this.#queue = {
+				...this.#queue,
+				slots: this.#queue.slots.filter((s) => s.nzo_id !== nzoId)
+			};
+			if (this.#queue.slots.length !== before) {
+				this.#totalRemainingBytes = this.#queue.slots.reduce(
+					(sum, s) => sum + s.remaining_bytes, 0);
+			}
+		}
+		this.poll();
+	}
+
+	#handleMetrics(event: WSEvent) {
+		this.#speedBytesPerSec = event.speed ?? 0;
+		this.#totalRemainingBytes = event.remaining ?? 0;
+		this.#speedLimitBytesPerSec = event.speed_limit ?? 0;
+		this.#bandwidthMaxBytesPerSec = event.bandwidth_max ?? 0;
+		this.#bandwidthPerc = event.bandwidth_perc ?? 100;
+		this.#speedHistory = [...this.#speedHistory.slice(-(SPEED_HISTORY_SIZE - 1)), this.#speedBytesPerSec];
+		if (event.servers) {
+			this.#serverStats = event.servers;
+		}
 	}
 
 	stop() {
