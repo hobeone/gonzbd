@@ -321,7 +321,10 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 	}
 }
 
-// extractSet extracts one complete RAR set using rarengine with sequential volume channel streaming.
+// extractSet extracts one complete RAR set using rarengine with sequential
+// volume channel streaming. The deferred panic recovery catches rarengine
+// panics and must remain in this function — it only protects the call stack
+// of the goroutine that called extractSet, not the feeder goroutine.
 func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -337,10 +340,50 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr
 		maxVol = 100 // fallback safe bound
 	}
 
+	volumesChan, feedErrChan := d.startVolumeFeed(ctx, setname, maxVol)
+
+	sd := rarengine.NewStreamDecompressor(volumesChan)
+	if d.opts.Password != "" {
+		sd.SetPassword(d.opts.Password)
+	}
+
+	extractedFiles, err := d.extractEntries(ctx, sd)
+	if err != nil {
+		return err
+	}
+
+	select {
+	case feedErr := <-feedErrChan:
+		return feedErr
+	default:
+	}
+
+	// Record success.
+	d.mu.Lock()
+	var rarParts []string
+	for _, p := range d.completedVols[setname] {
+		rarParts = append(rarParts, p)
+	}
+	d.successSets[setname] = SuccessSet{
+		RarParts:       rarParts,
+		ExtractedFiles: extractedFiles,
+	}
+	d.mu.Unlock()
+
+	d.log.Info("set extraction complete", "set", setname,
+		"parts", len(rarParts), "files", len(extractedFiles))
+
+	return nil
+}
+
+// startVolumeFeed spawns a goroutine that opens each completed RAR volume in
+// order and sends it on the returned channel. The goroutine closes volumesChan
+// on completion or error. Any error is delivered on the returned buffered
+// errChan; the caller must drain volumesChan to let the goroutine exit cleanly.
+func (d *DirectUnpacker) startVolumeFeed(ctx context.Context, setname string, maxVol int) (<-chan io.ReadCloser, <-chan error) {
 	volumesChan := make(chan io.ReadCloser)
 	feedErrChan := make(chan error, 1)
 
-	// Start a goroutine to sequentially feed volumes to the decompressor
 	go func() {
 		defer close(volumesChan)
 		for vol := 1; vol <= maxVol; vol++ {
@@ -368,23 +411,24 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr
 		}
 	}()
 
-	sd := rarengine.NewStreamDecompressor(volumesChan)
-	if d.opts.Password != "" {
-		sd.SetPassword(d.opts.Password)
-	}
+	return volumesChan, feedErrChan
+}
 
+// extractEntries drives the rarengine decompressor header-by-header, writing
+// each archive entry to disk. Returns the list of extracted file paths on
+// success, or the first error encountered.
+func (d *DirectUnpacker) extractEntries(ctx context.Context, sd *rarengine.StreamDecompressor) ([]string, error) {
 	var extractedFiles []string
 
 	for {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
-
 		d.mu.Lock()
 		killed := d.killed
 		d.mu.Unlock()
 		if killed {
-			return fmt.Errorf("killed")
+			return nil, fmt.Errorf("killed")
 		}
 
 		fh, err := sd.Next()
@@ -392,7 +436,7 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr
 			if errors.Is(err, io.EOF) || errors.Is(err, rarengine.ErrNoNextVolume) {
 				break
 			}
-			return fmt.Errorf("directunpack: read header: %w", err)
+			return nil, fmt.Errorf("directunpack: read header: %w", err)
 		}
 
 		destRel, sanitizeErr := unpack.SanitizeArchivePath(fh.Name, d.opts.OneFolder)
@@ -403,7 +447,6 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr
 		}
 
 		destPath := filepath.Join(d.extractDir, destRel)
-
 		unpackOpts := unpack.Options{
 			Password:         d.opts.Password,
 			OneFolder:        d.opts.OneFolder,
@@ -411,42 +454,19 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr
 			IgnoreUnrarDates: d.opts.IgnoreUnrarDates,
 			OnLine:           d.opts.OnLine,
 		}
-
 		if err := unpack.ExtractEntryRarengine(ctx, d.extractDir, destPath, fh, sd, unpackOpts, d.log); err != nil {
-			return fmt.Errorf("directunpack: extract %s: %w", fh.Name, err)
+			return nil, fmt.Errorf("directunpack: extract %s: %w", fh.Name, err)
 		}
 
 		if !fh.IsDir {
 			extractedFiles = append(extractedFiles, destPath)
 		}
-
 		if d.opts.OnLine != nil {
 			d.opts.OnLine("Extracting  " + fh.Name)
 		}
 	}
 
-	select {
-	case feedErr := <-feedErrChan:
-		return feedErr
-	default:
-	}
-
-	// Record success.
-	d.mu.Lock()
-	var rarParts []string
-	for _, p := range d.completedVols[setname] {
-		rarParts = append(rarParts, p)
-	}
-	d.successSets[setname] = SuccessSet{
-		RarParts:       rarParts,
-		ExtractedFiles: extractedFiles,
-	}
-	d.mu.Unlock()
-
-	d.log.Info("set extraction complete", "set", setname,
-		"parts", len(rarParts), "files", len(extractedFiles))
-
-	return nil
+	return extractedFiles, nil
 }
 
 // waitForVolume blocks until the specified volume is in completedVols.
