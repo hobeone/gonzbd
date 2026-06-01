@@ -193,9 +193,10 @@ describe('HistoryRow', () => {
 				{
 					name: 'download',
 					actions: [
-						'File completion (1 of 2 incomplete):',
+						'File completion (1 of 3 incomplete):',
 						'  ✓ movie.mkv — 100% (1.3 GB)',
-						'  ⚠ extra.par2 — 66% (6.5 MiB of 9.9 MiB received)',
+						'  ⚠ extra.rar — 66% (6.5 MiB of 9.9 MiB received)',
+						'  - extra.par2 — not downloaded',
 						// Indented rename: same bug class — the marker (→) must
 						// win over the leading-whitespace fallback.
 						'  obfuscated.bin → Real.Name.mkv'
@@ -209,12 +210,14 @@ describe('HistoryRow', () => {
 		const divs = Array.from(container.querySelectorAll('div'));
 		const doneLine = divs.find((d) => d.textContent === '  ✓ movie.mkv — 100% (1.3 GB)');
 		const shortLine = divs.find(
-			(d) => d.textContent === '  ⚠ extra.par2 — 66% (6.5 MiB of 9.9 MiB received)'
+			(d) => d.textContent === '  ⚠ extra.rar — 66% (6.5 MiB of 9.9 MiB received)'
 		);
+		const deferredLine = divs.find((d) => d.textContent === '  - extra.par2 — not downloaded');
 		const renameLine = divs.find((d) => d.textContent === '  obfuscated.bin → Real.Name.mkv');
 
 		expect(doneLine?.className).toContain('text-green-600');
 		expect(shortLine?.className).toContain('text-amber-600');
+		expect(deferredLine?.className).toContain('text-gray-600');
 		// Indented arrow line stays emerald instead of falling through to gray.
 		expect(renameLine?.className).toContain('text-emerald-600');
 	});
