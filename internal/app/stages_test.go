@@ -111,8 +111,8 @@ func TestBuildStages_BadExtraPar2Params(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{
-		DownloadDir:    t.TempDir(),
-		CompleteDir:    t.TempDir(),
+		DownloadDir:     t.TempDir(),
+		CompleteDir:     t.TempDir(),
 		ExtraPar2Params: "noDash", // must start with '-'
 	}
 	_, err := buildStages(cfg, discardLog(), emptyProbe())
@@ -125,8 +125,8 @@ func TestBuildStages_BadExtraUnrarParams(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{
-		DownloadDir:     t.TempDir(),
-		CompleteDir:     t.TempDir(),
+		DownloadDir:      t.TempDir(),
+		CompleteDir:      t.TempDir(),
 		ExtraUnrarParams: "noDash", // must start with '-'
 	}
 	_, err := buildStages(cfg, discardLog(), emptyProbe())
@@ -205,8 +205,8 @@ func TestBuildStages_UnpackEnabledByEnableFileJoin(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{
-		DownloadDir:   t.TempDir(),
-		CompleteDir:   t.TempDir(),
+		DownloadDir:    t.TempDir(),
+		CompleteDir:    t.TempDir(),
 		EnableFileJoin: true,
 	}
 	built, err := buildStages(cfg, discardLog(), emptyProbe())
@@ -235,8 +235,8 @@ func TestBuildStages_SampleCleanupEnabledByIgnoreSamples(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{
-		DownloadDir:  t.TempDir(),
-		CompleteDir:  t.TempDir(),
+		DownloadDir:   t.TempDir(),
+		CompleteDir:   t.TempDir(),
 		IgnoreSamples: true,
 	}
 	built, err := buildStages(cfg, discardLog(), emptyProbe())
@@ -269,8 +269,8 @@ func TestBuildStages_Par2CleanupEnabledByConfig(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{
-		DownloadDir:     t.TempDir(),
-		CompleteDir:     t.TempDir(),
+		DownloadDir:      t.TempDir(),
+		CompleteDir:      t.TempDir(),
 		EnableParCleanup: true,
 	}
 	built, err := buildStages(cfg, discardLog(), emptyProbe())
