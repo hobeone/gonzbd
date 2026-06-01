@@ -128,6 +128,54 @@ func TestIsCrossOrigin_RefererLoopback(t *testing.T) {
 	}
 }
 
+func TestIsRefererCrossOrigin(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		referer     string
+		currentHost string
+		want        bool
+	}{
+		{"empty referer", "", "localhost:4289", false},
+		{"malformed referer", "://bad", "localhost:4289", false},
+		{"same host referer", "http://localhost:4289/config", "localhost:4289", false},
+		{"different host referer", "http://evil.com/page", "localhost:4289", true},
+		{"loopback IP referer", "http://127.0.0.1:4289/page", "localhost:4289", false},
+		{"localhost name referer", "http://localhost:9090/page", "127.0.0.1:4289", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isRefererCrossOrigin(tc.referer, tc.currentHost)
+			if got != tc.want {
+				t.Errorf("isRefererCrossOrigin(%q, %q) = %t, want %t", tc.referer, tc.currentHost, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsSecFetchSiteCrossOrigin(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		sfs  string
+		want bool
+	}{
+		{"cross-site", true},
+		{"cross-origin", true},
+		{"same-origin", false},
+		{"same-site", false},
+		{"none", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.sfs, func(t *testing.T) {
+			got := isSecFetchSiteCrossOrigin(tc.sfs)
+			if got != tc.want {
+				t.Errorf("isSecFetchSiteCrossOrigin(%q) = %t, want %t", tc.sfs, got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------- isLocalhost ----------
 
 func TestIsLocalhost_IPv4Loopback(t *testing.T) {

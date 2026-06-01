@@ -120,6 +120,36 @@ func isLocalhost(r *http.Request) bool {
 	return ip.IsLoopback()
 }
 
+// isRefererCrossOrigin parses referer and returns true if it originates from a
+// non-local host different from currentHost.
+func isRefererCrossOrigin(referer, currentHost string) bool {
+	if referer == "" {
+		return false
+	}
+	u, err := url.Parse(referer)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if strings.EqualFold(u.Host, currentHost) {
+		return false
+	}
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	return true
+}
+
+// isSecFetchSiteCrossOrigin returns true if sfs indicates a cross-site or
+// cross-origin request.
+func isSecFetchSiteCrossOrigin(sfs string) bool {
+	return sfs == "cross-site" || sfs == "cross-origin"
+}
+
 // isCrossOrigin returns true if the request carries an Origin header
 // from a non-local origin. Browsers send Origin on cross-origin requests
 // (POST, PUT, DELETE, and fetch/XHR GET). We use this to reject CSRF
@@ -129,33 +159,12 @@ func isCrossOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		// No Origin header — fall back to Referer and Sec-Fetch-Site.
-		// Cross-origin GET requests (via <img>, <form method=GET>) don't
-		// send Origin, but modern browsers do send Sec-Fetch-Site.
-
-		// Check Referer first: if it's present and from a non-local host,
-		// treat as cross-origin to block CSRF via embedded resources.
-		if ref := r.Header.Get("Referer"); ref != "" {
-			if u, err := url.Parse(ref); err == nil && u.Host != "" {
-				if !strings.EqualFold(u.Host, r.Host) {
-					host := u.Hostname()
-					ip := net.ParseIP(host)
-					if ip == nil || !ip.IsLoopback() {
-						if !strings.EqualFold(host, "localhost") {
-							return true
-						}
-					}
-				}
-			}
-		}
-
-		// Block if explicitly cross-site/cross-origin.
-		sfs := r.Header.Get("Sec-Fetch-Site")
-		if sfs == "cross-site" || sfs == "cross-origin" {
+		if isRefererCrossOrigin(r.Header.Get("Referer"), r.Host) {
 			return true
 		}
-		// No Sec-Fetch-Site or same-origin/same-site/none → allow.
-		return false
+		return isSecFetchSiteCrossOrigin(r.Header.Get("Sec-Fetch-Site"))
 	}
+
 	// Parse the origin and check if it matches the request's Host.
 	u, err := url.Parse(origin)
 	if err != nil {
