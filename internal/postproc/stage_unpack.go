@@ -219,31 +219,8 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	enableFileJoin := u.EnableFileJoin
 	enableRecursive := u.EnableRecursive
 	u.mu.RUnlock()
-	opts.OnLine = func(line string) {
-		if job.OnOutput != nil {
-			job.OnOutput("unpack", line)
-		}
-	}
-	// Build the password list: per-job password comes first (highest priority),
-	// followed by any passwords from the config password_file.
-	if job.Queue.Password != "" {
-		opts.Passwords = append([]string{job.Queue.Password}, opts.Passwords...)
-	}
-	if passwordFile != "" {
-		filePws, err := cmdutil.LoadPasswordFile(passwordFile)
-		if err != nil {
-			logf(log, job, slog.LevelWarn, "password file: %v", err)
-		} else {
-			opts.Passwords = append(opts.Passwords, filePws...)
-			if len(filePws) > 30 {
-				logf(log, job, slog.LevelWarn, "password file contains %d entries (>30); extraction may be slow", len(filePws))
-			}
-		}
-	}
-	opts.Password = "" //nolint:staticcheck // SA1019: intentionally zeroed to force Passwords-list iteration
-	if len(opts.Passwords) > 0 {
-		logf(log, job, slog.LevelInfo, "Will try %d password(s) for encrypted archives", len(opts.Passwords))
-	}
+
+	opts = u.prepareOptions(log, job, opts, passwordFile)
 
 	// Track which archives have been processed across all passes to
 	// avoid re-extracting the same archive in a subsequent pass.
@@ -254,21 +231,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	// DirectUnpack: if any RAR sets were already extracted during download,
 	// mark their main archive files as processed so Scan → extract skips them.
 	// The archive parts are still recorded in allSuccessful for cleanup.
-	if len(job.DirectUnpackSets) > 0 {
-		for setname, result := range job.DirectUnpackSets {
-			logf(log, job, slog.LevelInfo, "Set %q already extracted by DirectUnpack (%d files, %d parts)",
-				setname, len(result.ExtractedFiles), len(result.RarParts))
-			for _, part := range result.RarParts {
-				processed[part] = true
-				// Also mark by basename so Scan's file-based lookup matches.
-				processed[filepath.Base(part)] = true
-			}
-			allSuccessful = append(allSuccessful, unpack.Archive{
-				Type:  unpack.RarArchive,
-				Parts: result.RarParts,
-			})
-		}
-	}
+	u.handleDirectUnpack(log, job, processed, &allSuccessful)
 
 	maxDepth := maxUnpackDepth
 	if !enableRecursive {
@@ -284,12 +247,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		}
 
 		// Filter out already-processed archives.
-		var pending []unpack.Archive
-		for _, a := range archives {
-			if !processed[a.MainFile] {
-				pending = append(pending, a)
-			}
-		}
+		pending := u.filterPending(archives, processed)
 
 		if len(pending) == 0 {
 			if depth == 0 {
@@ -302,7 +260,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 
 		logf(log, job, slog.LevelInfo, "Found %d archive(s) (pass %d)", len(pending), depth+1)
 
-		// I5: Sort pending archives so file joins (SplitArchive) run first,
+		// Sort pending archives so file joins (SplitArchive) run first,
 		// then RAR extraction, then 7z. This matches SABnzbd's unpacker()
 		// order: file_join → rar_unpack → unseven. Without this, joined
 		// output can't be extracted in the same pass.
@@ -318,23 +276,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		for _, a := range pending {
 			processed[a.MainFile] = true
 
-			var res unpack.Result
-			var err error
-			switch a.Type {
-			case unpack.RarArchive:
-				res, err = extractRARArchive(ctx, log, job, a, opts)
-			case unpack.SevenZipArchive:
-				res, err = extractSevenZipArchive(ctx, log, job, a, opts)
-			case unpack.SplitArchive:
-				if !enableFileJoin {
-					logf(log, job, slog.LevelInfo, "Skipping file join (disabled): %s", filepath.Base(a.MainFile))
-					continue
-				}
-				logf(log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
-				res, err = unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
-			default:
-				continue
-			}
+			res, err := u.extractArchive(ctx, log, job, a, opts, enableFileJoin)
 			if failErr := cmp.Or(err, res.Err); failErr != nil {
 				recordUnpackFailure(log, job, a, res, failErr, &firstErr)
 				continue
@@ -377,6 +319,95 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// Delete source archive files after successful extraction.
+	u.cleanupArchives(log, job, allSuccessful)
+
+	// Apply permissions recursively after extraction.
+	u.applyPermissions(log, job, permissions, allSuccessful)
+
+	return firstErr
+}
+
+// prepareOptions sets up passwords list, callbacks, and other extraction options.
+func (u *UnpackStage) prepareOptions(log *slog.Logger, job *Job, opts unpack.Options, passwordFile string) unpack.Options {
+	opts.OnLine = func(line string) {
+		if job.OnOutput != nil {
+			job.OnOutput("unpack", line)
+		}
+	}
+	// Build the password list: per-job password comes first (highest priority),
+	// followed by any passwords from the config password_file.
+	if job.Queue.Password != "" {
+		opts.Passwords = append([]string{job.Queue.Password}, opts.Passwords...)
+	}
+	if passwordFile != "" {
+		filePws, err := cmdutil.LoadPasswordFile(passwordFile)
+		if err != nil {
+			logf(log, job, slog.LevelWarn, "password file: %v", err)
+		} else {
+			opts.Passwords = append(opts.Passwords, filePws...)
+			if len(filePws) > 30 {
+				logf(log, job, slog.LevelWarn, "password file contains %d entries (>30); extraction may be slow", len(filePws))
+			}
+		}
+	}
+	opts.Password = "" //nolint:staticcheck // SA1019: intentionally zeroed to force Passwords-list iteration
+	if len(opts.Passwords) > 0 {
+		logf(log, job, slog.LevelInfo, "Will try %d password(s) for encrypted archives", len(opts.Passwords))
+	}
+	return opts
+}
+
+// handleDirectUnpack marks DirectUnpack archive files as processed and appends them to allSuccessful.
+func (u *UnpackStage) handleDirectUnpack(log *slog.Logger, job *Job, processed map[string]bool, allSuccessful *[]unpack.Archive) {
+	if len(job.DirectUnpackSets) > 0 {
+		for setname, result := range job.DirectUnpackSets {
+			logf(log, job, slog.LevelInfo, "Set %q already extracted by DirectUnpack (%d files, %d parts)",
+				setname, len(result.ExtractedFiles), len(result.RarParts))
+			for _, part := range result.RarParts {
+				processed[part] = true
+				// Also mark by basename so Scan's file-based lookup matches.
+				processed[filepath.Base(part)] = true
+			}
+			*allSuccessful = append(*allSuccessful, unpack.Archive{
+				Type:  unpack.RarArchive,
+				Parts: result.RarParts,
+			})
+		}
+	}
+}
+
+// filterPending returns a list of archives that haven't been processed yet.
+func (u *UnpackStage) filterPending(archives []unpack.Archive, processed map[string]bool) []unpack.Archive {
+	var pending []unpack.Archive
+	for _, a := range archives {
+		if !processed[a.MainFile] {
+			pending = append(pending, a)
+		}
+	}
+	return pending
+}
+
+// extractArchive executes extraction based on the archive type.
+func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options, enableFileJoin bool) (unpack.Result, error) {
+	switch a.Type {
+	case unpack.RarArchive:
+		return extractRARArchive(ctx, log, job, a, opts)
+	case unpack.SevenZipArchive:
+		return extractSevenZipArchive(ctx, log, job, a, opts)
+	case unpack.SplitArchive:
+		if !enableFileJoin {
+			logf(log, job, slog.LevelInfo, "Skipping file join (disabled): %s", filepath.Base(a.MainFile))
+			return unpack.Result{}, nil
+		}
+		logf(log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
+		return unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
+	default:
+		return unpack.Result{}, nil
+	}
+}
+
+// cleanupArchives deletes source archive files after successful extraction.
+func (u *UnpackStage) cleanupArchives(log *slog.Logger, job *Job, allSuccessful []unpack.Archive) {
 	if u.cleanup.Load() && len(allSuccessful) > 0 {
 		var cleaned int
 		for _, a := range allSuccessful {
@@ -389,8 +420,10 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			logf(log, job, slog.LevelInfo, "Cleaned up %d archive file(s)", cleaned)
 		}
 	}
+}
 
-	// Apply permissions recursively after extraction.
+// applyPermissions recursively applies target permissions to the extracted files.
+func (u *UnpackStage) applyPermissions(log *slog.Logger, job *Job, permissions string, allSuccessful []unpack.Archive) {
 	if permissions != "" && len(allSuccessful) > 0 {
 		applied, permErr := applyPermissions(job.DownloadDir, permissions)
 		if permErr != nil {
@@ -399,8 +432,6 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			logf(log, job, slog.LevelInfo, "Applied permissions (%s) to %d file(s)/dir(s)", permissions, applied)
 		}
 	}
-
-	return firstErr
 }
 
 // extractRARArchive dispatches a single RAR archive to either GoUnRAR
