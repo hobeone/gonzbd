@@ -132,6 +132,10 @@ func buildFileCompletionLines(job *Job) []string {
 	fileLines := make([]string, 0, len(files))
 	for fi := range files {
 		f := &files[fi]
+		if f.Deferred {
+			fileLines = append(fileLines, fmt.Sprintf("  - %s — not downloaded", f.Subject))
+			continue
+		}
 		var downloaded, total int64
 		anyFailed := false
 		for ai := range f.Articles {
