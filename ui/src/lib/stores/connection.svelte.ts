@@ -10,9 +10,9 @@
  *  - HTTP failures: 2 consecutive → "disconnected" (avoids flashing on a single dropped request)
  *  - WebSocket close: immediate "disconnected" (authoritative signal)
  *  - Backoff: 1s → 2s → 4s → 8s → 16s → 32s → 60s (cap) with ±20% jitter
- *  - Health probe: GET /api?mode=version&output=json (lightweight, side-effect-free)
  *  - On reconnect: fires all registered onReconnected callbacks
  */
+import { getRedirectUrl } from '$lib/utils';
 
 const MIN_DELAY = 1000;
 const MAX_DELAY = 60000;
@@ -167,35 +167,14 @@ class ConnectionStore {
 		try {
 			const res = await fetch('/api?mode=version&output=json');
 			
-			if (!res || !res.url) {
-				if (res && res.ok) {
-					this.#probing = false;
-					this.reportSuccess();
-					return;
-				}
-			} else {
-				// Detect redirect on health probe
-				const reqURL = new URL('/api?mode=version&output=json', window.location.origin);
-				const resURL = new URL(res.url);
-				const crossOriginRedirect = resURL.origin !== reqURL.origin;
-				const sameOriginAuthRedirect = res.redirected && !resURL.pathname.startsWith('/api');
-
-				if (crossOriginRedirect || sameOriginAuthRedirect) {
-					this.#probing = false;
-					this.reportAuthExpired();
-
-					// Rewrite any redirect parameters containing "/api" to point to the current SPA location
-					for (const [key, value] of resURL.searchParams.entries()) {
-						if (value.includes('/api')) {
-							resURL.searchParams.set(key, window.location.href);
-						}
-					}
-
-					setTimeout(() => {
-						window.location.href = resURL.href;
-					}, 1500);
-					return;
-				}
+			const redirectUrl = getRedirectUrl(res, '/api?mode=version&output=json');
+			if (redirectUrl) {
+				this.#probing = false;
+				this.reportAuthExpired();
+				setTimeout(() => {
+					window.location.href = redirectUrl;
+				}, 1500);
+				return;
 			}
 
 			if (res && res.ok) {
@@ -228,24 +207,10 @@ class ConnectionStore {
 	async #checkSession(): Promise<void> {
 		try {
 			const res = await fetch('/api?mode=version&output=json');
-			if (!res || !res.url) return;
-
-			const reqURL = new URL('/api?mode=version&output=json', window.location.origin);
-			const resURL = new URL(res.url);
-			const crossOriginRedirect = resURL.origin !== reqURL.origin;
-			const sameOriginAuthRedirect = res.redirected && !resURL.pathname.startsWith('/api');
-
-			if (crossOriginRedirect || sameOriginAuthRedirect) {
+			const redirectUrl = getRedirectUrl(res, '/api?mode=version&output=json');
+			if (redirectUrl) {
 				this.reportAuthExpired();
-
-				// Rewrite any redirect parameters containing "/api" to point to the current SPA location
-				for (const [key, value] of resURL.searchParams.entries()) {
-					if (value.includes('/api')) {
-						resURL.searchParams.set(key, window.location.href);
-					}
-				}
-
-				window.location.href = resURL.href;
+				window.location.href = redirectUrl;
 			}
 		} catch {
 			// Ignore network errors to avoid false disconnect triggers during transient blips
