@@ -83,8 +83,12 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	if job.Queue != nil && len(job.Queue.Files) > 0 {
 		var assembledFiles []par2.AssembledFile
 		for _, jf := range job.Queue.Files {
+			name := jf.Subject
+			if jf.Filename != "" {
+				name = jf.Filename
+			}
 			assembledFiles = append(assembledFiles, par2.AssembledFile{
-				FileName: jf.Subject,
+				FileName: name,
 				CRC32:    jf.AssembledCRC32,
 				FileSize: jf.Bytes,
 			})

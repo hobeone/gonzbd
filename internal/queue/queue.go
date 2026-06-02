@@ -881,6 +881,22 @@ func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
 	return nil
 }
 
+// SetFileFilename stores the resolved final filename on a JobFile.
+func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if fileIdx < 0 || fileIdx >= len(job.Files) {
+		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
+	}
+	job.Files[fileIdx].Filename = filename
+	q.dirty.Store(true)
+	return nil
+}
+
 // SetFileCRC32 stores the assembled CRC32 on a JobFile. The CRC is
 // computed by the assembler by combining per-article yEnc CRCs in
 // offset order and represents the CRC32 of the entire file as written
