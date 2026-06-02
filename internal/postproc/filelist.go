@@ -132,8 +132,12 @@ func buildFileCompletionLines(job *Job) []string {
 	fileLines := make([]string, 0, len(files))
 	for fi := range files {
 		f := &files[fi]
+		name := f.Subject
+		if f.Filename != "" {
+			name = f.Filename
+		}
 		if f.Deferred {
-			fileLines = append(fileLines, fmt.Sprintf("  - %s — not downloaded", f.Subject))
+			fileLines = append(fileLines, fmt.Sprintf("  - %s — not downloaded", name))
 			continue
 		}
 		var downloaded, total int64
@@ -151,12 +155,12 @@ func buildFileCompletionLines(job *Job) []string {
 		pct := completionPct(downloaded, total)
 		if pct >= 100 && !anyFailed {
 			fileLines = append(fileLines, fmt.Sprintf("  ✓ %s — 100%% (%s)",
-				f.Subject, humanfmt.BytesSI(total)))
+				name, humanfmt.BytesSI(total)))
 			continue
 		}
 		incomplete++
 		fileLines = append(fileLines, fmt.Sprintf("  ⚠ %s — %d%% (%s of %s received)",
-			f.Subject, pct, humanfmt.BytesSI(downloaded), humanfmt.BytesSI(total)))
+			name, pct, humanfmt.BytesSI(downloaded), humanfmt.BytesSI(total)))
 	}
 
 	var header string

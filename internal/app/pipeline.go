@@ -320,20 +320,30 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	// its real extension (.par2, .rar, etc.). Running the extraction
 	// regex again would break filenames containing characters like '&'
 	// that aren't in the basic-filename regex's character class.
-	filename := snap.Files[fileIdx].Subject
-
 	// Compute the job directory once from the already-sanitized job name
-	// (queue.NewJob runs SanitizeFolderName at admission), then sanitize
-	// only the filename per call. This guarantees every file in a job
-	// lands in the same directory — postproc derives the same path via
-	// filepath.Join(DownloadDir, job.Name) when scanning for par2 sets.
+	// (queue.NewJob runs SanitizeFolderName at admission). This guarantees
+	// every file in a job lands in the same directory — postproc derives
+	// the same path via filepath.Join(DownloadDir, job.Name) when scanning
+	// for par2 sets.
 	jobDir := filepath.Join(p.downloadDir, snap.Name)
 
-	// GetUniqueFilename appends ".1", ".2" etc. when the path already
-	// exists, handling obfuscated NZBs where multiple files may have
-	// identical or unparseable subjects.
-	path := fsutil.GetUniqueFilename(
-		fsutil.JoinSafe(jobDir, "", filename, p.sanitize))
+	var path string
+	filename := snap.Files[fileIdx].Filename
+	if filename != "" {
+		// Use the already-resolved and persisted filename directly, preventing
+		// duplicate renaming across daemon restarts.
+		path = fsutil.JoinSafe(jobDir, "", filename, p.sanitize)
+	} else {
+		// First time resolving this file. GetUniqueFilename appends ".1", ".2" etc.
+		// when the path already exists on disk (e.g. naming collisions).
+		candidate := snap.Files[fileIdx].Subject
+		path = fsutil.GetUniqueFilename(
+			fsutil.JoinSafe(jobDir, "", candidate, p.sanitize))
+		resolvedFilename := filepath.Base(path)
+		if err := p.queue.SetFileFilename(jobID, fileIdx, resolvedFilename); err != nil {
+			return fmt.Errorf("set file filename: %w", err)
+		}
+	}
 
 	// Count only unfinished articles — on resume/retry, already-done
 	// articles won't be re-dispatched, so TotalParts must match the

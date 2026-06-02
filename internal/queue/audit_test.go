@@ -375,6 +375,60 @@ func TestSetFileCRC32(t *testing.T) {
 	})
 }
 
+// ---------- SetFileFilename ----------
+
+func TestSetFileFilename(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sets filename on valid file index", func(t *testing.T) {
+		t.Parallel()
+		q := New()
+		j := makeMultiFileJob(t, "filename-valid", 2, 2)
+		_ = q.Add(j)
+		dir := t.TempDir()
+		_ = q.Save(dir)
+
+		filename := "resolved.mkv"
+		if err := q.SetFileFilename(j.ID, 0, filename); err != nil {
+			t.Fatalf("SetFileFilename: %v", err)
+		}
+		got, _ := q.Get(j.ID)
+		if got.Files[0].Filename != filename {
+			t.Errorf("Filename = %q, want %q", got.Files[0].Filename, filename)
+		}
+		// File 1 should be unaffected.
+		if got.Files[1].Filename != "" {
+			t.Errorf("File 1 Filename = %q, want empty", got.Files[1].Filename)
+		}
+		if !q.IsDirty() {
+			t.Error("SetFileFilename should set dirty flag")
+		}
+	})
+
+	t.Run("error on out-of-bounds index", func(t *testing.T) {
+		t.Parallel()
+		q := New()
+		j := makeMultiFileJob(t, "filename-oob", 1, 1)
+		_ = q.Add(j)
+
+		if err := q.SetFileFilename(j.ID, 99, "bad.mkv"); err == nil {
+			t.Error("expected error for out-of-bounds file index")
+		}
+	})
+
+	t.Run("error on unknown job", func(t *testing.T) {
+		t.Parallel()
+		q := New()
+		err := q.SetFileFilename("nonexistent", 0, "bad.mkv")
+		if err == nil {
+			t.Fatal("expected error for nonexistent job")
+		}
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("error = %v, want ErrNotFound", err)
+		}
+	})
+}
+
 // ---------- SnapshotJob / SnapshotJobByName ----------
 
 func TestSnapshotJob_Audit(t *testing.T) {
