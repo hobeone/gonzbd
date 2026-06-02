@@ -280,7 +280,11 @@ func (j *Job) recomputePending() {
 // JobFile is a single file within a job: its articles, its assembly
 // state, and the metadata needed to write it out.
 type JobFile struct {
-	Subject  string       `json:"subject"`
+	Subject string `json:"subject"`
+	// Filename is the final resolved filename as written on disk.
+	// If empty, it has not yet been resolved during a download pass.
+	// Persisted so that restarts do not generate a new unique name.
+	Filename string       `json:"filename,omitempty"`
 	Date     time.Time    `json:"date"`
 	Articles []JobArticle `json:"articles"`
 	Bytes    int64        `json:"bytes"`
