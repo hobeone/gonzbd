@@ -1,4 +1,8 @@
 <script lang="ts">
+	import { LayerCake, Svg } from 'layercake';
+	import SparklineLine from './SparklineLine.svelte';
+	import SparklineArea from './SparklineArea.svelte';
+
 	let {
 		title,
 		value,
@@ -13,23 +17,9 @@
 		children?: import('svelte').Snippet;
 	} = $props();
 
-	// Map data points into SVG polyline coordinates
-	const polylinePoints = $derived.by(() => {
-		if (sparklineData.length < 2) return '';
-		const width = 120;
-		const height = 40;
-		const maxVal = Math.max(...sparklineData, 1);
-		const minVal = Math.min(...sparklineData, 0);
-		const valRange = maxVal - minVal;
-
-		return sparklineData
-			.map((val, idx) => {
-				const x = (idx / (sparklineData.length - 1)) * width;
-				const y = height - ((val - minVal) / valRange) * height;
-				return `${x},${y}`;
-			})
-			.join(' ');
-	});
+	const chartData = $derived(
+		sparklineData.map((y, x) => ({ x, y }))
+	);
 </script>
 
 <div class="flex flex-col rounded-xl border border-border bg-card p-5 space-y-4 shadow-sm hover:border-primary/50 transition-colors select-none text-foreground">
@@ -59,18 +49,21 @@
 			{/if}
 		</div>
 
-		<!-- Ultra-lightweight SVG Sparkline -->
+		<!-- LayerCake-based Sparkline -->
 		{#if sparklineData.length >= 2}
-			<svg class="h-10 w-28 shrink-0 overflow-visible text-rose-500 dark:text-rose-400" viewBox="0 0 120 40">
-				<polyline
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					points={polylinePoints}
-				/>
-			</svg>
+			<div class="h-10 w-28 shrink-0 relative overflow-visible">
+				<LayerCake
+					x="x"
+					y="y"
+					data={chartData}
+					yDomain={[0, null]}
+				>
+					<Svg>
+						<SparklineArea class="text-rose-500/10 dark:text-rose-400/10" />
+						<SparklineLine class="text-rose-500 dark:text-rose-400" strokeWidth={2} />
+					</Svg>
+				</LayerCake>
+			</div>
 		{/if}
 	</div>
 </div>
