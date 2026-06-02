@@ -903,8 +903,12 @@ func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger) (boo
 	}
 	assembled := make([]par2.AssembledFile, len(files))
 	for i, jf := range files {
+		name := jf.Subject
+		if jf.Filename != "" {
+			name = jf.Filename
+		}
 		assembled[i] = par2.AssembledFile{
-			FileName: jf.Subject,
+			FileName: name,
 			CRC32:    jf.AssembledCRC32,
 			FileSize: jf.Bytes,
 		}
