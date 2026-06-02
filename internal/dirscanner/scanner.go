@@ -213,7 +213,7 @@ func (s *Scanner) scanDir(ctx context.Context, dir, category string) (files map[
 		if !wasSeen {
 			// First sighting: record it and move to next file.
 			s.store.Set(path, currentScan[path])
-			s.logger.Debug("first sighting of file", "path", path)
+			s.logger.Debug("first sighting of file, waiting to see if it's size changes on the next scan before adding it to queue", "path", path)
 			continue
 		}
 
