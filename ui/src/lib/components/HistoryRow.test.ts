@@ -215,11 +215,11 @@ describe('HistoryRow', () => {
 		const deferredLine = divs.find((d) => d.textContent === '  - extra.par2 — not downloaded');
 		const renameLine = divs.find((d) => d.textContent === '  obfuscated.bin → Real.Name.mkv');
 
-		expect(doneLine?.className).toContain('text-green-600');
-		expect(shortLine?.className).toContain('text-amber-600');
-		expect(deferredLine?.className).toContain('text-gray-600');
+		expect(doneLine?.className).toContain('text-emerald-500');
+		expect(shortLine?.className).toContain('text-amber-500');
+		expect(deferredLine?.className).toContain('text-muted-foreground');
 		// Indented arrow line stays emerald instead of falling through to gray.
-		expect(renameLine?.className).toContain('text-emerald-600');
+		expect(renameLine?.className).toContain('text-emerald-500');
 	});
 
 	it('expanded view shows post-processing time when > 0', async () => {

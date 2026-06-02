@@ -1,6 +1,6 @@
-import { fetchQueue, postAction } from '$lib/api';
+import { fetchQueue, postAction, fetchServerStats } from '$lib/api';
 import type { QueueDetail, QueueSlot, ServerSnapshot } from '$lib/types';
-import { subscribeWS, type WSEvent } from './websocket.svelte';
+import { subscribeWS, getWSStatus, type WSEvent } from './websocket.svelte';
 import { reportFailure, reportSuccess, onReconnected } from './connection.svelte';
 
 const SPEED_HISTORY_SIZE = 60;
@@ -60,6 +60,16 @@ class QueueStore {
 			this.#totalRemainingBytes = res.queue.slots.reduce((sum, s) => sum + s.remaining_bytes, 0);
 			this.#error = null;
 			reportSuccess();
+
+			// Fallback: poll server status when WS is disconnected
+			if (!getWSStatus()) {
+				try {
+					const stats = await fetchServerStats();
+					this.#serverStats = stats.servers;
+				} catch (err) {
+					console.error('Failed to poll server stats:', err);
+				}
+			}
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
 			this.#error = msg;

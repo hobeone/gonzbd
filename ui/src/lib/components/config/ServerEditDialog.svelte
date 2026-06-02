@@ -127,7 +127,7 @@
 <Dialog.Root bind:open>
 	<Dialog.Portal>
 		<Dialog.Overlay class="fixed inset-0 z-[60] bg-black/50" />
-		<Dialog.Content class="fixed left-1/2 top-1/2 z-[70] w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white dark:bg-gray-900 p-6 shadow-xl">
+		<Dialog.Content class="fixed left-1/2 top-1/2 z-[70] w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-card p-6 shadow-xl text-foreground">
 			<Dialog.Title class="text-lg font-semibold">
 				{server ? 'Edit Server' : 'Add Server'}
 			</Dialog.Title>
@@ -166,7 +166,7 @@
 				<div class="space-y-1.5">
 					<label for="server-pipelining" class="text-sm font-medium">Pipeline Depth</label>
 					<Input id="server-pipelining" type="number" bind:value={draft.pipelining_requests} min="1" max="10" />
-					<p class="text-xs text-gray-500 dark:text-gray-400">Commands in-flight per connection</p>
+					<p class="text-xs text-muted-foreground">Commands in-flight per connection</p>
 				</div>
 
 				<div class="space-y-1.5">
@@ -176,11 +176,11 @@
 
 				<div class="col-span-2 flex items-center gap-6 py-2">
 					<label class="flex items-center gap-2 text-sm font-medium cursor-pointer">
-						<input type="checkbox" bind:checked={draft.ssl} class="rounded border-gray-300 dark:border-gray-600" />
+						<input type="checkbox" bind:checked={draft.ssl} class="rounded border-input bg-transparent text-foreground focus:ring-ring" />
 						SSL / TLS
 					</label>
 					<label class="flex items-center gap-2 text-sm font-medium cursor-pointer">
-						<input type="checkbox" bind:checked={draft.enable} class="rounded border-gray-300 dark:border-gray-600" />
+						<input type="checkbox" bind:checked={draft.enable} class="rounded border-input bg-transparent text-foreground focus:ring-ring" />
 						Enabled
 					</label>
 				</div>
@@ -219,21 +219,21 @@
 							Required
 						</label>
 					</div>
-					<p class="text-xs text-gray-500 dark:text-gray-400">
+					<p class="text-xs text-muted-foreground">
 						Backup servers can be auto-disabled when failure rate is high. Required servers are never auto-disabled.
 					</p>
 				</div>
 			</div>
 
 			{#if testResult}
-				<div class="mt-4 rounded-md p-3 text-sm {testResult.ok ? 'bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300' : 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300'}">
+				<div class="mt-4 rounded-md p-3 text-sm {testResult.ok ? 'bg-emerald-500/10 text-emerald-500' : 'bg-destructive/10 text-destructive'}">
 					{testResult.message}
 				</div>
 			{/if}
 
 			{#if confirmingDelete}
-				<div class="mt-6 flex items-center justify-between rounded-md bg-red-50 dark:bg-red-950 px-3 py-2">
-					<span class="text-sm text-red-700 dark:text-red-300">Delete <strong>{originalName}</strong>?</span>
+				<div class="mt-6 flex items-center justify-between rounded-md bg-destructive/10 px-3 py-2">
+					<span class="text-sm text-destructive">Delete <strong>{originalName}</strong>?</span>
 					<div class="flex gap-2">
 						<Button variant="ghost" size="xs" onclick={() => (confirmingDelete = false)}>No</Button>
 						<Button variant="destructive" size="xs" onclick={handleDelete}>Yes, delete</Button>
@@ -249,7 +249,7 @@
 				</div>
 
 				{#if server && ondelete && !confirmingDelete}
-					<Button variant="ghost" size="sm" class="text-red-600 dark:text-red-400" onclick={() => (confirmingDelete = true)}>Delete</Button>
+					<Button variant="ghost" size="sm" class="text-destructive" onclick={() => (confirmingDelete = true)}>Delete</Button>
 				{/if}
 
 				<div class="flex flex-1 justify-end gap-3">

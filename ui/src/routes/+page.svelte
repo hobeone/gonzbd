@@ -1,18 +1,29 @@
 <script lang="ts">
-	import Navbar from '$lib/components/Navbar.svelte';
+	import SidebarNav from '$lib/components/SidebarNav.svelte';
+	import StatCard from '$lib/components/StatCard.svelte';
 	import QueueTable from '$lib/components/QueueTable.svelte';
 	import HistoryTable from '$lib/components/HistoryTable.svelte';
 	import WarningsBanner from '$lib/components/WarningsBanner.svelte';
-	import StatusBar from '$lib/components/StatusBar.svelte';
 	import Toast from '$lib/components/Toast.svelte';
+	import SpeedLimitControl from '$lib/components/SpeedLimitControl.svelte';
 	import ConnectionOverlay from '$lib/components/ConnectionOverlay.svelte';
 	import ShortcutHelp from '$lib/components/ShortcutHelp.svelte';
 	import { onMount, onDestroy } from 'svelte';
-	import { startPolling, stopPolling, isPaused, getQueueSlots, getSpeedBytesPerSec } from '$lib/stores/queue.svelte';
+	import {
+		startPolling,
+		stopPolling,
+		isPaused,
+		getQueueSlots,
+		getSpeedBytesPerSec,
+		getSpeedHistory,
+		getTotalRemainingBytes,
+		refreshQueue
+	} from '$lib/stores/queue.svelte';
 	import { startHistoryPolling, stopHistoryPolling } from '$lib/stores/history.svelte';
 	import { startWarningsPolling, stopWarningsPolling } from '$lib/stores/warnings.svelte';
 	import { faviconForState, type AppState } from '$lib/favicon';
 	import { handleGlobalShortcut, registerShortcut } from '$lib/shortcuts.svelte';
+	import { formatSpeed, formatSize, formatETA } from '$lib/utils';
 
 	let helpOpen = $state(false);
 
@@ -45,6 +56,13 @@
 	);
 
 	const faviconHref = $derived(faviconForState(appState));
+
+	const eta = $derived.by(() => {
+		const speed = getSpeedBytesPerSec();
+		const remaining = getTotalRemainingBytes();
+		if (speed <= 0 || remaining <= 0) return '--';
+		return formatETA(remaining / speed) || '--';
+	});
 </script>
 
 <svelte:head>
@@ -54,32 +72,73 @@
 
 <svelte:window onkeydown={handleGlobalShortcut} />
 
-<div class="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950">
-	<Navbar paused={isPaused()} onpausetoggle={() => {}} />
-	<StatusBar />
-	<ConnectionOverlay />
+<div class="flex h-screen w-screen overflow-hidden bg-background text-foreground">
+	<!-- Left Side Navigation Rail -->
+	<SidebarNav paused={isPaused()} onpausetoggle={refreshQueue} />
 
-	<div class="mx-auto w-full max-w-7xl flex-1 space-y-6 px-4 pt-4 pb-8">
-		<WarningsBanner />
+	<!-- Main Content Layout -->
+	<div class="flex flex-1 flex-col overflow-hidden">
+		<ConnectionOverlay />
 
-		<section>
-			<div class="mb-3 flex items-center gap-3">
-				<h2 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Queue</h2>
-				<div class="h-px flex-1 bg-gray-200 dark:bg-gray-700"></div>
+		<main class="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+			<WarningsBanner />
+
+			<!-- Material 3 Quick Stats Grid -->
+			<div data-testid="status-bar" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+				<!-- Speed StatCard -->
+				<StatCard
+					title="Download Speed"
+					value={formatSpeed(getSpeedBytesPerSec())}
+					status={appState === 'downloading' ? 'active' : 'idle'}
+					sparklineData={getSpeedHistory()}
+				>
+					<SpeedLimitControl />
+				</StatCard>
+
+				<!-- Remaining Bytes StatCard -->
+				<StatCard
+					title="Remaining Data"
+					value={formatSize(getTotalRemainingBytes())}
+					status={getTotalRemainingBytes() > 0 && !isPaused() ? 'active' : 'idle'}
+				>
+					<div class="flex items-center gap-1.5 text-xs text-muted-foreground font-medium">
+						{#if isPaused()}
+							<span class="text-amber-500 font-bold uppercase tracking-wider">Paused</span>
+						{:else}
+							<span>ETA:</span>
+							<span class="text-foreground font-bold">{eta}</span>
+						{/if}
+					</div>
+				</StatCard>
+
+				<!-- Active Jobs / Slots StatCard -->
+				<StatCard
+					title="Queue Slots"
+					value={`${getQueueSlots().length} Job${getQueueSlots().length !== 1 ? 's' : ''}`}
+					status={getQueueSlots().length > 0 ? 'active' : 'idle'}
+				/>
 			</div>
-			<QueueTable />
-		</section>
 
-		<section>
-			<div class="mb-3 flex items-center gap-3">
-				<h2 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">History</h2>
-				<div class="h-px flex-1 bg-gray-200 dark:bg-gray-700"></div>
-			</div>
-			<HistoryTable />
-		</section>
+			<!-- Queue Section -->
+			<section>
+				<div class="mb-3 flex items-center gap-3">
+					<h2 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Queue</h2>
+					<div class="h-px flex-1 bg-border"></div>
+				</div>
+				<QueueTable />
+			</section>
+
+			<!-- History Section -->
+			<section>
+				<div class="mb-3 flex items-center gap-3">
+					<h2 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">History</h2>
+					<div class="h-px flex-1 bg-border"></div>
+				</div>
+				<HistoryTable />
+			</section>
+		</main>
 	</div>
 </div>
 
 <Toast />
 <ShortcutHelp bind:open={helpOpen} />
-

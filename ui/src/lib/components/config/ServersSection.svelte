@@ -66,7 +66,7 @@
 	<Separator />
 
 	{#if allDisabled()}
-		<div class="flex items-center gap-2.5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
+		<div class="flex items-center gap-2.5 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
 			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4 flex-shrink-0 text-amber-500 dark:text-amber-400">
 				<path fill-rule="evenodd" d="M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.3-2.25l5.197-9ZM8 5a.75.75 0 0 1 .75.75v2a.75.75 0 0 1-1.5 0v-2A.75.75 0 0 1 8 5Zm0 6.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" clip-rule="evenodd" />
 			</svg>
@@ -76,7 +76,7 @@
 
 	<div class="space-y-3">
 		{#if !configData.servers || configData.servers.length === 0}
-			<div class="rounded-lg border border-dashed p-8 text-center text-sm text-gray-500 dark:text-gray-400">
+			<div class="rounded-lg border border-dashed border-border bg-card/50 p-8 text-center text-sm text-muted-foreground">
 				No servers configured.
 			</div>
 		{:else}
@@ -84,7 +84,7 @@
 				{@const isTesting = testingServer === server.name}
 				{@const result = testResults[server.name]}
 
-				<div class="rounded-lg border {server.enable ? 'border-gray-200 dark:border-gray-700' : 'border-gray-200/60 dark:border-gray-700/60 opacity-60'}">
+				<div class="rounded-lg border {server.enable ? 'border-border bg-card' : 'border-border/60 bg-card/60 opacity-60'}">
 					<!-- Header row: toggle + name + badges -->
 					<div class="flex items-center gap-3 px-4 py-3">
 						<label class="flex items-center cursor-pointer flex-shrink-0" title={server.enable ? 'Disable server' : 'Enable server'}>
@@ -92,37 +92,37 @@
 								type="checkbox"
 								checked={server.enable}
 								onchange={() => onToggleServer(server, !server.enable)}
-								class="size-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 cursor-pointer"
+								class="size-4 rounded border-input bg-transparent text-foreground focus:ring-ring cursor-pointer"
 							/>
 						</label>
 						<div class="min-w-0 flex-1">
 							<div class="flex items-center gap-2">
-								<span class="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">{server.name}</span>
+								<span class="font-medium text-sm text-foreground truncate">{server.name}</span>
 								{#if server.ssl}
-									<span class="inline-flex items-center rounded bg-blue-50 dark:bg-blue-950 px-1.5 py-0 text-[9px] font-bold text-blue-600 dark:text-blue-400 ring-1 ring-inset ring-blue-500/20">TLS</span>
+									<span class="inline-flex items-center rounded bg-primary/10 px-1.5 py-0 text-[9px] font-bold text-primary ring-1 ring-inset ring-primary/20">TLS</span>
 								{/if}
 								{#if !server.enable}
 									<Badge variant="destructive" class="py-0 h-3.5 text-[9px] uppercase tracking-tighter opacity-70">Disabled</Badge>
 								{/if}
 							</div>
-							<div class="mt-0.5 font-mono text-xs text-gray-500 dark:text-gray-400 truncate">
+							<div class="mt-0.5 font-mono text-xs text-muted-foreground truncate">
 								{server.host}:{server.port}
 							</div>
 						</div>
 					</div>
 
 					<!-- Details + actions row -->
-					<div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 px-4 py-2 text-xs text-gray-600 dark:text-gray-400">
+					<div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
 						<span>
-							<span class="text-gray-400 dark:text-gray-500">User:</span>
+							<span class="text-muted-foreground/80">User:</span>
 							<span class="ml-1 font-medium">{server.username || 'anonymous'}</span>
 						</span>
 						<span>
-							<span class="text-gray-400 dark:text-gray-500">Connections:</span>
+							<span class="text-muted-foreground/80">Connections:</span>
 							<span class="ml-1 font-bold">{server.connections}</span>
 						</span>
 						<span>
-							<span class="text-gray-400 dark:text-gray-500">Priority:</span>
+							<span class="text-muted-foreground/80">Priority:</span>
 							<span class="ml-1 font-bold">{server.priority}</span>
 						</span>
 
@@ -144,10 +144,10 @@
 
 					<!-- Inline test result banner -->
 					{#if result}
-						<div class="flex items-center gap-2 border-t px-4 py-2 text-xs
+						<div class="flex items-center gap-2 border-t border-border px-4 py-2 text-xs
 							{result.ok
-								? 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-300'
-								: 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300'
+								? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500'
+								: 'border-destructive bg-destructive/10 text-destructive'
 							}"
 						>
 							{#if result.ok}
@@ -162,7 +162,7 @@
 							<span class="flex-1">{result.message}</span>
 							<button
 								onclick={() => dismissResult(server.name)}
-								class="flex-shrink-0 rounded p-0.5 hover:bg-black/10 dark:hover:bg-white/10"
+								class="flex-shrink-0 rounded p-0.5 hover:bg-muted"
 								aria-label="Dismiss"
 							>
 								<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3">

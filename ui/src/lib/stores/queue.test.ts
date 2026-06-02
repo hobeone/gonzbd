@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // Mock dependencies.
 vi.mock('$lib/api', () => ({
 	fetchQueue: vi.fn(),
-	postAction: vi.fn()
+	postAction: vi.fn(),
+	fetchServerStats: vi.fn().mockResolvedValue({ servers: [] })
 }));
 
 // Captures the handler passed to subscribeWS so tests can simulate WS events.
@@ -12,7 +13,8 @@ vi.mock('./websocket.svelte', () => ({
 	subscribeWS: vi.fn((handler: (event: any) => void) => {
 		capturedWSHandler = handler;
 		return vi.fn();
-	})
+	}),
+	getWSStatus: vi.fn().mockReturnValue(false)
 }));
 
 // Mock ConnectionStore — queue store reports success/failure to it.

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { fetchConfig, setConfig, postAction } from '$lib/api';
-	import { getServerStats } from '$lib/stores/queue.svelte';
+	import { getServerStats, refreshQueue } from '$lib/stores/queue.svelte';
 	import type { ServerSnapshot, ConnSnapshot, ServerConfig } from '$lib/types';
 	import { formatSize as formatBytes, formatSpeed as formatBps } from '$lib/utils';
 	import ServerEditDialog from './config/ServerEditDialog.svelte';
@@ -88,6 +88,7 @@
 	async function unblockServer(name: string) {
 		try {
 			await postAction('status', { name: 'unblock_server', value: name });
+			await refreshQueue();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to unblock server';
 		}
@@ -123,20 +124,20 @@
 
 	<!-- Drawer -->
 	<div
-		class="fixed top-0 right-0 z-50 flex h-full w-full max-w-lg flex-col border-l border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900"
+		class="fixed top-0 right-0 z-50 flex h-full w-full max-w-lg flex-col border-l border-border bg-card shadow-2xl text-foreground"
 	>
 		<!-- Header -->
-		<div class="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-gray-700">
+		<div class="flex items-center justify-between border-b border-border px-5 py-4">
 			<div class="flex items-center gap-3">
 				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-5 text-indigo-500">
 					<path d="M1 4.75C1 3.784 1.784 3 2.75 3h14.5c.966 0 1.75.784 1.75 1.75v10.515a1.75 1.75 0 0 1-1.75 1.75h-1.5c-.078 0-.155-.005-.23-.015H4.48c-.075.01-.152.015-.23.015h-1.5A1.75 1.75 0 0 1 1 15.265V4.75Z" />
 				</svg>
-				<h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">Server Status</h2>
+				<h2 class="text-base font-semibold text-foreground">Server Status</h2>
 			</div>
 			<button
 				onclick={() => (open = false)}
 				aria-label="Close"
-				class="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+				class="rounded-md p-1.5 text-muted-foreground hover:bg-muted"
 			>
 				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-5">
 					<path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" />
@@ -145,25 +146,25 @@
 		</div>
 
 		<!-- Aggregate stats bar -->
-		<div class="grid grid-cols-3 gap-3 border-b border-gray-200 bg-gray-50 px-5 py-3 dark:border-gray-700 dark:bg-gray-800/50">
+		<div class="grid grid-cols-3 gap-3 border-b border-border bg-muted/40 px-5 py-3">
 			<div class="text-center">
-				<div class="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Speed</div>
-				<div class="mt-0.5 text-lg font-bold text-gray-900 dark:text-gray-100">{formatBps(totalBps())}</div>
+				<div class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Speed</div>
+				<div class="mt-0.5 text-lg font-bold text-foreground">{formatBps(totalBps())}</div>
 			</div>
 			<div class="text-center">
-				<div class="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Active</div>
-				<div class="mt-0.5 text-lg font-bold text-gray-900 dark:text-gray-100">{totalActiveConns()} / {totalMaxConns()}</div>
+				<div class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Active</div>
+				<div class="mt-0.5 text-lg font-bold text-foreground">{totalActiveConns()} / {totalMaxConns()}</div>
 			</div>
 			<div class="text-center">
-				<div class="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Servers</div>
-				<div class="mt-0.5 text-lg font-bold text-gray-900 dark:text-gray-100">{servers.length}</div>
+				<div class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Servers</div>
+				<div class="mt-0.5 text-lg font-bold text-foreground">{servers.length}</div>
 			</div>
 		</div>
 
 		<!-- Server list -->
 		<div class="flex-1 overflow-y-auto p-4 space-y-3">
 			{#if error}
-				<div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+				<div class="rounded-lg border border-destructive bg-destructive/10 px-4 py-3 text-sm text-destructive">
 					{error}
 				</div>
 			{/if}
@@ -174,9 +175,9 @@
 				{@const aggrBps = totalBps()}
 				{@const speedPct = aggrBps > 0 ? (server.bps / aggrBps) * 100 : 0}
 
-				<div class="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+				<div class="overflow-hidden rounded-lg border border-border">
 					<!-- Server header -->
-					<div class="flex items-stretch hover:bg-gray-50 dark:hover:bg-gray-800/50">
+					<div class="flex items-stretch hover:bg-muted/40">
 					<button
 						onclick={() => toggleExpanded(server.name)}
 						class="flex flex-1 min-w-0 items-center gap-3 px-4 py-3 text-left"
@@ -197,24 +198,24 @@
 						<!-- Server info -->
 						<div class="min-w-0 flex-1">
 							<div class="flex items-center gap-2">
-								<span class="truncate font-medium text-gray-900 dark:text-gray-100">{server.name}</span>
+								<span class="truncate font-medium text-foreground">{server.name}</span>
 								{#if server.ssl}
-									<span class="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-green-700 dark:bg-green-900 dark:text-green-300">SSL</span>
+									<span class="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-emerald-500">SSL</span>
 								{/if}
 								{#if server.optional}
-									<span class="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-blue-700 dark:bg-blue-900 dark:text-blue-300">Backup</span>
+									<span class="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-primary">Backup</span>
 								{/if}
-								<span class="text-xs text-gray-500 dark:text-gray-400">P{server.priority}</span>
+								<span class="text-xs text-muted-foreground">P{server.priority}</span>
 							</div>
-							<div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+							<div class="mt-0.5 text-xs text-muted-foreground">
 								{server.host}:{server.port}
 							</div>
 						</div>
 
 						<!-- Speed + conn count -->
 						<div class="flex-shrink-0 text-right">
-							<div class="text-sm font-semibold text-gray-900 dark:text-gray-100">{formatBps(server.bps)}</div>
-							<div class="text-xs text-gray-500 dark:text-gray-400">
+							<div class="text-sm font-semibold text-foreground">{formatBps(server.bps)}</div>
+							<div class="text-xs text-muted-foreground">
 								{server.active_conns}/{server.max_connections} conns
 							</div>
 						</div>
@@ -224,7 +225,7 @@
 							xmlns="http://www.w3.org/2000/svg"
 							viewBox="0 0 20 20"
 							fill="currentColor"
-							class="size-4 flex-shrink-0 text-gray-400 transition-transform {isExpanded ? 'rotate-180' : ''}"
+							class="size-4 flex-shrink-0 text-muted-foreground transition-transform {isExpanded ? 'rotate-180' : ''}"
 						>
 							<path fill-rule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" />
 						</svg>
@@ -236,7 +237,7 @@
 						disabled={editLoadingFor === server.name}
 						title="Server settings"
 						aria-label="Edit {server.name} settings"
-						class="flex flex-shrink-0 items-center justify-center px-3 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-50"
+						class="flex flex-shrink-0 items-center justify-center px-3 text-muted-foreground hover:text-foreground disabled:opacity-50"
 					>
 						{#if editLoadingFor === server.name}
 							<svg class="size-4 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -253,9 +254,9 @@
 
 					<!-- Speed proportion bar -->
 					{#if server.enabled && aggrBps > 0}
-						<div class="h-1 bg-gray-100 dark:bg-gray-800">
+						<div class="h-1 bg-muted">
 							<div
-								class="h-full bg-indigo-500 transition-all duration-300"
+								class="h-full bg-primary transition-all duration-300"
 								style="width: {Math.max(speedPct, 1)}%"
 							></div>
 						</div>
@@ -263,16 +264,16 @@
 
 					<!-- Expanded details -->
 					{#if isExpanded}
-						<div class="border-t border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/30">
+						<div class="border-t border-border bg-muted/20">
 							<!-- Stats -->
 							<div class="grid grid-cols-2 gap-x-4 gap-y-1 px-4 py-3 text-xs">
 								<div>
-									<span class="text-gray-500 dark:text-gray-400">Total Downloaded:</span>
-									<span class="ml-1 font-medium text-gray-900 dark:text-gray-100">{formatBytes(server.total_bytes)}</span>
+									<span class="text-muted-foreground">Total Downloaded:</span>
+									<span class="ml-1 font-medium text-foreground">{formatBytes(server.total_bytes)}</span>
 								</div>
 								<div>
-									<span class="text-gray-500 dark:text-gray-400">Pipelining:</span>
-									<span class="ml-1 font-medium text-gray-900 dark:text-gray-100">{server.pipelining || 1}</span>
+									<span class="text-muted-foreground">Pipelining:</span>
+									<span class="ml-1 font-medium text-foreground">{server.pipelining || 1}</span>
 								</div>
 							</div>
 
@@ -293,33 +294,33 @@
 							{/if}
 
 							{#if !server.enabled}
-								<div class="mx-4 mb-3 flex items-center gap-2 rounded-md bg-gray-100 px-3 py-2 text-xs dark:bg-gray-800">
-									<span class="font-medium text-gray-600 dark:text-gray-400">Server disabled in configuration</span>
+								<div class="mx-4 mb-3 flex items-center gap-2 rounded-md bg-muted px-3 py-2 text-xs">
+									<span class="font-medium text-muted-foreground">Server disabled in configuration</span>
 								</div>
 							{/if}
 
 							<!-- Per-connection table -->
 							<div class="px-4 pb-3">
-								<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
+								<div class="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
 									Connections
 								</div>
 								<div class="space-y-1">
 									{#each server.connections.toSorted((a, b) => a.index - b.index) as conn (conn.index)}
-										<div class="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs {conn.article_id ? 'bg-white dark:bg-gray-900' : 'bg-transparent'}">
-											<span class="w-6 flex-shrink-0 font-mono text-gray-400 dark:text-gray-500">#{conn.index}</span>
+										<div class="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs {conn.article_id ? 'bg-card' : 'bg-transparent'}">
+											<span class="w-6 flex-shrink-0 font-mono text-muted-foreground">#{conn.index}</span>
 											{#if conn.article_id}
 												<div class="size-1.5 flex-shrink-0 rounded-full bg-emerald-500 animate-pulse"></div>
-												<span class="min-w-0 flex-1 truncate text-gray-700 dark:text-gray-300" title={conn.subject || conn.article_id}>
+												<span class="min-w-0 flex-1 truncate text-foreground" title={conn.subject || conn.article_id}>
 													{conn.subject || conn.article_id}
 												</span>
-												<span class="flex-shrink-0 text-gray-400 dark:text-gray-500">{formatBytes(conn.bytes)}</span>
-												<span class="flex-shrink-0 font-mono text-gray-400 dark:text-gray-500">{connDuration(conn)}</span>
+												<span class="flex-shrink-0 text-muted-foreground">{formatBytes(conn.bytes)}</span>
+												<span class="flex-shrink-0 font-mono text-muted-foreground">{connDuration(conn)}</span>
 											{:else if conn.connected}
 												<div class="size-1.5 flex-shrink-0 rounded-full bg-blue-400 dark:bg-blue-500"></div>
-												<span class="text-gray-400 dark:text-gray-500">Idle</span>
+												<span class="text-muted-foreground">Idle</span>
 											{:else}
-												<div class="size-1.5 flex-shrink-0 rounded-full bg-gray-300 dark:bg-gray-600"></div>
-												<span class="text-gray-400 dark:text-gray-500">Disconnected</span>
+												<div class="size-1.5 flex-shrink-0 rounded-full bg-muted-foreground/30"></div>
+												<span class="text-muted-foreground">Disconnected</span>
 											{/if}
 										</div>
 									{/each}
@@ -330,7 +331,7 @@
 				</div>
 			{:else}
 				{#if !error}
-					<div class="py-12 text-center text-sm text-gray-500 dark:text-gray-400">
+					<div class="py-12 text-center text-sm text-muted-foreground">
 						No servers configured
 					</div>
 				{/if}
@@ -338,7 +339,7 @@
 		</div>
 
 		<!-- Footer -->
-		<div class="border-t border-gray-200 bg-gray-50 px-5 py-3 text-xs text-gray-400 dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-500">
+		<div class="border-t border-border bg-muted/40 px-5 py-3 text-xs text-muted-foreground">
 			Auto-updating via WebSocket
 		</div>
 	</div>

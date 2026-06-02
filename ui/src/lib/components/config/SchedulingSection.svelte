@@ -28,13 +28,13 @@
 
 	<div class="space-y-4">
 		{#if configData.schedules.length === 0}
-			<div class="rounded-lg border border-dashed p-8 text-center text-sm text-gray-500 dark:text-gray-400">
+			<div class="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground bg-card/50">
 				No schedules configured.
 			</div>
 		{:else}
 			<div class="overflow-hidden rounded-md border">
 				<table class="w-full text-left text-sm">
-					<thead class="bg-gray-50 dark:bg-gray-800 text-xs uppercase text-gray-500 dark:text-gray-400">
+					<thead class="bg-muted/40 text-xs uppercase text-muted-foreground">
 						<tr>
 							<th class="px-4 py-2">Name</th>
 							<th class="px-4 py-2">Time</th>
@@ -46,12 +46,12 @@
 						{#each configData.schedules as sched (sched.name)}
 							<tr class={sched.enabled ? '' : 'opacity-50'}>
 								<td class="px-4 py-3 font-medium">{sched.name}</td>
-								<td class="px-4 py-3 text-gray-600 dark:text-gray-400 font-mono text-xs">{sched.hour}:{sched.minute} ({sched.dayofweek})</td>
+								<td class="px-4 py-3 text-muted-foreground font-mono text-xs">{sched.hour}:{sched.minute} ({sched.dayofweek})</td>
 								<td class="px-4 py-3 uppercase text-xs font-bold">{sched.action}</td>
 								<td class="px-4 py-3 text-right">
 									<div class="flex justify-end gap-1">
 										<Button variant="ghost" size="xs" onclick={() => onEditSchedule(sched)}>Edit</Button>
-										<Button variant="ghost" size="xs" class="text-red-600 dark:text-red-400" onclick={() => onDeleteSchedule(sched.name)}>Delete</Button>
+										<Button variant="ghost" size="xs" class="text-destructive" onclick={() => onDeleteSchedule(sched.name)}>Delete</Button>
 									</div>
 								</td>
 							</tr>

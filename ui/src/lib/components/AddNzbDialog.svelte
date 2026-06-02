@@ -4,6 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { uploadNzb, postAction, fetchCategories } from '$lib/api';
+	import { refreshQueue } from '$lib/stores/queue.svelte';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -47,6 +48,7 @@
 			if (password) params.password = password;
 
 			await uploadNzb(files[0], params);
+			await refreshQueue();
 			open = false;
 		} catch (e) {
 			result = { ok: false, message: e instanceof Error ? e.message : String(e) };
@@ -66,6 +68,7 @@
 			if (password) params.password = password;
 
 			await postAction('addurl', params);
+			await refreshQueue();
 			open = false;
 		} catch (e) {
 			result = { ok: false, message: e instanceof Error ? e.message : String(e) };
@@ -93,27 +96,27 @@
 	<Dialog.Portal>
 		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50" />
 		<Dialog.Content
-			class="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white dark:bg-gray-900 p-6 shadow-lg"
+			class="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-card p-6 shadow-lg text-foreground"
 			ondrop={handleDrop}
 			ondragover={handleDragOver}
 			ondragleave={() => (dragging = false)}
 		>
 			<Dialog.Title class="text-lg font-semibold">Add NZB</Dialog.Title>
-			<Dialog.Description class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+			<Dialog.Description class="mt-1 text-sm text-muted-foreground">
 				Upload an NZB file or paste a URL.
 			</Dialog.Description>
 
 			<Tabs.Root bind:value={activeTab} class="mt-4">
-				<Tabs.List class="flex gap-1 border-b">
+				<Tabs.List class="flex gap-1 border-b border-border">
 					<Tabs.Trigger
 						value="file"
-						class="border-b-2 px-3 py-1.5 text-sm font-medium data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 data-[state=inactive]:border-transparent data-[state=inactive]:text-gray-500 dark:data-[state=inactive]:text-gray-400"
+						class="border-b-2 px-3 py-1.5 text-sm font-medium data-[state=active]:border-primary data-[state=active]:text-primary data-[state=inactive]:border-transparent data-[state=inactive]:text-muted-foreground"
 					>
 						File
 					</Tabs.Trigger>
 					<Tabs.Trigger
 						value="url"
-						class="border-b-2 px-3 py-1.5 text-sm font-medium data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 data-[state=inactive]:border-transparent data-[state=inactive]:text-gray-500 dark:data-[state=inactive]:text-gray-400"
+						class="border-b-2 px-3 py-1.5 text-sm font-medium data-[state=active]:border-primary data-[state=active]:text-primary data-[state=inactive]:border-transparent data-[state=inactive]:text-muted-foreground"
 					>
 						URL
 					</Tabs.Trigger>
@@ -121,7 +124,7 @@
 
 				<div class="mt-4 grid grid-cols-2 gap-4">
 					<div class="space-y-1.5">
-						<label for="category" class="text-xs font-medium text-gray-500 dark:text-gray-400">Category</label>
+						<label for="category" class="text-xs font-medium text-muted-foreground">Category</label>
 						<select
 							id="category"
 							bind:value={category}
@@ -133,7 +136,7 @@
 						</select>
 					</div>
 					<div class="space-y-1.5">
-						<label for="password" class="text-xs font-medium text-gray-500 dark:text-gray-400">Password</label>
+						<label for="password" class="text-xs font-medium text-muted-foreground">Password</label>
 						<Input
 							id="password"
 							type="text"
@@ -147,18 +150,18 @@
 				<Tabs.Content value="file" class="mt-4">
 					<label
 						class="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-8 transition-colors
-						{dragging ? 'border-blue-500 bg-blue-50 dark:bg-blue-950' : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'}"
+						{dragging ? 'border-primary bg-primary/10' : 'border-border hover:border-muted-foreground'}"
 					>
-						<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="mb-2 size-8 text-gray-400 dark:text-gray-500">
+						<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="mb-2 size-8 text-muted-foreground">
 							<path d="M9.25 13.25a.75.75 0 0 0 1.5 0V4.636l2.955 3.129a.75.75 0 0 0 1.09-1.03l-4.25-4.5a.75.75 0 0 0-1.09 0l-4.25 4.5a.75.75 0 1 0 1.09 1.03L9.25 4.636v8.614Z" />
 							<path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
 						</svg>
 						{#if files && files.length > 0}
-							<span class="block w-full max-w-[200px] sm:max-w-xs text-sm font-medium text-gray-900 dark:text-gray-100 truncate text-center" title={files[0].name}>{files[0].name}</span>
-							<span class="mt-1 text-xs text-gray-500 dark:text-gray-400">{(files[0].size / 1024).toFixed(1)} KB</span>
+							<span class="block w-full max-w-[200px] sm:max-w-xs text-sm font-medium text-foreground truncate text-center" title={files[0].name}>{files[0].name}</span>
+							<span class="mt-1 text-xs text-muted-foreground">{(files[0].size / 1024).toFixed(1)} KB</span>
 						{:else}
-							<span class="text-sm text-gray-600 dark:text-gray-400">Drop NZB file here or click to browse</span>
-							<span class="mt-1 text-xs text-gray-400 dark:text-gray-500">.nzb files only</span>
+							<span class="text-sm text-muted-foreground">Drop NZB file here or click to browse</span>
+							<span class="mt-1 text-xs text-muted-foreground/80">.nzb files only</span>
 						{/if}
 						<input
 							type="file"
@@ -177,11 +180,11 @@
 				</Tabs.Content>
 
 				<Tabs.Content value="url" class="mt-4">
-					<input
+					<Input
 						type="url"
 						bind:value={url}
 						placeholder="https://example.com/file.nzb"
-						class="w-full rounded-md border px-3 py-2 text-sm bg-transparent focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+						class="w-full h-9"
 						onkeydown={(e) => e.key === 'Enter' && submitUrl()}
 					/>
 					<Button
@@ -195,7 +198,7 @@
 			</Tabs.Root>
 
 			{#if result}
-				<p class="mt-3 text-sm {result.ok ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}">
+				<p class="mt-3 text-sm {result.ok ? 'text-green-600 dark:text-green-400' : 'text-destructive'}">
 					{result.message}
 				</p>
 			{/if}

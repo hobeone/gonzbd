@@ -15,7 +15,7 @@
 	bind:ref
 	data-slot="progress"
 	class={cn(
-		"relative flex h-2 w-full items-center overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800",
+		"relative flex h-2 w-full items-center overflow-hidden rounded-full bg-muted",
 		className
 	)}
 	{value}
@@ -24,7 +24,7 @@
 >
 	<div
 		data-slot="progress-indicator"
-		class="h-full w-full flex-1 bg-blue-600 transition-all dark:bg-blue-500"
+		class="h-full w-full flex-1 bg-primary transition-all"
 		style="transform: translateX(-{100 - (100 * (value ?? 0)) / (max ?? 1)}%)"
 	></div>
 </ProgressPrimitive.Root>

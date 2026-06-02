@@ -4,7 +4,8 @@ import type {
 	WarningsResponse,
 	StatusResponse,
 	VersionResponse,
-	ConfigResponse
+	ConfigResponse,
+	ServerStatsResponse
 } from './types';
 import { reportAuthExpired, isAuthExpired } from './stores/connection.svelte';
 import { getRedirectUrl } from '$lib/utils';
@@ -90,6 +91,10 @@ export async function fetchHistory(
 
 export async function fetchWarnings(): Promise<WarningsResponse> {
 	return fetchJSON<WarningsResponse>(apiUrl('warnings'));
+}
+
+export async function fetchServerStats(): Promise<ServerStatsResponse> {
+	return fetchJSON<ServerStatsResponse>(apiUrl('server_stats'));
 }
 
 export async function fetchScripts(): Promise<string[]> {

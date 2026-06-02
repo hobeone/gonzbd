@@ -111,6 +111,7 @@ class HistoryStore {
 	async retryJob(nzoId: string) {
 		await postAction('history', { name: 'retry', value: nzoId });
 		await this.poll();
+		refreshQueue();
 	}
 }
 
