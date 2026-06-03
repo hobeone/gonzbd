@@ -328,20 +328,13 @@ func (p *PostProcessor) popWithPause() (*Job, bool) {
 	}
 }
 
-// processJob runs all registered stages in order for job.
-// Stage errors are recorded but do not abort the pipeline.
+// buildPreambleLog builds and returns the synthetic preamble StageLogEntries
+// that are prepended to job.StageLog before any pipeline stages run. It always
+// returns a "download" entry and, when the job has DirectUnpack data, a
+// "direct unpack" entry as well.
 //
-// If the job already carries a FailMsg (e.g. "beyond repair" from the
-// download health gate), all processing stages are skipped. The job
-// still flows through to history so the user sees the failure.
-func (p *PostProcessor) processJob(job *Job) {
-	job.OnOutput = func(tool, line string) {
-		if p.onOutput != nil {
-			p.onOutput(job.Queue.ID, tool, line)
-		}
-	}
-	p.log.Info("postproc: processing job", "job", job.Queue.ID, "name", job.Queue.Name)
-
+// The caller is responsible for appending the returned slice to job.StageLog.
+func buildPreambleLog(job *Job) []StageLogEntry {
 	// Build a synthetic "download" stage that captures the files present
 	// in the download directory before any stages run. This gives the
 	// history UI a clear view of the starting state for debugging.
@@ -354,12 +347,14 @@ func (p *PostProcessor) processJob(job *Job) {
 		dlElapsed = job.Queue.DownloadFinished.Sub(dlStarted)
 	}
 	dlLines := buildDownloadFileList(job)
-	job.StageLog = append(job.StageLog, StageLogEntry{
-		Stage:   "download",
-		Started: dlStarted,
-		Elapsed: dlElapsed,
-		Lines:   dlLines,
-	})
+	entries := []StageLogEntry{
+		{
+			Stage:   "download",
+			Started: dlStarted,
+			Elapsed: dlElapsed,
+			Lines:   dlLines,
+		},
+	}
 
 	// Direct Unpack stage log: show what was extracted during download
 	// and what failed, so the user can see the outcome in the history UI.
@@ -382,7 +377,7 @@ func (p *PostProcessor) processJob(job *Job) {
 				fmt.Sprintf("Error: Set %q failed → %s (will retry in normal unpack)",
 					setname, failure.Reason))
 		}
-		job.StageLog = append(job.StageLog, StageLogEntry{
+		entries = append(entries, StageLogEntry{
 			Stage:   "direct unpack",
 			Started: time.Now(),
 			// Elapsed is zero — DU ran concurrently with download,
@@ -390,6 +385,178 @@ func (p *PostProcessor) processJob(job *Job) {
 			Lines: duLines,
 		})
 	}
+
+	return entries
+}
+
+// buildSummaryEntry builds the final synthetic "summary" StageLogEntry for the
+// history/UI. This gives the expanded history row a final card showing the
+// pipeline at a glance.
+//
+// The caller is responsible for appending the returned entry to job.StageLog.
+func buildSummaryEntry(job *Job) StageLogEntry {
+	// Build a synthetic "summary" stage for the history/UI. This gives the
+	// expanded history row a final card showing the pipeline at a glance.
+	var summaryLines []string
+	var pipelineStart, pipelineEnd time.Time
+	for _, sl := range job.StageLog {
+		// Track overall pipeline start/end from individual stage timings.
+		if pipelineStart.IsZero() || sl.Started.Before(pipelineStart) {
+			pipelineStart = sl.Started
+		}
+		stageEnd := sl.Started.Add(sl.Elapsed)
+		if stageEnd.After(pipelineEnd) {
+			pipelineEnd = stageEnd
+		}
+		symbol := "✓"
+		detail := fmt.Sprintf("%.1fs", sl.Elapsed.Seconds())
+		if sl.Err != nil {
+			symbol = "✗"
+			detail += " — " + sl.Err.Error()
+		}
+		summaryLines = append(summaryLines, fmt.Sprintf("%s %s (%s)", symbol, sl.Stage, detail))
+	}
+	totalDuration := pipelineEnd.Sub(pipelineStart)
+	finalStatus := "Completed"
+	if job.FailMsg != "" || job.ParError || job.UnpackError {
+		finalStatus = "Failed"
+	}
+	header := fmt.Sprintf("Pipeline %s in %.1fs", finalStatus, totalDuration.Seconds())
+	if job.FinalDir != "" {
+		header += " → " + job.FinalDir
+	}
+	summaryLines = append([]string{header}, summaryLines...)
+
+	// Append the final file listing so the user can see what ended up
+	// in the output directory.
+	if finalFiles := buildFinalFileList(job); len(finalFiles) > 0 {
+		summaryLines = append(summaryLines, "") // blank separator
+		summaryLines = append(summaryLines, finalFiles...)
+	}
+
+	return StageLogEntry{
+		Stage:   "summary",
+		Started: pipelineEnd,
+		Elapsed: totalDuration,
+		Lines:   summaryLines,
+	}
+}
+
+// runStage executes a single stage for job. It handles the PP-level skip
+// check, status updates, timing, output capture, and context-cancellation
+// detection. The returned bool is true when the pipeline should abort because
+// the worker context was cancelled mid-stage.
+//
+// The caller is responsible for appending the returned StageLogEntry to
+// job.StageLog and breaking out of the stage loop when abort is true.
+func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (StageLogEntry, bool) {
+	// PP enforcement (M1): skip stages above the job's post-processing
+	// level. SABnzbd PP levels are cumulative:
+	//   0 = download only (skip repair + unpack)
+	//   1 = +repair (par2 verify/repair)
+	//   2 = +unpack (also does repair)
+	//   3 = +delete (repair + unpack + cleanup)
+	// Quickcheck and repair require PP ≥ 1; unpack requires PP ≥ 2.
+	// Other stages (deobfuscate, sort, finalize, script) always run.
+	if shouldSkipForPP(stage.Name(), job.Queue.PP) {
+		p.log.Info("postproc: skipping stage (PP level)",
+			"stage", stage.Name(),
+			"job", job.Queue.ID,
+			"pp", job.Queue.PP,
+		)
+		return StageLogEntry{
+			Stage:   stage.Name(),
+			Started: time.Now(),
+			Lines:   []string{fmt.Sprintf("Skipped: PP=%d (stage requires higher PP level)", job.Queue.PP)},
+		}, false
+	}
+
+	if p.statusUpdater != nil {
+		var status constants.Status
+		switch stage.Name() {
+		case "repair":
+			status = constants.StatusVerifying
+		case "unpack":
+			status = constants.StatusExtracting
+		case "finalize":
+			status = constants.StatusMoving
+		default:
+			status = constants.StatusRunning
+		}
+		p.statusUpdater(job.Queue.ID, status)
+	}
+
+	entry := StageLogEntry{
+		Stage:   stage.Name(),
+		Started: time.Now(),
+	}
+
+	err := stage.Run(ctx, job)
+	entry.Elapsed = time.Since(entry.Started)
+	entry.Err = err
+
+	// Capture any tool output lines the stage deposited.
+	if len(job.OutputLines) > 0 {
+		entry.Lines = append(entry.Lines, job.OutputLines...)
+		job.OutputLines = job.OutputLines[:0]
+	}
+
+	if err != nil {
+		// Stage errors are recorded but do NOT abort the pipeline.
+		// Each stage self-gates based on job flags (ParError, UnpackError,
+		// FailMsg) to decide whether to skip when a prior stage has failed.
+		// This matches Python's behavior where ALL stages run (including
+		// the user script) even when repair/unpack fails — the script
+		// receives the failure status code so automation tools (Sonarr,
+		// Radarr) can handle the failure.
+		p.log.Warn("postproc: stage failed, continuing pipeline",
+			"stage", stage.Name(),
+			"job", job.Queue.ID,
+			"err", err,
+		)
+	} else {
+		p.log.Info("postproc: stage done",
+			"stage", stage.Name(),
+			"job", job.Queue.ID,
+			"elapsed", entry.Elapsed,
+		)
+	}
+
+	// If the worker context was cancelled mid-stage, stop running further
+	// stages — the stage itself should have returned early, but we don't
+	// force it to. Context cancellation is the ONLY reason to abort.
+	select {
+	case <-ctx.Done():
+		p.log.Info("postproc: worker context cancelled, aborting remaining stages",
+			"job", job.Queue.ID,
+		)
+		return entry, true
+	default:
+	}
+
+	// Note: job.NeedRequeue is set by the repair stage when par2
+	// reports insufficient blocks or a corrupt main file. It is
+	// recorded for informational purposes (history/UI) but no longer
+	// aborts the pipeline — downstream stages (unpack, finalize,
+	// script) still run so the job completes to history.
+	return entry, false
+}
+
+// processJob runs all registered stages in order for job.
+// Stage errors are recorded but do not abort the pipeline.
+//
+// If the job already carries a FailMsg (e.g. "beyond repair" from the
+// download health gate), all processing stages are skipped. The job
+// still flows through to history so the user sees the failure.
+func (p *PostProcessor) processJob(job *Job) {
+	job.OnOutput = func(tool, line string) {
+		if p.onOutput != nil {
+			p.onOutput(job.Queue.ID, tool, line)
+		}
+	}
+	p.log.Info("postproc: processing job", "job", job.Queue.ID, "name", job.Queue.Name)
+
+	job.StageLog = append(job.StageLog, buildPreambleLog(job)...)
 
 	if job.FailMsg != "" {
 		p.log.Warn("postproc: skipping all stages — job already failed",
@@ -431,97 +598,11 @@ func (p *PostProcessor) processJob(job *Job) {
 	}
 
 	for _, stage := range p.stages {
-		// PP enforcement (M1): skip stages above the job's post-processing
-		// level. SABnzbd PP levels are cumulative:
-		//   0 = download only (skip repair + unpack)
-		//   1 = +repair (par2 verify/repair)
-		//   2 = +unpack (also does repair)
-		//   3 = +delete (repair + unpack + cleanup)
-		// Quickcheck and repair require PP ≥ 1; unpack requires PP ≥ 2.
-		// Other stages (deobfuscate, sort, finalize, script) always run.
-		if shouldSkipForPP(stage.Name(), job.Queue.PP) {
-			p.log.Info("postproc: skipping stage (PP level)",
-				"stage", stage.Name(),
-				"job", job.Queue.ID,
-				"pp", job.Queue.PP,
-			)
-			job.StageLog = append(job.StageLog, StageLogEntry{
-				Stage:   stage.Name(),
-				Started: time.Now(),
-				Lines:   []string{fmt.Sprintf("Skipped: PP=%d (stage requires higher PP level)", job.Queue.PP)},
-			})
-			continue
-		}
-
-		if p.statusUpdater != nil {
-			var status constants.Status
-			switch stage.Name() {
-			case "repair":
-				status = constants.StatusVerifying
-			case "unpack":
-				status = constants.StatusExtracting
-			case "finalize":
-				status = constants.StatusMoving
-			default:
-				status = constants.StatusRunning
-			}
-			p.statusUpdater(job.Queue.ID, status)
-		}
-
-		entry := StageLogEntry{
-			Stage:   stage.Name(),
-			Started: time.Now(),
-		}
-
-		err := stage.Run(p.workerCtx, job)
-		entry.Elapsed = time.Since(entry.Started)
-		entry.Err = err
-
-		// Capture any tool output lines the stage deposited.
-		if len(job.OutputLines) > 0 {
-			entry.Lines = append(entry.Lines, job.OutputLines...)
-			job.OutputLines = job.OutputLines[:0]
-		}
-
-		if err != nil {
-			// Stage errors are recorded but do NOT abort the pipeline.
-			// Each stage self-gates based on job flags (ParError, UnpackError,
-			// FailMsg) to decide whether to skip when a prior stage has failed.
-			// This matches Python's behavior where ALL stages run (including
-			// the user script) even when repair/unpack fails — the script
-			// receives the failure status code so automation tools (Sonarr,
-			// Radarr) can handle the failure.
-			p.log.Warn("postproc: stage failed, continuing pipeline",
-				"stage", stage.Name(),
-				"job", job.Queue.ID,
-				"err", err,
-			)
-		} else {
-			p.log.Info("postproc: stage done",
-				"stage", stage.Name(),
-				"job", job.Queue.ID,
-				"elapsed", entry.Elapsed,
-			)
-		}
+		entry, abort := p.runStage(p.workerCtx, stage, job)
 		job.StageLog = append(job.StageLog, entry)
-
-		// If the worker context was cancelled mid-stage, stop running further
-		// stages — the stage itself should have returned early, but we don't
-		// force it to. Context cancellation is the ONLY reason to abort.
-		select {
-		case <-p.workerCtx.Done():
-			p.log.Info("postproc: worker context cancelled, aborting remaining stages",
-				"job", job.Queue.ID,
-			)
+		if abort {
 			return
-		default:
 		}
-
-		// Note: job.NeedRequeue is set by the repair stage when par2
-		// reports insufficient blocks or a corrupt main file. It is
-		// recorded for informational purposes (history/UI) but no longer
-		// aborts the pipeline — downstream stages (unpack, finalize,
-		// script) still run so the job completes to history.
 	}
 
 	p.log.Info("postproc: job complete",
@@ -530,51 +611,7 @@ func (p *PostProcessor) processJob(job *Job) {
 		"fail_msg", job.FailMsg,
 	)
 
-	// Build a synthetic "summary" stage for the history/UI. This gives the
-	// expanded history row a final card showing the pipeline at a glance.
-	var summaryLines []string
-	var pipelineStart, pipelineEnd time.Time
-	for _, sl := range job.StageLog {
-		// Track overall pipeline start/end from individual stage timings.
-		if pipelineStart.IsZero() || sl.Started.Before(pipelineStart) {
-			pipelineStart = sl.Started
-		}
-		stageEnd := sl.Started.Add(sl.Elapsed)
-		if stageEnd.After(pipelineEnd) {
-			pipelineEnd = stageEnd
-		}
-		symbol := "✓"
-		detail := fmt.Sprintf("%.1fs", sl.Elapsed.Seconds())
-		if sl.Err != nil {
-			symbol = "✗"
-			detail += " — " + sl.Err.Error()
-		}
-		summaryLines = append(summaryLines, fmt.Sprintf("%s %s (%s)", symbol, sl.Stage, detail))
-	}
-	totalDuration := pipelineEnd.Sub(pipelineStart)
-	finalStatus := "Completed"
-	if job.FailMsg != "" || job.ParError || job.UnpackError {
-		finalStatus = "Failed"
-	}
-	header := fmt.Sprintf("Pipeline %s in %.1fs", finalStatus, totalDuration.Seconds())
-	if job.FinalDir != "" {
-		header += " → " + job.FinalDir
-	}
-	summaryLines = append([]string{header}, summaryLines...)
-
-	// Append the final file listing so the user can see what ended up
-	// in the output directory.
-	if finalFiles := buildFinalFileList(job); len(finalFiles) > 0 {
-		summaryLines = append(summaryLines, "") // blank separator
-		summaryLines = append(summaryLines, finalFiles...)
-	}
-
-	job.StageLog = append(job.StageLog, StageLogEntry{
-		Stage:   "summary",
-		Started: pipelineEnd,
-		Elapsed: totalDuration,
-		Lines:   summaryLines,
-	})
+	job.StageLog = append(job.StageLog, buildSummaryEntry(job))
 }
 
 // setBusyWithJob updates busy and currentJobID atomically. Used by the
