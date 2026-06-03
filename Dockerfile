@@ -2,12 +2,12 @@
 ARG ALPINE_VERSION=3.23
 
 # ---- Build UI ----
-FROM node:26-alpine${ALPINE_VERSION} AS ui-builder
+FROM oven/bun:alpine AS ui-builder
 WORKDIR /src/ui
-COPY ui/package.json ui/package-lock.json ./
-RUN npm ci
+COPY ui/package.json ui/bun.lock ./
+RUN bun install --frozen-lockfile
 COPY ui/ .
-RUN npm run build
+RUN bun run build
 
 # ---- Build Go binary ----
 FROM golang:1.26-alpine${ALPINE_VERSION} AS go-builder
