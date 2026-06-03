@@ -139,14 +139,7 @@ func inspectViaUnrar(p string, ver int) (Info, error) {
 	stderrStr := stderr.String()
 
 	if err != nil {
-		if strings.Contains(output, "Incorrect password") || strings.Contains(stderrStr, "Incorrect password") ||
-			strings.Contains(output, "password") || strings.Contains(stderrStr, "password") {
-			info.HeaderEncrypted = true
-			info.Encrypted = true
-			return info, nil
-		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 11 {
+		if isPasswordError(err, output, stderrStr) {
 			info.HeaderEncrypted = true
 			info.Encrypted = true
 			return info, nil
@@ -154,22 +147,42 @@ func inspectViaUnrar(p string, ver int) (Info, error) {
 		return info, fmt.Errorf("rarheader: unrar vt failed: %w (stderr: %q)", err, stderrStr)
 	}
 
+	info.Filenames, info.Encrypted = parseUnrarVtOutput(output)
+	return info, nil
+}
+
+// isPasswordError checks if the unrar error, stdout, or stderr indicates
+// a password-related error (incorrect password or missing password).
+func isPasswordError(err error, stdout, stderr string) bool {
+	if strings.Contains(stdout, "Incorrect password") || strings.Contains(stderr, "Incorrect password") ||
+		strings.Contains(stdout, "password") || strings.Contains(stderr, "password") {
+		return true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 11 {
+		return true
+	}
+	return false
+}
+
+// parseUnrarVtOutput parses the stdout of 'unrar vt' to extract filenames
+// and encryption status.
+func parseUnrarVtOutput(output string) (filenames []string, encrypted bool) {
 	lines := strings.Split(output, "\n")
 	var currentName string
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if after, ok := strings.CutPrefix(line, "Name:"); ok {
 			currentName = strings.TrimSpace(after)
-			info.Filenames = append(info.Filenames, sanitizeName(currentName))
+			filenames = append(filenames, sanitizeName(currentName))
 		} else if after, ok := strings.CutPrefix(line, "Flags:"); ok {
 			flags := strings.TrimSpace(after)
 			if strings.Contains(flags, "encrypted") {
-				info.Encrypted = true
+				encrypted = true
 			}
 		}
 	}
-
-	return info, nil
+	return filenames, encrypted
 }
 
 // readMagic opens path, reads up to 8 bytes, and returns the RAR version
