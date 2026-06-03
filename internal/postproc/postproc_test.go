@@ -4,12 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -1080,4 +1086,204 @@ func TestPreCheck_UnsetDirSkipsGuard(t *testing.T) {
 	if stage.CallCount() != 1 {
 		t.Errorf("stage ran %d times, want 1 (unset DownloadDir should not trigger pre-check)", stage.CallCount())
 	}
+}
+
+type mockPPStage struct {
+	name    string
+	runFunc func(ctx context.Context, job *Job) error
+}
+
+func (m *mockPPStage) Name() string                            { return m.name }
+func (m *mockPPStage) Run(ctx context.Context, job *Job) error { return m.runFunc(ctx, job) }
+
+func TestPostProc_HelperMethods(t *testing.T) {
+	t.Parallel()
+
+	t.Run("buildPreambleLog", func(t *testing.T) {
+		now := time.Now()
+		job := &Job{
+			Queue: &queue.Job{
+				ID:               "job1",
+				Name:             "TestJob",
+				DownloadStarted:  now,
+				DownloadFinished: now.Add(5 * time.Second),
+			},
+			DownloadDir: t.TempDir(),
+		}
+
+		// Write a dummy file to the download directory to populate the download file list
+		dummyFile := filepath.Join(job.DownloadDir, "file.txt")
+		if err := os.WriteFile(dummyFile, []byte("test"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Case 1: No Direct Unpack data
+		entries := buildPreambleLog(job)
+		if len(entries) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(entries))
+		}
+		if entries[0].Stage != "download" {
+			t.Errorf("expected stage 'download', got %q", entries[0].Stage)
+		}
+		if entries[0].Elapsed != 5*time.Second {
+			t.Errorf("expected elapsed 5s, got %v", entries[0].Elapsed)
+		}
+
+		// Case 2: With Direct Unpack data
+		job.DirectUnpackSets = map[string]directunpack.SuccessSet{
+			"set1": {
+				ExtractedFiles: []string{filepath.Join(job.DownloadDir, "extracted.txt")},
+				RarParts:       []string{"part1.rar", "part2.rar"},
+			},
+		}
+		job.DirectUnpackFailures = map[string]directunpack.FailedSet{
+			"set2": {Reason: "password error"},
+		}
+
+		entries = buildPreambleLog(job)
+		if len(entries) != 2 {
+			t.Fatalf("expected 2 entries, got %d", len(entries))
+		}
+		if entries[1].Stage != "direct unpack" {
+			t.Errorf("expected stage 'direct unpack', got %q", entries[1].Stage)
+		}
+		// Verify lines content contains the sets/failures information
+		linesStr := strings.Join(entries[1].Lines, "\n")
+		if !strings.Contains(linesStr, `✓ Set "set1": extracted 1 file(s) from 2 volume(s)`) {
+			t.Errorf("expected line showing set1 success, got lines: %v", entries[1].Lines)
+		}
+		if !strings.Contains(linesStr, `Error: Set "set2" failed → password error (will retry in normal unpack)`) {
+			t.Errorf("expected line showing set2 failure, got lines: %v", entries[1].Lines)
+		}
+	})
+
+	t.Run("buildSummaryEntry", func(t *testing.T) {
+		now := time.Now()
+		job := &Job{
+			Queue: &queue.Job{
+				ID: "job1",
+			},
+			StageLog: []StageLogEntry{
+				{
+					Stage:   "repair",
+					Started: now,
+					Elapsed: 1500 * time.Millisecond,
+					Err:     nil,
+				},
+				{
+					Stage:   "unpack",
+					Started: now.Add(2 * time.Second),
+					Elapsed: 2500 * time.Millisecond,
+					Err:     fmt.Errorf("some unpack error"),
+				},
+			},
+			FailMsg:  "Failed",
+			FinalDir: "/final/destination/dir",
+		}
+
+		entry := buildSummaryEntry(job)
+		if entry.Stage != "summary" {
+			t.Errorf("expected stage 'summary', got %q", entry.Stage)
+		}
+		if entry.Elapsed != 4500*time.Millisecond {
+			t.Errorf("expected total duration 4.5s, got %v", entry.Elapsed)
+		}
+
+		linesStr := strings.Join(entry.Lines, "\n")
+		if !strings.Contains(linesStr, "Pipeline Failed in 4.5s → /final/destination/dir") {
+			t.Errorf("expected header line, got: %v", entry.Lines)
+		}
+		if !strings.Contains(linesStr, "✓ repair (1.5s)") {
+			t.Errorf("expected repair line, got: %v", entry.Lines)
+		}
+		if !strings.Contains(linesStr, "✗ unpack (2.5s — some unpack error)") {
+			t.Errorf("expected unpack line, got: %v", entry.Lines)
+		}
+	})
+
+	t.Run("runStage", func(t *testing.T) {
+		var updatedID string
+		var updatedStatus constants.Status
+
+		p := &PostProcessor{
+			log: slog.Default(),
+			statusUpdater: func(id string, status constants.Status) {
+				updatedID = id
+				updatedStatus = status
+			},
+		}
+
+		job := &Job{
+			Queue: &queue.Job{
+				ID: "job1",
+				PP: 0, // PP=0 skips repair
+			},
+		}
+
+		mockStage := &mockPPStage{
+			name: "repair",
+			runFunc: func(ctx context.Context, job *Job) error {
+				return nil
+			},
+		}
+
+		// 1. Skip check
+		entry, abort := p.runStage(t.Context(), mockStage, job)
+		if abort {
+			t.Error("expected abort to be false when skipping stage")
+		}
+		if len(entry.Lines) == 0 || !strings.Contains(entry.Lines[0], "Skipped: PP=0") {
+			t.Errorf("expected skipped log entry, got %v", entry)
+		}
+
+		// 2. Normal success run
+		job.Queue.PP = 3 // PP=3 runs repair
+		var stageRan bool
+		mockStage.runFunc = func(ctx context.Context, job *Job) error {
+			stageRan = true
+			job.OutputLines = append(job.OutputLines, "stage output line")
+			return nil
+		}
+
+		entry, abort = p.runStage(t.Context(), mockStage, job)
+		if abort {
+			t.Error("expected abort to be false")
+		}
+		if !stageRan {
+			t.Error("expected stage.Run to be executed")
+		}
+		if updatedID != "job1" || updatedStatus != constants.StatusVerifying {
+			t.Errorf("expected status update to Verifying, got id=%s status=%s", updatedID, updatedStatus)
+		}
+		if entry.Err != nil {
+			t.Errorf("expected no error, got %v", entry.Err)
+		}
+		if len(entry.Lines) != 1 || entry.Lines[0] != "stage output line" {
+			t.Errorf("expected stage output line in entry lines, got %v", entry.Lines)
+		}
+
+		// 3. Normal error run
+		mockStage.runFunc = func(ctx context.Context, job *Job) error {
+			return fmt.Errorf("stage execution failed")
+		}
+		entry, abort = p.runStage(t.Context(), mockStage, job)
+		if abort {
+			t.Error("expected abort to be false on error")
+		}
+		if entry.Err == nil || entry.Err.Error() != "stage execution failed" {
+			t.Errorf("expected error in entry, got %v", entry.Err)
+		}
+
+		// 4. Abort on cancelled context
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel() // Cancel immediately
+
+		mockStage.runFunc = func(ctx context.Context, job *Job) error {
+			return nil
+		}
+		_, abort = p.runStage(ctx, mockStage, job)
+		if !abort {
+			t.Error("expected abort to be true when context is cancelled")
+		}
+	})
 }
