@@ -22,7 +22,7 @@ import (
 func Handler(apiKeyFn func() string, authCheck AuthCheck) (http.Handler, error) {
 	dist, err := fs.Sub(ui.DistFS, "dist")
 	if err != nil {
-		return nil, fmt.Errorf("web: embedded ui/dist subtree missing — run 'cd ui && npm run build' first: %w", err)
+		return nil, fmt.Errorf("web: embedded ui/dist subtree missing — run 'cd ui && bun run build' first: %w", err)
 	}
 	return NewSPAHandler(dist, apiKeyFn, authCheck), nil
 }

@@ -85,26 +85,26 @@ echo "===================================================="
 total_start=$(start_ms)
 
 # --- Group A: phases that have no dependencies on each other ---
-# Kick all four off immediately; the npm build is the gating dependency
+# Kick all four off immediately; the bun build is the gating dependency
 # for the uitest phase, so we want it running first.
-run_phase "npm-build"      "$LOG_DIR/npm-build.log"      bash -c 'cd ui && npm run build'
+run_phase "bun-build"      "$LOG_DIR/bun-build.log"      bash -c 'cd ui && bun run build'
 run_phase "go-unit"        "$LOG_DIR/go-unit.log"        go test ./...
 run_phase "go-integration" "$LOG_DIR/go-integration.log" go test -tags=integration ./test/integration/...
 
 # UI vitest only runs if node_modules exists (parity with original script).
 if [ -d "ui/node_modules" ]; then
-    run_phase "ui-vitest"  "$LOG_DIR/ui-vitest.log"      bash -c 'cd ui && npm test -- --run'
+    run_phase "ui-vitest"  "$LOG_DIR/ui-vitest.log"      bash -c 'cd ui && bun run test -- --run'
 else
     echo -e "${YELLOW}SKIP${NC}  ui-vitest          (ui/node_modules missing)"
 fi
 
 # --- Wait for the build before launching the dependent uitest phase. ---
 fail=0
-if ! wait_phase "npm-build"; then
+if ! wait_phase "bun-build"; then
     fail=1
 fi
 
-# --- Group B: dependent on npm build ---
+# --- Group B: dependent on bun build ---
 # Only launch the uitest phase if the build succeeded; otherwise the
 # embedded dist would be wrong and the failure would be misleading.
 if [ $fail -eq 0 ] && [ -f "ui/dist/index.html" ]; then
