@@ -90,31 +90,11 @@ func Par2Rename(ctx context.Context, log *slog.Logger, dir string, opts fsutil.S
 			newPath := fsutil.GetUniqueFilename(desiredPath)
 
 			if newPath != desiredPath {
-				// The par2 target already exists. Check whether it has the same
-				// content as the obfuscated file. If so, the obfuscated copy is a
-				// redundant duplicate — delete it rather than producing a .1 file.
-				identical, cerr := contentEqual(path, desiredPath, hash)
-				if cerr != nil {
-					log.Debug("deobfuscate: content check failed, keeping both files",
-						"obfuscated", e.Name(), "existing", trueName, "err", cerr)
-				} else if identical {
-					if rerr := os.Remove(path); rerr != nil {
-						log.Warn("deobfuscate: failed to remove duplicate obfuscated file",
-							"path", path, "err", rerr)
-					} else {
-						log.Info("deobfuscate: deleted duplicate obfuscated file",
-							"deleted", e.Name(),
-							"identical_to", trueName,
-						)
-					}
+				finalPath, skip := resolveConflictingRename(log, path, e.Name(), desiredPath, newPath, hash)
+				if skip {
 					continue
-				} else {
-					log.Warn("deobfuscate: par2 target already exists with different content — renamed to avoid overwriting",
-						"obfuscated", e.Name(),
-						"par2_name", trueName,
-						"renamed_to", filepath.Base(newPath),
-					)
 				}
+				newPath = finalPath
 			}
 
 			r, err := renameRecorded(log, path, newPath, trueName, "deobfuscate: par2-renamed")
@@ -126,4 +106,47 @@ func Par2Rename(ctx context.Context, log *slog.Logger, dir string, opts fsutil.S
 	}
 
 	return renames, nil
+}
+
+// resolveConflictingRename handles the case where the par2-recorded target
+// filename already exists on disk. It compares the obfuscated file against
+// the existing target by hash and returns the final destination path to
+// rename to, or "" if the obfuscated file should be deleted (identical
+// duplicate). The second return value is true when the caller should skip
+// this entry (delete or unresolvable conflict).
+func resolveConflictingRename(
+	log *slog.Logger,
+	path string, // path of the obfuscated source file
+	name string, // entry.Name() for logging
+	desiredPath string, // the par2-recorded target (already exists)
+	newPath string, // the unique-suffix target path GetUniqueFilename returned
+	hash [16]byte,
+) (finalPath string, skip bool) {
+	// The par2 target already exists. Check whether it has the same
+	// content as the obfuscated file. If so, the obfuscated copy is a
+	// redundant duplicate — delete it rather than producing a .1 file.
+	identical, cerr := contentEqual(path, desiredPath, hash)
+	if cerr != nil {
+		log.Debug("deobfuscate: content check failed, keeping both files",
+			"obfuscated", name, "existing", filepath.Base(desiredPath), "err", cerr)
+		return newPath, false
+	}
+	if identical {
+		if rerr := os.Remove(path); rerr != nil {
+			log.Warn("deobfuscate: failed to remove duplicate obfuscated file",
+				"path", path, "err", rerr)
+		} else {
+			log.Info("deobfuscate: deleted duplicate obfuscated file",
+				"deleted", name,
+				"identical_to", filepath.Base(desiredPath),
+			)
+		}
+		return "", true
+	}
+	log.Warn("deobfuscate: par2 target already exists with different content — renamed to avoid overwriting",
+		"obfuscated", name,
+		"par2_name", filepath.Base(desiredPath),
+		"renamed_to", filepath.Base(newPath),
+	)
+	return newPath, false
 }
