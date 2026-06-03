@@ -2,11 +2,11 @@
 # run_tests_parallel.sh - Parallel variant of run_tests.sh.
 #
 # The original script runs four phases head-to-tail:
-#   Go unit -> Go integration -> UI vitest -> npm build -> UI E2E (uitest)
+#   Go unit -> Go integration -> UI vitest -> bun run build -> UI E2E (uitest)
 #
 # Only one real ordering constraint exists: the UI E2E tests embed
 # ui/dist/ via //go:embed at compile time, so they must run AFTER
-# 'npm run build' completes. Everything else is independent.
+# 'bun run build' completes. Everything else is independent.
 #
 # This script kicks off all independent phases concurrently, then runs
 # the E2E tests once the build finishes. Output from each phase is
