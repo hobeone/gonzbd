@@ -1287,3 +1287,69 @@ func TestPostProc_HelperMethods(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// buildSummaryEntry — missing boundary cases
+// ---------------------------------------------------------------------------
+
+// TestBuildSummaryEntry_EmptyStageLog verifies that an empty StageLog produces
+// a valid summary with zero duration, no panic, and "Completed" status.
+func TestBuildSummaryEntry_EmptyStageLog(t *testing.T) {
+	t.Parallel()
+	job := &Job{
+		Queue:    &queue.Job{ID: "empty-log"},
+		StageLog: []StageLogEntry{}, // no stages ran
+	}
+
+	entry := buildSummaryEntry(job)
+
+	if entry.Stage != "summary" {
+		t.Errorf("Stage = %q; want %q", entry.Stage, "summary")
+	}
+	if entry.Elapsed != 0 {
+		t.Errorf("Elapsed = %v; want 0 for empty StageLog", entry.Elapsed)
+	}
+	// No FailMsg, no ParError, no UnpackError → should say "Completed".
+	if len(entry.Lines) == 0 {
+		t.Fatal("Lines should not be empty")
+	}
+	header := entry.Lines[0]
+	if !strings.Contains(header, "Completed") {
+		t.Errorf("header = %q; want 'Completed' for clean job", header)
+	}
+}
+
+// TestBuildSummaryEntry_AllSuccess verifies that a job with all successful
+// stages and a FailMsg of "" produces a "Completed" header.
+func TestBuildSummaryEntry_AllSuccess(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	job := &Job{
+		Queue:    &queue.Job{ID: "all-ok"},
+		FinalDir: "/output/done",
+		StageLog: []StageLogEntry{
+			{Stage: "repair", Started: now, Elapsed: time.Second, Err: nil},
+			{Stage: "unpack", Started: now.Add(time.Second), Elapsed: 2 * time.Second, Err: nil},
+		},
+	}
+
+	entry := buildSummaryEntry(job)
+
+	if entry.Elapsed != 3*time.Second {
+		t.Errorf("Elapsed = %v; want 3s", entry.Elapsed)
+	}
+	linesStr := strings.Join(entry.Lines, "\n")
+	if !strings.Contains(linesStr, "Completed") {
+		t.Errorf("expected 'Completed' in summary, got: %v", entry.Lines)
+	}
+	if !strings.Contains(linesStr, "/output/done") {
+		t.Errorf("expected FinalDir in summary header, got: %v", entry.Lines)
+	}
+	// Verify both stage lines use the success symbol.
+	if !strings.Contains(linesStr, "✓ repair") {
+		t.Errorf("expected '✓ repair' in summary, got: %v", entry.Lines)
+	}
+	if !strings.Contains(linesStr, "✓ unpack") {
+		t.Errorf("expected '✓ unpack' in summary, got: %v", entry.Lines)
+	}
+}
