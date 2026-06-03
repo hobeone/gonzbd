@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -116,31 +117,7 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	var entries []history.Entry
 
 	if nzoIDs != "" {
-		// Fetch individual IDs directly instead of loading the entire
-		// table — avoids memory exhaustion for large history DBs.
-		for _, id := range splitCSV(nzoIDs) {
-			e, err := s.history.Get(r.Context(), id)
-			if err != nil || e == nil {
-				continue
-			}
-			if catFilter != "" && e.Category != catFilter {
-				continue
-			}
-			if statusFilter != "" && e.Status != statusFilter {
-				continue
-			}
-			if failedOnly && e.Status != "Failed" {
-				continue
-			}
-			if search != "" {
-				sLower := strings.ToLower(search)
-				if !strings.Contains(strings.ToLower(e.Name), sLower) &&
-					!strings.Contains(strings.ToLower(e.NzbName), sLower) {
-					continue
-				}
-			}
-			entries = append(entries, *e)
-		}
+		entries = s.fetchEntriesByIDs(r.Context(), nzoIDs, catFilter, statusFilter, search, failedOnly)
 	} else {
 		opts.Start = start
 		opts.Limit = limit
@@ -166,51 +143,11 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	// history entries. SABnzbd moves jobs to history when post-processing
 	// starts (spec §11.3); third-party clients expect this lifecycle.
 	// Only inject for paginated listings (not nzo_ids lookups).
-	if nzoIDs == "" && s.queue != nil {
-		ppJobs := s.queue.Snapshot()
-		for _, j := range ppJobs {
-			if !j.PostProc {
-				continue
-			}
-			// Apply the same filters as regular history entries.
-			if catFilter != "" && j.Category != catFilter {
-				continue
-			}
-			ppStatus := string(j.Status)
-			if failedOnly {
-				continue // PP jobs are not yet failed
-			}
-			if statusFilter != "" && ppStatus != statusFilter {
-				continue
-			}
-			if search != "" {
-				sLower := strings.ToLower(search)
-				if !strings.Contains(strings.ToLower(j.Name), sLower) &&
-					!strings.Contains(strings.ToLower(j.Filename), sLower) {
-					continue
-				}
-			}
-
-			var dlTime int64
-			if !j.DownloadStarted.IsZero() && !j.DownloadFinished.IsZero() {
-				dlTime = int64(j.DownloadFinished.Sub(j.DownloadStarted).Seconds())
-			}
-
-			totalBytes += j.TotalBytes
-			slots = append(slots, historySlot{
-				NzoID:        j.ID,
-				Name:         j.Name,
-				NZBName:      j.Filename,
-				Status:       ppStatus,
-				Category:     j.Category,
-				Size:         humanfmt.Bytes(j.TotalBytes),
-				Bytes:        j.TotalBytes,
-				Downloaded:   j.TotalBytes - j.FailedBytes - j.RemainingBytes,
-				DownloadTime: dlTime,
-				Completed:    0, // not yet completed
-			})
-			totalCount++ // include in total for pagination
-		}
+	if nzoIDs == "" {
+		slots, totalCount, totalBytes = s.injectPostProcJobs(
+			slots, totalCount, totalBytes,
+			catFilter, statusFilter, search, failedOnly,
+		)
 	}
 
 	for _, e := range entries {
@@ -257,6 +194,101 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 			Slots:     slots,
 		},
 	})
+}
+
+// fetchEntriesByIDs retrieves specific history entries by their NZO IDs,
+// applying manual filters since we bypass the database search query.
+func (s *Server) fetchEntriesByIDs(
+	ctx context.Context,
+	nzoIDs string,
+	catFilter, statusFilter, search string,
+	failedOnly bool,
+) []history.Entry {
+	var entries []history.Entry
+	for _, id := range splitCSV(nzoIDs) {
+		e, err := s.history.Get(ctx, id)
+		if err != nil || e == nil {
+			continue
+		}
+		if catFilter != "" && e.Category != catFilter {
+			continue
+		}
+		if statusFilter != "" && e.Status != statusFilter {
+			continue
+		}
+		if failedOnly && e.Status != "Failed" {
+			continue
+		}
+		if search != "" {
+			sLower := strings.ToLower(search)
+			if !strings.Contains(strings.ToLower(e.Name), sLower) &&
+				!strings.Contains(strings.ToLower(e.NzbName), sLower) {
+				continue
+			}
+		}
+		entries = append(entries, *e)
+	}
+	return entries
+}
+
+// injectPostProcJobs adds active post-processing jobs from the queue to the
+// history slots list, applying category, status, and search filters.
+// It returns the updated slots slice, updated totalCount, and updated totalBytes.
+func (s *Server) injectPostProcJobs(
+	slots []historySlot,
+	totalCount int,
+	totalBytes int64,
+	catFilter, statusFilter, search string,
+	failedOnly bool,
+) ([]historySlot, int, int64) {
+	if s.queue == nil {
+		return slots, totalCount, totalBytes
+	}
+	ppJobs := s.queue.Snapshot()
+	for _, j := range ppJobs {
+		if !j.PostProc {
+			continue
+		}
+		// Apply the same filters as regular history entries.
+		if catFilter != "" && j.Category != catFilter {
+			continue
+		}
+		ppStatus := string(j.Status)
+		if failedOnly {
+			continue // PP jobs are not yet failed
+		}
+		if statusFilter != "" && ppStatus != statusFilter {
+			continue
+		}
+		if search != "" {
+			sLower := strings.ToLower(search)
+			if !strings.Contains(strings.ToLower(j.Name), sLower) &&
+				!strings.Contains(strings.ToLower(j.Filename), sLower) {
+				continue
+			}
+		}
+
+		var dlTime int64
+		if !j.DownloadStarted.IsZero() && !j.DownloadFinished.IsZero() {
+			dlTime = int64(j.DownloadFinished.Sub(j.DownloadStarted).Seconds())
+		}
+
+		totalBytes += j.TotalBytes
+		slots = append(slots, historySlot{
+			NzoID:        j.ID,
+			Name:         j.Name,
+			NZBName:      j.Filename,
+			Status:       ppStatus,
+			Category:     j.Category,
+			Size:         humanfmt.Bytes(j.TotalBytes),
+			Bytes:        j.TotalBytes,
+			Downloaded:   j.TotalBytes - j.FailedBytes - j.RemainingBytes,
+			DownloadTime: dlTime,
+			Completed:    0, // not yet completed
+		})
+		totalCount++ // include in total for pagination
+	}
+	return slots, totalCount, totalBytes
 }
 
 // historyDelete removes history entries. value= may be a CSV of NZO IDs,
