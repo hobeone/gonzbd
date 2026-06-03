@@ -158,95 +158,10 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		logf(log, job, slog.LevelInfo, "Found %d non-par2 data file(s) for checksum matching", len(dataFiles))
 
 		for _, set := range sets {
-			main := set.ParseFile()
-			if main == "" {
-				logf(log, job, slog.LevelInfo, "Skipped par2 set %q: no main file", set.Name)
-				continue
-			}
-			if vs.IsVerified(set.Name) {
-				logf(log, job, slog.LevelInfo, "Skipping previously verified set %q", set.Name)
-				job.OutputLines = append(job.OutputLines,
-					fmt.Sprintf("[repair] Skipping previously verified set: %s", set.Name))
-				continue
-			}
-			repairOpts := par2Opts
-			repairOpts.OnLine = func(line string) {
-				if job.OnOutput != nil {
-					job.OnOutput("par2", line)
-				}
-			}
-			repairOpts.OnCommand = func(cmdLine string) {
-				logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
-			}
-
-			// Dispatch: native par2engine vs external par2 binary.
-			// Follows the same pattern as GoUnRAR/UnRAR in stage_unpack.go.
-			res, err := dispatchRepairTool(ctx, log, job, main, dataFiles, repairOpts, useGoPar2Val, goPar2FallbackVal)
-			// Capture par2 tool output for the stage log.
-			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[par2] %s", set.Name))
-			if res.CommandLine != "" {
-				job.OutputLines = append(job.OutputLines, "Command: "+res.CommandLine)
-			}
-			if res.Output != "" {
-				job.OutputLines = append(job.OutputLines,
-					toolOutputLines(res.Output)...)
-			}
-			if err != nil {
-				job.ParError = true
-				vs.MarkVerified(set.Name, false)
-				logf(log, job, slog.LevelWarn, "Error: par2 repair %q failed: %v", set.Name, err)
+			if err := s.processPar2Set(ctx, log, job, set, dataFiles, par2Opts, vs, useGoPar2Val, goPar2FallbackVal); err != nil {
 				if firstErr == nil {
-					firstErr = fmt.Errorf("repair %q: %w", set.Name, err)
+					firstErr = err
 				}
-				continue
-			}
-			if !res.Success {
-				// I3: Not enough recovery blocks — record for informational
-				// purposes but treat as a repair failure so the pipeline
-				// continues (unpack, finalize, script still run).
-				if res.NeedMoreBlocks {
-					job.NeedRequeue = true
-					job.RequeueBlocksNeeded = res.BlocksNeeded
-					job.RequeueReason = fmt.Sprintf(
-						"par2 needs %d more recovery blocks for %q",
-						res.BlocksNeeded, set.Name)
-					logf(log, job, slog.LevelWarn,
-						"Par2 repair %q needs %d more blocks — repair not possible with current data",
-						set.Name, res.BlocksNeeded)
-					job.ParError = true
-					vs.MarkVerified(set.Name, false)
-					if firstErr == nil {
-						firstErr = fmt.Errorf("repair %q: need %d more recovery blocks", set.Name, res.BlocksNeeded)
-					}
-					continue
-				}
-
-				// I4: Main par2 file corrupt/missing — record and continue.
-				if res.Parsed != nil && res.Parsed.Status == par2.StatusInvalidPar2 {
-					job.NeedRequeue = true
-					job.RequeueReason = fmt.Sprintf(
-						"par2 main file corrupt/missing for %q — re-download needed",
-						set.Name)
-					logf(log, job, slog.LevelWarn,
-						"Par2 main file corrupt/missing for %q — repair not possible",
-						set.Name)
-					job.ParError = true
-					vs.MarkVerified(set.Name, false)
-					if firstErr == nil {
-						firstErr = fmt.Errorf("repair %q: main par2 file corrupt or missing", set.Name)
-					}
-					continue
-				}
-
-				job.ParError = true
-				vs.MarkVerified(set.Name, false)
-				logf(log, job, slog.LevelWarn, "Error: par2 repair %q unsuccessful (exit=%d)", set.Name, res.ExitCode)
-				if firstErr == nil {
-					firstErr = fmt.Errorf("repair %q: unsuccessful (exit=%d)", set.Name, res.ExitCode)
-				}
-			} else {
-				recordRepairSuccess(log, set, job, vs, res)
 			}
 		}
 	} else {
@@ -254,6 +169,109 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	return firstErr
+}
+
+// processPar2Set processes a single par2 set: checks verification status, dispatches the repair tool,
+// captures tool output, and handles repair failure/success records.
+func (s *RepairStage) processPar2Set(
+	ctx context.Context,
+	log *slog.Logger,
+	job *Job,
+	set par2.Set,
+	dataFiles []string,
+	par2Opts par2.RunOptions,
+	vs *VerifiedSets,
+	useGoPar2Val, goPar2FallbackVal bool,
+) error {
+	main := set.ParseFile()
+	if main == "" {
+		logf(log, job, slog.LevelInfo, "Skipped par2 set %q: no main file", set.Name)
+		return nil
+	}
+	if vs.IsVerified(set.Name) {
+		logf(log, job, slog.LevelInfo, "Skipping previously verified set %q", set.Name)
+		job.OutputLines = append(job.OutputLines,
+			fmt.Sprintf("[repair] Skipping previously verified set: %s", set.Name))
+		return nil
+	}
+
+	repairOpts := par2Opts
+	repairOpts.OnLine = func(line string) {
+		if job.OnOutput != nil {
+			job.OnOutput("par2", line)
+		}
+	}
+	repairOpts.OnCommand = func(cmdLine string) {
+		logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+	}
+
+	// Dispatch: native par2engine vs external par2 binary.
+	res, err := dispatchRepairTool(ctx, log, job, main, dataFiles, repairOpts, useGoPar2Val, goPar2FallbackVal)
+
+	// Capture par2 tool output for the stage log.
+	job.OutputLines = append(job.OutputLines, fmt.Sprintf("[par2] %s", set.Name))
+	if res.CommandLine != "" {
+		job.OutputLines = append(job.OutputLines, "Command: "+res.CommandLine)
+	}
+	if res.Output != "" {
+		job.OutputLines = append(job.OutputLines, toolOutputLines(res.Output)...)
+	}
+
+	return s.handleRepairResult(log, job, set, vs, res, err)
+}
+
+// handleRepairResult evaluates the repair result: classifies errors, records failures,
+// or registers successful repairs in job state.
+func (s *RepairStage) handleRepairResult(
+	log *slog.Logger,
+	job *Job,
+	set par2.Set,
+	vs *VerifiedSets,
+	res par2.RepairResult,
+	err error,
+) error {
+	if err != nil {
+		job.ParError = true
+		vs.MarkVerified(set.Name, false)
+		logf(log, job, slog.LevelWarn, "Error: par2 repair %q failed: %v", set.Name, err)
+		return fmt.Errorf("repair %q: %w", set.Name, err)
+	}
+
+	if !res.Success {
+		job.ParError = true
+		vs.MarkVerified(set.Name, false)
+
+		// I3: Not enough recovery blocks
+		if res.NeedMoreBlocks {
+			job.NeedRequeue = true
+			job.RequeueBlocksNeeded = res.BlocksNeeded
+			job.RequeueReason = fmt.Sprintf(
+				"par2 needs %d more recovery blocks for %q",
+				res.BlocksNeeded, set.Name)
+			logf(log, job, slog.LevelWarn,
+				"Par2 repair %q needs %d more blocks — repair not possible with current data",
+				set.Name, res.BlocksNeeded)
+			return fmt.Errorf("repair %q: need %d more recovery blocks", set.Name, res.BlocksNeeded)
+		}
+
+		// I4: Main par2 file corrupt/missing
+		if res.Parsed != nil && res.Parsed.Status == par2.StatusInvalidPar2 {
+			job.NeedRequeue = true
+			job.RequeueReason = fmt.Sprintf(
+				"par2 main file corrupt/missing for %q — re-download needed",
+				set.Name)
+			logf(log, job, slog.LevelWarn,
+				"Par2 main file corrupt/missing for %q — repair not possible",
+				set.Name)
+			return fmt.Errorf("repair %q: main par2 file corrupt or missing", set.Name)
+		}
+
+		logf(log, job, slog.LevelWarn, "Error: par2 repair %q unsuccessful (exit=%d)", set.Name, res.ExitCode)
+		return fmt.Errorf("repair %q: unsuccessful (exit=%d)", set.Name, res.ExitCode)
+	}
+
+	recordRepairSuccess(log, set, job, vs, res)
+	return nil
 }
 
 // dispatchRepairTool selects and runs either the native Go par2engine or the
