@@ -93,108 +93,118 @@
 	}
 </script>
 
-<tr class="border-b hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer text-gray-900 dark:text-gray-100" onclick={toggle}>
-	<td class="px-4 py-3 max-w-[200px] sm:max-w-xs md:max-w-sm lg:max-w-md xl:max-w-lg">
+<tr class="border-b border-m3-outline/10 hover:bg-m3-surface-variant/25 text-m3-on-surface cursor-pointer transition-colors" onclick={toggle}>
+	<td class="px-5 py-3.5 max-w-[200px] sm:max-w-xs md:max-w-sm lg:max-w-md xl:max-w-lg">
 		<div class="flex items-center gap-2">
-			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4 shrink-0 text-gray-400 transition-transform {expanded ? 'rotate-90' : ''}">
-				<path d="M5.75 3a.75.75 0 0 0-.75.75v8.5c0 .414.336.75.75.75h.5a.75.75 0 0 0 .75-.75V3.75a.75.75 0 0 0-.75-.75h-.5ZM10.25 3a.75.75 0 0 0-.75.75v8.5c0 .414.336.75.75.75h.5a.75.75 0 0 0 .75-.75V3.75a.75.75 0 0 0-.75-.75h-.5Z" class="hidden" />
-				<path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z" />
-			</svg>
-			<div class="font-medium truncate" title={slot.name}>{slot.name}</div>
+			<span class="material-symbols-outlined text-lg text-m3-on-surface-variant/80 transition-transform duration-200 {expanded ? 'rotate-90' : ''} select-none">chevron_right</span>
+			<div class="font-semibold truncate text-sm" title={slot.name}>{slot.name}</div>
 		</div>
 		{#if slot.fail_message}
-			<div class="ml-6 mt-0.5 text-xs text-red-600 truncate" title={slot.fail_message}>{slot.fail_message}</div>
+			<div class="ml-7 mt-0.5 text-xs text-destructive truncate font-semibold" title={slot.fail_message}>{slot.fail_message}</div>
 		{/if}
 	</td>
-	<td class="px-4 py-3 text-sm">{slot.size}</td>
-	<td class="px-4 py-3">
-		<Badge variant={statusVariant()} class="text-xs">
+	<td class="px-5 py-3.5 text-sm font-medium">{slot.size}</td>
+	<td class="px-5 py-3.5">
+		<Badge variant={statusVariant()} class="text-xs font-semibold px-2 py-0.5 rounded-full">
 			{slot.status}
 		</Badge>
 	</td>
-	<td class="px-4 py-3 text-sm">{slot.category || '*'}</td>
-	<td class="px-4 py-3 text-sm">{completedDate()}</td>
-	<td class="px-4 py-3 flex gap-1" onclick={(e) => e.stopPropagation()}>
-		{#if slot.status === 'Failed'}
-			<Button variant="ghost" size="icon-xs" onclick={retry} disabled={acting} title="Retry">
-				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3.5 text-blue-600">
-					<path fill-rule="evenodd" d="M13.836 2.477a.75.75 0 0 1 .75.75v3.182a.75.75 0 0 1-.75.75h-3.182a.75.75 0 0 1 0-1.5h1.371A6.002 6.002 0 0 0 2.5 8c0 .88.192 1.715.534 2.464a.75.75 0 1 1-1.37.62A7.502 7.502 0 0 1 1 8a7.502 7.502 0 0 1 11.215-6.527V1.227a.75.75 0 0 1 .75-.75h.871ZM1 8c0-.88.192-1.715.534-2.464a.75.75 0 1 0-1.37-.62A7.502 7.502 0 0 0 1 8a7.502 7.502 0 0 0 11.215 6.527v.246a.75.75 0 0 0 1.5 0v-3.182a.75.75 0 0 0-.75-.75h-3.182a.75.75 0 0 0 0 1.5h1.371A6.002 6.002 0 0 1 1 8Z" clip-rule="evenodd" />
-				</svg>
+	<td class="px-5 py-3.5 text-sm font-semibold">{slot.category || '*'}</td>
+	<td class="px-5 py-3.5 text-sm font-medium">{completedDate()}</td>
+	<td class="px-5 py-3.5">
+		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+		<div class="flex gap-1 justify-end" onclick={(e) => e.stopPropagation()}>
+			{#if slot.status === 'Failed'}
+				<Button
+					variant="ghost"
+					size="icon-xs"
+					onclick={retry}
+					disabled={acting}
+					class="rounded-full text-m3-primary hover:bg-m3-primary/10 transition-colors"
+					title="Retry"
+				>
+					<span class="material-symbols-outlined text-lg leading-none">replay</span>
+				</Button>
+			{/if}
+			<Button
+				variant="ghost"
+				size="icon-xs"
+				onclick={onremove}
+				disabled={acting}
+				class="rounded-full text-destructive hover:bg-destructive/10 transition-colors"
+				title="Delete"
+			>
+				<span class="material-symbols-outlined text-lg leading-none">delete</span>
 			</Button>
-		{/if}
-		<Button variant="ghost" size="icon-xs" onclick={onremove} disabled={acting} title="Delete">
-			<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3.5 text-red-500">
-				<path fill-rule="evenodd" d="M5 3.25V4H2.75a.75.75 0 0 0 0 1.5h.3l.815 8.15A1.5 1.5 0 0 0 5.357 15h5.285a1.5 1.5 0 0 0 1.493-1.35l.815-8.15h.3a.75.75 0 0 0 0-1.5H11v-.75A2.25 2.25 0 0 0 8.75 1h-1.5A2.25 2.25 0 0 0 5 3.25Zm2.25-.75a.75.75 0 0 0-.75.75V4h3v-.75a.75.75 0 0 0-.75-.75h-1.5ZM6.05 6a.75.75 0 0 1 .787.713l.275 5.5a.75.75 0 0 1-1.498.075l-.275-5.5A.75.75 0 0 1 6.05 6Zm3.9 0a.75.75 0 0 1 .712.787l-.275 5.5a.75.75 0 0 1-1.498-.075l.275-5.5a.75.75 0 0 1 .786-.711Z" clip-rule="evenodd" />
-			</svg>
-		</Button>
+		</div>
 	</td>
 </tr>
 
 {#if expanded}
-	<tr class="bg-gray-50/50 dark:bg-gray-900/50">
-		<td colspan="6" class="px-4 py-4">
+	<tr class="border-b border-m3-outline/10 bg-m3-surface-variant/15 text-m3-on-surface">
+		<td colspan="6" class="px-6 py-4">
 			{#if slot.fail_message}
-				<div class="mb-4 rounded-md border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 px-4 py-3">
-					<div class="text-xs font-semibold uppercase tracking-wider text-red-600 dark:text-red-400">Failure Reason</div>
-					<div class="mt-1 text-sm text-red-700 dark:text-red-300">{slot.fail_message}</div>
+				<div class="mb-4 rounded-2xl border border-destructive/20 bg-destructive/10 px-4 py-3">
+					<div class="text-[10px] font-bold uppercase tracking-wider text-destructive">Failure Reason</div>
+					<div class="mt-1 text-sm text-destructive font-semibold">{slot.fail_message}</div>
 				</div>
 			{/if}
 			<div class="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
 				<div class="space-y-3">
 					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Source</div>
-						<div class="mt-1 font-mono text-xs text-gray-700 dark:text-gray-300 break-all">{slot.nzb_name}</div>
+						<div class="text-[10px] font-bold uppercase tracking-wider text-m3-primary">Source</div>
+						<div class="mt-1 font-mono text-xs text-m3-on-surface break-all font-medium">{slot.nzb_name}</div>
 					</div>
 					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Path</div>
-						<div class="mt-1 font-mono text-xs text-gray-700 dark:text-gray-300 break-all">{slot.path}</div>
+						<div class="text-[10px] font-bold uppercase tracking-wider text-m3-primary">Path</div>
+						<div class="mt-1 font-mono text-xs text-m3-on-surface break-all font-medium">{slot.path}</div>
 					</div>
 					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Download Health</div>
+						<div class="text-[10px] font-bold uppercase tracking-wider text-m3-primary">Download Health</div>
 						<div class="mt-1 flex items-center gap-2">
 							{#if slot.completeness > 0}
-								<div class="flex h-2 w-24 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+								<div class="flex h-2 w-24 overflow-hidden rounded-full bg-m3-surface-variant/40">
 									<div
 										class="h-full rounded-full transition-all {slot.completeness >= 100 ? 'bg-green-500' : slot.completeness >= 95 ? 'bg-yellow-500' : 'bg-red-500'}"
 										style="width: {slot.completeness}%"
 									></div>
 								</div>
-								<span class="text-xs font-medium {slot.completeness >= 100 ? 'text-green-600 dark:text-green-400' : slot.completeness >= 95 ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}">
+								<span class="text-xs font-semibold {slot.completeness >= 100 ? 'text-green-600 dark:text-green-400' : slot.completeness >= 95 ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}">
 									{slot.completeness}%
 								</span>
 							{:else}
-								<span class="text-xs text-gray-500 dark:text-gray-400">N/A</span>
+								<span class="text-xs text-m3-on-surface-variant/70 font-semibold">N/A</span>
 							{/if}
 						</div>
 					</div>
 					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Repair Summary</div>
-						<div class="mt-1 text-gray-700 dark:text-gray-300 break-all">{slot.url_info || 'N/A'}</div>
+						<div class="text-[10px] font-bold uppercase tracking-wider text-m3-primary">Repair Summary</div>
+						<div class="mt-1 text-m3-on-surface break-all font-medium">{slot.url_info || 'N/A'}</div>
 					</div>
 				</div>
 				<div class="space-y-3">
 					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Download Stats</div>
-						<div class="mt-1 text-gray-700 dark:text-gray-300">
+						<div class="text-[10px] font-bold uppercase tracking-wider text-m3-primary">Download Stats</div>
+						<div class="mt-1 text-m3-on-surface font-medium">
 							Downloaded in {formatDuration(slot.download_time)} at {formatSpeed(slot.downloaded > 0 ? slot.downloaded : slot.bytes, slot.download_time)}
 						</div>
 						{#if slot.downloaded > 0 && slot.downloaded !== slot.bytes}
-							<div class="text-xs text-gray-500 dark:text-gray-400">
+							<div class="text-xs text-m3-on-surface-variant font-semibold mt-0.5">
 								{formatSize(slot.downloaded)} of {formatSize(slot.bytes)} received ({formatSize(slot.bytes - slot.downloaded)} failed)
 							</div>
 						{/if}
 					</div>
 					{#if slot.postproc_time > 0}
 						<div>
-							<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Post-Processing</div>
-							<div class="mt-1 text-gray-700 dark:text-gray-300">
+							<div class="text-[10px] font-bold uppercase tracking-wider text-m3-primary">Post-Processing</div>
+							<div class="mt-1 text-m3-on-surface font-medium">
 								Completed in {formatDuration(slot.postproc_time)}
 							</div>
 						</div>
 					{/if}
 					<div>
-						<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Servers</div>
-						<div class="mt-1 text-gray-700 dark:text-gray-300 italic break-all">
+						<div class="text-[10px] font-bold uppercase tracking-wider text-m3-primary">Servers</div>
+						<div class="mt-1 text-m3-on-surface italic break-all font-medium">
 							{slot.meta || 'N/A'}
 						</div>
 					</div>
@@ -202,14 +212,14 @@
 			</div>
 
 			{#if slot.stage_log.length > 0}
-				<div class="mt-4 border-t border-gray-200 dark:border-gray-700 pt-3">
-					<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">Processing Stages</div>
+				<div class="mt-4 border-t border-m3-outline/10 pt-4">
+					<div class="text-[10px] font-bold uppercase tracking-wider text-m3-primary mb-3">Processing Stages</div>
 					<div class="space-y-2">
 						{#each slot.stage_log as stage (stage.name)}
-							<div class="rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2">
-								<div class="text-xs font-semibold capitalize text-gray-700 dark:text-gray-300">{stage.name}</div>
+							<div class="rounded-2xl border border-m3-outline/20 bg-m3-surface/30 px-4 py-3">
+								<div class="text-xs font-bold capitalize text-m3-primary">{stage.name}</div>
 								{#if stage.actions.length > 0}
-									<div class="mt-1 space-y-0.5">
+									<div class="mt-2 space-y-0.5">
 										{#each stage.actions as action, ai (ai)}
 											{#if action === ''}
 												<div class="h-1"></div>
@@ -227,4 +237,3 @@
 		</td>
 	</tr>
 {/if}
-

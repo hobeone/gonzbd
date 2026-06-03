@@ -311,23 +311,12 @@
 </script>
 
 <tr
-	class="border-b hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-900 dark:text-gray-100 cursor-pointer"
+	class="border-b border-m3-outline/10 hover:bg-m3-surface-variant/25 text-m3-on-surface cursor-pointer transition-colors"
 	onclick={() => { expanded = !expanded; }}
 >
-	<td class="px-4 py-3 max-w-[200px] sm:max-w-xs md:max-w-sm lg:max-w-md xl:max-w-lg">
+	<td class="px-5 py-3.5 max-w-[200px] sm:max-w-xs md:max-w-sm lg:max-w-md xl:max-w-lg">
 		<div class="flex items-center gap-2">
-			<svg
-				xmlns="http://www.w3.org/2000/svg"
-				viewBox="0 0 16 16"
-				fill="currentColor"
-				class={cn('size-4 shrink-0 transition-transform', expanded && 'rotate-90')}
-			>
-				<path
-					fill-rule="evenodd"
-					d="M6.22 4.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06-1.06L8.94 8 6.22 5.28a.75.75 0 0 1 0-1.06Z"
-					clip-rule="evenodd"
-				/>
-			</svg>
+			<span class="material-symbols-outlined text-lg text-m3-on-surface-variant/80 transition-transform duration-200 {expanded ? 'rotate-90' : ''} select-none">chevron_right</span>
 			<div class="min-w-0 flex-1">
 				{#if renaming}
 					<div
@@ -341,37 +330,34 @@
 							bind:value={renameValue}
 							onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') commitRename(); else if (e.key === 'Escape') cancelRename(); }}
 							onblur={commitRename}
-							class="w-full rounded border border-blue-400 bg-white px-1.5 py-0.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500 dark:bg-gray-800 dark:border-blue-500"
+							class="w-full rounded-lg border border-m3-primary bg-m3-surface px-2 py-1 text-sm font-semibold text-m3-on-surface focus:outline-none outline-none shadow-sm"
 							autofocus
 						/>
 					</div>
 				{:else}
-					<div class="flex items-center gap-1">
-						<div class="font-medium truncate" title={slot.name || slot.filename}>
+					<div class="flex items-center gap-1.5">
+						<div class="font-semibold truncate text-sm" title={slot.name || slot.filename}>
 							{slot.name || slot.filename}
 						</div>
 						<button
 							onclick={(e: MouseEvent) => { e.stopPropagation(); startRename(); }}
-							class="shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-opacity"
+							class="shrink-0 text-m3-on-surface-variant/60 hover:text-m3-primary transition-opacity flex items-center"
 							title="Rename"
 						>
-							<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3">
-								<path d="M13.488 2.513a1.75 1.75 0 0 0-2.475 0L6.75 6.774a2.75 2.75 0 0 0-.596.892l-.848 2.047a.75.75 0 0 0 .98.98l2.047-.848a2.75 2.75 0 0 0 .892-.596l4.261-4.262a1.75 1.75 0 0 0 0-2.474Z" />
-								<path d="M4.75 3.5c-.69 0-1.25.56-1.25 1.25v6.5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V9A.75.75 0 0 1 14 9v2.25A2.75 2.75 0 0 1 11.25 14h-6.5A2.75 2.75 0 0 1 2 11.25v-6.5A2.75 2.75 0 0 1 4.75 2H7a.75.75 0 0 1 0 1.5H4.75Z" />
-							</svg>
+							<span class="material-symbols-outlined text-base">edit</span>
 						</button>
 					</div>
 				{/if}
 				{#if isDownloading && slot.current_file}
 					<div
-						class="text-xs text-gray-500 dark:text-gray-400 truncate font-mono"
+						class="text-xs text-m3-on-surface-variant/80 truncate font-mono mt-0.5"
 						title={slot.current_file}
 					>
 						↓ {slot.current_file}
 					</div>
 				{:else if isPostProc && outputLines.length > 0}
 					<div
-						class="text-xs text-gray-500 dark:text-gray-400 truncate font-mono"
+						class="text-xs text-m3-on-surface-variant/80 truncate font-mono mt-0.5"
 						title={outputLines[outputLines.length - 1]}
 					>
 						⚙ {outputLines[outputLines.length - 1]}
@@ -380,53 +366,47 @@
 			</div>
 			{#if slot.warning}
 				<div class="flex items-center text-amber-600 shrink-0 max-w-[100px]" title={slot.warning}>
-					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4 shrink-0">
-						<path
-							fill-rule="evenodd"
-							d="M6.701 2.25c.577-1 1.419-1 1.998 0l5.156 8.93c.577 1 .158 1.82-1 1.82H3.145c-1.158 0-1.577-.82-1-1.82l5.156-8.93ZM8 5.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 5.5Zm0 6a.625.625 0 1 0 0-1.25.625.625 0 0 0 0 1.25Z"
-							clip-rule="evenodd"
-						/>
-					</svg>
-					<span class="ml-1 text-xs font-semibold truncate">{slot.warning}</span>
+					<span class="material-symbols-outlined text-sm leading-none shrink-0">warning</span>
+					<span class="ml-1 text-xs font-bold truncate">{slot.warning}</span>
 				</div>
 			{/if}
 			{#if hasFailed}
-				<span class="shrink-0 text-xs font-medium text-red-500 dark:text-red-400" title="Failed download bytes">
+				<span class="shrink-0 text-xs font-bold text-destructive" title="Failed download bytes">
 					✗ {formatBytes(slot.failed_bytes)}
 				</span>
 			{/if}
 			{#if slot.par2_held}
-				<Badge variant="outline" class="shrink-0 text-xs text-slate-500 dark:text-slate-400 border-slate-300 dark:border-slate-600" title="Par2 recovery volumes are downloaded only if repair is needed">
+				<Badge variant="outline" class="shrink-0 text-xs text-m3-on-surface-variant border-m3-outline/35" title="Par2 recovery volumes are downloaded only if repair is needed">
 					par2 on-demand
 				</Badge>
 			{/if}
 		</div>
 	</td>
-	<td class="px-4 py-3">
+	<td class="px-5 py-3.5">
 		<div class="flex w-32 items-center gap-2">
 			<Progress
 				value={percentage}
 				max={100}
-				class={cn('h-2 flex-1', isActive && 'animate-pulse')}
+				class={cn('h-1.5 flex-1 bg-m3-surface-variant/40', isActive && 'animate-pulse')}
 			/>
-			<span class="text-xs font-mono text-gray-500 dark:text-gray-400 w-9 text-right">{slot.percentage}%</span>
+			<span class="text-xs font-mono text-m3-on-surface-variant/80 w-9 text-right font-semibold">{slot.percentage}%</span>
 		</div>
 	</td>
-	<td class="px-4 py-3 text-sm whitespace-nowrap">{slot.size}</td>
-	<td class="px-4 py-3 text-sm whitespace-nowrap">
+	<td class="px-5 py-3.5 text-sm font-medium whitespace-nowrap">{slot.size}</td>
+	<td class="px-5 py-3.5 text-sm font-medium whitespace-nowrap">
 		{slot.sizeleft}
 		{#if etaText && isDownloading}
-			<span class="ml-1 text-xs text-gray-500 dark:text-gray-400" title="Estimated time remaining">
+			<span class="ml-1 text-xs text-m3-on-surface-variant/80 font-semibold" title="Estimated time remaining">
 				· {etaText}
 			</span>
 		{/if}
 	</td>
-	<td class="px-4 py-3">
-		<Badge variant={isPaused ? 'outline' : isPostProc ? 'secondary' : 'default'} class="text-xs">
+	<td class="px-5 py-3.5">
+		<Badge variant={isPaused ? 'outline' : isPostProc ? 'secondary' : 'default'} class="text-xs font-semibold px-2 py-0.5 rounded-full">
 			{slot.status}
 		</Badge>
 	</td>
-	<td class="px-4 py-3 text-sm">
+	<td class="px-5 py-3.5 text-sm">
 		<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
 		<div
 			onclick={(e: MouseEvent) => e.stopPropagation()}
@@ -435,7 +415,7 @@
 			<select
 				onchange={changeCat}
 				onfocus={ensureCategoriesLoaded}
-				class="h-7 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer max-w-[120px]"
+				class="h-7 rounded-lg border border-m3-outline bg-transparent px-1.5 text-xs font-semibold text-m3-on-surface focus:outline-none focus:ring-1 focus:ring-m3-primary cursor-pointer max-w-[120px]"
 				title="Category (switching inherits PP, script, and priority)"
 			>
 				{#if categories.length === 0}
@@ -448,90 +428,80 @@
 			</select>
 		</div>
 	</td>
-	<td class="px-4 py-3">
-		<div class="flex gap-1">
+	<td class="px-5 py-3.5">
+		<div class="flex gap-1 justify-end">
 			<!-- svelte-ignore a11y_click_events_have_key_events -->
 			<Button
 				variant="ghost"
 				size="icon-xs"
 				onclick={(e: MouseEvent) => { e.stopPropagation(); togglePause(); }}
 				disabled={acting}
+				class="rounded-full text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface transition-colors"
 				title={isPaused ? 'Resume' : 'Pause'}
 			>
 				{#if isPaused}
-					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3.5">
-						<path
-							d="M4.5 2A1.5 1.5 0 0 0 3 3.5v9a1.5 1.5 0 0 0 2.3 1.27l7-4.5a1.5 1.5 0 0 0 0-2.54l-7-4.5A1.5 1.5 0 0 0 4.5 2Z"
-						/>
-					</svg>
+					<span class="material-symbols-outlined text-lg leading-none">play_arrow</span>
 				{:else}
-					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3.5">
-						<path
-							d="M4.5 2a.75.75 0 0 0-.75.75v10.5c0 .414.336.75.75.75h1a.75.75 0 0 0 .75-.75V2.75A.75.75 0 0 0 5.5 2h-1ZM10.5 2a.75.75 0 0 0-.75.75v10.5c0 .414.336.75.75.75h1a.75.75 0 0 0 .75-.75V2.75a.75.75 0 0 0-.75-.75h-1Z"
-						/>
-					</svg>
+					<span class="material-symbols-outlined text-lg leading-none">pause</span>
 				{/if}
 			</Button>
-
-			<Button variant="ghost" size="icon-xs" onclick={(e: MouseEvent) => { e.stopPropagation(); onremove(); }} disabled={acting} title="Delete">
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 16 16"
-					fill="currentColor"
-					class="size-3.5 text-red-500"
-				>
-					<path
-						fill-rule="evenodd"
-						d="M5 3.25V4H2.75a.75.75 0 0 0 0 1.5h.3l.815 8.15A1.5 1.5 0 0 0 5.357 15h5.285a1.5 1.5 0 0 0 1.493-1.35l.815-8.15h.3a.75.75 0 0 0 0-1.5H11v-.75A2.25 2.25 0 0 0 8.75 1h-1.5A2.25 2.25 0 0 0 5 3.25Zm2.25-.75a.75.75 0 0 0-.75.75V4h3v-.75a.75.75 0 0 0-.75-.75h-1.5ZM6.05 6a.75.75 0 0 1 .787.713l.275 5.5a.75.75 0 0 1-1.498.075l-.275-5.5A.75.75 0 0 1 6.05 6Zm3.9 0a.75.75 0 0 1 .712.787l-.275 5.5a.75.75 0 0 1-1.498-.075l.275-5.5a.75.75 0 0 1 .786-.711Z"
-						clip-rule="evenodd"
-					/>
-				</svg>
+ 
+			<Button
+				variant="ghost"
+				size="icon-xs"
+				onclick={(e: MouseEvent) => { e.stopPropagation(); onremove(); }}
+				disabled={acting}
+				class="rounded-full text-destructive hover:bg-destructive/10 transition-colors"
+				title="Delete"
+			>
+				<span class="material-symbols-outlined text-lg leading-none">delete</span>
 			</Button>
 		</div>
 	</td>
 </tr>
 
 {#if expanded}
-	<tr class="border-b bg-gray-50/50 dark:bg-gray-800/50">
-		<td colspan="7" class="px-6 py-3">
+	<tr class="border-b border-m3-outline/10 bg-m3-surface-variant/15 text-m3-on-surface">
+		<td colspan="7" class="px-6 py-4">
 			<div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
 				<div>
-					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Failed</span>
+					<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Failed</span>
 					{#if slot.failed_bytes > 0}
-						<div class="font-medium text-red-600 dark:text-red-400">{formatBytes(slot.failed_bytes)}</div>
+						<div class="font-bold text-red-600 dark:text-red-400 mt-0.5">{formatBytes(slot.failed_bytes)}</div>
 					{:else}
-						<div class="font-medium text-emerald-600 dark:text-emerald-400">None</div>
+						<div class="font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">None</div>
 					{/if}
 				</div>
 				<div>
-					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Par2 Recovery</span>
-					<div class="font-medium">
+					<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Par2 Recovery</span>
+					<div class="font-bold mt-0.5">
 						{#if slot.par2_bytes > 0}
 							{formatBytes(slot.par2_bytes)}
-							<span class="text-gray-400 text-xs">({slot.par2_files} file{slot.par2_files !== 1 ? 's' : ''})</span>
+							<span class="text-m3-on-surface-variant/70 text-xs font-semibold">({slot.par2_files} file{slot.par2_files !== 1 ? 's' : ''})</span>
 						{:else}
-							<span class="text-gray-400">None</span>
+							<span class="text-m3-on-surface-variant/60 font-semibold">None</span>
 						{/if}
 					</div>
 				</div>
 				<div>
-					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Health</span>
-					<div class={cn('font-medium', healthLabel().color)}>{healthLabel().text}</div>
+					<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Health</span>
+					<div class={cn('font-bold mt-0.5', healthLabel().color)}>{healthLabel().text}</div>
 				</div>
 				<div>
-					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Downloaded</span>
-					<div class="font-medium">{formatBytes(slot.bytes - slot.remaining_bytes)} of {slot.size}</div>
+					<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Downloaded</span>
+					<div class="font-bold mt-0.5">{formatBytes(slot.bytes - slot.remaining_bytes)} of {slot.size}</div>
 				</div>
 				<div>
-					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Processing</span>
+					<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Processing</span>
 					<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
 					<div
+						class="mt-1"
 						onclick={(e: MouseEvent) => e.stopPropagation()}
 						onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
 					>
 						<select
 							onchange={changePP}
-							class="h-7 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+							class="h-7 rounded-lg border border-m3-outline bg-transparent px-2 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-m3-primary cursor-pointer text-m3-on-surface"
 							title="Post-processing level: 0=Download, 1=+Repair, 2=+Unpack, 3=+Delete"
 						>
 							{#each Object.entries(PP_LABELS) as [val, label] (val)}
@@ -541,16 +511,17 @@
 					</div>
 				</div>
 				<div>
-					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Category</span>
+					<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Category</span>
 					<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
 					<div
+						class="mt-1"
 						onclick={(e: MouseEvent) => e.stopPropagation()}
 						onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
 					>
 						<select
 							onchange={changeCat}
 							onfocus={ensureCategoriesLoaded}
-							class="h-7 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+							class="h-7 rounded-lg border border-m3-outline bg-transparent px-2 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-m3-primary cursor-pointer text-m3-on-surface"
 							title="Category (switching inherits PP, script, and priority)"
 						>
 							{#if categories.length === 0}
@@ -564,16 +535,17 @@
 					</div>
 				</div>
 				<div>
-					<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Script</span>
+					<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Script</span>
 					<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
 					<div
+						class="mt-1"
 						onclick={(e: MouseEvent) => e.stopPropagation()}
 						onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
 					>
 						<select
 							onchange={changeScript}
 							onfocus={ensureScriptsLoaded}
-							class="h-7 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+							class="h-7 rounded-lg border border-m3-outline bg-transparent px-2 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-m3-primary cursor-pointer text-m3-on-surface"
 							title="Post-processing script"
 						>
 							{#if scripts.length === 0}
@@ -589,19 +561,19 @@
 				</div>
 				{#if isActive}
 					<div>
-						<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Articles Left</span>
-						<div class="font-medium font-mono">{slot.articles_remaining ?? 0}</div>
+						<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Articles Left</span>
+						<div class="font-bold font-mono mt-0.5">{slot.articles_remaining ?? 0}</div>
 					</div>
 					{#if etaText}
 						<div>
-							<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">ETA</span>
-							<div class="font-medium font-mono">{etaText}</div>
+							<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">ETA</span>
+							<div class="font-bold font-mono mt-0.5">{etaText}</div>
 						</div>
 					{/if}
 					{#if slot.current_file}
 						<div class="col-span-2 md:col-span-4">
-							<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Current File</span>
-							<div class="font-medium font-mono text-xs truncate" title={slot.current_file}>{slot.current_file}</div>
+							<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Current File</span>
+							<div class="font-medium font-mono text-xs truncate mt-0.5 text-m3-on-surface-variant" title={slot.current_file}>{slot.current_file}</div>
 						</div>
 					{/if}
 				{/if}
@@ -610,13 +582,13 @@
 			<!-- Real-time postproc output log: visible while post-processing. -->
 			{#if outputLines.length > 0}
 				<div class="mt-4">
-					<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide mb-2">
+					<div class="text-m3-primary text-[10px] font-bold uppercase tracking-wider mb-2 flex items-center">
 						Post-Processing Output
-						<Badge variant="secondary" class="ml-2 text-[10px] py-0 animate-pulse">Live</Badge>
+						<Badge variant="secondary" class="ml-2 text-[10px] py-0 px-2 rounded-full animate-pulse bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">Live</Badge>
 					</div>
 					<div
 						bind:this={outputLogEl}
-						class="bg-gray-900 text-gray-100 rounded-md p-3 font-mono text-xs leading-relaxed max-h-48 overflow-y-auto scroll-smooth"
+						class="bg-gray-950 text-emerald-400 rounded-2xl border border-m3-outline/10 p-4 font-mono text-xs leading-relaxed max-h-48 overflow-y-auto scroll-smooth"
 					>
 						{#each outputLines as line, i (i)}
 							<div class="whitespace-pre-wrap break-all">{line}</div>
@@ -627,57 +599,50 @@
 
 			<!-- Per-file breakdown: lazy-fetched while the drawer is open. -->
 			<div class="mt-4">
-				<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide mb-2">
+				<div class="text-m3-primary text-[10px] font-bold uppercase tracking-wider mb-2">
 					Files
 					{#if files}
-						<span class="ml-1 text-gray-400">({files.length})</span>
+						<span class="ml-1 text-m3-on-surface-variant/80">({files.length})</span>
 					{/if}
 				</div>
 				{#if filesLoading && !files}
-					<div class="text-xs text-gray-500 dark:text-gray-400">Loading file list…</div>
+					<div class="text-xs text-m3-on-surface-variant/70 font-semibold">Loading file list…</div>
 				{:else if filesError}
-					<div class="text-xs text-red-600 dark:text-red-400" title={filesError}>
+					<div class="text-xs text-destructive font-semibold" title={filesError}>
 						Failed to load file list: {filesError}
 					</div>
 				{:else if files && files.length > 0}
-					<div class="overflow-x-auto">
+					<div class="overflow-x-auto rounded-2xl border border-m3-outline/25 bg-m3-surface/30 px-4 py-2">
 						<table class="w-full text-xs">
-							<thead class="text-gray-500 dark:text-gray-400">
-								<tr class="border-b border-gray-200 dark:border-gray-700">
-									<th class="text-left py-1 pr-4 font-medium">File</th>
-									<th class="text-right py-1 pr-4 font-medium whitespace-nowrap">Size</th>
-									<th class="text-right py-1 pr-4 font-medium whitespace-nowrap">Done</th>
-									<th class="text-left py-1 pr-4 font-medium w-32">Progress</th>
-									<th class="text-left py-1 font-medium">State</th>
+							<thead class="text-m3-primary border-b border-m3-outline/10">
+								<tr>
+									<th class="text-left py-2 pr-4 text-[10px] font-bold uppercase tracking-wider">File</th>
+									<th class="text-right py-2 pr-4 text-[10px] font-bold uppercase tracking-wider whitespace-nowrap">Size</th>
+									<th class="text-right py-2 pr-4 text-[10px] font-bold uppercase tracking-wider whitespace-nowrap">Done</th>
+									<th class="text-left py-2 pr-4 text-[10px] font-bold uppercase tracking-wider w-32">Progress</th>
+									<th class="text-left py-2 text-[10px] font-bold uppercase tracking-wider">State</th>
 								</tr>
 							</thead>
 							<tbody>
-								<!--
-									Keyed on array index, not f.name: NZBs commonly contain
-									multiple files sharing the same subject (e.g. main +
-									sample, or par2 blocks all named after the release).
-									Job.Files order is stable across refreshes (NZB source
-									order), so position is a valid identity.
-								-->
 								{#each files as f, i (i)}
-									<tr class="border-b border-gray-100 dark:border-gray-800 last:border-0">
-										<td class="py-1 pr-4 font-mono truncate max-w-xs" title={f.name}>{f.name}</td>
-										<td class="py-1 pr-4 text-right font-mono whitespace-nowrap">{formatBytes(f.bytes)}</td>
-										<td class="py-1 pr-4 text-right font-mono whitespace-nowrap">{formatBytes(f.bytes_downloaded)}</td>
-										<td class="py-1 pr-4">
+									<tr class="border-b border-m3-outline/5 last:border-0 hover:bg-m3-surface-variant/10">
+										<td class="py-1.5 pr-4 font-mono truncate max-w-xs text-m3-on-surface" title={f.name}>{f.name}</td>
+										<td class="py-1.5 pr-4 text-right font-mono whitespace-nowrap text-m3-on-surface font-medium">{formatBytes(f.bytes)}</td>
+										<td class="py-1.5 pr-4 text-right font-mono whitespace-nowrap text-m3-on-surface font-medium">{formatBytes(f.bytes_downloaded)}</td>
+										<td class="py-1.5 pr-4">
 											<div class="flex items-center gap-2">
-												<Progress value={filePct(f)} max={100} class="h-1.5 flex-1" />
-												<span class="font-mono text-gray-500 w-9 text-right">{filePct(f)}%</span>
+												<Progress value={filePct(f)} max={100} class="h-1.5 flex-1 bg-m3-surface-variant/40" />
+												<span class="font-mono text-m3-on-surface-variant/80 w-9 text-right font-semibold">{filePct(f)}%</span>
 											</div>
 										</td>
-										<td class={cn('py-1 capitalize', fileStateColor(f.state))}>{f.state}</td>
+										<td class={cn('py-1.5 capitalize font-semibold text-xs', fileStateColor(f.state))}>{f.state}</td>
 									</tr>
 								{/each}
 							</tbody>
 						</table>
 					</div>
 				{:else if files}
-					<div class="text-xs text-gray-500 dark:text-gray-400">No files in this job.</div>
+					<div class="text-xs text-m3-on-surface-variant/70 font-semibold">No files in this job.</div>
 				{/if}
 			</div>
 		</td>

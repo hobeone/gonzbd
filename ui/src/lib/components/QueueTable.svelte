@@ -65,33 +65,22 @@
 
 <div class="mb-4">
 	<div class="relative w-full max-w-sm">
-		<svg
-			xmlns="http://www.w3.org/2000/svg"
-			viewBox="0 0 16 16"
-			fill="currentColor"
-			class="absolute left-2.5 top-2.5 size-4 text-gray-400"
-		>
-			<path
-				fill-rule="evenodd"
-				d="M9.965 11.026a5 5 0 1 1 1.06-1.06l2.755 2.754a.75.75 0 1 1-1.06 1.06l-2.755-2.754ZM10.5 7a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z"
-				clip-rule="evenodd"
-			/>
-		</svg>
+		<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-lg text-m3-on-surface-variant">search</span>
 		<Input
 			type="search"
 			placeholder="Search queue..."
-			class="pl-8"
+			class="pl-9 h-10 rounded-full border-m3-outline focus-visible:ring-m3-primary"
 			bind:value={localSearch}
 		/>
 	</div>
 </div>
 
 {#if getError()}
-	<div class="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900 p-4 text-sm text-red-700 dark:text-red-300">
+	<div class="rounded-2xl border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive font-semibold">
 		API error: {getError()}
 	</div>
 {:else if slots().length === 0}
-	<div class="rounded-lg border bg-white dark:bg-gray-900 p-8 text-center text-gray-500 dark:text-gray-400">
+	<div class="rounded-3xl border border-m3-outline/20 bg-m3-surface p-8 text-center text-m3-on-surface-variant/80 font-medium">
 		{#if getQueue() === null}
 			Loading...
 		{:else}
@@ -99,17 +88,17 @@
 		{/if}
 	</div>
 {:else}
-	<div class="overflow-x-auto rounded-lg border bg-white dark:bg-gray-900">
+	<div class="overflow-x-auto rounded-3xl border border-m3-outline/20 bg-m3-surface shadow-m3-1">
 		<table class="w-full text-left">
-			<thead class="border-b bg-gray-50 dark:bg-gray-900 text-xs uppercase text-gray-500 dark:text-gray-400">
+			<thead class="border-b border-m3-outline/10 bg-m3-surface-variant/20 text-[11px] font-bold uppercase tracking-wider text-m3-on-surface-variant">
 				<tr>
-					<th class="px-4 py-3">Name</th>
-					<th class="px-4 py-3">Progress</th>
-					<th class="px-4 py-3">Size</th>
-					<th class="px-4 py-3">Left</th>
-					<th class="px-4 py-3">Status</th>
-					<th class="px-4 py-3">Category</th>
-					<th class="px-4 py-3">Actions</th>
+					<th class="px-5 py-3.5">Name</th>
+					<th class="px-5 py-3.5">Progress</th>
+					<th class="px-5 py-3.5">Size</th>
+					<th class="px-5 py-3.5">Left</th>
+					<th class="px-5 py-3.5">Status</th>
+					<th class="px-5 py-3.5">Category</th>
+					<th class="px-5 py-3.5 text-right">Actions</th>
 				</tr>
 			</thead>
 			<tbody>
@@ -130,33 +119,33 @@
 
 <Dialog.Root bind:open={showDeleteConfirm}>
 	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs" />
 		<Dialog.Content
-			class="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white dark:bg-gray-900 p-6 shadow-lg outline-none"
+			class="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-m3-outline/20 bg-m3-surface text-m3-on-surface p-6 shadow-m3-3 outline-none animate-in fade-in zoom-in-95"
 		>
 			<div class="mb-4">
-				<Dialog.Title class="text-lg font-bold">Delete Job</Dialog.Title>
-				<Dialog.Description class="mt-2 text-sm text-gray-500 dark:text-gray-400">
-					Are you sure you want to delete <span class="inline-block max-w-[200px] sm:max-w-xs align-bottom font-semibold text-gray-900 dark:text-gray-100 truncate" title={deleteTarget?.name || deleteTarget?.filename}
+				<Dialog.Title class="text-lg font-semibold tracking-tight text-m3-on-surface">Delete Job</Dialog.Title>
+				<Dialog.Description class="mt-2 text-sm text-m3-on-surface-variant/80">
+					Are you sure you want to delete <span class="inline-block max-w-[200px] sm:max-w-xs align-bottom font-bold text-m3-on-surface truncate" title={deleteTarget?.name || deleteTarget?.filename}
 						>{deleteTarget?.name || deleteTarget?.filename}</span
 					>?
 				</Dialog.Description>
 			</div>
 
-			<div class="py-4 text-gray-900 dark:text-gray-100">
-				<label class="flex cursor-pointer items-center gap-2 text-sm">
+			<div class="py-4">
+				<label class="flex cursor-pointer items-center gap-2.5 text-sm text-m3-on-surface font-medium select-none">
 					<input
 						type="checkbox"
 						bind:checked={deleteFiles}
-						class="size-4 rounded border-gray-300 dark:border-gray-600 text-red-600 focus:ring-red-500"
+						class="size-4 rounded-md border-m3-outline text-m3-primary focus:ring-m3-primary accent-m3-primary cursor-pointer"
 					/>
 					<span>Also delete downloaded files from disk</span>
 				</label>
 			</div>
 
 			<div class="mt-6 flex justify-end gap-3">
-				<Button variant="outline" onclick={() => (showDeleteConfirm = false)}>Cancel</Button>
-				<Button variant="destructive" onclick={remove} disabled={acting}>
+				<Button variant="outline" class="rounded-full px-5 border-m3-outline text-m3-on-surface hover:bg-m3-surface-variant/50" onclick={() => (showDeleteConfirm = false)}>Cancel</Button>
+				<Button variant="destructive" class="rounded-full px-5 bg-destructive text-destructive-foreground hover:bg-destructive/90" onclick={remove} disabled={acting}>
 					{acting ? 'Deleting...' : 'Delete Job'}
 				</Button>
 			</div>
