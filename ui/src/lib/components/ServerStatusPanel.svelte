@@ -117,53 +117,49 @@
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
-		class="fixed inset-0 z-40 bg-black/30 backdrop-blur-sm transition-opacity"
+		class="fixed inset-0 z-40 bg-black/50 backdrop-blur-xs transition-opacity animate-in fade-in"
 		onclick={() => (open = false)}
 	></div>
 
 	<!-- Drawer -->
 	<div
-		class="fixed top-0 right-0 z-50 flex h-full w-full max-w-lg flex-col border-l border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900"
+		class="fixed top-0 right-0 z-50 flex h-full w-full max-w-lg flex-col border-l border-m3-outline/10 bg-m3-surface text-m3-on-surface rounded-l-3xl shadow-m3-3 outline-none"
 	>
 		<!-- Header -->
-		<div class="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-gray-700">
+		<div class="flex items-center justify-between border-b border-m3-outline/10 px-6 py-4">
 			<div class="flex items-center gap-3">
-				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-5 text-indigo-500">
-					<path d="M1 4.75C1 3.784 1.784 3 2.75 3h14.5c.966 0 1.75.784 1.75 1.75v10.515a1.75 1.75 0 0 1-1.75 1.75h-1.5c-.078 0-.155-.005-.23-.015H4.48c-.075.01-.152.015-.23.015h-1.5A1.75 1.75 0 0 1 1 15.265V4.75Z" />
-				</svg>
-				<h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">Server Status</h2>
+				<span class="material-symbols-outlined text-m3-primary text-xl">dns</span>
+				<h2 class="text-base font-semibold tracking-tight">Server Status</h2>
 			</div>
 			<button
 				onclick={() => (open = false)}
 				aria-label="Close"
-				class="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+				class="rounded-full p-1.5 text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface transition-colors"
 			>
-				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-5">
-					<path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" />
-				</svg>
+				<span class="material-symbols-outlined text-lg leading-none">close</span>
 			</button>
 		</div>
 
 		<!-- Aggregate stats bar -->
-		<div class="grid grid-cols-3 gap-3 border-b border-gray-200 bg-gray-50 px-5 py-3 dark:border-gray-700 dark:bg-gray-800/50">
+		<div class="grid grid-cols-3 gap-3 border-b border-m3-outline/10 bg-m3-surface-variant/20 px-6 py-3.5">
 			<div class="text-center">
-				<div class="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Speed</div>
-				<div class="mt-0.5 text-lg font-bold text-gray-900 dark:text-gray-100">{formatBps(totalBps())}</div>
+				<div class="text-xs font-semibold uppercase tracking-wider text-m3-primary">Speed</div>
+				<div class="mt-0.5 text-lg font-bold text-m3-on-surface">{formatBps(totalBps())}</div>
 			</div>
 			<div class="text-center">
-				<div class="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Active</div>
-				<div class="mt-0.5 text-lg font-bold text-gray-900 dark:text-gray-100">{totalActiveConns()} / {totalMaxConns()}</div>
+				<div class="text-xs font-semibold uppercase tracking-wider text-m3-primary">Active</div>
+				<div class="mt-0.5 text-lg font-bold text-m3-on-surface">{totalActiveConns()} / {totalMaxConns()}</div>
 			</div>
 			<div class="text-center">
-				<div class="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Servers</div>
-				<div class="mt-0.5 text-lg font-bold text-gray-900 dark:text-gray-100">{servers.length}</div>
+				<div class="text-xs font-semibold uppercase tracking-wider text-m3-primary">Servers</div>
+				<div class="mt-0.5 text-lg font-bold text-m3-on-surface">{servers.length}</div>
 			</div>
 		</div>
 
 		<!-- Server list -->
-		<div class="flex-1 overflow-y-auto p-4 space-y-3">
+		<div class="flex-1 overflow-y-auto p-5 space-y-4">
 			{#if error}
-				<div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+				<div class="rounded-2xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive font-semibold">
 					{error}
 				</div>
 			{/if}
@@ -174,88 +170,79 @@
 				{@const aggrBps = totalBps()}
 				{@const speedPct = aggrBps > 0 ? (server.bps / aggrBps) * 100 : 0}
 
-				<div class="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+				<div class="overflow-hidden rounded-2xl border border-m3-outline/20 bg-m3-surface-variant/10">
 					<!-- Server header -->
-					<div class="flex items-stretch hover:bg-gray-50 dark:hover:bg-gray-800/50">
-					<button
-						onclick={() => toggleExpanded(server.name)}
-						class="flex flex-1 min-w-0 items-center gap-3 px-4 py-3 text-left"
-					>
-						<!-- Status dot -->
-						<div class="flex-shrink-0">
-							{#if !server.enabled}
-								<div class="size-2.5 rounded-full bg-gray-400" title="Disabled"></div>
-							{:else if penalty}
-								<div class="size-2.5 rounded-full bg-amber-500 animate-pulse" title="Penalized"></div>
-							{:else if server.active}
-								<div class="size-2.5 rounded-full bg-emerald-500" title="Active"></div>
-							{:else}
-								<div class="size-2.5 rounded-full bg-red-500" title="Inactive"></div>
-							{/if}
-						</div>
-
-						<!-- Server info -->
-						<div class="min-w-0 flex-1">
-							<div class="flex items-center gap-2">
-								<span class="truncate font-medium text-gray-900 dark:text-gray-100">{server.name}</span>
-								{#if server.ssl}
-									<span class="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-green-700 dark:bg-green-900 dark:text-green-300">SSL</span>
-								{/if}
-								{#if server.optional}
-									<span class="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-blue-700 dark:bg-blue-900 dark:text-blue-300">Backup</span>
-								{/if}
-								<span class="text-xs text-gray-500 dark:text-gray-400">P{server.priority}</span>
-							</div>
-							<div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-								{server.host}:{server.port}
-							</div>
-						</div>
-
-						<!-- Speed + conn count -->
-						<div class="flex-shrink-0 text-right">
-							<div class="text-sm font-semibold text-gray-900 dark:text-gray-100">{formatBps(server.bps)}</div>
-							<div class="text-xs text-gray-500 dark:text-gray-400">
-								{server.active_conns}/{server.max_connections} conns
-							</div>
-						</div>
-
-						<!-- Expand arrow -->
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 20 20"
-							fill="currentColor"
-							class="size-4 flex-shrink-0 text-gray-400 transition-transform {isExpanded ? 'rotate-180' : ''}"
+					<div class="flex items-stretch hover:bg-m3-surface-variant/20 transition-colors">
+						<button
+							onclick={() => toggleExpanded(server.name)}
+							class="flex flex-1 min-w-0 items-center gap-3.5 px-4 py-3 text-left"
 						>
-							<path fill-rule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" />
-						</svg>
-					</button>
+							<!-- Status dot -->
+							<div class="flex-shrink-0">
+								{#if !server.enabled}
+									<div class="size-2.5 rounded-full bg-m3-on-surface-variant/40" title="Disabled"></div>
+								{:else if penalty}
+									<div class="size-2.5 rounded-full bg-amber-500 animate-pulse" title="Penalized"></div>
+								{:else if server.active}
+									<div class="size-2.5 rounded-full bg-emerald-500" title="Active"></div>
+								{:else}
+									<div class="size-2.5 rounded-full bg-destructive" title="Inactive"></div>
+								{/if}
+							</div>
 
-					<!-- Settings (gear) button -->
-					<button
-						onclick={() => openServerSettings(server.name)}
-						disabled={editLoadingFor === server.name}
-						title="Server settings"
-						aria-label="Edit {server.name} settings"
-						class="flex flex-shrink-0 items-center justify-center px-3 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-50"
-					>
-						{#if editLoadingFor === server.name}
-							<svg class="size-4 animate-spin" viewBox="0 0 24 24" fill="none">
-								<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-								<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-							</svg>
-						{:else}
-							<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-4">
-								<path fill-rule="evenodd" d="M7.84 1.804A1 1 0 0 1 8.82 1h2.36a1 1 0 0 1 .98.804l.331 1.652a6.993 6.993 0 0 1 1.929 1.115l1.598-.54a1 1 0 0 1 1.186.447l1.18 2.044a1 1 0 0 1-.205 1.251l-1.267 1.113a7.047 7.047 0 0 1 0 2.228l1.267 1.113a1 1 0 0 1 .206 1.25l-1.18 2.045a1 1 0 0 1-1.187.447l-1.598-.54a6.993 6.993 0 0 1-1.929 1.115l-.33 1.652a1 1 0 0 1-.98.804H8.82a1 1 0 0 1-.98-.804l-.331-1.652a6.993 6.993 0 0 1-1.929-1.115l-1.598.54a1 1 0 0 1-1.186-.447l-1.18-2.044a1 1 0 0 1 .205-1.251l1.267-1.114a7.05 7.05 0 0 1 0-2.227L1.821 7.773a1 1 0 0 1-.206-1.25l1.18-2.045a1 1 0 0 1 1.187-.447l1.598.54A6.992 6.992 0 0 1 7.51 3.456l.33-1.652ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" clip-rule="evenodd" />
-							</svg>
-						{/if}
-					</button>
+							<!-- Server info -->
+							<div class="min-w-0 flex-1">
+								<div class="flex items-center gap-2">
+									<span class="truncate font-semibold text-m3-on-surface text-sm">{server.name}</span>
+									{#if server.ssl}
+										<span class="rounded bg-green-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-green-600 dark:text-green-400">SSL</span>
+									{/if}
+									{#if server.optional}
+										<span class="rounded bg-m3-primary-container px-1.5 py-0.5 text-[9px] font-bold uppercase text-m3-on-primary-container">Backup</span>
+									{/if}
+									<span class="text-[10px] font-bold text-m3-on-surface-variant/80">P{server.priority}</span>
+								</div>
+								<div class="mt-0.5 text-xs text-m3-on-surface-variant/80 font-medium">
+									{server.host}:{server.port}
+								</div>
+							</div>
+
+							<!-- Speed + conn count -->
+							<div class="flex-shrink-0 text-right">
+								<div class="text-sm font-bold text-m3-on-surface">{formatBps(server.bps)}</div>
+								<div class="text-xs text-m3-on-surface-variant/85 font-medium">
+									{server.active_conns}/{server.max_connections} conns
+								</div>
+							</div>
+
+							<!-- Expand arrow -->
+							<span class="material-symbols-outlined text-lg text-m3-on-surface-variant/80 transition-transform duration-200 {isExpanded ? 'rotate-180' : ''}">expand_more</span>
+						</button>
+
+						<!-- Settings (gear) button -->
+						<button
+							onclick={() => openServerSettings(server.name)}
+							disabled={editLoadingFor === server.name}
+							title="Server settings"
+							aria-label="Edit {server.name} settings"
+							class="flex flex-shrink-0 items-center justify-center px-4 text-m3-on-surface-variant/70 hover:text-m3-primary transition-colors disabled:opacity-50"
+						>
+							{#if editLoadingFor === server.name}
+								<svg class="size-4 animate-spin text-m3-primary" viewBox="0 0 24 24" fill="none">
+									<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+									<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+								</svg>
+							{:else}
+								<span class="material-symbols-outlined text-lg leading-none">settings</span>
+							{/if}
+						</button>
 					</div>
 
 					<!-- Speed proportion bar -->
 					{#if server.enabled && aggrBps > 0}
-						<div class="h-1 bg-gray-100 dark:bg-gray-800">
+						<div class="h-[3px] bg-m3-outline/10">
 							<div
-								class="h-full bg-indigo-500 transition-all duration-300"
+								class="h-full bg-m3-primary transition-all duration-300"
 								style="width: {Math.max(speedPct, 1)}%"
 							></div>
 						</div>
@@ -263,28 +250,26 @@
 
 					<!-- Expanded details -->
 					{#if isExpanded}
-						<div class="border-t border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/30">
+						<div class="border-t border-m3-outline/10 bg-m3-surface-variant/20">
 							<!-- Stats -->
-							<div class="grid grid-cols-2 gap-x-4 gap-y-1 px-4 py-3 text-xs">
+							<div class="grid grid-cols-2 gap-x-4 gap-y-1.5 px-4 py-3 text-xs">
 								<div>
-									<span class="text-gray-500 dark:text-gray-400">Total Downloaded:</span>
-									<span class="ml-1 font-medium text-gray-900 dark:text-gray-100">{formatBytes(server.total_bytes)}</span>
+									<span class="text-m3-on-surface-variant/80 font-medium">Total Downloaded:</span>
+									<span class="ml-1 font-semibold text-m3-on-surface">{formatBytes(server.total_bytes)}</span>
 								</div>
 								<div>
-									<span class="text-gray-500 dark:text-gray-400">Pipelining:</span>
-									<span class="ml-1 font-medium text-gray-900 dark:text-gray-100">{server.pipelining || 1}</span>
+									<span class="text-m3-on-surface-variant/80 font-medium">Pipelining:</span>
+									<span class="ml-1 font-semibold text-m3-on-surface">{server.pipelining || 1}</span>
 								</div>
 							</div>
 
 							{#if penalty}
-								<div class="mx-4 mb-3 flex items-center gap-2 rounded-md bg-amber-50 px-3 py-2 text-xs dark:bg-amber-950">
-									<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4 text-amber-600 dark:text-amber-400">
-										<path fill-rule="evenodd" d="M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.3-2.25l5.197-9ZM8 5a.75.75 0 0 1 .75.75v2a.75.75 0 0 1-1.5 0v-2A.75.75 0 0 1 8 5Zm0 6.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" clip-rule="evenodd" />
-									</svg>
-									<span class="font-medium text-amber-700 dark:text-amber-300">Penalized — {penalty} remaining</span>
+								<div class="mx-4 mb-3 flex items-center gap-2 rounded-2xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs">
+									<span class="material-symbols-outlined text-amber-500 text-sm">warning</span>
+									<span class="font-semibold text-amber-700 dark:text-amber-300">Penalized — {penalty} remaining</span>
 									<button
 										onclick={() => unblockServer(server.name)}
-										class="ml-auto rounded bg-amber-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-amber-700 dark:bg-amber-500 dark:hover:bg-amber-400 dark:text-gray-900"
+										class="ml-auto rounded-full bg-amber-500 text-m3-surface px-2.5 py-0.5 text-[10px] font-bold hover:bg-amber-400"
 										title="Clear penalty and retry immediately"
 									>
 										Unblock
@@ -293,33 +278,33 @@
 							{/if}
 
 							{#if !server.enabled}
-								<div class="mx-4 mb-3 flex items-center gap-2 rounded-md bg-gray-100 px-3 py-2 text-xs dark:bg-gray-800">
-									<span class="font-medium text-gray-600 dark:text-gray-400">Server disabled in configuration</span>
+								<div class="mx-4 mb-3 flex items-center gap-2 rounded-2xl bg-m3-surface-variant/40 px-3 py-2 text-xs">
+									<span class="font-semibold text-m3-on-surface-variant/70">Server disabled in configuration</span>
 								</div>
 							{/if}
 
 							<!-- Per-connection table -->
 							<div class="px-4 pb-3">
-								<div class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
+								<div class="text-[10px] font-bold uppercase tracking-wider text-m3-primary mb-2">
 									Connections
 								</div>
 								<div class="space-y-1">
 									{#each server.connections.toSorted((a, b) => a.index - b.index) as conn (conn.index)}
-										<div class="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs {conn.article_id ? 'bg-white dark:bg-gray-900' : 'bg-transparent'}">
-											<span class="w-6 flex-shrink-0 font-mono text-gray-400 dark:text-gray-500">#{conn.index}</span>
+										<div class="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs {conn.article_id ? 'bg-m3-surface/50 shadow-m3-1' : 'bg-transparent'}">
+											<span class="w-6 flex-shrink-0 font-mono text-m3-on-surface-variant/70">#{conn.index}</span>
 											{#if conn.article_id}
 												<div class="size-1.5 flex-shrink-0 rounded-full bg-emerald-500 animate-pulse"></div>
-												<span class="min-w-0 flex-1 truncate text-gray-700 dark:text-gray-300" title={conn.subject || conn.article_id}>
+												<span class="min-w-0 flex-1 truncate text-m3-on-surface font-medium" title={conn.subject || conn.article_id}>
 													{conn.subject || conn.article_id}
 												</span>
-												<span class="flex-shrink-0 text-gray-400 dark:text-gray-500">{formatBytes(conn.bytes)}</span>
-												<span class="flex-shrink-0 font-mono text-gray-400 dark:text-gray-500">{connDuration(conn)}</span>
+												<span class="flex-shrink-0 text-m3-on-surface-variant/80 font-medium">{formatBytes(conn.bytes)}</span>
+												<span class="flex-shrink-0 font-mono text-m3-on-surface-variant/70">{connDuration(conn)}</span>
 											{:else if conn.connected}
-												<div class="size-1.5 flex-shrink-0 rounded-full bg-blue-400 dark:bg-blue-500"></div>
-												<span class="text-gray-400 dark:text-gray-500">Idle</span>
+												<div class="size-1.5 flex-shrink-0 rounded-full bg-m3-primary/60"></div>
+												<span class="text-m3-on-surface-variant/70">Idle</span>
 											{:else}
-												<div class="size-1.5 flex-shrink-0 rounded-full bg-gray-300 dark:bg-gray-600"></div>
-												<span class="text-gray-400 dark:text-gray-500">Disconnected</span>
+												<div class="size-1.5 flex-shrink-0 rounded-full bg-m3-on-surface-variant/30"></div>
+												<span class="text-m3-on-surface-variant/50">Disconnected</span>
 											{/if}
 										</div>
 									{/each}
@@ -330,7 +315,7 @@
 				</div>
 			{:else}
 				{#if !error}
-					<div class="py-12 text-center text-sm text-gray-500 dark:text-gray-400">
+					<div class="py-12 text-center text-sm text-m3-on-surface-variant/70 font-semibold">
 						No servers configured
 					</div>
 				{/if}
@@ -338,7 +323,7 @@
 		</div>
 
 		<!-- Footer -->
-		<div class="border-t border-gray-200 bg-gray-50 px-5 py-3 text-xs text-gray-400 dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-500">
+		<div class="border-t border-m3-outline/10 bg-m3-surface-variant/20 px-6 py-4 text-xs text-m3-on-surface-variant/80 font-medium">
 			Auto-updating via WebSocket
 		</div>
 	</div>
