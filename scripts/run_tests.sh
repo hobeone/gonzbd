@@ -29,9 +29,9 @@ if [ -d "ui" ]; then
     echo -e "\n[3/4] Running UI Component Tests..."
     cd ui
     if [ -d "node_modules" ]; then
-        npm test
+        bun run test
     else
-        echo "node_modules not found in ui/, skipping UI tests (run 'npm install' in ui/ to enable)"
+        echo "node_modules not found in ui/, skipping UI tests (run 'bun install' in ui/ to enable)"
     fi
     cd ..
     echo -e "${GREEN}✓ UI Component Tests Passed${NC}"
@@ -40,9 +40,9 @@ else
 fi
 
 # Run: go test -tags=uitest -v ./test/uitest/...
-# Prerequisites: cd ui && npm run build; playwright install chromium")
+# Prerequisites: cd ui && bun run build; playwright install chromium")
 
-cd ui && npm run build && cd ..
+cd ui && bun run build && cd ..
 
 # 4. UI E2E Tests (requires built UI + Playwright browsers)
 if [ -f "ui/dist/index.html" ]; then
@@ -50,7 +50,7 @@ if [ -f "ui/dist/index.html" ]; then
     go test -tags=uitest -v ./test/uitest/...
     echo -e "${GREEN}✓ UI E2E Tests Passed${NC}"
 else
-    echo -e "\n[4/4] Skipping UI E2E Tests (run 'cd ui && npm run build' first)"
+    echo -e "\n[4/4] Skipping UI E2E Tests (run 'cd ui && bun run build' first)"
 fi
 
 echo -e "\n${GREEN}===================================================="
