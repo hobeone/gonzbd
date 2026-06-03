@@ -1,10 +1,12 @@
 package dirscanner
 
 import (
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -792,4 +794,198 @@ func TestScanPassesInheritSentinels(t *testing.T) {
 		t.Errorf("Priority: expected DefaultPriority (%d), got %d — category Priority will be ignored downstream",
 			constants.DefaultPriority, got.Priority)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// pruneRemovedFiles — focused unit tests for all 3 prune branches
+// ---------------------------------------------------------------------------
+
+func TestPruneRemovedFiles_PrunesFileInScannedDirWhenMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	scanner := New(tmpDir, store, &MockHandler{failFor: make(map[string]error)}, nil, nil)
+
+	// Record a file as seen.
+	filePath := filepath.Join(tmpDir, "gone.nzb")
+	store.Set(filePath, FileState{Size: 100, MTime: time.Now()})
+
+	// scannedDirs contains tmpDir, but currentScan does NOT list the file
+	// (it was deleted between scans).
+	scannedDirs := map[string]bool{filepath.Clean(tmpDir): true}
+	currentScan := map[string]FileState{} // file absent
+
+	scanner.pruneRemovedFiles(scannedDirs, currentScan)
+
+	if _, ok := store.Get(filePath); ok {
+		t.Error("stale entry should have been pruned from store")
+	}
+}
+
+func TestPruneRemovedFiles_KeepsFileInUnscannedExistingDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Create a real subdirectory that won't be in scannedDirs.
+	// It MUST exist on disk so the os.Stat branch doesn't prune it.
+	unscannedDir := filepath.Join(tmpDir, "unscanned")
+	if err := os.MkdirAll(unscannedDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	scanner := New(tmpDir, store, &MockHandler{failFor: make(map[string]error)}, nil, nil)
+
+	filePath := filepath.Join(unscannedDir, "pending.nzb")
+	store.Set(filePath, FileState{Size: 50, MTime: time.Now()})
+
+	// scannedDirs does NOT include unscannedDir, so the file should be kept.
+	scannedDirs := map[string]bool{filepath.Clean(tmpDir): true}
+	currentScan := map[string]FileState{} // file absent from this scan pass
+
+	scanner.pruneRemovedFiles(scannedDirs, currentScan)
+
+	if _, ok := store.Get(filePath); !ok {
+		t.Error("file in unscanned (but existing) dir should NOT be pruned")
+	}
+}
+
+func TestPruneRemovedFiles_PrunesFileWhoseParentDirIsGone(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	scanner := New(tmpDir, store, &MockHandler{failFor: make(map[string]error)}, nil, nil)
+
+	// Record a file in a directory that no longer exists on disk.
+	deletedDir := filepath.Join(tmpDir, "removed_category")
+	filePath := filepath.Join(deletedDir, "old.nzb")
+	store.Set(filePath, FileState{Size: 200, MTime: time.Now()})
+	// deletedDir is NOT created on disk, simulating a removed category folder.
+
+	scannedDirs := map[string]bool{filepath.Clean(tmpDir): true}
+	currentScan := map[string]FileState{}
+
+	scanner.pruneRemovedFiles(scannedDirs, currentScan)
+
+	if _, ok := store.Get(filePath); ok {
+		t.Error("file whose parent dir is gone should be pruned from store")
+	}
+}
+
+func TestPruneRemovedFiles_KeepsPresentFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	scanner := New(tmpDir, store, &MockHandler{failFor: make(map[string]error)}, nil, nil)
+
+	filePath := filepath.Join(tmpDir, "present.nzb")
+	state := FileState{Size: 30, MTime: time.Now()}
+	store.Set(filePath, state)
+
+	// File IS in currentScan — it should be retained.
+	scannedDirs := map[string]bool{filepath.Clean(tmpDir): true}
+	currentScan := map[string]FileState{filePath: state}
+
+	scanner.pruneRemovedFiles(scannedDirs, currentScan)
+
+	if _, ok := store.Get(filePath); !ok {
+		t.Error("file present in currentScan should NOT be pruned")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// processScannedFile — PartialError boundary
+// ---------------------------------------------------------------------------
+
+// TestProcessScannedFile_PartialError verifies that when handleStableFile
+// returns a PartialError (some NZBs from an archive imported, some failed),
+// the source file is NOT renamed to .failed. The file is left for retry.
+func TestProcessScannedFile_PartialError(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+
+	// Build a ZIP archive containing 2 NZB files.
+	zipPath := filepath.Join(tmpDir, "batch.zip")
+	if err := createZipWithNZBs(t, zipPath, []string{"a.nzb", "b.nzb"}); err != nil {
+		t.Fatalf("create zip: %v", err)
+	}
+
+	// Handler succeeds for "batch.zip[1]" (a.nzb) but fails for "batch.zip[2]"
+	// (b.nzb), producing a PartialError from handleStableFile.
+	handler := &MockHandler{
+		failFor: map[string]error{
+			"batch.zip[2]": fmt.Errorf("simulated import failure for second NZB"),
+		},
+	}
+	scanner := New(tmpDir, store, handler, nil, nil)
+
+	// First processScannedFile call records the file (first sighting).
+	ok, err := scanner.processScannedFile(t.Context(), zipPath, "batch.zip", "", map[string]FileState{})
+	if err != nil {
+		t.Fatalf("first scan unexpected error: %v", err)
+	}
+	if ok {
+		t.Error("first scan should not process (not yet stable)")
+	}
+
+	// Second call: file is stable (same state), triggers extraction.
+	ok, err = scanner.processScannedFile(t.Context(), zipPath, "batch.zip", "", map[string]FileState{})
+	if err == nil {
+		t.Fatal("expected error from PartialError, got nil")
+	}
+	var pe *PartialError
+	if !isPartialError(err, &pe) {
+		t.Errorf("expected PartialError, got %T: %v", err, err)
+	}
+	if ok {
+		t.Error("processScannedFile should return false on partial error")
+	}
+
+	// CRITICAL: the source ZIP must NOT be renamed to .failed on PartialError.
+	if _, err := os.Stat(zipPath); os.IsNotExist(err) {
+		t.Error("source ZIP was removed/renamed on PartialError — it should be kept for retry")
+	}
+	if _, err := os.Stat(zipPath + ".failed"); !os.IsNotExist(err) {
+		t.Error("source ZIP was renamed to .failed on PartialError — it should be kept for retry")
+	}
+}
+
+// isPartialError checks whether err is or wraps a *PartialError, writing
+// the match to out. We can't use errors.As across the package boundary so
+// this helper lives in the same package.
+func isPartialError(err error, out **PartialError) bool {
+	return errors.As(err, out)
+}
+
+// createZipWithNZBs creates a ZIP archive at path containing one empty .nzb
+// file for each name in names.
+func createZipWithNZBs(t *testing.T, path string, names []string) error {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close() //nolint:errcheck
+	w := zip.NewWriter(f)
+	defer w.Close() //nolint:errcheck
+	for _, name := range names {
+		fw, err := w.Create(name)
+		if err != nil {
+			return err
+		}
+		if _, err := fw.Write([]byte("<?xml version=\"1.0\" ?>")); err != nil {
+			return err
+		}
+	}
+	return nil
 }

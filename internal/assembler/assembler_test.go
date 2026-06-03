@@ -925,4 +925,110 @@ func TestAssembler_HelperMethods(t *testing.T) {
 			t.Errorf("expected file size to be 11, got %d", fi.Size())
 		}
 	})
+
+	t.Run("finalizeFile_zeroLength", func(t *testing.T) {
+		// A file where no articles were successfully written (all failed or
+		// the job had 0-byte content) leaves maxWritten=0. finalizeFile must
+		// not call Truncate(0) — that would silently wipe any pre-allocated
+		// content — and must still fire OnFileComplete.
+		var callbackFired int
+		opts := Options{
+			FileInfo:       func(string, int) (FileInfo, error) { return FileInfo{Path: "test"}, nil },
+			OnFileComplete: func(_ string, _ int, _ uint32) { callbackFired++ },
+		}
+		a := New(opts, slog.Default())
+		a.pendingDone = make(map[string][]string)
+		a.pendingFailed = make(map[string][]string)
+
+		tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_zero_")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		f := &openFile{
+			handle:     tmpFile,
+			seenFailed: make(map[string]struct{}),
+			seenDone:   make(map[string]struct{}),
+			maxWritten: 0, // no bytes written
+			crcValid:   false,
+		}
+
+		wc := newWriteCache(0)
+		key := fileKey{jobID: "job1", fileIdx: 0}
+		open := map[fileKey]*openFile{key: f}
+		completed := make(map[fileKey]struct{})
+		req := WriteRequest{JobID: "job1", FileIdx: 0}
+
+		a.finalizeFile(f, key, req, open, completed, wc)
+
+		if callbackFired != 1 {
+			t.Errorf("OnFileComplete fired %d times for zero-length file, want 1", callbackFired)
+		}
+		if _, ok := open[key]; ok {
+			t.Error("file should be removed from open map")
+		}
+		if _, ok := completed[key]; !ok {
+			t.Error("file should be added to completed map")
+		}
+		// File size stays at 0 (Truncate skipped when maxWritten==0).
+		fi, err := os.Stat(tmpFile.Name())
+		if err != nil {
+			t.Fatalf("stat: %v", err)
+		}
+		if fi.Size() != 0 {
+			t.Errorf("zero-length file size = %d, want 0", fi.Size())
+		}
+	})
+
+	t.Run("handleSuccessArticle_writeFail", func(t *testing.T) {
+		// When writeArticleOrBuffer fails (file closed), handleSuccessArticle
+		// must still return true (partsWritten increments — job must not stall)
+		// and the article must land in pendingFailed, not pendingDone.
+		a := &Assembler{
+			log:           slog.Default(),
+			pendingFailed: make(map[string][]string),
+			pendingDone:   make(map[string][]string),
+		}
+
+		tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_fail_")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Close the file so WriteAt will return an error.
+		tmpFile.Close()
+
+		f := &openFile{
+			handle:     tmpFile, // closed — writes will fail
+			seenFailed: make(map[string]struct{}),
+			seenDone:   make(map[string]struct{}),
+			crcValid:   true,
+		}
+
+		wc := newWriteCache(0)
+		open := make(map[fileKey]*openFile)
+		key := fileKey{jobID: "job1", fileIdx: 0}
+
+		req := WriteRequest{
+			JobID:     "job1",
+			MessageID: "msgFail",
+			Offset:    0,
+			Data:      []byte("data that will not be written"),
+			CRC:       99999,
+		}
+
+		got := a.handleSuccessArticle(f, req, wc, open, key)
+		if !got {
+			t.Error("handleSuccessArticle must return true on write failure (prevents job stall)")
+		}
+		// Write failed → article should be in pendingFailed, not pendingDone.
+		if len(a.pendingFailed["job1"]) == 0 {
+			t.Error("failed write should add msgid to pendingFailed")
+		}
+		if len(a.pendingDone["job1"]) != 0 {
+			t.Error("failed write should NOT add msgid to pendingDone")
+		}
+		if _, ok := f.seenFailed["msgFail"]; !ok {
+			t.Error("msgFail should be in seenFailed after write failure")
+		}
+	})
 }
