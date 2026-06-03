@@ -9,7 +9,7 @@
 //	go test -tags=uitest -v ./test/uitest/...
 //
 // Prerequisites:
-//   - The UI must be pre-built: cd ui && npm run build
+//   - The UI must be pre-built: cd ui && bun run build
 //   - Playwright browsers must be installed (cached in ~/.cache/ms-playwright-go/)
 package uitest
 
@@ -55,7 +55,7 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	// Verify the embedded UI dist exists.
 	if _, err := fs.Stat(ui.DistFS, "dist/index.html"); err != nil {
-		t.Fatal("ui/dist/index.html not found — run 'cd ui && npm run build' first")
+		t.Fatal("ui/dist/index.html not found — run 'cd ui && bun run build' first")
 	}
 
 	q := queue.New()
