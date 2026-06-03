@@ -3,6 +3,7 @@ package par2
 import (
 	"crypto/md5" //nolint:gosec // md5 used for PAR2 spec packet integrity
 	"encoding/binary"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -500,5 +501,74 @@ func TestParseFileDescBody_ISO8859_1_FileName(t *testing.T) {
 	want := "Ärger.txt"
 	if fd.FileName != want {
 		t.Errorf("FileName = %q, want %q", fd.FileName, want)
+	}
+}
+
+func TestScanForMagic(t *testing.T) {
+	// Create a temp file containing some junk, then the magic header, then some more data.
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "scan_test.bin")
+
+	junk := make([]byte, 100)
+	for i := range junk {
+		junk[i] = 0xAA
+	}
+
+	content := append([]byte{}, junk...)
+	content = append(content, magic...)
+	content = append(content, 0x11, 0x22, 0x33)
+
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	// Read first 64 bytes (simulating reading a header that isn't magic)
+	hdr := make([]byte, 64)
+	if _, err := io.ReadFull(f, hdr); err != nil {
+		t.Fatalf("ReadFull: %v", err)
+	}
+
+	found, err := scanForMagic(f, magic)
+	if err != nil {
+		t.Fatalf("scanForMagic error: %v", err)
+	}
+	if !found {
+		t.Fatal("scanForMagic did not find magic")
+	}
+
+	// Verify cursor position. scanForMagic seeks to where magic starts (100).
+	pos, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	if pos != 100 {
+		t.Errorf("cursor position = %d, want 100", pos)
+	}
+}
+
+func TestValidatePacketMD5(t *testing.T) {
+	setID := [16]byte{0x01, 0x02, 0x03}
+	packetType := [16]byte{0xAA, 0xBB, 0xCC}
+	body := []byte("hello validate")
+
+	pkt := buildPacket(setID, packetType, body)
+	header := pkt[:64]
+	packetBody := pkt[64:]
+
+	if !validatePacketMD5(header, packetBody) {
+		t.Error("validatePacketMD5 failed on valid packet")
+	}
+
+	// Corrupt header MD5
+	badHeader := append([]byte{}, header...)
+	badHeader[16] ^= 0xFF
+	if validatePacketMD5(badHeader, packetBody) {
+		t.Error("validatePacketMD5 succeeded on corrupted header MD5")
 	}
 }
