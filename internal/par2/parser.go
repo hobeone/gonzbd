@@ -128,36 +128,8 @@ func ParsePar2Set(path string) (*Par2Set, error) {
 
 		if !bytes.Equal(header[0:8], magic) {
 			// Scan forward up to maxJunkScan bytes to find the next magic.
-			found := false
-			// We already consumed 64 bytes that weren't a valid header.
-			// Put the last 7 bytes back (magic is 8 bytes, so partial
-			// overlap is possible) by seeking back 7 bytes from current pos.
-			if _, seekErr := f.Seek(-56, io.SeekCurrent); seekErr != nil {
-				break // can't seek, bail
-			}
-			scanBuf := make([]byte, maxJunkScan)
-			n, readErr := f.Read(scanBuf)
-			if n == 0 {
-				break
-			}
-			scanBuf = scanBuf[:n]
-
-			idx := bytes.Index(scanBuf, magic)
-			if idx >= 0 {
-				// Seek to where magic starts, then let the loop re-read the header.
-				// Current position is (old_pos - 56 + n).
-				// We want to be at (old_pos - 56 + idx).
-				backtrack := int64(n - idx)
-				if _, seekErr := f.Seek(-backtrack, io.SeekCurrent); seekErr != nil {
-					break
-				}
-				found = true
-			}
-			if !found {
-				if readErr != nil {
-					break // EOF or error during scan
-				}
-				// If we scanned the full buffer without finding magic, stop.
+			found, scanErr := scanForMagic(f, magic)
+			if scanErr != nil || !found {
 				break
 			}
 			continue
@@ -174,19 +146,7 @@ func ParsePar2Set(path string) (*Par2Set, error) {
 			return nil, fmt.Errorf("read body: %w", err)
 		}
 
-		// Validate MD5: hash of (setID[16] + type[16] + body).
-		// header[16:32] = packet MD5
-		// header[32:48] = recovery set ID
-		// header[48:64] = packet type
-		h := md5.New() //nolint:gosec // md5 is used for packet integrity by PAR2 spec
-		h.Write(header[32:48])
-		h.Write(header[48:64])
-		h.Write(body)
-		var computedMD5 [16]byte
-		copy(computedMD5[:], h.Sum(nil))
-		var storedMD5 [16]byte
-		copy(storedMD5[:], header[16:32])
-		if computedMD5 != storedMD5 {
+		if !validatePacketMD5(header, body) {
 			// MD5 mismatch — drop this packet silently and continue.
 			continue
 		}
@@ -359,4 +319,50 @@ func ParseFileDescriptions(path string) ([]FileDesc, error) {
 		return nil, err
 	}
 	return set.Files, nil
+}
+
+// scanForMagic scans forward up to maxJunkScan bytes to find the next magic.
+// Put the last 7 bytes back (magic is 8 bytes, so partial overlap is possible)
+// by seeking back 7 bytes from current pos.
+// Returns true if magic is found, false if not found or on error.
+func scanForMagic(f *os.File, magic []byte) (bool, error) {
+	if _, seekErr := f.Seek(-56, io.SeekCurrent); seekErr != nil {
+		return false, seekErr
+	}
+	scanBuf := make([]byte, maxJunkScan)
+	n, readErr := f.Read(scanBuf)
+	if n == 0 {
+		return false, readErr
+	}
+	scanBuf = scanBuf[:n]
+
+	idx := bytes.Index(scanBuf, magic)
+	if idx >= 0 {
+		// Seek to where magic starts, then let the loop re-read the header.
+		// Current position is (old_pos - 56 + n).
+		// We want to be at (old_pos - 56 + idx).
+		backtrack := int64(n - idx)
+		if _, seekErr := f.Seek(-backtrack, io.SeekCurrent); seekErr != nil {
+			return false, seekErr
+		}
+		return true, nil
+	}
+	return false, readErr
+}
+
+// validatePacketMD5 verifies the MD5 checksum of the packet body.
+// MD5 is a hash of (setID[16] + type[16] + body).
+// header[16:32] = packet MD5
+// header[32:48] = recovery set ID
+// header[48:64] = packet type
+func validatePacketMD5(header []byte, body []byte) bool {
+	h := md5.New() //nolint:gosec // md5 is used for packet integrity by PAR2 spec
+	h.Write(header[32:48])
+	h.Write(header[48:64])
+	h.Write(body)
+	var computedMD5 [16]byte
+	copy(computedMD5[:], h.Sum(nil))
+	var storedMD5 [16]byte
+	copy(storedMD5[:], header[16:32])
+	return computedMD5 == storedMD5
 }
