@@ -214,17 +214,20 @@
 
 <Dialog.Root bind:open>
 	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50" />
-		<Dialog.Content class="fixed left-1/2 top-1/2 z-50 flex h-[85vh] w-full max-w-4xl -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border bg-white dark:bg-gray-900 shadow-lg">
+		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs" />
+		<Dialog.Content class="fixed left-1/2 top-1/2 z-50 flex h-[85vh] w-full max-w-4xl -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl border border-m3-outline/20 bg-m3-surface text-m3-on-surface shadow-m3-3 outline-none">
 			<!-- Sidebar -->
-			<aside class="w-64 shrink-0 border-r bg-gray-50/50 dark:bg-gray-800/50 p-4">
-				<Dialog.Title class="px-2 text-lg font-bold tracking-tight">Settings</Dialog.Title>
+			<aside class="w-64 shrink-0 border-r border-m3-outline/10 bg-m3-surface-variant/30 p-5">
+				<Dialog.Title class="px-2 text-lg font-semibold tracking-tight text-m3-on-surface flex items-center gap-2 select-none">
+					<span class="material-symbols-outlined text-m3-primary text-xl">settings</span>
+					Settings
+				</Dialog.Title>
 				<nav class="mt-6 space-y-1">
 					{#each sections as section (section.id)}
 						<button
 							onclick={() => (activeSection = section.id)}
-							class="w-full rounded-md px-3 py-2 text-left text-sm font-medium transition-colors
-							{activeSection === section.id ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}"
+							class="w-full rounded-full px-4 py-2.5 text-left text-sm font-semibold tracking-wide transition-all
+							{activeSection === section.id ? 'bg-m3-primary-container text-m3-on-primary-container' : 'text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface'}"
 						>
 							{section.label}
 						</button>
@@ -236,24 +239,40 @@
 			<div class="flex flex-1 flex-col overflow-hidden">
 				<div class="flex-1 overflow-y-auto p-8">
 					{#if error}
-						<div class="mb-6 flex items-center justify-between rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950 p-4 text-sm text-red-700 dark:text-red-300">
+						<div class="mb-6 flex items-center justify-between rounded-2xl border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive font-semibold">
 							<div class="flex items-center gap-2">
-								<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4">
-									<path fill-rule="evenodd" d="M8 15A7 7 0 1 0 8 1a7 7 0 0 0 0 14ZM8 4a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-1.5 0v-3A.75.75 0 0 1 8 4Zm0 8a.908.908 0 1 1 0-1.817.908.908 0 0 1 0 1.817Z" clip-rule="evenodd" />
-								</svg>
+								<span class="material-symbols-outlined text-lg leading-none">error</span>
 								<span>{error}</span>
 							</div>
-							<button onclick={() => (error = null)} class="text-red-900 dark:text-red-100 hover:text-red-700 dark:hover:text-red-300" aria-label="Dismiss error">
-								<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-4">
-									<path d="M5.28 4.22a.75.75 0 0 0-1.06 1.06L6.94 8l-2.72 2.72a.75.75 0 1 0 1.06 1.06L8 9.06l2.72 2.72a.75.75 0 1 0 1.06-1.06L9.06 8l2.72-2.72a.75.75 0 0 0-1.06-1.06L8 6.94 5.28 4.22Z" />
-								</svg>
+							<button onclick={() => (error = null)} class="text-destructive hover:opacity-80" aria-label="Dismiss error">
+								<span class="material-symbols-outlined text-lg leading-none">close</span>
 							</button>
 						</div>
 					{/if}
 
 					{#if loading}
-						<div class="flex h-32 items-center justify-center text-sm text-gray-500 dark:text-gray-400">
-							Loading configuration...
+						<div class="flex h-32 flex-col gap-3 items-center justify-center text-sm text-m3-on-surface-variant/80">
+							<svg
+								class="size-8 animate-spin text-m3-primary"
+								xmlns="http://www.w3.org/2000/svg"
+								fill="none"
+								viewBox="0 0 24 24"
+							>
+								<circle
+									class="opacity-25"
+									cx="12"
+									cy="12"
+									r="10"
+									stroke="currentColor"
+									stroke-width="4"
+								></circle>
+								<path
+									class="opacity-75"
+									fill="currentColor"
+									d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+								></path>
+							</svg>
+							<span>Loading configuration...</span>
 						</div>
 					{:else if configData}
 						{#if activeSection === 'general'}
@@ -289,26 +308,27 @@
 				</div>
 
 				<!-- Footer -->
-				<footer class="flex items-center justify-between border-t bg-gray-50 dark:bg-gray-800/50 px-8 py-4">
-					<div class="text-xs text-muted-foreground">
+				<footer class="flex items-center justify-between border-t border-m3-outline/10 bg-m3-surface-variant/20 px-8 py-4">
+					<div class="text-xs text-m3-on-surface-variant">
 						{#if saving}
-							<span class="flex items-center gap-2">
-								<svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+							<span class="flex items-center gap-2 font-medium">
+								<svg class="h-4 w-4 animate-spin text-m3-primary" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
 								Saving changes...
 							</span>
 						{:else if dirtyFields.length > 0}
-							<span class="font-medium text-amber-600 dark:text-amber-400">{dirtyFields.length} unsaved changes</span>
+							<span class="font-bold text-amber-600 dark:text-amber-400">{dirtyFields.length} unsaved changes</span>
 						{:else}
 							All changes are synced with the server.
 						{/if}
 					</div>
 					<div class="flex gap-3">
 						{#if dirtyFields.length > 0}
-							<Button variant="ghost" onclick={discardChanges} disabled={saving}>Discard</Button>
-							<Button onclick={saveAll} disabled={saving}>Save Changes</Button>
+							<Button variant="ghost" class="rounded-full px-5" onclick={discardChanges} disabled={saving}>Discard</Button>
+							<Button class="bg-m3-primary text-m3-on-primary hover:bg-m3-primary/90 rounded-full px-5" onclick={saveAll} disabled={saving}>Save Changes</Button>
 						{/if}
 						<Button
 							variant="outline"
+							class="rounded-full px-5 border-m3-outline text-m3-on-surface hover:bg-m3-surface-variant/50"
 							onclick={() => {
 								if (dirtyFields.length > 0 && !confirm('You have unsaved changes. Close anyway?')) return;
 								open = false;

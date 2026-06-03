@@ -100,45 +100,43 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<div data-testid="status-bar" class="border-t bg-white dark:bg-gray-900">
-	<div class="mx-auto flex max-w-7xl items-center gap-4 px-4 py-2 text-sm text-gray-600 dark:text-gray-400">
+<div data-testid="status-bar" class="border-t border-m3-outline/20 bg-m3-surface text-m3-on-surface">
+	<div class="mx-auto flex max-w-7xl items-center gap-4 px-4 py-2 text-sm text-m3-on-surface-variant">
 		<div class="flex items-center gap-2">
 			<SpeedGraph data={history} />
 			<!-- Speed display (read-only) -->
-			<span class="font-mono font-medium text-gray-900 dark:text-gray-100">{formatSpeed(speed)}</span>
+			<span class="font-mono font-medium text-m3-on-surface">{formatSpeed(speed)}</span>
 			<!-- Clickable limit label -->
 			<div class="relative" bind:this={popoverEl}>
 				<button
 					onclick={togglePopover}
-					class="group flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
+					class="group flex items-center gap-1.5 rounded-full bg-m3-surface-variant/50 px-3 py-1 text-xs font-semibold text-m3-on-surface-variant transition-colors hover:bg-m3-surface-variant/80 hover:text-m3-on-surface"
 					title="Click to set speed limit"
 				>
-					<span class="text-gray-500 dark:text-gray-400">Limit:</span>
-					<span class="font-medium {bandwidthMax > 0 && bandwidthPerc < 100 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-700 dark:text-gray-300'}">{limitLabel}</span>
-					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="size-3 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100">
-						<path fill-rule="evenodd" d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" />
-					</svg>
+					<span class="opacity-80">Limit:</span>
+					<span class="font-bold {bandwidthMax > 0 && bandwidthPerc < 100 ? 'text-amber-600 dark:text-amber-400' : 'text-m3-on-surface'}">{limitLabel}</span>
+					<span class="material-symbols-outlined text-[16px] text-m3-on-surface-variant opacity-0 transition-opacity group-hover:opacity-100 leading-none">arrow_drop_down</span>
 				</button>
 
 				{#if showPopover}
 					<div
-						class="absolute top-full left-0 z-50 mt-2 w-72 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800"
+						class="absolute top-full left-0 z-50 mt-2 w-72 rounded-3xl border border-m3-outline/20 bg-m3-surface p-4 shadow-m3-2 text-m3-on-surface"
 						role="dialog"
 						aria-label="Bandwidth limit"
 					>
 						{#if bandwidthMax > 0}
 							<!-- Header -->
-							<div class="border-b border-gray-100 px-4 py-2.5 dark:border-gray-700">
-								<p class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Bandwidth Limit</p>
-								<p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">Max: {maxFormatted.value} {maxFormatted.unit}</p>
+							<div class="border-b border-m3-outline/10 pb-2.5 mb-2.5">
+								<p class="text-xs font-semibold uppercase tracking-wide text-m3-on-surface-variant">Bandwidth Limit</p>
+								<p class="mt-0.5 text-xs text-m3-on-surface-variant/75">Max: {maxFormatted.value} {maxFormatted.unit}</p>
 							</div>
 
 							<!-- Slider -->
-							<div class="px-4 py-4">
+							<div class="py-1">
 								<!-- Live value display -->
 								<div class="mb-3 flex items-baseline justify-between">
-									<span class="text-2xl font-bold tabular-nums text-gray-900 dark:text-gray-100">{displayPerc}%</span>
-									<span class="text-sm font-medium text-gray-500 dark:text-gray-400">{effectiveFormatted.value} {effectiveFormatted.unit}</span>
+									<span class="text-2xl font-bold tabular-nums text-m3-on-surface">{displayPerc}%</span>
+									<span class="text-sm font-medium text-m3-on-surface-variant">{effectiveFormatted.value} {effectiveFormatted.unit}</span>
 								</div>
 
 								<!-- Range input -->
@@ -155,7 +153,7 @@
 								/>
 
 								<!-- Scale markers -->
-								<div class="mt-1 flex justify-between text-[10px] text-gray-400 dark:text-gray-500">
+								<div class="mt-1 flex justify-between text-[10px] text-m3-on-surface-variant/70">
 									<span>1%</span>
 									<span>25%</span>
 									<span>50%</span>
@@ -165,14 +163,12 @@
 							</div>
 						{:else}
 							<!-- No bandwidth limit configured -->
-							<div class="px-4 py-5 text-center">
-								<div class="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-700">
-									<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-5 text-gray-400">
-										<path fill-rule="evenodd" d="M8.34 1.804A1 1 0 0 1 9.32 1h1.36a1 1 0 0 1 .98.804l.295 1.473c.497.144.971.342 1.416.587l1.25-.834a1 1 0 0 1 1.262.125l.962.962a1 1 0 0 1 .125 1.262l-.834 1.25c.245.445.443.919.587 1.416l1.473.294a1 1 0 0 1 .804.98v1.362a1 1 0 0 1-.804.98l-1.473.295a6.95 6.95 0 0 1-.587 1.416l.834 1.25a1 1 0 0 1-.125 1.262l-.962.962a1 1 0 0 1-1.262.125l-1.25-.834a6.953 6.953 0 0 1-1.416.587l-.294 1.473a1 1 0 0 1-.98.804H9.32a1 1 0 0 1-.98-.804l-.295-1.473a6.957 6.957 0 0 1-1.416-.587l-1.25.834a1 1 0 0 1-1.262-.125l-.962-.962a1 1 0 0 1-.125-1.262l.834-1.25a6.957 6.957 0 0 1-.587-1.416l-1.473-.294A1 1 0 0 1 1 10.68V9.32a1 1 0 0 1 .804-.98l1.473-.295c.144-.497.342-.971.587-1.416l-.834-1.25a1 1 0 0 1 .125-1.262l.962-.962A1 1 0 0 1 5.38 3.03l1.25.834a6.957 6.957 0 0 1 1.416-.587l.294-1.473ZM13 10a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" clip-rule="evenodd" />
-									</svg>
+							<div class="py-4 text-center">
+								<div class="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-m3-surface-variant">
+									<span class="material-symbols-outlined text-m3-on-surface-variant text-xl">settings</span>
 								</div>
-								<p class="text-sm font-medium text-gray-700 dark:text-gray-300">No bandwidth limit set</p>
-								<p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+								<p class="text-sm font-medium text-m3-on-surface">No bandwidth limit set</p>
+								<p class="mt-1 text-xs text-m3-on-surface-variant/70">
 									Set a limit in Settings → Downloads
 								</p>
 							</div>
@@ -181,14 +177,14 @@
 				{/if}
 			</div>
 		</div>
-		<div class="h-4 w-px bg-gray-200 dark:bg-gray-700"></div>
-		<span>{itemCount} item{itemCount !== 1 ? 's' : ''}</span>
-		<div class="h-4 w-px bg-gray-200 dark:bg-gray-700"></div>
-		<span>{formatSize(remaining)} left</span>
-		<div class="h-4 w-px bg-gray-200 dark:bg-gray-700"></div>
-		<span>ETA: {eta}</span>
+		<div class="h-4 w-px bg-m3-outline/20"></div>
+		<span class="text-m3-on-surface-variant">{itemCount} item{itemCount !== 1 ? 's' : ''}</span>
+		<div class="h-4 w-px bg-m3-outline/20"></div>
+		<span class="text-m3-on-surface-variant">{formatSize(remaining)} left</span>
+		<div class="h-4 w-px bg-m3-outline/20"></div>
+		<span class="text-m3-on-surface-variant">ETA: {eta}</span>
 		{#if paused}
-			<span class="ml-auto font-medium text-yellow-600 dark:text-yellow-400">PAUSED</span>
+			<span class="ml-auto font-semibold tracking-wider text-xs bg-amber-500/10 text-amber-500 px-2 py-0.5 rounded-full select-none">PAUSED</span>
 		{/if}
 	</div>
 </div>
@@ -198,9 +194,9 @@
 	.slider {
 		-webkit-appearance: none;
 		appearance: none;
-		height: 6px;
-		border-radius: 3px;
-		background: linear-gradient(to right, #3b82f6, #60a5fa);
+		height: 4px;
+		border-radius: 2px;
+		background: var(--color-m3-surface-variant);
 		outline: none;
 		cursor: pointer;
 	}
@@ -211,8 +207,8 @@
 		width: 20px;
 		height: 20px;
 		border-radius: 50%;
-		background: #3b82f6;
-		border: 3px solid white;
+		background: var(--color-m3-primary);
+		border: 2px solid var(--color-m3-surface);
 		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 		cursor: grab;
 		transition: transform 0.15s ease, box-shadow 0.15s ease;
@@ -220,21 +216,20 @@
 
 	.slider::-webkit-slider-thumb:hover {
 		transform: scale(1.15);
-		box-shadow: 0 2px 6px rgba(59, 130, 246, 0.4);
+		box-shadow: 0 0 0 6px var(--color-m3-primary-container);
 	}
 
 	.slider::-webkit-slider-thumb:active {
 		cursor: grabbing;
 		transform: scale(1.1);
-		box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
 	}
 
 	.slider::-moz-range-thumb {
 		width: 20px;
 		height: 20px;
 		border-radius: 50%;
-		background: #3b82f6;
-		border: 3px solid white;
+		background: var(--color-m3-primary);
+		border: 2px solid var(--color-m3-surface);
 		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 		cursor: grab;
 	}
@@ -244,16 +239,16 @@
 	}
 
 	.slider::-moz-range-track {
-		height: 6px;
-		border-radius: 3px;
-		background: linear-gradient(to right, #3b82f6, #60a5fa);
+		height: 4px;
+		border-radius: 2px;
+		background: var(--color-m3-surface-variant);
 	}
 
-	/* Dark mode thumb */
+	/* Dark mode thumb border color */
 	:global(.dark) .slider::-webkit-slider-thumb {
-		border-color: #1f2937;
+		border-color: var(--color-m3-surface);
 	}
 	:global(.dark) .slider::-moz-range-thumb {
-		border-color: #1f2937;
+		border-color: var(--color-m3-surface);
 	}
 </style>

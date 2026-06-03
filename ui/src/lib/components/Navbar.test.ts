@@ -60,7 +60,7 @@ describe('Navbar', () => {
 
 	it('renders + Add NZB button', () => {
 		render(Navbar);
-		expect(screen.getByText('+ Add NZB')).toBeInTheDocument();
+		expect(screen.getByText('Add NZB')).toBeInTheDocument();
 	});
 
 	it('renders settings button with title', () => {

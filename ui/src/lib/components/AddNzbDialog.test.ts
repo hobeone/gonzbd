@@ -61,7 +61,7 @@ describe('AddNzbDialog', () => {
 	it('renders drag-and-drop area with hint text', () => {
 		render(AddNzbDialog, { props: { open: true } });
 		expect(screen.getByText('Drop NZB file here or click to browse')).toBeInTheDocument();
-		expect(screen.getByText('.nzb files only')).toBeInTheDocument();
+		expect(screen.getByText('.nzb or .nzb.gz files')).toBeInTheDocument();
 	});
 
 	it('does not render dialog content when closed', () => {

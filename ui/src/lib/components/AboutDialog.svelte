@@ -114,35 +114,24 @@
 
 <Dialog.Root bind:open>
 	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50" />
+		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs" />
 		<Dialog.Content
-			class="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white shadow-lg dark:border-gray-700 dark:bg-gray-900"
+			class="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-m3-outline/20 bg-m3-surface text-m3-on-surface shadow-m3-3 outline-none"
 		>
 			<!-- Header -->
-			<div class="border-b px-5 py-4 dark:border-gray-700">
-				<Dialog.Title class="flex items-center gap-2 text-lg font-semibold">
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						viewBox="0 0 20 20"
-						fill="currentColor"
-						class="size-5 text-blue-500"
-					>
-						<path
-							fill-rule="evenodd"
-							d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-7-4a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM9 9a.75.75 0 0 0 0 1.5h.253a.25.25 0 0 1 .244.304l-.459 2.066A1.75 1.75 0 0 0 10.747 15H11a.75.75 0 0 0 0-1.5h-.253a.25.25 0 0 1-.244-.304l.459-2.066A1.75 1.75 0 0 0 9.253 9H9Z"
-							clip-rule="evenodd"
-						/>
-					</svg>
+			<div class="border-b border-m3-outline/10 px-6 py-4">
+				<Dialog.Title class="flex items-center gap-2.5 text-lg font-semibold tracking-tight text-m3-on-surface">
+					<span class="material-symbols-outlined text-m3-primary text-2xl">info</span>
 					About GoNZBD
 				</Dialog.Title>
 			</div>
 
 			<!-- Body -->
-			<div class="max-h-[60vh] overflow-y-auto px-5 py-3">
+			<div class="max-h-[60vh] overflow-y-auto px-6 py-4">
 				{#if loading}
-					<div class="flex items-center justify-center py-8">
+					<div class="flex items-center justify-center py-10">
 						<svg
-							class="size-6 animate-spin text-gray-400"
+							class="size-8 animate-spin text-m3-primary"
 							xmlns="http://www.w3.org/2000/svg"
 							fill="none"
 							viewBox="0 0 24 24"
@@ -164,25 +153,25 @@
 					</div>
 				{:else if error}
 					<div
-						class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300"
+						class="rounded-2xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive"
 					>
 						{error}
 					</div>
 				{:else if info}
 					{#each sections as section, i (section.title)}
 						{#if i > 0}
-							<div class="my-3 h-px bg-gray-100 dark:bg-gray-800"></div>
+							<div class="my-4 h-px bg-m3-outline/10"></div>
 						{/if}
 						<h3
-							class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500"
+							class="mb-3 text-[11px] font-bold uppercase tracking-wider text-m3-primary"
 						>
 							{section.title}
 						</h3>
-						<dl class="space-y-1.5">
+						<dl class="space-y-2">
 							{#each section.rows as row (row.label)}
 								<div class="flex items-start gap-3">
 									<dt
-										class="w-20 shrink-0 text-xs font-medium text-gray-500 dark:text-gray-400"
+										class="w-24 shrink-0 text-xs font-semibold text-m3-on-surface-variant/80"
 									>
 										{row.label}
 									</dt>
@@ -191,7 +180,7 @@
 											? 'font-mono text-xs'
 											: ''} {row.value === 'not found'
 											? 'text-amber-600 dark:text-amber-400'
-											: 'text-gray-900 dark:text-gray-100'}"
+											: 'text-m3-on-surface'}"
 									>
 										{row.value}
 									</dd>
@@ -204,7 +193,7 @@
 
 			<!-- Footer -->
 			<div
-				class="border-t px-5 py-3 text-center text-xs text-gray-400 dark:border-gray-700 dark:text-gray-500"
+				class="border-t border-m3-outline/10 px-6 py-4 text-center text-xs text-m3-on-surface-variant/70 font-medium"
 			>
 				GoNZBD — A Go reimplementation of SABnzbd
 			</div>
