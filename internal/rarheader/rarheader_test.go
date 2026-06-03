@@ -3,6 +3,7 @@ package rarheader
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -167,4 +168,74 @@ func writeTemp(t *testing.T, name string, data []byte) string {
 		t.Fatalf("writeTemp: %v", err)
 	}
 	return path
+}
+
+func TestIsPasswordError(t *testing.T) {
+	// Subprocess helper to get an exit status 11 error.
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess")
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	exit11Err := cmd.Run()
+	if exit11Err == nil {
+		t.Fatal("expected helper process to fail with exit status 11")
+	}
+
+	cases := []struct {
+		name      string
+		err       error
+		stdout    string
+		stderr    string
+		wantRetry bool
+	}{
+		{"no error", nil, "", "", false},
+		{"incorrect password stdout", nil, "Incorrect password", "", true},
+		{"incorrect password stderr", nil, "", "Incorrect password", true},
+		{"password stdout", nil, "password required", "", true},
+		{"password stderr", nil, "", "password required", true},
+		{"exit code 11", exit11Err, "", "", true},
+		{"generic error", errors.New("unrar failed"), "", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isPasswordError(tc.err, tc.stdout, tc.stderr)
+			if got != tc.wantRetry {
+				t.Errorf("isPasswordError(%v, %q, %q) = %v, want %v", tc.err, tc.stdout, tc.stderr, got, tc.wantRetry)
+			}
+		})
+	}
+}
+
+func TestParseUnrarVtOutput(t *testing.T) {
+	output := `
+Name: file1.txt
+Type: File
+Flags: encrypted
+Name: file2.txt
+Type: File
+Flags: directory
+Name: path/to/file3.txt
+Type: File
+Flags: encrypted, solid
+`
+	filenames, encrypted := parseUnrarVtOutput(output)
+	if !encrypted {
+		t.Error("parseUnrarVtOutput did not detect encrypted flag")
+	}
+	want := []string{"file1.txt", "file2.txt", "file3.txt"}
+	if len(filenames) != len(want) {
+		t.Fatalf("got %d filenames, want %d", len(filenames), len(want))
+	}
+	for i, f := range filenames {
+		if f != want[i] {
+			t.Errorf("filenames[%d] = %q, want %q", i, f, want[i])
+		}
+	}
+}
+
+// Helper process for TestIsPasswordError to produce exit status 11.
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+	os.Exit(11)
 }
