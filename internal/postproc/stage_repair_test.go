@@ -1,6 +1,8 @@
 package postproc
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -8,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/par2"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // par2Fixture returns the absolute path to a file in the shared par2 fixture
@@ -170,5 +174,180 @@ func TestCleanupPar2Backups_PreservesIfOriginalMissing(t *testing.T) {
 	}
 	if _, err := os.Stat(backupPath); err != nil {
 		t.Errorf("backup removed despite missing original: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleRepairResult — focused unit tests for all 5 outcome branches
+// ---------------------------------------------------------------------------
+
+// repairJob creates a minimal Job wired to a real temp dir for VerifiedSets persistence.
+func repairJob(t *testing.T) (*Job, *VerifiedSets) {
+	t.Helper()
+	dir := t.TempDir()
+	job := &Job{
+		Queue: &queue.Job{
+			ID:   "rjob",
+			Name: "RepairTest",
+		},
+		DownloadDir: dir,
+	}
+	vs := NewVerifiedSets(dir)
+	return job, vs
+}
+
+// TestHandleRepairResult_ErrorPath verifies that a non-nil err sets ParError,
+// marks the set as not-verified, and returns an error wrapping the original.
+func TestHandleRepairResult_ErrorPath(t *testing.T) {
+	t.Parallel()
+	job, vs := repairJob(t)
+	set := par2.Set{Name: "testset", MainFile: "testset.par2"}
+	stage := &RepairStage{}
+
+	underlying := fmt.Errorf("par2 crashed with code 137")
+	err := stage.handleRepairResult(slog.Default(), job, set, vs, par2.RepairResult{}, underlying)
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, underlying) {
+		t.Errorf("error chain should wrap underlying: %v", err)
+	}
+	if !job.ParError {
+		t.Error("ParError should be true after error")
+	}
+	if job.NeedRequeue {
+		t.Error("NeedRequeue should be false on generic error")
+	}
+	// vs should record the set as not-verified (false), not simply absent.
+	vs.MarkVerified("testset", false)
+	if vs.IsVerified("testset") {
+		t.Error("set should not be verified after error")
+	}
+}
+
+// TestHandleRepairResult_NeedMoreBlocks verifies that NeedMoreBlocks=true sets
+// NeedRequeue and populates RequeueBlocksNeeded.
+func TestHandleRepairResult_NeedMoreBlocks(t *testing.T) {
+	t.Parallel()
+	job, vs := repairJob(t)
+	set := par2.Set{Name: "testset", MainFile: "testset.par2"}
+	stage := &RepairStage{}
+
+	res := par2.RepairResult{
+		Success:        false,
+		NeedMoreBlocks: true,
+		BlocksNeeded:   42,
+	}
+	err := stage.handleRepairResult(slog.Default(), job, set, vs, res, nil)
+
+	if err == nil {
+		t.Fatal("expected error for NeedMoreBlocks")
+	}
+	if !job.ParError {
+		t.Error("ParError should be true")
+	}
+	if !job.NeedRequeue {
+		t.Error("NeedRequeue should be true when more blocks needed")
+	}
+	if job.RequeueBlocksNeeded != 42 {
+		t.Errorf("RequeueBlocksNeeded = %d; want 42", job.RequeueBlocksNeeded)
+	}
+	if job.RequeueReason == "" {
+		t.Error("RequeueReason should be set")
+	}
+}
+
+// TestHandleRepairResult_InvalidPar2 verifies that a corrupt/missing par2 file
+// (Parsed.Status == StatusInvalidPar2) sets NeedRequeue with a distinct reason
+// from NeedMoreBlocks and leaves RequeueBlocksNeeded as 0.
+func TestHandleRepairResult_InvalidPar2(t *testing.T) {
+	t.Parallel()
+	job, vs := repairJob(t)
+	set := par2.Set{Name: "testset", MainFile: "testset.par2"}
+	stage := &RepairStage{}
+
+	res := par2.RepairResult{
+		Success: false,
+		Parsed:  &par2.RepairOutput{Status: par2.StatusInvalidPar2},
+	}
+	err := stage.handleRepairResult(slog.Default(), job, set, vs, res, nil)
+
+	if err == nil {
+		t.Fatal("expected error for InvalidPar2")
+	}
+	if !job.ParError {
+		t.Error("ParError should be true")
+	}
+	if !job.NeedRequeue {
+		t.Error("NeedRequeue should be true for corrupt par2")
+	}
+	// Distinguishes this path from NeedMoreBlocks: no specific block count.
+	if job.RequeueBlocksNeeded != 0 {
+		t.Errorf("RequeueBlocksNeeded should be 0 for corrupt par2, got %d", job.RequeueBlocksNeeded)
+	}
+	if job.RequeueReason == "" {
+		t.Error("RequeueReason should be set")
+	}
+}
+
+// TestHandleRepairResult_UnsuccessfulGeneric verifies the catch-all failed
+// path: ParError=true, no requeue, non-nil error.
+func TestHandleRepairResult_UnsuccessfulGeneric(t *testing.T) {
+	t.Parallel()
+	job, vs := repairJob(t)
+	set := par2.Set{Name: "testset", MainFile: "testset.par2"}
+	stage := &RepairStage{}
+
+	res := par2.RepairResult{
+		Success:  false,
+		ExitCode: 2,
+	}
+	err := stage.handleRepairResult(slog.Default(), job, set, vs, res, nil)
+
+	if err == nil {
+		t.Fatal("expected error for generic unsuccessful repair")
+	}
+	if !job.ParError {
+		t.Error("ParError should be true")
+	}
+	if job.NeedRequeue {
+		t.Error("NeedRequeue should be false for generic failure without NeedMoreBlocks")
+	}
+}
+
+// TestHandleRepairResult_Success verifies that a successful repair clears
+// ParError, marks the set verified, and returns no error.
+func TestHandleRepairResult_Success(t *testing.T) {
+	t.Parallel()
+	job, vs := repairJob(t)
+	set := par2.Set{
+		Name:       "testset",
+		MainFile:   "testset.par2",
+		ExtraFiles: []string{"testset.vol001+01.par2"},
+	}
+	stage := &RepairStage{}
+
+	res := par2.RepairResult{Success: true}
+	err := stage.handleRepairResult(slog.Default(), job, set, vs, res, nil)
+
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+	if job.ParError {
+		t.Error("ParError should be false on success")
+	}
+	if job.NeedRequeue {
+		t.Error("NeedRequeue should be false on success")
+	}
+	if !vs.IsVerified("testset") {
+		t.Error("set should be marked verified after success")
+	}
+	// recordRepairSuccess should have added par2 files to ConsumedFiles.
+	if _, ok := job.ConsumedFiles["testset.par2"]; !ok {
+		t.Error("MainFile should be in ConsumedFiles after success")
+	}
+	if _, ok := job.ConsumedFiles["testset.vol001+01.par2"]; !ok {
+		t.Error("ExtraFile should be in ConsumedFiles after success")
 	}
 }
