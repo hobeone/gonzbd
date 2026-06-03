@@ -178,6 +178,15 @@ golangci-lint run ./...               # Linting
 
 Use Conventional Commits format (defined in the global CLAUDE.md). Scope should be the Go package name or subsystem: `fix(assembler)`, `refactor(queue)`, `feat(nntp)`.
 
+### Commit Hygiene (learned from real mistakes)
+
+These rules exist because a batch of refactor commits violated them — the cost is misleading history that `git log <file>` and `git bisect` then propagate.
+
+- **The subject line MUST describe what is actually in the diff.** Before committing, run `git diff --cached --stat` and confirm the scope and files match the message. A commit subjected `refactor(api): …` that actually changes `internal/assembler/` is a defect, not a typo — it makes the assembler change invisible to anyone searching api history.
+- **One logical change per commit — verify, don't assume.** When several edits accumulate in the working tree, do not `git add -A` and split by timing. Stage per logical unit (`git add <paths>`) and confirm each commit contains only that unit. Two unrelated extractions (e.g. an assembler refactor and an api/config helper) must be two commits.
+- **Quantitative claims in commit bodies MUST be measured, not estimated.** If you write "drops cyclomatic complexity from 24 to <5," you must have run the tool (`gocyclo`/`gocognit`) on the result. An extraction reduces the *parent's* complexity by construction, but the magnitude is not guessable — a real case dropped 24→12, not the claimed <5. State the measured number or omit the claim.
+- **Re-run `golangci-lint` on the final diff, not a mental model of it.** Refactors that convert control flow (e.g. fall-through `return` into boolean returns) can introduce *new* lint findings (`S1008`, `ifElseChain`) that did not exist in the original. The gate must be run against the code you are about to commit.
+
 ## Reading Python for Reference
 
 When consulting the Python source for behavior clarification:

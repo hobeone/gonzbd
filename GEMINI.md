@@ -188,6 +188,8 @@ These rules are established from real hotspots targeted by repowise. They ensure
 
 - **Isolate Parsing & Normalization**: Keep primary decoding handlers (like config `decode`) concise. Extract error-type partitioning loops (like parsing `yaml.TypeError`) and struct normalizations (like assigning defaults or converting nil slices) into dedicated helpers.
 
+- **Measure the result; preserve behavior exactly**: After a complexity-reduction extraction, run `gocyclo`/`gocognit` on the function and use the *measured* number — never an estimate — in any commit claim. Confirm the extraction is behavior-preserving: when hoisting shared statements out of sibling branches (e.g. `ParError = true`), verify every branch set them; when converting fall-through into return values, re-run `golangci-lint` (it may now flag `S1008`/`ifElseChain` that the original control flow hid).
+
 ### 6. Performance & Hot-Path Discipline
 
 These rules were learned from production pprof profiling at 2 Gbps. The download pipeline processes ~330 articles/second; any per-article overhead multiplies fast.
@@ -299,3 +301,10 @@ All commits must follow [Conventional Commits 1.0.0](https://www.conventionalcom
 | `chore` | Build, CI, dependency updates |
 
 Append `!` or add `BREAKING CHANGE:` footer for any public API or wire-format change.
+
+**Commit hygiene (mandatory — learned from real mistakes):**
+
+- **The subject MUST match the diff.** Before committing, run `git diff --cached --stat` and confirm the scope and changed files match the message. A commit subjected `refactor(api): …` that actually edits `internal/assembler/` is a defect: it hides the real change from `git log <file>` and `git bisect`.
+- **One logical change per commit.** When several edits pile up in the working tree, never `git add -A` and let commits be sliced by timing. Stage per logical unit with `git add <paths>` and verify each commit holds only that unit. Two unrelated extractions are two commits.
+- **Quantitative claims MUST be measured.** Do not write "drops CCN from 24 to <5" unless you ran `gocyclo`/`gocognit` on the result. Extraction lowers the parent's complexity by construction, but the magnitude is not guessable — a real case landed at 12, not the claimed <5. State the measured number or drop the claim.
+- **Re-run `golangci-lint` on the actual final diff.** Control-flow refactors (fall-through `return` → boolean returns) can introduce *new* findings (`S1008`, `ifElseChain`) absent from the original. The gate must run against the code you are about to commit, not an assumption about it.
