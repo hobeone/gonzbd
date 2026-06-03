@@ -147,7 +147,18 @@ func (e *testEnv) newPage(t *testing.T) playwright.Page {
 	if err != nil {
 		t.Fatalf("browser.NewPage: %v", err)
 	}
+	var logs []string
+	page.OnConsole(func(msg playwright.ConsoleMessage) {
+		logs = append(logs, fmt.Sprintf("%s: %s", msg.Type(), msg.Text()))
+	})
 	t.Cleanup(func() {
+		if t.Failed() && len(logs) > 0 {
+			t.Logf("--- Browser Console Logs ---")
+			for _, log := range logs {
+				t.Logf("[BROWSER] %s", log)
+			}
+			t.Logf("----------------------------")
+		}
 		_ = page.Close()
 	})
 	return page
@@ -232,7 +243,7 @@ func (e *testEnv) seedHistoryWithPrefix(t *testing.T, n int, status, prefix stri
 }
 
 // screenshotOnFailure registers a cleanup that captures a full-page screenshot
-// when the test fails. Screenshots are saved to test/uitest/screenshots/.
+// and logs page HTML content when the test fails.
 func screenshotOnFailure(t *testing.T, page playwright.Page) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -246,6 +257,9 @@ func screenshotOnFailure(t *testing.T, page playwright.Page) {
 				t.Logf("screenshot failed: %v", err)
 			} else {
 				t.Logf("Screenshot saved: %s", path)
+			}
+			if content, err := page.Content(); err == nil {
+				t.Logf("Page HTML on failure:\n%s", content)
 			}
 		}
 	})

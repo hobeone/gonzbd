@@ -26,6 +26,10 @@
 
 	let scripts = $state<string[]>(['None']);
 
+	const isReservedCategory = $derived(
+		category ? (category.name === '*' || category.name === 'Default') : false
+	);
+
 	$effect(() => {
 		if (open) {
 			if (category) {
@@ -81,7 +85,7 @@
 			<div class="mt-4 space-y-4">
 				<div class="space-y-1.5">
 					<label for="cat-name" class="text-sm font-medium">Category Name</label>
-					<Input id="cat-name" bind:value={draft.name} placeholder="e.g. tv" disabled={!!category && (category.name === '*' || category.name === 'Default')} />
+					<Input id="cat-name" bind:value={draft.name} placeholder="e.g. tv" disabled={isReservedCategory} />
 				</div>
 
 				<div class="space-y-1.5">
