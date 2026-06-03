@@ -50,12 +50,12 @@ is not a drop-in replacement for an existing Python SABnzbd install.
 ## Build
 
 ```bash
-cd ui && npm install && npm run build && cd ..
+cd ui && bun install && bun run build && cd ..
 go build ./cmd/gonzbd
 ```
 
 The first command builds the Svelte SPA into `ui/dist/`; the Go build
-embeds it into the binary. Node.js is only needed at build time.
+embeds it into the binary. Bun is only needed at build time.
 
 Versioned build:
 
@@ -451,22 +451,22 @@ To upgrade a Go package to a newer **major version** (which typically introduces
    ```
 
 
-### NPM Packages
+### Frontend Packages
 To manage and upgrade frontend Svelte dependencies in the `ui/` subdirectory:
 ```bash
 cd ui
 
 # Upgrade all packages to their latest versions, ignoring semver constraints (may introduce breaking changes)
-npx npm-check-updates -u && npm install
+bun x npm-check-updates -u && bun install
 
 # Upgrade a specific package to its latest version (including major/breaking changes)
-npm install <package-name>@latest
+bun add <package-name>@latest
 
 # Update all packages according to semver constraints in package.json (safe minor/patch updates)
-npm update
+bun update
 
-# Audit and fix vulnerability warnings
-npm audit fix
+# Audit vulnerability warnings
+bun pm audit
 ```
 
 ## Repository layout

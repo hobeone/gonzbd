@@ -21,7 +21,7 @@ Two wrapper scripts in `scripts/` run the full suite with a single command:
 
 | Script | What it does |
 |--------|-------------|
-| `scripts/run_tests.sh` | Runs unit → integration → UI vitest → `npm run build` → uitest sequentially |
+| `scripts/run_tests.sh` | Runs unit → integration → UI vitest → `bun run build` → uitest sequentially |
 | `scripts/run_tests_parallel.sh` | Same phases, but unit/integration/vitest/build run concurrently; uitest starts once build finishes. Faster on multi-core machines. Per-phase logs written to `logs/`. |
 
 Use `run_tests.sh` as the canonical pre-commit gate (matches CLAUDE.md quality gates). Use `run_tests_parallel.sh` for faster feedback during active development.
@@ -189,7 +189,7 @@ real Chromium browser against it.
 
 ### Prerequisites
 
-1. **Build the UI first:** `cd ui && npm run build`
+1. **Build the UI first:** `cd ui && bun run build`
 2. **Install Playwright browsers** (cached in `~/.cache/ms-playwright-go/`):
    ```bash
    go run github.com/playwright-community/playwright-go/cmd/playwright install --with-deps chromium
