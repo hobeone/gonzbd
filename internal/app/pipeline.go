@@ -196,61 +196,68 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 	telemetry.ArticlesReceived.Add(1)
 
 	if res.Err != nil {
-		if errors.Is(res.Err, downloader.ErrNoServersLeft) ||
-			!isRetryableDownloaderError(res.Err) {
-			// Terminal failure (all servers exhausted or unrecoverable
-			// decode error). Hand to the assembler so it can mark the
-			// article Failed in the queue.
-			p.log.Warn("article permanently failed, handing to assembler",
-				"job", res.JobID, "msgid", res.MessageID, "file", res.Subject, "err", res.Err)
-
-			if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
-				p.log.Warn("register fallback file failed",
-					"job", res.JobID, "fileidx", res.FileIdx, "err", err)
-			}
-
-			// The assembler marks the article Failed in the queue (with dup
-			// suppression) so failure and completion accounting stay ordered
-			// with file writes on the single worker goroutine.
-			writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
-				JobID:     res.JobID,
-				FileIdx:   res.FileIdx,
-				MessageID: res.MessageID,
-				FatalErr:  res.Err,
-			})
-			// If the assembler couldn't accept the request, clear Emitted
-			// so the dispatcher can retry the article.
-			if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
-				p.log.Warn("write fatal article failed, returning to dispatch pool",
-					"job", res.JobID, "msgid", res.MessageID, "err", writeErr)
-				_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
-			}
-			telemetry.ArticlesFailed.Add(1)
-
-			// Early abort: if the first batch of articles is mostly
-			// failures, the job is likely DMCA'd or expired. Abort now
-			// to save bandwidth.
-			if p.queue.CheckEarlyAbort(res.JobID) {
-				p.log.Warn("early abort: 80%+ of first articles failed, job appears DMCA'd/expired",
-					"job", res.JobID)
-				if p.onJobHopeless != nil {
-					p.onJobHopeless(res.JobID)
-				}
-			}
-		} else {
-			// Retryable error (connection drop, 430 from one server).
-			// Clear the Emitted flag so the dispatcher re-dispatches this
-			// article on the next pass.
-			p.log.Debug("fetch error, returning to dispatch pool",
-				"job", res.JobID, "msgid", res.MessageID, "server", res.ServerName, "err", res.Err)
-			if err := p.queue.ClearArticleEmitted(res.JobID, res.MessageID); err != nil {
-				p.log.Debug("clear emitted failed, this typically happens when a job has already been stopped", "job", res.JobID, "msgid", res.MessageID, "err", err)
-			}
-			telemetry.ArticlesRetried.Add(1)
-		}
-		return
+		p.handleFailureResult(ctx, res)
+	} else {
+		p.handleSuccessResult(ctx, res)
 	}
+}
 
+func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.ArticleResult) {
+	if errors.Is(res.Err, downloader.ErrNoServersLeft) ||
+		!isRetryableDownloaderError(res.Err) {
+		// Terminal failure (all servers exhausted or unrecoverable
+		// decode error). Hand to the assembler so it can mark the
+		// article Failed in the queue.
+		p.log.Warn("article permanently failed, handing to assembler",
+			"job", res.JobID, "msgid", res.MessageID, "file", res.Subject, "err", res.Err)
+
+		if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
+			p.log.Warn("register fallback file failed",
+				"job", res.JobID, "fileidx", res.FileIdx, "err", err)
+		}
+
+		// The assembler marks the article Failed in the queue (with dup
+		// suppression) so failure and completion accounting stay ordered
+		// with file writes on the single worker goroutine.
+		writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
+			JobID:     res.JobID,
+			FileIdx:   res.FileIdx,
+			MessageID: res.MessageID,
+			FatalErr:  res.Err,
+		})
+		// If the assembler couldn't accept the request, clear Emitted
+		// so the dispatcher can retry the article.
+		if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
+			p.log.Warn("write fatal article failed, returning to dispatch pool",
+				"job", res.JobID, "msgid", res.MessageID, "err", writeErr)
+			_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
+		}
+		telemetry.ArticlesFailed.Add(1)
+
+		// Early abort: if the first batch of articles is mostly
+		// failures, the job is likely DMCA'd or expired. Abort now
+		// to save bandwidth.
+		if p.queue.CheckEarlyAbort(res.JobID) {
+			p.log.Warn("early abort: 80%+ of first articles failed, job appears DMCA'd/expired",
+				"job", res.JobID)
+			if p.onJobHopeless != nil {
+				p.onJobHopeless(res.JobID)
+			}
+		}
+	} else {
+		// Retryable error (connection drop, 430 from one server).
+		// Clear the Emitted flag so the dispatcher re-dispatches this
+		// article on the next pass.
+		p.log.Debug("fetch error, returning to dispatch pool",
+			"job", res.JobID, "msgid", res.MessageID, "server", res.ServerName, "err", res.Err)
+		if err := p.queue.ClearArticleEmitted(res.JobID, res.MessageID); err != nil {
+			p.log.Debug("clear emitted failed, this typically happens when a job has already been stopped", "job", res.JobID, "msgid", res.MessageID, "err", err)
+		}
+		telemetry.ArticlesRetried.Add(1)
+	}
+}
+
+func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.ArticleResult) {
 	// Record download stats
 	p.queue.MarkJobStarted(res.JobID, time.Now())
 	p.queue.RecordDownload(res.JobID, res.ServerName, len(res.Data))
