@@ -696,3 +696,170 @@ func TestHistoryList_PostProcNotInjectedForNzoIDs(t *testing.T) {
 		t.Errorf("got %d slots; want 0 (nzo_ids should skip PP injection)", len(resp.History.Slots))
 	}
 }
+
+func TestFetchEntriesByIDs_Internal(t *testing.T) {
+	t.Parallel()
+	s, repo := testHistoryServer(t)
+	ctx := t.Context()
+
+	id1 := seedEntry(t, repo, "Ubuntu Linux", "Completed", "os", time.Now())
+	id2 := seedEntry(t, repo, "Debian Linux", "Failed", "os", time.Now())
+	id3 := seedEntry(t, repo, "Windows 11", "Completed", "os", time.Now())
+
+	t.Run("empty ids string", func(t *testing.T) {
+		got := s.fetchEntriesByIDs(ctx, "", "", "", "", false)
+		if len(got) != 0 {
+			t.Errorf("expected empty, got %d entries", len(got))
+		}
+	})
+
+	t.Run("invalid and valid csv ids", func(t *testing.T) {
+		csv := fmt.Sprintf("%s,nonexistent,%s", id1, id2)
+		got := s.fetchEntriesByIDs(ctx, csv, "", "", "", false)
+		if len(got) != 2 {
+			t.Fatalf("expected 2 entries, got %d", len(got))
+		}
+		if got[0].NzoID != id1 || got[1].NzoID != id2 {
+			t.Errorf("unexpected entries order/ids: %v", got)
+		}
+	})
+
+	t.Run("category filter", func(t *testing.T) {
+		csv := fmt.Sprintf("%s,%s", id1, id2)
+		got := s.fetchEntriesByIDs(ctx, csv, "movies", "", "", false)
+		if len(got) != 0 {
+			t.Errorf("expected 0 entries with category 'movies', got %v", got)
+		}
+		got = s.fetchEntriesByIDs(ctx, csv, "os", "", "", false)
+		if len(got) != 2 {
+			t.Errorf("expected 2 entries with category 'os', got %v", got)
+		}
+	})
+
+	t.Run("status filter", func(t *testing.T) {
+		csv := fmt.Sprintf("%s,%s,%s", id1, id2, id3)
+		got := s.fetchEntriesByIDs(ctx, csv, "", "Failed", "", false)
+		if len(got) != 1 || got[0].NzoID != id2 {
+			t.Errorf("expected only failed entry id2, got %v", got)
+		}
+	})
+
+	t.Run("failedOnly filter", func(t *testing.T) {
+		csv := fmt.Sprintf("%s,%s,%s", id1, id2, id3)
+		got := s.fetchEntriesByIDs(ctx, csv, "", "", "", true)
+		if len(got) != 1 || got[0].NzoID != id2 {
+			t.Errorf("expected only failed entry id2, got %v", got)
+		}
+	})
+
+	t.Run("search filter case insensitive and field selection", func(t *testing.T) {
+		csv := fmt.Sprintf("%s,%s,%s", id1, id2, id3)
+		// Match Ubuntu by "ubuntu" (name)
+		got := s.fetchEntriesByIDs(ctx, csv, "", "", "ubuntu", false)
+		if len(got) != 1 || got[0].NzoID != id1 {
+			t.Errorf("search for 'ubuntu' expected id1, got %v", got)
+		}
+
+		// Match nothing
+		got = s.fetchEntriesByIDs(ctx, csv, "", "", "macOS", false)
+		if len(got) != 0 {
+			t.Errorf("search for 'macOS' expected 0 results, got %v", got)
+		}
+	})
+}
+
+func TestInjectPostProcJobs_Internal(t *testing.T) {
+	t.Parallel()
+	q := queue.New()
+	s := Server{
+		queue: q,
+	}
+
+	now := time.Now()
+	// Add PP job
+	j1 := addTestJob(t, q, queue.AddOptions{Filename: "show.nzb"})
+	j1.PostProc = true
+	j1.Status = constants.StatusRepairing
+	j1.Category = "tv"
+	j1.Name = "Show.S01E01"
+	j1.TotalBytes = 1000
+	j1.FailedBytes = 100
+	j1.RemainingBytes = 200
+	j1.DownloadStarted = now
+	j1.DownloadFinished = now.Add(10 * time.Second)
+
+	// Add non-PP job
+	j2 := addTestJob(t, q, queue.AddOptions{Filename: "show2.nzb"})
+	j2.PostProc = false
+	j2.Status = constants.StatusDownloading
+	j2.Category = "tv"
+	j2.Name = "Show.S01E02"
+
+	t.Run("no queue server", func(t *testing.T) {
+		sNoQueue := Server{}
+		slots, count, bytes := sNoQueue.injectPostProcJobs(nil, 0, 0, "", "", "", false)
+		if len(slots) != 0 || count != 0 || bytes != 0 {
+			t.Errorf("expected empty, got %v, %v, %v", slots, count, bytes)
+		}
+	})
+
+	t.Run("default injects PP job only", func(t *testing.T) {
+		slots, count, bytes := s.injectPostProcJobs(nil, 0, 0, "", "", "", false)
+		if len(slots) != 1 {
+			t.Fatalf("expected 1 injected slot, got %d", len(slots))
+		}
+		slot := slots[0]
+		if slot.NzoID != j1.ID {
+			t.Errorf("expected injected slot to be j1, got %v", slot)
+		}
+		if count != 1 {
+			t.Errorf("expected count=1, got %d", count)
+		}
+		if bytes != 1000 {
+			t.Errorf("expected bytes=1000, got %d", bytes)
+		}
+		if slot.Downloaded != 700 {
+			t.Errorf("expected Downloaded=700 (1000-100-200), got %d", slot.Downloaded)
+		}
+		if slot.DownloadTime != 10 {
+			t.Errorf("expected DownloadTime=10, got %d", slot.DownloadTime)
+		}
+	})
+
+	t.Run("category filter mismatch", func(t *testing.T) {
+		slots, _, _ := s.injectPostProcJobs(nil, 0, 0, "movies", "", "", false)
+		if len(slots) != 0 {
+			t.Errorf("expected 0 slots on category mismatch, got %v", slots)
+		}
+	})
+
+	t.Run("failedOnly skips PP", func(t *testing.T) {
+		slots, _, _ := s.injectPostProcJobs(nil, 0, 0, "", "", "", true)
+		if len(slots) != 0 {
+			t.Errorf("expected 0 slots on failedOnly, got %v", slots)
+		}
+	})
+
+	t.Run("status filter mismatch", func(t *testing.T) {
+		slots, _, _ := s.injectPostProcJobs(nil, 0, 0, "", "Downloading", "", false)
+		if len(slots) != 0 {
+			t.Errorf("expected 0 slots on status mismatch, got %v", slots)
+		}
+	})
+
+	t.Run("search query", func(t *testing.T) {
+		slots, _, _ := s.injectPostProcJobs(nil, 0, 0, "", "", "Show", false)
+		if len(slots) != 1 {
+			t.Errorf("expected 1 slot on query 'Show', got %v", slots)
+		}
+
+		var count int
+		var bytes int64
+		slots, count, bytes = s.injectPostProcJobs(nil, 0, 0, "", "", "debian", false)
+		_ = count
+		_ = bytes
+		if len(slots) != 0 {
+			t.Errorf("expected 0 slots on query 'debian', got %v", slots)
+		}
+	})
+}
