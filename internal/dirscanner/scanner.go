@@ -103,59 +103,14 @@ func (s *Scanner) ScanOnce(ctx context.Context) (int, error) {
 	scannedDirs[filepath.Clean(s.dir)] = true
 
 	// Scan category subdirectories.
-	if catMap != nil {
-		entries, err := os.ReadDir(s.dir)
-		if err != nil {
-			return processed, fmt.Errorf("failed to read directory for subdirs: %w", err)
-		}
-
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			if strings.HasPrefix(entry.Name(), ".") {
-				continue
-			}
-			catName, ok := catMap[strings.ToLower(entry.Name())]
-			if !ok {
-				continue
-			}
-
-			subDir := filepath.Join(s.dir, entry.Name())
-			subScan, subProcessed, err := s.scanDir(ctx, subDir, catName)
-			if err != nil {
-				s.logger.Warn("failed to scan category subdir", "dir", subDir, "category", catName, "err", err)
-				continue
-			}
-			processed += subProcessed
-			scannedDirs[filepath.Clean(subDir)] = true
-
-			// Merge subdir scan results into the combined map.
-			maps.Copy(currentScan, subScan)
-		}
+	subProcessed, err := s.scanCategorySubdirs(ctx, catMap, scannedDirs, currentScan)
+	if err != nil {
+		return processed, err
 	}
+	processed += subProcessed
 
 	// Remove entries from store that no longer exist on disk.
-	var toDelete []string
-	s.store.mu.RLock()
-	for storedPath := range s.store.states {
-		if _, exists := currentScan[storedPath]; !exists {
-			dir := filepath.Dir(storedPath)
-			if scannedDirs[dir] {
-				// Directory was scanned but file is gone — prune.
-				toDelete = append(toDelete, storedPath)
-			} else if _, err := os.Stat(dir); os.IsNotExist(err) {
-				// Directory no longer exists (category removed or
-				// folder deleted) — prune to prevent unbounded growth.
-				toDelete = append(toDelete, storedPath)
-			}
-		}
-	}
-	s.store.mu.RUnlock()
-
-	for _, path := range toDelete {
-		s.store.Delete(path)
-	}
+	s.pruneRemovedFiles(scannedDirs, currentScan)
 
 	// Persist updated state to disk.
 	if err := s.store.Save(); err != nil {
@@ -196,53 +151,14 @@ func (s *Scanner) scanDir(ctx context.Context, dir, category string) (files map[
 			continue
 		}
 
-		// Get current file stat.
-		stat, err := os.Stat(path)
+		ok, err := s.processScannedFile(ctx, path, entry.Name(), category, currentScan)
 		if err != nil {
-			s.logger.Warn("failed to stat file", "path", path, "err", err)
-			continue
-		}
-
-		currentScan[path] = FileState{
-			Size:  stat.Size(),
-			MTime: stat.ModTime(),
-		}
-
-		// Check if this file was seen in a prior scan with the same state.
-		priorState, wasSeen := s.store.Get(path)
-		if !wasSeen {
-			// First sighting: record it and move to next file.
-			s.store.Set(path, currentScan[path])
-			s.logger.Debug("first sighting of file, waiting to see if it's size changes on the next scan before adding it to queue", "path", path)
-			continue
-		}
-
-		// File was seen before. Check if it's stable (same size+mtime).
-		if priorState.Size != currentScan[path].Size || !priorState.MTime.Equal(currentScan[path].MTime) {
-			// File changed: reset the stable timer by updating its recorded state.
-			s.store.Set(path, currentScan[path])
-			s.logger.Debug("file changed, resetting stability timer", "path", path)
-			continue
-		}
-
-		// File is stable. Extract, handle, and clean up.
-		if err := s.handleStableFile(ctx, path, entry.Name(), category); err != nil {
 			s.logger.Warn("failed to handle file", "path", path, "err", err)
-			// Only leave for retry if some NZBs succeeded (partial
-			// success). If all failed or extraction itself failed,
-			// permanently mark as .failed.
-			var pe *PartialError
-			if !errors.As(err, &pe) {
-				failedPath := path + ".failed"
-				if renameErr := os.Rename(path, failedPath); renameErr != nil {
-					s.logger.Warn("failed to rename file", "path", path, "err", renameErr)
-				}
-				s.store.Delete(path)
-			}
 			continue
 		}
-
-		processed++
+		if ok {
+			processed++
+		}
 	}
 
 	return currentScan, processed, nil
@@ -330,4 +246,128 @@ func isValidExtension(filename string) bool {
 		strings.HasSuffix(lower, ".nzb.gz") ||
 		strings.HasSuffix(lower, ".nzb.bz2") ||
 		strings.HasSuffix(lower, ".zip")
+}
+
+// scanCategorySubdirs scans category-specific watch folders underneath watch root.
+func (s *Scanner) scanCategorySubdirs(
+	ctx context.Context,
+	catMap map[string]string,
+	scannedDirs map[string]bool,
+	currentScan map[string]FileState,
+) (int, error) {
+	if catMap == nil {
+		return 0, nil
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read directory for subdirs: %w", err)
+	}
+
+	processed := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		catName, ok := catMap[strings.ToLower(entry.Name())]
+		if !ok {
+			continue
+		}
+
+		subDir := filepath.Join(s.dir, entry.Name())
+		subScan, subProcessed, err := s.scanDir(ctx, subDir, catName)
+		if err != nil {
+			s.logger.Warn("failed to scan category subdir", "dir", subDir, "category", catName, "err", err)
+			continue
+		}
+		processed += subProcessed
+		scannedDirs[filepath.Clean(subDir)] = true
+
+		// Merge subdir scan results into the combined map.
+		maps.Copy(currentScan, subScan)
+	}
+	return processed, nil
+}
+
+// pruneRemovedFiles scans the store for deleted files and watch folders to prune from state.
+func (s *Scanner) pruneRemovedFiles(scannedDirs map[string]bool, currentScan map[string]FileState) {
+	var toDelete []string
+	s.store.mu.RLock()
+	for storedPath := range s.store.states {
+		if _, exists := currentScan[storedPath]; !exists {
+			dir := filepath.Dir(storedPath)
+			if scannedDirs[dir] {
+				// Directory was scanned but file is gone — prune.
+				toDelete = append(toDelete, storedPath)
+			} else if _, err := os.Stat(dir); os.IsNotExist(err) {
+				// Directory no longer exists (category removed or
+				// folder deleted) — prune to prevent unbounded growth.
+				toDelete = append(toDelete, storedPath)
+			}
+		}
+	}
+	s.store.mu.RUnlock()
+
+	for _, path := range toDelete {
+		s.store.Delete(path)
+	}
+}
+
+// processScannedFile checks if the file at path is stable and, if so,
+// processes it (extracts and handles it). Returns true if successfully
+// processed, or false if not yet stable, skipped, or failed.
+func (s *Scanner) processScannedFile(
+	ctx context.Context,
+	path string,
+	name string,
+	category string,
+	currentScan map[string]FileState,
+) (bool, error) {
+	// Get current file stat.
+	stat, err := os.Stat(path)
+	if err != nil {
+		return false, fmt.Errorf("stat: %w", err)
+	}
+
+	state := FileState{
+		Size:  stat.Size(),
+		MTime: stat.ModTime(),
+	}
+	currentScan[path] = state
+
+	// Check if this file was seen in a prior scan with the same state.
+	priorState, wasSeen := s.store.Get(path)
+	if !wasSeen {
+		// First sighting: record it and return.
+		s.store.Set(path, state)
+		s.logger.Debug("first sighting of file, waiting to see if it's size changes on the next scan before adding it to queue", "path", path)
+		return false, nil
+	}
+
+	// File was seen before. Check if it's stable (same size+mtime).
+	if priorState.Size != state.Size || !priorState.MTime.Equal(state.MTime) {
+		// File changed: reset the stable timer by updating its recorded state.
+		s.store.Set(path, state)
+		s.logger.Debug("file changed, resetting stability timer", "path", path)
+		return false, nil
+	}
+
+	// File is stable. Extract, handle, and clean up.
+	if err := s.handleStableFile(ctx, path, name, category); err != nil {
+		// Only leave for retry if some NZBs succeeded (partial success).
+		// If all failed or extraction itself failed, permanently mark as .failed.
+		var pe *PartialError
+		if !errors.As(err, &pe) {
+			failedPath := path + ".failed"
+			if renameErr := os.Rename(path, failedPath); renameErr != nil {
+				s.logger.Warn("failed to rename file", "path", path, "err", renameErr)
+			}
+			s.store.Delete(path)
+		}
+		return false, err
+	}
+
+	return true, nil
 }
