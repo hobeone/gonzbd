@@ -41,3 +41,6 @@ ui/coverage/
 .agents/
 .claude/
 .mcp.json
+
+# repowise API keys (local)
+.repowise/.env
