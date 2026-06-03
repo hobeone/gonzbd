@@ -680,10 +680,9 @@ func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 	}
 	f.seenFailed[req.MessageID] = struct{}{}
 	a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
-	if alreadyCounted {
-		return false
-	}
-	return true
+	// If this MessageID was already counted as a success, don't increment
+	// partsWritten again (the failure ack above is still recorded).
+	return !alreadyCounted
 }
 
 // handleSuccessArticle handles the non-fatal (else) branch of processRequest.
