@@ -9,7 +9,7 @@ export default defineConfig({
 	},
 	test: {
 		include: ['src/**/*.{test,spec}.{js,ts}'],
-		environment: 'jsdom',
+		environment: 'happy-dom',
 		globals: true,
 		setupFiles: ['./src/setupTests.ts'],
 		coverage: {
