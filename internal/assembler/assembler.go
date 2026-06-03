@@ -634,88 +634,12 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	}
 
 	if req.FatalErr != nil {
-		f.crcValid = false // Failed articles invalidate CRC tracking
-		a.log.Debug("counting failed article toward completion (skipping disk write)",
-			"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", req.FatalErr)
-		if f.seenFailed == nil {
-			f.seenFailed = make(map[string]struct{})
-		}
-		if _, dup := f.seenFailed[req.MessageID]; dup {
-			// Already recorded — re-emit the ack so the queue
-			// receives it even if a prior flush dropped it.
-			a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
-			return
-		}
-		// Cross-check: if this MessageID was already counted as a success,
-		// don't increment partsWritten again — just record the failure ack.
-		alreadyCounted := false
-		if f.seenDone != nil {
-			if _, was := f.seenDone[req.MessageID]; was {
-				alreadyCounted = true
-			}
-		}
-		f.seenFailed[req.MessageID] = struct{}{}
-		a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
-		if alreadyCounted {
+		if !a.handleFatalArticle(f, req) {
 			return
 		}
 	} else {
-		// Deduplicate successful writes (defence in depth — the upstream
-		// queue gate should prevent this, but an overlapping retry could
-		// slip through). Only dedup when MessageID is set (always true in
-		// production; may be empty in unit tests).
-		if req.MessageID != "" {
-			if f.seenDone == nil {
-				f.seenDone = make(map[string]struct{})
-			}
-			if _, dup := f.seenDone[req.MessageID]; dup {
-				// Already written to disk — re-emit the ack so
-				// the queue receives it even if a prior flush
-				// dropped the original acknowledgment.
-				a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
-				return
-			}
-			// Cross-check: if this MessageID was already counted as a failure,
-			// write the data (overwrite the hole) but don't count again.
-			if f.seenFailed != nil {
-				if _, was := f.seenFailed[req.MessageID]; was {
-					// Write the data but skip partsWritten increment.
-					a.writeArticleOrBuffer(f, key, req, wc, open)
-					f.seenDone[req.MessageID] = struct{}{}
-					a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
-					return
-				}
-			}
-		}
-		if !a.writeArticleOrBuffer(f, key, req, wc, open) {
-			// Write failed — treat as a failed article so partsWritten
-			// still increments. Without this, the job stalls forever
-			// because TotalParts is never reached. The job will
-			// eventually go hopeless if enough articles fail.
-			if req.MessageID != "" {
-				if f.seenFailed == nil {
-					f.seenFailed = make(map[string]struct{})
-				}
-				f.seenFailed[req.MessageID] = struct{}{}
-				a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
-			}
-		} else {
-			if req.MessageID != "" {
-				f.seenDone[req.MessageID] = struct{}{}
-			}
-			a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
-			// Record CRC for this article. Only accumulate when
-			// the decoder provided a non-zero CRC (yEnc articles).
-			if req.CRC != 0 {
-				f.crcParts = append(f.crcParts, crcPart{
-					offset: req.Offset,
-					crc:    req.CRC,
-					len:    int64(len(req.Data)),
-				})
-			} else if len(req.Data) > 0 {
-				// UU-encoded or otherwise CRC-less article.
-				f.crcValid = false
-			}
+		if !a.handleSuccessArticle(f, req, wc, open, key) {
+			return
 		}
 	}
 
@@ -725,70 +649,176 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		"part", f.partsWritten, "total", f.info.TotalParts,
 		"offset", req.Offset, "bytes", len(req.Data), "failed", req.FatalErr != nil)
 	if f.info.TotalParts > 0 && f.partsWritten >= f.info.TotalParts {
-		// Drain any remaining cached articles for this file before close.
-		a.drainCacheForFile(wc, f, key)
-		// Truncate to the actual decoded size. Pre-allocation
-		// (fallocate/ftruncate) extends the file to the NZB-declared
-		// encoded size, which includes yEnc overhead (~2% larger).
-		// Without this truncation the file has trailing zero bytes,
-		// which causes par2 to report it as damaged.
-		if f.maxWritten > 0 {
-			if err := f.handle.Truncate(f.maxWritten); err != nil {
-				a.log.Error("truncate completed file to decoded size",
-					"path", f.info.Path,
-					"expected", f.maxWritten,
-					"error", err,
-				)
-			}
-		} else {
-			a.log.Debug("zero-length file completed",
-				"path", f.info.Path,
-			)
-		}
-		// Durability: fsync before closing and reporting completion.
-		if err := f.handle.Sync(); err != nil {
-			a.log.Error("fsync completed file",
-				"path", f.info.Path,
-				"error", err,
-			)
-		}
-		if err := f.handle.Close(); err != nil {
-			a.log.Warn("close completed file",
-				"path", f.info.Path,
-				"error", err,
-			)
-		}
-		delete(open, key)
-		completed[key] = struct{}{} // tombstone: reject late duplicates
-		telemetry.FilesCompleted.Add(1)
-		a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
-		// Flush pending Done/Failed before firing the callback. The
-		// pipeline's watchCompletions must not observe IsComplete()==true
-		// on a file whose articles are not yet marked Done in the queue,
-		// or it will race job-completion logic ahead of durability state.
-		a.flush()
+		a.finalizeFile(f, key, req, open, completed, wc)
+	}
+}
 
-		// Compute the whole-file CRC32 by combining per-article CRCs
-		// in offset order. This produces the same CRC as if the file
-		// were read sequentially, which is what par2 files store.
-		var fileCRC uint32
-		if f.crcValid && len(f.crcParts) > 0 {
-			slices.SortFunc(f.crcParts, func(a, b crcPart) int {
-				return cmp.Compare(a.offset, b.offset)
+// handleFatalArticle handles the req.FatalErr != nil branch of processRequest.
+// It deduplicates via seenFailed, cross-checks seenDone, and appends to
+// pendingFailed. Returns true if partsWritten should be incremented (first-time
+// failure); false if it was a duplicate that already counted.
+func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
+	f.crcValid = false // Failed articles invalidate CRC tracking
+	a.log.Debug("counting failed article toward completion (skipping disk write)",
+		"job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path, "error", req.FatalErr)
+	if f.seenFailed == nil {
+		f.seenFailed = make(map[string]struct{})
+	}
+	if _, dup := f.seenFailed[req.MessageID]; dup {
+		// Already recorded — re-emit the ack so the queue
+		// receives it even if a prior flush dropped it.
+		a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
+		return false
+	}
+	// Cross-check: if this MessageID was already counted as a success,
+	// don't increment partsWritten again — just record the failure ack.
+	alreadyCounted := false
+	if f.seenDone != nil {
+		if _, was := f.seenDone[req.MessageID]; was {
+			alreadyCounted = true
+		}
+	}
+	f.seenFailed[req.MessageID] = struct{}{}
+	a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
+	if alreadyCounted {
+		return false
+	}
+	return true
+}
+
+// handleSuccessArticle handles the non-fatal (else) branch of processRequest.
+// It deduplicates via seenDone, cross-checks seenFailed, calls
+// writeArticleOrBuffer, accumulates CRC, and appends to pendingDone. Returns
+// true if partsWritten should be incremented.
+func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writeCache, open map[fileKey]*openFile, key fileKey) bool {
+	// Deduplicate successful writes (defence in depth — the upstream
+	// queue gate should prevent this, but an overlapping retry could
+	// slip through). Only dedup when MessageID is set (always true in
+	// production; may be empty in unit tests).
+	if req.MessageID != "" {
+		if f.seenDone == nil {
+			f.seenDone = make(map[string]struct{})
+		}
+		if _, dup := f.seenDone[req.MessageID]; dup {
+			// Already written to disk — re-emit the ack so
+			// the queue receives it even if a prior flush
+			// dropped the original acknowledgment.
+			a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
+			return false
+		}
+		// Cross-check: if this MessageID was already counted as a failure,
+		// write the data (overwrite the hole) but don't count again.
+		if f.seenFailed != nil {
+			if _, was := f.seenFailed[req.MessageID]; was {
+				// Write the data but skip partsWritten increment.
+				a.writeArticleOrBuffer(f, key, req, wc, open)
+				f.seenDone[req.MessageID] = struct{}{}
+				a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
+				return false
+			}
+		}
+	}
+	if !a.writeArticleOrBuffer(f, key, req, wc, open) {
+		// Write failed — treat as a failed article so partsWritten
+		// still increments. Without this, the job stalls forever
+		// because TotalParts is never reached. The job will
+		// eventually go hopeless if enough articles fail.
+		if req.MessageID != "" {
+			if f.seenFailed == nil {
+				f.seenFailed = make(map[string]struct{})
+			}
+			f.seenFailed[req.MessageID] = struct{}{}
+			a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
+		}
+	} else {
+		if req.MessageID != "" {
+			f.seenDone[req.MessageID] = struct{}{}
+		}
+		a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
+		// Record CRC for this article. Only accumulate when
+		// the decoder provided a non-zero CRC (yEnc articles).
+		if req.CRC != 0 {
+			f.crcParts = append(f.crcParts, crcPart{
+				offset: req.Offset,
+				crc:    req.CRC,
+				len:    int64(len(req.Data)),
 			})
-			fileCRC = f.crcParts[0].crc
-			for _, p := range f.crcParts[1:] {
-				fileCRC = crc32util.Combine(fileCRC, p.crc, p.len)
-			}
-			a.log.Debug("computed file CRC32",
-				"job", req.JobID, "fileidx", req.FileIdx,
-				"path", f.info.Path, "crc32", fileCRC,
-				"parts", len(f.crcParts))
+		} else if len(req.Data) > 0 {
+			// UU-encoded or otherwise CRC-less article.
+			f.crcValid = false
 		}
+	}
+	return true
+}
 
-		if a.opts.OnFileComplete != nil {
-			a.opts.OnFileComplete(req.JobID, req.FileIdx, fileCRC)
+// finalizeFile handles everything after f.partsWritten >= f.info.TotalParts:
+// draining the write cache, truncating to decoded size, fsyncing, closing,
+// tombstoning, flushing pending Done/Failed, combining per-article CRCs into a
+// whole-file CRC32, and firing the OnFileComplete callback.
+func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, open map[fileKey]*openFile, completed map[fileKey]struct{}, wc *writeCache) {
+	// Drain any remaining cached articles for this file before close.
+	a.drainCacheForFile(wc, f, key)
+	// Truncate to the actual decoded size. Pre-allocation
+	// (fallocate/ftruncate) extends the file to the NZB-declared
+	// encoded size, which includes yEnc overhead (~2% larger).
+	// Without this truncation the file has trailing zero bytes,
+	// which causes par2 to report it as damaged.
+	if f.maxWritten > 0 {
+		if err := f.handle.Truncate(f.maxWritten); err != nil {
+			a.log.Error("truncate completed file to decoded size",
+				"path", f.info.Path,
+				"expected", f.maxWritten,
+				"error", err,
+			)
 		}
+	} else {
+		a.log.Debug("zero-length file completed",
+			"path", f.info.Path,
+		)
+	}
+	// Durability: fsync before closing and reporting completion.
+	if err := f.handle.Sync(); err != nil {
+		a.log.Error("fsync completed file",
+			"path", f.info.Path,
+			"error", err,
+		)
+	}
+	if err := f.handle.Close(); err != nil {
+		a.log.Warn("close completed file",
+			"path", f.info.Path,
+			"error", err,
+		)
+	}
+	delete(open, key)
+	completed[key] = struct{}{} // tombstone: reject late duplicates
+	telemetry.FilesCompleted.Add(1)
+	a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
+	// Flush pending Done/Failed before firing the callback. The
+	// pipeline's watchCompletions must not observe IsComplete()==true
+	// on a file whose articles are not yet marked Done in the queue,
+	// or it will race job-completion logic ahead of durability state.
+	a.flush()
+
+	// Compute the whole-file CRC32 by combining per-article CRCs
+	// in offset order. This produces the same CRC as if the file
+	// were read sequentially, which is what par2 files store.
+	var fileCRC uint32
+	if f.crcValid && len(f.crcParts) > 0 {
+		slices.SortFunc(f.crcParts, func(a, b crcPart) int {
+			return cmp.Compare(a.offset, b.offset)
+		})
+		fileCRC = f.crcParts[0].crc
+		for _, p := range f.crcParts[1:] {
+			fileCRC = crc32util.Combine(fileCRC, p.crc, p.len)
+		}
+		a.log.Debug("computed file CRC32",
+			"job", req.JobID, "fileidx", req.FileIdx,
+			"path", f.info.Path, "crc32", fileCRC,
+			"parts", len(f.crcParts))
+	}
+
+	if a.opts.OnFileComplete != nil {
+		a.opts.OnFileComplete(req.JobID, req.FileIdx, fileCRC)
 	}
 }
 
