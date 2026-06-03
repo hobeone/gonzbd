@@ -37,16 +37,21 @@ import (
 // accounting.
 func isRetryableDownloaderError(err error) bool {
 	// Sentinel-based checks (preferred — no string fragility).
-	if errors.Is(err, nntp.ErrNoArticle) ||
-		errors.Is(err, nntp.ErrServerUnavailable) ||
-		errors.Is(err, nntp.ErrAuthRequired) ||
-		errors.Is(err, nntp.ErrTransient) ||
-		errors.Is(err, nntp.ErrClosed) ||
-		errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded) ||
-		errors.Is(err, decoder.ErrCRCMismatch) {
-		return true
+	sentinels := [...]error{
+		nntp.ErrNoArticle,
+		nntp.ErrServerUnavailable,
+		nntp.ErrAuthRequired,
+		nntp.ErrTransient,
+		nntp.ErrClosed,
+		io.ErrUnexpectedEOF,
+		context.Canceled,
+		context.DeadlineExceeded,
+		decoder.ErrCRCMismatch,
+	}
+	for _, s := range sentinels {
+		if errors.Is(err, s) {
+			return true
+		}
 	}
 	// Network-level errors: op errors (dial, read, write) and timeouts.
 	// Using the type hierarchy is more robust than string-matching against
