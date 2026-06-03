@@ -1,92 +1,47 @@
+import { BasePollStore } from './base-poll.svelte';
 import { fetchHistory, postAction } from '$lib/api';
-import type { HistoryDetail, HistorySlot } from '$lib/types';
+import type { HistoryDetail } from '$lib/types';
 import { refreshQueue } from './queue.svelte';
-import { subscribeWS } from './websocket.svelte';
-import { reportFailure, reportSuccess, onReconnected } from './connection.svelte';
+import { type WSEvent } from './websocket.svelte';
+import { reportFailure, reportSuccess } from './connection.svelte';
 
-class HistoryStore {
+class HistoryStore extends BasePollStore {
 	#history = $state.raw<HistoryDetail | null>(null);
-	#error = $state<string | null>(null);
-	#wsCleanup: (() => void) | null = null;
-	#reconnectCleanup: (() => void) | null = null;
-
-	#historyPage = $state(0);
-	#historyLimit = $state(10);
 	#showFailedOnly = $state(false);
-	#searchText = $state('');
 
 	get history() { return this.#history; }
-	get error() { return this.#error; }
-	get page() { return this.#historyPage; }
-	get limit() { return this.#historyLimit; }
+	get error() { return this.errorState; }
+	get page() { return this.currentPageState; }
+	get limit() { return this.pageLimitState; }
 	get failedOnly() { return this.#showFailedOnly; }
-	get searchText() { return this.#searchText; }
+	get searchText() { return this.searchTextState; }
 
 	async poll() {
 		try {
 			const params: Record<string, string> = {};
 			if (this.#showFailedOnly) params.status = 'Failed';
-			if (this.#searchText) params.search = this.#searchText;
+			if (this.searchTextState) params.search = this.searchTextState;
 
-			const res = await fetchHistory(this.#historyPage * this.#historyLimit, this.#historyLimit, params);
+			const res = await fetchHistory(this.currentPageState * this.pageLimitState, this.pageLimitState, params);
 			this.#history = res.history;
-			this.#error = null;
+			this.errorState = null;
 			reportSuccess();
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			this.#error = msg;
+			this.errorState = msg;
 			reportFailure(msg);
 		}
 	}
 
-	start() {
-		if (this.#wsCleanup) return;
-		this.poll();
-
-		this.#wsCleanup = subscribeWS((event) => {
-			// history_updated covers in-history mutations (delete, retry, etc.).
-			// job_finalized is the queue→history transition; both stores
-			// subscribe to it so they refresh from a single trigger.
-			if (event.event === 'history_updated' || event.event === 'job_finalized') {
-				this.poll();
-			}
-		});
-
-		// When ConnectionStore detects reconnection, refetch immediately.
-		this.#reconnectCleanup = onReconnected(() => this.poll());
-	}
-
-	stop() {
-		if (this.#wsCleanup) {
-			this.#wsCleanup();
-			this.#wsCleanup = null;
+	handleWSEvent(event: WSEvent) {
+		if (event.event === 'history_updated' || event.event === 'job_finalized') {
+			this.poll();
 		}
-		if (this.#reconnectCleanup) {
-			this.#reconnectCleanup();
-			this.#reconnectCleanup = null;
-		}
-	}
-
-	setPage(page: number) {
-		this.#historyPage = page;
-		this.poll();
-	}
-
-	setLimit(limit: number) {
-		this.#historyLimit = limit;
-		this.#historyPage = 0;
-		this.poll();
 	}
 
 	setFailedOnly(failed: boolean) {
 		this.#showFailedOnly = failed;
-		this.#historyPage = 0;
-		this.poll();
-	}
-
-	setSearch(search: string) {
-		this.#searchText = search;
-		this.#historyPage = 0;
+		this.currentPageState = 0;
 		this.poll();
 	}
 

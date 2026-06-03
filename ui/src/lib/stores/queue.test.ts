@@ -6,12 +6,17 @@ vi.mock('$lib/api', () => ({
 	postAction: vi.fn()
 }));
 
-// Captures the handler passed to subscribeWS so tests can simulate WS events.
-let capturedWSHandler: ((event: any) => void) | null = null;
+// Captures the handlers passed to subscribeWS so tests can simulate WS events.
+const capturedWSHandlers = new Set<(event: any) => void>();
+const capturedWSHandler = (event: any) => {
+	capturedWSHandlers.forEach((h) => h(event));
+};
 vi.mock('./websocket.svelte', () => ({
 	subscribeWS: vi.fn((handler: (event: any) => void) => {
-		capturedWSHandler = handler;
-		return vi.fn();
+		capturedWSHandlers.add(handler);
+		return vi.fn(() => {
+			capturedWSHandlers.delete(handler);
+		});
 	})
 }));
 
@@ -68,6 +73,7 @@ describe('Queue Store', () => {
 	beforeEach(async () => {
 		vi.useFakeTimers();
 		vi.clearAllMocks();
+		capturedWSHandlers.clear();
 		stopPolling();
 		// Reset singleton state.
 		vi.mocked(fetchQueue).mockResolvedValue({
