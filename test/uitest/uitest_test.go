@@ -484,17 +484,18 @@ func TestSettingsOpensAndLoadsConfig(t *testing.T) {
 	page := env.newPage(t)
 	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
+	page.WaitForTimeout(1000)
 
 	// Look for the settings/gear button.
-	settingsBtn := page.Locator("[aria-label='Settings'], button:has-text('Settings'), [title='Settings']")
-	if err := settingsBtn.First().WaitFor(playwright.LocatorWaitForOptions{
+	settingsBtn := page.Locator("button[title='Settings']")
+	if err := settingsBtn.WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
 	}); err != nil {
 		t.Fatalf("Settings button not visible: %v", err)
 	}
 
-	if err := settingsBtn.First().Click(); err != nil {
+	if err := settingsBtn.Click(); err != nil {
 		t.Fatalf("click Settings: %v", err)
 	}
 
@@ -514,16 +515,17 @@ func TestSettingsTabNavigation(t *testing.T) {
 	page := env.newPage(t)
 	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
+	page.WaitForTimeout(1000)
 
 	// Open settings.
-	settingsBtn := page.Locator("[aria-label='Settings'], button:has-text('Settings'), [title='Settings']")
-	if err := settingsBtn.First().WaitFor(playwright.LocatorWaitForOptions{
+	settingsBtn := page.Locator("button[title='Settings']")
+	if err := settingsBtn.WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(5000),
 	}); err != nil {
 		t.Fatalf("Settings button not visible: %v", err)
 	}
-	if err := settingsBtn.First().Click(); err != nil {
+	if err := settingsBtn.Click(); err != nil {
 		t.Fatalf("click Settings: %v", err)
 	}
 
