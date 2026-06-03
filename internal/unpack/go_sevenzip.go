@@ -66,50 +66,8 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 			return res, err
 		}
 
-		destRel, sanitizeErr := SanitizeArchivePath(f.Name, opts.OneFolder)
-		if sanitizeErr != nil {
-			log.Warn("skipping entry with bad path",
-				"raw_name", f.Name, "err", sanitizeErr)
-			if opts.OnLine != nil {
-				opts.OnLine("Skipping bad path: " + f.Name)
-			}
-			continue
-		}
-
-		destPath := filepath.Join(outDir, destRel)
-
-		// In OneFolder mode, different archive paths can flatten to the
-		// same basename. Auto-rename to avoid silent overwrites, matching
-		// 7z's -aou behavior. Skip when OverwriteFiles is true.
-		if opts.OneFolder && !opts.OverwriteFiles {
-			destPath = uniquePath(destPath)
-		}
-
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(destPath, 0o750); err != nil {
-				return res, fmt.Errorf("go_7z: mkdir %s: %w", destPath, err)
-			}
-			continue
-		}
-
-		// Skip non-regular files: symlinks can escape outDir via relative
-		// targets; device/pipe/socket entries are meaningless from archives.
-		if f.Mode()&fs.ModeSymlink != 0 {
-			log.Warn("skipping symlink entry", "name", f.Name)
-			if opts.OnLine != nil {
-				opts.OnLine("Skipping symlink: " + f.Name)
-			}
-			continue
-		}
-		if !f.FileInfo().Mode().IsRegular() {
-			log.Warn("skipping non-regular entry", "name", f.Name, "mode", f.Mode())
-			if opts.OnLine != nil {
-				opts.OnLine("Skipping non-regular entry: " + f.Name)
-			}
-			continue
-		}
-
-		if err := extractSevenZipFile(ctx, destPath, f, opts, log); err != nil {
+		extracted, err := extractSevenZipEntry(ctx, f, outDir, opts, log)
+		if err != nil {
 			res.Reason = classifySevenZipError(err)
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", f.Name, err))
@@ -117,7 +75,7 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 			return res, err
 		}
 
-		if opts.OnLine != nil {
+		if extracted && opts.OnLine != nil {
 			opts.OnLine("Extracting  " + f.Name)
 		}
 	}
@@ -249,4 +207,58 @@ func classifySevenZipError(err error) FailReason {
 	}
 
 	return FailUnknown
+}
+
+// extractSevenZipEntry handles path sanitization, unique naming, skip predicates,
+// and file extraction for a single 7-zip archive entry. Returns true if the
+// entry was extracted (regular file), or false if it was skipped or a directory.
+func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, opts Options, log *slog.Logger) (bool, error) {
+	destRel, sanitizeErr := SanitizeArchivePath(f.Name, opts.OneFolder)
+	if sanitizeErr != nil {
+		log.Warn("skipping entry with bad path",
+			"raw_name", f.Name, "err", sanitizeErr)
+		if opts.OnLine != nil {
+			opts.OnLine("Skipping bad path: " + f.Name)
+		}
+		return false, nil
+	}
+
+	destPath := filepath.Join(outDir, destRel)
+
+	// In OneFolder mode, different archive paths can flatten to the
+	// same basename. Auto-rename to avoid silent overwrites, matching
+	// 7z's -aou behavior. Skip when OverwriteFiles is true.
+	if opts.OneFolder && !opts.OverwriteFiles {
+		destPath = uniquePath(destPath)
+	}
+
+	if f.FileInfo().IsDir() {
+		if err := os.MkdirAll(destPath, 0o750); err != nil {
+			return false, fmt.Errorf("go_7z: mkdir %s: %w", destPath, err)
+		}
+		return false, nil
+	}
+
+	// Skip non-regular files: symlinks can escape outDir via relative
+	// targets; device/pipe/socket entries are meaningless from archives.
+	if f.Mode()&fs.ModeSymlink != 0 {
+		log.Warn("skipping symlink entry", "name", f.Name)
+		if opts.OnLine != nil {
+			opts.OnLine("Skipping symlink: " + f.Name)
+		}
+		return false, nil
+	}
+	if !f.FileInfo().Mode().IsRegular() {
+		log.Warn("skipping non-regular entry", "name", f.Name, "mode", f.Mode())
+		if opts.OnLine != nil {
+			opts.OnLine("Skipping non-regular entry: " + f.Name)
+		}
+		return false, nil
+	}
+
+	if err := extractSevenZipFile(ctx, destPath, f, opts, log); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
