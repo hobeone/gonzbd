@@ -112,13 +112,12 @@
 	<td class="px-5 py-3.5 text-sm font-semibold">{slot.category || '*'}</td>
 	<td class="px-5 py-3.5 text-sm font-medium">{completedDate()}</td>
 	<td class="px-5 py-3.5">
-		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-		<div class="flex gap-1 justify-end" onclick={(e) => e.stopPropagation()}>
+		<div class="flex gap-1 justify-end">
 			{#if slot.status === 'Failed'}
 				<Button
 					variant="ghost"
 					size="icon-xs"
-					onclick={retry}
+					onclick={(e) => { e.stopPropagation(); retry(); }}
 					disabled={acting}
 					class="rounded-full text-m3-primary hover:bg-m3-primary/10 transition-colors"
 					title="Retry"
@@ -129,7 +128,7 @@
 			<Button
 				variant="ghost"
 				size="icon-xs"
-				onclick={onremove}
+				onclick={(e) => { e.stopPropagation(); onremove(); }}
 				disabled={acting}
 				class="rounded-full text-destructive hover:bg-destructive/10 transition-colors"
 				title="Delete"
