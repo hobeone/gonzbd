@@ -68,37 +68,7 @@ func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Inject SABnzbd-specific fields into the "misc" section that Sonarr
-	// reads. Sorting is intentionally not implemented — it is handled by
-	// external apps (Sonarr, Radarr, etc.). These fields return false/empty
-	// so Sonarr doesn't warn about missing configuration.
-	if miscRaw, ok := remapped["misc"]; ok {
-		var miscMap map[string]json.RawMessage
-		if err := json.Unmarshal(miscRaw, &miscMap); err == nil {
-			sabDefaults := map[string]any{
-				"pre_check":                false,
-				"enable_tv_sorting":        false,
-				"tv_categories":            []string{},
-				"enable_movie_sorting":     false,
-				"movie_categories":         []string{},
-				"enable_date_sorting":      false,
-				"date_categories":          []string{},
-				"history_retention":        "",
-				"history_retention_option": "all",
-				"history_retention_number": 0,
-			}
-			for field, val := range sabDefaults {
-				if _, exists := miscMap[field]; !exists {
-					if b, err := json.Marshal(val); err == nil {
-						miscMap[field] = b
-					}
-				}
-			}
-			if b, err := json.Marshal(miscMap); err == nil {
-				remapped["misc"] = b
-			}
-		}
-	}
+	injectSABDefaults(remapped)
 
 	// Ensure "sorters" is always present as an empty array, never omitted.
 	// Sonarr iterates config.Sorters and will NRE if the key is absent.
@@ -121,6 +91,48 @@ func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondOK(w, "config", remapped)
+}
+
+// injectSABDefaults merges SABnzbd-specific fields that Sonarr/Radarr
+// expect into the "misc" section of the remapped config. Fields already
+// present in the section are left unchanged — we only inject missing keys.
+// Errors are silently ignored (unmarshal/marshal failures leave the section
+// unchanged).
+//
+// Sorting is intentionally not implemented — it is handled by external apps
+// (Sonarr, Radarr, etc.). These fields return false/empty so Sonarr doesn't
+// warn about missing configuration.
+func injectSABDefaults(remapped map[string]json.RawMessage) {
+	miscRaw, ok := remapped["misc"]
+	if !ok {
+		return
+	}
+	var miscMap map[string]json.RawMessage
+	if err := json.Unmarshal(miscRaw, &miscMap); err != nil {
+		return
+	}
+	sabDefaults := map[string]any{
+		"pre_check":                false,
+		"enable_tv_sorting":        false,
+		"tv_categories":            []string{},
+		"enable_movie_sorting":     false,
+		"movie_categories":         []string{},
+		"enable_date_sorting":      false,
+		"date_categories":          []string{},
+		"history_retention":        "",
+		"history_retention_option": "all",
+		"history_retention_number": 0,
+	}
+	for field, val := range sabDefaults {
+		if _, exists := miscMap[field]; !exists {
+			if b, err := json.Marshal(val); err == nil {
+				miscMap[field] = b
+			}
+		}
+	}
+	if b, err := json.Marshal(miscMap); err == nil {
+		remapped["misc"] = b
+	}
 }
 
 // modeSetConfig sets configuration parameters.
