@@ -76,48 +76,48 @@
 */
 @layer base {
   :root {
-    --background: #FEF7FF;      /* M3 Light Surface */
-    --foreground: #1D1B20;      /* M3 Light On Surface */
-    --card: #F7F2FA;            /* M3 Light Elevated Surface */
-    --card-foreground: #1D1B20;
-    --popover: #F7F2FA;
-    --popover-foreground: #1D1B20;
-    --primary: #6750A4;         /* M3 Light Primary */
+    --background: #F8F9FF;      /* M3 Light Surface (Blue-tinted) */
+    --foreground: #191C20;      /* M3 Light On Surface */
+    --card: #EDF0F7;            /* M3 Light Elevated Surface */
+    --card-foreground: #191C20;
+    --popover: #EDF0F7;
+    --popover-foreground: #191C20;
+    --primary: #0061A4;         /* M3 Light Primary (Royal Blue) */
     --primary-foreground: #FFFFFF;
-    --secondary: #EADDFF;       /* M3 Light Primary Container */
-    --secondary-foreground: #21005D;
-    --muted: #E7E0EC;           /* M3 Light Surface Variant */
-    --muted-foreground: #49454F;
-    --accent: #E8DEF8;          /* M3 Light Secondary Container */
-    --accent-foreground: #1D192B;
+    --secondary: #D1E4FF;       /* M3 Light Primary Container */
+    --secondary-foreground: #001D36;
+    --muted: #E0E2EC;           /* M3 Light Surface Variant */
+    --muted-foreground: #43474E;
+    --accent: #D9E2FF;          /* M3 Light Secondary Container */
+    --accent-foreground: #001945;
     --destructive: #B3261E;     /* M3 Light Error */
     --destructive-foreground: #FFFFFF;
-    --border: #CAC4D0;          /* M3 Light Outline Variant */
-    --input: #E7E0EC;
-    --ring: #6750A4;
+    --border: #C3C6CF;          /* M3 Light Outline Variant */
+    --input: #E0E2EC;
+    --ring: #0061A4;
     --radius: 12px;
   }
 
   .dark {
-    --background: #141218;      /* M3 Dark Surface */
-    --foreground: #E6E1E5;      /* M3 Dark On Surface */
-    --card: #1D1B20;            /* M3 Dark Elevated Surface */
-    --card-foreground: #E6E1E5;
-    --popover: #1D1B20;
-    --popover-foreground: #E6E1E5;
-    --primary: #D0BCFF;         /* M3 Dark Primary */
-    --primary-foreground: #381E72;
-    --secondary: #4F378B;       /* M3 Dark Primary Container */
-    --secondary-foreground: #EADDFF;
-    --muted: #49454F;           /* M3 Dark Surface Variant */
-    --muted-foreground: #CAC4D0;
-    --accent: #4A4458;          /* M3 Dark Secondary Container */
-    --accent-foreground: #E8DEF8;
+    --background: #111318;      /* M3 Dark Surface (Blue-tinted dark) */
+    --foreground: #E2E2E9;      /* M3 Dark On Surface */
+    --card: #1A1C22;            /* M3 Dark Elevated Surface */
+    --card-foreground: #E2E2E9;
+    --popover: #1A1C22;
+    --popover-foreground: #E2E2E9;
+    --primary: #A0C9FF;         /* M3 Dark Primary (Light Blue) */
+    --primary-foreground: #00325A;
+    --secondary: #00497E;       /* M3 Dark Primary Container */
+    --secondary-foreground: #D1E4FF;
+    --muted: #43474E;           /* M3 Dark Surface Variant */
+    --muted-foreground: #C3C6CF;
+    --accent: #3B4858;          /* M3 Dark Secondary Container */
+    --accent-foreground: #D5E4F7;
     --destructive: #F2B8B5;     /* M3 Dark Error */
     --destructive-foreground: #601410;
-    --border: #49454F;          /* M3 Dark Outline Variant */
-    --input: #49454F;
-    --ring: #D0BCFF;
+    --border: #43474E;          /* M3 Dark Outline Variant */
+    --input: #43474E;
+    --ring: #A0C9FF;
   }
 }
 
@@ -139,11 +139,11 @@
     color-scheme: light dark;
   }
   .dark select {
-    background-color: #1D1B20;
-    color: #E6E1E5;
+    background-color: #1A1C22;
+    color: #E2E2E9;
   }
   .dark select option {
-    background-color: #1D1B20;
-    color: #E6E1E5;
+    background-color: #1A1C22;
+    color: #E2E2E9;
   }
 }
