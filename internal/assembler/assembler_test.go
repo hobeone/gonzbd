@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -708,4 +709,220 @@ func TestTelemetryPreallocCalls(t *testing.T) {
 	if got := telemetry.PreallocCalls.Value(); got != 1 {
 		t.Errorf("PreallocCalls = %d, want 1", got)
 	}
+}
+
+func TestAssembler_HelperMethods(t *testing.T) {
+	t.Parallel()
+
+	t.Run("handleFatalArticle", func(t *testing.T) {
+		a := &Assembler{
+			log:           slog.Default(),
+			pendingFailed: make(map[string][]string),
+			pendingDone:   make(map[string][]string),
+		}
+		f := &openFile{
+			seenFailed: make(map[string]struct{}),
+			seenDone:   make(map[string]struct{}),
+			crcValid:   true,
+		}
+		req := WriteRequest{
+			JobID:     "job1",
+			MessageID: "msg1",
+			FatalErr:  fmt.Errorf("article error"),
+		}
+
+		// First-time failure.
+		if !a.handleFatalArticle(f, req) {
+			t.Error("expected handleFatalArticle to return true for first-time failure")
+		}
+		if f.crcValid {
+			t.Error("expected crcValid to be false after fatal error")
+		}
+		if _, ok := f.seenFailed["msg1"]; !ok {
+			t.Error("expected seenFailed to contain msg1")
+		}
+		if len(a.pendingFailed["job1"]) != 1 || a.pendingFailed["job1"][0] != "msg1" {
+			t.Errorf("expected pendingFailed to contain msg1, got %v", a.pendingFailed["job1"])
+		}
+
+		// Duplicate failure.
+		if a.handleFatalArticle(f, req) {
+			t.Error("expected handleFatalArticle to return false for duplicate failure")
+		}
+		if len(a.pendingFailed["job1"]) != 2 {
+			t.Errorf("expected pendingFailed to contain 2 entries, got %d", len(a.pendingFailed["job1"]))
+		}
+
+		// Cross-check: already counted as success.
+		f.seenFailed = make(map[string]struct{})
+		a.pendingFailed = make(map[string][]string)
+		f.seenDone["msg1"] = struct{}{}
+		if a.handleFatalArticle(f, req) {
+			t.Error("expected handleFatalArticle to return false when already counted as success")
+		}
+	})
+
+	t.Run("handleSuccessArticle", func(t *testing.T) {
+		a := &Assembler{
+			log:           slog.Default(),
+			pendingFailed: make(map[string][]string),
+			pendingDone:   make(map[string][]string),
+		}
+
+		tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_test_success")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tmpFile.Close()
+
+		f := &openFile{
+			handle:     tmpFile,
+			seenFailed: make(map[string]struct{}),
+			seenDone:   make(map[string]struct{}),
+			crcValid:   true,
+		}
+
+		wc := newWriteCache(0) // Caching disabled - write directly.
+		open := make(map[fileKey]*openFile)
+		key := fileKey{jobID: "job1", fileIdx: 0}
+
+		req := WriteRequest{
+			JobID:     "job1",
+			MessageID: "msg1",
+			Offset:    0,
+			Data:      []byte("hello success"),
+			CRC:       12345,
+		}
+
+		// First-time success.
+		if !a.handleSuccessArticle(f, req, wc, open, key) {
+			t.Error("expected handleSuccessArticle to return true")
+		}
+		if _, ok := f.seenDone["msg1"]; !ok {
+			t.Error("expected seenDone to contain msg1")
+		}
+		if len(a.pendingDone["job1"]) != 1 || a.pendingDone["job1"][0] != "msg1" {
+			t.Errorf("expected pendingDone to contain msg1, got %v", a.pendingDone["job1"])
+		}
+		if len(f.crcParts) != 1 || f.crcParts[0].crc != 12345 {
+			t.Errorf("expected crcParts to contain 12345, got %v", f.crcParts)
+		}
+
+		// Duplicate success.
+		if a.handleSuccessArticle(f, req, wc, open, key) {
+			t.Error("expected handleSuccessArticle to return false for duplicate success")
+		}
+		if len(a.pendingDone["job1"]) != 2 {
+			t.Errorf("expected pendingDone to contain 2 entries, got %d", len(a.pendingDone["job1"]))
+		}
+
+		// Cross-check: already counted as failure.
+		f.seenDone = make(map[string]struct{})
+		a.pendingDone = make(map[string][]string)
+		f.seenFailed["msg1"] = struct{}{}
+		if a.handleSuccessArticle(f, req, wc, open, key) {
+			t.Error("expected handleSuccessArticle to return false when already counted as failure")
+		}
+		if _, ok := f.seenDone["msg1"]; !ok {
+			t.Error("expected seenDone to contain msg1")
+		}
+
+		// CRC-less success invalidates CRC tracking.
+		req2 := WriteRequest{
+			JobID:     "job1",
+			MessageID: "msg2",
+			Offset:    13,
+			Data:      []byte("world"),
+			CRC:       0, // CRC-less
+		}
+		if !a.handleSuccessArticle(f, req2, wc, open, key) {
+			t.Error("expected handleSuccessArticle to return true for req2")
+		}
+		if f.crcValid {
+			t.Error("expected crcValid to be false after CRC-less article")
+		}
+	})
+
+	t.Run("finalizeFile", func(t *testing.T) {
+		// Mock callback tracking.
+		var callbackJobID string
+		var callbackFileIdx int
+		var callbackCRC uint32
+		var callbackFired int
+
+		opts := Options{
+			FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
+				return FileInfo{Path: "test"}, nil
+			},
+			OnFileComplete: func(jobID string, fileIdx int, fileCRC uint32) {
+				callbackJobID = jobID
+				callbackFileIdx = fileIdx
+				callbackCRC = fileCRC
+				callbackFired++
+			},
+		}
+
+		a := New(opts, slog.Default())
+		a.pendingDone = make(map[string][]string)
+		a.pendingFailed = make(map[string][]string)
+
+		tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_test_finalize")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Write some initial data so truncation works.
+		if _, err := tmpFile.Write([]byte("hello world final truncate")); err != nil {
+			t.Fatal(err)
+		}
+
+		f := &openFile{
+			handle:     tmpFile,
+			seenFailed: make(map[string]struct{}),
+			seenDone:   make(map[string]struct{}),
+			maxWritten: 11, // "hello world" length is 11
+			crcValid:   true,
+			crcParts: []crcPart{
+				{offset: 0, crc: 1, len: 5},
+				{offset: 5, crc: 2, len: 6},
+			},
+		}
+
+		wc := newWriteCache(0)
+		key := fileKey{jobID: "job1", fileIdx: 0}
+		open := map[fileKey]*openFile{key: f}
+		completed := make(map[fileKey]struct{})
+
+		req := WriteRequest{
+			JobID:   "job1",
+			FileIdx: 0,
+		}
+
+		a.finalizeFile(f, key, req, open, completed, wc)
+
+		// Check maps updated.
+		if _, ok := open[key]; ok {
+			t.Error("expected file to be removed from open map")
+		}
+		if _, ok := completed[key]; !ok {
+			t.Error("expected file to be added to completed map")
+		}
+
+		// Check callback fired.
+		if callbackFired != 1 {
+			t.Errorf("expected OnFileComplete callback to fire 1 time, got %d", callbackFired)
+		}
+		if callbackJobID != "job1" || callbackFileIdx != 0 {
+			t.Errorf("callback parameters mismatch: job=%s, idx=%d", callbackJobID, callbackFileIdx)
+		}
+		_ = callbackCRC
+
+		// Verify file size is truncated to maxWritten (11).
+		fi, err := os.Stat(tmpFile.Name())
+		if err != nil {
+			t.Fatalf("failed to stat file: %v", err)
+		}
+		if fi.Size() != 11 {
+			t.Errorf("expected file size to be 11, got %d", fi.Size())
+		}
+	})
 }
