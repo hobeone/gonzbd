@@ -1,51 +1,25 @@
+import { BasePollStore } from './base-poll.svelte';
 import { fetchQueue, postAction } from '$lib/api';
-import type { QueueDetail, QueueSlot, ServerSnapshot } from '$lib/types';
-import { subscribeWS, type WSEvent } from './websocket.svelte';
-import { reportFailure, reportSuccess, onReconnected } from './connection.svelte';
+import type { QueueDetail } from '$lib/types';
+import { type WSEvent } from './websocket.svelte';
+import { reportFailure, reportSuccess } from './connection.svelte';
+import { startTelemetry, stopTelemetry, setTotalRemainingBytes } from './telemetry.svelte';
 
-const SPEED_HISTORY_SIZE = 60;
-
-class QueueStore {
+class QueueStore extends BasePollStore {
 	#queue = $state.raw<QueueDetail | null>(null);
-	#polling = $state(false);
-	#error = $state<string | null>(null);
-	#wsCleanup: (() => void) | null = null;
-	#reconnectCleanup: (() => void) | null = null;
-
-	#currentPage = $state(0);
-	#pageLimit = $state(10);
-	#searchText = $state('');
-
-	#speedBytesPerSec = $state(0);
-	#speedHistory = $state<number[]>([]);
-	#totalRemainingBytes = $state(0);
-	#speedLimitBytesPerSec = $state(0);
-	#bandwidthMaxBytesPerSec = $state(0);
-	#bandwidthPerc = $state(100);
-	#serverStats = $state<ServerSnapshot[]>([]);
 
 	// Debounce: prevent overlapping poll() calls from piling up.
 	#pollInFlight = false;
 	#pollDirty = false;
 
 	get queue() { return this.#queue; }
-	get error() { return this.#error; }
-	get isPolling() { return this.#polling; }
-	get currentPage() { return this.#currentPage; }
-	get pageLimit() { return this.#pageLimit; }
-	get searchText() { return this.#searchText; }
-	get speedBytesPerSec() { return this.#speedBytesPerSec; }
-	get speedHistory() { return this.#speedHistory; }
-	get totalRemainingBytes() { return this.#totalRemainingBytes; }
-	get speedLimitBytesPerSec() { return this.#speedLimitBytesPerSec; }
-	get bandwidthMaxBytesPerSec() { return this.#bandwidthMaxBytesPerSec; }
-	get bandwidthPerc() { return this.#bandwidthPerc; }
-	get serverStats() { return this.#serverStats; }
+	get error() { return this.errorState; }
+	get isPolling() { return this.pollingState; }
+	get currentPage() { return this.currentPageState; }
+	get pageLimit() { return this.pageLimitState; }
+	get searchText() { return this.searchTextState; }
 
 	async poll() {
-		// If a poll is already in-flight, mark dirty so we re-poll when
-		// the current one finishes. This prevents request pile-up from
-		// rapid WebSocket events while ensuring data stays fresh.
 		if (this.#pollInFlight) {
 			this.#pollDirty = true;
 			return;
@@ -53,20 +27,20 @@ class QueueStore {
 		this.#pollInFlight = true;
 		try {
 			const params: Record<string, string> = {};
-			if (this.#searchText) params.search = this.#searchText;
+			if (this.searchTextState) params.search = this.searchTextState;
 
-			const res = await fetchQueue(this.#currentPage * this.#pageLimit, this.#pageLimit, params);
+			const res = await fetchQueue(this.currentPageState * this.pageLimitState, this.pageLimitState, params);
 			this.#queue = res.queue;
-			this.#totalRemainingBytes = res.queue.slots.reduce((sum, s) => sum + s.remaining_bytes, 0);
-			this.#error = null;
+			const totalRemaining = res.queue.slots.reduce((sum, s) => sum + s.remaining_bytes, 0);
+			setTotalRemainingBytes(totalRemaining);
+			this.errorState = null;
 			reportSuccess();
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			this.#error = msg;
+			this.errorState = msg;
 			reportFailure(msg);
 		} finally {
 			this.#pollInFlight = false;
-			// If new events arrived during the fetch, do one more poll.
 			if (this.#pollDirty) {
 				this.#pollDirty = false;
 				this.poll();
@@ -75,31 +49,24 @@ class QueueStore {
 	}
 
 	start() {
-		if (this.#polling) return;
-		this.#polling = true;
-		this.poll();
-
-		this.#wsCleanup = subscribeWS((event) => this.#handleWSEvent(event));
-
-		// When ConnectionStore detects reconnection, refetch immediately.
-		this.#reconnectCleanup = onReconnected(() => this.poll());
+		super.start();
+		startTelemetry();
 	}
 
-	#handleWSEvent(event: WSEvent) {
+	stop() {
+		super.stop();
+		stopTelemetry();
+	}
+
+	handleWSEvent(event: WSEvent) {
 		if (event.event === 'queue_updated') {
 			this.poll();
 		} else if (event.event === 'job_finalized') {
 			this.#handleJobFinalized(event.nzo_id);
-		} else if (event.event === 'metrics') {
-			this.#handleMetrics(event);
 		}
 	}
 
 	#handleJobFinalized(nzoId?: string) {
-		// Job moved from queue → history. Optimistically drop
-		// the slot so the row disappears immediately, then refetch
-		// for an authoritative view (other slots may have shifted
-		// pages, status counts changed, etc.).
 		if (nzoId && this.#queue) {
 			const before = this.#queue.slots.length;
 			this.#queue = {
@@ -107,51 +74,11 @@ class QueueStore {
 				slots: this.#queue.slots.filter((s) => s.nzo_id !== nzoId)
 			};
 			if (this.#queue.slots.length !== before) {
-				this.#totalRemainingBytes = this.#queue.slots.reduce(
+				const totalRemaining = this.#queue.slots.reduce(
 					(sum, s) => sum + s.remaining_bytes, 0);
+				setTotalRemainingBytes(totalRemaining);
 			}
 		}
-		this.poll();
-	}
-
-	#handleMetrics(event: WSEvent) {
-		this.#speedBytesPerSec = event.speed ?? 0;
-		this.#totalRemainingBytes = event.remaining ?? 0;
-		this.#speedLimitBytesPerSec = event.speed_limit ?? 0;
-		this.#bandwidthMaxBytesPerSec = event.bandwidth_max ?? 0;
-		this.#bandwidthPerc = event.bandwidth_perc ?? 100;
-		this.#speedHistory = [...this.#speedHistory.slice(-(SPEED_HISTORY_SIZE - 1)), this.#speedBytesPerSec];
-		if (event.servers) {
-			this.#serverStats = event.servers;
-		}
-	}
-
-	stop() {
-		if (this.#wsCleanup) {
-			this.#wsCleanup();
-			this.#wsCleanup = null;
-		}
-		if (this.#reconnectCleanup) {
-			this.#reconnectCleanup();
-			this.#reconnectCleanup = null;
-		}
-		this.#polling = false;
-	}
-
-	setPage(page: number) {
-		this.#currentPage = page;
-		this.poll();
-	}
-
-	setLimit(limit: number) {
-		this.#pageLimit = limit;
-		this.#currentPage = 0;
-		this.poll();
-	}
-
-	setSearch(search: string) {
-		this.#searchText = search;
-		this.#currentPage = 0;
 		this.poll();
 	}
 
@@ -173,15 +100,10 @@ class QueueStore {
 		await postAction('queue', params);
 		await this.poll();
 	}
-
-	async setBandwidthPerc(perc: number) {
-		await postAction('set_config', { section: 'downloads', keyword: 'bandwidth_perc', value: String(perc) });
-	}
 }
 
 const store = new QueueStore();
 
-// Exported wrapper functions to maintain API compatibility with components
 export const getQueue = () => store.queue;
 export const getQueueSlots = () => store.queue?.slots ?? [];
 export const getQueuePage = () => store.currentPage;
@@ -196,15 +118,19 @@ export const isPolling = () => store.isPolling;
 export const startPolling = () => store.start();
 export const stopPolling = () => store.stop();
 export const refreshQueue = () => store.poll();
-export const getSpeedBytesPerSec = () => store.speedBytesPerSec;
-export const getSpeedHistory = () => store.speedHistory;
-export const getTotalRemainingBytes = () => store.totalRemainingBytes;
-export const getSpeedLimitBytesPerSec = () => store.speedLimitBytesPerSec;
-export const getBandwidthMaxBytesPerSec = () => store.bandwidthMaxBytesPerSec;
-export const getBandwidthPerc = () => store.bandwidthPerc;
-export const getServerStats = () => store.serverStats;
-export const setBandwidthPerc = (perc: number) => store.setBandwidthPerc(perc);
 
 export const pauseJob = (id: string) => store.pauseJob(id);
 export const resumeJob = (id: string) => store.resumeJob(id);
 export const deleteJob = (id: string, df?: boolean) => store.deleteJob(id, df);
+
+// Re-export telemetry selectors and updates to maintain backward compatibility
+export {
+	getSpeedBytesPerSec,
+	getSpeedHistory,
+	getTotalRemainingBytes,
+	getSpeedLimitBytesPerSec,
+	getBandwidthMaxBytesPerSec,
+	getBandwidthPerc,
+	getServerStats,
+	setBandwidthPerc
+} from './telemetry.svelte';
