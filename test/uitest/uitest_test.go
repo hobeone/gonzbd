@@ -1,5 +1,6 @@
 //go:build uitest
 
+//nolint:staticcheck // pre-existing page.WaitForTimeout deprecated warnings in Playwright tests
 package uitest
 
 import (
