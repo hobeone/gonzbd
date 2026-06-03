@@ -150,14 +150,13 @@ func IsProbablyObfuscated(log *slog.Logger, filename string) bool {
 	}
 
 	// "Catullus" — starts with capital, overwhelmingly lowercase.
-	if filebasename != "" && filebasename[0] >= 'A' && filebasename[0] <= 'Z' &&
-		lowerchars > 2 && upperchars > 0 && float64(upperchars)/float64(lowerchars) <= 0.25 {
+	if isCapitalStartMostlyLowercase(filebasename, lowerchars, upperchars) {
 		log.Debug("deobfuscate: not obfuscated — capital-start mostly-lowercase")
 		return false
 	}
 
 	// Short simple words (like "alpha", "multi", "test") are not obfuscated.
-	if len(filebasename) >= 3 && len(filebasename) <= 10 && upperchars == 0 && decimals == 0 && spacesdots <= 1 {
+	if isShortSimpleWord(filebasename, upperchars, decimals, spacesdots) {
 		log.Debug("deobfuscate: not obfuscated — short simple word")
 		return false
 	}
@@ -559,4 +558,16 @@ func extractRARUsefulName(dir string, log *slog.Logger) string {
 		}
 	}
 	return bestStem
+}
+
+func isCapitalStartMostlyLowercase(basename string, lower, upper int) bool {
+	if basename == "" {
+		return false
+	}
+	first := basename[0]
+	return first >= 'A' && first <= 'Z' && lower > 2 && upper > 0 && float64(upper)/float64(lower) <= 0.25
+}
+
+func isShortSimpleWord(basename string, upper, decs, seps int) bool {
+	return len(basename) >= 3 && len(basename) <= 10 && upper == 0 && decs == 0 && seps <= 1
 }
