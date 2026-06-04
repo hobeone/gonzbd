@@ -1,6 +1,9 @@
 package unpack
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestParseUnrarOutput(t *testing.T) {
 	tests := []struct {
@@ -71,4 +74,77 @@ func TestParseUnrarOutput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func init() {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") == "1" {
+		mode := os.Getenv("HELPER_MODE")
+		switch mode {
+		case "unrar":
+			_, _ = os.Stdout.WriteString("UNRAR 7.21 freeware\n")
+			os.Exit(0)
+		case "sevenzip":
+			_, _ = os.Stdout.WriteString("7-Zip (z) 21.06 x64\n")
+			os.Exit(0)
+		default:
+			os.Exit(1)
+		}
+	}
+}
+
+func TestDetectUnrar(t *testing.T) {
+	t.Run("nonexistent binary", func(t *testing.T) {
+		got := DetectUnrar(t.Context(), "/path/to/nonexistent")
+		if got.Available {
+			t.Error("expected Available to be false for nonexistent binary")
+		}
+	})
+
+	t.Run("valid mock binary", func(t *testing.T) {
+		bin := os.Args[0]
+		os.Setenv("GO_WANT_HELPER_PROCESS", "1")
+		os.Setenv("HELPER_MODE", "unrar")
+		defer func() {
+			os.Unsetenv("GO_WANT_HELPER_PROCESS")
+			os.Unsetenv("HELPER_MODE")
+		}()
+
+		got := DetectUnrar(t.Context(), bin)
+		if !got.Available {
+			t.Error("expected Available to be true")
+		}
+		if got.Version != 721 || got.VersionStr != "7.21" {
+			t.Errorf("expected version 721 (7.21), got version=%d (%s)", got.Version, got.VersionStr)
+		}
+		if got.HasProblem {
+			t.Error("expected HasProblem to be false for version 7.21")
+		}
+	})
+}
+
+func TestDetectSevenZip(t *testing.T) {
+	t.Run("nonexistent binary", func(t *testing.T) {
+		got := DetectSevenZip(t.Context(), "/path/to/nonexistent")
+		if got.Available {
+			t.Error("expected Available to be false for nonexistent binary")
+		}
+	})
+
+	t.Run("valid mock binary", func(t *testing.T) {
+		bin := os.Args[0]
+		os.Setenv("GO_WANT_HELPER_PROCESS", "1")
+		os.Setenv("HELPER_MODE", "sevenzip")
+		defer func() {
+			os.Unsetenv("GO_WANT_HELPER_PROCESS")
+			os.Unsetenv("HELPER_MODE")
+		}()
+
+		got := DetectSevenZip(t.Context(), bin)
+		if !got.Available {
+			t.Error("expected Available to be true")
+		}
+		if got.Version != "21.06" {
+			t.Errorf("expected version 21.06, got %q", got.Version)
+		}
+	})
 }
