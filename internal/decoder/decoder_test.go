@@ -519,31 +519,100 @@ func TestDecodeArticle_AtMaxSize(t *testing.T) {
 func TestDecoderUnexportedHelpersDirect(t *testing.T) {
 	t.Parallel()
 
-	t.Run("sub42Span basic", func(t *testing.T) {
-		src := []byte{42, 43, 44, 0, 1}
-		dst := []byte{100}
-		got := sub42Span(dst, src)
-		want := []byte{100, 0, 1, 2, 214, 215}
-		if !bytes.Equal(got, want) {
-			t.Errorf("sub42Span got %v, want %v", got, want)
+	t.Run("sub42Span", func(t *testing.T) {
+		t.Parallel()
+		cases := []struct {
+			name string
+			dst  []byte
+			src  []byte
+			want []byte
+		}{
+			{
+				name: "empty_src_nil_dst",
+				dst:  nil, src: nil,
+				want: nil,
+			},
+			{
+				name: "empty_src_nonempty_dst",
+				dst:  []byte{1, 2, 3}, src: nil,
+				want: []byte{1, 2, 3},
+			},
+			{
+				// n=3: only the scalar loop runs (n < 8).
+				name: "scalar_only_n3",
+				dst:  nil, src: []byte{50, 51, 52},
+				want: []byte{8, 9, 10},
+			},
+			{
+				// n=8: exactly one pass of the 8× unrolled loop; scalar loop gets 0 iterations.
+				name: "unrolled_only_n8",
+				dst:  nil, src: []byte{50, 51, 52, 53, 54, 55, 56, 57},
+				want: []byte{8, 9, 10, 11, 12, 13, 14, 15},
+			},
+			{
+				// src bytes < 42 wrap to high values inside the unrolled loop.
+				// byte(0)-42 = 214, same arithmetic as the hot-path 0xd6 correctness rule.
+				name: "unrolled_underflow_wrap_n8",
+				dst:  nil, src: []byte{0, 0, 0, 0, 0, 0, 0, 0},
+				want: []byte{214, 214, 214, 214, 214, 214, 214, 214},
+			},
+			{
+				// n=9: one 8× pass then one scalar iteration.
+				name: "unrolled_plus_scalar_n9",
+				dst:  nil, src: []byte{50, 51, 52, 53, 54, 55, 56, 57, 58},
+				want: []byte{8, 9, 10, 11, 12, 13, 14, 15, 16},
+			},
+			{
+				// n=16: two full 8× passes; scalar loop gets 0 iterations.
+				name: "two_unrolled_passes_n16",
+				dst:  nil,
+				src:  []byte{42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57},
+				want: []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+			},
+			{
+				name: "nonempty_dst_preserves_prefix",
+				dst:  []byte{99, 100}, src: []byte{42, 43, 44},
+				want: []byte{99, 100, 0, 1, 2},
+			},
 		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got := sub42Span(tc.dst, tc.src)
+				if !bytes.Equal(got, tc.want) {
+					t.Errorf("sub42Span(%v, %v) = %v, want %v", tc.dst, tc.src, got, tc.want)
+				}
+			})
+		}
+
+		// Verify the no-grow path: when dst already has sufficient spare capacity,
+		// sub42Span extends it in-place and produces the same decoded output.
+		t.Run("preallocated_dst_no_grow", func(t *testing.T) {
+			src := []byte{50, 51, 52, 53, 54, 55, 56, 57}
+			dst := make([]byte, 2, 20)
+			dst[0], dst[1] = 99, 100
+			got := sub42Span(dst, src)
+			want := []byte{99, 100, 8, 9, 10, 11, 12, 13, 14, 15}
+			if !bytes.Equal(got, want) {
+				t.Errorf("pre-allocated: got %v, want %v", got, want)
+			}
+		})
 	})
 
 	t.Run("indexSpecial", func(t *testing.T) {
+		t.Parallel()
 		cases := []struct {
 			name  string
 			input []byte
 			want  int
 		}{
-			{"no specials", []byte("abcdef"), -1},
-			{"equals start", []byte("=abcdef"), 0},
-			{"equals mid", []byte("abc=def"), 3},
-			{"newline mid", []byte("abc\ndef"), 3},
-			{"cr mid", []byte("abc\rdef"), 3},
-			{"multiple", []byte("abc\rde=f"), 3},
+			{"no_specials", []byte("abcdef"), -1},
+			{"equals_start", []byte("=abcdef"), 0},
+			{"equals_mid", []byte("abc=def"), 3},
+			{"newline_mid", []byte("abc\ndef"), 3},
+			{"cr_mid", []byte("abc\rdef"), 3},
+			{"multiple_first_wins", []byte("abc\rde=f"), 3},
 			{"empty", []byte(""), -1},
 		}
-
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				got := indexSpecial(tc.input)
@@ -554,12 +623,50 @@ func TestDecoderUnexportedHelpersDirect(t *testing.T) {
 		}
 	})
 
-	t.Run("decodeUULine basic", func(t *testing.T) {
-		enc := []byte("0V%T")
-		got := decodeUULine(enc, 3)
-		want := []byte("Cat")
-		if !bytes.Equal(got, want) {
-			t.Errorf("decodeUULine(%q) = %q, want %q", enc, got, want)
+	t.Run("decodeUULine", func(t *testing.T) {
+		t.Parallel()
+		cases := []struct {
+			name   string
+			enc    []byte
+			rawLen int
+			want   []byte
+		}{
+			{
+				name: "rawLen_0", enc: nil, rawLen: 0,
+				want: []byte{},
+			},
+			{
+				// 'A'=65. Encoded group for one byte: (65>>2+32)='0', (65<<4&63+32)='0', ' ', ' '.
+				name: "rawLen_1_A", enc: []byte("00  "), rawLen: 1,
+				want: []byte{'A'},
+			},
+			{
+				// "He" encodes as "2&4 " (4-char group, 2nd byte stops the loop).
+				name: "rawLen_2_He", enc: []byte("2&4 "), rawLen: 2,
+				want: []byte("He"),
+			},
+			{
+				// Full 3-byte group, no padding required.
+				name: "rawLen_3_Cat", enc: []byte("0V%T"), rawLen: 3,
+				want: []byte("Cat"),
+			},
+			{
+				// enc has only 3 chars for a 3-byte decode; the 4th is padded with ' ' (→ d=0).
+				// Padding changes byte3: (c<<6)|0 = 5<<6 as uint8 = 64 = '@', not 't'.
+				name: "short_enc_pads_with_space", enc: []byte("0V%"), rawLen: 3,
+				want: []byte("Ca@"),
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got := decodeUULine(tc.enc, tc.rawLen)
+				if !bytes.Equal(got, tc.want) {
+					t.Errorf("decodeUULine(%q, %d) = %q, want %q", tc.enc, tc.rawLen, got, tc.want)
+				}
+				if len(got) != tc.rawLen {
+					t.Errorf("decodeUULine returned %d bytes, want exactly %d", len(got), tc.rawLen)
+				}
+			})
 		}
 	})
 }
