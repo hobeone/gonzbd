@@ -3,6 +3,7 @@ package par2
 import (
 	"crypto/md5" //nolint:gosec // md5 used for PAR2 spec packet integrity
 	"encoding/binary"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
@@ -571,4 +572,112 @@ func TestValidatePacketMD5(t *testing.T) {
 	if validatePacketMD5(badHeader, packetBody) {
 		t.Error("validatePacketMD5 succeeded on corrupted header MD5")
 	}
+}
+
+func TestParserUnexportedHelpersDirect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parseIFSCBody short", func(t *testing.T) {
+		got := parseIFSCBody([]byte{1, 2, 3})
+		if got != nil {
+			t.Errorf("parseIFSCBody of short slice = %+v, want nil", got)
+		}
+	})
+
+	t.Run("parseIFSCBody valid", func(t *testing.T) {
+		body := make([]byte, 16+20*2)
+		fileID := [16]byte{1, 2, 3}
+		copy(body[0:16], fileID[:])
+		// Entry 1
+		copy(body[16:32], []byte("md5hash1--------"))
+		binary.LittleEndian.PutUint32(body[32:36], 0x11111111)
+		// Entry 2
+		copy(body[36:52], []byte("md5hash2--------"))
+		binary.LittleEndian.PutUint32(body[52:56], 0x22222222)
+
+		got := parseIFSCBody(body)
+		if got == nil {
+			t.Fatal("parseIFSCBody returned nil")
+		}
+		if got.fileID != fileID {
+			t.Errorf("fileID = %v, want %v", got.fileID, fileID)
+		}
+		if len(got.slices) != 2 {
+			t.Fatalf("len(slices) = %d, want 2", len(got.slices))
+		}
+		if got.slices[0].crc32 != 0x11111111 || got.slices[1].crc32 != 0x22222222 {
+			t.Errorf("slices CRCs = [%x, %x], want [11111111, 22222222]", got.slices[0].crc32, got.slices[1].crc32)
+		}
+	})
+
+	t.Run("reconstructCRCs", func(t *testing.T) {
+		fileID := [16]byte{1}
+		fd := &FileDesc{
+			FileID:   fileID,
+			FileSize: 5,
+		}
+		set := &Par2Set{
+			SliceSize: 3,
+			FilesByID: map[[16]byte]*FileDesc{
+				fileID: fd,
+			},
+		}
+
+		// File content: "Hello"
+		// Slice 0: "Hel"
+		crc0 := crc32.ChecksumIEEE([]byte("Hel"))
+		// Slice 1: "lo" padded with one zero to SliceSize (3) -> "lo\x00"
+		crc1 := crc32.ChecksumIEEE([]byte("lo\x00"))
+
+		ifscPackets := []ifscData{
+			{
+				fileID: fileID,
+				slices: []ifscSlice{
+					{crc32: crc0},
+					{crc32: crc1},
+				},
+			},
+		}
+
+		reconstructCRCs(set, ifscPackets)
+
+		wantCRC := crc32.ChecksumIEEE([]byte("Hello"))
+		if fd.FileCRC32 != wantCRC {
+			t.Errorf("reconstructCRCs combined CRC = %08x, want %08x", fd.FileCRC32, wantCRC)
+		}
+	})
+
+	t.Run("buildBy16k with duplicates", func(t *testing.T) {
+		h1 := [16]byte{1}
+		h2 := [16]byte{2}
+
+		set := &Par2Set{
+			Files: []FileDesc{
+				{FileID: [16]byte{10}, Hash16k: h1},
+				{FileID: [16]byte{20}, Hash16k: h1}, // duplicate of h1
+				{FileID: [16]byte{30}, Hash16k: h2}, // unique
+			},
+			By16k: make(map[[16]byte]*FileDesc),
+		}
+
+		buildBy16k(set)
+
+		if !set.Files[0].HasDuplicate {
+			t.Error("expected Files[0] to be flagged as duplicate")
+		}
+		if !set.Files[1].HasDuplicate {
+			t.Error("expected Files[1] to be flagged as duplicate")
+		}
+		if set.Files[2].HasDuplicate {
+			t.Error("expected Files[2] to not be flagged as duplicate")
+		}
+
+		if _, ok := set.By16k[h1]; ok {
+			t.Error("expected duplicate hash h1 to not be in By16k map")
+		}
+		fd, ok := set.By16k[h2]
+		if !ok || fd.FileID != [16]byte{30} {
+			t.Errorf("expected h2 in By16k map mapping to FileID 30, got ok=%v", ok)
+		}
+	})
 }
