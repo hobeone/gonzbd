@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -75,6 +76,12 @@ func main() {
 	fmt.Println("\nStatus: All modified unexported helpers have direct test references.")
 }
 
+// gapEntry records an untested unexported function and its estimated complexity.
+type gapEntry struct {
+	name       string
+	complexity int
+}
+
 func checkFile(srcPath string, hasGaps *bool) error {
 	fset := token.NewFileSet()
 	node, err := parser.ParseFile(fset, srcPath, nil, parser.ParseComments)
@@ -82,17 +89,20 @@ func checkFile(srcPath string, hasGaps *bool) error {
 		return err
 	}
 
-	// Find all unexported functions & methods
-	var unexported []string
+	// Collect unexported functions with their complexity scores.
+	type funcInfo struct {
+		name string
+		decl *ast.FuncDecl
+	}
+	var unexported []funcInfo
 	for _, decl := range node.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok {
 			continue
 		}
 		name := fn.Name.Name
-		// Unexported function/method starts with a lowercase letter
-		if len(name) > 0 && unicode.IsLower(rune(name[0])) {
-			unexported = append(unexported, name)
+		if name != "" && unicode.IsLower(rune(name[0])) {
+			unexported = append(unexported, funcInfo{name, fn})
 		}
 	}
 
@@ -100,14 +110,14 @@ func checkFile(srcPath string, hasGaps *bool) error {
 		return nil
 	}
 
-	// Locate test files in the same directory
+	// Locate test files in the same directory.
 	dir := filepath.Dir(srcPath)
 	testFiles, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
 	if err != nil {
 		return err
 	}
 
-	// Collect all identifiers from all test files in the package
+	// Collect all identifiers from all test files in the package.
 	testIdents := make(map[string]bool)
 	for _, tf := range testFiles {
 		tset := token.NewFileSet()
@@ -123,18 +133,47 @@ func checkFile(srcPath string, hasGaps *bool) error {
 		})
 	}
 
-	// Check if each unexported function is referenced in tests
-	printedHeader := false
-	for _, name := range unexported {
-		if !testIdents[name] {
-			if !printedHeader {
-				fmt.Printf("\n--- Gaps identified in file: %s ---\n", srcPath)
-				printedHeader = true
-			}
-			fmt.Printf("  ✗ Helper %q is not directly referenced in test files.\n", name)
-			*hasGaps = true
+	// Collect gaps and sort by complexity descending so the highest-priority
+	// functions appear first. This guides the agent (or human) toward writing
+	// tests for the most complex code before trivial one-liners.
+	var gaps []gapEntry
+	for _, fi := range unexported {
+		if !testIdents[fi.name] {
+			gaps = append(gaps, gapEntry{fi.name, funcComplexity(fi.decl)})
 		}
 	}
+	if len(gaps) == 0 {
+		return nil
+	}
 
+	sort.Slice(gaps, func(i, j int) bool {
+		return gaps[i].complexity > gaps[j].complexity
+	})
+
+	fmt.Printf("\n--- Gaps identified in file: %s ---\n", srcPath)
+	for _, g := range gaps {
+		fmt.Printf("  ✗ Helper %q is not directly referenced in test files. (complexity: %d)\n", g.name, g.complexity)
+	}
+	*hasGaps = true
 	return nil
+}
+
+// funcComplexity estimates the cyclomatic complexity of a function by counting
+// branching AST nodes. This is a heuristic equivalent to gocyclo's approach
+// and requires no external tools: each if/for/range/switch/select/case adds 1.
+func funcComplexity(fn *ast.FuncDecl) int {
+	score := 1
+	if fn.Body == nil {
+		return score
+	}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch n.(type) {
+		case *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt,
+			*ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt,
+			*ast.CaseClause, *ast.CommClause:
+			score++
+		}
+		return true
+	})
+	return score
 }
