@@ -473,3 +473,31 @@ func equalSlices(a, b []string) bool {
 	}
 	return true
 }
+
+func TestCharsetReaderDirect(t *testing.T) {
+	input := strings.NewReader("hello")
+
+	// 1. Supported: UTF-8
+	r, err := charsetReader("utf-8", input)
+	if err != nil {
+		t.Fatalf("charsetReader(utf-8) failed: %v", err)
+	}
+	if r != input {
+		t.Error("expected UTF-8 reader to pass through input reader directly")
+	}
+
+	// 2. Supported: ISO-8859-1 / Latin-1
+	r, err = charsetReader("iso-8859-1", input)
+	if err != nil {
+		t.Fatalf("charsetReader(iso-8859-1) failed: %v", err)
+	}
+	if r == input {
+		t.Error("expected ISO-8859-1 reader to wrap the input reader")
+	}
+
+	// 3. Unsupported charset
+	_, err = charsetReader("invalid-charset-123", input)
+	if err == nil {
+		t.Error("expected error for invalid-charset-123, got nil")
+	}
+}
