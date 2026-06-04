@@ -230,7 +230,7 @@ func extractFilename(resp *http.Response, parsedURL *url.URL) string {
 
 	// Fall back to URL path basename.
 	filename := filepath.Base(parsedURL.Path)
-	if filename == "" || filename == "." {
+	if filename == "" || filename == "." || filename == "/" {
 		filename = "download.nzb"
 	}
 
