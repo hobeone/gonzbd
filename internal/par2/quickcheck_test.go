@@ -360,3 +360,85 @@ func TestQuickCheck_Phase4_CRCSizeFallback(t *testing.T) {
 		t.Fatal("original file should be gone after relocation")
 	}
 }
+
+func TestQuickCheck_Integration(t *testing.T) {
+	tmpDir := t.TempDir()
+	parPath := filepath.Join(tmpDir, "test.par2")
+
+	setID := [16]byte{1, 2, 3, 4}
+	fileID := [16]byte{10, 20, 30}
+	fullHash := [16]byte{0xAA, 0xBB, 0xCC}
+
+	content := []byte("flat file content for quickcheck integration test")
+	hash16k := md5.Sum(content)
+	fileName := "Subdir/original.txt"
+
+	// Build the par2 file.
+	body := buildFileDescBody(fileID, fullHash, hash16k, uint64(len(content)), fileName)
+	pkt := buildPacket(setID, typeFileDesc, body)
+	if err := os.WriteFile(parPath, pkt, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Create the flat file matching the par2 expected file.
+	// Use flattened name: "Subdir_original.txt" (since slash turns to underscore).
+	flatName := "Subdir_original.txt"
+	if err := os.WriteFile(filepath.Join(tmpDir, flatName), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Call QuickCheck
+	sets := []Set{
+		{
+			Name:     "test",
+			MainFile: parPath,
+		},
+	}
+	renames, err := QuickCheck(tmpDir, sets, nil)
+	if err != nil {
+		t.Fatalf("QuickCheck failed: %v", err)
+	}
+
+	if len(renames) != 1 {
+		t.Fatalf("expected 1 rename, got %d", len(renames))
+	}
+	if renames[0].From != flatName || renames[0].To != "Subdir/original.txt" {
+		t.Errorf("unexpected rename: %+v", renames[0])
+	}
+
+	// Verify file is relocated.
+	dest := filepath.Join(tmpDir, "Subdir", "original.txt")
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("file not found at relocated path %s: %v", dest, err)
+	}
+}
+
+func TestQuickCheck_EdgeCases(t *testing.T) {
+	// Case 1: Empty manifests list (or no par2 main file)
+	t.Run("empty main file skips set", func(t *testing.T) {
+		sets := []Set{
+			{Name: "empty"},
+		}
+		renames, err := QuickCheck(t.TempDir(), sets, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(renames) != 0 {
+			t.Errorf("expected 0 renames, got %d", len(renames))
+		}
+	})
+
+	// Case 2: Parse file failure (does not exist)
+	t.Run("parse failure warns and continues", func(t *testing.T) {
+		sets := []Set{
+			{Name: "missing", MainFile: "missing.par2"},
+		}
+		renames, err := QuickCheck(t.TempDir(), sets, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(renames) != 0 {
+			t.Errorf("expected 0 renames, got %d", len(renames))
+		}
+	})
+}
