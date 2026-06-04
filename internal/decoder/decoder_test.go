@@ -515,3 +515,51 @@ func TestDecodeArticle_AtMaxSize(t *testing.T) {
 		t.Errorf("DecodeArticle(body of exactly maxDecodeSize) should not return ErrBodyTooLarge")
 	}
 }
+
+func TestDecoderUnexportedHelpersDirect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sub42Span basic", func(t *testing.T) {
+		src := []byte{42, 43, 44, 0, 1}
+		dst := []byte{100}
+		got := sub42Span(dst, src)
+		want := []byte{100, 0, 1, 2, 214, 215}
+		if !bytes.Equal(got, want) {
+			t.Errorf("sub42Span got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("indexSpecial", func(t *testing.T) {
+		cases := []struct {
+			name  string
+			input []byte
+			want  int
+		}{
+			{"no specials", []byte("abcdef"), -1},
+			{"equals start", []byte("=abcdef"), 0},
+			{"equals mid", []byte("abc=def"), 3},
+			{"newline mid", []byte("abc\ndef"), 3},
+			{"cr mid", []byte("abc\rdef"), 3},
+			{"multiple", []byte("abc\rde=f"), 3},
+			{"empty", []byte(""), -1},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got := indexSpecial(tc.input)
+				if got != tc.want {
+					t.Errorf("indexSpecial(%q) = %d, want %d", tc.input, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("decodeUULine basic", func(t *testing.T) {
+		enc := []byte("0V%T")
+		got := decodeUULine(enc, 3)
+		want := []byte("Cat")
+		if !bytes.Equal(got, want) {
+			t.Errorf("decodeUULine(%q) = %q, want %q", enc, got, want)
+		}
+	})
+}
