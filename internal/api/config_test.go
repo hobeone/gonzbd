@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"testing"
@@ -410,4 +411,74 @@ func TestGetConfig_SortersAlwaysPresent(t *testing.T) {
 	if arr == nil {
 		t.Error("sorters should be empty array, not null")
 	}
+}
+
+func TestInjectSABDefaultsDirect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing misc key", func(t *testing.T) {
+		remapped := map[string]json.RawMessage{
+			"servers": json.RawMessage(`[]`),
+		}
+		injectSABDefaults(remapped)
+		if len(remapped) != 1 {
+			t.Errorf("len(remapped) = %d, want 1", len(remapped))
+		}
+	})
+
+	t.Run("invalid json in misc", func(t *testing.T) {
+		remapped := map[string]json.RawMessage{
+			"misc": json.RawMessage(`{invalid-json`),
+		}
+		injectSABDefaults(remapped)
+		if string(remapped["misc"]) != `{invalid-json` {
+			t.Errorf("misc was modified: %s", string(remapped["misc"]))
+		}
+	})
+
+	t.Run("inject all defaults", func(t *testing.T) {
+		remapped := map[string]json.RawMessage{
+			"misc": json.RawMessage(`{}`),
+		}
+		injectSABDefaults(remapped)
+
+		var m map[string]any
+		if err := json.Unmarshal(remapped["misc"], &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		expected := []string{
+			"pre_check", "enable_tv_sorting", "tv_categories",
+			"enable_movie_sorting", "movie_categories", "enable_date_sorting",
+			"date_categories", "history_retention", "history_retention_option",
+			"history_retention_number",
+		}
+		for _, key := range expected {
+			if _, ok := m[key]; !ok {
+				t.Errorf("missing default key: %s", key)
+			}
+		}
+	})
+
+	t.Run("preserve existing fields", func(t *testing.T) {
+		remapped := map[string]json.RawMessage{
+			"misc": json.RawMessage(`{"pre_check":true,"existing_custom_field":"val"}`),
+		}
+		injectSABDefaults(remapped)
+
+		var m map[string]any
+		if err := json.Unmarshal(remapped["misc"], &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if m["pre_check"] != true {
+			t.Errorf("pre_check was overwritten, got %v, want true", m["pre_check"])
+		}
+		if m["existing_custom_field"] != "val" {
+			t.Errorf("existing_custom_field was overwritten, got %v, want 'val'", m["existing_custom_field"])
+		}
+		if _, ok := m["enable_tv_sorting"]; !ok {
+			t.Error("missing injected default key: enable_tv_sorting")
+		}
+	})
 }
