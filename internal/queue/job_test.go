@@ -179,3 +179,60 @@ func TestIsEarlyAbort_AllFailed(t *testing.T) {
 		t.Error("should fire at 100% failure rate")
 	}
 }
+
+func TestJobUnexportedHelpersDirect(t *testing.T) {
+	// 1. stripNZBExt
+	testsStrip := []struct {
+		in   string
+		want string
+	}{
+		{"my_file.nzb", "my_file"},
+		{"my_file.nzb.gz", "my_file"},
+		{"my_file.nzb.bz2", "my_file"},
+		{"my_file.txt", "my_file.txt"},
+		{"my_file", "my_file"},
+	}
+	for _, tc := range testsStrip {
+		if got := stripNZBExt(tc.in); got != tc.want {
+			t.Errorf("stripNZBExt(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	// 2. deriveName
+	testsDerive := []struct {
+		in   string
+		want string
+	}{
+		{"/path/to/file.nzb", "file"},
+		{"/path/to/file.nzb.gz", "file"},
+		{"/path/to/file.nzb.bz2", "file"},
+		{"/path/to/file.rar", "file"},
+		{"/path/to/file", "file"},
+		{"file", "file"},
+	}
+	for _, tc := range testsDerive {
+		if got := deriveName(tc.in); got != tc.want {
+			t.Errorf("deriveName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	// 3. newJobID
+	id1, err := newJobID()
+	if err != nil {
+		t.Fatalf("newJobID failed: %v", err)
+	}
+	if len(id1) != 16 {
+		t.Errorf("newJobID length = %d, want 16", len(id1))
+	}
+	// Verify it is a valid hex string
+	for _, c := range id1 {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			t.Errorf("invalid hex character in job ID: %c", c)
+		}
+	}
+
+	id2, _ := newJobID()
+	if id1 == id2 {
+		t.Error("newJobID returned non-unique IDs")
+	}
+}
