@@ -357,6 +357,10 @@ func TestClassifySevenZipErrorDirect(t *testing.T) {
 		want FailReason
 	}{
 		{
+			// nil is never passed in production: callers only invoke this function
+			// after confirming err != nil. Returning FailUnknown for nil is
+			// arbitrary; this case documents the observed behavior so a future
+			// refactor doesn't accidentally change it silently.
 			name: "nil error",
 			err:  nil,
 			want: FailUnknown,
