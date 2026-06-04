@@ -19,6 +19,11 @@ echo -e "\n[1/4] Running Go Unit Tests..."
 go test ./...
 echo -e "${GREEN}✓ Go Unit Tests Passed${NC}"
 
+# Go Test Alignment Check (unexported helpers coverage check)
+echo -e "\nRunning Go Test Alignment Check..."
+go run scripts/check_test_alignment.go
+echo -e "${GREEN}✓ Go Test Alignment Check Passed${NC}"
+
 # 2. Go Integration Tests
 echo -e "\n[2/4] Running Go Integration Tests..."
 go test -v -tags=integration ./test/integration/...
