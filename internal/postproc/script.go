@@ -221,8 +221,11 @@ func buildArgv(in ScriptInput) []string {
 	}
 }
 
-// lastNonEmptyLine walks the log body backwards and returns the last
-// non-empty trimmed line.
+// lastNonEmptyLine returns the content after the final newline in s, trimmed
+// of trailing whitespace. If the final segment is whitespace-only it returns
+// "". For typical script output (which ends with a meaningful line) this is
+// equivalent to "last non-empty line", but it does NOT walk backwards through
+// prior lines when the last segment is blank.
 func lastNonEmptyLine(s string) string {
 	s = strings.TrimRight(s, "\r\n")
 	idx := strings.LastIndexAny(s, "\n")

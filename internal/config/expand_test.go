@@ -132,20 +132,54 @@ func TestExpandPaths(t *testing.T) {
 }
 
 func TestExpandPathsDirect(t *testing.T) {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("HOME not set")
+	}
+	want := filepath.Join(home, "test")
+
+	// Set every path field that expandPaths is responsible for expanding.
+	// If a developer adds a new field to GeneralConfig and forgets to include
+	// it in expandPaths(), exactly one assertion below will fail.
 	g := &GeneralConfig{
-		DownloadDir: "~/dl",
+		HTTPSCert:   "~/test",
+		HTTPSKey:    "~/test",
+		DownloadDir: "~/test",
+		CompleteDir: "~/test",
+		DirscanDir:  "~/test",
+		ScriptDir:   "~/test",
+		LogDir:      "~/test",
+		AdminDir:    "~/test",
 	}
 	g.expandPaths()
-	if g.DownloadDir != filepath.Join(home, "dl") {
-		t.Errorf("expandPaths (GeneralConfig) failed: %q", g.DownloadDir)
+	for field, got := range map[string]string{
+		"HTTPSCert":   g.HTTPSCert,
+		"HTTPSKey":    g.HTTPSKey,
+		"DownloadDir": g.DownloadDir,
+		"CompleteDir": g.CompleteDir,
+		"DirscanDir":  g.DirscanDir,
+		"ScriptDir":   g.ScriptDir,
+		"LogDir":      g.LogDir,
+		"AdminDir":    g.AdminDir,
+	} {
+		if got != want {
+			t.Errorf("GeneralConfig.%s: got %q, want %q", field, got, want)
+		}
 	}
 
 	p := &PostProcConfig{
-		Par2Command: "~/bin/par2",
+		Par2Command:   "~/test",
+		UnrarCommand:  "~/test",
+		SevenzCommand: "~/test",
 	}
 	p.expandPaths()
-	if p.Par2Command != filepath.Join(home, "bin/par2") {
-		t.Errorf("expandPaths (PostProcConfig) failed: %q", p.Par2Command)
+	for field, got := range map[string]string{
+		"Par2Command":   p.Par2Command,
+		"UnrarCommand":  p.UnrarCommand,
+		"SevenzCommand": p.SevenzCommand,
+	} {
+		if got != want {
+			t.Errorf("PostProcConfig.%s: got %q, want %q", field, got, want)
+		}
 	}
 }

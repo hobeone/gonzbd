@@ -372,6 +372,10 @@ func TestSanitizeCoreDirect(t *testing.T) {
 	}{
 		{"basic", " hello world ", SanitizeOptions{}, "hello world"},
 		{"strip diacritics", "éöñ", SanitizeOptions{StripDiacritics: true}, "eon"},
+		// Default ReplaceIllegalWith is "_"; this is the most common production path.
+		{"default_illegal_slash", "hello/world", SanitizeOptions{}, "hello_world"},
+		{"default_illegal_star", "file*name", SanitizeOptions{}, "file_name"},
+		{"default_illegal_colon", "C:file", SanitizeOptions{}, "C_file"},
 		{"custom illegal char replacement", "hello/world", SanitizeOptions{ReplaceIllegalWith: "!"}, "hello!world"},
 		{"custom space replacement", "hello world", SanitizeOptions{ReplaceSpacesWith: "-"}, "hello-world"},
 		{"win device replacement", "CON", SanitizeOptions{}, "_CON"},
