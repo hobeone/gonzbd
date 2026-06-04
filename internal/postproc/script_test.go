@@ -347,3 +347,67 @@ func TestRunScript_Cwd(t *testing.T) {
 		t.Errorf("cwd: want %q (or %q), got %q (or %q)", dir, dirResolved, got, gotResolved)
 	}
 }
+
+func TestLastNonEmptyLineDirect(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "empty",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "single line no newline",
+			input: "hello",
+			want:  "hello",
+		},
+		{
+			name:  "single line with newline",
+			input: "hello\n",
+			want:  "hello",
+		},
+		{
+			name:  "multiple lines",
+			input: "line1\nline2",
+			want:  "line2",
+		},
+		{
+			name:  "multiple lines trailing newlines",
+			input: "line1\nline2\n\n\n",
+			want:  "line2",
+		},
+		{
+			name:  "carriage returns",
+			input: "line1\r\nline2\r\n\r\n",
+			want:  "line2",
+		},
+		{
+			name:  "line with trailing spaces",
+			input: "line1\nline2  \n",
+			want:  "line2",
+		},
+		{
+			name:  "trailing space only line",
+			input: "line1\nline2  \n \n",
+			want:  "",
+		},
+		{
+			name:  "whitespace only",
+			input: "   \n  \n",
+			want:  "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := lastNonEmptyLine(tc.input)
+			if got != tc.want {
+				t.Errorf("lastNonEmptyLine(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
