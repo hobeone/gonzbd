@@ -361,3 +361,56 @@ func TestReplaceWinDevices(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeCoreDirect(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		input    string
+		opts     SanitizeOptions
+		expected string
+	}{
+		{"basic", " hello world ", SanitizeOptions{}, "hello world"},
+		{"strip diacritics", "éöñ", SanitizeOptions{StripDiacritics: true}, "eon"},
+		{"custom illegal char replacement", "hello/world", SanitizeOptions{ReplaceIllegalWith: "!"}, "hello!world"},
+		{"custom space replacement", "hello world", SanitizeOptions{ReplaceSpacesWith: "-"}, "hello-world"},
+		{"win device replacement", "CON", SanitizeOptions{}, "_CON"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := sanitizeCore(tt.input, tt.opts)
+			if got != tt.expected {
+				t.Errorf("sanitizeCore(%q) = %q; want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestStripDiacriticsDirect(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"accented e", "éèêë", "eeee"},
+		{"accented o", "öòóôõ", "ooooo"},
+		{"accented a", "àáâãäå", "aaaaaa"},
+		{"cilla/tilde", "çñ", "cn"},
+		{"non-accented text", "hello 123", "hello 123"},
+		{"empty string", "", ""},
+		{"emoji and non-latin", "🚀漢", "🚀漢"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := stripDiacritics(tt.input)
+			if got != tt.expected {
+				t.Errorf("stripDiacritics(%q) = %q; want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
