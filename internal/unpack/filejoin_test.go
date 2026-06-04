@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -361,4 +362,52 @@ func TestSortedNumericParts_NoSuffix(t *testing.T) {
 // partSuffix returns "001", "002", etc.
 func partSuffix(n int) string {
 	return fmt.Sprintf("%03d", n)
+}
+
+func TestCopyPartDirect(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	t.Run("valid file", func(t *testing.T) {
+		content := []byte("hello world")
+		partPath := filepath.Join(dir, "valid.part")
+		if err := os.WriteFile(partPath, content, 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		var buf strings.Builder
+		err := copyPart(&buf, partPath)
+		if err != nil {
+			t.Fatalf("copyPart: %v", err)
+		}
+
+		if buf.String() != string(content) {
+			t.Errorf("got %q, want %q", buf.String(), string(content))
+		}
+	})
+
+	t.Run("empty file", func(t *testing.T) {
+		partPath := filepath.Join(dir, "empty.part")
+		if err := os.WriteFile(partPath, nil, 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		var buf strings.Builder
+		err := copyPart(&buf, partPath)
+		if err != nil {
+			t.Fatalf("copyPart: %v", err)
+		}
+
+		if buf.Len() != 0 {
+			t.Errorf("got length %d, want 0", buf.Len())
+		}
+	})
+
+	t.Run("non-existent file", func(t *testing.T) {
+		var buf strings.Builder
+		err := copyPart(&buf, filepath.Join(dir, "does-not-exist"))
+		if err == nil {
+			t.Error("expected error for non-existent file")
+		}
+	})
 }
