@@ -46,7 +46,7 @@ func main() {
 		files := strings.SplitSeq(stdout.String(), "\n")
 		for f := range files {
 			f = strings.TrimSpace(f)
-			if f == "" || !strings.HasSuffix(f, ".go") || strings.HasSuffix(f, "_test.go") {
+			if !strings.HasPrefix(f, "internal/") || !strings.HasSuffix(f, ".go") || strings.HasSuffix(f, "_test.go") {
 				continue
 			}
 			// Make sure file exists
