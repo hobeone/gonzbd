@@ -6,8 +6,10 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -669,5 +671,86 @@ func TestFetch_RejectsRedirectToPrivateIP(t *testing.T) {
 	}
 	if len(ids) != 0 {
 		t.Fatalf("expected 0 NZBs for redirect to private IP, got %d", len(ids))
+	}
+}
+
+func TestExtractFilename_Direct(t *testing.T) {
+	parsedURL, _ := url.Parse("http://example.com/downloads/file")
+
+	// 1. Content-Disposition takes precedence
+	resp1 := &http.Response{Header: make(http.Header)}
+	resp1.Header.Set("Content-Disposition", `attachment; filename="header.nzb"`)
+	if got := extractFilename(resp1, parsedURL); got != "header.nzb" {
+		t.Errorf("extractFilename: got %q, want %q", got, "header.nzb")
+	}
+
+	// 2. Fallback to URL path with extension appended
+	resp2 := &http.Response{Header: make(http.Header)}
+	if got := extractFilename(resp2, parsedURL); got != "file.nzb" {
+		t.Errorf("extractFilename: got %q, want %q", got, "file.nzb")
+	}
+
+	// 3. Fallback to default name if URL path is empty
+	emptyURL, _ := url.Parse("http://example.com/")
+	if got := extractFilename(resp2, emptyURL); got != "download.nzb" {
+		t.Errorf("extractFilename empty path: got %q, want %q", got, "download.nzb")
+	}
+}
+
+func TestIsPrivateIP_Direct(t *testing.T) {
+	tests := []struct {
+		ip   string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"::1", true},
+		{"10.0.0.1", true},
+		{"192.168.1.50", true},
+		{"172.16.31.254", true},
+		{"169.254.0.1", true}, // link-local
+		{"8.8.8.8", false},
+		{"2606:4700:4700::1111", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ip, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("failed to parse IP %q", tt.ip)
+			}
+			if got := isPrivateIP(ip); got != tt.want {
+				t.Errorf("isPrivateIP(%s) = %v; want %v", tt.ip, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateURL_Direct(t *testing.T) {
+	tests := []struct {
+		name         string
+		urlStr       string
+		allowPrivate bool
+		wantErr      bool
+	}{
+		{"valid HTTP public", "http://8.8.8.8/test.nzb", false, false},
+		{"valid HTTPS public", "https://1.1.1.1/test.nzb", false, false},
+		{"unsupported scheme", "ftp://google.com/test.nzb", false, true},
+		{"localhost blocked", "http://localhost/test.nzb", false, true},
+		{"localhost blocked even if allowed", "http://localhost/test.nzb", true, true},
+		{"private IP blocked by default", "http://127.0.0.1/test.nzb", false, true},
+		{"private IP allowed by flag", "http://127.0.0.1/test.nzb", true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := url.Parse(tt.urlStr)
+			if err != nil {
+				t.Fatalf("failed to parse URL %q: %v", tt.urlStr, err)
+			}
+			err = validateURL(u, tt.allowPrivate)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateURL(%q, %v) error = %v; wantErr = %v", tt.urlStr, tt.allowPrivate, err, tt.wantErr)
+			}
+		})
 	}
 }
