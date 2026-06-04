@@ -55,7 +55,7 @@ func buildFileDescBody(fileID [16]byte, fullHash [16]byte, hash16k [16]byte, fil
 	nameBytes := []byte(fileName)
 	body = append(body, nameBytes...)
 	pad := (4 - (len(nameBytes) % 4)) % 4
-	for i := 0; i < pad; i++ {
+	for range pad {
 		body = append(body, 0)
 	}
 	return body

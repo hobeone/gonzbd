@@ -14,33 +14,50 @@ import (
 )
 
 func main() {
-	// 1. Get modified Go files via git
-	cmd := exec.Command("git", "diff", "--name-only", "origin/main...HEAD")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		// Fallback to checking uncommitted changes if origin/main check fails
-		cmd = exec.Command("git", "diff", "--name-only", "HEAD~1")
-		stdout.Reset()
-		_ = cmd.Run()
-	}
-
-	files := strings.Split(stdout.String(), "\n")
 	var targetFiles []string
-	for _, f := range files {
-		f = strings.TrimSpace(f)
-		if f == "" || !strings.HasSuffix(f, ".go") || strings.HasSuffix(f, "_test.go") {
-			continue
+
+	if len(os.Args) > 1 && os.Args[1] == "--all" {
+		err := filepath.Walk("internal", func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() && strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+				targetFiles = append(targetFiles, path)
+			}
+			return nil
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error walking internal/: %v\n", err)
+			os.Exit(1)
 		}
-		// Make sure file exists
-		if _, err := os.Stat(f); err == nil {
-			targetFiles = append(targetFiles, f)
+	} else {
+		// Get modified Go files via git
+		cmd := exec.Command("git", "diff", "--name-only", "origin/main...HEAD")
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			// Fallback to checking uncommitted changes if origin/main check fails
+			cmd = exec.Command("git", "diff", "--name-only", "HEAD~1")
+			stdout.Reset()
+			_ = cmd.Run()
+		}
+
+		files := strings.SplitSeq(stdout.String(), "\n")
+		for f := range files {
+			f = strings.TrimSpace(f)
+			if f == "" || !strings.HasSuffix(f, ".go") || strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			// Make sure file exists
+			if _, err := os.Stat(f); err == nil {
+				targetFiles = append(targetFiles, f)
+			}
 		}
 	}
 
 	if len(targetFiles) == 0 {
-		fmt.Println("No modified Go source files found to check.")
+		fmt.Println("No source Go files found to check.")
 		os.Exit(0)
 	}
 
