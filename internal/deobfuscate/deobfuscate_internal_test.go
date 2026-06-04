@@ -117,3 +117,27 @@ func TestResolveConflictingRename(t *testing.T) {
 		}
 	})
 }
+
+func TestHasCollisionSuffixDirect(t *testing.T) {
+	cases := []struct {
+		name     string
+		filename string
+		want     bool
+	}{
+		{"collision mkv.1", "video.mkv.1", true},
+		{"collision rar.99", "archive.rar.99", true},
+		{"collision 7z.02", "archive.7z.02", true},
+		{"no extension suffix", "video.mkv", false},
+		{"unpopular extension", "video.xyz.1", false},
+		{"non-numeric suffix", "video.mkv.abc", false},
+		{"empty string", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hasCollisionSuffix(tc.filename)
+			if got != tc.want {
+				t.Errorf("hasCollisionSuffix(%q) = %v, want %v", tc.filename, got, tc.want)
+			}
+		})
+	}
+}
