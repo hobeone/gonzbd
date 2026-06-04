@@ -322,3 +322,90 @@ func BenchmarkCombine(b *testing.B) {
 		})
 	}
 }
+
+func TestMatrixMath(t *testing.T) {
+	// Identity matrix
+	var identity [32]uint32
+	for i := range 32 {
+		identity[i] = 1 << i
+	}
+
+	// 1. gf2MatrixMul with identity matrix
+	var vec uint32 = 0xDEADC0DE
+	if got := gf2MatrixMul(&identity, vec); got != vec {
+		t.Errorf("gf2MatrixMul(identity, %x) = %x, want %x", vec, got, vec)
+	}
+
+	// 2. gf2MatrixMul with zero vector
+	if got := gf2MatrixMul(&identity, 0); got != 0 {
+		t.Errorf("gf2MatrixMul(identity, 0) = %x, want 0", got)
+	}
+
+	// 3. gf2MatrixSquare of identity
+	var squared [32]uint32
+	gf2MatrixSquare(&squared, &identity)
+	for i := range 32 {
+		if squared[i] != identity[i] {
+			t.Errorf("gf2MatrixSquare(identity)[%d] = %x, want %x", i, squared[i], identity[i])
+		}
+	}
+
+	// 4. gf2MatrixInvert of identity
+	var inverted [32]uint32
+	gf2MatrixInvert(&inverted, &identity)
+	for i := range 32 {
+		if inverted[i] != identity[i] {
+			t.Errorf("gf2MatrixInvert(identity)[%d] = %x, want %x", i, inverted[i], identity[i])
+		}
+	}
+
+	// 5. Singular matrix inversion (all zeroes)
+	var singular [32]uint32
+	var invSingular [32]uint32
+	gf2MatrixInvert(&invSingular, &singular)
+	for i := range 32 {
+		if invSingular[i] != 0 {
+			t.Errorf("gf2MatrixInvert(singular)[%d] = %x, want 0", i, invSingular[i])
+		}
+	}
+}
+
+func TestShiftHelpers(t *testing.T) {
+	// 1. oneByteShift output verification (sanity check)
+	mat := oneByteShift()
+	nonZero := false
+	for _, row := range mat {
+		if row != 0 {
+			nonZero = true
+			break
+		}
+	}
+	if !nonZero {
+		t.Error("oneByteShift returned an all-zero matrix")
+	}
+
+	// 2. crcOfZeros boundary cases
+	if got := crcOfZeros(0); got != 0 {
+		t.Errorf("crcOfZeros(0) = %x, want 0", got)
+	}
+	if got := crcOfZeros(-5); got != 0 {
+		t.Errorf("crcOfZeros(-5) = %x, want 0", got)
+	}
+
+	// 3. applyShift boundary cases
+	val := uint32(12345)
+	if got := applyShift(val, 0); got != val {
+		t.Errorf("applyShift(val, 0) = %x, want %x", got, val)
+	}
+	if got := applyShift(val, -1); got != val {
+		t.Errorf("applyShift(val, -1) = %x, want %x", got, val)
+	}
+
+	// 4. applyInverseShift boundary cases
+	if got := applyInverseShift(val, 0); got != val {
+		t.Errorf("applyInverseShift(val, 0) = %x, want %x", got, val)
+	}
+	if got := applyInverseShift(val, -1); got != val {
+		t.Errorf("applyInverseShift(val, -1) = %x, want %x", got, val)
+	}
+}
