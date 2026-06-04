@@ -130,3 +130,22 @@ func TestExpandPaths(t *testing.T) {
 		t.Errorf("PostProc.Par2Command not expanded: %q", cfg.PostProc.Par2Command)
 	}
 }
+
+func TestExpandPathsDirect(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	g := &GeneralConfig{
+		DownloadDir: "~/dl",
+	}
+	g.expandPaths()
+	if g.DownloadDir != filepath.Join(home, "dl") {
+		t.Errorf("expandPaths (GeneralConfig) failed: %q", g.DownloadDir)
+	}
+
+	p := &PostProcConfig{
+		Par2Command: "~/bin/par2",
+	}
+	p.expandPaths()
+	if p.Par2Command != filepath.Join(home, "bin/par2") {
+		t.Errorf("expandPaths (PostProcConfig) failed: %q", p.Par2Command)
+	}
+}
