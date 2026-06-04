@@ -371,41 +371,80 @@ func TestMatrixMath(t *testing.T) {
 }
 
 func TestShiftHelpers(t *testing.T) {
-	// 1. oneByteShift output verification (sanity check)
-	mat := oneByteShift()
-	nonZero := false
-	for _, row := range mat {
-		if row != 0 {
-			nonZero = true
-			break
+	t.Run("crcOfZeros_matches_actual_crc", func(t *testing.T) {
+		// crcOfZeros must agree with the reference CRC implementation for positive n.
+		for _, n := range []int64{1, 5, 100} {
+			want := crc32.ChecksumIEEE(make([]byte, n))
+			got := crcOfZeros(n)
+			if got != want {
+				t.Errorf("crcOfZeros(%d) = %08x, want %08x", n, got, want)
+			}
 		}
-	}
-	if !nonZero {
-		t.Error("oneByteShift returned an all-zero matrix")
-	}
+	})
 
-	// 2. crcOfZeros boundary cases
-	if got := crcOfZeros(0); got != 0 {
-		t.Errorf("crcOfZeros(0) = %x, want 0", got)
-	}
-	if got := crcOfZeros(-5); got != 0 {
-		t.Errorf("crcOfZeros(-5) = %x, want 0", got)
-	}
+	t.Run("crcOfZeros_nonpositive_n", func(t *testing.T) {
+		if got := crcOfZeros(0); got != 0 {
+			t.Errorf("crcOfZeros(0) = %08x, want 0", got)
+		}
+		if got := crcOfZeros(-5); got != 0 {
+			t.Errorf("crcOfZeros(-5) = %08x, want 0", got)
+		}
+	})
 
-	// 3. applyShift boundary cases
-	val := uint32(12345)
-	if got := applyShift(val, 0); got != val {
-		t.Errorf("applyShift(val, 0) = %x, want %x", got, val)
-	}
-	if got := applyShift(val, -1); got != val {
-		t.Errorf("applyShift(val, -1) = %x, want %x", got, val)
-	}
+	t.Run("applyShift_applyInverseShift_roundtrip", func(t *testing.T) {
+		// The core algebraic invariant: applying the shift and then its inverse
+		// must be the identity for any input value and any shift count.
+		cases := []struct {
+			val uint32
+			n   int64
+		}{
+			{0xDEADC0DE, 1},
+			{0xDEADC0DE, 8},
+			{0xDEADC0DE, 100},
+			{0x00000000, 50},
+			{0xFFFFFFFF, 50},
+		}
+		for _, tc := range cases {
+			shifted := applyShift(tc.val, tc.n)
+			got := applyInverseShift(shifted, tc.n)
+			if got != tc.val {
+				t.Errorf("round-trip val=%08x n=%d: applyInverseShift(applyShift(...)) = %08x, want %08x",
+					tc.val, tc.n, got, tc.val)
+			}
+		}
+	})
 
-	// 4. applyInverseShift boundary cases
-	if got := applyInverseShift(val, 0); got != val {
-		t.Errorf("applyInverseShift(val, 0) = %x, want %x", got, val)
-	}
-	if got := applyInverseShift(val, -1); got != val {
-		t.Errorf("applyInverseShift(val, -1) = %x, want %x", got, val)
-	}
+	t.Run("applyShift_nonpositive_n", func(t *testing.T) {
+		val := uint32(12345)
+		if got := applyShift(val, 0); got != val {
+			t.Errorf("applyShift(val, 0) = %08x, want %08x", got, val)
+		}
+		if got := applyShift(val, -1); got != val {
+			t.Errorf("applyShift(val, -1) = %08x, want %08x", got, val)
+		}
+	})
+
+	t.Run("applyInverseShift_nonpositive_n", func(t *testing.T) {
+		val := uint32(12345)
+		if got := applyInverseShift(val, 0); got != val {
+			t.Errorf("applyInverseShift(val, 0) = %08x, want %08x", got, val)
+		}
+		if got := applyInverseShift(val, -1); got != val {
+			t.Errorf("applyInverseShift(val, -1) = %08x, want %08x", got, val)
+		}
+	})
+
+	t.Run("oneByteShift_is_single_byte_operator", func(t *testing.T) {
+		// oneByteShift must produce the matrix M where gf2MatrixMul(M, x) equals
+		// applyShift(x, 1) for any x. This grounds the matrix construction against
+		// the reference implementation rather than just checking it is non-zero.
+		mat := oneByteShift()
+		for _, val := range []uint32{0xDEADC0DE, 0x12345678, 0x00000000, 0xFFFFFFFF} {
+			got := gf2MatrixMul(&mat, val)
+			want := applyShift(val, 1)
+			if got != want {
+				t.Errorf("gf2MatrixMul(oneByteShift, %08x) = %08x, want %08x", val, got, want)
+			}
+		}
+	})
 }
