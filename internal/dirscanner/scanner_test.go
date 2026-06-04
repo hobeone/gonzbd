@@ -989,3 +989,77 @@ func createZipWithNZBs(t *testing.T, path string, names []string) error {
 	}
 	return nil
 }
+
+func TestScannerUnexportedHelpersDirect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("isValidExtension", func(t *testing.T) {
+		cases := []struct {
+			filename string
+			want     bool
+		}{
+			{"test.nzb", true},
+			{"test.nzb.gz", true},
+			{"test.nzb.bz2", true},
+			{"test.zip", true},
+			{"TEST.NZB", true},
+			{"TEST.NZB.GZ", true},
+			{"test.Nzb.Bz2", true},
+			{"test.ZIP", true},
+			{"test.rar.nzb", true},
+			{"test.nzb.rar", false},
+			{"test.txt", false},
+			{"test.rar", false},
+			{"", false},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.filename, func(t *testing.T) {
+				got := isValidExtension(tc.filename)
+				if got != tc.want {
+					t.Errorf("isValidExtension(%q) = %t, want %t", tc.filename, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("buildCategoryMap", func(t *testing.T) {
+		t.Run("nil catFn", func(t *testing.T) {
+			s := &Scanner{catFn: nil}
+			got := s.buildCategoryMap()
+			if got != nil {
+				t.Errorf("buildCategoryMap() for nil catFn: expected nil, got %v", got)
+			}
+		})
+
+		t.Run("empty catFn", func(t *testing.T) {
+			s := &Scanner{catFn: func() []string { return []string{} }}
+			got := s.buildCategoryMap()
+			if got != nil {
+				t.Errorf("buildCategoryMap() for empty catFn: expected nil, got %v", got)
+			}
+		})
+
+		t.Run("valid categories case-insensitive mapping", func(t *testing.T) {
+			s := &Scanner{
+				catFn: func() []string {
+					return []string{"TV", "movies", "Anime", "tv"}
+				},
+			}
+			got := s.buildCategoryMap()
+			want := map[string]string{
+				"tv":     "tv",
+				"movies": "movies",
+				"anime":  "Anime",
+			}
+			if len(got) != len(want) {
+				t.Fatalf("buildCategoryMap() length mismatch: got %d, want %d", len(got), len(want))
+			}
+			for k, v := range want {
+				if got[k] != v {
+					t.Errorf("key %q: got %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	})
+}
