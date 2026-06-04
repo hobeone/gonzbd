@@ -224,3 +224,18 @@ func splitOnWhitespace(s string) []string {
 	}
 	return result
 }
+
+func TestFormatParCmdLineDirect(t *testing.T) {
+	got := formatParCmdLine("/usr/bin/par2", []string{"r", "-q", "/tmp/file.par2"})
+	want := "/usr/bin/par2 r -q /tmp/file.par2"
+	if got != want {
+		t.Errorf("formatParCmdLine = %q, want %q", got, want)
+	}
+
+	// Empty args
+	got = formatParCmdLine("/usr/bin/par2", nil)
+	want = "/usr/bin/par2"
+	if got != want {
+		t.Errorf("formatParCmdLine = %q, want %q", got, want)
+	}
+}
