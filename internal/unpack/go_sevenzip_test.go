@@ -2,11 +2,15 @@ package unpack
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/bodgit/sevenzip"
 )
 
 // sevenZipTestdata returns the path to the bodgit/sevenzip testdata directory.
@@ -341,5 +345,65 @@ func TestGoSevenZip_CommandLineField(t *testing.T) {
 	}
 	if res.CommandLine[:5] != "go_7z" {
 		t.Errorf("GoSevenZip() CommandLine = %q, want prefix go_7z", res.CommandLine)
+	}
+}
+
+func TestClassifySevenZipErrorDirect(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want FailReason
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: FailUnknown,
+		},
+		{
+			name: "read error encrypted",
+			err:  &sevenzip.ReadError{Encrypted: true},
+			want: FailWrongPassword,
+		},
+		{
+			name: "read error unencrypted",
+			err:  &sevenzip.ReadError{Encrypted: false},
+			want: FailUnknown,
+		},
+		{
+			name: "not a valid 7-zip file",
+			err:  errors.New("not a valid 7-zip file"),
+			want: FailNotArchive,
+		},
+		{
+			name: "checksum error",
+			err:  errors.New("checksum error"),
+			want: FailCorrupt,
+		},
+		{
+			name: "unsupported compression algorithm",
+			err:  errors.New("unsupported compression algorithm"),
+			want: FailCorrupt,
+		},
+		{
+			name: "disk full",
+			err:  syscall.ENOSPC,
+			want: FailDiskFull,
+		},
+		{
+			name: "other error",
+			err:  errors.New("something went wrong"),
+			want: FailUnknown,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifySevenZipError(tc.err)
+			if got != tc.want {
+				t.Errorf("classifySevenZipError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
