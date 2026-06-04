@@ -200,3 +200,31 @@ func TestEmailNotifier_Accepts(t *testing.T) {
 		t.Error("should not accept DiskFull")
 	}
 }
+
+func TestAppriseTypeDirect(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		input EventType
+		want  string
+	}{
+		{DownloadComplete, "success"},
+		{PostProcessingComplete, "success"},
+		{QueueDone, "success"},
+		{DownloadFailed, "failure"},
+		{PostProcessingFailed, "failure"},
+		{Error, "failure"},
+		{DiskFull, "warning"},
+		{Warning, "warning"},
+		{DownloadStarted, "info"},
+		{EventType(99), "info"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.input.String(), func(t *testing.T) {
+			got := appriseType(tc.input)
+			if got != tc.want {
+				t.Errorf("appriseType(%s) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
