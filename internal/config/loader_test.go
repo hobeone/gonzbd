@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,4 +198,42 @@ func minimalYAML(t *testing.T) string {
 		t.Fatalf("read: %v", err)
 	}
 	return string(b)
+}
+
+func TestLoaderUnexportedHelpersDirect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("partitionYAMLErrors", func(t *testing.T) {
+		warns, err := partitionYAMLErrors(nil)
+		if len(warns) != 0 || err != nil {
+			t.Errorf("expected (nil, nil) for nil, got %v, %v", warns, err)
+		}
+
+		stdErr := fmt.Errorf("some standard error")
+		warns, err = partitionYAMLErrors(stdErr)
+		if len(warns) != 0 || err != stdErr {
+			t.Errorf("expected stdErr returned as-is, got %v, %v", warns, err)
+		}
+	})
+
+	t.Run("applyNormalization", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.applyNormalization()
+
+		if cfg.Downloads.ReplaceIllegalWith != "_" {
+			t.Errorf("ReplaceIllegalWith: got %q, want '_'", cfg.Downloads.ReplaceIllegalWith)
+		}
+		if len(cfg.Downloads.CleanupList) == 0 {
+			t.Errorf("CleanupList was not populated with sticky defaults")
+		}
+		if cfg.Servers == nil {
+			t.Error("Servers is nil, expected []")
+		}
+		if cfg.Categories == nil {
+			t.Error("Categories is nil, expected []")
+		}
+		if cfg.Schedules == nil {
+			t.Error("Schedules is nil, expected []")
+		}
+	})
 }

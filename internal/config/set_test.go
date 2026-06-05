@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -288,4 +289,104 @@ func TestConfig_SetValidationRollback(t *testing.T) {
 	if cfg.General.Port != 9999 {
 		t.Errorf("Port = %d, want 9999", cfg.General.Port)
 	}
+}
+
+func TestSetUnexportedHelpersDirect(t *testing.T) {
+	type dummy struct {
+		Name        string    `json:"name"`
+		Port        int       `yaml:"port"`
+		ByteSizeVal ByteSize  `json:"bytes"`
+		PercentVal  Percent   `json:"percent"`
+		SSLVal      SSLVerify `json:"ssl"`
+		Bypass      bool      `json:"bypass"`
+		SliceVal    []string  `json:"slice"`
+	}
+
+	t.Run("findFieldByTag", func(t *testing.T) {
+		d := dummy{}
+		v := reflect.ValueOf(&d).Elem()
+
+		f1 := findFieldByTag(v, "name")
+		if !f1.IsValid() || f1.Kind() != reflect.String {
+			t.Error("expected to find field 'name'")
+		}
+
+		f2 := findFieldByTag(v, "port")
+		if !f2.IsValid() || f2.Kind() != reflect.Int {
+			t.Error("expected to find field 'port'")
+		}
+
+		fNone := findFieldByTag(v, "nonexistent")
+		if fNone.IsValid() {
+			t.Error("expected not to find 'nonexistent'")
+		}
+	})
+
+	t.Run("setFieldValue", func(t *testing.T) {
+		d := dummy{}
+		v := reflect.ValueOf(&d).Elem()
+
+		// 1. String
+		f := findFieldByTag(v, "name")
+		if err := setFieldValue(f, "hello"); err != nil {
+			t.Fatalf("set string: %v", err)
+		}
+		if d.Name != "hello" {
+			t.Errorf("expected 'hello', got %q", d.Name)
+		}
+
+		// 2. Int
+		f = findFieldByTag(v, "port")
+		if err := setFieldValue(f, "1234"); err != nil {
+			t.Fatalf("set int: %v", err)
+		}
+		if d.Port != 1234 {
+			t.Errorf("expected 1234, got %d", d.Port)
+		}
+
+		// 3. ByteSize
+		f = findFieldByTag(v, "bytes")
+		if err := setFieldValue(f, "5M"); err != nil {
+			t.Fatalf("set bytes: %v", err)
+		}
+		if d.ByteSizeVal != 5*1024*1024 {
+			t.Errorf("expected 5M, got %v", d.ByteSizeVal)
+		}
+
+		// 4. Percent
+		f = findFieldByTag(v, "percent")
+		if err := setFieldValue(f, "75"); err != nil {
+			t.Fatalf("set percent: %v", err)
+		}
+		if d.PercentVal != 75 {
+			t.Errorf("expected 75, got %v", d.PercentVal)
+		}
+
+		// 5. SSLVerify
+		f = findFieldByTag(v, "ssl")
+		if err := setFieldValue(f, "2"); err != nil {
+			t.Fatalf("set ssl: %v", err)
+		}
+		if d.SSLVal != 2 {
+			t.Errorf("expected 2, got %v", d.SSLVal)
+		}
+
+		// 6. Bool
+		f = findFieldByTag(v, "bypass")
+		if err := setFieldValue(f, "true"); err != nil {
+			t.Fatalf("set bool: %v", err)
+		}
+		if !d.Bypass {
+			t.Error("expected true")
+		}
+
+		// 7. Slice
+		f = findFieldByTag(v, "slice")
+		if err := setFieldValue(f, `["x", "y"]`); err != nil {
+			t.Fatalf("set slice: %v", err)
+		}
+		if len(d.SliceVal) != 2 || d.SliceVal[0] != "x" || d.SliceVal[1] != "y" {
+			t.Errorf("unexpected slice value: %v", d.SliceVal)
+		}
+	})
 }
