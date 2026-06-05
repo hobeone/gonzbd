@@ -166,3 +166,38 @@ func TestContainsIgnoredMovieFolderDirect(t *testing.T) {
 		t.Error("expected true when bdmv folder exists")
 	}
 }
+
+func TestExtractRARUsefulNameDirect(t *testing.T) {
+	tmpDir := t.TempDir()
+	log := slog.Default()
+
+	// 1. Empty directory
+	if got := extractRARUsefulName(tmpDir, log); got != "" {
+		t.Errorf("extractRARUsefulName empty: got %q, want empty", got)
+	}
+
+	// 2. Directory with non-rar files
+	if err := os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if got := extractRARUsefulName(tmpDir, log); got != "" {
+		t.Errorf("extractRARUsefulName non-rar: got %q, want empty", got)
+	}
+
+	// 3. Directory with a valid RAR file
+	fixturePath := filepath.Join("..", "..", "test", "fixtures", "rar", "sample.rar")
+	fixtureData, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("failed to read fixture rar: %v", err)
+	}
+
+	rarPath := filepath.Join(tmpDir, "a1b2c3d4.rar")
+	if err := os.WriteFile(rarPath, fixtureData, 0o644); err != nil {
+		t.Fatalf("copy rar: %v", err)
+	}
+
+	got := extractRARUsefulName(tmpDir, log)
+	if got != "sample" {
+		t.Errorf("extractRARUsefulName(sample.rar) = %q, want 'sample'", got)
+	}
+}
