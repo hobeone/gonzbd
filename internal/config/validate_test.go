@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -260,5 +261,128 @@ func validServer(name string) ServerConfig {
 		Timeout:            60,
 		PipeliningRequests: 2,
 		Enable:             true,
+	}
+}
+
+// ---------- Direct Validation Helpers ----------
+
+func TestGeneralConfig_ValidateDirect(t *testing.T) {
+	t.Parallel()
+	g := GeneralConfig{
+		Host:        "localhost",
+		Port:        8080,
+		DownloadDir: "/tmp/download",
+		CompleteDir: "/tmp/complete",
+		APIKey:      "abcdef0123456789",
+		NZBKey:      "0123456789abcdef",
+	}
+	if err := g.validate(); err != nil {
+		t.Errorf("expected clean validate, got: %v", err)
+	}
+
+	g.APIKey = "short"
+	if err := g.validate(); err == nil {
+		t.Error("expected validation error for invalid API key")
+	}
+}
+
+func TestDownloadConfig_ValidateDirect(t *testing.T) {
+	t.Parallel()
+	d := DownloadConfig{
+		BandwidthMax:  100,
+		BandwidthPerc: 50,
+		MaxArtTries:   3,
+	}
+	if err := d.validate(); err != nil {
+		t.Errorf("expected clean validate, got: %v", err)
+	}
+
+	d.BandwidthMax = -1
+	if err := d.validate(); err == nil {
+		t.Error("expected error for negative bandwidth_max")
+	}
+}
+
+func TestPostProcConfig_ValidateDirect(t *testing.T) {
+	t.Parallel()
+	p := PostProcConfig{
+		Permissions: "755",
+	}
+	if err := p.validate(); err != nil {
+		t.Errorf("expected clean validate, got: %v", err)
+	}
+
+	p.Permissions = "899"
+	if err := p.validate(); err == nil {
+		t.Error("expected error for non-octal permissions")
+	}
+}
+
+func TestServerConfig_ValidateDirect(t *testing.T) {
+	t.Parallel()
+	s := ServerConfig{
+		Host:               "news.example.com",
+		Port:               119,
+		Connections:        4,
+		Timeout:            120,
+		PipeliningRequests: 5,
+	}
+	if err := s.validate(); err != nil {
+		t.Errorf("expected clean validate, got: %v", err)
+	}
+
+	s.Connections = 0
+	if err := s.validate(); err == nil {
+		t.Error("expected error for 0 connections")
+	}
+}
+
+func TestCategoryConfig_ValidateDirect(t *testing.T) {
+	t.Parallel()
+	c := CategoryConfig{
+		PP: 2,
+	}
+	if err := c.validate(); err != nil {
+		t.Errorf("expected clean validate, got: %v", err)
+	}
+
+	c.PP = 4
+	if err := c.validate(); err == nil {
+		t.Error("expected error for PP=4")
+	}
+}
+
+func TestScheduleConfig_ValidateDirect(t *testing.T) {
+	t.Parallel()
+	s := ScheduleConfig{
+		Action:    "pause",
+		Minute:    "*",
+		Hour:      "*",
+		DayOfWeek: "*",
+	}
+	if err := s.validate(); err != nil {
+		t.Errorf("expected clean validate, got: %v", err)
+	}
+
+	s.Minute = "abc"
+	if err := s.validate(); err == nil {
+		t.Error("expected error for invalid minute cron token")
+	}
+}
+
+func TestNamesHelpersDirect(t *testing.T) {
+	t.Parallel()
+	servers := []ServerConfig{{Name: "s1"}, {Name: "s2"}}
+	categories := []CategoryConfig{{Name: "c1"}, {Name: "c2"}}
+	schedules := []ScheduleConfig{{Name: "sc1"}, {Name: "sc2"}}
+
+	if got := serverNames(servers); !slices.Equal(got, []string{"s1", "s2"}) {
+		t.Errorf("serverNames = %v", got)
+	}
+	if got := categoryNames(categories); !slices.Equal(got, []string{"c1", "c2"}) {
+		t.Errorf("categoryNames = %v", got)
+	}
+	if got := scheduleNames(schedules); !slices.Equal(got, []string{"sc1", "sc2"}) {
+		t.Errorf("scheduleNames = %v", got)
 	}
 }
