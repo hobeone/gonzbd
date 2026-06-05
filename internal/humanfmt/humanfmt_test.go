@@ -41,8 +41,13 @@ func TestBytesSI(t *testing.T) {
 		{1024, "1.0 KiB"},
 		{1536 * 1024, "1.5 MiB"},
 		{1 << 30, "1.0 GiB"},
-		// Test TiB scale to check for out of bounds panic
+		// TiB and above index into the "KMGTPE" suffix table. The original
+		// "KMG" table panicked (index out of range) at TiB (exp=3); these
+		// cases pin every suffix the fix unlocked, up to EiB (exp=5), which
+		// is the largest scale reachable by int64 (max ~8 EiB).
 		{1 << 40, "1.0 TiB"},
+		{1 << 50, "1.0 PiB"},
+		{1 << 60, "1.0 EiB"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.want, func(t *testing.T) {
