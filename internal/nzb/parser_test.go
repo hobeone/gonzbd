@@ -584,3 +584,41 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 		}
 	})
 }
+
+func TestAbsorbHead_Direct(t *testing.T) {
+	const headXMLData = `<head>
+		<meta type="title">Test Direct Title</meta>
+		<meta type="category">  test-category  </meta>
+		<meta type="empty"></meta>
+		<meta type="">no-type</meta>
+	</head>`
+
+	dec := xml.NewDecoder(strings.NewReader(headXMLData))
+	tok, err := dec.Token()
+	if err != nil {
+		t.Fatalf("dec.Token: %v", err)
+	}
+	se, ok := tok.(xml.StartElement)
+	if !ok {
+		t.Fatalf("expected xml.StartElement, got %T", tok)
+	}
+
+	nzbOut := &NZB{Meta: make(map[string][]string)}
+	err = absorbHead(dec, &se, nzbOut)
+	if err != nil {
+		t.Fatalf("absorbHead: %v", err)
+	}
+
+	if got := nzbOut.Meta["title"]; len(got) != 1 || got[0] != "Test Direct Title" {
+		t.Errorf("expected title 'Test Direct Title', got %v", got)
+	}
+	if got := nzbOut.Meta["category"]; len(got) != 1 || got[0] != "test-category" {
+		t.Errorf("expected category 'test-category' (trimmed), got %v", got)
+	}
+	if _, ok := nzbOut.Meta["empty"]; ok {
+		t.Errorf("empty meta value should be skipped")
+	}
+	if _, ok := nzbOut.Meta[""]; ok {
+		t.Errorf("empty meta type should be skipped")
+	}
+}
