@@ -501,3 +501,64 @@ func TestCharsetReaderDirect(t *testing.T) {
 		t.Error("expected error for invalid-charset-123, got nil")
 	}
 }
+
+func TestParserUnexportedHelpersDirect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("convertFile", func(t *testing.T) {
+		xf := xmlFile{
+			Subject: "test-subject",
+			Date:    "1700000000",
+			Groups:  []string{"alt.binaries.test"},
+			Segments: []xmlSegment{
+				{Bytes: 100, Number: 1, ID: "msg1"},
+				{Bytes: 200, Number: 2, ID: "msg2"},
+				{Bytes: 0, Number: 3, ID: "bad1"},
+				{Bytes: -10, Number: 4, ID: "bad2"},
+				{Bytes: 1 << 24, Number: 5, ID: "bad3"},
+				{Bytes: 100, Number: 1, ID: "msg1-dup"},
+			},
+		}
+
+		digest := md5.New()
+		file, ts, counters := convertFile(xf, time.Now(), digest)
+		if ts != 1700000000 {
+			t.Errorf("ts = %d, want 1700000000", ts)
+		}
+		if file.Subject != "test-subject" {
+			t.Errorf("Subject = %q, want 'test-subject'", file.Subject)
+		}
+		if len(file.Articles) != 2 {
+			t.Errorf("len(Articles) = %d, want 2", len(file.Articles))
+		}
+		if counters.dupes != 1 {
+			t.Errorf("counters.dupes = %d, want 1", counters.dupes)
+		}
+		if counters.bad != 3 {
+			t.Errorf("counters.bad = %d, want 3", counters.bad)
+		}
+	})
+
+	t.Run("absorbHead and absorbFile and parseXML", func(t *testing.T) {
+		const doc = `<?xml version="1.0"?>
+<nzb>
+  <head>
+    <meta type="title">Test NZB</meta>
+  </head>
+  <file date="1700000000">
+    <groups><group>g</group></groups>
+    <segments><segment bytes="100" number="1">id@h</segment></segments>
+  </file>
+</nzb>`
+		got, err := parseXML(strings.NewReader(doc))
+		if err != nil {
+			t.Fatalf("parseXML: %v", err)
+		}
+		if got.Meta["title"][0] != "Test NZB" {
+			t.Errorf("Meta title = %q", got.Meta["title"][0])
+		}
+		if len(got.Files) != 1 {
+			t.Fatalf("len(Files) = %d", len(got.Files))
+		}
+	})
+}
