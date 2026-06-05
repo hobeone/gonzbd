@@ -237,3 +237,26 @@ func statFile(t *testing.T, path string) os.FileInfo {
 	}
 	return info
 }
+
+// ---------- Direct Certgen Helpers ----------
+
+func TestWriteFileAtomic_Direct(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := tmp + "/nested/file.txt"
+	data := []byte("atomic-data")
+
+	if err := writeFileAtomic(path, data, 0o644); err != nil {
+		t.Fatalf("writeFileAtomic failed: %v", err)
+	}
+
+	got := readFile(t, path)
+	if string(got) != "atomic-data" {
+		t.Errorf("got %q, want atomic-data", got)
+	}
+
+	info := statFile(t, path)
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Errorf("perm = %#o, want %#o", perm, 0o644)
+	}
+}
