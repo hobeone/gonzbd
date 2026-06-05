@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/md5" //nolint:gosec // test mirrors parser's MD5 usage
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -559,6 +560,27 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 		}
 		if len(got.Files) != 1 {
 			t.Fatalf("len(Files) = %d", len(got.Files))
+		}
+
+		// Direct call to absorbFile
+		dec := xml.NewDecoder(strings.NewReader(`<file date="1700000000"><groups><group>g</group></groups><segments><segment bytes="100" number="1">id@h</segment></segments></file>`))
+		tok, err := dec.Token()
+		if err != nil {
+			t.Fatalf("dec.Token: %v", err)
+		}
+		se := tok.(xml.StartElement)
+		nzbOut := &NZB{}
+		digest := md5.New()
+		seenGroups := make(map[string]struct{})
+		ts, segs, err := absorbFile(dec, &se, nzbOut, digest, seenGroups, time.Now())
+		if err != nil {
+			t.Fatalf("absorbFile: %v", err)
+		}
+		if ts != 1700000000 {
+			t.Errorf("expected ts=1700000000, got %d", ts)
+		}
+		if segs != 1 {
+			t.Errorf("expected segs=1, got %d", segs)
 		}
 	})
 }
