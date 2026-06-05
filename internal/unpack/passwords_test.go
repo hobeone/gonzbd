@@ -269,7 +269,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 
 		opts := Options{Passwords: []string{"wrong1", "wrong2"}}
 		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, isWrongPW, "mock")
-		if err != ErrWrongPassword {
+		if !errors.Is(err, ErrWrongPassword) {
 			t.Fatalf("expected ErrWrongPassword, got %v", err)
 		}
 		if calls != 2 {
@@ -288,7 +288,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 
 		opts := Options{Passwords: []string{"wrong1", "wrong2"}}
 		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
-		if err != sysErr {
+		if !errors.Is(err, sysErr) {
 			t.Fatalf("expected system error, got %v", err)
 		}
 		if calls != 1 {
