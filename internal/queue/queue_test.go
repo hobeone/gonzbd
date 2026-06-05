@@ -1114,3 +1114,65 @@ func TestSetScript(t *testing.T) {
 		t.Error("SetScript(unknown) should error")
 	}
 }
+
+func TestQueueUnexportedHelpersDirect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("indexOfLocked and removeAtLocked", func(t *testing.T) {
+		q := New()
+		j1 := &Job{ID: "j1", Priority: constants.NormalPriority}
+		j2 := &Job{ID: "j2", Priority: constants.NormalPriority}
+		_ = q.Add(j1)
+		_ = q.Add(j2)
+
+		q.mu.Lock()
+		defer q.mu.Unlock()
+
+		idx, ok := q.indexOfLocked("j2")
+		if !ok || idx != 1 {
+			t.Errorf("indexOfLocked(j2) = %d, %t, want 1, true", idx, ok)
+		}
+
+		q.removeAtLocked(1)
+		if len(q.jobs) != 1 || q.jobs[0].ID != "j1" {
+			t.Errorf("after removeAtLocked(1) jobs: %v", q.jobs)
+		}
+
+		_, ok = q.indexOfLocked("j2")
+		if ok {
+			t.Error("expected ok=false for removed job")
+		}
+	})
+
+	t.Run("insertByPriorityLocked", func(t *testing.T) {
+		q := New()
+		jLow := &Job{ID: "low", Priority: constants.LowPriority}
+		jHigh := &Job{ID: "high", Priority: constants.HighPriority}
+		jNorm := &Job{ID: "norm", Priority: constants.NormalPriority}
+
+		q.mu.Lock()
+		defer q.mu.Unlock()
+
+		q.insertByPriorityLocked(jLow)
+		q.insertByPriorityLocked(jHigh)
+		q.insertByPriorityLocked(jNorm)
+
+		// Expected order descending: high, norm, low
+		if len(q.jobs) != 3 || q.jobs[0].ID != "high" || q.jobs[1].ID != "norm" || q.jobs[2].ID != "low" {
+			var ids []string
+			for _, j := range q.jobs {
+				ids = append(ids, j.ID)
+			}
+			t.Errorf("unexpected jobs order: %v", ids)
+		}
+	})
+
+	t.Run("notifyLocked non-blocking", func(t *testing.T) {
+		q := New()
+		q.mu.Lock()
+		defer q.mu.Unlock()
+
+		q.notifyLocked()
+		q.notifyLocked()
+	})
+}
