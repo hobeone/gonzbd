@@ -136,3 +136,15 @@ func TestSnapshotJob_ArtIdxIsolation(t *testing.T) {
 		t.Error("mutation via clone's articleByID affected original job's Files slice")
 	}
 }
+
+func TestCloneJobDirect(t *testing.T) {
+	t.Parallel()
+	job := &Job{
+		ID:   "test-id",
+		Name: "Test",
+	}
+	cloned := cloneJob(job)
+	if cloned.ID != job.ID {
+		t.Errorf("cloneJob ID mismatch: got %q, want %q", cloned.ID, job.ID)
+	}
+}
