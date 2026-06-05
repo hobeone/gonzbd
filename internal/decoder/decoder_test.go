@@ -670,3 +670,138 @@ func TestDecoderUnexportedHelpersDirect(t *testing.T) {
 		}
 	})
 }
+
+func TestDecoderMetadataParsingDirect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parseHeader", func(t *testing.T) {
+		t.Run("missing ybegin", func(t *testing.T) {
+			body := []byte("hello world")
+			_, _, err := parseHeader(body)
+			if !errors.Is(err, ErrNotYEnc) {
+				t.Errorf("expected ErrNotYEnc, got %v", err)
+			}
+		})
+
+		t.Run("malformed line end", func(t *testing.T) {
+			body := []byte("=ybegin size=100") // no newline
+			_, _, err := parseHeader(body)
+			if !errors.Is(err, errMalformed) {
+				t.Errorf("expected errMalformed, got %v", err)
+			}
+		})
+
+		t.Run("single part ybegin", func(t *testing.T) {
+			body := []byte("=ybegin size=1234 name=test_file.bin\nbody_data")
+			hdr, bodyStart, err := parseHeader(body)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if hdr.size != 1234 {
+				t.Errorf("expected size 1234, got %d", hdr.size)
+			}
+			if hdr.name != "test_file.bin" {
+				t.Errorf("expected name 'test_file.bin', got %q", hdr.name)
+			}
+			if hdr.isPart {
+				t.Error("expected isPart false")
+			}
+			if bodyStart != len("=ybegin size=1234 name=test_file.bin\n") {
+				t.Errorf("unexpected bodyStart: %d", bodyStart)
+			}
+		})
+
+		t.Run("multipart ybegin and ypart", func(t *testing.T) {
+			body := []byte("=ybegin size=100000 part=12 name=multi.bin\n=ypart begin=1001 end=2000\nbody_data")
+			hdr, bodyStart, err := parseHeader(body)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if hdr.size != 100000 {
+				t.Errorf("expected size 100000, got %d", hdr.size)
+			}
+			if hdr.name != "multi.bin" {
+				t.Errorf("expected name 'multi.bin', got %q", hdr.name)
+			}
+			if !hdr.isPart {
+				t.Error("expected isPart true")
+			}
+			if hdr.offset != 1000 { // 1001-1 (0-based)
+				t.Errorf("expected offset 1000, got %d", hdr.offset)
+			}
+			expectedStart := len("=ybegin size=100000 part=12 name=multi.bin\n=ypart begin=1001 end=2000\n")
+			if bodyStart != expectedStart {
+				t.Errorf("expected bodyStart %d, got %d", expectedStart, bodyStart)
+			}
+		})
+
+		t.Run("ypart malformed", func(t *testing.T) {
+			body := []byte("=ybegin size=100000 part=12 name=multi.bin\n=ypart begin=1001") // no newline on ypart
+			_, _, err := parseHeader(body)
+			if !errors.Is(err, errMalformed) {
+				t.Errorf("expected errMalformed, got %v", err)
+			}
+		})
+	})
+
+	t.Run("parseTrailer", func(t *testing.T) {
+		t.Run("missing yend prefix", func(t *testing.T) {
+			_, err := parseTrailer([]byte("=not_yend size=123"), false)
+			if !errors.Is(err, errMissingTrailer) {
+				t.Errorf("expected errMissingTrailer, got %v", err)
+			}
+		})
+
+		t.Run("single part trailer", func(t *testing.T) {
+			line := []byte("=yend size=1234 crc32=abcdef12\n")
+			tr, err := parseTrailer(line, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tr.size != 1234 {
+				t.Errorf("expected size 1234, got %d", tr.size)
+			}
+			if tr.crc != 0xabcdef12 {
+				t.Errorf("expected crc 0xabcdef12, got 0x%x", tr.crc)
+			}
+			if !tr.valid {
+				t.Error("expected valid true")
+			}
+		})
+
+		t.Run("multipart trailer", func(t *testing.T) {
+			line := []byte("=yend size=500 part=2 pcrc32=12345678\n")
+			tr, err := parseTrailer(line, true)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tr.size != 500 {
+				t.Errorf("expected size 500, got %d", tr.size)
+			}
+			if tr.crc != 0x12345678 {
+				t.Errorf("expected crc 0x12345678, got 0x%x", tr.crc)
+			}
+			if !tr.valid {
+				t.Error("expected valid true")
+			}
+		})
+	})
+
+	t.Run("parseKeyValues callback", func(t *testing.T) {
+		line := []byte("=ybegin size=500 name=some name with spaces.bin\r\n")
+		var keys, values []string
+		parseKeyValues(line, func(k, v string) {
+			keys = append(keys, k)
+			values = append(values, v)
+		})
+		if len(keys) != 2 {
+			t.Fatalf("expected 2 keys, got %d", len(keys))
+		}
+		if keys[0] != "size" || values[0] != "500" {
+			t.Errorf("expected size=500, got %s=%s", keys[0], values[0])
+		}
+		if keys[1] != "name" || values[1] != "some name with spaces.bin" {
+			t.Errorf("expected name='some name with spaces.bin', got %s=%s", keys[1], values[1])
+		}
+	})
+}
