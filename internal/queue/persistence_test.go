@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -475,5 +476,96 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 					fi, ai, art.FileIdx, fi)
 			}
 		}
+	}
+}
+
+// ---------- Direct Persistence/Job Helpers ----------
+
+func TestReadWriteGzJSONRaw_Direct(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.json.gz")
+
+	type dummy struct {
+		Name string `json:"name"`
+		Val  int    `json:"val"`
+	}
+	original := dummy{Name: "hello", Val: 42}
+
+	data, jsonErr := json.Marshal(original)
+	if jsonErr != nil {
+		t.Fatal(jsonErr)
+	}
+
+	if err := writeGzJSONRaw(path, data); err != nil {
+		t.Fatalf("writeGzJSONRaw failed: %v", err)
+	}
+
+	var loaded dummy
+	if err := readGzJSON(path, &loaded); err != nil {
+		t.Fatalf("readGzJSON failed: %v", err)
+	}
+
+	if loaded != original {
+		t.Errorf("loaded %+v, want %+v", loaded, original)
+	}
+}
+
+func TestQueue_SaveInner_Direct(t *testing.T) {
+	tmp := t.TempDir()
+	q := New()
+	job1 := &Job{
+		ID:   "job1",
+		Name: "Job 1",
+		Files: []JobFile{
+			{
+				Subject: "subject1",
+				Articles: []JobArticle{
+					{ID: "art1", Bytes: 100},
+				},
+			},
+		},
+	}
+	_ = q.Add(job1)
+
+	if err := q.saveInner(tmp); err != nil {
+		t.Fatalf("saveInner failed: %v", err)
+	}
+
+	var loadedJob Job
+	if err := readGzJSON(filepath.Join(tmp, "jobs", "job1.json.gz"), &loadedJob); err != nil {
+		t.Fatalf("failed to read job: %v", err)
+	}
+	if loadedJob.ID != "job1" {
+		t.Errorf("loaded job mismatch: %+v", loadedJob)
+	}
+}
+
+func TestJob_RecomputePendingAndBuildArtIndex_Direct(t *testing.T) {
+	job := &Job{
+		ID: "test-job",
+		Files: []JobFile{
+			{
+				Subject: "file1",
+				Articles: []JobArticle{
+					{ID: "art1", Done: false},
+					{ID: "art2", Done: true, Failed: false, Bytes: 100},
+				},
+			},
+		},
+	}
+
+	job.recomputePending()
+
+	if job.Files[0].Pending != 1 {
+		t.Errorf("expected file 0 pending 1, got %d", job.Files[0].Pending)
+	}
+	if job.Files[0].BytesDownloaded != 100 {
+		t.Errorf("expected file 0 bytes downloaded 100, got %d", job.Files[0].BytesDownloaded)
+	}
+
+	job.buildArtIndex()
+	art := job.articleByID("art1")
+	if art == nil || art.ID != "art1" {
+		t.Fatal("expected to find art1")
 	}
 }
