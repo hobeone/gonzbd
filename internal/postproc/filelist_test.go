@@ -1,6 +1,8 @@
 package postproc
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -205,5 +207,44 @@ func TestBuildDownloadFileListIncludesCompletion(t *testing.T) {
 	// The original on-disk listing must still be present (additive change).
 	if !strings.Contains(joined, "Files in download directory") {
 		t.Errorf("on-disk listing was removed; got:\n%s", joined)
+	}
+}
+
+func TestBuildFinalFileListDirect(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// 1. Directory is missing / nonexistent
+	jobMissing := &Job{FinalDir: "/nonexistent/path/ever"}
+	lines := buildFinalFileList(jobMissing)
+	if lines != nil {
+		t.Errorf("expected nil for nonexistent directory, got %v", lines)
+	}
+
+	// 2. Directory exists and contains files/folders
+	subDir := filepath.Join(tmpDir, "folder1")
+	if err := os.Mkdir(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	filePath := filepath.Join(tmpDir, "file1.txt")
+	content := []byte(strings.Repeat("A", 1234)) // 1234 bytes
+	if err := os.WriteFile(filePath, content, 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	job := &Job{FinalDir: tmpDir}
+	lines = buildFinalFileList(job)
+	joined := strings.Join(lines, "\n")
+
+	if !strings.Contains(joined, "Final files (2):") {
+		t.Errorf("expected header 'Final files (2):', got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "file1.txt") {
+		t.Errorf("expected file1.txt in output, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "📁 folder1/") {
+		t.Errorf("expected folder1/ directory in output, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "Total:") {
+		t.Errorf("expected Total: in output, got:\n%s", joined)
 	}
 }
