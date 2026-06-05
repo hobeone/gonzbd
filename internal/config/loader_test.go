@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -211,7 +212,7 @@ func TestLoaderUnexportedHelpersDirect(t *testing.T) {
 
 		stdErr := fmt.Errorf("some standard error")
 		warns, err = partitionYAMLErrors(stdErr)
-		if len(warns) != 0 || err != stdErr {
+		if len(warns) != 0 || !errors.Is(err, stdErr) {
 			t.Errorf("expected stdErr returned as-is, got %v, %v", warns, err)
 		}
 	})
