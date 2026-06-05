@@ -1,6 +1,13 @@
 package unpack
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -110,4 +117,182 @@ func TestIs7zWrongPassword(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCleanupPartialFiles(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Create initial file
+	f1 := filepath.Join(tmp, "initial.txt")
+	if err := os.WriteFile(f1, []byte("initial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	beforeSnap, err := snapshotDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create partial files
+	f2 := filepath.Join(tmp, "partial1.txt")
+	if err := os.WriteFile(f2, []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f3 := filepath.Join(tmp, "subdir", "partial2.txt")
+	if err := os.MkdirAll(filepath.Dir(f3), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f3, []byte("partial2"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Call cleanupPartialFiles
+	cleanupPartialFiles(tmp, beforeSnap, slog.Default(), "test", 1)
+
+	// Verify f1 still exists, but f2 and f3 are deleted
+	if _, err := os.Stat(f1); err != nil {
+		t.Errorf("initial file was deleted: %v", err)
+	}
+	if _, err := os.Stat(f2); err == nil {
+		t.Errorf("partial1.txt was not cleaned up")
+	}
+	if _, err := os.Stat(f3); err == nil {
+		t.Errorf("subdir/partial2.txt was not cleaned up")
+	}
+}
+
+func TestWithPasswords_Mocked(t *testing.T) {
+	ctx := context.Background()
+	log := slog.Default()
+	archive := Archive{MainFile: "test.rar"}
+	outDir := t.TempDir()
+
+	t.Run("no passwords - calls extract once", func(t *testing.T) {
+		calls := 0
+		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+			calls++
+			if opts.Password != "" {
+				t.Errorf("expected no password, got %q", opts.Password)
+			}
+			return Result{ExitCode: 0}, nil
+		}
+
+		opts := Options{}
+		res, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if calls != 1 {
+			t.Errorf("expected 1 call, got %d", calls)
+		}
+		if res.ExitCode != 0 {
+			t.Errorf("expected ExitCode 0, got %d", res.ExitCode)
+		}
+	})
+
+	t.Run("success on first password", func(t *testing.T) {
+		calls := 0
+		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+			calls++
+			if opts.Password != "pass1" {
+				t.Errorf("expected pass1, got %q", opts.Password)
+			}
+			return Result{ExitCode: 0}, nil
+		}
+
+		opts := Options{Passwords: []string{"pass1", "pass2"}}
+		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if calls != 1 {
+			t.Errorf("expected 1 call, got %d", calls)
+		}
+	})
+
+	t.Run("retry on wrong password then success", func(t *testing.T) {
+		calls := 0
+		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+			calls++
+			if calls == 1 {
+				if opts.Password != "wrong" {
+					t.Errorf("first attempt expected 'wrong', got %q", opts.Password)
+				}
+				// Simulate creating a partial file to verify cleanup is triggered
+				pfile := filepath.Join(outDir, "partial.txt")
+				_ = os.WriteFile(pfile, []byte("partial"), 0600)
+
+				return Result{ExitCode: 2, Output: "wrong password!"}, errors.New("extract failed")
+			}
+			if calls == 2 {
+				if opts.Password != "right" {
+					t.Errorf("second attempt expected 'right', got %q", opts.Password)
+				}
+				return Result{ExitCode: 0}, nil
+			}
+			return Result{}, fmt.Errorf("unexpected call %d", calls)
+		}
+
+		isWrongPW := func(exitCode int, output string) bool {
+			return exitCode == 2 && strings.Contains(output, "wrong password")
+		}
+
+		opts := Options{Passwords: []string{"wrong", "right"}}
+		res, err := withPasswords(ctx, log, archive, outDir, opts, extract, isWrongPW, "mock")
+		if err != nil {
+			t.Fatalf("expected success, got error %v", err)
+		}
+		if calls != 2 {
+			t.Errorf("expected 2 calls, got %d", calls)
+		}
+		if res.ExitCode != 0 {
+			t.Errorf("expected ExitCode 0, got %d", res.ExitCode)
+		}
+
+		// Verify partial file was cleaned up
+		pfile := filepath.Join(outDir, "partial.txt")
+		if _, err := os.Stat(pfile); err == nil {
+			t.Error("partial.txt should have been cleaned up")
+		}
+	})
+
+	t.Run("exhaust all passwords", func(t *testing.T) {
+		calls := 0
+		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+			calls++
+			return Result{ExitCode: 2, Output: "wrong!"}, errors.New("extract failed")
+		}
+
+		isWrongPW := func(exitCode int, output string) bool {
+			return true
+		}
+
+		opts := Options{Passwords: []string{"wrong1", "wrong2"}}
+		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, isWrongPW, "mock")
+		if err != ErrWrongPassword {
+			t.Fatalf("expected ErrWrongPassword, got %v", err)
+		}
+		if calls != 2 {
+			t.Errorf("expected 2 calls, got %d", calls)
+		}
+	})
+
+	t.Run("system error aborts retry loop", func(t *testing.T) {
+		calls := 0
+		sysErr := errors.New("system error")
+		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+			calls++
+			// ExitCode = 0, Reason = FailUnknown means system error
+			return Result{ExitCode: 0, Reason: FailUnknown}, sysErr
+		}
+
+		opts := Options{Passwords: []string{"wrong1", "wrong2"}}
+		_, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
+		if err != sysErr {
+			t.Fatalf("expected system error, got %v", err)
+		}
+		if calls != 1 {
+			t.Errorf("expected 1 call (no retry on system error), got %d", calls)
+		}
+	})
 }
