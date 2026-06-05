@@ -118,3 +118,24 @@ func TestVerifiedSets_CorruptFile(t *testing.T) {
 		t.Error("corrupt file should result in no verified sets")
 	}
 }
+
+func TestVerifiedSets_LoadSave_Direct(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	vs := NewVerifiedSets(dir)
+	vs.sets["direct_test"] = true
+
+	if err := vs.save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	vs2 := &VerifiedSets{
+		sets: make(map[string]bool),
+		path: vs.path,
+	}
+	vs2.load()
+	if !vs2.sets["direct_test"] {
+		t.Error("expected load to populate direct_test")
+	}
+}
