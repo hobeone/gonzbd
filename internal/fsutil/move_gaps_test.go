@@ -117,3 +117,13 @@ func TestIsRenameMergeNeeded_Nil(t *testing.T) {
 		t.Error("nil should not need merge")
 	}
 }
+
+func TestCrossDeviceErr_Direct(t *testing.T) {
+	err := crossDeviceErr()
+	if err == nil {
+		t.Fatal("expected non-nil cross-device error")
+	}
+	if !IsCrossDeviceError(err) {
+		t.Errorf("expected IsCrossDeviceError(%v) to be true", err)
+	}
+}
