@@ -156,3 +156,47 @@ func TestExtensionCleanup_Name(t *testing.T) {
 		t.Errorf("Name() = %q, want %q", stage.Name(), "extension_cleanup")
 	}
 }
+
+func TestCleanupEmptyDirs(t *testing.T) {
+	root := t.TempDir()
+
+	emptyDir := filepath.Join(root, "empty_dir")
+	nonEmptyDir := filepath.Join(root, "non_empty_dir")
+	nestedEmpty := filepath.Join(root, "nested_empty")
+	nestedEmptySub := filepath.Join(nestedEmpty, "subdir")
+
+	if err := os.MkdirAll(emptyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(nonEmptyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(nestedEmptySub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(nonEmptyDir, "file.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupEmptyDirs(root)
+
+	if _, err := os.Stat(emptyDir); !os.IsNotExist(err) {
+		t.Errorf("expected empty_dir to be removed")
+	}
+	if _, err := os.Stat(nestedEmptySub); !os.IsNotExist(err) {
+		t.Errorf("expected nested_empty/subdir to be removed")
+	}
+	if _, err := os.Stat(nestedEmpty); !os.IsNotExist(err) {
+		t.Errorf("expected nested_empty to be removed")
+	}
+	if _, err := os.Stat(nonEmptyDir); err != nil {
+		t.Errorf("expected non_empty_dir to survive")
+	}
+	if _, err := os.Stat(filepath.Join(nonEmptyDir, "file.txt")); err != nil {
+		t.Errorf("expected non_empty_dir/file.txt to survive")
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Errorf("expected root dir to survive")
+	}
+}
