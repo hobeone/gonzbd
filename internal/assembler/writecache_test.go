@@ -476,3 +476,47 @@ func TestAssemblerWithWriteCache_ShutdownDrain(t *testing.T) {
 		t.Errorf("file content prefix = %q, want %q", data[:len(want)], want)
 	}
 }
+
+// ---------- Direct Writecache Helpers ----------
+
+func TestBuildContiguousRun_Direct(t *testing.T) {
+	t.Parallel()
+	wc := newWriteCache(1000)
+	fb := &fileBuf{
+		articles: make(map[int64][]byte),
+	}
+
+	// Case 1: Empty
+	run := wc.buildContiguousRun(fb, 100)
+	if run != nil {
+		t.Error("expected nil run for empty buffer")
+	}
+
+	// Case 2: Contiguous but below minSize
+	fb.articles[0] = []byte("short")
+	run = wc.buildContiguousRun(fb, 100)
+	if run != nil {
+		t.Error("expected nil run for run size < minSize")
+	}
+
+	// Case 3: Contiguous and >= minSize
+	fb.articles[5] = []byte("enough data to exceed threshold")
+	fb.articles[0] = []byte("hello")
+	run = wc.buildContiguousRun(fb, 20)
+	if run == nil {
+		t.Fatal("expected contiguous run")
+	}
+	if run.offset != 0 {
+		t.Errorf("offset = %d, want 0", run.offset)
+	}
+	expectedData := "helloenough data to exceed threshold"
+	if string(run.data) != expectedData {
+		t.Errorf("data = %q, want %q", run.data, expectedData)
+	}
+	if fb.writeCursor != 36 {
+		t.Errorf("writeCursor = %d, want 36", fb.writeCursor)
+	}
+	if len(fb.articles) != 0 {
+		t.Errorf("expected articles to be cleared, got %v", fb.articles)
+	}
+}
