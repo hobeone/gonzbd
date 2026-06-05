@@ -1,7 +1,14 @@
+// Command check_test_alignment reports unexported functions and methods under
+// internal/ that are never directly referenced from a test file in the same
+// package. It is a discovery aid for unit-test gaps, not a coverage oracle: a
+// reference satisfies the check regardless of how thoroughly the helper is
+// actually exercised. Use --min-complexity to triage the output toward the
+// helpers whose logic most warrants a direct test.
 package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -15,9 +22,13 @@ import (
 )
 
 func main() {
+	all := flag.Bool("all", false, "scan every non-test .go file under internal/ instead of the git diff")
+	minComplexity := flag.Int("min-complexity", 0, "only report helpers whose estimated complexity is >= this value")
+	flag.Parse()
+
 	var targetFiles []string
 
-	if len(os.Args) > 1 && os.Args[1] == "--all" {
+	if *all {
 		err := filepath.Walk("internal", func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
@@ -64,7 +75,7 @@ func main() {
 
 	hasGaps := false
 	for _, srcPath := range targetFiles {
-		if err := checkFile(srcPath, &hasGaps); err != nil {
+		if err := checkFile(srcPath, *minComplexity, &hasGaps); err != nil {
 			fmt.Fprintf(os.Stderr, "Error checking %s: %v\n", srcPath, err)
 		}
 	}
@@ -82,18 +93,31 @@ type gapEntry struct {
 	complexity int
 }
 
-func checkFile(srcPath string, hasGaps *bool) error {
+// funcInfo describes one unexported function or method declaration.
+type funcInfo struct {
+	name     string
+	decl     *ast.FuncDecl
+	isMethod bool // has a receiver — called as `recv.name(...)`, not `name(...)`
+}
+
+// testRefs records how unexported identifiers are referenced across a package's
+// test files. The two classes are kept separate so a plain function named
+// `load` is not considered "covered" merely because some unrelated test calls a
+// *method* `x.load()`, accesses a struct field `.load`, or vice versa. This is
+// the bare-name collision that a single flat identifier set silently masks.
+type testRefs struct {
+	funcRefs   map[string]bool // identifiers used outside selector position: `load`, `load(...)`, `f := load`
+	methodRefs map[string]bool // identifiers used as the selector field: `x.load`, `x.load()`
+}
+
+func checkFile(srcPath string, minComplexity int, hasGaps *bool) error {
 	fset := token.NewFileSet()
 	node, err := parser.ParseFile(fset, srcPath, nil, parser.ParseComments)
 	if err != nil {
 		return err
 	}
 
-	// Collect unexported functions with their complexity scores.
-	type funcInfo struct {
-		name string
-		decl *ast.FuncDecl
-	}
+	// Collect unexported functions and methods.
 	var unexported []funcInfo
 	for _, decl := range node.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -102,7 +126,11 @@ func checkFile(srcPath string, hasGaps *bool) error {
 		}
 		name := fn.Name.Name
 		if name != "" && unicode.IsLower(rune(name[0])) {
-			unexported = append(unexported, funcInfo{name, fn})
+			unexported = append(unexported, funcInfo{
+				name:     name,
+				decl:     fn,
+				isMethod: fn.Recv != nil,
+			})
 		}
 	}
 
@@ -117,30 +145,25 @@ func checkFile(srcPath string, hasGaps *bool) error {
 		return err
 	}
 
-	// Collect all identifiers from all test files in the package.
-	testIdents := make(map[string]bool)
-	for _, tf := range testFiles {
-		tset := token.NewFileSet()
-		tnode, err := parser.ParseFile(tset, tf, nil, 0)
-		if err != nil {
-			continue
-		}
-		ast.Inspect(tnode, func(n ast.Node) bool {
-			if ident, ok := n.(*ast.Ident); ok {
-				testIdents[ident.Name] = true
-			}
-			return true
-		})
-	}
+	refs := collectTestRefs(testFiles)
 
 	// Collect gaps and sort by complexity descending so the highest-priority
 	// functions appear first. This guides the agent (or human) toward writing
 	// tests for the most complex code before trivial one-liners.
 	var gaps []gapEntry
 	for _, fi := range unexported {
-		if !testIdents[fi.name] {
-			gaps = append(gaps, gapEntry{fi.name, funcComplexity(fi.decl)})
+		covered := refs.funcRefs[fi.name]
+		if fi.isMethod {
+			covered = refs.methodRefs[fi.name]
 		}
+		if covered {
+			continue
+		}
+		complexity := funcComplexity(fi.decl)
+		if complexity < minComplexity {
+			continue
+		}
+		gaps = append(gaps, gapEntry{fi.name, complexity})
 	}
 	if len(gaps) == 0 {
 		return nil
@@ -158,20 +181,62 @@ func checkFile(srcPath string, hasGaps *bool) error {
 	return nil
 }
 
+// collectTestRefs parses every test file and records identifier references,
+// partitioned into function-position and selector-position uses. An identifier
+// that appears as `x.Sel` is recorded only as a method reference; everything
+// else is a function reference. This requires two passes per file: the first
+// marks the *ast.Ident nodes that sit in selector position (by pointer
+// identity), the second records every other identifier as a function reference.
+func collectTestRefs(testFiles []string) testRefs {
+	refs := testRefs{
+		funcRefs:   make(map[string]bool),
+		methodRefs: make(map[string]bool),
+	}
+	for _, tf := range testFiles {
+		tset := token.NewFileSet()
+		tnode, err := parser.ParseFile(tset, tf, nil, 0)
+		if err != nil {
+			continue
+		}
+
+		selSels := make(map[*ast.Ident]bool)
+		ast.Inspect(tnode, func(n ast.Node) bool {
+			if se, ok := n.(*ast.SelectorExpr); ok {
+				selSels[se.Sel] = true
+				refs.methodRefs[se.Sel.Name] = true
+			}
+			return true
+		})
+		ast.Inspect(tnode, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && !selSels[id] {
+				refs.funcRefs[id.Name] = true
+			}
+			return true
+		})
+	}
+	return refs
+}
+
 // funcComplexity estimates the cyclomatic complexity of a function by counting
-// branching AST nodes. This is a heuristic equivalent to gocyclo's approach
-// and requires no external tools: each if/for/range/switch/select/case adds 1.
+// branching AST nodes. This is a heuristic equivalent to gocyclo's approach and
+// requires no external tools: the base is 1, each if/for/range/switch/select/
+// case adds 1, and each && / || adds 1 (a short-circuit operator is an extra
+// decision point, which gocyclo also counts).
 func funcComplexity(fn *ast.FuncDecl) int {
 	score := 1
 	if fn.Body == nil {
 		return score
 	}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch n.(type) {
+		switch x := n.(type) {
 		case *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt,
 			*ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt,
 			*ast.CaseClause, *ast.CommClause:
 			score++
+		case *ast.BinaryExpr:
+			if x.Op == token.LAND || x.Op == token.LOR {
+				score++
+			}
 		}
 		return true
 	})
