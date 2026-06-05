@@ -3,6 +3,7 @@ package dirscanner
 import (
 	"archive/zip"
 	"compress/gzip"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -274,5 +275,111 @@ func TestStore_OpenCorruptFile(t *testing.T) {
 	_, err := OpenStore(path)
 	if err == nil {
 		t.Error("expected error for corrupt JSON")
+	}
+}
+
+// ---------- Direct Decompress Helpers ----------
+
+func TestExtractPlainNZB_Direct(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.nzb")
+	content := []byte("<nzb>plain</nzb>")
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := extractPlainNZB(path)
+	if err != nil {
+		t.Fatalf("extractPlainNZB failed: %v", err)
+	}
+	if len(got) != 1 || string(got[0]) != string(content) {
+		t.Errorf("got %q, want %q", got, content)
+	}
+
+	// Exceed max size
+	largePath := filepath.Join(tmp, "large.nzb")
+	largeData := make([]byte, MaxDecompressSize+100)
+	if err := os.WriteFile(largePath, largeData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extractPlainNZB(largePath); err == nil {
+		t.Error("expected error for file exceeding MaxDecompressSize")
+	}
+}
+
+func TestExtractGZ_Direct(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.nzb.gz")
+	content := []byte("<nzb>gzip</nzb>")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := gzip.NewWriter(f)
+	if _, err := w.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	f.Close()
+
+	got, err := extractGZ(path)
+	if err != nil {
+		t.Fatalf("extractGZ failed: %v", err)
+	}
+	if len(got) != 1 || string(got[0]) != string(content) {
+		t.Errorf("got %q, want %q", got, content)
+	}
+}
+
+func TestExtractBZ2_Direct(t *testing.T) {
+	bz2Hex := "425a683931415926535967ae97bf0000011980000080051621401020003100301a1a0c9366c315acf714c2f17724538509067ae97bf0"
+	bz2Bytes, err := hex.DecodeString(bz2Hex)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.nzb.bz2")
+	if err := os.WriteFile(path, bz2Bytes, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := extractBZ2(path)
+	if err != nil {
+		t.Fatalf("extractBZ2 failed: %v", err)
+	}
+	expected := "<nzb>bzipped</nzb>"
+	if len(got) != 1 || string(got[0]) != expected {
+		t.Errorf("got %q, want %q", got, expected)
+	}
+}
+
+func TestExtractZip_Direct(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.zip")
+	content := []byte("<nzb>zipped</nzb>")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := zip.NewWriter(f)
+	fw, err := w.Create("inner.nzb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	f.Close()
+
+	got, err := extractZip(path)
+	if err != nil {
+		t.Fatalf("extractZip failed: %v", err)
+	}
+	if len(got) != 1 || string(got[0]) != string(content) {
+		t.Errorf("got %q, want %q", got, content)
 	}
 }
