@@ -690,8 +690,18 @@ func TestExtractFilename_Direct(t *testing.T) {
 		t.Errorf("extractFilename: got %q, want %q", got, "file.nzb")
 	}
 
-	// 3. Fallback to default name if URL path is empty
-	emptyURL, _ := url.Parse("http://example.com/")
+	// 3. Root path "/": filepath.Base("/") returns "/", which must fall back
+	//    to the default name. Reverting the `|| filename == "/"` guard in
+	//    extractFilename makes this case return "/.nzb" and fail.
+	rootURL, _ := url.Parse("http://example.com/")
+	if got := extractFilename(resp2, rootURL); got != "download.nzb" {
+		t.Errorf("extractFilename root path: got %q, want %q", got, "download.nzb")
+	}
+
+	// 4. Genuinely empty path: filepath.Base("") returns ".", the other
+	//    fallback branch. url.Parse always yields Path "/" for a bare host,
+	//    so construct the empty-path URL directly.
+	emptyURL := &url.URL{Scheme: "http", Host: "example.com"}
 	if got := extractFilename(resp2, emptyURL); got != "download.nzb" {
 		t.Errorf("extractFilename empty path: got %q, want %q", got, "download.nzb")
 	}
