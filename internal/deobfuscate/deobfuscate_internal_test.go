@@ -141,3 +141,28 @@ func TestHasCollisionSuffixDirect(t *testing.T) {
 		})
 	}
 }
+
+func TestContainsIgnoredMovieFolderDirect(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Initially empty directory should return false.
+	if containsIgnoredMovieFolder(tmpDir) {
+		t.Error("expected false for empty directory")
+	}
+
+	// Non-ignored directory should return false.
+	if err := os.Mkdir(filepath.Join(tmpDir, "some_folder"), 0o755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+	if containsIgnoredMovieFolder(tmpDir) {
+		t.Error("expected false for non-ignored folder")
+	}
+
+	// Ignored folder (e.g. BDMV, case-insensitively) should return true.
+	if err := os.Mkdir(filepath.Join(tmpDir, "bdmv"), 0o755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+	if !containsIgnoredMovieFolder(tmpDir) {
+		t.Error("expected true when bdmv folder exists")
+	}
+}
