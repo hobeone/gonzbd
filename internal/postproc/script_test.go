@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -410,4 +411,66 @@ func TestLastNonEmptyLineDirect(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestScriptHelperFunctionsDirect(t *testing.T) {
+	t.Parallel()
+
+	t.Run("buildArgv", func(t *testing.T) {
+		in := ScriptInput{
+			CompleteDir: "/fake/complete",
+			NZBName:     "my.nzb",
+			JobName:     "job-name",
+			ReportName:  "report-name",
+			Category:    "cat",
+			Group:       "group",
+			Status:      1,
+			FailureURL:  "https://example.com/fail",
+		}
+		got := buildArgv(in)
+		want := []string{
+			"/fake/complete",
+			"my.nzb",
+			"job-name",
+			"report-name",
+			"cat",
+			"group",
+			"1",
+			"https://example.com/fail",
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("buildArgv = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("buildEnv", func(t *testing.T) {
+		in := ScriptInput{
+			Bytes:   1234,
+			NZBName: "test.nzb",
+		}
+		env := buildEnv(in)
+		hasPath := false
+		hasBytes := false
+		hasFilename := false
+		for _, pair := range env {
+			if strings.HasPrefix(pair, "PATH=") {
+				hasPath = true
+			}
+			if pair == "SAB_BYTES=1234" {
+				hasBytes = true
+			}
+			if pair == "SAB_FILENAME=test.nzb" {
+				hasFilename = true
+			}
+		}
+		if !hasPath && len(os.Environ()) > 0 {
+			t.Error("expected PATH env var inherited from parent process env")
+		}
+		if !hasBytes {
+			t.Error("expected SAB_BYTES=1234 in env")
+		}
+		if !hasFilename {
+			t.Error("expected SAB_FILENAME=test.nzb in env")
+		}
+	})
 }
