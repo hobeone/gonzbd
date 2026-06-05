@@ -431,8 +431,8 @@ func TestMarkArticleFailed_ParityWithBatched(t *testing.T) {
 	ft, err2 := q2.MarkArticlesFailed(jid2, []string{mid2})
 	first2 := len(ft) > 0
 
-	if err1 != err2 {
-		t.Errorf("error mismatch: singular=%v batched=%v", err1, err2)
+	if err1 != nil || err2 != nil {
+		t.Errorf("expected both forms to succeed: singular=%v batched=%v", err1, err2)
 	}
 	if first1 != first2 {
 		t.Errorf("first-time flag mismatch: singular=%v batched=%v", first1, first2)
