@@ -201,3 +201,110 @@ func TestExtractRARUsefulNameDirect(t *testing.T) {
 		t.Errorf("extractRARUsefulName(sample.rar) = %q, want 'sample'", got)
 	}
 }
+
+// ---------- Direct Content Equal Helpers ----------
+
+func TestContentEqualAndStreamEqual_Direct(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+
+	// 1. Files with different sizes
+	f1 := filepath.Join(tmp, "f1.txt")
+	f2 := filepath.Join(tmp, "f2.txt")
+	if err := os.WriteFile(f1, []byte("short"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f2, []byte("longer file content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	equal, err := contentEqual(f1, f2, [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equal {
+		t.Error("expected false for different sizes")
+	}
+
+	// 2. Small files (<=16KB), identical content
+	f3 := filepath.Join(tmp, "f3.txt")
+	content3 := []byte("hello world small file")
+	if err := os.WriteFile(f3, content3, 0644); err != nil {
+		t.Fatal(err)
+	}
+	hash3 := md5.Sum(content3)
+
+	equal, err = contentEqual(f3, f3, hash3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equal {
+		t.Error("expected true for identical small files")
+	}
+
+	// 3. Small files (<=16KB), different hashes
+	equal, err = contentEqual(f3, f1, hash3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equal {
+		t.Error("expected false for different small files")
+	}
+
+	// 4. Large files (>16KB), identical content
+	largeContent := make([]byte, 40*1024)
+	for i := range largeContent {
+		largeContent[i] = byte(i % 256)
+	}
+	f4 := filepath.Join(tmp, "f4.txt")
+	f5 := filepath.Join(tmp, "f5.txt")
+	if err := os.WriteFile(f4, largeContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f5, largeContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	hash4 := md5.Sum(largeContent[:16384])
+
+	equal, err = contentEqual(f4, f5, hash4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equal {
+		t.Error("expected true for identical large files")
+	}
+
+	// 5. Large files, different content in the middle (after 16KB)
+	largeContentDiff := make([]byte, len(largeContent))
+	copy(largeContentDiff, largeContent)
+	largeContentDiff[30*1024] = 99
+	f6 := filepath.Join(tmp, "f6.txt")
+	if err := os.WriteFile(f6, largeContentDiff, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	equal, err = contentEqual(f4, f6, hash4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equal {
+		t.Error("expected false for large files with different content in the streaming section")
+	}
+
+	// Test streamEqual directly
+	equal, err = streamEqual(f4, f5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equal {
+		t.Error("streamEqual expected true")
+	}
+
+	equal, err = streamEqual(f4, f6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equal {
+		t.Error("streamEqual expected false")
+	}
+}
