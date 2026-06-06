@@ -202,7 +202,11 @@ func TestPauseResume(t *testing.T) {
 		p.q.Push(&Job{Queue: &queue.Job{ID: "j" + string(rune('0'+i)), Name: "j" + string(rune('0'+i))}})
 	}
 
-	// Give the worker a moment to confirm it is not processing.
+	// Negative-observation window. There is no deterministic signal for "the
+	// worker has reached its paused-wait", so we allow a bounded window and
+	// confirm no stage ran. This is intentionally a sleep, NOT a synchronization
+	// wait: the positive guarantee (paused jobs DO run after Resume) is asserted
+	// deterministically below via wg.Wait + CallCount == 3.
 	time.Sleep(30 * time.Millisecond)
 	if stage.CallCount() > 0 {
 		t.Errorf("stage called %d times while paused, want 0", stage.CallCount())
@@ -541,19 +545,17 @@ func TestNoGoroutineLeak(t *testing.T) {
 	if err := p.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	// Give the worker goroutine time to start.
-	time.Sleep(20 * time.Millisecond)
+	// Wait for the worker goroutine to actually start, so there is something to
+	// reap (otherwise the leak check would pass trivially).
+	waitUntil(t, func() bool { return runtime.NumGoroutine() > before }, 2*time.Second, "worker goroutine to start")
 
 	if err := p.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	// Give the runtime time to reclaim the goroutine stack.
-	time.Sleep(20 * time.Millisecond)
-
-	after := runtime.NumGoroutine()
-	if after > before {
-		t.Errorf("goroutine leak: %d goroutines before, %d after", before, after)
-	}
+	// Goroutine teardown after Stop is asynchronous; poll until the count
+	// returns to baseline rather than sleeping a fixed amount.
+	waitUntil(t, func() bool { return runtime.NumGoroutine() <= before }, 2*time.Second,
+		"goroutines to return to baseline after Stop")
 }
 
 // ---------------------------------------------------------------------------
@@ -613,7 +615,7 @@ func TestPPQueuePopCancelledCtx(t *testing.T) {
 
 func TestEmptyMethod(t *testing.T) {
 	p := startProcessor(t, Options{})
-	time.Sleep(20 * time.Millisecond)
+	waitUntil(t, p.Empty, 2*time.Second, "processor to be idle")
 	if !p.Empty() {
 		t.Error("Empty() = false on idle processor")
 	}
