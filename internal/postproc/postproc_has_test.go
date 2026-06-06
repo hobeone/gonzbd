@@ -55,7 +55,6 @@ func TestHas_QueuedJob(t *testing.T) {
 
 func TestHas_NotPresent(t *testing.T) {
 	p := startProcessor(t, Options{})
-	time.Sleep(10 * time.Millisecond)
 	if p.Has("nonexistent") {
 		t.Error("Has('nonexistent') = true for non-existent job")
 	}
@@ -163,7 +162,14 @@ func TestOnEmpty_CalledWhenQueueDrains(t *testing.T) {
 
 	p.Process(makeJob(t, "j1"))
 	wg.Wait()
-	time.Sleep(20 * time.Millisecond)
+	// OnEmpty fires in the worker AFTER onJobDone, so wg.Wait (which covers
+	// onJobDone) does not cover it. Poll instead of sleeping. With no further
+	// jobs the count cannot exceed 1.
+	waitUntil(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return emptyCalls >= 1
+	}, 2*time.Second, "OnEmpty to fire")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -195,7 +201,11 @@ func TestOnEmpty_NotCalledWhenMoreJobs(t *testing.T) {
 	p.Process(makeJob(t, "j2"))
 	close(block)
 	wg.Wait()
-	time.Sleep(20 * time.Millisecond)
+	waitUntil(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return emptyCalls >= 1
+	}, 2*time.Second, "OnEmpty to fire")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -246,7 +256,6 @@ func TestHistory_CapMaxEntries(t *testing.T) {
 
 func TestPauseWhileIdle(t *testing.T) {
 	p := startProcessor(t, Options{Stages: []Stage{newRecordStage("s")}})
-	time.Sleep(10 * time.Millisecond)
 
 	p.Pause()
 	// Double pause is safe.
@@ -266,7 +275,6 @@ func TestPauseWhileIdle(t *testing.T) {
 	})
 	p2.Pause()
 	p2.Process(makeJob(t, "after-pause"))
-	time.Sleep(30 * time.Millisecond)
 	p2.Resume()
 	wg.Wait()
 }
@@ -276,9 +284,7 @@ func TestPauseWhileIdle(t *testing.T) {
 func TestStopWhilePaused(t *testing.T) {
 	p := New(Options{Stages: []Stage{newRecordStage("s")}})
 	_ = p.Start(t.Context())
-	time.Sleep(10 * time.Millisecond)
 	p.Pause()
-	time.Sleep(10 * time.Millisecond)
 
 	done := make(chan struct{})
 	go func() {
@@ -305,7 +311,6 @@ func TestProcessJob_ContextCancelled(t *testing.T) {
 
 	// Cancel the context before the first stage runs.
 	cancel()
-	time.Sleep(20 * time.Millisecond)
 
 	p.wg.Wait()
 
