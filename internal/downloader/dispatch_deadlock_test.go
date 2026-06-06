@@ -48,8 +48,11 @@ func TestDispatchPass_ExhaustedEmitsDoNotBlockQueueWriters(t *testing.T) {
 		t.Fatalf("no completion received; downloader may be stuck")
 	}
 
-	// Give the dispatcher a moment to fill the buffer again and attempt
-	// further exhausted emits (which now block).
+	// Race-reproduction window (intentional, NOT a synchronization sleep):
+	// give the dispatcher time to refill the cap-1 completions buffer and block
+	// on the next exhausted emit while holding the queue RLock. The assertion
+	// below is guarded by its own 2s timeout, so an over/under-sized window
+	// cannot cause a false failure — only a narrower reproduction window.
 	time.Sleep(200 * time.Millisecond)
 
 	// A queue writer must make progress even while the dispatcher is
