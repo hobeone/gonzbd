@@ -172,9 +172,14 @@ func TestCancelJob_AfterStopReturnsError(t *testing.T) {
 func TestCancelJob_ContextCancel(t *testing.T) {
 	// Create an assembler where the worker is blocked.
 	blockCh := make(chan struct{})
+	entered := make(chan struct{}, 1)
 	opts := Options{
 		QueueSize: 1,
 		FileInfo: func(_ string, _ int) (FileInfo, error) {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
 			<-blockCh
 			return FileInfo{}, fmt.Errorf("blocked")
 		},
@@ -192,7 +197,9 @@ func TestCancelJob_ContextCancel(t *testing.T) {
 			JobID: "block", FileIdx: 0, Data: []byte("x"),
 		})
 	}()
-	time.Sleep(5 * time.Millisecond)
+	// Deterministically wait until the worker has dequeued the request and
+	// entered FileInfo (queue now drained), instead of sleeping.
+	<-entered
 
 	// Fill the queue (cap 1).
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)

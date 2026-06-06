@@ -17,6 +17,19 @@ import (
 	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
+// waitUntil polls cond every 5ms until it returns true or the deadline passes.
+func waitUntil(t *testing.T, cond func() bool, deadline time.Duration, msg string) {
+	t.Helper()
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for: %s", msg)
+}
+
 // helper: build Options with a simple in-memory FileInfo resolver.
 func makeOpts(dir string, files map[string]FileInfo) Options {
 	return Options{
@@ -294,14 +307,10 @@ func TestStopDrainsChannel(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	// After Stop the worker must have exited. Allow a brief settling period for
-	// goroutines that are in the process of unwinding.
-	time.Sleep(10 * time.Millisecond)
-	goroutinesAfter := runtime.NumGoroutine()
-	if goroutinesAfter > goroutinesBefore {
-		t.Errorf("goroutine count increased after Stop: before=%d after=%d",
-			goroutinesBefore, goroutinesAfter)
-	}
+	// After Stop the worker must have exited. Teardown is asynchronous, so poll
+	// until the goroutine count settles rather than sleeping a fixed amount.
+	waitUntil(t, func() bool { return runtime.NumGoroutine() <= goroutinesBefore }, 2*time.Second,
+		"goroutine count to settle after Stop")
 
 	// The file must have been created (some writes landed).
 	if _, err := os.Stat(path); err != nil {
@@ -388,10 +397,16 @@ func TestContextCancelDuringWriteArticleSend(t *testing.T) {
 	// The most reliable approach: use a FileInfo that blocks until we signal.
 	blockWorker := make(chan struct{})
 	unblockWorker := make(chan struct{})
+	entered := make(chan struct{}, 1)
 	opts2 := Options{
 		QueueSize: 1,
 		FileInfo: func(_ string, _ int) (FileInfo, error) {
-			// Block the worker on the first call until we signal.
+			// Signal that the worker has dequeued the request and entered
+			// FileInfo (queue now drained), then block until released.
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
 			<-blockWorker
 			<-unblockWorker
 			return FileInfo{}, fmt.Errorf("intentional error to discard")
@@ -408,9 +423,11 @@ func TestContextCancelDuringWriteArticleSend(t *testing.T) {
 		_ = a2.WriteArticle(t.Context(), WriteRequest{JobID: "j", FileIdx: 0, Offset: 0, Data: []byte("x")})
 	}()
 
-	// Wait for the worker to enter FileInfo (channel drained, worker blocked).
+	// Deterministically wait until the worker has dequeued the request and
+	// entered FileInfo (so the queue is drained); it cannot dequeue another
+	// request until FileInfo returns.
+	<-entered
 	close(blockWorker)
-	time.Sleep(5 * time.Millisecond)
 
 	// Now the queue is empty but the worker is blocked in FileInfo.
 	// Fill the queue (cap 1) with another request.
