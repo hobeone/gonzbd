@@ -18,8 +18,8 @@ func TestStart_DoubleCallReturnsError(t *testing.T) {
 		t.Fatalf("first Start: %v", err)
 	}
 
-	// Give the worker goroutine time to spin up.
-	time.Sleep(20 * time.Millisecond)
+	// Wait for the worker goroutine to spin up before measuring.
+	waitUntil(t, func() bool { return runtime.NumGoroutine() > before }, 2*time.Second, "worker goroutine to start")
 	afterFirst := runtime.NumGoroutine()
 
 	// Second call must fail.
@@ -31,8 +31,8 @@ func TestStart_DoubleCallReturnsError(t *testing.T) {
 		t.Errorf("error = %v, want ErrAlreadyStarted", err)
 	}
 
-	// Verify no extra goroutine was spawned.
-	time.Sleep(20 * time.Millisecond)
+	// The failed second Start returns synchronously and spawns nothing, so the
+	// goroutine count can be checked immediately without waiting.
 	afterSecond := runtime.NumGoroutine()
 	if afterSecond > afterFirst {
 		t.Errorf("goroutine leak: %d after first Start, %d after second Start",
@@ -44,11 +44,10 @@ func TestStart_DoubleCallReturnsError(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	time.Sleep(20 * time.Millisecond)
-	afterStop := runtime.NumGoroutine()
-	if afterStop > before+1 { // allow some slack for test runtime goroutines
-		t.Errorf("goroutine leak after Stop: %d before, %d after", before, afterStop)
-	}
+	// Goroutine teardown after Stop is asynchronous; poll until the count
+	// settles rather than sleeping. +1 slack for test runtime goroutines.
+	waitUntil(t, func() bool { return runtime.NumGoroutine() <= before+1 }, 2*time.Second,
+		"goroutines to settle after Stop")
 }
 
 // TestStart_ProcessesJobsAfterGuard verifies that the started guard does not
