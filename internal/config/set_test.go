@@ -246,17 +246,6 @@ func TestConfig_Set(t *testing.T) {
 	}
 }
 
-func TestConfig_SetSSLVerify(t *testing.T) {
-	cfg, _ := Default()
-	cfg.Servers = []ServerConfig{{Name: "test"}}
-
-	// Note: Set currently doesn't support setting fields inside slice elements
-	// by index/keyword via (section, keyword, value). It only supports
-	// flat sections or the entire slice via JSON.
-	// But let's verify if we can set it if it was a flat field (it's not currently,
-	// but we added support in setFieldValue).
-}
-
 // TestConfig_SetValidationRollback verifies that Set rejects changes
 // that would make the config invalid and rolls back to the previous value.
 func TestConfig_SetValidationRollback(t *testing.T) {
