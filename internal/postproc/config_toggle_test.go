@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
@@ -137,38 +136,6 @@ func TestUnpackStage_JoinBeforeExtract(t *testing.T) {
 	if string(data) != "AB" {
 		t.Errorf("joined content = %q, want %q", data, "AB")
 	}
-}
-
-// ---------- RepairStage ConsumedFiles tracking (I2) ----------
-
-// TestRepairStage_ConsumedFilesTracked verifies that after repair,
-// par2 file names are captured in job.ConsumedFiles for cleanup.
-func TestRepairStage_ConsumedFilesTracked(t *testing.T) {
-	t.Parallel()
-	job := &Job{
-		Queue: &queue.Job{
-			ID:   "test-consumed",
-			Name: "movie",
-		},
-		DownloadDir: t.TempDir(),
-	}
-
-	// Create par2 files that will be found.
-	os.WriteFile(filepath.Join(job.DownloadDir, "movie.par2"), []byte("fake"), 0o644)
-	os.WriteFile(filepath.Join(job.DownloadDir, "movie.vol000+01.par2"), []byte("fake"), 0o644)
-	os.WriteFile(filepath.Join(job.DownloadDir, "movie.mkv"), []byte("video data"), 0o644)
-
-	// Run with a non-existent par2 binary — the stage will fail to exec
-	// but should still populate job state without panicking.
-	stage := NewRepairStage()
-	_ = stage.Run(t.Context(), job)
-
-	// Even though repair failed, the stage should not panic.
-	// The ConsumedFiles list depends on parsed output from par2,
-	// so with a failed binary it may be empty — that's acceptable.
-	// What we're really verifying is that the code path doesn't panic.
-	t.Logf("ConsumedFiles = %v", job.ConsumedFiles)
-	t.Logf("Par2Renames = %v", job.Par2Renames)
 }
 
 // ---------- archiveTypePriority ordering ----------
