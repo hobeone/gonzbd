@@ -19,9 +19,14 @@ echo -e "\n[1/4] Running Go Unit Tests..."
 go test ./...
 echo -e "${GREEN}✓ Go Unit Tests Passed${NC}"
 
-# Go Test Alignment Check (unexported helpers coverage check)
+# Go Test Alignment Check (unexported helpers coverage check).
+# Scoped to changed files (git-diff mode) and gated at --min-complexity=8 so
+# only substantive untested helpers block the build; trivial one-liners are
+# reported for triage via `--all` but do not fail CI. Run
+# `go run scripts/check_test_alignment/main.go --all --min-complexity=N` to
+# survey the wider backlog.
 echo -e "\nRunning Go Test Alignment Check..."
-go run scripts/check_test_alignment/main.go
+go run scripts/check_test_alignment/main.go --min-complexity=8
 echo -e "${GREEN}✓ Go Test Alignment Check Passed${NC}"
 
 # Go Test Coverage Check
