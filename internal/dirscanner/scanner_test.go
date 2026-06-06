@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -279,15 +280,104 @@ func TestDecompressGZ(t *testing.T) {
 }
 
 func TestDecompressBZ2(t *testing.T) {
-	t.Log("BZ2 decompression is read-only in stdlib; tested via integration")
+	tmpDir := t.TempDir()
+	// stdlib compress/bzip2 is decompress-only, so the compressed bytes are
+	// embedded as a fixture (a real `bzip2 -9` stream) rather than produced at
+	// test time. Decompresses to `<?xml version="1.0" ?>`.
+	bz2Data := []byte{66, 90, 104, 57, 49, 65, 89, 38, 83, 89, 7, 88, 122, 103, 0, 0, 3, 153, 128, 80, 1, 96, 7, 130, 39, 153, 64, 32, 0, 49, 76, 152, 153, 6, 70, 20, 209, 166, 141, 168, 15, 72, 153, 91, 179, 91, 27, 14, 9, 236, 18, 97, 199, 197, 220, 145, 78, 20, 36, 1, 214, 30, 153, 192}
+	want := []byte(`<?xml version="1.0" ?>`)
+
+	bz2Path := filepath.Join(tmpDir, "test.nzb.bz2")
+	if err := os.WriteFile(bz2Path, bz2Data, 0o644); err != nil {
+		t.Fatalf("write bz2 file: %v", err)
+	}
+
+	nzbs, err := ExtractNZBs(bz2Path)
+	if err != nil {
+		t.Fatalf("ExtractNZBs: %v", err)
+	}
+	if len(nzbs) != 1 {
+		t.Fatalf("expected 1 NZB, got %d", len(nzbs))
+	}
+	if !bytes.Equal(nzbs[0], want) {
+		t.Errorf("decompressed content = %q, want %q", nzbs[0], want)
+	}
 }
 
 func TestDecompressZip(t *testing.T) {
-	// This test is simplified since we cannot easily create zip files in a
-	// portable manner without additional dependencies. The real implementation
-	// is tested via integration or by creating temporary zip files manually.
-	// For unit test purposes, we verify that ZIP extraction is handled.
-	t.Log("ZIP decompression tested via integration")
+	tmpDir := t.TempDir()
+	nzbA := []byte(`<?xml version="1.0" ?><nzb>A</nzb>`)
+	nzbB := []byte(`<?xml version="1.0" ?><nzb>B</nzb>`)
+
+	zipPath := filepath.Join(tmpDir, "test.zip")
+	file, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("create zip file: %v", err)
+	}
+	defer file.Close()
+
+	zw := zip.NewWriter(file)
+	writeMember := func(name string, content []byte) {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("zip.Create(%s): %v", name, err)
+		}
+		if _, err := w.Write(content); err != nil {
+			t.Fatalf("write zip member %s: %v", name, err)
+		}
+	}
+	// extractZip iterates members in archive order and skips non-.nzb files,
+	// so the readme between the two NZBs must not shift the result order.
+	writeMember("first.nzb", nzbA)
+	writeMember("readme.txt", []byte("ignore me"))
+	writeMember("second.nzb", nzbB)
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+
+	nzbs, err := ExtractNZBs(zipPath)
+	if err != nil {
+		t.Fatalf("ExtractNZBs: %v", err)
+	}
+	if len(nzbs) != 2 {
+		t.Fatalf("expected 2 NZBs (readme.txt skipped), got %d", len(nzbs))
+	}
+	if !bytes.Equal(nzbs[0], nzbA) {
+		t.Errorf("nzbs[0] = %q, want %q", nzbs[0], nzbA)
+	}
+	if !bytes.Equal(nzbs[1], nzbB) {
+		t.Errorf("nzbs[1] = %q, want %q", nzbs[1], nzbB)
+	}
+}
+
+func TestDecompressZip_NoNZBFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	zipPath := filepath.Join(tmpDir, "empty.zip")
+	file, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("create zip file: %v", err)
+	}
+	defer file.Close()
+
+	zw := zip.NewWriter(file)
+	w, err := zw.Create("readme.txt")
+	if err != nil {
+		t.Fatalf("zip.Create: %v", err)
+	}
+	if _, err := w.Write([]byte("no nzb here")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+
+	_, err = ExtractNZBs(zipPath)
+	if err == nil {
+		t.Fatal("expected error for zip with no .nzb members, got nil")
+	}
+	if !strings.Contains(err.Error(), "no .nzb files") {
+		t.Errorf("error = %q, want it to mention 'no .nzb files'", err.Error())
+	}
 }
 
 func TestDotfilesSkipped(t *testing.T) {
