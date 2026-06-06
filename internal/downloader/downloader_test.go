@@ -49,6 +49,13 @@ type mockNNTP struct {
 	// dispatcher does not speculatively fan out to other servers.
 	bodyDelay time.Duration
 
+	// bodyGate, when non-nil, replaces bodyDelay with a deterministic gate:
+	// the BODY handler sends the requested msgID on bodyEntered and then
+	// blocks until bodyGate is closed. Lets a test observe the "request in
+	// flight" window without racing a fixed duration.
+	bodyGate    chan struct{}
+	bodyEntered chan string
+
 	// stats
 	dials      atomic.Int64
 	fetches    atomic.Int64
@@ -73,6 +80,16 @@ func withAuth(user, pass string) mockOption {
 
 func withBodyDelay(d time.Duration) mockOption {
 	return func(m *mockNNTP) { m.bodyDelay = d }
+}
+
+// withBodyGate makes the BODY handler signal arrival on bodyEntered and block
+// until bodyGate is closed. Deterministic replacement for withBodyDelay when a
+// test needs to observe the in-flight window rather than race a fixed duration.
+func withBodyGate() mockOption {
+	return func(m *mockNNTP) {
+		m.bodyGate = make(chan struct{})
+		m.bodyEntered = make(chan string, 16)
+	}
 }
 
 func newMockNNTP(t *testing.T, opts ...mockOption) *mockNNTP {
@@ -168,7 +185,10 @@ func (ms *mockNNTP) handleConn(c net.Conn) {
 			body, hasBody := ms.bodies[id]
 			rejected := ms.reject[id]
 			ms.bodiesMu.Unlock()
-			if ms.bodyDelay > 0 {
+			if ms.bodyGate != nil {
+				ms.bodyEntered <- id
+				<-ms.bodyGate
+			} else if ms.bodyDelay > 0 {
 				time.Sleep(ms.bodyDelay)
 			}
 			if rejected || !hasBody {
@@ -454,7 +474,7 @@ func TestDownloaderFallbackServer(t *testing.T) {
 // still sleeping. If it is sequential (correct), backup sees no
 // requests until primary has rejected.
 func TestDownloaderNoSpeculativeFallback(t *testing.T) {
-	primary := newMockNNTP(t, withBodyDelay(200*time.Millisecond))
+	primary := newMockNNTP(t, withBodyGate())
 	primary.rejectArticle("a@h")
 
 	backup := newMockNNTP(t)
@@ -471,8 +491,15 @@ func TestDownloaderNoSpeculativeFallback(t *testing.T) {
 	}
 	defer func() { _ = d.Stop() }()
 
-	// 100 ms into primary's 200 ms delay: backup must be untouched.
-	time.Sleep(100 * time.Millisecond)
+	// Block until primary has actually received the BODY request and is held
+	// mid-fetch. At this point a non-speculative dispatcher is committed to
+	// primary and must not have touched backup — checked deterministically,
+	// with no reliance on wall-clock timing.
+	select {
+	case <-primary.bodyEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("primary never received the BODY request")
+	}
 	if got := backup.dials.Load(); got != 0 {
 		t.Fatalf("backup was dialed while primary in-flight: %d dials", got)
 	}
@@ -480,7 +507,8 @@ func TestDownloaderNoSpeculativeFallback(t *testing.T) {
 		t.Fatalf("backup fetched while primary in-flight: %d fetches", got)
 	}
 
-	// Let primary finish and backup take over.
+	// Release primary; it returns 430 for a@h and backup takes over.
+	close(primary.bodyGate)
 	results := collect(t, d.Completions(), 2, 5*time.Second)
 
 	var saw430, sawSuccess bool
@@ -579,7 +607,10 @@ func TestDownloaderPerJobPauseResume(t *testing.T) {
 		t.Fatalf("Pause: %v", err)
 	}
 
-	// Drain any results that were in-flight during the pause.
+	// Settle window for articles already in flight when the pause landed (with
+	// Connections=1 there is at most one). Intentional bounded wait for
+	// stragglers to drain, NOT a synchronization sleep: the test adapts to
+	// however many actually completed via the count below.
 	time.Sleep(300 * time.Millisecond)
 	for {
 		select {
@@ -704,16 +735,26 @@ func TestDownloaderGracefulShutdown(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Drain some results then Stop mid-stream.
+	// Drain results in the background; signal once the first one arrives so we
+	// Stop deterministically mid-stream rather than after a fixed sleep.
 	drained := make(chan struct{})
+	firstResult := make(chan struct{})
 	go func() {
 		defer close(drained)
+		first := true
 		for range d.Completions() {
-			// Consume until Stop closes the channel.
+			if first {
+				close(firstResult)
+				first = false
+			}
 		}
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-firstResult:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no completion received before Stop")
+	}
 	if err := d.Stop(); err != nil {
 		t.Errorf("Stop: %v", err)
 	}
@@ -762,8 +803,9 @@ func TestDownloaderNewAcceptsEmptyServers(t *testing.T) {
 		t.Fatalf("Start with no servers: %v", err)
 	}
 	// Add work — nothing should be dispatched since there are no servers.
+	// Nothing to wait for: with no servers the dispatcher has no work path,
+	// so Stop can be called immediately.
 	_ = q.Add(makeJobWithArticles(t, []string{"a@h"}))
-	time.Sleep(100 * time.Millisecond)
 	if err := d.Stop(); err != nil {
 		t.Errorf("Stop: %v", err)
 	}
