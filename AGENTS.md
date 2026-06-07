@@ -95,7 +95,9 @@ golangci-lint run ./...                                     # Linting
 Each logical change is a self-contained unit of work. The workflow is:
 
 1. **Read** the relevant spec/architecture sections.
-2. **Implement** the change.
+2. **Implement** the change. For a bug fix, write the failing test *first* and
+   confirm it fails on the unpatched code before applying the fix (see Testing
+   Standards § Red-Green Discipline).
 3. **Verify** all quality gates pass (see below).
 4. **Commit** with a Conventional Commits message. Mention the plan step in the
    body if useful context.
@@ -272,6 +274,43 @@ When evaluating a new library:
 - **Integration tests** under `test/integration/` with `//go:build integration` tag.
 - **Mocks/fakes** preferred over interface mocking frameworks. Hand-rolled fakes are clearer than `gomock`-generated ones for small interfaces.
 - **Coverage target**: 80%+ for `internal/` packages. Don't chase coverage for trivial code paths.
+
+### Red-Green Discipline (write the failing test first)
+
+**Every bug fix and every regression test MUST be proven to fail on the
+unpatched code before the fix lands.** A test that already passes against the
+buggy code does not test the fix — it is a change-detector that will silently
+let the bug return. This has happened here repeatedly: tests named for a fix
+that still passed with the fix reverted (a `"1.0 TiB"` case that never reached
+the panicking branch; a `download.nzb` fallback case that never exercised the
+fixed `/` path). A passing test is not evidence until you have seen it fail for
+the right reason.
+
+The required order for any fix:
+
+1. **Write the test first**, encoding the *correct* expected behavior (not the
+   current output — assert what the code *should* do, with an independent oracle
+   where possible).
+2. **Run it against the unfixed code and watch it FAIL.** For a pre-existing
+   bug, write the test before touching the code. For a regression guard added
+   alongside a fix, stash or revert the fix (e.g. the one-line change) and
+   confirm the test goes red. Read the failure message — it must fail because of
+   the bug, not a typo or wrong setup.
+3. **Apply the fix**, confirm the test now passes, and confirm the rest of the
+   suite stays green.
+
+**The cheap pre-commit check for any `fix:` + `test:` pair:** mentally (or
+actually) revert the fix and confirm the new test fails. If it still passes, the
+test is exercising the wrong branch or input — fix the *test*, not just the
+code. The fix and its test belong in the same change so this is verifiable.
+
+**For de-flaking concurrency/timing tests**, the analogous proof is
+`go test -race -count=N` (N ≥ 50, ideally also under `GOMAXPROCS=1`): a single
+green run does not prove a flaky test is fixed, because a flaky test passes most
+of the time by definition. Replace synchronization `time.Sleep` calls with a
+deterministic signal (channel, `sync.WaitGroup`, or a poll-until-condition
+helper); leave only genuine timing windows (mock latency, negative-observation
+windows) and document each as intentional.
 
 ## Git Conventions
 
