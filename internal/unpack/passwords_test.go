@@ -296,3 +296,40 @@ func TestWithPasswords_Mocked(t *testing.T) {
 		}
 	})
 }
+
+// TestWithPasswords_GoNativeWrongPasswordRetries is the red-green guard for the
+// C3 fix (b84d74a). A Go-native extractor signals a wrong password with
+// ExitCode==0, Reason==FailWrongPassword, AND a non-nil error. The system-error
+// early-return must NOT fire for that shape (it is an extraction failure, not a
+// failure to start the process), so withPasswords must retry the next password.
+// Before the fix (the guard lacked `&& res.Reason == FailUnknown`), the first
+// wrong password was returned as a system error and the correct one was never
+// tried — this test fails on that reverted code.
+func TestWithPasswords_GoNativeWrongPasswordRetries(t *testing.T) {
+	ctx := context.Background()
+	log := slog.Default()
+	archive := Archive{MainFile: "test.7z"}
+	outDir := t.TempDir()
+
+	calls := 0
+	extract := func(_ context.Context, _ *slog.Logger, _ Archive, _ string, opts Options) (Result, error) {
+		calls++
+		if opts.Password == "correct" {
+			return Result{ExitCode: 0, ExtractedFiles: []string{"file.txt"}}, nil
+		}
+		// Go-native extractor shape: ExitCode 0 + classified Reason + non-nil err.
+		return Result{ExitCode: 0, Reason: FailWrongPassword}, errors.New("wrong password")
+	}
+
+	opts := Options{Passwords: []string{"wrong", "correct"}}
+	res, err := withPasswords(ctx, log, archive, outDir, opts, extract, nil, "mock")
+	if err != nil {
+		t.Fatalf("expected retry to succeed with the correct password, got error: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("expected 2 attempts (retry past wrong password), got %d", calls)
+	}
+	if len(res.ExtractedFiles) != 1 {
+		t.Errorf("expected extracted files from the successful attempt, got %v", res.ExtractedFiles)
+	}
+}
