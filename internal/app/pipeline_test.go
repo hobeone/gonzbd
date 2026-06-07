@@ -46,6 +46,14 @@ func TestIsRetryableDownloaderError(t *testing.T) {
 		{"wrapped ErrNoArticle", errors.Join(errors.New("outer"), nntp.ErrNoArticle), true},
 		{"wrapped net.OpError", errors.Join(errors.New("outer"),
 			&net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}), true},
+		// Discriminating cases for the d48db10 fix: network/timeout errors whose
+		// message contains NONE of the legacy string markers ("dial:",
+		// "connection", "i/o timeout"). They are retryable only via the
+		// type-based checks; the old string-matching code missed them, so these
+		// cases fail if the fix is reverted.
+		{"net.OpError opaque message", &net.OpError{Op: "read", Net: "tcp",
+			Err: errors.New("socket failure")}, true},
+		{"timeout error opaque message", &opaqueTimeoutError{}, true},
 		// Terminal errors — NOT retryable.
 		{"ErrAuthRejected", nntp.ErrAuthRejected, false},
 		{"generic error", errors.New("some internal error"), false},
@@ -68,3 +76,11 @@ type testTimeoutError struct{}
 func (e *testTimeoutError) Error() string   { return "i/o timeout" }
 func (e *testTimeoutError) Timeout() bool   { return true }
 func (e *testTimeoutError) Temporary() bool { return true }
+
+// opaqueTimeoutError implements the Timeout() bool interface but its message
+// does NOT contain "i/o timeout" — so only the type-based check (not the legacy
+// string-matching) can classify it as retryable.
+type opaqueTimeoutError struct{}
+
+func (e *opaqueTimeoutError) Error() string { return "operation deadline reached" }
+func (e *opaqueTimeoutError) Timeout() bool { return true }
