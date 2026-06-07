@@ -4,6 +4,25 @@ import (
 	"testing"
 )
 
+func TestCategoryConfig_validate_PPBounds(t *testing.T) {
+	// 4e6d545 tightened the PP bound from [0,7] to [0,3] (PP is a cumulative
+	// level, not a bitmask). Legacy bitmask-style values 4–7 must now be
+	// rejected, not silently accepted. Reverting validate() to `> 7` makes the
+	// rejection cases below pass an error-free check and this test fails.
+	for _, pp := range []int{4, 5, 7} {
+		c := CategoryConfig{Name: "x", PP: pp}
+		if err := c.validate(); err == nil {
+			t.Errorf("CategoryConfig{PP: %d}.validate() = nil, want an error", pp)
+		}
+	}
+	for _, pp := range []int{0, 1, 2, 3} {
+		c := CategoryConfig{Name: "x", PP: pp}
+		if err := c.validate(); err != nil {
+			t.Errorf("CategoryConfig{PP: %d}.validate() = %v, want nil", pp, err)
+		}
+	}
+}
+
 func TestFindCategory(t *testing.T) {
 	cats := []CategoryConfig{
 		{Name: "*", PP: 1, Script: "star.sh", Priority: -1, Dir: "star"},

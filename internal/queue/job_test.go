@@ -84,6 +84,21 @@ func TestNewJob_ExplicitOverridesCategory(t *testing.T) {
 	}
 }
 
+func TestNewJob_ClampsPPAbove3(t *testing.T) {
+	// 4e6d545: legacy bitmask PP values (e.g. 7) are clamped to the max valid
+	// level 3, not passed through. Without the clamp, job.PP would be 7.
+	job, err := NewJob(minimalNZB(), AddOptions{
+		Filename: "test.nzb",
+		PP:       7,
+	}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.PP != 3 {
+		t.Errorf("job.PP = %d, want 3 (PP>3 clamped)", job.PP)
+	}
+}
+
 func TestNewJob_NoCategoriesFallback(t *testing.T) {
 	// No Categories: sentinels resolve through FindCategory which
 	// falls back to BuiltinDefaultCategory (PP=3, Priority=Normal).
