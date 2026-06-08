@@ -187,7 +187,7 @@ func TestCountUnfinishedArticles(t *testing.T) {
 	})
 
 	t.Run("error on invalid file index", func(t *testing.T) {
-		_, err := q.CountUnfinishedArticles(j.ID, 99)
+		_, err := q.CountUnfinishedArticles(j.ID, len(j.Files))
 		if err == nil {
 			t.Error("expected error for out-of-range file index")
 		}

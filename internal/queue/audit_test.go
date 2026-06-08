@@ -346,7 +346,7 @@ func TestSetFileCRC32(t *testing.T) {
 		j := makeMultiFileJob(t, "crc-oob", 1, 1)
 		_ = q.Add(j)
 
-		if err := q.SetFileCRC32(j.ID, 99, 0x1234); err == nil {
+		if err := q.SetFileCRC32(j.ID, len(j.Files), 0x1234); err == nil {
 			t.Error("expected error for out-of-bounds file index")
 		}
 	})
@@ -411,7 +411,7 @@ func TestSetFileFilename(t *testing.T) {
 		j := makeMultiFileJob(t, "filename-oob", 1, 1)
 		_ = q.Add(j)
 
-		if err := q.SetFileFilename(j.ID, 99, "bad.mkv"); err == nil {
+		if err := q.SetFileFilename(j.ID, len(j.Files), "bad.mkv"); err == nil {
 			t.Error("expected error for out-of-bounds file index")
 		}
 	})
