@@ -109,10 +109,9 @@ func TestSupportsSparse(t *testing.T) {
 	// On typical CI/dev Linux filesystems (ext4, tmpfs, btrfs, xfs),
 	// sparse files are supported. This test verifies the probe works.
 	got := SupportsSparse(dir)
-
-	// We can't assert true/false portably, but we can verify the
-	// function runs without error. Log the result for debugging.
-	t.Logf("SupportsSparse(%s) = %v", dir, got)
+	if !got {
+		t.Errorf("expected SupportsSparse(%s) to be true on standard test environment", dir)
+	}
 }
 
 func TestSupportsSparseInvalidDir(t *testing.T) {
@@ -129,6 +128,9 @@ func TestCheckSparseSupport(t *testing.T) {
 	supported, msg := CheckSparseSupport(dir)
 	t.Logf("CheckSparseSupport(%s): supported=%v msg=%q", dir, supported, msg)
 
+	if !supported {
+		t.Errorf("expected CheckSparseSupport(%s) to return true, got false", dir)
+	}
 	if msg == "" {
 		t.Error("CheckSparseSupport returned empty message")
 	}
