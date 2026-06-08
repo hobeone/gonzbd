@@ -63,6 +63,21 @@ func buildMainBody(sliceSize uint64, fileIDs ...[16]byte) []byte {
 	return body
 }
 
+// buildMainBodyWithCount creates a spec-correct Main packet body:
+// sliceSize(8) + recoverySetCount(4) + N×16-byte FileID entries. Unlike
+// buildMainBody (which omits the recoverySetCount field for brevity), this
+// produces the exact body length the parser uses to derive expectedFiles —
+// needed by tests that exercise the §4.5 early-exit optimization.
+func buildMainBodyWithCount(sliceSize uint64, recoverySetCount uint32, fileIDs ...[16]byte) []byte {
+	body := make([]byte, 12+len(fileIDs)*16)
+	binary.LittleEndian.PutUint64(body[0:8], sliceSize)
+	binary.LittleEndian.PutUint32(body[8:12], recoverySetCount)
+	for i, id := range fileIDs {
+		copy(body[12+i*16:12+(i+1)*16], id[:])
+	}
+	return body
+}
+
 // buildIFSCBody creates an IFSC packet body with fileID and slice CRC entries.
 func buildIFSCBody(fileID [16]byte, slices []ifscSlice) []byte {
 	body := make([]byte, 16+len(slices)*20)
@@ -163,6 +178,165 @@ func TestParsePar2Set_MainPacket(t *testing.T) {
 	if set.SliceSize != 768*1024 {
 		t.Errorf("SliceSize = %d, want %d", set.SliceSize, 768*1024)
 	}
+}
+
+// TestParsePar2Set_PacketLengthBoundary exercises the `packetLen < 64`
+// boundary directly: 64 is the minimum valid packet length (a zero-length
+// body), so 63 must be rejected and 64 accepted.
+func TestParsePar2Set_PacketLengthBoundary(t *testing.T) {
+	t.Run("packetLen below header size is rejected", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "test.par2")
+
+		buf := make([]byte, 64)
+		copy(buf[0:8], magic)
+		binary.LittleEndian.PutUint64(buf[8:16], 63) // < 64: shorter than the header itself
+
+		if err := os.WriteFile(parPath, buf, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		if _, err := ParsePar2Set(parPath); err == nil {
+			t.Fatal("ParsePar2Set: expected error for packetLen=63, got nil")
+		}
+	})
+
+	t.Run("packetLen exactly at header size is accepted", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "test.par2")
+
+		setID := [16]byte{0x07}
+		pkt := buildPacket(setID, typeCreator, []byte{}) // packetLen = 64 + 0 = 64
+
+		if err := os.WriteFile(parPath, pkt, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		set, err := ParsePar2Set(parPath)
+		if err != nil {
+			t.Fatalf("ParsePar2Set: expected packetLen=64 to be accepted, got error: %v", err)
+		}
+		if set.Creator != "" {
+			t.Errorf("Creator = %q, want empty for zero-length body", set.Creator)
+		}
+	})
+}
+
+// TestParsePar2Set_MainBodyLengthBoundary exercises the `len(body) < 8`
+// boundary in the Main-packet branch: bodies shorter than 8 bytes can't
+// hold the sliceSize field and must be skipped, while exactly 8 bytes is
+// the minimal valid Main body.
+func TestParsePar2Set_MainBodyLengthBoundary(t *testing.T) {
+	setID := [16]byte{0x08}
+
+	t.Run("body shorter than 8 bytes is skipped", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "test.par2")
+
+		shortBody := []byte{1, 2, 3, 4, 5, 6, 7} // 7 bytes — can't hold a uint64 sliceSize
+		pkt := buildPacket(setID, typeMain, shortBody)
+
+		if err := os.WriteFile(parPath, pkt, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		set, err := ParsePar2Set(parPath)
+		if err != nil {
+			t.Fatalf("ParsePar2Set: %v", err)
+		}
+		if set.SliceSize != 0 {
+			t.Errorf("SliceSize = %d, want 0 (short Main body must be skipped)", set.SliceSize)
+		}
+	})
+
+	t.Run("body of exactly 8 bytes is parsed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "test.par2")
+
+		body := make([]byte, 8)
+		binary.LittleEndian.PutUint64(body, 999999)
+		pkt := buildPacket(setID, typeMain, body)
+
+		if err := os.WriteFile(parPath, pkt, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		set, err := ParsePar2Set(parPath)
+		if err != nil {
+			t.Fatalf("ParsePar2Set: %v", err)
+		}
+		if set.SliceSize != 999999 {
+			t.Errorf("SliceSize = %d, want 999999", set.SliceSize)
+		}
+	})
+}
+
+// TestParsePar2Set_EarlyExitOptimization exercises the §4.5 scan optimization
+// (parser.go: "expectedFiles > 0 && fileSize > earlyExitThreshold && ...").
+// It proves both that the optimization fires (skipping a trailing FileDesc
+// packet once the expected count is reached in a file above the 10 MiB
+// threshold) and that it does not fire for files below the threshold.
+func TestParsePar2Set_EarlyExitOptimization(t *testing.T) {
+	setID := [16]byte{0x09}
+	fileID1 := [16]byte{0x01}
+	fileID2 := [16]byte{0x02}
+	fullHash := [16]byte{0xAA}
+	hash16k := [16]byte{0xBB}
+
+	build := func(t *testing.T, paddingSize int) *Par2Set {
+		t.Helper()
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "test.par2")
+
+		// recoverySetCount=1 with one FileID makes expectedFiles == 1, so a
+		// single FileDesc + IFSC pair satisfies the "all expected packets seen"
+		// half of the early-exit condition.
+		mainBody := buildMainBodyWithCount(768*1024, 1, fileID1)
+
+		mainPkt := buildPacket(setID, typeMain, mainBody)
+		fd1Pkt := buildPacket(setID, typeFileDesc,
+			buildFileDescBody(fileID1, fullHash, hash16k, 1000, "first.bin"))
+		ifscPkt := buildPacket(setID, typeIFSC, buildIFSCBody(fileID1, nil))
+		recPkt := buildPacket(setID, typeRecovery, make([]byte, paddingSize))
+		fd2Pkt := buildPacket(setID, typeFileDesc,
+			buildFileDescBody(fileID2, fullHash, hash16k, 2000, "second.bin"))
+
+		buf := make([]byte, 0, len(mainPkt)+len(fd1Pkt)+len(ifscPkt)+len(recPkt)+len(fd2Pkt))
+		buf = append(buf, mainPkt...)
+		buf = append(buf, fd1Pkt...)
+		buf = append(buf, ifscPkt...)
+		buf = append(buf, recPkt...)
+		buf = append(buf, fd2Pkt...)
+
+		if err := os.WriteFile(parPath, buf, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		set, err := ParsePar2Set(parPath)
+		if err != nil {
+			t.Fatalf("ParsePar2Set: %v", err)
+		}
+		return set
+	}
+
+	t.Run("file above threshold stops once expected packets are seen", func(t *testing.T) {
+		// Total size must exceed earlyExitThreshold (10 MiB) for the
+		// optimization to engage; the trailing FileDesc must then be skipped.
+		set := build(t, 11*1024*1024)
+		if len(set.Files) != 1 {
+			t.Fatalf("got %d files, want 1 (early exit should skip the trailing FileDesc)", len(set.Files))
+		}
+		if set.Files[0].FileID != fileID1 {
+			t.Errorf("FileID = %x, want %x", set.Files[0].FileID, fileID1)
+		}
+	})
+
+	t.Run("file below threshold keeps scanning to the end", func(t *testing.T) {
+		set := build(t, 1024)
+		if len(set.Files) != 2 {
+			t.Fatalf("got %d files, want 2 (file below threshold must not early-exit)", len(set.Files))
+		}
+	})
 }
 
 func TestParsePar2Set_MD5Validation(t *testing.T) {
@@ -581,6 +755,47 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 		got := parseIFSCBody([]byte{1, 2, 3})
 		if got != nil {
 			t.Errorf("parseIFSCBody of short slice = %+v, want nil", got)
+		}
+	})
+
+	t.Run("parseIFSCBody length boundary", func(t *testing.T) {
+		// 15 bytes can't hold the 16-byte fileID; 16 is the minimal valid body
+		// (fileID present, zero slices).
+		if got := parseIFSCBody(make([]byte, 15)); got != nil {
+			t.Errorf("parseIFSCBody(15 bytes) = %+v, want nil", got)
+		}
+		got := parseIFSCBody(make([]byte, 16))
+		if got == nil {
+			t.Fatal("parseIFSCBody(16 bytes) = nil, want non-nil")
+		}
+		if len(got.slices) != 0 {
+			t.Errorf("parseIFSCBody(16 bytes) slices = %d, want 0", len(got.slices))
+		}
+	})
+
+	t.Run("parseFileDescBody length boundary", func(t *testing.T) {
+		// 55 bytes can't hold FileID+FullHash+Hash16k+FileSize (56 bytes);
+		// 56 is the minimal valid body (no filename); 57+ carries a filename.
+		if got := parseFileDescBody(make([]byte, 55)); got != nil {
+			t.Errorf("parseFileDescBody(55 bytes) = %+v, want nil", got)
+		}
+
+		minimal := parseFileDescBody(make([]byte, 56))
+		if minimal == nil {
+			t.Fatal("parseFileDescBody(56 bytes) = nil, want non-nil")
+		}
+		if minimal.FileName != "" {
+			t.Errorf("parseFileDescBody(56 bytes) FileName = %q, want empty (no name bytes present)", minimal.FileName)
+		}
+
+		withName := make([]byte, 60)
+		copy(withName[56:], "abcd")
+		fd := parseFileDescBody(withName)
+		if fd == nil {
+			t.Fatal("parseFileDescBody(60 bytes) = nil, want non-nil")
+		}
+		if fd.FileName != "abcd" {
+			t.Errorf("parseFileDescBody(60 bytes) FileName = %q, want %q", fd.FileName, "abcd")
 		}
 	})
 

@@ -361,6 +361,120 @@ func TestQuickCheck_Phase4_CRCSizeFallback(t *testing.T) {
 	}
 }
 
+// TestQuickCheck_Phase3HashMatch_EndToEnd drives QuickCheck itself (not just
+// relocateFile/ComputeHash16k in isolation) through Phase 3's hash16k index
+// build-and-match loop: the obfuscated flat file matches neither the par2
+// basename nor the flattened name, so only the hash16k comparison can find it.
+func TestQuickCheck_Phase3HashMatch_EndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	parPath := filepath.Join(dir, "test.par2")
+
+	setID := [16]byte{0x10}
+	fileID := [16]byte{0x11}
+	fileName := "Subdir/realname.dat"
+
+	content := make([]byte, 32*1024) // > 16KB, so hash16k covers a true prefix
+	for i := range content {
+		content[i] = byte(i % 251)
+	}
+	hash16k := md5.Sum(content[:16*1024])
+
+	// No IFSC packet, so FileCRC32 stays 0 and Phase 4 cannot claim this
+	// entry — only the Phase 3 hash16k path can match it.
+	fdBody := buildFileDescBody(fileID, [16]byte{}, hash16k, uint64(len(content)), fileName)
+	pkt := buildPacket(setID, typeFileDesc, fdBody)
+	if err := os.WriteFile(parPath, pkt, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Name matches neither "realname.dat" (basename) nor "Subdir_realname.dat"
+	// (flattened) — phases 1 and 2 must both miss.
+	obfuscatedName := "a1b2c3d4e5f6.bin"
+	if err := os.WriteFile(filepath.Join(dir, obfuscatedName), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sets := []Set{{Name: "test", MainFile: parPath}}
+	renames, err := QuickCheck(dir, sets, nil)
+	if err != nil {
+		t.Fatalf("QuickCheck: %v", err)
+	}
+
+	if len(renames) != 1 {
+		t.Fatalf("got %d renames, want 1 (phase 3 hash16k match)", len(renames))
+	}
+	if renames[0].From != obfuscatedName || renames[0].To != fileName {
+		t.Errorf("rename = %+v, want From=%q To=%q", renames[0], obfuscatedName, fileName)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Subdir", "realname.dat")); err != nil {
+		t.Errorf("file not relocated to expected path: %v", err)
+	}
+}
+
+// TestQuickCheck_Phase4CRCMatch_EndToEnd drives QuickCheck itself through
+// Phase 4's CRC32+size index build-and-match loop. The entry's Hash16k is
+// deliberately wrong (so Phase 3 misses it) but its FileCRC32 — reconstructed
+// from a single full IFSC slice via Combine(0, crc, n) == crc — matches the
+// flat file's actual CRC32 and size, so only Phase 4 can find it.
+func TestQuickCheck_Phase4CRCMatch_EndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	parPath := filepath.Join(dir, "test.par2")
+
+	setID := [16]byte{0x20}
+	fileID := [16]byte{0x21}
+	fileName := "Subdir/other.dat"
+
+	content := make([]byte, 4096)
+	for i := range content {
+		content[i] = byte(i % 137)
+	}
+	fileSize := uint64(len(content))
+	actualCRC := crc32.ChecksumIEEE(content)
+	if actualCRC == 0 {
+		t.Fatal("test content CRC32 is zero — pick different content so the phase 4 filter (FileCRC32 > 0) applies")
+	}
+
+	// sliceSize == fileSize ⇒ exactly one full slice with zero tail padding,
+	// so reconstructCRCs combines it as Combine(0, crc, sliceSize) == crc.
+	mainPkt := buildPacket(setID, typeMain, buildMainBody(fileSize, fileID))
+	fdBody := buildFileDescBody(fileID, [16]byte{}, [16]byte{0xDE, 0xAD}, fileSize, fileName)
+	fdPkt := buildPacket(setID, typeFileDesc, fdBody)
+	ifscBody := buildIFSCBody(fileID, []ifscSlice{{crc32: actualCRC}})
+	ifscPkt := buildPacket(setID, typeIFSC, ifscBody)
+
+	buf := make([]byte, 0, len(mainPkt)+len(fdPkt)+len(ifscPkt))
+	buf = append(buf, mainPkt...)
+	buf = append(buf, fdPkt...)
+	buf = append(buf, ifscPkt...)
+	if err := os.WriteFile(parPath, buf, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Name matches neither "other.dat" (basename) nor "Subdir_other.dat"
+	// (flattened), and its hash16k won't match {0xDE, 0xAD, ...} — only the
+	// CRC32+size fallback can find it.
+	obfuscatedName := "f00dbabe9988.dat"
+	if err := os.WriteFile(filepath.Join(dir, obfuscatedName), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sets := []Set{{Name: "test", MainFile: parPath}}
+	renames, err := QuickCheck(dir, sets, nil)
+	if err != nil {
+		t.Fatalf("QuickCheck: %v", err)
+	}
+
+	if len(renames) != 1 {
+		t.Fatalf("got %d renames, want 1 (phase 4 CRC32+size match)", len(renames))
+	}
+	if renames[0].From != obfuscatedName || renames[0].To != fileName {
+		t.Errorf("rename = %+v, want From=%q To=%q", renames[0], obfuscatedName, fileName)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Subdir", "other.dat")); err != nil {
+		t.Errorf("file not relocated to expected path: %v", err)
+	}
+}
+
 func TestQuickCheck_Integration(t *testing.T) {
 	tmpDir := t.TempDir()
 	parPath := filepath.Join(tmpDir, "test.par2")
