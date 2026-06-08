@@ -248,7 +248,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 
 	// TopOnly: find the minimum (most preferred) server priority so we
 	// can skip backup servers when enabled.
-	minPriority := -1
+	var minPriority int
 	if opts.topOnly {
 		minPriority = getMinServerPriority(opts.serverCfgs)
 	}

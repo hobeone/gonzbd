@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/bpsmeter"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -827,7 +828,7 @@ func TestDownloaderDoubleStart(t *testing.T) {
 func TestDownloaderPipeliningConcurrency(t *testing.T) {
 	ms := newMockNNTP(t)
 
-	var articles []string
+	articles := make([]string, 0, 5)
 	for i := range 5 {
 		msgid := fmt.Sprintf("pipe%d@h", i)
 		articles = append(articles, msgid)
@@ -1039,5 +1040,82 @@ func TestServerStatus_PenaltyField(t *testing.T) {
 	}
 	if snaps[0].Active {
 		t.Error("Active should be false for penalized server")
+	}
+}
+
+func TestNew_CompletionsBufferDefault(t *testing.T) {
+	t.Parallel()
+
+	q := queue.New()
+	d := New(q, nil, nil, Options{CompletionsBuffer: 0}, nil)
+	if cap(d.completions) != 256 {
+		t.Errorf("cap(completions) = %d, want 256", cap(d.completions))
+	}
+
+	d2 := New(q, nil, nil, Options{CompletionsBuffer: -10}, nil)
+	if cap(d2.completions) != 256 {
+		t.Errorf("cap(completions) = %d, want 256", cap(d2.completions))
+	}
+
+	d3 := New(q, nil, nil, Options{CompletionsBuffer: 100}, nil)
+	if cap(d3.completions) != 100 {
+		t.Errorf("cap(completions) = %d, want 100", cap(d3.completions))
+	}
+}
+
+func TestNew_PerServerQueueDefault(t *testing.T) {
+	t.Parallel()
+
+	q := queue.New()
+	srv := fakeSrv("s1", 0, true)
+	srv.cfg.Connections = 3
+	srv.cfg.PipeliningRequests = 4
+
+	d := New(q, []*Server{srv}, nil, Options{PerServerQueue: 0}, nil)
+	// Expected: 2 * 3 * 4 = 24
+	if cap(d.workCh["s1"]) != 24 {
+		t.Errorf("cap(workCh[s1]) = %d, want 24", cap(d.workCh["s1"]))
+	}
+
+	d2 := New(q, []*Server{srv}, nil, Options{PerServerQueue: 10}, nil)
+	if cap(d2.workCh["s1"]) != 10 {
+		t.Errorf("cap(workCh[s1]) = %d, want 10", cap(d2.workCh["s1"]))
+	}
+}
+
+func TestPauseBeforeStart(t *testing.T) {
+	t.Parallel()
+
+	q := queue.New()
+	d := New(q, nil, nil, Options{}, nil)
+	// Should not panic or crash
+	d.Pause()
+	d.Resume()
+}
+
+func TestServerStatus_MeterFields(t *testing.T) {
+	t.Parallel()
+
+	q := queue.New()
+	srv := NewServer(config.ServerConfig{
+		Name:        "primary",
+		Host:        "news.example.com",
+		Connections: 1,
+		Enable:      true,
+	})
+
+	meter := bpsmeter.NewMeter(10*time.Second, time.Now)
+	d := New(q, []*Server{srv}, meter, Options{}, nil)
+
+	// Record some bytes on the meter.
+	meter.Record("primary", 1000)
+
+	snaps := d.ServerStatus()
+	if len(snaps) != 1 {
+		t.Fatalf("len(snaps) = %d; want 1", len(snaps))
+	}
+	s := snaps[0]
+	if s.TotalBytes != 1000 {
+		t.Errorf("TotalBytes = %d; want 1000", s.TotalBytes)
 	}
 }
