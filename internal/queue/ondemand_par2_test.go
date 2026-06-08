@@ -204,7 +204,7 @@ func TestUndeferRecoveryVolumes_Edges(t *testing.T) {
 	}
 	// Out-of-range and non-deferred indices are no-ops: Par2Recovered stays
 	// false and the volume stays deferred.
-	if err := q.UndeferRecoveryVolumes(job.ID, []int{0, 99}); err != nil {
+	if err := q.UndeferRecoveryVolumes(job.ID, []int{0, len(job.Files), -1}); err != nil {
 		t.Fatal(err)
 	}
 	snap := q.SnapshotJob(job.ID)
