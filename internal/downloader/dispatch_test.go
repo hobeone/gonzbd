@@ -20,13 +20,17 @@ func newDispatchDownloader(servers []*Server) *Downloader {
 	for _, srv := range servers {
 		workCh[srv.Cfg().Name] = make(chan *articleRequest, 1)
 	}
-	return &Downloader{
-		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		servers:  servers,
-		workCh:   workCh,
-		tryList:  make(map[string]serverMask),
-		inFlight: make(map[string]int),
+	d := &Downloader{
+		log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		servers:      servers,
+		workCh:       workCh,
+		tryList:      make(map[string]serverMask),
+		inFlight:     make(map[string]int),
+		connActivity: make(map[string]*ConnActivity),
 	}
+	ch := make(chan struct{})
+	d.disconnectPtr.Store(&ch)
+	return d
 }
 
 // fakeSrv returns a Server with the given name/priority/enabled state.
@@ -397,5 +401,189 @@ func TestBuildDispatchPlan_NormalJobDispatched(t *testing.T) {
 	}
 	if _, ok := plan.activeJobs[job.ID]; !ok {
 		t.Error("activeJobs does not contain the job ID")
+	}
+}
+
+func TestBuildDispatchPlan_PropagationDelayZeroDoesNotHoldBackFutureJob(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	d.queue = queue.New()
+	job := makeJobWithArticles(t, []string{"new@h"})
+	// Set job added time to the future relative to opts.now
+	now := time.Now()
+	job.Added = now.Add(5 * time.Minute)
+	if err := d.queue.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+	opts := defaultOpts(d.servers)
+	opts.now = now
+	opts.propagationDelay = 0 // disabled
+
+	plan := d.buildDispatchPlan(context.Background(), opts)
+
+	if plan.dispatched != 1 {
+		t.Errorf("dispatched = %d, want 1 (propagation delay is 0, should not hold back future job)", plan.dispatched)
+	}
+}
+
+func TestBuildDispatchPlan_DispatchesMultipleArticlesInOnePass(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	d.workCh["s1"] = make(chan *articleRequest, 10)
+	d.queue = queue.New()
+	job := makeJobWithArticles(t, []string{"msg1@h", "msg2@h", "msg3@h"})
+	if err := d.queue.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+	opts := defaultOpts(d.servers)
+
+	plan := d.buildDispatchPlan(context.Background(), opts)
+
+	if plan.dispatched != 3 {
+		t.Errorf("dispatched = %d, want 3 articles in a single pass", plan.dispatched)
+	}
+}
+
+func TestBuildDispatchPlan_StopsOnCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	d.queue = queue.New()
+	job := makeJobWithArticles(t, []string{"msg1@h", "msg2@h"})
+	if err := d.queue.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+	opts := defaultOpts(d.servers)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	plan := d.buildDispatchPlan(ctx, opts)
+
+	if plan.dispatched != 0 {
+		t.Errorf("dispatched = %d, want 0 on cancelled context", plan.dispatched)
+	}
+}
+
+func TestApplyDispatchPlan_IdleDisconnect(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	d.queue = queue.New()
+
+	// Set up connActivity to simulate an active connection.
+	d.connActivityMu.Lock()
+	d.connActivity["s1#0"] = &ConnActivity{
+		ServerName: "s1",
+		ConnIndex:  0,
+		Connected:  true,
+	}
+	d.connActivityMu.Unlock()
+
+	// Initial disconnect channel.
+	ch := d.disconnectSnapshot()
+
+	// Case 1: plan.dispatched > 0. Should NOT disconnect.
+	plan := dispatchPlan{
+		dispatched: 1,
+	}
+	d.applyDispatchPlan(context.Background(), plan)
+	select {
+	case <-ch:
+		t.Fatal("disconnect channel was closed when plan.dispatched > 0")
+	default:
+		// correct
+	}
+
+	// Case 2: plan.dispatched == 0, but queue has downloadable jobs. Should NOT disconnect.
+	job := makeJobWithArticles(t, []string{"msg1@h"})
+	if err := d.queue.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+	plan = dispatchPlan{
+		dispatched: 0,
+	}
+	d.applyDispatchPlan(context.Background(), plan)
+	select {
+	case <-ch:
+		t.Fatal("disconnect channel was closed when queue has downloadable jobs")
+	default:
+		// correct
+	}
+
+	// Case 3: plan.dispatched == 0, queue has no downloadable jobs. Should disconnect.
+	// Empty the queue.
+	d.queue = queue.New()
+	plan = dispatchPlan{
+		dispatched: 0,
+	}
+	d.applyDispatchPlan(context.Background(), plan)
+	select {
+	case <-ch:
+		// correct, it closed the channel!
+	default:
+		t.Fatal("disconnect channel was NOT closed when idle and no downloadable jobs")
+	}
+}
+
+func TestTryDispatch_TopOnlySkipsBackupWhenPrimaryFull(t *testing.T) {
+	t.Parallel()
+
+	primary := fakeSrv("primary", 0, true)
+	backup := fakeSrv("backup", 1, true)
+	d := newDispatchDownloader([]*Server{primary, backup})
+	// Fill primary's channel
+	d.workCh["primary"] <- &articleRequest{messageID: "blocker"}
+	a := fakeArticle("msg1@h")
+	opts := defaultOpts(d.servers)
+	opts.topOnly = true
+
+	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+
+	if handled {
+		t.Error("handled: got true, want false (primary full, backup should be skipped under topOnly)")
+	}
+	if exReq != nil {
+		t.Error("exReq: got non-nil, want nil")
+	}
+	// Verify backup channel is empty
+	select {
+	case <-d.workCh["backup"]:
+		t.Error("backup workCh received req — backup was not skipped when primary was full under topOnly")
+	default:
+		// correct
+	}
+}
+
+func TestGetMinServerPriority(t *testing.T) {
+	t.Parallel()
+
+	// Case 1: no servers
+	if got := getMinServerPriority(nil); got != -1 {
+		t.Errorf("got %d, want -1", got)
+	}
+
+	// Case 2: only disabled servers
+	cfgs := []config.ServerConfig{
+		{Priority: 0, Enable: false},
+		{Priority: 1, Enable: false},
+	}
+	if got := getMinServerPriority(cfgs); got != -1 {
+		t.Errorf("got %d, want -1", got)
+	}
+
+	// Case 3: enabled servers with priority >= 2
+	cfgs = []config.ServerConfig{
+		{Priority: 3, Enable: true},
+		{Priority: 2, Enable: true},
+	}
+	if got := getMinServerPriority(cfgs); got != 2 {
+		t.Errorf("got %d, want 2", got)
 	}
 }
