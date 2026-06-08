@@ -16,6 +16,7 @@ func preallocateFile(f *os.File, size int64) error {
 	if size <= 0 {
 		return nil // nothing to pre-allocate
 	}
+	//nolint:gosec // G115: file descriptor fits in int
 	err := unix.Fallocate(int(f.Fd()), 0, 0, size)
 	if err == nil {
 		return nil
