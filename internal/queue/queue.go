@@ -829,7 +829,7 @@ func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 }
 
 // SetPar2ReleaseReason sets the Par2ReleaseReason field for the given job.
-func (q *Queue) SetPar2ReleaseReason(jobID string, reason string) error {
+func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	job, ok := q.byID[jobID]
@@ -995,7 +995,7 @@ func (q *Queue) indexOfLocked(id string) (int, bool) {
 			return i, true
 		}
 	}
-	return -1, false
+	return 0, false
 }
 
 // notifyLocked fires a non-blocking signal on notifyCh. Must be
