@@ -1115,6 +1115,27 @@ func TestSetScript(t *testing.T) {
 	}
 }
 
+func TestSetPar2ReleaseReason(t *testing.T) {
+	t.Parallel()
+	q := New()
+	j := makeJob(t, "par2-reason-test", constants.NormalPriority)
+	_ = q.Add(j)
+
+	if err := q.SetPar2ReleaseReason(j.ID, "damaged"); err != nil {
+		t.Fatalf("SetPar2ReleaseReason: %v", err)
+	}
+	got, _ := q.Get(j.ID)
+	if got.Par2ReleaseReason != "damaged" {
+		t.Errorf("Par2ReleaseReason = %q, want %q", got.Par2ReleaseReason, "damaged")
+	}
+	if !q.IsDirty() {
+		t.Error("SetPar2ReleaseReason should set dirty")
+	}
+	if err := q.SetPar2ReleaseReason("nonexistent", "x"); err == nil {
+		t.Error("SetPar2ReleaseReason(unknown) should error")
+	}
+}
+
 func TestQueueUnexportedHelpersDirect(t *testing.T) {
 	t.Parallel()
 

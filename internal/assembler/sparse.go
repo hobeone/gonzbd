@@ -31,6 +31,7 @@ func SupportsSparse(dir string) bool {
 	}
 
 	var stat syscall.Stat_t
+	//nolint:gosec // G115: file descriptor fits in int
 	if err := syscall.Fstat(int(tmp.Fd()), &stat); err != nil {
 		return false
 	}

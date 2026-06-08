@@ -115,9 +115,20 @@ func TestWriteCachePressure(t *testing.T) {
 		t.Error("should not be under pressure when empty")
 	}
 
-	key := fileKey{jobID: "j", fileIdx: 0}
-	wc.buffer(key, 0, make([]byte, 901)) // 901/1000 = 90.1%
+	// 800/1000 = 80% (should be false, also tests /9 arithmetic mutation)
+	wc.used = 800
+	if wc.pressure() {
+		t.Error("should not be under pressure at 80%")
+	}
 
+	// 900/1000 = 90% (boundary: > 90% is required, so exactly 90% should be false)
+	wc.used = 900
+	if wc.pressure() {
+		t.Error("should not be under pressure at exactly 90%")
+	}
+
+	// 901/1000 = 90.1% (should be true)
+	wc.used = 901
 	if !wc.pressure() {
 		t.Error("should be under pressure at 90.1%")
 	}
@@ -183,9 +194,17 @@ func TestWriteCacheDrainAll(t *testing.T) {
 	wc.buffer(k1, 0, make([]byte, 100))
 	wc.buffer(k2, 0, make([]byte, 200))
 
+	// Add an empty file entry to perFile and ensure it is not returned.
+	wc.perFile[fileKey{jobID: "empty", fileIdx: 0}] = &fileBuf{
+		articles: make(map[int64][]byte),
+	}
+
 	result := wc.drainAll()
 	if len(result) != 2 {
 		t.Errorf("expected 2 files, got %d", len(result))
+	}
+	if _, ok := result[fileKey{jobID: "empty", fileIdx: 0}]; ok {
+		t.Error("drainAll should not return entries for empty file buffers")
 	}
 	if wc.used != 0 {
 		t.Errorf("used after drainAll = %d, want 0", wc.used)
@@ -263,6 +282,7 @@ func TestWriteCacheWriteCursorAdvances(t *testing.T) {
 
 func TestWriteCachePressureDisabledWhenZeroLimit(t *testing.T) {
 	wc := newWriteCache(0)
+	wc.used = 100
 	if wc.pressure() {
 		t.Error("pressure should be false when limit=0")
 	}
@@ -498,6 +518,14 @@ func TestBuildContiguousRun_Direct(t *testing.T) {
 	if run != nil {
 		t.Error("expected nil run for run size < minSize")
 	}
+
+	// Case 2.1: Contiguous and exactly equal to minSize (boundary)
+	fb.articles[0] = []byte("exactlyfive")
+	run = wc.buildContiguousRun(fb, 11) // runSize = 11, minSize = 11
+	if run == nil {
+		t.Error("expected contiguous run when runSize == minSize")
+	}
+	fb.writeCursor = 0
 
 	// Case 3: Contiguous and >= minSize
 	fb.articles[5] = []byte("enough data to exceed threshold")

@@ -858,6 +858,22 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if f.crcValid {
 			t.Error("expected crcValid to be false after CRC-less article")
 		}
+
+		// Empty data success with CRC=0 does not invalidate CRC tracking.
+		req3 := WriteRequest{
+			JobID:     "job1",
+			MessageID: "msg3",
+			Offset:    18,
+			Data:      nil, // 0-length
+			CRC:       0,
+		}
+		f.crcValid = true
+		if !a.handleSuccessArticle(f, req3, wc, open, key) {
+			t.Error("expected handleSuccessArticle to return true for req3")
+		}
+		if !f.crcValid {
+			t.Error("expected crcValid to remain true after empty article")
+		}
 	})
 
 	t.Run("finalizeFile", func(t *testing.T) {
@@ -961,6 +977,10 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Write 10 bytes first. If Truncate(0) is wrongly called, size becomes 0.
+		if _, err := tmpFile.Write(make([]byte, 10)); err != nil {
+			t.Fatal(err)
+		}
 
 		f := &openFile{
 			handle:     tmpFile,
@@ -987,20 +1007,54 @@ func TestAssembler_HelperMethods(t *testing.T) {
 		if _, ok := completed[key]; !ok {
 			t.Error("file should be added to completed map")
 		}
-		// File size stays at 0 (Truncate skipped when maxWritten==0).
+		// File size stays at 10 (Truncate skipped when maxWritten==0).
 		fi, err := os.Stat(tmpFile.Name())
 		if err != nil {
 			t.Fatalf("stat: %v", err)
 		}
-		if fi.Size() != 0 {
-			t.Errorf("zero-length file size = %d, want 0", fi.Size())
+		if fi.Size() != 10 {
+			t.Errorf("zero-length file size = %d, want 10", fi.Size())
 		}
+	})
+
+	t.Run("finalizeFile_emptyCRCParts", func(t *testing.T) {
+		// A file with crcValid=true but empty/nil crcParts should finalize
+		// successfully without panicking (kills boundary mutant on len(crcParts) > 0).
+		opts := Options{
+			FileInfo: func(jobID string, fileIdx int) (FileInfo, error) {
+				return FileInfo{Path: "test"}, nil
+			},
+		}
+		a := New(opts, slog.Default())
+		a.pendingDone = make(map[string][]string)
+		a.pendingFailed = make(map[string][]string)
+
+		tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_test_crc_empty")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := &openFile{
+			handle:     tmpFile,
+			seenFailed: make(map[string]struct{}),
+			seenDone:   make(map[string]struct{}),
+			maxWritten: 11,
+			crcValid:   true,
+			crcParts:   nil, // empty
+		}
+		wc := newWriteCache(0)
+		key := fileKey{jobID: "job1", fileIdx: 0}
+		open := map[fileKey]*openFile{key: f}
+		completed := make(map[fileKey]struct{})
+		req := WriteRequest{JobID: "job1", FileIdx: 0}
+
+		a.finalizeFile(f, key, req, open, completed, wc)
 	})
 
 	t.Run("handleSuccessArticle_writeFail", func(t *testing.T) {
 		// When writeArticleOrBuffer fails (file closed), handleSuccessArticle
 		// must still return true (partsWritten increments — job must not stall)
 		// and the article must land in pendingFailed, not pendingDone.
+		// We leave seenFailed as nil to verify map initialization works and prevent panic (kills nil seenFailed mutant).
 		a := &Assembler{
 			log:           slog.Default(),
 			pendingFailed: make(map[string][]string),
@@ -1016,7 +1070,7 @@ func TestAssembler_HelperMethods(t *testing.T) {
 
 		f := &openFile{
 			handle:     tmpFile, // closed — writes will fail
-			seenFailed: make(map[string]struct{}),
+			seenFailed: nil,     // nil — test map initialization
 			seenDone:   make(map[string]struct{}),
 			crcValid:   true,
 		}
@@ -1048,4 +1102,222 @@ func TestAssembler_HelperMethods(t *testing.T) {
 			t.Error("msgFail should be in seenFailed after write failure")
 		}
 	})
+}
+
+func TestDefaultDoneFlushInterval(t *testing.T) {
+	a := New(Options{
+		FileInfo: func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
+	}, nil)
+	if a.flushInterval != defaultDoneFlushInterval {
+		t.Errorf("flushInterval = %v, want %v", a.flushInterval, defaultDoneFlushInterval)
+	}
+}
+
+func TestNew_QueueSizeDefault(t *testing.T) {
+	a := New(Options{
+		FileInfo:  func(_ string, _ int) (FileInfo, error) { return FileInfo{}, nil },
+		QueueSize: 0,
+	}, nil)
+	if cap(a.reqs) != defaultQueueSize {
+		t.Errorf("cap(reqs) = %d, want %d", cap(a.reqs), defaultQueueSize)
+	}
+}
+
+func TestDiskCheckInterval(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	total := diskCheckInterval * 2              // 32 requests
+	registerFile(t, dir, files, "job1", 0, 100) // Keep file open beyond 32 requests
+
+	var lowDiskCount atomic.Int32
+	opts := makeOpts(dir, files)
+	opts.QueueSize = 64
+	const tenPiB = 10 * (1 << 50)
+	opts.MinFreeBytes = tenPiB
+	opts.OnLowDisk = func(dir string, free int64) {
+		lowDiskCount.Add(1)
+	}
+
+	blockCh := make(chan struct{})
+	entered := make(chan struct{}, 1)
+
+	// Wrap FileInfo to block on the first call.
+	origFileInfo := opts.FileInfo
+	opts.FileInfo = func(jobID string, fileIdx int) (FileInfo, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-blockCh
+		return origFileInfo(jobID, fileIdx)
+	}
+
+	a := New(opts, nil)
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// 1. Send first request. It will block inside FileInfo, stalling the worker.
+	req1 := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("XXXX")}
+	if err := a.WriteArticle(t.Context(), req1); err != nil {
+		t.Fatalf("WriteArticle 1: %v", err)
+	}
+
+	// Wait until the worker has dequeued and entered FileInfo.
+	<-entered
+
+	// 2. Queue 31 more requests (total = 32 requests). They will block in the channel.
+	for i := 1; i < total; i++ {
+		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("XXXX")}
+		if err := a.WriteArticle(t.Context(), req); err != nil {
+			t.Fatalf("WriteArticle %d: %v", i, err)
+		}
+	}
+
+	// 3. Unblock the worker asynchronously after Stop is initiated.
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		close(blockCh)
+	}()
+
+	// 4. Stop the assembler. This closes stopCh, so the worker will enter
+	// the stop drain loop and drain the remaining 31 requests.
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Reqs 16 and 32 should trigger checkDiskSpace.
+	// Since MinFreeBytes is 10 PiB, OnLowDisk should fire exactly 2 times.
+	if n := lowDiskCount.Load(); n != 2 {
+		t.Errorf("OnLowDisk called %d times, want exactly 2", n)
+	}
+}
+
+func TestFlush_OnlyFailedArticles(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 1)
+
+	var failedIDs []string
+	var mu sync.Mutex
+	opts := makeOpts(dir, files)
+	opts.DoneFlushInterval = -1
+	opts.MarkArticlesFailed = func(_ string, msgIDs []string) ([]string, error) {
+		mu.Lock()
+		failedIDs = append(failedIDs, msgIDs...)
+		mu.Unlock()
+		return msgIDs, nil
+	}
+
+	a := startAssembler(t, opts)
+
+	req := WriteRequest{
+		JobID: "job1", FileIdx: 0, MessageID: "fail-only",
+		FatalErr: fmt.Errorf("fail"),
+	}
+	if err := a.WriteArticle(t.Context(), req); err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(failedIDs) != 1 || failedIDs[0] != "fail-only" {
+		t.Errorf("failedIDs = %v, want [fail-only]", failedIDs)
+	}
+}
+
+func TestLateDuplicate_FatalErr(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 1)
+
+	var failedIDs []string
+	var mu sync.Mutex
+	opts := makeOpts(dir, files)
+	opts.DoneFlushInterval = -1
+	opts.MarkArticlesFailed = func(_ string, msgIDs []string) ([]string, error) {
+		mu.Lock()
+		failedIDs = append(failedIDs, msgIDs...)
+		mu.Unlock()
+		return msgIDs, nil
+	}
+
+	a := startAssembler(t, opts)
+
+	// Complete the file.
+	_ = a.WriteArticle(t.Context(), WriteRequest{
+		JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("AA"),
+		MessageID: "msg1",
+	})
+
+	// Send late duplicate with FatalErr.
+	_ = a.WriteArticle(t.Context(), WriteRequest{
+		JobID: "job1", FileIdx: 0, MessageID: "msg1-late-fail",
+		FatalErr: fmt.Errorf("late fail"),
+	})
+
+	_ = a.Stop()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(failedIDs) != 1 || failedIDs[0] != "msg1-late-fail" {
+		t.Errorf("failedIDs = %v, want [msg1-late-fail]", failedIDs)
+	}
+}
+
+func TestPreallocCallsNotIncrementedWhenSizeZero(t *testing.T) {
+	telemetry.Reset()
+
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	path := filepath.Join(dir, "job1_0.dat")
+	files["job1:0"] = FileInfo{Path: path, TotalParts: 1, ExpectedSize: 0}
+
+	opts := makeOpts(dir, files)
+	a := startAssembler(t, opts)
+
+	req := WriteRequest{
+		JobID: "job1", FileIdx: 0,
+		Offset: 0, Data: []byte("DATA"),
+	}
+	if err := a.WriteArticle(t.Context(), req); err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if got := telemetry.PreallocCalls.Value(); got != 0 {
+		t.Errorf("PreallocCalls = %d, want 0", got)
+	}
+}
+
+func TestTotalPartsZero_DoesNotComplete(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 0) // TotalParts = 0
+
+	var completed bool
+	opts := makeOpts(dir, files)
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) { completed = true }
+
+	a := startAssembler(t, opts)
+
+	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("AAAA")}
+	if err := a.WriteArticle(t.Context(), req); err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if completed {
+		t.Error("OnFileComplete should not fire when TotalParts is 0")
+	}
 }
