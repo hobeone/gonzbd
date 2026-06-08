@@ -241,7 +241,7 @@ func TestJobUnexportedHelpersDirect(t *testing.T) {
 	}
 	// Verify it is a valid hex string
 	for _, c := range id1 {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Errorf("invalid hex character in job ID: %c", c)
 		}
 	}
@@ -249,5 +249,40 @@ func TestJobUnexportedHelpersDirect(t *testing.T) {
 	id2, _ := newJobID()
 	if id1 == id2 {
 		t.Error("newJobID returned non-unique IDs")
+	}
+}
+
+func TestNewJob_CategoryPriorityBoundaryClamping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		priority int
+		want     constants.Priority
+	}{
+		{"exactly -128", -128, constants.Priority(-128)},
+		{"below -128", -129, constants.NormalPriority},
+		{"exactly 127", 127, constants.Priority(127)},
+		{"above 127", 128, constants.NormalPriority},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cats := []config.CategoryConfig{
+				{Name: "movies", Priority: tc.priority},
+			}
+			job, err := NewJob(minimalNZB(), AddOptions{
+				Filename:   "test.nzb",
+				Category:   "movies",
+				Priority:   constants.DefaultPriority,
+				Categories: cats,
+			}, fsutil.SanitizeOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job.Priority != tc.want {
+				t.Errorf("Priority = %d, want %d", job.Priority, tc.want)
+			}
+		})
 	}
 }

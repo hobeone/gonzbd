@@ -369,8 +369,8 @@ func TestMarkFileComplete(t *testing.T) {
 	}
 
 	// Invalid index
-	if err := q.MarkFileComplete(j.ID, 99); err == nil {
-		t.Error("MarkFileComplete(99) should error")
+	if err := q.MarkFileComplete(j.ID, len(j.Files)); err == nil {
+		t.Error("MarkFileComplete(len(j.Files)) should error")
 	}
 }
 
@@ -1159,7 +1159,7 @@ func TestQueueUnexportedHelpersDirect(t *testing.T) {
 
 		// Expected order descending: high, norm, low
 		if len(q.jobs) != 3 || q.jobs[0].ID != "high" || q.jobs[1].ID != "norm" || q.jobs[2].ID != "low" {
-			var ids []string
+			ids := make([]string, 0, len(q.jobs))
 			for _, j := range q.jobs {
 				ids = append(ids, j.ID)
 			}
@@ -1174,5 +1174,84 @@ func TestQueueUnexportedHelpersDirect(t *testing.T) {
 
 		q.notifyLocked()
 		q.notifyLocked()
+	})
+}
+
+func TestRemove_DeletesDiskFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create the jobs directory inside dir
+	if err := os.MkdirAll(filepath.Join(dir, "jobs"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	q := New()
+	q.stateDir = dir // pass stateDir
+	job := makeJob(t, "a", constants.NormalPriority)
+	_ = q.Add(job)
+
+	// Create a mock state file
+	jobPath := filepath.Join(dir, "jobs", job.ID+".json.gz")
+	if err := os.WriteFile(jobPath, []byte("mock data"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Verify file exists
+	if _, err := os.Stat(jobPath); err != nil {
+		t.Fatalf("mock file does not exist: %v", err)
+	}
+
+	// Remove the job
+	if err := q.Remove(job.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// Verify file is deleted
+	if _, err := os.Stat(jobPath); !os.IsNotExist(err) {
+		t.Fatalf("expected job file to be deleted, got err: %v", err)
+	}
+}
+
+func TestMarkArticlesFailed_EmptyBatch(t *testing.T) {
+	t.Parallel()
+	q := New()
+	j := makeMultiFileJob(t, "fail-batch", 1, 3)
+	_ = q.Add(j)
+
+	t.Run("empty_batch_failed_is_no-op", func(t *testing.T) {
+		q.dirty.Store(false)
+		firstTime, err := q.MarkArticlesFailed(j.ID, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(firstTime) != 0 {
+			t.Errorf("len(firstTime) = %d, want 0", len(firstTime))
+		}
+		if q.IsDirty() {
+			t.Error("IsDirty should be false")
+		}
+	})
+
+	t.Run("duplicate_failed_is_no-op", func(t *testing.T) {
+		firstTime, err := q.MarkArticlesFailed(j.ID, []string{"f0a0@test"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(firstTime) != 1 || firstTime[0] != "f0a0@test" {
+			t.Errorf("unexpected firstTime: %v", firstTime)
+		}
+
+		q.dirty.Store(false)
+		firstTime2, err := q.MarkArticlesFailed(j.ID, []string{"f0a0@test"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(firstTime2) != 0 {
+			t.Errorf("len(firstTime2) = %d, want 0", len(firstTime2))
+		}
+		if q.IsDirty() {
+			t.Error("IsDirty should be false")
+		}
 	})
 }
