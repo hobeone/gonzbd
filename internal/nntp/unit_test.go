@@ -1,8 +1,12 @@
 package nntp
 
 import (
+	"bufio"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
 )
@@ -26,6 +30,7 @@ func TestClassifyStatus(t *testing.T) {
 		{450, ErrTransient},
 		{500, ErrTransient},
 		{599, ErrTransient},
+		{600, nil},
 		{200, nil},
 		{222, nil},
 		{100, nil},
@@ -176,6 +181,78 @@ func TestParseCapabilities_VersionMalformed(t *testing.T) {
 	}
 }
 
+func TestParseCapabilities_VersionNoArgs(t *testing.T) {
+	t.Parallel()
+	caps := parseCapabilities("VERSION\nREADER\n")
+	if caps.Version != 0 {
+		t.Errorf("Version = %d, want 0 for no args", caps.Version)
+	}
+}
+
+func TestProbeCapabilities_Errors(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.DiscardHandler)
+
+	t.Run("write error", func(t *testing.T) {
+		fw := &failingWriter{}
+		bw := bufio.NewWriter(fw)
+		bw.Write(make([]byte, 10000))
+		bw.Flush()
+
+		br := bufio.NewReader(strings.NewReader(""))
+		caps := probeCapabilities(logger, bw, br)
+		if !caps.HasBody || !caps.HasStat {
+			t.Error("expected default capabilities on write failure")
+		}
+	})
+
+	t.Run("flush error", func(t *testing.T) {
+		fw := &failingWriter{}
+		bw := bufio.NewWriter(fw)
+		br := bufio.NewReader(strings.NewReader(""))
+		caps := probeCapabilities(logger, bw, br)
+		if !caps.HasBody || !caps.HasStat {
+			t.Error("expected default capabilities on flush failure")
+		}
+	})
+
+	t.Run("read greeting error", func(t *testing.T) {
+		var buf strings.Builder
+		bw := bufio.NewWriter(&buf)
+		br := bufio.NewReader(strings.NewReader(""))
+		caps := probeCapabilities(logger, bw, br)
+		if !caps.HasBody || !caps.HasStat {
+			t.Error("expected default capabilities on greeting read failure")
+		}
+	})
+
+	t.Run("rejected status", func(t *testing.T) {
+		var buf strings.Builder
+		bw := bufio.NewWriter(&buf)
+		br := bufio.NewReader(strings.NewReader("500 Command not recognized\r\n"))
+		caps := probeCapabilities(logger, bw, br)
+		if !caps.HasBody || !caps.HasStat {
+			t.Error("expected default capabilities on status rejection")
+		}
+	})
+
+	t.Run("read body error", func(t *testing.T) {
+		var buf strings.Builder
+		bw := bufio.NewWriter(&buf)
+		br := bufio.NewReader(strings.NewReader("101 capabilities follow\r\nVERSION 2\r\nREADER\r\n"))
+		caps := probeCapabilities(logger, bw, br)
+		if !caps.HasBody || !caps.HasStat {
+			t.Error("expected default capabilities on body read failure")
+		}
+	})
+}
+
+type failingWriter struct{}
+
+func (f *failingWriter) Write(p []byte) (int, error) {
+	return 0, errors.New("write failed")
+}
+
 func TestDefaultCapabilities(t *testing.T) {
 	t.Parallel()
 	caps := defaultCapabilities()
@@ -196,6 +273,9 @@ func TestNewDialOptions_DefaultPorts(t *testing.T) {
 	if opts.port != 119 {
 		t.Errorf("plain port = %d, want 119", opts.port)
 	}
+	if opts.readBuf != 256*1024 {
+		t.Errorf("readBuf = %d, want 262144", opts.readBuf)
+	}
 
 	// SSL.
 	opts, err = newDialOptions(config.ServerConfig{Host: "news.example.com", SSL: true})
@@ -204,6 +284,17 @@ func TestNewDialOptions_DefaultPorts(t *testing.T) {
 	}
 	if opts.port != 563 {
 		t.Errorf("SSL port = %d, want 563", opts.port)
+	}
+}
+
+func TestNewDialOptions_TimeoutNonZero(t *testing.T) {
+	t.Parallel()
+	opts, err := newDialOptions(config.ServerConfig{Host: "x", Timeout: 10})
+	if err != nil {
+		t.Fatalf("newDialOptions: %v", err)
+	}
+	if opts.dialer.Timeout != 10*time.Second {
+		t.Errorf("timeout = %v, want 10s", opts.dialer.Timeout)
 	}
 }
 
