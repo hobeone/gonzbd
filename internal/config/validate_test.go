@@ -29,6 +29,13 @@ func TestPortInRange_MaxBoundary(t *testing.T) {
 	}
 }
 
+func TestPortInRange_MinBoundary(t *testing.T) {
+	t.Parallel()
+	if err := portInRange("port", 1, false); err != nil {
+		t.Errorf("1 should be valid, got %v", err)
+	}
+}
+
 func TestPortInRange_OutOfRange(t *testing.T) {
 	t.Parallel()
 	if err := portInRange("port", 65536, false); err == nil {
@@ -227,6 +234,16 @@ func TestValidateSchedule_ValidPassthrough(t *testing.T) {
 	}
 }
 
+func TestValidateSchedule_DuplicateNames(t *testing.T) {
+	t.Parallel()
+	cfg := mustDefault(t)
+	cfg.Schedules = []ScheduleConfig{
+		{Name: "sched", Action: "pause", Minute: "*", Hour: "*", DayOfWeek: "*"},
+		{Name: "sched", Action: "resume", Minute: "*", Hour: "*", DayOfWeek: "*"},
+	}
+	requireValidateError(t, cfg, "sched")
+}
+
 // ---------- helpers ----------
 
 func mustDefault(t *testing.T) *Config {
@@ -268,7 +285,7 @@ func validServer(name string) ServerConfig {
 
 func TestGeneralConfig_ValidateDirect(t *testing.T) {
 	t.Parallel()
-	g := GeneralConfig{
+	cleanG := GeneralConfig{
 		Host:        "localhost",
 		Port:        8080,
 		DownloadDir: "/tmp/download",
@@ -276,13 +293,44 @@ func TestGeneralConfig_ValidateDirect(t *testing.T) {
 		APIKey:      "abcdef0123456789",
 		NZBKey:      "0123456789abcdef",
 	}
-	if err := g.validate(); err != nil {
+	if err := cleanG.validate(); err != nil {
 		t.Errorf("expected clean validate, got: %v", err)
 	}
 
+	g := cleanG
 	g.APIKey = "short"
 	if err := g.validate(); err == nil {
 		t.Error("expected validation error for invalid API key")
+	}
+
+	g2 := cleanG
+	g2.HTTPSPort = 65536
+	g2.HTTPSCert = "cert.pem"
+	g2.HTTPSKey = "key.pem"
+	if err := g2.validate(); err == nil {
+		t.Error("expected error for invalid HTTPSPort")
+	}
+
+	g3 := cleanG
+	g3.HTTPSPort = 443
+	g3.HTTPSCert = ""
+	if err := g3.validate(); err == nil {
+		t.Error("expected error for missing HTTPSCert")
+	}
+
+	g4 := cleanG
+	g4.HTTPSPort = 443
+	g4.HTTPSCert = "cert"
+	g4.HTTPSKey = ""
+	if err := g4.validate(); err == nil {
+		t.Error("expected error for missing HTTPSKey")
+	}
+
+	g5 := cleanG
+	g5.DirscanDir = "/tmp"
+	g5.DirscanSpeed = 0
+	if err := g5.validate(); err == nil {
+		t.Error("expected error for zero dirscan_speed with dirscan_dir")
 	}
 }
 
@@ -297,6 +345,23 @@ func TestDownloadConfig_ValidateDirect(t *testing.T) {
 		t.Errorf("expected clean validate, got: %v", err)
 	}
 
+	d.BandwidthPerc = 0
+	if err := d.validate(); err != nil {
+		t.Errorf("0 percent should pass, got: %v", err)
+	}
+
+	d.BandwidthPerc = 100
+	if err := d.validate(); err != nil {
+		t.Errorf("100 percent should pass, got: %v", err)
+	}
+
+	d.BandwidthPerc = 50
+	d.MaxArtOpt = -1
+	if err := d.validate(); err == nil {
+		t.Error("expected error for negative max_art_opt")
+	}
+
+	d.MaxArtOpt = 0
 	d.BandwidthMax = -1
 	if err := d.validate(); err == nil {
 		t.Error("expected error for negative bandwidth_max")
@@ -310,6 +375,16 @@ func TestPostProcConfig_ValidateDirect(t *testing.T) {
 	}
 	if err := p.validate(); err != nil {
 		t.Errorf("expected clean validate, got: %v", err)
+	}
+
+	p.Permissions = "0755"
+	if err := p.validate(); err != nil {
+		t.Errorf("4-digit permissions should pass, got: %v", err)
+	}
+
+	p.Permissions = "700"
+	if err := p.validate(); err != nil {
+		t.Errorf("permissions with 0 should pass, got: %v", err)
 	}
 
 	p.Permissions = "899"
@@ -331,9 +406,46 @@ func TestServerConfig_ValidateDirect(t *testing.T) {
 		t.Errorf("expected clean validate, got: %v", err)
 	}
 
-	s.Connections = 0
-	if err := s.validate(); err == nil {
+	s1 := s
+	s1.Connections = 0
+	if err := s1.validate(); err == nil {
 		t.Error("expected error for 0 connections")
+	}
+
+	s2 := s
+	s2.Port = 999999
+	if err := s2.validate(); err == nil {
+		t.Error("expected error for invalid Port")
+	}
+
+	s3 := s
+	s3.SSLVerify = SSLVerify(9)
+	if err := s3.validate(); err == nil {
+		t.Error("expected error for invalid SSLVerify")
+	}
+
+	s4 := s
+	s4.Priority = -1
+	if err := s4.validate(); err == nil {
+		t.Error("expected error for negative Priority")
+	}
+
+	s5 := s
+	s5.Retention = -1
+	if err := s5.validate(); err == nil {
+		t.Error("expected error for negative Retention")
+	}
+
+	s6 := s
+	s6.Timeout = 0
+	if err := s6.validate(); err == nil {
+		t.Error("expected error for zero Timeout")
+	}
+
+	s7 := s
+	s7.PipeliningRequests = 0
+	if err := s7.validate(); err == nil {
+		t.Error("expected error for zero PipeliningRequests")
 	}
 }
 
