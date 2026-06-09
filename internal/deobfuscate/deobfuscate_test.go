@@ -35,6 +35,15 @@ func TestIsProbablyObfuscated(t *testing.T) {
 		// Path is handled correctly (only basename checked)
 		{"full path not obfuscated", "/some/dir/My.Great.Show.S02E05.mkv", false},
 		{"full path obfuscated", "/some/dir/b082fa0beaa644d3aa01045d5b8d0b36.mkv", true},
+		// Boundaries to kill mutants
+		{"boundary capital start A", "Aaaaa.mkv", false},
+		{"boundary capital start Z", "Zaaaa.mkv", false},
+		{"boundary capital start ratio 0.25", "AAaaaaaaaa.mkv", false},
+		{"boundary short simple length 3", "cat.mkv", false},
+		{"boundary short simple length 10", "catapultss.mkv", false},
+		{"boundary short simple seps 1", "cat_dog.mkv", false},
+		{"boundary mixed case separator", "AA_aa.mkv", false},
+		{"boundary letters+digits+sep", "abcd 2020.mkv", false},
 	}
 
 	for _, tc := range cases {
@@ -45,6 +54,12 @@ func TestIsProbablyObfuscated(t *testing.T) {
 				t.Errorf("IsProbablyObfuscated(%q) = %v, want %v", tc.filename, got, tc.want)
 			}
 		})
+	}
+
+	// Test nil logger doesn't panic
+	gotNil := deobfuscate.IsProbablyObfuscated(nil, "b082fa0beaa644d3aa01045d5b8d0b36.mkv")
+	if !gotNil {
+		t.Error("expected true for nil logger obfuscated check")
 	}
 }
 
@@ -83,6 +98,16 @@ func TestBiggestFile(t *testing.T) {
 		}
 		if !ok || path != big {
 			t.Errorf("3x case: got path=%q ok=%v, want path=%q ok=true", path, ok, big)
+		}
+
+		// Exact 3x boundary
+		bigExact := createFile(t, dir, "big_exact.mkv", 9000)
+		path, ok, err = deobfuscate.BiggestFile([]string{bigExact, small})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok || path != bigExact {
+			t.Errorf("exact 3x case: got path=%q ok=%v, want path=%q ok=true", path, ok, bigExact)
 		}
 	})
 
@@ -138,11 +163,19 @@ func TestDeobfuscate(t *testing.T) {
 		if _, err := os.Stat(big); !os.IsNotExist(err) {
 			t.Errorf("original big file still exists: %s", big)
 		}
-		_ = small // may or may not be renamed depending on stem match
 
 		expectedBig := filepath.Join(dir, "Cool.Show.S01E01.mkv")
 		if _, err := os.Stat(expectedBig); err != nil {
 			t.Errorf("expected renamed file not found: %s", expectedBig)
+		}
+
+		// Sibling file must also be renamed and original should be gone.
+		expectedSmall := filepath.Join(dir, "Cool.Show.S01E01.nfo")
+		if _, err := os.Stat(expectedSmall); err != nil {
+			t.Errorf("expected renamed sibling file not found: %s", expectedSmall)
+		}
+		if _, err := os.Stat(small); !os.IsNotExist(err) {
+			t.Errorf("original sibling file still exists: %s", small)
 		}
 	})
 
@@ -225,6 +258,73 @@ func TestDeobfuscate(t *testing.T) {
 		}
 		if len(renames) == 0 {
 			t.Error("expected rename for >10 MiB obfuscated file")
+		}
+	})
+
+	t.Run("deobfuscate runs when biggest is exactly 10MiB", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		// 10 MiB = exactly the threshold (boundary)
+		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv", 10*1024*1024)
+		createFile(t, dir, "tiny.nfo", 10)
+
+		renames, err := deobfuscate.Deobfuscate(context.Background(), slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(renames) == 0 {
+			t.Error("expected rename for exactly 10 MiB obfuscated file")
+		}
+	})
+
+	t.Run("nil logger doesn't panic", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		createFile(t, dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv", 11*1024*1024)
+		createFile(t, dir, "tiny.nfo", 10)
+
+		renames, err := deobfuscate.Deobfuscate(context.Background(), nil, dir, "SomeName", fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(renames) == 0 {
+			t.Error("expected rename with nil logger")
+		}
+
+		// Test subtitles with nil logger
+		subRenames, err := deobfuscate.Subtitles(nil, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = subRenames
+	})
+
+	t.Run("deobfuscate with extension fix first", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		ebmlHeader := []byte{
+			0x1A, 0x45, 0xDF, 0xA3, // EBML magic
+			0x93,                   // size
+			0x42, 0x86, 0x81, 0x01, // EBMLVersion: 1
+			0x42, 0xF7, 0x81, 0x01, // EBMLReadVersion: 1
+			0x42, 0xF2, 0x81, 0x04, // EBMLMaxIDLength: 4
+			0x42, 0xF3, 0x81, 0x08, // EBMLMaxSizeLength: 8
+			0x42, 0x82, 0x88, // DocType (length 8)
+			'm', 'a', 't', 'r', 'o', 's', 'k', 'a', // "matroska"
+		}
+		data := make([]byte, 11*1024*1024)
+		copy(data, ebmlHeader)
+		path := filepath.Join(dir, "12345678901234567890.xyz")
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		renames, err := deobfuscate.Deobfuscate(context.Background(), slog.Default(), dir, "SomeName", fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(renames) != 2 {
+			t.Errorf("expected 2 renames (extension fix + deobfuscate), got %d: %+v", len(renames), renames)
 		}
 	})
 }

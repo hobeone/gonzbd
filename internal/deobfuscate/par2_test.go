@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -169,5 +170,56 @@ func TestPar2Rename_CollisionDifferent(t *testing.T) {
 	}
 	if _, err := os.Stat(wantTo); err != nil {
 		t.Errorf(".1 renamed file %q missing: %v", wantTo, err)
+	}
+}
+
+type recordHandler struct {
+	records []slog.Record
+}
+
+func (h *recordHandler) Enabled(ctx context.Context, l slog.Level) bool { return true }
+func (h *recordHandler) Handle(ctx context.Context, r slog.Record) error {
+	h.records = append(h.records, r)
+	return nil
+}
+func (h *recordHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *recordHandler) WithGroup(name string) slog.Handler       { return h }
+
+func TestPar2Rename_NilLogger(t *testing.T) {
+	t.Parallel()
+	jobDir := t.TempDir()
+	renames, err := Par2Rename(context.Background(), nil, jobDir, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("Par2Rename with nil logger: %v", err)
+	}
+	if len(renames) != 0 {
+		t.Errorf("expected 0 renames, got %d", len(renames))
+	}
+}
+
+func TestDeobfuscate_Par2RenameError(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "not_a_dir.txt")
+	if err := os.WriteFile(filePath, []byte("hello"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	handler := &recordHandler{}
+	log := slog.New(handler)
+
+	_, err := Deobfuscate(context.Background(), log, filePath, "MovieName", fsutil.SanitizeOptions{})
+	if err == nil {
+		t.Error("expected Deobfuscate to fail when path is not a directory")
+	}
+
+	foundWarn := false
+	for _, rec := range handler.records {
+		if rec.Level == slog.LevelWarn && strings.Contains(rec.Message, "par2 deobfuscation encountered an error") {
+			foundWarn = true
+			break
+		}
+	}
+	if !foundWarn {
+		t.Error("expected a warning log to be recorded when Par2Rename failed")
 	}
 }
