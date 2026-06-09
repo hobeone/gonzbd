@@ -11,9 +11,12 @@ import (
 	"strings"
 )
 
-const (
+var (
 	// MaxDecompressSize limits decompressed NZB size per file to guard against zip bombs.
 	MaxDecompressSize = 100 * 1024 * 1024 // 100 MiB
+
+	maxNZBsPerZip      = 1000                     // sane upper bound for NZBs in one archive
+	maxCumulativeBytes int64 = 500 * 1024 * 1024 // 500 MiB total across all NZBs
 )
 
 // ArchiveType identifies the format of a file.
@@ -97,7 +100,7 @@ func extractGZ(path string) ([][]byte, error) {
 	}
 	defer reader.Close() //nolint:errcheck // cleanup of gzip reader
 
-	data, err := io.ReadAll(io.LimitReader(reader, MaxDecompressSize+1))
+	data, err := io.ReadAll(io.LimitReader(reader, int64(MaxDecompressSize)+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read decompressed data: %w", err)
 	}
@@ -119,7 +122,7 @@ func extractBZ2(path string) ([][]byte, error) {
 
 	reader := bzip2.NewReader(file)
 
-	data, err := io.ReadAll(io.LimitReader(reader, MaxDecompressSize+1))
+	data, err := io.ReadAll(io.LimitReader(reader, int64(MaxDecompressSize)+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read decompressed data: %w", err)
 	}
@@ -138,10 +141,7 @@ func extractZip(path string) ([][]byte, error) {
 	}
 	defer reader.Close() //nolint:errcheck // cleanup of zip reader
 
-	const (
-		maxNZBsPerZip      = 1000              // sane upper bound for NZBs in one archive
-		maxCumulativeBytes = 500 * 1024 * 1024 // 500 MiB total across all NZBs
-	)
+
 
 	var result [][]byte
 	var cumulative int64
@@ -158,7 +158,7 @@ func extractZip(path string) ([][]byte, error) {
 			return nil, fmt.Errorf("failed to open zip member %s: %w", file.Name, err)
 		}
 
-		data, err := io.ReadAll(io.LimitReader(rc, MaxDecompressSize+1))
+		data, err := io.ReadAll(io.LimitReader(rc, int64(MaxDecompressSize)+1))
 		rc.Close() //nolint:errcheck // cleanup of opened zip member
 
 		if err != nil {
