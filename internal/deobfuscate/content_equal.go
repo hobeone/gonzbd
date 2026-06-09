@@ -46,17 +46,17 @@ func contentEqual(pathA, pathB string, knownHashOfA [16]byte) (bool, error) {
 // streamEqual reads pathA and pathB in 32KB chunks and returns true if every
 // byte is identical. Assumes callers have already verified equal sizes.
 func streamEqual(pathA, pathB string) (bool, error) {
-	fa, err := os.Open(pathA)
+	fa, err := os.Open(pathA) //nolint:gosec // read-only open of paths validated inside deobfuscation
 	if err != nil {
 		return false, err
 	}
-	defer fa.Close() //nolint:errcheck
+	defer fa.Close() //nolint:errcheck // read-only file close error is safe to ignore
 
-	fb, err := os.Open(pathB)
+	fb, err := os.Open(pathB) //nolint:gosec // read-only open of paths validated inside deobfuscation
 	if err != nil {
 		return false, err
 	}
-	defer fb.Close() //nolint:errcheck
+	defer fb.Close() //nolint:errcheck // read-only file close error is safe to ignore
 
 	const chunk = 32 * 1024
 	bufA := make([]byte, chunk)

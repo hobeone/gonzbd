@@ -259,7 +259,8 @@ func TestFixExtension(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "LOVEBITES.part01.rar.1")
 		// RAR5 magic bytes
-		content := []byte{'R', 'a', 'r', '!', 0x1A, 0x07, 0x01, 0x00}
+		content := make([]byte, 0, 8+256)
+		content = append(content, 'R', 'a', 'r', '!', 0x1A, 0x07, 0x01, 0x00)
 		content = append(content, make([]byte, 256)...) // pad
 		if err := os.WriteFile(path, content, 0o644); err != nil {
 			t.Fatal(err)
@@ -311,6 +312,48 @@ func TestFixExtension(t *testing.T) {
 		}
 		if rename.From != "" {
 			t.Errorf("expected no rename, got %+v", rename)
+		}
+	})
+
+	t.Run("rar3 content with non-popular extension", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "test_rar3.xyz")
+		content := []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00}
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		rename, err := deobfuscate.FixExtension(context.Background(), slog.Default(), path)
+		if err != nil {
+			t.Fatalf("FixExtension error: %v", err)
+		}
+		if rename.From == "" {
+			t.Fatal("expected a rename for RAR3 content")
+		}
+		if rename.To != path+".rar" {
+			t.Errorf("expected destination %q, got %q", path+".rar", rename.To)
+		}
+	})
+
+	t.Run("rar5 content with non-popular extension", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "test_rar5.xyz")
+		content := []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00}
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		rename, err := deobfuscate.FixExtension(context.Background(), slog.Default(), path)
+		if err != nil {
+			t.Fatalf("FixExtension error: %v", err)
+		}
+		if rename.From == "" {
+			t.Fatal("expected a rename for RAR5 content")
+		}
+		if rename.To != path+".rar" {
+			t.Errorf("expected destination %q, got %q", path+".rar", rename.To)
 		}
 	})
 }
