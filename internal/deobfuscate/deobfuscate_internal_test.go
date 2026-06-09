@@ -200,6 +200,11 @@ func TestExtractRARUsefulNameDirect(t *testing.T) {
 	if got != "sample" {
 		t.Errorf("extractRARUsefulName(sample.rar) = %q, want 'sample'", got)
 	}
+
+	// Test nil logger doesn't panic
+	if gotNil := extractRARUsefulName(tmpDir, nil); gotNil != "sample" {
+		t.Errorf("extractRARUsefulName with nil logger: got %q, want 'sample'", gotNil)
+	}
 }
 
 // ---------- Direct Content Equal Helpers ----------
@@ -306,5 +311,27 @@ func TestContentEqualAndStreamEqual_Direct(t *testing.T) {
 	}
 	if equal {
 		t.Error("streamEqual expected false")
+	}
+
+	// 6. Exactly 32KB files (multiple of chunk size) to kill mutation on errB == io.EOF
+	exactChunkContent := make([]byte, 32*1024)
+	for i := range exactChunkContent {
+		exactChunkContent[i] = byte(i % 256)
+	}
+	f7 := filepath.Join(tmp, "f7.txt")
+	f8 := filepath.Join(tmp, "f8.txt")
+	if err := os.WriteFile(f7, exactChunkContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f8, exactChunkContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	hash7 := md5.Sum(exactChunkContent[:16384])
+	equal, err = contentEqual(f7, f8, hash7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equal {
+		t.Error("expected true for identical exactly 32KB files")
 	}
 }
