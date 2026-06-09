@@ -97,6 +97,26 @@ func TestConfig_Set(t *testing.T) {
 			},
 		},
 		{
+			"set Percent (bandwidth_perc) boundary 0",
+			"downloads", "bandwidth_perc", "0",
+			false,
+			func(t *testing.T, c *Config) {
+				if c.Downloads.BandwidthPerc != 0 {
+					t.Errorf("BandwidthPerc = %d, want 0", c.Downloads.BandwidthPerc)
+				}
+			},
+		},
+		{
+			"set Percent (bandwidth_perc) boundary 100",
+			"downloads", "bandwidth_perc", "100",
+			false,
+			func(t *testing.T, c *Config) {
+				if c.Downloads.BandwidthPerc != 100 {
+					t.Errorf("BandwidthPerc = %d, want 100", c.Downloads.BandwidthPerc)
+				}
+			},
+		},
+		{
 			"set Percent out of bounds",
 			"downloads", "bandwidth_perc", "105",
 			true,
@@ -224,6 +244,25 @@ func TestConfig_Set(t *testing.T) {
 					t.Error("StripDiacritics is false, want true")
 				}
 			},
+		},
+		{
+			"set slice (servers)",
+			"servers", "", `[{"name": "test-srv", "host": "news.example.com", "port": 119, "connections": 4, "enable": true, "timeout": 60, "pipelining_requests": 2}]`,
+			false,
+			func(t *testing.T, c *Config) {
+				if len(c.Servers) != 1 {
+					t.Fatalf("len(Servers) = %d, want 1", len(c.Servers))
+				}
+				if c.Servers[0].Name != "test-srv" {
+					t.Errorf("Server Name = %q, want test-srv", c.Servers[0].Name)
+				}
+			},
+		},
+		{
+			"set slice (servers) invalid JSON",
+			"servers", "", `[invalid-json`,
+			true,
+			nil,
 		},
 	}
 

@@ -51,6 +51,17 @@ func TestByteSize_UnmarshalJSON_String(t *testing.T) {
 	}
 }
 
+func TestByteSize_UnmarshalJSON_EmptyString(t *testing.T) {
+	t.Parallel()
+	var b ByteSize
+	if err := b.UnmarshalJSON([]byte(`""`)); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if b != 0 {
+		t.Errorf("got %d, want 0", b)
+	}
+}
+
 func TestByteSize_UnmarshalJSON_Number(t *testing.T) {
 	t.Parallel()
 	var b ByteSize
@@ -89,6 +100,25 @@ func TestParseByteSize_Empty(t *testing.T) {
 	}
 	if b != 0 {
 		t.Errorf("got %d, want 0 for empty", b)
+	}
+}
+
+func TestParseByteSize_BoundaryMinG(t *testing.T) {
+	t.Parallel()
+	b, err := ParseByteSize("0.0G")
+	if err != nil {
+		t.Fatalf("ParseByteSize(0.0G): %v", err)
+	}
+	if b != 0 {
+		t.Errorf("got %d, want 0", b)
+	}
+}
+
+func TestParseByteSize_BoundaryMaxInt64(t *testing.T) {
+	t.Parallel()
+	_, err := ParseByteSize("9007199254740992K")
+	if err != nil {
+		t.Fatalf("ParseByteSize(9007199254740992K): %v", err)
 	}
 }
 
@@ -150,6 +180,28 @@ func TestPercent_UnmarshalJSON_Valid(t *testing.T) {
 	}
 	if p != 75 {
 		t.Errorf("got %d, want 75", p)
+	}
+}
+
+func TestPercent_UnmarshalJSON_Boundary0(t *testing.T) {
+	t.Parallel()
+	var p Percent
+	if err := json.Unmarshal([]byte("0"), &p); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if p != 0 {
+		t.Errorf("got %d, want 0", p)
+	}
+}
+
+func TestPercent_UnmarshalJSON_Boundary100(t *testing.T) {
+	t.Parallel()
+	var p Percent
+	if err := json.Unmarshal([]byte("100"), &p); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if p != 100 {
+		t.Errorf("got %d, want 100", p)
 	}
 }
 
