@@ -219,7 +219,7 @@ func absorbFile(
 	digest hash.Hash,
 	seenGroups map[string]struct{},
 	now time.Time,
-) (int64, int, error) {
+) (timestamp int64, numSegments int, err error) {
 	var xf xmlFile
 	if err := dec.DecodeElement(&xf, se); err != nil {
 		return 0, 0, fmt.Errorf("nzb: decode <file>: %w", err)
