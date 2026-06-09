@@ -20,6 +20,10 @@ func sevenZipTestdata(t *testing.T) string {
 	// Relative to the gonzbd project root: ../sevenzip/testdata
 	dir := filepath.Join("..", "..", "..", "sevenzip", "testdata")
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		fallback := "/home/hobe/software/sevenzip/testdata"
+		if _, err := os.Stat(fallback); err == nil {
+			return fallback
+		}
 		t.Skipf("sevenzip testdata not found at %s (run tests from gonzbd root)", dir)
 	}
 	return dir
@@ -409,5 +413,22 @@ func TestClassifySevenZipErrorDirect(t *testing.T) {
 				t.Errorf("classifySevenZipError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestGoSevenZip_PanicRecovery(t *testing.T) {
+	archive := Archive{
+		Type:     SevenZipArchive,
+		MainFile: "dummy.7z",
+	}
+	res, err := GoSevenZip(context.Background(), nil, archive, t.TempDir(), Options{})
+	if err == nil {
+		t.Fatal("expected error from panic recovery, got nil")
+	}
+	if !strings.Contains(err.Error(), "sevenzip panic") {
+		t.Errorf("expected error to contain 'sevenzip panic', got: %v", err)
+	}
+	if res.Reason != FailCorrupt {
+		t.Errorf("expected res.Reason to be FailCorrupt, got: %v", res.Reason)
 	}
 }
