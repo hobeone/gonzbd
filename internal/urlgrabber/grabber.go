@@ -126,15 +126,9 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 		return nil, fmt.Errorf("URL rejected: %w", err)
 	}
 
-	// Use configured credentials if provided, otherwise try URL userinfo.
+	// Use configured credentials if provided.
 	username := g.cfg.Username
 	password := g.cfg.Password
-	if username == "" && password == "" {
-		if parsedURL.User != nil {
-			username = parsedURL.User.Username()
-			password, _ = parsedURL.User.Password()
-		}
-	}
 
 	if username != "" || password != "" {
 		req.SetBasicAuth(username, password)
