@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -514,6 +515,7 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 			Segments: []xmlSegment{
 				{Bytes: 100, Number: 1, ID: "msg1"},
 				{Bytes: 200, Number: 2, ID: "msg2"},
+				{Bytes: 100, Number: 0, ID: "bad4"},
 				{Bytes: 0, Number: 3, ID: "bad1"},
 				{Bytes: -10, Number: 4, ID: "bad2"},
 				{Bytes: 1 << 24, Number: 5, ID: "bad3"},
@@ -620,5 +622,110 @@ func TestAbsorbHead_Direct(t *testing.T) {
 	}
 	if _, ok := nzbOut.Meta[""]; ok {
 		t.Errorf("empty meta type should be skipped")
+	}
+}
+
+func TestParseNoValidFiles(t *testing.T) {
+	const doc = `<?xml version="1.0"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file subject="no segments">
+    <groups><group>g</group></groups>
+  </file>
+</nzb>`
+	got, err := Parse(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("Parse empty NZB: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil NZB")
+	}
+	if len(got.Files) != 0 {
+		t.Errorf("expected 0 files, got %d", len(got.Files))
+	}
+	if !got.AvgAge.IsZero() {
+		t.Errorf("expected zero AvgAge, got %s", got.AvgAge)
+	}
+}
+
+func TestParse_MaxFilesWithSkipped(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0"?><nzb>`)
+	for i := 0; i < maxFiles+1; i++ {
+		b.WriteString(`<file subject="f"><groups><group>g</group></groups><segments></segments></file>`)
+	}
+	b.WriteString(`</nzb>`)
+
+	_, err := Parse(strings.NewReader(b.String()))
+	if err == nil {
+		t.Fatal("expected error for file count matching or exceeding maxFiles via skipped files")
+	}
+	if !strings.Contains(err.Error(), "file count exceeds limit") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParse_ExactMaxSegments(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0"?><nzb>`)
+	b.WriteString(`<file subject="big" date="1700000000">`)
+	b.WriteString(`<groups><group>g</group></groups><segments>`)
+	for i := 1; i <= maxSegments; i++ {
+		b.WriteString(`<segment bytes="100" number="`)
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(`">id@h</segment>`)
+	}
+	b.WriteString(`</segments></file></nzb>`)
+
+	got, err := Parse(strings.NewReader(b.String()))
+	if err != nil {
+		t.Fatalf("expected no error for exactly maxSegments, got: %v", err)
+	}
+	if len(got.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(got.Files))
+	}
+	if len(got.Files[0].Articles) != maxSegments {
+		t.Fatalf("expected %d articles, got %d", maxSegments, len(got.Files[0].Articles))
+	}
+}
+
+func TestParseBzip2EnvelopeInline(t *testing.T) {
+	bzBytes := []byte{
+		0x42, 0x5a, 0x68, 0x39, 0x31, 0x41, 0x59, 0x26, 0x53, 0x59, 0xea, 0xc7,
+		0x72, 0x43, 0x00, 0x00, 0x00, 0x99, 0x80, 0x00, 0x00, 0x80, 0x05, 0x10,
+		0x01, 0x00, 0x10, 0x20, 0x00, 0x21, 0x80, 0x0c, 0x02, 0x47, 0xae, 0xe2,
+		0xee, 0x48, 0xa7, 0x0a, 0x12, 0x1d, 0x58, 0xee, 0x48, 0x60,
+	}
+	got, err := Parse(bytes.NewReader(bzBytes))
+	if err != nil {
+		t.Fatalf("Parse bzip2 inline: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil NZB")
+	}
+}
+
+func TestEnvelopeSelection_MoreMagicCombinations(t *testing.T) {
+	tests := []struct {
+		name  string
+		magic []byte
+	}{
+		{"not gzip or bz2, first byte non-matching", []byte{0x00, 0x00}},
+		{"gzip first, bad second", []byte{0x1f, 0x00}},
+		{"bz first, bad second", []byte{'B', 'X'}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			br := bufio.NewReader(bytes.NewReader([]byte("<nzb/>")))
+			src, closer, err := unwrapEnvelope(br, tc.magic)
+			if err != nil {
+				t.Fatalf("unwrapEnvelope: %v", err)
+			}
+			if closer != nil {
+				t.Error("expected no closer")
+			}
+			if src != br {
+				t.Error("expected passthrough reader")
+			}
+		})
 	}
 }
