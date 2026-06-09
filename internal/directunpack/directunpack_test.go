@@ -66,9 +66,12 @@ func TestDirectUnpack_SingleVolume_HappyPath(t *testing.T) {
 	du.Wait()
 
 	results := du.Results()
+	failures := du.Failures()
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got: %+v", failures)
+	}
 	if len(results) == 0 {
-		failures := du.Failures()
-		t.Fatalf("expected success, got failures: %+v", failures)
+		t.Fatal("expected success, got 0 results")
 	}
 
 	// Verify extracted files exist.
@@ -120,9 +123,12 @@ func TestDirectUnpack_MultiVolume_AllPresent(t *testing.T) {
 	du.Wait()
 
 	results := du.Results()
+	failures := du.Failures()
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got: %+v", failures)
+	}
 	if len(results) == 0 {
-		failures := du.Failures()
-		t.Fatalf("expected success, got failures: %+v", failures)
+		t.Fatal("expected success, got 0 results")
 	}
 
 	// Check that a file was extracted.
@@ -170,9 +176,12 @@ func TestDirectUnpack_MultiVolume_Delayed(t *testing.T) {
 	du.Wait()
 
 	results := du.Results()
+	failures := du.Failures()
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got: %+v", failures)
+	}
 	if len(results) == 0 {
-		failures := du.Failures()
-		t.Fatalf("expected success, got failures: %+v", failures)
+		t.Fatal("expected success, got 0 results")
 	}
 }
 
@@ -223,9 +232,12 @@ func TestDirectUnpack_MultiVolume_OutOfOrder(t *testing.T) {
 	du.Wait()
 
 	results := du.Results()
+	failures := du.Failures()
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got: %+v", failures)
+	}
 	if len(results) == 0 {
-		failures := du.Failures()
-		t.Fatalf("expected success, got failures: %+v", failures)
+		t.Fatal("expected success, got 0 results")
 	}
 }
 
@@ -510,6 +522,15 @@ func TestDirectUnpack_OnLineCallback(t *testing.T) {
 	if lineCount == 0 {
 		t.Error("expected OnLine callback to receive output lines")
 	}
+
+	results := du.Results()
+	failures := du.Failures()
+	if len(failures) != 0 {
+		t.Fatalf("expected no failures, got: %+v", failures)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected success, got 0 results")
+	}
 }
 
 func TestDirectUnpack_Password(t *testing.T) {
@@ -604,4 +625,87 @@ func testLogger(t *testing.T) *slog.Logger {
 	t.Helper()
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})).
 		With("test", t.Name())
+}
+
+type logRecorder struct {
+	mu   sync.Mutex
+	logs []string
+}
+
+func (r *logRecorder) Enabled(ctx context.Context, l slog.Level) bool {
+	return true
+}
+
+func (r *logRecorder) Handle(ctx context.Context, rec slog.Record) error {
+	r.mu.Lock()
+	r.logs = append(r.logs, rec.Message)
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *logRecorder) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return r
+}
+
+func (r *logRecorder) WithGroup(name string) slog.Handler {
+	return r
+}
+
+func TestDirectUnpack_Add_NoAllFilenames(t *testing.T) {
+	recorder := &logRecorder{}
+	logger := slog.New(recorder)
+	du := New(logger, "test", t.TempDir(), t.TempDir(), Options{})
+
+	ctx := context.Background()
+	du.Add(ctx, "movie.part01.rar", "/tmp/movie.part01.rar")
+
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	for _, msg := range recorder.logs {
+		if msg == "volume map built" {
+			t.Error("expected volume map NOT to be built when allFilenames is empty")
+		}
+	}
+}
+
+func TestDirectUnpack_OnLinePanic(t *testing.T) {
+	srcDir := testdataDir(t)
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+
+	volPath := copyRAR(t, srcDir, workDir, "single_rar5.rar")
+
+	du := New(
+		testLogger(t),
+		"test-job",
+		workDir,
+		extractDir,
+		Options{
+			OnLine: func(line string) {
+				panic("simulated panic")
+			},
+		},
+	)
+
+	du.SetAllFilenames([]string{"single_rar5.rar"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	du.Add(ctx, "single_rar5.rar", volPath)
+	du.Wait()
+
+	results := du.Results()
+	if len(results) != 0 {
+		t.Fatalf("expected 0 success sets after panic, got %d", len(results))
+	}
+
+	failures := du.Failures()
+	f, ok := failures["single_rar5"]
+	if !ok {
+		t.Fatal("expected failure for single_rar5")
+	}
+	if !strings.Contains(f.Reason, "rarengine panic: simulated panic") {
+		t.Errorf("expected failure reason to contain panic message, got: %q", f.Reason)
+	}
 }
