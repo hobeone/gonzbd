@@ -1,6 +1,7 @@
 package web
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -122,4 +123,52 @@ func TestStaticAssetNoCookie(t *testing.T) {
 			t.Errorf("GET /_app/test.js should not set gonzbd_apikey cookie")
 		}
 	}
+}
+
+func TestSPACookieSecureFlag(t *testing.T) {
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, nil)
+
+	t.Run("with TLS (HTTPS)", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.TLS = &tls.ConnectionState{}
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		cookies := rr.Result().Cookies()
+		var found *http.Cookie
+		for _, c := range cookies {
+			if c.Name == "gonzbd_apikey" {
+				found = c
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("did not set gonzbd_apikey cookie")
+		}
+		if !found.Secure {
+			t.Error("cookie should have Secure=true when request is HTTPS (TLS != nil)")
+		}
+	})
+
+	t.Run("without TLS (HTTP)", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.TLS = nil
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		cookies := rr.Result().Cookies()
+		var found *http.Cookie
+		for _, c := range cookies {
+			if c.Name == "gonzbd_apikey" {
+				found = c
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("did not set gonzbd_apikey cookie")
+		}
+		if found.Secure {
+			t.Error("cookie should have Secure=false when request is HTTP (TLS == nil)")
+		}
+	})
 }
