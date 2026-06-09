@@ -136,3 +136,38 @@ exit 1
 		t.Error("expected error to persist when no auto-correction happened")
 	}
 }
+
+func TestUnRAR_CannotCreateNoAutoFix_ZeroFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test not portable to Windows")
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+	outDir := t.TempDir()
+
+	scriptPath := filepath.Join(dir, "mock-unrar")
+	script := `#!/bin/sh
+echo "Cannot create file.txt"
+echo "Attempting to correct the filename"
+exit 1
+`
+	writeScript(t, scriptPath, []byte(script))
+
+	archive := unpack.Archive{
+		Type:     unpack.RarArchive,
+		Name:     "archive",
+		MainFile: filepath.Join(dir, "archive.rar"),
+		Parts:    []string{filepath.Join(dir, "archive.rar")},
+	}
+	os.WriteFile(archive.MainFile, []byte("rar"), 0o644)
+
+	_, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, unpack.Options{
+		UnrarCommand: scriptPath,
+	})
+
+	// Since 0 files were extracted, it should NOT auto-correct and the error must persist.
+	if err == nil {
+		t.Error("expected error to persist when zero files were extracted")
+	}
+}
