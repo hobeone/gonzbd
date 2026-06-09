@@ -23,7 +23,7 @@ func isExcessivelyObfuscated(name string) bool {
 }
 
 func parsePRiVATESubject(subject string) string {
-	if len(subject) < 9 || !strings.EqualFold(subject[:9], "[private]") {
+	if !strings.EqualFold(subject[:min(len(subject), 9)], "[private]") {
 		return ""
 	}
 
@@ -49,11 +49,9 @@ func ExtractFilenameFromSubject(subject string) string {
 	// 1. Filename nicely wrapped in quotes
 	matches := reSubjectFilenameQuotes.FindAllStringSubmatch(subject, -1)
 	for _, m := range matches {
-		if len(m) > 1 {
-			name := strings.Trim(m[1], ` "`)
-			if name != "" && !isExcessivelyObfuscated(name) {
-				return name
-			}
+		name := strings.Trim(m[1], ` "`)
+		if name != "" && !isExcessivelyObfuscated(name) {
+			return name
 		}
 	}
 
