@@ -1,9 +1,11 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -66,6 +68,12 @@ func TestParse(t *testing.T) {
 			name:    "empty line",
 			line:    "",
 			wantErr: true,
+		},
+		{
+			name:   "action name matches a field earlier in the line and len is 6",
+			line:   "* * * * 1 1",
+			action: "1",
+			arg:    "",
 		},
 	}
 
@@ -404,5 +412,80 @@ func TestUnknownActionViaSchedulerContinues(t *testing.T) {
 	defer mu.Unlock()
 	if !knownFired {
 		t.Error("known handler must fire even when preceding unknown action fails")
+	}
+}
+
+func TestNewWithNilLogger(t *testing.T) {
+	t.Parallel()
+	sched := New(nil, NewRegistry(), nil)
+	if sched.logger == nil {
+		t.Error("expected default logger to be set, got nil")
+	}
+}
+
+func TestTickDispatchLogging(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	reg.Register("fail_action", func(_ context.Context, _ string) error {
+		return errors.New("intentional failure")
+	})
+	reg.Register("ok_action", func(_ context.Context, _ string) error {
+		return nil
+	})
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	failSpec, err := Parse("0 10 * * * fail_action")
+	if err != nil {
+		t.Fatalf("Parse fail_action: %v", err)
+	}
+	okSpec, err := Parse("0 10 * * * ok_action")
+	if err != nil {
+		t.Fatalf("Parse ok_action: %v", err)
+	}
+
+	sched := New([]ScheduleSpec{failSpec, okSpec}, reg, logger)
+	tick := time.Date(2024, 4, 15, 10, 0, 0, 0, time.UTC)
+
+	sched.Tick(t.Context(), tick)
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "scheduled action failed") {
+		t.Error("expected log warning 'scheduled action failed' for fail_action")
+	}
+	if strings.Contains(logOutput, "ok_action") {
+		t.Error("did not expect warning log for ok_action")
+	}
+}
+
+func TestOneshotDispatchLogging(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	reg.Register("fail_action", func(_ context.Context, _ string) error {
+		return errors.New("intentional failure")
+	})
+	reg.Register("ok_action", func(_ context.Context, _ string) error {
+		return nil
+	})
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	sched := New(nil, reg, logger)
+	fireAt := time.Date(2024, 4, 15, 10, 0, 0, 0, time.UTC)
+	sched.Oneshots().Add(Oneshot{FireAt: fireAt, Action: "fail_action", Arg: ""})
+	sched.Oneshots().Add(Oneshot{FireAt: fireAt, Action: "ok_action", Arg: ""})
+
+	sched.Tick(t.Context(), fireAt)
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "one-shot action failed") {
+		t.Error("expected log warning 'one-shot action failed' for fail_action")
+	}
+	if strings.Contains(logOutput, "ok_action") {
+		t.Error("did not expect warning log for ok_action")
 	}
 }
