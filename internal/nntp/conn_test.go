@@ -727,3 +727,85 @@ func TestFetch_AfterReaderError(t *testing.T) {
 		t.Error("expected connection context to be cancelled after reader error")
 	}
 }
+
+func TestStat_Errors(t *testing.T) {
+	// 1. State != StateReady
+	{
+		conn := &Conn{} // state is StateInit (0), not StateReady
+		err := conn.Stat(t.Context(), "test@host")
+		if !errors.Is(err, ErrInvalidState) {
+			t.Errorf("expected ErrInvalidState, got %v", err)
+		}
+	}
+
+	// 2. Already cancelled context
+	{
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		conn := &Conn{state: StateReady}
+		err := conn.Stat(ctx, "test@host")
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got %v", err)
+		}
+	}
+
+	// 3. Invalid message ID
+	{
+		conn := &Conn{state: StateReady}
+		err := conn.Stat(t.Context(), "test\n@host")
+		if !errors.Is(err, ErrInvalidMessageID) {
+			t.Errorf("expected ErrInvalidMessageID, got %v", err)
+		}
+	}
+}
+
+func TestStat_ServerErrors(t *testing.T) {
+	ms := newMockServer(t, func(c *mockConn) {
+		c.send("200 welcome")
+		c.expect("CAPABILITIES")
+		c.sendCaps()
+
+		// Case A: unexpected 500 error
+		c.expect("STAT <error@host>")
+		c.send("500 internal server error")
+
+		// Case B: timeout context / orphan
+		c.expect("STAT <timeout@host>")
+		// Allow client context to time out (50ms), then send response to keep pipeline in sync.
+		time.Sleep(200 * time.Millisecond)
+		c.send("223 0 <timeout@host>")
+
+		// Case C: unexpected code 300 (non-sentinel)
+		c.expect("STAT <code300@host>")
+		c.send("300 special response")
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, err := Dial(ctx, makeCfg(ms.addr))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	// Test case A
+	err = conn.Stat(ctx, "error@host")
+	if !errors.Is(err, ErrTransient) {
+		t.Errorf("expected ErrTransient error, got %v", err)
+	}
+
+	// Test case B (context timeout mid-flight)
+	queryCtx, queryCancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer queryCancel()
+	err = conn.Stat(queryCtx, "timeout@host")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected DeadlineExceeded, got %v", err)
+	}
+
+	// Test case C (unexpected code 300)
+	err = conn.Stat(ctx, "code300@host")
+	var se *ServerError
+	if !errors.As(err, &se) || se.Code != 300 {
+		t.Errorf("expected ServerError 300, got %v", err)
+	}
+}
