@@ -528,7 +528,7 @@ func (c *Conn) Fetch(ctx context.Context, messageID string) ([]byte, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-c.ctx.Done():
-		return nil, ErrClosed
+		return nil, c.closeError()
 	}
 
 	pc := &pendingCmd{kind: cmdBody, done: make(chan struct{})}
@@ -604,7 +604,7 @@ func (c *Conn) Stat(ctx context.Context, messageID string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.ctx.Done():
-		return ErrClosed
+		return c.closeError()
 	}
 
 	pc := &pendingCmd{kind: cmdStat, done: make(chan struct{})}
