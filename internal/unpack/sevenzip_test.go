@@ -68,4 +68,7 @@ func TestSevenZip_OnCommandFiresBeforeExec(t *testing.T) {
 	if !strings.Contains(captured, archive.MainFile) {
 		t.Errorf("cmdline missing archive path: %q", captured)
 	}
+	if !strings.Contains(captured, opts.SevenZipCommand) {
+		t.Errorf("cmdline missing custom binary path: %q", captured)
+	}
 }

@@ -236,3 +236,37 @@ func TestEnsureRarSet(t *testing.T) {
 		t.Error("expected retrieve existing s1 on duplicate call")
 	}
 }
+
+func TestSortedNumericParts(t *testing.T) {
+	t.Run("valid contiguous sequence", func(t *testing.T) {
+		input := []string{"file.003", "file.001", "file.002"}
+		got, err := sortedNumericParts(input)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		want := []string{"file.001", "file.002", "file.003"}
+		if !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("missing part", func(t *testing.T) {
+		input := []string{"file.001", "file.003"}
+		_, err := sortedNumericParts(input)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		expected := "missing part 2 in split sequence"
+		if err.Error() != expected {
+			t.Errorf("got error %q, want %q", err.Error(), expected)
+		}
+	})
+
+	t.Run("invalid suffix", func(t *testing.T) {
+		input := []string{"file.abc"}
+		_, err := sortedNumericParts(input)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+}

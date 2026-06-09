@@ -1,6 +1,7 @@
 package unpack
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -36,12 +37,26 @@ func TestFileJoin_Success(t *testing.T) {
 		},
 	}
 
-	res, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	res, err := FileJoin(t.Context(), logger, archive, outDir, Options{})
 	if err != nil {
 		t.Fatalf("FileJoin: %v", err)
 	}
 	if res.Err != nil {
 		t.Fatalf("Result.Err: %v", res.Err)
+	}
+
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, `"part":1`) || !strings.Contains(logStr, `"pct":"33%"`) {
+		t.Errorf("missing or incorrect progress logs for part 1 in: %s", logStr)
+	}
+	if !strings.Contains(logStr, `"part":2`) || !strings.Contains(logStr, `"pct":"67%"`) {
+		t.Errorf("missing or incorrect progress logs for part 2 in: %s", logStr)
+	}
+	if !strings.Contains(logStr, `"part":3`) || !strings.Contains(logStr, `"pct":"100%"`) {
+		t.Errorf("missing or incorrect progress logs for part 3 in: %s", logStr)
 	}
 
 	joined, err := os.ReadFile(filepath.Join(outDir, "movie"))
@@ -410,4 +425,32 @@ func TestCopyPartDirect(t *testing.T) {
 			t.Error("expected error for non-existent file")
 		}
 	})
+}
+
+func TestFileJoin_CopyError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	outDir := t.TempDir()
+
+	part1 := filepath.Join(dir, "movie.001")
+	os.WriteFile(part1, []byte("AAAA"), 0o644)
+
+	part2 := filepath.Join(dir, "movie.002")
+	if err := os.Mkdir(part2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := Archive{
+		Type:     SplitArchive,
+		Name:     "movie",
+		MainFile: part1,
+		Parts:    []string{part1, part2},
+	}
+
+	_, err := FileJoin(t.Context(), slog.Default(), archive, outDir, Options{})
+	if err == nil {
+		t.Error("expected error when copying a directory part, but got nil")
+	} else if !strings.HasPrefix(err.Error(), "filejoin: copy") {
+		t.Errorf("expected copy error, got: %v", err)
+	}
 }
