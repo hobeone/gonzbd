@@ -52,6 +52,9 @@ func TestExtractFilenameFromSubject(t *testing.T) {
 		{"exclamation_unquoted",
 			`bang!file.zip (1/1)`,
 			"file.zip"},
+		{"first_obfuscated_second_real",
+			`"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.rar" "real_name.rar"`,
+			"real_name.rar"},
 	}
 
 	for _, tt := range tests {
@@ -72,6 +75,7 @@ func TestParsePRiVATESubject_Standard(t *testing.T) {
 	}{
 		{"example 1", `[PRiVATE]-[WtFnZb]-[Some.Show.S01E05.720p]-[02/34] - "" yEnc (02/34)`, "Some.Show.S01E05.720p"},
 		{"example 2", `[PRiVATE]-[WtFnZb]-[movie.name.2024.1080p.BluRay]-[01/75] - "" yEnc (01/75)`, "movie.name.2024.1080p.BluRay"},
+		{"exactly 3 groups", `[PRiVATE]-[group]-[filename]`, "filename"},
 	}
 
 	for _, tt := range tests {
