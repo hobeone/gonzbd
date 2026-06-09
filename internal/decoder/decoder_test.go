@@ -294,6 +294,12 @@ func TestDecodeArticle_MalformedInputs(t *testing.T) {
 		[]byte("=yend size=99"),
 		1)
 
+	// Build a negative-size variant.
+	negativeSize := bytes.Replace(good,
+		fmt.Appendf(nil, "=ybegin line=128 size=%d", len(raw)),
+		[]byte("=ybegin line=128 size=-100"),
+		1)
+
 	cases := []struct {
 		name    string
 		input   []byte
@@ -305,6 +311,7 @@ func TestDecodeArticle_MalformedInputs(t *testing.T) {
 		{"missing_yend", []byte("=ybegin line=128 size=3 name=x\r\nabc\r\n"), errMissingTrailer},
 		{"corrupt_crc", corruptCRC, ErrCRCMismatch},
 		{"size_mismatch", sizeMismatch, errSizeMismatch},
+		{"negative_size", negativeSize, nil},
 	}
 
 	for _, tc := range cases {
@@ -596,6 +603,17 @@ func TestDecoderUnexportedHelpersDirect(t *testing.T) {
 				t.Errorf("pre-allocated: got %v, want %v", got, want)
 			}
 		})
+
+		// Verify exact capacity no-alloc behavior to kill boundary mutant
+		t.Run("sub42Span_exact_capacity_no_alloc", func(t *testing.T) {
+			dst := make([]byte, 2, 5)
+			dst[0], dst[1] = 99, 100
+			src := []byte{42, 43, 44} // n=3, matches spare capacity exactly
+			got := sub42Span(dst, src)
+			if &got[0] != &dst[0] {
+				t.Error("sub42Span allocated a new backing array when spare capacity was exactly sufficient")
+			}
+		})
 	})
 
 	t.Run("indexSpecial", func(t *testing.T) {
@@ -668,6 +686,17 @@ func TestDecoderUnexportedHelpersDirect(t *testing.T) {
 				}
 			})
 		}
+
+		t.Run("decodeUULine_capacity", func(t *testing.T) {
+			got1 := decodeUULine([]byte("00  "), 1)
+			if cap(got1) != 1 {
+				t.Errorf("expected cap 1, got %d", cap(got1))
+			}
+			got2 := decodeUULine([]byte("2&4 "), 2)
+			if cap(got2) != 2 {
+				t.Errorf("expected cap 2, got %d", cap(got2))
+			}
+		})
 	})
 }
 
@@ -804,4 +833,146 @@ func TestDecoderMetadataParsingDirect(t *testing.T) {
 			t.Errorf("expected name='some name with spaces.bin', got %s=%s", keys[1], values[1])
 		}
 	})
+
+	t.Run("ypart with trailing spaces", func(t *testing.T) {
+		body := []byte("=ybegin size=100000 part=12 name=multi.bin\n=ypart begin=1001 end=2000    \nbody_data")
+		hdr, _, err := parseHeader(body)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if hdr.offset != 1000 {
+			t.Errorf("expected offset 1000, got %d", hdr.offset)
+		}
+	})
+
+	t.Run("trailer with trailing spaces", func(t *testing.T) {
+		line := []byte("=yend size=1234 crc32=abcdef12    \n")
+		tr, err := parseTrailer(line, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tr.size != 1234 || tr.crc != 0xabcdef12 {
+			t.Errorf("incorrect parse: %+v", tr)
+		}
+	})
+}
+
+func TestDecodeArticle_ExtraLinesAfterYend(t *testing.T) {
+	raw := []byte("hello")
+	checksum := crc32.ChecksumIEEE(raw)
+
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "=ybegin line=128 size=%d name=test.bin\r\n", len(raw))
+	for _, b := range raw {
+		buf.WriteByte(b + 42)
+	}
+	buf.WriteString("\r\n")
+	fmt.Fprintf(&buf, "=yend size=%d crc32=%08x\r\n", len(raw), checksum)
+	buf.WriteString("some random signature or newsreader info\r\n")
+	buf.WriteString("size=999999 crc32=deadbeef\r\n")
+
+	art, err := DecodeArticle(buf.Bytes())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(art.Data, raw) {
+		t.Errorf("decoded data mismatch: got %q, want %q", art.Data, raw)
+	}
+}
+
+func TestDecodeBody_Preallocation(t *testing.T) {
+	encoded := []byte("12345") // 5 bytes
+
+	// Case 1: sizeHint <= 0 (e.g., 0) -> should preallocate to maxCap = len(encoded) = 5
+	out, _ := decodeBody(encoded, 0)
+	if cap(out) != 5 {
+		t.Errorf("For sizeHint=0, expected capacity 5, got %d", cap(out))
+	}
+
+	// Case 2: sizeHint > maxCap (e.g., 100) -> should cap to maxCap = 5
+	out2, _ := decodeBody(encoded, 100)
+	if cap(out2) != 5 {
+		t.Errorf("For sizeHint=100, expected capacity 5, got %d", cap(out2))
+	}
+
+	// Case 3: sizeHint is valid (e.g., 5)
+	out3, _ := decodeBody(encoded, 5)
+	if cap(out3) != 5 {
+		t.Errorf("For sizeHint=5, expected capacity 5, got %d", cap(out3))
+	}
+
+	// Case 4: sizeHint > maxCap (negation test, e.g. 6) -> should cap to maxCap = 5
+	out4, _ := decodeBody(encoded, 6)
+	if cap(out4) != 5 {
+		t.Errorf("For sizeHint=6, expected capacity 5, got %d", cap(out4))
+	}
+
+	// Case 5: sizeHint is negative (e.g., -5) -> should preallocate to maxCap = 5
+	out5, _ := decodeBody(encoded, -5)
+	if cap(out5) != 5 {
+		t.Errorf("For sizeHint=-5, expected capacity 5, got %d", cap(out5))
+	}
+}
+
+func TestDecodeArticle_TrailerImmediatelyAfterNewline(t *testing.T) {
+	body := []byte("=ybegin line=128 size=0 name=empty.bin\n\n=yend size=0\n")
+	art, err := DecodeArticle(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(art.Data) != 0 {
+		t.Errorf("expected empty data, got %q", art.Data)
+	}
+}
+
+func TestDecodeArticle_Multipart_BeginZero(t *testing.T) {
+	full := makeRaw(2000)
+	part := full[:1000]
+	fileSize := int64(len(full))
+	article := yencEncodePart("test.bin", 1, 2, part, fileSize, 0, 1000)
+
+	art, err := DecodeArticle(article)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if art.Offset < 0 {
+		t.Errorf("expected non-negative offset, got %d", art.Offset)
+	}
+}
+
+func TestDecodeArticle_Multipart_CorruptPCRC(t *testing.T) {
+	full := makeRaw(2000)
+	part := full[:1000]
+	fileSize := int64(len(full))
+	article := yencEncodePart("test.bin", 1, 2, part, fileSize, 1, 1000)
+
+	checksum := crc32.ChecksumIEEE(part)
+	article = bytes.Replace(article,
+		fmt.Appendf(nil, "pcrc32=%08x", checksum),
+		[]byte("pcrc32=deadbeef"),
+		1)
+
+	_, err := DecodeArticle(article)
+	if !errors.Is(err, ErrCRCMismatch) {
+		t.Errorf("expected ErrCRCMismatch for corrupt pcrc32, got %v", err)
+	}
+}
+
+func TestLatin1ToUTF8_Boundary128(t *testing.T) {
+	input := []byte{128}
+	expected := string([]byte{0xC2, 0x80})
+	got := latin1ToUTF8(input)
+	if got != expected {
+		t.Errorf("latin1ToUTF8([128]) = %q (len %d), want %q (len %d)", got, len(got), expected, len(expected))
+	}
+}
+
+func TestDecodeUU_AtMaxSize(t *testing.T) {
+	body := make([]byte, maxDecodeSize)
+	copy(body, []byte("begin 644 test.bin\n"))
+
+	_, _, err := DecodeUU(body)
+	if errors.Is(err, ErrBodyTooLarge) {
+		t.Errorf("DecodeUU(body of exactly maxDecodeSize) should not return ErrBodyTooLarge")
+	}
 }
