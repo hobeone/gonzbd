@@ -24,8 +24,16 @@ func TestCheckDependencies_Missing(t *testing.T) {
 	defer os.Setenv("PATH", oldPath)
 
 	warnings := CheckDependencies()
-	// Should have 2 warnings: par2 missing + neither 7zip nor unrar found.
-	if len(warnings) < 2 {
-		t.Errorf("Expected at least 2 warnings, got %d: %v", len(warnings), warnings)
+	expected := []string{
+		`External program "par2" not found in PATH. PAR2 repair will fail.`,
+		`Neither "7-zip" nor "unrar" found in PATH. Archive extraction will fail.`,
+	}
+	if len(warnings) != len(expected) {
+		t.Fatalf("Expected exactly %d warnings, got %d: %v", len(expected), len(warnings), warnings)
+	}
+	for i, w := range warnings {
+		if w != expected[i] {
+			t.Errorf("Warning at %d mismatch: expected %q, got %q", i, expected[i], w)
+		}
 	}
 }

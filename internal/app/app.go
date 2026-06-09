@@ -890,7 +890,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(jobID string, snap *queue.Jo
 // download (NoCRC), or could not be matched (Unverified). When no usable par2
 // index is on disk (e.g. the index itself failed to download), it returns true
 // so the recovery volumes are fetched — the safe, today's-behaviour fallback.
-func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger) (bool, string) {
+func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger) (needsRecovery bool, reason string) {
 	sets, err := par2.FindPar2Files(dir)
 	if err != nil || len(sets) == 0 {
 		reason := "no usable par2 index found to verify against"
@@ -1740,7 +1740,6 @@ func (app *Application) ResumeDownloads() {
 	}
 }
 
-// ServerStatus returns a snapshot of all NNTP server connection state,
 // DisconnectAll drops all idle NNTP connections. Workers stay alive and
 // will re-dial lazily when new work arrives.
 func (app *Application) DisconnectAll() {
