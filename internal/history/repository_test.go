@@ -2,6 +2,7 @@ package history
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -514,5 +515,49 @@ func TestEscapeLike(t *testing.T) {
 				t.Errorf("escapeLike(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDBConnectionSettings(t *testing.T) {
+	db, _ := openTestDB(t)
+	if db.connMaxLifetime != 5*time.Minute {
+		t.Errorf("connMaxLifetime = %v, want 5m", db.connMaxLifetime)
+	}
+	if db.maxIdleConns != 25 {
+		t.Errorf("maxIdleConns = %d, want 25", db.maxIdleConns)
+	}
+	if db.maxOpenConns != 25 {
+		t.Errorf("maxOpenConns = %d, want 25", db.maxOpenConns)
+	}
+}
+
+func TestDeleteChunked(t *testing.T) {
+	db, repo := openTestDB(t)
+	ctx := t.Context()
+
+	tx, err := db.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+
+	const totalEntries = 999
+	ids := make([]string, totalEntries)
+	for i := range totalEntries {
+		ids[i] = fmt.Sprintf("chunk-%d", i)
+		_, err := tx.ExecContext(ctx, "INSERT INTO history (nzo_id) VALUES (?)", ids[i])
+		if err != nil {
+			t.Fatalf("Exec: %v", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	n, err := repo.Delete(ctx, ids...)
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if n != totalEntries {
+		t.Errorf("deleted = %d, want %d", n, totalEntries)
 	}
 }
