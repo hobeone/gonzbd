@@ -47,14 +47,14 @@ func buildMainBody(sliceSize uint64, fileIDs ...[16]byte) []byte {
 }
 
 func buildFileDescBody(fileID [16]byte, fullHash [16]byte, hash16k [16]byte, fileSize uint64, fileName string) []byte {
-	body := make([]byte, 16+16+16+8)
+	nameBytes := []byte(fileName)
+	pad := (4 - (len(nameBytes) % 4)) % 4
+	body := make([]byte, 16+16+16+8, 16+16+16+8+len(nameBytes)+pad)
 	copy(body[0:16], fileID[:])
 	copy(body[16:32], fullHash[:])
 	copy(body[32:48], hash16k[:])
 	binary.LittleEndian.PutUint64(body[48:56], fileSize)
-	nameBytes := []byte(fileName)
 	body = append(body, nameBytes...)
-	pad := (4 - (len(nameBytes) % 4)) % 4
 	for range pad {
 		body = append(body, 0)
 	}
@@ -127,7 +127,7 @@ func TestQuickCheckStage_Run(t *testing.T) {
 	fdPkt := buildPacket(setID, typeFileDesc, buildFileDescBody(fileID, fullHash, hash16k, sliceSize, fileName))
 	ifscPkt := buildPacket(setID, typeIFSC, buildIFSCBody(fileID, hash16k, crc32.ChecksumIEEE(content)))
 
-	var parContent []byte
+	parContent := make([]byte, 0, len(mainPkt)+len(fdPkt)+len(ifscPkt))
 	parContent = append(parContent, mainPkt...)
 	parContent = append(parContent, fdPkt...)
 	parContent = append(parContent, ifscPkt...)
@@ -175,4 +175,181 @@ func TestQuickCheckStage_Run(t *testing.T) {
 	if !strings.Contains(linesStr, "1/1 par2-tracked files verified OK") {
 		t.Errorf("expected CRC OK verification line in output, got: %s", linesStr)
 	}
+}
+
+func TestQuickCheckStage_CRCErrors(t *testing.T) {
+	t.Run("CRC Mismatch", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "test.par2")
+
+		setID := [16]byte{1, 2, 3, 4}
+		fileID := [16]byte{10, 20, 30}
+		fullHash := [16]byte{0xAA, 0xBB, 0xCC}
+
+		content := []byte("flat file content for quickcheck stage test")
+		hash16k := md5.Sum(content)
+		fileName := "original.txt"
+
+		sliceSize := uint64(len(content))
+
+		mainPkt := buildPacket(setID, typeMain, buildMainBody(sliceSize, fileID))
+		fdPkt := buildPacket(setID, typeFileDesc, buildFileDescBody(fileID, fullHash, hash16k, sliceSize, fileName))
+		ifscPkt := buildPacket(setID, typeIFSC, buildIFSCBody(fileID, hash16k, crc32.ChecksumIEEE(content)))
+
+		parContent := make([]byte, 0, len(mainPkt)+len(fdPkt)+len(ifscPkt))
+		parContent = append(parContent, mainPkt...)
+		parContent = append(parContent, fdPkt...)
+		parContent = append(parContent, ifscPkt...)
+
+		if err := os.WriteFile(parPath, parContent, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		if err := os.WriteFile(filepath.Join(tmpDir, fileName), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		stage := NewQuickCheckStage()
+		stage.SetEnabled(true)
+
+		job := &Job{
+			Queue: &queue.Job{
+				ID: "job-qc-err",
+				Files: []queue.JobFile{
+					{
+						Filename:       "original.txt",
+						Bytes:          int64(len(content)),
+						AssembledCRC32: crc32.ChecksumIEEE(content) + 1, // Mismatch!
+					},
+				},
+			},
+			DownloadDir: tmpDir,
+		}
+
+		err := stage.Run(t.Context(), job)
+		if err != nil {
+			t.Fatalf("Run failed: %v", err)
+		}
+
+		if job.QuickCheckPassed {
+			t.Error("expected job.QuickCheckPassed to be false on CRC mismatch")
+		}
+
+		linesStr := strings.Join(job.OutputLines, "\n")
+		if !strings.Contains(linesStr, "CRC mismatch") {
+			t.Errorf("expected CRC mismatch line, got: %s", linesStr)
+		}
+	})
+
+	t.Run("No CRC", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "test.par2")
+
+		setID := [16]byte{1, 2, 3, 4}
+		fileID := [16]byte{10, 20, 30}
+		fullHash := [16]byte{0xAA, 0xBB, 0xCC}
+
+		content := []byte("flat file content for quickcheck stage test")
+		hash16k := md5.Sum(content)
+		fileName := "original.txt"
+
+		sliceSize := uint64(len(content))
+
+		mainPkt := buildPacket(setID, typeMain, buildMainBody(sliceSize, fileID))
+		fdPkt := buildPacket(setID, typeFileDesc, buildFileDescBody(fileID, fullHash, hash16k, sliceSize, fileName))
+		ifscPkt := buildPacket(setID, typeIFSC, buildIFSCBody(fileID, hash16k, crc32.ChecksumIEEE(content)))
+
+		parContent := make([]byte, 0, len(mainPkt)+len(fdPkt)+len(ifscPkt))
+		parContent = append(parContent, mainPkt...)
+		parContent = append(parContent, fdPkt...)
+		parContent = append(parContent, ifscPkt...)
+
+		if err := os.WriteFile(parPath, parContent, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		if err := os.WriteFile(filepath.Join(tmpDir, fileName), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		stage := NewQuickCheckStage()
+		stage.SetEnabled(true)
+
+		job := &Job{
+			Queue: &queue.Job{
+				ID: "job-qc-nocrc",
+				Files: []queue.JobFile{
+					{
+						Filename:       "original.txt",
+						Bytes:          int64(len(content)),
+						AssembledCRC32: 0, // No CRC!
+					},
+				},
+			},
+			DownloadDir: tmpDir,
+		}
+
+		err := stage.Run(t.Context(), job)
+		if err != nil {
+			t.Fatalf("Run failed: %v", err)
+		}
+
+		if job.QuickCheckPassed {
+			t.Error("expected job.QuickCheckPassed to be false on missing CRC")
+		}
+
+		linesStr := strings.Join(job.OutputLines, "\n")
+		if !strings.Contains(linesStr, "CRC unavailable") {
+			t.Errorf("expected CRC unavailable line, got: %s", linesStr)
+		}
+	})
+
+	t.Run("Unverified", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "test.par2")
+
+		setID := [16]byte{1, 2, 3, 4}
+		fileID := [16]byte{10, 20, 30}
+		fullHash := [16]byte{0xAA, 0xBB, 0xCC}
+
+		content := []byte("flat file content for quickcheck stage test")
+		hash16k := md5.Sum(content)
+		fileName := "original.txt"
+
+		sliceSize := uint64(len(content))
+
+		mainPkt := buildPacket(setID, typeMain, buildMainBody(sliceSize, fileID))
+		fdPkt := buildPacket(setID, typeFileDesc, buildFileDescBody(fileID, fullHash, hash16k, sliceSize, fileName))
+		ifscPkt := buildPacket(setID, typeIFSC, buildIFSCBody(fileID, hash16k, crc32.ChecksumIEEE(content)))
+
+		parContent := make([]byte, 0, len(mainPkt)+len(fdPkt)+len(ifscPkt))
+		parContent = append(parContent, mainPkt...)
+		parContent = append(parContent, fdPkt...)
+		parContent = append(parContent, ifscPkt...)
+
+		if err := os.WriteFile(parPath, parContent, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		// Don't create the file, and pass an empty file list so it is unverified.
+		stage := NewQuickCheckStage()
+		stage.SetEnabled(true)
+
+		job := &Job{
+			Queue: &queue.Job{
+				ID:    "job-qc-unver",
+				Files: []queue.JobFile{}, // No files matching the par2 entry.
+			},
+			DownloadDir: tmpDir,
+		}
+
+		err := stage.Run(t.Context(), job)
+		if err != nil {
+			t.Fatalf("Run failed: %v", err)
+		}
+
+		if job.QuickCheckPassed {
+			t.Error("expected job.QuickCheckPassed to be false on unverified files")
+		}
+	})
 }
