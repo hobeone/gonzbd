@@ -764,3 +764,113 @@ func TestValidateURL_Direct(t *testing.T) {
 		})
 	}
 }
+
+func TestNew_Defaults(t *testing.T) {
+	handler := &MockHandler{}
+	grabber := New(Config{}, handler)
+
+	if grabber.cfg.Timeout != DefaultTimeout {
+		t.Errorf("expected Timeout %v, got %v", DefaultTimeout, grabber.cfg.Timeout)
+	}
+	if grabber.cfg.MaxBytes != DefaultMaxBytes {
+		t.Errorf("expected MaxBytes %d, got %d", DefaultMaxBytes, grabber.cfg.MaxBytes)
+	}
+	if grabber.logger == nil {
+		t.Errorf("expected non-nil logger")
+	}
+	if grabber.client == nil {
+		t.Fatalf("expected non-nil HTTP client")
+	}
+	if grabber.client.Timeout != DefaultTimeout {
+		t.Errorf("expected HTTP client Timeout %v, got %v", DefaultTimeout, grabber.client.Timeout)
+	}
+}
+
+func TestFetchHTTPBasicAuthPartial(t *testing.T) {
+	nzbData := []byte(`<?xml version="1.0" encoding="UTF-8"?><nzb/>`)
+
+	// Test case 1: Username only
+	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "onlyuser" || password != "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-nzb")
+		w.Write(nzbData)
+	}))
+	defer server1.Close()
+
+	handler1 := &MockHandler{}
+	grabber1 := New(Config{Username: "onlyuser", AllowPrivateIPs: true}, handler1)
+	_, err := grabber1.Fetch(t.Context(), server1.URL+"/test.nzb", types.FetchOptions{})
+	if err != nil {
+		t.Fatalf("Username-only basic auth failed: %v", err)
+	}
+
+	// Test case 2: Password only
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "" || password != "onlypass" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-nzb")
+		w.Write(nzbData)
+	}))
+	defer server2.Close()
+
+	handler2 := &MockHandler{}
+	grabber2 := New(Config{Password: "onlypass", AllowPrivateIPs: true}, handler2)
+	_, err = grabber2.Fetch(t.Context(), server2.URL+"/test.nzb", types.FetchOptions{})
+	if err != nil {
+		t.Fatalf("Password-only basic auth failed: %v", err)
+	}
+}
+
+func TestFetchSizeCapExact(t *testing.T) {
+	nzbData := []byte(`<?xml version="1.0" encoding="UTF-8"?><nzb/>`)
+	size := len(nzbData)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-nzb")
+		w.Write(nzbData)
+	}))
+	defer server.Close()
+
+	// MaxBytes matches size exactly
+	handler := &MockHandler{}
+	grabber := New(Config{MaxBytes: int64(size), AllowPrivateIPs: true}, handler)
+	_, err := grabber.Fetch(t.Context(), server.URL+"/test.nzb", types.FetchOptions{})
+	if err != nil {
+		t.Fatalf("Fetch with exact MaxBytes failed: %v", err)
+	}
+}
+
+func TestFetchRedirectLimit_Direct(t *testing.T) {
+	handler := &MockHandler{}
+	grabber := New(Config{}, handler)
+
+	if grabber.client.CheckRedirect == nil {
+		t.Fatalf("CheckRedirect is nil")
+	}
+
+	req, err := http.NewRequest("GET", "http://example.com", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+
+	// 9 redirects should be allowed
+	err = grabber.client.CheckRedirect(req, make([]*http.Request, 9))
+	if err != nil {
+		t.Errorf("Expected 9 redirects to be allowed, got error: %v", err)
+	}
+
+	// 10 redirects should be rejected
+	err = grabber.client.CheckRedirect(req, make([]*http.Request, 10))
+	if err == nil {
+		t.Errorf("Expected 10 redirects to be rejected, got nil error")
+	} else if !strings.Contains(err.Error(), "too many redirects") {
+		t.Errorf("Expected error to mention too many redirects, got: %v", err)
+	}
+}
