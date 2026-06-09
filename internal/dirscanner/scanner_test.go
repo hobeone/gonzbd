@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1037,6 +1039,12 @@ func TestProcessScannedFile_PartialError(t *testing.T) {
 	if !isPartialError(err, &pe) {
 		t.Errorf("expected PartialError, got %T: %v", err, err)
 	}
+	if pe.Failed != 1 {
+		t.Errorf("expected pe.Failed = 1, got %d", pe.Failed)
+	}
+	if pe.Total != 2 {
+		t.Errorf("expected pe.Total = 2, got %d", pe.Total)
+	}
 	if ok {
 		t.Error("processScannedFile should return false on partial error")
 	}
@@ -1151,5 +1159,227 @@ func TestScannerUnexportedHelpersDirect(t *testing.T) {
 				}
 			}
 		})
+	})
+}
+
+type testLogHandler struct {
+	mu       sync.Mutex
+	records  []slog.Record
+	onRecord func(slog.Record)
+}
+
+func (h *testLogHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return true
+}
+
+func (h *testLogHandler) Handle(ctx context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	if h.onRecord != nil {
+		h.onRecord(r)
+	}
+	return nil
+}
+
+func (h *testLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *testLogHandler) WithGroup(name string) slog.Handler       { return h }
+
+func (h *testLogHandler) hasMessage(msg string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if strings.Contains(r.Message, msg) {
+			return true
+		}
+	}
+	return false
+}
+
+type deleteFileHandler struct {
+	fileToDelete string
+	errToReturn  error
+}
+
+func (h *deleteFileHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) (string, error) {
+	os.Remove(h.fileToDelete)
+	return "", h.errToReturn
+}
+
+func TestScanner_Run(t *testing.T) {
+	t.Run("success_processed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
+		handler := &MockHandler{failFor: make(map[string]error)}
+
+		// Set a short timeout context to kill the negation mutant if log complete is not received
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+
+		lh := &testLogHandler{
+			onRecord: func(r slog.Record) {
+				if strings.Contains(r.Message, "scan complete") {
+					cancel()
+				}
+			},
+		}
+		logger := slog.New(lh)
+		scanner := New(tmpDir, store, handler, nil, logger)
+
+		nzbPath := filepath.Join(tmpDir, "test.nzb")
+		os.WriteFile(nzbPath, []byte("<?xml version=\"1.0\" ?>"), 0o644)
+
+		if _, err := scanner.ScanOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+
+		err := scanner.Run(ctx, 1*time.Millisecond)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run failed: %v", err)
+		}
+
+		if !lh.hasMessage("scan complete") {
+			t.Error("expected \"scan complete\" log message")
+		}
+	})
+
+	t.Run("scan_failed", func(t *testing.T) {
+		store, _ := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+		handler := &MockHandler{failFor: make(map[string]error)}
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		lh := &testLogHandler{
+			onRecord: func(r slog.Record) {
+				if strings.Contains(r.Message, "scan failed") {
+					cancel()
+				}
+			},
+		}
+		logger := slog.New(lh)
+		scanner := New("/nonexistent/dir", store, handler, nil, logger)
+
+		err := scanner.Run(ctx, 1*time.Millisecond)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run failed: %v", err)
+		}
+
+		if !lh.hasMessage("scan failed") {
+			t.Error("expected scan failed log message")
+		}
+	})
+
+	t.Run("no_files_processed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
+		handler := &MockHandler{failFor: make(map[string]error)}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		defer cancel()
+
+		lh := &testLogHandler{}
+		logger := slog.New(lh)
+		scanner := New(tmpDir, store, handler, nil, logger)
+
+		err := scanner.Run(ctx, 2*time.Millisecond)
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run failed: %v", err)
+		}
+
+		if lh.hasMessage("scan complete") {
+			t.Error("did not expect \"scan complete\" log when no files were processed")
+		}
+	})
+}
+
+func TestScanner_LogWarnings(t *testing.T) {
+	t.Run("rename_failed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
+
+		nzbPath := filepath.Join(tmpDir, "test.nzb")
+		os.WriteFile(nzbPath, []byte("<?xml version=\"1.0\" ?>"), 0o644)
+
+		lh := &testLogHandler{}
+		logger := slog.New(lh)
+
+		h := &deleteFileHandler{
+			fileToDelete: nzbPath,
+			errToReturn:  fmt.Errorf("simulated failure"),
+		}
+		scanner := New(tmpDir, store, h, nil, logger)
+
+		scanner.ScanOnce(t.Context())
+		scanner.ScanOnce(t.Context())
+
+		if !lh.hasMessage("failed to rename file") {
+			t.Error("expected failed to rename file warning message")
+		}
+	})
+
+	t.Run("rename_succeeds", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
+
+		nzbPath := filepath.Join(tmpDir, "test.nzb")
+		os.WriteFile(nzbPath, []byte("<?xml version=\"1.0\" ?>"), 0o644)
+
+		lh := &testLogHandler{}
+		logger := slog.New(lh)
+
+		handler := &MockHandler{
+			failFor: map[string]error{
+				"test.nzb": fmt.Errorf("simulated failure"),
+			},
+		}
+		scanner := New(tmpDir, store, handler, nil, logger)
+
+		scanner.ScanOnce(t.Context())
+		scanner.ScanOnce(t.Context())
+
+		if lh.hasMessage("failed to rename file") {
+			t.Error("did not expect failed to rename file warning message")
+		}
+	})
+
+	t.Run("remove_failed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
+
+		nzbPath := filepath.Join(tmpDir, "test.nzb")
+		os.WriteFile(nzbPath, []byte("<?xml version=\"1.0\" ?>"), 0o644)
+
+		lh := &testLogHandler{}
+		logger := slog.New(lh)
+
+		h := &deleteFileHandler{fileToDelete: nzbPath}
+		scanner := New(tmpDir, store, h, nil, logger)
+
+		scanner.ScanOnce(t.Context())
+		scanner.ScanOnce(t.Context())
+
+		if !lh.hasMessage("failed to delete file after successful handling") {
+			t.Error("expected failed to delete file warning message")
+		}
+	})
+
+	t.Run("save_failed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
+
+		lh := &testLogHandler{}
+		logger := slog.New(lh)
+
+		scanner := New(tmpDir, store, &MockHandler{}, nil, logger)
+
+		store.path = "/nonexistent/path/state.json"
+		store.Set("somefile", FileState{})
+
+		scanner.ScanOnce(t.Context())
+
+		if !lh.hasMessage("failed to save state") {
+			t.Error("expected failed to save state warning message")
+		}
 	})
 }
