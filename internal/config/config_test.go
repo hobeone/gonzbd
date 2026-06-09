@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 // marshalForCompare renders cfg to canonical YAML so we can compare two
@@ -41,6 +43,9 @@ func TestDefaultIsValid(t *testing.T) {
 	}
 	if cfg.General.APIKey == cfg.General.NZBKey {
 		t.Errorf("APIKey and NZBKey are identical (%q); should be distinct random values", cfg.General.APIKey)
+	}
+	if cfg.Downloads.MinFreeSpace != ByteSize(1024*constants.MiB) {
+		t.Errorf("MinFreeSpace = %d, want %d", cfg.Downloads.MinFreeSpace, 1024*constants.MiB)
 	}
 }
 
