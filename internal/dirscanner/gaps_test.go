@@ -4,8 +4,11 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"encoding/hex"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -381,5 +384,206 @@ func TestExtractZip_Direct(t *testing.T) {
 	}
 	if len(got) != 1 || string(got[0]) != string(content) {
 		t.Errorf("got %q, want %q", got, content)
+	}
+}
+
+func compressBZ2(t *testing.T, data []byte) string {
+	t.Helper()
+	tmp := t.TempDir()
+	outPath := filepath.Join(tmp, "temp.bz2")
+	hexData := hex.EncodeToString(data)
+	cmd := exec.Command("python3", "-c", fmt.Sprintf(`
+import binascii, bz2
+with open(%q, "wb") as f:
+    f.write(bz2.compress(binascii.unhexlify(%q)))
+`, outPath, hexData))
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to run python bzip2 compression: %v", err)
+	}
+	return outPath
+}
+
+func TestMaxDecompressSizeBoundary(t *testing.T) {
+	// Temporarily modify MaxDecompressSize
+	oldLimit := MaxDecompressSize
+	MaxDecompressSize = 10
+	defer func() { MaxDecompressSize = oldLimit }()
+
+	tmp := t.TempDir()
+
+	// 1. extractPlainNZB
+	// Exactly 10 bytes (should succeed)
+	p1 := filepath.Join(tmp, "p1.nzb")
+	os.WriteFile(p1, make([]byte, 10), 0644)
+	res, err := extractPlainNZB(p1)
+	if err != nil {
+		t.Errorf("extractPlainNZB exactly at boundary failed: %v", err)
+	}
+	if len(res) != 1 || len(res[0]) != 10 {
+		t.Errorf("expected 1 result of length 10")
+	}
+
+	// 11 bytes (should fail)
+	p2 := filepath.Join(tmp, "p2.nzb")
+	os.WriteFile(p2, make([]byte, 11), 0644)
+	_, err = extractPlainNZB(p2)
+	if err == nil {
+		t.Errorf("expected error for extractPlainNZB exceeding boundary")
+	}
+
+	// 2. extractGZ
+	// Exactly 10 bytes (should succeed)
+	gz1 := filepath.Join(tmp, "gz1.nzb.gz")
+	{
+		f, _ := os.Create(gz1)
+		w := gzip.NewWriter(f)
+		w.Write(make([]byte, 10))
+		w.Close()
+		f.Close()
+	}
+	res, err = extractGZ(gz1)
+	if err != nil {
+		t.Errorf("extractGZ exactly at boundary failed: %v", err)
+	}
+	if len(res) != 1 || len(res[0]) != 10 {
+		t.Errorf("expected 1 result of length 10")
+	}
+
+	// 11 bytes (should fail)
+	gz2 := filepath.Join(tmp, "gz2.nzb.gz")
+	{
+		f, _ := os.Create(gz2)
+		w := gzip.NewWriter(f)
+		w.Write(make([]byte, 11))
+		w.Close()
+		f.Close()
+	}
+	_, err = extractGZ(gz2)
+	if err == nil {
+		t.Errorf("expected error for extractGZ exceeding boundary")
+	}
+
+	// 3. extractZip
+	// Exactly 10 bytes (should succeed)
+	z1 := filepath.Join(tmp, "z1.zip")
+	{
+		f, _ := os.Create(z1)
+		w := zip.NewWriter(f)
+		fw, _ := w.Create("inner.nzb")
+		fw.Write(make([]byte, 10))
+		w.Close()
+		f.Close()
+	}
+	res, err = extractZip(z1)
+	if err != nil {
+		t.Errorf("extractZip exactly at boundary failed: %v", err)
+	}
+	if len(res) != 1 || len(res[0]) != 10 {
+		t.Errorf("expected 1 result of length 10")
+	}
+
+	// 11 bytes (should fail)
+	z2 := filepath.Join(tmp, "z2.zip")
+	{
+		f, _ := os.Create(z2)
+		w := zip.NewWriter(f)
+		fw, _ := w.Create("inner.nzb")
+		fw.Write(make([]byte, 11))
+		w.Close()
+		f.Close()
+	}
+	_, err = extractZip(z2)
+	if err == nil {
+		t.Errorf("expected error for extractZip exceeding boundary")
+	}
+
+	// 4. extractBZ2
+	// Exactly 10 bytes (should succeed)
+	bz1 := compressBZ2(t, make([]byte, 10))
+	res, err = extractBZ2(bz1)
+	if err != nil {
+		t.Errorf("extractBZ2 exactly at boundary failed: %v", err)
+	}
+	if len(res) != 1 || len(res[0]) != 10 {
+		t.Errorf("expected 1 result of length 10")
+	}
+
+	// 11 bytes (should fail)
+	bz2 := compressBZ2(t, make([]byte, 11))
+	_, err = extractBZ2(bz2)
+	if err == nil {
+		t.Errorf("expected error for extractBZ2 exceeding boundary")
+	}
+}
+
+func TestZipCustomLimits(t *testing.T) {
+	oldMaxNZBs := maxNZBsPerZip
+	oldMaxCumulative := maxCumulativeBytes
+	defer func() {
+		maxNZBsPerZip = oldMaxNZBs
+		maxCumulativeBytes = oldMaxCumulative
+	}()
+
+	maxNZBsPerZip = 2
+	maxCumulativeBytes = 20
+
+	tmp := t.TempDir()
+
+	// Test maxNZBsPerZip limit (3 files in zip, max is 2)
+	z1 := filepath.Join(tmp, "nzb_limit.zip")
+	{
+		f, _ := os.Create(z1)
+		w := zip.NewWriter(f)
+		for _, name := range []string{"1.nzb", "2.nzb", "3.nzb"} {
+			fw, _ := w.Create(name)
+			fw.Write([]byte("x")) // 1 byte each
+		}
+		w.Close()
+		f.Close()
+	}
+	_, err := extractZip(z1)
+	if err == nil {
+		t.Errorf("expected error for zip exceeding maxNZBsPerZip")
+	} else if !strings.Contains(err.Error(), "more than 2 NZB files") {
+		t.Errorf("expected max NZB files error, got: %v", err)
+	}
+
+	// Test maxCumulativeBytes limit (2 files of 11 bytes, total 22, max is 20)
+	z2 := filepath.Join(tmp, "bytes_limit.zip")
+	{
+		f, _ := os.Create(z2)
+		w := zip.NewWriter(f)
+		for _, name := range []string{"1.nzb", "2.nzb"} {
+			fw, _ := w.Create(name)
+			fw.Write(make([]byte, 11))
+		}
+		w.Close()
+		f.Close()
+	}
+	_, err = extractZip(z2)
+	if err == nil {
+		t.Errorf("expected error for zip exceeding maxCumulativeBytes")
+	} else if !strings.Contains(err.Error(), "cumulative decompressed size exceeds") {
+		t.Errorf("expected cumulative size error, got: %v", err)
+	}
+
+	// Test cumulative boundary: exactly equal to maxCumulativeBytes (20) succeeds
+	z3 := filepath.Join(tmp, "bytes_boundary.zip")
+	{
+		f, _ := os.Create(z3)
+		w := zip.NewWriter(f)
+		for _, name := range []string{"1.nzb", "2.nzb"} {
+			fw, _ := w.Create(name)
+			fw.Write(make([]byte, 10)) // 2 * 10 = 20 bytes
+		}
+		w.Close()
+		f.Close()
+	}
+	res, err := extractZip(z3)
+	if err != nil {
+		t.Errorf("extractZip exactly at cumulative limit failed: %v", err)
+	}
+	if len(res) != 2 {
+		t.Errorf("expected 2 results, got %d", len(res))
 	}
 }
