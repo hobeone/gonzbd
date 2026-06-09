@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -657,5 +658,72 @@ func TestCloseUnblocksRateLimiter(t *testing.T) {
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("Close deadlocked, limiter did not unblock")
+	}
+}
+
+func TestFetch_WriteFailure(t *testing.T) {
+	t.Parallel()
+	ms := newMockServer(t, func(mc *mockConn) {
+		mc.send("200 welcome")
+		mc.expect("CAPABILITIES")
+		mc.sendCaps()
+	})
+
+	c, err := Dial(context.Background(), makeCfg(ms.addr))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	// Close underlying network connection directly to force write/flush failure.
+	c.nc.Close()
+
+	_, err = c.Fetch(context.Background(), "<test@example.com>")
+	if err == nil {
+		t.Error("expected error due to closed socket, got nil")
+	}
+
+	// Verify unappendPending worked.
+	c.pendingLock.Lock()
+	pLen := len(c.pending)
+	c.pendingLock.Unlock()
+	if pLen != 0 {
+		t.Errorf("expected pending queue to be empty, got %d", pLen)
+	}
+}
+
+func TestFetch_AfterReaderError(t *testing.T) {
+	t.Parallel()
+	ms := newMockServer(t, func(mc *mockConn) {
+		mc.send("200 welcome")
+		mc.expect("CAPABILITIES")
+		mc.sendCaps()
+		// Abruptly close server connection.
+		mc.c.Close()
+	})
+
+	c, err := Dial(context.Background(), makeCfg(ms.addr))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	// Wait for reader loop to detect the socket close and transition.
+	time.Sleep(100 * time.Millisecond)
+
+	// Now try to fetch. It should return the reader error (or wrap it).
+	_, err = c.Fetch(context.Background(), "<test@example.com>")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("expected EOF or ErrUnexpectedEOF, got %v", err)
+	}
+
+	// Verify context is cancelled
+	select {
+	case <-c.ctx.Done():
+	default:
+		t.Error("expected connection context to be cancelled after reader error")
 	}
 }

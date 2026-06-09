@@ -1,8 +1,16 @@
 package nntp
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseCipherListDirect(t *testing.T) {
@@ -113,4 +121,53 @@ func TestVerifyConnectionIgnoreHostnameDirect(t *testing.T) {
 			t.Error("expected error when no peer certificates presented")
 		}
 	})
+}
+
+func TestVerifyConnectionIgnoreHostname_ManualVerify(t *testing.T) {
+	t.Parallel()
+
+	// Generate a dummy peer certificate
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"Test Inc"},
+		},
+		NotBefore: time.Now().Add(-1 * time.Hour),
+		NotAfter:  time.Now().Add(1 * time.Hour),
+		KeyUsage:  x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+	}
+
+	certBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("failed to create certificate: %v", err)
+	}
+
+	cert, err := x509.ParseCertificate(certBytes)
+	if err != nil {
+		t.Fatalf("failed to parse certificate: %v", err)
+	}
+
+	cs := tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+	}
+
+	err = verifyConnectionIgnoreHostname(cs)
+	if err == nil {
+		t.Fatal("expected verification failure, got nil")
+	}
+
+	// Verify that the error is not "load system roots" (tls.go:80:9 negation)
+	if strings.Contains(err.Error(), "load system roots") {
+		t.Errorf("got error with 'load system roots', but expected 'verify peer chain': %v", err)
+	}
+
+	// Verify that the error is "verify peer chain" (tls.go:92:9 negation)
+	if !strings.Contains(err.Error(), "verify peer chain") {
+		t.Errorf("expected error to contain 'verify peer chain', got: %v", err)
+	}
 }

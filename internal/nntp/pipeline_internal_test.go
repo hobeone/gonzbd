@@ -4,6 +4,9 @@ import "testing"
 
 func TestExpectedBodyCodeDirect(t *testing.T) {
 	t.Parallel()
+	if cmdBody != 1 {
+		t.Errorf("cmdBody = %d, want 1", cmdBody)
+	}
 	cases := []struct {
 		name     string
 		kind     cmdKind
