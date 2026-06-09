@@ -138,6 +138,9 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 		if !strings.Contains(got, "skipped") {
 			t.Errorf("expected 'skipped' in par2 line; got:\n%s", got)
 		}
+		if !strings.Contains(got, "saved 500 B by not downloading par2 files") {
+			t.Errorf("expected saved bytes message; got:\n%s", got)
+		}
 	})
 
 	t.Run("fetched: repair was needed", func(t *testing.T) {
@@ -145,8 +148,9 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 		job := &Job{
 			DownloadDir: dir,
 			Queue: &queue.Job{
-				TotalBytes:    1000,
-				Par2Recovered: true,
+				TotalBytes:        1000,
+				Par2Recovered:     true,
+				Par2ReleaseReason: "repair needed",
 				Files: []queue.JobFile{
 					{Subject: "release.rar", Articles: []queue.JobArticle{art(500, true, false)}},
 					{Subject: "x.vol000+01.par2", IsPar2Recovery: true, Deferred: false, Bytes: 500},
@@ -156,6 +160,9 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 		got := strings.Join(buildDownloadFileList(job), "\n")
 		if !strings.Contains(got, "⚠ Par2: fetched") {
 			t.Errorf("expected fetched par2 line; got:\n%s", got)
+		}
+		if !strings.Contains(got, "(reason: repair needed)") {
+			t.Errorf("expected reason; got:\n%s", got)
 		}
 	})
 
@@ -183,11 +190,20 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 // is added alongside (not replacing) the on-disk file listing.
 func TestBuildDownloadFileListIncludesCompletion(t *testing.T) {
 	dir := t.TempDir()
+
+	// Create a file to test the file size warning / info checks
+	if err := os.WriteFile(filepath.Join(dir, "file1.txt"), make([]byte, 1234), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	job := &Job{
 		DownloadDir: dir,
 		Queue: &queue.Job{
 			TotalBytes:  200,
 			FailedBytes: 100,
+			ServerStats: map[string]int64{
+				"news.server.com": 123,
+			},
 			Files: []queue.JobFile{
 				{Subject: "short.rar", Articles: []queue.JobArticle{
 					art(100, true, false), art(100, false, true),
@@ -207,6 +223,18 @@ func TestBuildDownloadFileListIncludesCompletion(t *testing.T) {
 	// The original on-disk listing must still be present (additive change).
 	if !strings.Contains(joined, "Files in download directory") {
 		t.Errorf("on-disk listing was removed; got:\n%s", joined)
+	}
+	// Assert failed bytes warning is logged
+	if !strings.Contains(joined, "failed (50.0%)") {
+		t.Errorf("expected failed bytes warning; got:\n%s", joined)
+	}
+	// Assert server stats are logged
+	if !strings.Contains(joined, "Servers: news.server.com: 123 B") {
+		t.Errorf("expected server stats; got:\n%s", joined)
+	}
+	// Assert file size is formatted correctly (not 0 B)
+	if !strings.Contains(joined, "file1.txt (1.2 KiB)") {
+		t.Errorf("expected file1.txt size to be 1.2 KiB; got:\n%s", joined)
 	}
 }
 
@@ -238,13 +266,13 @@ func TestBuildFinalFileListDirect(t *testing.T) {
 	if !strings.Contains(joined, "Final files (2):") {
 		t.Errorf("expected header 'Final files (2):', got:\n%s", joined)
 	}
-	if !strings.Contains(joined, "file1.txt") {
-		t.Errorf("expected file1.txt in output, got:\n%s", joined)
+	if !strings.Contains(joined, "file1.txt (1.2 KiB)") {
+		t.Errorf("expected file1.txt (1.2 KiB) in output, got:\n%s", joined)
 	}
 	if !strings.Contains(joined, "📁 folder1/") {
 		t.Errorf("expected folder1/ directory in output, got:\n%s", joined)
 	}
-	if !strings.Contains(joined, "Total:") {
-		t.Errorf("expected Total: in output, got:\n%s", joined)
+	if !strings.Contains(joined, "Total: 1.2 KiB") {
+		t.Errorf("expected Total: 1.2 KiB in output, got:\n%s", joined)
 	}
 }

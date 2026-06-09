@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -199,5 +200,39 @@ func TestSampleCleanup_MissingDirIsTolerated(t *testing.T) {
 	stage := NewSampleCleanupStage()
 	if err := stage.Run(context.Background(), job); err != nil {
 		t.Errorf("Run returned error for missing dir: %v (should be tolerated)", err)
+	}
+}
+
+func TestSampleCleanup_RemoveFailure(t *testing.T) {
+	t.Parallel()
+	job := makeTestJob(t, "remove-failure")
+
+	touchFile(t, filepath.Join(job.DownloadDir, "release.mkv"))
+	sampleFile := filepath.Join(job.DownloadDir, "release-sample.mkv")
+	touchFile(t, sampleFile)
+
+	// Make download directory non-writable, so we can't remove files from it.
+	if err := os.Chmod(job.DownloadDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Chmod(job.DownloadDir, 0o755)
+	}()
+
+	stage := NewSampleCleanupStage()
+	if err := stage.Run(context.Background(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Verify that we recorded the removal failure.
+	foundFailureMsg := false
+	for _, line := range job.OutputLines {
+		if strings.Contains(line, "remove ") && strings.Contains(line, "release-sample.mkv") {
+			foundFailureMsg = true
+			break
+		}
+	}
+	if !foundFailureMsg {
+		t.Errorf("expected failure message in OutputLines, got: %v", job.OutputLines)
 	}
 }

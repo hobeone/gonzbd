@@ -1,6 +1,7 @@
 package postproc
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -137,5 +138,45 @@ func TestVerifiedSets_LoadSave_Direct(t *testing.T) {
 	vs2.load()
 	if !vs2.sets["direct_test"] {
 		t.Error("expected load to populate direct_test")
+	}
+}
+
+func TestVerifiedSets_LogOnSaveFailure(t *testing.T) {
+	dir := t.TempDir()
+
+	// 1. Success case: save should succeed, and no warning should be logged.
+	vs := NewVerifiedSets(dir)
+
+	oldLogger := slog.Default()
+	handler := &testLogHandler{}
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	vs.MarkVerified("movie", true)
+
+	handler.mu.Lock()
+	warnLoggedSuccess := handler.warnLogged
+	handler.warnLogged = false
+	handler.mu.Unlock()
+
+	if warnLoggedSuccess {
+		t.Error("expected no warning logs on successful MarkVerified")
+	}
+
+	// 2. Failure case: make path a directory so writing fails, and warning should be logged.
+	vsFail := NewVerifiedSets(dir)
+	vsFail.path = filepath.Join(dir, "is-a-directory")
+	if err := os.Mkdir(vsFail.path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	vsFail.MarkVerified("movie", true)
+
+	handler.mu.Lock()
+	warnLoggedFailure := handler.warnLogged
+	handler.mu.Unlock()
+
+	if !warnLoggedFailure {
+		t.Error("expected warning log on failed MarkVerified save")
 	}
 }
