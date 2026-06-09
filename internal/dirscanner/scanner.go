@@ -204,7 +204,7 @@ func (s *Scanner) handleStableFile(ctx context.Context, path, filename, category
 			// Some NZBs imported — leave the archive for retry.
 			return &PartialError{Failed: len(nzbs) - successCount, Total: len(nzbs), Err: lastErr}
 		}
-		return fmt.Errorf("%d of %d NZBs failed: %w", len(nzbs)-successCount, len(nzbs), lastErr)
+		return fmt.Errorf("%d of %d NZBs failed: %w", len(nzbs), len(nzbs), lastErr)
 	}
 	if successCount == 0 {
 		return fmt.Errorf("no NZBs processed")
