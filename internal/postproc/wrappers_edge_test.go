@@ -2,6 +2,7 @@ package postproc
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -523,5 +524,99 @@ func TestCleanupStage_NoAdminDir(t *testing.T) {
 	stage := NewCleanupStage()
 	if err := stage.Run(context.Background(), job); err != nil {
 		t.Fatalf("Run() = %v, expected nil", err)
+	}
+}
+
+func TestDeobfuscateStage_FullFlow(t *testing.T) {
+	t.Parallel()
+	job, dir := stageJob(t)
+	// 11 MiB obfuscated file (above 10 MiB threshold).
+	mkvFile := filepath.Join(dir, "b082fa0beaa644d3aa01045d5b8d0b36.mkv")
+	data := make([]byte, 11*1024*1024)
+	if err := os.WriteFile(mkvFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Add english.srt subtitle (size 100).
+	srtFile := filepath.Join(dir, "english.srt")
+	if err := os.WriteFile(srtFile, []byte("subtitles content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stage := NewDeobfuscateStage()
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Errorf("Deobfuscate: %v", err)
+	}
+
+	// Verify deobfuscation happened.
+	expectedMkv := filepath.Join(dir, "test.job.mkv")
+	if _, err := os.Stat(expectedMkv); err != nil {
+		t.Errorf("expected renamed mkv file not found: %v", err)
+	}
+	// Verify subtitle renaming happened.
+	expectedSrt := filepath.Join(dir, "test.job.english.srt")
+	if _, err := os.Stat(expectedSrt); err != nil {
+		t.Errorf("expected renamed srt file not found: %v", err)
+	}
+
+	// Verify OutputLines logs.
+	hasDeobfLog := false
+	hasSubLog := false
+	for _, line := range job.OutputLines {
+		if strings.Contains(line, "Deobfuscated 1 file(s)") {
+			hasDeobfLog = true
+		}
+		if strings.Contains(line, "Renamed 1 subtitle file(s)") {
+			hasSubLog = true
+		}
+	}
+	if !hasDeobfLog {
+		t.Errorf("expected 'Deobfuscated 1 file(s)' in output, got: %v", job.OutputLines)
+	}
+	if !hasSubLog {
+		t.Errorf("expected 'Renamed 1 subtitle file(s)' in output, got: %v", job.OutputLines)
+	}
+}
+
+func TestCleanupStage_LogOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	adminDir := filepath.Join(dir, "__ADMIN__")
+	if err := os.MkdirAll(adminDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Create a file inside __ADMIN__.
+	if err := os.WriteFile(filepath.Join(adminDir, "file.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	job := &Job{
+		Queue:       &queue.Job{ID: "test-cleanup-fail"},
+		DownloadDir: dir,
+	}
+
+	// Make __ADMIN__ directory non-writable/non-executable.
+	if err := os.Chmod(adminDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Chmod(adminDir, 0o755)
+	}()
+
+	oldLogger := slog.Default()
+	handler := &testLogHandler{}
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	stage := NewCleanupStage()
+	if err := stage.Run(context.Background(), job); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+
+	// Verify that warnings were logged because RemoveAll failed and directory still exists.
+	handler.mu.Lock()
+	warnLogged := handler.warnLogged
+	handler.mu.Unlock()
+
+	if !warnLogged {
+		t.Error("expected warnings to be logged on cleanup failure")
 	}
 }

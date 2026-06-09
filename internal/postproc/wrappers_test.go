@@ -163,6 +163,8 @@ func TestPar2CleanupStage_RunsAfterSuccessfulUnpack(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "movie.par2"), []byte("par2 main"), 0o644)
 	os.WriteFile(filepath.Join(dir, "movie.vol00+1.par2"), []byte("par2 vol"), 0o644)
 	os.WriteFile(filepath.Join(dir, "movie.vol01+2.par2"), []byte("par2 vol"), 0o644)
+	// Create backup copy file.
+	os.WriteFile(filepath.Join(dir, "movie.mkv.1"), []byte("backup"), 0o644)
 
 	// Simulate: repair succeeded, unpack succeeded (defaults).
 	stage := NewPar2CleanupStage(true)
@@ -181,6 +183,24 @@ func TestPar2CleanupStage_RunsAfterSuccessfulUnpack(t *testing.T) {
 		if strings.HasSuffix(strings.ToLower(e.Name()), ".par2") {
 			t.Errorf("par2 file %q should have been cleaned up", e.Name())
 		}
+	}
+
+	// Verify OutputLines logs.
+	foundPar2Cleaned := false
+	foundBackupsCleaned := false
+	for _, line := range job.OutputLines {
+		if line == "Cleaned up 3 par2 file(s)" {
+			foundPar2Cleaned = true
+		}
+		if line == "Cleaned up 1 par2 backup file(s)" {
+			foundBackupsCleaned = true
+		}
+	}
+	if !foundPar2Cleaned {
+		t.Errorf("expected 'Cleaned up 3 par2 file(s)' in output, got: %v", job.OutputLines)
+	}
+	if !foundBackupsCleaned {
+		t.Errorf("expected 'Cleaned up 1 par2 backup file(s)' in output, got: %v", job.OutputLines)
 	}
 }
 
@@ -540,5 +560,20 @@ func TestDeobfuscateStage_NoRenames(t *testing.T) {
 	}
 	if len(entries) != len(normalFiles) {
 		t.Errorf("file count = %d, want %d", len(entries), len(normalFiles))
+	}
+}
+
+func TestPar2CleanupStage_NoFiles(t *testing.T) {
+	t.Parallel()
+	job, _ := stageJob(t)
+	// No par2 or backup files created in dir.
+	stage := NewPar2CleanupStage(true)
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, line := range job.OutputLines {
+		if strings.Contains(line, "Cleaned up ") {
+			t.Errorf("unexpected cleanup log: %q", line)
+		}
 	}
 }
