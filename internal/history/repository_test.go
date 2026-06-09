@@ -1,8 +1,10 @@
 package history
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -559,5 +561,61 @@ func TestDeleteChunked(t *testing.T) {
 	}
 	if n != totalEntries {
 		t.Errorf("deleted = %d, want %d", n, totalEntries)
+	}
+}
+
+func TestOpen_Error(t *testing.T) {
+	// Attempting to open a directory as a SQLite file should fail
+	_, err := Open(t.TempDir())
+	if err == nil {
+		t.Error("expected error opening directory as database, got nil")
+	}
+}
+
+func TestOpen_ReadOnlyError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "readonly.db")
+	
+	// Create and initialize a valid SQLite file
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open setup: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close setup: %v", err)
+	}
+
+	// Make the file read-only
+	if err := os.Chmod(path, 0400); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	// Open again. Ping should succeed, but Exec(WAL) or Exec(VACUUM) should fail.
+	_, err = Open(path)
+	if err == nil {
+		t.Error("expected error opening read-only database, got nil")
+	}
+}
+
+func TestOpen_GooseError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "goose_error.db")
+
+	// Create a database and pre-create the 'history' table manually
+	// so that the goose migration trying to create the same table fails.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	_, err = db.Exec("CREATE TABLE history (id INTEGER PRIMARY KEY)")
+	if err != nil {
+		db.Close()
+		t.Fatalf("CREATE TABLE: %v", err)
+	}
+	db.Close()
+
+	_, err = Open(path)
+	if err == nil {
+		t.Error("expected error from goose.Up when table already exists, got nil")
 	}
 }
