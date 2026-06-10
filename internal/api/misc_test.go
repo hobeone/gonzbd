@@ -98,6 +98,68 @@ func TestModeGetScripts_ReturnsNone(t *testing.T) {
 	}
 }
 
+func TestModeGetScripts_WithScripts(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+
+	// Write an executable script file.
+	scriptPath := filepath.Join(tmpDir, "myscript.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho ok"), 0755); err != nil {
+		t.Fatalf("failed to write test script: %v", err)
+	}
+
+	// Write a non-executable file.
+	nonExecPath := filepath.Join(tmpDir, "readme.txt")
+	if err := os.WriteFile(nonExecPath, []byte("hello"), 0644); err != nil {
+		t.Fatalf("failed to write readme: %v", err)
+	}
+
+	cfg := &config.Config{}
+	cfg.General.APIKey = testAPIKey
+	cfg.General.NZBKey = testNZBKey
+	cfg.General.ScriptDir = tmpDir
+
+	s := testServerWithConfig(t, cfg)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=get_scripts&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	m := decodeJSON(t, rr)
+	if m["status"] != true {
+		t.Errorf("status = %v; want true", m["status"])
+	}
+
+	scripts, ok := m["scripts"].([]any)
+	if !ok {
+		t.Fatalf("scripts not an array")
+	}
+
+	var foundScript, foundReadme, foundNone bool
+	for _, sc := range scripts {
+		name := sc.(string)
+		switch name {
+		case "myscript.sh":
+			foundScript = true
+		case "readme.txt":
+			foundReadme = true
+		case "None":
+			foundNone = true
+		}
+	}
+
+	if !foundNone {
+		t.Error("expected 'None' in scripts")
+	}
+	if !foundScript {
+		t.Error("expected 'myscript.sh' to be listed in scripts")
+	}
+	if foundReadme {
+		t.Error("expected 'readme.txt' to be excluded from scripts because it is not executable")
+	}
+}
+
 func TestModeBrowse_ValidDir(t *testing.T) {
 	t.Parallel()
 	s := testServer()
