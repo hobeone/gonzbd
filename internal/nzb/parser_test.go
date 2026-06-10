@@ -650,7 +650,7 @@ func TestParseNoValidFiles(t *testing.T) {
 func TestParse_MaxFilesWithSkipped(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0"?><nzb>`)
-	for i := 0; i < maxFiles+1; i++ {
+	for range maxFiles + 1 {
 		b.WriteString(`<file subject="f"><groups><group>g</group></groups><segments></segments></file>`)
 	}
 	b.WriteString(`</nzb>`)

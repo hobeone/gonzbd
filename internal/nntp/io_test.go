@@ -274,7 +274,7 @@ func TestReadDotStuffedBody_MaxSize(t *testing.T) {
 	t.Run("exact max body size", func(t *testing.T) {
 		var sb strings.Builder
 		chunk := strings.Repeat("A", 999) + "\n"
-		for i := 0; i < 10485; i++ {
+		for range 10485 {
 			sb.WriteString(chunk)
 		}
 		sb.WriteString(strings.Repeat("A", 759) + "\n")
@@ -292,7 +292,7 @@ func TestReadDotStuffedBody_MaxSize(t *testing.T) {
 	t.Run("exceeds max body size", func(t *testing.T) {
 		var sb strings.Builder
 		chunk := strings.Repeat("A", 999) + "\n"
-		for i := 0; i < 10485; i++ {
+		for range 10485 {
 			sb.WriteString(chunk)
 		}
 		sb.WriteString(strings.Repeat("A", 760) + "\n")
