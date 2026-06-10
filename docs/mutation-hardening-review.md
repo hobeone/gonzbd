@@ -30,7 +30,7 @@ coverage.
 | 5 | `2a541af` | test(urlgrabber): harden mutation test coverage to 100% | `internal/urlgrabber/grabber.go` | done | Looked like a feature regression at first (removed manual extraction of Basic-Auth creds from URL userinfo), but `net/http`'s `Request.Write` already applies `req.URL.User` as a Basic-Auth header automatically when no `Authorization` header is set, and config-based `req.SetBasicAuth` overrides it. Verified `TestFetchHTTPBasicAuthViaURL` and `TestFetchHTTPBasicAuthConfigOverridesURL` both still pass — truly equivalent dead-code removal. No issue. |
 | 6 | `cab398a` | test(history): add unit tests to kill lived mutants | `internal/history/db.go` | done | Found a tautological test: `TestDBConnectionSettings` added 3 unused struct fields (`connMaxLifetime`, `maxOpenConns`, `maxIdleConns`) purely so the test could compare them against the same constants used to set them — could never fail. Fixed in `4abd9b3`: removed the fields, test now checks `sql.DB.Stats().MaxOpenConnections` (real applied config). |
 | 7 | `4847a0c` | test(app): harden test coverage and kill lived mutants in internal/app | `internal/app/app.go` | done | `app.go` change is a 3-line doc-comment cleanup, no behavior change. `diagnostics_test.go`/`history_helper_test.go` additions are correct (exact warning-string matching, 5-scenario `buildHistoryEntry` table). Issue found in `notify_test.go`: it used `unsafe.Pointer`/`reflect` to read unexported `Dispatcher.notifiers` and `ScriptNotifier.cfg` across package boundaries — fragile and a code-smell precedent. Fixed below. |
-| 8 | `880d42d` | test(dirscanner): harden test coverage and kill lived mutants to reach 100% test efficacy | `internal/dirscanner/decompress.go`, `internal/dirscanner/scanner.go` | pending | |
+| 8 | `880d42d` | test(dirscanner): harden test coverage and kill lived mutants to reach 100% test efficacy | `internal/dirscanner/decompress.go`, `internal/dirscanner/scanner.go` | done | `scanner.go`'s `len(nzbs)-successCount` → `len(nzbs)` is an equivalent mutant (this branch only runs when `successCount==0`, so the two are always equal). `decompress.go`'s `const`→`var` change for `MaxDecompressSize`/`maxNZBsPerZip`/`maxCumulativeBytes` is a deliberate (if slightly fragile) test-overridability pattern, restored via `defer` in non-parallel tests — acceptable. Found and fixed one real issue: `gaps_test.go`'s new `compressBZ2` shelled out to `python3` for bz2 fixture generation, a new external-tool dependency for a non-integration unit test (would break `go test ./...` in minimal CI without python3). Replaced with pre-computed bz2 byte fixtures (Go stdlib has no bz2 writer). Also fixed a pre-existing `gofmt` issue in the new `var` block. |
 | 9 | `1bd5653` | fix(nntp): propagate underlying reader error on fetch/stat after connection close | `internal/nntp/conn.go` | pending | This is a real `fix:`, not test-only — verify it's correct and red/green-proven |
 | 10 | `a7a7d14` | test(humanfmt): harden test coverage and kill lived mutants | `internal/humanfmt/humanfmt.go` | pending | |
 | 11 | `246c328` | test(fsutil): harden mutation testing coverage and resolve lived mutants | `internal/fsutil/containment.go`, `internal/fsutil/sanitize.go` | pending | |
@@ -161,9 +161,9 @@ tier 2 for review once the original 27 are done.
 
 ## Overall progress
 
-- Tier 1 reviewed: 7 / 15
+- Tier 1 reviewed: 8 / 15
 - Tier 2 reviewed: 0 / 12
 - Extra (post-scope): `4a6bc09` not yet reviewed — add to tier 2 queue
 
 ## Next up
-Continue tier 1 with #8 `880d42d` (dirscanner — `decompress.go`, `scanner.go`).
+Continue tier 1 with #9 `1bd5653` (nntp — `internal/nntp/conn.go`, real `fix:` commit, verify red/green discipline).
