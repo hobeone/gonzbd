@@ -1,11 +1,17 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 // ---------- Broadcaster unit tests ----------
@@ -143,5 +149,93 @@ func TestBroadcaster_ConcurrentBroadcasts(t *testing.T) {
 	}
 	if count != 20 {
 		t.Errorf("received %d events, want 20", count)
+	}
+}
+
+func TestBroadcaster_Handle(t *testing.T) {
+	b := NewBroadcaster(slog.Default())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.Handle(w, r)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
+	defer conn.Close(websocket.StatusInternalError, "done")
+
+	// Broadcast an event
+	b.Broadcast(Event{Type: "ws_test", Speed: 100})
+
+	// Read from connection
+	_, msg, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+
+	var ev Event
+	if err := json.Unmarshal(msg, &ev); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if ev.Type != "ws_test" || ev.Speed != 100 {
+		t.Errorf("unexpected event: %+v", ev)
+	}
+}
+
+func TestBroadcaster_HandleClientDisconnect(t *testing.T) {
+	b := NewBroadcaster(slog.Default())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.Handle(w, r)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
+
+	// Wait a bit for connection to be registered
+	time.Sleep(10 * time.Millisecond)
+
+	b.mu.RLock()
+	clientCount := len(b.clients)
+	b.mu.RUnlock()
+	if clientCount != 1 {
+		t.Errorf("expected 1 client, got %d", clientCount)
+	}
+
+	// Close from client side
+	_ = conn.Close(websocket.StatusNormalClosure, "done")
+
+	// Wait for handler to detect disconnect and clean up
+	for range 10 {
+		time.Sleep(10 * time.Millisecond)
+		b.mu.RLock()
+		clientCount = len(b.clients)
+		b.mu.RUnlock()
+		if clientCount == 0 {
+			break
+		}
+	}
+
+	if clientCount != 0 {
+		t.Error("expected client to be removed from broadcaster after disconnect")
 	}
 }
