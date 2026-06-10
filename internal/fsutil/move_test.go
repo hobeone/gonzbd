@@ -217,6 +217,29 @@ func TestGetUniqueFilename_NoExtension(t *testing.T) {
 	}
 }
 
+func TestGetUniqueFilename_ExhaustedAttempts(t *testing.T) {
+	// Not using t.Parallel() because it mutates global package variable maxAttempts
+	oldMaxAttempts := maxAttempts
+	maxAttempts = 3
+	defer func() { maxAttempts = oldMaxAttempts }()
+
+	dir := t.TempDir()
+	base := filepath.Join(dir, "report.txt")
+
+	// Create original + .1 + .2 + .3
+	for _, name := range []string{"report.txt", "report.1.txt", "report.2.txt", "report.3.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("exists"), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+
+	got := GetUniqueFilename(base)
+	want := filepath.Join(dir, "report.3.txt") // should return the last candidate
+	if got != want {
+		t.Errorf("GetUniqueFilename = %q, want %q when attempts are exhausted", got, want)
+	}
+}
+
 // ---------- JoinSafe ----------
 
 func TestJoinSafe_Normal(t *testing.T) {
