@@ -60,6 +60,6 @@ func Duration(d time.Duration) string {
 		return fmt.Sprintf("%dm %ds", m, s)
 	}
 	h := m / 60
-	m = m % 60
+	m %= 60
 	return fmt.Sprintf("%dh %dm", h, m)
 }
