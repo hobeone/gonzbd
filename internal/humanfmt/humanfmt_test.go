@@ -14,10 +14,17 @@ func TestBytes(t *testing.T) {
 		{-100, "-100 B"},
 		{1023, "1023 B"},
 		{1024, "1.00 KB"},
+		{1025, "1.00 KB"},
 		{1536, "1.50 KB"},
+		{(1 << 20) - 1, "1024.00 KB"},
 		{1 << 20, "1.00 MB"},
+		{(1 << 20) + 1024, "1.00 MB"},
+		{(1 << 30) - 1, "1024.00 MB"},
 		{1 << 30, "1.00 GB"},
+		{(1 << 30) + (1 << 20), "1.00 GB"},
+		{(1 << 40) - 1, "1024.00 GB"},
 		{1 << 40, "1.00 TB"},
+		{(1 << 40) + (1 << 30), "1.00 TB"},
 		{5 * (1 << 40), "5.00 TB"},
 	}
 	for _, tc := range cases {
@@ -67,7 +74,13 @@ func TestDuration(t *testing.T) {
 		{0, "0.0s"},
 		{-10 * time.Second, "-10.0s"},
 		{45 * time.Second, "45.0s"},
+		{59 * time.Second, "59.0s"},
+		{60 * time.Second, "1m 0s"},
+		{61 * time.Second, "1m 1s"},
 		{5*time.Minute + 30*time.Second, "5m 30s"},
+		{59*time.Minute + 59*time.Second, "59m 59s"},
+		{60 * time.Minute, "1h 0m"},
+		{61 * time.Minute, "1h 1m"},
 		{2*time.Hour + 15*time.Minute, "2h 15m"},
 	}
 	for _, tc := range cases {
