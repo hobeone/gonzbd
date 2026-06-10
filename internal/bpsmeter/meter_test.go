@@ -34,15 +34,15 @@ func TestMeterBPSSmoothing(t *testing.T) {
 
 	// At t=1s: 2000 bytes within the 10 s window → BPS = 200.
 	bps := m.BPS("")
-	if bps <= 0 {
-		t.Fatalf("expected positive BPS at t=1s, got %f", bps)
+	if bps != 200.0 {
+		t.Fatalf("expected BPS = 200 at t=1s, got %f", bps)
 	}
 
 	// Advance to t=5s — still within window; BPS should remain positive.
 	adv(4 * time.Second)
 	bps5 := m.BPS("")
-	if bps5 <= 0 {
-		t.Fatalf("expected positive BPS at t=5s, got %f", bps5)
+	if bps5 != 200.0 {
+		t.Fatalf("expected BPS = 200 at t=5s, got %f", bps5)
 	}
 
 	// Advance to t=15s — all samples now outside the 10 s window; BPS must be 0.
@@ -390,5 +390,71 @@ func TestMeterRecord_NegativeBytes(t *testing.T) {
 	// Total should reflect net accounting: 5000 + (-1000) = 4000.
 	if got := m.Total(""); got != 4000 {
 		t.Errorf("Total after negative record = %d, want 4000", got)
+	}
+}
+
+func TestNewMeter_ZeroWindow(t *testing.T) {
+	t.Parallel()
+	m := NewMeter(0, nil)
+	if m.window != defaultWindow {
+		t.Errorf("expected window to be defaultWindow (%v), got %v", defaultWindow, m.window)
+	}
+}
+
+func TestMeterBPS_RingBufferWrap(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	clk, adv := fixedClock(start)
+	// Window is 10s. int(10) + 2 = 12 buckets.
+	m := NewMeter(10*time.Second, clk)
+
+	// Record 100 bytes every second for 10 seconds (from t=1 to t=10).
+	// Total written: 1000 bytes.
+	// We want to verify that no bucket overwrites occur early.
+	for range 10 {
+		adv(1 * time.Second)
+		m.Record("", 100)
+	}
+
+	// At t=10s, BPS is sum of t=1 to t=10 (10s window).
+	// Total bytes in window should be 1000.
+	bps := m.BPS("")
+	if bps != 100.0 {
+		t.Errorf("expected BPS = 100.0, got %f", bps)
+	}
+}
+
+func TestLimiterSetRate_Detailed(t *testing.T) {
+	t.Parallel()
+	l := NewLimiter(1000) // case l.lim == nil
+
+	// Rate unchanged
+	l.SetRate(1000)
+	if r := l.Rate(); r != 1000 {
+		t.Errorf("expected rate to remain 1000, got %f", r)
+	}
+
+	// Rate increased
+	l.SetRate(2000)
+	if r := l.Rate(); r != 2000 {
+		t.Errorf("expected rate to increase to 2000, got %f", r)
+	}
+
+	// Rate decreased
+	l.SetRate(500)
+	if r := l.Rate(); r != 500 {
+		t.Errorf("expected rate to decrease to 500, got %f", r)
+	}
+
+	// Rate disabled (0)
+	l.SetRate(0)
+	if r := l.Rate(); r != 0 {
+		t.Errorf("expected rate to be 0 (disabled), got %f", r)
+	}
+
+	// Rate disabled again (negative)
+	l.SetRate(-100)
+	if r := l.Rate(); r != 0 {
+		t.Errorf("expected rate to be 0 (disabled negative), got %f", r)
 	}
 }
