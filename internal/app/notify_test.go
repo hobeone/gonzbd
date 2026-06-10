@@ -1,28 +1,12 @@
 package app
 
 import (
-	"reflect"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/notifier"
 )
-
-func getNotifiers(d *notifier.Dispatcher) []notifier.Notifier {
-	val := reflect.ValueOf(d).Elem()
-	field := val.FieldByName("notifiers")
-	ptr := unsafe.Pointer(field.UnsafeAddr())
-	return *(*[]notifier.Notifier)(ptr)
-}
-
-func getScriptConfig(sn notifier.Notifier) notifier.ScriptConfig {
-	val := reflect.ValueOf(sn).Elem()
-	field := val.FieldByName("cfg")
-	ptr := unsafe.Pointer(field.UnsafeAddr())
-	return *(*notifier.ScriptConfig)(ptr)
-}
 
 func TestBuildNotifier_ScriptTimeoutCases(t *testing.T) {
 	cases := []struct {
@@ -60,7 +44,7 @@ func TestBuildNotifier_ScriptTimeoutCases(t *testing.T) {
 			if d == nil {
 				t.Fatal("BuildNotifier returned nil")
 			}
-			notifiers := getNotifiers(d)
+			notifiers := d.Notifiers()
 			if len(notifiers) != 1 {
 				t.Fatalf("Expected exactly 1 notifier, got %d", len(notifiers))
 			}
@@ -68,7 +52,11 @@ func TestBuildNotifier_ScriptTimeoutCases(t *testing.T) {
 			if sn.Name() != "script" {
 				t.Fatalf("Expected script notifier, got %q", sn.Name())
 			}
-			scriptCfg := getScriptConfig(sn)
+			scriptNotifier, ok := sn.(*notifier.ScriptNotifier)
+			if !ok {
+				t.Fatalf("Expected *notifier.ScriptNotifier, got %T", sn)
+			}
+			scriptCfg := scriptNotifier.Config()
 			if scriptCfg.Timeout != tc.expectedTimeout {
 				t.Errorf("Expected timeout %v, got %v", tc.expectedTimeout, scriptCfg.Timeout)
 			}

@@ -89,6 +89,11 @@ func (d *Dispatcher) Register(n Notifier) {
 	d.notifiers = append(d.notifiers, n)
 }
 
+// Notifiers returns the notifiers registered with d.
+func (d *Dispatcher) Notifiers() []Notifier {
+	return d.notifiers
+}
+
 // Dispatch sends e to every registered notifier that accepts e.Type.
 // Failures from individual notifiers are logged; Dispatch never returns an error.
 func (d *Dispatcher) Dispatch(ctx context.Context, e Event) {
