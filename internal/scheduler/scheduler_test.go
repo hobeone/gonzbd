@@ -75,6 +75,12 @@ func TestParse(t *testing.T) {
 			action: "1",
 			arg:    "",
 		},
+		{
+			name:   "action name matches a field earlier in the line and has args",
+			line:   "* * * * 1 1 arg",
+			action: "1",
+			arg:    "arg",
+		},
 	}
 
 	for _, tc := range tests {
