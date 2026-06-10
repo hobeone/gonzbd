@@ -173,7 +173,11 @@ func ParseByteSize(raw string) (ByteSize, error) {
 		return 0, fmt.Errorf("byte size: %q is negative", raw)
 	}
 	bytes := f * float64(mult)
-	if bytes > float64(maxInt64) {
+	// float64(maxInt64) itself rounds up to 2^63, which overflows int64, so
+	// the comparison must be >= (not >) to reject exactly 2^63 — otherwise
+	// ByteSize(bytes) wraps to math.MinInt64, silently producing a negative
+	// byte size.
+	if bytes >= float64(maxInt64) {
 		return 0, fmt.Errorf("byte size: %q overflows int64", raw)
 	}
 	return ByteSize(bytes), nil
