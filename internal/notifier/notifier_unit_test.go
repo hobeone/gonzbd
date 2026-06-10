@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -309,5 +311,48 @@ func TestScriptNotifier_ETXTBSY_Exhausted(t *testing.T) {
 	}
 	if attempts != 3 {
 		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+func writeScript(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+content), 0755); err != nil {
+		t.Fatalf("writeScript: %v", err)
+	}
+	return p
+}
+
+func TestScriptNotifier_ETXTBSY(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := writeScript(t, dir, "retry.sh", `echo "ok"`)
+
+	// Lock the file for writing to trigger ETXTBSY on exec
+	f, err := os.OpenFile(p, os.O_WRONLY, 0755)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+
+	n := NewScriptNotifier(ScriptConfig{
+		Path:      p,
+		Timeout:   2 * time.Second,
+		EventMask: []EventType{DownloadComplete},
+	})
+
+	// Use a wrapper around the run function to deterministically close the file
+	// after the first ETXTBSY error is encountered.
+	originalRun := n.run
+	n.run = func(cmd *exec.Cmd) error {
+		runErr := originalRun(cmd)
+		if runErr != nil && isETXTBSY(runErr) {
+			_ = f.Close()
+		}
+		return runErr
+	}
+
+	err = n.Send(t.Context(), Event{Type: DownloadComplete, Timestamp: time.Now()})
+	if err != nil {
+		t.Fatalf("expected Send to succeed after retry, got: %v", err)
 	}
 }
