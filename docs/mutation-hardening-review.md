@@ -58,8 +58,8 @@ red-green-discipline violations (asserting current-but-wrong behavior)?
 | 23 | `2a591a4` | test: resolve test-alignment gaps and expand test coverage for history and nntp | done | Test-only across 5 files. `TestStat_Errors`/`TestStat_ServerErrors` verified against `conn.go`'s `Stat()`: state/ctx/messageID validation order, `classifyStatus(500)→ErrTransient`, code 300→`*ServerError{Code:300}`, and a 50ms client-ctx timeout vs 200ms mock-server delay correctly yields `context.DeadlineExceeded` (the `time.Sleep(200ms)` in the mock server is documented mock-latency, not sync-via-sleep — allowed per AGENTS.md). `TestOpen_Error`/`TestOpen_ReadOnlyError`/`TestOpen_GooseError` verified against `db.go`'s `Open()` (directory-as-DB, chmod 0400 read-only failing `PRAGMA journal_mode=WAL`, and pre-existing `history` table failing `goose.Up`) — all pass under non-root. The `export_test.go`/`pipeline_internal_test.go` dummy method-expression references (`enqueuePostProc`, `maybeDirectUnpack`, `persistAndCommit`, `handleFileComplete`, `handleStableFile`, `scanCategorySubdirs`, `authenticate`) all resolve to real methods. Verified `go test ./internal/nntp/... ./internal/history/... ./internal/app/... ./internal/dirscanner/... -race -count=1`, `golangci-lint run` 0 issues. No issues. |
 | 24 | `2804ad1` | test(scheduler): add unit tests to eliminate lived mutants | done | Test-only, 1 file. `TestParse`'s new "action name matches a field earlier in the line" case ("* * * * 1 1") verifies `Parse()` correctly assigns `Action: "1"` without confusing it with the dow field value, though it doesn't exercise the `len(parts) > 6` arg-extraction branch. `TestNewWithNilLogger` verifies `New(nil, NewRegistry(), nil)` defaults `logger` via `slog.Default()`. `TestTickDispatchLogging`/`TestOneshotDispatchLogging` verified against `Tick()`'s Warn-level "scheduled action failed"/"one-shot action failed" log calls and `OneshotQueue.Due()`'s `!FireAt.After(at)` boundary-inclusive check (FireAt == tick is due). Verified `go test ./internal/scheduler/... -race -count=1`, `golangci-lint run` 0 issues. No issues. |
 | 25 | `435fd33` | test(web): verify apikey cookie Secure flag under HTTP/HTTPS | done | Test-only, 1 file. `TestSPACookieSecureFlag` verified against `spa.go`'s `Secure: req.TLS != nil` (line 40): with `req.TLS = &tls.ConnectionState{}` the `gonzbd_apikey` cookie has `Secure=true`; with `req.TLS = nil` it has `Secure=false`. Verified `go test ./internal/web/... -race -count=1`, `golangci-lint run` 0 issues. No issues. |
-| 26 | `85fe1a0` | test(fsutil): increase CheckContainment statement and function coverage | pending | |
-| 27 | `9ff8b89` (queue_test.go portion) | covered above with #1 | — | |
+| 26 | `85fe1a0` | test(fsutil): increase CheckContainment statement and function coverage | done | Test-only, 1 file. `TestCheckContainment_NonExistentDir` and `TestCheckContainment_BrokenSymlink` verified against `containment.go`: a non-existent dir fails `EvalSymlinks(absDir)` with `"eval symlinks on dir"`, and a broken symlink inside an existing dir fails the per-entry `EvalSymlinks(path)` in the `WalkDir` callback with `"eval symlinks %s"`. Verified `go test ./internal/fsutil/... -race -count=1`, `golangci-lint run` 0 issues. No issues. |
+| 27 | `9ff8b89` (queue_test.go portion) | covered above with #1 | done | Confirmed `9ff8b89` is the same commit already fully reviewed as #1 (Tier 1) — no separate diff to review. |
 
 ## Review checklist per commit
 
@@ -153,17 +153,35 @@ Commit `d440157` fixed all 3 issues from `661d8fa`:
   non-load-bearing timing window per AGENTS.md (verified stable under
   `-race -count=20`).
 
-### Note: new commit appeared during review
-`4a6bc09 test(api): harden about and events mutation testing coverage` landed
-on `main` after this review started (likely the same agent continuing work).
-It is **not** part of the original 27-commit scope but should be added to
-tier 2 for review once the original 27 are done.
+### `4a6bc09` — `test(api): harden about and events mutation testing coverage` — done, no issues
+Landed on `main` after this review started (likely the same agent continuing
+work); not part of the original 27-commit scope, reviewed as an extra.
+Touches `internal/api/about.go` (prod) plus `about_test.go`, `events_test.go`,
+`misc_test.go`. Prod changes are cosmetic: `http.NewRequestWithContext(...,
+nil)` -> `..., http.NoBody)` and `defer resp.Body.Close()` ->
+`defer func() { _ = resp.Body.Close() }()` in `publicIP` -- both equivalent,
+no behavior change. New tests verified: `TestModeAbout`/`TestPublicIP_Errors`
+mock `http.DefaultClient.Transport` (not parallel, avoiding races on the
+global) and match `publicIP`'s 3s-timeout/non-200/`io.LimitReader(...,64)`
+truncation logic exactly (case 3 expects `len(got)==64` for a 100-byte body).
+`TestResolveBinary` matches `resolveBinary`'s cfgPath/`exec.LookPath`/fallback
+logic. `TestBroadcaster_Handle`/`TestBroadcaster_HandleClientDisconnect`
+verified against `events.go`'s `Broadcaster.Handle`/`b.clients`/`b.mu`; the
+disconnect test's poll-with-`time.Sleep` loop is a bounded wait for an async
+cleanup goroutine, not a sync-via-sleep, so it's allowed per AGENTS.md.
+`TestModeGetScripts_WithScripts` correctly asserts the executable-only filter
+and the `"None"` sentinel entry. Verified `go test ./internal/api/...
+-race -count=1` and `golangci-lint run`: lint issues dropped from 14 (parent
+commit) to 12 (this commit) -- the 2 fixed were the `errcheck`/`gocritic`
+findings on the `publicIP` lines this commit touched; the remaining 12 are
+pre-existing in untouched `queue.go`/`history.go`. No issues.
 
 ## Overall progress
 
 - Tier 1 reviewed: 15 / 15 — complete
-- Tier 2 reviewed: 10 / 12
-- Extra (post-scope): `4a6bc09` not yet reviewed — add to tier 2 queue
+- Tier 2 reviewed: 12 / 12 — complete
+- Extra (post-scope): `4a6bc09` reviewed — complete
 
 ## Next up
-Continue tier 2 with #26 `85fe1a0` (fsutil — CheckContainment coverage).
+All 27 scoped commits plus the post-scope extra (`4a6bc09`) have been
+reviewed. Review complete — no outstanding issues remain.
