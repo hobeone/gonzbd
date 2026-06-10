@@ -86,14 +86,17 @@ func Inspect(p string) (Info, error) {
 	return inspectViaUnrar(p, ver)
 }
 
+// InspectRar5 opens the file at path and inspects it as a RAR5 archive
+// using the pure Go rarengine library.
 func InspectRar5(p string) (info Info, err error) {
 	info.Version = 5
 
+	//nolint:gosec // p is trusted input from internal caller
 	f, err := os.Open(p)
 	if err != nil {
 		return info, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	volumesChan := make(chan io.ReadCloser, 1)
 	volumesChan <- f
@@ -129,6 +132,7 @@ func inspectViaUnrar(p string, ver int) (Info, error) {
 	var info Info
 	info.Version = ver
 
+	//nolint:gosec // p is trusted input from internal caller
 	cmd := exec.Command("unrar", "vt", "-p-", p)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -185,20 +189,20 @@ func parseUnrarVtOutput(output string) (filenames []string, encrypted bool) {
 	return filenames, encrypted
 }
 
-// readMagic opens path, reads up to 8 bytes, and returns the RAR version
+// readMagic opens p, reads up to 8 bytes, and returns the RAR version
 // (3 or 5) based on the magic signature. Returns ErrNotRAR if the file
 // does not start with a valid RAR signature.
-func readMagic(path string) (int, error) {
-	f, err := os.Open(path) //nolint:gosec // path from trusted internal callers
+func readMagic(p string) (int, error) {
+	f, err := os.Open(p) //nolint:gosec // p from trusted internal callers
 	if err != nil {
-		return 0, fmt.Errorf("rarheader: open %s: %w", path, err)
+		return 0, fmt.Errorf("rarheader: open %s: %w", p, err)
 	}
 	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, 8)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return 0, fmt.Errorf("rarheader: read %s: %w", path, err)
+		return 0, fmt.Errorf("rarheader: read %s: %w", p, err)
 	}
 
 	if n >= len(rar5Sig) && bytes.Equal(buf[:len(rar5Sig)], rar5Sig) {
