@@ -100,6 +100,9 @@ func TestValidatePriorityArgs(t *testing.T) {
 		{"empty", "nice", "", false},
 		{"valid nice", "nice", "-n 15", false},
 		{"valid ionice", "ionice", "-c2 -n4", false},
+		{"uppercase characters", "nice", "NICE -N 15", false},
+		{"tab characters", "nice", "-n\t15", false},
+		{"boundary characters", "nice", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- \t", false},
 		{"semicolon injection", "nice", "-n 15; rm -rf /", true},
 		{"pipe injection", "nice", "-n 15 | cat", true},
 		{"backtick injection", "nice", "-n `whoami`", true},
@@ -112,6 +115,40 @@ func TestValidatePriorityArgs(t *testing.T) {
 			err := ValidatePriorityArgs(tt.kind, tt.args)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidatePriorityArgs(%q, %q) error = %v, wantErr %v", tt.kind, tt.args, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseExtraParams(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  string
+		want    []string
+		wantErr bool
+	}{
+		{"empty", "", nil, false},
+		{"only spaces", "   ", nil, false},
+		{"valid single", "-v", []string{"-v"}, false},
+		{"valid multiple", "-v -d --safe", []string{"-v", "-d", "--safe"}, false},
+		{"invalid prefix", "v", nil, true},
+		{"mixed invalid", "-v d", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseExtraParams(tt.params)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseExtraParams(%q) error = %v, wantErr %v", tt.params, err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				if len(got) != len(tt.want) {
+					t.Fatalf("got %d args, want %d", len(got), len(tt.want))
+				}
+				for i := range got {
+					if got[i] != tt.want[i] {
+						t.Errorf("got[%d] = %q, want %q", i, got[i], tt.want[i])
+					}
+				}
 			}
 		})
 	}

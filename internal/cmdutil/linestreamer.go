@@ -46,12 +46,13 @@ func (s *LineStreamer) Write(p []byte) (n int, err error) {
 	// Accumulate full output (for post-exit parsing).
 	if s.cap > 0 && !s.capped {
 		remaining := s.cap - s.full.Len()
-		if remaining <= 0 {
+		switch {
+		case remaining <= 0:
 			s.capped = true
-		} else if len(p) > remaining {
+		case len(p) > remaining:
 			s.full.Write(p[:remaining])
 			s.capped = true
-		} else {
+		default:
 			s.full.Write(p)
 		}
 	} else if s.cap == 0 {
