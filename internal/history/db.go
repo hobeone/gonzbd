@@ -34,10 +34,7 @@ var initGooseErr = sync.OnceValue(func() error {
 
 // DB wraps a SQLite connection pool configured for history access.
 type DB struct {
-	db              *sql.DB
-	connMaxLifetime time.Duration
-	maxOpenConns    int
-	maxIdleConns    int
+	db *sql.DB
 }
 
 // Open opens (or creates) the SQLite database at path, applies the schema if
@@ -86,20 +83,11 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("history: VACUUM: %w", err)
 	}
 
-	maxOpenConns := 25
-	maxIdleConns := 25
-	connMaxLifetime := 5 * time.Minute
+	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxIdleConns(25)
+	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
-	sqlDB.SetMaxOpenConns(maxOpenConns)
-	sqlDB.SetMaxIdleConns(maxIdleConns)
-	sqlDB.SetConnMaxLifetime(connMaxLifetime)
-
-	return &DB{
-		db:              sqlDB,
-		connMaxLifetime: connMaxLifetime,
-		maxOpenConns:    maxOpenConns,
-		maxIdleConns:    maxIdleConns,
-	}, nil
+	return &DB{db: sqlDB}, nil
 }
 
 // Close releases the underlying database connection pool. It is safe to call
