@@ -1,8 +1,13 @@
 package notifier
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"os/exec"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -105,7 +110,9 @@ func TestDispatcher_DispatchNoNotifiers(t *testing.T) {
 
 func TestDispatcher_DispatchErrorSwallowed(t *testing.T) {
 	t.Parallel()
-	d := NewDispatcher(nil)
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	d := NewDispatcher(logger)
 	failing := &mockNotifier{
 		name:    "fail",
 		mask:    []EventType{Error},
@@ -115,6 +122,30 @@ func TestDispatcher_DispatchErrorSwallowed(t *testing.T) {
 
 	// Should not panic; errors are logged but swallowed.
 	d.Dispatch(t.Context(), Event{Type: Error, Title: "bad"})
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "notifier send failed") {
+		t.Errorf("expected log output to contain 'notifier send failed', got: %q", logOutput)
+	}
+}
+
+func TestDispatcher_DispatchSuccessNotLogged(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	d := NewDispatcher(logger)
+	success := &mockNotifier{
+		name: "success",
+		mask: []EventType{Error},
+	}
+	d.Register(success)
+
+	d.Dispatch(t.Context(), Event{Type: Error, Title: "good"})
+
+	logOutput := buf.String()
+	if strings.Contains(logOutput, "notifier send failed") {
+		t.Errorf("expected log output NOT to contain 'notifier send failed', got: %q", logOutput)
+	}
 }
 
 // ---------- ScriptNotifier ----------
@@ -226,5 +257,57 @@ func TestAppriseTypeDirect(t *testing.T) {
 				t.Errorf("appriseType(%s) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestScriptNotifier_ETXTBSY_RetryCount(t *testing.T) {
+	t.Parallel()
+
+	var attempts int
+	n := NewScriptNotifier(ScriptConfig{
+		Path:      "/dummy/path",
+		Timeout:   2 * time.Second,
+		EventMask: []EventType{DownloadComplete},
+	})
+	n.run = func(_ *exec.Cmd) error {
+		attempts++
+		if attempts < 3 {
+			return syscall.ETXTBSY
+		}
+		return nil
+	}
+
+	err := n.Send(t.Context(), Event{Type: DownloadComplete, Timestamp: time.Now()})
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestScriptNotifier_ETXTBSY_Exhausted(t *testing.T) {
+	t.Parallel()
+
+	var attempts int
+	n := NewScriptNotifier(ScriptConfig{
+		Path:      "/dummy/path",
+		Timeout:   2 * time.Second,
+		EventMask: []EventType{DownloadComplete},
+	})
+	n.run = func(_ *exec.Cmd) error {
+		attempts++
+		return syscall.ETXTBSY
+	}
+
+	err := n.Send(t.Context(), Event{Type: DownloadComplete, Timestamp: time.Now()})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if strings.Contains(err.Error(), "exhausted retries") {
+		t.Fatalf("expected specific runner error, got fallback: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
 	}
 }

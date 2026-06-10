@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -403,5 +404,459 @@ func TestDispatchConcurrent(t *testing.T) {
 
 	if len(n1.events()) != 1 || len(n2.events()) != 1 {
 		t.Errorf("expected both to receive event")
+	}
+}
+
+// ----- Mock SMTP Server and Email Notifier Tests -----
+
+func TestEmailNotifier_Send_Success(t *testing.T) {
+	t.Parallel()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer l.Close()
+
+	addr := l.Addr().String()
+	host, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		write := func(s string) { _, _ = conn.Write([]byte(s)) }
+		read := func() string {
+			buf := make([]byte, 1024)
+			n, _ := conn.Read(buf)
+			return string(buf[:n])
+		}
+
+		write("220 mock-smtp.example.com GoNZBD SMTP\r\n")
+		_ = read() // EHLO
+		write("250-mock-smtp.example.com\r\n250 AUTH PLAIN\r\n")
+		_ = read() // AUTH PLAIN
+		write("235 Authentication successful\r\n")
+		_ = read() // MAIL FROM
+		write("250 OK\r\n")
+		_ = read() // RCPT TO
+		write("250 OK\r\n")
+		_ = read() // DATA
+		write("354 Start mail input\r\n")
+		_ = read() // body data
+		write("250 OK\r\n")
+		_ = read() // QUIT
+		write("221 Goodbye\r\n")
+	}()
+
+	n := NewEmailNotifier(EmailConfig{
+		Host:      host,
+		Port:      port,
+		Username:  "user",
+		Password:  "pass",
+		From:      "from@example.com",
+		To:        []string{"to@example.com"},
+		EventMask: []EventType{DownloadComplete},
+	})
+
+	err = n.Send(t.Context(), Event{
+		Type:      DownloadComplete,
+		Title:     "Success Title",
+		Body:      "Success Body",
+		Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+}
+
+func TestEmailNotifier_Send_Auth_Failure(t *testing.T) {
+	t.Parallel()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer l.Close()
+
+	addr := l.Addr().String()
+	host, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		write := func(s string) { _, _ = conn.Write([]byte(s)) }
+		read := func() string {
+			buf := make([]byte, 1024)
+			n, _ := conn.Read(buf)
+			return string(buf[:n])
+		}
+
+		write("220 mock-smtp.example.com GoNZBD SMTP\r\n")
+		_ = read() // EHLO
+		write("250-mock-smtp.example.com\r\n250 AUTH PLAIN\r\n")
+		_ = read() // AUTH PLAIN
+		write("535 Authentication credentials invalid\r\n")
+	}()
+
+	n := NewEmailNotifier(EmailConfig{
+		Host:      host,
+		Port:      port,
+		Username:  "user",
+		Password:  "pass",
+		From:      "from@example.com",
+		To:        []string{"to@example.com"},
+		EventMask: []EventType{DownloadComplete},
+	})
+
+	err = n.Send(t.Context(), Event{
+		Type:      DownloadComplete,
+		Timestamp: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected auth error, got nil")
+	}
+}
+
+func TestEmailNotifier_Send_Mail_Failure(t *testing.T) {
+	t.Parallel()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer l.Close()
+
+	addr := l.Addr().String()
+	host, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		write := func(s string) { _, _ = conn.Write([]byte(s)) }
+		read := func() string {
+			buf := make([]byte, 1024)
+			n, _ := conn.Read(buf)
+			return string(buf[:n])
+		}
+
+		write("220 mock-smtp.example.com GoNZBD SMTP\r\n")
+		_ = read() // EHLO
+		write("250-mock-smtp.example.com\r\n250 AUTH PLAIN\r\n")
+		_ = read() // AUTH PLAIN
+		write("235 Authentication successful\r\n")
+		_ = read() // MAIL FROM
+		write("550 Sender rejected\r\n")
+	}()
+
+	n := NewEmailNotifier(EmailConfig{
+		Host:      host,
+		Port:      port,
+		Username:  "user",
+		Password:  "pass",
+		From:      "from@example.com",
+		To:        []string{"to@example.com"},
+		EventMask: []EventType{DownloadComplete},
+	})
+
+	err = n.Send(t.Context(), Event{
+		Type:      DownloadComplete,
+		Timestamp: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected MAIL FROM error, got nil")
+	}
+}
+
+func TestEmailNotifier_Send_Rcpt_Failure(t *testing.T) {
+	t.Parallel()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer l.Close()
+
+	addr := l.Addr().String()
+	host, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		write := func(s string) { _, _ = conn.Write([]byte(s)) }
+		read := func() string {
+			buf := make([]byte, 1024)
+			n, _ := conn.Read(buf)
+			return string(buf[:n])
+		}
+
+		write("220 mock-smtp.example.com GoNZBD SMTP\r\n")
+		_ = read() // EHLO
+		write("250-mock-smtp.example.com\r\n250 AUTH PLAIN\r\n")
+		_ = read() // AUTH PLAIN
+		write("235 Authentication successful\r\n")
+		_ = read() // MAIL FROM
+		write("250 OK\r\n")
+		_ = read() // RCPT TO
+		write("550 User unknown\r\n")
+	}()
+
+	n := NewEmailNotifier(EmailConfig{
+		Host:      host,
+		Port:      port,
+		Username:  "user",
+		Password:  "pass",
+		From:      "from@example.com",
+		To:        []string{"to@example.com"},
+		EventMask: []EventType{DownloadComplete},
+	})
+
+	err = n.Send(t.Context(), Event{
+		Type:      DownloadComplete,
+		Timestamp: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected RCPT TO error, got nil")
+	}
+}
+
+func TestEmailNotifier_Send_Data_Failure(t *testing.T) {
+	t.Parallel()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer l.Close()
+
+	addr := l.Addr().String()
+	host, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		write := func(s string) { _, _ = conn.Write([]byte(s)) }
+		read := func() string {
+			buf := make([]byte, 1024)
+			n, _ := conn.Read(buf)
+			return string(buf[:n])
+		}
+
+		write("220 mock-smtp.example.com GoNZBD SMTP\r\n")
+		_ = read() // EHLO
+		write("250-mock-smtp.example.com\r\n250 AUTH PLAIN\r\n")
+		_ = read() // AUTH PLAIN
+		write("235 Authentication successful\r\n")
+		_ = read() // MAIL FROM
+		write("250 OK\r\n")
+		_ = read() // RCPT TO
+		write("250 OK\r\n")
+		_ = read() // DATA
+		write("554 Failure\r\n")
+	}()
+
+	n := NewEmailNotifier(EmailConfig{
+		Host:      host,
+		Port:      port,
+		Username:  "user",
+		Password:  "pass",
+		From:      "from@example.com",
+		To:        []string{"to@example.com"},
+		EventMask: []EventType{DownloadComplete},
+	})
+
+	err = n.Send(t.Context(), Event{
+		Type:      DownloadComplete,
+		Timestamp: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected DATA error, got nil")
+	}
+}
+
+func TestEmailNotifier_Send_STARTTLS_Failure(t *testing.T) {
+	t.Parallel()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer l.Close()
+
+	addr := l.Addr().String()
+	host, portStr, _ := net.SplitHostPort(addr)
+	var port int
+	fmt.Sscanf(portStr, "%d", &port)
+
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		write := func(s string) { _, _ = conn.Write([]byte(s)) }
+		read := func() string {
+			buf := make([]byte, 1024)
+			n, _ := conn.Read(buf)
+			return string(buf[:n])
+		}
+
+		write("220 mock-smtp.example.com GoNZBD SMTP\r\n")
+		_ = read() // EHLO
+		write("250-mock-smtp.example.com\r\n250 STARTTLS\r\n")
+		_ = read() // STARTTLS
+		write("220 Ready to start TLS\r\n")
+		// The client will start TLS handshake, server just closes connection
+	}()
+
+	n := NewEmailNotifier(EmailConfig{
+		Host:      host,
+		Port:      port,
+		From:      "from@example.com",
+		To:        []string{"to@example.com"},
+		UseTLS:    true,
+		EventMask: []EventType{DownloadComplete},
+	})
+
+	err = n.Send(t.Context(), Event{
+		Type:      DownloadComplete,
+		Timestamp: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected STARTTLS handshake error, got nil")
+	}
+	if !strings.Contains(err.Error(), "starttls") {
+		t.Fatalf("expected starttls error, got: %v", err)
+	}
+}
+
+func TestEmailNotifier_Send_ImplicitTLS_DialFailure(t *testing.T) {
+	t.Parallel()
+	n := NewEmailNotifier(EmailConfig{
+		Host:      "127.0.0.1",
+		Port:      1, // closed port, instantly refuses connection
+		From:      "from@example.com",
+		To:        []string{"to@example.com"},
+		UseSSL:    true,
+		EventMask: []EventType{DownloadComplete},
+	})
+
+	err := n.Send(t.Context(), Event{
+		Type:      DownloadComplete,
+		Timestamp: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected dial error, got nil")
+	}
+	if !strings.Contains(err.Error(), "tls dial") {
+		t.Fatalf("expected tls dial error, got: %v", err)
+	}
+}
+
+// ----- Additional Script and Apprise Tests -----
+
+func TestScriptNotifier_TimeoutZero(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := writeScript(t, dir, "ok.sh", `echo "ok"`)
+
+	n := NewScriptNotifier(ScriptConfig{
+		Path:      p,
+		Timeout:   0, // triggers default timeout of 30s
+		EventMask: []EventType{DownloadComplete},
+	})
+	err := n.Send(t.Context(), Event{Type: DownloadComplete, Timestamp: time.Now()})
+	if err != nil {
+		t.Fatalf("expected success with default timeout, got: %v", err)
+	}
+}
+
+func TestScriptNotifier_ETXTBSY(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := writeScript(t, dir, "retry.sh", `echo "ok"`)
+
+	// Lock the file for writing to trigger ETXTBSY on exec
+	f, err := os.OpenFile(p, os.O_WRONLY, 0755)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+
+	// Release the file after a short delay so the retry loop eventually succeeds
+	go func() {
+		time.Sleep(8 * time.Millisecond)
+		_ = f.Close()
+	}()
+
+	n := NewScriptNotifier(ScriptConfig{
+		Path:      p,
+		Timeout:   2 * time.Second,
+		EventMask: []EventType{DownloadComplete},
+	})
+
+	err = n.Send(t.Context(), Event{Type: DownloadComplete, Timestamp: time.Now()})
+	if err != nil {
+		t.Fatalf("expected Send to succeed after retry, got: %v", err)
+	}
+}
+
+func TestAppriseNotifier_DefaultClient(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// Pass nil client to trigger DefaultClient path
+	n := NewAppriseNotifier(AppriseConfig{
+		URL:       srv.URL,
+		EventMask: []EventType{Warning},
+	}, nil)
+
+	err := n.Send(t.Context(), Event{Type: Warning, Timestamp: time.Now()})
+	if err != nil {
+		t.Fatalf("expected success with default client, got: %v", err)
+	}
+}
+
+func TestAppriseStatus300(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusMultipleChoices) // 300
+	}))
+	defer srv.Close()
+
+	n := NewAppriseNotifier(AppriseConfig{
+		URL:       srv.URL,
+		EventMask: []EventType{Warning},
+	}, srv.Client())
+
+	err := n.Send(t.Context(), Event{Type: Warning, Timestamp: time.Now()})
+	if err == nil {
+		t.Fatal("expected error for 300 status code, got nil")
 	}
 }

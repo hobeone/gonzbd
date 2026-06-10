@@ -25,11 +25,15 @@ type ScriptConfig struct {
 // mirroring the Python implementation's custom notification script contract.
 type ScriptNotifier struct {
 	cfg ScriptConfig
+	run func(*exec.Cmd) error
 }
 
 // NewScriptNotifier creates a ScriptNotifier from cfg.
 func NewScriptNotifier(cfg ScriptConfig) *ScriptNotifier {
-	return &ScriptNotifier{cfg: cfg}
+	return &ScriptNotifier{
+		cfg: cfg,
+		run: func(cmd *exec.Cmd) error { return cmd.Run() },
+	}
 }
 
 // Name returns the notifier identifier.
@@ -76,7 +80,7 @@ func (s *ScriptNotifier) Send(ctx context.Context, e Event) error {
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 
-		err := cmd.Run()
+		err := s.run(cmd)
 		if err == nil {
 			return nil
 		}
