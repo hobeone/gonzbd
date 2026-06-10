@@ -32,6 +32,8 @@ var (
 // ErrNotRAR is returned when a file does not start with a valid RAR signature.
 var ErrNotRAR = errors.New("rarheader: not a RAR archive")
 
+var execCommand = exec.Command
+
 // Info holds metadata extracted from a RAR archive's headers.
 type Info struct {
 	// Version is the RAR format version: 3 for RAR3, 5 for RAR5.
@@ -133,7 +135,7 @@ func inspectViaUnrar(p string, ver int) (Info, error) {
 	info.Version = ver
 
 	//nolint:gosec // p is trusted input from internal caller
-	cmd := exec.Command("unrar", "vt", "-p-", p)
+	cmd := execCommand("unrar", "vt", "-p-", p)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
