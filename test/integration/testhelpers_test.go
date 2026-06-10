@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/history"
@@ -211,4 +212,30 @@ func NewTestApp(t *testing.T, mockAddr string) *app.Application {
 	})
 
 	return a
+}
+
+// wsAdapter implements app.EventEmitter by forwarding events to an
+// api.Broadcaster, converting between the two (structurally identical)
+// Event types. This mirrors cmd/gonzbd/main.go's wsAdapter, which wires
+// the application's emitter to the API's WebSocket broadcaster in
+// production; integration tests need the same wiring to observe
+// broadcasts over a real WebSocket connection.
+type wsAdapter struct {
+	b *api.Broadcaster
+}
+
+func (w wsAdapter) Broadcast(e app.Event) {
+	w.b.Broadcast(api.Event{
+		Type:          e.Type,
+		Speed:         e.Speed,
+		Remaining:     e.Remaining,
+		SpeedLimit:    e.SpeedLimit,
+		BandwidthMax:  e.BandwidthMax,
+		BandwidthPerc: e.BandwidthPerc,
+		NzoID:         e.NzoID,
+		Tool:          e.Tool,
+		Line:          e.Line,
+		Stage:         e.Stage,
+		Servers:       e.Servers,
+	})
 }
