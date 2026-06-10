@@ -116,9 +116,21 @@ func TestParseByteSize_BoundaryMinG(t *testing.T) {
 
 func TestParseByteSize_BoundaryMaxInt64(t *testing.T) {
 	t.Parallel()
-	_, err := ParseByteSize("9007199254740992K")
+	// 9007199254740992K == 2^63 bytes, which overflows int64 (max is
+	// 2^63-1). float64(maxInt64) itself rounds up to 2^63, so this value
+	// must be rejected by >= rather than > to avoid ByteSize(bytes)
+	// silently wrapping to a negative value.
+	if _, err := ParseByteSize("9007199254740992K"); err == nil {
+		t.Fatal("ParseByteSize(9007199254740992K): expected overflow error, got nil")
+	}
+
+	// One unit below the boundary must still parse cleanly.
+	b, err := ParseByteSize("9007199254740991K")
 	if err != nil {
-		t.Fatalf("ParseByteSize(9007199254740992K): %v", err)
+		t.Fatalf("ParseByteSize(9007199254740991K): %v", err)
+	}
+	if b <= 0 {
+		t.Errorf("ParseByteSize(9007199254740991K) = %d, want positive", b)
 	}
 }
 
