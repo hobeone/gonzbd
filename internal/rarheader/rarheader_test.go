@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -318,4 +319,62 @@ func TestInspect_ValidRAR_Fixtures(t *testing.T) {
 			t.Errorf("expected filenames in InspectRar5(du_test.part1.rar), got none")
 		}
 	}
+}
+
+func TestInspectViaUnrar_Success(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess_UnrarSuccess")
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		return cmd
+	}
+
+	info, err := inspectViaUnrar("dummy.rar", 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !info.Encrypted {
+		t.Error("expected encrypted=true")
+	}
+	if len(info.Filenames) != 1 || info.Filenames[0] != "movie.mkv" {
+		t.Errorf("unexpected filenames: %v", info.Filenames)
+	}
+}
+
+func TestInspectViaUnrar_Failure(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess_UnrarFailure")
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		return cmd
+	}
+
+	_, err := inspectViaUnrar("dummy.rar", 3)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unrar vt failed") {
+		t.Errorf("expected unrar vt failed error, got: %v", err)
+	}
+}
+
+func TestHelperProcess_UnrarSuccess(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+	// Output valid unrar vt output
+	os.Stdout.WriteString("Name: movie.mkv\nFlags: encrypted\n")
+	os.Exit(0)
+}
+
+func TestHelperProcess_UnrarFailure(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+	os.Stderr.WriteString("some unrar error")
+	os.Exit(1)
 }
