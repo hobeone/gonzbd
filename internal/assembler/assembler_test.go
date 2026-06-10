@@ -1174,7 +1174,12 @@ func TestDiskCheckInterval(t *testing.T) {
 		}
 	}
 
-	// 3. Unblock the worker asynchronously after Stop is initiated.
+	// 3. Unblock the worker asynchronously after Stop is initiated. The
+	// sleep is not load-bearing for correctness: a.Stop() blocks until the
+	// worker drains, so it simply waits longer if blockCh closes later.
+	// It exists only to give Stop() a chance to begin closing stopCh first,
+	// so the worker observes shutdown via the stop-drain path rather than
+	// the main loop. Intentional timing window (AGENTS.md).
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		close(blockCh)
