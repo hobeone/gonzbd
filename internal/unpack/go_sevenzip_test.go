@@ -20,10 +20,6 @@ func sevenZipTestdata(t *testing.T) string {
 	// Relative to the gonzbd project root: ../sevenzip/testdata
 	dir := filepath.Join("..", "..", "..", "sevenzip", "testdata")
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		fallback := "/home/hobe/software/sevenzip/testdata"
-		if _, err := os.Stat(fallback); err == nil {
-			return fallback
-		}
 		t.Skipf("sevenzip testdata not found at %s (run tests from gonzbd root)", dir)
 	}
 	return dir
@@ -416,6 +412,12 @@ func TestClassifySevenZipErrorDirect(t *testing.T) {
 	}
 }
 
+// TestGoSevenZip_PanicRecovery verifies the top-level recover() in
+// GoSevenZip converts any panic into a FailCorrupt result with a
+// "sevenzip panic" error. The panic here comes from log.With on the
+// nil *slog.Logger (a convenient, deterministic trigger) rather than
+// from the sevenzip library itself, but it exercises the same generic
+// recover/format/Reason path that a real library panic would hit.
 func TestGoSevenZip_PanicRecovery(t *testing.T) {
 	archive := Archive{
 		Type:     SevenZipArchive,
