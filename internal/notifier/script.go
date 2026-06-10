@@ -39,6 +39,9 @@ func NewScriptNotifier(cfg ScriptConfig) *ScriptNotifier {
 // Name returns the notifier identifier.
 func (s *ScriptNotifier) Name() string { return "script" }
 
+// Config returns a copy of the notifier's configuration.
+func (s *ScriptNotifier) Config() ScriptConfig { return s.cfg }
+
 // Accepts reports whether this notifier is configured to handle t.
 func (s *ScriptNotifier) Accepts(t EventType) bool {
 	return acceptsAny(s.cfg.EventMask, t)
