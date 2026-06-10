@@ -92,6 +92,11 @@ func Inspect(p string) (Info, error) {
 // using the pure Go rarengine library.
 func InspectRar5(p string) (info Info, err error) {
 	info.Version = 5
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("rarheader: rarengine panic: %v", r)
+		}
+	}()
 
 	//nolint:gosec // p is trusted input from internal caller
 	f, err := os.Open(p)
@@ -105,12 +110,6 @@ func InspectRar5(p string) (info Info, err error) {
 	close(volumesChan)
 
 	sd := rarengine.NewStreamDecompressor(volumesChan)
-
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("rarheader: rarengine panic: %v", r)
-		}
-	}()
 
 	for {
 		fh, err := sd.Next()
