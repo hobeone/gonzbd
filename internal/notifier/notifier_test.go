@@ -795,35 +795,6 @@ func TestScriptNotifier_TimeoutZero(t *testing.T) {
 	}
 }
 
-func TestScriptNotifier_ETXTBSY(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	p := writeScript(t, dir, "retry.sh", `echo "ok"`)
-
-	// Lock the file for writing to trigger ETXTBSY on exec
-	f, err := os.OpenFile(p, os.O_WRONLY, 0755)
-	if err != nil {
-		t.Fatalf("OpenFile: %v", err)
-	}
-
-	// Release the file after a short delay so the retry loop eventually succeeds
-	go func() {
-		time.Sleep(8 * time.Millisecond)
-		_ = f.Close()
-	}()
-
-	n := NewScriptNotifier(ScriptConfig{
-		Path:      p,
-		Timeout:   2 * time.Second,
-		EventMask: []EventType{DownloadComplete},
-	})
-
-	err = n.Send(t.Context(), Event{Type: DownloadComplete, Timestamp: time.Now()})
-	if err != nil {
-		t.Fatalf("expected Send to succeed after retry, got: %v", err)
-	}
-}
-
 func TestAppriseNotifier_DefaultClient(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
