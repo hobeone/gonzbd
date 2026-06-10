@@ -15,6 +15,8 @@ func TestSanitizeFilename(t *testing.T) {
 		expected string
 	}{
 		{"empty", "", SanitizeOptions{}, "unknown"},
+		{"trim to empty", "...", SanitizeOptions{}, "unknown"},
+		{"trim spaces to empty", "   ", SanitizeOptions{}, "unknown"},
 		{"basic", "test.bin", SanitizeOptions{}, "test.bin"},
 		{"illegal chars", "test?file*.bin", SanitizeOptions{}, "test_file_.bin"},
 		{"control chars", "test\x01file.bin", SanitizeOptions{}, "test_file.bin"},
@@ -47,11 +49,15 @@ func TestSanitizeFolderName(t *testing.T) {
 		expected string
 	}{
 		{"empty", "", SanitizeOptions{}, "unknown"},
+		{"trim to empty", "...", SanitizeOptions{}, "unknown"},
+		{"trim spaces to empty", "   ", SanitizeOptions{}, "unknown"},
 		{"basic", "My Show", SanitizeOptions{}, "My Show"},
 		{"trailing dots", "My Show...", SanitizeOptions{}, "My Show"},
 		{"trailing spaces", "My Show   ", SanitizeOptions{}, "My Show"},
 		{"illegal and trailing", "My:Show?...", SanitizeOptions{}, "My_Show_"},
 		{"windows device", "CON", SanitizeOptions{}, "_CON"},
+		{"exactly maxFilenameBytes", strings.Repeat("a", 255), SanitizeOptions{}, strings.Repeat("a", 255)},
+		{"exceeds maxFilenameBytes", strings.Repeat("a", 256), SanitizeOptions{}, strings.Repeat("a", 255)},
 	}
 
 	for _, tt := range tests {
@@ -75,6 +81,9 @@ func TestTruncateFilename(t *testing.T) {
 		{"truncate", "testing.bin", 8, "test.bin"}, // base "testing" -> "test", ext ".bin"
 		{"multi-byte", "🚀🚀🚀.bin", 10, "🚀.bin"},     // 🚀 is 4 bytes, 4 + 4 = 8
 		{"only ext", ".hugeextension", 5, ".huge"},
+		{"overlong ext truncation", "base.123456789012345678901", 22, "ba.1234567890123456789"},                       // base "base" (4) and ext ".123456789012345678901" (21). ext truncated to 20: ".1234567890123456789". maxBaseBytes = 22 - 20 = 2. base truncated to 2 ("ba"). Returns "ba.1234567890123456789".
+		{"maxBaseBytes equals 0", "a.abcde", 6, "a.abcd"},                                                             // maxBytes=6, len(ext)=6, maxBaseBytes=0. Truncates base first? Wait: returns "a.abcd" (original code filename[:maxBytes]).
+		{"len == maxBytes with overlong ext", "abcde.123456789012345678901234", 30, "abcde.123456789012345678901234"}, // total len is 30, fits exactly, so no truncation happens.
 	}
 
 	for _, tt := range tests {
@@ -416,5 +425,14 @@ func TestStripDiacriticsDirect(t *testing.T) {
 				t.Errorf("stripDiacritics(%q) = %q; want %q", tt.input, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestCompileCleanupList_Invalid(t *testing.T) {
+	t.Parallel()
+	patterns := []string{`[invalid`, `valid-pattern`}
+	compiled := CompileCleanupList(patterns)
+	if len(compiled) != 1 {
+		t.Errorf("expected 1 compiled regex, got %d", len(compiled))
 	}
 }

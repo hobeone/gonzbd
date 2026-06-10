@@ -38,14 +38,14 @@ func CheckContainment(dir string) error {
 		}
 
 		// Resolve the real path, following symlinks.
-		real, err := filepath.EvalSymlinks(path)
+		realPath, err := filepath.EvalSymlinks(path)
 		if err != nil {
 			// If the target doesn't exist, that's still suspicious.
 			return fmt.Errorf("containment: eval symlinks %s: %w", path, err)
 		}
-		realAbs, err := filepath.Abs(real)
+		realAbs, err := filepath.Abs(realPath)
 		if err != nil {
-			return fmt.Errorf("containment: abs %s: %w", real, err)
+			return fmt.Errorf("containment: abs %s: %w", realPath, err)
 		}
 
 		// The resolved path must be exactly absDir or start with absDir + separator.

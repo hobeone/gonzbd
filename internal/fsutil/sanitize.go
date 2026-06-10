@@ -226,6 +226,8 @@ func truncateFilename(filename string, maxBytes int) string {
 	return truncatedBase.String() + ext
 }
 
+var maxAttempts = 10_000
+
 // GetUniqueFilename returns a unique version of the path by appending .1, .2, etc.
 // if the file already exists on disk. Stops after 10,000 attempts to prevent
 // unbounded iteration on pathologically crowded directories.
@@ -234,7 +236,6 @@ func GetUniqueFilename(path string) string {
 		return path
 	}
 
-	const maxAttempts = 10_000
 	ext := filepath.Ext(path)
 	base := path[:len(path)-len(ext)]
 	for i := 1; i <= maxAttempts; i++ {
