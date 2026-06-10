@@ -1,6 +1,7 @@
 package rarheader
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -238,4 +239,83 @@ func TestHelperProcess(t *testing.T) {
 		return
 	}
 	os.Exit(11)
+}
+
+func TestIsRAR_FileNotFound_CheckBool(t *testing.T) {
+	ok, err := IsRAR("/nonexistent/path/to/file.rar")
+	if err == nil {
+		t.Error("IsRAR returned nil error for nonexistent file")
+	}
+	if ok {
+		t.Error("IsRAR returned true for nonexistent file")
+	}
+}
+
+func TestInspectRar5_FileNotFound(t *testing.T) {
+	_, err := InspectRar5("/nonexistent/path/to/file.rar")
+	if err == nil {
+		t.Error("InspectRar5 returned nil error for nonexistent file")
+	}
+}
+
+func TestInspectRar5_Corrupted(t *testing.T) {
+	data := append([]byte{}, rar5Sig...)
+	data = append(data, bytes.Repeat([]byte{0xFF}, 1000)...)
+	path := writeTemp(t, "corrupt.rar", data)
+	_, err := InspectRar5(path)
+	if err == nil {
+		t.Error("expected error for corrupted RAR5 file in InspectRar5")
+	}
+}
+
+func TestInspect_CorruptedRAR5_Fallback(t *testing.T) {
+	data := append([]byte{}, rar5Sig...)
+	data = append(data, bytes.Repeat([]byte{0xFF}, 1000)...)
+	path := writeTemp(t, "corrupt.rar", data)
+	_, err := Inspect(path)
+	if err == nil {
+		t.Error("expected error for corrupted RAR5 file in Inspect")
+	}
+}
+
+func TestInspect_ValidRAR_Fixtures(t *testing.T) {
+	// Test on sample.rar
+	path5 := filepath.Join("..", "..", "test", "fixtures", "rar", "sample.rar")
+	if _, err := os.Stat(path5); err == nil {
+		info, err := Inspect(path5)
+		if err != nil {
+			t.Fatalf("Inspect(%s) error: %v", path5, err)
+		}
+		if info.Version != 5 && info.Version != 3 {
+			t.Errorf("unexpected version: %d", info.Version)
+		}
+		if len(info.Filenames) == 0 {
+			t.Errorf("expected filenames in sample.rar, got none")
+		}
+	}
+
+	// Test on multi-volume segment
+	pathPart := filepath.Join("..", "..", "test", "fixtures", "rar", "multivolume", "du_test.part1.rar")
+	if _, err := os.Stat(pathPart); err == nil {
+		// Test Inspect (fallback or pure Go)
+		info, err := Inspect(pathPart)
+		if err != nil {
+			t.Fatalf("Inspect(%s) error: %v", pathPart, err)
+		}
+		if info.Version != 5 {
+			t.Errorf("expected version 5, got %d", info.Version)
+		}
+		if len(info.Filenames) == 0 {
+			t.Errorf("expected filenames in du_test.part1.rar, got none")
+		}
+
+		// Directly test InspectRar5 to bypass Inspect fallback and kill mutants
+		infoRar5, err := InspectRar5(pathPart)
+		if err != nil {
+			t.Fatalf("InspectRar5(%s) error: %v", pathPart, err)
+		}
+		if len(infoRar5.Filenames) == 0 {
+			t.Errorf("expected filenames in InspectRar5(du_test.part1.rar), got none")
+		}
+	}
 }
