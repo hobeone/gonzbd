@@ -1,5 +1,5 @@
 # All Alpine-based stages use the same version for consistency.
-ARG ALPINE_VERSION=3.23
+ARG ALPINE_VERSION=3.24
 
 # ---- Build UI ----
 FROM oven/bun:alpine AS ui-builder
