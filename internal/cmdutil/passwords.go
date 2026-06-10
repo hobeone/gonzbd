@@ -14,11 +14,12 @@ func LoadPasswordFile(path string) ([]string, error) {
 	if path == "" {
 		return nil, nil
 	}
+	//nolint:gosec // path is user-supplied config
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open password file %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var passwords []string
 	scanner := bufio.NewScanner(f)
