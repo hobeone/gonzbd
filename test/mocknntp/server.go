@@ -37,6 +37,17 @@ type Config struct {
 	// exercising timeout/cancellation paths.
 	ResponseDelay time.Duration
 
+	// BodyDelay is slept before writing the BODY response status line.
+	// Useful for holding a read open during download integration tests.
+	BodyDelay time.Duration
+
+	// BodyGate, if non-nil, blocks the BODY response until the channel is closed.
+	BodyGate <-chan struct{}
+
+	// OnBodyCalled, if non-nil, receives the requested Message-ID when a
+	// BODY command starts processing.
+	OnBodyCalled chan<- string
+
 	// Greeting overrides the default "200 mocknntp ready". Use "201 ..."
 	// to simulate a no-posting server.
 	Greeting string
@@ -299,6 +310,30 @@ func (s *Server) handleBody(bw *bufio.Writer, cs *connState, messageID string) {
 	if !ok {
 		_ = s.send(bw, "430 no article with that message-id") //nolint:errcheck // best-effort
 		return
+	}
+
+	if s.cfg.OnBodyCalled != nil {
+		select {
+		case s.cfg.OnBodyCalled <- messageID:
+		case <-s.done:
+			return
+		}
+	}
+
+	if s.cfg.BodyDelay > 0 {
+		select {
+		case <-s.done:
+			return
+		case <-time.After(s.cfg.BodyDelay):
+		}
+	}
+
+	if s.cfg.BodyGate != nil {
+		select {
+		case <-s.done:
+			return
+		case <-s.cfg.BodyGate:
+		}
 	}
 
 	_ = s.send(bw, fmt.Sprintf("222 0 <%s> body follows", messageID)) //nolint:errcheck // best-effort
