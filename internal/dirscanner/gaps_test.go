@@ -4,9 +4,7 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"encoding/hex"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -387,18 +385,33 @@ func TestExtractZip_Direct(t *testing.T) {
 	}
 }
 
+// bz2OfZeros maps a zero-byte payload length to its pre-computed bzip2
+// encoding (Go's standard library only provides a bzip2 reader, not a
+// writer). Generated via: python3 -c "import bz2; print(bz2.compress(bytes(N)).hex())"
+var bz2OfZeros = map[int]string{
+	10: "425a68393141592653596e1651c7000000400041002000210082831772453850906e1651c7",
+	11: "425a6839314159265359378de1d600000040004080200021008283177245385090378de1d6",
+}
+
 func compressBZ2(t *testing.T, data []byte) string {
 	t.Helper()
+	for _, b := range data {
+		if b != 0 {
+			t.Fatalf("compressBZ2 only supports all-zero payloads")
+		}
+	}
+	hexData, ok := bz2OfZeros[len(data)]
+	if !ok {
+		t.Fatalf("compressBZ2: no precomputed fixture for length %d", len(data))
+	}
+	raw, err := hex.DecodeString(hexData)
+	if err != nil {
+		t.Fatalf("decode bz2 fixture: %v", err)
+	}
 	tmp := t.TempDir()
 	outPath := filepath.Join(tmp, "temp.bz2")
-	hexData := hex.EncodeToString(data)
-	cmd := exec.Command("python3", "-c", fmt.Sprintf(`
-import binascii, bz2
-with open(%q, "wb") as f:
-    f.write(bz2.compress(binascii.unhexlify(%q)))
-`, outPath, hexData))
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("failed to run python bzip2 compression: %v", err)
+	if err := os.WriteFile(outPath, raw, 0o644); err != nil {
+		t.Fatalf("write bz2 fixture: %v", err)
 	}
 	return outPath
 }

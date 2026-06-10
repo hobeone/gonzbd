@@ -15,7 +15,7 @@ var (
 	// MaxDecompressSize limits decompressed NZB size per file to guard against zip bombs.
 	MaxDecompressSize = 100 * 1024 * 1024 // 100 MiB
 
-	maxNZBsPerZip      = 1000                     // sane upper bound for NZBs in one archive
+	maxNZBsPerZip            = 1000              // sane upper bound for NZBs in one archive
 	maxCumulativeBytes int64 = 500 * 1024 * 1024 // 500 MiB total across all NZBs
 )
 
@@ -140,8 +140,6 @@ func extractZip(path string) ([][]byte, error) {
 		return nil, fmt.Errorf("failed to open zip file: %w", err)
 	}
 	defer reader.Close() //nolint:errcheck // cleanup of zip reader
-
-
 
 	var result [][]byte
 	var cumulative int64
