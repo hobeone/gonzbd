@@ -397,6 +397,42 @@ func TestGreetingRejected(t *testing.T) {
 	}
 }
 
+// TestFetchStatAfterReaderError verifies that Fetch and Stat propagate the
+// underlying reader error (via closeError) when the connection dies for a
+// reason other than an explicit Close() call, rather than the generic
+// ErrClosed.
+func TestFetchStatAfterReaderError(t *testing.T) {
+	ms := newMockServer(t, func(c *mockConn) {
+		c.send("200 welcome")
+		c.expect("CAPABILITIES")
+		c.sendCaps()
+		// Close the connection without responding further, causing the
+		// reader to observe an unexpected EOF.
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, err := Dial(ctx, makeCfg(ms.addr))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Wait for runReader to observe the closed socket and record closeErr.
+	<-conn.ctx.Done()
+
+	wantErr := conn.closeError()
+	if errors.Is(wantErr, ErrClosed) {
+		t.Fatalf("closeError() = %v, want a specific reader error, not generic ErrClosed", wantErr)
+	}
+
+	if _, err := conn.Fetch(ctx, "anything@host"); !errors.Is(err, wantErr) {
+		t.Errorf("Fetch after reader error = %v, want %v", err, wantErr)
+	}
+	if err := conn.Stat(ctx, "anything@host"); !errors.Is(err, wantErr) {
+		t.Errorf("Stat after reader error = %v, want %v", err, wantErr)
+	}
+}
+
 func TestFetchAfterClose(t *testing.T) {
 	ms := newMockServer(t, func(c *mockConn) {
 		c.send("200 welcome")
