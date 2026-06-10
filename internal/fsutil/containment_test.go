@@ -106,3 +106,30 @@ func TestCheckContainment_RelativeSymlinkInside(t *testing.T) {
 		t.Errorf("expected no error for relative symlink inside dir, got: %v", err)
 	}
 }
+
+func TestCheckContainment_NonExistentDir(t *testing.T) {
+	err := CheckContainment("/non/existent/path/for/sure")
+	if err == nil {
+		t.Fatal("expected error for non-existent directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "eval symlinks on dir") {
+		t.Errorf("expected error to mention 'eval symlinks on dir', got: %v", err)
+	}
+}
+
+func TestCheckContainment_BrokenSymlink(t *testing.T) {
+	dir := t.TempDir()
+	// Create a symlink pointing to a non-existent target.
+	link := filepath.Join(dir, "broken.txt")
+	if err := os.Symlink("non_existent_target.txt", link); err != nil {
+		t.Fatal(err)
+	}
+
+	err := CheckContainment(dir)
+	if err == nil {
+		t.Fatal("expected error for broken symlink, got nil")
+	}
+	if !strings.Contains(err.Error(), "eval symlinks") {
+		t.Errorf("expected error to mention 'eval symlinks', got: %v", err)
+	}
+}
