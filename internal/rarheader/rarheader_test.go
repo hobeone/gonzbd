@@ -362,6 +362,36 @@ func TestInspectViaUnrar_Failure(t *testing.T) {
 	}
 }
 
+func TestInspectViaUnrar_PasswordError(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess_UnrarPasswordError")
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		return cmd
+	}
+
+	info, err := inspectViaUnrar("dummy.rar", 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !info.Encrypted {
+		t.Error("expected encrypted=true")
+	}
+	if !info.HeaderEncrypted {
+		t.Error("expected headerEncrypted=true")
+	}
+}
+
+func TestHelperProcess_UnrarPasswordError(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+	os.Stdout.WriteString("Access denied: incorrect password?\n")
+	os.Exit(11)
+}
+
 func TestHelperProcess_UnrarSuccess(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return
