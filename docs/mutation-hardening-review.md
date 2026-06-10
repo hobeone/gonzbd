@@ -50,7 +50,7 @@ red-green-discipline violations (asserting current-but-wrong behavior)?
 |---|--------|---------|--------|-------|
 | 16 | `479e968` | test(decoder): harden mutation test coverage for yEnc and UU decoders | done | Test-only, all assertions verified against actual `decoder.go`/`uu.go` logic: `negative_size` case correctly exercises `decodeBody`'s `capacity <= 0` fallback (trailer size unchanged so no size-mismatch error); `TestDecodeBody_Preallocation`'s `cap()==5` expectations match `maxCap = min(len(encoded), maxDecodeSize)`; `TestDecodeUU_AtMaxSize` correctly checks the `>` (not `>=`) boundary on `maxDecodeSize`. No issues. |
 | 17 | `bf41d83` | test(nntp): harden test coverage and kill lived mutants | done | Test-only across `conn_test.go`, `io_test.go`, `pipeline_internal_test.go`, `tls_test.go`, `unit_test.go`. All assertions verified against production code: `io_test.go` boundary tests match `maxResponseLineLen=2048`/`maxBodySize=10MiB` `>` comparisons; `unit_test.go`'s `{600, nil}` case correctly hits `classifyStatus`'s `code < 600` boundary; `TestProbeCapabilities_Errors` subcases each exercise the matching `defaultCapabilities()` fallback branch in `probeCapabilities`; `TestVerifyConnectionIgnoreHostname_ManualVerify` correctly expects a "verify peer chain" error for a self-signed cert. **Issue found and fixed**: `TestFetch_AfterReaderError` used `time.Sleep(100ms)` to wait for the reader goroutine to observe the closed socket, violating AGENTS.md's "no `time.Sleep` for synchronization" rule (the same issue fixed for #9 via `TestFetchStatAfterReaderError`). Replaced with `<-c.ctx.Done()`, removed the now-redundant trailing `ctx.Done()` assertion. `TestFetch_WriteFailure` correctly verifies `unappendPending` drains `c.pending` after a write failure. Verified `go test ./internal/nntp/... -race -count=5`, `golangci-lint run` 0 issues. |
-| 18 | `4c8d73b` | test(assembler): cover linux-specific preallocate fallback and error paths | pending | |
+| 18 | `4c8d73b` | test(assembler): cover linux-specific preallocate fallback and error paths | done | Test-only, single new file `preallocate_linux_test.go`. `TestPreallocateLinuxFallback` opens `/proc/self/coredump_filter` (fallocate returns ENOTSUP/EOPNOTSUPP there) and confirms `preallocateFile` falls back to `Truncate` and returns nil; `TestPreallocateLinuxError` uses a pipe (fallocate returns ESPIPE, not ENOTSUP) and confirms the error is returned directly without fallback. Both match `preallocate_linux.go`'s actual branches exactly. Verified `go test ./internal/assembler/... -race -count=3`. No issues. |
 | 19 | `df6fdb6` | test(postproc): harden unit tests to kill postproc mutants | pending | |
 | 20 | `19f0b0a` | test(directunpack): harden tests against volume map and panic recovery mutants | pending | |
 | 21 | `3b9b9a1` | test(unpack): harden mutation test coverage | pending | |
@@ -162,8 +162,8 @@ tier 2 for review once the original 27 are done.
 ## Overall progress
 
 - Tier 1 reviewed: 15 / 15 — complete
-- Tier 2 reviewed: 2 / 12
+- Tier 2 reviewed: 3 / 12
 - Extra (post-scope): `4a6bc09` not yet reviewed — add to tier 2 queue
 
 ## Next up
-Continue tier 2 with #18 `4c8d73b` (assembler — linux preallocate fallback and error paths).
+Continue tier 2 with #19 `df6fdb6` (postproc — harden unit tests to kill mutants).
