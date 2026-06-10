@@ -744,8 +744,9 @@ func TestFetch_AfterReaderError(t *testing.T) {
 	}
 	defer c.Close()
 
-	// Wait for reader loop to detect the socket close and transition.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the reader loop to observe the socket close and cancel the
+	// connection context.
+	<-c.ctx.Done()
 
 	// Now try to fetch. It should return the reader error (or wrap it).
 	_, err = c.Fetch(context.Background(), "<test@example.com>")
@@ -754,13 +755,6 @@ func TestFetch_AfterReaderError(t *testing.T) {
 	}
 	if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Errorf("expected EOF or ErrUnexpectedEOF, got %v", err)
-	}
-
-	// Verify context is cancelled
-	select {
-	case <-c.ctx.Done():
-	default:
-		t.Error("expected connection context to be cancelled after reader error")
 	}
 }
 
