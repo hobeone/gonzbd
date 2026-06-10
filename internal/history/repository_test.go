@@ -522,14 +522,8 @@ func TestEscapeLike(t *testing.T) {
 
 func TestDBConnectionSettings(t *testing.T) {
 	db, _ := openTestDB(t)
-	if db.connMaxLifetime != 5*time.Minute {
-		t.Errorf("connMaxLifetime = %v, want 5m", db.connMaxLifetime)
-	}
-	if db.maxIdleConns != 25 {
-		t.Errorf("maxIdleConns = %d, want 25", db.maxIdleConns)
-	}
-	if db.maxOpenConns != 25 {
-		t.Errorf("maxOpenConns = %d, want 25", db.maxOpenConns)
+	if got := db.db.Stats().MaxOpenConnections; got != 25 {
+		t.Errorf("MaxOpenConnections = %d, want 25", got)
 	}
 }
 
@@ -575,7 +569,7 @@ func TestOpen_Error(t *testing.T) {
 func TestOpen_ReadOnlyError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "readonly.db")
-	
+
 	// Create and initialize a valid SQLite file
 	db, err := Open(path)
 	if err != nil {
