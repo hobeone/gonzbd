@@ -133,3 +133,21 @@ func TestCheckContainment_BrokenSymlink(t *testing.T) {
 		t.Errorf("expected error to mention 'eval symlinks', got: %v", err)
 	}
 }
+
+func TestCheckContainment_WalkErr(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "unreadable_subdir")
+	if err := os.Mkdir(sub, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(sub, 0755) // Clean up permission so cleanup can delete it
+
+	err := CheckContainment(dir)
+	// We expect an error. It might be permission denied (which is walked as walkErr).
+	if err == nil {
+		if os.Getuid() == 0 {
+			t.Skip("Running as root, permission checks ignored")
+		}
+		t.Fatal("expected error for unreadable subdirectory, got nil")
+	}
+}
