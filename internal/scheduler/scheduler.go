@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/robfig/cron/v3"
 )
@@ -50,9 +51,25 @@ func Parse(line string) (ScheduleSpec, error) {
 	action := parts[5]
 	var arg string
 	if len(parts) > 6 {
-		// Everything after the action name is the argument, preserving spaces.
-		actionIdx := strings.Index(line, parts[5])
-		arg = strings.TrimSpace(line[actionIdx+len(parts[5]):])
+		// Find the start of the action name in line.
+		// Since there could be duplicate words (e.g. "1 1"), we cannot just use strings.Index(line, action).
+		// We must find the index of the 6th word (parts[5]) by skipping the first 5 words.
+		idx := 0
+		for range 5 {
+			// Skip leading whitespace of the current word
+			for idx < len(line) && unicode.IsSpace(rune(line[idx])) {
+				idx++
+			}
+			// Skip the current word characters
+			for idx < len(line) && !unicode.IsSpace(rune(line[idx])) {
+				idx++
+			}
+		}
+		actionIdx := strings.Index(line[idx:], action)
+		if actionIdx != -1 {
+			actionIdx += idx
+			arg = strings.TrimSpace(line[actionIdx+len(action):])
+		}
 	}
 
 	return ScheduleSpec{
