@@ -710,22 +710,21 @@ func TestDirectUnpack_OnLinePanic(t *testing.T) {
 	}
 }
 
-// TestDirectUnpack_SkipsNonRAR5 verifies that DirectUnpack pre-checks the
+// TestDirectUnpack_SkipsNonRAR verifies that DirectUnpack pre-checks the
 // magic bytes of the first volume and skips (rather than fails) sets that
-// aren't RAR5. rarengine only supports RAR5; legacy RAR3/4 archives
-// (movie.rar/.r00/.r01/...) are common on Usenet and are handled by the
-// normal unpack stage's external unrar fallback.
-func TestDirectUnpack_SkipsNonRAR5(t *testing.T) {
+// aren't RAR3 or RAR5 (the only formats rarengine can read). Other formats
+// are handled by the normal unpack stage's external unrar fallback.
+func TestDirectUnpack_SkipsNonRAR(t *testing.T) {
 	workDir := t.TempDir()
 	extractDir := t.TempDir()
 
-	// A minimal file starting with the 7-byte RAR3 magic signature
-	// (Rar!\x1a\x07\x00). DirectUnpack must reject this before invoking
-	// rarengine, so the remaining bytes don't need to form a valid archive.
-	data := []byte{0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0xb2, 0xef, 0x73}
-	volPath := filepath.Join(workDir, "legacy.rar")
+	// A file starting with the ZIP local file header signature (PK\x03\x04).
+	// DirectUnpack must reject this before invoking rarengine, so the
+	// remaining bytes don't need to form a valid archive.
+	data := []byte{0x50, 0x4b, 0x03, 0x04, 0xb2, 0xef, 0x73}
+	volPath := filepath.Join(workDir, "notrar.rar")
 	if err := os.WriteFile(volPath, data, 0o644); err != nil {
-		t.Fatalf("write legacy.rar: %v", err)
+		t.Fatalf("write notrar.rar: %v", err)
 	}
 
 	du := New(
@@ -736,12 +735,12 @@ func TestDirectUnpack_SkipsNonRAR5(t *testing.T) {
 		Options{},
 	)
 
-	du.SetAllFilenames([]string{"legacy.rar"})
+	du.SetAllFilenames([]string{"notrar.rar"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	du.Add(ctx, "legacy.rar", volPath)
+	du.Add(ctx, "notrar.rar", volPath)
 	du.Wait()
 
 	if results := du.Results(); len(results) != 0 {
@@ -752,11 +751,11 @@ func TestDirectUnpack_SkipsNonRAR5(t *testing.T) {
 	}
 
 	skipped := du.Skipped()
-	s, ok := skipped["legacy"]
+	s, ok := skipped["notrar"]
 	if !ok {
-		t.Fatalf("expected 'legacy' to be recorded as skipped, got: %+v", skipped)
+		t.Fatalf("expected 'notrar' to be recorded as skipped, got: %+v", skipped)
 	}
-	if !strings.Contains(s.Reason, "RAR3/4") {
-		t.Errorf("expected skip reason to mention RAR3/4, got: %q", s.Reason)
+	if !strings.Contains(s.Reason, "RAR3/RAR5") {
+		t.Errorf("expected skip reason to mention RAR3/RAR5, got: %q", s.Reason)
 	}
 }

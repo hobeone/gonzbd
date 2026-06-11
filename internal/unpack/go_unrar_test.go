@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/rarheader"
 )
 
 func TestGoUnRAR_SingleVolume(t *testing.T) {
@@ -438,7 +440,7 @@ func TestSanitizeArchivePath(t *testing.T) {
 	}
 }
 
-func TestDetectRar5Direct(t *testing.T) {
+func TestDetectRarVersionDirect(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
@@ -449,28 +451,28 @@ func TestDetectRar5Direct(t *testing.T) {
 			t.Fatalf("write file: %v", err)
 		}
 
-		got, err := detectRar5(path)
+		got, err := rarheader.Version(path)
 		if err != nil {
-			t.Fatalf("detectRar5 error: %v", err)
+			t.Fatalf("rarheader.Version error: %v", err)
 		}
-		if !got {
-			t.Error("expected detectRar5 to return true for valid RAR5 signature")
+		if got != 5 {
+			t.Errorf("expected version 5 for RAR5 signature, got %d", got)
 		}
 	})
 
-	t.Run("invalid signature (rar3)", func(t *testing.T) {
+	t.Run("valid rar3 signature", func(t *testing.T) {
 		path := filepath.Join(dir, "rar3.rar")
 		signature := []byte{0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0x00}
 		if err := os.WriteFile(path, signature, 0o644); err != nil {
 			t.Fatalf("write file: %v", err)
 		}
 
-		got, err := detectRar5(path)
+		got, err := rarheader.Version(path)
 		if err != nil {
-			t.Fatalf("detectRar5 error: %v", err)
+			t.Fatalf("rarheader.Version error: %v", err)
 		}
-		if got {
-			t.Error("expected detectRar5 to return false for RAR3 signature")
+		if got != 3 {
+			t.Errorf("expected version 3 for RAR3 signature, got %d", got)
 		}
 	})
 
@@ -480,12 +482,9 @@ func TestDetectRar5Direct(t *testing.T) {
 			t.Fatalf("write file: %v", err)
 		}
 
-		got, err := detectRar5(path)
-		if err != nil {
-			t.Fatalf("detectRar5 error: %v", err)
-		}
-		if got {
-			t.Error("expected detectRar5 to return false for short file")
+		_, err := rarheader.Version(path)
+		if !errors.Is(err, rarheader.ErrNotRAR) {
+			t.Errorf("expected ErrNotRAR for short file, got %v", err)
 		}
 	})
 
@@ -495,22 +494,16 @@ func TestDetectRar5Direct(t *testing.T) {
 			t.Fatalf("write file: %v", err)
 		}
 
-		got, err := detectRar5(path)
-		if err != nil {
-			t.Fatalf("detectRar5 error: %v", err)
-		}
-		if got {
-			t.Error("expected detectRar5 to return false for empty file")
+		_, err := rarheader.Version(path)
+		if !errors.Is(err, rarheader.ErrNotRAR) {
+			t.Errorf("expected ErrNotRAR for empty file, got %v", err)
 		}
 	})
 
 	t.Run("non-existent file", func(t *testing.T) {
-		got, err := detectRar5(filepath.Join(dir, "non-existent"))
+		_, err := rarheader.Version(filepath.Join(dir, "non-existent"))
 		if err == nil {
 			t.Error("expected error for non-existent file")
-		}
-		if got {
-			t.Error("expected detectRar5 to return false for non-existent file")
 		}
 	})
 }

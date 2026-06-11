@@ -121,9 +121,9 @@ type Job struct {
 	DirectUnpackFailures map[string]directunpack.FailedSet
 
 	// DirectUnpackSkipped holds sets that DirectUnpack did not attempt
-	// because they aren't RAR5 (rarengine only supports RAR5). These sets
-	// are handled normally by the unpack stage's external unrar fallback;
-	// this is expected, not an error.
+	// because they aren't RAR3/RAR5 (the only formats rarengine supports).
+	// These sets are handled normally by the unpack stage's external unrar
+	// fallback; this is expected, not an error.
 	DirectUnpackSkipped map[string]directunpack.SkippedSet
 }
 
