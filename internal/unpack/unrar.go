@@ -42,7 +42,7 @@ type Options struct {
 	// IgnoreUnrarDates discards in-archive modification timestamps and uses extraction time.
 	// Adds -tsm- to unrar arguments (matches SABnzbd's behavior).
 	IgnoreUnrarDates bool
-	// UseGoRAR uses the pure-Go rarengine library for RAR5 extraction
+	// UseGoRAR uses the pure-Go rarengine library for RAR3/RAR5 extraction
 	// instead of shelling out to unrar. No external binary required.
 	// Default true.
 	UseGoRAR bool

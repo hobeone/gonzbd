@@ -1,7 +1,6 @@
 package unpack
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,14 +13,18 @@ import (
 	"syscall"
 
 	"github.com/hobeone/rarengine"
+
+	"github.com/hobeone/gonzbd/internal/rarheader"
 )
 
 // GoUnRAR extracts archive.MainFile into outDir using pure-Go rarengine,
-// or falls back to the external unrar command if rarengine fails or is not RAR5.
+// or falls back to the external unrar command if rarengine fails or the
+// archive isn't a RAR3/RAR5 archive rarengine can read.
 // It is equivalent to UnRAR.
 func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (res Result, err error) {
-	isRar5, detectErr := detectRar5(archive.MainFile)
-	if detectErr == nil && isRar5 {
+	ver, detectErr := rarheader.Version(archive.MainFile)
+	if detectErr == nil && (ver == 3 || ver == 5) {
+		log.Info("go_unrar: detected RAR archive version, using rarengine", "rar_version", ver)
 		beforeSnap, snapErr := snapshotDir(outDir)
 		var rarengineRes Result
 		rarengineRes, err = GoUnRAREngine(ctx, log, archive, outDir, opts)
@@ -31,34 +34,15 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return rarengineRes, err
 		}
-		log.Warn("go_unrar: rarengine failed, falling back to external unrar", "err", err)
+		log.Warn("go_unrar: rarengine failed, falling back to external unrar", "rar_version", ver, "err", err)
 		if snapErr == nil {
 			cleanupPartialFiles(outDir, beforeSnap, log, "go_unrar_rarengine", 1)
 		}
 	} else {
-		log.Info("go_unrar: archive is not RAR5, falling back to external unrar")
+		log.Info("go_unrar: archive is not a recognized RAR version, falling back to external unrar")
 	}
 
 	return UnRAR(ctx, log, archive, outDir, opts)
-}
-
-func detectRar5(filename string) (bool, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-
-	var magic [8]byte
-	n, err := f.Read(magic[:])
-	if err != nil && err != io.EOF {
-		return false, err
-	}
-	if n < 8 {
-		return false, nil
-	}
-	expectedMagic := []byte{0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00}
-	return bytes.Equal(magic[:], expectedMagic), nil
 }
 
 func ClassifyRarEngineError(err error) FailReason {

@@ -477,8 +477,8 @@ func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack
 	res, err := unpack.GoUnRARWithPasswords(ctx, log, a, job.DownloadDir, goOpts)
 
 	// Fallback: if Go-native extraction failed and the external unrar binary
-	// is available, retry with it. rarengine only supports RAR5; RAR3/4 and
-	// some encrypted formats require the external binary.
+	// is available, retry with it. rarengine only supports RAR3/RAR5; other
+	// formats and some encrypted archives require the external binary.
 	// Gated on GoRarFallback so users can disable the retry.
 	if goErr := cmp.Or(err, res.Err); goErr != nil && opts.GoRarFallback {
 		unrarBin := opts.UnrarCommand
