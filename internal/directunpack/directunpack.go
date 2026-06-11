@@ -17,12 +17,12 @@ import (
 	"github.com/hobeone/rarengine"
 )
 
-// errNotRAR5 is returned by extractSet when the first volume of a set is
-// not RAR5. It is handled specially by run(): the set is recorded as
-// skipped (not failed) and logged at Info level, since rarengine only
-// supports RAR5 and the normal unpack stage's external unrar handles
-// RAR3/4 archives correctly.
-var errNotRAR5 = errors.New("not a RAR5 archive")
+// errNotRAR is returned by extractSet when the first volume of a set isn't
+// a RAR archive rarengine can read (RAR3 or RAR5). It is handled specially
+// by run(): the set is recorded as skipped (not failed) and logged at Info
+// level, since the normal unpack stage's external unrar handles other
+// formats correctly.
+var errNotRAR = errors.New("not a RAR3/RAR5 archive")
 
 // SuccessSet records the outcome of a successfully extracted RAR set.
 type SuccessSet struct {
@@ -39,11 +39,11 @@ type FailedSet struct {
 }
 
 // SkippedSet records a set that DirectUnpack did not attempt because it
-// isn't RAR5. rarengine (the pure-Go decompressor used by DirectUnpack)
-// only supports RAR5; legacy RAR3/4 archives (commonly named
-// movie.rar/movie.r00/movie.r01/...) are routinely posted to Usenet and
-// are handled correctly by the normal unpack stage's external unrar
-// fallback. This is expected, not an error.
+// isn't a RAR3 or RAR5 archive. rarengine (the pure-Go decompressor used by
+// DirectUnpack) only supports RAR3/RAR5; other formats (e.g. legacy RAR2,
+// or non-RAR archives misidentified by filename) are handled correctly by
+// the normal unpack stage's external unrar fallback. This is expected, not
+// an error.
 type SkippedSet struct {
 	// Reason is a human-readable description of why the set was skipped.
 	Reason string
@@ -337,16 +337,16 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 			d.mu.Lock()
 			killed := d.killed
 			if !killed {
-				if errors.Is(err, errNotRAR5) {
-					d.recordSkipped(setname, "not RAR5 (legacy RAR3/4 archive); handled by normal unpack")
+				if errors.Is(err, errNotRAR) {
+					d.recordSkipped(setname, "not RAR3/RAR5; handled by normal unpack")
 				} else {
 					d.recordFailure(setname, err.Error())
 				}
 			}
 			d.mu.Unlock()
 			if !killed {
-				if errors.Is(err, errNotRAR5) {
-					d.log.Info("skipping set, not RAR5", "set", setname)
+				if errors.Is(err, errNotRAR) {
+					d.log.Info("skipping set, not a RAR3/RAR5 archive", "set", setname)
 				} else {
 					d.log.Error("extraction failed", "set", setname, "err", err)
 				}
@@ -393,15 +393,14 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr
 		maxVol = 100 // fallback safe bound
 	}
 
-	// rarengine only supports RAR5. Check the first volume's magic bytes
-	// before streaming so legacy RAR3/4 sets (e.g. movie.rar/.r00/.r01...)
-	// are skipped immediately rather than failing on the first header read.
-	// rarengine only supports RAR5. Check the first volume's magic bytes
-	// before streaming so legacy RAR3/4 sets (e.g. movie.rar/.r00/.r01...)
-	// are skipped immediately rather than failing on the first header read.
-	if ver, err := rarheader.Version(vol1Path); err != nil || ver != 5 {
-		return errNotRAR5
+	// rarengine supports RAR3 and RAR5. Check the first volume's magic bytes
+	// before streaming so other formats are skipped immediately rather than
+	// failing on the first header read.
+	ver, err := rarheader.Version(vol1Path)
+	if err != nil || (ver != 3 && ver != 5) {
+		return errNotRAR
 	}
+	d.log.Info("starting extraction", "set", setname, "rar_version", ver)
 
 	volumesChan, feedErrChan := d.startVolumeFeed(ctx, setname, maxVol)
 
