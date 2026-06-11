@@ -63,6 +63,15 @@ func IsRAR(p string) (bool, error) {
 	return ver > 0, err
 }
 
+// Version returns the RAR format version (3 or 5) of the file at path,
+// based on its magic signature. It reads at most 8 bytes and performs no
+// header parsing, so it is suitable for fast pre-filtering before choosing
+// an extraction strategy. Returns ErrNotRAR if the file does not start
+// with a valid RAR signature.
+func Version(p string) (int, error) {
+	return readMagic(p)
+}
+
 // Inspect opens the file at path and reads its RAR headers without
 // decompressing any content. It returns an Info struct describing the
 // archive's contents and properties.

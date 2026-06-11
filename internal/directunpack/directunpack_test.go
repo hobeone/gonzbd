@@ -709,3 +709,54 @@ func TestDirectUnpack_OnLinePanic(t *testing.T) {
 		t.Errorf("expected failure reason to contain panic message, got: %q", f.Reason)
 	}
 }
+
+// TestDirectUnpack_SkipsNonRAR5 verifies that DirectUnpack pre-checks the
+// magic bytes of the first volume and skips (rather than fails) sets that
+// aren't RAR5. rarengine only supports RAR5; legacy RAR3/4 archives
+// (movie.rar/.r00/.r01/...) are common on Usenet and are handled by the
+// normal unpack stage's external unrar fallback.
+func TestDirectUnpack_SkipsNonRAR5(t *testing.T) {
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+
+	// A minimal file starting with the 7-byte RAR3 magic signature
+	// (Rar!\x1a\x07\x00). DirectUnpack must reject this before invoking
+	// rarengine, so the remaining bytes don't need to form a valid archive.
+	data := []byte{0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0xb2, 0xef, 0x73}
+	volPath := filepath.Join(workDir, "legacy.rar")
+	if err := os.WriteFile(volPath, data, 0o644); err != nil {
+		t.Fatalf("write legacy.rar: %v", err)
+	}
+
+	du := New(
+		testLogger(t),
+		"test-job",
+		workDir,
+		extractDir,
+		Options{},
+	)
+
+	du.SetAllFilenames([]string{"legacy.rar"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	du.Add(ctx, "legacy.rar", volPath)
+	du.Wait()
+
+	if results := du.Results(); len(results) != 0 {
+		t.Fatalf("expected no successful sets, got: %+v", results)
+	}
+	if failures := du.Failures(); len(failures) != 0 {
+		t.Fatalf("expected no failed sets, got: %+v", failures)
+	}
+
+	skipped := du.Skipped()
+	s, ok := skipped["legacy"]
+	if !ok {
+		t.Fatalf("expected 'legacy' to be recorded as skipped, got: %+v", skipped)
+	}
+	if !strings.Contains(s.Reason, "RAR3/4") {
+		t.Errorf("expected skip reason to mention RAR3/4, got: %q", s.Reason)
+	}
+}

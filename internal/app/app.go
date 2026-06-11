@@ -1125,6 +1125,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// Wait() blocks until any in-progress extraction finishes.
 	var duResults map[string]directunpack.SuccessSet
 	var duFailures map[string]directunpack.FailedSet
+	var duSkipped map[string]directunpack.SkippedSet
 	app.mu.Lock()
 	du := app.directUnpackers[job.ID]
 	if du != nil {
@@ -1136,6 +1137,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 		du.Wait()
 		duResults = du.Results()
 		duFailures = du.Failures()
+		duSkipped = du.Skipped()
 		if len(duResults) > 0 {
 			app.log.Info("directunpack: passing results to postproc",
 				"job", job.ID, "sets", len(duResults))
@@ -1143,6 +1145,10 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 		if len(duFailures) > 0 {
 			app.log.Warn("directunpack: passing failures to postproc",
 				"job", job.ID, "failed_sets", len(duFailures))
+		}
+		if len(duSkipped) > 0 {
+			app.log.Info("directunpack: passing skipped sets to postproc",
+				"job", job.ID, "skipped_sets", len(duSkipped))
 		}
 	}
 
@@ -1154,6 +1160,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 		FailMsg:              failMsg,
 		DirectUnpackSets:     duResults,
 		DirectUnpackFailures: duFailures,
+		DirectUnpackSkipped:  duSkipped,
 	})
 	select {
 	case app.jobComplete <- JobComplete{JobID: job.ID}:

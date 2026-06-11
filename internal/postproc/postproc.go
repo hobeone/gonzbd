@@ -358,7 +358,7 @@ func buildPreambleLog(job *Job) []StageLogEntry {
 
 	// Direct Unpack stage log: show what was extracted during download
 	// and what failed, so the user can see the outcome in the history UI.
-	if len(job.DirectUnpackSets) > 0 || len(job.DirectUnpackFailures) > 0 {
+	if len(job.DirectUnpackSets) > 0 || len(job.DirectUnpackFailures) > 0 || len(job.DirectUnpackSkipped) > 0 {
 		var duLines []string
 		for setname, result := range job.DirectUnpackSets {
 			duLines = append(duLines,
@@ -376,6 +376,10 @@ func buildPreambleLog(job *Job) []StageLogEntry {
 			duLines = append(duLines,
 				fmt.Sprintf("Error: Set %q failed → %s (will retry in normal unpack)",
 					setname, failure.Reason))
+		}
+		for setname, skipped := range job.DirectUnpackSkipped {
+			duLines = append(duLines,
+				fmt.Sprintf("– Set %q skipped: %s", setname, skipped.Reason))
 		}
 		entries = append(entries, StageLogEntry{
 			Stage:   "direct unpack",
