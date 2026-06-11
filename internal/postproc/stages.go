@@ -119,6 +119,12 @@ type Job struct {
 	// failed to extract, along with the failure reason. These sets will
 	// be retried by the normal unpack stage.
 	DirectUnpackFailures map[string]directunpack.FailedSet
+
+	// DirectUnpackSkipped holds sets that DirectUnpack did not attempt
+	// because they aren't RAR5 (rarengine only supports RAR5). These sets
+	// are handled normally by the unpack stage's external unrar fallback;
+	// this is expected, not an error.
+	DirectUnpackSkipped map[string]directunpack.SkippedSet
 }
 
 // StageLogEntry records the outcome of a single stage execution.

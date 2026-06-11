@@ -12,9 +12,17 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/hobeone/gonzbd/internal/rarheader"
 	"github.com/hobeone/gonzbd/internal/unpack"
 	"github.com/hobeone/rarengine"
 )
+
+// errNotRAR5 is returned by extractSet when the first volume of a set is
+// not RAR5. It is handled specially by run(): the set is recorded as
+// skipped (not failed) and logged at Info level, since rarengine only
+// supports RAR5 and the normal unpack stage's external unrar handles
+// RAR3/4 archives correctly.
+var errNotRAR5 = errors.New("not a RAR5 archive")
 
 // SuccessSet records the outcome of a successfully extracted RAR set.
 type SuccessSet struct {
@@ -27,6 +35,17 @@ type SuccessSet struct {
 // FailedSet records a set that DirectUnpack attempted but failed to extract.
 type FailedSet struct {
 	// Reason is a human-readable description of why extraction failed.
+	Reason string
+}
+
+// SkippedSet records a set that DirectUnpack did not attempt because it
+// isn't RAR5. rarengine (the pure-Go decompressor used by DirectUnpack)
+// only supports RAR5; legacy RAR3/4 archives (commonly named
+// movie.rar/movie.r00/movie.r01/...) are routinely posted to Usenet and
+// are handled correctly by the normal unpack stage's external unrar
+// fallback. This is expected, not an error.
+type SkippedSet struct {
+	// Reason is a human-readable description of why the set was skipped.
 	Reason string
 }
 
@@ -65,6 +84,7 @@ type DirectUnpacker struct {
 	completedVols map[string]map[int]string // setname → vol → absolute filepath
 	successSets   map[string]SuccessSet     // completed extractions
 	failedSets    map[string]FailedSet      // sets that failed
+	skippedSets   map[string]SkippedSet     // sets skipped (not RAR5)
 	nextSets      []string                  // archive sets waiting to start
 
 	// All files in the job (for initial volume scan).
@@ -93,6 +113,7 @@ func New(log *slog.Logger, jobID, downloadDir, extractDir string, opts Options) 
 		completedVols: make(map[string]map[int]string),
 		successSets:   make(map[string]SuccessSet),
 		failedSets:    make(map[string]FailedSet),
+		skippedSets:   make(map[string]SkippedSet),
 		volumeReady:   make(chan struct{}, 1),
 		done:          make(chan struct{}),
 		opts:          opts,
@@ -276,10 +297,27 @@ func (d *DirectUnpacker) Failures() map[string]FailedSet {
 	return out
 }
 
+// Skipped returns a copy of the sets that were not attempted because they
+// aren't RAR5. The caller should check this after Wait() returns alongside
+// Results() and Failures().
+func (d *DirectUnpacker) Skipped() map[string]SkippedSet {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make(map[string]SkippedSet, len(d.skippedSets))
+	maps.Copy(out, d.skippedSets)
+	return out
+}
+
 // recordFailure adds a failure entry for the current set. Must be called
 // with mu held.
 func (d *DirectUnpacker) recordFailure(setname, reason string) {
 	d.failedSets[setname] = FailedSet{Reason: reason}
+}
+
+// recordSkipped adds a skipped entry for the current set. Must be called
+// with mu held.
+func (d *DirectUnpacker) recordSkipped(setname, reason string) {
+	d.skippedSets[setname] = SkippedSet{Reason: reason}
 }
 
 // run is the main goroutine that manages extraction.
@@ -296,12 +334,23 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 		d.mu.Unlock()
 
 		if err := d.extractSet(ctx, setname); err != nil {
-			d.log.Error("extraction failed", "set", setname, "err", err)
 			d.mu.Lock()
-			if !d.killed {
-				d.recordFailure(setname, err.Error())
+			killed := d.killed
+			if !killed {
+				if errors.Is(err, errNotRAR5) {
+					d.recordSkipped(setname, "not RAR5 (legacy RAR3/4 archive); handled by normal unpack")
+				} else {
+					d.recordFailure(setname, err.Error())
+				}
 			}
 			d.mu.Unlock()
+			if !killed {
+				if errors.Is(err, errNotRAR5) {
+					d.log.Info("skipping set, not RAR5", "set", setname)
+				} else {
+					d.log.Error("extraction failed", "set", setname, "err", err)
+				}
+			}
 		}
 
 		// Check if we should start the next set.
@@ -332,12 +381,26 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr
 		}
 	}()
 
+	if err := d.waitForVolume(ctx, setname, 1); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	maxVol := d.totalVolumes[setname]
+	vol1Path := d.completedVols[setname][1]
 	d.mu.Unlock()
 
 	if maxVol == 0 {
 		maxVol = 100 // fallback safe bound
+	}
+
+	// rarengine only supports RAR5. Check the first volume's magic bytes
+	// before streaming so legacy RAR3/4 sets (e.g. movie.rar/.r00/.r01...)
+	// are skipped immediately rather than failing on the first header read.
+	// rarengine only supports RAR5. Check the first volume's magic bytes
+	// before streaming so legacy RAR3/4 sets (e.g. movie.rar/.r00/.r01...)
+	// are skipped immediately rather than failing on the first header read.
+	if ver, err := rarheader.Version(vol1Path); err != nil || ver != 5 {
+		return errNotRAR5
 	}
 
 	volumesChan, feedErrChan := d.startVolumeFeed(ctx, setname, maxVol)
