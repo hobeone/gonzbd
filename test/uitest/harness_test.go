@@ -79,7 +79,6 @@ func newTestEnv(t *testing.T) *testEnv {
 		},
 		Servers:    []config.ServerConfig{},
 		Categories: []config.CategoryConfig{},
-		Schedules:  []config.ScheduleConfig{},
 	}
 
 	apiSrv := api.New(api.Options{

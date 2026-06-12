@@ -119,12 +119,3 @@ categories:
     priority: 0
     dir: TV
 
-schedules:
-  - name: nightly-resume
-    enabled: true
-    action: resume
-    arguments: ""
-    minute: "0"
-    hour: "1"
-    dayofweek: "*"
-

@@ -191,59 +191,6 @@ func TestValidateServer_DuplicateNames(t *testing.T) {
 	requireValidateError(t, cfg, "news")
 }
 
-// ---------- ScheduleConfig.validate ----------
-
-func TestValidateSchedule_BadCronMinute(t *testing.T) {
-	t.Parallel()
-	cfg := mustDefault(t)
-	cfg.Schedules = []ScheduleConfig{{
-		Name:      "s",
-		Action:    "pause",
-		Minute:    "xx",
-		Hour:      "*",
-		DayOfWeek: "*",
-	}}
-	requireValidateError(t, cfg, "minute")
-}
-
-func TestValidateSchedule_EmptyAction(t *testing.T) {
-	t.Parallel()
-	cfg := mustDefault(t)
-	cfg.Schedules = []ScheduleConfig{{
-		Name:      "s",
-		Action:    "",
-		Minute:    "*",
-		Hour:      "*",
-		DayOfWeek: "*",
-	}}
-	requireValidateError(t, cfg, "action")
-}
-
-func TestValidateSchedule_ValidPassthrough(t *testing.T) {
-	t.Parallel()
-	cfg := mustDefault(t)
-	cfg.Schedules = []ScheduleConfig{{
-		Name:      "nightly",
-		Action:    "pause",
-		Minute:    "0",
-		Hour:      "2",
-		DayOfWeek: "*",
-	}}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("valid schedule: unexpected error %v", err)
-	}
-}
-
-func TestValidateSchedule_DuplicateNames(t *testing.T) {
-	t.Parallel()
-	cfg := mustDefault(t)
-	cfg.Schedules = []ScheduleConfig{
-		{Name: "sched", Action: "pause", Minute: "*", Hour: "*", DayOfWeek: "*"},
-		{Name: "sched", Action: "resume", Minute: "*", Hour: "*", DayOfWeek: "*"},
-	}
-	requireValidateError(t, cfg, "sched")
-}
-
 // ---------- helpers ----------
 
 func mustDefault(t *testing.T) *Config {
@@ -464,37 +411,15 @@ func TestCategoryConfig_ValidateDirect(t *testing.T) {
 	}
 }
 
-func TestScheduleConfig_ValidateDirect(t *testing.T) {
-	t.Parallel()
-	s := ScheduleConfig{
-		Action:    "pause",
-		Minute:    "*",
-		Hour:      "*",
-		DayOfWeek: "*",
-	}
-	if err := s.validate(); err != nil {
-		t.Errorf("expected clean validate, got: %v", err)
-	}
-
-	s.Minute = "abc"
-	if err := s.validate(); err == nil {
-		t.Error("expected error for invalid minute cron token")
-	}
-}
-
 func TestNamesHelpersDirect(t *testing.T) {
 	t.Parallel()
 	servers := []ServerConfig{{Name: "s1"}, {Name: "s2"}}
 	categories := []CategoryConfig{{Name: "c1"}, {Name: "c2"}}
-	schedules := []ScheduleConfig{{Name: "sc1"}, {Name: "sc2"}}
 
 	if got := serverNames(servers); !slices.Equal(got, []string{"s1", "s2"}) {
 		t.Errorf("serverNames = %v", got)
 	}
 	if got := categoryNames(categories); !slices.Equal(got, []string{"c1", "c2"}) {
 		t.Errorf("categoryNames = %v", got)
-	}
-	if got := scheduleNames(schedules); !slices.Equal(got, []string{"sc1", "sc2"}) {
-		t.Errorf("scheduleNames = %v", got)
 	}
 }

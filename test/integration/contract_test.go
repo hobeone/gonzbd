@@ -250,7 +250,6 @@ func TestAPIContract_ConfigResponse(t *testing.T) {
 	configSections := []string{
 		"misc", "downloads", "postproc",
 		"servers", "categories", "sorters",
-		"schedules",
 	}
 	for _, k := range configSections {
 		assertKey(t, cfg, k, "config")
