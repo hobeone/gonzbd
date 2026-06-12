@@ -7,11 +7,9 @@
 	import PostProcSection from './config/PostProcSection.svelte';
 	import ServersSection from './config/ServersSection.svelte';
 	import CategoriesSection from './config/CategoriesSection.svelte';
-	import SchedulingSection from './config/SchedulingSection.svelte';
 	import ServerEditDialog from './config/ServerEditDialog.svelte';
 	import CategoryEditDialog from './config/CategoryEditDialog.svelte';
-	import ScheduleEditDialog from './config/ScheduleEditDialog.svelte';
-	import type { ServerConfig, CategoryConfig, ScheduleConfig } from '$lib/types';
+	import type { ServerConfig, CategoryConfig } from '$lib/types';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -29,16 +27,12 @@
 	let selectedCategory = $state<CategoryConfig | null>(null);
 
 
-	let scheduleEditOpen = $state(false);
-	let selectedSchedule = $state<ScheduleConfig | null>(null);
-
 	const sections = [
 		{ id: 'general', label: 'General' },
 		{ id: 'downloads', label: 'Downloads' },
 		{ id: 'postproc', label: 'Post-Processing' },
 		{ id: 'servers', label: 'Servers' },
-		{ id: 'categories', label: 'Categories' },
-		{ id: 'scheduling', label: 'Scheduling' }
+		{ id: 'categories', label: 'Categories' }
 	];
 
 	$effect(() => {
@@ -155,24 +149,6 @@
 		const categories = configData.categories.filter((c: CategoryConfig) => c.name !== name);
 		configData = { ...configData, categories };
 		persistAndReload('categories', categories);
-	}
-
-
-	function saveSchedule(s: ScheduleConfig) {
-		if (!configData) return;
-		const schedules = [...(configData.schedules ?? [])];
-		const idx = schedules.findIndex((sched: ScheduleConfig) => sched.name === s.name);
-		if (idx !== -1) schedules[idx] = s;
-		else schedules.push(s);
-		configData = { ...configData, schedules };
-		persistAndReload('schedules', schedules);
-	}
-
-	function deleteSchedule(name: string) {
-		if (!configData || !confirm(`Delete schedule "${name}"?`)) return;
-		const schedules = configData.schedules.filter((s: ScheduleConfig) => s.name !== name);
-		configData = { ...configData, schedules };
-		persistAndReload('schedules', schedules);
 	}
 
 	function persistAndReload(section: string, items: any[]) {
@@ -296,13 +272,6 @@
 								onEditCategory={(c) => { selectedCategory = c; categoryEditOpen = true; }}
 								onDeleteCategory={deleteCategory}
 							/>
-						{:else if activeSection === 'scheduling'}
-							<SchedulingSection
-								{configData}
-								onAddSchedule={() => { selectedSchedule = null; scheduleEditOpen = true; }}
-								onEditSchedule={(s) => { selectedSchedule = s; scheduleEditOpen = true; }}
-								onDeleteSchedule={deleteSchedule}
-							/>
 						{/if}
 					{/if}
 				</div>
@@ -356,9 +325,3 @@
 	onsave={saveCategory}
 />
 
-
-<ScheduleEditDialog
-	bind:open={scheduleEditOpen}
-	schedule={selectedSchedule}
-	onsave={saveSchedule}
-/>

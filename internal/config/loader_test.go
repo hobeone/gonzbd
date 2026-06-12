@@ -109,20 +109,6 @@ func TestDecode_NilServersNormalized(t *testing.T) {
 	}
 }
 
-// TestDecode_NilSchedulesNormalized verifies the same normalization for schedules.
-func TestDecode_NilSchedulesNormalized(t *testing.T) {
-	t.Parallel()
-
-	yaml := minimalYAML(t) + "\nschedules:\n"
-	cfg, _, err := decode(strings.NewReader(yaml))
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if cfg.Schedules == nil {
-		t.Error("Schedules = nil; want []ScheduleConfig{}")
-	}
-}
-
 // ---------- Load error paths ----------
 
 // TestLoad_MissingFile verifies that Load returns an error containing the path
@@ -232,9 +218,6 @@ func TestLoaderUnexportedHelpersDirect(t *testing.T) {
 		}
 		if cfg.Categories == nil {
 			t.Error("Categories is nil, expected []")
-		}
-		if cfg.Schedules == nil {
-			t.Error("Schedules is nil, expected []")
 		}
 	})
 }

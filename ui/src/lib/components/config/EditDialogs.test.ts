@@ -9,7 +9,6 @@ vi.mock('$lib/api', () => ({
 
 import ServerEditDialog from './ServerEditDialog.svelte';
 import CategoryEditDialog from './CategoryEditDialog.svelte';
-import ScheduleEditDialog from './ScheduleEditDialog.svelte';
 
 describe('ServerEditDialog', () => {
 	beforeEach(() => vi.clearAllMocks());
@@ -186,28 +185,4 @@ describe('CategoryEditDialog', () => {
 	});
 });
 
-describe('ScheduleEditDialog', () => {
-	beforeEach(() => vi.clearAllMocks());
 
-	it('renders Add Schedule title when no schedule prop', () => {
-		render(ScheduleEditDialog, {
-			props: { open: true, onsave: vi.fn() }
-		});
-		expect(screen.getByText('Add Schedule')).toBeInTheDocument();
-	});
-
-	it('renders Cancel and Save buttons', () => {
-		render(ScheduleEditDialog, {
-			props: { open: true, onsave: vi.fn() }
-		});
-		expect(screen.getByText('Cancel')).toBeInTheDocument();
-		expect(screen.getByText('Save')).toBeInTheDocument();
-	});
-
-	it('does not render when closed', () => {
-		render(ScheduleEditDialog, {
-			props: { open: false, onsave: vi.fn() }
-		});
-		expect(screen.queryByText('Add Schedule')).not.toBeInTheDocument();
-	});
-});

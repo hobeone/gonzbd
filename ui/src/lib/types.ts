@@ -135,15 +135,6 @@ export interface CategoryConfig {
 	order: number;
 }
 
-export interface ScheduleConfig {
-	name: string;
-	enabled: boolean;
-	action: string;
-	arguments: string;
-	minute: string;
-	hour: string;
-	dayofweek: string;
-}
 export interface DownloadsConfig {
 	bandwidth_max: string;
 	bandwidth_perc: number;
@@ -168,7 +159,6 @@ export interface FullConfig {
 	postproc: Record<string, any>;
 	servers: ServerConfig[];
 	categories: CategoryConfig[];
-	schedules: ScheduleConfig[];
 }
 
 export interface ConfigResponse {
