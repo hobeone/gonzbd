@@ -82,9 +82,6 @@ func (cfg *Config) applyNormalization() {
 	if cfg.Categories == nil {
 		cfg.Categories = []CategoryConfig{}
 	}
-	if cfg.Schedules == nil {
-		cfg.Schedules = []ScheduleConfig{}
-	}
 }
 
 // decode is split out so tests can decode from in-memory buffers without

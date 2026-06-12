@@ -14,7 +14,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
-	"github.com/hobeone/gonzbd/internal/scheduler"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -61,37 +60,4 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 	}
 	log.Info("ingested nzb", "filename", filename, "files", len(job.Files), "bytes", job.TotalBytes, "id", job.ID)
 	return job.ID, nil
-}
-
-// schedulesFromConfig builds scheduler.ScheduleSpec values from the
-// config.ScheduleConfig list. ScheduleConfig has only minute/hour/dow
-// fields, so the day-of-month and month fields are synthesized as "*".
-// Disabled schedules are skipped.
-func schedulesFromConfig(scs []config.ScheduleConfig) ([]scheduler.ScheduleSpec, error) {
-	out := make([]scheduler.ScheduleSpec, 0, len(scs))
-	for _, sc := range scs {
-		if !sc.Enabled {
-			continue
-		}
-		minute := fallback(sc.Minute, "*")
-		hour := fallback(sc.Hour, "*")
-		dow := fallback(sc.DayOfWeek, "*")
-		line := fmt.Sprintf("%s %s * * %s %s", minute, hour, dow, sc.Action)
-		if sc.Arguments != "" {
-			line += " " + sc.Arguments
-		}
-		spec, err := scheduler.Parse(line)
-		if err != nil {
-			return nil, fmt.Errorf("schedule %q: %w", sc.Name, err)
-		}
-		out = append(out, spec)
-	}
-	return out, nil
-}
-
-func fallback(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
 }

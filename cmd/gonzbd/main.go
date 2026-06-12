@@ -37,7 +37,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/humanfmt"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
-	"github.com/hobeone/gonzbd/internal/scheduler"
 	"github.com/hobeone/gonzbd/internal/types"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 	"github.com/hobeone/gonzbd/internal/web"
@@ -348,11 +347,6 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		return err
 	}
 
-	// Scheduler. Parsed schedules drive periodic pause/resume/etc.
-	if err := startScheduler(ctx, cfg, application.Queue(), application, cancel, log); err != nil {
-		return err
-	}
-
 	apiSrv := api.New(api.Options{
 		Version:      Version,
 		Commit:       Commit,
@@ -581,42 +575,6 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 		}
 	}()
 	log.Info("dirscanner started", "dir", cfg.General.DirscanDir, "interval", interval)
-	return nil
-}
-
-// startScheduler parses cfg.Schedules, registers the known actions, and
-// launches the scheduler loop. cancel is used by the "shutdown" action
-// to trigger the same shutdown path as SIGINT.
-func startScheduler(ctx context.Context, cfg *config.Config, q *queue.Queue, application *app.Application, cancel context.CancelFunc, log *slog.Logger) error {
-	specs, err := schedulesFromConfig(cfg.Schedules)
-	if err != nil {
-		return fmt.Errorf("parse schedules: %w", err)
-	}
-	reg := scheduler.NewRegistry()
-	reg.Register("pause", func(_ context.Context, _ string) error { q.PauseAll(); return nil })
-	reg.Register("resume", func(_ context.Context, _ string) error { q.ResumeAll(); return nil })
-	reg.Register("speedlimit", func(_ context.Context, arg string) error {
-		bps, err := strconv.ParseInt(arg, 10, 64)
-		if err != nil {
-			log.Warn("scheduler: invalid speedlimit arg", "arg", arg, "err", err)
-			return nil // don't fail the scheduler for a bad arg
-		}
-		application.SetSpeedLimit(bps * 1024) // arg is KB/s
-		log.Info("scheduler: speedlimit set", "kbps", bps)
-		return nil
-	})
-	reg.Register("shutdown", func(_ context.Context, _ string) error {
-		log.Info("scheduler: shutdown action fired")
-		cancel()
-		return nil
-	})
-	sch := scheduler.New(specs, reg, slog.Default().With("component", "scheduler"))
-	go func() {
-		if err := sch.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Error("scheduler", "err", err)
-		}
-	}()
-	log.Info("scheduler started", "schedules", len(specs))
 	return nil
 }
 

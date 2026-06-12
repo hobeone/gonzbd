@@ -47,21 +47,11 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if err := validateUniqueNames("schedule", scheduleNames(c.Schedules)); err != nil {
-		errs = append(errs, err)
-	}
-	for i := range c.Schedules {
-		if err := c.Schedules[i].validate(); err != nil {
-			errs = append(errs, fmt.Errorf("schedules[%d] (%q): %w", i, c.Schedules[i].Name, err))
-		}
-	}
-
 	return errors.Join(errs...)
 }
 
 var (
 	apiKeyPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
-	cronTokenRE   = regexp.MustCompile(`^(\*|[0-9,\-]+)$`)
 )
 
 // validateUniqueNames returns an error if any name appears more than once.
@@ -264,23 +254,6 @@ func (c *CategoryConfig) validate() error {
 	return nil
 }
 
-func (s *ScheduleConfig) validate() error {
-	var errs []error
-	if strings.TrimSpace(s.Action) == "" {
-		errs = append(errs, fmt.Errorf("action: %w", errEmpty))
-	}
-	if !cronTokenRE.MatchString(s.Minute) {
-		errs = append(errs, fmt.Errorf("minute: %q is not a valid cron token", s.Minute))
-	}
-	if !cronTokenRE.MatchString(s.Hour) {
-		errs = append(errs, fmt.Errorf("hour: %q is not a valid cron token", s.Hour))
-	}
-	if !cronTokenRE.MatchString(s.DayOfWeek) {
-		errs = append(errs, fmt.Errorf("dayofweek: %q is not a valid cron token", s.DayOfWeek))
-	}
-	return errors.Join(errs...)
-}
-
 // Helpers extract the Name field from each subsection slice for the
 // validateUniqueNames helper.
 
@@ -296,14 +269,6 @@ func categoryNames(c []CategoryConfig) []string {
 	names := make([]string, len(c))
 	for i := range c {
 		names[i] = c[i].Name
-	}
-	return names
-}
-
-func scheduleNames(s []ScheduleConfig) []string {
-	names := make([]string, len(s))
-	for i := range s {
-		names[i] = s[i].Name
 	}
 	return names
 }
