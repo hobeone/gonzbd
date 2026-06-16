@@ -467,6 +467,7 @@ func (d *Downloader) SetDispatchOptions(maxArtTries, maxArtOpt int, topOnly bool
 	d.optsMu.Unlock()
 }
 
+// SetOnJobHopeless registers the callback invoked when a job becomes hopeless.
 func (d *Downloader) SetOnJobHopeless(cb func(jobID string)) {
 	d.onJobHopeless = cb
 }
