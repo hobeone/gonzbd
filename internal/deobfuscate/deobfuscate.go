@@ -471,10 +471,11 @@ func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 		// or there is no character after (exact match). A bare prefix match like
 		// "SomeMovie2" with prefix "SomeMovie" does not qualify as a sibling.
 		if strings.HasPrefix(srtBase, bigBase) {
-			if len(srtBase) == len(bigBase) {
+			suffix := srtBase[len(bigBase):]
+			if len(suffix) == 0 {
 				continue
 			}
-			nextChar := srtBase[len(bigBase)]
+			nextChar := suffix[0]
 			if nextChar == '.' || nextChar == '_' || nextChar == '-' || nextChar == ' ' {
 				continue
 			}

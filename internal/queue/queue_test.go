@@ -1255,16 +1255,15 @@ func TestRemove_NoIOUnderLock(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	// Save and restore the package-level removeFile hook.
-	origRemoveFile := removeFile
-	defer func() { removeFile = origRemoveFile }()
+	// Save the original removeFile hook.
+	origRemoveFile := q.removeFile
 
 	// started: closed when the hook begins executing (lock should be free by then).
 	// release: closed by main goroutine to unblock the hook.
 	started := make(chan struct{})
 	release := make(chan struct{})
 
-	removeFile = func(name string) error {
+	q.removeFile = func(name string) error {
 		close(started) // signal that we are inside the delete (lock must be released)
 		<-release      // block until the main goroutine confirms the lock is free
 		return origRemoveFile(name)

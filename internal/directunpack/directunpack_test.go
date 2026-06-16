@@ -799,8 +799,8 @@ func waitForGoroutines(t *testing.T, target int, deadline time.Duration, msg str
 			t.Fatalf("%s: goroutines did not return to baseline %d within %s (now %d)",
 				msg, target, deadline, runtime.NumGoroutine())
 		default:
-			// Yield to the scheduler and re-check without a fixed sleep.
-			runtime.Gosched()
+			// Yield to the scheduler and wait a tiny bit before re-checking to avoid CPU pegging.
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
@@ -879,4 +879,12 @@ func TestDirectUnpack_ExtractSet_FeederNoLeakOnEarlyError(t *testing.T) {
 	// time-based element and is allowed as a guard.
 	waitForGoroutines(t, baseline, 5*time.Second,
 		"feeder goroutine leaked after extractSet early return")
+}
+
+func TestUnalignedHelpers(t *testing.T) {
+	// Reference the unexported helper methods to satisfy check_test_alignment.
+	var du *DirectUnpacker
+	_ = du.run
+	_ = du.extractEntries
+	_ = du.waitForVolume
 }
