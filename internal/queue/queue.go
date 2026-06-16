@@ -19,15 +19,13 @@ import (
 // not present.
 var ErrNotFound = errors.New("queue: job not found")
 
-// removeFile deletes a job's persisted state file. Indirected for tests.
-var removeFile = os.Remove
-
 // Queue owns the ordered list of active jobs plus the notify channel
 // the downloader waits on.
 type Queue struct {
-	mu   sync.RWMutex
-	jobs []*Job          // ordered: priority-descending at Add time; Reorder may violate
-	byID map[string]*Job // ID -> *Job for O(1) lookup
+	mu         sync.RWMutex
+	jobs       []*Job          // ordered: priority-descending at Add time; Reorder may violate
+	byID       map[string]*Job // ID -> *Job for O(1) lookup
+	removeFile func(string) error
 
 	stateDir string // Root directory for persistent state (admin/queue)
 
@@ -60,9 +58,10 @@ func (q *Queue) IsDirty() bool { return q.dirty.Load() }
 // New returns an empty, unpaused queue.
 func New() *Queue {
 	return &Queue{
-		byID:     make(map[string]*Job),
-		notifyCh: make(chan struct{}, 1),
-		log:      slog.Default().With("component", "queue"),
+		byID:       make(map[string]*Job),
+		notifyCh:   make(chan struct{}, 1),
+		log:        slog.Default().With("component", "queue"),
+		removeFile: os.Remove,
 	}
 }
 
@@ -267,7 +266,7 @@ func (q *Queue) Remove(id string) error {
 
 	// --- No lock held below this line ---
 	if jobPath != "" {
-		_ = removeFile(jobPath) // best-effort delete; error is intentionally ignored
+		_ = q.removeFile(jobPath) // best-effort delete; error is intentionally ignored
 	}
 	return nil
 }
