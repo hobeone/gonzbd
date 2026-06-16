@@ -9,6 +9,13 @@ file. It must be read and followed for every session.
 > `~/.claude/CLAUDE.md` (which defines, among other things, the global
 > Conventional Commits policy).
 
+> **⮕ Active multi-session work:** the v2→v1 porting effort is coordinated in
+> [`docs/superpowers/plans/PORT-HANDOFF.md`](docs/superpowers/plans/PORT-HANDOFF.md).
+> If you are resuming/continuing that work, **read it first** and follow its
+> resume protocol. Progress is tracked by the checkboxes in the plan
+> (`docs/superpowers/plans/2026-06-15-port-v2-improvements-to-v1.md`) and by git
+> history — not by any in-session TODO list.
+
 ## Project Context
 
 GoNZBD is a high-performance Go reimplementation of [SABnzbd](https://sabnzbd.org),
