@@ -187,7 +187,7 @@ func parseXML(r io.Reader) (*NZB, error) {
 		}
 	}
 
-	if len(out.Files) == 0 && out.SkippedFiles == 0 {
+	if len(out.Files) == 0 {
 		return nil, ErrNoFiles
 	}
 
