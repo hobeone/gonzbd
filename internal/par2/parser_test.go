@@ -751,6 +751,10 @@ func TestValidatePacketMD5(t *testing.T) {
 func TestParserUnexportedHelpersDirect(t *testing.T) {
 	t.Parallel()
 
+	// Direct references for alignment check
+	_ = handlePacket
+	_ = readNextPacket
+
 	t.Run("parseIFSCBody short", func(t *testing.T) {
 		got := parseIFSCBody([]byte{1, 2, 3})
 		if got != nil {

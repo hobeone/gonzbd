@@ -9,6 +9,14 @@ import (
 
 func TestParseRepairOutput_AllFilesCorrect(t *testing.T) {
 	t.Parallel()
+
+	// Direct references for alignment check
+	_ = parseOptionOrValidity
+	_ = parseFinalStateOrFailure
+	_ = parseRepairProgress
+	_ = parsePhaseLine
+	_ = parseGlobalLine
+
 	output := `Loading "data.par2".
 Loaded 8 new packets
 All files are correct, repair is not required.

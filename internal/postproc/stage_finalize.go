@@ -43,33 +43,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	folderRename := f.folderRename.Load()
 
 	if job.ParError || job.UnpackError || job.FailMsg != "" {
-		var reasons []string
-		if job.ParError {
-			reasons = append(reasons, "repair failed")
-		}
-		if job.UnpackError {
-			reasons = append(reasons, "unpack failed")
-		}
-		if job.FailMsg != "" {
-			reasons = append(reasons, job.FailMsg)
-		}
-
-		// When FolderRename is enabled, rename the download directory
-		// in-place with a _FAILED_ prefix so users can visually identify
-		// it. The files stay in the incomplete/download area (NOT moved
-		// to complete) so that retry can find them.
-		if folderRename && job.DownloadDir != "" {
-			failedDir := prefixDirName(job.DownloadDir, "_FAILED_")
-			if err := os.Rename(job.DownloadDir, failedDir); err == nil {
-				logf(ctx, log, job, slog.LevelInfo, "Renamed to %s", failedDir)
-				job.DownloadDir = failedDir
-			} else {
-				logf(ctx, log, job, slog.LevelWarn, "Failed to add _FAILED_ prefix: %v", err)
-			}
-		}
-
-		logf(ctx, log, job, slog.LevelInfo, "Skipped final move: files remain in download directory (%s)", strings.Join(reasons, "; "))
-		return nil // Skip move if failed, so files stay in DownloadDir for retry
+		return f.handleFailure(ctx, log, job, folderRename)
 	}
 
 	if job.FinalDir == "" {
@@ -88,7 +62,40 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	logf(ctx, log, job, slog.LevelInfo, "Moving %s → %s", job.DownloadDir, dest)
+	return f.moveToDest(ctx, log, job, dest, folderRename)
+}
 
+func (f *FinalizeStage) handleFailure(ctx context.Context, log *slog.Logger, job *Job, folderRename bool) error {
+	var reasons []string
+	if job.ParError {
+		reasons = append(reasons, "repair failed")
+	}
+	if job.UnpackError {
+		reasons = append(reasons, "unpack failed")
+	}
+	if job.FailMsg != "" {
+		reasons = append(reasons, job.FailMsg)
+	}
+
+	// When FolderRename is enabled, rename the download directory
+	// in-place with a _FAILED_ prefix so users can visually identify
+	// it. The files stay in the incomplete/download area (NOT moved
+	// to complete) so that retry can find them.
+	if folderRename && job.DownloadDir != "" {
+		failedDir := prefixDirName(job.DownloadDir, "_FAILED_")
+		if err := os.Rename(job.DownloadDir, failedDir); err == nil {
+			logf(ctx, log, job, slog.LevelInfo, "Renamed to %s", failedDir)
+			job.DownloadDir = failedDir
+		} else {
+			logf(ctx, log, job, slog.LevelWarn, "Failed to add _FAILED_ prefix: %v", err)
+		}
+	}
+
+	logf(ctx, log, job, slog.LevelInfo, "Skipped final move: files remain in download directory (%s)", strings.Join(reasons, "; "))
+	return nil // Skip move if failed, so files stay in DownloadDir for retry
+}
+
+func (f *FinalizeStage) moveToDest(ctx context.Context, log *slog.Logger, job *Job, dest string, folderRename bool) error {
 	// Create parent directory for final destination
 	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 		return fmt.Errorf("finalize: mkdir %s: %w", filepath.Dir(dest), err)
@@ -118,6 +125,10 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 		logf(ctx, log, job, slog.LevelInfo, "Atomic rename failed (%v), falling back to file-by-file move", err)
 	}
 
+	return f.moveFileByFile(ctx, log, job, dest, folderRename)
+}
+
+func (f *FinalizeStage) moveFileByFile(ctx context.Context, log *slog.Logger, job *Job, dest string, folderRename bool) error {
 	// Fallback: If os.Rename failed (e.g. cross-device), move file by file.
 	entries, err := os.ReadDir(job.DownloadDir)
 	if err != nil {

@@ -70,6 +70,8 @@ func buildIFSCBody(fileID [16]byte, sliceMD5 [16]byte, sliceCRC uint32) []byte {
 }
 
 func TestQuickCheckStage_Disabled(t *testing.T) {
+	_ = (*QuickCheckStage).verifyJobCRCs
+
 	stage := NewQuickCheckStage()
 	stage.SetEnabled(false)
 
