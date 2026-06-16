@@ -1352,3 +1352,47 @@ func TestMarkArticlesFailed_EmptyBatch(t *testing.T) {
 		}
 	})
 }
+
+func TestMarkArticlesFailed_SignalsNotify(t *testing.T) {
+	q := New()
+	j := makeJob(t, "j", constants.NormalPriority)
+	_ = q.Add(j)
+
+	// Drain any signals triggered by Add.
+	for {
+		select {
+		case <-q.Notify():
+		default:
+			goto drained
+		}
+	}
+drained:
+
+	msgID := j.Files[0].Articles[0].ID
+
+	// 1. First-time failure: should signal notify.
+	_, err := q.MarkArticlesFailed(j.ID, []string{msgID})
+	if err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+
+	select {
+	case <-q.Notify():
+		// Success
+	case <-time.After(500 * time.Millisecond):
+		t.Error("MarkArticlesFailed did not signal notify channel on first failure")
+	}
+
+	// 2. Repeat failure: should NOT signal notify.
+	_, err = q.MarkArticlesFailed(j.ID, []string{msgID})
+	if err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+
+	select {
+	case <-q.Notify():
+		t.Error("MarkArticlesFailed signaled notify channel on repeat failure")
+	default:
+		// Success
+	}
+}
