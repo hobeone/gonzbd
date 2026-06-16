@@ -118,77 +118,15 @@ func ParsePar2Set(path string) (*Par2Set, error) {
 
 	header := make([]byte, 64)
 	for {
-		_, err := io.ReadFull(f, header)
+		packetType, body, err := readNextPacket(f, fileSize, header)
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read header: %w", err)
+			return nil, err
 		}
 
-		if !bytes.Equal(header[0:8], magic) {
-			// Scan forward up to maxJunkScan bytes to find the next magic.
-			found, scanErr := scanForMagic(f, magic)
-			if scanErr != nil || !found {
-				break
-			}
-			continue
-		}
-
-		packetLen := binary.LittleEndian.Uint64(header[8:16])
-		if packetLen < 64 || packetLen > fileSize {
-			return nil, fmt.Errorf("invalid packet length: %d", packetLen)
-		}
-
-		bodyLen := packetLen - 64
-		body := make([]byte, bodyLen)
-		if _, err := io.ReadFull(f, body); err != nil {
-			return nil, fmt.Errorf("read body: %w", err)
-		}
-
-		if !validatePacketMD5(header, body) {
-			// MD5 mismatch — drop this packet silently and continue.
-			continue
-		}
-
-		var packetType [16]byte
-		copy(packetType[:], header[48:64])
-
-		switch packetType {
-		case typeMain:
-			if len(body) < 8 {
-				continue
-			}
-			set.SliceSize = binary.LittleEndian.Uint64(body[0:8])
-			copy(set.SetID[:], header[32:48])
-
-			// Main packet body after sliceSize(8) + recoverySetCount(4) is
-			// an array of 16-byte FileID entries.
-			if len(body) > 12 {
-				expectedFiles = (len(body) - 12) / 16
-			}
-
-		case typeFileDesc:
-			fd := parseFileDescBody(body)
-			if fd == nil {
-				continue
-			}
-			set.Files = append(set.Files, *fd)
-			seenFileDescs++
-
-		case typeIFSC:
-			idata := parseIFSCBody(body)
-			if idata != nil {
-				ifscPackets = append(ifscPackets, *idata)
-				seenIFSC++
-			}
-
-		case typeRecovery:
-			set.RecoveryBlocks++
-
-		case typeCreator:
-			set.Creator = string(bytes.TrimRight(body, "\x00"))
-		}
+		handlePacket(set, &ifscPackets, packetType, header, body, &expectedFiles, &seenFileDescs, &seenIFSC)
 
 		// Scan optimization (spec §4.5): for large par2 files, stop once
 		// all FileDesc + IFSC packets have been seen. Recovery blocks are
@@ -199,6 +137,103 @@ func ParsePar2Set(path string) (*Par2Set, error) {
 		}
 	}
 
+	postProcessSet(set, ifscPackets)
+
+	return set, nil
+}
+
+// readNextPacket reads the next valid packet from the par2 file.
+// It skips junk data by scanning for the magic sequence, validates packet length
+// and MD5 checksum, and returns the packet type and body bytes.
+func readNextPacket(f *os.File, fileSize uint64, header []byte) ([16]byte, []byte, error) {
+	for {
+		_, err := io.ReadFull(f, header)
+		if err != nil {
+			return [16]byte{}, nil, err
+		}
+
+		if !bytes.Equal(header[0:8], magic) {
+			// Scan forward up to maxJunkScan bytes to find the next magic.
+			found, scanErr := scanForMagic(f, magic)
+			if scanErr != nil {
+				return [16]byte{}, nil, scanErr
+			}
+			if !found {
+				return [16]byte{}, nil, io.EOF
+			}
+			continue
+		}
+
+		packetLen := binary.LittleEndian.Uint64(header[8:16])
+		if packetLen < 64 || packetLen > fileSize {
+			return [16]byte{}, nil, fmt.Errorf("invalid packet length: %d", packetLen)
+		}
+
+		bodyLen := packetLen - 64
+		body := make([]byte, bodyLen)
+		if _, err := io.ReadFull(f, body); err != nil {
+			return [16]byte{}, nil, fmt.Errorf("read body: %w", err)
+		}
+
+		if !validatePacketMD5(header, body) {
+			// MD5 mismatch — drop this packet silently and continue.
+			continue
+		}
+
+		var packetType [16]byte
+		copy(packetType[:], header[48:64])
+		return packetType, body, nil
+	}
+}
+
+// handlePacket parses the content of a single packet based on its type.
+func handlePacket(
+	set *Par2Set,
+	ifscPackets *[]ifscData,
+	packetType [16]byte,
+	header []byte,
+	body []byte,
+	expectedFiles, seenFileDescs, seenIFSC *int,
+) {
+	switch packetType {
+	case typeMain:
+		if len(body) < 8 {
+			return
+		}
+		set.SliceSize = binary.LittleEndian.Uint64(body[0:8])
+		copy(set.SetID[:], header[32:48])
+
+		// Main packet body after sliceSize(8) + recoverySetCount(4) is
+		// an array of 16-byte FileID entries.
+		if len(body) > 12 {
+			*expectedFiles = (len(body) - 12) / 16
+		}
+
+	case typeFileDesc:
+		fd := parseFileDescBody(body)
+		if fd == nil {
+			return
+		}
+		set.Files = append(set.Files, *fd)
+		*seenFileDescs++
+
+	case typeIFSC:
+		idata := parseIFSCBody(body)
+		if idata != nil {
+			*ifscPackets = append(*ifscPackets, *idata)
+			*seenIFSC++
+		}
+
+	case typeRecovery:
+		set.RecoveryBlocks++
+
+	case typeCreator:
+		set.Creator = string(bytes.TrimRight(body, "\x00"))
+	}
+}
+
+// postProcessSet builds indices and reconstructs CRCs after parsing all packets.
+func postProcessSet(set *Par2Set, ifscPackets []ifscData) {
 	// Build FilesByID index.
 	for i := range set.Files {
 		set.FilesByID[set.Files[i].FileID] = &set.Files[i]
@@ -211,8 +246,6 @@ func ParsePar2Set(path string) (*Par2Set, error) {
 
 	// Build By16k map with deduplication.
 	buildBy16k(set)
-
-	return set, nil
 }
 
 // parseFileDescBody parses the body of a FileDesc packet.

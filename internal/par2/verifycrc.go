@@ -61,6 +61,12 @@ type AssembledFile struct {
 	FileSize int64
 }
 
+type par2Entry struct {
+	desc     FileDesc
+	parFile  string // which par2 file this came from
+	consumed bool
+}
+
 // VerifyCRCs compares assembled CRC32 values (computed during download)
 // against CRC32 values from par2 file manifests. This is the "quick check"
 // verification that can detect corruption without re-reading files from disk.
@@ -71,18 +77,13 @@ type AssembledFile struct {
 // Returns a summary of verification results. Errors parsing par2 files are
 // logged but don't abort — individual files that can't be verified are
 // counted as Skipped.
+//
+//nolint:gocyclo // multi-strategy verification fallback logic
 func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyResult {
 	if log == nil {
 		log = slog.Default()
 	}
 
-	// Build a lookup from basename → par2 FileDesc (with CRC).
-	// We use basename because downloaded files are flat.
-	type par2Entry struct {
-		desc     FileDesc
-		parFile  string // which par2 file this came from
-		consumed bool
-	}
 	par2Index := make(map[string]*par2Entry) // basename → entry
 
 	for _, set := range sets {
@@ -117,10 +118,12 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 
 	var result CRCVerifyResult
 
+	// Name-based verification pass
 	for _, af := range files {
-		// Look up par2 entry first so we can distinguish between
-		// par2-tracked files (important) and non-par2 files (benign).
-		entry, inPar2 := par2Index[af.FileName]
+		entry, inPar2 := matchBasename(af, par2Index)
+		if !inPar2 {
+			entry, inPar2 = matchFlattened(af, par2Index)
+		}
 
 		// Files with no assembled CRC (articles failed during download).
 		if af.CRC32 == 0 {
@@ -187,77 +190,7 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 	}
 
 	// CRC+Size fallback pass (P7/G9 — spec §5.3).
-	// For par2 entries that had no basename match (obfuscated filenames),
-	// try matching by (CRC32, FileSize) tuple. This is the most common
-	// scenario with obfuscated downloads where the NZB subject bears no
-	// resemblance to the par2 manifest's filenames.
-	//
-	// We build a (crc32, fileSize) index from unconsumed assembled files
-	// and match it against unconsumed par2 entries.
-	var unconsumedPar2 []*par2Entry
-	for _, entry := range par2Index {
-		if !entry.consumed && entry.desc.FileCRC32 > 0 && entry.desc.FileSize > 0 {
-			unconsumedPar2 = append(unconsumedPar2, entry)
-		}
-	}
-
-	if len(unconsumedPar2) > 0 {
-		type crcSizeKey struct {
-			crc  uint32
-			size int64
-		}
-		// Build index from unconsumed assembled files.
-		assembledByCRC := make(map[crcSizeKey]AssembledFile)
-		consumedAssembled := make(map[string]bool)
-		// Mark files already consumed by the name-based pass.
-		for _, cr := range result.Files {
-			consumedAssembled[cr.FileName] = true
-		}
-		for _, name := range result.NoCRCFiles {
-			consumedAssembled[name] = true
-		}
-		for _, af := range files {
-			if af.CRC32 == 0 || consumedAssembled[af.FileName] {
-				continue
-			}
-			key := crcSizeKey{crc: af.CRC32, size: af.FileSize}
-			assembledByCRC[key] = af
-		}
-
-		log.Info("verifycrc: CRC+size fallback pass",
-			"unmatched_par2", len(unconsumedPar2),
-			"available_assembled", len(assembledByCRC))
-
-		for _, entry := range unconsumedPar2 {
-			key := crcSizeKey{
-				crc:  entry.desc.FileCRC32,
-				size: int64(entry.desc.FileSize), //nolint:gosec // filesize is non-negative
-			}
-			if af, ok := assembledByCRC[key]; ok {
-				entry.consumed = true
-				delete(assembledByCRC, key)
-
-				// match is guaranteed: the lookup key contains the CRC,
-				// so a successful hit means af.CRC32 == entry.desc.FileCRC32.
-				cr := CRCResult{
-					FileName:     af.FileName,
-					AssembledCRC: af.CRC32,
-					Par2CRC:      entry.desc.FileCRC32,
-					Match:        true,
-					Par2FileName: entry.desc.FileName,
-				}
-				result.Files = append(result.Files, cr)
-				result.Checked++
-				result.Matched++
-
-				log.Info("verifycrc: CRC+size fallback match",
-					"assembled", af.FileName,
-					"par2", entry.desc.FileName,
-					"crc32", fmt.Sprintf("%08x", af.CRC32),
-					"size", af.FileSize)
-			}
-		}
-	}
+	matchCRCSize(files, par2Index, log, &result)
 
 	// Count par2 entries that had no corresponding assembled file at all.
 	// These represent a name mismatch between NZB and par2 manifest.
@@ -282,4 +215,79 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 		"not_in_par2", result.NotInPar2)
 
 	return result
+}
+
+func matchBasename(af AssembledFile, par2Index map[string]*par2Entry) (*par2Entry, bool) {
+	entry, ok := par2Index[af.FileName]
+	return entry, ok
+}
+
+func matchFlattened(af AssembledFile, par2Index map[string]*par2Entry) (*par2Entry, bool) {
+	flat := filepath.Base(filepath.ToSlash(af.FileName))
+	entry, ok := par2Index[flat]
+	return entry, ok
+}
+
+func matchCRCSize(files []AssembledFile, par2Index map[string]*par2Entry, log *slog.Logger, result *CRCVerifyResult) {
+	var unconsumedPar2 []*par2Entry
+	for _, entry := range par2Index {
+		if !entry.consumed && entry.desc.FileCRC32 > 0 && entry.desc.FileSize > 0 {
+			unconsumedPar2 = append(unconsumedPar2, entry)
+		}
+	}
+
+	if len(unconsumedPar2) == 0 {
+		return
+	}
+
+	// Build index from unconsumed assembled files.
+	assembledByCRC := make(map[crcSizeKey]AssembledFile)
+	consumedAssembled := make(map[string]bool)
+	// Mark files already consumed by the name-based pass.
+	for _, cr := range result.Files {
+		consumedAssembled[cr.FileName] = true
+	}
+	for _, name := range result.NoCRCFiles {
+		consumedAssembled[name] = true
+	}
+	for _, af := range files {
+		if af.CRC32 == 0 || consumedAssembled[af.FileName] {
+			continue
+		}
+		//nolint:gosec // FileSize is positive, conversion is safe
+		key := crcSizeKey{crc: af.CRC32, size: uint64(af.FileSize)}
+		assembledByCRC[key] = af
+	}
+
+	log.Info("verifycrc: CRC+size fallback pass",
+		"unmatched_par2", len(unconsumedPar2),
+		"available_assembled", len(assembledByCRC))
+
+	for _, entry := range unconsumedPar2 {
+		key := crcSizeKey{
+			crc:  entry.desc.FileCRC32,
+			size: entry.desc.FileSize,
+		}
+		if af, ok := assembledByCRC[key]; ok {
+			entry.consumed = true
+			delete(assembledByCRC, key)
+
+			cr := CRCResult{
+				FileName:     af.FileName,
+				AssembledCRC: af.CRC32,
+				Par2CRC:      entry.desc.FileCRC32,
+				Match:        true,
+				Par2FileName: entry.desc.FileName,
+			}
+			result.Files = append(result.Files, cr)
+			result.Checked++
+			result.Matched++
+
+			log.Info("verifycrc: CRC+size fallback match",
+				"assembled", af.FileName,
+				"par2", entry.desc.FileName,
+				"crc32", fmt.Sprintf("%08x", af.CRC32),
+				"size", af.FileSize)
+		}
+	}
 }

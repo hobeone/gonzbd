@@ -1,11 +1,13 @@
 package postproc
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
@@ -243,4 +245,106 @@ func TestArchiveTypeName_KnownTypes(t *testing.T) {
 			t.Errorf("archiveTypeName(%v) = %q, want %q", tc.at, got, tc.want)
 		}
 	}
+}
+
+func TestUnpackHelpers(t *testing.T) {
+	t.Parallel()
+
+	// Direct references for alignment check
+	_ = extractRARArchive
+	_ = extractSevenZipArchive
+
+	// 1. Test prepareOptions
+	t.Run("prepareOptions", func(t *testing.T) {
+		u := NewUnpackStage()
+		job := &Job{
+			Queue: &queue.Job{
+				Password: "jobpass",
+			},
+		}
+
+		// Create a temporary password file
+		tmpFile := filepath.Join(t.TempDir(), "passwords.txt")
+		content := "pass1\npass2\n"
+		if err := os.WriteFile(tmpFile, []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		opts := u.prepareOptions(t.Context(), slog.Default(), job, unpack.Options{}, tmpFile)
+		if len(opts.Passwords) != 3 {
+			t.Errorf("len(Passwords) = %d; want 3", len(opts.Passwords))
+		}
+		if opts.Passwords[0] != "jobpass" {
+			t.Errorf("Passwords[0] = %q; want jobpass", opts.Passwords[0])
+		}
+
+		// Non-existent password file
+		_ = u.prepareOptions(t.Context(), slog.Default(), job, unpack.Options{}, "nonexistent-password-file.txt")
+	})
+
+	// 2. Test applyPermissions
+	t.Run("applyPermissions", func(t *testing.T) {
+		u := NewUnpackStage()
+		dir := t.TempDir()
+		// create a file inside dir
+		fPath := filepath.Join(dir, "file.txt")
+		if err := os.WriteFile(fPath, []byte("hello"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		job := &Job{
+			Queue:       &queue.Job{ID: "testjob"},
+			DownloadDir: dir,
+		}
+		u.applyPermissions(t.Context(), slog.Default(), job, "755", []unpack.Archive{{}})
+	})
+
+	// 3. Test extractArchive RAR scenarios
+	t.Run("extractArchive RAR", func(t *testing.T) {
+		u := NewUnpackStage()
+		job := &Job{
+			Queue:       &queue.Job{ID: "testjob"},
+			DownloadDir: t.TempDir(),
+		}
+		a := unpack.Archive{Type: unpack.RarArchive, Name: "nonexistent.rar"}
+
+		// Scenario A: Native Go, no fallback
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, true)
+
+		// Scenario B: External only
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false}, true)
+
+		// Scenario C: Native Go with external fallback
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true}, true)
+	})
+
+	// 4. Test extractArchive 7-Zip scenarios
+	t.Run("extractArchive 7-Zip", func(t *testing.T) {
+		u := NewUnpackStage()
+		job := &Job{
+			Queue:       &queue.Job{ID: "testjob"},
+			DownloadDir: t.TempDir(),
+		}
+		a := unpack.Archive{Type: unpack.SevenZipArchive, Name: "nonexistent.7z"}
+
+		// Scenario A: Native Go, no fallback
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, true)
+
+		// Scenario B: External only
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false}, true)
+
+		// Scenario C: Native Go with external fallback
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true}, true)
+	})
+
+	// 5. Test extractArchive (SplitArchive disabled)
+	t.Run("extractArchive SplitArchive disabled", func(t *testing.T) {
+		u := NewUnpackStage()
+		job := &Job{
+			Queue:       &queue.Job{ID: "testjob"},
+			DownloadDir: t.TempDir(),
+		}
+		a := unpack.Archive{Type: unpack.SplitArchive, MainFile: "test.001"}
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{}, false)
+	})
 }
