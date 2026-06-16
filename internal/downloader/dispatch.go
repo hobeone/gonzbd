@@ -212,10 +212,10 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle, opts dispatchOpts) (bool, *articleRequest) {
 	key := a.MessageID
 
-	d.tryMu.Lock()
-	defer d.tryMu.Unlock()
+	d.tracker.Lock()
+	defer d.tracker.Unlock()
 
-	if d.inFlight[key] > 0 {
+	if d.tracker.InFlightLocked(key) > 0 {
 		return false, nil
 	}
 
@@ -236,7 +236,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 		return false, nil
 	}
 
-	mask, hasTried := d.tryList[key]
+	mask, hasTried := d.tracker.TryListLocked(key)
 
 	// MaxArtTries: if the article has already been tried on the maximum
 	// number of servers, declare it permanently failed. This prevents
@@ -276,8 +276,8 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 		select {
 		case ch <- req:
 			mask.set(idx)
-			d.tryList[key] = mask
-			d.inFlight[key]++
+			d.tracker.SetTriedLocked(key, mask)
+			d.tracker.IncrementInFlightLocked(key)
 			return true, nil
 		default:
 			// server's queue is full; try next server
@@ -562,14 +562,9 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 // next dispatch pass observes the cleared state and can fan out to
 // a fallback server if the try-list allows.
 func (d *Downloader) clearInFlight(jobID, messageID string) { //nolint:unparam // jobID kept for future per-job tracking
-	key := messageID
-	d.tryMu.Lock()
-	defer d.tryMu.Unlock()
-	if d.inFlight[key] <= 1 {
-		delete(d.inFlight, key)
-		return
-	}
-	d.inFlight[key]--
+	d.tracker.Lock()
+	defer d.tracker.Unlock()
+	d.tracker.DecrementInFlightLocked(messageID)
 }
 
 // unmarkTried removes serverIdx from an article's try-list, used
@@ -577,19 +572,9 @@ func (d *Downloader) clearInFlight(jobID, messageID string) { //nolint:unparam /
 // the dispatcher can hand the article back to the same server once
 // it recovers, or bounce it to another.
 func (d *Downloader) unmarkTried(jobID, messageID string, serverIdx int) { //nolint:unparam // jobID kept for future per-job tracking
-	d.tryMu.Lock()
-	defer d.tryMu.Unlock()
-	key := messageID
-	mask, ok := d.tryList[key]
-	if !ok {
-		return
-	}
-	mask.unset(serverIdx)
-	if mask.isEmpty() {
-		delete(d.tryList, key)
-	} else {
-		d.tryList[key] = mask
-	}
+	d.tracker.Lock()
+	defer d.tracker.Unlock()
+	d.tracker.UnmarkTriedLocked(messageID, serverIdx)
 }
 
 // clearTried removes an article's entire try-list entry, freeing
@@ -597,10 +582,9 @@ func (d *Downloader) unmarkTried(jobID, messageID string, serverIdx int) { //nol
 // decode error, or ErrNoServersLeft) and will never be dispatched
 // again.
 func (d *Downloader) clearTried(jobID, messageID string) { //nolint:unparam // jobID kept for future per-job tracking
-	key := messageID
-	d.tryMu.Lock()
-	defer d.tryMu.Unlock()
-	delete(d.tryList, key)
+	d.tracker.Lock()
+	defer d.tracker.Unlock()
+	d.tracker.ClearTriedLocked(messageID)
 }
 
 // managedConn encapsulates an NNTP connection and the synchronization

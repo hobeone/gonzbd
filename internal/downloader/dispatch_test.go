@@ -24,8 +24,7 @@ func newDispatchDownloader(servers []*Server) *Downloader {
 		log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 		servers:      servers,
 		workCh:       workCh,
-		tryList:      make(map[string]serverMask),
-		inFlight:     make(map[string]int),
+		tracker:      newMapTracker(),
 		connActivity: make(map[string]*ConnActivity),
 	}
 	ch := make(chan struct{})
@@ -98,12 +97,16 @@ func TestTryDispatch_SuccessfulSend(t *testing.T) {
 	default:
 		t.Error("workCh[s1] is empty — req was not sent")
 	}
+	d.tracker.Lock()
+	inFlightVal := d.tracker.InFlightLocked("msg1@h")
+	mask, _ := d.tracker.TryListLocked("msg1@h")
+	d.tracker.Unlock()
+
 	// inFlight must be incremented so a second dispatch pass skips this article.
-	if d.inFlight["msg1@h"] != 1 {
-		t.Errorf("inFlight = %d, want 1", d.inFlight["msg1@h"])
+	if inFlightVal != 1 {
+		t.Errorf("inFlight = %d, want 1", inFlightVal)
 	}
 	// try-list bit for server 0 must be set.
-	mask := d.tryList["msg1@h"]
 	if !mask.has(0) {
 		t.Error("tryList[msg1@h] bit 0 not set after dispatch")
 	}
@@ -115,7 +118,9 @@ func TestTryDispatch_AlreadyInFlight(t *testing.T) {
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
-	d.inFlight["msg1@h"] = 1 // simulate an outstanding request
+	d.tracker.Lock()
+	d.tracker.IncrementInFlightLocked("msg1@h")
+	d.tracker.Unlock()
 	a := fakeArticle("msg1@h")
 	opts := defaultOpts(d.servers)
 
@@ -160,7 +165,9 @@ func TestTryDispatch_MaxArtTriesExhausted(t *testing.T) {
 	// Mark server 0 as already tried.
 	mask := serverMask{}
 	mask.set(0)
-	d.tryList["msg1@h"] = mask
+	d.tracker.Lock()
+	d.tracker.SetTriedLocked("msg1@h", mask)
+	d.tracker.Unlock()
 	a := fakeArticle("msg1@h")
 	opts := defaultOpts(d.servers)
 	opts.maxArtTries = 1 // cap at 1 try
@@ -187,7 +194,9 @@ func TestTryDispatch_AllServersTriedExhausted(t *testing.T) {
 	// Mark the only server as tried.
 	mask := serverMask{}
 	mask.set(0)
-	d.tryList["msg1@h"] = mask
+	d.tracker.Lock()
+	d.tracker.SetTriedLocked("msg1@h", mask)
+	d.tracker.Unlock()
 	a := fakeArticle("msg1@h")
 	opts := defaultOpts(d.servers)
 
@@ -585,5 +594,26 @@ func TestGetMinServerPriority(t *testing.T) {
 	}
 	if got := getMinServerPriority(cfgs); got != 2 {
 		t.Errorf("got %d, want 2", got)
+	}
+}
+
+func BenchmarkDownloader_Dispatch(b *testing.B) {
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	a := fakeArticle("msg1@h")
+	opts := defaultOpts(d.servers)
+	ctx := context.Background()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		d.tracker.Lock()
+		d.tracker.DecrementInFlightLocked(a.MessageID)
+		d.tracker.ClearTriedLocked(a.MessageID)
+		d.tracker.Unlock()
+		select {
+		case <-d.workCh["s1"]:
+		default:
+		}
+		_, _ = d.tryDispatch(ctx, a, opts)
 	}
 }
