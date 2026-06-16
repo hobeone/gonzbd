@@ -828,16 +828,16 @@ func (app *Application) watchCompletions(ctx context.Context) {
 		case <-ctx.Done():
 			// Drain any pending completions so they're applied to
 			// the queue before it's saved to disk during shutdown.
-			app.drainCompletions()
+			app.drainCompletions(ctx)
 			return
 		case fc := <-app.internalFileComplete:
-			app.handleFileComplete(fc)
+			app.handleFileComplete(ctx, fc)
 		}
 	}
 }
 
 // handleFileComplete processes a single file completion event.
-func (app *Application) handleFileComplete(fc FileComplete) {
+func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete) {
 	// Store the assembled CRC32 on the queue's JobFile so it survives
 	// serialization and is available during post-processing QuickCheck.
 	if fc.CRC32 != 0 {
@@ -859,7 +859,7 @@ func (app *Application) handleFileComplete(fc FileComplete) {
 
 	snap := app.queue.SnapshotJob(fc.JobID)
 	if snap != nil && snap.IsComplete() {
-		if app.maybeReleaseRecoveryVolumes(fc.JobID, snap) {
+		if app.maybeReleaseRecoveryVolumes(ctx, fc.JobID, snap) {
 			return // downloader will fetch recovery volumes
 		}
 		app.maybeFinalize(fc.JobID, failMsgForJob(snap))
@@ -874,7 +874,10 @@ func (app *Application) handleFileComplete(fc FileComplete) {
 // Returns false when: there are no deferred volumes, the data verifies clean,
 // or un-deferral itself fails (in which case we fall through to finalize without
 // recovery volumes, matching the pre-on-demand-par2 behaviour).
-func (app *Application) maybeReleaseRecoveryVolumes(jobID string, snap *queue.Job) bool {
+func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID string, snap *queue.Job) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	if !snap.HasDeferredPar2() || snap.Par2Recovered {
 		return false
 	}
@@ -882,6 +885,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(jobID string, snap *queue.Jo
 	needsRecovery, reason := par2NeedsRecovery(dir, snap.Files, app.log)
 	if !needsRecovery {
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
+		_ = app.queue.DiscardDeferredPar2(jobID)
 		return false
 	}
 	_ = app.queue.SetPar2ReleaseReason(jobID, reason)
@@ -968,11 +972,11 @@ func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger) (nee
 }
 
 // drainCompletions processes all buffered events on internalFileComplete.
-func (app *Application) drainCompletions() {
+func (app *Application) drainCompletions(ctx context.Context) {
 	for {
 		select {
 		case fc := <-app.internalFileComplete:
-			app.handleFileComplete(fc)
+			app.handleFileComplete(ctx, fc)
 		default:
 			return
 		}
