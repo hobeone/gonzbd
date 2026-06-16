@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,3 +92,20 @@ func TestOpen_CancelledContext(t *testing.T) {
 	}
 }
 
+func TestOpen_InitGooseError(t *testing.T) {
+	// Save original
+	orig := initGooseErr
+	defer func() { initGooseErr = orig }()
+
+	initGooseErr = func() error {
+		return errors.New("mocked goose error")
+	}
+
+	_, err := Open(t.Context(), filepath.Join(t.TempDir(), "goose.db"))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "mocked goose error") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}

@@ -25,7 +25,31 @@ func Par2Rename(ctx context.Context, log *slog.Logger, dir string, opts fsutil.S
 		return nil, fmt.Errorf("readdir %s: %w", dir, err)
 	}
 
-	// 1. Find all PAR2 files.
+	par2Files := findPar2Files(entries, dir)
+	if len(par2Files) == 0 {
+		return nil, nil
+	}
+
+	hashToName := buildHashToNameMap(log, par2Files)
+	if len(hashToName) == 0 {
+		return nil, nil
+	}
+
+	var renames []Rename
+	for _, e := range entries {
+		r, renamed, err := par2RenameFile(log, dir, e, hashToName, opts)
+		if err != nil {
+			return renames, err
+		}
+		if renamed {
+			renames = append(renames, r)
+		}
+	}
+
+	return renames, nil
+}
+
+func findPar2Files(entries []os.DirEntry, dir string) []string {
 	var par2Files []string
 	for _, e := range entries {
 		if !e.Type().IsRegular() {
@@ -35,12 +59,10 @@ func Par2Rename(ctx context.Context, log *slog.Logger, dir string, opts fsutil.S
 			par2Files = append(par2Files, filepath.Join(dir, e.Name()))
 		}
 	}
+	return par2Files
+}
 
-	if len(par2Files) == 0 {
-		return nil, nil
-	}
-
-	// 2. Build hash-to-name map from all PAR2 files.
+func buildHashToNameMap(log *slog.Logger, par2Files []string) map[[16]byte]string {
 	hashToName := make(map[[16]byte]string)
 	for _, p := range par2Files {
 		descs, err := par2.ParseFileDescriptions(p)
@@ -52,60 +74,57 @@ func Par2Rename(ctx context.Context, log *slog.Logger, dir string, opts fsutil.S
 			hashToName[d.Hash16k] = d.FileName
 		}
 	}
+	return hashToName
+}
 
-	if len(hashToName) == 0 {
-		return nil, nil
+func par2RenameFile(
+	log *slog.Logger,
+	dir string,
+	e os.DirEntry,
+	hashToName map[[16]byte]string,
+	opts fsutil.SanitizeOptions,
+) (Rename, bool, error) {
+	if !e.Type().IsRegular() {
+		return Rename{}, false, nil
+	}
+	path := filepath.Join(dir, e.Name())
+	ext := strings.ToLower(filepath.Ext(e.Name()))
+
+	// Skip if extension is in the excluded list or if it's a PAR2 file itself.
+	if excludedExts[ext] || strings.EqualFold(ext, ".par2") {
+		return Rename{}, false, nil
 	}
 
-	// 3. Scan regular files and hash their first 16KB.
-	var renames []Rename
-	for _, e := range entries {
-		if !e.Type().IsRegular() {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		ext := strings.ToLower(filepath.Ext(e.Name()))
-
-		// Skip if extension is in the excluded list or if it's a PAR2 file itself.
-		if excludedExts[ext] || strings.EqualFold(ext, ".par2") {
-			continue
-		}
-
-		// Calculate 16KB hash using the canonical par2 implementation.
-		hash, err := par2.ComputeHash16k(path)
-		if err != nil {
-			log.Debug("deobfuscate: failed to hash file", "path", path, "err", err)
-			continue
-		}
-
-		// Check if we have a match.
-		if trueName, ok := hashToName[hash]; ok {
-			if e.Name() == trueName {
-				continue
-			}
-
-			// Perform rename; GetUniqueFilename adds a numeric suffix if the
-			// par2-recorded target already exists on disk.
-			desiredPath := fsutil.JoinSafe(dir, "", trueName, opts)
-			newPath := fsutil.GetUniqueFilename(desiredPath)
-
-			if newPath != desiredPath {
-				finalPath, skip := resolveConflictingRename(log, path, e.Name(), desiredPath, newPath, hash)
-				if skip {
-					continue
-				}
-				newPath = finalPath
-			}
-
-			r, err := renameRecorded(log, path, newPath, trueName, "deobfuscate: par2-renamed")
-			if err != nil {
-				return renames, fmt.Errorf("rename %s → %s: %w", path, newPath, err)
-			}
-			renames = append(renames, r)
-		}
+	// Calculate 16KB hash using the canonical par2 implementation.
+	hash, err := par2.ComputeHash16k(path)
+	if err != nil {
+		log.Debug("deobfuscate: failed to hash file", "path", path, "err", err)
+		return Rename{}, false, nil
 	}
 
-	return renames, nil
+	trueName, ok := hashToName[hash]
+	if !ok || e.Name() == trueName {
+		return Rename{}, false, nil
+	}
+
+	// Perform rename; GetUniqueFilename adds a numeric suffix if the
+	// par2-recorded target already exists on disk.
+	desiredPath := fsutil.JoinSafe(dir, "", trueName, opts)
+	newPath := fsutil.GetUniqueFilename(desiredPath)
+
+	if newPath != desiredPath {
+		finalPath, skip := resolveConflictingRename(log, path, e.Name(), desiredPath, newPath, hash)
+		if skip {
+			return Rename{}, false, nil
+		}
+		newPath = finalPath
+	}
+
+	r, err := renameRecorded(log, path, newPath, trueName, "deobfuscate: par2-renamed")
+	if err != nil {
+		return Rename{}, false, fmt.Errorf("rename %s → %s: %w", path, newPath, err)
+	}
+	return r, true, nil
 }
 
 // resolveConflictingRename handles the case where the par2-recorded target
