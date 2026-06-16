@@ -280,7 +280,9 @@ func (q *Queue) Pause(id string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	job.Status = constants.StatusPaused
+	if err := q.setStatusLocked(job, constants.StatusPaused); err != nil {
+		return err
+	}
 	q.dirty.Store(true)
 	return nil
 }
@@ -294,7 +296,9 @@ func (q *Queue) Resume(id string) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	if job.Status == constants.StatusPaused {
-		job.Status = constants.StatusQueued
+		if err := q.setStatusLocked(job, constants.StatusQueued); err != nil {
+			return err
+		}
 		job.Warning = ""
 	}
 	q.dirty.Store(true)
@@ -398,6 +402,7 @@ func (q *Queue) SetCategory(id, cat string, cats []config.CategoryConfig) error 
 }
 
 // SetStatus updates the status of the job with the given ID. Returns
+// ErrIllegalStatusTransition if the requested transition is not allowed,
 // ErrNotFound if the job is absent.
 func (q *Queue) SetStatus(id string, status constants.Status) error {
 	q.mu.Lock()
@@ -406,15 +411,15 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	job.Status = status
+	if err := q.setStatusLocked(job, status); err != nil {
+		return err
+	}
 	q.dirty.Store(true)
 	return nil
 }
 
 // SetStatusIf conditionally updates a job's status. The status is only
-// changed if the current status matches ifCurrent. This is used by the
-// dispatcher to flip Queued → Downloading without accidentally
-// overwriting a Paused or PostProcessing status set concurrently.
+// changed if the current status matches ifCurrent AND the edge is legal.
 // Returns ErrNotFound if the job is absent; returns nil even if the
 // condition didn't match (no error, just a no-op).
 func (q *Queue) SetStatusIf(id string, newStatus, ifCurrent constants.Status) error {
@@ -424,10 +429,23 @@ func (q *Queue) SetStatusIf(id string, newStatus, ifCurrent constants.Status) er
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	if job.Status == ifCurrent {
-		job.Status = newStatus
-		q.dirty.Store(true)
+	if job.Status != ifCurrent {
+		return nil
 	}
+	if err := q.setStatusLocked(job, newStatus); err != nil {
+		return err
+	}
+	q.dirty.Store(true)
+	return nil
+}
+
+// setStatusLocked validates and applies a status transition. Must hold
+// q.mu for write.
+func (q *Queue) setStatusLocked(job *Job, status constants.Status) error {
+	if !canTransitionStatus(job.Status, status) {
+		return illegalTransition(job.Status, status)
+	}
+	job.Status = status
 	return nil
 }
 
@@ -444,8 +462,10 @@ func (q *Queue) SetPostProcStarted(id string) (bool, error) {
 	if job.PostProc {
 		return false, nil
 	}
+	if err := q.setStatusLocked(job, constants.StatusVerifying); err != nil {
+		return false, err
+	}
 	job.PostProc = true
-	job.Status = constants.StatusVerifying
 	q.dirty.Store(true)
 	return true, nil
 }
@@ -641,7 +661,7 @@ func (q *Queue) ClearAllEmitted() {
 		// articles are actually in-flight. The new downloader's first
 		// dispatch pass will transition back to Downloading.
 		if job.Status == constants.StatusDownloading {
-			job.Status = constants.StatusQueued
+			_ = q.setStatusLocked(job, constants.StatusQueued)
 		}
 		for fi := range job.Files {
 			for ai := range job.Files[fi].Articles {
@@ -849,6 +869,8 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 	q.dirty.Store(true)
 	return nil
 }
+
+
 
 // undeferRecoveryLocked clears Deferred on the given file indices of job. If
 // any file changed it marks Par2Recovered, recomputes pending counters from
