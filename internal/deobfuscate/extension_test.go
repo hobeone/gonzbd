@@ -358,6 +358,107 @@ func TestFixExtension(t *testing.T) {
 	})
 }
 
+func TestFixExtension_NoOverwriteOnCollision(t *testing.T) {
+	t.Parallel()
+	log := slog.Default()
+
+	t.Run("rar branch does not overwrite existing sibling", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+
+		// Pre-create the would-be target name with known contents.
+		target := filepath.Join(dir, "archive.xyz.rar")
+		if err := os.WriteFile(target, []byte("OLD"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Source file: RAR3 magic bytes, non-popular extension — FixExtension
+		// will want to rename it to archive.xyz.rar, which already exists.
+		path := filepath.Join(dir, "archive.xyz")
+		rarMagic := []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00}
+		content := make([]byte, 0, len(rarMagic)+256)
+		content = append(content, rarMagic...)
+		content = append(content, make([]byte, 256)...)
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		if err != nil {
+			t.Fatalf("FixExtension error: %v", err)
+		}
+		if rename.From == "" {
+			t.Fatal("expected a rename, got zero-value")
+		}
+
+		// The pre-existing sibling must still have its original contents — not overwritten.
+		got, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatalf("could not read pre-existing sibling: %v", err)
+		}
+		if string(got) != "OLD" {
+			t.Errorf("pre-existing sibling was overwritten: contents = %q, want %q", string(got), "OLD")
+		}
+
+		// The renamed file must have landed on a unique name (GetUniqueFilename
+		// appends .1 before the extension: "archive.xyz.1.rar").
+		wantTo := filepath.Join(dir, "archive.xyz.1.rar")
+		if rename.To != wantTo {
+			t.Errorf("expected unique target %q, got %q", wantTo, rename.To)
+		}
+		if _, err := os.Stat(rename.To); err != nil {
+			t.Errorf("renamed file does not exist at unique path: %v", err)
+		}
+	})
+
+	t.Run("filetype branch does not overwrite existing sibling", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+
+		// Pre-create the would-be target name with known contents.
+		// FixExtension will detect JPEG content and want to rename to
+		// "photo.xyz.jpg", which already exists.
+		target := filepath.Join(dir, "photo.xyz.jpg")
+		if err := os.WriteFile(target, []byte("OLD"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Source file: JPEG magic bytes, non-popular extension.
+		path := filepath.Join(dir, "photo.xyz")
+		jpegMagic := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01}
+		if err := os.WriteFile(path, jpegMagic, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		if err != nil {
+			t.Fatalf("FixExtension error: %v", err)
+		}
+		if rename.From == "" {
+			t.Fatal("expected a rename, got zero-value")
+		}
+
+		// The pre-existing sibling must still have its original contents.
+		got, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatalf("could not read pre-existing sibling: %v", err)
+		}
+		if string(got) != "OLD" {
+			t.Errorf("pre-existing sibling was overwritten: contents = %q, want %q", string(got), "OLD")
+		}
+
+		// The renamed file must have landed on a unique name.
+		// GetUniqueFilename("photo.xyz.jpg") → "photo.xyz.1.jpg"
+		wantTo := filepath.Join(dir, "photo.xyz.1.jpg")
+		if rename.To != wantTo {
+			t.Errorf("expected unique target %q, got %q", wantTo, rename.To)
+		}
+		if _, err := os.Stat(rename.To); err != nil {
+			t.Errorf("renamed file does not exist at unique path: %v", err)
+		}
+	})
+}
+
 func TestDeobfuscateSubtitles(t *testing.T) {
 	t.Parallel()
 
