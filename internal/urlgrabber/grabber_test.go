@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -749,6 +750,11 @@ func TestValidateURL_Direct(t *testing.T) {
 		{"localhost blocked even if allowed", "http://localhost/test.nzb", true, true},
 		{"private IP blocked by default", "http://127.0.0.1/test.nzb", false, true},
 		{"private IP allowed by flag", "http://127.0.0.1/test.nzb", true, false},
+		{"CGNAT IP blocked", "http://100.64.0.1/test.nzb", false, true},
+		{"CGNAT IP allowed by flag", "http://100.64.0.1/test.nzb", true, false},
+		{"unspecified IP blocked", "http://0.0.0.0/test.nzb", false, true},
+		{"unspecified IP allowed by flag", "http://0.0.0.0/test.nzb", true, false},
+		{"link-local IP blocked", "http://169.254.0.1/test.nzb", false, true},
 	}
 
 	for _, tt := range tests {
@@ -757,7 +763,7 @@ func TestValidateURL_Direct(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to parse URL %q: %v", tt.urlStr, err)
 			}
-			err = validateURL(u, tt.allowPrivate)
+			err = validateURL(t.Context(), u, tt.allowPrivate, defaultResolver{net.DefaultResolver})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateURL(%q, %v) error = %v; wantErr = %v", tt.urlStr, tt.allowPrivate, err, tt.wantErr)
 			}
@@ -872,5 +878,197 @@ func TestFetchRedirectLimit_Direct(t *testing.T) {
 		t.Errorf("Expected 10 redirects to be rejected, got nil error")
 	} else if !strings.Contains(err.Error(), "too many redirects") {
 		t.Errorf("Expected error to mention too many redirects, got: %v", err)
+	}
+}
+
+type mockRebindResolver struct {
+	mu      sync.Mutex
+	calls   int
+	host    string
+	public  string
+	private string
+}
+
+func (r *mockRebindResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if host != r.host {
+		return nil, fmt.Errorf("unexpected host: %s", host)
+	}
+	r.calls++
+	if r.calls == 1 {
+		return []string{r.public}, nil
+	}
+	return []string{r.private}, nil
+}
+
+func TestFetch_DNSRebinding(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("secret private data"))
+	}))
+	defer ts.Close()
+
+	u, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatalf("failed to parse test server url: %v", err)
+	}
+	port := u.Port()
+
+	resolver := &mockRebindResolver{
+		host:    "evil-rebind.com",
+		public:  "8.8.8.8",
+		private: "127.0.0.1",
+	}
+
+	h := &MockHandler{}
+	cfg := Config{
+		AllowPrivateIPs: false,
+		Resolver:        resolver,
+	}
+	grabber := New(cfg, h)
+
+	targetURL := fmt.Sprintf("http://evil-rebind.com:%s/test.nzb", port)
+
+	_, err = grabber.Fetch(t.Context(), targetURL, types.FetchOptions{})
+	if err == nil {
+		t.Fatal("expected DNS rebinding SSRF attempt to be blocked, but got no error")
+	}
+
+	if !strings.Contains(err.Error(), "SSRF") && !strings.Contains(err.Error(), "resolves to private/loopback") && !strings.Contains(err.Error(), "blocked connection") {
+		t.Errorf("expected SSRF block error, got: %v", err)
+	}
+}
+
+func TestFetchRetryAfter(t *testing.T) {
+	now := time.Now()
+	futureTime := now.Add(60 * time.Second)
+	httpDateStr := futureTime.UTC().Format(http.TimeFormat)
+
+	tests := []struct {
+		name         string
+		statusCode   int
+		headers      map[string]string
+		wantDuration time.Duration
+		wantErrType  bool
+		tolerance    time.Duration
+	}{
+		{
+			name:         "429 seconds",
+			statusCode:   429,
+			headers:      map[string]string{"Retry-After": "120"},
+			wantDuration: 120 * time.Second,
+			wantErrType:  true,
+		},
+		{
+			name:         "503 seconds",
+			statusCode:   503,
+			headers:      map[string]string{"Retry-After": "30"},
+			wantDuration: 30 * time.Second,
+			wantErrType:  true,
+		},
+		{
+			name:         "429 date",
+			statusCode:   429,
+			headers:      map[string]string{"Retry-After": httpDateStr},
+			wantDuration: 60 * time.Second,
+			wantErrType:  true,
+			tolerance:    2 * time.Second,
+		},
+		{
+			name:         "429 no header",
+			statusCode:   429,
+			headers:      nil,
+			wantDuration: 0,
+			wantErrType:  false,
+		},
+		{
+			name:         "429 invalid header",
+			statusCode:   429,
+			headers:      map[string]string{"Retry-After": "invalid"},
+			wantDuration: 0,
+			wantErrType:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				for k, v := range tc.headers {
+					w.Header().Set(k, v)
+				}
+				w.WriteHeader(tc.statusCode)
+			}))
+			defer ts.Close()
+
+			h := &MockHandler{}
+			grabber := New(Config{AllowPrivateIPs: true}, h)
+			_, err := grabber.Fetch(t.Context(), ts.URL+"/test.nzb", types.FetchOptions{})
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+
+			if tc.wantErrType {
+				var retryErr *RetryAfterError
+				if !errors.As(err, &retryErr) {
+					t.Fatalf("expected RetryAfterError, got %T: %v", err, err)
+				}
+				if retryErr.StatusCode != tc.statusCode {
+					t.Errorf("expected status %d, got %d", tc.statusCode, retryErr.StatusCode)
+				}
+				expectedErrStr := fmt.Sprintf("HTTP %d: retry after %s", tc.statusCode, retryErr.Duration)
+				if err.Error() != expectedErrStr {
+					t.Errorf("expected error string %q, got %q", expectedErrStr, err.Error())
+				}
+				diff := retryErr.Duration - tc.wantDuration
+				if diff < 0 {
+					diff = -diff
+				}
+				maxDiff := tc.tolerance
+				if maxDiff == 0 {
+					maxDiff = 100 * time.Millisecond
+				}
+				if diff > maxDiff {
+					t.Errorf("expected duration close to %s, got %s (diff %s)", tc.wantDuration, retryErr.Duration, diff)
+				}
+			} else {
+				var retryErr *RetryAfterError
+				if errors.As(err, &retryErr) {
+					t.Fatalf("did not expect RetryAfterError, got: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestSelectAndValidateIP(t *testing.T) {
+	tests := []struct {
+		name         string
+		ips          []string
+		allowPrivate bool
+		wantIP       string
+		wantErr      bool
+	}{
+		{"allowPrivate=true, empty IPs", []string{}, true, "", true},
+		{"allowPrivate=true, has private IP", []string{"127.0.0.1"}, true, "127.0.0.1", false},
+		{"allowPrivate=true, has public IP", []string{"8.8.8.8"}, true, "8.8.8.8", false},
+		{"allowPrivate=false, empty IPs", []string{}, false, "", true},
+		{"allowPrivate=false, private IP only", []string{"127.0.0.1"}, false, "", true},
+		{"allowPrivate=false, public IP only", []string{"8.8.8.8"}, false, "8.8.8.8", false},
+		{"allowPrivate=false, first invalid, second public", []string{"invalid", "8.8.8.8"}, false, "8.8.8.8", false},
+		{"allowPrivate=false, first private, second public", []string{"127.0.0.1", "8.8.8.8"}, false, "", true}, // fails early on any private IP
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotIP, err := selectAndValidateIP(tt.ips, tt.allowPrivate)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("selectAndValidateIP() error = %v, wantErr = %v", err, tt.wantErr)
+				return
+			}
+			if gotIP != tt.wantIP {
+				t.Errorf("selectAndValidateIP() = %q, want %q", gotIP, tt.wantIP)
+			}
+		})
 	}
 }

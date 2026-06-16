@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,19 @@ const (
 	// DefaultMaxBytes is the default maximum response body size.
 	DefaultMaxBytes = 100 * 1024 * 1024 // 100 MiB
 )
+
+// Resolver defines the DNS resolution interface used by Grabber to prevent SSRF DNS-rebinding attacks.
+type Resolver interface {
+	LookupHost(ctx context.Context, host string) ([]string, error)
+}
+
+type defaultResolver struct {
+	*net.Resolver
+}
+
+func (r defaultResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	return r.Resolver.LookupHost(ctx, host)
+}
 
 // Config holds configuration for the Grabber.
 type Config struct {
@@ -43,6 +57,8 @@ type Config struct {
 	// AllowPrivateIPs disables SSRF private-IP blocking. Only set this
 	// in tests; production must always leave it false.
 	AllowPrivateIPs bool
+	// Resolver is the DNS resolver. If nil, defaultResolver is used.
+	Resolver Resolver
 }
 
 // Handler defines the interface for consuming NZB payloads fetched by the Grabber.
@@ -59,6 +75,7 @@ type Grabber struct {
 	client          *http.Client
 	logger          *slog.Logger
 	allowPrivateIPs bool
+	resolver        Resolver
 }
 
 // New creates a new Grabber with the given config and handler.
@@ -74,17 +91,55 @@ func New(cfg Config, h Handler) *Grabber {
 	}
 	log := cfg.Logger.With("component", "urlgrabber")
 
-	client := cfg.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: cfg.Timeout}
+	resolver := cfg.Resolver
+	if resolver == nil {
+		resolver = defaultResolver{net.DefaultResolver}
+	}
+
+	dialer := &net.Dialer{
+		Timeout: cfg.Timeout,
 	}
 	allowPrivate := cfg.AllowPrivateIPs
+
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := resolver.LookupHost(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			validIP, err := selectAndValidateIP(ips, allowPrivate)
+			if err != nil {
+				return nil, fmt.Errorf("SSRF: %w for host %s", err, host)
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(validIP, port))
+		},
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	client := cfg.HTTPClient
+	if client == nil {
+		client = &http.Client{
+			Transport: transport,
+			Timeout:   cfg.Timeout,
+		}
+	} else {
+		client.Transport = transport
+	}
 	// Install redirect validation to prevent SSRF via redirect chains.
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return fmt.Errorf("too many redirects")
 		}
-		if err := validateURL(req.URL, allowPrivate); err != nil {
+		if err := validateURL(req.Context(), req.URL, allowPrivate, resolver); err != nil {
 			return fmt.Errorf("redirect target blocked: %w", err)
 		}
 		return nil
@@ -96,6 +151,7 @@ func New(cfg Config, h Handler) *Grabber {
 		client:          client,
 		logger:          log,
 		allowPrivateIPs: allowPrivate,
+		resolver:        resolver,
 	}
 }
 
@@ -122,7 +178,7 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 	}
 
 	// Validate the URL to prevent SSRF attacks.
-	if err := validateURL(parsedURL, g.allowPrivateIPs); err != nil {
+	if err := validateURL(ctx, parsedURL, g.allowPrivateIPs, g.resolver); err != nil {
 		return nil, fmt.Errorf("URL rejected: %w", err)
 	}
 
@@ -141,6 +197,16 @@ func (g *Grabber) Fetch(ctx context.Context, urlStr string, opts types.FetchOpti
 	defer resp.Body.Close() //nolint:errcheck // cleanup of response body
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+			if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
+				if duration, err := parseRetryAfter(retryAfter); err == nil {
+					return nil, &RetryAfterError{
+						StatusCode: resp.StatusCode,
+						Duration:   duration,
+					}
+				}
+			}
+		}
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
@@ -260,7 +326,7 @@ func isPrivateIP(ip net.IP) bool {
 //   - Hosts that resolve to loopback, link-local, or RFC1918 private
 //     addresses are rejected (unless allowPrivateIPs is true).
 //   - The hostname "localhost" is explicitly blocked.
-func validateURL(u *url.URL, allowPrivateIPs bool) error {
+func validateURL(ctx context.Context, u *url.URL, allowPrivateIPs bool, resolver Resolver) error {
 	// Scheme check.
 	scheme := strings.ToLower(u.Scheme)
 	if scheme != "http" && scheme != "https" {
@@ -278,17 +344,62 @@ func validateURL(u *url.URL, allowPrivateIPs bool) error {
 	}
 
 	// Resolve and check all IPs.
-	//nolint:gosec // false positive: this function is the SSRF validator checking for private/loopback IPs
-	ips, err := net.LookupHost(host)
+	ips, err := resolver.LookupHost(ctx, host)
 	if err != nil {
 		return fmt.Errorf("failed to resolve host %q: %w", host, err)
 	}
-	for _, ipStr := range ips {
-		ip := net.ParseIP(ipStr)
-		if ip != nil && isPrivateIP(ip) {
-			return fmt.Errorf("host %q resolves to private/loopback address %s", host, ipStr)
+	_, err = selectAndValidateIP(ips, allowPrivateIPs)
+	return err
+}
+
+// selectAndValidateIP filters and validates host IPs.
+func selectAndValidateIP(ips []string, allowPrivate bool) (string, error) {
+	if allowPrivate {
+		if len(ips) > 0 {
+			return ips[0], nil
 		}
+		return "", fmt.Errorf("no IPs found")
 	}
 
-	return nil
+	_, cgNatNet, _ := net.ParseCIDR("100.64.0.0/10")
+	var validIP string
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		isPrivate := ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || cgNatNet.Contains(ip)
+		if isPrivate {
+			return "", fmt.Errorf("resolves to private/loopback/unspecified: %s", ipStr)
+		}
+		if validIP == "" {
+			validIP = ipStr
+		}
+	}
+	if validIP == "" {
+		return "", fmt.Errorf("no valid IP found")
+	}
+	return validIP, nil
+}
+
+// RetryAfterError is returned when HTTP 429 or 503 is encountered with a Retry-After header.
+type RetryAfterError struct {
+	StatusCode int
+	Duration   time.Duration
+}
+
+func (e *RetryAfterError) Error() string {
+	return fmt.Sprintf("HTTP %d: retry after %s", e.StatusCode, e.Duration)
+}
+
+func parseRetryAfter(val string) (time.Duration, error) {
+	if seconds, err := strconv.Atoi(val); err == nil {
+		return time.Duration(seconds) * time.Second, nil
+	}
+	t, err := http.ParseTime(val)
+	if err != nil {
+		return 0, err
+	}
+	duration := max(time.Until(t), 0)
+	return duration, nil
 }
