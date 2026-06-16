@@ -3,6 +3,7 @@
 package fsutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -218,6 +219,9 @@ func truncateFilename(filename string, maxBytes int) string {
 // truncateOnRuneBoundary cuts s to at most maxBytes without splitting a
 // multi-byte UTF-8 rune (the cut backs off to the nearest rune start).
 func truncateOnRuneBoundary(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
 	if len(s) <= maxBytes {
 		return s
 	}
@@ -240,7 +244,7 @@ var maxAttempts = 10_000
 // if the file already exists on disk. Stops after 10,000 attempts to prevent
 // unbounded iteration on pathologically crowded directories.
 func GetUniqueFilename(path string) string {
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return path
 	}
 
@@ -248,7 +252,7 @@ func GetUniqueFilename(path string) string {
 	base := path[:len(path)-len(ext)]
 	for i := 1; i <= maxAttempts; i++ {
 		newPath := fmt.Sprintf("%s.%d%s", base, i, ext)
-		if _, err := os.Stat(newPath); err != nil {
+		if _, err := os.Stat(newPath); errors.Is(err, os.ErrNotExist) {
 			return newPath
 		}
 	}
