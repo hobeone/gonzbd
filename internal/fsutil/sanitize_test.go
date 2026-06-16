@@ -508,3 +508,11 @@ func TestTruncateOnRuneBoundary_NegativeGuard(t *testing.T) {
 		})
 	}
 }
+
+func TestTruncateOnRuneBoundary_Boundary(t *testing.T) {
+	t.Parallel()
+	got := truncateOnRuneBoundary("a", 1)
+	if got != "a" {
+		t.Errorf("expected 'a', got %q", got)
+	}
+}

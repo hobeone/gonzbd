@@ -219,7 +219,7 @@ func truncateFilename(filename string, maxBytes int) string {
 // truncateOnRuneBoundary cuts s to at most maxBytes without splitting a
 // multi-byte UTF-8 rune (the cut backs off to the nearest rune start).
 func truncateOnRuneBoundary(s string, maxBytes int) string {
-	if maxBytes <= 0 {
+	if maxBytes < 1 {
 		return ""
 	}
 	if len(s) <= maxBytes {
