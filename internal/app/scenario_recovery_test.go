@@ -140,3 +140,77 @@ func waitUntil(timeout time.Duration, cond func() bool) bool {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+func TestRecovery_DuplicateJobInHistory(t *testing.T) {
+	adminDir := t.TempDir()
+	downloadDir := t.TempDir()
+	completeDir := t.TempDir()
+
+	const jobID = "recover0-00000002"
+
+	// Seed active queue with a completed job.
+	seed := queue.New()
+	seeded := &queue.Job{
+		ID:     jobID,
+		Name:   "recovery-dup",
+		Status: constants.StatusQueued,
+		Files: []queue.JobFile{{
+			Subject:  "recovery.bin",
+			Complete: true,
+			Articles: []queue.JobArticle{{ID: "a@t", Done: true, Bytes: 100}},
+			Bytes:    100,
+		}},
+		TotalBytes:     100,
+		RemainingBytes: 0,
+	}
+	if err := seed.Add(seeded); err != nil {
+		t.Fatalf("seed.Add: %v", err)
+	}
+	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {
+		t.Fatalf("seed.Save: %v", err)
+	}
+
+	// Seed history with the same job.
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+
+	entry := history.Entry{
+		NzoID:     jobID,
+		Name:      "recovery-dup",
+		Status:    "Completed",
+		Completed: time.Now(),
+	}
+	if err := repo.Add(t.Context(), entry); err != nil {
+		t.Fatalf("repo.Add: %v", err)
+	}
+
+	cfg := app.Config{
+		DownloadDir: downloadDir,
+		CompleteDir: completeDir,
+		AdminDir:    adminDir,
+		Servers:     []config.ServerConfig{nntptest.New(t).ServerConfig("recovery-dup", 1)},
+	}
+
+	a, err := app.New(cfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(func() {
+		cancel()
+		_ = a.Shutdown()
+	})
+	if err := a.Start(ctx); err != nil {
+		t.Fatalf("app.Start: %v", err)
+	}
+
+	// Verify that the duplicate job has been removed from the queue immediately on start.
+	if a.Queue().SnapshotJob(jobID) != nil {
+		t.Errorf("job %s was not removed from queue on startup despite being in history", jobID)
+	}
+}
