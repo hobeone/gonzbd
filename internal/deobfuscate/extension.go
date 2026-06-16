@@ -142,11 +142,6 @@ func FixExtension(ctx context.Context, log *slog.Logger, path string) (Rename, e
 		// filetype may not recognize all RAR variants.
 		isRAR, _ := rarheader.IsRAR(path)
 		if isRAR {
-			if ext == ".rar" {
-				log.Debug("deobfuscate: RAR content with .rar extension, no fix needed",
-					"file", base)
-				return Rename{}, nil
-			}
 			newPath := fsutil.GetUniqueFilename(path + ".rar")
 			log.Info("deobfuscate: RAR content detected by magic bytes, appending .rar",
 				"file", base, "current_ext", ext)

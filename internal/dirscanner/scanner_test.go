@@ -1466,3 +1466,37 @@ func TestScanOnce_SubdirCancellationPropagates(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
+
+func TestScanCategorySubdirs_SubdirError(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	stateFile := filepath.Join(tmpDir, "state.json")
+	store, err := OpenStore(stateFile)
+	if err != nil {
+		t.Fatalf("OpenStore failed: %v", err)
+	}
+
+	handler := &MockHandler{failFor: make(map[string]error)}
+	catFn := func() []string { return []string{"tv"} }
+	scanner := New(tmpDir, store, handler, catFn, nil)
+
+	subDir := filepath.Join(tmpDir, "tv")
+	if err := os.Mkdir(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make the subdirectory completely unreadable to force os.ReadDir failure.
+	if err := os.Chmod(subDir, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(subDir, 0755) })
+
+	// Scan should continue and not fail with an error because it logs and skips the bad category subdir.
+	count, err := scanner.ScanOnce(t.Context())
+	if err != nil {
+		t.Fatalf("ScanOnce returned unexpected error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 processed files, got %d", count)
+	}
+}

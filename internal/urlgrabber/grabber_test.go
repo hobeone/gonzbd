@@ -736,6 +736,41 @@ func TestIsPrivateIP_Direct(t *testing.T) {
 	}
 }
 
+func TestTo4Safe_Direct(t *testing.T) {
+	tests := []struct {
+		ip   string
+		want string
+	}{
+		{"127.0.0.1", "127.0.0.1"},
+		{"::ffff:127.0.0.1", "127.0.0.1"},
+		{"::127.0.0.1", "127.0.0.1"},
+		{"::10.0.0.1", "10.0.0.1"},
+		{"::1", "0.0.0.1"},
+		{"2001:db8::1", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ip, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("failed to parse IP %q", tt.ip)
+			}
+			got := to4Safe(ip)
+			if tt.want == "" {
+				if got != nil {
+					t.Errorf("to4Safe(%s) = %s; want nil", tt.ip, got)
+				}
+			} else {
+				if got == nil {
+					t.Errorf("to4Safe(%s) = nil; want %s", tt.ip, tt.want)
+				} else if gotStr := got.String(); gotStr != tt.want {
+					t.Errorf("to4Safe(%s) = %s; want %s", tt.ip, gotStr, tt.want)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateURL_Direct(t *testing.T) {
 	tests := []struct {
 		name         string

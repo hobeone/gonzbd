@@ -1,6 +1,7 @@
 package par2
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -330,4 +331,84 @@ func TestGoPar2_LoggerConcurrentOnLine(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestGoRepair_DamagedAndRepaired(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+
+	// Damage the data file by modifying exactly one byte, keeping the size identical.
+	dataFile := filepath.Join(dir, "data.bin")
+	data, err := os.ReadFile(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) < 1 {
+		t.Fatal("fixture data.bin is empty")
+	}
+	data[0] = data[0] ^ 0xFF // flip bits of the first byte
+	if err := os.WriteFile(dataFile, data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var onLineCalled bool
+	res, err := GoRepair(context.Background(), discardLogger(), mainFile, dir, func(line string) {
+		onLineCalled = true
+	})
+	if err != nil {
+		t.Fatalf("GoRepair failed: %v\nOutput: %s", err, res.Output)
+	}
+	if !res.Success {
+		t.Errorf("expected res.Success = true, got false\nOutput: %s", res.Output)
+	}
+
+	// Verify that the file was actually repaired back to original content.
+	repairedData, err := os.ReadFile(dataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalData, err := os.ReadFile(filepath.Join(par2FixtureDir, "data.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(repairedData, originalData) {
+		t.Error("repaired data does not match original data")
+	}
+	if !onLineCalled {
+		t.Error("expected onLine to be called during repair")
+	}
+}
+
+func TestGoRepair_RepairNotPossible(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+
+	// Remove the recovery volume.
+	if err := os.Remove(filepath.Join(dir, "data.vol000+102.par2")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Damage the data file.
+	dataFile := filepath.Join(dir, "data.bin")
+	if err := os.WriteFile(dataFile, []byte("damaged data"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	res, err := GoRepair(context.Background(), discardLogger(), mainFile, dir, nil)
+	if err != nil {
+		t.Fatalf("GoRepair returned error: %v", err)
+	}
+	if res.Success {
+		t.Error("expected Success to be false when repair is not possible")
+	}
+	if !res.NeedMoreBlocks {
+		t.Error("expected NeedMoreBlocks to be true")
+	}
+	if res.BlocksNeeded == 0 {
+		t.Error("expected BlocksNeeded > 0")
+	}
 }
