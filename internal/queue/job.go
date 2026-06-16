@@ -275,6 +275,7 @@ func (j *Job) recomputePending() {
 		total += n
 	}
 	j.PendingArticles = total
+	j.buildArtIndex()
 }
 
 // JobFile is a single file within a job: its articles, its assembly
