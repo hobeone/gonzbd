@@ -231,7 +231,7 @@ func sanitizeName(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
 	name = strings.ReplaceAll(name, "\x00", "_")
 	name = path.Base(name)
-	if name == "" || name == "." || name == "/" {
+	if name == "" || name == "." || name == ".." || name == "/" {
 		return "unknown"
 	}
 	return name

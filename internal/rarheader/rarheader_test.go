@@ -149,6 +149,7 @@ func TestSanitizeName(t *testing.T) {
 		{"just_slashes", "///", "unknown"},
 		{"backslash_only", `\`, "unknown"},
 		{"current_dir_prefix", "./file.txt", "file.txt"},
+		{"dotdot", "..", "unknown"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
