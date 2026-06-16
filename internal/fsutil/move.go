@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 )
 
@@ -122,7 +121,7 @@ func checkSymlinkContainment(symlinkPath, target string) error {
 	}
 
 	// The resolved target must be within absDir.
-	if !strings.HasPrefix(resolved, absDir+string(filepath.Separator)) && resolved != absDir {
+	if !PathWithin(absDir, resolved) {
 		return fmt.Errorf("%w: %s -> %s escapes %s", ErrSymlinkEscape, symlinkPath, target, absDir)
 	}
 	return nil
