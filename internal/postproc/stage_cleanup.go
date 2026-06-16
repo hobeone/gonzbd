@@ -19,7 +19,7 @@ func NewCleanupStage() *CleanupStage { return &CleanupStage{} }
 func (*CleanupStage) Name() string { return "cleanup" }
 
 // Run removes admin sidecar data from the download directory.
-func (c *CleanupStage) Run(_ context.Context, job *Job) error {
+func (c *CleanupStage) Run(ctx context.Context, job *Job) error {
 	log := c.Log
 	if log == nil {
 		log = slog.Default()
@@ -28,7 +28,7 @@ func (c *CleanupStage) Run(_ context.Context, job *Job) error {
 
 	// On failure, preserve admin data for debugging/retry.
 	if job.ParError || job.UnpackError || job.FailMsg != "" {
-		logf(log, job, slog.LevelInfo, "Skipped: preserving admin data for failed job")
+		logf(ctx, log, job, slog.LevelInfo, "Skipped: preserving admin data for failed job")
 		return nil
 	}
 
@@ -47,6 +47,6 @@ func (c *CleanupStage) Run(_ context.Context, job *Job) error {
 			"dir", adminDir)
 	}
 
-	logf(log, job, slog.LevelInfo, "Removed admin data")
+	logf(ctx, log, job, slog.LevelInfo, "Removed admin data")
 	return nil
 }

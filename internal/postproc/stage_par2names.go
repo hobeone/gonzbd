@@ -28,13 +28,13 @@ func (r *RecoverPar2NamesStage) Run(ctx context.Context, job *Job) error {
 	}
 	log = log.With("component", "postproc/recover_par2_names", "job", job.Queue.ID)
 
-	logf(log, job, slog.LevelInfo, "Running par2-based filename recovery in %s", job.DownloadDir)
+	logf(ctx, log, job, slog.LevelInfo, "Running par2-based filename recovery in %s", job.DownloadDir)
 
 	renames, err := deobfuscate.Par2Rename(ctx, log, job.DownloadDir, job.Sanitize)
 	if len(renames) == 0 {
-		logf(log, job, slog.LevelInfo, "No par2-based renames needed")
+		logf(ctx, log, job, slog.LevelInfo, "No par2-based renames needed")
 	} else {
-		logf(log, job, slog.LevelInfo, "Par2 renamed %d file(s)", len(renames))
+		logf(ctx, log, job, slog.LevelInfo, "Par2 renamed %d file(s)", len(renames))
 		for _, ren := range renames {
 			from := filepath.Base(ren.From)
 			to := filepath.Base(ren.To)
@@ -54,7 +54,7 @@ func (r *RecoverPar2NamesStage) Run(ctx context.Context, job *Job) error {
 		}
 	}
 	if err != nil {
-		logf(log, job, slog.LevelWarn, "Warning: par2 rename encountered errors: %v", err)
+		logf(ctx, log, job, slog.LevelWarn, "Warning: par2 rename encountered errors: %v", err)
 		// Non-fatal: heuristic deobfuscation or the user can fix things.
 	}
 	return nil

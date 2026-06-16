@@ -36,33 +36,33 @@ func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
 	}
 	log = log.With("component", "postproc/deobfuscate", "job", job.Queue.ID)
 
-	logf(log, job, slog.LevelInfo, "Starting deobfuscation in %s (useful name: %s)", job.DownloadDir, job.Queue.Name)
+	logf(ctx, log, job, slog.LevelInfo, "Starting deobfuscation in %s (useful name: %s)", job.DownloadDir, job.Queue.Name)
 
 	renames, err := deobfuscate.Deobfuscate(ctx, log, job.DownloadDir, job.Queue.Name, job.Sanitize)
 	if len(renames) == 0 {
-		logf(log, job, slog.LevelInfo, "No files needed deobfuscation")
+		logf(ctx, log, job, slog.LevelInfo, "No files needed deobfuscation")
 	} else {
-		logf(log, job, slog.LevelInfo, "Deobfuscated %d file(s)", len(renames))
+		logf(ctx, log, job, slog.LevelInfo, "Deobfuscated %d file(s)", len(renames))
 		for _, r := range renames {
-			logf(log, job, slog.LevelInfo, "%s → %s", filepath.Base(r.From), filepath.Base(r.To))
+			logf(ctx, log, job, slog.LevelInfo, "%s → %s", filepath.Base(r.From), filepath.Base(r.To))
 		}
 	}
 
 	// Subtitle alignment: rename .srt files to match the dominant video.
 	subRenames, subErr := deobfuscate.Subtitles(log, job.DownloadDir)
 	if len(subRenames) > 0 {
-		logf(log, job, slog.LevelInfo, "Renamed %d subtitle file(s)", len(subRenames))
+		logf(ctx, log, job, slog.LevelInfo, "Renamed %d subtitle file(s)", len(subRenames))
 		for _, r := range subRenames {
-			logf(log, job, slog.LevelInfo, "%s → %s", filepath.Base(r.From), filepath.Base(r.To))
+			logf(ctx, log, job, slog.LevelInfo, "%s → %s", filepath.Base(r.From), filepath.Base(r.To))
 		}
 	}
 	// Prefer to report the primary deobfuscation error if both failed.
 	if err != nil {
-		logf(log, job, slog.LevelWarn, "Error: deobfuscation failed: %v", err)
+		logf(ctx, log, job, slog.LevelWarn, "Error: deobfuscation failed: %v", err)
 		return fmt.Errorf("deobfuscate: %w", err)
 	}
 	if subErr != nil {
-		logf(log, job, slog.LevelWarn, "Error: subtitle alignment failed: %v", subErr)
+		logf(ctx, log, job, slog.LevelWarn, "Error: subtitle alignment failed: %v", subErr)
 		return fmt.Errorf("deobfuscate subtitles: %w", subErr)
 	}
 	return nil

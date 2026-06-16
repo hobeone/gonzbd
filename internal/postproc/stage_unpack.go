@@ -198,7 +198,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	log = log.With("component", "postproc/unpack", "job", job.Queue.ID)
 
 	if !u.enabled() {
-		logf(log, job, slog.LevelInfo, "Unpack stage disabled — skipping")
+		logf(ctx, log, job, slog.LevelInfo, "Unpack stage disabled — skipping")
 		return nil
 	}
 
@@ -206,7 +206,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	// corrupt and unpacking would produce garbage. Matches Python's
 	// safe_postproc gate: "if all_ok: ... unpacker()".
 	if job.ParError {
-		logf(log, job, slog.LevelInfo, "Skipped: repair failed, archives may be corrupt")
+		logf(ctx, log, job, slog.LevelInfo, "Skipped: repair failed, archives may be corrupt")
 		return nil
 	}
 
@@ -220,7 +220,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	enableRecursive := u.EnableRecursive
 	u.mu.RUnlock()
 
-	opts = u.prepareOptions(log, job, opts, passwordFile)
+	opts = u.prepareOptions(ctx, log, job, opts, passwordFile)
 
 	// Track which archives have been processed across all passes to
 	// avoid re-extracting the same archive in a subsequent pass.
@@ -231,14 +231,14 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	// DirectUnpack: if any RAR sets were already extracted during download,
 	// mark their main archive files as processed so Scan → extract skips them.
 	// The archive parts are still recorded in allSuccessful for cleanup.
-	u.handleDirectUnpack(log, job, processed, &allSuccessful)
+	u.handleDirectUnpack(ctx, log, job, processed, &allSuccessful)
 
 	maxDepth := maxUnpackDepth
 	if !enableRecursive {
 		maxDepth = 1
 	}
 	for depth := range maxDepth {
-		logf(log, job, slog.LevelInfo, "Scanning for archives in %s (pass %d/%d)", job.DownloadDir, depth+1, maxUnpackDepth)
+		logf(ctx, log, job, slog.LevelInfo, "Scanning for archives in %s (pass %d/%d)", job.DownloadDir, depth+1, maxUnpackDepth)
 
 		archives, err := unpack.Scan(job.DownloadDir)
 		if err != nil {
@@ -251,14 +251,14 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 
 		if len(pending) == 0 {
 			if depth == 0 {
-				logf(log, job, slog.LevelInfo, "No archives found")
+				logf(ctx, log, job, slog.LevelInfo, "No archives found")
 			} else {
-				logf(log, job, slog.LevelInfo, "No new archives found (pass %d)", depth+1)
+				logf(ctx, log, job, slog.LevelInfo, "No new archives found (pass %d)", depth+1)
 			}
 			break
 		}
 
-		logf(log, job, slog.LevelInfo, "Found %d archive(s) (pass %d)", len(pending), depth+1)
+		logf(ctx, log, job, slog.LevelInfo, "Found %d archive(s) (pass %d)", len(pending), depth+1)
 
 		// Sort pending archives so file joins (SplitArchive) run first,
 		// then RAR extraction, then 7z. This matches SABnzbd's unpacker()
@@ -269,7 +269,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		})
 
 		for _, a := range pending {
-			logf(log, job, slog.LevelInfo, "  %s: %s (%d parts)", archiveTypeName(a.Type), a.Name, len(a.Parts))
+			logf(ctx, log, job, slog.LevelInfo, "  %s: %s (%d parts)", archiveTypeName(a.Type), a.Name, len(a.Parts))
 		}
 
 		extractedAny := false
@@ -278,10 +278,10 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 
 			res, err := u.extractArchive(ctx, log, job, a, opts, enableFileJoin)
 			if failErr := cmp.Or(err, res.Err); failErr != nil {
-				recordUnpackFailure(log, job, a, res, failErr, &firstErr)
+				recordUnpackFailure(ctx, log, job, a, res, failErr, &firstErr)
 				continue
 			}
-			logf(log, job, slog.LevelInfo, "Extracted %s successfully", a.Name)
+			logf(ctx, log, job, slog.LevelInfo, "Extracted %s successfully", a.Name)
 			// Record command line in stage log for successful extractions too.
 			if res.CommandLine != "" {
 				job.OutputLines = append(job.OutputLines,
@@ -294,7 +294,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			// contain paths like "../../../etc/crontab" that escape outDir.
 			if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
 				job.UnpackError = true
-				logf(log, job, slog.LevelWarn, "Error: containment violation after extracting %q: %v", a.Name, cErr)
+				logf(ctx, log, job, slog.LevelWarn, "Error: containment violation after extracting %q: %v", a.Name, cErr)
 				if firstErr == nil {
 					firstErr = fmt.Errorf("unpack %q: containment check: %w", a.Name, cErr)
 				}
@@ -319,16 +319,16 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// Delete source archive files after successful extraction.
-	u.cleanupArchives(log, job, allSuccessful)
+	u.cleanupArchives(ctx, log, job, allSuccessful)
 
 	// Apply permissions recursively after extraction.
-	u.applyPermissions(log, job, permissions, allSuccessful)
+	u.applyPermissions(ctx, log, job, permissions, allSuccessful)
 
 	return firstErr
 }
 
 // prepareOptions sets up passwords list, callbacks, and other extraction options.
-func (u *UnpackStage) prepareOptions(log *slog.Logger, job *Job, opts unpack.Options, passwordFile string) unpack.Options {
+func (u *UnpackStage) prepareOptions(ctx context.Context, log *slog.Logger, job *Job, opts unpack.Options, passwordFile string) unpack.Options {
 	opts.OnLine = func(line string) {
 		if job.OnOutput != nil {
 			job.OnOutput("unpack", line)
@@ -342,26 +342,26 @@ func (u *UnpackStage) prepareOptions(log *slog.Logger, job *Job, opts unpack.Opt
 	if passwordFile != "" {
 		filePws, err := cmdutil.LoadPasswordFile(passwordFile)
 		if err != nil {
-			logf(log, job, slog.LevelWarn, "password file: %v", err)
+			logf(ctx, log, job, slog.LevelWarn, "password file: %v", err)
 		} else {
 			opts.Passwords = append(opts.Passwords, filePws...)
 			if len(filePws) > 30 {
-				logf(log, job, slog.LevelWarn, "password file contains %d entries (>30); extraction may be slow", len(filePws))
+				logf(ctx, log, job, slog.LevelWarn, "password file contains %d entries (>30); extraction may be slow", len(filePws))
 			}
 		}
 	}
 	opts.Password = "" //nolint:staticcheck // SA1019: intentionally zeroed to force Passwords-list iteration
 	if len(opts.Passwords) > 0 {
-		logf(log, job, slog.LevelInfo, "Will try %d password(s) for encrypted archives", len(opts.Passwords))
+		logf(ctx, log, job, slog.LevelInfo, "Will try %d password(s) for encrypted archives", len(opts.Passwords))
 	}
 	return opts
 }
 
 // handleDirectUnpack marks DirectUnpack archive files as processed and appends them to allSuccessful.
-func (u *UnpackStage) handleDirectUnpack(log *slog.Logger, job *Job, processed map[string]bool, allSuccessful *[]unpack.Archive) {
+func (u *UnpackStage) handleDirectUnpack(ctx context.Context, log *slog.Logger, job *Job, processed map[string]bool, allSuccessful *[]unpack.Archive) {
 	if len(job.DirectUnpackSets) > 0 {
 		for setname, result := range job.DirectUnpackSets {
-			logf(log, job, slog.LevelInfo, "Set %q already extracted by DirectUnpack (%d files, %d parts)",
+			logf(ctx, log, job, slog.LevelInfo, "Set %q already extracted by DirectUnpack (%d files, %d parts)",
 				setname, len(result.ExtractedFiles), len(result.RarParts))
 			for _, part := range result.RarParts {
 				processed[part] = true
@@ -396,10 +396,10 @@ func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job 
 		return extractSevenZipArchive(ctx, log, job, a, opts)
 	case unpack.SplitArchive:
 		if !enableFileJoin {
-			logf(log, job, slog.LevelInfo, "Skipping file join (disabled): %s", filepath.Base(a.MainFile))
+			logf(ctx, log, job, slog.LevelInfo, "Skipping file join (disabled): %s", filepath.Base(a.MainFile))
 			return unpack.Result{}, nil
 		}
-		logf(log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
+		logf(ctx, log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
 		return unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
 	default:
 		return unpack.Result{}, nil
@@ -407,7 +407,7 @@ func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job 
 }
 
 // cleanupArchives deletes source archive files after successful extraction.
-func (u *UnpackStage) cleanupArchives(log *slog.Logger, job *Job, allSuccessful []unpack.Archive) {
+func (u *UnpackStage) cleanupArchives(ctx context.Context, log *slog.Logger, job *Job, allSuccessful []unpack.Archive) {
 	if u.cleanup.Load() && len(allSuccessful) > 0 {
 		var cleaned int
 		for _, a := range allSuccessful {
@@ -417,19 +417,19 @@ func (u *UnpackStage) cleanupArchives(log *slog.Logger, job *Job, allSuccessful 
 			}
 		}
 		if cleaned > 0 {
-			logf(log, job, slog.LevelInfo, "Cleaned up %d archive file(s)", cleaned)
+			logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d archive file(s)", cleaned)
 		}
 	}
 }
 
 // applyPermissions recursively applies target permissions to the extracted files.
-func (u *UnpackStage) applyPermissions(log *slog.Logger, job *Job, permissions string, allSuccessful []unpack.Archive) {
+func (u *UnpackStage) applyPermissions(ctx context.Context, log *slog.Logger, job *Job, permissions string, allSuccessful []unpack.Archive) {
 	if permissions != "" && len(allSuccessful) > 0 {
 		applied, permErr := applyPermissions(job.DownloadDir, permissions)
 		if permErr != nil {
-			logf(log, job, slog.LevelWarn, "permissions: %v", permErr)
+			logf(ctx, log, job, slog.LevelWarn, "permissions: %v", permErr)
 		} else if applied > 0 {
-			logf(log, job, slog.LevelInfo, "Applied permissions (%s) to %d file(s)/dir(s)", permissions, applied)
+			logf(ctx, log, job, slog.LevelInfo, "Applied permissions (%s) to %d file(s)/dir(s)", permissions, applied)
 		}
 	}
 }
@@ -450,7 +450,7 @@ func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack
 		}
 		if _, lookErr := exec.LookPath(unrarBin); lookErr != nil {
 			useGoRAR = true
-			logf(log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_unrar", unrarBin)
+			logf(ctx, log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_unrar", unrarBin)
 		}
 	}
 
@@ -462,12 +462,12 @@ func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack
 			}
 		}
 		unrarOpts.OnCommand = func(cmdLine string) {
-			logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+			logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
 		}
 		return unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
 	}
 
-	logf(log, job, slog.LevelInfo, "Using go_unrar for RAR (pure-Go)")
+	logf(ctx, log, job, slog.LevelInfo, "Using go_unrar for RAR (pure-Go)")
 	goOpts := opts
 	goOpts.OnLine = func(line string) {
 		if job.OnOutput != nil {
@@ -486,7 +486,7 @@ func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack
 			unrarBin = "unrar"
 		}
 		if _, lookErr := exec.LookPath(unrarBin); lookErr == nil {
-			logf(log, job, slog.LevelWarn,
+			logf(ctx, log, job, slog.LevelWarn,
 				"go_unrar failed (%v), retrying with external %s", goErr, unrarBin)
 			if job.OnOutput != nil {
 				job.OnOutput("go_unrar",
@@ -499,7 +499,7 @@ func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack
 				}
 			}
 			unrarOpts.OnCommand = func(cmdLine string) {
-				logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+				logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
 			}
 			return unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
 		}
@@ -524,7 +524,7 @@ func extractSevenZipArchive(ctx context.Context, log *slog.Logger, job *Job, a u
 		if _, lookErr := exec.LookPath(szBin); lookErr != nil {
 			if _, lookErr2 := exec.LookPath("7z"); lookErr2 != nil {
 				useGo7z = true
-				logf(log, job, slog.LevelInfo, "7z binary not found in PATH, falling back to go_7z")
+				logf(ctx, log, job, slog.LevelInfo, "7z binary not found in PATH, falling back to go_7z")
 			}
 		}
 	}
@@ -537,12 +537,12 @@ func extractSevenZipArchive(ctx context.Context, log *slog.Logger, job *Job, a u
 			}
 		}
 		szOpts.OnCommand = func(cmdLine string) {
-			logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+			logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
 		}
 		return unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
 	}
 
-	logf(log, job, slog.LevelInfo, "Using go_7z for 7-Zip (pure-Go)")
+	logf(ctx, log, job, slog.LevelInfo, "Using go_7z for 7-Zip (pure-Go)")
 	goOpts := opts
 	goOpts.OnLine = func(line string) {
 		if job.OnOutput != nil {
@@ -557,7 +557,7 @@ func extractSevenZipArchive(ctx context.Context, log *slog.Logger, job *Job, a u
 	if goErr := cmp.Or(err, res.Err); goErr != nil && opts.Go7zFallback {
 		szBin := find7zBin(opts.SevenZipCommand)
 		if szBin != "" {
-			logf(log, job, slog.LevelWarn,
+			logf(ctx, log, job, slog.LevelWarn,
 				"go_7z failed (%v), retrying with external %s", goErr, szBin)
 			if job.OnOutput != nil {
 				job.OnOutput("go_7z",
@@ -571,7 +571,7 @@ func extractSevenZipArchive(ctx context.Context, log *slog.Logger, job *Job, a u
 				}
 			}
 			szOpts.OnCommand = func(cmdLine string) {
-				logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+				logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
 			}
 			return unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
 		}
@@ -620,9 +620,9 @@ func applyPermissions(dir, permStr string) (int, error) {
 // recordUnpackFailure handles extraction failures by setting job error
 // state, logging the failure, capturing the first error, and appending
 // command/output lines for diagnostics.
-func recordUnpackFailure(log *slog.Logger, job *Job, a unpack.Archive, res unpack.Result, failErr error, firstErr *error) {
+func recordUnpackFailure(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, res unpack.Result, failErr error, firstErr *error) {
 	job.UnpackError = true
-	logf(log, job, slog.LevelWarn, "Error: extraction failed for %q (%s): %v", a.Name, archiveTypeName(a.Type), failErr)
+	logf(ctx, log, job, slog.LevelWarn, "Error: extraction failed for %q (%s): %v", a.Name, archiveTypeName(a.Type), failErr)
 	if *firstErr == nil {
 		*firstErr = fmt.Errorf("unpack %q: %w", a.Name, failErr)
 	}
