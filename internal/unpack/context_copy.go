@@ -33,6 +33,9 @@ func contextCopy(ctx context.Context, dst io.Writer, src io.Reader) (int64, erro
 		}
 		if readErr != nil {
 			if readErr == io.EOF {
+				if err := ctx.Err(); err != nil {
+					return written, err
+				}
 				return written, nil
 			}
 			return written, readErr

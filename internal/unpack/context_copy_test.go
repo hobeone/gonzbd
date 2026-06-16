@@ -121,3 +121,25 @@ func TestContextCopy_PeriodicCancellationCheck(t *testing.T) {
 		t.Errorf("expected to write exactly 262144 bytes, wrote %d", n)
 	}
 }
+
+type cancelReader struct {
+	cancel context.CancelFunc
+}
+
+func (r *cancelReader) Read(p []byte) (int, error) {
+	r.cancel()
+	return copy(p, "data"), io.EOF
+}
+
+func TestContextCopy_CancellationAtEOF(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	src := &cancelReader{cancel: cancel}
+	var dst bytes.Buffer
+
+	_, err := contextCopy(ctx, &dst, src)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
