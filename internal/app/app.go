@@ -57,40 +57,7 @@ type JobComplete struct {
 	JobID string
 }
 
-// PostProcComplete is emitted when post-processing finished.
-type PostProcComplete struct {
-	JobID string
-}
 
-// EventEmitter defines the interface for broadcasting real-time events.
-type EventEmitter interface {
-	Broadcast(event Event)
-}
-
-// Event represents a real-time notification sent to the UI.
-type Event struct {
-	Type          string `json:"event"`
-	Speed         int64  `json:"speed,omitempty"`
-	Remaining     int64  `json:"remaining,omitempty"`
-	SpeedLimit    int64  `json:"speed_limit"`
-	BandwidthMax  int64  `json:"bandwidth_max"`
-	BandwidthPerc int    `json:"bandwidth_perc"`
-	// NzoID is set on per-job events (currently job_finalized) so clients
-	// can target a specific row without a full refetch.
-	NzoID string `json:"nzo_id,omitempty"`
-	Tool  string `json:"tool,omitempty"`  // subprocess tool name (par2, unrar, 7z, script)
-	Line  string `json:"line,omitempty"`  // single output line from subprocess
-	Stage string `json:"stage,omitempty"` // pipeline stage name (repair, unpack)
-	// Servers is populated on "metrics" events with per-server
-	// connection snapshots so the UI can render the server status
-	// panel without a separate HTTP poll.
-	Servers []downloader.ServerSnapshot `json:"servers,omitempty"`
-}
-
-type dummyEmitter struct{}
-
-func (d dummyEmitter) Broadcast(_ Event) {
-}
 
 // Downloader defines the interface for the Usenet article downloader.
 type Downloader interface {
@@ -164,16 +131,7 @@ type Application struct {
 	activeDU atomic.Int32
 }
 
-// SetEmitter injects a broadcaster for real-time events.
-func (app *Application) SetEmitter(e EventEmitter) {
-	app.mu.Lock()
-	defer app.mu.Unlock()
-	if e == nil {
-		app.emitter = dummyEmitter{}
-		return
-	}
-	app.emitter = e
-}
+
 
 // SetNotifier injects a notification dispatcher for lifecycle events.
 func (app *Application) SetNotifier(d *notifier.Dispatcher) {
@@ -721,34 +679,7 @@ func (app *Application) Start(ctx context.Context) error {
 	return nil
 }
 
-func (app *Application) runMetricsPush(ctx context.Context) {
-	ticker := time.NewTicker(1000 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Trigger a table refresh only while actively downloading so
-			// individual job percentages update, but avoid pointless
-			// refreshes when idle or paused.
-			remaining := app.queue.TotalRemainingBytes()
-			speed := app.downloader.Speed()
-			app.emitter.Broadcast(Event{
-				Type:          "metrics",
-				Speed:         int64(speed),
-				Remaining:     remaining,
-				SpeedLimit:    app.downloader.SpeedLimit(),
-				BandwidthMax:  app.bandwidthMax.Load(),
-				BandwidthPerc: int(app.bandwidthPerc.Load()),
-				Servers:       app.downloader.ServerStatus(),
-			})
-			if speed > 0 {
-				app.emitter.Broadcast(Event{Type: "queue_updated"})
-			}
-		}
-	}
-}
+
 
 // Shutdown stops the downloader, post-processor, and assembler, flushes the
 // cache, and persists the queue to disk. Safe to call multiple times.
