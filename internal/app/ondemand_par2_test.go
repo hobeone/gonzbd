@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -85,6 +86,105 @@ func TestPar2NeedsRecovery(t *testing.T) {
 		}
 		if got, _ := par2NeedsRecovery(dir, files, log); got {
 			t.Error("par2 protecting different files must NOT trigger recovery-volume download")
+		}
+	})
+}
+
+func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dir := t.TempDir()
+
+	q := queue.New()
+	app := &Application{
+		queue: q,
+		log:   log,
+	}
+	app.cfg.DownloadDir = dir
+
+	const jobID = "job-1"
+	job := &queue.Job{
+		ID:   jobID,
+		Name: "job-name",
+		Files: []queue.JobFile{
+			{Subject: "data.bin", AssembledCRC32: 0x1068AFA6, Bytes: 100},
+			{Subject: "data.vol000+01.par2", IsPar2Recovery: true, Deferred: true, Bytes: 100},
+		},
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("context cancelled returns false", func(t *testing.T) {
+		cancelledCtx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		snap := q.SnapshotJob(jobID)
+		if app.maybeReleaseRecoveryVolumes(cancelledCtx, jobID, snap) {
+			t.Error("maybeReleaseRecoveryVolumes must return false when context is cancelled")
+		}
+	})
+
+	t.Run("clean verification discards deferred par2", func(t *testing.T) {
+		dirClean := filepath.Join(dir, "job-name")
+		if err := os.MkdirAll(dirClean, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		copyFixturePar2(t, dirClean)
+
+		snap := q.SnapshotJob(jobID)
+		if app.maybeReleaseRecoveryVolumes(t.Context(), jobID, snap) {
+			t.Error("maybeReleaseRecoveryVolumes must return false when verification is clean")
+		}
+
+		// Verify that the deferred PAR2 files are removed from the queue.
+		snapAfter := q.SnapshotJob(jobID)
+		for _, f := range snapAfter.Files {
+			if f.IsPar2Recovery {
+				t.Error("deferred par2 recovery files were not discarded from the job")
+			}
+		}
+	})
+
+	t.Run("corrupt data undeferes recovery volumes", func(t *testing.T) {
+		// Create a new job with mismatched CRC.
+		const jobCorruptID = "job-corrupt"
+		jobCorrupt := &queue.Job{
+			ID:   jobCorruptID,
+			Name: "job-corrupt-name",
+			Files: []queue.JobFile{
+				{Subject: "data.bin", AssembledCRC32: 0xDEADBEEF, Bytes: 100},
+				{Subject: "data.vol000+01.par2", IsPar2Recovery: true, Deferred: true, Bytes: 100},
+			},
+		}
+		if err := q.Add(jobCorrupt); err != nil {
+			t.Fatal(err)
+		}
+
+		dirCorrupt := filepath.Join(dir, "job-corrupt-name")
+		if err := os.MkdirAll(dirCorrupt, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		copyFixturePar2(t, dirCorrupt)
+
+		snap := q.SnapshotJob(jobCorruptID)
+		app.emitter = dummyEmitter{}
+		if !app.maybeReleaseRecoveryVolumes(t.Context(), jobCorruptID, snap) {
+			t.Error("maybeReleaseRecoveryVolumes must return true when verification fails")
+		}
+
+		// Verify that the deferred recovery volume was undeferred.
+		snapAfter := q.SnapshotJob(jobCorruptID)
+		found := false
+		for _, f := range snapAfter.Files {
+			if f.IsPar2Recovery {
+				found = true
+				if f.Deferred {
+					t.Error("deferred recovery volume was not undeferred")
+				}
+			}
+		}
+		if !found {
+			t.Error("recovery volume disappeared from job")
 		}
 	})
 }
