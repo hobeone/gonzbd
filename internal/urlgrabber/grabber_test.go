@@ -1072,3 +1072,41 @@ func TestSelectAndValidateIP(t *testing.T) {
 		})
 	}
 }
+
+func TestSSRF_ObfuscatedEncodings(t *testing.T) {
+	// All of these must be blocked when returned by the resolver / dialed.
+	blockedIPs := []string{
+		"::ffff:127.0.0.1",         // IPv4-mapped IPv6 loopback
+		"::ffff:10.0.0.1",          // IPv4-mapped IPv6 private
+		"0:0:0:0:0:ffff:7f00:0001", // expanded v4-mapped loopback
+		"::1",                      // IPv6 loopback
+		"fc00::1",                  // IPv6 ULA (private)
+		"100.64.0.1",               // CGNAT
+		"0.0.0.0",                  // unspecified
+	}
+
+	for _, host := range blockedIPs {
+		t.Run(host, func(t *testing.T) {
+			_, err := selectAndValidateIP([]string{host}, false)
+			if err == nil {
+				t.Errorf("expected IP %s to be blocked, but selectAndValidateIP returned no error", host)
+			}
+		})
+	}
+}
+
+func TestFetch_ObfuscatedHostnamesRejected(t *testing.T) {
+	grabber := New(Config{AllowPrivateIPs: false}, &MockHandler{})
+
+	for _, host := range []string{
+		"http://2130706433/test.nzb",
+		"http://0177.0.0.1/test.nzb",
+	} {
+		t.Run(host, func(t *testing.T) {
+			_, err := grabber.Fetch(t.Context(), host, types.FetchOptions{})
+			if err == nil {
+				t.Errorf("expected obfuscated hostname %q to be rejected, got nil error", host)
+			}
+		})
+	}
+}
