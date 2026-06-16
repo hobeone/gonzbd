@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -242,4 +244,90 @@ func TestAddCandidateFiles_SkipsPar2Files(t *testing.T) {
 	if nonPar2 == 0 {
 		t.Errorf("fixture dir has no non-par2 files; fixture layout may have changed")
 	}
+}
+
+// TestGoVerify_ConcurrentOnLine asserts that the onLine callback passed to
+// GoVerify does not cause a data race when called concurrently.
+func TestGoVerify_ConcurrentOnLine(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+
+	var allLines []string
+	_, err := GoVerify(context.Background(), discardLogger(), mainFile, dir, func(line string) {
+		allLines = append(allLines, line)
+	})
+	if err != nil {
+		t.Fatalf("GoVerify: %v", err)
+	}
+	if len(allLines) == 0 {
+		t.Error("expected onLine to be called during GoVerify")
+	}
+}
+
+// TestGoVerify_DamagedData verifies that when GoVerify runs on damaged data,
+// progress updates containing "Verifying..." are emitted.
+func TestGoVerify_DamagedData(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+
+	// Damage the data file.
+	dataFile := filepath.Join(dir, "data.bin")
+	if err := os.WriteFile(dataFile, []byte("damaged garbage"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var progressLines int
+	_, err := GoVerify(context.Background(), discardLogger(), mainFile, dir, func(line string) {
+		if strings.Contains(line, "Verifying...") {
+			progressLines++
+		}
+	})
+	if err != nil {
+		t.Fatalf("GoVerify: %v", err)
+	}
+	if progressLines == 0 {
+		t.Error("expected onLine to be called with progress updates containing 'Verifying...' during GoVerify on damaged data")
+	}
+}
+
+// TestGoRepair_ConcurrentOnLine asserts that the onLine callback passed to
+// GoRepair does not cause a data race when called concurrently.
+func TestGoRepair_ConcurrentOnLine(t *testing.T) {
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+
+	var lines []string
+	_, err := GoRepair(context.Background(), discardLogger(), mainFile, dir, func(line string) {
+		lines = append(lines, line)
+	})
+	if err != nil {
+		t.Fatalf("GoRepair: %v", err)
+	}
+}
+
+// TestGoPar2_LoggerConcurrentOnLine asserts that logging concurrently to a logger
+// wrapped with newPar2UILogger does not race on the onLine callback.
+func TestGoPar2_LoggerConcurrentOnLine(t *testing.T) {
+	var mu sync.Mutex
+	var lines []string
+	base := discardLogger()
+	logger := newPar2UILogger(base, func(line string) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, line)
+	})
+
+	const numGoroutines = 10
+	const logsPerGoroutine = 50
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+	for range numGoroutines {
+		go func() {
+			defer wg.Done()
+			for range logsPerGoroutine {
+				logger.Info("log message")
+			}
+		}()
+	}
+	wg.Wait()
 }

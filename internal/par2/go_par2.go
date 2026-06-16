@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	par2engine "github.com/hobeone/par2engine/par2"
 )
@@ -73,10 +74,20 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 		}
 	}()
 
+	var mu sync.Mutex
+	var safeOnLine func(string)
+	if onLine != nil {
+		safeOnLine = func(line string) {
+			mu.Lock()
+			defer mu.Unlock()
+			onLine(line)
+		}
+	}
+
 	d, err := newDecoderForDir(ctx, log, parfile, candidateDir,
 		func(msg string) { log.Warn("go_par2: "+msg, "dir", candidateDir) },
 		func(msg string) { log.Info("go_par2: "+msg, "dir", candidateDir) },
-		onLine,
+		safeOnLine,
 	)
 	if err != nil {
 		res.Status = StatusInvalidPar2
@@ -86,8 +97,8 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 
 	var verifyProgress chan par2engine.Progress
 	var verifyDone chan struct{}
-	if onLine != nil {
-		verifyProgress, verifyDone = monitorProgress("Verifying", onLine)
+	if safeOnLine != nil {
+		verifyProgress, verifyDone = monitorProgress("Verifying", safeOnLine)
 	}
 
 	err = d.VerifyScans(ctx, verifyProgress)
@@ -108,19 +119,19 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 	switch {
 	case !counts.RepairNeeded():
 		res.Status = StatusAllFilesOK
-		if onLine != nil {
-			onLine("[go_par2] All files are correct")
+		if safeOnLine != nil {
+			safeOnLine("[go_par2] All files are correct")
 		}
 	case counts.RepairPossible():
 		res.Status = StatusRepairPossible
-		if onLine != nil {
-			onLine(fmt.Sprintf("[go_par2] Repair needed: %d blocks missing, %d parity available",
+		if safeOnLine != nil {
+			safeOnLine(fmt.Sprintf("[go_par2] Repair needed: %d blocks missing, %d parity available",
 				counts.UnusableDataShardCount, counts.UsableParityShardCount))
 		}
 	default:
 		res.Status = StatusRepairNotPossible
-		if onLine != nil {
-			onLine(fmt.Sprintf("[go_par2] Repair not possible: need %d more recovery blocks",
+		if safeOnLine != nil {
+			safeOnLine(fmt.Sprintf("[go_par2] Repair not possible: need %d more recovery blocks",
 				counts.BlocksNeeded()))
 		}
 	}
@@ -142,8 +153,11 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 		}
 	}()
 
+	var mu sync.Mutex
 	var output strings.Builder
 	accumulate := func(line string) {
+		mu.Lock()
+		defer mu.Unlock()
 		output.WriteString(line)
 		output.WriteString("\n")
 		if onLine != nil {
