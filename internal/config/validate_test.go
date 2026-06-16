@@ -423,3 +423,23 @@ func TestNamesHelpersDirect(t *testing.T) {
 		t.Errorf("categoryNames = %v", got)
 	}
 }
+
+func TestDownloadConfig_InvalidCleanupListRegex(t *testing.T) {
+	t.Parallel()
+	d := DownloadConfig{
+		BandwidthMax:  100,
+		BandwidthPerc: 50,
+		MaxArtTries:   3,
+		CleanupList:   []string{"[a-z", "valid-regex"}, // [a-z is invalid (missing closing bracket)
+	}
+	err := d.validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid cleanup_list regex, got nil")
+	}
+	if !strings.Contains(err.Error(), "cleanup_list") {
+		t.Errorf("expected error to mention 'cleanup_list', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "error parsing regexp") {
+		t.Errorf("expected error to contain regexp compilation error message, got: %v", err)
+	}
+}

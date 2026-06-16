@@ -169,6 +169,9 @@ func (d *DownloadConfig) validate() error {
 	if err := nonNegative("propagation_delay", d.PropagationDelay); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validateCleanupList(d.CleanupList); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -213,6 +216,17 @@ func validateExtraParams(field, s string) error {
 		}
 	}
 	return nil
+}
+
+// validateCleanupList checks that every pattern in the cleanup list is a valid regular expression.
+func validateCleanupList(patterns []string) error {
+	var errs []error
+	for i, pat := range patterns {
+		if _, err := regexp.Compile(pat); err != nil {
+			errs = append(errs, fmt.Errorf("cleanup_list[%d] (%q): %w", i, pat, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (s *ServerConfig) validate() error {
