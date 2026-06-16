@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -206,16 +207,18 @@ func NewTestAppSeparateDirs(t *testing.T, mockAddr string, opts AppTestOpts) (a 
 	}
 
 	cfg := buildAppConfig(mockAddr, downloadDir)
-	cfg.CompleteDir = completeDir
-	cfg.AdminDir = adminDir
-	cfg.EnableUnrar = opts.EnableUnrar
-	cfg.Enable7zip = opts.Enable7zip
-	cfg.FolderRename = opts.FolderRename
-	cfg.FlatUnpack = opts.FlatUnpack
-	cfg.Nice = opts.Nice
-	if opts.Par2Command != "" {
-		cfg.Par2Command = opts.Par2Command
-	}
+	cfg.With(func(c *config.Config) {
+		c.General.CompleteDir = completeDir
+		c.General.AdminDir = adminDir
+		c.PostProc.EnableUnrar = opts.EnableUnrar
+		c.PostProc.Enable7zip = opts.Enable7zip
+		c.PostProc.FolderRename = opts.FolderRename
+		c.PostProc.FlatUnpack = opts.FlatUnpack
+		c.PostProc.Nice = opts.Nice
+		if opts.Par2Command != "" {
+			c.PostProc.Par2Command = opts.Par2Command
+		}
+	})
 
 	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	if err != nil {

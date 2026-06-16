@@ -155,18 +155,22 @@ func RegisterArticles(srv *mocknntp.Server, files []TestFile) {
 
 // buildAppConfig creates an app.Config pointing at the given mock NNTP address
 // and download directory.
-func buildAppConfig(mockAddr, downloadDir string) app.Config {
+func buildAppConfig(mockAddr, downloadDir string) *config.Config {
 	host := mockAddr
 	port := 119
 	if idx := strings.LastIndex(mockAddr, ":"); idx >= 0 {
 		host = mockAddr[:idx]
 		fmt.Sscanf(mockAddr[idx+1:], "%d", &port) //nolint:errcheck // best-effort port parse in tests
 	}
-	return app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: downloadDir,
-		AdminDir:    downloadDir,
-		Servers: []config.ServerConfig{
+	cfg, err := config.Default()
+	if err != nil {
+		panic(err)
+	}
+	cfg.With(func(c *config.Config) {
+		c.General.DownloadDir = downloadDir
+		c.General.CompleteDir = downloadDir
+		c.General.AdminDir = downloadDir
+		c.Servers = []config.ServerConfig{
 			{
 				Name:        "test",
 				Host:        host,
@@ -174,8 +178,9 @@ func buildAppConfig(mockAddr, downloadDir string) app.Config {
 				Connections: 2,
 				Enable:      true,
 			},
-		},
-	}
+		}
+	})
+	return cfg
 }
 
 // NewTestApp builds and starts an *app.Application pointed at the mock NNTP

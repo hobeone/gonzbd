@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/test/mocknntp"
 )
@@ -160,10 +161,14 @@ func TestPipeline_MissingTool_Graceful(t *testing.T) {
 	}
 
 	cfg := buildAppConfig(srv.Addr(), downloadDir)
-	cfg.CompleteDir = completeDir
-	cfg.AdminDir = adminDir
-	cfg.EnableUnrar = true
-	cfg.UnrarCommand = "/nonexistent/unrar-missing-binary"
+	cfg.With(func(c *config.Config) {
+		c.General.CompleteDir = completeDir
+		c.General.AdminDir = adminDir
+		c.PostProc.EnableUnrar = true
+		c.PostProc.UnrarCommand = "/bin/false"
+		c.PostProc.UseGoRAR = false
+		c.PostProc.GoRarFallback = false
+	})
 
 	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	if err != nil {

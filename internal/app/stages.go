@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"strconv"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/unpack"
@@ -25,18 +28,27 @@ type binaryProbe struct {
 // buildStages so tests can skip the probe by constructing a binaryProbe
 // directly. Also fixes the accidental double-detection of unrar that
 // previously occurred (once in New() and once in buildStages).
-func probeBinaries(ctx context.Context, cfg Config, log *slog.Logger) binaryProbe {
+func probeBinaries(ctx context.Context, cfg *config.Config, log *slog.Logger) binaryProbe {
 	ppLog := log.With("component", "postproc")
 
-	par2Caps := par2.DetectCapabilities(ctx, cfg.Par2Command)
-	if par2Caps.IsTurbo && !cfg.Par2Turbo {
+	var par2Command, unrarCommand, sevenzCommand string
+	var par2Turbo bool
+	cfg.WithRead(func(c *config.Config) {
+		par2Command = c.PostProc.Par2Command
+		par2Turbo = c.PostProc.Par2Turbo
+		unrarCommand = c.PostProc.UnrarCommand
+		sevenzCommand = c.PostProc.SevenzCommand
+	})
+
+	par2Caps := par2.DetectCapabilities(ctx, par2Command)
+	if par2Caps.IsTurbo && !par2Turbo {
 		ppLog.Info("Detected par2cmdline-turbo; consider enabling par2_turbo for faster repair")
 	}
 	if par2Caps.Version != "" {
 		ppLog.Info("Detected par2 binary", "version", par2Caps.Version)
 	}
 
-	unrarInfo := unpack.DetectUnrar(ctx, cfg.UnrarCommand)
+	unrarInfo := unpack.DetectUnrar(ctx, unrarCommand)
 	if unrarInfo.Available {
 		ppLog.Info("Detected unrar binary", "version", unrarInfo.VersionStr)
 		if unrarInfo.HasProblem {
@@ -46,7 +58,7 @@ func probeBinaries(ctx context.Context, cfg Config, log *slog.Logger) binaryProb
 		ppLog.Warn("unrar binary not found; RAR extraction will not be available")
 	}
 
-	sevenzInfo := unpack.DetectSevenZip(ctx, cfg.SevenzCommand)
+	sevenzInfo := unpack.DetectSevenZip(ctx, sevenzCommand)
 	if sevenzInfo.Available {
 		ppLog.Info("Detected 7z binary", "version", sevenzInfo.Version)
 	} else {
@@ -80,9 +92,57 @@ type builtStages struct {
 // Separated so the stage-wiring block doesn't live inside the New() constructor.
 // The returned builtStages holds pointers to individually-addressable stages
 // that can be toggled at runtime without restart.
-func buildStages(cfg Config, log *slog.Logger, probe binaryProbe) (builtStages, error) {
+func buildStages(cfg *config.Config, version string, log *slog.Logger, probe binaryProbe) (builtStages, error) {
 	ppLog := log.With("component", "postproc")
 	var stages []postproc.Stage
+
+	var enableQuickCheck, par2Turbo, useGoPar2, goPar2Fallback, enableRarCleanup bool
+	var enableFileJoin, enableRecursive, enableUnrar, enable7zip, ignoreSamples bool
+	var enableParCleanup, deobfuscateFilenames, folderRename, scriptCanFail bool
+	var par2Command, unrarCommand, sevenzCommand, permissions, passwordFile string
+	var scriptDir, completeDir, apiKey, listenAddr string
+	var nice, ionice, extraPar2Params, extraUnrarParams string
+	var cleanupExtensions []string
+	var flatUnpack, overwriteFiles, ignoreUnrarDates, useGoRAR, goRarFallback, useGo7z, go7zFallback bool
+
+	cfg.WithRead(func(c *config.Config) {
+		enableQuickCheck = c.PostProc.EnableQuickCheck
+		par2Command = c.PostProc.Par2Command
+		par2Turbo = c.PostProc.Par2Turbo
+		useGoPar2 = c.PostProc.UseGoPar2
+		goPar2Fallback = c.PostProc.GoPar2Fallback
+		enableRarCleanup = c.PostProc.EnableRarCleanup
+		enableFileJoin = c.PostProc.EnableFileJoin
+		enableRecursive = c.PostProc.EnableRecursive
+		enableUnrar = c.PostProc.EnableUnrar
+		enable7zip = c.PostProc.Enable7zip
+		ignoreSamples = c.PostProc.IgnoreSamples
+		enableParCleanup = c.PostProc.EnableParCleanup
+		deobfuscateFilenames = c.PostProc.DeobfuscateFilenames
+		folderRename = c.PostProc.FolderRename
+		scriptCanFail = c.PostProc.ScriptCanFail
+		unrarCommand = c.PostProc.UnrarCommand
+		sevenzCommand = c.PostProc.SevenzCommand
+		permissions = c.PostProc.Permissions
+		passwordFile = c.PostProc.PasswordFile
+		scriptDir = c.General.ScriptDir
+		completeDir = c.General.CompleteDir
+		nice = c.PostProc.Nice
+		ionice = c.PostProc.Ionice
+		extraPar2Params = c.PostProc.ExtraPar2Params
+		extraUnrarParams = c.PostProc.ExtraUnrarParams
+		cleanupExtensions = c.PostProc.CleanupExtensions
+		flatUnpack = c.PostProc.FlatUnpack
+		overwriteFiles = c.PostProc.OverwriteFiles
+		ignoreUnrarDates = c.PostProc.IgnoreUnrarDates
+		useGoRAR = c.PostProc.UseGoRAR
+		goRarFallback = c.PostProc.GoRarFallback
+		useGo7z = c.PostProc.UseGo7z
+		go7zFallback = c.PostProc.Go7zFallback
+
+		apiKey = c.General.APIKey
+		listenAddr = net.JoinHostPort(c.General.Host, strconv.Itoa(c.General.Port))
+	})
 
 	// Quick-check stage: relocate flat files into par2-expected subdirs
 	// and CRC-verify assembled files before repair runs. The stage is
@@ -90,18 +150,18 @@ func buildStages(cfg Config, log *slog.Logger, probe binaryProbe) (builtStages, 
 	// Application.SetQuickCheckEnabled without restarting.
 	qcStage := postproc.NewQuickCheckStage()
 	qcStage.Log = ppLog
-	qcStage.SetEnabled(!cfg.SkipQuickCheck)
+	qcStage.SetEnabled(enableQuickCheck)
 	stages = append(stages, qcStage)
 
 	// Build nice/ionice wrapping config for all external tool commands.
-	cmdCfg := cmdutil.CmdConfig{Nice: cfg.Nice, Ionice: cfg.Ionice}
+	cmdCfg := cmdutil.CmdConfig{Nice: nice, Ionice: ionice}
 
 	// Parse user-supplied extra params (validated: must start with '-').
-	extraPar2Args, err := cmdutil.ParseExtraParams(cfg.ExtraPar2Params)
+	extraPar2Args, err := cmdutil.ParseExtraParams(extraPar2Params)
 	if err != nil {
 		return builtStages{}, fmt.Errorf("extra_par2_params: %w", err)
 	}
-	extraUnrarArgs, err := cmdutil.ParseExtraParams(cfg.ExtraUnrarParams)
+	extraUnrarArgs, err := cmdutil.ParseExtraParams(extraUnrarParams)
 	if err != nil {
 		return builtStages{}, fmt.Errorf("extra_unrar_params: %w", err)
 	}
@@ -116,45 +176,45 @@ func buildStages(cfg Config, log *slog.Logger, probe binaryProbe) (builtStages, 
 	// Repair stage.
 	repairStage := postproc.NewRepairStageWith(
 		par2.RunOptions{
-			Command:   cfg.Par2Command,
-			Turbo:     cfg.Par2Turbo,
+			Command:   par2Command,
+			Turbo:     par2Turbo,
 			CmdCfg:    cmdCfg,
 			ExtraArgs: extraPar2Args,
 			Caps:      &probe.Par2Caps,
 		},
 	)
 	repairStage.Log = ppLog
-	repairStage.UseGoPar2 = cfg.UseGoPar2
-	repairStage.GoPar2Fallback = cfg.GoPar2Fallback
+	repairStage.UseGoPar2 = useGoPar2
+	repairStage.GoPar2Fallback = goPar2Fallback
 	stages = append(stages, repairStage)
 
 	// Unpack stage: always included in pipeline, enabled dynamically.
 	unpackStage := postproc.NewUnpackStageWith(unpack.Options{
-		UnrarCommand:     cfg.UnrarCommand,
-		SevenZipCommand:  cfg.SevenzCommand,
-		OverwriteFiles:   cfg.OverwriteFiles,
-		IgnoreUnrarDates: cfg.IgnoreUnrarDates,
-		OneFolder:        cfg.FlatUnpack,
-		UseGoRAR:         cfg.UseGoRAR,
-		GoRarFallback:    cfg.GoRarFallback,
-		UseGo7z:          cfg.UseGo7z,
-		Go7zFallback:     cfg.Go7zFallback,
+		UnrarCommand:     unrarCommand,
+		SevenZipCommand:  sevenzCommand,
+		OverwriteFiles:   overwriteFiles,
+		IgnoreUnrarDates: ignoreUnrarDates,
+		OneFolder:        flatUnpack,
+		UseGoRAR:         useGoRAR,
+		GoRarFallback:    goRarFallback,
+		UseGo7z:          useGo7z,
+		Go7zFallback:     go7zFallback,
 		HasProblem:       probe.UnrarInfo.HasProblem,
 		CmdCfg:           cmdCfg,
 		ExtraArgs:        extraUnrarArgs,
-	}, cfg.EnableRarCleanup)
-	unpackStage.Permissions = cfg.Permissions
-	unpackStage.PasswordFile = cfg.PasswordFile
-	unpackStage.EnableFileJoin = cfg.EnableFileJoin
-	unpackStage.EnableRecursive = cfg.EnableRecursive
+	}, enableRarCleanup)
+	unpackStage.Permissions = permissions
+	unpackStage.PasswordFile = passwordFile
+	unpackStage.EnableFileJoin = enableFileJoin
+	unpackStage.EnableRecursive = enableRecursive
 	unpackStage.Log = ppLog
-	unpackStage.SetEnabled(cfg.EnableUnrar || cfg.Enable7zip || cfg.EnableFileJoin)
+	unpackStage.SetEnabled(enableUnrar || enable7zip || enableFileJoin)
 	stages = append(stages, unpackStage)
 
 	// Sample cleanup runs after unpack so it sees both raw and extracted files.
 	sampleStage := postproc.NewSampleCleanupStage()
 	sampleStage.Log = ppLog
-	sampleStage.SetEnabled(cfg.IgnoreSamples)
+	sampleStage.SetEnabled(ignoreSamples)
 	stages = append(stages, sampleStage)
 
 	// Par2-based filename recovery: unconditional, runs after unpack.
@@ -166,18 +226,18 @@ func buildStages(cfg Config, log *slog.Logger, probe binaryProbe) (builtStages, 
 	// Par2 cleanup: delete .par2 files after everything that needs them
 	// has run (repair, unpack, par2 rename). Gated on both repair and
 	// unpack success so par2 files survive for debugging when things fail.
-	par2CleanupStage := postproc.NewPar2CleanupStage(cfg.EnableParCleanup)
+	par2CleanupStage := postproc.NewPar2CleanupStage(enableParCleanup)
 	par2CleanupStage.Log = ppLog
 	stages = append(stages, par2CleanupStage)
 
 	// Deobfuscation stage.
 	deobStage := postproc.NewDeobfuscateStage()
 	deobStage.Log = ppLog
-	deobStage.SetEnabled(cfg.DeobfuscateFilenames)
+	deobStage.SetEnabled(deobfuscateFilenames)
 	stages = append(stages, deobStage)
 
 	// Extension cleanup: delete files matching the user's cleanup list.
-	cleanupStage := postproc.NewExtensionCleanupStage(cfg.CleanupExtensions)
+	cleanupStage := postproc.NewExtensionCleanupStage(cleanupExtensions)
 	cleanupStage.Log = ppLog
 	stages = append(stages, cleanupStage)
 
@@ -185,7 +245,7 @@ func buildStages(cfg Config, log *slog.Logger, probe binaryProbe) (builtStages, 
 	// Must run BEFORE script so scripts receive the final directory path.
 	finalizeStage := postproc.NewFinalizeStage()
 	finalizeStage.Log = ppLog
-	finalizeStage.SetFolderRename(cfg.FolderRename)
+	finalizeStage.SetFolderRename(folderRename)
 	stages = append(stages, finalizeStage)
 
 	// Cleanup: remove admin sidecar data (__ADMIN__ dir) from the job dir.
@@ -196,11 +256,11 @@ func buildStages(cfg Config, log *slog.Logger, probe binaryProbe) (builtStages, 
 	// Script stage: runs AFTER finalize so job.DownloadDir points to the
 	// final complete_dir, matching SABnzbd's $1 convention.
 	scriptStage := postproc.NewScriptStage(
-		cfg.ScriptDir, cfg.CompleteDir,
-		cfg.Version, cfg.APIKey, cfg.ListenAddr,
+		scriptDir, completeDir,
+		version, apiKey, listenAddr,
 	)
 	scriptStage.Log = ppLog
-	scriptStage.SetScriptCanFail(cfg.ScriptCanFail)
+	scriptStage.SetScriptCanFail(scriptCanFail)
 	stages = append(stages, scriptStage)
 
 	return builtStages{

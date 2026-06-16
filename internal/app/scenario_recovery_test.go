@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
@@ -67,16 +66,12 @@ func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	repo := history.NewRepository(db)
 
-	cfg := app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: completeDir,
-		AdminDir:    adminDir,
-		// The job is already complete; the downloader should never
-		// actually be asked to fetch anything. Provide a scripted
-		// server purely to satisfy app.New's at-least-one-server
-		// requirement.
-		Servers: []config.ServerConfig{nntptest.New(t).ServerConfig("recovery", 1)},
-	}
+	cfg := testConfig(
+		downloadDir,
+		completeDir,
+		adminDir,
+		nntptest.New(t).ServerConfig("recovery", 1),
+	)
 
 	a, err := app.New(cfg, repo, app.WithPostProcStages([]postproc.Stage{noOpStage{}}))
 	if err != nil {
@@ -188,12 +183,12 @@ func TestRecovery_DuplicateJobInHistory(t *testing.T) {
 		t.Fatalf("repo.Add: %v", err)
 	}
 
-	cfg := app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: completeDir,
-		AdminDir:    adminDir,
-		Servers:     []config.ServerConfig{nntptest.New(t).ServerConfig("recovery-dup", 1)},
-	}
+	cfg := testConfig(
+		downloadDir,
+		completeDir,
+		adminDir,
+		nntptest.New(t).ServerConfig("recovery-dup", 1),
+	)
 
 	a, err := app.New(cfg, repo)
 	if err != nil {

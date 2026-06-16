@@ -173,6 +173,18 @@ func TestBroadcaster_Handle(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusInternalError, "done")
 
+	// Wait for client to be registered in broadcaster.
+	ctxPoll, cancelPoll := context.WithTimeout(ctx, 2*time.Second)
+	for b.NumClients() == 0 {
+		select {
+		case <-ctxPoll.Done():
+			cancelPoll()
+			t.Fatal("timeout waiting for client registration in broadcaster")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancelPoll()
+
 	// Broadcast an event
 	b.Broadcast(Event{Type: "ws_test", Speed: 100})
 
@@ -211,8 +223,17 @@ func TestBroadcaster_HandleClientDisconnect(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 	}
 
-	// Wait a bit for connection to be registered
-	time.Sleep(10 * time.Millisecond)
+	// Wait for connection to be registered.
+	ctxPoll, cancelPoll := context.WithTimeout(ctx, 2*time.Second)
+	for b.NumClients() == 0 {
+		select {
+		case <-ctxPoll.Done():
+			cancelPoll()
+			t.Fatal("timeout waiting for client registration")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancelPoll()
 
 	b.mu.RLock()
 	clientCount := len(b.clients)
@@ -224,17 +245,21 @@ func TestBroadcaster_HandleClientDisconnect(t *testing.T) {
 	// Close from client side
 	_ = conn.Close(websocket.StatusNormalClosure, "done")
 
-	// Wait for handler to detect disconnect and clean up
-	for range 10 {
-		time.Sleep(10 * time.Millisecond)
-		b.mu.RLock()
-		clientCount = len(b.clients)
-		b.mu.RUnlock()
-		if clientCount == 0 {
-			break
+	// Wait for handler to detect disconnect and clean up.
+	ctxPoll2, cancelPoll2 := context.WithTimeout(ctx, 2*time.Second)
+	for b.NumClients() > 0 {
+		select {
+		case <-ctxPoll2.Done():
+			cancelPoll2()
+			t.Fatal("timeout waiting for client disconnect cleanup")
+		case <-time.After(5 * time.Millisecond):
 		}
 	}
+	cancelPoll2()
 
+	b.mu.RLock()
+	clientCount = len(b.clients)
+	b.mu.RUnlock()
 	if clientCount != 0 {
 		t.Error("expected client to be removed from broadcaster after disconnect")
 	}

@@ -27,20 +27,19 @@ func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, 
 	// leaves a clean queue for checkpoint assertions.
 	mock := startMockNNTP(t, map[string][]byte{})
 
-	cfg := app.Config{
-		DownloadDir:        downloadDir,
-		CompleteDir:        completeDir,
-		AdminDir:           adminDir,
-		CheckpointInterval: interval,
-		Servers: []config.ServerConfig{{
+	cfg := testConfig(
+		downloadDir,
+		completeDir,
+		adminDir,
+		config.ServerConfig{
 			Name:   "mock",
 			Host:   mock.host,
 			Port:   mock.port,
 			Enable: true,
-		}},
-	}
+		},
+	)
 
-	application, err := app.New(cfg, nil)
+	application, err := app.New(cfg, nil, app.WithCheckpointInterval(interval))
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}

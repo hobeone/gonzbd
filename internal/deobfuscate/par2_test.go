@@ -223,3 +223,37 @@ func TestDeobfuscate_Par2RenameError(t *testing.T) {
 		t.Error("expected a warning log to be recorded when Par2Rename failed")
 	}
 }
+
+func TestPar2Rename_InvalidPar2File(t *testing.T) {
+	tmpDir := t.TempDir()
+	jobDir := filepath.Join(tmpDir, "job_folder")
+	if err := os.MkdirAll(jobDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Create an obfuscated file
+	fileData := []byte("this is more than 16kb of data " + string(make([]byte, 20000)))
+	obfPath := filepath.Join(jobDir, "abcdef1234567890.mkv")
+	if err := os.WriteFile(obfPath, fileData, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Create an invalid par2 file that triggers a parsing error (invalid packet length)
+	invalidPar2Path := filepath.Join(jobDir, "invalid.par2")
+	invalidContent := make([]byte, 64)
+	copy(invalidContent[0:8], "PAR2\x00PKT\x00")
+	// Set packet length (bytes 8-16) to 1 (which is < 64)
+	invalidContent[8] = 1
+	if err := os.WriteFile(invalidPar2Path, invalidContent, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Run Par2Rename. It should succeed but not rename anything because the par2 is invalid.
+	renames, err := Par2Rename(context.Background(), slog.Default(), jobDir, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("Par2Rename: %v", err)
+	}
+	if len(renames) != 0 {
+		t.Errorf("len(renames) = %d; want 0", len(renames))
+	}
+}

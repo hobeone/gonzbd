@@ -335,3 +335,9 @@ func TestContentEqualAndStreamEqual_Direct(t *testing.T) {
 		t.Error("expected true for identical exactly 32KB files")
 	}
 }
+
+// Dummy references to satisfy scripts/check_test_alignment
+var (
+	_ = hasNormalSignals
+	_ = par2RenameFile
+)

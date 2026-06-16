@@ -40,79 +40,7 @@ var ErrAlreadyStarted = errors.New("app: already started")
 
 const defaultCheckpointInterval = 30 * time.Second
 
-// Config is the minimal configuration required to construct an Application.
-type Config struct {
-	DownloadDir        string
-	CompleteDir        string
-	AdminDir           string
-	WriteCacheBytes    int64
-	Servers            []config.ServerConfig
-	Categories         []config.CategoryConfig
-	CheckpointInterval time.Duration
-	Sanitize           fsutil.SanitizeOptions
 
-	// Download tuning.
-	BandwidthMax     int64 // bytes/sec; 0 = unlimited
-	BandwidthPerc    int   // 0-100; percentage of BandwidthMax
-	MinFreeSpace     int64 // bytes; 0 = disabled
-	MaxArtTries      int   // per-article retry cap across all servers
-	MaxArtOpt        int   // per-article retry cap on optional servers
-	TopOnly          bool  // restrict dispatch to highest-priority server
-	NoPenalties      bool  // use short penalties for testing
-	PreCheck         bool  // STAT before BODY
-	PropagationDelay int   // minutes to hold new jobs before downloading
-
-	// PostProc pipeline configuration.
-	ScriptDir            string
-	DeobfuscateFilenames bool
-	IgnoreSamples        bool
-	EnableUnrar          bool
-	Enable7zip           bool
-	EnableFileJoin       bool
-	EnableRecursive      bool
-	EnableParCleanup     bool
-	EnableRarCleanup     bool
-	Par2Command          string
-	Par2Turbo            bool
-	UnrarCommand         string
-	SevenzCommand        string
-	IgnoreUnrarDates     bool
-	OverwriteFiles       bool
-	FlatUnpack           bool
-	UseGoRAR             bool
-	UseGo7z              bool
-	UseGoPar2            bool
-	GoRarFallback        bool
-	Go7zFallback         bool
-	GoPar2Fallback       bool
-	// SkipQuickCheck disables the CRC pre-verification pass before par2 repair.
-	// Zero value (false) preserves the existing behavior: quickcheck runs.
-	SkipQuickCheck    bool
-	CleanupExtensions []string
-	FolderRename      bool
-	Nice              string
-	Ionice            string
-	Permissions       string
-	PasswordFile      string
-	ExtraUnrarParams  string
-	ExtraPar2Params   string
-	ScriptCanFail     bool
-
-	// DirectUnpack enables extraction of RAR archives while the download
-	// is still in progress. Completed volumes are fed to the extractor
-	// as they arrive. Falls back to standard extraction
-	// on any error. Requires EnableUnrar=true.
-	DirectUnpack bool
-	// DirectUnpackThreads limits the number of concurrent DirectUnpack
-	// workers across all jobs. 0 means no limit (one per active job).
-	// Default 3 (matching SABnzbd).
-	DirectUnpackThreads int
-
-	// ScriptStage metadata injected into SAB_* env vars.
-	Version    string
-	APIKey     string
-	ListenAddr string
-}
 
 // FileComplete is emitted on Application.FileComplete() when a file is done.
 type FileComplete struct {
@@ -166,9 +94,10 @@ func (d dummyEmitter) Broadcast(_ Event) {
 
 // Application manages the download and post-processing pipeline.
 type Application struct {
-	log     *slog.Logger
+	version            string
+	checkpointInterval time.Duration
+	log                *slog.Logger
 	mu      sync.Mutex
-	cfg     Config
 	config  *config.Config
 	emitter EventEmitter
 	meter   *bpsmeter.Meter
@@ -235,17 +164,30 @@ func (app *Application) SetNotifier(d *notifier.Dispatcher) {
 }
 
 // New constructs an Application from cfg.
-func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*Application, error) {
-	if cfg.DownloadDir == "" {
+func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application)) (*Application, error) {
+	var dlDir, completeDir, adminDir string
+	var writeCacheBytes, minFreeBytes int64
+	var sanitize fsutil.SanitizeOptions
+	var serversConfig []config.ServerConfig
+	cfg.WithRead(func(c *config.Config) {
+		dlDir = c.General.DownloadDir
+		completeDir = c.General.CompleteDir
+		adminDir = c.General.AdminDir
+		writeCacheBytes = int64(c.Downloads.WriteCacheSize)
+		minFreeBytes = int64(c.Downloads.MinFreeSpace)
+		sanitize = c.Downloads.SanitizeOptions()
+		serversConfig = c.Servers
+	})
+
+	if dlDir == "" {
 		return nil, errors.New("app: DownloadDir is required")
 	}
-	if cfg.CompleteDir == "" {
+	if completeDir == "" {
 		return nil, errors.New("app: CompleteDir is required")
 	}
 
 	app := &Application{
-		cfg:                  cfg,
-		config:               convertConfig(cfg),
+		config:               cfg,
 		historyRepo:          repo,
 		emitter:              dummyEmitter{},
 		fileComplete:         make(chan FileComplete, 16),
@@ -266,7 +208,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		app.meter = bpsmeter.NewMeter(10*time.Second, time.Now)
 	}
 
-	queueStateDir := filepath.Join(cfg.AdminDir, "queue")
+	queueStateDir := filepath.Join(adminDir, "queue")
 	q, err := queue.Load(queueStateDir)
 	if err != nil {
 		return nil, fmt.Errorf("app: load queue: %w", err)
@@ -275,19 +217,19 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 
 	// Probe sparse file support on the download directory. Pre-allocation
 	// uses fallocate/ftruncate which benefits from sparse-capable filesystems.
-	if supported, msg := assembler.CheckSparseSupport(cfg.DownloadDir); !supported {
+	if supported, msg := assembler.CheckSparseSupport(dlDir); !supported {
 		log.Warn(msg)
 	} else {
 		log.Info(msg)
 	}
 
-	if cfg.WriteCacheBytes > 0 {
+	if writeCacheBytes > 0 {
 		log.Info("write coalescing enabled",
-			"cacheMiB", cfg.WriteCacheBytes/(1024*1024))
+			"cacheMiB", writeCacheBytes/(1024*1024))
 	}
 
-	servers := make([]*downloader.Server, len(cfg.Servers))
-	for i, sc := range cfg.Servers {
+	servers := make([]*downloader.Server, len(serversConfig))
+	for i, sc := range serversConfig {
 		servers[i] = downloader.NewServer(sc)
 	}
 	d := downloader.New(q, servers, app.meter, app.buildDownloaderOptions(), log)
@@ -315,8 +257,8 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		log:         log.With("component", "pipeline"),
 		queue:       q,
 		completions: d.Completions(),
-		downloadDir: cfg.DownloadDir,
-		sanitize:    cfg.Sanitize,
+		downloadDir: dlDir,
+		sanitize:    sanitize,
 		onJobHopeless: func(jobID string) {
 			snap := q.SnapshotJob(jobID)
 			if snap == nil {
@@ -336,7 +278,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	stages := app.customStages
 	if stages == nil {
 		probe := probeBinaries(context.Background(), cfg, log)
-		built, err := buildStages(cfg, log, probe)
+		built, err := buildStages(cfg, app.version, log, probe)
 		if err != nil {
 			return nil, err
 		}
@@ -373,8 +315,8 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 		FileInfo:           p.resolveFileInfo,
 		MarkArticlesDone:   q.MarkArticlesDone,
 		MarkArticlesFailed: q.MarkArticlesFailed,
-		MinFreeBytes:       cfg.MinFreeSpace,
-		WriteCacheBytes:    cfg.WriteCacheBytes,
+		MinFreeBytes:       minFreeBytes,
+		WriteCacheBytes:    writeCacheBytes,
 		OnLowDisk: func(dir string, freeBytes int64) {
 			app.downloader.Pause()
 			app.log.Warn("low disk space, downloads paused",
@@ -427,7 +369,11 @@ func (app *Application) finalizeJob(job *postproc.Job) {
 // events. Returns a non-nil error if persistence failed and the job was kept in
 // the queue for recovery (the error is already logged; callers can simply return).
 func (app *Application) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
-	histJobsDir := filepath.Join(app.cfg.AdminDir, "history", "jobs")
+	var adminDir string
+	app.config.WithRead(func(c *config.Config) {
+		adminDir = c.General.AdminDir
+	})
+	histJobsDir := filepath.Join(adminDir, "history", "jobs")
 	if err := os.MkdirAll(histJobsDir, 0o750); err != nil {
 		log.Warn("failed to create history jobs dir", "err", err)
 	}
@@ -502,7 +448,11 @@ func (app *Application) Speed() float64 {
 // AddJob validates, deduplicates, and enqueues a new download job. If force
 // is false and a duplicate is detected, the job is added in a paused state.
 func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
-	nzbDir := filepath.Join(app.cfg.AdminDir, "nzb")
+	var adminDir string
+	app.config.WithRead(func(c *config.Config) {
+		adminDir = c.General.AdminDir
+	})
+	nzbDir := filepath.Join(adminDir, "nzb")
 	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
 		return fmt.Errorf("app: mkdir admin nzb: %w", err)
 	}
@@ -543,9 +493,13 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	// Pick a name not already taken in the queue or on disk. queue.Add
 	// re-checks under its write lock (authoritative), so the small TOCTOU
 	// window here is limited to filesystem collisions which are benign.
-	downloadDir := app.cfg.DownloadDir
-	completeDir := app.cfg.CompleteDir
-	categories := app.cfg.Categories
+	var downloadDir, completeDir string
+	var categories []config.CategoryConfig
+	app.config.WithRead(func(c *config.Config) {
+		downloadDir = c.General.DownloadDir
+		completeDir = c.General.CompleteDir
+		categories = c.Categories
+	})
 	job.Name = queue.UniqueName(job.Name, func(name string) bool {
 		if app.queue.ExistsByName(name) {
 			return true
@@ -606,7 +560,11 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	}
 	app.pipeline.forgetJob(id)
 	if deleteFiles {
-		path := filepath.Join(app.cfg.DownloadDir, snap.Name)
+		var downloadDir string
+		app.config.WithRead(func(c *config.Config) {
+			downloadDir = c.General.DownloadDir
+		})
+		path := filepath.Join(downloadDir, snap.Name)
 		_ = os.RemoveAll(path)
 	}
 	app.emitter.Broadcast(Event{Type: "queue_updated"})
@@ -692,7 +650,7 @@ func (app *Application) Start(ctx context.Context) error {
 	app.pipeline.ctx = app.ctx // must be set before goroutine launch (setCompletions reads it)
 	app.wg.Go(func() { app.pipeline.run(app.ctx) })
 	app.wg.Go(func() { app.watchCompletions(app.ctx) })
-	interval := app.cfg.CheckpointInterval
+	interval := app.checkpointInterval
 	if interval <= 0 {
 		interval = defaultCheckpointInterval
 	}
@@ -809,7 +767,11 @@ func (app *Application) Shutdown() error {
 	if err := app.postProcessor.Stop(); err != nil {
 		errs = append(errs, fmt.Errorf("postprocessor stop: %w", err))
 	}
-	if err := app.queue.Save(filepath.Join(app.cfg.AdminDir, "queue")); err != nil {
+	var adminDir string
+	app.config.WithRead(func(c *config.Config) {
+		adminDir = c.General.AdminDir
+	})
+	if err := app.queue.Save(filepath.Join(adminDir, "queue")); err != nil {
 		errs = append(errs, fmt.Errorf("queue save: %w", err))
 	}
 	return errors.Join(errs...)
@@ -826,7 +788,11 @@ func (app *Application) runCheckpoint(ctx context.Context, interval time.Duratio
 			if !app.queue.IsDirty() {
 				continue
 			}
-			_ = app.queue.Save(filepath.Join(app.cfg.AdminDir, "queue"))
+			var adminDir string
+			app.config.WithRead(func(c *config.Config) {
+				adminDir = c.General.AdminDir
+			})
+			_ = app.queue.Save(filepath.Join(adminDir, "queue"))
 		}
 	}
 }
@@ -895,7 +861,11 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	if !snap.HasDeferredPar2() || snap.Par2Recovered {
 		return false
 	}
-	dir := filepath.Join(app.cfg.DownloadDir, snap.Name)
+	var downloadDir string
+	app.config.WithRead(func(c *config.Config) {
+		downloadDir = c.General.DownloadDir
+	})
+	dir := filepath.Join(downloadDir, snap.Name)
 	needsRecovery, reason := par2NeedsRecovery(dir, snap.Files, app.log)
 	if !needsRecovery {
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
@@ -1033,8 +1003,10 @@ func (app *Application) maybeDirectUnpack(fc FileComplete) {
 	du, exists := app.directUnpackers[fc.JobID]
 	if !exists {
 		var limit int
+		var downloadDirBase string
 		app.config.WithRead(func(c *config.Config) {
 			limit = c.PostProc.DirectUnpackThreads
+			downloadDirBase = c.General.DownloadDir
 		})
 		if limit > 0 && int(app.activeDU.Load()) >= limit {
 			app.mu.Unlock()
@@ -1042,7 +1014,7 @@ func (app *Application) maybeDirectUnpack(fc FileComplete) {
 				"job", fc.JobID, "active", app.activeDU.Load(), "limit", limit)
 			return
 		}
-		downloadDir := filepath.Join(app.cfg.DownloadDir, snap.Name)
+		downloadDir := filepath.Join(downloadDirBase, snap.Name)
 		du = directunpack.New(
 			app.log.With("component", "directunpack", "job", fc.JobID),
 			fc.JobID, downloadDir, downloadDir,
@@ -1064,11 +1036,17 @@ func (app *Application) maybeDirectUnpack(fc FileComplete) {
 
 // buildDirectUnpackOpts constructs DirectUnpack options from the app config.
 func (app *Application) buildDirectUnpackOpts() directunpack.Options {
+	var flatUnpack, overwriteFiles, ignoreUnrarDates bool
+	app.config.WithRead(func(c *config.Config) {
+		flatUnpack = c.PostProc.FlatUnpack
+		overwriteFiles = c.PostProc.OverwriteFiles
+		ignoreUnrarDates = c.PostProc.IgnoreUnrarDates
+	})
 	return directunpack.Options{
 		Password:         "", // per-job passwords are pre-checked; DU skips password jobs
-		OneFolder:        app.cfg.FlatUnpack,
-		OverwriteFiles:   app.cfg.OverwriteFiles,
-		IgnoreUnrarDates: app.cfg.IgnoreUnrarDates,
+		OneFolder:        flatUnpack,
+		OverwriteFiles:   overwriteFiles,
+		IgnoreUnrarDates: ignoreUnrarDates,
 	}
 }
 
@@ -1080,7 +1058,11 @@ func (app *Application) maybeFinalize(jobID, failMsg string) {
 		// next periodic checkpoint (~30s) would lose the flag, causing
 		// articles to be re-downloaded on restart instead of entering
 		// post-processing via crash recovery.
-		if saveErr := app.queue.Save(filepath.Join(app.cfg.AdminDir, "queue")); saveErr != nil {
+		var adminDir string
+		app.config.WithRead(func(c *config.Config) {
+			adminDir = c.General.AdminDir
+		})
+		if saveErr := app.queue.Save(filepath.Join(adminDir, "queue")); saveErr != nil {
 			app.log.Warn("forced queue save on job completion failed", "job", jobID, "err", saveErr)
 		}
 		// Snapshot the job to decouple the post-processor from the
@@ -1105,7 +1087,16 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// needs it, and keeping it around leaks memory across many downloads.
 	app.pipeline.forgetJob(job.ID)
 
-	downloadDir := filepath.Join(app.cfg.DownloadDir, job.Name)
+	var downloadDirBase, completeDir string
+	var categories []config.CategoryConfig
+	var sanitize fsutil.SanitizeOptions
+	app.config.WithRead(func(c *config.Config) {
+		downloadDirBase = c.General.DownloadDir
+		completeDir = c.General.CompleteDir
+		categories = c.Categories
+		sanitize = c.Downloads.SanitizeOptions()
+	})
+	downloadDir := filepath.Join(downloadDirBase, job.Name)
 
 	// Log the handoff from download → postproc. This is the "entering
 	// postproc" bookend; processJob logs the "exiting" bookend.
@@ -1143,19 +1134,20 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 		}
 	}
 
-	cat := config.FindCategory(app.cfg.Categories, job.Category)
+	cat := config.FindCategory(categories, job.Category)
 	catDir := cat.Dir
 	// P6: Category dir trailing '*' suppresses the per-job subfolder.
 	// Files go directly into the category directory ("flat layout").
 	// e.g. catDir="movies*" → complete_dir/movies/file.mkv
 	//      catDir="movies"  → complete_dir/movies/JobName/file.mkv
+	//      catDir="movies"  → complete_dir/movies/JobName/file.mkv
 	flatLayout := strings.HasSuffix(catDir, "*")
 	if flatLayout {
 		catDir = strings.TrimSuffix(catDir, "*")
 	}
-	finalDir := filepath.Join(app.cfg.CompleteDir, catDir, job.Name)
+	finalDir := filepath.Join(completeDir, catDir, job.Name)
 	if flatLayout {
-		finalDir = filepath.Join(app.cfg.CompleteDir, catDir)
+		finalDir = filepath.Join(completeDir, catDir)
 	}
 	// Collect DirectUnpack results (if any) before enqueuing post-processing.
 	// Wait() blocks until any in-progress extraction finishes.
@@ -1192,7 +1184,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 		Queue:                job,
 		DownloadDir:          downloadDir,
 		FinalDir:             finalDir,
-		Sanitize:             app.cfg.Sanitize,
+		Sanitize:             sanitize,
 		FailMsg:              failMsg,
 		DirectUnpackSets:     duResults,
 		DirectUnpackFailures: duFailures,
@@ -1404,9 +1396,9 @@ func (app *Application) SetPasswordFile(v string) {
 
 // SetEnableFileJoin enables or disables split file joining at runtime.
 func (app *Application) SetEnableFileJoin(v bool) {
-	app.mu.Lock()
-	app.cfg.EnableFileJoin = v
-	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.PostProc.EnableFileJoin = v
+	})
 	if app.unpackStage != nil {
 		app.unpackStage.SetEnableFileJoin(v)
 	}
@@ -1414,9 +1406,9 @@ func (app *Application) SetEnableFileJoin(v bool) {
 
 // SetEnableRecursive enables or disables recursive unpacking at runtime.
 func (app *Application) SetEnableRecursive(v bool) {
-	app.mu.Lock()
-	app.cfg.EnableRecursive = v
-	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.PostProc.EnableRecursive = v
+	})
 	if app.unpackStage != nil {
 		app.unpackStage.SetEnableRecursive(v)
 	}
@@ -1424,9 +1416,6 @@ func (app *Application) SetEnableRecursive(v bool) {
 
 // SetDirectUnpack enables or disables extraction of RAR archives while still downloading.
 func (app *Application) SetDirectUnpack(v bool) {
-	app.mu.Lock()
-	app.cfg.DirectUnpack = v
-	app.mu.Unlock()
 	app.config.With(func(c *config.Config) {
 		c.PostProc.DirectUnpack = v
 	})
@@ -1434,9 +1423,6 @@ func (app *Application) SetDirectUnpack(v bool) {
 
 // SetDirectUnpackThreads limits the number of concurrent DirectUnpack workers.
 func (app *Application) SetDirectUnpackThreads(v int) {
-	app.mu.Lock()
-	app.cfg.DirectUnpackThreads = v
-	app.mu.Unlock()
 	app.config.With(func(c *config.Config) {
 		c.PostProc.DirectUnpackThreads = v
 	})
@@ -1444,23 +1430,23 @@ func (app *Application) SetDirectUnpackThreads(v int) {
 
 // SetEnableUnrar enables or disables standard RAR unpacking at runtime.
 func (app *Application) SetEnableUnrar(v bool) {
-	app.mu.Lock()
-	app.cfg.EnableUnrar = v
-	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.PostProc.EnableUnrar = v
+	})
 }
 
 // SetEnable7zip enables or disables standard 7-Zip unpacking at runtime.
 func (app *Application) SetEnable7zip(v bool) {
-	app.mu.Lock()
-	app.cfg.Enable7zip = v
-	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.PostProc.Enable7zip = v
+	})
 }
 
 // SetPar2Turbo updates par2cmdline-turbo settings at runtime. Thread-safe.
 func (app *Application) SetPar2Turbo(v bool) {
-	app.mu.Lock()
-	app.cfg.Par2Turbo = v
-	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.PostProc.Par2Turbo = v
+	})
 	if app.repairStage != nil {
 		app.repairStage.SetPar2Turbo(v)
 	}
@@ -1468,9 +1454,9 @@ func (app *Application) SetPar2Turbo(v bool) {
 
 // SetIgnoreUnrarDates updates unrar modify timestamps options at runtime. Thread-safe.
 func (app *Application) SetIgnoreUnrarDates(v bool) {
-	app.mu.Lock()
-	app.cfg.IgnoreUnrarDates = v
-	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.PostProc.IgnoreUnrarDates = v
+	})
 	if app.unpackStage != nil {
 		app.unpackStage.SetIgnoreUnrarDates(v)
 	}
@@ -1479,16 +1465,19 @@ func (app *Application) SetIgnoreUnrarDates(v bool) {
 // SetSanitizeOptions updates the filename sanitization options used for new
 // jobs. Thread-safe; takes effect for the next enqueued job.
 func (app *Application) SetSanitizeOptions(opts fsutil.SanitizeOptions) {
-	app.mu.Lock()
-	app.cfg.Sanitize = opts
-	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.Downloads.ReplaceIllegalWith = opts.ReplaceIllegalWith
+		c.Downloads.ReplaceSpacesWith = opts.ReplaceSpacesWith
+		c.Downloads.StripDiacritics = opts.StripDiacritics
+		c.Downloads.CleanupList = opts.CleanupList
+	})
 }
 
 // SetMinFreeSpace updates the low-disk-space threshold. Thread-safe.
 func (app *Application) SetMinFreeSpace(bytes int64) {
-	app.mu.Lock()
-	app.cfg.MinFreeSpace = bytes
-	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.Downloads.MinFreeSpace = config.ByteSize(bytes)
+	})
 	if app.assembler != nil {
 		app.assembler.SetMinFreeBytes(bytes)
 	}
@@ -1497,33 +1486,33 @@ func (app *Application) SetMinFreeSpace(bytes int64) {
 // SetMaxArtTries updates per-article retry limit and related dispatch options.
 // Thread-safe; takes effect on the next dispatch pass.
 func (app *Application) SetMaxArtTries(v int) {
-	app.mu.Lock()
-	app.cfg.MaxArtTries = v
-	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.Downloads.MaxArtTries = v
+	})
 	app.pushDispatchOptions()
 }
 
 // SetMaxArtOpt updates the backup-server retry limit.
 func (app *Application) SetMaxArtOpt(v int) {
-	app.mu.Lock()
-	app.cfg.MaxArtOpt = v
-	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.Downloads.MaxArtOpt = v
+	})
 	app.pushDispatchOptions()
 }
 
 // SetTopOnly controls whether dispatch is restricted to the top-priority server.
 func (app *Application) SetTopOnly(v bool) {
-	app.mu.Lock()
-	app.cfg.TopOnly = v
-	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.Downloads.TopOnly = v
+	})
 	app.pushDispatchOptions()
 }
 
 // SetPropagationDelay updates the delay before new jobs start downloading.
 func (app *Application) SetPropagationDelay(minutes int) {
-	app.mu.Lock()
-	app.cfg.PropagationDelay = minutes
-	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.Downloads.PropagationDelay = minutes
+	})
 	app.pushDispatchOptions()
 }
 
@@ -1599,14 +1588,17 @@ func (app *Application) ReloadGeneralOptions(cfg *config.Config) {
 // and forwards them to the running downloader. Must not be called while
 // holding app.mu.
 func (app *Application) pushDispatchOptions() {
-	app.mu.Lock()
-	maxArtTries := app.cfg.MaxArtTries
-	maxArtOpt := app.cfg.MaxArtOpt
-	topOnly := app.cfg.TopOnly
-	propDelay := time.Duration(app.cfg.PropagationDelay) * time.Minute
-	app.mu.Unlock()
+	var maxArtTries, maxArtOpt int
+	var topOnly bool
+	var propDelay int
+	app.config.WithRead(func(c *config.Config) {
+		maxArtTries = c.Downloads.MaxArtTries
+		maxArtOpt = c.Downloads.MaxArtOpt
+		topOnly = c.Downloads.TopOnly
+		propDelay = c.Downloads.PropagationDelay
+	})
 	if app.downloader != nil {
-		app.downloader.SetDispatchOptions(maxArtTries, maxArtOpt, topOnly, propDelay)
+		app.downloader.SetDispatchOptions(maxArtTries, maxArtOpt, topOnly, time.Duration(propDelay)*time.Minute)
 	}
 }
 
@@ -1617,7 +1609,11 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	if err != nil {
 		return err
 	}
-	jobPath := filepath.Join(app.cfg.AdminDir, "history", "jobs", jobID+".json.gz")
+	var adminDir string
+	app.config.WithRead(func(c *config.Config) {
+		adminDir = c.General.AdminDir
+	})
+	jobPath := filepath.Join(adminDir, "history", "jobs", jobID+".json.gz")
 	job, err := queue.LoadJob(jobPath)
 	if err != nil {
 		return err
@@ -1697,13 +1693,24 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 // options are applied consistently.
 func (app *Application) buildDownloaderOptions() downloader.Options {
 	q := app.queue
+	var maxArtTries, maxArtOpt int
+	var topOnly, noPenalties, preCheck bool
+	var propDelay int
+	app.config.WithRead(func(c *config.Config) {
+		maxArtTries = c.Downloads.MaxArtTries
+		maxArtOpt = c.Downloads.MaxArtOpt
+		topOnly = c.Downloads.TopOnly
+		noPenalties = c.Downloads.NoPenalties
+		preCheck = c.Downloads.PreCheck
+		propDelay = c.Downloads.PropagationDelay
+	})
 	return downloader.Options{
-		MaxArtTries:      app.cfg.MaxArtTries,
-		MaxArtOpt:        app.cfg.MaxArtOpt,
-		TopOnly:          app.cfg.TopOnly,
-		NoPenalties:      app.cfg.NoPenalties,
-		PreCheck:         app.cfg.PreCheck,
-		PropagationDelay: time.Duration(app.cfg.PropagationDelay) * time.Minute,
+		MaxArtTries:      maxArtTries,
+		MaxArtOpt:        maxArtOpt,
+		TopOnly:          topOnly,
+		NoPenalties:      noPenalties,
+		PreCheck:         preCheck,
+		PropagationDelay: time.Duration(propDelay) * time.Minute,
 		OnJobHopeless: func(jobID string) {
 			snap := q.SnapshotJob(jobID)
 			if snap == nil {
@@ -1724,9 +1731,14 @@ func WithPostProcStages(stages []postproc.Stage) func(*Application) {
 	return func(a *Application) { a.customStages = stages }
 }
 
-// WithConfig returns an option that injects a pre-constructed *config.Config.
-func WithConfig(cfg *config.Config) func(*Application) {
-	return func(a *Application) { a.config = cfg }
+// WithVersion returns an option that sets the application build version.
+func WithVersion(v string) func(*Application) {
+	return func(a *Application) { a.version = v }
+}
+
+// WithCheckpointInterval returns an option that sets the queue persistence interval.
+func WithCheckpointInterval(d time.Duration) func(*Application) {
+	return func(a *Application) { a.checkpointInterval = d }
 }
 
 // SetSpeedLimit updates the download speed limit. bytesPerSec <= 0 means unlimited.
@@ -1754,7 +1766,9 @@ func (app *Application) SetBandwidthPerc(perc int) {
 func (app *Application) SetDownloadDir(dir string) {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	app.cfg.DownloadDir = dir
+	app.config.With(func(c *config.Config) {
+		c.General.DownloadDir = dir
+	})
 	if app.pipeline != nil {
 		app.pipeline.mu.Lock()
 		app.pipeline.downloadDir = dir
@@ -1769,7 +1783,9 @@ func (app *Application) SetDownloadDir(dir string) {
 func (app *Application) SetCompleteDir(dir string) {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	app.cfg.CompleteDir = dir
+	app.config.With(func(c *config.Config) {
+		c.General.CompleteDir = dir
+	})
 	app.log.Info("complete dir updated", "dir", dir)
 }
 
@@ -1877,53 +1893,4 @@ func writeGzFile(path string, data []byte) error {
 	})
 }
 
-func convertConfig(c Config) *config.Config {
-	cfg := &config.Config{}
-	cfg.With(func(o *config.Config) {
-		o.General.DownloadDir = c.DownloadDir
-		o.General.CompleteDir = c.CompleteDir
-		o.General.AdminDir = c.AdminDir
-		o.General.ScriptDir = c.ScriptDir
-		o.Downloads.WriteCacheSize = config.ByteSize(c.WriteCacheBytes)
-		o.Downloads.BandwidthMax = config.ByteSize(c.BandwidthMax)
-		o.Downloads.BandwidthPerc = config.Percent(c.BandwidthPerc)
-		o.Downloads.MinFreeSpace = config.ByteSize(c.MinFreeSpace)
-		o.Downloads.MaxArtTries = c.MaxArtTries
-		o.Downloads.MaxArtOpt = c.MaxArtOpt
-		o.Downloads.TopOnly = c.TopOnly
-		o.Downloads.NoPenalties = c.NoPenalties
-		o.Downloads.PreCheck = c.PreCheck
-		o.Downloads.PropagationDelay = c.PropagationDelay
-		o.Downloads.ReplaceIllegalWith = c.Sanitize.ReplaceIllegalWith
-		o.Downloads.ReplaceSpacesWith = c.Sanitize.ReplaceSpacesWith
-		o.Downloads.StripDiacritics = c.Sanitize.StripDiacritics
-		o.Downloads.CleanupList = c.Sanitize.CleanupList
 
-		o.PostProc.DeobfuscateFilenames = c.DeobfuscateFilenames
-		o.PostProc.IgnoreSamples = c.IgnoreSamples
-		o.PostProc.EnableUnrar = c.EnableUnrar
-		o.PostProc.Enable7zip = c.Enable7zip
-		o.PostProc.EnableFileJoin = c.EnableFileJoin
-		o.PostProc.EnableRecursive = c.EnableRecursive
-		o.PostProc.EnableParCleanup = c.EnableParCleanup
-		o.PostProc.EnableRarCleanup = c.EnableRarCleanup
-		o.PostProc.Par2Command = c.Par2Command
-		o.PostProc.Par2Turbo = c.Par2Turbo
-		o.PostProc.UnrarCommand = c.UnrarCommand
-		o.PostProc.SevenzCommand = c.SevenzCommand
-		o.PostProc.IgnoreUnrarDates = c.IgnoreUnrarDates
-		o.PostProc.OverwriteFiles = c.OverwriteFiles
-		o.PostProc.FlatUnpack = c.FlatUnpack
-		o.PostProc.UseGoRAR = c.UseGoRAR
-		o.PostProc.UseGo7z = c.UseGo7z
-		o.PostProc.UseGoPar2 = c.UseGoPar2
-		o.PostProc.GoRarFallback = c.GoRarFallback
-		o.PostProc.Go7zFallback = c.Go7zFallback
-		o.PostProc.GoPar2Fallback = c.GoPar2Fallback
-		o.PostProc.EnableQuickCheck = !c.SkipQuickCheck
-
-		o.Servers = c.Servers
-		o.Categories = c.Categories
-	})
-	return cfg
-}

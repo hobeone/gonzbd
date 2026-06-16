@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -18,9 +19,11 @@ import (
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -36,17 +39,17 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 	// No articles in mock, so they all fail
 	mock := startMockNNTP(t, map[string][]byte{})
 
-	appCfg := app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: completeDir,
-		AdminDir:    adminDir,
-		Servers: []config.ServerConfig{{
+	appCfg := testConfig(
+		downloadDir,
+		completeDir,
+		adminDir,
+		config.ServerConfig{
 			Name:   "mock",
 			Host:   mock.host,
 			Port:   mock.port,
 			Enable: true,
-		}},
-	}
+		},
+	)
 
 	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	repo := history.NewRepository(db)
@@ -129,19 +132,21 @@ func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 	}
 	mock := startMockNNTP(t, articles)
 
-	appCfg := app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: completeDir,
-		AdminDir:    adminDir,
-		EnableUnrar: true,
-		Enable7zip:  true,
-		Servers: []config.ServerConfig{{
+	appCfg := testConfig(
+		downloadDir,
+		completeDir,
+		adminDir,
+		config.ServerConfig{
 			Name:   "mock",
 			Host:   mock.host,
 			Port:   mock.port,
 			Enable: true,
-		}},
-	}
+		},
+	)
+	appCfg.With(func(c *config.Config) {
+		c.PostProc.EnableUnrar = true
+		c.PostProc.Enable7zip = true
+	})
 
 	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	repo := history.NewRepository(db)
@@ -222,17 +227,17 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 	}
 	mock := startMockNNTP(t, articles)
 
-	appCfg := app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: completeDir,
-		AdminDir:    adminDir,
-		Servers: []config.ServerConfig{{
+	appCfg := testConfig(
+		downloadDir,
+		completeDir,
+		adminDir,
+		config.ServerConfig{
 			Name:   "mock",
 			Host:   mock.host,
 			Port:   mock.port,
 			Enable: true,
-		}},
-	}
+		},
+	)
 
 	// 1. Start app, download job, check it moves to history and is removed from queue
 	{
@@ -360,17 +365,17 @@ func TestRetryHistoryJob(t *testing.T) {
 
 	mock := startMockNNTP(t, map[string][]byte{})
 
-	appCfg := app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: completeDir,
-		AdminDir:    adminDir,
-		Servers: []config.ServerConfig{{
+	appCfg := testConfig(
+		downloadDir,
+		completeDir,
+		adminDir,
+		config.ServerConfig{
 			Name:   "mock",
 			Host:   mock.host,
 			Port:   mock.port,
 			Enable: true,
-		}},
-	}
+		},
+	)
 
 	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	repo := history.NewRepository(db)
@@ -474,17 +479,17 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 
 	mock := startMockNNTP(t, map[string][]byte{})
 
-	appCfg := app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: completeDir,
-		AdminDir:    adminDir,
-		Servers: []config.ServerConfig{{
+	appCfg := testConfig(
+		downloadDir,
+		completeDir,
+		adminDir,
+		config.ServerConfig{
 			Name:   "mock",
 			Host:   mock.host,
 			Port:   mock.port,
 			Enable: true,
-		}},
-	}
+		},
+	)
 
 	// 1. Start app, add a job, and stop app (triggering save)
 	{
@@ -557,11 +562,11 @@ func TestFullDownloadLifecycle(t *testing.T) {
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
 
-	application, err := app.New(app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: completeDir,
-		AdminDir:    adminDir,
-		Servers: []config.ServerConfig{{
+	cfg := testConfig(
+		downloadDir,
+		completeDir,
+		adminDir,
+		config.ServerConfig{
 			Name:               "mock",
 			Host:               mock.host,
 			Port:               mock.port,
@@ -569,12 +574,15 @@ func TestFullDownloadLifecycle(t *testing.T) {
 			PipeliningRequests: 1,
 			Timeout:            5,
 			Enable:             true,
-		}},
-		Categories: []config.CategoryConfig{
+		},
+	)
+	cfg.With(func(c *config.Config) {
+		c.Categories = []config.CategoryConfig{
 			{Name: "Default", Dir: ""},
 			{Name: "movies", Dir: "Movies"},
-		},
-	}, nil)
+		}
+	})
+	application, err := app.New(cfg, nil)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
@@ -805,17 +813,17 @@ func TestStart_DoubleStartReturnsError(t *testing.T) {
 
 	mock := startMockNNTP(t, nil)
 
-	appCfg := app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: completeDir,
-		AdminDir:    adminDir,
-		Servers: []config.ServerConfig{{
+	appCfg := testConfig(
+		downloadDir,
+		completeDir,
+		adminDir,
+		config.ServerConfig{
 			Name:   "mock",
 			Host:   mock.host,
 			Port:   mock.port,
 			Enable: true,
-		}},
-	}
+		},
+	)
 
 	application, err := app.New(appCfg, nil)
 	if err != nil {
@@ -854,12 +862,11 @@ func TestStart_FailedStartResetsStartedFlag(t *testing.T) {
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
 
-	appCfg := app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: completeDir,
-		AdminDir:    adminDir,
-		// No servers — Start will reach the assembler step which is what we control.
-	}
+	appCfg := testConfig(
+		downloadDir,
+		completeDir,
+		adminDir,
+	)
 
 	application, err := app.New(appCfg, nil)
 	if err != nil {
@@ -930,12 +937,12 @@ func TestReloadDownloader_ServerChanges(t *testing.T) {
 		Enable: true,
 	}
 
-	appCfg := app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: completeDir,
-		AdminDir:    adminDir,
-		Servers:     []config.ServerConfig{cfg1},
-	}
+	appCfg := testConfig(
+		downloadDir,
+		completeDir,
+		adminDir,
+		cfg1,
+	)
 
 	application, err := app.New(appCfg, nil)
 	if err != nil {
@@ -967,19 +974,22 @@ func TestReloadDownloader_ServerChanges(t *testing.T) {
 }
 
 // TestReloadPostProcOptions verifies that ReloadPostProcOptions successfully
-// propagates hot-reloadable options like DirectUnpack to the application configuration.
 func TestReloadPostProcOptions(t *testing.T) {
 	tmpDir := t.TempDir()
-	appCfg := app.Config{
-		DownloadDir: filepath.Join(tmpDir, "incomplete"),
-		CompleteDir: filepath.Join(tmpDir, "complete"),
-	}
-	if err := os.MkdirAll(appCfg.DownloadDir, 0o750); err != nil {
+	dlDir := filepath.Join(tmpDir, "incomplete")
+	compDir := filepath.Join(tmpDir, "complete")
+	if err := os.MkdirAll(dlDir, 0o750); err != nil {
 		t.Fatalf("Failed to create download dir: %v", err)
 	}
-	if err := os.MkdirAll(appCfg.CompleteDir, 0o750); err != nil {
+	if err := os.MkdirAll(compDir, 0o750); err != nil {
 		t.Fatalf("Failed to create complete dir: %v", err)
 	}
+
+	appCfg := testConfig(
+		dlDir,
+		compDir,
+		filepath.Join(tmpDir, "admin"),
+	)
 
 	application, err := app.New(appCfg, nil)
 	if err != nil {
@@ -1001,30 +1011,32 @@ func TestReloadPostProcOptions(t *testing.T) {
 	application.ReloadPostProcOptions(cfg)
 
 	currentCfg := application.GetConfig()
-	if !currentCfg.DirectUnpack {
-		t.Errorf("DirectUnpack = false, want true")
-	}
-	if currentCfg.DirectUnpackThreads != 5 {
-		t.Errorf("DirectUnpackThreads = %d, want 5", currentCfg.DirectUnpackThreads)
-	}
-	if !currentCfg.EnableUnrar {
-		t.Errorf("EnableUnrar = false, want true")
-	}
-	if !currentCfg.Enable7zip {
-		t.Errorf("Enable7zip = false, want true")
-	}
-	if !currentCfg.EnableFileJoin {
-		t.Errorf("EnableFileJoin = false, want true")
-	}
-	if !currentCfg.EnableRecursive {
-		t.Errorf("EnableRecursive = false, want true")
-	}
-	if !currentCfg.Par2Turbo {
-		t.Errorf("Par2Turbo = false, want true")
-	}
-	if !currentCfg.IgnoreUnrarDates {
-		t.Errorf("IgnoreUnrarDates = false, want true")
-	}
+	currentCfg.WithRead(func(c *config.Config) {
+		if !c.PostProc.DirectUnpack {
+			t.Errorf("DirectUnpack = false, want true")
+		}
+		if c.PostProc.DirectUnpackThreads != 5 {
+			t.Errorf("DirectUnpackThreads = %d, want 5", c.PostProc.DirectUnpackThreads)
+		}
+		if !c.PostProc.EnableUnrar {
+			t.Errorf("EnableUnrar = false, want true")
+		}
+		if !c.PostProc.Enable7zip {
+			t.Errorf("Enable7zip = false, want true")
+		}
+		if !c.PostProc.EnableFileJoin {
+			t.Errorf("EnableFileJoin = false, want true")
+		}
+		if !c.PostProc.EnableRecursive {
+			t.Errorf("EnableRecursive = false, want true")
+		}
+		if !c.PostProc.Par2Turbo {
+			t.Errorf("Par2Turbo = false, want true")
+		}
+		if !c.PostProc.IgnoreUnrarDates {
+			t.Errorf("IgnoreUnrarDates = false, want true")
+		}
+	})
 
 	// Hot-reload config change
 	cfg.PostProc.DirectUnpack = false
@@ -1039,28 +1051,433 @@ func TestReloadPostProcOptions(t *testing.T) {
 	application.ReloadPostProcOptions(cfg)
 
 	currentCfg = application.GetConfig()
-	if currentCfg.DirectUnpack {
-		t.Errorf("DirectUnpack = true, want false")
+	currentCfg.WithRead(func(c *config.Config) {
+		if c.PostProc.DirectUnpack {
+			t.Errorf("DirectUnpack = true, want false")
+		}
+		if c.PostProc.DirectUnpackThreads != 2 {
+			t.Errorf("DirectUnpackThreads = %d, want 2", c.PostProc.DirectUnpackThreads)
+		}
+		if c.PostProc.EnableUnrar {
+			t.Errorf("EnableUnrar = true, want false")
+		}
+		if c.PostProc.Enable7zip {
+			t.Errorf("Enable7zip = true, want false")
+		}
+		if c.PostProc.EnableFileJoin {
+			t.Errorf("EnableFileJoin = true, want false")
+		}
+		if c.PostProc.EnableRecursive {
+			t.Errorf("EnableRecursive = true, want false")
+		}
+		if c.PostProc.Par2Turbo {
+			t.Errorf("Par2Turbo = true, want false")
+		}
+		if c.PostProc.IgnoreUnrarDates {
+			t.Errorf("IgnoreUnrarDates = true, want false")
+		}
+	})
+}
+
+func TestApplication_SettersAndOptions(t *testing.T) {
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+
+	// Test options
+	application, err := app.New(cfg, nil,
+		app.WithLogger(slog.Default()),
+		app.WithVersion("1.2.3"),
+		app.WithCheckpointInterval(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
 	}
-	if currentCfg.DirectUnpackThreads != 2 {
-		t.Errorf("DirectUnpackThreads = %d, want 2", currentCfg.DirectUnpackThreads)
+
+	// Test setters
+	application.SetDirectUnpack(true)
+	application.SetDirectUnpackThreads(5)
+	application.SetEnableUnrar(true)
+	application.SetEnable7zip(true)
+	application.SetPar2Turbo(true)
+	application.SetIgnoreUnrarDates(true)
+	application.SetSanitizeOptions(fsutil.SanitizeOptions{
+		ReplaceIllegalWith: "-",
+		ReplaceSpacesWith:  "_",
+		StripDiacritics:    true,
+		CleanupList:        []string{".nfo"},
+	})
+	application.SetMinFreeSpace(2048)
+	application.SetMaxArtTries(5)
+	application.SetMaxArtOpt(2)
+	application.SetTopOnly(true)
+	application.SetPropagationDelay(10)
+	application.SetDownloadDir(t.TempDir())
+	application.SetCompleteDir(t.TempDir())
+
+	// Verify values
+	c := application.GetConfig()
+	c.WithRead(func(cfg *config.Config) {
+		if !cfg.PostProc.DirectUnpack {
+			t.Error("DirectUnpack not set")
+		}
+		if cfg.PostProc.DirectUnpackThreads != 5 {
+			t.Errorf("DirectUnpackThreads = %d, want 5", cfg.PostProc.DirectUnpackThreads)
+		}
+		if !cfg.PostProc.EnableUnrar {
+			t.Error("EnableUnrar not set")
+		}
+		if !cfg.PostProc.Enable7zip {
+			t.Error("Enable7zip not set")
+		}
+		if !cfg.PostProc.Par2Turbo {
+			t.Error("Par2Turbo not set")
+		}
+		if !cfg.PostProc.IgnoreUnrarDates {
+			t.Error("IgnoreUnrarDates not set")
+		}
+		if cfg.Downloads.ReplaceIllegalWith != "-" {
+			t.Errorf("ReplaceIllegalWith = %q, want -", cfg.Downloads.ReplaceIllegalWith)
+		}
+		if cfg.Downloads.ReplaceSpacesWith != "_" {
+			t.Errorf("ReplaceSpacesWith = %q, want _", cfg.Downloads.ReplaceSpacesWith)
+		}
+		if !cfg.Downloads.StripDiacritics {
+			t.Error("StripDiacritics not set")
+		}
+		if len(cfg.Downloads.CleanupList) != 1 || cfg.Downloads.CleanupList[0] != ".nfo" {
+			t.Errorf("CleanupList = %v, want [.nfo]", cfg.Downloads.CleanupList)
+		}
+		if cfg.Downloads.MinFreeSpace != 2048 {
+			t.Errorf("MinFreeSpace = %d, want 2048", cfg.Downloads.MinFreeSpace)
+		}
+		if cfg.Downloads.MaxArtTries != 5 {
+			t.Errorf("MaxArtTries = %d, want 5", cfg.Downloads.MaxArtTries)
+		}
+		if cfg.Downloads.MaxArtOpt != 2 {
+			t.Errorf("MaxArtOpt = %d, want 2", cfg.Downloads.MaxArtOpt)
+		}
+		if !cfg.Downloads.TopOnly {
+			t.Error("TopOnly not set")
+		}
+		if cfg.Downloads.PropagationDelay != 10 {
+			t.Errorf("PropagationDelay = %d, want 10", cfg.Downloads.PropagationDelay)
+		}
+	})
+
+	// Test maybeDirectUnpack and buildDirectUnpackOpts coverage
+	parsed := &nzb.NZB{
+		Files: []nzb.File{{
+			Subject: "test.part01.rar",
+			Bytes:   100,
+		}},
 	}
-	if currentCfg.EnableUnrar {
-		t.Errorf("EnableUnrar = true, want false")
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "du-test", Category: "movies", PP: 3}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
 	}
-	if currentCfg.Enable7zip {
-		t.Errorf("Enable7zip = true, want false")
+	_ = application.Queue().Add(job)
+
+	// Trigger buildDirectUnpackOpts
+	_ = application.TriggerBuildDirectUnpackOpts()
+
+	// Trigger maybeDirectUnpack with nonexistent job (nil snap check)
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: "nonexistent", FileIdx: 0})
+
+	// Trigger maybeDirectUnpack with valid job but bad index
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID, FileIdx: -1})
+
+	// Trigger maybeDirectUnpack with valid job but non-rar filename
+	parsed2 := &nzb.NZB{
+		Files: []nzb.File{{
+			Subject: "test.txt",
+			Bytes:   100,
+		}},
 	}
-	if currentCfg.EnableFileJoin {
-		t.Errorf("EnableFileJoin = true, want false")
+	job2, _ := queue.NewJob(parsed2, queue.AddOptions{Name: "du-test-txt", Category: "movies", PP: 3}, fsutil.SanitizeOptions{})
+	_ = application.Queue().Add(job2)
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job2.ID, FileIdx: 0})
+
+	// Trigger maybeDirectUnpack with valid job and valid RAR filename (resolves but fails resolveFileInfo)
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID, FileIdx: 0})
+}
+
+func TestApplication_EdgeCases(t *testing.T) {
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+
+	db, _ := history.Open(t.Context(), filepath.Join(admin, "history.db"))
+	repo := history.NewRepository(db)
+	defer db.Close()
+
+	// 1. Test duplicate checks in AddJob (History DB and backup files)
+	application, _ := app.New(cfg, repo)
+
+	// Create a job, add it, wait for it to complete/fail to get in history
+	parsed := &nzb.NZB{
+		Files: []nzb.File{{
+			Subject: "test.bin",
+			Articles: []nzb.Article{
+				{ID: "art1", Bytes: 10, Number: 1},
+			},
+			Bytes: 10,
+		}},
 	}
-	if currentCfg.EnableRecursive {
-		t.Errorf("EnableRecursive = true, want false")
+	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "dup-test"}, fsutil.SanitizeOptions{})
+	// Set MD5 sum
+	job.MD5 = "abcdef0123456789abcdef0123456789"
+	job.Filename = "dup-test.nzb"
+
+	// Add it to queue
+	_ = application.Queue().Add(job)
+
+	// Try adding the SAME job (Duplicate check: active queue MD5 check)
+	job2, _ := queue.NewJob(parsed, queue.AddOptions{Name: "dup-test-2"}, fsutil.SanitizeOptions{})
+	job2.MD5 = job.MD5
+	job2.Filename = "dup-test.nzb"
+	err := application.AddJob(t.Context(), job2, []byte("nzb content"), false)
+	if err != nil {
+		t.Fatalf("AddJob: %v", err)
 	}
-	if currentCfg.Par2Turbo {
-		t.Errorf("Par2Turbo = true, want false")
+	if job2.Status != constants.StatusPaused || job2.Warning != "Duplicate NZB" {
+		t.Errorf("job2.Status = %v, Warning = %v; want Paused, Duplicate NZB", job2.Status, job2.Warning)
 	}
-	if currentCfg.IgnoreUnrarDates {
-		t.Errorf("IgnoreUnrarDates = true, want false")
+
+	// Add forced duplicate
+	job3, _ := queue.NewJob(parsed, queue.AddOptions{Name: "dup-test-3"}, fsutil.SanitizeOptions{})
+	job3.MD5 = job.MD5
+	err = application.AddJob(t.Context(), job3, []byte("nzb content"), true)
+	if err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	if job3.Warning != "Duplicate NZB (Forced)" {
+		t.Errorf("job3.Warning = %v; want Duplicate NZB (Forced)", job3.Warning)
+	}
+
+	// Test unique name collision in downloadDir
+	if err := os.MkdirAll(filepath.Join(dl, "collision-name"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	jobCollision, _ := queue.NewJob(parsed, queue.AddOptions{Name: "collision-name"}, fsutil.SanitizeOptions{})
+	if err := application.AddJob(t.Context(), jobCollision, []byte("nzb content"), false); err != nil {
+		t.Fatalf("AddJob collision: %v", err)
+	}
+	if jobCollision.Name == "collision-name" {
+		t.Errorf("expected unique name suffix for collision, got %q", jobCollision.Name)
+	}
+
+	// Test backup duplicate check
+	nzbDir := filepath.Join(admin, "nzb")
+	if err := os.MkdirAll(nzbDir, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nzbDir, "backup-test.nzb.gz"), []byte("backup"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	jobBackup, _ := queue.NewJob(parsed, queue.AddOptions{Name: "backup-test"}, fsutil.SanitizeOptions{})
+	jobBackup.Filename = "backup-test.nzb"
+	_ = application.AddJob(t.Context(), jobBackup, []byte("nzb content"), false)
+	if jobBackup.Status != constants.StatusPaused {
+		t.Error("expected jobBackup to be paused due to backup duplicate")
+	}
+
+	// 2. Test RemoveJob not found error
+	err = application.RemoveJob(t.Context(), "nonexistent", true)
+	if err == nil {
+		t.Error("expected RemoveJob to fail for nonexistent job")
+	}
+
+	// 3. Test buildDownloaderOptions and OnJobHopeless callback (triggers maybeFinalize and enqueuePostProc)
+	downloaderOpts := application.TriggerBuildDownloaderOptions()
+
+	// Nonexistent job ID (nil snap return)
+	downloaderOpts.OnJobHopeless("nonexistent")
+
+	// Valid job ID (triggers maybeFinalize and enqueuePostProc)
+	downloaderOpts.OnJobHopeless(job.ID)
+
+	// Add category with flat layout to config
+	cfg.With(func(c *config.Config) {
+		c.Categories = append(c.Categories, config.CategoryConfig{
+			Name: "flatcat",
+			Dir:  "flat*",
+		})
+	})
+	jobFlat, _ := queue.NewJob(parsed, queue.AddOptions{Name: "flat-test", Category: "flatcat", PP: 3}, fsutil.SanitizeOptions{})
+	_ = application.Queue().Add(jobFlat)
+
+	// Inject a dummy direct unpacker to test enqueuePostProc direct unpack handoff
+	duEdge := directunpack.New(slog.Default(), jobFlat.ID, t.TempDir(), t.TempDir(), directunpack.Options{})
+	application.InjectDirectUnpacker(jobFlat.ID, duEdge)
+
+	// Trigger hopeless on flat job
+	_ = application.Queue().SetStatus(jobFlat.ID, constants.StatusDownloading)
+	downloaderOpts.OnJobHopeless(jobFlat.ID)
+
+	// 4. Test handleFileComplete branches
+	// Nonexistent job (early return)
+	application.TriggerHandleFileComplete(t.Context(), app.FileComplete{JobID: "nonexistent", FileIdx: 0})
+
+	// Cancelled context (early return)
+	cancelledCtx, cancelCtx := context.WithCancel(t.Context())
+	cancelCtx()
+	application.TriggerHandleFileComplete(cancelledCtx, app.FileComplete{JobID: job.ID, FileIdx: 0})
+
+	// Job already in post-processing (early return)
+	jobPostProc, _ := queue.NewJob(parsed, queue.AddOptions{Name: "postproc-already"}, fsutil.SanitizeOptions{})
+	_, _ = application.Queue().SetPostProcStarted(jobPostProc.ID)
+	_ = application.Queue().Add(jobPostProc)
+	application.TriggerHandleFileComplete(t.Context(), app.FileComplete{JobID: jobPostProc.ID, FileIdx: 0})
+
+	// 5. Test drainCompletions case branch (channel has entry)
+	application.SendFileComplete(app.FileComplete{JobID: "nonexistent", FileIdx: 0})
+	application.TriggerDrainCompletions(t.Context())
+
+	// 6. Test maybeFinalize double start branch (returns early when already started)
+	application.TriggerMaybeFinalize(job.ID, "")
+
+	// 7. Test maybeFinalize queue save error branch (triggers warning log)
+	_ = application.Queue().SetStatus(jobCollision.ID, constants.StatusDownloading)
+	cfg.With(func(c *config.Config) {
+		c.General.AdminDir = "/nonexistent-permission-denied"
+	})
+	application.TriggerMaybeFinalize(jobCollision.ID, "")
+
+	// 8. Test maybeDirectUnpack branches
+	// Create a job with RAR volumes
+	parsedRar := &nzb.NZB{
+		Files: []nzb.File{
+			{Subject: "test.part1.rar"},
+			{Subject: "test.part2.rar"},
+		},
+	}
+	jobRar, _ := queue.NewJob(parsedRar, queue.AddOptions{Name: "rar-job", PP: 3}, fsutil.SanitizeOptions{})
+	_ = application.Queue().Add(jobRar)
+
+	// Low PP (returns early)
+	jobNoPP, _ := queue.NewJob(parsedRar, queue.AddOptions{Name: "no-pp-job", PP: 1}, fsutil.SanitizeOptions{})
+	_ = application.Queue().Add(jobNoPP)
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobNoPP.ID, FileIdx: 0})
+
+	// Password set (returns early)
+	jobPwd, _ := queue.NewJob(parsedRar, queue.AddOptions{Name: "pwd-job", PP: 3, Password: "foo"}, fsutil.SanitizeOptions{})
+	_ = application.Queue().Add(jobPwd)
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobPwd.ID, FileIdx: 0})
+
+	// Invalid file index (returns early)
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID, FileIdx: -1})
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID, FileIdx: 99})
+
+	// Not a RAR volume (returns early)
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID, FileIdx: 0})
+
+	// resolveFileInfo fails (returns early)
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID, FileIdx: 0})
+
+	// Concurrency limit reached (returns early)
+	application.InjectPipelineFileInfo(jobRar.ID, 0, filepath.Join(dl, "test.part1.rar"))
+	cfg.With(func(c *config.Config) {
+		c.PostProc.DirectUnpackThreads = 1
+		c.PostProc.DirectUnpack = true
+		c.PostProc.EnableUnrar = true
+	})
+	application.SetActiveDU(1)
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID, FileIdx: 0})
+
+	// Success path (creates new direct unpacker and calls Add)
+	application.SetActiveDU(0)
+	application.InjectCtx(t.Context())
+	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID, FileIdx: 0})
+}
+
+func TestApplication_PersistAndCommitError(t *testing.T) {
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+
+	db, err := history.Open(t.Context(), filepath.Join(admin, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	repo := history.NewRepository(db)
+
+	application, err := app.New(cfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{{
+			Subject: "test.bin",
+			Bytes:   10,
+		}},
+	}
+	qJob, err := queue.NewJob(parsed, queue.AddOptions{Name: "persist-err-test"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	_ = application.Queue().Add(qJob)
+
+	// Construct a postproc.Job wrapping the queue.Job
+	ppJob := &postproc.Job{
+		Queue: qJob,
+	}
+
+	// Close the DB database connection so history.Add fails
+	db.Close()
+
+	entry := history.Entry{
+		NzoID: qJob.ID,
+		Name:  qJob.Name,
+	}
+
+	// Trigger persistAndCommit — it should fail because DB is closed
+	err = application.TriggerPersistAndCommit(slog.Default(), entry, ppJob)
+	if err == nil {
+		t.Error("expected persistAndCommit to fail when DB is closed")
+	}
+
+	// Verify the gz payload was deleted/cleaned up
+	histJobsDir := filepath.Join(admin, "history", "jobs")
+	jobPath := filepath.Join(histJobsDir, qJob.ID+".json.gz")
+	if _, err := os.Stat(jobPath); err == nil || !os.IsNotExist(err) {
+		t.Errorf("expected gz file %q to be deleted, got err: %v", jobPath, err)
+	}
+}
+
+func TestApplication_ShutdownWithOptions(t *testing.T) {
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+
+	application, err := app.New(cfg, nil)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	// 1. Test Shutdown on unstarted application (returns nil)
+	if err := application.Shutdown(); err != nil {
+		t.Errorf("expected no error shutting down unstarted app, got %v", err)
+	}
+
+	// 2. Start application
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Inject a dummy direct unpacker
+	du := directunpack.New(slog.Default(), "job1", t.TempDir(), t.TempDir(), directunpack.Options{})
+	application.InjectDirectUnpacker("job1", du)
+
+	// Call Shutdown on started application (verifies the abort loop and normal cleanup)
+	if err := application.Shutdown(); err != nil {
+		t.Errorf("Shutdown: %v", err)
 	}
 }
