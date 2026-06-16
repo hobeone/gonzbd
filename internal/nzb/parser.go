@@ -20,6 +20,9 @@ import (
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
+// ErrNoFiles is returned when an NZB file contains no <file> elements at all.
+var ErrNoFiles = errors.New("nzb: no <file> elements found")
+
 // maxArticleSize is the upper bound on a plausible NNTP article payload
 // (8 MiB, inclusive). Values at or above this are treated as malformed.
 // Matches Python sabnzbd/nzbparser.py which uses `>= 2**23`.
@@ -182,6 +185,10 @@ func parseXML(r io.Reader) (*NZB, error) {
 				ageCount++
 			}
 		}
+	}
+
+	if len(out.Files) == 0 && out.SkippedFiles == 0 {
+		return nil, ErrNoFiles
 	}
 
 	copy(out.MD5[:], digest.Sum(nil))

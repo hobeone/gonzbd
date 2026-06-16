@@ -696,10 +696,10 @@ func TestParseBzip2EnvelopeInline(t *testing.T) {
 		0xee, 0x48, 0xa7, 0x0a, 0x12, 0x1d, 0x58, 0xee, 0x48, 0x60,
 	}
 	got, err := Parse(bytes.NewReader(bzBytes))
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrNoFiles) {
 		t.Fatalf("Parse bzip2 inline: %v", err)
 	}
-	if got == nil {
+	if err == nil && got == nil {
 		t.Fatal("expected non-nil NZB")
 	}
 }
@@ -727,5 +727,18 @@ func TestEnvelopeSelection_MoreMagicCombinations(t *testing.T) {
 				t.Error("expected passthrough reader")
 			}
 		})
+	}
+}
+
+func TestParseZeroFilesRejects(t *testing.T) {
+	const doc = `<?xml version="1.0"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+</nzb>`
+	_, err := Parse(strings.NewReader(doc))
+	if err == nil {
+		t.Fatal("expected error for NZB with zero <file> elements")
+	}
+	if !errors.Is(err, ErrNoFiles) {
+		t.Fatalf("expected ErrNoFiles, got: %v", err)
 	}
 }
