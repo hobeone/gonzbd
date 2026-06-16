@@ -19,6 +19,9 @@ import (
 // not present.
 var ErrNotFound = errors.New("queue: job not found")
 
+// removeFile deletes a job's persisted state file. Indirected for tests.
+var removeFile = os.Remove
+
 // Queue owns the ordered list of active jobs plus the notify channel
 // the downloader waits on.
 type Queue struct {
@@ -247,19 +250,25 @@ func (q *Queue) Add(job *Job) error {
 // Remove drops the job from the queue and deletes its persistent state file.
 func (q *Queue) Remove(id string) error {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	idx, ok := q.indexOfLocked(id)
 	if !ok {
+		q.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	q.removeAtLocked(idx)
 	delete(q.byID, id)
-
+	// Snapshot the path under the lock; empty string means no persistent state.
+	var jobPath string
 	if q.stateDir != "" {
-		jobPath := filepath.Join(q.stateDir, "jobs", id+".json.gz")
-		_ = os.Remove(jobPath)
+		jobPath = filepath.Join(q.stateDir, "jobs", id+".json.gz")
 	}
 	q.dirty.Store(true)
+	q.mu.Unlock()
+
+	// --- No lock held below this line ---
+	if jobPath != "" {
+		_ = removeFile(jobPath) // best-effort delete; error is intentionally ignored
+	}
 	return nil
 }
 
