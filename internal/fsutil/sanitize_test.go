@@ -488,4 +488,3 @@ func TestTruncateOnRuneBoundary_ExactlyLimit(t *testing.T) {
 		t.Errorf("expected original string, got %q", got)
 	}
 }
-
