@@ -11,6 +11,7 @@ import (
 
 	"github.com/h2non/filetype"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/rarheader"
 )
 
@@ -146,7 +147,7 @@ func FixExtension(ctx context.Context, log *slog.Logger, path string) (Rename, e
 					"file", base)
 				return Rename{}, nil
 			}
-			newPath := path + ".rar"
+			newPath := fsutil.GetUniqueFilename(path + ".rar")
 			log.Info("deobfuscate: RAR content detected by magic bytes, appending .rar",
 				"file", base, "current_ext", ext)
 			if err := os.Rename(path, newPath); err != nil {
@@ -168,7 +169,7 @@ func FixExtension(ctx context.Context, log *slog.Logger, path string) (Rename, e
 		return Rename{}, nil
 	}
 
-	newPath := path + detectedExt
+	newPath := fsutil.GetUniqueFilename(path + detectedExt)
 	log.Info("deobfuscate: content type detected, appending correct extension",
 		"file", base, "current_ext", ext, "detected_ext", detectedExt)
 	if err := os.Rename(path, newPath); err != nil {
