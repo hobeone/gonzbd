@@ -643,10 +643,6 @@ func waitForStarted() (func(string), <-chan struct{}) {
 	}, ch
 }
 
-func fmtPart(n int) string {
-	return fmt.Sprintf("movie.part%02d.rar", n)
-}
-
 func testLogger(t *testing.T) *slog.Logger {
 	t.Helper()
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})).

@@ -4,15 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // State is the JSON-persisted shape for Quota + Meter lifetime totals.
 type State struct {
-	PeriodStart   time.Time        `json:"period_start"`
-	PeriodUsage   int64            `json:"period_usage"`
 	LifetimeTotal int64            `json:"lifetime_total"`
 	ServerTotals  map[string]int64 `json:"server_totals"`
 }
