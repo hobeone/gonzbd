@@ -861,11 +861,7 @@ func TestDirectUnpack_ExtractSet_FeederNoLeakOnEarlyError(t *testing.T) {
 	runtime.GC()
 	baseline := runtime.NumGoroutine()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	// Deliberately do NOT defer cancel() before the assertion: cancelling here
-	// would mask the leak by unblocking the feeder via the caller ctx. The
-	// whole point is that extractSet must unblock the feeder on its own.
-	defer cancel()
+	ctx := t.Context()
 
 	errCh := make(chan error, 1)
 	go func() {
