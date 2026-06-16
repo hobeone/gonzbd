@@ -488,3 +488,23 @@ func TestTruncateOnRuneBoundary_ExactlyLimit(t *testing.T) {
 		t.Errorf("expected original string, got %q", got)
 	}
 }
+
+func TestTruncateOnRuneBoundary_NegativeGuard(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		input    string
+		maxBytes int
+	}{
+		{"zero limit", "hello", 0},
+		{"negative limit", "hello", -5},
+		{"large negative limit", "hello", -100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateOnRuneBoundary(tc.input, tc.maxBytes)
+			if got != "" {
+				t.Errorf("expected empty string, got %q", got)
+			}
+		})
+	}
+}
