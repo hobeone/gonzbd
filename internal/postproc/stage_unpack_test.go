@@ -3,6 +3,7 @@ package postproc
 import (
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -253,6 +254,7 @@ func TestUnpackHelpers(t *testing.T) {
 	// Direct references for alignment check
 	_ = extractRARArchive
 	_ = extractSevenZipArchive
+	_ = (*UnpackStage).extractPendingArchives
 
 	// 1. Test prepareOptions
 	t.Run("prepareOptions", func(t *testing.T) {
@@ -346,5 +348,84 @@ func TestUnpackHelpers(t *testing.T) {
 		}
 		a := unpack.Archive{Type: unpack.SplitArchive, MainFile: "test.001"}
 		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{}, false)
+	})
+
+	// 6. Test extractPendingArchives (external tool success to cover CommandLine and Output)
+	t.Run("extractPendingArchives external success", func(t *testing.T) {
+		if _, err := exec.LookPath("unrar"); err != nil {
+			t.Skip("unrar binary not found in PATH")
+		}
+		u := NewUnpackStage()
+		job := &Job{
+			Queue:       &queue.Job{ID: "testjob"},
+			DownloadDir: t.TempDir(),
+		}
+		copyToDir(t, unpackFixture("single_rar5.rar"), job.DownloadDir)
+		
+		processed := make(map[string]bool)
+		var allSuccessful []unpack.Archive
+		var firstErr error
+		
+		pending, err := unpack.Scan(job.DownloadDir)
+		if err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		
+		opts := unpack.Options{
+			UseGoRAR: false,
+		}
+		
+		ok := u.extractPendingArchives(t.Context(), slog.Default(), job, pending, processed, opts, true, &firstErr, &allSuccessful)
+		if !ok {
+			t.Error("expected extractPendingArchives to return true")
+		}
+		if firstErr != nil {
+			t.Errorf("expected nil error, got %v", firstErr)
+		}
+		if len(allSuccessful) != 1 {
+			t.Errorf("len(allSuccessful) = %d; want 1", len(allSuccessful))
+		}
+	})
+
+	// 7. Test extractPendingArchives containment violation
+	t.Run("extractPendingArchives containment violation", func(t *testing.T) {
+		u := NewUnpackStage()
+		job := &Job{
+			Queue:       &queue.Job{ID: "testjob"},
+			DownloadDir: t.TempDir(),
+		}
+		copyToDir(t, unpackFixture("single_rar5.rar"), job.DownloadDir)
+		
+		// Create a symlink pointing outside DownloadDir to trigger containment error
+		target := filepath.Join(job.DownloadDir, "bad_symlink")
+		if err := os.Symlink(t.TempDir(), target); err != nil {
+			t.Skipf("symlinks not supported on this OS: %v", err)
+		}
+		
+		processed := make(map[string]bool)
+		var allSuccessful []unpack.Archive
+		var firstErr error
+		
+		pending, err := unpack.Scan(job.DownloadDir)
+		if err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		
+		opts := unpack.Options{
+			UseGoRAR: true, // Go-native is fast and sufficient
+		}
+		
+		ok := u.extractPendingArchives(t.Context(), slog.Default(), job, pending, processed, opts, true, &firstErr, &allSuccessful)
+		// Since containment check fails, firstErr should be non-nil
+		if firstErr == nil {
+			t.Error("expected containment violation error, got nil")
+		}
+		if !job.UnpackError {
+			t.Error("expected job.UnpackError to be true")
+		}
+		// Since containment check fails, the archive is not successfully finished, so ok should be false
+		if ok {
+			t.Error("expected ok=false since containment check failed")
+		}
 	})
 }

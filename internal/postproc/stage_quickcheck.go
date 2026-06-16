@@ -78,84 +78,82 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 			"[quickcheck] No files needed subdirectory relocation")
 	}
 
-	// CRC verification: compare assembled CRC32s (from download) against
-	// par2 manifest CRC32s to detect corruption without re-reading files.
-	if job.Queue != nil && len(job.Queue.Files) > 0 {
-		var assembledFiles []par2.AssembledFile
-		for _, jf := range job.Queue.Files {
-			name := jf.Subject
-			if jf.Filename != "" {
-				name = jf.Filename
-			}
-			assembledFiles = append(assembledFiles, par2.AssembledFile{
-				FileName: name,
-				CRC32:    jf.AssembledCRC32,
-				FileSize: jf.Bytes,
-			})
+	q.verifyJobCRCs(ctx, log, job, sets)
+	return nil
+}
+
+func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, job *Job, sets []par2.Set) {
+	if job.Queue == nil || len(job.Queue.Files) == 0 {
+		return
+	}
+
+	var assembledFiles []par2.AssembledFile
+	for _, jf := range job.Queue.Files {
+		name := jf.Subject
+		if jf.Filename != "" {
+			name = jf.Filename
 		}
+		assembledFiles = append(assembledFiles, par2.AssembledFile{
+			FileName: name,
+			CRC32:    jf.AssembledCRC32,
+			FileSize: jf.Bytes,
+		})
+	}
 
-		crcResult := par2.VerifyCRCs(assembledFiles, sets, log)
+	crcResult := par2.VerifyCRCs(assembledFiles, sets, log)
+	unverifiable := crcResult.NoCRC + crcResult.Unverified + crcResult.Mismatched
 
-		// How many par2-tracked files could NOT be verified?
-		unverifiable := crcResult.NoCRC + crcResult.Unverified + crcResult.Mismatched
+	if crcResult.Checked > 0 {
+		job.OutputLines = append(job.OutputLines,
+			fmt.Sprintf("[quickcheck] CRC verification: %d/%d par2-tracked files verified OK",
+				crcResult.Matched, crcResult.Checked+crcResult.NoCRC))
 
-		if crcResult.Checked > 0 {
-			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[quickcheck] CRC verification: %d/%d par2-tracked files verified OK",
-					crcResult.Matched, crcResult.Checked+crcResult.NoCRC))
-
-			if crcResult.Mismatched > 0 {
-				logf(ctx, log, job, slog.LevelWarn,
-					"quickcheck: CRC MISMATCH detected — %d file(s) corrupted",
-					crcResult.Mismatched)
-				for _, f := range crcResult.Files {
-					if !f.Match {
-						job.OutputLines = append(job.OutputLines,
-							fmt.Sprintf("[quickcheck] ✗ %s: CRC mismatch (assembled=%08x par2=%08x)",
-								f.FileName, f.AssembledCRC, f.Par2CRC))
-					}
+		if crcResult.Mismatched > 0 {
+			logf(ctx, log, job, slog.LevelWarn,
+				"quickcheck: CRC MISMATCH detected — %d file(s) corrupted",
+				crcResult.Mismatched)
+			for _, f := range crcResult.Files {
+				if !f.Match {
+					job.OutputLines = append(job.OutputLines,
+						fmt.Sprintf("[quickcheck] ✗ %s: CRC mismatch (assembled=%08x par2=%08x)",
+							f.FileName, f.AssembledCRC, f.Par2CRC))
 				}
 			}
 		}
+	}
 
-		// Report par2-tracked files with no CRC (download failures).
-		if crcResult.NoCRC > 0 {
-			for _, name := range crcResult.NoCRCFiles {
-				job.OutputLines = append(job.OutputLines,
-					fmt.Sprintf("[quickcheck] ⚠ %s: download had failures, CRC unavailable", name))
-			}
-		}
-
-		// Report par2 entries that couldn't be matched to any assembled file.
-		if crcResult.Unverified > 0 {
-			logf(ctx, log, job, slog.LevelWarn,
-				"quickcheck: %d par2-tracked file(s) not found by name",
-				crcResult.Unverified)
-		}
-
-		// Decision: can we skip par2 repair?
-		switch {
-		case unverifiable > 0:
-			logf(ctx, log, job, slog.LevelInfo,
-				"quickcheck: %d/%d par2-tracked files verified OK, %d could not be verified — par2 repair will run",
-				crcResult.Matched, crcResult.Matched+unverifiable, unverifiable)
+	if crcResult.NoCRC > 0 {
+		for _, name := range crcResult.NoCRCFiles {
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[quickcheck] %d file(s) need par2 verification — repair stage will run",
-					unverifiable))
-		case crcResult.Checked > 0:
-			logf(ctx, log, job, slog.LevelInfo,
-				"quickcheck: all %d par2-tracked files verified OK — skipping par2 repair",
-				crcResult.Matched)
-			job.QuickCheckPassed = true
-		default:
-			logf(ctx, log, job, slog.LevelInfo,
-				"quickcheck: no files could be CRC-verified — par2 repair will run")
-			job.OutputLines = append(job.OutputLines,
-				"[quickcheck] No CRC data available — par2 repair will run")
+				fmt.Sprintf("[quickcheck] ⚠ %s: download had failures, CRC unavailable", name))
 		}
 	}
 
-	return nil
+	if crcResult.Unverified > 0 {
+		logf(ctx, log, job, slog.LevelWarn,
+			"quickcheck: %d par2-tracked file(s) not found by name",
+			crcResult.Unverified)
+	}
+
+	switch {
+	case unverifiable > 0:
+		logf(ctx, log, job, slog.LevelInfo,
+			"quickcheck: %d/%d par2-tracked files verified OK, %d could not be verified — par2 repair will run",
+			crcResult.Matched, crcResult.Matched+unverifiable, unverifiable)
+		job.OutputLines = append(job.OutputLines,
+			fmt.Sprintf("[quickcheck] %d file(s) need par2 verification — repair stage will run",
+				unverifiable))
+	case crcResult.Checked > 0:
+		logf(ctx, log, job, slog.LevelInfo,
+			"quickcheck: all %d par2-tracked files verified OK — skipping par2 repair",
+			crcResult.Matched)
+		job.QuickCheckPassed = true
+	default:
+		logf(ctx, log, job, slog.LevelInfo,
+			"quickcheck: no files could be CRC-verified — par2 repair will run")
+		job.OutputLines = append(job.OutputLines,
+			"[quickcheck] No CRC data available — par2 repair will run")
+	}
 }
 
 // RepairStage runs par2 verify+repair against every par2 set it finds in

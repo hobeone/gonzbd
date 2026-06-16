@@ -272,46 +272,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			logf(ctx, log, job, slog.LevelInfo, "  %s: %s (%d parts)", archiveTypeName(a.Type), a.Name, len(a.Parts))
 		}
 
-		extractedAny := false
-		for _, a := range pending {
-			processed[a.MainFile] = true
-
-			res, err := u.extractArchive(ctx, log, job, a, opts, enableFileJoin)
-			if failErr := cmp.Or(err, res.Err); failErr != nil {
-				recordUnpackFailure(ctx, log, job, a, res, failErr, &firstErr)
-				continue
-			}
-			logf(ctx, log, job, slog.LevelInfo, "Extracted %s successfully", a.Name)
-			// Record command line in stage log for successful extractions too.
-			if res.CommandLine != "" {
-				job.OutputLines = append(job.OutputLines,
-					fmt.Sprintf("[%s] %s", archiveTypeName(a.Type), a.Name),
-					"Command: "+res.CommandLine)
-			}
-
-			// Post-extraction containment check: verify all extracted files
-			// are inside the output directory. A malicious archive could
-			// contain paths like "../../../etc/crontab" that escape outDir.
-			if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
-				job.UnpackError = true
-				logf(ctx, log, job, slog.LevelWarn, "Error: containment violation after extracting %q: %v", a.Name, cErr)
-				if firstErr == nil {
-					firstErr = fmt.Errorf("unpack %q: containment check: %w", a.Name, cErr)
-				}
-				continue
-			}
-
-			// Capture tool output on success.
-			if res.Output != "" {
-				job.OutputLines = append(job.OutputLines,
-					fmt.Sprintf("[%s] %s", archiveTypeName(a.Type), a.Name))
-				job.OutputLines = append(job.OutputLines,
-					toolOutputLines(res.Output)...)
-			}
-			allSuccessful = append(allSuccessful, a)
-			extractedAny = true
-		}
-
+		extractedAny := u.extractPendingArchives(ctx, log, job, pending, processed, opts, enableFileJoin, &firstErr, &allSuccessful)
 		// If nothing was extracted this pass, no point re-scanning.
 		if !extractedAny {
 			break
@@ -325,6 +286,59 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	u.applyPermissions(ctx, log, job, permissions, allSuccessful)
 
 	return firstErr
+}
+
+func (u *UnpackStage) extractPendingArchives(
+	ctx context.Context,
+	log *slog.Logger,
+	job *Job,
+	pending []unpack.Archive,
+	processed map[string]bool,
+	opts unpack.Options,
+	enableFileJoin bool,
+	firstErr *error,
+	allSuccessful *[]unpack.Archive,
+) bool {
+	extractedAny := false
+	for _, a := range pending {
+		processed[a.MainFile] = true
+
+		res, err := u.extractArchive(ctx, log, job, a, opts, enableFileJoin)
+		if failErr := cmp.Or(err, res.Err); failErr != nil {
+			recordUnpackFailure(ctx, log, job, a, res, failErr, firstErr)
+			continue
+		}
+		logf(ctx, log, job, slog.LevelInfo, "Extracted %s successfully", a.Name)
+		// Record command line in stage log for successful extractions too.
+		if res.CommandLine != "" {
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("[%s] %s", archiveTypeName(a.Type), a.Name),
+				"Command: "+res.CommandLine)
+		}
+
+		// Post-extraction containment check: verify all extracted files
+		// are inside the output directory. A malicious archive could
+		// contain paths like "../../../etc/crontab" that escape outDir.
+		if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
+			job.UnpackError = true
+			logf(ctx, log, job, slog.LevelWarn, "Error: containment violation after extracting %q: %v", a.Name, cErr)
+			if *firstErr == nil {
+				*firstErr = fmt.Errorf("unpack %q: containment check: %w", a.Name, cErr)
+			}
+			continue
+		}
+
+		// Capture tool output on success.
+		if res.Output != "" {
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("[%s] %s", archiveTypeName(a.Type), a.Name))
+			job.OutputLines = append(job.OutputLines,
+				toolOutputLines(res.Output)...)
+		}
+		*allSuccessful = append(*allSuccessful, a)
+		extractedAny = true
+	}
+	return extractedAny
 }
 
 // prepareOptions sets up passwords list, callbacks, and other extraction options.

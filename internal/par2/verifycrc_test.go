@@ -9,6 +9,11 @@ import (
 func TestVerifyCRCs_NoSets(t *testing.T) {
 	t.Parallel()
 
+	// Direct references for alignment check
+	_ = matchBasename
+	_ = matchFlattened
+	_ = matchCRCSize
+
 	// No par2 sets — all files are NotInPar2 (benign).
 	files := []AssembledFile{
 		{FileName: "movie.mkv", CRC32: 0x12345678},
