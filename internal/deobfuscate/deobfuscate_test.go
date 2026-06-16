@@ -329,6 +329,87 @@ func TestDeobfuscate(t *testing.T) {
 	})
 }
 
+func TestSubtitles(t *testing.T) {
+	t.Parallel()
+
+	// bigVideo is ~30 MiB; srt files are tiny — satisfies 3× dominance ratio.
+	const bigSize = 30 * 1024 * 1024
+	const tinySize = 100
+
+	t.Run("numeric-suffix srt is not a sibling and must be renamed", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		// Dominant video file.
+		createFile(t, dir, "Some_Big_Movie.mkv", bigSize)
+		// Genuine unrelated subtitle — different base entirely, should be renamed.
+		createFile(t, dir, "14_English.srt", tinySize)
+		// Unrelated subtitle that shares the video's base as a bare prefix but
+		// has a digit immediately after — NOT a sibling, so it must also be
+		// renamed (not skipped). The bare-prefix bug wrongly skips this one.
+		createFile(t, dir, "Some_Big_Movie2.srt", tinySize)
+
+		renames, err := deobfuscate.Subtitles(nil, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Both srt files are unrelated to the video and must be renamed.
+		// The buggy code skips Some_Big_Movie2.srt (bare HasPrefix match),
+		// so it returns only 1 rename. The correct code returns 2.
+		if len(renames) != 2 {
+			t.Fatalf("expected 2 renames (both srts are unrelated), got %d: %+v", len(renames), renames)
+		}
+
+		// Build a set of (From → To) pairs for order-independent checking.
+		renamed := make(map[string]string, 2)
+		for _, r := range renames {
+			renamed[filepath.Base(r.From)] = filepath.Base(r.To)
+		}
+
+		wantPairs := map[string]string{
+			"14_English.srt":      "Some_Big_Movie.14_English.srt",
+			"Some_Big_Movie2.srt": "Some_Big_Movie.Some_Big_Movie2.srt",
+		}
+		for from, to := range wantPairs {
+			if got := renamed[from]; got != to {
+				t.Errorf("rename of %q: got %q, want %q", from, got, to)
+			}
+		}
+	})
+
+	t.Run("exact-base match srt is skipped (already correct)", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		createFile(t, dir, "Some_Big_Movie.mkv", bigSize)
+		// Exact base match (no extension difference): already a sibling.
+		createFile(t, dir, "Some_Big_Movie.srt", tinySize)
+
+		renames, err := deobfuscate.Subtitles(nil, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(renames) != 0 {
+			t.Errorf("expected 0 renames (srt already matches base), got %d: %+v", len(renames), renames)
+		}
+	})
+
+	t.Run("separator suffix srt is skipped (already a sibling)", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		createFile(t, dir, "Some_Big_Movie.mkv", bigSize)
+		// "Some_Big_Movie.en.srt" — separator '.' after the base prefix.
+		createFile(t, dir, "Some_Big_Movie.en.srt", tinySize)
+
+		renames, err := deobfuscate.Subtitles(nil, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(renames) != 0 {
+			t.Errorf("expected 0 renames (srt is already a separator-sibling), got %d: %+v", len(renames), renames)
+		}
+	})
+}
+
 // createFile writes size bytes of zeros to dir/name and returns the full path.
 func createFile(t *testing.T, dir, name string, size int) string {
 	t.Helper()

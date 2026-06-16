@@ -466,9 +466,18 @@ func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 	var renames []Rename
 	for _, srt := range srtFiles {
 		srtBase := strings.TrimSuffix(srt, filepath.Ext(srt))
-		// Skip if the .srt already shares the video's basename prefix.
+		// Skip if the .srt already shares the video's basename prefix AND the
+		// character immediately after the prefix is a separator (., _, -, space)
+		// or there is no character after (exact match). A bare prefix match like
+		// "SomeMovie2" with prefix "SomeMovie" does not qualify as a sibling.
 		if strings.HasPrefix(srtBase, bigBase) {
-			continue
+			if len(srtBase) == len(bigBase) {
+				continue
+			}
+			nextChar := srtBase[len(bigBase)]
+			if nextChar == '.' || nextChar == '_' || nextChar == '-' || nextChar == ' ' {
+				continue
+			}
 		}
 
 		// Construct new name: <bigBase>.<srt_filename>
