@@ -811,6 +811,7 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 				q.log.Info("on-demand par2: download failure detected, releasing recovery volumes early", "job", jobID)
 			}
 		}
+		q.notifyLocked()
 	}
 	return firstTime, nil
 }
