@@ -632,18 +632,12 @@ func TestParseNoValidFiles(t *testing.T) {
     <groups><group>g</group></groups>
   </file>
 </nzb>`
-	got, err := Parse(strings.NewReader(doc))
-	if err != nil {
-		t.Fatalf("Parse empty NZB: %v", err)
+	_, err := Parse(strings.NewReader(doc))
+	if err == nil {
+		t.Fatal("expected error on NZB with no valid files")
 	}
-	if got == nil {
-		t.Fatal("expected non-nil NZB")
-	}
-	if len(got.Files) != 0 {
-		t.Errorf("expected 0 files, got %d", len(got.Files))
-	}
-	if !got.AvgAge.IsZero() {
-		t.Errorf("expected zero AvgAge, got %s", got.AvgAge)
+	if !errors.Is(err, ErrNoFiles) {
+		t.Fatalf("expected ErrNoFiles, got: %v", err)
 	}
 }
 
