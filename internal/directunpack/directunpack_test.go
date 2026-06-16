@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -783,4 +784,107 @@ func TestDirectUnpack_SkipsNonRAR(t *testing.T) {
 	if !strings.Contains(s.Reason, "RAR3/RAR5") {
 		t.Errorf("expected skip reason to mention RAR3/RAR5, got: %q", s.Reason)
 	}
+}
+
+// waitForGoroutines polls runtime.NumGoroutine() until it drops to at most
+// target, or fails the test when the deadline elapses. This is a
+// poll-until-condition guard (no fixed time.Sleep for synchronization); the
+// only time-based element is the deadline that t.Fatals, which is permitted.
+func waitForGoroutines(t *testing.T, target int, deadline time.Duration, msg string) {
+	t.Helper()
+	timeout := time.After(deadline)
+	for {
+		runtime.GC() // let any just-finished goroutines be observed as gone
+		if runtime.NumGoroutine() <= target {
+			return
+		}
+		select {
+		case <-timeout:
+			t.Fatalf("%s: goroutines did not return to baseline %d within %s (now %d)",
+				msg, target, deadline, runtime.NumGoroutine())
+		default:
+			// Yield to the scheduler and re-check without a fixed sleep.
+			runtime.Gosched()
+		}
+	}
+}
+
+// TestDirectUnpack_ExtractSet_FeederNoLeakOnEarlyError proves that when
+// extractSet returns early because extractEntries fails, the volume feeder
+// goroutine started by startVolumeFeed is unblocked and exits promptly rather
+// than leaking (along with the *os.File it holds) until the job context is
+// cancelled.
+//
+// Setup that guarantees the feeder is still alive at the moment of the early
+// return: totalVolumes is set to 10 but only volume 1 is present on disk, so
+// the feeder must either still be trying to send volume 1 on the unbuffered
+// volumesChan, or be blocked in waitForVolume awaiting volume 2. The early
+// error is triggered deterministically by making extractDir read-only, so the
+// first os.OpenFile/MkdirAll inside extractEntries fails immediately,
+// independent of rarengine streaming timing.
+//
+// On the unfixed code (extractSet watches only the caller ctx and never
+// cancels on its own early return), the feeder stays blocked forever and this
+// test fails at the deadline. With the WithCancel/defer cancel() fix, the
+// feeder's ctx.Done() / waitForVolume select fires and the goroutine exits.
+func TestDirectUnpack_ExtractSet_FeederNoLeakOnEarlyError(t *testing.T) {
+	srcDir := testdataDir(t)
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+
+	vol1 := copyRAR(t, srcDir, workDir, "multi_new.part01.rar")
+
+	du := New(
+		testLogger(t),
+		"test-job",
+		workDir,
+		extractDir,
+		Options{},
+	)
+
+	const setname = "multi_new"
+	// Volume 1 present and recorded; declare 10 total so the feeder always has
+	// more work pending after volume 1.
+	du.mu.Lock()
+	du.totalVolumes[setname] = 10
+	du.completedVols[setname] = map[int]string{1: vol1}
+	du.mu.Unlock()
+
+	// Force the early error: an unwritable extract directory makes the first
+	// file write in extractEntries fail before any volume-2 data is needed.
+	if err := os.Chmod(extractDir, 0o500); err != nil {
+		t.Fatalf("chmod extractDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(extractDir, 0o700) })
+
+	// Quiesce so the baseline excludes scheduler-transient goroutines.
+	runtime.GC()
+	baseline := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Deliberately do NOT defer cancel() before the assertion: cancelling here
+	// would mask the leak by unblocking the feeder via the caller ctx. The
+	// whole point is that extractSet must unblock the feeder on its own.
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- du.extractSet(ctx, setname)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected extractSet to return an error (unwritable extractDir), got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("extractSet did not return within 5s")
+	}
+
+	// extractSet has returned. On fixed code its deferred cancel has already
+	// fired, so the feeder must be gone. Poll back to baseline (one feeder
+	// goroutine above baseline is the leak). The deadline t.Fatal is the only
+	// time-based element and is allowed as a guard.
+	waitForGoroutines(t, baseline, 5*time.Second,
+		"feeder goroutine leaked after extractSet early return")
 }
