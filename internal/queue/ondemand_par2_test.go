@@ -216,4 +216,48 @@ func TestUndeferRecoveryVolumes_Edges(t *testing.T) {
 	}
 }
 
+func TestDiscardDeferredPar2(t *testing.T) {
+	q := New()
+	job, err := NewJob(par2NZB(), AddOptions{Filename: "m.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := q.SnapshotJob(job.ID)
+	if !snap.HasDeferredPar2() {
+		t.Fatal("expected deferred par2 files")
+	}
+
+	initialTotalBytes := snap.TotalBytes
+	deferredBytes := snap.Files[2].Bytes
+
+	if err := q.DiscardDeferredPar2("missing"); err == nil {
+		t.Error("expected error for missing job")
+	}
+
+	if err := q.DiscardDeferredPar2(job.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	snap = q.SnapshotJob(job.ID)
+	if snap.HasDeferredPar2() {
+		t.Error("expected no deferred par2 files after discard")
+	}
+
+	if len(snap.Files) != 2 { // movie.mkv + movie.par2
+		t.Errorf("len(Files) = %d, want 2", len(snap.Files))
+	}
+
+	if snap.TotalBytes != initialTotalBytes-deferredBytes {
+		t.Errorf("TotalBytes = %d, want %d", snap.TotalBytes, initialTotalBytes-deferredBytes)
+	}
+
+	if snap.RemainingBytes != snap.TotalBytes {
+		t.Errorf("RemainingBytes = %d, want %d", snap.RemainingBytes, snap.TotalBytes)
+	}
+}
+
 
