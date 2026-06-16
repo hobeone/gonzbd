@@ -870,6 +870,39 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 	return nil
 }
 
+// DiscardDeferredPar2 removes all deferred par2 files from the job,
+// adjusting TotalBytes and RemainingBytes.
+func (q *Queue) DiscardDeferredPar2(jobID string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+
+	var activeFiles []JobFile
+	var discardedBytes int64
+	for _, f := range job.Files {
+		if f.Deferred {
+			discardedBytes += f.Bytes
+		} else {
+			activeFiles = append(activeFiles, f)
+		}
+	}
+
+	if discardedBytes > 0 {
+		job.Files = activeFiles
+		job.TotalBytes -= discardedBytes
+		job.RemainingBytes -= discardedBytes
+		if job.RemainingBytes < 0 {
+			job.RemainingBytes = 0
+		}
+		job.recomputePending()
+		q.dirty.Store(true)
+	}
+	return nil
+}
+
 
 
 // undeferRecoveryLocked clears Deferred on the given file indices of job. If
