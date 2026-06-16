@@ -151,3 +151,42 @@ func TestCheckContainment_WalkErr(t *testing.T) {
 		t.Fatal("expected error for unreadable subdirectory, got nil")
 	}
 }
+
+func TestPathWithin(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		base   string
+		target string
+		want   bool
+	}{
+		// Equal
+		{"/a/b", "/a/b", true},
+		{"/a/b/", "/a/b", true},
+		{"/a/b", "/a/b/", true},
+		// Nested
+		{"/a/b", "/a/b/c", true},
+		{"/a/b", "/a/b/c/d", true},
+		// Escape
+		{"/a/b", "/a", false},
+		{"/a/b", "/a/bc", false},
+		{"/a/b", "/a/b_suffix", false},
+		{"/a/b", "/a/b/../c", false},    // resolves to /a/c, which escapes /a/b
+		{"/a/b", "/a/b/../../c", false}, // resolves to /c, which escapes
+		// Relative paths
+		{"a/b", "a/b/c", true},
+		{"a/b", "a/c", false},
+		{"a/b", "a/b/../c", false},
+		// Mixed absolute/relative
+		{"/a/b", "/a/b/c/..", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.base+" ↔ "+tt.target, func(t *testing.T) {
+			got := PathWithin(tt.base, tt.target)
+			if got != tt.want {
+				t.Errorf("PathWithin(%q, %q) = %t, want %t", tt.base, tt.target, got, tt.want)
+			}
+		})
+	}
+}
