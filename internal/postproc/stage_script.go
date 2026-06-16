@@ -77,7 +77,7 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 
 	name := job.Queue.Script
 	if name == "" || name == "None" {
-		logf(log, job, slog.LevelDebug, "No script configured")
+		logf(ctx, log, job, slog.LevelDebug, "No script configured")
 		return nil
 	}
 	scriptPath := name
@@ -99,7 +99,7 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		status = 1
 	}
 
-	logf(log, job, slog.LevelInfo, "Running: %s", scriptPath)
+	logf(ctx, log, job, slog.LevelInfo, "Running: %s", scriptPath)
 
 	in := ScriptInput{
 		FinalDir:    job.DownloadDir,
@@ -122,7 +122,7 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 			}
 		},
 	}
-	logf(log, job, slog.LevelInfo, "Script env: dir=%s, category=%s, status=%d, job=%s",
+	logf(ctx, log, job, slog.LevelInfo, "Script env: dir=%s, category=%s, status=%d, job=%s",
 		in.FinalDir, in.Category, in.Status, in.JobName)
 
 	res := RunScript(ctx, scriptPath, in)
@@ -132,19 +132,19 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		job.OutputLines = append(job.OutputLines,
 			toolOutputLines(res.LogBody)...)
 	}
-	logf(log, job, slog.LevelInfo, "Exit code: %d (%.1fs)", res.ExitCode, res.Duration.Seconds())
+	logf(ctx, log, job, slog.LevelInfo, "Exit code: %d (%.1fs)", res.ExitCode, res.Duration.Seconds())
 
 	if res.Err != nil {
 		if errors.Is(res.Err, ErrNonZeroExit) {
-			logf(log, job, slog.LevelWarn, "Error: script %q exited %d", name, res.ExitCode)
+			logf(ctx, log, job, slog.LevelWarn, "Error: script %q exited %d", name, res.ExitCode)
 			if s.scriptCanFail.Load() {
 				// Log but don't fail the pipeline.
-				logf(log, job, slog.LevelInfo, "script_can_fail=true: ignoring non-zero exit")
+				logf(ctx, log, job, slog.LevelInfo, "script_can_fail=true: ignoring non-zero exit")
 				return nil
 			}
 			return fmt.Errorf("script %q exited %d", name, res.ExitCode)
 		}
-		logf(log, job, slog.LevelWarn, "Error: script %q failed: %v", name, res.Err)
+		logf(ctx, log, job, slog.LevelWarn, "Error: script %q failed: %v", name, res.Err)
 		return fmt.Errorf("script %q: %w", name, res.Err)
 	}
 	return nil

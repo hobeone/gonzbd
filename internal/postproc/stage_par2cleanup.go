@@ -40,7 +40,7 @@ func (*Par2CleanupStage) Name() string { return "par2_cleanup" }
 
 // Run deletes all par2 files and par2 backup files from job.DownloadDir.
 // Skipped when Cleanup is false, or when repair or unpack has failed.
-func (s *Par2CleanupStage) Run(_ context.Context, job *Job) error {
+func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	log := s.Log
 	if log == nil {
 		log = slog.Default()
@@ -52,11 +52,11 @@ func (s *Par2CleanupStage) Run(_ context.Context, job *Job) error {
 	}
 
 	if job.ParError {
-		logf(log, job, slog.LevelInfo, "Keeping par2 files (repair failed)")
+		logf(ctx, log, job, slog.LevelInfo, "Keeping par2 files (repair failed)")
 		return nil
 	}
 	if job.UnpackError {
-		logf(log, job, slog.LevelInfo, "Keeping par2 files (unpack failed)")
+		logf(ctx, log, job, slog.LevelInfo, "Keeping par2 files (unpack failed)")
 		return nil
 	}
 
@@ -79,7 +79,7 @@ func (s *Par2CleanupStage) Run(_ context.Context, job *Job) error {
 		}
 	}
 	if cleaned > 0 {
-		logf(log, job, slog.LevelInfo, "Cleaned up %d par2 file(s)", cleaned)
+		logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d par2 file(s)", cleaned)
 	}
 
 	// Par2 repair creates backup copies of damaged files by appending
@@ -88,7 +88,7 @@ func (s *Par2CleanupStage) Run(_ context.Context, job *Job) error {
 	// RAR magic bytes in a ".1" file and incorrectly appends ".rar").
 	backups := cleanupPar2Backups(job.DownloadDir, log)
 	if backups > 0 {
-		logf(log, job, slog.LevelInfo, "Cleaned up %d par2 backup file(s)", backups)
+		logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d par2 backup file(s)", backups)
 	}
 
 	return nil

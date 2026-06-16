@@ -34,46 +34,46 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	log = log.With("component", "postproc/quickcheck", "job", job.Queue.ID)
 
 	if !q.enabled() {
-		logf(log, job, slog.LevelInfo, "quickcheck disabled — skipping CRC pre-verify, par2 repair will run")
+		logf(ctx, log, job, slog.LevelInfo, "quickcheck disabled — skipping CRC pre-verify, par2 repair will run")
 		job.OutputLines = append(job.OutputLines,
 			"[quickcheck] Disabled — par2 repair will run the full verify/repair step")
 		return nil
 	}
 
-	logf(log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)
+	logf(ctx, log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)
 
 	sets, err := par2.FindPar2Files(job.DownloadDir)
 	if err != nil {
-		logf(log, job, slog.LevelWarn, "quickcheck: failed to find par2 files: %v", err)
+		logf(ctx, log, job, slog.LevelWarn, "quickcheck: failed to find par2 files: %v", err)
 		return nil // non-fatal
 	}
 	if len(sets) == 0 {
-		logf(log, job, slog.LevelInfo, "quickcheck: no par2 files found, skipping")
+		logf(ctx, log, job, slog.LevelInfo, "quickcheck: no par2 files found, skipping")
 		job.OutputLines = append(job.OutputLines,
 			"[quickcheck] No par2 files found — skipping subdirectory relocation and CRC verification")
 		return nil
 	}
 
-	logf(log, job, slog.LevelInfo, "quickcheck: found %d par2 set(s), checking for subdirectory entries", len(sets))
+	logf(ctx, log, job, slog.LevelInfo, "quickcheck: found %d par2 set(s), checking for subdirectory entries", len(sets))
 	job.OutputLines = append(job.OutputLines,
 		fmt.Sprintf("[quickcheck] Found %d par2 set(s)", len(sets)))
 
 	renames, err := par2.QuickCheck(job.DownloadDir, sets, log)
 	if err != nil {
-		logf(log, job, slog.LevelWarn, "quickcheck: %v", err)
+		logf(ctx, log, job, slog.LevelWarn, "quickcheck: %v", err)
 		job.OutputLines = append(job.OutputLines,
 			fmt.Sprintf("[quickcheck] Error: %v", err))
 		return nil // non-fatal
 	}
 
 	if len(renames) > 0 {
-		logf(log, job, slog.LevelInfo, "quickcheck: relocated %d file(s) into subdirectories", len(renames))
+		logf(ctx, log, job, slog.LevelInfo, "quickcheck: relocated %d file(s) into subdirectories", len(renames))
 		for _, r := range renames {
 			job.OutputLines = append(job.OutputLines,
 				fmt.Sprintf("[quickcheck] %s → %s", r.From, r.To))
 		}
 	} else {
-		logf(log, job, slog.LevelInfo, "quickcheck: no files needed relocation")
+		logf(ctx, log, job, slog.LevelInfo, "quickcheck: no files needed relocation")
 		job.OutputLines = append(job.OutputLines,
 			"[quickcheck] No files needed subdirectory relocation")
 	}
@@ -105,7 +105,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 					crcResult.Matched, crcResult.Checked+crcResult.NoCRC))
 
 			if crcResult.Mismatched > 0 {
-				logf(log, job, slog.LevelWarn,
+				logf(ctx, log, job, slog.LevelWarn,
 					"quickcheck: CRC MISMATCH detected — %d file(s) corrupted",
 					crcResult.Mismatched)
 				for _, f := range crcResult.Files {
@@ -128,7 +128,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 
 		// Report par2 entries that couldn't be matched to any assembled file.
 		if crcResult.Unverified > 0 {
-			logf(log, job, slog.LevelWarn,
+			logf(ctx, log, job, slog.LevelWarn,
 				"quickcheck: %d par2-tracked file(s) not found by name",
 				crcResult.Unverified)
 		}
@@ -136,19 +136,19 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 		// Decision: can we skip par2 repair?
 		switch {
 		case unverifiable > 0:
-			logf(log, job, slog.LevelInfo,
+			logf(ctx, log, job, slog.LevelInfo,
 				"quickcheck: %d/%d par2-tracked files verified OK, %d could not be verified — par2 repair will run",
 				crcResult.Matched, crcResult.Matched+unverifiable, unverifiable)
 			job.OutputLines = append(job.OutputLines,
 				fmt.Sprintf("[quickcheck] %d file(s) need par2 verification — repair stage will run",
 					unverifiable))
 		case crcResult.Checked > 0:
-			logf(log, job, slog.LevelInfo,
+			logf(ctx, log, job, slog.LevelInfo,
 				"quickcheck: all %d par2-tracked files verified OK — skipping par2 repair",
 				crcResult.Matched)
 			job.QuickCheckPassed = true
 		default:
-			logf(log, job, slog.LevelInfo,
+			logf(ctx, log, job, slog.LevelInfo,
 				"quickcheck: no files could be CRC-verified — par2 repair will run")
 			job.OutputLines = append(job.OutputLines,
 				"[quickcheck] No CRC data available — par2 repair will run")

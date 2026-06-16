@@ -110,7 +110,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	// we can skip PAR2 repair entirely. The files are already extracted
 	// and healthy, and the source archives will be deleted anyway.
 	if len(job.DirectUnpackSets) > 0 && len(job.DirectUnpackFailures) == 0 && len(job.DirectUnpackSkipped) == 0 {
-		logf(log, job, slog.LevelInfo, "Direct Unpack successfully extracted all sets — skipping par2 repair")
+		logf(ctx, log, job, slog.LevelInfo, "Direct Unpack successfully extracted all sets — skipping par2 repair")
 		job.OutputLines = append(job.OutputLines,
 			"[repair] Skipped: Direct Unpack successfully extracted all archives during download")
 		return nil
@@ -121,13 +121,13 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	// healthy job. Par2 cleanup is handled by the separate par2_cleanup
 	// stage that runs after unpack.
 	if job.QuickCheckPassed {
-		logf(log, job, slog.LevelInfo, "QuickCheck verified all CRCs — skipping par2 repair")
+		logf(ctx, log, job, slog.LevelInfo, "QuickCheck verified all CRCs — skipping par2 repair")
 		job.OutputLines = append(job.OutputLines,
 			"[repair] Skipped: QuickCheck already verified all file CRCs")
 		return nil
 	}
 
-	logf(log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)
+	logf(ctx, log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)
 
 	sets, err := par2.FindPar2Files(job.DownloadDir)
 	if err != nil {
@@ -137,14 +137,14 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 
 	vs := NewVerifiedSets(job.DownloadDir)
 	if vs.AllVerified() {
-		logf(log, job, slog.LevelInfo, "All par2 sets previously verified, skipping repair")
+		logf(ctx, log, job, slog.LevelInfo, "All par2 sets previously verified, skipping repair")
 		job.OutputLines = append(job.OutputLines, "[repair] All sets previously verified — skipping")
 		return nil
 	}
 
 	var firstErr error
 	if len(sets) > 0 {
-		logf(log, job, slog.LevelInfo, "Found %d par2 set(s)", len(sets))
+		logf(ctx, log, job, slog.LevelInfo, "Found %d par2 set(s)", len(sets))
 
 		// Collect all non-par2 files in the download directory to pass as
 		// extra arguments. This lets par2 checksum-match files even when
@@ -155,7 +155,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 			job.ParError = true
 			return fmt.Errorf("repair: scan data files: %w", scanErr)
 		}
-		logf(log, job, slog.LevelInfo, "Found %d non-par2 data file(s) for checksum matching", len(dataFiles))
+		logf(ctx, log, job, slog.LevelInfo, "Found %d non-par2 data file(s) for checksum matching", len(dataFiles))
 
 		for _, set := range sets {
 			if err := s.processPar2Set(ctx, log, job, set, dataFiles, par2Opts, vs, useGoPar2Val, goPar2FallbackVal); err != nil {
@@ -165,7 +165,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 			}
 		}
 	} else {
-		logf(log, job, slog.LevelInfo, "No par2 files found")
+		logf(ctx, log, job, slog.LevelInfo, "No par2 files found")
 	}
 
 	return firstErr
@@ -185,11 +185,11 @@ func (s *RepairStage) processPar2Set(
 ) error {
 	main := set.ParseFile()
 	if main == "" {
-		logf(log, job, slog.LevelInfo, "Skipped par2 set %q: no main file", set.Name)
+		logf(ctx, log, job, slog.LevelInfo, "Skipped par2 set %q: no main file", set.Name)
 		return nil
 	}
 	if vs.IsVerified(set.Name) {
-		logf(log, job, slog.LevelInfo, "Skipping previously verified set %q", set.Name)
+		logf(ctx, log, job, slog.LevelInfo, "Skipping previously verified set %q", set.Name)
 		job.OutputLines = append(job.OutputLines,
 			fmt.Sprintf("[repair] Skipping previously verified set: %s", set.Name))
 		return nil
@@ -202,7 +202,7 @@ func (s *RepairStage) processPar2Set(
 		}
 	}
 	repairOpts.OnCommand = func(cmdLine string) {
-		logf(log, job, slog.LevelInfo, "Running: %s", cmdLine)
+		logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
 	}
 
 	// Dispatch: native par2engine vs external par2 binary.
@@ -217,12 +217,13 @@ func (s *RepairStage) processPar2Set(
 		job.OutputLines = append(job.OutputLines, toolOutputLines(res.Output)...)
 	}
 
-	return s.handleRepairResult(log, job, set, vs, res, err)
+	return s.handleRepairResult(ctx, log, job, set, vs, res, err)
 }
 
 // handleRepairResult evaluates the repair result: classifies errors, records failures,
 // or registers successful repairs in job state.
 func (s *RepairStage) handleRepairResult(
+	ctx context.Context,
 	log *slog.Logger,
 	job *Job,
 	set par2.Set,
@@ -233,7 +234,7 @@ func (s *RepairStage) handleRepairResult(
 	if err != nil {
 		job.ParError = true
 		vs.MarkVerified(set.Name, false)
-		logf(log, job, slog.LevelWarn, "Error: par2 repair %q failed: %v", set.Name, err)
+		logf(ctx, log, job, slog.LevelWarn, "Error: par2 repair %q failed: %v", set.Name, err)
 		return fmt.Errorf("repair %q: %w", set.Name, err)
 	}
 
@@ -248,7 +249,7 @@ func (s *RepairStage) handleRepairResult(
 			job.RequeueReason = fmt.Sprintf(
 				"par2 needs %d more recovery blocks for %q",
 				res.BlocksNeeded, set.Name)
-			logf(log, job, slog.LevelWarn,
+			logf(ctx, log, job, slog.LevelWarn,
 				"Par2 repair %q needs %d more blocks — repair not possible with current data",
 				set.Name, res.BlocksNeeded)
 			return fmt.Errorf("repair %q: need %d more recovery blocks", set.Name, res.BlocksNeeded)
@@ -260,17 +261,17 @@ func (s *RepairStage) handleRepairResult(
 			job.RequeueReason = fmt.Sprintf(
 				"par2 main file corrupt/missing for %q — re-download needed",
 				set.Name)
-			logf(log, job, slog.LevelWarn,
+			logf(ctx, log, job, slog.LevelWarn,
 				"Par2 main file corrupt/missing for %q — repair not possible",
 				set.Name)
 			return fmt.Errorf("repair %q: main par2 file corrupt or missing", set.Name)
 		}
 
-		logf(log, job, slog.LevelWarn, "Error: par2 repair %q unsuccessful (exit=%d)", set.Name, res.ExitCode)
+		logf(ctx, log, job, slog.LevelWarn, "Error: par2 repair %q unsuccessful (exit=%d)", set.Name, res.ExitCode)
 		return fmt.Errorf("repair %q: unsuccessful (exit=%d)", set.Name, res.ExitCode)
 	}
 
-	recordRepairSuccess(log, set, job, vs, res)
+	recordRepairSuccess(ctx, log, set, job, vs, res)
 	return nil
 }
 
@@ -293,7 +294,7 @@ func dispatchRepairTool(
 		}
 		if _, lookErr := exec.LookPath(par2Bin); lookErr != nil {
 			useGoPar2 = true // external not found, fall back to native
-			logf(log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_par2", par2Bin)
+			logf(ctx, log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_par2", par2Bin)
 		}
 	}
 
@@ -301,7 +302,7 @@ func dispatchRepairTool(
 		return par2.RepairWith(ctx, repairOpts, main, dataFiles...)
 	}
 
-	logf(log, job, slog.LevelInfo, "Using go_par2 for PAR2 (native Go)")
+	logf(ctx, log, job, slog.LevelInfo, "Using go_par2 for PAR2 (native Go)")
 	res, err := par2.GoRepair(ctx, log, main, job.DownloadDir, func(line string) {
 		log.Info(line)
 		if job.OnOutput != nil {
@@ -324,7 +325,7 @@ func dispatchRepairTool(
 			if err != nil {
 				reason = err.Error()
 			}
-			logf(log, job, slog.LevelWarn,
+			logf(ctx, log, job, slog.LevelWarn,
 				"go_par2 result not successful (%s), retrying with external %s", reason, par2Bin)
 			if job.OnOutput != nil {
 				job.OnOutput("go_par2",
@@ -340,9 +341,9 @@ func dispatchRepairTool(
 // marks the set verified, records consumed par2 files, wires renames for
 // downstream deobfuscation, and protects joinables and repair sources from
 // premature cleanup deletion.
-func recordRepairSuccess(log *slog.Logger, set par2.Set, job *Job, vs *VerifiedSets, res par2.RepairResult) {
+func recordRepairSuccess(ctx context.Context, log *slog.Logger, set par2.Set, job *Job, vs *VerifiedSets, res par2.RepairResult) {
 	vs.MarkVerified(set.Name, true)
-	logf(log, job, slog.LevelInfo, "Par2 repair %q succeeded", set.Name)
+	logf(ctx, log, job, slog.LevelInfo, "Par2 repair %q succeeded", set.Name)
 
 	// M7: record par2 files as consumed for cleanup protection.
 	if job.ConsumedFiles == nil {
@@ -367,7 +368,7 @@ func recordRepairSuccess(log *slog.Logger, set par2.Set, job *Job, vs *VerifiedS
 		}
 		for canonical, onDisk := range res.Parsed.Renames {
 			job.Par2Renames[canonical] = onDisk
-			logf(log, job, slog.LevelInfo, "Par2 rename: %q → %q", onDisk, canonical)
+			logf(ctx, log, job, slog.LevelInfo, "Par2 rename: %q → %q", onDisk, canonical)
 		}
 	}
 
@@ -381,7 +382,7 @@ func recordRepairSuccess(log *slog.Logger, set par2.Set, job *Job, vs *VerifiedS
 		job.ConsumedFiles[filepath.Join(job.DownloadDir, rf)] = struct{}{}
 	}
 	if n := len(res.Parsed.UsedJoinables) + len(res.Parsed.UsedForRepair); n > 0 {
-		logf(log, job, slog.LevelInfo,
+		logf(ctx, log, job, slog.LevelInfo,
 			"Par2 consumed %d joinable(s) + %d repair source(s) → protected from cleanup",
 			len(res.Parsed.UsedJoinables), len(res.Parsed.UsedForRepair))
 	}

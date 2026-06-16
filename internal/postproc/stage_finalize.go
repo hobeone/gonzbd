@@ -61,14 +61,14 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 		if folderRename && job.DownloadDir != "" {
 			failedDir := prefixDirName(job.DownloadDir, "_FAILED_")
 			if err := os.Rename(job.DownloadDir, failedDir); err == nil {
-				logf(log, job, slog.LevelInfo, "Renamed to %s", failedDir)
+				logf(ctx, log, job, slog.LevelInfo, "Renamed to %s", failedDir)
 				job.DownloadDir = failedDir
 			} else {
-				logf(log, job, slog.LevelWarn, "Failed to add _FAILED_ prefix: %v", err)
+				logf(ctx, log, job, slog.LevelWarn, "Failed to add _FAILED_ prefix: %v", err)
 			}
 		}
 
-		logf(log, job, slog.LevelInfo, "Skipped final move: files remain in download directory (%s)", strings.Join(reasons, "; "))
+		logf(ctx, log, job, slog.LevelInfo, "Skipped final move: files remain in download directory (%s)", strings.Join(reasons, "; "))
 		return nil // Skip move if failed, so files stay in DownloadDir for retry
 	}
 
@@ -77,7 +77,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	if job.DownloadDir == job.FinalDir {
-		logf(log, job, slog.LevelInfo, "Already at final location: %s", job.FinalDir)
+		logf(ctx, log, job, slog.LevelInfo, "Already at final location: %s", job.FinalDir)
 		return nil // Already there (e.g. one-shot download directly to target)
 	}
 
@@ -87,7 +87,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 		dest = prefixDirName(job.FinalDir, "_UNPACK_")
 	}
 
-	logf(log, job, slog.LevelInfo, "Moving %s → %s", job.DownloadDir, dest)
+	logf(ctx, log, job, slog.LevelInfo, "Moving %s → %s", job.DownloadDir, dest)
 
 	// Create parent directory for final destination
 	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
@@ -99,15 +99,15 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	// not-empty (ENOTEMPTY/EEXIST) errors — the latter allows
 	// merging files into an existing destination directory.
 	if err := os.Rename(job.DownloadDir, dest); err == nil {
-		logf(log, job, slog.LevelInfo, "%s → %s (atomic rename)", job.DownloadDir, dest)
+		logf(ctx, log, job, slog.LevelInfo, "%s → %s (atomic rename)", job.DownloadDir, dest)
 		job.DownloadDir = dest
 		// If FolderRename is active, strip the _UNPACK_ prefix now.
 		if folderRename {
 			if err := os.Rename(dest, job.FinalDir); err != nil {
-				logf(log, job, slog.LevelWarn, "Failed to strip _UNPACK_ prefix: %v", err)
+				logf(ctx, log, job, slog.LevelWarn, "Failed to strip _UNPACK_ prefix: %v", err)
 				// Not fatal — files are in _UNPACK_ dir but accessible.
 			} else {
-				logf(log, job, slog.LevelInfo, "%s → %s (prefix stripped)", dest, job.FinalDir)
+				logf(ctx, log, job, slog.LevelInfo, "%s → %s (prefix stripped)", dest, job.FinalDir)
 				job.DownloadDir = job.FinalDir
 			}
 		}
@@ -115,7 +115,7 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	} else if !fsutil.IsRenameMergeNeeded(err) {
 		return fmt.Errorf("finalize: rename %s -> %s: %w", job.DownloadDir, dest, err)
 	} else {
-		logf(log, job, slog.LevelInfo, "Atomic rename failed (%v), falling back to file-by-file move", err)
+		logf(ctx, log, job, slog.LevelInfo, "Atomic rename failed (%v), falling back to file-by-file move", err)
 	}
 
 	// Fallback: If os.Rename failed (e.g. cross-device), move file by file.
@@ -134,22 +134,22 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 		dst := fsutil.JoinSafe(dest, "", e.Name(), job.Sanitize)
 		if err := moveRecursive(ctx, src, dst); err != nil {
 			moveErrors = append(moveErrors, fmt.Errorf("finalize: move %s -> %s: %w", src, dst, err))
-			logf(log, job, slog.LevelWarn, "Failed to move %s → %s: %v", filepath.Base(src), dst, err)
+			logf(ctx, log, job, slog.LevelWarn, "Failed to move %s → %s: %v", filepath.Base(src), dst, err)
 			continue
 		}
-		logf(log, job, slog.LevelInfo, "%s → %s", filepath.Base(src), dst)
+		logf(ctx, log, job, slog.LevelInfo, "%s → %s", filepath.Base(src), dst)
 	}
 
 	if len(moveErrors) > 0 {
 		// Some files failed to move — do NOT remove the source directory
 		// to avoid data loss of the unmoved files.
-		logf(log, job, slog.LevelWarn, "Partial move: %d file(s) failed, keeping source directory %s", len(moveErrors), job.DownloadDir)
+		logf(ctx, log, job, slog.LevelWarn, "Partial move: %d file(s) failed, keeping source directory %s", len(moveErrors), job.DownloadDir)
 		return errors.Join(moveErrors...)
 	}
 
 	// All files moved successfully — clean up the empty source directory.
 	_ = os.RemoveAll(job.DownloadDir)
-	logf(log, job, slog.LevelInfo, "Removed empty source directory: %s", job.DownloadDir)
+	logf(ctx, log, job, slog.LevelInfo, "Removed empty source directory: %s", job.DownloadDir)
 
 	// Update DownloadDir.
 	job.DownloadDir = dest
@@ -157,9 +157,9 @@ func (f *FinalizeStage) Run(ctx context.Context, job *Job) error {
 	// Strip _UNPACK_ prefix if FolderRename is active.
 	if folderRename {
 		if err := os.Rename(dest, job.FinalDir); err != nil {
-			logf(log, job, slog.LevelWarn, "Failed to strip _UNPACK_ prefix: %v", err)
+			logf(ctx, log, job, slog.LevelWarn, "Failed to strip _UNPACK_ prefix: %v", err)
 		} else {
-			logf(log, job, slog.LevelInfo, "%s → %s (prefix stripped)", dest, job.FinalDir)
+			logf(ctx, log, job, slog.LevelInfo, "%s → %s (prefix stripped)", dest, job.FinalDir)
 			job.DownloadDir = job.FinalDir
 		}
 	}

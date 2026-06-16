@@ -1,6 +1,7 @@
 package postproc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -205,7 +206,7 @@ func TestHandleRepairResult_ErrorPath(t *testing.T) {
 	stage := &RepairStage{}
 
 	underlying := fmt.Errorf("par2 crashed with code 137")
-	err := stage.handleRepairResult(slog.Default(), job, set, vs, par2.RepairResult{}, underlying)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, vs, par2.RepairResult{}, underlying)
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -239,7 +240,7 @@ func TestHandleRepairResult_NeedMoreBlocks(t *testing.T) {
 		NeedMoreBlocks: true,
 		BlocksNeeded:   42,
 	}
-	err := stage.handleRepairResult(slog.Default(), job, set, vs, res, nil)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, vs, res, nil)
 
 	if err == nil {
 		t.Fatal("expected error for NeedMoreBlocks")
@@ -271,7 +272,7 @@ func TestHandleRepairResult_InvalidPar2(t *testing.T) {
 		Success: false,
 		Parsed:  &par2.RepairOutput{Status: par2.StatusInvalidPar2},
 	}
-	err := stage.handleRepairResult(slog.Default(), job, set, vs, res, nil)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, vs, res, nil)
 
 	if err == nil {
 		t.Fatal("expected error for InvalidPar2")
@@ -303,7 +304,7 @@ func TestHandleRepairResult_UnsuccessfulGeneric(t *testing.T) {
 		Success:  false,
 		ExitCode: 2,
 	}
-	err := stage.handleRepairResult(slog.Default(), job, set, vs, res, nil)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, vs, res, nil)
 
 	if err == nil {
 		t.Fatal("expected error for generic unsuccessful repair")
@@ -329,7 +330,7 @@ func TestHandleRepairResult_Success(t *testing.T) {
 	stage := &RepairStage{}
 
 	res := par2.RepairResult{Success: true}
-	err := stage.handleRepairResult(slog.Default(), job, set, vs, res, nil)
+	err := stage.handleRepairResult(context.Background(), slog.Default(), job, set, vs, res, nil)
 
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
