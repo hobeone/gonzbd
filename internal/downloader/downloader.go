@@ -477,6 +477,10 @@ func (d *Downloader) SetDispatchOptions(maxArtTries, maxArtOpt int, topOnly bool
 	d.optsMu.Unlock()
 }
 
+func (d *Downloader) SetOnJobHopeless(cb func(jobID string)) {
+	d.onJobHopeless = cb
+}
+
 // IsPaused reports the downloader's own pause flag. Orthogonal to
 // queue.IsPaused; either being true suppresses dispatch.
 func (d *Downloader) IsPaused() bool { return d.paused.Load() }

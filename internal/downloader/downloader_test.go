@@ -1120,6 +1120,26 @@ func TestServerStatus_MeterFields(t *testing.T) {
 	}
 }
 
+func TestDownloader_SetOnJobHopeless(t *testing.T) {
+	q := queue.New()
+	meter := bpsmeter.NewMeter(10*time.Second, time.Now)
+	d := New(q, nil, meter, Options{}, nil)
+
+	called := false
+	cb := func(jobID string) {
+		called = true
+	}
+	d.SetOnJobHopeless(cb)
+
+	if d.onJobHopeless == nil {
+		t.Fatal("expected onJobHopeless callback to be set")
+	}
+	d.onJobHopeless("test")
+	if !called {
+		t.Error("expected callback to be invoked")
+	}
+}
+
 // Dummy references to satisfy scripts/check_test_alignment. handleRequest and
 // connWorker are long-running goroutine workers exercised indirectly via
 // integration-level tests rather than direct unit tests.

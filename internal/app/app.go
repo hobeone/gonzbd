@@ -92,6 +92,25 @@ type dummyEmitter struct{}
 func (d dummyEmitter) Broadcast(_ Event) {
 }
 
+// Downloader defines the interface for the Usenet article downloader.
+type Downloader interface {
+	Start(ctx context.Context) error
+	Stop() error
+	Completions() <-chan *downloader.ArticleResult
+	SetSpeedLimit(bytesPerSec int64)
+	SetDispatchOptions(maxArtTries, maxArtOpt int, topOnly bool, propagationDelay time.Duration)
+	UnblockServer(name string) bool
+	ServerStatus() []downloader.ServerSnapshot
+	Speed() float64
+	SpeedLimit() int64
+	Pause()
+	Resume()
+	SetOnJobHopeless(cb func(jobID string))
+	DisconnectAll()
+}
+
+var _ Downloader = (*downloader.Downloader)(nil)
+
 // Application manages the download and post-processing pipeline.
 type Application struct {
 	version            string
@@ -104,7 +123,7 @@ type Application struct {
 
 	queue            *queue.Queue
 	historyRepo      *history.Repository
-	downloader       *downloader.Downloader
+	downloader       Downloader
 	assembler        *assembler.Assembler
 	postProcessor    *postproc.PostProcessor
 	pipeline         *pipeline
@@ -228,12 +247,13 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 			"cacheMiB", writeCacheBytes/(1024*1024))
 	}
 
-	servers := make([]*downloader.Server, len(serversConfig))
-	for i, sc := range serversConfig {
-		servers[i] = downloader.NewServer(sc)
+	if app.downloader == nil {
+		servers := make([]*downloader.Server, len(serversConfig))
+		for i, sc := range serversConfig {
+			servers[i] = downloader.NewServer(sc)
+		}
+		app.downloader = downloader.New(q, servers, app.meter, app.buildDownloaderOptions(), log)
 	}
-	d := downloader.New(q, servers, app.meter, app.buildDownloaderOptions(), log)
-	app.downloader = d
 
 	// Apply initial bandwidth limit from config.
 	var bandwidthMax int64
@@ -250,13 +270,13 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.bandwidthPerc.Store(int32(perc))
 	if bandwidthMax > 0 {
-		d.SetSpeedLimit(bandwidthMax * int64(perc) / 100)
+		app.downloader.SetSpeedLimit(bandwidthMax * int64(perc) / 100)
 	}
 
 	p := &pipeline{
 		log:         log.With("component", "pipeline"),
 		queue:       q,
-		completions: d.Completions(),
+		completions: app.downloader.Completions(),
 		downloadDir: dlDir,
 		sanitize:    sanitize,
 		onJobHopeless: func(jobID string) {
@@ -1719,6 +1739,11 @@ func (app *Application) buildDownloaderOptions() downloader.Options {
 			app.maybeFinalize(jobID, failMsgForJob(snap))
 		},
 	}
+}
+
+// WithDownloader returns an option that overrides the Application's downloader.
+func WithDownloader(d Downloader) func(*Application) {
+	return func(a *Application) { a.downloader = d }
 }
 
 // WithLogger returns an option that overrides the Application's logger.
