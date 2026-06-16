@@ -242,7 +242,21 @@ func (d *DirectUnpacker) Abort() {
 	// Clear results.
 	d.successSets = make(map[string]SuccessSet)
 	d.nextSets = nil
+
+	// If run() never started, it will never close d.done. Close it here so
+	// Done()/Wait() observers unblock, and skip the wait below. run()'s
+	// `defer close(d.done)` only fires when started==true (set under the lock
+	// before `go d.run` in Add), so this close and that one are mutually
+	// exclusive — d.done is never double-closed.
+	started := d.started
+	if !started {
+		close(d.done)
+	}
 	d.mu.Unlock()
+
+	if !started {
+		return
+	}
 
 	// Signal the reader goroutine to unblock.
 	select {
