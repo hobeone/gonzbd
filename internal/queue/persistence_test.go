@@ -569,3 +569,35 @@ func TestJob_RecomputePendingAndBuildArtIndex_Direct(t *testing.T) {
 		t.Fatal("expected to find art1")
 	}
 }
+
+func TestLoadJob_RecomputesPending(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs", "pending.json.gz")
+
+	j := makeMultiFileJob(t, "load-recompute", 1, 3)
+	// Make sure articles are not done or emitted so they are pending
+	j.Files[0].Articles[0].Done = false
+	j.Files[0].Articles[0].Emitted = false
+	j.Files[0].Articles[1].Done = false
+	j.Files[0].Articles[1].Emitted = false
+	j.Files[0].Articles[2].Done = false
+	j.Files[0].Articles[2].Emitted = false
+
+	if err := SaveJob(path, j); err != nil {
+		t.Fatalf("SaveJob: %v", err)
+	}
+
+	loaded, err := LoadJob(path)
+	if err != nil {
+		t.Fatalf("LoadJob: %v", err)
+	}
+
+	// Verify that loaded job has recomputed pending counters
+	if loaded.PendingArticles != 3 {
+		t.Errorf("loaded.PendingArticles = %d, want 3", loaded.PendingArticles)
+	}
+	if loaded.Files[0].Pending != 3 {
+		t.Errorf("loaded.Files[0].Pending = %d, want 3", loaded.Files[0].Pending)
+	}
+}

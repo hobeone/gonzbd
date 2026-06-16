@@ -196,6 +196,7 @@ func LoadJob(path string) (*Job, error) {
 	if err := readGzJSON(path, &job); err != nil {
 		return nil, err
 	}
+	job.recomputePending()
 	return &job, nil
 }
 
