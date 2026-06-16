@@ -407,7 +407,6 @@ func isSiteLocal(ip net.IP) bool {
 	return len(ip) == 16 && ip[0] == 0xfe && (ip[1]&0xc0) == 0xc0
 }
 
-
 // RetryAfterError is returned when HTTP 429 or 503 is encountered with a Retry-After header.
 type RetryAfterError struct {
 	StatusCode int

@@ -238,6 +238,9 @@ func (s *Scanner) Run(ctx context.Context, interval time.Duration) error {
 		case <-ticker.C:
 			count, err := s.ScanOnce(ctx)
 			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
 				s.logger.Warn("scan failed", "err", err)
 				continue
 			}
