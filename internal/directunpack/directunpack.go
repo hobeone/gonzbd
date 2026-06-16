@@ -90,9 +90,6 @@ type DirectUnpacker struct {
 	// All files in the job (for initial volume scan).
 	allFilenames []string
 
-	// Active volumes coordination.
-	activeSet string
-
 	// Coordination.
 	volumeReady chan struct{} // signaled when a new RAR volume finishes
 	done        chan struct{} // closed when run() exits
