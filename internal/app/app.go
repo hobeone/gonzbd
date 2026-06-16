@@ -40,8 +40,6 @@ var ErrAlreadyStarted = errors.New("app: already started")
 
 const defaultCheckpointInterval = 30 * time.Second
 
-
-
 // FileComplete is emitted on Application.FileComplete() when a file is done.
 type FileComplete struct {
 	JobID   string
@@ -56,8 +54,6 @@ type FileComplete struct {
 type JobComplete struct {
 	JobID string
 }
-
-
 
 // Downloader defines the interface for the Usenet article downloader.
 type Downloader interface {
@@ -83,10 +79,10 @@ type Application struct {
 	version            string
 	checkpointInterval time.Duration
 	log                *slog.Logger
-	mu      sync.Mutex
-	config  *config.Config
-	emitter EventEmitter
-	meter   *bpsmeter.Meter
+	mu                 sync.Mutex
+	config             *config.Config
+	emitter            EventEmitter
+	meter              *bpsmeter.Meter
 
 	queue            *queue.Queue
 	historyRepo      *history.Repository
@@ -130,8 +126,6 @@ type Application struct {
 	// Used to enforce DirectUnpackThreads concurrency limit.
 	activeDU atomic.Int32
 }
-
-
 
 // SetNotifier injects a notification dispatcher for lifecycle events.
 func (app *Application) SetNotifier(d *notifier.Dispatcher) {
@@ -678,8 +672,6 @@ func (app *Application) Start(ctx context.Context) error {
 	succeeded = true
 	return nil
 }
-
-
 
 // Shutdown stops the downloader, post-processor, and assembler, flushes the
 // cache, and persists the queue to disk. Safe to call multiple times.
@@ -1467,8 +1459,6 @@ func (app *Application) SetPropagationDelay(minutes int) {
 	app.pushDispatchOptions()
 }
 
-
-
 // pushDispatchOptions reads the current mutable dispatch fields under app.mu
 // and forwards them to the running downloader. Must not be called while
 // holding app.mu.
@@ -1537,8 +1527,6 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	}
 	return nil
 }
-
-
 
 // buildDownloaderOptions constructs a downloader.Options from the current
 // app config. Used by both New() and ReloadDownloader() to ensure the same
@@ -1749,5 +1737,3 @@ func writeGzFile(path string, data []byte) error {
 		return gz.Close()
 	})
 }
-
-
