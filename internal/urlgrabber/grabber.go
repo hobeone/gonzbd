@@ -368,9 +368,14 @@ func selectAndValidateIP(ips []string, allowPrivate bool) (string, error) {
 		if ip == nil {
 			continue
 		}
-		isPrivate := ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || cgNatNet.Contains(ip)
+		isPrivate := ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || isSiteLocal(ip) || cgNatNet.Contains(ip)
+		if !isPrivate {
+			if v4 := to4Safe(ip); v4 != nil {
+				isPrivate = v4.IsPrivate() || v4.IsLoopback() || v4.IsLinkLocalUnicast() || v4.IsUnspecified() || cgNatNet.Contains(v4)
+			}
+		}
 		if isPrivate {
-			return "", fmt.Errorf("resolves to private/loopback/unspecified: %s", ipStr)
+			return "", fmt.Errorf("resolves to private/loopback/unspecified/local: %s", ipStr)
 		}
 		if validIP == "" {
 			validIP = ipStr
@@ -381,6 +386,27 @@ func selectAndValidateIP(ips []string, allowPrivate bool) (string, error) {
 	}
 	return validIP, nil
 }
+
+// to4Safe converts IPv4-mapped and IPv4-compatible IPv6 addresses to IPv4.
+func to4Safe(ip net.IP) net.IP {
+	if v4 := ip.To4(); v4 != nil {
+		return v4
+	}
+	// Handle IPv4-compatible IPv6 addresses (first 12 bytes are 0).
+	if len(ip) == 16 &&
+		ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0 &&
+		ip[4] == 0 && ip[5] == 0 && ip[6] == 0 && ip[7] == 0 &&
+		ip[8] == 0 && ip[9] == 0 && ip[10] == 0 && ip[11] == 0 {
+		return ip[12:16]
+	}
+	return nil
+}
+
+// isSiteLocal IPv6 checks if the address is within fec0::/10.
+func isSiteLocal(ip net.IP) bool {
+	return len(ip) == 16 && ip[0] == 0xfe && (ip[1]&0xc0) == 0xc0
+}
+
 
 // RetryAfterError is returned when HTTP 429 or 503 is encountered with a Retry-After header.
 type RetryAfterError struct {

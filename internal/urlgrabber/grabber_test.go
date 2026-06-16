@@ -1083,6 +1083,9 @@ func TestSSRF_ObfuscatedEncodings(t *testing.T) {
 		"fc00::1",                  // IPv6 ULA (private)
 		"100.64.0.1",               // CGNAT
 		"0.0.0.0",                  // unspecified
+		"::127.0.0.1",              // IPv4-compatible IPv6 loopback (SSRF bypass)
+		"::10.0.0.1",               // IPv4-compatible IPv6 private (SSRF bypass)
+		"fec0::1",                  // Site-local IPv6 (SSRF bypass)
 	}
 
 	for _, host := range blockedIPs {
