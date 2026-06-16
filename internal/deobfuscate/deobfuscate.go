@@ -80,34 +80,48 @@ func IsProbablyObfuscated(log *slog.Logger, filename string) bool {
 
 	log.Debug("deobfuscate: checking", "basename", filebasename)
 
-	// — certainly obfuscated patterns —
+	if hasObfuscatedPattern(log, filebasename) {
+		return true
+	}
 
+	if hasNormalSignals(log, filebasename) {
+		return false
+	}
+
+	log.Debug("deobfuscate: obfuscated (default)")
+	return true
+}
+
+func hasObfuscatedPattern(log *slog.Logger, name string) bool {
 	// Exactly 32 lowercase hex digits.
-	if hex32.MatchString(filebasename) {
+	if hex32.MatchString(name) {
 		log.Debug("deobfuscate: obfuscated — 32 hex digits")
 		return true
 	}
 
 	// 40+ chars of lowercase hex + dots.
-	if hex40plus.MatchString(filebasename) {
+	if hex40plus.MatchString(name) {
 		log.Debug("deobfuscate: obfuscated — 40+ hex/dot chars")
 		return true
 	}
 
 	// Square-bracket tokens combined with a 30+ hex run.
-	if hex30.MatchString(filebasename) && len(squareBracketWord.FindAllString(filebasename, -1)) >= 2 {
+	if hex30.MatchString(name) && len(squareBracketWord.FindAllString(name, -1)) >= 2 {
 		log.Debug("deobfuscate: obfuscated — square brackets + 30-char hex")
 		return true
 	}
 
 	// Starts with the literal "abc.xyz" prefix.
-	if abcXyz.MatchString(filebasename) {
+	if abcXyz.MatchString(name) {
 		log.Debug("deobfuscate: obfuscated — abc.xyz prefix")
 		return true
 	}
 
-	// — signals for non-obfuscated names —
+	return false
+}
 
+//nolint:gocyclo // Sequence of five independent name heuristic checks
+func hasNormalSignals(log *slog.Logger, name string) bool {
 	// Count character categories. Intentionally ASCII-only to match the
 	// Python reference implementation. Non-ASCII runes (unicode letters,
 	// CJK, etc.) are not counted toward any bucket, which means filenames
@@ -118,7 +132,7 @@ func IsProbablyObfuscated(log *slog.Logger, filename string) bool {
 	upperchars := 0
 	lowerchars := 0
 	spacesdots := 0
-	for _, c := range filebasename {
+	for _, c := range name {
 		switch {
 		case c >= '0' && c <= '9':
 			decimals++
@@ -134,35 +148,34 @@ func IsProbablyObfuscated(log *slog.Logger, filename string) bool {
 	// "Great Distro" — mixed case with at least one separator.
 	if upperchars >= 2 && lowerchars >= 2 && spacesdots >= 1 {
 		log.Debug("deobfuscate: not obfuscated — mixed case + separator")
-		return false
+		return true
 	}
 
 	// "this is a download" — three or more separators.
 	if spacesdots >= 3 {
 		log.Debug("deobfuscate: not obfuscated — 3+ separators")
-		return false
+		return true
 	}
 
 	// "Beast 2020" — letters + year-like digits + separator.
 	if (upperchars+lowerchars >= 4) && decimals >= 4 && spacesdots >= 1 {
 		log.Debug("deobfuscate: not obfuscated — letters+digits+sep")
-		return false
+		return true
 	}
 
 	// "Catullus" — starts with capital, overwhelmingly lowercase.
-	if isCapitalStartMostlyLowercase(filebasename, lowerchars, upperchars) {
+	if isCapitalStartMostlyLowercase(name, lowerchars, upperchars) {
 		log.Debug("deobfuscate: not obfuscated — capital-start mostly-lowercase")
-		return false
+		return true
 	}
 
 	// Short simple words (like "alpha", "multi", "test") are not obfuscated.
-	if isShortSimpleWord(filebasename, upperchars, decimals, spacesdots) {
+	if isShortSimpleWord(name, upperchars, decimals, spacesdots) {
 		log.Debug("deobfuscate: not obfuscated — short simple word")
-		return false
+		return true
 	}
 
-	log.Debug("deobfuscate: obfuscated (default)")
-	return true
+	return false
 }
 
 // BiggestFile returns the largest file in paths (by size on disk). ok is true
