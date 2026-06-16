@@ -54,7 +54,7 @@ func TestIntegration_QueueUpdatedBroadcast(t *testing.T) {
 	// 2. Application, wired to a real WebSocket broadcaster via wsAdapter
 	// (mirrors cmd/gonzbd/main.go's production wiring).
 	dir := t.TempDir()
-	db, err := history.Open(filepath.Join(dir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
 	}

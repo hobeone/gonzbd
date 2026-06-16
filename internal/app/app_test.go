@@ -48,7 +48,7 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 		}},
 	}
 
-	db, _ := history.Open(filepath.Join(adminDir, "history.db"))
+	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	repo := history.NewRepository(db)
 	defer db.Close()
 
@@ -143,7 +143,7 @@ func TestDownloadLifecycleFailureStaysInIncomplete(t *testing.T) {
 		}},
 	}
 
-	db, _ := history.Open(filepath.Join(adminDir, "history.db"))
+	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	repo := history.NewRepository(db)
 	defer db.Close()
 
@@ -236,7 +236,7 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 
 	// 1. Start app, download job, check it moves to history and is removed from queue
 	{
-		db, err := history.Open(filepath.Join(adminDir, "history.db"))
+		db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 		if err != nil {
 			t.Fatalf("history.Open: %v", err)
 		}
@@ -308,7 +308,7 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 
 	// 2. Restart app, verify queue remains empty and history still has the job
 	{
-		db, err := history.Open(filepath.Join(adminDir, "history.db"))
+		db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 		if err != nil {
 			t.Fatalf("history.Open restart: %v", err)
 		}
@@ -372,7 +372,7 @@ func TestRetryHistoryJob(t *testing.T) {
 		}},
 	}
 
-	db, _ := history.Open(filepath.Join(adminDir, "history.db"))
+	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	repo := history.NewRepository(db)
 	defer db.Close()
 

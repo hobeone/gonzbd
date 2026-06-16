@@ -536,7 +536,7 @@ func buildAPIServerWithQueue(t *testing.T) (*api.Server, *httptest.Server) {
 	q := queue.New()
 
 	dir := t.TempDir()
-	db, err := history.Open(filepath.Join(dir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
 	}
@@ -588,7 +588,7 @@ func buildAPIServerWithValidConfig(t *testing.T) (*api.Server, *httptest.Server)
 	q := queue.New()
 
 	dir := t.TempDir()
-	db, err := history.Open(filepath.Join(dir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
 	}

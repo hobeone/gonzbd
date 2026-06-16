@@ -186,7 +186,7 @@ func NewTestApp(t *testing.T, mockAddr string) *app.Application {
 	dir := t.TempDir()
 	cfg := buildAppConfig(mockAddr, dir)
 
-	db, err := history.Open(filepath.Join(dir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
 	}

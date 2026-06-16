@@ -54,7 +54,7 @@ func newMockServer(t *testing.T, files []TestFile) *mocknntp.Server {
 func newTestAppWithDir(t *testing.T, mockAddr, downloadDir string) *app.Application {
 	t.Helper()
 
-	db, err := history.Open(filepath.Join(downloadDir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(downloadDir, "history.db"))
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
 	}

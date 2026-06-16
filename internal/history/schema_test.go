@@ -13,7 +13,7 @@ func TestOpen_InvalidPath(t *testing.T) {
 
 	t.Run("nonexistent directory", func(t *testing.T) {
 		t.Parallel()
-		_, err := Open("/nonexistent/deep/path/history.db")
+		_, err := Open(t.Context(), "/nonexistent/deep/path/history.db")
 		if err == nil {
 			t.Fatal("expected error for nonexistent directory")
 		}
@@ -23,7 +23,7 @@ func TestOpen_InvalidPath(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		// Try to open the directory itself as a database file.
-		_, err := Open(dir)
+		_, err := Open(t.Context(), dir)
 		if err == nil {
 			t.Fatal("expected error when path is a directory")
 		}
@@ -44,7 +44,7 @@ func TestAllColumns_CountMatchesScanEntry(t *testing.T) {
 	// the column list matches scanEntry's Scan call.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")
-	db, err := Open(path)
+	db, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

@@ -9,6 +9,7 @@
 package history
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -42,7 +43,7 @@ type DB struct {
 // reclaim free pages from prior deletes (spec §11.4).
 //
 // The returned *DB must be closed when the caller is done with it.
-func Open(path string) (*DB, error) {
+func Open(ctx context.Context, path string) (*DB, error) {
 	// Connection-scoped pragmas MUST be in the DSN for modernc.org/sqlite
 	// so they apply to every connection in the pool, not just one random
 	// checkout. journal_mode=WAL is database-scoped (persists on disk)
@@ -57,14 +58,14 @@ func Open(path string) (*DB, error) {
 	// many idle connections just wastes file descriptors.
 	sqlDB.SetMaxOpenConns(4)
 
-	if err := sqlDB.Ping(); err != nil {
+	if err := sqlDB.PingContext(ctx); err != nil {
 		_ = sqlDB.Close() //nolint:errcheck // superseded by ping error
 		return nil, fmt.Errorf("error pinging database: %s, %w", path, err)
 	}
 
 	// WAL mode is database-scoped (persists on disk) — only needs
 	// to run once, not per-connection.
-	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL"); err != nil {
+	if _, err := sqlDB.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
 		_ = sqlDB.Close() //nolint:errcheck // superseded by open error
 		return nil, fmt.Errorf("history: PRAGMA journal_mode=WAL: %w", err)
 	}
@@ -73,12 +74,12 @@ func Open(path string) (*DB, error) {
 		_ = sqlDB.Close()
 		return nil, err
 	}
-	if err := goose.Up(sqlDB, "migrations"); err != nil {
+	if err := goose.UpContext(ctx, sqlDB, "migrations"); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("history: run migrations: %w", err)
 	}
 
-	if _, err := sqlDB.Exec("VACUUM"); err != nil {
+	if _, err := sqlDB.ExecContext(ctx, "VACUUM"); err != nil {
 		_ = sqlDB.Close() //nolint:errcheck // superseded by vacuum error
 		return nil, fmt.Errorf("history: VACUUM: %w", err)
 	}

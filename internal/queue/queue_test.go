@@ -1402,3 +1402,38 @@ drained:
 		// Success
 	}
 }
+
+func TestQueue_PauseErrors(t *testing.T) {
+	t.Parallel()
+
+	q := New()
+
+	// 1. Pause non-existent job
+	err := q.Pause("non-existent")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Pause non-existent: got %v, want %v", err, ErrNotFound)
+	}
+
+	// 2. Pause job in illegal state (e.g. Completed)
+	j := makeJob(t, "j1", constants.NormalPriority)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Must transition to Downloading -> Verifying -> Completed first to make it Completed
+	if err := q.SetStatus(j.ID, constants.StatusDownloading); err != nil {
+		t.Fatalf("SetStatus(Downloading): %v", err)
+	}
+	if err := q.SetStatus(j.ID, constants.StatusVerifying); err != nil {
+		t.Fatalf("SetStatus(Verifying): %v", err)
+	}
+	if err := q.SetStatus(j.ID, constants.StatusCompleted); err != nil {
+		t.Fatalf("SetStatus(Completed): %v", err)
+	}
+
+	err = q.Pause(j.ID)
+	if !errors.Is(err, ErrIllegalStatusTransition) {
+		t.Errorf("Pause Completed job: got %v, want %v", err, ErrIllegalStatusTransition)
+	}
+}
+

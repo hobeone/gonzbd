@@ -38,7 +38,7 @@ func TestEndToEndDownload(t *testing.T) {
 	downloadDir := t.TempDir()
 	adminDir := t.TempDir()
 
-	db, _ := history.Open(filepath.Join(adminDir, "history.db"))
+	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	repo := history.NewRepository(db)
 
 	application, err := app.New(app.Config{

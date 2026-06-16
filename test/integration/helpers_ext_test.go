@@ -217,7 +217,7 @@ func NewTestAppSeparateDirs(t *testing.T, mockAddr string, opts AppTestOpts) (a 
 		cfg.Par2Command = opts.Par2Command
 	}
 
-	db, err := history.Open(filepath.Join(adminDir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
 	}

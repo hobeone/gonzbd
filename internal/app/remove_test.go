@@ -19,7 +19,7 @@ func TestRemoveJob(t *testing.T) {
 	_ = os.MkdirAll(downloadDir, 0o750)
 	_ = os.MkdirAll(adminDir, 0o750)
 
-	db, _ := history.Open(filepath.Join(adminDir, "history.db"))
+	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	repo := history.NewRepository(db)
 	a, err := New(Config{
 		DownloadDir: downloadDir,
