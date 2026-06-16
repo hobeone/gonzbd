@@ -77,3 +77,17 @@ func TestAllColumns_CountMatchesScanEntry(t *testing.T) {
 		t.Errorf("allColumns has %d columns, expected 30 — did you add/remove a column without updating scanEntry?", colCount)
 	}
 }
+
+func TestOpen_CancelledContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cancelled.db")
+	_, err := Open(ctx, path)
+	if err == nil {
+		t.Fatal("expected error with cancelled context, got nil")
+	}
+}
+
