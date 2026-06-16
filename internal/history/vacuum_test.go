@@ -17,7 +17,7 @@ func TestVacuumOnOpen(t *testing.T) {
 	path := filepath.Join(dir, "history.db")
 
 	// First open: creates the database, runs migrations, runs VACUUM.
-	db1, err := Open(path)
+	db1, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestVacuumOnOpen(t *testing.T) {
 
 	// Second open: runs VACUUM on an existing database with potential
 	// free pages. This must not error.
-	db2, err := Open(path)
+	db2, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("second Open (VACUUM on existing db): %v", err)
 	}
@@ -44,7 +44,7 @@ func TestOpenClose_MultipleRounds(t *testing.T) {
 	path := filepath.Join(dir, "history.db")
 
 	for i := range 3 {
-		db, err := Open(path)
+		db, err := Open(t.Context(), path)
 		if err != nil {
 			t.Fatalf("Open round %d: %v", i, err)
 		}

@@ -124,7 +124,7 @@ func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDi
 		opts = append(opts, app.WithLogger(debugLogger))
 	}
 
-	histDB, err := history.Open(filepath.Join(adminDir, "history.db"))
+	histDB, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
 	}

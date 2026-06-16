@@ -170,7 +170,7 @@ func replayOneNZB(t *testing.T, nzbPath string) {
 	// which defers until the parent test completes — with hundreds of
 	// parallel NZBs that means hundreds of app instances + mock servers
 	// + article maps all alive simultaneously, eating RAM.
-	db, err := history.Open(filepath.Join(downloadDir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(downloadDir, "history.db"))
 	if err != nil {
 		_ = srv.Close()
 		_ = os.RemoveAll(downloadDir)

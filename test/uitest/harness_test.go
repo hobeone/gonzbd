@@ -62,7 +62,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	ma := api.NopApp{Queue: q}
 
 	// In-memory history database.
-	histDB, err := history.Open(":memory:")
+	histDB, err := history.Open(t.Context(), ":memory:")
 	if err != nil {
 		t.Fatalf("history.Open(:memory:): %v", err)
 	}

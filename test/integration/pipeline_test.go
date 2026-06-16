@@ -165,7 +165,7 @@ func TestPipeline_MissingTool_Graceful(t *testing.T) {
 	cfg.EnableUnrar = true
 	cfg.UnrarCommand = "/nonexistent/unrar-missing-binary"
 
-	db, err := history.Open(filepath.Join(adminDir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
 	}

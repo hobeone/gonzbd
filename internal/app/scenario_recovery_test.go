@@ -60,7 +60,7 @@ func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 		t.Fatalf("seed.Save: %v", err)
 	}
 
-	db, err := history.Open(filepath.Join(adminDir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
 	}

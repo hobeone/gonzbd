@@ -230,7 +230,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		}()
 	}
 
-	histDB, err := history.Open(filepath.Join(adminDir, "history.db"))
+	histDB, err := history.Open(context.Background(), filepath.Join(adminDir, "history.db"))
 	if err != nil {
 		return fmt.Errorf("open history db: %w", err)
 	}
@@ -718,7 +718,7 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 	}
 
 	// Open history repo (needed for summary at the end)
-	db, err := history.Open(filepath.Join(adminDir, "history.db"))
+	db, err := history.Open(context.Background(), filepath.Join(adminDir, "history.db"))
 	if err != nil {
 		return fmt.Errorf("open history db: %w", err)
 	}

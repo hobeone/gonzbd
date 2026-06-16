@@ -72,7 +72,7 @@ func newScenarioHarnessWithConns(t testing.TB, conns int) *scenarioHarness {
 		completeDir: t.TempDir(),
 	}
 
-	db, err := history.Open(filepath.Join(h.adminDir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(h.adminDir, "history.db"))
 	if err != nil {
 		t.Fatalf("scenario: open history db: %v", err)
 	}

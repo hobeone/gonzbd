@@ -19,7 +19,7 @@ import (
 func testHistoryServer(t *testing.T) (*Server, *history.Repository) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "hist.db")
-	db, err := history.Open(dbPath)
+	db, err := history.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
 	}
@@ -574,7 +574,7 @@ func TestHistoryList_PostProcJobsInjected(t *testing.T) {
 
 	// Build a server with both a queue and a history repo.
 	dbPath := filepath.Join(t.TempDir(), "hist.db")
-	db, err := history.Open(dbPath)
+	db, err := history.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
 	}
@@ -654,7 +654,7 @@ func TestHistoryList_PostProcNotInjectedForNzoIDs(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "hist.db")
-	db, err := history.Open(dbPath)
+	db, err := history.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
 	}
