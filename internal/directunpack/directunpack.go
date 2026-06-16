@@ -12,9 +12,10 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/hobeone/rarengine"
+
 	"github.com/hobeone/gonzbd/internal/rarheader"
 	"github.com/hobeone/gonzbd/internal/unpack"
-	"github.com/hobeone/rarengine"
 )
 
 // errNotRAR is returned by extractSet when the first volume of a set isn't
