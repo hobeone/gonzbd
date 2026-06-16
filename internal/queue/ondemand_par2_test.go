@@ -259,5 +259,3 @@ func TestDiscardDeferredPar2(t *testing.T) {
 		t.Errorf("RemainingBytes = %d, want %d", snap.RemainingBytes, snap.TotalBytes)
 	}
 }
-
-

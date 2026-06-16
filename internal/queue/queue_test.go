@@ -1436,4 +1436,3 @@ func TestQueue_PauseErrors(t *testing.T) {
 		t.Errorf("Pause Completed job: got %v, want %v", err, ErrIllegalStatusTransition)
 	}
 }
-

@@ -903,8 +903,6 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 	return nil
 }
 
-
-
 // undeferRecoveryLocked clears Deferred on the given file indices of job. If
 // any file changed it marks Par2Recovered, recomputes pending counters from
 // ground truth (RemainingBytes already counted these bytes), and wakes the
