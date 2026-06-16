@@ -238,16 +238,7 @@ type Downloader struct {
 	pauseCtx    context.Context //nolint:containedctx // pause lifecycle
 	pauseCancel context.CancelFunc
 
-	tryMu   sync.Mutex
-	tryList map[string]serverMask
-
-	// inFlight counts outstanding requests per article across all
-	// servers. An article with inFlight > 0 is not re-dispatched even
-	// if its try-list has untried servers remaining; the in-flight
-	// request must resolve first. This prevents speculative fan-out to
-	// multiple servers, which would double-charge paid bandwidth and
-	// produce duplicate completions.
-	inFlight map[string]int
+	tracker dispatchTracker
 
 	// connActivityMu guards connActivity. Workers write their own
 	// entry via setConnActivity/clearConnActivity; ServerStatus()
@@ -296,8 +287,7 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		completions:      make(chan *ArticleResult, opts.CompletionsBuffer),
 		dispatchReady:    make(chan struct{}, 1),
 		limiter:          bpsmeter.NewLimiter(0),
-		tryList:          make(map[string]serverMask),
-		inFlight:         make(map[string]int),
+		tracker:          newMapTracker(),
 		connActivity:     make(map[string]*ConnActivity),
 		maxArtTries:      opts.MaxArtTries,
 		maxArtOpt:        opts.MaxArtOpt,
