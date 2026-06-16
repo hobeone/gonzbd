@@ -82,6 +82,8 @@ go test -tags=e2e -timeout=10m ./test/e2e/                  # E2E (requires live
 go test ./internal/config/ -run 'TestUI|TestAllFlat'        # Config ↔ UI contract
 go vet ./...                                                # Static analysis
 golangci-lint run ./...                                     # Linting
+gremlins unleash --timeout-coefficient 100 ./internal/queue # Mutation testing on a package
+gremlins unleash --timeout-coefficient 100 --diff origin/main # Mutation testing on local changes only
 ```
 
 > **See `docs/TESTING.md` for the full testing guide** — build tags, required
@@ -112,6 +114,9 @@ Each commit must leave the repository in a working state
 go install golang.org/x/tools/cmd/goimports@latest
 
 # Install golangci-lint if not present (see https://golangci-lint.run/welcome/install/)
+
+# Install gremlins (mutation testing) if not present
+go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
 ```
 
 ### After Editing Any `.go` File
@@ -133,10 +138,20 @@ go vet ./...                          # Must pass
 go test -race ./...                   # Unit tests with the race detector
 ./scripts/run_tests.sh                # Full Go + UI suite
 golangci-lint run ./...               # Must pass (no new issues)
+gremlins unleash --timeout-coefficient 100 --diff origin/main # No lived mutants in the diff (mutation proof)
 ```
 
 `./scripts/run_tests.sh` runs the full Go and UI suites but **without** the race
 detector, so `go test -race ./...` is a separate, required step.
+
+The `gremlins` gate enforces mutation-testing proof: every behavioral change in
+the diff must be killed by a test (no surviving/lived mutants). If a mutant
+lives, the test suite does not actually pin that behavior — add or strengthen
+the test rather than weakening the gate. Run it scoped to the changed package
+during development (`gremlins unleash --timeout-coefficient 100 ./internal/<pkg>`)
+and against the diff before commit. See **`docs/mutation-testing-playbook.md`**
+for the repeatable process for triaging `LIVED`/`NOT COVERED` mutants and
+closing the gaps with targeted tests.
 
 If any gate fails, fix the underlying issue. **Do not skip, suppress, or bypass
 these checks** to make a commit go through. If a lint rule genuinely needs to be
@@ -314,7 +329,7 @@ windows) and document each as intentional.
 
 ## Git Conventions
 
-- **Branch**: work directly on `main` for now (single developer); switch to feature branches when collaboration begins.
+- **Branch**: single developer — commit directly to `main`. This repo has **no GitHub branch protection** (private repo; protection is a Pro/public-only feature), so no PR is required. For multi-step efforts, do the work in an isolated **git worktree** off `main`, then integrate by fast-forwarding `main` (no PR). Switch to feature branches + PRs only when collaboration begins.
 - **One step per commit** (or one logical sub-piece if a step is split).
 - **Never** force-push, rewrite history, or `git reset --hard` without user approval.
 - **Always** run quality gates before committing.
