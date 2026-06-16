@@ -165,184 +165,24 @@ func ParseRepairOutput(output string) *RepairOutput {
 			ro.Lines = append(ro.Lines, line)
 		}
 
-		// --- Error/termination patterns (checked first, highest priority) ---
-
-		if strings.HasPrefix(line, "Invalid option specified") ||
-			strings.HasPrefix(line, "Invalid thread option") ||
-			strings.HasPrefix(line, "Cannot specify recovery file count") {
-			ro.InvalidOption = true
-			ro.Status = StatusBadOption
+		if parseGlobalLine(line, ro, &verified) {
 			continue
 		}
 
-		if strings.HasPrefix(line, "All files are correct") {
-			ro.Finished = true
-			ro.Status = StatusAllFilesOK
+		if parseOptionOrValidity(line, ro, verified) {
 			continue
 		}
 
-		if strings.HasPrefix(line, "Repair is required") {
-			ro.Status = StatusRepairRequired
-			verified = true
-			// Reset counters for verification of repair.
-			ro.VerifyTotal = 0
-			ro.VerifyNum = 0
+		if parseRepairProgress(line, ro) {
 			continue
 		}
 
-		if strings.HasPrefix(line, "Main packet not found") ||
-			strings.Contains(line, "The recovery file does not exist") {
-			ro.Status = StatusInvalidPar2
+		if parsePhaseLine(line, ro, &inVerify, &inExtraFiles) {
 			continue
 		}
-
-		if strings.HasPrefix(line, "You need") {
-			if m := needMoreBlocksRE.FindStringSubmatch(line); len(m) == 2 {
-				ro.NeedMoreBlocks = true
-				ro.BlocksNeeded, _ = strconv.Atoi(m[1])
-				ro.Status = StatusNeedMoreBlocks
-			}
-			continue
-		}
-
-		if strings.HasPrefix(line, "Repair is possible") {
-			ro.Status = StatusRepairPossible
-			ro.Phase = PhaseRepairing
-			ro.RepairPercent = 0
-			ro.RepairStarted = time.Now()
-			continue
-		}
-
-		if strings.HasPrefix(line, "Repair is not possible") {
-			ro.Status = StatusRepairNotPossible
-			continue
-		}
-
-		if m := repairProgressRE.FindStringSubmatch(line); len(m) == 2 {
-			if pct, err := strconv.ParseFloat(m[1], 64); err == nil {
-				ro.RepairPercent = pct
-			}
-			continue
-		}
-
-		if strings.HasPrefix(line, "Repair complete") {
-			ro.Finished = true
-			// Don't override a more-specific failure status.
-			if ro.Status != StatusRepairFailed && ro.Status != StatusRepairNotPossible {
-				ro.Status = StatusRepairComplete
-			}
-			continue
-		}
-
-		// Count missing/damaged files after "Repair is required".
-		if verified && (strings.HasSuffix(line, "are missing.") || strings.HasSuffix(line, "exist but are damaged.")) {
-			if m := missingDamagedRE.FindStringSubmatch(line); len(m) == 2 {
-				n, _ := strconv.Atoi(m[1])
-				ro.VerifyTotal += n
-			}
-			continue
-		}
-
-		if strings.HasPrefix(line, "Verifying repaired files") {
-			ro.Phase = PhaseVerifyingRepair
-			continue
-		}
-
-		if ro.Phase == PhaseVerifyingRepair && strings.HasPrefix(line, "Target") {
-			ro.VerifyNum++
-			continue
-		}
-
-		if strings.Contains(line, "Could not write") && strings.Contains(line, "at offset 0:") {
-			// Join-output collision — par2 tried to write but the file exists.
-			// SABnzbd treats this as finished=true when joinables exist.
-			// We flag it; the caller decides based on joinable state.
-			ro.Finished = true
-			continue
-		}
-
-		if strings.Contains(line, "cannot be renamed to") {
-			ro.Status = StatusRepairNotPossible
-			continue
-		}
-
-		if strings.Contains(line, "not enough space on the disk") ||
-			strings.Contains(line, "Insufficient disk space") {
-			ro.Status = StatusDiskFull
-			continue
-		}
-
-		if strings.HasPrefix(line, "No details available for recoverable file") {
-			ro.Status = StatusRepairNotPossible
-			continue
-		}
-
-		if strings.HasPrefix(line, "Repair Failed") {
-			ro.Status = StatusRepairFailed
-			ro.Finished = false
-			continue
-		}
-
-		// --- Phase-dependent parsing (only before "Repair is required") ---
 
 		if !verified {
-			// "Scanning:" lines are silently consumed (SABnzbd: pass).
-			if strings.HasPrefix(line, "Scanning:") {
-				continue
-			}
-
-			if inExtraFiles {
-				// Rename detection: "File: "X" - is a match for "Y""
-				if m := isMatchForRE.FindStringSubmatch(line); len(m) == 3 {
-					oldName := m[1]
-					newName := m[2]
-					ro.Renames[newName] = oldName
-					ro.VerifyNum++
-				}
-
-				// Block reconstruction: "File: "X" - found N of M data blocks from "Y""
-				if m := blockFoundRE.FindStringSubmatch(line); len(m) == 3 {
-					oldName := m[1]
-					newName := m[2]
-					ro.UsedJoinables = append(ro.UsedJoinables, oldName)
-					ro.Renames[newName] = oldName
-					ro.VerifyNum++
-				}
-
-				// Duplicate data blocks → used_for_repair.
-				if strings.Contains(line, "duplicate data blocks") {
-					if m := targetRE.FindStringSubmatch(line); len(m) == 2 {
-						ro.UsedForRepair = append(ro.UsedForRepair, m[1])
-					}
-				}
-			} else if !inVerify {
-				// Total recoverable files.
-				if m := recoverableFilesRE.FindStringSubmatch(line); len(m) == 2 {
-					n, _ := strconv.Atoi(m[1])
-					ro.RecoverableFiles = n
-				}
-
-				if strings.HasPrefix(line, "Verifying source files:") {
-					inVerify = true
-					continue
-				}
-			} else if strings.HasPrefix(line, "Scanning extra files:") {
-				// Transition: verify → extra files.
-				inVerify = false
-				inExtraFiles = true
-				ro.Phase = PhaseExtraFiles
-				ro.VerifyNum = 0
-			} else {
-				// In the verify phase — count target files.
-				if m := targetRE.FindStringSubmatch(line); len(m) == 2 {
-					ro.VerifyNum++
-
-					// Duplicate data blocks detected during verification.
-					if strings.Contains(line, "duplicate data blocks") {
-						ro.UsedForRepair = append(ro.UsedForRepair, m[1])
-					}
-				}
-			}
+			parseFinalStateOrFailure(line, ro, inVerify, inExtraFiles)
 		}
 	}
 
@@ -352,4 +192,178 @@ func ParseRepairOutput(output string) *RepairOutput {
 	}
 
 	return ro
+}
+
+// parseGlobalLine checks lines that don't depend on phase or verify state.
+func parseGlobalLine(line string, ro *RepairOutput, verified *bool) bool {
+	if strings.HasPrefix(line, "Invalid option specified") ||
+		strings.HasPrefix(line, "Invalid thread option") ||
+		strings.HasPrefix(line, "Cannot specify recovery file count") {
+		ro.InvalidOption = true
+		ro.Status = StatusBadOption
+		return true
+	}
+	if strings.HasPrefix(line, "All files are correct") {
+		ro.Finished = true
+		ro.Status = StatusAllFilesOK
+		return true
+	}
+	if strings.HasPrefix(line, "Repair is required") {
+		ro.Status = StatusRepairRequired
+		*verified = true
+		ro.VerifyTotal = 0
+		ro.VerifyNum = 0
+		return true
+	}
+	if strings.HasPrefix(line, "Main packet not found") ||
+		strings.Contains(line, "The recovery file does not exist") {
+		ro.Status = StatusInvalidPar2
+		return true
+	}
+	return false
+}
+
+// parseOptionOrValidity parses option errors, missing files count, disk space and renamed errors.
+func parseOptionOrValidity(line string, ro *RepairOutput, verified bool) bool {
+	if strings.HasPrefix(line, "You need") {
+		if m := needMoreBlocksRE.FindStringSubmatch(line); len(m) == 2 {
+			ro.NeedMoreBlocks = true
+			ro.BlocksNeeded, _ = strconv.Atoi(m[1])
+			ro.Status = StatusNeedMoreBlocks
+		}
+		return true
+	}
+	if verified && (strings.HasSuffix(line, "are missing.") || strings.HasSuffix(line, "exist but are damaged.")) {
+		if m := missingDamagedRE.FindStringSubmatch(line); len(m) == 2 {
+			n, _ := strconv.Atoi(m[1])
+			ro.VerifyTotal += n
+		}
+		return true
+	}
+	if strings.Contains(line, "cannot be renamed to") {
+		ro.Status = StatusRepairNotPossible
+		return true
+	}
+	if strings.Contains(line, "not enough space on the disk") ||
+		strings.Contains(line, "Insufficient disk space") {
+		ro.Status = StatusDiskFull
+		return true
+	}
+	if strings.HasPrefix(line, "No details available for recoverable file") {
+		ro.Status = StatusRepairNotPossible
+		return true
+	}
+	return false
+}
+
+// parseRepairProgress parses repair status, percentages and command completion.
+func parseRepairProgress(line string, ro *RepairOutput) bool {
+	if strings.HasPrefix(line, "Repair is possible") {
+		ro.Status = StatusRepairPossible
+		ro.Phase = PhaseRepairing
+		ro.RepairPercent = 0
+		ro.RepairStarted = time.Now()
+		return true
+	}
+	if strings.HasPrefix(line, "Repair is not possible") {
+		ro.Status = StatusRepairNotPossible
+		return true
+	}
+	if m := repairProgressRE.FindStringSubmatch(line); len(m) == 2 {
+		if pct, err := strconv.ParseFloat(m[1], 64); err == nil {
+			ro.RepairPercent = pct
+		}
+		return true
+	}
+	if strings.HasPrefix(line, "Repair complete") {
+		ro.Finished = true
+		if ro.Status != StatusRepairFailed && ro.Status != StatusRepairNotPossible {
+			ro.Status = StatusRepairComplete
+		}
+		return true
+	}
+	if strings.HasPrefix(line, "Repair Failed") {
+		ro.Status = StatusRepairFailed
+		ro.Finished = false
+		return true
+	}
+	return false
+}
+
+// parsePhaseLine handles transition lines like Verifying repaired files, Scanning extra files.
+func parsePhaseLine(line string, ro *RepairOutput, inVerify, inExtraFiles *bool) bool {
+	if strings.HasPrefix(line, "Verifying repaired files") {
+		ro.Phase = PhaseVerifyingRepair
+		return true
+	}
+	if ro.Phase == PhaseVerifyingRepair && strings.HasPrefix(line, "Target") {
+		ro.VerifyNum++
+		return true
+	}
+	if strings.Contains(line, "Could not write") && strings.Contains(line, "at offset 0:") {
+		ro.Finished = true
+		return true
+	}
+	if strings.HasPrefix(line, "Scanning source files:") || strings.HasPrefix(line, "Verifying source files:") {
+		*inVerify = true
+		return true
+	}
+	if strings.HasPrefix(line, "Scanning extra files:") {
+		*inVerify = false
+		*inExtraFiles = true
+		ro.Phase = PhaseExtraFiles
+		ro.VerifyNum = 0
+		return true
+	}
+	return false
+}
+
+// parseFinalStateOrFailure checks scan-time target blocks and matches.
+func parseFinalStateOrFailure(line string, ro *RepairOutput, inVerify, inExtraFiles bool) {
+	// "Scanning:" lines are silently consumed.
+	if strings.HasPrefix(line, "Scanning:") {
+		return
+	}
+
+	if inExtraFiles {
+		// Rename detection: "File: "X" - is a match for "Y""
+		if m := isMatchForRE.FindStringSubmatch(line); len(m) == 3 {
+			oldName := m[1]
+			newName := m[2]
+			ro.Renames[newName] = oldName
+			ro.VerifyNum++
+		}
+
+		// Block reconstruction: "File: "X" - found N of M data blocks from "Y""
+		if m := blockFoundRE.FindStringSubmatch(line); len(m) == 3 {
+			oldName := m[1]
+			newName := m[2]
+			ro.UsedJoinables = append(ro.UsedJoinables, oldName)
+			ro.Renames[newName] = oldName
+			ro.VerifyNum++
+		}
+
+		// Duplicate data blocks → used_for_repair.
+		if strings.Contains(line, "duplicate data blocks") {
+			if m := targetRE.FindStringSubmatch(line); len(m) == 2 {
+				ro.UsedForRepair = append(ro.UsedForRepair, m[1])
+			}
+		}
+	} else if !inVerify {
+		// Total recoverable files.
+		if m := recoverableFilesRE.FindStringSubmatch(line); len(m) == 2 {
+			n, _ := strconv.Atoi(m[1])
+			ro.RecoverableFiles = n
+		}
+	} else {
+		// In the verify phase — count target files.
+		if m := targetRE.FindStringSubmatch(line); len(m) == 2 {
+			ro.VerifyNum++
+
+			// Duplicate data blocks detected during verification.
+			if strings.Contains(line, "duplicate data blocks") {
+				ro.UsedForRepair = append(ro.UsedForRepair, m[1])
+			}
+		}
+	}
 }

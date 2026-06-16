@@ -253,10 +253,6 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 			"unmatched_entries", len(unmatchedPhase4))
 
 		// Build (crc32, filesize) → FileDesc index.
-		type crcSizeKey struct {
-			crc  uint32
-			size uint64
-		}
 		crcIndex := make(map[crcSizeKey]FileDesc)
 		for _, fd := range unmatchedPhase4 {
 			crcIndex[crcSizeKey{crc: fd.FileCRC32, size: fd.FileSize}] = fd
@@ -414,4 +410,9 @@ func computeFileCRC32(path string) (uint32, error) {
 		return 0, err
 	}
 	return h.Sum32(), nil
+}
+
+type crcSizeKey struct {
+	crc  uint32
+	size uint64
 }

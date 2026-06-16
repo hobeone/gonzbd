@@ -171,7 +171,7 @@ var volPattern = regexp.MustCompile(`(?i)\.vol\d+[-+]\d+$`)
 // where the filename is wrapped in yEnc tokens rather than appearing as a
 // clean basename.  The word-boundary (\b) after ".par2" anchors on the quote,
 // space, or end-of-string that follows in typical NZB subjects.
-var recoveryVolumePattern = regexp.MustCompile(`(?i)\.vol\d+[-+]\d+\.par2\b`)
+var recoveryVolumePattern = regexp.MustCompile(`(?i)\.vol\d+[-+]\d+\.par2(?:[^a-zA-Z0-9.]|$)`)
 
 // IsRecoveryVolume reports whether s refers to a par2 recovery volume
 // (e.g. "movie.vol000+01.par2") rather than the par2 index file

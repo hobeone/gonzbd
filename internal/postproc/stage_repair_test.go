@@ -352,3 +352,113 @@ func TestHandleRepairResult_Success(t *testing.T) {
 		t.Error("ExtraFile should be in ConsumedFiles after success")
 	}
 }
+
+func TestRepairHelpers(t *testing.T) {
+	t.Parallel()
+
+	// 1. Test recordRepairSuccess
+	t.Run("recordRepairSuccess", func(t *testing.T) {
+		job := &Job{ConsumedFiles: make(map[string]struct{})}
+		vs := NewVerifiedSets(t.TempDir())
+		set := par2.Set{
+			Name:       "testset",
+			MainFile:   "testset.par2",
+			ExtraFiles: []string{"testset.vol001.par2"},
+		}
+		res := par2.RepairResult{
+			Parsed: &par2.RepairOutput{
+				Renames:       map[string]string{"repaired.txt": "obfuscated.txt"},
+				UsedJoinables: []string{"joinable.txt"},
+			},
+		}
+		job.DownloadDir = t.TempDir()
+		recordRepairSuccess(t.Context(), slog.Default(), set, job, vs, res)
+		if !vs.IsVerified("testset") {
+			t.Error("expected set to be verified")
+		}
+		if _, ok := job.ConsumedFiles["testset.par2"]; !ok {
+			t.Error("expected testset.par2 to be consumed")
+		}
+		if job.Par2Renames["repaired.txt"] != "obfuscated.txt" {
+			t.Error("expected par2 rename to be recorded")
+		}
+		if _, ok := job.ConsumedFiles[filepath.Join(job.DownloadDir, "joinable.txt")]; !ok {
+			t.Error("expected joinable.txt to be consumed")
+		}
+	})
+
+	// 2. Test dispatchRepairTool
+	t.Run("dispatchRepairTool", func(t *testing.T) {
+		job := &Job{
+			Queue:       &queue.Job{ID: "testjob"},
+			DownloadDir: t.TempDir(),
+		}
+
+		// Scenario A: Native Go, no fallback
+		_, _ = dispatchRepairTool(
+			t.Context(),
+			slog.Default(),
+			job,
+			"nonexistent.par2",
+			nil,
+			par2.RunOptions{},
+			true,  // useGoPar2
+			false, // fallback
+		)
+
+		// Scenario B: External only
+		_, _ = dispatchRepairTool(
+			t.Context(),
+			slog.Default(),
+			job,
+			"nonexistent.par2",
+			nil,
+			par2.RunOptions{},
+			false, // useGoPar2
+			false, // fallback
+		)
+
+		// Scenario C: Native Go with external fallback
+		_, _ = dispatchRepairTool(
+			t.Context(),
+			slog.Default(),
+			job,
+			"nonexistent.par2",
+			nil,
+			par2.RunOptions{},
+			true, // useGoPar2
+			true, // fallback
+		)
+	})
+
+	// 3. Test processPar2Set
+	t.Run("processPar2Set", func(t *testing.T) {
+		job := &Job{
+			Queue:         &queue.Job{ID: "testjob"},
+			ConsumedFiles: make(map[string]struct{}),
+			DownloadDir:   t.TempDir(),
+		}
+		vs := NewVerifiedSets(t.TempDir())
+		set := par2.Set{
+			Name: "empty",
+		}
+		// Empty set (no main file) should skip.
+		s := &RepairStage{}
+		err := s.processPar2Set(t.Context(), slog.Default(), job, set, nil, par2.RunOptions{}, vs, true, false)
+		if err != nil {
+			t.Fatalf("processPar2Set: %v", err)
+		}
+
+		// Set already verified should skip.
+		vs.MarkVerified("verified-set", true)
+		set2 := par2.Set{
+			Name:       "verified-set",
+			MainFile:   "verified-set.par2",
+			ExtraFiles: []string{"verified-set.vol001.par2"},
+		}
+		err = s.processPar2Set(t.Context(), slog.Default(), job, set2, nil, par2.RunOptions{}, vs, true, false)
+		if err != nil {
+			t.Fatalf("processPar2Set: %v", err)
+		}
+	})
+}
