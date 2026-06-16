@@ -421,7 +421,11 @@ func TestForEachUnfinishedArticle(t *testing.T) {
 	})
 
 	t.Run("skips PostProc jobs", func(t *testing.T) {
-		_, _ = q.SetPostProcStarted(j.ID)
+		_ = q.SetStatus(j.ID, constants.StatusDownloading)
+		ok, err := q.SetPostProcStarted(j.ID)
+		if err != nil || !ok {
+			t.Fatalf("SetPostProcStarted: %v, %v", ok, err)
+		}
 		var count int
 		q.ForEachUnfinishedArticle(func(_ UnfinishedArticle) bool {
 			count++
@@ -561,6 +565,7 @@ func TestSetPostProcStarted(t *testing.T) {
 	q := New()
 	j := makeJob(t, "postproc", constants.NormalPriority)
 	_ = q.Add(j)
+	_ = q.SetStatus(j.ID, constants.StatusDownloading)
 
 	t.Run("first call returns true", func(t *testing.T) {
 		ok, err := q.SetPostProcStarted(j.ID)

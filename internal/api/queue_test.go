@@ -1338,6 +1338,7 @@ func TestQueueList_PostProcJobsVisible(t *testing.T) {
 	ppJob := addTestJob(t, q, queue.AddOptions{Filename: "postproc.nzb"})
 
 	// Mark ppJob as post-processing (sets PostProc=true, Status=Verifying).
+	_ = q.SetStatus(ppJob.ID, constants.StatusDownloading)
 	_, err := q.SetPostProcStarted(ppJob.ID)
 	if err != nil {
 		t.Fatalf("SetPostProcStarted: %v", err)

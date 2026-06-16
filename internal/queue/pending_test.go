@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/constants"
 )
 
 // verifyPending checks that Pending, PendingArticles, and
@@ -51,8 +53,9 @@ func verifyPending(t *testing.T, q *Queue, label string) {
 // articles. Article IDs are formatted as "art-{fileIdx}-{artIdx}".
 func makeTestJob(id string, nFiles, nArtsPerFile int) *Job {
 	job := &Job{
-		ID:   id,
-		Name: id,
+		ID:     id,
+		Name:   id,
+		Status: constants.StatusQueued,
 	}
 	for fi := range nFiles {
 		file := JobFile{Subject: "file"}

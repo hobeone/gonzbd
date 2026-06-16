@@ -2,6 +2,7 @@ package queue
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -245,22 +246,28 @@ func TestRemove_NilZerosSlotForGC(t *testing.T) {
 	}
 }
 
-func TestQueueSetStatus(t *testing.T) {
+func TestSetStatusEnforcesStateMachine(t *testing.T) {
 	q := New()
 	j := makeJob(t, "j", constants.NormalPriority)
-	_ = q.Add(j)
+	_ = q.Add(j) // Queued
 
-	if err := q.SetStatus(j.ID, constants.StatusRepairing); err != nil {
-		t.Fatalf("SetStatus: %v", err)
+	// Legal: Queued -> Downloading.
+	if err := q.SetStatus(j.ID, constants.StatusDownloading); err != nil {
+		t.Fatalf("legal transition rejected: %v", err)
+	}
+
+	// Illegal: Downloading -> Completed.
+	if err := q.SetStatus(j.ID, constants.StatusCompleted); !errors.Is(err, ErrIllegalStatusTransition) {
+		t.Fatalf("illegal transition err = %v, want ErrIllegalStatusTransition", err)
 	}
 
 	got, _ := q.Get(j.ID)
-	if got.Status != constants.StatusRepairing {
-		t.Errorf("Status = %q, want %q", got.Status, constants.StatusRepairing)
+	if got.Status != constants.StatusDownloading {
+		t.Errorf("status changed despite illegal transition: %q", got.Status)
 	}
 
-	if err := q.SetStatus("nonexistent", constants.StatusRepairing); err == nil {
-		t.Error("SetStatus(nonexistent) should error")
+	if _, err := q.Get("missing"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get(missing) = %v", err)
 	}
 }
 
@@ -763,7 +770,7 @@ func TestDirtyFlagOnMutations(t *testing.T) {
 	_ = q.Save(dir)
 
 	// 4. SetStatus
-	if err := q.SetStatus(j1.ID, constants.StatusRepairing); err != nil {
+	if err := q.SetStatus(j1.ID, constants.StatusDownloading); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
 	if !q.IsDirty() {

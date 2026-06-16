@@ -139,7 +139,11 @@ func TestHasDownloadableJobs(t *testing.T) {
 		q := New()
 		j := makeJob(t, "dl-pp", constants.NormalPriority)
 		_ = q.Add(j)
-		_, _ = q.SetPostProcStarted(j.ID)
+		_ = q.SetStatus(j.ID, constants.StatusDownloading)
+		ok, err := q.SetPostProcStarted(j.ID)
+		if err != nil || !ok {
+			t.Fatalf("SetPostProcStarted: %v, %v", ok, err)
+		}
 		if q.HasDownloadableJobs() {
 			t.Error("queue with only post-processing jobs should not have downloadable jobs")
 		}
@@ -166,7 +170,11 @@ func TestHasDownloadableJobs(t *testing.T) {
 		_ = q.Add(j1)
 		_ = q.Add(j2)
 		_ = q.Pause(j1.ID)
-		_, _ = q.SetPostProcStarted(j2.ID)
+		_ = q.SetStatus(j2.ID, constants.StatusDownloading)
+		ok, err := q.SetPostProcStarted(j2.ID)
+		if err != nil || !ok {
+			t.Fatalf("SetPostProcStarted: %v, %v", ok, err)
+		}
 		if q.HasDownloadableJobs() {
 			t.Error("queue with all paused/post-proc jobs should not have downloadable jobs")
 		}
