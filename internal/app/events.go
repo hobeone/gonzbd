@@ -35,6 +35,7 @@ type Event struct {
 type dummyEmitter struct{}
 
 func (d dummyEmitter) Broadcast(_ Event) {
+	_ = struct{}{}
 }
 
 // SetEmitter injects a broadcaster for real-time events.
