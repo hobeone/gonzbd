@@ -395,6 +395,13 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr
 		}
 	}()
 
+	// Derive a cancellable context so any early return from extractSet unblocks
+	// the volume feeder goroutine (which only watches this ctx). Without this,
+	// an early error from extractEntries leaks the feeder and its open *os.File
+	// until the job-level context is cancelled.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	if err := d.waitForVolume(ctx, setname, 1); err != nil {
 		return err
 	}
