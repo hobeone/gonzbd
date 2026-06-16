@@ -21,12 +21,13 @@ func TestRemoveJob(t *testing.T) {
 
 	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	repo := history.NewRepository(db)
-	a, err := New(Config{
-		DownloadDir: downloadDir,
-		CompleteDir: filepath.Join(dir, "complete"),
-		AdminDir:    adminDir,
-		Servers:     []config.ServerConfig{{Name: "test"}},
-	}, repo)
+	cfg := testConfig(
+		downloadDir,
+		filepath.Join(dir, "complete"),
+		adminDir,
+		config.ServerConfig{Name: "test"},
+	)
+	a, err := New(cfg, repo)
 	if err != nil {
 		t.Fatalf("New application failed: %v", err)
 	}

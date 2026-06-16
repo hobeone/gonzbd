@@ -109,13 +109,11 @@ func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDi
 		t.Logf("  adminDir:    %s", adminDir)
 	}
 
-	appCfg := app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: downloadDir,
-		AdminDir:    adminDir,
-		Servers:     cfg.Servers,
-		Categories:  cfg.Categories,
-	}
+	cfg.With(func(o *config.Config) {
+		o.General.DownloadDir = downloadDir
+		o.General.CompleteDir = downloadDir
+		o.General.AdminDir = adminDir
+	})
 
 	var opts []func(*app.Application)
 	if os.Getenv("E2E_DEBUG") == "1" {
@@ -130,7 +128,7 @@ func newE2EApp(t *testing.T, cfg *config.Config) (a *app.Application, downloadDi
 	}
 	repo := history.NewRepository(histDB)
 
-	a, err = app.New(appCfg, repo, opts...)
+	a, err = app.New(cfg, repo, opts...)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}

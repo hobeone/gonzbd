@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -95,11 +96,18 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 	dir := t.TempDir()
 
 	q := queue.New()
-	app := &Application{
-		queue: q,
-		log:   log,
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("config.Default: %v", err)
 	}
-	app.cfg.DownloadDir = dir
+	cfg.With(func(c *config.Config) {
+		c.General.DownloadDir = dir
+	})
+	app := &Application{
+		queue:  q,
+		log:    log,
+		config: cfg,
+	}
 
 	const jobID = "job-1"
 	job := &queue.Job{

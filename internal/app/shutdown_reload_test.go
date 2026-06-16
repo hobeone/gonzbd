@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // ---------- H9: Shutdown error propagation ----------
@@ -46,15 +48,21 @@ func TestShutdown_PropagatesErrors(t *testing.T) {
 func TestBuildDownloaderOptions_FieldMapping(t *testing.T) {
 	t.Parallel()
 
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("config.Default: %v", err)
+	}
+	cfg.With(func(c *config.Config) {
+		c.Downloads.MaxArtTries = 5
+		c.Downloads.MaxArtOpt = 3
+		c.Downloads.TopOnly = true
+		c.Downloads.NoPenalties = true
+		c.Downloads.PreCheck = true
+		c.Downloads.PropagationDelay = 10 // minutes
+	})
+
 	app := &Application{
-		cfg: Config{
-			MaxArtTries:      5,
-			MaxArtOpt:        3,
-			TopOnly:          true,
-			NoPenalties:      true,
-			PreCheck:         true,
-			PropagationDelay: 10, // minutes
-		},
+		config: cfg,
 	}
 
 	opts := app.buildDownloaderOptions()
@@ -87,7 +95,8 @@ func TestBuildDownloaderOptions_FieldMapping(t *testing.T) {
 func TestBuildDownloaderOptions_Defaults(t *testing.T) {
 	t.Parallel()
 
-	app := &Application{cfg: Config{}}
+	cfg := &config.Config{}
+	app := &Application{config: cfg}
 
 	opts := app.buildDownloaderOptions()
 

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
@@ -79,12 +78,12 @@ func newScenarioHarnessWithConns(t testing.TB, conns int) *scenarioHarness {
 	h.repo = history.NewRepository(db)
 	h.closeDB = db.Close
 
-	cfg := app.Config{
-		DownloadDir: h.downloadDir,
-		CompleteDir: h.completeDir,
-		AdminDir:    h.adminDir,
-		Servers:     []config.ServerConfig{h.server.ServerConfig("scenario", conns)},
-	}
+	cfg := testConfig(
+		h.downloadDir,
+		h.completeDir,
+		h.adminDir,
+		h.server.ServerConfig("scenario", conns),
+	)
 
 	a, err := app.New(cfg, h.repo, app.WithPostProcStages([]postproc.Stage{noOpStage{}}))
 	if err != nil {

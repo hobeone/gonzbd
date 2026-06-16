@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/unpack"
@@ -33,7 +34,7 @@ func TestBuildStages_StageOrder(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{DownloadDir: t.TempDir(), CompleteDir: t.TempDir()}
-	built, err := buildStages(cfg, discardLog(), emptyProbe())
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestBuildStages_PointersSameAsSlice(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{DownloadDir: t.TempDir(), CompleteDir: t.TempDir()}
-	built, err := buildStages(cfg, discardLog(), emptyProbe())
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestBuildStages_BadExtraPar2Params(t *testing.T) {
 		CompleteDir:     t.TempDir(),
 		ExtraPar2Params: "noDash", // must start with '-'
 	}
-	_, err := buildStages(cfg, discardLog(), emptyProbe())
+	_, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err == nil {
 		t.Fatal("expected error for bad ExtraPar2Params, got nil")
 	}
@@ -129,7 +130,7 @@ func TestBuildStages_BadExtraUnrarParams(t *testing.T) {
 		CompleteDir:      t.TempDir(),
 		ExtraUnrarParams: "noDash", // must start with '-'
 	}
-	_, err := buildStages(cfg, discardLog(), emptyProbe())
+	_, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err == nil {
 		t.Fatal("expected error for bad ExtraUnrarParams, got nil")
 	}
@@ -141,7 +142,7 @@ func TestBuildStages_QuickCheckDefaultEnabled(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{DownloadDir: t.TempDir(), CompleteDir: t.TempDir()}
-	built, err := buildStages(cfg, discardLog(), emptyProbe())
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -158,7 +159,7 @@ func TestBuildStages_SkipQuickCheckDisablesStage(t *testing.T) {
 		CompleteDir:    t.TempDir(),
 		SkipQuickCheck: true,
 	}
-	built, err := buildStages(cfg, discardLog(), emptyProbe())
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestBuildStages_UnpackEnabledByEnableUnrar(t *testing.T) {
 		CompleteDir: t.TempDir(),
 		EnableUnrar: true,
 	}
-	built, err := buildStages(cfg, discardLog(), emptyProbe())
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -192,7 +193,7 @@ func TestBuildStages_UnpackEnabledByEnable7zip(t *testing.T) {
 		CompleteDir: t.TempDir(),
 		Enable7zip:  true,
 	}
-	built, err := buildStages(cfg, discardLog(), emptyProbe())
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -209,7 +210,7 @@ func TestBuildStages_UnpackEnabledByEnableFileJoin(t *testing.T) {
 		CompleteDir:    t.TempDir(),
 		EnableFileJoin: true,
 	}
-	built, err := buildStages(cfg, discardLog(), emptyProbe())
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -222,7 +223,7 @@ func TestBuildStages_UnpackDisabledByDefault(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{DownloadDir: t.TempDir(), CompleteDir: t.TempDir()}
-	built, err := buildStages(cfg, discardLog(), emptyProbe())
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -239,7 +240,7 @@ func TestBuildStages_SampleCleanupEnabledByIgnoreSamples(t *testing.T) {
 		CompleteDir:   t.TempDir(),
 		IgnoreSamples: true,
 	}
-	built, err := buildStages(cfg, discardLog(), emptyProbe())
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -256,7 +257,7 @@ func TestBuildStages_DeobfuscateEnabledByConfig(t *testing.T) {
 		CompleteDir:          t.TempDir(),
 		DeobfuscateFilenames: true,
 	}
-	built, err := buildStages(cfg, discardLog(), emptyProbe())
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestBuildStages_Par2CleanupEnabledByConfig(t *testing.T) {
 		CompleteDir:      t.TempDir(),
 		EnableParCleanup: true,
 	}
-	built, err := buildStages(cfg, discardLog(), emptyProbe())
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -286,7 +287,7 @@ func TestBuildStages_Par2CleanupDisabledByDefault(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{DownloadDir: t.TempDir(), CompleteDir: t.TempDir()}
-	built, err := buildStages(cfg, discardLog(), emptyProbe())
+	built, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -314,7 +315,7 @@ func TestBuildStages_ProbeHasNoEffectOnEnablement(t *testing.T) {
 		CompleteDir: t.TempDir(),
 		EnableUnrar: true,
 	}
-	built, err := buildStages(cfg, discardLog(), probe)
+	built, err := testBuildStages(cfg, discardLog(), probe)
 	if err != nil {
 		t.Fatalf("buildStages: %v", err)
 	}
@@ -322,4 +323,99 @@ func TestBuildStages_ProbeHasNoEffectOnEnablement(t *testing.T) {
 	if !built.Unpack.IsEnabled() {
 		t.Error("UnpackStage: probe.HasProblem should not disable the stage")
 	}
+}
+
+type Config struct {
+	DownloadDir          string
+	CompleteDir          string
+	AdminDir             string
+	WriteCacheBytes      int64
+	Servers              []config.ServerConfig
+	Categories           []config.CategoryConfig
+	Nice                 string
+	Ionice               string
+	ExtraPar2Params      string
+	ExtraUnrarParams     string
+	Par2Command          string
+	Par2Turbo            bool
+	UnrarCommand         string
+	SevenzCommand        string
+	UseGoPar2            bool
+	GoPar2Fallback       bool
+	UseGoRAR             bool
+	GoRarFallback        bool
+	UseGo7z              bool
+	Go7zFallback         bool
+	EnableUnrar          bool
+	Enable7zip           bool
+	EnableFileJoin       bool
+	EnableRecursive      bool
+	EnableRarCleanup     bool
+	EnableParCleanup     bool
+	IgnoreSamples        bool
+	DeobfuscateFilenames bool
+	CleanupExtensions    []string
+	FolderRename         bool
+	ScriptDir            string
+	ScriptCanFail        bool
+	Version              string
+	APIKey               string
+	ListenAddr           string
+	SkipQuickCheck       bool
+	Permissions          string
+	PasswordFile         string
+	IgnoreUnrarDates     bool
+	OverwriteFiles       bool
+	FlatUnpack           bool
+}
+
+func convertConfig(c Config) *config.Config {
+	cfg := &config.Config{}
+	cfg.With(func(o *config.Config) {
+		o.General.DownloadDir = c.DownloadDir
+		o.General.CompleteDir = c.CompleteDir
+		o.General.AdminDir = c.AdminDir
+		o.General.ScriptDir = c.ScriptDir
+		o.Downloads.WriteCacheSize = config.ByteSize(c.WriteCacheBytes)
+		o.Downloads.ReplaceIllegalWith = "_" // sensible default
+		o.PostProc.DeobfuscateFilenames = c.DeobfuscateFilenames
+		o.PostProc.IgnoreSamples = c.IgnoreSamples
+		o.PostProc.EnableUnrar = c.EnableUnrar
+		o.PostProc.Enable7zip = c.Enable7zip
+		o.PostProc.EnableFileJoin = c.EnableFileJoin
+		o.PostProc.EnableRecursive = c.EnableRecursive
+		o.PostProc.EnableParCleanup = c.EnableParCleanup
+		o.PostProc.EnableRarCleanup = c.EnableRarCleanup
+		o.PostProc.Par2Command = c.Par2Command
+		o.PostProc.Par2Turbo = c.Par2Turbo
+		o.PostProc.UnrarCommand = c.UnrarCommand
+		o.PostProc.SevenzCommand = c.SevenzCommand
+		o.PostProc.IgnoreUnrarDates = c.IgnoreUnrarDates
+		o.PostProc.OverwriteFiles = c.OverwriteFiles
+		o.PostProc.FlatUnpack = c.FlatUnpack
+		o.PostProc.UseGoRAR = c.UseGoRAR
+		o.PostProc.UseGo7z = c.UseGo7z
+		o.PostProc.UseGoPar2 = c.UseGoPar2
+		o.PostProc.GoRarFallback = c.GoRarFallback
+		o.PostProc.Go7zFallback = c.Go7zFallback
+		o.PostProc.GoPar2Fallback = c.GoPar2Fallback
+		o.PostProc.EnableQuickCheck = !c.SkipQuickCheck
+		o.PostProc.CleanupExtensions = c.CleanupExtensions
+		o.PostProc.FolderRename = c.FolderRename
+		o.PostProc.Nice = c.Nice
+		o.PostProc.Ionice = c.Ionice
+		o.PostProc.Permissions = c.Permissions
+		o.PostProc.PasswordFile = c.PasswordFile
+		o.PostProc.ExtraUnrarParams = c.ExtraUnrarParams
+		o.PostProc.ExtraPar2Params = c.ExtraPar2Params
+		o.PostProc.ScriptCanFail = c.ScriptCanFail
+		o.Servers = c.Servers
+		o.Categories = c.Categories
+	})
+	return cfg
+}
+
+func testBuildStages(c Config, log *slog.Logger, probe binaryProbe) (builtStages, error) {
+	cfg := convertConfig(c)
+	return buildStages(cfg, c.Version, log, probe)
 }

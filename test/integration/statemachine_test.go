@@ -41,11 +41,15 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 	var port int
 	fmt.Sscanf(portStr, "%d", &port)
 
-	cfg := app.Config{
-		DownloadDir: downloadDir,
-		CompleteDir: completeDir,
-		AdminDir:    adminDir,
-		Servers: []config.ServerConfig{
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("config.Default: %v", err)
+	}
+	cfg.With(func(c *config.Config) {
+		c.General.DownloadDir = downloadDir
+		c.General.CompleteDir = completeDir
+		c.General.AdminDir = adminDir
+		c.Servers = []config.ServerConfig{
 			{
 				Name:        "chaos",
 				Host:        host,
@@ -53,8 +57,8 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 				Connections: 4,
 				Enable:      true,
 			},
-		},
-	}
+		}
+	})
 
 	// Open history repo
 	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))

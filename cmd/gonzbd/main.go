@@ -237,71 +237,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	defer func() { _ = histDB.Close() }() //nolint:errcheck // daemon shutdown; close error not actionable
 	histRepo := history.NewRepository(histDB)
 
-	application, err := app.New(app.Config{
-		DownloadDir:     dlDir,
-		CompleteDir:     cfg.General.CompleteDir,
-		AdminDir:        adminDir,
-		WriteCacheBytes: int64(cfg.Downloads.WriteCacheSize),
-		Servers:         enabledServers(cfg.Servers),
-		Categories:      cfg.Categories,
-		Sanitize: fsutil.SanitizeOptions{
-			ReplaceIllegalWith: cfg.Downloads.ReplaceIllegalWith,
-			ReplaceSpacesWith:  cfg.Downloads.ReplaceSpacesWith,
-			StripDiacritics:    cfg.Downloads.StripDiacritics,
-			CleanupList:        cfg.Downloads.CleanupList,
-		},
-
-		// Download tuning.
-		BandwidthMax:     int64(cfg.Downloads.BandwidthMax),
-		BandwidthPerc:    int(cfg.Downloads.BandwidthPerc),
-		MinFreeSpace:     int64(cfg.Downloads.MinFreeSpace),
-		MaxArtTries:      cfg.Downloads.MaxArtTries,
-		MaxArtOpt:        cfg.Downloads.MaxArtOpt,
-		TopOnly:          cfg.Downloads.TopOnly,
-		NoPenalties:      cfg.Downloads.NoPenalties,
-		PreCheck:         cfg.Downloads.PreCheck,
-		PropagationDelay: cfg.Downloads.PropagationDelay,
-
-		// PostProc pipeline.
-		ScriptDir:            cfg.General.ScriptDir,
-		DeobfuscateFilenames: cfg.PostProc.DeobfuscateFilenames,
-		IgnoreSamples:        cfg.PostProc.IgnoreSamples,
-		EnableUnrar:          cfg.PostProc.EnableUnrar,
-		Enable7zip:           cfg.PostProc.Enable7zip,
-		EnableFileJoin:       cfg.PostProc.EnableFileJoin,
-		EnableRecursive:      cfg.PostProc.EnableRecursive,
-		EnableParCleanup:     cfg.PostProc.EnableParCleanup,
-		EnableRarCleanup:     cfg.PostProc.EnableRarCleanup,
-		Par2Command:          cfg.PostProc.Par2Command,
-		Par2Turbo:            cfg.PostProc.Par2Turbo,
-		UnrarCommand:         cfg.PostProc.UnrarCommand,
-		SevenzCommand:        cfg.PostProc.SevenzCommand,
-		IgnoreUnrarDates:     cfg.PostProc.IgnoreUnrarDates,
-		OverwriteFiles:       cfg.PostProc.OverwriteFiles,
-		FlatUnpack:           cfg.PostProc.FlatUnpack,
-		UseGoRAR:             cfg.PostProc.UseGoRAR,
-		UseGo7z:              cfg.PostProc.UseGo7z,
-		UseGoPar2:            cfg.PostProc.UseGoPar2,
-		GoRarFallback:        cfg.PostProc.GoRarFallback,
-		Go7zFallback:         cfg.PostProc.Go7zFallback,
-		GoPar2Fallback:       cfg.PostProc.GoPar2Fallback,
-		SkipQuickCheck:       !cfg.PostProc.EnableQuickCheck,
-		CleanupExtensions:    cfg.PostProc.CleanupExtensions,
-		FolderRename:         cfg.PostProc.FolderRename,
-		Nice:                 cfg.PostProc.Nice,
-		Ionice:               cfg.PostProc.Ionice,
-		Permissions:          cfg.PostProc.Permissions,
-		PasswordFile:         cfg.PostProc.PasswordFile,
-		ExtraUnrarParams:     cfg.PostProc.ExtraUnrarParams,
-		ExtraPar2Params:      cfg.PostProc.ExtraPar2Params,
-		ScriptCanFail:        cfg.PostProc.ScriptCanFail,
-		DirectUnpack:         cfg.PostProc.DirectUnpack,
-		DirectUnpackThreads:  cfg.PostProc.DirectUnpackThreads,
-
-		Version:    Version,
-		APIKey:     cfg.General.APIKey,
-		ListenAddr: net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port)),
-	}, histRepo)
+	application, err := app.New(cfg, histRepo, app.WithVersion(Version))
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
 	}
@@ -729,14 +665,7 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 		return fmt.Errorf("no news servers configured — add at least one server to your config file")
 	}
 
-	application, err := app.New(app.Config{
-		DownloadDir:     dlDir,
-		CompleteDir:     cfg.General.CompleteDir,
-		AdminDir:        adminDir,
-		WriteCacheBytes: int64(cfg.Downloads.WriteCacheSize),
-		Servers:         enabledServers(cfg.Servers),
-		Categories:      cfg.Categories,
-	}, repo)
+	application, err := app.New(cfg, repo)
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
 	}
