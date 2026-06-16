@@ -68,22 +68,29 @@ func JoinSafe(base, folder, file string, opts SanitizeOptions) string {
 	}
 }
 
-// SanitizeFilename cleans up a filename to ensure it is safe for all filesystems.
-// It follows the logic of Python SABnzbd's sanitize_filename.
+// SanitizeFilename cleans a filename so it is safe for all filesystems:
+// illegal characters replaced, Windows reserved names defused, trailing
+// dots/spaces stripped, and the result truncated to NAME_MAX bytes
+// preserving the extension. Follows SABnzbd's sanitize_filename.
 func SanitizeFilename(filename string, opts SanitizeOptions) string {
 	if filename == "" {
 		return "unknown"
 	}
 	filename = sanitizeCore(filename, opts)
-	filename = strings.TrimRight(filename, ". ")
+	filename = trimTrailingDotAndSpace(filename)
+	filename = truncateFilename(filename, maxFilenameBytes)
+	// Truncation can re-expose a trailing dot/space that the cut landed
+	// on; trim again so the result is stable (idempotent).
+	filename = trimTrailingDotAndSpace(filename)
 	if filename == "" {
 		return "unknown"
 	}
-	return truncateFilename(filename, maxFilenameBytes)
+	return filename
 }
 
-// SanitizeFolderName cleans up a folder name to ensure it is safe for all filesystems.
-// It follows the logic of Python SABnzbd's sanitize_foldername.
+// SanitizeFolderName cleans a folder name. Unlike filenames, truncation
+// happens before trailing-dot stripping so a truncated folder never ends
+// in a dot. Follows SABnzbd's sanitize_foldername.
 func SanitizeFolderName(foldername string, opts SanitizeOptions) string {
 	if foldername == "" {
 		return "unknown"
@@ -92,7 +99,7 @@ func SanitizeFolderName(foldername string, opts SanitizeOptions) string {
 	if len(foldername) > maxFilenameBytes {
 		foldername = truncateFilename(foldername, maxFilenameBytes)
 	}
-	foldername = strings.TrimRight(foldername, ". ")
+	foldername = trimTrailingDotAndSpace(foldername)
 	if foldername == "" {
 		return "unknown"
 	}
@@ -191,39 +198,40 @@ func replaceWinDevices(name string) string {
 	return name
 }
 
+// truncateFilename caps filename at maxBytes, preserving the extension
+// (itself capped at maxExtensionLen) and never splitting a multi-byte
+// UTF-8 rune.
 func truncateFilename(filename string, maxBytes int) string {
 	if len(filename) <= maxBytes {
 		return filename
 	}
 
-	ext := filepath.Ext(filename)
-	// If extension itself is somehow huge, truncate it too (rare but safe)
-	if len(ext) > maxExtensionLen {
-		ext = ext[:maxExtensionLen]
-	}
-
+	ext := truncateOnRuneBoundary(filepath.Ext(filename), maxExtensionLen)
 	base := filename[:len(filename)-len(filepath.Ext(filename))]
 	maxBaseBytes := maxBytes - len(ext)
-
 	if maxBaseBytes <= 0 {
-		// Extremely rare case: extension is longer than maxBytes
-		// Just hard truncate
-		return filename[:maxBytes]
+		return truncateOnRuneBoundary(filename, maxBytes)
 	}
+	return truncateOnRuneBoundary(base, maxBaseBytes) + ext
+}
 
-	// Truncate base to maxBaseBytes, ensuring we don't break a multi-byte UTF-8 character.
-	var truncatedBase strings.Builder
-	currentBytes := 0
-	for _, r := range base {
-		rLen := utf8.RuneLen(r)
-		if currentBytes+rLen > maxBaseBytes {
-			break
-		}
-		truncatedBase.WriteRune(r)
-		currentBytes += rLen
+// truncateOnRuneBoundary cuts s to at most maxBytes without splitting a
+// multi-byte UTF-8 rune (the cut backs off to the nearest rune start).
+func truncateOnRuneBoundary(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
 	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
 
-	return truncatedBase.String() + ext
+func trimTrailingDotAndSpace(s string) string {
+	return strings.TrimRightFunc(s, func(r rune) bool {
+		return r == '.' || unicode.IsSpace(r)
+	})
 }
 
 var maxAttempts = 10_000

@@ -436,3 +436,56 @@ func TestCompileCleanupList_Invalid(t *testing.T) {
 		t.Errorf("expected 1 compiled regex, got %d", len(compiled))
 	}
 }
+
+func TestSanitizeFilename_TruncateExtensionRuneBoundary(t *testing.T) {
+	t.Parallel()
+	// Base is 240 bytes. Extension is 31 bytes. Total = 271 > 255.
+	// Extension is 30 bytes of "漢" (10 runes, each 3 bytes -> 30 bytes) plus ".".
+	// Max extension length is 20. Truncating it at 20 bytes would split the 7th rune (1 + 3*6 = 19 bytes).
+	// So it should truncate to 19 bytes (6 runes + ".") to avoid invalid UTF-8.
+	ext := "." + strings.Repeat("漢", 10)
+	input := strings.Repeat("a", 240) + ext
+	got := SanitizeFilename(input, SanitizeOptions{})
+	t.Logf("got: %q, bytes: %v, valid: %v", got, []byte(got), utf8.ValidString(got))
+	if !utf8.ValidString(got) {
+		t.Errorf("SanitizeFilename(%q) produced invalid UTF-8: %q", input, got)
+	}
+}
+
+func TestSanitizeFilename_NoBaseBytesRuneBoundary(t *testing.T) {
+	t.Parallel()
+	// Input where extension is longer than maxFilenameBytes (255).
+	// "漢" is 3 bytes. 100 "漢" = 300 bytes.
+	// Truncating to 255 bytes (which is not a multiple of 3) might split a rune if done via raw slicing.
+	input := "." + strings.Repeat("漢", 100)
+	got := SanitizeFilename(input, SanitizeOptions{})
+	if !utf8.ValidString(got) {
+		t.Errorf("SanitizeFilename(%q) produced invalid UTF-8: %q", input, got)
+	}
+}
+
+func TestSanitizeFilename_ExtensionTruncationEndsInSpace(t *testing.T) {
+	t.Parallel()
+	// Base is 240 bytes. Extension is "." + 18 'b's + " c" (21 bytes).
+	// Total filename: 261 bytes > 255.
+	// TrimRight does nothing because it ends in 'c'.
+	// In truncateFilename, the extension is truncated to 20 bytes: "." + 18 'b's + " "
+	// This truncated extension ends in a space!
+	// So the returned filename will end in a space unless we trim it again.
+	ext := "." + strings.Repeat("b", 18) + " c"
+	input := strings.Repeat("a", 240) + ext
+	got := SanitizeFilename(input, SanitizeOptions{})
+	t.Logf("got: %q, bytes: %v", got, []byte(got))
+	if strings.HasSuffix(got, ".") || strings.HasSuffix(got, " ") {
+		t.Errorf("SanitizeFilename(%q) returned filename ending in dot/space: %q", input, got)
+	}
+}
+
+func TestTruncateOnRuneBoundary_ExactlyLimit(t *testing.T) {
+	t.Parallel()
+	got := truncateOnRuneBoundary("exactly20characters!", 20)
+	if got != "exactly20characters!" {
+		t.Errorf("expected original string, got %q", got)
+	}
+}
+
