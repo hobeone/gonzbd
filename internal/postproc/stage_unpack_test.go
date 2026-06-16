@@ -361,20 +361,20 @@ func TestUnpackHelpers(t *testing.T) {
 			DownloadDir: t.TempDir(),
 		}
 		copyToDir(t, unpackFixture("single_rar5.rar"), job.DownloadDir)
-		
+
 		processed := make(map[string]bool)
 		var allSuccessful []unpack.Archive
 		var firstErr error
-		
+
 		pending, err := unpack.Scan(job.DownloadDir)
 		if err != nil {
 			t.Fatalf("Scan: %v", err)
 		}
-		
+
 		opts := unpack.Options{
 			UseGoRAR: false,
 		}
-		
+
 		ok := u.extractPendingArchives(t.Context(), slog.Default(), job, pending, processed, opts, true, &firstErr, &allSuccessful)
 		if !ok {
 			t.Error("expected extractPendingArchives to return true")
@@ -395,26 +395,26 @@ func TestUnpackHelpers(t *testing.T) {
 			DownloadDir: t.TempDir(),
 		}
 		copyToDir(t, unpackFixture("single_rar5.rar"), job.DownloadDir)
-		
+
 		// Create a symlink pointing outside DownloadDir to trigger containment error
 		target := filepath.Join(job.DownloadDir, "bad_symlink")
 		if err := os.Symlink(t.TempDir(), target); err != nil {
 			t.Skipf("symlinks not supported on this OS: %v", err)
 		}
-		
+
 		processed := make(map[string]bool)
 		var allSuccessful []unpack.Archive
 		var firstErr error
-		
+
 		pending, err := unpack.Scan(job.DownloadDir)
 		if err != nil {
 			t.Fatalf("Scan: %v", err)
 		}
-		
+
 		opts := unpack.Options{
 			UseGoRAR: true, // Go-native is fast and sufficient
 		}
-		
+
 		ok := u.extractPendingArchives(t.Context(), slog.Default(), job, pending, processed, opts, true, &firstErr, &allSuccessful)
 		// Since containment check fails, firstErr should be non-nil
 		if firstErr == nil {
