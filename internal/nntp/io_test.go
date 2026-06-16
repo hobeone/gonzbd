@@ -31,6 +31,8 @@ func TestParseStatus(t *testing.T) {
 		{name: "empty string", input: "", wantErr: true},
 		{name: "non-numeric", input: "2X0 OK", wantErr: true},
 		{name: "no space separator", input: "200OK", wantErr: true},
+		{name: "signed negative status code", input: "-01 OK", wantErr: true},
+		{name: "signed positive status code", input: "+01 OK", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

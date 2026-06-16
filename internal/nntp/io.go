@@ -68,6 +68,13 @@ func parseStatus(line string) (code int, text string, err error) {
 	if len(line) < 3 {
 		return 0, "", fmt.Errorf("nntp: short response %q", line)
 	}
+	// The grammar requires exactly three ASCII digits; Atoi alone would
+	// also accept signs ("-01" → -1).
+	for i := range 3 {
+		if line[i] < '0' || line[i] > '9' {
+			return 0, "", fmt.Errorf("nntp: non-numeric status %q", line)
+		}
+	}
 	code, err = strconv.Atoi(line[:3])
 	if err != nil {
 		return 0, "", fmt.Errorf("nntp: non-numeric status %q", line)

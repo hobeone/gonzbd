@@ -233,22 +233,3 @@ func (c *Conn) closeError() error {
 	}
 	return ErrClosed
 }
-
-// classifyStatus maps an NNTP status code onto one of the sentinel
-// errors so callers can branch without knowing the wire codes.
-func classifyStatus(code int) error {
-	switch code {
-	case 430, 423:
-		return ErrNoArticle
-	case 480:
-		return ErrAuthRequired
-	case 481, 482:
-		return ErrAuthRejected
-	case 502, 503:
-		return ErrServerUnavailable
-	}
-	if code >= 400 && code < 600 {
-		return ErrTransient
-	}
-	return nil
-}
