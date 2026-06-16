@@ -169,6 +169,7 @@ type Application struct {
 	log     *slog.Logger
 	mu      sync.Mutex
 	cfg     Config
+	config  *config.Config
 	emitter EventEmitter
 	meter   *bpsmeter.Meter
 
@@ -244,6 +245,7 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 
 	app := &Application{
 		cfg:                  cfg,
+		config:               convertConfig(cfg),
 		historyRepo:          repo,
 		emitter:              dummyEmitter{},
 		fileComplete:         make(chan FileComplete, 16),
@@ -292,14 +294,21 @@ func New(cfg Config, repo *history.Repository, opts ...func(*Application)) (*App
 	app.downloader = d
 
 	// Apply initial bandwidth limit from config.
-	app.bandwidthMax.Store(cfg.BandwidthMax)
-	perc := cfg.BandwidthPerc
+	var bandwidthMax int64
+	var bandwidthPerc int
+	app.config.WithRead(func(c *config.Config) {
+		bandwidthMax = int64(c.Downloads.BandwidthMax)
+		bandwidthPerc = int(c.Downloads.BandwidthPerc)
+	})
+
+	app.bandwidthMax.Store(bandwidthMax)
+	perc := bandwidthPerc
 	if perc <= 0 || perc > 100 {
 		perc = 100
 	}
 	app.bandwidthPerc.Store(int32(perc))
-	if cfg.BandwidthMax > 0 {
-		d.SetSpeedLimit(cfg.BandwidthMax * int64(perc) / 100)
+	if bandwidthMax > 0 {
+		d.SetSpeedLimit(bandwidthMax * int64(perc) / 100)
 	}
 
 	p := &pipeline{
@@ -853,7 +862,12 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 
 	// DirectUnpack: feed completed RAR volumes to the unpacker for
 	// streaming extraction during download.
-	if app.cfg.DirectUnpack && app.cfg.EnableUnrar {
+	var directUnpack, enableUnrar bool
+	app.config.WithRead(func(c *config.Config) {
+		directUnpack = c.PostProc.DirectUnpack
+		enableUnrar = c.PostProc.EnableUnrar
+	})
+	if directUnpack && enableUnrar {
 		app.maybeDirectUnpack(fc)
 	}
 
@@ -1018,7 +1032,10 @@ func (app *Application) maybeDirectUnpack(fc FileComplete) {
 	app.mu.Lock()
 	du, exists := app.directUnpackers[fc.JobID]
 	if !exists {
-		limit := app.cfg.DirectUnpackThreads
+		var limit int
+		app.config.WithRead(func(c *config.Config) {
+			limit = c.PostProc.DirectUnpackThreads
+		})
 		if limit > 0 && int(app.activeDU.Load()) >= limit {
 			app.mu.Unlock()
 			app.log.Debug("directunpack: skipping, concurrency limit reached",
@@ -1410,6 +1427,9 @@ func (app *Application) SetDirectUnpack(v bool) {
 	app.mu.Lock()
 	app.cfg.DirectUnpack = v
 	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.PostProc.DirectUnpack = v
+	})
 }
 
 // SetDirectUnpackThreads limits the number of concurrent DirectUnpack workers.
@@ -1417,6 +1437,9 @@ func (app *Application) SetDirectUnpackThreads(v int) {
 	app.mu.Lock()
 	app.cfg.DirectUnpackThreads = v
 	app.mu.Unlock()
+	app.config.With(func(c *config.Config) {
+		c.PostProc.DirectUnpackThreads = v
+	})
 }
 
 // SetEnableUnrar enables or disables standard RAR unpacking at runtime.
@@ -1701,6 +1724,11 @@ func WithPostProcStages(stages []postproc.Stage) func(*Application) {
 	return func(a *Application) { a.customStages = stages }
 }
 
+// WithConfig returns an option that injects a pre-constructed *config.Config.
+func WithConfig(cfg *config.Config) func(*Application) {
+	return func(a *Application) { a.config = cfg }
+}
+
 // SetSpeedLimit updates the download speed limit. bytesPerSec <= 0 means unlimited.
 func (app *Application) SetSpeedLimit(bytesPerSec int64) {
 	app.mu.Lock()
@@ -1847,4 +1875,55 @@ func writeGzFile(path string, data []byte) error {
 		}
 		return gz.Close()
 	})
+}
+
+func convertConfig(c Config) *config.Config {
+	cfg := &config.Config{}
+	cfg.With(func(o *config.Config) {
+		o.General.DownloadDir = c.DownloadDir
+		o.General.CompleteDir = c.CompleteDir
+		o.General.AdminDir = c.AdminDir
+		o.General.ScriptDir = c.ScriptDir
+		o.Downloads.WriteCacheSize = config.ByteSize(c.WriteCacheBytes)
+		o.Downloads.BandwidthMax = config.ByteSize(c.BandwidthMax)
+		o.Downloads.BandwidthPerc = config.Percent(c.BandwidthPerc)
+		o.Downloads.MinFreeSpace = config.ByteSize(c.MinFreeSpace)
+		o.Downloads.MaxArtTries = c.MaxArtTries
+		o.Downloads.MaxArtOpt = c.MaxArtOpt
+		o.Downloads.TopOnly = c.TopOnly
+		o.Downloads.NoPenalties = c.NoPenalties
+		o.Downloads.PreCheck = c.PreCheck
+		o.Downloads.PropagationDelay = c.PropagationDelay
+		o.Downloads.ReplaceIllegalWith = c.Sanitize.ReplaceIllegalWith
+		o.Downloads.ReplaceSpacesWith = c.Sanitize.ReplaceSpacesWith
+		o.Downloads.StripDiacritics = c.Sanitize.StripDiacritics
+		o.Downloads.CleanupList = c.Sanitize.CleanupList
+
+		o.PostProc.DeobfuscateFilenames = c.DeobfuscateFilenames
+		o.PostProc.IgnoreSamples = c.IgnoreSamples
+		o.PostProc.EnableUnrar = c.EnableUnrar
+		o.PostProc.Enable7zip = c.Enable7zip
+		o.PostProc.EnableFileJoin = c.EnableFileJoin
+		o.PostProc.EnableRecursive = c.EnableRecursive
+		o.PostProc.EnableParCleanup = c.EnableParCleanup
+		o.PostProc.EnableRarCleanup = c.EnableRarCleanup
+		o.PostProc.Par2Command = c.Par2Command
+		o.PostProc.Par2Turbo = c.Par2Turbo
+		o.PostProc.UnrarCommand = c.UnrarCommand
+		o.PostProc.SevenzCommand = c.SevenzCommand
+		o.PostProc.IgnoreUnrarDates = c.IgnoreUnrarDates
+		o.PostProc.OverwriteFiles = c.OverwriteFiles
+		o.PostProc.FlatUnpack = c.FlatUnpack
+		o.PostProc.UseGoRAR = c.UseGoRAR
+		o.PostProc.UseGo7z = c.UseGo7z
+		o.PostProc.UseGoPar2 = c.UseGoPar2
+		o.PostProc.GoRarFallback = c.GoRarFallback
+		o.PostProc.Go7zFallback = c.Go7zFallback
+		o.PostProc.GoPar2Fallback = c.GoPar2Fallback
+		o.PostProc.EnableQuickCheck = !c.SkipQuickCheck
+
+		o.Servers = c.Servers
+		o.Categories = c.Categories
+	})
+	return cfg
 }
