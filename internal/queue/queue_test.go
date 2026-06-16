@@ -1234,6 +1234,82 @@ func TestRemove_DeletesDiskFile(t *testing.T) {
 	}
 }
 
+// TestRemove_NoIOUnderLock proves that Remove releases q.mu before calling
+// removeFile. On the old code (lock held during delete), the read method
+// called from the main goroutine blocks until Remove returns, causing the
+// test to time out. After the fix the read returns immediately.
+func TestRemove_NoIOUnderLock(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "jobs"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	q := New()
+	q.stateDir = dir
+	job := makeJob(t, "lock-test", constants.NormalPriority)
+	_ = q.Add(job)
+
+	// Create a placeholder state file so removeFile has something to call.
+	jobPath := filepath.Join(dir, "jobs", job.ID+".json.gz")
+	if err := os.WriteFile(jobPath, []byte("placeholder"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Save and restore the package-level removeFile hook.
+	origRemoveFile := removeFile
+	defer func() { removeFile = origRemoveFile }()
+
+	// started: closed when the hook begins executing (lock should be free by then).
+	// release: closed by main goroutine to unblock the hook.
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	removeFile = func(name string) error {
+		close(started) // signal that we are inside the delete (lock must be released)
+		<-release      // block until the main goroutine confirms the lock is free
+		return origRemoveFile(name)
+	}
+
+	removeDone := make(chan struct{})
+	go func() {
+		defer close(removeDone)
+		if err := q.Remove(job.ID); err != nil {
+			t.Errorf("Remove: %v", err)
+		}
+	}()
+
+	// Wait until the hook has started (i.e. Remove has at least reached the delete call).
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for removeFile hook to start")
+	}
+
+	// If the lock is still held here, q.Len() will block until Remove returns.
+	// With the fix the lock is already released, so Len() returns promptly.
+	lenDone := make(chan int, 1)
+	go func() { lenDone <- q.Len() }()
+
+	select {
+	case n := <-lenDone:
+		// Lock was not held — correct. Job was already removed from the in-memory
+		// slice, so Len() should be 0.
+		if n != 0 {
+			t.Errorf("Len() = %d after Remove (pre-delete), want 0", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("q.Len() blocked — Remove is holding q.mu during disk I/O (bug not fixed)")
+	}
+
+	// Release the hook so Remove can finish.
+	close(release)
+	select {
+	case <-removeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Remove goroutine did not finish after release")
+	}
+}
+
 func TestMarkArticlesFailed_EmptyBatch(t *testing.T) {
 	t.Parallel()
 	q := New()
