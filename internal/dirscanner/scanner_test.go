@@ -34,6 +34,9 @@ type HandlerCall struct {
 }
 
 func (m *MockHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err, ok := m.failFor[filename]; ok {
 		m.lastError = err
 		return "", err
@@ -1382,4 +1385,84 @@ func TestScanner_LogWarnings(t *testing.T) {
 			t.Error("expected failed to save state warning message")
 		}
 	})
+}
+
+func TestScanOnce_CancellationPropagates(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
+	if err != nil {
+		t.Fatalf("OpenStore failed: %v", err)
+	}
+
+	handler := &MockHandler{failFor: make(map[string]error)}
+	scanner := New(tmpDir, store, handler, nil, nil)
+
+	nzbPath := filepath.Join(tmpDir, "test.nzb")
+	if err := os.WriteFile(nzbPath, []byte("<?xml version=\"1.0\" ?>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First scan records the file.
+	if _, err := scanner.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a cancelled context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Second scan (file is stable): we run with cancelled context.
+	_, err = scanner.ScanOnce(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	// Since it was cancelled (not a real failure), the file must NOT be renamed to .failed.
+	if _, err := os.Stat(nzbPath); os.IsNotExist(err) {
+		t.Errorf("expected original file to remain, but it is missing")
+	}
+	if _, err := os.Stat(nzbPath + ".failed"); err == nil {
+		t.Errorf("did not expect file to be renamed to .failed")
+	}
+
+	// And its state entry in the store must NOT be deleted.
+	if _, ok := store.Get(nzbPath); !ok {
+		t.Errorf("expected file state to remain in store, but it was deleted")
+	}
+}
+
+func TestScanOnce_SubdirCancellationPropagates(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := OpenStore(filepath.Join(tmpDir, "state.json"))
+	if err != nil {
+		t.Fatalf("OpenStore failed: %v", err)
+	}
+
+	handler := &MockHandler{failFor: make(map[string]error)}
+	catFn := func() []string { return []string{"tv"} }
+	scanner := New(tmpDir, store, handler, catFn, nil)
+
+	tvDir := filepath.Join(tmpDir, "tv")
+	if err := os.MkdirAll(tvDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nzbPath := filepath.Join(tvDir, "show.nzb")
+	if err := os.WriteFile(nzbPath, []byte("<?xml version=\"1.0\" ?>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First scan records the file.
+	if _, err := scanner.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a cancelled context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Second scan (stable): run with cancelled context.
+	_, err = scanner.ScanOnce(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
 }

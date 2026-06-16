@@ -92,6 +92,9 @@ func (s *Scanner) buildCategoryMap() map[string]string {
 // decompresses them, invokes the handler, and on success deletes the source
 // file. Returns the number of files processed.
 func (s *Scanner) ScanOnce(ctx context.Context) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	catMap := s.buildCategoryMap()
 	scannedDirs := make(map[string]bool)
 
@@ -127,6 +130,9 @@ func (s *Scanner) ScanOnce(ctx context.Context) (int, error) {
 // Returns the set of files observed (for store cleanup) and the number
 // of files that were successfully processed.
 func (s *Scanner) scanDir(ctx context.Context, dir, category string) (files map[string]FileState, nzbCount int, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to read directory: %w", err)
@@ -153,6 +159,9 @@ func (s *Scanner) scanDir(ctx context.Context, dir, category string) (files map[
 
 		ok, err := s.processScannedFile(ctx, path, entry.Name(), category, currentScan)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil, processed, err
+			}
 			s.logger.Warn("failed to handle file", "path", path, "err", err)
 			continue
 		}
@@ -279,6 +288,9 @@ func (s *Scanner) scanCategorySubdirs(
 		subDir := filepath.Join(s.dir, entry.Name())
 		subScan, subProcessed, err := s.scanDir(ctx, subDir, catName)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return processed, err
+			}
 			s.logger.Warn("failed to scan category subdir", "dir", subDir, "category", catName, "err", err)
 			continue
 		}
@@ -356,6 +368,9 @@ func (s *Scanner) processScannedFile(
 
 	// File is stable. Extract, handle, and clean up.
 	if err := s.handleStableFile(ctx, path, name, category); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return false, err
+		}
 		// Only leave for retry if some NZBs succeeded (partial success).
 		// If all failed or extraction itself failed, permanently mark as .failed.
 		var pe *PartialError
