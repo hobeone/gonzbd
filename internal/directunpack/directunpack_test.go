@@ -399,6 +399,31 @@ func TestDirectUnpack_WaitNotStarted(t *testing.T) {
 	}
 }
 
+func TestDirectUnpack_AbortUnstarted(t *testing.T) {
+	du := New(testLogger(t), "test", t.TempDir(), t.TempDir(), Options{})
+
+	// Abort() before any Add() must not deadlock: d.done is only closed by
+	// run(), which only launches from Add(). An unstarted Abort must close
+	// d.done itself and skip the <-d.done wait.
+	done := make(chan struct{})
+	go func() {
+		du.Abort()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Abort() on an unstarted DirectUnpacker deadlocked")
+	}
+
+	// Done() must be closed after an unstarted Abort so observers unblock.
+	select {
+	case <-du.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Done() not closed after Abort() on an unstarted DirectUnpacker")
+	}
+}
+
 func TestDirectUnpack_AddNonRar(t *testing.T) {
 	du := New(testLogger(t), "test", "/tmp", "/tmp", Options{})
 	ctx := context.Background()
