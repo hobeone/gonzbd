@@ -409,3 +409,40 @@ func TestHelperProcess_UnrarFailure(t *testing.T) {
 	os.Stderr.WriteString("some unrar error")
 	os.Exit(1)
 }
+
+func TestIsRARReader(t *testing.T) {
+	t.Parallel()
+
+	t.Run("RAR5 reader", func(t *testing.T) {
+		r := bytes.NewReader(rar5Sig)
+		ok, err := IsRARReader(r)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !ok {
+			t.Error("expected true for RAR5 signature")
+		}
+	})
+
+	t.Run("RAR3 reader", func(t *testing.T) {
+		r := bytes.NewReader(rar3Sig)
+		ok, err := IsRARReader(r)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !ok {
+			t.Error("expected true for RAR3 signature")
+		}
+	})
+
+	t.Run("non-RAR reader", func(t *testing.T) {
+		r := bytes.NewReader([]byte("not a rar file"))
+		ok, err := IsRARReader(r)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ok {
+			t.Error("expected false for non-RAR signature")
+		}
+	})
+}

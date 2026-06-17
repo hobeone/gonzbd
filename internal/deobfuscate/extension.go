@@ -12,7 +12,6 @@ import (
 	"github.com/h2non/filetype"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
-	"github.com/hobeone/gonzbd/internal/rarheader"
 )
 
 // popularExts is a set of file extensions (with leading dot, lowercase) that
@@ -98,13 +97,13 @@ func hasCollisionSuffix(filename string) bool {
 // is or isn't being renamed. Pass nil for silent operation.
 //
 // Returns zero-value Rename and nil error if no fix is needed.
-func FixExtension(ctx context.Context, log *slog.Logger, path string) (Rename, error) {
+func FixExtension(ctx context.Context, log *slog.Logger, root *os.Root, rel, path string) (Rename, error) {
 	if log == nil {
 		log = slog.Default()
 	}
 	log = log.With("component", "deobfuscate")
-	base := filepath.Base(path)
-	ext := strings.ToLower(filepath.Ext(path))
+	base := filepath.Base(rel)
+	ext := strings.ToLower(filepath.Ext(rel))
 
 	if popularExts[ext] {
 		log.Debug("deobfuscate: extension already popular, skipping",
@@ -112,8 +111,8 @@ func FixExtension(ctx context.Context, log *slog.Logger, path string) (Rename, e
 		return Rename{}, nil
 	}
 
-	if hasCollisionSuffix(path) {
-		m := collisionSuffixRe.FindStringSubmatch(path)
+	if hasCollisionSuffix(rel) {
+		m := collisionSuffixRe.FindStringSubmatch(rel)
 		log.Info("deobfuscate: file has collision suffix, skipping extension fix",
 			"file", base, "real_ext", m[1], "suffix", m[2])
 		return Rename{}, nil
@@ -128,7 +127,7 @@ func FixExtension(ctx context.Context, log *slog.Logger, path string) (Rename, e
 	log.Debug("deobfuscate: extension not popular, sniffing magic bytes",
 		"file", base, "ext", ext)
 
-	kind, err := filetype.MatchFile(path)
+	f, err := root.Open(rel)
 	if err != nil {
 		// File too small or unreadable — not an error worth propagating.
 		if os.IsNotExist(err) {
@@ -136,20 +135,14 @@ func FixExtension(ctx context.Context, log *slog.Logger, path string) (Rename, e
 		}
 		return Rename{}, err
 	}
+	defer f.Close() //nolint:errcheck // read-only close
+
+	kind, err := filetype.MatchReader(f)
+	if err != nil {
+		return Rename{}, err
+	}
 
 	if kind == filetype.Unknown {
-		// Fallback: check if it's a RAR archive by magic signature.
-		// filetype may not recognize all RAR variants.
-		isRAR, _ := rarheader.IsRAR(path)
-		if isRAR {
-			newPath := fsutil.GetUniqueFilename(path + ".rar")
-			log.Info("deobfuscate: RAR content detected by magic bytes, appending .rar",
-				"file", base, "current_ext", ext)
-			if err := os.Rename(path, newPath); err != nil {
-				return Rename{}, fmt.Errorf("rename %s → %s: %w", path, newPath, err)
-			}
-			return Rename{From: path, To: newPath}, nil
-		}
 		log.Debug("deobfuscate: unknown content type, no extension fix",
 			"file", base)
 		return Rename{}, nil
@@ -164,11 +157,12 @@ func FixExtension(ctx context.Context, log *slog.Logger, path string) (Rename, e
 		return Rename{}, nil
 	}
 
-	newPath := fsutil.GetUniqueFilename(path + detectedExt)
+	newRel := fsutil.GetUniqueRelPath(root, rel+detectedExt)
+	newPath := filepath.Join(filepath.Dir(path), filepath.Base(newRel))
 	log.Info("deobfuscate: content type detected, appending correct extension",
 		"file", base, "current_ext", ext, "detected_ext", detectedExt)
-	if err := os.Rename(path, newPath); err != nil {
-		return Rename{}, fmt.Errorf("rename %s → %s: %w", path, newPath, err)
+	if err := root.Rename(rel, newRel); err != nil {
+		return Rename{}, fmt.Errorf("rename %s → %s: %w", rel, newRel, err)
 	}
 	return Rename{From: path, To: newPath}, nil
 }

@@ -63,6 +63,23 @@ func IsRAR(p string) (bool, error) {
 	return ver > 0, err
 }
 
+// IsRARReader checks whether the reader starts with a RAR3 or RAR5 magic
+// signature.
+func IsRARReader(r io.Reader) (bool, error) {
+	buf := make([]byte, 8)
+	n, err := io.ReadFull(r, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	if n >= len(rar5Sig) && bytes.Equal(buf[:len(rar5Sig)], rar5Sig) {
+		return true, nil
+	}
+	if n >= len(rar3Sig) && bytes.Equal(buf[:len(rar3Sig)], rar3Sig) {
+		return true, nil
+	}
+	return false, nil
+}
+
 // Version returns the RAR format version (3 or 5) of the file at path,
 // based on its magic signature. It reads at most 8 bytes and performs no
 // header parsing, so it is suitable for fast pre-filtering before choosing
