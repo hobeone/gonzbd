@@ -297,6 +297,36 @@ When evaluating a new library:
 - **Mocks/fakes** preferred over interface mocking frameworks. Hand-rolled fakes are clearer than `gomock`-generated ones for small interfaces.
 - **Coverage target**: 80%+ for `internal/` packages. Don't chase coverage for trivial code paths.
 
+### Coverage Exemptions
+
+The `scripts/check_coverage` tool enforces an 80% per-function threshold on
+changed code. Some functions are **trivially correct by inspection** and testing
+them adds no confidence — e.g., no-op interface stubs, single-field getters, or
+type-assertion wrappers. **Do not insert dead code** (like `_ = struct{}{}`)
+to make the coverage tool instrument empty method bodies. That is coverage
+gaming, not testing.
+
+Instead, mark the function with a `//nocover:` comment on the `func` line
+explaining *why* testing provides no value:
+
+```go
+func (d dummyEmitter) Broadcast(_ Event) {} //nocover: no-op interface stub
+```
+
+The coverage checker skips any function whose declaration line contains
+`//nocover:`. The comment MUST include a reason after the colon. Functions
+eligible for exemption:
+
+- **No-op interface stubs** (empty method bodies satisfying an interface).
+- **Trivial getters/setters** with no logic, branching, or side effects.
+- **Compile-time interface checks** (`var _ Foo = (*Bar)(nil)`).
+
+Functions NOT eligible — these must be tested:
+
+- Anything with branching (`if`, `switch`, `for`).
+- Anything with error handling or error wrapping.
+- Anything that mutates shared state.
+
 ### Red-Green Discipline (write the failing test first)
 
 **Every bug fix and every regression test MUST be proven to fail on the

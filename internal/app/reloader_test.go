@@ -8,11 +8,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
-func TestApplication_DummyEmitter(t *testing.T) {
-	d := dummyEmitter{}
-	d.Broadcast(Event{Type: "test"})
-}
-
 func TestApplication_ReloadOptions(t *testing.T) {
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	app, err := New(cfg, nil)

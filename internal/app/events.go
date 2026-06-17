@@ -34,9 +34,7 @@ type Event struct {
 
 type dummyEmitter struct{}
 
-func (d dummyEmitter) Broadcast(_ Event) {
-	_ = struct{}{}
-}
+func (d dummyEmitter) Broadcast(_ Event) {} //nocover: no-op interface stub
 
 // SetEmitter injects a broadcaster for real-time events.
 func (app *Application) SetEmitter(e EventEmitter) {
