@@ -18,6 +18,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
+// UnpackStage extracts downloaded archives during post-processing.
 type UnpackStage struct {
 	// toggle provides the thread-safe SetEnabled/enabled flag.
 	toggle
@@ -296,7 +297,7 @@ func (u *UnpackStage) extractPendingArchives(
 	processed map[string]bool,
 	opts unpack.Options,
 	enableFileJoin bool,
-	firstErr *error,
+	firstErr *error, //nolint:gocritic // ptrToRefParam: pointer required to accumulate first error across calls
 	allSuccessful *[]unpack.Archive,
 ) bool {
 	extractedAny := false
@@ -613,14 +614,15 @@ func applyPermissions(dir, permStr string) (int, error) {
 			return nil // skip entries we can't stat
 		}
 		var target os.FileMode
-		if d.IsDir() {
+		switch {
+		case d.IsDir():
 			target = dirMode
-		} else if d.Type().IsRegular() {
+		case d.Type().IsRegular():
 			target = fileMode
-		} else {
+		default:
 			return nil // skip symlinks, devices, etc.
 		}
-		if chErr := os.Chmod(path, target); chErr == nil {
+		if chErr := os.Chmod(path, target); chErr == nil { //nolint:gosec // operating within the job-owned output dir
 			count++
 		}
 		return nil
@@ -634,7 +636,7 @@ func applyPermissions(dir, permStr string) (int, error) {
 // recordUnpackFailure handles extraction failures by setting job error
 // state, logging the failure, capturing the first error, and appending
 // command/output lines for diagnostics.
-func recordUnpackFailure(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, res unpack.Result, failErr error, firstErr *error) {
+func recordUnpackFailure(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, res unpack.Result, failErr error, firstErr *error) { //nolint:gocritic // ptrToRefParam: pointer required to set caller's first-error sentinel
 	job.UnpackError = true
 	logf(ctx, log, job, slog.LevelWarn, "Error: extraction failed for %q (%s): %v", a.Name, archiveTypeName(a.Type), failErr)
 	if *firstErr == nil {

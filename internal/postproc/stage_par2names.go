@@ -8,6 +8,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/deobfuscate"
 )
 
+// RecoverPar2NamesStage restores original filenames from par2 manifests after extraction.
 type RecoverPar2NamesStage struct {
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger

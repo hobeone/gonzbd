@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 )
 
+// CleanupStage removes unwanted files from the job's output directory after extraction.
 type CleanupStage struct {
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger

@@ -9,6 +9,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/deobfuscate"
 )
 
+// DeobfuscateStage renames obfuscated files to human-readable names after extraction.
 type DeobfuscateStage struct {
 	// toggle provides the thread-safe SetEnabled/enabled flag.
 	toggle
