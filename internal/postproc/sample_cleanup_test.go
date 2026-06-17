@@ -236,3 +236,44 @@ func TestSampleCleanup_RemoveFailure(t *testing.T) {
 		t.Errorf("expected failure message in OutputLines, got: %v", job.OutputLines)
 	}
 }
+
+func TestSampleCleanup_ZipSlip_Symlink(t *testing.T) {
+	dlDir := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim-sample.txt")
+	if err := os.WriteFile(victim, []byte("VICTIM"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plant symlink inside dlDir pointing to outside directory
+	if err := os.Symlink(outside, filepath.Join(dlDir, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a job representing the run. Place another dummy file to avoid false-positive guard.
+	if err := os.WriteFile(filepath.Join(dlDir, "movie.mkv"), []byte("MOVIE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	job := &Job{
+		DownloadDir:   dlDir,
+		ConsumedFiles: make(map[string]struct{}),
+	}
+
+	stage := NewSampleCleanupStage()
+	stage.SetEnabled(true)
+	// Run stage. It should walk dlDir but root.Remove("link/victim-sample.txt")
+	// should fail/refuse to follow the symlink because of os.Root.
+	if err := stage.Run(context.Background(), job); err != nil {
+		t.Fatalf("stage run returned error: %v", err)
+	}
+
+	// Victim must survive
+	data, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("failed to read victim: %v", err)
+	}
+	if string(data) != "VICTIM" {
+		t.Errorf("victim content modified: %s", string(data))
+	}
+}
