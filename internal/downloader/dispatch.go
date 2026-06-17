@@ -37,6 +37,7 @@ type dispatchOpts struct {
 	maxArtOpt        int // carried for future use; tryDispatch reads maxArtTries only
 	topOnly          bool
 	propagationDelay time.Duration
+	onJobHopeless    func(jobID string)
 }
 
 // buildDispatchPlan iterates over the unfinished article queue and populates
@@ -88,7 +89,7 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 // drains exhausted articles (must happen after queue RLock is released to
 // avoid deadlock on the completions channel), transitions job statuses,
 // handles hopeless jobs, and triggers idle disconnect.
-func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan) {
+func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, opts dispatchOpts) {
 	// Queue RLock and tryMu are both released by now. Safe to block on
 	// completions; the pipeline consumer can take the queue write lock.
 	for _, req := range plan.exhausted {
@@ -112,8 +113,8 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan) {
 	// Handle hopeless jobs.
 	for jobID := range plan.hopelessJobs {
 		d.log.Warn("job beyond repair (failed bytes > par2 bytes), marking FAILED", "job", jobID)
-		if d.onJobHopeless != nil {
-			d.onJobHopeless(jobID)
+		if opts.onJobHopeless != nil {
+			opts.onJobHopeless(jobID)
 		} else {
 			_ = d.queue.Pause(jobID) // Fallback if no callback
 		}
@@ -170,11 +171,12 @@ func (d *Downloader) dispatchPass(ctx context.Context) {
 		maxArtOpt:        d.maxArtOpt,
 		topOnly:          d.topOnly,
 		propagationDelay: d.propagationDelay,
+		onJobHopeless:    d.onJobHopeless,
 	}
 	d.optsMu.RUnlock()
 
 	plan := d.buildDispatchPlan(ctx, opts)
-	d.applyDispatchPlan(ctx, plan)
+	d.applyDispatchPlan(ctx, plan, opts)
 }
 
 // tryDispatch hands the article to the first eligible server with

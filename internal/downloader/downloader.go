@@ -199,6 +199,8 @@ type Downloader struct {
 	meter   *bpsmeter.Meter
 	opts    Options
 
+	// onJobHopeless is guarded by optsMu — set via SetOnJobHopeless,
+	// read via snapshot in buildDispatchPlan.
 	onJobHopeless func(jobID string)
 
 	// workCh routes requests to per-server worker pools. Keyed by
@@ -468,8 +470,11 @@ func (d *Downloader) SetDispatchOptions(maxArtTries, maxArtOpt int, topOnly bool
 }
 
 // SetOnJobHopeless registers the callback invoked when a job becomes hopeless.
+// Thread-safe: guarded by optsMu.
 func (d *Downloader) SetOnJobHopeless(cb func(jobID string)) {
+	d.optsMu.Lock()
 	d.onJobHopeless = cb
+	d.optsMu.Unlock()
 }
 
 // IsPaused reports the downloader's own pause flag. Orthogonal to
