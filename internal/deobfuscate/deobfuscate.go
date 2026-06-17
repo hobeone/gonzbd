@@ -485,7 +485,7 @@ func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 		// "SomeMovie2" with prefix "SomeMovie" does not qualify as a sibling.
 		if strings.HasPrefix(srtBase, bigBase) {
 			suffix := srtBase[len(bigBase):]
-			if len(suffix) == 0 {
+			if suffix == "" {
 				continue
 			}
 			nextChar := suffix[0]
