@@ -179,7 +179,13 @@ func TestCleanupEmptyDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanupEmptyDirs(root)
+	rootH, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootH.Close()
+
+	cleanupEmptyDirs(rootH)
 
 	if _, err := os.Stat(emptyDir); !os.IsNotExist(err) {
 		t.Errorf("expected empty_dir to be removed")
@@ -198,5 +204,41 @@ func TestCleanupEmptyDirs(t *testing.T) {
 	}
 	if _, err := os.Stat(root); err != nil {
 		t.Errorf("expected root dir to survive")
+	}
+}
+
+func TestExtensionCleanup_ZipSlip_Symlink(t *testing.T) {
+	dlDir := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(victim, []byte("VICTIM"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Plant symlink inside dlDir pointing to outside directory
+	if err := os.Symlink(outside, filepath.Join(dlDir, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a job representing the run
+	job := &Job{
+		DownloadDir:   dlDir,
+		ConsumedFiles: make(map[string]struct{}),
+	}
+
+	stage := NewExtensionCleanupStage([]string{"txt"})
+	// Run stage. It should walk dlDir but root.Remove("link/victim.txt")
+	// should fail/refuse to follow the symlink because of os.Root.
+	if err := stage.Run(context.Background(), job); err != nil {
+		t.Fatalf("stage run returned error: %v", err)
+	}
+
+	// Victim must survive
+	data, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("failed to read victim: %v", err)
+	}
+	if string(data) != "VICTIM" {
+		t.Errorf("victim content modified: %s", string(data))
 	}
 }

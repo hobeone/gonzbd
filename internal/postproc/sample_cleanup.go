@@ -3,6 +3,7 @@ package postproc
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -61,13 +62,22 @@ func (s *SampleCleanupStage) Run(ctx context.Context, job *Job) error {
 
 	log := s.logger(job)
 
+	root, err := os.OpenRoot(job.DownloadDir)
+	if err != nil {
+		log.Warn("sample cleanup failed to open root", "dir", job.DownloadDir, "err", err)
+		job.OutputLines = append(job.OutputLines,
+			fmt.Sprintf("open root %s: %v", job.DownloadDir, err))
+		return nil
+	}
+	defer root.Close() //nolint:errcheck // read-only close
+
 	var samples []string
 	totalFiles := 0
-	walkErr := filepath.WalkDir(job.DownloadDir, func(path string, d os.DirEntry, err error) error {
+	walkErr := fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
+		if d.IsDir() || path == "." {
 			return nil
 		}
 		totalFiles++
@@ -102,21 +112,28 @@ func (s *SampleCleanupStage) Run(ctx context.Context, job *Job) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err := os.Remove(p); err != nil {
-			log.Warn("failed to remove sample", "path", p, "err", err)
+		absPath := filepath.Join(job.DownloadDir, p)
+		if err := root.Remove(p); err != nil {
+			log.Warn("failed to remove sample", "path", absPath, "err", err)
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("remove %s: %v", p, err))
+				fmt.Sprintf("remove %s: %v", absPath, err))
 			continue
 		}
-		log.Info("removed sample file", "path", p)
-		job.OutputLines = append(job.OutputLines, fmt.Sprintf("removed sample %s", p))
+		log.Info("removed sample file", "path", absPath)
+		job.OutputLines = append(job.OutputLines, fmt.Sprintf("removed sample %s", absPath))
 	}
 	return nil
 }
 
 func (s *SampleCleanupStage) logger(job *Job) *slog.Logger {
 	if s.Log != nil {
-		return s.Log.With("job", job.Queue.ID, "stage", s.Name())
+		if job.Queue != nil {
+			return s.Log.With("job", job.Queue.ID, "stage", s.Name())
+		}
+		return s.Log.With("stage", s.Name())
 	}
-	return slog.Default().With("job", job.Queue.ID, "stage", s.Name())
+	if job.Queue != nil {
+		return slog.Default().With("job", job.Queue.ID, "stage", s.Name())
+	}
+	return slog.Default().With("stage", s.Name())
 }

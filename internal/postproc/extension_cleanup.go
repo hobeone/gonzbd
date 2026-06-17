@@ -3,6 +3,7 @@ package postproc
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -77,12 +78,21 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 		extSet[ext] = struct{}{}
 	}
 
+	root, err := os.OpenRoot(job.DownloadDir)
+	if err != nil {
+		log.Warn("extension cleanup failed to open root", "dir", job.DownloadDir, "err", err)
+		job.OutputLines = append(job.OutputLines,
+			fmt.Sprintf("open root %s: %v", job.DownloadDir, err))
+		return nil
+	}
+	defer root.Close() //nolint:errcheck // read-only close
+
 	var removed int
-	walkErr := filepath.WalkDir(job.DownloadDir, func(path string, d os.DirEntry, err error) error {
+	walkErr := fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
+		if d.IsDir() || path == "." {
 			return nil
 		}
 		if ctx.Err() != nil {
@@ -105,20 +115,21 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 			return nil
 		}
 		// M7: protect files consumed by repair/join operations.
-		if _, consumed := job.ConsumedFiles[path]; consumed {
+		absPath := filepath.Join(job.DownloadDir, path)
+		if _, consumed := job.ConsumedFiles[absPath]; consumed {
 			return nil
 		}
 
-		if err := os.Remove(path); err != nil { //nolint:gosec // operating within the job-owned output dir
-			log.Warn("failed to remove file", "path", path, "err", err)
+		if err := root.Remove(path); err != nil {
+			log.Warn("failed to remove file", "path", absPath, "err", err)
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("remove %s: %v", path, err))
+				fmt.Sprintf("remove %s: %v", absPath, err))
 			return nil
 		}
 		removed++
-		log.Info("removed unwanted file", "path", path, "ext", ext)
+		log.Info("removed unwanted file", "path", absPath, "ext", ext)
 		job.OutputLines = append(job.OutputLines,
-			fmt.Sprintf("removed %s (ext=%s)", filepath.Base(path), ext))
+			fmt.Sprintf("removed %s (ext=%s)", filepath.Base(absPath), ext))
 		return nil
 	})
 	if walkErr != nil {
@@ -129,7 +140,7 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// Clean up any now-empty directories (like SABnzbd's cleanup_empty_directories).
-	cleanupEmptyDirs(job.DownloadDir)
+	cleanupEmptyDirs(root)
 
 	if removed > 0 {
 		log.Info("extension cleanup complete", "removed", removed)
@@ -139,15 +150,15 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 
 // cleanupEmptyDirs removes empty subdirectories under root, bottom-up.
 // It does not remove root itself.
-func cleanupEmptyDirs(root string) {
+func cleanupEmptyDirs(root *os.Root) {
 	// Walk bottom-up by collecting dirs first, then processing in reverse.
 	var dirs []string
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	_ = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			//nolint:nilerr // ignore walk errors to do a best-effort empty directory cleanup
 			return nil
 		}
-		if !d.IsDir() || path == root {
+		if !d.IsDir() || path == "." {
 			return nil
 		}
 		dirs = append(dirs, path)
@@ -155,16 +166,26 @@ func cleanupEmptyDirs(root string) {
 	})
 	// Process deepest first.
 	for i := len(dirs) - 1; i >= 0; i-- {
-		entries, err := os.ReadDir(dirs[i])
-		if err == nil && len(entries) == 0 {
-			_ = os.Remove(dirs[i])
+		d, err := root.Open(dirs[i])
+		if err == nil {
+			entries, rerr := d.ReadDir(-1)
+			_ = d.Close()
+			if rerr == nil && len(entries) == 0 {
+				_ = root.Remove(dirs[i])
+			}
 		}
 	}
 }
 
 func (s *ExtensionCleanupStage) logger(job *Job) *slog.Logger {
 	if s.Log != nil {
-		return s.Log.With("job", job.Queue.ID, "stage", s.Name())
+		if job.Queue != nil {
+			return s.Log.With("job", job.Queue.ID, "stage", s.Name())
+		}
+		return s.Log.With("stage", s.Name())
 	}
-	return slog.Default().With("job", job.Queue.ID, "stage", s.Name())
+	if job.Queue != nil {
+		return slog.Default().With("job", job.Queue.ID, "stage", s.Name())
+	}
+	return slog.Default().With("stage", s.Name())
 }
