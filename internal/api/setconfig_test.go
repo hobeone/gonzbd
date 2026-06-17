@@ -191,3 +191,80 @@ func TestModeSetConfig_ConcurrentSafe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+type speedLimitSpyApp struct {
+	NopApp
+	mu         sync.Mutex
+	speedLimit int64
+	maxSpeed   int64
+	perc       int
+}
+
+func (a *speedLimitSpyApp) SetSpeedLimit(v int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.speedLimit = v
+}
+
+func (a *speedLimitSpyApp) SetBandwidthMax(v int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.maxSpeed = v
+}
+
+func (a *speedLimitSpyApp) SetBandwidthPerc(v int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.perc = v
+}
+
+// TestModeSetConfig_SpeedLimits verifies that setting downloads/bandwidth_max
+// and downloads/bandwidth_perc hot-applies the limit via the App interface.
+func TestModeSetConfig_SpeedLimits(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	cfg.With(func(c *config.Config) {
+		c.General.APIKey = testAPIKey
+		c.General.NZBKey = testNZBKey
+	})
+
+	app := &speedLimitSpyApp{}
+	s := New(Options{
+		Version: "1.0.0-test",
+		Config:  cfg,
+		App:     app,
+	})
+
+	h := s.Handler()
+
+	// 1. Set bandwidth_max to 5000000 bytes/sec
+	rr := apiGet(t, h, "/api?mode=set_config&section=downloads&keyword=bandwidth_max&value=5000000&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("set_config status = %d; want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	// 2. Set bandwidth_perc to 50%
+	rr = apiGet(t, h, "/api?mode=set_config&section=downloads&keyword=bandwidth_perc&value=50&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("set_config status = %d; want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	app.mu.Lock()
+	maxSpeed := app.maxSpeed
+	perc := app.perc
+	speedLimit := app.speedLimit
+	app.mu.Unlock()
+
+	if maxSpeed != 5000000 {
+		t.Errorf("maxSpeed = %d; want 5000000", maxSpeed)
+	}
+	if perc != 50 {
+		t.Errorf("perc = %d; want 50", perc)
+	}
+	if speedLimit != 2500000 {
+		t.Errorf("speedLimit = %d; want 2500000", speedLimit)
+	}
+}

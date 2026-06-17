@@ -477,3 +477,28 @@ func TestMissingMode_GETStillFails(t *testing.T) {
 		t.Errorf("status = %d; want 400", rr.Code)
 	}
 }
+
+func TestServer_Addr(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	// 1. Before start, Addr() must return nil.
+	if addr := s.Addr(); addr != nil {
+		t.Errorf("Addr() = %v before Start, want nil", addr)
+	}
+
+	// 2. Start it.
+	addr, err := s.Start(":0")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = s.Shutdown(t.Context()) }()
+
+	// 3. Addr() should return the same address as Start.
+	addr2 := s.Addr()
+	if addr2 == nil {
+		t.Fatal("Addr() returned nil after Start")
+	}
+	if addr.String() != addr2.String() {
+		t.Errorf("Addr() = %v, want %v", addr2, addr)
+	}
+}

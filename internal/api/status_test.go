@@ -234,3 +234,63 @@ func TestFullStatus_SonarrCompleteDir(t *testing.T) {
 		t.Errorf("completedir = %q; want %q", completeDir, "/data/complete")
 	}
 }
+
+type unblockSpyApp struct {
+	NopApp
+	unblockResult bool
+	calledName    string
+}
+
+func (u *unblockSpyApp) UnblockServer(name string) bool {
+	u.calledName = name
+	return u.unblockResult
+}
+
+func TestModeStatus_UnblockServer(t *testing.T) {
+	t.Parallel()
+
+	// 1. Missing value param -> 400
+	s1 := testServer()
+	h1 := s1.Handler()
+	rr1 := apiGet(t, h1, "/api?mode=status&name=unblock_server&apikey="+testAPIKey)
+	if rr1.Code != http.StatusBadRequest {
+		t.Errorf("status = %d; want 400 (missing value)", rr1.Code)
+	}
+
+	// 2. Happy path (app returns true) -> 200
+	app2 := &unblockSpyApp{unblockResult: true}
+	s2 := New(Options{
+		Version: "1.0.0-test",
+		Config: &config.Config{General: config.GeneralConfig{
+			APIKey: testAPIKey,
+			NZBKey: testNZBKey,
+		}},
+		App: app2,
+	})
+	rr2 := apiGet(t, s2.Handler(), "/api?mode=status&name=unblock_server&value=my-server&apikey="+testAPIKey)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (happy path); body = %s", rr2.Code, rr2.Body.String())
+	}
+	if app2.calledName != "my-server" {
+		t.Errorf("calledName = %q; want my-server", app2.calledName)
+	}
+	m2 := decodeJSON(t, rr2)
+	if m2["status"] != true {
+		t.Errorf("response status = %v; want true", m2["status"])
+	}
+
+	// 3. Server not found (app returns false) -> 404
+	app3 := &unblockSpyApp{unblockResult: false}
+	s3 := New(Options{
+		Version: "1.0.0-test",
+		Config: &config.Config{General: config.GeneralConfig{
+			APIKey: testAPIKey,
+			NZBKey: testNZBKey,
+		}},
+		App: app3,
+	})
+	rr3 := apiGet(t, s3.Handler(), "/api?mode=status&name=unblock_server&value=unknown-server&apikey="+testAPIKey)
+	if rr3.Code != http.StatusNotFound {
+		t.Errorf("status = %d; want 404 (not found); body = %s", rr3.Code, rr3.Body.String())
+	}
+}
