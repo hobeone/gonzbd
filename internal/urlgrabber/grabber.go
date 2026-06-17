@@ -132,7 +132,10 @@ func New(cfg Config, h Handler) *Grabber {
 			Timeout:   cfg.Timeout,
 		}
 	} else {
-		client.Transport = transport
+		// Copy the client to avoid mutating the caller-supplied pointer.
+		c := *client
+		c.Transport = transport
+		client = &c
 	}
 	// Install redirect validation to prevent SSRF via redirect chains.
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -313,12 +316,6 @@ func extractFromContentDisposition(disposition string) string {
 		return ""
 	}
 	return params["filename"]
-}
-
-// isPrivateIP returns true if ip falls within any private, loopback, or
-// link-local address range. Uses stdlib methods available since Go 1.17.
-func isPrivateIP(ip net.IP) bool {
-	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
 }
 
 // validateURL rejects URLs that could be used for SSRF attacks:

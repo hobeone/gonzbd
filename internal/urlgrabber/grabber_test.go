@@ -46,6 +46,21 @@ func (m *MockHandler) NZBs() map[string][]byte {
 	return result
 }
 
+func TestNew_NoHTTPClientMutation(t *testing.T) {
+	t.Parallel()
+	customTransport := &http.Transport{}
+	customClient := &http.Client{
+		Transport: customTransport,
+	}
+
+	handler := &MockHandler{}
+	_ = New(Config{HTTPClient: customClient}, handler)
+
+	if customClient.Transport != customTransport {
+		t.Errorf("HTTPClient.Transport was mutated; got %T, want original %T", customClient.Transport, customTransport)
+	}
+}
+
 func TestFetchPlainNZB(t *testing.T) {
 	nzbData := []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
@@ -705,34 +720,6 @@ func TestExtractFilename_Direct(t *testing.T) {
 	emptyURL := &url.URL{Scheme: "http", Host: "example.com"}
 	if got := extractFilename(resp2, emptyURL); got != "download.nzb" {
 		t.Errorf("extractFilename empty path: got %q, want %q", got, "download.nzb")
-	}
-}
-
-func TestIsPrivateIP_Direct(t *testing.T) {
-	tests := []struct {
-		ip   string
-		want bool
-	}{
-		{"127.0.0.1", true},
-		{"::1", true},
-		{"10.0.0.1", true},
-		{"192.168.1.50", true},
-		{"172.16.31.254", true},
-		{"169.254.0.1", true}, // link-local
-		{"8.8.8.8", false},
-		{"2606:4700:4700::1111", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.ip, func(t *testing.T) {
-			ip := net.ParseIP(tt.ip)
-			if ip == nil {
-				t.Fatalf("failed to parse IP %q", tt.ip)
-			}
-			if got := isPrivateIP(ip); got != tt.want {
-				t.Errorf("isPrivateIP(%s) = %v; want %v", tt.ip, got, tt.want)
-			}
-		})
 	}
 }
 
