@@ -14,6 +14,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
+// RepairStage verifies and repairs extracted files using par2 recovery data.
 type RepairStage struct {
 	mu sync.RWMutex
 	// Par2Opts configures the par2 binary path and turbo mode.

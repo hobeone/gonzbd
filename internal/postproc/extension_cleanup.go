@@ -109,7 +109,7 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 			return nil
 		}
 
-		if err := os.Remove(path); err != nil {
+		if err := os.Remove(path); err != nil { //nolint:gosec // operating within the job-owned output dir
 			log.Warn("failed to remove file", "path", path, "err", err)
 			job.OutputLines = append(job.OutputLines,
 				fmt.Sprintf("remove %s: %v", path, err))

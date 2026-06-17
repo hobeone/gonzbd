@@ -8,6 +8,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
+// QuickCheckStage relocates flat-downloaded files into the subdirectory structure expected by par2.
 type QuickCheckStage struct {
 	// toggle provides the thread-safe SetEnabled/enabled flag.
 	toggle

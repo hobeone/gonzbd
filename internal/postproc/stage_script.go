@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 )
 
+// ScriptStage executes a user-defined post-processing script after extraction.
 type ScriptStage struct {
 	mu sync.RWMutex
 	// ScriptDir is the directory holding user scripts; the job's Script

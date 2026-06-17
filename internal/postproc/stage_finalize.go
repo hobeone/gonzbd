@@ -13,6 +13,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
+// FinalizeStage moves the completed job to its final destination directory.
 type FinalizeStage struct {
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
