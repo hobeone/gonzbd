@@ -18,6 +18,7 @@ type FunctionRange struct {
 	Name      string
 	StartLine int
 	EndLine   int
+	NoCover   bool // true if the func line contains //nocover:
 }
 
 func main() {
@@ -143,6 +144,12 @@ func main() {
 				continue
 			}
 
+			// Skip functions explicitly marked as exempt from coverage.
+			// Usage: func (d dummyEmitter) Broadcast(_ Event) {} //nocover: no-op stub
+			if fn.NoCover {
+				continue
+			}
+
 			// Find coverage for this function
 			covKey := fmt.Sprintf("%s:%d:%s", file, fn.StartLine, fn.Name)
 			pct, exists := coverData[covKey]
@@ -262,10 +269,17 @@ func getChangedLines() (map[string]map[int]bool, error) {
 
 func getFileFunctions(path string) ([]FunctionRange, error) {
 	fset := token.NewFileSet()
-	node, err := parser.ParseFile(fset, path, nil, 0)
+	node, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
 		return nil, err
 	}
+
+	// Read source lines for //nocover: detection.
+	srcBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	srcLines := strings.Split(string(srcBytes), "\n")
 
 	var funcs []FunctionRange
 	for _, decl := range node.Decls {
@@ -276,10 +290,18 @@ func getFileFunctions(path string) ([]FunctionRange, error) {
 		startPos := fset.Position(fn.Pos())
 		endPos := fset.Position(fn.End())
 
+		// Check if the func declaration line contains //nocover:
+		noCover := false
+		if startPos.Line > 0 && startPos.Line <= len(srcLines) {
+			line := srcLines[startPos.Line-1]
+			noCover = strings.Contains(line, "//nocover:")
+		}
+
 		funcs = append(funcs, FunctionRange{
 			Name:      fn.Name.Name,
 			StartLine: startPos.Line,
 			EndLine:   endPos.Line,
+			NoCover:   noCover,
 		})
 	}
 
