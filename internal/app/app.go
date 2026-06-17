@@ -39,21 +39,6 @@ var ErrAlreadyStarted = errors.New("app: already started")
 
 const defaultCheckpointInterval = 30 * time.Second
 
-// FileComplete is emitted on Application.FileComplete() when a file is done.
-type FileComplete struct {
-	JobID   string
-	FileIdx int
-	// CRC32 is the whole-file CRC32 computed by the assembler from
-	// per-article CRCs combined in offset order. Zero if unavailable
-	// (e.g. UU-encoded articles or failed articles).
-	CRC32 uint32
-}
-
-// JobComplete is emitted when all files in a job are assembled.
-type JobComplete struct {
-	JobID string
-}
-
 // Downloader defines the interface for the Usenet article downloader.
 // Downloader defines the lifecycle and control interface for the Usenet article downloader.
 type Downloader interface {

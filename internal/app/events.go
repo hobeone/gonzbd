@@ -7,6 +7,21 @@ import (
 	"github.com/hobeone/gonzbd/internal/downloader"
 )
 
+// FileComplete is emitted when a file assembly is finished.
+type FileComplete struct {
+	JobID   string
+	FileIdx int
+	// CRC32 is the whole-file CRC32 computed by the assembler from
+	// per-article CRCs combined in offset order. Zero if unavailable
+	// (e.g. UU-encoded articles or failed articles).
+	CRC32 uint32
+}
+
+// JobComplete is emitted when all files in a job are assembled.
+type JobComplete struct {
+	JobID string
+}
+
 // PostProcComplete is emitted when post-processing finished.
 type PostProcComplete struct {
 	JobID string
