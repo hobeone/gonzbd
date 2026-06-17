@@ -1,4 +1,4 @@
-package app_test
+package app
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -17,13 +16,17 @@ import (
 )
 
 type fakeDownloader struct {
-	mu            sync.Mutex
-	started       bool
-	speedLimit    int64
-	speed         float64
-	paused        bool
-	completions   chan *downloader.ArticleResult
-	onJobHopeless func(jobID string)
+	mu               sync.Mutex
+	started          bool
+	speedLimit       int64
+	speed            float64
+	paused           bool
+	completions      chan *downloader.ArticleResult
+	onJobHopeless    func(jobID string)
+	maxArtTries      int
+	maxArtOpt        int
+	topOnly          bool
+	propagationDelay time.Duration
 }
 
 func newFakeDownloader() *fakeDownloader {
@@ -57,6 +60,12 @@ func (f *fakeDownloader) SetSpeedLimit(bytesPerSec int64) {
 }
 
 func (f *fakeDownloader) SetDispatchOptions(maxArtTries, maxArtOpt int, topOnly bool, propagationDelay time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.maxArtTries = maxArtTries
+	f.maxArtOpt = maxArtOpt
+	f.topOnly = topOnly
+	f.propagationDelay = propagationDelay
 }
 
 func (f *fakeDownloader) UnblockServer(name string) bool {
@@ -113,7 +122,7 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 	repo := history.NewRepository(db)
 
 	fd := newFakeDownloader()
-	application, err := app.New(cfg, repo, app.WithDownloader(fd))
+	application, err := New(cfg, repo, WithDownloader(fd))
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}

@@ -283,6 +283,9 @@ func New(opts Options, log *slog.Logger) *Assembler {
 // assembler. Zero disables disk-space checks. Thread-safe.
 func (a *Assembler) SetMinFreeBytes(v int64) { a.minFreeBytes.Store(v) }
 
+// MinFreeBytes returns the current low-disk threshold in bytes. Thread-safe.
+func (a *Assembler) MinFreeBytes() int64 { return a.minFreeBytes.Load() }
+
 // Start launches the worker goroutine. It returns an error if called more than
 // once without an intervening Stop.
 func (a *Assembler) Start(_ context.Context) error {
