@@ -251,11 +251,11 @@ func sub42Span(dst, src []byte) []byte {
 		out[i] = src[i] - 42
 		out[i+1] = src[i+1] - 42
 		out[i+2] = src[i+2] - 42
-		out[i+3] = src[i+3] - 42
-		out[i+4] = src[i+4] - 42
-		out[i+5] = src[i+5] - 42
-		out[i+6] = src[i+6] - 42
-		out[i+7] = src[i+7] - 42
+		out[i+3] = src[i+3] - 42 //nolint:gosec // bounds guaranteed by length pre-check at function top
+		out[i+4] = src[i+4] - 42 //nolint:gosec // bounds guaranteed by length pre-check at function top
+		out[i+5] = src[i+5] - 42 //nolint:gosec // bounds guaranteed by length pre-check at function top
+		out[i+6] = src[i+6] - 42 //nolint:gosec // bounds guaranteed by length pre-check at function top
+		out[i+7] = src[i+7] - 42 //nolint:gosec // bounds guaranteed by length pre-check at function top
 	}
 	for ; i < n; i++ {
 		out[i] = src[i] - 42
