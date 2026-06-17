@@ -1,122 +1,108 @@
 package config
 
 import (
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
 
-// uiKeywords is the canonical list of (section, keyword) pairs that Svelte
-// config components send to the API via mode=set_config.
-//
-// HOW TO MAINTAIN THIS LIST
-// ─────────────────────────
-// Add an entry here when you add a new keyword= prop to any ConfigInput,
-// ConfigSwitch, or ConfigTextarea component. Remove it when you remove the
-// component. The test verifies that every entry resolves to a real Go struct
-// field via its json tag — if the keyword doesn't exist in Go, Set() returns
-// "invalid keyword" and the test fails.
-//
-// Sections use their internal names (e.g. "general", not "misc").
-// The API's "general"↔"misc" alias is transparent to this test.
-var uiKeywords = []struct {
-	section string
-	keyword string
-	// component identifies the Svelte file for grep/blame purposes.
-	component string
-}{
-	// ── GeneralSection.svelte ────────────────────────────────────────────────
-	{"general", "host", "GeneralSection.svelte"},
-	{"general", "port", "GeneralSection.svelte"},
-	{"general", "api_key", "GeneralSection.svelte"},
-	{"general", "nzb_key", "GeneralSection.svelte"},
-	{"general", "download_dir", "GeneralSection.svelte"},
-	{"general", "complete_dir", "GeneralSection.svelte"},
-	{"general", "log_level", "GeneralSection.svelte"},
-
-	// ── DownloadsSection.svelte ──────────────────────────────────────────────
-	{"downloads", "bandwidth_max", "DownloadsSection.svelte"},
-	{"downloads", "min_free_space", "DownloadsSection.svelte"},
-	{"downloads", "write_cache_size", "DownloadsSection.svelte"},
-	{"downloads", "max_art_tries", "DownloadsSection.svelte"},
-	{"downloads", "top_only", "DownloadsSection.svelte"},
-	{"downloads", "pre_check", "DownloadsSection.svelte"},
-	{"downloads", "replace_illegal_with", "DownloadsSection.svelte"},
-	{"downloads", "replace_spaces_with", "DownloadsSection.svelte"},
-	{"downloads", "strip_diacritics", "DownloadsSection.svelte"},
-	{"downloads", "cleanup_list", "DownloadsSection.svelte"},
-
-	// ── PostProcSection.svelte ───────────────────────────────────────────────
-	// Extraction
-	{"postproc", "enable_unrar", "PostProcSection.svelte"},
-	{"postproc", "enable_7zip", "PostProcSection.svelte"},
-	{"postproc", "use_go_rar", "PostProcSection.svelte"},
-	{"postproc", "go_rar_fallback", "PostProcSection.svelte"},
-	{"postproc", "use_go_7z", "PostProcSection.svelte"},
-	{"postproc", "go_7z_fallback", "PostProcSection.svelte"},
-	{"postproc", "enable_filejoin", "PostProcSection.svelte"},
-	{"postproc", "enable_tsjoin", "PostProcSection.svelte"},
-	{"postproc", "enable_recursive", "PostProcSection.svelte"},
-	{"postproc", "direct_unpack", "PostProcSection.svelte"},
-	{"postproc", "flat_unpack", "PostProcSection.svelte"},
-	{"postproc", "overwrite_files", "PostProcSection.svelte"},
-	{"postproc", "ignore_unrar_dates", "PostProcSection.svelte"},
-	// Par2 Repair
-	{"postproc", "use_go_par2", "PostProcSection.svelte"},
-	{"postproc", "go_par2_fallback", "PostProcSection.svelte"},
-	{"postproc", "enable_quick_check", "PostProcSection.svelte"},
-	{"postproc", "par2_turbo", "PostProcSection.svelte"},
-	{"postproc", "process_unpacked_par2", "PostProcSection.svelte"},
-	// Cleanup & Output
-	{"postproc", "enable_par_cleanup", "PostProcSection.svelte"},
-	{"postproc", "enable_rar_cleanup", "PostProcSection.svelte"},
-	{"postproc", "deobfuscate_filenames", "PostProcSection.svelte"},
-	{"postproc", "ignore_samples", "PostProcSection.svelte"},
-	{"postproc", "folder_rename", "PostProcSection.svelte"},
-	{"postproc", "cleanup_extensions", "PostProcSection.svelte"},
-	{"postproc", "permissions", "PostProcSection.svelte"},
-	// External Tools
-	{"postproc", "par2_command", "PostProcSection.svelte"},
-	{"postproc", "unrar_command", "PostProcSection.svelte"},
-	{"postproc", "sevenz_command", "PostProcSection.svelte"},
-	{"postproc", "password_file", "PostProcSection.svelte"},
-	// Advanced
-	{"postproc", "script_can_fail", "PostProcSection.svelte"},
-	{"postproc", "nice", "PostProcSection.svelte"},
-	{"postproc", "ionice", "PostProcSection.svelte"},
-	{"postproc", "extra_unrar_params", "PostProcSection.svelte"},
-	{"postproc", "extra_par2_params", "PostProcSection.svelte"},
+func findRepoRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("could not find go.mod in parent directories")
+		}
+		dir = parent
+	}
 }
 
 // TestUIKeywordsAreValidConfigTags verifies that every (section, keyword)
-// pair in uiKeywords resolves to a real Go struct field via its json tag.
+// pair defined in Svelte config components resolves to a real Go struct field
+// via its json tag.
 //
-// This test calls config.Set with an empty string value (the same code path
-// the live API uses). An "invalid keyword" error means the keyword in the
-// Svelte component has no backing field in Go — that setting silently fails
-// in production when the user clicks Save.
-//
-// Type-conversion errors (e.g. empty string → bool) are expected and are NOT
-// treated as failures: they prove the field exists and is reachable.
+// This test dynamically walks the Svelte UI directory at test runtime, extracts
+// section and keyword props from ConfigInput/ConfigSwitch/ConfigTextarea/ConfigSelect
+// tags, and calls config.Set. Misspellings or renames will cause the test to fail.
 func TestUIKeywordsAreValidConfigTags(t *testing.T) {
+	root, err := findRepoRoot()
+	if err != nil {
+		t.Fatalf("findRepoRoot: %v", err)
+	}
+
+	configUIDir := filepath.Join(root, "ui", "src", "lib", "components", "config")
+
+	compRegex := regexp.MustCompile(`(?s)<(ConfigInput|ConfigSwitch|ConfigTextarea|ConfigSelect)\b([^>]*?)>`)
+	secRegex := regexp.MustCompile(`\bsection=["']([^"']*)["']`)
+	keyRegex := regexp.MustCompile(`\bkeyword=["']([^"']*)["']`)
+
 	cfg, err := Default()
 	if err != nil {
 		t.Fatalf("Default(): %v", err)
 	}
 
-	for _, kw := range uiKeywords {
-		t.Run(kw.section+"/"+kw.keyword, func(t *testing.T) {
-			setErr := cfg.Set(kw.section, kw.keyword, "")
-			if setErr != nil && strings.Contains(setErr.Error(), "invalid keyword") {
-				t.Errorf(
-					"[%s] keyword %q in section %q has no matching json tag in any Go config struct\n"+
-						"  → Either the Svelte keyword= prop is misspelled, or the Go field was renamed/removed.",
-					kw.component, kw.keyword, kw.section,
-				)
+	foundCount := 0
+
+	err = filepath.WalkDir(configUIDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".svelte" {
+			return nil
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		matches := compRegex.FindAllStringSubmatch(string(content), -1)
+		for _, match := range matches {
+			attrs := match[2]
+			secMatch := secRegex.FindStringSubmatch(attrs)
+			keyMatch := keyRegex.FindStringSubmatch(attrs)
+
+			if len(secMatch) < 2 || len(keyMatch) < 2 {
+				continue
 			}
-			// Any other error (type conversion, validation) is fine — it proves
-			// the field exists and was reached by the reflection router.
-		})
+
+			section := secMatch[1]
+			keyword := keyMatch[1]
+			foundCount++
+
+			componentName := filepath.Base(path)
+			t.Run(componentName+":"+section+"/"+keyword, func(t *testing.T) {
+				setErr := cfg.Set(section, keyword, "")
+				if setErr != nil && strings.Contains(setErr.Error(), "invalid keyword") {
+					t.Errorf(
+						"[%s] keyword %q in section %q has no matching json tag in any Go config struct\n"+
+							"  → Either the Svelte keyword= prop is misspelled, or the Go field was renamed/removed.",
+						componentName, keyword, section,
+					)
+				}
+			})
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		t.Fatalf("WalkDir: %v", err)
+	}
+
+	if foundCount == 0 {
+		t.Errorf("No ConfigInput/ConfigSwitch/ConfigTextarea/ConfigSelect components found, parsing logic might be broken")
 	}
 }
 
