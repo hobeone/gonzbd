@@ -40,7 +40,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -488,7 +487,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 		// A recovery volume (*.volNNN+MM.par2) carries redundancy; the par2
 		// index file (no volume suffix) carries the per-file checksums we
 		// need for verification and is therefore never deferred.
-		isRecovery := isPar2 && par2.IsRecoveryVolume(pf.Subject)
+		isRecovery := isPar2 && isRecoveryVolume(pf.Subject)
 		jf := JobFile{
 			Subject:        pf.Subject,
 			Date:           pf.Date,
