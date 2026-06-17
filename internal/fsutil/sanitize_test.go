@@ -1,6 +1,7 @@
 package fsutil
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -515,4 +516,96 @@ func TestTruncateOnRuneBoundary_Boundary(t *testing.T) {
 	if got != "a" {
 		t.Errorf("expected 'a', got %q", got)
 	}
+}
+
+func TestGetUniqueFilename_AllCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-existent file", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "newfile.txt")
+		got := GetUniqueFilename(target)
+		if got != target {
+			t.Errorf("GetUniqueFilename(%q) = %q; want %q", target, got, target)
+		}
+	})
+
+	t.Run("colliding file", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "colliding.txt")
+		if err := os.WriteFile(target, []byte("exist"), 0o644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		expected := filepath.Join(dir, "colliding.1.txt")
+		got := GetUniqueFilename(target)
+		if got != expected {
+			t.Errorf("GetUniqueFilename(%q) = %q; want %q", target, got, expected)
+		}
+	})
+
+	t.Run("multiple collisions", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "colliding.txt")
+		if err := os.WriteFile(target, []byte("exist"), 0o644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "colliding.1.txt"), []byte("exist1"), 0o644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		expected := filepath.Join(dir, "colliding.2.txt")
+		got := GetUniqueFilename(target)
+		if got != expected {
+			t.Errorf("GetUniqueFilename(%q) = %q; want %q", target, got, expected)
+		}
+	})
+
+	t.Run("conflicting permission on file", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "restricted.txt")
+		if err := os.WriteFile(target, []byte("restricted"), 0o000); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+		defer func() {
+			// Restore permissions so cleanup doesn't fail.
+			_ = os.Chmod(target, 0o644)
+		}()
+
+		// Since restricted.txt exists (though unreadable), it should resolve to restricted.1.txt.
+		expected := filepath.Join(dir, "restricted.1.txt")
+		got := GetUniqueFilename(target)
+		if got != expected {
+			t.Errorf("GetUniqueFilename(%q) = %q; want %q", target, got, expected)
+		}
+	})
+
+	t.Run("inaccessible parent directory", func(t *testing.T) {
+		dir := t.TempDir()
+		parent := filepath.Join(dir, "locked_dir")
+		if err := os.Mkdir(parent, 0o755); err != nil {
+			t.Fatalf("Mkdir failed: %v", err)
+		}
+		target := filepath.Join(parent, "file.txt")
+		if err := os.WriteFile(target, []byte("file"), 0o644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		// Lock parent directory so we cannot stat any suffix files (like file.1.txt).
+		if err := os.Chmod(parent, 0o000); err != nil {
+			t.Fatalf("Chmod failed: %v", err)
+		}
+		defer func() {
+			// Restore permissions so cleanup doesn't fail.
+			_ = os.Chmod(parent, 0o755)
+		}()
+
+		// When parent directory is locked, Stat(target.1) will fail with permission error.
+		// The loop should stop immediately and return target.1 rather than iterating 10,000 times.
+		expected := filepath.Join(parent, "file.1.txt")
+		got := GetUniqueFilename(target)
+		if got != expected {
+			t.Errorf("GetUniqueFilename(%q) = %q; want %q", target, got, expected)
+		}
+	})
 }

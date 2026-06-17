@@ -3,6 +3,7 @@
 package fsutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -244,7 +245,12 @@ var maxAttempts = 10_000
 // unbounded iteration on pathologically crowded directories.
 func GetUniqueFilename(path string) string {
 	if _, err := os.Stat(path); err != nil {
-		return path
+		// If the file definitely doesn't exist, we can use this path.
+		if errors.Is(err, os.ErrNotExist) {
+			return path
+		}
+		// If it's a permission error (or other OS error), the path is occupied/blocked.
+		// Fall through to the loop to check if we can create a suffix (e.g. path.1).
 	}
 
 	ext := filepath.Ext(path)
@@ -252,6 +258,12 @@ func GetUniqueFilename(path string) string {
 	for i := 1; i <= maxAttempts; i++ {
 		newPath := fmt.Sprintf("%s.%d%s", base, i, ext)
 		if _, err := os.Stat(newPath); err != nil {
+			// If the suffix path doesn't exist, we can use it.
+			if errors.Is(err, os.ErrNotExist) {
+				return newPath
+			}
+			// If we get a permission error on the suffix path, the parent directory
+			// is likely inaccessible. Stop looping immediately to prevent 10,000 futile syscalls.
 			return newPath
 		}
 	}
