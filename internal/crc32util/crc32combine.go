@@ -222,7 +222,7 @@ func gf2MatrixInvert(dst, src *[32]uint32) {
 			}
 			return
 		}
-		aug[col], aug[pivot] = aug[pivot], aug[col]
+		aug[col], aug[pivot] = aug[pivot], aug[col] //nolint:gosec // bounds guaranteed by length pre-check at function top
 		for row := range 32 {
 			if row != col && aug[row]&(1<<col) != 0 {
 				aug[row] ^= aug[col]
