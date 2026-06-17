@@ -1,6 +1,7 @@
 package fsutil
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -38,13 +39,24 @@ func RootedOpenFile(root *os.Root, rel string, flag int, perm fs.FileMode) (*os.
 // target already exists.
 func GetUniqueRelPath(root *os.Root, rel string) string {
 	if _, err := root.Stat(rel); err != nil {
-		return rel
+		// If the file definitely doesn't exist relative to root, use this path.
+		if errors.Is(err, os.ErrNotExist) {
+			return rel
+		}
+		// If it's a permission error (or other OS error), the path is occupied/blocked.
+		// Fall through to the loop to check if we can create a suffix (e.g. rel.1).
 	}
 	ext := filepath.Ext(rel)
 	base := rel[:len(rel)-len(ext)]
 	for i := 1; i <= 10_000; i++ {
 		newRel := fmt.Sprintf("%s.%d%s", base, i, ext)
 		if _, err := root.Stat(newRel); err != nil {
+			// If the suffix path doesn't exist, we can use it.
+			if errors.Is(err, os.ErrNotExist) {
+				return newRel
+			}
+			// If we get a permission error on the suffix path, the root/parent directory
+			// is likely inaccessible. Stop looping immediately to prevent 10,000 futile syscalls.
 			return newRel
 		}
 	}

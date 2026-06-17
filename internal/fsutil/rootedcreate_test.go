@@ -96,3 +96,93 @@ func TestRootedOpenFile_ZipSlip_Symlink(t *testing.T) {
 		t.Fatal("SECURITY: file was created outside root by traversing symlinked component")
 	}
 }
+
+func TestGetUniqueRelPath_AllCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-existent file", func(t *testing.T) {
+		dir := t.TempDir()
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("OpenRoot failed: %v", err)
+		}
+		defer root.Close()
+
+		got := fsutil.GetUniqueRelPath(root, "newfile.txt")
+		if got != "newfile.txt" {
+			t.Errorf("GetUniqueRelPath = %q; want %q", got, "newfile.txt")
+		}
+	})
+
+	t.Run("colliding file", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "colliding.txt"), []byte("exist"), 0o644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("OpenRoot failed: %v", err)
+		}
+		defer root.Close()
+
+		got := fsutil.GetUniqueRelPath(root, "colliding.txt")
+		if got != "colliding.1.txt" {
+			t.Errorf("GetUniqueRelPath = %q; want %q", got, "colliding.1.txt")
+		}
+	})
+
+	t.Run("conflicting permission on file", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "restricted.txt")
+		if err := os.WriteFile(target, []byte("restricted"), 0o000); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+		defer func() {
+			_ = os.Chmod(target, 0o644)
+		}()
+
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("OpenRoot failed: %v", err)
+		}
+		defer root.Close()
+
+		got := fsutil.GetUniqueRelPath(root, "restricted.txt")
+		if got != "restricted.1.txt" {
+			t.Errorf("GetUniqueRelPath = %q; want %q", got, "restricted.1.txt")
+		}
+	})
+
+	t.Run("inaccessible parent directory", func(t *testing.T) {
+		dir := t.TempDir()
+		parent := filepath.Join(dir, "locked_dir")
+		if err := os.Mkdir(parent, 0o755); err != nil {
+			t.Fatalf("Mkdir failed: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(parent, "file.txt"), []byte("file"), 0o644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("OpenRoot failed: %v", err)
+		}
+		defer root.Close()
+
+		// Lock parent directory so we cannot stat any suffix files (like locked_dir/file.1.txt).
+		if err := os.Chmod(parent, 0o000); err != nil {
+			t.Fatalf("Chmod failed: %v", err)
+		}
+		defer func() {
+			_ = os.Chmod(parent, 0o755)
+		}()
+
+		// When parent directory is locked, root.Stat("locked_dir/file.1.txt") fails with permission error.
+		// The loop should stop immediately and return locked_dir/file.1.txt rather than iterating 10,000 times.
+		got := fsutil.GetUniqueRelPath(root, "locked_dir/file.txt")
+		if got != "locked_dir/file.1.txt" {
+			t.Errorf("GetUniqueRelPath = %q; want %q", got, "locked_dir/file.1.txt")
+		}
+	})
+}
