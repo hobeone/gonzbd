@@ -7,6 +7,15 @@ import "github.com/hobeone/gonzbd/internal/constants"
 // "inherit from the job's category". This mirrors Python SABnzbd's -1.
 const PPInherit = -1
 
+// Post-processing levels.
+const (
+	PPNone   = 0 // Download only
+	PPVerify = 1 // +repair (verify/repair)
+	PPRepair = 1 // (alias)
+	PPUnpack = 2 // +unpack
+	PPDelete = 3 // +delete
+)
+
 // FetchOptions holds optional parameters for NZB ingest operations
 // (via URL grabber, watched folder, or manual upload).
 type FetchOptions struct {
