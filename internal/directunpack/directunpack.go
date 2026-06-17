@@ -167,11 +167,9 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 			d.curSetname = setname
 			d.started = true
 			needStart = true
-		} else {
+		} else if !d.setQueued(setname) {
 			// Vol 1 hasn't arrived yet — queue the set for later.
-			if !d.setQueued(setname) {
-				d.nextSets = append(d.nextSets, setname)
-			}
+			d.nextSets = append(d.nextSets, setname)
 		}
 	} else if setname != d.curSetname && !d.setQueued(setname) {
 		// Different set than what we're currently extracting — queue it.
@@ -461,7 +459,7 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr
 // order and sends it on the returned channel. The goroutine closes volumesChan
 // on completion or error. Any error is delivered on the returned buffered
 // errChan; the caller must drain volumesChan to let the goroutine exit cleanly.
-func (d *DirectUnpacker) startVolumeFeed(ctx context.Context, setname string, maxVol int) (<-chan io.ReadCloser, <-chan error) {
+func (d *DirectUnpacker) startVolumeFeed(ctx context.Context, setname string, maxVol int) (volumes <-chan io.ReadCloser, errs <-chan error) {
 	volumesChan := make(chan io.ReadCloser)
 	feedErrChan := make(chan error, 1)
 
@@ -476,7 +474,7 @@ func (d *DirectUnpacker) startVolumeFeed(ctx context.Context, setname string, ma
 			volPath := d.completedVols[setname][vol]
 			d.mu.Unlock()
 
-			f, err := os.Open(volPath)
+			f, err := os.Open(volPath) //nolint:gosec // volPath is a job-owned directory path set by AddVolume
 			if err != nil {
 				feedErrChan <- err
 				return
