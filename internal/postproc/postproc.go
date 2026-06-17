@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // Options configures a PostProcessor at construction time.
@@ -659,9 +660,9 @@ func (p *PostProcessor) addHistory(job *Job) {
 func shouldSkipForPP(stageName string, pp int) bool {
 	switch stageName {
 	case "quickcheck", "repair":
-		return pp < 1
+		return pp < types.PPVerify
 	case "unpack":
-		return pp < 2
+		return pp < types.PPUnpack
 	default:
 		return false
 	}
