@@ -12,6 +12,8 @@ import (
 	"syscall"
 
 	"github.com/bodgit/sevenzip"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // GoSevenZip extracts archive.MainFile into outDir using the pure-Go
@@ -61,12 +63,21 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 		"files", len(r.File),
 	)
 
+	// Open the output directory as an os.Root once for the entire extraction.
+	// All entry writes go through this rooted handle so they cannot escape
+	// outDir via "..", an absolute path, or a symlinked path component.
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		return res, fmt.Errorf("go_7z: open root: %w", err)
+	}
+	defer root.Close() //nolint:errcheck // close after all writes; not in a loop
+
 	for _, f := range r.File {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
 
-		extracted, err := extractSevenZipEntry(ctx, f, outDir, opts, log)
+		extracted, err := extractSevenZipEntry(ctx, f, outDir, root, opts, log)
 		if err != nil {
 			res.Reason = classifySevenZipError(err)
 			if opts.OnLine != nil {
@@ -108,15 +119,13 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 	return res, nil
 }
 
-// extractSevenZipFile extracts a single file from the archive to disk.
-// The file's reader is opened and closed within this function to enable
-// the library's stream reuse optimisation for solid archives.
-func extractSevenZipFile(ctx context.Context, destPath string, f *sevenzip.File, opts Options, log *slog.Logger) error {
-	// Create parent directories.
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o750); err != nil {
-		return fmt.Errorf("go_7z: mkdir %s: %w", filepath.Dir(destPath), err)
-	}
-
+// extractSevenZipFile extracts a single file from the archive to disk through
+// root, an os.Root anchored at the extraction output directory. destRel is the
+// sanitized path relative to root's base directory; destPath is the absolute
+// path used only for skip-check logging. The file's reader is opened and
+// closed within this function to enable the library's stream reuse
+// optimisation for solid archives.
+func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath string, f *sevenzip.File, opts Options, log *slog.Logger) error {
 	rc, err := f.Open()
 	if err != nil {
 		return fmt.Errorf("go_7z: open entry %s: %w", f.Name, err)
@@ -128,7 +137,7 @@ func extractSevenZipFile(ctx context.Context, destPath string, f *sevenzip.File,
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if !opts.OverwriteFiles {
 		// Check if file already exists.
-		if _, statErr := os.Stat(destPath); statErr == nil {
+		if _, statErr := root.Stat(destRel); statErr == nil {
 			log.Info("skipping existing file", "path", destPath)
 			if opts.OnLine != nil {
 				opts.OnLine("Skipping existing: " + f.Name)
@@ -137,23 +146,22 @@ func extractSevenZipFile(ctx context.Context, destPath string, f *sevenzip.File,
 		}
 	}
 
-	//nolint:gosec // false positive: destPath is fully sanitized and sandboxed within the download root
-	out, err := os.OpenFile(destPath, flags, 0o600)
+	out, err := fsutil.RootedOpenFile(root, destRel, flags, 0o600)
 	if err != nil {
-		return fmt.Errorf("go_7z: create %s: %w", destPath, err)
+		return fmt.Errorf("go_7z: create %s: %w", destRel, err)
 	}
 	defer out.Close() //nolint:errcheck // best-effort close; write errors are caught by contextCopy
 
 	if _, err := contextCopy(ctx, out, rc); err != nil {
 		var errno syscall.Errno
 		if errors.As(err, &errno) && errno == syscall.ENOSPC {
-			return fmt.Errorf("go_7z: disk full writing %s: %w", destPath, err)
+			return fmt.Errorf("go_7z: disk full writing %s: %w", destRel, err)
 		}
-		return fmt.Errorf("go_7z: write %s: %w", destPath, err)
+		return fmt.Errorf("go_7z: write %s: %w", destRel, err)
 	}
 
 	if err := out.Close(); err != nil {
-		return fmt.Errorf("go_7z: close %s: %w", destPath, err)
+		return fmt.Errorf("go_7z: close %s: %w", destRel, err)
 	}
 
 	// Permissions: strip executable bits from untrusted archives.
@@ -162,14 +170,14 @@ func extractSevenZipFile(ctx context.Context, destPath string, f *sevenzip.File,
 	// Chmod is skipped — the file keeps the safer 0600 from OpenFile.
 	mode := f.Mode() & 0o666
 	if mode != 0 {
-		_ = os.Chmod(destPath, mode)
+		_ = root.Chmod(destRel, mode)
 	}
 
 	// Modification time: preserve from archive unless config says ignore.
 	// Note: field is named IgnoreUnrarDates for historical reasons but
 	// applies to all archive types.
 	if !opts.IgnoreUnrarDates && !f.Modified.IsZero() {
-		_ = os.Chtimes(destPath, f.Modified, f.Modified)
+		_ = root.Chtimes(destRel, f.Modified, f.Modified)
 	}
 
 	return nil
@@ -210,9 +218,10 @@ func classifySevenZipError(err error) FailReason {
 }
 
 // extractSevenZipEntry handles path sanitization, unique naming, skip predicates,
-// and file extraction for a single 7-zip archive entry. Returns true if the
-// entry was extracted (regular file), or false if it was skipped or a directory.
-func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, opts Options, log *slog.Logger) (bool, error) {
+// and file extraction for a single 7-zip archive entry. root is an os.Root
+// anchored at outDir opened once by the caller. Returns true if the entry was
+// extracted (regular file), or false if it was skipped or a directory.
+func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, root *os.Root, opts Options, log *slog.Logger) (bool, error) {
 	destRel, sanitizeErr := SanitizeArchivePath(f.Name, opts.OneFolder)
 	if sanitizeErr != nil {
 		log.Warn("skipping entry with bad path",
@@ -230,11 +239,17 @@ func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, 
 	// 7z's -aou behavior. Skip when OverwriteFiles is true.
 	if opts.OneFolder && !opts.OverwriteFiles {
 		destPath = uniquePath(destPath)
+		// Recompute destRel after uniquePath adjusts the absolute path.
+		rel, relErr := filepath.Rel(outDir, destPath)
+		if relErr != nil || !filepath.IsLocal(rel) {
+			return false, fmt.Errorf("go_7z: uniquePath escaped outDir for %s", f.Name)
+		}
+		destRel = rel
 	}
 
 	if f.FileInfo().IsDir() {
-		if err := os.MkdirAll(destPath, 0o750); err != nil {
-			return false, fmt.Errorf("go_7z: mkdir %s: %w", destPath, err)
+		if err := root.MkdirAll(destRel, 0o750); err != nil {
+			return false, fmt.Errorf("go_7z: mkdir %s: %w", destRel, err)
 		}
 		return false, nil
 	}
@@ -256,7 +271,7 @@ func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, 
 		return false, nil
 	}
 
-	if err := extractSevenZipFile(ctx, destPath, f, opts, log); err != nil {
+	if err := extractSevenZipFile(ctx, root, destRel, destPath, f, opts, log); err != nil {
 		return false, err
 	}
 

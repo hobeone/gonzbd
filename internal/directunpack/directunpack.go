@@ -494,9 +494,20 @@ func (d *DirectUnpacker) startVolumeFeed(ctx context.Context, setname string, ma
 }
 
 // extractEntries drives the rarengine decompressor header-by-header, writing
-// each archive entry to disk. Returns the list of extracted file paths on
+// each archive entry to disk. It opens an os.Root anchored at d.extractDir
+// once for the entire session; all entry writes go through that rooted handle
+// so they cannot escape d.extractDir via "..", an absolute path, or a
+// symlinked path component. Returns the list of extracted file paths on
 // success, or the first error encountered.
 func (d *DirectUnpacker) extractEntries(ctx context.Context, sd *rarengine.StreamDecompressor) ([]string, error) {
+	root, err := os.OpenRoot(d.extractDir)
+	if err != nil {
+		return nil, fmt.Errorf("directunpack: open root %s: %w", d.extractDir, err)
+	}
+	// Close after all entries are processed. Not deferred inside the loop to
+	// avoid the deferInLoop lint finding; we close explicitly here.
+	defer root.Close() //nolint:errcheck // read-only close after all writes are complete
+
 	var extractedFiles []string
 
 	for {
@@ -533,7 +544,7 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, sd *rarengine.Strea
 			IgnoreUnrarDates: d.opts.IgnoreUnrarDates,
 			OnLine:           d.opts.OnLine,
 		}
-		if err := unpack.ExtractEntryRarengine(ctx, d.extractDir, destPath, fh, sd, unpackOpts, d.log); err != nil {
+		if err := unpack.ExtractEntryRarengine(ctx, root, d.extractDir, destRel, destPath, fh, sd, unpackOpts, d.log); err != nil {
 			return nil, fmt.Errorf("directunpack: extract %s: %w", fh.Name, err)
 		}
 

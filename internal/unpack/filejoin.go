@@ -3,11 +3,14 @@ package unpack
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 const joinBufSize = 16 * 1024 * 1024 // 16 MiB write buffer (SABnzbd uses 24 MiB)
@@ -41,6 +44,9 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	}
 
 	outPath := filepath.Join(outDir, archive.Name)
+	// outRel is just the archive name (a filename, no directory component),
+	// used for all root-relative operations.
+	outRel := archive.Name
 
 	log.Info("filejoin: starting join",
 		"name", archive.Name,
@@ -48,11 +54,20 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 		"outPath", outPath,
 	)
 
+	// Open the output directory as an os.Root. All writes go through this
+	// rooted handle so the join output cannot escape outDir via "..", an
+	// absolute path, or a symlinked path component.
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		return Result{Err: err}, fmt.Errorf("filejoin: open root: %w", err)
+	}
+	defer root.Close() //nolint:errcheck // close after all writes complete
+
 	// O_EXCL atomically refuses to create the file if it already exists,
 	// avoiding the TOCTOU race of a separate Stat check.
-	outFile, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666) //nolint:gosec // outPath is constructed from caller-supplied outDir and archive.Name
+	outFile, err := fsutil.RootedOpenFile(root, outRel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 	if err != nil {
-		if os.IsExist(err) {
+		if errors.Is(err, os.ErrExist) {
 			// Output already exists — treat as successful no-op (§8.1).
 			// This handles re-runs after a crash where the join completed
 			// but source cleanup didn't finish.
@@ -65,8 +80,8 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	bw := bufio.NewWriterSize(outFile, joinBufSize)
 
 	cleanup := func() {
-		_ = outFile.Close()    //nolint:errcheck // best-effort cleanup
-		_ = os.Remove(outPath) //nolint:errcheck // best-effort cleanup
+		_ = outFile.Close()     //nolint:errcheck // best-effort cleanup
+		_ = root.Remove(outRel) //nolint:errcheck // best-effort cleanup
 	}
 
 	totalParts := len(archive.Parts)
@@ -99,7 +114,7 @@ func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir str
 	}
 
 	if err := outFile.Close(); err != nil {
-		_ = os.Remove(outPath) //nolint:errcheck // best-effort cleanup
+		_ = root.Remove(outRel) //nolint:errcheck // best-effort cleanup
 		return Result{Err: err}, fmt.Errorf("filejoin: close output: %w", err)
 	}
 
