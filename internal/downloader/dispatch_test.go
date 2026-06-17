@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -650,7 +651,7 @@ func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 	// Check completions channel received the ErrNoServersLeft result
 	select {
 	case res := <-d.Completions():
-		if res.MessageID != "msg1@h" || res.Err != ErrNoServersLeft {
+		if res.MessageID != "msg1@h" || !errors.Is(res.Err, ErrNoServersLeft) {
 			t.Errorf("unexpected completion result: %+v", res)
 		}
 	default:
@@ -692,4 +693,3 @@ func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 		t.Errorf("expected job status to be Paused, got %+v", snap)
 	}
 }
-
