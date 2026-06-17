@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -77,13 +78,19 @@ func TestResolveConflictingRename(t *testing.T) {
 
 	hash := md5.Sum(content)
 
+	root, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to open root: %v", err)
+	}
+	defer root.Close()
+
 	t.Run("identical duplicate file on disk", func(t *testing.T) {
 		// Create desired file with identical content.
 		if err := os.WriteFile(desiredPath, content, 0o644); err != nil {
 			t.Fatalf("failed to write desired file: %v", err)
 		}
 
-		finalPath, skip := resolveConflictingRename(log, obfuscatedPath, "obfuscated.txt", desiredPath, newPath, hash)
+		finalPath, skip := resolveConflictingRename(log, root, "obfuscated.txt", obfuscatedPath, "obfuscated.txt", desiredPath, newPath, hash)
 		if !skip {
 			t.Error("expected skip=true for identical duplicate file")
 		}
@@ -94,6 +101,42 @@ func TestResolveConflictingRename(t *testing.T) {
 		// Obfuscated file should be removed.
 		if _, err := os.Stat(obfuscatedPath); !os.IsNotExist(err) {
 			t.Error("expected obfuscated file to be deleted")
+		}
+	})
+
+	t.Run("identical duplicate file on disk - remove fails", func(t *testing.T) {
+		// Recreate obfuscated file.
+		if err := os.WriteFile(obfuscatedPath, content, 0o644); err != nil {
+			t.Fatalf("failed to write obfuscated file: %v", err)
+		}
+
+		// Make the directory read-only so root.Remove fails.
+		if err := os.Chmod(tmpDir, 0555); err != nil {
+			t.Fatalf("failed to Chmod: %v", err)
+		}
+		defer os.Chmod(tmpDir, 0755) // restore for cleanup
+
+		handler := &recordHandler{}
+		recordLog := slog.New(handler)
+
+		finalPath, skip := resolveConflictingRename(recordLog, root, "obfuscated.txt", obfuscatedPath, "obfuscated.txt", desiredPath, newPath, hash)
+		if !skip {
+			t.Error("expected skip=true even if remove fails")
+		}
+		if finalPath != "" {
+			t.Errorf("expected finalPath=\"\", got %q", finalPath)
+		}
+
+		// Verify that a warning log was recorded.
+		foundWarn := false
+		for _, rec := range handler.records {
+			if rec.Level == slog.LevelWarn && strings.Contains(rec.Message, "failed to remove duplicate obfuscated file") {
+				foundWarn = true
+				break
+			}
+		}
+		if !foundWarn {
+			t.Error("expected warning log about failed remove to be recorded")
 		}
 	})
 
@@ -108,7 +151,7 @@ func TestResolveConflictingRename(t *testing.T) {
 			t.Fatalf("failed to write desired file: %v", err)
 		}
 
-		finalPath, skip := resolveConflictingRename(log, obfuscatedPath, "obfuscated.txt", desiredPath, newPath, hash)
+		finalPath, skip := resolveConflictingRename(log, root, "obfuscated.txt", obfuscatedPath, "obfuscated.txt", desiredPath, newPath, hash)
 		if skip {
 			t.Error("expected skip=false for different content conflict")
 		}
@@ -145,8 +188,14 @@ func TestHasCollisionSuffixDirect(t *testing.T) {
 func TestContainsIgnoredMovieFolderDirect(t *testing.T) {
 	tmpDir := t.TempDir()
 
+	root, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot failed: %v", err)
+	}
+	defer root.Close()
+
 	// Initially empty directory should return false.
-	if containsIgnoredMovieFolder(tmpDir) {
+	if containsIgnoredMovieFolder(root) {
 		t.Error("expected false for empty directory")
 	}
 
@@ -154,7 +203,7 @@ func TestContainsIgnoredMovieFolderDirect(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(tmpDir, "some_folder"), 0o755); err != nil {
 		t.Fatalf("failed to create dir: %v", err)
 	}
-	if containsIgnoredMovieFolder(tmpDir) {
+	if containsIgnoredMovieFolder(root) {
 		t.Error("expected false for non-ignored folder")
 	}
 
@@ -162,7 +211,7 @@ func TestContainsIgnoredMovieFolderDirect(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(tmpDir, "bdmv"), 0o755); err != nil {
 		t.Fatalf("failed to create dir: %v", err)
 	}
-	if !containsIgnoredMovieFolder(tmpDir) {
+	if !containsIgnoredMovieFolder(root) {
 		t.Error("expected true when bdmv folder exists")
 	}
 }
@@ -171,8 +220,14 @@ func TestExtractRARUsefulNameDirect(t *testing.T) {
 	tmpDir := t.TempDir()
 	log := slog.Default()
 
+	root, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenRoot failed: %v", err)
+	}
+	defer root.Close()
+
 	// 1. Empty directory
-	if got := extractRARUsefulName(tmpDir, log); got != "" {
+	if got := extractRARUsefulName(root, tmpDir, log); got != "" {
 		t.Errorf("extractRARUsefulName empty: got %q, want empty", got)
 	}
 
@@ -180,7 +235,7 @@ func TestExtractRARUsefulNameDirect(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	if got := extractRARUsefulName(tmpDir, log); got != "" {
+	if got := extractRARUsefulName(root, tmpDir, log); got != "" {
 		t.Errorf("extractRARUsefulName non-rar: got %q, want empty", got)
 	}
 
@@ -196,13 +251,13 @@ func TestExtractRARUsefulNameDirect(t *testing.T) {
 		t.Fatalf("copy rar: %v", err)
 	}
 
-	got := extractRARUsefulName(tmpDir, log)
+	got := extractRARUsefulName(root, tmpDir, log)
 	if got != "sample" {
 		t.Errorf("extractRARUsefulName(sample.rar) = %q, want 'sample'", got)
 	}
 
 	// Test nil logger doesn't panic
-	if gotNil := extractRARUsefulName(tmpDir, nil); gotNil != "sample" {
+	if gotNil := extractRARUsefulName(root, tmpDir, nil); gotNil != "sample" {
 		t.Errorf("extractRARUsefulName with nil logger: got %q, want 'sample'", gotNil)
 	}
 }

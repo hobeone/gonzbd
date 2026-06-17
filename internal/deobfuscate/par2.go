@@ -3,6 +3,7 @@ package deobfuscate
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,15 +15,21 @@ import (
 
 // Par2Rename scans dir for .par2 files, builds a mapping of 16KB MD5 hashes
 // to original filenames, and renames any obfuscated files that match.
-func Par2Rename(ctx context.Context, log *slog.Logger, dir string, opts fsutil.SanitizeOptions) ([]Rename, error) {
+// It opens root for dir once and confines all filesystem operations.
+func Par2Rename(ctx context.Context, log *slog.Logger, root *os.Root, dir string, opts fsutil.SanitizeOptions) ([]Rename, error) {
 	if log == nil {
 		log = slog.Default()
 	}
 	log = log.With("component", "deobfuscate")
 
-	entries, err := os.ReadDir(dir)
+	d, err := root.Open(".")
 	if err != nil {
-		return nil, fmt.Errorf("readdir %s: %w", dir, err)
+		return nil, fmt.Errorf("open root: %w", err)
+	}
+	defer d.Close() //nolint:errcheck // read-only close
+	entries, err := d.ReadDir(-1)
+	if err != nil {
+		return nil, fmt.Errorf("readdir: %w", err)
 	}
 
 	par2Files := findPar2Files(entries, dir)
@@ -37,7 +44,7 @@ func Par2Rename(ctx context.Context, log *slog.Logger, dir string, opts fsutil.S
 
 	var renames []Rename
 	for _, e := range entries {
-		r, renamed, err := par2RenameFile(log, dir, e, hashToName, opts)
+		r, renamed, err := par2RenameFile(log, root, dir, e, hashToName, opts)
 		if err != nil {
 			return renames, err
 		}
@@ -49,7 +56,7 @@ func Par2Rename(ctx context.Context, log *slog.Logger, dir string, opts fsutil.S
 	return renames, nil
 }
 
-func findPar2Files(entries []os.DirEntry, dir string) []string {
+func findPar2Files(entries []fs.DirEntry, dir string) []string {
 	var par2Files []string
 	for _, e := range entries {
 		if !e.Type().IsRegular() {
@@ -79,8 +86,9 @@ func buildHashToNameMap(log *slog.Logger, par2Files []string) map[[16]byte]strin
 
 func par2RenameFile(
 	log *slog.Logger,
+	root *os.Root,
 	dir string,
-	e os.DirEntry,
+	e fs.DirEntry,
 	hashToName map[[16]byte]string,
 	opts fsutil.SanitizeOptions,
 ) (Rename, bool, error) {
@@ -107,20 +115,25 @@ func par2RenameFile(
 		return Rename{}, false, nil
 	}
 
-	// Perform rename; GetUniqueFilename adds a numeric suffix if the
+	// Perform rename; GetUniqueRelPath adds a numeric suffix if the
 	// par2-recorded target already exists on disk.
-	desiredPath := fsutil.JoinSafe(dir, "", trueName, opts)
-	newPath := fsutil.GetUniqueFilename(desiredPath)
+	relDst := fsutil.JoinSafe("", "", trueName, opts)
+	relNewPath := fsutil.GetUniqueRelPath(root, relDst)
 
-	if newPath != desiredPath {
-		finalPath, skip := resolveConflictingRename(log, path, e.Name(), desiredPath, newPath, hash)
+	desiredPath := filepath.Join(dir, relDst)
+	newPath := filepath.Join(dir, relNewPath)
+
+	if relNewPath != relDst {
+		finalPath, skip := resolveConflictingRename(log, root, e.Name(), path, e.Name(), desiredPath, newPath, hash)
 		if skip {
 			return Rename{}, false, nil
 		}
 		newPath = finalPath
+		// Re-evaluate relNewPath based on absolute finalPath.
+		relNewPath = filepath.Base(newPath)
 	}
 
-	r, err := renameRecorded(log, path, newPath, trueName, "deobfuscate: par2-renamed")
+	r, err := renameRecorded(log, root, e.Name(), relNewPath, path, newPath, trueName, "deobfuscate: par2-renamed")
 	if err != nil {
 		return Rename{}, false, fmt.Errorf("rename %s → %s: %w", path, newPath, err)
 	}
@@ -135,6 +148,8 @@ func par2RenameFile(
 // this entry (delete or unresolvable conflict).
 func resolveConflictingRename(
 	log *slog.Logger,
+	root *os.Root,
+	relSrc string,
 	path string, // path of the obfuscated source file
 	name string, // entry.Name() for logging
 	desiredPath string, // the par2-recorded target (already exists)
@@ -151,7 +166,7 @@ func resolveConflictingRename(
 		return newPath, false
 	}
 	if identical {
-		if rerr := os.Remove(path); rerr != nil {
+		if rerr := root.Remove(relSrc); rerr != nil {
 			log.Warn("deobfuscate: failed to remove duplicate obfuscated file",
 				"path", path, "err", rerr)
 		} else {

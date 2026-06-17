@@ -65,7 +65,7 @@ func TestPar2Rename(t *testing.T) {
 	writePar2(t, jobDir, fileName, fileData)
 
 	// 3. Run Par2Rename.
-	renames, err := Par2Rename(context.Background(), slog.Default(), jobDir, fsutil.SanitizeOptions{})
+	renames, err := testPar2Rename(context.Background(), slog.Default(), jobDir, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("Par2Rename: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestPar2Rename_CollisionIdentical(t *testing.T) {
 
 	writePar2(t, jobDir, trueName, content)
 
-	renames, err := Par2Rename(context.Background(), slog.Default(), jobDir, fsutil.SanitizeOptions{})
+	renames, err := testPar2Rename(context.Background(), slog.Default(), jobDir, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("Par2Rename: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestPar2Rename_CollisionDifferent(t *testing.T) {
 
 	writePar2(t, jobDir, trueName, obfContent)
 
-	renames, err := Par2Rename(context.Background(), slog.Default(), jobDir, fsutil.SanitizeOptions{})
+	renames, err := testPar2Rename(context.Background(), slog.Default(), jobDir, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("Par2Rename: %v", err)
 	}
@@ -188,7 +188,7 @@ func (h *recordHandler) WithGroup(name string) slog.Handler       { return h }
 func TestPar2Rename_NilLogger(t *testing.T) {
 	t.Parallel()
 	jobDir := t.TempDir()
-	renames, err := Par2Rename(context.Background(), nil, jobDir, fsutil.SanitizeOptions{})
+	renames, err := testPar2Rename(context.Background(), nil, jobDir, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("Par2Rename with nil logger: %v", err)
 	}
@@ -198,18 +198,31 @@ func TestPar2Rename_NilLogger(t *testing.T) {
 }
 
 func TestDeobfuscate_Par2RenameError(t *testing.T) {
-	tmpDir := t.TempDir()
-	filePath := filepath.Join(tmpDir, "not_a_dir.txt")
-	if err := os.WriteFile(filePath, []byte("hello"), 0644); err != nil {
+	jobDir := t.TempDir()
+
+	// Create a file and a par2 file mapping to it
+	fileName := "original.mkv"
+	fileData := make([]byte, 11*1024*1024)
+	copy(fileData, []byte("this is more than 10MB of data"))
+
+	obfPath := filepath.Join(jobDir, "abcdef1234567890.mkv")
+	if err := os.WriteFile(obfPath, fileData, 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+	writePar2(t, jobDir, fileName, fileData)
+
+	// Make the directory read-only (no write permissions)
+	if err := os.Chmod(jobDir, 0555); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	defer os.Chmod(jobDir, 0755) // restore for cleanup
 
 	handler := &recordHandler{}
 	log := slog.New(handler)
 
-	_, err := Deobfuscate(context.Background(), log, filePath, "MovieName", fsutil.SanitizeOptions{})
+	_, err := Deobfuscate(context.Background(), log, jobDir, "MovieName", fsutil.SanitizeOptions{})
 	if err == nil {
-		t.Error("expected Deobfuscate to fail when path is not a directory")
+		t.Error("expected Deobfuscate to fail when directory is read-only")
 	}
 
 	foundWarn := false
@@ -249,11 +262,20 @@ func TestPar2Rename_InvalidPar2File(t *testing.T) {
 	}
 
 	// Run Par2Rename. It should succeed but not rename anything because the par2 is invalid.
-	renames, err := Par2Rename(context.Background(), slog.Default(), jobDir, fsutil.SanitizeOptions{})
+	renames, err := testPar2Rename(context.Background(), slog.Default(), jobDir, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("Par2Rename: %v", err)
 	}
 	if len(renames) != 0 {
 		t.Errorf("len(renames) = %d; want 0", len(renames))
 	}
+}
+
+func testPar2Rename(ctx context.Context, log *slog.Logger, dir string, opts fsutil.SanitizeOptions) ([]Rename, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return Par2Rename(ctx, log, root, dir, opts)
 }

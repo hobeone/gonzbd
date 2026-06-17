@@ -67,6 +67,17 @@ func TestHasPopularExtension(t *testing.T) {
 	}
 }
 
+func testFixExtension(ctx context.Context, log *slog.Logger, path string) (deobfuscate.Rename, error) {
+	dir := filepath.Dir(path)
+	rel := filepath.Base(path)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return deobfuscate.Rename{}, err
+	}
+	defer root.Close()
+	return deobfuscate.FixExtension(ctx, log, root, rel, path)
+}
+
 func TestFixExtension(t *testing.T) {
 	t.Parallel()
 	log := slog.Default()
@@ -81,7 +92,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -106,7 +117,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -127,7 +138,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -145,7 +156,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -162,7 +173,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -192,7 +203,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -221,7 +232,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -245,7 +256,7 @@ func TestFixExtension(t *testing.T) {
 		if err := os.WriteFile(path, content, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -266,7 +277,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -288,7 +299,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -306,7 +317,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), nil, path)
+		rename, err := testFixExtension(context.Background(), nil, path)
 		if err != nil {
 			t.Fatalf("FixExtension error with nil logger: %v", err)
 		}
@@ -324,7 +335,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), slog.Default(), path)
+		rename, err := testFixExtension(context.Background(), slog.Default(), path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -345,7 +356,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), slog.Default(), path)
+		rename, err := testFixExtension(context.Background(), slog.Default(), path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -359,7 +370,7 @@ func TestFixExtension(t *testing.T) {
 
 	t.Run("non-existent file no rename", func(t *testing.T) {
 		t.Parallel()
-		rename, err := deobfuscate.FixExtension(context.Background(), slog.Default(), "nonexistent.xyz")
+		rename, err := testFixExtension(context.Background(), slog.Default(), "nonexistent.xyz")
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -371,7 +382,7 @@ func TestFixExtension(t *testing.T) {
 	t.Run("directory path returns error", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		_, err := deobfuscate.FixExtension(context.Background(), slog.Default(), dir)
+		_, err := testFixExtension(context.Background(), slog.Default(), dir)
 		if err == nil {
 			t.Fatal("expected error when passing a directory, got nil")
 		}
@@ -387,7 +398,7 @@ func TestFixExtension(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), slog.Default(), path)
+		rename, err := testFixExtension(context.Background(), slog.Default(), path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -422,7 +433,7 @@ func TestFixExtension_NoOverwriteOnCollision(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -469,7 +480,7 @@ func TestFixExtension_NoOverwriteOnCollision(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}

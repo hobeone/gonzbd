@@ -32,3 +32,21 @@ func RootedOpenFile(root *os.Root, rel string, flag int, perm fs.FileMode) (*os.
 	}
 	return f, nil
 }
+
+// GetUniqueRelPath returns a unique version of rel relative to root by checking
+// existence using root.Stat. It appends .1, .2, etc., up to 10,000 attempts if the
+// target already exists.
+func GetUniqueRelPath(root *os.Root, rel string) string {
+	if _, err := root.Stat(rel); err != nil {
+		return rel
+	}
+	ext := filepath.Ext(rel)
+	base := rel[:len(rel)-len(ext)]
+	for i := 1; i <= 10_000; i++ {
+		newRel := fmt.Sprintf("%s.%d%s", base, i, ext)
+		if _, err := root.Stat(newRel); err != nil {
+			return newRel
+		}
+	}
+	return fmt.Sprintf("%s.%d%s", base, 10_000, ext)
+}

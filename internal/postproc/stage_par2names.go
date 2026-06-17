@@ -3,6 +3,7 @@ package postproc
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 
 	"github.com/hobeone/gonzbd/internal/deobfuscate"
@@ -31,7 +32,14 @@ func (r *RecoverPar2NamesStage) Run(ctx context.Context, job *Job) error {
 
 	logf(ctx, log, job, slog.LevelInfo, "Running par2-based filename recovery in %s", job.DownloadDir)
 
-	renames, err := deobfuscate.Par2Rename(ctx, log, job.DownloadDir, job.Sanitize)
+	root, err := os.OpenRoot(job.DownloadDir)
+	if err != nil {
+		logf(ctx, log, job, slog.LevelWarn, "Warning: failed to open root: %v", err)
+		return nil
+	}
+	defer root.Close() //nolint:errcheck // read-only close
+
+	renames, err := deobfuscate.Par2Rename(ctx, log, root, job.DownloadDir, job.Sanitize)
 	if len(renames) == 0 {
 		logf(ctx, log, job, slog.LevelInfo, "No par2-based renames needed")
 	} else {

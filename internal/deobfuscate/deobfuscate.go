@@ -249,15 +249,12 @@ type Rename struct {
 	TrueName string // par2-recorded target name; empty for heuristic renames
 }
 
-// renameRecorded renames src→dst and, on success, logs the move (logMsg with
-// from/to attributes) and returns the recorded Rename. trueName fills
-// Rename.TrueName for par2-driven renames; pass "" for heuristic renames.
-//
-// On failure it returns the raw os.Rename error and a zero Rename, leaving the
-// error context and the abort-vs-continue decision to the caller, which owns
-// the dst computation and the appropriate wrapping message.
-func renameRecorded(log *slog.Logger, src, dst, trueName, logMsg string) (Rename, error) {
-	if err := os.Rename(src, dst); err != nil {
+// renameRecorded renames src→dst relative to root and, on success, logs the
+// move (logMsg with from/to attributes) and returns the recorded Rename.
+// trueName fills Rename.TrueName for par2-driven renames; pass "" for
+// heuristic renames.
+func renameRecorded(log *slog.Logger, root *os.Root, relSrc, relDst, src, dst, trueName, logMsg string) (Rename, error) {
+	if err := root.Rename(relSrc, relDst); err != nil {
 		return Rename{}, err
 	}
 	log.Info(logMsg, "from", src, "to", dst)
@@ -278,14 +275,20 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	}
 	log = log.With("component", "deobfuscate")
 
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("deobfuscate: open root %s: %w", dir, err)
+	}
+	defer root.Close() //nolint:errcheck // read-only close
+
 	// Skip deobfuscation for DVD/Bluray disc structures.
-	if containsIgnoredMovieFolder(dir) {
+	if containsIgnoredMovieFolder(root) {
 		log.Info("deobfuscate: skipping — DVD/Bluray directory detected", "dir", dir)
 		return nil, nil
 	}
 
 	// Phase 1: Attempt PAR2-based deobfuscation first.
-	parRenames, err := Par2Rename(ctx, log, dir, opts)
+	parRenames, err := Par2Rename(ctx, log, root, dir, opts)
 	if err != nil {
 		log.Warn("deobfuscate: par2 deobfuscation encountered an error", "dir", dir, "err", err)
 	}
@@ -295,33 +298,41 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	}
 
 	// Phase 2: Attempt RAR-header-based deobfuscation.
-	rarName := extractRARUsefulName(dir, log)
+	rarName := extractRARUsefulName(root, dir, log)
 	if rarName != "" {
 		log.Info("deobfuscate: RAR headers suggest useful name", "name", rarName)
 		usefulName = rarName
 	}
 
 	// Phase 3: Collect regular files and fix extensions before the heuristic.
-	entries, err := os.ReadDir(dir)
+	d, err := root.Open(".")
 	if err != nil {
-		return nil, fmt.Errorf("readdir %s: %w", dir, err)
+		return nil, fmt.Errorf("open root: %w", err)
+	}
+	defer d.Close() //nolint:errcheck // read-only close
+	entries, err := d.ReadDir(-1)
+	if err != nil {
+		return nil, fmt.Errorf("readdir: %w", err)
 	}
 
 	var paths []string
+	var relPaths []string
 	for _, e := range entries {
 		if !e.Type().IsRegular() {
 			continue
 		}
 		paths = append(paths, filepath.Join(dir, e.Name()))
+		relPaths = append(relPaths, e.Name())
 	}
 	log.Info("deobfuscate: found files for heuristic", "count", len(paths))
 
 	// Fix extensions by content sniffing. Files with non-popular
 	// extensions get their real type detected via magic bytes.
 	var allRenames []Rename
-	for i, p := range paths {
-		if !HasPopularExtension(p) {
-			r, fixErr := FixExtension(ctx, log, p)
+	for i, rel := range relPaths {
+		p := paths[i]
+		if !HasPopularExtension(rel) {
+			r, fixErr := FixExtension(ctx, log, root, rel, p)
 			if fixErr != nil {
 				log.Warn("deobfuscate: extension fix error", "path", p, "err", fixErr)
 				continue
@@ -330,7 +341,8 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 				allRenames = append(allRenames, r)
 				log.Info("deobfuscate: fixed extension",
 					"from", filepath.Base(r.From), "to", filepath.Base(r.To))
-				paths[i] = r.To // Update path for BiggestFile
+				paths[i] = r.To
+				relPaths[i] = filepath.Base(r.To)
 			}
 		}
 	}
@@ -350,34 +362,37 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	// RAR-header renames above have no size threshold because they use
 	// structural metadata, not heuristics.
 	const minDeobfuscateSize = 10 * 1024 * 1024 // 10 MiB
-	if fi, statErr := os.Stat(bigPath); statErr == nil && fi.Size() < minDeobfuscateSize {
+	bigRel := filepath.Base(bigPath)
+	if fi, statErr := root.Stat(bigRel); statErr == nil && fi.Size() < minDeobfuscateSize {
 		log.Info("deobfuscate: biggest file under 10 MiB, skipping heuristic rename",
-			"file", filepath.Base(bigPath), "size", fi.Size())
+			"file", bigRel, "size", fi.Size())
 		return allRenames, nil
 	}
 
-	log.Info("deobfuscate: biggest file candidate", "path", filepath.Base(bigPath))
+	log.Info("deobfuscate: biggest file candidate", "path", bigRel)
 
 	ext := strings.ToLower(filepath.Ext(bigPath))
 	if excludedExts[ext] {
 		log.Info("deobfuscate: biggest file has excluded extension, skipping rename",
-			"file", filepath.Base(bigPath), "ext", ext)
+			"file", bigRel, "ext", ext)
 		return allRenames, nil
 	}
 
 	if !IsProbablyObfuscated(log, bigPath) {
 		log.Info("deobfuscate: biggest file name is not obfuscated, skipping rename",
-			"file", filepath.Base(bigPath))
+			"file", bigRel)
 		return allRenames, nil
 	}
 	log.Info("deobfuscate: biggest file is obfuscated, will rename",
-		"file", filepath.Base(bigPath), "useful_name", usefulName)
+		"file", bigRel, "useful_name", usefulName)
 
 	renames := allRenames
 
 	// Rename the biggest file.
-	newBigPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(dir, "", usefulName+filepath.Ext(bigPath), opts))
-	r, err := renameRecorded(log, bigPath, newBigPath, "", "deobfuscate: renamed")
+	relDst := fsutil.JoinSafe("", "", usefulName+filepath.Ext(bigPath), opts)
+	newBigRel := fsutil.GetUniqueRelPath(root, relDst)
+	newBigPath := filepath.Join(dir, newBigRel)
+	r, err := renameRecorded(log, root, bigRel, newBigRel, bigPath, newBigPath, "", "deobfuscate: renamed")
 	if err != nil {
 		return nil, fmt.Errorf("rename %s → %s: %w", bigPath, newBigPath, err)
 	}
@@ -387,19 +402,22 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	baseDirFile := strings.TrimSuffix(bigPath, filepath.Ext(bigPath))
 
 	// Rename siblings that share the same stem (e.g. "file-sample.iso").
-	for _, p := range paths {
+	for i, p := range paths {
+		rel := relPaths[i]
 		if p == bigPath {
 			continue
 		}
 		if !strings.HasPrefix(p, baseDirFile) {
 			continue
 		}
-		if _, err := os.Stat(p); err != nil {
+		if _, err := root.Stat(rel); err != nil {
 			continue
 		}
 		remainingSuffix := strings.TrimPrefix(p, baseDirFile)
-		newPath := fsutil.GetUniqueFilename(fsutil.JoinSafe(dir, "", usefulName+remainingSuffix, opts))
-		r, renErr := renameRecorded(log, p, newPath, "", "deobfuscate: renamed sibling")
+		relDstSib := fsutil.JoinSafe("", "", usefulName+remainingSuffix, opts)
+		newRelSib := fsutil.GetUniqueRelPath(root, relDstSib)
+		newPath := filepath.Join(dir, newRelSib)
+		r, renErr := renameRecorded(log, root, rel, newRelSib, p, newPath, "", "deobfuscate: renamed sibling")
 		if renErr != nil {
 			return renames, fmt.Errorf("rename sibling %s → %s: %w", p, newPath, renErr)
 		}
@@ -409,10 +427,15 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	return renames, nil
 }
 
-// containsIgnoredMovieFolder walks one level of subdirectories under dir and
+// containsIgnoredMovieFolder walks one level of subdirectories under root and
 // returns true if any match an ignored DVD/Bluray folder name.
-func containsIgnoredMovieFolder(dir string) bool {
-	entries, err := os.ReadDir(dir)
+func containsIgnoredMovieFolder(root *os.Root) bool {
+	d, err := root.Open(".")
+	if err != nil {
+		return false
+	}
+	defer d.Close() //nolint:errcheck // read-only close
+	entries, err := d.ReadDir(-1)
 	if err != nil {
 		return false
 	}
@@ -426,29 +449,30 @@ func containsIgnoredMovieFolder(dir string) bool {
 
 // Subtitles renames .srt subtitle files to match the dominant
 // video file in dir. This ensures media players auto-detect subtitles.
-//
-// For example:
-//
-//	Some_Big_Movie.mkv    →  (unchanged)
-//	14_English.srt         →  Some_Big_Movie.14_English.srt
-//	dut.srt                →  Some_Big_Movie.dut.srt
-//	Some_Big_Movie.srt     →  (unchanged — already matches)
-//
-// Only acts when there is a clearly biggest file (3× ratio) and at least
-// one .srt file whose name doesn't already share the video's basename.
 func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 	if log == nil {
 		log = slog.Default()
 	}
 	log = log.With("component", "deobfuscate")
 
-	entries, err := os.ReadDir(dir)
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return nil, fmt.Errorf("deobfuscate subtitles: readdir %s: %w", dir, err)
+		return nil, fmt.Errorf("deobfuscate subtitles: open root %s: %w", dir, err)
+	}
+	defer root.Close() //nolint:errcheck // read-only close
+
+	d, err := root.Open(".")
+	if err != nil {
+		return nil, fmt.Errorf("deobfuscate subtitles: open root: %w", err)
+	}
+	defer d.Close() //nolint:errcheck // read-only close
+	entries, err := d.ReadDir(-1)
+	if err != nil {
+		return nil, fmt.Errorf("deobfuscate subtitles: readdir: %w", err)
 	}
 
 	var paths []string
-	var srtFiles []string
+	var srtRels []string
 	for _, e := range entries {
 		if !e.Type().IsRegular() {
 			continue
@@ -456,11 +480,11 @@ func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 		p := filepath.Join(dir, e.Name())
 		paths = append(paths, p)
 		if strings.EqualFold(filepath.Ext(p), ".srt") {
-			srtFiles = append(srtFiles, p)
+			srtRels = append(srtRels, e.Name())
 		}
 	}
 
-	if len(srtFiles) == 0 {
+	if len(srtRels) == 0 {
 		return nil, nil
 	}
 
@@ -474,17 +498,14 @@ func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 	}
 
 	// bigBase is e.g. "/path/to/Some_Big_Movie" (no extension).
-	bigBase := strings.TrimSuffix(biggest, filepath.Ext(biggest))
+	bigBaseRel := strings.TrimSuffix(filepath.Base(biggest), filepath.Ext(biggest))
 
 	var renames []Rename
-	for _, srt := range srtFiles {
-		srtBase := strings.TrimSuffix(srt, filepath.Ext(srt))
-		// Skip if the .srt already shares the video's basename prefix AND the
-		// character immediately after the prefix is a separator (., _, -, space)
-		// or there is no character after (exact match). A bare prefix match like
-		// "SomeMovie2" with prefix "SomeMovie" does not qualify as a sibling.
-		if strings.HasPrefix(srtBase, bigBase) {
-			suffix := srtBase[len(bigBase):]
+	for _, srtRel := range srtRels {
+		srt := filepath.Join(dir, srtRel)
+		srtBaseRel := strings.TrimSuffix(srtRel, filepath.Ext(srtRel))
+		if strings.HasPrefix(srtBaseRel, bigBaseRel) {
+			suffix := srtBaseRel[len(bigBaseRel):]
 			if suffix == "" {
 				continue
 			}
@@ -495,9 +516,10 @@ func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 		}
 
 		// Construct new name: <bigBase>.<srt_filename>
-		srtName := filepath.Base(srt)
-		newPath := fsutil.GetUniqueFilename(bigBase + "." + srtName)
-		r, renErr := renameRecorded(log, srt, newPath, "", "deobfuscate: renamed subtitle")
+		srtName := filepath.Base(srtRel)
+		newRel := fsutil.GetUniqueRelPath(root, bigBaseRel+"."+srtName)
+		newPath := filepath.Join(dir, newRel)
+		r, renErr := renameRecorded(log, root, srtRel, newRel, srt, newPath, "", "deobfuscate: renamed subtitle")
 		if renErr != nil {
 			return renames, fmt.Errorf("rename subtitle %s → %s: %w", srt, newPath, renErr)
 		}
@@ -507,20 +529,21 @@ func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 	return renames, nil
 }
 
-// extractRARUsefulName scans dir for RAR archives (by magic bytes, not just
+// extractRARUsefulName scans root for RAR archives (by magic bytes, not just
 // extension) and inspects their headers to extract internal filenames. Returns
 // the stem of the most common internal filename, or "" if no useful name can
 // be determined.
-//
-// This catches two key scenarios:
-//  1. Cloaked RARs: files with .001/.xyz/no extension that are actually RAR volumes
-//  2. Obfuscated outer names: e.g. "a1b2c3d4.rar" containing "Movie.Name.2024.mkv"
-func extractRARUsefulName(dir string, log *slog.Logger) string {
+func extractRARUsefulName(root *os.Root, dir string, log *slog.Logger) string {
 	if log == nil {
 		log = slog.Default()
 	}
 	log = log.With("component", "deobfuscate")
-	entries, err := os.ReadDir(dir)
+	d, err := root.Open(".")
+	if err != nil {
+		return ""
+	}
+	defer d.Close() //nolint:errcheck // read-only close
+	entries, err := d.ReadDir(-1)
 	if err != nil {
 		return ""
 	}
@@ -533,8 +556,13 @@ func extractRARUsefulName(dir string, log *slog.Logger) string {
 		}
 		path := filepath.Join(dir, e.Name())
 
-		isRAR, err := rarheader.IsRAR(path)
-		if err != nil || !isRAR {
+		f, err := root.Open(e.Name())
+		if err != nil {
+			continue
+		}
+		isRAR, rerr := rarheader.IsRARReader(f)
+		_ = f.Close()
+		if rerr != nil || !isRAR {
 			continue
 		}
 

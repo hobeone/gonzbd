@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/hobeone/gonzbd/internal/deobfuscate"
 )
 
 // M23: FixExtension with a long filename (near NAME_MAX=255) that would exceed
@@ -31,7 +29,7 @@ func TestFixExtension_LongFilename(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
@@ -60,7 +58,7 @@ func TestFixExtension_LongFilename(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, err := deobfuscate.FixExtension(context.Background(), log, path)
+		_, err := testFixExtension(context.Background(), log, path)
 		// Appending ".jpg" to a 255-byte filename creates a 259-byte target.
 		// The OS should reject this rename with ENAMETOOLONG.
 		if err == nil {
@@ -79,7 +77,7 @@ func TestFixExtension_LongFilename(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		rename, err := deobfuscate.FixExtension(context.Background(), log, path)
+		rename, err := testFixExtension(context.Background(), log, path)
 		if err != nil {
 			t.Fatalf("FixExtension error: %v", err)
 		}
