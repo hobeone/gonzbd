@@ -45,6 +45,7 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 	return UnRAR(ctx, log, archive, outDir, opts)
 }
 
+// ClassifyRarEngineError maps a rarengine error to the appropriate FailReason constant.
 func ClassifyRarEngineError(err error) FailReason {
 	switch {
 	case errors.Is(err, rarengine.ErrRarBombDetected):
@@ -58,6 +59,7 @@ func ClassifyRarEngineError(err error) FailReason {
 	}
 }
 
+// GoUnRAREngine extracts a RAR archive using the pure-Go rarengine library.
 func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (res Result, err error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -110,6 +112,7 @@ func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDi
 	return res, nil
 }
 
+// ExtractEntryRarengine writes a single rarengine entry to destPath within outDir.
 func ExtractEntryRarengine(ctx context.Context, outDir, destPath string, fh *rarengine.FileHeader, r io.Reader, opts Options, log *slog.Logger) error {
 	if fh.IsDir {
 		return os.MkdirAll(destPath, 0o750)
@@ -130,11 +133,11 @@ func ExtractEntryRarengine(ctx context.Context, outDir, destPath string, fh *rar
 		return fmt.Errorf("go_unrar: mkdir %s: %w", filepath.Dir(destPath), err)
 	}
 
-	out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // destPath sanitized by SanitizeArchivePath
 	if err != nil {
 		return fmt.Errorf("go_unrar: create %s: %w", destPath, err)
 	}
-	defer out.Close()
+	defer out.Close() //nolint:errcheck // best-effort close; write errors caught by contextCopy
 
 	if _, err := contextCopy(ctx, out, r); err != nil {
 		var errno syscall.Errno

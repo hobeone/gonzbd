@@ -54,7 +54,7 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 		}
 		return res, fmt.Errorf("go_7z: open: %w", err)
 	}
-	defer r.Close()
+	defer r.Close() //nolint:errcheck // best-effort close
 
 	log.Info("starting extraction",
 		"outDir", outDir,
@@ -122,7 +122,7 @@ func extractSevenZipFile(ctx context.Context, destPath string, f *sevenzip.File,
 		return fmt.Errorf("go_7z: open entry %s: %w", f.Name, err)
 	}
 	// MUST close before the next file's Open() for stream reuse in solid archives.
-	defer rc.Close()
+	defer rc.Close() //nolint:errcheck // best-effort close
 
 	// Handle overwrite policy.
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
@@ -142,7 +142,7 @@ func extractSevenZipFile(ctx context.Context, destPath string, f *sevenzip.File,
 	if err != nil {
 		return fmt.Errorf("go_7z: create %s: %w", destPath, err)
 	}
-	defer out.Close()
+	defer out.Close() //nolint:errcheck // best-effort close; write errors are caught by contextCopy
 
 	if _, err := contextCopy(ctx, out, rc); err != nil {
 		var errno syscall.Errno

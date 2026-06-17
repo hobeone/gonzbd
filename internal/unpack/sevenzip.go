@@ -12,6 +12,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
+// SevenZipBinaries is the ordered list of 7-zip binary names tried during auto-detection.
 var SevenZipBinaries = []string{"7zz", "7zzs", "7z", "7za"}
 
 // sevenZipBin returns the path to the 7-zip binary to use.

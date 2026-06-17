@@ -62,7 +62,7 @@ func DetectUnrar(ctx context.Context, bin string) UnrarInfo {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, bin).CombinedOutput() //nolint:gosec
+	out, err := exec.CommandContext(ctx, bin).CombinedOutput() //nolint:gosec // binary path from config or SevenZipBinaries constant list
 	if err != nil && len(out) == 0 {
 		// Binary not found or can't execute.
 		return UnrarInfo{}
@@ -85,7 +85,7 @@ func DetectSevenZip(ctx context.Context, bin string) SevenzInfo {
 	defer cancel()
 
 	for _, cand := range candidates {
-		out, err := exec.CommandContext(ctx, cand).CombinedOutput() //nolint:gosec
+		out, err := exec.CommandContext(ctx, cand).CombinedOutput() //nolint:gosec // binary path from config or SevenZipBinaries constant list
 		if err != nil && len(out) == 0 {
 			continue
 		}

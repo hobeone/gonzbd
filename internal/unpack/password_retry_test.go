@@ -2,6 +2,7 @@ package unpack
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ func TestGoSevenZipWithPasswords_AllWrongExhausted(t *testing.T) {
 	if err == nil {
 		t.Fatal("GoSevenZipWithPasswords: expected error when all passwords wrong")
 	}
-	if err != ErrWrongPassword {
+	if !errors.Is(err, ErrWrongPassword) {
 		t.Errorf("GoSevenZipWithPasswords: expected ErrWrongPassword, got: %v", err)
 	}
 }
@@ -84,7 +85,7 @@ func TestGoSevenZipWithPasswords_SystemErrorStillEarlyReturns(t *testing.T) {
 		t.Fatal("GoSevenZipWithPasswords: expected error for cancelled context")
 	}
 	// Should be context error, NOT ErrWrongPassword.
-	if err == ErrWrongPassword {
+	if errors.Is(err, ErrWrongPassword) {
 		t.Fatal("GoSevenZipWithPasswords: got ErrWrongPassword, expected context error")
 	}
 }
