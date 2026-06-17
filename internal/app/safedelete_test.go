@@ -87,4 +87,30 @@ func TestSafeDeleteDir(t *testing.T) {
 			t.Fatal("target under the second base should have been deleted")
 		}
 	})
+
+	// Regression for the os.Root hardening: a target path that is *lexically*
+	// inside base but reaches outside through a symlinked component must NOT be
+	// deleted. The previous lexical (filepath.Rel/PathWithin + os.RemoveAll)
+	// implementation would have followed the symlink and deleted the victim.
+	t.Run("refuses to delete through a symlinked component (os.Root)", func(t *testing.T) {
+		base := t.TempDir()
+		outside := t.TempDir()
+		victim := filepath.Join(outside, "victim.txt")
+		if err := os.WriteFile(victim, []byte("VICTIM"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// Attacker-planted symlink inside base pointing out of the tree.
+		if err := os.Symlink(outside, filepath.Join(base, "link")); err != nil {
+			t.Fatal(err)
+		}
+		// Lexically "base/link/victim.txt" is within base, but it resolves
+		// outside via the symlink.
+		target := filepath.Join(base, "link", "victim.txt")
+		if err := safeDeleteDir(target, base); err == nil {
+			t.Fatal("expected an error: deletion must not traverse the symlink out of base")
+		}
+		if !exists(victim) {
+			t.Fatal("SECURITY: deleted a file outside base by traversing a symlinked component")
+		}
+	})
 }
