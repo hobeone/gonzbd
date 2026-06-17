@@ -89,6 +89,24 @@ func TestApplication_ReloadOptions(t *testing.T) {
 	if !ok || lvl != slog.LevelWarn {
 		t.Errorf("expected downloader component level to remain Warn on invalid config, got %v", lvl)
 	}
+
+	// 5. Test ReloadGeneralOptions invalid global level but valid component level (partial apply)
+	cfg.With(func(c *config.Config) {
+		c.General.LogLevel = "invalid-level"
+		c.General.LogLevels = map[string]string{"downloader": "info"}
+	})
+	app.ReloadGeneralOptions(cfg)
+	// Global level should remain debug
+	if got := globalLevelVar.Level(); got != slog.LevelDebug {
+		t.Errorf("expected global level to remain Debug, got %v", got)
+	}
+	// Downloader level should update to Info
+	componentLevelsMu.RLock()
+	lvl, ok = componentLevels["downloader"]
+	componentLevelsMu.RUnlock()
+	if !ok || lvl != slog.LevelInfo {
+		t.Errorf("expected downloader component level to update to Info, got %v (ok=%t)", lvl, ok)
+	}
 }
 
 func TestApplication_RunMetricsPush(t *testing.T) {

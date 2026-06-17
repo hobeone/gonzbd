@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
@@ -64,14 +65,21 @@ func (app *Application) ReloadDownloadOptions(cfg *config.Config) {
 func (app *Application) ReloadGeneralOptions(cfg *config.Config) {
 	globalLevel, err := cfg.General.ParseLogLevel()
 	if err != nil {
-		app.log.Error("failed to parse global log level on reload", "err", err)
-		return
+		app.log.Error("failed to parse global log level on reload, keeping current", "err", err)
+		globalLevel = globalLevelVar.Level()
 	}
+
 	compLevels, err := cfg.General.ParseLogLevels()
 	if err != nil {
-		app.log.Error("failed to parse component log levels on reload", "err", err)
-		return
+		app.log.Error("failed to parse component log levels on reload, keeping current", "err", err)
+		componentLevelsMu.RLock()
+		compLevels = make(map[string]slog.Level, len(componentLevels))
+		for k, v := range componentLevels {
+			compLevels[k] = v
+		}
+		componentLevelsMu.RUnlock()
 	}
+
 	SetLogLevels(globalLevel, compLevels)
 }
 
