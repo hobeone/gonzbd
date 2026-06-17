@@ -20,7 +20,7 @@ func buildPacket(setID [16]byte, packetType [16]byte, body []byte) []byte {
 	copy(buf[0:8], magic)
 	// Packet length.
 	binary.LittleEndian.PutUint64(buf[8:16], packetLen)
-	// Set ID.
+	// ParsedSet ID.
 	copy(buf[32:48], setID[:])
 	// Packet type.
 	copy(buf[48:64], packetType[:])
@@ -283,7 +283,7 @@ func TestParsePar2Set_EarlyExitOptimization(t *testing.T) {
 	fullHash := [16]byte{0xAA}
 	hash16k := [16]byte{0xBB}
 
-	build := func(t *testing.T, paddingSize int) *Par2Set {
+	build := func(t *testing.T, paddingSize int) *ParsedSet {
 		t.Helper()
 		tmpDir := t.TempDir()
 		parPath := filepath.Join(tmpDir, "test.par2")
@@ -394,7 +394,7 @@ func TestParsePar2Set_IFSCAndCRC(t *testing.T) {
 	ifscPkt := buildPacket(setID, typeIFSC, ifscBody)
 
 	// Write all packets.
-	var buf []byte
+	buf := make([]byte, 0, len(mainPkt)+len(fdPkt)+len(ifscPkt))
 	buf = append(buf, mainPkt...)
 	buf = append(buf, fdPkt...)
 	buf = append(buf, ifscPkt...)
@@ -438,7 +438,7 @@ func TestParsePar2Set_Deduplication(t *testing.T) {
 	fd3Body := buildFileDescBody([16]byte{3}, [16]byte{}, uniqueHash16k, 3000, "unique.txt")
 	fd3Pkt := buildPacket(setID, typeFileDesc, fd3Body)
 
-	var buf []byte
+	buf := make([]byte, 0, len(fd1Pkt)+len(fd2Pkt)+len(fd3Pkt))
 	buf = append(buf, fd1Pkt...)
 	buf = append(buf, fd2Pkt...)
 	buf = append(buf, fd3Pkt...)
@@ -495,7 +495,7 @@ func TestParsePar2Set_JunkByteScan(t *testing.T) {
 		junk[i] = 0xFE
 	}
 
-	var buf []byte
+	buf := make([]byte, 0, len(junk)+len(pkt))
 	buf = append(buf, junk...)
 	buf = append(buf, pkt...)
 
@@ -532,7 +532,7 @@ func TestParsePar2Set_RecoveryAndCreator(t *testing.T) {
 	creatorBody := append([]byte(creatorText), make([]byte, padLen)...)
 	creatorPkt := buildPacket(setID, typeCreator, creatorBody)
 
-	var buf []byte
+	buf := make([]byte, 0, len(rec1)+len(rec2)+len(creatorPkt))
 	buf = append(buf, rec1...)
 	buf = append(buf, rec2...)
 	buf = append(buf, creatorPkt...)
@@ -575,7 +575,7 @@ func TestParsePar2Set_MultiplePacketTypes(t *testing.T) {
 	// Creator packet.
 	creatorPkt := buildPacket(setID, typeCreator, []byte("GoNZBD\x00\x00"))
 
-	var buf []byte
+	buf := make([]byte, 0, len(mainPkt)+len(fdPkt)+len(recPkt)+len(creatorPkt))
 	buf = append(buf, mainPkt...)
 	buf = append(buf, fdPkt...)
 	buf = append(buf, recPkt...)
@@ -835,7 +835,7 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 			FileID:   fileID,
 			FileSize: 5,
 		}
-		set := &Par2Set{
+		set := &ParsedSet{
 			SliceSize: 3,
 			FilesByID: map[[16]byte]*FileDesc{
 				fileID: fd,
@@ -870,7 +870,7 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 		h1 := [16]byte{1}
 		h2 := [16]byte{2}
 
-		set := &Par2Set{
+		set := &ParsedSet{
 			Files: []FileDesc{
 				{FileID: [16]byte{10}, Hash16k: h1},
 				{FileID: [16]byte{20}, Hash16k: h1}, // duplicate of h1

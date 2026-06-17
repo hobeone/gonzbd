@@ -125,7 +125,7 @@ type RunOptions struct {
 	// Caps holds detected capabilities of the par2 binary (from
 	// DetectCapabilities at startup). Used to conditionally add -N
 	// and -B flags. May be nil when detection hasn't run.
-	Caps *Par2Caps
+	Caps *Caps
 	// OnLine is called for each line of output from the par2 subprocess.
 	// May be nil.
 	OnLine func(string) `json:"-"`
@@ -145,7 +145,7 @@ func (o RunOptions) command() string {
 
 // capsArgs returns the conditional flags based on detected binary
 // capabilities. dir is the directory containing the par2 file.
-func capsArgs(caps *Par2Caps, dir string) []string {
+func capsArgs(caps *Caps, dir string) []string {
 	if caps == nil {
 		return nil
 	}

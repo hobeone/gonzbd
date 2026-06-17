@@ -308,7 +308,7 @@ func TestBuildStages_ProbeHasNoEffectOnEnablement(t *testing.T) {
 	// enablement is config-driven (EnableUnrar), not probe-driven.
 	probe := binaryProbe{
 		UnrarInfo: unpack.UnrarInfo{Available: true, HasProblem: true},
-		Par2Caps:  par2.Par2Caps{},
+		Par2Caps:  par2.Caps{},
 	}
 	cfg := Config{
 		DownloadDir: t.TempDir(),
