@@ -107,6 +107,52 @@ func TestApplication_ReloadOptions(t *testing.T) {
 	if !ok || lvl != slog.LevelInfo {
 		t.Errorf("expected downloader component level to update to Info, got %v (ok=%t)", lvl, ok)
 	}
+
+	// 6. Test ReloadPostProcOptions (happy path)
+	cfg.With(func(c *config.Config) {
+		c.PostProc.EnableQuickCheck = true
+		c.PostProc.EnableParCleanup = true
+		c.PostProc.EnableRarCleanup = true
+		c.PostProc.OverwriteFiles = true
+		c.PostProc.FlatUnpack = true
+		c.PostProc.Permissions = "0755"
+		c.PostProc.FolderRename = true
+		c.PostProc.ScriptCanFail = true
+		c.PostProc.UseGoRAR = true
+		c.PostProc.UseGo7z = true
+		c.PostProc.UseGoPar2 = true
+		c.PostProc.GoRarFallback = true
+		c.PostProc.Go7zFallback = true
+		c.PostProc.GoPar2Fallback = true
+		c.PostProc.Nice = "nice -n 19"
+		c.PostProc.Ionice = "ionice -c 3"
+		c.PostProc.Par2Command = "par2"
+		c.PostProc.UnrarCommand = "unrar"
+		c.PostProc.SevenzCommand = "7z"
+		c.PostProc.ExtraUnrarParams = "-ppassword"
+		c.PostProc.ExtraPar2Params = "-t+"
+		c.PostProc.CleanupExtensions = []string{".nfo"}
+		c.PostProc.DeobfuscateFilenames = true
+		c.PostProc.IgnoreSamples = true
+		c.General.ScriptDir = "/scripts"
+		c.PostProc.EnableUnrar = true
+		c.PostProc.Enable7zip = true
+		c.PostProc.PasswordFile = "pass.txt"
+		c.PostProc.EnableFileJoin = true
+		c.PostProc.EnableRecursive = true
+		c.PostProc.DirectUnpack = true
+		c.PostProc.DirectUnpackThreads = 4
+		c.PostProc.Par2Turbo = true
+		c.PostProc.IgnoreUnrarDates = true
+	})
+	app.ReloadPostProcOptions(cfg)
+
+	// 7. Test ReloadPostProcOptions with parsing errors in extra params (triggers error paths)
+	cfg.With(func(c *config.Config) {
+		c.PostProc.ExtraUnrarParams = "'unclosed quote"
+		c.PostProc.ExtraPar2Params = "'unclosed quote"
+	})
+	app.ReloadPostProcOptions(cfg)
 }
 
 func TestApplication_RunMetricsPush(t *testing.T) {

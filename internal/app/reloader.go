@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"log/slog"
+	"maps"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
@@ -74,9 +75,7 @@ func (app *Application) ReloadGeneralOptions(cfg *config.Config) {
 		app.log.Error("failed to parse component log levels on reload, keeping current", "err", err)
 		componentLevelsMu.RLock()
 		compLevels = make(map[string]slog.Level, len(componentLevels))
-		for k, v := range componentLevels {
-			compLevels[k] = v
-		}
+		maps.Copy(compLevels, componentLevels)
 		componentLevelsMu.RUnlock()
 	}
 

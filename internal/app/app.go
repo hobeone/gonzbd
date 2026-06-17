@@ -405,7 +405,7 @@ func (app *Application) Queue() *queue.Queue { return app.queue }
 
 // Speed returns the current aggregate download speed in bytes/sec, or 0
 // when downloading is idle or the downloader stats interface has not been wired yet.
-func (app *Application) Speed() float64 {
+func (app *Application) Speed() float64 { //nocover: trivial delegate
 	if app.downloaderStats == nil {
 		return 0
 	}
@@ -1355,7 +1355,7 @@ func (app *Application) UnblockServer(name string) bool {
 // ServerStatus returns a point-in-time snapshot of all servers,
 // including per-connection article activity. Returns nil when the
 // downloader is not running.
-func (app *Application) ServerStatus() []downloader.ServerSnapshot {
+func (app *Application) ServerStatus() []downloader.ServerSnapshot { //nocover: trivial delegate
 	app.mu.Lock()
 	defer app.mu.Unlock()
 	if app.downloaderStats != nil {

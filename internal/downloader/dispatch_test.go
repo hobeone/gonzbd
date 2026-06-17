@@ -25,6 +25,7 @@ func newDispatchDownloader(servers []*Server) *Downloader {
 		servers:      servers,
 		workCh:       workCh,
 		tracker:      newDispatchTracker(),
+		completions:  make(chan *ArticleResult, 10),
 		connActivity: make(map[string]*ConnActivity),
 	}
 	ch := make(chan struct{})
@@ -616,3 +617,79 @@ func BenchmarkDownloader_Dispatch(b *testing.B) {
 		_, _ = d.tryDispatch(ctx, a, opts)
 	}
 }
+
+func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+	q := queue.New()
+	d.queue = q
+
+	// 1. Test plan.exhausted side-effects
+	job := makeJobWithArticles(t, []string{"msg1@h"})
+	if err := q.Add(job); err != nil {
+		t.Fatalf("q.Add: %v", err)
+	}
+
+	// Setup tried mapping to test that it gets cleared
+	d.tracker.Lock()
+	mask := serverMask{}
+	mask.set(0)
+	d.tracker.SetTriedLocked("msg1@h", mask)
+	d.tracker.Unlock()
+
+	plan := dispatchPlan{
+		exhausted: []*articleRequest{{
+			jobID:     job.ID,
+			messageID: "msg1@h",
+			bytes:     100,
+		}},
+	}
+
+	d.applyDispatchPlan(context.Background(), plan, dispatchOpts{})
+
+	// Check completions channel received the ErrNoServersLeft result
+	select {
+	case res := <-d.Completions():
+		if res.MessageID != "msg1@h" || res.Err != ErrNoServersLeft {
+			t.Errorf("unexpected completion result: %+v", res)
+		}
+	default:
+		t.Error("expected completions channel to receive article result")
+	}
+
+	// Check tryList was cleared
+	tryListLen, _ := d.tracker.Len()
+	if tryListLen != 0 {
+		t.Error("expected tryList to be cleared for the exhausted article")
+	}
+
+	// 2. Test plan.hopelessJobs side-effects (with callback)
+	var callbackJob string
+	opts := dispatchOpts{
+		onJobHopeless: func(jobID string) {
+			callbackJob = jobID
+		},
+	}
+	plan = dispatchPlan{
+		hopelessJobs: map[string]struct{}{
+			job.ID: {},
+		},
+	}
+	d.applyDispatchPlan(context.Background(), plan, opts)
+	if callbackJob != job.ID {
+		t.Errorf("expected hopeless callback to fire for %s, got %s", job.ID, callbackJob)
+	}
+
+	// 3. Test plan.hopelessJobs fallback (without callback -> should pause the job in queue)
+	plan = dispatchPlan{
+		hopelessJobs: map[string]struct{}{
+			job.ID: {},
+		},
+	}
+	d.applyDispatchPlan(context.Background(), plan, dispatchOpts{}) // no callback
+	snap := q.SnapshotJob(job.ID)
+	if snap == nil || snap.Status != constants.StatusPaused {
+		t.Errorf("expected job status to be Paused, got %+v", snap)
+	}
+}
+
