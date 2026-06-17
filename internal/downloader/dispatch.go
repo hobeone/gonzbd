@@ -564,9 +564,7 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 // next dispatch pass observes the cleared state and can fan out to
 // a fallback server if the try-list allows.
 func (d *Downloader) clearInFlight(jobID, messageID string) { //nolint:unparam // jobID kept for future per-job tracking
-	d.tracker.Lock()
-	defer d.tracker.Unlock()
-	d.tracker.DecrementInFlightLocked(messageID)
+	d.tracker.DecrementInFlight(messageID)
 }
 
 // unmarkTried removes serverIdx from an article's try-list, used
@@ -574,9 +572,7 @@ func (d *Downloader) clearInFlight(jobID, messageID string) { //nolint:unparam /
 // the dispatcher can hand the article back to the same server once
 // it recovers, or bounce it to another.
 func (d *Downloader) unmarkTried(jobID, messageID string, serverIdx int) { //nolint:unparam // jobID kept for future per-job tracking
-	d.tracker.Lock()
-	defer d.tracker.Unlock()
-	d.tracker.UnmarkTriedLocked(messageID, serverIdx)
+	d.tracker.UnmarkTried(messageID, serverIdx)
 }
 
 // clearTried removes an article's entire try-list entry, freeing
@@ -584,9 +580,7 @@ func (d *Downloader) unmarkTried(jobID, messageID string, serverIdx int) { //nol
 // decode error, or ErrNoServersLeft) and will never be dispatched
 // again.
 func (d *Downloader) clearTried(jobID, messageID string) { //nolint:unparam // jobID kept for future per-job tracking
-	d.tracker.Lock()
-	defer d.tracker.Unlock()
-	d.tracker.ClearTriedLocked(messageID)
+	d.tracker.ClearTried(messageID)
 }
 
 // managedConn encapsulates an NNTP connection and the synchronization
