@@ -7,11 +7,11 @@ import (
 	"time"
 )
 
-// Par2Caps describes the capabilities of the installed par2 binary,
+// Caps describes the capabilities of the installed par2 binary,
 // detected at startup via `par2 -h` / `par2 -V` output parsing.
 // SABnzbd uses similar detection in newsunpack.py to conditionally
 // add -N and -B flags.
-type Par2Caps struct {
+type Caps struct {
 	// SupportsNoDataSkipping is true when par2 supports -N (no data
 	// skipping during verification). This speeds up verification
 	// significantly for undamaged files.
@@ -35,9 +35,9 @@ type Par2Caps struct {
 // `par2 -h` and parsing the help output. The ctx should have a short
 // timeout since this runs at startup.
 //
-// Returns an empty Par2Caps (not nil) on failure — the caller can
+// Returns an empty Caps (not nil) on failure — the caller can
 // safely use zero-value caps.
-func DetectCapabilities(ctx context.Context, par2Bin string) Par2Caps {
+func DetectCapabilities(ctx context.Context, par2Bin string) Caps {
 	if par2Bin == "" {
 		par2Bin = "par2"
 	}
@@ -53,10 +53,10 @@ func DetectCapabilities(ctx context.Context, par2Bin string) Par2Caps {
 	help := string(out)
 
 	// Also try -V for version detection.
-	vOut, _ := exec.CommandContext(ctx, par2Bin, "-V").CombinedOutput() //nolint:gosec
+	vOut, _ := exec.CommandContext(ctx, par2Bin, "-V").CombinedOutput() //nolint:gosec // binary path from config
 	versionStr := strings.TrimSpace(string(vOut))
 
-	var caps Par2Caps
+	var caps Caps
 
 	// Detect -N support (no data skipping).
 	// par2cmdline-turbo help says "No data skipping" or shows "-N"

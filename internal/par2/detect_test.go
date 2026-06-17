@@ -12,7 +12,7 @@ func TestCapsArgs_NilCaps(t *testing.T) {
 
 func TestCapsArgs_NoDataSkippingOnly(t *testing.T) {
 	t.Parallel()
-	caps := &Par2Caps{SupportsNoDataSkipping: true}
+	caps := &Caps{SupportsNoDataSkipping: true}
 	args := capsArgs(caps, "/tmp/job")
 	if len(args) != 1 || args[0] != "-N" {
 		t.Errorf("expected [-N], got %v", args)
@@ -21,7 +21,7 @@ func TestCapsArgs_NoDataSkippingOnly(t *testing.T) {
 
 func TestCapsArgs_BasepathOnly(t *testing.T) {
 	t.Parallel()
-	caps := &Par2Caps{SupportsBasepath: true}
+	caps := &Caps{SupportsBasepath: true}
 	args := capsArgs(caps, "/tmp/job")
 	if len(args) != 2 || args[0] != "-B" || args[1] != "/tmp/job" {
 		t.Errorf("expected [-B /tmp/job], got %v", args)
@@ -30,7 +30,7 @@ func TestCapsArgs_BasepathOnly(t *testing.T) {
 
 func TestCapsArgs_Both(t *testing.T) {
 	t.Parallel()
-	caps := &Par2Caps{SupportsNoDataSkipping: true, SupportsBasepath: true}
+	caps := &Caps{SupportsNoDataSkipping: true, SupportsBasepath: true}
 	args := capsArgs(caps, "/data")
 	want := []string{"-N", "-B", "/data"}
 	if len(args) != len(want) {
@@ -45,7 +45,7 @@ func TestCapsArgs_Both(t *testing.T) {
 
 func TestCapsArgs_BasepathEmptyDir(t *testing.T) {
 	t.Parallel()
-	caps := &Par2Caps{SupportsBasepath: true}
+	caps := &Caps{SupportsBasepath: true}
 	args := capsArgs(caps, "")
 	if len(args) != 0 {
 		t.Errorf("expected no -B for empty dir, got %v", args)
@@ -54,7 +54,7 @@ func TestCapsArgs_BasepathEmptyDir(t *testing.T) {
 
 func TestCapsArgs_NoFlags(t *testing.T) {
 	t.Parallel()
-	caps := &Par2Caps{IsTurbo: true, Version: "0.9.0"}
+	caps := &Caps{IsTurbo: true, Version: "0.9.0"}
 	args := capsArgs(caps, "/tmp")
 	if len(args) != 0 {
 		t.Errorf("expected no args when neither -N nor -B supported, got %v", args)

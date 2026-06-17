@@ -18,7 +18,7 @@ import (
 // Accepted by buildStages so tests can inject fake results without spawning
 // real processes.
 type binaryProbe struct {
-	Par2Caps   par2.Par2Caps
+	Par2Caps   par2.Caps
 	UnrarInfo  unpack.UnrarInfo
 	SevenzInfo unpack.SevenzInfo
 }

@@ -18,7 +18,7 @@ import (
 const par2FileSizeLimit = 1 * 1024 * 1024 * 1024 // 1 GiB
 
 // newDecoderForDir handles setup and candidate file registration for a PAR2 decoder.
-func newDecoderForDir(ctx context.Context, log *slog.Logger, parfile, candidateDir string, onWarn, onInfo func(string), onUILine func(string)) (*par2engine.Decoder, error) {
+func newDecoderForDir(ctx context.Context, log *slog.Logger, parfile, candidateDir string, onWarn, onInfo, onUILine func(string)) (*par2engine.Decoder, error) {
 	engineLog := newPar2UILogger(log.With("component", "go_par2"), onUILine)
 
 	d, err := par2engine.NewDecoder(ctx, parfile, par2engine.DecoderOptions{
@@ -47,9 +47,9 @@ func newDecoderForDir(ctx context.Context, log *slog.Logger, parfile, candidateD
 // monitorProgress spawns a background goroutine to format and track progress
 // updates from a channel, calling onUpdate with formatted strings. It returns
 // the progress channel and a done channel to await completion.
-func monitorProgress(label string, onUpdate func(string)) (chan par2engine.Progress, chan struct{}) {
-	progress := make(chan par2engine.Progress, 100)
-	done := make(chan struct{})
+func monitorProgress(label string, onUpdate func(string)) (progress chan par2engine.Progress, done chan struct{}) {
+	progress = make(chan par2engine.Progress, 100)
+	done = make(chan struct{})
 	go func() {
 		for p := range progress {
 			onUpdate(fmt.Sprintf("[go_par2] %s... %.1f%%", label, p.Percent))

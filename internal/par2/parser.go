@@ -47,8 +47,8 @@ type FileDesc struct {
 	HasDuplicate bool   // true if another FileDesc shares this Hash16k
 }
 
-// Par2Set aggregates all information parsed from a PAR2 file's packets.
-type Par2Set struct {
+// ParsedSet aggregates all information parsed from a PAR2 file's packets.
+type ParsedSet struct {
 	SetID          [16]byte
 	SliceSize      uint64
 	Files          []FileDesc             // all file descriptions
@@ -80,9 +80,9 @@ var (
 
 const maxJunkScan = 64 * 1024 // max bytes to scan forward looking for magic
 
-// ParsePar2Set reads path (a .par2 file) and returns the full Par2Set with all
+// ParsePar2Set reads path (a .par2 file) and returns the full ParsedSet with all
 // packet types parsed.
-func ParsePar2Set(path string) (*Par2Set, error) {
+func ParsePar2Set(path string) (*ParsedSet, error) {
 	f, err := os.Open(path) //nolint:gosec // path is constructed from trusted readdir
 	if err != nil {
 		return nil, err
@@ -98,7 +98,7 @@ func ParsePar2Set(path string) (*Par2Set, error) {
 	}
 	fileSize := uint64(fi.Size()) //nolint:gosec // G115: guarded above
 
-	set := &Par2Set{
+	set := &ParsedSet{
 		FilesByID: make(map[[16]byte]*FileDesc),
 		By16k:     make(map[[16]byte]*FileDesc),
 	}
@@ -145,7 +145,7 @@ func ParsePar2Set(path string) (*Par2Set, error) {
 // readNextPacket reads the next valid packet from the par2 file.
 // It skips junk data by scanning for the magic sequence, validates packet length
 // and MD5 checksum, and returns the packet type and body bytes.
-func readNextPacket(f *os.File, fileSize uint64, header []byte) ([16]byte, []byte, error) {
+func readNextPacket(f *os.File, fileSize uint64, header []byte) (packetType [16]byte, body []byte, err error) {
 	for {
 		_, err := io.ReadFull(f, header)
 		if err != nil {
@@ -188,7 +188,7 @@ func readNextPacket(f *os.File, fileSize uint64, header []byte) ([16]byte, []byt
 
 // handlePacket parses the content of a single packet based on its type.
 func handlePacket(
-	set *Par2Set,
+	set *ParsedSet,
 	ifscPackets *[]ifscData,
 	packetType [16]byte,
 	header []byte,
@@ -233,7 +233,7 @@ func handlePacket(
 }
 
 // postProcessSet builds indices and reconstructs CRCs after parsing all packets.
-func postProcessSet(set *Par2Set, ifscPackets []ifscData) {
+func postProcessSet(set *ParsedSet, ifscPackets []ifscData) {
 	// Build FilesByID index.
 	for i := range set.Files {
 		set.FilesByID[set.Files[i].FileID] = &set.Files[i]
@@ -292,7 +292,7 @@ func parseIFSCBody(body []byte) *ifscData {
 
 // reconstructCRCs computes the per-file CRC32 from IFSC slice CRCs using
 // crc32util.Combine and crc32util.ZeroUnpad for the tail slice.
-func reconstructCRCs(set *Par2Set, ifscPackets []ifscData) {
+func reconstructCRCs(set *ParsedSet, ifscPackets []ifscData) {
 	for _, idata := range ifscPackets {
 		fd, ok := set.FilesByID[idata.fileID]
 		if !ok || fd.FileSize == 0 || len(idata.slices) == 0 {
@@ -326,7 +326,7 @@ func reconstructCRCs(set *Par2Set, ifscPackets []ifscData) {
 
 // buildBy16k populates set.By16k and sets HasDuplicate on files that share
 // the same Hash16k.
-func buildBy16k(set *Par2Set) {
+func buildBy16k(set *ParsedSet) {
 	// First pass: count occurrences.
 	counts := make(map[[16]byte]int)
 	for i := range set.Files {
@@ -388,7 +388,7 @@ func scanForMagic(f *os.File, magic []byte) (bool, error) {
 // header[16:32] = packet MD5
 // header[32:48] = recovery set ID
 // header[48:64] = packet type
-func validatePacketMD5(header []byte, body []byte) bool {
+func validatePacketMD5(header, body []byte) bool {
 	h := md5.New() //nolint:gosec // md5 is used for packet integrity by PAR2 spec
 	h.Write(header[32:48])
 	h.Write(header[48:64])

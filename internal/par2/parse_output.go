@@ -325,7 +325,8 @@ func parseFinalStateOrFailure(line string, ro *RepairOutput, inVerify, inExtraFi
 		return
 	}
 
-	if inExtraFiles {
+	switch {
+	case inExtraFiles:
 		// Rename detection: "File: "X" - is a match for "Y""
 		if m := isMatchForRE.FindStringSubmatch(line); len(m) == 3 {
 			oldName := m[1]
@@ -349,13 +350,13 @@ func parseFinalStateOrFailure(line string, ro *RepairOutput, inVerify, inExtraFi
 				ro.UsedForRepair = append(ro.UsedForRepair, m[1])
 			}
 		}
-	} else if !inVerify {
+	case !inVerify:
 		// Total recoverable files.
 		if m := recoverableFilesRE.FindStringSubmatch(line); len(m) == 2 {
 			n, _ := strconv.Atoi(m[1])
 			ro.RecoverableFiles = n
 		}
-	} else {
+	default:
 		// In the verify phase — count target files.
 		if m := targetRE.FindStringSubmatch(line); len(m) == 2 {
 			ro.VerifyNum++

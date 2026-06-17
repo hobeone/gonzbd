@@ -1,7 +1,8 @@
 package par2
 
 import (
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // MD5 is mandated by the PAR2 format, not security-sensitive
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -389,7 +390,7 @@ func ComputeHash16k(path string) ([16]byte, error) {
 
 	buf := make([]byte, 16*1024)
 	n, err := io.ReadFull(f, buf)
-	if err != nil && err != io.ErrUnexpectedEOF {
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return zero, err
 	}
 
