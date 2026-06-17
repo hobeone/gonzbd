@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/rarengine"
+
 	"github.com/hobeone/gonzbd/internal/rarheader"
 )
 
@@ -395,6 +397,112 @@ func TestGoUnRAR_OverwriteFilesTrue(t *testing.T) {
 	}
 	if string(data) == sentinel {
 		t.Error("file1.txt was NOT overwritten when OverwriteFiles=true")
+	}
+}
+
+// --- os.Root zip-slip regression tests for ExtractEntryRarengine ---
+
+// TestExtractEntryRarengine_Normal verifies that a normal entry is extracted
+// correctly when written through an os.Root.
+func TestExtractEntryRarengine_Normal(t *testing.T) {
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	fh := &rarengine.FileHeader{Name: "subdir/hello.txt"}
+	content := []byte("hello world")
+	destRel := "subdir/hello.txt"
+	destPath := filepath.Join(outDir, destRel)
+
+	if err := ExtractEntryRarengine(
+		context.Background(), root, outDir, destRel, destPath,
+		fh, strings.NewReader(string(content)), Options{}, slog.Default(),
+	); err != nil {
+		t.Fatalf("ExtractEntryRarengine: %v", err)
+	}
+
+	got, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Errorf("content = %q, want %q", got, content)
+	}
+}
+
+// TestExtractEntryRarengine_ZipSlip_SymlinkComponent verifies that os.Root
+// refuses to write through a symlinked path component inside the output dir
+// that resolves outside. This is the security case lexical SanitizeArchivePath
+// alone cannot catch: the relative path "link/evil.txt" looks safe lexically,
+// but "link" is a symlink to an external directory.
+func TestExtractEntryRarengine_ZipSlip_SymlinkComponent(t *testing.T) {
+	outDir := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "evil.txt")
+
+	// Plant a symlink inside outDir pointing out.
+	if err := os.Symlink(outside, filepath.Join(outDir, "link")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	fh := &rarengine.FileHeader{Name: "link/evil.txt"}
+	destRel := "link/evil.txt"
+	destPath := filepath.Join(outDir, destRel) // lexically inside, resolves outside
+
+	extractErr := ExtractEntryRarengine(
+		context.Background(), root, outDir, destRel, destPath,
+		fh, strings.NewReader("EVIL"), Options{}, slog.Default(),
+	)
+	if extractErr == nil {
+		t.Fatal("expected error: os.Root must refuse write through symlinked component")
+	}
+
+	// The victim outside the root must not have been created.
+	if _, statErr := os.Stat(victim); !os.IsNotExist(statErr) {
+		t.Fatal("SECURITY: file was created outside output dir via symlinked component")
+	}
+}
+
+// TestExtractEntryRarengine_ZipSlip_DotDot verifies that a dotdot path
+// (which SanitizeArchivePath should already catch) is also refused by
+// os.Root as defense-in-depth.
+func TestExtractEntryRarengine_ZipSlip_DotDot(t *testing.T) {
+	outDir := t.TempDir()
+	outside := t.TempDir()
+	_ = outside
+
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	fh := &rarengine.FileHeader{Name: "../escape.txt"}
+	// Intentionally bypass SanitizeArchivePath to test the root enforcement.
+	destRel := "../escape.txt"
+	destPath := filepath.Join(outDir, destRel)
+
+	extractErr := ExtractEntryRarengine(
+		context.Background(), root, outDir, destRel, destPath,
+		fh, strings.NewReader("EVIL"), Options{}, slog.Default(),
+	)
+	if extractErr == nil {
+		t.Fatal("expected error: os.Root must refuse dotdot path")
+	}
+
+	// Nothing must be written outside outDir.
+	escapePath := filepath.Join(filepath.Dir(outDir), "escape.txt")
+	if _, statErr := os.Stat(escapePath); !os.IsNotExist(statErr) {
+		t.Fatal("SECURITY: file was created outside output dir via dotdot path")
 	}
 }
 

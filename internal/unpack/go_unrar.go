@@ -14,6 +14,7 @@ import (
 
 	"github.com/hobeone/rarengine"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/rarheader"
 )
 
@@ -112,14 +113,19 @@ func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDi
 	return res, nil
 }
 
-// ExtractEntryRarengine writes a single rarengine entry to destPath within outDir.
-func ExtractEntryRarengine(ctx context.Context, outDir, destPath string, fh *rarengine.FileHeader, r io.Reader, opts Options, log *slog.Logger) error {
+// ExtractEntryRarengine writes a single rarengine entry through root, an
+// os.Root anchored at the extraction output directory. root must be opened by
+// the caller (once per extraction session) and closed after all entries have
+// been written. destRel is the sanitized path relative to root's base
+// directory (output of SanitizeArchivePath); destPath is the absolute path
+// (filepath.Join(outDir, destRel)) used only for skip-check logging.
+func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, destPath string, fh *rarengine.FileHeader, r io.Reader, opts Options, log *slog.Logger) error {
 	if fh.IsDir {
-		return os.MkdirAll(destPath, 0o750)
+		return root.MkdirAll(destRel, 0o750)
 	}
 
 	if !opts.OverwriteFiles {
-		if _, statErr := os.Stat(destPath); statErr == nil {
+		if _, statErr := root.Stat(destRel); statErr == nil {
 			log.Info("skipping existing file", "path", destPath)
 			if opts.OnLine != nil {
 				opts.OnLine("Skipping existing: " + fh.Name)
@@ -129,35 +135,31 @@ func ExtractEntryRarengine(ctx context.Context, outDir, destPath string, fh *rar
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o750); err != nil {
-		return fmt.Errorf("go_unrar: mkdir %s: %w", filepath.Dir(destPath), err)
-	}
-
-	out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // destPath sanitized by SanitizeArchivePath
+	out, err := fsutil.RootedOpenFile(root, destRel, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return fmt.Errorf("go_unrar: create %s: %w", destPath, err)
+		return fmt.Errorf("go_unrar: create %s: %w", destRel, err)
 	}
 	defer out.Close() //nolint:errcheck // best-effort close; write errors caught by contextCopy
 
 	if _, err := contextCopy(ctx, out, r); err != nil {
 		var errno syscall.Errno
 		if errors.As(err, &errno) && errno == syscall.ENOSPC {
-			return fmt.Errorf("go_unrar: disk full writing %s: %w", destPath, err)
+			return fmt.Errorf("go_unrar: disk full writing %s: %w", destRel, err)
 		}
-		return fmt.Errorf("go_unrar: write %s: %w", destPath, err)
+		return fmt.Errorf("go_unrar: write %s: %w", destRel, err)
 	}
 
 	if err := out.Close(); err != nil {
-		return fmt.Errorf("go_unrar: close %s: %w", destPath, err)
+		return fmt.Errorf("go_unrar: close %s: %w", destRel, err)
 	}
 
 	mode := fh.Mode() & 0o666
 	if mode != 0 && fh.HostOS != 0 {
-		_ = os.Chmod(destPath, mode)
+		_ = root.Chmod(destRel, mode)
 	}
 
 	if !opts.IgnoreUnrarDates && !fh.ModificationTime.IsZero() {
-		_ = os.Chtimes(destPath, fh.ModificationTime, fh.ModificationTime)
+		_ = root.Chtimes(destRel, fh.ModificationTime, fh.ModificationTime)
 	}
 
 	return nil
