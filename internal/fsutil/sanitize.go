@@ -3,7 +3,6 @@
 package fsutil
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -244,7 +243,7 @@ var maxAttempts = 10_000
 // if the file already exists on disk. Stops after 10,000 attempts to prevent
 // unbounded iteration on pathologically crowded directories.
 func GetUniqueFilename(path string) string {
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(path); err != nil {
 		return path
 	}
 
@@ -252,7 +251,7 @@ func GetUniqueFilename(path string) string {
 	base := path[:len(path)-len(ext)]
 	for i := 1; i <= maxAttempts; i++ {
 		newPath := fmt.Sprintf("%s.%d%s", base, i, ext)
-		if _, err := os.Stat(newPath); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(newPath); err != nil {
 			return newPath
 		}
 	}
