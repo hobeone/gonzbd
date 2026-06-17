@@ -687,8 +687,8 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 	// Body is already size-limited by the middleware's MaxBytesReader.
 	// Use a reasonable in-memory limit for multipart parsing; files
 	// larger than this are spilled to temp files on disk.
-	const maxMultipartMemory = 10 * 1024 * 1024 // 10 MiB
-	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil {
+	const maxMultipartMemory = 10 * 1024 * 1024                      // 10 MiB
+	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil { //nolint:gosec // body size bounded by MaxBytesReader middleware
 		s.respondError(w, http.StatusBadRequest, "parse multipart: "+err.Error())
 		return
 	}
@@ -731,11 +731,11 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts := types.FetchOptions{
-		Category: r.FormValue("cat"),
-		Password: r.FormValue("password"),
-		NzbName:  r.FormValue("nzbname"),
+		Category: r.FormValue("cat"),      //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Password: r.FormValue("password"), //nolint:gosec // body size bounded by MaxBytesReader middleware
+		NzbName:  r.FormValue("nzbname"),  //nolint:gosec // body size bounded by MaxBytesReader middleware
 		PP:       ppParam(r),
-		Script:   r.FormValue("script"),
+		Script:   r.FormValue("script"), //nolint:gosec // body size bounded by MaxBytesReader middleware
 		Priority: priorityParam(r),
 	}
 	ids, err := s.grabber.Fetch(r.Context(), urlStr, opts)
@@ -835,10 +835,10 @@ func (s *Server) enqueueNZBData(w http.ResponseWriter, r *http.Request, data []b
 
 	opts := queue.AddOptions{
 		Filename: filename,
-		Name:     r.FormValue("nzbname"),
-		Category: r.FormValue("cat"),
-		Script:   r.FormValue("script"),
-		Password: r.FormValue("password"),
+		Name:     r.FormValue("nzbname"),  //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Category: r.FormValue("cat"),      //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Script:   r.FormValue("script"),   //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Password: r.FormValue("password"), //nolint:gosec // body size bounded by MaxBytesReader middleware
 		PP:       ppParam(r),
 		Priority: priorityParam(r),
 		Logger:   s.log,
