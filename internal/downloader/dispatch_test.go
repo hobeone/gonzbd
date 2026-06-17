@@ -24,7 +24,7 @@ func newDispatchDownloader(servers []*Server) *Downloader {
 		log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 		servers:      servers,
 		workCh:       workCh,
-		tracker:      newMapTracker(),
+		tracker:      newDispatchTracker(),
 		connActivity: make(map[string]*ConnActivity),
 	}
 	ch := make(chan struct{})
@@ -606,10 +606,9 @@ func BenchmarkDownloader_Dispatch(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		d.tracker.Lock()
-		d.tracker.DecrementInFlightLocked(a.MessageID)
-		d.tracker.ClearTriedLocked(a.MessageID)
-		d.tracker.Unlock()
+		// Teardown state directly on the maps to avoid any tracker method/lock overhead.
+		delete(d.tracker.inFlight, a.MessageID)
+		delete(d.tracker.tryList, a.MessageID)
 		select {
 		case <-d.workCh["s1"]:
 		default:

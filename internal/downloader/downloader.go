@@ -240,7 +240,7 @@ type Downloader struct {
 	pauseCtx    context.Context //nolint:containedctx // pause lifecycle
 	pauseCancel context.CancelFunc
 
-	tracker dispatchTracker
+	tracker *dispatchTracker
 
 	// connActivityMu guards connActivity. Workers write their own
 	// entry via setConnActivity/clearConnActivity; ServerStatus()
@@ -289,7 +289,7 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		completions:      make(chan *ArticleResult, opts.CompletionsBuffer),
 		dispatchReady:    make(chan struct{}, 1),
 		limiter:          bpsmeter.NewLimiter(0),
-		tracker:          newMapTracker(),
+		tracker:          newDispatchTracker(),
 		connActivity:     make(map[string]*ConnActivity),
 		maxArtTries:      opts.MaxArtTries,
 		maxArtOpt:        opts.MaxArtOpt,

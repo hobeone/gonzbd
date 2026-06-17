@@ -382,9 +382,7 @@ func TestDownloaderTryListCleanedOnSuccess(t *testing.T) {
 	var tryListLen, inFlightLen int
 	deadline := time.After(2 * time.Second)
 	for {
-		d.tracker.Lock()
-		tryListLen, inFlightLen = d.tracker.LenLocked()
-		d.tracker.Unlock()
+		tryListLen, inFlightLen = d.tracker.Len()
 		if tryListLen == 0 && inFlightLen == 0 {
 			break
 		}
