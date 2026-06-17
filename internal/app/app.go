@@ -532,7 +532,9 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 			downloadDir = c.General.DownloadDir
 		})
 		path := filepath.Join(downloadDir, snap.Name)
-		_ = os.RemoveAll(path)
+		if err := safeDeleteDir(path, downloadDir); err != nil {
+			app.log.Warn("failed to delete job directory", "path", path, "err", err)
+		}
 	}
 	app.emitter.Broadcast(Event{Type: "queue_updated"})
 
@@ -554,7 +556,16 @@ func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteF
 		return fmt.Errorf("app: get history: %w", err)
 	}
 	if deleteFiles && entry.Path != "" {
-		_ = os.RemoveAll(entry.Path)
+		var downloadDir, completeDir string
+		app.config.WithRead(func(c *config.Config) {
+			downloadDir = c.General.DownloadDir
+			completeDir = c.General.CompleteDir
+		})
+		// A history job's files may live under the complete dir (finished)
+		// or the download dir (failed); allow either, refuse anything else.
+		if err := safeDeleteDir(entry.Path, completeDir, downloadDir); err != nil {
+			app.log.Warn("failed to delete history job directory", "path", entry.Path, "err", err)
+		}
 	}
 	if _, err := app.historyRepo.Delete(ctx, id); err != nil {
 		return err
