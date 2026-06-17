@@ -797,14 +797,14 @@ func TestInjectPostProcJobs_Internal(t *testing.T) {
 
 	t.Run("no queue server", func(t *testing.T) {
 		sNoQueue := Server{}
-		slots, count, bytes := sNoQueue.injectPostProcJobs(nil, 0, 0, "", "", "", false)
+		slots, count, bytes := sNoQueue.injectPostProcJobs(nil, 0, "", "", "", false)
 		if len(slots) != 0 || count != 0 || bytes != 0 {
 			t.Errorf("expected empty, got %v, %v, %v", slots, count, bytes)
 		}
 	})
 
 	t.Run("default injects PP job only", func(t *testing.T) {
-		slots, count, bytes := s.injectPostProcJobs(nil, 0, 0, "", "", "", false)
+		slots, count, bytes := s.injectPostProcJobs(nil, 0, "", "", "", false)
 		if len(slots) != 1 {
 			t.Fatalf("expected 1 injected slot, got %d", len(slots))
 		}
@@ -827,35 +827,35 @@ func TestInjectPostProcJobs_Internal(t *testing.T) {
 	})
 
 	t.Run("category filter mismatch", func(t *testing.T) {
-		slots, _, _ := s.injectPostProcJobs(nil, 0, 0, "movies", "", "", false)
+		slots, _, _ := s.injectPostProcJobs(nil, 0, "movies", "", "", false)
 		if len(slots) != 0 {
 			t.Errorf("expected 0 slots on category mismatch, got %v", slots)
 		}
 	})
 
 	t.Run("failedOnly skips PP", func(t *testing.T) {
-		slots, _, _ := s.injectPostProcJobs(nil, 0, 0, "", "", "", true)
+		slots, _, _ := s.injectPostProcJobs(nil, 0, "", "", "", true)
 		if len(slots) != 0 {
 			t.Errorf("expected 0 slots on failedOnly, got %v", slots)
 		}
 	})
 
 	t.Run("status filter mismatch", func(t *testing.T) {
-		slots, _, _ := s.injectPostProcJobs(nil, 0, 0, "", "Downloading", "", false)
+		slots, _, _ := s.injectPostProcJobs(nil, 0, "", "Downloading", "", false)
 		if len(slots) != 0 {
 			t.Errorf("expected 0 slots on status mismatch, got %v", slots)
 		}
 	})
 
 	t.Run("search query", func(t *testing.T) {
-		slots, _, _ := s.injectPostProcJobs(nil, 0, 0, "", "", "Show", false)
+		slots, _, _ := s.injectPostProcJobs(nil, 0, "", "", "Show", false)
 		if len(slots) != 1 {
 			t.Errorf("expected 1 slot on query 'Show', got %v", slots)
 		}
 
 		var count int
 		var bytes int64
-		slots, count, bytes = s.injectPostProcJobs(nil, 0, 0, "", "", "debian", false)
+		slots, count, bytes = s.injectPostProcJobs(nil, 0, "", "", "debian", false)
 		_ = count
 		_ = bytes
 		if len(slots) != 0 {

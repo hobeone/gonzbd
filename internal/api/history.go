@@ -145,7 +145,7 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	// Only inject for paginated listings (not nzo_ids lookups).
 	if nzoIDs == "" {
 		slots, totalCount, totalBytes = s.injectPostProcJobs(
-			slots, totalCount, totalBytes,
+			slots, totalCount,
 			catFilter, statusFilter, search, failedOnly,
 		)
 	}
@@ -233,16 +233,18 @@ func (s *Server) fetchEntriesByIDs(
 
 // injectPostProcJobs adds active post-processing jobs from the queue to the
 // history slots list, applying category, status, and search filters.
-// It returns the updated slots slice, updated totalCount, and updated totalBytes.
+// It returns the updated slots slice, updated totalCount, and the sum of TotalBytes
+// across all injected jobs.
 func (s *Server) injectPostProcJobs(
 	slots []historySlot,
 	totalCount int,
-	totalBytes int64,
 	catFilter, statusFilter, search string,
 	failedOnly bool,
-) ([]historySlot, int, int64) {
+) (updatedSlots []historySlot, updatedCount int, totalBytes int64) {
+	updatedSlots = slots
+	updatedCount = totalCount
 	if s.queue == nil {
-		return slots, totalCount, totalBytes
+		return
 	}
 	ppJobs := s.queue.Snapshot()
 	for _, j := range ppJobs {
@@ -274,7 +276,7 @@ func (s *Server) injectPostProcJobs(
 		}
 
 		totalBytes += j.TotalBytes
-		slots = append(slots, historySlot{
+		updatedSlots = append(updatedSlots, historySlot{
 			NzoID:        j.ID,
 			Name:         j.Name,
 			NZBName:      j.Filename,
@@ -286,9 +288,9 @@ func (s *Server) injectPostProcJobs(
 			DownloadTime: dlTime,
 			Completed:    0, // not yet completed
 		})
-		totalCount++ // include in total for pagination
+		updatedCount++ // include in total for pagination
 	}
-	return slots, totalCount, totalBytes
+	return
 }
 
 // historyDelete removes history entries. value= may be a CSV of NZO IDs,
@@ -301,7 +303,7 @@ func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deleteFiles := r.FormValue("delete_files") == "1" || r.FormValue("del_files") == "1"
+	deleteFiles := r.FormValue("delete_files") == "1" || r.FormValue("del_files") == "1" //nolint:gosec // body size bounded by MaxBytesReader middleware
 
 	var ids []string
 
