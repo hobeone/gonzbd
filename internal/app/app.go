@@ -55,6 +55,7 @@ type JobComplete struct {
 }
 
 // Downloader defines the interface for the Usenet article downloader.
+// Downloader defines the lifecycle and control interface for the Usenet article downloader.
 type Downloader interface {
 	Start(ctx context.Context) error
 	Stop() error
@@ -62,16 +63,23 @@ type Downloader interface {
 	SetSpeedLimit(bytesPerSec int64)
 	SetDispatchOptions(maxArtTries, maxArtOpt int, topOnly bool, propagationDelay time.Duration)
 	UnblockServer(name string) bool
-	ServerStatus() []downloader.ServerSnapshot
-	Speed() float64
-	SpeedLimit() int64
 	Pause()
 	Resume()
 	SetOnJobHopeless(cb func(jobID string))
 	DisconnectAll()
 }
 
-var _ Downloader = (*downloader.Downloader)(nil)
+// DownloaderStats defines the read-only observability interface for the downloader.
+type DownloaderStats interface {
+	Speed() float64
+	SpeedLimit() int64
+	ServerStatus() []downloader.ServerSnapshot
+}
+
+var (
+	_ Downloader      = (*downloader.Downloader)(nil)
+	_ DownloaderStats = (*downloader.Downloader)(nil)
+)
 
 // Application manages the download and post-processing pipeline.
 type Application struct {
@@ -86,6 +94,7 @@ type Application struct {
 	queue            *queue.Queue
 	historyRepo      *history.Repository
 	downloader       Downloader
+	downloaderStats  DownloaderStats
 	assembler        *assembler.Assembler
 	postProcessor    *postproc.PostProcessor
 	pipeline         *pipeline
@@ -203,7 +212,9 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		for i, sc := range serversConfig {
 			servers[i] = downloader.NewServer(sc)
 		}
-		app.downloader = downloader.New(q, servers, app.meter, app.buildDownloaderOptions(), log)
+		realDL := downloader.New(q, servers, app.meter, app.buildDownloaderOptions(), log)
+		app.downloader = realDL
+		app.downloaderStats = realDL
 	}
 
 	// Apply initial bandwidth limit from config.
@@ -408,12 +419,12 @@ func (app *Application) fireCompletionNotification(entry history.Entry) {
 func (app *Application) Queue() *queue.Queue { return app.queue }
 
 // Speed returns the current aggregate download speed in bytes/sec, or 0
-// when downloading is idle or the downloader has not been wired yet.
+// when downloading is idle or the downloader stats interface has not been wired yet.
 func (app *Application) Speed() float64 {
-	if app.downloader == nil {
+	if app.downloaderStats == nil {
 		return 0
 	}
-	return app.downloader.Speed()
+	return app.downloaderStats.Speed()
 }
 
 // AddJob validates, deduplicates, and enqueues a new download job. If force
@@ -1237,7 +1248,12 @@ func (app *Application) buildDownloaderOptions() downloader.Options {
 
 // WithDownloader returns an option that overrides the Application's downloader.
 func WithDownloader(d Downloader) func(*Application) {
-	return func(a *Application) { a.downloader = d }
+	return func(a *Application) {
+		a.downloader = d
+		if ds, ok := d.(DownloaderStats); ok {
+			a.downloaderStats = ds
+		}
+	}
 }
 
 // WithLogger returns an option that overrides the Application's logger.
@@ -1357,8 +1373,8 @@ func (app *Application) UnblockServer(name string) bool {
 func (app *Application) ServerStatus() []downloader.ServerSnapshot {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	if app.downloader != nil {
-		return app.downloader.ServerStatus()
+	if app.downloaderStats != nil {
+		return app.downloaderStats.ServerStatus()
 	}
 	return nil
 }

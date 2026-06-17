@@ -56,15 +56,22 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 			return
 		case <-ticker.C:
 			remaining := app.queue.TotalRemainingBytes()
-			speed := app.downloader.Speed()
+			var speed float64
+			var limit int64
+			var servers []downloader.ServerSnapshot
+			if app.downloaderStats != nil {
+				speed = app.downloaderStats.Speed()
+				limit = app.downloaderStats.SpeedLimit()
+				servers = app.downloaderStats.ServerStatus()
+			}
 			app.emitter.Broadcast(Event{
 				Type:          "metrics",
 				Speed:         int64(speed),
 				Remaining:     remaining,
-				SpeedLimit:    app.downloader.SpeedLimit(),
+				SpeedLimit:    limit,
 				BandwidthMax:  app.bandwidthMax.Load(),
 				BandwidthPerc: int(app.bandwidthPerc.Load()),
-				Servers:       app.downloader.ServerStatus(),
+				Servers:       servers,
 			})
 			if speed > 0 {
 				app.emitter.Broadcast(Event{Type: "queue_updated"})

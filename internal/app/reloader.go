@@ -106,6 +106,7 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 		return err
 	}
 	app.downloader = newDownloader
+	app.downloaderStats = newDownloader
 	app.pipeline.setCompletions(newDownloader.Completions())
 	return nil
 }
