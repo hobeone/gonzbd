@@ -502,7 +502,7 @@ func TestApplyDispatchPlan_IdleDisconnect(t *testing.T) {
 	plan := dispatchPlan{
 		dispatched: 1,
 	}
-	d.applyDispatchPlan(context.Background(), plan)
+	d.applyDispatchPlan(context.Background(), plan, dispatchOpts{})
 	select {
 	case <-ch:
 		t.Fatal("disconnect channel was closed when plan.dispatched > 0")
@@ -518,7 +518,7 @@ func TestApplyDispatchPlan_IdleDisconnect(t *testing.T) {
 	plan = dispatchPlan{
 		dispatched: 0,
 	}
-	d.applyDispatchPlan(context.Background(), plan)
+	d.applyDispatchPlan(context.Background(), plan, dispatchOpts{})
 	select {
 	case <-ch:
 		t.Fatal("disconnect channel was closed when queue has downloadable jobs")
@@ -532,7 +532,7 @@ func TestApplyDispatchPlan_IdleDisconnect(t *testing.T) {
 	plan = dispatchPlan{
 		dispatched: 0,
 	}
-	d.applyDispatchPlan(context.Background(), plan)
+	d.applyDispatchPlan(context.Background(), plan, dispatchOpts{})
 	select {
 	case <-ch:
 		// correct, it closed the channel!
