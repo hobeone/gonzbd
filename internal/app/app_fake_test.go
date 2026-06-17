@@ -157,26 +157,27 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 		Offset:    0,
 	}
 
-	// Wait for the job to complete and get removed/finalized or finish download
-	// Since we mock, we can check queue status or history status.
-	var entry *history.Entry
-	for start := time.Now(); time.Since(start) < 5*time.Second; {
-		entry, _ = application.GetHistory(t.Context(), job.ID)
-		if entry != nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	if entry == nil {
+	// Wait for post-processing to complete via the deterministic channel
+	// signal, not polling. Project anti-patterns forbid time.Sleep for
+	// synchronization.
+	select {
+	case <-application.PostProcComplete():
+	case <-time.After(5 * time.Second):
 		snap := application.Queue().SnapshotJob(job.ID)
 		if snap != nil {
-			t.Logf("Job in queue: Status=%v, PostProc=%v, IsComplete=%v, Files=%+v",
-				snap.Status, snap.PostProc, snap.IsComplete(), snap.Files)
-		} else {
-			t.Log("Job not found in queue either!")
+			t.Logf("Job in queue: Status=%v, PostProc=%v, IsComplete=%v",
+				snap.Status, snap.PostProc, snap.IsComplete())
 		}
-		t.Fatal("timed out waiting for job to complete in history")
+		t.Fatal("timed out waiting for PostProcComplete")
+	}
+
+	// PostProcComplete fired — the job should now be in history.
+	entry, err := application.GetHistory(t.Context(), job.ID)
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected job in history after PostProcComplete, got nil")
 	}
 
 	if entry.Status != string(constants.StatusCompleted) {
