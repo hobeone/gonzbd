@@ -266,7 +266,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 			_ = q.SetStatus(jobID, status)
 		},
 		OnOutput: func(jobID, tool, line string) {
-			app.emitter.Broadcast(Event{
+			app.emit(Event{
 				Type:  "postproc_output",
 				NzoID: jobID,
 				Tool:  tool,
@@ -348,7 +348,7 @@ func (app *Application) persistAndCommit(log *slog.Logger, entry history.Entry, 
 	if err := queue.SaveJob(jobPath, job.Queue); err != nil {
 		log.Error("failed to save final job state; keeping job in queue",
 			"job", job.Queue.ID, "err", err)
-		app.emitter.Broadcast(Event{Type: "queue_updated"})
+		app.emit(Event{Type: "queue_updated"})
 		return err
 	}
 	if app.historyRepo != nil {
@@ -358,7 +358,7 @@ func (app *Application) persistAndCommit(log *slog.Logger, entry history.Entry, 
 				"job", job.Queue.ID, "err", err)
 			dbCancel()
 			_ = os.Remove(jobPath) // clean up the orphaned payload file
-			app.emitter.Broadcast(Event{Type: "queue_updated"})
+			app.emit(Event{Type: "queue_updated"})
 			return err
 		}
 		dbCancel()
@@ -372,7 +372,7 @@ func (app *Application) persistAndCommit(log *slog.Logger, entry history.Entry, 
 	}
 	// job_finalized signals a queue→history transition so both stores
 	// refresh from a single trigger and reach the new state together.
-	app.emitter.Broadcast(Event{Type: "job_finalized", NzoID: job.Queue.ID})
+	app.emit(Event{Type: "job_finalized", NzoID: job.Queue.ID})
 	return nil
 }
 
@@ -497,7 +497,7 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	if err := app.queue.Add(job); err != nil {
 		return fmt.Errorf("app: add to queue: %w", err)
 	}
-	app.emitter.Broadcast(Event{Type: "queue_updated"})
+	app.emit(Event{Type: "queue_updated"})
 	app.log.Info("job added", "name", job.Name, "id", job.ID, "status", addStatus)
 	return nil
 }
@@ -536,7 +536,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 			app.log.Warn("failed to delete job directory", "path", path, "err", err)
 		}
 	}
-	app.emitter.Broadcast(Event{Type: "queue_updated"})
+	app.emit(Event{Type: "queue_updated"})
 
 	// Disconnect NNTP servers if no downloadable jobs remain.
 	if !app.queue.HasDownloadableJobs() {
@@ -570,7 +570,7 @@ func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteF
 	if _, err := app.historyRepo.Delete(ctx, id); err != nil {
 		return err
 	}
-	app.emitter.Broadcast(Event{Type: "history_updated"})
+	app.emit(Event{Type: "history_updated"})
 	return nil
 }
 
@@ -773,7 +773,7 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 	if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
 		return
 	}
-	app.emitter.Broadcast(Event{Type: "queue_updated"})
+	app.emit(Event{Type: "queue_updated"})
 
 	// DirectUnpack: feed completed RAR volumes to the unpacker for
 	// streaming extraction during download.
@@ -830,7 +830,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	}
 	app.log.Info("on-demand par2: repair needed, fetching recovery volumes",
 		"job", jobID, "volumes", len(idxs), "reason", reason)
-	app.emitter.Broadcast(Event{Type: "queue_updated"})
+	app.emit(Event{Type: "queue_updated"})
 	return true
 }
 
@@ -1200,8 +1200,8 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 		return err
 	}
 	_, _ = app.historyRepo.Delete(ctx, jobID)
-	app.emitter.Broadcast(Event{Type: "queue_updated"})
-	app.emitter.Broadcast(Event{Type: "history_updated"})
+	app.emit(Event{Type: "queue_updated"})
+	app.emit(Event{Type: "history_updated"})
 	snap := app.queue.SnapshotJob(jobID)
 	if snap != nil && snap.IsComplete() {
 		app.maybeFinalize(jobID, failMsgForJob(snap))
