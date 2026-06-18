@@ -355,11 +355,15 @@ func ParseFileDescriptions(path string) ([]FileDesc, error) {
 }
 
 // scanForMagic scans forward up to maxJunkScan bytes to find the next magic.
-// Put the last 7 bytes back (magic is 8 bytes, so partial overlap is possible)
-// by seeking back 7 bytes from current pos.
+// It is called after a 64-byte header read at offset P failed the magic check,
+// which only rules out a magic starting at P itself. The next possible start is
+// P+1, so rewind to P+1 before scanning: the cursor is at P+64 on entry, hence
+// seek back len(header)-1 = 63. Seeking back only 56 (= 64-8) would resume at
+// P+8 and skip candidate starts P+1..P+7, silently dropping any packet preceded
+// by 1-7 bytes of junk.
 // Returns true if magic is found, false if not found or on error.
 func scanForMagic(f *os.File, magic []byte) (bool, error) {
-	if _, seekErr := f.Seek(-56, io.SeekCurrent); seekErr != nil {
+	if _, seekErr := f.Seek(-63, io.SeekCurrent); seekErr != nil {
 		return false, seekErr
 	}
 	scanBuf := make([]byte, maxJunkScan)
@@ -372,8 +376,8 @@ func scanForMagic(f *os.File, magic []byte) (bool, error) {
 	idx := bytes.Index(scanBuf, magic)
 	if idx >= 0 {
 		// Seek to where magic starts, then let the loop re-read the header.
-		// Current position is (old_pos - 56 + n).
-		// We want to be at (old_pos - 56 + idx).
+		// Current position is (old_pos - 63 + n).
+		// We want to be at (old_pos - 63 + idx).
 		backtrack := int64(n - idx)
 		if _, seekErr := f.Seek(-backtrack, io.SeekCurrent); seekErr != nil {
 			return false, seekErr
