@@ -207,10 +207,10 @@ func buildFinalFileList(job *Job) []string {
 		if info != nil {
 			sz = info.Size()
 		}
-		totalSize += sz
 		if e.IsDir() {
 			lines = append(lines, fmt.Sprintf("  📁 %s/", e.Name()))
 		} else {
+			totalSize += sz
 			lines = append(lines, fmt.Sprintf("  %s (%s)", e.Name(), humanfmt.BytesSI(sz)))
 		}
 	}
