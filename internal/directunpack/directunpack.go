@@ -480,6 +480,8 @@ func (d *DirectUnpacker) startVolumeFeed(ctx context.Context, setname string, ma
 				return
 			}
 
+			d.log.Info("unpacking volume", "set", setname, "vol", vol, "path", filepath.Base(volPath))
+
 			select {
 			case volumesChan <- f:
 			case <-ctx.Done():
