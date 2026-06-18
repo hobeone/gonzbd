@@ -8,17 +8,17 @@ import (
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
-// contentEqual reports whether pathA and pathB have identical content.
-// knownHashOfA is the MD5-of-first-16KB already computed for pathA, avoiding
+// contentEqual reports whether relA and relB have identical content relative to root.
+// knownHashOfA is the MD5-of-first-16KB already computed for relA, avoiding
 // a redundant read. Files ≤ 16384 bytes are compared entirely via this hash
 // (which covers the whole file). Larger files fall back to a streaming
 // chunk-by-chunk comparison.
-func contentEqual(pathA, pathB string, knownHashOfA [16]byte) (bool, error) {
-	statA, err := os.Stat(pathA)
+func contentEqual(root *os.Root, relA, relB string, knownHashOfA [16]byte) (bool, error) {
+	statA, err := root.Stat(relA)
 	if err != nil {
 		return false, err
 	}
-	statB, err := os.Stat(pathB)
+	statB, err := root.Stat(relB)
 	if err != nil {
 		return false, err
 	}
@@ -26,7 +26,7 @@ func contentEqual(pathA, pathB string, knownHashOfA [16]byte) (bool, error) {
 		return false, nil
 	}
 
-	hashB, err := par2.ComputeHash16k(pathB)
+	hashB, err := par2.ComputeHash16kRoot(root, relB)
 	if err != nil {
 		return false, err
 	}
@@ -40,19 +40,19 @@ func contentEqual(pathA, pathB string, knownHashOfA [16]byte) (bool, error) {
 	}
 
 	// Larger files: stream both and compare chunk by chunk.
-	return streamEqual(pathA, pathB)
+	return streamEqual(root, relA, relB)
 }
 
-// streamEqual reads pathA and pathB in 32KB chunks and returns true if every
+// streamEqual reads relA and relB in 32KB chunks and returns true if every
 // byte is identical. Assumes callers have already verified equal sizes.
-func streamEqual(pathA, pathB string) (bool, error) {
-	fa, err := os.Open(pathA) //nolint:gosec // read-only open of paths validated inside deobfuscation
+func streamEqual(root *os.Root, relA, relB string) (bool, error) {
+	fa, err := root.Open(relA)
 	if err != nil {
 		return false, err
 	}
 	defer fa.Close() //nolint:errcheck // read-only file close error is safe to ignore
 
-	fb, err := os.Open(pathB) //nolint:gosec // read-only open of paths validated inside deobfuscation
+	fb, err := root.Open(relB)
 	if err != nil {
 		return false, err
 	}

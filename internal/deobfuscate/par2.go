@@ -104,7 +104,7 @@ func par2RenameFile(
 	}
 
 	// Calculate 16KB hash using the canonical par2 implementation.
-	hash, err := par2.ComputeHash16k(path)
+	hash, err := par2.ComputeHash16kRoot(root, e.Name())
 	if err != nil {
 		log.Debug("deobfuscate: failed to hash file", "path", path, "err", err)
 		return Rename{}, false, nil
@@ -124,7 +124,7 @@ func par2RenameFile(
 	newPath := filepath.Join(dir, relNewPath)
 
 	if relNewPath != relDst {
-		finalPath, skip := resolveConflictingRename(log, root, e.Name(), path, e.Name(), desiredPath, newPath, hash)
+		finalPath, skip := resolveConflictingRename(log, root, e.Name(), relDst, path, e.Name(), desiredPath, newPath, hash)
 		if skip {
 			return Rename{}, false, nil
 		}
@@ -150,6 +150,7 @@ func resolveConflictingRename(
 	log *slog.Logger,
 	root *os.Root,
 	relSrc string,
+	relDst string,
 	path string, // path of the obfuscated source file
 	name string, // entry.Name() for logging
 	desiredPath string, // the par2-recorded target (already exists)
@@ -159,7 +160,7 @@ func resolveConflictingRename(
 	// The par2 target already exists. Check whether it has the same
 	// content as the obfuscated file. If so, the obfuscated copy is a
 	// redundant duplicate — delete it rather than producing a .1 file.
-	identical, cerr := contentEqual(path, desiredPath, hash)
+	identical, cerr := contentEqual(root, relSrc, relDst, hash)
 	if cerr != nil {
 		log.Debug("deobfuscate: content check failed, keeping both files",
 			"obfuscated", name, "existing", filepath.Base(desiredPath), "err", cerr)

@@ -74,40 +74,101 @@ func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDi
 
 	log = log.With("component", "go_unrar_engine", "archive", archive.MainFile)
 
-	unpackOpts := rarengine.UnpackOptions{
-		Password:         opts.Password,
-		Logger:           log,
-		OneFolder:        opts.OneFolder,
-		OverwriteFiles:   opts.OverwriteFiles,
-		IgnoreUnrarDates: opts.IgnoreUnrarDates,
-		OnEntry: func(fh *rarengine.FileHeader) {
-			if opts.OnLine != nil {
-				opts.OnLine("Extracting  " + fh.Name)
-			}
-		},
-	}
-
-	files, err := rarengine.UnpackDir(ctx, archive.MainFile, outDir, unpackOpts)
+	root, err := os.OpenRoot(outDir)
 	if err != nil {
-		res.Reason = ClassifyRarEngineError(err)
-		return res, fmt.Errorf("go_unrar: unpack: %w", err)
+		return res, fmt.Errorf("go_unrar: open root: %w", err)
+	}
+	defer root.Close() //nolint:errcheck // close after all writes; not in a loop
+
+	vols, err := discoverRar5Volumes(archive.MainFile)
+	if err != nil {
+		res.Reason = FailMissingVolume
+		return res, fmt.Errorf("go_unrar: discover volumes: %w", err)
 	}
 
-	res.ExtractedFiles = files
-	res.CommandLine = fmt.Sprintf("go_unrar %s -> %s", archive.MainFile, outDir)
-
-	var outBuf strings.Builder
-	for _, f := range files {
-		displayPath := f
-		if filepath.IsAbs(f) {
-			if rel, err := filepath.Rel(outDir, f); err == nil && !strings.HasPrefix(rel, "..") {
-				displayPath = rel
-			} else {
-				displayPath = filepath.Base(f)
+	volumesChan := make(chan io.ReadCloser, len(vols))
+	for _, volPath := range vols {
+		vf, err := os.Open(volPath) //nolint:gosec // read-only open of discovered archive volume parts
+		if err != nil {
+			close(volumesChan)
+			for v := range volumesChan {
+				_ = v.Close()
 			}
+			res.Reason = FailMissingVolume
+			return res, fmt.Errorf("go_unrar: open volume %q: %w", volPath, err)
 		}
-		outBuf.WriteString("Extracting  " + displayPath + "\n")
+		volumesChan <- vf
 	}
+	close(volumesChan)
+
+	sd := rarengine.NewStreamDecompressor(volumesChan)
+	if opts.Password != "" {
+		sd.SetPassword(opts.Password)
+	}
+
+	var extractedFiles []string
+	var outBuf strings.Builder
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+
+		fh, err := sd.Next()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, rarengine.ErrNoNextVolume) {
+				break
+			}
+			res.Reason = ClassifyRarEngineError(err)
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("ERROR: corrupt archive header: %v", err))
+			}
+			return res, fmt.Errorf("go_unrar: read header: %w", err)
+		}
+
+		destRel, sanitizeErr := SanitizeArchivePath(fh.Name, opts.OneFolder)
+		if sanitizeErr != nil {
+			log.Warn("skipping entry with bad path", "raw_name", fh.Name, "err", sanitizeErr)
+			if opts.OnLine != nil {
+				opts.OnLine("Skipping bad path: " + fh.Name)
+			}
+			_, _ = io.Copy(io.Discard, sd)
+			continue
+		}
+
+		destPath := filepath.Join(outDir, destRel)
+
+		if opts.OneFolder && !opts.OverwriteFiles {
+			destPath = uniquePath(destPath)
+			// Recompute destRel and verify it stays inside outDir
+			rel, relErr := filepath.Rel(outDir, destPath)
+			if relErr != nil || !filepath.IsLocal(rel) {
+				return res, fmt.Errorf("go_unrar: uniquePath escaped outDir for %s", fh.Name)
+			}
+			destRel = rel
+		}
+
+		if err := ExtractEntryRarengine(ctx, root, outDir, destRel, destPath, fh, sd, opts, log); err != nil {
+			res.Reason = ClassifyRarEngineError(err)
+			if opts.OnLine != nil {
+				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", fh.Name, err))
+			}
+			return res, err
+		}
+
+		if !fh.IsDir {
+			extractedFiles = append(extractedFiles, destPath)
+			displayPath := destRel
+			outBuf.WriteString("Extracting  " + displayPath + "\n")
+		}
+
+		if opts.OnLine != nil {
+			opts.OnLine("Extracting  " + fh.Name)
+		}
+	}
+
+	res.ExtractedFiles = extractedFiles
+	res.CommandLine = fmt.Sprintf("go_unrar %s -> %s", archive.MainFile, outDir)
 	res.Output = outBuf.String()
 
 	return res, nil
@@ -198,4 +259,65 @@ func SanitizeArchivePath(name string, oneFolder bool) (string, error) {
 		return "", fmt.Errorf("archive path is empty after sanitization")
 	}
 	return name, nil
+}
+
+func discoverRar5Volumes(mainFile string) ([]string, error) {
+	if !strings.Contains(mainFile, ".part") {
+		return []string{mainFile}, nil
+	}
+
+	var prefix, suffix string
+	var numStr strings.Builder
+	var isZeroPadded bool
+
+	idx := strings.Index(mainFile, ".part")
+	if idx == -1 {
+		return []string{mainFile}, nil
+	}
+	prefix = mainFile[:idx+5]
+	remaining := mainFile[idx+5:]
+
+	for i, c := range remaining {
+		if c >= '0' && c <= '9' {
+			numStr.WriteString(string(c))
+		} else {
+			suffix = remaining[i:]
+			break
+		}
+	}
+
+	if numStr.String() == "" {
+		return []string{mainFile}, nil
+	}
+
+	isZeroPadded = len(numStr.String()) > 1 && numStr.String()[0] == '0'
+
+	var volumes []string
+	partNum := 1
+	for {
+		var volPath string
+		if isZeroPadded {
+			volPath = fmt.Sprintf("%s%0*d%s", prefix, len(numStr.String()), partNum, suffix)
+		} else {
+			volPath = fmt.Sprintf("%s%d%s", prefix, partNum, suffix)
+		}
+
+		if _, err := os.Stat(volPath); err != nil {
+			if os.IsNotExist(err) {
+				if partNum > 1 {
+					break
+				}
+				volPath = mainFile
+				if _, err := os.Stat(volPath); err == nil {
+					volumes = append(volumes, volPath)
+				}
+				break
+			}
+			return nil, err
+		}
+		volumes = append(volumes, volPath)
+		partNum++
+	}
+
+	return volumes, nil
 }

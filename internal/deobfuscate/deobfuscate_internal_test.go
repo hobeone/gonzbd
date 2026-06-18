@@ -90,7 +90,7 @@ func TestResolveConflictingRename(t *testing.T) {
 			t.Fatalf("failed to write desired file: %v", err)
 		}
 
-		finalPath, skip := resolveConflictingRename(log, root, "obfuscated.txt", obfuscatedPath, "obfuscated.txt", desiredPath, newPath, hash)
+		finalPath, skip := resolveConflictingRename(log, root, "obfuscated.txt", "desired.txt", obfuscatedPath, "obfuscated.txt", desiredPath, newPath, hash)
 		if !skip {
 			t.Error("expected skip=true for identical duplicate file")
 		}
@@ -119,7 +119,7 @@ func TestResolveConflictingRename(t *testing.T) {
 		handler := &recordHandler{}
 		recordLog := slog.New(handler)
 
-		finalPath, skip := resolveConflictingRename(recordLog, root, "obfuscated.txt", obfuscatedPath, "obfuscated.txt", desiredPath, newPath, hash)
+		finalPath, skip := resolveConflictingRename(recordLog, root, "obfuscated.txt", "desired.txt", obfuscatedPath, "obfuscated.txt", desiredPath, newPath, hash)
 		if !skip {
 			t.Error("expected skip=true even if remove fails")
 		}
@@ -151,7 +151,7 @@ func TestResolveConflictingRename(t *testing.T) {
 			t.Fatalf("failed to write desired file: %v", err)
 		}
 
-		finalPath, skip := resolveConflictingRename(log, root, "obfuscated.txt", obfuscatedPath, "obfuscated.txt", desiredPath, newPath, hash)
+		finalPath, skip := resolveConflictingRename(log, root, "obfuscated.txt", "desired.txt", obfuscatedPath, "obfuscated.txt", desiredPath, newPath, hash)
 		if skip {
 			t.Error("expected skip=false for different content conflict")
 		}
@@ -268,6 +268,12 @@ func TestContentEqualAndStreamEqual_Direct(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 
+	root, err := os.OpenRoot(tmp)
+	if err != nil {
+		t.Fatalf("failed to open root: %v", err)
+	}
+	defer root.Close()
+
 	// 1. Files with different sizes
 	f1 := filepath.Join(tmp, "f1.txt")
 	f2 := filepath.Join(tmp, "f2.txt")
@@ -278,7 +284,7 @@ func TestContentEqualAndStreamEqual_Direct(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	equal, err := contentEqual(f1, f2, [16]byte{})
+	equal, err := contentEqual(root, "f1.txt", "f2.txt", [16]byte{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +300,7 @@ func TestContentEqualAndStreamEqual_Direct(t *testing.T) {
 	}
 	hash3 := md5.Sum(content3)
 
-	equal, err = contentEqual(f3, f3, hash3)
+	equal, err = contentEqual(root, "f3.txt", "f3.txt", hash3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +309,7 @@ func TestContentEqualAndStreamEqual_Direct(t *testing.T) {
 	}
 
 	// 3. Small files (<=16KB), different hashes
-	equal, err = contentEqual(f3, f1, hash3)
+	equal, err = contentEqual(root, "f3.txt", "f1.txt", hash3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +332,7 @@ func TestContentEqualAndStreamEqual_Direct(t *testing.T) {
 	}
 	hash4 := md5.Sum(largeContent[:16384])
 
-	equal, err = contentEqual(f4, f5, hash4)
+	equal, err = contentEqual(root, "f4.txt", "f5.txt", hash4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +349,7 @@ func TestContentEqualAndStreamEqual_Direct(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	equal, err = contentEqual(f4, f6, hash4)
+	equal, err = contentEqual(root, "f4.txt", "f6.txt", hash4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +358,7 @@ func TestContentEqualAndStreamEqual_Direct(t *testing.T) {
 	}
 
 	// Test streamEqual directly
-	equal, err = streamEqual(f4, f5)
+	equal, err = streamEqual(root, "f4.txt", "f5.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +366,7 @@ func TestContentEqualAndStreamEqual_Direct(t *testing.T) {
 		t.Error("streamEqual expected true")
 	}
 
-	equal, err = streamEqual(f4, f6)
+	equal, err = streamEqual(root, "f4.txt", "f6.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +388,7 @@ func TestContentEqualAndStreamEqual_Direct(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash7 := md5.Sum(exactChunkContent[:16384])
-	equal, err = contentEqual(f7, f8, hash7)
+	equal, err = contentEqual(root, "f7.txt", "f8.txt", hash7)
 	if err != nil {
 		t.Fatal(err)
 	}

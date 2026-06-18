@@ -397,6 +397,26 @@ func ComputeHash16k(path string) ([16]byte, error) {
 	return md5.Sum(buf[:n]), nil //nolint:gosec // MD5 used for par2 compatibility, not security
 }
 
+// ComputeHash16kRoot computes the MD5 hash of the first 16KB of a file,
+// relative to an os.Root handle.
+func ComputeHash16kRoot(root *os.Root, relPath string) ([16]byte, error) {
+	var zero [16]byte
+
+	f, err := root.Open(relPath)
+	if err != nil {
+		return zero, err
+	}
+	defer f.Close() //nolint:errcheck // read-only
+
+	buf := make([]byte, 16*1024)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return zero, err
+	}
+
+	return md5.Sum(buf[:n]), nil //nolint:gosec // MD5 used for par2 compatibility, not security
+}
+
 // computeFileCRC32 computes the CRC32 (IEEE) of the entire file at path.
 // Used by Phase 4 of QuickCheck for the (CRC32, FileSize) fallback match.
 func computeFileCRC32(path string) (uint32, error) {
