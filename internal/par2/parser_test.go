@@ -1,11 +1,13 @@
 package par2
 
 import (
+	"bytes"
 	"crypto/md5" //nolint:gosec // md5 used for PAR2 spec packet integrity
 	"encoding/binary"
 	"hash/crc32"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -724,6 +726,101 @@ func TestScanForMagic(t *testing.T) {
 	}
 	if pos != 100 {
 		t.Errorf("cursor position = %d, want 100", pos)
+	}
+}
+
+// countParsablePackets walks a PAR2 file packet-by-packet via the parser's own
+// readNextPacket and returns how many valid packets it recovers. Counting raw
+// packets (rather than the deduplicated ParsedSet) is what makes a single
+// dropped packet observable: PAR2 files store redundant copies of critical
+// packets, so losing one copy may not change the final set.
+func countParsablePackets(t *testing.T, path string) int {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	header := make([]byte, 64)
+	n := 0
+	for {
+		if _, _, err := readNextPacket(f, uint64(fi.Size()), header); err != nil {
+			break
+		}
+		n++
+	}
+	return n
+}
+
+// TestScanForMagic_RecoversPacketAfterShortJunk proves the junk-skipping scan
+// recovers a packet preceded by 1–7 bytes of junk. The magic is 8 bytes; after
+// a 64-byte header read fails the magic check at offset P, the only ruled-out
+// start is P itself, so the rescan must resume at P+1 (seek back len(header)-1 =
+// 63). A seek back of 56 (= 64-8) instead resumes at P+8, skipping candidate
+// starts P+1..P+7 and silently dropping a packet whenever 1–7 junk bytes
+// precede it. Uses a real par2-generated file so the packet layout is genuine.
+func TestScanForMagic_RecoversPacketAfterShortJunk(t *testing.T) {
+	par2Path, err := exec.LookPath("par2")
+	if err != nil {
+		t.Skip("par2 binary not installed")
+	}
+
+	dir := t.TempDir()
+	dataFile := filepath.Join(dir, "data.bin")
+	// Enough data that the index .par2 holds several packets (we need a 2nd one).
+	payload := make([]byte, 64*1024)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	if err := os.WriteFile(dataFile, payload, 0o644); err != nil {
+		t.Fatalf("write data file: %v", err)
+	}
+
+	cmd := exec.Command(par2Path, "create", "-q", "-n1", "base.par2", "data.bin")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("par2 create failed: %v\n%s", err, out)
+	}
+
+	cleanPath := filepath.Join(dir, "base.par2")
+	clean, err := os.ReadFile(cleanPath)
+	if err != nil {
+		t.Fatalf("read par2 index: %v", err)
+	}
+
+	cleanCount := countParsablePackets(t, cleanPath)
+	if cleanCount < 2 {
+		t.Fatalf("expected the par2 index to hold >=2 packets, got %d", cleanCount)
+	}
+
+	// Offset of the SECOND packet's magic (the first is at offset 0). We inject
+	// junk immediately before it; packet 1 is read by its length field, so the
+	// parser lands exactly here and must scan to recover packet 2.
+	rel := bytes.Index(clean[len(magic):], magic)
+	if rel < 0 {
+		t.Fatalf("could not find a second PAR2 packet magic in the index file")
+	}
+	second := rel + len(magic)
+
+	for k := 1; k <= 7; k++ {
+		junked := make([]byte, 0, len(clean)+k)
+		junked = append(junked, clean[:second]...)
+		junked = append(junked, bytes.Repeat([]byte{0xFF}, k)...)
+		junked = append(junked, clean[second:]...)
+
+		junkPath := filepath.Join(dir, "junked.par2")
+		if err := os.WriteFile(junkPath, junked, 0o644); err != nil {
+			t.Fatalf("write junked par2: %v", err)
+		}
+
+		got := countParsablePackets(t, junkPath)
+		if got != cleanCount {
+			t.Errorf("with %d junk byte(s) before the 2nd packet: recovered %d packets, want %d (a packet was silently dropped)", k, got, cleanCount)
+		}
 	}
 }
 
