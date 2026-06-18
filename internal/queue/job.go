@@ -122,7 +122,8 @@ type Job struct {
 	// propagate across Usenet peers).
 	AvgAge time.Time `json:"avg_age"`
 
-	// Files holds the job's files in NZB source order.
+	// Files holds the job's files sorted by sortJobFiles (RAR volumes
+	// first in volume order, then others in NZB source order).
 	Files []JobFile `json:"files"`
 
 	// TotalBytes is the byte count the NZB claimed — sum of
@@ -515,6 +516,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 		}
 	}
 	job.RemainingBytes = job.TotalBytes
+	sortJobFiles(job.Files)
 	return job, nil
 }
 
