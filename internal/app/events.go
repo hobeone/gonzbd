@@ -51,6 +51,19 @@ type dummyEmitter struct{}
 
 func (d dummyEmitter) Broadcast(_ Event) {} //nocover: no-op interface stub
 
+// emit broadcasts e through the currently-registered emitter. The emitter
+// pointer is read under app.mu so a concurrent SetEmitter (e.g. a test swapping
+// in a fake) cannot race the read; Broadcast is called after releasing the lock
+// so a slow broadcast never blocks other app.mu holders (the "snapshot under
+// lock, release, then act" rule from AGENTS.md). emitter is never nil — it is
+// initialized to dummyEmitter and SetEmitter substitutes dummyEmitter for nil.
+func (app *Application) emit(e Event) {
+	app.mu.Lock()
+	em := app.emitter
+	app.mu.Unlock()
+	em.Broadcast(e)
+}
+
 // SetEmitter injects a broadcaster for real-time events.
 func (app *Application) SetEmitter(e EventEmitter) {
 	app.mu.Lock()
@@ -79,7 +92,7 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 				limit = app.downloaderStats.SpeedLimit()
 				servers = app.downloaderStats.ServerStatus()
 			}
-			app.emitter.Broadcast(Event{
+			app.emit(Event{
 				Type:          "metrics",
 				Speed:         int64(speed),
 				Remaining:     remaining,
@@ -89,7 +102,7 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 				Servers:       servers,
 			})
 			if speed > 0 {
-				app.emitter.Broadcast(Event{Type: "queue_updated"})
+				app.emit(Event{Type: "queue_updated"})
 			}
 		}
 	}
