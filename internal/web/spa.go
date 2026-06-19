@@ -3,6 +3,7 @@ package web
 import (
 	"io/fs"
 	"net/http"
+	"path"
 	"strings"
 )
 
@@ -43,8 +44,8 @@ func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		if path == "/" {
+		reqPath := r.URL.Path
+		if reqPath == "/" {
 			if authCheck != nil && !authCheck(w, r) {
 				return
 			}
@@ -55,7 +56,7 @@ func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http
 		}
 
 		// Strip leading slash for fs.Stat lookup.
-		clean := strings.TrimPrefix(path, "/")
+		clean := strings.TrimPrefix(reqPath, "/")
 		if _, err := fs.Stat(dist, clean); err == nil {
 			// Known static asset — serve without auth check.
 			// Vite-hashed assets (under /assets/) use content-hash
@@ -65,6 +66,15 @@ func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http
 				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			}
 			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		// A missing path with a file extension is a dead asset reference
+		// (404), not a client-side route -- SPA routes are always
+		// extension-less paths. Check before authCheck since a 404 for a
+		// non-existent asset shouldn't require authentication to learn.
+		if path.Ext(clean) != "" {
+			http.NotFound(w, r)
 			return
 		}
 
