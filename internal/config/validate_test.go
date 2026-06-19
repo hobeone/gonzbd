@@ -443,3 +443,172 @@ func TestDownloadConfig_InvalidCleanupListRegex(t *testing.T) {
 		t.Errorf("expected error to contain regexp compilation error message, got: %v", err)
 	}
 }
+
+// ---------- NotificationConfig.validate ----------
+
+func TestNotificationConfig_ValidateDirect(t *testing.T) {
+	t.Parallel()
+
+	// Empty/Disabled notifications should pass.
+	nEmpty := NotificationConfig{}
+	if err := nEmpty.validate(); err != nil {
+		t.Errorf("empty notifications config should pass, got: %v", err)
+	}
+
+	// Email Validations
+	t.Run("Email", func(t *testing.T) {
+		t.Parallel()
+
+		// Valid Email Config
+		n := NotificationConfig{
+			Email: EmailNotificationConfig{
+				Enable: true,
+				Host:   "smtp.example.com",
+				Port:   587,
+				From:   "sender@example.com",
+				To:     []string{"recipient@example.com"},
+				Events: []string{"DownloadStarted", "DownloadComplete"},
+			},
+		}
+		if err := n.validate(); err != nil {
+			t.Errorf("valid email config should pass, got: %v", err)
+		}
+
+		// Email Host empty
+		badHost := n
+		badHost.Email.Host = ""
+		if err := badHost.validate(); err == nil || !strings.Contains(err.Error(), "host") {
+			t.Errorf("expected host validation error, got: %v", err)
+		}
+
+		// Email Port out of range
+		badPort := n
+		badPort.Email.Port = 0
+		if err := badPort.validate(); err == nil || !strings.Contains(err.Error(), "port") {
+			t.Errorf("expected port validation error, got: %v", err)
+		}
+		badPort.Email.Port = 65536
+		if err := badPort.validate(); err == nil || !strings.Contains(err.Error(), "port") {
+			t.Errorf("expected port validation error, got: %v", err)
+		}
+
+		// Email From empty
+		badFrom := n
+		badFrom.Email.From = ""
+		if err := badFrom.validate(); err == nil || !strings.Contains(err.Error(), "from") {
+			t.Errorf("expected from validation error, got: %v", err)
+		}
+
+		// Email To empty slice or empty strings
+		badToSlice := n
+		badToSlice.Email.To = []string{}
+		if err := badToSlice.validate(); err == nil || !strings.Contains(err.Error(), "to") {
+			t.Errorf("expected to validation error for empty slice, got: %v", err)
+		}
+		badToStrings := n
+		badToStrings.Email.To = []string{"valid@example.com", "", "alsovalid@example.com"}
+		if err := badToStrings.validate(); err == nil || !strings.Contains(err.Error(), "to") {
+			t.Errorf("expected to validation error for empty string in slice, got: %v", err)
+		}
+
+		// Email Invalid Event
+		badEvent := n
+		badEvent.Email.Events = []string{"DownloadStarted", "InvalidEventName"}
+		if err := badEvent.validate(); err == nil || !strings.Contains(err.Error(), "events") {
+			t.Errorf("expected events validation error, got: %v", err)
+		}
+	})
+
+	// Apprise Validations
+	t.Run("Apprise", func(t *testing.T) {
+		t.Parallel()
+
+		// Valid Apprise with URL
+		nURL := NotificationConfig{
+			Apprise: AppriseNotificationConfig{
+				Enable: true,
+				URL:    "http://apprise.local",
+				Events: []string{"DiskFull"},
+			},
+		}
+		if err := nURL.validate(); err != nil {
+			t.Errorf("valid apprise config with URL should pass, got: %v", err)
+		}
+
+		// Valid Apprise with ServiceURL
+		nServiceURL := NotificationConfig{
+			Apprise: AppriseNotificationConfig{
+				Enable:     true,
+				ServiceURL: "pushed://user@service",
+				Events:     []string{"DiskFull"},
+			},
+		}
+		if err := nServiceURL.validate(); err != nil {
+			t.Errorf("valid apprise config with ServiceURL should pass, got: %v", err)
+		}
+
+		// Apprise URLs both empty
+		badBothEmpty := NotificationConfig{
+			Apprise: AppriseNotificationConfig{
+				Enable: true,
+			},
+		}
+		if err := badBothEmpty.validate(); err == nil || !strings.Contains(err.Error(), "url") {
+			t.Errorf("expected apprise url/service_url validation error, got: %v", err)
+		}
+
+		// Apprise Invalid Event
+		badEvent := nURL
+		badEvent.Apprise.Events = []string{"InvalidEvent"}
+		if err := badEvent.validate(); err == nil || !strings.Contains(err.Error(), "events") {
+			t.Errorf("expected apprise events validation error, got: %v", err)
+		}
+	})
+
+	// Script Validations
+	t.Run("Script", func(t *testing.T) {
+		t.Parallel()
+
+		// Valid Script
+		n := NotificationConfig{
+			Script: ScriptNotificationConfig{
+				Enable:  true,
+				Path:    "/path/to/script.sh",
+				Timeout: 10,
+				Events:  []string{"QueueDone"},
+			},
+		}
+		if err := n.validate(); err != nil {
+			t.Errorf("valid script config should pass, got: %v", err)
+		}
+
+		// Script Path empty
+		badPath := n
+		badPath.Script.Path = ""
+		if err := badPath.validate(); err == nil || !strings.Contains(err.Error(), "path") {
+			t.Errorf("expected script path validation error, got: %v", err)
+		}
+
+		// Script Timeout negative
+		badTimeout := n
+		badTimeout.Script.Timeout = -1
+		if err := badTimeout.validate(); err == nil || !strings.Contains(err.Error(), "timeout") {
+			t.Errorf("expected script timeout validation error, got: %v", err)
+		}
+
+		// Script Invalid Event
+		badEvent := n
+		badEvent.Script.Events = []string{"QueueDone", "InvalidEvent"}
+		if err := badEvent.validate(); err == nil || !strings.Contains(err.Error(), "events") {
+			t.Errorf("expected script events validation error, got: %v", err)
+		}
+	})
+}
+
+func TestConfigValidate_NotificationsWired(t *testing.T) {
+	t.Parallel()
+	cfg := mustDefault(t)
+	cfg.Notifications.Email.Enable = true
+	cfg.Notifications.Email.Host = "" // invalid email host
+	requireValidateError(t, cfg, "notifications")
+}

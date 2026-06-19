@@ -10,6 +10,7 @@ import (
 func (c *Config) ExpandPaths() {
 	c.General.expandPaths()
 	c.PostProc.expandPaths()
+	c.Notifications.expandPaths()
 }
 
 func (g *GeneralConfig) expandPaths() {
@@ -27,6 +28,10 @@ func (p *PostProcConfig) expandPaths() {
 	p.Par2Command = expandPath(p.Par2Command)
 	p.UnrarCommand = expandPath(p.UnrarCommand)
 	p.SevenzCommand = expandPath(p.SevenzCommand)
+}
+
+func (n *NotificationConfig) expandPaths() {
+	n.Script.Path = expandPath(n.Script.Path)
 }
 
 // expandPath expands environment variables ($VAR, ${VAR}) and replaces
