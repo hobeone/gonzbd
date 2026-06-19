@@ -229,7 +229,7 @@ const (
 // have resolved: if 80%+ failed, the download is likely DMCA'd or
 // expired and further downloading wastes bandwidth.
 //
-// Must be called under the queue's lock (read or write).
+// Must be called under the queue's write lock.
 func (j *Job) IsEarlyAbort() bool {
 	if j.EarlyAborted {
 		return false // already fired
