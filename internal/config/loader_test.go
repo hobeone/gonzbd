@@ -179,6 +179,65 @@ func TestDecode_FatalTypeError(t *testing.T) {
 	}
 }
 
+// ---------- server port normalization ----------
+
+// withServersYAML replaces the empty "servers: []" key that minimalYAML's
+// base config renders with the given servers block. minimalYAML's Default()
+// config already emits an explicit (empty) "servers:" key, so the plan's
+// originally-assumed append-only fixture would produce a duplicate "servers"
+// mapping key and fail to parse; replace instead of append.
+func withServersYAML(t *testing.T, serversBlock string) string {
+	t.Helper()
+	base := minimalYAML(t)
+	yaml := strings.Replace(base, "servers: []\n", serversBlock, 1)
+	if yaml == base {
+		t.Fatal("withServersYAML: \"servers: []\" not found in minimalYAML base; fixture assumption is stale")
+	}
+	return yaml
+}
+
+func TestDecode_ServerPortDefaultsPlain(t *testing.T) {
+	t.Parallel()
+	yaml := withServersYAML(t, "servers:\n  - name: s1\n    host: news.example.com\n    connections: 1\n")
+	cfg, _, err := decode(strings.NewReader(yaml))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(cfg.Servers) != 1 {
+		t.Fatalf("got %d servers, want 1", len(cfg.Servers))
+	}
+	if cfg.Servers[0].Port != 119 {
+		t.Errorf("Port = %d, want 119 (plain default)", cfg.Servers[0].Port)
+	}
+}
+
+func TestDecode_ServerPortDefaultsSSL(t *testing.T) {
+	t.Parallel()
+	yaml := withServersYAML(t, "servers:\n  - name: s1\n    host: news.example.com\n    connections: 1\n    ssl: true\n")
+	cfg, _, err := decode(strings.NewReader(yaml))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(cfg.Servers) != 1 {
+		t.Fatalf("got %d servers, want 1", len(cfg.Servers))
+	}
+	if cfg.Servers[0].Port != 563 {
+		t.Errorf("Port = %d, want 563 (ssl default)", cfg.Servers[0].Port)
+	}
+}
+
+func TestDecode_ServerPortExplicitNotOverridden(t *testing.T) {
+	t.Parallel()
+	yaml := withServersYAML(t, "servers:\n  - name: s1\n    host: news.example.com\n    connections: 1\n    port: 8119\n")
+	cfg, _, err := decode(strings.NewReader(yaml))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cfg.Servers[0].Port != 8119 {
+		t.Errorf("Port = %d, want 8119 (explicit value preserved)", cfg.Servers[0].Port)
+	}
+}
+
 // ---------- helper ----------
 
 // minimalYAML returns a YAML string that passes Validate() and is suitable

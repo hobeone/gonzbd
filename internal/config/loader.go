@@ -129,6 +129,15 @@ func (cfg *Config) applyNormalization() {
 	if cfg.Categories == nil {
 		cfg.Categories = []CategoryConfig{}
 	}
+	for i := range cfg.Servers {
+		if cfg.Servers[i].Port == 0 {
+			if cfg.Servers[i].SSL {
+				cfg.Servers[i].Port = 563
+			} else {
+				cfg.Servers[i].Port = 119
+			}
+		}
+	}
 }
 
 // decode is split out so tests can decode from in-memory buffers without
