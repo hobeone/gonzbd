@@ -1,52 +1,11 @@
 package queue
 
 import (
-	"path/filepath"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
+
+	"github.com/hobeone/gonzbd/internal/rarheader"
 )
-
-// rarPartPattern matches new-style multi-part RAR names: movie.part01.rar.
-var rarPartPattern = regexp.MustCompile(`(?i)(.+)\.part(\d+)\.rar$`)
-
-// rarMainPattern matches the legacy main volume: movie.rar (no .partNN).
-var rarMainPattern = regexp.MustCompile(`(?i)(.+)\.rar$`)
-
-// rarExtraPattern matches legacy extra volumes: movie.r00, movie.r01, …
-var rarExtraPattern = regexp.MustCompile(`(?i)(.+)\.r(\d+)$`)
-
-// analyzeRarSubject parses a file subject (or filename) into its RAR set name
-// and 1-based volume number. Returns ("", 0) for non-RAR files.
-// Mirrors directunpack.AnalyzeRarFilename — kept separate to avoid a
-// circular import between queue and directunpack.
-func analyzeRarSubject(subject string) (setname string, volume int) {
-	base := filepath.Base(subject)
-
-	if m := rarPartPattern.FindStringSubmatch(base); len(m) == 3 {
-		vol, err := strconv.Atoi(m[2])
-		if err != nil {
-			return "", 0
-		}
-		return strings.ToLower(m[1]), vol
-	}
-
-	// Legacy extra must be checked before legacy main (.r00 would also match .rar$).
-	if m := rarExtraPattern.FindStringSubmatch(base); len(m) == 3 {
-		n, err := strconv.Atoi(m[2])
-		if err != nil {
-			return "", 0
-		}
-		return strings.ToLower(m[1]), n + 2
-	}
-
-	if m := rarMainPattern.FindStringSubmatch(base); len(m) == 2 {
-		return strings.ToLower(m[1]), 1
-	}
-
-	return "", 0
-}
 
 // rarSortKey returns the sort key for a JobFile.
 // RAR volumes sort first (tier 0), ordered by (setname, volume).
@@ -58,7 +17,7 @@ type rarSortKey struct {
 }
 
 func fileRarSortKey(f JobFile) rarSortKey {
-	setname, vol := analyzeRarSubject(f.Subject)
+	setname, vol := rarheader.AnalyzeRarFilename(f.Subject)
 	if setname != "" {
 		return rarSortKey{tier: 0, setname: setname, vol: vol}
 	}
