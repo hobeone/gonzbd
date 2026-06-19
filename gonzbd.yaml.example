@@ -386,3 +386,40 @@ categories:
     script: None
     priority: 0
     dir: movies
+
+# Notifications configuration (optional).
+# controls notification sinks for system events.
+notifications:
+  # Email notification settings (SMTP).
+  email:
+    enable: false
+    host: "smtp.example.com"
+    port: 587
+    username: ""
+    password: ""
+    from: "gonzbd@example.com"
+    to:
+      - "admin@example.com"
+    use_tls: true
+    use_ssl: false
+    # List of events to notify on. Empty or omitted means all events.
+    # Valid events: DownloadStarted, DownloadComplete, DownloadFailed,
+    # PostProcessingComplete, PostProcessingFailed, DiskFull, QueueDone, Warning, Error.
+    events: []
+
+  # Apprise notifications.
+  apprise:
+    enable: false
+    # URL of a local Apprise API instance or similar service endpoint.
+    url: ""
+    service_url: ""
+    events: []
+
+  # Custom script notification.
+  script:
+    enable: false
+    # Path to the script. Can be relative to configuration dir or absolute.
+    # Environment variables and leading ~ are expanded.
+    path: ""
+    timeout: 30
+    events: []
