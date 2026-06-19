@@ -191,7 +191,7 @@ type Job struct {
 // articleByID returns the article with the given messageID, or nil if
 // not found. On first call it lazily builds an index over all articles
 // in the job so subsequent lookups are O(1) instead of O(files×articles).
-// Must be called under the queue's lock (read or write).
+// Must be called under the queue's write lock.
 func (j *Job) articleByID(messageID string) *JobArticle {
 	if j.artIdx == nil {
 		j.buildArtIndex()
