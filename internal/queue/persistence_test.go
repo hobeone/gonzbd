@@ -601,3 +601,31 @@ func TestLoadJob_RecomputesPending(t *testing.T) {
 		t.Errorf("loaded.Files[0].Pending = %d, want 3", loaded.Files[0].Pending)
 	}
 }
+
+func TestSave_SetsStateDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	q := New()
+	j := makeJob(t, "backup-cleanup", constants.NormalPriority)
+	if err := q.Add(j); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	jobPath := filepath.Join(dir, "jobs", j.ID+".json.gz")
+	if _, err := os.Stat(jobPath); err != nil {
+		t.Fatalf("expected job backup file to exist at %s, got err: %v", jobPath, err)
+	}
+
+	if err := q.Remove(j.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(jobPath); !os.IsNotExist(err) {
+		t.Errorf("expected job backup file to be deleted, but it still exists (err: %v)", err)
+	}
+}
+
