@@ -750,6 +750,30 @@ Each server is a subsection of `[servers]`:
   dayofweek = "*"      # 1-7 (1=Mon) or *
   action = "speedlimit" # Action name
 ```
+
+### 9.9 Notifications Settings
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `email.enable` | bool | `false` | Enable/disable email notifications |
+| `email.host` | string | | SMTP server hostname |
+| `email.port` | int | `0` | SMTP server port |
+| `email.username` | string | | SMTP server username |
+| `email.password` | string | | SMTP server password |
+| `email.from` | string | | Sender email address |
+| `email.to` | list | | Recipient email addresses |
+| `email.use_tls` | bool | `false` | Use explicit TLS (STARTTLS) |
+| `email.use_ssl` | bool | `false` | Use implicit SSL |
+| `email.events` | list | | List of subscribed event names (empty = all) |
+| `apprise.enable` | bool | `false` | Enable/disable Apprise notifications |
+| `apprise.url` | string | | Apprise API endpoint url |
+| `apprise.service_url` | string | | Apprise custom service url |
+| `apprise.events` | list | | List of subscribed event names (empty = all) |
+| `script.enable` | bool | `false` | Enable/disable custom script notifications |
+| `script.path` | path | | Path to executable script (env vars / ~ expanded) |
+| `script.timeout` | int | `30` | Timeout in seconds (0 = 30s default) |
+| `script.events` | list | | List of subscribed event names (empty = all) |
+
 ---
 
 ## 10. HTTP API
@@ -1008,11 +1032,11 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 
 ## 12. Directory Scanner
 
-### 13.1 Purpose
+### 12.1 Purpose
 
 Watches a configured directory for NZB files and automatically adds them to the queue.
 
-### 13.2 Accepted Formats
+### 12.2 Accepted Formats
 
 | Extension | Handling |
 |-----------|---------|
@@ -1021,7 +1045,7 @@ Watches a configured directory for NZB files and automatically adds them to the 
 | `.nzb.bz2` | Decompress, then add |
 | `.zip` | Extract NZB from archive, then add |
 
-### 13.3 Deduplication State
+### 12.3 Deduplication State
 
 Per file, tracked in `dirscan.json` (GoNZBD; SABnzbd used `watched_data2.sab`). GoNZBD's `FileState` records only:
 - `size`: File size in bytes
@@ -1031,19 +1055,19 @@ Per file, tracked in `dirscan.json` (GoNZBD; SABnzbd used `watched_data2.sab`). 
 
 A file is "stable" (ready to process) when its size, mtime, and ctime haven't changed between two consecutive scans.
 
-### 13.4 Category/Priority Inference
+### 12.4 Category/Priority Inference
 
 If the watched folder has subdirectories matching category names (case-insensitive), files placed in those subdirectories inherit that category's settings.
 
-### 13.5 Scan Interval
+### 12.5 Scan Interval
 
 Default: **5 seconds** (`dirscan_speed`). Uses asyncio for non-blocking directory traversal.
 
 ---
 
-## 14. Scheduler
+## 13. Scheduler
 
-### 14.1 Supported Actions
+### 13.1 Supported Actions
 
 | Action | Arguments | Description |
 |--------|-----------|-------------|
@@ -1064,7 +1088,7 @@ Default: **5 seconds** (`dirscan_speed`). Uses asyncio for non-blocking director
 | `enable_quota` | | Enable bandwidth quota |
 | `disable_quota` | | Disable bandwidth quota |
 
-### 14.2 Schedule Format
+### 13.2 Schedule Format
 
 Each schedule entry has:
 - `enabled`: bool
@@ -1076,15 +1100,15 @@ Each schedule entry has:
 
 Schedules run via a cron-like mechanism. Evaluation is minute-granularity.
 
-### 14.3 Server Resume Planning
+### 13.3 Server Resume Planning
 
 After a server penalty, the scheduler posts a single-fire event at `now + penalty_minutes` to call `plan_server(server_id, 0)` — clearing the penalty and re-enabling the server.
 
 ---
 
-## 15. Notifications
+## 14. Notifications
 
-### 15.1 Notification Events
+### 14.1 Notification Events
 
 | Event key | Trigger |
 |-----------|---------|
@@ -1104,7 +1128,7 @@ After a server penalty, the scheduler posts a single-fire event at `now + penalt
 
 Each notification service can be configured to receive any subset of event types.
 
-### 15.2 Notification Services
+### 14.2 Notification Services
 
 | Service | Platform | Config Section |
 |---------|----------|---------------|
@@ -1119,7 +1143,7 @@ Each notification service can be configured to receive any subset of event types
 
 **Apprise**: Single URL encodes service + credentials (e.g., `discord://token/channel_id`). Supports 100+ services. Go equivalent: use an Apprise HTTP gateway or individual service clients.
 
-### 15.3 Email Notifications
+### 14.3 Email Notifications
 
 - **SMTP**: plain or STARTTLS (`cfg.email_server`, port 25 or 587)
 - **SMTP_SSL**: TLS from connect (port 465)
@@ -1129,14 +1153,14 @@ Each notification service can be configured to receive any subset of event types
 
 ---
 
-## 16. Bandwidth Metering and Quotas
+## 15. Bandwidth Metering and Quotas
 
-### 16.1 Real-Time Speed
+### 15.1 Real-Time Speed
 
 - Current BPS computed as rolling average of recent N-second window
 - Displayed in queue status as `kbpersec` and formatted `speed`
 
-### 16.2 Speed Limiting
+### 15.2 Speed Limiting
 
 - `bandwidth_max`: Absolute ceiling in bytes/sec (or `"10M"` notation: k/m/g suffixes)
 - `bandwidth_perc`: Percentage of `bandwidth_max` to actually use (1-100)
@@ -1144,7 +1168,7 @@ Each notification service can be configured to receive any subset of event types
 - Applied by throttling the rate at which articles are dispatched to connections
 - Scheduler can change `speedlimit` at scheduled times
 
-### 16.3 Bandwidth Quota
+### 15.3 Bandwidth Quota
 
 | Setting | Description |
 |---------|-------------|
@@ -1158,7 +1182,7 @@ When quota is reached:
 2. Notification sent (`quota` event)
 3. Auto-resume at quota reset time via scheduler
 
-### 16.4 Statistics Tracking
+### 15.4 Statistics Tracking
 
 Per-server cumulative download stats stored in `bpsmeter.json` (GoNZBD; SABnzbd used `bpsmeter.sab`):
 - `bytes_today`, `bytes_this_week`, `bytes_this_month`, `bytes_total`
@@ -1166,9 +1190,9 @@ Per-server cumulative download stats stored in `bpsmeter.json` (GoNZBD; SABnzbd 
 
 ---
 
-## 17. Data Formats and Types
+## 16. Data Formats and Types
 
-### 17.1 NZB XML Format
+### 16.1 NZB XML Format
 
 NZB files conform to the NZB specification (DTD at `http://www.newzbin.com/DTD/nzb/`):
 
@@ -1206,7 +1230,7 @@ Key parsing:
 - `<segment number>` + `bytes`: Segment ordering and size
 - `<group>`: Newsgroup(s) to fetch from
 
-### 17.2 Internal ID Format
+### 16.2 Internal ID Format
 
 Job IDs (`nzo_id`): GoNZBD uses a bare 16-character lowercase hex string —
 8 random bytes hex-encoded, no prefix (e.g. `a1b2c3d47f8e2b09`). See
@@ -1216,12 +1240,12 @@ e.g. `SABnzbd_nzo_a1b2c3d4`; GoNZBD drops the prefix.)
 File IDs: GoNZBD does not expose a per-file `nzf_id` (the `delete_nzf` API
 action is not implemented). SABnzbd used `SABnzbd_nzf_<8 alnum>`.
 
-### 17.3 Size Notation
+### 16.3 Size Notation
 
 Human-readable sizes use binary prefixes (IEC): B, KB (1024), MB, GB, TB.
 API inputs accept: `"500M"`, `"2G"`, `"1024K"` (case-insensitive).
 
-### 17.4 Admin Files (State Persistence)
+### 16.4 Admin Files (State Persistence)
 
 These are the GoNZBD admin files (the SABnzbd originals are noted for reference).
 
@@ -1237,33 +1261,33 @@ These are the GoNZBD admin files (the SABnzbd originals are noted for reference)
 
 ---
 
-## 18. Security
+## 17. Security
 
-### 18.1 API Authentication
+### 17.1 API Authentication
 
 - **API key**: 16-character random alphanumeric string, generated on first run
 - **NZB key**: Separate key allowing NZB uploads without full API access
 - Keys stored in `gonzbd.yaml` in plaintext (protect file permissions)
 - Regeneration: POST to `api?mode=config&name=set_apikey`
 
-### 18.2 Web UI Authentication
+### 17.2 Web UI Authentication
 
 - **Username + password**: Stored as bcrypt hash (or plaintext legacy)
 - **Session cookie**: Set after successful login; HTTP-only
 - **HTTPS**: Self-signed cert generated via `certgen.py`; `cryptography` library used
 
-### 18.3 NNTP Password Handling
+### 17.3 NNTP Password Handling
 
 - Stored in config as plaintext (protected by file permissions)
 - NOT transmitted in log output (masked as `****`)
 
-### 18.4 Access Control
+### 17.4 Access Control
 
 - **Local ranges**: Requests from `127.0.0.1` and RFC 1918 ranges can be granted UI access without credentials (configurable)
 - **X-Forwarded-For**: Considered when `cfg.verify_host = true` (reverse proxy support)
 - **Config lock**: Prevent configuration changes without a separate PIN
 
-### 18.5 Certificate Generation
+### 17.5 Certificate Generation
 
 Self-signed TLS certificates generated via `cryptography` library:
 - 4096-bit RSA key
@@ -1274,11 +1298,11 @@ Self-signed TLS certificates generated via `cryptography` library:
 
 ---
 
-## 19. Suggested Agents for Spec Refinement
+## 18. Suggested Agents for Spec Refinement
 
 The following specialized agents or skills would produce a more accurate and complete specification for Go reimplementation:
 
-### 19.1 Protocol Verification Agent
+### 18.1 Protocol Verification Agent
 
 **Purpose**: Cross-reference the NNTP implementation against RFC 3977 (NNTP), RFC 4643 (AUTHINFO), and RFC 5536 (Article Format) to identify:
 - Any RFC-compliant behaviors that the spec above missed
@@ -1288,7 +1312,7 @@ The following specialized agents or skills would produce a more accurate and com
 **Skill to use**: `general-purpose` agent with web search + code grep  
 **Query**: "Compare sabnzbd/newswrapper.py NNTP handling against RFC 3977 section by section"
 
-### 19.2 Test Behavior Extractor Agent
+### 18.2 Test Behavior Extractor Agent
 
 **Purpose**: Read all tests in `tests/` to extract behavioral requirements that aren't obvious from the production code. Tests encode edge cases, known bugs, and regression scenarios.
 
@@ -1297,13 +1321,13 @@ The following specialized agents or skills would produce a more accurate and com
 **Skill to use**: `feature-dev:code-explorer` agent  
 **Output**: List of "the code must behave X in situation Y" requirements per subsystem
 
-### 19.3 yEnc Specification Agent
+### 18.3 yEnc Specification Agent
 
 **Purpose**: Produce a complete yEnc format spec including all edge cases (escape sequences, multi-part, CRC handling, malformed data tolerance). The current spec covers the happy path only.
 
 **Skill to use**: `general-purpose` with `WebSearch` for the yEnc specification document + code analysis of `sabnzbd/decoder.py`
 
-### 19.4 API Surface Completeness Agent
+### 18.4 API Surface Completeness Agent
 
 **Purpose**: Systematically enumerate every API parameter, response field, and edge case by:
 1. Reading `sabnzbd/api.py` completely (it's large)
@@ -1312,14 +1336,14 @@ The following specialized agents or skills would produce a more accurate and com
 **Skill to use**: `feature-dev:code-explorer`  
 **Output**: Complete API reference with all request parameters and response field schemas
 
-### 19.5 Integration Test Scenario Agent
+### 18.5 Integration Test Scenario Agent
 
 **Purpose**: The functional tests (`test_functional_*.py`) exercise end-to-end scenarios including downloads, post-processing, sorting, and API calls. Extract all test scenarios as requirements — these represent the "must work" acceptance criteria for the reimplementation.
 
 **Skill to use**: `pr-review-toolkit:pr-test-analyzer`  
 **Framing**: "Treat this as if the functional tests are the acceptance tests for a Go reimplementation. Document every scenario as a requirement."
 
-### 19.6 Performance Requirements Agent
+### 18.6 Performance Requirements Agent
 
 **Purpose**: The Python code has several explicit performance choices (256 KB buffers, 2 pipelined requests, 500 MB cache, 12-item assembler queue). A Go reimplementation may differ, but the agent should:
 - Extract all explicit tuning constants with their rationale
@@ -1328,7 +1352,7 @@ The following specialized agents or skills would produce a more accurate and com
 
 **Skill to use**: `python-development:python-performance-optimization` + `golang-performance`
 
-### 19.7 sabctools Interface Agent
+### 18.7 sabctools Interface Agent
 
 **Purpose**: `sabctools` is a C++ extension that SABnzbd relies on for yEnc decoding, CRC32, and SSL buffer handling. The Go reimplementation must match its behavior exactly. This agent should:
 - Locate the `sabctools` source (likely at `github.com/sabnzbd/sabctools`)
@@ -1337,7 +1361,7 @@ The following specialized agents or skills would produce a more accurate and com
 
 **Skill to use**: `general-purpose` with GitHub access + `WebFetch`
 
-### 19.8 Sorting / guessit Behavior Agent
+### 18.8 Sorting / guessit Behavior Agent
 
 **Purpose**: `guessit` is a Python library that parses media filenames into structured metadata (title, season, episode, year, quality, etc.). The sorting subsystem depends heavily on it. The Go reimplementation needs either:
 - A Go equivalent library (e.g., `github.com/nicholasgasior/gsfmt` or custom)
@@ -1346,7 +1370,7 @@ The following specialized agents or skills would produce a more accurate and com
 
 **Skill to use**: `general-purpose` with web search for Go media filename parsers + `guessit` documentation
 
-### 19.9 Migration Compatibility Agent
+### 18.9 Migration Compatibility Agent
 
 **Purpose**: Real users will migrate from SABnzbd (Python) to the Go reimplementation. This agent should:
 - Document exactly what needs to be migrated: queue format, history DB, config INI, bpsmeter stats

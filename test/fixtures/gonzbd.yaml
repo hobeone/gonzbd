@@ -120,7 +120,7 @@ categories:
     dir: TV
 
 # Notifications configuration (optional).
-# controls notification sinks for system events.
+# Controls notification sinks for system events.
 notifications:
   # Email notification settings (SMTP).
   email:
