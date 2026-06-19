@@ -4,7 +4,7 @@
 
 **Goal:** Port seven targeted improvements identified by comparing `gonzbd2` (v2, at `/home/hobe/software/gonzbd2`) against this repo (v1), adapting each to v1's architecture (`os.Root` sandboxing, queue/assembler decoupling, existing test idioms) rather than transliterating v2's code.
 
-**Architecture:** Each task is independent and touches a different subsystem. Tasks are TDD'd individually: write the failing test against current v1 behavior, watch it fail for the right reason, implement the minimal change, confirm green, run the package's full suite, commit. No task depends on another landing first — they can be executed in any order or in parallel by different workers. **Six of the seven are ready to implement; Task 6 is BLOCKED pending a user decision** (it requires a persistence-format change — see that task's section and the Self-Review Notes).
+**Architecture:** Each task is independent and touches a different subsystem. Tasks are TDD'd individually: write the failing test against current v1 behavior, watch it fail for the right reason, implement the minimal change, confirm green, run the package's full suite, commit. No task depends on another landing first — they can be executed in any order or in parallel by different workers. All seven are specified. Task 6 requires a persistence-format change (a new `JobFile.WriteCursor` field); the user approved Option 1 on 2026-06-18, so it is now ready alongside the rest.
 
 **Tech Stack:** Go 1.25, `gopkg.in/yaml.v3`, `github.com/pressly/goose/v3`, `modernc.org/sqlite`, standard `testing` package (table-driven, no mocking framework).
 
@@ -18,7 +18,7 @@
   ```
 - Red-Green discipline (AGENTS.md): every test must be written first and observed to fail for the right reason before the implementation lands. "Fails to compile because the function doesn't exist yet" counts as a valid RED for new functions/fields.
 - Do not run `gremlins` mutation testing as part of this plan's steps — it's a pre-push gate the user runs separately per AGENTS.md; each task's steps stop at green tests + lint clean.
-- v2 source is reference-only, at `/home/hobe/software/gonzbd2`. Never copy v2 code verbatim where it conflicts with v1's decided architecture. (Task 6 is the cautionary case: its byte-exactness depends on v2 persisting decoded article geometry, which v1 does not — see that task's Correctness Finding.)
+- v2 source is reference-only, at `/home/hobe/software/gonzbd2`. Never copy v2 code verbatim where it conflicts with v1's decided architecture. (Task 6 adapts v2's idea to a single persisted per-file cursor rather than v2's per-article decoded-geometry persistence.)
 
 ---
 
@@ -679,97 +679,406 @@ EOF
 
 ---
 
-### Task 6: Resumed write-cache coalescing stalls — BLOCKED, needs a persistence decision
+### Task 6: Resume write-cache coalescing via a persisted per-file WriteCursor (Option 1, APPROVED)
 
-> **Status: do not implement as part of this batch.** The original
-> single-field `InitialWriteCursor` approach is **incorrect** (see Correctness
-> Finding below), and every correct alternative changes the persisted queue
-> state — which AGENTS.md's Decision Protocol says **must be escalated to the
-> user** before implementation. This task is documented here so the finding
-> isn't lost, but it should be lifted into its own plan after the user picks an
-> approach. The other six tasks are independent and can land without it.
+**Files:**
+- Modify: `internal/queue/job.go` (add field to `JobFile`)
+- Modify: `internal/queue/queue.go` (add `SetFileWriteCursor`)
+- Modify: `internal/assembler/writecache.go` (add `initCursor`, `cursorFor`)
+- Modify: `internal/assembler/assembler.go` (add `FileInfo.InitialWriteCursor`, `Options.SetWriteCursor`, `pendingCursor`, wire them)
+- Modify: `internal/app/pipeline.go` (read `WriteCursor` into `FileInfo.InitialWriteCursor`)
+- Modify: `internal/app/app.go` (wire `SetWriteCursor: q.SetFileWriteCursor`)
+- Test: `internal/queue/queue_test.go`, `internal/assembler/writecache_test.go`, `internal/assembler/assembler_test.go`, `internal/app/pipeline_test.go`
 
-**The real bug (confirmed, worth fixing):** the write-coalescing cache
-(`internal/assembler/writecache.go`) tracks a per-file `writeCursor` initialized
-to 0 and only flushes a contiguous run starting *from that cursor*
-(`buildContiguousRun`, `writecache.go:109-145`). On a **resumed** download the
-already-downloaded prefix is `Done` and never re-dispatched
-(`CountUnfinishedArticles` excludes `Done`, `pipeline.go:360-366`), so the first
-article the assembler receives starts at some decoded offset > 0. The cache scans
-`fb.articles[fb.writeCursor]` from 0, never finds it, and `flushContiguous`
-returns `nil` forever — coalescing never engages for any resumed file; articles
-only leave the cache via the 90%-pressure flush or the completion drain. Data is
-still written correctly (no corruption); the optimization is simply dead on
-resume. v2 fixes this.
+**The bug (recap):** the write-coalescing cache initializes each file's `writeCursor` to 0 and only flushes contiguous runs starting from it. On a resumed download the already-downloaded prefix is `Done` and never re-dispatched, so the first article arrives at a decoded offset > 0; the cache scans `fb.articles[0]`, never finds it, and coalescing stalls forever for that file.
 
-**Correctness Finding (why the originally-proposed fix does not work):** the
-proposed value was `InitialWriteCursor = Σ art.Bytes` over the `Done` prefix.
-`art.Bytes` is the **NZB-declared encoded** segment size — the assembler itself
-documents this: preallocation uses `Σ art.Bytes` and the code comments
-(`assembler.go:179`, `:765`) state it is *"~2% larger than the actual decoded
-content"* and must be truncated away at completion. But the write cache is keyed
-by **decoded** offsets (`WriteRequest.Offset` comes from the decoder's yBegin
-header). So `Σ art.Bytes` overshoots the true decoded cursor by the cumulative
-yEnc overhead and can **never equal a cache key**. `buildContiguousRun` would
-look at `fb.articles[overshoot]`, find nothing, and stall exactly as before. The
-"safe estimate, falls back to current behavior" framing in the original draft is
-technically true but hides that the fix *never* engages — it would add a queue
-method, a `FileInfo` field, and pipeline plumbing for zero behavioral effect.
+**The approved design (Option 1):** persist the cache's contiguous write frontier (a decoded byte offset) as a new `JobFile.WriteCursor` field, advanced through a **batched** assembler callback that rides the existing 250ms `flush()` cadence (never per-article — AGENTS.md §7 hot-path rule). On resume the pipeline reads it back into `FileInfo.InitialWriteCursor`, and the assembler seeds the cache's per-file cursor from it.
 
-**Why v2 is correct and what it costs:** v2 persists the **decoded** offset and
-size of each article (`queue.SetArticleDecodedInfo`, called by the assembler when
-a range is durably written) and `queue.AdvanceWriteCursor` walks those persisted
-decoded offsets to compute a byte-exact resume cursor
-(`gonzbd2/internal/assembler/cache.go:35,213-229`, `assembler.go:637-642`). The
-exactness comes entirely from storing decoded geometry in the queue — which the
-v1 queue does not currently persist.
+**Why this is safe regardless of the value (load-bearing invariant — keep it true):** `WriteCursor` is a *non-load-bearing optimization hint*. What gets (re)written on resume is determined entirely by article `Done` flags (which gate re-dispatch), never by `WriteCursor`. The cache stores every buffered article and drains all of them to disk at file completion (`drainCacheForFile`) regardless of the cursor; an article whose offset is below the cursor simply isn't *coalesced* (it's still written). So a stale, too-high, or too-low cursor can only cost coalescing efficiency — it can never drop or corrupt data. Do not add any code path that *discards* an article based on its offset relative to the cursor (v2 has such a check; v1 must not grow one here), or this invariant breaks.
 
-**The two correct options (both require a persisted-state change → escalate):**
+**Interfaces:**
+- Produces: `JobFile.WriteCursor int64` (persisted, `json:"write_cursor,omitempty"`).
+- Produces: `(q *Queue) SetFileWriteCursor(jobID string, fileIdx int, cursor int64) error`.
+- Produces: `(wc *writeCache) initCursor(key fileKey, cursor int64)` and `(wc *writeCache) cursorFor(key fileKey) int64`.
+- Modifies: `assembler.FileInfo` gains `InitialWriteCursor int64`; `assembler.Options` gains `SetWriteCursor func(jobID string, fileIdx int, cursor int64) error`.
+- Consumes: pipeline reads `snap.Files[fileIdx].WriteCursor`; `app.go` wires `SetWriteCursor: q.SetFileWriteCursor`.
 
-1. **Per-file contiguous cursor (recommended — smaller).** Add a persisted
-   `WriteCursor int64` to `queue.JobFile`. The assembler reports the advanced
-   value through a *batched* callback (mirroring `MarkArticlesDone`, so the queue
-   write-lock is taken per-batch, not per-article — required by the hot-path
-   rules in AGENTS.md §7) whenever it advances `fb.writeCursor` past a flushed
-   contiguous run. `pipeline.registerFile` reads it back as
-   `FileInfo.InitialWriteCursor` on resume. Byte-exact because it stores the
-   actual decoded frontier the cache reached. Note: only meaningful when
-   `WriteCacheBytes > 0`; with caching off there is no coalescing to stall, so a
-   cursor of 0 is correct.
+#### Step group A — queue field + setter
 
-2. **Per-article decoded info (faithful v2 port — larger).** Persist decoded
-   `{offset,size}` per article and compute the cursor by walking the `Done`
-   prefix, as v2 does. More state and more plumbing; only worth it if a later
-   feature also needs per-article decoded geometry.
+- [ ] **Step 1: Failing test for `SetFileWriteCursor`** — add to `internal/queue/queue_test.go`:
 
-**Recommendation:** escalate using the AGENTS.md "Decision needed" format,
-recommend Option 1, and — once approved — write a dedicated plan for it with the
-batched-callback design spelled out and TDD'd (the byte-exactness and the
-batching both need their own failing tests). Do **not** fold it into this batch.
+```go
+func TestSetFileWriteCursor(t *testing.T) {
+	q := New()
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
+			{ID: "a1@x", Bytes: 100, Number: 1},
+			{ID: "a2@x", Bytes: 100, Number: 2},
+		}},
+	}}
+	job, err := NewJob(parsed, AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SetFileWriteCursor(job.ID, 0, 4096); err != nil {
+		t.Fatalf("SetFileWriteCursor: %v", err)
+	}
+	snap := q.SnapshotJob(job.ID)
+	if snap.Files[0].WriteCursor != 4096 {
+		t.Errorf("WriteCursor = %d, want 4096", snap.Files[0].WriteCursor)
+	}
+	if !q.IsDirty() {
+		t.Error("queue should be marked dirty after SetFileWriteCursor")
+	}
+}
 
-**Escalation draft to present to the user:**
-
+func TestSetFileWriteCursor_Errors(t *testing.T) {
+	q := New()
+	if err := q.SetFileWriteCursor("nope", 0, 1); err == nil {
+		t.Error("expected error for unknown job")
+	}
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "f", Bytes: 100, Articles: []nzb.Article{{ID: "a@x", Bytes: 100, Number: 1}}},
+	}}
+	job, _ := NewJob(parsed, AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
+	_ = q.Add(job)
+	if err := q.SetFileWriteCursor(job.ID, 5, 1); err == nil {
+		t.Error("expected error for out-of-range fileIdx")
+	}
+}
 ```
-Decision needed: how to persist the resume write-cursor for coalescing
 
-Context: the write cache never coalesces on resumed downloads because it
-restarts its per-file cursor at 0 while the real first article arrives at a
-decoded offset > 0. Fixing it byte-exactly requires persisting decoded write
-geometry in the queue state (a persistence-format change), which the Decision
-Protocol requires escalating.
+- [ ] **Step 2: Run → RED** (`SetFileWriteCursor` / `WriteCursor` undefined → compile failure).
+Run: `go test ./internal/queue/ -run TestSetFileWriteCursor -v`
 
-Options:
-1. Per-file WriteCursor on JobFile, advanced via a batched assembler callback —
-   smaller, byte-exact, no per-article state. Persisted-state change: one new
-   JobFile field.
-2. Per-article decoded {offset,size} (faithful v2 port) — larger, reusable if
-   other features need decoded geometry. Persisted-state change: per-article.
-3. Do nothing — accept that resumed files don't coalesce (data is still written
-   correctly; only the syscall-batching optimization is lost on resume).
+- [ ] **Step 3: Add the field** to `JobFile` in `internal/queue/job.go`, immediately after the `BytesDownloaded` field (keep it with the other per-file progress fields, NOT in the `json:"-"` transient group — it MUST persist):
 
-Recommendation: Option 1 — byte-exact with the least new persisted state and the
-least hot-path overhead.
+```go
+	// WriteCursor is the decoded byte offset up to which the assembler's
+	// coalescing cache has contiguously written this file. Persisted as a
+	// resume hint so the cache can restart coalescing from here instead of
+	// stalling at offset 0. Non-load-bearing: what gets (re)written is
+	// governed by article Done flags, so any stale value is safe, merely
+	// suboptimal. See assembler.FileInfo.InitialWriteCursor.
+	WriteCursor int64 `json:"write_cursor,omitempty"`
 ```
+
+- [ ] **Step 4: Add `SetFileWriteCursor`** to `internal/queue/queue.go` (place it right after `MarkArticlesDone`; mirror that method's lock + dirty pattern):
+
+```go
+// SetFileWriteCursor records the assembler's contiguous write frontier for a
+// file as a persisted resume hint (see JobFile.WriteCursor). Called from the
+// assembler's batched flush, never per-article.
+func (q *Queue) SetFileWriteCursor(jobID string, fileIdx int, cursor int64) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if fileIdx < 0 || fileIdx >= len(job.Files) {
+		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
+	}
+	job.Files[fileIdx].WriteCursor = cursor
+	q.dirty.Store(true)
+	return nil
+}
+```
+
+- [ ] **Step 5: GREEN + gates** — `go fix ./internal/queue/`, `goimports -w`, build, `go test -race ./internal/queue/...`, `golangci-lint run ./internal/queue/...`. Commit:
+```
+feat(queue): persist per-file WriteCursor resume hint
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+```
+
+#### Step group B — cache primitives
+
+- [ ] **Step 6: Failing tests** — add to `internal/assembler/writecache_test.go`:
+
+```go
+func TestWriteCacheInitCursorResumesFromOffset(t *testing.T) {
+	wc := newWriteCache(1 << 20)
+	key := fileKey{jobID: "j", fileIdx: 0}
+	wc.initCursor(key, 4096)
+	if wc.cursorFor(key) != 4096 {
+		t.Fatalf("cursorFor = %d, want 4096", wc.cursorFor(key))
+	}
+	artSize := 200 * 1024
+	wc.buffer(key, 4096, make([]byte, artSize))
+	if run := wc.flushContiguous(key); run != nil {
+		t.Fatalf("expected no flush below threshold, got offset %d", run.offset)
+	}
+	wc.buffer(key, 4096+int64(artSize), make([]byte, artSize))
+	wc.buffer(key, 4096+int64(2*artSize), make([]byte, artSize))
+	run := wc.flushContiguous(key)
+	if run == nil {
+		t.Fatal("expected a contiguous run from the initialized cursor")
+	}
+	if run.offset != 4096 {
+		t.Errorf("run.offset = %d, want 4096 (the initialized cursor, not 0)", run.offset)
+	}
+	if wc.cursorFor(key) != 4096+int64(3*artSize) {
+		t.Errorf("cursorFor after flush = %d, want %d", wc.cursorFor(key), 4096+int64(3*artSize))
+	}
+}
+
+func TestWriteCacheInitCursorNoopWhenDisabled(t *testing.T) {
+	wc := newWriteCache(0)
+	key := fileKey{jobID: "j", fileIdx: 0}
+	wc.initCursor(key, 4096)
+	if len(wc.perFile) != 0 {
+		t.Errorf("perFile should stay empty when disabled, got %d", len(wc.perFile))
+	}
+	if wc.cursorFor(key) != 0 {
+		t.Errorf("cursorFor on absent key = %d, want 0", wc.cursorFor(key))
+	}
+}
+
+func TestWriteCacheInitCursorDoesNotClobberExisting(t *testing.T) {
+	wc := newWriteCache(1 << 20)
+	key := fileKey{jobID: "j", fileIdx: 0}
+	wc.buffer(key, 0, []byte("data"))
+	wc.initCursor(key, 9999)
+	if wc.cursorFor(key) != 0 {
+		t.Errorf("cursorFor = %d, want 0 (initCursor must not clobber an existing buffer)", wc.cursorFor(key))
+	}
+}
+```
+
+- [ ] **Step 7: Run → RED** (`initCursor`/`cursorFor` undefined).
+Run: `go test ./internal/assembler/ -run TestWriteCacheInitCursor -v`
+
+- [ ] **Step 8: Implement** in `internal/assembler/writecache.go`, after `newWriteCache`:
+
+```go
+// initCursor pre-creates the file's buffer entry with the given starting
+// write cursor if one doesn't already exist. Called once when a file is first
+// registered so a resumed download (whose [0,cursor) range was already written
+// and won't be re-delivered) doesn't wait forever for an offset-0 article that
+// never arrives. No-op when caching is disabled or the entry already exists (a
+// fresh download's first buffer() call legitimately starts the cursor at 0).
+func (wc *writeCache) initCursor(key fileKey, cursor int64) {
+	if !wc.enabled() {
+		return
+	}
+	if _, ok := wc.perFile[key]; ok {
+		return
+	}
+	wc.perFile[key] = &fileBuf{articles: make(map[int64][]byte), writeCursor: cursor}
+}
+
+// cursorFor returns the file's current contiguous write frontier, or 0 if the
+// file has no buffer entry (caching disabled, or already drained).
+func (wc *writeCache) cursorFor(key fileKey) int64 {
+	if fb, ok := wc.perFile[key]; ok {
+		return fb.writeCursor
+	}
+	return 0
+}
+```
+
+- [ ] **Step 9: GREEN** — `go test ./internal/assembler/ -run TestWriteCacheInitCursor -v`, then full `go test -race ./internal/assembler/...`. (No commit yet — group C lands in the same commit as B since the cache primitives are only exercised once wired.)
+
+#### Step group C — assembler wiring
+
+- [ ] **Step 10: Failing test** — add to `internal/assembler/assembler_test.go`:
+
+```go
+func TestResumedFileCoalescesAndReportsCursor(t *testing.T) {
+	telemetry.Reset()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resumed.dat")
+
+	const cursor = int64(4096)
+	var gotJob string
+	var gotIdx int
+	var gotCursor int64
+	files := map[string]FileInfo{
+		"job1:0": {Path: path, TotalParts: 3, InitialWriteCursor: cursor},
+	}
+	opts := makeOpts(dir, files)
+	opts.WriteCacheBytes = 1 << 20
+	opts.SetWriteCursor = func(jobID string, fileIdx int, c int64) error {
+		gotJob, gotIdx, gotCursor = jobID, fileIdx, c
+		return nil
+	}
+	a := startAssembler(t, opts)
+
+	artSize := 200 * 1024 // 3 * 200KB = 600KB > 512KB contiguous threshold
+	for i := range 3 {
+		req := WriteRequest{
+			JobID: "job1", FileIdx: 0,
+			Offset: cursor + int64(i*artSize),
+			Data:   make([]byte, artSize),
+		}
+		if err := a.WriteArticle(t.Context(), req); err != nil {
+			t.Fatalf("WriteArticle: %v", err)
+		}
+	}
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Coalesced into a single disk write starting from the resumed cursor.
+	if got := telemetry.DiskWrites.Value(); got != 1 {
+		t.Errorf("DiskWrites = %d, want 1 (coalesced run from resumed cursor)", got)
+	}
+	// The advanced cursor was reported through the batched callback.
+	if gotJob != "job1" || gotIdx != 0 {
+		t.Errorf("SetWriteCursor got (%q,%d), want (job1,0)", gotJob, gotIdx)
+	}
+	if gotCursor != cursor+int64(3*artSize) {
+		t.Errorf("reported cursor = %d, want %d", gotCursor, cursor+int64(3*artSize))
+	}
+}
+```
+
+- [ ] **Step 11: Run → RED** (`FileInfo.InitialWriteCursor` and `Options.SetWriteCursor` undefined → compile failure).
+
+- [ ] **Step 12: Implement the wiring** in `internal/assembler/assembler.go`:
+
+(a) Add to `FileInfo` (after `ExpectedSize`):
+```go
+	// InitialWriteCursor seeds the write-coalescing cache's per-file cursor.
+	// Zero for a fresh download (file starts at byte 0). On resume the caller
+	// sets it to the file's persisted contiguous write frontier so coalescing
+	// doesn't stall waiting for an offset-0 article that was already written
+	// before the restart. See queue.JobFile.WriteCursor.
+	InitialWriteCursor int64
+```
+
+(b) Add to `Options` (after `WriteCacheBytes`):
+```go
+	// SetWriteCursor persists a file's advanced contiguous write frontier as a
+	// resume hint. Called from the worker's batched flush, never per-article.
+	// Optional; nil disables cursor persistence.
+	SetWriteCursor func(jobID string, fileIdx int, cursor int64) error
+```
+
+(c) Add the batch map to the `Assembler` struct (next to `pendingDone`/`pendingFailed`):
+```go
+	// pendingCursor holds the latest reported write cursor per file, flushed
+	// to Options.SetWriteCursor on the same cadence as pendingDone. Worker-owned.
+	pendingCursor map[fileKey]int64
+```
+
+(d) Initialize it in `New` (alongside `pendingDone`/`pendingFailed`):
+```go
+		pendingCursor: make(map[fileKey]int64),
+```
+
+(e) In `processRequest`, where the openFile entry is first created (right after `open[key] = f`), seed the cache cursor:
+```go
+		wc.initCursor(key, info.InitialWriteCursor)
+```
+
+(f) In `writeArticleOrBuffer`, in the cached branch, right after the contiguous run is successfully written (inside `if run := wc.flushContiguous(key); run != nil { ... }`, after the `WriteAt` succeeds), record the advanced cursor:
+```go
+				a.pendingCursor[key] = wc.cursorFor(key)
+```
+Place it after the successful `f.handle.WriteAt(run.data, run.offset)` (i.e. after the `if _, err := ...; err != nil { return false }` block, still inside the `run != nil` block). Do NOT record on the pressure-flush or drain paths — those delete the buffer and would report a misleading 0.
+
+(g) In `flush()`, after the existing pendingDone/pendingFailed loops and before the `clear(...)` calls, drain the cursor batch:
+```go
+	if a.opts.SetWriteCursor != nil {
+		for k, cur := range a.pendingCursor {
+			if err := a.opts.SetWriteCursor(k.jobID, k.fileIdx, cur); err != nil {
+				a.log.Debug("set write cursor (job already removed)",
+					"job", k.jobID, "fileidx", k.fileIdx, "error", err)
+			}
+		}
+	}
+	clear(a.pendingCursor)
+```
+(Add `clear(a.pendingCursor)` next to the existing `clear(a.pendingDone)` / `clear(a.pendingFailed)`. Also update `flush`'s early-return guard at the top — `if len(a.pendingDone) == 0 && len(a.pendingFailed) == 0` — to also check `&& len(a.pendingCursor) == 0`, so a cursor-only batch still flushes.)
+
+(h) In `finalizeFile`, drop any pending cursor for the now-complete file (it won't resume) — after `delete(open, key)`:
+```go
+	delete(a.pendingCursor, key)
+```
+
+- [ ] **Step 13: GREEN + gates** — `go fix ./internal/assembler/`, `goimports -w`, build, `go test -race ./internal/assembler/...`, `golangci-lint run ./internal/assembler/...`. Commit group B+C together:
+```
+feat(assembler): seed and persist write-coalescing cursor for resume
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+```
+
+#### Step group D — pipeline + app wiring
+
+- [ ] **Step 14: Failing test** — add to `internal/app/pipeline_test.go` (imports: `queue`, `nzb`, `fsutil`, `assembler`):
+
+```go
+func TestRegisterFile_SeedsInitialWriteCursorFromQueue(t *testing.T) {
+	q := queue.New()
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
+			{ID: "a1@x", Bytes: 100, Number: 1},
+			{ID: "a2@x", Bytes: 100, Number: 2},
+			{ID: "a3@x", Bytes: 100, Number: 3},
+		}},
+	}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SetFileWriteCursor(job.ID, 0, 4096); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &pipeline{
+		queue:       q,
+		downloadDir: t.TempDir(),
+		fileInfo:    make(map[fileKey]assembler.FileInfo),
+	}
+	if err := p.registerFile(job.ID, 0); err != nil {
+		t.Fatalf("registerFile: %v", err)
+	}
+	info := p.fileInfo[fileKey{jobID: job.ID, fileIdx: 0}]
+	if info.InitialWriteCursor != 4096 {
+		t.Errorf("InitialWriteCursor = %d, want 4096", info.InitialWriteCursor)
+	}
+}
+```
+
+- [ ] **Step 15: Run → RED** (`info.InitialWriteCursor` is 0 — nothing seeds it yet).
+
+- [ ] **Step 16: Implement** in `internal/app/pipeline.go`, in `registerFile`, where the `assembler.FileInfo{...}` literal is built — add the field:
+```go
+	info := assembler.FileInfo{
+		Path:               path,
+		TotalParts:         totalParts,
+		ExpectedSize:       snap.Files[fileIdx].Bytes,
+		InitialWriteCursor: snap.Files[fileIdx].WriteCursor,
+	}
+```
+Run `gofmt -w internal/app/pipeline.go` to realign the struct literal.
+
+- [ ] **Step 17: Wire the callback** in `internal/app/app.go`, in the `assembler.New(assembler.Options{...})` literal (after `MarkArticlesFailed: q.MarkArticlesFailed,`):
+```go
+		SetWriteCursor:     q.SetFileWriteCursor,
+```
+
+- [ ] **Step 18: GREEN + gates** — `go fix ./internal/app/`, `goimports -w`, `go build ./...`, `go test -race ./internal/app/... ./internal/queue/... ./internal/assembler/...`, `golangci-lint run ./internal/app/...`. Commit:
+```
+feat(app): wire resume write-cursor between queue and assembler
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+```
+
+#### Step group E — config doc sync
+
+- [ ] **Step 19:** `WriteCursor` is internal queue state, not a user config field, so no `gonzbd.yaml` / `sabnzbd_spec.md` §9 update is needed. (Persisted queue-state schema is documented in `docs/ARCHITECTURE.md`; the field is backward-compatible — old state files lack it and default to 0, i.e. fresh-download behavior.) No action; this step is the explicit confirmation that the config-doc-sync gate does not apply.
+
+---
+
 
 ---
 
@@ -1065,10 +1374,10 @@ EOF
 
 ## Self-Review Notes
 
-- **Spec coverage:** all seven tasks from the source request (numbered 2–8, preserved verbatim for traceability) have a corresponding section above. Six are ready to implement. **Task 6 is BLOCKED** — see its section for the correctness finding; it needs a user decision on a persistence change before it can be written.
+- **Spec coverage:** all seven tasks from the source request (numbered 2–8, preserved verbatim for traceability) have a corresponding section above and are ready to implement. Task 6 required a persistence-format change; the user approved Option 1 (a persisted per-file `WriteCursor`) on 2026-06-18.
 - **Deviations from the literal request, and why:**
   - Task 2's "originalStem/renameSiblings" port is adapted to v1's `os.Root` sandboxing throughout (not just "where needed") — v1 has no plain-`os`-call code path left in `Deobfuscate` to leave alone.
-  - Task 6's originally-specified `InitialWriteCursor = Σ art.Bytes` approach is **incorrect** and has been replaced with a blocked-task writeup: `art.Bytes` is the NZB *encoded* size, but the write cache is keyed by *decoded* offsets, so the value never aligns and the "fix" would be a no-op. Every correct alternative changes persisted queue state, which AGENTS.md requires escalating. The section gives the finding, two correct options, and a ready-to-send escalation draft.
+  - Task 6's originally-specified `InitialWriteCursor = Σ art.Bytes` approach was **incorrect** (`art.Bytes` is the NZB *encoded* size; the cache is keyed by *decoded* offsets, so it never aligns). It was replaced with the approved Option 1: persist the assembler's actual decoded contiguous frontier as `JobFile.WriteCursor` and seed the cache from it on resume. The cursor is a non-load-bearing hint (re-dispatch is gated by `Done`, not the cursor), so any stale value is safe.
   - Task 7's "port TestRepairOutput_ETA" is downgraded to "add the two boundary cases v1 doesn't already cover" rather than porting a duplicate composite test, per the project's anti-redundant-test stance.
 - **Placeholder scan:** every step in the six ready tasks has complete, copy-pasteable code or an exact shell command; no "TBD"/"handle edge cases"/"similar to Task N" language.
 - **Type consistency:** within each ready task, every type/method/field name matches between its definition and its call sites (e.g. Task 2's `renameSiblings`/`originalStem` signatures, Task 5's port loop, Task 8's `path.Ext(clean)`).
