@@ -13,14 +13,14 @@ import (
 	"github.com/bodgit/sevenzip"
 )
 
-// sevenZipTestdata returns the path to the bodgit/sevenzip testdata directory.
-// Tests are skipped if the directory doesn't exist.
+// sevenZipTestdata returns the path to the local sevenzip testdata
+// directory, vendored into this repo so these tests are self-contained
+// and don't depend on a sibling project being checked out.
 func sevenZipTestdata(t *testing.T) string {
 	t.Helper()
-	// Relative to the gonzbd project root: ../sevenzip/testdata
-	dir := filepath.Join("..", "..", "..", "sevenzip", "testdata")
+	dir := filepath.Join("testdata", "sevenzip")
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		t.Skipf("sevenzip testdata not found at %s (run tests from gonzbd root)", dir)
+		t.Fatalf("local sevenzip testdata not found at %s", dir)
 	}
 	return dir
 }
@@ -50,6 +50,15 @@ func TestGoSevenZip_LZMA2(t *testing.T) {
 		}
 	}
 	t.Logf("Extracted %d files", len(res.ExtractedFiles))
+
+	filePath := filepath.Join(outDir, res.ExtractedFiles[0])
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("expected file %s to have mode 0644, got %o", res.ExtractedFiles[0], info.Mode().Perm())
+	}
 }
 
 func TestGoSevenZip_LZMA(t *testing.T) {
