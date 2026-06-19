@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -67,6 +69,51 @@ func partitionYAMLErrors(err error) (unknowns []string, fatal error) {
 	return unknowns, nil
 }
 
+var yamlLineRegex = regexp.MustCompile(`line\s+(\d+)`)
+
+// wrapYAMLError appends a few lines of source context around the line
+// number yaml.v3 embeds in its error message (e.g. "line 5: ..."), so
+// operators can see the offending YAML without re-opening the file. If
+// the message has no parseable line number, err is returned unchanged.
+func wrapYAMLError(err error, b []byte) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	matches := yamlLineRegex.FindStringSubmatch(msg)
+	if len(matches) < 2 {
+		return err
+	}
+	lineNum, pErr := strconv.Atoi(matches[1])
+	if pErr != nil || lineNum <= 0 {
+		return err
+	}
+
+	lines := bytes.Split(b, []byte("\n"))
+	if lineNum > len(lines) {
+		return err
+	}
+
+	var ctx strings.Builder
+	ctx.WriteString(msg)
+	ctx.WriteString("\nContext:\n")
+
+	start := max(lineNum-3, 0)
+	end := min(lineNum+2, len(lines))
+
+	for i := start; i < end; i++ {
+		currLineNum := i + 1
+		lineContent := strings.TrimSuffix(string(lines[i]), "\r")
+		marker := " "
+		if currLineNum == lineNum {
+			marker = ">"
+		}
+		fmt.Fprintf(&ctx, "%s %3d | %s\n", marker, currLineNum, lineContent)
+	}
+
+	return errors.New(ctx.String())
+}
+
 // applyNormalization sets sticky defaults for critical settings and normalizes
 // nil slices to empty arrays to ensure correct JSON/YAML serialization.
 func (cfg *Config) applyNormalization() {
@@ -117,7 +164,7 @@ func decode(r io.Reader) (*Config, []string, error) {
 		}
 		unknowns, fatal := partitionYAMLErrors(err)
 		if fatal != nil {
-			return nil, unknowns, fatal
+			return nil, unknowns, wrapYAMLError(fatal, b)
 		}
 		return cfg, unknowns, nil
 	}

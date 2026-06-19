@@ -9,6 +9,22 @@ import (
 	"testing"
 )
 
+func TestDecode_ErrorShowsSourceContext(t *testing.T) {
+	t.Parallel()
+
+	const malformed = "general:\n  host: [unclosed list\n"
+	_, _, err := decode(strings.NewReader(malformed))
+	if err == nil {
+		t.Fatal("decode: expected a YAML syntax error, got nil")
+	}
+	if !strings.Contains(err.Error(), "Context:") {
+		t.Errorf("error should contain a %q section, got:\n%v", "Context:", err)
+	}
+	if !strings.Contains(err.Error(), "host: [unclosed list") {
+		t.Errorf("error should quote the offending line, got:\n%v", err)
+	}
+}
+
 // ---------- decode sticky defaults ----------
 
 // TestDecode_StickyReplaceIllegalWith verifies that setting replace_illegal_with
