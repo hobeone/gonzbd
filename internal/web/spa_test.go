@@ -70,6 +70,16 @@ func TestNewSPAHandler_UnknownPathFallsBackToIndex(t *testing.T) {
 	}
 }
 
+func TestNewSPAHandler_MissingFileWithExtensionReturns404(t *testing.T) {
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/_app/does-not-exist.js", nil))
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("GET /_app/does-not-exist.js status = %d, want 404", rr.Code)
+	}
+}
+
 func TestSPACookieOnRoot(t *testing.T) {
 	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, nil)
 	rr := httptest.NewRecorder()
