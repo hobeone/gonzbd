@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -79,7 +78,7 @@ func TestRepairStage_GoRepairHealthyData(t *testing.T) {
 
 	stage := &RepairStage{
 		UseGoPar2: true,
-		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:       slog.New(slog.DiscardHandler),
 	}
 
 	if err := stage.Run(t.Context(), job); err != nil {
@@ -148,7 +147,7 @@ func TestCleanupPar2Backups_RemovesBackupsWithOriginal(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "movie.part01.rar"), []byte("repaired"), 0o644)       //nolint:errcheck
 	os.WriteFile(filepath.Join(dir, "movie.part01.rar.1"), []byte("damaged-orig"), 0o644) //nolint:errcheck
 
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.DiscardHandler)
 	removed := cleanupPar2Backups(dir, log)
 
 	if removed != 1 {
@@ -167,7 +166,7 @@ func TestCleanupPar2Backups_PreservesIfOriginalMissing(t *testing.T) {
 	backupPath := filepath.Join(dir, "movie.part01.rar.1")
 	os.WriteFile(backupPath, []byte("damaged-orig"), 0o644) //nolint:errcheck
 
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.DiscardHandler)
 	removed := cleanupPar2Backups(dir, log)
 
 	if removed != 0 {

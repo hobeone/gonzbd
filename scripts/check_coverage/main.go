@@ -264,7 +264,7 @@ func getChangedLines() (map[string]map[int]bool, error) {
 			if _, exists := changedFiles[currentFile]; !exists {
 				changedFiles[currentFile] = make(map[int]bool)
 			}
-			for i := 0; i < count; i++ {
+			for i := range count {
 				changedFiles[currentFile][start+i] = true
 			}
 		}

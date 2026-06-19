@@ -3,7 +3,6 @@ package par2
 import (
 	"bytes"
 	"context"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -33,7 +32,7 @@ func copyPar2Fixtures(t *testing.T, dir string) string {
 }
 
 func discardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 // ---------- GoRepair ----------
@@ -157,7 +156,7 @@ func TestTeeHandler_NilOnLineNoPanic(t *testing.T) {
 	t.Parallel()
 
 	h := &teeHandler{
-		Handler: slog.NewTextHandler(io.Discard, nil),
+		Handler: slog.DiscardHandler,
 		onLine:  nil,
 	}
 	// Must not panic.
@@ -171,7 +170,7 @@ func TestTeeHandler_WithAttrsPreservesOnLine(t *testing.T) {
 
 	var lines []string
 	base := &teeHandler{
-		Handler: slog.NewTextHandler(io.Discard, nil),
+		Handler: slog.DiscardHandler,
 		onLine:  func(s string) { lines = append(lines, s) },
 	}
 	child := base.WithAttrs([]slog.Attr{slog.String("k", "v")})

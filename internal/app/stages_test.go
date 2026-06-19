@@ -1,7 +1,6 @@
 package app
 
 import (
-	"io"
 	"log/slog"
 	"testing"
 
@@ -13,7 +12,7 @@ import (
 
 // discardLog returns a logger that throws away all output, keeping test output clean.
 func discardLog() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 // emptyProbe returns a binaryProbe with zero values (no external binaries available).

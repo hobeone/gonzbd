@@ -3,7 +3,6 @@ package downloader
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -22,7 +21,7 @@ func newDispatchDownloader(servers []*Server) *Downloader {
 		workCh[srv.Cfg().Name] = make(chan *articleRequest, 1)
 	}
 	d := &Downloader{
-		log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		log:          slog.New(slog.DiscardHandler),
 		servers:      servers,
 		workCh:       workCh,
 		tracker:      newDispatchTracker(),
@@ -607,7 +606,7 @@ func BenchmarkDownloader_Dispatch(b *testing.B) {
 	ctx := context.Background()
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		// Teardown state directly on the maps to avoid any tracker method/lock overhead.
 		delete(d.tracker.inFlight, a.MessageID)
 		delete(d.tracker.tryList, a.MessageID)
