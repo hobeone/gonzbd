@@ -346,9 +346,10 @@ func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	res.Status = parseStatus(output)
 
 	// Propagate only system-level errors, not par2's repair-required exit codes.
-	var exitErr *exec.ExitError
-	if runErr != nil && !errors.As(runErr, &exitErr) {
-		return res, fmt.Errorf("par2 verify: %w", runErr)
+	if runErr != nil {
+		if _, ok := errors.AsType[*exec.ExitError](runErr); !ok {
+			return res, fmt.Errorf("par2 verify: %w", runErr)
+		}
 	}
 
 	return res, nil
@@ -398,9 +399,8 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 		Output:      streamer.String(),
 	}
 
-	var exitErr *exec.ExitError
 	if runErr != nil {
-		if errors.As(runErr, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 			res.ExitCode = exitErr.ExitCode()
 		} else {
 			return res, fmt.Errorf("par2 repair: %w", runErr)

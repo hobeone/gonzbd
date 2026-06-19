@@ -203,8 +203,7 @@ func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, 
 	defer out.Close() //nolint:errcheck // best-effort close; write errors caught by contextCopy
 
 	if _, err := contextCopy(ctx, out, r); err != nil {
-		var errno syscall.Errno
-		if errors.As(err, &errno) && errno == syscall.ENOSPC {
+		if errno, ok := errors.AsType[syscall.Errno](err); ok && errno == syscall.ENOSPC {
 			return fmt.Errorf("go_unrar: disk full writing %s: %w", destRel, err)
 		}
 		return fmt.Errorf("go_unrar: write %s: %w", destRel, err)

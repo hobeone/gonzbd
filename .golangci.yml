@@ -24,6 +24,7 @@ linters:
     - prealloc
     - revive
     - wastedassign
+    - modernize
   settings:
     errcheck:
       check-type-assertions: true
@@ -48,6 +49,9 @@ linters:
     gosec:
       excludes:
         - G104  # handled by errcheck
+    modernize:
+      disable:
+        - any
   exclusions:
     paths:
       - node_modules

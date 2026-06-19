@@ -391,8 +391,7 @@ func TestGreetingRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("Dial should have failed on 502 greeting")
 	}
-	var se *ServerError
-	if !errors.As(err, &se) || se.Code != 502 {
+	if se, ok := errors.AsType[*ServerError](err); !ok || se.Code != 502 {
 		t.Errorf("err = %v, want ServerError{502}", err)
 	}
 }
@@ -834,8 +833,7 @@ func TestStat_ServerErrors(t *testing.T) {
 
 	// Test case C (unexpected code 300)
 	err = conn.Stat(ctx, "code300@host")
-	var se *ServerError
-	if !errors.As(err, &se) || se.Code != 300 {
+	if se, ok := errors.AsType[*ServerError](err); !ok || se.Code != 300 {
 		t.Errorf("expected ServerError 300, got %v", err)
 	}
 }

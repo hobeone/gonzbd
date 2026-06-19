@@ -189,8 +189,7 @@ func isPasswordError(err error, stdout, stderr string) bool {
 		strings.Contains(stdout, "password") || strings.Contains(stderr, "password") {
 		return true
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 11 {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok && exitErr.ExitCode() == 11 {
 		return true
 	}
 	return false

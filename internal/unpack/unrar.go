@@ -203,9 +203,8 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 		ExtractedFiles: extracted,
 	}
 
-	var exitErr *exec.ExitError
 	if runErr != nil {
-		if errors.As(runErr, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 			res.ExitCode = exitErr.ExitCode()
 			res.Reason = ClassifyUnrarOutput(res.Output)
 

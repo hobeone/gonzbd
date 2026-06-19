@@ -53,8 +53,7 @@ func TestIdleTimeoutReader_SlowRead(t *testing.T) {
 		t.Fatal("expected deadline error, got nil")
 	}
 	// The error should indicate a timeout (deadline exceeded).
-	var netErr net.Error
-	if !errors.As(err, &netErr) || !netErr.Timeout() {
+	if netErr, ok := errors.AsType[net.Error](err); !ok || !netErr.Timeout() {
 		t.Fatalf("expected timeout error, got: %v", err)
 	}
 }

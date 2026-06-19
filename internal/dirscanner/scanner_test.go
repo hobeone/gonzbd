@@ -1038,8 +1038,8 @@ func TestProcessScannedFile_PartialError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from PartialError, got nil")
 	}
-	var pe *PartialError
-	if !isPartialError(err, &pe) {
+	pe, isPE := errors.AsType[*PartialError](err)
+	if !isPE {
 		t.Errorf("expected PartialError, got %T: %v", err, err)
 	}
 	if pe.Failed != 1 {
@@ -1059,13 +1059,6 @@ func TestProcessScannedFile_PartialError(t *testing.T) {
 	if _, err := os.Stat(zipPath + ".failed"); !os.IsNotExist(err) {
 		t.Error("source ZIP was renamed to .failed on PartialError — it should be kept for retry")
 	}
-}
-
-// isPartialError checks whether err is or wraps a *PartialError, writing
-// the match to out. We can't use errors.As across the package boundary so
-// this helper lives in the same package.
-func isPartialError(err error, out **PartialError) bool {
-	return errors.As(err, out)
 }
 
 // createZipWithNZBs creates a ZIP archive at path containing one empty .nzb

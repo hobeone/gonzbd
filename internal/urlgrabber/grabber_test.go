@@ -1031,8 +1031,8 @@ func TestFetchRetryAfter(t *testing.T) {
 			}
 
 			if tc.wantErrType {
-				var retryErr *RetryAfterError
-				if !errors.As(err, &retryErr) {
+				retryErr, ok := errors.AsType[*RetryAfterError](err)
+				if !ok {
 					t.Fatalf("expected RetryAfterError, got %T: %v", err, err)
 				}
 				if retryErr.StatusCode != tc.statusCode {
@@ -1054,8 +1054,7 @@ func TestFetchRetryAfter(t *testing.T) {
 					t.Errorf("expected duration close to %s, got %s (diff %s)", tc.wantDuration, retryErr.Duration, diff)
 				}
 			} else {
-				var retryErr *RetryAfterError
-				if errors.As(err, &retryErr) {
+				if _, ok := errors.AsType[*RetryAfterError](err); ok {
 					t.Fatalf("did not expect RetryAfterError, got: %v", err)
 				}
 			}
