@@ -13,7 +13,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
-	"sync"
+	"io/fs"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -24,14 +24,6 @@ import (
 
 //go:embed migrations/*.sql
 var embedMigrations embed.FS
-
-var initGooseErr = sync.OnceValue(func() error {
-	goose.SetBaseFS(embedMigrations)
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		return fmt.Errorf("history: set goose dialect: %w", err)
-	}
-	return nil
-})
 
 // DB wraps a SQLite connection pool configured for history access.
 type DB struct {
@@ -70,11 +62,19 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, fmt.Errorf("history: PRAGMA journal_mode=WAL: %w", err)
 	}
 
-	if err := initGooseErr(); err != nil {
+	subFS, err := fs.Sub(embedMigrations, "migrations")
+	if err != nil {
 		_ = sqlDB.Close()
-		return nil, err
+		return nil, fmt.Errorf("history: sub fs: %w", err)
 	}
-	if err := goose.UpContext(ctx, sqlDB, "migrations"); err != nil {
+
+	provider, err := goose.NewProvider(goose.DialectSQLite3, sqlDB, subFS)
+	if err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("history: new goose provider: %w", err)
+	}
+
+	if _, err := provider.Up(ctx); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("history: run migrations: %w", err)
 	}
