@@ -1436,3 +1436,45 @@ func TestQueue_PauseErrors(t *testing.T) {
 		t.Errorf("Pause Completed job: got %v, want %v", err, ErrIllegalStatusTransition)
 	}
 }
+
+func TestSetFileWriteCursor(t *testing.T) {
+	q := New()
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
+			{ID: "a1@x", Bytes: 100, Number: 1},
+			{ID: "a2@x", Bytes: 100, Number: 2},
+		}},
+	}}
+	job, err := NewJob(parsed, AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SetFileWriteCursor(job.ID, 0, 4096); err != nil {
+		t.Fatalf("SetFileWriteCursor: %v", err)
+	}
+	snap := q.SnapshotJob(job.ID)
+	if snap.Files[0].WriteCursor != 4096 {
+		t.Errorf("WriteCursor = %d, want 4096", snap.Files[0].WriteCursor)
+	}
+	if !q.IsDirty() {
+		t.Error("queue should be marked dirty after SetFileWriteCursor")
+	}
+}
+
+func TestSetFileWriteCursor_Errors(t *testing.T) {
+	q := New()
+	if err := q.SetFileWriteCursor("nope", 0, 1); err == nil {
+		t.Error("expected error for unknown job")
+	}
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "f", Bytes: 100, Articles: []nzb.Article{{ID: "a@x", Bytes: 100, Number: 1}}},
+	}}
+	job, _ := NewJob(parsed, AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
+	_ = q.Add(job)
+	if err := q.SetFileWriteCursor(job.ID, 5, 1); err == nil {
+		t.Error("expected error for out-of-range fileIdx")
+	}
+}

@@ -776,6 +776,24 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 	return nil
 }
 
+// SetFileWriteCursor records the assembler's contiguous write frontier for a
+// file as a persisted resume hint (see JobFile.WriteCursor). Called from the
+// assembler's batched flush, never per-article.
+func (q *Queue) SetFileWriteCursor(jobID string, fileIdx int, cursor int64) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if fileIdx < 0 || fileIdx >= len(job.Files) {
+		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
+	}
+	job.Files[fileIdx].WriteCursor = cursor
+	q.dirty.Store(true)
+	return nil
+}
+
 // MarkArticlesFailed is the batched form of MarkArticleFailed. Like
 // MarkArticlesDone it takes the queue write lock exactly once. The
 // returned firstTimeIDs lists message-IDs that actually flipped from
