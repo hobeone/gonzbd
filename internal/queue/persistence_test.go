@@ -628,4 +628,3 @@ func TestSave_SetsStateDir(t *testing.T) {
 		t.Errorf("expected job backup file to be deleted, but it still exists (err: %v)", err)
 	}
 }
-

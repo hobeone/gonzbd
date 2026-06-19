@@ -33,12 +33,13 @@ func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http
 	fileServer := http.FileServerFS(dist)
 
 	setAPIKeyCookie := func(w http.ResponseWriter, req *http.Request) {
+		secure := req.TLS != nil || req.Header.Get("X-Forwarded-Proto") == "https"
 		http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly is intentionally false so JS can read it for X-API-Key headers
 			Name:     "gonzbd_apikey",
 			Value:    apiKeyFn(),
 			Path:     "/",
 			HttpOnly: false, // JS reads it to attach as X-API-Key header
-			Secure:   req.TLS != nil,
+			Secure:   secure,
 			SameSite: http.SameSiteStrictMode,
 		})
 	}
