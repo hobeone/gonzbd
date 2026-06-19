@@ -186,7 +186,7 @@ func TestShouldDeactivateOptional(t *testing.T) {
 				Required:    tc.required,
 				Connections: tc.conns,
 			})
-			for i := int64(0); i < tc.bad; i++ {
+			for range tc.bad {
 				s.RecordBadConnection()
 			}
 			got := shouldDeactivateOptional(s)

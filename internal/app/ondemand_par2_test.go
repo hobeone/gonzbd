@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -27,7 +26,7 @@ func copyFixturePar2(t *testing.T, dir string) {
 }
 
 func TestPar2NeedsRecovery(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.DiscardHandler)
 
 	// A realistic file set: the protected content file plus a deferred
 	// recovery volume (which par2 does not list, so it must not affect the
@@ -92,7 +91,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 }
 
 func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.DiscardHandler)
 	dir := t.TempDir()
 
 	q := queue.New()

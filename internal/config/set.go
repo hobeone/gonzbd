@@ -98,7 +98,7 @@ func setSliceValue(f reflect.Value, val string) error {
 
 func findFieldByTag(v reflect.Value, tagValue string) reflect.Value {
 	t := v.Type()
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		field := t.Field(i)
 		// Check json tag first, then fallback to yaml
 		tag := field.Tag.Get("json")

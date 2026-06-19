@@ -28,7 +28,7 @@ import (
 
 func newTestLogger(t *testing.T) *slog.Logger {
 	t.Helper()
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 // ----- EventType.String -----
