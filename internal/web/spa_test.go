@@ -182,3 +182,27 @@ func TestSPACookieSecureFlag(t *testing.T) {
 		}
 	})
 }
+
+func TestSPACookieSecureFlag_XForwardedProto(t *testing.T) {
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, nil)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	cookies := rr.Result().Cookies()
+	var found *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "gonzbd_apikey" {
+			found = c
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("did not set gonzbd_apikey cookie")
+	}
+	if !found.Secure {
+		t.Error("cookie should have Secure=true when X-Forwarded-Proto is https")
+	}
+}
