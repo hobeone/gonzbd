@@ -116,6 +116,11 @@ func TestExpandPaths(t *testing.T) {
 		PostProc: PostProcConfig{
 			Par2Command: "~/bin/par2",
 		},
+		Notifications: NotificationConfig{
+			Script: ScriptNotificationConfig{
+				Path: "~/scripts/notifier.sh",
+			},
+		},
 	}
 
 	cfg.ExpandPaths()
@@ -128,6 +133,9 @@ func TestExpandPaths(t *testing.T) {
 	}
 	if cfg.PostProc.Par2Command != filepath.Join(home, "bin/par2") {
 		t.Errorf("PostProc.Par2Command not expanded: %q", cfg.PostProc.Par2Command)
+	}
+	if cfg.Notifications.Script.Path != filepath.Join(home, "scripts/notifier.sh") {
+		t.Errorf("Notifications.Script.Path not expanded: %q", cfg.Notifications.Script.Path)
 	}
 }
 
@@ -181,5 +189,48 @@ func TestExpandPathsDirect(t *testing.T) {
 		if got != want {
 			t.Errorf("PostProcConfig.%s: got %q, want %q", field, got, want)
 		}
+	}
+
+	n := &NotificationConfig{
+		Script: ScriptNotificationConfig{
+			Path: "~/test",
+		},
+	}
+	n.expandPaths()
+	if n.Script.Path != want {
+		t.Errorf("NotificationConfig.Script.Path: got %q, want %q", n.Script.Path, want)
+	}
+}
+
+func TestConfigExpandEnv_NotificationsScriptPath(t *testing.T) {
+	os.Setenv("TEST_SCRIPT_DIR", "/tmp/scripts")
+	defer os.Unsetenv("TEST_SCRIPT_DIR")
+
+	yml := `
+general:
+  host: "127.0.0.1"
+  port: 8080
+  download_dir: "/tmp"
+  complete_dir: "/tmp"
+  api_key: "0123456789abcdef"
+  nzb_key: "0123456789abcdef"
+notifications:
+  script:
+    enable: true
+    path: "$TEST_SCRIPT_DIR/notify.sh"
+`
+	cfg, _, err := decode(strings.NewReader(yml))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if cfg.Notifications.Script.Path != "$TEST_SCRIPT_DIR/notify.sh" {
+		t.Errorf("before ExpandPaths: Script.Path = %q", cfg.Notifications.Script.Path)
+	}
+
+	cfg.ExpandPaths()
+
+	if cfg.Notifications.Script.Path != "/tmp/scripts/notify.sh" {
+		t.Errorf("after ExpandPaths: Script.Path = %q, want /tmp/scripts/notify.sh", cfg.Notifications.Script.Path)
 	}
 }

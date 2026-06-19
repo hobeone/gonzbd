@@ -28,6 +28,9 @@ func (c *Config) Validate() error {
 	if err := c.PostProc.validate(); err != nil {
 		errs = append(errs, fmt.Errorf("postproc: %w", err))
 	}
+	if err := c.Notifications.validate(); err != nil {
+		errs = append(errs, fmt.Errorf("notifications: %w", err))
+	}
 
 	if err := validateUniqueNames("server", serverNames(c.Servers)); err != nil {
 		errs = append(errs, err)
@@ -285,4 +288,97 @@ func categoryNames(c []CategoryConfig) []string {
 		names[i] = c[i].Name
 	}
 	return names
+}
+
+func (n *NotificationConfig) validate() error {
+	var errs []error
+	if n.Email.Enable {
+		if err := n.Email.validate(); err != nil {
+			errs = append(errs, fmt.Errorf("email: %w", err))
+		}
+	}
+	if n.Apprise.Enable {
+		if err := n.Apprise.validate(); err != nil {
+			errs = append(errs, fmt.Errorf("apprise: %w", err))
+		}
+	}
+	if n.Script.Enable {
+		if err := n.Script.validate(); err != nil {
+			errs = append(errs, fmt.Errorf("script: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (e *EmailNotificationConfig) validate() error {
+	var errs []error
+	if strings.TrimSpace(e.Host) == "" {
+		errs = append(errs, fmt.Errorf("host: %w", errEmpty))
+	}
+	if err := portInRange("port", e.Port, false); err != nil {
+		errs = append(errs, err)
+	}
+	if strings.TrimSpace(e.From) == "" {
+		errs = append(errs, fmt.Errorf("from: %w", errEmpty))
+	}
+	if len(e.To) == 0 {
+		errs = append(errs, fmt.Errorf("to: %w", errEmpty))
+	} else {
+		for i, to := range e.To {
+			if strings.TrimSpace(to) == "" {
+				errs = append(errs, fmt.Errorf("to[%d]: %w", i, errEmpty))
+			}
+		}
+	}
+	if err := validateEvents(e.Events); err != nil {
+		errs = append(errs, fmt.Errorf("events: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+func (a *AppriseNotificationConfig) validate() error {
+	var errs []error
+	if strings.TrimSpace(a.URL) == "" && strings.TrimSpace(a.ServiceURL) == "" {
+		errs = append(errs, fmt.Errorf("url: must set at least one of url or service_url"))
+	}
+	if err := validateEvents(a.Events); err != nil {
+		errs = append(errs, fmt.Errorf("events: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+func (s *ScriptNotificationConfig) validate() error {
+	var errs []error
+	if strings.TrimSpace(s.Path) == "" {
+		errs = append(errs, fmt.Errorf("path: %w", errEmpty))
+	}
+	if err := nonNegative("timeout", s.Timeout); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateEvents(s.Events); err != nil {
+		errs = append(errs, fmt.Errorf("events: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+var validEvents = map[string]struct{}{
+	"DownloadStarted":        {},
+	"DownloadComplete":       {},
+	"DownloadFailed":         {},
+	"PostProcessingComplete": {},
+	"PostProcessingFailed":   {},
+	"DiskFull":               {},
+	"QueueDone":              {},
+	"Warning":                {},
+	"Error":                  {},
+}
+
+func validateEvents(events []string) error {
+	var errs []error
+	for _, ev := range events {
+		if _, ok := validEvents[ev]; !ok {
+			errs = append(errs, fmt.Errorf("invalid event %q", ev))
+		}
+	}
+	return errors.Join(errs...)
 }
