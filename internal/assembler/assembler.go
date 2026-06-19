@@ -103,6 +103,13 @@ type FileInfo struct {
 	// per-write filesystem metadata overhead and fragmentation.
 	// Zero disables pre-allocation.
 	ExpectedSize int64
+
+	// InitialWriteCursor seeds the write-coalescing cache's per-file cursor.
+	// Zero for a fresh download (file starts at byte 0). On resume the caller
+	// sets it to the file's persisted contiguous write frontier so coalescing
+	// doesn't stall waiting for an offset-0 article that was already written
+	// before the restart. See queue.JobFile.WriteCursor.
+	InitialWriteCursor int64
 }
 
 // Options configures an Assembler.
@@ -160,6 +167,11 @@ type Options struct {
 	// sequential write patterns. Zero disables caching (each article is
 	// written individually, which is the pre-5.0 behavior).
 	WriteCacheBytes int64
+
+	// SetWriteCursor persists a file's advanced contiguous write frontier as a
+	// resume hint. Called from the worker's batched flush, never per-article.
+	// Optional; nil disables cursor persistence.
+	SetWriteCursor func(jobID string, fileIdx int, cursor int64) error
 }
 
 // fileKey uniquely identifies a target file within the assembler.
@@ -248,6 +260,10 @@ type Assembler struct {
 	// worker — no locking.
 	pendingDone   map[string][]string
 	pendingFailed map[string][]string
+
+	// pendingCursor holds the latest reported write cursor per file, flushed
+	// to Options.SetWriteCursor on the same cadence as pendingDone. Worker-owned.
+	pendingCursor map[fileKey]int64
 }
 
 // New creates an Assembler from opts. It panics if opts.FileInfo is nil.
@@ -274,6 +290,7 @@ func New(opts Options, log *slog.Logger) *Assembler {
 		flushInterval: flushInterval,
 		pendingDone:   make(map[string][]string),
 		pendingFailed: make(map[string][]string),
+		pendingCursor: make(map[fileKey]int64),
 	}
 	a.minFreeBytes.Store(opts.MinFreeBytes)
 	return a
@@ -523,7 +540,7 @@ func (a *Assembler) dispatchRequest(
 // disk, and the next completion will retry implicitly (partsWritten
 // tracking is local to the assembler).
 func (a *Assembler) flush() {
-	if len(a.pendingDone) == 0 && len(a.pendingFailed) == 0 {
+	if len(a.pendingDone) == 0 && len(a.pendingFailed) == 0 && len(a.pendingCursor) == 0 {
 		return
 	}
 	if a.opts.MarkArticlesDone != nil {
@@ -545,10 +562,19 @@ func (a *Assembler) flush() {
 			}
 		}
 	}
+	if a.opts.SetWriteCursor != nil {
+		for k, cur := range a.pendingCursor {
+			if err := a.opts.SetWriteCursor(k.jobID, k.fileIdx, cur); err != nil {
+				a.log.Debug("set write cursor (job already removed)",
+					"job", k.jobID, "fileidx", k.fileIdx, "error", err)
+			}
+		}
+	}
 	// Reset the maps. Reuse the backing allocation where reasonable by
 	// clearing rather than reallocating (Go 1.21+ `clear` semantics).
 	clear(a.pendingDone)
 	clear(a.pendingFailed)
+	clear(a.pendingCursor)
 }
 
 // closeAll closes all remaining open file handles. Called on worker exit.
@@ -634,6 +660,7 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		}
 		f = &openFile{handle: fh, info: info, crcValid: true}
 		open[key] = f
+		wc.initCursor(key, info.InitialWriteCursor)
 	}
 
 	if req.FatalErr != nil {
@@ -792,6 +819,7 @@ func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, ope
 		)
 	}
 	delete(open, key)
+	delete(a.pendingCursor, key)
 	completed[key] = struct{}{} // tombstone: reject late duplicates
 	telemetry.FilesCompleted.Add(1)
 	a.log.Info("file complete", "job", req.JobID, "fileidx", req.FileIdx, "path", f.info.Path)
@@ -883,6 +911,7 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 				)
 				return false
 			}
+			a.pendingCursor[key] = wc.cursorFor(key)
 		}
 		// Relieve memory pressure if needed.
 		for wc.pressure() {
