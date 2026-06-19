@@ -310,6 +310,14 @@ type JobFile struct {
 	// Drives per-file progress in the UI's queue-row drawer.
 	BytesDownloaded int64 `json:"-"`
 
+	// WriteCursor is the decoded byte offset up to which the assembler's
+	// coalescing cache has contiguously written this file. Persisted as a
+	// resume hint so the cache can restart coalescing from here instead of
+	// stalling at offset 0. Non-load-bearing: what gets (re)written is
+	// governed by article Done flags, so any stale value is safe, merely
+	// suboptimal. See assembler.FileInfo.InitialWriteCursor.
+	WriteCursor int64 `json:"write_cursor,omitempty"`
+
 	// IsPar2Recovery marks a par2 recovery volume (*.volNNN+MM.par2), as
 	// opposed to the par2 index file. Set at add-time. Persisted.
 	IsPar2Recovery bool `json:"is_par2_recovery,omitempty"`
