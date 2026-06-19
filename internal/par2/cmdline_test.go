@@ -130,6 +130,28 @@ func TestRepairOutput_ETA_ZeroPercent(t *testing.T) {
 	}
 }
 
+func TestRepairOutput_ETA_NegativePercent(t *testing.T) {
+	t.Parallel()
+	ro := &RepairOutput{
+		RepairStarted: time.Now().Add(-10 * time.Second),
+		RepairPercent: -5.0,
+	}
+	if eta := ro.ETA(); eta != 0 {
+		t.Errorf("ETA at -5%% = %v, want 0", eta)
+	}
+}
+
+func TestRepairOutput_ETA_OverHundredPercent(t *testing.T) {
+	t.Parallel()
+	ro := &RepairOutput{
+		RepairStarted: time.Now().Add(-10 * time.Second),
+		RepairPercent: 105.0,
+	}
+	if eta := ro.ETA(); eta != 0 {
+		t.Errorf("ETA at 105%% = %v, want 0", eta)
+	}
+}
+
 func TestRepairOutput_ETA_Complete(t *testing.T) {
 	t.Parallel()
 	ro := &RepairOutput{
