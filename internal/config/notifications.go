@@ -2,7 +2,7 @@ package config
 
 // NotificationConfig controls event notification sinks (email, Apprise,
 // script). Each sub-section is independent; leave a section empty to
-// disable that sink. See spec §9.8.
+// disable that sink. See spec §9.9.
 type NotificationConfig struct {
 	// Email holds SMTP settings for email notifications.
 	Email EmailNotificationConfig `yaml:"email,omitempty" json:"email"`
