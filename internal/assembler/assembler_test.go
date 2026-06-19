@@ -659,6 +659,59 @@ func TestTelemetryDiskWriteCountersCachedDrain(t *testing.T) {
 	}
 }
 
+func TestResumedFileCoalescesAndReportsCursor(t *testing.T) {
+	telemetry.Reset()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resumed.dat")
+
+	const cursor = int64(4096)
+	var gotJob string
+	var gotIdx int
+	var gotCursor int64
+	// TotalParts is 4 but we only write 3: the file stays INCOMPLETE, which
+	// is the resume scenario the cursor hint serves. A file that completes
+	// in-session never needs a resume cursor, so finalizeFile deliberately
+	// drops the pending cursor on completion; asserting a completion-time
+	// report would contradict that design.
+	files := map[string]FileInfo{
+		"job1:0": {Path: path, TotalParts: 4, InitialWriteCursor: cursor},
+	}
+	opts := makeOpts(dir, files)
+	opts.WriteCacheBytes = 1 << 20
+	opts.SetWriteCursor = func(jobID string, fileIdx int, c int64) error {
+		gotJob, gotIdx, gotCursor = jobID, fileIdx, c
+		return nil
+	}
+	a := startAssembler(t, opts)
+
+	artSize := 200 * 1024 // 3 * 200KB = 600KB > 512KB contiguous threshold
+	for i := range 3 {
+		req := WriteRequest{
+			JobID: "job1", FileIdx: 0,
+			Offset: cursor + int64(i*artSize),
+			Data:   make([]byte, artSize),
+		}
+		if err := a.WriteArticle(t.Context(), req); err != nil {
+			t.Fatalf("WriteArticle: %v", err)
+		}
+	}
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Coalesced into a single disk write starting from the resumed cursor.
+	if got := telemetry.DiskWrites.Value(); got != 1 {
+		t.Errorf("DiskWrites = %d, want 1 (coalesced run from resumed cursor)", got)
+	}
+	// The advanced cursor was reported through the batched callback.
+	if gotJob != "job1" || gotIdx != 0 {
+		t.Errorf("SetWriteCursor got (%q,%d), want (job1,0)", gotJob, gotIdx)
+	}
+	if gotCursor != cursor+int64(3*artSize) {
+		t.Errorf("reported cursor = %d, want %d", gotCursor, cursor+int64(3*artSize))
+	}
+}
+
 func TestTelemetryFileCompleted(t *testing.T) {
 	telemetry.Reset()
 

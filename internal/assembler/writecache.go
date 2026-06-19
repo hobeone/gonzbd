@@ -61,6 +61,31 @@ func (wc *writeCache) enabled() bool {
 	return wc.limit > 0
 }
 
+// initCursor pre-creates the file's buffer entry with the given starting
+// write cursor if one doesn't already exist. Called once when a file is first
+// registered so a resumed download (whose [0,cursor) range was already written
+// and won't be re-delivered) doesn't wait forever for an offset-0 article that
+// never arrives. No-op when caching is disabled or the entry already exists (a
+// fresh download's first buffer() call legitimately starts the cursor at 0).
+func (wc *writeCache) initCursor(key fileKey, cursor int64) {
+	if !wc.enabled() {
+		return
+	}
+	if _, ok := wc.perFile[key]; ok {
+		return
+	}
+	wc.perFile[key] = &fileBuf{articles: make(map[int64][]byte), writeCursor: cursor}
+}
+
+// cursorFor returns the file's current contiguous write frontier, or 0 if the
+// file has no buffer entry (caching disabled, or already drained).
+func (wc *writeCache) cursorFor(key fileKey) int64 {
+	if fb, ok := wc.perFile[key]; ok {
+		return fb.writeCursor
+	}
+	return 0
+}
+
 // buffer adds an article to the cache. Returns true if the article was
 // buffered, false if caching is disabled (caller should write immediately).
 func (wc *writeCache) buffer(key fileKey, offset int64, data []byte) bool {
