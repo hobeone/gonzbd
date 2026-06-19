@@ -56,12 +56,13 @@ func isRetryableDownloaderError(err error) bool {
 	// Network-level errors: op errors (dial, read, write) and timeouts.
 	// Using the type hierarchy is more robust than string-matching against
 	// error messages that can change across Go releases or OS versions.
-	var netErr *net.OpError
-	if errors.As(err, &netErr) {
+	if _, ok := errors.AsType[*net.OpError](err); ok {
 		return true
 	}
-	var timeoutErr interface{ Timeout() bool }
-	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+	if timeoutErr, ok := errors.AsType[interface {
+		error
+		Timeout() bool
+	}](err); ok && timeoutErr.Timeout() {
 		return true
 	}
 	return false

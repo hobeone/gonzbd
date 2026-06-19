@@ -357,8 +357,7 @@ func RunScript(ctx context.Context, scriptPath string, in ScriptInput) ScriptRes
 	}
 
 	if waitErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](waitErr); ok {
 			result.ExitCode = exitErr.ExitCode()
 		} else {
 			result.ExitCode = -1

@@ -153,8 +153,7 @@ func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath s
 	defer out.Close() //nolint:errcheck // best-effort close; write errors are caught by contextCopy
 
 	if _, err := contextCopy(ctx, out, rc); err != nil {
-		var errno syscall.Errno
-		if errors.As(err, &errno) && errno == syscall.ENOSPC {
+		if errno, ok := errors.AsType[syscall.Errno](err); ok && errno == syscall.ENOSPC {
 			return fmt.Errorf("go_7z: disk full writing %s: %w", destRel, err)
 		}
 		return fmt.Errorf("go_7z: write %s: %w", destRel, err)
@@ -190,8 +189,7 @@ func classifySevenZipError(err error) FailReason {
 	}
 
 	// Check for ReadError with Encrypted hint → wrong password.
-	var readErr *sevenzip.ReadError
-	if errors.As(err, &readErr) && readErr.Encrypted {
+	if readErr, ok := errors.AsType[*sevenzip.ReadError](err); ok && readErr.Encrypted {
 		return FailWrongPassword
 	}
 
@@ -209,8 +207,7 @@ func classifySevenZipError(err error) FailReason {
 	}
 
 	// Disk full.
-	var errno syscall.Errno
-	if errors.As(err, &errno) && errno == syscall.ENOSPC {
+	if errno, ok := errors.AsType[syscall.Errno](err); ok && errno == syscall.ENOSPC {
 		return FailDiskFull
 	}
 

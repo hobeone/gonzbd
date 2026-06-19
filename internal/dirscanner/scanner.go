@@ -376,8 +376,7 @@ func (s *Scanner) processScannedFile(
 		}
 		// Only leave for retry if some NZBs succeeded (partial success).
 		// If all failed or extraction itself failed, permanently mark as .failed.
-		var pe *PartialError
-		if !errors.As(err, &pe) {
+		if _, ok := errors.AsType[*PartialError](err); !ok {
 			failedPath := path + ".failed"
 			if renameErr := os.Rename(path, failedPath); renameErr != nil {
 				s.logger.Warn("failed to rename file", "path", path, "err", renameErr)

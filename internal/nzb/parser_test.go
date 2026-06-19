@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -73,7 +74,7 @@ func TestParseSimple(t *testing.T) {
 	}
 
 	wantGroups := []string{"alt.binaries.test"}
-	if !equalSlices(got.Groups, wantGroups) {
+	if !slices.Equal(got.Groups, wantGroups) {
 		t.Errorf("Groups = %v, want %v", got.Groups, wantGroups)
 	}
 	if got.DuplicateArticles != 0 || got.BadArticles != 0 || got.SkippedFiles != 0 {
@@ -94,7 +95,7 @@ func TestParseMultiFileAndMultiValueMeta(t *testing.T) {
 
 	// Multi-value meta: two <meta type="category"> entries.
 	wantCats := []string{"tv", "hd"}
-	if !equalSlices(got.Meta["category"], wantCats) {
+	if !slices.Equal(got.Meta["category"], wantCats) {
 		t.Errorf(`Meta["category"] = %v, want %v`, got.Meta["category"], wantCats)
 	}
 	if got := got.Meta["password"]; len(got) != 1 || got[0] != "secret" {
@@ -107,7 +108,7 @@ func TestParseMultiFileAndMultiValueMeta(t *testing.T) {
 
 	// Groups union, deduped, first-seen order.
 	wantGroups := []string{"alt.binaries.tv", "alt.binaries.misc"}
-	if !equalSlices(got.Groups, wantGroups) {
+	if !slices.Equal(got.Groups, wantGroups) {
 		t.Errorf("Groups = %v, want %v", got.Groups, wantGroups)
 	}
 
@@ -455,25 +456,12 @@ func bzip2Encode(t *testing.T, data []byte) []byte {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
-		var ee *exec.Error
-		if errors.As(err, &ee) {
+		if _, ok := errors.AsType[*exec.Error](err); ok {
 			return nil
 		}
 		t.Fatalf("bzip2 -c: %v", err)
 	}
 	return out.Bytes()
-}
-
-func equalSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func TestCharsetReaderDirect(t *testing.T) {
