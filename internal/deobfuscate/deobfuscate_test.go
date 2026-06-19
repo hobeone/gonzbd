@@ -329,6 +329,48 @@ func TestDeobfuscate(t *testing.T) {
 	})
 }
 
+func TestDeobfuscate_SiblingMatchesPreFixStem(t *testing.T) {
+	dir := t.TempDir()
+
+	// "abc.xyz" is the abc.xyz-obfuscation pattern (matched regardless of
+	// what follows). The original name has no popular extension, so it
+	// goes through FixExtension, which content-sniffs PNG magic bytes and
+	// appends ".png" -- producing "abc.xyz.somejunk.png". A naive
+	// last-extension trim of the POST-fix name leaves "abc.xyz.somejunk"
+	// as the sibling-matching stem, which misses true siblings that only
+	// share the pre-fix stem "abc.xyz".
+	pngSig := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A} //nolint:prealloc // fixed-size literal, not built via loop append
+	big := append(pngSig, make([]byte, 11*1024*1024)...)             // 11 MiB: clears the 10 MiB heuristic floor and the 3x BiggestFile ratio
+	bigName := "abc.xyz.somejunk"
+	if err := os.WriteFile(filepath.Join(dir, bigName), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	siblingName := "abc.xyz.eng.srt"
+	sibling := []byte("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
+	if err := os.WriteFile(filepath.Join(dir, siblingName), sibling, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	renames, err := deobfuscate.Deobfuscate(context.Background(), nil, dir, "Useful_Name", fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("Deobfuscate: %v", err)
+	}
+
+	var sawSibling bool
+	for _, r := range renames {
+		if filepath.Base(r.From) == siblingName {
+			sawSibling = true
+			if filepath.Base(r.To) != "Useful_Name.eng.srt" {
+				t.Errorf("sibling renamed to %q, want %q", filepath.Base(r.To), "Useful_Name.eng.srt")
+			}
+		}
+	}
+	if !sawSibling {
+		t.Errorf("sibling %q was not renamed (stem-matching bug); renames: %+v", siblingName, renames)
+	}
+}
+
 func TestSubtitles(t *testing.T) {
 	t.Parallel()
 

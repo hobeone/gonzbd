@@ -398,22 +398,60 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	}
 	renames = append(renames, r)
 
-	// basedirfile is the path without extension — used to find siblings.
-	baseDirFile := strings.TrimSuffix(bigPath, filepath.Ext(bigPath))
+	siblingRenames, err := renameSiblings(log, root, dir, usefulName, bigPath, paths, relPaths, allRenames, opts)
+	renames = append(renames, siblingRenames...)
+	if err != nil {
+		return renames, err
+	}
 
-	// Rename siblings that share the same stem (e.g. "file-sample.iso").
+	return renames, nil
+}
+
+// originalStem returns the path stem (no extension) of bigPath as it was
+// BEFORE any extension-fix rename was applied. FixExtension only ever
+// appends an extension to the existing name, so if bigPath is the result
+// of such a rename, trimming bigPath's own last extension is not enough --
+// it leaves any pre-existing pseudo-extension (e.g. ".somejunk" in
+// "abc.xyz.somejunk.png") attached to the stem, which breaks matching
+// against true siblings that only share the real pre-fix stem.
+func originalStem(bigPath string, extensionRenames []Rename) string {
+	origPath := bigPath
+	for _, r := range extensionRenames {
+		if r.To == bigPath {
+			origPath = r.From
+			break
+		}
+	}
+	return strings.TrimSuffix(origPath, filepath.Ext(origPath))
+}
+
+// renameSiblings renames every file in paths/relPaths that shares bigPath's
+// pre-fix stem (see originalStem) to usefulName plus its remaining suffix.
+// bigPath itself is skipped (the caller already renamed it). Operates
+// through root so all writes stay confined to dir, matching the rest of
+// this package's os.Root sandboxing.
+func renameSiblings(log *slog.Logger, root *os.Root, dir, usefulName, bigPath string, paths, relPaths []string, extensionRenames []Rename, opts fsutil.SanitizeOptions) ([]Rename, error) {
+	var renames []Rename
+	baseDirFile := originalStem(bigPath, extensionRenames)
 	for i, p := range paths {
-		rel := relPaths[i]
 		if p == bigPath {
 			continue
 		}
-		if !strings.HasPrefix(p, baseDirFile) {
+		origP := p
+		for _, r := range extensionRenames {
+			if r.To == p {
+				origP = r.From
+				break
+			}
+		}
+		if !strings.HasPrefix(origP, baseDirFile) {
 			continue
 		}
+		rel := relPaths[i]
 		if _, err := root.Stat(rel); err != nil {
 			continue
 		}
-		remainingSuffix := strings.TrimPrefix(p, baseDirFile)
+		remainingSuffix := strings.TrimPrefix(origP, baseDirFile) + strings.TrimPrefix(p, origP)
 		relDstSib := fsutil.JoinSafe("", "", usefulName+remainingSuffix, opts)
 		newRelSib := fsutil.GetUniqueRelPath(root, relDstSib)
 		newPath := filepath.Join(dir, newRelSib)
@@ -423,7 +461,6 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 		}
 		renames = append(renames, r)
 	}
-
 	return renames, nil
 }
 
