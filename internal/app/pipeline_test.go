@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"syscall"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/decoder"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // TestIsRetryableDownloaderError verifies error classification uses the
@@ -84,3 +89,38 @@ type opaqueTimeoutError struct{}
 
 func (e *opaqueTimeoutError) Error() string { return "operation deadline reached" }
 func (e *opaqueTimeoutError) Timeout() bool { return true }
+
+func TestRegisterFile_SeedsInitialWriteCursorFromQueue(t *testing.T) {
+	q := queue.New()
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
+			{ID: "a1@x", Bytes: 100, Number: 1},
+			{ID: "a2@x", Bytes: 100, Number: 2},
+			{ID: "a3@x", Bytes: 100, Number: 3},
+		}},
+	}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SetFileWriteCursor(job.ID, 0, 4096); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &pipeline{
+		log:         slog.Default(),
+		queue:       q,
+		downloadDir: t.TempDir(),
+		fileInfo:    make(map[fileKey]assembler.FileInfo),
+	}
+	if err := p.registerFile(job.ID, 0); err != nil {
+		t.Fatalf("registerFile: %v", err)
+	}
+	info := p.fileInfo[fileKey{jobID: job.ID, fileIdx: 0}]
+	if info.InitialWriteCursor != 4096 {
+		t.Errorf("InitialWriteCursor = %d, want 4096", info.InitialWriteCursor)
+	}
+}

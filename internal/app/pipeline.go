@@ -366,9 +366,10 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	}
 
 	info := assembler.FileInfo{
-		Path:         path,
-		TotalParts:   totalParts,
-		ExpectedSize: snap.Files[fileIdx].Bytes,
+		Path:               path,
+		TotalParts:         totalParts,
+		ExpectedSize:       snap.Files[fileIdx].Bytes,
+		InitialWriteCursor: snap.Files[fileIdx].WriteCursor,
 	}
 
 	p.fileInfo[key] = info

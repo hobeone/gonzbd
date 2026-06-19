@@ -282,6 +282,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		FileInfo:           p.resolveFileInfo,
 		MarkArticlesDone:   q.MarkArticlesDone,
 		MarkArticlesFailed: q.MarkArticlesFailed,
+		SetWriteCursor:     q.SetFileWriteCursor,
 		MinFreeBytes:       minFreeBytes,
 		WriteCacheBytes:    writeCacheBytes,
 		OnLowDisk: func(dir string, freeBytes int64) {
