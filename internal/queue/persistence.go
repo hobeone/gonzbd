@@ -51,6 +51,9 @@ func (q *Queue) Save(dir string) error {
 		q.dirty.Store(true)
 		return err
 	}
+	q.mu.Lock()
+	q.stateDir = dir
+	q.mu.Unlock()
 	return nil
 }
 
