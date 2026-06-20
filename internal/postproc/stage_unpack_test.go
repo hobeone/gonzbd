@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -62,6 +63,37 @@ func TestUnpackStage_ExtractSingleRarGoMode(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("extracted file %s not found: %v", name, err)
 		}
+	}
+}
+
+// TestUnpackStage_ExtractSingleRarGoMode_LabelsGoUnrarEngine verifies that
+// OutputLines for a go_unrar extraction are labeled "[go_unrar]", not the
+// generic "[unrar]" archive-type label, so the UI/log can distinguish which
+// engine actually performed the extraction.
+func TestUnpackStage_ExtractSingleRarGoMode_LabelsGoUnrarEngine(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
+
+	if err := enabledUnpackStage().Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var sawGoUnrarLabel, sawBareUnrarLabel bool
+	for _, line := range job.OutputLines {
+		if strings.HasPrefix(line, "[go_unrar]") {
+			sawGoUnrarLabel = true
+		}
+		if strings.HasPrefix(line, "[unrar]") {
+			sawBareUnrarLabel = true
+		}
+	}
+	if !sawGoUnrarLabel {
+		t.Errorf("OutputLines missing [go_unrar] label: %v", job.OutputLines)
+	}
+	if sawBareUnrarLabel {
+		t.Errorf("OutputLines contains generic [unrar] label for a go_unrar extraction: %v", job.OutputLines)
 	}
 }
 
