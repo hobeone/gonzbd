@@ -103,6 +103,10 @@ type Result struct {
 	Reason FailReason
 	// Err is non-nil when the extraction failed.
 	Err error
+	// Engine identifies which extractor produced this result (e.g. "unrar",
+	// "go_unrar", "7z", "go_7z"), so callers can label log output by the
+	// engine actually used rather than just the archive type.
+	Engine string
 }
 
 // UnRAR extracts archive.MainFile into outDir by shelling out to the `unrar`

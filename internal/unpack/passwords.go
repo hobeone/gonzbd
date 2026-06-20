@@ -93,7 +93,9 @@ func withPasswords(
 	passwords := allPasswords(opts)
 	if len(passwords) == 0 {
 		// No password list — single attempt (no-password).
-		return extract(ctx, log, archive, outDir, opts)
+		res, err := extract(ctx, log, archive, outDir, opts)
+		res.Engine = toolName
+		return res, err
 	}
 
 	var lastRes Result
@@ -106,6 +108,7 @@ func withPasswords(
 		beforeSnap, _ := snapshotDir(outDir)
 
 		res, err := extract(ctx, log, archive, outDir, attempt)
+		res.Engine = toolName
 
 		// System-level error: binary not found, context cancelled, etc.
 		// For subprocess extractors, ExitCode==0 with an error means the

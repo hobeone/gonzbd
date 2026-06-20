@@ -314,7 +314,7 @@ func (u *UnpackStage) extractPendingArchives(
 		// Record command line in stage log for successful extractions too.
 		if res.CommandLine != "" {
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[%s] %s", archiveTypeName(a.Type), a.Name),
+				fmt.Sprintf("[%s] %s", cmp.Or(res.Engine, archiveTypeName(a.Type)), a.Name),
 				"Command: "+res.CommandLine)
 		}
 
@@ -333,7 +333,7 @@ func (u *UnpackStage) extractPendingArchives(
 		// Capture tool output on success.
 		if res.Output != "" {
 			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("[%s] %s", archiveTypeName(a.Type), a.Name))
+				fmt.Sprintf("[%s] %s", cmp.Or(res.Engine, archiveTypeName(a.Type)), a.Name))
 			job.OutputLines = append(job.OutputLines,
 				toolOutputLines(res.Output)...)
 		}
@@ -648,12 +648,13 @@ func applyPermissions(dir, permStr string) (int, error) {
 // command/output lines for diagnostics.
 func recordUnpackFailure(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, res unpack.Result, failErr error, firstErr *error) { //nolint:gocritic // ptrToRefParam: pointer required to set caller's first-error sentinel
 	job.UnpackError = true
-	logf(ctx, log, job, slog.LevelWarn, "Error: extraction failed for %q (%s): %v", a.Name, archiveTypeName(a.Type), failErr)
+	engine := cmp.Or(res.Engine, archiveTypeName(a.Type))
+	logf(ctx, log, job, slog.LevelWarn, "Error: extraction failed for %q (%s): %v", a.Name, engine, failErr)
 	if *firstErr == nil {
 		*firstErr = fmt.Errorf("unpack %q: %w", a.Name, failErr)
 	}
 	job.OutputLines = append(job.OutputLines,
-		fmt.Sprintf("[%s] %s (FAILED)", archiveTypeName(a.Type), a.Name))
+		fmt.Sprintf("[%s] %s (FAILED)", engine, a.Name))
 	if res.CommandLine != "" {
 		job.OutputLines = append(job.OutputLines, "Command: "+res.CommandLine)
 	}
