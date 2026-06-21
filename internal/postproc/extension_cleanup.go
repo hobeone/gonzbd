@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -165,13 +166,13 @@ func cleanupEmptyDirs(root *os.Root) {
 		return nil
 	})
 	// Process deepest first.
-	for i := len(dirs) - 1; i >= 0; i-- {
-		d, err := root.Open(dirs[i])
+	for _, dirPath := range slices.Backward(dirs) {
+		d, err := root.Open(dirPath)
 		if err == nil {
 			entries, rerr := d.ReadDir(-1)
 			_ = d.Close()
 			if rerr == nil && len(entries) == 0 {
-				_ = root.Remove(dirs[i])
+				_ = root.Remove(dirPath)
 			}
 		}
 	}
