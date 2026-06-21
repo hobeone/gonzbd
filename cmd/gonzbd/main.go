@@ -322,9 +322,10 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	if err != nil {
 		return fmt.Errorf("web handler: %w", err)
 	}
-	handler := composeRouter(apiSrv, webHandler)
+	httpHandler := composeRouter(apiSrv, webHandler, false)
+	httpsHandler := composeRouter(apiSrv, webHandler, true)
 
-	httpSrv, httpsSrv := newServers(cfg, handler)
+	httpSrv, httpsSrv := newServers(cfg, httpHandler, httpsHandler)
 	if listenOverride != "" {
 		httpSrv.Addr = listenOverride
 	}
@@ -468,11 +469,11 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 
 // newServers constructs the HTTP and HTTPS servers with the configured addresses
 // and handlers.
-func newServers(cfg *config.Config, handler http.Handler) (httpSrv, httpsSrv *http.Server) {
+func newServers(cfg *config.Config, httpHandler, httpsHandler http.Handler) (httpSrv, httpsSrv *http.Server) {
 	httpAddr := net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port))
 	httpSrv = &http.Server{
 		Addr:              httpAddr,
-		Handler:           handler,
+		Handler:           httpHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -482,7 +483,7 @@ func newServers(cfg *config.Config, handler http.Handler) (httpSrv, httpsSrv *ht
 	httpsAddr := net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.HTTPSPort))
 	httpsSrv = &http.Server{
 		Addr:              httpsAddr,
-		Handler:           handler,
+		Handler:           httpsHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -495,7 +496,7 @@ func newServers(cfg *config.Config, handler http.Handler) (httpSrv, httpsSrv *ht
 // composeRouter produces the outer HTTP handler that routes /api requests
 // to the API server, /debug/ to profiling/telemetry handlers, and
 // everything else to the web UI handler.
-func composeRouter(apiSrv *api.Server, webHandler http.Handler) http.Handler {
+func composeRouter(apiSrv *api.Server, webHandler http.Handler, isHTTPS bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api", apiSrv.Handler())
 	mux.Handle("/api/", apiSrv.Handler())
@@ -506,7 +507,21 @@ func composeRouter(apiSrv *api.Server, webHandler http.Handler) http.Handler {
 	mux.Handle("/debug/", http.DefaultServeMux)
 
 	mux.Handle("/", webHandler)
-	return mux
+	return securityHeadersHandler(mux, isHTTPS)
+}
+
+func securityHeadersHandler(next http.Handler, isHTTPS bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none';")
+
+		if isHTTPS {
+			w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // keyPrefix returns the first few chars of an API key for debug logs,
