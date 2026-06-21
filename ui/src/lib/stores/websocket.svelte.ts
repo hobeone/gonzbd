@@ -1,5 +1,4 @@
 import { SvelteSet } from 'svelte/reactivity';
-import { getCookie } from '$lib/utils';
 import { reportDisconnect, reportSuccess, onReconnected } from '$lib/stores/connection.svelte';
 
 export interface WSEvent {
@@ -30,11 +29,6 @@ class WebSocketStore {
 
 		const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 		let url = `${protocol}//${window.location.host}/api/ws`;
-
-		const apikey = getCookie('gonzbd_apikey');
-		if (apikey) {
-			url += `?apikey=${apikey}`;
-		}
 
 		this.#socket = new WebSocket(url);
 

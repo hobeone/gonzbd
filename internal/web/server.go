@@ -4,7 +4,6 @@
 package web
 
 import (
-	"fmt"
 	"io/fs"
 	"net/http"
 
@@ -19,9 +18,6 @@ import (
 //
 // The handler is stateless and safe to serve concurrently.
 func Handler(apiKeyFn func() string) (http.Handler, error) {
-	dist, err := fs.Sub(ui.DistFS, "dist")
-	if err != nil {
-		return nil, fmt.Errorf("web: embedded ui/dist subtree missing — run 'cd ui && bun run build' first: %w", err)
-	}
+	dist, _ := fs.Sub(ui.DistFS, "dist")
 	return NewSPAHandler(dist, apiKeyFn), nil
 }

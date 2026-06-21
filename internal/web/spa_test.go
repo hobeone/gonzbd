@@ -223,3 +223,27 @@ func TestSPACookieSecureFlag_XForwardedProto(t *testing.T) {
 		})
 	}
 }
+
+func TestNewSPAHandler_SetCookie(t *testing.T) {
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+
+	cookies := rr.Result().Cookies()
+	var found *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "gonzbd_apikey" {
+			found = c
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("GET / did not set gonzbd_apikey cookie")
+	}
+	if found.Value != "test-key" {
+		t.Errorf("cookie value = %q, want 'test-key'", found.Value)
+	}
+	if !found.HttpOnly {
+		t.Error("cookie should have HttpOnly=true")
+	}
+}

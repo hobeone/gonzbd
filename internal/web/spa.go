@@ -23,11 +23,11 @@ func NewSPAHandler(dist fs.FS, apiKeyFn func() string) http.Handler {
 
 	setAPIKeyCookie := func(w http.ResponseWriter, req *http.Request) {
 		secure := req.TLS != nil || strings.EqualFold(req.Header.Get("X-Forwarded-Proto"), "https")
-		http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly is intentionally false so JS can read it for X-API-Key headers
+		http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure is set dynamically based on TLS, HttpOnly is true.
 			Name:     "gonzbd_apikey",
 			Value:    apiKeyFn(),
 			Path:     "/",
-			HttpOnly: false, // JS reads it to attach as X-API-Key header
+			HttpOnly: true, // Protected against XSS; browser sends cookie header automatically.
 			Secure:   secure,
 			SameSite: http.SameSiteStrictMode,
 		})
