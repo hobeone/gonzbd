@@ -59,9 +59,9 @@ Data flows through the system in a multi-stage pipeline designed for maximum con
 2.  **Parsing**: The `nzb` package parses the XML into a `Job` which is added to the `queue`.
 3.  **Downloader**: The `downloader` picks up jobs from the `queue`. It manages a pool of `nntp` connections across multiple servers.
 4.  **Fetching**: Each connection goroutine fetches articles (segments) from Usenet servers.
-5.  **Pipeline Bridge**: As articles are downloaded, they are sent through a `pipeline` goroutine (in `internal/app/pipeline.go`).
-6.  **Decoding**: The `pipeline` decodes raw NNTP bodies (usually yEnc) using the `decoder`.
-7.  **Assembly**: Decoded parts are handed to the `assembler`, which writes them to their exact byte offset in the target file using `pwrite`. This allows for out-of-order assembly as segments arrive.
+5.  **Decoding**: The connection goroutine decodes raw NNTP bodies (usually yEnc or UU-encoded) using the `decoder` package concurrently to ensure maximum overlap.
+6.  **Pipeline Bridge**: As decoded article parts are emitted, they are routed through a `pipeline` goroutine (in `internal/app/pipeline.go`) which fans them out.
+7.  **Assembly**: The `pipeline` hands decoded parts to the `assembler`, which writes them to their exact byte offset in the target file using `pwrite`. This allows for out-of-order assembly as segments arrive.
 8.  **On-Demand PAR2 Gate** (optional, default on): when a job's non-deferred files are all assembled, if PAR2 recovery volumes were held back (see *On-Demand PAR2* below), the downloaded data is CRC-verified against the PAR2 index *before* post-processing. Clean ⇒ the job finalizes and the recovery volumes are never downloaded; damaged ⇒ the volumes are un-deferred and fetched via the normal download path, then completion fires again and proceeds to post-processing.
 9.  **Post-Processing**: Once all segments of a job are assembled, the job is handed to the `postproc` package, which runs a configurable chain of stages: repair (PAR2), unpack (RAR/7z/join), deobfuscate, user script, and finalize (move to complete directory). Sorting/renaming is intentionally not implemented — it is handled by external tools (Sonarr, Radarr, etc.).
 
@@ -69,7 +69,7 @@ Data flows through the system in a multi-stage pipeline designed for maximum con
 
 Unlike the original Python implementation's single-threaded selector loop, GoNZBD leverages Go's native concurrency:
 
-- **Goroutine per Connection**: Each NNTP connection runs in its own goroutine, allowing for massive parallelism across servers.
+- **Goroutine per Connection**: Each NNTP connection runs a persistent worker goroutine (`connWorker`) that manages the socket state and handles pipelined fetches and concurrent decodes via sub-goroutines (bounded by configuration settings), allowing for massive parallelism across servers.
 - **Channels for Signaling**: Channels are used to stream `ArticleResult`s from the downloader to the pipeline and assembler.
 - **Shared State Locking**: Hot-path state (the queue, job metadata) is protected by `sync.RWMutex`.
 
