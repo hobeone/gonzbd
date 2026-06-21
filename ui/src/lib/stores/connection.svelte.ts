@@ -166,13 +166,26 @@ class ConnectionStore {
 
 		try {
 			const res = await fetch('/api?mode=version&output=json');
-			
+
 			const redirectUrl = getRedirectUrl(res, '/api?mode=version&output=json');
 			if (redirectUrl) {
 				this.#probing = false;
 				this.reportAuthExpired();
 				setTimeout(() => {
 					window.location.href = redirectUrl;
+				}, 1500);
+				return;
+			}
+
+			// A same-origin 401 (no redirect) means our session cookie is
+			// stale — e.g. the backend restarted and rotated its ephemeral
+			// session key. Reload to pick up a fresh cookie rather than
+			// backing off forever against a credential that can never work.
+			if (res.status === 401) {
+				this.#probing = false;
+				this.reportAuthExpired();
+				setTimeout(() => {
+					window.location.reload();
 				}, 1500);
 				return;
 			}
@@ -211,6 +224,13 @@ class ConnectionStore {
 			if (redirectUrl) {
 				this.reportAuthExpired();
 				window.location.href = redirectUrl;
+				return;
+			}
+			// Stale session cookie (e.g. backend restarted) — reload to
+			// pick up a fresh one.
+			if (res.status === 401) {
+				this.reportAuthExpired();
+				window.location.reload();
 			}
 		} catch {
 			// Ignore network errors to avoid false disconnect triggers during transient blips

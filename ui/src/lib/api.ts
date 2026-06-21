@@ -31,6 +31,23 @@ function checkRedirect(res: Response, requestedUrl: string): boolean {
 		return true;
 	}
 
+	// A same-origin 401 from /api (no redirect involved) means our session
+	// cookie is stale — e.g. the backend restarted and issued a new
+	// ephemeral session key. Reloading re-hits "/" and picks up a fresh
+	// cookie automatically.
+	if (res.status === 401) {
+		if (isAuthExpired()) {
+			return true;
+		}
+
+		reportAuthExpired();
+
+		setTimeout(() => {
+			window.location.reload();
+		}, 1500);
+		return true;
+	}
+
 	return false;
 }
 
