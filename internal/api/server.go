@@ -254,11 +254,6 @@ func (s *Server) getAuth() AuthConfig {
 	s.config.WithRead(func(cfg *config.Config) {
 		auth.APIKey = cfg.General.APIKey
 		auth.NZBKey = cfg.General.NZBKey
-		// When behind a reverse proxy (inet_exposure: inet),
-		// LocalhostBypass is forcibly disabled because RemoteAddr
-		// is the proxy's loopback address, not the real client.
-		auth.LocalhostBypass = cfg.General.LocalhostBypass &&
-			cfg.General.InetExposure != "inet"
 	})
 	return auth
 }

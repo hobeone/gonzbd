@@ -176,44 +176,6 @@ func TestIsSecFetchSiteCrossOrigin(t *testing.T) {
 	}
 }
 
-// ---------- isLocalhost ----------
-
-func TestIsLocalhost_IPv4Loopback(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/", nil)
-	r.RemoteAddr = "127.0.0.1:12345"
-	if !isLocalhost(r) {
-		t.Error("127.0.0.1 should be localhost")
-	}
-}
-
-func TestIsLocalhost_IPv6Loopback(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/", nil)
-	r.RemoteAddr = "[::1]:12345"
-	if !isLocalhost(r) {
-		t.Error("::1 should be localhost")
-	}
-}
-
-func TestIsLocalhost_ExternalIP(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/", nil)
-	r.RemoteAddr = "192.168.1.100:12345"
-	if isLocalhost(r) {
-		t.Error("192.168.1.100 should not be localhost")
-	}
-}
-
-func TestIsLocalhost_UnparseableAddr(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/", nil)
-	r.RemoteAddr = "not-an-ip"
-	if isLocalhost(r) {
-		t.Error("unparseable addr should not be localhost")
-	}
-}
-
 // ---------- apiKeyFromRequest ----------
 
 func TestApiKeyFromRequest_QueryApikey(t *testing.T) {
@@ -276,29 +238,6 @@ func TestApiKeyFromRequest_None(t *testing.T) {
 }
 
 // ---------- callerLevel ----------
-
-func TestCallerLevel_LocalhostBypassGrants(t *testing.T) {
-	t.Parallel()
-	cfg := AuthConfig{APIKey: "0123456789abcdef", LocalhostBypass: true}
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.RemoteAddr = "127.0.0.1:12345"
-	r.Host = "localhost:4289"
-	if got := callerLevel(r, cfg); got != LevelAdmin {
-		t.Errorf("localhost bypass: got %d, want LevelAdmin", got)
-	}
-}
-
-func TestCallerLevel_LocalhostBypassBlockedByCrossOrigin(t *testing.T) {
-	t.Parallel()
-	cfg := AuthConfig{APIKey: "0123456789abcdef", LocalhostBypass: true}
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.RemoteAddr = "127.0.0.1:12345"
-	r.Host = "localhost:4289"
-	r.Header.Set("Origin", "http://evil.com")
-	if got := callerLevel(r, cfg); got == LevelAdmin {
-		t.Error("cross-origin request from localhost should NOT get admin")
-	}
-}
 
 func TestCallerLevel_ValidAPIKey(t *testing.T) {
 	t.Parallel()
