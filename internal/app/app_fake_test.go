@@ -22,7 +22,6 @@ type fakeDownloader struct {
 	speed            float64
 	paused           bool
 	completions      chan *downloader.ArticleResult
-	onJobHopeless    func(jobID string)
 	maxArtTries      int
 	maxArtOpt        int
 	topOnly          bool
@@ -98,12 +97,6 @@ func (f *fakeDownloader) Resume() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.paused = false
-}
-
-func (f *fakeDownloader) SetOnJobHopeless(cb func(jobID string)) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.onJobHopeless = cb
 }
 
 func (f *fakeDownloader) DisconnectAll() {

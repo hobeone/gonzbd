@@ -2,9 +2,13 @@ package app
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,9 +16,9 @@ import (
 func TestGenerateSelfSigned(t *testing.T) {
 	t.Parallel()
 
-	certPEM, keyPEM, err := GenerateSelfSigned()
+	certPEM, keyPEM, err := generateSelfSigned()
 	if err != nil {
-		t.Fatalf("GenerateSelfSigned: %v", err)
+		t.Fatalf("generateSelfSigned: %v", err)
 	}
 
 	// Verify cert PEM is valid
@@ -121,14 +125,14 @@ func TestGenerateSelfSignedUniqueness(t *testing.T) {
 	t.Parallel()
 
 	// Generate two certificates and verify they have different serial numbers
-	cert1PEM, _, err := GenerateSelfSigned()
+	cert1PEM, _, err := generateSelfSigned()
 	if err != nil {
-		t.Fatalf("GenerateSelfSigned: %v", err)
+		t.Fatalf("generateSelfSigned: %v", err)
 	}
 
-	cert2PEM, _, err := GenerateSelfSigned()
+	cert2PEM, _, err := generateSelfSigned()
 	if err != nil {
-		t.Fatalf("GenerateSelfSigned: %v", err)
+		t.Fatalf("generateSelfSigned: %v", err)
 	}
 
 	block1, _ := pem.Decode(cert1PEM)
@@ -258,5 +262,69 @@ func TestWriteFileAtomic_Direct(t *testing.T) {
 	info := statFile(t, path)
 	if perm := info.Mode().Perm(); perm != 0o644 {
 		t.Errorf("perm = %#o, want %#o", perm, 0o644)
+	}
+}
+
+func TestWriteSelfSignedErrors(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Create a regular file to block directory creation/writing.
+	blockerFile := filepath.Join(tmpDir, "blocked_path")
+	if err := os.WriteFile(blockerFile, []byte("blocker"), 0o644); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+
+	t.Run("cert_write_error", func(t *testing.T) {
+		// Attempting to write where the parent dir is a regular file.
+		badCertPath := filepath.Join(blockerFile, "cert.pem")
+		badKeyPath := filepath.Join(tmpDir, "key.pem")
+		err := WriteSelfSigned(badCertPath, badKeyPath)
+		if err == nil {
+			t.Fatal("expected error writing to invalid cert path, got nil")
+		}
+		if !strings.Contains(err.Error(), "write certificate") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("key_write_error_and_cleanup", func(t *testing.T) {
+		// Valid path for cert, but invalid for key (parent dir is a regular file).
+		certPath := filepath.Join(tmpDir, "valid-cert.pem")
+		badKeyPath := filepath.Join(blockerFile, "key.pem")
+		err := WriteSelfSigned(certPath, badKeyPath)
+		if err == nil {
+			t.Fatal("expected error writing to invalid key path, got nil")
+		}
+		if !strings.Contains(err.Error(), "write key") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+		// Verify that the cert file was cleaned up/deleted.
+		if _, err := os.Stat(certPath); !os.IsNotExist(err) {
+			t.Errorf("expected cert file to be removed, but got: %v", err)
+		}
+	})
+}
+
+type errorReader struct{}
+
+func (errorReader) Read(p []byte) (n int, err error) {
+	return 0, fmt.Errorf("mock random reader error")
+}
+
+func TestGenerateSelfSignedErrors(t *testing.T) {
+	oldReader := rand.Reader
+	t.Cleanup(func() {
+		rand.Reader = oldReader
+	})
+	rand.Reader = errorReader{}
+
+	_, _, err := generateSelfSigned()
+	if err == nil {
+		t.Fatal("expected error from generateSelfSigned when random reader fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "generate ed25519 key") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }

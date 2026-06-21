@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// GenerateSelfSigned generates an Ed25519 key and self-signed certificate
+// generateSelfSigned generates an Ed25519 key and self-signed certificate
 // suitable for HTTPS. It returns the PEM-encoded certificate and key as byte slices.
 //
 // Ed25519 is chosen over RSA for its smaller key size (32-byte public key vs
@@ -24,7 +24,7 @@ import (
 // The certificate has CN=gonzbd and SANs for 127.0.0.1, ::1, and localhost.
 // Validity is from now-1h (for clock skew) to now+5 years. SerialNumber is a
 // random 128-bit value.
-func GenerateSelfSigned() (certPEM, keyPEM []byte, err error) {
+func generateSelfSigned() (certPEM, keyPEM []byte, err error) {
 	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate ed25519 key: %w", err)
@@ -84,7 +84,7 @@ func GenerateSelfSigned() (certPEM, keyPEM []byte, err error) {
 // certPath is written with permissions 0o644; keyPath is written with permissions 0o600.
 // Writes are atomic (temp file + rename).
 func WriteSelfSigned(certPath, keyPath string) error {
-	certPEM, keyPEM, err := GenerateSelfSigned()
+	certPEM, keyPEM, err := generateSelfSigned()
 	if err != nil {
 		return err
 	}
