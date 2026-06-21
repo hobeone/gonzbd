@@ -126,36 +126,6 @@ func TestCallerLevel_BadKey(t *testing.T) {
 	}
 }
 
-func TestCallerLevel_LocalhostBypass(t *testing.T) {
-	t.Parallel()
-	req := httptest.NewRequest(http.MethodGet, "/api?mode=version", nil)
-	req.RemoteAddr = "127.0.0.1:12345"
-	cfg := AuthConfig{APIKey: testAPIKey, LocalhostBypass: true}
-	if got := callerLevel(req, cfg); got != LevelAdmin {
-		t.Errorf("level = %d; want %d (admin via localhost)", got, LevelAdmin)
-	}
-}
-
-func TestCallerLevel_LocalhostBypassDisabled(t *testing.T) {
-	t.Parallel()
-	req := httptest.NewRequest(http.MethodGet, "/api?mode=version", nil)
-	req.RemoteAddr = "127.0.0.1:12345"
-	cfg := AuthConfig{APIKey: testAPIKey, LocalhostBypass: false}
-	if got := callerLevel(req, cfg); got != 0 {
-		t.Errorf("level = %d; want 0 (localhost bypass disabled, no key)", got)
-	}
-}
-
-func TestCallerLevel_IPv6Localhost(t *testing.T) {
-	t.Parallel()
-	req := httptest.NewRequest(http.MethodGet, "/api?mode=version", nil)
-	req.RemoteAddr = "[::1]:54321"
-	cfg := AuthConfig{APIKey: testAPIKey, LocalhostBypass: true}
-	if got := callerLevel(req, cfg); got != LevelAdmin {
-		t.Errorf("level = %d; want %d (admin via ::1)", got, LevelAdmin)
-	}
-}
-
 func TestCallerLevel_HeaderKey(t *testing.T) {
 	t.Parallel()
 	req := httptest.NewRequest(http.MethodGet, "/api?mode=version", nil)

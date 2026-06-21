@@ -41,16 +41,6 @@ func TestConfig_Set(t *testing.T) {
 			},
 		},
 		{
-			"set bool (localhost_bypass)",
-			"general", "localhost_bypass", "true",
-			false,
-			func(t *testing.T, c *Config) {
-				if !c.General.LocalhostBypass {
-					t.Error("LocalhostBypass is false, want true")
-				}
-			},
-		},
-		{
 			"set ByteSize (bandwidth_max) numeric",
 			"downloads", "bandwidth_max", "1048576",
 			false,

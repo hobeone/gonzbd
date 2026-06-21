@@ -783,7 +783,6 @@ Each server is a subsection of `[servers]`:
 - **API key** (`api_key`): Required for most operations. Pass as `?apikey=<key>` or POST field.
 - **NZB key** (`nzb_key`): Alternative key for NZB upload only (addfile, addurl).
 - **Session cookie**: Web UI uses session-based auth after username/password login.
-- **Localhost bypass**: Requests from `127.0.0.1` can be configured to bypass auth (`local_ranges`).
 
 ### 10.2 Endpoint
 
