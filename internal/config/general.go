@@ -24,12 +24,6 @@ type GeneralConfig struct {
 	APIKey string `yaml:"api_key" json:"api_key"`
 	// NZBKey authenticates NZB-upload API requests. 16-character lowercase hex.
 	NZBKey string `yaml:"nzb_key" json:"nzb_key"`
-	// Username for the web UI. Empty disables basic auth.
-	Username string `yaml:"username" json:"username"`
-	// Password for the web UI. Stored as a hashed value (format set by
-	// the auth subsystem); plaintext is rejected at validation time
-	// when the auth subsystem is wired up.
-	Password string `yaml:"password" json:"password"`
 
 	// DownloadDir is the work-in-progress directory for incomplete
 	// downloads. Created on startup if it does not exist.
