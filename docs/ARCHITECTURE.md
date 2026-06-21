@@ -37,7 +37,6 @@ The project follows a standard Go project layout:
     - `postproc/`: Post-processing pipeline: quickcheck, repair, unpack, deobfuscate, finalize, script, and supporting stages.
     - `queue/`: The active download queue and job state management with lazy article index and transient field recomputation.
     - `rarheader/`: RAR archive header parsing with filename sanitization.
-    - `scheduler/`: Cron-like task scheduling.
     - `telemetry/`: Runtime metrics collection and export.
     - `types/`: Shared type definitions used across packages.
     - `unpack/`: Archive extraction wrappers for RAR, 7z, and split file joining.
@@ -154,7 +153,7 @@ When running in daemon mode (`--serve`), the application follows this sequence i
 5.  **Persistence**: Opens the SQLite history database (`history.db`) and runs any pending `goose` migrations.
 6.  **Application Core**: Constructs the `app.Application` orchestrator, which initializes the internal `queue`, `downloader`, `assembler`, and `postProcessor`.
 7.  **Subsystem Start**: Invokes `application.Start()`, which boots the background goroutines for the pipeline, downloader, and post-processor.
-8.  **Ancillary services**: Starts the bandwidth meter (`bpsmeter`), notifier, directory scanner (`dirscanner`), and scheduler.
+8.  **Ancillary services**: Starts the bandwidth meter (`bpsmeter`), notifier, and directory scanner (`dirscanner`).
 9.  **API & Web**: Constructs the `api.Server` and `web.Handler`, binding them to a single HTTP listener (and optionally a separate HTTPS listener).
 10. **Wait**: Blocks until a termination signal (SIGINT/SIGTERM) is received, then performs a graceful shutdown (stop producers → drain consumers → cancel context → wait → cleanup).
 
@@ -168,6 +167,7 @@ The GoNZBD binary serves both the functional API and the modern web UI from a si
 - **Error Logging**: All non-200 API responses are automatically logged. Status codes 500 and above are logged as errors, while other non-200 codes (4xx) are logged as warnings, including the explanation of what went wrong.
 - **WebSockets**: Located at `/api/ws`, it provides real-time state updates to the UI using a broadcaster pattern.
 - **Web UI**: The Svelte 5 SPA is embedded in the binary using `go:embed` (see `ui/embed.go`). The `internal/web` package handles serving these static assets and ensures SPA routing (fallback to `index.html`).
+- **Authentication**: Security is enforced at `/api` and `/api/ws` using either the API key (passed via `?apikey=` parameter or `X-Api-Key` header) or the NZB key (for upload-only modes). For Web UI browser-based requests, the backend sets a secure `HttpOnly` session cookie (`gonzbd_apikey`) automatically upon API verification during navigation. Local Basic Authentication (username/password configurations) and localhost bypasses are deprecated and removed from the core application, deferring ingress auth to front-end reverse proxies.
 
 ### Svelte 5 Development Caveats
 
