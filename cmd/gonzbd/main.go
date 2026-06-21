@@ -323,7 +323,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		var key string
 		cfg.WithRead(func(c *config.Config) { key = c.General.APIKey })
 		return key
-	}, nil)
+	})
 	if err != nil {
 		return fmt.Errorf("web handler: %w", err)
 	}
