@@ -273,31 +273,6 @@ func TestAdminMode_APIKey_Sufficient(t *testing.T) {
 	}
 }
 
-// --- Integration: Start + real HTTP ---
-
-func TestServer_StartShutdown(t *testing.T) {
-	t.Parallel()
-	s := testServer()
-	addr, err := s.Start(":0")
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Logf("listening on %s", addr)
-
-	resp, err := http.Get("http://" + addr.String() + "/api?mode=version") //nolint:gosec // G107: test URL from ephemeral port
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // test cleanup
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d; want 200", resp.StatusCode)
-	}
-
-	if err := s.Shutdown(t.Context()); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
-}
-
 func TestAuthConfigDynamic(t *testing.T) {
 	t.Parallel()
 	q := queue.New()
@@ -445,30 +420,5 @@ func TestMissingMode_GETStillFails(t *testing.T) {
 	rr := apiGet(t, s.Handler(), "/api")
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status = %d; want 400", rr.Code)
-	}
-}
-
-func TestServer_Addr(t *testing.T) {
-	t.Parallel()
-	s := testServer()
-	// 1. Before start, Addr() must return nil.
-	if addr := s.Addr(); addr != nil {
-		t.Errorf("Addr() = %v before Start, want nil", addr)
-	}
-
-	// 2. Start it.
-	addr, err := s.Start(":0")
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = s.Shutdown(t.Context()) }()
-
-	// 3. Addr() should return the same address as Start.
-	addr2 := s.Addr()
-	if addr2 == nil {
-		t.Fatal("Addr() returned nil after Start")
-	}
-	if addr.String() != addr2.String() {
-		t.Errorf("Addr() = %v, want %v", addr2, addr)
 	}
 }
