@@ -9,8 +9,7 @@ general:
   https_key: ""
   api_key: 0123456789abcdef
   nzb_key: fedcba9876543210
-  username: admin
-  password: ""
+
   download_dir: Downloads/incomplete
   complete_dir: Downloads/complete
   dirscan_dir: Downloads/watch

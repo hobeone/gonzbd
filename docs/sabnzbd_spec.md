@@ -624,8 +624,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `https_key` | path | | TLS key path |
 | `api_key` | string | (generated) | 16-char hex API key |
 | `nzb_key` | string | (generated) | 16-char hex NZB upload key |
-| `username` | string | | Web UI username |
-| `password` | string | | Web UI password (hashed) |
+
 | `download_dir` | path | `~/Downloads/incomplete` | Work-in-progress directory |
 | `complete_dir` | path | `~/Downloads/complete` | Final output directory |
 | `dirscan_dir` | path | | Watched folder path |
@@ -782,7 +781,7 @@ Each server is a subsection of `[servers]`:
 
 - **API key** (`api_key`): Required for most operations. Pass as `?apikey=<key>` or POST field.
 - **NZB key** (`nzb_key`): Alternative key for NZB upload only (addfile, addurl).
-- **Session cookie**: Web UI uses session-based auth after username/password login.
+- **Session cookie**: Web UI sets a session-based auth cookie (`gonzbd_apikey`) automatically on navigation.
 
 ### 10.2 Endpoint
 
@@ -1271,9 +1270,9 @@ These are the GoNZBD admin files (the SABnzbd originals are noted for reference)
 
 ### 17.2 Web UI Authentication
 
-- **Username + password**: Stored as bcrypt hash (or plaintext legacy)
-- **Session cookie**: Set after successful login; HTTP-only
-- **HTTPS**: Self-signed cert generated via `certgen.py`; `cryptography` library used
+- **No password**: Authentication is handled upstream (reverse proxy). No username/password configurations exist.
+- **Session cookie**: `gonzbd_apikey` set automatically on access, enabling secure client-side API authentication.
+- **HTTPS**: Self-signed cert generated when `https_port > 0` is configured.
 
 ### 17.3 NNTP Password Handling
 
