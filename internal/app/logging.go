@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -198,8 +199,7 @@ func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
 	effectiveLevel := globalLvl
 
 	componentLevelsMu.RLock()
-	for i := len(components) - 1; i >= 0; i-- {
-		p := components[i]
+	for _, p := range slices.Backward(components) {
 		for p != "" {
 			if lvl, ok := componentLevels[p]; ok {
 				effectiveLevel = lvl
