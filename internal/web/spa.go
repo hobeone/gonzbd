@@ -7,12 +7,6 @@ import (
 	"strings"
 )
 
-// AuthCheck is called before serving the SPA. It returns true if the
-// request is authenticated (valid Basic Auth credentials, localhost
-// bypass, or API key cookie). When it returns false, it must have
-// written a 401 response.
-type AuthCheck func(w http.ResponseWriter, r *http.Request) bool
-
 // NewSPAHandler returns an http.Handler that serves a Vite-built SPA.
 // The dist parameter should be rooted at the build output directory
 // (index.html at the root, hashed assets under _app/).
@@ -21,15 +15,10 @@ type AuthCheck func(w http.ResponseWriter, r *http.Request) bool
 // does not match a real file is served as index.html so that the SPA's
 // client-side router can handle it.
 //
-// When the root "/" is requested and auth succeeds, it sets a
+// When the root "/" is requested, it sets a
 // "gonzbd_apikey" cookie so the client-side JS can hit the /api without
 // needing an explicit key.
-//
-// authCheck is called on every navigation request (root and SPA
-// catch-all). Static asset requests (JS/CSS/images) are served without
-// auth so that browser caching works. If authCheck is nil, all requests
-// are allowed (useful for tests).
-func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http.Handler {
+func NewSPAHandler(dist fs.FS, apiKeyFn func() string) http.Handler {
 	fileServer := http.FileServerFS(dist)
 
 	setAPIKeyCookie := func(w http.ResponseWriter, req *http.Request) {
@@ -47,9 +36,6 @@ func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqPath := r.URL.Path
 		if reqPath == "/" {
-			if authCheck != nil && !authCheck(w, r) {
-				return
-			}
 			w.Header().Set("Cache-Control", "no-cache")
 			setAPIKeyCookie(w, r)
 			fileServer.ServeHTTP(w, r)
@@ -80,9 +66,6 @@ func NewSPAHandler(dist fs.FS, apiKeyFn func() string, authCheck AuthCheck) http
 		}
 
 		// SPA catch-all: serve index.html for client-side routing.
-		if authCheck != nil && !authCheck(w, r) {
-			return
-		}
 		// Clone the request so the original path is preserved for
 		// upstream logging middleware.
 		r2 := r.Clone(r.Context())

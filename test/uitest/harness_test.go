@@ -93,7 +93,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	mux := http.NewServeMux()
 	mux.Handle("/api", apiSrv.Handler())
 	mux.Handle("/api/ws", apiSrv.Handler())
-	webHandler, err := web.Handler(func() string { return testAPIKey }, nil)
+	webHandler, err := web.Handler(func() string { return testAPIKey })
 	if err != nil {
 		t.Fatalf("web.Handler: %v", err)
 	}
