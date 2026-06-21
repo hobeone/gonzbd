@@ -32,6 +32,7 @@
 		<ConfigInput section="general" keyword="nzb_key" label="NZB Key" value={configData.general.nzb_key} description="Key for NZB uploads only." onupdate={onFieldUpdate} />
 		<ConfigInput section="general" keyword="download_dir" label="Download Directory" value={configData.general.download_dir} description="Path for incomplete downloads." onupdate={onFieldUpdate} />
 		<ConfigInput section="general" keyword="complete_dir" label="Complete Directory" value={configData.general.complete_dir} description="Path for finished downloads." onupdate={onFieldUpdate} />
+		<ConfigInput section="general" keyword="dirscan_dir" label="Watch Directory" value={configData.general.dirscan_dir} placeholder="(disabled)" description="Folder to watch for dropped-in NZB files. Leave empty to disable." requiresRestart={true} onupdate={onFieldUpdate} />
 		<ConfigSelect section="general" keyword="log_level" label="Log Level" value={configData.general.log_level} options={logOptions} description="Minimum baseline log level. For advanced per-component overrides (e.g. downloader: debug, api: warn), please configure the 'log_levels' map directly in the gonzbd.yaml configuration file." onupdate={onFieldUpdate} />
 	</div>
 </section>
