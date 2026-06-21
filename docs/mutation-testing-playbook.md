@@ -30,6 +30,7 @@ gremlins unleash --timeout-coefficient=40 ./internal/<package>
 - Run it in the background (`run_in_background: true` if using the Agent
   tools) — even a focused package run produces a long mutant log and you only
   need the tail summary plus the `LIVED`/`NOT COVERED` lines.
+- **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will completely fill up `/tmp` (potentially causing system hangs or build failures). Always scope it to a single focused package or run it on local diffs.
 
 The summary line looks like:
 ```
