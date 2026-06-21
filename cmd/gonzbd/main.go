@@ -320,8 +320,12 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	if err != nil {
 		return fmt.Errorf("web handler: %w", err)
 	}
-	httpHandler := composeRouter(apiSrv, webHandler, false)
-	httpsHandler := composeRouter(apiSrv, webHandler, true)
+	scriptHashes, err := web.IndexScriptHashes()
+	if err != nil {
+		return fmt.Errorf("web script hashes: %w", err)
+	}
+	httpHandler := composeRouter(apiSrv, webHandler, false, scriptHashes)
+	httpsHandler := composeRouter(apiSrv, webHandler, true, scriptHashes)
 
 	httpSrv, httpsSrv := newServers(cfg, httpHandler, httpsHandler)
 	if listenOverride != "" {
@@ -494,7 +498,7 @@ func newServers(cfg *config.Config, httpHandler, httpsHandler http.Handler) (htt
 // composeRouter produces the outer HTTP handler that routes /api requests
 // to the API server, /debug/ to profiling/telemetry handlers, and
 // everything else to the web UI handler.
-func composeRouter(apiSrv *api.Server, webHandler http.Handler, isHTTPS bool) http.Handler {
+func composeRouter(apiSrv *api.Server, webHandler http.Handler, isHTTPS bool, scriptHashes []string) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api", apiSrv.Handler())
 	mux.Handle("/api/", apiSrv.Handler())
@@ -505,15 +509,38 @@ func composeRouter(apiSrv *api.Server, webHandler http.Handler, isHTTPS bool) ht
 	mux.Handle("/debug/", http.DefaultServeMux)
 
 	mux.Handle("/", webHandler)
-	return securityHeadersHandler(mux, isHTTPS)
+	return securityHeadersHandler(mux, isHTTPS, contentSecurityPolicy(scriptHashes))
 }
 
-func securityHeadersHandler(next http.Handler, isHTTPS bool) http.Handler {
+// contentSecurityPolicy builds the CSP header value. scriptHashes are the
+// 'sha256-...' source expressions for the SPA's inline <script> tags (see
+// web.IndexScriptHashes) — computed at startup from the actual embedded
+// build output rather than hardcoded, so a SvelteKit upgrade that changes
+// the bootstrap script's content can't silently desync the policy from
+// what's served. Google Fonts domains are allowlisted because the SPA
+// loads Roboto and Material Symbols directly from fonts.googleapis.com /
+// fonts.gstatic.com rather than self-hosting them.
+func contentSecurityPolicy(scriptHashes []string) string {
+	var scriptSrc strings.Builder
+	scriptSrc.WriteString("script-src 'self'")
+	for _, h := range scriptHashes {
+		scriptSrc.WriteString(" " + h)
+	}
+	return scriptSrc.String() +
+		"; default-src 'self'" +
+		"; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com" +
+		"; font-src 'self' https://fonts.gstatic.com" +
+		"; img-src 'self' data:" +
+		"; connect-src 'self' ws: wss:" +
+		"; frame-ancestors 'none';"
+}
+
+func securityHeadersHandler(next http.Handler, isHTTPS bool, csp string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none';")
+		w.Header().Set("Content-Security-Policy", csp)
 
 		if isHTTPS {
 			w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")

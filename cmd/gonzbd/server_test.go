@@ -52,6 +52,42 @@ func TestNewServersTimeouts(t *testing.T) {
 	}
 }
 
+func TestContentSecurityPolicy(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		scriptHashes []string
+		wantCSP      string
+	}{
+		{
+			name:         "no inline scripts",
+			scriptHashes: nil,
+			wantCSP:      "script-src 'self'; default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none';",
+		},
+		{
+			name:         "one inline script hash",
+			scriptHashes: []string{"'sha256-AAAA='"},
+			wantCSP:      "script-src 'self' 'sha256-AAAA='; default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none';",
+		},
+		{
+			name:         "multiple inline script hashes",
+			scriptHashes: []string{"'sha256-AAAA='", "'sha256-BBBB='"},
+			wantCSP:      "script-src 'self' 'sha256-AAAA=' 'sha256-BBBB='; default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none';",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := contentSecurityPolicy(tc.scriptHashes)
+			if got != tc.wantCSP {
+				t.Errorf("contentSecurityPolicy(%v) = %q; want %q", tc.scriptHashes, got, tc.wantCSP)
+			}
+		})
+	}
+}
+
 func TestSecurityHeaders(t *testing.T) {
 	cfg, err := config.Default()
 	if err != nil {
@@ -83,9 +119,11 @@ func TestSecurityHeaders(t *testing.T) {
 		},
 	}
 
+	scriptHashes := []string{"'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='"}
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			router := composeRouter(apiSrv, dummyHandler, tc.isHTTPS)
+			router := composeRouter(apiSrv, dummyHandler, tc.isHTTPS, scriptHashes)
 			req := httptest.NewRequest(http.MethodGet, "/random-path", nil)
 			rr := httptest.NewRecorder()
 			router.ServeHTTP(rr, req)
@@ -108,7 +146,7 @@ func TestSecurityHeaders(t *testing.T) {
 			}
 
 			gotCSP := headers.Get("Content-Security-Policy")
-			wantCSP := "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none';"
+			wantCSP := "script-src 'self' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='; default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none';"
 			if gotCSP != wantCSP {
 				t.Errorf("Content-Security-Policy = %q; want %q", gotCSP, wantCSP)
 			}
