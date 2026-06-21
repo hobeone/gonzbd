@@ -16,6 +16,7 @@ describe('GeneralSection', () => {
 			nzb_key: 'nzb-key-456',
 			download_dir: '/tmp/incomplete',
 			complete_dir: '/tmp/complete',
+			dirscan_dir: '/tmp/watch',
 			log_level: 'info'
 		}
 	};
@@ -30,7 +31,7 @@ describe('GeneralSection', () => {
 		expect(screen.getByText(/Server connectivity and basic daemon tuning/)).toBeInTheDocument();
 	});
 
-	it('renders all 7 config input fields', () => {
+	it('renders all 8 config input fields', () => {
 		render(GeneralSection, { configData: mockConfig, onFieldUpdate: vi.fn() });
 		expect(screen.getByText('Host')).toBeInTheDocument();
 		expect(screen.getByText('Port')).toBeInTheDocument();
@@ -38,6 +39,7 @@ describe('GeneralSection', () => {
 		expect(screen.getByText('NZB Key')).toBeInTheDocument();
 		expect(screen.getByText('Download Directory')).toBeInTheDocument();
 		expect(screen.getByText('Complete Directory')).toBeInTheDocument();
+		expect(screen.getByText('Watch Directory')).toBeInTheDocument();
 		expect(screen.getByText('Log Level')).toBeInTheDocument();
 	});
 
