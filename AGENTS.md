@@ -24,12 +24,12 @@ the automated Usenet binary newsreader. It targets fresh installations and is
 implementation lives at `../sabnzbd/`.
 
 - **Module path:** `github.com/hobeone/gonzbd`
-- **Go version:** 1.25 (toolchain 1.26.2)
+- **Go version:** 1.26.4 (toolchain 1.26.4)
 - **Status:** Core backend download pipeline and legacy mode-dispatch API
   (`/api?mode=...`) are functional. The Glitter web UI port (Phase 12) is the
   current active focus.
 - **Main technologies:**
-    - **Language:** Go 1.25+
+    - **Language:** Go 1.26.4+
     - **Configuration:** YAML (`gopkg.in/yaml.v3`)
     - **Persistence:** SQLite (`modernc.org/sqlite`, pure Go) for history;
       JSON+gzip for queue state.
@@ -92,6 +92,8 @@ golangci-lint run ./...                                     # Linting
 gremlins unleash --timeout-coefficient 100 ./internal/queue # Mutation testing on a package
 gremlins unleash --timeout-coefficient 100 --diff origin/main # Mutation testing on local changes only
 ```
+
+> **WARNING:** Running `gremlins` on the entire repository (e.g. `./...` or `./internal/...`) is forbidden. It will run dozens of mutant compiles in parallel, exhausting disk space and completely filling up `/tmp`. Always scope `gremlins` to a single focused package or use the `--diff` flag.
 
 > **See `docs/TESTING.md` for the full testing guide** — build tags, required
 > tools, per-file descriptions, and a decision guide for which suites to run
@@ -156,7 +158,7 @@ the diff must be killed by a test (no surviving/lived mutants). If a mutant
 lives, the test suite does not actually pin that behavior — add or strengthen
 the test rather than weakening the gate. Run it scoped to the changed package
 during development (`gremlins unleash --timeout-coefficient 100 ./internal/<pkg>`)
-and against the diff before commit. See **`docs/mutation-testing-playbook.md`**
+and against the diff before commit. **NEVER run gremlins on the entire repository (e.g. `./...`) as it will fill up `/tmp` and exhaust disk space.** See **`docs/mutation-testing-playbook.md`**
 for the repeatable process for triaging `LIVED`/`NOT COVERED` mutants and
 closing the gaps with targeted tests.
 
