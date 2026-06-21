@@ -281,14 +281,43 @@ func TestCallerLevel_MissingKey(t *testing.T) {
 
 func TestCallerLevel_CookieBlockedByCrossOrigin(t *testing.T) {
 	t.Parallel()
-	cfg := AuthConfig{APIKey: "0123456789abcdef"}
+	cfg := AuthConfig{APIKey: "0123456789abcdef", SessionKey: "session000session000"}
+	r := httptest.NewRequest("GET", "/api", nil)
+	r.RemoteAddr = "192.168.1.1:12345"
+	r.Host = "localhost:4289"
+	r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: "session000session000"})
+	r.Header.Set("Origin", "http://evil.com")
+	if got := callerLevel(r, cfg); got != 0 {
+		t.Errorf("cookie + cross-origin: got %d, want 0", got)
+	}
+}
+
+func TestCallerLevel_ValidSessionKeyCookie(t *testing.T) {
+	t.Parallel()
+	cfg := AuthConfig{APIKey: "0123456789abcdef", SessionKey: "session000session000"}
+	r := httptest.NewRequest("GET", "/api", nil)
+	r.RemoteAddr = "192.168.1.1:12345"
+	r.Host = "localhost:4289"
+	r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: "session000session000"})
+	if got := callerLevel(r, cfg); got != LevelAdmin {
+		t.Errorf("valid session key cookie: got %d, want LevelAdmin", got)
+	}
+}
+
+// TestCallerLevel_CookieDoesNotAcceptAPIKey pins the core security property
+// of the session key split: the permanent APIKey must not authenticate via
+// the cookie path, even though it would authenticate via query/header. A
+// leaked browser cookie must never be replayable as the long-lived key used
+// by third-party integrations.
+func TestCallerLevel_CookieDoesNotAcceptAPIKey(t *testing.T) {
+	t.Parallel()
+	cfg := AuthConfig{APIKey: "0123456789abcdef", SessionKey: "session000session000"}
 	r := httptest.NewRequest("GET", "/api", nil)
 	r.RemoteAddr = "192.168.1.1:12345"
 	r.Host = "localhost:4289"
 	r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: "0123456789abcdef"})
-	r.Header.Set("Origin", "http://evil.com")
 	if got := callerLevel(r, cfg); got != 0 {
-		t.Errorf("cookie + cross-origin: got %d, want 0", got)
+		t.Errorf("APIKey via cookie: got %d, want 0 (must not authenticate)", got)
 	}
 }
 

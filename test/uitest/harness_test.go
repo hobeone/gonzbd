@@ -93,7 +93,9 @@ func newTestEnv(t *testing.T) *testEnv {
 	mux := http.NewServeMux()
 	mux.Handle("/api", apiSrv.Handler())
 	mux.Handle("/api/ws", apiSrv.Handler())
-	webHandler, err := web.Handler(func() string { return testAPIKey })
+	// Mirror production wiring: the SPA cookie carries the API server's
+	// ephemeral session key, not General.APIKey.
+	webHandler, err := web.Handler(apiSrv.SessionKey)
 	if err != nil {
 		t.Fatalf("web.Handler: %v", err)
 	}

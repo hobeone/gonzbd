@@ -273,6 +273,42 @@ func TestAdminMode_APIKey_Sufficient(t *testing.T) {
 	}
 }
 
+func TestSessionKey_GrantsAdminViaCookie(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	req := httptest.NewRequest(http.MethodGet, "/api?mode=queue", nil)
+	req.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: s.SessionKey()})
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionKey_DoesNotAcceptAPIKey(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	req := httptest.NewRequest(http.MethodGet, "/api?mode=queue", nil)
+	req.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: testAPIKey})
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d; want 401 (the permanent APIKey must not authenticate via cookie)", rr.Code)
+	}
+}
+
+func TestSessionKey_UniquePerServerInstance(t *testing.T) {
+	t.Parallel()
+	s1 := testServer()
+	s2 := testServer()
+	if s1.SessionKey() == "" {
+		t.Fatal("SessionKey() must not be empty")
+	}
+	if s1.SessionKey() == s2.SessionKey() {
+		t.Error("two server instances must not share a session key")
+	}
+}
+
 func TestAuthConfigDynamic(t *testing.T) {
 	t.Parallel()
 	q := queue.New()
