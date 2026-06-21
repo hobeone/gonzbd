@@ -72,10 +72,9 @@ func newTestEnv(t *testing.T) *testEnv {
 	// Initialize all slices to non-nil so JSON encodes as [] not null.
 	cfg := &config.Config{
 		General: config.GeneralConfig{
-			Host:            "0.0.0.0",
-			Port:            4289,
-			APIKey:          testAPIKey,
-			LocalhostBypass: true,
+			Host:   "0.0.0.0",
+			Port:   4289,
+			APIKey: testAPIKey,
 		},
 		Servers:    []config.ServerConfig{},
 		Categories: []config.CategoryConfig{},

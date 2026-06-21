@@ -26,8 +26,7 @@ const (
 	LevelAdmin AccessLevel = 3
 )
 
-// AuthConfig supplies the keys and localhost-bypass settings to the auth
-// middleware.
+// AuthConfig supplies the keys to the auth middleware.
 type AuthConfig struct {
 	// APIKey is the full API key (16-char hex). Required for LevelAdmin
 	// and sufficient for all levels.
@@ -36,18 +35,11 @@ type AuthConfig struct {
 	// NZBKey is the upload-only key. Sufficient for LevelOpen and
 	// LevelProtected, but not LevelAdmin.
 	NZBKey string
-
-	// LocalhostBypass, when true, grants LevelAdmin to any request from
-	// 127.0.0.0/8 or ::1. Mirrors Python's local_ranges behavior.
-	LocalhostBypass bool
 }
 
 // callerLevel determines the highest access level the caller can reach
-// based on the supplied credentials and source address.
+// based on the supplied credentials.
 func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
-	if cfg.LocalhostBypass && isLocalhost(r) && !isCrossOrigin(r) {
-		return LevelAdmin
-	}
 	key, fromCookie := apiKeyFromRequest(r)
 	if key == "" {
 		return 0
@@ -106,20 +98,6 @@ func apiKeyFromRequest(r *http.Request) (string, bool) {
 	return "", false
 }
 
-// isLocalhost returns true if the request originates from a loopback
-// address (IPv4 127.0.0.0/8 or IPv6 ::1).
-func isLocalhost(r *http.Request) bool {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	return ip.IsLoopback()
-}
-
 // isRefererCrossOrigin parses referer and returns true if it originates from a
 // non-local host different from currentHost.
 func isRefererCrossOrigin(referer, currentHost string) bool {
@@ -153,8 +131,7 @@ func isSecFetchSiteCrossOrigin(sfs string) bool {
 // isCrossOrigin returns true if the request carries an Origin header
 // from a non-local origin. Browsers send Origin on cross-origin requests
 // (POST, PUT, DELETE, and fetch/XHR GET). We use this to reject CSRF
-// attempts that abuse the LocalhostBypass feature — a malicious website
-// cannot forge the Origin header.
+// attempts — a malicious website cannot forge the Origin header.
 func isCrossOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
