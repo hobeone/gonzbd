@@ -314,11 +314,6 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		apiSrv.AddWarning(msg)
 	}
 
-	listen := listenOverride
-	if listen == "" {
-		listen = net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port))
-	}
-
 	webHandler, err := web.Handler(func() string {
 		var key string
 		cfg.WithRead(func(c *config.Config) { key = c.General.APIKey })
@@ -329,25 +324,22 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	}
 	handler := composeRouter(apiSrv, webHandler)
 
-	httpSrv := &http.Server{
-		Addr:              listen,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
+	httpSrv, httpsSrv := newServers(cfg, handler)
+	if listenOverride != "" {
+		httpSrv.Addr = listenOverride
 	}
 	// errCh sized to 2 so both HTTP and HTTPS goroutines can report
 	// without blocking each other if both fail simultaneously.
 	errCh := make(chan error, 2)
 	go func() {
-		log.Info("http listener starting", "addr", listen, "api_key_prefix", keyPrefix(cfg.General.APIKey))
+		log.Info("http listener starting", "addr", httpSrv.Addr, "api_key_prefix", keyPrefix(cfg.General.APIKey))
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
 
 	// HTTPS listener — started when https_port > 0.
-	var httpsSrv *http.Server
 	if cfg.General.HTTPSPort > 0 {
-		httpsListen := net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.HTTPSPort))
 		certFile := cfg.General.HTTPSCert
 		keyFile := cfg.General.HTTPSKey
 
@@ -362,17 +354,14 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 				"cert", certFile, "key", keyFile)
 		}
 
-		httpsSrv = &http.Server{
-			Addr:              httpsListen,
-			Handler:           handler,
-			ReadHeaderTimeout: 10 * time.Second,
-		}
 		go func() {
-			log.Info("https listener starting", "addr", httpsListen)
+			log.Info("https listener starting", "addr", httpsSrv.Addr)
 			if err := httpsSrv.ListenAndServeTLS(certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- err
 			}
 		}()
+	} else {
+		httpsSrv = nil
 	}
 
 	select {
@@ -475,6 +464,32 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 	}()
 	log.Info("dirscanner started", "dir", cfg.General.DirscanDir, "interval", interval)
 	return nil
+}
+
+// newServers constructs the HTTP and HTTPS servers with the configured addresses
+// and handlers.
+func newServers(cfg *config.Config, handler http.Handler) (httpSrv, httpsSrv *http.Server) {
+	httpAddr := net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port))
+	httpSrv = &http.Server{
+		Addr:              httpAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	httpsAddr := net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.HTTPSPort))
+	httpsSrv = &http.Server{
+		Addr:              httpsAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	return httpSrv, httpsSrv
 }
 
 // composeRouter produces the outer HTTP handler that routes /api requests
