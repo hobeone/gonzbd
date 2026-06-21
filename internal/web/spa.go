@@ -17,7 +17,10 @@ import (
 //
 // When the root "/" is requested, it sets a
 // "gonzbd_apikey" cookie so the client-side JS can hit the /api without
-// needing an explicit key.
+// needing an explicit key. apiKeyFn should return the API server's
+// ephemeral session key (Server.SessionKey), not the permanent
+// General.APIKey — see AuthConfig.SessionKey for why these are kept
+// distinct.
 func NewSPAHandler(dist fs.FS, apiKeyFn func() string) http.Handler {
 	fileServer := http.FileServerFS(dist)
 

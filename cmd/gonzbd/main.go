@@ -314,11 +314,9 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		apiSrv.AddWarning(msg)
 	}
 
-	webHandler, err := web.Handler(func() string {
-		var key string
-		cfg.WithRead(func(c *config.Config) { key = c.General.APIKey })
-		return key
-	})
+	// The web SPA cookie carries the API server's ephemeral session key,
+	// not the permanent General.APIKey — see AuthConfig.SessionKey.
+	webHandler, err := web.Handler(apiSrv.SessionKey)
 	if err != nil {
 		return fmt.Errorf("web handler: %w", err)
 	}

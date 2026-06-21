@@ -29,12 +29,21 @@ const (
 // AuthConfig supplies the keys to the auth middleware.
 type AuthConfig struct {
 	// APIKey is the full API key (16-char hex). Required for LevelAdmin
-	// and sufficient for all levels.
+	// and sufficient for all levels. Presented via query param, header,
+	// or POST form body (third-party clients) — never via cookie.
 	APIKey string
 
 	// NZBKey is the upload-only key. Sufficient for LevelOpen and
 	// LevelProtected, but not LevelAdmin.
 	NZBKey string
+
+	// SessionKey is the ephemeral, in-memory credential issued to the
+	// embedded web SPA via the gonzbd_apikey cookie (see Server.sessionKey).
+	// It is generated fresh on every process start and is intentionally
+	// kept separate from APIKey: a leaked browser cookie cannot be
+	// replayed as the permanent key used by third-party integrations
+	// (Sonarr, Radarr, etc.), and it stops working on the next restart.
+	SessionKey string
 }
 
 // callerLevel determines the highest access level the caller can reach
@@ -44,9 +53,18 @@ func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
 	if key == "" {
 		return 0
 	}
-	// If the key came from a cookie, enforce cross-origin check for
-	// defense-in-depth (cookie SameSite may be insufficient on older browsers).
-	if fromCookie && isCrossOrigin(r) {
+	if fromCookie {
+		// Enforce cross-origin check for defense-in-depth (cookie
+		// SameSite may be insufficient on older browsers).
+		if isCrossOrigin(r) {
+			return 0
+		}
+		// Cookie-sourced keys are validated against the ephemeral
+		// session key only — never against APIKey/NZBKey. See
+		// AuthConfig.SessionKey.
+		if subtle.ConstantTimeCompare([]byte(key), []byte(cfg.SessionKey)) == 1 {
+			return LevelAdmin
+		}
 		return 0
 	}
 	// Use constant-time comparison to prevent timing attacks.

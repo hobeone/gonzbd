@@ -906,8 +906,13 @@ func TestSPASetsAPIKeyCookie(t *testing.T) {
 	for _, c := range cookies {
 		if c.Name == "gonzbd_apikey" {
 			found = true
-			if c.Value != testAPIKey {
-				t.Errorf("gonzbd_apikey cookie = %q; want %q", c.Value, testAPIKey)
+			// The cookie carries the API server's ephemeral session key,
+			// not the configured APIKey — see AuthConfig.SessionKey.
+			if c.Value != env.APISrv.SessionKey() {
+				t.Errorf("gonzbd_apikey cookie = %q; want %q", c.Value, env.APISrv.SessionKey())
+			}
+			if c.Value == testAPIKey {
+				t.Error("gonzbd_apikey cookie must not equal the permanent APIKey")
 			}
 			break
 		}

@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -109,6 +112,12 @@ type Server struct {
 	modes   modeTable
 	mux     *http.ServeMux
 	handler http.Handler
+
+	// sessionKey is an ephemeral, in-memory credential generated fresh
+	// each time New is called. It is the only key value ever placed in
+	// the "gonzbd_apikey" cookie served to the embedded web SPA — see
+	// AuthConfig.SessionKey for why it is kept distinct from APIKey.
+	sessionKey string
 }
 
 // New constructs an API Server. It does not bind or listen; the returned
@@ -134,6 +143,7 @@ func New(opts Options) *Server {
 		shutdownFunc: opts.ShutdownFunc,
 		events:       NewBroadcaster(log),
 		mux:          http.NewServeMux(),
+		sessionKey:   generateSessionKey(),
 	}
 	s.registerModes()
 
@@ -156,6 +166,29 @@ func New(opts Options) *Server {
 // router built by cmd/gonzbd.
 func (s *Server) Handler() http.Handler {
 	return s.handler
+}
+
+// SessionKey returns the ephemeral, in-memory key generated for this
+// server instance. It is the value the web SPA's "gonzbd_apikey" cookie
+// must carry — see AuthConfig.SessionKey.
+func (s *Server) SessionKey() string {
+	return s.sessionKey
+}
+
+// generateSessionKey returns a fresh random hex key for the lifetime of
+// this process. It is never persisted or derived from config — restarting
+// the process invalidates every previously issued session cookie.
+//
+// crypto/rand.Read failing means the OS entropy source is unavailable,
+// which makes it impossible to run this binary securely at all; that is
+// an unrecoverable platform error, not a normal error path to design
+// around (see project panic-for-control-flow exception).
+func generateSessionKey() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("api: failed to generate session key: %v", err))
+	}
+	return hex.EncodeToString(b)
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -213,6 +246,7 @@ func (s *Server) getAuth() AuthConfig {
 		auth.APIKey = cfg.General.APIKey
 		auth.NZBKey = cfg.General.NZBKey
 	})
+	auth.SessionKey = s.sessionKey
 	return auth
 }
 
