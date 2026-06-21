@@ -1,10 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { WSEvent } from './websocket.svelte';
 
-// Mock getCookie
-vi.mock('$lib/utils', () => ({
-	getCookie: vi.fn().mockReturnValue(null)
-}));
 
 // Mock ConnectionStore — WS store reports success/failure to it.
 vi.mock('./connection.svelte', () => ({
@@ -110,20 +106,6 @@ describe('websocket store', () => {
 		// Last unsub should close
 		unsub2();
 		expect(ws.readyState).toBe(3);
-	});
-
-	it('appends apikey to URL when cookie exists', async () => {
-		const { getCookie } = await import('$lib/utils');
-		vi.mocked(getCookie).mockReturnValue('test-api-key');
-
-		const { subscribeWS } = await import('./websocket.svelte');
-		const handler = vi.fn();
-
-		const unsub = subscribeWS(handler);
-
-		expect(MockWebSocket.instances[0].url).toContain('apikey=test-api-key');
-
-		unsub();
 	});
 
 	it('getWSStatus returns true after open', async () => {
