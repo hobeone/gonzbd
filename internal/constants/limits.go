@@ -118,14 +118,6 @@ const (
 // admin directory. Versioning lets the on-disk format evolve without
 // mistaking older files for current ones.
 const (
-	// QueueFormatVersion is the version stamped into the on-disk queue
-	// index file name. Bump when the JSON layout changes incompatibly.
-	QueueFormatVersion = 1
-
-	// HistoryDBVersion is the SQLite history schema version. Bump on
-	// any incompatible schema change.
-	HistoryDBVersion = 1
-
 	// AdminDirName is the per-instance admin directory under the user's
 	// data root. Python: DEF_ADMIN_DIR = "admin".
 	AdminDirName = "admin"
