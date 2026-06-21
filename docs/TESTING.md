@@ -97,6 +97,8 @@ sudo apt install unrar rar par2 p7zip-full
 | `truncation_test.go` | Truncated article handling |
 | `replay_test.go` | Historical NZB replay (requires fixtures) |
 | `directunpack_integration_test.go` | Pure-Go RAR extraction via rarengine: multi-volume streaming and volume-boundary handling |
+| `pause_integration_test.go` | Tests pause and resume behaviors of the active queue and downloading connection goroutines |
+| `queue_updated_broadcast_test.go` | Verifies that queue updates trigger active real-time WebSocket broadcasts |
 
 ### Running
 
@@ -236,7 +238,25 @@ These test the full app lifecycle (download → assembly → post-processing)
 using an in-process mock NNTP server. They do **not** shell out to external
 tools — post-processing stages that require `par2`/`unrar`/`7z` are stubbed.
 
-## Decision Guide: Which Tests to Run
+## 7. Mutation Testing (`gremlins`)
+
+**When to run:** Before submitting a change to ensure all new logic paths and behavioral modifications are fully pinned by tests (no lived mutants in the diff).
+
+**Command:**
+```bash
+# Focused on a single package
+gremlins unleash --timeout-coefficient 100 ./internal/<package>
+
+# Local diff mutation testing
+gremlins unleash --timeout-coefficient 100 --diff origin/main
+```
+
+> [!WARNING]
+> **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will completely fill up `/tmp` (potentially causing system hangs or build failures). Always scope it to a single focused package or run it on local diffs.
+
+See [docs/mutation-testing-playbook.md](file:///usr/local/google/home/hobe/software/gonzbd/docs/mutation-testing-playbook.md) for the detailed triage guide and playbook.
+
+## 8. Decision Guide: Which Tests to Run
 
 | Change area | Run |
 |-------------|-----|
