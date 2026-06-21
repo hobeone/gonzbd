@@ -1117,16 +1117,17 @@ func TestServerStatus_MeterFields(t *testing.T) {
 	}
 }
 
-func TestDownloader_SetOnJobHopeless(t *testing.T) {
+func TestDownloader_OnJobHopelessOption(t *testing.T) {
 	q := queue.New()
 	meter := bpsmeter.NewMeter(10*time.Second, time.Now)
-	d := New(q, nil, meter, Options{}, nil)
 
 	called := false
 	cb := func(jobID string) {
 		called = true
 	}
-	d.SetOnJobHopeless(cb)
+	d := New(q, nil, meter, Options{
+		OnJobHopeless: cb,
+	}, nil)
 
 	if d.onJobHopeless == nil {
 		t.Fatal("expected onJobHopeless callback to be set")

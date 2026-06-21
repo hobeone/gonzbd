@@ -50,7 +50,6 @@ type Downloader interface {
 	UnblockServer(name string) bool
 	Pause()
 	Resume()
-	SetOnJobHopeless(cb func(jobID string))
 	DisconnectAll()
 }
 

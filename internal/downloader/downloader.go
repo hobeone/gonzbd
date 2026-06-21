@@ -469,14 +469,6 @@ func (d *Downloader) SetDispatchOptions(maxArtTries, maxArtOpt int, topOnly bool
 	d.optsMu.Unlock()
 }
 
-// SetOnJobHopeless registers the callback invoked when a job becomes hopeless.
-// Thread-safe: guarded by optsMu.
-func (d *Downloader) SetOnJobHopeless(cb func(jobID string)) {
-	d.optsMu.Lock()
-	d.onJobHopeless = cb
-	d.optsMu.Unlock()
-}
-
 // IsPaused reports the downloader's own pause flag. Orthogonal to
 // queue.IsPaused; either being true suppresses dispatch.
 func (d *Downloader) IsPaused() bool { return d.paused.Load() }
