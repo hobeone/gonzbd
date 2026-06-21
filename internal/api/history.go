@@ -139,17 +139,6 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	var slots []historySlot
 	var totalBytes int64
 
-	// Inject currently-post-processing jobs from the queue as synthetic
-	// history entries. SABnzbd moves jobs to history when post-processing
-	// starts (spec §11.3); third-party clients expect this lifecycle.
-	// Only inject for paginated listings (not nzo_ids lookups).
-	if nzoIDs == "" {
-		slots, totalCount, totalBytes = s.injectPostProcJobs(
-			slots, totalCount,
-			catFilter, statusFilter, search, failedOnly,
-		)
-	}
-
 	for _, e := range entries {
 		totalBytes += e.Bytes
 
@@ -229,68 +218,6 @@ func (s *Server) fetchEntriesByIDs(
 		entries = append(entries, *e)
 	}
 	return entries
-}
-
-// injectPostProcJobs adds active post-processing jobs from the queue to the
-// history slots list, applying category, status, and search filters.
-// It returns the updated slots slice, updated totalCount, and the sum of TotalBytes
-// across all injected jobs.
-func (s *Server) injectPostProcJobs(
-	slots []historySlot,
-	totalCount int,
-	catFilter, statusFilter, search string,
-	failedOnly bool,
-) (updatedSlots []historySlot, updatedCount int, totalBytes int64) {
-	updatedSlots = slots
-	updatedCount = totalCount
-	if s.queue == nil {
-		return
-	}
-	ppJobs := s.queue.Snapshot()
-	for _, j := range ppJobs {
-		if !j.PostProc {
-			continue
-		}
-		// Apply the same filters as regular history entries.
-		if catFilter != "" && j.Category != catFilter {
-			continue
-		}
-		ppStatus := string(j.Status)
-		if failedOnly {
-			continue // PP jobs are not yet failed
-		}
-		if statusFilter != "" && ppStatus != statusFilter {
-			continue
-		}
-		if search != "" {
-			sLower := strings.ToLower(search)
-			if !strings.Contains(strings.ToLower(j.Name), sLower) &&
-				!strings.Contains(strings.ToLower(j.Filename), sLower) {
-				continue
-			}
-		}
-
-		var dlTime int64
-		if !j.DownloadStarted.IsZero() && !j.DownloadFinished.IsZero() {
-			dlTime = int64(j.DownloadFinished.Sub(j.DownloadStarted).Seconds())
-		}
-
-		totalBytes += j.TotalBytes
-		updatedSlots = append(updatedSlots, historySlot{
-			NzoID:        j.ID,
-			Name:         j.Name,
-			NZBName:      j.Filename,
-			Status:       ppStatus,
-			Category:     j.Category,
-			Size:         humanfmt.Bytes(j.TotalBytes),
-			Bytes:        j.TotalBytes,
-			Downloaded:   j.TotalBytes - j.FailedBytes - j.RemainingBytes,
-			DownloadTime: dlTime,
-			Completed:    0, // not yet completed
-		})
-		updatedCount++ // include in total for pagination
-	}
-	return
 }
 
 // historyDelete removes history entries. value= may be a CSV of NZO IDs,
