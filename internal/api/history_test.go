@@ -564,12 +564,15 @@ func TestHistorySlot_CompletenessAndDownloaded(t *testing.T) {
 	}
 }
 
-// --- PostProc injection into history ---
+// --- PostProc jobs stay in the queue, not history ---
 
-// TestHistoryList_PostProcJobsInjected verifies that jobs currently in
-// post-processing (from the queue with PostProc=true) appear in the
-// history listing as synthetic entries, matching SABnzbd lifecycle (§11.3).
-func TestHistoryList_PostProcJobsInjected(t *testing.T) {
+// TestHistoryList_PostProcJobsNotInjected verifies that jobs currently in
+// post-processing (PostProc=true in the queue) do NOT appear in the history
+// listing. Such jobs remain visible in the queue (see queue_test.go) with
+// their live status until OnJobDone moves them to history; injecting a
+// synthetic duplicate here previously caused the job to render in both the
+// queue and history tables simultaneously.
+func TestHistoryList_PostProcJobsNotInjected(t *testing.T) {
 	t.Parallel()
 
 	// Build a server with both a queue and a history repo.
@@ -600,7 +603,6 @@ func TestHistoryList_PostProcJobsInjected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetPostProcStarted: %v", err)
 	}
-	// Set status after SetPostProcStarted (which resets to Verifying).
 	if err := q.SetStatus(ppJob.ID, constants.StatusRepairing); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
@@ -624,76 +626,19 @@ func TestHistoryList_PostProcJobsInjected(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	// Should have 2 slots: the PP job (first) + the completed entry.
-	if resp.History.NoOfSlots != 2 {
-		t.Errorf("noofslots = %d; want 2", resp.History.NoOfSlots)
+	// Should have only the one completed DB entry; the PP job stays in the
+	// queue and must not be duplicated here.
+	if resp.History.NoOfSlots != 1 {
+		t.Errorf("noofslots = %d; want 1", resp.History.NoOfSlots)
 	}
-	if len(resp.History.Slots) != 2 {
-		t.Fatalf("got %d slots; want 2", len(resp.History.Slots))
+	if len(resp.History.Slots) != 1 {
+		t.Fatalf("got %d slots; want 1", len(resp.History.Slots))
 	}
-
-	// The post-processing job should be first with dynamic status.
-	ppSlot := resp.History.Slots[0]
-	if ppSlot.NzoID != ppJob.ID {
-		t.Errorf("pp slot nzo_id = %s; want %s", ppSlot.NzoID, ppJob.ID)
+	if resp.History.Slots[0].NzoID == ppJob.ID {
+		t.Errorf("PP job %s leaked into history listing", ppJob.ID)
 	}
-	if ppSlot.Status != "Repairing" {
-		t.Errorf("pp slot status = %s; want Repairing", ppSlot.Status)
-	}
-
-	// The completed DB entry should be second.
-	dbSlot := resp.History.Slots[1]
-	if dbSlot.Status != "Completed" {
-		t.Errorf("db slot status = %s; want Completed", dbSlot.Status)
-	}
-}
-
-// TestHistoryList_PostProcNotInjectedForNzoIDs verifies that synthetic
-// PP entries are NOT injected when the client requests specific nzo_ids.
-func TestHistoryList_PostProcNotInjectedForNzoIDs(t *testing.T) {
-	t.Parallel()
-
-	dbPath := filepath.Join(t.TempDir(), "hist.db")
-	db, err := history.Open(t.Context(), dbPath)
-	if err != nil {
-		t.Fatalf("history.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	repo := history.NewRepository(db)
-
-	q := queue.New()
-	s := New(Options{
-		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
-		Version: "1.0.0-test",
-		Queue:   q,
-		History: repo,
-		App:     NopApp{Queue: q, History: repo},
-	})
-
-	// Add a PP job to the queue.
-	ppJob := addTestJob(t, q, queue.AddOptions{Filename: "pp.nzb"})
-	_, _ = q.SetPostProcStarted(ppJob.ID)
-
-	// Request the PP job by nzo_id — should NOT find it (it's not in history DB).
-	rr := apiGet(t, s.Handler(), fmt.Sprintf("/api?mode=history&apikey=%s&nzo_ids=%s", testAPIKey, ppJob.ID))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200", rr.Code)
-	}
-
-	var resp struct {
-		History struct {
-			Slots []struct {
-				NzoID string `json:"nzo_id"`
-			} `json:"slots"`
-		} `json:"history"`
-	}
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-
-	// nzo_ids lookup goes to DB only, so no PP injection.
-	if len(resp.History.Slots) != 0 {
-		t.Errorf("got %d slots; want 0 (nzo_ids should skip PP injection)", len(resp.History.Slots))
+	if resp.History.Slots[0].Status != "Completed" {
+		t.Errorf("db slot status = %s; want Completed", resp.History.Slots[0].Status)
 	}
 }
 
@@ -764,102 +709,6 @@ func TestFetchEntriesByIDs_Internal(t *testing.T) {
 		got = s.fetchEntriesByIDs(ctx, csv, "", "", "macOS", false)
 		if len(got) != 0 {
 			t.Errorf("search for 'macOS' expected 0 results, got %v", got)
-		}
-	})
-}
-
-func TestInjectPostProcJobs_Internal(t *testing.T) {
-	t.Parallel()
-	q := queue.New()
-	s := Server{
-		queue: q,
-	}
-
-	now := time.Now()
-	// Add PP job
-	j1 := addTestJob(t, q, queue.AddOptions{Filename: "show.nzb"})
-	j1.PostProc = true
-	j1.Status = constants.StatusRepairing
-	j1.Category = "tv"
-	j1.Name = "Show.S01E01"
-	j1.TotalBytes = 1000
-	j1.FailedBytes = 100
-	j1.RemainingBytes = 200
-	j1.DownloadStarted = now
-	j1.DownloadFinished = now.Add(10 * time.Second)
-
-	// Add non-PP job
-	j2 := addTestJob(t, q, queue.AddOptions{Filename: "show2.nzb"})
-	j2.PostProc = false
-	j2.Status = constants.StatusDownloading
-	j2.Category = "tv"
-	j2.Name = "Show.S01E02"
-
-	t.Run("no queue server", func(t *testing.T) {
-		sNoQueue := Server{}
-		slots, count, bytes := sNoQueue.injectPostProcJobs(nil, 0, "", "", "", false)
-		if len(slots) != 0 || count != 0 || bytes != 0 {
-			t.Errorf("expected empty, got %v, %v, %v", slots, count, bytes)
-		}
-	})
-
-	t.Run("default injects PP job only", func(t *testing.T) {
-		slots, count, bytes := s.injectPostProcJobs(nil, 0, "", "", "", false)
-		if len(slots) != 1 {
-			t.Fatalf("expected 1 injected slot, got %d", len(slots))
-		}
-		slot := slots[0]
-		if slot.NzoID != j1.ID {
-			t.Errorf("expected injected slot to be j1, got %v", slot)
-		}
-		if count != 1 {
-			t.Errorf("expected count=1, got %d", count)
-		}
-		if bytes != 1000 {
-			t.Errorf("expected bytes=1000, got %d", bytes)
-		}
-		if slot.Downloaded != 700 {
-			t.Errorf("expected Downloaded=700 (1000-100-200), got %d", slot.Downloaded)
-		}
-		if slot.DownloadTime != 10 {
-			t.Errorf("expected DownloadTime=10, got %d", slot.DownloadTime)
-		}
-	})
-
-	t.Run("category filter mismatch", func(t *testing.T) {
-		slots, _, _ := s.injectPostProcJobs(nil, 0, "movies", "", "", false)
-		if len(slots) != 0 {
-			t.Errorf("expected 0 slots on category mismatch, got %v", slots)
-		}
-	})
-
-	t.Run("failedOnly skips PP", func(t *testing.T) {
-		slots, _, _ := s.injectPostProcJobs(nil, 0, "", "", "", true)
-		if len(slots) != 0 {
-			t.Errorf("expected 0 slots on failedOnly, got %v", slots)
-		}
-	})
-
-	t.Run("status filter mismatch", func(t *testing.T) {
-		slots, _, _ := s.injectPostProcJobs(nil, 0, "", "Downloading", "", false)
-		if len(slots) != 0 {
-			t.Errorf("expected 0 slots on status mismatch, got %v", slots)
-		}
-	})
-
-	t.Run("search query", func(t *testing.T) {
-		slots, _, _ := s.injectPostProcJobs(nil, 0, "", "", "Show", false)
-		if len(slots) != 1 {
-			t.Errorf("expected 1 slot on query 'Show', got %v", slots)
-		}
-
-		var count int
-		var bytes int64
-		slots, count, bytes = s.injectPostProcJobs(nil, 0, "", "", "debian", false)
-		_ = count
-		_ = bytes
-		if len(slots) != 0 {
-			t.Errorf("expected 0 slots on query 'debian', got %v", slots)
 		}
 	})
 }
