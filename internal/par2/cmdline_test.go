@@ -38,7 +38,7 @@ func TestRepairWith_NoQuietFlag(t *testing.T) {
 	}
 }
 
-// TestVerifyWith_HasQuietFlag verifies that VerifyWith includes -q
+// TestVerifyWith_HasQuietFlag verifies that verifyWith includes -q
 // (quiet mode is fine for verification since we only need aggregate status).
 func TestVerifyWith_HasQuietFlag(t *testing.T) {
 	t.Parallel()
@@ -50,7 +50,7 @@ func TestVerifyWith_HasQuietFlag(t *testing.T) {
 			captured = cmdLine
 		},
 	}
-	_, _ = VerifyWith(t.Context(), opts, "/tmp/does-not-exist.par2")
+	_, _ = verifyWith(t.Context(), opts, "/tmp/does-not-exist.par2")
 
 	if captured == "" {
 		t.Fatal("OnCommand was not called")
@@ -96,7 +96,7 @@ func TestVerifyWith_ExtraArgs(t *testing.T) {
 			captured = cmdLine
 		},
 	}
-	_, _ = VerifyWith(t.Context(), opts, "/tmp/does-not-exist.par2")
+	_, _ = verifyWith(t.Context(), opts, "/tmp/does-not-exist.par2")
 
 	if captured == "" {
 		t.Fatal("OnCommand was not called")

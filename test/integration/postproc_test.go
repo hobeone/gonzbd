@@ -42,13 +42,19 @@ func TestPostProc_Par2VerifyOK(t *testing.T) {
 	}
 
 	// Verify the par2 set.
-	result, err := par2.Verify(ctx, parFile)
+	result, err := par2.RepairWith(ctx, par2.RunOptions{}, parFile)
 	if err != nil {
-		t.Fatalf("par2.Verify: %v", err)
+		t.Fatalf("par2.RepairWith: %v", err)
 	}
-	if result.Status != par2.StatusAllFilesOK {
-		t.Errorf("par2.Verify status = %v; want StatusAllFilesOK\nstdout: %s\nstderr: %s",
-			result.Status, result.Stdout, result.Stderr)
+	if !result.Success {
+		t.Errorf("par2.RepairWith failed: output: %s", result.Output)
+	}
+	if result.Parsed == nil || result.Parsed.Status != par2.StatusAllFilesOK {
+		status := par2.StatusUnknown
+		if result.Parsed != nil {
+			status = result.Parsed.Status
+		}
+		t.Errorf("status = %v; want StatusAllFilesOK\noutput: %s", status, result.Output)
 	}
 }
 
@@ -95,33 +101,34 @@ func TestPostProc_Par2VerifyAndRepair(t *testing.T) {
 		t.Fatalf("corrupt data file: %v", err)
 	}
 
-	// Verify — expect repair required or repair possible.
-	verResult, err := par2.Verify(ctx, parFile)
-	if err != nil {
-		t.Fatalf("par2.Verify (corrupted): %v", err)
-	}
-	if verResult.Status == par2.StatusAllFilesOK {
-		t.Fatal("expected par2.Verify to detect damage but it reported StatusAllFilesOK")
-	}
-	t.Logf("post-corruption status: %v (stdout: %s)", verResult.Status, verResult.Stdout)
-
 	// Repair.
-	repResult, err := par2.Repair(ctx, parFile)
+	repResult, err := par2.RepairWith(ctx, par2.RunOptions{}, parFile)
 	if err != nil {
-		t.Fatalf("par2.Repair: %v", err)
+		t.Fatalf("par2.RepairWith: %v", err)
 	}
 	if !repResult.Success {
-		t.Fatalf("par2.Repair not successful (exit %d)\noutput: %s", repResult.ExitCode, repResult.Output)
+		t.Fatalf("par2.RepairWith not successful (exit %d)\noutput: %s", repResult.ExitCode, repResult.Output)
+	}
+	if repResult.Parsed == nil || repResult.Parsed.Status != par2.StatusRepairComplete {
+		status := par2.StatusUnknown
+		if repResult.Parsed != nil {
+			status = repResult.Parsed.Status
+		}
+		t.Errorf("repair status = %v; want StatusRepairComplete\noutput: %s", status, repResult.Output)
 	}
 
-	// Verify again — expect OK.
-	verResult2, err := par2.Verify(ctx, parFile)
+	// Verify the input file is restored.
+	restored, err := os.ReadFile(dataFile) //nolint:gosec // G304: test path
 	if err != nil {
-		t.Fatalf("par2.Verify (after repair): %v", err)
+		t.Fatalf("read restored data file: %v", err)
 	}
-	if verResult2.Status != par2.StatusAllFilesOK {
-		t.Errorf("after repair: status = %v; want StatusAllFilesOK\nstdout: %s\nstderr: %s",
-			verResult2.Status, verResult2.Stdout, verResult2.Stderr)
+	if len(restored) != len(payload) {
+		t.Fatalf("restored length %d, want %d", len(restored), len(payload))
+	}
+	for i := range payload {
+		if restored[i] != payload[i] {
+			t.Fatalf("mismatch at byte %d", i)
+		}
 	}
 }
 

@@ -300,17 +300,17 @@ func parseStatus(output string) Status {
 	}
 }
 
-// Verify runs `par2 v <parfile> [extraFiles...]` and parses the output to
+// verify runs `par2 v <parfile> [extraFiles...]` and parses the output to
 // determine whether the protected files are intact.  It returns a VerifyResult
 // even when par2 itself exits with a non-zero code, as long as the process
 // could be started. A returned error indicates a system-level failure (binary
 // not found, context cancelled, etc.).
-func Verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyResult, error) {
-	return VerifyWith(ctx, RunOptions{}, parfile, extraFiles...)
+func verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyResult, error) {
+	return verifyWith(ctx, RunOptions{}, parfile, extraFiles...)
 }
 
-// VerifyWith is like Verify but uses the given RunOptions for binary selection.
-func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (VerifyResult, error) {
+// verifyWith is like verify but uses the given RunOptions for binary selection.
+func verifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (VerifyResult, error) {
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	args := make([]string, 0, 6+len(extraFiles))
 	args = append(args, "v", "-q")
@@ -355,10 +355,10 @@ func VerifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	return res, nil
 }
 
-// Repair runs `par2 r <parfile> [extraFiles...]` and attempts to repair any
-// damaged files. Like Verify, it returns a RepairResult even on non-zero exit
+// repair runs `par2 r <parfile> [extraFiles...]` and attempts to repair any
+// damaged files. Like verify, it returns a RepairResult even on non-zero exit
 // codes.  A non-nil error signals a system-level failure.
-func Repair(ctx context.Context, parfile string, extraFiles ...string) (RepairResult, error) {
+func repair(ctx context.Context, parfile string, extraFiles ...string) (RepairResult, error) {
 	return RepairWith(ctx, RunOptions{}, parfile, extraFiles...)
 }
 

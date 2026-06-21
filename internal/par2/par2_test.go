@@ -1,4 +1,4 @@
-package par2_test
+package par2
 
 import (
 	"cmp"
@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
-
-	"github.com/hobeone/gonzbd/internal/par2"
 )
 
 // hasPar2 returns true and the path to the par2 binary if it is installed.
@@ -106,7 +104,7 @@ func TestFindPar2Files(t *testing.T) {
 				touch(t, filepath.Join(dir, f))
 			}
 
-			sets, err := par2.FindPar2Files(dir)
+			sets, err := FindPar2Files(dir)
 			if err != nil {
 				t.Fatalf("FindPar2Files: %v", err)
 			}
@@ -116,7 +114,7 @@ func TestFindPar2Files(t *testing.T) {
 			}
 
 			// Sort returned sets for stable comparison.
-			slices.SortFunc(sets, func(a, b par2.Set) int { return cmp.Compare(a.Name, b.Name) })
+			slices.SortFunc(sets, func(a, b Set) int { return cmp.Compare(a.Name, b.Name) })
 
 			if tc.wantNames != nil {
 				for i, s := range sets {
@@ -157,7 +155,7 @@ func TestFindPar2Files_GlobMetachars(t *testing.T) {
 	touch(t, filepath.Join(metaDir, "movie.par2"))
 	touch(t, filepath.Join(metaDir, "movie.vol000+01.par2"))
 
-	sets, err := par2.FindPar2Files(metaDir)
+	sets, err := FindPar2Files(metaDir)
 	if err != nil {
 		t.Fatalf("FindPar2Files: %v", err)
 	}
@@ -203,7 +201,7 @@ func TestVerifyAndRepair(t *testing.T) {
 	}
 
 	// Locate the main (non-volume) par2 file.
-	sets, err := par2.FindPar2Files(dir)
+	sets, err := FindPar2Files(dir)
 	if err != nil || len(sets) == 0 {
 		t.Fatalf("FindPar2Files after create: err=%v sets=%v", err, sets)
 	}
@@ -216,11 +214,11 @@ func TestVerifyAndRepair(t *testing.T) {
 	ctx := t.Context()
 
 	t.Run("verify_good_set", func(t *testing.T) {
-		res, err := par2.Verify(ctx, mainFile)
+		res, err := verify(ctx, mainFile)
 		if err != nil {
-			t.Fatalf("Verify: %v", err)
+			t.Fatalf("verify: %v", err)
 		}
-		if res.Status != par2.StatusAllFilesOK {
+		if res.Status != StatusAllFilesOK {
 			t.Errorf("Status = %v, want StatusAllFilesOK\nstdout: %s\nstderr: %s",
 				res.Status, res.Stdout, res.Stderr)
 		}
@@ -241,12 +239,12 @@ func TestVerifyAndRepair(t *testing.T) {
 			}
 		})
 
-		res, err := par2.Verify(ctx, mainFile)
+		res, err := verify(ctx, mainFile)
 		if err != nil {
-			t.Fatalf("Verify: %v", err)
+			t.Fatalf("verify: %v", err)
 		}
 		// par2 may report RepairRequired or RepairPossible on corruption.
-		if res.Status != par2.StatusRepairRequired && res.Status != par2.StatusRepairPossible {
+		if res.Status != StatusRepairRequired && res.Status != StatusRepairPossible {
 			t.Errorf("Status = %v, want RepairRequired or RepairPossible\nstdout: %s\nstderr: %s",
 				res.Status, res.Stdout, res.Stderr)
 		}
@@ -261,9 +259,9 @@ func TestVerifyAndRepair(t *testing.T) {
 			t.Fatalf("write corrupt: %v", err)
 		}
 
-		res, err := par2.Repair(ctx, mainFile)
+		res, err := repair(ctx, mainFile)
 		if err != nil {
-			t.Fatalf("Repair: %v", err)
+			t.Fatalf("repair: %v", err)
 		}
 		if !res.Success {
 			t.Errorf("Repair.Success = false\nOutput: %s", res.Output)
