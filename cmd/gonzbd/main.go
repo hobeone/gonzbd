@@ -41,10 +41,10 @@ import (
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
 	"github.com/hobeone/gonzbd/internal/web"
 
-	// Side-effect imports: register pprof handlers and expvar counters
-	// on http.DefaultServeMux (routed via /debug/ in composeRouter).
-	_ "net/http/pprof" //nolint:gosec // G108: intentionally exposed on /debug/ behind auth
-
+	// Side-effect import: register expvar counters on http.DefaultServeMux
+	// (routed via /debug/ in composeRouter). pprof is intentionally not
+	// imported — it has no auth gate and must not be reachable in this
+	// binary.
 	_ "github.com/hobeone/gonzbd/internal/telemetry"
 )
 
@@ -501,9 +501,9 @@ func composeRouter(apiSrv *api.Server, webHandler http.Handler, isHTTPS bool) ht
 	mux.Handle("/api", apiSrv.Handler())
 	mux.Handle("/api/", apiSrv.Handler())
 
-	// Profiling and telemetry — net/http/pprof registers its handlers
-	// on http.DefaultServeMux, so route /debug/pprof/ there. expvar
-	// registers /debug/vars on DefaultServeMux too.
+	// Telemetry — expvar registers /debug/vars on http.DefaultServeMux,
+	// so route /debug/ there. pprof is not imported by this binary, so
+	// no profiling endpoints are reachable.
 	mux.Handle("/debug/", http.DefaultServeMux)
 
 	mux.Handle("/", webHandler)

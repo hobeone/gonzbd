@@ -2,12 +2,9 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -87,9 +84,9 @@ type ApplicationReloader interface {
 	Speed() float64
 }
 
-// Server is the HTTP API server. It owns a net/http.Server and the mode
-// dispatch table. Construct with New, start with Start, shut down with
-// Shutdown.
+// Server is the HTTP API server. It owns the mode dispatch table and
+// exposes its handler via Handler; the caller (cmd/gonzbd) is responsible
+// for binding and serving it on a real net/http.Server.
 type Server struct {
 	version string
 	commit  string
@@ -109,14 +106,13 @@ type Server struct {
 	mu       sync.RWMutex
 	warnings []string
 
-	modes modeTable
-	mux   *http.ServeMux
-	srv   *http.Server
-	ln    net.Listener // set by Start; read by Addr
+	modes   modeTable
+	mux     *http.ServeMux
+	handler http.Handler
 }
 
-// New constructs an API Server. It does not bind or listen; call Start
-// to begin serving.
+// New constructs an API Server. It does not bind or listen; the returned
+// Server's Handler method provides the HTTP handler for the caller to serve.
 func New(opts Options) *Server {
 	log := opts.Logger
 	if log == nil {
@@ -150,54 +146,16 @@ func New(opts Options) *Server {
 	// Wrap the mux with logging middleware. Auth is checked per-mode
 	// inside handleAPI (each mode has its own access level), not as
 	// blanket middleware on the mux.
-	handler := s.loggingMiddleware(s.mux)
-
-	s.srv = &http.Server{
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
-	}
+	s.handler = s.loggingMiddleware(s.mux)
 
 	return s
 }
 
-// Addr returns the listener address after Start succeeds. Useful in tests
-// to discover the ephemeral port when ":0" is passed to Start.
-func (s *Server) Addr() net.Addr {
-	if s.ln == nil {
-		return nil
-	}
-	return s.ln.Addr()
-}
-
-// Start binds to addr and serves HTTP until Shutdown is called. It
-// returns immediately after the listener is open; the server runs in a
-// background goroutine. Returns the listener address (useful when addr
-// is ":0" for ephemeral port selection).
-func (s *Server) Start(addr string) (net.Addr, error) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("api: listen %s: %w", addr, err)
-	}
-	s.ln = ln
-	go func() {
-		if err := s.srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			s.log.Error("api: serve", "error", err)
-		}
-	}()
-	return ln.Addr(), nil
-}
-
-// Shutdown gracefully stops the server, waiting for in-flight requests
-// to complete within the context deadline.
-func (s *Server) Shutdown(ctx context.Context) error {
-	return s.srv.Shutdown(ctx)
-}
-
 // Handler returns the server's root HTTP handler. Useful for
-// httptest.NewServer in tests (bypasses Start/listener).
+// httptest.NewServer in tests, and for mounting into the production
+// router built by cmd/gonzbd.
 func (s *Server) Handler() http.Handler {
-	return s.srv.Handler
+	return s.handler
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
