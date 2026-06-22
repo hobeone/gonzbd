@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -166,11 +167,74 @@ func TestProxy_CorruptFault(t *testing.T) {
 		t.Fatalf("status = %q, want 222 (corrupt still returns a successful body)", status)
 	}
 
+	// The passthrough path (proven by TestProxy_PassthroughBody) relays bytes
+	// unchanged, so the correct uncorrupted reference is exactly string(encoded):
+	// EncodeYEnc already emits CRLF line endings, so no transformation is needed.
 	body := readBody(t, br)
-	directFromUpstream := strings.ReplaceAll(string(encoded), "\n", "\r\n")
-	if body == directFromUpstream {
+	if body == string(encoded) {
 		t.Fatal("corrupted body is byte-identical to the uncorrupted upstream body")
 	}
+}
+
+func TestProxy_ConcurrentCorruptNoRace(t *testing.T) {
+	original := []byte(strings.Repeat("hello world ", 50))
+	encoded := mocknntp.EncodeYEnc("file.bin", original)
+
+	upstream := mocknntp.NewServer(mocknntp.Config{})
+	upstream.AddArticle("target@test", encoded)
+	if err := upstream.Start(); err != nil {
+		t.Fatalf("start upstream: %v", err)
+	}
+	t.Cleanup(func() { _ = upstream.Close() })
+
+	// Rate: 1.0 forces every BODY through the rng-driven matchRule path, and
+	// "corrupt" forces every match through corruptLines' rng — so concurrent
+	// connections hammer the per-connection rng derivation simultaneously.
+	addr := startProxy(t, upstream, []Rule{
+		{Rate: 1.0, Action: "corrupt", CorruptBytes: 20},
+	})
+
+	const conns = 8
+	var wg sync.WaitGroup
+	for range conns {
+		wg.Go(func() {
+			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+			if err != nil {
+				t.Errorf("dial proxy: %v", err)
+				return
+			}
+			defer func() { _ = conn.Close() }()
+			br := bufio.NewReader(conn)
+			bw := bufio.NewWriter(conn)
+			if _, err := br.ReadString('\n'); err != nil { // greeting
+				t.Errorf("read greeting: %v", err)
+				return
+			}
+			if _, err := bw.WriteString("BODY <target@test>\r\n"); err != nil {
+				t.Errorf("write command: %v", err)
+				return
+			}
+			if err := bw.Flush(); err != nil {
+				t.Errorf("flush command: %v", err)
+				return
+			}
+			if _, err := br.ReadString('\n'); err != nil { // status line
+				t.Errorf("read status: %v", err)
+				return
+			}
+			for {
+				l, err := br.ReadString('\n')
+				if err != nil {
+					t.Errorf("read body: %v", err)
+					return
+				}
+				if l == ".\r\n" {
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
 }
 
 func TestProxy_TimeoutFault(t *testing.T) {

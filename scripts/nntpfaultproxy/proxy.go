@@ -5,24 +5,33 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
+	"sync/atomic"
 	"time"
 )
 
 // connHandler relays one downstream (gonzbd) connection to a freshly
 // dialed upstream connection, applying fault rules to BODY/STAT requests.
+//
+// One connHandler is created once and handle() is called concurrently —
+// one goroutine per accepted downstream connection. math/rand/v2's *Rand
+// is not safe for concurrent use, so the handler stores only the immutable
+// seed plus an atomic connection counter and derives a fresh, independent
+// *rand.Rand inside each handle() call. That rng is threaded explicitly
+// through the fault path; no *rand.Rand is shared across goroutines.
 type connHandler struct {
-	cfg *Config
-	log *slog.Logger
-	rng *rand.Rand
+	cfg     *Config
+	log     *slog.Logger
+	seed    uint64
+	connSeq atomic.Uint64
 }
 
 // newConnHandler builds a connHandler. seed drives rate-based fault
 // matching; pass a fixed value for reproducible test/validation runs.
 func newConnHandler(cfg *Config, log *slog.Logger, seed uint64) *connHandler {
 	return &connHandler{
-		cfg: cfg,
-		log: log,
-		rng: rand.New(rand.NewPCG(seed, seed^0x9E3779B97F4A7C15)), //nolint:gosec // G404: deterministic seeded PRNG is intentional for reproducible fault injection
+		cfg:  cfg,
+		log:  log,
+		seed: seed,
 	}
 }
 
@@ -33,6 +42,13 @@ func newConnHandler(cfg *Config, log *slog.Logger, seed uint64) *connHandler {
 // downstream and upstream.
 func (h *connHandler) handle(downstream net.Conn) {
 	defer downstream.Close() //nolint:errcheck // best-effort close
+
+	// Derive a fresh, independently seeded rng for this connection. Combining
+	// the immutable seed with a per-connection counter keeps selection
+	// reproducible (deterministic given the same -seed and the same sequence
+	// of accepted connections) without sharing mutable state across goroutines.
+	seq := h.connSeq.Add(1)
+	rng := rand.New(rand.NewPCG(h.seed, seq^0x9E3779B97F4A7C15)) //nolint:gosec // G404: deterministic seeded PRNG is intentional for reproducible fault injection
 
 	upstream, err := dialUpstream(h.cfg.Upstream, 15*time.Second)
 	if err != nil {
@@ -60,8 +76,8 @@ func (h *connHandler) handle(downstream net.Conn) {
 		kind, messageID := parseCommand(line)
 
 		if kind == cmdBody || kind == cmdStat {
-			if rule, matched := matchRule(h.cfg.Rules, messageID, h.rng); matched {
-				if !h.applyFault(kind, messageID, rule, ubr, ubw, dbw) {
+			if rule, matched := matchRule(h.cfg.Rules, messageID, rng); matched {
+				if !h.applyFault(kind, messageID, rule, rng, ubr, ubw, dbw) {
 					return
 				}
 				continue
@@ -133,14 +149,14 @@ func relayResponse(src *bufio.Reader, dst *bufio.Writer, kind commandKind) error
 // applyFault handles a BODY/STAT request matched by a fault rule. Returns
 // true if the caller should continue reading the next command, false if
 // the connection should be torn down.
-func (h *connHandler) applyFault(kind commandKind, messageID string, rule Rule, ubr *bufio.Reader, ubw, dbw *bufio.Writer) bool {
+func (h *connHandler) applyFault(kind commandKind, messageID string, rule Rule, rng *rand.Rand, ubr *bufio.Reader, ubw, dbw *bufio.Writer) bool {
 	switch rule.Action {
 	case "drop":
 		return h.applyDrop(messageID, dbw)
 	case "timeout":
 		return h.applyTimeout(rule)
 	case "corrupt":
-		return h.applyCorrupt(kind, messageID, ubr, ubw, dbw, rule)
+		return h.applyCorrupt(kind, messageID, rng, ubr, ubw, dbw, rule)
 	default:
 		return false
 	}
@@ -177,7 +193,7 @@ func (h *connHandler) applyTimeout(rule Rule) bool {
 // still dot-stuffed body before relaying it downstream. A corrupt rule
 // matching a STAT (which carries no body) passes the response through
 // unchanged.
-func (h *connHandler) applyCorrupt(kind commandKind, messageID string, ubr *bufio.Reader, ubw, dbw *bufio.Writer, rule Rule) bool {
+func (h *connHandler) applyCorrupt(kind commandKind, messageID string, rng *rand.Rand, ubr *bufio.Reader, ubw, dbw *bufio.Writer, rule Rule) bool {
 	h.log.Info("fault: corrupt", "message_id", messageID)
 
 	cmd := "BODY <" + messageID + ">\r\n"
@@ -218,7 +234,7 @@ func (h *connHandler) applyCorrupt(kind commandKind, messageID string, ubr *bufi
 	if n <= 0 {
 		n = 1
 	}
-	corruptLines(h.rng, bodyLines, n)
+	corruptLines(rng, bodyLines, n)
 
 	for _, l := range bodyLines {
 		if _, err := dbw.Write(l); err != nil {
