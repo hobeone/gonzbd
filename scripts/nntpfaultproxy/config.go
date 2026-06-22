@@ -56,7 +56,7 @@ type Config struct {
 
 // LoadConfig reads and validates a fault proxy YAML config file.
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: user-supplied config path is the whole point
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}

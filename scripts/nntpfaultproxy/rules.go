@@ -1,6 +1,10 @@
 package main
 
-import "math/rand/v2"
+import (
+	"slices"
+
+	"math/rand/v2"
+)
 
 // matchRule returns the first rule that applies to messageID, or false if
 // no rule matches. Rules with a non-empty MessageIDs list match only those
@@ -11,10 +15,8 @@ import "math/rand/v2"
 func matchRule(rules []Rule, messageID string, rng *rand.Rand) (Rule, bool) {
 	for _, r := range rules {
 		if len(r.MessageIDs) > 0 {
-			for _, id := range r.MessageIDs {
-				if id == messageID {
-					return r, true
-				}
+			if slices.Contains(r.MessageIDs, messageID) {
+				return r, true
 			}
 			continue
 		}
