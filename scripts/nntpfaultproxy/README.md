@@ -119,5 +119,5 @@ Three fault actions:
 
 ## Reproducibility
 
-Pass `-seed <n>` to make `rate`-based rules deterministic across runs.
+Pass `-seed <n>` to make `rate`-based rules deterministic across runs (where `n` is a non-zero integer; `-seed 0` or omitting the flag seeds from the current time and is non-deterministic).
 `message_ids`-based rules are already fully deterministic (exact match).
