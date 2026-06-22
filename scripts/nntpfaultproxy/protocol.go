@@ -52,13 +52,13 @@ func extractMessageID(s string) string {
 
 // isMultilineResponse reports whether a response to the given command kind
 // with the given status code is a dot-terminated multi-line block (true)
-// or a single status line (false). CAPABILITIES is always multiline; BODY
-// is multiline only on success (222); everything else this proxy handles
-// (STAT, AUTHINFO, QUIT) is always single-line per RFC 3977.
+// or a single status line (false). CAPABILITIES is multiline only on success
+// (code 101); BODY is multiline only on success (222); everything else this
+// proxy handles (STAT, AUTHINFO, QUIT) is always single-line per RFC 3977.
 func isMultilineResponse(kind commandKind, code int) bool {
 	switch kind {
 	case cmdCapabilities:
-		return true
+		return code == 101
 	case cmdBody:
 		return code == 222
 	default:
