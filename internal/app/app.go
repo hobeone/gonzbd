@@ -1028,7 +1028,21 @@ func (app *Application) buildDirectUnpackOpts() directunpack.Options {
 		OneFolder:        flatUnpack,
 		OverwriteFiles:   overwriteFiles,
 		IgnoreUnrarDates: ignoreUnrarDates,
+		OnStatusChange: func() {
+			app.emit(Event{Type: "queue_updated"})
+		},
 	}
+}
+
+// DirectUnpackStatus returns the status of the direct unpacker for the given job.
+func (app *Application) DirectUnpackStatus(jobID string) (directunpack.Status, bool) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	du, ok := app.directUnpackers[jobID]
+	if !ok {
+		return directunpack.Status{}, false
+	}
+	return du.Status(), true
 }
 
 func (app *Application) maybeFinalize(jobID, failMsg string) {
