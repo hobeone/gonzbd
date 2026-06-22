@@ -65,6 +65,45 @@ func TestRepairStage_DirectUnpackWithFailuresDontSkip(t *testing.T) {
 	}
 }
 
+// TestRepairStage_QuickCheckProblemOverridesDirectUnpackSuccess guards against
+// the reported regression where DirectUnpack reporting a set as successfully
+// extracted caused the repair stage to skip par2 verification entirely, even
+// though the QuickCheck stage (which runs first) had already determined that
+// repair was needed (e.g. a downloaded RAR volume had failed/missing
+// articles, so its CRC could not be verified). DirectUnpack only knows
+// whether rarengine could mechanically read the archive's entries — not
+// whether the underlying download was complete — so its "success" must never
+// override an explicit "needs repair" verdict from QuickCheck.
+func TestRepairStage_QuickCheckProblemOverridesDirectUnpackSuccess(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	copyPar2Fixtures(t, dir)
+
+	// DirectUnpack reports a clean success with no failures/skips...
+	job.DirectUnpackSets = map[string]directunpack.SuccessSet{
+		"ok": {RarParts: []string{"data.bin"}, ExtractedFiles: []string{"data.out"}},
+	}
+	// ...but QuickCheck ran and found a problem (unverifiable/mismatched CRC).
+	job.QuickCheckRan = true
+	job.QuickCheckPassed = false
+
+	stage := &RepairStage{
+		UseGoPar2: true,
+		Log:       slog.New(slog.DiscardHandler),
+	}
+
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, line := range job.OutputLines {
+		if line == "[repair] Skipped: Direct Unpack successfully extracted all archives during download" {
+			t.Fatalf("repair was skipped on DirectUnpack's say despite QuickCheck flagging a problem; output: %v", job.OutputLines)
+		}
+	}
+}
+
 // ---------- GoRepair integration test ----------
 
 // TestRepairStage_GoRepairHealthyData verifies the GoRepair path with the
