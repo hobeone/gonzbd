@@ -72,6 +72,17 @@ type Job struct {
 	// file integrity.
 	QuickCheckPassed bool
 
+	// QuickCheckRan is set by the quickcheck stage whenever it actually
+	// performed CRC verification (i.e. it was enabled and found par2 sets to
+	// check against) — regardless of the outcome. Distinguishes "quickcheck
+	// ran and found a problem" (QuickCheckRan && !QuickCheckPassed — repair
+	// must run) from "quickcheck never ran" (!QuickCheckRan — DirectUnpack's
+	// own success/failure is the only available signal). Without this
+	// distinction, the repair stage's DirectUnpack-success shortcut cannot
+	// tell those two cases apart and may skip repair despite quickcheck
+	// having explicitly flagged unverifiable or corrupted files.
+	QuickCheckRan bool
+
 	// NeedRequeue is set by the repair stage when par2 reports that the
 	// job needs additional recovery blocks ("You need N more blocks") or
 	// the main par2 file is corrupt/missing. When true, processJob stops

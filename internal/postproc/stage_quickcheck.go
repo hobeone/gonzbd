@@ -87,6 +87,7 @@ func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, j
 	if job.Queue == nil || len(job.Queue.Files) == 0 {
 		return
 	}
+	job.QuickCheckRan = true
 
 	var assembledFiles []par2.AssembledFile
 	for _, jf := range job.Queue.Files {

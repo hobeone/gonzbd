@@ -916,6 +916,20 @@ func (app *Application) drainCompletions(ctx context.Context) {
 	}
 }
 
+// hasFailedArticle reports whether any article in jf permanently failed
+// (exhausted retries on all servers). Such a file can still reach the
+// "complete" state — the assembler fires OnFileComplete once every article
+// is Done-or-Failed, leaving gaps in the written file rather than blocking
+// the job forever on data that will never arrive.
+func hasFailedArticle(jf *queue.JobFile) bool {
+	for _, art := range jf.Articles {
+		if art.Failed {
+			return true
+		}
+	}
+	return false
+}
+
 // maybeDirectUnpack feeds a completed file to the DirectUnpacker for the
 // job, creating one if this is the first RAR volume for that job.
 func (app *Application) maybeDirectUnpack(fc FileComplete) {
@@ -934,8 +948,9 @@ func (app *Application) maybeDirectUnpack(fc FileComplete) {
 	if fc.FileIdx < 0 || fc.FileIdx >= len(snap.Files) {
 		return
 	}
-	filename := snap.Files[fc.FileIdx].Subject
-	_, vol := directunpack.AnalyzeRarFilename(filename)
+	jobFile := &snap.Files[fc.FileIdx]
+	filename := jobFile.Subject
+	setname, vol := directunpack.AnalyzeRarFilename(filename)
 	if vol == 0 {
 		return // not a RAR volume
 	}
@@ -979,6 +994,23 @@ func (app *Application) maybeDirectUnpack(fc FileComplete) {
 		app.activeDU.Add(1)
 	}
 	app.mu.Unlock()
+
+	// A file can reach "complete" with some of its articles permanently
+	// Failed (the assembler still fires OnFileComplete once every article is
+	// resolved — Done or Failed — so the job isn't stuck waiting on data that
+	// will never arrive; see internal/assembler's handleFatalArticle). The
+	// on-disk RAR volume in that case is the right size but has gaps where
+	// the failed articles' bytes should be. DirectUnpack must not report
+	// success on such a volume — mark the set corrupt before Add() so
+	// extraction aborts (or success is suppressed) instead of silently
+	// trusting incomplete data. par2 repair will fix it from the
+	// recovery blocks; the normal unpack stage re-extracts afterward.
+	if hasFailedArticle(jobFile) {
+		reason := fmt.Sprintf("volume %s had failed/missing download articles", filename)
+		du.MarkCorrupt(setname, reason)
+		app.log.Warn("directunpack: marking set corrupt, volume incomplete",
+			"job", fc.JobID, "set", setname, "file", filename)
+	}
 
 	du.Add(app.ctx, filename, info.Path)
 }

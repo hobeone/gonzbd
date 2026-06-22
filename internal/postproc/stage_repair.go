@@ -108,9 +108,17 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	log = log.With("component", "postproc/repair", "job", job.Queue.ID)
 
 	// If Direct Unpack successfully extracted the archives during download,
-	// we can skip PAR2 repair entirely. The files are already extracted
-	// and healthy, and the source archives will be deleted anyway.
-	if len(job.DirectUnpackSets) > 0 && len(job.DirectUnpackFailures) == 0 && len(job.DirectUnpackSkipped) == 0 {
+	// we can skip PAR2 repair entirely — but only when QuickCheck either
+	// didn't run (disabled, or no par2 sets to check) or ran and confirmed
+	// everything verified clean. If QuickCheck ran and flagged a problem
+	// (unverifiable or mismatched CRCs), repair must run regardless of what
+	// DirectUnpack reported: DirectUnpack only knows whether rarengine could
+	// mechanically walk the archive's entries, not whether the source data
+	// was complete and correct (see directunpack.DirectUnpacker.MarkCorrupt
+	// for the matching defense on the DirectUnpack side).
+	quickCheckFoundProblem := job.QuickCheckRan && !job.QuickCheckPassed
+	if len(job.DirectUnpackSets) > 0 && len(job.DirectUnpackFailures) == 0 && len(job.DirectUnpackSkipped) == 0 &&
+		!quickCheckFoundProblem {
 		logf(ctx, log, job, slog.LevelInfo, "Direct Unpack successfully extracted all sets — skipping par2 repair")
 		job.OutputLines = append(job.OutputLines,
 			"[repair] Skipped: Direct Unpack successfully extracted all archives during download")
