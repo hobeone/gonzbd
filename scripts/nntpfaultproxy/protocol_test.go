@@ -49,6 +49,7 @@ func TestIsMultilineResponse(t *testing.T) {
 		want bool
 	}{
 		{cmdCapabilities, 101, true},
+		{cmdCapabilities, 500, false},
 		{cmdBody, 222, true},
 		{cmdBody, 430, false},
 		{cmdStat, 223, false},
