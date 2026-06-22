@@ -95,6 +95,68 @@ func TestGoSevenZip_Copy(t *testing.T) {
 	}
 }
 
+// corruptedCopySevenZip copies copy.7z into dir, flips one byte within the
+// stored (uncompressed) file content, and returns the corrupted archive's
+// path. copy.7z uses the 7z "Copy" method, so the on-disk archive bytes
+// contain the plaintext content verbatim — the corruption can be applied by
+// locating that exact substring in the raw file and changing one byte
+// in place, without needing to understand 7z's container format at all.
+// The byte count is preserved, so the file's UncompressedSize/structure
+// stays intact; only the content (and therefore its real CRC32) changes,
+// while FileHeader.CRC32 (parsed from the header) still reflects the
+// original, correct content — exactly modeling a RAR/7z volume assembled
+// from a download with missing/failed articles (right size, wrong bytes).
+func corruptedCopySevenZip(t *testing.T, dir string) string {
+	t.Helper()
+	src := filepath.Join(sevenZipTestdata(t), "copy.7z")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const needle = "Lorem ipsum dolor sit amet"
+	idx := strings.Index(string(data), needle)
+	if idx < 0 {
+		t.Fatalf("fixture content marker %q not found in copy.7z — fixture may have changed", needle)
+	}
+	corrupted := append([]byte(nil), data...)
+	corrupted[idx] ^= 0xFF // flip every bit of one byte; same length, wrong content
+
+	dst := filepath.Join(dir, "copy_corrupted.7z")
+	if err := os.WriteFile(dst, corrupted, 0o600); err != nil {
+		t.Fatalf("write corrupted fixture: %v", err)
+	}
+	return dst
+}
+
+// TestGoSevenZip_ChecksumMismatch_DetectsCorruption guards against the
+// reported gap where bodgit/sevenzip parses each file's CRC32 from the
+// archive header but never compares it against the actually-decompressed
+// content (confirmed via the library's own README FAQ, which tells callers
+// to do this themselves for the encrypted+uncompressed case). Without our
+// own check, a 7z volume assembled from an incomplete/corrupt download
+// (right size, wrong bytes) extracts "successfully" with no signal to the
+// quickcheck/repair pipeline that anything is wrong.
+func TestGoSevenZip_ChecksumMismatch_DetectsCorruption(t *testing.T) {
+	outDir := t.TempDir()
+	archivePath := corruptedCopySevenZip(t, t.TempDir())
+	archive := Archive{
+		Type:     SevenZipArchive,
+		MainFile: archivePath,
+	}
+
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	if err == nil {
+		t.Fatal("GoSevenZip() expected a checksum error on corrupted content, got nil")
+	}
+	if !strings.Contains(err.Error(), "checksum error") {
+		t.Errorf("expected error to mention 'checksum error', got: %v", err)
+	}
+	if res.Reason != FailCorrupt {
+		t.Errorf("Reason = %v, want FailCorrupt", res.Reason)
+	}
+}
+
 func TestGoSevenZip_Bzip2(t *testing.T) {
 	td := sevenZipTestdata(t)
 	outDir := t.TempDir()
