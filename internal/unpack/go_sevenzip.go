@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/crc32"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -15,6 +17,17 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
+
+// errSevenZipChecksum is returned when a file's decompressed content doesn't
+// match the CRC32 recorded in the 7z archive header. bodgit/sevenzip parses
+// this digest (exposed as File.CRC32) but never checks it during Open/Read —
+// its own README FAQ tells callers to do this themselves for the
+// encrypted-but-uncompressed case, and the same gap applies generally: a
+// structurally valid archive whose underlying bytes are wrong (e.g.
+// assembled from an incomplete download) extracts without error. The
+// "checksum error" substring matches classifySevenZipError's existing
+// FailCorrupt heuristic, used for the library's own checksum errors.
+var errSevenZipChecksum = errors.New("go_7z: checksum error: content does not match archive CRC32")
 
 // GoSevenZip extracts archive.MainFile into outDir using the pure-Go
 // bodgit/sevenzip library. It is equivalent to SevenZip (subprocess) but
@@ -152,7 +165,11 @@ func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath s
 	}
 	defer out.Close() //nolint:errcheck // best-effort close; write errors are caught by contextCopy
 
-	if _, err := contextCopy(ctx, out, rc); err != nil {
+	// Accumulate CRC32 over the bytes actually written so we can verify them
+	// against f.CRC32 below — the library itself never does this (see
+	// errSevenZipChecksum).
+	hasher := crc32.NewIEEE()
+	if _, err := contextCopy(ctx, io.MultiWriter(out, hasher), rc); err != nil {
 		if errno, ok := errors.AsType[syscall.Errno](err); ok && errno == syscall.ENOSPC {
 			return fmt.Errorf("go_7z: disk full writing %s: %w", destRel, err)
 		}
@@ -161,6 +178,15 @@ func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath s
 
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("go_7z: close %s: %w", destRel, err)
+	}
+
+	// f.CRC32 == 0 means no digest was recorded for this entry (the
+	// library's own tests treat this as "no CRC available" rather than a
+	// literal zero checksum, e.g. for genuinely empty files which are
+	// already handled earlier via the isEmptyStream/isEmptyFile short
+	// circuit in File.Open and never reach this code path with content).
+	if f.CRC32 != 0 && hasher.Sum32() != f.CRC32 {
+		return fmt.Errorf("%w: file %q: computed=%08x header=%08x", errSevenZipChecksum, f.Name, hasher.Sum32(), f.CRC32)
 	}
 
 	// Permissions: strip executable bits from untrusted archives.
