@@ -25,7 +25,7 @@ func TestApplication_ReloadOptions(t *testing.T) {
 		c.Downloads.TopOnly = true
 		c.Downloads.PropagationDelay = 30
 	})
-	app.ReloadDownloadOptions(cfg)
+	app.ReloadDownloadOptions(cfg.Downloads)
 
 	// Assert on Assembler
 	if got := app.assembler.MinFreeBytes(); got != 50*1024*1024 {
@@ -53,7 +53,7 @@ func TestApplication_ReloadOptions(t *testing.T) {
 		c.General.LogLevel = "debug"
 		c.General.LogLevels = map[string]string{"downloader": "warn"}
 	})
-	app.ReloadGeneralOptions(cfg)
+	app.ReloadGeneralOptions(cfg.General)
 
 	if got := globalLevelVar.Level(); got != slog.LevelDebug {
 		t.Errorf("expected global level to be Debug, got %v", got)
@@ -70,7 +70,7 @@ func TestApplication_ReloadOptions(t *testing.T) {
 	cfg.With(func(c *config.Config) {
 		c.General.LogLevel = "invalid-level"
 	})
-	app.ReloadGeneralOptions(cfg)
+	app.ReloadGeneralOptions(cfg.General)
 	// Global level should still be debug from previous step
 	if got := globalLevelVar.Level(); got != slog.LevelDebug {
 		t.Errorf("expected global level to remain Debug on invalid config, got %v", got)
@@ -81,7 +81,7 @@ func TestApplication_ReloadOptions(t *testing.T) {
 		c.General.LogLevel = "debug"
 		c.General.LogLevels = map[string]string{"downloader": "invalid-level"}
 	})
-	app.ReloadGeneralOptions(cfg)
+	app.ReloadGeneralOptions(cfg.General)
 	// Downloader level should still be warn from previous step
 	componentLevelsMu.RLock()
 	lvl, ok = componentLevels["downloader"]
@@ -95,7 +95,7 @@ func TestApplication_ReloadOptions(t *testing.T) {
 		c.General.LogLevel = "invalid-level"
 		c.General.LogLevels = map[string]string{"downloader": "info"}
 	})
-	app.ReloadGeneralOptions(cfg)
+	app.ReloadGeneralOptions(cfg.General)
 	// Global level should remain debug
 	if got := globalLevelVar.Level(); got != slog.LevelDebug {
 		t.Errorf("expected global level to remain Debug, got %v", got)
@@ -145,14 +145,62 @@ func TestApplication_ReloadOptions(t *testing.T) {
 		c.PostProc.Par2Turbo = true
 		c.PostProc.IgnoreUnrarDates = true
 	})
-	app.ReloadPostProcOptions(cfg)
+	app.ReloadPostProcOptions(cfg.PostProc, cfg.General.ScriptDir)
 
 	// 7. Test ReloadPostProcOptions with parsing errors in extra params (triggers error paths)
 	cfg.With(func(c *config.Config) {
 		c.PostProc.ExtraUnrarParams = "'unclosed quote"
 		c.PostProc.ExtraPar2Params = "'unclosed quote"
 	})
-	app.ReloadPostProcOptions(cfg)
+	app.ReloadPostProcOptions(cfg.PostProc, cfg.General.ScriptDir)
+}
+
+// TestApplication_ReloadPostProcOptions_NoDeadlockUnderReadLock guards against
+// a regression of the self-deadlock previously present in
+// internal/api/config.go's modeSetConfig handler, which used to call:
+//
+//	s.config.WithRead(func(cfg *config.Config) { s.app.ReloadPostProcOptions(cfg) })
+//
+// ReloadPostProcOptions calls several Set* methods (SetEnableFileJoin,
+// SetEnableRecursive, SetDirectUnpack, etc.) that internally call
+// app.config.With(...), acquiring the *write* lock on config.Config. Calling
+// ReloadPostProcOptions itself while still holding that config's *read* lock
+// self-deadlocked the goroutine (sync.RWMutex is not reentrant) — and because
+// Go's RWMutex is writer-preferring, every other request that subsequently
+// tried to RLock the config queued up behind it too, wedging the whole HTTP
+// server (this is what caused the 504s / unresponsive shutdown reported
+// against production).
+//
+// ReloadPostProcOptions's signature now takes a value snapshot
+// (config.PostProcConfig) instead of *config.Config, which makes it
+// impossible to pass a still-locked config through to it. This test exercises
+// the correct pattern — snapshot under WithRead, release, then call — and
+// guards the snapshot's release-before-call ordering with a timeout in case a
+// future change reintroduces the lock-holding call.
+func TestApplication_ReloadPostProcOptions_NoDeadlockUnderReadLock(t *testing.T) {
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+	app, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		var pp config.PostProcConfig
+		var scriptDir string
+		cfg.WithRead(func(c *config.Config) {
+			pp = c.PostProc
+			scriptDir = c.General.ScriptDir
+		})
+		app.ReloadPostProcOptions(pp, scriptDir)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("deadlock: ReloadPostProcOptions never returned")
+	}
 }
 
 func TestApplication_RunMetricsPush(t *testing.T) {

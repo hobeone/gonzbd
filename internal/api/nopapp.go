@@ -57,13 +57,13 @@ func (n NopApp) PausePostProcessor() {}
 func (n NopApp) ResumePostProcessor() {}
 
 // ReloadPostProcOptions is a stub.
-func (n NopApp) ReloadPostProcOptions(*config.Config) {}
+func (n NopApp) ReloadPostProcOptions(config.PostProcConfig, string) {}
 
 // ReloadDownloadOptions is a stub.
-func (n NopApp) ReloadDownloadOptions(*config.Config) {}
+func (n NopApp) ReloadDownloadOptions(config.DownloadConfig) {}
 
 // ReloadGeneralOptions is a stub.
-func (n NopApp) ReloadGeneralOptions(*config.Config) {}
+func (n NopApp) ReloadGeneralOptions(config.GeneralConfig) {}
 
 // UnblockServer is a stub.
 func (n NopApp) UnblockServer(string) bool { return true }

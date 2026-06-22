@@ -24,9 +24,9 @@ func TestNopAppCoverage(t *testing.T) {
 	app.DisconnectAll()
 	app.PausePostProcessor()
 	app.ResumePostProcessor()
-	app.ReloadPostProcOptions(&config.Config{})
-	app.ReloadDownloadOptions(&config.Config{})
-	app.ReloadGeneralOptions(&config.Config{})
+	app.ReloadPostProcOptions(config.PostProcConfig{}, "/tmp/scripts")
+	app.ReloadDownloadOptions(config.DownloadConfig{})
+	app.ReloadGeneralOptions(config.GeneralConfig{})
 	_ = app.UnblockServer("srv1")
 	_ = app.ServerStatus()
 	if sp := app.Speed(); sp != 12.34 {

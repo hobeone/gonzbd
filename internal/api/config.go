@@ -196,14 +196,30 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Hot-apply postproc and download options for the next job.
+	//
+	// Snapshot the relevant config values under a brief read lock, then call
+	// into the app *after* releasing it. Reload*Options call Set* methods
+	// that themselves acquire config.Config's write lock (e.g.
+	// SetEnableFileJoin) — calling them while still holding the read lock
+	// would self-deadlock, since sync.RWMutex is not reentrant.
 	if s.app != nil {
 		switch section {
 		case "postproc":
-			s.config.WithRead(func(cfg *config.Config) { s.app.ReloadPostProcOptions(cfg) })
+			var pp config.PostProcConfig
+			var scriptDir string
+			s.config.WithRead(func(cfg *config.Config) {
+				pp = cfg.PostProc
+				scriptDir = cfg.General.ScriptDir
+			})
+			s.app.ReloadPostProcOptions(pp, scriptDir)
 		case "downloads":
-			s.config.WithRead(func(cfg *config.Config) { s.app.ReloadDownloadOptions(cfg) })
+			var d config.DownloadConfig
+			s.config.WithRead(func(cfg *config.Config) { d = cfg.Downloads })
+			s.app.ReloadDownloadOptions(d)
 		case "general":
-			s.config.WithRead(func(cfg *config.Config) { s.app.ReloadGeneralOptions(cfg) })
+			var g config.GeneralConfig
+			s.config.WithRead(func(cfg *config.Config) { g = cfg.General })
+			s.app.ReloadGeneralOptions(g)
 		}
 	}
 
