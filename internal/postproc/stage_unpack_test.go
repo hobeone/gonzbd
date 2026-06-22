@@ -1,6 +1,7 @@
 package postproc
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -460,4 +461,462 @@ func TestUnpackHelpers(t *testing.T) {
 			t.Error("expected ok=false since containment check failed")
 		}
 	})
+}
+
+func TestUnpackStage_RealtimeLogTransitions(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
+
+	var loggedLines []string
+	job.OnOutput = func(tool, line string) {
+		loggedLines = append(loggedLines, line)
+	}
+
+	if err := enabledUnpackStage().Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var sawStart, sawComplete bool
+	for _, l := range loggedLines {
+		if strings.Contains(l, "Using go_unrar for RAR (pure-Go)") {
+			sawStart = true
+		}
+		if strings.Contains(l, "go_unrar: unpacking complete") {
+			sawComplete = true
+		}
+	}
+
+	if !sawStart {
+		t.Errorf("expected start log 'Using go_unrar for RAR (pure-Go)' in OnOutput, got: %v", loggedLines)
+	}
+	if !sawComplete {
+		t.Errorf("expected complete log 'go_unrar: unpacking complete' in OnOutput, got: %v", loggedLines)
+	}
+}
+
+func sevenZipFixture(name string) string {
+	return filepath.Join("..", "unpack", "testdata", "sevenzip", name)
+}
+
+func TestUnpackStage_RealtimeLogTransitions_SevenZip(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	copyToDir(t, sevenZipFixture("lzma2.7z"), dir)
+
+	var loggedLines []string
+	job.OnOutput = func(tool, line string) {
+		loggedLines = append(loggedLines, line)
+	}
+
+	s := NewUnpackStageWith(unpack.Options{UseGo7z: true}, false)
+	s.SetEnabled(true)
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var sawStart, sawComplete bool
+	for _, l := range loggedLines {
+		if strings.Contains(l, "Using go_7z for 7-Zip (pure-Go)") {
+			sawStart = true
+		}
+		if strings.Contains(l, "go_7z: unpacking complete") {
+			sawComplete = true
+		}
+	}
+
+	if !sawStart {
+		t.Errorf("expected start log 'Using go_7z for 7-Zip (pure-Go)' in OnOutput, got: %v", loggedLines)
+	}
+	if !sawComplete {
+		t.Errorf("expected complete log 'go_7z: unpacking complete' in OnOutput, got: %v", loggedLines)
+	}
+}
+
+func TestUnpackStage_RealtimeLogTransitions_SevenZip_Fallback(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	// Copy a RAR archive but name it as .7z to force GoSevenZip to fail
+	// and trigger the fallback to external 7z.
+	rarPath := copyToDir(t, unpackFixture("single_rar5.rar"), dir)
+	fake7zPath := filepath.Join(dir, "single_rar5.7z")
+	if err := os.Rename(rarPath, fake7zPath); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	var loggedLines []string
+	job.OnOutput = func(tool, line string) {
+		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
+	}
+
+	// We must configure Go7zFallback: true, UseGo7z: true, and ensure SevenZipCommand is set/detectable
+	s := NewUnpackStageWith(unpack.Options{
+		UseGo7z:         true,
+		Go7zFallback:    true,
+		SevenZipCommand: "7z",
+	}, false)
+	s.SetEnabled(true)
+
+	// We expect this to fail eventually because it's not a real 7z archive.
+	_ = s.Run(t.Context(), job)
+
+	var sawGo7zStart, sawGo7zFailRetry, sawExternal7zCommand bool
+	for _, l := range loggedLines {
+		if strings.Contains(l, "[go_7z] Using go_7z for 7-Zip (pure-Go)") {
+			sawGo7zStart = true
+		}
+		if strings.Contains(l, "[go_7z] Go-native extraction failed:") && strings.Contains(l, "retrying with 7z") {
+			sawGo7zFailRetry = true
+		}
+		if strings.Contains(l, "[7z] Running command:") {
+			sawExternal7zCommand = true
+		}
+	}
+
+	if !sawGo7zStart {
+		t.Errorf("expected start log 'Using go_7z for 7-Zip (pure-Go)' in OnOutput, got: %v", loggedLines)
+	}
+	if !sawGo7zFailRetry {
+		t.Errorf("expected fallback retry log in OnOutput, got: %v", loggedLines)
+	}
+	if !sawExternal7zCommand {
+		t.Errorf("expected external command log in OnOutput, got: %v", loggedLines)
+	}
+}
+
+func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback(t *testing.T) {
+	t.Parallel()
+
+	// Check if unrar is available on this system first.
+	if _, lookErr := exec.LookPath("unrar"); lookErr != nil {
+		t.Skip("unrar binary not found, skipping fallback test")
+	}
+
+	job, dir := stageJob(t)
+	// Use a corrupt rar to trigger GoUnRAR failure and fallback to unrar
+	copyToDir(t, unpackFixture("corrupt.rar"), dir)
+
+	var loggedLines []string
+	job.OnOutput = func(tool, line string) {
+		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
+	}
+
+	s := NewUnpackStageWith(unpack.Options{
+		UseGoRAR:      true,
+		GoRarFallback: true,
+		UnrarCommand:  "unrar",
+	}, false)
+	s.SetEnabled(true)
+
+	_ = s.Run(t.Context(), job)
+
+	var sawGoRarStart, sawGoRarFailRetry, sawExternalUnrarCommand bool
+	for _, l := range loggedLines {
+		if strings.Contains(l, "[go_unrar] Using go_unrar for RAR (pure-Go)") {
+			sawGoRarStart = true
+		}
+		if strings.Contains(l, "[go_unrar] Go-native extraction failed:") && strings.Contains(l, "retrying with unrar") {
+			sawGoRarFailRetry = true
+		}
+		if strings.Contains(l, "[unrar] Running command:") {
+			sawExternalUnrarCommand = true
+		}
+	}
+
+	if !sawGoRarStart {
+		t.Errorf("expected start log 'Using go_unrar for RAR (pure-Go)' in OnOutput, got: %v", loggedLines)
+	}
+	if !sawGoRarFailRetry {
+		t.Errorf("expected fallback retry log in OnOutput, got: %v", loggedLines)
+	}
+	if !sawExternalUnrarCommand {
+		t.Errorf("expected external command log in OnOutput, got: %v", loggedLines)
+	}
+}
+
+func createDummyExecutable(t *testing.T, dir, filename, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write dummy executable: %v", err)
+	}
+	return path
+}
+
+func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback_Success(t *testing.T) {
+	t.Parallel()
+
+	tmpBinDir := t.TempDir()
+	unrarPath := filepath.Join(tmpBinDir, "mock-unrar")
+
+	// Initially write a failing script to force the internal fallback inside GoUnRAR to fail
+	failingScript := `#!/bin/sh
+echo "unrar mock failed"
+exit 1
+`
+	if err := os.WriteFile(unrarPath, []byte(failingScript), 0o755); err != nil {
+		t.Fatalf("WriteFile failing script: %v", err)
+	}
+
+	job, dir := stageJob(t)
+	copyToDir(t, unpackFixture("corrupt.rar"), dir)
+
+	var loggedLines []string
+	job.OnOutput = func(tool, line string) {
+		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
+		// When we see the retry trigger log, overwrite the script to succeed
+		if tool == "go_unrar" && strings.Contains(line, "Go-native extraction failed") {
+			successScript := `#!/bin/sh
+echo "unrar stdout line 1"
+echo "unrar stdout line 2"
+outdir=""
+for arg in "$@"; do
+  case "$arg" in
+    -o*) outdir="${arg#-o}" ;;
+    *) outdir="$arg" ;;
+  esac
+done
+outdir="${outdir%/}"
+if [ -n "$outdir" ] && [ -d "$outdir" ]; then
+  touch "$outdir/mock_extracted_file.txt"
+fi
+exit 0
+`
+			if err := os.WriteFile(unrarPath, []byte(successScript), 0o755); err != nil {
+				panic(err)
+			}
+		}
+	}
+
+	s := NewUnpackStageWith(unpack.Options{
+		UseGoRAR:      true,
+		GoRarFallback: true,
+		UnrarCommand:  unrarPath,
+	}, false)
+	s.SetEnabled(true)
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("expected fallback to succeed, got error: %v", err)
+	}
+
+	if job.UnpackError {
+		t.Error("expected job.UnpackError to be false since fallback succeeded")
+	}
+
+	var sawGoRarStart, sawGoRarFailRetry, sawExternalUnrarCommand, sawStdout, sawSuccess bool
+	for _, l := range loggedLines {
+		if strings.Contains(l, "[go_unrar] Using go_unrar for RAR (pure-Go)") {
+			sawGoRarStart = true
+		}
+		if strings.Contains(l, "[go_unrar] Go-native extraction failed:") && strings.Contains(l, "retrying with") {
+			sawGoRarFailRetry = true
+		}
+		if strings.Contains(l, "[unrar] Running command:") {
+			sawExternalUnrarCommand = true
+		}
+		if strings.Contains(l, "[unrar] unrar stdout line 1") {
+			sawStdout = true
+		}
+		if strings.Contains(l, "[unrar] Unpacking complete:") {
+			sawSuccess = true
+		}
+	}
+
+	if !sawGoRarStart {
+		t.Errorf("missing go_unrar start log: %v", loggedLines)
+	}
+	if !sawGoRarFailRetry {
+		t.Errorf("missing fallback retry log: %v", loggedLines)
+	}
+	if !sawExternalUnrarCommand {
+		t.Errorf("missing external command log: %v", loggedLines)
+	}
+	if !sawStdout {
+		t.Errorf("missing stdout line: %v", loggedLines)
+	}
+	if !sawSuccess {
+		t.Errorf("missing success log: %v", loggedLines)
+	}
+}
+
+func TestUnpackStage_RealtimeLogTransitions_SevenZip_Fallback_Success(t *testing.T) {
+	t.Parallel()
+
+	tmpBinDir := t.TempDir()
+	dummyScript := `#!/bin/sh
+echo "7z stdout line 1"
+echo "7z stdout line 2"
+outdir=""
+for arg in "$@"; do
+  case "$arg" in
+    -o*) outdir="${arg#-o}" ;;
+    *) outdir="$arg" ;;
+  esac
+done
+outdir="${outdir%/}"
+if [ -n "$outdir" ] && [ -d "$outdir" ]; then
+  touch "$outdir/mock_extracted_file.txt"
+fi
+exit 0
+`
+	szPath := createDummyExecutable(t, tmpBinDir, "mock-7z", dummyScript)
+
+	job, dir := stageJob(t)
+	// Copy a RAR archive but name it as .7z to force GoSevenZip to fail
+	rarPath := copyToDir(t, unpackFixture("single_rar5.rar"), dir)
+	fake7zPath := filepath.Join(dir, "single_rar5.7z")
+	if err := os.Rename(rarPath, fake7zPath); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	var loggedLines []string
+	job.OnOutput = func(tool, line string) {
+		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
+	}
+
+	s := NewUnpackStageWith(unpack.Options{
+		UseGo7z:         true,
+		Go7zFallback:    true,
+		SevenZipCommand: szPath,
+	}, false)
+	s.SetEnabled(true)
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("expected fallback to succeed, got error: %v", err)
+	}
+
+	if job.UnpackError {
+		t.Error("expected job.UnpackError to be false since fallback succeeded")
+	}
+
+	var sawGo7zStart, sawGo7zFailRetry, sawExternal7zCommand, sawStdout, sawSuccess bool
+	for _, l := range loggedLines {
+		if strings.Contains(l, "[go_7z] Using go_7z for 7-Zip (pure-Go)") {
+			sawGo7zStart = true
+		}
+		if strings.Contains(l, "[go_7z] Go-native extraction failed:") && strings.Contains(l, "retrying with") {
+			sawGo7zFailRetry = true
+		}
+		if strings.Contains(l, "[7z] Running command:") {
+			sawExternal7zCommand = true
+		}
+		if strings.Contains(l, "[7z] 7z stdout line 1") {
+			sawStdout = true
+		}
+		if strings.Contains(l, "[7z] Unpacking complete:") {
+			sawSuccess = true
+		}
+	}
+
+	if !sawGo7zStart {
+		t.Errorf("expected start log 'Using go_7z for 7-Zip (pure-Go)' in OnOutput, got: %v", loggedLines)
+	}
+	if !sawGo7zFailRetry {
+		t.Errorf("expected fallback retry log in OnOutput, got: %v", loggedLines)
+	}
+	if !sawExternal7zCommand {
+		t.Errorf("expected external command log in OnOutput, got: %v", loggedLines)
+	}
+	if !sawStdout {
+		t.Errorf("expected stdout line in OnOutput, got: %v", loggedLines)
+	}
+	if !sawSuccess {
+		t.Errorf("expected success log in OnOutput, got: %v", loggedLines)
+	}
+}
+
+func TestUnpackStage_RealtimeLogTransitions_SevenZip_Direct_Success(t *testing.T) {
+	t.Parallel()
+
+	tmpBinDir := t.TempDir()
+	dummyScript := `#!/bin/sh
+echo "7z stdout line 1"
+exit 0
+`
+	szPath := createDummyExecutable(t, tmpBinDir, "mock-7z", dummyScript)
+
+	job, dir := stageJob(t)
+	copyToDir(t, sevenZipFixture("lzma2.7z"), dir)
+
+	var loggedLines []string
+	job.OnOutput = func(tool, line string) {
+		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
+	}
+
+	s := NewUnpackStageWith(unpack.Options{
+		UseGo7z:         false,
+		SevenZipCommand: szPath,
+	}, false)
+	s.SetEnabled(true)
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("expected extraction to succeed, got error: %v", err)
+	}
+
+	var sawStart, sawComplete bool
+	for _, l := range loggedLines {
+		if strings.Contains(l, "[7z] Unpacking:") {
+			sawStart = true
+		}
+		if strings.Contains(l, "[7z] Unpacking complete:") {
+			sawComplete = true
+		}
+	}
+
+	if !sawStart {
+		t.Errorf("expected start log 'Unpacking:' in OnOutput, got: %v", loggedLines)
+	}
+	if !sawComplete {
+		t.Errorf("expected complete log 'Unpacking complete:' in OnOutput, got: %v", loggedLines)
+	}
+}
+
+func TestUnpackStage_RealtimeLogTransitions_Rar_Direct_Success(t *testing.T) {
+	t.Parallel()
+
+	tmpBinDir := t.TempDir()
+	dummyScript := `#!/bin/sh
+echo "unrar stdout line 1"
+exit 0
+`
+	unrarPath := createDummyExecutable(t, tmpBinDir, "mock-unrar", dummyScript)
+
+	job, dir := stageJob(t)
+	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
+
+	var loggedLines []string
+	job.OnOutput = func(tool, line string) {
+		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
+	}
+
+	s := NewUnpackStageWith(unpack.Options{
+		UseGoRAR:     false,
+		UnrarCommand: unrarPath,
+	}, false)
+	s.SetEnabled(true)
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("expected extraction to succeed, got error: %v", err)
+	}
+
+	var sawStart, sawComplete bool
+	for _, l := range loggedLines {
+		if strings.Contains(l, "[unrar] Unpacking:") {
+			sawStart = true
+		}
+		if strings.Contains(l, "[unrar] Unpacking complete:") {
+			sawComplete = true
+		}
+	}
+
+	if !sawStart {
+		t.Errorf("expected start log 'Unpacking:' in OnOutput, got: %v", loggedLines)
+	}
+	if !sawComplete {
+		t.Errorf("expected complete log 'Unpacking complete:' in OnOutput, got: %v", loggedLines)
+	}
 }
