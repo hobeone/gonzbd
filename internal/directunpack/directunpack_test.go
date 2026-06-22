@@ -142,6 +142,66 @@ func TestDirectUnpack_MultiVolume_AllPresent(t *testing.T) {
 	}
 }
 
+// TestDirectUnpack_MarkCorrupt_PreventsFalseSuccess guards against DirectUnpack
+// reporting a set as successfully extracted when one of its volumes was
+// assembled from a download with missing/failed articles. The on-disk RAR
+// file in that case is structurally readable (rarengine can still walk its
+// entries) but its content is wrong — the source data never fully arrived.
+// The caller (app.maybeDirectUnpack) is expected to call MarkCorrupt for any
+// volume whose JobFile had failed articles, before/with the corresponding
+// Add(). DirectUnpack must then report the set as failed, not successful, so
+// the normal unpack + par2 repair path runs instead of silently trusting
+// corrupt output.
+func TestDirectUnpack_MarkCorrupt_PreventsFalseSuccess(t *testing.T) {
+	srcDir := testdataDir(t)
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+
+	var names []string
+	for i := 1; i <= 10; i++ {
+		name := fmt.Sprintf("multi_new.part%02d.rar", i)
+		copyRAR(t, srcDir, workDir, name)
+		names = append(names, name)
+	}
+
+	du := New(
+		testLogger(t),
+		"test-job",
+		workDir,
+		extractDir,
+		Options{},
+	)
+	du.SetAllFilenames(names)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Simulate part06 having had failed articles during download: mark the
+	// set corrupt before feeding the (structurally valid but wrong-content)
+	// volume, exactly as maybeDirectUnpack must do.
+	du.MarkCorrupt("multi_new", "volume multi_new.part06.rar had failed/missing articles")
+
+	for _, name := range names {
+		du.Add(ctx, name, filepath.Join(workDir, name))
+	}
+
+	du.Wait()
+
+	results := du.Results()
+	failures := du.Failures()
+
+	if _, ok := results["multi_new"]; ok {
+		t.Errorf("expected set NOT in Results() once marked corrupt, got: %+v", results)
+	}
+	fs, ok := failures["multi_new"]
+	if !ok {
+		t.Fatalf("expected set in Failures(), got results=%+v failures=%+v", results, failures)
+	}
+	if fs.Reason == "" {
+		t.Error("expected non-empty failure reason")
+	}
+}
+
 func TestDirectUnpack_MultiVolume_Delayed(t *testing.T) {
 	srcDir := testdataDir(t)
 	workDir := t.TempDir()

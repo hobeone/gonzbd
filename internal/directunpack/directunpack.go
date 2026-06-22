@@ -86,6 +86,7 @@ type DirectUnpacker struct {
 	successSets   map[string]SuccessSet     // completed extractions
 	failedSets    map[string]FailedSet      // sets that failed
 	skippedSets   map[string]SkippedSet     // sets skipped (not RAR5)
+	corruptSets   map[string]string         // setname → reason; volumes assembled from a failed/incomplete download
 	nextSets      []string                  // archive sets waiting to start
 
 	// All files in the job (for initial volume scan).
@@ -112,6 +113,7 @@ func New(log *slog.Logger, jobID, downloadDir, extractDir string, opts Options) 
 		successSets:   make(map[string]SuccessSet),
 		failedSets:    make(map[string]FailedSet),
 		skippedSets:   make(map[string]SkippedSet),
+		corruptSets:   make(map[string]string),
 		volumeReady:   make(chan struct{}, 1),
 		done:          make(chan struct{}),
 		opts:          opts,
@@ -124,6 +126,31 @@ func (d *DirectUnpacker) SetAllFilenames(names []string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.allFilenames = names
+}
+
+// MarkCorrupt records that a volume belonging to setname was assembled from
+// a download with missing or failed articles. The on-disk RAR file may still
+// be structurally readable (rarengine can walk its entries), but its content
+// is wrong since the source data never fully arrived. Once marked, the set
+// can never be reported as successfully extracted: extraction either aborts
+// early (if still waiting on volumes) or is downgraded to a failure after
+// the fact (if extraction had already consumed the volume in question).
+//
+// The caller must call MarkCorrupt before the corresponding Add() for the
+// affected volume, so the corrupt flag is visible before extraction can
+// possibly consume that volume's data.
+func (d *DirectUnpacker) MarkCorrupt(setname, reason string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.corruptSets[setname] = reason
+
+	// Wake any waitForVolume loop blocked on this set so it can re-check and
+	// abort promptly instead of waiting for a volume that may never arrive
+	// (or arrive much later) on the corrupt path.
+	select {
+	case d.volumeReady <- struct{}{}:
+	default:
+	}
 }
 
 // Add is called when a RAR volume file has been fully assembled on disk.
@@ -437,8 +464,18 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr
 	default:
 	}
 
-	// Record success.
 	d.mu.Lock()
+	// Backstop: a volume needed for this set may have been marked corrupt
+	// (failed/missing download articles) after waitForVolume's own check —
+	// e.g. all volumes had already arrived and extraction never went back
+	// through waitForVolume again. Never record success once any volume of
+	// this set is known to be assembled from incomplete data.
+	if reason, corrupt := d.corruptSets[setname]; corrupt {
+		d.mu.Unlock()
+		return fmt.Errorf("directunpack: %s", reason)
+	}
+
+	// Record success.
 	var rarParts []string
 	for _, p := range d.completedVols[setname] {
 		rarParts = append(rarParts, p)
@@ -568,6 +605,10 @@ func (d *DirectUnpacker) waitForVolume(ctx context.Context, setname string, vol 
 		if d.killed {
 			d.mu.Unlock()
 			return fmt.Errorf("killed")
+		}
+		if reason, corrupt := d.corruptSets[setname]; corrupt {
+			d.mu.Unlock()
+			return fmt.Errorf("directunpack: %s", reason)
 		}
 		if vols, ok := d.completedVols[setname]; ok {
 			if _, found := vols[vol]; found {
