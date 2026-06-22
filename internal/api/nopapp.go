@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -97,4 +98,9 @@ func (n NopApp) RemoveHistoryJob(ctx context.Context, id string, deleteFiles boo
 		return err
 	}
 	return nil
+}
+
+// DirectUnpackStatus is a stub.
+func (n NopApp) DirectUnpackStatus(jobID string) (directunpack.Status, bool) {
+	return directunpack.Status{}, false
 }

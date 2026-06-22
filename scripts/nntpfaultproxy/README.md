@@ -117,6 +117,57 @@ Three fault actions:
   idle read-deadline fires and the connection is marked bad rather than
   hanging the whole download.
 
+## Percentage-based (rate) faults
+
+For broad fuzzing — "drop roughly 0.1% of all articles" — use `rate`
+instead of `message_ids`. A rule with `rate` set and no `message_ids`
+matches that fraction of every BODY/STAT request the proxy sees, decided
+per request by the seeded RNG:
+
+```yaml
+rules:
+  - rate: 0.001       # 0.1%
+    action: drop
+```
+
+A few things worth knowing before relying on this:
+
+- **`rate` is a probability per request, not a guaranteed count.** With
+  `rate: 0.001` and 10,000 articles, expect *around* 10 drops, not exactly
+  10 — it's a Bernoulli trial per BODY/STAT, not a fixed quota.
+- **It applies to every article from every file in the queue**, not just
+  the one you're targeting — including par2 index/recovery files, NFOs,
+  sample files, anything gonzbd fetches while this server is active. If
+  you want the percentage confined to one volume, pair it with a smaller
+  `message_ids` list instead, or queue only the NZB you're testing while
+  the fault proxy is wired in.
+- **Rules are evaluated in order, first match wins.** You can combine a
+  precise `message_ids` rule with a broad `rate` rule — the exact-match
+  rule takes priority for the IDs it lists, and the rate rule covers
+  everything else:
+
+  ```yaml
+  rules:
+    - message_ids:
+        - "abc123@example"   # guaranteed to drop, every run
+      action: drop
+    - rate: 0.001            # ~0.1% of everything else
+      action: drop
+  ```
+
+- **Use `-seed <n>` for a reproducible run.** The same seed plus the same
+  sequence of accepted connections reproduces the same drop pattern,
+  useful for comparing behavior across two runs of the same NZB:
+
+  ```bash
+  /tmp/nntpfaultproxy -config /tmp/faultproxy.yaml -seed 42
+  ```
+
+- **`rate` works with any action**, not just `drop` — `rate: 0.001` with
+  `action: corrupt` silently corrupts ~0.1% of articles instead of
+  failing them outright, useful for exercising the CRC32 checks across a
+  whole queue rather than one hand-picked article.
+
 ## Reproducibility
 
 Pass `-seed <n>` to make `rate`-based rules deterministic across runs (where `n` is a non-zero integer; `-seed 0` or omitting the flag seeds from the current time and is non-deterministic).

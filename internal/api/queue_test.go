@@ -14,6 +14,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -1623,5 +1624,118 @@ func TestQueueChangeCat_ListReflectsNewCategory(t *testing.T) {
 	}
 	if slot.PP != "1" {
 		t.Errorf("pp = %q; want 1 (from tv category)", slot.PP)
+	}
+}
+
+type mockApp struct {
+	NopApp
+	statuses map[string]directunpack.Status
+}
+
+func (m mockApp) DirectUnpackStatus(jobID string) (directunpack.Status, bool) {
+	st, ok := m.statuses[jobID]
+	return st, ok
+}
+
+func TestQueueList_WithDirectUnpackStatus(t *testing.T) {
+	t.Parallel()
+	q := queue.New()
+
+	statuses := map[string]directunpack.Status{
+		"test-job-id": {
+			Active:           true,
+			CurrentSet:       "movie_set",
+			CompletedVolumes: 2,
+			TotalVolumes:     5,
+			SuccessSets:      []string{"set1"},
+			FailedSets:       []string{"set2"},
+		},
+	}
+	app := mockApp{
+		NopApp:   NopApp{Queue: q},
+		statuses: statuses,
+	}
+
+	s := New(Options{
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+		Version: "1.0.0-test",
+		Queue:   q,
+		App:     app,
+	})
+
+	data := makeTestNZB(t)
+	parsed, err := nzb.Parse(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("parse test NZB: %v", err)
+	}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "movie.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	job.ID = "test-job-id"
+	if err := q.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+
+	// 1. Verify queue list endpoint
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	var resp struct {
+		Queue struct {
+			Slots []struct {
+				NzoID        string               `json:"nzo_id"`
+				DirectUnpack *directunpack.Status `json:"direct_unpack"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(resp.Queue.Slots) != 1 {
+		t.Fatalf("expected 1 slot, got %d", len(resp.Queue.Slots))
+	}
+
+	slot := resp.Queue.Slots[0]
+	if slot.DirectUnpack == nil {
+		t.Fatal("expected non-nil direct_unpack in response")
+	}
+	if !slot.DirectUnpack.Active {
+		t.Error("expected direct_unpack.active to be true")
+	}
+	if slot.DirectUnpack.CurrentSet != "movie_set" {
+		t.Errorf("expected direct_unpack.current_set to be 'movie_set', got %q", slot.DirectUnpack.CurrentSet)
+	}
+
+	// 2. Verify queue job detail endpoint (files=1 is required for details)
+	rrDetail := apiGet(t, s.Handler(), "/api?mode=queue&nzo_id=test-job-id&files=1&apikey="+testAPIKey)
+	if rrDetail.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rrDetail.Code)
+	}
+
+	var respDetail struct {
+		Queue struct {
+			Slots []struct {
+				NzoID        string               `json:"nzo_id"`
+				DirectUnpack *directunpack.Status `json:"direct_unpack"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rrDetail.Body).Decode(&respDetail); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(respDetail.Queue.Slots) != 1 {
+		t.Fatalf("expected 1 slot in detail response, got %d", len(respDetail.Queue.Slots))
+	}
+	slotDetail := respDetail.Queue.Slots[0]
+	if slotDetail.DirectUnpack == nil {
+		t.Fatal("expected non-nil direct_unpack in detail response")
+	}
+	if !slotDetail.DirectUnpack.Active {
+		t.Error("expected direct_unpack.active to be true in detail response")
 	}
 }
