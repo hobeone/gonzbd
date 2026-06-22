@@ -476,7 +476,10 @@ describe('QueueRow', () => {
 			direct_unpack: {
 				active: false,
 				success_sets: ['set_a', 'set_b'],
-				failed_sets: ['set_c']
+				failed_sets: ['set_c'],
+				failed_reasons: {
+					'set_c': 'volume set_c.part01.rar had failed/missing download articles'
+				}
 			}
 		};
 
@@ -486,8 +489,8 @@ describe('QueueRow', () => {
 		expect(row).toBeTruthy();
 		await fireEvent.click(row);
 
-		expect(screen.getByText(/Finished \(2 OK/)).toBeInTheDocument();
-		expect(screen.getByText('1 Failed')).toBeInTheDocument();
+		expect(screen.getByText(/Unpack failed: volume had failed or missing download blocks/)).toBeInTheDocument();
+		expect(screen.getByText('(2 OK, 1 Failed)')).toBeInTheDocument();
 	});
 });
 

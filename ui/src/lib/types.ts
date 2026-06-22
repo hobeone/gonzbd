@@ -38,6 +38,7 @@ export interface DirectUnpackStatus {
 	total_volumes?: number;
 	success_sets?: string[];
 	failed_sets?: string[];
+	failed_reasons?: Record<string, string>;
 }
 
 export interface QueueFile {

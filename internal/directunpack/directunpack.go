@@ -125,12 +125,13 @@ func New(log *slog.Logger, jobID, downloadDir, extractDir string, opts Options) 
 
 // Status represents the real-time state of a DirectUnpacker instance.
 type Status struct {
-	Active           bool     `json:"active"`
-	CurrentSet       string   `json:"current_set,omitempty"`
-	CompletedVolumes int      `json:"completed_volumes,omitempty"`
-	TotalVolumes     int      `json:"total_volumes,omitempty"`
-	SuccessSets      []string `json:"success_sets,omitempty"`
-	FailedSets       []string `json:"failed_sets,omitempty"`
+	Active           bool              `json:"active"`
+	CurrentSet       string            `json:"current_set,omitempty"`
+	CompletedVolumes int               `json:"completed_volumes,omitempty"`
+	TotalVolumes     int               `json:"total_volumes,omitempty"`
+	SuccessSets      []string          `json:"success_sets,omitempty"`
+	FailedSets       []string          `json:"failed_sets,omitempty"`
+	FailedReasons    map[string]string `json:"failed_reasons,omitempty"`
 }
 
 // Status returns a thread-safe snapshot of the current direct unpack state.
@@ -158,10 +159,16 @@ func (d *DirectUnpacker) Status() Status {
 		active = !d.killed && d.curSetname != ""
 	}
 
+	failedReasons := make(map[string]string)
+	for k, v := range d.failedSets {
+		failedReasons[k] = v.Reason
+	}
+
 	status := Status{
-		Active:      active,
-		SuccessSets: successNames,
-		FailedSets:  failedNames,
+		Active:        active,
+		SuccessSets:   successNames,
+		FailedSets:    failedNames,
+		FailedReasons: failedReasons,
 	}
 
 	if status.Active {

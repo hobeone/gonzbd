@@ -1025,6 +1025,35 @@ func TestDirectUnpack_Status(t *testing.T) {
 	}
 }
 
+func TestDirectUnpack_Status_FailedReasons(t *testing.T) {
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+
+	du := New(
+		testLogger(t),
+		"test-job",
+		workDir,
+		extractDir,
+		Options{},
+	)
+
+	du.SetAllFilenames([]string{"corrupt.rar"})
+
+	// Mark corrupt to force failure
+	du.MarkCorrupt("corrupt", "failed articles")
+	du.Add(context.Background(), "corrupt.rar", filepath.Join(workDir, "corrupt.rar"))
+
+	du.Wait()
+
+	status := du.Status()
+	if len(status.FailedSets) != 1 || status.FailedSets[0] != "corrupt" {
+		t.Errorf("expected failed sets to be ['corrupt'], got %+v", status.FailedSets)
+	}
+	if reason, ok := status.FailedReasons["corrupt"]; !ok || reason != "directunpack: failed articles" {
+		t.Errorf("expected FailedReasons['corrupt'] to be 'directunpack: failed articles', got %q (ok=%t)", reason, ok)
+	}
+}
+
 func TestUnalignedHelpers(t *testing.T) {
 	// Reference the unexported helper methods to satisfy check_test_alignment.
 	var du *DirectUnpacker
