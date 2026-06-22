@@ -941,10 +941,95 @@ func TestDirectUnpack_ExtractSet_FeederNoLeakOnEarlyError(t *testing.T) {
 		"feeder goroutine leaked after extractSet early return")
 }
 
+func TestDirectUnpack_Status(t *testing.T) {
+	srcDir := testdataDir(t)
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+
+	volPath := copyRAR(t, srcDir, workDir, "single_rar5.rar")
+
+	var statusChanges int
+	var mu sync.Mutex
+	onStatusChange := func() {
+		mu.Lock()
+		statusChanges++
+		mu.Unlock()
+	}
+
+	du := New(
+		testLogger(t),
+		"test-job",
+		workDir,
+		extractDir,
+		Options{
+			OnStatusChange: onStatusChange,
+		},
+	)
+
+	// Initial status check.
+	initStatus := du.Status()
+	if initStatus.Active {
+		t.Error("expected initial status to be inactive")
+	}
+	if initStatus.CurrentSet != "" {
+		t.Errorf("expected empty CurrentSet, got %q", initStatus.CurrentSet)
+	}
+
+	du.SetAllFilenames([]string{"single_rar5.rar"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	du.Add(ctx, "single_rar5.rar", volPath)
+
+	// Check status during extraction.
+	var activeStatus Status
+	foundActive := false
+	for start := time.Now(); time.Since(start) < 2*time.Second; {
+		st := du.Status()
+		if st.Active {
+			activeStatus = st
+			foundActive = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !foundActive {
+		t.Error("never observed active direct unpack status")
+	} else {
+		if activeStatus.CurrentSet != "single_rar5" {
+			t.Errorf("expected CurrentSet to be 'single_rar5', got %q", activeStatus.CurrentSet)
+		}
+		if activeStatus.TotalVolumes != 1 {
+			t.Errorf("expected TotalVolumes to be 1, got %d", activeStatus.TotalVolumes)
+		}
+	}
+
+	du.Wait()
+
+	// Final status check.
+	finalStatus := du.Status()
+	if finalStatus.Active {
+		t.Error("expected final status to be inactive")
+	}
+	if len(finalStatus.SuccessSets) != 1 || finalStatus.SuccessSets[0] != "single_rar5" {
+		t.Errorf("expected success sets to be ['single_rar5'], got %+v", finalStatus.SuccessSets)
+	}
+
+	mu.Lock()
+	changes := statusChanges
+	mu.Unlock()
+	if changes == 0 {
+		t.Error("expected status changes callback to be called, got 0")
+	}
+}
+
 func TestUnalignedHelpers(t *testing.T) {
 	// Reference the unexported helper methods to satisfy check_test_alignment.
 	var du *DirectUnpacker
 	_ = du.run
 	_ = du.extractEntries
 	_ = du.waitForVolume
+	_ = du.notifyChange
 }

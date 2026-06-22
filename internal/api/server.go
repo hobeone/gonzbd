@@ -11,6 +11,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -90,6 +91,7 @@ type ApplicationReloader interface {
 	ServerStatus() []downloader.ServerSnapshot
 	// Speed returns the current aggregate download speed in bytes/sec.
 	Speed() float64
+	DirectUnpackStatus(jobID string) (directunpack.Status, bool)
 }
 
 // Server is the HTTP API server. It owns the mode dispatch table and

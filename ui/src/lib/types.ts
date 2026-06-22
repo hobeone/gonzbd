@@ -28,6 +28,16 @@ export interface QueueSlot {
 	current_file: string;
 	par2_held?: boolean;
 	files?: QueueFile[];
+	direct_unpack?: DirectUnpackStatus;
+}
+
+export interface DirectUnpackStatus {
+	active: boolean;
+	current_set?: string;
+	completed_volumes?: number;
+	total_volumes?: number;
+	success_sets?: string[];
+	failed_sets?: string[];
 }
 
 export interface QueueFile {

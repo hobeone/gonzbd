@@ -577,6 +577,45 @@
 						</div>
 					{/if}
 				{/if}
+				{#if slot.direct_unpack}
+					<div>
+						<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Direct Unpack</span>
+						<div class="font-bold mt-0.5">
+							{#if slot.direct_unpack.active}
+								<span class="text-amber-600 dark:text-amber-400">Extracting: {slot.direct_unpack.current_set}</span>
+								{#if slot.direct_unpack.completed_volumes !== undefined && slot.direct_unpack.total_volumes}
+									<span class="text-xs text-m3-on-surface-variant/70 font-mono ml-1">
+										({slot.direct_unpack.completed_volumes}/{slot.direct_unpack.total_volumes} vols)
+									</span>
+								{/if}
+							{:else if slot.direct_unpack.success_sets?.length || slot.direct_unpack.failed_sets?.length}
+								<span class="text-emerald-600 dark:text-emerald-400">
+									Finished ({slot.direct_unpack.success_sets?.length ?? 0} OK
+									{#if slot.direct_unpack.failed_sets?.length}
+										, <span class="text-red-600 dark:text-red-400">{slot.direct_unpack.failed_sets.length} Failed</span>
+									{/if})
+								</span>
+							{:else}
+								<span class="text-m3-on-surface-variant/60 font-semibold">Idle</span>
+							{/if}
+						</div>
+					</div>
+				{/if}
+				{#if slot.direct_unpack?.active && slot.direct_unpack.completed_volumes !== undefined && slot.direct_unpack.total_volumes}
+					<div class="col-span-2 md:col-span-4">
+						<span class="text-m3-primary text-[10px] font-bold uppercase tracking-wider">Direct Unpack Progress</span>
+						<div class="flex items-center gap-2 mt-1">
+							<Progress
+								value={slot.direct_unpack.completed_volumes}
+								max={slot.direct_unpack.total_volumes}
+								class="h-1.5 flex-1 bg-m3-surface-variant/40"
+							/>
+							<span class="text-xs font-mono text-m3-on-surface-variant/80 w-12 text-right">
+								{slot.direct_unpack.total_volumes > 0 ? Math.round((slot.direct_unpack.completed_volumes / slot.direct_unpack.total_volumes) * 100) : 0}%
+							</span>
+						</div>
+					</div>
+				{/if}
 			</div>
 
 			<!-- Real-time postproc output log: visible while post-processing. -->

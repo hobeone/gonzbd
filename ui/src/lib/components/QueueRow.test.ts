@@ -441,4 +441,53 @@ describe('QueueRow', () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it('renders direct unpack status and progress bar when active', async () => {
+		const activeSlot: QueueSlot = {
+			...baseSlot,
+			direct_unpack: {
+				active: true,
+				current_set: 'test_set',
+				completed_volumes: 3,
+				total_volumes: 10,
+				success_sets: ['set_a'],
+				failed_sets: ['set_b']
+			}
+		};
+
+		const { container } = render(QueueRow, { slot: activeSlot, onremove: () => {} });
+
+		const row = container.querySelector('tr[class*="cursor-pointer"]') as HTMLElement;
+		expect(row).toBeTruthy();
+		await fireEvent.click(row);
+
+		expect(screen.getByText('Extracting: test_set')).toBeInTheDocument();
+		expect(screen.getByText('(3/10 vols)')).toBeInTheDocument();
+		expect(screen.getByText('30%')).toBeInTheDocument();
+
+		const progress = screen.getAllByRole('progressbar');
+		const duProgress = progress.find(p => p.getAttribute('aria-valuenow') === '30' || p.getAttribute('aria-valuenow') === '3');
+		expect(duProgress).toBeTruthy();
+	});
+
+	it('renders direct unpack finished status when inactive', async () => {
+		const finishedSlot: QueueSlot = {
+			...baseSlot,
+			direct_unpack: {
+				active: false,
+				success_sets: ['set_a', 'set_b'],
+				failed_sets: ['set_c']
+			}
+		};
+
+		const { container } = render(QueueRow, { slot: finishedSlot, onremove: () => {} });
+
+		const row = container.querySelector('tr[class*="cursor-pointer"]') as HTMLElement;
+		expect(row).toBeTruthy();
+		await fireEvent.click(row);
+
+		expect(screen.getByText(/Finished \(2 OK/)).toBeInTheDocument();
+		expect(screen.getByText('1 Failed')).toBeInTheDocument();
+	});
 });
+

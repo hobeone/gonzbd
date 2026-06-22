@@ -63,6 +63,9 @@ type Options struct {
 
 	// OnLine is called for each line of extraction output. May be nil.
 	OnLine func(string)
+
+	// OnStatusChange is called when the unpacker's status changes.
+	OnStatusChange func()
 }
 
 // DirectUnpacker manages pure-Go RAR extraction as volumes complete during
@@ -117,6 +120,62 @@ func New(log *slog.Logger, jobID, downloadDir, extractDir string, opts Options) 
 		volumeReady:   make(chan struct{}, 1),
 		done:          make(chan struct{}),
 		opts:          opts,
+	}
+}
+
+// Status represents the real-time state of a DirectUnpacker instance.
+type Status struct {
+	Active           bool     `json:"active"`
+	CurrentSet       string   `json:"current_set,omitempty"`
+	CompletedVolumes int      `json:"completed_volumes,omitempty"`
+	TotalVolumes     int      `json:"total_volumes,omitempty"`
+	SuccessSets      []string `json:"success_sets,omitempty"`
+	FailedSets       []string `json:"failed_sets,omitempty"`
+}
+
+// Status returns a thread-safe snapshot of the current direct unpack state.
+func (d *DirectUnpacker) Status() Status {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	successNames := make([]string, 0, len(d.successSets))
+	for k := range d.successSets {
+		successNames = append(successNames, k)
+	}
+	slices.Sort(successNames)
+
+	failedNames := make([]string, 0, len(d.failedSets))
+	for k := range d.failedSets {
+		failedNames = append(failedNames, k)
+	}
+	slices.Sort(failedNames)
+
+	var active bool
+	select {
+	case <-d.done:
+		active = false
+	default:
+		active = !d.killed && d.curSetname != ""
+	}
+
+	status := Status{
+		Active:      active,
+		SuccessSets: successNames,
+		FailedSets:  failedNames,
+	}
+
+	if status.Active {
+		status.CurrentSet = d.curSetname
+		status.CompletedVolumes = len(d.completedVols[d.curSetname])
+		status.TotalVolumes = d.totalVolumes[d.curSetname]
+	}
+
+	return status
+}
+
+func (d *DirectUnpacker) notifyChange() {
+	if d.opts.OnStatusChange != nil {
+		d.opts.OnStatusChange()
 	}
 }
 
@@ -204,6 +263,8 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 	}
 
 	d.mu.Unlock()
+
+	d.notifyChange()
 
 	if needStart {
 		go d.run(ctx)
@@ -359,7 +420,10 @@ func (d *DirectUnpacker) recordSkipped(setname, reason string) {
 
 // run is the main goroutine that manages extraction.
 func (d *DirectUnpacker) run(ctx context.Context) {
-	defer close(d.done)
+	defer func() {
+		close(d.done)
+		d.notifyChange()
+	}()
 
 	for {
 		d.mu.Lock()
@@ -387,6 +451,7 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 				} else {
 					d.log.Error("extraction failed", "set", setname, "err", err)
 				}
+				d.notifyChange()
 			}
 		}
 
@@ -402,6 +467,8 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 		d.nextSets = d.nextSets[1:]
 		d.curSetname = nextSet
 		d.mu.Unlock()
+
+		d.notifyChange()
 
 		d.log.Info("starting next archive set", "set", nextSet)
 	}
@@ -485,6 +552,8 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr
 		ExtractedFiles: extractedFiles,
 	}
 	d.mu.Unlock()
+
+	d.notifyChange()
 
 	d.log.Info("set extraction complete", "set", setname,
 		"parts", len(rarParts), "files", len(extractedFiles))
