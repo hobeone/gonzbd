@@ -1476,6 +1476,17 @@ func TestApplication_ShutdownWithOptions(t *testing.T) {
 	du := directunpack.New(slog.Default(), "job1", t.TempDir(), t.TempDir(), directunpack.Options{})
 	application.InjectDirectUnpacker("job1", du)
 
+	// Verify DirectUnpackStatus
+	_, ok := application.DirectUnpackStatus("job1")
+	if !ok {
+		t.Error("DirectUnpackStatus: expected ok=true, got false")
+	}
+
+	_, ok = application.DirectUnpackStatus("nonexistent")
+	if ok {
+		t.Error("DirectUnpackStatus: expected ok=false for nonexistent job, got true")
+	}
+
 	// Call Shutdown on started application (verifies the abort loop and normal cleanup)
 	if err := application.Shutdown(); err != nil {
 		t.Errorf("Shutdown: %v", err)
