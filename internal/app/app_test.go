@@ -1008,7 +1008,7 @@ func TestReloadPostProcOptions(t *testing.T) {
 	cfg.PostProc.Par2Turbo = true
 	cfg.PostProc.IgnoreUnrarDates = true
 
-	application.ReloadPostProcOptions(cfg)
+	application.ReloadPostProcOptions(cfg.PostProc, cfg.General.ScriptDir)
 
 	currentCfg := application.GetConfig()
 	currentCfg.WithRead(func(c *config.Config) {
@@ -1048,7 +1048,7 @@ func TestReloadPostProcOptions(t *testing.T) {
 	cfg.PostProc.Par2Turbo = false
 	cfg.PostProc.IgnoreUnrarDates = false
 
-	application.ReloadPostProcOptions(cfg)
+	application.ReloadPostProcOptions(cfg.PostProc, cfg.General.ScriptDir)
 
 	currentCfg = application.GetConfig()
 	currentCfg.WithRead(func(c *config.Config) {

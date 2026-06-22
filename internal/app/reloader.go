@@ -12,65 +12,73 @@ import (
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
-// ReloadPostProcOptions applies all hot-applicable postproc settings from cfg
-// to the running post-processor. Same idempotency note as other Reload*Options.
-func (app *Application) ReloadPostProcOptions(cfg *config.Config) {
-	app.SetQuickCheckEnabled(cfg.PostProc.EnableQuickCheck)
-	app.SetParCleanup(cfg.PostProc.EnableParCleanup)
-	app.SetRarCleanup(cfg.PostProc.EnableRarCleanup)
-	app.SetOverwriteFiles(cfg.PostProc.OverwriteFiles)
-	app.SetFlatUnpack(cfg.PostProc.FlatUnpack)
-	app.SetPermissions(cfg.PostProc.Permissions)
-	app.SetFolderRename(cfg.PostProc.FolderRename)
-	app.SetScriptCanFail(cfg.PostProc.ScriptCanFail)
+// ReloadPostProcOptions applies all hot-applicable postproc settings from pp
+// (and the script directory from General) to the running post-processor.
+// Same idempotency note as other Reload*Options.
+//
+// pp and scriptDir must be value snapshots taken without holding
+// config.Config's lock: several of the Set* calls below acquire that lock
+// themselves (e.g. SetEnableFileJoin), so calling this from inside
+// cfg.WithRead/With would deadlock (sync.RWMutex is not reentrant).
+func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string) {
+	app.SetQuickCheckEnabled(pp.EnableQuickCheck)
+	app.SetParCleanup(pp.EnableParCleanup)
+	app.SetRarCleanup(pp.EnableRarCleanup)
+	app.SetOverwriteFiles(pp.OverwriteFiles)
+	app.SetFlatUnpack(pp.FlatUnpack)
+	app.SetPermissions(pp.Permissions)
+	app.SetFolderRename(pp.FolderRename)
+	app.SetScriptCanFail(pp.ScriptCanFail)
 
 	// --- NEW HOT-RELOADS ---
-	app.SetUseGoRAR(cfg.PostProc.UseGoRAR)
-	app.SetUseGo7z(cfg.PostProc.UseGo7z)
-	app.SetUseGoPar2(cfg.PostProc.UseGoPar2)
-	app.SetGoRarFallback(cfg.PostProc.GoRarFallback)
-	app.SetGo7zFallback(cfg.PostProc.Go7zFallback)
-	app.SetGoPar2Fallback(cfg.PostProc.GoPar2Fallback)
-	app.SetNiceAndIonice(cfg.PostProc.Nice, cfg.PostProc.Ionice)
-	app.SetExternalCommands(cfg.PostProc.Par2Command, cfg.PostProc.UnrarCommand, cfg.PostProc.SevenzCommand)
-	app.SetExtraParams(cfg.PostProc.ExtraUnrarParams, cfg.PostProc.ExtraPar2Params)
-	app.SetCleanupExtensions(cfg.PostProc.CleanupExtensions)
-	app.SetDeobfuscate(cfg.PostProc.DeobfuscateFilenames)
-	app.SetIgnoreSamples(cfg.PostProc.IgnoreSamples)
-	app.SetScriptDir(cfg.General.ScriptDir)
-	app.SetUnpackEnabled(cfg.PostProc.EnableUnrar || cfg.PostProc.Enable7zip || cfg.PostProc.EnableFileJoin)
-	app.SetPasswordFile(cfg.PostProc.PasswordFile)
-	app.SetEnableFileJoin(cfg.PostProc.EnableFileJoin)
-	app.SetEnableRecursive(cfg.PostProc.EnableRecursive)
-	app.SetDirectUnpack(cfg.PostProc.DirectUnpack)
-	app.SetDirectUnpackThreads(cfg.PostProc.DirectUnpackThreads)
-	app.SetEnableUnrar(cfg.PostProc.EnableUnrar)
-	app.SetEnable7zip(cfg.PostProc.Enable7zip)
-	app.SetPar2Turbo(cfg.PostProc.Par2Turbo)
-	app.SetIgnoreUnrarDates(cfg.PostProc.IgnoreUnrarDates)
+	app.SetUseGoRAR(pp.UseGoRAR)
+	app.SetUseGo7z(pp.UseGo7z)
+	app.SetUseGoPar2(pp.UseGoPar2)
+	app.SetGoRarFallback(pp.GoRarFallback)
+	app.SetGo7zFallback(pp.Go7zFallback)
+	app.SetGoPar2Fallback(pp.GoPar2Fallback)
+	app.SetNiceAndIonice(pp.Nice, pp.Ionice)
+	app.SetExternalCommands(pp.Par2Command, pp.UnrarCommand, pp.SevenzCommand)
+	app.SetExtraParams(pp.ExtraUnrarParams, pp.ExtraPar2Params)
+	app.SetCleanupExtensions(pp.CleanupExtensions)
+	app.SetDeobfuscate(pp.DeobfuscateFilenames)
+	app.SetIgnoreSamples(pp.IgnoreSamples)
+	app.SetScriptDir(scriptDir)
+	app.SetUnpackEnabled(pp.EnableUnrar || pp.Enable7zip || pp.EnableFileJoin)
+	app.SetPasswordFile(pp.PasswordFile)
+	app.SetEnableFileJoin(pp.EnableFileJoin)
+	app.SetEnableRecursive(pp.EnableRecursive)
+	app.SetDirectUnpack(pp.DirectUnpack)
+	app.SetDirectUnpackThreads(pp.DirectUnpackThreads)
+	app.SetEnableUnrar(pp.EnableUnrar)
+	app.SetEnable7zip(pp.Enable7zip)
+	app.SetPar2Turbo(pp.Par2Turbo)
+	app.SetIgnoreUnrarDates(pp.IgnoreUnrarDates)
 }
 
-// ReloadDownloadOptions applies all hot-applicable download settings from cfg
-// to the running pipeline. Same idempotency note as ReloadPostProcOptions.
-func (app *Application) ReloadDownloadOptions(cfg *config.Config) {
-	app.SetSanitizeOptions(cfg.Downloads.SanitizeOptions())
-	app.SetMinFreeSpace(int64(cfg.Downloads.MinFreeSpace))
-	app.SetMaxArtTries(cfg.Downloads.MaxArtTries)
-	app.SetMaxArtOpt(cfg.Downloads.MaxArtOpt)
-	app.SetTopOnly(cfg.Downloads.TopOnly)
-	app.SetPropagationDelay(cfg.Downloads.PropagationDelay)
+// ReloadDownloadOptions applies all hot-applicable download settings from d
+// to the running pipeline. Same locking note as ReloadPostProcOptions: d must
+// be a value snapshot taken without holding config.Config's lock.
+func (app *Application) ReloadDownloadOptions(d config.DownloadConfig) {
+	app.SetSanitizeOptions(d.SanitizeOptions())
+	app.SetMinFreeSpace(int64(d.MinFreeSpace))
+	app.SetMaxArtTries(d.MaxArtTries)
+	app.SetMaxArtOpt(d.MaxArtOpt)
+	app.SetTopOnly(d.TopOnly)
+	app.SetPropagationDelay(d.PropagationDelay)
 }
 
-// ReloadGeneralOptions applies all hot-applicable general settings from cfg
-// to the running logging handlers.
-func (app *Application) ReloadGeneralOptions(cfg *config.Config) {
-	globalLevel, err := cfg.General.ParseLogLevel()
+// ReloadGeneralOptions applies all hot-applicable general settings from g
+// to the running logging handlers. Same locking note as ReloadPostProcOptions:
+// g must be a value snapshot taken without holding config.Config's lock.
+func (app *Application) ReloadGeneralOptions(g config.GeneralConfig) {
+	globalLevel, err := g.ParseLogLevel()
 	if err != nil {
 		app.log.Error("failed to parse global log level on reload, keeping current", "err", err)
 		globalLevel = globalLevelVar.Level()
 	}
 
-	compLevels, err := cfg.General.ParseLogLevels()
+	compLevels, err := g.ParseLogLevels()
 	if err != nil {
 		app.log.Error("failed to parse component log levels on reload, keeping current", "err", err)
 		componentLevelsMu.RLock()

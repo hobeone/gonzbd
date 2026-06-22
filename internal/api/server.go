@@ -76,11 +76,16 @@ type ApplicationReloader interface {
 	PausePostProcessor()
 	ResumePostProcessor()
 	// ReloadPostProcOptions applies all hot-applicable postproc settings.
-	ReloadPostProcOptions(cfg *config.Config)
+	// Callers must pass a value snapshot taken without holding config.Config's
+	// lock (see internal/app/reloader.go) — never call from inside
+	// config.WithRead/With, as that would deadlock.
+	ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string)
 	// ReloadDownloadOptions applies all hot-applicable download settings.
-	ReloadDownloadOptions(cfg *config.Config)
+	// Same locking note as ReloadPostProcOptions.
+	ReloadDownloadOptions(d config.DownloadConfig)
 	// ReloadGeneralOptions applies all hot-applicable general settings.
-	ReloadGeneralOptions(cfg *config.Config)
+	// Same locking note as ReloadPostProcOptions.
+	ReloadGeneralOptions(g config.GeneralConfig)
 	UnblockServer(name string) bool
 	ServerStatus() []downloader.ServerSnapshot
 	// Speed returns the current aggregate download speed in bytes/sec.
