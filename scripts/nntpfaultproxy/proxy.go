@@ -179,13 +179,22 @@ func (h *connHandler) applyDrop(messageID string, dbw *bufio.Writer) bool {
 // anything — simulating a hung/dead connection so gonzbd's own idle
 // read-deadline and bad-connection handling get exercised.
 func (h *connHandler) applyTimeout(rule Rule) bool {
+	d := timeoutDuration(rule)
+	h.log.Info("fault: timeout", "duration", d)
+	time.Sleep(d)
+	return false
+}
+
+// timeoutDuration resolves the wait duration for action "timeout": the
+// rule's configured TimeoutAfter, or 60s if unset/non-positive. Split out
+// from applyTimeout so the default-duration boundary is unit-testable
+// without an actual 60-second sleep.
+func timeoutDuration(rule Rule) time.Duration {
 	d := rule.TimeoutAfter
 	if d <= 0 {
 		d = 60 * time.Second
 	}
-	h.log.Info("fault: timeout", "duration", d)
-	time.Sleep(d)
-	return false
+	return d
 }
 
 // applyCorrupt fetches the real response from upstream, then — for a

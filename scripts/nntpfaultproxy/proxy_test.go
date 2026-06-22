@@ -258,3 +258,49 @@ func TestProxy_TimeoutFault(t *testing.T) {
 		t.Fatal("expected the connection to close without a response after the timeout fault, got a response")
 	}
 }
+
+func TestTimeoutDuration(t *testing.T) {
+	tests := []struct {
+		name string
+		rule Rule
+		want time.Duration
+	}{
+		{"configured value is used", Rule{TimeoutAfter: 50 * time.Millisecond}, 50 * time.Millisecond},
+		{"zero defaults to 60s", Rule{}, 60 * time.Second},
+		{"negative defaults to 60s", Rule{TimeoutAfter: -1}, 60 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := timeoutDuration(tt.rule); got != tt.want {
+				t.Errorf("timeoutDuration(%+v) = %v, want %v", tt.rule, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestProxy_CorruptFaultStat exercises the corrupt fault's STAT branch: a
+// matching "corrupt" rule against a STAT command must pass the (single-line,
+// bodyless) response through unchanged, since corruptLines only ever
+// mutates a multiline BODY response.
+func TestProxy_CorruptFaultStat(t *testing.T) {
+	upstream := mocknntp.NewServer(mocknntp.Config{})
+	upstream.AddArticle("target@test", mocknntp.EncodeYEnc("file.bin", []byte("hello world")))
+	if err := upstream.Start(); err != nil {
+		t.Fatalf("start upstream: %v", err)
+	}
+	t.Cleanup(func() { _ = upstream.Close() })
+
+	addr := startProxy(t, upstream, []Rule{
+		{MessageIDs: []string{"target@test"}, Action: "corrupt", CorruptBytes: 20},
+	})
+	_, br, bw := dialRaw(t, addr)
+
+	sendCommand(t, bw, "STAT <target@test>\r\n")
+	status, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if !strings.HasPrefix(status, "223") {
+		t.Fatalf("status = %q, want 223 (STAT is unaffected by the corrupt fault)", status)
+	}
+}
