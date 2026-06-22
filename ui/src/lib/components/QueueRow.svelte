@@ -20,6 +20,31 @@
 		return PP_LABELS[pp] ?? `PP${pp}`;
 	}
 
+	function formatFailureReason(reason: string | undefined): string {
+		if (!reason) return 'Unknown error';
+		const lower = reason.toLowerCase();
+		if (lower.includes('failed/missing download articles') || lower.includes('incomplete download')) {
+			return 'volume had failed or missing download blocks (needs par2 repair)';
+		}
+		if (lower === 'aborted' || lower.includes('aborted')) {
+			return 'extraction was aborted';
+		}
+		if (lower.includes('password')) {
+			return 'incorrect password';
+		}
+		if (lower.includes('disk full') || lower.includes('no space')) {
+			return 'disk is full';
+		}
+		if (lower.includes('not a rar') || lower.includes('not rar')) {
+			return 'not a supported RAR archive';
+		}
+		let clean = reason;
+		if (clean.startsWith('directunpack: ')) {
+			clean = clean.substring('directunpack: '.length);
+		}
+		return clean;
+	}
+
 	let { slot, onremove }: { slot: QueueSlot; onremove: () => void } = $props();
 
 	let acting = $state(false);
@@ -589,12 +614,18 @@
 									</span>
 								{/if}
 							{:else if slot.direct_unpack.success_sets?.length || slot.direct_unpack.failed_sets?.length}
-								<span class="text-emerald-600 dark:text-emerald-400">
-									Finished ({slot.direct_unpack.success_sets?.length ?? 0} OK
-									{#if slot.direct_unpack.failed_sets?.length}
-										, <span class="text-red-600 dark:text-red-400">{slot.direct_unpack.failed_sets.length} Failed</span>
-									{/if})
-								</span>
+								{#if slot.direct_unpack.failed_sets?.length}
+									<span class="text-red-600 dark:text-red-400">
+										Unpack failed: {formatFailureReason(slot.direct_unpack.failed_reasons?.[slot.direct_unpack.failed_sets[0]])}
+									</span>
+									<span class="text-xs text-m3-on-surface-variant/70 font-mono ml-1">
+										({slot.direct_unpack.success_sets?.length ?? 0} OK, {slot.direct_unpack.failed_sets.length} Failed)
+									</span>
+								{:else}
+									<span class="text-emerald-600 dark:text-emerald-400">
+										Finished ({slot.direct_unpack.success_sets?.length ?? 0} OK)
+									</span>
+								{/if}
 							{:else}
 								<span class="text-m3-on-surface-variant/60 font-semibold">Idle</span>
 							{/if}
