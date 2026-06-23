@@ -78,6 +78,61 @@ func TestUnRAR_OnCommandFiresBeforeExec(t *testing.T) {
 	}
 }
 
+// TestUnRAR_PasswordFlag verifies UnRAR builds the correct password flag
+// from its password parameter: "-p-" (suppress interactive prompt) when
+// empty, "-p<redacted>" (the real "-p<password>" flag, redacted for
+// display-safe logging by formatCmdLine) when non-empty. Mutation testing
+// flagged this branch as uncovered after the password-parameter refactor --
+// every other direct UnRAR() call in this package passes an empty password,
+// so nothing previously exercised the non-empty case at this layer
+// (GoUnRAR/UnRAR password tests only cover the rarengine path, not the
+// unrar subprocess). The literal password is intentionally never present
+// in the OnCommand cmdline -- see formatCmdLine -- so this test asserts
+// against the redacted form rather than the raw "-psecret" flag.
+func TestUnRAR_PasswordFlag(t *testing.T) {
+	archive := unpack.Archive{
+		Type:     unpack.RarArchive,
+		Name:     "test",
+		MainFile: "/tmp/does-not-exist.rar",
+		Parts:    []string{"/tmp/does-not-exist.rar"},
+	}
+
+	t.Run("empty password suppresses prompt", func(t *testing.T) {
+		var captured string
+		opts := unpack.Options{
+			UnrarCommand: "/nonexistent/binary",
+			OnCommand:    func(cmdLine string) { captured = cmdLine },
+		}
+		_, _ = unpack.UnRAR(t.Context(), slog.Default(), archive, t.TempDir(), "", opts)
+
+		if !strings.Contains(captured, "-p-") {
+			t.Errorf("cmdline missing -p- for empty password: %q", captured)
+		}
+		if strings.Contains(captured, "-p<redacted>") {
+			t.Errorf("cmdline should not contain a redacted password flag when no password is set: %q", captured)
+		}
+	})
+
+	t.Run("non-empty password sets the redacted password flag", func(t *testing.T) {
+		var captured string
+		opts := unpack.Options{
+			UnrarCommand: "/nonexistent/binary",
+			OnCommand:    func(cmdLine string) { captured = cmdLine },
+		}
+		_, _ = unpack.UnRAR(t.Context(), slog.Default(), archive, t.TempDir(), "secret", opts)
+
+		if !strings.Contains(captured, "-p<redacted>") {
+			t.Errorf("cmdline missing redacted password flag: %q", captured)
+		}
+		if strings.Contains(captured, "-psecret") {
+			t.Errorf("cmdline must never contain the literal password: %q", captured)
+		}
+		if strings.Contains(captured, "-p-") {
+			t.Errorf("cmdline should not contain -p- when a password is set: %q", captured)
+		}
+	})
+}
+
 // TestUnRAR_HasProblemDegradedMode verifies that when HasProblem is true
 // (non-original or old unrar), the flags -scf, -or, -ai, -tsm- are NOT
 // emitted. Matches SABnzbd's RAR_PROBLEM degraded mode.
