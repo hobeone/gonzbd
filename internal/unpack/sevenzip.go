@@ -15,7 +15,7 @@ import (
 // SevenZipBinaries is the ordered list of 7-zip binary names tried during auto-detection.
 var SevenZipBinaries = []string{"7zz", "7zzs", "7z", "7za"}
 
-// sevenZipBin returns the path to the 7-zip binary to use.
+// SevenZipBin returns the path to the 7-zip binary to use.
 // Resolution order:
 //  1. Explicit command from Options (SevenZipCommand).
 //  2. GONZBD_SEVENZIP_BIN environment variable (if set and non-empty).
@@ -24,8 +24,10 @@ var SevenZipBinaries = []string{"7zz", "7zzs", "7z", "7za"}
 //  5. "7z" (full 7-Zip — includes RAR5 codec, common distro package).
 //  6. "7za" (standalone 7-Zip — lacks RAR codec, last resort).
 //
-// Returns an error if no binary is found.
-func sevenZipBin(opts Options) (string, error) {
+// Returns an error if no binary is found. Callers in other packages should
+// use this instead of reimplementing the resolution order, so the candidate
+// list and env var only need to be kept in one place.
+func SevenZipBin(opts Options) (string, error) {
 	if opts.SevenZipCommand != "" {
 		return opts.SevenZipCommand, nil
 	}
@@ -53,7 +55,7 @@ func sevenZipBin(opts Options) (string, error) {
 // prompt on stdin when -p is supplied.
 func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
 	log = log.With("component", "unpack/sevenzip")
-	bin, err := sevenZipBin(opts)
+	bin, err := SevenZipBin(opts)
 	if err != nil {
 		return Result{Err: err}, err
 	}
