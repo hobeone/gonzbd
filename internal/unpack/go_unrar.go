@@ -1,6 +1,7 @@
 package unpack
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -81,7 +84,7 @@ func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDi
 	}
 	defer root.Close() //nolint:errcheck // close after all writes; not in a loop
 
-	vols, err := discoverRar5Volumes(archive.MainFile)
+	vols, err := volumesForArchive(archive)
 	if err != nil {
 		res.Reason = FailMissingVolume
 		return res, fmt.Errorf("go_unrar: discover volumes: %w", err)
@@ -259,6 +262,56 @@ func SanitizeArchivePath(name string, oneFolder bool) (string, error) {
 		return "", fmt.Errorf("archive path is empty after sanitization")
 	}
 	return name, nil
+}
+
+// volumesForArchive returns the ordered list of volume files belonging to
+// archive, for streaming into rarengine. archive.Parts (populated by Scan)
+// already has the correct file set, but is sorted for deletion purposes,
+// not playback order: legacy ".r00" sorts lexicographically before the main
+// ".rar" volume, which would feed rarengine the volumes out of order and
+// abort partway through with "channel was closed" once it expects a next
+// volume that was never queued in the right place. Reorder Parts with
+// MainFile first, then any ".rNN" volumes by ascending numeric suffix.
+// Falls back to filename-pattern discovery when Parts isn't usable (e.g.
+// hand-built Archive values that don't go through Scan).
+func volumesForArchive(archive Archive) ([]string, error) {
+	if len(archive.Parts) <= 1 {
+		return discoverRar5Volumes(archive.MainFile)
+	}
+
+	type numbered struct {
+		n    int
+		path string
+	}
+	var legacy []numbered
+	for _, p := range archive.Parts {
+		if p == archive.MainFile {
+			continue
+		}
+		base := strings.ToLower(filepath.Base(p))
+		m := legacyExtraPattern.FindString(base)
+		if m == "" {
+			// Not legacy ".rNN" naming (e.g. new-style ".partNN.rar",
+			// already in correct lexicographic order) -- trust Parts as-is.
+			return archive.Parts, nil
+		}
+		n, atoiErr := strconv.Atoi(m[2:]) // strip leading ".r"
+		if atoiErr != nil {
+			// Unreachable in practice: legacyExtraPattern guarantees digits
+			// after ".r". Fall back to unordered Parts rather than failing
+			// extraction outright over a defensive case.
+			return archive.Parts, nil //nolint:nilerr // intentional fallback, not an oversight
+		}
+		legacy = append(legacy, numbered{n, p})
+	}
+	slices.SortFunc(legacy, func(a, b numbered) int { return cmp.Compare(a.n, b.n) })
+
+	out := make([]string, 0, len(archive.Parts))
+	out = append(out, archive.MainFile)
+	for _, item := range legacy {
+		out = append(out, item.path)
+	}
+	return out, nil
 }
 
 func discoverRar5Volumes(mainFile string) ([]string, error) {
