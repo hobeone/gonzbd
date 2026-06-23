@@ -79,8 +79,8 @@ type Options struct {
 	OnCommand func(string) `json:"-"`
 }
 
-// unrarBin returns the configured unrar binary, defaulting to "unrar".
-func (o Options) unrarBin() string {
+// UnrarBin returns the configured unrar binary, defaulting to "unrar".
+func (o Options) UnrarBin() string {
 	if o.UnrarCommand != "" {
 		return o.UnrarCommand
 	}
@@ -165,7 +165,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 
 	args = append(args, archive.MainFile, outDir+"/") // unrar expects a trailing slash on the output directory
 
-	bin := opts.unrarBin()
+	bin := opts.UnrarBin()
 
 	// Build a display-safe command line (redact password).
 	cmdLine := formatCmdLine(bin, args, pwFlag)

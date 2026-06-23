@@ -460,10 +460,7 @@ func (u *UnpackStage) applyPermissions(ctx context.Context, log *slog.Logger, jo
 func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options) (unpack.Result, error) {
 	useGoRAR := opts.UseGoRAR
 	if !useGoRAR {
-		unrarBin := opts.UnrarCommand
-		if unrarBin == "" {
-			unrarBin = "unrar"
-		}
+		unrarBin := opts.UnrarBin()
 		if _, lookErr := exec.LookPath(unrarBin); lookErr != nil {
 			useGoRAR = true
 			logf(ctx, log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_unrar", unrarBin)
@@ -520,10 +517,7 @@ func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack
 	// formats and some encrypted archives require the external binary.
 	// Gated on GoRarFallback so users can disable the retry.
 	if goErr := cmp.Or(err, res.Err); goErr != nil && opts.GoRarFallback {
-		unrarBin := opts.UnrarCommand
-		if unrarBin == "" {
-			unrarBin = "unrar"
-		}
+		unrarBin := opts.UnrarBin()
 		if _, lookErr := exec.LookPath(unrarBin); lookErr == nil {
 			logf(ctx, log, job, slog.LevelWarn,
 				"go_unrar failed (%v), retrying with external %s", goErr, unrarBin)
