@@ -135,8 +135,8 @@ type RunOptions struct {
 	OnCommand func(string) `json:"-"`
 }
 
-// command returns the configured par2 binary, defaulting to "par2".
-func (o RunOptions) command() string {
+// Bin returns the configured par2 binary, defaulting to "par2".
+func (o RunOptions) Bin() string {
 	if o.Command != "" {
 		return o.Command
 	}
@@ -319,11 +319,11 @@ func verifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	args = append(args, parfile)
 	args = append(args, extraFiles...)
 
-	cmd := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.command(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	cmd := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	cmd.Dir = filepath.Dir(parfile)
 
 	// Build and emit full command line for UI visibility.
-	cmdLine := formatParCmdLine(opts.command(), args)
+	cmdLine := formatParCmdLine(opts.Bin(), args)
 	if opts.OnLine != nil {
 		opts.OnLine("Command: " + cmdLine)
 	}
@@ -377,11 +377,11 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	args = append(args, parfile)
 	args = append(args, extraFiles...)
 
-	cmd := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.command(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	cmd := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	cmd.Dir = filepath.Dir(parfile)
 
 	// Build and emit full command line for UI visibility.
-	cmdLine := formatParCmdLine(opts.command(), args)
+	cmdLine := formatParCmdLine(opts.Bin(), args)
 	if opts.OnLine != nil {
 		opts.OnLine("Command: " + cmdLine)
 	}

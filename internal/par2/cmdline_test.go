@@ -267,14 +267,14 @@ func TestRunOptions_CommandDirect(t *testing.T) {
 
 	t.Run("default command", func(t *testing.T) {
 		o := RunOptions{}
-		if got := o.command(); got != "par2" {
+		if got := o.Bin(); got != "par2" {
 			t.Errorf("command = %q, want 'par2'", got)
 		}
 	})
 
 	t.Run("custom command", func(t *testing.T) {
 		o := RunOptions{Command: "/usr/local/bin/par2"}
-		if got := o.command(); got != "/usr/local/bin/par2" {
+		if got := o.Bin(); got != "/usr/local/bin/par2" {
 			t.Errorf("command = %q, want '/usr/local/bin/par2'", got)
 		}
 	})

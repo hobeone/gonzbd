@@ -297,10 +297,7 @@ func dispatchRepairTool(
 	useGoPar2, fallback bool,
 ) (par2.RepairResult, error) {
 	if !useGoPar2 {
-		par2Bin := repairOpts.Command
-		if par2Bin == "" {
-			par2Bin = "par2"
-		}
+		par2Bin := repairOpts.Bin()
 		if _, lookErr := exec.LookPath(par2Bin); lookErr != nil {
 			useGoPar2 = true // external not found, fall back to native
 			logf(ctx, log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_par2", par2Bin)
@@ -325,10 +322,7 @@ func dispatchRepairTool(
 	// (NeedMoreBlocks=true) — fallback must check both err and !res.Success.
 	// Gated on fallback so users can disable the retry.
 	if (err != nil || !res.Success) && fallback {
-		par2Bin := repairOpts.Command
-		if par2Bin == "" {
-			par2Bin = "par2"
-		}
+		par2Bin := repairOpts.Bin()
 		if _, lookErr := exec.LookPath(par2Bin); lookErr == nil {
 			reason := "non-success result"
 			if err != nil {
