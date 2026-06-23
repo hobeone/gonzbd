@@ -238,6 +238,37 @@ func TestBuildDownloadFileListIncludesCompletion(t *testing.T) {
 	}
 }
 
+// TestBuildDownloadFileListRecursesSubdirectories verifies that files nested
+// in subdirectories of the download dir are listed (not just the bare
+// "dirname/" entry), with each nesting level indented two more spaces, and
+// that the header count reflects files only (not directories).
+func TestBuildDownloadFileListRecursesSubdirectories(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file1.txt"), make([]byte, 1234), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "nested.txt"), make([]byte, 1234), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	job := &Job{DownloadDir: dir, Queue: &queue.Job{}}
+	joined := strings.Join(buildDownloadFileList(job), "\n")
+
+	if !strings.Contains(joined, "Files in download directory (2):") {
+		t.Errorf("expected header counting files only (not dirs); got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "  📁 subdir/") {
+		t.Errorf("expected subdirectory entry; got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "    nested.txt (1.2 KiB)") {
+		t.Errorf("expected nested file indented two more spaces under its directory; got:\n%s", joined)
+	}
+}
+
 func TestBuildFinalFileListDirect(t *testing.T) {
 	tmpDir := t.TempDir()
 
