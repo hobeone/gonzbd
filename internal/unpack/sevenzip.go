@@ -53,14 +53,14 @@ func SevenZipBin(opts Options) (string, error) {
 // is true, matching SABnzbd's cfg.flat_unpack).  -bsp0 suppresses the
 // progress stream.  -p with an empty value is safe for 7zz — it does not
 // prompt on stdin when -p is supplied.
-func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
 	log = log.With("component", "unpack/sevenzip")
 	bin, err := SevenZipBin(opts)
 	if err != nil {
 		return Result{Err: err}, err
 	}
 
-	pwFlag := "-p" + opts.Password // safe even when Password is ""
+	pwFlag := "-p" + password // safe even when password is ""
 
 	method := "x" // preserve paths
 	if opts.OneFolder {

@@ -30,7 +30,7 @@ func TestUnRAR_Integration(t *testing.T) {
 		Parts:    []string{rarPath},
 	}
 
-	res, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
+	res, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, "", unpack.Options{})
 	if err != nil {
 		t.Fatalf("UnRAR error: %v\nOutput:\n%s", err, res.Output)
 	}
@@ -58,7 +58,7 @@ func TestUnRAR_OnCommandFiresBeforeExec(t *testing.T) {
 		},
 	}
 	// Run is expected to fail; we don't check err.
-	_, _ = unpack.UnRAR(t.Context(), slog.Default(), archive, t.TempDir(), opts)
+	_, _ = unpack.UnRAR(t.Context(), slog.Default(), archive, t.TempDir(), "", opts)
 
 	if captured == "" {
 		t.Fatal("OnCommand was not called")
@@ -97,7 +97,7 @@ func TestUnRAR_HasProblemDegradedMode(t *testing.T) {
 			captured = cmdLine
 		},
 	}
-	_, _ = unpack.UnRAR(t.Context(), slog.Default(), archive, t.TempDir(), opts)
+	_, _ = unpack.UnRAR(t.Context(), slog.Default(), archive, t.TempDir(), "", opts)
 
 	if captured == "" {
 		t.Fatal("OnCommand was not called")

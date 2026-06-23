@@ -56,7 +56,7 @@ func TestUnRAR_OverwriteFiles(t *testing.T) {
 	t.Run("overwrite=true", func(t *testing.T) {
 		t.Parallel()
 		opts, captured := captureCmd(unpack.Options{OverwriteFiles: true})
-		_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), opts)
+		_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), "", opts)
 		if !strings.Contains(*captured, " -o+ ") && !strings.Contains(*captured, " -o+\n") {
 			// Check if -o+ appears anywhere in the command
 			if !strings.Contains(*captured, "-o+") {
@@ -71,7 +71,7 @@ func TestUnRAR_OverwriteFiles(t *testing.T) {
 	t.Run("overwrite=false", func(t *testing.T) {
 		t.Parallel()
 		opts, captured := captureCmd(unpack.Options{OverwriteFiles: false})
-		_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), opts)
+		_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), "", opts)
 		if !strings.Contains(*captured, "-o-") {
 			t.Errorf("OverwriteFiles=false: cmdline missing -o-: %q", *captured)
 		}
@@ -89,7 +89,7 @@ func TestUnRAR_IgnoreUnrarDatesPositive(t *testing.T) {
 		IgnoreUnrarDates: true,
 		HasProblem:       false,
 	})
-	_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), opts)
+	_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), "", opts)
 	if !strings.Contains(*captured, "-tsm-") {
 		t.Errorf("IgnoreUnrarDates=true: cmdline missing -tsm-: %q", *captured)
 	}
@@ -103,7 +103,7 @@ func TestUnRAR_FlatExtraction(t *testing.T) {
 	t.Run("flat=true", func(t *testing.T) {
 		t.Parallel()
 		opts, captured := captureCmd(unpack.Options{OneFolder: true})
-		_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), opts)
+		_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), "", opts)
 		// The command should start with: /nonexistent/binary e -y ...
 		parts := strings.Fields(*captured)
 		if len(parts) < 2 {
@@ -117,7 +117,7 @@ func TestUnRAR_FlatExtraction(t *testing.T) {
 	t.Run("flat=false_default", func(t *testing.T) {
 		t.Parallel()
 		opts, captured := captureCmd(unpack.Options{OneFolder: false})
-		_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), opts)
+		_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), "", opts)
 		parts := strings.Fields(*captured)
 		if len(parts) < 2 {
 			t.Fatalf("cmdline too short: %q", *captured)
@@ -134,7 +134,7 @@ func TestUnRAR_ExtraArgs(t *testing.T) {
 	opts, captured := captureCmd(unpack.Options{
 		ExtraArgs: []string{"-mlp", "-ri10:5"},
 	})
-	_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), opts)
+	_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), "", opts)
 	if !strings.Contains(*captured, "-mlp") {
 		t.Errorf("ExtraArgs: cmdline missing -mlp: %q", *captured)
 	}
@@ -153,7 +153,7 @@ func TestUnRAR_NiceIoniceWrapping(t *testing.T) {
 			Ionice: "-c2 -n4",
 		},
 	})
-	_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), opts)
+	_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), "", opts)
 	// The captured command line from formatCmdLine uses the raw binary (/nonexistent/binary),
 	// not the nice/ionice prefix (that's internal to exec.Cmd). But the binary should
 	// still be present in the captured line — cmdutil wrapping doesn't change the OnCommand
@@ -172,7 +172,7 @@ func TestSevenZip_OverwriteFiles(t *testing.T) {
 	t.Run("overwrite=true", func(t *testing.T) {
 		t.Parallel()
 		opts, captured := captureCmdSZ(unpack.Options{OverwriteFiles: true})
-		_, _ = unpack.SevenZip(t.Context(), slog.Default(), dummySZArchive(), t.TempDir(), opts)
+		_, _ = unpack.SevenZip(t.Context(), slog.Default(), dummySZArchive(), t.TempDir(), "", opts)
 		if !strings.Contains(*captured, "-aoa") {
 			t.Errorf("OverwriteFiles=true: cmdline missing -aoa: %q", *captured)
 		}
@@ -181,7 +181,7 @@ func TestSevenZip_OverwriteFiles(t *testing.T) {
 	t.Run("overwrite=false", func(t *testing.T) {
 		t.Parallel()
 		opts, captured := captureCmdSZ(unpack.Options{OverwriteFiles: false})
-		_, _ = unpack.SevenZip(t.Context(), slog.Default(), dummySZArchive(), t.TempDir(), opts)
+		_, _ = unpack.SevenZip(t.Context(), slog.Default(), dummySZArchive(), t.TempDir(), "", opts)
 		if !strings.Contains(*captured, "-aou") {
 			t.Errorf("OverwriteFiles=false: cmdline missing -aou: %q", *captured)
 		}
@@ -195,7 +195,7 @@ func TestSevenZip_FlatExtraction(t *testing.T) {
 	t.Run("flat=true", func(t *testing.T) {
 		t.Parallel()
 		opts, captured := captureCmdSZ(unpack.Options{OneFolder: true})
-		_, _ = unpack.SevenZip(t.Context(), slog.Default(), dummySZArchive(), t.TempDir(), opts)
+		_, _ = unpack.SevenZip(t.Context(), slog.Default(), dummySZArchive(), t.TempDir(), "", opts)
 		parts := strings.Fields(*captured)
 		if len(parts) < 2 {
 			t.Fatalf("cmdline too short: %q", *captured)
@@ -208,7 +208,7 @@ func TestSevenZip_FlatExtraction(t *testing.T) {
 	t.Run("flat=false_default", func(t *testing.T) {
 		t.Parallel()
 		opts, captured := captureCmdSZ(unpack.Options{OneFolder: false})
-		_, _ = unpack.SevenZip(t.Context(), slog.Default(), dummySZArchive(), t.TempDir(), opts)
+		_, _ = unpack.SevenZip(t.Context(), slog.Default(), dummySZArchive(), t.TempDir(), "", opts)
 		parts := strings.Fields(*captured)
 		if len(parts) < 2 {
 			t.Fatalf("cmdline too short: %q", *captured)

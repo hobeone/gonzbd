@@ -28,7 +28,7 @@ import (
 // actually ran, and so opts.GoRarFallback=false reliably means "never shell
 // out," with no other path silently overriding it.
 // It is equivalent to UnRAR.
-func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (res Result, err error) {
+func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
 	ver, detectErr := rarheader.Version(archive.MainFile)
 	if detectErr != nil {
 		reason := FailUnknown
@@ -41,7 +41,7 @@ func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir stri
 
 	log.Info("go_unrar: detected RAR archive version, using rarengine", "rar_version", ver)
 	beforeSnap, snapErr := snapshotDir(outDir)
-	res, err = GoUnRAREngine(ctx, log, archive, outDir, opts)
+	res, err = GoUnRAREngine(ctx, log, archive, outDir, password, opts)
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && snapErr == nil {
 		cleanupPartialFiles(outDir, beforeSnap, log, "go_unrar_rarengine", 1)
 	}
@@ -65,7 +65,7 @@ func ClassifyRarEngineError(err error) FailReason {
 }
 
 // GoUnRAREngine extracts a RAR archive using the pure-Go rarengine library.
-func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (res Result, err error) {
+func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			res.Reason = FailCorrupt
@@ -106,8 +106,8 @@ func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDi
 	close(volumesChan)
 
 	sd := rarengine.NewStreamDecompressor(volumesChan)
-	if opts.Password != "" {
-		sd.SetPassword(opts.Password)
+	if password != "" {
+		sd.SetPassword(password)
 	}
 
 	var extractedFiles []string
