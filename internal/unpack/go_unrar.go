@@ -266,17 +266,36 @@ func SanitizeArchivePath(name string, oneFolder bool) (string, error) {
 
 // volumesForArchive returns the ordered list of volume files belonging to
 // archive, for streaming into rarengine. archive.Parts (populated by Scan)
-// already has the correct file set, but is sorted for deletion purposes,
-// not playback order: legacy ".r00" sorts lexicographically before the main
-// ".rar" volume, which would feed rarengine the volumes out of order and
-// abort partway through with "channel was closed" once it expects a next
-// volume that was never queued in the right place. Reorder Parts with
-// MainFile first, then any ".rNN" volumes by ascending numeric suffix.
-// Falls back to filename-pattern discovery when Parts isn't usable (e.g.
-// hand-built Archive values that don't go through Scan).
+// already has the correct file set when available; otherwise this probes
+// the filesystem starting from MainFile (e.g. for hand-built Archive values
+// that bypass Scan, such as in tests). Either way, the candidate set is run
+// through orderVolumes -- the single place that knows how to sequence
+// volumes correctly, so there is exactly one algorithm regardless of how
+// the candidates were discovered.
 func volumesForArchive(archive Archive) ([]string, error) {
-	if len(archive.Parts) <= 1 {
-		return discoverRar5Volumes(archive.MainFile)
+	if len(archive.Parts) > 1 {
+		return orderVolumes(archive.MainFile, archive.Parts), nil
+	}
+	discovered, err := discoverRar5Volumes(archive.MainFile)
+	if err != nil {
+		return nil, err
+	}
+	return orderVolumes(archive.MainFile, discovered), nil
+}
+
+// orderVolumes sequences an unordered (or deletion-ordered) set of volume
+// file paths into the order rarengine must read them in: mainFile first,
+// then any legacy ".rNN" volumes by ascending numeric suffix. New-style
+// ".partNN.rar" sets are already in correct lexicographic order and are
+// returned unchanged. This is the only place that reorders volumes --
+// archive.Parts is sorted for deletion purposes, not playback order, since
+// legacy ".r00" sorts lexicographically before the main ".rar" volume,
+// which would feed rarengine the volumes out of order and make it abort
+// partway through with "channel was closed" once it expects a next volume
+// that was never queued in the right place.
+func orderVolumes(mainFile string, candidates []string) []string {
+	if len(candidates) <= 1 {
+		return candidates
 	}
 
 	type numbered struct {
@@ -284,41 +303,71 @@ func volumesForArchive(archive Archive) ([]string, error) {
 		path string
 	}
 	var legacy []numbered
-	for _, p := range archive.Parts {
-		if p == archive.MainFile {
+	for _, p := range candidates {
+		if p == mainFile {
 			continue
 		}
 		base := strings.ToLower(filepath.Base(p))
 		m := legacyExtraPattern.FindString(base)
 		if m == "" {
 			// Not legacy ".rNN" naming (e.g. new-style ".partNN.rar",
-			// already in correct lexicographic order) -- trust Parts as-is.
-			return archive.Parts, nil
+			// already in correct lexicographic order) -- trust the
+			// existing order.
+			return candidates
 		}
-		n, atoiErr := strconv.Atoi(m[2:]) // strip leading ".r"
-		if atoiErr != nil {
+		n, err := strconv.Atoi(m[2:]) // strip leading ".r"
+		if err != nil {
 			// Unreachable in practice: legacyExtraPattern guarantees digits
-			// after ".r". Fall back to unordered Parts rather than failing
+			// after ".r". Trust the existing order rather than failing
 			// extraction outright over a defensive case.
-			return archive.Parts, nil //nolint:nilerr // intentional fallback, not an oversight
+			return candidates //nolint:nilerr // intentional fallback, not an oversight
 		}
 		legacy = append(legacy, numbered{n, p})
 	}
 	slices.SortFunc(legacy, func(a, b numbered) int { return cmp.Compare(a.n, b.n) })
 
-	out := make([]string, 0, len(archive.Parts))
-	out = append(out, archive.MainFile)
+	out := make([]string, 0, len(candidates))
+	out = append(out, mainFile)
 	for _, item := range legacy {
 		out = append(out, item.path)
 	}
-	return out, nil
+	return out
 }
 
+// discoverRar5Volumes probes the filesystem for sibling volumes of mainFile.
+// Used only when no caller-supplied candidate list (Archive.Parts) is
+// available -- e.g. hand-built Archive values that bypass Scan. Recognizes
+// both volume-naming conventions Scan itself understands: new-style
+// ".partNN.rar" and legacy ".rar"/".r00"/".r01"/….
 func discoverRar5Volumes(mainFile string) ([]string, error) {
-	if !strings.Contains(mainFile, ".part") {
-		return []string{mainFile}, nil
+	if strings.Contains(mainFile, ".part") {
+		return discoverPartNNVolumes(mainFile)
 	}
+	if strings.HasSuffix(strings.ToLower(mainFile), ".rar") {
+		return discoverLegacyVolumes(mainFile)
+	}
+	return []string{mainFile}, nil
+}
 
+// discoverLegacyVolumes probes for ".r00", ".r01", … siblings of a legacy
+// mainFile ending in ".rar", stopping at the first missing index.
+func discoverLegacyVolumes(mainFile string) ([]string, error) {
+	volumes := []string{mainFile}
+	base := mainFile[:len(mainFile)-len(".rar")]
+	for n := 0; ; n++ {
+		volPath := fmt.Sprintf("%s.r%02d", base, n)
+		if _, err := os.Stat(volPath); err != nil {
+			if os.IsNotExist(err) {
+				break
+			}
+			return nil, err
+		}
+		volumes = append(volumes, volPath)
+	}
+	return volumes, nil
+}
+
+func discoverPartNNVolumes(mainFile string) ([]string, error) {
 	var prefix, suffix string
 	var numStr strings.Builder
 	var isZeroPadded bool

@@ -161,6 +161,66 @@ func TestGoUnRAR_MultiVolume_LegacyNaming(t *testing.T) {
 	}
 }
 
+// TestGoUnRAR_MultiVolume_LegacyNaming_NoParts exercises the disk-probing
+// fallback (discoverRar5Volumes) directly, by constructing an Archive with
+// only MainFile set -- no Parts -- the same way TestGoUnRAR_MultiVolume
+// does for new-style naming. This proves the fallback path independently
+// recognizes legacy ".rNN" siblings too, not just the Archive.Parts path
+// exercised by TestGoUnRAR_MultiVolume_LegacyNaming: a caller that builds
+// Archive by hand (bypassing Scan) for a legacy-named set must not hit the
+// same "channel was closed" bug the Parts-based path was fixed for.
+func TestGoUnRAR_MultiVolume_LegacyNaming_NoParts(t *testing.T) {
+	srcDir := "testdata"
+	parts := []string{
+		"multi_new.part01.rar", "multi_new.part02.rar", "multi_new.part03.rar",
+		"multi_new.part04.rar", "multi_new.part05.rar", "multi_new.part06.rar",
+		"multi_new.part07.rar", "multi_new.part08.rar", "multi_new.part09.rar",
+		"multi_new.part10.rar",
+	}
+	legacyNames := []string{
+		"multi_legacy.rar", "multi_legacy.r00", "multi_legacy.r01", "multi_legacy.r02",
+		"multi_legacy.r03", "multi_legacy.r04", "multi_legacy.r05", "multi_legacy.r06",
+		"multi_legacy.r07", "multi_legacy.r08",
+	}
+
+	archiveDir := t.TempDir()
+	for i, src := range parts {
+		data, err := os.ReadFile(filepath.Join(srcDir, src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(archiveDir, legacyNames[i]), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	archive := Archive{
+		Type:     RarArchive,
+		Name:     "multi_legacy",
+		MainFile: filepath.Join(archiveDir, "multi_legacy.rar"),
+		// Parts intentionally left nil to force the discoverRar5Volumes
+		// fallback path.
+	}
+
+	outDir := t.TempDir()
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("GoUnRAR() error: %v", err)
+	}
+	if len(res.ExtractedFiles) == 0 {
+		t.Fatal("GoUnRAR() extracted no files")
+	}
+
+	path := filepath.Join(outDir, "bigfile.bin")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("bigfile.bin not found: %v", err)
+	}
+	if info.Size() != 8192 {
+		t.Errorf("bigfile.bin size = %d, want 8192", info.Size())
+	}
+}
+
 func TestGoUnRAR_PasswordCorrect(t *testing.T) {
 	outDir := t.TempDir()
 	archive := Archive{
