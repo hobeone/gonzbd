@@ -653,7 +653,6 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, sd *rarengine.Strea
 
 		destPath := filepath.Join(d.extractDir, destRel)
 		unpackOpts := unpack.Options{
-			Password:         d.opts.Password,
 			OneFolder:        d.opts.OneFolder,
 			OverwriteFiles:   d.opts.OverwriteFiles,
 			IgnoreUnrarDates: d.opts.IgnoreUnrarDates,

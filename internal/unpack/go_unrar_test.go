@@ -24,7 +24,7 @@ func TestGoUnRAR_SingleVolume(t *testing.T) {
 		MainFile: filepath.Join("testdata", "single_rar5.rar"),
 	}
 
-	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoUnRAR() error: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestGoUnRAR_MultiVolume(t *testing.T) {
 		MainFile: filepath.Join("testdata", "multi_new.part01.rar"),
 	}
 
-	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoUnRAR() error: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestGoUnRAR_MultiVolume_LegacyNaming(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoUnRAR() error: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestGoUnRAR_MultiVolume_LegacyNaming_NoParts(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoUnRAR() error: %v", err)
 	}
@@ -229,9 +229,7 @@ func TestGoUnRAR_PasswordCorrect(t *testing.T) {
 		MainFile: filepath.Join("testdata", "password_rar5.rar"),
 	}
 
-	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{
-		Password: "testpass",
-	})
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "testpass", Options{})
 	if err != nil {
 		t.Fatalf("GoUnRAR() error: %v", err)
 	}
@@ -248,9 +246,7 @@ func TestGoUnRAR_PasswordWrong(t *testing.T) {
 		MainFile: filepath.Join("testdata", "password_rar5.rar"),
 	}
 
-	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{
-		Password: "wrongpassword",
-	})
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "wrongpassword", Options{})
 	if err == nil {
 		t.Fatal("GoUnRAR() expected error for wrong password")
 	}
@@ -268,7 +264,7 @@ func TestGoUnRAR_EncryptedHeader(t *testing.T) {
 	}
 
 	// Without password — should fail.
-	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err == nil {
 		t.Fatal("GoUnRAR() expected error for encrypted header without password")
 	}
@@ -278,9 +274,7 @@ func TestGoUnRAR_EncryptedHeader(t *testing.T) {
 
 	// With correct password — should succeed.
 	outDir2 := t.TempDir()
-	res, err = GoUnRAR(context.Background(), slog.Default(), archive, outDir2, Options{
-		Password: "testpass",
-	})
+	res, err = GoUnRAR(context.Background(), slog.Default(), archive, outDir2, "testpass", Options{})
 	if err != nil {
 		t.Fatalf("GoUnRAR() with password error: %v", err)
 	}
@@ -297,7 +291,7 @@ func TestGoUnRAR_Corrupt(t *testing.T) {
 		MainFile: filepath.Join("testdata", "corrupt.rar"),
 	}
 
-	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err == nil {
 		t.Fatal("GoUnRAR() expected error for corrupt archive")
 	}
@@ -322,7 +316,7 @@ func TestGoUnRAR_NotAnArchive(t *testing.T) {
 		MainFile: notRar,
 	}
 
-	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err == nil {
 		t.Fatal("GoUnRAR() expected error for non-RAR file")
 	}
@@ -342,7 +336,7 @@ func TestGoUnRAR_ContextCancellation(t *testing.T) {
 		MainFile: filepath.Join("testdata", "single_rar5.rar"),
 	}
 
-	_, err := GoUnRAR(ctx, slog.Default(), archive, outDir, Options{})
+	_, err := GoUnRAR(ctx, slog.Default(), archive, outDir, "", Options{})
 	if err == nil {
 		t.Fatal("GoUnRAR() expected error for cancelled context")
 	}
@@ -359,7 +353,7 @@ func TestGoUnRAR_OneFolder(t *testing.T) {
 		MainFile: filepath.Join("testdata", "single_rar5.rar"),
 	}
 
-	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{
 		OneFolder: true,
 	})
 	if err != nil {
@@ -392,7 +386,7 @@ func TestGoUnRAR_IgnoreUnrarDates(t *testing.T) {
 
 	before := time.Now().Add(-time.Second) // just before extraction
 
-	_, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{
+	_, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{
 		IgnoreUnrarDates: true,
 	})
 	if err != nil {
@@ -420,7 +414,7 @@ func TestGoUnRAR_OnLineCallback(t *testing.T) {
 	}
 
 	var lines []string
-	_, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{
+	_, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{
 		OnLine: func(line string) { lines = append(lines, line) },
 	})
 	if err != nil {
@@ -447,7 +441,7 @@ func TestGoUnRAR_WithDirs(t *testing.T) {
 		MainFile: filepath.Join("testdata", "with_dirs.rar"),
 	}
 
-	_, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{})
+	_, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoUnRAR() error: %v", err)
 	}
@@ -478,7 +472,7 @@ func TestGoUnRAR_OverwriteFilesFalse(t *testing.T) {
 		MainFile: filepath.Join("testdata", "single_rar5.rar"),
 	}
 
-	_, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{
+	_, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{
 		OverwriteFiles: false,
 	})
 	if err != nil {
@@ -513,7 +507,7 @@ func TestGoUnRAR_OverwriteFilesTrue(t *testing.T) {
 		MainFile: filepath.Join("testdata", "single_rar5.rar"),
 	}
 
-	_, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{
+	_, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{
 		OverwriteFiles: true,
 	})
 	if err != nil {
