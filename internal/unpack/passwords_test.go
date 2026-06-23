@@ -23,28 +23,18 @@ func TestAllPasswords_DeduplicatesAndOrders(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "single_password_only",
-			opts: Options{Password: "secret"},
+			name: "single_password",
+			opts: Options{Passwords: []string{"secret"}},
 			want: []string{"secret"},
 		},
 		{
-			name: "passwords_list_only",
+			name: "passwords_list",
 			opts: Options{Passwords: []string{"a", "b", "c"}},
 			want: []string{"a", "b", "c"},
 		},
 		{
-			name: "both_no_overlap",
-			opts: Options{Password: "fallback", Passwords: []string{"first", "second"}},
-			want: []string{"first", "second", "fallback"},
-		},
-		{
-			name: "both_with_overlap",
-			opts: Options{Password: "first", Passwords: []string{"first", "second"}},
-			want: []string{"first", "second"},
-		},
-		{
 			name: "empty_strings_filtered",
-			opts: Options{Password: "", Passwords: []string{"", "real", ""}},
+			opts: Options{Passwords: []string{"", "real", ""}},
 			want: []string{"real"},
 		},
 		{
@@ -169,10 +159,10 @@ func TestWithPasswords_Mocked(t *testing.T) {
 
 	t.Run("no passwords - calls extract once", func(t *testing.T) {
 		calls := 0
-		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, password string, opts Options) (Result, error) {
 			calls++
-			if opts.Password != "" {
-				t.Errorf("expected no password, got %q", opts.Password)
+			if password != "" {
+				t.Errorf("expected no password, got %q", password)
 			}
 			return Result{ExitCode: 0}, nil
 		}
@@ -192,10 +182,10 @@ func TestWithPasswords_Mocked(t *testing.T) {
 
 	t.Run("success on first password", func(t *testing.T) {
 		calls := 0
-		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, password string, opts Options) (Result, error) {
 			calls++
-			if opts.Password != "pass1" {
-				t.Errorf("expected pass1, got %q", opts.Password)
+			if password != "pass1" {
+				t.Errorf("expected pass1, got %q", password)
 			}
 			return Result{ExitCode: 0}, nil
 		}
@@ -212,11 +202,11 @@ func TestWithPasswords_Mocked(t *testing.T) {
 
 	t.Run("retry on wrong password then success", func(t *testing.T) {
 		calls := 0
-		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, password string, opts Options) (Result, error) {
 			calls++
 			if calls == 1 {
-				if opts.Password != "wrong" {
-					t.Errorf("first attempt expected 'wrong', got %q", opts.Password)
+				if password != "wrong" {
+					t.Errorf("first attempt expected 'wrong', got %q", password)
 				}
 				// Simulate creating a partial file to verify cleanup is triggered
 				pfile := filepath.Join(outDir, "partial.txt")
@@ -225,8 +215,8 @@ func TestWithPasswords_Mocked(t *testing.T) {
 				return Result{ExitCode: 2, Output: "wrong password!"}, errors.New("extract failed")
 			}
 			if calls == 2 {
-				if opts.Password != "right" {
-					t.Errorf("second attempt expected 'right', got %q", opts.Password)
+				if password != "right" {
+					t.Errorf("second attempt expected 'right', got %q", password)
 				}
 				return Result{ExitCode: 0}, nil
 			}
@@ -258,7 +248,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 
 	t.Run("exhaust all passwords", func(t *testing.T) {
 		calls := 0
-		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, password string, opts Options) (Result, error) {
 			calls++
 			return Result{ExitCode: 2, Output: "wrong!"}, errors.New("extract failed")
 		}
@@ -280,7 +270,7 @@ func TestWithPasswords_Mocked(t *testing.T) {
 	t.Run("system error aborts retry loop", func(t *testing.T) {
 		calls := 0
 		sysErr := errors.New("system error")
-		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+		extract := func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, password string, opts Options) (Result, error) {
 			calls++
 			// ExitCode = 0, Reason = FailUnknown means system error
 			return Result{ExitCode: 0, Reason: FailUnknown}, sysErr
@@ -312,9 +302,9 @@ func TestWithPasswords_GoNativeWrongPasswordRetries(t *testing.T) {
 	outDir := t.TempDir()
 
 	calls := 0
-	extract := func(_ context.Context, _ *slog.Logger, _ Archive, _ string, opts Options) (Result, error) {
+	extract := func(_ context.Context, _ *slog.Logger, _ Archive, _ string, password string, _ Options) (Result, error) {
 		calls++
-		if opts.Password == "correct" {
+		if password == "correct" {
 			return Result{ExitCode: 0, ExtractedFiles: []string{"file.txt"}}, nil
 		}
 		// Go-native extractor shape: ExitCode 0 + classified Reason + non-nil err.

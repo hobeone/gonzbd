@@ -36,7 +36,7 @@ func TestSevenZip_Integration(t *testing.T) {
 		Parts:    []string{szPath},
 	}
 
-	res, err := unpack.SevenZip(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
+	res, err := unpack.SevenZip(t.Context(), slog.Default(), archive, outDir, "", unpack.Options{})
 	if err != nil {
 		t.Fatalf("SevenZip error: %v\nOutput:\n%s", err, res.Output)
 	}
@@ -60,7 +60,7 @@ func TestSevenZip_OnCommandFiresBeforeExec(t *testing.T) {
 			captured = cmdLine
 		},
 	}
-	_, _ = unpack.SevenZip(t.Context(), slog.Default(), archive, t.TempDir(), opts)
+	_, _ = unpack.SevenZip(t.Context(), slog.Default(), archive, t.TempDir(), "", opts)
 
 	if captured == "" {
 		t.Fatal("OnCommand was not called")

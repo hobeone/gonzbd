@@ -14,9 +14,10 @@ import (
 // exhausted without successful extraction.
 var ErrWrongPassword = errors.New("unpack: wrong password (all passwords exhausted)")
 
-// extractFunc is the signature shared by UnRAR and SevenZip — the
-// tool-specific extraction function called by withPasswords.
-type extractFunc func(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error)
+// extractFunc is the signature shared by UnRAR, SevenZip, GoUnRAR, and
+// GoSevenZip — the tool-specific extraction function called by
+// withPasswords, once per password candidate.
+type extractFunc func(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error)
 
 // wrongPasswordFunc inspects a tool's exit code and captured output
 // to determine whether the failure was caused by a wrong password.
@@ -57,9 +58,8 @@ func is7zWrongPassword(exitCode int, output string) bool {
 		strings.Contains(lower, "data error in encrypted file")
 }
 
-// allPasswords returns the effective password list from Options.
-// Priority: Passwords list first, then the single Password field as a
-// fallback candidate. Duplicates are removed.
+// allPasswords returns the effective password list from Options, with
+// duplicates and empty entries removed.
 func allPasswords(opts Options) []string {
 	seen := make(map[string]bool)
 	var result []string
@@ -68,9 +68,6 @@ func allPasswords(opts Options) []string {
 			seen[p] = true
 			result = append(result, p)
 		}
-	}
-	if opts.Password != "" && !seen[opts.Password] {
-		result = append(result, opts.Password)
 	}
 	return result
 }
@@ -93,21 +90,18 @@ func withPasswords(
 	passwords := allPasswords(opts)
 	if len(passwords) == 0 {
 		// No password list — single attempt (no-password).
-		res, err := extract(ctx, log, archive, outDir, opts)
+		res, err := extract(ctx, log, archive, outDir, "", opts)
 		res.Engine = toolName
 		return res, err
 	}
 
 	var lastRes Result
 	for i, pw := range passwords {
-		attempt := opts
-		attempt.Password = pw
-
 		// Snapshot outDir before attempt so we can clean up partial
 		// files if this password turns out to be wrong (S2 fix).
 		beforeSnap, _ := snapshotDir(outDir)
 
-		res, err := extract(ctx, log, archive, outDir, attempt)
+		res, err := extract(ctx, log, archive, outDir, pw, opts)
 		res.Engine = toolName
 
 		// System-level error: binary not found, context cancelled, etc.
@@ -177,9 +171,9 @@ func cleanupPartialFiles(outDir string, beforeSnap map[string]struct{}, log *slo
 }
 
 // UnRARWithPasswords tries extracting with each password in opts.Passwords
-// (and opts.Password) until one succeeds or all are exhausted. If the
-// archive is not password-protected, the first attempt with no password
-// succeeds immediately.
+// until one succeeds or all are exhausted. If the archive is not
+// password-protected, the first attempt with no password succeeds
+// immediately.
 //
 // When no passwords are configured, this delegates directly to UnRAR.
 func UnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
@@ -187,8 +181,8 @@ func UnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, 
 }
 
 // GoUnRARWithPasswords tries extracting with each password in opts.Passwords
-// (and opts.Password) using the pure-Go rarengine extractor until one
-// succeeds or all are exhausted.
+// using the pure-Go rarengine extractor until one succeeds or all are
+// exhausted.
 //
 // When no passwords are configured, this delegates directly to GoUnRAR.
 func GoUnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
@@ -200,7 +194,7 @@ func GoUnRARWithPasswords(ctx context.Context, log *slog.Logger, archive Archive
 }
 
 // SevenZipWithPasswords tries extracting with each password in opts.Passwords
-// (and opts.Password) until one succeeds or all are exhausted.
+// until one succeeds or all are exhausted.
 //
 // When no passwords are configured, this delegates directly to SevenZip.
 func SevenZipWithPasswords(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {

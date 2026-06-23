@@ -33,7 +33,7 @@ func TestGoSevenZip_LZMA2(t *testing.T) {
 		MainFile: filepath.Join(td, "lzma2.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestGoSevenZip_LZMA(t *testing.T) {
 		MainFile: filepath.Join(td, "lzma.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestGoSevenZip_Copy(t *testing.T) {
 		MainFile: filepath.Join(td, "copy.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestGoSevenZip_ChecksumMismatch_DetectsCorruption(t *testing.T) {
 		MainFile: archivePath,
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err == nil {
 		t.Fatal("GoSevenZip() expected a checksum error on corrupted content, got nil")
 	}
@@ -165,7 +165,7 @@ func TestGoSevenZip_Bzip2(t *testing.T) {
 		MainFile: filepath.Join(td, "bzip2.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestGoSevenZip_Deflate(t *testing.T) {
 		MainFile: filepath.Join(td, "deflate.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -199,9 +199,7 @@ func TestGoSevenZip_PasswordCorrect(t *testing.T) {
 		MainFile: filepath.Join(td, "aes7z.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{
-		Password: "password",
-	})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "password", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -218,9 +216,7 @@ func TestGoSevenZip_PasswordWrong(t *testing.T) {
 		MainFile: filepath.Join(td, "aes7z.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{
-		Password: "wrong_password",
-	})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "wrong_password", Options{})
 	if err == nil {
 		t.Fatal("GoSevenZip() expected error for wrong password")
 	}
@@ -237,7 +233,7 @@ func TestGoSevenZip_MultiVolume(t *testing.T) {
 		MainFile: filepath.Join(td, "multi.7z.001"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -255,7 +251,7 @@ func TestGoSevenZip_Empty(t *testing.T) {
 		MainFile: filepath.Join(td, "empty.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -274,7 +270,7 @@ func TestGoSevenZip_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := GoSevenZip(ctx, slog.Default(), archive, outDir, Options{})
+	_, err := GoSevenZip(ctx, slog.Default(), archive, outDir, "", Options{})
 	if err == nil {
 		t.Fatal("GoSevenZip() expected error for cancelled context")
 	}
@@ -289,7 +285,7 @@ func TestGoSevenZip_OnLineCallback(t *testing.T) {
 	}
 
 	var lines []string
-	_, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{
+	_, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{
 		OnLine: func(line string) {
 			lines = append(lines, line)
 		},
@@ -315,7 +311,7 @@ func TestGoSevenZip_BCJ(t *testing.T) {
 		MainFile: filepath.Join(td, "bcj.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -332,7 +328,7 @@ func TestGoSevenZip_BCJ2(t *testing.T) {
 		MainFile: filepath.Join(td, "bcj2.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -349,7 +345,7 @@ func TestGoSevenZip_Zstd(t *testing.T) {
 		MainFile: filepath.Join(td, "zstd.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -366,7 +362,7 @@ func TestGoSevenZip_Brotli(t *testing.T) {
 		MainFile: filepath.Join(td, "brotli.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -389,7 +385,7 @@ func TestGoSevenZip_NotAnArchive(t *testing.T) {
 		MainFile: fakeFile,
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err == nil {
 		t.Fatal("GoSevenZip() expected error for non-archive file")
 	}
@@ -407,7 +403,7 @@ func TestGoSevenZip_CommandLineField(t *testing.T) {
 		MainFile: filepath.Join(td, "lzma2.7z"),
 	}
 
-	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, Options{})
+	res, err := GoSevenZip(context.Background(), slog.Default(), archive, outDir, "", Options{})
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
@@ -494,7 +490,7 @@ func TestGoSevenZip_PanicRecovery(t *testing.T) {
 		Type:     SevenZipArchive,
 		MainFile: "dummy.7z",
 	}
-	res, err := GoSevenZip(context.Background(), nil, archive, t.TempDir(), Options{})
+	res, err := GoSevenZip(context.Background(), nil, archive, t.TempDir(), "", Options{})
 	if err == nil {
 		t.Fatal("expected error from panic recovery, got nil")
 	}
