@@ -58,8 +58,8 @@ func is7zWrongPassword(exitCode int, output string) bool {
 }
 
 // allPasswords returns the effective password list from Options.
-// Priority: Passwords list first, then single Password field (for
-// backward compatibility). Duplicates are removed.
+// Priority: Passwords list first, then the single Password field as a
+// fallback candidate. Duplicates are removed.
 func allPasswords(opts Options) []string {
 	seen := make(map[string]bool)
 	var result []string
