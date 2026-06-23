@@ -33,6 +33,8 @@ github.com/hobeone/par2engine v1.0.5 h1:sYPA4KkkO1jbW6h3fd1pmsVF9psOF435jFZ3cRxA
 github.com/hobeone/par2engine v1.0.5/go.mod h1:RHtnHd07b66lwo2/c1pJVRs62Y4vxnwglj8QZbJ29G4=
 github.com/hobeone/rarengine v1.0.3 h1:4bimmV6t5fZMu4UThfWakcEeIC0+OOkM+9bf7r8c+A8=
 github.com/hobeone/rarengine v1.0.3/go.mod h1:hUm3/DKYWjeiVVHtFsLSIHUuNaXDDPQjy6YrLcSLN44=
+github.com/hobeone/rarengine v1.0.4 h1:6BZlw3SoxpTedJB7CasZHzIjcGA7yUtfpRZESFvRWSM=
+github.com/hobeone/rarengine v1.0.4/go.mod h1:hUm3/DKYWjeiVVHtFsLSIHUuNaXDDPQjy6YrLcSLN44=
 github.com/klauspost/compress v1.18.6 h1:2jupLlAwFm95+YDR+NwD2MEfFO9d4z4Prjl1XXDjuao=
 github.com/klauspost/compress v1.18.6/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
 github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=

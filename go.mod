@@ -7,7 +7,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/h2non/filetype v1.1.3
 	github.com/hobeone/par2engine v1.0.5
-	github.com/hobeone/rarengine v1.0.3
+	github.com/hobeone/rarengine v1.0.4
 	github.com/lmittmann/tint v1.1.3
 	github.com/playwright-community/playwright-go v0.5700.1
 	github.com/pressly/goose/v3 v3.27.1
