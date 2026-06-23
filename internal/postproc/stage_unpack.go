@@ -366,7 +366,6 @@ func (u *UnpackStage) prepareOptions(ctx context.Context, log *slog.Logger, job 
 			}
 		}
 	}
-	opts.Password = "" //nolint:staticcheck // SA1019: intentionally zeroed to force Passwords-list iteration
 	if len(opts.Passwords) > 0 {
 		logf(ctx, log, job, slog.LevelInfo, "Will try %d password(s) for encrypted archives", len(opts.Passwords))
 	}
