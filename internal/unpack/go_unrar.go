@@ -18,37 +18,38 @@ import (
 	"github.com/hobeone/gonzbd/internal/rarheader"
 )
 
-// GoUnRAR extracts archive.MainFile into outDir using pure-Go rarengine,
-// or falls back to the external unrar command if rarengine fails or the
-// archive isn't a RAR3/RAR5 archive rarengine can read.
+// GoUnRAR extracts archive.MainFile into outDir using pure-Go rarengine.
+// It does not fall back to the external unrar binary itself — that decision
+// belongs to the caller (see stage_unpack.go's GoRarFallback-gated retry),
+// so a Result's Engine/CommandLine always accurately reflect which tool
+// actually ran, and so opts.GoRarFallback=false reliably means "never shell
+// out," with no other path silently overriding it.
 // It is equivalent to UnRAR.
 func GoUnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (res Result, err error) {
 	ver, detectErr := rarheader.Version(archive.MainFile)
-	if detectErr == nil && (ver == 3 || ver == 5) {
-		log.Info("go_unrar: detected RAR archive version, using rarengine", "rar_version", ver)
-		beforeSnap, snapErr := snapshotDir(outDir)
-		var rarengineRes Result
-		rarengineRes, err = GoUnRAREngine(ctx, log, archive, outDir, opts)
-		if err == nil {
-			return rarengineRes, nil
+	if detectErr != nil {
+		reason := FailUnknown
+		if errors.Is(detectErr, rarheader.ErrNotRAR) {
+			reason = FailNotArchive
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return rarengineRes, err
-		}
-		log.Warn("go_unrar: rarengine failed, falling back to external unrar", "rar_version", ver, "err", err)
-		if snapErr == nil {
-			cleanupPartialFiles(outDir, beforeSnap, log, "go_unrar_rarengine", 1)
-		}
-	} else {
-		log.Info("go_unrar: archive is not a recognized RAR version, falling back to external unrar")
+		log.Info("go_unrar: cannot determine RAR version", "err", detectErr)
+		return Result{Reason: reason}, fmt.Errorf("go_unrar: %w", detectErr)
 	}
 
-	return UnRAR(ctx, log, archive, outDir, opts)
+	log.Info("go_unrar: detected RAR archive version, using rarengine", "rar_version", ver)
+	beforeSnap, snapErr := snapshotDir(outDir)
+	res, err = GoUnRAREngine(ctx, log, archive, outDir, opts)
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && snapErr == nil {
+		cleanupPartialFiles(outDir, beforeSnap, log, "go_unrar_rarengine", 1)
+	}
+	return res, err
 }
 
 // ClassifyRarEngineError maps a rarengine error to the appropriate FailReason constant.
 func ClassifyRarEngineError(err error) FailReason {
 	switch {
+	case errors.Is(err, rarengine.ErrWrongPassword), errors.Is(err, rarengine.ErrPasswordRequired):
+		return FailWrongPassword
 	case errors.Is(err, rarengine.ErrRarBombDetected):
 		return FailCorrupt
 	case errors.Is(err, rarengine.ErrBadHeaderCRC):
