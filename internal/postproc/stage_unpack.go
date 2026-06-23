@@ -271,7 +271,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		})
 
 		for _, a := range pending {
-			logf(ctx, log, job, slog.LevelInfo, "  %s: %s (%d parts)", archiveTypeName(a.Type), a.Name, len(a.Parts))
+			logf(ctx, log, job, slog.LevelInfo, "  %s: %s (%d parts)", archiveTypeName(a.Type), a.MainFile, len(a.Parts))
 		}
 
 		extractedAny := u.extractPendingArchives(ctx, log, job, pending, processed, opts, enableFileJoin, &firstErr, &allSuccessful)
@@ -715,18 +715,10 @@ func recordUnpackFailure(ctx context.Context, log *slog.Logger, job *Job, a unpa
 	}
 }
 
-// RecoverPar2NamesStage renames obfuscated files using par2 metadata
-// (16K-MD5 matching). This mirrors SABnzbd's recover_par2_names() which
-// runs after unpacking but before heuristic deobfuscation. It is
-// unconditional — it runs even when deobfuscate_filenames is disabled.
-//
-// Par2 files contain MD5 hashes of the first 16384 bytes of each file.
-// This stage matches every file in the download directory against those
-// hashes and renames matches to the par2-recorded names.
 func archiveTypeName(t unpack.ArchiveType) string {
 	switch t {
 	case unpack.RarArchive:
-		return "unrar"
+		return "rar"
 	case unpack.SevenZipArchive:
 		return "7zip"
 	case unpack.SplitArchive:
