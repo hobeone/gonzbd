@@ -91,6 +91,76 @@ func TestGoUnRAR_MultiVolume(t *testing.T) {
 	}
 }
 
+// TestGoUnRAR_MultiVolume_LegacyNaming reproduces a production bug: a RAR5
+// multi-volume archive split using the legacy ".rar"/".r00"/".r01" naming
+// convention (still common -- WinRAR's "old style volume names" option is
+// independent of archive format) instead of new-style ".partNN.rar". The
+// RAR5 binary stream itself doesn't encode filenames for volume
+// continuation, so copying the (already-verified-correct) multi_new
+// .partNN.rar fixtures under legacy names produces an equally valid
+// legacy-named multi-volume RAR5 set.
+//
+// Before the fix, GoUnRAREngine's volume discovery only recognized ".part"
+// in the filename and silently treated this as a single-volume archive,
+// so rarengine ran out of data partway through and failed with
+// "rarengine: expected next volume stream from channel, but channel was
+// closed" -- exactly the error reported in production logs.
+func TestGoUnRAR_MultiVolume_LegacyNaming(t *testing.T) {
+	srcDir := "testdata"
+	parts := []string{
+		"multi_new.part01.rar", "multi_new.part02.rar", "multi_new.part03.rar",
+		"multi_new.part04.rar", "multi_new.part05.rar", "multi_new.part06.rar",
+		"multi_new.part07.rar", "multi_new.part08.rar", "multi_new.part09.rar",
+		"multi_new.part10.rar",
+	}
+	legacyNames := []string{
+		"multi_legacy.rar", "multi_legacy.r00", "multi_legacy.r01", "multi_legacy.r02",
+		"multi_legacy.r03", "multi_legacy.r04", "multi_legacy.r05", "multi_legacy.r06",
+		"multi_legacy.r07", "multi_legacy.r08",
+	}
+
+	archiveDir := t.TempDir()
+	for i, src := range parts {
+		data, err := os.ReadFile(filepath.Join(srcDir, src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(archiveDir, legacyNames[i]), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	archives, err := Scan(archiveDir)
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+	if len(archives) != 1 {
+		t.Fatalf("Scan() found %d archives, want 1", len(archives))
+	}
+	archive := archives[0]
+	if len(archive.Parts) != len(legacyNames) {
+		t.Fatalf("archive.Parts has %d entries, want %d", len(archive.Parts), len(legacyNames))
+	}
+
+	outDir := t.TempDir()
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, Options{})
+	if err != nil {
+		t.Fatalf("GoUnRAR() error: %v", err)
+	}
+	if len(res.ExtractedFiles) == 0 {
+		t.Fatal("GoUnRAR() extracted no files")
+	}
+
+	path := filepath.Join(outDir, "bigfile.bin")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("bigfile.bin not found: %v", err)
+	}
+	if info.Size() != 8192 {
+		t.Errorf("bigfile.bin size = %d, want 8192", info.Size())
+	}
+}
+
 func TestGoUnRAR_PasswordCorrect(t *testing.T) {
 	outDir := t.TempDir()
 	archive := Archive{
