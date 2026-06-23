@@ -867,6 +867,39 @@ func TestDownloaderPipeliningConcurrency(t *testing.T) {
 	}
 }
 
+// TestDownloaderStart_SkipsDisabledServers verifies that disabled servers
+// (Enable: false) never get connWorker goroutines spawned or connActivity
+// entries pre-populated. Disabled servers are documented as "kept in
+// config but skipped at dispatch" -- but Start previously iterated
+// d.servers unconditionally, spinning up a full pool of connections (and
+// logging "creating connections") for servers the operator explicitly
+// disabled.
+func TestDownloaderStart_SkipsDisabledServers(t *testing.T) {
+	ms := newMockNNTP(t)
+
+	enabled := testServer(t, "enabled", ms.addr)
+	disabled := testServer(t, "disabled", ms.addr, func(c *config.ServerConfig) {
+		c.Enable = false
+	})
+
+	d := New(queue.New(), []*Server{enabled, disabled}, nil, Options{}, nil)
+	if err := d.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = d.Stop() }()
+
+	d.connActivityMu.RLock()
+	defer d.connActivityMu.RUnlock()
+	for wid, ca := range d.connActivity {
+		if ca.ServerName == "disabled" {
+			t.Errorf("connActivity entry %q exists for disabled server", wid)
+		}
+	}
+	if len(d.connActivity) == 0 {
+		t.Error("expected connActivity entries for the enabled server, found none")
+	}
+}
+
 // --- Connection activity and ServerStatus tests ---
 
 func TestConnActivity_SetAndClear(t *testing.T) {

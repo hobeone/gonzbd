@@ -308,6 +308,14 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		perServer = max(1, perServer)
 		d.workCh[name] = make(chan *articleRequest, perServer)
 
+		// Disabled servers are kept in d.servers (so ServerStatus can still
+		// list them), but never get connection workers or activity
+		// entries -- they're skipped at dispatch (isServerCandidate) and
+		// would otherwise show idle connection slots that never connect.
+		if !srv.Cfg().Enable {
+			continue
+		}
+
 		// Pre-populate connection activity entries (all idle).
 		conns := max(srv.Connections(), 1)
 		for i := range conns {
@@ -353,6 +361,10 @@ func (d *Downloader) Start(ctx context.Context) error {
 	// connection, each lazily dials its own *nntp.Conn.
 	totalWorkers := 0
 	for i, srv := range d.servers {
+		if !srv.Cfg().Enable {
+			d.log.Info("server disabled, skipping connection setup", "server", srv.Cfg().Name)
+			continue
+		}
 		conns := max(srv.Connections(), 1)
 		for j := range conns {
 			wid := fmt.Sprintf("%s#%d", srv.Cfg().Name, j)
