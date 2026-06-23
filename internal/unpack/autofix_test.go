@@ -80,7 +80,7 @@ exit 1
 	// Create a dummy archive file.
 	os.WriteFile(archive.MainFile, []byte("rar"), 0o644)
 
-	res, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, unpack.Options{
+	res, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, "", unpack.Options{
 		UnrarCommand: scriptPath,
 	})
 
@@ -127,7 +127,7 @@ exit 1
 	}
 	os.WriteFile(archive.MainFile, []byte("rar"), 0o644)
 
-	_, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, unpack.Options{
+	_, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, "", unpack.Options{
 		UnrarCommand: scriptPath,
 	})
 
@@ -162,7 +162,7 @@ exit 1
 	}
 	os.WriteFile(archive.MainFile, []byte("rar"), 0o644)
 
-	_, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, unpack.Options{
+	_, err := unpack.UnRAR(t.Context(), slog.Default(), archive, outDir, "", unpack.Options{
 		UnrarCommand: scriptPath,
 	})
 

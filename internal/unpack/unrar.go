@@ -13,17 +13,16 @@ import (
 
 // Options controls how an extraction tool is invoked.
 type Options struct {
-	// Password is the password used for a single extraction attempt. Empty
-	// means no password. UnRAR, SevenZip, GoUnRAR, and GoSevenZip read this
-	// field directly. Callers that want multi-password iteration should set
-	// Passwords instead and call the corresponding *WithPasswords wrapper,
-	// which populates Password per attempt from the candidate list.
-	Password string
 	// Passwords is a prioritized list of passwords to try. When an
 	// extraction fails with a "wrong password" error, the next password
 	// in the list is tried. This implements SABnzbd's get_all_passwords()
-	// behavior. The single Password field is appended as a fallback
-	// candidate.
+	// behavior. Empty means no password. Callers that already know there's
+	// exactly one password can still set a single-element list.
+	//
+	// UnRAR, SevenZip, GoUnRAR, and GoSevenZip take the password for one
+	// attempt as an explicit function parameter, not from this struct --
+	// only the *WithPasswords wrappers (via withPasswords) read Passwords,
+	// iterating it and calling the underlying extractor once per candidate.
 	Passwords []string
 	// OneFolder extracts all files flat into outDir (no path preservation).
 	// For unrar this selects the 'e' command; for 7z this selects 'e'
@@ -123,7 +122,7 @@ type Result struct {
 // (preserve paths) otherwise.  -p- suppresses the interactive password
 // prompt when no password is supplied, preventing the subprocess from
 // blocking on stdin.
-func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (Result, error) {
+func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
 	log = log.With("component", "unpack/unrar")
 	mode := "x"
 	if opts.OneFolder {
@@ -131,8 +130,8 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir string
 	}
 
 	pwFlag := "-p-" // suppress interactive prompt
-	if opts.Password != "" {
-		pwFlag = "-p" + opts.Password
+	if password != "" {
+		pwFlag = "-p" + password
 	}
 
 	args := []string{

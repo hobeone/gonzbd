@@ -36,7 +36,7 @@ var errSevenZipChecksum = errors.New("go_7z: checksum error: content does not ma
 // Files are extracted in natural archive order and each file's reader is
 // closed before opening the next, enabling the library's stream reuse
 // optimisation for solid archives.
-func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir string, opts Options) (res Result, err error) {
+func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
 	// Top-level recover: sevenzip may panic on malformed archives.
 	defer func() {
 		if p := recover(); p != nil {
@@ -57,8 +57,8 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir s
 	}
 
 	var r *sevenzip.ReadCloser
-	if opts.Password != "" {
-		r, err = sevenzip.OpenReaderWithPassword(archive.MainFile, opts.Password)
+	if password != "" {
+		r, err = sevenzip.OpenReaderWithPassword(archive.MainFile, password)
 	} else {
 		r, err = sevenzip.OpenReader(archive.MainFile)
 	}
