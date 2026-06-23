@@ -3,6 +3,7 @@ package postproc
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -80,28 +81,17 @@ func buildDownloadFileList(job *Job) []string {
 	// downloaded successfully.
 	lines = append(lines, buildFileCompletionLines(job)...)
 
-	// Enumerate files in the download directory.
-	entries, err := os.ReadDir(job.DownloadDir)
+	// Enumerate files in the download directory, recursing into
+	// subdirectories so nothing nested (e.g. by extraction or par2 staging)
+	// is hidden from the listing.
+	treeLines, fileCount, err := buildDirTree(job.DownloadDir, "  ")
 	if err != nil {
 		lines = append(lines, fmt.Sprintf("Error reading download dir: %v", err))
 		return lines
 	}
 
-	lines = append(lines, fmt.Sprintf("Files in download directory (%d):", len(entries)))
-	for _, e := range entries {
-		info, _ := e.Info()
-		var sz int64
-		if info != nil {
-			sz = info.Size()
-		}
-		prefix := "  "
-		if e.IsDir() {
-			prefix = "  📁 "
-			lines = append(lines, fmt.Sprintf("%s%s/", prefix, e.Name()))
-		} else {
-			lines = append(lines, fmt.Sprintf("%s%s (%s)", prefix, e.Name(), humanfmt.BytesSI(sz)))
-		}
-	}
+	lines = append(lines, fmt.Sprintf("Files in download directory (%d):", fileCount))
+	lines = append(lines, treeLines...)
 
 	// Server stats, if available.
 	if len(job.Queue.ServerStats) > 0 {
@@ -113,6 +103,43 @@ func buildDownloadFileList(job *Job) []string {
 	}
 
 	return lines
+}
+
+// buildDirTree recursively lists dir's contents as indented tree lines:
+// directories print as "<indent>📁 name/" with their contents indented two
+// more spaces underneath; files print as "<indent>name (size)". It returns
+// the lines, the total number of files found (directories are not counted),
+// and an error if the top-level directory itself can't be read. Errors
+// reading a subdirectory are reported inline rather than aborting the walk.
+func buildDirTree(dir, indent string) ([]string, int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var lines []string
+	fileCount := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			lines = append(lines, fmt.Sprintf("%s📁 %s/", indent, e.Name()))
+			subLines, subCount, err := buildDirTree(filepath.Join(dir, e.Name()), indent+"  ")
+			if err != nil {
+				lines = append(lines, fmt.Sprintf("%s  Error reading dir: %v", indent, err))
+				continue
+			}
+			lines = append(lines, subLines...)
+			fileCount += subCount
+			continue
+		}
+		info, _ := e.Info()
+		var sz int64
+		if info != nil {
+			sz = info.Size()
+		}
+		lines = append(lines, fmt.Sprintf("%s%s (%s)", indent, e.Name(), humanfmt.BytesSI(sz)))
+		fileCount++
+	}
+	return lines, fileCount, nil
 }
 
 // buildFileCompletionLines produces one line per job file showing its
