@@ -269,7 +269,7 @@ func TestArchiveTypeName_KnownTypes(t *testing.T) {
 		at   unpack.ArchiveType
 		want string
 	}{
-		{unpack.RarArchive, "unrar"},
+		{unpack.RarArchive, "rar"},
 		{unpack.SevenZipArchive, "7zip"},
 		{unpack.SplitArchive, "filejoin"},
 		{unpack.UnknownArchive, "unpack"},
