@@ -559,17 +559,11 @@ func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack
 func extractSevenZipArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options) (unpack.Result, error) {
 	useGo7z := opts.UseGo7z
 	if !useGo7z {
-		szBin := opts.SevenZipCommand
-		if szBin == "" {
-			szBin = "7zz"
-		}
-		if _, lookErr := exec.LookPath(szBin); lookErr != nil {
-			if _, lookErr2 := exec.LookPath("7z"); lookErr2 != nil {
-				useGo7z = true
-				logf(ctx, log, job, slog.LevelInfo, "7z binary not found in PATH, falling back to go_7z")
-				if job.OnOutput != nil {
-					job.OnOutput("go_7z", "7z binary not found in PATH, falling back to go_7z")
-				}
+		if _, binErr := unpack.SevenZipBin(opts); binErr != nil {
+			useGo7z = true
+			logf(ctx, log, job, slog.LevelInfo, "7z binary not found in PATH, falling back to go_7z")
+			if job.OnOutput != nil {
+				job.OnOutput("go_7z", "7z binary not found in PATH, falling back to go_7z")
 			}
 		}
 	}
@@ -620,8 +614,7 @@ func extractSevenZipArchive(ctx context.Context, log *slog.Logger, job *Job, a u
 	// is available, retry with it. Gated on Go7zFallback so users can
 	// disable the retry.
 	if goErr := cmp.Or(err, res.Err); goErr != nil && opts.Go7zFallback {
-		szBin := find7zBin(opts.SevenZipCommand)
-		if szBin != "" {
+		if szBin, binErr := unpack.SevenZipBin(opts); binErr == nil {
 			logf(ctx, log, job, slog.LevelWarn,
 				"go_7z failed (%v), retrying with external %s", goErr, szBin)
 			if job.OnOutput != nil {
@@ -757,23 +750,6 @@ func archiveTypePriority(t unpack.ArchiveType) int {
 	default:
 		return 3
 	}
-}
-
-// find7zBin returns the path to an available 7z binary, checking the
-// configured name first, then "7zz", then "7z". Returns "" if none found.
-func find7zBin(configured string) string {
-	if configured != "" {
-		if _, err := exec.LookPath(configured); err == nil {
-			return configured
-		}
-	}
-	if _, err := exec.LookPath("7zz"); err == nil {
-		return "7zz"
-	}
-	if _, err := exec.LookPath("7z"); err == nil {
-		return "7z"
-	}
-	return ""
 }
 
 // CleanupStage removes temporary admin data from the download directory after
