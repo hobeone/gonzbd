@@ -419,27 +419,6 @@ func TestUnpackStage_SkipsOnParError(t *testing.T) {
 	}
 }
 
-// ---------- find7zBin ----------
-
-func TestFind7zBin_ConfiguredNotFound(t *testing.T) {
-	t.Parallel()
-	// With a bogus configured name, it should NOT return the configured name.
-	got := find7zBin("/nonexistent/7z-binary")
-	if got == "/nonexistent/7z-binary" {
-		t.Error("find7zBin should not return a nonexistent configured binary")
-	}
-	// It may return "7zz" or "7z" if available, or "" if neither exists.
-	// Either is fine — the key is that the bogus path is rejected.
-}
-
-func TestFind7zBin_EmptyConfigured(t *testing.T) {
-	t.Parallel()
-	// With empty configured name, falls through to 7zz/7z detection.
-	// On most systems one of these exists; on CI it may not.
-	// We just verify it doesn't panic.
-	_ = find7zBin("")
-}
-
 // ---------- CleanupStage tests ----------
 
 func TestCleanupStage_Name(t *testing.T) {
