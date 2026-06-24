@@ -1380,6 +1380,96 @@ func TestTotalPartsZero_DoesNotComplete(t *testing.T) {
 	}
 }
 
+// TestCancelJob_BlocksUntilFileClosedAndRemoved proves CancelJob does not
+// report completion until the worker has actually closed and removed the
+// job's open file handles. Callers like app.RemoveJob delete the job's
+// directory immediately after CancelJob returns; if CancelJob merely
+// enqueues a control message without waiting for it to be processed, the
+// directory delete can race the worker's Close()+Remove() of files still
+// inside it. On NFS-mounted download directories this race produces
+// .nfsXXXXXX silly-rename artifacts and a non-empty directory the delete
+// can't remove.
+func TestCancelJob_BlocksUntilFileClosedAndRemoved(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "target.dat")
+	blockerPath := filepath.Join(dir, "blocker.dat")
+
+	resolverEntered := make(chan struct{}, 1)
+	resolverRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(resolverRelease) }) }
+	// Guarantee the worker is released even if the test fails before the
+	// deliberate release point below, so a.Stop() in t.Cleanup doesn't
+	// block forever on a permanently-parked worker goroutine.
+	defer release()
+
+	opts := Options{
+		FileInfo: func(jobID string, _ int) (FileInfo, error) {
+			switch jobID {
+			case "target":
+				// TotalParts is never reached, so the file stays open.
+				return FileInfo{Path: targetPath, TotalParts: 100}, nil
+			case "blocker":
+				resolverEntered <- struct{}{}
+				<-resolverRelease
+				return FileInfo{Path: blockerPath, TotalParts: 1}, nil
+			default:
+				return FileInfo{}, fmt.Errorf("unexpected job %q", jobID)
+			}
+		},
+	}
+	a := startAssembler(t, opts)
+
+	if err := a.WriteArticle(t.Context(), WriteRequest{
+		JobID: "target", FileIdx: 0, MessageID: "m1", Offset: 0, Data: []byte("AAAA"),
+	}); err != nil {
+		t.Fatalf("WriteArticle(target): %v", err)
+	}
+
+	// The worker processes a.reqs FIFO on a single goroutine, so by the time
+	// it's parked inside the blocker's FileInfo call, the "target" article
+	// enqueued above is guaranteed to have already been fully processed
+	// (file opened and written).
+	if err := a.WriteArticle(t.Context(), WriteRequest{
+		JobID: "blocker", FileIdx: 0, MessageID: "b1", Offset: 0, Data: []byte("Z"),
+	}); err != nil {
+		t.Fatalf("WriteArticle(blocker): %v", err)
+	}
+	<-resolverEntered // worker is now parked inside the blocker's FileInfo call.
+
+	if _, err := os.Stat(targetPath); err != nil {
+		t.Fatalf("target file should exist before cancel: %v", err)
+	}
+
+	cancelDone := make(chan error, 1)
+	go func() { cancelDone <- a.CancelJob(t.Context(), "target") }()
+
+	// Negative-observation window: the worker cannot have reached the
+	// cancel control message yet -- it's deterministically still blocked
+	// inside the blocker's FileInfo call. CancelJob must not report
+	// completion this early.
+	select {
+	case err := <-cancelDone:
+		t.Fatalf("CancelJob returned before the worker could have closed the file (err=%v)", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	release() // let the worker proceed past the blocker.
+
+	select {
+	case err := <-cancelDone:
+		if err != nil {
+			t.Fatalf("CancelJob: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("CancelJob did not return after unblocking the worker")
+	}
+
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("target file should have been removed by CancelJob, stat err = %v", err)
+	}
+}
+
 // Dummy references to satisfy scripts/check_test_alignment. These are internal
 // goroutine workers or helper methods called in background processing.
 var (
