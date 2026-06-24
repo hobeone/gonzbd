@@ -52,7 +52,7 @@
 	<div class="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4">
 		<h1 class="text-xl font-medium tracking-tight text-m3-primary flex items-center gap-2 select-none">
 			<span class="material-symbols-outlined text-2xl font-bold">download_for_offline</span>
-			GoNZBD
+      <a href="https://www.github.com/hobeone/gonzbd" target="_blank" rel="noopener noreferrer">GoNZBD</a>
 		</h1>
 
 		<Button
