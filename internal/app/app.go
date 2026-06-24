@@ -520,7 +520,15 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	// Cancel in-flight post-processing and assembler file handles before
 	// removing files to prevent the PP from operating on a deleted directory.
 	app.postProcessor.Cancel(id)
-	_ = app.assembler.CancelJob(ctx, id)
+	// CancelJob blocks until the assembler has actually closed the job's
+	// open file handles. If it returns an error (ctx cancelled, assembler
+	// not started/stopped), we have no such guarantee -- warn so a
+	// subsequent directory-delete failure (e.g. .nfsXXXXXX on NFS mounts)
+	// is traceable back to this race instead of looking unexplained.
+	if err := app.assembler.CancelJob(ctx, id); err != nil {
+		app.log.Warn("assembler cancel job did not confirm file handles closed",
+			"job", id, "error", err)
+	}
 	// Remove from queue and pipeline so no more articles are dispatched.
 	if err := app.queue.Remove(id); err != nil {
 		return err
