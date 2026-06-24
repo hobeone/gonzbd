@@ -60,23 +60,6 @@ func TestHas_NotPresent(t *testing.T) {
 	}
 }
 
-// ---------- PushHead ----------
-
-func TestPushHead_SetsFirstInQueue(t *testing.T) {
-	q := newPPQueue()
-	q.Push(&Job{Queue: &queue.Job{ID: "a"}})
-	q.Push(&Job{Queue: &queue.Job{ID: "b"}})
-	q.PushHead(&Job{Queue: &queue.Job{ID: "head"}})
-
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-
-	first, ok := q.Pop(ctx)
-	if !ok || first.Queue.ID != "head" {
-		t.Errorf("PushHead: first popped = %q, want 'head'", first.Queue.ID)
-	}
-}
-
 func TestPPQueue_Len(t *testing.T) {
 	q := newPPQueue()
 	if q.Len() != 0 {
@@ -249,53 +232,6 @@ func TestHistory_CapMaxEntries(t *testing.T) {
 	h := p.History()
 	if len(h) > 1000 {
 		t.Errorf("History len = %d, want <= 1000", len(h))
-	}
-}
-
-// ---------- Pause/Resume edge cases ----------
-
-func TestPauseWhileIdle(t *testing.T) {
-	p := startProcessor(t, Options{Stages: []Stage{newRecordStage("s")}})
-
-	p.Pause()
-	// Double pause is safe.
-	p.Pause()
-
-	// Resume while paused with no jobs.
-	p.Resume()
-	// Double resume is safe.
-	p.Resume()
-
-	// Enqueue job — should process normally.
-	var wg sync.WaitGroup
-	wg.Add(1)
-	p2 := startProcessor(t, Options{
-		Stages:    []Stage{newRecordStage("s")},
-		OnJobDone: func(_ *Job) { wg.Done() },
-	})
-	p2.Pause()
-	p2.Process(makeJob(t, "after-pause"))
-	p2.Resume()
-	wg.Wait()
-}
-
-// ---------- Stop while paused ----------
-
-func TestStopWhilePaused(t *testing.T) {
-	p := New(Options{Stages: []Stage{newRecordStage("s")}})
-	_ = p.Start(t.Context())
-	p.Pause()
-
-	done := make(chan struct{})
-	go func() {
-		_ = p.Stop()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Stop while paused did not return")
 	}
 }
 

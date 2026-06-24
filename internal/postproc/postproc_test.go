@@ -177,49 +177,6 @@ func (o *orderCapture) Run(_ context.Context, _ *Job) error {
 }
 
 // Test 4: Pause halts processing; Resume continues without losing jobs.
-func TestPauseResume(t *testing.T) {
-	stage := newRecordStage("s")
-
-	var doneMu sync.Mutex
-	var doneCount int
-	var wg sync.WaitGroup
-	wg.Add(3)
-
-	p := startProcessor(t, Options{
-		Stages: []Stage{stage},
-		OnJobDone: func(_ *Job) {
-			doneMu.Lock()
-			doneCount++
-			doneMu.Unlock()
-			wg.Done()
-		},
-	})
-
-	p.Pause()
-
-	// Enqueue 3 jobs while paused.
-	for i := range 3 {
-		p.q.Push(&Job{Queue: &queue.Job{ID: "j" + string(rune('0'+i)), Name: "j" + string(rune('0'+i))}})
-	}
-
-	// Negative-observation window. There is no deterministic signal for "the
-	// worker has reached its paused-wait", so we allow a bounded window and
-	// confirm no stage ran. This is intentionally a sleep, NOT a synchronization
-	// wait: the positive guarantee (paused jobs DO run after Resume) is asserted
-	// deterministically below via wg.Wait + CallCount == 3.
-	time.Sleep(30 * time.Millisecond)
-	if stage.CallCount() > 0 {
-		t.Errorf("stage called %d times while paused, want 0", stage.CallCount())
-	}
-
-	p.Resume()
-	wg.Wait()
-
-	if got := stage.CallCount(); got != 3 {
-		t.Errorf("stage called %d times after resume, want 3", got)
-	}
-}
-
 // Test 5: Stop during in-flight stage: stage receives cancelled ctx; Stop
 // returns only after worker exits.
 func TestStopDuringInFlightStage(t *testing.T) {

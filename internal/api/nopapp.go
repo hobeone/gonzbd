@@ -51,12 +51,6 @@ func (n NopApp) ResumeDownloads() {}
 // DisconnectAll is a stub.
 func (n NopApp) DisconnectAll() {}
 
-// PausePostProcessor is a stub.
-func (n NopApp) PausePostProcessor() {}
-
-// ResumePostProcessor is a stub.
-func (n NopApp) ResumePostProcessor() {}
-
 // ReloadPostProcOptions is a stub.
 func (n NopApp) ReloadPostProcOptions(config.PostProcConfig, string) {}
 
