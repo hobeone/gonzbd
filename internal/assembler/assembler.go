@@ -77,6 +77,12 @@ type WriteRequest struct {
 	// verification against par2 file hashes. Zero when the article failed
 	// or was UU-encoded.
 	CRC uint32
+
+	// ackCh, when non-nil, is closed by the worker immediately after this
+	// control message (cancel) has been fully processed -- i.e. after the
+	// job's open file handles have been closed and removed. Set only by
+	// CancelJob; never used by ordinary write requests.
+	ackCh chan struct{}
 }
 
 // FileInfo describes a target file. The assembler requests it from the caller's
@@ -386,9 +392,13 @@ func (a *Assembler) WriteArticle(ctx context.Context, req WriteRequest) error {
 }
 
 // CancelJob sends a control message to the worker goroutine to close all
-// open file handles for the given job. This prevents FD leaks when a job
-// is removed from the queue while articles are still being assembled.
-// Blocks until the message is accepted or ctx is cancelled.
+// open file handles for the given job, and blocks until the worker has
+// actually done so. This prevents FD leaks when a job is removed from the
+// queue while articles are still being assembled, and lets callers safely
+// delete the job's directory immediately after CancelJob returns without
+// racing the worker's Close()+Remove() of files still inside it (which on
+// NFS-mounted directories produces .nfsXXXXXX silly-rename artifacts and a
+// directory the caller's delete can't remove).
 func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 	a.mu.Lock()
 	if !a.started {
@@ -406,13 +416,26 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 
 	// Control message convention: JobID="" and FileIdx=-1, with the
 	// real job ID in MessageID.
+	ack := make(chan struct{})
 	control := WriteRequest{
 		JobID:     "",
 		FileIdx:   -1,
 		MessageID: jobID,
+		ackCh:     ack,
 	}
 	select {
 	case a.reqs <- control:
+	case <-a.stopCh:
+		return ErrStopped
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	// Wait for the worker to actually process the control message. If Stop
+	// races and drains it during shutdown, the worker still closes ack (see
+	// dispatchRequest), so this is never left blocking indefinitely.
+	select {
+	case <-ack:
 		return nil
 	case <-a.stopCh:
 		return ErrStopped
@@ -523,6 +546,9 @@ func (a *Assembler) dispatchRequest(
 			delete(open, k)
 			completed[k] = struct{}{}
 			wc.forget(k) // discard cached articles for cancelled file
+		}
+		if req.ackCh != nil {
+			close(req.ackCh)
 		}
 		return 0
 	}
