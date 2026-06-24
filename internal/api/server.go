@@ -74,8 +74,6 @@ type ApplicationReloader interface {
 	PauseDownloads()
 	ResumeDownloads()
 	DisconnectAll()
-	PausePostProcessor()
-	ResumePostProcessor()
 	// ReloadPostProcOptions applies all hot-applicable postproc settings.
 	// Callers must pass a value snapshot taken without holding config.Config's
 	// lock (see internal/app/reloader.go) — never call from inside

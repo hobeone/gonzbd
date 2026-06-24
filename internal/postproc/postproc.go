@@ -58,15 +58,6 @@ type PostProcessor struct {
 
 	q *ppQueue
 
-	// pause / resume coordination.
-	pauseMu sync.Mutex
-	paused  bool
-	// resumeC is a channel that is closed when the processor resumes.
-	// It is replaced with a fresh channel on each Pause call so that
-	// subsequent Pause/Resume cycles work correctly.  Always read resumeC
-	// under pauseMu and copy to a local before releasing.
-	resumeC chan struct{}
-
 	// workerCtx / workerCancel drive the worker lifecycle.
 	workerCtx    context.Context //nolint:containedctx // intentional: worker context lives in struct
 	workerCancel context.CancelFunc
@@ -109,7 +100,6 @@ func New(opts Options) *PostProcessor {
 		onOutput:      opts.OnOutput,
 		log:           log,
 		q:             newPPQueue(),
-		resumeC:       make(chan struct{}),
 	}
 }
 
@@ -140,9 +130,6 @@ func (p *PostProcessor) Stop() error {
 	if p.workerCancel != nil {
 		p.workerCancel()
 	}
-	// Unblock the worker if it is waiting on a resume signal so it can
-	// observe the cancelled context and exit.
-	p.signalResume()
 	p.wg.Wait()
 	return nil
 }
@@ -151,44 +138,6 @@ func (p *PostProcessor) Stop() error {
 func (p *PostProcessor) Process(job *Job) {
 	p.log.Info("postproc: enqueuing job", "job", job.Queue.ID)
 	p.q.Push(job)
-}
-
-// Pause halts processing after the current job finishes.  Safe to call
-// multiple times; subsequent calls are no-ops.
-func (p *PostProcessor) Pause() {
-	p.pauseMu.Lock()
-	defer p.pauseMu.Unlock()
-	if !p.paused {
-		p.paused = true
-		// Replace resumeC so the next Resume closes a fresh channel.
-		p.resumeC = make(chan struct{})
-		p.log.Info("postproc: paused")
-	}
-}
-
-// Resume continues processing after a Pause.  Safe to call when not paused.
-func (p *PostProcessor) Resume() {
-	p.pauseMu.Lock()
-	defer p.pauseMu.Unlock()
-	if !p.paused {
-		return
-	}
-	p.paused = false
-	close(p.resumeC)
-	p.log.Info("postproc: resumed")
-}
-
-// signalResume unblocks a paused worker without changing the paused flag.
-// Used by Stop so that a paused worker can observe ctx cancellation.
-func (p *PostProcessor) signalResume() {
-	p.pauseMu.Lock()
-	defer p.pauseMu.Unlock()
-	select {
-	case <-p.resumeC:
-		// already closed
-	default:
-		close(p.resumeC)
-	}
 }
 
 // Cancel removes job with jobID from the pending queue, or, if it is
@@ -262,8 +211,8 @@ func (p *PostProcessor) run() {
 		default:
 		}
 
-		// Wait for a job, respecting pause.
-		job, jobCtx, ok := p.popWithPause()
+		// Wait for a job.
+		job, jobCtx, ok := p.popJob()
 		if !ok {
 			// ctx cancelled.
 			return
@@ -310,54 +259,23 @@ func (p *PostProcessor) run() {
 	}
 }
 
-// popWithPause wraps q.Pop and inserts a pause-check loop.
-// Returns (job, jobCtx, true) on success, (nil, nil, false) when ctx is done.
-// jobCtx is derived from workerCtx and is independently cancellable via
-// Cancel, so a single in-flight job can be aborted without affecting any
-// other job or the worker itself.
-func (p *PostProcessor) popWithPause() (*Job, context.Context, bool) {
-	for {
-		// Grab the current resumeC before checking paused, so we don't
-		// race between paused==true and the channel being closed.
-		p.pauseMu.Lock()
-		paused := p.paused
-		resumeC := p.resumeC
-		p.pauseMu.Unlock()
-
-		if paused {
-			p.log.Debug("postproc: worker paused, waiting for resume")
-			select {
-			case <-p.workerCtx.Done():
-				return nil, nil, false
-			case <-resumeC:
-				// Loop back to re-check paused state.
-				continue
-			}
-		}
-
-		// Not paused — try to pop.
-		job, ok := p.q.Pop(p.workerCtx)
-		if !ok {
-			return nil, nil, false
-		}
-
-		// Re-check pause after Pop returns: a Pause may have landed while we
-		// were blocked in Pop, or between paused==false and the Pop return.
-		// If paused, put the job back at the head and loop to wait on resumeC.
-		p.pauseMu.Lock()
-		stillPaused := p.paused
-		p.pauseMu.Unlock()
-		if stillPaused {
-			p.q.PushHead(job)
-			continue
-		}
-
-		// Set busy atomically before returning so Has()/Empty() never
-		// see the intermediate state (queue empty, not busy).
-		jobCtx, jobCancel := context.WithCancel(p.workerCtx)
-		p.setBusyWithJob(true, job.Queue.ID, jobCancel)
-		return job, jobCtx, true
+// popJob pops the next job from the queue and sets up its derived,
+// independently-cancellable context (see Cancel).
+// Returns (job, jobCtx, true) on success, (nil, nil, false) when the worker
+// context is done. jobCtx is derived from workerCtx and is independently
+// cancellable via Cancel, so a single in-flight job can be aborted without
+// affecting any other job or the worker itself.
+func (p *PostProcessor) popJob() (*Job, context.Context, bool) {
+	job, ok := p.q.Pop(p.workerCtx)
+	if !ok {
+		return nil, nil, false
 	}
+
+	// Set busy atomically before returning so Has()/Empty() never
+	// see the intermediate state (queue empty, not busy).
+	jobCtx, jobCancel := context.WithCancel(p.workerCtx)
+	p.setBusyWithJob(true, job.Queue.ID, jobCancel)
+	return job, jobCtx, true
 }
 
 // buildPreambleLog builds and returns the synthetic preamble StageLogEntries
