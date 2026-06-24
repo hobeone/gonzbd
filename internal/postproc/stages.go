@@ -24,10 +24,12 @@ type Stage interface {
 	// "unpack", "sort").
 	Name() string
 
-	// Run executes the stage.  The supplied ctx is cancelled when the
-	// PostProcessor is stopped; stages MUST respect it and return promptly.
-	// Returning a non-nil error records the failure in the StageLog but
-	// does NOT abort the pipeline; subsequent stages still run.
+	// Run executes the stage.  The supplied ctx is cancelled either when the
+	// PostProcessor is stopped, or when this specific job is removed via
+	// Cancel while it's being processed; stages MUST respect it and return
+	// promptly in both cases. Returning a non-nil error records the failure
+	// in the StageLog but does NOT abort the pipeline; subsequent stages
+	// still run.
 	Run(ctx context.Context, job *Job) error
 }
 

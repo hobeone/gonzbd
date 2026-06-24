@@ -76,13 +76,17 @@ type PostProcessor struct {
 
 	// busy is true while a job's stages are executing.
 	// currentJobID is the ID of the in-flight job (empty when not busy).
+	// currentJobCancel cancels the in-flight job's derived context (see
+	// popWithPause); Cancel calls it to abort a job that is actively being
+	// processed, distinct from workerCancel which aborts everything.
 	// started guards against double Start calls.
-	// All three are guarded by busyMu so Has can atomically observe the
+	// All four are guarded by busyMu so Has can atomically observe the
 	// "queued-or-running" set.
-	busyMu       sync.Mutex
-	busy         bool
-	started      bool
-	currentJobID string
+	busyMu           sync.Mutex
+	busy             bool
+	started          bool
+	currentJobID     string
+	currentJobCancel context.CancelFunc
 
 	// history tracks all completed jobs for the UI.
 	historyMu sync.RWMutex
@@ -187,12 +191,23 @@ func (p *PostProcessor) signalResume() {
 	}
 }
 
-// Cancel removes job with jobID from the queue.  If the job is
-// currently being processed its context is already managed by Stop/workerCtx;
-// stages must respect ctx.Done() for cancellation during execution.
-// Returns true if the job was found and removed from the queue.
+// Cancel removes job with jobID from the pending queue, or, if it is
+// currently being processed, cancels its derived context so the active
+// stage observes ctx.Done() and returns promptly. Stages must respect
+// ctx.Done() for this to take effect during execution.
+// Returns true if the job was found pending or in-flight.
 func (p *PostProcessor) Cancel(jobID string) bool {
-	return p.q.Cancel(jobID)
+	removed := p.q.Cancel(jobID)
+
+	p.busyMu.Lock()
+	inFlight := p.currentJobID == jobID && p.currentJobCancel != nil
+	cancel := p.currentJobCancel
+	p.busyMu.Unlock()
+
+	if inFlight {
+		cancel()
+	}
+	return removed || inFlight
 }
 
 // Empty returns true when the queue is empty and no job is currently being
@@ -248,7 +263,7 @@ func (p *PostProcessor) run() {
 		}
 
 		// Wait for a job, respecting pause.
-		job, ok := p.popWithPause()
+		job, jobCtx, ok := p.popWithPause()
 		if !ok {
 			// ctx cancelled.
 			return
@@ -256,21 +271,33 @@ func (p *PostProcessor) run() {
 
 		// setBusyWithJob was already called inside popWithPause to
 		// eliminate the race window between pop and busy-set.
-		p.processJob(job)
+		p.processJob(jobCtx, job)
 
 		// If the worker context was cancelled (shutdown), the job was only
 		// partially processed. Skip onJobDone so it remains in the active
 		// queue. On the next startup, crash recovery will find it with
 		// PostProc=true and re-enqueue it for post-processing.
 		if p.workerCtx.Err() != nil {
-			p.setBusyWithJob(false, "")
+			p.setBusyWithJob(false, "", nil)
 			p.log.Info("postproc: shutdown interrupted job, preserving for recovery",
 				"job", job.Queue.ID)
 			return
 		}
 
+		// jobCtx is cancelled independently of workerCtx by Cancel() when
+		// this specific job is removed mid-processing. Unlike a shutdown,
+		// the job is gone for good (the caller, e.g. app.RemoveJob, owns
+		// its cleanup) -- drop it without recording history or firing
+		// onJobDone, and keep serving the rest of the queue.
+		if jobCtx.Err() != nil {
+			p.setBusyWithJob(false, "", nil)
+			p.log.Info("postproc: job cancelled mid-processing, dropping",
+				"job", job.Queue.ID)
+			continue
+		}
+
 		p.addHistory(job)
-		p.setBusyWithJob(false, "")
+		p.setBusyWithJob(false, "", nil)
 
 		if p.onJobDone != nil {
 			p.onJobDone(job)
@@ -284,8 +311,11 @@ func (p *PostProcessor) run() {
 }
 
 // popWithPause wraps q.Pop and inserts a pause-check loop.
-// Returns (job, true) on success, (nil, false) when ctx is done.
-func (p *PostProcessor) popWithPause() (*Job, bool) {
+// Returns (job, jobCtx, true) on success, (nil, nil, false) when ctx is done.
+// jobCtx is derived from workerCtx and is independently cancellable via
+// Cancel, so a single in-flight job can be aborted without affecting any
+// other job or the worker itself.
+func (p *PostProcessor) popWithPause() (*Job, context.Context, bool) {
 	for {
 		// Grab the current resumeC before checking paused, so we don't
 		// race between paused==true and the channel being closed.
@@ -298,7 +328,7 @@ func (p *PostProcessor) popWithPause() (*Job, bool) {
 			p.log.Debug("postproc: worker paused, waiting for resume")
 			select {
 			case <-p.workerCtx.Done():
-				return nil, false
+				return nil, nil, false
 			case <-resumeC:
 				// Loop back to re-check paused state.
 				continue
@@ -308,7 +338,7 @@ func (p *PostProcessor) popWithPause() (*Job, bool) {
 		// Not paused — try to pop.
 		job, ok := p.q.Pop(p.workerCtx)
 		if !ok {
-			return nil, false
+			return nil, nil, false
 		}
 
 		// Re-check pause after Pop returns: a Pause may have landed while we
@@ -324,8 +354,9 @@ func (p *PostProcessor) popWithPause() (*Job, bool) {
 
 		// Set busy atomically before returning so Has()/Empty() never
 		// see the intermediate state (queue empty, not busy).
-		p.setBusyWithJob(true, job.Queue.ID)
-		return job, true
+		jobCtx, jobCancel := context.WithCancel(p.workerCtx)
+		p.setBusyWithJob(true, job.Queue.ID, jobCancel)
+		return job, jobCtx, true
 	}
 }
 
@@ -527,12 +558,13 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 		)
 	}
 
-	// If the worker context was cancelled mid-stage, stop running further
-	// stages — the stage itself should have returned early, but we don't
-	// force it to. Context cancellation is the ONLY reason to abort.
+	// If ctx was cancelled mid-stage (worker shutdown or this job being
+	// individually cancelled via Cancel), stop running further stages —
+	// the stage itself should have returned early, but we don't force it
+	// to. Context cancellation is the ONLY reason to abort.
 	select {
 	case <-ctx.Done():
-		p.log.Info("postproc: worker context cancelled, aborting remaining stages",
+		p.log.Info("postproc: context cancelled, aborting remaining stages",
 			"job", job.Queue.ID,
 		)
 		return entry, true
@@ -553,7 +585,7 @@ func (p *PostProcessor) runStage(ctx context.Context, stage Stage, job *Job) (St
 // If the job already carries a FailMsg (e.g. "beyond repair" from the
 // download health gate), all processing stages are skipped. The job
 // still flows through to history so the user sees the failure.
-func (p *PostProcessor) processJob(job *Job) {
+func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 	job.OnOutput = func(tool, line string) {
 		if p.onOutput != nil {
 			p.onOutput(job.Queue.ID, tool, line)
@@ -603,7 +635,7 @@ func (p *PostProcessor) processJob(job *Job) {
 	}
 
 	for _, stage := range p.stages {
-		entry, abort := p.runStage(p.workerCtx, stage, job)
+		entry, abort := p.runStage(ctx, stage, job)
 		job.StageLog = append(job.StageLog, entry)
 		if abort {
 			return
@@ -619,13 +651,15 @@ func (p *PostProcessor) processJob(job *Job) {
 	job.StageLog = append(job.StageLog, buildSummaryEntry(job))
 }
 
-// setBusyWithJob updates busy and currentJobID atomically. Used by the
-// worker around each processJob call so Has can observe the in-flight
-// job ID without racing the busy flag.
-func (p *PostProcessor) setBusyWithJob(v bool, jobID string) {
+// setBusyWithJob updates busy, currentJobID, and currentJobCancel
+// atomically. Used by the worker around each processJob call so Has and
+// Cancel can observe the in-flight job (and abort it) without racing the
+// busy flag. cancel should be nil when v is false.
+func (p *PostProcessor) setBusyWithJob(v bool, jobID string, cancel context.CancelFunc) {
 	p.busyMu.Lock()
 	p.busy = v
 	p.currentJobID = jobID
+	p.currentJobCancel = cancel
 	p.busyMu.Unlock()
 }
 

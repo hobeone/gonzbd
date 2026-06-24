@@ -496,6 +496,64 @@ func TestCancelQueuedJob(t *testing.T) {
 	}
 }
 
+// TestCancelInProgressJob verifies that Cancel actually aborts a job that is
+// currently executing a stage, not just one still sitting in the pending
+// queue. Before this fix, Cancel only removed pending jobs; an in-progress
+// job's stage kept running to completion (holding open files / subprocesses
+// in its job directory) even though the caller (e.g. app.RemoveJob) may
+// concurrently delete that directory. The cancelled job must also be
+// dropped silently -- not finalized via OnJobDone -- since the canceller
+// owns its cleanup.
+func TestCancelInProgressJob(t *testing.T) {
+	block := make(chan struct{}) // never closed: only ctx cancellation should unblock the stage
+	blocker := &recordStage{name: "blocker", block: block}
+
+	var onJobDoneCalled atomic.Bool
+	p := startProcessor(t, Options{
+		Stages: []Stage{blocker},
+		OnJobDone: func(_ *Job) {
+			onJobDoneCalled.Store(true)
+		},
+	})
+
+	job := makeJob(t, "running")
+	p.Process(job)
+
+	waitUntil(t, func() bool {
+		p.busyMu.Lock()
+		b := p.busy && p.currentJobID == "running"
+		p.busyMu.Unlock()
+		return b
+	}, 2*time.Second, "worker to be busy on running job")
+
+	removed := p.Cancel("running")
+	if !removed {
+		t.Error("Cancel returned false for in-progress job, want true")
+	}
+
+	// The blocker stage must observe ctx cancellation and return promptly,
+	// without the test ever closing `block`.
+	waitUntil(t, func() bool {
+		return blocker.CallCount() > 0
+	}, 2*time.Second, "blocker stage to observe cancellation and return")
+
+	calls := blocker.Calls()
+	if len(calls) != 1 || calls[0] != "blocker/cancelled" {
+		t.Errorf("blocker calls = %v, want [blocker/cancelled]", calls)
+	}
+
+	waitUntil(t, func() bool {
+		p.busyMu.Lock()
+		busy := p.busy
+		p.busyMu.Unlock()
+		return !busy
+	}, 2*time.Second, "worker to become idle after cancelled job")
+
+	if onJobDoneCalled.Load() {
+		t.Error("OnJobDone fired for a job cancelled mid-processing; it should be dropped silently")
+	}
+}
+
 // Test 8: OnJobDone fires exactly once per job with full StageLog.
 func TestOnJobDoneFiredOnce(t *testing.T) {
 	s1 := newRecordStage("a")
