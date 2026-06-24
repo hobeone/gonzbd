@@ -2,7 +2,6 @@ package postproc
 
 import (
 	"context"
-	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -64,9 +63,7 @@ func (s *SampleCleanupStage) Run(ctx context.Context, job *Job) error {
 
 	root, err := os.OpenRoot(job.DownloadDir)
 	if err != nil {
-		log.Warn("sample cleanup failed to open root", "dir", job.DownloadDir, "err", err)
-		job.OutputLines = append(job.OutputLines,
-			fmt.Sprintf("open root %s: %v", job.DownloadDir, err))
+		logf(ctx, log, job, slog.LevelWarn, "open root %s: %v", job.DownloadDir, err)
 		return nil
 	}
 	defer root.Close() //nolint:errcheck // read-only close
@@ -87,9 +84,7 @@ func (s *SampleCleanupStage) Run(ctx context.Context, job *Job) error {
 		return nil
 	})
 	if walkErr != nil {
-		log.Warn("sample cleanup walk failed", "dir", job.DownloadDir, "err", walkErr)
-		job.OutputLines = append(job.OutputLines,
-			fmt.Sprintf("walk %s: %v", job.DownloadDir, walkErr))
+		logf(ctx, log, job, slog.LevelWarn, "walk %s: %v", job.DownloadDir, walkErr)
 		return nil
 	}
 
@@ -100,11 +95,9 @@ func (s *SampleCleanupStage) Run(ctx context.Context, job *Job) error {
 	if len(samples) >= totalFiles {
 		// Every file looks like a sample — refuse to wipe the whole
 		// release. Matches Python's "false-positive" branch.
-		log.Info("skipping sample cleanup: every file matches sample pattern",
-			"dir", job.DownloadDir, "files", totalFiles)
-		job.OutputLines = append(job.OutputLines,
-			fmt.Sprintf("sample cleanup skipped: %d/%d files match (false positive guard)",
-				len(samples), totalFiles))
+		logf(ctx, log, job, slog.LevelInfo,
+			"sample cleanup skipped: %d/%d files match (false positive guard)",
+			len(samples), totalFiles)
 		return nil
 	}
 
@@ -114,13 +107,10 @@ func (s *SampleCleanupStage) Run(ctx context.Context, job *Job) error {
 		}
 		absPath := filepath.Join(job.DownloadDir, p)
 		if err := root.Remove(p); err != nil {
-			log.Warn("failed to remove sample", "path", absPath, "err", err)
-			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("remove %s: %v", absPath, err))
+			logf(ctx, log, job, slog.LevelWarn, "remove %s: %v", absPath, err)
 			continue
 		}
-		log.Info("removed sample file", "path", absPath)
-		job.OutputLines = append(job.OutputLines, fmt.Sprintf("removed sample %s", absPath))
+		logf(ctx, log, job, slog.LevelInfo, "removed sample %s", absPath)
 	}
 	return nil
 }

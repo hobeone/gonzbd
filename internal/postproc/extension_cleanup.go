@@ -2,7 +2,6 @@ package postproc
 
 import (
 	"context"
-	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -81,9 +80,7 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 
 	root, err := os.OpenRoot(job.DownloadDir)
 	if err != nil {
-		log.Warn("extension cleanup failed to open root", "dir", job.DownloadDir, "err", err)
-		job.OutputLines = append(job.OutputLines,
-			fmt.Sprintf("open root %s: %v", job.DownloadDir, err))
+		logf(ctx, log, job, slog.LevelWarn, "open root %s: %v", job.DownloadDir, err)
 		return nil
 	}
 	defer root.Close() //nolint:errcheck // read-only close
@@ -122,21 +119,15 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 		}
 
 		if err := root.Remove(path); err != nil {
-			log.Warn("failed to remove file", "path", absPath, "err", err)
-			job.OutputLines = append(job.OutputLines,
-				fmt.Sprintf("remove %s: %v", absPath, err))
+			logf(ctx, log, job, slog.LevelWarn, "remove %s: %v", absPath, err)
 			return nil
 		}
 		removed++
-		log.Info("removed unwanted file", "path", absPath, "ext", ext)
-		job.OutputLines = append(job.OutputLines,
-			fmt.Sprintf("removed %s (ext=%s)", filepath.Base(absPath), ext))
+		logf(ctx, log, job, slog.LevelInfo, "removed %s (ext=%s)", filepath.Base(absPath), ext)
 		return nil
 	})
 	if walkErr != nil {
-		log.Warn("extension cleanup walk failed", "dir", job.DownloadDir, "err", walkErr)
-		job.OutputLines = append(job.OutputLines,
-			fmt.Sprintf("walk %s: %v", job.DownloadDir, walkErr))
+		logf(ctx, log, job, slog.LevelWarn, "walk %s: %v", job.DownloadDir, walkErr)
 		return nil
 	}
 
@@ -144,7 +135,7 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 	cleanupEmptyDirs(root)
 
 	if removed > 0 {
-		log.Info("extension cleanup complete", "removed", removed)
+		logf(ctx, log, job, slog.LevelInfo, "extension cleanup complete: removed %d file(s)", removed)
 	}
 	return nil
 }
