@@ -119,9 +119,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	quickCheckFoundProblem := job.QuickCheckRan && !job.QuickCheckPassed
 	if len(job.DirectUnpackSets) > 0 && len(job.DirectUnpackFailures) == 0 && len(job.DirectUnpackSkipped) == 0 &&
 		!quickCheckFoundProblem {
-		logf(ctx, log, job, slog.LevelInfo, "Direct Unpack successfully extracted all sets — skipping par2 repair")
-		job.OutputLines = append(job.OutputLines,
-			"[repair] Skipped: Direct Unpack successfully extracted all archives during download")
+		logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: Direct Unpack successfully extracted all archives during download")
 		return nil
 	}
 
@@ -130,9 +128,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	// healthy job. Par2 cleanup is handled by the separate par2_cleanup
 	// stage that runs after unpack.
 	if job.QuickCheckPassed {
-		logf(ctx, log, job, slog.LevelInfo, "QuickCheck verified all CRCs — skipping par2 repair")
-		job.OutputLines = append(job.OutputLines,
-			"[repair] Skipped: QuickCheck already verified all file CRCs")
+		logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: QuickCheck already verified all file CRCs")
 		return nil
 	}
 
@@ -146,8 +142,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 
 	vs := NewVerifiedSets(job.DownloadDir)
 	if vs.AllVerified() {
-		logf(ctx, log, job, slog.LevelInfo, "All par2 sets previously verified, skipping repair")
-		job.OutputLines = append(job.OutputLines, "[repair] All sets previously verified — skipping")
+		logf(ctx, log, job, slog.LevelInfo, "[repair] All sets previously verified — skipping")
 		return nil
 	}
 
@@ -198,9 +193,7 @@ func (s *RepairStage) processPar2Set(
 		return nil
 	}
 	if vs.IsVerified(set.Name) {
-		logf(ctx, log, job, slog.LevelInfo, "Skipping previously verified set %q", set.Name)
-		job.OutputLines = append(job.OutputLines,
-			fmt.Sprintf("[repair] Skipping previously verified set: %s", set.Name))
+		logf(ctx, log, job, slog.LevelInfo, "[repair] Skipping previously verified set: %s", set.Name)
 		return nil
 	}
 
