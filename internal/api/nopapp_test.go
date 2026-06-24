@@ -22,8 +22,6 @@ func TestNopAppCoverage(t *testing.T) {
 	app.PauseDownloads()
 	app.ResumeDownloads()
 	app.DisconnectAll()
-	app.PausePostProcessor()
-	app.ResumePostProcessor()
 	app.ReloadPostProcOptions(config.PostProcConfig{}, "/tmp/scripts")
 	app.ReloadDownloadOptions(config.DownloadConfig{})
 	app.ReloadGeneralOptions(config.GeneralConfig{})

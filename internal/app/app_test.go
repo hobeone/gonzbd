@@ -419,9 +419,13 @@ func TestRetryHistoryJob(t *testing.T) {
 		t.Fatalf("queue.SaveJob: %v", err)
 	}
 
-	// Pause post-processing so we can verify the state before it finishes again
-	application.PausePostProcessor()
-	defer application.ResumePostProcessor()
+	// Pause downloads so the retried job sits at Queued long enough to
+	// inspect without racing the downloader/post-processor pipeline. This
+	// freezes the job strictly earlier than a post-processing pause would
+	// (before MarkJobStarted/RecordDownload ever run), so the status is
+	// deterministically Queued rather than "maybe further along."
+	application.PauseDownloads()
+	defer application.ResumeDownloads()
 
 	// 2. Trigger Retry
 	if err := application.RetryHistoryJob(ctx, jobID); err != nil {
@@ -433,11 +437,8 @@ func TestRetryHistoryJob(t *testing.T) {
 		t.Errorf("Queue length = %d, want 1", application.Queue().Len())
 	}
 	status, _ := application.Queue().GetJobStatus(jobID)
-	// The job should be in an active state. The mock server returns 430
-	// instantly, so the job may already have progressed from Queued through
-	// Downloading to Verifying (post-processor is paused).
-	if status != constants.StatusQueued && status != constants.StatusDownloading && status != constants.StatusVerifying {
-		t.Errorf("Status = %q, want Queued, Downloading, or Verifying", status)
+	if status != constants.StatusQueued {
+		t.Errorf("Status = %q, want Queued", status)
 	}
 
 	// 4. Verify history entry is gone
@@ -464,7 +465,7 @@ func TestRetryHistoryJob(t *testing.T) {
 	}
 
 	// 5. Resume and wait for it to finish to be clean
-	application.ResumePostProcessor()
+	application.ResumeDownloads()
 	select {
 	case <-application.PostProcComplete():
 	case <-time.After(5 * time.Second):

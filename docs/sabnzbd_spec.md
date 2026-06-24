@@ -839,8 +839,8 @@ Error:
 |------|-----------|----------|-------------|
 | `pause` | | status | Pause downloader |
 | `resume` | | status | Resume downloader |
-| `pause_pp` | | status | Pause post-processor |
-| `resume_pp` | | status | Resume post-processor |
+| `pause_pp` | | 501 | Not implemented. gonzbd has no pause/resume control for post-processing independent of download pause; use `pause`/`resume` instead. Registered (not 404) for SABnzbd-API client compatibility. |
+| `resume_pp` | | 501 | Not implemented. See `pause_pp`. |
 | `disconnect` | | status | Force disconnect all NNTP |
 | `speedlimit` | `value=bytes_or_perc` | status | Set speed limit (top-level alias for `config&name=speedlimit`; same handler). Plain integers are KiB/s. Admin level. |
 
