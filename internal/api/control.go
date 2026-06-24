@@ -66,24 +66,17 @@ func (s *Server) modeDisconnect(w http.ResponseWriter, r *http.Request) {
 	respondStatus(w)
 }
 
-// modePausePP pauses the post-processing pipeline.
+// modePausePP and modeResumePP are not supported: gonzbd's post-processing
+// pipeline has no pause/resume control independent of download pause (see
+// docs/sabnzbd_spec.md). The modes stay registered rather than 404ing so
+// SABnzbd-API clients that probe them (Sonarr, Radarr, NZB360-style tools)
+// get a clear "not implemented" instead of treating a missing route as a
+// connectivity failure. Mirrors the nil-shutdownFunc pattern in
+// modeShutdown.
 func (s *Server) modePausePP(w http.ResponseWriter, r *http.Request) {
-	if s.app == nil {
-		s.respondError(w, http.StatusInternalServerError, "app not wired")
-		return
-	}
-	s.app.PausePostProcessor()
-	s.log.Info("post-processing paused")
-	respondStatus(w)
+	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: pause_pp")
 }
 
-// modeResumePP resumes the post-processing pipeline.
 func (s *Server) modeResumePP(w http.ResponseWriter, r *http.Request) {
-	if s.app == nil {
-		s.respondError(w, http.StatusInternalServerError, "app not wired")
-		return
-	}
-	s.app.ResumePostProcessor()
-	s.log.Info("post-processing resumed")
-	respondStatus(w)
+	s.respondError(w, http.StatusNotImplemented, "not implemented in this build: resume_pp")
 }

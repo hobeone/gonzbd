@@ -1199,16 +1199,6 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	}
 }
 
-// PausePostProcessor pauses the post-processing pipeline.
-func (app *Application) PausePostProcessor() {
-	app.postProcessor.Pause()
-}
-
-// ResumePostProcessor resumes the post-processing pipeline.
-func (app *Application) ResumePostProcessor() {
-	app.postProcessor.Resume()
-}
-
 // SetQuickCheckEnabled enables or disables the CRC pre-verify pass at runtime
 // without restarting. Takes effect for the next job that enters post-processing.
 

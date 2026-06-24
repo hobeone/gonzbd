@@ -22,10 +22,10 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	h := newScenarioHarness(t)
 	h.Start()
 
-	// Pause post-proc so the requeued job sits in the queue long enough
-	// to be inspected without racing the finaliser.
-	h.app.PausePostProcessor()
-	t.Cleanup(h.app.ResumePostProcessor)
+	// Pause downloads so the requeued job sits at Queued long enough to be
+	// inspected without racing the downloader/post-processor pipeline.
+	h.app.PauseDownloads()
+	t.Cleanup(h.app.ResumeDownloads)
 
 	const jobID = "retry-reset-00000001"
 
@@ -80,9 +80,7 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	if len(snap.ServerStats) != 0 {
 		t.Errorf("ServerStats = %v, want empty", snap.ServerStats)
 	}
-	// The mock server returns 430 instantly, so the job may have progressed
-	// from Queued through Downloading to Verifying before we check.
-	if snap.Status != constants.StatusQueued && snap.Status != constants.StatusDownloading && snap.Status != constants.StatusVerifying {
-		t.Errorf("Status = %q, want Queued, Downloading, or Verifying", snap.Status)
+	if snap.Status != constants.StatusQueued {
+		t.Errorf("Status = %q, want Queued", snap.Status)
 	}
 }
