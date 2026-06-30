@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 
 	"github.com/hobeone/gonzbd/internal/par2"
@@ -70,12 +71,24 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	var cleaned int
 	for _, set := range sets {
 		if set.MainFile != "" {
-			_ = os.Remove(set.MainFile)
-			cleaned++
+			if err := os.Remove(set.MainFile); err == nil {
+				line := "Deleted par2 file: " + filepath.Base(set.MainFile)
+				job.OutputLines = append(job.OutputLines, "[par2_cleanup] "+line)
+				if job.OnOutput != nil {
+					job.OnOutput("par2_cleanup", line)
+				}
+				cleaned++
+			}
 		}
 		for _, ef := range set.ExtraFiles {
-			_ = os.Remove(ef)
-			cleaned++
+			if err := os.Remove(ef); err == nil {
+				line := "Deleted par2 file: " + filepath.Base(ef)
+				job.OutputLines = append(job.OutputLines, "[par2_cleanup] "+line)
+				if job.OnOutput != nil {
+					job.OnOutput("par2_cleanup", line)
+				}
+				cleaned++
+			}
 		}
 	}
 	if cleaned > 0 {
@@ -87,8 +100,15 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	// These orphaned backups confuse later stages (deobfuscate sees
 	// RAR magic bytes in a ".1" file and incorrectly appends ".rar").
 	backups := cleanupPar2Backups(job.DownloadDir, log)
-	if backups > 0 {
-		logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d par2 backup file(s)", backups)
+	for _, backup := range backups {
+		line := "Deleted par2 backup file: " + filepath.Base(backup)
+		job.OutputLines = append(job.OutputLines, "[par2_cleanup] "+line)
+		if job.OnOutput != nil {
+			job.OnOutput("par2_cleanup", line)
+		}
+	}
+	if len(backups) > 0 {
+		logf(ctx, log, job, slog.LevelInfo, "Cleaned up %d par2 backup file(s)", len(backups))
 	}
 
 	return nil
