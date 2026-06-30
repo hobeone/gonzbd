@@ -10,7 +10,7 @@ require (
 	github.com/hobeone/rarengine v1.0.5
 	github.com/lmittmann/tint v1.1.3
 	github.com/playwright-community/playwright-go v0.5700.1
-	github.com/pressly/goose/v3 v3.27.1
+	github.com/pressly/goose/v3 v3.27.2
 	golang.org/x/sys v0.46.0
 	golang.org/x/text v0.38.0
 	golang.org/x/time v0.15.0
