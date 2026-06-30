@@ -393,10 +393,10 @@ var par2BackupRe = regexp.MustCompile(`(?i)\.(rar|r\d+|7z|zip|mkv|avi|mp4|flac|m
 // original to "movie.rar.1" and writes the repaired data to "movie.rar".
 // This function finds and removes those ".N" backup files, but only when
 // the corresponding repaired file exists (safety check).
-func cleanupPar2Backups(dir string, log *slog.Logger) int {
+func cleanupPar2Backups(dir string, log *slog.Logger) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return 0
+		return nil
 	}
 
 	// Build a set of existing filenames for the safety check.
@@ -405,7 +405,7 @@ func cleanupPar2Backups(dir string, log *slog.Logger) int {
 		existing[e.Name()] = true
 	}
 
-	var removed int
+	var removed []string
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -433,7 +433,7 @@ func cleanupPar2Backups(dir string, log *slog.Logger) int {
 			continue
 		}
 		log.Info("repair: removed par2 backup", "file", name)
-		removed++
+		removed = append(removed, name)
 	}
 	return removed
 }

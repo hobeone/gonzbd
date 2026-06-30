@@ -188,6 +188,12 @@ func TestPar2CleanupStage_RunsAfterSuccessfulUnpack(t *testing.T) {
 	// Verify OutputLines logs.
 	foundPar2Cleaned := false
 	foundBackupsCleaned := false
+	expectedLogs := map[string]bool{
+		"[par2_cleanup] Deleted par2 file: movie.par2":         false,
+		"[par2_cleanup] Deleted par2 file: movie.vol00+1.par2": false,
+		"[par2_cleanup] Deleted par2 file: movie.vol01+2.par2": false,
+		"[par2_cleanup] Deleted par2 backup file: movie.mkv.1": false,
+	}
 	for _, line := range job.OutputLines {
 		if line == "Cleaned up 3 par2 file(s)" {
 			foundPar2Cleaned = true
@@ -195,12 +201,20 @@ func TestPar2CleanupStage_RunsAfterSuccessfulUnpack(t *testing.T) {
 		if line == "Cleaned up 1 par2 backup file(s)" {
 			foundBackupsCleaned = true
 		}
+		if _, expected := expectedLogs[line]; expected {
+			expectedLogs[line] = true
+		}
 	}
 	if !foundPar2Cleaned {
 		t.Errorf("expected 'Cleaned up 3 par2 file(s)' in output, got: %v", job.OutputLines)
 	}
 	if !foundBackupsCleaned {
 		t.Errorf("expected 'Cleaned up 1 par2 backup file(s)' in output, got: %v", job.OutputLines)
+	}
+	for expectedLine, found := range expectedLogs {
+		if !found {
+			t.Errorf("expected log line %q not found in: %v", expectedLine, job.OutputLines)
+		}
 	}
 }
 

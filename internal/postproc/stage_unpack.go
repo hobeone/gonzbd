@@ -427,8 +427,14 @@ func (u *UnpackStage) cleanupArchives(ctx context.Context, log *slog.Logger, job
 		var cleaned int
 		for _, a := range allSuccessful {
 			for _, part := range a.Parts {
-				_ = os.Remove(part)
-				cleaned++
+				if err := os.Remove(part); err == nil {
+					line := "Deleted archive file: " + filepath.Base(part)
+					job.OutputLines = append(job.OutputLines, "[unpack] "+line)
+					if job.OnOutput != nil {
+						job.OnOutput("unpack", line)
+					}
+					cleaned++
+				}
 			}
 		}
 		if cleaned > 0 {

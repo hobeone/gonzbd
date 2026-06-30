@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -106,6 +107,14 @@ func TestUnpackStage_CleanupDeletesArchiveParts(t *testing.T) {
 	job, dir := stageJob(t)
 	rarPath := copyToDir(t, unpackFixture("single_rar5.rar"), dir)
 
+	var output []string
+	var mu sync.Mutex
+	job.OnOutput = func(tool, line string) {
+		mu.Lock()
+		defer mu.Unlock()
+		output = append(output, fmt.Sprintf("[%s] %s", tool, line))
+	}
+
 	s := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, true /* cleanup */)
 	s.SetEnabled(true)
 
@@ -114,6 +123,30 @@ func TestUnpackStage_CleanupDeletesArchiveParts(t *testing.T) {
 	}
 	if _, err := os.Stat(rarPath); !os.IsNotExist(err) {
 		t.Errorf("archive still exists after cleanup: want removed, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, line := range output {
+		if strings.Contains(line, "[unpack] Deleted archive file: single_rar5.rar") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected deleted archive file log, got: %v", output)
+	}
+
+	foundSummary := false
+	for _, line := range job.OutputLines {
+		if line == "Cleaned up 1 archive file(s)" {
+			foundSummary = true
+			break
+		}
+	}
+	if !foundSummary {
+		t.Errorf("expected 'Cleaned up 1 archive file(s)' in job.OutputLines, got: %v", job.OutputLines)
 	}
 }
 
