@@ -100,6 +100,7 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 
 	log.Info("7zip: starting extraction",
 		"binary", bin,
+		"args", formatArgs(args, pwFlag),
 		"archive", archive.MainFile,
 		"outDir", outDir,
 		"cmdline", cmdLine,
