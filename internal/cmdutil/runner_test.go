@@ -109,12 +109,47 @@ func TestValidatePriorityArgs(t *testing.T) {
 		{"dollar injection", "nice", "-n $HOME", true},
 		{"ampersand", "nice", "-n 15 &", true},
 		{"parentheses", "nice", "(-n 15)", true},
+		{"double quote injection", "nice", "-n \"15\"", true},
+		{"single quote injection", "nice", "-n '15'", true},
+		{"slash character", "nice", "-n 15 /bin/sh", true},
+		{"backslash character", "nice", "-n 15 \\", true},
+		{"newline character", "nice", "-n 15\nrm -rf /", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidatePriorityArgs(tt.kind, tt.args)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidatePriorityArgs(%q, %q) error = %v, wantErr %v", tt.kind, tt.args, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildPriorityArgs_IgnoreMalformed(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  CmdConfig
+		want []string
+	}{
+		{"valid nice", CmdConfig{Nice: "-n 15"}, []string{"nice", "-n", "15"}},
+		{"valid ionice", CmdConfig{Ionice: "-c2 -n4"}, []string{"ionice", "-c2", "-n4"}},
+		{"valid both", CmdConfig{Nice: "-n 15", Ionice: "-c2 -n4"}, []string{"nice", "-n", "15", "ionice", "-c2", "-n4"}},
+		{"malformed nice semicolon ignored", CmdConfig{Nice: "-n 15; rm -rf /"}, nil},
+		{"malformed ionice semicolon ignored", CmdConfig{Ionice: "-c2; cat /etc/passwd"}, nil},
+		{"malformed nice quotes ignored", CmdConfig{Nice: "-n \"15\""}, nil},
+		{"one valid one malformed nice", CmdConfig{Nice: "-n 15; rm -rf /", Ionice: "-c2 -n4"}, []string{"ionice", "-c2", "-n4"}},
+		{"one valid one malformed ionice", CmdConfig{Nice: "-n 15", Ionice: "-c2 | cat"}, []string{"nice", "-n", "15"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildPriorityArgs(tt.cfg)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v (len %d), want %v (len %d)", got, len(got), tt.want, len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("got[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
 			}
 		})
 	}

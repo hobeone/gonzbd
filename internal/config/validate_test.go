@@ -340,6 +340,50 @@ func TestPostProcConfig_ValidateDirect(t *testing.T) {
 	}
 }
 
+func TestPostProcConfig_ValidatePriorityWrapper(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		nice    string
+		ionice  string
+		wantErr bool
+	}{
+		{"valid nice", "-n 15", "", false},
+		{"valid ionice", "", "-c2 -n4", false},
+		{"valid both", "-n 15", "-c2 -n4", false},
+		{"nice semicolon injection", "-n 15; rm -rf /", "", true},
+		{"ionice semicolon injection", "", "-c2; rm -rf /", true},
+		{"nice double quote injection", "-n \"15\"", "", true},
+		{"nice backtick injection", "-n `whoami`", "", true},
+		{"ionice pipe injection", "-c2 | cat", "", true},
+		{"nice dollar injection", "-n $HOME", "", true},
+		{"ionice ampersand", "-c2 &", "", true},
+		{"nice parens", "(-n 15)", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			p := PostProcConfig{
+				Nice:   tt.nice,
+				Ionice: tt.ionice,
+			}
+			err := p.validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("PostProcConfig.validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+
+	t.Run("top level Config.Validate rejects injection", func(t *testing.T) {
+		t.Parallel()
+		c := &Config{}
+		c.PostProc.Nice = "-n 15; rm -rf /"
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "postproc") {
+			t.Errorf("expected Config.Validate to return postproc error for nice injection, got %v", err)
+		}
+	})
+}
+
 func TestServerConfig_ValidateDirect(t *testing.T) {
 	t.Parallel()
 	s := ServerConfig{
