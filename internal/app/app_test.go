@@ -1493,3 +1493,73 @@ func TestApplication_ShutdownWithOptions(t *testing.T) {
 		t.Errorf("Shutdown: %v", err)
 	}
 }
+
+func TestApp_EventLoopStarvation(t *testing.T) {
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+
+	application, err := app.New(cfg, nil)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer application.Shutdown()
+
+	// Read test RAR archive from unpack testdata to simulate DirectUnpack blocking
+	rarData, err := os.ReadFile("../unpack/testdata/multi_new.part01.rar")
+	if err != nil {
+		t.Fatalf("failed to read test archive: %v", err)
+	}
+	rarPath := filepath.Join(dl, "multi_new.part01.rar")
+	if err := os.WriteFile(rarPath, rarData, 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	// 1. Add job1 (will use DirectUnpack and block on vol 2)
+	parsed1 := nzb.NZB{Files: []nzb.File{{Subject: "multi_new.part01.rar", Bytes: 1024}}}
+	job1, _ := queue.NewJob(&parsed1, queue.AddOptions{Name: "job1-du", PP: 3}, fsutil.SanitizeOptions{})
+	if err := application.Queue().Add(job1); err != nil {
+		t.Fatalf("add job1: %v", err)
+	}
+	_ = application.Queue().SetStatus(job1.ID, constants.StatusDownloading)
+
+	du := directunpack.New(slog.Default(), job1.ID, dl, comp, directunpack.Options{})
+	du.SetAllFilenames([]string{"multi_new.part01.rar", "multi_new.part02.rar"})
+	du.Add(ctx, "multi_new.part01.rar", rarPath)
+	application.InjectDirectUnpacker(job1.ID, du)
+	defer du.Abort()
+
+	// 2. Add job2 (normal job without DirectUnpack)
+	parsed2 := nzb.NZB{Files: []nzb.File{{Subject: "normal.txt", Bytes: 100}}}
+	job2, _ := queue.NewJob(&parsed2, queue.AddOptions{Name: "job2-normal", PP: 3}, fsutil.SanitizeOptions{})
+	if err := application.Queue().Add(job2); err != nil {
+		t.Fatalf("add job2: %v", err)
+	}
+	_ = application.Queue().SetStatus(job2.ID, constants.StatusDownloading)
+
+	// Send completion events: job1 first, then job2 immediately after.
+	// In unpatched code, watchCompletions blocks synchronously on job1's du.Wait(),
+	// preventing it from ever processing job2's completion event.
+	application.SendFileComplete(app.FileComplete{JobID: job1.ID, FileIdx: 0})
+	application.SendFileComplete(app.FileComplete{JobID: job2.ID, FileIdx: 0})
+
+	// Assert that job2 completes without being starved by job1's DirectUnpack.
+	select {
+	case jc := <-application.JobComplete():
+		if jc.JobID == job1.ID {
+			t.Fatalf("job1 completed prematurely; expected du.Wait() to block on vol 2")
+		}
+		if jc.JobID != job2.ID {
+			t.Fatalf("expected job2 to complete, got job %q", jc.JobID)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("completion event loop starved: job2 did not complete because watchCompletions blocked on job1's du.Wait()")
+	}
+}
