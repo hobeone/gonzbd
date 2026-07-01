@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -1467,6 +1468,87 @@ func TestCancelJob_BlocksUntilFileClosedAndRemoved(t *testing.T) {
 
 	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
 		t.Fatalf("target file should have been removed by CancelJob, stat err = %v", err)
+	}
+}
+
+func TestAssembler_StopWaitGroup(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	const (
+		numFiles     = 5
+		partsPerFile = 10
+	)
+	for fi := range numFiles {
+		registerFile(t, dir, files, "job1", fi, partsPerFile)
+	}
+
+	opts := makeOpts(dir, files)
+	opts.QueueSize = 2
+
+	var completions atomic.Int32
+	opts.OnFileComplete = func(_ string, _ int, _ uint32) {
+		completions.Add(1)
+	}
+
+	a := New(opts, nil)
+
+	// Verify that the assembler is using sync.WaitGroup (wg) and not an atomic spin loop (inFlight)
+	val := reflect.ValueOf(a).Elem()
+	if !val.FieldByName("wg").IsValid() {
+		t.Fatalf("Assembler must use wg (sync.WaitGroup) instead of inFlight atomic spin loop for clean synchronization")
+	}
+	if val.FieldByName("inFlight").IsValid() {
+		t.Fatalf("Assembler must not have inFlight atomic counter (should be replaced by wg)")
+	}
+	if val.FieldByName("workerDone").IsValid() {
+		t.Fatalf("Assembler must not have workerDone channel (worker should be tracked by wg)")
+	}
+
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Test concurrent in-flight assemblies being waited on during Stop().
+	const workers = 10
+	var senderWg sync.WaitGroup
+	senderWg.Add(workers)
+
+	for w := range workers {
+		go func() {
+			defer senderWg.Done()
+			for part := range partsPerFile {
+				req := WriteRequest{
+					JobID:   "job1",
+					FileIdx: w % numFiles,
+					Offset:  int64(part * 4),
+					Data:    []byte("DATA"),
+				}
+				_ = a.WriteArticle(t.Context(), req)
+			}
+		}()
+	}
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- a.Stop()
+	}()
+
+	senderWg.Wait()
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Stop() to return (possible deadlock)")
+	}
+
+	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("TEST")}
+	if err := a.WriteArticle(t.Context(), req); !errors.Is(err, ErrStopped) {
+		t.Errorf("WriteArticle after Stop() = %v, want ErrStopped", err)
+	}
+	if err := a.CancelJob(t.Context(), "job1"); !errors.Is(err, ErrStopped) {
+		t.Errorf("CancelJob after Stop() = %v, want ErrStopped", err)
 	}
 }
 
