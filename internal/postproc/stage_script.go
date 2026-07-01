@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // ScriptStage executes a user-defined post-processing script after extraction.
@@ -77,13 +80,25 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	log = log.With("component", "postproc/script", "job", job.Queue.ID)
 
 	name := job.Queue.Script
-	if name == "" || name == "None" {
+	if name == "" || strings.EqualFold(name, "none") || strings.EqualFold(name, "default") {
 		logf(ctx, log, job, slog.LevelDebug, "No script configured")
 		return nil
 	}
-	scriptPath := name
-	if scriptDir != "" && !filepath.IsAbs(name) {
-		scriptPath = filepath.Join(scriptDir, name)
+	if scriptDir == "" {
+		err := fmt.Errorf("script %q configured on job but no script_dir is set", name)
+		logf(ctx, log, job, slog.LevelWarn, "Error: %v", err)
+		return err
+	}
+	if filepath.IsAbs(name) {
+		err := fmt.Errorf("script path %q is absolute, which is not allowed; must be relative to script_dir", name)
+		logf(ctx, log, job, slog.LevelWarn, "Error: %v", err)
+		return err
+	}
+	scriptPath := filepath.Join(scriptDir, name)
+	if !fsutil.PathWithin(scriptDir, scriptPath) {
+		err := fmt.Errorf("script path %q traverses outside script_dir %q", name, scriptDir)
+		logf(ctx, log, job, slog.LevelWarn, "Error: %v", err)
+		return err
 	}
 
 	// SABnzbd script status codes (§6.5):

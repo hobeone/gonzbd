@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1737,5 +1738,70 @@ func TestQueueList_WithDirectUnpackStatus(t *testing.T) {
 	}
 	if !slotDetail.DirectUnpack.Active {
 		t.Error("expected direct_unpack.active to be true in detail response")
+	}
+}
+
+// --- change_script and script parameter sanitization ---
+
+func TestQueueChangeScript_Sanitization(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		input      string
+		wantScript string
+	}{
+		{"PathTraversal", "../../../../etc/passwd", "passwd"},
+		{"AbsolutePath", "/bin/malicious.sh", "malicious.sh"},
+		{"WindowsTraversal", "..\\..\\windows\\win.ini", "win.ini"},
+		{"SimpleScript", "sonarr.sh", "sonarr.sh"},
+		{"NoneCaseInsensitive", "none", "none"},
+		{"DefaultCaseInsensitive", "Default", "Default"},
+		{"Empty", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, q := testQueueServer(t)
+			job := addTestJob(t, q, queue.AddOptions{Filename: "test.nzb"})
+
+			urlStr := "/api?mode=queue&name=change_script&value=" + job.ID + "&value2=" + url.QueryEscape(tt.input) + "&apikey=" + testAPIKey
+			rr := apiGet(t, s.Handler(), urlStr)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d; want 200", rr.Code)
+			}
+
+			got, err := q.Get(job.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.Script != tt.wantScript {
+				t.Errorf("Script = %q; want %q", got.Script, tt.wantScript)
+			}
+		})
+	}
+}
+
+func TestQueueAddLocalFile_Sanitization(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+
+	dir := t.TempDir()
+	nzbPath := filepath.Join(dir, "local.nzb")
+	if err := os.WriteFile(nzbPath, makeTestNZB(t), 0o600); err != nil {
+		t.Fatalf("write NZB: %v", err)
+	}
+
+	urlStr := "/api?mode=addlocalfile&name=" + url.QueryEscape(nzbPath) + "&script=" + url.QueryEscape("../../../../etc/passwd") + "&apikey=" + testAPIKey
+	rr := apiGet(t, s.Handler(), urlStr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	if q.Len() != 1 {
+		t.Fatalf("queue len = %d; want 1", q.Len())
+	}
+	jobs := q.Snapshot()
+	if jobs[0].Script != "passwd" {
+		t.Errorf("Script = %q; want passwd", jobs[0].Script)
 	}
 }
