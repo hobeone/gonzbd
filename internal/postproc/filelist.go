@@ -111,7 +111,7 @@ func buildDownloadFileList(job *Job) []string {
 // the lines, the total number of files found (directories are not counted),
 // and an error if the top-level directory itself can't be read. Errors
 // reading a subdirectory are reported inline rather than aborting the walk.
-func buildDirTree(dir, indent string) ([]string, int, error) {
+func buildDirTree(dir, indent string) (out []string, count int, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, 0, err
