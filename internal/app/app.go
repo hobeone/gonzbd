@@ -1153,10 +1153,9 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 		finalDir = filepath.Join(completeDir, catDir)
 	}
 	// Collect DirectUnpack results (if any) before enqueuing post-processing.
-	// Wait() blocks until any in-progress extraction finishes.
-	var duResults map[string]directunpack.SuccessSet
-	var duFailures map[string]directunpack.FailedSet
-	var duSkipped map[string]directunpack.SkippedSet
+	// When du != nil, Wait() is executed inside an asynchronous worker
+	// goroutine on app.wg so the completion event consumer (watchCompletions)
+	// never blocks waiting for disk unpacking to finish.
 	app.mu.Lock()
 	du := app.directUnpackers[job.ID]
 	if du != nil {
@@ -1164,39 +1163,47 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	}
 	delete(app.directUnpackers, job.ID)
 	app.mu.Unlock()
-	if du != nil {
-		du.Wait()
-		duResults = du.Results()
-		duFailures = du.Failures()
-		duSkipped = du.Skipped()
-		if len(duResults) > 0 {
-			app.log.Info("directunpack: passing results to postproc",
-				"job", job.ID, "sets", len(duResults))
-		}
-		if len(duFailures) > 0 {
-			app.log.Warn("directunpack: passing failures to postproc",
-				"job", job.ID, "failed_sets", len(duFailures))
-		}
-		if len(duSkipped) > 0 {
-			app.log.Info("directunpack: passing skipped sets to postproc",
-				"job", job.ID, "skipped_sets", len(duSkipped))
+
+	dispatch := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
+		app.postProcessor.Process(&postproc.Job{
+			Queue:                job,
+			DownloadDir:          downloadDir,
+			FinalDir:             finalDir,
+			Sanitize:             sanitize,
+			FailMsg:              failMsg,
+			DirectUnpackSets:     duResults,
+			DirectUnpackFailures: duFailures,
+			DirectUnpackSkipped:  duSkipped,
+		})
+		select {
+		case app.jobComplete <- JobComplete{JobID: job.ID}:
+		default:
 		}
 	}
 
-	app.postProcessor.Process(&postproc.Job{
-		Queue:                job,
-		DownloadDir:          downloadDir,
-		FinalDir:             finalDir,
-		Sanitize:             sanitize,
-		FailMsg:              failMsg,
-		DirectUnpackSets:     duResults,
-		DirectUnpackFailures: duFailures,
-		DirectUnpackSkipped:  duSkipped,
-	})
-	select {
-	case app.jobComplete <- JobComplete{JobID: job.ID}:
-	default:
+	if du != nil {
+		app.wg.Go(func() {
+			du.Wait()
+			duResults := du.Results()
+			duFailures := du.Failures()
+			duSkipped := du.Skipped()
+			if len(duResults) > 0 {
+				app.log.Info("directunpack: passing results to postproc",
+					"job", job.ID, "sets", len(duResults))
+			}
+			if len(duFailures) > 0 {
+				app.log.Warn("directunpack: passing failures to postproc",
+					"job", job.ID, "failed_sets", len(duFailures))
+			}
+			if len(duSkipped) > 0 {
+				app.log.Info("directunpack: passing skipped sets to postproc",
+					"job", job.ID, "skipped_sets", len(duSkipped))
+			}
+			dispatch(duResults, duFailures, duSkipped)
+		})
+		return
 	}
+	dispatch(nil, nil, nil)
 }
 
 // SetQuickCheckEnabled enables or disables the CRC pre-verify pass at runtime
