@@ -324,6 +324,7 @@ func (u *UnpackStage) extractPendingArchives(
 		if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
 			job.UnpackError = true
 			logf(ctx, log, job, slog.LevelWarn, "Error: containment violation after extracting %q: %v", a.Name, cErr)
+			cleanupContainmentViolation(job.DownloadDir, res.ExtractedFiles, log)
 			if *firstErr == nil {
 				*firstErr = fmt.Errorf("unpack %q: containment check: %w", a.Name, cErr)
 			}
@@ -746,6 +747,28 @@ func archiveTypePriority(t unpack.ArchiveType) int {
 		return 2 // then 7z
 	default:
 		return 3
+	}
+}
+
+// cleanupContainmentViolation removes out-of-bounds target files and extracted
+// files from disk immediately when an external subprocess or extraction fails
+// the containment check.
+func cleanupContainmentViolation(outDir string, extractedFiles []string, log *slog.Logger) {
+	for _, f := range extractedFiles {
+		absPath := f
+		if !filepath.IsAbs(f) {
+			absPath = filepath.Join(outDir, f)
+		}
+		if realPath, err := filepath.EvalSymlinks(absPath); err == nil {
+			if !fsutil.PathWithin(outDir, realPath) {
+				if rmErr := os.RemoveAll(realPath); rmErr == nil && log != nil {
+					log.Warn("containment: removed out-of-bounds target file", "target", realPath)
+				}
+			}
+		}
+		if rmErr := os.RemoveAll(absPath); rmErr == nil && log != nil {
+			log.Warn("containment: removed extracted file after containment check failure", "file", absPath)
+		}
 	}
 }
 
