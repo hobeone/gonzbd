@@ -54,24 +54,34 @@ func (b *Broadcaster) Broadcast(event Event) {
 		return
 	}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
+	b.mu.RLock()
 	if len(b.clients) > 0 {
 		b.log.Debug("WebSocket broadcast", "event", event.Type, "clients", len(b.clients))
 	}
 
+	var overflow []*client
 	for c := range b.clients {
 		select {
 		case c.send <- data:
 		default:
-			// Client's buffer is full — close the channel to force the
-			// write loop to exit and the client to reconnect. This
-			// prevents permanent UI desync from silently dropped events.
-			close(c.send)
-			delete(b.clients, c)
-			b.log.Warn("WebSocket client buffer full, disconnecting")
+			overflow = append(overflow, c)
 		}
+	}
+	b.mu.RUnlock()
+
+	if len(overflow) > 0 {
+		b.mu.Lock()
+		for _, c := range overflow {
+			if _, exists := b.clients[c]; exists {
+				// Client's buffer is full — close the channel to force the
+				// write loop to exit and the client to reconnect. This
+				// prevents permanent UI desync from silently dropped events.
+				close(c.send)
+				delete(b.clients, c)
+				b.log.Warn("WebSocket client buffer full, disconnecting")
+			}
+		}
+		b.mu.Unlock()
 	}
 }
 

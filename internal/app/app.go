@@ -1325,7 +1325,7 @@ func WithCheckpointInterval(d time.Duration) func(*Application) {
 }
 
 // WithLifecycleContext returns an option that sets the Application's initial lifecycle context.
-func WithLifecycleContext(ctx context.Context) func(*Application) {
+func WithLifecycleContext(ctx context.Context) func(*Application) { //nocover: trivial functional option setter
 	return func(a *Application) { a.ctx = ctx }
 }
 

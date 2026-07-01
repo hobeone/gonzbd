@@ -152,6 +152,104 @@ func TestBroadcaster_ConcurrentBroadcasts(t *testing.T) {
 	}
 }
 
+func TestBroadcaster_ConcurrentEvents(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ConcurrentRLock", func(t *testing.T) {
+		b := NewBroadcaster(slog.Default())
+		c := &client{send: make(chan []byte, 10)}
+		b.mu.Lock()
+		b.clients[c] = struct{}{}
+		b.mu.Unlock()
+
+		// Hold RLock to simulate an ongoing read operation (e.g. NumClients or another broadcast).
+		b.mu.RLock()
+		defer b.mu.RUnlock()
+
+		done := make(chan struct{})
+		go func() {
+			// If Broadcast attempts to take a full Lock(), this will deadlock/block
+			// until RUnlock is called. Under RLock(), it will succeed immediately.
+			b.Broadcast(Event{Type: "test", Speed: 100})
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Success: read broadcast ran concurrently under RLock without starvation or deadlock.
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("Broadcast blocked while RLock was held, indicating it requires full Lock() instead of RLock()")
+		}
+	})
+
+	t.Run("HighLoadConcurrentBroadcastAndSubscribe", func(t *testing.T) {
+		b := NewBroadcaster(slog.New(slog.DiscardHandler))
+
+		var wg sync.WaitGroup
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		// 10 goroutines continuously subscribing and unsubscribing.
+		for range 10 {
+			wg.Go(func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						c := &client{send: make(chan []byte, 5)}
+						b.mu.Lock()
+						b.clients[c] = struct{}{}
+						b.mu.Unlock()
+
+						time.Sleep(2 * time.Millisecond)
+
+						b.mu.Lock()
+						delete(b.clients, c)
+						b.mu.Unlock()
+					}
+				}
+			})
+		}
+
+		// 20 goroutines continuously broadcasting under high load.
+		for i := range 20 {
+			wg.Go(func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						b.Broadcast(Event{Type: "high_load", Speed: int64(i)})
+						time.Sleep(1 * time.Millisecond)
+					}
+				}
+			})
+		}
+
+		// 5 goroutines subscribing with small buffers that will intentionally overflow and trigger cleanup.
+		for range 5 {
+			wg.Go(func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						c := &client{send: make(chan []byte, 1)} // small buffer will overflow quickly
+						b.mu.Lock()
+						b.clients[c] = struct{}{}
+						b.mu.Unlock()
+
+						time.Sleep(5 * time.Millisecond)
+					}
+				}
+			})
+		}
+
+		wg.Wait()
+	})
+}
+
 func TestBroadcaster_Handle(t *testing.T) {
 	b := NewBroadcaster(slog.Default())
 
@@ -262,5 +360,52 @@ func TestBroadcaster_HandleClientDisconnect(t *testing.T) {
 	b.mu.RUnlock()
 	if clientCount != 0 {
 		t.Error("expected client to be removed from broadcaster after disconnect")
+	}
+}
+
+type recordHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *recordHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+func (h *recordHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *recordHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *recordHandler) len() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.records)
+}
+
+func TestBroadcaster_DebugLogging(t *testing.T) {
+	t.Parallel()
+
+	rec := &recordHandler{}
+	logger := slog.New(rec)
+	b := NewBroadcaster(logger)
+
+	// Broadcast with 0 clients: should NOT log debug message.
+	b.Broadcast(Event{Type: "no_clients"})
+	if got := rec.len(); got != 0 {
+		t.Errorf("expected 0 log records with no clients, got %d", got)
+	}
+
+	// Add 1 client.
+	c := &client{send: make(chan []byte, 10)}
+	b.mu.Lock()
+	b.clients[c] = struct{}{}
+	b.mu.Unlock()
+
+	// Broadcast with 1 client: should log debug message.
+	b.Broadcast(Event{Type: "with_client"})
+	if got := rec.len(); got != 1 {
+		t.Errorf("expected 1 log record with 1 client, got %d", got)
 	}
 }
