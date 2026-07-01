@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -138,13 +139,7 @@ func TestUnpackStage_CleanupDeletesArchiveParts(t *testing.T) {
 		t.Errorf("expected deleted archive file log, got: %v", output)
 	}
 
-	foundSummary := false
-	for _, line := range job.OutputLines {
-		if line == "Cleaned up 1 archive file(s)" {
-			foundSummary = true
-			break
-		}
-	}
+	foundSummary := slices.Contains(job.OutputLines, "Cleaned up 1 archive file(s)")
 	if !foundSummary {
 		t.Errorf("expected 'Cleaned up 1 archive file(s)' in job.OutputLines, got: %v", job.OutputLines)
 	}

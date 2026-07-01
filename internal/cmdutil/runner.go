@@ -67,13 +67,15 @@ func FormatCmdPrefix(cfg CmdConfig) string {
 
 // buildPriorityArgs returns the nice/ionice prefix arguments for the
 // given config. Used by both BuildCommand and FormatCmdPrefix.
+// Malformed argument strings containing shell metacharacters are ignored
+// to prevent command injection if validation was bypassed.
 func buildPriorityArgs(cfg CmdConfig) []string {
 	var parts []string
-	if cfg.Nice != "" {
+	if cfg.Nice != "" && ValidatePriorityArgs("nice", cfg.Nice) == nil {
 		parts = append(parts, "nice")
 		parts = append(parts, strings.Fields(cfg.Nice)...)
 	}
-	if cfg.Ionice != "" {
+	if cfg.Ionice != "" && ValidatePriorityArgs("ionice", cfg.Ionice) == nil {
 		parts = append(parts, "ionice")
 		parts = append(parts, strings.Fields(cfg.Ionice)...)
 	}

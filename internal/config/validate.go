@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
 // Validate checks the configuration for required-field, range, and
@@ -200,6 +202,13 @@ func (p *PostProcConfig) validate() error {
 		errs = append(errs, err)
 	}
 	if err := validateExtraParams("extra_par2_params", p.ExtraPar2Params); err != nil {
+		errs = append(errs, err)
+	}
+
+	if err := cmdutil.ValidatePriorityArgs("nice", p.Nice); err != nil {
+		errs = append(errs, err)
+	}
+	if err := cmdutil.ValidatePriorityArgs("ionice", p.Ionice); err != nil {
 		errs = append(errs, err)
 	}
 
