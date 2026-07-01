@@ -1,6 +1,7 @@
 package postproc
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"os"
@@ -681,24 +682,7 @@ func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback_Success(t *testing.T) {
 	tmpBinDir := t.TempDir()
 	unrarPath := filepath.Join(tmpBinDir, "mock-unrar")
 
-	// Initially write a failing script to force the internal fallback inside GoUnRAR to fail
-	failingScript := `#!/bin/sh
-echo "unrar mock failed"
-exit 1
-`
-	if err := os.WriteFile(unrarPath, []byte(failingScript), 0o755); err != nil {
-		t.Fatalf("WriteFile failing script: %v", err)
-	}
-
-	job, dir := stageJob(t)
-	copyToDir(t, unpackFixture("corrupt.rar"), dir)
-
-	var loggedLines []string
-	job.OnOutput = func(tool, line string) {
-		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
-		// When we see the retry trigger log, overwrite the script to succeed
-		if tool == "go_unrar" && strings.Contains(line, "Go-native extraction failed") {
-			successScript := `#!/bin/sh
+	successScript := `#!/bin/sh
 echo "unrar stdout line 1"
 echo "unrar stdout line 2"
 outdir=""
@@ -714,10 +698,16 @@ if [ -n "$outdir" ] && [ -d "$outdir" ]; then
 fi
 exit 0
 `
-			if err := os.WriteFile(unrarPath, []byte(successScript), 0o755); err != nil {
-				panic(err)
-			}
-		}
+	if err := os.WriteFile(unrarPath, []byte(successScript), 0o755); err != nil {
+		t.Fatalf("WriteFile success script: %v", err)
+	}
+
+	job, dir := stageJob(t)
+	copyToDir(t, unpackFixture("corrupt.rar"), dir)
+
+	var loggedLines []string
+	job.OnOutput = func(tool, line string) {
+		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
 	}
 
 	s := NewUnpackStageWith(unpack.Options{
@@ -946,5 +936,116 @@ exit 0
 	}
 	if !sawComplete {
 		t.Errorf("expected complete log 'Unpacking complete:' in OnOutput, got: %v", loggedLines)
+	}
+}
+
+func TestUnpackStage_ContainmentViolation_ImmediateCleanup(t *testing.T) {
+	t.Parallel()
+
+	if _, lookErr := exec.LookPath("sh"); lookErr != nil {
+		t.Skip("sh not found, skipping script-based containment cleanup test")
+	}
+
+	job, dir := stageJob(t)
+	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
+
+	outsideDir := t.TempDir()
+	escapedFile := filepath.Join(outsideDir, "secret_outside.txt")
+	if err := os.WriteFile(escapedFile, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write escaped file: %v", err)
+	}
+
+	scriptPath := filepath.Join(t.TempDir(), "fake_unrar.sh")
+	scriptContent := fmt.Sprintf(`#!/bin/sh
+for arg in "$@"; do
+  outDir="$arg"
+done
+outDir=$(echo "$outDir" | sed 's#/$##')
+ln -s "%s" "$outDir/evil_link"
+touch "$outDir/normal_file.txt"
+exit 0
+`, escapedFile)
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0o755); err != nil {
+		t.Fatalf("write fake unrar script: %v", err)
+	}
+
+	s := NewUnpackStageWith(unpack.Options{
+		UseGoRAR:     false,
+		UnrarCommand: scriptPath,
+	}, true)
+	s.SetEnabled(true)
+
+	_ = s.Run(t.Context(), job)
+
+	if !job.UnpackError {
+		t.Error("expected job.UnpackError = true when containment check fails")
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "evil_link")); !os.IsNotExist(err) {
+		t.Errorf("evil_link inside DownloadDir should be deleted immediately, stat err: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "normal_file.txt")); !os.IsNotExist(err) {
+		t.Errorf("normal_file.txt inside DownloadDir should be deleted immediately, stat err: %v", err)
+	}
+	if _, err := os.Stat(escapedFile); !os.IsNotExist(err) {
+		t.Errorf("escaped target file %s outside DownloadDir should be deleted immediately by target removal, stat err: %v", escapedFile, err)
+	}
+}
+
+func TestCleanupContainmentViolation_Direct(t *testing.T) {
+	t.Parallel()
+
+	outDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("top secret"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	symlinkPath := filepath.Join(outDir, "link.txt")
+	if err := os.Symlink(outsideFile, symlinkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	normalFile := filepath.Join(outDir, "normal.txt")
+	if err := os.WriteFile(normalFile, []byte("normal content"), 0o644); err != nil {
+		t.Fatalf("write normal file: %v", err)
+	}
+
+	var buf bytes.Buffer
+	handler := slog.NewTextHandler(&buf, nil)
+	log := slog.New(handler)
+
+	// We pass:
+	// 1. "link.txt" (relative path to symlink pointing out of bounds)
+	// 2. normalFile (absolute path to normal file inside outDir)
+	// 3. "nonexistent.txt" (to cover error path when file doesn't exist)
+	cleanupContainmentViolation(outDir, []string{"link.txt", normalFile, "nonexistent.txt"}, log)
+
+	if _, err := os.Stat(outsideFile); !os.IsNotExist(err) {
+		t.Errorf("expected out-of-bounds target %s to be deleted, stat err: %v", outsideFile, err)
+	}
+	if _, err := os.Stat(symlinkPath); !os.IsNotExist(err) {
+		t.Errorf("expected symlink %s to be deleted, stat err: %v", symlinkPath, err)
+	}
+	if _, err := os.Stat(normalFile); !os.IsNotExist(err) {
+		t.Errorf("expected normal file %s to be deleted, stat err: %v", normalFile, err)
+	}
+
+	logs := buf.String()
+	if !strings.Contains(logs, "removed out-of-bounds target file") {
+		t.Errorf("expected log to contain 'removed out-of-bounds target file', got: %s", logs)
+	}
+	if !strings.Contains(logs, "removed extracted file after containment check failure") {
+		t.Errorf("expected log to contain 'removed extracted file after containment check failure', got: %s", logs)
+	}
+
+	// Also test with nil logger to ensure no panic on logging branches
+	if err := os.WriteFile(normalFile, []byte("again"), 0o644); err != nil {
+		t.Fatalf("write normal file again: %v", err)
+	}
+	cleanupContainmentViolation(outDir, []string{"normal.txt"}, nil)
+	if _, err := os.Stat(normalFile); !os.IsNotExist(err) {
+		t.Errorf("expected normal file to be deleted with nil logger, stat err: %v", err)
 	}
 }

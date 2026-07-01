@@ -2,7 +2,9 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -19,6 +21,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
+	"github.com/hobeone/gonzbd/internal/urlgrabber"
 )
 
 // makeTestNZB returns a minimal valid NZB XML document as a byte slice.
@@ -1804,4 +1808,105 @@ func TestQueueAddLocalFile_Sanitization(t *testing.T) {
 	if jobs[0].Script != "passwd" {
 		t.Errorf("Script = %q; want passwd", jobs[0].Script)
 	}
+}
+
+type mockGrabberHandler struct {
+	id  string
+	err error
+}
+
+func (m mockGrabberHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) (string, error) {
+	return m.id, m.err
+}
+
+type errorAddJobApp struct {
+	NopApp
+	err error
+}
+
+func (e errorAddJobApp) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
+	return e.err
+}
+
+func TestQueue_CoverageGaps(t *testing.T) {
+	t.Parallel()
+
+	t.Run("change_script errors", func(t *testing.T) {
+		s, _ := testQueueServer(t)
+		// Missing value (nzo_id)
+		rr1 := apiGet(t, s.Handler(), "/api?mode=queue&name=change_script&apikey="+testAPIKey)
+		if rr1.Code != http.StatusBadRequest {
+			t.Errorf("status = %d; want 400 when value missing", rr1.Code)
+		}
+		// Non-existent job ID
+		rr2 := apiGet(t, s.Handler(), "/api?mode=queue&name=change_script&value=nonexistent&value2=test.sh&apikey="+testAPIKey)
+		if rr2.Code != http.StatusNotFound {
+			t.Errorf("status = %d; want 404 when job not found", rr2.Code)
+		}
+	})
+
+	t.Run("addurl with wired grabber", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/err.nzb" {
+				http.Error(w, "server error", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/x-nzb")
+			_, _ = w.Write(makeTestNZB(t))
+		}))
+		defer ts.Close()
+
+		s, _ := testQueueServer(t)
+		grabber := urlgrabber.New(urlgrabber.Config{AllowPrivateIPs: true}, mockGrabberHandler{id: "nzo_test1"})
+		s.grabber = grabber
+
+		// Success
+		rr1 := apiGet(t, s.Handler(), "/api?mode=addurl&name="+url.QueryEscape(ts.URL+"/good.nzb")+"&apikey="+testAPIKey)
+		if rr1.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200", rr1.Code)
+		}
+		if !strings.Contains(rr1.Body.String(), "nzo_test1") {
+			t.Errorf("body = %q; want nzo_test1", rr1.Body.String())
+		}
+
+		// Fetch error
+		rr2 := apiGet(t, s.Handler(), "/api?mode=addurl&name="+url.QueryEscape(ts.URL+"/err.nzb")+"&apikey="+testAPIKey)
+		if rr2.Code != http.StatusBadGateway {
+			t.Errorf("status = %d; want 502 on fetch error", rr2.Code)
+		}
+	})
+
+	t.Run("addfile and addlocalfile error branches", func(t *testing.T) {
+		s, _ := testQueueServer(t)
+		dir := t.TempDir()
+		badPath := filepath.Join(dir, "bad.nzb")
+		if err := os.WriteFile(badPath, []byte("invalid xml"), 0o600); err != nil {
+			t.Fatalf("write bad NZB: %v", err)
+		}
+
+		// addlocalfile with bad xml
+		rr1 := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name="+url.QueryEscape(badPath)+"&apikey="+testAPIKey)
+		if rr1.Code != http.StatusBadRequest {
+			t.Errorf("status = %d; want 400 on bad XML", rr1.Code)
+		}
+
+		// addfile with errorApp on AddJob
+		q := queue.New()
+		errApp := errorAddJobApp{NopApp: NopApp{Queue: q}, err: errors.New("add job failed")}
+		sErr := New(Options{
+			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+			Version: "1.0.0-test",
+			Queue:   q,
+			App:     errApp,
+		})
+		dir2 := t.TempDir()
+		goodPath := filepath.Join(dir2, "good.nzb")
+		if err := os.WriteFile(goodPath, makeTestNZB(t), 0o600); err != nil {
+			t.Fatalf("write good NZB: %v", err)
+		}
+		rr2 := apiGet(t, sErr.Handler(), "/api?mode=addlocalfile&name="+url.QueryEscape(goodPath)+"&apikey="+testAPIKey)
+		if rr2.Code != http.StatusInternalServerError {
+			t.Errorf("status = %d; want 500 on AddJob error", rr2.Code)
+		}
+	})
 }

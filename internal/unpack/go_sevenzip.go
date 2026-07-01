@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/bodgit/sevenzip"
@@ -27,7 +28,10 @@ import (
 // assembled from an incomplete download) extracts without error. The
 // "checksum error" substring matches classifySevenZipError's existing
 // FailCorrupt heuristic, used for the library's own checksum errors.
-var errSevenZipChecksum = errors.New("go_7z: checksum error: content does not match archive CRC32")
+var (
+	errSevenZipChecksum = errors.New("go_7z: checksum error: content does not match archive CRC32")
+	errSevenZipBomb     = errors.New("go_7z: decompression bomb detected: size or ratio exceeds limits")
+)
 
 // GoSevenZip extracts archive.MainFile into outDir using the pure-Go
 // bodgit/sevenzip library. It is equivalent to SevenZip (subprocess) but
@@ -85,16 +89,25 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, 
 	}
 	defer root.Close() //nolint:errcheck // close after all writes; not in a loop
 
+	var arcSize int64
+	if st, statErr := os.Stat(archive.MainFile); statErr == nil {
+		arcSize = st.Size()
+	}
+	var totalRead int64
+
 	for _, f := range r.File {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
 
-		extracted, err := extractSevenZipEntry(ctx, f, outDir, root, opts, log)
+		extracted, err := extractSevenZipEntry(ctx, f, outDir, root, opts, arcSize, &totalRead, log)
 		if err != nil {
 			res.Reason = classifySevenZipError(err)
 			if opts.OnLine != nil {
 				opts.OnLine(fmt.Sprintf("ERROR: %s: %v", f.Name, err))
+			}
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				cleanupPartialFiles(outDir, before, log, "go_7z", 1)
 			}
 			return res, err
 		}
@@ -132,13 +145,63 @@ func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, 
 	return res, nil
 }
 
+type boundReader struct {
+	r            io.Reader
+	totalRead    *int64
+	maxSize      int64
+	maxRatio     int64
+	arcSize      int64
+	minThreshold int64
+	name         string
+}
+
+func (b *boundReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if n > 0 {
+		atomic.AddInt64(b.totalRead, int64(n))
+		currTotal := atomic.LoadInt64(b.totalRead)
+		if b.maxSize > 0 && currTotal > b.maxSize {
+			return n, fmt.Errorf("%w: total read (%d bytes) exceeds ceiling (%d bytes)", errSevenZipBomb, currTotal, b.maxSize)
+		}
+		if b.arcSize > 0 && b.maxRatio > 0 && currTotal > b.minThreshold && currTotal > b.arcSize*b.maxRatio {
+			return n, fmt.Errorf("%w: archive ratio exceeds limit (%d)", errSevenZipBomb, b.maxRatio)
+		}
+	}
+	return n, err
+}
+
 // extractSevenZipFile extracts a single file from the archive to disk through
 // root, an os.Root anchored at the extraction output directory. destRel is the
 // sanitized path relative to root's base directory; destPath is the absolute
 // path used only for skip-check logging. The file's reader is opened and
 // closed within this function to enable the library's stream reuse
 // optimisation for solid archives.
-func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath string, f *sevenzip.File, opts Options, log *slog.Logger) error {
+func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath string, f *sevenzip.File, opts Options, arcSize int64, totalRead *int64, log *slog.Logger) error {
+	maxSize := opts.MaxSize
+	if maxSize <= 0 {
+		maxSize = 250 * 1024 * 1024 * 1024 // 250 GiB
+	}
+	maxRatio := opts.MaxRatio
+	if maxRatio <= 0 {
+		maxRatio = 250
+	}
+	minThreshold := opts.MinBombThreshold
+	if minThreshold == 0 {
+		minThreshold = 10 * 1024 * 1024 // 10 MiB
+	}
+
+	currTotal := atomic.LoadInt64(totalRead)
+	if currTotal < 0 {
+		return fmt.Errorf("go_7z: invalid negative total read count: %d", currTotal)
+	}
+	projTotal := f.UncompressedSize + uint64(currTotal)
+	if projTotal > uint64(maxSize) {
+		return fmt.Errorf("%w: entry %q uncompressed size (%d) exceeds ceiling (%d)", errSevenZipBomb, f.Name, f.UncompressedSize, maxSize)
+	}
+	if arcSize > 0 && (minThreshold < 0 || projTotal > uint64(minThreshold)) && projTotal > uint64(arcSize)*uint64(maxRatio) {
+		return fmt.Errorf("%w: entry %q ratio exceeds limit (%d)", errSevenZipBomb, f.Name, maxRatio)
+	}
+
 	rc, err := f.Open()
 	if err != nil {
 		return fmt.Errorf("go_7z: open entry %s: %w", f.Name, err)
@@ -169,7 +232,16 @@ func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath s
 	// against f.CRC32 below — the library itself never does this (see
 	// errSevenZipChecksum).
 	hasher := crc32.NewIEEE()
-	if _, err := contextCopy(ctx, io.MultiWriter(out, hasher), rc); err != nil {
+	br := &boundReader{
+		r:            rc,
+		totalRead:    totalRead,
+		maxSize:      maxSize,
+		maxRatio:     maxRatio,
+		arcSize:      arcSize,
+		minThreshold: minThreshold,
+		name:         f.Name,
+	}
+	if _, err := contextCopy(ctx, io.MultiWriter(out, hasher), br); err != nil {
 		if errno, ok := errors.AsType[syscall.Errno](err); ok && errno == syscall.ENOSPC {
 			return fmt.Errorf("go_7z: disk full writing %s: %w", destRel, err)
 		}
@@ -225,7 +297,7 @@ func classifySevenZipError(err error) FailReason {
 	if strings.Contains(errStr, "not a valid 7-zip file") {
 		return FailNotArchive
 	}
-	if strings.Contains(errStr, "checksum error") {
+	if strings.Contains(errStr, "checksum error") || errors.Is(err, errSevenZipBomb) || strings.Contains(errStr, "decompression bomb") {
 		return FailCorrupt
 	}
 	if strings.Contains(errStr, "unsupported compression algorithm") {
@@ -244,7 +316,7 @@ func classifySevenZipError(err error) FailReason {
 // and file extraction for a single 7-zip archive entry. root is an os.Root
 // anchored at outDir opened once by the caller. Returns true if the entry was
 // extracted (regular file), or false if it was skipped or a directory.
-func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, root *os.Root, opts Options, log *slog.Logger) (bool, error) {
+func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, root *os.Root, opts Options, arcSize int64, totalRead *int64, log *slog.Logger) (bool, error) {
 	destRel, sanitizeErr := SanitizeArchivePath(f.Name, opts.OneFolder)
 	if sanitizeErr != nil {
 		log.Warn("skipping entry with bad path",
@@ -294,7 +366,7 @@ func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, 
 		return false, nil
 	}
 
-	if err := extractSevenZipFile(ctx, root, destRel, destPath, f, opts, log); err != nil {
+	if err := extractSevenZipFile(ctx, root, destRel, destPath, f, opts, arcSize, totalRead, log); err != nil {
 		return false, err
 	}
 
