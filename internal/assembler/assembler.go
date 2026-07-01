@@ -247,14 +247,12 @@ type Assembler struct {
 	// We use a dedicated stop channel rather than closing reqs, because
 	// closing reqs while WriteArticle goroutines may be sending on it would
 	// cause a panic. The worker drains reqs after seeing stopCh is closed.
-	stopCh     chan struct{}
-	workerDone chan struct{}
+	stopCh chan struct{}
 
-	// inFlight tracks the number of WriteArticle goroutines that have
-	// passed the stopped check but have not yet completed their channel
-	// send. Stop() waits for this to reach zero before closing stopCh,
-	// so no writes are lost in the shutdown window.
-	inFlight atomic.Int32
+	// wg tracks all in-flight WriteArticle and CancelJob calls as well as
+	// the worker goroutine, ensuring Stop() blocks cleanly without sleep
+	// polling until all in-flight work and the worker have finished.
+	wg sync.WaitGroup
 
 	// flushInterval is the computed interval for the periodic batch
 	// flush. A non-positive value disables the timer entirely (flush
@@ -292,7 +290,6 @@ func New(opts Options, log *slog.Logger) *Assembler {
 		opts:          opts,
 		reqs:          make(chan WriteRequest, opts.QueueSize),
 		stopCh:        make(chan struct{}),
-		workerDone:    make(chan struct{}),
 		flushInterval: flushInterval,
 		pendingDone:   make(map[string][]string),
 		pendingFailed: make(map[string][]string),
@@ -323,8 +320,7 @@ func (a *Assembler) Start(_ context.Context) error {
 	}
 
 	a.started = true
-	// Reset inFlightOnce/inFlightZero for clean Start after construction.
-	// (Only relevant if an Assembler is ever re-used, but safe regardless.)
+	a.wg.Add(1)
 	go a.worker()
 	return nil
 }
@@ -347,18 +343,14 @@ func (a *Assembler) Stop() error {
 
 	// Close stopCh first to unblock any WriteArticle goroutines stuck in
 	// their select (e.g. waiting for channel capacity). They will see
-	// <-a.stopCh and return ErrStopped, decrementing inFlight. If the
+	// <-a.stopCh and return ErrStopped, calling wg.Done(). If the
 	// request channel has capacity, their send may also succeed — the
 	// worker will drain those items before exiting.
 	close(a.stopCh)
 
-	// Now wait for all in-flight goroutines to complete their defers.
-	// They are guaranteed to exit promptly since stopCh is now closed.
-	for a.inFlight.Load() > 0 {
-		time.Sleep(time.Microsecond)
-	}
-
-	<-a.workerDone
+	// Wait for all in-flight WriteArticle/CancelJob goroutines and the worker
+	// goroutine to finish cleanly without sleep polling.
+	a.wg.Wait()
 	return nil
 }
 
@@ -375,11 +367,11 @@ func (a *Assembler) WriteArticle(ctx context.Context, req WriteRequest) error {
 		a.mu.Unlock()
 		return ErrStopped
 	}
-	// Track this sender so Stop() waits for us before closing stopCh.
-	a.inFlight.Add(1)
+	// Track this sender so Stop() waits for us before returning.
+	a.wg.Add(1)
 	a.mu.Unlock()
 
-	defer a.inFlight.Add(-1)
+	defer a.wg.Done()
 
 	select {
 	case a.reqs <- req:
@@ -409,10 +401,10 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 		a.mu.Unlock()
 		return ErrStopped
 	}
-	a.inFlight.Add(1)
+	a.wg.Add(1)
 	a.mu.Unlock()
 
-	defer a.inFlight.Add(-1)
+	defer a.wg.Done()
 
 	// Control message convention: JobID="" and FileIdx=-1, with the
 	// real job ID in MessageID.
@@ -454,7 +446,7 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 // The per-article pwrite + fsync remains serial; only the queue-mutation
 // path is batched. See B.7 in docs/state_machine_hardening_plan.md.
 func (a *Assembler) worker() {
-	defer close(a.workerDone)
+	defer a.wg.Done()
 
 	open := make(map[fileKey]*openFile)
 	completed := make(map[fileKey]struct{})    // tombstone set for finished files
