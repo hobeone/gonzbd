@@ -77,8 +77,20 @@ type Options struct {
 	OnLine func(string) `json:"-"`
 	// OnCommand is called once per subprocess invocation, just before
 	// exec, with the full display-safe command line (passwords redacted).
-	// Lets callers log the actual argv that's about to run. May be nil.
 	OnCommand func(string) `json:"-"`
+
+	// MaxSize sets the maximum allowed uncompressed size in bytes for a single
+	// entry in pure-Go extractors to prevent decompression bombs.
+	// If 0, default (250 GiB) is used.
+	MaxSize int64
+	// MaxRatio sets the maximum allowed compression ratio (uncompressed / compressed)
+	// for decompression bomb protection in pure-Go extractors.
+	// If 0, default (250) is used.
+	MaxRatio int64
+	// MinBombThreshold sets the minimum uncompressed bytes extracted before
+	// ratio limit checking is enforced. If 0, default (10 MiB) is used.
+	// If negative (< 0), ratio checking is enforced immediately from byte 0.
+	MinBombThreshold int64
 }
 
 // UnrarBin returns the configured unrar binary, defaulting to "unrar".

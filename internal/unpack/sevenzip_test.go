@@ -123,3 +123,38 @@ func TestSevenZip_LoggedArgsRedacted(t *testing.T) {
 		}
 	})
 }
+
+func TestSevenZip_Coverage(t *testing.T) {
+	archive := unpack.Archive{
+		Type:     unpack.SevenZipArchive,
+		Name:     "test",
+		MainFile: "/tmp/does-not-exist.7z",
+		Parts:    []string{"/tmp/does-not-exist.7z"},
+	}
+
+	var onlineLines []string
+	opts := unpack.Options{
+		SevenZipCommand: "/nonexistent/binary",
+		OneFolder:       true,
+		OverwriteFiles:  true,
+		OnLine: func(l string) {
+			onlineLines = append(onlineLines, l)
+		},
+	}
+	_, _ = unpack.SevenZip(t.Context(), slog.Default(), archive, t.TempDir(), "", opts)
+	if len(onlineLines) == 0 {
+		t.Error("expected OnLine to be called")
+	}
+
+	if falseBin, err := exec.LookPath("false"); err == nil {
+		res, err := unpack.SevenZip(t.Context(), slog.Default(), archive, t.TempDir(), "", unpack.Options{
+			SevenZipCommand: falseBin,
+		})
+		if err == nil {
+			t.Error("expected error from false command")
+		}
+		if res.ExitCode == 0 {
+			t.Errorf("expected non-zero exit code, got %d", res.ExitCode)
+		}
+	}
+}
