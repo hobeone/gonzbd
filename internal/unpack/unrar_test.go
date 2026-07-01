@@ -1,6 +1,7 @@
 package unpack_test
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -171,4 +172,128 @@ func TestUnRAR_HasProblemDegradedMode(t *testing.T) {
 			t.Errorf("degraded mode: cmdline should NOT contain flag %q but does: %q", flag, captured)
 		}
 	}
+}
+
+type logRecorder struct {
+	attrs   []slog.Attr
+	records *[]slog.Record
+}
+
+func newTestLogger() (*slog.Logger, *[]slog.Record) {
+	records := &[]slog.Record{}
+	h := &logRecorder{records: records}
+	return slog.New(h), records
+}
+
+func (h *logRecorder) Enabled(ctx context.Context, l slog.Level) bool { return true }
+func (h *logRecorder) Handle(ctx context.Context, r slog.Record) error {
+	for _, a := range h.attrs {
+		r.AddAttrs(a)
+	}
+	*h.records = append(*h.records, r)
+	return nil
+}
+func (h *logRecorder) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newAttrs := make([]slog.Attr, len(h.attrs)+len(attrs))
+	copy(newAttrs, h.attrs)
+	copy(newAttrs[len(h.attrs):], attrs)
+	return &logRecorder{attrs: newAttrs, records: h.records}
+}
+func (h *logRecorder) WithGroup(name string) slog.Handler { return h }
+
+func TestUnRAR_LoggedArgsRedacted(t *testing.T) {
+	archive := unpack.Archive{
+		Type:     unpack.RarArchive,
+		Name:     "test",
+		MainFile: "/tmp/does-not-exist.rar",
+		Parts:    []string{"/tmp/does-not-exist.rar"},
+	}
+
+	t.Run("non-empty password is redacted in args log attribute", func(t *testing.T) {
+		opts := unpack.Options{
+			UnrarCommand: "/nonexistent/binary",
+			ExtraArgs:    []string{"-v"},
+		}
+		logger, records := newTestLogger()
+		_, _ = unpack.UnRAR(t.Context(), logger, archive, t.TempDir(), "supersecret", opts)
+
+		var loggedArgs []string
+		for _, r := range *records {
+			if r.Message == "unrar: starting extraction" {
+				r.Attrs(func(a slog.Attr) bool {
+					if a.Key == "args" {
+						if slice, ok := a.Value.Any().([]string); ok {
+							loggedArgs = slice
+						}
+					}
+					return true
+				})
+			}
+		}
+
+		if loggedArgs == nil {
+			t.Fatal("did not find args attribute of type []string in starting extraction log record")
+		}
+
+		for _, arg := range loggedArgs {
+			if strings.Contains(arg, "supersecret") {
+				t.Errorf("logged args leaked secret password: %q in %v", arg, loggedArgs)
+			}
+		}
+
+		var foundRedacted, foundExtra bool
+		for _, arg := range loggedArgs {
+			if arg == "-p<redacted>" {
+				foundRedacted = true
+			}
+			if arg == "-v" {
+				foundExtra = true
+			}
+		}
+		if !foundRedacted {
+			t.Errorf("logged args missing -p<redacted> flag: %v", loggedArgs)
+		}
+		if !foundExtra {
+			t.Errorf("logged args missing extra arg -v: %v", loggedArgs)
+		}
+	})
+
+	t.Run("empty password retains -p- without redaction in args log attribute", func(t *testing.T) {
+		opts := unpack.Options{
+			UnrarCommand: "/nonexistent/binary",
+		}
+		logger, records := newTestLogger()
+		_, _ = unpack.UnRAR(t.Context(), logger, archive, t.TempDir(), "", opts)
+
+		var loggedArgs []string
+		for _, r := range *records {
+			if r.Message == "unrar: starting extraction" {
+				r.Attrs(func(a slog.Attr) bool {
+					if a.Key == "args" {
+						if slice, ok := a.Value.Any().([]string); ok {
+							loggedArgs = slice
+						}
+					}
+					return true
+				})
+			}
+		}
+
+		if loggedArgs == nil {
+			t.Fatal("did not find args attribute of type []string in starting extraction log record")
+		}
+
+		var foundPromptSuppress bool
+		for _, arg := range loggedArgs {
+			if arg == "-p-" {
+				foundPromptSuppress = true
+			}
+			if arg == "-p<redacted>" {
+				t.Errorf("logged args should not contain -p<redacted> when password is empty: %v", loggedArgs)
+			}
+		}
+		if !foundPromptSuppress {
+			t.Errorf("logged args missing -p- flag: %v", loggedArgs)
+		}
+	})
 }
