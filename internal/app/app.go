@@ -158,6 +158,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		jobComplete:          make(chan JobComplete, 8),
 		postProcComplete:     make(chan PostProcComplete, 8),
 		directUnpackers:      make(map[string]*directunpack.DirectUnpacker),
+		ctx:                  context.Background(),
 	}
 	for _, o := range opts {
 		o(app)
@@ -243,7 +244,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 
 	stages := app.customStages
 	if stages == nil {
-		probe := probeBinaries(context.Background(), cfg, log)
+		probe := probeBinaries(app.ctx, cfg, log)
 		built, err := buildStages(cfg, app.version, log, probe)
 		if err != nil {
 			return nil, err
@@ -352,7 +353,7 @@ func (app *Application) persistAndCommit(log *slog.Logger, entry history.Entry, 
 		return err
 	}
 	if app.historyRepo != nil {
-		dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
 		if err := app.historyRepo.Add(dbCtx, entry); err != nil {
 			log.Error("failed to add history entry; keeping job in queue for recovery",
 				"job", job.Queue.ID, "err", err)
@@ -389,7 +390,7 @@ func (app *Application) fireCompletionNotification(entry history.Entry) {
 		evtType = notifier.PostProcessingFailed
 		title = "Download failed"
 	}
-	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	notifyCtx, notifyCancel := context.WithTimeout(app.ctx, 30*time.Second)
 	app.notifyDispatcher.Dispatch(notifyCtx, notifier.Event{
 		Type:      evtType,
 		Title:     title,
@@ -1321,6 +1322,11 @@ func WithVersion(v string) func(*Application) {
 // WithCheckpointInterval returns an option that sets the queue persistence interval.
 func WithCheckpointInterval(d time.Duration) func(*Application) {
 	return func(a *Application) { a.checkpointInterval = d }
+}
+
+// WithLifecycleContext returns an option that sets the Application's initial lifecycle context.
+func WithLifecycleContext(ctx context.Context) func(*Application) {
+	return func(a *Application) { a.ctx = ctx }
 }
 
 // SetSpeedLimit updates the download speed limit. bytesPerSec <= 0 means unlimited.

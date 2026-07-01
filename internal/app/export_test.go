@@ -19,7 +19,7 @@ import (
 // assembler.Start step (assembler returns ErrStopped). Used to test that a
 // failed Start resets started=false so the application can be retried.
 func (a *Application) ForceAssemblerStopped() error {
-	if err := a.assembler.Start(context.Background()); err != nil {
+	if err := a.assembler.Start(a.ctx); err != nil {
 		return err
 	}
 	return a.assembler.Stop()
@@ -94,10 +94,16 @@ func (a *Application) SetActiveDU(val int32) {
 	a.activeDU.Store(val)
 }
 
+// TriggerFireCompletionNotification calls the unexported fireCompletionNotification method.
+func (a *Application) TriggerFireCompletionNotification(entry history.Entry) {
+	a.fireCompletionNotification(entry)
+}
+
 // Dummy references to satisfy scripts/check_test_alignment
 var (
 	_ = (*Application).enqueuePostProc
 	_ = (*Application).maybeDirectUnpack
 	_ = (*Application).persistAndCommit
 	_ = (*Application).handleFileComplete
+	_ = (*Application).fireCompletionNotification
 )
