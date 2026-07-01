@@ -164,7 +164,7 @@
 
 			<div class="mt-6 flex justify-end gap-3">
 				<Button variant="outline" class="rounded-full px-5 border-m3-outline text-m3-on-surface hover:bg-m3-surface-variant/50" onclick={() => (showDeleteConfirm = false)}>Cancel</Button>
-				<Button variant="destructive" class="rounded-full px-5 bg-destructive text-destructive-foreground hover:bg-destructive/90" onclick={remove} disabled={acting}>
+				<Button variant="destructive" class="rounded-full px-5 bg-destructive text-destructive-foreground hover:bg-red-600 dark:hover:bg-red-500 hover:text-white dark:hover:text-white" onclick={remove} disabled={acting}>
 					{acting ? 'Deleting...' : 'Delete Item'}
 				</Button>
 			</div>
