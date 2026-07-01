@@ -669,6 +669,22 @@ func (s *Server) queueChangeName(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// sanitizeScriptParam cleans a script parameter from API requests.
+// It preserves empty string and special values ("None", "Default", case-insensitive)
+// while stripping directory components from all other script paths using filepath.Base
+// to prevent path traversal and absolute path execution.
+func sanitizeScriptParam(script string) string {
+	if script == "" {
+		return ""
+	}
+	// Convert Windows backslashes to forward slashes so filepath.Base works across OS boundaries.
+	script = strings.ReplaceAll(script, "\\", "/")
+	if strings.EqualFold(script, "none") || strings.EqualFold(script, "default") {
+		return script
+	}
+	return filepath.Base(script)
+}
+
 // queueChangeScript handles name=change_script.
 // SABnzbd convention: value = nzo_id, value2 = script name.
 //
@@ -678,7 +694,7 @@ func (s *Server) queueChangeScript(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	script := r.FormValue("value2")
+	script := sanitizeScriptParam(r.FormValue("value2"))
 	if err := s.queue.SetScript(nzoID, script); err != nil {
 		s.respondError(w, http.StatusNotFound, err.Error())
 		return
@@ -750,7 +766,7 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 		Password: r.FormValue("password"), //nolint:gosec // body size bounded by MaxBytesReader middleware
 		NzbName:  r.FormValue("nzbname"),  //nolint:gosec // body size bounded by MaxBytesReader middleware
 		PP:       ppParam(r),
-		Script:   r.FormValue("script"), //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Script:   sanitizeScriptParam(r.FormValue("script")), //nolint:gosec // body size bounded by MaxBytesReader middleware
 		Priority: priorityParam(r),
 	}
 	ids, err := s.grabber.Fetch(r.Context(), urlStr, opts)
@@ -850,10 +866,10 @@ func (s *Server) enqueueNZBData(w http.ResponseWriter, r *http.Request, data []b
 
 	opts := queue.AddOptions{
 		Filename: filename,
-		Name:     r.FormValue("nzbname"),  //nolint:gosec // body size bounded by MaxBytesReader middleware
-		Category: r.FormValue("cat"),      //nolint:gosec // body size bounded by MaxBytesReader middleware
-		Script:   r.FormValue("script"),   //nolint:gosec // body size bounded by MaxBytesReader middleware
-		Password: r.FormValue("password"), //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Name:     r.FormValue("nzbname"),                     //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Category: r.FormValue("cat"),                         //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Script:   sanitizeScriptParam(r.FormValue("script")), //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Password: r.FormValue("password"),                    //nolint:gosec // body size bounded by MaxBytesReader middleware
 		PP:       ppParam(r),
 		Priority: priorityParam(r),
 		Logger:   s.log,

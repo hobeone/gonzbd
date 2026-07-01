@@ -494,15 +494,14 @@ func TestScriptStage_AbsolutePathOverridesScriptDir(t *testing.T) {
 	t.Parallel()
 	job, _ := stageJob(t)
 
-	// Script field is an absolute path; ScriptDir (intentionally bogus)
-	// must not be prepended.
+	// Script field is an absolute path; must be rejected for security.
 	scriptPath := filepath.Join(t.TempDir(), "abs.sh")
 	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 0\n"))
 	job.Queue.Script = scriptPath
 
 	stage := NewScriptStage("/nonexistent-dir", "/tmp/complete", "test", "", "")
-	if err := stage.Run(t.Context(), job); err != nil {
-		t.Errorf("Run with absolute script path: %v", err)
+	if err := stage.Run(t.Context(), job); err == nil {
+		t.Errorf("Run with absolute script path expected error, got nil")
 	}
 }
 
