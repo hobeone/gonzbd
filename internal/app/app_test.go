@@ -22,6 +22,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -1561,5 +1562,132 @@ func TestApp_EventLoopStarvation(t *testing.T) {
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("completion event loop starved: job2 did not complete because watchCompletions blocked on job1's du.Wait()")
+	}
+}
+
+type contextCheckingNotifier struct {
+	mu          sync.Mutex
+	receivedErr error
+}
+
+func (n *contextCheckingNotifier) Name() string                    { return "context-checker" }
+func (n *contextCheckingNotifier) Accepts(notifier.EventType) bool { return true }
+func (n *contextCheckingNotifier) Send(ctx context.Context, _ notifier.Event) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.receivedErr = ctx.Err()
+	return n.receivedErr
+}
+
+func TestApp_ShutdownContextInheritance(t *testing.T) {
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+
+	db, err := history.Open(t.Context(), filepath.Join(admin, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	defer db.Close()
+	repo := history.NewRepository(db)
+
+	application, err := app.New(cfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	checker := &contextCheckingNotifier{}
+	dispatcher := notifier.NewDispatcher(slog.Default())
+	dispatcher.Register(checker)
+	application.SetNotifier(dispatcher)
+
+	// Create and immediately cancel the application lifecycle context
+	ctx, cancel := context.WithCancel(t.Context())
+	application.InjectCtx(ctx)
+	cancel()
+
+	// 1. Verify fireCompletionNotification derives from canceled lifecycle context rather than orphaned context.Background()
+	entry := history.Entry{
+		NzoID:  "test-ctx-inherit",
+		Name:   "test-job-ctx",
+		Status: "Completed",
+	}
+	application.TriggerFireCompletionNotification(entry)
+
+	checker.mu.Lock()
+	gotErr := checker.receivedErr
+	checker.mu.Unlock()
+	if !errors.Is(gotErr, context.Canceled) {
+		t.Errorf("expected completion notification context to inherit cancellation from parent lifecycle context, got %v", gotErr)
+	}
+
+	// 2. Verify persistAndCommit derives from canceled lifecycle context rather than orphaned context.Background()
+	parsed := &nzb.NZB{
+		Files: []nzb.File{{
+			Subject: "test.bin",
+			Bytes:   10,
+		}},
+	}
+	qJob, err := queue.NewJob(parsed, queue.AddOptions{Name: "persist-ctx-test"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	_ = application.Queue().Add(qJob)
+	ppJob := &postproc.Job{
+		Queue: qJob,
+	}
+
+	err = application.TriggerPersistAndCommit(slog.Default(), entry, ppJob)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected persistAndCommit to fail with context.Canceled when parent lifecycle context is canceled, got %v", err)
+	}
+}
+
+type deadlineCheckingNotifier struct {
+	onSend func(ctx context.Context)
+}
+
+func (n *deadlineCheckingNotifier) Name() string                    { return "deadline-checker" }
+func (n *deadlineCheckingNotifier) Accepts(notifier.EventType) bool { return true }
+func (n *deadlineCheckingNotifier) Send(ctx context.Context, _ notifier.Event) error {
+	if n.onSend != nil {
+		n.onSend(ctx)
+	}
+	return nil
+}
+
+func TestApp_FireCompletionNotificationTimeout(t *testing.T) {
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+	application, _ := app.New(cfg, nil)
+
+	var gotDeadline time.Time
+	var hasDeadline bool
+	var gotErr error
+
+	checker := &deadlineCheckingNotifier{
+		onSend: func(ctx context.Context) {
+			gotDeadline, hasDeadline = ctx.Deadline()
+			gotErr = ctx.Err()
+		},
+	}
+	dispatcher := notifier.NewDispatcher(slog.Default())
+	dispatcher.Register(checker)
+	application.SetNotifier(dispatcher)
+
+	application.TriggerFireCompletionNotification(history.Entry{Status: "Completed", Name: "test"})
+
+	if !hasDeadline {
+		t.Fatal("expected notification context to have a deadline")
+	}
+	if gotErr != nil {
+		t.Fatalf("expected notification context to be active (not timed out), got err: %v", gotErr)
+	}
+	remaining := time.Until(gotDeadline)
+	if remaining < 25*time.Second || remaining > 35*time.Second {
+		t.Fatalf("expected notification timeout to be ~30s, got remaining: %v", remaining)
 	}
 }
