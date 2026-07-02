@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -1909,4 +1910,203 @@ func TestQueue_CoverageGaps(t *testing.T) {
 			t.Errorf("status = %d; want 500 on AddJob error", rr2.Code)
 		}
 	})
+}
+
+type queueSpyApp struct {
+	NopApp
+	mu      sync.Mutex
+	paused  int
+	resumed int
+}
+
+func (a *queueSpyApp) PauseDownloads() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.paused++
+}
+
+func (a *queueSpyApp) ResumeDownloads() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.resumed++
+}
+
+func TestModeQueue_Comprehensive(t *testing.T) {
+	t.Parallel()
+
+	t.Run("queue_not_wired", func(t *testing.T) {
+		t.Parallel()
+		s := New(Options{Version: "1.0.0"})
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/api?mode=queue", nil)
+		s.modeQueue(rr, req)
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d; want 500", rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "queue not wired") {
+			t.Errorf("body = %q; want to contain 'queue not wired'", rr.Body.String())
+		}
+	})
+
+	t.Run("pause_all_and_resume_all_with_app", func(t *testing.T) {
+		t.Parallel()
+		q := queue.New()
+		spy := &queueSpyApp{NopApp: NopApp{Queue: q}}
+		s := New(Options{
+			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
+			Version: "1.0.0-test",
+			Queue:   q,
+			App:     spy,
+		})
+
+		rr := apiGet(t, s.Handler(), "/api?mode=queue&name=pause_all&apikey="+testAPIKey)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200", rr.Code)
+		}
+		if !q.IsPaused() {
+			t.Error("expected queue to be paused")
+		}
+		spy.mu.Lock()
+		p := spy.paused
+		spy.mu.Unlock()
+		if p != 1 {
+			t.Errorf("paused = %d; want 1", p)
+		}
+
+		rr = apiGet(t, s.Handler(), "/api?mode=queue&name=resume_all&apikey="+testAPIKey)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200", rr.Code)
+		}
+		if q.IsPaused() {
+			t.Error("expected queue to be resumed")
+		}
+		spy.mu.Lock()
+		r := spy.resumed
+		spy.mu.Unlock()
+		if r != 1 {
+			t.Errorf("resumed = %d; want 1", r)
+		}
+	})
+
+	t.Run("pause_all_and_resume_all_nil_app", func(t *testing.T) {
+		t.Parallel()
+		q := queue.New()
+		s := New(Options{
+			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
+			Version: "1.0.0-test",
+			Queue:   q,
+			// App intentionally nil
+		})
+
+		rr := apiGet(t, s.Handler(), "/api?mode=queue&name=pause_all&apikey="+testAPIKey)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200", rr.Code)
+		}
+		if !q.IsPaused() {
+			t.Error("expected queue to be paused")
+		}
+
+		rr = apiGet(t, s.Handler(), "/api?mode=queue&name=resume_all&apikey="+testAPIKey)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200", rr.Code)
+		}
+		if q.IsPaused() {
+			t.Error("expected queue to be resumed")
+		}
+	})
+
+	t.Run("stubbed_actions", func(t *testing.T) {
+		t.Parallel()
+		s, _ := testQueueServer(t)
+
+		for _, action := range []string{"sort", "delete_nzf"} {
+			rr := apiGet(t, s.Handler(), "/api?mode=queue&name="+action+"&apikey="+testAPIKey)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("action %s status = %d; want 400", action, rr.Code)
+			}
+			if !strings.Contains(rr.Body.String(), "not implemented in this build") {
+				t.Errorf("action %s body = %q; want 'not implemented in this build'", action, rr.Body.String())
+			}
+		}
+	})
+
+	t.Run("change_complete_action", func(t *testing.T) {
+		t.Parallel()
+		s, _ := testQueueServer(t)
+
+		rr := apiGet(t, s.Handler(), "/api?mode=queue&name=change_complete_action&value=shutdown&apikey="+testAPIKey)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200", rr.Code)
+		}
+		m := decodeJSON(t, rr)
+		if m["status"] != true {
+			t.Errorf("status = %v; want true", m["status"])
+		}
+	})
+
+	t.Run("rename_alias", func(t *testing.T) {
+		t.Parallel()
+		s, q := testQueueServer(t)
+		job := addTestJob(t, q, queue.AddOptions{Name: "OldName"})
+
+		rr := apiGet(t, s.Handler(), "/api?mode=queue&name=rename&value="+job.ID+"&value2=NewName&apikey="+testAPIKey)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200", rr.Code)
+		}
+		m := decodeJSON(t, rr)
+		if m["status"] != true {
+			t.Errorf("status = %v; want true", m["status"])
+		}
+		if job.Name != "NewName" {
+			t.Errorf("job.Name = %q; want NewName", job.Name)
+		}
+	})
+
+	t.Run("unknown_action", func(t *testing.T) {
+		t.Parallel()
+		s, _ := testQueueServer(t)
+
+		rr := apiGet(t, s.Handler(), "/api?mode=queue&name=bogus_action&apikey="+testAPIKey)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d; want 400", rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "unknown queue action: bogus_action") {
+			t.Errorf("body = %q; want to contain 'unknown queue action: bogus_action'", rr.Body.String())
+		}
+	})
+}
+
+func TestStageFromStatus(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		status constants.Status
+		want   string
+	}{
+		{constants.StatusDownloading, "download"},
+		{constants.StatusFetching, "download"},
+		{constants.StatusGrabbing, "download"},
+		{constants.StatusVerifying, "repair"},
+		{constants.StatusRepairing, "repair"},
+		{constants.StatusChecking, "repair"},
+		{constants.StatusQuickCheck, "repair"},
+		{constants.StatusExtracting, "unpack"},
+		{constants.StatusMoving, "move"},
+		{constants.StatusRunning, "script"},
+		{constants.StatusPaused, "paused"},
+		{constants.StatusQueued, "queued"},
+		{constants.StatusIdle, "queued"},
+		{constants.StatusPropagating, "propagating"},
+		{constants.StatusCompleted, "completed"},
+		{constants.StatusFailed, "failed"},
+		{constants.StatusDeleted, "deleted"},
+		{"UNKNOWN_STATUS", "unknown_status"},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.status), func(t *testing.T) {
+			t.Parallel()
+			if got := stageFromStatus(tc.status); got != tc.want {
+				t.Errorf("stageFromStatus(%q) = %q; want %q", tc.status, got, tc.want)
+			}
+		})
+	}
 }
