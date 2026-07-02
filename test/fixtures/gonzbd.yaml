@@ -55,6 +55,7 @@ postproc:
   flat_unpack: false
   direct_unpack: false
   direct_unpack_threads: 3
+  strict_sandbox: true
   deobfuscate_filenames: true
   ignore_samples: false
   cleanup_extensions: []

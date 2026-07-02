@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/unpack"
@@ -1047,5 +1048,29 @@ func TestCleanupContainmentViolation_Direct(t *testing.T) {
 	cleanupContainmentViolation(outDir, []string{"normal.txt"}, nil)
 	if _, err := os.Stat(normalFile); !os.IsNotExist(err) {
 		t.Errorf("expected normal file to be deleted with nil logger, stat err: %v", err)
+	}
+}
+
+func TestUnpackStage_SetStrictSandbox(t *testing.T) {
+	s := NewUnpackStageWith(unpack.Options{
+		Sandbox: cmdutil.SandboxConfig{
+			Enabled: true,
+			Strict:  true,
+		},
+	}, false)
+
+	s.SetStrictSandbox(false)
+	s.mu.RLock()
+	strict := s.BaseOpts.Sandbox.Strict
+	s.mu.RUnlock()
+	if strict {
+		t.Error("expected SetStrictSandbox(false) to update BaseOpts.Sandbox.Strict")
+	}
+
+	s.SetStrictSandbox(true)
+	job := &Job{DownloadDir: "/tmp/test-sandbox-target", Queue: &queue.Job{}}
+	opts := s.prepareOptions(t.Context(), slog.Default(), job, s.BaseOpts, "")
+	if opts.Sandbox.TargetDir != "/tmp/test-sandbox-target" {
+		t.Errorf("expected prepareOptions to set TargetDir to %q, got %q", job.DownloadDir, opts.Sandbox.TargetDir)
 	}
 }

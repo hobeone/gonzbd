@@ -36,6 +36,7 @@
 			<ConfigSwitch section="postproc" keyword="direct_unpack" label="Direct Unpack" value={configData.postproc.direct_unpack} description="Extract RAR volumes while still downloading, overlapping I/O for faster completion. Requires 'Enable RAR extraction'." onupdate={onFieldUpdate} />
 			<ConfigSwitch section="postproc" keyword="flat_unpack" label="Flat unpack" value={configData.postproc.flat_unpack} description="Ignore archive-internal directory structure; extract all files into the job folder." onupdate={onFieldUpdate} />
 			<ConfigSwitch section="postproc" keyword="overwrite_files" label="Overwrite existing files" value={configData.postproc.overwrite_files} description="Allow extraction to overwrite files that already exist in the destination." onupdate={onFieldUpdate} />
+			<ConfigSwitch section="postproc" keyword="strict_sandbox" label="Strict OS sandboxing" value={configData.postproc.strict_sandbox} description="Abort external unpacker execution immediately if OS-level sandboxing (bwrap, sandbox-exec, jail) cannot be established. When disabled, falls back to un-sandboxed execution with post-extraction boundary checks." onupdate={onFieldUpdate} />
 			<ConfigSwitch section="postproc" keyword="ignore_unrar_dates" label="Ignore archive dates" value={configData.postproc.ignore_unrar_dates} description="Discard in-archive modification timestamps; use extraction time instead." onupdate={onFieldUpdate} />
 		</div>
 	</div>

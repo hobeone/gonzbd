@@ -114,7 +114,10 @@ func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, pa
 		opts.OnCommand(cmdLine)
 	}
 
-	cmd := cmdutil.BuildCommand(ctx, opts.CmdCfg, bin, args...) //nolint:gosec // bin and args are caller-supplied, not shell-expanded
+	cmd, err := cmdutil.BuildSandboxedCommand(ctx, opts.CmdCfg, opts.Sandbox, bin, args...) //nolint:gosec // bin and args are caller-supplied, not shell-expanded
+	if err != nil {
+		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "7z"}, err
+	}
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
