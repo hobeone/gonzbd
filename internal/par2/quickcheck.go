@@ -40,7 +40,52 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 		log = slog.Default()
 	}
 
-	// Collect all FileDesc entries from all par2 sets.
+	manifest := collectManifests(sets, log)
+	if len(manifest) == 0 {
+		log.Info("quickcheck: no file descriptions found in any par2 set")
+		return nil, nil
+	}
+
+	log.Info("quickcheck: total par2 manifest entries", "count", len(manifest))
+	for i, fd := range manifest {
+		log.Info("quickcheck: manifest entry",
+			"idx", i,
+			"filename", fd.FileName,
+			"size", fd.FileSize,
+			"hash16k", fmt.Sprintf("%x", fd.Hash16k))
+	}
+
+	subdirEntries := filterSubdirEntries(manifest, log)
+	if len(subdirEntries) == 0 {
+		log.Info("quickcheck: no par2 entries contain subdirectory paths — all filenames are flat")
+		return nil, nil
+	}
+
+	flatFiles, err := scanFlatFiles(dir, log)
+	if err != nil {
+		return nil, err
+	}
+
+	renames := make([]Rename, 0, len(subdirEntries))
+	matched := make(map[string]bool)   // flat filenames already consumed
+	relocated := make(map[string]bool) // par2 entries already relocated
+
+	renames = append(renames, matchByBasename(dir, subdirEntries, flatFiles, matched, relocated, log)...)
+	renames = append(renames, matchByFlattenedName(dir, subdirEntries, flatFiles, matched, relocated, log)...)
+	renames = append(renames, matchByHash16k(dir, subdirEntries, flatFiles, matched, relocated, log)...)
+	renames = append(renames, matchByCRC32Fallback(dir, subdirEntries, flatFiles, matched, relocated, log)...)
+
+	log.Info("quickcheck: complete",
+		"total_renames", len(renames),
+		"total_subdir_entries", len(subdirEntries))
+
+	return renames, nil
+}
+
+func collectManifests(sets []Set, log *slog.Logger) []FileDesc {
+	if log == nil {
+		log = slog.Default()
+	}
 	var manifest []FileDesc
 	for _, set := range sets {
 		parFile := set.ParseFile()
@@ -61,37 +106,23 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 			"file", filepath.Base(parFile), "entries", len(descs))
 		manifest = append(manifest, descs...)
 	}
+	return manifest
+}
 
-	if len(manifest) == 0 {
-		log.Info("quickcheck: no file descriptions found in any par2 set")
-		return nil, nil
+func filterSubdirEntries(manifest []FileDesc, log *slog.Logger) []FileDesc {
+	if log == nil {
+		log = slog.Default()
 	}
-
-	// Log all manifest entries so we can see exactly what par2 expects.
-	log.Info("quickcheck: total par2 manifest entries", "count", len(manifest))
-	for i, fd := range manifest {
-		log.Info("quickcheck: manifest entry",
-			"idx", i,
-			"filename", fd.FileName,
-			"size", fd.FileSize,
-			"hash16k", fmt.Sprintf("%x", fd.Hash16k))
-	}
-
-	// Filter to entries that have a subdirectory component — only those
-	// need relocation. Entries like "movie.mkv" are already flat.
 	var subdirEntries []FileDesc
 	for _, fd := range manifest {
-		// Normalize backslashes (par2 files may use either separator).
 		normalized := filepath.ToSlash(fd.FileName)
 		if strings.Contains(normalized, "/") {
 			fd.FileName = normalized
 			subdirEntries = append(subdirEntries, fd)
 		}
 	}
-
 	if len(subdirEntries) == 0 {
-		log.Info("quickcheck: no par2 entries contain subdirectory paths — all filenames are flat")
-		return nil, nil
+		return nil
 	}
 	log.Info("quickcheck: par2 entries with subdirectory paths",
 		"count", len(subdirEntries))
@@ -99,8 +130,13 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 		log.Info("quickcheck: needs relocation",
 			"par2path", fd.FileName, "size", fd.FileSize)
 	}
+	return subdirEntries
+}
 
-	// Scan flat files in the download directory (top-level only).
+func scanFlatFiles(dir string, log *slog.Logger) (map[string]os.DirEntry, error) {
+	if log == nil {
+		log = slog.Default()
+	}
 	dirEntries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("quickcheck: readdir %s: %w", dir, err)
@@ -117,14 +153,19 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 	for name := range flatFiles {
 		log.Debug("quickcheck: flat file", "name", name)
 	}
+	return flatFiles, nil
+}
 
-	var renames []Rename
-	matched := make(map[string]bool)   // flat filenames already consumed
-	relocated := make(map[string]bool) // par2 entries already relocated
-
-	// Phase 1: Basename match.
+func matchByBasename(dir string, subdirEntries []FileDesc, flatFiles map[string]os.DirEntry, matched, relocated map[string]bool, log *slog.Logger) []Rename {
+	if log == nil {
+		log = slog.Default()
+	}
+	renames := make([]Rename, 0, len(subdirEntries))
 	log.Info("quickcheck: Phase 1 — basename matching")
 	for _, fd := range subdirEntries {
+		if relocated[fd.FileName] {
+			continue
+		}
 		basename := filepath.Base(fd.FileName)
 		if _, ok := flatFiles[basename]; ok && !matched[basename] {
 			log.Info("quickcheck: phase 1 candidate",
@@ -140,10 +181,14 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 				"exists", flatFiles[basename] != nil, "already_matched", matched[basename])
 		}
 	}
+	return renames
+}
 
-	// Phase 2: Flattened name match.
-	// SanitizeFilename replaces "/" with "_", so "Screens/foo.jpg" becomes
-	// "Screens_foo.jpg" during download.
+func matchByFlattenedName(dir string, subdirEntries []FileDesc, flatFiles map[string]os.DirEntry, matched, relocated map[string]bool, log *slog.Logger) []Rename {
+	if log == nil {
+		log = slog.Default()
+	}
+	renames := make([]Rename, 0, len(subdirEntries))
 	log.Info("quickcheck: Phase 2 — flattened name matching (/ → _)")
 	for _, fd := range subdirEntries {
 		if relocated[fd.FileName] {
@@ -164,162 +209,182 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 				"exists", flatFiles[flattenedName] != nil, "already_matched", matched[flattenedName])
 		}
 	}
+	return renames
+}
 
-	// Phase 3: Hash16k match for remaining unmatched entries.
-	var unmatchedEntries []FileDesc
+func filterUnmatched(subdirEntries []FileDesc, relocated map[string]bool, requireCRC bool) []FileDesc {
+	var unmatched []FileDesc
 	for _, fd := range subdirEntries {
-		if !relocated[fd.FileName] {
-			unmatchedEntries = append(unmatchedEntries, fd)
+		if relocated[fd.FileName] {
+			continue
 		}
+		if requireCRC && (fd.FileCRC32 == 0 || fd.FileSize == 0) {
+			continue
+		}
+		unmatched = append(unmatched, fd)
+	}
+	return unmatched
+}
+
+func shouldSkipFlatFile(name string, matched map[string]bool) bool {
+	if matched[name] {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(name))
+	return ext == ".par2" || ext == ".sfv" || ext == ".nfo"
+}
+
+func tryMatchHash16kFile(dir, name string, de os.DirEntry, hashIndex map[[16]byte]FileDesc, log *slog.Logger) (Rename, bool) {
+	if log == nil {
+		log = slog.Default()
+	}
+	hash, err := ComputeHash16k(filepath.Join(dir, de.Name()))
+	if err != nil {
+		log.Debug("quickcheck: phase 3 cannot hash file",
+			"name", name, "err", err)
+		return Rename{}, false
 	}
 
-	if len(unmatchedEntries) > 0 {
-		log.Info("quickcheck: Phase 3 — hash16k matching",
-			"unmatched_entries", len(unmatchedEntries))
+	fd, ok := hashIndex[hash]
+	if !ok {
+		return Rename{}, false
+	}
 
-		// Build hash16k → FileDesc index for unmatched par2 entries.
-		hashIndex := make(map[[16]byte]FileDesc)
-		for _, fd := range unmatchedEntries {
-			hashIndex[fd.Hash16k] = fd
-			log.Info("quickcheck: phase 3 seeking hash16k match",
-				"par2path", fd.FileName,
-				"hash16k", fmt.Sprintf("%x", fd.Hash16k))
-		}
+	info, err := de.Info()
+	if err != nil {
+		return Rename{}, false
+	}
+	if fd.FileSize > 0 && uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
+		log.Info("quickcheck: phase 3 hash16k matched but size differs",
+			"flat", name, "par2path", fd.FileName,
+			"flatSize", info.Size(), "par2Size", fd.FileSize)
+		return Rename{}, false
+	}
 
-		// Compute hash16k for each unmatched flat file and try to match.
-		for name, de := range flatFiles {
-			if matched[name] {
-				continue
-			}
-			// Skip verification and metadata files — they're not data files
-			// that need relocation.
-			ext := strings.ToLower(filepath.Ext(name))
-			if ext == ".par2" || ext == ".sfv" || ext == ".nfo" {
-				continue
-			}
+	log.Info("quickcheck: phase 3 hash16k match found",
+		"flat", name, "par2path", fd.FileName)
+	if relocateFile(dir, name, fd, log) {
+		delete(hashIndex, hash)
+		return Rename{From: name, To: fd.FileName}, true
+	}
+	return Rename{}, false
+}
 
-			hash, err := ComputeHash16k(filepath.Join(dir, de.Name()))
-			if err != nil {
-				log.Debug("quickcheck: phase 3 cannot hash file",
-					"name", name, "err", err)
-				continue
-			}
-
-			if fd, ok := hashIndex[hash]; ok {
-				// Verify file size matches before relocating.
-				info, err := de.Info()
-				if err != nil {
-					continue
-				}
-				if fd.FileSize > 0 && uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
-					log.Info("quickcheck: phase 3 hash16k matched but size differs",
-						"flat", name, "par2path", fd.FileName,
-						"flatSize", info.Size(), "par2Size", fd.FileSize)
-					continue
-				}
-				log.Info("quickcheck: phase 3 hash16k match found",
-					"flat", name, "par2path", fd.FileName)
-				if relocateFile(dir, name, fd, log) {
-					renames = append(renames, Rename{From: name, To: fd.FileName})
-					matched[name] = true
-					delete(hashIndex, hash)
-				}
-			}
-		}
-
-		// Log any entries that remained unmatched after phase 3.
-		for _, fd := range hashIndex {
-			log.Debug("quickcheck: phase 3 unmatched, will try CRC fallback",
-				"par2path", fd.FileName, "size", fd.FileSize)
-		}
-	} else {
+func matchByHash16k(dir string, subdirEntries []FileDesc, flatFiles map[string]os.DirEntry, matched, relocated map[string]bool, log *slog.Logger) []Rename {
+	if log == nil {
+		log = slog.Default()
+	}
+	unmatchedEntries := filterUnmatched(subdirEntries, relocated, false)
+	if len(unmatchedEntries) == 0 {
 		log.Info("quickcheck: Phase 3 — skipped, all subdir entries matched")
+		return nil
 	}
 
-	// Phase 4: CRC32+FileSize fallback (spec §5.3).
-	// For entries still unmatched after hash16k, try matching by the full
-	// file CRC32 and file size tuple. This is the most expensive pass
-	// (requires reading the entire file), but handles cases where:
-	//   - hash16k is ambiguous (HasDuplicate excludes both entries)
-	//   - the file was renamed by the poster
-	var unmatchedPhase4 []FileDesc
-	for _, fd := range subdirEntries {
-		if !relocated[fd.FileName] && fd.FileCRC32 > 0 && fd.FileSize > 0 {
-			unmatchedPhase4 = append(unmatchedPhase4, fd)
-		}
+	log.Info("quickcheck: Phase 3 — hash16k matching",
+		"unmatched_entries", len(unmatchedEntries))
+
+	hashIndex := make(map[[16]byte]FileDesc)
+	for _, fd := range unmatchedEntries {
+		hashIndex[fd.Hash16k] = fd
+		log.Info("quickcheck: phase 3 seeking hash16k match",
+			"par2path", fd.FileName,
+			"hash16k", fmt.Sprintf("%x", fd.Hash16k))
 	}
 
-	if len(unmatchedPhase4) > 0 {
-		log.Info("quickcheck: Phase 4 — CRC32+size fallback matching",
-			"unmatched_entries", len(unmatchedPhase4))
-
-		// Build (crc32, filesize) → FileDesc index.
-		crcIndex := make(map[crcSizeKey]FileDesc)
-		for _, fd := range unmatchedPhase4 {
-			crcIndex[crcSizeKey{crc: fd.FileCRC32, size: fd.FileSize}] = fd
+	renames := make([]Rename, 0, len(unmatchedEntries))
+	for name, de := range flatFiles {
+		if shouldSkipFlatFile(name, matched) {
+			continue
 		}
-
-		// Compute CRC32 for each unmatched flat file.
-		for name, de := range flatFiles {
-			if matched[name] || len(crcIndex) == 0 {
-				continue
-			}
-			ext := strings.ToLower(filepath.Ext(name))
-			if ext == ".par2" || ext == ".sfv" || ext == ".nfo" {
-				continue
-			}
-
-			info, err := de.Info()
-			if err != nil {
-				continue
-			}
-			fileSize := uint64(info.Size()) //nolint:gosec // size is non-negative
-
-			// Quick pre-check: does any unmatched entry have this file size?
-			sizeMatch := false
-			for k := range crcIndex {
-				if k.size == fileSize {
-					sizeMatch = true
-					break
-				}
-			}
-			if !sizeMatch {
-				continue
-			}
-
-			fileCRC, err := computeFileCRC32(filepath.Join(dir, name))
-			if err != nil {
-				log.Debug("quickcheck: phase 4 cannot compute CRC32",
-					"name", name, "err", err)
-				continue
-			}
-
-			key := crcSizeKey{crc: fileCRC, size: fileSize}
-			if fd, ok := crcIndex[key]; ok {
-				log.Info("quickcheck: phase 4 CRC32+size match found",
-					"flat", name, "par2path", fd.FileName,
-					"crc32", fmt.Sprintf("%08x", fileCRC), "size", fileSize)
-				if relocateFile(dir, name, fd, log) {
-					renames = append(renames, Rename{From: name, To: fd.FileName})
-					matched[name] = true
-					relocated[fd.FileName] = true
-					delete(crcIndex, key)
-				}
-			}
-		}
-
-		// Log any entries that remained unmatched after all four phases.
-		for _, fd := range crcIndex {
-			log.Warn("quickcheck: par2 entry unmatched after all phases",
-				"par2path", fd.FileName, "size", fd.FileSize)
+		if ren, ok := tryMatchHash16kFile(dir, name, de, hashIndex, log); ok {
+			renames = append(renames, ren)
+			matched[name] = true
+			relocated[ren.To] = true
 		}
 	}
 
-	log.Info("quickcheck: complete",
-		"total_renames", len(renames),
-		"total_subdir_entries", len(subdirEntries))
+	for _, fd := range hashIndex {
+		log.Debug("quickcheck: phase 3 unmatched, will try CRC fallback",
+			"par2path", fd.FileName, "size", fd.FileSize)
+	}
+	return renames
+}
 
-	return renames, nil
+func tryMatchCRC32File(dir, name string, de os.DirEntry, crcIndex map[crcSizeKey]FileDesc, log *slog.Logger) (Rename, bool) {
+	if log == nil {
+		log = slog.Default()
+	}
+	info, err := de.Info()
+	if err != nil {
+		return Rename{}, false
+	}
+	fileSize := uint64(info.Size()) //nolint:gosec // size is non-negative
+
+	sizeMatch := false
+	for k := range crcIndex {
+		if k.size == fileSize {
+			sizeMatch = true
+			break
+		}
+	}
+	if !sizeMatch {
+		return Rename{}, false
+	}
+
+	fileCRC, err := computeFileCRC32(filepath.Join(dir, name))
+	if err != nil {
+		log.Debug("quickcheck: phase 4 cannot compute CRC32",
+			"name", name, "err", err)
+		return Rename{}, false
+	}
+
+	key := crcSizeKey{crc: fileCRC, size: fileSize}
+	if fd, ok := crcIndex[key]; ok {
+		log.Info("quickcheck: phase 4 CRC32+size match found",
+			"flat", name, "par2path", fd.FileName,
+			"crc32", fmt.Sprintf("%08x", fileCRC), "size", fileSize)
+		if relocateFile(dir, name, fd, log) {
+			delete(crcIndex, key)
+			return Rename{From: name, To: fd.FileName}, true
+		}
+	}
+	return Rename{}, false
+}
+
+func matchByCRC32Fallback(dir string, subdirEntries []FileDesc, flatFiles map[string]os.DirEntry, matched, relocated map[string]bool, log *slog.Logger) []Rename {
+	if log == nil {
+		log = slog.Default()
+	}
+	unmatchedPhase4 := filterUnmatched(subdirEntries, relocated, true)
+	if len(unmatchedPhase4) == 0 {
+		return nil
+	}
+
+	log.Info("quickcheck: Phase 4 — CRC32+size fallback matching",
+		"unmatched_entries", len(unmatchedPhase4))
+
+	crcIndex := make(map[crcSizeKey]FileDesc)
+	for _, fd := range unmatchedPhase4 {
+		crcIndex[crcSizeKey{crc: fd.FileCRC32, size: fd.FileSize}] = fd
+	}
+
+	renames := make([]Rename, 0, len(unmatchedPhase4))
+	for name, de := range flatFiles {
+		if shouldSkipFlatFile(name, matched) || len(crcIndex) == 0 {
+			continue
+		}
+		if ren, ok := tryMatchCRC32File(dir, name, de, crcIndex, log); ok {
+			renames = append(renames, ren)
+			matched[name] = true
+			relocated[ren.To] = true
+		}
+	}
+
+	for _, fd := range crcIndex {
+		log.Warn("quickcheck: par2 entry unmatched after all phases",
+			"par2path", fd.FileName, "size", fd.FileSize)
+	}
+	return renames
 }
 
 // relocateFile moves a flat file into the par2-specified subdirectory path.
