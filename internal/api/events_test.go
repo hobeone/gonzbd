@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // ---------- Broadcaster unit tests ----------
@@ -408,4 +410,118 @@ func TestBroadcaster_DebugLogging(t *testing.T) {
 	if got := rec.len(); got != 1 {
 		t.Errorf("expected 1 log record with 1 client, got %d", got)
 	}
+}
+
+// ---------- Server handleWS tests ----------
+
+func TestHandleWS(t *testing.T) {
+	t.Parallel()
+
+	t.Run("forbidden without apikey", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := config.Default()
+		if err != nil {
+			t.Fatalf("Default(): %v", err)
+		}
+		s := testServerWithConfig(t, cfg)
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/api/ws", nil)
+		s.Handler().ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Errorf("status = %d; want 403 Forbidden", rr.Code)
+		}
+	})
+
+	t.Run("forbidden with wrong apikey", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := config.Default()
+		if err != nil {
+			t.Fatalf("Default(): %v", err)
+		}
+		s := testServerWithConfig(t, cfg)
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/api/ws?apikey=wrong_key", nil)
+		s.Handler().ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Errorf("status = %d; want 403 Forbidden", rr.Code)
+		}
+	})
+
+	t.Run("success with valid apikey", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := config.Default()
+		if err != nil {
+			t.Fatalf("Default(): %v", err)
+		}
+		s := testServerWithConfig(t, cfg)
+		srv := httptest.NewServer(s.Handler())
+		defer srv.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/ws?apikey=" + testAPIKey
+		conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+		if err != nil {
+			t.Fatalf("websocket dial failed: %v", err)
+		}
+		if resp != nil && resp.Body != nil {
+			defer func() { _ = resp.Body.Close() }()
+		}
+		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "done") }()
+
+		// Wait for connection to be registered on server.
+		ctxPoll, cancelPoll := context.WithTimeout(ctx, 2*time.Second)
+		for s.EventBroadcaster().NumClients() == 0 {
+			select {
+			case <-ctxPoll.Done():
+				cancelPoll()
+				t.Fatal("timeout waiting for client registration")
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+		cancelPoll()
+
+		// Broadcast an event and verify client receives it.
+		s.EventBroadcaster().Broadcast(Event{Type: "test_ws_event", Speed: 1234})
+
+		_, msg, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("conn.Read: %v", err)
+		}
+		var ev Event
+		if err := json.Unmarshal(msg, &ev); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if ev.Type != "test_ws_event" {
+			t.Errorf("event type = %q; want test_ws_event", ev.Type)
+		}
+		if ev.Speed != 1234 {
+			t.Errorf("speed = %d; want 1234", ev.Speed)
+		}
+	})
+
+	t.Run("success with valid nzbkey", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := config.Default()
+		if err != nil {
+			t.Fatalf("Default(): %v", err)
+		}
+		s := testServerWithConfig(t, cfg)
+		srv := httptest.NewServer(s.Handler())
+		defer srv.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/ws?apikey=" + testNZBKey
+		conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+		if err != nil {
+			t.Fatalf("websocket dial with nzbkey failed: %v", err)
+		}
+		if resp != nil && resp.Body != nil {
+			defer func() { _ = resp.Body.Close() }()
+		}
+		_ = conn.Close(websocket.StatusNormalClosure, "done")
+	})
 }

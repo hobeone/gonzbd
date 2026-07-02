@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -356,6 +359,66 @@ func TestHistoryMarkCompleted(t *testing.T) {
 	if e.Status != "Completed" {
 		t.Errorf("status = %q; want Completed", e.Status)
 	}
+}
+
+type retryErrApp struct {
+	NopApp
+	err error
+}
+
+func (a retryErrApp) RetryHistoryJob(_ context.Context, _ string) error {
+	return a.err
+}
+
+// --- Retry ---
+
+func TestHistoryRetry(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing value", func(t *testing.T) {
+		t.Parallel()
+		s, _ := testHistoryServer(t)
+		rr := apiGet(t, s.Handler(), "/api?mode=history&name=retry&apikey="+testAPIKey)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("status = %d; want 400", rr.Code)
+		}
+		m := decodeJSON(t, rr)
+		if _, ok := m["error"]; !ok {
+			t.Error("expected error field in JSON response")
+		}
+	})
+
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		s, _ := testHistoryServer(t)
+		rr := apiGet(t, s.Handler(), "/api?mode=history&name=retry&value=job_123&apikey="+testAPIKey)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+		}
+		m := decodeJSON(t, rr)
+		if m["status"] != true {
+			t.Errorf("status = %v; want true", m["status"])
+		}
+		if nzoID, _ := m["nzo_id"].(string); nzoID != "job_123" {
+			t.Errorf("nzo_id = %v; want job_123", m["nzo_id"])
+		}
+	})
+
+	t.Run("retry error", func(t *testing.T) {
+		t.Parallel()
+		s, repo := testHistoryServer(t)
+		s.app = retryErrApp{NopApp: NopApp{History: repo}, err: errors.New("simulated retry failure")}
+
+		rr := apiGet(t, s.Handler(), "/api?mode=history&name=retry&value=job_fail&apikey="+testAPIKey)
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d; want 500", rr.Code)
+		}
+		m := decodeJSON(t, rr)
+		errMsg, _ := m["error"].(string)
+		if !strings.Contains(errMsg, "simulated retry failure") {
+			t.Errorf("error = %q; want to contain 'simulated retry failure'", errMsg)
+		}
+	})
 }
 
 // --- Nil guard ---
