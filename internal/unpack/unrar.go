@@ -64,6 +64,9 @@ type Options struct {
 	// extraction subprocess. When non-empty, the command is prepended
 	// with nice and/or ionice. Matches SABnzbd's cfg.nice/cfg.ionice.
 	CmdCfg cmdutil.CmdConfig
+	// Sandbox specifies OS-level sandboxing (bwrap, sandbox-exec, jail) containment
+	// settings for the extraction subprocess.
+	Sandbox cmdutil.SandboxConfig
 	// ExtraArgs holds additional user-specified command-line arguments
 	// appended to every unrar invocation. Pre-validated by the config
 	// layer to contain only flags starting with '-'.
@@ -200,7 +203,10 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 		opts.OnCommand(cmdLine)
 	}
 
-	cmd := cmdutil.BuildCommand(ctx, opts.CmdCfg, bin, args...) //nolint:gosec // args are caller-supplied, not shell-expanded
+	cmd, err := cmdutil.BuildSandboxedCommand(ctx, opts.CmdCfg, opts.Sandbox, bin, args...) //nolint:gosec // args are caller-supplied, not shell-expanded
+	if err != nil {
+		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "unrar"}, err
+	}
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer

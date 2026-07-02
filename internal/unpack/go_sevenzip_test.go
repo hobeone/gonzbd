@@ -793,3 +793,126 @@ func TestExtractSevenZipFile_Direct(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractSevenZipEntry_Coverage(t *testing.T) {
+	t.Parallel()
+	td := sevenZipTestdata(t)
+	r, err := sevenzip.OpenReader(filepath.Join(td, "lzma2.7z"))
+	if err != nil {
+		t.Fatalf("open lzma2.7z: %v", err)
+	}
+	defer r.Close()
+
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+
+	// Normal extraction via extractSevenZipEntry
+	totalRead := new(int64)
+	extracted, err := extractSevenZipEntry(t.Context(), r.File[0], outDir, root, Options{}, 0, totalRead, slog.Default())
+	if err != nil || !extracted {
+		t.Errorf("expected successful extraction, got extracted=%v err=%v", extracted, err)
+	}
+
+	// OneFolder mode without overwrite (triggers uniquePath)
+	extracted, err = extractSevenZipEntry(t.Context(), r.File[0], outDir, root, Options{OneFolder: true}, 0, totalRead, slog.Default())
+	if err != nil || !extracted {
+		t.Errorf("expected OneFolder extraction, got extracted=%v err=%v", extracted, err)
+	}
+
+	// Bad path (should return false, nil and skip)
+	badFile := *r.File[0]
+	badFile.Name = "../../etc/passwd"
+	var onlineMsg string
+	extracted, err = extractSevenZipEntry(t.Context(), &badFile, outDir, root, Options{
+		OnLine: func(msg string) { onlineMsg = msg },
+	}, 0, totalRead, slog.Default())
+	if err != nil || extracted {
+		t.Errorf("expected skip on bad path, got extracted=%v err=%v", extracted, err)
+	}
+	if !strings.Contains(onlineMsg, "Skipping bad path") {
+		t.Errorf("expected OnLine callback for bad path, got: %q", onlineMsg)
+	}
+
+	// Directory entry (Attributes 0x10)
+	dirFile := *r.File[0]
+	dirFile.Name = "testdir"
+	dirFile.Attributes = 0x10
+	extracted, err = extractSevenZipEntry(t.Context(), &dirFile, outDir, root, Options{}, 0, totalRead, slog.Default())
+	if err != nil || extracted {
+		t.Errorf("expected directory skip, got extracted=%v err=%v", extracted, err)
+	}
+
+	// Symlink entry (UNIX S_IFLNK 0120000 in upper 16 bits = 0xA0000000)
+	symFile := *r.File[0]
+	symFile.Name = "testlink"
+	symFile.Attributes = 0xA0000000
+	extracted, err = extractSevenZipEntry(t.Context(), &symFile, outDir, root, Options{
+		OnLine: func(msg string) { onlineMsg = msg },
+	}, 0, totalRead, slog.Default())
+	if err != nil || extracted {
+		t.Errorf("expected symlink skip, got extracted=%v err=%v", extracted, err)
+	}
+
+	// Non-regular entry (UNIX S_IFCHR 0020000 in upper 16 bits = 0x20000000)
+	charFile := *r.File[0]
+	charFile.Name = "testchar"
+	charFile.Attributes = 0x20000000
+	extracted, err = extractSevenZipEntry(t.Context(), &charFile, outDir, root, Options{
+		OnLine: func(msg string) { onlineMsg = msg },
+	}, 0, totalRead, slog.Default())
+	if err != nil || extracted {
+		t.Errorf("expected non-regular skip, got extracted=%v err=%v", extracted, err)
+	}
+}
+
+func TestExtractSevenZipFile_Coverage(t *testing.T) {
+	t.Parallel()
+	td := sevenZipTestdata(t)
+	r, err := sevenzip.OpenReader(filepath.Join(td, "lzma2.7z"))
+	if err != nil {
+		t.Fatalf("open lzma2.7z: %v", err)
+	}
+	defer r.Close()
+
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+
+	totalRead := new(int64)
+	f := r.File[0]
+
+	// Extract first time
+	err = extractSevenZipFile(t.Context(), root, "exist_test", filepath.Join(outDir, "exist_test"), f, Options{}, 0, totalRead, slog.Default())
+	if err != nil {
+		t.Fatalf("extract first time: %v", err)
+	}
+
+	// Extract second time with OverwriteFiles = false (should skip existing)
+	var onlineMsg string
+	err = extractSevenZipFile(t.Context(), root, "exist_test", filepath.Join(outDir, "exist_test"), f, Options{
+		OverwriteFiles: false,
+		OnLine:         func(msg string) { onlineMsg = msg },
+	}, 0, totalRead, slog.Default())
+	if err != nil {
+		t.Errorf("extract second time: %v", err)
+	}
+	if !strings.Contains(onlineMsg, "Skipping existing") {
+		t.Errorf("expected OnLine callback for existing file, got: %q", onlineMsg)
+	}
+
+	// Extract with IgnoreUnrarDates = false and valid modification time
+	err = extractSevenZipFile(t.Context(), root, "date_test", filepath.Join(outDir, "date_test"), f, Options{
+		OverwriteFiles:   true,
+		IgnoreUnrarDates: false,
+	}, 0, totalRead, slog.Default())
+	if err != nil {
+		t.Errorf("extract with date: %v", err)
+	}
+}

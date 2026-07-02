@@ -181,6 +181,13 @@ func (u *UnpackStage) SetIgnoreUnrarDates(v bool) {
 	u.BaseOpts.IgnoreUnrarDates = v
 }
 
+// SetStrictSandbox updates strict sandbox setting at runtime. Thread-safe.
+func (u *UnpackStage) SetStrictSandbox(v bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.BaseOpts.Sandbox.Strict = v
+}
+
 // Name returns the stage identifier.
 func (*UnpackStage) Name() string { return "unpack" }
 
@@ -346,6 +353,9 @@ func (u *UnpackStage) extractPendingArchives(
 
 // prepareOptions sets up passwords list, callbacks, and other extraction options.
 func (u *UnpackStage) prepareOptions(ctx context.Context, log *slog.Logger, job *Job, opts unpack.Options, passwordFile string) unpack.Options {
+	if opts.Sandbox.TargetDir == "" {
+		opts.Sandbox.TargetDir = job.DownloadDir
+	}
 	opts.OnLine = func(line string) {
 		if job.OnOutput != nil {
 			job.OnOutput("unpack", line)
@@ -353,7 +363,7 @@ func (u *UnpackStage) prepareOptions(ctx context.Context, log *slog.Logger, job 
 	}
 	// Build the password list: per-job password comes first (highest priority),
 	// followed by any passwords from the config password_file.
-	if job.Queue.Password != "" {
+	if job.Queue != nil && job.Queue.Password != "" {
 		opts.Passwords = append([]string{job.Queue.Password}, opts.Passwords...)
 	}
 	if passwordFile != "" {

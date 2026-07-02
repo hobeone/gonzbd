@@ -100,6 +100,11 @@ type PostProcConfig struct {
 	// Default 3 (matching SABnzbd).
 	DirectUnpackThreads int `yaml:"direct_unpack_threads" json:"direct_unpack_threads"`
 
+	// StrictSandbox determines if external unpacker execution must abort
+	// immediately when OS-level sandboxing (bwrap, sandbox-exec, jail) cannot
+	// be established. Defaults to true.
+	StrictSandbox bool `yaml:"strict_sandbox" json:"strict_sandbox"`
+
 	// DeobfuscateFilenames renames obfuscated files (random hex/UUIDs)
 	// to use the job name as a base. Defaults to true.
 	DeobfuscateFilenames bool `yaml:"deobfuscate_filenames" json:"deobfuscate_filenames"`
