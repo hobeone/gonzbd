@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	par2engine "github.com/hobeone/par2engine/par2"
+
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
 // par2FileSizeLimit is the maximum size of a par2 index or volume file that
@@ -66,77 +68,74 @@ func monitorProgress(label string, onUpdate func(string)) (progress chan par2eng
 // regardless of their on-disk names. Pass an empty string to skip.
 // onLine is called for progress updates and diagnostic messages (may be nil).
 func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir string, onLine func(string)) (res VerifyResult, err error) {
-	// Recover from panics in the par2engine library (untrusted data).
-	defer func() {
-		if p := recover(); p != nil {
+	err = cmdutil.SafeEngineRun("go_par2: par2engine panic during verify", func() error {
+		var mu sync.Mutex
+		var safeOnLine func(string)
+		if onLine != nil {
+			safeOnLine = func(line string) {
+				mu.Lock()
+				defer mu.Unlock()
+				onLine(line)
+			}
+		}
+
+		d, decErr := newDecoderForDir(ctx, log, parfile, candidateDir,
+			func(msg string) { log.Warn("go_par2: "+msg, "dir", candidateDir) },
+			func(msg string) { log.Info("go_par2: "+msg, "dir", candidateDir) },
+			safeOnLine,
+		)
+		if decErr != nil {
+			res.Status = StatusInvalidPar2
+			return fmt.Errorf("go_par2: %w", decErr)
+		}
+		defer d.Close() //nolint:errcheck // best-effort close
+
+		var verifyProgress chan par2engine.Progress
+		var verifyDone chan struct{}
+		if safeOnLine != nil {
+			verifyProgress, verifyDone = monitorProgress("Verifying", safeOnLine)
+		}
+
+		scanErr := d.VerifyScans(ctx, verifyProgress)
+		if verifyProgress != nil {
+			close(verifyProgress)
+			<-verifyDone
+		}
+		if scanErr != nil {
 			res.Status = StatusUnknown
-			err = fmt.Errorf("go_par2: par2engine panic during verify: %v", p)
+			return fmt.Errorf("go_par2: verify scan: %w", scanErr)
 		}
-	}()
 
-	var mu sync.Mutex
-	var safeOnLine func(string)
-	if onLine != nil {
-		safeOnLine = func(line string) {
-			mu.Lock()
-			defer mu.Unlock()
-			onLine(line)
+		counts := d.ShardCounts()
+		res.CommandLine = fmt.Sprintf("go_par2 verify %s", parfile)
+		res.Stdout = fmt.Sprintf("usable_data=%d unusable_data=%d usable_parity=%d",
+			counts.UsableDataShardCount, counts.UnusableDataShardCount, counts.UsableParityShardCount)
+
+		switch {
+		case !counts.RepairNeeded():
+			res.Status = StatusAllFilesOK
+			if safeOnLine != nil {
+				safeOnLine("[go_par2] All files are correct")
+			}
+		case counts.RepairPossible():
+			res.Status = StatusRepairPossible
+			if safeOnLine != nil {
+				safeOnLine(fmt.Sprintf("[go_par2] Repair needed: %d blocks missing, %d parity available",
+					counts.UnusableDataShardCount, counts.UsableParityShardCount))
+			}
+		default:
+			res.Status = StatusRepairNotPossible
+			if safeOnLine != nil {
+				safeOnLine(fmt.Sprintf("[go_par2] Repair not possible: need %d more recovery blocks",
+					counts.BlocksNeeded()))
+			}
 		}
-	}
 
-	d, err := newDecoderForDir(ctx, log, parfile, candidateDir,
-		func(msg string) { log.Warn("go_par2: "+msg, "dir", candidateDir) },
-		func(msg string) { log.Info("go_par2: "+msg, "dir", candidateDir) },
-		safeOnLine,
-	)
-	if err != nil {
-		res.Status = StatusInvalidPar2
-		return res, fmt.Errorf("go_par2: %w", err)
-	}
-	defer d.Close() //nolint:errcheck // best-effort close
-
-	var verifyProgress chan par2engine.Progress
-	var verifyDone chan struct{}
-	if safeOnLine != nil {
-		verifyProgress, verifyDone = monitorProgress("Verifying", safeOnLine)
-	}
-
-	err = d.VerifyScans(ctx, verifyProgress)
-	if verifyProgress != nil {
-		close(verifyProgress)
-		<-verifyDone
-	}
-	if err != nil {
+		return nil
+	}, func(_ any) {
 		res.Status = StatusUnknown
-		return res, fmt.Errorf("go_par2: verify scan: %w", err)
-	}
-
-	counts := d.ShardCounts()
-	res.CommandLine = fmt.Sprintf("go_par2 verify %s", parfile)
-	res.Stdout = fmt.Sprintf("usable_data=%d unusable_data=%d usable_parity=%d",
-		counts.UsableDataShardCount, counts.UnusableDataShardCount, counts.UsableParityShardCount)
-
-	switch {
-	case !counts.RepairNeeded():
-		res.Status = StatusAllFilesOK
-		if safeOnLine != nil {
-			safeOnLine("[go_par2] All files are correct")
-		}
-	case counts.RepairPossible():
-		res.Status = StatusRepairPossible
-		if safeOnLine != nil {
-			safeOnLine(fmt.Sprintf("[go_par2] Repair needed: %d blocks missing, %d parity available",
-				counts.UnusableDataShardCount, counts.UsableParityShardCount))
-		}
-	default:
-		res.Status = StatusRepairNotPossible
-		if safeOnLine != nil {
-			safeOnLine(fmt.Sprintf("[go_par2] Repair not possible: need %d more recovery blocks",
-				counts.BlocksNeeded()))
-		}
-	}
-
-	return res, nil
+	})
+	return res, err
 }
 
 // GoRepair runs a native Go-based PAR2 verification and repair using par2engine.
@@ -146,85 +145,81 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 // regardless of their on-disk names. Pass an empty string to skip.
 // onLine is called for each progress update and diagnostic message (may be nil).
 func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir string, onLine func(string)) (res RepairResult, err error) {
-	// Recover from panics in the par2engine library (untrusted data).
-	defer func() {
-		if p := recover(); p != nil {
-			err = fmt.Errorf("go_par2: par2engine panic during repair: %v", p)
+	err = cmdutil.SafeEngineRun("go_par2: par2engine panic during repair", func() error {
+		var mu sync.Mutex
+		var output strings.Builder
+		accumulate := func(line string) {
+			mu.Lock()
+			defer mu.Unlock()
+			output.WriteString(line)
+			output.WriteString("\n")
+			if onLine != nil {
+				onLine(line)
+			}
 		}
-	}()
 
-	var mu sync.Mutex
-	var output strings.Builder
-	accumulate := func(line string) {
-		mu.Lock()
-		defer mu.Unlock()
-		output.WriteString(line)
-		output.WriteString("\n")
-		if onLine != nil {
-			onLine(line)
+		d, decErr := newDecoderForDir(ctx, log, parfile, candidateDir,
+			func(msg string) { accumulate(fmt.Sprintf("[go_par2] WARN: %s", msg)) },
+			func(msg string) { accumulate(fmt.Sprintf("[go_par2] %s", msg)) },
+			accumulate,
+		)
+		if decErr != nil {
+			res.Output = output.String()
+			return fmt.Errorf("go_par2: %w", decErr)
 		}
-	}
+		defer d.Close() //nolint:errcheck // best-effort close
 
-	d, err := newDecoderForDir(ctx, log, parfile, candidateDir,
-		func(msg string) { accumulate(fmt.Sprintf("[go_par2] WARN: %s", msg)) },
-		func(msg string) { accumulate(fmt.Sprintf("[go_par2] %s", msg)) },
-		accumulate,
-	)
-	if err != nil {
-		res.Output = output.String()
-		return res, fmt.Errorf("go_par2: %w", err)
-	}
-	defer d.Close() //nolint:errcheck // best-effort close
+		res.CommandLine = fmt.Sprintf("go_par2 repair %s", parfile)
 
-	res.CommandLine = fmt.Sprintf("go_par2 repair %s", parfile)
+		verifyProgress, verifyDone := monitorProgress("Verifying", accumulate)
+		scanErr := d.VerifyScans(ctx, verifyProgress)
+		close(verifyProgress)
+		<-verifyDone
+		if scanErr != nil {
+			res.Output = output.String()
+			return fmt.Errorf("go_par2: verify scan: %w", scanErr)
+		}
 
-	verifyProgress, verifyDone := monitorProgress("Verifying", accumulate)
-	err = d.VerifyScans(ctx, verifyProgress)
-	close(verifyProgress)
-	<-verifyDone
-	if err != nil {
-		res.Output = output.String()
-		return res, fmt.Errorf("go_par2: verify scan: %w", err)
-	}
+		counts := d.ShardCounts()
 
-	counts := d.ShardCounts()
+		if !counts.RepairNeeded() {
+			res.Success = true
+			accumulate("[go_par2] All files are correct")
+			res.Output = output.String()
+			return nil
+		}
 
-	if !counts.RepairNeeded() {
+		if !counts.RepairPossible() {
+			res.NeedMoreBlocks = true
+			res.BlocksNeeded = counts.BlocksNeeded()
+			accumulate(fmt.Sprintf("[go_par2] Repair not possible — need %d more recovery blocks", res.BlocksNeeded))
+			res.Output = output.String()
+			return nil
+		}
+
+		// Phase 2: Repair
+		accumulate(fmt.Sprintf("[go_par2] Repair required: %d missing blocks, %d parity available",
+			counts.UnusableDataShardCount, counts.UsableParityShardCount))
+
+		repairProgress, repairDone := monitorProgress("Repairing", accumulate)
+		repairErr := d.Repair(ctx, repairProgress)
+		close(repairProgress)
+		<-repairDone
+
+		if repairErr != nil {
+			res.ExitCode = 1
+			accumulate(fmt.Sprintf("[go_par2] Repair failed: %v", repairErr))
+			res.Output = output.String()
+			return fmt.Errorf("go_par2: repair: %w", repairErr)
+		}
+
 		res.Success = true
-		accumulate("[go_par2] All files are correct")
+		accumulate("[go_par2] Repair complete")
 		res.Output = output.String()
-		return res, nil
-	}
 
-	if !counts.RepairPossible() {
-		res.NeedMoreBlocks = true
-		res.BlocksNeeded = counts.BlocksNeeded()
-		accumulate(fmt.Sprintf("[go_par2] Repair not possible — need %d more recovery blocks", res.BlocksNeeded))
-		res.Output = output.String()
-		return res, nil
-	}
-
-	// Phase 2: Repair
-	accumulate(fmt.Sprintf("[go_par2] Repair required: %d missing blocks, %d parity available",
-		counts.UnusableDataShardCount, counts.UsableParityShardCount))
-
-	repairProgress, repairDone := monitorProgress("Repairing", accumulate)
-	repairErr := d.Repair(ctx, repairProgress)
-	close(repairProgress)
-	<-repairDone
-
-	if repairErr != nil {
-		res.ExitCode = 1
-		accumulate(fmt.Sprintf("[go_par2] Repair failed: %v", repairErr))
-		res.Output = output.String()
-		return res, fmt.Errorf("go_par2: repair: %w", repairErr)
-	}
-
-	res.Success = true
-	accumulate("[go_par2] Repair complete")
-	res.Output = output.String()
-
-	return res, nil
+		return nil
+	})
+	return res, err
 }
 
 // addCandidateFiles reads dir and registers every non-directory, non-par2 file

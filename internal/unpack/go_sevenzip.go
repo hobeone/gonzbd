@@ -16,6 +16,7 @@ import (
 
 	"github.com/bodgit/sevenzip"
 
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
@@ -41,17 +42,19 @@ var (
 // closed before opening the next, enabling the library's stream reuse
 // optimisation for solid archives.
 func GoSevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
-	// Top-level recover: sevenzip may panic on malformed archives.
-	defer func() {
-		if p := recover(); p != nil {
-			res.Reason = FailCorrupt
-			err = fmt.Errorf("go_7z: sevenzip panic: %v", p)
-			if opts.OnLine != nil {
-				opts.OnLine(fmt.Sprintf("ERROR: sevenzip panic: %v", p))
-			}
+	err = cmdutil.SafeEngineRun("go_7z: sevenzip panic", func() error {
+		res, err = goSevenZipInternal(ctx, log, archive, outDir, password, opts)
+		return err
+	}, func(p any) {
+		res.Reason = FailCorrupt
+		if opts.OnLine != nil {
+			opts.OnLine(fmt.Sprintf("ERROR: sevenzip panic: %v", p))
 		}
-	}()
+	})
+	return res, err
+}
 
+func goSevenZipInternal(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
 	log = log.With("component", "go_7z", "archive", archive.MainFile)
 
 	// Snapshot directory before extraction.
