@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
@@ -156,5 +157,26 @@ func TestSevenZip_Coverage(t *testing.T) {
 		if res.ExitCode == 0 {
 			t.Errorf("expected non-zero exit code, got %d", res.ExitCode)
 		}
+	}
+}
+
+func TestSevenZip_SandboxOptions(t *testing.T) {
+	archive := unpack.Archive{
+		Type:     unpack.SevenZipArchive,
+		Name:     "test",
+		MainFile: "/tmp/does-not-exist.7z",
+		Parts:    []string{"/tmp/does-not-exist.7z"},
+	}
+	opts := unpack.Options{
+		UseGo7z: false,
+		Sandbox: cmdutil.SandboxConfig{
+			Enabled:   true,
+			Strict:    true,
+			TargetDir: "/tmp",
+		},
+	}
+	res, err := unpack.SevenZip(t.Context(), slog.Default(), archive, "/tmp", "", opts)
+	if err == nil {
+		t.Fatalf("expected error when strict sandbox is enabled on non-existent or unsupported binary, got nil (res=%+v)", res)
 	}
 }

@@ -103,7 +103,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	var scriptDir, completeDir, apiKey, listenAddr string
 	var nice, ionice, extraPar2Params, extraUnrarParams string
 	var cleanupExtensions []string
-	var flatUnpack, overwriteFiles, ignoreUnrarDates, useGoRAR, goRarFallback, useGo7z, go7zFallback bool
+	var flatUnpack, overwriteFiles, ignoreUnrarDates, useGoRAR, goRarFallback, useGo7z, go7zFallback, strictSandbox bool
 
 	cfg.WithRead(func(c *config.Config) {
 		enableQuickCheck = c.PostProc.EnableQuickCheck
@@ -139,6 +139,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 		goRarFallback = c.PostProc.GoRarFallback
 		useGo7z = c.PostProc.UseGo7z
 		go7zFallback = c.PostProc.Go7zFallback
+		strictSandbox = c.PostProc.StrictSandbox
 
 		apiKey = c.General.APIKey
 		listenAddr = net.JoinHostPort(c.General.Host, strconv.Itoa(c.General.Port))
@@ -201,7 +202,11 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 		Go7zFallback:     go7zFallback,
 		HasProblem:       probe.UnrarInfo.HasProblem,
 		CmdCfg:           cmdCfg,
-		ExtraArgs:        extraUnrarArgs,
+		Sandbox: cmdutil.SandboxConfig{
+			Enabled: true,
+			Strict:  strictSandbox,
+		},
+		ExtraArgs: extraUnrarArgs,
 	}, enableRarCleanup)
 	unpackStage.Permissions = permissions
 	unpackStage.PasswordFile = passwordFile

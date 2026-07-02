@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
@@ -296,4 +297,25 @@ func TestUnRAR_LoggedArgsRedacted(t *testing.T) {
 			t.Errorf("logged args missing -p- flag: %v", loggedArgs)
 		}
 	})
+}
+
+func TestUnRAR_SandboxOptions(t *testing.T) {
+	archive := unpack.Archive{
+		Type:     unpack.RarArchive,
+		Name:     "test",
+		MainFile: "/tmp/does-not-exist.rar",
+		Parts:    []string{"/tmp/does-not-exist.rar"},
+	}
+	opts := unpack.Options{
+		UseGoRAR: false,
+		Sandbox: cmdutil.SandboxConfig{
+			Enabled:   true,
+			Strict:    true,
+			TargetDir: "/tmp",
+		},
+	}
+	res, err := unpack.UnRAR(t.Context(), slog.Default(), archive, "/tmp", "", opts)
+	if err == nil {
+		t.Fatalf("expected error when strict sandbox is enabled on non-existent or unsupported binary, got nil (res=%+v)", res)
+	}
 }

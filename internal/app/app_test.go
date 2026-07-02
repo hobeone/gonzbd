@@ -1104,6 +1104,7 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 	application.SetEnable7zip(true)
 	application.SetPar2Turbo(true)
 	application.SetIgnoreUnrarDates(true)
+	application.SetStrictSandbox(false)
 	application.SetSanitizeOptions(fsutil.SanitizeOptions{
 		ReplaceIllegalWith: "-",
 		ReplaceSpacesWith:  "_",
@@ -1138,6 +1139,9 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 		}
 		if !cfg.PostProc.IgnoreUnrarDates {
 			t.Error("IgnoreUnrarDates not set")
+		}
+		if cfg.PostProc.StrictSandbox {
+			t.Error("StrictSandbox not set to false")
 		}
 		if cfg.Downloads.ReplaceIllegalWith != "-" {
 			t.Errorf("ReplaceIllegalWith = %q, want -", cfg.Downloads.ReplaceIllegalWith)
