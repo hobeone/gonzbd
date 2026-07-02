@@ -276,9 +276,22 @@ func convertFile(xf xmlFile, now time.Time, digest hash.Hash) (File, int64, arti
 		Groups:  xf.Groups,
 	}
 
-	byPart := make(map[int]Article, len(xf.Segments))
+	byPart, counters := partitionSegments(xf.Segments, digest)
+	normalizeFileStruct(&file, byPart)
+
+	if len(file.Articles) == 0 {
+		return file, 0, counters
+	}
+	return file, ts, counters
+}
+
+// partitionSegments iterates through raw xmlSegment elements, filtering out
+// structurally invalid or out-of-bounds segments and deduplicating by part number.
+// Valid segment IDs are hashed into digest in source order.
+func partitionSegments(segments []xmlSegment, digest hash.Hash) (map[int]Article, articleCounters) {
+	byPart := make(map[int]Article, len(segments))
 	var counters articleCounters
-	for _, s := range xf.Segments {
+	for _, s := range segments {
 		id := strings.TrimSpace(s.ID)
 		// Structural validity: id must be present and the part number
 		// must be a positive integer. Missing/zero mirrors Python's
@@ -305,7 +318,16 @@ func convertFile(xf xmlFile, now time.Time, digest hash.Hash) (File, int64, arti
 		}
 		byPart[s.Number] = Article{ID: id, Bytes: s.Bytes, Number: s.Number}
 	}
+	return byPart, counters
+}
 
+// normalizeFileStruct takes the partitioned segments map, sorts articles in
+// ascending order by part number, and normalizes the File struct's Articles
+// slice and total Bytes count.
+func normalizeFileStruct(file *File, byPart map[int]Article) {
+	if file == nil {
+		return
+	}
 	parts := make([]int, 0, len(byPart))
 	for p := range byPart {
 		parts = append(parts, p)
@@ -313,14 +335,11 @@ func convertFile(xf xmlFile, now time.Time, digest hash.Hash) (File, int64, arti
 	slices.Sort(parts)
 
 	file.Articles = make([]Article, 0, len(parts))
+	var totalBytes int64
 	for _, p := range parts {
 		a := byPart[p]
 		file.Articles = append(file.Articles, a)
-		file.Bytes += int64(a.Bytes)
+		totalBytes += int64(a.Bytes)
 	}
-
-	if len(file.Articles) == 0 {
-		return file, 0, counters
-	}
-	return file, ts, counters
+	file.Bytes = totalBytes
 }
