@@ -2,6 +2,8 @@ package postproc
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1073,4 +1075,87 @@ func TestUnpackStage_SetStrictSandbox(t *testing.T) {
 	if opts.Sandbox.TargetDir != "/tmp/test-sandbox-target" {
 		t.Errorf("expected prepareOptions to set TargetDir to %q, got %q", job.DownloadDir, opts.Sandbox.TargetDir)
 	}
+}
+
+func TestExtractWithDriver_GoModeAndFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("go mode success without fallback", func(t *testing.T) {
+		t.Parallel()
+		job, _ := stageJob(t)
+		var runGoCalled, runExtCalled bool
+
+		driver := archiveEngineDriver{
+			toolName:   "mocktool",
+			goToolName: "go_mocktool",
+			formatName: "MOCK",
+			useGo:      true,
+			fallback:   false,
+			findBin: func(_ unpack.Options) (string, error) {
+				return "/bin/mocktool", nil
+			},
+			runGo: func(_ context.Context, _ *slog.Logger, _ unpack.Archive, _ string, _ unpack.Options) (unpack.Result, error) {
+				runGoCalled = true
+				return unpack.Result{Engine: "go_mocktool"}, nil
+			},
+			runExternal: func(_ context.Context, _ *slog.Logger, _ unpack.Archive, _ string, _ unpack.Options) (unpack.Result, error) {
+				runExtCalled = true
+				return unpack.Result{}, nil
+			},
+		}
+
+		res, err := extractWithDriver(t.Context(), slog.Default(), job, unpack.Archive{Name: "test.mock"}, unpack.Options{}, driver)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if !runGoCalled || runExtCalled {
+			t.Fatalf("expected runGo=true, runExt=false, got runGo=%v, runExt=%v", runGoCalled, runExtCalled)
+		}
+		if res.Engine != "go_mocktool" {
+			t.Fatalf("expected engine go_mocktool, got %s", res.Engine)
+		}
+	})
+
+	t.Run("go mode failure triggers fallback to external when binary available", func(t *testing.T) {
+		t.Parallel()
+		job, _ := stageJob(t)
+		var runGoCalled, runExtCalled bool
+		var extBinReceived string
+
+		driver := archiveEngineDriver{
+			toolName:   "mocktool",
+			goToolName: "go_mocktool",
+			formatName: "MOCK",
+			useGo:      true,
+			fallback:   true,
+			findBin: func(_ unpack.Options) (string, error) {
+				return "/usr/local/bin/mocktool", nil
+			},
+			runGo: func(_ context.Context, _ *slog.Logger, _ unpack.Archive, _ string, _ unpack.Options) (unpack.Result, error) {
+				runGoCalled = true
+				return unpack.Result{}, errors.New("go engine error")
+			},
+			runExternal: func(_ context.Context, _ *slog.Logger, _ unpack.Archive, _ string, _ unpack.Options) (unpack.Result, error) {
+				runExtCalled = true
+				return unpack.Result{Engine: "mocktool"}, nil
+			},
+			onExternal: func(_ *unpack.Options, bin string) {
+				extBinReceived = bin
+			},
+		}
+
+		res, err := extractWithDriver(t.Context(), slog.Default(), job, unpack.Archive{Name: "test.mock"}, unpack.Options{}, driver)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if !runGoCalled || !runExtCalled {
+			t.Fatalf("expected both runGo and runExt called, got runGo=%v, runExt=%v", runGoCalled, runExtCalled)
+		}
+		if extBinReceived != "/usr/local/bin/mocktool" {
+			t.Fatalf("expected extBin=/usr/local/bin/mocktool, got %q", extBinReceived)
+		}
+		if res.Engine != "mocktool" {
+			t.Fatalf("expected engine mocktool, got %s", res.Engine)
+		}
+	})
 }

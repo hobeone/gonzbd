@@ -19,6 +19,8 @@ import (
 	"strings"
 
 	"github.com/hobeone/rarengine"
+
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
 var (
@@ -118,41 +120,38 @@ func Inspect(p string) (Info, error) {
 // using the pure Go rarengine library.
 func InspectRar5(p string) (info Info, err error) {
 	info.Version = 5
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("rarheader: rarengine panic: %v", r)
+	err = cmdutil.SafeEngineRun("rarheader: rarengine panic", func() error {
+		//nolint:gosec // p is trusted input from internal caller
+		f, openErr := os.Open(p)
+		if openErr != nil {
+			return openErr
 		}
-	}()
+		defer func() { _ = f.Close() }()
 
-	//nolint:gosec // p is trusted input from internal caller
-	f, err := os.Open(p)
-	if err != nil {
-		return info, err
-	}
-	defer func() { _ = f.Close() }()
+		volumesChan := make(chan io.ReadCloser, 1)
+		volumesChan <- f
+		close(volumesChan)
 
-	volumesChan := make(chan io.ReadCloser, 1)
-	volumesChan <- f
-	close(volumesChan)
+		sd := rarengine.NewStreamDecompressor(volumesChan)
 
-	sd := rarengine.NewStreamDecompressor(volumesChan)
-
-	for {
-		fh, err := sd.Next()
-		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, rarengine.ErrNoNextVolume) {
-				break
+		for {
+			fh, nextErr := sd.Next()
+			if nextErr != nil {
+				if errors.Is(nextErr, io.EOF) || errors.Is(nextErr, rarengine.ErrNoNextVolume) {
+					break
+				}
+				return nextErr
 			}
-			return info, err
+			if !fh.IsDir {
+				info.Filenames = append(info.Filenames, sanitizeName(fh.Name))
+			}
+			if fh.Encrypted {
+				info.Encrypted = true
+			}
 		}
-		if !fh.IsDir {
-			info.Filenames = append(info.Filenames, sanitizeName(fh.Name))
-		}
-		if fh.Encrypted {
-			info.Encrypted = true
-		}
-	}
-	return info, nil
+		return nil
+	})
+	return info, err
 }
 
 func inspectViaUnrar(p string, ver int) (Info, error) {

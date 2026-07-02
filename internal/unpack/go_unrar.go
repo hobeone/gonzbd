@@ -17,6 +17,7 @@ import (
 
 	"github.com/hobeone/rarengine"
 
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/rarheader"
 )
@@ -66,16 +67,19 @@ func ClassifyRarEngineError(err error) FailReason {
 
 // GoUnRAREngine extracts a RAR archive using the pure-Go rarengine library.
 func GoUnRAREngine(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			res.Reason = FailCorrupt
-			err = fmt.Errorf("go_unrar: rarengine panic: %v", p)
-			if opts.OnLine != nil {
-				opts.OnLine(fmt.Sprintf("ERROR: rarengine panic: %v", p))
-			}
+	err = cmdutil.SafeEngineRun("go_unrar: rarengine panic", func() error {
+		res, err = goUnRAREngineInternal(ctx, log, archive, outDir, password, opts)
+		return err
+	}, func(p any) {
+		res.Reason = FailCorrupt
+		if opts.OnLine != nil {
+			opts.OnLine(fmt.Sprintf("ERROR: rarengine panic: %v", p))
 		}
-	}()
+	})
+	return res, err
+}
 
+func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (res Result, err error) {
 	log = log.With("component", "go_unrar_engine", "archive", archive.MainFile)
 
 	root, err := os.OpenRoot(outDir)
