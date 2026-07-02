@@ -466,6 +466,115 @@ func (u *UnpackStage) applyPermissions(ctx context.Context, log *slog.Logger, jo
 	}
 }
 
+type archiveEngineDriver struct {
+	toolName    string
+	goToolName  string
+	formatName  string
+	useGo       bool
+	fallback    bool
+	findBin     func(opts unpack.Options) (string, error)
+	runExternal func(ctx context.Context, log *slog.Logger, a unpack.Archive, outDir string, opts unpack.Options) (unpack.Result, error)
+	runGo       func(ctx context.Context, log *slog.Logger, a unpack.Archive, outDir string, opts unpack.Options) (unpack.Result, error)
+	onExternal  func(opts *unpack.Options, bin string)
+}
+
+func extractWithDriver(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options, d archiveEngineDriver) (unpack.Result, error) {
+	useGo := d.useGo
+	var extBin string
+	if !useGo {
+		var binErr error
+		extBin, binErr = d.findBin(opts)
+		if binErr != nil {
+			useGo = true
+			msg := fmt.Sprintf("%s not found in PATH, falling back to %s", cmp.Or(extBin, d.toolName+" binary"), d.goToolName)
+			logf(ctx, log, job, slog.LevelInfo, "%s", msg)
+			if job.OnOutput != nil {
+				job.OnOutput(d.goToolName, msg)
+			}
+		}
+	}
+
+	if !useGo {
+		extOpts := opts
+		if d.onExternal != nil {
+			d.onExternal(&extOpts, extBin)
+		}
+		extOpts.OnLine = func(line string) {
+			if job.OnOutput != nil {
+				job.OnOutput(d.toolName, line)
+			}
+		}
+		extOpts.OnCommand = func(cmdLine string) {
+			logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
+			if job.OnOutput != nil {
+				job.OnOutput(d.toolName, fmt.Sprintf("Running command: %s", cmdLine))
+			}
+		}
+		if job.OnOutput != nil {
+			job.OnOutput(d.toolName, fmt.Sprintf("Unpacking: %s (using external %s)", a.Name, d.toolName))
+		}
+		res, err := d.runExternal(ctx, log, a, job.DownloadDir, extOpts)
+		if err == nil && res.Err == nil {
+			if job.OnOutput != nil {
+				job.OnOutput(d.toolName, fmt.Sprintf("Unpacking complete: %s (using external %s)", a.Name, d.toolName))
+			}
+		}
+		return res, err
+	}
+
+	logf(ctx, log, job, slog.LevelInfo, "Using %s for %s (pure-Go)", d.goToolName, d.formatName)
+	if job.OnOutput != nil {
+		job.OnOutput(d.goToolName, fmt.Sprintf("Using %s for %s (pure-Go): %s", d.goToolName, d.formatName, a.Name))
+	}
+	goOpts := opts
+	goOpts.OnLine = func(line string) {
+		if job.OnOutput != nil {
+			job.OnOutput(d.goToolName, line)
+		}
+	}
+	res, err := d.runGo(ctx, log, a, job.DownloadDir, goOpts)
+	if err == nil && res.Err == nil {
+		if job.OnOutput != nil {
+			job.OnOutput(d.goToolName, fmt.Sprintf("%s: unpacking complete: %s", d.goToolName, a.Name))
+		}
+	}
+
+	if goErr := cmp.Or(err, res.Err); goErr != nil && d.fallback {
+		extBin, binErr := d.findBin(opts)
+		if binErr == nil {
+			logf(ctx, log, job, slog.LevelWarn,
+				"%s failed (%v), retrying with external %s", d.goToolName, goErr, extBin)
+			if job.OnOutput != nil {
+				job.OnOutput(d.goToolName,
+					fmt.Sprintf("Go-native extraction failed: %v — retrying with %s", goErr, extBin))
+			}
+			extOpts := opts
+			if d.onExternal != nil {
+				d.onExternal(&extOpts, extBin)
+			}
+			extOpts.OnLine = func(line string) {
+				if job.OnOutput != nil {
+					job.OnOutput(d.toolName, line)
+				}
+			}
+			extOpts.OnCommand = func(cmdLine string) {
+				logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
+				if job.OnOutput != nil {
+					job.OnOutput(d.toolName, fmt.Sprintf("Running command: %s", cmdLine))
+				}
+			}
+			res, err := d.runExternal(ctx, log, a, job.DownloadDir, extOpts)
+			if err == nil && res.Err == nil {
+				if job.OnOutput != nil {
+					job.OnOutput(d.toolName, fmt.Sprintf("Unpacking complete: %s (using external %s)", a.Name, d.toolName))
+				}
+			}
+			return res, err
+		}
+	}
+	return res, err
+}
+
 // extractRARArchive dispatches a single RAR archive to either GoUnRAR
 // (pure-Go) or the external unrar binary, following the same priority order
 // as SABnzbd:
@@ -474,95 +583,20 @@ func (u *UnpackStage) applyPermissions(ctx context.Context, log *slog.Logger, jo
 //  2. unrar available → unrar subprocess
 //  3. unrar not in PATH → GoUnRAR
 func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options) (unpack.Result, error) {
-	useGoRAR := opts.UseGoRAR
-	if !useGoRAR {
-		unrarBin := opts.UnrarBin()
-		if _, lookErr := exec.LookPath(unrarBin); lookErr != nil {
-			useGoRAR = true
-			logf(ctx, log, job, slog.LevelInfo, "%s not found in PATH, falling back to go_unrar", unrarBin)
-			if job.OnOutput != nil {
-				job.OnOutput("go_unrar", fmt.Sprintf("%s not found in PATH, falling back to go_unrar", unrarBin))
-			}
-		}
-	}
-
-	if !useGoRAR {
-		unrarOpts := opts
-		unrarOpts.OnLine = func(line string) {
-			if job.OnOutput != nil {
-				job.OnOutput("unrar", line)
-			}
-		}
-		unrarOpts.OnCommand = func(cmdLine string) {
-			logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
-			if job.OnOutput != nil {
-				job.OnOutput("unrar", fmt.Sprintf("Running command: %s", cmdLine))
-			}
-		}
-		if job.OnOutput != nil {
-			job.OnOutput("unrar", fmt.Sprintf("Unpacking: %s (using external unrar)", a.Name))
-		}
-		res, err := unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
-		if err == nil && res.Err == nil {
-			if job.OnOutput != nil {
-				job.OnOutput("unrar", fmt.Sprintf("Unpacking complete: %s (using external unrar)", a.Name))
-			}
-		}
-		return res, err
-	}
-
-	logf(ctx, log, job, slog.LevelInfo, "Using go_unrar for RAR (pure-Go)")
-	if job.OnOutput != nil {
-		job.OnOutput("go_unrar", fmt.Sprintf("Using go_unrar for RAR (pure-Go): %s", a.Name))
-	}
-	goOpts := opts
-	goOpts.OnLine = func(line string) {
-		if job.OnOutput != nil {
-			job.OnOutput("go_unrar", line)
-		}
-	}
-	res, err := unpack.GoUnRARWithPasswords(ctx, log, a, job.DownloadDir, goOpts)
-	if err == nil && res.Err == nil {
-		if job.OnOutput != nil {
-			job.OnOutput("go_unrar", fmt.Sprintf("go_unrar: unpacking complete: %s", a.Name))
-		}
-	}
-
-	// Fallback: if Go-native extraction failed and the external unrar binary
-	// is available, retry with it. rarengine only supports RAR3/RAR5; other
-	// formats and some encrypted archives require the external binary.
-	// Gated on GoRarFallback so users can disable the retry.
-	if goErr := cmp.Or(err, res.Err); goErr != nil && opts.GoRarFallback {
-		unrarBin := opts.UnrarBin()
-		if _, lookErr := exec.LookPath(unrarBin); lookErr == nil {
-			logf(ctx, log, job, slog.LevelWarn,
-				"go_unrar failed (%v), retrying with external %s", goErr, unrarBin)
-			if job.OnOutput != nil {
-				job.OnOutput("go_unrar",
-					fmt.Sprintf("Go-native extraction failed: %v — retrying with %s", goErr, unrarBin))
-			}
-			unrarOpts := opts
-			unrarOpts.OnLine = func(line string) {
-				if job.OnOutput != nil {
-					job.OnOutput("unrar", line)
-				}
-			}
-			unrarOpts.OnCommand = func(cmdLine string) {
-				logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
-				if job.OnOutput != nil {
-					job.OnOutput("unrar", fmt.Sprintf("Running command: %s", cmdLine))
-				}
-			}
-			res, err := unpack.UnRARWithPasswords(ctx, log, a, job.DownloadDir, unrarOpts)
-			if err == nil && res.Err == nil {
-				if job.OnOutput != nil {
-					job.OnOutput("unrar", fmt.Sprintf("Unpacking complete: %s (using external unrar)", a.Name))
-				}
-			}
-			return res, err
-		}
-	}
-	return res, err
+	return extractWithDriver(ctx, log, job, a, opts, archiveEngineDriver{
+		toolName:   "unrar",
+		goToolName: "go_unrar",
+		formatName: "RAR",
+		useGo:      opts.UseGoRAR,
+		fallback:   opts.GoRarFallback,
+		findBin: func(o unpack.Options) (string, error) {
+			unrarBin := o.UnrarBin()
+			_, err := exec.LookPath(unrarBin)
+			return unrarBin, err
+		},
+		runExternal: unpack.UnRARWithPasswords,
+		runGo:       unpack.GoUnRARWithPasswords,
+	})
 }
 
 // extractSevenZipArchive dispatches a single 7-Zip archive to either
@@ -573,93 +607,21 @@ func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack
 //  2. 7z available → 7z subprocess
 //  3. 7z not in PATH → GoSevenZip
 func extractSevenZipArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options) (unpack.Result, error) {
-	useGo7z := opts.UseGo7z
-	if !useGo7z {
-		if _, binErr := unpack.SevenZipBin(opts); binErr != nil {
-			useGo7z = true
-			logf(ctx, log, job, slog.LevelInfo, "7z binary not found in PATH, falling back to go_7z")
-			if job.OnOutput != nil {
-				job.OnOutput("go_7z", "7z binary not found in PATH, falling back to go_7z")
+	return extractWithDriver(ctx, log, job, a, opts, archiveEngineDriver{
+		toolName:    "7z",
+		goToolName:  "go_7z",
+		formatName:  "7-Zip",
+		useGo:       opts.UseGo7z,
+		fallback:    opts.Go7zFallback,
+		findBin:     unpack.SevenZipBin,
+		runExternal: unpack.SevenZipWithPasswords,
+		runGo:       unpack.GoSevenZipWithPasswords,
+		onExternal: func(o *unpack.Options, bin string) {
+			if bin != "" {
+				o.SevenZipCommand = bin
 			}
-		}
-	}
-
-	if !useGo7z {
-		szOpts := opts
-		szOpts.OnLine = func(line string) {
-			if job.OnOutput != nil {
-				job.OnOutput("7z", line)
-			}
-		}
-		szOpts.OnCommand = func(cmdLine string) {
-			logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
-			if job.OnOutput != nil {
-				job.OnOutput("7z", fmt.Sprintf("Running command: %s", cmdLine))
-			}
-		}
-		if job.OnOutput != nil {
-			job.OnOutput("7z", fmt.Sprintf("Unpacking: %s (using external 7z)", a.Name))
-		}
-		res, err := unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
-		if err == nil && res.Err == nil {
-			if job.OnOutput != nil {
-				job.OnOutput("7z", fmt.Sprintf("Unpacking complete: %s (using external 7z)", a.Name))
-			}
-		}
-		return res, err
-	}
-
-	logf(ctx, log, job, slog.LevelInfo, "Using go_7z for 7-Zip (pure-Go)")
-	if job.OnOutput != nil {
-		job.OnOutput("go_7z", fmt.Sprintf("Using go_7z for 7-Zip (pure-Go): %s", a.Name))
-	}
-	goOpts := opts
-	goOpts.OnLine = func(line string) {
-		if job.OnOutput != nil {
-			job.OnOutput("go_7z", line)
-		}
-	}
-	res, err := unpack.GoSevenZipWithPasswords(ctx, log, a, job.DownloadDir, goOpts)
-	if err == nil && res.Err == nil {
-		if job.OnOutput != nil {
-			job.OnOutput("go_7z", fmt.Sprintf("go_7z: unpacking complete: %s", a.Name))
-		}
-	}
-
-	// Fallback: if Go-native extraction failed and the external 7z binary
-	// is available, retry with it. Gated on Go7zFallback so users can
-	// disable the retry.
-	if goErr := cmp.Or(err, res.Err); goErr != nil && opts.Go7zFallback {
-		if szBin, binErr := unpack.SevenZipBin(opts); binErr == nil {
-			logf(ctx, log, job, slog.LevelWarn,
-				"go_7z failed (%v), retrying with external %s", goErr, szBin)
-			if job.OnOutput != nil {
-				job.OnOutput("go_7z",
-					fmt.Sprintf("Go-native extraction failed: %v — retrying with %s", goErr, szBin))
-			}
-			szOpts := opts
-			szOpts.SevenZipCommand = szBin
-			szOpts.OnLine = func(line string) {
-				if job.OnOutput != nil {
-					job.OnOutput("7z", line)
-				}
-			}
-			szOpts.OnCommand = func(cmdLine string) {
-				logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
-				if job.OnOutput != nil {
-					job.OnOutput("7z", fmt.Sprintf("Running command: %s", cmdLine))
-				}
-			}
-			res, err := unpack.SevenZipWithPasswords(ctx, log, a, job.DownloadDir, szOpts)
-			if err == nil && res.Err == nil {
-				if job.OnOutput != nil {
-					job.OnOutput("7z", fmt.Sprintf("Unpacking complete: %s (using external 7z)", a.Name))
-				}
-			}
-			return res, err
-		}
-	}
-	return res, err
+		},
+	})
 }
 
 // applyPermissions walks dir recursively and applies the given octal

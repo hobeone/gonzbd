@@ -14,6 +14,7 @@ import (
 
 	"github.com/hobeone/rarengine"
 
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/rarheader"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
@@ -485,87 +486,83 @@ func (d *DirectUnpacker) run(ctx context.Context) {
 // volume channel streaming. The deferred panic recovery catches rarengine
 // panics and must remain in this function — it only protects the call stack
 // of the goroutine that called extractSet, not the feeder goroutine.
-func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) (retErr error) {
-	defer func() {
-		if p := recover(); p != nil {
-			retErr = fmt.Errorf("directunpack: rarengine panic: %v", p)
+func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) error {
+	return cmdutil.SafeEngineRun("directunpack: rarengine panic", func() error {
+		// Derive a cancellable context so any early return from extractSet unblocks
+		// the volume feeder goroutine (which only watches this ctx). Without this,
+		// an early error from extractEntries leaks the feeder and its open *os.File
+		// until the job-level context is cancelled.
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		if err := d.waitForVolume(ctx, setname, 1); err != nil {
+			return err
 		}
-	}()
-
-	// Derive a cancellable context so any early return from extractSet unblocks
-	// the volume feeder goroutine (which only watches this ctx). Without this,
-	// an early error from extractEntries leaks the feeder and its open *os.File
-	// until the job-level context is cancelled.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	if err := d.waitForVolume(ctx, setname, 1); err != nil {
-		return err
-	}
-	d.mu.Lock()
-	maxVol := d.totalVolumes[setname]
-	vol1Path := d.completedVols[setname][1]
-	d.mu.Unlock()
-
-	if maxVol == 0 {
-		maxVol = 100 // fallback safe bound
-	}
-
-	// rarengine supports RAR3 and RAR5. Check the first volume's magic bytes
-	// before streaming so other formats are skipped immediately rather than
-	// failing on the first header read.
-	ver, err := rarheader.Version(vol1Path)
-	if err != nil || (ver != 3 && ver != 5) {
-		return errNotRAR
-	}
-	d.log.Info("starting extraction", "set", setname, "rar_version", ver)
-
-	volumesChan, feedErrChan := d.startVolumeFeed(ctx, setname, maxVol)
-
-	sd := rarengine.NewStreamDecompressor(volumesChan)
-	if d.opts.Password != "" {
-		sd.SetPassword(d.opts.Password)
-	}
-
-	extractedFiles, err := d.extractEntries(ctx, sd)
-	if err != nil {
-		return err
-	}
-
-	select {
-	case feedErr := <-feedErrChan:
-		return feedErr
-	default:
-	}
-
-	d.mu.Lock()
-	// Backstop: a volume needed for this set may have been marked corrupt
-	// (failed/missing download articles) after waitForVolume's own check —
-	// e.g. all volumes had already arrived and extraction never went back
-	// through waitForVolume again. Never record success once any volume of
-	// this set is known to be assembled from incomplete data.
-	if reason, corrupt := d.corruptSets[setname]; corrupt {
+		d.mu.Lock()
+		maxVol := d.totalVolumes[setname]
+		vol1Path := d.completedVols[setname][1]
 		d.mu.Unlock()
-		return fmt.Errorf("directunpack: %s", reason)
-	}
 
-	// Record success.
-	var rarParts []string
-	for _, p := range d.completedVols[setname] {
-		rarParts = append(rarParts, p)
-	}
-	d.successSets[setname] = SuccessSet{
-		RarParts:       rarParts,
-		ExtractedFiles: extractedFiles,
-	}
-	d.mu.Unlock()
+		if maxVol == 0 {
+			maxVol = 100 // fallback safe bound
+		}
 
-	d.notifyChange()
+		// rarengine supports RAR3 and RAR5. Check the first volume's magic bytes
+		// before streaming so other formats are skipped immediately rather than
+		// failing on the first header read.
+		ver, err := rarheader.Version(vol1Path)
+		if err != nil || (ver != 3 && ver != 5) {
+			return errNotRAR
+		}
+		d.log.Info("starting extraction", "set", setname, "rar_version", ver)
 
-	d.log.Info("set extraction complete", "set", setname,
-		"parts", len(rarParts), "files", len(extractedFiles))
+		volumesChan, feedErrChan := d.startVolumeFeed(ctx, setname, maxVol)
 
-	return nil
+		sd := rarengine.NewStreamDecompressor(volumesChan)
+		if d.opts.Password != "" {
+			sd.SetPassword(d.opts.Password)
+		}
+
+		extractedFiles, err := d.extractEntries(ctx, sd)
+		if err != nil {
+			return err
+		}
+
+		select {
+		case feedErr := <-feedErrChan:
+			return feedErr
+		default:
+		}
+
+		d.mu.Lock()
+		// Backstop: a volume needed for this set may have been marked corrupt
+		// (failed/missing download articles) after waitForVolume's own check —
+		// e.g. all volumes had already arrived and extraction never went back
+		// through waitForVolume again. Never record success once any volume of
+		// this set is known to be assembled from incomplete data.
+		if reason, corrupt := d.corruptSets[setname]; corrupt {
+			d.mu.Unlock()
+			return fmt.Errorf("directunpack: %s", reason)
+		}
+
+		// Record success.
+		var rarParts []string
+		for _, p := range d.completedVols[setname] {
+			rarParts = append(rarParts, p)
+		}
+		d.successSets[setname] = SuccessSet{
+			RarParts:       rarParts,
+			ExtractedFiles: extractedFiles,
+		}
+		d.mu.Unlock()
+
+		d.notifyChange()
+
+		d.log.Info("set extraction complete", "set", setname,
+			"parts", len(rarParts), "files", len(extractedFiles))
+
+		return nil
+	})
 }
 
 // startVolumeFeed spawns a goroutine that opens each completed RAR volume in
