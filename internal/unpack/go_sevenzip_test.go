@@ -491,7 +491,10 @@ func TestGoSevenZip_PanicRecovery(t *testing.T) {
 		Type:     SevenZipArchive,
 		MainFile: "dummy.7z",
 	}
-	res, err := GoSevenZip(context.Background(), nil, archive, t.TempDir(), "", Options{})
+	var onlineMsg string
+	res, err := GoSevenZip(context.Background(), nil, archive, t.TempDir(), "", Options{
+		OnLine: func(msg string) { onlineMsg = msg },
+	})
 	if err == nil {
 		t.Fatal("expected error from panic recovery, got nil")
 	}
@@ -500,6 +503,26 @@ func TestGoSevenZip_PanicRecovery(t *testing.T) {
 	}
 	if res.Reason != FailCorrupt {
 		t.Errorf("expected res.Reason to be FailCorrupt, got: %v", res.Reason)
+	}
+	if !strings.Contains(onlineMsg, "ERROR: sevenzip panic:") {
+		t.Errorf("expected OnLine callback to receive 'ERROR: sevenzip panic:', got: %q", onlineMsg)
+	}
+}
+
+func TestGoSevenZipInternal_Direct(t *testing.T) {
+	td := sevenZipTestdata(t)
+	outDir := t.TempDir()
+	archive := Archive{
+		Type:     SevenZipArchive,
+		MainFile: filepath.Join(td, "lzma2.7z"),
+	}
+
+	res, err := goSevenZipInternal(context.Background(), slog.Default(), archive, outDir, "", Options{})
+	if err != nil {
+		t.Fatalf("goSevenZipInternal() error: %v", err)
+	}
+	if len(res.ExtractedFiles) == 0 {
+		t.Fatal("goSevenZipInternal() extracted no files")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -113,19 +114,85 @@ func TestGoRepair_CommandLineSet(t *testing.T) {
 // ---------- GoVerify ----------
 
 // TestGoVerify_HealthyData verifies that GoVerify on an intact set returns
-// StatusAllFilesOK.
+// StatusAllFilesOK and calls onLine callback.
 func TestGoVerify_HealthyData(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	mainFile := copyPar2Fixtures(t, dir)
 
-	res, err := GoVerify(context.Background(), discardLogger(), mainFile, dir, nil)
+	var lines []string
+	res, err := GoVerify(context.Background(), discardLogger(), mainFile, dir, func(l string) {
+		lines = append(lines, l)
+	})
 	if err != nil {
 		t.Fatalf("GoVerify: %v", err)
 	}
 	if res.Status != StatusAllFilesOK {
 		t.Errorf("Status = %v, want StatusAllFilesOK\nOutput: %s", res.Status, res.Stdout)
+	}
+	if !slices.Contains(lines, "[go_par2] All files are correct") {
+		t.Errorf("expected '[go_par2] All files are correct' in onLine, got: %v", lines)
+	}
+}
+
+// TestGoVerify_RepairPossible_CallsOnLine verifies that when repair is needed and possible,
+// GoVerify sets StatusRepairPossible and calls onLine callback.
+func TestGoVerify_RepairPossible_CallsOnLine(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+
+	dataPath := filepath.Join(dir, "data.bin")
+	data, err := os.ReadFile(dataPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	data[0] ^= 0xFF // flip one byte without changing file size
+	if err := os.WriteFile(dataPath, data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var lines []string
+	res, err := GoVerify(context.Background(), discardLogger(), mainFile, dir, func(l string) {
+		lines = append(lines, l)
+	})
+	if err != nil {
+		t.Fatalf("GoVerify: %v", err)
+	}
+	if res.Status != StatusRepairPossible {
+		t.Errorf("Status = %v, want StatusRepairPossible\nOutput: %s", res.Status, res.Stdout)
+	}
+	var found bool
+	for _, l := range lines {
+		if strings.HasPrefix(l, "[go_par2] Repair needed:") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected '[go_par2] Repair needed:' in onLine, got: %v", lines)
+	}
+}
+
+// TestGoVerify_MissingCandidateDir_LogsWarning verifies that a missing candidateDir
+// logs a warning during GoVerify setup.
+func TestGoVerify_MissingCandidateDir_LogsWarning(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mainFile := copyPar2Fixtures(t, dir)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	_, err := GoVerify(context.Background(), logger, mainFile, filepath.Join(dir, "nonexistent"), nil)
+	if err != nil {
+		t.Fatalf("GoVerify: %v", err)
+	}
+	if !strings.Contains(buf.String(), "go_par2: could not register all candidate files") {
+		t.Errorf("expected warning in log output, got: %s", buf.String())
 	}
 }
 
@@ -264,29 +331,42 @@ func TestGoVerify_ConcurrentOnLine(t *testing.T) {
 	}
 }
 
-// TestGoVerify_DamagedData verifies that when GoVerify runs on damaged data,
-// progress updates containing "Verifying..." are emitted.
+// TestGoVerify_DamagedData verifies that when GoVerify runs on severely damaged data,
+// it reports StatusRepairNotPossible and emits appropriate progress/repair-status messages.
 func TestGoVerify_DamagedData(t *testing.T) {
 	dir := t.TempDir()
 	mainFile := copyPar2Fixtures(t, dir)
 
-	// Damage the data file.
+	// Severely damage the data file by truncating to garbage so repair is not possible.
 	dataFile := filepath.Join(dir, "data.bin")
 	if err := os.WriteFile(dataFile, []byte("damaged garbage"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	var progressLines int
-	_, err := GoVerify(context.Background(), discardLogger(), mainFile, dir, func(line string) {
-		if strings.Contains(line, "Verifying...") {
-			progressLines++
-		}
+	var lines []string
+	res, err := GoVerify(context.Background(), discardLogger(), mainFile, dir, func(line string) {
+		lines = append(lines, line)
 	})
 	if err != nil {
 		t.Fatalf("GoVerify: %v", err)
 	}
-	if progressLines == 0 {
-		t.Error("expected onLine to be called with progress updates containing 'Verifying...' during GoVerify on damaged data")
+	if res.Status != StatusRepairNotPossible {
+		t.Errorf("got status %v, want StatusRepairNotPossible", res.Status)
+	}
+	var sawVerifying, sawNotPossible bool
+	for _, l := range lines {
+		if strings.Contains(l, "Verifying...") {
+			sawVerifying = true
+		}
+		if strings.Contains(l, "[go_par2] Repair not possible:") {
+			sawNotPossible = true
+		}
+	}
+	if !sawVerifying {
+		t.Errorf("expected 'Verifying...' in onLine, got: %v", lines)
+	}
+	if !sawNotPossible {
+		t.Errorf("expected '[go_par2] Repair not possible:' in onLine, got: %v", lines)
 	}
 }
 

@@ -617,9 +617,7 @@ func extractSevenZipArchive(ctx context.Context, log *slog.Logger, job *Job, a u
 		runExternal: unpack.SevenZipWithPasswords,
 		runGo:       unpack.GoSevenZipWithPasswords,
 		onExternal: func(o *unpack.Options, bin string) {
-			if bin != "" {
-				o.SevenZipCommand = bin
-			}
+			o.SevenZipCommand = bin
 		},
 	})
 }
