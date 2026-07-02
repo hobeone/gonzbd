@@ -511,7 +511,7 @@ func (d *DirectUnpacker) extractSet(ctx context.Context, setname string) error {
 		// before streaming so other formats are skipped immediately rather than
 		// failing on the first header read.
 		ver, err := rarheader.Version(vol1Path)
-		if err != nil || (ver != 3 && ver != 5) {
+		if err != nil {
 			return errNotRAR
 		}
 		d.log.Info("starting extraction", "set", setname, "rar_version", ver)
