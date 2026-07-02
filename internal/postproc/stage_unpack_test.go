@@ -896,6 +896,29 @@ exit 0
 	}
 }
 
+func TestUnpackStage_SevenZip_ExternalFallback_SetsCommand(t *testing.T) {
+	tmpBinDir := t.TempDir()
+	dummyScript := `#!/bin/sh
+echo "7z stdout line 1"
+exit 0
+`
+	szPath := createDummyExecutable(t, tmpBinDir, "mock-7z", dummyScript)
+	t.Setenv("GONZBD_SEVENZIP_BIN", szPath)
+
+	job, dir := stageJob(t)
+	copyToDir(t, sevenZipFixture("lzma2.7z"), dir)
+
+	s := NewUnpackStageWith(unpack.Options{
+		UseGo7z:         false,
+		SevenZipCommand: "", // empty initially, should be discovered from GONZBD_SEVENZIP_BIN and assigned in onExternal
+	}, false)
+	s.SetEnabled(true)
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("expected extraction to succeed with env var binary, got error: %v", err)
+	}
+}
+
 func TestUnpackStage_RealtimeLogTransitions_Rar_Direct_Success(t *testing.T) {
 	t.Parallel()
 

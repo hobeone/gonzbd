@@ -254,7 +254,7 @@ func tryMatchHash16kFile(dir, name string, de os.DirEntry, hashIndex map[[16]byt
 	if err != nil {
 		return Rename{}, false
 	}
-	if fd.FileSize > 0 && uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
+	if uint64(info.Size()) != fd.FileSize { //nolint:gosec // size is non-negative
 		log.Info("quickcheck: phase 3 hash16k matched but size differs",
 			"flat", name, "par2path", fd.FileName,
 			"flatSize", info.Size(), "par2Size", fd.FileSize)

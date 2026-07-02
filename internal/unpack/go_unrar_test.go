@@ -291,9 +291,15 @@ func TestGoUnRAR_Corrupt(t *testing.T) {
 		MainFile: filepath.Join("testdata", "corrupt.rar"),
 	}
 
-	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{})
+	var onlineCalled bool
+	res, err := GoUnRAR(context.Background(), slog.Default(), archive, outDir, "", Options{
+		OnLine: func(msg string) { onlineCalled = true },
+	})
 	if err == nil {
 		t.Fatal("GoUnRAR() expected error for corrupt archive")
+	}
+	if !onlineCalled {
+		t.Error("expected OnLine to be called on corrupt archive error")
 	}
 	// Should classify as corrupt, not panic.
 	if res.Reason != FailCorrupt && res.Reason != FailNotArchive {
@@ -736,6 +742,114 @@ func TestDetectRarVersionDirect(t *testing.T) {
 		_, err := rarheader.Version(filepath.Join(dir, "non-existent"))
 		if err == nil {
 			t.Error("expected error for non-existent file")
+		}
+	})
+}
+
+func TestGoUnRAREngine_PanicRecovery(t *testing.T) {
+	archive := Archive{
+		Type:     RarArchive,
+		MainFile: "dummy.rar",
+	}
+	var onlineMsg string
+	res, err := GoUnRAREngine(context.Background(), nil, archive, t.TempDir(), "", Options{
+		OnLine: func(msg string) { onlineMsg = msg },
+	})
+	if err == nil {
+		t.Fatal("expected error from panic recovery, got nil")
+	}
+	if !strings.Contains(err.Error(), "rarengine panic") {
+		t.Errorf("expected error to contain 'rarengine panic', got: %v", err)
+	}
+	if res.Reason != FailCorrupt {
+		t.Errorf("expected res.Reason to be FailCorrupt, got: %v", res.Reason)
+	}
+	if !strings.Contains(onlineMsg, "ERROR: rarengine panic:") {
+		t.Errorf("expected OnLine callback to receive 'ERROR: rarengine panic:', got: %q", onlineMsg)
+	}
+}
+
+func TestGoUnRAREngineInternal_Direct(t *testing.T) {
+	outDir := t.TempDir()
+	archive := Archive{
+		Type:     RarArchive,
+		Name:     "single_rar5",
+		MainFile: filepath.Join("testdata", "single_rar5.rar"),
+	}
+
+	res, err := goUnRAREngineInternal(context.Background(), slog.Default(), archive, outDir, "", Options{})
+	if err != nil {
+		t.Fatalf("goUnRAREngineInternal() error: %v", err)
+	}
+	if len(res.ExtractedFiles) == 0 {
+		t.Fatal("goUnRAREngineInternal() extracted no files")
+	}
+}
+
+func TestDiscoverPartNNVolumes(t *testing.T) {
+	t.Run("multi-volume part01", func(t *testing.T) {
+		vols, err := discoverPartNNVolumes(filepath.Join("testdata", "multi_new.part01.rar"))
+		if err != nil {
+			t.Fatalf("discoverPartNNVolumes() error: %v", err)
+		}
+		if len(vols) != 10 {
+			t.Errorf("expected 10 volumes, got %d: %v", len(vols), vols)
+		}
+	})
+
+	t.Run("non-part file", func(t *testing.T) {
+		vols, err := discoverPartNNVolumes(filepath.Join("testdata", "single_rar5.rar"))
+		if err != nil {
+			t.Fatalf("discoverPartNNVolumes() error: %v", err)
+		}
+		if len(vols) != 1 || vols[0] != filepath.Join("testdata", "single_rar5.rar") {
+			t.Errorf("expected single volume, got: %v", vols)
+		}
+	})
+}
+
+func TestGoUnRAREngineInternal_ErrorBranches(t *testing.T) {
+	t.Run("non-existent outDir", func(t *testing.T) {
+		archive := Archive{Type: RarArchive, MainFile: filepath.Join("testdata", "single_rar5.rar")}
+		_, err := goUnRAREngineInternal(context.Background(), slog.Default(), archive, filepath.Join(t.TempDir(), "missing", "subdir"), "", Options{})
+		if err == nil {
+			t.Error("expected error for missing outDir")
+		}
+	})
+
+	t.Run("missing archive file", func(t *testing.T) {
+		archive := Archive{Type: RarArchive, MainFile: "/non/existent/file.rar"}
+		res, err := goUnRAREngineInternal(context.Background(), slog.Default(), archive, t.TempDir(), "", Options{})
+		if err == nil {
+			t.Error("expected error for missing archive file")
+		}
+		if res.Reason != FailMissingVolume {
+			t.Errorf("got reason %v, want FailMissingVolume", res.Reason)
+		}
+	})
+
+	t.Run("missing volume part in Parts list", func(t *testing.T) {
+		archive := Archive{
+			Type:     RarArchive,
+			MainFile: filepath.Join("testdata", "multi_new.part01.rar"),
+			Parts:    []string{filepath.Join("testdata", "multi_new.part01.rar"), "/non/existent/part02.rar"},
+		}
+		res, err := goUnRAREngineInternal(context.Background(), slog.Default(), archive, t.TempDir(), "", Options{})
+		if err == nil {
+			t.Error("expected error for missing volume part")
+		}
+		if res.Reason != FailMissingVolume {
+			t.Errorf("got reason %v, want FailMissingVolume", res.Reason)
+		}
+	})
+
+	t.Run("cancelled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		archive := Archive{Type: RarArchive, MainFile: filepath.Join("testdata", "single_rar5.rar")}
+		_, err := goUnRAREngineInternal(ctx, slog.Default(), archive, t.TempDir(), "", Options{})
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got %v", err)
 		}
 	})
 }
