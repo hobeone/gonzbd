@@ -530,6 +530,96 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 		}
 	})
 
+	t.Run("partitionSegments", func(t *testing.T) {
+		segs := []xmlSegment{
+			{Bytes: 100, Number: 1, ID: "  msg1@foo  "},
+			{Bytes: 200, Number: 2, ID: "msg2@foo"},
+			{Bytes: 100, Number: 0, ID: "bad-number-0"},
+			{Bytes: 100, Number: -1, ID: "bad-number-neg"},
+			{Bytes: 100, Number: 3, ID: "   "},
+			{Bytes: 0, Number: 4, ID: "bad-bytes-0"},
+			{Bytes: -5, Number: 5, ID: "bad-bytes-neg"},
+			{Bytes: 1 << 23, Number: 6, ID: "bad-bytes-max"},
+			{Bytes: (1 << 23) - 1, Number: 7, ID: "msg7@foo"},
+			{Bytes: 150, Number: 1, ID: "msg1-dup@foo"},
+			{Bytes: 200, Number: 2, ID: "msg2@foo"},
+		}
+
+		digest := md5.New()
+		byPart, counters := partitionSegments(segs, digest)
+
+		if len(byPart) != 3 {
+			t.Fatalf("len(byPart) = %d, want 3", len(byPart))
+		}
+		if byPart[1].ID != "msg1@foo" || byPart[1].Bytes != 100 || byPart[1].Number != 1 {
+			t.Errorf("byPart[1] = %+v, want msg1@foo (100 bytes)", byPart[1])
+		}
+		if byPart[2].ID != "msg2@foo" {
+			t.Errorf("byPart[2] = %+v, want msg2@foo", byPart[2])
+		}
+		if byPart[7].ID != "msg7@foo" || byPart[7].Bytes != (1<<23)-1 {
+			t.Errorf("byPart[7] = %+v, want msg7@foo", byPart[7])
+		}
+
+		if counters.dupes != 1 {
+			t.Errorf("counters.dupes = %d, want 1", counters.dupes)
+		}
+		if counters.bad != 3 {
+			t.Errorf("counters.bad = %d, want 3", counters.bad)
+		}
+
+		wantDigest := md5.New()
+		for _, id := range []string{"msg1@foo", "msg2@foo", "bad-bytes-0", "bad-bytes-neg", "bad-bytes-max", "msg7@foo", "msg1-dup@foo", "msg2@foo"} {
+			_, _ = wantDigest.Write([]byte(id))
+		}
+		if !slices.Equal(digest.Sum(nil), wantDigest.Sum(nil)) {
+			t.Errorf("digest mismatch: got %x, want %x", digest.Sum(nil), wantDigest.Sum(nil))
+		}
+	})
+
+	t.Run("normalizeFileStruct", func(t *testing.T) {
+		t.Run("nil file", func(t *testing.T) {
+			normalizeFileStruct(nil, map[int]Article{1: {ID: "a", Number: 1, Bytes: 10}})
+		})
+
+		t.Run("empty or nil map", func(t *testing.T) {
+			file := &File{Subject: "test", Bytes: 100}
+			normalizeFileStruct(file, nil)
+			if len(file.Articles) != 0 || file.Articles == nil {
+				t.Errorf("expected empty non-nil Articles slice, got %v", file.Articles)
+			}
+			if file.Bytes != 0 {
+				t.Errorf("expected Bytes=0, got %d", file.Bytes)
+			}
+		})
+
+		t.Run("sorting and byte sum", func(t *testing.T) {
+			byPart := map[int]Article{
+				10: {ID: "part10", Number: 10, Bytes: 500},
+				2:  {ID: "part2", Number: 2, Bytes: 200},
+				5:  {ID: "part5", Number: 5, Bytes: 300},
+				1:  {ID: "part1", Number: 1, Bytes: 100},
+			}
+			file := &File{Subject: "test", Bytes: 9999}
+			normalizeFileStruct(file, byPart)
+
+			if len(file.Articles) != 4 {
+				t.Fatalf("len(Articles) = %d, want 4", len(file.Articles))
+			}
+			wantNumbers := []int{1, 2, 5, 10}
+			wantIDs := []string{"part1", "part2", "part5", "part10"}
+			for i, a := range file.Articles {
+				if a.Number != wantNumbers[i] || a.ID != wantIDs[i] {
+					t.Errorf("Articles[%d] = (Number:%d, ID:%q), want (Number:%d, ID:%q)",
+						i, a.Number, a.ID, wantNumbers[i], wantIDs[i])
+				}
+			}
+			if file.Bytes != 1100 {
+				t.Errorf("Bytes = %d, want 1100", file.Bytes)
+			}
+		})
+	})
+
 	t.Run("absorbHead and absorbFile and parseXML", func(t *testing.T) {
 		const doc = `<?xml version="1.0"?>
 <nzb>
