@@ -14,6 +14,9 @@ echo "===================================================="
 echo "Starting Full Test Suite: sabnzbd-go"
 echo "===================================================="
 
+echo -e "\n[0/4] Building UI files for Go to embed..."
+cd ui && bun run build && cd ..
+
 # 1. Go Unit Tests
 echo -e "\n[1/4] Running Go Unit Tests..."
 go test ./...
@@ -56,8 +59,6 @@ fi
 
 # Run: go test -tags=uitest -v ./test/uitest/...
 # Prerequisites: cd ui && bun run build; playwright install chromium")
-
-cd ui && bun run build && cd ..
 
 # 4. UI E2E Tests (requires built UI + Playwright browsers)
 if [ -f "ui/dist/index.html" ]; then
