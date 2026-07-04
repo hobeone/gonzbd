@@ -238,38 +238,111 @@ func (h *testLogRecorder) WithAttrs(attrs []slog.Attr) slog.Handler {
 func (h *testLogRecorder) WithGroup(string) slog.Handler { return h }
 
 func TestVerifiedSets_ComponentScopedLogging(t *testing.T) {
-	oldLogger := slog.Default()
-	records := &[]slog.Record{}
-	slog.SetDefault(slog.New(&testLogRecorder{records: records}))
-	defer slog.SetDefault(oldLogger)
+	t.Run("nil logger defaults and scopes component=postproc", func(t *testing.T) {
+		oldLogger := slog.Default()
+		records := &[]slog.Record{}
+		slog.SetDefault(slog.New(&testLogRecorder{records: records}))
+		defer slog.SetDefault(oldLogger)
 
-	dir := t.TempDir()
-	adminDir := filepath.Join(dir, constants.JobAdminDirName)
-	if err := os.MkdirAll(adminDir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(adminDir, constants.VerifiedFileName)
-	if err := os.WriteFile(path, []byte("{corrupted json"), 0o640); err != nil {
-		t.Fatal(err)
-	}
+		dir := t.TempDir()
+		adminDir := filepath.Join(dir, constants.JobAdminDirName)
+		if err := os.MkdirAll(adminDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(adminDir, constants.VerifiedFileName)
+		if err := os.WriteFile(path, []byte("{corrupted json"), 0o640); err != nil {
+			t.Fatal(err)
+		}
 
-	_ = NewVerifiedSets(dir, nil)
+		_ = NewVerifiedSets(dir, nil)
 
-	if len(*records) == 0 {
-		t.Fatal("expected at least one log record for corrupted state, got 0")
-	}
+		if len(*records) == 0 {
+			t.Fatal("expected at least one log record for corrupted state, got 0")
+		}
 
-	foundComponent := false
-	for _, rec := range *records {
-		rec.Attrs(func(a slog.Attr) bool {
-			if a.Key == "component" && a.Value.String() == "postproc" {
-				foundComponent = true
-				return false
+		foundComponent := false
+		for _, rec := range *records {
+			rec.Attrs(func(a slog.Attr) bool {
+				if a.Key == "component" && a.Value.String() == "postproc" {
+					foundComponent = true
+					return false
+				}
+				return true
+			})
+		}
+		if !foundComponent {
+			t.Errorf("expected warning log record to have attribute component=postproc; records: %v", *records)
+		}
+	})
+
+	t.Run("pre-scoped logger retains attributes without double-scoping", func(t *testing.T) {
+		records := &[]slog.Record{}
+		baseHandler := &testLogRecorder{records: records}
+		customLogger := slog.New(baseHandler).With("component", "postproc/repair", "job", "123")
+
+		dir := t.TempDir()
+		adminDir := filepath.Join(dir, constants.JobAdminDirName)
+		if err := os.MkdirAll(adminDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(adminDir, constants.VerifiedFileName)
+		if err := os.WriteFile(path, []byte("{corrupted json"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+
+		_ = NewVerifiedSets(dir, customLogger)
+
+		if len(*records) == 0 {
+			t.Fatal("expected at least one log record for corrupted state, got 0")
+		}
+
+		// Count the occurrences of component attribute
+		var componentValues []string
+		for _, rec := range *records {
+			rec.Attrs(func(a slog.Attr) bool {
+				if a.Key == "component" {
+					componentValues = append(componentValues, a.Value.String())
+				}
+				return true
+			})
+		}
+
+		// We also need to check base logger attributes that were passed via customLogger
+		// Go's slog records from customLogger.With() will place the pre-scoped attributes in rec.Attrs or handler.attrs.
+		// Our custom testLogRecorder prepends h.attrs to records it receives.
+		// Let's verify that we don't have multiple component attributes in the final record
+		var allComponents []string
+		for _, a := range baseHandler.attrs {
+			if a.Key == "component" {
+				allComponents = append(allComponents, a.Value.String())
 			}
-			return true
-		})
-	}
-	if !foundComponent {
-		t.Errorf("expected warning log record to have attribute component=postproc; records: %v", *records)
-	}
+		}
+		// Also find inside the record itself
+		for _, rec := range *records {
+			rec.Attrs(func(a slog.Attr) bool {
+				if a.Key == "component" {
+					allComponents = append(allComponents, a.Value.String())
+				}
+				return true
+			})
+		}
+
+		hasPostprocRepair := false
+		hasPostproc := false
+		for _, c := range allComponents {
+			if c == "postproc/repair" {
+				hasPostprocRepair = true
+			}
+			if c == "postproc" {
+				hasPostproc = true
+			}
+		}
+
+		if !hasPostprocRepair {
+			t.Errorf("expected component=postproc/repair to be preserved, but wasn't found in: %v", allComponents)
+		}
+		if hasPostproc {
+			t.Errorf("did not expect redundant component=postproc to be added when logger was already pre-scoped; all components: %v", allComponents)
+		}
+	})
 }
