@@ -64,18 +64,18 @@ func Open(ctx context.Context, path string) (*DB, error) {
 
 	subFS, err := fs.Sub(embedMigrations, "migrations")
 	if err != nil {
-		_ = sqlDB.Close()
+		_ = sqlDB.Close() //nolint:errcheck // superseded by sub fs error
 		return nil, fmt.Errorf("history: sub fs: %w", err)
 	}
 
 	provider, err := goose.NewProvider(goose.DialectSQLite3, sqlDB, subFS)
 	if err != nil {
-		_ = sqlDB.Close()
+		_ = sqlDB.Close() //nolint:errcheck // superseded by goose provider error
 		return nil, fmt.Errorf("history: new goose provider: %w", err)
 	}
 
 	if _, err := provider.Up(ctx); err != nil {
-		_ = sqlDB.Close()
+		_ = sqlDB.Close() //nolint:errcheck // superseded by migration error
 		return nil, fmt.Errorf("history: run migrations: %w", err)
 	}
 

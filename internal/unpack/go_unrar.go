@@ -100,7 +100,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 		if err != nil {
 			close(volumesChan)
 			for v := range volumesChan {
-				_ = v.Close()
+				_ = v.Close() //nolint:errcheck // cleanup opened volumes on error path
 			}
 			res.Reason = FailMissingVolume
 			return res, fmt.Errorf("go_unrar: open volume %q: %w", volPath, err)
@@ -140,7 +140,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			if opts.OnLine != nil {
 				opts.OnLine("Skipping bad path: " + fh.Name)
 			}
-			_, _ = io.Copy(io.Discard, sd)
+			_, _ = io.Copy(io.Discard, sd) //nolint:errcheck // drain stream to skip bad entry
 			continue
 		}
 
@@ -199,7 +199,7 @@ func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, 
 			if opts.OnLine != nil {
 				opts.OnLine("Skipping existing: " + fh.Name)
 			}
-			_, _ = io.Copy(io.Discard, r)
+			_, _ = io.Copy(io.Discard, r) //nolint:errcheck // drain stream to skip existing entry
 			return nil
 		}
 	}
