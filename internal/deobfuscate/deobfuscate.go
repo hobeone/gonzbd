@@ -72,9 +72,8 @@ var abcXyz = regexp.MustCompile(`^abc\.xyz`)
 // is inspected. This is a direct port of Python's is_probably_obfuscated.
 func IsProbablyObfuscated(log *slog.Logger, filename string) bool {
 	if log == nil {
-		log = slog.Default()
+		log = slog.Default().With("component", "deobfuscate")
 	}
-	log = log.With("component", "deobfuscate")
 	base := filepath.Base(filename)
 	filebasename := strings.TrimSuffix(base, filepath.Ext(base))
 
@@ -271,9 +270,8 @@ func renameRecorded(log *slog.Logger, root *os.Root, relSrc, relDst, src, dst, t
 // disc structure directories (VIDEO_TS, AUDIO_TS, BDMV).
 func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, opts fsutil.SanitizeOptions) ([]Rename, error) {
 	if log == nil {
-		log = slog.Default()
+		log = slog.Default().With("component", "deobfuscate")
 	}
-	log = log.With("component", "deobfuscate")
 
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -488,9 +486,8 @@ func containsIgnoredMovieFolder(root *os.Root) bool {
 // video file in dir. This ensures media players auto-detect subtitles.
 func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 	if log == nil {
-		log = slog.Default()
+		log = slog.Default().With("component", "deobfuscate")
 	}
-	log = log.With("component", "deobfuscate")
 
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -572,9 +569,8 @@ func Subtitles(log *slog.Logger, dir string) ([]Rename, error) {
 // be determined.
 func extractRARUsefulName(root *os.Root, dir string, log *slog.Logger) string {
 	if log == nil {
-		log = slog.Default()
+		log = slog.Default().With("component", "deobfuscate")
 	}
-	log = log.With("component", "deobfuscate")
 	d, err := root.Open(".")
 	if err != nil {
 		return ""
