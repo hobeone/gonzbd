@@ -126,7 +126,7 @@ func InspectRar5(p string) (info Info, err error) {
 		if openErr != nil {
 			return openErr
 		}
-		defer func() { _ = f.Close() }()
+		defer func() { _ = f.Close() }() //nolint:errcheck // cleanup error in defer
 
 		volumesChan := make(chan io.ReadCloser, 1)
 		volumesChan <- f
@@ -222,7 +222,7 @@ func readMagic(p string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("rarheader: open %s: %w", p, err)
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = f.Close() }() //nolint:errcheck // cleanup error in defer
 
 	buf := make([]byte, 8)
 	n, err := io.ReadFull(f, buf)
