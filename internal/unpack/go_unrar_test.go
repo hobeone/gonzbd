@@ -563,6 +563,60 @@ func TestExtractEntryRarengine_Normal(t *testing.T) {
 	}
 }
 
+func TestExtractEntryRarengine_PermissionErrors(t *testing.T) {
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	fh := &rarengine.FileHeader{
+		Name:             "perm_test/hello.txt",
+		HostOS:           2, // Unix
+		Attributes:       0644,
+		ModificationTime: time.Now(),
+	}
+
+	handler := &testDebugHandler{}
+	logger := slog.New(handler)
+
+	destRel := "perm_test/hello.txt"
+	destPath := filepath.Join(outDir, destRel)
+
+	ctx := &unlinkingContext{Context: context.Background(), destPath: destPath}
+	err = ExtractEntryRarengine(
+		ctx, root, outDir, destRel, destPath,
+		fh, strings.NewReader("hello world"), Options{
+			OverwriteFiles:   true,
+			IgnoreUnrarDates: false,
+		}, logger,
+	)
+	if err != nil {
+		t.Fatalf("ExtractEntryRarengine: %v", err)
+	}
+
+	handler.mu.Lock()
+	records := append([]slog.Record(nil), handler.records...)
+	handler.mu.Unlock()
+
+	var foundChmod, foundChtimes bool
+	for _, rec := range records {
+		if rec.Level == slog.LevelDebug && strings.Contains(rec.Message, "failed to set file permissions") {
+			foundChmod = true
+		}
+		if rec.Level == slog.LevelDebug && strings.Contains(rec.Message, "failed to set file timestamps") {
+			foundChtimes = true
+		}
+	}
+	if !foundChmod {
+		t.Error("expected debug log for failed Chmod")
+	}
+	if !foundChtimes {
+		t.Error("expected debug log for failed Chtimes")
+	}
+}
+
 // TestExtractEntryRarengine_ZipSlip_SymlinkComponent verifies that os.Root
 // refuses to write through a symlinked path component inside the output dir
 // that resolves outside. This is the security case lexical SanitizeArchivePath

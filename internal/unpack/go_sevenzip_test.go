@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -937,5 +938,92 @@ func TestExtractSevenZipFile_Coverage(t *testing.T) {
 	}, 0, totalRead, slog.Default())
 	if err != nil {
 		t.Errorf("extract with date: %v", err)
+	}
+}
+
+type testDebugHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *testDebugHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= slog.LevelDebug
+}
+
+func (h *testDebugHandler) Handle(ctx context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *testDebugHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *testDebugHandler) WithGroup(name string) slog.Handler       { return h }
+
+type unlinkingContext struct {
+	context.Context
+	destPath string
+	unlinked bool
+}
+
+func (u *unlinkingContext) Err() error {
+	if !u.unlinked {
+		os.Remove(u.destPath)
+		u.unlinked = true
+	}
+	return u.Context.Err()
+}
+
+func TestExtractSevenZipFile_PermissionErrors(t *testing.T) {
+	td := sevenZipTestdata(t)
+	r, err := sevenzip.OpenReader(filepath.Join(td, "lzma2.7z"))
+	if err != nil {
+		t.Fatalf("open lzma2.7z: %v", err)
+	}
+	defer r.Close()
+
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+
+	totalRead := new(int64)
+	f := r.File[0]
+
+	handler := &testDebugHandler{}
+	logger := slog.New(handler)
+
+	destRel := "perm_test"
+	destPath := filepath.Join(outDir, destRel)
+
+	ctx := &unlinkingContext{Context: context.Background(), destPath: destPath}
+	err = extractSevenZipFile(ctx, root, destRel, destPath, f, Options{
+		OverwriteFiles:   true,
+		IgnoreUnrarDates: false,
+	}, 0, totalRead, logger)
+	if err != nil {
+		t.Fatalf("extractSevenZipFile: %v", err)
+	}
+
+	handler.mu.Lock()
+	records := append([]slog.Record(nil), handler.records...)
+	handler.mu.Unlock()
+
+	var foundChmod, foundChtimes bool
+	for _, rec := range records {
+		if rec.Level == slog.LevelDebug && strings.Contains(rec.Message, "failed to set file permissions") {
+			foundChmod = true
+		}
+		if rec.Level == slog.LevelDebug && strings.Contains(rec.Message, "failed to set file timestamps") {
+			foundChtimes = true
+		}
+	}
+	if !foundChmod {
+		t.Error("expected debug log for failed Chmod")
+	}
+	if !foundChtimes {
+		t.Error("expected debug log for failed Chtimes")
 	}
 }
