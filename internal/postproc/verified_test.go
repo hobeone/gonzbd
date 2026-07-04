@@ -180,3 +180,37 @@ func TestVerifiedSets_LogOnSaveFailure(t *testing.T) {
 		t.Error("expected warning log on failed MarkVerified save")
 	}
 }
+
+func TestVerified_CorruptedState(t *testing.T) {
+	dir := t.TempDir()
+
+	adminDir := filepath.Join(dir, constants.JobAdminDirName)
+	if err := os.MkdirAll(adminDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(adminDir, constants.VerifiedFileName)
+	if err := os.WriteFile(path, []byte("{corrupted json"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	oldLogger := slog.Default()
+	handler := &testLogHandler{}
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	vs := NewVerifiedSets(dir)
+	if vs.AllVerified() {
+		t.Error("corrupt file should result in empty (not AllVerified) state")
+	}
+	if vs.IsVerified("anything") {
+		t.Error("corrupt file should result in no verified sets")
+	}
+
+	handler.mu.Lock()
+	warnLogged := handler.warnLogged
+	handler.mu.Unlock()
+
+	if !warnLogged {
+		t.Error("expected warning log when loading corrupted verification state")
+	}
+}

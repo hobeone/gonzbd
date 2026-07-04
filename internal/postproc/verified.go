@@ -73,7 +73,10 @@ func (v *VerifiedSets) load() {
 	if err != nil {
 		return // no file yet, start fresh
 	}
-	_ = json.Unmarshal(data, &v.sets)
+	if err := json.Unmarshal(data, &v.sets); err != nil {
+		slog.Warn("verified: failed to unmarshal par2 verification state",
+			"path", v.path, "err", err)
+	}
 }
 
 func (v *VerifiedSets) save() error {
