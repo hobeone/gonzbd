@@ -27,9 +27,8 @@ func NewVerifiedSets(downloadDir string, log *slog.Logger) *VerifiedSets {
 	adminDir := filepath.Join(downloadDir, constants.JobAdminDirName)
 	path := filepath.Join(adminDir, constants.VerifiedFileName)
 	if log == nil {
-		log = slog.Default()
+		log = slog.Default().With("component", "postproc")
 	}
-	log = log.With("component", "postproc")
 	vs := &VerifiedSets{
 		sets: make(map[string]bool),
 		path: path,
