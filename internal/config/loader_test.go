@@ -411,7 +411,7 @@ func TestWrapYAMLError(t *testing.T) {
 				t.Fatal("expected error, got nil")
 			}
 			if tc.wantSame {
-				if got != tc.err {
+				if !errors.Is(got, tc.err) {
 					t.Fatalf("expected exact same error %v, got: %v", tc.err, got)
 				}
 				return
