@@ -356,3 +356,69 @@ func TestLoad_ComponentScopedLogging(t *testing.T) {
 		t.Errorf("expected warning log record to have attribute component=config; records: %v", *records)
 	}
 }
+
+func TestWrapYAMLError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		content  []byte
+		wantNil  bool
+		wantSame bool
+		wantSub  string
+	}{
+		{
+			name:    "nil error",
+			err:     nil,
+			content: []byte("foo: bar"),
+			wantNil: true,
+		},
+		{
+			name:     "no line number in error",
+			err:      errors.New("generic yaml failure"),
+			content:  []byte("foo: bar"),
+			wantSame: true,
+		},
+		{
+			name:     "line number zero",
+			err:      errors.New("yaml: line 0: bad"),
+			content:  []byte("foo: bar"),
+			wantSame: true,
+		},
+		{
+			name:     "line number out of bounds",
+			err:      errors.New("yaml: line 10: bad"),
+			content:  []byte("foo: bar\nbaz: qux"),
+			wantSame: true,
+		},
+		{
+			name:    "valid line number wrapping",
+			err:     errors.New("yaml: line 2: mapping values are not allowed in this context"),
+			content: []byte("line 1: good\nline 2: bad:\nline 3: good"),
+			wantSub: ">   2 | line 2: bad:",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wrapYAMLError(tc.err, tc.content)
+			if tc.wantNil {
+				if got != nil {
+					t.Fatalf("expected nil, got: %v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if tc.wantSame {
+				if got != tc.err {
+					t.Fatalf("expected exact same error %v, got: %v", tc.err, got)
+				}
+				return
+			}
+			if tc.wantSub != "" && !strings.Contains(got.Error(), tc.wantSub) {
+				t.Errorf("expected substring %q in error:\n%v", tc.wantSub, got)
+			}
+		})
+	}
+}
