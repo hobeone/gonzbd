@@ -1,8 +1,10 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -295,4 +297,62 @@ func TestLoaderUnexportedHelpersDirect(t *testing.T) {
 			t.Error("Categories is nil, expected []")
 		}
 	})
+}
+
+type testLogRecorder struct {
+	attrs   []slog.Attr
+	records *[]slog.Record
+}
+
+func (h *testLogRecorder) Enabled(context.Context, slog.Level) bool { return true }
+func (h *testLogRecorder) Handle(_ context.Context, r slog.Record) error {
+	for _, a := range h.attrs {
+		r.AddAttrs(a)
+	}
+	*h.records = append(*h.records, r)
+	return nil
+}
+func (h *testLogRecorder) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newAttrs := make([]slog.Attr, len(h.attrs)+len(attrs))
+	copy(newAttrs, h.attrs)
+	copy(newAttrs[len(h.attrs):], attrs)
+	return &testLogRecorder{attrs: newAttrs, records: h.records}
+}
+func (h *testLogRecorder) WithGroup(string) slog.Handler { return h }
+
+func TestLoad_ComponentScopedLogging(t *testing.T) {
+	oldLogger := slog.Default()
+	records := &[]slog.Record{}
+	slog.SetDefault(slog.New(&testLogRecorder{records: records}))
+	defer slog.SetDefault(oldLogger)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test_config.yaml")
+	yaml := minimalYAML(t) + "\nunknown_test_field: 123\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if len(*records) == 0 {
+		t.Fatal("expected at least one log record for unknown field, got 0")
+	}
+
+	foundComponent := false
+	for _, rec := range *records {
+		rec.Attrs(func(a slog.Attr) bool {
+			if a.Key == "component" && a.Value.String() == "config" {
+				foundComponent = true
+				return false
+			}
+			return true
+		})
+	}
+	if !foundComponent {
+		t.Errorf("expected warning log record to have attribute component=config; records: %v", *records)
+	}
 }

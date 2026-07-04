@@ -18,16 +18,22 @@ type VerifiedSets struct {
 	mu   sync.Mutex
 	sets map[string]bool // set name → verified
 	path string          // abs path to __verified__ file
+	log  *slog.Logger
 }
 
 // NewVerifiedSets loads (or creates) the verified sets file for a job.
 // downloadDir is the job's download directory.
-func NewVerifiedSets(downloadDir string) *VerifiedSets {
+func NewVerifiedSets(downloadDir string, log *slog.Logger) *VerifiedSets {
 	adminDir := filepath.Join(downloadDir, constants.JobAdminDirName)
 	path := filepath.Join(adminDir, constants.VerifiedFileName)
+	if log == nil {
+		log = slog.Default()
+	}
+	log = log.With("component", "postproc")
 	vs := &VerifiedSets{
 		sets: make(map[string]bool),
 		path: path,
+		log:  log,
 	}
 	vs.load()
 	return vs
@@ -63,7 +69,7 @@ func (v *VerifiedSets) MarkVerified(setName string, ok bool) {
 	defer v.mu.Unlock()
 	v.sets[setName] = ok
 	if err := v.save(); err != nil {
-		slog.Warn("verified: failed to persist par2 verification state",
+		v.log.Warn("verified: failed to persist par2 verification state",
 			"path", v.path, "err", err)
 	}
 }
@@ -74,7 +80,7 @@ func (v *VerifiedSets) load() {
 		return // no file yet, start fresh
 	}
 	if err := json.Unmarshal(data, &v.sets); err != nil {
-		slog.Warn("verified: failed to unmarshal par2 verification state",
+		v.log.Warn("verified: failed to unmarshal par2 verification state",
 			"path", v.path, "err", err)
 	}
 }

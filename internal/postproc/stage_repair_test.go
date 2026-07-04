@@ -231,7 +231,7 @@ func repairJob(t *testing.T) (*Job, *VerifiedSets) {
 		},
 		DownloadDir: dir,
 	}
-	vs := NewVerifiedSets(dir)
+	vs := NewVerifiedSets(dir, nil)
 	return job, vs
 }
 
@@ -397,7 +397,7 @@ func TestRepairHelpers(t *testing.T) {
 	// 1. Test recordRepairSuccess
 	t.Run("recordRepairSuccess", func(t *testing.T) {
 		job := &Job{ConsumedFiles: make(map[string]struct{})}
-		vs := NewVerifiedSets(t.TempDir())
+		vs := NewVerifiedSets(t.TempDir(), nil)
 		set := par2.Set{
 			Name:       "testset",
 			MainFile:   "testset.par2",
@@ -476,7 +476,7 @@ func TestRepairHelpers(t *testing.T) {
 			ConsumedFiles: make(map[string]struct{}),
 			DownloadDir:   t.TempDir(),
 		}
-		vs := NewVerifiedSets(t.TempDir())
+		vs := NewVerifiedSets(t.TempDir(), nil)
 		set := par2.Set{
 			Name: "empty",
 		}
