@@ -111,24 +111,22 @@ func buildDownloadFileList(job *Job) []string {
 // the lines, the total number of files found (directories are not counted),
 // and an error if the top-level directory itself can't be read. Errors
 // reading a subdirectory are reported inline rather than aborting the walk.
-func buildDirTree(dir, indent string) (out []string, count int, err error) {
+func buildDirTree(dir, indent string) (lines []string, count int, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	var lines []string
-	fileCount := 0
 	for _, e := range entries {
 		if e.IsDir() {
 			lines = append(lines, fmt.Sprintf("%s📁 %s/", indent, e.Name()))
-			subLines, subCount, err := buildDirTree(filepath.Join(dir, e.Name()), indent+"  ")
-			if err != nil {
-				lines = append(lines, fmt.Sprintf("%s  Error reading dir: %v", indent, err))
+			subLines, subCount, subErr := buildDirTree(filepath.Join(dir, e.Name()), indent+"  ")
+			if subErr != nil {
+				lines = append(lines, fmt.Sprintf("%s  Error reading dir: %v", indent, subErr))
 				continue
 			}
 			lines = append(lines, subLines...)
-			fileCount += subCount
+			count += subCount
 			continue
 		}
 		info, _ := e.Info()
@@ -137,9 +135,9 @@ func buildDirTree(dir, indent string) (out []string, count int, err error) {
 			sz = info.Size()
 		}
 		lines = append(lines, fmt.Sprintf("%s%s (%s)", indent, e.Name(), humanfmt.BytesSI(sz)))
-		fileCount++
+		count++
 	}
-	return lines, fileCount, nil
+	return lines, count, nil
 }
 
 // buildFileCompletionLines produces one line per job file showing its
