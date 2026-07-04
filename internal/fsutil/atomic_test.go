@@ -131,3 +131,42 @@ func TestWriteAtomic_MissingDirFails(t *testing.T) {
 		t.Error("expected error for missing parent directory, got nil")
 	}
 }
+
+func TestWriteAtomic_SyncError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sync_err.bin")
+
+	err := fsutil.WriteAtomic(path, func(w io.Writer) error {
+		f, ok := w.(*os.File)
+		if !ok {
+			t.Fatal("expected *os.File")
+		}
+		// Closing the file early causes tmp.Sync() to fail with EBADF/file already closed.
+		_ = f.Close()
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected sync error when file is closed early, got nil")
+	}
+}
+
+func TestWriteAtomic_RenameError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rename_err.bin")
+
+	err := fsutil.WriteAtomic(path, func(w io.Writer) error {
+		f, ok := w.(*os.File)
+		if !ok {
+			t.Fatal("expected *os.File")
+		}
+		_, _ = f.Write([]byte("data"))
+		// Removing the temp file during write causes os.Rename to fail.
+		_ = os.Remove(f.Name())
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected rename error when temp file is removed early, got nil")
+	}
+}
