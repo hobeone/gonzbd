@@ -185,7 +185,7 @@ go test ./internal/config/ -run 'TestUIKeywordsAreValidConfigTags|TestAllFlatCon
 
 **Build tag:** `uitest`
 
-Browser-based integration tests using [Playwright for Go](https://github.com/playwright-community/playwright-go).
+Browser-based integration tests using [Playwright for Go](https://github.com/mxschmitt/playwright-go).
 Tests spin up the full Go backend with the embedded Svelte SPA and drive a
 real Chromium browser against it.
 
@@ -194,7 +194,7 @@ real Chromium browser against it.
 1. **Build the UI first:** `cd ui && bun run build`
 2. **Install Playwright browsers** (cached in `~/.cache/ms-playwright-go/`):
    ```bash
-   go run github.com/playwright-community/playwright-go/cmd/playwright install --with-deps chromium
+   go run github.com/mxschmitt/playwright-go/cmd/playwright@v0.xxxx.x install --with-deps
    ```
 
 ### Test Files
