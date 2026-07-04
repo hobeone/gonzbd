@@ -3,8 +3,10 @@ package queue
 import (
 	"encoding/json"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -626,5 +628,49 @@ func TestSave_SetsStateDir(t *testing.T) {
 
 	if _, err := os.Stat(jobPath); !os.IsNotExist(err) {
 		t.Errorf("expected job backup file to be deleted, but it still exists (err: %v)", err)
+	}
+}
+
+func TestWriteGzJSON_EncodeError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "encode_err.json.gz")
+	// Channels cannot be JSON-marshaled, causing enc.Encode to fail.
+	err := writeGzJSON(path, make(chan int))
+	if err == nil {
+		t.Fatal("expected encode error when marshaling channel, got nil")
+	}
+}
+
+func TestWriteGzJSONRaw_WriteError(t *testing.T) {
+	// Do NOT call t.Parallel() because Setrlimit mutates process-global state.
+	var oldRlim syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &oldRlim); err != nil {
+		t.Skipf("Getrlimit not supported: %v", err)
+	}
+
+	signal.Ignore(syscall.SIGXFSZ)
+	defer signal.Reset(syscall.SIGXFSZ)
+
+	newRlim := syscall.Rlimit{Cur: 10, Max: oldRlim.Max}
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &newRlim); err != nil {
+		t.Skipf("Setrlimit not supported: %v", err)
+	}
+	defer func() {
+		_ = syscall.Setrlimit(syscall.RLIMIT_FSIZE, &oldRlim)
+	}()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fsize_err.json.gz")
+	// Writing a large incompressible payload exceeds the 10-byte file size limit during gz.Write, causing it to fail.
+	data := make([]byte, 500_000)
+	val := uint32(1)
+	for i := range data {
+		val = val*1103515245 + 12345
+		data[i] = byte(val >> 16)
+	}
+	err := writeGzJSONRaw(path, data)
+	if err == nil {
+		t.Fatal("expected write error when exceeding RLIMIT_FSIZE, got nil")
 	}
 }

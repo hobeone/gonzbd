@@ -2,6 +2,7 @@ package directunpack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1061,4 +1062,72 @@ func TestUnalignedHelpers(t *testing.T) {
 	_ = du.extractEntries
 	_ = du.waitForVolume
 	_ = du.notifyChange
+	_ = du.startVolumeFeed
+}
+
+func TestStartVolumeFeed_OpenError(t *testing.T) {
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+	d := New(slog.Default(), "job-open-err", workDir, extractDir, Options{})
+	setname := "testset"
+
+	// Register a completed volume pointing to a non-existent file.
+	d.mu.Lock()
+	d.completedVols[setname] = map[int]string{
+		1: filepath.Join(workDir, "nonexistent.rar"),
+	}
+	d.mu.Unlock()
+
+	ctx := context.Background()
+	volumesChan, errChan := d.startVolumeFeed(ctx, setname, 1)
+
+	// Drain volumesChan until closed.
+	for range volumesChan {
+	}
+
+	select {
+	case err := <-errChan:
+		if err == nil {
+			t.Fatal("expected open error from errChan, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for open error")
+	}
+}
+
+func TestStartVolumeFeed_ContextCancelledDuringSend(t *testing.T) {
+	workDir := t.TempDir()
+	extractDir := t.TempDir()
+	d := New(slog.Default(), "job-cancel", workDir, extractDir, Options{})
+	setname := "testset"
+
+	volPath := filepath.Join(workDir, "vol1.rar")
+	if err := os.WriteFile(volPath, []byte("data"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	d.mu.Lock()
+	d.completedVols[setname] = map[int]string{
+		1: volPath,
+	}
+	d.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	volumesChan, errChan := d.startVolumeFeed(ctx, setname, 1)
+
+	// We DO NOT read from volumesChan immediately, causing the goroutine to block on `case volumesChan <- f:`.
+	// Cancel the context so it takes `case <-ctx.Done():`.
+	cancel()
+
+	// Now wait for errChan to receive ctx.Err().
+	select {
+	case err := <-errChan:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for context cancellation error")
+	}
+	for range volumesChan {
+	}
 }
