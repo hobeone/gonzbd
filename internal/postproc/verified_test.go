@@ -1,6 +1,7 @@
 package postproc
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,7 +14,7 @@ func TestVerifiedSets_RoundTrip(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	vs := NewVerifiedSets(dir)
+	vs := NewVerifiedSets(dir, nil)
 	vs.MarkVerified("movie", true)
 	vs.MarkVerified("subs", false)
 
@@ -28,7 +29,7 @@ func TestVerifiedSets_RoundTrip(t *testing.T) {
 	}
 
 	// Reload from disk.
-	vs2 := NewVerifiedSets(dir)
+	vs2 := NewVerifiedSets(dir, nil)
 	if !vs2.IsVerified("movie") {
 		t.Error("after reload: movie should be verified")
 	}
@@ -42,7 +43,7 @@ func TestVerifiedSets_AllVerified(t *testing.T) {
 	dir := t.TempDir()
 
 	// Empty → false.
-	vs := NewVerifiedSets(dir)
+	vs := NewVerifiedSets(dir, nil)
 	if vs.AllVerified() {
 		t.Error("empty set should not be AllVerified")
 	}
@@ -65,12 +66,12 @@ func TestVerifiedSets_Persistence(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	vs := NewVerifiedSets(dir)
+	vs := NewVerifiedSets(dir, nil)
 	vs.MarkVerified("set1", true)
 	vs.MarkVerified("set2", true)
 
 	// Create a new instance pointing to the same directory.
-	vs2 := NewVerifiedSets(dir)
+	vs2 := NewVerifiedSets(dir, nil)
 	if !vs2.IsVerified("set1") {
 		t.Error("set1 should be verified after reload")
 	}
@@ -86,7 +87,7 @@ func TestVerifiedSets_FileLocation(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	vs := NewVerifiedSets(dir)
+	vs := NewVerifiedSets(dir, nil)
 	vs.MarkVerified("test", true)
 
 	// Verify the file is in the expected location.
@@ -111,7 +112,7 @@ func TestVerifiedSets_CorruptFile(t *testing.T) {
 	}
 
 	// Should recover gracefully with empty state.
-	vs := NewVerifiedSets(dir)
+	vs := NewVerifiedSets(dir, nil)
 	if vs.AllVerified() {
 		t.Error("corrupt file should result in empty (not AllVerified) state")
 	}
@@ -124,7 +125,7 @@ func TestVerifiedSets_LoadSave_Direct(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	vs := NewVerifiedSets(dir)
+	vs := NewVerifiedSets(dir, nil)
 	vs.sets["direct_test"] = true
 
 	if err := vs.save(); err != nil {
@@ -145,7 +146,7 @@ func TestVerifiedSets_LogOnSaveFailure(t *testing.T) {
 	dir := t.TempDir()
 
 	// 1. Success case: save should succeed, and no warning should be logged.
-	vs := NewVerifiedSets(dir)
+	vs := NewVerifiedSets(dir, nil)
 
 	oldLogger := slog.Default()
 	handler := &testLogHandler{}
@@ -164,7 +165,7 @@ func TestVerifiedSets_LogOnSaveFailure(t *testing.T) {
 	}
 
 	// 2. Failure case: make path a directory so writing fails, and warning should be logged.
-	vsFail := NewVerifiedSets(dir)
+	vsFail := NewVerifiedSets(dir, nil)
 	vsFail.path = filepath.Join(dir, "is-a-directory")
 	if err := os.Mkdir(vsFail.path, 0o755); err != nil {
 		t.Fatal(err)
@@ -198,7 +199,7 @@ func TestVerified_CorruptedState(t *testing.T) {
 	slog.SetDefault(slog.New(handler))
 	defer slog.SetDefault(oldLogger)
 
-	vs := NewVerifiedSets(dir)
+	vs := NewVerifiedSets(dir, nil)
 	if vs.AllVerified() {
 		t.Error("corrupt file should result in empty (not AllVerified) state")
 	}
@@ -212,5 +213,63 @@ func TestVerified_CorruptedState(t *testing.T) {
 
 	if !warnLogged {
 		t.Error("expected warning log when loading corrupted verification state")
+	}
+}
+
+type testLogRecorder struct {
+	attrs   []slog.Attr
+	records *[]slog.Record
+}
+
+func (h *testLogRecorder) Enabled(context.Context, slog.Level) bool { return true }
+func (h *testLogRecorder) Handle(_ context.Context, r slog.Record) error {
+	for _, a := range h.attrs {
+		r.AddAttrs(a)
+	}
+	*h.records = append(*h.records, r)
+	return nil
+}
+func (h *testLogRecorder) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newAttrs := make([]slog.Attr, len(h.attrs)+len(attrs))
+	copy(newAttrs, h.attrs)
+	copy(newAttrs[len(h.attrs):], attrs)
+	return &testLogRecorder{attrs: newAttrs, records: h.records}
+}
+func (h *testLogRecorder) WithGroup(string) slog.Handler { return h }
+
+func TestVerifiedSets_ComponentScopedLogging(t *testing.T) {
+	oldLogger := slog.Default()
+	records := &[]slog.Record{}
+	slog.SetDefault(slog.New(&testLogRecorder{records: records}))
+	defer slog.SetDefault(oldLogger)
+
+	dir := t.TempDir()
+	adminDir := filepath.Join(dir, constants.JobAdminDirName)
+	if err := os.MkdirAll(adminDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(adminDir, constants.VerifiedFileName)
+	if err := os.WriteFile(path, []byte("{corrupted json"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = NewVerifiedSets(dir, nil)
+
+	if len(*records) == 0 {
+		t.Fatal("expected at least one log record for corrupted state, got 0")
+	}
+
+	foundComponent := false
+	for _, rec := range *records {
+		rec.Attrs(func(a slog.Attr) bool {
+			if a.Key == "component" && a.Value.String() == "postproc" {
+				foundComponent = true
+				return false
+			}
+			return true
+		})
+	}
+	if !foundComponent {
+		t.Errorf("expected warning log record to have attribute component=postproc; records: %v", *records)
 	}
 }
