@@ -57,15 +57,14 @@ type Scanner struct {
 // New creates a new Scanner for the given directory.
 func New(dir string, store *Store, h Handler, cats CategoryFunc, logger *slog.Logger) *Scanner {
 	if logger == nil {
-		logger = slog.Default()
+		logger = slog.Default().With("component", "dirscanner")
 	}
-	log := logger.With("component", "dirscanner")
 	return &Scanner{
 		dir:     dir,
 		store:   store,
 		handler: h,
 		catFn:   cats,
-		logger:  log,
+		logger:  logger,
 	}
 }
 

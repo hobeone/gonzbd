@@ -18,9 +18,8 @@ import (
 // It opens root for dir once and confines all filesystem operations.
 func Par2Rename(ctx context.Context, log *slog.Logger, root *os.Root, dir string, opts fsutil.SanitizeOptions) ([]Rename, error) {
 	if log == nil {
-		log = slog.Default()
+		log = slog.Default().With("component", "deobfuscate")
 	}
-	log = log.With("component", "deobfuscate")
 
 	d, err := root.Open(".")
 	if err != nil {

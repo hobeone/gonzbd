@@ -87,9 +87,9 @@ func New(cfg Config, h Handler) *Grabber {
 		cfg.MaxBytes = DefaultMaxBytes
 	}
 	if cfg.Logger == nil {
-		cfg.Logger = slog.Default()
+		cfg.Logger = slog.Default().With("component", "urlgrabber")
 	}
-	log := cfg.Logger.With("component", "urlgrabber")
+	log := cfg.Logger
 
 	resolver := cfg.Resolver
 	if resolver == nil {
