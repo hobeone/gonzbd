@@ -9,7 +9,7 @@ require (
 	github.com/hobeone/par2engine v1.0.5
 	github.com/hobeone/rarengine v1.0.5
 	github.com/lmittmann/tint v1.1.3
-	github.com/playwright-community/playwright-go v0.6100.0
+	github.com/mxschmitt/playwright-go v0.6100.0
 	github.com/pressly/goose/v3 v3.27.2
 	golang.org/x/sys v0.46.0
 	golang.org/x/text v0.38.0

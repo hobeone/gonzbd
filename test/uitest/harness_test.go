@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/config"
