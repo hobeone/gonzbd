@@ -40,5 +40,7 @@ func BuildSandboxedCommand(ctx context.Context, priorityCfg CmdConfig, sandboxCf
 		}
 		return BuildCommand(ctx, priorityCfg, name, args...), nil
 	}
-	return BuildCommand(ctx, priorityCfg, sName, sArgs...), nil
+	cmd := BuildCommand(ctx, priorityCfg, sName, sArgs...)
+	cmd.Env = append(cmd.Environ(), "TMPDIR="+sandboxCfg.TargetDir)
+	return cmd, nil
 }
