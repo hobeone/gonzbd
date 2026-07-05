@@ -595,7 +595,7 @@ func (d *DirectUnpacker) startVolumeFeed(ctx context.Context, setname string, ma
 			select {
 			case volumesChan <- f:
 			case <-ctx.Done():
-				_ = f.Close() //nolint:errcheck // best-effort cleanup on cancellation
+				_ = f.Close() // best-effort cleanup on cancellation
 				feedErrChan <- ctx.Err()
 				return
 			}
@@ -644,7 +644,7 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, sd *rarengine.Strea
 		destRel, sanitizeErr := unpack.SanitizeArchivePath(fh.Name, d.opts.OneFolder)
 		if sanitizeErr != nil {
 			d.log.Warn("directunpack: skipping entry with bad path", "raw_name", fh.Name, "err", sanitizeErr)
-			_, _ = io.Copy(io.Discard, sd) //nolint:errcheck // drain stream to skip bad entry
+			_, _ = io.Copy(io.Discard, sd) // drain stream to skip bad entry
 			continue
 		}
 
