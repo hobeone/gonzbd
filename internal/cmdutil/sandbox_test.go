@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"slices"
 	"testing"
 )
 
@@ -71,5 +72,24 @@ func TestBuildSandboxedCommand_NonStrictFallback(t *testing.T) {
 		if cmd.Args[i] != w {
 			t.Errorf("args[%d] = %q, want %q", i, cmd.Args[i], w)
 		}
+	}
+}
+
+func TestBuildSandboxedCommand_SetsTMPDIR(t *testing.T) {
+	orig := lookPath
+	defer func() { lookPath = orig }()
+	lookPath = func(file string) (string, error) {
+		return "/usr/bin/bwrap", nil
+	}
+
+	ctx := context.Background()
+	cfg := SandboxConfig{Enabled: true, Strict: false, TargetDir: "/sandbox/target"}
+	cmd, err := BuildSandboxedCommand(ctx, CmdConfig{}, cfg, "echo", "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !slices.Contains(cmd.Env, "TMPDIR=/sandbox/target") {
+		t.Fatalf("expected cmd.Env to contain TMPDIR=/sandbox/target when sandboxing enabled, got %v", cmd.Env)
 	}
 }
