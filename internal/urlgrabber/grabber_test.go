@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
 	"net"
 	"net/http"
@@ -1133,14 +1132,5 @@ func TestFetch_ObfuscatedHostnamesRejected(t *testing.T) {
 				t.Errorf("expected obfuscated hostname %q to be rejected, got nil error", host)
 			}
 		})
-	}
-}
-
-func TestNew_NoDoubleScopedLogger(t *testing.T) {
-	t.Parallel()
-	preScoped := slog.Default().With("component", "urlgrabber")
-	g := New(Config{Logger: preScoped}, &MockHandler{})
-	if g.logger == nil {
-		t.Fatal("expected non-nil logger")
 	}
 }

@@ -26,6 +26,8 @@ type VerifiedSets struct {
 func NewVerifiedSets(downloadDir string, log *slog.Logger) *VerifiedSets {
 	adminDir := filepath.Join(downloadDir, constants.JobAdminDirName)
 	path := filepath.Join(adminDir, constants.VerifiedFileName)
+	// Leaf packages self-scope only when they are the root of the logger chain;
+	// a caller-supplied logger is assumed already scoped.
 	if log == nil {
 		log = slog.Default().With("component", "postproc")
 	}
