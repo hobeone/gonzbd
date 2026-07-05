@@ -1007,14 +1007,17 @@ exit 0
 		t.Error("expected job.UnpackError = true when containment check fails")
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, "evil_link")); !os.IsNotExist(err) {
-		t.Errorf("evil_link inside DownloadDir should be deleted immediately, stat err: %v", err)
+	if _, err := os.Lstat(filepath.Join(dir, "evil_link")); !os.IsNotExist(err) {
+		t.Errorf("evil_link inside DownloadDir should be unlinked immediately, stat err: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "normal_file.txt")); !os.IsNotExist(err) {
 		t.Errorf("normal_file.txt inside DownloadDir should be deleted immediately, stat err: %v", err)
 	}
-	if _, err := os.Stat(escapedFile); !os.IsNotExist(err) {
-		t.Errorf("escaped target file %s outside DownloadDir should be deleted immediately by target removal, stat err: %v", escapedFile, err)
+	// The symlink target lives outside DownloadDir and is a pre-existing file.
+	// It MUST survive: following evil_link to delete it is the vulnerability —
+	// a malicious archive could otherwise erase any file the process can reach.
+	if _, err := os.Stat(escapedFile); err != nil {
+		t.Errorf("escaped symlink target %s outside DownloadDir must be preserved, stat err: %v", escapedFile, err)
 	}
 }
 
@@ -1048,20 +1051,21 @@ func TestCleanupContainmentViolation_Direct(t *testing.T) {
 	// 3. "nonexistent.txt" (to cover error path when file doesn't exist)
 	cleanupContainmentViolation(outDir, []string{"link.txt", normalFile, "nonexistent.txt"}, log)
 
-	if _, err := os.Stat(outsideFile); !os.IsNotExist(err) {
-		t.Errorf("expected out-of-bounds target %s to be deleted, stat err: %v", outsideFile, err)
+	// The out-of-bounds symlink target is a pre-existing victim file: it MUST
+	// be preserved. Following the symlink to delete it would let a malicious
+	// archive destroy arbitrary files by planting a symlink pointing at them.
+	if _, err := os.Stat(outsideFile); err != nil {
+		t.Errorf("out-of-bounds symlink target %s must be preserved, stat err: %v", outsideFile, err)
 	}
-	if _, err := os.Stat(symlinkPath); !os.IsNotExist(err) {
-		t.Errorf("expected symlink %s to be deleted, stat err: %v", symlinkPath, err)
+	// The escaping symlink itself (inside outDir) must be unlinked.
+	if _, err := os.Lstat(symlinkPath); !os.IsNotExist(err) {
+		t.Errorf("expected escaping symlink %s to be unlinked, stat err: %v", symlinkPath, err)
 	}
 	if _, err := os.Stat(normalFile); !os.IsNotExist(err) {
 		t.Errorf("expected normal file %s to be deleted, stat err: %v", normalFile, err)
 	}
 
 	logs := buf.String()
-	if !strings.Contains(logs, "removed out-of-bounds target file") {
-		t.Errorf("expected log to contain 'removed out-of-bounds target file', got: %s", logs)
-	}
 	if !strings.Contains(logs, "removed extracted file after containment check failure") {
 		t.Errorf("expected log to contain 'removed extracted file after containment check failure', got: %s", logs)
 	}

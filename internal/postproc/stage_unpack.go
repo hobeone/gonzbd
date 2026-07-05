@@ -720,23 +720,33 @@ func archiveTypePriority(t unpack.ArchiveType) int {
 	}
 }
 
-// cleanupContainmentViolation removes out-of-bounds target files and extracted
-// files from disk immediately when an external subprocess or extraction fails
-// the containment check.
+// cleanupContainmentViolation removes the entries an extraction created when it
+// fails the containment check. It deletes ONLY paths that lie inside outDir,
+// and it unlinks them without following symlinks. It must never delete the
+// resolved target of an out-of-bounds symlink: a malicious archive can plant a
+// symlink (e.g. link -> /home/user) inside outDir, and following it to
+// os.RemoveAll the target would let the archive destroy arbitrary pre-existing
+// files. Unlinking the symlink itself neutralizes the escape while leaving the
+// victim untouched.
 func cleanupContainmentViolation(outDir string, extractedFiles []string, log *slog.Logger) {
 	for _, f := range extractedFiles {
 		absPath := f
 		if !filepath.IsAbs(f) {
 			absPath = filepath.Join(outDir, f)
 		}
-		if realPath, err := filepath.EvalSymlinks(absPath); err == nil {
-			if !fsutil.PathWithin(outDir, realPath) {
-				if rmErr := os.RemoveAll(realPath); rmErr == nil && log != nil {
-					log.Warn("containment: removed out-of-bounds target file", "target", realPath)
-				}
+		// Guard lexically against the extracted path itself (not its symlink
+		// target) so an escaping symlink is unlinked here rather than followed.
+		if !fsutil.PathWithin(outDir, absPath) {
+			if log != nil {
+				log.Warn("containment: refusing to remove extracted path outside output dir", "file", absPath)
 			}
+			continue
 		}
-		if rmErr := os.RemoveAll(absPath); rmErr == nil && log != nil {
+		// os.Remove unlinks a symlink without following it, so an out-of-bounds
+		// symlink target is left intact. Extracted entries are regular files
+		// (directories are never recorded by the snapshot diff), so Remove
+		// suffices and avoids recursively deleting through a bad path.
+		if rmErr := os.Remove(absPath); rmErr == nil && log != nil {
 			log.Warn("containment: removed extracted file after containment check failure", "file", absPath)
 		}
 	}
