@@ -86,6 +86,8 @@ func New(cfg Config, h Handler) *Grabber {
 	if cfg.MaxBytes == 0 {
 		cfg.MaxBytes = DefaultMaxBytes
 	}
+	// Leaf packages self-scope only when they are the root of the logger chain;
+	// a caller-supplied logger is assumed already scoped.
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default().With("component", "urlgrabber")
 	}
