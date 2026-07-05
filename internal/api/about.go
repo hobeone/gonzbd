@@ -118,7 +118,7 @@ func publicIP(url string) string {
 	if err != nil {
 		return ""
 	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // cleanup error in defer
+	defer func() { _ = resp.Body.Close() }() // cleanup error in defer
 
 	if resp.StatusCode != http.StatusOK {
 		return ""

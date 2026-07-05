@@ -188,11 +188,9 @@ func (s *Server) SessionKey() string {
 // which makes it impossible to run this binary securely at all; that is
 // an unrecoverable platform error, not a normal error path to design
 // around (see project panic-for-control-flow exception).
-var randRead = rand.Read
-
-func generateSessionKey() string {
+func generateSessionKey() string { //nocover: unrecoverable OS entropy error
 	b := make([]byte, 32)
-	if _, err := randRead(b); err != nil {
+	if _, err := rand.Read(b); err != nil {
 		panic(fmt.Errorf("api: failed to generate session key: %w", err))
 	}
 	return hex.EncodeToString(b)
