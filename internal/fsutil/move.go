@@ -77,18 +77,18 @@ func copyAndRemove(src, dst string) error {
 
 	out, err := os.Create(dst) //nolint:gosec // G304: path from caller, not user input
 	if err != nil {
-		_ = in.Close() //nolint:errcheck // cleanup opened input on create error
+		_ = in.Close() // cleanup opened input on create error
 		return err
 	}
 
 	if _, err = io.Copy(out, in); err != nil {
-		_ = in.Close()     //nolint:errcheck // cleanup opened input on copy error
-		_ = out.Close()    //nolint:errcheck // cleanup opened output on copy error
+		_ = in.Close()     // cleanup opened input on copy error
+		_ = out.Close()    // cleanup opened output on copy error
 		_ = os.Remove(dst) // clean up partial file
 		return err
 	}
 	// Close source before removing it — on Windows, Remove fails on open files.
-	_ = in.Close() //nolint:errcheck // read-only input file is being deleted regardless
+	_ = in.Close() // read-only input file is being deleted regardless
 	if err := out.Close(); err != nil {
 		_ = os.Remove(dst) // clean up partial file
 		return err
