@@ -71,6 +71,8 @@ var abcXyz = regexp.MustCompile(`^abc\.xyz`)
 // argument may be a plain filename or a full path; only the base component
 // is inspected. This is a direct port of Python's is_probably_obfuscated.
 func IsProbablyObfuscated(log *slog.Logger, filename string) bool {
+	// Leaf packages self-scope only when they are the root of the logger chain;
+	// a caller-supplied logger is assumed already scoped.
 	if log == nil {
 		log = slog.Default().With("component", "deobfuscate")
 	}
