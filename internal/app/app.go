@@ -1082,6 +1082,39 @@ func (app *Application) maybeFinalize(jobID, failMsg string) {
 	}
 }
 
+// directUnpackWaiter is the subset of *directunpack.DirectUnpacker that
+// awaitDirectUnpackOrAbort needs. Defined here (consumer side) so the wait
+// logic can be unit-tested with a fake.
+type directUnpackWaiter interface {
+	Wait()
+	Abort()
+}
+
+// awaitDirectUnpackOrAbort blocks until du finishes or ctx is cancelled. On
+// natural completion it returns true. On cancellation it calls du.Abort() —
+// which makes du.Wait() return — waits for the wait goroutine to exit, and
+// returns false so the caller can skip post-processing during shutdown.
+//
+// This exists because a du handed to the async completion goroutine has already
+// been removed from app.directUnpackers, so Shutdown()'s abort loop cannot
+// reach it; without this, a du.Wait() that blocks forever would hang
+// app.wg.Wait() during shutdown.
+func awaitDirectUnpackOrAbort(ctx context.Context, du directUnpackWaiter) bool {
+	waited := make(chan struct{})
+	go func() {
+		du.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+		return true
+	case <-ctx.Done():
+		du.Abort()
+		<-waited
+		return false
+	}
+}
+
 func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// Mark the download phase as finished so OnJobDone can compute
 	// download duration accurately, excluding post-processing time.
@@ -1184,7 +1217,15 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 
 	if du != nil {
 		app.wg.Go(func() {
-			du.Wait()
+			// du has already been removed from app.directUnpackers above, so
+			// Shutdown()'s abort loop can no longer reach it. du.Wait() can
+			// block indefinitely (e.g. waiting on a RAR volume that never
+			// arrives), which would hang Shutdown() at app.wg.Wait(). Watch the
+			// lifecycle context and Abort() the du on cancellation so Wait()
+			// returns; skip dispatch since we are tearing down.
+			if !awaitDirectUnpackOrAbort(app.ctx, du) {
+				return
+			}
 			duResults := du.Results()
 			duFailures := du.Failures()
 			duSkipped := du.Skipped()
