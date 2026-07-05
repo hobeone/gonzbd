@@ -163,10 +163,18 @@ func (b *boundReader) Read(p []byte) (int, error) {
 	if n > 0 {
 		atomic.AddInt64(b.totalRead, int64(n))
 		currTotal := atomic.LoadInt64(b.totalRead)
+		if currTotal < 0 {
+			return n, fmt.Errorf("go_7z: invalid negative total read count: %d", currTotal)
+		}
 		if b.maxSize > 0 && currTotal > b.maxSize {
 			return n, fmt.Errorf("%w: total read (%d bytes) exceeds ceiling (%d bytes)", errSevenZipBomb, currTotal, b.maxSize)
 		}
-		if b.arcSize > 0 && b.maxRatio > 0 && currTotal > b.minThreshold && currTotal > b.arcSize*b.maxRatio {
+		// Compute the ratio ceiling in uint64 to avoid int64 overflow on very
+		// large archives (matching the projected-size check in
+		// extractSevenZipFile). currTotal, arcSize and maxRatio are all
+		// positive in this branch, so the conversions are safe.
+		if b.arcSize > 0 && b.maxRatio > 0 && currTotal > b.minThreshold &&
+			uint64(currTotal) > uint64(b.arcSize)*uint64(b.maxRatio) {
 			return n, fmt.Errorf("%w: archive ratio exceeds limit (%d)", errSevenZipBomb, b.maxRatio)
 		}
 	}
