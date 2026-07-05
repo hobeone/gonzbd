@@ -392,10 +392,10 @@ func TestHandleRepairResult_Success(t *testing.T) {
 	}
 }
 
-// TestShouldFallbackToExternal pins the native→external fallback decision: a
-// definitive go_par2 verdict (not enough recovery data, or a corrupt/missing
-// main par2 file) must NOT trigger a redundant external par2 scan, while engine
-// errors and unexpected non-success results must.
+// TestShouldFallbackToExternal pins the native→external fallback decision: the
+// definitive go_par2 verdict (not enough recovery data) must NOT trigger a
+// redundant external par2 scan, while engine errors and unexpected non-success
+// results must.
 func TestShouldFallbackToExternal(t *testing.T) {
 	t.Parallel()
 
@@ -422,11 +422,9 @@ func TestShouldFallbackToExternal(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "corrupt main par2 is definitive, no fallback",
-			res:  par2.RepairResult{Success: false, Parsed: &par2.RepairOutput{Status: par2.StatusInvalidPar2}},
-			want: false,
-		},
-		{
+			// A go_par2 decoder/parse failure surfaces as err != nil, not as a
+			// StatusInvalidPar2 result — GoRepair never sets res.Parsed — so it
+			// must fall back to let the mature external parser try.
 			name: "generic non-success falls back",
 			res:  par2.RepairResult{Success: false, ExitCode: 2},
 			want: true,
