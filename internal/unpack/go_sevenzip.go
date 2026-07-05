@@ -270,14 +270,18 @@ func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath s
 	// Chmod is skipped — the file keeps the safer 0600 from OpenFile.
 	mode := f.Mode() & 0o666
 	if mode != 0 {
-		_ = root.Chmod(destRel, mode)
+		if err := root.Chmod(destRel, mode); err != nil {
+			log.Debug("unpack: failed to set file permissions", "file", destRel, "err", err)
+		}
 	}
 
 	// Modification time: preserve from archive unless config says ignore.
 	// Note: field is named IgnoreUnrarDates for historical reasons but
 	// applies to all archive types.
 	if !opts.IgnoreUnrarDates && !f.Modified.IsZero() {
-		_ = root.Chtimes(destRel, f.Modified, f.Modified)
+		if err := root.Chtimes(destRel, f.Modified, f.Modified); err != nil {
+			log.Debug("unpack: failed to set file timestamps", "file", destRel, "err", err)
+		}
 	}
 
 	return nil

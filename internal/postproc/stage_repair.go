@@ -140,7 +140,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		return fmt.Errorf("repair: find par2 sets: %w", err)
 	}
 
-	vs := NewVerifiedSets(job.DownloadDir)
+	vs := NewVerifiedSets(job.DownloadDir, log)
 	if vs.AllVerified() {
 		logf(ctx, log, job, slog.LevelInfo, "[repair] All sets previously verified — skipping")
 		return nil
