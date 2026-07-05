@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -968,13 +969,16 @@ type unlinkingContext struct {
 
 func (u *unlinkingContext) Err() error {
 	if !u.unlinked {
-		os.Remove(u.destPath)
+		_ = os.Remove(u.destPath) //nolint:errcheck // best-effort cleanup to force chmod/chtimes failure in test
 		u.unlinked = true
 	}
 	return u.Context.Err()
 }
 
 func TestExtractSevenZipFile_PermissionErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping test that relies on POSIX unlink-while-open semantics")
+	}
 	td := sevenZipTestdata(t)
 	r, err := sevenzip.OpenReader(filepath.Join(td, "lzma2.7z"))
 	if err != nil {
