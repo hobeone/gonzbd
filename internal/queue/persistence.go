@@ -189,7 +189,7 @@ func (q *Queue) Prune() {
 
 	for _, p := range toRemove {
 		q.log.Info("pruning orphaned job state", "path", p)
-		_ = os.Remove(p)
+		_ = os.Remove(p) //nolint:errcheck // best-effort pruning of orphaned job file
 	}
 }
 
@@ -219,7 +219,7 @@ func writeGzJSON(path string, v any) error {
 		enc := json.NewEncoder(gz)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(v); err != nil {
-			_ = gz.Close()
+			_ = gz.Close() //nolint:errcheck // cleanup gzip writer on encode error
 			return fmt.Errorf("encode: %w", err)
 		}
 		if err := gz.Close(); err != nil {
@@ -235,7 +235,7 @@ func writeGzJSONRaw(path string, data []byte) error {
 	return fsutil.WriteAtomic(path, func(w io.Writer) error {
 		gz := gzip.NewWriter(w)
 		if _, err := gz.Write(data); err != nil {
-			_ = gz.Close()
+			_ = gz.Close() //nolint:errcheck // cleanup gzip writer on write error
 			return fmt.Errorf("write gzip: %w", err)
 		}
 		if err := gz.Close(); err != nil {

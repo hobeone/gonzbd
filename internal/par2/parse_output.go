@@ -228,6 +228,7 @@ func parseOptionOrValidity(line string, ro *RepairOutput, verified bool) bool {
 	if strings.HasPrefix(line, "You need") {
 		if m := needMoreBlocksRE.FindStringSubmatch(line); len(m) == 2 {
 			ro.NeedMoreBlocks = true
+			//nolint:errcheck // non-numeric token fallback handled by default 0
 			ro.BlocksNeeded, _ = strconv.Atoi(m[1])
 			ro.Status = StatusNeedMoreBlocks
 		}
@@ -235,6 +236,7 @@ func parseOptionOrValidity(line string, ro *RepairOutput, verified bool) bool {
 	}
 	if verified && (strings.HasSuffix(line, "are missing.") || strings.HasSuffix(line, "exist but are damaged.")) {
 		if m := missingDamagedRE.FindStringSubmatch(line); len(m) == 2 {
+			//nolint:errcheck // non-numeric token fallback handled by default 0
 			n, _ := strconv.Atoi(m[1])
 			ro.VerifyTotal += n
 		}
@@ -353,6 +355,7 @@ func parseFinalStateOrFailure(line string, ro *RepairOutput, inVerify, inExtraFi
 	case !inVerify:
 		// Total recoverable files.
 		if m := recoverableFilesRE.FindStringSubmatch(line); len(m) == 2 {
+			//nolint:errcheck // non-numeric token fallback handled by default 0
 			n, _ := strconv.Atoi(m[1])
 			ro.RecoverableFiles = n
 		}

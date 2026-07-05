@@ -1,8 +1,10 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -295,4 +297,128 @@ func TestLoaderUnexportedHelpersDirect(t *testing.T) {
 			t.Error("Categories is nil, expected []")
 		}
 	})
+}
+
+type testLogRecorder struct {
+	attrs   []slog.Attr
+	records *[]slog.Record
+}
+
+func (h *testLogRecorder) Enabled(context.Context, slog.Level) bool { return true }
+func (h *testLogRecorder) Handle(_ context.Context, r slog.Record) error {
+	for _, a := range h.attrs {
+		r.AddAttrs(a)
+	}
+	*h.records = append(*h.records, r)
+	return nil
+}
+func (h *testLogRecorder) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newAttrs := make([]slog.Attr, len(h.attrs)+len(attrs))
+	copy(newAttrs, h.attrs)
+	copy(newAttrs[len(h.attrs):], attrs)
+	return &testLogRecorder{attrs: newAttrs, records: h.records}
+}
+func (h *testLogRecorder) WithGroup(string) slog.Handler { return h }
+
+func TestLoad_ComponentScopedLogging(t *testing.T) {
+	oldLogger := slog.Default()
+	records := &[]slog.Record{}
+	slog.SetDefault(slog.New(&testLogRecorder{records: records}))
+	defer slog.SetDefault(oldLogger)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test_config.yaml")
+	yaml := minimalYAML(t) + "\nunknown_test_field: 123\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if len(*records) == 0 {
+		t.Fatal("expected at least one log record for unknown field, got 0")
+	}
+
+	foundComponent := false
+	for _, rec := range *records {
+		rec.Attrs(func(a slog.Attr) bool {
+			if a.Key == "component" && a.Value.String() == "config" {
+				foundComponent = true
+				return false
+			}
+			return true
+		})
+	}
+	if !foundComponent {
+		t.Errorf("expected warning log record to have attribute component=config; records: %v", *records)
+	}
+}
+
+func TestWrapYAMLError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		content  []byte
+		wantNil  bool
+		wantSame bool
+		wantSub  string
+	}{
+		{
+			name:    "nil error",
+			err:     nil,
+			content: []byte("foo: bar"),
+			wantNil: true,
+		},
+		{
+			name:     "no line number in error",
+			err:      errors.New("generic yaml failure"),
+			content:  []byte("foo: bar"),
+			wantSame: true,
+		},
+		{
+			name:     "line number zero",
+			err:      errors.New("yaml: line 0: bad"),
+			content:  []byte("foo: bar"),
+			wantSame: true,
+		},
+		{
+			name:     "line number out of bounds",
+			err:      errors.New("yaml: line 10: bad"),
+			content:  []byte("foo: bar\nbaz: qux"),
+			wantSame: true,
+		},
+		{
+			name:    "valid line number wrapping",
+			err:     errors.New("yaml: line 2: mapping values are not allowed in this context"),
+			content: []byte("line 1: good\nline 2: bad:\nline 3: good"),
+			wantSub: ">   2 | line 2: bad:",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wrapYAMLError(tc.err, tc.content)
+			if tc.wantNil {
+				if got != nil {
+					t.Fatalf("expected nil, got: %v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if tc.wantSame {
+				if !errors.Is(got, tc.err) {
+					t.Fatalf("expected exact same error %v, got: %v", tc.err, got)
+				}
+				return
+			}
+			if tc.wantSub != "" && !strings.Contains(got.Error(), tc.wantSub) {
+				t.Errorf("expected substring %q in error:\n%v", tc.wantSub, got)
+			}
+		})
+	}
 }

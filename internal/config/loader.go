@@ -34,8 +34,9 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: decode %q: %w", path, err)
 	}
+	log := slog.Default().With("component", "config")
 	for _, u := range unknowns {
-		slog.Warn("config: unknown field ignored", "detail", u, "path", path)
+		log.Warn("config: unknown field ignored", "detail", u, "path", path)
 	}
 	cfg.ExpandPaths()
 	if err := cfg.Validate(); err != nil {

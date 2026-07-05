@@ -29,8 +29,8 @@ func WriteAtomic(path string, write func(w io.Writer) error) error {
 	tmpName := tmp.Name()
 
 	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		_ = tmp.Close()        //nolint:errcheck // cleanup temp file on error path
+		_ = os.Remove(tmpName) //nolint:errcheck // cleanup temp file on error path
 	}
 
 	if err := write(tmp); err != nil {
@@ -42,11 +42,11 @@ func WriteAtomic(path string, write func(w io.Writer) error) error {
 		return fmt.Errorf("atomic write %s: fsync: %w", base, err)
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
+		_ = os.Remove(tmpName) //nolint:errcheck // cleanup temp file on close error
 		return fmt.Errorf("atomic write %s: close temp: %w", base, err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
+		_ = os.Remove(tmpName) //nolint:errcheck // cleanup temp file on rename error
 		return fmt.Errorf("atomic write %s: rename: %w", base, err)
 	}
 	return nil

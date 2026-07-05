@@ -1,6 +1,7 @@
 package fsutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -125,5 +126,91 @@ func TestCrossDeviceErr_Direct(t *testing.T) {
 	}
 	if !IsCrossDeviceError(err) {
 		t.Errorf("expected IsCrossDeviceError(%v) to be true", err)
+	}
+}
+
+func TestCopyAndRemove_SymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	sym := filepath.Join(dir, "escape.txt")
+	if err := os.Symlink("/tmp/nonexistent_escape_target", sym); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	dst := filepath.Join(dir, "escape_moved.txt")
+
+	err := copyAndRemove(sym, dst)
+	if err == nil {
+		t.Fatal("expected ErrSymlinkEscape, got nil")
+	}
+	if !errors.Is(err, ErrSymlinkEscape) {
+		t.Errorf("expected ErrSymlinkEscape, got: %v", err)
+	}
+}
+
+func TestCopyAndRemove_CreateError(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src_create_err.txt")
+	if err := os.WriteFile(src, []byte("data"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Passing a directory path as dst causes os.Create(dst) to fail, executing _ = in.Close().
+	err := copyAndRemove(src, dir)
+	if err == nil {
+		t.Fatal("expected create error when dst is a directory, got nil")
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("src should still exist after create error: %v", err)
+	}
+}
+
+func TestCopyAndRemove_CopyError(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "src_dir")
+	if err := os.Mkdir(srcDir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	dst := filepath.Join(dir, "dst.txt")
+	// Passing a directory as src allows os.Open and os.Create to succeed, but io.Copy fails with EISDIR.
+	err := copyAndRemove(srcDir, dst)
+	if err == nil {
+		t.Fatal("expected copy error when src is a directory, got nil")
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Errorf("dst partial file should be removed after copy error: %v", err)
+	}
+}
+
+func TestCopyAndRemove_SymlinkCreateError(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("target"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	sym := filepath.Join(dir, "sym.txt")
+	if err := os.Symlink("target.txt", sym); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	// Destination in non-existent directory causes os.Symlink to fail.
+	dst := filepath.Join(dir, "nodir", "sym_dst.txt")
+
+	err := copyAndRemove(sym, dst)
+	if err == nil {
+		t.Fatal("expected symlink create error when dst dir does not exist, got nil")
+	}
+}
+
+func TestCopyAndRemove_OpenError(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "unreadable.txt")
+	if err := os.WriteFile(src, []byte("data"), 0o000); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(src, 0o600)
+	})
+
+	dst := filepath.Join(dir, "dst.txt")
+	err := copyAndRemove(src, dst)
+	if err == nil {
+		t.Fatal("expected open error on 0000 file, got nil")
 	}
 }

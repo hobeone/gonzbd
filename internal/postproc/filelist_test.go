@@ -307,3 +307,68 @@ func TestBuildFinalFileListDirect(t *testing.T) {
 		t.Errorf("expected Total: 1.2 KiB in output, got:\n%s", joined)
 	}
 }
+
+func TestBuildDirTree(t *testing.T) {
+	t.Run("nonexistent directory returns error", func(t *testing.T) {
+		lines, count, err := buildDirTree("/nonexistent/path/ever", "  ")
+		if err == nil {
+			t.Errorf("expected error for nonexistent directory, got nil (lines: %v, count: %d)", lines, count)
+		}
+	})
+
+	t.Run("directory with files and subdirectories", func(t *testing.T) {
+		dir := t.TempDir()
+		subDir := filepath.Join(dir, "subdir")
+		if err := os.Mkdir(subDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "file1.txt"), make([]byte, 100), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(subDir, "nested.txt"), make([]byte, 200), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		lines, count, err := buildDirTree(dir, "  ")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("expected count=2, got %d", count)
+		}
+		joined := strings.Join(lines, "\n")
+		if !strings.Contains(joined, "  file1.txt (100 B)") {
+			t.Errorf("missing file1.txt line; got:\n%s", joined)
+		}
+		if !strings.Contains(joined, "  📁 subdir/") {
+			t.Errorf("missing subdir line; got:\n%s", joined)
+		}
+		if !strings.Contains(joined, "    nested.txt (200 B)") {
+			t.Errorf("missing nested.txt line; got:\n%s", joined)
+		}
+	})
+
+	t.Run("unreadable subdirectory inline error", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("skipping permission test when running as root")
+		}
+		dir := t.TempDir()
+		noPermDir := filepath.Join(dir, "noperm")
+		if err := os.Mkdir(noPermDir, 0o000); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		defer os.Chmod(noPermDir, 0o755)
+
+		lines, count, err := buildDirTree(dir, "  ")
+		if err != nil {
+			t.Fatalf("unexpected top-level error: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("expected count=0, got %d", count)
+		}
+		joined := strings.Join(lines, "\n")
+		if !strings.Contains(joined, "Error reading dir:") {
+			t.Errorf("expected inline error message; got:\n%s", joined)
+		}
+	})
+}
