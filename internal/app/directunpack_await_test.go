@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fakeDirectUnpack is a minimal directUnpackWaiter. Wait blocks until finish or
@@ -49,10 +50,20 @@ func TestAwaitDirectUnpackOrAbort_CancelAbortsAndReturns(t *testing.T) {
 	cancel() // lifecycle context cancelled (shutdown)
 
 	// Must return promptly rather than hang: the cancellation path aborts the
-	// stuck unpack so Wait() returns. If the abort were missing, this call
-	// would block forever and the test would time out.
-	if awaitDirectUnpackOrAbort(ctx, f) {
-		t.Error("expected false (aborted on cancel), got true")
+	// stuck unpack so Wait() returns. Run in a goroutine bounded by a generous
+	// deadline so a regression (missing Abort) fails this test in ~200ms
+	// instead of stalling the whole package until the outer go-test timeout.
+	// The deadline is a hang-detection window only — the success path returns
+	// immediately, so it never adds latency in the normal case.
+	result := make(chan bool, 1)
+	go func() { result <- awaitDirectUnpackOrAbort(ctx, f) }()
+	select {
+	case got := <-result:
+		if got {
+			t.Error("expected false (aborted on cancel), got true")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("awaitDirectUnpackOrAbort did not return promptly after context cancellation")
 	}
 	if !f.aborted.Load() {
 		t.Error("expected Abort to be called on context cancellation")
