@@ -412,7 +412,7 @@ func TestWrapYAMLError(t *testing.T) {
 			}
 			if tc.wantSame {
 				if !errors.Is(got, tc.err) {
-					t.Fatalf("expected exact same error %v, got: %v", tc.err, got)
+					t.Fatalf("expected errors.Is match for error %v, got: %v", tc.err, got)
 				}
 				return
 			}

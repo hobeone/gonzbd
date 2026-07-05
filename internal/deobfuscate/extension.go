@@ -99,9 +99,8 @@ func hasCollisionSuffix(filename string) bool {
 // Returns zero-value Rename and nil error if no fix is needed.
 func FixExtension(ctx context.Context, log *slog.Logger, root *os.Root, rel, path string) (Rename, error) {
 	if log == nil {
-		log = slog.Default()
+		log = slog.Default().With("component", "deobfuscate")
 	}
-	log = log.With("component", "deobfuscate")
 	base := filepath.Base(rel)
 	ext := strings.ToLower(filepath.Ext(rel))
 
