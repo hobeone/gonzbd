@@ -75,6 +75,9 @@ func TestSafeEngineRun(t *testing.T) {
 		if err.Error() != expectedMsg {
 			t.Fatalf("expected error %q, got %q", expectedMsg, err.Error())
 		}
+		if !errors.Is(err, panicErr) {
+			t.Fatalf("expected error to wrap %v so errors.Is works, but got %v", panicErr, err)
+		}
 	})
 
 	t.Run("multiple panic callbacks are called", func(t *testing.T) {
