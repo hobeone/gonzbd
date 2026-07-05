@@ -310,11 +310,11 @@ func dispatchRepairTool(
 	})
 
 	// Fallback: retry with the external par2 binary only when the native result
-	// is inconclusive. A definitive negative verdict (not enough recovery data,
-	// or a corrupt/missing main par2 file) is authoritative — external par2
-	// re-scans the same content-matched files and reaches the identical
-	// conclusion, so retrying only burns a full scan without changing the
-	// outcome. Gated on fallback so users can disable the retry entirely.
+	// is inconclusive. A "not enough recovery data" verdict (NeedMoreBlocks) is
+	// authoritative — external par2 re-scans the same content-matched files and
+	// reaches the identical conclusion, so retrying only burns a full scan
+	// without changing the outcome. Gated on fallback so users can disable the
+	// retry entirely.
 	if fallback && shouldFallbackToExternal(res, err) {
 		par2Bin := repairOpts.Bin()
 		if _, lookErr := exec.LookPath(par2Bin); lookErr == nil {
@@ -332,15 +332,16 @@ func dispatchRepairTool(
 }
 
 // shouldFallbackToExternal reports whether a native go_par2 result warrants a
-// retry with the external par2 binary. GoRepair returns err=nil for definitive
-// logical verdicts, so the decision cannot key on err alone.
+// retry with the external par2 binary. GoRepair returns err=nil for a definitive
+// logical verdict, so the decision cannot key on err alone.
 //
-// Definitive negative verdicts — not enough recovery data (NeedMoreBlocks) or a
-// corrupt/missing main par2 file (StatusInvalidPar2) — are authoritative and
-// map 1:1 to the requeue outcomes in handleRepairResult; external par2 would
-// reach the same conclusion, so we skip the redundant scan. Fallback is
-// reserved for engine errors and unexpected non-success results, where the
-// mature external binary may genuinely differ from the native engine.
+// The only definitive go_par2 verdict is "not enough recovery data"
+// (NeedMoreBlocks): a deterministic Reed-Solomon shard count that the external
+// binary must agree with, so retrying it only burns a redundant scan. Every
+// other non-success — including a go_par2 decoder/parse failure (err != nil) —
+// falls back, because a parse failure is ambiguous: the mature external par2
+// may read a par2 file go_par2 could not, and if it also fails,
+// handleRepairResult requeues for re-download.
 func shouldFallbackToExternal(res par2.RepairResult, err error) bool {
 	if err != nil {
 		return true
@@ -349,9 +350,6 @@ func shouldFallbackToExternal(res par2.RepairResult, err error) bool {
 		return false
 	}
 	if res.NeedMoreBlocks {
-		return false
-	}
-	if res.Parsed != nil && res.Parsed.Status == par2.StatusInvalidPar2 {
 		return false
 	}
 	return true
