@@ -8,7 +8,11 @@ import "fmt"
 func SafeEngineRun(prefix string, fn func() error, onPanic ...func(p any)) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("%s: %v", prefix, p)
+			if perr, ok := p.(error); ok {
+				err = fmt.Errorf("%s: %w", prefix, perr)
+			} else {
+				err = fmt.Errorf("%s: %v", prefix, p)
+			}
 			for _, callback := range onPanic {
 				if callback != nil {
 					callback(p)
