@@ -51,36 +51,36 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	sqlDB.SetMaxOpenConns(4)
 
 	if err := sqlDB.PingContext(ctx); err != nil {
-		_ = sqlDB.Close() //nolint:errcheck // superseded by ping error
+		_ = sqlDB.Close() // superseded by ping error
 		return nil, fmt.Errorf("error pinging database: %s, %w", path, err)
 	}
 
 	// WAL mode is database-scoped (persists on disk) — only needs
 	// to run once, not per-connection.
 	if _, err := sqlDB.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
-		_ = sqlDB.Close() //nolint:errcheck // superseded by open error
+		_ = sqlDB.Close() // superseded by open error
 		return nil, fmt.Errorf("history: PRAGMA journal_mode=WAL: %w", err)
 	}
 
 	subFS, err := fs.Sub(embedMigrations, "migrations")
 	if err != nil {
-		_ = sqlDB.Close() //nolint:errcheck // superseded by sub fs error
+		_ = sqlDB.Close() // superseded by sub fs error
 		return nil, fmt.Errorf("history: sub fs: %w", err)
 	}
 
 	provider, err := goose.NewProvider(goose.DialectSQLite3, sqlDB, subFS)
 	if err != nil {
-		_ = sqlDB.Close() //nolint:errcheck // superseded by goose provider error
+		_ = sqlDB.Close() // superseded by goose provider error
 		return nil, fmt.Errorf("history: new goose provider: %w", err)
 	}
 
 	if _, err := provider.Up(ctx); err != nil {
-		_ = sqlDB.Close() //nolint:errcheck // superseded by migration error
+		_ = sqlDB.Close() // superseded by migration error
 		return nil, fmt.Errorf("history: run migrations: %w", err)
 	}
 
 	if _, err := sqlDB.ExecContext(ctx, "VACUUM"); err != nil {
-		_ = sqlDB.Close() //nolint:errcheck // superseded by vacuum error
+		_ = sqlDB.Close() // superseded by vacuum error
 		return nil, fmt.Errorf("history: VACUUM: %w", err)
 	}
 

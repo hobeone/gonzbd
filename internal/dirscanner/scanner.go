@@ -56,16 +56,17 @@ type Scanner struct {
 
 // New creates a new Scanner for the given directory.
 func New(dir string, store *Store, h Handler, cats CategoryFunc, logger *slog.Logger) *Scanner {
+	// Leaf packages self-scope only when they are the root of the logger chain;
+	// a caller-supplied logger is assumed already scoped.
 	if logger == nil {
-		logger = slog.Default()
+		logger = slog.Default().With("component", "dirscanner")
 	}
-	log := logger.With("component", "dirscanner")
 	return &Scanner{
 		dir:     dir,
 		store:   store,
 		handler: h,
 		catFn:   cats,
-		logger:  log,
+		logger:  logger,
 	}
 }
 

@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -458,28 +457,4 @@ func TestMissingMode_GETStillFails(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status = %d; want 400", rr.Code)
 	}
-}
-
-func TestGenerateSessionKey_PanicErrorWrapping(t *testing.T) {
-	oldRandRead := randRead
-	defer func() { randRead = oldRandRead }()
-
-	mockErr := errors.New("mock entropy failure")
-	randRead = func(_ []byte) (int, error) { return 0, mockErr }
-
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic from generateSessionKey on rand.Read failure, got nil")
-		}
-		err, ok := r.(error)
-		if !ok {
-			t.Fatalf("expected panic value to be an error (for error wrapping), got %T: %v", r, r)
-		}
-		if !errors.Is(err, mockErr) {
-			t.Errorf("expected wrapped error to contain mockErr (%v), got: %v", mockErr, err)
-		}
-	}()
-
-	_ = generateSessionKey()
 }

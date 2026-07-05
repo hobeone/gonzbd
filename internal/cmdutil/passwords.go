@@ -19,7 +19,7 @@ func LoadPasswordFile(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open password file %q: %w", path, err)
 	}
-	defer func() { _ = f.Close() }() //nolint:errcheck // cleanup error in defer
+	defer func() { _ = f.Close() }() // cleanup error in defer
 
 	var passwords []string
 	scanner := bufio.NewScanner(f)
