@@ -333,14 +333,18 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 			t.Fatalf("WriteFile: %v", err)
 		}
 
-		// Don't create the file, and pass an empty file list so it is unverified.
+		// The downloaded file's name and content don't match the par2 entry
+		// (original.txt) at all, and CRC+size fallback can't rescue it either
+		// — so the par2 entry is left unconsumed: a genuine name mismatch.
 		stage := NewQuickCheckStage()
 		stage.SetEnabled(true)
 
 		job := &Job{
 			Queue: &queue.Job{
-				ID:    "job-qc-unver",
-				Files: []queue.JobFile{}, // No files matching the par2 entry.
+				ID: "job-qc-unver",
+				Files: []queue.JobFile{
+					{Filename: "unrelated.dat", AssembledCRC32: 0x99999999, Bytes: 999},
+				},
 			},
 			DownloadDir: tmpDir,
 		}
@@ -352,6 +356,14 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 
 		if job.QuickCheckPassed {
 			t.Error("expected job.QuickCheckPassed to be false on unverified files")
+		}
+
+		linesStr := strings.Join(job.OutputLines, "\n")
+		if !strings.Contains(linesStr, fileName) {
+			t.Errorf("expected OutputLines to name the unverified file %q, got: %s", fileName, linesStr)
+		}
+		if !strings.Contains(linesStr, "not found by name") {
+			t.Errorf("expected OutputLines to explain why, got: %s", linesStr)
 		}
 	})
 }

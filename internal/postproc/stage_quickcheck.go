@@ -125,6 +125,10 @@ func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, j
 		logf(ctx, log, job, slog.LevelWarn,
 			"[quickcheck] %d par2-tracked file(s) not found by name",
 			crcResult.Unverified)
+		for _, name := range crcResult.UnverifiedFiles {
+			job.OutputLines = append(job.OutputLines,
+				fmt.Sprintf("[quickcheck] ⚠ %s: par2-tracked file not found by name", name))
+		}
 	}
 
 	switch {
