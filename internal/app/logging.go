@@ -190,37 +190,82 @@ func (f *filterHandler) Enabled(ctx context.Context, level slog.Level) bool {
 
 func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
 	components := f.extractComponents(r)
+	joined := joinComponents(components)
 
-	// Determine the effective level by walking components from most-specific
-	// (last) to least-specific (first). For each component, also try
-	// slash-hierarchy parents (e.g. "postproc/unpack" → "postproc").
-	// The first match wins.
-	globalLvl := globalLevelVar.Level()
-	effectiveLevel := globalLvl
-
-	componentLevelsMu.RLock()
-	for _, p := range slices.Backward(components) {
-		for p != "" {
-			if lvl, ok := componentLevels[p]; ok {
-				effectiveLevel = lvl
-				goto resolved
-			}
-			// Try slash-hierarchy parent.
-			idx := strings.LastIndex(p, "/")
-			if idx == -1 {
-				break
-			}
-			p = p[:idx]
-		}
-	}
-resolved:
-	componentLevelsMu.RUnlock()
-
-	if r.Level < effectiveLevel {
+	if r.Level < resolveEffectiveLevel(components, joined) {
 		return nil
 	}
 
-	return f.next.Handle(ctx, r)
+	// Emit a single canonical component attribute (the joined path) instead of
+	// the stack of individually-scoped ones. WithAttrs already withheld
+	// component from f.next, so injecting it here yields exactly one
+	// component= key per line (e.g. "app/postproc/repair").
+	return f.next.Handle(ctx, recordWithSingleComponent(r, joined))
+}
+
+// joinComponents builds the canonical component path from the ordered
+// (least→most specific) component values by joining with "/". Component values
+// are bare tokens (e.g. "app", "postproc", "repair"), so a plain join yields
+// "app/postproc/repair".
+func joinComponents(components []string) string {
+	return strings.Join(components, "/")
+}
+
+// resolveEffectiveLevel determines the minimum level a record must meet to be
+// emitted, given its ordered component chain and the joined canonical path.
+func resolveEffectiveLevel(components []string, joined string) slog.Level {
+	componentLevelsMu.RLock()
+	defer componentLevelsMu.RUnlock()
+
+	// 1. Walk the individual components most-specific (last) to least-specific
+	//    (first); for each, also try slash-hierarchy parents. First match
+	//    wins. Preserves every documented per-segment filter key.
+	for _, p := range slices.Backward(components) {
+		if lvl, ok := lookupComponentLevel(p); ok {
+			return lvl
+		}
+	}
+	// 2. Superset: the joined canonical path and its slash-prefixes, so the
+	//    exact component string shown in logs (e.g. "app/postproc/repair") is
+	//    itself a usable filter key.
+	if lvl, ok := lookupComponentLevel(joined); ok {
+		return lvl
+	}
+	return globalLevelVar.Level()
+}
+
+// lookupComponentLevel checks componentLevels for p and each of its
+// slash-parents (e.g. "app/postproc/repair" → "app/postproc" → "app").
+// The caller must hold componentLevelsMu.
+func lookupComponentLevel(p string) (slog.Level, bool) {
+	for p != "" {
+		if lvl, ok := componentLevels[p]; ok {
+			return lvl, true
+		}
+		idx := strings.LastIndex(p, "/")
+		if idx == -1 {
+			break
+		}
+		p = p[:idx]
+	}
+	return 0, false
+}
+
+// recordWithSingleComponent returns a copy of r with every "component"
+// attribute removed and, when component is non-empty, exactly one "component"
+// attribute appended.
+func recordWithSingleComponent(r slog.Record, component string) slog.Record {
+	nr := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key != "component" {
+			nr.AddAttrs(a)
+		}
+		return true
+	})
+	if component != "" {
+		nr.AddAttrs(slog.String("component", component))
+	}
+	return nr
 }
 
 // extractComponents collects all "component" attribute values in order.
@@ -252,8 +297,18 @@ func (f *filterHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	newAttrs := make([]slog.Attr, len(f.currentAttrs)+len(attrs))
 	copy(newAttrs, f.currentAttrs)
 	copy(newAttrs[len(f.currentAttrs):], attrs)
+
+	// Forward only non-component attrs to the sink handlers; component values
+	// are re-emitted as a single joined attribute in Handle, so the sinks must
+	// not accumulate the individually-scoped ones.
+	forwarded := make([]slog.Attr, 0, len(attrs))
+	for _, a := range attrs {
+		if a.Key != "component" {
+			forwarded = append(forwarded, a)
+		}
+	}
 	return &filterHandler{
-		next:         f.next.WithAttrs(attrs),
+		next:         f.next.WithAttrs(forwarded),
 		currentAttrs: newAttrs,
 	}
 }
