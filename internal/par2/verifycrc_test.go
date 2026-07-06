@@ -1,8 +1,11 @@
 package par2
 
 import (
+	"crypto/md5" //nolint:gosec // md5 used for PAR2 spec packet integrity
+	"hash/crc32"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -154,6 +157,66 @@ func TestVerifyCRCs_WithRealPar2Fixture(t *testing.T) {
 		}
 		if len(result.UnverifiedFiles) != 1 || result.UnverifiedFiles[0] != "data.bin" {
 			t.Errorf("UnverifiedFiles = %v, want [data.bin]", result.UnverifiedFiles)
+		}
+	})
+
+	t.Run("UnverifiedFiles is sorted regardless of manifest order", func(t *testing.T) {
+		t.Parallel()
+
+		// par2Index is a map, so its iteration order is randomized per run.
+		// Build a manifest with three unconsumed entries (no assembled files
+		// at all, so none can be matched by name or CRC+size) and register
+		// them in a deliberately non-alphabetical order to catch any
+		// regression to raw map-iteration order.
+		setID := [16]byte{9, 9, 9}
+		names := []string{"zebra.txt", "apple.txt", "mango.txt"}
+		pkts := make([][]byte, 0, 2*len(names))
+		fileIDs := make([][16]byte, 0, len(names))
+		for i, name := range names {
+			fileID := [16]byte{byte(i + 1)}
+			fileIDs = append(fileIDs, fileID)
+			content := []byte("content for " + name)
+			hash16k := md5.Sum(content) //nolint:gosec // test fixture only
+			pkts = append(pkts,
+				buildPacket(setID, typeFileDesc, buildFileDescBody(fileID, hash16k, hash16k, uint64(len(content)), name)),
+				buildPacket(setID, typeIFSC, buildIFSCBody(fileID, []ifscSlice{{md5Hash: hash16k, crc32: crc32.ChecksumIEEE(content)}})),
+			)
+		}
+		mainPkt := buildPacket(setID, typeMain, buildMainBody(16, fileIDs...))
+
+		var parContent []byte
+		parContent = append(parContent, mainPkt...)
+		for _, p := range pkts {
+			parContent = append(parContent, p...)
+		}
+
+		tmpDir := t.TempDir()
+		parPath := filepath.Join(tmpDir, "multi.par2")
+		if err := os.WriteFile(parPath, parContent, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		multiSets, err := FindPar2Files(tmpDir)
+		if err != nil {
+			t.Fatalf("FindPar2Files: %v", err)
+		}
+		if len(multiSets) == 0 {
+			t.Fatal("expected at least one par2 set")
+		}
+
+		result := VerifyCRCs(nil, multiSets, slog.Default())
+
+		if result.Unverified != 3 {
+			t.Fatalf("Unverified = %d, want 3", result.Unverified)
+		}
+		want := []string{"apple.txt", "mango.txt", "zebra.txt"}
+		if len(result.UnverifiedFiles) != len(want) {
+			t.Fatalf("UnverifiedFiles = %v, want %v", result.UnverifiedFiles, want)
+		}
+		for i, name := range want {
+			if result.UnverifiedFiles[i] != name {
+				t.Errorf("UnverifiedFiles[%d] = %q, want %q (order must be deterministic)", i, result.UnverifiedFiles[i], name)
+			}
 		}
 	})
 
