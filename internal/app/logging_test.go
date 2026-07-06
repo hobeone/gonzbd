@@ -259,6 +259,27 @@ func TestSetupComponentLevels(t *testing.T) {
 		{"walk-up-child-overrides", slog.LevelInfo, map[string]slog.Level{"app": slog.LevelWarn, "assembler": slog.LevelDebug}, []string{"app", "assembler"}, slog.LevelDebug, true},
 		// No component levels at all: behaves as global.
 		{"no-overrides", slog.LevelInfo, nil, []string{"api"}, slog.LevelInfo, true},
+		// Superset: the joined canonical path is itself a valid filter key.
+		// A rule on the full path "app/postproc/repair" matches a line scoped
+		// [app, postproc, repair].
+		{"superset-full-path", slog.LevelInfo, map[string]slog.Level{"app/postproc/repair": slog.LevelDebug}, []string{"app", "postproc", "repair"}, slog.LevelDebug, true},
+		// Superset: a slash-prefix of the joined path also matches.
+		{"superset-path-prefix", slog.LevelInfo, map[string]slog.Level{"app/postproc": slog.LevelDebug}, []string{"app", "postproc", "repair"}, slog.LevelDebug, true},
+		// Bare leaf segment still works as a key after the leaf-rename.
+		{"bare-leaf-segment", slog.LevelInfo, map[string]slog.Level{"repair": slog.LevelDebug}, []string{"app", "postproc", "repair"}, slog.LevelDebug, true},
+		// Breaking-change guard: a legacy slash key that is neither a stacked
+		// segment nor a prefix of the joined path (e.g. "postproc/repair", now
+		// that the leaf is bare "repair") no longer matches — filter on
+		// "repair" or "app/postproc/repair" instead.
+		{"legacy-slash-key-no-match", slog.LevelInfo, map[string]slog.Level{"postproc/repair": slog.LevelDebug}, []string{"app", "postproc", "repair"}, slog.LevelDebug, false},
+		// Precedence: a specific full-path override must NOT be shadowed by a
+		// broader mid-chain segment rule. "app/postproc/repair" (depth 3) wins
+		// over "postproc" (depth 2), so debug passes.
+		{"specific-path-beats-broad-segment", slog.LevelInfo, map[string]slog.Level{"postproc": slog.LevelWarn, "app/postproc/repair": slog.LevelDebug}, []string{"app", "postproc", "repair"}, slog.LevelDebug, true},
+		// Precedence, other direction: a specific leaf segment must NOT be
+		// shadowed by a broad root path rule. "repair" (depth 3) wins over
+		// "app" (depth 1), so debug passes.
+		{"specific-leaf-beats-broad-root", slog.LevelInfo, map[string]slog.Level{"app": slog.LevelWarn, "repair": slog.LevelDebug}, []string{"app", "postproc", "repair"}, slog.LevelDebug, true},
 	}
 
 	for _, tt := range tests {
@@ -296,5 +317,43 @@ func TestSetupComponentLevels(t *testing.T) {
 					gotLog, tt.wantLog, tt.global, tt.levels, tt.components, tt.logLevel, string(data))
 			}
 		})
+	}
+}
+
+// TestSetup_SingleJoinedComponent is the regression guard for the reported bug:
+// a logger scoped through multiple .With("component", ...) layers must emit a
+// single component= attribute holding the joined path, not one per layer.
+func TestSetup_SingleJoinedComponent(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "test.log")
+	logger, closer, err := app.Setup(app.LoggingOptions{Level: slog.LevelInfo, LogFile: logFile})
+	if err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	defer func() { _ = closer.Close() }() //nolint:errcheck
+
+	// Mirror the real chain: app → postproc → repair → go_par2, with an
+	// interleaved non-component attr that must survive.
+	l := logger.
+		With("component", "app").
+		With("component", "postproc").
+		With("component", "repair", "job", "abc123").
+		With("component", "go_par2")
+	l.Info("candidate files")
+
+	_ = closer.Close() // flush
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	line := string(data)
+
+	if n := bytes.Count(data, []byte("component=")); n != 1 {
+		t.Errorf("found %d component= attrs; want exactly 1\nline: %s", n, line)
+	}
+	if !bytes.Contains(data, []byte("component=app/postproc/repair/go_par2")) {
+		t.Errorf("expected single joined component=app/postproc/repair/go_par2\nline: %s", line)
+	}
+	if !bytes.Contains(data, []byte("job=abc123")) {
+		t.Errorf("non-component attr job=abc123 must be preserved\nline: %s", line)
 	}
 }

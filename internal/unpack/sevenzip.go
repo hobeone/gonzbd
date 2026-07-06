@@ -54,7 +54,7 @@ func SevenZipBin(opts Options) (string, error) {
 // progress stream.  -p with an empty value is safe for 7zz — it does not
 // prompt on stdin when -p is supplied.
 func SevenZip(ctx context.Context, log *slog.Logger, archive Archive, outDir, password string, opts Options) (Result, error) {
-	log = log.With("component", "unpack/sevenzip")
+	log = log.With("component", "sevenzip")
 	bin, err := SevenZipBin(opts)
 	if err != nil {
 		return Result{Err: err}, err

@@ -204,7 +204,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "postproc/unpack", "job", job.Queue.ID)
+	log = log.With("component", "unpack", "job", job.Queue.ID)
 
 	if !u.enabled() {
 		logf(ctx, log, job, slog.LevelInfo, "Unpack stage disabled — skipping")
