@@ -77,7 +77,7 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "postproc/script", "job", job.Queue.ID)
+	log = log.With("component", "script", "job", job.Queue.ID)
 
 	name := job.Queue.Script
 	if name == "" || strings.EqualFold(name, "none") || strings.EqualFold(name, "default") {

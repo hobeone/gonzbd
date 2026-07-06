@@ -32,7 +32,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "postproc/quickcheck", "job", job.Queue.ID)
+	log = log.With("component", "quickcheck", "job", job.Queue.ID)
 
 	if !q.enabled() {
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Disabled — par2 repair will run the full verify/repair step")
