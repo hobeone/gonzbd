@@ -191,36 +191,106 @@ func (f *filterHandler) Enabled(ctx context.Context, level slog.Level) bool {
 func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
 	components := f.extractComponents(r)
 
-	// Determine the effective level by walking components from most-specific
-	// (last) to least-specific (first). For each component, also try
-	// slash-hierarchy parents (e.g. "postproc/unpack" → "postproc").
-	// The first match wins.
-	globalLvl := globalLevelVar.Level()
-	effectiveLevel := globalLvl
-
-	componentLevelsMu.RLock()
-	for _, p := range slices.Backward(components) {
-		for p != "" {
-			if lvl, ok := componentLevels[p]; ok {
-				effectiveLevel = lvl
-				goto resolved
-			}
-			// Try slash-hierarchy parent.
-			idx := strings.LastIndex(p, "/")
-			if idx == -1 {
-				break
-			}
-			p = p[:idx]
-		}
-	}
-resolved:
-	componentLevelsMu.RUnlock()
-
-	if r.Level < effectiveLevel {
+	if r.Level < resolveEffectiveLevel(components) {
 		return nil
 	}
 
-	return f.next.Handle(ctx, r)
+	// Emit a single canonical component attribute (the joined path) instead of
+	// the stack of individually-scoped ones. WithAttrs already withheld
+	// component from f.next, so injecting it here yields exactly one
+	// component= key per line (e.g. "app/postproc/repair").
+	return f.next.Handle(ctx, recordWithSingleComponent(r, joinComponents(components)))
+}
+
+// joinComponents builds the canonical component path from the ordered
+// (least→most specific) component values. Values are normally bare tokens
+// (e.g. "app", "postproc", "repair") yielding "app/postproc/repair", but a
+// value may itself contain slashes; overlapping suffix/prefix segments across
+// the "/" boundary are merged so a stray compound value (e.g. "postproc/repair"
+// stacked under an existing "postproc") still produces a canonical path rather
+// than "app/postproc/postproc/repair".
+func joinComponents(components []string) string {
+	var segments []string
+	for _, c := range components {
+		if c == "" {
+			continue
+		}
+		parts := strings.Split(c, "/")
+		if len(segments) == 0 {
+			segments = append(segments, parts...)
+			continue
+		}
+		// Find the longest suffix of segments that equals a prefix of parts.
+		maxOverlap := 0
+		for i := 1; i <= len(segments) && i <= len(parts); i++ {
+			if slices.Equal(segments[len(segments)-i:], parts[:i]) {
+				maxOverlap = i
+			}
+		}
+		segments = append(segments, parts[maxOverlap:]...)
+	}
+	return strings.Join(segments, "/")
+}
+
+// resolveEffectiveLevel determines the minimum level a record must meet to be
+// emitted, given its ordered (least→most specific) component chain.
+//
+// Rules are matched most-specific first: walking depth from the leaf down to
+// the root, a rule may be keyed either as the exact canonical path up to that
+// depth (e.g. "app/postproc/repair") or as the bare segment at that depth
+// (e.g. "repair"). Both denote the same depth, so a rule at a deeper depth
+// always wins over one at a shallower depth — a specific override is never
+// shadowed by a broader ancestor rule.
+func resolveEffectiveLevel(components []string) slog.Level {
+	componentLevelsMu.RLock()
+	defer componentLevelsMu.RUnlock()
+
+	for i := len(components) - 1; i >= 0; i-- {
+		// Exact canonical path up to this depth (e.g. "app/postproc/repair").
+		if lvl, ok := componentLevels[joinComponents(components[:i+1])]; ok {
+			return lvl
+		}
+		// Bare segment at this depth, with slash-parent fallback for any
+		// value that itself contains slashes.
+		if lvl, ok := lookupComponentLevel(components[i]); ok {
+			return lvl
+		}
+	}
+	return globalLevelVar.Level()
+}
+
+// lookupComponentLevel checks componentLevels for p and each of its
+// slash-parents (e.g. "app/postproc/repair" → "app/postproc" → "app").
+// The caller must hold componentLevelsMu.
+func lookupComponentLevel(p string) (slog.Level, bool) {
+	for p != "" {
+		if lvl, ok := componentLevels[p]; ok {
+			return lvl, true
+		}
+		idx := strings.LastIndex(p, "/")
+		if idx == -1 {
+			break
+		}
+		p = p[:idx]
+	}
+	return 0, false
+}
+
+// recordWithSingleComponent returns a copy of r with every "component"
+// attribute removed and, when component is non-empty, exactly one "component"
+// attribute appended.
+func recordWithSingleComponent(r slog.Record, component string) slog.Record {
+	nr := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key != "component" {
+			nr.AddAttrs(a)
+		}
+		return true
+	})
+	if component != "" {
+		nr.AddAttrs(slog.String("component", component))
+	}
+	return nr
 }
 
 // extractComponents collects all "component" attribute values in order.
@@ -252,8 +322,18 @@ func (f *filterHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	newAttrs := make([]slog.Attr, len(f.currentAttrs)+len(attrs))
 	copy(newAttrs, f.currentAttrs)
 	copy(newAttrs[len(f.currentAttrs):], attrs)
+
+	// Forward only non-component attrs to the sink handlers; component values
+	// are re-emitted as a single joined attribute in Handle, so the sinks must
+	// not accumulate the individually-scoped ones.
+	forwarded := make([]slog.Attr, 0, len(attrs))
+	for _, a := range attrs {
+		if a.Key != "component" {
+			forwarded = append(forwarded, a)
+		}
+	}
 	return &filterHandler{
-		next:         f.next.WithAttrs(attrs),
+		next:         f.next.WithAttrs(forwarded),
 		currentAttrs: newAttrs,
 	}
 }

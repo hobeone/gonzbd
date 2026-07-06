@@ -28,7 +28,7 @@ const joinBufSize = 16 * 1024 * 1024 // 16 MiB write buffer (SABnzbd uses 24 MiB
 // ctx is checked between parts; cancellation stops the join and removes the
 // partial output file.
 func FileJoin(ctx context.Context, log *slog.Logger, archive Archive, outDir string, _ Options) (Result, error) {
-	log = log.With("component", "unpack/filejoin")
+	log = log.With("component", "filejoin")
 	if archive.Type != SplitArchive {
 		return Result{Err: fmt.Errorf("filejoin: archive type is not SplitArchive")},
 			fmt.Errorf("filejoin: archive type is not SplitArchive")
