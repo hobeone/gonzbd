@@ -152,6 +152,9 @@ func TestVerifyCRCs_WithRealPar2Fixture(t *testing.T) {
 		if result.Unverified != 1 {
 			t.Errorf("Unverified = %d, want 1 (data.bin par2 entry unconsumed)", result.Unverified)
 		}
+		if len(result.UnverifiedFiles) != 1 || result.UnverifiedFiles[0] != "data.bin" {
+			t.Errorf("UnverifiedFiles = %v, want [data.bin]", result.UnverifiedFiles)
+		}
 	})
 
 	t.Run("par2-tracked file with no CRC", func(t *testing.T) {

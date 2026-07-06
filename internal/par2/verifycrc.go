@@ -48,6 +48,11 @@ type CRCVerifyResult struct {
 	// NoCRCFiles lists the names of par2-tracked files that could not
 	// be verified because their assembled CRC was 0 (download failures).
 	NoCRCFiles []string
+	// UnverifiedFiles lists the par2 manifest paths (may include subdirectory
+	// components, e.g. "Screens/foo.jpg") of par2-tracked entries that had no
+	// corresponding assembled file — a name mismatch between the NZB and the
+	// par2 manifest. These are the files counted in Unverified.
+	UnverifiedFiles []string
 }
 
 // AssembledFile represents a downloaded file with its assembled CRC32.
@@ -197,6 +202,7 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 	for basename, entry := range par2Index {
 		if !entry.consumed {
 			result.Unverified++
+			result.UnverifiedFiles = append(result.UnverifiedFiles, entry.desc.FileName)
 			log.Warn("verifycrc: par2-tracked file not found in assembled files (name mismatch?)",
 				"par2_basename", basename,
 				"par2_path", entry.desc.FileName)
