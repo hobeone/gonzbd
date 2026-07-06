@@ -3,6 +3,7 @@ package postproc
 import (
 	"crypto/md5"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"os"
 	"path/filepath"
@@ -176,6 +177,11 @@ func TestQuickCheckStage_Run(t *testing.T) {
 	}
 	if !strings.Contains(linesStr, "1/1 par2-tracked files verified OK") {
 		t.Errorf("expected CRC OK verification line in output, got: %s", linesStr)
+	}
+
+	wantVerifiedLine := fmt.Sprintf("%s: CRC verified (%08x)", "original.txt", crc32.ChecksumIEEE(content))
+	if !strings.Contains(linesStr, wantVerifiedLine) {
+		t.Errorf("expected per-file verified line %q in output, got: %s", wantVerifiedLine, linesStr)
 	}
 }
 
