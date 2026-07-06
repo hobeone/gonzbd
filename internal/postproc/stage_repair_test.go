@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -388,6 +389,144 @@ func TestHandleRepairResult_Success(t *testing.T) {
 	}
 	if _, ok := job.ConsumedFiles["testset.vol001+01.par2"]; !ok {
 		t.Error("ExtraFile should be in ConsumedFiles after success")
+	}
+}
+
+// TestShouldFallbackToExternal pins the native→external fallback decision: the
+// definitive go_par2 verdict (not enough recovery data) must NOT trigger a
+// redundant external par2 scan, while engine errors and unexpected non-success
+// results must.
+func TestShouldFallbackToExternal(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		res  par2.RepairResult
+		err  error
+		want bool
+	}{
+		{
+			name: "engine error falls back",
+			res:  par2.RepairResult{},
+			err:  errors.New("go_par2: par2engine panic"),
+			want: true,
+		},
+		{
+			name: "success does not fall back",
+			res:  par2.RepairResult{Success: true},
+			want: false,
+		},
+		{
+			name: "need more blocks is definitive, no fallback",
+			res:  par2.RepairResult{Success: false, NeedMoreBlocks: true, BlocksNeeded: 84},
+			want: false,
+		},
+		{
+			// A go_par2 decoder/parse failure surfaces as err != nil, not as a
+			// StatusInvalidPar2 result — GoRepair never sets res.Parsed — so it
+			// must fall back to let the mature external parser try.
+			name: "generic non-success falls back",
+			res:  par2.RepairResult{Success: false, ExitCode: 2},
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shouldFallbackToExternal(tc.res, tc.err); got != tc.want {
+				t.Errorf("shouldFallbackToExternal(%+v, %v) = %v; want %v", tc.res, tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNativeRepairReason verifies the fallback-reason string prefers the engine
+// error, then a specific block count, then a generic exit-code summary.
+func TestNativeRepairReason(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		res  par2.RepairResult
+		err  error
+		want string
+	}{
+		{
+			name: "engine error wins",
+			res:  par2.RepairResult{NeedMoreBlocks: true, BlocksNeeded: 9, ExitCode: 3},
+			err:  errors.New("boom"),
+			want: "boom",
+		},
+		{
+			name: "block count when no error",
+			res:  par2.RepairResult{NeedMoreBlocks: true, BlocksNeeded: 84},
+			want: "needs 84 more recovery blocks",
+		},
+		{
+			name: "generic exit code",
+			res:  par2.RepairResult{ExitCode: 2},
+			want: "unsuccessful (exit=2)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := nativeRepairReason(tc.res, tc.err); got != tc.want {
+				t.Errorf("nativeRepairReason(%+v, %v) = %q; want %q", tc.res, tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDispatchRepairTool_FallbackRunsWhenBinaryPresent pins the binary-presence
+// guard: when go_par2 fails and the external par2 binary IS resolvable, the
+// external retry must run (signalled by the "retrying with external" OnOutput
+// message). A missing (non-resolvable) binary must NOT retry.
+func TestDispatchRepairTool_FallbackRunsWhenBinaryPresent(t *testing.T) {
+	t.Parallel()
+
+	// Stub "par2" binary: resolvable + executable, exits non-zero so the
+	// external run yields a benign failure. We assert on the branch taken,
+	// not the result.
+	stub := filepath.Join(t.TempDir(), "par2stub")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	run := func(command string) bool {
+		var retried bool
+		job := &Job{
+			Queue:       &queue.Job{ID: "testjob"},
+			DownloadDir: t.TempDir(),
+			OnOutput: func(_ string, line string) {
+				if strings.Contains(line, "retrying with external") {
+					retried = true
+				}
+			},
+		}
+		// "nonexistent.par2" makes GoRepair fail in newDecoderForDir, i.e.
+		// err != nil. Falling back on such a decoder/parse failure is the
+		// intended design (only NeedMoreBlocks skips fallback — see
+		// shouldFallbackToExternal), so shouldFallbackToExternal returns true
+		// and the binary-presence guard under test decides whether to retry.
+		_, _ = dispatchRepairTool(
+			t.Context(), slog.Default(), job,
+			"nonexistent.par2", nil,
+			par2.RunOptions{Command: command},
+			true, // useGoPar2
+			true, // fallback
+		)
+		return retried
+	}
+
+	if !run(stub) {
+		t.Error("expected external fallback to run when the par2 binary is resolvable")
+	}
+	// A binary that cannot be resolved on PATH must not trigger the retry.
+	if run(filepath.Join(t.TempDir(), "definitely-missing-par2-binary")) {
+		t.Error("expected no fallback when the par2 binary is not resolvable")
 	}
 }
 

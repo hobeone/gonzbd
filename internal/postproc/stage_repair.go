@@ -309,20 +309,18 @@ func dispatchRepairTool(
 		}
 	})
 
-	// Fallback: if native repair failed or returned a non-success result,
-	// retry with the external par2 binary if available.
-	// GoRepair returns err=nil for logical failures like insufficient blocks
-	// (NeedMoreBlocks=true) — fallback must check both err and !res.Success.
-	// Gated on fallback so users can disable the retry.
-	if (err != nil || !res.Success) && fallback {
+	// Fallback: retry with the external par2 binary only when the native result
+	// is inconclusive. A "not enough recovery data" verdict (NeedMoreBlocks) is
+	// authoritative — external par2 re-scans the same content-matched files and
+	// reaches the identical conclusion, so retrying only burns a full scan
+	// without changing the outcome. Gated on fallback so users can disable the
+	// retry entirely.
+	if fallback && shouldFallbackToExternal(res, err) {
 		par2Bin := repairOpts.Bin()
 		if _, lookErr := exec.LookPath(par2Bin); lookErr == nil {
-			reason := "non-success result"
-			if err != nil {
-				reason = err.Error()
-			}
+			reason := nativeRepairReason(res, err)
 			logf(ctx, log, job, slog.LevelWarn,
-				"go_par2 result not successful (%s), retrying with external %s", reason, par2Bin)
+				"go_par2 result inconclusive (%s), retrying with external %s", reason, par2Bin)
 			if job.OnOutput != nil {
 				job.OnOutput("go_par2",
 					fmt.Sprintf("Native repair result: %s — retrying with external %s", reason, par2Bin))
@@ -331,6 +329,43 @@ func dispatchRepairTool(
 		}
 	}
 	return res, err
+}
+
+// shouldFallbackToExternal reports whether a native go_par2 result warrants a
+// retry with the external par2 binary. GoRepair returns err=nil for a definitive
+// logical verdict, so the decision cannot key on err alone.
+//
+// The only definitive go_par2 verdict is "not enough recovery data"
+// (NeedMoreBlocks): a deterministic Reed-Solomon shard count that the external
+// binary must agree with, so retrying it only burns a redundant scan. Every
+// other non-success — including a go_par2 decoder/parse failure (err != nil) —
+// falls back, because a parse failure is ambiguous: the mature external par2
+// may read a par2 file go_par2 could not, and if it also fails,
+// handleRepairResult requeues for re-download.
+func shouldFallbackToExternal(res par2.RepairResult, err error) bool {
+	if err != nil {
+		return true
+	}
+	if res.Success {
+		return false
+	}
+	if res.NeedMoreBlocks {
+		return false
+	}
+	return true
+}
+
+// nativeRepairReason describes why a native go_par2 result triggered a fallback,
+// for logging. It prefers the engine error, then a specific block count, then a
+// generic exit-code summary.
+func nativeRepairReason(res par2.RepairResult, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if res.NeedMoreBlocks {
+		return fmt.Sprintf("needs %d more recovery blocks", res.BlocksNeeded)
+	}
+	return fmt.Sprintf("unsuccessful (exit=%d)", res.ExitCode)
 }
 
 // recordRepairSuccess updates job state after a successful par2 repair:
