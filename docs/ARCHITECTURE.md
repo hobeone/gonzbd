@@ -135,6 +135,36 @@ Post-processing runs a chain of `Stage` implementations in order for each comple
 
 Stage errors are recorded in the `StageLog` but do **not** abort the pipeline — subsequent stages still run. Each stage self-gates based on job flags (`ParError`, `UnpackError`, `FailMsg`) to decide whether to skip when a prior stage has failed. The only reason to abort remaining stages is context cancellation, either daemon shutdown or a single job being cancelled mid-processing (`Cancel`). The processor has no pause/resume control of its own — downloads can be paused via `pause`/`resume`, which transitively stalls the post-processing queue since no new jobs finish downloading.
 
+#### External subprocess containment (`internal/cmdutil`, `internal/unpack`)
+
+External `unrar`/`7z` subprocesses get two independent layers of containment,
+enforced differently depending on how they run:
+
+1. **OS-level sandboxing** (`internal/cmdutil.BuildSandboxedCommand`): wraps
+   the subprocess with `bwrap` (Linux) or `sandbox-exec` (macOS), restricting
+   filesystem writes to the job's directory at the kernel level.
+   `strict_sandbox: true` makes `BuildSandboxedCommand` return
+   `ErrSandboxUnavailable` (aborting extraction) if the wrapper binary can't
+   be found; `false` falls back to running the subprocess unwrapped.
+2. **Post-extraction path containment** (`stage_unpack.go`, always on,
+   independent of `strict_sandbox`): after extraction, every produced path is
+   checked against the job's output directory; anything outside it is deleted
+   (only paths that lie inside `outDir` are ever removed) and the job is
+   flagged with a containment-violation error.
+
+**In the official Docker image, layer 1 is effectively disabled by default**
+(`bwrap` isn't installed, and `Default()` seeds `strict_sandbox: false` for
+brand-new container configs — see `internal/config/defaults.go`'s
+`runningInDockerImage`). This isn't an oversight: `bwrap` needs to create an
+unprivileged user+mount namespace, which a normal (non-`--privileged`)
+container's default seccomp/AppArmor profile blocks. Installing `bwrap` there
+doesn't restore sandboxing — it just makes `bwrap` itself fail at exec time
+(after `wrapSandbox` has already succeeded, since it only checks that the
+binary exists in `PATH`, not that it can actually create a namespace), which
+silently breaks every extraction regardless of `strict_sandbox`. Docker's own
+container boundary plus layer 2 (path containment, unaffected by any of this)
+are the containment model actually in effect for the shipped image.
+
 ### Persistence (`internal/history`, `internal/config`)
 
 - **SQLite History**: Completed jobs are stored in `history.db`. The schema is maintained via `goose` migrations and is designed to be byte-for-byte compatible with the original Python implementation's history database.
