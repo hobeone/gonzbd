@@ -69,12 +69,30 @@ LABEL org.opencontainers.image.title="GoNZBD" \
 #   tzdata          - timezone support for schedules
 #   su-exec         - lightweight privilege drop (like gosu)
 #   shadow          - usermod/groupmod for PUID/PGID support
+#
+# Deliberately NOT installed: bubblewrap. internal/cmdutil sandboxes external
+# unrar/7z subprocesses with `bwrap` on Linux, but bwrap needs to create an
+# unprivileged user+mount namespace — something a normal (non-`--privileged`)
+# `docker run`/`docker compose` container's default seccomp/AppArmor profile
+# blocks. Installing bwrap here would not make sandboxing work; it would only
+# make extraction silently fail on every job (bwrap exits 1 before it even
+# execs unrar/7z). See "Configuration for Docker" in README.md and
+# docs/ARCHITECTURE.md's Post-Processing section for the containment model
+# actually in effect here (per-job containment check, not OS sandboxing).
 RUN apk add --no-cache \
     7zip \
     ca-certificates \
     tzdata \
     su-exec \
     shadow
+
+# Signals to the Go binary (see internal/config/defaults.go) that this is the
+# official container image, so a brand-new config defaults strict_sandbox to
+# false instead of aborting extraction when bwrap (deliberately absent, above)
+# can't be found. Existing config files are never modified by this — a user
+# who explicitly sets strict_sandbox: true (e.g. running --privileged with
+# their own bwrap-enabled image) keeps that choice.
+ENV GONZBD_DOCKER=1
 
 COPY --from=go-builder /gonzbd /usr/local/bin/gonzbd
 COPY --from=par2-builder /usr/local/bin/par2 /usr/local/bin/par2

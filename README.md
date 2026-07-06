@@ -272,6 +272,30 @@ categories:
 > `--listen 0.0.0.0:$GONZBD_PORT` (default 4289), so the `host` field
 > in the config is overridden inside Docker.
 
+### OS sandboxing in Docker
+
+On native (non-Docker) installs, external `unrar`/`7z` subprocesses run inside
+an OS-level sandbox (`bwrap` on Linux, `sandbox-exec` on macOS) that restricts
+filesystem access to the job's own directory, and `strict_sandbox: true`
+(the default) aborts extraction if that sandbox can't be established.
+
+**The Docker image does not install `bwrap`, and a brand-new container config
+defaults `strict_sandbox` to `false`.** `bwrap` needs to create an
+unprivileged user+mount namespace, which a normal (non-`--privileged`)
+container's default seccomp/AppArmor profile blocks — installing it would not
+make sandboxing work, it would just make every extraction fail immediately.
+Docker's own container boundary plus gonzbd's own post-extraction path
+containment check (which runs regardless of `strict_sandbox` and rejects any
+extracted file that lands outside the job directory — see `docs/ARCHITECTURE.md`)
+provide the practical protection here instead.
+
+`strict_sandbox` is a normal `gonzbd.yaml` field — set it to `true` at any
+time (existing config or new) if you've built a custom image with
+`bubblewrap` installed and granted the container `--privileged` (or an
+equivalent capability set) so `bwrap` can actually run. The `false` default
+described above only applies to the value written the first time a container
+generates a brand-new config; it does not change any config you already have.
+
 ### Volumes
 
 | Container Path | Purpose | Size | Backup? |
