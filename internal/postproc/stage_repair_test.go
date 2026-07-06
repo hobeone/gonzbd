@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -126,6 +127,81 @@ func TestRepairStage_GoRepairHealthyData(t *testing.T) {
 	}
 	if job.ParError {
 		t.Errorf("ParError = true after successful GoRepair; want false")
+	}
+}
+
+// countingHandler is a minimal slog.Handler that counts records by message,
+// used to detect duplicate log emission.
+type countingHandler struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func newCountingHandler() *countingHandler { return &countingHandler{counts: make(map[string]int)} }
+
+func (h *countingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *countingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.counts[r.Message]++
+	return nil
+}
+
+func (h *countingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *countingHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *countingHandler) count(message string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.counts[message]
+}
+
+// TestRepairStage_GoRepairDoesNotDuplicateEngineLogLines guards against a
+// reported regression: par2engine's own log records (e.g. "Candidate file(s)
+// to consider (1):") were appearing twice in the log — once via go_par2's
+// teeHandler forwarding the record to the base handler, and once more because
+// dispatchRepairTool's onLine callback additionally called log.Info(line),
+// re-emitting the same message as a second, independent record. onLine must
+// only feed job.OnOutput; the structured log entry is already produced by the
+// teeHandler pass-through.
+func TestRepairStage_GoRepairDoesNotDuplicateEngineLogLines(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	copyPar2Fixtures(t, dir)
+
+	var onOutputLines []string
+	job.OnOutput = func(_ string, line string) {
+		onOutputLines = append(onOutputLines, line)
+	}
+
+	handler := newCountingHandler()
+	stage := &RepairStage{
+		UseGoPar2: true,
+		Log:       slog.New(handler),
+	}
+
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	const engineMsg = "Candidate file(s) to consider (1):"
+	if got := handler.count(engineMsg); got != 1 {
+		t.Errorf("log message %q recorded %d time(s); want exactly 1 (duplicate engine log line)", engineMsg, got)
+	}
+
+	// The onLine → job.OnOutput path (UI/history feed) must still fire even
+	// though the redundant log.Info call was removed.
+	found := false
+	for _, l := range onOutputLines {
+		if strings.Contains(l, engineMsg) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected job.OnOutput to receive a line containing %q, got: %v", engineMsg, onOutputLines)
 	}
 }
 
