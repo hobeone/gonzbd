@@ -272,6 +272,14 @@ func TestSetupComponentLevels(t *testing.T) {
 		// that the leaf is bare "repair") no longer matches — filter on
 		// "repair" or "app/postproc/repair" instead.
 		{"legacy-slash-key-no-match", slog.LevelInfo, map[string]slog.Level{"postproc/repair": slog.LevelDebug}, []string{"app", "postproc", "repair"}, slog.LevelDebug, false},
+		// Precedence: a specific full-path override must NOT be shadowed by a
+		// broader mid-chain segment rule. "app/postproc/repair" (depth 3) wins
+		// over "postproc" (depth 2), so debug passes.
+		{"specific-path-beats-broad-segment", slog.LevelInfo, map[string]slog.Level{"postproc": slog.LevelWarn, "app/postproc/repair": slog.LevelDebug}, []string{"app", "postproc", "repair"}, slog.LevelDebug, true},
+		// Precedence, other direction: a specific leaf segment must NOT be
+		// shadowed by a broad root path rule. "repair" (depth 3) wins over
+		// "app" (depth 1), so debug passes.
+		{"specific-leaf-beats-broad-root", slog.LevelInfo, map[string]slog.Level{"app": slog.LevelWarn, "repair": slog.LevelDebug}, []string{"app", "postproc", "repair"}, slog.LevelDebug, true},
 	}
 
 	for _, tt := range tests {

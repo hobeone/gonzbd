@@ -190,9 +190,8 @@ func (f *filterHandler) Enabled(ctx context.Context, level slog.Level) bool {
 
 func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
 	components := f.extractComponents(r)
-	joined := joinComponents(components)
 
-	if r.Level < resolveEffectiveLevel(components, joined) {
+	if r.Level < resolveEffectiveLevel(components) {
 		return nil
 	}
 
@@ -200,36 +199,62 @@ func (f *filterHandler) Handle(ctx context.Context, r slog.Record) error {
 	// the stack of individually-scoped ones. WithAttrs already withheld
 	// component from f.next, so injecting it here yields exactly one
 	// component= key per line (e.g. "app/postproc/repair").
-	return f.next.Handle(ctx, recordWithSingleComponent(r, joined))
+	return f.next.Handle(ctx, recordWithSingleComponent(r, joinComponents(components)))
 }
 
 // joinComponents builds the canonical component path from the ordered
-// (least→most specific) component values by joining with "/". Component values
-// are bare tokens (e.g. "app", "postproc", "repair"), so a plain join yields
-// "app/postproc/repair".
+// (least→most specific) component values. Values are normally bare tokens
+// (e.g. "app", "postproc", "repair") yielding "app/postproc/repair", but a
+// value may itself contain slashes; overlapping suffix/prefix segments across
+// the "/" boundary are merged so a stray compound value (e.g. "postproc/repair"
+// stacked under an existing "postproc") still produces a canonical path rather
+// than "app/postproc/postproc/repair".
 func joinComponents(components []string) string {
-	return strings.Join(components, "/")
+	var segments []string
+	for _, c := range components {
+		if c == "" {
+			continue
+		}
+		parts := strings.Split(c, "/")
+		if len(segments) == 0 {
+			segments = append(segments, parts...)
+			continue
+		}
+		// Find the longest suffix of segments that equals a prefix of parts.
+		maxOverlap := 0
+		for i := 1; i <= len(segments) && i <= len(parts); i++ {
+			if slices.Equal(segments[len(segments)-i:], parts[:i]) {
+				maxOverlap = i
+			}
+		}
+		segments = append(segments, parts[maxOverlap:]...)
+	}
+	return strings.Join(segments, "/")
 }
 
 // resolveEffectiveLevel determines the minimum level a record must meet to be
-// emitted, given its ordered component chain and the joined canonical path.
-func resolveEffectiveLevel(components []string, joined string) slog.Level {
+// emitted, given its ordered (least→most specific) component chain.
+//
+// Rules are matched most-specific first: walking depth from the leaf down to
+// the root, a rule may be keyed either as the exact canonical path up to that
+// depth (e.g. "app/postproc/repair") or as the bare segment at that depth
+// (e.g. "repair"). Both denote the same depth, so a rule at a deeper depth
+// always wins over one at a shallower depth — a specific override is never
+// shadowed by a broader ancestor rule.
+func resolveEffectiveLevel(components []string) slog.Level {
 	componentLevelsMu.RLock()
 	defer componentLevelsMu.RUnlock()
 
-	// 1. Walk the individual components most-specific (last) to least-specific
-	//    (first); for each, also try slash-hierarchy parents. First match
-	//    wins. Preserves every documented per-segment filter key.
-	for _, p := range slices.Backward(components) {
-		if lvl, ok := lookupComponentLevel(p); ok {
+	for i := len(components) - 1; i >= 0; i-- {
+		// Exact canonical path up to this depth (e.g. "app/postproc/repair").
+		if lvl, ok := componentLevels[joinComponents(components[:i+1])]; ok {
 			return lvl
 		}
-	}
-	// 2. Superset: the joined canonical path and its slash-prefixes, so the
-	//    exact component string shown in logs (e.g. "app/postproc/repair") is
-	//    itself a usable filter key.
-	if lvl, ok := lookupComponentLevel(joined); ok {
-		return lvl
+		// Bare segment at this depth, with slash-parent fallback for any
+		// value that itself contains slashes.
+		if lvl, ok := lookupComponentLevel(components[i]); ok {
+			return lvl
+		}
 	}
 	return globalLevelVar.Level()
 }
