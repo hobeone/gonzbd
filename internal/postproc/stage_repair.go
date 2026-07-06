@@ -302,8 +302,10 @@ func dispatchRepairTool(
 	}
 
 	logf(ctx, log, job, slog.LevelInfo, "Using go_par2 for PAR2 (native Go)")
+	// onLine feeds job.OnOutput (UI/history) only — go_par2's teeHandler
+	// already writes each engine log record to the structured log via its
+	// embedded base handler, so re-logging here would duplicate every line.
 	res, err := par2.GoRepair(ctx, log, main, job.DownloadDir, func(line string) {
-		log.Info(line)
 		if job.OnOutput != nil {
 			job.OnOutput("par2", line)
 		}
