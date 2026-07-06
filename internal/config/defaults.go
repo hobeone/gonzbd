@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
 
 	"github.com/hobeone/gonzbd/internal/constants"
 )
@@ -19,6 +20,22 @@ var DefaultCleanupList = []string{
 	`(?i)-? ?\(Scenzbd\)$`,
 	`(?i)-? ?\(Obfuscated\)$`,
 	`(?i)-? ?\(NZBGeek\)$`,
+}
+
+// runningInDockerImage reports whether this binary is the official Docker
+// image, via the GONZBD_DOCKER=1 marker set in the Dockerfile's runtime
+// stage. The image deliberately does not install bubblewrap: bwrap needs an
+// unprivileged user+mount namespace that a normal (non-`--privileged`)
+// container's seccomp/AppArmor profile blocks, so installing it would only
+// make every extraction silently fail rather than provide working
+// containment. Default() uses this to seed StrictSandbox=false for brand-new
+// container configs, avoiding a hard abort on missing bwrap; the pipeline
+// still enforces post-extraction path containment regardless (see
+// internal/postproc/stage_unpack.go). A config file that already sets
+// strict_sandbox explicitly is never touched by this — only the seed value
+// for a config that doesn't exist yet is affected.
+func runningInDockerImage() bool {
+	return os.Getenv("GONZBD_DOCKER") == "1"
 }
 
 // Default returns a fully populated Config suitable for first-run use.
@@ -89,7 +106,7 @@ func Default() (*Config, error) {
 			FlatUnpack:           false,
 			DeobfuscateFilenames: true,
 			DirectUnpackThreads:  3, // match SABnzbd default
-			StrictSandbox:        true,
+			StrictSandbox:        !runningInDockerImage(),
 			UseGoRAR:             true,
 			UseGo7z:              true,
 			UseGoPar2:            true,

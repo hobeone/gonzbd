@@ -49,6 +49,29 @@ func TestDefaultIsValid(t *testing.T) {
 	}
 }
 
+func TestDefaultStrictSandbox(t *testing.T) {
+	t.Run("native install defaults to strict", func(t *testing.T) {
+		cfg, err := Default()
+		if err != nil {
+			t.Fatalf("Default(): %v", err)
+		}
+		if !cfg.PostProc.StrictSandbox {
+			t.Errorf("StrictSandbox = false, want true when GONZBD_DOCKER is unset")
+		}
+	})
+
+	t.Run("container image defaults to non-strict", func(t *testing.T) {
+		t.Setenv("GONZBD_DOCKER", "1")
+		cfg, err := Default()
+		if err != nil {
+			t.Fatalf("Default(): %v", err)
+		}
+		if cfg.PostProc.StrictSandbox {
+			t.Errorf("StrictSandbox = true, want false when GONZBD_DOCKER=1 (bwrap is never installed in the image; strict mode would abort every extraction)")
+		}
+	})
+}
+
 func TestRoundTripDefault(t *testing.T) {
 	original, err := Default()
 	if err != nil {
