@@ -100,6 +100,13 @@ func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, j
 			"[quickcheck] CRC verification: %d/%d par2-tracked files verified OK",
 			crcResult.Matched, crcResult.Checked+crcResult.NoCRC)
 
+		for _, f := range crcResult.Files {
+			if f.Match {
+				job.OutputLines = append(job.OutputLines,
+					fmt.Sprintf("[quickcheck] ✓ %s: CRC verified (%08x)", f.FileName, f.AssembledCRC))
+			}
+		}
+
 		if crcResult.Mismatched > 0 {
 			logf(ctx, log, job, slog.LevelWarn,
 				"[quickcheck] CRC MISMATCH detected — %d file(s) corrupted",
