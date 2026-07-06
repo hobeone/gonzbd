@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 )
 
 // CRCResult records the outcome of a single file CRC verification.
@@ -48,6 +49,11 @@ type CRCVerifyResult struct {
 	// NoCRCFiles lists the names of par2-tracked files that could not
 	// be verified because their assembled CRC was 0 (download failures).
 	NoCRCFiles []string
+	// UnverifiedFiles lists the par2 manifest paths (may include subdirectory
+	// components, e.g. "Screens/foo.jpg") of par2-tracked entries that had no
+	// corresponding assembled file — a name mismatch between the NZB and the
+	// par2 manifest. These are the files counted in Unverified.
+	UnverifiedFiles []string
 }
 
 // AssembledFile represents a downloaded file with its assembled CRC32.
@@ -194,13 +200,23 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 
 	// Count par2 entries that had no corresponding assembled file at all.
 	// These represent a name mismatch between NZB and par2 manifest.
+	// par2Index is a map, so its iteration order is randomized per run; sort
+	// the unconsumed basenames first so UnverifiedFiles (and the resulting
+	// UI log lines) are in a stable, reproducible order.
+	unconsumed := make([]string, 0, len(par2Index))
 	for basename, entry := range par2Index {
 		if !entry.consumed {
-			result.Unverified++
-			log.Warn("verifycrc: par2-tracked file not found in assembled files (name mismatch?)",
-				"par2_basename", basename,
-				"par2_path", entry.desc.FileName)
+			unconsumed = append(unconsumed, basename)
 		}
+	}
+	slices.Sort(unconsumed)
+	for _, basename := range unconsumed {
+		entry := par2Index[basename]
+		result.Unverified++
+		result.UnverifiedFiles = append(result.UnverifiedFiles, entry.desc.FileName)
+		log.Warn("verifycrc: par2-tracked file not found in assembled files (name mismatch?)",
+			"par2_basename", basename,
+			"par2_path", entry.desc.FileName)
 	}
 
 	// Total par2-tracked files in the manifest.
