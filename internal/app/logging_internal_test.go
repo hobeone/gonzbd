@@ -20,6 +20,16 @@ func TestJoinComponents(t *testing.T) {
 		{"stage", []string{"app", "postproc", "repair"}, "app/postproc/repair"},
 		{"engine", []string{"app", "postproc", "repair", "go_par2"}, "app/postproc/repair/go_par2"},
 		{"unpack helper", []string{"app", "postproc", "unpack", "sevenzip"}, "app/postproc/unpack/sevenzip"},
+		// Overlap merge: a compound value stacked under its own parent must not
+		// double the shared segment.
+		{"overlap compound", []string{"app", "postproc", "postproc/repair"}, "app/postproc/repair"},
+		{"overlap nested", []string{"parent", "parent/child"}, "parent/child"},
+		{"overlap two segments", []string{"app", "postproc/unpack", "unpack/sevenzip"}, "app/postproc/unpack/sevenzip"},
+		{"empty values skipped", []string{"app", "", "repair"}, "app/repair"},
+		// Full-length overlaps: the entire next value is already the tail, so it
+		// contributes nothing (exercises i == len(parts), the loop's upper bound).
+		{"duplicate token collapses", []string{"app", "app"}, "app"},
+		{"trailing compound fully merges", []string{"app", "postproc", "repair", "postproc/repair"}, "app/postproc/repair"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
