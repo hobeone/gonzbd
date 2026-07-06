@@ -77,7 +77,7 @@ general:
   #
   # Common components: api, main, downloader, assembler, nntp, queue,
   #   postproc, decoder, dirscanner, rss, sorting, deobfuscate,
-  #   unpack/unrar, unpack/sevenzip, unpack/filejoin
+  #   unrar, sevenzip, filejoin
   #
   # Example:
   #   log_levels:

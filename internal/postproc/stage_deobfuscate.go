@@ -35,7 +35,7 @@ func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	log = log.With("component", "postproc/deobfuscate", "job", job.Queue.ID)
+	log = log.With("component", "deobfuscate", "job", job.Queue.ID)
 
 	logf(ctx, log, job, slog.LevelInfo, "Starting deobfuscation in %s (useful name: %s)", job.DownloadDir, job.Queue.Name)
 
