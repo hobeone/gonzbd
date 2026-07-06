@@ -506,8 +506,11 @@ func TestDispatchRepairTool_FallbackRunsWhenBinaryPresent(t *testing.T) {
 				}
 			},
 		}
-		// "nonexistent.par2" makes GoRepair fail (err != nil), so
-		// shouldFallbackToExternal returns true and the guard decides.
+		// "nonexistent.par2" makes GoRepair fail in newDecoderForDir, i.e.
+		// err != nil. Falling back on such a decoder/parse failure is the
+		// intended design (only NeedMoreBlocks skips fallback — see
+		// shouldFallbackToExternal), so shouldFallbackToExternal returns true
+		// and the binary-presence guard under test decides whether to retry.
 		_, _ = dispatchRepairTool(
 			t.Context(), slog.Default(), job,
 			"nonexistent.par2", nil,
