@@ -8,7 +8,11 @@
 ARG ALPINE_VERSION=3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 # ---- Build UI ----
-FROM oven/bun:alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0 AS ui-builder
+# --platform=$BUILDPLATFORM: bun/vite's output (static JS/HTML/CSS) is the
+# same regardless of the final image's target platform, so this stage always
+# runs natively on the build host instead of under QEMU emulation for the
+# non-native leg of a multi-arch build.
+FROM --platform=$BUILDPLATFORM oven/bun:alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0 AS ui-builder
 WORKDIR /src/ui
 COPY ui/package.json ui/bun.lock ./
 RUN bun install --frozen-lockfile
@@ -16,8 +20,16 @@ COPY ui/ .
 RUN bun run build
 
 # ---- Build Go binary ----
-FROM golang:1.26-alpine3.24@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS go-builder
+# --platform=$BUILDPLATFORM + explicit GOOS/GOARCH below: CGO_ENABLED=0 makes
+# Go natively cross-compile, so there's no need to run this stage under QEMU
+# emulation for the non-native leg of a multi-arch build either — only the
+# resulting binary needs to target the other platform, not the compiler
+# toolchain running it. TARGETOS/TARGETARCH are buildx's implicit global
+# args; they must be re-declared with ARG inside this stage to be visible.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine3.24@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS go-builder
 WORKDIR /src
+ARG TARGETOS
+ARG TARGETARCH
 
 # Git is needed for version stamping.
 RUN apk add --no-cache git
@@ -35,7 +47,7 @@ ARG BUILD_DATE=
 RUN VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}" && \
     COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}" && \
     BUILD_DATE="${BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
-    CGO_ENABLED=0 go build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
       -ldflags="-s -w \
         -X main.Version=${VERSION} \
         -X main.Commit=${COMMIT} \
