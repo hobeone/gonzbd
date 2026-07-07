@@ -1,6 +1,31 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended"
+  "extends": ["config:recommended"],
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "Pin Docker base images to a digest and keep the digest current, since the Dockerfile's oven/bun, golang, alpine, and linuxserver/unrar images all use floating tags.",
+      "matchCategories": ["docker"],
+      "pinDigests": true
+    },
+    {
+      "description": "Group all golang.org/x/* module updates into a single PR.",
+      "matchDatasources": ["go"],
+      "matchPackageNames": ["golang.org/x/**"],
+      "groupName": "golang.org/x modules"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Tracks the animetosho/par2cmdline-turbo release pinned by ARG PAR2_VERSION in the Dockerfile (downloaded via its GitHub release tarball URL) — Dependabot has no equivalent capability for a version pinned inside an ARG line.",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG PAR2_VERSION=(?<currentValue>.*?)\\n"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "animetosho/par2cmdline-turbo"
+    }
   ]
 }
