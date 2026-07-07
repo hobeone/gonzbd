@@ -1,8 +1,8 @@
 # All Alpine-based stages use the same version for consistency.
-ARG ALPINE_VERSION=3.24
+ARG ALPINE_VERSION=3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 # ---- Build UI ----
-FROM oven/bun:alpine AS ui-builder
+FROM oven/bun:alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0 AS ui-builder
 WORKDIR /src/ui
 COPY ui/package.json ui/bun.lock ./
 RUN bun install --frozen-lockfile
@@ -48,7 +48,7 @@ RUN apk add --no-cache autoconf automake build-base curl \
  && rm -rf /tmp/par2
 
 # ---- Runtime ----
-FROM ghcr.io/linuxserver/unrar:latest AS unrar
+FROM ghcr.io/linuxserver/unrar:latest@sha256:22e6e76f2f2372a7cd6e046b10025e8bde8a04a2b2b2c6072fca6821da5747f7 AS unrar
 
 FROM alpine:${ALPINE_VERSION}
 
