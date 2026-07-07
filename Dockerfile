@@ -1,4 +1,10 @@
-# All Alpine-based stages use the same version for consistency.
+# Governs the plain `alpine` stages below only. Deliberately NOT interpolated
+# into the go-builder FROM line: Renovate's Docker manager pins a digest onto
+# this ARG's value, and that digest is only valid for the `alpine` image
+# itself — splicing it into a different repository's tag (golang:1.26-alpine
+# ${ALPINE_VERSION}) produced an invalid, nonexistent image reference. The
+# golang stage below pins its own alpine-variant tag independently instead;
+# bump both together by hand when moving to a new Alpine release.
 ARG ALPINE_VERSION=3.24
 
 # ---- Build UI ----
@@ -10,7 +16,7 @@ COPY ui/ .
 RUN bun run build
 
 # ---- Build Go binary ----
-FROM golang:1.26-alpine${ALPINE_VERSION} AS go-builder
+FROM golang:1.26-alpine3.24 AS go-builder
 WORKDIR /src
 
 # Git is needed for version stamping.
