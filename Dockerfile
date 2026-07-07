@@ -108,5 +108,12 @@ COPY --chmod=755 entrypoint.sh /entrypoint.sh
 ENV GONZBD_PORT=4289
 EXPOSE 4289
 
+# Mirrors docker-compose-example.yml's healthcheck so `docker run` users (not
+# just compose) get the same coverage without extra setup. Shell form (not
+# exec-array) so $GONZBD_PORT expands; busybox wget (already in the base
+# image) needs no extra package.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --spider -q "http://localhost:${GONZBD_PORT}/api?mode=version&output=json" || exit 1
+
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["gonzbd", "--config", "/config/gonzbd.yaml", "--serve"]
