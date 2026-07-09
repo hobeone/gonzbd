@@ -1,18 +1,14 @@
-# Governs the plain `alpine` stages below only. Deliberately NOT interpolated
-# into the go-builder FROM line: Renovate's Docker manager pins a digest onto
-# this ARG's value, and that digest is only valid for the `alpine` image
-# itself — splicing it into a different repository's tag (golang:1.26-alpine
-# ${ALPINE_VERSION}) produced an invalid, nonexistent image reference. The
-# golang stage below pins its own alpine-variant tag independently instead;
-# bump both together by hand when moving to a new Alpine release.
-ARG ALPINE_VERSION=3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+# Governs the plain `alpine` stages below only. Not interpolated into the
+# go-builder FROM line, which pins its own alpine-variant tag independently
+# instead — bump both together by hand when moving to a new Alpine release.
+ARG ALPINE_VERSION=3.24
 
 # ---- Build UI ----
 # --platform=$BUILDPLATFORM: bun/vite's output (static JS/HTML/CSS) is the
 # same regardless of the final image's target platform, so this stage always
 # runs natively on the build host instead of under QEMU emulation for the
 # non-native leg of a multi-arch build.
-FROM --platform=$BUILDPLATFORM oven/bun:alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0 AS ui-builder
+FROM --platform=$BUILDPLATFORM oven/bun:alpine AS ui-builder
 WORKDIR /src/ui
 COPY ui/package.json ui/bun.lock ./
 RUN bun install --frozen-lockfile
@@ -26,7 +22,7 @@ RUN bun run build
 # resulting binary needs to target the other platform, not the compiler
 # toolchain running it. TARGETOS/TARGETARCH are buildx's implicit global
 # args; they must be re-declared with ARG inside this stage to be visible.
-FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine3.24 AS go-builder
 WORKDIR /src
 ARG TARGETOS
 ARG TARGETARCH
@@ -80,7 +76,7 @@ RUN apk add --no-cache autoconf automake build-base curl \
  && rm -rf /tmp/par2
 
 # ---- Runtime ----
-FROM ghcr.io/linuxserver/unrar:latest@sha256:5e150efdebbcb4e313b30bd17e40fc386f538a0a9baa4c9b1a5368a9a9a57e39 AS unrar
+FROM ghcr.io/linuxserver/unrar:latest AS unrar
 
 FROM alpine:${ALPINE_VERSION}
 
