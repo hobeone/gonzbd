@@ -80,7 +80,7 @@ RUN apk add --no-cache autoconf automake build-base curl \
  && rm -rf /tmp/par2
 
 # ---- Runtime ----
-FROM ghcr.io/linuxserver/unrar:latest@sha256:22e6e76f2f2372a7cd6e046b10025e8bde8a04a2b2b2c6072fca6821da5747f7 AS unrar
+FROM ghcr.io/linuxserver/unrar:latest@sha256:5e150efdebbcb4e313b30bd17e40fc386f538a0a9baa4c9b1a5368a9a9a57e39 AS unrar
 
 FROM alpine:${ALPINE_VERSION}
 
