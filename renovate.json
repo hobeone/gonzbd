@@ -6,11 +6,6 @@
   "labels": ["dependencies"],
   "packageRules": [
     {
-      "description": "Pin Docker base images to a digest and keep the digest current, since the Dockerfile's oven/bun, golang, alpine, and linuxserver/unrar images all use floating tags.",
-      "matchCategories": ["docker"],
-      "pinDigests": true
-    },
-    {
       "description": "Group all golang.org/x/* module updates into a single PR.",
       "matchDatasources": ["go"],
       "matchPackageNames": ["golang.org/x/**"],
