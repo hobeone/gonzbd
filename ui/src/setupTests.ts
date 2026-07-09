@@ -19,10 +19,10 @@ console.warn = (...args: unknown[]) => {
 // "document is not defined" ReferenceError. Suppress this specific
 // error since it's harmless in test environments.
 const _origSetTimeout = globalThis.setTimeout;
-globalThis.setTimeout = function patchedSetTimeout(fn: TimerHandler, ms?: number, ...args: unknown[]): ReturnType<typeof _origSetTimeout> {
+(globalThis as any).setTimeout = function patchedSetTimeout(fn: any, ms?: number, ...args: any[]): any {
 	const wrapped = typeof fn === 'function' ? function (this: unknown) {
 		try {
-			return fn.apply(this, args as []);
+			return fn.apply(this, args);
 		} catch (e) {
 			// Suppress the known bits-ui body-scroll-lock error
 			if (e instanceof ReferenceError && (e as Error).message?.includes('document is not defined')) {
@@ -32,4 +32,4 @@ globalThis.setTimeout = function patchedSetTimeout(fn: TimerHandler, ms?: number
 		}
 	} : fn;
 	return _origSetTimeout(wrapped, ms);
-} as typeof setTimeout;
+};
