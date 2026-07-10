@@ -72,6 +72,60 @@ func TestDefaultStrictSandbox(t *testing.T) {
 	})
 }
 
+func TestDefaultEnableTar(t *testing.T) {
+	cfg, err := Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	if !cfg.PostProc.EnableTar {
+		t.Errorf("EnableTar = false, want true (matches SABnzbd's cfg.enable_tar() default)")
+	}
+}
+
+func TestEnableTar_YAMLRoundTrip(t *testing.T) {
+	t.Run("unset in YAML keeps default true", func(t *testing.T) {
+		cfg, unknowns, err := decode(strings.NewReader("---\n"))
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(unknowns) != 0 {
+			t.Fatalf("unexpected unknown fields: %v", unknowns)
+		}
+		if !cfg.PostProc.EnableTar {
+			t.Errorf("EnableTar = false, want true when omitted from YAML")
+		}
+	})
+
+	t.Run("explicit false is honored", func(t *testing.T) {
+		cfg, _, err := decode(strings.NewReader("postproc:\n  enable_tar: false\n"))
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if cfg.PostProc.EnableTar {
+			t.Errorf("EnableTar = true, want false when explicitly set to false in YAML")
+		}
+	})
+
+	t.Run("round-trips through Save/Load", func(t *testing.T) {
+		original, err := Default()
+		if err != nil {
+			t.Fatalf("Default(): %v", err)
+		}
+		original.PostProc.EnableTar = false
+		path := filepath.Join(t.TempDir(), "gonzbd.yaml")
+		if err := original.Save(path); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		loaded, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if loaded.PostProc.EnableTar {
+			t.Errorf("EnableTar = true after round-trip, want false")
+		}
+	})
+}
+
 func TestRoundTripDefault(t *testing.T) {
 	original, err := Default()
 	if err != nil {
