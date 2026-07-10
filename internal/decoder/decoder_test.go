@@ -834,6 +834,53 @@ func TestDecoderMetadataParsingDirect(t *testing.T) {
 		}
 	})
 
+	t.Run("parseKeyValues name field with trailing whitespace and null", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			line     []byte
+			wantName string
+		}{
+			{
+				name:     "trailing space",
+				line:     []byte("=ybegin size=100 name=file.bin \r\n"),
+				wantName: "file.bin",
+			},
+			{
+				name:     "trailing tab",
+				line:     []byte("=ybegin size=100 name=file.bin\t\r\n"),
+				wantName: "file.bin",
+			},
+			{
+				name:     "trailing null byte",
+				line:     []byte("=ybegin size=100 name=file.bin\x00\r\n"),
+				wantName: "file.bin",
+			},
+			{
+				name:     "trailing space and tab",
+				line:     []byte("=ybegin size=100 name=file.bin \t\r\n"),
+				wantName: "file.bin",
+			},
+			{
+				name:     "trailing space tab and null",
+				line:     []byte("=ybegin size=100 name=file.bin \t\x00\r\n"),
+				wantName: "file.bin",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				var gotName string
+				parseKeyValues(tc.line, func(k, v string) {
+					if k == "name" {
+						gotName = v
+					}
+				})
+				if gotName != tc.wantName {
+					t.Errorf("expected name=%q, got %q", tc.wantName, gotName)
+				}
+			})
+		}
+	})
+
 	t.Run("ypart with trailing spaces", func(t *testing.T) {
 		body := []byte("=ybegin size=100000 part=12 name=multi.bin\n=ypart begin=1001 end=2000    \nbody_data")
 		hdr, _, err := parseHeader(body)
