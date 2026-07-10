@@ -169,6 +169,11 @@ postproc:
   # Enable 7z archive extraction. Requires 7z on PATH.
   enable_7zip: true
 
+  # Enable plain .tar archive extraction (not compressed variants like
+  # .tar.gz/.tgz). Uses a pure-Go extractor, no external tool required.
+  # Matches SABnzbd's cfg.enable_tar(). Default true.
+  enable_tar: true
+
   # Enable split file joining (.001/.002/...). When false, split files
   # are left as-is. Matches SABnzbd's cfg.enable_filejoin(). Default true.
   enable_filejoin: true

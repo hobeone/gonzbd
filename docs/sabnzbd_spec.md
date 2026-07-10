@@ -658,6 +658,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 |-----|------|---------|-------------|
 | `enable_unrar` | bool | true | Enable RAR extraction |
 | `enable_7zip` | bool | true | Enable 7z extraction |
+| `enable_tar` | bool | true | Enable plain .tar extraction (not compressed variants like .tar.gz/.tgz) |
 | `enable_filejoin` | bool | true | Enable split file joining (.001/.002) |
 | `enable_tsjoin` | bool | true | Enable TS file joining (.ts.001/.ts.002) |
 | `enable_recursive` | bool | true | Recursive unpack up to 3 levels |
