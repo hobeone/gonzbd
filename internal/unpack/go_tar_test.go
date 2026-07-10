@@ -1391,3 +1391,76 @@ func TestGoTar_NonUTF8Filename(t *testing.T) {
 		t.Errorf("ExtractedFiles = %v, want exactly 1 entry", res.ExtractedFiles)
 	}
 }
+
+// --- (6d) context cancellation mid-extraction ---
+
+// TestGoTar_ContextCancellationMidExtraction verifies that goTarInternal's
+// main loop checks ctx.Err() between tar entries (the check at the top of
+// the for loop in go_tar.go, immediately before tr.Next()) and stops
+// extraction promptly once the context is canceled, rather than draining
+// the entire archive regardless of cancellation.
+//
+// The archive has 5 regular-file entries. opts.OnLine is invoked once per
+// successfully-extracted entry (goTarInternal's "Extracting <name>" line,
+// emitted right after extractTarEntry returns for that entry), so canceling
+// the context from inside the first OnLine callback simulates "caller asked
+// us to stop after entry 1 was already written" -- the earliest point a
+// real caller (e.g. a job cancellation) could plausibly act. GoTar is fully
+// synchronous with no internal goroutines, so no synchronization is needed
+// around the shared `lines` slice or the cancel call.
+func TestGoTar_ContextCancellationMidExtraction(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+
+	const numEntries = 5
+	entries := make([]tarEntry, 0, numEntries)
+	for i := range numEntries {
+		entries = append(entries, tarEntry{
+			name:    fmt.Sprintf("file%d.txt", i),
+			content: fmt.Appendf(nil, "contents of file %d", i),
+		})
+	}
+	tarPath := buildTar(t, srcDir, "cancel.tar", entries)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var lines []string
+	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+	_, err := GoTar(ctx, testLogger(), archive, outDir, Options{
+		OnLine: func(line string) {
+			lines = append(lines, line)
+			if len(lines) == 1 {
+				cancel()
+			}
+		},
+	})
+
+	if err == nil {
+		t.Fatal("expected an error from context cancellation, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected err to be/wrap context.Canceled, got: %v", err)
+	}
+
+	// res.ExtractedFiles is intentionally not asserted here: goTarInternal
+	// only computes it on the success-completion path (after the loop
+	// exits via io.EOF), matching every other early-return error branch in
+	// the loop (corrupt header, per-entry extraction errors) -- none of
+	// those populate ExtractedFiles either. The observable proof that
+	// extraction actually stopped early is on disk: the first entry's file
+	// must exist (it was written before the callback canceled the
+	// context), and later entries -- which the top-of-loop ctx.Err() check
+	// must prevent tr.Next() from ever reaching -- must not.
+	if _, statErr := os.Stat(filepath.Join(outDir, "file0.txt")); statErr != nil {
+		t.Errorf("expected file0.txt to have been extracted before cancellation, stat err: %v", statErr)
+	}
+	for i := 1; i < numEntries; i++ {
+		name := fmt.Sprintf("file%d.txt", i)
+		if _, statErr := os.Stat(filepath.Join(outDir, name)); !os.IsNotExist(statErr) {
+			t.Errorf("expected %s to NOT be extracted after cancellation, stat err: %v", name, statErr)
+		}
+	}
+}
