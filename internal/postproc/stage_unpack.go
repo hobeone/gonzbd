@@ -23,7 +23,7 @@ import (
 type UnpackStage struct {
 	// toggle provides the thread-safe SetEnabled/enabled flag.
 	toggle
-	// mu protects BaseOpts, Permissions, PasswordFile, EnableFileJoin, and EnableRecursive.
+	// mu protects BaseOpts, Permissions, PasswordFile, EnableFileJoin, EnableTar, and EnableRecursive.
 	// Can be updated via Set* methods from the API goroutine while a job runs.
 	mu sync.RWMutex
 	// BaseOpts holds config-driven extraction options (tool paths, flags).
@@ -42,6 +42,10 @@ type UnpackStage struct {
 	// EnableFileJoin enables split file joining (.001/.002).
 	// When false, SplitArchive types are skipped. Default true.
 	EnableFileJoin bool
+	// EnableTar enables plain .tar extraction. When false, TarArchive
+	// types are skipped entirely (matching the EnableFileJoin pattern).
+	// Default true.
+	EnableTar bool
 	// EnableRecursive enables recursive unpacking (re-scan after each
 	// pass, up to maxUnpackDepth). When false, only one pass runs.
 	EnableRecursive bool
@@ -91,6 +95,13 @@ func (u *UnpackStage) SetEnableRecursive(v bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.EnableRecursive = v
+}
+
+// SetEnableTar enables or disables plain .tar extraction. Thread-safe.
+func (u *UnpackStage) SetEnableTar(v bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.EnableTar = v
 }
 
 // SetOverwriteFiles enables or disables overwriting existing files on extraction.
@@ -220,12 +231,14 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// Snapshot mutable fields under RLock so a concurrent SetOverwriteFiles /
-	// SetFlatUnpack / SetPermissions / SetPasswordFile / SetEnableFileJoin / SetEnableRecursive call doesn't race.
+	// SetFlatUnpack / SetPermissions / SetPasswordFile / SetEnableFileJoin /
+	// SetEnableTar / SetEnableRecursive call doesn't race.
 	u.mu.RLock()
 	opts := u.BaseOpts
 	permissions := u.Permissions
 	passwordFile := u.PasswordFile
 	enableFileJoin := u.EnableFileJoin
+	enableTar := u.EnableTar
 	enableRecursive := u.EnableRecursive
 	u.mu.RUnlock()
 
@@ -281,7 +294,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 			logf(ctx, log, job, slog.LevelInfo, "  %s: %s (%d parts)", archiveTypeName(a.Type), a.MainFile, len(a.Parts))
 		}
 
-		extractedAny := u.extractPendingArchives(ctx, log, job, pending, processed, opts, enableFileJoin, &firstErr, &allSuccessful)
+		extractedAny := u.extractPendingArchives(ctx, log, job, pending, processed, opts, enableFileJoin, enableTar, &firstErr, &allSuccessful)
 		// If nothing was extracted this pass, no point re-scanning.
 		if !extractedAny {
 			break
@@ -305,6 +318,7 @@ func (u *UnpackStage) extractPendingArchives(
 	processed map[string]bool,
 	opts unpack.Options,
 	enableFileJoin bool,
+	enableTar bool,
 	firstErr *error, //nolint:gocritic // ptrToRefParam: pointer required to accumulate first error across calls
 	allSuccessful *[]unpack.Archive,
 ) bool {
@@ -312,7 +326,7 @@ func (u *UnpackStage) extractPendingArchives(
 	for _, a := range pending {
 		processed[a.MainFile] = true
 
-		res, err := u.extractArchive(ctx, log, job, a, opts, enableFileJoin)
+		res, err := u.extractArchive(ctx, log, job, a, opts, enableFileJoin, enableTar)
 		if failErr := cmp.Or(err, res.Err); failErr != nil {
 			recordUnpackFailure(ctx, log, job, a, res, failErr, firstErr)
 			continue
@@ -416,7 +430,7 @@ func (u *UnpackStage) filterPending(archives []unpack.Archive, processed map[str
 }
 
 // extractArchive executes extraction based on the archive type.
-func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options, enableFileJoin bool) (unpack.Result, error) {
+func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options, enableFileJoin, enableTar bool) (unpack.Result, error) {
 	switch a.Type {
 	case unpack.RarArchive:
 		return extractRARArchive(ctx, log, job, a, opts)
@@ -429,6 +443,12 @@ func (u *UnpackStage) extractArchive(ctx context.Context, log *slog.Logger, job 
 		}
 		logf(ctx, log, job, slog.LevelInfo, "Joining split files: %s (%d parts)", filepath.Base(a.MainFile), len(a.Parts))
 		return unpack.FileJoin(ctx, log, a, job.DownloadDir, opts)
+	case unpack.TarArchive:
+		if !enableTar {
+			logf(ctx, log, job, slog.LevelInfo, "Skipping tar archive (disabled): %s", filepath.Base(a.MainFile))
+			return unpack.Result{}, nil
+		}
+		return extractTarArchive(ctx, log, job, a, opts)
 	default:
 		return unpack.Result{}, nil
 	}
@@ -624,6 +644,30 @@ func extractSevenZipArchive(ctx context.Context, log *slog.Logger, job *Job, a u
 	})
 }
 
+// extractTarArchive dispatches a single plain .tar archive to GoTar.
+// Unlike RAR/7z there is no engine-selection option or external-tool
+// fallback: Go's stdlib archive/tar is the only extraction path, so this
+// is a direct call rather than going through extractWithDriver.
+func extractTarArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options) (unpack.Result, error) {
+	logf(ctx, log, job, slog.LevelInfo, "Using go_tar for tar (pure-Go): %s", a.Name)
+	if job.OnOutput != nil {
+		job.OnOutput("go_tar", fmt.Sprintf("Unpacking: %s (using go_tar)", a.Name))
+	}
+	tarOpts := opts
+	tarOpts.OnLine = func(line string) {
+		if job.OnOutput != nil {
+			job.OnOutput("go_tar", line)
+		}
+	}
+	res, err := unpack.GoTar(ctx, log, a, job.DownloadDir, tarOpts)
+	if err == nil && res.Err == nil {
+		if job.OnOutput != nil {
+			job.OnOutput("go_tar", fmt.Sprintf("go_tar: unpacking complete: %s", a.Name))
+		}
+	}
+	return res, err
+}
+
 // applyPermissions walks dir recursively and applies the given octal
 // permission string. Directories receive the full mode; regular files
 // have execute bits stripped (e.g. "755" → dirs=0755, files=0644).
@@ -701,6 +745,8 @@ func archiveTypeName(t unpack.ArchiveType) string {
 		return "7zip"
 	case unpack.SplitArchive:
 		return "filejoin"
+	case unpack.TarArchive:
+		return "tar"
 	default:
 		return "unpack"
 	}
@@ -717,8 +763,10 @@ func archiveTypePriority(t unpack.ArchiveType) int {
 		return 1 // then RAR
 	case unpack.SevenZipArchive:
 		return 2 // then 7z
+	case unpack.TarArchive:
+		return 3 // then tar
 	default:
-		return 3
+		return 4
 	}
 }
 
