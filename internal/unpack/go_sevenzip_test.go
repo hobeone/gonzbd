@@ -584,7 +584,7 @@ func TestBoundReader_Direct(t *testing.T) {
 	{
 		totalRead := new(int64)
 		*totalRead = 100
-		br := &boundReader{r: strings.NewReader(""), totalRead: totalRead, maxSize: 10}
+		br := &boundReader{r: strings.NewReader(""), totalRead: totalRead, maxSize: 10, errBomb: errSevenZipBomb}
 		var buf [10]byte
 		n, err := br.Read(buf[:])
 		if n != 0 || !errors.Is(err, io.EOF) {
@@ -595,7 +595,7 @@ func TestBoundReader_Direct(t *testing.T) {
 	// 2. Ceiling limit checks and boundary (currTotal > b.maxSize)
 	{
 		totalRead := new(int64)
-		br := &boundReader{r: strings.NewReader("0123456789abcdef"), totalRead: totalRead, maxSize: 10}
+		br := &boundReader{r: strings.NewReader("0123456789abcdef"), totalRead: totalRead, maxSize: 10, errBomb: errSevenZipBomb}
 		var buf [10]byte
 		// Read exactly 10 bytes (currTotal == maxSize, should NOT error)
 		n, err := br.Read(buf[:])
@@ -612,7 +612,7 @@ func TestBoundReader_Direct(t *testing.T) {
 	// 3. Ceiling limit disabled when maxSize <= 0
 	{
 		totalRead := new(int64)
-		br := &boundReader{r: strings.NewReader("0123456789"), totalRead: totalRead, maxSize: 0}
+		br := &boundReader{r: strings.NewReader("0123456789"), totalRead: totalRead, maxSize: 0, errBomb: errSevenZipBomb}
 		var buf [10]byte
 		n, err := br.Read(buf[:])
 		if n != 10 || err != nil {
@@ -625,7 +625,7 @@ func TestBoundReader_Direct(t *testing.T) {
 	{
 		totalRead := new(int64)
 		// arcSize = 10, maxRatio = 2 (limit = 20), minThreshold = 25
-		br := &boundReader{r: strings.NewReader("012345678901234567890123456789"), totalRead: totalRead, arcSize: 10, maxRatio: 2, minThreshold: 25}
+		br := &boundReader{r: strings.NewReader("012345678901234567890123456789"), totalRead: totalRead, arcSize: 10, maxRatio: 2, minThreshold: 25, errBomb: errSevenZipBomb}
 		var buf [25]byte
 		// Read 25 bytes: currTotal == 25, which is NOT > minThreshold (25). Should NOT error despite 25 > 20 ratio limit!
 		n, err := br.Read(buf[:])
@@ -643,7 +643,7 @@ func TestBoundReader_Direct(t *testing.T) {
 	{
 		totalRead := new(int64)
 		// arcSize = 10, maxRatio = 2 (limit = 20), minThreshold = -1 (checked from byte 0)
-		br := &boundReader{r: strings.NewReader("012345678901234567890123456789"), totalRead: totalRead, arcSize: 10, maxRatio: 2, minThreshold: -1}
+		br := &boundReader{r: strings.NewReader("012345678901234567890123456789"), totalRead: totalRead, arcSize: 10, maxRatio: 2, minThreshold: -1, errBomb: errSevenZipBomb}
 		var buf [20]byte
 		// Read exactly 20 bytes: currTotal == 20, which is NOT > 20. Should NOT error!
 		n, err := br.Read(buf[:])
@@ -658,7 +658,7 @@ func TestBoundReader_Direct(t *testing.T) {
 
 		// Also test minThreshold == 0
 		*totalRead = 0
-		br = &boundReader{r: strings.NewReader("012345678901234567890123456789"), totalRead: totalRead, arcSize: 10, maxRatio: 2, minThreshold: 0}
+		br = &boundReader{r: strings.NewReader("012345678901234567890123456789"), totalRead: totalRead, arcSize: 10, maxRatio: 2, minThreshold: 0, errBomb: errSevenZipBomb}
 		n, err = br.Read(buf[:]) // read 20 bytes
 		if n != 20 || err != nil {
 			t.Fatalf("expected 20, nil when at exact ratio limit with minThreshold=0, got n=%d, err=%v", n, err)
@@ -673,7 +673,7 @@ func TestBoundReader_Direct(t *testing.T) {
 	{
 		totalRead := new(int64)
 		// arcSize = 2, maxRatio = 5 (limit = 10; notice 2+5=7, 2-5=-3, 2/5=0)
-		br := &boundReader{r: strings.NewReader("01234567890123456789"), totalRead: totalRead, arcSize: 2, maxRatio: 5, minThreshold: -1}
+		br := &boundReader{r: strings.NewReader("01234567890123456789"), totalRead: totalRead, arcSize: 2, maxRatio: 5, minThreshold: -1, errBomb: errSevenZipBomb}
 		var buf [10]byte
 		n, err := br.Read(buf[:])
 		if n != 10 || err != nil {
@@ -688,13 +688,13 @@ func TestBoundReader_Direct(t *testing.T) {
 	// Disabled ratio limit when arcSize == 0 or maxRatio == 0
 	{
 		totalRead := new(int64)
-		br := &boundReader{r: strings.NewReader("0123456789"), totalRead: totalRead, arcSize: 0, maxRatio: 2, minThreshold: -1}
+		br := &boundReader{r: strings.NewReader("0123456789"), totalRead: totalRead, arcSize: 0, maxRatio: 2, minThreshold: -1, errBomb: errSevenZipBomb}
 		var buf [10]byte
 		if n, err := br.Read(buf[:]); n != 10 || err != nil {
 			t.Errorf("expected success when arcSize is 0, got n=%d, err=%v", n, err)
 		}
 		*totalRead = 0
-		br = &boundReader{r: strings.NewReader("0123456789"), totalRead: totalRead, arcSize: 10, maxRatio: 0, minThreshold: -1}
+		br = &boundReader{r: strings.NewReader("0123456789"), totalRead: totalRead, arcSize: 10, maxRatio: 0, minThreshold: -1, errBomb: errSevenZipBomb}
 		if n, err := br.Read(buf[:]); n != 10 || err != nil {
 			t.Errorf("expected success when maxRatio is 0, got n=%d, err=%v", n, err)
 		}
