@@ -552,6 +552,19 @@ func (p *PostProcessor) processJob(ctx context.Context, job *Job) {
 		}
 	}
 
+	// Seed the owned-files allowlist from whatever is on disk right now.
+	// job.DownloadDir is exclusive to this job for its whole lifetime (see
+	// Job.OwnedFiles doc comment), so this snapshot captures every file the
+	// download itself produced. Stages that later create or rename files
+	// (unpack, par2 rename, deobfuscate) extend this set themselves so
+	// extension/sample cleanup can still clean up freshly-extracted junk.
+	// Skipped if the caller already populated OwnedFiles (e.g. tests).
+	if job.DownloadDir != "" && job.OwnedFiles == nil {
+		if owned, err := snapshotOwnedFiles(job.DownloadDir); err == nil {
+			job.OwnedFiles = owned
+		}
+	}
+
 	for _, stage := range p.stages {
 		entry, abort := p.runStage(ctx, stage, job)
 		job.StageLog = append(job.StageLog, entry)

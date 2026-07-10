@@ -207,6 +207,45 @@ func TestCleanupEmptyDirs(t *testing.T) {
 	}
 }
 
+// TestExtensionCleanup_RestrictsToOwnedFiles simulates the upstream SABnzbd
+// bug (#3462, commit 5b3cf86f6): cleanup_list() used to glob-delete any file
+// in the working directory matching a cleanup extension, regardless of
+// whether it belonged to the current job. A stray file matching a cleanup
+// extension but absent from job.OwnedFiles must survive, while an owned
+// file with the same extension is still removed.
+func TestExtensionCleanup_RestrictsToOwnedFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	ownedPath := filepath.Join(dir, "job.nfo")
+	strayPath := filepath.Join(dir, "unrelated.nfo")
+	if err := os.WriteFile(ownedPath, []byte("owned"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(strayPath, []byte("stray"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stage := NewExtensionCleanupStage([]string{"nfo"})
+	job := &Job{
+		Queue:       &queue.Job{ID: "test"},
+		DownloadDir: dir,
+		OwnedFiles: map[string]struct{}{
+			ownedPath: {},
+		},
+	}
+
+	if err := stage.Run(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(ownedPath); !os.IsNotExist(err) {
+		t.Errorf("expected owned file %s to be deleted", ownedPath)
+	}
+	if _, err := os.Stat(strayPath); err != nil {
+		t.Errorf("expected unrelated file %s to survive, got %v", strayPath, err)
+	}
+}
+
 func TestExtensionCleanup_ZipSlip_Symlink(t *testing.T) {
 	dlDir := t.TempDir()
 	outside := t.TempDir()

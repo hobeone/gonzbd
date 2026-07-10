@@ -112,6 +112,19 @@ type Job struct {
 	// skips these to prevent deletion of files needed for recovery.
 	ConsumedFiles map[string]struct{}
 
+	// OwnedFiles lists absolute paths of files known to belong to this job:
+	// everything present in DownloadDir when processJob starts (populated
+	// automatically — see postproc.go's processJob), plus every file later
+	// produced by unpack/join/rename stages. Extension and sample cleanup
+	// restrict deletion to this set when it is non-nil, mirroring upstream
+	// SABnzbd's "Track files during cleanup to prevent removing unrelated
+	// files" fix (commit 5b3cf86f6, #3462): cleanup must never delete a
+	// file that isn't this job's own, even if DownloadDir were ever shared
+	// or reused. A nil map means "not tracked" and disables the restriction
+	// (used by callers/tests that construct a Job directly without going
+	// through processJob).
+	OwnedFiles map[string]struct{}
+
 	// Par2Renames maps par2's canonical filename → actual on-disk filename.
 	// Populated from par2's "is a match for" output during repair. Used by
 	// downstream stages (deobfuscate, sort) to apply par2-discovered renames.

@@ -45,6 +45,7 @@ func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
 	} else {
 		logf(ctx, log, job, slog.LevelInfo, "Deobfuscated %d file(s)", len(renames))
 		for _, r := range renames {
+			markRenamed(job, r.From, r.To)
 			logf(ctx, log, job, slog.LevelInfo, "%s → %s", filepath.Base(r.From), filepath.Base(r.To))
 		}
 	}
@@ -54,6 +55,7 @@ func (d *DeobfuscateStage) Run(ctx context.Context, job *Job) error {
 	if len(subRenames) > 0 {
 		logf(ctx, log, job, slog.LevelInfo, "Renamed %d subtitle file(s)", len(subRenames))
 		for _, r := range subRenames {
+			markRenamed(job, r.From, r.To)
 			logf(ctx, log, job, slog.LevelInfo, "%s → %s", filepath.Base(r.From), filepath.Base(r.To))
 		}
 	}
