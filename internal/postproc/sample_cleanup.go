@@ -106,6 +106,14 @@ func (s *SampleCleanupStage) Run(ctx context.Context, job *Job) error {
 			return ctx.Err()
 		}
 		absPath := filepath.Join(job.DownloadDir, p)
+		// Restrict deletion to files this job actually owns (upstream
+		// SABnzbd #3462). A nil OwnedFiles means "not tracked" and disables
+		// the restriction (see Job.OwnedFiles doc comment).
+		if job.OwnedFiles != nil {
+			if _, owned := job.OwnedFiles[absPath]; !owned {
+				continue
+			}
+		}
 		if err := root.Remove(p); err != nil {
 			logf(ctx, log, job, slog.LevelWarn, "remove %s: %v", absPath, err)
 			continue

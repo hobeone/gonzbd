@@ -345,6 +345,7 @@ func (u *UnpackStage) extractPendingArchives(
 			job.OutputLines = append(job.OutputLines,
 				toolOutputLines(res.Output)...)
 		}
+		markOwned(job, res.ExtractedFiles)
 		*allSuccessful = append(*allSuccessful, a)
 		extractedAny = true
 	}
@@ -389,6 +390,7 @@ func (u *UnpackStage) handleDirectUnpack(ctx context.Context, log *slog.Logger, 
 		for setname, result := range job.DirectUnpackSets {
 			logf(ctx, log, job, slog.LevelInfo, "Set %q already extracted by DirectUnpack (%d files, %d parts)",
 				setname, len(result.ExtractedFiles), len(result.RarParts))
+			markOwned(job, result.ExtractedFiles)
 			for _, part := range result.RarParts {
 				processed[part] = true
 				// Also mark by basename so Scan's file-based lookup matches.

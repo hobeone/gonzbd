@@ -1105,6 +1105,49 @@ func TestPreCheck_UnsetDirSkipsGuard(t *testing.T) {
 	}
 }
 
+// TestProcessJob_SeedsOwnedFilesFromDownloadDir verifies that processJob
+// auto-populates job.OwnedFiles from the current contents of DownloadDir
+// before any stage runs, giving every real pipeline run the extension/sample
+// cleanup ownership restriction for free (see Job.OwnedFiles doc comment).
+func TestProcessJob_SeedsOwnedFilesFromDownloadDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "movie.mkv")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedOwned map[string]struct{}
+	stage := &mockPPStage{
+		name: "capture",
+		runFunc: func(_ context.Context, job *Job) error {
+			capturedOwned = job.OwnedFiles
+			return nil
+		},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	p := startProcessor(t, Options{
+		Stages:    []Stage{stage},
+		OnJobDone: func(_ *Job) { wg.Done() },
+	})
+
+	job := &Job{
+		Queue:       &queue.Job{ID: "seed", Name: "seed", PP: 3},
+		DownloadDir: dir,
+	}
+	p.Process(job)
+	wg.Wait()
+
+	if capturedOwned == nil {
+		t.Fatal("expected job.OwnedFiles to be populated before stages ran")
+	}
+	if _, ok := capturedOwned[filePath]; !ok {
+		t.Errorf("expected %s to be recorded as owned, got %v", filePath, capturedOwned)
+	}
+}
+
 type mockPPStage struct {
 	name    string
 	runFunc func(ctx context.Context, job *Job) error
