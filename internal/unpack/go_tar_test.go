@@ -299,6 +299,106 @@ func TestGoTar_FifoEntrySkipped(t *testing.T) {
 	}
 }
 
+// --- (c5) bare absolute path entry is defanged, not literally rejected ---
+
+func TestGoTar_AbsolutePathEntryRejected(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+
+	// A bare absolute path (no ".." component at all) exercises a distinct
+	// branch of SanitizeArchivePath (go_unrar.go) from
+	// TestGoTar_PathTraversalRejected's relative "../../../etc/..." case.
+	// Reading SanitizeArchivePath: it does path.Clean, then
+	// strings.TrimPrefix(name, "/"), then rejects only if a ".."
+	// component *remains* after cleaning. Clean("/etc/passwd") has no ".."
+	// component, so TrimPrefix alone reduces it to "etc/passwd" -- the
+	// entry is NOT rejected with an error; it is defanged (leading "/"
+	// stripped) and extracted safely as a relative path contained inside
+	// outDir. This is the same "strip the leading slash" convention GNU
+	// tar itself uses by default. This test proves that behavior: no file
+	// is ever written outside outDir, and the entry lands at outDir/etc/passwd.
+	tarPath := buildTar(t, srcDir, "abspath.tar", []tarEntry{
+		{name: "/etc/passwd", content: []byte("evil")},
+		{name: "safe.txt", content: []byte("safe content")},
+	})
+
+	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil || res.Err != nil {
+		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(outDir, "safe.txt")); statErr != nil {
+		t.Errorf("safe.txt not extracted: %v", statErr)
+	}
+
+	// The absolute-path entry must never land at the real, host-rooted
+	// /etc/passwd.
+	if _, statErr := os.Stat("/etc/passwd"); statErr == nil {
+		data, readErr := os.ReadFile("/etc/passwd")
+		if readErr == nil && string(data) == "evil" {
+			t.Fatalf("absolute path entry escaped to real /etc/passwd")
+		}
+	}
+
+	// It must be safely contained inside outDir, with the leading slash
+	// stripped (outDir/etc/passwd), proving the escape was neutralized.
+	contained, readErr := os.ReadFile(filepath.Join(outDir, "etc", "passwd"))
+	if readErr != nil {
+		t.Fatalf("expected absolute-path entry contained at outDir/etc/passwd: %v", readErr)
+	}
+	if string(contained) != "evil" {
+		t.Errorf("outDir/etc/passwd content = %q, want %q", contained, "evil")
+	}
+}
+
+// --- (c6) symlink entry whose *name* (not Linkname) contains ".." ---
+
+func TestGoTar_SymlinkNameWithTraversal(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+
+	// Proves the non-regular-type skip and path-sanitization checks
+	// compose correctly: this symlink entry's *name* contains "..", not
+	// its Linkname (TestGoTar_SymlinkEntrySkipped already covers a
+	// symlink with an absolute Linkname but a clean name). Regardless of
+	// which check -- type-based skip, or path sanitization -- would catch
+	// this first, the outcome must be the same: nothing is created on
+	// disk, so a future reordering of these checks can't accidentally let
+	// a bad-path symlink through.
+	tarPath := buildTar(t, srcDir, "symlink-traversal.tar", []tarEntry{
+		{name: "../../evil-link", typeflag: tar.TypeSymlink, linkname: "/etc/passwd"},
+		{name: "safe.txt", content: []byte("safe content")},
+	})
+
+	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil || res.Err != nil {
+		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(outDir, "safe.txt")); statErr != nil {
+		t.Errorf("safe.txt not extracted: %v", statErr)
+	}
+
+	// Nothing should exist at the traversal target, whether escaped
+	// outside outDir or written under a mangled name inside it.
+	escaped := filepath.Join(filepath.Dir(outDir), "evil-link")
+	if _, statErr := os.Lstat(escaped); statErr == nil {
+		t.Errorf("symlink-with-traversal-name entry escaped to %s", escaped)
+	}
+	if _, statErr := os.Lstat(filepath.Join(outDir, "..", "evil-link")); statErr == nil {
+		t.Errorf("symlink-with-traversal-name entry escaped via relative outDir path")
+	}
+	if _, statErr := os.Lstat(filepath.Join(outDir, "evil-link")); statErr == nil {
+		t.Errorf("symlink-with-traversal-name entry was created inside outDir under a mangled name")
+	}
+}
+
 // --- (d) setuid/setgid bits stripped ---
 
 func TestGoTar_SetuidSetgidBitsStripped(t *testing.T) {
@@ -364,6 +464,59 @@ func TestGoTar_SparseBombRejected(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(outDir, "huge-file")); statErr == nil {
 		t.Errorf("oversized entry was written to disk despite bomb rejection")
 	}
+}
+
+// --- (e2) genuine GNU sparse entry still trips the bomb check ---
+
+func TestGoTar_GenuineGNUSparseEntry(t *testing.T) {
+	t.Parallel()
+
+	// TestGoTar_SparseBombRejected above proves the declared-Header.Size
+	// bomb check, but its backing bytes are real (physically written)
+	// content matching the declared size -- it doesn't exercise
+	// archive/tar's actual GNU-sparse decode path, where the *reader*
+	// synthesizes zero bytes for holes that were never physically written.
+	//
+	// This test was meant to build a genuine sparse tar.Header (large
+	// logical Header.Size, backed by little physical data via declared
+	// hole regions) using archive/tar's own sparse-file support, per the
+	// task brief's suggested go doc archive/tar.Header /
+	// archive/tar.SparseEntry APIs.
+	//
+	// Verified against this Go toolchain (go1.26.5, matching go.mod's
+	// go 1.26.4 toolchain directive):
+	//
+	//   $ go doc archive/tar.Header    # no Sparse-related field at all
+	//   $ go doc archive/tar.SparseEntry
+	//   doc: no symbol SparseEntry in package archive/tar
+	//
+	// archive/tar in the current stdlib exposes no public API on
+	// tar.Writer for emitting a genuinely sparse GNU/PAX entry (no
+	// Header.SparseHoles field, no SparseEntry type, no WriteHeader
+	// option to declare holes). tar.Writer only ever writes the bytes
+	// given to it via Write; there is no supported way to make it emit an
+	// entry whose *physical* stream is smaller than its declared logical
+	// Header.Size through GNU sparse hole records. Fabricating one would
+	// require hand-rolling raw GNU sparse header bytes bypassing
+	// archive/tar's writer entirely -- exactly the "contrived workaround"
+	// the task brief says to avoid.
+	//
+	// Per the brief's explicit fallback ("If constructing a genuine
+	// sparse header proves awkward with the stdlib API, fall back to
+	// documenting why... and keep the existing declared-size-mismatch
+	// test as the primary proof"), TestGoTar_SparseBombRejected above
+	// remains the primary proof that go_tar.go's bomb-detection logic
+	// (opts.MaxSize/MaxRatio enforcement in extractTarFile, shared with
+	// GoSevenZip via boundReader) rejects an oversized declared
+	// Header.Size before reading/writing that many bytes -- which is the
+	// property that matters regardless of whether the backing bytes are
+	// physically present or hole-synthesized, since the check fires on
+	// the *declared* size alone (see extractTarFile's projTotal check,
+	// which runs before any byte of the entry is read).
+	t.Skip("archive/tar in this Go version (go1.26.5) has no public API " +
+		"for writing a genuine GNU sparse entry (no Header.SparseHoles, " +
+		"no SparseEntry type) -- see comment above; " +
+		"TestGoTar_SparseBombRejected covers the declared-size bomb check.")
 }
 
 // --- (f) OneFolder flattening ---
