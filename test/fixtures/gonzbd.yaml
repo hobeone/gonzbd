@@ -38,6 +38,7 @@ downloads:
 postproc:
   enable_unrar: true
   enable_7zip: true
+  enable_tar: true
   enable_filejoin: true
   enable_tsjoin: true
   enable_recursive: true

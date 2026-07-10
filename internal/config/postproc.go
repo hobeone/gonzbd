@@ -7,6 +7,9 @@ type PostProcConfig struct {
 	EnableUnrar bool `yaml:"enable_unrar" json:"enable_unrar"`
 	// Enable7zip enables 7z extraction.
 	Enable7zip bool `yaml:"enable_7zip" json:"enable_7zip"`
+	// EnableTar enables plain .tar extraction (not compressed variants
+	// like .tar.gz/.tgz). Matches SABnzbd's cfg.enable_tar(). Default true.
+	EnableTar bool `yaml:"enable_tar" json:"enable_tar"`
 	// EnableFileJoin enables split file joining (.001/.002/...).
 	// Matches SABnzbd's cfg.enable_filejoin(). Default true.
 	EnableFileJoin bool `yaml:"enable_filejoin" json:"enable_filejoin"`

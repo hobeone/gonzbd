@@ -91,6 +91,7 @@ func Default() (*Config, error) {
 		PostProc: PostProcConfig{
 			EnableUnrar:          true,
 			Enable7zip:           true,
+			EnableTar:            true,
 			EnableFileJoin:       true,
 			EnableTSJoin:         true,
 			EnableRecursive:      true,
