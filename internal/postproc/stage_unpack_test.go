@@ -1,6 +1,7 @@
 package postproc
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -220,6 +222,117 @@ func TestUnpackStage_DisabledSkips(t *testing.T) {
 	}
 }
 
+// buildTestTar writes a minimal .tar archive containing a single file entry
+// into dir and returns its path.
+func buildTestTar(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	f, err := os.Create(path) //nolint:gosec // test fixture path under t.TempDir()
+	if err != nil {
+		t.Fatalf("create tar: %v", err)
+	}
+	tw := tar.NewWriter(f)
+	content := []byte("tar payload content")
+	hdr := &tar.Header{
+		Name:    "payload.txt",
+		Mode:    0o644,
+		Size:    int64(len(content)),
+		ModTime: time.Now(),
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatalf("write tar header: %v", err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatalf("write tar content: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close tar file: %v", err)
+	}
+	return path
+}
+
+// TestUnpackStage_ExtractTarArchive verifies a plain .tar archive is
+// extracted successfully when EnableTar is true, and that extractTarArchive
+// reports completion via job.OnOutput (proving the "err == nil && res.Err ==
+// nil" success branch actually gates the "unpacking complete" callback,
+// rather than firing unconditionally or never).
+func TestUnpackStage_ExtractTarArchive(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	buildTestTar(t, dir, "archive.tar")
+
+	var outputs []string
+	job.OnOutput = func(_, line string) { outputs = append(outputs, line) }
+
+	s := NewUnpackStageWith(unpack.Options{}, false)
+	s.SetEnabled(true)
+	s.EnableTar = true
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if job.UnpackError {
+		t.Errorf("UnpackError = true; want false")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "payload.txt")); err != nil {
+		t.Errorf("expected payload.txt extracted from tar archive: %v", err)
+	}
+
+	var sawStart, sawLine, sawComplete bool
+	for _, l := range outputs {
+		if strings.Contains(l, "Unpacking:") && strings.Contains(l, "using go_tar") {
+			sawStart = true
+		}
+		if strings.Contains(l, "Extracting") && strings.Contains(l, "payload.txt") {
+			sawLine = true
+		}
+		if strings.Contains(l, "go_tar: unpacking complete") {
+			sawComplete = true
+		}
+	}
+	if !sawStart {
+		t.Errorf("expected an OnOutput 'Unpacking: ... (using go_tar)' start message, got %v", outputs)
+	}
+	if !sawLine {
+		t.Errorf("expected an OnOutput passthrough of GoTar's per-entry 'Extracting' line, got %v", outputs)
+	}
+	if !sawComplete {
+		t.Errorf("expected an OnOutput 'go_tar: unpacking complete' message, got %v", outputs)
+	}
+}
+
+// TestUnpackStage_TarDisabledSkips verifies that a tar archive is skipped
+// entirely (not attempted) when EnableTar is false, mirroring the
+// EnableFileJoin-disabled behavior for SplitArchive.
+func TestUnpackStage_TarDisabledSkips(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	buildTestTar(t, dir, "archive.tar")
+
+	s := NewUnpackStageWith(unpack.Options{}, false)
+	s.SetEnabled(true)
+	s.EnableTar = false
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if job.UnpackError {
+		t.Errorf("UnpackError = true; want false (disabled tar should not be attempted)")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "payload.txt")); err == nil {
+		t.Errorf("payload.txt extracted even though EnableTar=false")
+	}
+	// The archive itself must still be present (never processed).
+	if _, err := os.Stat(filepath.Join(dir, "archive.tar")); err != nil {
+		t.Errorf("archive.tar removed/moved even though EnableTar=false: %v", err)
+	}
+}
+
 // ---------- applyPermissions helper ----------
 
 // TestApplyPermissions_SetsFileModeOnFiles verifies that applyPermissions
@@ -376,13 +489,13 @@ func TestUnpackHelpers(t *testing.T) {
 		a := unpack.Archive{Type: unpack.RarArchive, Name: "nonexistent.rar"}
 
 		// Scenario A: Native Go, no fallback
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, true)
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, true, true)
 
 		// Scenario B: External only
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false}, true)
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false}, true, true)
 
 		// Scenario C: Native Go with external fallback
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true}, true)
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true}, true, true)
 	})
 
 	// 4. Test extractArchive 7-Zip scenarios
@@ -395,13 +508,13 @@ func TestUnpackHelpers(t *testing.T) {
 		a := unpack.Archive{Type: unpack.SevenZipArchive, Name: "nonexistent.7z"}
 
 		// Scenario A: Native Go, no fallback
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, true)
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, true, true)
 
 		// Scenario B: External only
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false}, true)
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false}, true, true)
 
 		// Scenario C: Native Go with external fallback
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true}, true)
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true}, true, true)
 	})
 
 	// 5. Test extractArchive (SplitArchive disabled)
@@ -412,7 +525,7 @@ func TestUnpackHelpers(t *testing.T) {
 			DownloadDir: t.TempDir(),
 		}
 		a := unpack.Archive{Type: unpack.SplitArchive, MainFile: "test.001"}
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{}, false)
+		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{}, false, false)
 	})
 
 	// 6. Test extractPendingArchives (external tool success to cover CommandLine and Output)
@@ -440,7 +553,7 @@ func TestUnpackHelpers(t *testing.T) {
 			UseGoRAR: false,
 		}
 
-		ok := u.extractPendingArchives(t.Context(), slog.Default(), job, pending, processed, opts, true, &firstErr, &allSuccessful)
+		ok := u.extractPendingArchives(t.Context(), slog.Default(), job, pending, processed, opts, true, true, &firstErr, &allSuccessful)
 		if !ok {
 			t.Error("expected extractPendingArchives to return true")
 		}
@@ -480,7 +593,7 @@ func TestUnpackHelpers(t *testing.T) {
 			UseGoRAR: true, // Go-native is fast and sufficient
 		}
 
-		ok := u.extractPendingArchives(t.Context(), slog.Default(), job, pending, processed, opts, true, &firstErr, &allSuccessful)
+		ok := u.extractPendingArchives(t.Context(), slog.Default(), job, pending, processed, opts, true, true, &firstErr, &allSuccessful)
 		// Since containment check fails, firstErr should be non-nil
 		if firstErr == nil {
 			t.Error("expected containment violation error, got nil")
