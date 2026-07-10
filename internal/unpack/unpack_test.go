@@ -65,6 +65,12 @@ func TestClassify(t *testing.T) {
 		// P21: .ts.NNN files are generic splits — joined by FileJoin
 		{"show.ts.001", unpack.SplitArchive},
 		{"show.ts.002", unpack.SplitArchive},
+		{"backup.tar", unpack.TarArchive},
+		{"backup.TAR", unpack.TarArchive},
+		// Compressed tar variants are out of scope (upstream TAR_RE is
+		// `\.(tar$)`, plain tar only) — they must NOT be classified as tar.
+		{"backup.tar.gz", unpack.UnknownArchive},
+		{"backup.tgz", unpack.UnknownArchive},
 		{"readme.txt", unpack.UnknownArchive},
 		{"movie.nfo", unpack.UnknownArchive},
 		{"noext", unpack.UnknownArchive},
@@ -191,6 +197,26 @@ func TestScan(t *testing.T) {
 			wantLen:   1,
 			wantNames: []string{"show.ts"},
 			wantTypes: map[string]unpack.ArchiveType{"show.ts": unpack.SplitArchive},
+		},
+		{
+			name: "single tar archive",
+			layout: []string{
+				"backup.tar",
+			},
+			wantLen:   1,
+			wantNames: []string{"backup"},
+			wantTypes: map[string]unpack.ArchiveType{"backup": unpack.TarArchive},
+		},
+		{
+			// Compressed tar variants are out of scope for TarArchive
+			// detection and remain unrecognised (no other archive type
+			// matches them either).
+			name: "compressed tar variants are not classified as tar",
+			layout: []string{
+				"backup.tar.gz",
+				"backup.tgz",
+			},
+			wantLen: 0,
 		},
 	}
 

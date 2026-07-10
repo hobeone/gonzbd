@@ -173,6 +173,20 @@ func TestGroupArchives(t *testing.T) {
 			},
 		},
 		{
+			name: "single tar archive",
+			files: []string{
+				"/dir/backup.tar",
+			},
+			want: []Archive{
+				{
+					Type:     TarArchive,
+					Name:     "backup",
+					MainFile: "/dir/backup.tar",
+					Parts:    []string{"/dir/backup.tar"},
+				},
+			},
+		},
+		{
 			name: "generic split files overridden by rar",
 			files: []string{
 				"/dir/movie.part02.rar",

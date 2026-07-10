@@ -27,6 +27,11 @@ const (
 	// SplitArchive represents generic split files (.001/.002/…) with no other
 	// recognised archive type; joined by FileJoin.
 	SplitArchive
+	// TarArchive is a plain .tar archive. Unlike RAR/7z there is no
+	// multi-volume split convention in scope here (matches upstream
+	// SABnzbd's narrow `TAR_RE = re.compile(r"\.(tar$)", re.I)`), so a
+	// TarArchive's Parts is always a single-element slice.
+	TarArchive
 )
 
 // Archive describes one extractable unit discovered during a directory scan.
@@ -73,6 +78,8 @@ func Classify(path string) ArchiveType {
 		return SevenZipArchive
 	case numericSuffixPattern.MatchString(base):
 		return SplitArchive
+	case strings.HasSuffix(lower, ".tar"):
+		return TarArchive
 	default:
 		return UnknownArchive
 	}
@@ -117,6 +124,7 @@ func groupArchives(files []string) []Archive {
 	sevenSplit := make(map[string][]string) // key: lower-case set name → volume paths
 	sevenSingle := make(map[string]string)  // key: lower-case set name → .7z path
 	splitParts := make(map[string][]string) // key: lower-case base name without suffix
+	tarSingle := make(map[string]string)    // key: lower-case set name → .tar path
 
 	for _, path := range files {
 		base := filepath.Base(path)
@@ -162,6 +170,11 @@ func groupArchives(files []string) []Archive {
 			suffix := numericSuffixPattern.FindString(lower)
 			name := lower[:len(lower)-len(suffix)]
 			splitParts[name] = append(splitParts[name], path)
+
+		case strings.HasSuffix(lower, ".tar"):
+			// Plain tar archive. No multi-volume convention in scope.
+			name := lower[:len(lower)-len(".tar")]
+			tarSingle[name] = path
 		}
 	}
 
@@ -242,6 +255,16 @@ func groupArchives(files []string) []Archive {
 			Name:     name,
 			MainFile: sorted[0],
 			Parts:    sorted,
+		})
+	}
+
+	// Single tar archives.
+	for name, path := range tarSingle {
+		archives = append(archives, Archive{
+			Type:     TarArchive,
+			Name:     name,
+			MainFile: path,
+			Parts:    []string{path},
 		})
 	}
 
