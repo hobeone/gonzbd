@@ -148,6 +148,11 @@ func goSevenZipInternal(ctx context.Context, log *slog.Logger, archive Archive, 
 	return res, nil
 }
 
+// boundReader enforces decompression-bomb limits (total bytes read and
+// compression ratio) on a streaming reader. It is shared across pure-Go
+// extractors (go_7z, go_tar) so the size/ratio enforcement algorithm has
+// exactly one implementation; errBomb and errPrefix let each caller report
+// its own sentinel error and message prefix rather than hardcoding go_7z's.
 type boundReader struct {
 	r            io.Reader
 	totalRead    *int64
@@ -156,6 +161,8 @@ type boundReader struct {
 	arcSize      int64
 	minThreshold int64
 	name         string
+	errBomb      error
+	errPrefix    string
 }
 
 func (b *boundReader) Read(p []byte) (int, error) {
@@ -164,10 +171,10 @@ func (b *boundReader) Read(p []byte) (int, error) {
 		atomic.AddInt64(b.totalRead, int64(n))
 		currTotal := atomic.LoadInt64(b.totalRead)
 		if currTotal < 0 {
-			return n, fmt.Errorf("go_7z: invalid negative total read count: %d", currTotal)
+			return n, fmt.Errorf("%s: invalid negative total read count: %d", b.errPrefix, currTotal)
 		}
 		if b.maxSize > 0 && currTotal > b.maxSize {
-			return n, fmt.Errorf("%w: total read (%d bytes) exceeds ceiling (%d bytes)", errSevenZipBomb, currTotal, b.maxSize)
+			return n, fmt.Errorf("%w: total read (%d bytes) exceeds ceiling (%d bytes)", b.errBomb, currTotal, b.maxSize)
 		}
 		// Compute the ratio ceiling in uint64 to avoid int64 overflow on very
 		// large archives (matching the projected-size check in
@@ -175,7 +182,7 @@ func (b *boundReader) Read(p []byte) (int, error) {
 		// positive in this branch, so the conversions are safe.
 		if b.arcSize > 0 && b.maxRatio > 0 && currTotal > b.minThreshold &&
 			uint64(currTotal) > uint64(b.arcSize)*uint64(b.maxRatio) {
-			return n, fmt.Errorf("%w: archive ratio exceeds limit (%d)", errSevenZipBomb, b.maxRatio)
+			return n, fmt.Errorf("%w: archive ratio exceeds limit (%d)", b.errBomb, b.maxRatio)
 		}
 	}
 	return n, err
@@ -251,6 +258,8 @@ func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath s
 		arcSize:      arcSize,
 		minThreshold: minThreshold,
 		name:         f.Name,
+		errBomb:      errSevenZipBomb,
+		errPrefix:    "go_7z",
 	}
 	if _, err := contextCopy(ctx, io.MultiWriter(out, hasher), br); err != nil {
 		if errno, ok := errors.AsType[syscall.Errno](err); ok && errno == syscall.ENOSPC {
