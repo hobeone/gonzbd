@@ -28,16 +28,19 @@ type tarEntry struct {
 	devminor int64
 }
 
-// buildTar writes entries into a new .tar file under dir and returns its
-// path. Directory entries (typeflag == tar.TypeDir) get no content.
-func buildTar(t *testing.T, dir, name string, entries []tarEntry) string {
+// buildTarBytes serializes entries into an in-memory tar archive and returns
+// its raw bytes. This is the single place the byte-level construction logic
+// lives: buildTar (below) writes these bytes to a file for tests that call
+// GoTar against a path, and FuzzGoTar reuses it directly to seed the fuzz
+// corpus with the same crafted-attack archives the named tests use.
+//
+// t is testing.TB (not *testing.T) so *testing.F -- which has no shared
+// type with *testing.T beyond testing.TB -- can call this directly from
+// FuzzGoTar's seed-corpus setup, before f.Fuzz has even been called.
+func buildTarBytes(t testing.TB, entries []tarEntry) []byte {
 	t.Helper()
-	path := filepath.Join(dir, name)
-	f, err := os.Create(path) //nolint:gosec // test fixture path under t.TempDir()
-	if err != nil {
-		t.Fatalf("create tar: %v", err)
-	}
-	tw := tar.NewWriter(f)
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
 	for _, e := range entries {
 		typeflag := e.typeflag
 		if typeflag == 0 {
@@ -80,8 +83,16 @@ func buildTar(t *testing.T, dir, name string, entries []tarEntry) string {
 	if err := tw.Close(); err != nil {
 		t.Fatalf("close tar writer: %v", err)
 	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close tar file: %v", err)
+	return buf.Bytes()
+}
+
+// buildTar writes entries into a new .tar file under dir and returns its
+// path. Directory entries (typeflag == tar.TypeDir) get no content.
+func buildTar(t *testing.T, dir, name string, entries []tarEntry) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, buildTarBytes(t, entries), 0o644); err != nil { //nolint:gosec // test fixture path under t.TempDir()
+		t.Fatalf("write tar: %v", err)
 	}
 	return path
 }
@@ -1463,4 +1474,103 @@ func TestGoTar_ContextCancellationMidExtraction(t *testing.T) {
 			t.Errorf("expected %s to NOT be extracted after cancellation, stat err: %v", name, statErr)
 		}
 	}
+}
+
+// --- (6f) fuzzing ---
+
+// FuzzGoTar fuzzes GoTar directly against raw tar bytes, modeled on
+// internal/decoder/fuzz_test.go's FuzzDecodeArticle/FuzzDecodeUU harness
+// style: seed the corpus with byte-serialized versions of every
+// crafted-attack tar built in the named tests above (path traversal,
+// symlink, hardlink, device, FIFO, sparse-bomb, absolute-path, PAX-long-name,
+// non-UTF8 filename), then let go test -fuzz mutate them.
+//
+// The only invariant asserted is "does not panic": TestGoTar_PanicRecovery
+// above already proves cmdutil.SafeEngineRun catches panics from inside
+// goTarInternal and turns them into a returned error, so a panic that
+// escapes this fuzz target (crashing the test binary instead of being
+// returned as an error) would mean a panic path *outside* that recovery
+// wrapper -- a genuine bug, not an expected fuzz failure mode.
+func FuzzGoTar(f *testing.F) {
+	seed := func(entries []tarEntry) {
+		f.Add(buildTarBytes(f, entries))
+	}
+
+	// Path traversal (relative "../..").
+	seed([]tarEntry{
+		{name: "../../../etc/passwd-pwned", content: []byte("evil")},
+		{name: "safe.txt", content: []byte("safe content")},
+	})
+	// Bare absolute path (no ".." component).
+	seed([]tarEntry{
+		{name: "/etc/passwd", content: []byte("evil")},
+		{name: "safe.txt", content: []byte("safe content")},
+	})
+	// Symlink with an absolute Linkname.
+	seed([]tarEntry{
+		{name: "evil-link", typeflag: tar.TypeSymlink, linkname: "/etc/passwd"},
+		{name: "safe.txt", content: []byte("safe content")},
+	})
+	// Symlink whose own name (not Linkname) contains "..".
+	seed([]tarEntry{
+		{name: "../../evil-link", typeflag: tar.TypeSymlink, linkname: "/etc/passwd"},
+		{name: "safe.txt", content: []byte("safe content")},
+	})
+	// Hardlink referencing an already-seen tar member.
+	seed([]tarEntry{
+		{name: "safe.txt", content: []byte("safe content")},
+		{name: "hard-link-to-safe", typeflag: tar.TypeLink, linkname: "safe.txt"},
+	})
+	// Char and block device entries.
+	seed([]tarEntry{
+		{name: "evil-char-device", typeflag: tar.TypeChar, devmajor: 1, devminor: 5},
+		{name: "safe.txt", content: []byte("safe content")},
+	})
+	seed([]tarEntry{
+		{name: "evil-block-device", typeflag: tar.TypeBlock, devmajor: 1, devminor: 5},
+		{name: "safe.txt", content: []byte("safe content")},
+	})
+	// FIFO entry.
+	seed([]tarEntry{
+		{name: "evil-fifo", typeflag: tar.TypeFifo},
+		{name: "safe.txt", content: []byte("safe content")},
+	})
+	// Sparse/decompression-bomb-style entry: declared size far exceeds a
+	// plausible extraction budget.
+	seed([]tarEntry{
+		{name: "huge-file", content: bytes.Repeat([]byte{0}, 64*1024)},
+	})
+	// PAX extended header via a name exceeding ustar's 100-byte limit.
+	seed([]tarEntry{
+		{name: "subdir/" + strings.Repeat("f", 150) + ".txt", content: []byte("payload")},
+	})
+	// Invalid-UTF-8 filename.
+	seed([]tarEntry{
+		{name: "bad-\xff\xfename.txt", content: []byte("payload")},
+	})
+	// setuid/setgid bits on a regular file.
+	seed([]tarEntry{
+		{name: "suid-file", mode: 0o4755, content: []byte("payload")},
+	})
+	// Empty archive (no entries at all -- just buildTarBytes's terminating
+	// zero blocks).
+	seed(nil)
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		dir := t.TempDir()
+		tarPath := filepath.Join(dir, "fuzz.tar")
+		if err := os.WriteFile(tarPath, data, 0o644); err != nil { //nolint:gosec // fuzz fixture path under t.TempDir()
+			t.Fatalf("write fuzz tar fixture: %v", err)
+		}
+		outDir := filepath.Join(dir, "out")
+		if err := os.Mkdir(outDir, 0o755); err != nil {
+			t.Fatalf("mkdir outDir: %v", err)
+		}
+
+		archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+		// Only "does not panic" is asserted: errors (corrupt archive,
+		// rejected paths, bomb detection) are all expected and valid
+		// outcomes for arbitrary mutated input.
+		_, _ = GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	})
 }
