@@ -7,7 +7,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/h2non/filetype v1.1.3
 	github.com/hobeone/par2engine v1.0.6
-	github.com/hobeone/rarengine v1.0.6
+	github.com/hobeone/rarengine v1.0.7
 	github.com/lmittmann/tint v1.1.3
 	github.com/mxschmitt/playwright-go v0.6100.0
 	github.com/pressly/goose/v3 v3.27.2
@@ -47,10 +47,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-// Local, unpublished rarengine changes (VerifyPassword/VerifyFilePassword,
-// see docs/superpowers/plans/2026-07-10-sabnzbd-rar-tar-improvements.md Task
-// 1). Not yet pushed to the rarengine remote or tagged -- replace with a real
-// `go get github.com/hobeone/rarengine@<version>` once that lands, with
-// explicit confirmation before doing so.
-replace github.com/hobeone/rarengine => ../rarengine
