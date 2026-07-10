@@ -333,6 +333,161 @@ func TestUnpackStage_TarDisabledSkips(t *testing.T) {
 	}
 }
 
+// TestUnpackStage_MixedTarAndRarArchives verifies that a job download dir
+// containing both a plain .tar and a RAR archive extracts both in a single
+// UnpackStage.Run pass, each dispatched to its correct engine (go_tar for
+// the tar, go_unrar for the RAR — proven via the per-engine OnOutput lines
+// each dispatcher emits, since job.OutputLines labels tar with the generic
+// "tar" archiveTypeName rather than "go_tar").
+func TestUnpackStage_MixedTarAndRarArchives(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
+	buildTestTar(t, dir, "archive.tar")
+
+	var outputs []string
+	job.OnOutput = func(_, line string) { outputs = append(outputs, line) }
+
+	s := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, false)
+	s.SetEnabled(true)
+	s.EnableTar = true
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if job.UnpackError {
+		t.Errorf("UnpackError = true; want false")
+	}
+
+	// RAR contents extracted.
+	for _, name := range []string{"file1.txt", "file2.txt"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("extracted RAR file %s not found: %v", name, err)
+		}
+	}
+	// tar contents extracted.
+	if _, err := os.Stat(filepath.Join(dir, "payload.txt")); err != nil {
+		t.Errorf("extracted tar file payload.txt not found: %v", err)
+	}
+
+	var sawGoUnrar, sawGoTar bool
+	for _, l := range outputs {
+		if strings.Contains(l, "go_unrar") {
+			sawGoUnrar = true
+		}
+		if strings.Contains(l, "go_tar") {
+			sawGoTar = true
+		}
+	}
+	if !sawGoUnrar {
+		t.Errorf("expected an OnOutput line mentioning go_unrar (RAR dispatch), got %v", outputs)
+	}
+	if !sawGoTar {
+		t.Errorf("expected an OnOutput line mentioning go_tar (tar dispatch), got %v", outputs)
+	}
+}
+
+// buildTraversalTar writes a tar archive containing one legitimate entry
+// ("safe.txt") alongside a path-traversal entry whose name attempts to
+// escape outDir via "../../../etc/passwd-pwned". GoTar's type/path-sanitize
+// logic (internal/unpack/go_tar.go) is expected to skip the traversal entry
+// entirely — it should never be written to disk at all, inside or outside
+// outDir — so the stage-level containment check
+// (fsutil.CheckContainment/cleanupContainmentViolation in stage_unpack.go)
+// never observes a violation to clean up.
+func buildTraversalTar(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	f, err := os.Create(path) //nolint:gosec // test fixture path under t.TempDir()
+	if err != nil {
+		t.Fatalf("create tar: %v", err)
+	}
+	tw := tar.NewWriter(f)
+	entries := []struct {
+		name    string
+		content []byte
+	}{
+		{"safe.txt", []byte("safe content")},
+		{"../../../etc/passwd-pwned", []byte("evil")},
+	}
+	for _, e := range entries {
+		hdr := &tar.Header{
+			Name:    e.name,
+			Mode:    0o644,
+			Size:    int64(len(e.content)),
+			ModTime: time.Now(),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write tar header %q: %v", e.name, err)
+		}
+		if _, err := tw.Write(e.content); err != nil {
+			t.Fatalf("write tar content %q: %v", e.name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close tar file: %v", err)
+	}
+	return path
+}
+
+// TestUnpackStage_TarTraversalDoesNotTripContainmentCleanup verifies that a
+// tar containing a path-traversal entry, processed through the full
+// UnpackStage.Run path, does not misfire the stage-level containment
+// cleanup against the legitimate sibling output extracted from the same
+// archive. GoTar already skips the traversal entry at the extractor level
+// (TestGoTar_PathTraversalRejected in internal/unpack/go_tar_test.go); this
+// test proves the extractor-level skip and the stage-level
+// cleanupContainmentViolation defense-in-depth layer are consistent with
+// each other rather than fighting over the same "violation" — the stage
+// must not see (and therefore must not clean up after) a containment
+// failure that never actually happened on disk.
+func TestUnpackStage_TarTraversalDoesNotTripContainmentCleanup(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	buildTraversalTar(t, dir, "traversal.tar")
+
+	var outputs []string
+	job.OnOutput = func(_, line string) { outputs = append(outputs, line) }
+
+	s := NewUnpackStageWith(unpack.Options{}, false)
+	s.SetEnabled(true)
+	s.EnableTar = true
+
+	if err := s.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The containment check must never trip: the traversal entry was
+	// skipped by GoTar itself, so nothing ever escaped outDir for the
+	// stage-level check to catch (and nothing for cleanupContainmentViolation
+	// to have to unwind).
+	if job.UnpackError {
+		t.Errorf("UnpackError = true; want false (no real containment violation occurred)")
+	}
+	for _, l := range outputs {
+		if strings.Contains(l, "containment") {
+			t.Errorf("unexpected containment-related output line (cleanup should never fire): %q", l)
+		}
+	}
+
+	// The legitimate sibling entry must survive intact — proving
+	// cleanupContainmentViolation was never invoked to delete it.
+	if _, err := os.Stat(filepath.Join(dir, "safe.txt")); err != nil {
+		t.Errorf("safe.txt not extracted (or was wrongly cleaned up): %v", err)
+	}
+
+	// The traversal entry must not have escaped anywhere outside dir.
+	escaped := filepath.Join(filepath.Dir(dir), "etc", "passwd-pwned")
+	if _, err := os.Stat(escaped); err == nil {
+		t.Errorf("path traversal entry escaped to %s", escaped)
+	}
+}
+
 // ---------- applyPermissions helper ----------
 
 // TestApplyPermissions_SetsFileModeOnFiles verifies that applyPermissions
