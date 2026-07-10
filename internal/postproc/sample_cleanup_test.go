@@ -237,6 +237,39 @@ func TestSampleCleanup_RemoveFailure(t *testing.T) {
 	}
 }
 
+// TestSampleCleanup_RestrictsToOwnedFiles simulates the upstream SABnzbd
+// bug (#3462, commit 5b3cf86f6): sample/proof cleanup used to delete any
+// matching file in the working directory regardless of job ownership. A
+// stray sample file absent from job.OwnedFiles must survive, while an
+// owned sample file is still removed.
+func TestSampleCleanup_RestrictsToOwnedFiles(t *testing.T) {
+	t.Parallel()
+	job := makeTestJob(t, "owned-restriction")
+
+	ownedPath := filepath.Join(job.DownloadDir, "release-sample.mkv")
+	strayPath := filepath.Join(job.DownloadDir, "other-sample.mkv")
+	touchFile(t, filepath.Join(job.DownloadDir, "release.mkv"))
+	touchFile(t, ownedPath)
+	touchFile(t, strayPath)
+
+	job.OwnedFiles = map[string]struct{}{
+		filepath.Join(job.DownloadDir, "release.mkv"): {},
+		ownedPath: {},
+	}
+
+	stage := NewSampleCleanupStage()
+	if err := stage.Run(context.Background(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if _, err := os.Stat(ownedPath); !os.IsNotExist(err) {
+		t.Errorf("expected owned sample %s to be deleted", ownedPath)
+	}
+	if _, err := os.Stat(strayPath); err != nil {
+		t.Errorf("expected unrelated file %s to survive, got %v", strayPath, err)
+	}
+}
+
 func TestSampleCleanup_ZipSlip_Symlink(t *testing.T) {
 	dlDir := t.TempDir()
 	outside := t.TempDir()

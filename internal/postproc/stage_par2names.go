@@ -45,6 +45,7 @@ func (r *RecoverPar2NamesStage) Run(ctx context.Context, job *Job) error {
 	} else {
 		logf(ctx, log, job, slog.LevelInfo, "Par2 renamed %d file(s)", len(renames))
 		for _, ren := range renames {
+			markRenamed(job, ren.From, ren.To)
 			from := filepath.Base(ren.From)
 			to := filepath.Base(ren.To)
 			if ren.TrueName != "" && to != ren.TrueName {

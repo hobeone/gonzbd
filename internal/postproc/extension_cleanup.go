@@ -117,6 +117,14 @@ func (s *ExtensionCleanupStage) Run(ctx context.Context, job *Job) error {
 		if _, consumed := job.ConsumedFiles[absPath]; consumed {
 			return nil
 		}
+		// Restrict deletion to files this job actually owns (upstream
+		// SABnzbd #3462). A nil OwnedFiles means "not tracked" and disables
+		// the restriction (see Job.OwnedFiles doc comment).
+		if job.OwnedFiles != nil {
+			if _, owned := job.OwnedFiles[absPath]; !owned {
+				return nil
+			}
+		}
 
 		if err := root.Remove(path); err != nil {
 			logf(ctx, log, job, slog.LevelWarn, "remove %s: %v", absPath, err)
