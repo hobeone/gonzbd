@@ -2,12 +2,16 @@ package rarheader
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hobeone/rarengine"
 )
 
 func TestIsRAR_RAR3Signature(t *testing.T) {
@@ -445,4 +449,153 @@ func TestIsRARReader(t *testing.T) {
 			t.Error("expected false for non-RAR signature")
 		}
 	})
+}
+
+func TestVerifyPassword_ContentEncrypted(t *testing.T) {
+	path := filepath.Join("..", "unpack", "testdata", "password_rar5.rar")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("fixture not present: %v", err)
+	}
+
+	t.Run("correct password", func(t *testing.T) {
+		verified, hasCheckValue, err := VerifyPassword(path, "testpass")
+		if err != nil {
+			t.Fatalf("VerifyPassword() unexpected error: %v", err)
+		}
+		if !hasCheckValue {
+			t.Fatalf("VerifyPassword() hasCheckValue = false, want true")
+		}
+		if !verified {
+			t.Errorf("VerifyPassword() verified = false, want true for correct password")
+		}
+	})
+
+	t.Run("wrong password", func(t *testing.T) {
+		verified, hasCheckValue, err := VerifyPassword(path, "definitely-wrong")
+		if err != nil {
+			t.Fatalf("VerifyPassword() unexpected error: %v", err)
+		}
+		if !hasCheckValue {
+			t.Fatalf("VerifyPassword() hasCheckValue = false, want true")
+		}
+		if verified {
+			t.Errorf("VerifyPassword() verified = true, want false for wrong password")
+		}
+	})
+}
+
+func TestVerifyPassword_HeaderEncrypted(t *testing.T) {
+	path := filepath.Join("..", "unpack", "testdata", "encrypted_header.rar")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("fixture not present: %v", err)
+	}
+
+	t.Run("correct password", func(t *testing.T) {
+		verified, hasCheckValue, err := VerifyPassword(path, "testpass")
+		if err != nil {
+			t.Fatalf("VerifyPassword() unexpected error: %v", err)
+		}
+		if !hasCheckValue {
+			t.Fatalf("VerifyPassword() hasCheckValue = false, want true")
+		}
+		if !verified {
+			t.Errorf("VerifyPassword() verified = false, want true for correct password")
+		}
+	})
+
+	t.Run("wrong password", func(t *testing.T) {
+		verified, hasCheckValue, err := VerifyPassword(path, "definitely-wrong")
+		if err != nil {
+			t.Fatalf("VerifyPassword() unexpected error: %v", err)
+		}
+		if !hasCheckValue {
+			t.Fatalf("VerifyPassword() hasCheckValue = false, want true")
+		}
+		if verified {
+			t.Errorf("VerifyPassword() verified = true, want false for wrong password")
+		}
+	})
+}
+
+func TestVerifyPassword_NotEncrypted(t *testing.T) {
+	path := filepath.Join("..", "unpack", "testdata", "single_rar5.rar")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("fixture not present: %v", err)
+	}
+
+	verified, hasCheckValue, err := VerifyPassword(path, "anything")
+	if err != nil {
+		t.Fatalf("VerifyPassword() unexpected error: %v", err)
+	}
+	if hasCheckValue {
+		t.Fatalf("VerifyPassword() hasCheckValue = true, want false for an unencrypted archive")
+	}
+	if verified {
+		t.Fatalf("VerifyPassword() verified = true, want false for an unencrypted archive")
+	}
+}
+
+func TestVerifyPassword_NotRAR5(t *testing.T) {
+	path := writeTemp(t, "test.rar", rar3Sig)
+	_, _, err := VerifyPassword(path, "anything")
+	if err != nil {
+		t.Fatalf("VerifyPassword() unexpected error for non-RAR5 archive: %v", err)
+	}
+}
+
+func TestVerifyPassword_FileNotFound(t *testing.T) {
+	_, _, err := VerifyPassword("/nonexistent/path/to/file.rar", "anything")
+	if err == nil {
+		t.Error("VerifyPassword() returned nil error for nonexistent file")
+	}
+}
+
+// buildRAR5Block constructs a raw, CRC-valid RAR5 block header (as read by
+// rarengine.ReadBlockHeader) of the given type/flags, with a HasData
+// payload of dataSize bytes when flags carries HeaderFlagHasData.
+func buildRAR5Block(headerType, flags, dataSize uint64) []byte {
+	payload := append([]byte{}, rarengine.EncodeVint(headerType)...)
+	payload = append(payload, rarengine.EncodeVint(flags)...)
+	if flags&rarengine.HeaderFlagHasData > 0 {
+		payload = append(payload, rarengine.EncodeVint(dataSize)...)
+	}
+	sizeV := rarengine.EncodeVint(uint64(len(payload)))
+	buf := append(append([]byte{}, sizeV...), payload...)
+
+	crc := crc32.ChecksumIEEE(buf)
+	var out bytes.Buffer
+	var crcBuf [4]byte
+	binary.LittleEndian.PutUint32(crcBuf[:], crc)
+	out.Write(crcBuf[:])
+	out.Write(buf)
+	return out.Bytes()
+}
+
+// TestVerifyPasswordFromHeaders_SkipsUnknownBlockData proves
+// verifyPasswordFromHeaders's default case correctly skips over the data
+// payload of a block type it doesn't otherwise special-case (anything
+// other than HEAD_CRYPT/HEAD_FILE/HEAD_SERVICE/HEAD_ENDARC that carries a
+// HasData payload) before continuing to scan for the real encryption/file
+// information -- exercising the DataSize-skip path that real fixture
+// archives never happen to hit (their archive headers carry no data).
+func TestVerifyPasswordFromHeaders_SkipsUnknownBlockData(t *testing.T) {
+	const arbitraryHeaderType = 6 // not archive/file/service/encryption/end
+	var buf bytes.Buffer
+	buf.Write(buildRAR5Block(arbitraryHeaderType, rarengine.HeaderFlagHasData, 4))
+	buf.Write([]byte{0xAA, 0xBB, 0xCC, 0xDD}) // the 4 bytes of skipped data
+	buf.Write(buildRAR5Block(rarengine.HeaderTypeEnd, 0, 0))
+
+	verified, hasCheckValue, err := verifyPasswordFromHeaders(&buf, "irrelevant")
+	if err != nil {
+		t.Fatalf("verifyPasswordFromHeaders() unexpected error: %v", err)
+	}
+	if hasCheckValue {
+		t.Errorf("hasCheckValue = true, want false (no encryption in this synthetic stream)")
+	}
+	if verified {
+		t.Errorf("verified = true, want false")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected the whole synthetic stream to be consumed, %d bytes remain", buf.Len())
+	}
 }

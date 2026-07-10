@@ -154,6 +154,90 @@ func InspectRar5(p string) (info Info, err error) {
 	return info, err
 }
 
+// VerifyPassword opens the RAR5 archive at mainFilePath and checks whether
+// password matches its embedded password check value, without extracting
+// or decompressing any file content. It inspects, in order:
+//
+//   - If the archive's own headers are encrypted (HEAD_CRYPT), it verifies
+//     against the archive-wide check value.
+//   - Otherwise, if the first file entry is content-encrypted, it verifies
+//     against that file's per-file check value.
+//   - If neither is present -- the archive isn't encrypted at all, or an
+//     older archive carries no check value -- hasCheckValue is false and
+//     verified is false: there is nothing to definitively check, and
+//     callers must fall back to a real extraction attempt.
+//
+// Only RAR5 is supported (verified=false, hasCheckValue=false, err=nil for
+// RAR3/4 archives) -- RAR3's SHA1-based check is out of scope for now.
+func VerifyPassword(mainFilePath, password string) (verified, hasCheckValue bool, err error) {
+	ver, err := readMagic(mainFilePath)
+	if err != nil {
+		return false, false, err
+	}
+	if ver != 5 {
+		return false, false, nil
+	}
+
+	//nolint:gosec // mainFilePath is trusted input from internal caller
+	f, err := os.Open(mainFilePath)
+	if err != nil {
+		return false, false, fmt.Errorf("rarheader: open %s: %w", mainFilePath, err)
+	}
+	defer func() { _ = f.Close() }() // cleanup error in defer
+
+	if _, err := io.CopyN(io.Discard, f, int64(len(rar5Sig))); err != nil {
+		return false, false, fmt.Errorf("rarheader: skip signature: %w", err)
+	}
+
+	return verifyPasswordFromHeaders(f, password)
+}
+
+// verifyPasswordFromHeaders scans RAR5 block headers from r (positioned
+// just past the magic signature) for either an archive-level HEAD_CRYPT
+// header or the first file entry, returning the corresponding check-value
+// verification result. r is a plain io.Reader (no seeking) so block payload
+// data that isn't needed is skipped via DataSize.
+func verifyPasswordFromHeaders(r io.Reader, password string) (verified, hasCheckValue bool, err error) {
+	for {
+		h, err := rarengine.ReadBlockHeader(r)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return false, false, nil
+			}
+			return false, false, fmt.Errorf("rarheader: read block header: %w", err)
+		}
+
+		switch h.Type {
+		case rarengine.HeaderTypeEncryption:
+			ch, err := rarengine.ParseCryptHeader(h)
+			if err != nil {
+				return false, false, fmt.Errorf("rarheader: parse crypt header: %w", err)
+			}
+			return rarengine.VerifyPassword(ch, password)
+
+		case rarengine.HeaderTypeFile, rarengine.HeaderTypeService:
+			fh, err := rarengine.ParseFileHeader(h)
+			if err != nil {
+				return false, false, fmt.Errorf("rarheader: parse file header: %w", err)
+			}
+			if !fh.Encrypted {
+				return false, false, nil
+			}
+			return rarengine.VerifyFilePassword(fh, password)
+
+		case rarengine.HeaderTypeEnd:
+			return false, false, nil
+
+		default:
+			if h.DataSize > 0 {
+				if _, err := io.CopyN(io.Discard, r, h.DataSize); err != nil {
+					return false, false, fmt.Errorf("rarheader: skip block data: %w", err)
+				}
+			}
+		}
+	}
+}
+
 func inspectViaUnrar(p string, ver int) (Info, error) {
 	var info Info
 	info.Version = ver
