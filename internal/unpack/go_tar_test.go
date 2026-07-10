@@ -312,7 +312,7 @@ func TestGoTar_FifoEntrySkipped(t *testing.T) {
 
 // --- (c5) bare absolute path entry is defanged, not literally rejected ---
 
-func TestGoTar_AbsolutePathEntryRejected(t *testing.T) {
+func TestGoTar_AbsolutePathEntryDefanged(t *testing.T) {
 	t.Parallel()
 
 	srcDir := t.TempDir()
