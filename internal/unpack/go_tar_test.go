@@ -24,6 +24,8 @@ type tarEntry struct {
 	content  []byte
 	linkname string
 	modTime  time.Time
+	devmajor int64
+	devminor int64
 }
 
 // buildTar writes entries into a new .tar file under dir and returns its
@@ -63,6 +65,8 @@ func buildTar(t *testing.T, dir, name string, entries []tarEntry) string {
 			Size:     size,
 			ModTime:  modTime,
 			Linkname: e.linkname,
+			Devmajor: e.devmajor,
+			Devminor: e.devminor,
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			t.Fatalf("write header %s: %v", e.name, err)
@@ -185,6 +189,110 @@ func TestGoTar_SymlinkEntrySkipped(t *testing.T) {
 
 	if _, statErr := os.Lstat(filepath.Join(outDir, "evil-link")); statErr == nil {
 		t.Errorf("symlink entry was created on disk, should have been skipped")
+	}
+	if _, statErr := os.Stat(filepath.Join(outDir, "safe.txt")); statErr != nil {
+		t.Errorf("safe.txt not extracted: %v", statErr)
+	}
+}
+
+// --- (c2) hardlink entry skipped ---
+
+func TestGoTar_HardlinkEntrySkipped(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+
+	tarPath := buildTar(t, srcDir, "hardlink.tar", []tarEntry{
+		{name: "safe.txt", content: []byte("safe content")},
+		// Hardlinks reference an already-seen tar member by name (unlike
+		// symlinks, which can point anywhere on the filesystem).
+		{name: "hard-link-to-safe", typeflag: tar.TypeLink, linkname: "safe.txt"},
+	})
+
+	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil || res.Err != nil {
+		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	}
+
+	if _, statErr := os.Lstat(filepath.Join(outDir, "hard-link-to-safe")); statErr == nil {
+		t.Errorf("hardlink entry was created on disk, should have been skipped")
+	} else if !os.IsNotExist(statErr) {
+		t.Errorf("unexpected error stating hardlink entry path: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(outDir, "safe.txt")); statErr != nil {
+		t.Errorf("safe.txt not extracted: %v", statErr)
+	}
+}
+
+// --- (c3) device file entries skipped ---
+
+func TestGoTar_DeviceFileEntriesSkipped(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		typeflag byte
+	}{
+		{name: "char device (TypeChar)", typeflag: tar.TypeChar},
+		{name: "block device (TypeBlock)", typeflag: tar.TypeBlock},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srcDir := t.TempDir()
+			outDir := t.TempDir()
+
+			tarPath := buildTar(t, srcDir, "device.tar", []tarEntry{
+				// Devmajor/Devminor 1/5 mirrors /dev/zero-like values.
+				{name: "evil-device", typeflag: tc.typeflag, devmajor: 1, devminor: 5},
+				{name: "safe.txt", content: []byte("safe content")},
+			})
+
+			archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+			res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+			if err != nil || res.Err != nil {
+				t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+			}
+
+			if _, statErr := os.Lstat(filepath.Join(outDir, "evil-device")); statErr == nil {
+				t.Errorf("device entry was created on disk, should have been skipped")
+			} else if !os.IsNotExist(statErr) {
+				t.Errorf("unexpected error stating device entry path: %v", statErr)
+			}
+			if _, statErr := os.Stat(filepath.Join(outDir, "safe.txt")); statErr != nil {
+				t.Errorf("safe.txt not extracted: %v", statErr)
+			}
+		})
+	}
+}
+
+// --- (c4) FIFO entry skipped ---
+
+func TestGoTar_FifoEntrySkipped(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+
+	tarPath := buildTar(t, srcDir, "fifo.tar", []tarEntry{
+		{name: "evil-fifo", typeflag: tar.TypeFifo},
+		{name: "safe.txt", content: []byte("safe content")},
+	})
+
+	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil || res.Err != nil {
+		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	}
+
+	if _, statErr := os.Lstat(filepath.Join(outDir, "evil-fifo")); statErr == nil {
+		t.Errorf("FIFO entry was created on disk, should have been skipped")
+	} else if !os.IsNotExist(statErr) {
+		t.Errorf("unexpected error stating FIFO entry path: %v", statErr)
 	}
 	if _, statErr := os.Stat(filepath.Join(outDir, "safe.txt")); statErr != nil {
 		t.Errorf("safe.txt not extracted: %v", statErr)
