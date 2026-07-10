@@ -44,9 +44,10 @@ func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDi
 	app.SetDeobfuscate(pp.DeobfuscateFilenames)
 	app.SetIgnoreSamples(pp.IgnoreSamples)
 	app.SetScriptDir(scriptDir)
-	app.SetUnpackEnabled(pp.EnableUnrar || pp.Enable7zip || pp.EnableFileJoin)
+	app.SetUnpackEnabled(pp.EnableUnrar || pp.Enable7zip || pp.EnableFileJoin || pp.EnableTar)
 	app.SetPasswordFile(pp.PasswordFile)
 	app.SetEnableFileJoin(pp.EnableFileJoin)
+	app.SetEnableTar(pp.EnableTar)
 	app.SetEnableRecursive(pp.EnableRecursive)
 	app.SetDirectUnpack(pp.DirectUnpack)
 	app.SetDirectUnpackThreads(pp.DirectUnpackThreads)
@@ -322,6 +323,16 @@ func (app *Application) SetEnableFileJoin(v bool) {
 	})
 	if app.unpackStage != nil {
 		app.unpackStage.SetEnableFileJoin(v)
+	}
+}
+
+// SetEnableTar enables or disables plain .tar extraction at runtime.
+func (app *Application) SetEnableTar(v bool) {
+	app.config.With(func(c *config.Config) {
+		c.PostProc.EnableTar = v
+	})
+	if app.unpackStage != nil {
+		app.unpackStage.SetEnableTar(v)
 	}
 }
 

@@ -97,7 +97,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	var stages []postproc.Stage
 
 	var enableQuickCheck, par2Turbo, useGoPar2, goPar2Fallback, enableRarCleanup bool
-	var enableFileJoin, enableRecursive, enableUnrar, enable7zip, ignoreSamples bool
+	var enableFileJoin, enableTar, enableRecursive, enableUnrar, enable7zip, ignoreSamples bool
 	var enableParCleanup, deobfuscateFilenames, folderRename, scriptCanFail bool
 	var par2Command, unrarCommand, sevenzCommand, permissions, passwordFile string
 	var scriptDir, completeDir, apiKey, listenAddr string
@@ -113,6 +113,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 		goPar2Fallback = c.PostProc.GoPar2Fallback
 		enableRarCleanup = c.PostProc.EnableRarCleanup
 		enableFileJoin = c.PostProc.EnableFileJoin
+		enableTar = c.PostProc.EnableTar
 		enableRecursive = c.PostProc.EnableRecursive
 		enableUnrar = c.PostProc.EnableUnrar
 		enable7zip = c.PostProc.Enable7zip
@@ -211,9 +212,10 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	unpackStage.Permissions = permissions
 	unpackStage.PasswordFile = passwordFile
 	unpackStage.EnableFileJoin = enableFileJoin
+	unpackStage.EnableTar = enableTar
 	unpackStage.EnableRecursive = enableRecursive
 	unpackStage.Log = ppLog
-	unpackStage.SetEnabled(enableUnrar || enable7zip || enableFileJoin)
+	unpackStage.SetEnabled(enableUnrar || enable7zip || enableFileJoin || enableTar)
 	stages = append(stages, unpackStage)
 
 	// Sample cleanup runs after unpack so it sees both raw and extracted files.
