@@ -1234,3 +1234,160 @@ func TestGoTar_IgnoreUnrarDatesSkipsTimestampRestore(t *testing.T) {
 		t.Errorf("mtime = %v, want recent extraction-time mtime (after %v)", fi.ModTime(), before)
 	}
 }
+
+// --- structural edge cases (6c) ---
+
+// TestGoTar_EmptyArchive verifies that a tar file containing zero entries --
+// just the two 512-byte zero blocks tar.NewWriter's Close() always writes to
+// mark end-of-archive -- extracts successfully with no files and no error.
+func TestGoTar_EmptyArchive(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+
+	tarPath := buildTar(t, srcDir, "empty.tar", nil)
+
+	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil || res.Err != nil {
+		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	}
+	if len(res.ExtractedFiles) != 0 {
+		t.Errorf("ExtractedFiles = %v, want empty", res.ExtractedFiles)
+	}
+}
+
+// TestGoTar_DirectoryOnlyArchive verifies an archive containing only
+// tar.TypeDir entries (no regular files) creates the directories on disk.
+// snapshotDir/diffSnapshot (used to populate res.ExtractedFiles) only track
+// regular files -- see snapshot.go's snapshotDir, which explicitly skips
+// d.IsDir() -- matching go_sevenzip.go/go_unrar.go's convention of listing
+// only regular files in ExtractedFiles, never directories. So a directory-only
+// archive must report zero ExtractedFiles despite successfully creating
+// directories.
+func TestGoTar_DirectoryOnlyArchive(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+
+	tarPath := buildTar(t, srcDir, "dirsonly.tar", []tarEntry{
+		{name: "top/", typeflag: tar.TypeDir},
+		{name: "top/nested/", typeflag: tar.TypeDir},
+	})
+
+	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil || res.Err != nil {
+		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	}
+
+	for _, dir := range []string{"top", "top/nested"} {
+		fi, statErr := os.Stat(filepath.Join(outDir, dir))
+		if statErr != nil {
+			t.Fatalf("stat %s: %v", dir, statErr)
+		}
+		if !fi.IsDir() {
+			t.Errorf("%s is not a directory", dir)
+		}
+	}
+
+	// Matches the codebase convention (snapshotDir skips directories): no
+	// regular files were created, so ExtractedFiles must be empty.
+	if len(res.ExtractedFiles) != 0 {
+		t.Errorf("ExtractedFiles = %v, want empty (directories aren't tracked)", res.ExtractedFiles)
+	}
+}
+
+// TestGoTar_PAXLongNameEntry verifies a filename long enough that
+// archive/tar's writer must emit a PAX extended header (a >100-byte final
+// path component can't fit in ustar's 100-byte Name field, nor be split into
+// the 155-byte Name+Prefix scheme since the overflow is entirely within one
+// component) still resolves to its full, correct nested path and passes
+// through SanitizeArchivePath and extraction normally.
+//
+// Verified empirically against this Go toolchain (go1.26.5): tar.Writer
+// auto-upgrades hdr.Format to PAX when needed -- there is no need to set
+// hdr.Format = tar.FormatPAX explicitly, and tar.Reader.Next() returns the
+// full resolved long name (not a truncated legacy-field value) with
+// h.Format == tar.FormatPAX.
+func TestGoTar_PAXLongNameEntry(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+
+	// The final path component alone is 154 bytes, well over ustar's
+	// 100-byte Name field limit, forcing archive/tar's writer to use a PAX
+	// extended header regardless of the short "subdir/" prefix.
+	longFileName := strings.Repeat("f", 150) + ".txt"
+	longName := "subdir/" + longFileName
+	if len(longName) <= 100 {
+		t.Fatalf("test setup invalid: longName (%d bytes) must exceed the legacy 100-byte Name field", len(longName))
+	}
+
+	tarPath := buildTar(t, srcDir, "paxlongname.tar", []tarEntry{
+		{name: longName, content: []byte("payload")},
+	})
+
+	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil || res.Err != nil {
+		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	}
+
+	data, readErr := os.ReadFile(filepath.Join(outDir, "subdir", longFileName))
+	if readErr != nil {
+		t.Fatalf("read long-named file at resolved nested path: %v", readErr)
+	}
+	if string(data) != "payload" {
+		t.Errorf("content = %q, want %q", data, "payload")
+	}
+	if len(res.ExtractedFiles) != 1 {
+		t.Errorf("ExtractedFiles = %v, want exactly 1 entry", res.ExtractedFiles)
+	}
+}
+
+// TestGoTar_NonUTF8Filename pins down this codebase's existing behavior for
+// an entry name containing invalid UTF-8 byte sequences: SanitizeArchivePath
+// (go_unrar.go) only rejects null bytes and ".." components -- it performs
+// no UTF-8 validation -- so an invalid-UTF-8 name that contains neither is
+// neither rejected nor mangled. archive/tar itself round-trips the raw bytes
+// unchanged (verified empirically: Writer/Reader preserve the exact byte
+// sequence, auto-selecting PAX format for the header), and Linux filesystems
+// accept any byte sequence in a filename except NUL and '/'. The net result,
+// which this test documents rather than mandates, is that extraction
+// succeeds and the file lands on disk under its literal (invalid-UTF-8) name.
+func TestGoTar_NonUTF8Filename(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+
+	// \xff\xfe is not valid UTF-8 in this position, but contains no NUL
+	// byte and no ".." component, so SanitizeArchivePath's two checks
+	// (null-byte rejection, ".." rejection) don't fire on it.
+	badName := "bad-\xff\xfe-name.txt"
+
+	tarPath := buildTar(t, srcDir, "nonutf8.tar", []tarEntry{
+		{name: badName, content: []byte("payload")},
+	})
+
+	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+	res, err := GoTar(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil || res.Err != nil {
+		t.Fatalf("GoTar failed: err=%v res.Err=%v", err, res.Err)
+	}
+
+	data, readErr := os.ReadFile(filepath.Join(outDir, badName))
+	if readErr != nil {
+		t.Fatalf("read invalid-UTF-8-named file: %v", readErr)
+	}
+	if string(data) != "payload" {
+		t.Errorf("content = %q, want %q", data, "payload")
+	}
+	if len(res.ExtractedFiles) != 1 {
+		t.Errorf("ExtractedFiles = %v, want exactly 1 entry", res.ExtractedFiles)
+	}
+}
