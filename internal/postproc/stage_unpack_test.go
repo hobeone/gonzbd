@@ -349,8 +349,7 @@ func TestUnpackStage_MixedTarAndRarArchives(t *testing.T) {
 	var outputs []string
 	job.OnOutput = func(_, line string) { outputs = append(outputs, line) }
 
-	s := NewUnpackStageWith(unpack.Options{UseGoRAR: true}, false)
-	s.SetEnabled(true)
+	s := enabledUnpackStage()
 	s.EnableTar = true
 
 	if err := s.Run(t.Context(), job); err != nil {
@@ -436,23 +435,33 @@ func buildTraversalTar(t *testing.T, dir, name string) string {
 
 // TestUnpackStage_TarTraversalDoesNotTripContainmentCleanup verifies that a
 // tar containing a path-traversal entry, processed through the full
-// UnpackStage.Run path, does not misfire the stage-level containment
-// cleanup against the legitimate sibling output extracted from the same
-// archive. GoTar already skips the traversal entry at the extractor level
-// (TestGoTar_PathTraversalRejected in internal/unpack/go_tar_test.go); this
-// test proves the extractor-level skip and the stage-level
-// cleanupContainmentViolation defense-in-depth layer are consistent with
-// each other rather than fighting over the same "violation" — the stage
-// must not see (and therefore must not clean up after) a containment
-// failure that never actually happened on disk.
+// UnpackStage.Run path, does NOT spuriously trip fsutil.CheckContainment
+// (stage_unpack.go's post-extraction containment check) nor lose or
+// corrupt the legitimate sibling output extracted from the same archive.
+//
+// This test does NOT and cannot exercise cleanupContainmentViolation's body
+// (stage_unpack.go ~781): that function only runs when CheckContainment
+// returns an error, and CheckContainment detects violations exclusively via
+// filepath.EvalSymlinks — i.e. symlink escapes, not path-traversal-by-name.
+// GoTar's SanitizeArchivePath (internal/unpack/go_tar.go) already rejects
+// the traversal entry before any write occurs, so nothing is ever written
+// outside outDir and CheckContainment never has anything to catch. GoTar
+// also unconditionally skips all symlink/hardlink/device/FIFO entries (a
+// deliberate design choice — see the tar hardening plan), so there is no
+// tar-only way to construct a scenario that reaches
+// cleanupContainmentViolation's body; that would require a genuine
+// symlink-escape path through a different extractor (e.g. RAR/7z), which is
+// out of scope here.
+//
+// What this test DOES prove: the extractor-level skip and the stage-level
+// containment check are consistent — neither double-flags nor conflicts —
+// and no violation is spuriously raised for a threat GoTar already fully
+// neutralized before any write took place.
 func TestUnpackStage_TarTraversalDoesNotTripContainmentCleanup(t *testing.T) {
 	t.Parallel()
 
 	job, dir := stageJob(t)
 	buildTraversalTar(t, dir, "traversal.tar")
-
-	var outputs []string
-	job.OnOutput = func(_, line string) { outputs = append(outputs, line) }
 
 	s := NewUnpackStageWith(unpack.Options{}, false)
 	s.SetEnabled(true)
@@ -464,25 +473,22 @@ func TestUnpackStage_TarTraversalDoesNotTripContainmentCleanup(t *testing.T) {
 
 	// The containment check must never trip: the traversal entry was
 	// skipped by GoTar itself, so nothing ever escaped outDir for the
-	// stage-level check to catch (and nothing for cleanupContainmentViolation
-	// to have to unwind).
+	// stage-level check to catch.
 	if job.UnpackError {
 		t.Errorf("UnpackError = true; want false (no real containment violation occurred)")
 	}
-	for _, l := range outputs {
-		if strings.Contains(l, "containment") {
-			t.Errorf("unexpected containment-related output line (cleanup should never fire): %q", l)
-		}
-	}
 
-	// The legitimate sibling entry must survive intact — proving
-	// cleanupContainmentViolation was never invoked to delete it.
+	// The legitimate sibling entry must survive intact — proving no
+	// spurious containment-driven cleanup ran against the extraction.
 	if _, err := os.Stat(filepath.Join(dir, "safe.txt")); err != nil {
 		t.Errorf("safe.txt not extracted (or was wrongly cleaned up): %v", err)
 	}
 
-	// The traversal entry must not have escaped anywhere outside dir.
-	escaped := filepath.Join(filepath.Dir(dir), "etc", "passwd-pwned")
+	// The traversal entry must not have escaped anywhere outside dir. The
+	// archive entry name is "../../../etc/passwd-pwned" (three levels up
+	// from outDir per filepath.Join semantics), so that is the path a
+	// regression in SanitizeArchivePath would actually produce on disk.
+	escaped := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(dir))), "etc", "passwd-pwned")
 	if _, err := os.Stat(escaped); err == nil {
 		t.Errorf("path traversal entry escaped to %s", escaped)
 	}
