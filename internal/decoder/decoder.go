@@ -426,8 +426,8 @@ func parseKeyValues(line []byte, fn func(k, v string)) {
 
 		// The "name" field runs to end-of-line (may contain spaces).
 		if key == "name" {
-			// Strip trailing \r if present.
-			val := bytes.TrimRight(rest, "\r\n")
+			// Strip trailing whitespace and null bytes per sabctools commit bc24612.
+			val := bytes.TrimRight(rest, " \t\r\n\x00")
 			fn(key, latin1ToUTF8(val))
 			break
 		}
