@@ -200,6 +200,14 @@ postproc:
   # Matches SABnzbd's cfg.process_unpacked_par2(). Default true.
   process_unpacked_par2: true
 
+  # Attempt to recover a fully obfuscated RAR5 volume set (no filename
+  # numbering clue at all, and no PAR2 protection covering the volumes)
+  # by reading volume sequencing directly from each file's RAR5 header,
+  # then renaming to canonical part-numbered names. A no-op whenever
+  # normal filename-based RAR detection already finds something, so
+  # safe to leave enabled. Default true.
+  enable_rar_volume_recovery: true
+
   # Path to the par2 binary. Can be a bare name (resolved via PATH)
   # or an absolute path. Default: "par2".
   par2_command: par2
