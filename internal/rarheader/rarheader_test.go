@@ -550,6 +550,134 @@ func TestVerifyPassword_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestRecoverVolumeExtension_MultiVolumeRAR5(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		file          string
+		wantVolumeIdx int
+		wantMultiVol  bool
+	}{
+		{"first volume, no explicit flag", "../unpack/testdata/multi_new.part01.rar", 0, true},
+		{"second volume", "../unpack/testdata/multi_new.part02.rar", 1, true},
+		{"tenth volume", "../unpack/testdata/multi_new.part10.rar", 9, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			idx, multiVol, err := RecoverVolumeExtension(tt.file)
+			if err != nil {
+				t.Fatalf("RecoverVolumeExtension(%s): %v", tt.file, err)
+			}
+			if idx != tt.wantVolumeIdx {
+				t.Errorf("volumeIndex = %d; want %d", idx, tt.wantVolumeIdx)
+			}
+			if multiVol != tt.wantMultiVol {
+				t.Errorf("multiVolume = %v; want %v", multiVol, tt.wantMultiVol)
+			}
+		})
+	}
+}
+
+func TestRecoverVolumeExtension_NotRAR(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	p := dir + "/not-a-rar.txt"
+	if err := os.WriteFile(p, []byte("plain text, not a RAR archive"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, err := RecoverVolumeExtension(p)
+	if !errors.Is(err, ErrNotRAR) {
+		t.Errorf("err = %v; want ErrNotRAR", err)
+	}
+}
+
+func TestRecoverVolumeExtension_RAR3ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	// encrypted_header.rar in testdata is RAR5; use a RAR3 fixture if one
+	// exists in internal/unpack/testdata, otherwise construct a minimal
+	// RAR3-signature-only file (RAR3 support is explicitly out of scope --
+	// this test only needs to prove the function doesn't panic or silently
+	// return a wrong answer for RAR3 input, not exercise real RAR3 parsing).
+	dir := t.TempDir()
+	p := dir + "/rar3.rar"
+	if err := os.WriteFile(p, rar3Sig, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, err := RecoverVolumeExtension(p)
+	if err == nil {
+		t.Error("RecoverVolumeExtension on RAR3 signature: expected an error (RAR3 unsupported), got nil")
+	}
+}
+
+// buildArchiveHeaderBlock constructs a raw, CRC-valid RAR5 main archive
+// header block (HeaderTypeArchive) carrying the given archive-level flags
+// and, when hasVolNum is true, an explicit volume-number field. Real RAR5
+// archives never emit an explicit VolumeNumber of exactly 0 (the first
+// volume always omits the flag entirely, relying on rarengine's -1
+// sentinel; the second volume's explicit number is already 1) so this
+// synthetic construction is the only way to exercise
+// RecoverVolumeExtension's "< 0" boundary against a genuine VolumeNumber==0
+// input and kill the CONDITIONALS_BOUNDARY mutant on that comparison.
+func buildArchiveHeaderBlock(archiveFlags uint64, hasVolNum bool, volNum uint64) []byte {
+	archivePayload := rarengine.EncodeVint(archiveFlags)
+	if hasVolNum {
+		archivePayload = append(archivePayload, rarengine.EncodeVint(volNum)...)
+	}
+
+	const blockFlags = 0 // no HasExtra, no HasData
+	payload := append([]byte{}, rarengine.EncodeVint(rarengine.HeaderTypeArchive)...)
+	payload = append(payload, rarengine.EncodeVint(blockFlags)...)
+	payload = append(payload, archivePayload...)
+
+	sizeV := rarengine.EncodeVint(uint64(len(payload)))
+	buf := append(append([]byte{}, sizeV...), payload...)
+
+	crc := crc32.ChecksumIEEE(buf)
+	var out bytes.Buffer
+	var crcBuf [4]byte
+	binary.LittleEndian.PutUint32(crcBuf[:], crc)
+	out.Write(crcBuf[:])
+	out.Write(buf)
+	return out.Bytes()
+}
+
+// TestRecoverVolumeExtension_ExplicitVolumeNumberZero proves the "first
+// volume" normalization in RecoverVolumeExtension is keyed specifically on
+// rarengine's -1 sentinel (no explicit flag), not on "volume number <= 0".
+// A synthetic archive header with ArcFlagVolNum set and an explicit
+// VolumeNumber of 0 must be returned as volumeIndex 0 via the ah.VolumeNumber
+// return path, not misclassified by a boundary error.
+func TestRecoverVolumeExtension_ExplicitVolumeNumberZero(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	buf.Write(rar5Sig)
+	buf.Write(buildArchiveHeaderBlock(rarengine.ArcFlagMultiVol|rarengine.ArcFlagVolNum, true, 0))
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "synthetic.rar")
+	if err := os.WriteFile(p, buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	idx, multiVol, err := RecoverVolumeExtension(p)
+	if err != nil {
+		t.Fatalf("RecoverVolumeExtension(%s): %v", p, err)
+	}
+	if !multiVol {
+		t.Errorf("multiVolume = false; want true")
+	}
+	if idx != 0 {
+		t.Errorf("volumeIndex = %d; want 0 (explicit VolumeNumber==0)", idx)
+	}
+}
+
 // buildRAR5Block constructs a raw, CRC-valid RAR5 block header (as read by
 // rarengine.ReadBlockHeader) of the given type/flags, with a HasData
 // payload of dataSize bytes when flags carries HeaderFlagHasData.

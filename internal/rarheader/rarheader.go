@@ -238,6 +238,64 @@ func verifyPasswordFromHeaders(r io.Reader, password string) (verified, hasCheck
 	}
 }
 
+// RecoverVolumeExtension opens the RAR5 archive at path and reads its main
+// archive header to recover volume sequencing information, without
+// decompressing any file content. It is used to reconstruct a canonical
+// filename (e.g. "name.part003.rar") for a RAR volume whose on-disk name
+// carries no numbering clue at all.
+//
+// volumeIndex is 0-indexed: the first volume in a set has no explicit
+// volume-number flag in the RAR5 format and is normalized to 0 here; the
+// second volume is 1, the third is 2, and so on. multiVolume is false for a
+// single, non-split archive, in which case volumeIndex is always 0.
+//
+// Only RAR5 is supported -- RAR3 has no equivalent field in its main
+// archive header (the volume number lives in the RAR3 end-of-archive block,
+// which this package does not parse). Returns ErrNotRAR if path is not a
+// valid RAR archive at all, and a non-nil error (not ErrNotRAR) for a
+// recognized RAR3 archive, since volume recovery cannot be performed for it.
+func RecoverVolumeExtension(p string) (volumeIndex int, multiVolume bool, err error) {
+	ver, err := readMagic(p)
+	if err != nil {
+		return 0, false, err
+	}
+	if ver != 5 {
+		return 0, false, fmt.Errorf("rarheader: RAR%d volume recovery not supported (RAR5 only)", ver)
+	}
+
+	//nolint:gosec // p is trusted input from internal caller
+	f, err := os.Open(p)
+	if err != nil {
+		return 0, false, fmt.Errorf("rarheader: open %s: %w", p, err)
+	}
+	defer func() { _ = f.Close() }() // cleanup error in defer
+
+	if _, err := io.CopyN(io.Discard, f, int64(len(rar5Sig))); err != nil {
+		return 0, false, fmt.Errorf("rarheader: skip signature: %w", err)
+	}
+
+	h, err := rarengine.ReadBlockHeader(f)
+	if err != nil {
+		return 0, false, fmt.Errorf("rarheader: read block header: %w", err)
+	}
+	if h.Type != rarengine.HeaderTypeArchive {
+		return 0, false, fmt.Errorf("rarheader: expected archive header block, got type %d", h.Type)
+	}
+
+	ah, err := rarengine.ParseArchiveHeader(h)
+	if err != nil {
+		return 0, false, fmt.Errorf("rarheader: parse archive header: %w", err)
+	}
+
+	if !ah.MultiVolume {
+		return 0, false, nil
+	}
+	if ah.VolumeNumber < 0 {
+		return 0, true, nil // first volume: RAR5 omits the explicit flag
+	}
+	return ah.VolumeNumber, true, nil
+}
+
 func inspectViaUnrar(p string, ver int) (Info, error) {
 	var info Info
 	info.Version = ver
