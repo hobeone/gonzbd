@@ -24,8 +24,8 @@ func emptyProbe() binaryProbe {
 
 // TestBuildStages_StageOrder verifies the documented pipeline order:
 //
-//	quickcheck → repair → unpack → sample → par2names → par2cleanup
-//	→ deobfuscate → extcleanup → finalize → cleanup → script
+//	quickcheck → repair → rarvolrecovery → unpack → sample → par2names →
+//	par2cleanup → deobfuscate → extcleanup → finalize → cleanup → script
 //
 // This is the highest-value assertion for stages.go: a silent reorder would
 // cause post-processing failures (e.g. cleanup running before rename).
@@ -45,6 +45,7 @@ func TestBuildStages_StageOrder(t *testing.T) {
 	checks := []stageCheck{
 		{"QuickCheckStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.QuickCheckStage); return ok }},
 		{"RepairStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.RepairStage); return ok }},
+		{"RarVolumeRecoveryStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.RarVolumeRecoveryStage); return ok }},
 		{"UnpackStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.UnpackStage); return ok }},
 		{"SampleCleanupStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.SampleCleanupStage); return ok }},
 		{"RecoverPar2NamesStage", func(s postproc.Stage) bool { _, ok := s.(*postproc.RecoverPar2NamesStage); return ok }},
@@ -85,23 +86,23 @@ func TestBuildStages_PointersSameAsSlice(t *testing.T) {
 	if built.Stages[1] != built.Repair {
 		t.Error("Repair pointer != stages[1]")
 	}
-	if built.Stages[2] != built.Unpack {
-		t.Error("Unpack pointer != stages[2]")
+	if built.Stages[3] != built.Unpack {
+		t.Error("Unpack pointer != stages[3]")
 	}
-	if built.Stages[3] != built.SampleCleanup {
-		t.Error("SampleCleanup pointer != stages[3]")
+	if built.Stages[4] != built.SampleCleanup {
+		t.Error("SampleCleanup pointer != stages[4]")
 	}
-	if built.Stages[5] != built.Par2Cleanup {
-		t.Error("Par2Cleanup pointer != stages[5]")
+	if built.Stages[6] != built.Par2Cleanup {
+		t.Error("Par2Cleanup pointer != stages[6]")
 	}
-	if built.Stages[6] != built.Deobfuscate {
-		t.Error("Deobfuscate pointer != stages[6]")
+	if built.Stages[7] != built.Deobfuscate {
+		t.Error("Deobfuscate pointer != stages[7]")
 	}
-	if built.Stages[8] != built.Finalize {
-		t.Error("Finalize pointer != stages[8]")
+	if built.Stages[9] != built.Finalize {
+		t.Error("Finalize pointer != stages[9]")
 	}
-	if built.Stages[10] != built.Script {
-		t.Error("Script pointer != stages[10]")
+	if built.Stages[11] != built.Script {
+		t.Error("Script pointer != stages[11]")
 	}
 }
 
