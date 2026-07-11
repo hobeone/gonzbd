@@ -69,6 +69,14 @@ type PostProcConfig struct {
 	// falls back to the external par2 binary if available.
 	// Default true.
 	UseGoPar2 bool `yaml:"use_go_par2" json:"use_go_par2"`
+	// EnableRarVolumeRecovery attempts to recover a fully obfuscated RAR5
+	// volume set (no filename numbering clue at all, and no PAR2 protection
+	// covering the volumes) by reading volume sequencing directly from each
+	// file's RAR5 header, then renaming to canonical part-numbered names.
+	// A no-op whenever normal filename-based RAR detection already finds
+	// something, so safe to leave enabled.
+	// Default true.
+	EnableRarVolumeRecovery bool `yaml:"enable_rar_volume_recovery" json:"enable_rar_volume_recovery"`
 	// GoRarFallback controls whether a failed pure-Go RAR extraction
 	// automatically retries with the external unrar binary. Only relevant
 	// when UseGoRAR is true. When false, a go_unrar failure is final.

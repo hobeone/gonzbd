@@ -97,6 +97,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	var stages []postproc.Stage
 
 	var enableQuickCheck, par2Turbo, useGoPar2, goPar2Fallback, enableRarCleanup bool
+	var enableRarVolumeRecovery bool
 	var enableFileJoin, enableTar, enableRecursive, enableUnrar, enable7zip, ignoreSamples bool
 	var enableParCleanup, deobfuscateFilenames, folderRename, scriptCanFail bool
 	var par2Command, unrarCommand, sevenzCommand, permissions, passwordFile string
@@ -112,6 +113,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 		useGoPar2 = c.PostProc.UseGoPar2
 		goPar2Fallback = c.PostProc.GoPar2Fallback
 		enableRarCleanup = c.PostProc.EnableRarCleanup
+		enableRarVolumeRecovery = c.PostProc.EnableRarVolumeRecovery
 		enableFileJoin = c.PostProc.EnableFileJoin
 		enableTar = c.PostProc.EnableTar
 		enableRecursive = c.PostProc.EnableRecursive
@@ -189,6 +191,15 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	repairStage.UseGoPar2 = useGoPar2
 	repairStage.GoPar2Fallback = goPar2Fallback
 	stages = append(stages, repairStage)
+
+	// RAR volume recovery: no-op unless normal filename-based RAR detection
+	// found nothing at all. Must run after Repair (so PAR2-based rename
+	// recovery, if a PAR2 set exists, gets first chance) and before Unpack
+	// (so a successful rename here is visible to Unpack's own Scan()).
+	rarVolRecoveryStage := postproc.NewRarVolumeRecoveryStage()
+	rarVolRecoveryStage.Log = ppLog
+	rarVolRecoveryStage.SetEnabled(enableRarVolumeRecovery)
+	stages = append(stages, rarVolRecoveryStage)
 
 	// Unpack stage: always included in pipeline, enabled dynamically.
 	unpackStage := postproc.NewUnpackStageWith(unpack.Options{

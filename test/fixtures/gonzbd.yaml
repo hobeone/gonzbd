@@ -45,6 +45,7 @@ postproc:
   enable_par_cleanup: true
   enable_rar_cleanup: true
   process_unpacked_par2: true
+  enable_rar_volume_recovery: true
   par2_command: par2
   unrar_command: ""
   sevenz_command: ""

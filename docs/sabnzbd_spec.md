@@ -667,6 +667,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `enable_par_cleanup` | bool | true | Delete par2 after repair |
 | `enable_rar_cleanup` | bool | true | Delete archive files after extraction |
 | `process_unpacked_par2` | bool | true | Use unpacked par2 for filename recovery |
+| `enable_rar_volume_recovery` | bool | true | Recover a fully obfuscated RAR5 volume set (no filename numbering, no PAR2) via each file's RAR5 header; no-op when normal detection already finds an archive |
 | `par2_command` | string | `par2` | par2 binary path |
 | `unrar_command` | string | (auto-detected) | UnRAR binary path |
 | `sevenz_command` | string | (auto-detected) | 7-Zip binary path |
