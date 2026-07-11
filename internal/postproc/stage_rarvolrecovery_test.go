@@ -92,6 +92,39 @@ func TestRarVolumeRecoveryStage_NoOpWhenScanFindsArchives(t *testing.T) {
 	}
 }
 
+// TestRarVolumeRecoveryStage_AmbiguousVolumeCollisionSkipsAll proves that when
+// two different obfuscated candidates both resolve to the same recovered
+// volume index (here, volume 0 -- one via a genuine single-volume RAR5
+// archive, which always normalizes to volume index 0, and the other via the
+// first volume of a multi-volume set, which reports volume index 0 through
+// the "first volume, flag omitted" header path), the stage logs a warning and
+// renames neither file, per the documented ambiguous-collision behavior.
+func TestRarVolumeRecoveryStage_AmbiguousVolumeCollisionSkipsAll(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	firstObfuscated := filepath.Join(dir, "aaaaaaaaaaaa.dat")
+	secondObfuscated := filepath.Join(dir, "bbbbbbbbbbbb.dat")
+	copyRARFixture(t, "single_rar5.rar", firstObfuscated)
+	copyRARFixture(t, "multi_new.part01.rar", secondObfuscated)
+
+	stage := NewRarVolumeRecoveryStage()
+	stage.SetEnabled(true)
+	stage.Log = slog.New(slog.DiscardHandler)
+
+	job := &Job{DownloadDir: dir, Queue: &queue.Job{ID: "test"}, OwnedFiles: map[string]struct{}{}}
+	if err := stage.Run(context.Background(), job); err != nil {
+		t.Fatalf("RarVolumeRecoveryStage.Run: %v", err)
+	}
+
+	if _, statErr := os.Stat(firstObfuscated); statErr != nil {
+		t.Errorf("first ambiguous candidate was renamed away: %v", statErr)
+	}
+	if _, statErr := os.Stat(secondObfuscated); statErr != nil {
+		t.Errorf("second ambiguous candidate was renamed away: %v", statErr)
+	}
+}
+
 // TestRarVolumeRecoveryStage_DisabledIsNoOp proves SetEnabled(false) skips
 // recovery entirely.
 func TestRarVolumeRecoveryStage_DisabledIsNoOp(t *testing.T) {
