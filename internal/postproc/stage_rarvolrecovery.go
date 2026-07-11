@@ -54,11 +54,7 @@ func (s *RarVolumeRecoveryStage) Run(ctx context.Context, job *Job) error {
 		return nil
 	}
 
-	type candidate struct {
-		path      string
-		volumeIdx int
-	}
-	byVolume := make(map[int]candidate)
+	byVolume := make(map[int]string) // volume index -> candidate path
 	var ambiguous bool
 	for _, e := range entries {
 		if e.IsDir() {
@@ -75,16 +71,24 @@ func (s *RarVolumeRecoveryStage) Run(ctx context.Context, job *Job) error {
 			continue
 		}
 		if !multiVol {
+			// Deliberate: a standalone (non-split) RAR archive is treated as
+			// occupying volume position 0, the same slot as an obfuscated
+			// set's first volume. This means a stray single-volume RAR
+			// (e.g. an obfuscated sample) sharing the directory with a
+			// genuine obfuscated multi-volume set will collide with it and
+			// suppress recovery of the real set -- an intentional
+			// false-negative: this stage prefers doing nothing over
+			// guessing which candidate is the real first volume.
 			volIdx = 0
 		}
-		if existing, ok := byVolume[volIdx]; ok {
+		if existingPath, ok := byVolume[volIdx]; ok {
 			logf(ctx, log, job, slog.LevelWarn,
 				"rar_volume_recovery: ambiguous volume %d claimed by both %s and %s -- skipping recovery",
-				volIdx, existing.path, p)
+				volIdx, existingPath, p)
 			ambiguous = true
 			continue
 		}
-		byVolume[volIdx] = candidate{path: p, volumeIdx: volIdx}
+		byVolume[volIdx] = p
 	}
 
 	if ambiguous || len(byVolume) == 0 {
@@ -97,18 +101,18 @@ func (s *RarVolumeRecoveryStage) Run(ctx context.Context, job *Job) error {
 	}
 	base = fsutil.SanitizeFilename(base, job.Sanitize)
 
-	for volIdx, c := range byVolume {
+	for volIdx, p := range byVolume {
 		newName := fmt.Sprintf("%s.part%03d.rar", base, volIdx+1)
 		newPath := filepath.Join(job.DownloadDir, newName)
-		if newPath == c.path {
+		if newPath == p {
 			continue
 		}
-		if err := os.Rename(c.path, newPath); err != nil {
-			logf(ctx, log, job, slog.LevelWarn, "rar_volume_recovery: rename %s -> %s failed: %v", c.path, newPath, err)
+		if err := os.Rename(p, newPath); err != nil {
+			logf(ctx, log, job, slog.LevelWarn, "rar_volume_recovery: rename %s -> %s failed: %v", p, newPath, err)
 			continue
 		}
-		markRenamed(job, c.path, newPath)
-		logf(ctx, log, job, slog.LevelInfo, "rar_volume_recovery: recovered %s as volume %d -> %s", filepath.Base(c.path), volIdx, newName)
+		markRenamed(job, p, newPath)
+		logf(ctx, log, job, slog.LevelInfo, "rar_volume_recovery: recovered %s as volume %d -> %s", filepath.Base(p), volIdx, newName)
 	}
 
 	return nil
