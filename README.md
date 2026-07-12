@@ -280,7 +280,10 @@ that restricts filesystem access to the job's own directory, and
 `strict_sandbox: true` (the default) aborts extraction if that sandbox can't
 be established. `strict_sandbox: true` is rejected at startup (and at live
 config reload) on any platform other than Linux, since there is no working
-sandbox backend to enforce it there.
+sandbox backend to enforce it there. **This means an existing non-Docker
+FreeBSD/macOS install that has never touched this setting is already at the
+default of `true`, and will fail to start after upgrading until you set
+`strict_sandbox: false` in its config.**
 
 **The Docker image does not install `bwrap`, and a brand-new container config
 defaults `strict_sandbox` to `false`.** `bwrap` needs to create an
