@@ -257,6 +257,21 @@ func TestApplication_SetStrictSandbox_RejectedOnUnsupportedPlatform(t *testing.T
 	}
 }
 
+func TestApplication_SetStrictSandbox_NilUnpackStageSkipsPlatformGuard(t *testing.T) {
+	origGOOS := goos
+	defer func() { goos = origGOOS }()
+	goos = "darwin"
+
+	// app.unpackStage is nil here (zero-value Application, never built via
+	// New()), so there is no stage to guard and the goos check must not
+	// apply: SetStrictSandbox should apply directly, per the brief.
+	app := &Application{config: &config.Config{}}
+
+	if err := app.SetStrictSandbox(true); err != nil {
+		t.Fatalf("expected nil-unpackStage caller to bypass platform guard, got error: %v", err)
+	}
+}
+
 func TestApplication_ReloadPostProcOptions_PropagatesStrictSandboxError(t *testing.T) {
 	origGOOS := goos
 	defer func() { goos = origGOOS }()
