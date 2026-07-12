@@ -493,6 +493,7 @@ type setConfigSpyApp struct {
 	NopApp
 	mu                  sync.Mutex
 	reloadDownloaderErr error
+	reloadPostProcErr   error
 	reloadedDownloader  int
 	reloadedPostProc    int
 	reloadedDownloads   int
@@ -515,7 +516,7 @@ func (a *setConfigSpyApp) ReloadPostProcOptions(_ config.PostProcConfig, _ strin
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.reloadedPostProc++
-	return nil
+	return a.reloadPostProcErr
 }
 
 func (a *setConfigSpyApp) ReloadDownloadOptions(_ config.DownloadConfig) {
@@ -653,6 +654,39 @@ func TestModeSetConfig_Comprehensive(t *testing.T) {
 		spy.mu.Unlock()
 		if count != 1 {
 			t.Errorf("reloadedDownloader = %d; want 1", count)
+		}
+	})
+
+	t.Run("reload_postproc_error", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := config.Default()
+		if err != nil {
+			t.Fatalf("Default(): %v", err)
+		}
+		spy := &setConfigSpyApp{reloadPostProcErr: errors.New("postproc.strict_sandbox is not supported on darwin (only linux)")}
+		s := New(Options{
+			Version: "1.0.0-test",
+			Config:  cfg,
+			App:     spy,
+		})
+		cfg.With(func(c *config.Config) {
+			c.General.APIKey = testAPIKey
+		})
+
+		rr := apiGet(t, s.Handler(), "/api?mode=set_config&section=postproc&keyword=strict_sandbox&value=true&apikey="+testAPIKey)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+		}
+		m := decodeJSON(t, rr)
+		warning, _ := m["warning"].(string)
+		if !strings.Contains(warning, "strict_sandbox") {
+			t.Errorf("warning = %q; want to contain 'strict_sandbox'", warning)
+		}
+		spy.mu.Lock()
+		count := spy.reloadedPostProc
+		spy.mu.Unlock()
+		if count != 1 {
+			t.Errorf("reloadedPostProc = %d; want 1", count)
 		}
 	})
 
