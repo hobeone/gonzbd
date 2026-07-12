@@ -211,7 +211,11 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 				pp = cfg.PostProc
 				scriptDir = cfg.General.ScriptDir
 			})
-			s.app.ReloadPostProcOptions(pp, scriptDir)
+			// TODO(task 5): surface this error to the caller as an API
+			// warning instead of discarding it. For now the rejection (e.g.
+			// strict_sandbox on an unsupported platform) is only visible in
+			// logs emitted by the stage/app layers.
+			_ = s.app.ReloadPostProcOptions(pp, scriptDir)
 		case "downloads":
 			var d config.DownloadConfig
 			s.config.WithRead(func(cfg *config.Config) { d = cfg.Downloads })
