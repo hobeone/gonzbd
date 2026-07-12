@@ -141,11 +141,15 @@ External `unrar`/`7z` subprocesses get two independent layers of containment,
 enforced differently depending on how they run:
 
 1. **OS-level sandboxing** (`internal/cmdutil.BuildSandboxedCommand`): wraps
-   the subprocess with `bwrap` (Linux) or `sandbox-exec` (macOS), restricting
-   filesystem writes to the job's directory at the kernel level.
-   `strict_sandbox: true` makes `BuildSandboxedCommand` return
-   `ErrSandboxUnavailable` (aborting extraction) if the wrapper binary can't
-   be found; `false` falls back to running the subprocess unwrapped.
+   the subprocess with `bwrap`, restricting filesystem writes to the job's
+   directory at the kernel level. Linux is the only platform with a working
+   backend — `strict_sandbox: true` on any other platform is rejected at
+   startup (`internal/app.buildStages`) and at live config reload
+   (`UnpackStage.SetStrictSandbox`), rather than deferring the failure to the
+   first extraction attempt. On Linux, `strict_sandbox: true` makes
+   `BuildSandboxedCommand` return `ErrSandboxUnavailable` (aborting
+   extraction) if `bwrap` can't be found; `false` falls back to running the
+   subprocess unwrapped.
 2. **Post-extraction path containment** (`stage_unpack.go`, always on,
    independent of `strict_sandbox`): after extraction, every produced path is
    checked against the job's output directory; anything outside it is deleted
