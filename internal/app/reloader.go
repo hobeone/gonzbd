@@ -405,12 +405,13 @@ func (app *Application) SetIgnoreUnrarDates(v bool) {
 // buildStages check) and cannot be overridden from outside internal/postproc.
 // Checking here too keeps this layer's rejection behavior directly testable
 // from internal/app and gives an early, cheap rejection before touching the
-// stage.
+// stage. If app.unpackStage is nil there is no stage to guard, so the check
+// is skipped and the setting is applied directly.
 func (app *Application) SetStrictSandbox(v bool) error {
-	if v && goos != "linux" {
-		return fmt.Errorf("postproc.strict_sandbox is not supported on %s (only linux); disable strict_sandbox or run on linux", goos)
-	}
 	if app.unpackStage != nil {
+		if v && goos != "linux" {
+			return fmt.Errorf("postproc.strict_sandbox is not supported on %s (only linux); disable strict_sandbox or run on linux", goos)
+		}
 		if err := app.unpackStage.SetStrictSandbox(v); err != nil {
 			return err
 		}
