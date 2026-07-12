@@ -112,8 +112,10 @@ type PostProcConfig struct {
 	DirectUnpackThreads int `yaml:"direct_unpack_threads" json:"direct_unpack_threads"`
 
 	// StrictSandbox determines if external unpacker execution must abort
-	// immediately when OS-level sandboxing (bwrap, sandbox-exec, jail) cannot
-	// be established. Defaults to true.
+	// immediately when OS-level sandboxing (bwrap on Linux — the only
+	// supported platform) cannot be established. Setting this to true on
+	// any other platform is rejected at startup and at live config reload,
+	// since there is no working sandbox backend there. Defaults to true.
 	StrictSandbox bool `yaml:"strict_sandbox" json:"strict_sandbox"`
 
 	// DeobfuscateFilenames renames obfuscated files (random hex/UUIDs)
