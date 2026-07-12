@@ -511,10 +511,11 @@ func (a *setConfigSpyApp) ReloadDownloader(_ []config.ServerConfig) error {
 	return a.reloadDownloaderErr
 }
 
-func (a *setConfigSpyApp) ReloadPostProcOptions(_ config.PostProcConfig, _ string) {
+func (a *setConfigSpyApp) ReloadPostProcOptions(_ config.PostProcConfig, _ string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.reloadedPostProc++
+	return nil
 }
 
 func (a *setConfigSpyApp) ReloadDownloadOptions(_ config.DownloadConfig) {
