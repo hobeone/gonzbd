@@ -97,10 +97,11 @@ func (s *Server) registerModes() {
 		"addlocalfile": {handler: s.modeAddLocalFile, level: LevelProtected},
 		"history":      {handler: s.modeHistory, level: LevelProtected},
 		// Status modes
-		"fullstatus":   {handler: s.modeFullStatus, level: LevelProtected},
-		"status":       {handler: s.modeStatus, level: LevelProtected},
-		"warnings":     {handler: s.modeWarnings, level: LevelProtected},
-		"server_stats": {handler: s.modeServerStats, level: LevelProtected},
+		"fullstatus":      {handler: s.modeFullStatus, level: LevelProtected},
+		"status":          {handler: s.modeStatus, level: LevelProtected},
+		"warnings":        {handler: s.modeWarnings, level: LevelProtected},
+		"server_stats":    {handler: s.modeServerStats, level: LevelProtected},
+		"status_overview": {handler: s.modeStatusOverview, level: LevelProtected},
 		// Config modes
 		"config":     {handler: s.modeConfig, level: LevelAdmin},
 		"get_config": {handler: s.modeGetConfig, level: LevelAdmin},

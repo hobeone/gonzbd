@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
@@ -102,10 +103,11 @@ type ApplicationReloader interface {
 // exposes its handler via Handler; the caller (cmd/gonzbd) is responsible
 // for binding and serving it on a real net/http.Server.
 type Server struct {
-	version string
-	commit  string
-	date    string
-	log     *slog.Logger
+	version   string
+	commit    string
+	date      string
+	startTime time.Time
+	log       *slog.Logger
 
 	queue      *queue.Queue
 	history    *history.Repository
@@ -144,6 +146,7 @@ func New(opts Options) *Server {
 		version:      opts.Version,
 		commit:       opts.Commit,
 		date:         opts.Date,
+		startTime:    time.Now(),
 		log:          log,
 		queue:        opts.Queue,
 		history:      opts.History,
