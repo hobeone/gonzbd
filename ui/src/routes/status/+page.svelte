@@ -1,12 +1,16 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import Navbar from '$lib/components/Navbar.svelte';
 	import {
 		fetchStatusOverview,
 		fetchCheckUpdate,
+		testServerConnection,
 		type StatusOverviewResponse,
-		type CheckUpdateResult
+		type CheckUpdateResult,
+		type TestConnectionResult
 	} from '$lib/api';
+	import { getServerStats } from '$lib/stores/queue.svelte';
+	import { startTelemetry, stopTelemetry } from '$lib/stores/telemetry.svelte';
 
 	let overview = $state<StatusOverviewResponse | null>(null);
 	let overviewError = $state('');
@@ -47,6 +51,37 @@
 	function refresh() {
 		loadOverview();
 		loadUpdateCheck();
+	}
+
+	let servers = $derived(getServerStats());
+	let testingServer = $state<string | null>(null);
+	let connectionResults = $state<Record<string, TestConnectionResult>>({});
+
+	// This page is the only route that renders server data outside the
+	// main dashboard, so it must start its own WebSocket subscription
+	// (reference-counted — see websocket.svelte.ts) rather than assuming one
+	// is already running. Symmetric stop on unmount so a repeat visit to
+	// /status doesn't leak a duplicate handler.
+	onMount(() => {
+		startTelemetry();
+	});
+	onDestroy(() => {
+		stopTelemetry();
+	});
+
+	async function runConnectionTest(name: string) {
+		testingServer = name;
+		try {
+			const res = await testServerConnection(name);
+			connectionResults = { ...connectionResults, [name]: res.result };
+		} catch (e) {
+			connectionResults = {
+				...connectionResults,
+				[name]: { ok: false, error: e instanceof Error ? e.message : 'Test failed' }
+			};
+		} finally {
+			testingServer = null;
+		}
 	}
 
 	onMount(refresh);
@@ -147,6 +182,59 @@
 					>
 				</dd>
 			</dl>
+		</section>
+
+		<section class="mb-6 rounded-3xl border border-m3-outline/20 bg-m3-surface p-6 shadow-sm transition-all duration-300 hover:shadow-md hover:border-m3-primary/30">
+			<h2 class="mb-4 text-lg font-medium text-m3-on-surface">News Servers</h2>
+			{#each servers as server (server.name)}
+				<div class="mb-3 rounded-2xl border border-m3-outline/10 p-4 transition-all hover:bg-m3-surface-variant/5">
+					<div class="flex items-center justify-between">
+						<span class="font-medium text-m3-on-surface">{server.name} ({server.host}:{server.port})</span>
+						<span class="text-sm text-m3-on-surface/60">
+							{server.active_conns}/{server.max_connections} connections in use
+						</span>
+					</div>
+					<div class="mt-3 flex items-center gap-3">
+						<button
+							class="inline-flex items-center gap-1.5 rounded-full bg-m3-secondary px-3 py-1 text-xs text-m3-on-secondary disabled:opacity-50"
+							onclick={() => runConnectionTest(server.name)}
+							disabled={testingServer === server.name}
+						>
+							{#if testingServer === server.name}
+								<svg class="animate-spin h-3 w-3 text-m3-on-secondary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+								Testing...
+							{:else}
+								Test Connection
+							{/if}
+						</button>
+						{#if connectionResults[server.name]}
+							{@const result = connectionResults[server.name]}
+							{#if result.ok}
+								<span class="inline-flex items-center gap-1.5 text-xs text-green-600 bg-green-50 px-2.5 py-0.5 rounded-full border border-green-200">
+									<span class="relative flex h-1.5 w-1.5">
+										<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+										<span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500"></span>
+									</span>
+									Connected ({result.latency_ms}ms)
+								</span>
+							{:else if result.likely_connection_limit}
+								<span class="inline-flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200">
+									<span class="h-1.5 w-1.5 rounded-full bg-amber-500"></span>
+									Connection limit reached ({result.error})
+								</span>
+							{:else}
+								<span class="inline-flex items-center gap-1.5 text-xs text-red-600 bg-red-50 px-2.5 py-0.5 rounded-full border border-red-200">
+									<span class="relative flex h-1.5 w-1.5">
+										<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+										<span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span>
+									</span>
+									Failed: {result.error}
+								</span>
+							{/if}
+						{/if}
+					</div>
+				</div>
+			{/each}
 		</section>
 	{/if}
 </div>

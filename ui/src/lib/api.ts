@@ -233,3 +233,16 @@ export async function fetchStatusOverview(): Promise<StatusOverviewResponse> {
 export async function fetchCheckUpdate(): Promise<{ status: boolean; result: CheckUpdateResult }> {
 	return fetchJSON(apiUrl('status', { name: 'check_update' }));
 }
+
+export interface TestConnectionResult {
+	ok: boolean;
+	latency_ms?: number;
+	error?: string;
+	likely_connection_limit?: boolean;
+}
+
+export async function testServerConnection(
+	name: string
+): Promise<{ status: boolean; result: TestConnectionResult }> {
+	return fetchJSON(apiUrl('status', { name: 'test_connection', value: name }));
+}
