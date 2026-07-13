@@ -55,6 +55,7 @@ func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDi
 	app.SetEnable7zip(pp.Enable7zip)
 	app.SetPar2Turbo(pp.Par2Turbo)
 	app.SetIgnoreUnrarDates(pp.IgnoreUnrarDates)
+	app.SetStrictSandbox(pp.StrictSandbox)
 }
 
 // ReloadDownloadOptions applies all hot-applicable download settings from d
@@ -390,6 +391,21 @@ func (app *Application) SetIgnoreUnrarDates(v bool) {
 	})
 	if app.unpackStage != nil {
 		app.unpackStage.SetIgnoreUnrarDates(v)
+	}
+}
+
+// SetStrictSandbox updates strict sandboxing option at runtime. Thread-safe.
+// v is trusted to already satisfy the Linux-only platform constraint:
+// config.PostProcConfig.validate() rejects strict_sandbox=true on any
+// unsupported platform before a value can reach here (at config load or via
+// Config.Set(), both of which run Validate()), so no platform check is
+// repeated at this layer.
+func (app *Application) SetStrictSandbox(v bool) {
+	app.config.With(func(c *config.Config) {
+		c.PostProc.StrictSandbox = v
+	})
+	if app.unpackStage != nil {
+		app.unpackStage.SetStrictSandbox(v)
 	}
 }
 
