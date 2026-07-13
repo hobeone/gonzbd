@@ -81,6 +81,9 @@ func fetchLatestGithubRelease(ctx context.Context, userAgent string) (string, er
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return "", err
 	}
+	if body.TagName == "" {
+		return "", fmt.Errorf("github release response missing tag_name")
+	}
 	return body.TagName, nil
 }
 

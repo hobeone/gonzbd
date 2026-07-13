@@ -40,8 +40,24 @@ func TestCompareVersions_InvalidInput(t *testing.T) {
 	_ = compareVersions("v1.2.0", "also-not-a-version")
 }
 
+// TestModeStatus_CheckUpdate_DevBuildSkipsNetworkCall proves the dev-build
+// short circuit actually skips the GitHub call, rather than merely
+// producing the same "unknown" status a failed network call would also
+// produce. It points githubLatestReleaseURL at an httptest.Server whose
+// handler fails the test if it is ever invoked, so the assertion below
+// discriminates "short-circuited before any call" from "attempted and
+// failed" (which also yields status "unknown", see
+// TestModeStatus_CheckUpdate_StatusMapping's "github error status" case).
 func TestModeStatus_CheckUpdate_DevBuildSkipsNetworkCall(t *testing.T) {
-	t.Parallel()
+	github := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("githubLatestReleaseURL should not be called for a dev build")
+	}))
+	defer github.Close()
+
+	origURL := githubLatestReleaseURL
+	githubLatestReleaseURL = github.URL
+	defer func() { githubLatestReleaseURL = origURL }()
+
 	cfg, err := config.Default()
 	if err != nil {
 		t.Fatalf("Default(): %v", err)
@@ -78,6 +94,7 @@ func TestModeStatus_CheckUpdate_StatusMapping(t *testing.T) {
 		{"up to date", "v1.2.0", "v1.2.0", http.StatusOK, "up_to_date", "v1.2.0"},
 		{"update available", "v1.2.0", "v1.3.0", http.StatusOK, "update_available", "v1.3.0"},
 		{"github error status", "v1.2.0", "", http.StatusInternalServerError, "unknown", ""},
+		{"empty tag_name", "v1.2.0", "", http.StatusOK, "unknown", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
