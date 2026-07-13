@@ -11,13 +11,22 @@ import (
 )
 
 // Validate checks the configuration for required-field, range, and
-// uniqueness errors. Uses runtime.GOOS by default.
+// uniqueness errors. All discovered problems are joined into a single
+// error so the user can fix the file in one pass instead of edit-load
+// looping over them. Uses runtime.GOOS by default; see ValidateWithOS.
+//
+// Validation does not touch the filesystem (no path-existence checks),
+// because Load runs before subsystems are initialized and missing
+// directories are auto-created at startup. Subsystems perform their own
+// startup checks against the directories they need.
 func (c *Config) Validate() error {
 	return c.ValidateWithOS(runtime.GOOS)
 }
 
-// ValidateWithOS checks the configuration using the specified operating system.
-// Primarily used for concurrent testing of platform-specific options.
+// ValidateWithOS checks the configuration using the specified operating
+// system rather than runtime.GOOS. Exists so platform-specific checks
+// (e.g. strict_sandbox's Linux-only constraint) can be exercised with
+// t.Parallel() from tests without mutating shared package state.
 func (c *Config) ValidateWithOS(goos string) error {
 	var errs []error
 
