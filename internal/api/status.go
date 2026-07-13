@@ -52,6 +52,8 @@ func (s *Server) modeStatus(w http.ResponseWriter, r *http.Request) {
 		s.statusTestConnection(w, r)
 	case "test_disk_speed":
 		s.statusTestDiskSpeed(w, r)
+	case "check_update":
+		s.statusCheckUpdate(w, r)
 	// Stubbed sub-actions: not yet implemented.
 	case "delete_orphan", "delete_all_orphan", "add_orphan", "add_all_orphan":
 		s.respondError(w, http.StatusNotImplemented, "not implemented in this build: "+action)
