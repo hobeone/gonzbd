@@ -8,7 +8,7 @@ require (
 	github.com/h2non/filetype v1.1.3
 	github.com/hobeone/par2engine v1.0.6
 	github.com/hobeone/rarengine v1.0.7
-	github.com/lmittmann/tint v1.1.3
+	github.com/lmittmann/tint v1.2.0
 	github.com/mxschmitt/playwright-go v0.6100.0
 	github.com/pressly/goose/v3 v3.27.2
 	golang.org/x/sys v0.47.0
