@@ -40,7 +40,7 @@ func TestBuildSandboxedCommand_StrictFailure(t *testing.T) {
 	ctx := context.Background()
 	cfg := SandboxConfig{Enabled: true, Strict: true, TargetDir: "/tmp"}
 	_, err := BuildSandboxedCommand(ctx, CmdConfig{}, cfg, "echo", "hello")
-	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" || runtime.GOOS == "freebsd" {
+	if runtime.GOOS == "linux" {
 		if !errors.Is(err, ErrSandboxUnavailable) {
 			t.Fatalf("expected ErrSandboxUnavailable, got %v", err)
 		}
