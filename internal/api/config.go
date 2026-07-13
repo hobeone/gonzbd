@@ -156,16 +156,6 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Snapshot the entire postproc config section before applying changes.
-	// If the hot reload fails below, we can roll back the entire struct
-	// in memory and on disk.
-	var prevPostProc config.PostProcConfig
-	if section == "postproc" {
-		s.config.WithRead(func(cfg *config.Config) {
-			prevPostProc = cfg.PostProc
-		})
-	}
-
 	if err := s.config.Set(section, keyword, value); err != nil {
 		s.respondError(w, http.StatusBadRequest, "set config: "+err.Error())
 		return
@@ -221,24 +211,7 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 				pp = cfg.PostProc
 				scriptDir = cfg.General.ScriptDir
 			})
-			if err := s.app.ReloadPostProcOptions(pp, scriptDir); err != nil {
-				s.log.Error("reload postproc options", "error", err)
-				// Roll back the entire struct in-memory and re-persist to disk.
-				s.config.With(func(cfg *config.Config) {
-					cfg.PostProc = prevPostProc
-				})
-				if s.configPath != "" {
-					if saveErr := s.config.Save(s.configPath); saveErr != nil {
-						s.log.Error("persist rollback postproc config", "path", s.configPath, "error", saveErr)
-					}
-				}
-				respondJSON(w, http.StatusOK, map[string]any{
-					"status":  true,
-					"value":   value,
-					"warning": "config saved but postproc reload failed: " + err.Error(),
-				})
-				return
-			}
+			s.app.ReloadPostProcOptions(pp, scriptDir)
 		case "downloads":
 			var d config.DownloadConfig
 			s.config.WithRead(func(cfg *config.Config) { d = cfg.Downloads })

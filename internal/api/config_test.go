@@ -493,7 +493,6 @@ type setConfigSpyApp struct {
 	NopApp
 	mu                  sync.Mutex
 	reloadDownloaderErr error
-	reloadPostProcErr   error
 	reloadedDownloader  int
 	reloadedPostProc    int
 	reloadedDownloads   int
@@ -512,11 +511,10 @@ func (a *setConfigSpyApp) ReloadDownloader(_ []config.ServerConfig) error {
 	return a.reloadDownloaderErr
 }
 
-func (a *setConfigSpyApp) ReloadPostProcOptions(_ config.PostProcConfig, _ string) error {
+func (a *setConfigSpyApp) ReloadPostProcOptions(_ config.PostProcConfig, _ string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.reloadedPostProc++
-	return a.reloadPostProcErr
 }
 
 func (a *setConfigSpyApp) ReloadDownloadOptions(_ config.DownloadConfig) {
@@ -654,108 +652,6 @@ func TestModeSetConfig_Comprehensive(t *testing.T) {
 		spy.mu.Unlock()
 		if count != 1 {
 			t.Errorf("reloadedDownloader = %d; want 1", count)
-		}
-	})
-
-	t.Run("reload_postproc_error", func(t *testing.T) {
-		t.Parallel()
-		cfg, err := config.Default()
-		if err != nil {
-			t.Fatalf("Default(): %v", err)
-		}
-		spy := &setConfigSpyApp{reloadPostProcErr: errors.New("postproc.strict_sandbox is not supported on darwin (only linux)")}
-		s := New(Options{
-			Version: "1.0.0-test",
-			Config:  cfg,
-			App:     spy,
-		})
-		cfg.With(func(c *config.Config) {
-			c.General.APIKey = testAPIKey
-		})
-
-		rr := apiGet(t, s.Handler(), "/api?mode=set_config&section=postproc&keyword=strict_sandbox&value=true&apikey="+testAPIKey)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
-		}
-		m := decodeJSON(t, rr)
-		warning, _ := m["warning"].(string)
-		if !strings.Contains(warning, "strict_sandbox") {
-			t.Errorf("warning = %q; want to contain 'strict_sandbox'", warning)
-		}
-		spy.mu.Lock()
-		count := spy.reloadedPostProc
-		spy.mu.Unlock()
-		if count != 1 {
-			t.Errorf("reloadedPostProc = %d; want 1", count)
-		}
-	})
-
-	t.Run("reload_postproc_error_rolls_back_persisted_value", func(t *testing.T) {
-		t.Parallel()
-		cfg, err := config.Default()
-		if err != nil {
-			t.Fatalf("Default(): %v", err)
-		}
-		// Start from a known-good value so we can distinguish "rolled back"
-		// from "coincidentally still the default". Also set a non-zero value
-		// on another field to verify it is not lost (zeroed) on rollback.
-		cfg.With(func(c *config.Config) {
-			c.PostProc.StrictSandbox = false
-			c.PostProc.EnableUnrar = true
-		})
-
-		spy := &setConfigSpyApp{reloadPostProcErr: errors.New("postproc.strict_sandbox is not supported on darwin (only linux)")}
-		s := New(Options{
-			Version: "1.0.0-test",
-			Config:  cfg,
-			App:     spy,
-		})
-		cfg.With(func(c *config.Config) {
-			c.General.APIKey = testAPIKey
-		})
-
-		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "gonzbd.yaml")
-		if err := cfg.Save(configPath); err != nil {
-			t.Fatalf("Save() initial config: %v", err)
-		}
-		s.configPath = configPath
-
-		rr := apiGet(t, s.Handler(), "/api?mode=set_config&section=postproc&keyword=strict_sandbox&value=true&apikey="+testAPIKey)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
-		}
-		m := decodeJSON(t, rr)
-		warning, _ := m["warning"].(string)
-		if !strings.Contains(warning, "strict_sandbox") {
-			t.Errorf("warning = %q; want to contain 'strict_sandbox'", warning)
-		}
-
-		// The rejected value must not remain in the in-memory config...
-		var inMemory bool
-		var unrarEnabled bool
-		cfg.WithRead(func(c *config.Config) {
-			inMemory = c.PostProc.StrictSandbox
-			unrarEnabled = c.PostProc.EnableUnrar
-		})
-		if inMemory {
-			t.Errorf("in-memory PostProc.StrictSandbox = true; want rolled back to false")
-		}
-		if !unrarEnabled {
-			t.Error("in-memory PostProc.EnableUnrar = false; want preserved as true")
-		}
-
-		// ...nor on disk, since a restart re-reads the persisted file and
-		// would otherwise hit the startup guard for an unsupported platform.
-		onDisk, err := config.Load(configPath)
-		if err != nil {
-			t.Fatalf("Load() persisted config: %v", err)
-		}
-		if onDisk.PostProc.StrictSandbox {
-			t.Errorf("persisted PostProc.StrictSandbox = true; want rolled back to false")
-		}
-		if !onDisk.PostProc.EnableUnrar {
-			t.Error("persisted PostProc.EnableUnrar = false; want preserved as true")
 		}
 	})
 
