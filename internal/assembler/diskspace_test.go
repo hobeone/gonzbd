@@ -13,8 +13,17 @@ func TestWriteSpeedMBPerSec_WritesAndCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteSpeedMBPerSec: %v", err)
 	}
-	if mbPerSec <= 0 {
-		t.Errorf("mbPerSec = %f, want > 0", mbPerSec)
+	// Sane order-of-magnitude bounds on the computed throughput, not just
+	// "positive": a 4 MiB write completing in well under a second is
+	// physically bounded between roughly 0.1 MB/s (pathologically slow) and
+	// 100,000 MB/s (100 GB/s, far beyond any real disk) — wide enough to
+	// never flake on real hardware, but tight enough that swapping the
+	// mb/elapsed division for a multiplication (or vice versa) produces a
+	// value far outside this range.
+	const minPlausibleMBPerSec = 0.1
+	const maxPlausibleMBPerSec = 100_000
+	if mbPerSec < minPlausibleMBPerSec || mbPerSec > maxPlausibleMBPerSec {
+		t.Errorf("mbPerSec = %f, want in [%v, %v]", mbPerSec, minPlausibleMBPerSec, maxPlausibleMBPerSec)
 	}
 
 	entries, err := os.ReadDir(dir)
