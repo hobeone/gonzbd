@@ -11,15 +11,14 @@ import (
 )
 
 // Validate checks the configuration for required-field, range, and
-// uniqueness errors. All discovered problems are joined into a single
-// error so the user can fix the file in one pass instead of edit-load
-// looping over them.
-//
-// Validation does not touch the filesystem (no path-existence checks),
-// because Load runs before subsystems are initialized and missing
-// directories are auto-created at startup. Subsystems perform their own
-// startup checks against the directories they need.
+// uniqueness errors. Uses runtime.GOOS by default.
 func (c *Config) Validate() error {
+	return c.ValidateWithOS(runtime.GOOS)
+}
+
+// ValidateWithOS checks the configuration using the specified operating system.
+// Primarily used for concurrent testing of platform-specific options.
+func (c *Config) ValidateWithOS(goos string) error {
 	var errs []error
 
 	if err := c.General.validate(); err != nil {
@@ -28,7 +27,7 @@ func (c *Config) Validate() error {
 	if err := c.Downloads.validate(); err != nil {
 		errs = append(errs, fmt.Errorf("downloads: %w", err))
 	}
-	if err := c.PostProc.validate(); err != nil {
+	if err := c.PostProc.validateWithOS(goos); err != nil {
 		errs = append(errs, fmt.Errorf("postproc: %w", err))
 	}
 	if err := c.Notifications.validate(); err != nil {
@@ -181,14 +180,11 @@ func (d *DownloadConfig) validate() error {
 	return errors.Join(errs...)
 }
 
-var goos = runtime.GOOS // default to runtime.GOOS; overridden in tests
-
-// SetGOOSForTest overrides the OS used for platform-specific validation in tests.
-func SetGOOSForTest(s string) {
-	goos = s
+func (p *PostProcConfig) validate() error {
+	return p.validateWithOS(runtime.GOOS)
 }
 
-func (p *PostProcConfig) validate() error {
+func (p *PostProcConfig) validateWithOS(goos string) error {
 	var errs []error
 
 	if p.StrictSandbox && goos != "linux" {
