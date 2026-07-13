@@ -15,9 +15,10 @@ import (
 // It is intended for use in tests (unit, integration, and UI) to eliminate
 // duplicate mock definitions of the 20+-method interface.
 type NopApp struct {
-	Queue    *queue.Queue
-	History  *history.Repository
-	SpeedVal float64
+	Queue              *queue.Queue
+	History            *history.Repository
+	SpeedVal           float64
+	ServerSnapshotsVal []downloader.ServerSnapshot
 }
 
 var _ ApplicationReloader = (*NopApp)(nil)
@@ -64,8 +65,8 @@ func (n NopApp) ReloadGeneralOptions(config.GeneralConfig) {}
 // UnblockServer is a stub.
 func (n NopApp) UnblockServer(string) bool { return true }
 
-// ServerStatus is a stub.
-func (n NopApp) ServerStatus() []downloader.ServerSnapshot { return nil }
+// ServerStatus returns the configured mock server snapshots.
+func (n NopApp) ServerStatus() []downloader.ServerSnapshot { return n.ServerSnapshotsVal }
 
 // Speed returns the configured mock speed value.
 func (n NopApp) Speed() float64 { return n.SpeedVal }
