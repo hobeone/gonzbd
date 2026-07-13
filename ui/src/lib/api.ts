@@ -187,3 +187,49 @@ export async function uploadNzb(
 export async function fetchConfig(): Promise<ConfigResponse> {
 	return fetchJSON<ConfigResponse>(apiUrl('get_config'));
 }
+
+export interface StatusOverviewGeneral {
+	version: string;
+	commit: string;
+	build_date: string;
+	go_version: string;
+	uptime_seconds: number;
+	hostname: string;
+	local_ip: string;
+	config_path: string;
+	download_dir: string;
+	complete_dir: string;
+	admin_dir: string;
+	script_dir: string;
+	log_dir: string;
+	par2: { path: string; version: string };
+	unrar: { path: string; version: string };
+	sevenzip: { path: string; version: string };
+}
+
+export interface StatusOverviewSystem {
+	os: string;
+	arch: string;
+	article_cache_bytes: number;
+	download_dir_free_bytes: number;
+	min_free_space_bytes: number;
+}
+
+export interface StatusOverviewResponse {
+	status: boolean;
+	general: StatusOverviewGeneral;
+	system: StatusOverviewSystem;
+}
+
+export interface CheckUpdateResult {
+	status: 'up_to_date' | 'update_available' | 'unknown';
+	latest_version?: string;
+}
+
+export async function fetchStatusOverview(): Promise<StatusOverviewResponse> {
+	return fetchJSON<StatusOverviewResponse>(apiUrl('status_overview'));
+}
+
+export async function fetchCheckUpdate(): Promise<{ status: boolean; result: CheckUpdateResult }> {
+	return fetchJSON(apiUrl('status', { name: 'check_update' }));
+}
