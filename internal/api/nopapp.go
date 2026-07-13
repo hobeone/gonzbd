@@ -52,7 +52,7 @@ func (n NopApp) ResumeDownloads() {}
 func (n NopApp) DisconnectAll() {}
 
 // ReloadPostProcOptions is a stub.
-func (n NopApp) ReloadPostProcOptions(config.PostProcConfig, string) error { return nil }
+func (n NopApp) ReloadPostProcOptions(config.PostProcConfig, string) {}
 
 // ReloadDownloadOptions is a stub.
 func (n NopApp) ReloadDownloadOptions(config.DownloadConfig) {}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
@@ -180,8 +181,19 @@ func (d *DownloadConfig) validate() error {
 	return errors.Join(errs...)
 }
 
+var goos = runtime.GOOS // default to runtime.GOOS; overridden in tests
+
+// SetGOOSForTest overrides the OS used for platform-specific validation in tests.
+func SetGOOSForTest(s string) {
+	goos = s
+}
+
 func (p *PostProcConfig) validate() error {
 	var errs []error
+
+	if p.StrictSandbox && goos != "linux" {
+		errs = append(errs, fmt.Errorf("strict_sandbox is not supported on %s (only linux); disable strict_sandbox or run on linux", goos))
+	}
 
 	// Permissions must be valid 3- or 4-digit octal if set.
 	if p.Permissions != "" {

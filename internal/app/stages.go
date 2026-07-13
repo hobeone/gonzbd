@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"runtime"
 	"strconv"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
@@ -23,11 +22,6 @@ type binaryProbe struct {
 	UnrarInfo  unpack.UnrarInfo
 	SevenzInfo unpack.SevenzInfo
 }
-
-// goos is runtime.GOOS by default; tests override it to exercise
-// platform-specific validation (e.g. strict_sandbox rejection) without
-// needing to cross-compile or run on multiple real operating systems.
-var goos = runtime.GOOS
 
 // probeBinaries probes the three external tool binaries used by the
 // post-processing pipeline and logs what was found. Separated from
@@ -153,10 +147,6 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 		apiKey = c.General.APIKey
 		listenAddr = net.JoinHostPort(c.General.Host, strconv.Itoa(c.General.Port))
 	})
-
-	if strictSandbox && goos != "linux" {
-		return builtStages{}, fmt.Errorf("postproc.strict_sandbox is not supported on %s (only linux); disable strict_sandbox or run on linux", goos)
-	}
 
 	// Quick-check stage: relocate flat files into par2-expected subdirs
 	// and CRC-verify assembled files before repair runs. The stage is

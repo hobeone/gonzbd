@@ -74,11 +74,7 @@ type ApplicationReloader interface {
 	PauseDownloads()
 	ResumeDownloads()
 	DisconnectAll()
-	// ReloadPostProcOptions applies all hot-applicable postproc settings.
-	// Callers must pass a value snapshot taken without holding config.Config's
-	// lock (see internal/app/reloader.go) — never call from inside
-	// config.WithRead/With, as that would deadlock.
-	ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string) error
+	ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string)
 	// ReloadDownloadOptions applies all hot-applicable download settings.
 	// Same locking note as ReloadPostProcOptions.
 	ReloadDownloadOptions(d config.DownloadConfig)
