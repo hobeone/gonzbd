@@ -659,8 +659,7 @@ func TestConfigValidate_NotificationsWired(t *testing.T) {
 }
 
 func TestPostProcConfigValidate_StrictSandbox(t *testing.T) {
-	origGOOS := goos
-	defer func() { goos = origGOOS }()
+	t.Parallel()
 
 	tests := []struct {
 		platform string
@@ -677,9 +676,9 @@ func TestPostProcConfigValidate_StrictSandbox(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.platform+"_strict_"+strconv.FormatBool(tc.strict), func(t *testing.T) {
-			goos = tc.platform
+			t.Parallel()
 			p := PostProcConfig{StrictSandbox: tc.strict}
-			err := p.validate()
+			err := p.validateWithOS(tc.platform)
 			if tc.wantErr {
 				if err == nil {
 					t.Errorf("expected error for strict=%v on %s, got nil", tc.strict, tc.platform)
