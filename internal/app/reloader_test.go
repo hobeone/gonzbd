@@ -231,3 +231,66 @@ type eventCounter struct {
 func (e *eventCounter) Broadcast(ev Event) {
 	e.count++
 }
+
+func TestApplication_SetStrictSandbox_RejectedOnUnsupportedPlatform(t *testing.T) {
+	origGOOS := goos
+	defer func() { goos = origGOOS }()
+	goos = "darwin"
+
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+	// config.Default() seeds StrictSandbox=true outside Docker (see
+	// internal/config/defaults.go), which would otherwise trip Task 2's
+	// New()-time startup check before we ever reach SetStrictSandbox. Start
+	// disabled so New() succeeds, then flip it at runtime to exercise this
+	// task's rejection path specifically.
+	cfg.With(func(c *config.Config) {
+		c.PostProc.StrictSandbox = false
+	})
+	app, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer app.Shutdown()
+
+	if err := app.SetStrictSandbox(true); err == nil {
+		t.Fatal("expected error enabling strict_sandbox on darwin, got nil")
+	}
+}
+
+func TestApplication_SetStrictSandbox_NilUnpackStageSkipsPlatformGuard(t *testing.T) {
+	origGOOS := goos
+	defer func() { goos = origGOOS }()
+	goos = "darwin"
+
+	// app.unpackStage is nil here (zero-value Application, never built via
+	// New()), so there is no stage to guard and the goos check must not
+	// apply: SetStrictSandbox should apply directly, per the brief.
+	app := &Application{config: &config.Config{}}
+
+	if err := app.SetStrictSandbox(true); err != nil {
+		t.Fatalf("expected nil-unpackStage caller to bypass platform guard, got error: %v", err)
+	}
+}
+
+func TestApplication_ReloadPostProcOptions_PropagatesStrictSandboxError(t *testing.T) {
+	origGOOS := goos
+	defer func() { goos = origGOOS }()
+	goos = "darwin"
+
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+	// Same reasoning as above: start with StrictSandbox=false so New()
+	// succeeds on darwin, then exercise the rejection via ReloadPostProcOptions.
+	cfg.With(func(c *config.Config) {
+		c.PostProc.StrictSandbox = false
+	})
+	app, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer app.Shutdown()
+
+	pp := config.PostProcConfig{StrictSandbox: true}
+	if err := app.ReloadPostProcOptions(pp, ""); err == nil {
+		t.Fatal("expected ReloadPostProcOptions to propagate strict_sandbox rejection, got nil")
+	}
+}
