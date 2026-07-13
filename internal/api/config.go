@@ -27,6 +27,22 @@ var sabSectionReverse = map[string]string{
 	"general": "misc",
 }
 
+// resolveSection maps external SABnzbd section names (e.g. "misc") to internal ones ("general").
+func resolveSection(section string) string {
+	if internal, ok := sabSectionAlias[section]; ok {
+		return internal
+	}
+	return section
+}
+
+// externalSection maps internal section names (e.g. "general") to external SABnzbd ones ("misc").
+func externalSection(section string) string {
+	if external, ok := sabSectionReverse[section]; ok {
+		return external
+	}
+	return section
+}
+
 // modeGetConfig returns the current configuration as JSON.
 //
 // The response uses SABnzbd-compatible section names so that third-party
@@ -61,11 +77,7 @@ func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
 	// Remap internal section names → SABnzbd names (e.g. "general" → "misc").
 	remapped := make(map[string]json.RawMessage, len(full))
 	for k, v := range full {
-		if sabName, ok := sabSectionReverse[k]; ok {
-			remapped[sabName] = v
-		} else {
-			remapped[k] = v
-		}
+		remapped[externalSection(k)] = v
 	}
 
 	injectSABDefaults(remapped)
@@ -142,14 +154,9 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	section := formString(r, "section")
+	section := resolveSection(formString(r, "section"))
 	keyword := formString(r, "keyword")
 	value := formString(r, "value")
-
-	// Resolve SABnzbd section aliases (e.g. "misc" → "general").
-	if internal, ok := sabSectionAlias[section]; ok {
-		section = internal
-	}
 
 	if section == "" {
 		s.respondError(w, http.StatusBadRequest, "missing section")
@@ -196,59 +203,19 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Hot-apply postproc and download options for the next job.
-	//
-	// Snapshot the relevant config values under a brief read lock, then call
-	// into the app *after* releasing it. Reload*Options call Set* methods
-	// that themselves acquire config.Config's write lock (e.g.
-	// SetEnableFileJoin) — calling them while still holding the read lock
-	// would self-deadlock, since sync.RWMutex is not reentrant.
-	if s.app != nil {
-		switch section {
-		case "postproc":
-			var pp config.PostProcConfig
-			var scriptDir string
-			s.config.WithRead(func(cfg *config.Config) {
-				pp = cfg.PostProc
-				scriptDir = cfg.General.ScriptDir
-			})
-			s.app.ReloadPostProcOptions(pp, scriptDir)
-		case "downloads":
-			var d config.DownloadConfig
-			s.config.WithRead(func(cfg *config.Config) { d = cfg.Downloads })
-			s.app.ReloadDownloadOptions(d)
-		case "general":
-			var g config.GeneralConfig
-			s.config.WithRead(func(cfg *config.Config) { g = cfg.General })
-			s.app.ReloadGeneralOptions(g)
-		}
-	}
+	s.reloadSection(section)
 
 	// Hot-apply directory changes: create the directory and push it to the
 	// running application so future jobs use the new path immediately.
-	if section == "general" && s.app != nil && (keyword == "download_dir" || keyword == "complete_dir") {
-		var dir string
-		s.config.WithRead(func(cfg *config.Config) {
-			if keyword == "download_dir" {
-				dir = cfg.General.DownloadDir
-			} else {
-				dir = cfg.General.CompleteDir
-			}
-		})
-		if err := os.MkdirAll(dir, 0o750); err != nil {
-			s.log.Error("create directory", "keyword", keyword, "dir", dir, "error", err)
+	if section == "general" && (keyword == "download_dir" || keyword == "complete_dir") {
+		if warning := s.applyDirectoryChange(keyword); warning != "" {
 			respondJSON(w, http.StatusOK, map[string]any{
 				"status":  true,
 				"value":   value,
-				"warning": fmt.Sprintf("config saved but could not create %s: %v", dir, err),
+				"warning": warning,
 			})
 			return
 		}
-		if keyword == "download_dir" {
-			s.app.SetDownloadDir(dir)
-		} else {
-			s.app.SetCompleteDir(dir)
-		}
-		s.log.Info("directory updated", "keyword", keyword, "dir", dir)
 	}
 
 	respondOK(w, "value", value)
@@ -272,6 +239,60 @@ func (s *Server) applySpeedLimit() {
 	s.app.SetBandwidthMax(maxBytes)
 	s.app.SetBandwidthPerc(perc)
 	s.log.Info("speed limit applied", "bytes_per_sec", bytesPerSec, "bandwidth_max", maxBytes, "bandwidth_perc", perc)
+}
+
+// reloadSection handles the runtime reloading of section-specific configuration options.
+// Snapshotting the config is done under a read lock, and calling the reloader is done
+// after releasing it to prevent self-deadlock (since sync.RWMutex is not reentrant).
+func (s *Server) reloadSection(section string) {
+	if s.app == nil {
+		return
+	}
+	switch section {
+	case "postproc":
+		var pp config.PostProcConfig
+		var scriptDir string
+		s.config.WithRead(func(cfg *config.Config) {
+			pp = cfg.PostProc
+			scriptDir = cfg.General.ScriptDir
+		})
+		s.app.ReloadPostProcOptions(pp, scriptDir)
+	case "downloads":
+		var d config.DownloadConfig
+		s.config.WithRead(func(cfg *config.Config) { d = cfg.Downloads })
+		s.app.ReloadDownloadOptions(d)
+	case "general":
+		var g config.GeneralConfig
+		s.config.WithRead(func(cfg *config.Config) { g = cfg.General })
+		s.app.ReloadGeneralOptions(g)
+	}
+}
+
+// applyDirectoryChange handles the runtime directory creation and application for general config changes.
+// Returns a warning string if directory creation failed.
+func (s *Server) applyDirectoryChange(keyword string) string {
+	if s.app == nil {
+		return ""
+	}
+	var dir string
+	s.config.WithRead(func(cfg *config.Config) {
+		if keyword == "download_dir" {
+			dir = cfg.General.DownloadDir
+		} else {
+			dir = cfg.General.CompleteDir
+		}
+	})
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		s.log.Error("create directory", "keyword", keyword, "dir", dir, "error", err)
+		return fmt.Sprintf("config saved but could not create %s: %v", dir, err)
+	}
+	if keyword == "download_dir" {
+		s.app.SetDownloadDir(dir)
+	} else {
+		s.app.SetCompleteDir(dir)
+	}
+	s.log.Info("directory updated", "keyword", keyword, "dir", dir)
+	return ""
 }
 
 // modeConfig handles mode=config with sub-actions via name= parameter.
