@@ -21,13 +21,14 @@ tab, covering:
 
 1. **General Info** — version/commit/build date, uptime, config file path,
    Go version, hostname, local/public IP, resolved par2/unrar/7z binary
-   paths (version strings for unrar/7z, which the existing probe already
-   captures via `unpack.UnrarInfo.VersionStr`/`unpack.SevenzInfo.Version`;
-   par2 shows path only — `par2.Caps` tracks capability flags, not a
-   version string, and adding one is out of scope here), and a
-   GitHub-release version check (replaces NZBGet's "Updates" section —
-   gonzbd has no auto-updater, so this is informational only: "up to date"
-   vs. "vX.Y.Z available").
+   paths+versions (all three already captured by the existing startup
+   probe: `unpack.UnrarInfo.VersionStr`, `unpack.SevenzInfo.Version`, and
+   `par2.Caps.Version` — populated via `par2.DetectCapabilities` at
+   `internal/app/stages.go:43`; no new detection logic needed, this
+   corrects an earlier version of this spec that incorrectly assumed par2
+   had no version field), and a GitHub-release version check (replaces
+   NZBGet's "Updates" section — gonzbd has no auto-updater, so this is
+   informational only: "up to date" vs. "vX.Y.Z available").
 2. **News Servers** — per-server passive status (reusing the existing
    WebSocket-pushed data already shown in `ServerStatusPanel`) plus a new
    **"Test Connection"** action per server.
@@ -84,7 +85,7 @@ the backend stays inside the existing, consistent mode-dispatch pattern.
       "hostname": "...", "local_ip": "...", "public_ip": "...",
       "config_path": "...", "download_dir": "...", "complete_dir": "...",
       "admin_dir": "...", "script_dir": "...", "log_dir": "...",
-      "par2": {"path": "..."},
+      "par2": {"path": "...", "version": "..."},
       "unrar": {"path": "...", "version": "..."},
       "sevenzip": {"path": "...", "version": "..."},
       "update_check": {"status": "up_to_date|update_available|unknown", "latest_version": "v1.3.0"}
@@ -152,16 +153,21 @@ SABnzbd-compat mode.
 - **Article cache memory usage**: already tracked via an `atomic.Int64` in
   `internal/assembler` per existing architecture — needs a getter exposed
   up through `Application`.
-- **GitHub release check**: a small background component with its own
-  goroutine tied to the application's shutdown context (per the project's
-  goroutine-lifecycle convention), periodically calling
-  `GET https://api.github.com/repos/hobeone/gonzbd/releases/latest`,
-  caching the result, and comparing against the build's `Version` (a
-  `vX.Y.Z` string; `"dev"` builds report `status: "unknown"` and skip
-  comparison). Uses `golang.org/x/mod/semver` (already present transitively
-  in the module graph, not a new external dependency) for the comparison.
-  Degrades to `status: "unknown"` if GitHub is unreachable — never blocks
-  the status page or returns an error for this reason alone.
+- **GitHub release check**: a one-off, synchronous call made *inside* the
+  `status_overview` handler itself when the status page is loaded or
+  manually refreshed — no background goroutine, no continuous polling.
+  Calls `GET https://api.github.com/repos/hobeone/gonzbd/releases/latest`
+  with a short bounded timeout (e.g. 3s, via `context.WithTimeout` on the
+  request context) and compares the result against the build's `Version`
+  (a `vX.Y.Z` string; `"dev"` builds report `status: "unknown"` and skip
+  the network call entirely). Uses `golang.org/x/mod/semver` (already
+  present transitively in the module graph, not a new external dependency)
+  for the comparison. On timeout/network error/non-2xx response, reports
+  `status: "unknown"` — this never fails the whole `status_overview`
+  request, it only affects the `update_check` field within it. No
+  in-process caching between requests; since this only fires when a human
+  opens/refreshes the status page (not polled by anything), GitHub's
+  unauthenticated rate limit (60 req/hr/IP) is not a practical concern here.
 
 ## UI
 
