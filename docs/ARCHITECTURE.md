@@ -143,9 +143,11 @@ enforced differently depending on how they run:
 1. **OS-level sandboxing** (`internal/cmdutil.BuildSandboxedCommand`): wraps
    the subprocess with `bwrap`, restricting filesystem writes to the job's
    directory at the kernel level. Linux is the only platform with a working
-   backend — `strict_sandbox: true` on any other platform is rejected at
-   startup (`internal/app.buildStages`) and at live config reload
-   (`UnpackStage.SetStrictSandbox`), rather than deferring the failure to the
+   backend — the Linux-only constraint on `strict_sandbox: true` is enforced
+   centrally by `internal/config.PostProcConfig.validate()`, which runs on
+   every config load and on every `Config.Set()` call (see
+   `internal/config/set.go`). This rejects an unsupported combination before
+   it is ever persisted or applied, rather than deferring the failure to the
    first extraction attempt. On Linux, `strict_sandbox: true` makes
    `BuildSandboxedCommand` return `ErrSandboxUnavailable` (aborting
    extraction) if `bwrap` can't be found; `false` falls back to running the
