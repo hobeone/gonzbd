@@ -107,9 +107,11 @@ In `internal/assembler/assembler.go`, add to the `Assembler` struct (near the ex
 ```go
 	// cacheUsedBytes mirrors writeCache.used so it can be read safely from
 	// goroutines other than the worker goroutine (writeCache itself is
-	// documented as single-goroutine, no-lock). Updated once per
-	// dispatchRequest call via a defer, covering every path that can
-	// mutate writeCache.used (processRequest, wc.forget on job cancel).
+	// documented as single-goroutine, no-lock). Updated after every
+	// dispatchRequest call (via defer, covering processRequest and
+	// wc.forget on job cancel) and again after the shutdown drain
+	// (flushWriteCache in worker()), so it stays accurate through the
+	// only two places writeCache.used can change.
 	cacheUsedBytes atomic.Int64
 ```
 
@@ -123,7 +125,7 @@ func (a *Assembler) CacheUsageBytes() int64 {
 }
 ```
 
-- [ ] **Step 4: Update dispatchRequest to maintain the mirror**
+- [ ] **Step 4: Update dispatchRequest and the shutdown drain to maintain the mirror**
 
 In `internal/assembler/assembler.go`, modify `dispatchRequest` (around line 517) to add a `defer` as its first statement:
 
@@ -140,7 +142,26 @@ func (a *Assembler) dispatchRequest(
 	if req.JobID == "" && req.FileIdx == -1 {
 ```
 
-(Everything else in the function body is unchanged — the `defer` fires on every return path: the cancel-message path at `return 0` (line ~545), the already-cancelled-job path at `return 0` (line ~549), and the normal path at `return 1` (line ~552), covering every way `wc.used` can change inside this call.)
+(Everything else in the function body is unchanged — the `defer` fires on every return path: the cancel-message path at `return 0` (line ~545), the already-cancelled-job path at `return 0` (line ~549), and the normal path at `return 1` (line ~552).)
+
+`dispatchRequest` covers every mutation of `wc.used` reached through it (`processRequest`, `wc.forget`), but there is a second, separate mutation site: the shutdown-drain path in `worker()` calls `a.flushWriteCache(wc, open)` directly (not through `dispatchRequest`) when the request channel is fully drained after `stopCh` closes — around line 497:
+
+```go
+			default:
+				// Drain all cached articles to disk before shutdown.
+				a.flushWriteCache(wc, open)
+```
+
+Add the mirror update immediately after that call:
+
+```go
+			default:
+				// Drain all cached articles to disk before shutdown.
+				a.flushWriteCache(wc, open)
+				a.cacheUsedBytes.Store(wc.used)
+```
+
+With both sites updated, the mirror is accurate through every place `wc.used` can change — not just the common case.
 
 - [ ] **Step 5: Run the test to verify it passes**
 
@@ -177,7 +198,8 @@ feat(assembler): expose thread-safe write-cache usage counter
 
 writeCache.used is a plain int64, safe only because writeCache runs
 exclusively on the assembler's worker goroutine. Add an atomic.Int64
-mirror on Assembler, updated once per dispatchRequest call via defer,
+mirror on Assembler, updated after every dispatchRequest call and
+after the shutdown drain (the two places writeCache.used can change),
 so other goroutines (the new status page's backend) can read current
 cache usage without racing.
 
@@ -873,7 +895,7 @@ func (s *Server) modeStatusOverview(w http.ResponseWriter, _ *http.Request) {
 }
 ```
 
-(Note: public IP is deliberately omitted from this handler even though the spec lists it — `about.go`'s public-IP lookup takes up to ~3s via two concurrent external HTTP calls; carrying that same cost into every status-page load/refresh would reintroduce exactly the kind of avoidable external-network latency Task 7's `check_update` split is designed to avoid. If public IP is wanted here, it should follow the same "separate, independently-fetched, non-blocking" pattern as `check_update` — flag this as a discovered scope note rather than silently adding a second slow network call to this handler.)
+(Public IP is deliberately excluded from this handler — the spec was amended during planning to reflect this decision, see its General Info section: `about.go`'s public-IP lookup takes up to ~3s via two concurrent external HTTP calls, and carrying that same cost into every status-page load/refresh would reintroduce exactly the kind of avoidable external-network latency the separate `check_update` endpoint (Task 7) exists to avoid. This is settled scope, not a gap to fill in — do not add it back into this handler.)
 
 - [ ] **Step 5: Register the mode**
 
@@ -1016,7 +1038,70 @@ func TestModeStatus_TestConnection_UnreachableHost(t *testing.T) {
 		t.Error("expected a non-empty error message")
 	}
 }
+
+// TestModeStatus_TestConnection_ServerUnavailableSetsLikelyConnectionLimit
+// proves the likely_connection_limit classification, which none of the
+// other tests exercise (they hit "connection refused"/"not found", never
+// a 502/503 NNTP response). Stands up a minimal raw TCP listener that
+// writes a 502 greeting — the exact response most providers send when
+// an account's connection limit is already in use — instead of using
+// internal/nntp/nntptest's Scripted server, which always sends a
+// successful 200/201 greeting (it's built for article-fetch scenarios,
+// not greeting-rejection ones).
+func TestModeStatus_TestConnection_ServerUnavailableSetsLikelyConnectionLimit(t *testing.T) {
+	t.Parallel()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return // listener closed by test cleanup; nothing to serve
+		}
+		defer func() { _ = conn.Close() }()
+		_, _ = conn.Write([]byte("502 Too many connections from your account\r\n"))
+	}()
+
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("SplitHostPort: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("Atoi(%q): %v", portStr, err)
+	}
+
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	cfg.With(func(c *config.Config) {
+		c.General.APIKey = testAPIKey
+		c.Servers = []config.ServerConfig{{
+			Name: "s1", Host: host, Port: port, Connections: 1, Timeout: 5,
+		}}
+	})
+	s := New(Options{Config: cfg})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=status&name=test_connection&value=s1&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	m := decodeJSON(t, rr)
+	result := m["result"].(map[string]any)
+	if result["ok"] != false {
+		t.Errorf("result.ok = %v; want false", result["ok"])
+	}
+	if result["likely_connection_limit"] != true {
+		t.Errorf("result.likely_connection_limit = %v; want true for a 502 greeting", result["likely_connection_limit"])
+	}
+}
 ```
+
+(Add `"net"` and `"strconv"` to this test file's imports.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1122,7 +1207,7 @@ In `internal/api/status.go`, add a new `case` to `modeStatus`'s switch (`:48-56`
 go test ./internal/api/... -run TestModeStatus_TestConnection -v
 ```
 
-Expected: all three PASS. (The unreachable-host test connecting to `127.0.0.1:1` should fail fast — typically "connection refused" — well within the 10s bound; if it's flaky in CI due to environment-specific port behavior, that's a signal to adjust the test's target, not the production timeout.)
+Expected: all four PASS. (The unreachable-host test connecting to `127.0.0.1:1` should fail fast — typically "connection refused" — well within the 10s bound; if it's flaky in CI due to environment-specific port behavior, that's a signal to adjust the test's target, not the production timeout. The new 502-greeting test's raw listener should also respond well within the timeout since it's local.)
 
 - [ ] **Step 5: Run the full api package suite and quality gates**
 
@@ -1377,9 +1462,65 @@ func TestModeStatus_CheckUpdate_DevBuildSkipsNetworkCall(t *testing.T) {
 		t.Errorf("result.status = %v; want unknown for a dev build", result["status"])
 	}
 }
+
+// TestModeStatus_CheckUpdate_StatusMapping exercises statusCheckUpdate's
+// full status-mapping logic (up_to_date / update_available / unknown on
+// error) end-to-end via HTTP, using an httptest.Server in place of the
+// real GitHub API by overriding the githubLatestReleaseURL var. Without
+// this, only compareVersions itself (a pure function) would be tested,
+// leaving the 3-line mapping in statusCheckUpdate uncovered.
+func TestModeStatus_CheckUpdate_StatusMapping(t *testing.T) {
+	tests := []struct {
+		name           string
+		runningVersion string
+		latestTag      string
+		serverStatus   int
+		wantStatus     string
+		wantLatest     string
+	}{
+		{"up to date", "v1.2.0", "v1.2.0", http.StatusOK, "up_to_date", "v1.2.0"},
+		{"update available", "v1.2.0", "v1.3.0", http.StatusOK, "update_available", "v1.3.0"},
+		{"github error status", "v1.2.0", "", http.StatusInternalServerError, "unknown", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.serverStatus)
+				if tc.serverStatus == http.StatusOK {
+					_ = json.NewEncoder(w).Encode(map[string]string{"tag_name": tc.latestTag})
+				}
+			}))
+			defer github.Close()
+
+			origURL := githubLatestReleaseURL
+			githubLatestReleaseURL = github.URL
+			defer func() { githubLatestReleaseURL = origURL }()
+
+			cfg, err := config.Default()
+			if err != nil {
+				t.Fatalf("Default(): %v", err)
+			}
+			cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
+			s := New(Options{Version: tc.runningVersion, Config: cfg})
+
+			rr := apiGet(t, s.Handler(), "/api?mode=status&name=check_update&apikey="+testAPIKey)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+			}
+			m := decodeJSON(t, rr)
+			result := m["result"].(map[string]any)
+			if result["status"] != tc.wantStatus {
+				t.Errorf("result.status = %v; want %v", result["status"], tc.wantStatus)
+			}
+			if tc.wantLatest != "" && result["latest_version"] != tc.wantLatest {
+				t.Errorf("result.latest_version = %v; want %v", result["latest_version"], tc.wantLatest)
+			}
+		})
+	}
+}
 ```
 
-(Add `"net/http"` and `"github.com/hobeone/gonzbd/internal/config"` to this test file's imports.)
+(Add `"net/http"`, `"net/http/httptest"`, `"encoding/json"`, and `"github.com/hobeone/gonzbd/internal/config"` to this test file's imports. Note this test cannot use `t.Parallel()` at the outer level since it mutates the shared package-level `githubLatestReleaseURL` var — the subtests run sequentially, which is fine since each restores the var via `defer` before the next begins.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1412,7 +1553,13 @@ import (
 // status page.
 const checkUpdateTimeout = 3 * time.Second
 
-const githubLatestReleaseURL = "https://api.github.com/repos/hobeone/gonzbd/releases/latest"
+// githubLatestReleaseURL is a var, not a const, specifically so tests can
+// point it at a local httptest.Server instead of the real GitHub API —
+// the same test-seam pattern already used elsewhere in this codebase
+// (e.g. internal/cmdutil's `var lookPath = exec.LookPath`). Without this,
+// statusCheckUpdate's status-mapping logic (up_to_date/update_available)
+// would be untestable without hitting the real network.
+var githubLatestReleaseURL = "https://api.github.com/repos/hobeone/gonzbd/releases/latest"
 
 // statusCheckUpdate compares the running build's version against the
 // latest GitHub release. Reports status "unknown" (never an HTTP error)
@@ -1836,7 +1983,9 @@ EOF
 - Modify: `ui/src/lib/api.ts` (add `testConnection` helper)
 
 **Interfaces:**
-- Consumes: `getServerStats()` (existing, `$lib/stores/queue.svelte.ts` or `telemetry.svelte.ts`), `mode=status&name=test_connection` (Task 5), `postAction` (existing, `$lib/api.ts`).
+- Consumes: `getServerStats()`, `startTelemetry()`/`stopTelemetry()` (existing, `$lib/stores/telemetry.svelte.ts`), `mode=status&name=test_connection` (Task 5), `postAction` (existing, `$lib/api.ts`).
+
+**Context — important correction to Task 8's framing:** `getServerStats()` reads a module-singleton store that only receives data while a WebSocket subscription is active. That subscription is reference-counted (`ui/src/lib/stores/websocket.svelte.ts:77-88`: `subscribe()` opens the socket on the first handler, closes it on the last) and is only started by calling `startTelemetry()` (`ui/src/lib/stores/telemetry.svelte.ts:73-74`). Today, the only caller of `startTelemetry()` is `queue.svelte.ts`'s `start()` (`queue.svelte.ts:51-53`), which is invoked exclusively by the main dashboard's `onMount` (`ui/src/routes/+page.svelte`). The root `+layout.svelte` starts nothing but the theme. **This means a standalone `/status` route that never calls `startTelemetry()` itself will render an empty News Servers section on direct load/refresh/bookmark** (the primary way a user reaches this page) — there is no other code path that starts the subscription for it. Task 8's "Context" note describing the server-stats store as "already live via WebSocket" is only true *while the main dashboard page is also mounted*; it does not hold for this route in isolation. This task must start and stop the subscription itself, scoped to this page's own lifecycle — importing `queue.svelte.ts`'s wrapper is unnecessary and would incorrectly also start queue polling that this page doesn't use, so import `startTelemetry`/`stopTelemetry` directly from `telemetry.svelte.ts` instead.
 
 - [ ] **Step 1: Add the test-connection helper to `ui/src/lib/api.ts`**
 
@@ -1855,15 +2004,28 @@ export async function testServerConnection(name: string): Promise<{ status: bool
 
 - [ ] **Step 2: Add the News Servers section to the page**
 
-Extend `ui/src/routes/status/+page.svelte`'s `<script>` block:
+Extend `ui/src/routes/status/+page.svelte`'s `<script>` block. Add `onDestroy` to the existing `import { onMount } from 'svelte';` line from Task 8 (making it `import { onMount, onDestroy } from 'svelte';`), then add:
 
 ```ts
 	import { getServerStats } from '$lib/stores/queue.svelte';
+	import { startTelemetry, stopTelemetry } from '$lib/stores/telemetry.svelte';
 	import { testServerConnection, type TestConnectionResult } from '$lib/api';
 
 	let servers = $derived(getServerStats());
 	let testingServer = $state<string | null>(null);
 	let connectionResults = $state<Record<string, TestConnectionResult>>({});
+
+	// This page is the only route that renders server data outside the
+	// main dashboard, so it must start its own WebSocket subscription
+	// (reference-counted — see Context above) rather than assuming one is
+	// already running. Symmetric stop on unmount so a repeat visit to
+	// /status doesn't leak a duplicate handler.
+	onMount(() => {
+		startTelemetry();
+	});
+	onDestroy(() => {
+		stopTelemetry();
+	});
 
 	async function runConnectionTest(name: string) {
 		testingServer = name;
@@ -1940,7 +2102,7 @@ Add the section markup, after the System Info section (verify exact `ServerSnaps
 
 - [ ] **Step 3: Manually verify in a browser**
 
-With a real (or test) NNTP server configured, load `/status`, click "Test Connection" on a server row, and confirm the result renders inline. If possible, verify the 502/503 "likely_connection_limit" messaging by temporarily configuring a server with all connections already saturated by an active download.
+**Load `/status` by typing the URL directly (or a hard refresh) — not by clicking a nav link from the dashboard** — and confirm the News Servers section actually populates. This specifically exercises the `startTelemetry()` wiring from Step 2: navigating from the dashboard would appear to work even if that wiring were missing, because the dashboard's own subscription is often still tearing down/overlapping. A direct load is the case that was broken before this task's fix. Then, with a real (or test) NNTP server configured, click "Test Connection" on a server row and confirm the result renders inline. If possible, verify the 502/503 "likely_connection_limit" messaging by temporarily configuring a server with all connections already saturated by an active download.
 
 - [ ] **Step 4: Build and confirm**
 
@@ -1958,10 +2120,13 @@ git add ui/src/routes/status/+page.svelte ui/src/lib/api.ts
 git commit -m "$(cat <<'EOF'
 feat(ui): add News Servers section with Test Connection to /status
 
-Reuses the existing WebSocket-pushed server-stats store (no new
-data-fetching path for server data) and adds a per-server on-demand
-connection test, surfacing a softer message when the failure looks
-like an exhausted connection limit rather than a real config problem.
+Reuses the existing WebSocket-pushed server-stats store rather than
+building a new data-fetching path for server data, starting and
+stopping the subscription on this page's own mount/unmount since it's
+the only route besides the dashboard that renders it. Adds a
+per-server on-demand connection test, surfacing a softer message when
+the failure looks like an exhausted connection limit rather than a
+real config problem.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
