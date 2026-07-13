@@ -1552,6 +1552,53 @@ func TestAssembler_StopWaitGroup(t *testing.T) {
 	}
 }
 
+func TestAssembler_CacheUsageBytes_TracksBufferedBytes(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 3) // 3-part file
+
+	opts := makeOpts(dir, files)
+	opts.WriteCacheBytes = 1 << 20 // 1 MiB — caching enabled
+	a := startAssembler(t, opts)
+
+	if got := a.CacheUsageBytes(); got != 0 {
+		t.Fatalf("CacheUsageBytes() before any writes = %d, want 0", got)
+	}
+
+	// Write 2 of the file's 3 parts. Both stay buffered (well under the
+	// 512KB coalescing threshold) since the file isn't complete yet, so
+	// CacheUsageBytes must eventually reflect the buffered bytes before
+	// the 3rd (completing) write drains them to disk.
+	//
+	// WriteArticle only enqueues onto a channel (a.reqs <- req) and
+	// returns immediately — it does not wait for the worker goroutine to
+	// actually process the request. Poll to wait for the worker to process
+	// both articles.
+	for i := range 2 {
+		req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: int64(i * 4), Data: []byte("XXXX")}
+		if err := a.WriteArticle(t.Context(), req); err != nil {
+			t.Fatalf("WriteArticle: %v", err)
+		}
+	}
+
+	// Poll until we see the buffered bytes from both articles.
+	// The cache tracks bytes added to writeCache.used, updated after
+	// each dispatchRequest call via defer.
+	waitUntil(t, func() bool { return a.CacheUsageBytes() >= 8 }, 2*time.Second, "cache reaches at least 8 bytes")
+
+	// Complete the file (3rd part) — this drains all buffered articles.
+	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 8, Data: []byte("XXXX")}
+	if err := a.WriteArticle(t.Context(), req); err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := a.CacheUsageBytes(); got != 0 {
+		t.Errorf("CacheUsageBytes() after drain = %d, want 0", got)
+	}
+}
+
 // Dummy references to satisfy scripts/check_test_alignment. These are internal
 // goroutine workers or helper methods called in background processing.
 var (
