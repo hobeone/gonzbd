@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -86,6 +87,15 @@ type ApplicationReloader interface {
 	// Speed returns the current aggregate download speed in bytes/sec.
 	Speed() float64
 	DirectUnpackStatus(jobID string) (directunpack.Status, bool)
+	// BinaryVersionsInfo returns resolved external-tool version strings
+	// captured at startup, for the status page.
+	BinaryVersionsInfo() app.BinaryVersions
+	// ArticleCacheBytes returns current write-cache usage, for the status page.
+	ArticleCacheBytes() int64
+	// DownloadDirFreeBytes returns free disk space on the download directory.
+	DownloadDirFreeBytes() (int64, error)
+	// TestDownloadDirWriteSpeedMBPerSec runs an on-demand disk write-speed test.
+	TestDownloadDirWriteSpeedMBPerSec(ctx context.Context) (float64, error)
 }
 
 // Server is the HTTP API server. It owns the mode dispatch table and

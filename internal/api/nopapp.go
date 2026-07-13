@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/downloader"
@@ -98,3 +99,15 @@ func (n NopApp) RemoveHistoryJob(ctx context.Context, id string, deleteFiles boo
 func (n NopApp) DirectUnpackStatus(jobID string) (directunpack.Status, bool) {
 	return directunpack.Status{}, false
 }
+
+// BinaryVersionsInfo is a stub.
+func (n NopApp) BinaryVersionsInfo() app.BinaryVersions { return app.BinaryVersions{} }
+
+// ArticleCacheBytes is a stub.
+func (n NopApp) ArticleCacheBytes() int64 { return 0 }
+
+// DownloadDirFreeBytes is a stub.
+func (n NopApp) DownloadDirFreeBytes() (int64, error) { return 0, nil }
+
+// TestDownloadDirWriteSpeedMBPerSec is a stub.
+func (n NopApp) TestDownloadDirWriteSpeedMBPerSec(context.Context) (float64, error) { return 0, nil }
