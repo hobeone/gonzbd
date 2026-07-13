@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"reflect"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -158,15 +156,13 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Capture the pre-change value of the postproc keyword being set, so a
-	// rejected ReloadPostProcOptions (e.g. strict_sandbox unsupported on
-	// this platform) can be rolled back below rather than leaving a
-	// value on disk that will fail the startup guard on next restart.
-	var prevPostProcValue string
-	var havePrevPostProcValue bool
+	// Snapshot the entire postproc config section before applying changes.
+	// If the hot reload fails below, we can roll back the entire struct
+	// in memory and on disk.
+	var prevPostProc config.PostProcConfig
 	if section == "postproc" {
 		s.config.WithRead(func(cfg *config.Config) {
-			prevPostProcValue, havePrevPostProcValue = fieldStringByTag(reflect.ValueOf(cfg.PostProc), keyword)
+			prevPostProc = cfg.PostProc
 		})
 	}
 
@@ -227,17 +223,13 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 			})
 			if err := s.app.ReloadPostProcOptions(pp, scriptDir); err != nil {
 				s.log.Error("reload postproc options", "error", err)
-				// The rejected value was already persisted above. Roll it
-				// back in memory and on disk so a subsequent process
-				// restart doesn't hit the startup guard for a value the
-				// live reload never actually accepted.
-				if havePrevPostProcValue {
-					if rbErr := s.config.Set(section, keyword, prevPostProcValue); rbErr != nil {
-						s.log.Error("rollback postproc config", "keyword", keyword, "error", rbErr)
-					} else if s.configPath != "" {
-						if saveErr := s.config.Save(s.configPath); saveErr != nil {
-							s.log.Error("persist rollback postproc config", "path", s.configPath, "error", saveErr)
-						}
+				// Roll back the entire struct in-memory and re-persist to disk.
+				s.config.With(func(cfg *config.Config) {
+					cfg.PostProc = prevPostProc
+				})
+				if s.configPath != "" {
+					if saveErr := s.config.Save(s.configPath); saveErr != nil {
+						s.log.Error("persist rollback postproc config", "path", s.configPath, "error", saveErr)
 					}
 				}
 				respondJSON(w, http.StatusOK, map[string]any{
@@ -287,51 +279,6 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondOK(w, "value", value)
-}
-
-// fieldStringByTag reads the current value of the struct field tagged with
-// the given json/yaml keyword from v, returning it in the same string form
-// that config.Config.Set accepts for that field's type. This lets a caller
-// snapshot a value before Set overwrites it, then feed the string straight
-// back into Set to roll back the change. Returns ok=false if no field with
-// that tag exists.
-func fieldStringByTag(v reflect.Value, tagValue string) (str string, ok bool) {
-	t := v.Type()
-	for i := range t.NumField() {
-		field := t.Field(i)
-		tag := field.Tag.Get("json")
-		if tag == "" {
-			tag = field.Tag.Get("yaml")
-		}
-		if strings.Split(tag, ",")[0] != tagValue {
-			continue
-		}
-		return stringifyFieldValue(v.Field(i)), true
-	}
-	return "", false
-}
-
-// stringifyFieldValue converts a struct field's reflect.Value back into the
-// string form accepted by config.Config.Set for that field's type.
-func stringifyFieldValue(fv reflect.Value) string {
-	if s, isStringer := fv.Interface().(fmt.Stringer); isStringer {
-		return s.String()
-	}
-	switch fv.Kind() {
-	case reflect.Bool:
-		return strconv.FormatBool(fv.Bool())
-	case reflect.String:
-		return fv.String()
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return strconv.FormatInt(fv.Int(), 10)
-	case reflect.Slice:
-		if b, err := json.Marshal(fv.Interface()); err == nil {
-			return string(b)
-		}
-		return "[]"
-	default:
-		return fmt.Sprintf("%v", fv.Interface())
-	}
 }
 
 // applySpeedLimit reads bandwidth_max and bandwidth_perc from the live
