@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"sync"
@@ -19,11 +18,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
-
-// goos is runtime.GOOS by default; tests override it to exercise
-// platform-specific validation without needing to run on multiple
-// real operating systems.
-var goos = runtime.GOOS
 
 // UnpackStage extracts downloaded archives during post-processing.
 type UnpackStage struct {
@@ -199,16 +193,10 @@ func (u *UnpackStage) SetIgnoreUnrarDates(v bool) {
 }
 
 // SetStrictSandbox updates strict sandbox setting at runtime. Thread-safe.
-// Returns an error, leaving the setting unchanged, if v is true and the
-// current platform has no working sandbox backend (only linux does).
-func (u *UnpackStage) SetStrictSandbox(v bool) error {
-	if v && goos != "linux" {
-		return fmt.Errorf("postproc.strict_sandbox is not supported on %s (only linux); disable strict_sandbox or run on linux", goos)
-	}
+func (u *UnpackStage) SetStrictSandbox(v bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.BaseOpts.Sandbox.Strict = v
-	return nil
 }
 
 // Name returns the stage identifier.

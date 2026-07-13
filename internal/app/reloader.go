@@ -2,7 +2,6 @@ package app
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"maps"
 	"time"
@@ -21,7 +20,7 @@ import (
 // config.Config's lock: several of the Set* calls below acquire that lock
 // themselves (e.g. SetEnableFileJoin), so calling this from inside
 // cfg.WithRead/With would deadlock (sync.RWMutex is not reentrant).
-func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string) error {
+func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string) {
 	app.SetQuickCheckEnabled(pp.EnableQuickCheck)
 	app.SetParCleanup(pp.EnableParCleanup)
 	app.SetRarCleanup(pp.EnableRarCleanup)
@@ -56,7 +55,6 @@ func (app *Application) ReloadPostProcOptions(pp config.PostProcConfig, scriptDi
 	app.SetEnable7zip(pp.Enable7zip)
 	app.SetPar2Turbo(pp.Par2Turbo)
 	app.SetIgnoreUnrarDates(pp.IgnoreUnrarDates)
-	return app.SetStrictSandbox(pp.StrictSandbox)
 }
 
 // ReloadDownloadOptions applies all hot-applicable download settings from d
@@ -393,33 +391,6 @@ func (app *Application) SetIgnoreUnrarDates(v bool) {
 	if app.unpackStage != nil {
 		app.unpackStage.SetIgnoreUnrarDates(v)
 	}
-}
-
-// SetStrictSandbox updates strict sandboxing option at runtime. Thread-safe.
-// Returns an error, leaving the setting unchanged, if v is true and the
-// current platform has no working sandbox backend (only linux does).
-//
-// The goos check here duplicates the one in internal/postproc.UnpackStage.
-// SetStrictSandbox: that check guards against postproc's own package-level
-// goos var, which is independent of this package's goos var (Task 2's
-// buildStages check) and cannot be overridden from outside internal/postproc.
-// Checking here too keeps this layer's rejection behavior directly testable
-// from internal/app and gives an early, cheap rejection before touching the
-// stage. If app.unpackStage is nil there is no stage to guard, so the check
-// is skipped and the setting is applied directly.
-func (app *Application) SetStrictSandbox(v bool) error {
-	if app.unpackStage != nil {
-		if v && goos != "linux" {
-			return fmt.Errorf("postproc.strict_sandbox is not supported on %s (only linux); disable strict_sandbox or run on linux", goos)
-		}
-		if err := app.unpackStage.SetStrictSandbox(v); err != nil {
-			return err
-		}
-	}
-	app.config.With(func(c *config.Config) {
-		c.PostProc.StrictSandbox = v
-	})
-	return nil
 }
 
 // SetSanitizeOptions updates the filename sanitization options used for new

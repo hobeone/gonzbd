@@ -2,7 +2,6 @@ package app
 
 import (
 	"log/slog"
-	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -134,55 +133,6 @@ func TestBuildStages_BadExtraUnrarParams(t *testing.T) {
 	_, err := testBuildStages(cfg, discardLog(), emptyProbe())
 	if err == nil {
 		t.Fatal("expected error for bad ExtraUnrarParams, got nil")
-	}
-}
-
-func TestBuildStages_StrictSandboxRejectedOnUnsupportedPlatform(t *testing.T) {
-	origGOOS := goos
-	defer func() { goos = origGOOS }()
-
-	goos = "darwin"
-	cfg := Config{
-		DownloadDir:   t.TempDir(),
-		CompleteDir:   t.TempDir(),
-		StrictSandbox: true,
-	}
-	_, err := testBuildStages(cfg, discardLog(), emptyProbe())
-	if err == nil {
-		t.Fatal("expected error for strict_sandbox=true on darwin, got nil")
-	}
-	if !strings.Contains(err.Error(), "darwin") {
-		t.Errorf("error = %q, want it to mention the platform (darwin)", err.Error())
-	}
-}
-
-func TestBuildStages_StrictSandboxAllowedOnLinux(t *testing.T) {
-	origGOOS := goos
-	defer func() { goos = origGOOS }()
-
-	goos = "linux"
-	cfg := Config{
-		DownloadDir:   t.TempDir(),
-		CompleteDir:   t.TempDir(),
-		StrictSandbox: true,
-	}
-	if _, err := testBuildStages(cfg, discardLog(), emptyProbe()); err != nil {
-		t.Fatalf("buildStages: unexpected error on linux: %v", err)
-	}
-}
-
-func TestBuildStages_NonStrictSandboxAllowedOnUnsupportedPlatform(t *testing.T) {
-	origGOOS := goos
-	defer func() { goos = origGOOS }()
-
-	goos = "darwin"
-	cfg := Config{
-		DownloadDir:   t.TempDir(),
-		CompleteDir:   t.TempDir(),
-		StrictSandbox: false,
-	}
-	if _, err := testBuildStages(cfg, discardLog(), emptyProbe()); err != nil {
-		t.Fatalf("buildStages: unexpected error for strict_sandbox=false on darwin: %v", err)
 	}
 }
 

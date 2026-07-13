@@ -1362,9 +1362,7 @@ func TestUnpackStage_SetStrictSandbox(t *testing.T) {
 		},
 	}, false)
 
-	if err := s.SetStrictSandbox(false); err != nil {
-		t.Fatalf("SetStrictSandbox(false): unexpected error: %v", err)
-	}
+	s.SetStrictSandbox(false)
 	s.mu.RLock()
 	strict := s.BaseOpts.Sandbox.Strict
 	s.mu.RUnlock()
@@ -1372,38 +1370,11 @@ func TestUnpackStage_SetStrictSandbox(t *testing.T) {
 		t.Error("expected SetStrictSandbox(false) to update BaseOpts.Sandbox.Strict")
 	}
 
-	if err := s.SetStrictSandbox(true); err != nil {
-		t.Fatalf("SetStrictSandbox(true): unexpected error: %v", err)
-	}
+	s.SetStrictSandbox(true)
 	job := &Job{DownloadDir: "/tmp/test-sandbox-target", Queue: &queue.Job{}}
 	opts := s.prepareOptions(t.Context(), slog.Default(), job, s.BaseOpts, "")
 	if opts.Sandbox.TargetDir != "/tmp/test-sandbox-target" {
 		t.Errorf("expected prepareOptions to set TargetDir to %q, got %q", job.DownloadDir, opts.Sandbox.TargetDir)
-	}
-}
-
-func TestUnpackStage_SetStrictSandbox_RejectedOnUnsupportedPlatform(t *testing.T) {
-	origGOOS := goos
-	defer func() { goos = origGOOS }()
-	goos = "darwin"
-
-	s := NewUnpackStageWith(unpack.Options{
-		Sandbox: cmdutil.SandboxConfig{Enabled: true, Strict: false},
-	}, false)
-
-	err := s.SetStrictSandbox(true)
-	if err == nil {
-		t.Fatal("expected error enabling strict_sandbox on darwin, got nil")
-	}
-	if !strings.Contains(err.Error(), "darwin") {
-		t.Errorf("error = %q, want it to mention the platform (darwin)", err.Error())
-	}
-
-	s.mu.RLock()
-	strict := s.BaseOpts.Sandbox.Strict
-	s.mu.RUnlock()
-	if strict {
-		t.Error("expected rejected SetStrictSandbox(true) to leave BaseOpts.Sandbox.Strict unchanged (false)")
 	}
 }
 

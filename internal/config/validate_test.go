@@ -2,6 +2,7 @@ package config
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -655,4 +656,41 @@ func TestConfigValidate_NotificationsWired(t *testing.T) {
 	cfg.Notifications.Email.Enable = true
 	cfg.Notifications.Email.Host = "" // invalid email host
 	requireValidateError(t, cfg, "notifications")
+}
+
+func TestPostProcConfigValidate_StrictSandbox(t *testing.T) {
+	origGOOS := goos
+	defer func() { goos = origGOOS }()
+
+	tests := []struct {
+		platform string
+		strict   bool
+		wantErr  bool
+	}{
+		{"linux", true, false},
+		{"linux", false, false},
+		{"darwin", true, true},
+		{"darwin", false, false},
+		{"freebsd", true, true},
+		{"freebsd", false, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.platform+"_strict_"+strconv.FormatBool(tc.strict), func(t *testing.T) {
+			goos = tc.platform
+			p := PostProcConfig{StrictSandbox: tc.strict}
+			err := p.validate()
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected error for strict=%v on %s, got nil", tc.strict, tc.platform)
+				} else if !strings.Contains(err.Error(), "strict_sandbox") {
+					t.Errorf("expected error to mention 'strict_sandbox', got: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error for strict=%v on %s: %v", tc.strict, tc.platform, err)
+				}
+			}
+		})
+	}
 }
