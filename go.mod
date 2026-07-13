@@ -3,7 +3,7 @@ module github.com/hobeone/gonzbd
 go 1.26.5
 
 require (
-	github.com/bodgit/sevenzip v1.6.4
+	github.com/bodgit/sevenzip v1.6.5
 	github.com/coder/websocket v1.8.15
 	github.com/h2non/filetype v1.1.3
 	github.com/hobeone/par2engine v1.0.6
