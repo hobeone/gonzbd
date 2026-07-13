@@ -697,9 +697,11 @@ func TestModeSetConfig_Comprehensive(t *testing.T) {
 			t.Fatalf("Default(): %v", err)
 		}
 		// Start from a known-good value so we can distinguish "rolled back"
-		// from "coincidentally still the default".
+		// from "coincidentally still the default". Also set a non-zero value
+		// on another field to verify it is not lost (zeroed) on rollback.
 		cfg.With(func(c *config.Config) {
 			c.PostProc.StrictSandbox = false
+			c.PostProc.EnableUnrar = true
 		})
 
 		spy := &setConfigSpyApp{reloadPostProcErr: errors.New("postproc.strict_sandbox is not supported on darwin (only linux)")}
@@ -731,11 +733,16 @@ func TestModeSetConfig_Comprehensive(t *testing.T) {
 
 		// The rejected value must not remain in the in-memory config...
 		var inMemory bool
+		var unrarEnabled bool
 		cfg.WithRead(func(c *config.Config) {
 			inMemory = c.PostProc.StrictSandbox
+			unrarEnabled = c.PostProc.EnableUnrar
 		})
 		if inMemory {
 			t.Errorf("in-memory PostProc.StrictSandbox = true; want rolled back to false")
+		}
+		if !unrarEnabled {
+			t.Error("in-memory PostProc.EnableUnrar = false; want preserved as true")
 		}
 
 		// ...nor on disk, since a restart re-reads the persisted file and
@@ -746,6 +753,9 @@ func TestModeSetConfig_Comprehensive(t *testing.T) {
 		}
 		if onDisk.PostProc.StrictSandbox {
 			t.Errorf("persisted PostProc.StrictSandbox = true; want rolled back to false")
+		}
+		if !onDisk.PostProc.EnableUnrar {
+			t.Error("persisted PostProc.EnableUnrar = false; want preserved as true")
 		}
 	})
 
