@@ -87,8 +87,7 @@ the backend stays inside the existing, consistent mode-dispatch pattern.
       "admin_dir": "...", "script_dir": "...", "log_dir": "...",
       "par2": {"path": "...", "version": "..."},
       "unrar": {"path": "...", "version": "..."},
-      "sevenzip": {"path": "...", "version": "..."},
-      "update_check": {"status": "up_to_date|update_available|unknown", "latest_version": "v1.3.0"}
+      "sevenzip": {"path": "...", "version": "..."}
     },
     "system": {
       "os": "linux", "arch": "amd64",
@@ -130,6 +129,17 @@ the backend stays inside the existing, consistent mode-dispatch pattern.
   ```
   Bounded by a context timeout (e.g. 10s) so a genuinely broken disk can't
   hang the request indefinitely.
+- **`mode=status&name=check_update`**: new `case` in the same dispatcher.
+  Deliberately *not* part of `status_overview`'s response, so the rest of
+  the status page renders immediately without waiting on an external
+  network call. The UI fires this request independently and in parallel
+  with `status_overview`, rendering "checking…" in the General Info
+  section's update-check row until it resolves — the GitHub round-trip
+  latency (or a slow/unreachable GitHub) never delays anything else on the
+  page. Reports:
+  ```json
+  {"status": true, "result": {"status": "up_to_date|update_available|unknown", "latest_version": "v1.3.0"}}
+  ```
 
 No changes to `mode=server_stats`, `mode=about`, `mode=warnings`, or any
 SABnzbd-compat mode.
@@ -153,21 +163,23 @@ SABnzbd-compat mode.
 - **Article cache memory usage**: already tracked via an `atomic.Int64` in
   `internal/assembler` per existing architecture — needs a getter exposed
   up through `Application`.
-- **GitHub release check**: a one-off, synchronous call made *inside* the
-  `status_overview` handler itself when the status page is loaded or
-  manually refreshed — no background goroutine, no continuous polling.
-  Calls `GET https://api.github.com/repos/hobeone/gonzbd/releases/latest`
-  with a short bounded timeout (e.g. 3s, via `context.WithTimeout` on the
-  request context) and compares the result against the build's `Version`
-  (a `vX.Y.Z` string; `"dev"` builds report `status: "unknown"` and skip
-  the network call entirely). Uses `golang.org/x/mod/semver` (already
-  present transitively in the module graph, not a new external dependency)
-  for the comparison. On timeout/network error/non-2xx response, reports
-  `status: "unknown"` — this never fails the whole `status_overview`
-  request, it only affects the `update_check` field within it. No
-  in-process caching between requests; since this only fires when a human
-  opens/refreshes the status page (not polled by anything), GitHub's
-  unauthenticated rate limit (60 req/hr/IP) is not a practical concern here.
+- **GitHub release check**: a one-off, synchronous call made inside its
+  own handler (`mode=status&name=check_update`, see above) — no background
+  goroutine, no continuous polling, and deliberately not part of
+  `status_overview` so it can't add latency to the rest of the page. The
+  UI calls this endpoint independently, in parallel with `status_overview`,
+  as soon as the status page loads. Calls
+  `GET https://api.github.com/repos/hobeone/gonzbd/releases/latest` with a
+  short bounded timeout (e.g. 3s, via `context.WithTimeout` on the request
+  context) and compares the result against the build's `Version` (a
+  `vX.Y.Z` string; `"dev"` builds report `status: "unknown"` and skip the
+  network call entirely). Uses `golang.org/x/mod/semver` (already present
+  transitively in the module graph, not a new external dependency) for the
+  comparison. On timeout/network error/non-2xx response, reports
+  `status: "unknown"`. No in-process caching between requests; since this
+  only fires when a human opens/refreshes the status page (not polled by
+  anything), GitHub's unauthenticated rate limit (60 req/hr/IP) is not a
+  practical concern here.
 
 ## UI
 
@@ -178,7 +190,11 @@ fallback serving; no Go routing changes needed beyond the new API modes.
 
 - General Info + System Info: fetched from `mode=status_overview` on
   mount, with a manual refresh button. No WebSocket subscription for this
-  section.
+  section. The update-check row within General Info is populated by a
+  *separate*, independent fetch to `mode=status&name=check_update`, fired
+  in parallel with `status_overview` on the same mount/refresh trigger.
+  It renders "checking…" until that call resolves, so a slow or
+  unreachable GitHub never delays the rest of the page.
 - News Servers: reuses the existing `server_stats`-backed store (already
   live via WebSocket, same data `ServerStatusPanel` uses) so this section
   needs no new data-fetching path — just a new "Test Connection" button per
