@@ -6,8 +6,11 @@
 package assembler
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"syscall"
+	"time"
 )
 
 // FreeBytes returns the number of bytes available to unprivileged processes on
@@ -26,4 +29,53 @@ func FreeBytes(dir string) (int64, error) {
 	// Bsize is the fundamental block size in bytes (int64 on Linux).
 	// The product fits in int64 for any sane filesystem size.
 	return int64(st.Bavail) * int64(st.Bsize), nil //nolint:gosec,unconvert // G115: Bavail is filesystem metadata; unconvert: Bsize type varies by OS
+}
+
+// WriteSpeedMBPerSec writes a sizeBytes temp file into dir, times the
+// write plus fsync, deletes the file, and returns the throughput in
+// MB/s (decimal megabytes: bytes / 1e6 / seconds). Used by the status
+// page's on-demand disk-speed-test action; ctx bounds the whole
+// operation so a broken or extremely slow disk can't hang the caller
+// indefinitely.
+func WriteSpeedMBPerSec(ctx context.Context, dir string, sizeBytes int64) (float64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("assembler: write speed test: %w", err)
+	}
+
+	f, err := os.CreateTemp(dir, "gonzbd-diskspeedtest-*")
+	if err != nil {
+		return 0, fmt.Errorf("assembler: create temp file in %s: %w", dir, err)
+	}
+	path := f.Name()
+	defer func() {
+		_ = f.Close()       //nolint:errcheck // best-effort cleanup
+		_ = os.Remove(path) //nolint:errcheck // best-effort cleanup
+	}()
+
+	buf := make([]byte, 1024*1024) // 1 MiB write chunks
+	start := time.Now()
+	var written int64
+	for written < sizeBytes {
+		if err := ctx.Err(); err != nil {
+			return 0, fmt.Errorf("assembler: write speed test: %w", err)
+		}
+		n := int64(len(buf))
+		if remaining := sizeBytes - written; remaining < n {
+			n = remaining
+		}
+		if _, err := f.Write(buf[:n]); err != nil {
+			return 0, fmt.Errorf("assembler: write speed test: write %s: %w", path, err)
+		}
+		written += n
+	}
+	if err := f.Sync(); err != nil {
+		return 0, fmt.Errorf("assembler: write speed test: fsync %s: %w", path, err)
+	}
+	elapsed := time.Since(start)
+	if elapsed <= 0 {
+		return 0, fmt.Errorf("assembler: write speed test: elapsed time non-positive")
+	}
+
+	mb := float64(written) / 1_000_000
+	return mb / elapsed.Seconds(), nil
 }
