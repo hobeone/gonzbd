@@ -246,3 +246,13 @@ export async function testServerConnection(
 ): Promise<{ status: boolean; result: TestConnectionResult }> {
 	return fetchJSON(apiUrl('status', { name: 'test_connection', value: name }));
 }
+
+export interface TestDiskSpeedResult {
+	ok: boolean;
+	mb_per_sec?: number;
+	error?: string;
+}
+
+export async function testDiskSpeed(): Promise<{ status: boolean; result: TestDiskSpeedResult }> {
+	return fetchJSON(apiUrl('status', { name: 'test_disk_speed' }));
+}

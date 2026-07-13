@@ -5,9 +5,11 @@
 		fetchStatusOverview,
 		fetchCheckUpdate,
 		testServerConnection,
+		testDiskSpeed,
 		type StatusOverviewResponse,
 		type CheckUpdateResult,
-		type TestConnectionResult
+		type TestConnectionResult,
+		type TestDiskSpeedResult
 	} from '$lib/api';
 	import { getServerStats } from '$lib/stores/queue.svelte';
 	import { startTelemetry, stopTelemetry } from '$lib/stores/telemetry.svelte';
@@ -57,6 +59,9 @@
 	let testingServer = $state<string | null>(null);
 	let connectionResults = $state<Record<string, TestConnectionResult>>({});
 
+	let diskSpeedTesting = $state(false);
+	let diskSpeedResult = $state<TestDiskSpeedResult | null>(null);
+
 	// This page is the only route that renders server data outside the
 	// main dashboard, so it must start its own WebSocket subscription
 	// (reference-counted — see websocket.svelte.ts) rather than assuming one
@@ -81,6 +86,18 @@
 			};
 		} finally {
 			testingServer = null;
+		}
+	}
+
+	async function runDiskSpeedTest() {
+		diskSpeedTesting = true;
+		try {
+			const res = await testDiskSpeed();
+			diskSpeedResult = res.result;
+		} catch (e) {
+			diskSpeedResult = { ok: false, error: e instanceof Error ? e.message : 'Test failed' };
+		} finally {
+			diskSpeedTesting = false;
 		}
 	}
 
@@ -180,6 +197,32 @@
 					<span class="text-m3-on-surface/50"
 						>(min: {formatBytes(overview.system.min_free_space_bytes)})</span
 					>
+				</dd>
+				<dt class="text-m3-on-surface/60">Disk speed</dt>
+				<dd class="flex items-center gap-2">
+					<button
+						class="inline-flex items-center gap-1.5 rounded-full bg-m3-secondary px-3 py-1 text-xs text-m3-on-secondary disabled:opacity-50"
+						onclick={runDiskSpeedTest}
+						disabled={diskSpeedTesting}
+					>
+						{#if diskSpeedTesting}
+							<svg class="animate-spin h-3 w-3 text-m3-on-secondary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+							Testing...
+						{:else}
+							Test Disk Speed
+						{/if}
+					</button>
+					{#if diskSpeedResult}
+						{#if diskSpeedResult.ok}
+							<span class="inline-flex items-center gap-1 text-xs font-semibold text-green-600 bg-green-50 px-2 py-0.5 rounded-full border border-green-200">
+								{diskSpeedResult.mb_per_sec?.toFixed(1)} MB/s
+							</span>
+						{:else}
+							<span class="inline-flex items-center gap-1 text-xs text-red-600 bg-red-50 px-2 py-0.5 rounded-full border border-red-200">
+								Failed: {diskSpeedResult.error}
+							</span>
+						{/if}
+					{/if}
 				</dd>
 			</dl>
 		</section>
