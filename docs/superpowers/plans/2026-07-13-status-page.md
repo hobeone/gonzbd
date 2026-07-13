@@ -1338,6 +1338,8 @@ func TestCompareVersions(t *testing.T) {
 		{"v1.2.0", "v2.0.0", -1},
 		{"v1.9.0", "v1.10.0", -1}, // numeric, not lexicographic, comparison
 		{"v1.2", "v1.2.0", 0},     // missing patch defaults to 0
+		{"v1.2.1-2b7f9150", "v1.2.1", 0}, // strips build metadata
+		{"v1.2.0-rc1", "v1.2.0", 0},      // strips prerelease suffixes
 	}
 	for _, tc := range tests {
 		t.Run(tc.current+"_vs_"+tc.latest, func(t *testing.T) {
@@ -1425,7 +1427,7 @@ func (s *Server) statusCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), checkUpdateTimeout)
 	defer cancel()
 
-	latest, err := fetchLatestGithubRelease(ctx)
+	latest, err := fetchLatestGithubRelease(ctx, "gonzbd/"+s.version)
 	if err != nil {
 		s.log.Debug("check_update: github fetch failed", "error", err)
 		respondOK(w, "result", map[string]any{"status": "unknown"})
@@ -1444,12 +1446,13 @@ func (s *Server) statusCheckUpdate(w http.ResponseWriter, r *http.Request) {
 // repo's latest release tag. No caching: this only fires when a human
 // opens/refreshes the status page, so GitHub's unauthenticated rate
 // limit (60 req/hr/IP) is not a practical concern.
-func fetchLatestGithubRelease(ctx context.Context) (string, error) {
+func fetchLatestGithubRelease(ctx context.Context, userAgent string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, githubLatestReleaseURL, http.NoBody)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1492,6 +1495,9 @@ func compareVersions(a, b string) int {
 
 func parseVersionParts(v string) [3]int {
 	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if idx := strings.IndexAny(v, "-+"); idx != -1 {
+		v = v[:idx]
+	}
 	parts := strings.SplitN(v, ".", 3)
 	var out [3]int
 	for i := 0; i < len(parts) && i < 3; i++ {
@@ -1717,51 +1723,63 @@ Create `ui/src/routes/status/+page.svelte`:
 	{#if overviewError}
 		<p class="text-red-500">{overviewError}</p>
 	{:else if overview}
-		<section class="mb-6 rounded-3xl border border-m3-outline/20 bg-m3-surface p-4">
-			<h2 class="mb-2 text-lg font-medium text-m3-on-surface">General Info</h2>
-			<dl class="grid grid-cols-2 gap-2 text-sm">
+		<section class="mb-6 rounded-3xl border border-m3-outline/20 bg-m3-surface p-6 shadow-sm transition-all duration-300 hover:shadow-md hover:border-m3-primary/30">
+			<h2 class="mb-4 text-lg font-medium text-m3-on-surface">General Info</h2>
+			<dl class="grid grid-cols-[180px_1fr] gap-x-4 gap-y-3 text-sm">
 				<dt class="text-m3-on-surface/60">Version</dt>
-				<dd class="font-mono">{overview.general.version} ({overview.general.commit})</dd>
+				<dd class="font-mono text-m3-on-surface">{overview.general.version} ({overview.general.commit})</dd>
 				<dt class="text-m3-on-surface/60">Uptime</dt>
-				<dd>{formatUptime(overview.general.uptime_seconds)}</dd>
+				<dd class="text-m3-on-surface">{formatUptime(overview.general.uptime_seconds)}</dd>
 				<dt class="text-m3-on-surface/60">Go version</dt>
-				<dd class="font-mono">{overview.general.go_version}</dd>
+				<dd class="font-mono text-m3-on-surface">{overview.general.go_version}</dd>
 				<dt class="text-m3-on-surface/60">Hostname</dt>
-				<dd>{overview.general.hostname}</dd>
+				<dd class="text-m3-on-surface">{overview.general.hostname}</dd>
 				<dt class="text-m3-on-surface/60">Local IP</dt>
-				<dd class="font-mono">{overview.general.local_ip}</dd>
+				<dd class="font-mono text-m3-on-surface">{overview.general.local_ip}</dd>
 				<dt class="text-m3-on-surface/60">Config path</dt>
-				<dd class="font-mono">{overview.general.config_path}</dd>
+				<dd class="font-mono text-m3-on-surface">{overview.general.config_path}</dd>
 				<dt class="text-m3-on-surface/60">par2</dt>
-				<dd class="font-mono">{overview.general.par2.path || 'not found'} {overview.general.par2.version}</dd>
+				<dd class="font-mono text-m3-on-surface">{overview.general.par2.path || 'not found'} {overview.general.par2.version}</dd>
 				<dt class="text-m3-on-surface/60">unrar</dt>
-				<dd class="font-mono">{overview.general.unrar.path || 'not found'} {overview.general.unrar.version}</dd>
+				<dd class="font-mono text-m3-on-surface">{overview.general.unrar.path || 'not found'} {overview.general.unrar.version}</dd>
 				<dt class="text-m3-on-surface/60">7-Zip</dt>
-				<dd class="font-mono">{overview.general.sevenzip.path || 'not found'} {overview.general.sevenzip.version}</dd>
+				<dd class="font-mono text-m3-on-surface">{overview.general.sevenzip.path || 'not found'} {overview.general.sevenzip.version}</dd>
 				<dt class="text-m3-on-surface/60">Update</dt>
 				<dd>
 					{#if updateCheckLoading}
-						checking…
+						<span class="inline-flex items-center gap-1.5 text-xs text-m3-on-surface/60">
+							<svg class="animate-spin h-3.5 w-3.5 text-m3-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+							checking…
+						</span>
 					{:else if updateCheck?.status === 'update_available'}
-						update available: {updateCheck.latest_version}
+						<span class="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+							<span class="relative flex h-2 w-2">
+								<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+								<span class="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+							</span>
+							update available: {updateCheck.latest_version}
+						</span>
 					{:else if updateCheck?.status === 'up_to_date'}
-						up to date
+						<span class="inline-flex items-center gap-1.5 text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full border border-green-200">
+							<span class="h-2 w-2 rounded-full bg-green-500"></span>
+							up to date
+						</span>
 					{:else}
-						unknown
+						<span class="text-m3-on-surface/60">unknown</span>
 					{/if}
 				</dd>
 			</dl>
 		</section>
 
-		<section class="mb-6 rounded-3xl border border-m3-outline/20 bg-m3-surface p-4">
-			<h2 class="mb-2 text-lg font-medium text-m3-on-surface">System Info</h2>
-			<dl class="grid grid-cols-2 gap-2 text-sm">
+		<section class="mb-6 rounded-3xl border border-m3-outline/20 bg-m3-surface p-6 shadow-sm transition-all duration-300 hover:shadow-md hover:border-m3-primary/30">
+			<h2 class="mb-4 text-lg font-medium text-m3-on-surface">System Info</h2>
+			<dl class="grid grid-cols-[180px_1fr] gap-x-4 gap-y-3 text-sm">
 				<dt class="text-m3-on-surface/60">OS / Arch</dt>
-				<dd>{overview.system.os} / {overview.system.arch}</dd>
+				<dd class="text-m3-on-surface">{overview.system.os} / {overview.system.arch}</dd>
 				<dt class="text-m3-on-surface/60">Article cache usage</dt>
-				<dd>{formatBytes(overview.system.article_cache_bytes)}</dd>
+				<dd class="text-m3-on-surface">{formatBytes(overview.system.article_cache_bytes)}</dd>
 				<dt class="text-m3-on-surface/60">Download dir free space</dt>
-				<dd>
+				<dd class="text-m3-on-surface">
 					{formatBytes(overview.system.download_dir_free_bytes)}
 					<span class="text-m3-on-surface/50"
 						>(min: {formatBytes(overview.system.min_free_space_bytes)})</span
@@ -1866,39 +1884,55 @@ Extend `ui/src/routes/status/+page.svelte`'s `<script>` block:
 Add the section markup, after the System Info section (verify exact `ServerSnapshot` field names against `ui/src/lib/types.ts:190-207` before writing — `active_conns`/`max_connections` per earlier research):
 
 ```svelte
-	<section class="mb-6 rounded-3xl border border-m3-outline/20 bg-m3-surface p-4">
-		<h2 class="mb-2 text-lg font-medium text-m3-on-surface">News Servers</h2>
+	<section class="mb-6 rounded-3xl border border-m3-outline/20 bg-m3-surface p-6 shadow-sm transition-all duration-300 hover:shadow-md hover:border-m3-primary/30">
+		<h2 class="mb-4 text-lg font-medium text-m3-on-surface">News Servers</h2>
 		{#each servers as server (server.name)}
-			<div class="mb-3 rounded-2xl border border-m3-outline/10 p-3">
+			<div class="mb-3 rounded-2xl border border-m3-outline/10 p-4 transition-all hover:bg-m3-surface-variant/5">
 				<div class="flex items-center justify-between">
-					<span class="font-medium">{server.name} ({server.host}:{server.port})</span>
+					<span class="font-medium text-m3-on-surface">{server.name} ({server.host}:{server.port})</span>
 					<span class="text-sm text-m3-on-surface/60">
 						{server.active_conns}/{server.max_connections} connections in use
 					</span>
 				</div>
-				<button
-					class="mt-2 rounded-full bg-m3-secondary px-3 py-1 text-xs text-m3-on-secondary"
-					onclick={() => runConnectionTest(server.name)}
-					disabled={testingServer === server.name}
-				>
-					{testingServer === server.name ? 'Testing...' : 'Test Connection'}
-				</button>
-				{#if connectionResults[server.name]}
-					{@const result = connectionResults[server.name]}
-					<p class="mt-1 text-xs">
-						{#if result.ok}
-							<span class="text-green-600">Connected ({result.latency_ms}ms)</span>
-						{:else if result.likely_connection_limit}
-							<span class="text-amber-600"
-								>Server rejected the connection ({result.error}) — this commonly happens when your
-								existing downloads are using all configured connections, not necessarily a
-								configuration problem.</span
-							>
+				<div class="mt-3 flex items-center gap-3">
+					<button
+						class="inline-flex items-center gap-1.5 rounded-full bg-m3-secondary px-3 py-1 text-xs text-m3-on-secondary disabled:opacity-50"
+						onclick={() => runConnectionTest(server.name)}
+						disabled={testingServer === server.name}
+					>
+						{#if testingServer === server.name}
+							<svg class="animate-spin h-3 w-3 text-m3-on-secondary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+							Testing...
 						{:else}
-							<span class="text-red-500">Failed: {result.error}</span>
+							Test Connection
 						{/if}
-					</p>
-				{/if}
+					</button>
+					{#if connectionResults[server.name]}
+						{@const result = connectionResults[server.name]}
+						{#if result.ok}
+							<span class="inline-flex items-center gap-1.5 text-xs text-green-600 bg-green-50 px-2.5 py-0.5 rounded-full border border-green-200">
+								<span class="relative flex h-1.5 w-1.5">
+									<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+									<span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500"></span>
+								</span>
+								Connected ({result.latency_ms}ms)
+							</span>
+						{:else if result.likely_connection_limit}
+							<span class="inline-flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200">
+								<span class="h-1.5 w-1.5 rounded-full bg-amber-500"></span>
+								Connection limit reached ({result.error})
+							</span>
+						{:else}
+							<span class="inline-flex items-center gap-1.5 text-xs text-red-600 bg-red-50 px-2.5 py-0.5 rounded-full border border-red-200">
+								<span class="relative flex h-1.5 w-1.5">
+									<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+									<span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span>
+								</span>
+								Failed: {result.error}
+							</span>
+						{/if}
+					{/if}
+				</div>
 			</div>
 		{/each}
 	</section>
@@ -1986,19 +2020,28 @@ Add markup inside the System Info section, after the free-space `<dd>`:
 
 ```svelte
 				<dt class="text-m3-on-surface/60">Disk speed</dt>
-				<dd>
+				<dd class="flex items-center gap-2">
 					<button
-						class="rounded-full bg-m3-secondary px-3 py-1 text-xs text-m3-on-secondary"
+						class="inline-flex items-center gap-1.5 rounded-full bg-m3-secondary px-3 py-1 text-xs text-m3-on-secondary disabled:opacity-50"
 						onclick={runDiskSpeedTest}
 						disabled={diskSpeedTesting}
 					>
-						{diskSpeedTesting ? 'Testing...' : 'Test Disk Speed'}
+						{#if diskSpeedTesting}
+							<svg class="animate-spin h-3 w-3 text-m3-on-secondary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+							Testing...
+						{:else}
+							Test Disk Speed
+						{/if}
 					</button>
 					{#if diskSpeedResult}
 						{#if diskSpeedResult.ok}
-							<span class="ml-2 text-sm">{diskSpeedResult.mb_per_sec?.toFixed(1)} MB/s</span>
+							<span class="inline-flex items-center gap-1 text-xs font-semibold text-green-600 bg-green-50 px-2 py-0.5 rounded-full border border-green-200">
+								{diskSpeedResult.mb_per_sec?.toFixed(1)} MB/s
+							</span>
 						{:else}
-							<span class="ml-2 text-sm text-red-500">Failed: {diskSpeedResult.error}</span>
+							<span class="inline-flex items-center gap-1 text-xs text-red-600 bg-red-50 px-2 py-0.5 rounded-full border border-red-200">
+								Failed: {diskSpeedResult.error}
+							</span>
 						{/if}
 					{/if}
 				</dd>
