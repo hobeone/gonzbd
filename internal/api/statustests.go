@@ -16,6 +16,10 @@ import (
 // (which can be 60s+).
 const testConnectionTimeout = 10 * time.Second
 
+// testDiskSpeedTimeout bounds the on-demand disk-speed test so a
+// genuinely broken disk can't hang the request indefinitely.
+const testDiskSpeedTimeout = 10 * time.Second
+
 // statusTestConnection dials an existing, already-configured server by
 // name (value= parameter) and reports success/failure. A 502/503
 // response is flagged as likely_connection_limit: true, since that's
@@ -68,4 +72,23 @@ func (s *Server) statusTestConnection(w http.ResponseWriter, r *http.Request) {
 		"ok":         true,
 		"latency_ms": latency.Milliseconds(),
 	})
+}
+
+// statusTestDiskSpeed runs a bounded write-speed test against the
+// configured download directory.
+func (s *Server) statusTestDiskSpeed(w http.ResponseWriter, r *http.Request) {
+	if s.app == nil {
+		s.respondError(w, http.StatusInternalServerError, "app not wired")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), testDiskSpeedTimeout)
+	defer cancel()
+
+	mbPerSec, err := s.app.TestDownloadDirWriteSpeedMBPerSec(ctx)
+	if err != nil {
+		s.log.Warn("test_disk_speed failed", "error", err)
+		respondOK(w, "result", map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	respondOK(w, "result", map[string]any{"ok": true, "mb_per_sec": mbPerSec})
 }

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net"
 	"net/http"
 	"strconv"
@@ -134,5 +136,55 @@ func TestModeStatus_TestConnection_ServerUnavailableSetsLikelyConnectionLimit(t 
 	}
 	if result["likely_connection_limit"] != true {
 		t.Errorf("result.likely_connection_limit = %v; want true for a 502 greeting", result["likely_connection_limit"])
+	}
+}
+
+type diskSpeedSpyApp struct {
+	NopApp
+	mbPerSec float64
+	err      error
+}
+
+func (a *diskSpeedSpyApp) TestDownloadDirWriteSpeedMBPerSec(ctx context.Context) (float64, error) {
+	return a.mbPerSec, a.err
+}
+
+func TestModeStatus_TestDiskSpeed_Success(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
+	s := New(Options{Config: cfg, App: &diskSpeedSpyApp{mbPerSec: 210.4}})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=status&name=test_disk_speed&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	m := decodeJSON(t, rr)
+	result := m["result"].(map[string]any)
+	if result["mb_per_sec"] != 210.4 {
+		t.Errorf("result.mb_per_sec = %v; want 210.4", result["mb_per_sec"])
+	}
+}
+
+func TestModeStatus_TestDiskSpeed_Error(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
+	s := New(Options{Config: cfg, App: &diskSpeedSpyApp{err: errors.New("permission denied")}})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=status&name=test_disk_speed&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	m := decodeJSON(t, rr)
+	result := m["result"].(map[string]any)
+	if result["ok"] != false {
+		t.Errorf("result.ok = %v; want false on write error", result["ok"])
 	}
 }
