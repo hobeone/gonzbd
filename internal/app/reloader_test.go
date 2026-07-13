@@ -231,3 +231,31 @@ type eventCounter struct {
 func (e *eventCounter) Broadcast(ev Event) {
 	e.count++
 }
+
+// TestApplication_ReloadPostProcOptions_AppliesStrictSandboxToRunningStage
+// guards against a regression where ReloadPostProcOptions stopped applying
+// pp.StrictSandbox to the running UnpackStage after Application.SetStrictSandbox
+// was removed (config.Validate() now enforces the Linux-only platform
+// constraint, but nothing was left to propagate an accepted value to the
+// already-running stage on live reload).
+func TestApplication_ReloadPostProcOptions_AppliesStrictSandboxToRunningStage(t *testing.T) {
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+	cfg.With(func(c *config.Config) {
+		c.PostProc.StrictSandbox = false
+	})
+	app, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer app.Shutdown()
+
+	if got := app.unpackStage.BaseOpts.Sandbox.Strict; got {
+		t.Fatalf("precondition: unpackStage.BaseOpts.Sandbox.Strict = %v, want false", got)
+	}
+
+	app.ReloadPostProcOptions(config.PostProcConfig{StrictSandbox: true}, "")
+
+	if got := app.unpackStage.BaseOpts.Sandbox.Strict; !got {
+		t.Errorf("after ReloadPostProcOptions(StrictSandbox: true): unpackStage.BaseOpts.Sandbox.Strict = %v, want true", got)
+	}
+}
