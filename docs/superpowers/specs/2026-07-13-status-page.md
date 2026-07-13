@@ -20,7 +20,7 @@ Add a dedicated `/status` page to the Svelte UI, modeled on NZBGet's Status
 tab, covering:
 
 1. **General Info** — version/commit/build date, uptime, config file path,
-   Go version, hostname, local/public IP, resolved par2/unrar/7z binary
+   Go version, hostname, local IP, resolved par2/unrar/7z binary
    paths+versions (all three already captured by the existing startup
    probe: `unpack.UnrarInfo.VersionStr`, `unpack.SevenzInfo.Version`, and
    `par2.Caps.Version` — populated via `par2.DetectCapabilities` at
@@ -28,7 +28,17 @@ tab, covering:
    corrects an earlier version of this spec that incorrectly assumed par2
    had no version field), and a GitHub-release version check (replaces
    NZBGet's "Updates" section — gonzbd has no auto-updater, so this is
-   informational only: "up to date" vs. "vX.Y.Z available").
+   informational only: "up to date" vs. "vX.Y.Z available"). **Public IP
+   is deliberately excluded from the initial `status_overview` payload**
+   (correcting the response shape shown further below, which listed it) —
+   `internal/api/about.go`'s existing public-IP lookup costs up to ~3s via
+   two concurrent external HTTP calls, and folding that into the same
+   handler as everything else would reintroduce exactly the kind of
+   avoidable network latency the separate `check_update` endpoint (below)
+   exists to avoid. If public IP is wanted on this page, it should follow
+   the same "separate, independently-fetched, non-blocking" pattern as
+   `check_update`, as a follow-up — not silently bundled into
+   `status_overview`.
 2. **News Servers** — per-server passive status (reusing the existing
    WebSocket-pushed data already shown in `ServerStatusPanel`) plus a new
    **"Test Connection"** action per server.
@@ -82,7 +92,7 @@ the backend stays inside the existing, consistent mode-dispatch pattern.
     "general": {
       "version": "v1.2.0", "commit": "...", "build_date": "...",
       "go_version": "go1.26.4", "uptime_seconds": 12345,
-      "hostname": "...", "local_ip": "...", "public_ip": "...",
+      "hostname": "...", "local_ip": "...",
       "config_path": "...", "download_dir": "...", "complete_dir": "...",
       "admin_dir": "...", "script_dir": "...", "log_dir": "...",
       "par2": {"path": "...", "version": "..."},
