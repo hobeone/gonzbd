@@ -238,6 +238,15 @@ type Assembler struct {
 	// saves from the API goroutine don't race with the worker's disk checks.
 	minFreeBytes atomic.Int64
 
+	// cacheUsedBytes mirrors writeCache.used so it can be read safely from
+	// goroutines other than the worker goroutine (writeCache itself is
+	// documented as single-goroutine, no-lock). Updated after every
+	// dispatchRequest call (via defer, covering processRequest and
+	// wc.forget on job cancel) and again after the shutdown drain
+	// (flushWriteCache in worker()), so it stays accurate through the
+	// only two places writeCache.used can change.
+	cacheUsedBytes atomic.Int64
+
 	// mu guards the started/stopped state and the stopCh channel.
 	mu      sync.Mutex
 	started bool
@@ -305,6 +314,12 @@ func (a *Assembler) SetMinFreeBytes(v int64) { a.minFreeBytes.Store(v) }
 
 // MinFreeBytes returns the current low-disk threshold in bytes. Thread-safe.
 func (a *Assembler) MinFreeBytes() int64 { return a.minFreeBytes.Load() } //nocover: trivial atomic load
+
+// CacheUsageBytes returns the current number of bytes buffered in the
+// write-coalescing cache. Safe to call from any goroutine.
+func (a *Assembler) CacheUsageBytes() int64 {
+	return a.cacheUsedBytes.Load()
+}
 
 // Start launches the worker goroutine. It returns an error if called more than
 // once without an intervening Stop.
@@ -495,6 +510,7 @@ func (a *Assembler) worker() {
 				default:
 					// Drain all cached articles to disk before shutdown.
 					a.flushWriteCache(wc, open)
+					a.cacheUsedBytes.Store(wc.used)
 					// Channel drained. Final flush before closing files so the
 					// queue sees every Done/Failed that made it to disk.
 					a.flush()
@@ -521,6 +537,8 @@ func (a *Assembler) dispatchRequest(
 	cancelledJobs map[string]struct{},
 	wc *writeCache,
 ) int {
+	defer func() { a.cacheUsedBytes.Store(wc.used) }()
+
 	if req.JobID == "" && req.FileIdx == -1 {
 		// Control message: cancel a job. Close and remove all
 		// open files for the job encoded in MessageID.
@@ -886,7 +904,11 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 		}
 		seen[dir] = struct{}{}
 
-		free, err := FreeBytes(dir)
+		// context.Background(): this is a periodic background check inside
+		// the worker loop, not tied to any request lifecycle, so there is
+		// no natural context to thread through here. Unbounded, matching
+		// this check's behavior before FreeBytes gained a ctx parameter.
+		free, err := FreeBytes(context.Background(), dir)
 		if err != nil {
 			a.log.Warn("disk-space check failed", "dir", dir, "error", err)
 			continue

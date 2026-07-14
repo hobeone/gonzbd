@@ -70,10 +70,15 @@ type Application struct {
 	version            string
 	checkpointInterval time.Duration
 	log                *slog.Logger
-	mu                 sync.Mutex
-	config             *config.Config
-	emitter            EventEmitter
-	meter              *bpsmeter.Meter
+
+	// binaryVersions is populated once in New() from the startup probe
+	// and never mutated afterward — safe to read from any goroutine
+	// without synchronization (same pattern as the immutable version field).
+	binaryVersions BinaryVersions
+	mu             sync.Mutex
+	config         *config.Config
+	emitter        EventEmitter
+	meter          *bpsmeter.Meter
 
 	queue            *queue.Queue
 	historyRepo      *history.Repository
@@ -245,6 +250,11 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	stages := app.customStages
 	if stages == nil {
 		probe := probeBinaries(app.ctx, cfg, log)
+		app.binaryVersions = BinaryVersions{
+			Par2Version:   probe.Par2Caps.Version,
+			UnrarVersion:  probe.UnrarInfo.VersionStr,
+			SevenzVersion: probe.SevenzInfo.Version,
+		}
 		built, err := buildStages(cfg, app.version, log, probe)
 		if err != nil {
 			return nil, err
