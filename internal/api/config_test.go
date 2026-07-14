@@ -874,3 +874,50 @@ func TestModeSetConfig_Comprehensive(t *testing.T) {
 		}
 	})
 }
+
+func TestUnexportedConfigHelpersAlignmentReference(t *testing.T) {
+	var s Server
+	_ = s.configTestServer
+	_ = s.modeGetConfig
+	_ = s.modeConfig
+	_ = s.configSpeedLimit
+}
+
+func TestModeConfig_Speedlimit_NoApp(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	s.app = nil
+	rr := apiGet(t, s.Handler(), "/api?mode=config&name=speedlimit&value=500&apikey="+testAPIKey)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503", rr.Code)
+	}
+}
+
+func TestModeConfig_Speedlimit_InvalidValue(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	rr := apiGet(t, s.Handler(), "/api?mode=config&name=speedlimit&value=invalid&apikey="+testAPIKey)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400", rr.Code)
+	}
+}
+
+func TestModeConfig_TestServer_InvalidSSLVerify(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	rr := apiGet(t, s.Handler(), "/api?mode=config&name=test_server&host=localhost&ssl_verify=99&apikey="+testAPIKey)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400", rr.Code)
+	}
+}
+
+func TestModeConfig_SpecialActions(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	for _, act := range []string{"set_pause", "set_apikey", "set_nzbkey"} {
+		rr := apiGet(t, s.Handler(), "/api?mode=config&name="+act+"&apikey="+testAPIKey)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("action=%s: status = %d; want 400", act, rr.Code)
+		}
+	}
+}

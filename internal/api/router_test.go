@@ -110,3 +110,8 @@ func TestHandleAPI_CookieAuth_NonPost_StateChangingRestricted_405(t *testing.T) 
 		})
 	}
 }
+
+func TestUnexportedRouterHelpersAlignmentReference(t *testing.T) {
+	var s Server
+	_ = s.handleAPI
+}
