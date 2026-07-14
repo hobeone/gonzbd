@@ -183,9 +183,10 @@ SABnzbd-compat mode.
   short bounded timeout (e.g. 3s, via `context.WithTimeout` on the request
   context) and compares the result against the build's `Version` (a
   `vX.Y.Z` string; `"dev"` builds report `status: "unknown"` and skip the
-  network call entirely). Uses `golang.org/x/mod/semver` (already present
-  transitively in the module graph, not a new external dependency) for the
-  comparison. On timeout/network error/non-2xx response, reports
+  network call entirely). Uses a small hand-rolled numeric comparison
+  (gonzbd's tags are plain `vMAJOR.MINOR.PATCH`) rather than
+  `golang.org/x/mod/semver`, to avoid promoting it from a transitive to a
+  direct dependency. On timeout/network error/non-2xx response, reports
   `status: "unknown"`. No in-process caching between requests; since this
   only fires when a human opens/refreshes the status page (not polled by
   anything), GitHub's unauthenticated rate limit (60 req/hr/IP) is not a
