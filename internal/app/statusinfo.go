@@ -34,24 +34,28 @@ func (app *Application) ArticleCacheBytes() int64 {
 	return app.assembler.CacheUsageBytes()
 }
 
-// DownloadDirFreeBytes returns the free bytes available on the
-// filesystem containing the configured download directory.
-func (app *Application) DownloadDirFreeBytes() (int64, error) {
+// downloadDir returns the currently configured download directory path.
+func (app *Application) downloadDir() string {
 	var dlDir string
 	app.config.WithRead(func(c *config.Config) {
 		dlDir = c.General.DownloadDir
 	})
-	return assembler.FreeBytes(dlDir)
+	return dlDir
+}
+
+// DownloadDirFreeBytes returns the free bytes available on the
+// filesystem containing the configured download directory. Bounded by
+// ctx: statfs has no timeout of its own and can block indefinitely on a
+// stuck network mount, so a caller-supplied deadline is required to keep
+// a status-page request from hanging.
+func (app *Application) DownloadDirFreeBytes(ctx context.Context) (int64, error) {
+	return assembler.FreeBytes(ctx, app.downloadDir())
 }
 
 // TestDownloadDirWriteSpeedMBPerSec runs a bounded disk write-speed test
 // against the configured download directory. Backs the status page's
 // on-demand "Test Disk Speed" action.
 func (app *Application) TestDownloadDirWriteSpeedMBPerSec(ctx context.Context) (float64, error) {
-	var dlDir string
-	app.config.WithRead(func(c *config.Config) {
-		dlDir = c.General.DownloadDir
-	})
 	const testSizeBytes = 64 * 1024 * 1024 // 64 MiB
-	return assembler.WriteSpeedMBPerSec(ctx, dlDir, testSizeBytes)
+	return assembler.WriteSpeedMBPerSec(ctx, app.downloadDir(), testSizeBytes)
 }

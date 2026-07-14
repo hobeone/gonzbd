@@ -94,7 +94,7 @@ type ApplicationReloader interface {
 	// ArticleCacheBytes returns current write-cache usage, for the status page.
 	ArticleCacheBytes() int64
 	// DownloadDirFreeBytes returns free disk space on the download directory.
-	DownloadDirFreeBytes() (int64, error)
+	DownloadDirFreeBytes(ctx context.Context) (int64, error)
 	// TestDownloadDirWriteSpeedMBPerSec runs an on-demand disk write-speed test.
 	TestDownloadDirWriteSpeedMBPerSec(ctx context.Context) (float64, error)
 }

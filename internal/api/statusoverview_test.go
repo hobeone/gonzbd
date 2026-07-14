@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -18,7 +20,7 @@ type statusOverviewSpyApp struct {
 
 func (a *statusOverviewSpyApp) BinaryVersionsInfo() app.BinaryVersions { return a.binaryVersions }
 func (a *statusOverviewSpyApp) ArticleCacheBytes() int64               { return a.articleCache }
-func (a *statusOverviewSpyApp) DownloadDirFreeBytes() (int64, error) {
+func (a *statusOverviewSpyApp) DownloadDirFreeBytes(context.Context) (int64, error) {
 	return a.downloadDirFree, a.downloadDirErr
 }
 
@@ -70,6 +72,30 @@ func TestModeStatusOverview_ReturnsGeneralAndSystemSections(t *testing.T) {
 	}
 	if system["min_free_space_bytes"].(float64) != 1024*1024*1024 {
 		t.Errorf("system.min_free_space_bytes = %v; want %d", system["min_free_space_bytes"], 1024*1024*1024)
+	}
+}
+
+func TestModeStatusOverview_DownloadDirFreeBytesError(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
+	spy := &statusOverviewSpyApp{downloadDirErr: errors.New("stat failed")}
+	s := New(Options{Config: cfg, App: spy})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=status_overview&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	m := decodeJSON(t, rr)
+	system, ok := m["system"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected system section, got %v", m)
+	}
+	if system["download_dir_free_bytes"].(float64) != 0 {
+		t.Errorf("download_dir_free_bytes = %v; want 0 on error", system["download_dir_free_bytes"])
 	}
 }
 

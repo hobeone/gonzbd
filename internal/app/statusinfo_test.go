@@ -27,7 +27,7 @@ func TestApplication_DownloadDirFreeBytes_ReturnsPositiveForRealDir(t *testing.T
 	}
 	defer app.Shutdown()
 
-	free, err := app.DownloadDirFreeBytes()
+	free, err := app.DownloadDirFreeBytes(t.Context())
 	if err != nil {
 		t.Fatalf("DownloadDirFreeBytes: %v", err)
 	}

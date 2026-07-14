@@ -108,7 +108,7 @@ func (n NopApp) BinaryVersionsInfo() app.BinaryVersions { return app.BinaryVersi
 func (n NopApp) ArticleCacheBytes() int64 { return 0 }
 
 // DownloadDirFreeBytes is a stub.
-func (n NopApp) DownloadDirFreeBytes() (int64, error) { return 0, nil }
+func (n NopApp) DownloadDirFreeBytes(context.Context) (int64, error) { return 0, nil }
 
 // TestDownloadDirWriteSpeedMBPerSec is a stub.
 func (n NopApp) TestDownloadDirWriteSpeedMBPerSec(context.Context) (float64, error) { return 0, nil }

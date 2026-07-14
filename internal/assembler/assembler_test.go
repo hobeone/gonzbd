@@ -565,7 +565,7 @@ func TestConcurrentWriteArticle(t *testing.T) {
 
 func TestFreeBytes(t *testing.T) {
 	dir := t.TempDir()
-	free, err := FreeBytes(dir)
+	free, err := FreeBytes(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("FreeBytes: %v", err)
 	}
@@ -573,6 +573,20 @@ func TestFreeBytes(t *testing.T) {
 		t.Errorf("FreeBytes returned %d, want > 0", free)
 	}
 	t.Logf("FreeBytes(%s) = %d", dir, free)
+}
+
+func TestFreeBytes_ContextCanceled(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := FreeBytes(ctx, dir)
+	if err == nil {
+		t.Fatal("expected error for already-cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected error to wrap context.Canceled, got %v", err)
+	}
 }
 
 // ---- Telemetry tests -------------------------------------------------------

@@ -1,21 +1,27 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"runtime"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
+
+// downloadDirFreeBytesTimeout bounds the free-space stat call so a stuck
+// network mount can't hang this handler indefinitely.
+const downloadDirFreeBytesTimeout = 3 * time.Second
 
 // modeStatusOverview returns the aggregate General Info + System Info
 // snapshot for the status page. Deliberately excludes the GitHub update
 // check (see modeStatusCheckUpdate) so a slow/unreachable network call
 // never delays this handler, and excludes per-server data (already
 // available, live, via mode=server_stats).
-func (s *Server) modeStatusOverview(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) modeStatusOverview(w http.ResponseWriter, r *http.Request) {
 	hostname, _ := os.Hostname()
 
 	var (
@@ -39,16 +45,18 @@ func (s *Server) modeStatusOverview(w http.ResponseWriter, _ *http.Request) {
 
 	var articleCacheBytes int64
 	var downloadDirFreeBytes int64
-	var binVersions struct{ Par2, Unrar, Sevenz string }
+	var bv app.BinaryVersions
 	if s.app != nil {
 		articleCacheBytes = s.app.ArticleCacheBytes()
-		if free, err := s.app.DownloadDirFreeBytes(); err == nil {
+		ctx, cancel := context.WithTimeout(r.Context(), downloadDirFreeBytesTimeout)
+		free, err := s.app.DownloadDirFreeBytes(ctx)
+		cancel()
+		if err == nil {
 			downloadDirFreeBytes = free
 		} else {
 			s.log.Warn("status_overview: download dir free bytes", "error", err)
 		}
-		bv := s.app.BinaryVersionsInfo()
-		binVersions.Par2, binVersions.Unrar, binVersions.Sevenz = bv.Par2Version, bv.UnrarVersion, bv.SevenzVersion
+		bv = s.app.BinaryVersionsInfo()
 	}
 
 	general := map[string]any{
@@ -65,9 +73,9 @@ func (s *Server) modeStatusOverview(w http.ResponseWriter, _ *http.Request) {
 		"admin_dir":      adminDir,
 		"script_dir":     scriptDir,
 		"log_dir":        logDir,
-		"par2":           map[string]any{"path": resolveBinary(par2Cmd, "par2"), "version": binVersions.Par2},
-		"unrar":          map[string]any{"path": resolveBinary(unrarCmd, "unrar"), "version": binVersions.Unrar},
-		"sevenzip":       map[string]any{"path": resolveBinary(sevenzCmd, unpack.SevenZipBinaries...), "version": binVersions.Sevenz},
+		"par2":           map[string]any{"path": resolveBinary(par2Cmd, "par2"), "version": bv.Par2Version},
+		"unrar":          map[string]any{"path": resolveBinary(unrarCmd, "unrar"), "version": bv.UnrarVersion},
+		"sevenzip":       map[string]any{"path": resolveBinary(sevenzCmd, unpack.SevenZipBinaries...), "version": bv.SevenzVersion},
 	}
 
 	system := map[string]any{

@@ -904,7 +904,11 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 		}
 		seen[dir] = struct{}{}
 
-		free, err := FreeBytes(dir)
+		// context.Background(): this is a periodic background check inside
+		// the worker loop, not tied to any request lifecycle, so there is
+		// no natural context to thread through here. Unbounded, matching
+		// this check's behavior before FreeBytes gained a ctx parameter.
+		free, err := FreeBytes(context.Background(), dir)
 		if err != nil {
 			a.log.Warn("disk-space check failed", "dir", dir, "error", err)
 			continue
