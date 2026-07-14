@@ -1084,3 +1084,58 @@ func TestDecodePool_GetPut(t *testing.T) {
 	hugeBuf := make([]byte, 0, maxDecodeSize+1)
 	PutBuffer(hugeBuf)
 }
+
+func TestDecodeArticleBuf_ParseTrailerError_PoolHandling(t *testing.T) {
+	raw := []byte("hello world")
+	article := yencEncode("test.bin", raw)
+	article = bytes.Replace(article, []byte("=yend size=11"), []byte("=yend size=abc"), 1)
+
+	// Clean the pool first
+	for range 20 {
+		_ = GetBuffer(100)
+	}
+
+	// Case 1: scratch is nil. It should return errMalformed and return the buffer to the pool.
+	_, err := DecodeArticleBuf(article, nil)
+	if !errors.Is(err, errMalformed) {
+		t.Errorf("Case 1: expected errMalformed, got %v", err)
+	}
+	buf1 := GetBuffer(768 * 1024)
+	if cap(buf1) < 768*1024 {
+		t.Errorf("Case 1: expected pooled buffer to be returned, but got smaller buffer")
+	}
+
+	// Clean the pool again
+	for range 20 {
+		_ = GetBuffer(100)
+	}
+
+	// Case 2: scratch is non-nil and large enough. It should NOT return scratch to the pool.
+	scratch := make([]byte, 0, 100)
+	_, err = DecodeArticleBuf(article, scratch)
+	if !errors.Is(err, errMalformed) {
+		t.Errorf("Case 2: expected errMalformed, got %v", err)
+	}
+	for range 20 {
+		bg := GetBuffer(100)
+		if unsafe.SliceData(bg) == unsafe.SliceData(scratch) {
+			t.Errorf("Case 2: scratch buffer was incorrectly put into the pool")
+		}
+	}
+
+	// Clean the pool again
+	for range 20 {
+		_ = GetBuffer(100)
+	}
+
+	// Case 3: scratch is non-nil but too small. It should allocate a pooled buffer and return it on error.
+	smallScratch := make([]byte, 0, 2)
+	_, err = DecodeArticleBuf(article, smallScratch)
+	if !errors.Is(err, errMalformed) {
+		t.Errorf("Case 3: expected errMalformed, got %v", err)
+	}
+	buf3 := GetBuffer(768 * 1024)
+	if cap(buf3) < 768*1024 {
+		t.Errorf("Case 3: expected allocated pooled buffer to be returned to pool, got smaller buffer")
+	}
+}
