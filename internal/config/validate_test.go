@@ -355,6 +355,72 @@ func TestPostProcConfig_ValidateDirect(t *testing.T) {
 	}
 }
 
+func TestPostProcConfig_Par2LimitsValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		par2MaxPacketBodySize uint64
+		par2MaxJunkScanBytes  int64
+		wantErr               bool
+		wantSub               string
+	}{
+		{
+			name:                  "valid defaults",
+			par2MaxPacketBodySize: 67108864,
+			par2MaxJunkScanBytes:  65536,
+			wantErr:               false,
+		},
+		{
+			name:                  "valid zeros (unlimited)",
+			par2MaxPacketBodySize: 0,
+			par2MaxJunkScanBytes:  0,
+			wantErr:               false,
+		},
+		{
+			name:                  "valid exact floors",
+			par2MaxPacketBodySize: MinPar2PacketBodySize,
+			par2MaxJunkScanBytes:  MinPar2JunkScanBytes,
+			wantErr:               false,
+		},
+		{
+			name:                  "below packet body size floor",
+			par2MaxPacketBodySize: MinPar2PacketBodySize - 1,
+			par2MaxJunkScanBytes:  65536,
+			wantErr:               true,
+			wantSub:               "par2_max_packet_body_size (65535) must be at least 65536 bytes (64 KiB)",
+		},
+		{
+			name:                  "below junk scan bytes floor",
+			par2MaxPacketBodySize: 67108864,
+			par2MaxJunkScanBytes:  MinPar2JunkScanBytes - 1,
+			wantErr:               true,
+			wantSub:               "par2_max_junk_scan_bytes (1023) must be at least 1024 bytes (1 KiB)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			p := PostProcConfig{
+				Par2MaxPacketBodySize: tt.par2MaxPacketBodySize,
+				Par2MaxJunkScanBytes:  tt.par2MaxJunkScanBytes,
+			}
+			err := p.validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantSub)
+				}
+				if !strings.Contains(err.Error(), tt.wantSub) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantSub)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestPostProcConfig_ValidatePriorityWrapper(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

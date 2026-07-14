@@ -50,6 +50,8 @@ postproc:
   unrar_command: ""
   sevenz_command: ""
   par2_turbo: false
+  par2_max_packet_body_size: 67108864
+  par2_max_junk_scan_bytes: 65536
   ignore_unrar_dates: false
   overwrite_files: false
   use_go_rar: true
