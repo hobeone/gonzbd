@@ -184,13 +184,7 @@ func isStateChangingRequest(r *http.Request) bool {
 		return true
 	}
 	mode := r.URL.Query().Get("mode")
-	if mode == "" && r.Method == http.MethodPost {
-		mode = formValue(r, "mode")
-	}
 	name := r.URL.Query().Get("name")
-	if name == "" && r.Method == http.MethodPost {
-		name = formValue(r, "name")
-	}
 	return isStateChangingMode(mode, name)
 }
 

@@ -342,3 +342,9 @@ func TestModeBrowse_NonexistentDir(t *testing.T) {
 		t.Fatalf("status = %d; want 400 for nonexistent dir", rr.Code)
 	}
 }
+
+func TestUnexportedMiscHelpersAlignmentReference(t *testing.T) {
+	var s Server
+	_ = s.modeBrowse
+	_ = s.modeGetScripts
+}

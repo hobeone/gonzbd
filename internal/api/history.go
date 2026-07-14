@@ -263,7 +263,7 @@ func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 		if err := s.app.RemoveHistoryJob(r.Context(), id, deleteFiles); err == nil {
 			deleted++
 		} else {
-			s.log.Warn("failed to remove job during bulk delete", "id", id, "error", err)
+			s.log.WarnContext(r.Context(), "failed to remove job during bulk delete", "id", id, "error", err)
 		}
 	}
 
