@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
 type statusOverviewSpyApp struct {
-	NopApp
+	apitest.NopApp
 	binaryVersions  app.BinaryVersions
 	articleCache    int64
 	downloadDirFree int64

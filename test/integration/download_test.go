@@ -234,7 +234,14 @@ func waitForHistory(t *testing.T, a *app.Application, name string, timeout time.
 		// trust the app's OnJobDone logic which we verified in unit tests.
 		// Or better: the scenarioHarness in statemachine_test.go has this.
 		// Integration tests here are a bit more raw.
-		if a.Queue().SnapshotJobByName(name) == nil {
+		found := false
+		for _, j := range a.Queue().Snapshot() {
+			if j.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)

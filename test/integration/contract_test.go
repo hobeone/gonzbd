@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -556,7 +558,7 @@ func buildAPIServerWithQueue(t *testing.T) (*api.Server, *httptest.Server) {
 		History: repo,
 		Config:  cfg,
 		Grabber: grabber,
-		App:     api.NopApp{},
+		App:     apitest.NopApp{},
 	})
 
 	ts := httptest.NewServer(srv.Handler())
@@ -627,7 +629,7 @@ func buildAPIServerWithValidConfig(t *testing.T) (*api.Server, *httptest.Server)
 		Config:     cfg,
 		ConfigPath: filepath.Join(dir, "gonzbd.yaml"),
 		Grabber:    grabber,
-		App:        api.NopApp{},
+		App:        apitest.NopApp{},
 	})
 
 	ts := httptest.NewServer(srv.Handler())

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
@@ -236,7 +238,7 @@ func TestFullStatus_SonarrCompleteDir(t *testing.T) {
 }
 
 type unblockSpyApp struct {
-	NopApp
+	apitest.NopApp
 	unblockResult bool
 	calledName    string
 }

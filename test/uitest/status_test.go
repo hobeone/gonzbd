@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+
 	"github.com/mxschmitt/playwright-go"
 
 	"github.com/hobeone/gonzbd/internal/api"
@@ -29,7 +31,7 @@ import (
 // newTestEnvWithServer mirrors newTestEnv but wires a NopApp that reports one
 // configured News Server via ServerStatus(), and a matching config.Servers
 // entry. The shared newTestEnv (harness_test.go) hardcodes an empty-server
-// api.NopApp{Queue: q}, which can never report a configured server — its
+// apitest.NopApp{Queue: q}, which can never report a configured server — its
 // ServerStatus() stub always returned nil regardless of config. This helper
 // exists so tests that need a real, named server to appear in API/telemetry
 // responses (e.g. the News Servers row in TestStatusPageLoadsAndShowsGeneralInfo)
@@ -43,7 +45,7 @@ func newTestEnvWithServer(t *testing.T) *testEnv {
 	}
 
 	q := queue.New()
-	ma := api.NopApp{
+	ma := apitest.NopApp{
 		Queue: q,
 		ServerSnapshotsVal: []downloader.ServerSnapshot{
 			{

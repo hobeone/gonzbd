@@ -74,8 +74,8 @@ func (s *Server) Connections() int { return s.cfg.Connections }
 // BadConnections returns the current count of recorded bad connections.
 func (s *Server) BadConnections() int64 { return s.badConns.Load() }
 
-// GoodConnections returns the current count of recorded good connections.
-func (s *Server) GoodConnections() int64 { return s.goodConns.Load() }
+// goodConnections returns the current count of recorded good connections.
+func (s *Server) goodConnections() int64 { return s.goodConns.Load() }
 
 // RecordBadConnection increments the bad-connection counter. Thread-safe.
 func (s *Server) RecordBadConnection() { s.badConns.Add(1) }

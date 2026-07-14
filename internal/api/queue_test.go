@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -51,7 +53,7 @@ func testQueueServer(t *testing.T) (*Server, *queue.Queue) {
 		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
 		Version: "1.0.0-test",
 		Queue:   q,
-		App:     NopApp{Queue: q},
+		App:     apitest.NopApp{Queue: q},
 	})
 	return s, q
 }
@@ -319,7 +321,7 @@ func testQueueServerWithSpeed(t *testing.T, speed float64) (*Server, *queue.Queu
 		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
 		Version: "1.0.0-test",
 		Queue:   q,
-		App:     NopApp{Queue: q, SpeedVal: speed},
+		App:     apitest.NopApp{Queue: q, SpeedVal: speed},
 	})
 	return s, q
 }
@@ -1486,7 +1488,7 @@ func testQueueServerWithCats(t *testing.T, cats []config.CategoryConfig) (*Serve
 		Config:  cfg,
 		Version: "1.0.0-test",
 		Queue:   q,
-		App:     NopApp{Queue: q},
+		App:     apitest.NopApp{Queue: q},
 	})
 	return s, q
 }
@@ -1634,7 +1636,7 @@ func TestQueueChangeCat_ListReflectsNewCategory(t *testing.T) {
 }
 
 type mockApp struct {
-	NopApp
+	apitest.NopApp
 	statuses map[string]directunpack.Status
 }
 
@@ -1658,7 +1660,7 @@ func TestQueueList_WithDirectUnpackStatus(t *testing.T) {
 		},
 	}
 	app := mockApp{
-		NopApp:   NopApp{Queue: q},
+		NopApp:   apitest.NopApp{Queue: q},
 		statuses: statuses,
 	}
 
@@ -1821,7 +1823,7 @@ func (m mockGrabberHandler) HandleNZB(ctx context.Context, filename string, data
 }
 
 type errorAddJobApp struct {
-	NopApp
+	apitest.NopApp
 	err error
 }
 
@@ -1893,7 +1895,7 @@ func TestQueue_CoverageGaps(t *testing.T) {
 
 		// addfile with errorApp on AddJob
 		q := queue.New()
-		errApp := errorAddJobApp{NopApp: NopApp{Queue: q}, err: errors.New("add job failed")}
+		errApp := errorAddJobApp{NopApp: apitest.NopApp{Queue: q}, err: errors.New("add job failed")}
 		sErr := New(Options{
 			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
 			Version: "1.0.0-test",
@@ -1913,7 +1915,7 @@ func TestQueue_CoverageGaps(t *testing.T) {
 }
 
 type queueSpyApp struct {
-	NopApp
+	apitest.NopApp
 	mu      sync.Mutex
 	paused  int
 	resumed int
@@ -1951,7 +1953,7 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 	t.Run("pause_all_and_resume_all_with_app", func(t *testing.T) {
 		t.Parallel()
 		q := queue.New()
-		spy := &queueSpyApp{NopApp: NopApp{Queue: q}}
+		spy := &queueSpyApp{NopApp: apitest.NopApp{Queue: q}}
 		s := New(Options{
 			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey}},
 			Version: "1.0.0-test",

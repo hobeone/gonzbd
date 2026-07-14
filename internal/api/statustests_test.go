@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
@@ -140,7 +142,7 @@ func TestModeStatus_TestConnection_ServerUnavailableSetsLikelyConnectionLimit(t 
 }
 
 type diskSpeedSpyApp struct {
-	NopApp
+	apitest.NopApp
 	mbPerSec float64
 	err      error
 }
