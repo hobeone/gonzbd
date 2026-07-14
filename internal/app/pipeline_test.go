@@ -12,6 +12,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/decoder"
+	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -123,4 +124,102 @@ func TestRegisterFile_SeedsInitialWriteCursorFromQueue(t *testing.T) {
 	if info.InitialWriteCursor != 4096 {
 		t.Errorf("InitialWriteCursor = %d, want 4096", info.InitialWriteCursor)
 	}
+}
+
+func TestUnexportedPipelineHelpersAlignmentReference(t *testing.T) {
+	var p pipeline
+	_ = p.run
+	_ = p.handleFailureResult
+	_ = p.handleSuccessResult
+	_ = p.resolveFileInfo
+}
+
+func TestPipeline_HandleFailureResult(t *testing.T) {
+	q := queue.New()
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
+			{ID: "a1@x", Bytes: 100, Number: 1},
+		}},
+	}}
+	job, _ := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
+	_ = q.Add(job)
+
+	// Create an assembler (not started, so WriteArticle fails with ErrNotStarted)
+	a := assembler.New(assembler.Options{
+		FileInfo: func(jobID string, fileIdx int) (assembler.FileInfo, error) {
+			return assembler.FileInfo{}, nil
+		},
+	}, nil)
+
+	p := &pipeline{
+		log:       slog.Default(),
+		queue:     q,
+		assembler: a,
+		fileInfo:  make(map[fileKey]assembler.FileInfo),
+	}
+
+	// 1. Test handleFailureResult with a non-retryable error (triggering early abort)
+	job.ArticlesResolved = 10
+	job.ArticlesFailed = 9
+	hopelessFired := false
+	p.onJobHopeless = func(jobID string) {
+		if jobID == job.ID {
+			hopelessFired = true
+		}
+	}
+
+	resTerminal := &downloader.ArticleResult{
+		JobID:     job.ID,
+		FileIdx:   0,
+		MessageID: "a1@x",
+		Err:       downloader.ErrNoServersLeft,
+		Subject:   "movie.mkv",
+	}
+	p.handleFailureResult(t.Context(), resTerminal)
+	if !hopelessFired {
+		t.Error("expected onJobHopeless to be called for early abort")
+	}
+
+	// 2. Test handleFailureResult with a retryable error
+	resRetryable := &downloader.ArticleResult{
+		JobID:     job.ID,
+		FileIdx:   0,
+		MessageID: "a1@x",
+		Err:       errors.New("connection reset"),
+	}
+	p.handleFailureResult(t.Context(), resRetryable)
+}
+
+func TestPipeline_HandleSuccessResult(t *testing.T) {
+	q := queue.New()
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
+			{ID: "a1@x", Bytes: 100, Number: 1},
+		}},
+	}}
+	job, _ := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
+	_ = q.Add(job)
+
+	a := assembler.New(assembler.Options{
+		FileInfo: func(jobID string, fileIdx int) (assembler.FileInfo, error) {
+			return assembler.FileInfo{}, nil
+		},
+	}, nil)
+
+	p := &pipeline{
+		log:       slog.Default(),
+		queue:     q,
+		assembler: a,
+		fileInfo:  make(map[fileKey]assembler.FileInfo),
+	}
+
+	// Test handleSuccessResult
+	resSuccess := &downloader.ArticleResult{
+		JobID:      job.ID,
+		FileIdx:    0,
+		MessageID:  "a1@x",
+		Data:       []byte("some data"),
+		ServerName: "news.server.com",
+	}
+	p.handleSuccessResult(t.Context(), resSuccess)
 }
