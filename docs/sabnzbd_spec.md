@@ -862,6 +862,10 @@ Error:
 | `status` + `name=unblock_server` | `value=server_id` | status | Re-enable blocked server |
 | `status` + `name=delete_orphan` | `value=path` | status | Delete orphaned files |
 | `status` + `name=add_orphan` | `value=path` | status | Re-queue orphaned job |
+| `status_overview` | | General/System Info JSON | Aggregate snapshot for the `/status` UI page (gonzbd-only extension) |
+| `status` + `name=test_connection` | `value=server_name` | connection test result | Ad-hoc NNTP dial test for one configured server (gonzbd-only extension) |
+| `status` + `name=test_disk_speed` | | disk write-speed result | Write-speed test against the download directory (gonzbd-only extension) |
+| `status` + `name=check_update` | | update-check result | Compare running version against latest GitHub release (gonzbd-only extension) |
 
 #### History
 

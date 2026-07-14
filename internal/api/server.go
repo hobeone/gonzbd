@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
@@ -86,16 +88,26 @@ type ApplicationReloader interface {
 	// Speed returns the current aggregate download speed in bytes/sec.
 	Speed() float64
 	DirectUnpackStatus(jobID string) (directunpack.Status, bool)
+	// BinaryVersionsInfo returns resolved external-tool version strings
+	// captured at startup, for the status page.
+	BinaryVersionsInfo() app.BinaryVersions
+	// ArticleCacheBytes returns current write-cache usage, for the status page.
+	ArticleCacheBytes() int64
+	// DownloadDirFreeBytes returns free disk space on the download directory.
+	DownloadDirFreeBytes(ctx context.Context) (int64, error)
+	// TestDownloadDirWriteSpeedMBPerSec runs an on-demand disk write-speed test.
+	TestDownloadDirWriteSpeedMBPerSec(ctx context.Context) (float64, error)
 }
 
 // Server is the HTTP API server. It owns the mode dispatch table and
 // exposes its handler via Handler; the caller (cmd/gonzbd) is responsible
 // for binding and serving it on a real net/http.Server.
 type Server struct {
-	version string
-	commit  string
-	date    string
-	log     *slog.Logger
+	version   string
+	commit    string
+	date      string
+	startTime time.Time
+	log       *slog.Logger
 
 	queue      *queue.Queue
 	history    *history.Repository
@@ -134,6 +146,7 @@ func New(opts Options) *Server {
 		version:      opts.Version,
 		commit:       opts.Commit,
 		date:         opts.Date,
+		startTime:    time.Now(),
 		log:          log,
 		queue:        opts.Queue,
 		history:      opts.History,

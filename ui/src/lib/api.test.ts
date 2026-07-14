@@ -9,7 +9,9 @@ import {
 	fetchCategories,
 	setConfig,
 	postAction,
-	uploadNzb
+	uploadNzb,
+	fetchStatusOverview,
+	fetchCheckUpdate
 } from './api';
 
 // Mock global fetch
@@ -275,6 +277,81 @@ describe('API Wrappers', () => {
 			const file = new File(['big'], 'big.nzb');
 
 			await expect(uploadNzb(file)).rejects.toThrow('Upload 413: Payload Too Large');
+		});
+	});
+
+	// ── fetchStatusOverview ───────────────────────────────
+
+	describe('fetchStatusOverview', () => {
+		it('sends mode=status_overview', async () => {
+			mockOk({
+				status: true,
+				general: {
+					version: '1.0.0',
+					commit: 'abc123',
+					build_date: '2026-01-01',
+					go_version: 'go1.26.4',
+					uptime_seconds: 3661,
+					hostname: 'host',
+					local_ip: '192.168.1.1',
+					config_path: '/etc/gonzbd.yaml',
+					download_dir: '/downloads',
+					complete_dir: '/complete',
+					admin_dir: '/admin',
+					script_dir: '/scripts',
+					log_dir: '/logs',
+					par2: { path: '/usr/bin/par2', version: '0.8.1' },
+					unrar: { path: '/usr/bin/unrar', version: '6.2' },
+					sevenzip: { path: '/usr/bin/7z', version: '21.07' }
+				},
+				system: {
+					os: 'linux',
+					arch: 'amd64',
+					article_cache_bytes: 1024,
+					download_dir_free_bytes: 2048,
+					min_free_space_bytes: 512
+				}
+			});
+
+			const result = await fetchStatusOverview();
+
+			const url = new URL(mockFetch.mock.calls[0][0], 'http://localhost');
+			expect(url.searchParams.get('mode')).toBe('status_overview');
+			expect(result.general.hostname).toBe('host');
+			expect(result.system.os).toBe('linux');
+		});
+	});
+
+	// ── fetchCheckUpdate ──────────────────────────────────
+
+	describe('fetchCheckUpdate', () => {
+		it('sends mode=status&name=check_update', async () => {
+			mockOk({ status: true, result: { status: 'up_to_date' } });
+
+			const result = await fetchCheckUpdate();
+
+			const url = new URL(mockFetch.mock.calls[0][0], 'http://localhost');
+			expect(url.searchParams.get('mode')).toBe('status');
+			expect(url.searchParams.get('name')).toBe('check_update');
+			expect(result.result.status).toBe('up_to_date');
+		});
+
+		it('propagates update_available with latest_version', async () => {
+			mockOk({
+				status: true,
+				result: { status: 'update_available', latest_version: 'v2.0.0' }
+			});
+
+			const result = await fetchCheckUpdate();
+
+			expect(result.result.status).toBe('update_available');
+			expect(result.result.latest_version).toBe('v2.0.0');
+		});
+
+		it('rejects on a server error, letting callers fall back to unknown', async () => {
+			mockError(500, 'Internal Server Error');
+
+			await expect(fetchCheckUpdate()).rejects.toThrow();
 		});
 	});
 });
