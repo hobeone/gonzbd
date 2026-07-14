@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -75,6 +78,37 @@ func TestModeStatus_CheckUpdate_DevBuildSkipsNetworkCall(t *testing.T) {
 	if result["status"] != "unknown" {
 		t.Errorf("result.status = %v; want unknown for a dev build", result["status"])
 	}
+	reason, _ := result["reason"].(string)
+	if !strings.Contains(reason, "no version baked in") {
+		t.Errorf("result.reason = %q; want it to explain the dev-build short circuit", reason)
+	}
+}
+
+// TestUpdateCheckFailureReason exercises the reason-classification logic
+// directly, since the HTTP-level tests can only easily construct
+// HTTP-status and malformed-body failures via httptest.Server -- not a
+// genuine network-unreachable or context-deadline-exceeded error.
+func TestUpdateCheckFailureReason(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantSub string
+	}{
+		{"404 not found", &githubReleaseHTTPError{StatusCode: http.StatusNotFound}, "no GitHub release has been published"},
+		{"500 server error", &githubReleaseHTTPError{StatusCode: http.StatusInternalServerError}, "unexpected status (500)"},
+		{"403 rate limited", &githubReleaseHTTPError{StatusCode: http.StatusForbidden}, "unexpected status (403)"},
+		{"empty tag name", errEmptyTagName, "missing a release tag name"},
+		{"deadline exceeded", context.DeadlineExceeded, "did not respond in time"},
+		{"generic network error", errors.New("dial tcp: lookup api.github.com: no such host"), "could not reach GitHub"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := updateCheckFailureReason(tc.err)
+			if !strings.Contains(got, tc.wantSub) {
+				t.Errorf("updateCheckFailureReason(%v) = %q; want substring %q", tc.err, got, tc.wantSub)
+			}
+		})
+	}
 }
 
 // TestModeStatus_CheckUpdate_StatusMapping exercises statusCheckUpdate's
@@ -91,11 +125,13 @@ func TestModeStatus_CheckUpdate_StatusMapping(t *testing.T) {
 		serverStatus   int
 		wantStatus     string
 		wantLatest     string
+		wantReasonSub  string
 	}{
-		{"up to date", "v1.2.0", "v1.2.0", http.StatusOK, "up_to_date", "v1.2.0"},
-		{"update available", "v1.2.0", "v1.3.0", http.StatusOK, "update_available", "v1.3.0"},
-		{"github error status", "v1.2.0", "", http.StatusInternalServerError, "unknown", ""},
-		{"empty tag_name", "v1.2.0", "", http.StatusOK, "unknown", ""},
+		{"up to date", "v1.2.0", "v1.2.0", http.StatusOK, "up_to_date", "v1.2.0", ""},
+		{"update available", "v1.2.0", "v1.3.0", http.StatusOK, "update_available", "v1.3.0", ""},
+		{"no release published", "v1.2.0", "", http.StatusNotFound, "unknown", "", "no GitHub release has been published"},
+		{"github error status", "v1.2.0", "", http.StatusInternalServerError, "unknown", "", "unexpected status (500)"},
+		{"empty tag_name", "v1.2.0", "", http.StatusOK, "unknown", "", "missing a release tag name"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,6 +165,12 @@ func TestModeStatus_CheckUpdate_StatusMapping(t *testing.T) {
 			}
 			if tc.wantLatest != "" && result["latest_version"] != tc.wantLatest {
 				t.Errorf("result.latest_version = %v; want %v", result["latest_version"], tc.wantLatest)
+			}
+			if tc.wantReasonSub != "" {
+				reason, _ := result["reason"].(string)
+				if !strings.Contains(reason, tc.wantReasonSub) {
+					t.Errorf("result.reason = %q; want substring %q", reason, tc.wantReasonSub)
+				}
 			}
 		})
 	}

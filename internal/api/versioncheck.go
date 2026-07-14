@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -31,7 +32,10 @@ var githubLatestReleaseURL = "https://api.github.com/repos/hobeone/gonzbd/releas
 // response — this is informational only, never load-bearing.
 func (s *Server) statusCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	if s.version == "" || s.version == "dev" {
-		respondOK(w, "result", map[string]any{"status": "unknown"})
+		respondOK(w, "result", map[string]any{
+			"status": "unknown",
+			"reason": "this build has no version baked in (a local build without -ldflags -X main.Version=...)",
+		})
 		return
 	}
 
@@ -41,7 +45,10 @@ func (s *Server) statusCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	latest, err := fetchLatestGithubRelease(ctx, "gonzbd/"+s.version)
 	if err != nil {
 		s.log.Debug("check_update: github fetch failed", "error", err)
-		respondOK(w, "result", map[string]any{"status": "unknown"})
+		respondOK(w, "result", map[string]any{
+			"status": "unknown",
+			"reason": updateCheckFailureReason(err),
+		})
 		return
 	}
 
@@ -52,6 +59,45 @@ func (s *Server) statusCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	respondOK(w, "result", map[string]any{"status": status, "latest_version": latest})
 }
+
+// githubReleaseHTTPError is a typed error carrying the GitHub API's HTTP
+// status code, so updateCheckFailureReason can give a specific, readable
+// explanation (e.g. distinguishing "no release published yet" from
+// "rate limited") instead of a generic network failure message.
+type githubReleaseHTTPError struct {
+	StatusCode int
+}
+
+func (e *githubReleaseHTTPError) Error() string {
+	return fmt.Sprintf("github releases API: status %d", e.StatusCode)
+}
+
+// updateCheckFailureReason turns a fetchLatestGithubRelease error into a
+// short, human-readable explanation for the status page's Update field.
+// The raw error (a dial/DNS message, a wrapped context error, etc.) is not
+// shown directly -- it's logged at Debug for troubleshooting, but not
+// useful to a user glancing at the status page.
+func updateCheckFailureReason(err error) string {
+	if httpErr, ok := errors.AsType[*githubReleaseHTTPError](err); ok {
+		if httpErr.StatusCode == http.StatusNotFound {
+			return "no GitHub release has been published for this repository yet"
+		}
+		return fmt.Sprintf("GitHub API returned an unexpected status (%d), possibly rate-limited", httpErr.StatusCode)
+	}
+	if errors.Is(err, errEmptyTagName) {
+		return "GitHub's response was missing a release tag name (unexpected API response)"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "GitHub did not respond in time (check network/firewall access to api.github.com)"
+	}
+	return "could not reach GitHub (check network/firewall access to api.github.com)"
+}
+
+// errEmptyTagName is returned when GitHub's release API responds 200 OK
+// but the body has no tag_name -- a malformed/unexpected response
+// distinct from "no release published" (which is a 404, see
+// githubReleaseHTTPError).
+var errEmptyTagName = errors.New("github release response missing tag_name")
 
 // fetchLatestGithubRelease queries the GitHub releases API for this
 // repo's latest release tag. No caching: this only fires when a human
@@ -72,7 +118,7 @@ func fetchLatestGithubRelease(ctx context.Context, userAgent string) (string, er
 	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort cleanup
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("github releases API: status %d", resp.StatusCode)
+		return "", &githubReleaseHTTPError{StatusCode: resp.StatusCode}
 	}
 
 	var body struct {
@@ -82,7 +128,7 @@ func fetchLatestGithubRelease(ctx context.Context, userAgent string) (string, er
 		return "", err
 	}
 	if body.TagName == "" {
-		return "", fmt.Errorf("github release response missing tag_name")
+		return "", errEmptyTagName
 	}
 	return body.TagName, nil
 }

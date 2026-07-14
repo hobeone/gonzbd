@@ -224,6 +224,7 @@ export interface StatusOverviewResponse {
 export interface CheckUpdateResult {
 	status: 'up_to_date' | 'update_available' | 'unknown';
 	latest_version?: string;
+	reason?: string;
 }
 
 export async function fetchStatusOverview(): Promise<StatusOverviewResponse> {
