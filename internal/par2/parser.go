@@ -79,13 +79,38 @@ var (
 )
 
 const (
-	maxJunkScan       = 65536    // 64 * 1024: max bytes to scan forward looking for magic
-	maxPacketBodySize = 67108864 // 64 * 1024 * 1024 (64 MiB)
+	defaultMaxJunkScan       int64  = 65536    // 64 * 1024: default max bytes to scan forward looking for magic
+	defaultMaxPacketBodySize uint64 = 67108864 // 64 * 1024 * 1024 (64 MiB)
 )
 
-// ParsePar2Set reads path (a .par2 file) and returns the full ParsedSet with all
-// packet types parsed.
+// ParseOptions defines configurable limits for parsing PAR2 sets.
+type ParseOptions struct {
+	MaxJunkScanBytes  int64
+	MaxPacketBodySize uint64
+}
+
+// DefaultParseOptions returns standard safety limits for PAR2 parsing.
+func DefaultParseOptions() ParseOptions {
+	return ParseOptions{
+		MaxJunkScanBytes:  defaultMaxJunkScan,
+		MaxPacketBodySize: defaultMaxPacketBodySize,
+	}
+}
+
+// ParsePar2Set reads path (a .par2 file) using default safety limits.
 func ParsePar2Set(path string) (*ParsedSet, error) {
+	return ParsePar2SetWithOptions(path, DefaultParseOptions())
+}
+
+// ParsePar2SetWithOptions reads path (a .par2 file) with caller-specified limit options.
+func ParsePar2SetWithOptions(path string, opts ParseOptions) (*ParsedSet, error) {
+	if opts.MaxJunkScanBytes <= 0 {
+		opts.MaxJunkScanBytes = defaultMaxJunkScan
+	}
+	if opts.MaxPacketBodySize == 0 {
+		opts.MaxPacketBodySize = defaultMaxPacketBodySize
+	}
+
 	f, err := os.Open(path) //nolint:gosec // path is constructed from trusted readdir
 	if err != nil {
 		return nil, err
@@ -121,7 +146,7 @@ func ParsePar2Set(path string) (*ParsedSet, error) {
 
 	header := make([]byte, 64)
 	for {
-		packetType, body, err := readNextPacket(f, fileSize, header)
+		packetType, body, err := readNextPacketWithOptions(f, fileSize, header, opts)
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			break
 		}
@@ -146,9 +171,12 @@ func ParsePar2Set(path string) (*ParsedSet, error) {
 }
 
 // readNextPacket reads the next valid packet from the par2 file.
-// It skips junk data by scanning for the magic sequence, validates packet length
-// and MD5 checksum, and returns the packet type and body bytes.
 func readNextPacket(f *os.File, fileSize uint64, header []byte) (packetType [16]byte, body []byte, err error) {
+	return readNextPacketWithOptions(f, fileSize, header, DefaultParseOptions())
+}
+
+// readNextPacketWithOptions reads the next valid packet using configured limits.
+func readNextPacketWithOptions(f *os.File, fileSize uint64, header []byte, opts ParseOptions) (packetType [16]byte, body []byte, err error) {
 	for {
 		_, err := io.ReadFull(f, header)
 		if err != nil {
@@ -156,8 +184,8 @@ func readNextPacket(f *os.File, fileSize uint64, header []byte) (packetType [16]
 		}
 
 		if !bytes.Equal(header[0:8], magic) {
-			// Scan forward up to maxJunkScan bytes to find the next magic.
-			found, scanErr := scanForMagic(f, magic)
+			// Scan forward up to MaxJunkScanBytes to find the next magic.
+			found, scanErr := scanForMagicWithOptions(f, magic, opts.MaxJunkScanBytes)
 			if scanErr != nil {
 				return [16]byte{}, nil, scanErr
 			}
@@ -173,8 +201,8 @@ func readNextPacket(f *os.File, fileSize uint64, header []byte) (packetType [16]
 		}
 
 		bodyLen := packetLen - 64
-		if bodyLen > maxPacketBodySize {
-			return [16]byte{}, nil, fmt.Errorf("packet body size %d exceeds max %d", bodyLen, maxPacketBodySize)
+		if bodyLen > opts.MaxPacketBodySize {
+			return [16]byte{}, nil, fmt.Errorf("packet body size %d exceeds max %d", bodyLen, opts.MaxPacketBodySize)
 		}
 		body := make([]byte, bodyLen)
 		if _, err := io.ReadFull(f, body); err != nil {
@@ -360,15 +388,13 @@ func ParseFileDescriptions(path string) ([]FileDesc, error) {
 	return set.Files, nil
 }
 
-// scanForMagic scans forward up to maxJunkScan bytes to find the next magic.
-// It is called after a 64-byte header read at offset P failed the magic check,
-// which only rules out a magic starting at P itself. The next possible start is
-// P+1, so rewind to P+1 before scanning: the cursor is at P+64 on entry, hence
-// seek back len(header)-1 = 63. Seeking back only 56 (= 64-8) would resume at
-// P+8 and skip candidate starts P+1..P+7, silently dropping any packet preceded
-// by 1-7 bytes of junk.
-// Returns true if magic is found, false if not found or on error.
+// scanForMagic scans forward using default junk scan limit to find next magic.
 func scanForMagic(f *os.File, magic []byte) (bool, error) {
+	return scanForMagicWithOptions(f, magic, defaultMaxJunkScan)
+}
+
+// scanForMagicWithOptions scans forward up to maxJunkScan bytes to find the next magic.
+func scanForMagicWithOptions(f *os.File, magic []byte, maxJunkScan int64) (bool, error) {
 	if _, seekErr := f.Seek(-63, io.SeekCurrent); seekErr != nil {
 		return false, seekErr
 	}
