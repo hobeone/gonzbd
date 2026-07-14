@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"crypto/md5" //nolint:gosec // md5 used for PAR2 spec packet integrity
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // buildPacket creates a complete PAR2 packet with valid MD5 in the header.
@@ -83,12 +86,17 @@ func TestParsePar2SetWithOptions(t *testing.T) {
 		t.Fatalf("failed to write par2 file: %v", err)
 	}
 
-	// 1. With custom low body limit (e.g., 10 bytes), parsing body of mainPkt (length 24) should fail.
+	// 1. With custom body limit (e.g. 65536 bytes) on a packet body of 70000 bytes, parsing should fail.
+	largeBodyPkt := buildPacket(setID, typeRecovery, make([]byte, 70000))
+	largeParPath := filepath.Join(tmpDir, "large.par2")
+	if err := os.WriteFile(largeParPath, largeBodyPkt, 0644); err != nil {
+		t.Fatalf("failed to write large par2 file: %v", err)
+	}
 	lowOpts := DefaultParseOptions()
-	lowOpts.MaxPacketBodySize = 10
-	_, err := ParsePar2SetWithOptions(parPath, lowOpts)
+	lowOpts.MaxPacketBodySize = 65536
+	_, err := ParsePar2SetWithOptions(largeParPath, lowOpts)
 	if err == nil {
-		t.Fatalf("expected error when body exceeds MaxPacketBodySize = 10, got nil")
+		t.Fatalf("expected error when body exceeds MaxPacketBodySize = 65536, got nil")
 	}
 
 	// 2. With default options, parsing should succeed.
@@ -1091,5 +1099,135 @@ func TestParsePar2Set_MaxPacketBodySizeBoundary(t *testing.T) {
 	_, err = ParsePar2Set(parPath)
 	if err != nil {
 		t.Fatalf("ParsePar2Set: expected exactly 64 MiB packet body to pass size check, got error: %v", err)
+	}
+}
+
+func TestParsePar2Set_PacketBodySizeExceeded(t *testing.T) {
+	tmpDir := t.TempDir()
+	parPath := filepath.Join(tmpDir, "test_large_body.par2")
+
+	// Packet body size 70000 bytes (> MinPar2PacketBodySize 65536)
+	bodyLen := uint64(70000)
+	packetLen := 64 + bodyLen
+	buf := make([]byte, 64)
+	copy(buf[0:8], magic)
+	binary.LittleEndian.PutUint64(buf[8:16], packetLen)
+
+	f, err := os.Create(parPath)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.Write(buf); err != nil {
+		f.Close()
+		t.Fatalf("Write: %v", err)
+	}
+	if err := f.Truncate(int64(packetLen)); err != nil {
+		f.Close()
+		t.Fatalf("Truncate: %v", err)
+	}
+	f.Close()
+
+	opts := ParseOptions{
+		MaxPacketBodySize: 65536,
+		MaxJunkScanBytes:  65536,
+	}
+
+	_, err = ParsePar2SetWithOptions(parPath, opts)
+	if err == nil {
+		t.Fatalf("expected error when bodyLen (70000) > MaxPacketBodySize (65536), got nil")
+	}
+
+	if !errors.Is(err, ErrPacketBodySizeExceeded) {
+		t.Errorf("expected errors.Is(err, ErrPacketBodySizeExceeded), got: %v", err)
+	}
+
+	wantSubstring := "par2 packet body size (70000 bytes) exceeds configured limit (65536 bytes); increase 'par2_max_packet_body_size' in Settings -> Post-Processing if this is a valid ultra-large file"
+	if !bytes.Contains([]byte(err.Error()), []byte(wantSubstring)) {
+		t.Errorf("error string %q does not contain expected substring %q", err.Error(), wantSubstring)
+	}
+}
+
+func TestParsePar2Set_JunkScanLimitExceeded(t *testing.T) {
+	tmpDir := t.TempDir()
+	parPath := filepath.Join(tmpDir, "test_junk.par2")
+
+	// Write 2000 bytes of junk without magic header
+	junk := make([]byte, 2000)
+	for i := range junk {
+		junk[i] = 0xAA
+	}
+
+	if err := os.WriteFile(parPath, junk, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	opts := ParseOptions{
+		MaxJunkScanBytes:  1024,
+		MaxPacketBodySize: 67108864,
+	}
+
+	_, err := ParsePar2SetWithOptions(parPath, opts)
+	if err == nil {
+		t.Fatalf("expected error when junk scan exceeds limit, got nil")
+	}
+
+	if !errors.Is(err, ErrJunkScanLimitExceeded) {
+		t.Errorf("expected errors.Is(err, ErrJunkScanLimitExceeded), got: %v", err)
+	}
+
+	wantSubstring := "par2 junk scan exceeded limit (1024 bytes) without finding header magic; increase 'par2_max_junk_scan_bytes' in Settings -> Post-Processing if file has a large header"
+	if !bytes.Contains([]byte(err.Error()), []byte(wantSubstring)) {
+		t.Errorf("error string %q does not contain expected substring %q", err.Error(), wantSubstring)
+	}
+}
+
+func TestParsePar2Set_MinimumSafetyFloors(t *testing.T) {
+	tmpDir := t.TempDir()
+	parPath := filepath.Join(tmpDir, "test_floor.par2")
+
+	setID := [16]byte{0x01}
+	fileID := [16]byte{0x02}
+	mainPkt := buildPacket(setID, typeMain, buildMainBody(16384, fileID))
+
+	if err := os.WriteFile(parPath, mainPkt, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Below safety floor values: MaxPacketBodySize=10 (< MinPar2PacketBodySize 65536), MaxJunkScanBytes=50 (< MinPar2JunkScanBytes 1024)
+	// Should trigger fallback to defaults (64 MiB packet body, 64 KiB junk scan), allowing the 24-byte mainPkt body to parse successfully.
+	opts := ParseOptions{
+		MaxPacketBodySize: 10,
+		MaxJunkScanBytes:  50,
+	}
+
+	set, err := ParsePar2SetWithOptions(parPath, opts)
+	if err != nil {
+		t.Fatalf("expected ParsePar2SetWithOptions to succeed with safety floor fallback, got: %v", err)
+	}
+
+	if set.SetID != setID {
+		t.Errorf("SetID = %x, want %x", set.SetID, setID)
+	}
+}
+
+func TestParseOptionsFromConfig(t *testing.T) {
+	// Nil config fallback
+	optsNil := ParseOptionsFromConfig(nil)
+	defOpts := DefaultParseOptions()
+	if optsNil != defOpts {
+		t.Errorf("ParseOptionsFromConfig(nil) = %+v, want %+v", optsNil, defOpts)
+	}
+
+	// Non-nil config mapping
+	cfg := &config.PostProcConfig{
+		Par2MaxJunkScanBytes:  2048,
+		Par2MaxPacketBodySize: 131072,
+	}
+	opts := ParseOptionsFromConfig(cfg)
+	if opts.MaxJunkScanBytes != 2048 {
+		t.Errorf("MaxJunkScanBytes = %d, want 2048", opts.MaxJunkScanBytes)
+	}
+	if opts.MaxPacketBodySize != 131072 {
+		t.Errorf("MaxPacketBodySize = %d, want 131072", opts.MaxPacketBodySize)
 	}
 }

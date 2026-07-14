@@ -19,6 +19,8 @@ type RepairStage struct {
 	mu sync.RWMutex
 	// Par2Opts configures the par2 binary path and turbo mode.
 	Par2Opts par2.RunOptions
+	// ParseOpts defines safety limits for PAR2 parsing.
+	ParseOpts par2.ParseOptions
 	// UseGoPar2 enables the native par2engine library for verification
 	// and repair. When true and native repair fails, falls back to the
 	// external par2 binary if available (subject to GoPar2Fallback).
@@ -36,6 +38,13 @@ func (s *RepairStage) SetPar2Opts(opts par2.RunOptions) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Par2Opts = opts
+}
+
+// SetParseOpts updates the PAR2 parse options at runtime. Thread-safe.
+func (s *RepairStage) SetParseOpts(opts par2.ParseOptions) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ParseOpts = opts
 }
 
 // SetUseGoPar2 enables or disables pure-Go par2 at runtime. Thread-safe.
@@ -97,6 +106,7 @@ func (*RepairStage) Name() string { return "repair" }
 func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	s.mu.RLock()
 	par2Opts := s.Par2Opts
+	parseOpts := s.ParseOpts
 	useGoPar2Val := s.UseGoPar2
 	goPar2FallbackVal := s.GoPar2Fallback
 	s.mu.RUnlock()
@@ -134,7 +144,7 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 
 	logf(ctx, log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)
 
-	sets, err := par2.FindPar2Files(job.DownloadDir)
+	sets, err := par2.FindPar2Files(job.DownloadDir, parseOpts)
 	if err != nil {
 		job.ParError = true
 		return fmt.Errorf("repair: find par2 sets: %w", err)
