@@ -6,7 +6,10 @@ import (
 )
 
 func TestBuildCommand_NoWrapping(t *testing.T) {
-	cmd := BuildCommand(context.Background(), CmdConfig{}, "unrar", "x", "-y", "file.rar")
+	cmd, err := BuildCommand(context.Background(), CmdConfig{}, "unrar", "x", "-y", "file.rar")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if cmd.Path == "" {
 		t.Fatal("expected non-empty path")
 	}
@@ -23,7 +26,10 @@ func TestBuildCommand_NoWrapping(t *testing.T) {
 
 func TestBuildCommand_NiceOnly(t *testing.T) {
 	cfg := CmdConfig{Nice: "-n 15"}
-	cmd := BuildCommand(context.Background(), cfg, "unrar", "x")
+	cmd, err := BuildCommand(context.Background(), cfg, "unrar", "x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	args := cmd.Args
 	// Expected: nice -n 15 unrar x
 	want := []string{"nice", "-n", "15", "unrar", "x"}
@@ -39,7 +45,10 @@ func TestBuildCommand_NiceOnly(t *testing.T) {
 
 func TestBuildCommand_IonicOnly(t *testing.T) {
 	cfg := CmdConfig{Ionice: "-c2 -n4"}
-	cmd := BuildCommand(context.Background(), cfg, "par2", "r")
+	cmd, err := BuildCommand(context.Background(), cfg, "par2", "r")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	args := cmd.Args
 	// Expected: ionice -c2 -n4 par2 r
 	want := []string{"ionice", "-c2", "-n4", "par2", "r"}
@@ -55,7 +64,10 @@ func TestBuildCommand_IonicOnly(t *testing.T) {
 
 func TestBuildCommand_BothNiceAndIonice(t *testing.T) {
 	cfg := CmdConfig{Nice: "-n 15", Ionice: "-c2 -n4"}
-	cmd := BuildCommand(context.Background(), cfg, "7zz", "x", "-y", "archive.7z")
+	cmd, err := BuildCommand(context.Background(), cfg, "7zz", "x", "-y", "archive.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	args := cmd.Args
 	// Expected: nice -n 15 ionice -c2 -n4 7zz x -y archive.7z
 	want := []string{"nice", "-n", "15", "ionice", "-c2", "-n4", "7zz", "x", "-y", "archive.7z"}
@@ -125,30 +137,36 @@ func TestValidatePriorityArgs(t *testing.T) {
 	}
 }
 
-func TestBuildPriorityArgs_IgnoreMalformed(t *testing.T) {
+func TestBuildPriorityArgs(t *testing.T) {
 	tests := []struct {
-		name string
-		cfg  CmdConfig
-		want []string
+		name    string
+		cfg     CmdConfig
+		want    []string
+		wantErr bool
 	}{
-		{"valid nice", CmdConfig{Nice: "-n 15"}, []string{"nice", "-n", "15"}},
-		{"valid ionice", CmdConfig{Ionice: "-c2 -n4"}, []string{"ionice", "-c2", "-n4"}},
-		{"valid both", CmdConfig{Nice: "-n 15", Ionice: "-c2 -n4"}, []string{"nice", "-n", "15", "ionice", "-c2", "-n4"}},
-		{"malformed nice semicolon ignored", CmdConfig{Nice: "-n 15; rm -rf /"}, nil},
-		{"malformed ionice semicolon ignored", CmdConfig{Ionice: "-c2; cat /etc/passwd"}, nil},
-		{"malformed nice quotes ignored", CmdConfig{Nice: "-n \"15\""}, nil},
-		{"one valid one malformed nice", CmdConfig{Nice: "-n 15; rm -rf /", Ionice: "-c2 -n4"}, []string{"ionice", "-c2", "-n4"}},
-		{"one valid one malformed ionice", CmdConfig{Nice: "-n 15", Ionice: "-c2 | cat"}, []string{"nice", "-n", "15"}},
+		{"valid nice", CmdConfig{Nice: "-n 15"}, []string{"nice", "-n", "15"}, false},
+		{"valid ionice", CmdConfig{Ionice: "-c2 -n4"}, []string{"ionice", "-c2", "-n4"}, false},
+		{"valid both", CmdConfig{Nice: "-n 15", Ionice: "-c2 -n4"}, []string{"nice", "-n", "15", "ionice", "-c2", "-n4"}, false},
+		{"malformed nice semicolon errors", CmdConfig{Nice: "-n 15; rm -rf /"}, nil, true},
+		{"malformed ionice semicolon errors", CmdConfig{Ionice: "-c2; cat /etc/passwd"}, nil, true},
+		{"malformed nice quotes errors", CmdConfig{Nice: "-n \"15\""}, nil, true},
+		{"one valid one malformed nice errors", CmdConfig{Nice: "-n 15; rm -rf /", Ionice: "-c2 -n4"}, nil, true},
+		{"one valid one malformed ionice errors", CmdConfig{Nice: "-n 15", Ionice: "-c2 | cat"}, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildPriorityArgs(tt.cfg)
-			if len(got) != len(tt.want) {
-				t.Fatalf("got %v (len %d), want %v (len %d)", got, len(got), tt.want, len(tt.want))
+			got, err := buildPriorityArgs(tt.cfg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("buildPriorityArgs() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Errorf("got[%d] = %q, want %q", i, got[i], tt.want[i])
+			if !tt.wantErr {
+				if len(got) != len(tt.want) {
+					t.Fatalf("got %v (len %d), want %v (len %d)", got, len(got), tt.want, len(tt.want))
+				}
+				for i := range got {
+					if got[i] != tt.want[i] {
+						t.Errorf("got[%d] = %q, want %q", i, got[i], tt.want[i])
+					}
 				}
 			}
 		})
@@ -223,6 +241,25 @@ func TestValidateUnrarParams(t *testing.T) {
 			err := ValidateUnrarParams(tt.args)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateUnrarParams(%v) error = %v, wantErr %v", tt.args, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildCommand_MalformedPriorityArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  CmdConfig
+	}{
+		{"malformed nice semicolon", CmdConfig{Nice: "-n 15; rm -rf /"}},
+		{"malformed ionice pipe", CmdConfig{Ionice: "-c2 | cat /etc/passwd"}},
+		{"malformed nice quotes", CmdConfig{Nice: "-n \"15\""}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := BuildCommand(context.Background(), tt.cfg, "unrar", "x")
+			if err == nil {
+				t.Errorf("BuildCommand() with malformed priority %v expected error, got nil", tt.cfg)
 			}
 		})
 	}

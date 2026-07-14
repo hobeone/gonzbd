@@ -30,7 +30,7 @@ type SandboxConfig struct {
 // followed by nice/ionice process priorities.
 func BuildSandboxedCommand(ctx context.Context, priorityCfg CmdConfig, sandboxCfg SandboxConfig, name string, args ...string) (*exec.Cmd, error) {
 	if !sandboxCfg.Enabled || sandboxCfg.TargetDir == "" {
-		return BuildCommand(ctx, priorityCfg, name, args...), nil
+		return BuildCommand(ctx, priorityCfg, name, args...)
 	}
 
 	sName, sArgs, err := wrapSandbox(sandboxCfg.TargetDir, name, args)
@@ -38,9 +38,12 @@ func BuildSandboxedCommand(ctx context.Context, priorityCfg CmdConfig, sandboxCf
 		if sandboxCfg.Strict {
 			return nil, err
 		}
-		return BuildCommand(ctx, priorityCfg, name, args...), nil
+		return BuildCommand(ctx, priorityCfg, name, args...)
 	}
-	cmd := BuildCommand(ctx, priorityCfg, sName, sArgs...)
+	cmd, err := BuildCommand(ctx, priorityCfg, sName, sArgs...)
+	if err != nil {
+		return nil, err
+	}
 	cmd.Env = append(cmd.Environ(), "TMPDIR="+sandboxCfg.TargetDir)
 	return cmd, nil
 }

@@ -83,11 +83,7 @@ func Setup(opts LoggingOptions) (*slog.Logger, io.Closer, error) {
 	minLevel := dynamicMinLevel{}
 
 	// 1. Console handler (Colorized)
-	handlers = append(handlers, tint.NewHandler(os.Stderr, &tint.Options{
-		Level:      minLevel,
-		AddSource:  opts.AddSource,
-		TimeFormat: time.TimeOnly,
-	}))
+	handlers = append(handlers, tint.NewTextHandler(os.Stderr, &tint.Options{Level: minLevel, AddSource: opts.AddSource, TimeFormat: time.TimeOnly}))
 
 	// 2. File handler (Plain text)
 	if opts.LogFile != "" {
@@ -245,14 +241,14 @@ func resolveEffectiveLevel(components []string) slog.Level {
 	componentLevelsMu.RLock()
 	defer componentLevelsMu.RUnlock()
 
-	for i := len(components) - 1; i >= 0; i-- {
+	for i, c := range slices.Backward(components) {
 		// Exact canonical path up to this depth (e.g. "app/postproc/repair").
 		if lvl, ok := componentLevels[joinComponents(components[:i+1])]; ok {
 			return lvl
 		}
 		// Bare segment at this depth, with slash-parent fallback for any
 		// value that itself contains slashes.
-		if lvl, ok := lookupComponentLevel(components[i]); ok {
+		if lvl, ok := lookupComponentLevel(c); ok {
 			return lvl
 		}
 	}
