@@ -115,8 +115,8 @@ func TestRecordConnections(t *testing.T) {
 	if got := s.BadConnections(); got != 0 {
 		t.Errorf("BadConnections() = %d; want 0", got)
 	}
-	if got := s.GoodConnections(); got != 1 {
-		t.Errorf("GoodConnections() = %d; want 1", got)
+	if got := s.goodConnections(); got != 1 {
+		t.Errorf("goodConnections() = %d; want 1", got)
 	}
 }
 
@@ -370,8 +370,8 @@ func TestConcurrentRecordConnections(t *testing.T) {
 	if got := s.BadConnections(); got < 0 {
 		t.Errorf("BadConnections() = %d; want >= 0", got)
 	}
-	if got := s.GoodConnections(); got != wantGood {
-		t.Errorf("GoodConnections() = %d; want %d", got, wantGood)
+	if got := s.goodConnections(); got != wantGood {
+		t.Errorf("goodConnections() = %d; want %d", got, wantGood)
 	}
 }
 
@@ -394,8 +394,8 @@ func TestBadConnsResetsOnGood(t *testing.T) {
 	if s.BadConnections() != 0 {
 		t.Errorf("expected bad connections to reset to 0, got %d", s.BadConnections())
 	}
-	if s.GoodConnections() != 1 {
-		t.Errorf("expected 1 good connection, got %d", s.GoodConnections())
+	if s.goodConnections() != 1 {
+		t.Errorf("expected 1 good connection, got %d", s.goodConnections())
 	}
 }
 

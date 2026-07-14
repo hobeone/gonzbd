@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/history"
@@ -66,7 +68,7 @@ func buildAPIServer(t *testing.T) (*api.Server, *httptest.Server) {
 		History: repo,
 		Config:  cfg,
 		Grabber: grabber,
-		App:     api.NopApp{},
+		App:     apitest.NopApp{},
 	})
 
 	ts := httptest.NewServer(srv.Handler())

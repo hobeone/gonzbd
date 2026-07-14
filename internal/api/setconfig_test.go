@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
@@ -193,7 +195,7 @@ func TestModeSetConfig_ConcurrentSafe(t *testing.T) {
 }
 
 type speedLimitSpyApp struct {
-	NopApp
+	apitest.NopApp
 	mu         sync.Mutex
 	speedLimit int64
 	maxSpeed   int64

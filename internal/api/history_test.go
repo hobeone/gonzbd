@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
@@ -33,7 +35,7 @@ func testHistoryServer(t *testing.T) (*Server, *history.Repository) {
 		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
 		Version: "1.0.0-test",
 		History: repo,
-		App:     NopApp{History: repo},
+		App:     apitest.NopApp{History: repo},
 	})
 	return s, repo
 }
@@ -362,7 +364,7 @@ func TestHistoryMarkCompleted(t *testing.T) {
 }
 
 type retryErrApp struct {
-	NopApp
+	apitest.NopApp
 	err error
 }
 
@@ -407,7 +409,7 @@ func TestHistoryRetry(t *testing.T) {
 	t.Run("retry error", func(t *testing.T) {
 		t.Parallel()
 		s, repo := testHistoryServer(t)
-		s.app = retryErrApp{NopApp: NopApp{History: repo}, err: errors.New("simulated retry failure")}
+		s.app = retryErrApp{NopApp: apitest.NopApp{History: repo}, err: errors.New("simulated retry failure")}
 
 		rr := apiGet(t, s.Handler(), "/api?mode=history&name=retry&value=job_fail&apikey="+testAPIKey)
 		if rr.Code != http.StatusInternalServerError {
@@ -653,7 +655,7 @@ func TestHistoryList_PostProcJobsNotInjected(t *testing.T) {
 		Version: "1.0.0-test",
 		Queue:   q,
 		History: repo,
-		App:     NopApp{Queue: q, History: repo},
+		App:     apitest.NopApp{Queue: q, History: repo},
 	})
 
 	// Seed a completed history entry.

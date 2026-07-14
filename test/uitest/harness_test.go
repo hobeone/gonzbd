@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+
 	"github.com/mxschmitt/playwright-go"
 
 	"github.com/hobeone/gonzbd/internal/api"
@@ -59,7 +61,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 
 	q := queue.New()
-	ma := api.NopApp{Queue: q}
+	ma := apitest.NopApp{Queue: q}
 
 	// In-memory history database.
 	histDB, err := history.Open(t.Context(), ":memory:")
