@@ -359,6 +359,11 @@ func TestValidateRejectsBadInputs(t *testing.T) {
 			"extra_unrar_params",
 		},
 		{
+			"extra_unrar_params disallowed flag",
+			func(c *Config) { c.PostProc.ExtraUnrarParams = "-df -mlp" },
+			"not allowed",
+		},
+		{
 			"extra_par2_params non-flag",
 			func(c *Config) { c.PostProc.ExtraPar2Params = "notaflag" },
 			"extra_par2_params",

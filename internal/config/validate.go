@@ -214,9 +214,12 @@ func (p *PostProcConfig) validateWithOS(goos string) error {
 		}
 	}
 
-	// Extra params must be valid flags (each token starts with '-').
-	if err := validateExtraParams("extra_unrar_params", p.ExtraUnrarParams); err != nil {
-		errs = append(errs, err)
+	// Extra params must be valid flags (each token starts with '-'), and unrar
+	// params must only use SABnzbd allowlisted prefixes (-mlp, -om*, -ri*).
+	if args, err := cmdutil.ParseExtraParams(p.ExtraUnrarParams); err != nil {
+		errs = append(errs, fmt.Errorf("extra_unrar_params: %w", err))
+	} else if err := cmdutil.ValidateUnrarParams(args); err != nil {
+		errs = append(errs, fmt.Errorf("extra_unrar_params: %w", err))
 	}
 	if err := validateExtraParams("extra_par2_params", p.ExtraPar2Params); err != nil {
 		errs = append(errs, err)
