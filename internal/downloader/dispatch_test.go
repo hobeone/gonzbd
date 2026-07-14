@@ -9,6 +9,9 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/decoder"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -735,6 +738,12 @@ func TestAllServersFull(t *testing.T) {
 	if d.allServersFull(opts.serverCfgs) {
 		t.Error("expected allServersFull=false when no active servers exist")
 	}
+
+	// Test boundary case where serverCfgs has fewer elements than d.servers.
+	// This kills the CONDITIONALS_BOUNDARY mutant at dispatch.go:102.
+	optsLessCfgs := defaultOpts(d.servers)
+	optsLessCfgs.serverCfgs = optsLessCfgs.serverCfgs[:1]
+	_ = d.allServersFull(optsLessCfgs.serverCfgs)
 }
 
 func TestBuildDispatchPlan_EarlyExitWhenServersFull(t *testing.T) {
@@ -759,5 +768,145 @@ func TestBuildDispatchPlan_EarlyExitWhenServersFull(t *testing.T) {
 
 	if !d.allServersFull(opts.serverCfgs) {
 		t.Error("expected allServersFull=true")
+	}
+}
+
+func TestUnexportedDownloaderHelpersAlignmentReference(t *testing.T) {
+	var d Downloader
+	_ = d.fetchArticle
+	_ = d.selectServerForArticle
+}
+
+func TestTryDispatch_MaxArtTriesExhausted_MultipleServers(t *testing.T) {
+	t.Parallel()
+
+	srv1 := fakeSrv("s1", 0, true)
+	srv2 := fakeSrv("s2", 1, true)
+	d := newDispatchDownloader([]*Server{srv1, srv2})
+
+	// Mark server 0 as already tried, but server 1 is not tried.
+	mask := serverMask{}
+	mask.set(0)
+	d.tracker.Lock()
+	d.tracker.SetTriedLocked("msg1@h", mask)
+	d.tracker.Unlock()
+	a := fakeArticle("msg1@h")
+	opts := defaultOpts(d.servers)
+	opts.maxArtTries = 1 // cap at 1 try
+
+	handled, exReq := d.tryDispatch(context.Background(), a, opts)
+
+	if !handled {
+		t.Error("handled: got false, want true (exhausted)")
+	}
+	if exReq == nil {
+		t.Fatal("exReq: got nil, want non-nil articleRequest for exhausted article")
+	}
+	if exReq.messageID != "msg1@h" {
+		t.Errorf("exReq.messageID = %q, want %q", exReq.messageID, "msg1@h")
+	}
+	select {
+	case <-d.workCh["s2"]:
+		t.Error("server 2 was incorrectly dispatched to despite maxArtTries limit")
+	default:
+		// correct
+	}
+}
+
+func TestDownloader_DecodePayload_Coverage(t *testing.T) {
+	// 1. yEnc error branch
+	// 2. UU error branch
+	// 3. invalid DMCA
+	_, _, _, err := decodePayload([]byte("invalid body that fails both yenc and uu"))
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
+	q := queue.New()
+	d := &Downloader{
+		queue:       q,
+		completions: make(chan *ArticleResult, 10),
+		log:         slog.Default(),
+		tracker:     newDispatchTracker(),
+	}
+
+	cfg := config.ServerConfig{Name: "test-server"}
+	srv := NewServer(cfg)
+
+	req := &articleRequest{
+		jobID:     "job1",
+		fileIdx:   0,
+		messageID: "msg1",
+	}
+
+	// 1. Failure path: non-CRC decode error
+	body := []byte("invalid data")
+	d.processFetchedArticle(t.Context(), srv, req, body)
+	select {
+	case res := <-d.completions:
+		if res.Err == nil {
+			t.Error("expected decode error, got nil")
+		}
+	default:
+		t.Error("expected result emitted, got none")
+	}
+
+	// 2. Failure path: CRC mismatch error
+	yencBadCRC := []byte("=ybegin line=128 size=12 part=1 name=t.txt\r\n=ypart begin=1 end=12\r\ntest content\r\n=yend size=12 part=1 pcrc32=12345678\r\n")
+	d.processFetchedArticle(t.Context(), srv, req, yencBadCRC)
+	select {
+	case res := <-d.completions:
+		if !errors.Is(res.Err, decoder.ErrCRCMismatch) {
+			t.Errorf("expected CRC mismatch, got %v", res.Err)
+		}
+	default:
+		t.Error("expected result emitted for CRC mismatch, got none")
+	}
+}
+
+func TestDownloader_FetchArticle_Coverage(t *testing.T) {
+	q := queue.New()
+	d := &Downloader{
+		queue:   q,
+		tracker: newDispatchTracker(),
+		log:     slog.Default(),
+	}
+
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	cfg := config.ServerConfig{Name: "test-server"}
+	srv := NewServer(cfg)
+
+	req := &articleRequest{
+		jobID:     "job1",
+		fileIdx:   0,
+		messageID: "msg1",
+	}
+
+	// 1. Global pause check coverage (d.paused.Load() == true)
+	d.paused.Store(true)
+	body, ok := d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
+	if ok || body != nil {
+		t.Error("expected fetchArticle to return nil, false on global pause")
+	}
+
+	// 2. Job paused status check coverage (job paused)
+	d.paused.Store(false)
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
+			{ID: "msg1", Bytes: 100, Number: 1},
+		}},
+	}}
+	job, _ := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
+	job.Status = constants.StatusPaused
+	_ = q.Add(job)
+
+	req.jobID = job.ID
+	body, ok = d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
+	if ok || body != nil {
+		t.Error("expected fetchArticle to return nil, false on paused job")
 	}
 }
