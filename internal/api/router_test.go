@@ -89,3 +89,24 @@ func TestHandleAPI_CookieAuth_POST_StateChangingAllowed(t *testing.T) {
 		t.Errorf("pause via POST with cookie auth: got status %d, want 200 OK", rr.Code)
 	}
 }
+
+func TestHandleAPI_CookieAuth_NonPost_StateChangingRestricted_405(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+
+	methods := []string{http.MethodPut, http.MethodDelete, http.MethodPatch}
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/api?mode=pause", nil)
+			req.Host = "localhost:4289"
+			req.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: s.SessionKey()})
+			rr := httptest.NewRecorder()
+
+			s.Handler().ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusMethodNotAllowed {
+				t.Errorf("pause via %s with cookie auth: got status %d, want 405 Method Not Allowed", method, rr.Code)
+			}
+		})
+	}
+}
