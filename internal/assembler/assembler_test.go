@@ -1620,4 +1620,38 @@ var (
 	_ = (*Assembler).processRequest
 	_ = (*Assembler).flush
 	_ = (*Assembler).dispatchRequest
+	_ = (*Assembler).openTargetFile
+	_ = (*Assembler).writeArticleOrBuffer
 )
+
+func TestAssembler_FlushRunError(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "assembler-flush-run-err")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	_ = tmpFile.Close()
+
+	log := slog.Default()
+	a := &Assembler{
+		log: log,
+	}
+
+	f := &openFile{
+		handle: tmpFile,
+		info: FileInfo{
+			Path: tmpFile.Name(),
+		},
+	}
+
+	run := &flushRun{
+		data:   []byte("test"),
+		offset: 0,
+	}
+
+	success := a.flushRun(f, run)
+	if success {
+		t.Errorf("flushRun on closed file: got true, want false")
+	}
+}
