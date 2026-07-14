@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -2110,5 +2111,54 @@ func TestStageFromStatus(t *testing.T) {
 				t.Errorf("stageFromStatus(%q) = %q; want %q", tc.status, got, tc.want)
 			}
 		})
+	}
+}
+
+type removeJobErrApp struct {
+	apitest.NopApp
+	errByID map[string]error
+}
+
+func (a removeJobErrApp) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
+	if err, ok := a.errByID[id]; ok && err != nil {
+		return err
+	}
+	return a.NopApp.RemoveJob(ctx, id, deleteFiles)
+}
+
+func TestQueueDelete_RemoveJobErrorLog(t *testing.T) {
+	t.Parallel()
+	q := queue.New()
+	rec := &recordHandler{}
+	logger := slog.New(rec)
+	s := New(Options{
+		Logger:  logger,
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+		Version: "1.0.0-test",
+		Queue:   q,
+		App: removeJobErrApp{
+			NopApp:  apitest.NopApp{Queue: q},
+			errByID: map[string]error{"job_fail": errors.New("simulated queue delete failure")},
+		},
+	})
+
+	j1 := addTestJob(t, q, queue.AddOptions{Filename: "a.nzb"})
+	value := j1.ID + ",job_fail"
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=delete&value="+value+"&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	m := decodeJSON(t, rr)
+	if m["status"] != true {
+		t.Errorf("status = %v; want true", m["status"])
+	}
+	nzoIDs, ok := m["nzo_ids"].([]any)
+	if !ok || len(nzoIDs) != 1 || nzoIDs[0] != j1.ID {
+		t.Errorf("nzo_ids = %v; want [%s]", m["nzo_ids"], j1.ID)
+	}
+
+	if !rec.hasWarn("failed to remove job during bulk delete", "job_fail", "simulated queue delete failure") {
+		t.Errorf("expected warning log not found in records: %v", rec.records)
 	}
 }

@@ -365,21 +365,6 @@ func TestBroadcaster_HandleClientDisconnect(t *testing.T) {
 	}
 }
 
-type recordHandler struct {
-	mu      sync.Mutex
-	records []slog.Record
-}
-
-func (h *recordHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
-func (h *recordHandler) Handle(_ context.Context, r slog.Record) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.records = append(h.records, r)
-	return nil
-}
-func (h *recordHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
-func (h *recordHandler) WithGroup(_ string) slog.Handler      { return h }
-
 func (h *recordHandler) len() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
