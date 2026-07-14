@@ -319,10 +319,6 @@ func verifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	args = append(args, parfile)
 	args = append(args, extraFiles...)
 
-	cmd := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
-	cmd.Dir = filepath.Dir(parfile)
-
-	// Build and emit full command line for UI visibility.
 	cmdLine := formatParCmdLine(opts.Bin(), args)
 	if opts.OnLine != nil {
 		opts.OnLine("Command: " + cmdLine)
@@ -330,6 +326,12 @@ func verifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	if opts.OnCommand != nil {
 		opts.OnCommand(cmdLine)
 	}
+
+	cmd, err := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	if err != nil {
+		return VerifyResult{CommandLine: cmdLine, Status: StatusUnknown}, fmt.Errorf("par2 verify: %w", err)
+	}
+	cmd.Dir = filepath.Dir(parfile)
 
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
@@ -377,10 +379,6 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	args = append(args, parfile)
 	args = append(args, extraFiles...)
 
-	cmd := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
-	cmd.Dir = filepath.Dir(parfile)
-
-	// Build and emit full command line for UI visibility.
 	cmdLine := formatParCmdLine(opts.Bin(), args)
 	if opts.OnLine != nil {
 		opts.OnLine("Command: " + cmdLine)
@@ -388,6 +386,12 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 	if opts.OnCommand != nil {
 		opts.OnCommand(cmdLine)
 	}
+
+	cmd, err := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	if err != nil {
+		return RepairResult{CommandLine: cmdLine}, fmt.Errorf("par2 repair: %w", err)
+	}
+	cmd.Dir = filepath.Dir(parfile)
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
 

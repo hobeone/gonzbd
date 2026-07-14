@@ -43,43 +43,56 @@ func (c CmdConfig) IsEmpty() bool {
 // The wrapping order matches SABnzbd:
 //
 //	nice <nice_args> ionice <ionice_args> <name> <args...>
-func BuildCommand(ctx context.Context, cfg CmdConfig, name string, args ...string) *exec.Cmd {
+func BuildCommand(ctx context.Context, cfg CmdConfig, name string, args ...string) (*exec.Cmd, error) {
 	if cfg.IsEmpty() {
-		return exec.CommandContext(ctx, name, args...) //nolint:gosec // caller-supplied args
+		return exec.CommandContext(ctx, name, args...), nil //nolint:gosec // caller-supplied args
 	}
 
-	fullArgs := buildPriorityArgs(cfg)
+	fullArgs, err := buildPriorityArgs(cfg)
+	if err != nil {
+		return nil, err
+	}
 	fullArgs = append(fullArgs, name)
 	fullArgs = append(fullArgs, args...)
 
-	return exec.CommandContext(ctx, fullArgs[0], fullArgs[1:]...) //nolint:gosec // priority-wrapped command
+	return exec.CommandContext(ctx, fullArgs[0], fullArgs[1:]...), nil //nolint:gosec // priority-wrapped command
 }
 
 // FormatCmdPrefix returns the nice/ionice prefix that BuildCommand would
 // prepend, suitable for display in logs and UI. Returns empty string when
-// no wrapping is configured.
+// no wrapping is configured or when the priority arguments are malformed.
 func FormatCmdPrefix(cfg CmdConfig) string {
 	if cfg.IsEmpty() {
 		return ""
 	}
-	return strings.Join(buildPriorityArgs(cfg), " ")
+	args, err := buildPriorityArgs(cfg)
+	if err != nil {
+		return ""
+	}
+	return strings.Join(args, " ")
 }
 
 // buildPriorityArgs returns the nice/ionice prefix arguments for the
 // given config. Used by both BuildCommand and FormatCmdPrefix.
-// Malformed argument strings containing shell metacharacters are ignored
-// to prevent command injection if validation was bypassed.
-func buildPriorityArgs(cfg CmdConfig) []string {
+// Malformed argument strings containing shell metacharacters return an error
+// so that BuildCommand can abort process execution on malformed priority strings.
+func buildPriorityArgs(cfg CmdConfig) ([]string, error) {
 	var parts []string
-	if cfg.Nice != "" && ValidatePriorityArgs("nice", cfg.Nice) == nil {
+	if cfg.Nice != "" {
+		if err := ValidatePriorityArgs("nice", cfg.Nice); err != nil {
+			return nil, err
+		}
 		parts = append(parts, "nice")
 		parts = append(parts, strings.Fields(cfg.Nice)...)
 	}
-	if cfg.Ionice != "" && ValidatePriorityArgs("ionice", cfg.Ionice) == nil {
+	if cfg.Ionice != "" {
+		if err := ValidatePriorityArgs("ionice", cfg.Ionice); err != nil {
+			return nil, err
+		}
 		parts = append(parts, "ionice")
 		parts = append(parts, strings.Fields(cfg.Ionice)...)
 	}
-	return parts
+	return parts, nil
 }
 
 // ValidatePriorityArgs checks that a nice or ionice argument string

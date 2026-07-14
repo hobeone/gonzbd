@@ -93,3 +93,18 @@ func TestBuildSandboxedCommand_SetsTMPDIR(t *testing.T) {
 		t.Fatalf("expected cmd.Env to contain TMPDIR=/sandbox/target when sandboxing enabled, got %v", cmd.Env)
 	}
 }
+
+func TestBuildSandboxedCommand_MalformedPriorityArgs(t *testing.T) {
+	ctx := context.Background()
+	cfg := SandboxConfig{Enabled: false, TargetDir: "/tmp"}
+	_, err := BuildSandboxedCommand(ctx, CmdConfig{Nice: "-n 15; rm -rf /"}, cfg, "echo", "hello")
+	if err == nil {
+		t.Error("expected error for malformed priority args when sandboxing disabled, got nil")
+	}
+
+	cfgEnabled := SandboxConfig{Enabled: true, TargetDir: "/tmp"}
+	_, err = BuildSandboxedCommand(ctx, CmdConfig{Ionice: "-c2 | cat /etc/passwd"}, cfgEnabled, "echo", "hello")
+	if err == nil {
+		t.Error("expected error for malformed priority args when sandboxing enabled, got nil")
+	}
+}
