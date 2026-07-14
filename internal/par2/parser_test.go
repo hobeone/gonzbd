@@ -1069,7 +1069,7 @@ func TestParsePar2Set_MaxPacketBodySizeBoundary(t *testing.T) {
 	parPath := filepath.Join(tmpDir, "test.par2")
 
 	// Exactly 64 MiB body (packetLen = 64 MiB + 64 bytes header).
-	packetLen := uint64(defaultMaxPacketBodySize + 64)
+	packetLen := defaultMaxPacketBodySize + 64
 	buf := make([]byte, 64)
 	copy(buf[0:8], magic)
 	binary.LittleEndian.PutUint64(buf[8:16], packetLen)
