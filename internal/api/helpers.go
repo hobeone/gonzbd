@@ -134,7 +134,7 @@ func formatDuration(seconds int) string {
 // isSystemMutationMode returns true if mode mutates application-level state.
 func isSystemMutationMode(mode string) bool {
 	switch mode {
-	case "set_config", "shutdown", "restart", "pause", "resume", "disconnect", "addurl", "addfile":
+	case "set_config", "shutdown", "restart", "pause", "resume", "disconnect", "addurl", "addfile", "addlocalfile", "pause_pp", "resume_pp", "speedlimit":
 		return true
 	default:
 		return false
@@ -144,7 +144,7 @@ func isSystemMutationMode(mode string) bool {
 // isQueueMutation returns true if action name mutates the download queue.
 func isQueueMutation(name string) bool {
 	switch name {
-	case "delete", "purge", "delete_nzf":
+	case "delete", "purge", "delete_nzf", "pause", "resume", "priority", "change_opts", "switch":
 		return true
 	default:
 		return false
