@@ -49,12 +49,11 @@ func externalSection(section string) string {
 // clients (Sonarr, Radarr, NZB360) can read expected paths like
 // config.misc.complete_dir without error.
 func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
-	if s.config == nil {
-		s.respondError(w, http.StatusInternalServerError, "config not wired")
+	if !s.requireConfig(w) {
 		return
 	}
 
-	section := formString(r, "section")
+	section := formValue(r, "section")
 
 	// Marshal the config to JSON first, then optionally filter by section.
 	var raw json.RawMessage
@@ -149,14 +148,13 @@ func injectSABDefaults(remapped map[string]json.RawMessage) {
 
 // modeSetConfig sets configuration parameters.
 func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
-	if s.config == nil {
-		s.respondError(w, http.StatusInternalServerError, "config not wired")
+	if !s.requireConfig(w) {
 		return
 	}
 
-	section := resolveSection(formString(r, "section"))
-	keyword := formString(r, "keyword")
-	value := formString(r, "value")
+	section := resolveSection(formValue(r, "section"))
+	keyword := formValue(r, "keyword")
+	value := formValue(r, "value")
 
 	if section == "" {
 		s.respondError(w, http.StatusBadRequest, "missing section")
@@ -297,7 +295,7 @@ func (s *Server) applyDirectoryChange(keyword string) string {
 
 // modeConfig handles mode=config with sub-actions via name= parameter.
 func (s *Server) modeConfig(w http.ResponseWriter, r *http.Request) {
-	action := formString(r, "name")
+	action := formValue(r, "name")
 	switch action {
 	case "speedlimit":
 		s.configSpeedLimit(w, r)
@@ -331,7 +329,7 @@ func (s *Server) configSpeedLimit(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, http.StatusServiceUnavailable, "application not running")
 		return
 	}
-	raw := formString(r, "value")
+	raw := formValue(r, "value")
 	if raw == "" {
 		raw = "0"
 	}
@@ -375,22 +373,22 @@ const testServerTimeout = 15 * time.Second
 // connection. The result tells the caller whether the server is reachable
 // and accepts the supplied credentials.
 func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
-	host := formString(r, "host")
+	host := formValue(r, "host")
 	if host == "" {
 		s.respondError(w, http.StatusBadRequest, "missing host parameter")
 		return
 	}
 
-	port, _ := strconv.Atoi(formString(r, "port")) //nolint:errcheck // handled by port == 0 check
+	port, _ := strconv.Atoi(formValue(r, "port")) //nolint:errcheck // handled by port == 0 check
 	if port == 0 {
 		port = 119
 	}
-	ssl := formString(r, "ssl") == "1"
+	ssl := formValue(r, "ssl") == "1"
 	if ssl && port == 119 {
 		port = 563
 	}
 
-	sslVerifyStr := formString(r, "ssl_verify")
+	sslVerifyStr := formValue(r, "ssl_verify")
 	sslVerify := config.SSLVerifyHostname // safe default
 	if sslVerifyStr != "" {
 		if v, err := strconv.ParseInt(sslVerifyStr, 10, 8); err == nil {
@@ -406,8 +404,8 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 		Name:        "test",
 		Host:        host,
 		Port:        port,
-		Username:    formString(r, "username"),
-		Password:    formString(r, "password"),
+		Username:    formValue(r, "username"),
+		Password:    formValue(r, "password"),
 		SSL:         ssl,
 		SSLVerify:   sslVerify,
 		Connections: 1,

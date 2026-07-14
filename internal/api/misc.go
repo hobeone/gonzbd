@@ -60,9 +60,8 @@ func (s *Server) modeGetScripts(w http.ResponseWriter, r *http.Request) {
 
 // modeBrowse lists files and directories at a given path.
 func (s *Server) modeBrowse(w http.ResponseWriter, r *http.Request) {
-	dirPath := formString(r, "name")
-	if dirPath == "" {
-		s.respondError(w, http.StatusBadRequest, "missing name parameter (path)")
+	dirPath, ok := s.requireParam(w, r, "name", "path")
+	if !ok {
 		return
 	}
 
@@ -73,8 +72,8 @@ func (s *Server) modeBrowse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	showFiles := formString(r, "show_files") == "1"
-	showHidden := formString(r, "show_hidden_folders") == "1"
+	showFiles := formValue(r, "show_files") == "1"
+	showHidden := formValue(r, "show_hidden_folders") == "1"
 
 	entries, err := os.ReadDir(cleaned)
 	if err != nil {

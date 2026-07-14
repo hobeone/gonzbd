@@ -9,8 +9,7 @@ import (
 
 // modeFullStatus returns a full status snapshot including queue paused state and slot count.
 func (s *Server) modeFullStatus(w http.ResponseWriter, r *http.Request) {
-	if s.queue == nil {
-		s.respondError(w, http.StatusInternalServerError, "queue not wired")
+	if !s.requireQueue(w) {
 		return
 	}
 
@@ -38,7 +37,7 @@ func (s *Server) modeFullStatus(w http.ResponseWriter, r *http.Request) {
 
 // modeStatus handles mode=status with sub-actions via name= parameter.
 func (s *Server) modeStatus(w http.ResponseWriter, r *http.Request) {
-	action := formString(r, "name")
+	action := formValue(r, "name")
 	if action == "" {
 		// No action: fall through to fullstatus behavior
 		s.modeFullStatus(w, r)
@@ -69,13 +68,11 @@ func (s *Server) modeStatus(w http.ResponseWriter, r *http.Request) {
 // statusUnblockServer clears penalties on a named server.
 // SABnzbd convention: value = server name.
 func (s *Server) statusUnblockServer(w http.ResponseWriter, r *http.Request) {
-	if s.app == nil {
-		s.respondError(w, http.StatusInternalServerError, "app not wired")
+	if !s.requireApp(w) {
 		return
 	}
-	name := formString(r, "value")
-	if name == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value parameter (server name)")
+	name, ok := s.requireParam(w, r, "value", "server name")
+	if !ok {
 		return
 	}
 	if !s.app.UnblockServer(name) {
@@ -88,7 +85,7 @@ func (s *Server) statusUnblockServer(w http.ResponseWriter, r *http.Request) {
 
 // modeWarnings returns the warning list.
 func (s *Server) modeWarnings(w http.ResponseWriter, r *http.Request) {
-	action := formString(r, "name")
+	action := formValue(r, "name")
 	if action == "clear" {
 		s.ClearWarnings()
 		respondOK(w, "warnings", []string{})
@@ -101,8 +98,7 @@ func (s *Server) modeWarnings(w http.ResponseWriter, r *http.Request) {
 // modeServerStats returns per-server connection statistics including
 // health, BPS, penalty state, and per-connection article activity.
 func (s *Server) modeServerStats(w http.ResponseWriter, r *http.Request) {
-	if s.app == nil {
-		s.respondError(w, http.StatusInternalServerError, "app not wired")
+	if !s.requireApp(w) {
 		return
 	}
 	servers := s.app.ServerStatus()

@@ -2,58 +2,59 @@ package api
 
 import (
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
 
-// M14: Verify formString reads values correctly without triggering
+// M14: Verify formValue reads values correctly without triggering
 // implicit unbounded parsing (safe because middleware caps body size).
 
-// TestFormString_QueryParam verifies formString reads from query parameters.
-func TestFormString_QueryParam(t *testing.T) {
+// TestFormValue_QueryParam verifies formValue reads from query parameters.
+func TestFormValue_QueryParam(t *testing.T) {
 	t.Parallel()
 	req := httptest.NewRequest("GET", "/api?name=delete&value=SABnzbd_nzo_abc", nil)
-	if got := formString(req, "name"); got != "delete" {
-		t.Errorf("formString(name) = %q, want %q", got, "delete")
+	if got := formValue(req, "name"); got != "delete" {
+		t.Errorf("formValue(name) = %q, want %q", got, "delete")
 	}
-	if got := formString(req, "value"); got != "SABnzbd_nzo_abc" {
-		t.Errorf("formString(value) = %q, want %q", got, "SABnzbd_nzo_abc")
+	if got := formValue(req, "value"); got != "SABnzbd_nzo_abc" {
+		t.Errorf("formValue(value) = %q, want %q", got, "SABnzbd_nzo_abc")
 	}
 }
 
-// TestFormString_PostFormBody verifies formString reads from URL-encoded form body.
-func TestFormString_PostFormBody(t *testing.T) {
+// TestFormValue_PostFormBody verifies formValue reads from URL-encoded form body.
+func TestFormValue_PostFormBody(t *testing.T) {
 	t.Parallel()
 	body := strings.NewReader("name=delete&value=SABnzbd_nzo_xyz")
 	req := httptest.NewRequest("POST", "/api", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	if got := formString(req, "name"); got != "delete" {
-		t.Errorf("formString(name) from body = %q, want %q", got, "delete")
+	if got := formValue(req, "name"); got != "delete" {
+		t.Errorf("formValue(name) from body = %q, want %q", got, "delete")
 	}
 }
 
-// TestFormString_BodyTakesPrecedence verifies that form body takes
+// TestFormValue_BodyTakesPrecedence verifies that form body takes
 // precedence over query parameter for the same key, per Go's r.FormValue
 // semantics: "POST and PUT body parameters take precedence over URL query
 // string values."
-func TestFormString_BodyTakesPrecedence(t *testing.T) {
+func TestFormValue_BodyTakesPrecedence(t *testing.T) {
 	t.Parallel()
 	body := strings.NewReader("name=body_value")
 	req := httptest.NewRequest("POST", "/api?name=query_value", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	if got := formString(req, "name"); got != "body_value" {
-		t.Errorf("formString(name) = %q, want %q (body should take precedence per FormValue)", got, "body_value")
+	if got := formValue(req, "name"); got != "body_value" {
+		t.Errorf("formValue(name) = %q, want %q (body should take precedence per FormValue)", got, "body_value")
 	}
 }
 
-// TestFormString_MissingKey returns empty string for absent keys.
-func TestFormString_MissingKey(t *testing.T) {
+// TestFormValue_MissingKey returns empty string for absent keys.
+func TestFormValue_MissingKey(t *testing.T) {
 	t.Parallel()
 	req := httptest.NewRequest("GET", "/api?mode=queue", nil)
-	if got := formString(req, "nonexistent"); got != "" {
-		t.Errorf("formString(nonexistent) = %q, want empty string", got)
+	if got := formValue(req, "nonexistent"); got != "" {
+		t.Errorf("formValue(nonexistent) = %q, want empty string", got)
 	}
 }
 
@@ -80,5 +81,83 @@ func TestConfigTestServer_PrivateIPNotRejected(t *testing.T) {
 	// Connection to a private IP should fail (timeout), not panic.
 	if result["passed"] != false {
 		t.Errorf("passed = %v; want false (private IP is unreachable in CI)", result["passed"])
+	}
+}
+
+// errorReader simulates a read error during form parsing.
+type errorReader struct{}
+
+func (e *errorReader) Read(_ []byte) (int, error) {
+	return 0, os.ErrPermission
+}
+
+func TestFormValue_MultipartSuccess(t *testing.T) {
+	t.Parallel()
+	body := strings.NewReader("--myboundary\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nupload_name\r\n--myboundary--\r\n")
+	req := httptest.NewRequest("POST", "/api?name=query_fallback", body)
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=myboundary")
+
+	if got := formValue(req, "name"); got != "upload_name" {
+		t.Errorf("formValue(name) from multipart = %q, want %q", got, "upload_name")
+	}
+}
+
+func TestFormValue_MultipartEmptyValueFallback(t *testing.T) {
+	t.Parallel()
+	body := strings.NewReader("--myboundary\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\n\r\n--myboundary--\r\n")
+	req := httptest.NewRequest("POST", "/api?name=query_fallback", body)
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=myboundary")
+
+	if got := formValue(req, "name"); got != "query_fallback" {
+		t.Errorf("formValue(name) fallback from empty multipart = %q, want %q", got, "query_fallback")
+	}
+}
+
+func TestFormValue_MultipartParseErrorFallback(t *testing.T) {
+	t.Parallel()
+	body := strings.NewReader("broken-multipart-body-without-boundary-markers")
+	req := httptest.NewRequest("POST", "/api?name=query_fallback", body)
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=myboundary")
+
+	if got := formValue(req, "name"); got != "query_fallback" {
+		t.Errorf("formValue(name) fallback from broken multipart = %q, want %q", got, "query_fallback")
+	}
+}
+
+func TestFormValue_PutAndPatchMethods(t *testing.T) {
+	t.Parallel()
+	bodyPut := strings.NewReader("name=put_body")
+	reqPut := httptest.NewRequest("PUT", "/api?name=query_val", bodyPut)
+	reqPut.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if got := formValue(reqPut, "name"); got != "put_body" {
+		t.Errorf("formValue(name) PUT = %q, want %q", got, "put_body")
+	}
+
+	bodyPatch := strings.NewReader("name=patch_body")
+	reqPatch := httptest.NewRequest("PATCH", "/api?name=query_val", bodyPatch)
+	reqPatch.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if got := formValue(reqPatch, "name"); got != "patch_body" {
+		t.Errorf("formValue(name) PATCH = %q, want %q", got, "patch_body")
+	}
+}
+
+func TestFormValue_ParseFormErrorFallback(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest("POST", "/api?name=query_fallback", &errorReader{})
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	if got := formValue(req, "name"); got != "query_fallback" {
+		t.Errorf("formValue(name) fallback from ParseForm error = %q, want %q", got, "query_fallback")
+	}
+}
+
+func TestFormValue_PostFormEmptyValueFallback(t *testing.T) {
+	t.Parallel()
+	body := strings.NewReader("name=&other=val")
+	req := httptest.NewRequest("POST", "/api?name=query_fallback", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	if got := formValue(req, "name"); got != "query_fallback" {
+		t.Errorf("formValue(name) fallback from empty PostForm value = %q, want %q", got, "query_fallback")
 	}
 }
