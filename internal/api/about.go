@@ -19,7 +19,7 @@ import (
 // modeAbout returns system information for the About dialog: version,
 // local/public IPv4, hostname, configured directory paths, and
 // resolved binary paths for post-processing tools.
-func (s *Server) modeAbout(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) modeAbout(w http.ResponseWriter, r *http.Request) {
 	hostname, _ := os.Hostname()
 
 	var (
@@ -52,8 +52,9 @@ func (s *Server) modeAbout(w http.ResponseWriter, _ *http.Request) {
 	var publicV4, publicV6 string
 	var ipWG sync.WaitGroup
 	ipWG.Add(2)
-	go func() { defer ipWG.Done(); publicV4 = publicIP("https://api.ipify.org?format=text") }()
-	go func() { defer ipWG.Done(); publicV6 = publicIP("https://api6.ipify.org?format=text") }()
+	ctx := r.Context()
+	go func() { defer ipWG.Done(); publicV4 = publicIP(ctx, "https://api.ipify.org?format=text") }()
+	go func() { defer ipWG.Done(); publicV6 = publicIP(ctx, "https://api6.ipify.org?format=text") }()
 	ipWG.Wait()
 
 	about := map[string]string{
@@ -105,11 +106,11 @@ func localIPv4() string {
 // address. This is best-effort: on any failure (timeout, network error,
 // non-200 response) it returns "". Used with api.ipify.org for IPv4 and
 // api6.ipify.org for IPv6.
-func publicIP(url string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+func publicIP(ctx context.Context, urlStr string) string {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, http.NoBody)
 	if err != nil {
 		return ""
 	}
