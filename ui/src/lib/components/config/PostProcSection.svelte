@@ -53,6 +53,15 @@
 			<ConfigSwitch section="postproc" keyword="enable_quick_check" label="Enable quick CRC verify" value={configData.postproc.enable_quick_check} description="Pre-verify assembled files using CRC32 values from the par2 manifest. When all files pass, the expensive par2 repair subprocess is skipped. Disable to always run the full par2 verify/repair step." onupdate={onFieldUpdate} />
 			<ConfigSwitch section="postproc" keyword="par2_turbo" label="Use par2cmdline-turbo" value={configData.postproc.par2_turbo} description="Enable multi-threaded repair when the par2 binary supports it." onupdate={onFieldUpdate} />
 			<ConfigSwitch section="postproc" keyword="process_unpacked_par2" label="Process unpacked par2" value={configData.postproc.process_unpacked_par2} description="Use par2 files found inside extracted archives for filename recovery (deobfuscation)." onupdate={onFieldUpdate} />
+			<details class="group py-2">
+				<summary class="text-xs font-medium text-muted-foreground cursor-pointer hover:text-foreground">
+					Advanced PAR2 Safety &amp; Memory Controls
+				</summary>
+				<div class="mt-2 divide-y divide-gray-100 dark:divide-gray-800 pl-2 border-l-2 border-muted">
+					<ConfigInput section="postproc" keyword="par2_max_packet_body_size" label="Max PAR2 Packet Body Size (bytes)" placeholder="67108864" value={configData.postproc.par2_max_packet_body_size} description="Limits contiguous allocation for a single PAR2 packet body (min: 65536 [64 KiB], default: 67108864 [64 MiB]). Prevents OOM on corrupt files." onupdate={onFieldUpdate} />
+					<ConfigInput section="postproc" keyword="par2_max_junk_scan_bytes" label="Max PAR2 Junk Scan Distance (bytes)" placeholder="65536" value={configData.postproc.par2_max_junk_scan_bytes} description="Maximum forward search distance when scanning for PAR2 magic headers (min: 1024 [1 KiB], default: 65536 [64 KiB])." onupdate={onFieldUpdate} />
+				</div>
+			</details>
 		</div>
 	</div>
 
