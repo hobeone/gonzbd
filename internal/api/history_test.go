@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -831,5 +832,40 @@ func TestHistoryDelete_RemoveHistoryJobErrorLog(t *testing.T) {
 
 	if !rec.hasWarn("failed to remove job during bulk delete", "hist_fail", "simulated history delete failure") {
 		t.Errorf("expected warning log not found in records: %v", rec.records)
+	}
+}
+
+func TestUnexportedHistoryHelpersAlignmentReference(t *testing.T) {
+	var s Server
+	_ = s.historyDelete
+	_ = s.historyList
+	_ = s.modeHistory
+}
+
+func TestHistoryDelete_ContextCancelledErrors(t *testing.T) {
+	s, _ := testHistoryServer(t)
+	for _, val := range []string{"all", "failed", "completed"} {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		req := httptest.NewRequest(http.MethodGet, "/api?mode=history&name=delete&value="+val+"&apikey="+testAPIKey, nil)
+		req = req.WithContext(ctx)
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, req)
+		if rr.Code != http.StatusInternalServerError {
+			t.Errorf("value=%s with cancelled context: got status %d, want 500", val, rr.Code)
+		}
+	}
+}
+
+func TestHistoryMarkCompleted_ContextCancelledError(t *testing.T) {
+	s, _ := testHistoryServer(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api?mode=history&name=mark_as_completed&value=nzo123&apikey="+testAPIKey, nil)
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("got status %d, want 500", rr.Code)
 	}
 }

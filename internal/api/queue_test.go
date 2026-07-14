@@ -1912,6 +1912,71 @@ func TestQueue_CoverageGaps(t *testing.T) {
 		if rr2.Code != http.StatusInternalServerError {
 			t.Errorf("status = %d; want 500 on AddJob error", rr2.Code)
 		}
+
+		// addlocalfile with non-absolute path
+		rrNonAbs := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name=relative/path.nzb&apikey="+testAPIKey)
+		if rrNonAbs.Code != http.StatusBadRequest {
+			t.Errorf("status = %d; want 400 on non-absolute path", rrNonAbs.Code)
+		}
+
+		// addlocalfile with traversal path containing ..
+		rrTraversal := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name=/absolute/path/../../etc/passwd&apikey="+testAPIKey)
+		if rrTraversal.Code != http.StatusBadRequest {
+			t.Errorf("status = %d; want 400 on traversal path containing ..", rrTraversal.Code)
+		}
+
+		// addfile with missing multipart file fields
+		rrAddFileMissing := apiGet(t, s.Handler(), "/api?mode=addfile&apikey="+testAPIKey)
+		if rrAddFileMissing.Code != http.StatusBadRequest {
+			t.Errorf("status = %d; want 400 on missing file fields in addfile", rrAddFileMissing.Code)
+		}
+
+		// addfile with malformed multipart parsing
+		reqFailParse := httptest.NewRequest(http.MethodPost, "/api?mode=addfile&apikey="+testAPIKey, strings.NewReader("bad-body"))
+		reqFailParse.Header.Set("Content-Type", "multipart/form-data; boundary=invalid-boundary")
+		rrFailParse := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rrFailParse, reqFailParse)
+		if rrFailParse.Code != http.StatusBadRequest {
+			t.Errorf("status = %d; want 400 on invalid multipart body", rrFailParse.Code)
+		}
+
+		// addlocalfile with non-existent file
+		rrMissing := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name=/absolute/path/to/missing.nzb&apikey="+testAPIKey)
+		if rrMissing.Code != http.StatusBadRequest {
+			t.Errorf("status = %d; want 400 on missing file", rrMissing.Code)
+		}
+
+		// addlocalfile with file too large (51 MiB sparse file)
+		largePath := filepath.Join(dir, "large.nzb")
+		lf, err := os.Create(largePath)
+		if err != nil {
+			t.Fatalf("create large file: %v", err)
+		}
+		if err := lf.Truncate(51 * 1024 * 1024); err != nil {
+			_ = lf.Close()
+			t.Fatalf("truncate large file: %v", err)
+		}
+		_ = lf.Close()
+		rrLarge := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name="+url.QueryEscape(largePath)+"&apikey="+testAPIKey)
+		if rrLarge.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("status = %d; want 413 on file too large, got %d", rrLarge.Code, rrLarge.Code)
+		}
+
+		// addlocalfile with nil queue
+		sNoQueue := New(Options{
+			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+			Version: "1.0.0-test",
+		})
+		rrNoQueue := apiGet(t, sNoQueue.Handler(), "/api?mode=addlocalfile&name=/abs/path.nzb&apikey="+testAPIKey)
+		if rrNoQueue.Code != http.StatusInternalServerError {
+			t.Errorf("status = %d; want 500 on nil queue", rrNoQueue.Code)
+		}
+
+		// addlocalfile with directory to trigger read error
+		rrDir := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name="+url.QueryEscape(dir)+"&apikey="+testAPIKey)
+		if rrDir.Code != http.StatusInternalServerError {
+			t.Errorf("status = %d; want 500 on directory read error", rrDir.Code)
+		}
 	})
 }
 

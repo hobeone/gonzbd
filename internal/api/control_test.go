@@ -60,6 +60,15 @@ func TestModeResume_OK(t *testing.T) {
 	}
 }
 
+func TestModeResume_WithApp(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	rr := apiGet(t, s.Handler(), "/api?mode=resume&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+}
+
 func TestModeShutdown_NotImplemented(t *testing.T) {
 	t.Parallel()
 	s := testServer()
