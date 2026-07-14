@@ -1,8 +1,12 @@
 package api
 
 import (
+	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/urlgrabber"
+
 	"context"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -244,4 +248,84 @@ func (h *recordHandler) hasWarn(msg string, id string, errSubstr string) bool {
 		}
 	}
 	return false
+}
+
+func TestRequireDependenciesDirect(t *testing.T) {
+	t.Parallel()
+	s := &Server{log: slog.Default()} // all dependencies nil, logger non-nil
+
+	tests := []struct {
+		name    string
+		queue   bool
+		app     bool
+		cfg     bool
+		history bool
+		grabber bool
+		wantMsg string
+	}{
+		{"missing queue", true, false, false, false, false, "queue not wired"},
+		{"missing app", false, true, false, false, false, "app not wired"},
+		{"missing config", false, false, true, false, false, "config not wired"},
+		{"missing history", false, false, false, true, false, "history not wired"},
+		{"missing grabber", false, false, false, false, true, "url grabber not wired"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			ok := s.requireDependencies(rr, tt.queue, tt.app, tt.cfg, tt.history, tt.grabber)
+			if ok {
+				t.Errorf("expected false, got true")
+			}
+			if rr.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d; want 500", rr.Code)
+			}
+			if !strings.Contains(rr.Body.String(), tt.wantMsg) {
+				t.Errorf("body = %q; want %q", rr.Body.String(), tt.wantMsg)
+			}
+		})
+	}
+
+	// Also test individual require* methods when nil
+	t.Run("requireQueue nil", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		if s.requireQueue(rr) || !strings.Contains(rr.Body.String(), "queue not wired") {
+			t.Errorf("unexpected result for requireQueue: %v, %s", s.requireQueue(rr), rr.Body.String())
+		}
+	})
+	t.Run("requireApp nil", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		if s.requireApp(rr) || !strings.Contains(rr.Body.String(), "app not wired") {
+			t.Errorf("unexpected result for requireApp: %v, %s", s.requireApp(rr), rr.Body.String())
+		}
+	})
+	t.Run("requireConfig nil", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		if s.requireConfig(rr) || !strings.Contains(rr.Body.String(), "config not wired") {
+			t.Errorf("unexpected result for requireConfig: %v, %s", s.requireConfig(rr), rr.Body.String())
+		}
+	})
+	t.Run("requireHistory nil", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		if s.requireHistory(rr) || !strings.Contains(rr.Body.String(), "history not wired") {
+			t.Errorf("unexpected result for requireHistory: %v, %s", s.requireHistory(rr), rr.Body.String())
+		}
+	})
+	t.Run("requireGrabber nil", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		if s.requireGrabber(rr) || !strings.Contains(rr.Body.String(), "url grabber not wired") {
+			t.Errorf("unexpected result for requireGrabber: %v, %s", s.requireGrabber(rr), rr.Body.String())
+		}
+	})
+
+	// Also test when dependencies are non-nil (true path)
+	t.Run("dependencies non-nil", func(t *testing.T) {
+		s2 := testServer()
+		s2.history = &history.Repository{}
+		s2.grabber = &urlgrabber.Grabber{}
+		rr := httptest.NewRecorder()
+		if !s2.requireQueue(rr) || !s2.requireApp(rr) || !s2.requireConfig(rr) || !s2.requireHistory(rr) || !s2.requireGrabber(rr) {
+			t.Errorf("expected true when dependencies wired")
+		}
+	})
 }

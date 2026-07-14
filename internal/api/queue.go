@@ -29,12 +29,11 @@ const maxUploadBytes = 50 * 1024 * 1024
 //
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
-	if s.queue == nil {
-		s.respondError(w, http.StatusInternalServerError, "queue not wired")
+	if !s.requireQueue(w) {
 		return
 	}
 
-	action := r.FormValue("name")
+	action := formValue(r, "name")
 	switch action {
 	case "", "list":
 		s.queueList(w, r)
@@ -47,40 +46,56 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 	case "resume":
 		s.queueResumeJobs(w, r)
 	case "pause_all":
-		s.queue.PauseAll()
-		if s.app != nil {
-			s.app.PauseDownloads()
-		}
-		s.log.Info("downloads paused")
-		respondStatus(w)
+		s.queuePauseAll(w, r)
 	case "resume_all":
-		s.queue.ResumeAll()
-		if s.app != nil {
-			s.app.ResumeDownloads()
-		}
-		s.log.Info("downloads resumed")
-		respondStatus(w)
+		s.queueResumeAll(w, r)
 	case "priority":
 		s.queuePriority(w, r)
 	case "rename", "change_name":
 		s.queueChangeName(w, r)
 	case "change_script":
 		s.queueChangeScript(w, r)
-	// Stubbed: no backing implementation yet.
 	case "sort", "delete_nzf":
-		s.respondError(w, http.StatusBadRequest, "not implemented in this build: "+action)
-	// change_complete_action controls system power management (shutdown,
-	// hibernate after queue empties). GoNZBD does not support this, but
-	// returning an error breaks third-party clients — return success silently.
+		s.queueNotImplemented(w, action)
 	case "change_complete_action":
-		respondStatus(w)
+		s.queueChangeCompleteAction(w, r)
 	case "change_opts":
 		s.queueChangeOpts(w, r)
 	case "change_cat":
 		s.queueChangeCat(w, r)
 	default:
-		s.respondError(w, http.StatusBadRequest, "unknown queue action: "+action)
+		s.queueUnknownAction(w, action)
 	}
+}
+
+func (s *Server) queuePauseAll(w http.ResponseWriter, _ *http.Request) {
+	s.queue.PauseAll()
+	if s.app != nil {
+		s.app.PauseDownloads()
+	}
+	s.log.Info("downloads paused")
+	respondStatus(w)
+}
+
+func (s *Server) queueResumeAll(w http.ResponseWriter, _ *http.Request) {
+	s.queue.ResumeAll()
+	if s.app != nil {
+		s.app.ResumeDownloads()
+	}
+	s.log.Info("downloads resumed")
+	respondStatus(w)
+}
+
+func (s *Server) queueNotImplemented(w http.ResponseWriter, action string) {
+	s.respondError(w, http.StatusBadRequest, "not implemented in this build: "+action)
+}
+
+func (s *Server) queueChangeCompleteAction(w http.ResponseWriter, _ *http.Request) {
+	respondStatus(w)
+}
+
+func (s *Server) queueUnknownAction(w http.ResponseWriter, action string) {
+	s.respondError(w, http.StatusBadRequest, "unknown queue action: "+action)
 }
 
 // queueSlot is the per-job JSON shape clients expect in the queue listing.
@@ -338,16 +353,16 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	// open. We deliberately don't include the files array in the
 	// default listing — it would balloon payloads for clients that
 	// aren't viewing any drawer.
-	if nzoID := r.FormValue("nzo_id"); nzoID != "" && r.FormValue("files") == "1" {
+	if nzoID := formValue(r, "nzo_id"); nzoID != "" && formValue(r, "files") == "1" {
 		s.queueJobDetail(w, r, nzoID)
 		return
 	}
 
 	start := intParam(r, "start")
 	limit := intParam(r, "limit")
-	search := r.FormValue("search")
-	catFilter := r.FormValue("cat")
-	statusFilter := r.FormValue("status")
+	search := formValue(r, "search")
+	catFilter := formValue(r, "cat")
+	statusFilter := formValue(r, "status")
 
 	jobs := s.queue.Snapshot()
 	paused := s.queue.IsPaused()
@@ -492,9 +507,8 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 //
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
-	value := r.FormValue("value")
-	if value == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value")
+	value, ok := s.requireParam(w, r, "value", "")
+	if !ok {
 		return
 	}
 
@@ -508,7 +522,7 @@ func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 		ids = splitCSV(value)
 	}
 
-	deleteFiles := r.FormValue("delete_files") == "1" || r.FormValue("del_files") == "1"
+	deleteFiles := formValue(r, "delete_files") == "1" || formValue(r, "del_files") == "1"
 
 	var removed []string
 	for _, id := range ids {
@@ -624,7 +638,7 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cat := r.FormValue("value2") // empty string → FindCategory falls back to Default
+	cat := formValue(r, "value2") // empty string → FindCategory falls back to Default
 
 	var cats []config.CategoryConfig
 	if s.config != nil {
@@ -696,7 +710,7 @@ func (s *Server) queueChangeScript(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	script := sanitizeScriptParam(r.FormValue("value2"))
+	script := sanitizeScriptParam(formValue(r, "value2"))
 	if err := s.queue.SetScript(nzoID, script); err != nil {
 		s.respondError(w, http.StatusNotFound, err.Error())
 		return
@@ -712,8 +726,7 @@ func (s *Server) queueChangeScript(w http.ResponseWriter, r *http.Request) {
 // Access level: LevelProtected (deliberate deviation from Python's LevelOpen=1;
 // upload should require at least NZB-key-level auth in our unified model).
 func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
-	if s.queue == nil {
-		s.respondError(w, http.StatusInternalServerError, "queue not wired")
+	if !s.requireQueue(w) {
 		return
 	}
 
@@ -755,8 +768,7 @@ func (s *Server) modeAddFile(w http.ResponseWriter, r *http.Request) {
 // NZBs the client will see a longer response. Revisit if it hurts in
 // practice — a fire-and-forget wrapper is a few lines.
 func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
-	if s.grabber == nil {
-		s.respondError(w, http.StatusInternalServerError, "url grabber not wired")
+	if !s.requireGrabber(w) {
 		return
 	}
 	urlStr, ok := s.requireParam(w, r, "name", "URL")
@@ -764,11 +776,11 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts := types.FetchOptions{
-		Category: r.FormValue("cat"),      //nolint:gosec // body size bounded by MaxBytesReader middleware
-		Password: r.FormValue("password"), //nolint:gosec // body size bounded by MaxBytesReader middleware
-		NzbName:  r.FormValue("nzbname"),  //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Category: formValue(r, "cat"),      //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Password: formValue(r, "password"), //nolint:gosec // body size bounded by MaxBytesReader middleware
+		NzbName:  formValue(r, "nzbname"),  //nolint:gosec // body size bounded by MaxBytesReader middleware
 		PP:       ppParam(r),
-		Script:   sanitizeScriptParam(r.FormValue("script")), //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Script:   sanitizeScriptParam(formValue(r, "script")), //nolint:gosec // body size bounded by MaxBytesReader middleware
 		Priority: priorityParam(r),
 	}
 	ids, err := s.grabber.Fetch(r.Context(), urlStr, opts)
@@ -795,8 +807,7 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 //
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
-	if s.queue == nil {
-		s.respondError(w, http.StatusInternalServerError, "queue not wired")
+	if !s.requireQueue(w) {
 		return
 	}
 
@@ -868,10 +879,10 @@ func (s *Server) enqueueNZBData(w http.ResponseWriter, r *http.Request, data []b
 
 	opts := queue.AddOptions{
 		Filename: filename,
-		Name:     r.FormValue("nzbname"),                     //nolint:gosec // body size bounded by MaxBytesReader middleware
-		Category: r.FormValue("cat"),                         //nolint:gosec // body size bounded by MaxBytesReader middleware
-		Script:   sanitizeScriptParam(r.FormValue("script")), //nolint:gosec // body size bounded by MaxBytesReader middleware
-		Password: r.FormValue("password"),                    //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Name:     formValue(r, "nzbname"),                     //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Category: formValue(r, "cat"),                         //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Script:   sanitizeScriptParam(formValue(r, "script")), //nolint:gosec // body size bounded by MaxBytesReader middleware
+		Password: formValue(r, "password"),                    //nolint:gosec // body size bounded by MaxBytesReader middleware
 		PP:       ppParam(r),
 		Priority: priorityParam(r),
 		Logger:   s.log,

@@ -27,9 +27,8 @@ const testDiskSpeedTimeout = 10 * time.Second
 // limit is already in use by active downloads — a common, often
 // benign cause distinct from a real configuration problem.
 func (s *Server) statusTestConnection(w http.ResponseWriter, r *http.Request) {
-	name := formString(r, "value")
-	if name == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value parameter (server name)")
+	name, ok := s.requireParam(w, r, "value", "server name")
+	if !ok {
 		return
 	}
 
@@ -77,8 +76,7 @@ func (s *Server) statusTestConnection(w http.ResponseWriter, r *http.Request) {
 // statusTestDiskSpeed runs a bounded write-speed test against the
 // configured download directory.
 func (s *Server) statusTestDiskSpeed(w http.ResponseWriter, r *http.Request) {
-	if s.app == nil {
-		s.respondError(w, http.StatusInternalServerError, "app not wired")
+	if !s.requireApp(w) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), testDiskSpeedTimeout)

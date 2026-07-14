@@ -15,12 +15,11 @@ import (
 // modeHistory handles mode=history with sub-actions via the name= parameter.
 // Mirrors Python's _api_history and _api_history_table dispatch.
 func (s *Server) modeHistory(w http.ResponseWriter, r *http.Request) {
-	if s.history == nil {
-		s.respondError(w, http.StatusInternalServerError, "history not wired")
+	if !s.requireHistory(w) {
 		return
 	}
 
-	action := formString(r, "name")
+	action := formValue(r, "name")
 	switch action {
 	case "", "list":
 		s.historyList(w, r)
@@ -83,13 +82,13 @@ type historyDetail struct {
 // historyList returns a paginated, filtered history listing.
 func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 	start := intParam(r, "start")
-	rawLimit := formString(r, "limit")
+	rawLimit := formValue(r, "limit")
 	limit := intParam(r, "limit")
-	search := formString(r, "search")
-	catFilter := formString(r, "cat")
-	statusFilter := formString(r, "status")
-	failedOnly := formString(r, "failed_only") == "1"
-	nzoIDs := formString(r, "nzo_ids") // comma-separated IDs to fetch
+	search := formValue(r, "search")
+	catFilter := formValue(r, "cat")
+	statusFilter := formValue(r, "status")
+	failedOnly := formValue(r, "failed_only") == "1"
+	nzoIDs := formValue(r, "nzo_ids") // comma-separated IDs to fetch
 
 	// Default limit prevents loading the entire DB into memory.
 	// Max cap prevents OOM from adversarial limit= values.
@@ -224,13 +223,12 @@ func (s *Server) fetchEntriesByIDs(
 // or one of the special tokens: "all", "failed", "completed".
 // If delete_files=1 is present, also deletes downloaded files from disk.
 func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
-	value := formString(r, "value")
-	if value == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value parameter")
+	value, ok := s.requireParam(w, r, "value", "")
+	if !ok {
 		return
 	}
 
-	deleteFiles := r.FormValue("delete_files") == "1" || r.FormValue("del_files") == "1" //nolint:gosec // body size bounded by MaxBytesReader middleware
+	deleteFiles := formValue(r, "delete_files") == "1" || formValue(r, "del_files") == "1" //nolint:gosec // body size bounded by MaxBytesReader middleware
 
 	var ids []string
 
@@ -278,9 +276,8 @@ func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 // historyMarkCompleted marks an entry as completed via the mark_as_completed
 // sub-action. The nzo_id is supplied in the value= parameter.
 func (s *Server) historyMarkCompleted(w http.ResponseWriter, r *http.Request) {
-	nzoID := formString(r, "value")
-	if nzoID == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value parameter")
+	nzoID, ok := s.requireParam(w, r, "value", "")
+	if !ok {
 		return
 	}
 
@@ -294,9 +291,8 @@ func (s *Server) historyMarkCompleted(w http.ResponseWriter, r *http.Request) {
 // historyRetry moves an entry from history back to the queue via the retry
 // sub-action. The nzo_id is supplied in the value= parameter.
 func (s *Server) historyRetry(w http.ResponseWriter, r *http.Request) {
-	nzoID := formString(r, "value")
-	if nzoID == "" {
-		s.respondError(w, http.StatusBadRequest, "missing value parameter")
+	nzoID, ok := s.requireParam(w, r, "value", "")
+	if !ok {
 		return
 	}
 

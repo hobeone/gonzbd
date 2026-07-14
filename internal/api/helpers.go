@@ -18,7 +18,7 @@ func toMBString(n int64) string {
 
 // intParam reads a query parameter as int, returning 0 if absent or unparseable.
 func intParam(r *http.Request, key string) int {
-	v := formString(r, key)
+	v := formValue(r, key)
 	if v == "" {
 		return 0
 	}
@@ -29,11 +29,30 @@ func intParam(r *http.Request, key string) int {
 	return n
 }
 
-// formString reads a query/form value. Centralizes the //nolint:gosec
-// suppression — the body is size-limited by loggingMiddleware so G120
-// (memory-exhaustion via unbounded form parsing) does not apply.
-func formString(r *http.Request, key string) string {
-	return r.FormValue(key) //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
+// formValue extracts a form or query parameter value by key.
+// For POST/PUT/PATCH requests with form bodies (both url-encoded and multipart/form-data),
+// body values take precedence over URL query string values.
+// Uses bounded memory (10 MiB) when parsing multipart/form-data to prevent memory exhaustion.
+func formValue(r *http.Request, key string) string {
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		const maxMem = 10 * 1024 * 1024 // 10 MiB
+		if err := r.ParseMultipartForm(maxMem); err == nil && r.MultipartForm != nil {
+			if vs := r.MultipartForm.Value[key]; len(vs) > 0 && vs[0] != "" {
+				return vs[0]
+			}
+		}
+	} else if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+		if err := r.ParseForm(); err == nil {
+			if v := r.PostFormValue(key); v != "" {
+				return v
+			}
+		}
+	}
+	if r.Form != nil && len(r.Form[key]) > 0 && r.Form[key][0] != "" {
+		return r.Form[key][0]
+	}
+	return r.URL.Query().Get(key)
 }
 
 // requireParam reads the named query/form value. If it is empty, it writes a
@@ -42,7 +61,7 @@ func formString(r *http.Request, key string) string {
 // the SABnzbd-positional name the parameter carries, e.g.
 // requireParam(w, r, "value", "nzo_id") → "missing value parameter (nzo_id)".
 func (s *Server) requireParam(w http.ResponseWriter, r *http.Request, key, label string) (string, bool) {
-	v := formString(r, key)
+	v := formValue(r, key)
 	if v == "" {
 		msg := "missing " + key + " parameter"
 		if label != "" {
@@ -57,7 +76,7 @@ func (s *Server) requireParam(w http.ResponseWriter, r *http.Request, key, label
 // priorityParam reads the priority= query parameter and maps it to a Priority constant.
 // Returns DefaultPriority (inherit from category) when the parameter is absent.
 func priorityParam(r *http.Request) constants.Priority {
-	s := r.FormValue("priority") //nolint:gosec // G120: body already limited
+	s := formValue(r, "priority")
 	if s == "" {
 		return constants.DefaultPriority
 	}
@@ -67,7 +86,7 @@ func priorityParam(r *http.Request) constants.Priority {
 // ppParam extracts the post-processing level from the request.
 // Returns types.PPInherit (-1) when absent, meaning "inherit from category".
 func ppParam(r *http.Request) int {
-	s := r.FormValue("pp") //nolint:gosec // G120: body already limited
+	s := formValue(r, "pp")
 	if s == "" {
 		return types.PPInherit
 	}
@@ -142,4 +161,50 @@ func isStateChangingRequest(r *http.Request) bool {
 		name = formValue(r, "name")
 	}
 	return isStateChangingMode(mode, name)
+}
+
+// requireDependencies checks that all requested dependencies are wired on the server.
+// If any requested dependency is nil, it writes a 500 internal server error and returns false.
+func (s *Server) requireDependencies(w http.ResponseWriter, queue, app, config, history, grabber bool) bool {
+	if queue && s.queue == nil {
+		s.respondError(w, http.StatusInternalServerError, "queue not wired")
+		return false
+	}
+	if app && s.app == nil {
+		s.respondError(w, http.StatusInternalServerError, "app not wired")
+		return false
+	}
+	if config && s.config == nil {
+		s.respondError(w, http.StatusInternalServerError, "config not wired")
+		return false
+	}
+	if history && s.history == nil {
+		s.respondError(w, http.StatusInternalServerError, "history not wired")
+		return false
+	}
+	if grabber && s.grabber == nil {
+		s.respondError(w, http.StatusInternalServerError, "url grabber not wired")
+		return false
+	}
+	return true
+}
+
+func (s *Server) requireQueue(w http.ResponseWriter) bool {
+	return s.requireDependencies(w, true, false, false, false, false)
+}
+
+func (s *Server) requireApp(w http.ResponseWriter) bool {
+	return s.requireDependencies(w, false, true, false, false, false)
+}
+
+func (s *Server) requireConfig(w http.ResponseWriter) bool {
+	return s.requireDependencies(w, false, false, true, false, false)
+}
+
+func (s *Server) requireHistory(w http.ResponseWriter) bool {
+	return s.requireDependencies(w, false, false, false, true, false)
+}
+
+func (s *Server) requireGrabber(w http.ResponseWriter) bool {
+	return s.requireDependencies(w, false, false, false, false, true)
 }
