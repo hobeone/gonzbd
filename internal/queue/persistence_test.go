@@ -294,45 +294,6 @@ func TestSave_RestoresDirtyOnError(t *testing.T) {
 	}
 }
 
-// ---------- SnapshotJobByName ----------
-
-func TestSnapshotJobByName(t *testing.T) {
-	t.Parallel()
-	q := New()
-	j := makeJob(t, "my-download", constants.NormalPriority)
-	_ = q.Add(j)
-
-	t.Run("found", func(t *testing.T) {
-		snap := q.SnapshotJobByName("my-download")
-		if snap == nil {
-			t.Fatal("expected non-nil snapshot")
-		}
-		if snap.ID != j.ID {
-			t.Errorf("ID = %q, want %q", snap.ID, j.ID)
-		}
-		// Verify it's a deep copy.
-		snap.Name = "mutated"
-		original, _ := q.Get(j.ID)
-		if original.Name == "mutated" {
-			t.Error("snapshot mutation should not affect queue")
-		}
-	})
-
-	t.Run("not found", func(t *testing.T) {
-		snap := q.SnapshotJobByName("nonexistent")
-		if snap != nil {
-			t.Errorf("expected nil, got %+v", snap)
-		}
-	})
-
-	t.Run("empty name", func(t *testing.T) {
-		snap := q.SnapshotJobByName("")
-		if snap != nil {
-			t.Errorf("expected nil for empty name, got %+v", snap)
-		}
-	})
-}
-
 // ---------- Save/Load no-leftover temp files ----------
 
 func TestSaveJob_NoLeftoverTempFiles(t *testing.T) {

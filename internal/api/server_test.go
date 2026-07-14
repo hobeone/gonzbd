@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
@@ -25,7 +27,7 @@ func testServer() *Server {
 		Config:  cfg,
 		Version: "1.0.0-test",
 		Queue:   q,
-		App:     NopApp{Queue: q},
+		App:     apitest.NopApp{Queue: q},
 	})
 }
 
@@ -321,7 +323,7 @@ func TestAuthConfigDynamic(t *testing.T) {
 		Config:  cfg,
 		Version: "1.0.0-test",
 		Queue:   q,
-		App:     NopApp{Queue: q},
+		App:     apitest.NopApp{Queue: q},
 	})
 
 	// Authenticate with old-key works

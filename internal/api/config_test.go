@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/api/apitest"
+
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
@@ -519,8 +521,10 @@ func TestInjectSABDefaultsDirect(t *testing.T) {
 	})
 }
 
+var _ ApplicationReloader = (*apitest.NopApp)(nil)
+
 type setConfigSpyApp struct {
-	NopApp
+	apitest.NopApp
 	mu                  sync.Mutex
 	reloadDownloaderErr error
 	reloadedDownloader  int

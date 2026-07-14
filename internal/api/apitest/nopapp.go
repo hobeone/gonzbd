@@ -1,4 +1,5 @@
-package api
+// Package apitest provides test doubles and stubs for the api package.
+package apitest
 
 import (
 	"context"
@@ -20,8 +21,6 @@ type NopApp struct {
 	SpeedVal           float64
 	ServerSnapshotsVal []downloader.ServerSnapshot
 }
-
-var _ ApplicationReloader = (*NopApp)(nil)
 
 // ReloadDownloader is a stub.
 func (n NopApp) ReloadDownloader([]config.ServerConfig) error { return nil }
