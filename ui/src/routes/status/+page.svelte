@@ -4,12 +4,17 @@
 	import {
 		fetchStatusOverview,
 		fetchCheckUpdate,
+		fetchBuildInfo,
+		fetchRedactedConfig,
 		testServerConnection,
 		testDiskSpeed,
 		type StatusOverviewResponse,
 		type CheckUpdateResult,
 		type TestConnectionResult,
-		type TestDiskSpeedResult
+		type TestDiskSpeedResult,
+		type BuildInfoResponse,
+		type RedactedConfig,
+		type RedactedServerConfig
 	} from '$lib/api';
 	import { getServerStats } from '$lib/stores/queue.svelte';
 	import { startTelemetry, stopTelemetry } from '$lib/stores/telemetry.svelte';
@@ -20,6 +25,44 @@
 
 	let updateCheck = $state<CheckUpdateResult | null>(null);
 	let updateCheckLoading = $state(false);
+
+	let buildInfo = $state<BuildInfoResponse | null>(null);
+	let buildInfoError = $state('');
+	let buildInfoLoading = $state(false);
+
+	let configData = $state<RedactedConfig | null>(null);
+	let configError = $state('');
+	let configLoading = $state(false);
+
+	function loadBuildInfo() {
+		buildInfoLoading = true;
+		buildInfoError = '';
+		fetchBuildInfo()
+			.then((res) => {
+				buildInfo = res;
+			})
+			.catch((e) => {
+				buildInfoError = e instanceof Error ? e.message : 'Failed to load build info';
+			})
+			.finally(() => {
+				buildInfoLoading = false;
+			});
+	}
+
+	function loadConfig() {
+		configLoading = true;
+		configError = '';
+		fetchRedactedConfig()
+			.then((res) => {
+				configData = res.config;
+			})
+			.catch((e) => {
+				configError = e instanceof Error ? e.message : 'Failed to load config';
+			})
+			.finally(() => {
+				configLoading = false;
+			});
+	}
 
 	function loadOverview() {
 		overviewLoading = true;
@@ -53,9 +96,25 @@
 	function refresh() {
 		loadOverview();
 		loadUpdateCheck();
+		loadBuildInfo();
+		loadConfig();
 	}
 
 	let servers = $derived(getServerStats());
+	let serverConfigByName = $derived.by((): Record<string, RedactedServerConfig> => {
+		const map: Record<string, RedactedServerConfig> = {};
+		for (const sc of configData?.servers ?? []) {
+			map[sc.name] = sc;
+		}
+		return map;
+	});
+
+	const sslVerifyLabels: Record<number, string> = {
+		0: 'None',
+		1: 'Minimal',
+		2: 'Hostname',
+		3: 'Strict'
+	};
 	let testingServer = $state<string | null>(null);
 	let connectionResults = $state<Record<string, TestConnectionResult>>({});
 
@@ -116,6 +175,12 @@
 		const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
 		return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 	}
+
+	function formatBuildDate(iso: string): string {
+		if (!iso) return 'unknown';
+		const d = new Date(iso);
+		return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+	}
 </script>
 
 <svelte:head><title>Status - GoNZBD</title></svelte:head>
@@ -128,9 +193,11 @@
 	<button
 		class="mb-4 rounded-full bg-m3-primary px-4 py-2 text-sm text-m3-on-primary"
 		onclick={refresh}
-		disabled={overviewLoading || updateCheckLoading}
+		disabled={overviewLoading || updateCheckLoading || buildInfoLoading || configLoading}
 	>
-		{overviewLoading || updateCheckLoading ? 'Refreshing...' : 'Refresh'}
+		{overviewLoading || updateCheckLoading || buildInfoLoading || configLoading
+			? 'Refreshing...'
+			: 'Refresh'}
 	</button>
 
 	{#if overviewError}
@@ -228,6 +295,39 @@
 		</section>
 
 		<section class="mb-6 rounded-3xl border border-m3-outline/20 bg-m3-surface p-6 shadow-sm transition-all duration-300 hover:shadow-md hover:border-m3-primary/30">
+			<h2 class="mb-4 text-lg font-medium text-m3-on-surface">Build Info</h2>
+			{#if buildInfoError}
+				<p class="text-red-500">{buildInfoError}</p>
+			{:else if buildInfoLoading && !buildInfo}
+				<p class="text-sm text-m3-on-surface/60">Loading...</p>
+			{:else if buildInfo}
+				<dl class="mb-4 grid grid-cols-[180px_1fr] gap-x-4 gap-y-3 text-sm">
+					<dt class="text-m3-on-surface/60">Version</dt>
+					<dd class="font-mono text-m3-on-surface">{buildInfo.version} ({buildInfo.commit})</dd>
+					<dt class="text-m3-on-surface/60">Build date</dt>
+					<dd class="text-m3-on-surface">{formatBuildDate(buildInfo.build_date)}</dd>
+					<dt class="text-m3-on-surface/60">Go version</dt>
+					<dd class="font-mono text-m3-on-surface">{buildInfo.go_version}</dd>
+				</dl>
+				<h3 class="mb-2 text-sm font-medium text-m3-on-surface/80">
+					Dependencies ({buildInfo.deps.length})
+				</h3>
+				<div class="max-h-72 overflow-y-auto rounded-2xl border border-m3-outline/10">
+					<table class="w-full text-xs">
+						<tbody>
+							{#each buildInfo.deps as dep (dep.path)}
+								<tr class="border-b border-m3-outline/10 last:border-0">
+									<td class="px-3 py-1.5 font-mono text-m3-on-surface">{dep.path}</td>
+									<td class="px-3 py-1.5 font-mono text-m3-on-surface/60">{dep.version}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/if}
+		</section>
+
+		<section class="mb-6 rounded-3xl border border-m3-outline/20 bg-m3-surface p-6 shadow-sm transition-all duration-300 hover:shadow-md hover:border-m3-primary/30">
 			<h2 class="mb-4 text-lg font-medium text-m3-on-surface">News Servers</h2>
 			{#each servers as server (server.name)}
 				<div class="mb-3 rounded-2xl border border-m3-outline/10 p-4 transition-all hover:bg-m3-surface-variant/5">
@@ -237,6 +337,31 @@
 							{server.active_conns}/{server.max_connections} connections in use
 						</span>
 					</div>
+					{#if serverConfigByName[server.name]}
+						{@const sc = serverConfigByName[server.name]}
+						<dl class="mt-3 grid grid-cols-[110px_1fr] gap-x-4 gap-y-1 text-xs sm:grid-cols-[110px_1fr_110px_1fr]">
+							<dt class="text-m3-on-surface/50">Enabled</dt>
+							<dd class="text-m3-on-surface">{sc.enable ? 'Yes' : 'No'}</dd>
+							<dt class="text-m3-on-surface/50">SSL</dt>
+							<dd class="text-m3-on-surface">
+								{sc.ssl ? `Yes (${sslVerifyLabels[sc.ssl_verify] ?? sc.ssl_verify})` : 'No'}
+							</dd>
+							<dt class="text-m3-on-surface/50">SSL ciphers</dt>
+							<dd class="font-mono text-m3-on-surface">{sc.ssl_ciphers || 'default'}</dd>
+							<dt class="text-m3-on-surface/50">Priority</dt>
+							<dd class="text-m3-on-surface">{sc.priority}</dd>
+							<dt class="text-m3-on-surface/50">Required</dt>
+							<dd class="text-m3-on-surface">{sc.required ? 'Yes' : 'No'}</dd>
+							<dt class="text-m3-on-surface/50">Optional</dt>
+							<dd class="text-m3-on-surface">{sc.optional ? 'Yes' : 'No'}</dd>
+							<dt class="text-m3-on-surface/50">Retention</dt>
+							<dd class="text-m3-on-surface">{sc.retention > 0 ? `${sc.retention} days` : 'unlimited'}</dd>
+							<dt class="text-m3-on-surface/50">Timeout</dt>
+							<dd class="text-m3-on-surface">{sc.timeout}s</dd>
+							<dt class="text-m3-on-surface/50">Pipelining</dt>
+							<dd class="text-m3-on-surface">{sc.pipelining_requests} requests</dd>
+						</dl>
+					{/if}
 					<div class="mt-3 flex items-center gap-3">
 						<button
 							class="inline-flex items-center gap-1.5 rounded-full bg-m3-secondary px-3 py-1 text-xs text-m3-on-secondary disabled:opacity-50"
@@ -278,6 +403,20 @@
 					</div>
 				</div>
 			{/each}
+		</section>
+
+		<section class="mb-6 rounded-3xl border border-m3-outline/20 bg-m3-surface p-6 shadow-sm transition-all duration-300 hover:shadow-md hover:border-m3-primary/30">
+			<h2 class="mb-4 text-lg font-medium text-m3-on-surface">Config</h2>
+			<p class="mb-3 text-xs text-m3-on-surface/50">
+				Passwords, API keys, and other secrets are redacted.
+			</p>
+			{#if configError}
+				<p class="text-red-500">{configError}</p>
+			{:else if configLoading && !configData}
+				<p class="text-sm text-m3-on-surface/60">Loading...</p>
+			{:else if configData}
+				<pre class="max-h-96 overflow-auto rounded-2xl border border-m3-outline/10 bg-m3-surface-variant/10 p-4 text-xs text-m3-on-surface">{JSON.stringify(configData, null, 2)}</pre>
+			{/if}
 		</section>
 	{/if}
 </div>
