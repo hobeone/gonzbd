@@ -103,6 +103,63 @@ func TestPPParam(t *testing.T) {
 	}
 }
 
+func TestMutationClassificationStrategies(t *testing.T) {
+	t.Parallel()
+
+	sysTests := []struct {
+		mode string
+		want bool
+	}{
+		{"set_config", true},
+		{"shutdown", true},
+		{"restart", true},
+		{"pause", true},
+		{"resume", true},
+		{"disconnect", true},
+		{"addurl", true},
+		{"addfile", true},
+		{"queue", false},
+		{"history", false},
+		{"version", false},
+	}
+	for _, tt := range sysTests {
+		if got := isSystemMutationMode(tt.mode); got != tt.want {
+			t.Errorf("isSystemMutationMode(%q) = %v; want %v", tt.mode, got, tt.want)
+		}
+	}
+
+	queueTests := []struct {
+		name string
+		want bool
+	}{
+		{"delete", true},
+		{"purge", true},
+		{"delete_nzf", true},
+		{"list", false},
+		{"", false},
+	}
+	for _, tt := range queueTests {
+		if got := isQueueMutation(tt.name); got != tt.want {
+			t.Errorf("isQueueMutation(%q) = %v; want %v", tt.name, got, tt.want)
+		}
+	}
+
+	histTests := []struct {
+		name string
+		want bool
+	}{
+		{"delete", true},
+		{"purge", true},
+		{"list", false},
+		{"", false},
+	}
+	for _, tt := range histTests {
+		if got := isHistoryMutation(tt.name); got != tt.want {
+			t.Errorf("isHistoryMutation(%q) = %v; want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestOpenFileDirect(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "test.txt")

@@ -131,19 +131,50 @@ func formatDuration(seconds int) string {
 	return fmt.Sprintf("%d:%02d:%02d", h, m, s)
 }
 
-// isStateChangingMode returns true if the mode/name pair identifies a
-// state-changing or destructive endpoint (set_config, shutdown, restart,
-// pause, resume, disconnect, and queue/history deletions).
-func isStateChangingMode(mode, name string) bool {
+// isSystemMutationMode returns true if mode mutates application-level state.
+func isSystemMutationMode(mode string) bool {
 	switch mode {
-	case "set_config", "shutdown", "restart", "pause", "resume", "disconnect":
+	case "set_config", "shutdown", "restart", "pause", "resume", "disconnect", "addurl", "addfile":
 		return true
-	case "queue":
-		return name == "delete" || name == "purge" || name == "delete_nzf"
-	case "history":
-		return name == "delete"
+	default:
+		return false
 	}
-	return false
+}
+
+// isQueueMutation returns true if action name mutates the download queue.
+func isQueueMutation(name string) bool {
+	switch name {
+	case "delete", "purge", "delete_nzf":
+		return true
+	default:
+		return false
+	}
+}
+
+// isHistoryMutation returns true if action name mutates download history.
+func isHistoryMutation(name string) bool {
+	switch name {
+	case "delete", "purge":
+		return true
+	default:
+		return false
+	}
+}
+
+// isStateChangingMode returns true if the mode/name pair identifies a
+// state-changing or destructive endpoint.
+func isStateChangingMode(mode, name string) bool {
+	if isSystemMutationMode(mode) {
+		return true
+	}
+	switch mode {
+	case "queue":
+		return isQueueMutation(name)
+	case "history":
+		return isHistoryMutation(name)
+	default:
+		return false
+	}
 }
 
 // isStateChangingRequest returns true if r mutates server state, either
