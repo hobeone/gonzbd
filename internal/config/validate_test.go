@@ -97,6 +97,20 @@ func TestValidateExtraParams_NonFlagTokenFails(t *testing.T) {
 	}
 }
 
+func TestValidateExtraParams_DisallowedUnrarFlagFails(t *testing.T) {
+	t.Parallel()
+	cfg, err := Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	cfg.PostProc.ExtraUnrarParams = "-df"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for disallowed unrar flag -df")
+	} else if !strings.Contains(err.Error(), "not allowed") {
+		t.Errorf("expected error to mention 'not allowed', got %v", err)
+	}
+}
+
 // ---------- validateUniqueNames ----------
 
 func TestValidateUniqueNames_EmptyNameFails(t *testing.T) {

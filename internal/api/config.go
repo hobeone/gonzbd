@@ -358,6 +358,8 @@ func (s *Server) configSpeedLimit(w http.ResponseWriter, r *http.Request) {
 		if s.configPath != "" {
 			if err := s.config.Save(s.configPath); err != nil {
 				s.log.Error("persist speed limit", "error", err)
+				s.respondError(w, http.StatusInternalServerError, err.Error())
+				return
 			}
 		}
 	}

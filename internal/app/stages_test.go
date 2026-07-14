@@ -136,6 +136,20 @@ func TestBuildStages_BadExtraUnrarParams(t *testing.T) {
 	}
 }
 
+func TestBuildStages_DisallowedExtraUnrarParams(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		DownloadDir:      t.TempDir(),
+		CompleteDir:      t.TempDir(),
+		ExtraUnrarParams: "-df", // not allowed
+	}
+	_, err := testBuildStages(cfg, discardLog(), emptyProbe())
+	if err == nil {
+		t.Fatal("expected error for disallowed ExtraUnrarParams, got nil")
+	}
+}
+
 // ---------- Enablement via config flags ----------
 
 func TestBuildStages_QuickCheckDefaultEnabled(t *testing.T) {

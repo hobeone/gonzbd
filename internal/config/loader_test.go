@@ -167,6 +167,27 @@ func TestLoad_ValidationFailure(t *testing.T) {
 	}
 }
 
+// TestLoad_InvalidUnrarParams verifies that Load returns an error when the
+// file contains disallowed extra_unrar_params flags.
+func TestLoad_InvalidUnrarParams(t *testing.T) {
+	t.Parallel()
+
+	yaml := minimalYAML(t)
+	yaml = strings.ReplaceAll(yaml, `extra_unrar_params: ""`, `extra_unrar_params: "-df"`)
+
+	path := filepath.Join(t.TempDir(), "bad_unrar.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load: expected validation error for disallowed extra_unrar_params, got nil")
+	}
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Errorf("error %q does not mention \"not allowed\"", err.Error())
+	}
+}
+
 // ---------- decode type errors ----------
 
 // TestDecode_FatalTypeError verifies that a real type mismatch (e.g. string

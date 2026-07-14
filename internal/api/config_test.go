@@ -82,6 +82,36 @@ func TestModeConfig_Speedlimit(t *testing.T) {
 	}
 }
 
+func TestModeConfig_Speedlimit_SaveError(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	s := testServerWithConfig(t, cfg)
+	s.app = NopApp{}
+	s.configPath = "/dev/null/impossible/gonzbd.yaml"
+
+	rr := apiGet(t, s.Handler(), "/api?mode=config&name=speedlimit&value=500&apikey="+testAPIKey)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500, got %d", rr.Code, rr.Code)
+	}
+}
+
+func TestModeSetConfig_ExtraUnrarParamsDisallowed(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	s := testServerWithConfig(t, cfg)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=set_config&section=postproc&keyword=extra_unrar_params&value=-df&apikey="+testAPIKey)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400, got %d", rr.Code, rr.Code)
+	}
+}
+
 // TestModeSpeedlimit_TopLevel verifies the SABnzbd-compatible top-level
 // mode=speedlimit alias behaves identically to mode=config&name=speedlimit.
 func TestModeSpeedlimit_TopLevel(t *testing.T) {
