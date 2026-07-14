@@ -78,7 +78,10 @@ var (
 	typeCreator  = [16]byte{'P', 'A', 'R', ' ', '2', '.', '0', 0x00, 'C', 'r', 'e', 'a', 't', 'o', 'r', 0x00}
 )
 
-const maxJunkScan = 64 * 1024 // max bytes to scan forward looking for magic
+const (
+	maxJunkScan       = 65536    // 64 * 1024: max bytes to scan forward looking for magic
+	maxPacketBodySize = 67108864 // 64 * 1024 * 1024 (64 MiB)
+)
 
 // ParsePar2Set reads path (a .par2 file) and returns the full ParsedSet with all
 // packet types parsed.
@@ -170,6 +173,9 @@ func readNextPacket(f *os.File, fileSize uint64, header []byte) (packetType [16]
 		}
 
 		bodyLen := packetLen - 64
+		if bodyLen > maxPacketBodySize {
+			return [16]byte{}, nil, fmt.Errorf("packet body size %d exceeds max %d", bodyLen, maxPacketBodySize)
+		}
 		body := make([]byte, bodyLen)
 		if _, err := io.ReadFull(f, body); err != nil {
 			return [16]byte{}, nil, fmt.Errorf("read body: %w", err)

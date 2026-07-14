@@ -997,3 +997,63 @@ func TestParserUnexportedHelpersDirect(t *testing.T) {
 		}
 	})
 }
+
+func TestParsePar2Set_MaxPacketBodySize(t *testing.T) {
+	tmpDir := t.TempDir()
+	parPath := filepath.Join(tmpDir, "test.par2")
+
+	packetLen := uint64(100 * 1024 * 1024) // 100 MiB
+	buf := make([]byte, 64)
+	copy(buf[0:8], magic)
+	binary.LittleEndian.PutUint64(buf[8:16], packetLen)
+
+	f, err := os.Create(parPath)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.Write(buf); err != nil {
+		f.Close()
+		t.Fatalf("Write: %v", err)
+	}
+	// Truncate file so that packetLen <= fileSize check passes and we hit the body size check.
+	if err := f.Truncate(int64(packetLen)); err != nil {
+		f.Close()
+		t.Fatalf("Truncate: %v", err)
+	}
+	f.Close()
+
+	_, err = ParsePar2Set(parPath)
+	if err == nil {
+		t.Fatal("ParsePar2Set expected error when packet body size exceeds 64 MiB, got nil")
+	}
+}
+
+func TestParsePar2Set_MaxPacketBodySizeBoundary(t *testing.T) {
+	tmpDir := t.TempDir()
+	parPath := filepath.Join(tmpDir, "test.par2")
+
+	// Exactly 64 MiB body (packetLen = 64 MiB + 64 bytes header).
+	packetLen := uint64(maxPacketBodySize + 64)
+	buf := make([]byte, 64)
+	copy(buf[0:8], magic)
+	binary.LittleEndian.PutUint64(buf[8:16], packetLen)
+
+	f, err := os.Create(parPath)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.Write(buf); err != nil {
+		f.Close()
+		t.Fatalf("Write: %v", err)
+	}
+	if err := f.Truncate(int64(packetLen)); err != nil {
+		f.Close()
+		t.Fatalf("Truncate: %v", err)
+	}
+	f.Close()
+
+	_, err = ParsePar2Set(parPath)
+	if err != nil {
+		t.Fatalf("ParsePar2Set: expected exactly 64 MiB packet body to pass size check, got error: %v", err)
+	}
+}
