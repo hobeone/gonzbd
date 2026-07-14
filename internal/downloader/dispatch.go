@@ -51,6 +51,10 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 		hopelessJobs: make(map[string]struct{}),
 	}
 
+	if d.allServersFull(opts.serverCfgs) {
+		return plan
+	}
+
 	d.queue.ForEachUnfinishedArticle(func(a queue.UnfinishedArticle) bool {
 		if a.JobStatus == constants.StatusPaused {
 			return true // skip paused jobs, keep iterating
@@ -77,12 +81,41 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 		if exReq != nil {
 			plan.exhausted = append(plan.exhausted, exReq)
 		}
+		if d.allServersFull(opts.serverCfgs) {
+			return false
+		}
 		// Always continue — per-article send is non-blocking and
 		// we want to fan out as much as will fit this pass.
 		return ctx.Err() == nil
 	})
 
 	return plan
+}
+
+// allServersFull returns true when every active, enabled server has a full work
+// channel (len(ch) == cap(ch)). If true, further tryDispatch calls this pass
+// are guaranteed to skip every server, so buildDispatchPlan can early-exit.
+func (d *Downloader) allServersFull(serverCfgs []config.ServerConfig) bool {
+	now := time.Now()
+	hasActive := false
+	for i, srv := range d.servers {
+		if i >= len(serverCfgs) {
+			break
+		}
+		cfg := &serverCfgs[i]
+		if !cfg.Enable || !srv.Active(now) {
+			continue
+		}
+		ch, ok := d.workCh[cfg.Name]
+		if !ok {
+			continue
+		}
+		hasActive = true
+		if len(ch) < cap(ch) {
+			return false
+		}
+	}
+	return hasActive
 }
 
 // applyDispatchPlan executes the side effects deferred from buildDispatchPlan:
@@ -500,6 +533,9 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 	// directly in the connection goroutine to utilize all CPU cores.
 	decodedData, offset, partCRC, err := decodePayload(body)
 	if err != nil {
+		if decodedData != nil {
+			decoder.PutBuffer(decodedData)
+		}
 		if errors.Is(err, decoder.ErrCRCMismatch) {
 			// CRC mismatch is retryable: the server delivered data but
 			// it was corrupted. Keep this server in the try-list (don't
@@ -659,10 +695,16 @@ func decodePayload(body []byte) (decoded []byte, offset int64, crc uint32, err e
 	case decErr == nil:
 		return article.Data, article.Offset, article.CRC, nil
 	case errors.Is(decErr, decoder.ErrNotYEnc):
+		if article.Data != nil {
+			decoder.PutBuffer(article.Data)
+		}
 		// Fallback to UU decoding.
 		data, _, uuErr := decoder.DecodeUU(body)
 		if uuErr == nil {
 			return data, 0, 0, nil // UU encoding usually doesn't have offset info or CRC
+		}
+		if data != nil {
+			decoder.PutBuffer(data)
 		}
 
 		// Neither yEnc nor UU. Check for DMCA/takedown notices:
@@ -673,6 +715,9 @@ func decodePayload(body []byte) (decoded []byte, offset int64, crc uint32, err e
 		}
 		return nil, 0, 0, fmt.Errorf("yenc: %w; uu fallback: %w", decErr, uuErr)
 	default:
+		if article.Data != nil {
+			decoder.PutBuffer(article.Data)
+		}
 		return nil, 0, 0, decErr
 	}
 }

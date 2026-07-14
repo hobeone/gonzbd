@@ -209,6 +209,9 @@ func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResu
 }
 
 func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.ArticleResult) {
+	if res.Data != nil {
+		decoder.PutBuffer(res.Data)
+	}
 	if errors.Is(res.Err, downloader.ErrNoServersLeft) ||
 		!isRetryableDownloaderError(res.Err) {
 		// Terminal failure (all servers exhausted or unrecoverable
@@ -292,6 +295,9 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 		_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
 	} else if writeErr == nil {
 		telemetry.ArticlesWritten.Add(1)
+	}
+	if writeErr != nil && res.Data != nil {
+		decoder.PutBuffer(res.Data)
 	}
 }
 

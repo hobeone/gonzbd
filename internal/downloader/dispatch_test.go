@@ -692,3 +692,72 @@ func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 		t.Errorf("expected job status to be Paused, got %+v", snap)
 	}
 }
+
+func TestAllServersFull(t *testing.T) {
+	srv1 := fakeSrv("s1", 0, true)
+	srv2 := fakeSrv("s2", 0, true)
+	d := newDispatchDownloader([]*Server{srv1, srv2})
+
+	opts := defaultOpts(d.servers)
+
+	// Initially, both channels have capacity (len 0, cap 1).
+	if d.allServersFull(opts.serverCfgs) {
+		t.Error("expected allServersFull=false when channels are empty")
+	}
+
+	// Fill s1
+	d.workCh["s1"] <- &articleRequest{messageID: "msg1"}
+	if d.allServersFull(opts.serverCfgs) {
+		t.Error("expected allServersFull=false when s2 still has capacity")
+	}
+
+	// Fill s2
+	d.workCh["s2"] <- &articleRequest{messageID: "msg2"}
+	if !d.allServersFull(opts.serverCfgs) {
+		t.Error("expected allServersFull=true when both active enabled channels are full")
+	}
+
+	// Drain s2 but penalize/deactivate s2
+	<-d.workCh["s2"]
+	srv2.ApplyPenalty(time.Hour)
+	if !d.allServersFull(opts.serverCfgs) {
+		t.Error("expected allServersFull=true when s1 is full and s2 is inactive")
+	}
+
+	// Drain s1
+	<-d.workCh["s1"]
+	if d.allServersFull(opts.serverCfgs) {
+		t.Error("expected allServersFull=false when s1 is empty and s2 is inactive")
+	}
+
+	// If all servers are inactive or disabled, allServersFull must return false
+	srv1.ApplyPenalty(time.Hour)
+	if d.allServersFull(opts.serverCfgs) {
+		t.Error("expected allServersFull=false when no active servers exist")
+	}
+}
+
+func TestBuildDispatchPlan_EarlyExitWhenServersFull(t *testing.T) {
+	q := queue.New()
+	job := makeJobWithArticles(t, []string{"a@h", "b@h", "c@h", "d@h", "e@h", "f@h", "g@h", "h@h", "i@h", "j@h"})
+	if err := q.Add(job); err != nil {
+		t.Fatalf("queue.Add: %v", err)
+	}
+
+	srv1 := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv1})
+	d.queue = q
+	opts := defaultOpts(d.servers)
+
+	// Pre-fill the single capacity-1 work channel for s1 so that allServersFull is true immediately
+	d.workCh["s1"] <- &articleRequest{messageID: "prefill"}
+
+	plan := d.buildDispatchPlan(context.Background(), opts)
+	if plan.dispatched != 0 {
+		t.Errorf("dispatched = %d, want 0 when server is already full", plan.dispatched)
+	}
+
+	if !d.allServersFull(opts.serverCfgs) {
+		t.Error("expected allServersFull=true")
+	}
+}

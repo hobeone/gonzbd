@@ -3,6 +3,7 @@ package assembler
 import (
 	"cmp"
 	"context"
+
 	"errors"
 	"log/slog"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/decoder"
 
 	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/telemetry"
@@ -564,6 +567,9 @@ func (a *Assembler) dispatchRequest(
 	}
 	// Skip articles for cancelled jobs.
 	if _, cancelled := cancelledJobs[req.JobID]; cancelled {
+		if req.Data != nil {
+			decoder.PutBuffer(req.Data)
+		}
 		return 0
 	}
 	a.processRequest(req, open, completed, wc)
@@ -645,6 +651,9 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		} else {
 			a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
 		}
+		if req.Data != nil {
+			decoder.PutBuffer(req.Data)
+		}
 		return
 	}
 
@@ -657,6 +666,9 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 				"fileIdx", req.FileIdx,
 				"error", err,
 			)
+			if req.Data != nil {
+				decoder.PutBuffer(req.Data)
+			}
 			return
 		}
 
@@ -666,6 +678,9 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 				"path", info.Path,
 				"error", err,
 			)
+			if req.Data != nil {
+				decoder.PutBuffer(req.Data)
+			}
 			return
 		}
 		//nolint:gosec // G304: path is caller-supplied from FileInfo resolver, which is responsible for safe derivation
@@ -675,6 +690,9 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 				"path", info.Path,
 				"error", err,
 			)
+			if req.Data != nil {
+				decoder.PutBuffer(req.Data)
+			}
 			return
 		}
 		// Pre-allocate the file at the expected size. This reduces
@@ -703,10 +721,11 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 		if !a.handleFatalArticle(f, req) {
 			return
 		}
-	} else {
-		if !a.handleSuccessArticle(f, req, wc, open, key) {
-			return
+		if req.Data != nil {
+			decoder.PutBuffer(req.Data)
 		}
+	} else if !a.handleSuccessArticle(f, req, wc, open, key) {
+		return
 	}
 
 	f.partsWritten++
@@ -769,6 +788,9 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writ
 			// the queue receives it even if a prior flush
 			// dropped the original acknowledgment.
 			a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
+			if req.Data != nil {
+				decoder.PutBuffer(req.Data)
+			}
 			return false
 		}
 		// Cross-check: if this MessageID was already counted as a failure,
@@ -969,7 +991,13 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 			"offset", req.Offset,
 			"error", err,
 		)
+		if req.Data != nil {
+			decoder.PutBuffer(req.Data)
+		}
 		return false
+	}
+	if req.Data != nil {
+		decoder.PutBuffer(req.Data)
 	}
 	return true
 }
@@ -990,6 +1018,9 @@ func (a *Assembler) writeCachedArticles(f *openFile, arts []bufferedArticle, rea
 				"offset", art.offset,
 				"error", err,
 			)
+		}
+		if art.data != nil {
+			decoder.PutBuffer(art.data)
 		}
 	}
 }

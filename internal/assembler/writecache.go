@@ -3,6 +3,8 @@ package assembler
 import (
 	"cmp"
 	"slices"
+
+	"github.com/hobeone/gonzbd/internal/decoder"
 )
 
 // writeCache is a memory-bounded article buffer that coalesces contiguous
@@ -22,6 +24,8 @@ type writeCache struct {
 
 	// perFile tracks buffered articles grouped by file.
 	perFile map[fileKey]*fileBuf
+
+	scratchBuf []byte // reusable buffer for coalescing contiguous runs
 }
 
 // fileBuf holds buffered articles for a single file.
@@ -102,6 +106,9 @@ func (wc *writeCache) buffer(key fileKey, offset int64, data []byte) bool {
 	if existing, dup := fb.articles[offset]; dup {
 		wc.used -= int64(len(existing))
 		fb.totalBytes -= int64(len(existing))
+		if existing != nil {
+			decoder.PutBuffer(existing)
+		}
 	}
 	fb.articles[offset] = data
 	size := int64(len(data))
@@ -155,18 +162,21 @@ func (wc *writeCache) buildContiguousRun(fb *fileBuf, minSize int64) *flushRun {
 		return nil
 	}
 
-	// Coalesce into a single buffer.
-	coalesced := make([]byte, 0, runSize)
+	// Coalesce into wc.scratchBuf to eliminate heap allocations during write coalescing.
+	wc.scratchBuf = wc.scratchBuf[:0]
 	startOffset := fb.writeCursor
 	for _, art := range runArticles {
-		coalesced = append(coalesced, art.data...)
+		wc.scratchBuf = append(wc.scratchBuf, art.data...)
 		delete(fb.articles, art.offset)
 		fb.totalBytes -= int64(len(art.data))
 		wc.used -= int64(len(art.data))
+		if art.data != nil {
+			decoder.PutBuffer(art.data)
+		}
 	}
 	fb.writeCursor = cursor
 
-	return &flushRun{offset: startOffset, data: coalesced}
+	return &flushRun{offset: startOffset, data: wc.scratchBuf}
 }
 
 // pressure reports whether memory usage exceeds 90% of the limit.
@@ -236,6 +246,11 @@ func (wc *writeCache) drainAll() map[fileKey][]bufferedArticle {
 // a file's cache has already been drained through contiguous flushes.
 func (wc *writeCache) forget(key fileKey) {
 	if fb, ok := wc.perFile[key]; ok {
+		for _, data := range fb.articles {
+			if data != nil {
+				decoder.PutBuffer(data)
+			}
+		}
 		wc.used -= fb.totalBytes
 		delete(wc.perFile, key)
 	}
