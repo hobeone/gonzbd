@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/crc32util"
 )
 
@@ -69,6 +70,14 @@ type ifscSlice struct {
 	crc32   uint32
 }
 
+// Sentinel errors returned when PAR2 limit safety thresholds are exceeded.
+var (
+	// ErrPacketBodySizeExceeded indicates that a PAR2 packet body exceeds configured size limits.
+	ErrPacketBodySizeExceeded = errors.New("par2 packet body size exceeds limit")
+	// ErrJunkScanLimitExceeded indicates that searching for a PAR2 packet magic signature exceeded the configured scan limit.
+	ErrJunkScanLimitExceeded = errors.New("par2 junk header scan limit exceeded")
+)
+
 var (
 	magic        = []byte("PAR2\x00PKT")
 	typeMain     = [16]byte{'P', 'A', 'R', ' ', '2', '.', '0', 0x00, 'M', 'a', 'i', 'n', 0x00, 0x00, 0x00, 0x00}
@@ -81,6 +90,11 @@ var (
 const (
 	defaultMaxJunkScan       int64  = 65536    // 64 * 1024: default max bytes to scan forward looking for magic
 	defaultMaxPacketBodySize uint64 = 67108864 // 64 * 1024 * 1024 (64 MiB)
+
+	// MinPar2PacketBodySize defines the minimum allowed floor for PAR2 packet body size limit (64 KiB).
+	MinPar2PacketBodySize uint64 = 65536
+	// MinPar2JunkScanBytes defines the minimum allowed floor for PAR2 header junk scan distance (1 KiB).
+	MinPar2JunkScanBytes int64 = 1024
 )
 
 // ParseOptions defines configurable safety and memory bounds for parsing PAR2 sets.
@@ -103,20 +117,35 @@ func DefaultParseOptions() ParseOptions {
 	}
 }
 
-// ParsePar2Set reads path (a .par2 file) using default safety limits.
-// It returns a *ParsedSet containing file descriptions and verification hashes, or an error if the file
-// is unreadable, malformed, or exceeds standard packet allocation bounds.
-func ParsePar2Set(path string) (*ParsedSet, error) {
-	return ParsePar2SetWithOptions(path, DefaultParseOptions())
+// ParseOptionsFromConfig constructs ParseOptions from PostProcConfig.
+// If cfg is nil, DefaultParseOptions() is returned.
+func ParseOptionsFromConfig(cfg *config.PostProcConfig) ParseOptions {
+	if cfg == nil {
+		return DefaultParseOptions()
+	}
+	return ParseOptions{
+		MaxJunkScanBytes:  cfg.Par2MaxJunkScanBytes,
+		MaxPacketBodySize: cfg.Par2MaxPacketBodySize,
+	}
+}
+
+// ParsePar2Set reads path (a .par2 file) using safety limits.
+// Optional ParseOptions can be supplied to override defaults.
+func ParsePar2Set(path string, opts ...ParseOptions) (*ParsedSet, error) {
+	parseOpts := DefaultParseOptions()
+	if len(opts) > 0 {
+		parseOpts = opts[0]
+	}
+	return ParsePar2SetWithOptions(path, parseOpts)
 }
 
 // ParsePar2SetWithOptions reads path (a .par2 file) using caller-specified ParseOptions bounds.
 // It returns a *ParsedSet or an error if packet allocations exceed opts.MaxPacketBodySize or I/O fails.
 func ParsePar2SetWithOptions(path string, opts ParseOptions) (*ParsedSet, error) {
-	if opts.MaxJunkScanBytes <= 0 {
+	if opts.MaxJunkScanBytes < MinPar2JunkScanBytes {
 		opts.MaxJunkScanBytes = defaultMaxJunkScan
 	}
-	if opts.MaxPacketBodySize == 0 {
+	if opts.MaxPacketBodySize < MinPar2PacketBodySize {
 		opts.MaxPacketBodySize = defaultMaxPacketBodySize
 	}
 
@@ -186,6 +215,9 @@ func readNextPacket(f *os.File, fileSize uint64, header []byte) (packetType [16]
 
 // readNextPacketWithOptions reads the next valid packet using configured limits.
 func readNextPacketWithOptions(f *os.File, fileSize uint64, header []byte, opts ParseOptions) (packetType [16]byte, body []byte, err error) {
+	if opts.MaxPacketBodySize < MinPar2PacketBodySize {
+		opts.MaxPacketBodySize = defaultMaxPacketBodySize
+	}
 	for {
 		_, err := io.ReadFull(f, header)
 		if err != nil {
@@ -211,7 +243,7 @@ func readNextPacketWithOptions(f *os.File, fileSize uint64, header []byte, opts 
 
 		bodyLen := packetLen - 64
 		if bodyLen > opts.MaxPacketBodySize {
-			return [16]byte{}, nil, fmt.Errorf("packet body size %d exceeds max %d", bodyLen, opts.MaxPacketBodySize)
+			return [16]byte{}, nil, fmt.Errorf("par2 packet body size (%d bytes) exceeds configured limit (%d bytes); increase 'par2_max_packet_body_size' in Settings -> Post-Processing if this is a valid ultra-large file: %w", bodyLen, opts.MaxPacketBodySize, ErrPacketBodySizeExceeded)
 		}
 		body := make([]byte, bodyLen)
 		if _, err := io.ReadFull(f, body); err != nil {
@@ -388,9 +420,19 @@ func buildBy16k(set *ParsedSet) {
 }
 
 // ParseFileDescriptions reads path (a .par2 file) and returns all File Description
-// packets found within. This is a backward-compatible wrapper around ParsePar2Set.
-func ParseFileDescriptions(path string) ([]FileDesc, error) {
-	set, err := ParsePar2Set(path)
+// packets found within. Optional ParseOptions can be supplied.
+func ParseFileDescriptions(path string, opts ...ParseOptions) ([]FileDesc, error) {
+	parseOpts := DefaultParseOptions()
+	if len(opts) > 0 {
+		parseOpts = opts[0]
+	}
+	return ParseFileDescriptionsWithOptions(path, parseOpts)
+}
+
+// ParseFileDescriptionsWithOptions reads path (a .par2 file) using caller-specified ParseOptions
+// and returns all File Description packets found within.
+func ParseFileDescriptionsWithOptions(path string, opts ParseOptions) ([]FileDesc, error) {
+	set, err := ParsePar2SetWithOptions(path, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -404,11 +446,14 @@ func scanForMagic(f *os.File, magic []byte) (bool, error) {
 
 // scanForMagicWithOptions scans forward up to maxJunkScan bytes to find the next magic.
 func scanForMagicWithOptions(f *os.File, magic []byte, maxJunkScan int64) (bool, error) {
+	if maxJunkScan < MinPar2JunkScanBytes {
+		maxJunkScan = defaultMaxJunkScan
+	}
 	if _, seekErr := f.Seek(-63, io.SeekCurrent); seekErr != nil {
 		return false, seekErr
 	}
 	scanBuf := make([]byte, maxJunkScan)
-	n, readErr := f.Read(scanBuf)
+	n, readErr := io.ReadFull(f, scanBuf)
 	if n == 0 {
 		return false, readErr
 	}
@@ -424,6 +469,9 @@ func scanForMagicWithOptions(f *os.File, magic []byte, maxJunkScan int64) (bool,
 			return false, seekErr
 		}
 		return true, nil
+	}
+	if int64(n) >= maxJunkScan {
+		return false, fmt.Errorf("par2 junk scan exceeded limit (%d bytes) without finding header magic; increase 'par2_max_junk_scan_bytes' in Settings -> Post-Processing if file has a large header: %w", maxJunkScan, ErrJunkScanLimitExceeded)
 	}
 	return false, readErr
 }

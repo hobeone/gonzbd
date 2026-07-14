@@ -85,7 +85,16 @@ type par2Entry struct {
 // counted as Skipped.
 //
 //nolint:gocyclo // multi-strategy verification fallback logic
-func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyResult {
+func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger, opts ...ParseOptions) CRCVerifyResult {
+	parseOpts := DefaultParseOptions()
+	if len(opts) > 0 {
+		parseOpts = opts[0]
+	}
+	return VerifyCRCsWithOptions(files, sets, log, parseOpts)
+}
+
+// VerifyCRCsWithOptions compares assembled CRC32 values using specified ParseOptions.
+func VerifyCRCsWithOptions(files []AssembledFile, sets []Set, log *slog.Logger, opts ParseOptions) CRCVerifyResult {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -98,7 +107,7 @@ func VerifyCRCs(files []AssembledFile, sets []Set, log *slog.Logger) CRCVerifyRe
 			continue
 		}
 
-		descs, err := ParseFileDescriptions(parFile)
+		descs, err := ParseFileDescriptionsWithOptions(parFile, opts)
 		if err != nil {
 			log.Warn("verifycrc: failed to parse par2 file",
 				"file", filepath.Base(parFile), "err", err)

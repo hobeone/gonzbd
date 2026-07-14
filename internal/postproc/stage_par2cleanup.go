@@ -18,8 +18,9 @@ import (
 type Par2CleanupStage struct {
 	// cleanup is set atomically so SetCleanup can be called from any goroutine
 	// (e.g. the API handler) while a job may be running in the postproc worker.
-	cleanup atomic.Bool
-	Log     *slog.Logger
+	cleanup   atomic.Bool
+	ParseOpts par2.ParseOptions
+	Log       *slog.Logger
 }
 
 // NewPar2CleanupStage constructs a Par2CleanupStage.
@@ -62,7 +63,7 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	// Delete all .par2 files.
-	sets, err := par2.FindPar2Files(job.DownloadDir)
+	sets, err := par2.FindPar2Files(job.DownloadDir, s.ParseOpts)
 	if err != nil {
 		log.Warn("par2 cleanup: failed to scan for par2 files", "err", err)
 		return nil

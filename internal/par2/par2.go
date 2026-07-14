@@ -217,8 +217,8 @@ func isVolume(name string) bool {
 // FindPar2Files scans dir for .par2 files and groups them into Sets.
 // Files that are not .par2 files are ignored.  Returns an empty slice (not an
 // error) when no par2 files are found.  The returned slice is ordered by set
-// name.
-func FindPar2Files(dir string) ([]Set, error) {
+// name. Optional ParseOptions can be provided.
+func FindPar2Files(dir string, opts ...ParseOptions) ([]Set, error) {
 	dirEntries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("par2 find: %w", err)
