@@ -154,7 +154,14 @@ func isCrossOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		// No Origin header — fall back to Referer and Sec-Fetch-Site.
-		if isRefererCrossOrigin(r.Header.Get("Referer"), r.Host) {
+		referer := r.Header.Get("Referer")
+		if referer == "" {
+			_, fromCookie := apiKeyFromRequest(r)
+			if fromCookie && isStateChangingRequest(r) {
+				return true
+			}
+		}
+		if isRefererCrossOrigin(referer, r.Host) {
 			return true
 		}
 		return isSecFetchSiteCrossOrigin(r.Header.Get("Sec-Fetch-Site"))

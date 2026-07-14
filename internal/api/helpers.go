@@ -111,3 +111,35 @@ func formatDuration(seconds int) string {
 	s := seconds % 60
 	return fmt.Sprintf("%d:%02d:%02d", h, m, s)
 }
+
+// isStateChangingMode returns true if the mode/name pair identifies a
+// state-changing or destructive endpoint (set_config, shutdown, restart,
+// pause, resume, disconnect, and queue/history deletions).
+func isStateChangingMode(mode, name string) bool {
+	switch mode {
+	case "set_config", "shutdown", "restart", "pause", "resume", "disconnect":
+		return true
+	case "queue":
+		return name == "delete" || name == "purge" || name == "delete_nzf"
+	case "history":
+		return name == "delete"
+	}
+	return false
+}
+
+// isStateChangingRequest returns true if r mutates server state, either
+// by HTTP method (non-GET/HEAD) or by targeting a state-changing mode/name.
+func isStateChangingRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return true
+	}
+	mode := r.URL.Query().Get("mode")
+	if mode == "" && r.Method == http.MethodPost {
+		mode = formValue(r, "mode")
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" && r.Method == http.MethodPost {
+		name = formValue(r, "name")
+	}
+	return isStateChangingMode(mode, name)
+}

@@ -427,3 +427,13 @@ func TestStatusWriter_DoubleWriteHeader(t *testing.T) {
 		t.Errorf("first status should win: got %d, want 201", sw.status)
 	}
 }
+
+func TestIsCrossOrigin_CookieStateChangingEmptyHeaders(t *testing.T) {
+	t.Parallel()
+	r := httptest.NewRequest("POST", "/api?mode=pause", nil)
+	r.Host = "localhost:4289"
+	r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: "sessionkey"})
+	if !isCrossOrigin(r) {
+		t.Error("cookie-authenticated state-changing request with empty Origin and Referer MUST be cross-origin (fail closed)")
+	}
+}

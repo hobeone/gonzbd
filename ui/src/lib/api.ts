@@ -155,7 +155,24 @@ export async function postAction(
 	mode: string,
 	params?: Record<string, string>
 ): Promise<StatusResponse> {
-	return fetchJSON<StatusResponse>(apiUrl(mode, params));
+	const url = apiUrl(mode, params);
+	const res = await fetch(url, { method: "POST" });
+	if (checkRedirect(res, url)) {
+		return new Promise(() => {});
+	}
+	if (!res.ok) {
+		let message = `Action ${res.status}: ${res.statusText}`;
+		try {
+			const data = await res.json();
+			if (data && data.error) {
+				message = data.error;
+			}
+		} catch (e) {
+			// ignore parse errors
+		}
+		throw new Error(message);
+	}
+	return res.json() as Promise<StatusResponse>;
 }
 
 export async function uploadNzb(
