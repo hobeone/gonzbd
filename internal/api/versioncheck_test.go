@@ -22,6 +22,7 @@ func TestCompareVersions(t *testing.T) {
 		{"v1.2", "v1.2.0", 0},            // missing patch defaults to 0
 		{"v1.2.1-2b7f9150", "v1.2.1", 0}, // strips build metadata
 		{"v1.2.0-rc1", "v1.2.0", 0},      // strips prerelease suffixes
+		{"v1.2.3.4", "v1.2.3", 0},        // extra 4th component is ignored, not folded into patch
 	}
 	for _, tc := range tests {
 		t.Run(tc.current+"_vs_"+tc.latest, func(t *testing.T) {

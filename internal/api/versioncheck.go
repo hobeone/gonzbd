@@ -112,7 +112,7 @@ func parseVersionParts(v string) [3]int {
 	if idx := strings.IndexAny(v, "-+"); idx != -1 {
 		v = v[:idx]
 	}
-	parts := strings.SplitN(v, ".", 3)
+	parts := strings.Split(v, ".")
 	var out [3]int
 	for i := 0; i < len(parts) && i < 3; i++ {
 		n, _ := strconv.Atoi(parts[i]) //nolint:errcheck // malformed input defaults to 0, see doc comment
