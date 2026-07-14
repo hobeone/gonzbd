@@ -7,6 +7,8 @@ package assembler
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"syscall"
@@ -76,6 +78,17 @@ func WriteSpeedMBPerSec(ctx context.Context, dir string, sizeBytes int64) (float
 	}()
 
 	buf := make([]byte, 1024*1024) // 1 MiB write chunks
+	// Filled with random bytes, and the first 8 bytes are overwritten with
+	// the current write offset each iteration below. Either alone isn't
+	// enough: a filesystem with block-level dedup (e.g. ZFS, Btrfs) would
+	// still collapse a fixed random buffer written repeatedly into a
+	// single physical block, and plain zeros compress or hole-punch for
+	// free on any compressing filesystem — both would report throughput
+	// far higher than the disk can actually sustain, defeating the point
+	// of this diagnostic.
+	if _, err := rand.Read(buf); err != nil {
+		return 0, fmt.Errorf("assembler: write speed test: generate test data: %w", err)
+	}
 	start := time.Now()
 	var written int64
 	for written < sizeBytes {
@@ -85,6 +98,9 @@ func WriteSpeedMBPerSec(ctx context.Context, dir string, sizeBytes int64) (float
 		n := int64(len(buf))
 		if remaining := sizeBytes - written; remaining < n {
 			n = remaining
+		}
+		if n >= 8 {
+			binary.BigEndian.PutUint64(buf[:8], uint64(written))
 		}
 		if _, err := f.Write(buf[:n]); err != nil {
 			return 0, fmt.Errorf("assembler: write speed test: write %s: %w", path, err)
