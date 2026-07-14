@@ -1,10 +1,14 @@
 package api
 
 import (
+	"context"
+	"log/slog"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -200,4 +204,44 @@ func TestRequireParamDirect(t *testing.T) {
 	if rr2.Code != 400 {
 		t.Errorf("expected status 400, got %d", rr2.Code)
 	}
+}
+
+type recordHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *recordHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+func (h *recordHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *recordHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *recordHandler) hasWarn(msg string, id string, errSubstr string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if r.Level != slog.LevelWarn || r.Message != msg {
+			continue
+		}
+		var gotID string
+		var gotErr string
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "id" {
+				gotID = a.Value.String()
+			}
+			if a.Key == "error" {
+				gotErr = a.Value.String()
+			}
+			return true
+		})
+		if gotID == id && strings.Contains(gotErr, errSubstr) {
+			return true
+		}
+	}
+	return false
 }

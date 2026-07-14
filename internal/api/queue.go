@@ -514,6 +514,8 @@ func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 	for _, id := range ids {
 		if err := s.app.RemoveJob(r.Context(), id, deleteFiles); err == nil {
 			removed = append(removed, id)
+		} else {
+			s.log.Warn("failed to remove job during bulk delete", "id", id, "error", err)
 		}
 	}
 
