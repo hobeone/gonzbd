@@ -18,6 +18,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"strconv"
+	"sync"
 )
 
 // Sentinel errors returned by DecodeArticle.
@@ -98,7 +99,53 @@ type Article struct {
 // the decoded data, errSizeMismatch if the declared part size does not match
 // the decoded length, and errMissingTrailer / errMalformed / ErrNotYEnc on
 // structural problems.
+
+var decodePool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 768*1024)
+		return &b
+	},
+}
+
+// GetBuffer retrieves a byte slice from the decoding pool with at least capacity capReq,
+// up to maxDecodeSize. The returned slice has length 0.
+func GetBuffer(capReq int64) []byte {
+	maxCap := min(capReq, maxDecodeSize)
+	if maxCap <= 0 {
+		maxCap = 768 * 1024
+	}
+	bp, ok := decodePool.Get().(*[]byte)
+	if !ok || bp == nil {
+		return make([]byte, 0, maxCap)
+	}
+	buf := *bp
+	if int64(cap(buf)) < maxCap {
+		buf = make([]byte, 0, maxCap)
+	} else {
+		buf = buf[:0]
+	}
+	return buf
+}
+
+// PutBuffer returns a byte slice to the decoding pool.
+// Slices with capacity 0 or greater than maxDecodeSize are discarded to prevent pool pollution.
+func PutBuffer(buf []byte) {
+	if cap(buf) == 0 || cap(buf) > maxDecodeSize {
+		return
+	}
+	buf = buf[:0]
+	decodePool.Put(&buf)
+}
+
+// DecodeArticle decodes a yEnc-encoded NNTP article body using DecodeArticleBuf with a nil scratch buffer.
 func DecodeArticle(body []byte) (Article, error) {
+	return DecodeArticleBuf(body, nil)
+}
+
+// DecodeArticleBuf decodes a yEnc-encoded NNTP article body using an optional
+// scratch buffer for the decoded output to reduce heap allocations. If scratch
+// is nil or has insufficient capacity, a buffer from the decoding pool is used.
+func DecodeArticleBuf(body, scratch []byte) (Article, error) {
 	// Guard against huge inputs from direct callers that bypass the
 	// NNTP layer's maxBodySize limit.
 	if len(body) > maxDecodeSize {
@@ -127,7 +174,7 @@ func DecodeArticle(body []byte) (Article, error) {
 
 	encoded := body[bodyStart:trailerIdx]
 
-	decoded, computedCRC := decodeBody(encoded, hdr.size)
+	decoded, computedCRC := decodeBody(encoded, hdr.size, scratch)
 
 	// Slice to just the =yend line — content after it (signatures,
 	// empty lines, dot-stuffing leftovers) would corrupt parseKeyValues.
@@ -140,6 +187,9 @@ func DecodeArticle(body []byte) (Article, error) {
 
 	trailer, err := parseTrailer(trailerLine, hdr.isPart)
 	if err != nil {
+		if scratch == nil || len(decoded) == 0 || &decoded[0] != &scratch[0] {
+			PutBuffer(decoded)
+		}
 		return Article{}, err
 	}
 
@@ -173,7 +223,7 @@ func DecodeArticle(body []byte) (Article, error) {
 // Register) uint64 arithmetic. Special bytes are handled individually.
 // The escape flag persists across CR/LF so that a '=' split across a line
 // boundary is handled correctly (the 0xd6 correctness rule).
-func decodeBody(encoded []byte, sizeHint int64) (out []byte, checksum uint32) {
+func decodeBody(encoded []byte, sizeHint int64, scratch []byte) (out []byte, checksum uint32) {
 	capacity := sizeHint
 	// Cap the pre-allocation: the decoded output can never exceed
 	// len(encoded), and never exceed maxDecodeSize. This prevents
@@ -182,7 +232,11 @@ func decodeBody(encoded []byte, sizeHint int64) (out []byte, checksum uint32) {
 	if capacity <= 0 || capacity > maxCap {
 		capacity = maxCap
 	}
-	out = make([]byte, 0, capacity)
+	if scratch != nil && int64(cap(scratch)) >= capacity {
+		out = scratch[:0]
+	} else {
+		out = GetBuffer(capacity)
+	}
 
 	escaped := false
 	remaining := encoded

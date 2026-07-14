@@ -3,6 +3,7 @@ package assembler
 import (
 	"fmt"
 	"testing"
+	"unsafe"
 )
 
 func TestWriteCacheDisabledWhenZero(t *testing.T) {
@@ -593,5 +594,55 @@ func TestWriteCacheInitCursorDoesNotClobberExisting(t *testing.T) {
 	wc.initCursor(key, 9999)
 	if wc.cursorFor(key) != 0 {
 		t.Errorf("cursorFor = %d, want 0 (initCursor must not clobber an existing buffer)", wc.cursorFor(key))
+	}
+}
+
+func TestWriteCache_ScratchCoalescing(t *testing.T) {
+	wc := newWriteCache(10 << 20)
+	key := fileKey{jobID: "j", fileIdx: 0}
+
+	artSize := 200 * 1024
+	for i := range 3 {
+		wc.buffer(key, int64(i*artSize), make([]byte, artSize))
+	}
+	run1 := wc.flushContiguous(key)
+	if run1 == nil {
+		t.Fatal("expected run1 to not be nil")
+	}
+	ptr1 := unsafe.SliceData(run1.data)
+
+	// Buffer another 3 articles and flush again
+	for i := range 3 {
+		wc.buffer(key, int64((i+3)*artSize), make([]byte, artSize))
+	}
+	run2 := wc.flushContiguous(key)
+	if run2 == nil {
+		t.Fatal("expected run2 to not be nil")
+	}
+	ptr2 := unsafe.SliceData(run2.data)
+
+	if ptr1 != ptr2 {
+		t.Errorf("expected run2 to reuse wc.scratchBuf backing array (ptr1=%p, ptr2=%p)", ptr1, ptr2)
+	}
+}
+
+func BenchmarkWriteCache_ContiguousFlush(b *testing.B) {
+	wc := newWriteCache(100 << 20)
+	key := fileKey{jobID: "j", fileIdx: 0}
+	artSize := 200 * 1024
+	arts := make([][]byte, 3)
+	for i := range arts {
+		arts[i] = make([]byte, artSize)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		for j := range arts {
+			wc.buffer(key, int64(j*artSize), arts[j])
+		}
+		fb := wc.perFile[key]
+		fb.writeCursor = 0
+		_ = wc.buildContiguousRun(fb, contiguousRunSize)
 	}
 }
