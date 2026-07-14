@@ -65,6 +65,42 @@ func buildMainBody(sliceSize uint64, fileIDs ...[16]byte) []byte {
 	return body
 }
 
+func TestParsePar2SetWithOptions(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	parPath := filepath.Join(tmpDir, "test.par2")
+
+	var setID, fileID, fullHash, hash16k [16]byte
+	setID[0] = 0xAA
+	fileID[0] = 0xBB
+
+	mainPkt := buildPacket(setID, typeMain, buildMainBody(16384, fileID))
+	filePkt := buildPacket(setID, typeFileDesc, buildFileDescBody(fileID, fullHash, hash16k, 1024, "file1.txt"))
+
+	content := append(mainPkt, filePkt...)
+	if err := os.WriteFile(parPath, content, 0644); err != nil {
+		t.Fatalf("failed to write par2 file: %v", err)
+	}
+
+	// 1. With custom low body limit (e.g., 10 bytes), parsing body of mainPkt (length 24) should fail.
+	lowOpts := DefaultParseOptions()
+	lowOpts.MaxPacketBodySize = 10
+	_, err := ParsePar2SetWithOptions(parPath, lowOpts)
+	if err == nil {
+		t.Fatalf("expected error when body exceeds MaxPacketBodySize = 10, got nil")
+	}
+
+	// 2. With default options, parsing should succeed.
+	set, err := ParsePar2SetWithOptions(parPath, DefaultParseOptions())
+	if err != nil {
+		t.Fatalf("ParsePar2SetWithOptions with DefaultParseOptions failed: %v", err)
+	}
+	if len(set.Files) != 1 {
+		t.Errorf("expected 1 file, got %d", len(set.Files))
+	}
+}
+
 // buildMainBodyWithCount creates a spec-correct Main packet body:
 // sliceSize(8) + recoverySetCount(4) + N×16-byte FileID entries. Unlike
 // buildMainBody (which omits the recoverySetCount field for brevity), this
@@ -1033,7 +1069,7 @@ func TestParsePar2Set_MaxPacketBodySizeBoundary(t *testing.T) {
 	parPath := filepath.Join(tmpDir, "test.par2")
 
 	// Exactly 64 MiB body (packetLen = 64 MiB + 64 bytes header).
-	packetLen := uint64(maxPacketBodySize + 64)
+	packetLen := uint64(defaultMaxPacketBodySize + 64)
 	buf := make([]byte, 64)
 	copy(buf[0:8], magic)
 	binary.LittleEndian.PutUint64(buf[8:16], packetLen)
