@@ -641,80 +641,17 @@ func (a *Assembler) closeAll(open map[fileKey]*openFile) {
 func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile, completed map[fileKey]struct{}, wc *writeCache) {
 	key := fileKey{jobID: req.JobID, fileIdx: req.FileIdx}
 
-	// Reject late duplicates for already-completed files.
 	if _, done := completed[key]; done {
-		a.log.Debug("ignoring late article for completed file",
-			"job", req.JobID, "fileidx", req.FileIdx, "msgid", req.MessageID)
-		// Still ack so the queue doesn't re-dispatch.
-		if req.FatalErr != nil {
-			a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
-		} else {
-			a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
-		}
-		if req.Data != nil {
-			decoder.PutBuffer(req.Data)
-		}
+		a.handleLateDuplicate(req)
 		return
 	}
 
 	f, ok := open[key]
 	if !ok {
-		info, err := a.opts.FileInfo(req.JobID, req.FileIdx)
-		if err != nil {
-			a.log.Warn("FileInfo resolver failed; discarding article",
-				"jobID", req.JobID,
-				"fileIdx", req.FileIdx,
-				"error", err,
-			)
-			if req.Data != nil {
-				decoder.PutBuffer(req.Data)
-			}
+		f = a.openTargetFile(key, req, open, wc)
+		if f == nil {
 			return
 		}
-
-		dir := filepath.Dir(info.Path)
-		if err := os.MkdirAll(dir, 0o750); err != nil {
-			a.log.Error("mkdir parent",
-				"path", info.Path,
-				"error", err,
-			)
-			if req.Data != nil {
-				decoder.PutBuffer(req.Data)
-			}
-			return
-		}
-		//nolint:gosec // G304: path is caller-supplied from FileInfo resolver, which is responsible for safe derivation
-		fh, err := os.OpenFile(info.Path, os.O_WRONLY|os.O_CREATE, 0o644)
-		if err != nil {
-			a.log.Error("open target file",
-				"path", info.Path,
-				"error", err,
-			)
-			if req.Data != nil {
-				decoder.PutBuffer(req.Data)
-			}
-			return
-		}
-		// Pre-allocate the file at the expected size. This reduces
-		// per-write extent allocation overhead (ext4/xfs) and helps
-		// the filesystem lay out contiguous blocks.
-		if info.ExpectedSize > 0 {
-			telemetry.PreallocCalls.Add(1)
-			if err := preallocateFile(fh, info.ExpectedSize); err != nil {
-				a.log.Warn("file pre-allocation failed, continuing without",
-					"path", info.Path,
-					"size", info.ExpectedSize,
-					"error", err,
-				)
-			}
-		} else {
-			a.log.Debug("zero-length expected size for target file",
-				"path", info.Path,
-			)
-		}
-		f = &openFile{handle: fh, info: info, crcValid: true}
-		open[key] = f
-		wc.initCursor(key, info.InitialWriteCursor)
 	}
 
 	if req.FatalErr != nil {
@@ -738,10 +675,78 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	}
 }
 
-// handleFatalArticle handles the req.FatalErr != nil branch of processRequest.
-// It deduplicates via seenFailed, cross-checks seenDone, and appends to
-// pendingFailed. Returns true if partsWritten should be incremented (first-time
-// failure); false if it was a duplicate that already counted.
+// handleLateDuplicate handles articles arriving for a file that is already marked completed.
+func (a *Assembler) handleLateDuplicate(req WriteRequest) {
+	a.log.Debug("ignoring late article for completed file",
+		"job", req.JobID, "fileidx", req.FileIdx, "msgid", req.MessageID)
+	if req.FatalErr != nil {
+		a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
+	} else {
+		a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
+	}
+	if req.Data != nil {
+		decoder.PutBuffer(req.Data)
+	}
+}
+
+// openTargetFile resolves file information and creates the target file on disk for a new fileKey.
+func (a *Assembler) openTargetFile(key fileKey, req WriteRequest, open map[fileKey]*openFile, wc *writeCache) *openFile {
+	info, err := a.opts.FileInfo(req.JobID, req.FileIdx)
+	if err != nil {
+		a.log.Warn("FileInfo resolver failed; discarding article",
+			"jobID", req.JobID,
+			"fileIdx", req.FileIdx,
+			"error", err,
+		)
+		if req.Data != nil {
+			decoder.PutBuffer(req.Data)
+		}
+		return nil
+	}
+
+	dir := filepath.Dir(info.Path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		a.log.Error("mkdir parent",
+			"path", info.Path,
+			"error", err,
+		)
+		if req.Data != nil {
+			decoder.PutBuffer(req.Data)
+		}
+		return nil
+	}
+	//nolint:gosec // G304: path is caller-supplied from FileInfo resolver, which is responsible for safe derivation
+	fh, err := os.OpenFile(info.Path, os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		a.log.Error("open target file",
+			"path", info.Path,
+			"error", err,
+		)
+		if req.Data != nil {
+			decoder.PutBuffer(req.Data)
+		}
+		return nil
+	}
+	if info.ExpectedSize > 0 {
+		telemetry.PreallocCalls.Add(1)
+		if err := preallocateFile(fh, info.ExpectedSize); err != nil {
+			a.log.Warn("file pre-allocation failed, continuing without",
+				"path", info.Path,
+				"size", info.ExpectedSize,
+				"error", err,
+			)
+		}
+	} else {
+		a.log.Debug("zero-length expected size for target file",
+			"path", info.Path,
+		)
+	}
+	f := &openFile{handle: fh, info: info, crcValid: true}
+	open[key] = f
+	wc.initCursor(key, info.InitialWriteCursor)
+	return f
+}
+
 func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 	f.crcValid = false // Failed articles invalidate CRC tracking
 	a.log.Debug("counting failed article toward completion (skipping disk write)",
@@ -770,34 +775,20 @@ func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 	return !alreadyCounted
 }
 
-// handleSuccessArticle handles the non-fatal (else) branch of processRequest.
-// It deduplicates via seenDone, cross-checks seenFailed, calls
-// writeArticleOrBuffer, accumulates CRC, and appends to pendingDone. Returns
-// true if partsWritten should be incremented.
 func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writeCache, open map[fileKey]*openFile, key fileKey) bool {
-	// Deduplicate successful writes (defence in depth — the upstream
-	// queue gate should prevent this, but an overlapping retry could
-	// slip through). Only dedup when MessageID is set (always true in
-	// production; may be empty in unit tests).
 	if req.MessageID != "" {
 		if f.seenDone == nil {
 			f.seenDone = make(map[string]struct{})
 		}
 		if _, dup := f.seenDone[req.MessageID]; dup {
-			// Already written to disk — re-emit the ack so
-			// the queue receives it even if a prior flush
-			// dropped the original acknowledgment.
 			a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
 			if req.Data != nil {
 				decoder.PutBuffer(req.Data)
 			}
 			return false
 		}
-		// Cross-check: if this MessageID was already counted as a failure,
-		// write the data (overwrite the hole) but don't count again.
 		if f.seenFailed != nil {
 			if _, was := f.seenFailed[req.MessageID]; was {
-				// Write the data but skip partsWritten increment.
 				a.writeArticleOrBuffer(f, key, req, wc, open)
 				f.seenDone[req.MessageID] = struct{}{}
 				a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
@@ -806,10 +797,6 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writ
 		}
 	}
 	if !a.writeArticleOrBuffer(f, key, req, wc, open) {
-		// Write failed — treat as a failed article so partsWritten
-		// still increments. Without this, the job stalls forever
-		// because TotalParts is never reached. The job will
-		// eventually go hopeless if enough articles fail.
 		if req.MessageID != "" {
 			if f.seenFailed == nil {
 				f.seenFailed = make(map[string]struct{})
@@ -822,26 +809,24 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writ
 			f.seenDone[req.MessageID] = struct{}{}
 		}
 		a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
-		// Record CRC for this article. Only accumulate when
-		// the decoder provided a non-zero CRC (yEnc articles).
-		if req.CRC != 0 {
-			f.crcParts = append(f.crcParts, crcPart{
-				offset: req.Offset,
-				crc:    req.CRC,
-				len:    int64(len(req.Data)),
-			})
-		} else if len(req.Data) > 0 {
-			// UU-encoded or otherwise CRC-less article.
-			f.crcValid = false
-		}
+		a.recordArticleCRC(f, req)
 	}
 	return true
 }
 
-// finalizeFile handles everything after f.partsWritten >= f.info.TotalParts:
-// draining the write cache, truncating to decoded size, fsyncing, closing,
-// tombstoning, flushing pending Done/Failed, combining per-article CRCs into a
-// whole-file CRC32, and firing the OnFileComplete callback.
+// recordArticleCRC accumulates CRC information for a successfully written article.
+func (a *Assembler) recordArticleCRC(f *openFile, req WriteRequest) {
+	if req.CRC != 0 {
+		f.crcParts = append(f.crcParts, crcPart{
+			offset: req.Offset,
+			crc:    req.CRC,
+			len:    int64(len(req.Data)),
+		})
+	} else if len(req.Data) > 0 {
+		f.crcValid = false
+	}
+}
+
 func (a *Assembler) finalizeFile(f *openFile, key fileKey, req WriteRequest, open map[fileKey]*openFile, completed map[fileKey]struct{}, wc *writeCache) {
 	// Drain any remaining cached articles for this file before close.
 	a.drainCacheForFile(wc, f, key)
@@ -960,26 +945,12 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 		telemetry.CacheHits.Add(1)
 		// Article buffered. Check for a flushable contiguous run.
 		if run := wc.flushContiguous(key); run != nil {
-			telemetry.CacheFlushes.Add(1)
-			telemetry.CacheFlushBytes.Add(int64(len(run.data)))
-			telemetry.DiskWrites.Add(1)
-			telemetry.DiskWriteBytes.Add(int64(len(run.data)))
-			if _, err := f.handle.WriteAt(run.data, run.offset); err != nil {
-				a.log.Error("write coalesced run",
-					"path", f.info.Path,
-					"offset", run.offset,
-					"bytes", len(run.data),
-					"error", err,
-				)
+			if !a.flushRun(f, run) {
 				return false
 			}
 			a.pendingCursor[key] = wc.cursorFor(key)
 		}
-		// Relieve memory pressure if needed.
-		for wc.pressure() {
-			telemetry.CachePressureFlushes.Add(1)
-			a.flushPressure(wc, open)
-		}
+		a.relievePressure(wc, open)
 		return true
 	}
 	// Caching disabled — write directly.
@@ -1002,9 +973,33 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 	return true
 }
 
-// writeCachedArticles writes a batch of buffered articles to the given
-// open file. Errors are logged but do not stop the loop — partial
-// writes are better than skipping data entirely.
+// flushRun writes a coalesced run to the target file and records telemetry.
+// Returns true on success, false on I/O error.
+func (a *Assembler) flushRun(f *openFile, run *flushRun) bool {
+	telemetry.CacheFlushes.Add(1)
+	telemetry.CacheFlushBytes.Add(int64(len(run.data)))
+	telemetry.DiskWrites.Add(1)
+	telemetry.DiskWriteBytes.Add(int64(len(run.data)))
+	if _, err := f.handle.WriteAt(run.data, run.offset); err != nil {
+		a.log.Error("write coalesced run",
+			"path", f.info.Path,
+			"offset", run.offset,
+			"bytes", len(run.data),
+			"error", err,
+		)
+		return false
+	}
+	return true
+}
+
+// relievePressure force-flushes the largest cached files until memory usage drops below the pressure threshold.
+func (a *Assembler) relievePressure(wc *writeCache, open map[fileKey]*openFile) {
+	for wc.pressure() {
+		telemetry.CachePressureFlushes.Add(1)
+		a.flushPressure(wc, open)
+	}
+}
+
 func (a *Assembler) writeCachedArticles(f *openFile, arts []bufferedArticle, reason string) {
 	for _, art := range arts {
 		// Each drained article is its own WriteAt syscall (drains are not

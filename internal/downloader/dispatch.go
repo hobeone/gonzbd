@@ -281,8 +281,34 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 		return true, req
 	}
 
-	// TopOnly: find the minimum (most preferred) server priority so we
-	// can skip backup servers when enabled.
+	srv, idx := d.selectServerForArticle(mask, hasTried, opts)
+	if srv != nil {
+		ch, ok := d.workCh[srv.Cfg().Name]
+		if ok {
+			select {
+			case ch <- req:
+				mask.set(idx)
+				d.tracker.SetTriedLocked(key, mask)
+				d.tracker.IncrementInFlightLocked(key)
+				return true, nil
+			default:
+				// server queue filled between selectServerForArticle and ch <- req
+			}
+		}
+		return false, nil
+	}
+	if idx == -1 {
+		d.log.Warn("article failed on all servers", "msgid", a.MessageID, "job", a.JobID)
+		return true, req
+	}
+	return false, nil
+}
+
+// selectServerForArticle scans servers for the first eligible candidate with an available work slot.
+// Returns (srv, idx) if a server can accept the article right now.
+// Returns (nil, -1) if no eligible server exists and all enabled servers have been definitively tried (exhausted).
+// Returns (nil, -2) if no server can accept right now (e.g. queues full or temporarily penalized).
+func (d *Downloader) selectServerForArticle(mask serverMask, hasTried bool, opts dispatchOpts) (srv *Server, serverIdx int) {
 	var minPriority int
 	if opts.topOnly {
 		minPriority = getMinServerPriority(opts.serverCfgs)
@@ -295,11 +321,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 		if !isServerCandidate(cfg, mask, hasTried, idx, opts.topOnly, minPriority) {
 			continue
 		}
-		// This server hasn't been tried yet.
 		if !srv.Active(opts.now) {
-			// Server is penalized/inactive but not yet tried.
-			// Don't declare the article permanently failed — the
-			// penalty will expire and we'll get another chance.
 			allTried = false
 			continue
 		}
@@ -308,36 +330,17 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 		if !ok {
 			continue
 		}
-		select {
-		case ch <- req:
-			mask.set(idx)
-			d.tracker.SetTriedLocked(key, mask)
-			d.tracker.IncrementInFlightLocked(key)
-			return true, nil
-		default:
-			// server's queue is full; try next server
+		if len(ch) < cap(ch) {
+			return srv, idx
 		}
 	}
 
-	// If we found no eligible servers to even try (all are in the
-	// tryList), this article is permanently failed for this session.
-	// Return the req so dispatchPass can emit ErrNoServersLeft after
-	// locks are released.
-	//
-	// Crucially: only declare exhausted when all enabled servers have
-	// been definitively tried (allTried). If some servers are merely
-	// penalized (allTried=false), the article should wait for penalty
-	// expiry rather than being permanently failed.
 	if !anyEligible && allTried {
-		d.log.Warn("article failed on all servers", "msgid", a.MessageID, "job", a.JobID)
-		return true, req
+		return nil, -1
 	}
-
-	return false, nil
+	return nil, -2
 }
 
-// getMinServerPriority calculates the minimum (most preferred) priority
-// among all enabled servers.
 func getMinServerPriority(serverCfgs []config.ServerConfig) int {
 	minPriority := -1
 	for idx := range serverCfgs {
@@ -433,15 +436,29 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 // emission. The *nntp.Conn pointer is passed by reference so the
 // function can replace it with nil on connection-level failure
 // (forcing a re-dial on the next call).
+// handleRequest is the per-article workhorse. It owns the
+// bookkeeping for try-lists, penalty application, and success/error
+// emission. The *nntp.Conn pointer is passed by reference so the
+// function can replace it with nil on connection-level failure
+// (forcing a re-dial on the next call).
 func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx int, mc *managedConn, req *articleRequest, workerID string) {
 	d.setConnActivity(workerID, req)
 	defer d.clearConnActivity(workerID)
 	defer d.signalDispatch()
 	defer d.clearInFlight(req.jobID, req.messageID)
 
-	// Snapshot the current pause context. If Pause() is called while
-	// we're mid-Fetch, this context gets cancelled immediately,
-	// aborting the TCP read.
+	body, ok := d.fetchArticle(ctx, srv, serverIdx, mc, req, workerID)
+	if !ok {
+		return
+	}
+
+	d.processFetchedArticle(ctx, srv, req, body)
+}
+
+// fetchArticle performs network I/O and penalty tracking for a single article request.
+// Returns (body, true) if the article payload was successfully fetched.
+// Returns (nil, false) if the request was handled via pause/retry/error emission.
+func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx int, mc *managedConn, req *articleRequest, workerID string) ([]byte, bool) {
 	d.pauseMu.RLock()
 	fetchCtx := d.pauseCtx
 	d.pauseMu.RUnlock()
@@ -454,7 +471,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 	if status, err := d.queue.GetJobStatus(req.jobID); err == nil && status == constants.StatusPaused {
 		d.unmarkTried(req.jobID, req.messageID, serverIdx)
 		_ = d.queue.ClearArticleEmitted(req.jobID, req.messageID)
-		return
+		return nil, false
 	}
 
 	// Global pause check: same as above but for app-wide pause.
@@ -463,7 +480,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 	if d.paused.Load() || d.queue.IsPaused() {
 		d.unmarkTried(req.jobID, req.messageID, serverIdx)
 		_ = d.queue.ClearArticleEmitted(req.jobID, req.messageID)
-		return
+		return nil, false
 	}
 
 	c, err := mc.Get(fetchCtx, d, srv, workerID)
@@ -474,13 +491,13 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 			// dispatch pool silently. The deferred signalDispatch
 			// triggers a new pass where it can be tried on another
 			// server or wait for this server's penalty to expire.
-			return
+			return nil, false
 		}
 		if fetchCtx.Err() != nil {
 			// Context cancelled = shutdown or pause. Silently
 			// return; the article will be re-dispatched after
 			// the reload/unpause via ClearAllEmitted.
-			return
+			return nil, false
 		}
 		d.log.Warn("dial failed", "server", name, "error", err)
 		srv.RecordBadConnection()
@@ -488,7 +505,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 			d.log.Info("penalty applied", "server", name, "duration", pen)
 			srv.ApplyPenalty(pen)
 		}
-		return
+		return nil, false
 	}
 
 	body, err := c.Fetch(fetchCtx, req.messageID)
@@ -500,7 +517,7 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 			// healthy — reuse it.
 			srv.RecordGoodConnection()
 			d.emitResult(ctx, req, name, nil, 0, 0, err)
-			return
+			return nil, false
 		}
 		// Connection-level failure: tear down, re-dial later.
 		d.log.Warn("fetch failed", "server", name, "msgid", req.messageID, "error", err)
@@ -523,12 +540,17 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 		// server or this one after penalty expiry. Emitting would
 		// risk the pipeline misclassifying the error and inflating
 		// FailedBytes for what is a transient server issue.
-		return
+		return nil, false
 	}
 
 	srv.RecordGoodConnection()
 	d.log.Debug("fetched", "server", name, "msgid", req.messageID, "bytes", len(body))
+	return body, true
+}
 
+// processFetchedArticle decodes an article payload, verifies CRC, and emits the final queue result.
+func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req *articleRequest, body []byte) {
+	name := srv.Cfg().Name
 	// Decoding (Step 3: Parallelize Decoding): Decode article payload
 	// directly in the connection goroutine to utilize all CPU cores.
 	decodedData, offset, partCRC, err := decodePayload(body)
@@ -573,10 +595,6 @@ func (d *Downloader) handleRequest(ctx context.Context, srv *Server, serverIdx i
 	d.emitResult(ctx, req, name, decodedData, offset, partCRC, nil)
 }
 
-// emitResult publishes an ArticleResult on the completions channel.
-// Blocks until the consumer reads or ctx fires; the signalDispatch
-// in handleRequest's defer ensures the dispatcher wakes up regardless
-// of outcome.
 func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server string, data []byte, offset int64, crc uint32, err error) {
 	res := &ArticleResult{
 		JobID:      req.jobID,
