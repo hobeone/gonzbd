@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -40,7 +41,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 			{Subject: "data.bin", AssembledCRC32: 0x1068AFA6, Bytes: 100},
 			deferredVol,
 		}
-		if got, _ := par2NeedsRecovery(dir, files, log); got {
+		if got, _ := par2NeedsRecovery(dir, files, log, par2.DefaultParseOptions()); got {
 			t.Error("clean download must NOT trigger recovery-volume download")
 		}
 	})
@@ -49,7 +50,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir)
 		files := []queue.JobFile{{Subject: "data.bin", AssembledCRC32: 0xDEADBEEF}, deferredVol}
-		if got, reason := par2NeedsRecovery(dir, files, log); !got {
+		if got, reason := par2NeedsRecovery(dir, files, log, par2.DefaultParseOptions()); !got {
 			t.Error("corrupt file (CRC mismatch) must trigger recovery")
 		} else if !strings.Contains(reason, "corruption/CRC mismatch") {
 			t.Errorf("expected CRC mismatch reason, got: %q", reason)
@@ -60,7 +61,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir)
 		files := []queue.JobFile{{Subject: "data.bin", AssembledCRC32: 0}, deferredVol}
-		if got, reason := par2NeedsRecovery(dir, files, log); !got {
+		if got, reason := par2NeedsRecovery(dir, files, log, par2.DefaultParseOptions()); !got {
 			t.Error("par2-tracked file with no CRC must trigger recovery")
 		} else if !strings.Contains(reason, "failed download") {
 			t.Errorf("expected failed download reason, got: %q", reason)
@@ -70,7 +71,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 	t.Run("missing par2 index falls back to fetching recovery", func(t *testing.T) {
 		dir := t.TempDir() // empty — no par2 index on disk
 		files := []queue.JobFile{{Subject: "data.bin", AssembledCRC32: 0x1068AFA6}}
-		if got, reason := par2NeedsRecovery(dir, files, log); !got {
+		if got, reason := par2NeedsRecovery(dir, files, log, par2.DefaultParseOptions()); !got {
 			t.Error("no usable par2 index must fall back to fetching recovery volumes")
 		} else if !strings.Contains(reason, "no usable par2 index found") {
 			t.Errorf("expected missing index reason, got: %q", reason)
@@ -84,7 +85,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 			{Subject: "other.bin", AssembledCRC32: 0x99999999, Bytes: 100},
 			deferredVol,
 		}
-		if got, _ := par2NeedsRecovery(dir, files, log); got {
+		if got, _ := par2NeedsRecovery(dir, files, log, par2.DefaultParseOptions()); got {
 			t.Error("par2 protecting different files must NOT trigger recovery-volume download")
 		}
 	})

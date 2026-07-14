@@ -830,11 +830,13 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 		return false
 	}
 	var downloadDir string
+	var parseOpts par2.ParseOptions
 	app.config.WithRead(func(c *config.Config) {
 		downloadDir = c.General.DownloadDir
+		parseOpts = par2.ParseOptionsFromConfig(&c.PostProc)
 	})
 	dir := filepath.Join(downloadDir, snap.Name)
-	needsRecovery, reason := par2NeedsRecovery(dir, snap.Files, app.log)
+	needsRecovery, reason := par2NeedsRecovery(dir, snap.Files, app.log, parseOpts)
 	if !needsRecovery {
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
 		_ = app.queue.DiscardDeferredPar2(jobID)
@@ -861,8 +863,8 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 // download (NoCRC), or could not be matched (Unverified). When no usable par2
 // index is on disk (e.g. the index itself failed to download), it returns true
 // so the recovery volumes are fetched — the safe, today's-behaviour fallback.
-func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger) (needsRecovery bool, reason string) {
-	sets, err := par2.FindPar2Files(dir)
+func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger, parseOpts par2.ParseOptions) (needsRecovery bool, reason string) {
+	sets, err := par2.FindPar2Files(dir, parseOpts)
 	if err != nil || len(sets) == 0 {
 		reason := "no usable par2 index found to verify against"
 		if err != nil {
@@ -884,7 +886,7 @@ func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger) (nee
 			FileSize: jf.Bytes,
 		}
 	}
-	r := par2.VerifyCRCs(assembled, sets, log)
+	r := par2.VerifyCRCsWithOptions(assembled, sets, log, parseOpts)
 
 	// If none of our downloaded/assembled files are tracked by the PAR2 set,
 	// then the PAR2 set protects the extracted contents (Layout B)

@@ -12,6 +12,8 @@ import (
 type QuickCheckStage struct {
 	// toggle provides the thread-safe SetEnabled/enabled flag.
 	toggle
+	// ParseOpts defines safety limits for PAR2 parsing.
+	ParseOpts par2.ParseOptions
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
@@ -41,7 +43,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 
 	logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Scanning for par2 files in %s", job.DownloadDir)
 
-	sets, err := par2.FindPar2Files(job.DownloadDir)
+	sets, err := par2.FindPar2Files(job.DownloadDir, q.ParseOpts)
 	if err != nil {
 		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Failed to find par2 files: %v", err)
 		return nil // non-fatal
@@ -53,7 +55,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 
 	logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Found %d par2 set(s), checking for subdirectory entries", len(sets))
 
-	renames, err := par2.QuickCheck(job.DownloadDir, sets, log)
+	renames, err := par2.QuickCheckWithOptions(job.DownloadDir, sets, log, q.ParseOpts)
 	if err != nil {
 		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Error: %v", err)
 		return nil // non-fatal
@@ -92,7 +94,7 @@ func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, j
 		})
 	}
 
-	crcResult := par2.VerifyCRCs(assembledFiles, sets, log)
+	crcResult := par2.VerifyCRCsWithOptions(assembledFiles, sets, log, q.ParseOpts)
 	unverifiable := crcResult.NoCRC + crcResult.Unverified + crcResult.Mismatched
 
 	if crcResult.Checked > 0 {

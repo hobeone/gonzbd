@@ -106,6 +106,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	var cleanupExtensions []string
 	var flatUnpack, overwriteFiles, ignoreUnrarDates, useGoRAR, goRarFallback, useGo7z, go7zFallback, strictSandbox bool
 
+	var par2ParseOpts par2.ParseOptions
 	cfg.WithRead(func(c *config.Config) {
 		enableQuickCheck = c.PostProc.EnableQuickCheck
 		par2Command = c.PostProc.Par2Command
@@ -144,6 +145,8 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 		go7zFallback = c.PostProc.Go7zFallback
 		strictSandbox = c.PostProc.StrictSandbox
 
+		par2ParseOpts = par2.ParseOptionsFromConfig(&c.PostProc)
+
 		apiKey = c.General.APIKey
 		listenAddr = net.JoinHostPort(c.General.Host, strconv.Itoa(c.General.Port))
 	})
@@ -154,6 +157,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	// Application.SetQuickCheckEnabled without restarting.
 	qcStage := postproc.NewQuickCheckStage()
 	qcStage.Log = ppLog
+	qcStage.ParseOpts = par2ParseOpts
 	qcStage.SetEnabled(enableQuickCheck)
 	stages = append(stages, qcStage)
 
@@ -186,6 +190,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 		},
 	)
 	repairStage.Log = ppLog
+	repairStage.ParseOpts = par2ParseOpts
 	repairStage.UseGoPar2 = useGoPar2
 	repairStage.GoPar2Fallback = goPar2Fallback
 	stages = append(stages, repairStage)
@@ -244,6 +249,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	// unpack success so par2 files survive for debugging when things fail.
 	par2CleanupStage := postproc.NewPar2CleanupStage(enableParCleanup)
 	par2CleanupStage.Log = ppLog
+	par2CleanupStage.ParseOpts = par2ParseOpts
 	stages = append(stages, par2CleanupStage)
 
 	// Deobfuscation stage.

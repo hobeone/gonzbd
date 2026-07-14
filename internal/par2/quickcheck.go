@@ -35,12 +35,21 @@ type Rename struct {
 //
 // Errors during individual renames are logged but don't abort — par2 repair
 // will report any still-missing files.
-func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
+func QuickCheck(dir string, sets []Set, log *slog.Logger, opts ...ParseOptions) ([]Rename, error) {
+	parseOpts := DefaultParseOptions()
+	if len(opts) > 0 {
+		parseOpts = opts[0]
+	}
+	return QuickCheckWithOptions(dir, sets, log, parseOpts)
+}
+
+// QuickCheckWithOptions performs QuickCheck matching using caller-specified ParseOptions.
+func QuickCheckWithOptions(dir string, sets []Set, log *slog.Logger, opts ParseOptions) ([]Rename, error) {
 	if log == nil {
 		log = slog.Default()
 	}
 
-	manifest := collectManifests(sets, log)
+	manifest := collectManifestsWithOptions(sets, log, opts)
 	if len(manifest) == 0 {
 		log.Info("quickcheck: no file descriptions found in any par2 set")
 		return nil, nil
@@ -83,6 +92,10 @@ func QuickCheck(dir string, sets []Set, log *slog.Logger) ([]Rename, error) {
 }
 
 func collectManifests(sets []Set, log *slog.Logger) []FileDesc {
+	return collectManifestsWithOptions(sets, log, DefaultParseOptions())
+}
+
+func collectManifestsWithOptions(sets []Set, log *slog.Logger, opts ParseOptions) []FileDesc {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -96,7 +109,7 @@ func collectManifests(sets []Set, log *slog.Logger) []FileDesc {
 		}
 		log.Info("quickcheck: parsing par2 manifest",
 			"file", filepath.Base(parFile))
-		descs, err := ParseFileDescriptions(parFile)
+		descs, err := ParseFileDescriptionsWithOptions(parFile, opts)
 		if err != nil {
 			log.Warn("quickcheck: failed to parse par2 file",
 				"file", filepath.Base(parFile), "err", err)
