@@ -47,6 +47,12 @@ func TestDefaultIsValid(t *testing.T) {
 	if cfg.Downloads.MinFreeSpace != ByteSize(1024*constants.MiB) {
 		t.Errorf("MinFreeSpace = %d, want %d", cfg.Downloads.MinFreeSpace, 1024*constants.MiB)
 	}
+	if cfg.PostProc.Par2MaxPacketBodySize != 67108864 {
+		t.Errorf("Par2MaxPacketBodySize = %d, want %d", cfg.PostProc.Par2MaxPacketBodySize, 67108864)
+	}
+	if cfg.PostProc.Par2MaxJunkScanBytes != 65536 {
+		t.Errorf("Par2MaxJunkScanBytes = %d, want %d", cfg.PostProc.Par2MaxJunkScanBytes, 65536)
+	}
 }
 
 func TestDefaultStrictSandbox(t *testing.T) {

@@ -189,6 +189,13 @@ func (d *DownloadConfig) validate() error {
 	return errors.Join(errs...)
 }
 
+const (
+	// MinPar2PacketBodySize is the minimum allowed non-zero value for Par2MaxPacketBodySize (64 KiB).
+	MinPar2PacketBodySize uint64 = 65536
+	// MinPar2JunkScanBytes is the minimum allowed non-zero value for Par2MaxJunkScanBytes (1 KiB).
+	MinPar2JunkScanBytes int64 = 1024
+)
+
 func (p *PostProcConfig) validate() error {
 	return p.validateWithOS(runtime.GOOS)
 }
@@ -198,6 +205,13 @@ func (p *PostProcConfig) validateWithOS(goos string) error {
 
 	if p.StrictSandbox && goos != "linux" {
 		errs = append(errs, fmt.Errorf("strict_sandbox is not supported on %s (only linux); disable strict_sandbox or run on linux", goos))
+	}
+
+	if p.Par2MaxPacketBodySize != 0 && p.Par2MaxPacketBodySize < MinPar2PacketBodySize {
+		errs = append(errs, fmt.Errorf("par2_max_packet_body_size (%d) must be at least %d bytes (64 KiB)", p.Par2MaxPacketBodySize, MinPar2PacketBodySize))
+	}
+	if p.Par2MaxJunkScanBytes != 0 && p.Par2MaxJunkScanBytes < MinPar2JunkScanBytes {
+		errs = append(errs, fmt.Errorf("par2_max_junk_scan_bytes (%d) must be at least %d bytes (1 KiB)", p.Par2MaxJunkScanBytes, MinPar2JunkScanBytes))
 	}
 
 	// Permissions must be valid 3- or 4-digit octal if set.
