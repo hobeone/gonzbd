@@ -169,12 +169,10 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	if err != nil {
 		return builtStages{}, fmt.Errorf("extra_unrar_params: %w", err)
 	}
-	// N5: Validate extra unrar params against SABnzbd's allowlist.
-	// Warn instead of hard-fail so existing configs aren't broken.
+	// Sanity assert: extra unrar params must conform to SABnzbd's allowlist
+	// (enforced at config load and mutation boundaries via Validate()).
 	if err := cmdutil.ValidateUnrarParams(extraUnrarArgs); err != nil {
-		ppLog.Warn("extra_unrar_params contains non-standard flags",
-			"err", err,
-			"hint", "SABnzbd only allows: -mlp, -om*, -ri*")
+		return builtStages{}, fmt.Errorf("extra_unrar_params: %w", err)
 	}
 
 	// Repair stage.
