@@ -3,7 +3,6 @@ package api
 import (
 	"crypto/subtle"
 	"net/http"
-	"strings"
 )
 
 // modeEntry binds a handler function to its required access level.
@@ -27,9 +26,6 @@ type modeTable map[string]modeEntry
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	mode := r.URL.Query().Get("mode")
 	if mode == "" && r.Method == http.MethodPost {
-		// Fall back to the POST form body. For multipart uploads
-		// ParseMultipartForm reads the body under MaxBytesReader's
-		// limit. For url-encoded forms, ParseForm is lightweight.
 		mode = formValue(r, "mode")
 	}
 	if mode == "" {
@@ -66,34 +62,6 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entry.handler(w, r)
-}
-
-// formValue extracts a non-file form field from a POST request body.
-// It handles both url-encoded and multipart/form-data content types.
-// Unlike r.FormValue(), it does not fall back to query parameters
-// (the caller handles that separately) and uses our controlled memory
-// limits for multipart parsing.
-func formValue(r *http.Request, key string) string {
-	ct := r.Header.Get("Content-Type")
-	if strings.HasPrefix(ct, "multipart/form-data") {
-		// Parse multipart with our limit. If already parsed,
-		// ParseMultipartForm is a no-op.
-		const maxMem = 10 * 1024 * 1024 // 10 MiB
-		if err := r.ParseMultipartForm(maxMem); err != nil {
-			return ""
-		}
-		if r.MultipartForm != nil {
-			if vs := r.MultipartForm.Value[key]; len(vs) > 0 {
-				return vs[0]
-			}
-		}
-		return ""
-	}
-	// URL-encoded form body — ParseForm handles this.
-	if err := r.ParseForm(); err != nil {
-		return ""
-	}
-	return r.PostFormValue(key)
 }
 
 // registerModes populates the mode dispatch table with the built-in

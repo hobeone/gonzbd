@@ -6,8 +6,7 @@ import (
 
 // modePause pauses all downloads.
 func (s *Server) modePause(w http.ResponseWriter, r *http.Request) {
-	if s.queue == nil {
-		s.respondError(w, http.StatusInternalServerError, "queue not wired")
+	if !s.requireQueue(w) {
 		return
 	}
 
@@ -21,8 +20,7 @@ func (s *Server) modePause(w http.ResponseWriter, r *http.Request) {
 
 // modeResume resumes all downloads.
 func (s *Server) modeResume(w http.ResponseWriter, r *http.Request) {
-	if s.queue == nil {
-		s.respondError(w, http.StatusInternalServerError, "queue not wired")
+	if !s.requireQueue(w) {
 		return
 	}
 
@@ -57,8 +55,7 @@ func (s *Server) modeRestart(w http.ResponseWriter, r *http.Request) {
 // modeDisconnect disconnects all idle NNTP connections. Workers stay alive
 // and will re-dial lazily when new work arrives.
 func (s *Server) modeDisconnect(w http.ResponseWriter, r *http.Request) {
-	if s.app == nil {
-		s.respondError(w, http.StatusInternalServerError, "app not wired")
+	if !s.requireApp(w) {
 		return
 	}
 	s.app.DisconnectAll()
