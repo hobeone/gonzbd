@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -776,4 +777,59 @@ func TestFetchEntriesByIDs_Internal(t *testing.T) {
 			t.Errorf("search for 'macOS' expected 0 results, got %v", got)
 		}
 	})
+}
+
+type removeHistoryErrApp struct {
+	apitest.NopApp
+	errByID map[string]error
+}
+
+func (a removeHistoryErrApp) RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error {
+	if err, ok := a.errByID[id]; ok && err != nil {
+		return err
+	}
+	return a.NopApp.RemoveHistoryJob(ctx, id, deleteFiles)
+}
+
+func TestHistoryDelete_RemoveHistoryJobErrorLog(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "hist.db")
+	db, err := history.Open(t.Context(), dbPath)
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+
+	rec := &recordHandler{}
+	logger := slog.New(rec)
+	s := New(Options{
+		Logger:  logger,
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+		Version: "1.0.0-test",
+		History: repo,
+		App: removeHistoryErrApp{
+			NopApp:  apitest.NopApp{History: repo},
+			errByID: map[string]error{"hist_fail": errors.New("simulated history delete failure")},
+		},
+	})
+
+	id1 := seedEntry(t, repo, "ToKeepOrDelete", "Completed", "tv", time.Now())
+	value := id1 + ",hist_fail"
+
+	rr := apiGet(t, s.Handler(), "/api?mode=history&name=delete&value="+value+"&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	m := decodeJSON(t, rr)
+	if m["status"] != true {
+		t.Errorf("status = %v; want true", m["status"])
+	}
+	if deleted, ok := m["deleted"].(float64); !ok || deleted != 1 {
+		t.Errorf("deleted = %v; want 1", m["deleted"])
+	}
+
+	if !rec.hasWarn("failed to remove job during bulk delete", "hist_fail", "simulated history delete failure") {
+		t.Errorf("expected warning log not found in records: %v", rec.records)
+	}
 }

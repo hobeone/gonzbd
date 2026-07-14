@@ -91,7 +91,7 @@ func TestModeConfig_Speedlimit_SaveError(t *testing.T) {
 		t.Fatalf("Default(): %v", err)
 	}
 	s := testServerWithConfig(t, cfg)
-	s.app = NopApp{}
+	s.app = apitest.NopApp{}
 	s.configPath = "/dev/null/impossible/gonzbd.yaml"
 
 	rr := apiGet(t, s.Handler(), "/api?mode=config&name=speedlimit&value=500&apikey="+testAPIKey)
