@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"testing"
+	"unsafe"
 )
 
 // yencEncode produces a well-formed single-part yEnc article from raw data.
@@ -930,34 +931,35 @@ func TestDecodeArticle_ExtraLinesAfterYend(t *testing.T) {
 func TestDecodeBody_Preallocation(t *testing.T) {
 	encoded := []byte("12345") // 5 bytes
 
-	// Case 1: sizeHint <= 0 (e.g., 0) -> should preallocate to maxCap = len(encoded) = 5
-	out, _ := decodeBody(encoded, 0)
-	if cap(out) != 5 {
-		t.Errorf("For sizeHint=0, expected capacity 5, got %d", cap(out))
+	// Case 1: sizeHint <= 0 (e.g., 0) -> should preallocate to at least maxCap = len(encoded) = 5
+	out, _ := decodeBody(encoded, 0, nil)
+	if cap(out) < 5 {
+		t.Errorf("For sizeHint=0, expected capacity >= 5, got %d", cap(out))
 	}
 
-	// Case 2: sizeHint > maxCap (e.g., 100) -> should cap to maxCap = 5
-	out2, _ := decodeBody(encoded, 100)
+	// Case 2: sizeHint > maxCap (e.g., 100) -> when passing exact scratch, capacity should be capped to 5
+	scratch := make([]byte, 0, 5)
+	out2, _ := decodeBody(encoded, 100, scratch)
 	if cap(out2) != 5 {
-		t.Errorf("For sizeHint=100, expected capacity 5, got %d", cap(out2))
+		t.Errorf("For sizeHint=100 with scratch cap 5, expected capacity 5, got %d", cap(out2))
 	}
 
 	// Case 3: sizeHint is valid (e.g., 5)
-	out3, _ := decodeBody(encoded, 5)
+	out3, _ := decodeBody(encoded, 5, scratch)
 	if cap(out3) != 5 {
 		t.Errorf("For sizeHint=5, expected capacity 5, got %d", cap(out3))
 	}
 
-	// Case 4: sizeHint > maxCap (negation test, e.g. 6) -> should cap to maxCap = 5
-	out4, _ := decodeBody(encoded, 6)
+	// Case 4: sizeHint > maxCap (negation test, e.g. 6) -> should cap to maxCap = 5 when using exact scratch
+	out4, _ := decodeBody(encoded, 6, scratch)
 	if cap(out4) != 5 {
 		t.Errorf("For sizeHint=6, expected capacity 5, got %d", cap(out4))
 	}
 
-	// Case 5: sizeHint is negative (e.g., -5) -> should preallocate to maxCap = 5
-	out5, _ := decodeBody(encoded, -5)
-	if cap(out5) != 5 {
-		t.Errorf("For sizeHint=-5, expected capacity 5, got %d", cap(out5))
+	// Case 5: sizeHint is negative (e.g., -5) -> should preallocate to at least maxCap = 5
+	out5, _ := decodeBody(encoded, -5, nil)
+	if cap(out5) < 5 {
+		t.Errorf("For sizeHint=-5, expected capacity >= 5, got %d", cap(out5))
 	}
 }
 
@@ -1022,4 +1024,63 @@ func TestDecodeUU_AtMaxSize(t *testing.T) {
 	if errors.Is(err, ErrBodyTooLarge) {
 		t.Errorf("DecodeUU(body of exactly maxDecodeSize) should not return ErrBodyTooLarge")
 	}
+}
+
+func TestDecodeArticleBuf_ScratchReuse(t *testing.T) {
+	raw := makeRaw(1000)
+	article := yencEncode("test.bin", raw)
+
+	scratch := make([]byte, 0, 2000)
+	art, err := DecodeArticleBuf(article, scratch)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(art.Data, raw) {
+		t.Errorf("decoded data does not match original")
+	}
+	if unsafe.SliceData(art.Data) != unsafe.SliceData(scratch) {
+		t.Errorf("expected art.Data to reuse scratch buffer backing array")
+	}
+}
+
+func TestDecodeUUBuf_ScratchReuse(t *testing.T) {
+	body := []byte("begin 644 test.txt\n#0V%T\n`\nend\n")
+	scratch := make([]byte, 0, 100)
+	data, filename, err := DecodeUUBuf(body, scratch)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if filename != "test.txt" {
+		t.Errorf("filename = %q, want test.txt", filename)
+	}
+	if string(data) != "Cat" {
+		t.Errorf("data = %q, want Cat", string(data))
+	}
+	if len(data) > 0 && unsafe.SliceData(data) != unsafe.SliceData(scratch) {
+		t.Errorf("expected data to reuse scratch buffer backing array")
+	}
+}
+
+func TestDecodePool_GetPut(t *testing.T) {
+	buf := GetBuffer(1024)
+	if cap(buf) < 1024 {
+		t.Fatalf("expected cap >= 1024, got %d", cap(buf))
+	}
+	if len(buf) != 0 {
+		t.Fatalf("expected len == 0, got %d", len(buf))
+	}
+	buf = append(buf, []byte("hello")...)
+	PutBuffer(buf)
+
+	buf2 := GetBuffer(1024)
+	if len(buf2) != 0 {
+		t.Fatalf("expected len == 0 after pool recycling, got %d", len(buf2))
+	}
+	PutBuffer(buf2)
+
+	zeroCap := make([]byte, 0)
+	PutBuffer(zeroCap)
+
+	hugeBuf := make([]byte, 0, maxDecodeSize+1)
+	PutBuffer(hugeBuf)
 }

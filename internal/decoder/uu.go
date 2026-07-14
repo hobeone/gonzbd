@@ -27,6 +27,11 @@ var (
 // DecodeUU does not wire into DecodeArticle; the caller decides which format
 // to try (typically by checking whether DecodeArticle returns ErrNotYEnc).
 func DecodeUU(body []byte) (data []byte, filename string, err error) {
+	return DecodeUUBuf(body, nil)
+}
+
+// DecodeUUBuf decodes a UU-encoded article body using an optional scratch buffer.
+func DecodeUUBuf(body, scratch []byte) (data []byte, filename string, err error) {
 	// Guard against huge inputs from direct callers that bypass the
 	// NNTP layer's maxBodySize limit.
 	if len(body) > maxDecodeSize {
@@ -46,7 +51,13 @@ func DecodeUU(body []byte) (data []byte, filename string, err error) {
 	}
 	filename = parts[2]
 
-	out := make([]byte, 0, len(body)/4*3)
+	expectedCap := int64(len(body) / 4 * 3)
+	var out []byte
+	if scratch != nil && int64(cap(scratch)) >= expectedCap {
+		out = scratch[:0]
+	} else {
+		out = GetBuffer(expectedCap)
+	}
 
 	for {
 		line, rest, ok = bytes.Cut(rest, []byte("\n"))

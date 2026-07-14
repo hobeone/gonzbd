@@ -94,7 +94,7 @@ func BenchmarkDecodeBody_BestCase(b *testing.B) {
 	want := crc32.ChecksumIEEE(raw)
 	b.SetBytes(int64(len(encoded)))
 	for b.Loop() {
-		data, gotCRC := decodeBody(encoded, int64(len(raw)))
+		data, gotCRC := decodeBody(encoded, int64(len(raw)), nil)
 		if gotCRC != want {
 			b.Fatalf("CRC mismatch: 0x%08x != 0x%08x", gotCRC, want)
 		}
@@ -129,7 +129,7 @@ func BenchmarkDecodeBody_WorstCase(b *testing.B) {
 	want := crc32.ChecksumIEEE(raw)
 	b.SetBytes(int64(benchSize))
 	for b.Loop() {
-		data, gotCRC := decodeBody(encoded, int64(len(raw)))
+		data, gotCRC := decodeBody(encoded, int64(len(raw)), nil)
 		if gotCRC != want {
 			b.Fatalf("CRC mismatch: 0x%08x != 0x%08x", gotCRC, want)
 		}
@@ -154,6 +154,36 @@ func BenchmarkDecodeArticle_Small(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		art, err := DecodeArticle(benchSmall)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(art.Data) == 0 {
+			b.Fatal("empty result")
+		}
+	}
+}
+
+func BenchmarkDecodeArticleBuf_Small(b *testing.B) {
+	b.SetBytes(int64(smallBenchSize))
+	b.ReportAllocs()
+	scratch := make([]byte, 0, smallBenchSize+1024)
+	for b.Loop() {
+		art, err := DecodeArticleBuf(benchSmall, scratch)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(art.Data) == 0 {
+			b.Fatal("empty result")
+		}
+	}
+}
+
+func BenchmarkDecodeArticleBuf_BestCase(b *testing.B) {
+	b.SetBytes(int64(benchSize))
+	b.ReportAllocs()
+	scratch := make([]byte, 0, benchSize+1024)
+	for b.Loop() {
+		art, err := DecodeArticleBuf(benchBestCase, scratch)
 		if err != nil {
 			b.Fatal(err)
 		}
