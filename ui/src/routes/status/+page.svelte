@@ -113,7 +113,7 @@
 	function formatBytes(bytes: number): string {
 		if (bytes <= 0) return '0 B';
 		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-		const i = Math.floor(Math.log(bytes) / Math.log(1024));
+		const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
 		return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 	}
 </script>
@@ -128,9 +128,9 @@
 	<button
 		class="mb-4 rounded-full bg-m3-primary px-4 py-2 text-sm text-m3-on-primary"
 		onclick={refresh}
-		disabled={overviewLoading}
+		disabled={overviewLoading || updateCheckLoading}
 	>
-		{overviewLoading ? 'Refreshing...' : 'Refresh'}
+		{overviewLoading || updateCheckLoading ? 'Refreshing...' : 'Refresh'}
 	</button>
 
 	{#if overviewError}

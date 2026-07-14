@@ -347,5 +347,11 @@ describe('API Wrappers', () => {
 			expect(result.result.status).toBe('update_available');
 			expect(result.result.latest_version).toBe('v2.0.0');
 		});
+
+		it('rejects on a server error, letting callers fall back to unknown', async () => {
+			mockError(500, 'Internal Server Error');
+
+			await expect(fetchCheckUpdate()).rejects.toThrow();
+		});
 	});
 });
