@@ -224,7 +224,14 @@
 				<dd class="font-mono text-m3-on-surface">{overview.general.unrar.path || 'not found'} {overview.general.unrar.version}</dd>
 				<dt class="text-m3-on-surface/60">7-Zip</dt>
 				<dd class="font-mono text-m3-on-surface">{overview.general.sevenzip.path || 'not found'} {overview.general.sevenzip.version}</dd>
-				<dt class="text-m3-on-surface/60">Update</dt>
+				<dt class="flex items-center gap-1 text-m3-on-surface/60">
+					Update
+					<span
+						class="material-symbols-outlined cursor-help text-sm text-m3-on-surface/40"
+						title="Compares this build's version against the latest published GitHub Release for hobeone/gonzbd. Requires a version baked in at build time (git describe or -ldflags -X main.Version=...) and outbound network access to api.github.com; otherwise this shows 'unknown' with an explanation."
+						>help</span
+					>
+				</dt>
 				<dd>
 					{#if updateCheckLoading}
 						<span class="inline-flex items-center gap-1.5 text-xs text-m3-on-surface/60">
@@ -246,6 +253,9 @@
 						</span>
 					{:else}
 						<span class="text-m3-on-surface/60">unknown</span>
+						{#if updateCheck?.reason}
+							<span class="block text-xs text-m3-on-surface/40">{updateCheck.reason}</span>
+						{/if}
 					{/if}
 				</dd>
 			</dl>
