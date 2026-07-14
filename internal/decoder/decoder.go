@@ -19,6 +19,7 @@ import (
 	"hash/crc32"
 	"strconv"
 	"sync"
+	"unsafe"
 )
 
 // Sentinel errors returned by DecodeArticle.
@@ -187,7 +188,8 @@ func DecodeArticleBuf(body, scratch []byte) (Article, error) {
 
 	trailer, err := parseTrailer(trailerLine, hdr.isPart)
 	if err != nil {
-		if scratch == nil || len(decoded) == 0 || &decoded[0] != &scratch[0] {
+		//nolint:gosec // unsafe.SliceData is required to compare zero-length slice backing array pointers safely
+		if scratch == nil || unsafe.SliceData(decoded) != unsafe.SliceData(scratch) {
 			PutBuffer(decoded)
 		}
 		return Article{}, err
@@ -421,12 +423,17 @@ func parseTrailer(line []byte, isPart bool) (yencTrailer, error) {
 	}
 
 	trailer := yencTrailer{}
+	hasSize := false
+	var parseErr error
 	parseKeyValues(line, func(k, v string) {
 		switch k {
 		case "size":
 			n, err := strconv.ParseInt(v, 10, 64)
 			if err == nil {
 				trailer.size = n
+				hasSize = true
+			} else {
+				parseErr = errMalformed
 			}
 		case "crc32":
 			if !isPart {
@@ -434,6 +441,8 @@ func parseTrailer(line []byte, isPart bool) (yencTrailer, error) {
 				if err == nil {
 					trailer.crc = uint32(n)
 					trailer.valid = true
+				} else {
+					parseErr = errMalformed
 				}
 			}
 		case "pcrc32":
@@ -442,10 +451,19 @@ func parseTrailer(line []byte, isPart bool) (yencTrailer, error) {
 				if err == nil {
 					trailer.crc = uint32(n)
 					trailer.valid = true
+				} else {
+					parseErr = errMalformed
 				}
 			}
 		}
 	})
+
+	if parseErr != nil {
+		return yencTrailer{}, parseErr
+	}
+	if !hasSize {
+		return yencTrailer{}, errMalformed
+	}
 
 	return trailer, nil
 }
