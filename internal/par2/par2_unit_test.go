@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
 // ---------- parseStatus ----------
@@ -546,5 +548,25 @@ func TestTeeHandler_HandleAndEnabled(t *testing.T) {
 
 	if len(uiLogs) != 1 || uiLogs[0] != "WARN: Caution!" {
 		t.Errorf("expected formatted log in UI, got: %v", uiLogs)
+	}
+}
+
+func TestVerifyWith_MalformedPriorityArgs(t *testing.T) {
+	opts := RunOptions{
+		CmdCfg: cmdutil.CmdConfig{Nice: "-n 15; rm -rf /"},
+	}
+	_, err := verifyWith(context.Background(), opts, "test.par2")
+	if err == nil {
+		t.Error("expected error for malformed priority args in verifyWith, got nil")
+	}
+}
+
+func TestRepairWith_MalformedPriorityArgs(t *testing.T) {
+	opts := RunOptions{
+		CmdCfg: cmdutil.CmdConfig{Ionice: "-c2 | cat /etc/passwd"},
+	}
+	_, err := RepairWith(context.Background(), opts, "test.par2")
+	if err == nil {
+		t.Error("expected error for malformed priority args in RepairWith, got nil")
 	}
 }
