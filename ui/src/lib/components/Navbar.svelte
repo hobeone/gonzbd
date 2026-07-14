@@ -92,6 +92,16 @@
 			variant="ghost"
 			size="icon-sm"
 			class="text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface rounded-full transition-all"
+			href="/status"
+			title="Status"
+		>
+			<span class="material-symbols-outlined text-lg">monitor_heart</span>
+		</Button>
+
+		<Button
+			variant="ghost"
+			size="icon-sm"
+			class="text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface rounded-full transition-all"
 			onclick={() => (aboutOpen = true)}
 			title="About GoNZBD"
 		>

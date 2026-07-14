@@ -256,3 +256,47 @@ export interface TestDiskSpeedResult {
 export async function testDiskSpeed(): Promise<{ status: boolean; result: TestDiskSpeedResult }> {
 	return fetchJSON(apiUrl('status', { name: 'test_disk_speed' }));
 }
+
+export interface BuildDependency {
+	path: string;
+	version: string;
+}
+
+export interface BuildInfoResponse {
+	status: boolean;
+	version: string;
+	commit: string;
+	build_date: string;
+	go_version: string;
+	deps: BuildDependency[];
+}
+
+export async function fetchBuildInfo(): Promise<BuildInfoResponse> {
+	return fetchJSON<BuildInfoResponse>(apiUrl('status', { name: 'build_info' }));
+}
+
+export interface RedactedServerConfig {
+	name: string;
+	host: string;
+	port: number;
+	connections: number;
+	ssl: boolean;
+	ssl_verify: number;
+	ssl_ciphers: string;
+	priority: number;
+	required: boolean;
+	optional: boolean;
+	retention: number;
+	timeout: number;
+	pipelining_requests: number;
+	enable: boolean;
+}
+
+export interface RedactedConfig {
+	servers?: RedactedServerConfig[];
+	[key: string]: unknown;
+}
+
+export async function fetchRedactedConfig(): Promise<{ status: boolean; config: RedactedConfig }> {
+	return fetchJSON(apiUrl('status', { name: 'config' }));
+}
