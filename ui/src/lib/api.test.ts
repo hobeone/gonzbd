@@ -229,23 +229,28 @@ describe('API Wrappers', () => {
 	// ── postAction ────────────────────────────────────────
 
 	describe('postAction', () => {
-		it('sends GET with mode and params', async () => {
+		it('sends POST with mode and params', async () => {
 			mockOk({ status: true });
 			await postAction('pause');
 
-			const url = new URL(mockFetch.mock.calls[0][0], 'http://localhost');
-			expect(url.searchParams.get('mode')).toBe('pause');
-			expect(url.searchParams.get('output')).toBe('json');
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+			const [url, opts] = mockFetch.mock.calls[0];
+			const parsed = new URL(url, 'http://localhost');
+			expect(parsed.searchParams.get('mode')).toBe('pause');
+			expect(parsed.searchParams.get('output')).toBe('json');
+			expect(opts.method).toBe('POST');
 		});
 
 		it('includes additional params', async () => {
 			mockOk({ status: true });
 			await postAction('queue', { name: 'delete', value: 'abc123' });
 
-			const url = new URL(mockFetch.mock.calls[0][0], 'http://localhost');
-			expect(url.searchParams.get('mode')).toBe('queue');
-			expect(url.searchParams.get('name')).toBe('delete');
-			expect(url.searchParams.get('value')).toBe('abc123');
+			const [url, opts] = mockFetch.mock.calls[0];
+			const parsed = new URL(url, 'http://localhost');
+			expect(parsed.searchParams.get('mode')).toBe('queue');
+			expect(parsed.searchParams.get('name')).toBe('delete');
+			expect(parsed.searchParams.get('value')).toBe('abc123');
+			expect(opts.method).toBe('POST');
 		});
 	});
 

@@ -43,6 +43,18 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_, fromCookie := apiKeyFromRequest(r)
+	if fromCookie && r.Method != http.MethodPost {
+		name := r.URL.Query().Get("name")
+		if name == "" && r.Method == http.MethodPost {
+			name = formValue(r, "name")
+		}
+		if isStateChangingMode(mode, name) {
+			s.respondError(w, http.StatusMethodNotAllowed, "POST method required for state-changing endpoints when authenticated via cookie")
+			return
+		}
+	}
+
 	level := callerLevel(r, s.getAuth())
 	if level < entry.level {
 		if level == 0 {
