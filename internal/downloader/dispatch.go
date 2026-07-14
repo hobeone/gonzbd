@@ -92,9 +92,9 @@ func (d *Downloader) buildDispatchPlan(ctx context.Context, opts dispatchOpts) d
 	return plan
 }
 
-// allServersFull returns true when every active, enabled server has a full work
-// channel (len(ch) == cap(ch)). If true, further tryDispatch calls this pass
-// are guaranteed to skip every server, so buildDispatchPlan can early-exit.
+// allServersFull reports whether every active, enabled server has a full work channel.
+// If true, further tryDispatch calls during this pass are guaranteed to skip every server,
+// allowing buildDispatchPlan to early-exit.
 func (d *Downloader) allServersFull(serverCfgs []config.ServerConfig) bool {
 	now := time.Now()
 	hasActive := false

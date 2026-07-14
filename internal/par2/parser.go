@@ -83,13 +83,19 @@ const (
 	defaultMaxPacketBodySize uint64 = 67108864 // 64 * 1024 * 1024 (64 MiB)
 )
 
-// ParseOptions defines configurable limits for parsing PAR2 sets.
+// ParseOptions defines configurable safety and memory bounds for parsing PAR2 sets.
+// Zero values trigger standard safety defaults (64 KiB junk scan, 64 MiB max packet body size).
+// ParseOptions structs are immutable once constructed and safe for concurrent use across goroutines.
 type ParseOptions struct {
-	MaxJunkScanBytes  int64
+	// MaxJunkScanBytes is the maximum number of bytes to scan forward when looking for magic header signatures.
+	MaxJunkScanBytes int64
+
+	// MaxPacketBodySize is the maximum permitted allocation size in bytes for an individual PAR2 packet body.
 	MaxPacketBodySize uint64
 }
 
-// DefaultParseOptions returns standard safety limits for PAR2 parsing.
+// DefaultParseOptions returns standard safety limits for PAR2 parsing (64 KiB junk scan, 64 MiB packet size cap).
+// The returned ParseOptions struct is safe for concurrent use.
 func DefaultParseOptions() ParseOptions {
 	return ParseOptions{
 		MaxJunkScanBytes:  defaultMaxJunkScan,
@@ -98,11 +104,14 @@ func DefaultParseOptions() ParseOptions {
 }
 
 // ParsePar2Set reads path (a .par2 file) using default safety limits.
+// It returns a *ParsedSet containing file descriptions and verification hashes, or an error if the file
+// is unreadable, malformed, or exceeds standard packet allocation bounds.
 func ParsePar2Set(path string) (*ParsedSet, error) {
 	return ParsePar2SetWithOptions(path, DefaultParseOptions())
 }
 
-// ParsePar2SetWithOptions reads path (a .par2 file) with caller-specified limit options.
+// ParsePar2SetWithOptions reads path (a .par2 file) using caller-specified ParseOptions bounds.
+// It returns a *ParsedSet or an error if packet allocations exceed opts.MaxPacketBodySize or I/O fails.
 func ParsePar2SetWithOptions(path string, opts ParseOptions) (*ParsedSet, error) {
 	if opts.MaxJunkScanBytes <= 0 {
 		opts.MaxJunkScanBytes = defaultMaxJunkScan
