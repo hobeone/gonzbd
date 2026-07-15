@@ -16,8 +16,11 @@ import (
 // Returns an error if the embedded dist directory is missing (i.e. the
 // UI was not built before compiling).
 //
+// trustedFn gates issuance of the admin session cookie to trusted clients
+// only (see NewSPAHandler). Pass nil to always issue it (test-only).
+//
 // The handler is stateless and safe to serve concurrently.
-func Handler(apiKeyFn func() string) (http.Handler, error) {
+func Handler(apiKeyFn func() string, trustedFn func(*http.Request) bool) (http.Handler, error) {
 	dist, _ := fs.Sub(ui.DistFS, "dist")
-	return NewSPAHandler(dist, apiKeyFn), nil
+	return NewSPAHandler(dist, apiKeyFn, trustedFn), nil
 }

@@ -3,8 +3,11 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // ---------- isCrossOrigin ----------
@@ -296,7 +299,7 @@ func TestCallerLevel_ValidSessionKeyCookie(t *testing.T) {
 	t.Parallel()
 	cfg := AuthConfig{APIKey: "0123456789abcdef", SessionKey: "session000session000"}
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.RemoteAddr = "192.168.1.1:12345"
+	r.RemoteAddr = "127.0.0.1:12345" // loopback: trusted for cookie auth (SEC-1)
 	r.Host = "localhost:4289"
 	r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: "session000session000"})
 	if got := callerLevel(r, cfg); got != LevelAdmin {
@@ -313,7 +316,7 @@ func TestCallerLevel_CookieDoesNotAcceptAPIKey(t *testing.T) {
 	t.Parallel()
 	cfg := AuthConfig{APIKey: "0123456789abcdef", SessionKey: "session000session000"}
 	r := httptest.NewRequest("GET", "/api", nil)
-	r.RemoteAddr = "192.168.1.1:12345"
+	r.RemoteAddr = "127.0.0.1:12345" // loopback: trusted, so this asserts the key check, not the trust gate (SEC-1)
 	r.Host = "localhost:4289"
 	r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: "0123456789abcdef"})
 	if got := callerLevel(r, cfg); got != 0 {
@@ -436,4 +439,57 @@ func TestIsCrossOrigin_CookieStateChangingEmptyHeaders(t *testing.T) {
 	if !isCrossOrigin(r) {
 		t.Error("cookie-authenticated state-changing request with empty Origin and Referer MUST be cross-origin (fail closed)")
 	}
+}
+
+// TestCallerLevel_CookieTrustGate exercises the SEC-1 acceptance-side trust
+// gate through callerLevel: a valid session cookie authenticates as admin
+// only from a trusted source (loopback, or a configured TrustedRange, or a
+// verified X-Forwarded-For chain). Same-origin is assured via r.Host so the
+// isCrossOrigin gate never short-circuits the cases under test.
+func TestCallerLevel_CookieTrustGate(t *testing.T) {
+	t.Parallel()
+	const sess = "session000session000"
+	priv := mustPrefixes(t, "192.168.0.0/16")
+
+	tests := []struct {
+		name       string
+		remoteAddr string
+		xff        string
+		ranges     []netip.Prefix
+		verifyXFF  bool
+		want       AccessLevel
+	}{
+		{name: "loopback trusted by default", remoteAddr: "127.0.0.1:5000", want: LevelAdmin},
+		{name: "non-loopback untrusted by default", remoteAddr: "192.168.1.5:5000", want: 0},
+		{name: "non-loopback trusted via range", remoteAddr: "192.168.1.5:5000", ranges: priv, want: LevelAdmin},
+		{name: "outside range untrusted", remoteAddr: "10.0.0.5:5000", ranges: priv, want: 0},
+		{name: "verifyXFF trusted peer + trusted hop", remoteAddr: "192.168.1.5:5000", xff: "192.168.1.9", ranges: priv, verifyXFF: true, want: LevelAdmin},
+		{name: "verifyXFF trusted peer + untrusted hop", remoteAddr: "192.168.1.5:5000", xff: "8.8.8.8", ranges: priv, verifyXFF: true, want: 0},
+		{name: "spoofed xff ignored when verify off", remoteAddr: "8.8.8.8:5000", xff: "127.0.0.1", want: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := AuthConfig{APIKey: testAPIKey, SessionKey: sess, TrustedRanges: tc.ranges, VerifyXFF: tc.verifyXFF}
+			r := httptest.NewRequest("GET", "/api", nil)
+			r.Host = "localhost:4289"
+			r.RemoteAddr = tc.remoteAddr
+			if tc.xff != "" {
+				r.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: sess})
+			if got := callerLevel(r, cfg); got != tc.want {
+				t.Errorf("callerLevel = %d; want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func mustPrefixes(t *testing.T, entries ...string) []netip.Prefix {
+	t.Helper()
+	p, err := config.ParseLocalRanges(entries)
+	if err != nil {
+		t.Fatalf("ParseLocalRanges(%v): %v", entries, err)
+	}
+	return p
 }

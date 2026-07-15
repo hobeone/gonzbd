@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -316,7 +317,28 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 
 	// The web SPA cookie carries the API server's ephemeral session key,
 	// not the permanent General.APIKey — see AuthConfig.SessionKey.
-	webHandler, err := web.Handler(apiSrv.SessionKey)
+	//
+	// trustedFn reads the live config on each request so the admin session
+	// cookie is only issued to trusted sources (loopback or a configured
+	// local_range). This is the SEC-1 issuance-side gate; the API auth
+	// middleware enforces the matching acceptance-side gate.
+	trustedFn := func(r *http.Request) bool {
+		trusted := false
+		cfg.WithRead(func(c *config.Config) {
+			ranges, _ := config.ParseLocalRanges(c.General.LocalRanges)
+			trusted = config.IsTrustedRemote(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), ranges, c.General.VerifyXFFHeader)
+		})
+		return trusted
+	}
+	// Warn when the bind address is non-loopback but no local_ranges are
+	// configured: the web UI will refuse to hand out a session cookie to
+	// remote/proxied clients, so it will appear "logged out". API-key auth
+	// still works from anywhere.
+	if warn := nonLoopbackWithoutLocalRanges(cfg.General); warn != "" {
+		log.Warn(warn)
+		apiSrv.AddWarning(warn)
+	}
+	webHandler, err := web.Handler(apiSrv.SessionKey, trustedFn)
 	if err != nil {
 		return fmt.Errorf("web handler: %w", err)
 	}
@@ -556,6 +578,29 @@ func keyPrefix(key string) string {
 		return "<unset>"
 	}
 	return key[:4] + "..."
+}
+
+// nonLoopbackWithoutLocalRanges returns a warning message when the daemon
+// binds to a non-loopback address but no local_ranges are configured. In
+// that state the SEC-1 trust gate refuses to issue the web session cookie to
+// remote/proxied clients (loopback-only default), so the UI appears logged
+// out for them. Returns "" when the configuration is safe (loopback bind or
+// local_ranges set). API-key/NZB-key auth is unaffected in all cases.
+func nonLoopbackWithoutLocalRanges(g config.GeneralConfig) string {
+	if len(g.LocalRanges) > 0 {
+		return ""
+	}
+	host := strings.TrimSpace(g.Host)
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return ""
+	}
+	if ip, err := netip.ParseAddr(host); err == nil && ip.IsLoopback() {
+		return ""
+	}
+	return fmt.Sprintf("general.host is %q (non-loopback) but general.local_ranges is empty: "+
+		"the web UI will only issue its session cookie to loopback clients, so it will appear logged out "+
+		"for remote/proxied clients. Set general.local_ranges to your reverse-proxy/LAN/Docker CIDR "+
+		"(API-key auth is unaffected).", host)
 }
 
 // resolveDirs computes the effective download and admin directories from
