@@ -29,6 +29,8 @@ analysis passes (Security, Optimization, and one per traceability layer).
 | Optimization | Go backend is unusually clean (1 lint finding total). Findings are consolidation/decomposition + inert config knobs. | Low risk; best ROI is removing dead/inert surface |
 | Traceability | All four layers traced end-to-end and **clean/consistent**. Three real findings surfaced. | Data race (TRACE-1), unrestored early-abort counters (TRACE-3) |
 
+> **Status as of 2026-07-15:** SEC-2, SEC-5, TRACE-1, TRACE-3, TRACE-4, OPT-1, OPT-2, OPT-4, OPT-5, OPT-10, OPT-11, OPT-13 are done (see `## Suggested order of attack` → Batch review). **SEC-1 remains open** and is still the top priority; SEC-3, SEC-4, SEC-6, OPT-3, OPT-6, OPT-7, OPT-8, OPT-9, OPT-12, TRACE-2 are unaddressed.
+
 The single most important item is **SEC-1**: the web-UI session cookie is handed to any
 unauthenticated caller and grants admin, so the whole deployment's safety currently rests
 on binding to `127.0.0.1`. Fix that before anything else.
@@ -86,7 +88,8 @@ bind; SEC-1 becomes effectively Critical on any LAN/`0.0.0.0` bind.
 - **Effort:** M
 - **Acceptance:** An unauthenticated non-browser client bound to a non-loopback address cannot reach any `LevelProtected`/`LevelAdmin` mode; regression test covering the "GET / then replay cookie" path returns 401.
 
-### [ ] SEC-2 — `mode=get_config` returns all secrets unredacted  · MEDIUM
+### [x] SEC-2 — `mode=get_config` returns all secrets unredacted  · MEDIUM
+> **✅ Done (PR #75, `c7b3aca`, verified 2026-07-15):** `modeGetConfig` now marshals `s.config.Redacted()`. `TestModeGetConfig_RedactsSecrets` asserts no known secret value (server password, email password, Apprise URLs, apikey, nzbkey) appears in the response body; red-green proven against the unpatched handler.
 - **Location:** `internal/api/config.go:51-106` (`json.Marshal(cfg)` verbatim).
 - **Problem:** Unlike the status page (`statusConfig` → `config.Redacted()`), `modeGetConfig` emits `General.APIKey`, `General.NZBKey`, every `Servers[].Password`, `Notifications.Email.Password`, and Apprise URLs (embed webhook tokens) in cleartext. Chained with SEC-1 this leaks every stored credential, including the permanent API key.
 - **Fix:** Run the config through `config.Redacted()` (already exists, `internal/config/redact.go`) before emitting, or emit the redaction placeholder for secret fields. Audit `Redacted()`'s allowlist whenever a new secret field is added (it does not currently cover a notification `Script` path or future server-level tokens).
@@ -107,7 +110,8 @@ bind; SEC-1 becomes effectively Critical on any LAN/`0.0.0.0` bind.
 - **Effort:** S
 - **Acceptance:** `/debug/vars` requires auth (or is loopback-only); no `cmdline` exposure.
 
-### [ ] SEC-5 — WebSocket upgrade disables the library Origin check  · LOW
+### [x] SEC-5 — WebSocket upgrade disables the library Origin check  · LOW
+> **✅ Done (PR #75, `bdea247`/`6bac496`, verified 2026-07-15):** Removed `InsecureSkipVerify: true`; `AcceptOptions{}` now leaves the library's default same-origin check active. `TestBroadcaster_Handle_CrossOriginRejected`/`_SameOriginAccepted` cover the rejection/acceptance paths.
 - **Location:** `internal/api/events.go:90-93` (`websocket.AcceptOptions{InsecureSkipVerify: true}`).
 - **Problem:** Disables `coder/websocket`'s built-in same-origin enforcement; CSRF protection for `/api/ws` then relies solely on `callerLevel`'s `isCrossOrigin` + `SameSite=Strict`. Currently adequate but removes a redundant control; would become exploitable if the cookie's cross-origin gate regressed.
 - **Fix:** Set `AcceptOptions.OriginPatterns` (or leave default same-origin check on) instead of `InsecureSkipVerify: true`.
@@ -132,13 +136,13 @@ in prod, no `sort.Slice`, no un-preallocated slices in hot paths, no `defer` in 
 Documented hot paths verified intact — **do not touch them.**
 
 ### Dead / inert code
-- [ ] **OPT-1** — Delete unused exported option `WithLifecycleContext` (`internal/app/app.go:1379`, zero callers incl. tests). Effort S. *Confidence High.*
-- [ ] **OPT-2** — Remove dead test helper `scenarioHarness.JobStatus` (`internal/app/scenario_test.go:237`, no callers). Effort S. *Confidence High.*
+- [x] **OPT-1** — Delete unused exported option `WithLifecycleContext` (`internal/app/app.go:1379`, zero callers incl. tests). Effort S. *Confidence High.* **✅ Done (PR #76, `89477e8`).**
+- [x] **OPT-2** — Remove dead test helper `scenarioHarness.JobStatus` (`internal/app/scenario_test.go:237`, no callers). Effort S. *Confidence High.* **✅ Done (PR #76, `3e06b9e`).**
 - [ ] **OPT-3** — Resolve inert config knobs `no_penalties`, `pre_check`, `MaxArtOpt`: plumbed end-to-end but never consulted (`internal/config/downloads.go:37,42`; `internal/downloader/downloader.go:110,120,125`; `internal/downloader/dispatch.go:37,171`; wired `internal/app/app.go:1327-1336`). Either implement the behavior or remove the config surface + docs — shipping knobs that silently do nothing is a support trap. Effort M (implement) / S (remove). *Confidence High.*
 
 ### Duplication
-- [ ] **OPT-4** — Consolidate gzip-atomic writers: `app.writeGzFile` (`internal/app/app.go:1524`) and `queue.writeGzJSONRaw`/`writeGzJSON` (`internal/queue/persistence.go:234,216`) are near-identical across packages. Add `fsutil.WriteGzAtomic`/`WriteGzAtomicBytes` next to `WriteAtomic`. Effort S. *Confidence High.*
-- [ ] **OPT-5** — `certgen.writeFileAtomic` (`internal/app/certgen.go:110`) re-implements `fsutil.WriteAtomic` (only delta is a `Chmod`). Replace with `fsutil.WriteAtomicBytes` + `os.Chmod`, or add a perm variant to `fsutil`. Effort S. *Confidence High.*
+- [x] **OPT-4** — Consolidate gzip-atomic writers: `app.writeGzFile` (`internal/app/app.go:1524`) and `queue.writeGzJSONRaw`/`writeGzJSON` (`internal/queue/persistence.go:234,216`) are near-identical across packages. Add `fsutil.WriteGzAtomic`/`WriteGzAtomicBytes` next to `WriteAtomic`. Effort S. *Confidence High.* **✅ Done (PR #76, `e234015`/`7f71a87`).** Also hardened during review: `9aaf78a` fixed a panic-leak + chmod-TOCTOU in the shared `writeAtomic`.
+- [x] **OPT-5** — `certgen.writeFileAtomic` (`internal/app/certgen.go:110`) re-implements `fsutil.WriteAtomic` (only delta is a `Chmod`). Replace with `fsutil.WriteAtomicBytes` + `os.Chmod`, or add a perm variant to `fsutil`. Effort S. *Confidence High.* **✅ Done (PR #76, `db0dbe0`).**
 - [ ] **OPT-6** — Three archive extractors share a large per-entry "write one entry safely" body: `extractTarFile` (`internal/unpack/go_tar.go:213`), `extractSevenZipFile` (`internal/unpack/go_sevenzip.go:197`), `ExtractEntryRarengine` (`internal/unpack/go_unrar.go:191`). Extract a shared `writeEntry(...)` + `checkBombLimits(...)` helper. Also lowers OPT-8 complexity. Effort M. *Confidence High.*
 
 ### Complexity (measured via `gocyclo`; re-measure and cite real numbers in commits)
@@ -147,8 +151,8 @@ Documented hot paths verified intact — **do not touch them.**
 - [~] **OPT-9** — Decompose `(*Application).AddJob` (CCN 23, `internal/app/app.go:428`) and `(*Server).queueList` (CCN 22, `internal/api/queue.go:336`) — separate validation/filtering/assembly. Effort M. **🟡 Partial on `audit-traceability-refactor`:** `modeQueue`'s switch was decomposed (CCN 18→16, commit `eae5bf6`), but the two *named* hotspots `AddJob` (still CCN 23) and `queueList` (still CCN 22) are unchanged. Remaining work stands.
 
 ### Performance (non-hot-path; low but trivial wins)
-- [ ] **OPT-10** — `queueList` re-evaluates `strings.ToLower(search)` per job (`internal/api/queue.go:374`). Hoist `searchLower` above the loop; lowercase `j.Name`/`j.Filename` once. Effort S.
-- [ ] **OPT-11** — Preallocate per-request slices with known size: `internal/api/queue.go:363`, `internal/api/history.go:139`, `internal/history/repository.go:165` (`make([]T, 0, len(src))` / cap by `limit`). Effort S. *Confidence Medium (low value).*
+- [x] **OPT-10** — `queueList` re-evaluates `strings.ToLower(search)` per job (`internal/api/queue.go:374`). Hoist `searchLower` above the loop; lowercase `j.Name`/`j.Filename` once. Effort S. **✅ Done (PR #77, `4fc5a7d`).**
+- [x] **OPT-11** — Preallocate per-request slices with known size: `internal/api/queue.go:363`, `internal/api/history.go:139`, `internal/history/repository.go:165` (`make([]T, 0, len(src))` / cap by `limit`). Effort S. *Confidence Medium (low value).* **✅ Done (PR #77, `0c16dee`).** Hardened after review (`90aae8d`): `Repository.Search`'s preallocation is now capped at 10,000 independent of the caller-supplied `Limit` — an uncapped huge `Limit` crashed the process with an actual `fatal error: runtime: out of memory` before the fix.
 - [ ] **OPT-12** — `DirectUnpackStatus(j.ID)` called per job in the list loop (`internal/api/queue.go:380-383`). If it takes a mutex, fetch one `DirectUnpackStatuses()` snapshot before the loop. **Verify lock cost first.** Effort S–M. *Confidence Medium.*
 
 ### Modernization
@@ -165,7 +169,8 @@ Documented hot paths verified intact — **do not touch them.**
 Overall the cross-layer wiring is **consistent**. UI→client and client→HTTP boundaries
 (the ones with no compiler linking them) were traced end-to-end and are clean.
 
-### [ ] TRACE-1 — `queue.Get` returns a live `*Job` pointer; handlers read mutable fields without the per-job lock  · Risky (data race)
+### [x] TRACE-1 — `queue.Get` returns a live `*Job` pointer; handlers read mutable fields without the per-job lock  · Risky (data race)
+> **✅ Done (PR #77, `c056c65`, verified 2026-07-15):** `queueSetPaused`/`queueChangeCat` now read via `SnapshotJob` (deep copy under RLock) instead of the live `*Job` from `queue.Get`. `TestQueueSetPaused_ConcurrentMutationRace`/`TestQueueChangeCat_ConcurrentMutationRace` prove it under `-race`. Hardened after review: the original fixed-iteration mutator only caught the underlying regression 1/10 times under `-race -count=10`; switched to a stop-channel-driven mutator that runs for the full test duration, verified reliable. A related false-500 bug in `queueChangeCat` (returning 500 when a concurrent removal raced the post-change snapshot, despite the change already succeeding) was found and fixed in the same PR (`8420beb`).
 - **Location:** `internal/queue/queue.go:87-95` (`Get` returns the live pointer), callers `internal/api/queue.go:573` (reads `job.Name`) and `:653-659` (reads `job.Category`, `job.PP`, `job.Script`, `job.Priority`) for log lines.
 - **Problem:** Unlike `Snapshot`/`SnapshotJob` (which deep-copy via `cloneJob`, used by all listing/detail paths — verified safe), `Get` hands out the live struct while the download pipeline concurrently mutates it under the per-`Job` mutex. Reading these fields without that lock is a data race (a documented `AGENTS.md` hazard: "Don't expose mutable data to concurrent readers"). Impact is benign today (log values only) but it will trip `-race` and is a latent correctness trap if a caller ever acts on the read.
 - **Fix:** Return the field values from inside a locked accessor (e.g. have the setter return the resulting values, or add a `SnapshotJob`-based read), or drop the live-pointer log reads. Prefer removing `queue.Get`'s live-pointer API in favor of copied accessors.
@@ -179,14 +184,16 @@ Overall the cross-layer wiring is **consistent**. UI→client and client→HTTP 
 - **Effort:** S
 - **Acceptance:** `router.go` annotates UI-orphan-but-external modes.
 
-### [ ] TRACE-3 — Early-abort counters (`ArticlesResolved`/`ArticlesFailed`) are not restored on queue load  · Risky (narrow correctness)
+### [x] TRACE-3 — Early-abort counters (`ArticlesResolved`/`ArticlesFailed`) are not restored on queue load  · Risky (narrow correctness)
+> **✅ Done (PR #77, `9306a44`, verified 2026-07-15):** `recomputePending` now seeds both counters from the persisted article `Done`/`Failed` flags. New round-trip test persists a job with mixed outcomes, reloads, and asserts the restored counters and `IsEarlyAbort` outcome; red-green proven.
 - **Location:** `internal/queue/job.go:171-183` (transient `json:"-"` fields), `internal/queue/job.go:253-279` (`recomputePending` — the only load-time reinit — does not touch them), incremented only live at `internal/queue/queue.go:769,833`; consumed by `IsEarlyAbort` (`internal/queue/job.go:233-246`); load path `internal/queue/persistence.go:114-152`.
 - **Problem:** `recomputePending()` restores `Pending`, `PendingArticles`, `BytesDownloaded`, `FileIdx`, and `artIdx` from the persisted article `Done`/`Failed` flags, but **not** `ArticlesResolved`/`ArticlesFailed`. After a restart both reset to 0 regardless of how many articles already succeeded/failed on disk. The early-abort heuristic (fires when ≥80% of the first 10 *resolved* articles fail, to bail out of a DMCA'd/expired NZB) then re-samples only the new session's outcomes. A resumed, mostly-complete job that happens to hit a cluster of ≥10 failures right after restart (e.g. a dead file/server at the resume point) can be **false-positive early-aborted** despite having downloaded most of its content; conversely a genuinely-dead job "forgets" its prior failures. This is exactly the `AGENTS.md` hazard "ensure [transient state] is initialized in both Add and Load," and it is currently **untested** (the `IsEarlyAbort` tests set the counters in-memory only; the persistence round-trip test never asserts them).
 - **Fix:** Seed both counters inside `recomputePending`'s existing article loop from ground truth — `resolved += Done`, `failed += (Done && Failed)`. (This is strictly more correct than resetting to 0: a mostly-good job then computes a low failure rate and won't abort, while a truly-dead resumed job aborts immediately.) `EarlyAborted` resetting to `false` on load is benign and can stay. Add a round-trip test that persists a job with mixed Done/Failed articles, reloads, and asserts the seeded counters + `IsEarlyAbort` outcome.
 - **Effort:** S
 - **Acceptance:** After `Load`, `ArticlesResolved`/`ArticlesFailed` equal the persisted Done/Failed counts; new round-trip test proves it (red-green: fails before the `recomputePending` change).
 
-### [ ] TRACE-4 — History `scanEntry` cannot read NULL into non-pointer columns  · Low (robustness)
+### [x] TRACE-4 — History `scanEntry` cannot read NULL into non-pointer columns  · Low (robustness)
+> **✅ Done (PR #77, `36c7a53`, verified 2026-07-15):** `scanEntry` now scans nullable columns via `sql.Null*` and coalesces to zero values, instead of scanning directly into `string`/`int64`.
 - **Location:** `internal/history/repository.go` `scanEntry` (scans TEXT/INTEGER columns into `string`/`int64`), schema `internal/history/migrations/001_initial.sql` (columns are nullable, no `NOT NULL`).
 - **Problem:** `Add` always binds concrete (non-NULL, zero-valued) values so app-written rows never contain NULLs, but the schema permits them. A row inserted by any other means (manual `sqlite3`, a future migration, an external tool) with a NULL TEXT/INTEGER column would make `scanEntry` fail (`converting NULL to string is unsupported`), breaking `Get`/`Search` for the whole result set. Latent, not a live bug.
 - **Fix:** Either add `NOT NULL DEFAULT ''`/`DEFAULT 0` in a new migration (never edit `001_initial.sql`), or scan through `sql.Null*`/`COALESCE(col, '')` in the query. Low priority.
@@ -203,8 +210,12 @@ Overall the cross-layer wiring is **consistent**. UI→client and client→HTTP 
 
 ## Suggested order of attack
 
-1. **SEC-1** (architectural auth gap) — everything else is secondary to this.
-2. Quick security wins: **SEC-2** (reuse `Redacted()` in `get_config`), **SEC-3** (log redaction), **SEC-4/5** (debug + WS origin).
-3. **TRACE-1** (data race) + **TRACE-3** (seed early-abort counters on load — small, clear correctness win).
-4. Optimization quick wins: **OPT-1/2/13** (delete dead + fix deprecation), **OPT-10** (hoist ToLower), **OPT-4/5** (fsutil consolidation).
-5. **OPT-3** (decide fate of inert knobs), **OPT-6/8** (shared extractor helper), then the larger **OPT-7/9** decompositions.
+1. **SEC-1** (architectural auth gap) — everything else is secondary to this. **🟡 In progress**: loopback + explicit `local_ranges` design implemented on `sec/sec-1-trusted-source-auth` (uncommitted as of 2026-07-15), not yet merged.
+2. ~~Quick security wins: **SEC-2** (reuse `Redacted()` in `get_config`), **SEC-3** (log redaction), **SEC-4/5** (debug + WS origin).~~ **SEC-2/SEC-5 done**; **SEC-3/SEC-4** still open (deferred — both touch files SEC-1 also changes).
+3. ~~**TRACE-1** (data race) + **TRACE-3** (seed early-abort counters on load — small, clear correctness win).~~ **Both done.**
+4. ~~Optimization quick wins: **OPT-1/2/13** (delete dead + fix deprecation), **OPT-10** (hoist ToLower), **OPT-4/5** (fsutil consolidation).~~ **All done.**
+5. **OPT-3** (decide fate of inert knobs), **OPT-6/8** (shared extractor helper), then the larger **OPT-7/9** decompositions. Still open, along with **OPT-12** (verify `DirectUnpackStatus` lock cost before batching), **SEC-6**, **TRACE-2**.
+
+### Batch review — PRs #75, #76, #77 (merged 2026-07-15)
+
+Delegated implementation to Sonnet agents (per-PR worktrees), Opus orchestrated/verified each before merge — see individual finding entries above for commit hashes. All three PRs went through a full review cycle (CodeRabbit + manual/gremlins mutation-testing review) before merging; two additional bugs were found and fixed during that review that weren't in the original audit (see TRACE-1's and OPT-4's notes above: the `queueChangeCat` false-500 and the `writeAtomic` panic-leak/TOCTOU). This reinforces the audit's own **Red-Green Discipline**: several of the regression tests written for these fixes did not actually catch the regression on the first pass (e.g. TRACE-1's original race test caught the reverted bug only 1/10 times) and needed strengthening before being trusted.
