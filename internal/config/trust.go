@@ -28,6 +28,10 @@ func ParseLocalRanges(entries []string) ([]netip.Prefix, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid local_range %q: %w", e, err)
 			}
+			p, err = normalizeMappedPrefix(p)
+			if err != nil {
+				return nil, fmt.Errorf("invalid local_range %q: %w", e, err)
+			}
 			out = append(out, p.Masked())
 			continue
 		}
@@ -38,6 +42,27 @@ func ParseLocalRanges(entries []string) ([]netip.Prefix, error) {
 		out = append(out, netip.PrefixFrom(ip.Unmap(), ip.Unmap().BitLen()))
 	}
 	return out, nil
+}
+
+// normalizeMappedPrefix rewrites an IPv4-mapped IPv6 prefix (e.g.
+// "::ffff:192.168.1.0/120") into its plain IPv4 form ("192.168.1.0/24").
+// Without this, the prefix would never match anything: ipTrusted unmaps the
+// peer address to plain IPv4 before checking containment, and
+// netip.Prefix.Contains requires both addresses to share the same family —
+// a 4-byte peer address can never be "contained" by a 16-byte IPv6 prefix,
+// even one that is semantically an IPv4-mapped address. A CIDR whose prefix
+// boundary falls inside the fixed ::ffff:0:0/96 mapping (bits < 96) can't be
+// expressed as a plain IPv4 prefix at all, so that case is rejected rather
+// than silently accepted as a dead entry. Prefixes that aren't IPv4-mapped
+// pass through unchanged.
+func normalizeMappedPrefix(p netip.Prefix) (netip.Prefix, error) {
+	if !p.Addr().Is4In6() {
+		return p, nil
+	}
+	if p.Bits() < 96 {
+		return netip.Prefix{}, fmt.Errorf("IPv4-mapped prefix %s has fewer than 96 bits, cannot represent as IPv4", p)
+	}
+	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96), nil
 }
 
 // IsTrustedRemote reports whether a request originating from remoteAddr (the

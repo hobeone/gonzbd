@@ -3,8 +3,6 @@ package main
 import (
 	"strings"
 	"testing"
-
-	"github.com/hobeone/gonzbd/internal/config"
 )
 
 func TestNonLoopbackWithoutLocalRanges(t *testing.T) {
@@ -27,8 +25,7 @@ func TestNonLoopbackWithoutLocalRanges(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			g := config.GeneralConfig{Host: tc.host, LocalRanges: tc.ranges}
-			warn := nonLoopbackWithoutLocalRanges(g)
+			warn := nonLoopbackWithoutLocalRanges(tc.host, tc.ranges)
 			if (warn != "") != tc.wantWarn {
 				t.Errorf("nonLoopbackWithoutLocalRanges(host=%q, ranges=%v) warn=%q; wantWarn=%v", tc.host, tc.ranges, warn, tc.wantWarn)
 			}
@@ -36,5 +33,45 @@ func TestNonLoopbackWithoutLocalRanges(t *testing.T) {
 				t.Errorf("warning should mention local_ranges: %q", warn)
 			}
 		})
+	}
+}
+
+func TestListenerHost(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		addr string
+		want string
+	}{
+		{addr: "127.0.0.1:4289", want: "127.0.0.1"},
+		{addr: "0.0.0.0:8080", want: "0.0.0.0"},
+		{addr: "[::1]:4289", want: "::1"},
+		{addr: ":4289", want: ""},
+		{addr: "no-port-here", want: "no-port-here"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.addr, func(t *testing.T) {
+			t.Parallel()
+			if got := listenerHost(tc.addr); got != tc.want {
+				t.Errorf("listenerHost(%q) = %q; want %q", tc.addr, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestListenerHostReflectsOverride proves the warning must be evaluated
+// against the *effective* listener address (httpSrv.Addr after --listen is
+// applied), not the raw config-file general.host. Before this fix, main.go
+// checked cfg.General.Host directly: a config with a loopback host but a
+// --listen override binding non-loopback would silently produce no warning,
+// even though the daemon is actually listening on the non-loopback address.
+func TestListenerHostReflectsOverride(t *testing.T) {
+	const configHost = "127.0.0.1"
+	const overrideAddr = "0.0.0.0:4289" // as if --listen 0.0.0.0:4289 was passed
+
+	if warn := nonLoopbackWithoutLocalRanges(configHost, nil); warn != "" {
+		t.Fatalf("sanity check: the raw config host is loopback and should not warn on its own: %q", warn)
+	}
+	if warn := nonLoopbackWithoutLocalRanges(listenerHost(overrideAddr), nil); warn == "" {
+		t.Error("the effective listener host (after a --listen override) is non-loopback; expected a warning, got none")
 	}
 }
