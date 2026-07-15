@@ -252,6 +252,7 @@ func (j *Job) IsEarlyAbort() bool {
 // yet populated.
 func (j *Job) recomputePending() {
 	total := 0
+	var resolved, failed int
 	for fi := range j.Files {
 		n := 0
 		var downloaded int64
@@ -269,12 +270,25 @@ func (j *Job) recomputePending() {
 			if art.Done && !art.Failed {
 				downloaded += int64(art.Bytes)
 			}
+			// Seed the early-abort counters (TRACE-3) from ground truth:
+			// these are json:"-" transient fields that reset to zero on
+			// every Load, so without this they "forget" prior
+			// successes/failures and the IsEarlyAbort heuristic re-samples
+			// only the new session's outcomes.
+			if art.Done {
+				resolved++
+				if art.Failed {
+					failed++
+				}
+			}
 		}
 		j.Files[fi].Pending = n
 		j.Files[fi].BytesDownloaded = downloaded
 		total += n
 	}
 	j.PendingArticles = total
+	j.ArticlesResolved = resolved
+	j.ArticlesFailed = failed
 	j.buildArtIndex()
 }
 

@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -192,6 +193,65 @@ func TestIsEarlyAbort_AllFailed(t *testing.T) {
 	j := &Job{ArticlesResolved: 10, ArticlesFailed: 10} // 100%
 	if !j.IsEarlyAbort() {
 		t.Error("should fire at 100% failure rate")
+	}
+}
+
+// TestRecomputePending_SeedsEarlyAbortCounters proves TRACE-3:
+// recomputePending must restore ArticlesResolved/ArticlesFailed from
+// ground truth (the persisted Done/Failed article flags), not leave them
+// at their zero value. Before the fix, a reload after a restart forgot
+// how many articles had already resolved/failed, corrupting the
+// IsEarlyAbort heuristic for jobs resumed mid-download.
+func TestRecomputePending_SeedsEarlyAbortCounters(t *testing.T) {
+	j := &Job{
+		Files: []JobFile{
+			{Articles: []JobArticle{
+				{ID: "a1", Bytes: 100, Done: true},               // resolved, succeeded
+				{ID: "a2", Bytes: 100, Done: true, Failed: true}, // resolved, failed
+				{ID: "a3", Bytes: 100, Done: true, Failed: true}, // resolved, failed
+				{ID: "a4", Bytes: 100},                           // still pending
+			}},
+		},
+	}
+	// Simulate the state right after a JSON unmarshal from disk: the
+	// json:"-" transient counters are zero even though the persisted
+	// article flags above record 3 already-resolved articles (2 failed).
+	j.ArticlesResolved = 0
+	j.ArticlesFailed = 0
+
+	j.recomputePending()
+
+	if j.ArticlesResolved != 3 {
+		t.Errorf("ArticlesResolved = %d, want 3 (count of Done articles)", j.ArticlesResolved)
+	}
+	if j.ArticlesFailed != 2 {
+		t.Errorf("ArticlesFailed = %d, want 2 (count of Done&&Failed articles)", j.ArticlesFailed)
+	}
+}
+
+// TestRecomputePending_EarlyAbortFiresAfterReload proves the seeded
+// counters correctly feed IsEarlyAbort after a simulated restart: a job
+// that had already accumulated 8/10 failures before the restart must
+// still trip the early-abort heuristic on the very first post-reload
+// check, without needing 10 fresh failures in the new session.
+func TestRecomputePending_EarlyAbortFiresAfterReload(t *testing.T) {
+	articles := make([]JobArticle, 0, 10)
+	for i := range 10 {
+		art := JobArticle{ID: fmt.Sprintf("a%d", i), Bytes: 100, Done: true}
+		if i < 8 {
+			art.Failed = true
+		}
+		articles = append(articles, art)
+	}
+	j := &Job{Files: []JobFile{{Articles: articles}}}
+	// Simulate post-unmarshal zeroing of the transient counters.
+	j.ArticlesResolved = 0
+	j.ArticlesFailed = 0
+
+	j.recomputePending()
+
+	if !j.IsEarlyAbort() {
+		t.Error("IsEarlyAbort should fire immediately after reload: 8/10 failures were already on disk")
 	}
 }
 
