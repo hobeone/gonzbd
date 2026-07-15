@@ -21,10 +21,23 @@ import (
 // ephemeral session key (Server.SessionKey), not the permanent
 // General.APIKey — see AuthConfig.SessionKey for why these are kept
 // distinct.
-func NewSPAHandler(dist fs.FS, apiKeyFn func() string) http.Handler {
+//
+// The cookie is a full-admin credential, so it is only issued to trusted
+// clients: trustedFn reports whether the requesting client (by source IP,
+// per config.IsTrustedRemote) is loopback or within a configured
+// local_range. Untrusted clients still receive the static SPA, but no
+// session cookie — they must authenticate with the real API key. This
+// closes SEC-1: an unauthenticated non-loopback caller can no longer
+// obtain admin simply by requesting "/". The API auth middleware enforces
+// the same trust gate when accepting the cookie, so a leaked cookie cannot
+// be replayed from an untrusted address either.
+func NewSPAHandler(dist fs.FS, apiKeyFn func() string, trustedFn func(*http.Request) bool) http.Handler {
 	fileServer := http.FileServerFS(dist)
 
 	setAPIKeyCookie := func(w http.ResponseWriter, req *http.Request) {
+		if trustedFn != nil && !trustedFn(req) {
+			return
+		}
 		secure := req.TLS != nil || strings.EqualFold(req.Header.Get("X-Forwarded-Proto"), "https")
 		http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure is set dynamically based on TLS, HttpOnly is true.
 			Name:     "gonzbd_apikey",
