@@ -6,9 +6,12 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // AccessLevel defines the privilege tier required for an API call. Higher
@@ -44,6 +47,17 @@ type AuthConfig struct {
 	// replayed as the permanent key used by third-party integrations
 	// (Sonarr, Radarr, etc.), and it stops working on the next restart.
 	SessionKey string
+
+	// TrustedRanges are the client IP prefixes (in addition to loopback,
+	// which is always trusted) from which the session cookie is accepted as
+	// admin. Sourced from General.LocalRanges. Empty means loopback-only.
+	// The cookie path is refused for any request whose source is not
+	// trusted, so an unauthenticated non-loopback caller cannot obtain
+	// admin by replaying a leaked or forged session cookie.
+	TrustedRanges []netip.Prefix
+	// VerifyXFF mirrors General.VerifyXFFHeader: when true, every
+	// X-Forwarded-For hop must also be trusted once the peer qualifies.
+	VerifyXFF bool
 }
 
 // callerLevel determines the highest access level the caller can reach
@@ -57,6 +71,16 @@ func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
 		// Enforce cross-origin check for defense-in-depth (cookie
 		// SameSite may be insufficient on older browsers).
 		if isCrossOrigin(r) {
+			return 0
+		}
+		// Refuse the cookie path for untrusted sources. The SPA only
+		// hands the session cookie to trusted clients (loopback or a
+		// configured local_range); enforcing the same gate here means a
+		// leaked or forged cookie replayed from a non-loopback address
+		// (the SEC-1 attack: GET / to grab the cookie, then replay it)
+		// is rejected. Without this, any caller that can reach the port
+		// obtained zero-credential admin.
+		if !config.IsTrustedRemote(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), cfg.TrustedRanges, cfg.VerifyXFF) {
 			return 0
 		}
 		// Cookie-sourced keys are validated against the ephemeral

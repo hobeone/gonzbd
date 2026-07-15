@@ -9,6 +9,11 @@ import (
 	"testing/fstest"
 )
 
+// alwaysTrusted is a trust predicate that treats every request as trusted,
+// used by tests that assert cookie-issuance behavior independent of the
+// source-IP gate (which is exercised separately in TestSPACookie_TrustGate).
+func alwaysTrusted(*http.Request) bool { return true }
+
 func testSPAFS() fstest.MapFS {
 	return fstest.MapFS{
 		"index.html":   {Data: []byte(`<!DOCTYPE html><html><body>GoNZBD</body></html>`)},
@@ -19,7 +24,7 @@ func testSPAFS() fstest.MapFS {
 }
 
 func TestNewSPAHandler_RootServesIndexHTML(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, alwaysTrusted)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 
@@ -32,7 +37,7 @@ func TestNewSPAHandler_RootServesIndexHTML(t *testing.T) {
 }
 
 func TestNewSPAHandler_StaticFileServedDirectly(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, alwaysTrusted)
 
 	tests := []struct {
 		path       string
@@ -58,7 +63,7 @@ func TestNewSPAHandler_StaticFileServedDirectly(t *testing.T) {
 }
 
 func TestNewSPAHandler_UnknownPathFallsBackToIndex(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, alwaysTrusted)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/some/deep/route", nil))
 
@@ -71,7 +76,7 @@ func TestNewSPAHandler_UnknownPathFallsBackToIndex(t *testing.T) {
 }
 
 func TestNewSPAHandler_MissingFileWithExtensionReturns404(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, alwaysTrusted)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/_app/does-not-exist.js", nil))
 
@@ -81,7 +86,7 @@ func TestNewSPAHandler_MissingFileWithExtensionReturns404(t *testing.T) {
 }
 
 func TestSPACookieOnRoot(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, alwaysTrusted)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 
@@ -102,7 +107,7 @@ func TestSPACookieOnRoot(t *testing.T) {
 }
 
 func TestSPACookieOnDeepLink(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, alwaysTrusted)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/config/general", nil))
 
@@ -123,7 +128,7 @@ func TestSPACookieOnDeepLink(t *testing.T) {
 }
 
 func TestStaticAssetNoCookie(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, alwaysTrusted)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/_app/test.js", nil))
 
@@ -136,7 +141,7 @@ func TestStaticAssetNoCookie(t *testing.T) {
 }
 
 func TestSPACookieSecureFlag(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, alwaysTrusted)
 
 	t.Run("with TLS (HTTPS)", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/", nil)
@@ -198,7 +203,7 @@ func TestSPACookieSecureFlag_XForwardedProto(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.proto, func(t *testing.T) {
-			handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
+			handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, alwaysTrusted)
 			req := httptest.NewRequest("GET", "/", nil)
 			if tt.proto != "" {
 				req.Header.Set("X-Forwarded-Proto", tt.proto)
@@ -224,8 +229,58 @@ func TestSPACookieSecureFlag_XForwardedProto(t *testing.T) {
 	}
 }
 
+// TestSPACookie_TrustGate is the SEC-1 issuance-side regression: an
+// untrusted client (trustedFn returns false) must NOT receive the admin
+// session cookie from GET /, while a trusted client must. Without the gate,
+// GET / handed the cookie to anyone.
+func TestSPACookie_TrustGate(t *testing.T) {
+	hasCookie := func(rr *httptest.ResponseRecorder) bool {
+		for _, c := range rr.Result().Cookies() {
+			if c.Name == "gonzbd_apikey" {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("untrusted client gets SPA but no cookie", func(t *testing.T) {
+		untrusted := func(*http.Request) bool { return false }
+		handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, untrusted)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET / status = %d, want 200 (SPA still served)", rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "GoNZBD") {
+			t.Error("untrusted client should still receive the SPA HTML")
+		}
+		if hasCookie(rr) {
+			t.Error("untrusted client must NOT receive the gonzbd_apikey cookie")
+		}
+	})
+
+	t.Run("untrusted client gets no cookie on deep-link catch-all", func(t *testing.T) {
+		untrusted := func(*http.Request) bool { return false }
+		handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, untrusted)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, httptest.NewRequest("GET", "/config/general", nil))
+		if hasCookie(rr) {
+			t.Error("untrusted client must NOT receive the cookie via SPA catch-all")
+		}
+	})
+
+	t.Run("trusted client gets cookie", func(t *testing.T) {
+		handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, alwaysTrusted)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+		if !hasCookie(rr) {
+			t.Error("trusted client must receive the cookie")
+		}
+	})
+}
+
 func TestNewSPAHandler_SetCookie(t *testing.T) {
-	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" })
+	handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, alwaysTrusted)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
 

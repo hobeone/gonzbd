@@ -31,6 +31,25 @@ general:
   # upload-only access to indexers without exposing the full API key.
   nzb_key: ""
 
+  # Client IP ranges trusted to receive and use the web UI's ephemeral
+  # session cookie, IN ADDITION to loopback (127.0.0.1/::1), which is always
+  # trusted. Each entry is a CIDR ("10.0.0.0/8", "fd00::/8") or a bare IP
+  # ("192.168.1.5"). Empty (the default) means loopback-only: a non-loopback
+  # client — LAN, Docker bridge, or a reverse proxy — is NOT handed an admin
+  # session cookie, so the web UI will appear logged out for it. Set this to
+  # your reverse-proxy / Docker network / LAN CIDR to let the UI work for
+  # those clients without entering a key. This does NOT affect API-key or
+  # NZB-key authentication, which work from any address.
+  local_ranges: []
+
+  # When true, the X-Forwarded-For chain is also validated: once the direct
+  # peer is trusted (loopback or local_ranges), every forwarded hop must also
+  # be trusted or the request is treated as untrusted. Leave false (default)
+  # when your reverse proxy performs its own authentication and you trust the
+  # proxy connection itself. The header is never consulted when the direct
+  # peer is untrusted, so it cannot be spoofed by a public client.
+  verify_xff_header: false
+
   # Web UI credentials. Leave both empty to disable authentication.
   # Password is stored as a hash after first login via the UI.
   username: ""

@@ -160,6 +160,11 @@ func (g *GeneralConfig) validate() error {
 	if _, err := g.ParseLogLevels(); err != nil {
 		errs = append(errs, fmt.Errorf("log_levels: %w", err))
 	}
+	// Validate trusted client ranges at load time so a typo fails fast
+	// instead of silently locking out the reverse proxy / LAN.
+	if _, err := ParseLocalRanges(g.LocalRanges); err != nil {
+		errs = append(errs, fmt.Errorf("local_ranges: %w", err))
+	}
 	return errors.Join(errs...)
 }
 

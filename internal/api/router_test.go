@@ -30,6 +30,7 @@ func TestHandleAPI_CookieAuth_GET_StateChangingRestricted_405(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 			req.Host = "localhost:4289"
+			req.RemoteAddr = "127.0.0.1:12345" // loopback: trusted for cookie auth (SEC-1)
 			req.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: s.SessionKey()})
 			rr := httptest.NewRecorder()
 
@@ -76,6 +77,7 @@ func TestHandleAPI_CookieAuth_POST_StateChangingAllowed(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api?mode=pause", nil)
 	req.Host = "localhost:4289"
+	req.RemoteAddr = "127.0.0.1:12345" // loopback: trusted for cookie auth (SEC-1)
 	req.Header.Set("Origin", "http://localhost:4289")
 	req.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: s.SessionKey()})
 	rr := httptest.NewRecorder()
@@ -99,6 +101,7 @@ func TestHandleAPI_CookieAuth_NonPost_StateChangingRestricted_405(t *testing.T) 
 		t.Run(method, func(t *testing.T) {
 			req := httptest.NewRequest(method, "/api?mode=pause", nil)
 			req.Host = "localhost:4289"
+			req.RemoteAddr = "127.0.0.1:12345" // loopback: trusted for cookie auth (SEC-1)
 			req.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: s.SessionKey()})
 			rr := httptest.NewRecorder()
 
@@ -114,6 +117,42 @@ func TestHandleAPI_CookieAuth_NonPost_StateChangingRestricted_405(t *testing.T) 
 func TestUnexportedRouterHelpersAlignmentReference(t *testing.T) {
 	var s Server
 	_ = s.handleAPI
+}
+
+// TestSEC1_UntrustedCookieRejected is the SEC-1 acceptance-side regression:
+// replaying a VALID session cookie from a non-loopback address (the
+// "GET / to grab the cookie, then replay it" attack) must NOT grant admin.
+// The loopback-only default trust policy rejects the cookie; the same cookie
+// from loopback is accepted. Read-only mode=version is used so the only
+// variable is the auth outcome (200 = authenticated, 403 = rejected).
+func TestSEC1_UntrustedCookieRejected(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+
+	newReq := func(remoteAddr string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api?mode=queue", nil)
+		req.Host = "localhost:4289"
+		req.RemoteAddr = remoteAddr
+		req.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: s.SessionKey()})
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, req)
+		return rr
+	}
+
+	// Non-loopback source replaying the valid cookie: rejected. The trust
+	// gate makes callerLevel return 0, so the router responds 401 ("API key
+	// required") — the cookie authenticated nothing.
+	if rr := newReq("203.0.113.7:5000"); rr.Code != http.StatusUnauthorized {
+		t.Errorf("valid cookie from non-loopback: got status %d, want 401 (cookie must not authenticate an untrusted source)", rr.Code)
+	}
+	// Docker-bridge-style private source, still untrusted by default: rejected.
+	if rr := newReq("172.18.0.9:5000"); rr.Code != http.StatusUnauthorized {
+		t.Errorf("valid cookie from untrusted private addr: got status %d, want 401", rr.Code)
+	}
+	// Loopback source: accepted.
+	if rr := newReq("127.0.0.1:5000"); rr.Code != http.StatusOK {
+		t.Errorf("valid cookie from loopback: got status %d, want 200 (trusted)", rr.Code)
+	}
 }
 
 // TestHandleAPI_CookieAuth_GET_StateChangingClassification guards the
@@ -142,6 +181,7 @@ func TestHandleAPI_CookieAuth_GET_StateChangingClassification(t *testing.T) {
 		t.Run("blocked/"+tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tc.url, nil)
 			req.Host = "localhost:4289"
+			req.RemoteAddr = "127.0.0.1:12345" // loopback: trusted for cookie auth (SEC-1)
 			req.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: s.SessionKey()})
 			rr := httptest.NewRecorder()
 
@@ -164,6 +204,7 @@ func TestHandleAPI_CookieAuth_GET_StateChangingClassification(t *testing.T) {
 		t.Run("allowed/"+tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tc.url, nil)
 			req.Host = "localhost:4289"
+			req.RemoteAddr = "127.0.0.1:12345" // loopback: trusted for cookie auth (SEC-1)
 			req.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: s.SessionKey()})
 			rr := httptest.NewRecorder()
 

@@ -9,6 +9,12 @@ general:
   https_key: ""
   api_key: 0123456789abcdef
   nzb_key: fedcba9876543210
+  # Client IP ranges trusted for the web session cookie, in addition to
+  # loopback. Empty = loopback-only. See gonzbd.yaml.example for details.
+  local_ranges:
+    - 192.168.0.0/16
+    - 10.0.0.0/8
+  verify_xff_header: false
 
   download_dir: Downloads/incomplete
   complete_dir: Downloads/complete

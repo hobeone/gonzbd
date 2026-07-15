@@ -259,6 +259,11 @@ func (s *Server) getAuth() AuthConfig {
 	s.config.WithRead(func(cfg *config.Config) {
 		auth.APIKey = cfg.General.APIKey
 		auth.NZBKey = cfg.General.NZBKey
+		// LocalRanges is validated at load time, so a parse error here is
+		// not expected; on the off chance one slips through, fall back to
+		// loopback-only (nil ranges) rather than trusting everything.
+		auth.TrustedRanges, _ = config.ParseLocalRanges(cfg.General.LocalRanges)
+		auth.VerifyXFF = cfg.General.VerifyXFFHeader
 	})
 	auth.SessionKey = s.sessionKey
 	return auth
