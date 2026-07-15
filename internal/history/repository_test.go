@@ -107,6 +107,57 @@ func TestAddDuplicateNzoIDErrors(t *testing.T) {
 	}
 }
 
+// TestScanEntry_NullColumnsRoundTrip proves TRACE-4: a row with NULL
+// TEXT/INTEGER columns (as the nullable schema in
+// internal/history/migrations/001_initial.sql permits, even though Add
+// always writes concrete zero values) must round-trip through Get/Search
+// without erroring, with NULL coalescing to the Go zero value.
+func TestScanEntry_NullColumnsRoundTrip(t *testing.T) {
+	db, repo := openTestDB(t)
+	ctx := t.Context()
+
+	// Insert a row with every nullable column left NULL, bypassing Add
+	// (which always binds concrete values) to simulate a row written by
+	// another means (manual sqlite3, a future migration, an external tool).
+	_, err := db.db.ExecContext(ctx,
+		`INSERT INTO history (id, nzo_id, script_log) VALUES (?, ?, ?)`,
+		1, "null_row", []byte(nil))
+	if err != nil {
+		t.Fatalf("insert NULL row: %v", err)
+	}
+
+	got, err := repo.Get(ctx, "null_row")
+	if err != nil {
+		t.Fatalf("Get on row with NULL columns: %v", err)
+	}
+	if got.NzoID != "null_row" {
+		t.Errorf("NzoID = %q, want %q", got.NzoID, "null_row")
+	}
+	// Every other nullable TEXT/INTEGER column should coalesce to its Go
+	// zero value rather than erroring the scan.
+	if got.Name != "" || got.Category != "" || got.Status != "" || got.StageLog != "" {
+		t.Errorf("expected NULL text columns to coalesce to \"\", got Name=%q Category=%q Status=%q StageLog=%q",
+			got.Name, got.Category, got.Status, got.StageLog)
+	}
+	if got.Bytes != 0 || got.DownloadTime != 0 || got.Archive != 0 {
+		t.Errorf("expected NULL integer columns to coalesce to 0, got Bytes=%d DownloadTime=%d Archive=%d",
+			got.Bytes, got.DownloadTime, got.Archive)
+	}
+	if !got.Completed.IsZero() || !got.TimeAdded.IsZero() {
+		t.Errorf("expected NULL timestamp columns to coalesce to zero time, got Completed=%v TimeAdded=%v",
+			got.Completed, got.TimeAdded)
+	}
+
+	// Also exercise Search, which shares scanEntry with Get.
+	results, err := repo.Search(ctx, SearchOptions{})
+	if err != nil {
+		t.Fatalf("Search over row with NULL columns: %v", err)
+	}
+	if len(results) != 1 || results[0].NzoID != "null_row" {
+		t.Errorf("Search results = %+v, want single null_row entry", results)
+	}
+}
+
 func TestGetMissingReturnsErrNotFound(t *testing.T) {
 	_, repo := openTestDB(t)
 	ctx := t.Context()
