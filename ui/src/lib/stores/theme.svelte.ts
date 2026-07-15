@@ -38,7 +38,7 @@ export function getTheme(): ThemeMode {
 }
 
 /** Set the theme to a specific mode. */
-export function setTheme(mode: ThemeMode) {
+function setTheme(mode: ThemeMode) {
 	current = mode;
 	if (mode === 'system') {
 		localStorage.removeItem(STORAGE_KEY);

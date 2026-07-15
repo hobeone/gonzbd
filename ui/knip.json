@@ -1,0 +1,14 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignore": [
+    "src/lib/components/ui/**",
+    "static/theme.js"
+  ],
+  "ignoreDependencies": [
+    "@lucide/svelte"
+  ],
+  "rules": {
+    "exports": "off",
+    "types": "off"
+  }
+}

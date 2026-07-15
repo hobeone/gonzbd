@@ -10,6 +10,7 @@
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"check:unused": "knip",
 		"test": "vitest run",
 		"test:coverage": "vitest run --coverage",
 		"test:watch": "vitest"
@@ -27,6 +28,7 @@
 		"bits-ui": "^2.18.1",
 		"clsx": "^2.1.1",
 		"happy-dom": "^20.10.6",
+		"knip": "^6.27.0",
 		"svelte": "^5.56.5",
 		"svelte-check": "^4.7.2",
 		"tailwind-merge": "^3.6.0",
