@@ -141,28 +141,40 @@ func isSystemMutationMode(mode string) bool {
 	}
 }
 
-// isQueueMutation returns true if action name mutates the download queue.
+// isQueueMutation returns true if a queue action name mutates state.
+//
+// Fail closed: only the read-only listing actions ("" and "list") are
+// exempt; every other (including any future) sub-action is treated as
+// state-changing. Enumerating mutating actions instead let several real
+// mutations (pause_all, resume_all, rename, change_script, change_cat, …)
+// silently bypass the cookie-auth POST requirement. This is safe for the
+// web UI (it issues all queue mutations via POST and only ever GETs the
+// bare list/detail with an empty name) and for third-party apps (they
+// authenticate with ?apikey=, not a cookie, so the POST gate never applies).
 func isQueueMutation(name string) bool {
 	switch name {
-	case "delete", "purge", "delete_nzf", "pause", "resume", "priority", "change_opts", "switch":
-		return true
-	default:
+	case "", "list":
 		return false
+	default:
+		return true
 	}
 }
 
-// isHistoryMutation returns true if action name mutates download history.
+// isHistoryMutation returns true if a history action name mutates state.
+// Fail closed for the same reasons as isQueueMutation (retry and
+// mark_as_completed were previously unguarded).
 func isHistoryMutation(name string) bool {
 	switch name {
-	case "delete", "purge":
-		return true
-	default:
+	case "", "list":
 		return false
+	default:
+		return true
 	}
 }
 
 // isStateChangingMode returns true if the mode/name pair identifies a
-// state-changing or destructive endpoint.
+// state-changing or destructive endpoint, for the cookie-auth POST-only
+// CSRF gate. It fails closed for the sub-action-bearing modes.
 func isStateChangingMode(mode, name string) bool {
 	if isSystemMutationMode(mode) {
 		return true
@@ -172,6 +184,15 @@ func isStateChangingMode(mode, name string) bool {
 		return isQueueMutation(name)
 	case "history":
 		return isHistoryMutation(name)
+	case "warnings":
+		// Only name=clear mutates; the bare listing (empty name) is a
+		// read the UI polls via GET.
+		return name == "clear"
+	case "config":
+		// Every mode=config sub-action mutates config or probes a server;
+		// the UI reads configuration via the distinct get_config mode and
+		// never issues a cookie GET to mode=config.
+		return true
 	default:
 		return false
 	}
