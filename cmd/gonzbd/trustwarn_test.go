@@ -45,7 +45,12 @@ func TestListenerHost(t *testing.T) {
 		{addr: "127.0.0.1:4289", want: "127.0.0.1"},
 		{addr: "0.0.0.0:8080", want: "0.0.0.0"},
 		{addr: "[::1]:4289", want: "::1"},
-		{addr: ":4289", want: ""},
+		// A bare ":PORT" address (as produced by "--listen :4289") has no
+		// host component, but net.Listen resolves it to the wildcard bind
+		// (all interfaces) -- NOT loopback. Must normalize to a concrete
+		// non-loopback marker, not pass the empty string through, or
+		// nonLoopbackWithoutLocalRanges will misread "no host" as safe.
+		{addr: ":4289", want: "0.0.0.0"},
 		{addr: "no-port-here", want: "no-port-here"},
 	}
 	for _, tc := range tests {
@@ -58,20 +63,79 @@ func TestListenerHost(t *testing.T) {
 	}
 }
 
-// TestListenerHostReflectsOverride proves the warning must be evaluated
-// against the *effective* listener address (httpSrv.Addr after --listen is
-// applied), not the raw config-file general.host. Before this fix, main.go
-// checked cfg.General.Host directly: a config with a loopback host but a
-// --listen override binding non-loopback would silently produce no warning,
-// even though the daemon is actually listening on the non-loopback address.
-func TestListenerHostReflectsOverride(t *testing.T) {
-	const configHost = "127.0.0.1"
-	const overrideAddr = "0.0.0.0:4289" // as if --listen 0.0.0.0:4289 was passed
-
-	if warn := nonLoopbackWithoutLocalRanges(configHost, nil); warn != "" {
-		t.Fatalf("sanity check: the raw config host is loopback and should not warn on its own: %q", warn)
+// TestNonLoopbackWarnings exercises nonLoopbackWarnings directly -- this is
+// the exact function serveMode calls with httpSrv.Addr/httpsSrv.Addr, so
+// unlike testing listenerHost and nonLoopbackWithoutLocalRanges in
+// isolation, this proves serveMode's actual effective-host selection,
+// HTTPS-enabled gating, and same-host deduplication, not just that the two
+// underlying helpers compose correctly in the abstract.
+func TestNonLoopbackWarnings(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		httpAddr  string
+		httpsAddr string
+		httpsOn   bool
+		ranges    []string
+		wantWarns int
+	}{
+		{
+			name:     "loopback http, https disabled: no warning",
+			httpAddr: "127.0.0.1:4289", httpsAddr: "127.0.0.1:0", httpsOn: false,
+			wantWarns: 0,
+		},
+		{
+			// The bug this test guards: before nonLoopbackWarnings existed,
+			// main.go checked cfg.General.Host directly, which --listen
+			// never touches. A loopback config host with a --listen
+			// override to a non-loopback address produced no warning even
+			// though the daemon was actually listening non-loopback.
+			name:     "config host loopback but --listen override is non-loopback",
+			httpAddr: "0.0.0.0:4289", httpsAddr: "127.0.0.1:0", httpsOn: false,
+			wantWarns: 1,
+		},
+		{
+			// The bug the /96-adjacent listenerHost fix guards: "--listen
+			// :4289" (bare port) has no host component but binds all
+			// interfaces, not loopback.
+			name:     "--listen bare port is a wildcard bind, not loopback",
+			httpAddr: ":4289", httpsAddr: "127.0.0.1:0", httpsOn: false,
+			wantWarns: 1,
+		},
+		{
+			name:     "http loopback, https enabled and non-loopback",
+			httpAddr: "127.0.0.1:4289", httpsAddr: "192.168.1.5:4443", httpsOn: true,
+			wantWarns: 1,
+		},
+		{
+			name:     "https non-loopback but disabled: not checked",
+			httpAddr: "127.0.0.1:4289", httpsAddr: "192.168.1.5:4443", httpsOn: false,
+			wantWarns: 0,
+		},
+		{
+			name:     "both non-loopback, same host: deduplicated to one warning",
+			httpAddr: "0.0.0.0:4289", httpsAddr: "0.0.0.0:4443", httpsOn: true,
+			wantWarns: 1,
+		},
+		{
+			name:     "both non-loopback, different hosts: two warnings",
+			httpAddr: "0.0.0.0:4289", httpsAddr: "192.168.1.5:4443", httpsOn: true,
+			wantWarns: 2,
+		},
+		{
+			name:     "non-loopback but local_ranges configured: no warning",
+			httpAddr: "0.0.0.0:4289", httpsAddr: "127.0.0.1:0", httpsOn: false,
+			ranges: []string{"10.0.0.0/8"}, wantWarns: 0,
+		},
 	}
-	if warn := nonLoopbackWithoutLocalRanges(listenerHost(overrideAddr), nil); warn == "" {
-		t.Error("the effective listener host (after a --listen override) is non-loopback; expected a warning, got none")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := nonLoopbackWarnings(tc.httpAddr, tc.httpsAddr, tc.httpsOn, tc.ranges)
+			if len(got) != tc.wantWarns {
+				t.Errorf("nonLoopbackWarnings(%q, %q, https=%v, %v) = %d warnings %v; want %d",
+					tc.httpAddr, tc.httpsAddr, tc.httpsOn, tc.ranges, len(got), got, tc.wantWarns)
+			}
+		})
 	}
 }
