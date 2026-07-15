@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
@@ -229,17 +228,6 @@ func (h *scenarioHarness) waitFor(timeout time.Duration, cond func() bool) bool 
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-}
-
-// JobStatus returns the current Status of a job, or StatusQueued if the job
-// is no longer in the queue. Snapshot is deep-copied so it is safe to call
-// while the pipeline is active.
-func (h *scenarioHarness) JobStatus(jobID string) constants.Status {
-	snap := h.app.Queue().SnapshotJob(jobID)
-	if snap == nil {
-		return constants.StatusQueued
-	}
-	return snap.Status
 }
 
 // QueueContains reports whether jobID is currently in the active queue.
