@@ -1644,34 +1644,63 @@ func TestQueueChangeCat_ListReflectsNewCategory(t *testing.T) {
 // and then read job.Name with no lock held, while a concurrent SetName
 // call mutates job.Name under the queue's write lock. That is a data race
 // caught by `go test -race`. Run with -race to prove/disprove.
+// TestQueuePause_UnknownIDDoesNotPanic exercises the nil branch of
+// queueSetPaused's job-lookup: pausing/resuming an ID with no matching job
+// must be handled gracefully (loop just skips logging), not dereference the
+// nil *Job for the log line's job.Name.
+func TestQueuePause_UnknownIDDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	s, _ := testQueueServer(t)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&name=pause&value=nonexistent_id&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	rr = apiGet(t, s.Handler(), "/api?mode=queue&name=resume&value=nonexistent_id&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+}
+
 func TestQueueSetPaused_ConcurrentMutationRace(t *testing.T) {
 	s, q := testQueueServer(t)
 	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
 
 	const iterations = 300
-	var wg sync.WaitGroup
-	wg.Add(2)
+	stop := make(chan struct{})
+	var mutatorWG sync.WaitGroup
 
 	// Simulates the download pipeline concurrently renaming the job
-	// (e.g. on dupe-resolution or a rename triggered elsewhere).
-	go func() {
-		defer wg.Done()
-		for i := range iterations {
-			_ = q.SetName(job.ID, fmt.Sprintf("job-%d.nzb", i))
+	// (e.g. on dupe-resolution or a rename triggered elsewhere). Runs
+	// until told to stop, not for a fixed iteration count, so it stays
+	// active for the entire HTTP loop below — a mutator that races to
+	// finish its own fixed loop can exit before the (slower) HTTP loop
+	// reaches its later iterations, leaving no concurrent mutation to
+	// detect for the remainder of the run and weakening this as a
+	// regression proof.
+	mutatorWG.Go(func() {
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = q.SetName(job.ID, fmt.Sprintf("job-%d.nzb", i))
+				i++
+			}
 		}
-	}()
+	})
 
 	// Simulates a client repeatedly pausing/resuming the job, which
 	// (pre-fix) read job.Name off the live pointer for the log line.
-	go func() {
-		defer wg.Done()
-		for range iterations {
-			apiGet(t, s.Handler(), "/api?mode=queue&name=pause&value="+job.ID+"&apikey="+testAPIKey)
-			apiGet(t, s.Handler(), "/api?mode=queue&name=resume&value="+job.ID+"&apikey="+testAPIKey)
-		}
-	}()
+	for range iterations {
+		apiGet(t, s.Handler(), "/api?mode=queue&name=pause&value="+job.ID+"&apikey="+testAPIKey)
+		apiGet(t, s.Handler(), "/api?mode=queue&name=resume&value="+job.ID+"&apikey="+testAPIKey)
+	}
 
-	wg.Wait()
+	close(stop)
+	mutatorWG.Wait()
 }
 
 // TestQueueChangeCat_ConcurrentMutationRace proves that queueChangeCat does
@@ -1690,29 +1719,71 @@ func TestQueueChangeCat_ConcurrentMutationRace(t *testing.T) {
 	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb", Category: "Default"})
 
 	const iterations = 300
-	var wg sync.WaitGroup
-	wg.Add(2)
+	stop := make(chan struct{})
+	var mutatorWG sync.WaitGroup
 
-	go func() {
-		defer wg.Done()
-		for i := range iterations {
-			_ = q.SetPP(job.ID, i%4)
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		for i := range iterations {
-			cat := "movies"
-			if i%2 == 0 {
-				cat = "Default"
+	// Runs until told to stop (see TestQueueSetPaused_ConcurrentMutationRace
+	// for why a fixed iteration count is not enough to stay active for the
+	// full HTTP loop below).
+	mutatorWG.Go(func() {
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = q.SetPP(job.ID, i%4)
+				i++
 			}
-			apiGet(t, s.Handler(),
-				"/api?mode=queue&name=change_cat&value="+job.ID+"&value2="+cat+"&apikey="+testAPIKey)
 		}
-	}()
+	})
 
-	wg.Wait()
+	for i := range iterations {
+		cat := "movies"
+		if i%2 == 0 {
+			cat = "Default"
+		}
+		apiGet(t, s.Handler(),
+			"/api?mode=queue&name=change_cat&value="+job.ID+"&value2="+cat+"&apikey="+testAPIKey)
+	}
+
+	close(stop)
+	mutatorWG.Wait()
+}
+
+// TestRespondCategoryChanged_NilJobStillSucceeds proves that a category
+// change is reported as successful even when the post-change job snapshot
+// is nil. This is the case when the job is concurrently removed between
+// SetCategory succeeding and SnapshotJob running (TRACE-1's SnapshotJob
+// deep-copy fixed the *read*, but the nil case still needs its own handling:
+// SetCategory has already committed by the time job is snapshotted, so a
+// nil snapshot here is only missing logging detail, never a request
+// failure). Exercises respondCategoryChanged directly with a nil job — the
+// exact interleaving that produces a nil snapshot in production is a real
+// but vanishingly narrow race window (two back-to-back lock operations)
+// that is not practical to force reliably via goroutine timing, so this
+// tests the resulting logic deterministically instead.
+func TestRespondCategoryChanged_NilJobStillSucceeds(t *testing.T) {
+	s, _ := testQueueServer(t)
+
+	rr := httptest.NewRecorder()
+	s.respondCategoryChanged(rr, "some-nzo-id", nil)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 even when the job snapshot is nil "+
+			"(the category change already succeeded before the snapshot)", rr.Code)
+	}
+
+	var resp struct {
+		Status bool     `json:"status"`
+		NzoIDs []string `json:"nzo_ids"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Status || len(resp.NzoIDs) != 1 || resp.NzoIDs[0] != "some-nzo-id" {
+		t.Errorf("unexpected response body: %+v", resp)
+	}
 }
 
 type mockApp struct {
