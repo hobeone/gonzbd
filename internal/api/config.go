@@ -55,12 +55,12 @@ func (s *Server) modeGetConfig(w http.ResponseWriter, r *http.Request) {
 
 	section := formValue(r, "section")
 
-	// Marshal the config to JSON first, then optionally filter by section.
-	var raw json.RawMessage
-	var marshalErr error
-	s.config.WithRead(func(cfg *config.Config) {
-		raw, marshalErr = json.Marshal(cfg)
-	})
+	// Marshal a redacted copy of the config to JSON first, then optionally
+	// filter by section. Redacted() replaces all credential fields
+	// (API/NZB keys, server passwords, notification secrets) with a
+	// placeholder so this response never leaks secrets — see SEC-2.
+	redacted := s.config.Redacted()
+	raw, marshalErr := json.Marshal(redacted)
 	if marshalErr != nil {
 		s.respondError(w, http.StatusInternalServerError, "marshal config: "+marshalErr.Error())
 		return
