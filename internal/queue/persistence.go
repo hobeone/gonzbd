@@ -214,16 +214,11 @@ func SaveJob(path string, job *Job) error {
 
 // writeGzJSON encodes v as gzipped JSON and atomically publishes it at path.
 func writeGzJSON(path string, v any) error {
-	return fsutil.WriteAtomic(path, func(w io.Writer) error {
-		gz := gzip.NewWriter(w)
+	return fsutil.WriteGzAtomic(path, func(gz io.Writer) error {
 		enc := json.NewEncoder(gz)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(v); err != nil {
-			_ = gz.Close() // cleanup gzip writer on encode error
 			return fmt.Errorf("encode: %w", err)
-		}
-		if err := gz.Close(); err != nil {
-			return fmt.Errorf("close gzip: %w", err)
 		}
 		return nil
 	})
@@ -232,17 +227,7 @@ func writeGzJSON(path string, v any) error {
 // writeGzJSONRaw writes pre-marshalled JSON bytes to a gzipped file at path.
 // Used when JSON marshalling happens separately (e.g. under a lock) from disk I/O.
 func writeGzJSONRaw(path string, data []byte) error {
-	return fsutil.WriteAtomic(path, func(w io.Writer) error {
-		gz := gzip.NewWriter(w)
-		if _, err := gz.Write(data); err != nil {
-			_ = gz.Close() // cleanup gzip writer on write error
-			return fmt.Errorf("write gzip: %w", err)
-		}
-		if err := gz.Close(); err != nil {
-			return fmt.Errorf("close gzip: %w", err)
-		}
-		return nil
-	})
+	return fsutil.WriteGzAtomicBytes(path, data)
 }
 
 // readGzJSON opens path, gunzips, and decodes JSON into v. Returns
