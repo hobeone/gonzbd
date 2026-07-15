@@ -162,7 +162,15 @@ func (r *Repository) Search(ctx context.Context, opts SearchOptions) ([]Entry, e
 	}
 	defer rows.Close() //nolint:errcheck // read-only result set
 
-	var out []Entry
+	// Preallocate to the requested page size when known (OPT-11); the
+	// query can never return more than opts.Limit rows in that case. Fall
+	// back to a small hint for unbounded queries so we still avoid the
+	// first few reallocations.
+	capHint := 16
+	if opts.Limit > 0 {
+		capHint = opts.Limit
+	}
+	out := make([]Entry, 0, capHint)
 	for rows.Next() {
 		e, err := scanEntry(rows)
 		if err != nil {
