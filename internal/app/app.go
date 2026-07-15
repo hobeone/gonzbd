@@ -6,11 +6,9 @@
 package app
 
 import (
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1519,12 +1517,5 @@ func failMsgForJob(job *queue.Job) string {
 // writeGzFile writes data to path as a gzip-compressed file using atomic
 // temp+fsync+rename to prevent corruption on crash.
 func writeGzFile(path string, data []byte) error {
-	return fsutil.WriteAtomic(path, func(w io.Writer) error {
-		gz := gzip.NewWriter(w)
-		if _, err := gz.Write(data); err != nil {
-			_ = gz.Close()
-			return fmt.Errorf("gzip write: %w", err)
-		}
-		return gz.Close()
-	})
+	return fsutil.WriteGzAtomicBytes(path, data)
 }
