@@ -371,6 +371,73 @@ func TestBroadcaster_Handle_SameOriginAccepted(t *testing.T) {
 	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "done") }()
 }
 
+// TestBroadcaster_Handle_BufferOverflow exercises the Handle write loop's
+// overflow teardown: when a connected client stops reading, its send channel
+// fills, Broadcast closes the channel and deregisters the client, and the
+// write loop tears the connection down — either by observing the closed
+// channel (ok == false) or by hitting a write error/timeout. Both are the
+// same real behavior and neither is reached by the happy-path Handle tests.
+func TestBroadcaster_Handle_BufferOverflow(t *testing.T) {
+	b := NewBroadcaster(slog.Default())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.Handle(w, r)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "done") }()
+
+	// Wait for the client to register with the broadcaster.
+	ctxPoll, cancelPoll := context.WithTimeout(ctx, 2*time.Second)
+	for b.NumClients() == 0 {
+		select {
+		case <-ctxPoll.Done():
+			cancelPoll()
+			t.Fatal("timeout waiting for client registration")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancelPoll()
+
+	// The client deliberately never reads. Broadcast large events until the
+	// OS socket write buffer and the 16-slot send channel both fill; the next
+	// Broadcast then overflows, closing the channel and deregistering the
+	// client. The 4 KiB payload guarantees the socket buffer fills well within
+	// the loop regardless of platform buffer autotuning — a tiny payload can
+	// be fully absorbed by a multi-megabyte autotuned buffer and never
+	// overflow.
+	big := strings.Repeat("x", 4096)
+	const maxBroadcasts = 20000
+	sent := 0
+	for ; sent < maxBroadcasts && b.NumClients() != 0; sent++ {
+		b.Broadcast(Event{Type: "overflow_test", Line: big})
+	}
+
+	if n := b.NumClients(); n != 0 {
+		t.Fatalf("client did not overflow after %d broadcasts; NumClients() = %d", sent, n)
+	}
+
+	// Drain the connection until the server tears it down (StatusGoingAway on
+	// the closed-channel branch, or a write-error close). A read error here is
+	// the expected terminal state.
+	for {
+		if _, _, err := conn.Read(ctx); err != nil {
+			break
+		}
+	}
+}
+
 func TestBroadcaster_HandleClientDisconnect(t *testing.T) {
 	b := NewBroadcaster(slog.Default())
 
