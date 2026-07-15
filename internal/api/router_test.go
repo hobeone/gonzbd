@@ -115,3 +115,63 @@ func TestUnexportedRouterHelpersAlignmentReference(t *testing.T) {
 	var s Server
 	_ = s.handleAPI
 }
+
+// TestHandleAPI_CookieAuth_GET_StateChangingClassification guards the
+// fail-closed CSRF classification. Before it, several genuinely
+// state-changing sub-actions (pause_all, rename, change_cat, change_script,
+// history retry/mark_as_completed, warnings clear, and every mode=config
+// sub-action) were not classified as mutations, so a cookie-authenticated
+// GET (the CSRF vector) sailed past the POST-only gate.
+func TestHandleAPI_CookieAuth_GET_StateChangingClassification(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+
+	blocked := []struct{ name, url string }{
+		{"queue pause_all", "/api?mode=queue&name=pause_all"},
+		{"queue resume_all", "/api?mode=queue&name=resume_all"},
+		{"queue rename", "/api?mode=queue&name=rename&value=x&value2=y"},
+		{"queue change_cat", "/api?mode=queue&name=change_cat&value=x&value2=y"},
+		{"queue change_script", "/api?mode=queue&name=change_script&value=x&value2=y"},
+		{"history retry", "/api?mode=history&name=retry&value=x"},
+		{"history mark_as_completed", "/api?mode=history&name=mark_as_completed&value=x"},
+		{"warnings clear", "/api?mode=warnings&name=clear"},
+		{"config set_apikey", "/api?mode=config&name=set_apikey"},
+		{"config set_pause", "/api?mode=config&name=set_pause&value=1"},
+	}
+	for _, tc := range blocked {
+		t.Run("blocked/"+tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+			req.Host = "localhost:4289"
+			req.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: s.SessionKey()})
+			rr := httptest.NewRecorder()
+
+			s.Handler().ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusMethodNotAllowed {
+				t.Errorf("%s via cookie GET: got status %d, want 405 (state-changing must require POST)", tc.name, rr.Code)
+			}
+		})
+	}
+
+	// Read-only cookie GETs must NOT be blocked. They may return other
+	// statuses depending on wiring, but never 405.
+	allowed := []struct{ name, url string }{
+		{"queue list", "/api?mode=queue"},
+		{"history list", "/api?mode=history"},
+		{"warnings poll", "/api?mode=warnings"},
+	}
+	for _, tc := range allowed {
+		t.Run("allowed/"+tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+			req.Host = "localhost:4289"
+			req.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: s.SessionKey()})
+			rr := httptest.NewRecorder()
+
+			s.Handler().ServeHTTP(rr, req)
+
+			if rr.Code == http.StatusMethodNotAllowed {
+				t.Errorf("%s via cookie GET: got 405, but a read-only action must be allowed", tc.name)
+			}
+		})
+	}
+}
