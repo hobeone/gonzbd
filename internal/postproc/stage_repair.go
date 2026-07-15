@@ -19,7 +19,9 @@ type RepairStage struct {
 	mu sync.RWMutex
 	// Par2Opts configures the par2 binary path and turbo mode.
 	Par2Opts par2.RunOptions
-	// ParseOpts defines safety limits for PAR2 parsing.
+	// ParseOpts defines safety limits for PAR2 parsing. Applied when stages
+	// are built at startup (and on config reload's stage rebuild); there is
+	// no runtime setter, unlike the par2 binary/turbo options above.
 	ParseOpts par2.ParseOptions
 	// UseGoPar2 enables the native par2engine library for verification
 	// and repair. When true and native repair fails, falls back to the
@@ -38,13 +40,6 @@ func (s *RepairStage) SetPar2Opts(opts par2.RunOptions) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Par2Opts = opts
-}
-
-// SetParseOpts updates the PAR2 parse options at runtime. Thread-safe.
-func (s *RepairStage) SetParseOpts(opts par2.ParseOptions) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.ParseOpts = opts
 }
 
 // SetUseGoPar2 enables or disables pure-Go par2 at runtime. Thread-safe.
