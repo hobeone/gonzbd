@@ -135,7 +135,7 @@ func (s *Server) historyList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var slots []historySlot
+	slots := make([]historySlot, 0, len(entries))
 	var totalBytes int64
 
 	for _, e := range entries {
