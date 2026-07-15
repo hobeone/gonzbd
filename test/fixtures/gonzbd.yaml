@@ -50,9 +50,9 @@ postproc:
   unrar_command: ""
   sevenz_command: ""
   par2_turbo: false
-  # Maximum payload size (in bytes) of a single PAR2 packet body (default: 67108864 [64 MiB], min: 65536 [64 KiB], 0=unlimited). Prevents OOM on corrupt files.
+  # Maximum payload size (in bytes) of a single PAR2 packet body (default: 67108864 [64 MiB], min: 65536 [64 KiB]; 0 or below-floor uses the default). Prevents OOM on corrupt files.
   par2_max_packet_body_size: 67108864
-  # Maximum forward search distance (in bytes) when scanning for PAR2 magic headers (default: 65536 [64 KiB], min: 1024 [1 KiB], 0=unlimited).
+  # Maximum forward search distance (in bytes) when scanning for PAR2 magic headers (default: 65536 [64 KiB], min: 1024 [1 KiB]; 0 or below-floor uses the default).
   par2_max_junk_scan_bytes: 65536
   ignore_unrar_dates: false
   overwrite_files: false

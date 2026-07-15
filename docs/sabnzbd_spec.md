@@ -672,8 +672,8 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `unrar_command` | string | (auto-detected) | UnRAR binary path |
 | `sevenz_command` | string | (auto-detected) | 7-Zip binary path |
 | `par2_turbo` | bool | false | Use par2cmdline-turbo |
-| `par2_max_packet_body_size` | uint64 | 67108864 | Max PAR2 packet body size in bytes (64 MiB default; min floor 64 KiB; 0=unlimited) |
-| `par2_max_junk_scan_bytes` | int64 | 65536 | Max non-PAR2 junk scan bytes before header match (64 KiB default; min floor 1 KiB; 0=unlimited) |
+| `par2_max_packet_body_size` | uint64 | 67108864 | Max PAR2 packet body size in bytes (64 MiB default; min floor 64 KiB; 0 or below-floor uses the default — no unlimited setting) |
+| `par2_max_junk_scan_bytes` | int64 | 65536 | Max non-PAR2 junk scan bytes before header match (64 KiB default; min floor 1 KiB; 0 or below-floor uses the default) |
 | `ignore_unrar_dates` | bool | false | Ignore timestamps in archives |
 | `overwrite_files` | bool | false | Overwrite existing extracted files |
 | `flat_unpack` | bool | false | Extract all to single folder |
