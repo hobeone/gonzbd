@@ -354,21 +354,9 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	// httpsSrv.Addr — --listen only overrides the HTTP listener, so a
 	// config-file-only check would miss a non-loopback --listen override.
 	// API-key auth still works from anywhere regardless.
-	listenerAddrs := []string{httpSrv.Addr}
-	if cfg.General.HTTPSPort > 0 {
-		listenerAddrs = append(listenerAddrs, httpsSrv.Addr)
-	}
-	warnedHosts := make(map[string]bool, len(listenerAddrs))
-	for _, addr := range listenerAddrs {
-		host := listenerHost(addr)
-		if warnedHosts[host] {
-			continue
-		}
-		warnedHosts[host] = true
-		if warn := nonLoopbackWithoutLocalRanges(host, cfg.General.LocalRanges); warn != "" {
-			log.Warn(warn)
-			apiSrv.AddWarning(warn)
-		}
+	for _, warn := range nonLoopbackWarnings(httpSrv.Addr, httpsSrv.Addr, cfg.General.HTTPSPort > 0, cfg.General.LocalRanges) {
+		log.Warn(warn)
+		apiSrv.AddWarning(warn)
 	}
 	// errCh sized to 2 so both HTTP and HTTPS goroutines can report
 	// without blocking each other if both fail simultaneously.
@@ -629,7 +617,46 @@ func listenerHost(addr string) string {
 	if err != nil {
 		return addr
 	}
+	if host == "" {
+		// A blank host (e.g. ":4289", as produced by "--listen :4289" or
+		// any host:port string with no host component) means "listen on
+		// all interfaces" — net.Listen resolves it to the wildcard address
+		// ([::] / 0.0.0.0), not loopback. Normalize to an explicit
+		// non-loopback marker: nonLoopbackWithoutLocalRanges's empty-string
+		// case means "no host configured" (matching config.GeneralConfig's
+		// validated, always-non-empty general.host), which is the wrong
+		// reading for a wildcard bind address.
+		return "0.0.0.0"
+	}
 	return host
+}
+
+// nonLoopbackWarnings computes the SEC-1 non-loopback warning for each
+// distinct effective listener host. httpAddr is the HTTP listener's
+// *http.Server.Addr (reflecting any --listen override); httpsAddr is only
+// evaluated when httpsEnabled (https_port > 0) — HTTPS always binds
+// General.Host and is unaffected by --listen, but is included here so a
+// non-loopback general.host still warns even when --listen narrows the HTTP
+// listener to loopback. Deduplicates identical hosts so binding both
+// listeners to the same address doesn't produce two warnings.
+func nonLoopbackWarnings(httpAddr, httpsAddr string, httpsEnabled bool, localRanges []string) []string {
+	addrs := []string{httpAddr}
+	if httpsEnabled {
+		addrs = append(addrs, httpsAddr)
+	}
+	seen := make(map[string]bool, len(addrs))
+	var warnings []string
+	for _, addr := range addrs {
+		host := listenerHost(addr)
+		if seen[host] {
+			continue
+		}
+		seen[host] = true
+		if warn := nonLoopbackWithoutLocalRanges(host, localRanges); warn != "" {
+			warnings = append(warnings, warn)
+		}
+	}
+	return warnings
 }
 
 // resolveDirs computes the effective download and admin directories from
