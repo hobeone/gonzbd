@@ -309,3 +309,32 @@ func TestWriteAtomic_RenameError(t *testing.T) {
 		t.Fatal("expected rename error when temp file is removed early, got nil")
 	}
 }
+
+// TestWriteAtomic_PanicSafety proves that a panic in the write callback does
+// not leak the temp file or its file descriptor: the deferred cleanup runs
+// during unwinding, removing the temp file, and the panic propagates to the
+// caller (writeAtomic does not swallow it).
+func TestWriteAtomic_PanicSafety(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "panic_safety.bin")
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic in write callback to propagate, but it did not")
+		}
+		// The target is never published on panic, and the temp file must be
+		// cleaned up — so the directory must be empty.
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		for _, e := range entries {
+			t.Errorf("stray file left after panic: %s", e.Name())
+		}
+	}()
+
+	_ = fsutil.WriteAtomic(path, func(_ io.Writer) error {
+		panic("intentional crash in write callback")
+	})
+}

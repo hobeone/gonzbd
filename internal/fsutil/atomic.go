@@ -41,33 +41,41 @@ func writeAtomic(path string, perm os.FileMode, chmod bool, write func(w io.Writ
 	}
 	tmpName := tmp.Name()
 
-	cleanup := func() {
-		_ = tmp.Close()        // cleanup temp file on error path
-		_ = os.Remove(tmpName) // cleanup temp file on error path
-	}
+	// keep is set only on the fully successful path (after a successful
+	// rename). Until then, the deferred cleanup closes the fd and removes the
+	// temp file — this runs on any error return AND on a panic in write(),
+	// so neither leaks a descriptor nor a stray temp file. The final Close()
+	// on the success path means these are no-ops (double Close returns an
+	// ignored error); on the rename-error path the temp still exists and is
+	// removed here.
+	var keep bool
+	defer func() {
+		if !keep {
+			_ = tmp.Close()        // no-op if already closed on the success path
+			_ = os.Remove(tmpName) // remove the unpublished temp file
+		}
+	}()
 
 	if err := write(tmp); err != nil {
-		cleanup()
 		return fmt.Errorf("atomic write %s: %w", base, err)
 	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return fmt.Errorf("atomic write %s: fsync: %w", base, err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName) // cleanup temp file on close error
-		return fmt.Errorf("atomic write %s: close temp: %w", base, err)
-	}
 	if chmod {
-		if err := os.Chmod(tmpName, perm); err != nil {
-			_ = os.Remove(tmpName) // cleanup temp file on chmod error
+		// chmod the open descriptor (fchmod), not the path, so the permission
+		// change cannot be hijacked by a symlink swap on tmpName (TOCTOU).
+		if err := tmp.Chmod(perm); err != nil {
 			return fmt.Errorf("atomic write %s: chmod: %w", base, err)
 		}
 	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("atomic write %s: fsync: %w", base, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("atomic write %s: close temp: %w", base, err)
+	}
 	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName) // cleanup temp file on rename error
 		return fmt.Errorf("atomic write %s: rename: %w", base, err)
 	}
+	keep = true
 	return nil
 }
 
