@@ -374,8 +374,13 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 		speed = s.app.Speed()
 	}
 
+	// Hoisted out of the loop (OPT-10): lowercase search once per request
+	// instead of re-lowercasing it (and each job's Name/Filename) on every
+	// iteration.
+	searchLower := strings.ToLower(search)
+
 	// Build slots applying filters.
-	var slots []queueSlot
+	slots := make([]queueSlot, 0, len(jobs))
 	for _, j := range jobs {
 		// Post-processing jobs remain in the queue with their current
 		// status (Verifying, Repairing, Extracting, etc.) until
@@ -386,8 +391,8 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 		if statusFilter != "" && string(j.Status) != statusFilter {
 			continue
 		}
-		if search != "" && !strings.Contains(strings.ToLower(j.Name), strings.ToLower(search)) &&
-			!strings.Contains(strings.ToLower(j.Filename), strings.ToLower(search)) {
+		if search != "" && !strings.Contains(strings.ToLower(j.Name), searchLower) &&
+			!strings.Contains(strings.ToLower(j.Filename), searchLower) {
 			continue
 		}
 
