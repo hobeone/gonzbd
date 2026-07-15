@@ -87,9 +87,12 @@ func (b *Broadcaster) Broadcast(event Event) {
 
 // Handle upgrades the HTTP connection and manages the client lifecycle.
 func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
-	opts := &websocket.AcceptOptions{
-		InsecureSkipVerify: true,
-	}
+	// Leave OriginPatterns empty and InsecureSkipVerify false so the
+	// coder/websocket library enforces its default same-origin check
+	// (Origin host must match Request.Host, or no Origin header is
+	// present at all — the case for non-browser API clients). This is a
+	// defense-in-depth control independent of callerLevel/isCrossOrigin.
+	opts := &websocket.AcceptOptions{}
 	conn, err := websocket.Accept(w, r, opts)
 	if err != nil {
 		b.log.Error("WebSocket accept failed", "err", err)

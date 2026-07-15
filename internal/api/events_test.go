@@ -303,6 +303,74 @@ func TestBroadcaster_Handle(t *testing.T) {
 	}
 }
 
+// TestBroadcaster_Handle_CrossOriginRejected proves the WebSocket upgrade
+// enforces the coder/websocket library's same-origin check independent of
+// the application's callerLevel/isCrossOrigin logic (SEC-5). A handshake
+// carrying an Origin header for a different host than the request's Host
+// must be rejected at the library layer.
+func TestBroadcaster_Handle_CrossOriginRejected(t *testing.T) {
+	b := NewBroadcaster(slog.Default())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.Handle(w, r)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	_, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Origin": {"http://evil.example.com"},
+		},
+	})
+	if resp != nil && resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
+	if err == nil {
+		t.Fatal("expected cross-origin websocket dial to fail, but it succeeded")
+	}
+	if resp != nil && resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d; want 403 Forbidden", resp.StatusCode)
+	}
+
+	// The client must never have been registered.
+	if n := b.NumClients(); n != 0 {
+		t.Errorf("cross-origin client was registered: NumClients() = %d", n)
+	}
+}
+
+// TestBroadcaster_Handle_SameOriginAccepted proves same-origin handshakes
+// (the SPA's own connection, where Origin matches Host, or no Origin header
+// at all as sent by non-browser clients) still succeed after removing
+// InsecureSkipVerify.
+func TestBroadcaster_Handle_SameOriginAccepted(t *testing.T) {
+	b := NewBroadcaster(slog.Default())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.Handle(w, r)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Origin": {srv.URL},
+		},
+	})
+	if resp != nil && resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
+	if err != nil {
+		t.Fatalf("same-origin websocket dial failed: %v", err)
+	}
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "done") }()
+}
+
 func TestBroadcaster_HandleClientDisconnect(t *testing.T) {
 	b := NewBroadcaster(slog.Default())
 
