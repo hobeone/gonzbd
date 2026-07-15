@@ -570,7 +570,11 @@ func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, action f
 	}
 	for _, id := range splitCSV(value) {
 		_ = action(id) //nolint:errcheck // not-found silently ignored
-		if job, err := s.queue.Get(id); err == nil {
+		// Use SnapshotJob (deep copy under RLock), never the live *Job
+		// from queue.Get: the download pipeline mutates job.Name
+		// concurrently, and reading it off the live pointer here would
+		// be an unsynchronized data race (TRACE-1).
+		if job := s.queue.SnapshotJob(id); job != nil {
 			s.log.Info("job "+verb, "job", id, "name", job.Name)
 		}
 	}
@@ -650,9 +654,13 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	job, err := s.queue.Get(nzoID)
-	if err != nil {
-		s.respondError(w, http.StatusInternalServerError, err.Error())
+	// Use SnapshotJob (deep copy under RLock), never the live *Job from
+	// queue.Get: the download pipeline mutates these fields concurrently,
+	// and reading them off the live pointer here would be an
+	// unsynchronized data race (TRACE-1).
+	job := s.queue.SnapshotJob(nzoID)
+	if job == nil {
+		s.respondError(w, http.StatusInternalServerError, fmt.Sprintf("queue: job not found: %s", nzoID))
 		return
 	}
 	s.log.Info("job category changed", "job", nzoID,
