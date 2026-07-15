@@ -54,6 +54,59 @@ func TestModeGetConfig_Default(t *testing.T) {
 	}
 }
 
+// TestModeGetConfig_RedactsSecrets proves SEC-2: mode=get_config must never
+// emit credential values in cleartext. It sets a distinctive value on every
+// secret field covered by config.Redacted() and asserts none of them appear
+// anywhere in the response body.
+func TestModeGetConfig_RedactsSecrets(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+
+	const (
+		secretServerPassword = "s3cr3t-server-password-XYZ"
+		secretEmailPassword  = "s3cr3t-email-password-XYZ"
+		secretAppriseURL     = "https://discord.com/api/webhooks/123/s3cr3t-token-XYZ"
+		secretAppriseService = "https://slack.com/hooks/s3cr3t-service-XYZ"
+	)
+
+	cfg.With(func(c *config.Config) {
+		c.Servers = []config.ServerConfig{{
+			Name:     "test-server",
+			Host:     "news.example.com",
+			Password: secretServerPassword,
+		}}
+		c.Notifications.Email.Password = secretEmailPassword
+		c.Notifications.Apprise.URL = secretAppriseURL
+		c.Notifications.Apprise.ServiceURL = secretAppriseService
+	})
+
+	s := testServerWithConfig(t, cfg)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=get_config&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	secrets := map[string]string{
+		"apikey":          testAPIKey,
+		"nzbkey":          testNZBKey,
+		"server password": secretServerPassword,
+		"email password":  secretEmailPassword,
+		"apprise url":     secretAppriseURL,
+		"apprise service": secretAppriseService,
+	}
+	for name, secret := range secrets {
+		if strings.Contains(body, secret) {
+			t.Errorf("response body leaks %s (%q)", name, secret)
+		}
+	}
+}
+
 func TestModeSetConfig_NoConfigWired(t *testing.T) {
 	t.Parallel()
 	s := New(Options{Version: "1.0.0"})
