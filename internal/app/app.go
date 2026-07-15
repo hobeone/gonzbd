@@ -1377,11 +1377,6 @@ func WithCheckpointInterval(d time.Duration) func(*Application) {
 	return func(a *Application) { a.checkpointInterval = d }
 }
 
-// WithLifecycleContext returns an option that sets the Application's initial lifecycle context.
-func WithLifecycleContext(ctx context.Context) func(*Application) { //nocover: trivial functional option setter
-	return func(a *Application) { a.ctx = ctx }
-}
-
 // SetSpeedLimit updates the download speed limit. bytesPerSec <= 0 means unlimited.
 func (app *Application) SetSpeedLimit(bytesPerSec int64) {
 	app.mu.Lock()
