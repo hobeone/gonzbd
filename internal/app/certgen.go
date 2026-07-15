@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // generateSelfSigned generates an Ed25519 key and self-signed certificate
@@ -106,51 +108,12 @@ func WriteSelfSigned(certPath, keyPath string) error {
 }
 
 // writeFileAtomic writes data to a file atomically by writing to a temp file
-// in the same directory and renaming it.
+// in the same directory and renaming it, with perm applied before the file
+// is published.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
-
-	tmp, err := os.CreateTemp(dir, ".cert-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
-		//nolint:errcheck // best-effort cleanup; write error takes precedence
-		_ = tmp.Close()
-		//nolint:errcheck // best-effort cleanup; write error takes precedence
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("write: %w", err)
-	}
-
-	if err := tmp.Sync(); err != nil {
-		//nolint:errcheck // best-effort cleanup; sync error takes precedence
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("sync: %w", err)
-	}
-
-	if err := tmp.Close(); err != nil {
-		//nolint:errcheck // best-effort cleanup; close error takes precedence
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("close: %w", err)
-	}
-
-	if err := os.Chmod(tmpName, perm); err != nil {
-		//nolint:errcheck // best-effort cleanup; chmod error takes precedence
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("chmod: %w", err)
-	}
-
-	if err := os.Rename(tmpName, path); err != nil {
-		//nolint:errcheck // best-effort cleanup; rename error takes precedence
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("rename: %w", err)
-	}
-
-	return nil
+	return fsutil.WriteAtomicBytesPerm(path, data, perm)
 }
