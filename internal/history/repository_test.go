@@ -346,6 +346,38 @@ func TestSearchPagination(t *testing.T) {
 	}
 }
 
+// TestSearch_PreallocationCapBounded proves the result-slice preallocation
+// hint is capped independently of opts.Limit. Search still returns the
+// correct rows either way; this test is only about the allocation hint,
+// which is not directly observable except via cap() on an empty result
+// (nothing appended beyond the initial make), so it uses an empty DB and
+// checks cap() of the returned (empty) slice.
+func TestSearch_PreallocationCapBounded(t *testing.T) {
+	_, repo := openTestDB(t)
+	ctx := t.Context()
+
+	tests := []struct {
+		name    string
+		limit   int
+		wantCap int
+	}{
+		{"unbounded search falls back to the small default", 0, 16},
+		{"bounded, reasonable limit preallocates to it", 5, 5},
+		{"huge limit is clamped, not preallocated in full", 50_000_000, 10_000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := repo.Search(ctx, SearchOptions{Limit: tc.limit})
+			if err != nil {
+				t.Fatalf("Search: %v", err)
+			}
+			if cap(got) != tc.wantCap {
+				t.Errorf("cap = %d, want %d", cap(got), tc.wantCap)
+			}
+		})
+	}
+}
+
 func TestDeleteSingle(t *testing.T) {
 	_, repo := openTestDB(t)
 	ctx := t.Context()
