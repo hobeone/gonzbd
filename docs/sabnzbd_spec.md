@@ -1281,7 +1281,7 @@ These are the GoNZBD admin files (the SABnzbd originals are noted for reference)
 ### 17.2 Web UI Authentication
 
 - **No password**: Authentication is handled upstream (reverse proxy). No username/password configurations exist.
-- **Session cookie**: `gonzbd_apikey` set automatically on access, enabling secure client-side API authentication.
+- **Session cookie**: `gonzbd_apikey` is issued only to trusted request sources — see §17.4. Untrusted clients still receive the SPA, but no cookie, and must authenticate with the real `api_key`.
 - **HTTPS**: Self-signed cert generated when `https_port > 0` is configured.
 
 ### 17.3 NNTP Password Handling
@@ -1291,9 +1291,9 @@ These are the GoNZBD admin files (the SABnzbd originals are noted for reference)
 
 ### 17.4 Access Control
 
-- **Local ranges**: Requests from `127.0.0.1` and RFC 1918 ranges can be granted UI access without credentials (configurable)
-- **X-Forwarded-For**: Considered when `cfg.verify_host = true` (reverse proxy support)
-- **Config lock**: Prevent configuration changes without a separate PIN
+- **Trusted sources**: Loopback (`127.0.0.1`/`::1`) is always trusted; this is the default and only trusted source. `general.local_ranges` (CIDRs or bare IPs) explicitly extends trust to additional ranges (e.g. a reverse proxy's IP, a Docker bridge, or a LAN) — there is no implicit RFC 1918 trust. The `gonzbd_apikey` session cookie is only issued to, and only accepted from, trusted sources; this is enforced independently at both issuance (`GET /`) and acceptance (every API request), so a leaked or forged cookie cannot be replayed from an untrusted address.
+- **X-Forwarded-For**: Consulted only when `general.verify_xff_header = true`, and only after the direct peer already qualifies as trusted — a public client cannot spoof trust by appending a forged header, since its own peer IP fails the check first.
+- **API-key/NZB-key auth**: Unaffected by the above; works from any address.
 
 ### 17.5 Certificate Generation
 
