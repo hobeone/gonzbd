@@ -392,26 +392,68 @@ type scanner interface {
 
 // scanEntry reads one history row into an Entry. Timestamp columns are stored
 // as unix seconds (INTEGER) and converted to time.Time using UTC.
+//
+// TRACE-4: the schema (internal/history/migrations/001_initial.sql) declares
+// every TEXT/INTEGER column nullable, but Entry exposes plain string/int64
+// fields, not sql.Null*. Add() always binds concrete zero-valued (non-NULL)
+// values, so app-written rows never contain NULLs in practice — but a row
+// inserted by any other means (manual sqlite3, a future migration, an
+// external tool) with a NULL column would otherwise make database/sql return
+// "converting NULL to string/int64 is unsupported", breaking Get/Search for
+// the whole result set. Scan through sql.Null* and coalesce NULL to the zero
+// value, matching the "SQL NULL round-trips as zero value" contract already
+// documented on the Entry struct.
 func scanEntry(s scanner) (*Entry, error) {
 	var (
-		e                    Entry
-		completed, timeAdded int64
+		e                                                                    Entry
+		completed, timeAdded                                                 sql.NullInt64
+		name, nzbName, category, pp, script, report, urlField, status, nzoID sql.NullString
+		storage, path, scriptLine, stageLog, failMessage, urlInfo            sql.NullString
+		meta, series, md5sum, password, duplicateKey                         sql.NullString
+		downloadTime, postprocTime, downloaded, completeness                 sql.NullInt64
+		bytesVal, archive                                                    sql.NullInt64
 	)
 	err := s.Scan(
 		&e.ID, &completed,
-		&e.Name, &e.NzbName, &e.Category, &e.PP, &e.Script, &e.Report,
-		&e.URL, &e.Status, &e.NzoID, &e.Storage, &e.Path,
-		&e.ScriptLog, &e.ScriptLine,
-		&e.DownloadTime, &e.PostprocTime, &e.StageLog,
-		&e.Downloaded, &e.Completeness, &e.FailMessage, &e.URLInfo,
-		&e.Bytes, &e.Meta, &e.Series, &e.MD5Sum, &e.Password,
-		&e.DuplicateKey, &e.Archive, &timeAdded,
+		&name, &nzbName, &category, &pp, &script, &report,
+		&urlField, &status, &nzoID, &storage, &path,
+		&e.ScriptLog, &scriptLine,
+		&downloadTime, &postprocTime, &stageLog,
+		&downloaded, &completeness, &failMessage, &urlInfo,
+		&bytesVal, &meta, &series, &md5sum, &password,
+		&duplicateKey, &archive, &timeAdded,
 	)
 	if err != nil {
 		return nil, err
 	}
-	e.Completed = fromUnix(completed)
-	e.TimeAdded = fromUnix(timeAdded)
+	e.Completed = fromUnix(completed.Int64)
+	e.TimeAdded = fromUnix(timeAdded.Int64)
+	e.Name = name.String
+	e.NzbName = nzbName.String
+	e.Category = category.String
+	e.PP = pp.String
+	e.Script = script.String
+	e.Report = report.String
+	e.URL = urlField.String
+	e.Status = status.String
+	e.NzoID = nzoID.String
+	e.Storage = storage.String
+	e.Path = path.String
+	e.ScriptLine = scriptLine.String
+	e.DownloadTime = downloadTime.Int64
+	e.PostprocTime = postprocTime.Int64
+	e.StageLog = stageLog.String
+	e.Downloaded = downloaded.Int64
+	e.Completeness = completeness.Int64
+	e.FailMessage = failMessage.String
+	e.URLInfo = urlInfo.String
+	e.Bytes = bytesVal.Int64
+	e.Meta = meta.String
+	e.Series = series.String
+	e.MD5Sum = md5sum.String
+	e.Password = password.String
+	e.DuplicateKey = duplicateKey.String
+	e.Archive = archive.Int64
 	return &e, nil
 }
 
