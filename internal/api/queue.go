@@ -664,12 +664,20 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 	// and reading them off the live pointer here would be an
 	// unsynchronized data race (TRACE-1).
 	job := s.queue.SnapshotJob(nzoID)
-	if job == nil {
-		s.respondError(w, http.StatusInternalServerError, fmt.Sprintf("queue: job not found: %s", nzoID))
-		return
+	s.respondCategoryChanged(w, nzoID, job)
+}
+
+// respondCategoryChanged writes the change_cat success response. job is the
+// post-change snapshot used only for the log line and may be nil: SetCategory
+// has already succeeded by the time this is called, and a concurrent removal
+// of the job between that call and the snapshot is not a failure of this
+// request — it is only missing logging detail, so the response must stay
+// 200 regardless.
+func (s *Server) respondCategoryChanged(w http.ResponseWriter, nzoID string, job *queue.Job) {
+	if job != nil {
+		s.log.Info("job category changed", "job", nzoID,
+			"cat", job.Category, "pp", job.PP, "script", job.Script, "priority", job.Priority)
 	}
-	s.log.Info("job category changed", "job", nzoID,
-		"cat", job.Category, "pp", job.PP, "script", job.Script, "priority", job.Priority)
 	respondJSON(w, http.StatusOK, map[string]any{
 		"status":  true,
 		"nzo_ids": []string{nzoID},
