@@ -264,6 +264,12 @@ func TestSPACookie_TrustGate(t *testing.T) {
 		handler := NewSPAHandler(testSPAFS(), func() string { return "test-key" }, untrusted)
 		rr := httptest.NewRecorder()
 		handler.ServeHTTP(rr, httptest.NewRequest("GET", "/config/general", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET /config/general status = %d, want 200 (SPA still served via catch-all)", rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "GoNZBD") {
+			t.Error("untrusted client should still receive the SPA HTML via the deep-link catch-all")
+		}
 		if hasCookie(rr) {
 			t.Error("untrusted client must NOT receive the cookie via SPA catch-all")
 		}

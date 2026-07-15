@@ -24,6 +24,13 @@ func TestParseLocalRanges(t *testing.T) {
 		{name: "invalid cidr", in: []string{"10.0.0.0/99"}, wantErr: true},
 		{name: "invalid ip", in: []string{"not-an-ip"}, wantErr: true},
 		{name: "garbage among valid", in: []string{"10.0.0.0/8", "bogus"}, wantErr: true},
+		// IPv4-mapped CIDRs (::ffff:a.b.c.d/n) must normalize to plain IPv4
+		// prefixes, or ipTrusted's family-mismatched Contains() check would
+		// make the entry silently never match anything.
+		{name: "ipv4-mapped cidr normalizes to plain ipv4", in: []string{"::ffff:192.168.1.0/120"}, want: []string{"192.168.1.0/24"}},
+		{name: "ipv4-mapped host prefix normalizes", in: []string{"::ffff:10.1.2.3/128"}, want: []string{"10.1.2.3/32"}},
+		{name: "ipv4-mapped prefix narrower than the /96 mapping boundary is rejected", in: []string{"::ffff:192.168.1.0/64"}, wantErr: true},
+		{name: "ipv4-mapped prefix at exactly the /96 boundary is accepted", in: []string{"::ffff:0.0.0.0/96"}, want: []string{"0.0.0.0/0"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,6 +91,7 @@ func TestIsTrustedRemote(t *testing.T) {
 		{name: "docker trusted via range", remoteAddr: "172.18.0.5:5000", ranges: []string{"172.18.0.0/16"}, want: true},
 		{name: "bare host range match", remoteAddr: "172.18.0.5:5000", ranges: []string{"172.18.0.5"}, want: true},
 		{name: "outside range untrusted", remoteAddr: "172.19.0.5:5000", ranges: []string{"172.18.0.0/16"}, want: false},
+		{name: "private trusted via ipv4-mapped cidr range", remoteAddr: "192.168.1.10:5000", ranges: []string{"::ffff:192.168.0.0/112"}, want: true},
 
 		// X-Forwarded-For is ignored unless verifyXFF is on.
 		{name: "spoofed xff ignored when verify off", remoteAddr: "8.8.8.8:5000", xff: "127.0.0.1", want: false},

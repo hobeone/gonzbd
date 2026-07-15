@@ -330,14 +330,6 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		})
 		return trusted
 	}
-	// Warn when the bind address is non-loopback but no local_ranges are
-	// configured: the web UI will refuse to hand out a session cookie to
-	// remote/proxied clients, so it will appear "logged out". API-key auth
-	// still works from anywhere.
-	if warn := nonLoopbackWithoutLocalRanges(cfg.General); warn != "" {
-		log.Warn(warn)
-		apiSrv.AddWarning(warn)
-	}
 	webHandler, err := web.Handler(apiSrv.SessionKey, trustedFn)
 	if err != nil {
 		return fmt.Errorf("web handler: %w", err)
@@ -352,6 +344,31 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	httpSrv, httpsSrv := newServers(cfg, httpHandler, httpsHandler)
 	if listenOverride != "" {
 		httpSrv.Addr = listenOverride
+	}
+
+	// Warn when an *effective* listener address is non-loopback but no
+	// local_ranges are configured: the web UI will refuse to hand out a
+	// session cookie to remote/proxied clients, so it will appear "logged
+	// out". Checked against httpSrv.Addr (which reflects listenOverride,
+	// not just the config file's general.host) and, when enabled,
+	// httpsSrv.Addr — --listen only overrides the HTTP listener, so a
+	// config-file-only check would miss a non-loopback --listen override.
+	// API-key auth still works from anywhere regardless.
+	listenerAddrs := []string{httpSrv.Addr}
+	if cfg.General.HTTPSPort > 0 {
+		listenerAddrs = append(listenerAddrs, httpsSrv.Addr)
+	}
+	warnedHosts := make(map[string]bool, len(listenerAddrs))
+	for _, addr := range listenerAddrs {
+		host := listenerHost(addr)
+		if warnedHosts[host] {
+			continue
+		}
+		warnedHosts[host] = true
+		if warn := nonLoopbackWithoutLocalRanges(host, cfg.General.LocalRanges); warn != "" {
+			log.Warn(warn)
+			apiSrv.AddWarning(warn)
+		}
 	}
 	// errCh sized to 2 so both HTTP and HTTPS goroutines can report
 	// without blocking each other if both fail simultaneously.
@@ -586,11 +603,11 @@ func keyPrefix(key string) string {
 // remote/proxied clients (loopback-only default), so the UI appears logged
 // out for them. Returns "" when the configuration is safe (loopback bind or
 // local_ranges set). API-key/NZB-key auth is unaffected in all cases.
-func nonLoopbackWithoutLocalRanges(g config.GeneralConfig) string {
-	if len(g.LocalRanges) > 0 {
+func nonLoopbackWithoutLocalRanges(host string, localRanges []string) string {
+	if len(localRanges) > 0 {
 		return ""
 	}
-	host := strings.TrimSpace(g.Host)
+	host = strings.TrimSpace(host)
 	if host == "" || strings.EqualFold(host, "localhost") {
 		return ""
 	}
@@ -601,6 +618,18 @@ func nonLoopbackWithoutLocalRanges(g config.GeneralConfig) string {
 		"the web UI will only issue its session cookie to loopback clients, so it will appear logged out "+
 		"for remote/proxied clients. Set general.local_ranges to your reverse-proxy/LAN/Docker CIDR "+
 		"(API-key auth is unaffected).", host)
+}
+
+// listenerHost extracts the host portion of a "host:port" listener address
+// (e.g. an *http.Server.Addr, possibly overridden by --listen). Falls back
+// to the whole string if it doesn't parse as host:port, which
+// nonLoopbackWithoutLocalRanges then treats conservatively as non-loopback.
+func listenerHost(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
 }
 
 // resolveDirs computes the effective download and admin directories from

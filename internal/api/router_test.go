@@ -123,8 +123,8 @@ func TestUnexportedRouterHelpersAlignmentReference(t *testing.T) {
 // replaying a VALID session cookie from a non-loopback address (the
 // "GET / to grab the cookie, then replay it" attack) must NOT grant admin.
 // The loopback-only default trust policy rejects the cookie; the same cookie
-// from loopback is accepted. Read-only mode=version is used so the only
-// variable is the auth outcome (200 = authenticated, 403 = rejected).
+// from loopback is accepted. Read-only mode=queue is used so the only
+// variable is the auth outcome (200 = authenticated, 401 = rejected).
 func TestSEC1_UntrustedCookieRejected(t *testing.T) {
 	t.Parallel()
 	s := testServer()
