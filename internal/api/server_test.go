@@ -279,6 +279,7 @@ func TestSessionKey_GrantsAdminViaCookie(t *testing.T) {
 	t.Parallel()
 	s := testServer()
 	req := httptest.NewRequest(http.MethodGet, "/api?mode=queue", nil)
+	req.RemoteAddr = "127.0.0.1:12345" // loopback: trusted for cookie auth (SEC-1)
 	req.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: s.SessionKey()})
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, req)

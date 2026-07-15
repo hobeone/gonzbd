@@ -25,6 +25,26 @@ type GeneralConfig struct {
 	// NZBKey authenticates NZB-upload API requests. 16-character lowercase hex.
 	NZBKey string `yaml:"nzb_key" json:"nzb_key"`
 
+	// LocalRanges lists additional client IP ranges (CIDRs like
+	// "10.0.0.0/8", or bare IPs) that are trusted to receive and use the
+	// web UI's ephemeral session cookie, in ADDITION to loopback (which is
+	// always trusted). Loopback-only is the default: a non-loopback client
+	// (LAN, Docker bridge, reverse proxy) is NOT handed an admin session
+	// cookie unless its range is listed here. Set this to your reverse
+	// proxy / Docker network CIDR to allow the UI to work for those clients
+	// without entering a key. Does not affect API-key/NZB-key auth, which
+	// works from any address.
+	LocalRanges []string `yaml:"local_ranges" json:"local_ranges"`
+	// VerifyXFFHeader, when true, additionally validates the
+	// X-Forwarded-For chain: once the direct peer qualifies as trusted
+	// (loopback or LocalRanges), every forwarded hop must also be trusted
+	// or the request is treated as untrusted. Leave false (default) when
+	// your reverse proxy performs its own authentication and you trust the
+	// proxy connection itself. Enable it if you want GoNZBD to gate on the
+	// real client IP forwarded by a trusted proxy. The header is never
+	// consulted when the direct peer is untrusted, so it cannot be spoofed.
+	VerifyXFFHeader bool `yaml:"verify_xff_header" json:"verify_xff_header"`
+
 	// DownloadDir is the work-in-progress directory for incomplete
 	// downloads. Created on startup if it does not exist.
 	DownloadDir string `yaml:"download_dir" json:"download_dir"`

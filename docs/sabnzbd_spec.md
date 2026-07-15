@@ -624,6 +624,8 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `https_key` | path | | TLS key path |
 | `api_key` | string | (generated) | 16-char hex API key |
 | `nzb_key` | string | (generated) | 16-char hex NZB upload key |
+| `local_ranges` | list | | Client IP ranges (CIDRs or bare IPs) trusted to receive/use the web UI session cookie, in addition to loopback (always trusted). Empty = loopback-only; non-loopback clients (LAN/Docker/reverse-proxy) get no admin cookie unless listed. Does not affect API-key/NZB-key auth. |
+| `verify_xff_header` | bool | `false` | When true, every `X-Forwarded-For` hop must also be trusted once the direct peer qualifies. Leave false when the reverse proxy authenticates. The header is never consulted for an untrusted peer, so it cannot be spoofed. |
 
 | `download_dir` | path | `~/Downloads/incomplete` | Work-in-progress directory |
 | `complete_dir` | path | `~/Downloads/complete` | Final output directory |
