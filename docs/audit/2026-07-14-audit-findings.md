@@ -29,7 +29,7 @@ analysis passes (Security, Optimization, and one per traceability layer).
 | Optimization | Go backend is unusually clean (1 lint finding total). Findings are consolidation/decomposition + inert config knobs. | Low risk; best ROI is removing dead/inert surface |
 | Traceability | All four layers traced end-to-end and **clean/consistent**. Three real findings surfaced. | Data race (TRACE-1), unrestored early-abort counters (TRACE-3) |
 
-> **Status as of 2026-07-16:** SEC-1, SEC-2, SEC-5, TRACE-1, TRACE-3, TRACE-4, OPT-1, OPT-2, OPT-4, OPT-5, OPT-10, OPT-11, OPT-13 are done (see `## Suggested order of attack` → Batch review) — **the top-priority item (SEC-1) is closed.** SEC-3, SEC-4, SEC-6, OPT-3, OPT-6, OPT-7, OPT-8, OPT-9, OPT-12, TRACE-2 remain unaddressed and are next up whenever this backlog is picked up again (development is moving to another machine; nothing in this file depends on local session state — every "done" item cites the merged commit/PR).
+> **Status as of 2026-07-15: all 23 findings are done.** Batch 1 (see `## Suggested order of attack` → Batch review) closed SEC-1, SEC-2, SEC-5, TRACE-1, TRACE-3, TRACE-4, OPT-1, OPT-2, OPT-4, OPT-5, OPT-10, OPT-11, OPT-13. Batch 2 closed the remainder — SEC-3, SEC-4, SEC-6, TRACE-2, OPT-3, OPT-6, OPT-7, OPT-8, OPT-9, OPT-12 — via `superpowers:subagent-driven-development` in an isolated worktree (branch `worktree-audit-backlog-batch2`, commits `dc00511`..`4b8c096`, 20 commits across 9 tasks), each task implemented and independently reviewed before the next began. See individual finding entries above for commit hashes and what each task's review verified.
 
 The single most important item is **SEC-1**: the web-UI session cookie is handed to any
 unauthenticated caller and grants admin, so the whole deployment's safety currently rests
@@ -96,14 +96,16 @@ bind; SEC-1 becomes effectively Critical on any LAN/`0.0.0.0` bind.
 - **Effort:** S
 - **Acceptance:** `get_config` response contains `********` (or omits) for all credential fields; a test asserts no known secret value appears in the body.
 
-### [ ] SEC-3 — Secrets logged in cleartext via request-query logging  · MEDIUM
+### [x] SEC-3 — Secrets logged in cleartext via request-query logging  · MEDIUM
+> **✅ Done (commit `1cc680b`, verified 2026-07-15):** `sanitizeQuery` now redacts by substring match on the param name (`pass`/`key`/`secret`/`token`, case-insensitive) in addition to the exact `apikey`/`nzbkey` match, and redacts the `value` param when a sibling `keyword` param names a known secret field (`set_config&keyword=password&value=…`). Caught and fixed a real ordering bug during implementation: the generic substring-redaction loop was clobbering the `keyword` param's own value (since "keyword" contains "key") before the keyword-indirected check could read it — fixed by capturing `keyword` before the loop runs.
 - **Location:** `internal/api/middleware.go:234-238` + `sanitizeQuery` at `:245-258`.
 - **Problem:** `sanitizeQuery` only redacts `apikey`/`nzbkey`; all other params are logged verbatim at Info. Secrets travel in other params: `config&name=test_server&password=…`, `set_config&keyword=password&value=…`, `addurl&…&password=…`. Sending any as a URL query writes the provider/NZB password to structured logs.
 - **Fix:** Redact by value context, not just the two key names: redact any param whose name contains `pass`/`key`/`secret`/`token`, and redact `value` when `keyword` denotes a secret. Simplest robust option: log only `mode`/`name` and drop the raw query.
 - **Effort:** S
 - **Acceptance:** A request carrying `password=`/secret `value=` produces a log line with the secret redacted; unit test on `sanitizeQuery`.
 
-### [ ] SEC-4 — `/debug/vars` (expvar) exposed without auth  · LOW
+### [x] SEC-4 — `/debug/vars` (expvar) exposed without auth  · LOW
+> **✅ Done (commit `d4d850d`, verified 2026-07-15):** `/debug/` is now wrapped by a `trustGate` helper in `composeRouter` that reuses the exact same `trustedFn` predicate (`config.IsTrustedRemote`) already built for the SEC-1 admin-cookie-issuance gate — no new/parallel trust mechanism. Untrusted callers get 404 (not 403, to avoid confirming the path exists).
 - **Location:** `cmd/gonzbd/main.go` `composeRouter` (`mux.Handle("/debug/", http.DefaultServeMux)`), publisher `internal/telemetry/telemetry.go`.
 - **Problem:** `/debug/` routes to `http.DefaultServeMux`, outside the auth-checked API handler and `MaxBytesReader`. expvar publishes process `cmdline` (`os.Args` — leaks config/admin paths, possibly usernames) and `memstats` to any unauthenticated caller. Reachable remotely on non-loopback binds. (pprof is correctly not imported.)
 - **Fix:** Don't mount `http.DefaultServeMux`; register expvar on the app mux behind the same auth as the API, or gate `/debug/` to loopback. Avoid publishing `cmdline`.
@@ -118,7 +120,8 @@ bind; SEC-1 becomes effectively Critical on any LAN/`0.0.0.0` bind.
 - **Effort:** S
 - **Acceptance:** Cross-origin WS handshake rejected at the library layer independent of `callerLevel`.
 
-### [ ] SEC-6 — `mode=browse` / `mode=addlocalfile` allow filesystem enumeration/probing  · LOW
+### [x] SEC-6 — `mode=browse` / `mode=addlocalfile` allow filesystem enumeration/probing  · LOW
+> **✅ Done (commit `59e86e0`, verified 2026-07-15):** Both handlers now reject any absolute path that isn't equal to or nested under `{download,complete,dirscan,script}_dir` via a shared `pathWithinConfiguredRoots` check (an all-empty config rejects every path, never allows everything). `addlocalfile` raised from `LevelProtected` to `LevelAdmin`. Adapting the allowlist broke 8 pre-existing tests across `misc_test.go`/`queue_test.go` beyond the two anticipated in planning — each was verified to be a genuine setup adaptation (configuring a root and testing within/outside it), not a weakened assertion.
 - **Location:** `internal/api/misc.go:62-117` (`modeBrowse`, `LevelAdmin`), `internal/api/queue.go:795-854` (`modeAddLocalFile`, `LevelProtected`).
 - **Problem:** `browse` lists any absolute directory (only requires `filepath.IsAbs`); `addlocalfile` opens any absolute path without `..` and reports open/stat/parse errors distinctly (existence/readability oracle). Intended for the directory picker; combined with SEC-1 an unauthenticated attacker can walk the filesystem. `addlocalfile` at `LevelProtected` lets even the upload-only NZB key probe arbitrary paths.
 - **Fix:** Constrain both to an allowlist of configured roots (download/complete/script dirs); raise `addlocalfile` to `LevelAdmin`. Primary mitigation is SEC-1.
@@ -138,22 +141,22 @@ Documented hot paths verified intact — **do not touch them.**
 ### Dead / inert code
 - [x] **OPT-1** — Delete unused exported option `WithLifecycleContext` (`internal/app/app.go:1379`, zero callers incl. tests). Effort S. *Confidence High.* **✅ Done (PR #76, `89477e8`).**
 - [x] **OPT-2** — Remove dead test helper `scenarioHarness.JobStatus` (`internal/app/scenario_test.go:237`, no callers). Effort S. *Confidence High.* **✅ Done (PR #76, `3e06b9e`).**
-- [ ] **OPT-3** — Resolve inert config knobs `no_penalties`, `pre_check`, `MaxArtOpt`: plumbed end-to-end but never consulted (`internal/config/downloads.go:37,42`; `internal/downloader/downloader.go:110,120,125`; `internal/downloader/dispatch.go:37,171`; wired `internal/app/app.go:1327-1336`). Either implement the behavior or remove the config surface + docs — shipping knobs that silently do nothing is a support trap. Effort M (implement) / S (remove). *Confidence High.*
+- [x] **OPT-3** — Resolve inert config knobs `no_penalties`, `pre_check`, `MaxArtOpt`: plumbed end-to-end but never consulted (`internal/config/downloads.go:37,42`; `internal/downloader/downloader.go:110,120,125`; `internal/downloader/dispatch.go:37,171`; wired `internal/app/app.go:1327-1336`). Either implement the behavior or remove the config surface + docs — shipping knobs that silently do nothing is a support trap. Effort M (implement) / S (remove). *Confidence High.* **✅ Done (commit `2f60538`, verified 2026-07-15), decided to implement rather than remove.** `NoPenalties` clamps every applied penalty to `constants.PenaltyShort`; `MaxArtOpt` caps per-article attempts on optional/backup servers separately from `MaxArtTries`; `PreCheck` issues an NNTP `STAT` before `BODY` to skip the body transfer on articles already reported missing — gonzbd's own simplified design per its config doc comments, not a transliteration of SABnzbd's larger `nzo.precheck` job-state-machine feature. Verified race-free (`d.opts` is write-once, set in `New()`, never mutated post-construction) and hot-path-safe (no new per-article allocation/scan beyond a single `optionalTried` count per `selectServerForArticle` call).
 
 ### Duplication
 - [x] **OPT-4** — Consolidate gzip-atomic writers: `app.writeGzFile` (`internal/app/app.go:1524`) and `queue.writeGzJSONRaw`/`writeGzJSON` (`internal/queue/persistence.go:234,216`) are near-identical across packages. Add `fsutil.WriteGzAtomic`/`WriteGzAtomicBytes` next to `WriteAtomic`. Effort S. *Confidence High.* **✅ Done (PR #76, `e234015`/`7f71a87`).** Also hardened during review: `9aaf78a` fixed a panic-leak + chmod-TOCTOU in the shared `writeAtomic`.
 - [x] **OPT-5** — `certgen.writeFileAtomic` (`internal/app/certgen.go:110`) re-implements `fsutil.WriteAtomic` (only delta is a `Chmod`). Replace with `fsutil.WriteAtomicBytes` + `os.Chmod`, or add a perm variant to `fsutil`. Effort S. *Confidence High.* **✅ Done (PR #76, `db0dbe0`).**
-- [ ] **OPT-6** — Three archive extractors share a large per-entry "write one entry safely" body: `extractTarFile` (`internal/unpack/go_tar.go:213`), `extractSevenZipFile` (`internal/unpack/go_sevenzip.go:197`), `ExtractEntryRarengine` (`internal/unpack/go_unrar.go:191`). Extract a shared `writeEntry(...)` + `checkBombLimits(...)` helper. Also lowers OPT-8 complexity. Effort M. *Confidence High.*
+- [x] **OPT-6** — Three archive extractors share a large per-entry "write one entry safely" body: `extractTarFile` (`internal/unpack/go_tar.go:213`), `extractSevenZipFile` (`internal/unpack/go_sevenzip.go:197`), `ExtractEntryRarengine` (`internal/unpack/go_unrar.go:191`). Extract a shared `writeEntry(...)` + `checkBombLimits(...)` helper. Also lowers OPT-8 complexity. Effort M. *Confidence High.* **✅ Done (commit `3a25b91`, verified 2026-07-15).** New `internal/unpack/write_entry.go` (`writeEntrySafely`/`projectedBombCheck`) captures the shared skip/create/copy/chmod/chtimes/bomb-check logic; format-specific reader acquisition stays at each call site. Format-specific quirks (go_unrar's lack of an independent bomb-limit check; go_sevenzip's no-drain-on-skip and CRC32-gated-on-write behavior) verified preserved exactly, not folded away by the abstraction. All three existing test suites pass unmodified.
 
 ### Complexity (measured via `gocyclo`; re-measure and cite real numbers in commits)
-- [ ] **OPT-7** — Decompose `serveMode` (CCN **48**, `cmd/gonzbd/main.go:118`) and `run` (CCN 28, `:615`): extract `loadOrCreateConfig`, `ensureRuntimeDirs`, `setupTLS`, `installSignalHandlers`. Effort L. *Confidence High.*
-- [ ] **OPT-8** — Reduce the extractor trio complexity (CCN 26/24/…) via OPT-6's shared helper rather than splitting each. Effort M (shared with OPT-6).
-- [~] **OPT-9** — Decompose `(*Application).AddJob` (CCN 23, `internal/app/app.go:428`) and `(*Server).queueList` (CCN 22, `internal/api/queue.go:336`) — separate validation/filtering/assembly. Effort M. **🟡 Partial on `audit-traceability-refactor`:** `modeQueue`'s switch was decomposed (CCN 18→16, commit `eae5bf6`), but the two *named* hotspots `AddJob` (still CCN 23) and `queueList` (still CCN 22) are unchanged. Remaining work stands.
+- [x] **OPT-7** — Decompose `serveMode` (CCN **48**, `cmd/gonzbd/main.go:118`) and `run` (CCN 28, `:615`): extract `loadOrCreateConfig`, `ensureRuntimeDirs`, `setupTLS`, `installSignalHandlers`. Effort L. *Confidence High.* **✅ Done (10 commits `2365440`..`4b8c096`, verified 2026-07-15).** Measured `serveMode` 49→19, `run` 28→15. Extraction boundaries were derived from a full read of both functions rather than the audit's guessed names — landed as `loadOrCreateConfig`, `ensureRuntimeDirs`, `configureLogging`, `acquireLockAndPID`, `ensureSelfSignedCert`, `startListeners`, `awaitShutdownSignal`/`shutdownServeMode`, `waitForCompletion`, `printSummary`, `buildAPIServer` (`setupTLS`/`installSignalHandlers` as literally named didn't match the real control flow). One extraction per commit throughout. The two hazards this file's own `AGENTS.md` entry warns about — shutdown-sequence ordering and lost `context.Canceled` handling — were traced against the diff and confirmed preserved bit-for-bit. Deliberately stopped short of decomposing `serveMode`'s queue/router-wiring middle section (mostly straight-line initialization, not a meaningful CCN win).
+- [x] **OPT-8** — Reduce the extractor trio complexity (CCN 26/24/…) via OPT-6's shared helper rather than splitting each. Effort M (shared with OPT-6). **✅ Done together with OPT-6 (commit `3a25b91`).** Measured: `extractTarFile` 24→3, `extractSevenZipFile` 26→7, `ExtractEntryRarengine` 16→3.
+- [x] **OPT-9** — Decompose `(*Application).AddJob` (CCN 23, `internal/app/app.go:428`) and `(*Server).queueList` (CCN 22, `internal/api/queue.go:336`) — separate validation/filtering/assembly. Effort M. **🟡 Partial on `audit-traceability-refactor`:** `modeQueue`'s switch was decomposed (CCN 18→16, commit `eae5bf6`), but the two *named* hotspots `AddJob` (still CCN 23) and `queueList` (still CCN 22) are unchanged. Remaining work stands. **✅ Fully done (commits `3f72628`, `346d44f`, verified 2026-07-15).** Extracted `detectDuplicateNZB` from `AddJob` (CCN 23→14) and `filterQueueSlots` from `queueList` (CCN 22→13), one commit per package. The `force`/`!force` asymmetry in `AddJob` (Status set only when `!force`; Warning text differs either way) was preserved exactly. `filterQueueSlots` builds on OPT-12's `duStatuses` snapshot rather than reverting to per-job locking. A gremlins diff-scoped mutant exposed one genuine pre-existing coverage gap (`mode=queue&status=` never tested); closed with a new additive test rather than weakening the gate.
 
 ### Performance (non-hot-path; low but trivial wins)
 - [x] **OPT-10** — `queueList` re-evaluates `strings.ToLower(search)` per job (`internal/api/queue.go:374`). Hoist `searchLower` above the loop; lowercase `j.Name`/`j.Filename` once. Effort S. **✅ Done (PR #77, `4fc5a7d`).**
 - [x] **OPT-11** — Preallocate per-request slices with known size: `internal/api/queue.go:363`, `internal/api/history.go:139`, `internal/history/repository.go:165` (`make([]T, 0, len(src))` / cap by `limit`). Effort S. *Confidence Medium (low value).* **✅ Done (PR #77, `0c16dee`).** Hardened after review (`90aae8d`): `Repository.Search`'s preallocation is now capped at 10,000 independent of the caller-supplied `Limit` — an uncapped huge `Limit` crashed the process with an actual `fatal error: runtime: out of memory` before the fix.
-- [ ] **OPT-12** — `DirectUnpackStatus(j.ID)` called per job in the list loop (`internal/api/queue.go:380-383`). If it takes a mutex, fetch one `DirectUnpackStatuses()` snapshot before the loop. **Verify lock cost first.** Effort S–M. *Confidence Medium.*
+- [x] **OPT-12** — `DirectUnpackStatus(j.ID)` called per job in the list loop (`internal/api/queue.go:380-383`). If it takes a mutex, fetch one `DirectUnpackStatuses()` snapshot before the loop. **Verify lock cost first.** Effort S–M. *Confidence Medium.* **✅ Done (commit `b0b0986`, verified 2026-07-15).** Lock cost verified real before fixing: `DirectUnpackStatus` took `app.mu` — a plain `sync.Mutex` shared by the entire `Application`, not scoped to direct-unpack state — once per job. Added `DirectUnpackStatuses()` snapshotting all statuses under one lock acquisition; `queueList` now calls it once before the per-job loop. `apitest.NopApp` embedding meant a single stub addition satisfied the interface for every other test fake in the package.
 
 ### Modernization
 - [x] **OPT-13** — Replace deprecated `tint.NewHandler` with `tint.NewTextHandler` (`internal/app/logging.go:86`). The only lint finding in the backend. Effort S. **✅ Done on `audit-traceability-refactor` (verified 2026-07-14).**
@@ -177,7 +180,8 @@ Overall the cross-layer wiring is **consistent**. UI→client and client→HTTP 
 - **Effort:** S–M
 - **Acceptance:** No API handler reads mutable `*Job` fields off a live pointer; `go test -race ./internal/api/... ./internal/queue/...` clean under a concurrent-mutation test.
 
-### [ ] TRACE-2 — Document/limit orphaned-from-UI handlers  · Cleanup
+### [x] TRACE-2 — Document/limit orphaned-from-UI handlers  · Cleanup
+> **✅ Done (commit `dc00511`, verified 2026-07-15):** Added a comment block in `router.go` immediately above `registerModes`'s mode table marking `server_stats`, `fullstatus`, `watched_now`, `disconnect`, `addlocalfile`, `addurl` as third-party/SABnzbd-compat-only, not first-party-UI-driven.
 - **Location:** `internal/api/router.go:77-104`.
 - **Problem:** `server_stats` is registered and functional, but the UI obtains per-server stats over the **WebSocket telemetry** channel (`ui/src/lib/stores/telemetry.svelte.ts` → `getServerStats`), never via the HTTP endpoint. Similarly `fullstatus`, `watched_now`, `disconnect`, `addlocalfile`, `addurl` are not driven by the current UI. These are **valid SABnzbd/third-party compatibility endpoints**, not dead code — but that intent is undocumented, so a future reader can't tell "third-party surface" from "dead handler."
 - **Fix:** Add a short comment block in `router.go` marking which modes are third-party-compat-only (no first-party UI caller). No behavior change.
@@ -214,7 +218,37 @@ Overall the cross-layer wiring is **consistent**. UI→client and client→HTTP 
 2. ~~Quick security wins: **SEC-2** (reuse `Redacted()` in `get_config`), **SEC-3** (log redaction), **SEC-4/5** (debug + WS origin).~~ **SEC-2/SEC-5 done**; **SEC-3/SEC-4** still open — no longer blocked by SEC-1 landing (it's merged), pick up next.
 3. ~~**TRACE-1** (data race) + **TRACE-3** (seed early-abort counters on load — small, clear correctness win).~~ **Both done.**
 4. ~~Optimization quick wins: **OPT-1/2/13** (delete dead + fix deprecation), **OPT-10** (hoist ToLower), **OPT-4/5** (fsutil consolidation).~~ **All done.**
-5. **OPT-3** (decide fate of inert knobs), **OPT-6/8** (shared extractor helper), then the larger **OPT-7/9** decompositions. Still open, along with **OPT-12** (verify `DirectUnpackStatus` lock cost before batching), **SEC-6**, **TRACE-2**.
+5. ~~**OPT-3** (decide fate of inert knobs), **OPT-6/8** (shared extractor helper), then the larger **OPT-7/9** decompositions. **OPT-12** (verify `DirectUnpackStatus` lock cost before batching), **SEC-6**, **TRACE-2**.~~ **All done** — see `## Batch review — audit-backlog-batch2` below.
+
+### Batch review — audit-backlog-batch2 (2026-07-15)
+
+Executed via `superpowers:subagent-driven-development` in an isolated worktree, one task per
+commit group, each implemented by a fresh Sonnet subagent and independently reviewed (spec +
+quality) by a second Sonnet subagent before the next task began — 9 tasks, 20 commits total
+(`dc00511`..`4b8c096`). All nine were approved on first review pass (no fix-and-re-review
+cycles needed), though several reviews required real independent verification, not a rubber
+stamp:
+
+- **SEC-3's implementer** caught and fixed a genuine bug in the plan's own reference code: a
+  substring-based redaction loop was clobbering the `keyword` param's value (since "keyword"
+  contains "key") before a keyword-indirected check could read it — order-of-operations bug,
+  not a typo.
+- **SEC-6's blast radius** was larger than planned: 6 pre-existing tests beyond the 2
+  anticipated needed adapting to the new path-allowlist. The reviewer traced every one against
+  its pre-refactor behavior to confirm each was a genuine setup fix, not a weakened assertion.
+- **OPT-3** (the only genuine feature addition in this batch, not a bug fix or refactor) wired
+  three previously-inert config knobs into the downloader's documented hot path. The reviewer
+  independently re-traced the hot-path safety argument (is `Downloader.opts` truly write-once
+  after `New()`?) and the `MaxArtOpt`/`clampPenalty` boundary conditions by hand rather than
+  trusting the implementer's claims — both held up.
+- **OPT-7** (decomposing `cmd/gonzbd/main.go`'s `serveMode`/`run`, the repo's own
+  highest-churn file) was treated as the highest-risk task in the batch: reviewed against this
+  file's own documented shutdown-ordering and `context.Canceled` hazards from `AGENTS.md`,
+  both confirmed preserved bit-for-bit across all 10 extraction commits.
+
+No fixes were required after any review — a first-review approval rate this repo's earlier
+batches (PRs #75-78) did not achieve, though this batch's tasks were individually smaller and
+better-scoped than that batch's largest items.
 
 ### Batch review — PRs #75, #76, #77 (merged 2026-07-15), #78 (merged 2026-07-16)
 
