@@ -2545,3 +2545,76 @@ func TestQueueDelete_RemoveJobErrorLog(t *testing.T) {
 		t.Errorf("expected warning log not found in records: %v", rec.records)
 	}
 }
+
+// TestFilterQueueSlots covers filterQueueSlots directly (extracted from
+// queueList in OPT-9): category filter, status filter, search filter, and
+// the duStatuses lookup all apply independently and in combination.
+func TestFilterQueueSlots(t *testing.T) {
+	t.Parallel()
+
+	jobs := []*queue.Job{
+		{ID: "job1", Name: "Ubuntu ISO", Filename: "ubuntu.nzb", Category: "linux", Status: constants.StatusDownloading},
+		{ID: "job2", Name: "Debian ISO", Filename: "debian.nzb", Category: "linux", Status: constants.StatusPaused},
+		{ID: "job3", Name: "Some Movie", Filename: "movie.nzb", Category: "movies", Status: constants.StatusDownloading},
+	}
+	duStatuses := map[string]directunpack.Status{
+		"job1": {CurrentSet: "vol01"},
+	}
+
+	t.Run("no filters returns everything", func(t *testing.T) {
+		t.Parallel()
+		slots := filterQueueSlots(jobs, "", "", "", false, 0, duStatuses)
+		if len(slots) != 3 {
+			t.Fatalf("len(slots) = %d, want 3", len(slots))
+		}
+	})
+
+	t.Run("category filter", func(t *testing.T) {
+		t.Parallel()
+		slots := filterQueueSlots(jobs, "movies", "", "", false, 0, duStatuses)
+		if len(slots) != 1 || slots[0].NzoID != "job3" {
+			t.Fatalf("filterQueueSlots(category=movies) = %+v, want only job3", slots)
+		}
+	})
+
+	t.Run("status filter", func(t *testing.T) {
+		t.Parallel()
+		slots := filterQueueSlots(jobs, "", string(constants.StatusPaused), "", false, 0, duStatuses)
+		if len(slots) != 1 || slots[0].NzoID != "job2" {
+			t.Fatalf("filterQueueSlots(status=Paused) = %+v, want only job2", slots)
+		}
+	})
+
+	t.Run("search filter matches name or filename, case-insensitively", func(t *testing.T) {
+		t.Parallel()
+		slots := filterQueueSlots(jobs, "", "", "debian", false, 0, duStatuses)
+		if len(slots) != 1 || slots[0].NzoID != "job2" {
+			t.Fatalf("filterQueueSlots(search=debian) = %+v, want only job2", slots)
+		}
+	})
+
+	t.Run("duStatuses populates DirectUnpack for matching job only", func(t *testing.T) {
+		t.Parallel()
+		slots := filterQueueSlots(jobs, "", "", "", false, 0, duStatuses)
+		for _, s := range slots {
+			switch s.NzoID {
+			case "job1":
+				if s.DirectUnpack == nil || s.DirectUnpack.CurrentSet != "vol01" {
+					t.Errorf("job1.DirectUnpack = %+v, want CurrentSet=vol01", s.DirectUnpack)
+				}
+			default:
+				if s.DirectUnpack != nil {
+					t.Errorf("%s.DirectUnpack = %+v, want nil", s.NzoID, s.DirectUnpack)
+				}
+			}
+		}
+	})
+
+	t.Run("combined filters narrow to nothing", func(t *testing.T) {
+		t.Parallel()
+		slots := filterQueueSlots(jobs, "movies", string(constants.StatusPaused), "", false, 0, duStatuses)
+		if len(slots) != 0 {
+			t.Fatalf("filterQueueSlots(category=movies, status=Paused) = %+v, want empty", slots)
+		}
+	})
+}
