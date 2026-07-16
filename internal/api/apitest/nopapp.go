@@ -101,7 +101,7 @@ func (n NopApp) DirectUnpackStatus(jobID string) (directunpack.Status, bool) {
 }
 
 // DirectUnpackStatuses is a stub.
-func (n NopApp) DirectUnpackStatuses() map[string]directunpack.Status {
+func (n NopApp) DirectUnpackStatuses() map[string]directunpack.Status { //nocover: no-op interface stub
 	return nil
 }
 
