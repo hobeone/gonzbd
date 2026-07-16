@@ -341,6 +341,35 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 	}
 }
 
+// filterQueueSlots applies the category/status/search filters to jobs and
+// builds the resulting queueSlot list. Split out of queueList to isolate
+// per-job filtering from pagination and response assembly (OPT-9).
+func filterQueueSlots(jobs []*queue.Job, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status) []queueSlot {
+	slots := make([]queueSlot, 0, len(jobs))
+	for _, j := range jobs {
+		// Post-processing jobs remain in the queue with their current
+		// status (Verifying, Repairing, Extracting, etc.) until
+		// OnJobDone removes them and moves them to history.
+		if catFilter != "" && j.Category != catFilter {
+			continue
+		}
+		if statusFilter != "" && string(j.Status) != statusFilter {
+			continue
+		}
+		if searchLower != "" && !strings.Contains(strings.ToLower(j.Name), searchLower) &&
+			!strings.Contains(strings.ToLower(j.Filename), searchLower) {
+			continue
+		}
+
+		var duStatus *directunpack.Status
+		if status, ok := duStatuses[j.ID]; ok {
+			duStatus = &status
+		}
+		slots = append(slots, buildSlot(j, paused, speed, len(slots), duStatus))
+	}
+	return slots
+}
+
 // queueList returns the paginated, filtered queue listing.
 //
 // When called with nzo_id=<id>&files=1, returns a single-job detail
@@ -387,28 +416,7 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build slots applying filters.
-	slots := make([]queueSlot, 0, len(jobs))
-	for _, j := range jobs {
-		// Post-processing jobs remain in the queue with their current
-		// status (Verifying, Repairing, Extracting, etc.) until
-		// OnJobDone removes them and moves them to history.
-		if catFilter != "" && j.Category != catFilter {
-			continue
-		}
-		if statusFilter != "" && string(j.Status) != statusFilter {
-			continue
-		}
-		if search != "" && !strings.Contains(strings.ToLower(j.Name), searchLower) &&
-			!strings.Contains(strings.ToLower(j.Filename), searchLower) {
-			continue
-		}
-
-		var duStatus *directunpack.Status
-		if status, ok := duStatuses[j.ID]; ok {
-			duStatus = &status
-		}
-		slots = append(slots, buildSlot(j, paused, speed, len(slots), duStatus))
-	}
+	slots := filterQueueSlots(jobs, catFilter, statusFilter, searchLower, paused, speed, duStatuses)
 
 	total := len(slots)
 
