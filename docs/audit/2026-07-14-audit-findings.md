@@ -29,7 +29,7 @@ analysis passes (Security, Optimization, and one per traceability layer).
 | Optimization | Go backend is unusually clean (1 lint finding total). Findings are consolidation/decomposition + inert config knobs. | Low risk; best ROI is removing dead/inert surface |
 | Traceability | All four layers traced end-to-end and **clean/consistent**. Three real findings surfaced. | Data race (TRACE-1), unrestored early-abort counters (TRACE-3) |
 
-> **Status as of 2026-07-15: all 23 findings are done.** Batch 1 (see `## Suggested order of attack` → Batch review) closed SEC-1, SEC-2, SEC-5, TRACE-1, TRACE-3, TRACE-4, OPT-1, OPT-2, OPT-4, OPT-5, OPT-10, OPT-11, OPT-13. Batch 2 closed the remainder — SEC-3, SEC-4, SEC-6, TRACE-2, OPT-3, OPT-6, OPT-7, OPT-8, OPT-9, OPT-12 — via `superpowers:subagent-driven-development` in an isolated worktree (branch `worktree-audit-backlog-batch2`, commits `dc00511`..`4b8c096`, 20 commits across 9 tasks), each task implemented and independently reviewed before the next began. See individual finding entries above for commit hashes and what each task's review verified.
+> **Status as of 2026-07-15: all 23 findings are done.** Batch 1 (see `## Suggested order of attack` → Batch review) closed SEC-1, SEC-2, SEC-5, TRACE-1, TRACE-3, TRACE-4, OPT-1, OPT-2, OPT-4, OPT-5, OPT-10, OPT-11, OPT-13. Batch 2 closed the remainder — SEC-3, SEC-4, SEC-6, TRACE-2, OPT-3, OPT-6, OPT-7, OPT-8, OPT-9, OPT-12 — via `superpowers:subagent-driven-development` in an isolated worktree (branch `worktree-audit-backlog-batch2`, commits `dc00511`..`4b8c096`, 18 commits across 9 tasks), each task implemented and independently reviewed before the next began. See individual finding entries above for commit hashes and what each task's review verified.
 
 The single most important item is **SEC-1**: the web-UI session cookie is handed to any
 unauthenticated caller and grants admin, so the whole deployment's safety currently rests
@@ -224,7 +224,7 @@ Overall the cross-layer wiring is **consistent**. UI→client and client→HTTP 
 
 Executed via `superpowers:subagent-driven-development` in an isolated worktree, one task per
 commit group, each implemented by a fresh Sonnet subagent and independently reviewed (spec +
-quality) by a second Sonnet subagent before the next task began — 9 tasks, 20 commits total
+quality) by a second Sonnet subagent before the next task began — 9 tasks, 18 commits total
 (`dc00511`..`4b8c096`). All nine were approved on first review pass (no fix-and-re-review
 cycles needed), though several reviews required real independent verification, not a rubber
 stamp:
