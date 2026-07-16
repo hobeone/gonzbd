@@ -1022,22 +1022,30 @@ type unlinkingContext struct {
 // through a temp sibling file (published to destPath only via rename after
 // the write completes — see the atomic-publish rework), destPath itself
 // doesn't exist yet to unlink. Instead, this finds and unlinks the
-// in-progress temp file (named "<base>.gonzbd-tmp-<random>", per
-// fsutil.RootedCreateTemp) out from under the open descriptor, exploiting
-// the same POSIX unlink-while-open semantics to force the post-write
-// Chmod/Chtimes calls (which operate on the temp name pre-rename) to fail.
+// in-progress temp file (named ".gonzbd-tmp-<random>", per
+// fsutil.RootedCreateTemp -- independent of destPath's own basename, so a
+// near-NAME_MAX entry name doesn't overflow the temp name) out from under
+// the open descriptor, exploiting the same POSIX unlink-while-open
+// semantics to force the post-write Chmod/Chtimes calls (which operate on
+// the temp name pre-rename) to fail.
 func (u *unlinkingContext) Err() error {
+	// Only mark unlinked once a temp file was actually found and removed --
+	// RootedCreateTemp now checks ctx.Err() before the temp file exists
+	// (during its own setup/retry-loop guard), so an early call here would
+	// otherwise consume the one-shot unlink against an empty directory
+	// before there's anything to remove.
 	if !u.unlinked {
 		dir := filepath.Dir(u.destPath)
-		prefix := filepath.Base(u.destPath) + ".gonzbd-tmp-"
+		const prefix = ".gonzbd-tmp-"
 		if entries, err := os.ReadDir(dir); err == nil {
 			for _, e := range entries {
 				if strings.HasPrefix(e.Name(), prefix) {
-					_ = os.Remove(filepath.Join(dir, e.Name())) //nolint:errcheck // best-effort cleanup to force chmod/chtimes failure in test
+					if rmErr := os.Remove(filepath.Join(dir, e.Name())); rmErr == nil {
+						u.unlinked = true
+					}
 				}
 			}
 		}
-		u.unlinked = true
 	}
 	return u.Context.Err()
 }

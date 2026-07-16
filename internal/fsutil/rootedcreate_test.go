@@ -1,8 +1,12 @@
 package fsutil_test
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -97,6 +101,35 @@ func TestRootedOpenFile_ZipSlip_Symlink(t *testing.T) {
 	}
 }
 
+// TestRootedCreateTemp_NearNameMaxBasename verifies that a target whose
+// basename is already near the filesystem's per-component length limit
+// (NAME_MAX, 255 bytes on Linux) doesn't cause the temp name to overflow it.
+// The temp name must not incorporate rel's own basename length.
+func TestRootedCreateTemp_NearNameMaxBasename(t *testing.T) {
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	// 250 bytes: valid on Linux (NAME_MAX=255) but leaves only 5 bytes of
+	// margin -- the old base+".gonzbd-tmp-<16 hex chars>" scheme added ~28
+	// bytes, which would have overflowed and returned ENAMETOOLONG for a
+	// perfectly valid entry name.
+	longBase := strings.Repeat("a", 250)
+
+	f, tmpRel, err := fsutil.RootedCreateTemp(t.Context(), root, longBase)
+	if err != nil {
+		t.Fatalf("RootedCreateTemp: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if strings.Contains(filepath.Base(tmpRel), longBase) {
+		t.Errorf("tmpRel = %q; temp name must not incorporate rel's basename", tmpRel)
+	}
+}
+
 // TestRootedCreateTemp_SameDirAsTargetAndRenamable verifies that
 // RootedCreateTemp creates the temp file in the same directory as rel (so a
 // subsequent rename is same-filesystem) and that the returned name is
@@ -109,7 +142,7 @@ func TestRootedCreateTemp_SameDirAsTargetAndRenamable(t *testing.T) {
 	}
 	defer root.Close()
 
-	f, tmpRel, err := fsutil.RootedCreateTemp(root, "subdir/entry.txt")
+	f, tmpRel, err := fsutil.RootedCreateTemp(t.Context(), root, "subdir/entry.txt")
 	if err != nil {
 		t.Fatalf("RootedCreateTemp: %v", err)
 	}
@@ -157,7 +190,7 @@ func TestRootedCreateTemp_MkdirAllFailure(t *testing.T) {
 		t.Fatalf("write blocker file: %v", err)
 	}
 
-	_, _, err = fsutil.RootedCreateTemp(root, "blocker/entry.txt")
+	_, _, err = fsutil.RootedCreateTemp(t.Context(), root, "blocker/entry.txt")
 	if err == nil {
 		t.Fatal("expected an error when the parent path is occupied by a regular file")
 	}
@@ -167,6 +200,9 @@ func TestRootedCreateTemp_MkdirAllFailure(t *testing.T) {
 // failure other than a name collision (fs.ErrExist) is returned immediately
 // rather than retried as if it were a collision.
 func TestRootedCreateTemp_OpenFileNonExistError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not meaningful on windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root bypasses permission checks")
 	}
@@ -187,7 +223,7 @@ func TestRootedCreateTemp_OpenFileNonExistError(t *testing.T) {
 		_ = os.Chmod(outDir, 0o755)
 	}()
 
-	_, _, err = fsutil.RootedCreateTemp(root, "entry.txt")
+	_, _, err = fsutil.RootedCreateTemp(t.Context(), root, "entry.txt")
 	if err == nil {
 		t.Fatal("expected an error creating a temp file in a read-only directory")
 	}
@@ -195,6 +231,33 @@ func TestRootedCreateTemp_OpenFileNonExistError(t *testing.T) {
 
 // TestRootedCreateTemp_UniqueAcrossCalls verifies that repeated calls for the
 // same target rel never collide with each other.
+// TestRootedCreateTemp_CanceledContext verifies that a canceled context is
+// honored before any filesystem work: no directory or temp file is created.
+func TestRootedCreateTemp_CanceledContext(t *testing.T) {
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err = fsutil.RootedCreateTemp(ctx, root, "subdir/entry.txt")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("RootedCreateTemp error = %v, want context.Canceled", err)
+	}
+
+	entries, readErr := os.ReadDir(outDir)
+	if readErr != nil {
+		t.Fatalf("ReadDir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("outDir not empty after canceled context: %v", entries)
+	}
+}
+
 func TestRootedCreateTemp_UniqueAcrossCalls(t *testing.T) {
 	outDir := t.TempDir()
 	root, err := os.OpenRoot(outDir)
@@ -205,7 +268,7 @@ func TestRootedCreateTemp_UniqueAcrossCalls(t *testing.T) {
 
 	seen := make(map[string]bool)
 	for range 5 {
-		f, tmpRel, err := fsutil.RootedCreateTemp(root, "entry.txt")
+		f, tmpRel, err := fsutil.RootedCreateTemp(t.Context(), root, "entry.txt")
 		if err != nil {
 			t.Fatalf("RootedCreateTemp: %v", err)
 		}
