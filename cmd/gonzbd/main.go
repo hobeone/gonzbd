@@ -953,7 +953,12 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 	if err != nil {
 		return fmt.Errorf("retrieve history for summary: %w", err)
 	}
+	printSummary(job, hist, duration)
+	return nil
+}
 
+// printSummary prints the one-shot mode download summary to stdout.
+func printSummary(job *queue.Job, hist *history.Entry, duration time.Duration) {
 	fmt.Printf("\n--- Download Summary ---\n")
 	fmt.Printf("Job:        %s\n", job.Name)
 	fmt.Printf("Status:     %s\n", hist.Status)
@@ -968,8 +973,6 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 	netMBps := float64(job.TotalBytes) / (1024 * 1024) / duration.Seconds()
 	fmt.Printf("Avg Speed:   %.2f MB/s\n", netMBps)
 	fmt.Printf("------------------------\n\n")
-
-	return nil
 }
 
 func loadJob(path string, onDemandPar2 bool) (*queue.Job, []byte, error) {
