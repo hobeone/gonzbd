@@ -1218,7 +1218,7 @@ EOF
 **Interfaces:**
 - New: `func (app *Application) detectDuplicateNZB(ctx context.Context, job *queue.Job, rawNZB []byte, force bool, nzbDir string) (isDuplicate bool, warning string)`
   — extracted from `AddJob`'s duplicate-detection block (`app.go:436-468`).
-- New: `func (s *Server) filterQueueSlots(jobs []*queue.Job, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status) []queueSlot`
+- New: `func filterQueueSlots(jobs []*queue.Job, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status) []queueSlot`
   — extracted from `queueList`'s per-job filter+build loop (`queue.go:383-406`, already using
   the single-snapshot `duStatuses` from Task 5).
 
