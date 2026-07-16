@@ -13,12 +13,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/hobeone/rarengine"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/rarheader"
 )
 
@@ -193,48 +191,24 @@ func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, 
 		return root.MkdirAll(destRel, 0o750)
 	}
 
-	if !opts.OverwriteFiles {
-		if _, statErr := root.Stat(destRel); statErr == nil {
-			log.Info("skipping existing file", "path", destPath)
-			if opts.OnLine != nil {
-				opts.OnLine("Skipping existing: " + fh.Name)
-			}
-			_, _ = io.Copy(io.Discard, r) //nolint:errcheck // drain stream to skip existing entry
-			return nil
-		}
-	}
-
-	out, err := fsutil.RootedOpenFile(root, destRel, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("go_unrar: create %s: %w", destRel, err)
-	}
-	defer out.Close() //nolint:errcheck // best-effort close; write errors caught by contextCopy
-
-	if _, err := contextCopy(ctx, out, r); err != nil {
-		if errno, ok := errors.AsType[syscall.Errno](err); ok && errno == syscall.ENOSPC {
-			return fmt.Errorf("go_unrar: disk full writing %s: %w", destRel, err)
-		}
-		return fmt.Errorf("go_unrar: write %s: %w", destRel, err)
-	}
-
-	if err := out.Close(); err != nil {
-		return fmt.Errorf("go_unrar: close %s: %w", destRel, err)
-	}
-
+	// mode is masked to only the rw bits, matching go_tar/go_sevenzip's
+	// policy for untrusted archives -- but also gated on fh.HostOS != 0:
+	// rarengine reports Mode()==0 for archives created on hosts that don't
+	// carry Unix permission bits (e.g. Windows-authored RARs), and chmod-ing
+	// to 0 there would strip the safer 0600 default from OpenFile for no
+	// reason, so mode is forced to 0 (skip chmod) in that case too.
 	mode := fh.Mode() & 0o666
-	if mode != 0 && fh.HostOS != 0 {
-		if err := root.Chmod(destRel, mode); err != nil {
-			log.Debug("unpack: failed to set file permissions", "file", destRel, "err", err)
-		}
+	if fh.HostOS == 0 {
+		mode = 0
 	}
 
-	if !opts.IgnoreUnrarDates && !fh.ModificationTime.IsZero() {
-		if err := root.Chtimes(destRel, fh.ModificationTime, fh.ModificationTime); err != nil {
-			log.Debug("unpack: failed to set file timestamps", "file", destRel, "err", err)
-		}
-	}
-
-	return nil
+	// No bomb-limit check here: rarengine enforces its own decompression-
+	// bomb limits internally (see rarengine.ErrRarBombDetected, surfaced via
+	// ClassifyRarEngineError), so r is passed through to writeEntrySafely
+	// unwrapped, unlike go_tar/go_sevenzip which wrap their reader in a
+	// boundReader before writing.
+	_, err := writeEntrySafely(ctx, root, destRel, destPath, r, nil, true, mode, fh.ModificationTime, opts, fh.Name, "go_unrar", log)
+	return err
 }
 
 // SanitizeArchivePath cleans an archive entry path for safe extraction.

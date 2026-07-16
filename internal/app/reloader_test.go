@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 func TestApplication_ReloadOptions(t *testing.T) {
@@ -258,4 +261,78 @@ func TestApplication_ReloadPostProcOptions_AppliesStrictSandboxToRunningStage(t 
 	if got := app.unpackStage.BaseOpts.Sandbox.Strict; !got {
 		t.Errorf("after ReloadPostProcOptions(StrictSandbox: true): unpackStage.BaseOpts.Sandbox.Strict = %v, want true", got)
 	}
+}
+
+// TestDetectDuplicateNZB covers detectDuplicateNZB directly (extracted from
+// AddJob in OPT-9): the MD5-in-queue branch, and the force/!force asymmetry
+// (Status is only set by the caller when !force, but Warning differs either
+// way — detectDuplicateNZB itself only returns the warning text, so this
+// test asserts that contract).
+func TestDetectDuplicateNZB(t *testing.T) {
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+	a, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer a.Shutdown()
+
+	nzbDir := t.TempDir()
+
+	t.Run("not a duplicate", func(t *testing.T) {
+		job := &queue.Job{MD5: "no-match-md5"}
+		isDup, warning := a.detectDuplicateNZB(t.Context(), job, false, nzbDir)
+		if isDup {
+			t.Errorf("isDuplicate = true, want false")
+		}
+		if warning != "" {
+			t.Errorf("warning = %q, want empty", warning)
+		}
+	})
+
+	t.Run("duplicate via MD5 already in queue, not forced", func(t *testing.T) {
+		existing := &queue.Job{ID: "existing-not-forced", MD5: "dup-md5-queue"}
+		if err := a.queue.Add(existing); err != nil {
+			t.Fatalf("queue.Add: %v", err)
+		}
+
+		job := &queue.Job{MD5: "dup-md5-queue"}
+		isDup, warning := a.detectDuplicateNZB(t.Context(), job, false, nzbDir)
+		if !isDup {
+			t.Fatalf("isDuplicate = false, want true")
+		}
+		if warning != "Duplicate NZB" {
+			t.Errorf("warning = %q, want %q", warning, "Duplicate NZB")
+		}
+	})
+
+	t.Run("duplicate via MD5 already in queue, forced", func(t *testing.T) {
+		existing := &queue.Job{ID: "existing-forced", MD5: "dup-md5-forced"}
+		if err := a.queue.Add(existing); err != nil {
+			t.Fatalf("queue.Add: %v", err)
+		}
+
+		job := &queue.Job{MD5: "dup-md5-forced"}
+		isDup, warning := a.detectDuplicateNZB(t.Context(), job, true, nzbDir)
+		if !isDup {
+			t.Fatalf("isDuplicate = false, want true")
+		}
+		if warning != "Duplicate NZB (Forced)" {
+			t.Errorf("warning = %q, want %q", warning, "Duplicate NZB (Forced)")
+		}
+	})
+
+	t.Run("duplicate via gzipped backup file", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(nzbDir, "backed-up.nzb.gz"), []byte("x"), 0o600); err != nil {
+			t.Fatalf("write backup fixture: %v", err)
+		}
+
+		job := &queue.Job{MD5: "unrelated-md5", Filename: "backed-up.nzb"}
+		isDup, warning := a.detectDuplicateNZB(t.Context(), job, false, nzbDir)
+		if !isDup {
+			t.Fatalf("isDuplicate = false, want true (filename found in backup dir)")
+		}
+		if warning != "Duplicate NZB" {
+			t.Errorf("warning = %q, want %q", warning, "Duplicate NZB")
+		}
+	})
 }

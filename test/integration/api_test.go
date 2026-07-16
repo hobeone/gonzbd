@@ -41,13 +41,16 @@ const (
 )
 
 // buildAPIServer constructs an api.Server with a queue, history, config, and
-// grabber wired. The httptest.Server is registered for cleanup.
-func buildAPIServer(t *testing.T) (*api.Server, *httptest.Server) {
+// grabber wired. The httptest.Server is registered for cleanup. dir is the
+// temp directory backing the server's history DB; it is also configured as
+// General.DownloadDir so tests exercising path-scoped handlers (e.g.
+// addlocalfile, browse) have a valid configured root to operate within.
+func buildAPIServer(t *testing.T) (srv *api.Server, ts *httptest.Server, dir string) {
 	t.Helper()
 
 	q := queue.New()
 
-	dir := t.TempDir()
+	dir = t.TempDir()
 	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
 	if err != nil {
 		t.Fatalf("history.Open: %v", err)
@@ -59,10 +62,11 @@ func buildAPIServer(t *testing.T) (*api.Server, *httptest.Server) {
 	cfg := &config.Config{}
 	cfg.General.APIKey = integrationAPIKey
 	cfg.General.NZBKey = integrationNZBKey
+	cfg.General.DownloadDir = dir
 
 	grabber := urlgrabber.New(urlgrabber.Config{}, nopNZBHandler{})
 
-	srv := api.New(api.Options{
+	srv = api.New(api.Options{
 		Version: "integration-test",
 		Queue:   q,
 		History: repo,
@@ -71,9 +75,9 @@ func buildAPIServer(t *testing.T) (*api.Server, *httptest.Server) {
 		App:     apitest.NopApp{},
 	})
 
-	ts := httptest.NewServer(srv.Handler())
+	ts = httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return srv, ts
+	return srv, ts, dir
 }
 
 // apiDo sends a GET to the httptest server's /api endpoint with the given
@@ -102,7 +106,7 @@ func decodeAPIJSON(t *testing.T, resp *http.Response) map[string]any {
 // TestAPI_OpenModes exercises the modes that require no API key.
 func TestAPI_OpenModes(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	tests := []struct {
 		name       string
@@ -166,7 +170,7 @@ func TestAPI_OpenModes(t *testing.T) {
 // requests without credentials or with insufficient credentials.
 func TestAPI_AuthEnforcement(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	tests := []struct {
 		name       string
@@ -201,7 +205,7 @@ func TestAPI_AuthEnforcement(t *testing.T) {
 // TestAPI_ProtectedModes walks the protected-level modes with a valid API key.
 func TestAPI_ProtectedModes(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	// Each entry is mode=X plus any extra params needed for the mode to
 	// return a non-400 response.
@@ -237,7 +241,7 @@ func TestAPI_ProtectedModes(t *testing.T) {
 // TestAPI_AdminModes walks admin-level modes with a valid API key.
 func TestAPI_AdminModes(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	modes := []string{
 		"config", "get_config", "set_config",
@@ -259,7 +263,7 @@ func TestAPI_AdminModes(t *testing.T) {
 // TestAPI_AddFile tests multipart POST with a canned NZB.
 func TestAPI_AddFile(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	payload := []byte("hello nzb file payload")
 	files := []TestFile{{Name: "test.bin", Payload: payload}}
@@ -300,13 +304,12 @@ func TestAPI_AddFile(t *testing.T) {
 // TestAPI_AddLocalFile tests mode=addlocalfile with a temp NZB file.
 func TestAPI_AddLocalFile(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, dir := buildAPIServer(t)
 
 	payload := []byte("local file nzb test")
 	files := []TestFile{{Name: "local.bin", Payload: payload}}
 	rawNZB := BuildNZB(files)
 
-	dir := t.TempDir()
 	nzbPath := filepath.Join(dir, "local.nzb")
 	if err := os.WriteFile(nzbPath, rawNZB, 0o600); err != nil {
 		t.Fatalf("write nzb file: %v", err)
@@ -325,7 +328,7 @@ func TestAPI_AddLocalFile(t *testing.T) {
 // TestAPI_AddURL tests mode=addurl with an httptest server serving a canned NZB.
 func TestAPI_AddURL(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	payload := []byte("url nzb test content")
 	files := []TestFile{{Name: "url.bin", Payload: payload}}
@@ -356,7 +359,7 @@ func TestAPI_AddURL(t *testing.T) {
 // TestAPI_MissingMode verifies the error response when mode= is absent.
 func TestAPI_MissingMode(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 	resp := apiDo(t, ts, "apikey="+integrationAPIKey)
 	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // test cleanup
 	if resp.StatusCode != http.StatusBadRequest {
@@ -367,7 +370,7 @@ func TestAPI_MissingMode(t *testing.T) {
 // TestAPI_UnknownMode verifies the error response for unrecognized modes.
 func TestAPI_UnknownMode(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 	resp := apiDo(t, ts, "mode=doesnotexist&apikey="+integrationAPIKey)
 	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // test cleanup
 	if resp.StatusCode != http.StatusBadRequest {

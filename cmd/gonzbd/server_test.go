@@ -123,7 +123,8 @@ func TestSecurityHeaders(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			router := composeRouter(apiSrv, dummyHandler, tc.isHTTPS, scriptHashes)
+			trustedFn := func(*http.Request) bool { return true }
+			router := composeRouter(apiSrv, dummyHandler, tc.isHTTPS, scriptHashes, trustedFn)
 			req := httptest.NewRequest(http.MethodGet, "/random-path", nil)
 			rr := httptest.NewRecorder()
 			router.ServeHTTP(rr, req)

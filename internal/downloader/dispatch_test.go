@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/bpsmeter"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
@@ -908,5 +911,292 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 	body, ok = d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
 	if ok || body != nil {
 		t.Error("expected fetchArticle to return nil, false on paused job")
+	}
+}
+
+// ---------- OPT-3: no_penalties / max_art_opt / pre_check ----------
+
+// clampPenalty in isolation, bracketing constants.PenaltyShort on both
+// sides so the boundary comparison (pen > constants.PenaltyShort) is
+// pinned by an input where the two branches would diverge if a
+// mutation flipped > to >=.
+func TestClampPenalty(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		noPenalties bool
+		pen         time.Duration
+		want        time.Duration
+	}{
+		{"disabled: long penalty passes through unclamped", false, constants.PenaltyUnknown, constants.PenaltyUnknown},
+		{"enabled: below threshold passes through unclamped", true, constants.PenaltyShort - time.Second, constants.PenaltyShort - time.Second},
+		{"enabled: above threshold is clamped down", true, constants.PenaltyShort + time.Second, constants.PenaltyShort},
+		{"enabled: zero passes through unclamped", true, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			d := &Downloader{opts: Options{NoPenalties: tt.noPenalties}}
+			got := d.clampPenalty(tt.pen)
+			if got != tt.want {
+				t.Errorf("clampPenalty(%v) with NoPenalties=%v = %v, want %v", tt.pen, tt.noPenalties, got, tt.want)
+			}
+		})
+	}
+}
+
+// NoPenalties must clamp every applied penalty to constants.PenaltyShort,
+// even when PenaltyFor(err) would otherwise map the dial error to a much
+// longer duration (PenaltyUnknown, the catch-all default for an
+// unclassified dial error such as "connection refused").
+func TestFetchArticle_NoPenaltiesClampsPenaltyDuration(t *testing.T) {
+	t.Parallel()
+
+	// Listener we immediately close: every dial attempt against this
+	// address fails with a generic (unclassified) error, which
+	// PenaltyFor maps to constants.PenaltyUnknown (3m) by default —
+	// well above constants.PenaltyShort (1m).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	q := queue.New()
+	srv := testServer(t, "dead", addr)
+	d := &Downloader{
+		queue:   q,
+		tracker: newDispatchTracker(),
+		log:     slog.New(slog.DiscardHandler),
+		opts:    Options{NoPenalties: true},
+		limiter: bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	req := &articleRequest{jobID: "job1", messageID: "msg1"}
+	before := time.Now()
+	body, ok := d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
+	if ok || body != nil {
+		t.Fatalf("expected fetchArticle to fail against a closed listener")
+	}
+
+	expiry := srv.PenaltyExpiry()
+	got := expiry.Sub(before)
+	if got > constants.PenaltyShort+2*time.Second {
+		t.Errorf("penalty duration = %v, want <= constants.PenaltyShort (%v) when NoPenalties is set", got, constants.PenaltyShort)
+	}
+	if got <= 0 {
+		t.Errorf("penalty duration = %v, want > 0 (no_penalties still applies the short penalty, it does not disable penalties entirely)", got)
+	}
+}
+
+// MaxArtOpt caps the number of optional (backup) servers offered as
+// candidates for a single article, independent of MaxArtTries. Once the
+// cap is reached, further optional servers must be excluded even if they
+// individually have not yet been tried — only the required server should
+// remain selectable.
+func TestSelectServerForArticle_MaxArtOptCapsOptionalServerTries(t *testing.T) {
+	t.Parallel()
+
+	optA := NewServer(config.ServerConfig{Name: "optA", Priority: 0, Connections: 1, Enable: true, Optional: true})
+	optB := NewServer(config.ServerConfig{Name: "optB", Priority: 0, Connections: 1, Enable: true, Optional: true})
+	required := NewServer(config.ServerConfig{Name: "required", Priority: 0, Connections: 1, Enable: true})
+	d := newDispatchDownloader([]*Server{optA, optB, required})
+
+	// optA (idx 0) already tried; optB (idx 1) and required (idx 2) are not.
+	mask := serverMask{}
+	mask.set(0)
+
+	opts := defaultOpts(d.servers)
+	opts.maxArtOpt = 1
+
+	srv, idx := d.selectServerForArticle(mask, true, opts)
+	if srv == nil {
+		t.Fatal("selectServerForArticle returned nil server, want required server selectable")
+	}
+	if idx != 2 {
+		t.Errorf("selected server idx = %d (%s), want 2 (required) — optB should have been excluded once the optional-server cap was reached", idx, srv.Cfg().Name)
+	}
+}
+
+// TestIsServerCandidate covers isServerCandidate directly: each of its four
+// exclusion branches (already-tried, disabled, topOnly priority mismatch,
+// maxArtOpt cap on optional servers) plus the happy-path true case.
+func TestIsServerCandidate(t *testing.T) {
+	t.Parallel()
+
+	enabledRequired := &config.ServerConfig{Enable: true, Priority: 0}
+	enabledOptional := &config.ServerConfig{Enable: true, Priority: 0, Optional: true}
+	disabled := &config.ServerConfig{Enable: false, Priority: 0}
+	lowPriority := &config.ServerConfig{Enable: true, Priority: 5}
+
+	triedMask := serverMask{}
+	triedMask.set(0)
+	emptyMask := serverMask{}
+
+	cases := []struct {
+		name          string
+		cfg           *config.ServerConfig
+		mask          serverMask
+		hasTried      bool
+		idx           int
+		topOnly       bool
+		minPriority   int
+		optionalTried int
+		maxArtOpt     int
+		want          bool
+	}{
+		{
+			name: "eligible required server", cfg: enabledRequired, mask: emptyMask,
+			hasTried: false, idx: 0, topOnly: false, minPriority: 0, optionalTried: 0, maxArtOpt: 0,
+			want: true,
+		},
+		{
+			name: "already tried is excluded", cfg: enabledRequired, mask: triedMask,
+			hasTried: true, idx: 0, topOnly: false, minPriority: 0, optionalTried: 0, maxArtOpt: 0,
+			want: false,
+		},
+		{
+			name: "disabled server is excluded", cfg: disabled, mask: emptyMask,
+			hasTried: false, idx: 0, topOnly: false, minPriority: 0, optionalTried: 0, maxArtOpt: 0,
+			want: false,
+		},
+		{
+			name: "topOnly excludes lower-priority server", cfg: lowPriority, mask: emptyMask,
+			hasTried: false, idx: 0, topOnly: true, minPriority: 0, optionalTried: 0, maxArtOpt: 0,
+			want: false,
+		},
+		{
+			name: "topOnly allows server at minPriority", cfg: enabledRequired, mask: emptyMask,
+			hasTried: false, idx: 0, topOnly: true, minPriority: 0, optionalTried: 0, maxArtOpt: 0,
+			want: true,
+		},
+		{
+			name: "maxArtOpt cap excludes optional server once reached", cfg: enabledOptional, mask: emptyMask,
+			hasTried: false, idx: 1, topOnly: false, minPriority: 0, optionalTried: 1, maxArtOpt: 1,
+			want: false,
+		},
+		{
+			name: "maxArtOpt cap does not affect required servers", cfg: enabledRequired, mask: emptyMask,
+			hasTried: false, idx: 1, topOnly: false, minPriority: 0, optionalTried: 1, maxArtOpt: 1,
+			want: true,
+		},
+		{
+			name: "maxArtOpt=0 means unlimited optional tries", cfg: enabledOptional, mask: emptyMask,
+			hasTried: false, idx: 1, topOnly: false, minPriority: 0, optionalTried: 5, maxArtOpt: 0,
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := isServerCandidate(tc.cfg, tc.mask, tc.hasTried, tc.idx, tc.topOnly, tc.minPriority, tc.optionalTried, tc.maxArtOpt)
+			if got != tc.want {
+				t.Errorf("isServerCandidate(...) = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// PreCheck issues an NNTP STAT before BODY. When the server reports the
+// article missing via STAT, Fetch (BODY) must never be called — the
+// same not-found path taken on a Fetch-time ErrNoArticle is followed
+// instead (RecordGoodConnection + emitResult wrapping ErrNoArticle).
+func TestFetchArticle_PreCheckSkipsFetchOnMissingArticle(t *testing.T) {
+	t.Parallel()
+
+	ms := newMockNNTP(t)
+	// Deliberately do not add "missing@h" to ms.bodies, so STAT reports
+	// 430 (no such article). If Fetch (BODY) were called anyway, the
+	// mock's rejections counter would increment.
+
+	q := queue.New()
+	srv := testServer(t, "s", ms.addr)
+	d := &Downloader{
+		queue:       q,
+		tracker:     newDispatchTracker(),
+		log:         slog.New(slog.DiscardHandler),
+		opts:        Options{PreCheck: true},
+		completions: make(chan *ArticleResult, 1),
+		limiter:     bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	req := &articleRequest{jobID: "job1", messageID: "missing@h"}
+	mc := &managedConn{}
+	defer mc.Close(d, "worker1") // avoid leaving the conn open for the mock's idle-timeout to close (slows the test)
+	body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1")
+	if ok || body != nil {
+		t.Fatalf("expected fetchArticle to report not-found, got ok=%v body=%v", ok, body)
+	}
+
+	if ms.fetches.Load() != 0 || ms.rejections.Load() != 0 {
+		t.Errorf("BODY was called (fetches=%d rejections=%d), want 0 — PreCheck should have short-circuited via STAT",
+			ms.fetches.Load(), ms.rejections.Load())
+	}
+
+	select {
+	case res := <-d.completions:
+		if !errors.Is(res.Err, nntp.ErrNoArticle) {
+			t.Errorf("completion err = %v, want wrapping nntp.ErrNoArticle", res.Err)
+		}
+	default:
+		t.Error("expected a result on completions for the not-found article")
+	}
+
+	if srv.goodConnections() != 1 {
+		t.Errorf("goodConnections = %d, want 1 (STAT-based not-found is not a server fault)", srv.goodConnections())
+	}
+}
+
+// A connection-level failure during Fetch (mid-stream disconnect, distinct
+// from a clean 430 ErrNoArticle) must apply the clamped penalty via the
+// second clampPenalty call site in fetchArticle. Exercises the "fetch
+// failed" branch that TestDownloaderDialFailure and
+// TestFetchArticle_PreCheckSkipsFetchOnMissingArticle do not reach.
+func TestFetchArticle_FetchFailureAppliesClampedPenalty(t *testing.T) {
+	t.Parallel()
+
+	ms := newMockNNTP(t)
+	ms.addArticle("hangup@h", "body")
+	ms.hangupOnFetch("hangup@h")
+
+	q := queue.New()
+	srv := testServer(t, "s", ms.addr)
+	d := &Downloader{
+		queue:   q,
+		tracker: newDispatchTracker(),
+		log:     slog.New(slog.DiscardHandler),
+		opts:    Options{NoPenalties: true},
+		limiter: bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	req := &articleRequest{jobID: "job1", messageID: "hangup@h"}
+	mc := &managedConn{}
+	defer mc.Close(d, "worker1")
+	before := time.Now()
+	body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1")
+	if ok || body != nil {
+		t.Fatalf("expected fetchArticle to report a connection-level failure, got ok=%v body=%v", ok, body)
+	}
+
+	if srv.BadConnections() != 1 {
+		t.Errorf("BadConnections = %d, want 1 (mid-stream disconnect is a server fault)", srv.BadConnections())
+	}
+
+	expiry := srv.PenaltyExpiry()
+	got := expiry.Sub(before)
+	if got > constants.PenaltyShort+2*time.Second {
+		t.Errorf("penalty duration = %v, want <= constants.PenaltyShort (%v) when NoPenalties is set", got, constants.PenaltyShort)
+	}
+	if got <= 0 {
+		t.Errorf("penalty duration = %v, want > 0 for a connection-level fetch failure", got)
 	}
 }

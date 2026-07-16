@@ -59,6 +59,21 @@ func testQueueServer(t *testing.T) (*Server, *queue.Queue) {
 	return s, q
 }
 
+// testQueueServerWithRoot builds a Server wired with a fresh queue and root
+// configured as DownloadDir, so that browse/addlocalfile's SEC-6 allowlist
+// check permits paths under root.
+func testQueueServerWithRoot(t *testing.T, root string) (*Server, *queue.Queue) {
+	t.Helper()
+	q := queue.New()
+	s := New(Options{
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: root}},
+		Version: "1.0.0-test",
+		Queue:   q,
+		App:     apitest.NopApp{Queue: q},
+	})
+	return s, q
+}
+
 // addTestJob adds a job parsed from a minimal NZB to the queue and returns it.
 func addTestJob(t *testing.T, q *queue.Queue, opts queue.AddOptions) *queue.Job {
 	t.Helper()
@@ -192,6 +207,37 @@ func TestQueueDefault_Filtering(t *testing.T) {
 	}
 	if resp2.Queue.NoOfSlots != 1 {
 		t.Errorf("search-filtered noofslots = %d; want 1", resp2.Queue.NoOfSlots)
+	}
+}
+
+func TestQueueDefault_StatusFilter(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	addTestJob(t, q, queue.AddOptions{Filename: "movie.nzb", Category: "movies"})
+	paused := addTestJob(t, q, queue.AddOptions{Filename: "show.nzb", Category: "tv"})
+	if err := q.Pause(paused.ID); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	// Filter by status=Paused → expect exactly the paused job, not the
+	// unfiltered total of 2.
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&status=Paused&apikey="+testAPIKey)
+	var resp struct {
+		Queue struct {
+			NoOfSlots int `json:"noofslots"`
+			Slots     []struct {
+				NzoID string `json:"nzo_id"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Queue.NoOfSlots != 1 {
+		t.Fatalf("status-filtered noofslots = %d; want 1", resp.Queue.NoOfSlots)
+	}
+	if len(resp.Queue.Slots) != 1 || resp.Queue.Slots[0].NzoID != paused.ID {
+		t.Errorf("status-filtered slots = %+v; want only paused job %q", resp.Queue.Slots, paused.ID)
 	}
 }
 
@@ -875,9 +921,9 @@ func TestAddFile_NameField(t *testing.T) {
 
 func TestAddLocalFile_HappyPath(t *testing.T) {
 	t.Parallel()
-	s, q := testQueueServer(t)
-
 	dir := t.TempDir()
+	s, q := testQueueServerWithRoot(t, dir)
+
 	nzbPath := filepath.Join(dir, "local.nzb")
 	if err := os.WriteFile(nzbPath, makeTestNZB(t), 0o600); err != nil {
 		t.Fatalf("write NZB: %v", err)
@@ -943,6 +989,32 @@ func TestModeAddLocalFile_RejectsPathTraversal(t *testing.T) {
 				t.Errorf("status = %d; want 400 for path %q (body: %s)", rr.Code, tt.path, rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestModeAddLocalFile_RequiresAdmin(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	// testNZBKey is LevelProtected only (upload-only key) — must now be
+	// rejected since addlocalfile is LevelAdmin.
+	rr := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name=/tmp/x.nzb&apikey="+testNZBKey)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 (nzbkey is not admin)", rr.Code)
+	}
+}
+
+func TestModeAddLocalFile_RejectsPathOutsideConfiguredRoots(t *testing.T) {
+	t.Parallel()
+	downloadDir := t.TempDir()
+	// testServerWithConfig doesn't wire a Queue, and requireQueue is checked
+	// before the path/roots validation in modeAddLocalFile -- use
+	// testQueueServerWithRoot so the request reaches the SEC-6 check we're
+	// actually exercising here instead of failing earlier with 500.
+	s, _ := testQueueServerWithRoot(t, downloadDir)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name=/etc/hosts&apikey="+testAPIKey)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 (path outside configured roots)", rr.Code)
 	}
 }
 
@@ -1796,6 +1868,10 @@ func (m mockApp) DirectUnpackStatus(jobID string) (directunpack.Status, bool) {
 	return st, ok
 }
 
+func (m mockApp) DirectUnpackStatuses() map[string]directunpack.Status {
+	return m.statuses
+}
+
 func TestQueueList_WithDirectUnpackStatus(t *testing.T) {
 	t.Parallel()
 	q := queue.New()
@@ -1899,6 +1975,96 @@ func TestQueueList_WithDirectUnpackStatus(t *testing.T) {
 	}
 }
 
+// callCountingDUApp is a fake App that panics if DirectUnpackStatus (the
+// per-job singular lookup) is ever called, and counts calls to
+// DirectUnpackStatuses (the request-scoped snapshot). It is a regression
+// guard for OPT-12: queueList must snapshot direct-unpack statuses once per
+// request, never once per job.
+type callCountingDUApp struct {
+	apitest.NopApp
+	statuses         map[string]directunpack.Status
+	statusesCallsPtr *int
+}
+
+func (a callCountingDUApp) DirectUnpackStatus(string) (directunpack.Status, bool) {
+	panic("DirectUnpackStatus (per-job) must not be called by queueList; use DirectUnpackStatuses instead (OPT-12)")
+}
+
+func (a callCountingDUApp) DirectUnpackStatuses() map[string]directunpack.Status {
+	*a.statusesCallsPtr++
+	return a.statuses
+}
+
+func TestQueueList_UsesSingleDirectUnpackSnapshot(t *testing.T) {
+	t.Parallel()
+	q := queue.New()
+
+	statuses := map[string]directunpack.Status{
+		"job-1": {Active: true, CurrentSet: "set1"},
+		"job-2": {Active: true, CurrentSet: "set2"},
+		"job-3": {Active: true, CurrentSet: "set3"},
+	}
+
+	calls := 0
+	app := callCountingDUApp{
+		NopApp:           apitest.NopApp{Queue: q},
+		statuses:         statuses,
+		statusesCallsPtr: &calls,
+	}
+
+	s := New(Options{
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+		Version: "1.0.0-test",
+		Queue:   q,
+		App:     app,
+	})
+
+	data := makeTestNZB(t)
+	for _, id := range []string{"job-1", "job-2", "job-3"} {
+		parsed, err := nzb.Parse(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("parse test NZB: %v", err)
+		}
+		job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "movie.nzb"}, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatalf("NewJob: %v", err)
+		}
+		job.ID = id
+		if err := q.Add(job); err != nil {
+			t.Fatalf("queue.Add: %v", err)
+		}
+	}
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	var resp struct {
+		Queue struct {
+			Slots []struct {
+				NzoID        string               `json:"nzo_id"`
+				DirectUnpack *directunpack.Status `json:"direct_unpack"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Queue.Slots) != 3 {
+		t.Fatalf("expected 3 slots, got %d", len(resp.Queue.Slots))
+	}
+	for _, slot := range resp.Queue.Slots {
+		if slot.DirectUnpack == nil || !slot.DirectUnpack.Active {
+			t.Errorf("slot %s: expected active direct_unpack status", slot.NzoID)
+		}
+	}
+
+	if calls != 1 {
+		t.Errorf("DirectUnpackStatuses call count = %d; want 1 (queueList must snapshot once per request, not once per job)", calls)
+	}
+}
+
 // --- change_script and script parameter sanitization ---
 
 func TestQueueChangeScript_Sanitization(t *testing.T) {
@@ -1941,9 +2107,9 @@ func TestQueueChangeScript_Sanitization(t *testing.T) {
 
 func TestQueueAddLocalFile_Sanitization(t *testing.T) {
 	t.Parallel()
-	s, q := testQueueServer(t)
-
 	dir := t.TempDir()
+	s, q := testQueueServerWithRoot(t, dir)
+
 	nzbPath := filepath.Join(dir, "local.nzb")
 	if err := os.WriteFile(nzbPath, makeTestNZB(t), 0o600); err != nil {
 		t.Fatalf("write NZB: %v", err)
@@ -2031,8 +2197,8 @@ func TestQueue_CoverageGaps(t *testing.T) {
 	})
 
 	t.Run("addfile and addlocalfile error branches", func(t *testing.T) {
-		s, _ := testQueueServer(t)
 		dir := t.TempDir()
+		s, _ := testQueueServerWithRoot(t, dir)
 		badPath := filepath.Join(dir, "bad.nzb")
 		if err := os.WriteFile(badPath, []byte("invalid xml"), 0o600); err != nil {
 			t.Fatalf("write bad NZB: %v", err)
@@ -2047,13 +2213,13 @@ func TestQueue_CoverageGaps(t *testing.T) {
 		// addfile with errorApp on AddJob
 		q := queue.New()
 		errApp := errorAddJobApp{NopApp: apitest.NopApp{Queue: q}, err: errors.New("add job failed")}
+		dir2 := t.TempDir()
 		sErr := New(Options{
-			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: dir2}},
 			Version: "1.0.0-test",
 			Queue:   q,
 			App:     errApp,
 		})
-		dir2 := t.TempDir()
 		goodPath := filepath.Join(dir2, "good.nzb")
 		if err := os.WriteFile(goodPath, makeTestNZB(t), 0o600); err != nil {
 			t.Fatalf("write good NZB: %v", err)
@@ -2090,8 +2256,10 @@ func TestQueue_CoverageGaps(t *testing.T) {
 			t.Errorf("status = %d; want 400 on invalid multipart body", rrFailParse.Code)
 		}
 
-		// addlocalfile with non-existent file
-		rrMissing := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name=/absolute/path/to/missing.nzb&apikey="+testAPIKey)
+		// addlocalfile with non-existent file (within the configured root, so
+		// this exercises the "file not found" branch, not the SEC-6 check).
+		missingPath := filepath.Join(dir, "missing.nzb")
+		rrMissing := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name="+url.QueryEscape(missingPath)+"&apikey="+testAPIKey)
 		if rrMissing.Code != http.StatusBadRequest {
 			t.Errorf("status = %d; want 400 on missing file", rrMissing.Code)
 		}
@@ -2376,4 +2544,77 @@ func TestQueueDelete_RemoveJobErrorLog(t *testing.T) {
 	if !rec.hasWarn("failed to remove job during bulk delete", "job_fail", "simulated queue delete failure") {
 		t.Errorf("expected warning log not found in records: %v", rec.records)
 	}
+}
+
+// TestFilterQueueSlots covers filterQueueSlots directly (extracted from
+// queueList in OPT-9): category filter, status filter, search filter, and
+// the duStatuses lookup all apply independently and in combination.
+func TestFilterQueueSlots(t *testing.T) {
+	t.Parallel()
+
+	jobs := []*queue.Job{
+		{ID: "job1", Name: "Ubuntu ISO", Filename: "ubuntu.nzb", Category: "linux", Status: constants.StatusDownloading},
+		{ID: "job2", Name: "Debian ISO", Filename: "debian.nzb", Category: "linux", Status: constants.StatusPaused},
+		{ID: "job3", Name: "Some Movie", Filename: "movie.nzb", Category: "movies", Status: constants.StatusDownloading},
+	}
+	duStatuses := map[string]directunpack.Status{
+		"job1": {CurrentSet: "vol01"},
+	}
+
+	t.Run("no filters returns everything", func(t *testing.T) {
+		t.Parallel()
+		slots := filterQueueSlots(jobs, "", "", "", false, 0, duStatuses)
+		if len(slots) != 3 {
+			t.Fatalf("len(slots) = %d, want 3", len(slots))
+		}
+	})
+
+	t.Run("category filter", func(t *testing.T) {
+		t.Parallel()
+		slots := filterQueueSlots(jobs, "movies", "", "", false, 0, duStatuses)
+		if len(slots) != 1 || slots[0].NzoID != "job3" {
+			t.Fatalf("filterQueueSlots(category=movies) = %+v, want only job3", slots)
+		}
+	})
+
+	t.Run("status filter", func(t *testing.T) {
+		t.Parallel()
+		slots := filterQueueSlots(jobs, "", string(constants.StatusPaused), "", false, 0, duStatuses)
+		if len(slots) != 1 || slots[0].NzoID != "job2" {
+			t.Fatalf("filterQueueSlots(status=Paused) = %+v, want only job2", slots)
+		}
+	})
+
+	t.Run("search filter matches name or filename, case-insensitively", func(t *testing.T) {
+		t.Parallel()
+		slots := filterQueueSlots(jobs, "", "", "debian", false, 0, duStatuses)
+		if len(slots) != 1 || slots[0].NzoID != "job2" {
+			t.Fatalf("filterQueueSlots(search=debian) = %+v, want only job2", slots)
+		}
+	})
+
+	t.Run("duStatuses populates DirectUnpack for matching job only", func(t *testing.T) {
+		t.Parallel()
+		slots := filterQueueSlots(jobs, "", "", "", false, 0, duStatuses)
+		for _, s := range slots {
+			switch s.NzoID {
+			case "job1":
+				if s.DirectUnpack == nil || s.DirectUnpack.CurrentSet != "vol01" {
+					t.Errorf("job1.DirectUnpack = %+v, want CurrentSet=vol01", s.DirectUnpack)
+				}
+			default:
+				if s.DirectUnpack != nil {
+					t.Errorf("%s.DirectUnpack = %+v, want nil", s.NzoID, s.DirectUnpack)
+				}
+			}
+		}
+	})
+
+	t.Run("combined filters narrow to nothing", func(t *testing.T) {
+		t.Parallel()
+		slots := filterQueueSlots(jobs, "movies", string(constants.StatusPaused), "", false, 0, duStatuses)
+		if len(slots) != 0 {
+			t.Fatalf("filterQueueSlots(category=movies, status=Paused) = %+v, want empty", slots)
+		}
+	})
 }

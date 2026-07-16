@@ -270,22 +270,54 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// sanitizeQuery redacts apikey/nzbkey values from the query string so they
-// don't leak into logs. Uses url.ParseQuery to handle URL-encoded parameter
-// names (e.g. %61pikey → apikey) that would bypass a raw string prefix check.
+// secretParamSubstrings are lowercase substrings that mark a query
+// parameter *name* as secret-bearing. Matched via strings.Contains so
+// api_key, secret_token, etc. are all caught, not just exact names.
+var secretParamSubstrings = []string{"pass", "key", "secret", "token"}
+
+// sanitizeQuery redacts secret-bearing query values so they don't leak into
+// logs. It redacts by two rules: (1) any parameter name containing a
+// secret-like substring (apikey, nzbkey, password, secret, token, ...), and
+// (2) the "value" parameter when a sibling "keyword" parameter names a known
+// secret field (mode=set_config&keyword=password&value=...,
+// keyword=api_key&value=..., keyword=nzb_key&value=...). The keyword check
+// reuses isSecretParamName so it stays in sync with the config's actual
+// secret-bearing fields (password, api_key, nzb_key — see
+// internal/config/general.go, servers.go, notifications.go) rather than
+// requiring a separately maintained list. Uses url.ParseQuery to handle
+// URL-encoded parameter names (e.g. %61pikey → apikey) that would bypass a
+// raw string prefix check.
 func sanitizeQuery(raw string) string {
 	parsed, err := url.ParseQuery(raw)
 	if err != nil {
 		// Unparseable query — redact entirely to be safe.
 		return "***"
 	}
+	// Capture the keyword value before the redaction loop below, since the
+	// param name "keyword" itself contains the secret-like substring "key"
+	// and would otherwise be redacted before we get a chance to inspect it.
+	keyword := strings.ToLower(parsed.Get("keyword"))
 	for key := range parsed {
 		lower := strings.ToLower(key)
-		if lower == "apikey" || lower == "nzbkey" {
+		if isSecretParamName(lower) {
 			parsed.Set(key, "***")
 		}
 	}
+	if isSecretParamName(keyword) && parsed.Has("value") {
+		parsed.Set("value", "***")
+	}
 	return parsed.Encode()
+}
+
+// isSecretParamName reports whether a query parameter name (already
+// lowercased) is likely to carry a credential.
+func isSecretParamName(lower string) bool {
+	for _, sub := range secretParamSubstrings {
+		if strings.Contains(lower, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // statusWriter wraps ResponseWriter to capture the status code for logging.

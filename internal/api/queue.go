@@ -341,6 +341,35 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 	}
 }
 
+// filterQueueSlots applies the category/status/search filters to jobs and
+// builds the resulting queueSlot list. Split out of queueList to isolate
+// per-job filtering from pagination and response assembly (OPT-9).
+func filterQueueSlots(jobs []*queue.Job, catFilter, statusFilter, searchLower string, paused bool, speed float64, duStatuses map[string]directunpack.Status) []queueSlot {
+	slots := make([]queueSlot, 0, len(jobs))
+	for _, j := range jobs {
+		// Post-processing jobs remain in the queue with their current
+		// status (Verifying, Repairing, Extracting, etc.) until
+		// OnJobDone removes them and moves them to history.
+		if catFilter != "" && j.Category != catFilter {
+			continue
+		}
+		if statusFilter != "" && string(j.Status) != statusFilter {
+			continue
+		}
+		if searchLower != "" && !strings.Contains(strings.ToLower(j.Name), searchLower) &&
+			!strings.Contains(strings.ToLower(j.Filename), searchLower) {
+			continue
+		}
+
+		var duStatus *directunpack.Status
+		if status, ok := duStatuses[j.ID]; ok {
+			duStatus = &status
+		}
+		slots = append(slots, buildSlot(j, paused, speed, len(slots), duStatus))
+	}
+	return slots
+}
+
 // queueList returns the paginated, filtered queue listing.
 //
 // When called with nzo_id=<id>&files=1, returns a single-job detail
@@ -379,31 +408,15 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	// iteration.
 	searchLower := strings.ToLower(search)
 
-	// Build slots applying filters.
-	slots := make([]queueSlot, 0, len(jobs))
-	for _, j := range jobs {
-		// Post-processing jobs remain in the queue with their current
-		// status (Verifying, Repairing, Extracting, etc.) until
-		// OnJobDone removes them and moves them to history.
-		if catFilter != "" && j.Category != catFilter {
-			continue
-		}
-		if statusFilter != "" && string(j.Status) != statusFilter {
-			continue
-		}
-		if search != "" && !strings.Contains(strings.ToLower(j.Name), searchLower) &&
-			!strings.Contains(strings.ToLower(j.Filename), searchLower) {
-			continue
-		}
-
-		var duStatus *directunpack.Status
-		if s.app != nil {
-			if status, ok := s.app.DirectUnpackStatus(j.ID); ok {
-				duStatus = &status
-			}
-		}
-		slots = append(slots, buildSlot(j, paused, speed, len(slots), duStatus))
+	// Snapshot all direct-unpack statuses once per request (OPT-12) instead
+	// of re-locking app.mu (application-wide) once per job in the loop below.
+	var duStatuses map[string]directunpack.Status
+	if s.app != nil {
+		duStatuses = s.app.DirectUnpackStatuses()
 	}
+
+	// Build slots applying filters.
+	slots := filterQueueSlots(jobs, catFilter, statusFilter, searchLower, paused, speed, duStatuses)
 
 	total := len(slots)
 
@@ -822,9 +835,9 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 // absolute server-side path supplied in the name= query parameter.
 //
 // Security: only absolute paths are accepted; filepath.Clean is applied and
-// paths containing ".." after cleaning are rejected. This is a LevelProtected
-// operation (same as addfile); for stricter security consider LevelAdmin, but
-// LevelProtected mirrors Python's addlocalfile level (2).
+// paths containing ".." after cleaning are rejected. Restricted to
+// LevelAdmin and to paths within a configured picker root (SEC-6) — the
+// upload-only NZB key can no longer probe arbitrary filesystem paths.
 //
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
@@ -857,6 +870,11 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 	// Defense-in-depth: reject paths where ".." survives cleaning.
 	if strings.Contains(clean, "..") {
 		s.respondError(w, http.StatusBadRequest, "path must not contain '..'")
+		return
+	}
+
+	if !s.pathWithinConfiguredRoots(clean) {
+		s.respondError(w, http.StatusForbidden, "path is outside configured directories")
 		return
 	}
 

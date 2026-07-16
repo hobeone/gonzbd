@@ -162,10 +162,13 @@ func TestModeGetScripts_WithScripts(t *testing.T) {
 
 func TestModeBrowse_ValidDir(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	downloadDir := t.TempDir()
+	cfg := &config.Config{
+		General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: downloadDir},
+	}
+	s := testServerWithConfig(t, cfg)
 
-	// Use /tmp as a safe directory to browse
-	rr := apiGet(t, s.Handler(), "/api?mode=browse&name=/tmp&apikey="+testAPIKey)
+	rr := apiGet(t, s.Handler(), "/api?mode=browse&name="+downloadDir+"&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rr.Code)
 	}
@@ -180,7 +183,7 @@ func TestModeBrowse_ValidDir(t *testing.T) {
 		t.Fatalf("paths not an array")
 	}
 
-	// /tmp exists and should have some entries or be empty, but should be valid
+	// downloadDir exists and should have some entries or be empty, but should be valid
 	if paths == nil {
 		t.Errorf("paths is nil (should be array)")
 	}
@@ -190,9 +193,77 @@ func TestModeBrowse_PathTraversal(t *testing.T) {
 	t.Parallel()
 	s := testServer()
 
+	// No roots are configured on this server, so any absolute path --
+	// traversal or not -- is now rejected as outside the configured
+	// allowlist (SEC-6), before the request ever reaches the filesystem.
 	rr := apiGet(t, s.Handler(), "/api?mode=browse&name=/tmp/../../etc/passwd&apikey="+testAPIKey)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d; want 400 (path traversal)", rr.Code)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 (path outside configured roots)", rr.Code)
+	}
+}
+
+func TestModeBrowse_RejectsPathOutsideConfiguredRoots(t *testing.T) {
+	t.Parallel()
+	downloadDir := t.TempDir()
+	cfg := &config.Config{
+		General: config.GeneralConfig{
+			APIKey: testAPIKey, NZBKey: testNZBKey,
+			DownloadDir: downloadDir,
+		},
+	}
+	s := testServerWithConfig(t, cfg)
+
+	// /etc is outside every configured root.
+	rr := apiGet(t, s.Handler(), "/api?mode=browse&name=/etc&apikey="+testAPIKey)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 (path outside configured roots)", rr.Code)
+	}
+}
+
+// TestModeBrowse_RejectsSymlinkEscapeFromConfiguredRoot is a regression
+// guard for SEC-6's residual symlink gap: a symlink physically located
+// inside a configured root but pointing outside it must not be treated as
+// contained by a lexical-only prefix check.
+func TestModeBrowse_RejectsSymlinkEscapeFromConfiguredRoot(t *testing.T) {
+	t.Parallel()
+	downloadDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	escape := filepath.Join(downloadDir, "escape")
+	if err := os.Symlink(outsideDir, escape); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	cfg := &config.Config{
+		General: config.GeneralConfig{
+			APIKey: testAPIKey, NZBKey: testNZBKey,
+			DownloadDir: downloadDir,
+		},
+	}
+	s := testServerWithConfig(t, cfg)
+
+	// escape's lexical path is under downloadDir, but it resolves to
+	// outsideDir — must be rejected.
+	rr := apiGet(t, s.Handler(), "/api?mode=browse&name="+escape+"&apikey="+testAPIKey)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 (symlink escapes configured root)", rr.Code)
+	}
+}
+
+func TestModeBrowse_AllowsPathWithinDownloadDir(t *testing.T) {
+	t.Parallel()
+	downloadDir := t.TempDir()
+	cfg := &config.Config{
+		General: config.GeneralConfig{
+			APIKey: testAPIKey, NZBKey: testNZBKey,
+			DownloadDir: downloadDir,
+		},
+	}
+	s := testServerWithConfig(t, cfg)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=browse&name="+downloadDir+"&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (path within configured DownloadDir)", rr.Code)
 	}
 }
 
@@ -218,10 +289,14 @@ func TestModeBrowse_MissingName(t *testing.T) {
 
 func TestModeBrowse_ShowFiles(t *testing.T) {
 	t.Parallel()
-	s := testServer()
 
 	// Create a temporary directory with a file
 	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: tmpDir},
+	}
+	s := testServerWithConfig(t, cfg)
+
 	tmpFile := filepath.Join(tmpDir, "testfile.txt")
 	if err := os.WriteFile(tmpFile, []byte("test"), 0o644); err != nil {
 		t.Fatalf("create temp file: %v", err)
@@ -284,9 +359,13 @@ func TestModeWatchedNow_NotImplemented(t *testing.T) {
 
 func TestModeBrowse_HiddenFolders(t *testing.T) {
 	t.Parallel()
-	s := testServer()
 
 	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: tmpDir},
+	}
+	s := testServerWithConfig(t, cfg)
+
 	if err := os.MkdirAll(filepath.Join(tmpDir, ".hidden_dir"), 0o755); err != nil {
 		t.Fatalf("create hidden dir: %v", err)
 	}
@@ -335,9 +414,16 @@ func TestModeBrowse_HiddenFolders(t *testing.T) {
 
 func TestModeBrowse_NonexistentDir(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	downloadDir := t.TempDir()
+	cfg := &config.Config{
+		General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: downloadDir},
+	}
+	s := testServerWithConfig(t, cfg)
 
-	rr := apiGet(t, s.Handler(), "/api?mode=browse&name=/nonexistent_path_abc123&apikey="+testAPIKey)
+	// The nonexistent subdirectory is still within the configured root, so
+	// this exercises the "cannot read directory" branch rather than the
+	// SEC-6 allowlist check.
+	rr := apiGet(t, s.Handler(), "/api?mode=browse&name="+filepath.Join(downloadDir, "nonexistent_subdir")+"&apikey="+testAPIKey)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d; want 400 for nonexistent dir", rr.Code)
 	}
@@ -347,4 +433,120 @@ func TestUnexportedMiscHelpersAlignmentReference(t *testing.T) {
 	var s Server
 	_ = s.modeBrowse
 	_ = s.modeGetScripts
+}
+
+func TestResolveExistingAncestor(t *testing.T) {
+	t.Parallel()
+
+	t.Run("existing path resolves directly", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		resolved, ok := resolveExistingAncestor(dir)
+		if !ok {
+			t.Fatalf("resolveExistingAncestor(%q) ok = false, want true", dir)
+		}
+		want, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%q): %v", dir, err)
+		}
+		if resolved != want {
+			t.Errorf("resolved = %q, want %q", resolved, want)
+		}
+	})
+
+	t.Run("nonexistent leaf rejoins onto resolved existing parent", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		target := filepath.Join(dir, "nonexistent")
+		resolved, ok := resolveExistingAncestor(target)
+		if !ok {
+			t.Fatalf("resolveExistingAncestor(%q) ok = false, want true", target)
+		}
+		wantParent, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%q): %v", dir, err)
+		}
+		want := filepath.Join(wantParent, "nonexistent")
+		if resolved != want {
+			t.Errorf("resolved = %q, want %q", resolved, want)
+		}
+	})
+
+	t.Run("multi-level nonexistent suffix walks up to existing ancestor", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		target := filepath.Join(dir, "a", "b", "c")
+		resolved, ok := resolveExistingAncestor(target)
+		if !ok {
+			t.Fatalf("resolveExistingAncestor(%q) ok = false, want true", target)
+		}
+		wantParent, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%q): %v", dir, err)
+		}
+		want := filepath.Join(wantParent, "a", "b", "c")
+		if resolved != want {
+			t.Errorf("resolved = %q, want %q", resolved, want)
+		}
+	})
+
+	t.Run("symlink in an existing prefix resolves to its real target", func(t *testing.T) {
+		t.Parallel()
+		realDir := t.TempDir()
+		parentDir := t.TempDir()
+		link := filepath.Join(parentDir, "link")
+		if err := os.Symlink(realDir, link); err != nil {
+			t.Fatalf("Symlink: %v", err)
+		}
+		target := filepath.Join(link, "nonexistent-child")
+
+		resolved, ok := resolveExistingAncestor(target)
+		if !ok {
+			t.Fatalf("resolveExistingAncestor(%q) ok = false, want true", target)
+		}
+		wantReal, err := filepath.EvalSymlinks(realDir)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%q): %v", realDir, err)
+		}
+		want := filepath.Join(wantReal, "nonexistent-child")
+		if resolved != want {
+			t.Errorf("resolved = %q, want %q (symlink should resolve to its real target)", resolved, want)
+		}
+	})
+}
+
+// TestWithinAnyRoot_RootSlash is a regression guard: a configured root of
+// exactly "/" must match ordinary absolute paths. The naive
+// root+separator construction turns "/" into "//", which no cleaned path
+// can ever have as a prefix, silently rejecting everything.
+func TestWithinAnyRoot_RootSlash(t *testing.T) {
+	t.Parallel()
+	roots := []string{"/"}
+
+	cases := []string{"/", "/etc", "/etc/passwd", "/home/user/file.txt"}
+	for _, path := range cases {
+		if !withinAnyRoot(path, roots) {
+			t.Errorf("withinAnyRoot(%q, %q) = false, want true", path, roots)
+		}
+	}
+}
+
+// TestWithinAnyRoot_OrdinaryRootUnaffected confirms the "/" special-case
+// doesn't change behavior for a normal (non-"/") root.
+func TestWithinAnyRoot_OrdinaryRootUnaffected(t *testing.T) {
+	t.Parallel()
+	roots := []string{"/data/downloads"}
+
+	if !withinAnyRoot("/data/downloads", roots) {
+		t.Error("withinAnyRoot(root itself) = false, want true")
+	}
+	if !withinAnyRoot("/data/downloads/file.txt", roots) {
+		t.Error("withinAnyRoot(nested path) = false, want true")
+	}
+	if withinAnyRoot("/data/downloads-evil", roots) {
+		t.Error("withinAnyRoot(sibling sharing a string prefix without separator) = true, want false")
+	}
+	if withinAnyRoot("/etc", roots) {
+		t.Error("withinAnyRoot(unrelated path) = true, want false")
+	}
 }
