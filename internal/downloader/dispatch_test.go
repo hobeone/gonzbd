@@ -1022,6 +1022,86 @@ func TestSelectServerForArticle_MaxArtOptCapsOptionalServerTries(t *testing.T) {
 	}
 }
 
+// TestIsServerCandidate covers isServerCandidate directly: each of its four
+// exclusion branches (already-tried, disabled, topOnly priority mismatch,
+// maxArtOpt cap on optional servers) plus the happy-path true case.
+func TestIsServerCandidate(t *testing.T) {
+	t.Parallel()
+
+	enabledRequired := &config.ServerConfig{Enable: true, Priority: 0}
+	enabledOptional := &config.ServerConfig{Enable: true, Priority: 0, Optional: true}
+	disabled := &config.ServerConfig{Enable: false, Priority: 0}
+	lowPriority := &config.ServerConfig{Enable: true, Priority: 5}
+
+	triedMask := serverMask{}
+	triedMask.set(0)
+	emptyMask := serverMask{}
+
+	cases := []struct {
+		name          string
+		cfg           *config.ServerConfig
+		mask          serverMask
+		hasTried      bool
+		idx           int
+		topOnly       bool
+		minPriority   int
+		optionalTried int
+		maxArtOpt     int
+		want          bool
+	}{
+		{
+			name: "eligible required server", cfg: enabledRequired, mask: emptyMask,
+			hasTried: false, idx: 0, topOnly: false, minPriority: 0, optionalTried: 0, maxArtOpt: 0,
+			want: true,
+		},
+		{
+			name: "already tried is excluded", cfg: enabledRequired, mask: triedMask,
+			hasTried: true, idx: 0, topOnly: false, minPriority: 0, optionalTried: 0, maxArtOpt: 0,
+			want: false,
+		},
+		{
+			name: "disabled server is excluded", cfg: disabled, mask: emptyMask,
+			hasTried: false, idx: 0, topOnly: false, minPriority: 0, optionalTried: 0, maxArtOpt: 0,
+			want: false,
+		},
+		{
+			name: "topOnly excludes lower-priority server", cfg: lowPriority, mask: emptyMask,
+			hasTried: false, idx: 0, topOnly: true, minPriority: 0, optionalTried: 0, maxArtOpt: 0,
+			want: false,
+		},
+		{
+			name: "topOnly allows server at minPriority", cfg: enabledRequired, mask: emptyMask,
+			hasTried: false, idx: 0, topOnly: true, minPriority: 0, optionalTried: 0, maxArtOpt: 0,
+			want: true,
+		},
+		{
+			name: "maxArtOpt cap excludes optional server once reached", cfg: enabledOptional, mask: emptyMask,
+			hasTried: false, idx: 1, topOnly: false, minPriority: 0, optionalTried: 1, maxArtOpt: 1,
+			want: false,
+		},
+		{
+			name: "maxArtOpt cap does not affect required servers", cfg: enabledRequired, mask: emptyMask,
+			hasTried: false, idx: 1, topOnly: false, minPriority: 0, optionalTried: 1, maxArtOpt: 1,
+			want: true,
+		},
+		{
+			name: "maxArtOpt=0 means unlimited optional tries", cfg: enabledOptional, mask: emptyMask,
+			hasTried: false, idx: 1, topOnly: false, minPriority: 0, optionalTried: 5, maxArtOpt: 0,
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := isServerCandidate(tc.cfg, tc.mask, tc.hasTried, tc.idx, tc.topOnly, tc.minPriority, tc.optionalTried, tc.maxArtOpt)
+			if got != tc.want {
+				t.Errorf("isServerCandidate(...) = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // PreCheck issues an NNTP STAT before BODY. When the server reports the
 // article missing via STAT, Fetch (BODY) must never be called — the
 // same not-found path taken on a Fetch-time ErrNoArticle is followed
