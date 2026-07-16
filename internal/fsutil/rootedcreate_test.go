@@ -229,8 +229,6 @@ func TestRootedCreateTemp_OpenFileNonExistError(t *testing.T) {
 	}
 }
 
-// TestRootedCreateTemp_UniqueAcrossCalls verifies that repeated calls for the
-// same target rel never collide with each other.
 // TestRootedCreateTemp_CanceledContext verifies that a canceled context is
 // honored before any filesystem work: no directory or temp file is created.
 func TestRootedCreateTemp_CanceledContext(t *testing.T) {
@@ -258,6 +256,8 @@ func TestRootedCreateTemp_CanceledContext(t *testing.T) {
 	}
 }
 
+// TestRootedCreateTemp_UniqueAcrossCalls verifies that repeated calls for the
+// same target rel never collide with each other.
 func TestRootedCreateTemp_UniqueAcrossCalls(t *testing.T) {
 	outDir := t.TempDir()
 	root, err := os.OpenRoot(outDir)
