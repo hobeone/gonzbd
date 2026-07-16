@@ -97,6 +97,73 @@ func TestRootedOpenFile_ZipSlip_Symlink(t *testing.T) {
 	}
 }
 
+// TestRootedCreateTemp_SameDirAsTargetAndRenamable verifies that
+// RootedCreateTemp creates the temp file in the same directory as rel (so a
+// subsequent rename is same-filesystem) and that the returned name is
+// distinct from rel but renamable into place.
+func TestRootedCreateTemp_SameDirAsTargetAndRenamable(t *testing.T) {
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	f, tmpRel, err := fsutil.RootedCreateTemp(root, "subdir/entry.txt")
+	if err != nil {
+		t.Fatalf("RootedCreateTemp: %v", err)
+	}
+	if tmpRel == "subdir/entry.txt" {
+		t.Fatalf("tmpRel = %q; want a distinct temp name", tmpRel)
+	}
+	if filepath.Dir(tmpRel) != "subdir" {
+		t.Errorf("tmpRel dir = %q; want %q (same dir as target)", filepath.Dir(tmpRel), "subdir")
+	}
+	if _, err := f.WriteString("content"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := root.Rename(tmpRel, "subdir/entry.txt"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(outDir, "subdir", "entry.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "content" {
+		t.Errorf("content = %q, want %q", got, "content")
+	}
+}
+
+// TestRootedCreateTemp_UniqueAcrossCalls verifies that repeated calls for the
+// same target rel never collide with each other.
+func TestRootedCreateTemp_UniqueAcrossCalls(t *testing.T) {
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	seen := make(map[string]bool)
+	for range 5 {
+		f, tmpRel, err := fsutil.RootedCreateTemp(root, "entry.txt")
+		if err != nil {
+			t.Fatalf("RootedCreateTemp: %v", err)
+		}
+		if seen[tmpRel] {
+			t.Fatalf("tmpRel %q collided with a previous call", tmpRel)
+		}
+		seen[tmpRel] = true
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}
+}
+
 func TestGetUniqueRelPath_AllCases(t *testing.T) {
 	t.Parallel()
 

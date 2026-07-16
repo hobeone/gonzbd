@@ -1,6 +1,8 @@
 package fsutil
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -32,6 +34,43 @@ func RootedOpenFile(root *os.Root, rel string, flag int, perm fs.FileMode) (*os.
 		return nil, fmt.Errorf("fsutil: open %s: %w", rel, err)
 	}
 	return f, nil
+}
+
+// RootedCreateTemp creates a uniquely-named temporary file in the same
+// directory as rel (so a subsequent root.Rename to rel is same-filesystem
+// and atomic), through a rooted directory handle. It calls root.MkdirAll for
+// the parent directory, then retries root.OpenFile with a random suffix on
+// name collision (mirroring os.CreateTemp's own retry behavior, since
+// os.Root has no CreateTemp of its own).
+//
+// It returns the open file and the relative path it was created at (which
+// the caller must root.Rename into place on success, or root.Remove on
+// failure — RootedCreateTemp itself does not clean up). The caller is
+// responsible for closing the returned *os.File.
+func RootedCreateTemp(root *os.Root, rel string) (*os.File, string, error) {
+	dir := filepath.Dir(rel)
+	if dir != "." {
+		if err := root.MkdirAll(dir, 0o750); err != nil {
+			return nil, "", fmt.Errorf("fsutil: mkdir %s: %w", dir, err)
+		}
+	}
+	base := filepath.Base(rel)
+	const maxAttempts = 10_000
+	for range maxAttempts {
+		var buf [8]byte
+		if _, err := rand.Read(buf[:]); err != nil {
+			return nil, "", fmt.Errorf("fsutil: generate temp suffix: %w", err)
+		}
+		tmpRel := filepath.Join(dir, base+".gonzbd-tmp-"+hex.EncodeToString(buf[:]))
+		f, err := root.OpenFile(tmpRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			return f, tmpRel, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, "", fmt.Errorf("fsutil: create temp for %s: %w", rel, err)
+		}
+	}
+	return nil, "", fmt.Errorf("fsutil: create temp for %s: exhausted %d attempts", rel, maxAttempts)
 }
 
 // GetUniqueRelPath returns a unique version of rel relative to root by checking

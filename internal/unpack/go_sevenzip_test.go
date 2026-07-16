@@ -701,6 +701,57 @@ func TestBoundReader_Direct(t *testing.T) {
 	}
 }
 
+// TestExtractSevenZipFile_ChecksumMismatchNeverPublishes is the regression
+// guard for issue #82 at the level closest to the bug: it calls
+// extractSevenZipFile directly (bypassing goSevenZipInternal's own
+// cleanupPartialFiles safety net) with a tampered CRC32, and verifies the
+// corrupt content never becomes visible at destPath in the first place --
+// not that it's cleaned up afterward, but that the CRC check gates
+// publishing before any rename occurs.
+func TestExtractSevenZipFile_ChecksumMismatchNeverPublishes(t *testing.T) {
+	t.Parallel()
+
+	td := sevenZipTestdata(t)
+	r, err := sevenzip.OpenReader(filepath.Join(td, "lzma2.7z"))
+	if err != nil {
+		t.Fatalf("sevenzip.OpenReader: %v", err)
+	}
+	defer r.Close()
+	if len(r.File) == 0 {
+		t.Fatal("archive has no files")
+	}
+
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("os.OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	// Shallow-copy the real file entry and corrupt its recorded CRC32 so it
+	// can never match the (correct) decompressed content -- isolating the
+	// checksum-mismatch path without needing a corrupted archive fixture.
+	f := *r.File[0]
+	f.CRC32 = f.CRC32 ^ 0xFFFFFFFF //nolint:staticcheck // deliberate: guarantee mismatch regardless of original value
+
+	totalRead := new(int64)
+	err = extractSevenZipFile(t.Context(), root, "out.txt", filepath.Join(outDir, "out.txt"), &f, Options{}, 0, totalRead, slog.Default())
+	if !errors.Is(err, errSevenZipChecksum) {
+		t.Fatalf("extractSevenZipFile error = %v, want errSevenZipChecksum", err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(outDir, "out.txt")); !os.IsNotExist(statErr) {
+		t.Errorf("out.txt exists after checksum mismatch; want never published (stat err: %v)", statErr)
+	}
+	entries, readErr := os.ReadDir(outDir)
+	if readErr != nil {
+		t.Fatalf("ReadDir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("outDir not empty after checksum mismatch: %v", entries)
+	}
+}
+
 func TestExtractSevenZipFile_Direct(t *testing.T) {
 	t.Parallel()
 
@@ -967,15 +1018,31 @@ type unlinkingContext struct {
 	unlinked bool
 }
 
+// Err runs on every contextCopy iteration. Since writeEntrySafely now writes
+// through a temp sibling file (published to destPath only via rename after
+// the write completes — see the atomic-publish rework), destPath itself
+// doesn't exist yet to unlink. Instead, this finds and unlinks the
+// in-progress temp file (named "<base>.gonzbd-tmp-<random>", per
+// fsutil.RootedCreateTemp) out from under the open descriptor, exploiting
+// the same POSIX unlink-while-open semantics to force the post-write
+// Chmod/Chtimes calls (which operate on the temp name pre-rename) to fail.
 func (u *unlinkingContext) Err() error {
 	if !u.unlinked {
-		_ = os.Remove(u.destPath) //nolint:errcheck // best-effort cleanup to force chmod/chtimes failure in test
+		dir := filepath.Dir(u.destPath)
+		prefix := filepath.Base(u.destPath) + ".gonzbd-tmp-"
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), prefix) {
+					_ = os.Remove(filepath.Join(dir, e.Name())) //nolint:errcheck // best-effort cleanup to force chmod/chtimes failure in test
+				}
+			}
+		}
 		u.unlinked = true
 	}
 	return u.Context.Err()
 }
 
-func TestExtractSevenZipFile_PermissionErrors(t *testing.T) {
+func TestExtractSevenZipFile_TempFileUnlinkedMidWrite(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping test that relies on POSIX unlink-while-open semantics")
 	}
@@ -1007,8 +1074,18 @@ func TestExtractSevenZipFile_PermissionErrors(t *testing.T) {
 		OverwriteFiles:   true,
 		IgnoreUnrarDates: false,
 	}, 0, totalRead, logger)
-	if err != nil {
-		t.Fatalf("extractSevenZipFile: %v", err)
+	// The temp file backing this write is unlinked mid-copy (see
+	// unlinkingContext.Err), so Chmod/Chtimes on it fail (soft, logged at
+	// debug — checked below) but the final publish rename now also fails
+	// hard, since its source path no longer exists. This is the correct,
+	// improved behavior under atomic publish: a file that vanishes between
+	// write and publish must surface as a real extraction error, not
+	// silently succeed with a file that was never actually published.
+	if err == nil {
+		t.Fatal("extractSevenZipFile: expected a publish error, got nil")
+	}
+	if !strings.Contains(err.Error(), "publish") {
+		t.Errorf("extractSevenZipFile error = %v, want a publish-step error", err)
 	}
 
 	handler.mu.Lock()
