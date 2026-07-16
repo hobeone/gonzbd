@@ -50,11 +50,6 @@ general:
   # peer is untrusted, so it cannot be spoofed by a public client.
   verify_xff_header: false
 
-  # Web UI credentials. Leave both empty to disable authentication.
-  # Password is stored as a hash after first login via the UI.
-  username: ""
-  password: ""
-
   # Working directory for in-progress downloads. Files here are
   # incomplete and should not be accessed by media scanners.
   # Created automatically on startup if it does not exist.
