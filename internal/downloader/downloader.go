@@ -106,7 +106,6 @@ type Options struct {
 
 	// MaxArtOpt caps the number of attempts on optional (backup)
 	// servers per article. Zero means unlimited.
-	// TODO: not yet wired into dispatch logic.
 	MaxArtOpt int
 
 	// TopOnly restricts article dispatch to the highest-priority server
@@ -116,12 +115,10 @@ type Options struct {
 
 	// NoPenalties disables long server penalties; all penalties become
 	// a short fixed duration instead of the class-specific defaults.
-	// TODO: not yet wired into dispatch logic.
 	NoPenalties bool
 
 	// PreCheck sends a STAT command before BODY to verify article
 	// existence on the server, avoiding wasted bandwidth on 430s.
-	// TODO: not yet wired into dispatch logic.
 	PreCheck bool
 
 	// PropagationDelay is the minimum age a job must have before its
