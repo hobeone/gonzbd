@@ -138,6 +138,61 @@ func TestRootedCreateTemp_SameDirAsTargetAndRenamable(t *testing.T) {
 	}
 }
 
+// TestRootedCreateTemp_MkdirAllFailure verifies that a failure creating rel's
+// parent directory (e.g. a regular file already occupies that path
+// component) is returned as an error rather than panicking or silently
+// falling through to OpenFile.
+func TestRootedCreateTemp_MkdirAllFailure(t *testing.T) {
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	// "blocker" exists as a regular file, so MkdirAll("blocker", ...) for
+	// rel="blocker/entry.txt" must fail: it can't create a directory where
+	// a file already exists.
+	if err := os.WriteFile(filepath.Join(outDir, "blocker"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+
+	_, _, err = fsutil.RootedCreateTemp(root, "blocker/entry.txt")
+	if err == nil {
+		t.Fatal("expected an error when the parent path is occupied by a regular file")
+	}
+}
+
+// TestRootedCreateTemp_OpenFileNonExistError verifies that an OpenFile
+// failure other than a name collision (fs.ErrExist) is returned immediately
+// rather than retried as if it were a collision.
+func TestRootedCreateTemp_OpenFileNonExistError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses permission checks")
+	}
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	// A read-only directory rejects file creation with a permission error,
+	// not fs.ErrExist -- exercising RootedCreateTemp's non-collision error
+	// return path instead of the retry loop.
+	if err := os.Chmod(outDir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	defer func() {
+		_ = os.Chmod(outDir, 0o755)
+	}()
+
+	_, _, err = fsutil.RootedCreateTemp(root, "entry.txt")
+	if err == nil {
+		t.Fatal("expected an error creating a temp file in a read-only directory")
+	}
+}
+
 // TestRootedCreateTemp_UniqueAcrossCalls verifies that repeated calls for the
 // same target rel never collide with each other.
 func TestRootedCreateTemp_UniqueAcrossCalls(t *testing.T) {
