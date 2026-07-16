@@ -194,30 +194,13 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	logBuildDeps(log)
 
 	// Single-instance lock prevents two daemons from corrupting the same
-	// admin dir. Released on every exit path via defer.
-	lock, err := app.AcquireLockfile(filepath.Join(adminDir, "gonzbd.lock"))
+	// admin dir, plus an optional PID file. Both released on every exit
+	// path via the returned cleanup func.
+	releaseLockAndPID, err := acquireLockAndPID(adminDir, pidPath, log)
 	if err != nil {
-		if errors.Is(err, app.ErrLocked) {
-			return fmt.Errorf("another gonzbd instance is running (admin dir %s); aborting", adminDir)
-		}
-		return fmt.Errorf("acquire lockfile: %w", err)
+		return err
 	}
-	defer func() {
-		if err := lock.Release(); err != nil {
-			log.Warn("release lockfile", "err", err)
-		}
-	}()
-
-	if pidPath != "" {
-		if err := writePIDFile(pidPath); err != nil {
-			return fmt.Errorf("write pid file: %w", err)
-		}
-		defer func() {
-			if err := os.Remove(pidPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				log.Warn("remove pid file", "err", err)
-			}
-		}()
-	}
+	defer releaseLockAndPID()
 
 	histDB, err := history.Open(context.Background(), filepath.Join(adminDir, "history.db"))
 	if err != nil {
@@ -408,6 +391,43 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		log.Warn("save bpsmeter state", "err", err)
 	}
 	return nil
+}
+
+// acquireLockAndPID takes the single-instance admin-dir lockfile (preventing
+// two daemons from corrupting the same admin dir) and, if pidPath is set,
+// writes a PID file. On success it returns a cleanup func that releases both
+// resources in reverse order (PID file first, then lock — matching the
+// original defer ordering) — the caller should `defer` it. On failure to
+// write the PID file, the already-acquired lock is released before
+// returning the error, since no cleanup func is handed back in that case.
+func acquireLockAndPID(adminDir, pidPath string, log *slog.Logger) (cleanup func(), err error) {
+	lock, err := app.AcquireLockfile(filepath.Join(adminDir, "gonzbd.lock"))
+	if err != nil {
+		if errors.Is(err, app.ErrLocked) {
+			return nil, fmt.Errorf("another gonzbd instance is running (admin dir %s); aborting", adminDir)
+		}
+		return nil, fmt.Errorf("acquire lockfile: %w", err)
+	}
+	releaseLock := func() {
+		if err := lock.Release(); err != nil {
+			log.Warn("release lockfile", "err", err)
+		}
+	}
+
+	if pidPath == "" {
+		return releaseLock, nil
+	}
+
+	if err := writePIDFile(pidPath); err != nil {
+		releaseLock()
+		return nil, fmt.Errorf("write pid file: %w", err)
+	}
+	return func() {
+		if err := os.Remove(pidPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Warn("remove pid file", "err", err)
+		}
+		releaseLock()
+	}, nil
 }
 
 // writePIDFile writes the current process PID to path, atomically. The
