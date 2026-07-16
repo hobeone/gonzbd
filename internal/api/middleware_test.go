@@ -369,6 +369,63 @@ func TestSanitizeQuery_Malformed(t *testing.T) {
 	}
 }
 
+func TestSanitizeQuery_RedactsSecretParamNames(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		raw  string
+		want string // substring that must NOT appear in output
+	}{
+		{"password param", "mode=config&name=test_server&password=hunter2", "hunter2"},
+		{"secret param", "mode=addurl&url=http://x&secret=topsecret", "topsecret"},
+		{"token param", "mode=addurl&token=abc123", "abc123"},
+		{"key param", "mode=addurl&api_key=abc123", "abc123"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sanitizeQuery(tc.raw)
+			if strings.Contains(got, tc.want) {
+				t.Errorf("sanitizeQuery(%q) = %q; still contains secret %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeQuery_RedactsSecretValueByKeyword(t *testing.T) {
+	t.Parallel()
+	// set_config&keyword=<field>&value=<secret> — the secret travels in
+	// "value", named indirectly via the sibling "keyword" param. Covers all
+	// of the config's secret-bearing fields: password (general/servers/
+	// notifications), api_key and nzb_key (general) — see
+	// internal/config/general.go, servers.go, notifications.go.
+	cases := []struct {
+		name    string
+		keyword string
+	}{
+		{"password", "password"},
+		{"api_key", "api_key"},
+		{"nzb_key", "nzb_key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sanitizeQuery("mode=set_config&keyword=" + tc.keyword + "&value=hunter2")
+			if strings.Contains(got, "hunter2") {
+				t.Errorf("sanitizeQuery redacted keyword=%s but value leaked: %q", tc.keyword, got)
+			}
+		})
+	}
+}
+
+func TestSanitizeQuery_PreservesNonSecretParams(t *testing.T) {
+	t.Parallel()
+	got := sanitizeQuery("mode=queue&name=delete&value=job123")
+	if !strings.Contains(got, "job123") {
+		t.Errorf("sanitizeQuery over-redacted a non-secret value: %q", got)
+	}
+}
+
 // ---------- isMultipartUpload ----------
 
 func TestIsMultipartUpload_True(t *testing.T) {
