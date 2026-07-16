@@ -841,6 +841,38 @@ func resolveLogLevels(cfg *config.Config, cliOverride string) (map[string]slog.L
 	return levels, nil
 }
 
+// waitForCompletion blocks until job reaches history (post-processing
+// complete), the context is cancelled, or a 60-minute deadline elapses.
+// It polls GetHistory every 2s as a secondary check, covering the case
+// where PostProcComplete fired before the select loop started listening.
+func waitForCompletion(ctx context.Context, application *app.Application, job *queue.Job, log *slog.Logger) error {
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+
+	deadline := time.NewTimer(60 * time.Minute)
+	defer deadline.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("interrupted: %w", ctx.Err())
+		case ppc := <-application.PostProcComplete():
+			if ppc.JobID == job.ID {
+				return nil
+			}
+		case <-tick.C:
+			// Secondary check: has it already reached history?
+			// This covers the case where PostProcComplete fired before we started selecting.
+			if h, err := application.GetHistory(ctx, job.ID); err == nil {
+				log.Info("job found in history", "job", job.Name, "status", h.Status)
+				return nil
+			}
+		case <-deadline.C:
+			return fmt.Errorf("no completion in 60 minutes; aborting")
+		}
+	}
+}
+
 func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, verbose bool) error {
 	cfg, err := loadOrCreateConfig(configPath, false)
 	if err != nil {
@@ -912,34 +944,10 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 
 	// Wait for the job to reach History (indicates post-processing is complete).
 	log.Info("waiting for job to complete", "job", job.Name, "id", job.ID)
-
-	tick := time.NewTicker(2 * time.Second)
-	defer tick.Stop()
-
-	deadline := time.NewTimer(60 * time.Minute)
-	defer deadline.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("interrupted: %w", ctx.Err())
-		case ppc := <-application.PostProcComplete():
-			if ppc.JobID == job.ID {
-				goto done
-			}
-		case <-tick.C:
-			// Secondary check: has it already reached history?
-			// This covers the case where PostProcComplete fired before we started selecting.
-			if h, err := application.GetHistory(ctx, job.ID); err == nil {
-				log.Info("job found in history", "job", job.Name, "status", h.Status)
-				goto done
-			}
-		case <-deadline.C:
-			return fmt.Errorf("no completion in 60 minutes; aborting")
-		}
+	if err := waitForCompletion(ctx, application, job, log); err != nil {
+		return err
 	}
 
-done:
 	duration := time.Since(start)
 	hist, err := application.GetHistory(ctx, job.ID)
 	if err != nil {
