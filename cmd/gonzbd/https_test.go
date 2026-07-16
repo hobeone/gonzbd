@@ -1,16 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
+	"github.com/hobeone/gonzbd/internal/config"
 )
 
 func TestFileExists(t *testing.T) {
@@ -134,5 +139,87 @@ func TestHTTPSAutoGenerateCert(t *testing.T) {
 	_, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		t.Fatalf("LoadX509KeyPair: %v", err)
+	}
+}
+
+// syncBuffer is a mutex-guarded io.Writer so the HTTP listener goroutine
+// (if one were incorrectly started) and the test can safely read/write the
+// same log buffer concurrently.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) Contains(s string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return strings.Contains(b.buf.String(), s)
+}
+
+// TestStartListeners_CertFailurePreventsHTTPStart is a regression guard: a
+// self-signed-cert provisioning failure must be detected before the HTTP
+// listener goroutine is started, so a bind/runtime HTTP failure never runs
+// unsupervised with no shutdown handle returned to the caller.
+func TestStartListeners_CertFailurePreventsHTTPStart(t *testing.T) {
+	t.Parallel()
+
+	addr := "127.0.0.1:0"
+
+	// certFile/keyFile whose parent directory can never be created: a
+	// path component ("blocker") is a regular file, not a directory, so
+	// os.MkdirAll inside app.WriteSelfSigned's writeFileAtomic fails with
+	// ENOTDIR — a deterministic, guaranteed cert-provisioning failure.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+	certFile := filepath.Join(blocker, "sub", "cert.pem")
+	keyFile := filepath.Join(blocker, "sub", "key.pem")
+
+	httpSrv := &http.Server{Addr: addr, Handler: http.NewServeMux()}
+	httpsSrv := &http.Server{Addr: addr, Handler: http.NewServeMux()}
+	cfg := &config.Config{General: config.GeneralConfig{
+		HTTPSPort: 8443,
+		HTTPSCert: certFile,
+		HTTPSKey:  keyFile,
+	}}
+
+	logBuf := &syncBuffer{}
+	log := slog.New(slog.NewTextHandler(logBuf, nil))
+
+	errCh, gotHTTPS, err := startListeners(httpSrv, httpsSrv, cfg, log)
+	if err == nil {
+		t.Fatal("startListeners: expected a cert-provisioning error, got nil")
+	}
+	if errCh != nil {
+		t.Errorf("errCh = %v, want nil on cert-provisioning failure", errCh)
+	}
+	if gotHTTPS != nil {
+		t.Errorf("httpsSrv = %v, want nil on cert-provisioning failure", gotHTTPS)
+	}
+
+	// Negative-observation window: "http listener starting" is logged
+	// unconditionally as the first statement in the HTTP goroutine, before
+	// ListenAndServe is even attempted. If startListeners regresses to
+	// starting HTTP before checking the cert, that goroutine's scheduler
+	// slice reliably arrives well within this window; its absence is the
+	// regression proof. Documented per this repo's testing conventions as
+	// an intentional timing window, not a flaky sleep-based assertion of
+	// a positive event.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if logBuf.Contains("http listener starting") {
+			t.Fatal("HTTP listener goroutine started despite cert-provisioning failure")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if logBuf.Contains("http listener starting") {
+		t.Fatal("HTTP listener goroutine started despite cert-provisioning failure")
 	}
 }
