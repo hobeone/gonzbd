@@ -154,7 +154,17 @@ func resolveExistingAncestor(path string) (resolved string, ok bool) {
 // consistently symlink-resolved) for the prefix comparison to be valid.
 func withinAnyRoot(path string, roots []string) bool {
 	for _, root := range roots {
-		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+		if path == root {
+			return true
+		}
+		// A root of exactly "/" already ends in the separator; appending
+		// another would build "//", which no cleaned path can ever have
+		// as a prefix, making the whole root unmatchable.
+		prefix := root
+		if prefix != string(filepath.Separator) {
+			prefix += string(filepath.Separator)
+		}
+		if strings.HasPrefix(path, prefix) {
 			return true
 		}
 	}
