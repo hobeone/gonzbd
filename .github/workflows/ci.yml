@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
   pull_request:
-    branches: [ master ]
+    branches: [ main ]
 
 permissions:
   contents: read
@@ -54,6 +54,9 @@ jobs:
 
       - name: Run tests
         run: go test -v -race ./...
+
+      - name: Run integration tests
+        run: go test -v -tags=integration ./test/integration/...
 
       - name: Verify modules
         run: go mod verify
