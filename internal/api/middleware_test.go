@@ -369,6 +369,47 @@ func TestSanitizeQuery_Malformed(t *testing.T) {
 	}
 }
 
+func TestSanitizeQuery_RedactsSecretParamNames(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		raw  string
+		want string // substring that must NOT appear in output
+	}{
+		{"password param", "mode=config&name=test_server&password=hunter2", "hunter2"},
+		{"secret param", "mode=addurl&url=http://x&secret=topsecret", "topsecret"},
+		{"token param", "mode=addurl&token=abc123", "abc123"},
+		{"key param", "mode=addurl&api_key=abc123", "abc123"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sanitizeQuery(tc.raw)
+			if strings.Contains(got, tc.want) {
+				t.Errorf("sanitizeQuery(%q) = %q; still contains secret %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeQuery_RedactsSecretValueByKeyword(t *testing.T) {
+	t.Parallel()
+	// set_config&keyword=password&value=<secret> — the secret travels in
+	// "value", named indirectly via the sibling "keyword" param.
+	got := sanitizeQuery("mode=set_config&keyword=password&value=hunter2")
+	if strings.Contains(got, "hunter2") {
+		t.Errorf("sanitizeQuery redacted keyword=password but value leaked: %q", got)
+	}
+}
+
+func TestSanitizeQuery_PreservesNonSecretParams(t *testing.T) {
+	t.Parallel()
+	got := sanitizeQuery("mode=queue&name=delete&value=job123")
+	if !strings.Contains(got, "job123") {
+		t.Errorf("sanitizeQuery over-redacted a non-secret value: %q", got)
+	}
+}
+
 // ---------- isMultipartUpload ----------
 
 func TestIsMultipartUpload_True(t *testing.T) {
