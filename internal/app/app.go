@@ -1064,6 +1064,20 @@ func (app *Application) DirectUnpackStatus(jobID string) (directunpack.Status, b
 	return du.Status(), true
 }
 
+// DirectUnpackStatuses returns a snapshot of every active direct-unpacker's
+// status, keyed by job ID. Takes app.mu once regardless of job count — used
+// by queueList to avoid re-locking the application-wide mutex per job in the
+// listing hot path (OPT-12).
+func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	statuses := make(map[string]directunpack.Status, len(app.directUnpackers))
+	for jobID, du := range app.directUnpackers {
+		statuses[jobID] = du.Status()
+	}
+	return statuses
+}
+
 func (app *Application) maybeFinalize(jobID, failMsg string) {
 	started, err := app.queue.SetPostProcStarted(jobID)
 	if err == nil && started {

@@ -1495,6 +1495,38 @@ func TestApplication_ShutdownWithOptions(t *testing.T) {
 	}
 }
 
+// TestDirectUnpackStatuses_ReturnsAllActiveJobs proves DirectUnpackStatuses
+// snapshots every active direct-unpacker's status in a single call (OPT-12),
+// instead of requiring one DirectUnpackStatus(jobID) call — and therefore one
+// app.mu acquisition — per job.
+func TestDirectUnpackStatuses_ReturnsAllActiveJobs(t *testing.T) {
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+
+	application, err := app.New(cfg, nil)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	du1 := directunpack.New(slog.Default(), "job-1", t.TempDir(), t.TempDir(), directunpack.Options{})
+	du2 := directunpack.New(slog.Default(), "job-2", t.TempDir(), t.TempDir(), directunpack.Options{})
+	application.InjectDirectUnpacker("job-1", du1)
+	application.InjectDirectUnpacker("job-2", du2)
+
+	statuses := application.DirectUnpackStatuses()
+	if len(statuses) != 2 {
+		t.Fatalf("len(statuses) = %d; want 2", len(statuses))
+	}
+	if _, ok := statuses["job-1"]; !ok {
+		t.Errorf("statuses missing job-1")
+	}
+	if _, ok := statuses["job-2"]; !ok {
+		t.Errorf("statuses missing job-2")
+	}
+}
+
 func TestApp_EventLoopStarvation(t *testing.T) {
 	dl := t.TempDir()
 	comp := t.TempDir()

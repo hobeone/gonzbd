@@ -88,6 +88,11 @@ type ApplicationReloader interface {
 	// Speed returns the current aggregate download speed in bytes/sec.
 	Speed() float64
 	DirectUnpackStatus(jobID string) (directunpack.Status, bool)
+	// DirectUnpackStatuses returns a snapshot of every active direct-unpack
+	// job's status, keyed by job ID. Used by queueList to take the
+	// application-wide mutex once per request instead of once per job
+	// (OPT-12).
+	DirectUnpackStatuses() map[string]directunpack.Status
 	// BinaryVersionsInfo returns resolved external-tool version strings
 	// captured at startup, for the status page.
 	BinaryVersionsInfo() app.BinaryVersions
