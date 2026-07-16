@@ -92,8 +92,8 @@ golangci-lint run ./...                                     # Linting
 gremlins unleash --timeout-coefficient 100 ./internal/queue # Mutation testing on a package
 ```
 
-> **WARNING:** Running `gremlins` on the entire repository (e.g. `./...` or `./internal/...`) is forbidden. It will run dozens of mutant compiles in parallel, exhausting disk space and completely filling up `/tmp`. Always scope `gremlins` to a single focused package.
-
+> **WARNING:** Running `gremlins` on the entire repository (e.g. `./...` or `./internal/...`) is forbidden. It will run dozens of mutant compiles in parallel, exhausting disk space and filling up `/tmp`. Always scope `gremlins` to a single focused package.
+>
 > **KNOWN BUG — `--diff` is broken when scoped to a package** (the only way
 > this repo permits it to be run): gremlins v0.6.0 has a confirmed upstream
 > bug ([go-gremlins/gremlins#278](https://github.com/go-gremlins/gremlins/issues/278))
@@ -158,7 +158,7 @@ go vet ./...                          # Must pass
 go test -race ./...                   # Unit tests with the race detector
 ./scripts/run_tests.sh                # Full Go + UI suite
 golangci-lint run ./...               # Must pass (no new issues)
-gremlins unleash --timeout-coefficient 100 ./internal/<pkg> # No new lived mutants vs. baseline (mutation proof)
+gremlins unleash --timeout-coefficient 100 ./internal/<pkg> # Whole-package mutation baseline
 ```
 
 `./scripts/run_tests.sh` runs the full Go and UI suites but **without** the race
