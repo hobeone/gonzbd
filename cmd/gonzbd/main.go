@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -169,38 +170,19 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	}
 
 	// Set up structured logging. The -v CLI flag overrides the config level.
-	logLevel, err := cfg.General.ParseLogLevel()
-	if err != nil {
-		return fmt.Errorf("parse log level: %w", err)
-	}
-	if verbose {
-		logLevel = slog.LevelDebug
-	}
-
-	// Per-component log level overrides. CLI flag takes precedence over config.
-	compLevels, err := resolveLogLevels(cfg, logLevelsOverride)
-	if err != nil {
-		return fmt.Errorf("parse log levels: %w", err)
-	}
-
 	logFile := ""
 	if cfg.General.LogDir != "" {
 		logFile = filepath.Join(cfg.General.LogDir, "gonzbd.log")
 	}
-	logger, logCloser, err := app.Setup(app.LoggingOptions{
-		Level:           logLevel,
-		LogFile:         logFile,
-		ComponentLevels: compLevels,
-	})
+	logCloser, err := configureLogging(cfg, logLevelsOverride, verbose, true, logFile)
 	if err != nil {
-		return fmt.Errorf("setup logging: %w", err)
+		return err
 	}
 	defer func() {
 		if logCloser != nil {
 			_ = logCloser.Close() //nolint:errcheck // close error not actionable at shutdown
 		}
 	}()
-	_ = logger // installed as slog.Default by Setup
 	log := slog.Default().With("component", "main")
 
 	log.Info("gonzbd starting",
@@ -725,6 +707,45 @@ func resolveDirs(cfg *config.Config, downloadDirOverride string) (dlDir, adminDi
 	return dlDir, adminDir, nil
 }
 
+// configureLogging computes the effective base log level and installs the
+// process-wide slog handler via app.Setup. useConfigLevel selects the base
+// level source: serveMode honors cfg.General's configured level (daemon
+// mode, tunable in the config file); run (one-shot --nzb mode) always starts
+// from slog.LevelInfo, since it's a short-lived CLI invocation rather than a
+// long-running daemon. In both cases -v (verbose) overrides to Debug, and
+// logLevelsOverride supplies CLI per-component overrides on top of the
+// config's. logFile is the target log file path, or "" for stderr-only
+// (one-shot mode never file-logs). The returned io.Closer is non-nil only
+// when logFile is set — callers should close it, when non-nil, at shutdown.
+func configureLogging(cfg *config.Config, logLevelsOverride string, verbose, useConfigLevel bool, logFile string) (io.Closer, error) {
+	logLevel := slog.LevelInfo
+	if useConfigLevel {
+		lvl, err := cfg.General.ParseLogLevel()
+		if err != nil {
+			return nil, fmt.Errorf("parse log level: %w", err)
+		}
+		logLevel = lvl
+	}
+	if verbose {
+		logLevel = slog.LevelDebug
+	}
+
+	compLevels, err := resolveLogLevels(cfg, logLevelsOverride)
+	if err != nil {
+		return nil, fmt.Errorf("parse log levels: %w", err)
+	}
+
+	_, logCloser, err := app.Setup(app.LoggingOptions{
+		Level:           logLevel,
+		LogFile:         logFile,
+		ComponentLevels: compLevels,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("setup logging: %w", err)
+	}
+	return logCloser, nil
+}
+
 // resolveLogLevels merges per-component log levels from the config file
 // with any CLI overrides. CLI entries take precedence. The override string
 // is comma-separated key=value pairs, e.g. "api=warn,nntp=error".
@@ -767,27 +788,11 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 		return err
 	}
 
-	// One-shot mode: stderr-only logging.
-	logLevel := slog.LevelInfo
-	if verbose {
-		logLevel = slog.LevelDebug
+	// One-shot mode: stderr-only logging, base level always Info (not
+	// config-driven) unless -v is passed.
+	if _, err := configureLogging(cfg, logLevelsOverride, verbose, false, ""); err != nil {
+		return err
 	}
-
-	// Per-component log level overrides.
-	compLevels, err := resolveLogLevels(cfg, logLevelsOverride)
-	if err != nil {
-		return fmt.Errorf("parse log levels: %w", err)
-	}
-
-	logger, _, err := app.Setup(app.LoggingOptions{
-		Level:           logLevel,
-		LogFile:         "", // no file logging for one-shot mode
-		ComponentLevels: compLevels,
-	})
-	if err != nil {
-		return fmt.Errorf("setup logging: %w", err)
-	}
-	_ = logger // installed as slog.Default by Setup
 	log := slog.Default().With("component", "main")
 
 	dlDir, adminDir, err := resolveDirs(cfg, downloadDirOverride)
