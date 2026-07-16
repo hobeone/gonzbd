@@ -58,6 +58,44 @@ func (s *Server) modeGetScripts(w http.ResponseWriter, r *http.Request) {
 	respondOK(w, "scripts", scripts)
 }
 
+// configuredRoots returns the set of absolute directories the browse/
+// addlocalfile file pickers are allowed to read from: the download,
+// complete, dirscan, and script directories. Empty/unset config fields are
+// skipped (never treated as "any path").
+func (s *Server) configuredRoots() []string {
+	var roots []string
+	if s.config == nil {
+		return roots
+	}
+	s.config.WithRead(func(cfg *config.Config) {
+		for _, dir := range []string{
+			cfg.General.DownloadDir,
+			cfg.General.CompleteDir,
+			cfg.General.DirscanDir,
+			cfg.General.ScriptDir,
+		} {
+			if dir != "" {
+				roots = append(roots, filepath.Clean(dir))
+			}
+		}
+	})
+	return roots
+}
+
+// pathWithinConfiguredRoots reports whether cleaned (an already
+// filepath.Clean'd absolute path) is equal to or nested under one of the
+// configured picker roots (SEC-6). Used by both modeBrowse and
+// modeAddLocalFile so the filesystem-enumeration surface is limited to
+// directories the operator has already told gonzbd about.
+func (s *Server) pathWithinConfiguredRoots(cleaned string) bool {
+	for _, root := range s.configuredRoots() {
+		if cleaned == root || strings.HasPrefix(cleaned, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
 // modeBrowse lists files and directories at a given path.
 func (s *Server) modeBrowse(w http.ResponseWriter, r *http.Request) {
 	dirPath, ok := s.requireParam(w, r, "name", "path")
@@ -69,6 +107,10 @@ func (s *Server) modeBrowse(w http.ResponseWriter, r *http.Request) {
 	cleaned := filepath.Clean(dirPath)
 	if !filepath.IsAbs(cleaned) {
 		s.respondError(w, http.StatusBadRequest, "path must be absolute")
+		return
+	}
+	if !s.pathWithinConfiguredRoots(cleaned) {
+		s.respondError(w, http.StatusForbidden, "path is outside configured directories")
 		return
 	}
 
