@@ -255,36 +255,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		return err
 	}
 
-	apiSrv := api.New(api.Options{
-		Version:      Version,
-		Commit:       Commit,
-		Date:         Date,
-		Queue:        application.Queue(),
-		History:      histRepo,
-		Config:       cfg,
-		ConfigPath:   configPath,
-		Grabber:      grabber,
-		App:          application,
-		ShutdownFunc: cancel,
-	})
-
-	// Inject the WebSocket broadcaster from the API server into the
-	// application so it can fire real-time events.
-	application.SetEmitter(wsAdapter{apiSrv.EventBroadcaster()})
-
-	// Check for missing dependencies and surface them via logs and UI warnings.
-	for _, warning := range app.CheckDependencies() {
-		log.Warn(warning)
-		apiSrv.AddWarning(warning)
-	}
-
-	// Warn when no NNTP servers are configured. The app runs but cannot
-	// download until a server is added via the settings UI.
-	if len(enabledServers(cfg.Servers)) == 0 {
-		const msg = "No news servers configured — add one in Config → Servers to start downloading"
-		log.Warn(msg)
-		apiSrv.AddWarning(msg)
-	}
+	apiSrv := buildAPIServer(cfg, configPath, application, histRepo, grabber, cancel, log)
 
 	// The web SPA cookie carries the API server's ephemeral session key,
 	// not the permanent General.APIKey — see AuthConfig.SessionKey.
@@ -469,6 +440,45 @@ func ensureSelfSignedCert(certFile, keyFile string, log *slog.Logger) error {
 	log.Info("https: self-signed certificate written",
 		"cert", certFile, "key", keyFile)
 	return nil
+}
+
+// buildAPIServer constructs the API server, wires its WebSocket broadcaster
+// into the application's event emitter, and surfaces startup warnings
+// (missing external dependencies, no NNTP servers configured) through both
+// the log and the API server's in-UI warning list.
+func buildAPIServer(cfg *config.Config, configPath string, application *app.Application, histRepo *history.Repository, grabber *urlgrabber.Grabber, cancel context.CancelFunc, log *slog.Logger) *api.Server {
+	apiSrv := api.New(api.Options{
+		Version:      Version,
+		Commit:       Commit,
+		Date:         Date,
+		Queue:        application.Queue(),
+		History:      histRepo,
+		Config:       cfg,
+		ConfigPath:   configPath,
+		Grabber:      grabber,
+		App:          application,
+		ShutdownFunc: cancel,
+	})
+
+	// Inject the WebSocket broadcaster from the API server into the
+	// application so it can fire real-time events.
+	application.SetEmitter(wsAdapter{apiSrv.EventBroadcaster()})
+
+	// Check for missing dependencies and surface them via logs and UI warnings.
+	for _, warning := range app.CheckDependencies() {
+		log.Warn(warning)
+		apiSrv.AddWarning(warning)
+	}
+
+	// Warn when no NNTP servers are configured. The app runs but cannot
+	// download until a server is added via the settings UI.
+	if len(enabledServers(cfg.Servers)) == 0 {
+		const msg = "No news servers configured — add one in Config → Servers to start downloading"
+		log.Warn(msg)
+		apiSrv.AddWarning(msg)
+	}
+
+	return apiSrv
 }
 
 // startDirScanner wires the watched-directory scanner when cfg.General.DirscanDir
