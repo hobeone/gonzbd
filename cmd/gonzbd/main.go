@@ -338,8 +338,8 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	if err != nil {
 		return fmt.Errorf("web script hashes: %w", err)
 	}
-	httpHandler := composeRouter(apiSrv, webHandler, false, scriptHashes)
-	httpsHandler := composeRouter(apiSrv, webHandler, true, scriptHashes)
+	httpHandler := composeRouter(apiSrv, webHandler, false, scriptHashes, trustedFn)
+	httpsHandler := composeRouter(apiSrv, webHandler, true, scriptHashes, trustedFn)
 
 	httpSrv, httpsSrv := newServers(cfg, httpHandler, httpsHandler)
 	if listenOverride != "" {
@@ -523,20 +523,37 @@ func newServers(cfg *config.Config, httpHandler, httpsHandler http.Handler) (htt
 }
 
 // composeRouter produces the outer HTTP handler that routes /api requests
-// to the API server, /debug/ to profiling/telemetry handlers, and
-// everything else to the web UI handler.
-func composeRouter(apiSrv *api.Server, webHandler http.Handler, isHTTPS bool, scriptHashes []string) http.Handler {
+// to the API server, /debug/ to profiling/telemetry handlers (gated to
+// trusted callers only — SEC-4), and everything else to the web UI handler.
+func composeRouter(apiSrv *api.Server, webHandler http.Handler, isHTTPS bool, scriptHashes []string, trustedFn func(*http.Request) bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api", apiSrv.Handler())
 	mux.Handle("/api/", apiSrv.Handler())
 
-	// Telemetry — expvar registers /debug/vars on http.DefaultServeMux,
-	// so route /debug/ there. pprof is not imported by this binary, so
-	// no profiling endpoints are reachable.
-	mux.Handle("/debug/", http.DefaultServeMux)
+	// Telemetry — expvar registers /debug/vars on http.DefaultServeMux, so
+	// route /debug/ there, but only for callers the SEC-1 trust check
+	// already treats as loopback/local-range (same predicate that gates
+	// the admin session cookie). expvar has no per-request auth of its
+	// own and leaks os.Args (cmdline) + memstats, so an unauthenticated
+	// remote caller must never reach it. pprof is not imported by this
+	// binary, so no profiling endpoints are reachable regardless.
+	mux.Handle("/debug/", trustGate(http.DefaultServeMux, trustedFn))
 
 	mux.Handle("/", webHandler)
 	return securityHeadersHandler(mux, isHTTPS, contentSecurityPolicy(scriptHashes))
+}
+
+// trustGate wraps h so it only serves requests from callers trustedFn
+// approves (loopback, or a configured general.local_ranges entry); all
+// other callers get 404 (not 403, to avoid confirming the path exists).
+func trustGate(h http.Handler, trustedFn func(*http.Request) bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if trustedFn == nil || !trustedFn(r) {
+			http.NotFound(w, r)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // contentSecurityPolicy builds the CSP header value. scriptHashes are the
