@@ -799,15 +799,24 @@ func TestGoTar_CumulativeSizeAcrossEntriesTriggersBomb(t *testing.T) {
 // real inputs.
 func buildTarReaderEntry(t *testing.T, name string, size int) (*tar.Header, *tar.Reader) {
 	t.Helper()
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
 	content := bytes.Repeat([]byte{9}, size)
 	hdr := &tar.Header{Name: name, Mode: 0o644, Size: int64(size), ModTime: time.Now()}
+	return buildTarReaderEntryFromHeader(t, hdr, content)
+}
+
+// buildTarReaderEntryFromHeader writes a single arbitrary tar header (plus
+// optional content) and returns the header and reader as tr.Next() sees them.
+func buildTarReaderEntryFromHeader(t *testing.T, hdr *tar.Header, content []byte) (*tar.Header, *tar.Reader) {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
 	if err := tw.WriteHeader(hdr); err != nil {
 		t.Fatalf("write header: %v", err)
 	}
-	if _, err := tw.Write(content); err != nil {
-		t.Fatalf("write content: %v", err)
+	if len(content) > 0 {
+		if _, err := tw.Write(content); err != nil {
+			t.Fatalf("write content: %v", err)
+		}
 	}
 	if err := tw.Close(); err != nil {
 		t.Fatalf("close writer: %v", err)
@@ -1606,7 +1615,7 @@ func TestGoTarInternal_Direct(t *testing.T) {
 }
 
 // TestExtractTarEntry_Direct covers extractTarEntry's own dispatch logic
-// (type filtering, path sanitization, unique naming) directly, separately
+// (type filtering: regular file, directory, symlink) directly, separately
 // from extractTarFile's per-entry write path (already covered by
 // TestExtractTarFile_Direct).
 func TestExtractTarEntry_Direct(t *testing.T) {
@@ -1614,12 +1623,7 @@ func TestExtractTarEntry_Direct(t *testing.T) {
 
 	t.Run("regular file is extracted and returns true", func(t *testing.T) {
 		t.Parallel()
-		outDir := t.TempDir()
-		root, err := os.OpenRoot(outDir)
-		if err != nil {
-			t.Fatalf("os.OpenRoot: %v", err)
-		}
-		defer root.Close() //nolint:errcheck // test cleanup, best-effort
+		outDir, root := openTestRoot(t)
 
 		hdr, tr := buildTarReaderEntry(t, "entry.txt", 11)
 		var totalRead int64
@@ -1637,27 +1641,10 @@ func TestExtractTarEntry_Direct(t *testing.T) {
 
 	t.Run("directory entry creates the dir and returns false", func(t *testing.T) {
 		t.Parallel()
-		outDir := t.TempDir()
-		root, err := os.OpenRoot(outDir)
-		if err != nil {
-			t.Fatalf("os.OpenRoot: %v", err)
-		}
-		defer root.Close() //nolint:errcheck // test cleanup, best-effort
+		outDir, root := openTestRoot(t)
 
-		var buf bytes.Buffer
-		tw := tar.NewWriter(&buf)
 		hdr := &tar.Header{Name: "subdir/", Typeflag: tar.TypeDir, Mode: 0o755, ModTime: time.Now()}
-		if err := tw.WriteHeader(hdr); err != nil {
-			t.Fatalf("write header: %v", err)
-		}
-		if err := tw.Close(); err != nil {
-			t.Fatalf("close writer: %v", err)
-		}
-		tr := tar.NewReader(&buf)
-		gotHdr, err := tr.Next()
-		if err != nil {
-			t.Fatalf("tr.Next: %v", err)
-		}
+		gotHdr, tr := buildTarReaderEntryFromHeader(t, hdr, nil)
 
 		var totalRead int64
 		extracted, err := extractTarEntry(t.Context(), root, outDir, tr, gotHdr, Options{}, 0, &totalRead, testLogger())
@@ -1675,27 +1662,10 @@ func TestExtractTarEntry_Direct(t *testing.T) {
 
 	t.Run("symlink entry is skipped and returns false", func(t *testing.T) {
 		t.Parallel()
-		outDir := t.TempDir()
-		root, err := os.OpenRoot(outDir)
-		if err != nil {
-			t.Fatalf("os.OpenRoot: %v", err)
-		}
-		defer root.Close() //nolint:errcheck // test cleanup, best-effort
+		outDir, root := openTestRoot(t)
 
-		var buf bytes.Buffer
-		tw := tar.NewWriter(&buf)
 		hdr := &tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd", Mode: 0o777, ModTime: time.Now()}
-		if err := tw.WriteHeader(hdr); err != nil {
-			t.Fatalf("write header: %v", err)
-		}
-		if err := tw.Close(); err != nil {
-			t.Fatalf("close writer: %v", err)
-		}
-		tr := tar.NewReader(&buf)
-		gotHdr, err := tr.Next()
-		if err != nil {
-			t.Fatalf("tr.Next: %v", err)
-		}
+		gotHdr, tr := buildTarReaderEntryFromHeader(t, hdr, nil)
 
 		var totalRead int64
 		extracted, err := extractTarEntry(t.Context(), root, outDir, tr, gotHdr, Options{}, 0, &totalRead, testLogger())
@@ -1709,4 +1679,19 @@ func TestExtractTarEntry_Direct(t *testing.T) {
 			t.Errorf("expected no symlink to be created, stat err = %v", statErr)
 		}
 	})
+}
+
+// openTestRoot creates a fresh temp directory and an *os.Root over it,
+// registering cleanup of the root handle on test completion.
+func openTestRoot(t *testing.T) (string, *os.Root) {
+	t.Helper()
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("os.OpenRoot: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = root.Close()
+	})
+	return outDir, root
 }
