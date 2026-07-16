@@ -65,13 +65,22 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 // handlers. Steps 6.2-6.4 expand this list with queue, history, config,
 // control, and misc mode handlers.
 func (s *Server) registerModes() {
+	// Third-party/SABnzbd-compat-only modes: these are registered and fully
+	// functional but are NOT called by the bundled Svelte UI (ui/src/lib/api.ts).
+	// They exist for compatibility with third-party clients (Sonarr, Radarr,
+	// NZB360, sabnzbd-api clients) that talk to the legacy mode-dispatch API
+	// directly. Do not remove them as "dead code" — verified via traceability
+	// audit TRACE-2 (docs/audit/2026-07-14-audit-findings.md) that the UI uses
+	// the WebSocket telemetry channel instead of polling these HTTP endpoints:
+	//   - server_stats  (UI gets this via ui/src/lib/stores/telemetry.svelte.ts)
+	//   - fullstatus, watched_now, disconnect, addlocalfile, addurl
 	s.modes = modeTable{
 		"version":      {handler: s.modeVersion, level: LevelOpen},
 		"auth":         {handler: s.modeAuth, level: LevelOpen},
 		"queue":        {handler: s.modeQueue, level: LevelProtected},
 		"addfile":      {handler: s.modeAddFile, level: LevelProtected},
 		"addurl":       {handler: s.modeAddURL, level: LevelProtected},
-		"addlocalfile": {handler: s.modeAddLocalFile, level: LevelProtected},
+		"addlocalfile": {handler: s.modeAddLocalFile, level: LevelAdmin},
 		"history":      {handler: s.modeHistory, level: LevelProtected},
 		// Status modes
 		"fullstatus":      {handler: s.modeFullStatus, level: LevelProtected},

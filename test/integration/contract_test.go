@@ -151,7 +151,7 @@ func TestAPIContract_QueueJobDetail(t *testing.T) {
 // TestAPIContract_HistoryResponse verifies the history listing JSON shape.
 func TestAPIContract_HistoryResponse(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	// History may be empty; we test the envelope and empty-array behavior.
 	resp := apiDo(t, ts, "mode=history&apikey="+integrationAPIKey)
@@ -182,7 +182,7 @@ func TestAPIContract_HistoryResponse(t *testing.T) {
 // repository and verifies the API returns all keys the UI expects.
 func TestAPIContract_HistorySlotShape(t *testing.T) {
 	t.Parallel()
-	srv, ts := buildAPIServer(t)
+	srv, ts, _ := buildAPIServer(t)
 
 	// Insert a history entry directly into the DB.
 	entry := history.Entry{
@@ -233,7 +233,7 @@ func TestAPIContract_HistorySlotShape(t *testing.T) {
 // TestAPIContract_ConfigResponse verifies the config response shape.
 func TestAPIContract_ConfigResponse(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	resp := apiDo(t, ts, "mode=get_config&apikey="+integrationAPIKey)
 	defer resp.Body.Close()
@@ -273,7 +273,7 @@ func TestAPIContract_ConfigResponse(t *testing.T) {
 // TestAPIContract_VersionResponse verifies the version endpoint shape.
 func TestAPIContract_VersionResponse(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	resp := apiDo(t, ts, "mode=version")
 	defer resp.Body.Close()
@@ -288,7 +288,7 @@ func TestAPIContract_VersionResponse(t *testing.T) {
 // TestAPIContract_WarningsResponse verifies the warnings endpoint shape.
 func TestAPIContract_WarningsResponse(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	resp := apiDo(t, ts, "mode=warnings&apikey="+integrationAPIKey)
 	defer resp.Body.Close()
@@ -309,7 +309,7 @@ func TestAPIContract_WarningsResponse(t *testing.T) {
 // TestAPIContract_CategoriesResponse verifies the get_cats shape.
 func TestAPIContract_CategoriesResponse(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	resp := apiDo(t, ts, "mode=get_cats&apikey="+integrationAPIKey)
 	defer resp.Body.Close()
@@ -339,7 +339,7 @@ func TestAPIContract_CategoriesResponse(t *testing.T) {
 // TestAPIContract_ServerStatsResponse verifies the server_stats shape.
 func TestAPIContract_ServerStatsResponse(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	resp := apiDo(t, ts, "mode=server_stats&apikey="+integrationAPIKey)
 	defer resp.Body.Close()
@@ -353,7 +353,7 @@ func TestAPIContract_ServerStatsResponse(t *testing.T) {
 // TestAPIContract_StatusResponse verifies mode=status shape.
 func TestAPIContract_StatusResponse(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	resp := apiDo(t, ts, "mode=status&apikey="+integrationAPIKey)
 	defer resp.Body.Close()
@@ -369,7 +369,7 @@ func TestAPIContract_StatusResponse(t *testing.T) {
 // crash on null.
 func TestAPIContract_SlotsNeverNull(t *testing.T) {
 	t.Parallel()
-	_, ts := buildAPIServer(t)
+	_, ts, _ := buildAPIServer(t)
 
 	t.Run("queue", func(t *testing.T) {
 		resp := apiDo(t, ts, "mode=queue&apikey="+integrationAPIKey)

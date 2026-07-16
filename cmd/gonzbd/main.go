@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -113,24 +114,44 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  -f is an alias for --config")
 }
 
+// loadOrCreateConfig loads the YAML config at configPath, creating a default
+// config in memory if the file doesn't exist yet. persist controls whether
+// that generated default is written back to configPath: serve mode persists
+// it so the file exists on disk for the operator to edit; one-shot (--nzb)
+// mode does not bother, since it isn't expected to be re-run against the
+// same path the way the daemon is.
+func loadOrCreateConfig(configPath string, persist bool) (*config.Config, error) {
+	cfg, err := config.Load(configPath)
+	if err == nil {
+		return cfg, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	if persist {
+		slog.Info("config file not found; creating default", "path", configPath)
+	} else {
+		slog.Info("config file not found; using defaults", "path", configPath)
+	}
+	cfg, err = config.Default()
+	if err != nil {
+		return nil, fmt.Errorf("create default config: %w", err)
+	}
+	if persist {
+		if err := cfg.Save(configPath); err != nil {
+			return nil, fmt.Errorf("save default config: %w", err)
+		}
+	}
+	return cfg, nil
+}
+
 // serveMode runs the long-lived daemon: boots the download pipeline, opens
 // the history DB, constructs the API server and web handler, composes them
 // on a single listener, and blocks until SIGINT/SIGTERM.
 func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverride, pidPath string, verbose bool) error {
-	cfg, err := config.Load(configPath)
+	cfg, err := loadOrCreateConfig(configPath, true)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			slog.Info("config file not found; creating default", "path", configPath)
-			cfg, err = config.Default()
-			if err != nil {
-				return fmt.Errorf("create default config: %w", err)
-			}
-			if err := cfg.Save(configPath); err != nil {
-				return fmt.Errorf("save default config: %w", err)
-			}
-		} else {
-			return fmt.Errorf("load config: %w", err)
-		}
+		return err
 	}
 
 	dlDir, adminDir, err := resolveDirs(cfg, downloadDirOverride)
@@ -141,60 +162,27 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	// Ensure download, complete, and admin directories exist. Creating them
 	// early gives the user immediate feedback (at startup) if a path is
 	// invalid (e.g., typo, unmounted filesystem) instead of failing silently
-	// when the first download tries to write hours later.
-	//
-	// Log the absolute paths so users can verify where data will land,
-	// which is especially useful in Docker where relative paths resolve
-	// relative to the working directory inside the container.
-	dirs := []struct{ name, path string }{
-		{"download", dlDir},
-		{"complete", cfg.General.CompleteDir},
-		{"admin", adminDir},
-	}
-	if cfg.General.DirscanDir != "" {
-		dirs = append(dirs, struct{ name, path string }{"watch", cfg.General.DirscanDir})
-	}
-	for _, d := range dirs {
-		absPath, _ := filepath.Abs(d.path)
-		if err := os.MkdirAll(d.path, 0o750); err != nil {
-			return fmt.Errorf("create %s dir %s: %w", d.name, absPath, err)
-		}
-		slog.Info("directory ready", "role", d.name, "path", absPath) // pre-logger setup; slog.Default not yet configured
+	// when the first download tries to write hours later. Logged via
+	// slog.Default() directly: this runs before Setup() installs the
+	// configured logger, so it's the pre-logger-setup default handler.
+	if err := ensureRuntimeDirs(cfg, dlDir, adminDir, slog.Default()); err != nil {
+		return err
 	}
 
 	// Set up structured logging. The -v CLI flag overrides the config level.
-	logLevel, err := cfg.General.ParseLogLevel()
-	if err != nil {
-		return fmt.Errorf("parse log level: %w", err)
-	}
-	if verbose {
-		logLevel = slog.LevelDebug
-	}
-
-	// Per-component log level overrides. CLI flag takes precedence over config.
-	compLevels, err := resolveLogLevels(cfg, logLevelsOverride)
-	if err != nil {
-		return fmt.Errorf("parse log levels: %w", err)
-	}
-
 	logFile := ""
 	if cfg.General.LogDir != "" {
 		logFile = filepath.Join(cfg.General.LogDir, "gonzbd.log")
 	}
-	logger, logCloser, err := app.Setup(app.LoggingOptions{
-		Level:           logLevel,
-		LogFile:         logFile,
-		ComponentLevels: compLevels,
-	})
+	logCloser, err := configureLogging(cfg, logLevelsOverride, verbose, true, logFile)
 	if err != nil {
-		return fmt.Errorf("setup logging: %w", err)
+		return err
 	}
 	defer func() {
 		if logCloser != nil {
 			_ = logCloser.Close() //nolint:errcheck // close error not actionable at shutdown
 		}
 	}()
-	_ = logger // installed as slog.Default by Setup
 	log := slog.Default().With("component", "main")
 
 	log.Info("gonzbd starting",
@@ -206,30 +194,13 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	logBuildDeps(log)
 
 	// Single-instance lock prevents two daemons from corrupting the same
-	// admin dir. Released on every exit path via defer.
-	lock, err := app.AcquireLockfile(filepath.Join(adminDir, "gonzbd.lock"))
+	// admin dir, plus an optional PID file. Both released on every exit
+	// path via the returned cleanup func.
+	releaseLockAndPID, err := acquireLockAndPID(adminDir, pidPath, log)
 	if err != nil {
-		if errors.Is(err, app.ErrLocked) {
-			return fmt.Errorf("another gonzbd instance is running (admin dir %s); aborting", adminDir)
-		}
-		return fmt.Errorf("acquire lockfile: %w", err)
+		return err
 	}
-	defer func() {
-		if err := lock.Release(); err != nil {
-			log.Warn("release lockfile", "err", err)
-		}
-	}()
-
-	if pidPath != "" {
-		if err := writePIDFile(pidPath); err != nil {
-			return fmt.Errorf("write pid file: %w", err)
-		}
-		defer func() {
-			if err := os.Remove(pidPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				log.Warn("remove pid file", "err", err)
-			}
-		}()
-	}
+	defer releaseLockAndPID()
 
 	histDB, err := history.Open(context.Background(), filepath.Join(adminDir, "history.db"))
 	if err != nil {
@@ -284,36 +255,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		return err
 	}
 
-	apiSrv := api.New(api.Options{
-		Version:      Version,
-		Commit:       Commit,
-		Date:         Date,
-		Queue:        application.Queue(),
-		History:      histRepo,
-		Config:       cfg,
-		ConfigPath:   configPath,
-		Grabber:      grabber,
-		App:          application,
-		ShutdownFunc: cancel,
-	})
-
-	// Inject the WebSocket broadcaster from the API server into the
-	// application so it can fire real-time events.
-	application.SetEmitter(wsAdapter{apiSrv.EventBroadcaster()})
-
-	// Check for missing dependencies and surface them via logs and UI warnings.
-	for _, warning := range app.CheckDependencies() {
-		log.Warn(warning)
-		apiSrv.AddWarning(warning)
-	}
-
-	// Warn when no NNTP servers are configured. The app runs but cannot
-	// download until a server is added via the settings UI.
-	if len(enabledServers(cfg.Servers)) == 0 {
-		const msg = "No news servers configured — add one in Config → Servers to start downloading"
-		log.Warn(msg)
-		apiSrv.AddWarning(msg)
-	}
+	apiSrv := buildAPIServer(cfg, configPath, application, histRepo, grabber, cancel, log)
 
 	// The web SPA cookie carries the API server's ephemeral session key,
 	// not the permanent General.APIKey — see AuthConfig.SessionKey.
@@ -338,8 +280,8 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	if err != nil {
 		return fmt.Errorf("web script hashes: %w", err)
 	}
-	httpHandler := composeRouter(apiSrv, webHandler, false, scriptHashes)
-	httpsHandler := composeRouter(apiSrv, webHandler, true, scriptHashes)
+	httpHandler := composeRouter(apiSrv, webHandler, false, scriptHashes, trustedFn)
+	httpsHandler := composeRouter(apiSrv, webHandler, true, scriptHashes, trustedFn)
 
 	httpSrv, httpsSrv := newServers(cfg, httpHandler, httpsHandler)
 	if listenOverride != "" {
@@ -358,51 +300,40 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		log.Warn(warn)
 		apiSrv.AddWarning(warn)
 	}
-	// errCh sized to 2 so both HTTP and HTTPS goroutines can report
-	// without blocking each other if both fail simultaneously.
-	errCh := make(chan error, 2)
-	go func() {
-		log.Info("http listener starting", "addr", httpSrv.Addr, "api_key_prefix", keyPrefix(cfg.General.APIKey))
-		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-	}()
-
-	// HTTPS listener — started when https_port > 0.
-	if cfg.General.HTTPSPort > 0 {
-		certFile := cfg.General.HTTPSCert
-		keyFile := cfg.General.HTTPSKey
-
-		// Auto-generate self-signed certificate if the files don't exist.
-		if !fileExists(certFile) || !fileExists(keyFile) {
-			log.Info("https: cert/key not found, generating self-signed certificate",
-				"cert", certFile, "key", keyFile)
-			if err := app.WriteSelfSigned(certFile, keyFile); err != nil {
-				return fmt.Errorf("generate self-signed cert: %w", err)
-			}
-			log.Info("https: self-signed certificate written",
-				"cert", certFile, "key", keyFile)
-		}
-
-		go func() {
-			log.Info("https listener starting", "addr", httpsSrv.Addr)
-			if err := httpsSrv.ListenAndServeTLS(certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errCh <- err
-			}
-		}()
-	} else {
-		httpsSrv = nil
+	errCh, httpsSrv, err := startListeners(httpSrv, httpsSrv, cfg, log)
+	if err != nil {
+		return err
 	}
 
+	waitErr := awaitShutdownSignal(ctx, errCh, log)
+	shutdownServeMode(httpSrv, httpsSrv, application, meterStatePath, meter, log)
+	return waitErr
+}
+
+// awaitShutdownSignal blocks until either ctx is done (SIGINT/SIGTERM, via
+// signal.NotifyContext) or a listener goroutine reports a failure on errCh,
+// logging which of the two occurred. Returns nil for a normal shutdown
+// signal, or the listener's error so the caller can complete shutdown and
+// still exit non-zero instead of silently swallowing a bind/runtime
+// listener failure.
+func awaitShutdownSignal(ctx context.Context, errCh <-chan error, log *slog.Logger) error {
 	select {
 	case <-ctx.Done():
 		log.Info("shutdown signal received")
+		return nil
 	case err := <-errCh:
 		log.Error("listener failed", "err", err)
+		return err
 	}
+}
 
-	// Best-effort graceful shutdown. 5s is enough for in-flight API calls
-	// without keeping signal handlers trapped if the pipeline is wedged.
+// shutdownServeMode performs serveMode's best-effort graceful shutdown:
+// stop both HTTP(S) listeners (5s budget — enough for in-flight API calls
+// without keeping signal handlers trapped if the pipeline is wedged), stop
+// the application, and persist the bandwidth meter's lifetime totals. Each
+// step is independent and best-effort; a failure in one does not skip the
+// rest, matching the original inline sequence.
+func shutdownServeMode(httpSrv, httpsSrv *http.Server, application *app.Application, meterStatePath string, meter *bpsmeter.Meter, log *slog.Logger) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
@@ -419,7 +350,43 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	if err := bpsmeter.SaveState(meterStatePath, meter.Capture()); err != nil {
 		log.Warn("save bpsmeter state", "err", err)
 	}
-	return nil
+}
+
+// acquireLockAndPID takes the single-instance admin-dir lockfile (preventing
+// two daemons from corrupting the same admin dir) and, if pidPath is set,
+// writes a PID file. On success it returns a cleanup func that releases both
+// resources in reverse order (PID file first, then lock — matching the
+// original defer ordering) — the caller should `defer` it. On failure to
+// write the PID file, the already-acquired lock is released before
+// returning the error, since no cleanup func is handed back in that case.
+func acquireLockAndPID(adminDir, pidPath string, log *slog.Logger) (cleanup func(), err error) {
+	lock, err := app.AcquireLockfile(filepath.Join(adminDir, "gonzbd.lock"))
+	if err != nil {
+		if errors.Is(err, app.ErrLocked) {
+			return nil, fmt.Errorf("another gonzbd instance is running (admin dir %s); aborting", adminDir)
+		}
+		return nil, fmt.Errorf("acquire lockfile: %w", err)
+	}
+	releaseLock := func() {
+		if err := lock.Release(); err != nil {
+			log.Warn("release lockfile", "err", err)
+		}
+	}
+
+	if pidPath == "" {
+		return releaseLock, nil
+	}
+
+	if err := writePIDFile(pidPath); err != nil {
+		releaseLock()
+		return nil, fmt.Errorf("write pid file: %w", err)
+	}
+	return func() {
+		if err := os.Remove(pidPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Warn("remove pid file", "err", err)
+		}
+		releaseLock()
+	}, nil
 }
 
 // writePIDFile writes the current process PID to path, atomically. The
@@ -462,6 +429,64 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+// ensureSelfSignedCert generates a self-signed certificate/key pair at
+// certFile/keyFile if either is missing. Called before starting the HTTPS
+// listener so operators get a working (if browser-untrusted) HTTPS endpoint
+// without manually provisioning a certificate.
+func ensureSelfSignedCert(certFile, keyFile string, log *slog.Logger) error {
+	if fileExists(certFile) && fileExists(keyFile) {
+		return nil
+	}
+	log.Info("https: cert/key not found, generating self-signed certificate",
+		"cert", certFile, "key", keyFile)
+	if err := app.WriteSelfSigned(certFile, keyFile); err != nil {
+		return fmt.Errorf("generate self-signed cert: %w", err)
+	}
+	log.Info("https: self-signed certificate written",
+		"cert", certFile, "key", keyFile)
+	return nil
+}
+
+// buildAPIServer constructs the API server, wires its WebSocket broadcaster
+// into the application's event emitter, and surfaces startup warnings
+// (missing external dependencies, no NNTP servers configured) through both
+// the log and the API server's in-UI warning list.
+func buildAPIServer(cfg *config.Config, configPath string, application *app.Application, histRepo *history.Repository, grabber *urlgrabber.Grabber, cancel context.CancelFunc, log *slog.Logger) *api.Server {
+	apiSrv := api.New(api.Options{
+		Version:      Version,
+		Commit:       Commit,
+		Date:         Date,
+		Queue:        application.Queue(),
+		History:      histRepo,
+		Config:       cfg,
+		ConfigPath:   configPath,
+		Grabber:      grabber,
+		App:          application,
+		ShutdownFunc: cancel,
+		Logger:       log,
+	})
+
+	// Inject the WebSocket broadcaster from the API server into the
+	// application so it can fire real-time events.
+	application.SetEmitter(wsAdapter{apiSrv.EventBroadcaster()})
+
+	// Check for missing dependencies and surface them via logs and UI warnings.
+	for _, warning := range app.CheckDependencies() {
+		log.Warn(warning)
+		apiSrv.AddWarning(warning)
+	}
+
+	// Warn when no NNTP servers are configured. The app runs but cannot
+	// download until a server is added via the settings UI.
+	if len(enabledServers(cfg.Servers)) == 0 {
+		const msg = "No news servers configured — add one in Config → Servers to start downloading"
+		log.Warn(msg)
+		apiSrv.AddWarning(msg)
+	}
+
+	return apiSrv
+}
+
 // startDirScanner wires the watched-directory scanner when cfg.General.DirscanDir
 // is set. It's a goroutine that lives for the duration of ctx.
 func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h *ingestHandler, log *slog.Logger) error {
@@ -496,6 +521,50 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 	return nil
 }
 
+// startListeners — when cfg.General.HTTPSPort > 0 — first auto-provisions a
+// self-signed cert (via ensureSelfSignedCert), failing fast before either
+// listener starts if that fails. It then starts the HTTP listener
+// goroutine, and, when HTTPS is enabled, the HTTPS listener goroutine too.
+// Both goroutines report a listener failure (anything but the expected
+// http.ErrServerClosed on graceful Shutdown) onto the returned errCh, sized
+// to 2 so neither goroutine blocks if both fail simultaneously. When HTTPS
+// is disabled, the returned *http.Server is nil — the original httpsSrv
+// (from newServers) must not be used past this point in that case, since it
+// was never started; the caller should reassign its httpsSrv variable to
+// this return value.
+func startListeners(httpSrv, httpsSrv *http.Server, cfg *config.Config, log *slog.Logger) (chan error, *http.Server, error) {
+	var certFile, keyFile string
+	if cfg.General.HTTPSPort > 0 {
+		certFile = cfg.General.HTTPSCert
+		keyFile = cfg.General.HTTPSKey
+		if err := ensureSelfSignedCert(certFile, keyFile, log); err != nil {
+			return nil, nil, err
+		}
+	} else {
+		httpsSrv = nil
+	}
+
+	errCh := make(chan error, 2)
+	go func() {
+		log.Info("http listener starting", "addr", httpSrv.Addr, "api_key_prefix", keyPrefix(cfg.General.APIKey))
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	if httpsSrv == nil {
+		return errCh, nil, nil
+	}
+
+	go func() {
+		log.Info("https listener starting", "addr", httpsSrv.Addr)
+		if err := httpsSrv.ListenAndServeTLS(certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+	return errCh, httpsSrv, nil
+}
+
 // newServers constructs the HTTP and HTTPS servers with the configured addresses
 // and handlers.
 func newServers(cfg *config.Config, httpHandler, httpsHandler http.Handler) (httpSrv, httpsSrv *http.Server) {
@@ -523,20 +592,37 @@ func newServers(cfg *config.Config, httpHandler, httpsHandler http.Handler) (htt
 }
 
 // composeRouter produces the outer HTTP handler that routes /api requests
-// to the API server, /debug/ to profiling/telemetry handlers, and
-// everything else to the web UI handler.
-func composeRouter(apiSrv *api.Server, webHandler http.Handler, isHTTPS bool, scriptHashes []string) http.Handler {
+// to the API server, /debug/ to profiling/telemetry handlers (gated to
+// trusted callers only — SEC-4), and everything else to the web UI handler.
+func composeRouter(apiSrv *api.Server, webHandler http.Handler, isHTTPS bool, scriptHashes []string, trustedFn func(*http.Request) bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api", apiSrv.Handler())
 	mux.Handle("/api/", apiSrv.Handler())
 
-	// Telemetry — expvar registers /debug/vars on http.DefaultServeMux,
-	// so route /debug/ there. pprof is not imported by this binary, so
-	// no profiling endpoints are reachable.
-	mux.Handle("/debug/", http.DefaultServeMux)
+	// Telemetry — expvar registers /debug/vars on http.DefaultServeMux, so
+	// route /debug/ there, but only for callers the SEC-1 trust check
+	// already treats as loopback/local-range (same predicate that gates
+	// the admin session cookie). expvar has no per-request auth of its
+	// own and leaks os.Args (cmdline) + memstats, so an unauthenticated
+	// remote caller must never reach it. pprof is not imported by this
+	// binary, so no profiling endpoints are reachable regardless.
+	mux.Handle("/debug/", trustGate(http.DefaultServeMux, trustedFn))
 
 	mux.Handle("/", webHandler)
 	return securityHeadersHandler(mux, isHTTPS, contentSecurityPolicy(scriptHashes))
+}
+
+// trustGate wraps h so it only serves requests from callers trustedFn
+// approves (loopback, or a configured general.local_ranges entry); all
+// other callers get 404 (not 403, to avoid confirming the path exists).
+func trustGate(h http.Handler, trustedFn func(*http.Request) bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if trustedFn == nil || !trustedFn(r) {
+			http.NotFound(w, r)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // contentSecurityPolicy builds the CSP header value. scriptHashes are the
@@ -659,6 +745,31 @@ func nonLoopbackWarnings(httpAddr, httpsAddr string, httpsEnabled bool, localRan
 	return warnings
 }
 
+// ensureRuntimeDirs creates the download, complete, admin, and (if
+// configured) watch directories, logging each absolute path so users can
+// verify where data will land — especially useful in Docker where relative
+// paths resolve relative to the working directory inside the container.
+// Shared by serveMode (called with slog.Default(), before the configured
+// logger is installed) and run (called with the already-configured logger).
+func ensureRuntimeDirs(cfg *config.Config, dlDir, adminDir string, log *slog.Logger) error {
+	dirs := []struct{ name, path string }{
+		{"download", dlDir},
+		{"complete", cfg.General.CompleteDir},
+		{"admin", adminDir},
+	}
+	if cfg.General.DirscanDir != "" {
+		dirs = append(dirs, struct{ name, path string }{"watch", cfg.General.DirscanDir})
+	}
+	for _, d := range dirs {
+		absPath, _ := filepath.Abs(d.path)
+		if err := os.MkdirAll(d.path, 0o750); err != nil {
+			return fmt.Errorf("create %s dir %s: %w", d.name, absPath, err)
+		}
+		log.Info("directory ready", "role", d.name, "path", absPath)
+	}
+	return nil
+}
+
 // resolveDirs computes the effective download and admin directories from
 // the config and optional overrides. Separated from serveMode for reuse.
 func resolveDirs(cfg *config.Config, downloadDirOverride string) (dlDir, adminDir string, err error) {
@@ -675,6 +786,45 @@ func resolveDirs(cfg *config.Config, downloadDirOverride string) (dlDir, adminDi
 		adminDir = filepath.Join(dlDir, "admin")
 	}
 	return dlDir, adminDir, nil
+}
+
+// configureLogging computes the effective base log level and installs the
+// process-wide slog handler via app.Setup. useConfigLevel selects the base
+// level source: serveMode honors cfg.General's configured level (daemon
+// mode, tunable in the config file); run (one-shot --nzb mode) always starts
+// from slog.LevelInfo, since it's a short-lived CLI invocation rather than a
+// long-running daemon. In both cases -v (verbose) overrides to Debug, and
+// logLevelsOverride supplies CLI per-component overrides on top of the
+// config's. logFile is the target log file path, or "" for stderr-only
+// (one-shot mode never file-logs). The returned io.Closer is non-nil only
+// when logFile is set — callers should close it, when non-nil, at shutdown.
+func configureLogging(cfg *config.Config, logLevelsOverride string, verbose, useConfigLevel bool, logFile string) (io.Closer, error) {
+	logLevel := slog.LevelInfo
+	if useConfigLevel {
+		lvl, err := cfg.General.ParseLogLevel()
+		if err != nil {
+			return nil, fmt.Errorf("parse log level: %w", err)
+		}
+		logLevel = lvl
+	}
+	if verbose {
+		logLevel = slog.LevelDebug
+	}
+
+	compLevels, err := resolveLogLevels(cfg, logLevelsOverride)
+	if err != nil {
+		return nil, fmt.Errorf("parse log levels: %w", err)
+	}
+
+	_, logCloser, err := app.Setup(app.LoggingOptions{
+		Level:           logLevel,
+		LogFile:         logFile,
+		ComponentLevels: compLevels,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("setup logging: %w", err)
+	}
+	return logCloser, nil
 }
 
 // resolveLogLevels merges per-component log levels from the config file
@@ -713,41 +863,49 @@ func resolveLogLevels(cfg *config.Config, cliOverride string) (map[string]slog.L
 	return levels, nil
 }
 
-func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, verbose bool) error {
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			slog.Info("config file not found; using defaults", "path", configPath)
-			cfg, err = config.Default()
-			if err != nil {
-				return fmt.Errorf("create default config: %w", err)
+// waitForCompletion blocks until job reaches history (post-processing
+// complete), the context is cancelled, or a 60-minute deadline elapses.
+// It polls GetHistory every 2s as a secondary check, covering the case
+// where PostProcComplete fired before the select loop started listening.
+func waitForCompletion(ctx context.Context, application *app.Application, job *queue.Job, log *slog.Logger) error {
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+
+	deadline := time.NewTimer(60 * time.Minute)
+	defer deadline.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("interrupted: %w", ctx.Err())
+		case ppc := <-application.PostProcComplete():
+			if ppc.JobID == job.ID {
+				return nil
 			}
-		} else {
-			return fmt.Errorf("load config: %w", err)
+		case <-tick.C:
+			// Secondary check: has it already reached history?
+			// This covers the case where PostProcComplete fired before we started selecting.
+			if h, err := application.GetHistory(ctx, job.ID); err == nil {
+				log.Info("job found in history", "job", job.Name, "status", h.Status)
+				return nil
+			}
+		case <-deadline.C:
+			return fmt.Errorf("no completion in 60 minutes; aborting")
 		}
 	}
+}
 
-	// One-shot mode: stderr-only logging.
-	logLevel := slog.LevelInfo
-	if verbose {
-		logLevel = slog.LevelDebug
-	}
-
-	// Per-component log level overrides.
-	compLevels, err := resolveLogLevels(cfg, logLevelsOverride)
+func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, verbose bool) error {
+	cfg, err := loadOrCreateConfig(configPath, false)
 	if err != nil {
-		return fmt.Errorf("parse log levels: %w", err)
+		return err
 	}
 
-	logger, _, err := app.Setup(app.LoggingOptions{
-		Level:           logLevel,
-		LogFile:         "", // no file logging for one-shot mode
-		ComponentLevels: compLevels,
-	})
-	if err != nil {
-		return fmt.Errorf("setup logging: %w", err)
+	// One-shot mode: stderr-only logging, base level always Info (not
+	// config-driven) unless -v is passed.
+	if _, err := configureLogging(cfg, logLevelsOverride, verbose, false, ""); err != nil {
+		return err
 	}
-	_ = logger // installed as slog.Default by Setup
 	log := slog.Default().With("component", "main")
 
 	dlDir, adminDir, err := resolveDirs(cfg, downloadDirOverride)
@@ -756,20 +914,8 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 	}
 
 	// Create directories eagerly — fail fast on bad paths.
-	runDirs := []struct{ name, path string }{
-		{"download", dlDir},
-		{"complete", cfg.General.CompleteDir},
-		{"admin", adminDir},
-	}
-	if cfg.General.DirscanDir != "" {
-		runDirs = append(runDirs, struct{ name, path string }{"watch", cfg.General.DirscanDir})
-	}
-	for _, d := range runDirs {
-		absPath, _ := filepath.Abs(d.path)
-		if err := os.MkdirAll(d.path, 0o750); err != nil {
-			return fmt.Errorf("create %s dir %s: %w", d.name, absPath, err)
-		}
-		log.Info("directory ready", "role", d.name, "path", absPath)
+	if err := ensureRuntimeDirs(cfg, dlDir, adminDir, log); err != nil {
+		return err
 	}
 
 	// Open history repo (needed for summary at the end)
@@ -820,40 +966,21 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 
 	// Wait for the job to reach History (indicates post-processing is complete).
 	log.Info("waiting for job to complete", "job", job.Name, "id", job.ID)
-
-	tick := time.NewTicker(2 * time.Second)
-	defer tick.Stop()
-
-	deadline := time.NewTimer(60 * time.Minute)
-	defer deadline.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("interrupted: %w", ctx.Err())
-		case ppc := <-application.PostProcComplete():
-			if ppc.JobID == job.ID {
-				goto done
-			}
-		case <-tick.C:
-			// Secondary check: has it already reached history?
-			// This covers the case where PostProcComplete fired before we started selecting.
-			if h, err := application.GetHistory(ctx, job.ID); err == nil {
-				log.Info("job found in history", "job", job.Name, "status", h.Status)
-				goto done
-			}
-		case <-deadline.C:
-			return fmt.Errorf("no completion in 60 minutes; aborting")
-		}
+	if err := waitForCompletion(ctx, application, job, log); err != nil {
+		return err
 	}
 
-done:
 	duration := time.Since(start)
 	hist, err := application.GetHistory(ctx, job.ID)
 	if err != nil {
 		return fmt.Errorf("retrieve history for summary: %w", err)
 	}
+	printSummary(job, hist, duration)
+	return nil
+}
 
+// printSummary prints the one-shot mode download summary to stdout.
+func printSummary(job *queue.Job, hist *history.Entry, duration time.Duration) {
 	fmt.Printf("\n--- Download Summary ---\n")
 	fmt.Printf("Job:        %s\n", job.Name)
 	fmt.Printf("Status:     %s\n", hist.Status)
@@ -868,8 +995,6 @@ done:
 	netMBps := float64(job.TotalBytes) / (1024 * 1024) / duration.Seconds()
 	fmt.Printf("Avg Speed:   %.2f MB/s\n", netMBps)
 	fmt.Printf("------------------------\n\n")
-
-	return nil
 }
 
 func loadJob(path string, onDemandPar2 bool) (*queue.Job, []byte, error) {

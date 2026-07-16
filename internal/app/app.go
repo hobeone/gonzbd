@@ -421,19 +421,12 @@ func (app *Application) Speed() float64 { //nocover: trivial delegate
 	return app.downloaderStats.Speed()
 }
 
-// AddJob validates, deduplicates, and enqueues a new download job. If force
-// is false and a duplicate is detected, the job is added in a paused state.
-func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
-	var adminDir string
-	app.config.WithRead(func(c *config.Config) {
-		adminDir = c.General.AdminDir
-	})
-	nzbDir := filepath.Join(adminDir, "nzb")
-	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
-		return fmt.Errorf("app: mkdir admin nzb: %w", err)
-	}
-
-	isDuplicate := false
+// detectDuplicateNZB checks whether job's MD5 or filename already exists in
+// the active queue, history DB, or the admin/nzb/ backup directory. Returns
+// whether it's a duplicate and the Warning string AddJob should attach to
+// the job (empty if not a duplicate). Split out of AddJob to isolate the
+// duplicate-detection branching from queue insertion (OPT-9).
+func (app *Application) detectDuplicateNZB(ctx context.Context, job *queue.Job, force bool, nzbDir string) (isDuplicate bool, warning string) {
 	dupReason := ""
 	if app.queue.ExistsByMD5(job.MD5) {
 		isDuplicate = true
@@ -457,14 +450,34 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 			dupReason = "found in admin/nzb/ backup dir (filename, legacy)"
 		}
 	}
+	if !isDuplicate {
+		return false, ""
+	}
+	app.log.Info("duplicate NZB detected", "filename", job.Filename, "md5", job.MD5, "reason", dupReason, "forced", force)
+	if !force {
+		return true, "Duplicate NZB"
+	}
+	return true, "Duplicate NZB (Forced)"
+}
+
+// AddJob validates, deduplicates, and enqueues a new download job. If force
+// is false and a duplicate is detected, the job is added in a paused state.
+func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
+	var adminDir string
+	app.config.WithRead(func(c *config.Config) {
+		adminDir = c.General.AdminDir
+	})
+	nzbDir := filepath.Join(adminDir, "nzb")
+	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
+		return fmt.Errorf("app: mkdir admin nzb: %w", err)
+	}
+
+	isDuplicate, warning := app.detectDuplicateNZB(ctx, job, force, nzbDir)
 	if isDuplicate {
-		app.log.Info("duplicate NZB detected", "filename", job.Filename, "md5", job.MD5, "reason", dupReason, "forced", force)
 		if !force {
 			job.Status = constants.StatusPaused
-			job.Warning = "Duplicate NZB"
-		} else {
-			job.Warning = "Duplicate NZB (Forced)"
 		}
+		job.Warning = warning
 	}
 	// Pick a name not already taken in the queue or on disk. queue.Add
 	// re-checks under its write lock (authoritative), so the small TOCTOU
@@ -1062,6 +1075,20 @@ func (app *Application) DirectUnpackStatus(jobID string) (directunpack.Status, b
 		return directunpack.Status{}, false
 	}
 	return du.Status(), true
+}
+
+// DirectUnpackStatuses returns a snapshot of every active direct-unpacker's
+// status, keyed by job ID. Takes app.mu once regardless of job count — used
+// by queueList to avoid re-locking the application-wide mutex per job in the
+// listing hot path (OPT-12).
+func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	statuses := make(map[string]directunpack.Status, len(app.directUnpackers))
+	for jobID, du := range app.directUnpackers {
+		statuses[jobID] = du.Status()
+	}
+	return statuses
 }
 
 func (app *Application) maybeFinalize(jobID, failMsg string) {
