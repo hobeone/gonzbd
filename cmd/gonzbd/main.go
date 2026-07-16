@@ -161,25 +161,11 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	// Ensure download, complete, and admin directories exist. Creating them
 	// early gives the user immediate feedback (at startup) if a path is
 	// invalid (e.g., typo, unmounted filesystem) instead of failing silently
-	// when the first download tries to write hours later.
-	//
-	// Log the absolute paths so users can verify where data will land,
-	// which is especially useful in Docker where relative paths resolve
-	// relative to the working directory inside the container.
-	dirs := []struct{ name, path string }{
-		{"download", dlDir},
-		{"complete", cfg.General.CompleteDir},
-		{"admin", adminDir},
-	}
-	if cfg.General.DirscanDir != "" {
-		dirs = append(dirs, struct{ name, path string }{"watch", cfg.General.DirscanDir})
-	}
-	for _, d := range dirs {
-		absPath, _ := filepath.Abs(d.path)
-		if err := os.MkdirAll(d.path, 0o750); err != nil {
-			return fmt.Errorf("create %s dir %s: %w", d.name, absPath, err)
-		}
-		slog.Info("directory ready", "role", d.name, "path", absPath) // pre-logger setup; slog.Default not yet configured
+	// when the first download tries to write hours later. Logged via
+	// slog.Default() directly: this runs before Setup() installs the
+	// configured logger, so it's the pre-logger-setup default handler.
+	if err := ensureRuntimeDirs(cfg, dlDir, adminDir, slog.Default()); err != nil {
+		return err
 	}
 
 	// Set up structured logging. The -v CLI flag overrides the config level.
@@ -696,6 +682,31 @@ func nonLoopbackWarnings(httpAddr, httpsAddr string, httpsEnabled bool, localRan
 	return warnings
 }
 
+// ensureRuntimeDirs creates the download, complete, admin, and (if
+// configured) watch directories, logging each absolute path so users can
+// verify where data will land — especially useful in Docker where relative
+// paths resolve relative to the working directory inside the container.
+// Shared by serveMode (called with slog.Default(), before the configured
+// logger is installed) and run (called with the already-configured logger).
+func ensureRuntimeDirs(cfg *config.Config, dlDir, adminDir string, log *slog.Logger) error {
+	dirs := []struct{ name, path string }{
+		{"download", dlDir},
+		{"complete", cfg.General.CompleteDir},
+		{"admin", adminDir},
+	}
+	if cfg.General.DirscanDir != "" {
+		dirs = append(dirs, struct{ name, path string }{"watch", cfg.General.DirscanDir})
+	}
+	for _, d := range dirs {
+		absPath, _ := filepath.Abs(d.path)
+		if err := os.MkdirAll(d.path, 0o750); err != nil {
+			return fmt.Errorf("create %s dir %s: %w", d.name, absPath, err)
+		}
+		log.Info("directory ready", "role", d.name, "path", absPath)
+	}
+	return nil
+}
+
 // resolveDirs computes the effective download and admin directories from
 // the config and optional overrides. Separated from serveMode for reuse.
 func resolveDirs(cfg *config.Config, downloadDirOverride string) (dlDir, adminDir string, err error) {
@@ -785,20 +796,8 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 	}
 
 	// Create directories eagerly — fail fast on bad paths.
-	runDirs := []struct{ name, path string }{
-		{"download", dlDir},
-		{"complete", cfg.General.CompleteDir},
-		{"admin", adminDir},
-	}
-	if cfg.General.DirscanDir != "" {
-		runDirs = append(runDirs, struct{ name, path string }{"watch", cfg.General.DirscanDir})
-	}
-	for _, d := range runDirs {
-		absPath, _ := filepath.Abs(d.path)
-		if err := os.MkdirAll(d.path, 0o750); err != nil {
-			return fmt.Errorf("create %s dir %s: %w", d.name, absPath, err)
-		}
-		log.Info("directory ready", "role", d.name, "path", absPath)
+	if err := ensureRuntimeDirs(cfg, dlDir, adminDir, log); err != nil {
+		return err
 	}
 
 	// Open history repo (needed for summary at the end)
