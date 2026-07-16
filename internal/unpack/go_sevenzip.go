@@ -17,7 +17,6 @@ import (
 	"github.com/bodgit/sevenzip"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // errSevenZipChecksum is returned when a file's decompressed content doesn't
@@ -195,29 +194,8 @@ func (b *boundReader) Read(p []byte) (int, error) {
 // closed within this function to enable the library's stream reuse
 // optimisation for solid archives.
 func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath string, f *sevenzip.File, opts Options, arcSize int64, totalRead *int64, log *slog.Logger) error {
-	maxSize := opts.MaxSize
-	if maxSize <= 0 {
-		maxSize = 250 * 1024 * 1024 * 1024 // 250 GiB
-	}
-	maxRatio := opts.MaxRatio
-	if maxRatio <= 0 {
-		maxRatio = 250
-	}
-	minThreshold := opts.MinBombThreshold
-	if minThreshold == 0 {
-		minThreshold = 10 * 1024 * 1024 // 10 MiB
-	}
-
-	currTotal := atomic.LoadInt64(totalRead)
-	if currTotal < 0 {
-		return fmt.Errorf("go_7z: invalid negative total read count: %d", currTotal)
-	}
-	projTotal := f.UncompressedSize + uint64(currTotal)
-	if projTotal > uint64(maxSize) {
-		return fmt.Errorf("%w: entry %q uncompressed size (%d) exceeds ceiling (%d)", errSevenZipBomb, f.Name, f.UncompressedSize, maxSize)
-	}
-	if arcSize > 0 && (minThreshold < 0 || projTotal > uint64(minThreshold)) && projTotal > uint64(arcSize)*uint64(maxRatio) {
-		return fmt.Errorf("%w: entry %q ratio exceeds limit (%d)", errSevenZipBomb, f.Name, maxRatio)
+	if err := projectedBombCheck(f.UncompressedSize, arcSize, totalRead, opts, f.Name, "uncompressed", errSevenZipBomb, "go_7z"); err != nil {
+		return err
 	}
 
 	rc, err := f.Open()
@@ -227,49 +205,32 @@ func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath s
 	// MUST close before the next file's Open() for stream reuse in solid archives.
 	defer rc.Close() //nolint:errcheck // best-effort close
 
-	// Handle overwrite policy.
-	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
-	if !opts.OverwriteFiles {
-		// Check if file already exists.
-		if _, statErr := root.Stat(destRel); statErr == nil {
-			log.Info("skipping existing file", "path", destPath)
-			if opts.OnLine != nil {
-				opts.OnLine("Skipping existing: " + f.Name)
-			}
-			return nil
-		}
-	}
-
-	out, err := fsutil.RootedOpenFile(root, destRel, flags, 0o600)
-	if err != nil {
-		return fmt.Errorf("go_7z: create %s: %w", destRel, err)
-	}
-	defer out.Close() //nolint:errcheck // best-effort close; write errors are caught by contextCopy
-
 	// Accumulate CRC32 over the bytes actually written so we can verify them
 	// against f.CRC32 below — the library itself never does this (see
 	// errSevenZipChecksum).
 	hasher := crc32.NewIEEE()
-	br := &boundReader{
-		r:            rc,
-		totalRead:    totalRead,
-		maxSize:      maxSize,
-		maxRatio:     maxRatio,
-		arcSize:      arcSize,
-		minThreshold: minThreshold,
-		name:         f.Name,
-		errBomb:      errSevenZipBomb,
-		errPrefix:    "go_7z",
-	}
-	if _, err := contextCopy(ctx, io.MultiWriter(out, hasher), br); err != nil {
-		if errno, ok := errors.AsType[syscall.Errno](err); ok && errno == syscall.ENOSPC {
-			return fmt.Errorf("go_7z: disk full writing %s: %w", destRel, err)
-		}
-		return fmt.Errorf("go_7z: write %s: %w", destRel, err)
-	}
+	br := newBoundReader(rc, totalRead, arcSize, opts, f.Name, errSevenZipBomb, "go_7z")
 
-	if err := out.Close(); err != nil {
-		return fmt.Errorf("go_7z: close %s: %w", destRel, err)
+	// Permissions: strip executable bits from untrusted archives.
+	// Only keep rw bits (mode & 0o666). If the archive entry has an
+	// unusual execute-only mode (0111), the mask produces 0 and the
+	// Chmod is skipped — the file keeps the safer 0600 from OpenFile.
+	mode := f.Mode() & 0o666
+
+	// drainOnSkip=false: unlike go_tar/go_unrar, we do not drain rc on a
+	// skip-existing -- the deferred rc.Close() above is enough, and not
+	// draining preserves the library's stream-reuse optimisation for solid
+	// archives across skipped entries.
+	wrote, err := writeEntrySafely(ctx, root, destRel, destPath, br, hasher, false, mode, f.Modified, opts, f.Name, "go_7z", log)
+	if err != nil {
+		return err
+	}
+	if !wrote {
+		// Entry was skipped (already existed, OverwriteFiles=false):
+		// hasher never received any bytes, so there is nothing to verify --
+		// matches the original pre-extraction behavior of returning nil
+		// without any CRC check on a skip.
+		return nil
 	}
 
 	// f.CRC32 == 0 means no digest was recorded for this entry (the
@@ -279,26 +240,6 @@ func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath s
 	// circuit in File.Open and never reach this code path with content).
 	if f.CRC32 != 0 && hasher.Sum32() != f.CRC32 {
 		return fmt.Errorf("%w: file %q: computed=%08x header=%08x", errSevenZipChecksum, f.Name, hasher.Sum32(), f.CRC32)
-	}
-
-	// Permissions: strip executable bits from untrusted archives.
-	// Only keep rw bits (mode & 0o666). If the archive entry has an
-	// unusual execute-only mode (0111), the mask produces 0 and the
-	// Chmod is skipped — the file keeps the safer 0600 from OpenFile.
-	mode := f.Mode() & 0o666
-	if mode != 0 {
-		if err := root.Chmod(destRel, mode); err != nil {
-			log.Debug("unpack: failed to set file permissions", "file", destRel, "err", err)
-		}
-	}
-
-	// Modification time: preserve from archive unless config says ignore.
-	// Note: field is named IgnoreUnrarDates for historical reasons but
-	// applies to all archive types.
-	if !opts.IgnoreUnrarDates && !f.Modified.IsZero() {
-		if err := root.Chtimes(destRel, f.Modified, f.Modified); err != nil {
-			log.Debug("unpack: failed to set file timestamps", "file", destRel, "err", err)
-		}
 	}
 
 	return nil

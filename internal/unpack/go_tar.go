@@ -10,11 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"syscall"
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // errTarBomb is returned when a tar entry's declared or actually-read size
@@ -211,72 +209,14 @@ func extractTarEntry(ctx context.Context, root *os.Root, outDir string, tr *tar.
 // oversized sparse-file claim immediately) and the bytes actually read (via
 // boundReader, the same enforcement used by GoSevenZip).
 func extractTarFile(ctx context.Context, root *os.Root, destRel, destPath string, tr *tar.Reader, hdr *tar.Header, opts Options, arcSize int64, totalRead *int64, log *slog.Logger) error {
-	maxSize := opts.MaxSize
-	if maxSize <= 0 {
-		maxSize = 250 * 1024 * 1024 * 1024 // 250 GiB
-	}
-	maxRatio := opts.MaxRatio
-	if maxRatio <= 0 {
-		maxRatio = 250
-	}
-	minThreshold := opts.MinBombThreshold
-	if minThreshold == 0 {
-		minThreshold = 10 * 1024 * 1024 // 10 MiB
-	}
-
-	currTotal := atomic.LoadInt64(totalRead)
-	if currTotal < 0 {
-		return fmt.Errorf("go_tar: invalid negative total read count: %d", currTotal)
-	}
 	if hdr.Size < 0 {
 		return fmt.Errorf("%w: entry %q has negative declared size %d", errTarBomb, hdr.Name, hdr.Size)
 	}
-	projTotal := uint64(hdr.Size) + uint64(currTotal)
-	if projTotal > uint64(maxSize) {
-		return fmt.Errorf("%w: entry %q declared size (%d) exceeds ceiling (%d)", errTarBomb, hdr.Name, hdr.Size, maxSize)
-	}
-	if arcSize > 0 && (minThreshold < 0 || projTotal > uint64(minThreshold)) && projTotal > uint64(arcSize)*uint64(maxRatio) {
-		return fmt.Errorf("%w: entry %q ratio exceeds limit (%d)", errTarBomb, hdr.Name, maxRatio)
+	if err := projectedBombCheck(uint64(hdr.Size), arcSize, totalRead, opts, hdr.Name, "declared", errTarBomb, "go_tar"); err != nil {
+		return err
 	}
 
-	if !opts.OverwriteFiles {
-		if _, statErr := root.Stat(destRel); statErr == nil {
-			log.Info("skipping existing file", "path", destPath)
-			if opts.OnLine != nil {
-				opts.OnLine("Skipping existing: " + hdr.Name)
-			}
-			_, _ = io.Copy(io.Discard, tr) //nolint:errcheck // drain stream to skip existing entry
-			return nil
-		}
-	}
-
-	out, err := fsutil.RootedOpenFile(root, destRel, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("go_tar: create %s: %w", destRel, err)
-	}
-	defer out.Close() //nolint:errcheck // best-effort close; write errors caught by contextCopy
-
-	br := &boundReader{
-		r:            tr,
-		totalRead:    totalRead,
-		maxSize:      maxSize,
-		maxRatio:     maxRatio,
-		arcSize:      arcSize,
-		minThreshold: minThreshold,
-		name:         hdr.Name,
-		errBomb:      errTarBomb,
-		errPrefix:    "go_tar",
-	}
-	if _, err := contextCopy(ctx, out, br); err != nil {
-		if errno, ok := errors.AsType[syscall.Errno](err); ok && errno == syscall.ENOSPC {
-			return fmt.Errorf("go_tar: disk full writing %s: %w", destRel, err)
-		}
-		return fmt.Errorf("go_tar: write %s: %w", destRel, err)
-	}
-
-	if err := out.Close(); err != nil {
-		return fmt.Errorf("go_tar: close %s: %w", destRel, err)
-	}
+	br := newBoundReader(tr, totalRead, arcSize, opts, hdr.Name, errTarBomb, "go_tar")
 
 	// Permissions: strip setuid/setgid/sticky bits (and, matching
 	// GoUnRAR/GoSevenZip's policy for untrusted archives, all execute
@@ -286,20 +226,10 @@ func extractTarFile(ctx context.Context, root *os.Root, destRel, destPath string
 	// os.ModeSetuid/os.ModeSetgid/os.ModeSticky bit constants do not apply
 	// here; masking with 0o666 both strips the special bits and matches
 	// the existing extractors' "only rw bits" convention.
-	mode := hdr.Mode & 0o666
-	if mode != 0 {
-		if err := root.Chmod(destRel, os.FileMode(mode)); err != nil { //nolint:gosec // hdr.Mode&0o666 is bounded to valid permission bits
-			log.Debug("unpack: failed to set file permissions", "file", destRel, "err", err)
-		}
-	}
+	mode := os.FileMode(hdr.Mode & 0o666) //nolint:gosec // hdr.Mode&0o666 is bounded to valid permission bits
 
-	if !opts.IgnoreUnrarDates && !hdr.ModTime.IsZero() {
-		if err := root.Chtimes(destRel, hdr.ModTime, hdr.ModTime); err != nil {
-			log.Debug("unpack: failed to set file timestamps", "file", destRel, "err", err)
-		}
-	}
-
-	return nil
+	_, err := writeEntrySafely(ctx, root, destRel, destPath, br, nil, true, mode, hdr.ModTime, opts, hdr.Name, "go_tar", log)
+	return err
 }
 
 // classifyTarError maps a go_tar extraction error to a FailReason.
