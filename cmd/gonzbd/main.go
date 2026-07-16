@@ -458,6 +458,7 @@ func buildAPIServer(cfg *config.Config, configPath string, application *app.Appl
 		Grabber:      grabber,
 		App:          application,
 		ShutdownFunc: cancel,
+		Logger:       log,
 	})
 
 	// Inject the WebSocket broadcaster from the API server into the
