@@ -394,11 +394,27 @@ func TestSanitizeQuery_RedactsSecretParamNames(t *testing.T) {
 
 func TestSanitizeQuery_RedactsSecretValueByKeyword(t *testing.T) {
 	t.Parallel()
-	// set_config&keyword=password&value=<secret> — the secret travels in
-	// "value", named indirectly via the sibling "keyword" param.
-	got := sanitizeQuery("mode=set_config&keyword=password&value=hunter2")
-	if strings.Contains(got, "hunter2") {
-		t.Errorf("sanitizeQuery redacted keyword=password but value leaked: %q", got)
+	// set_config&keyword=<field>&value=<secret> — the secret travels in
+	// "value", named indirectly via the sibling "keyword" param. Covers all
+	// of the config's secret-bearing fields: password (general/servers/
+	// notifications), api_key and nzb_key (general) — see
+	// internal/config/general.go, servers.go, notifications.go.
+	cases := []struct {
+		name    string
+		keyword string
+	}{
+		{"password", "password"},
+		{"api_key", "api_key"},
+		{"nzb_key", "nzb_key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sanitizeQuery("mode=set_config&keyword=" + tc.keyword + "&value=hunter2")
+			if strings.Contains(got, "hunter2") {
+				t.Errorf("sanitizeQuery redacted keyword=%s but value leaked: %q", tc.keyword, got)
+			}
+		})
 	}
 }
 

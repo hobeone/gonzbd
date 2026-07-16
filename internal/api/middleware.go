@@ -275,19 +275,18 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 // api_key, secret_token, etc. are all caught, not just exact names.
 var secretParamSubstrings = []string{"pass", "key", "secret", "token"}
 
-// secretKeywords are the config.SetKeyword values whose value= parameter
-// carries a raw secret when submitted via mode=set_config or mode=config.
-var secretKeywords = map[string]bool{
-	"password": true,
-}
-
 // sanitizeQuery redacts secret-bearing query values so they don't leak into
 // logs. It redacts by two rules: (1) any parameter name containing a
 // secret-like substring (apikey, nzbkey, password, secret, token, ...), and
 // (2) the "value" parameter when a sibling "keyword" parameter names a known
-// secret field (mode=set_config&keyword=password&value=...). Uses
-// url.ParseQuery to handle URL-encoded parameter names (e.g. %61pikey →
-// apikey) that would bypass a raw string prefix check.
+// secret field (mode=set_config&keyword=password&value=...,
+// keyword=api_key&value=..., keyword=nzb_key&value=...). The keyword check
+// reuses isSecretParamName so it stays in sync with the config's actual
+// secret-bearing fields (password, api_key, nzb_key — see
+// internal/config/general.go, servers.go, notifications.go) rather than
+// requiring a separately maintained list. Uses url.ParseQuery to handle
+// URL-encoded parameter names (e.g. %61pikey → apikey) that would bypass a
+// raw string prefix check.
 func sanitizeQuery(raw string) string {
 	parsed, err := url.ParseQuery(raw)
 	if err != nil {
@@ -304,7 +303,7 @@ func sanitizeQuery(raw string) string {
 			parsed.Set(key, "***")
 		}
 	}
-	if secretKeywords[keyword] && parsed.Has("value") {
+	if isSecretParamName(keyword) && parsed.Has("value") {
 		parsed.Set("value", "***")
 	}
 	return parsed.Encode()
