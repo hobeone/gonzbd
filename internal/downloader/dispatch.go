@@ -34,7 +34,7 @@ type dispatchOpts struct {
 	now              time.Time
 	serverCfgs       []config.ServerConfig
 	maxArtTries      int
-	maxArtOpt        int // carried for future use; tryDispatch reads maxArtTries only
+	maxArtOpt        int
 	topOnly          bool
 	propagationDelay time.Duration
 	onJobHopeless    func(jobID string)
@@ -314,11 +314,24 @@ func (d *Downloader) selectServerForArticle(mask serverMask, hasTried bool, opts
 		minPriority = getMinServerPriority(opts.serverCfgs)
 	}
 
+	// MaxArtOpt: count how many optional servers this article has already
+	// been tried on. Computed once per call (not per server) — cheap
+	// O(len(serverCfgs)) pass reused by every isServerCandidate check
+	// below rather than an O(servers^2) recount.
+	optionalTried := 0
+	if hasTried {
+		for idx, cfg := range opts.serverCfgs {
+			if cfg.Optional && mask.has(idx) {
+				optionalTried++
+			}
+		}
+	}
+
 	anyEligible := false
 	allTried := true // assume all tried until proven otherwise
 	for idx, srv := range d.servers {
 		cfg := &opts.serverCfgs[idx]
-		if !isServerCandidate(cfg, mask, hasTried, idx, opts.topOnly, minPriority) {
+		if !isServerCandidate(cfg, mask, hasTried, idx, opts.topOnly, minPriority, optionalTried, opts.maxArtOpt) {
 			continue
 		}
 		if !srv.Active(opts.now) {
@@ -341,6 +354,17 @@ func (d *Downloader) selectServerForArticle(mask serverMask, hasTried bool, opts
 	return nil, -2
 }
 
+// clampPenalty enforces d.opts.NoPenalties: when set, no server penalty may
+// exceed constants.PenaltyShort, regardless of the error class PenaltyFor
+// would otherwise map to. Kept as a one-line helper so both call sites
+// (dial failure, fetch failure) apply the same rule (OPT-3).
+func (d *Downloader) clampPenalty(pen time.Duration) time.Duration {
+	if d.opts.NoPenalties && pen > constants.PenaltyShort {
+		return constants.PenaltyShort
+	}
+	return pen
+}
+
 func getMinServerPriority(serverCfgs []config.ServerConfig) int {
 	minPriority := -1
 	for idx := range serverCfgs {
@@ -356,7 +380,7 @@ func getMinServerPriority(serverCfgs []config.ServerConfig) int {
 
 // isServerCandidate evaluates whether a server should be considered for a dispatch try.
 // Checks if the server has already been tried, is disabled, or doesn't meet TopOnly priority.
-func isServerCandidate(cfg *config.ServerConfig, mask serverMask, hasTried bool, idx int, topOnly bool, minPriority int) bool {
+func isServerCandidate(cfg *config.ServerConfig, mask serverMask, hasTried bool, idx int, topOnly bool, minPriority, optionalTried, maxArtOpt int) bool {
 	if hasTried && mask.has(idx) {
 		return false
 	}
@@ -366,6 +390,12 @@ func isServerCandidate(cfg *config.ServerConfig, mask serverMask, hasTried bool,
 	}
 	// TopOnly: skip servers that are not in the primary group.
 	if topOnly && cfg.Priority > minPriority {
+		return false
+	}
+	// MaxArtOpt: once an article has been tried on this many optional
+	// (backup) servers, stop offering further optional servers — it may
+	// still be offered required servers (OPT-3).
+	if cfg.Optional && maxArtOpt > 0 && optionalTried >= maxArtOpt {
 		return false
 	}
 	return true
@@ -501,11 +531,27 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 		}
 		d.log.Warn("dial failed", "server", name, "error", err)
 		srv.RecordBadConnection()
-		if pen := PenaltyFor(err); pen > 0 {
+		if pen := d.clampPenalty(PenaltyFor(err)); pen > 0 {
 			d.log.Info("penalty applied", "server", name, "duration", pen)
 			srv.ApplyPenalty(pen)
 		}
 		return nil, false
+	}
+
+	if d.opts.PreCheck {
+		if statErr := c.Stat(fetchCtx, req.messageID); statErr != nil {
+			if errors.Is(statErr, nntp.ErrNoArticle) {
+				d.log.Debug("article not found (precheck)", "server", name, "msgid", req.messageID)
+				srv.RecordGoodConnection()
+				d.emitResult(ctx, req, name, nil, 0, 0, statErr)
+				return nil, false
+			}
+			// Any other Stat error (connection-level) is handled exactly
+			// like a Fetch failure below — fall through to the normal
+			// Fetch call so the existing dial/connection-error handling
+			// (penalty, bad-connection recording, re-dial) applies
+			// uniformly rather than being duplicated here.
+		}
 	}
 
 	body, err := c.Fetch(fetchCtx, req.messageID)
@@ -528,7 +574,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 		// Don't record bad connections or apply penalties.
 		if ctx.Err() == nil && fetchCtx.Err() == nil && isFirstNotifier {
 			srv.RecordBadConnection()
-			if pen := PenaltyFor(err); pen > 0 {
+			if pen := d.clampPenalty(PenaltyFor(err)); pen > 0 {
 				d.log.Info("penalty applied", "server", name, "duration", pen)
 				srv.ApplyPenalty(pen)
 			}
