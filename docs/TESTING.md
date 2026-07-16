@@ -249,7 +249,9 @@ gremlins unleash --timeout-coefficient 100 ./internal/<package>
 ```
 
 > [!WARNING]
-> **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will completely fill up `/tmp` (potentially causing system hangs or build failures). Always scope it to a single focused package.
+> **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will fill up `/tmp` (potentially causing system hangs or build failures). Always scope it to a single focused package.
+
+<!-- -->
 
 > [!WARNING]
 > **`--diff` is currently broken when scoped to a package** — a confirmed
