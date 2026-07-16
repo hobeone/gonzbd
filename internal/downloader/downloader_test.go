@@ -38,7 +38,15 @@ type mockNNTP struct {
 	// reject[msgID] = true causes 430 responses.
 	reject map[string]bool
 
-	// bodiesMu guards the two maps above.
+	// hangup[msgID] = true causes the BODY handler to write the "222
+	// body follows" status line and then close the connection without
+	// sending the body or dot-terminator — simulating a connection-level
+	// failure mid-transfer (as opposed to a clean 430 not-found), so
+	// tests can exercise the "fetch failed" penalty-application branch
+	// in fetchArticle (dispatch.go) that is distinct from ErrNoArticle.
+	hangup map[string]bool
+
+	// bodiesMu guards the three maps above.
 	bodiesMu sync.Mutex
 
 	// requireAuth demands AUTHINFO. User/pass accepted are user/pass.
@@ -104,6 +112,7 @@ func newMockNNTP(t *testing.T, opts ...mockOption) *mockNNTP {
 		ln:     ln,
 		bodies: make(map[string]string),
 		reject: make(map[string]bool),
+		hangup: make(map[string]bool),
 	}
 	for _, o := range opts {
 		o(ms)
@@ -123,6 +132,15 @@ func (ms *mockNNTP) rejectArticle(msgID string) {
 	ms.bodiesMu.Lock()
 	defer ms.bodiesMu.Unlock()
 	ms.reject[msgID] = true
+}
+
+// hangupOnFetch marks msgID so the BODY handler drops the connection
+// mid-response instead of completing it or returning 430 — simulating a
+// connection-level failure distinct from "article not found".
+func (ms *mockNNTP) hangupOnFetch(msgID string) {
+	ms.bodiesMu.Lock()
+	defer ms.bodiesMu.Unlock()
+	ms.hangup[msgID] = true
 }
 
 func (ms *mockNNTP) acceptLoop() {
@@ -185,12 +203,20 @@ func (ms *mockNNTP) handleConn(c net.Conn) {
 			ms.bodiesMu.Lock()
 			body, hasBody := ms.bodies[id]
 			rejected := ms.reject[id]
+			hangup := ms.hangup[id]
 			ms.bodiesMu.Unlock()
 			if ms.bodyGate != nil {
 				ms.bodyEntered <- id
 				<-ms.bodyGate
 			} else if ms.bodyDelay > 0 {
 				time.Sleep(ms.bodyDelay)
+			}
+			if hangup {
+				// Write the status line, then drop the connection before
+				// the body/terminator — a connection-level failure, not
+				// a clean 430 not-found.
+				_ = write(fmt.Sprintf("222 0 <%s> body follows\r\n", id))
+				return
 			}
 			if rejected || !hasBody {
 				ms.rejections.Add(1)
