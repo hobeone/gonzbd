@@ -514,3 +514,39 @@ func TestResolveExistingAncestor(t *testing.T) {
 		}
 	})
 }
+
+// TestWithinAnyRoot_RootSlash is a regression guard: a configured root of
+// exactly "/" must match ordinary absolute paths. The naive
+// root+separator construction turns "/" into "//", which no cleaned path
+// can ever have as a prefix, silently rejecting everything.
+func TestWithinAnyRoot_RootSlash(t *testing.T) {
+	t.Parallel()
+	roots := []string{"/"}
+
+	cases := []string{"/", "/etc", "/etc/passwd", "/home/user/file.txt"}
+	for _, path := range cases {
+		if !withinAnyRoot(path, roots) {
+			t.Errorf("withinAnyRoot(%q, %q) = false, want true", path, roots)
+		}
+	}
+}
+
+// TestWithinAnyRoot_OrdinaryRootUnaffected confirms the "/" special-case
+// doesn't change behavior for a normal (non-"/") root.
+func TestWithinAnyRoot_OrdinaryRootUnaffected(t *testing.T) {
+	t.Parallel()
+	roots := []string{"/data/downloads"}
+
+	if !withinAnyRoot("/data/downloads", roots) {
+		t.Error("withinAnyRoot(root itself) = false, want true")
+	}
+	if !withinAnyRoot("/data/downloads/file.txt", roots) {
+		t.Error("withinAnyRoot(nested path) = false, want true")
+	}
+	if withinAnyRoot("/data/downloads-evil", roots) {
+		t.Error("withinAnyRoot(sibling sharing a string prefix without separator) = true, want false")
+	}
+	if withinAnyRoot("/etc", roots) {
+		t.Error("withinAnyRoot(unrelated path) = true, want false")
+	}
+}
