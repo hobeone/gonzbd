@@ -30,7 +30,42 @@ gremlins unleash --timeout-coefficient=40 ./internal/<package>
 - Run it in the background (`run_in_background: true` if using the Agent
   tools) — even a focused package run produces a long mutant log and you only
   need the tail summary plus the `LIVED`/`NOT COVERED` lines.
-- **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will completely fill up `/tmp` (potentially causing system hangs or build failures). Always scope it to a single focused package or run it on local diffs.
+- **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will completely fill up `/tmp` (potentially causing system hangs or build failures). Always scope it to a single focused package.
+
+### Known limitation: `--diff` is broken when scoped to a package
+
+gremlins v0.6.0 has a confirmed upstream bug
+([go-gremlins/gremlins#278](https://github.com/go-gremlins/gremlins/issues/278)):
+`--diff <ref>` combined with any package/subdirectory argument — including
+`cd`-ing into the package directory and omitting the path entirely — reports
+every mutant in the changed file as `SKIPPED` (0 killed / 0 lived / 0
+not-covered), regardless of what the diff actually contains. This was verified
+directly against this repo: a real, unambiguous single-line diff produced
+`Skipped: 25` with `--diff`, but `Killed: 16, Lived: 0, Not covered: 8` on the
+same package without it.
+
+Root cause per the upstream report: gremlins compares the diff's file paths
+(repo-root-relative, from `git diff --merge-base`) against the AST walk's
+paths (relative to the package `CallingDir`), and they only match when
+`CallingDir` is `.` — which for this repo only happens at the module root,
+where whole-module runs are the exact scenario the `NEVER run gremlins on the
+entire repository` rule above forbids. There is no scoped invocation that
+gets a working `--diff` here.
+
+**Until upstream fixes this, do not use `--diff` for the mutation gate.**
+Instead:
+1. Run gremlins scoped to the changed package with no `--diff` flag, exactly
+   as in step 1 above, to get real `Killed`/`Lived`/`Not covered` numbers.
+2. Get the touched line ranges for your change: `git diff origin/main -- internal/<package>/<file>.go`.
+3. Cross-reference: for each `LIVED`/`NOT COVERED` mutant, check whether its
+   line number falls inside a range your diff touched. Only mutants on
+   *your* changed lines are the mutation-testing proof obligation for this
+   change — pre-existing `LIVED`/`NOT COVERED` lines outside the diff are a
+   separate, already-tracked gap (see "2. Triage" below for optionally
+   closing those too, if you have time).
+
+This is slower and more manual than `--diff` would be, but it's the only
+reliable signal until the upstream bug is fixed.
 
 The summary line looks like:
 ```
