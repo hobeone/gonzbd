@@ -210,6 +210,37 @@ func TestQueueDefault_Filtering(t *testing.T) {
 	}
 }
 
+func TestQueueDefault_StatusFilter(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	addTestJob(t, q, queue.AddOptions{Filename: "movie.nzb", Category: "movies"})
+	paused := addTestJob(t, q, queue.AddOptions{Filename: "show.nzb", Category: "tv"})
+	if err := q.Pause(paused.ID); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+
+	// Filter by status=Paused → expect exactly the paused job, not the
+	// unfiltered total of 2.
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&status=Paused&apikey="+testAPIKey)
+	var resp struct {
+		Queue struct {
+			NoOfSlots int `json:"noofslots"`
+			Slots     []struct {
+				NzoID string `json:"nzo_id"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Queue.NoOfSlots != 1 {
+		t.Fatalf("status-filtered noofslots = %d; want 1", resp.Queue.NoOfSlots)
+	}
+	if len(resp.Queue.Slots) != 1 || resp.Queue.Slots[0].NzoID != paused.ID {
+		t.Errorf("status-filtered slots = %+v; want only paused job %q", resp.Queue.Slots, paused.ID)
+	}
+}
+
 func TestQueueDefault_Pagination(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)
