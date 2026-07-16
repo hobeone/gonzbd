@@ -1574,3 +1574,139 @@ func FuzzGoTar(f *testing.F) {
 		_, _ = GoTar(context.Background(), testLogger(), archive, outDir, Options{})
 	})
 }
+
+// TestGoTarInternal_Direct calls goTarInternal directly rather than through
+// the exported GoTar (which only adds panic recovery via
+// cmdutil.SafeEngineRun) — proving the underlying implementation the tests
+// above exercise indirectly actually behaves as documented when called on
+// its own.
+func TestGoTarInternal_Direct(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	outDir := t.TempDir()
+
+	tarPath := buildTar(t, srcDir, "test.tar", []tarEntry{
+		{name: "direct.txt", content: []byte("direct call content")},
+	})
+
+	archive := Archive{Type: TarArchive, MainFile: tarPath, Parts: []string{tarPath}}
+	res, err := goTarInternal(context.Background(), testLogger(), archive, outDir, Options{})
+	if err != nil || res.Err != nil {
+		t.Fatalf("goTarInternal failed: err=%v res.Err=%v", err, res.Err)
+	}
+
+	data, readErr := os.ReadFile(filepath.Join(outDir, "direct.txt"))
+	if readErr != nil {
+		t.Fatalf("read direct.txt: %v", readErr)
+	}
+	if string(data) != "direct call content" {
+		t.Errorf("direct.txt content = %q, want %q", data, "direct call content")
+	}
+}
+
+// TestExtractTarEntry_Direct covers extractTarEntry's own dispatch logic
+// (type filtering, path sanitization, unique naming) directly, separately
+// from extractTarFile's per-entry write path (already covered by
+// TestExtractTarFile_Direct).
+func TestExtractTarEntry_Direct(t *testing.T) {
+	t.Parallel()
+
+	t.Run("regular file is extracted and returns true", func(t *testing.T) {
+		t.Parallel()
+		outDir := t.TempDir()
+		root, err := os.OpenRoot(outDir)
+		if err != nil {
+			t.Fatalf("os.OpenRoot: %v", err)
+		}
+		defer root.Close() //nolint:errcheck // test cleanup, best-effort
+
+		hdr, tr := buildTarReaderEntry(t, "entry.txt", 11)
+		var totalRead int64
+		extracted, err := extractTarEntry(t.Context(), root, outDir, tr, hdr, Options{}, 0, &totalRead, testLogger())
+		if err != nil {
+			t.Fatalf("extractTarEntry: %v", err)
+		}
+		if !extracted {
+			t.Error("extracted = false, want true for a regular file entry")
+		}
+		if _, statErr := os.Stat(filepath.Join(outDir, "entry.txt")); statErr != nil {
+			t.Errorf("expected entry.txt to exist: %v", statErr)
+		}
+	})
+
+	t.Run("directory entry creates the dir and returns false", func(t *testing.T) {
+		t.Parallel()
+		outDir := t.TempDir()
+		root, err := os.OpenRoot(outDir)
+		if err != nil {
+			t.Fatalf("os.OpenRoot: %v", err)
+		}
+		defer root.Close() //nolint:errcheck // test cleanup, best-effort
+
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		hdr := &tar.Header{Name: "subdir/", Typeflag: tar.TypeDir, Mode: 0o755, ModTime: time.Now()}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write header: %v", err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatalf("close writer: %v", err)
+		}
+		tr := tar.NewReader(&buf)
+		gotHdr, err := tr.Next()
+		if err != nil {
+			t.Fatalf("tr.Next: %v", err)
+		}
+
+		var totalRead int64
+		extracted, err := extractTarEntry(t.Context(), root, outDir, tr, gotHdr, Options{}, 0, &totalRead, testLogger())
+		if err != nil {
+			t.Fatalf("extractTarEntry: %v", err)
+		}
+		if extracted {
+			t.Error("extracted = true, want false for a directory entry")
+		}
+		info, statErr := os.Stat(filepath.Join(outDir, "subdir"))
+		if statErr != nil || !info.IsDir() {
+			t.Errorf("expected subdir/ to exist as a directory: %v", statErr)
+		}
+	})
+
+	t.Run("symlink entry is skipped and returns false", func(t *testing.T) {
+		t.Parallel()
+		outDir := t.TempDir()
+		root, err := os.OpenRoot(outDir)
+		if err != nil {
+			t.Fatalf("os.OpenRoot: %v", err)
+		}
+		defer root.Close() //nolint:errcheck // test cleanup, best-effort
+
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		hdr := &tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd", Mode: 0o777, ModTime: time.Now()}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write header: %v", err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatalf("close writer: %v", err)
+		}
+		tr := tar.NewReader(&buf)
+		gotHdr, err := tr.Next()
+		if err != nil {
+			t.Fatalf("tr.Next: %v", err)
+		}
+
+		var totalRead int64
+		extracted, err := extractTarEntry(t.Context(), root, outDir, tr, gotHdr, Options{}, 0, &totalRead, testLogger())
+		if err != nil {
+			t.Fatalf("extractTarEntry: %v", err)
+		}
+		if extracted {
+			t.Error("extracted = true, want false for a symlink entry")
+		}
+		if _, statErr := os.Lstat(filepath.Join(outDir, "link")); !os.IsNotExist(statErr) {
+			t.Errorf("expected no symlink to be created, stat err = %v", statErr)
+		}
+	})
+}
