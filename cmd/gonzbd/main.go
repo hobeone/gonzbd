@@ -344,15 +344,8 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		certFile := cfg.General.HTTPSCert
 		keyFile := cfg.General.HTTPSKey
 
-		// Auto-generate self-signed certificate if the files don't exist.
-		if !fileExists(certFile) || !fileExists(keyFile) {
-			log.Info("https: cert/key not found, generating self-signed certificate",
-				"cert", certFile, "key", keyFile)
-			if err := app.WriteSelfSigned(certFile, keyFile); err != nil {
-				return fmt.Errorf("generate self-signed cert: %w", err)
-			}
-			log.Info("https: self-signed certificate written",
-				"cert", certFile, "key", keyFile)
+		if err := ensureSelfSignedCert(certFile, keyFile, log); err != nil {
+			return err
 		}
 
 		go func() {
@@ -468,6 +461,24 @@ func writePIDFile(path string) error {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// ensureSelfSignedCert generates a self-signed certificate/key pair at
+// certFile/keyFile if either is missing. Called before starting the HTTPS
+// listener so operators get a working (if browser-untrusted) HTTPS endpoint
+// without manually provisioning a certificate.
+func ensureSelfSignedCert(certFile, keyFile string, log *slog.Logger) error {
+	if fileExists(certFile) && fileExists(keyFile) {
+		return nil
+	}
+	log.Info("https: cert/key not found, generating self-signed certificate",
+		"cert", certFile, "key", keyFile)
+	if err := app.WriteSelfSigned(certFile, keyFile); err != nil {
+		return fmt.Errorf("generate self-signed cert: %w", err)
+	}
+	log.Info("https: self-signed certificate written",
+		"cert", certFile, "key", keyFile)
+	return nil
 }
 
 // startDirScanner wires the watched-directory scanner when cfg.General.DirscanDir
