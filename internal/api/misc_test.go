@@ -162,10 +162,13 @@ func TestModeGetScripts_WithScripts(t *testing.T) {
 
 func TestModeBrowse_ValidDir(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	downloadDir := t.TempDir()
+	cfg := &config.Config{
+		General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: downloadDir},
+	}
+	s := testServerWithConfig(t, cfg)
 
-	// Use /tmp as a safe directory to browse
-	rr := apiGet(t, s.Handler(), "/api?mode=browse&name=/tmp&apikey="+testAPIKey)
+	rr := apiGet(t, s.Handler(), "/api?mode=browse&name="+downloadDir+"&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rr.Code)
 	}
@@ -180,7 +183,7 @@ func TestModeBrowse_ValidDir(t *testing.T) {
 		t.Fatalf("paths not an array")
 	}
 
-	// /tmp exists and should have some entries or be empty, but should be valid
+	// downloadDir exists and should have some entries or be empty, but should be valid
 	if paths == nil {
 		t.Errorf("paths is nil (should be array)")
 	}
@@ -190,9 +193,47 @@ func TestModeBrowse_PathTraversal(t *testing.T) {
 	t.Parallel()
 	s := testServer()
 
+	// No roots are configured on this server, so any absolute path --
+	// traversal or not -- is now rejected as outside the configured
+	// allowlist (SEC-6), before the request ever reaches the filesystem.
 	rr := apiGet(t, s.Handler(), "/api?mode=browse&name=/tmp/../../etc/passwd&apikey="+testAPIKey)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d; want 400 (path traversal)", rr.Code)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 (path outside configured roots)", rr.Code)
+	}
+}
+
+func TestModeBrowse_RejectsPathOutsideConfiguredRoots(t *testing.T) {
+	t.Parallel()
+	downloadDir := t.TempDir()
+	cfg := &config.Config{
+		General: config.GeneralConfig{
+			APIKey: testAPIKey, NZBKey: testNZBKey,
+			DownloadDir: downloadDir,
+		},
+	}
+	s := testServerWithConfig(t, cfg)
+
+	// /etc is outside every configured root.
+	rr := apiGet(t, s.Handler(), "/api?mode=browse&name=/etc&apikey="+testAPIKey)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 (path outside configured roots)", rr.Code)
+	}
+}
+
+func TestModeBrowse_AllowsPathWithinDownloadDir(t *testing.T) {
+	t.Parallel()
+	downloadDir := t.TempDir()
+	cfg := &config.Config{
+		General: config.GeneralConfig{
+			APIKey: testAPIKey, NZBKey: testNZBKey,
+			DownloadDir: downloadDir,
+		},
+	}
+	s := testServerWithConfig(t, cfg)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=browse&name="+downloadDir+"&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (path within configured DownloadDir)", rr.Code)
 	}
 }
 
@@ -218,10 +259,14 @@ func TestModeBrowse_MissingName(t *testing.T) {
 
 func TestModeBrowse_ShowFiles(t *testing.T) {
 	t.Parallel()
-	s := testServer()
 
 	// Create a temporary directory with a file
 	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: tmpDir},
+	}
+	s := testServerWithConfig(t, cfg)
+
 	tmpFile := filepath.Join(tmpDir, "testfile.txt")
 	if err := os.WriteFile(tmpFile, []byte("test"), 0o644); err != nil {
 		t.Fatalf("create temp file: %v", err)
@@ -284,9 +329,13 @@ func TestModeWatchedNow_NotImplemented(t *testing.T) {
 
 func TestModeBrowse_HiddenFolders(t *testing.T) {
 	t.Parallel()
-	s := testServer()
 
 	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: tmpDir},
+	}
+	s := testServerWithConfig(t, cfg)
+
 	if err := os.MkdirAll(filepath.Join(tmpDir, ".hidden_dir"), 0o755); err != nil {
 		t.Fatalf("create hidden dir: %v", err)
 	}
@@ -335,9 +384,16 @@ func TestModeBrowse_HiddenFolders(t *testing.T) {
 
 func TestModeBrowse_NonexistentDir(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	downloadDir := t.TempDir()
+	cfg := &config.Config{
+		General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: downloadDir},
+	}
+	s := testServerWithConfig(t, cfg)
 
-	rr := apiGet(t, s.Handler(), "/api?mode=browse&name=/nonexistent_path_abc123&apikey="+testAPIKey)
+	// The nonexistent subdirectory is still within the configured root, so
+	// this exercises the "cannot read directory" branch rather than the
+	// SEC-6 allowlist check.
+	rr := apiGet(t, s.Handler(), "/api?mode=browse&name="+filepath.Join(downloadDir, "nonexistent_subdir")+"&apikey="+testAPIKey)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d; want 400 for nonexistent dir", rr.Code)
 	}

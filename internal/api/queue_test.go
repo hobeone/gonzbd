@@ -59,6 +59,21 @@ func testQueueServer(t *testing.T) (*Server, *queue.Queue) {
 	return s, q
 }
 
+// testQueueServerWithRoot builds a Server wired with a fresh queue and root
+// configured as DownloadDir, so that browse/addlocalfile's SEC-6 allowlist
+// check permits paths under root.
+func testQueueServerWithRoot(t *testing.T, root string) (*Server, *queue.Queue) {
+	t.Helper()
+	q := queue.New()
+	s := New(Options{
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: root}},
+		Version: "1.0.0-test",
+		Queue:   q,
+		App:     apitest.NopApp{Queue: q},
+	})
+	return s, q
+}
+
 // addTestJob adds a job parsed from a minimal NZB to the queue and returns it.
 func addTestJob(t *testing.T, q *queue.Queue, opts queue.AddOptions) *queue.Job {
 	t.Helper()
@@ -875,9 +890,9 @@ func TestAddFile_NameField(t *testing.T) {
 
 func TestAddLocalFile_HappyPath(t *testing.T) {
 	t.Parallel()
-	s, q := testQueueServer(t)
-
 	dir := t.TempDir()
+	s, q := testQueueServerWithRoot(t, dir)
+
 	nzbPath := filepath.Join(dir, "local.nzb")
 	if err := os.WriteFile(nzbPath, makeTestNZB(t), 0o600); err != nil {
 		t.Fatalf("write NZB: %v", err)
@@ -943,6 +958,32 @@ func TestModeAddLocalFile_RejectsPathTraversal(t *testing.T) {
 				t.Errorf("status = %d; want 400 for path %q (body: %s)", rr.Code, tt.path, rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestModeAddLocalFile_RequiresAdmin(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	// testNZBKey is LevelProtected only (upload-only key) — must now be
+	// rejected since addlocalfile is LevelAdmin.
+	rr := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name=/tmp/x.nzb&apikey="+testNZBKey)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 (nzbkey is not admin)", rr.Code)
+	}
+}
+
+func TestModeAddLocalFile_RejectsPathOutsideConfiguredRoots(t *testing.T) {
+	t.Parallel()
+	downloadDir := t.TempDir()
+	// testServerWithConfig doesn't wire a Queue, and requireQueue is checked
+	// before the path/roots validation in modeAddLocalFile -- use
+	// testQueueServerWithRoot so the request reaches the SEC-6 check we're
+	// actually exercising here instead of failing earlier with 500.
+	s, _ := testQueueServerWithRoot(t, downloadDir)
+
+	rr := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name=/etc/hosts&apikey="+testAPIKey)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 (path outside configured roots)", rr.Code)
 	}
 }
 
@@ -1941,9 +1982,9 @@ func TestQueueChangeScript_Sanitization(t *testing.T) {
 
 func TestQueueAddLocalFile_Sanitization(t *testing.T) {
 	t.Parallel()
-	s, q := testQueueServer(t)
-
 	dir := t.TempDir()
+	s, q := testQueueServerWithRoot(t, dir)
+
 	nzbPath := filepath.Join(dir, "local.nzb")
 	if err := os.WriteFile(nzbPath, makeTestNZB(t), 0o600); err != nil {
 		t.Fatalf("write NZB: %v", err)
@@ -2031,8 +2072,8 @@ func TestQueue_CoverageGaps(t *testing.T) {
 	})
 
 	t.Run("addfile and addlocalfile error branches", func(t *testing.T) {
-		s, _ := testQueueServer(t)
 		dir := t.TempDir()
+		s, _ := testQueueServerWithRoot(t, dir)
 		badPath := filepath.Join(dir, "bad.nzb")
 		if err := os.WriteFile(badPath, []byte("invalid xml"), 0o600); err != nil {
 			t.Fatalf("write bad NZB: %v", err)
@@ -2047,13 +2088,13 @@ func TestQueue_CoverageGaps(t *testing.T) {
 		// addfile with errorApp on AddJob
 		q := queue.New()
 		errApp := errorAddJobApp{NopApp: apitest.NopApp{Queue: q}, err: errors.New("add job failed")}
+		dir2 := t.TempDir()
 		sErr := New(Options{
-			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+			Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey, DownloadDir: dir2}},
 			Version: "1.0.0-test",
 			Queue:   q,
 			App:     errApp,
 		})
-		dir2 := t.TempDir()
 		goodPath := filepath.Join(dir2, "good.nzb")
 		if err := os.WriteFile(goodPath, makeTestNZB(t), 0o600); err != nil {
 			t.Fatalf("write good NZB: %v", err)
@@ -2090,8 +2131,10 @@ func TestQueue_CoverageGaps(t *testing.T) {
 			t.Errorf("status = %d; want 400 on invalid multipart body", rrFailParse.Code)
 		}
 
-		// addlocalfile with non-existent file
-		rrMissing := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name=/absolute/path/to/missing.nzb&apikey="+testAPIKey)
+		// addlocalfile with non-existent file (within the configured root, so
+		// this exercises the "file not found" branch, not the SEC-6 check).
+		missingPath := filepath.Join(dir, "missing.nzb")
+		rrMissing := apiGet(t, s.Handler(), "/api?mode=addlocalfile&name="+url.QueryEscape(missingPath)+"&apikey="+testAPIKey)
 		if rrMissing.Code != http.StatusBadRequest {
 			t.Errorf("status = %d; want 400 on missing file", rrMissing.Code)
 		}

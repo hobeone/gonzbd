@@ -80,7 +80,7 @@ func (s *Server) registerModes() {
 		"queue":        {handler: s.modeQueue, level: LevelProtected},
 		"addfile":      {handler: s.modeAddFile, level: LevelProtected},
 		"addurl":       {handler: s.modeAddURL, level: LevelProtected},
-		"addlocalfile": {handler: s.modeAddLocalFile, level: LevelProtected},
+		"addlocalfile": {handler: s.modeAddLocalFile, level: LevelAdmin},
 		"history":      {handler: s.modeHistory, level: LevelProtected},
 		// Status modes
 		"fullstatus":      {handler: s.modeFullStatus, level: LevelProtected},

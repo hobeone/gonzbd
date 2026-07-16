@@ -822,9 +822,9 @@ func (s *Server) modeAddURL(w http.ResponseWriter, r *http.Request) {
 // absolute server-side path supplied in the name= query parameter.
 //
 // Security: only absolute paths are accepted; filepath.Clean is applied and
-// paths containing ".." after cleaning are rejected. This is a LevelProtected
-// operation (same as addfile); for stricter security consider LevelAdmin, but
-// LevelProtected mirrors Python's addlocalfile level (2).
+// paths containing ".." after cleaning are rejected. Restricted to
+// LevelAdmin and to paths within a configured picker root (SEC-6) — the
+// upload-only NZB key can no longer probe arbitrary filesystem paths.
 //
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
 func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
@@ -857,6 +857,11 @@ func (s *Server) modeAddLocalFile(w http.ResponseWriter, r *http.Request) {
 	// Defense-in-depth: reject paths where ".." survives cleaning.
 	if strings.Contains(clean, "..") {
 		s.respondError(w, http.StatusBadRequest, "path must not contain '..'")
+		return
+	}
+
+	if !s.pathWithinConfiguredRoots(clean) {
+		s.respondError(w, http.StatusForbidden, "path is outside configured directories")
 		return
 	}
 
