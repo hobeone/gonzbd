@@ -329,33 +329,9 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		log.Warn(warn)
 		apiSrv.AddWarning(warn)
 	}
-	// errCh sized to 2 so both HTTP and HTTPS goroutines can report
-	// without blocking each other if both fail simultaneously.
-	errCh := make(chan error, 2)
-	go func() {
-		log.Info("http listener starting", "addr", httpSrv.Addr, "api_key_prefix", keyPrefix(cfg.General.APIKey))
-		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-	}()
-
-	// HTTPS listener — started when https_port > 0.
-	if cfg.General.HTTPSPort > 0 {
-		certFile := cfg.General.HTTPSCert
-		keyFile := cfg.General.HTTPSKey
-
-		if err := ensureSelfSignedCert(certFile, keyFile, log); err != nil {
-			return err
-		}
-
-		go func() {
-			log.Info("https listener starting", "addr", httpsSrv.Addr)
-			if err := httpsSrv.ListenAndServeTLS(certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errCh <- err
-			}
-		}()
-	} else {
-		httpsSrv = nil
+	errCh, httpsSrv, err := startListeners(httpSrv, httpsSrv, cfg, log)
+	if err != nil {
+		return err
 	}
 
 	select {
@@ -513,6 +489,44 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 	}()
 	log.Info("dirscanner started", "dir", cfg.General.DirscanDir, "interval", interval)
 	return nil
+}
+
+// startListeners starts the HTTP listener goroutine, and — when
+// cfg.General.HTTPSPort > 0 — auto-provisions a self-signed cert (via
+// ensureSelfSignedCert) and starts the HTTPS listener goroutine too. Both
+// goroutines report a listener failure (anything but the expected
+// http.ErrServerClosed on graceful Shutdown) onto the returned errCh, sized
+// to 2 so neither goroutine blocks if both fail simultaneously. When HTTPS
+// is disabled, the returned *http.Server is nil — the original httpsSrv
+// (from newServers) must not be used past this point in that case, since it
+// was never started; the caller should reassign its httpsSrv variable to
+// this return value.
+func startListeners(httpSrv, httpsSrv *http.Server, cfg *config.Config, log *slog.Logger) (chan error, *http.Server, error) {
+	errCh := make(chan error, 2)
+	go func() {
+		log.Info("http listener starting", "addr", httpSrv.Addr, "api_key_prefix", keyPrefix(cfg.General.APIKey))
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	if cfg.General.HTTPSPort <= 0 {
+		return errCh, nil, nil
+	}
+
+	certFile := cfg.General.HTTPSCert
+	keyFile := cfg.General.HTTPSKey
+	if err := ensureSelfSignedCert(certFile, keyFile, log); err != nil {
+		return nil, nil, err
+	}
+
+	go func() {
+		log.Info("https listener starting", "addr", httpsSrv.Addr)
+		if err := httpsSrv.ListenAndServeTLS(certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+	return errCh, httpsSrv, nil
 }
 
 // newServers constructs the HTTP and HTTPS servers with the configured addresses
