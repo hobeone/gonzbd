@@ -217,32 +217,29 @@ func extractSevenZipFile(ctx context.Context, root *os.Root, destRel, destPath s
 	// Chmod is skipped — the file keeps the safer 0600 from OpenFile.
 	mode := f.Mode() & 0o666
 
-	// drainOnSkip=false: unlike go_tar/go_unrar, we do not drain rc on a
-	// skip-existing -- the deferred rc.Close() above is enough, and not
-	// draining preserves the library's stream-reuse optimisation for solid
-	// archives across skipped entries.
-	wrote, err := writeEntrySafely(ctx, root, destRel, destPath, br, hasher, false, mode, f.Modified, opts, f.Name, "go_7z", log)
-	if err != nil {
-		return err
-	}
-	if !wrote {
-		// Entry was skipped (already existed, OverwriteFiles=false):
-		// hasher never received any bytes, so there is nothing to verify --
-		// matches the original pre-extraction behavior of returning nil
-		// without any CRC check on a skip.
-		return nil
-	}
-
+	// verifyChecksum is called by writeEntrySafely after the write completes
+	// but before the entry is published (renamed into place at destRel), so
+	// a mismatch is caught before the corrupt content is ever visible under
+	// its final name -- not after, as a bare post-call check would leave it.
+	//
 	// f.CRC32 == 0 means no digest was recorded for this entry (the
 	// library's own tests treat this as "no CRC available" rather than a
 	// literal zero checksum, e.g. for genuinely empty files which are
 	// already handled earlier via the isEmptyStream/isEmptyFile short
 	// circuit in File.Open and never reach this code path with content).
-	if f.CRC32 != 0 && hasher.Sum32() != f.CRC32 {
-		return fmt.Errorf("%w: file %q: computed=%08x header=%08x", errSevenZipChecksum, f.Name, hasher.Sum32(), f.CRC32)
+	verifyChecksum := func() error {
+		if f.CRC32 != 0 && hasher.Sum32() != f.CRC32 {
+			return fmt.Errorf("%w: file %q: computed=%08x header=%08x", errSevenZipChecksum, f.Name, hasher.Sum32(), f.CRC32)
+		}
+		return nil
 	}
 
-	return nil
+	// drainOnSkip=false: unlike go_tar/go_unrar, we do not drain rc on a
+	// skip-existing -- the deferred rc.Close() above is enough, and not
+	// draining preserves the library's stream-reuse optimisation for solid
+	// archives across skipped entries.
+	_, err = writeEntrySafely(ctx, root, destRel, destPath, br, hasher, false, mode, f.Modified, opts, f.Name, "go_7z", log, verifyChecksum)
+	return err
 }
 
 // classifySevenZipError maps sevenzip library errors to FailReason.
