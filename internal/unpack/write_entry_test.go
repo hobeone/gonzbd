@@ -2,6 +2,7 @@ package unpack
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -118,6 +119,46 @@ func TestWriteEntrySafely_SkipExisting_NoDrain(t *testing.T) {
 	n, _ := src.Read(buf)
 	if n == 0 {
 		t.Fatal("expected src to remain undrained when drainOnSkip=false")
+	}
+}
+
+// errReader is an io.Reader that always fails, simulating a bomb-detection
+// error (or any other read failure) from a src reader being drained on skip.
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// TestWriteEntrySafely_SkipExisting_DrainErrorPropagates is a regression
+// guard: a read error while draining a skipped entry (e.g. a bomb-detection
+// error from a *boundReader-wrapped src) must be returned, not silently
+// discarded — src may still enforce safety limits during the drain even
+// though this entry's bytes aren't kept.
+func TestWriteEntrySafely_SkipExisting_DrainErrorPropagates(t *testing.T) {
+	t.Parallel()
+
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("os.OpenRoot: %v", err)
+	}
+	defer root.Close() //nolint:errcheck // test cleanup, best-effort
+
+	if err := os.WriteFile(filepath.Join(outDir, "exists.txt"), []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	wantErr := errors.New("simulated bomb-detection error during drain")
+	src := errReader{err: wantErr}
+
+	_, err = writeEntrySafely(
+		t.Context(), root, "exists.txt", filepath.Join(outDir, "exists.txt"),
+		src, nil, true, 0o644, time.Time{}, Options{OverwriteFiles: false}, "exists.txt", "go_test", slog.Default(),
+	)
+	if err == nil {
+		t.Fatal("writeEntrySafely: expected an error from the failing drain, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("writeEntrySafely error = %v, want wrapping %v", err, wantErr)
 	}
 }
 
