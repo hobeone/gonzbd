@@ -543,6 +543,52 @@ Both the HTTP and HTTPS listeners serve the same API and web UI. They
 share the same authentication (API key, HTTP Basic Auth) and are shut
 down gracefully on SIGINT/SIGTERM.
 
+## Security & Reverse Proxy Deployments
+
+By default, GoNZBD trusts loopback connections (`127.0.0.1` and `::1`)
+and automatically issues an ephemeral session cookie to them, granting
+full administrative access to the web UI without entering a key. Any
+other client address is untrusted by default and must authenticate
+with the API key or NZB key.
+
+**The risk:** if you run a reverse proxy (Nginx, Apache, Caddy, Traefik,
+etc.) on the *same host* as GoNZBD, every proxied request arrives at
+GoNZBD from `127.0.0.1` — indistinguishable from a genuinely local
+connection. If the proxy itself doesn't authenticate the client, anyone
+who can reach the proxy gets an unauthenticated admin session.
+
+**How to configure this safely:**
+
+- **Proxy on the same host, no proxy-level auth:** leave
+  `general.verify_xff_header` at its default (`false`). GoNZBD has no
+  way to distinguish proxied traffic from genuinely local traffic in
+  this setup, so the proxy itself is responsible for restricting who
+  can reach it (e.g. bind it to a private interface, put it behind a
+  VPN, or add HTTP auth at the proxy).
+- **Proxy on a different host or container (e.g. a Docker bridge
+  network):** first make sure the proxy itself authenticates every
+  client (e.g. HTTP auth, a VPN, or an access-control layer) — adding
+  its IP or CIDR to `general.local_ranges` extends GoNZBD's
+  loopback-level trust to that proxy's traffic, it does not add any
+  authentication of its own. Once the proxy authenticates its clients,
+  add its IP or CIDR to `general.local_ranges` so the UI works for it
+  without an API key — see the `LocalRanges` field documentation in
+  `internal/config/general.go` for the exact matching rules. Loopback
+  remains trusted either way.
+- **`general.verify_xff_header`:** when `true`, GoNZBD additionally
+  requires that *every* hop listed in a trusted request's
+  `X-Forwarded-For` header also be a trusted address (loopback or
+  `local_ranges`) — not just the direct connection. This guards against
+  a malicious client spoofing an `X-Forwarded-For` header to impersonate
+  a trusted proxy chain; it is not a substitute for the proxy
+  authenticating its own clients. Leave it `false` (the default) unless
+  you understand this distinction and your proxy chain's every hop is
+  itself trusted.
+
+In short: GoNZBD's loopback/`local_ranges` trust model secures the
+connection *to* GoNZBD, not the connection *to* your reverse proxy —
+that authentication is always the proxy's own responsibility.
+
 ## Unimplemented Config Fields
 
 The following config fields exist in the schema (and are accepted by the
