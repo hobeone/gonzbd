@@ -173,7 +173,7 @@ func writeEntrySafely(
 		}
 	}
 
-	out, tmpRel, err := fsutil.RootedCreateTemp(root, destRel)
+	out, tmpRel, err := fsutil.RootedCreateTemp(ctx, root, destRel)
 	if err != nil {
 		return false, fmt.Errorf("%s: create temp for %s: %w", errPrefix, destRel, err)
 	}

@@ -1,6 +1,7 @@
 package fsutil
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -43,25 +44,41 @@ func RootedOpenFile(root *os.Root, rel string, flag int, perm fs.FileMode) (*os.
 // name collision (mirroring os.CreateTemp's own retry behavior, since
 // os.Root has no CreateTemp of its own).
 //
+// The temp name uses a fixed short prefix (".gonzbd-tmp-<hex>") rather than
+// rel's own basename, so an archive entry whose name is already near the
+// filesystem's per-component length limit (NAME_MAX, typically 255 bytes on
+// Linux) doesn't get pushed over that limit by the added suffix -- which
+// would otherwise turn a validly-named entry into an ENAMETOOLONG failure
+// during extraction.
+//
+// ctx is checked before the mkdir/retry-loop setup and at the start of each
+// retry iteration, since both are blocking filesystem operations that
+// should not proceed once the caller's context is done.
+//
 // It returns the open file and the relative path it was created at (which
 // the caller must root.Rename into place on success, or root.Remove on
 // failure — RootedCreateTemp itself does not clean up). The caller is
 // responsible for closing the returned *os.File.
-func RootedCreateTemp(root *os.Root, rel string) (*os.File, string, error) {
+func RootedCreateTemp(ctx context.Context, root *os.Root, rel string) (*os.File, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	dir := filepath.Dir(rel)
 	if dir != "." {
 		if err := root.MkdirAll(dir, 0o750); err != nil {
 			return nil, "", fmt.Errorf("fsutil: mkdir %s: %w", dir, err)
 		}
 	}
-	base := filepath.Base(rel)
 	const maxAttempts = 10_000
 	for range maxAttempts {
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
 		var buf [8]byte
 		if _, err := rand.Read(buf[:]); err != nil {
 			return nil, "", fmt.Errorf("fsutil: generate temp suffix: %w", err)
 		}
-		tmpRel := filepath.Join(dir, base+".gonzbd-tmp-"+hex.EncodeToString(buf[:]))
+		tmpRel := filepath.Join(dir, ".gonzbd-tmp-"+hex.EncodeToString(buf[:]))
 		f, err := root.OpenFile(tmpRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 		if err == nil {
 			return f, tmpRel, nil
