@@ -220,6 +220,36 @@ func TestModeBrowse_RejectsPathOutsideConfiguredRoots(t *testing.T) {
 	}
 }
 
+// TestModeBrowse_RejectsSymlinkEscapeFromConfiguredRoot is a regression
+// guard for SEC-6's residual symlink gap: a symlink physically located
+// inside a configured root but pointing outside it must not be treated as
+// contained by a lexical-only prefix check.
+func TestModeBrowse_RejectsSymlinkEscapeFromConfiguredRoot(t *testing.T) {
+	t.Parallel()
+	downloadDir := t.TempDir()
+	outsideDir := t.TempDir()
+
+	escape := filepath.Join(downloadDir, "escape")
+	if err := os.Symlink(outsideDir, escape); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	cfg := &config.Config{
+		General: config.GeneralConfig{
+			APIKey: testAPIKey, NZBKey: testNZBKey,
+			DownloadDir: downloadDir,
+		},
+	}
+	s := testServerWithConfig(t, cfg)
+
+	// escape's lexical path is under downloadDir, but it resolves to
+	// outsideDir — must be rejected.
+	rr := apiGet(t, s.Handler(), "/api?mode=browse&name="+escape+"&apikey="+testAPIKey)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 (symlink escapes configured root)", rr.Code)
+	}
+}
+
 func TestModeBrowse_AllowsPathWithinDownloadDir(t *testing.T) {
 	t.Parallel()
 	downloadDir := t.TempDir()
@@ -403,4 +433,84 @@ func TestUnexportedMiscHelpersAlignmentReference(t *testing.T) {
 	var s Server
 	_ = s.modeBrowse
 	_ = s.modeGetScripts
+}
+
+func TestResolveExistingAncestor(t *testing.T) {
+	t.Parallel()
+
+	t.Run("existing path resolves directly", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		resolved, ok := resolveExistingAncestor(dir)
+		if !ok {
+			t.Fatalf("resolveExistingAncestor(%q) ok = false, want true", dir)
+		}
+		want, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%q): %v", dir, err)
+		}
+		if resolved != want {
+			t.Errorf("resolved = %q, want %q", resolved, want)
+		}
+	})
+
+	t.Run("nonexistent leaf rejoins onto resolved existing parent", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		target := filepath.Join(dir, "nonexistent")
+		resolved, ok := resolveExistingAncestor(target)
+		if !ok {
+			t.Fatalf("resolveExistingAncestor(%q) ok = false, want true", target)
+		}
+		wantParent, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%q): %v", dir, err)
+		}
+		want := filepath.Join(wantParent, "nonexistent")
+		if resolved != want {
+			t.Errorf("resolved = %q, want %q", resolved, want)
+		}
+	})
+
+	t.Run("multi-level nonexistent suffix walks up to existing ancestor", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		target := filepath.Join(dir, "a", "b", "c")
+		resolved, ok := resolveExistingAncestor(target)
+		if !ok {
+			t.Fatalf("resolveExistingAncestor(%q) ok = false, want true", target)
+		}
+		wantParent, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%q): %v", dir, err)
+		}
+		want := filepath.Join(wantParent, "a", "b", "c")
+		if resolved != want {
+			t.Errorf("resolved = %q, want %q", resolved, want)
+		}
+	})
+
+	t.Run("symlink in an existing prefix resolves to its real target", func(t *testing.T) {
+		t.Parallel()
+		realDir := t.TempDir()
+		parentDir := t.TempDir()
+		link := filepath.Join(parentDir, "link")
+		if err := os.Symlink(realDir, link); err != nil {
+			t.Fatalf("Symlink: %v", err)
+		}
+		target := filepath.Join(link, "nonexistent-child")
+
+		resolved, ok := resolveExistingAncestor(target)
+		if !ok {
+			t.Fatalf("resolveExistingAncestor(%q) ok = false, want true", target)
+		}
+		wantReal, err := filepath.EvalSymlinks(realDir)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%q): %v", realDir, err)
+		}
+		want := filepath.Join(wantReal, "nonexistent-child")
+		if resolved != want {
+			t.Errorf("resolved = %q, want %q (symlink should resolve to its real target)", resolved, want)
+		}
+	})
 }
