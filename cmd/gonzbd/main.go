@@ -334,15 +334,30 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		return err
 	}
 
+	awaitShutdownSignal(ctx, errCh, log)
+	shutdownServeMode(httpSrv, httpsSrv, application, meterStatePath, meter, log)
+	return nil
+}
+
+// awaitShutdownSignal blocks until either ctx is done (SIGINT/SIGTERM, via
+// signal.NotifyContext) or a listener goroutine reports a failure on errCh,
+// logging which of the two occurred.
+func awaitShutdownSignal(ctx context.Context, errCh <-chan error, log *slog.Logger) {
 	select {
 	case <-ctx.Done():
 		log.Info("shutdown signal received")
 	case err := <-errCh:
 		log.Error("listener failed", "err", err)
 	}
+}
 
-	// Best-effort graceful shutdown. 5s is enough for in-flight API calls
-	// without keeping signal handlers trapped if the pipeline is wedged.
+// shutdownServeMode performs serveMode's best-effort graceful shutdown:
+// stop both HTTP(S) listeners (5s budget — enough for in-flight API calls
+// without keeping signal handlers trapped if the pipeline is wedged), stop
+// the application, and persist the bandwidth meter's lifetime totals. Each
+// step is independent and best-effort; a failure in one does not skip the
+// rest, matching the original inline sequence.
+func shutdownServeMode(httpSrv, httpsSrv *http.Server, application *app.Application, meterStatePath string, meter *bpsmeter.Meter, log *slog.Logger) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
@@ -359,7 +374,6 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	if err := bpsmeter.SaveState(meterStatePath, meter.Capture()); err != nil {
 		log.Warn("save bpsmeter state", "err", err)
 	}
-	return nil
 }
 
 // acquireLockAndPID takes the single-instance admin-dir lockfile (preventing
