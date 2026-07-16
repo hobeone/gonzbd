@@ -564,7 +564,7 @@ func TestExtractEntryRarengine_Normal(t *testing.T) {
 	}
 }
 
-func TestExtractEntryRarengine_PermissionErrors(t *testing.T) {
+func TestExtractEntryRarengine_TempFileUnlinkedMidWrite(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping test that relies on POSIX unlink-while-open semantics")
 	}
@@ -596,8 +596,18 @@ func TestExtractEntryRarengine_PermissionErrors(t *testing.T) {
 			IgnoreUnrarDates: false,
 		}, logger,
 	)
-	if err != nil {
-		t.Fatalf("ExtractEntryRarengine: %v", err)
+	// The temp file backing this write is unlinked mid-copy (see
+	// unlinkingContext.Err), so Chmod/Chtimes on it fail (soft, logged at
+	// debug — checked below) but the final publish rename now also fails
+	// hard, since its source path no longer exists. This is the correct,
+	// improved behavior under atomic publish: a file that vanishes between
+	// write and publish must surface as a real extraction error, not
+	// silently succeed with a file that was never actually published.
+	if err == nil {
+		t.Fatal("ExtractEntryRarengine: expected a publish error, got nil")
+	}
+	if !strings.Contains(err.Error(), "publish") {
+		t.Errorf("ExtractEntryRarengine error = %v, want a publish-step error", err)
 	}
 
 	handler.mu.Lock()

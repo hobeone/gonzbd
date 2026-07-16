@@ -228,7 +228,7 @@ func extractTarFile(ctx context.Context, root *os.Root, destRel, destPath string
 	// the existing extractors' "only rw bits" convention.
 	mode := os.FileMode(hdr.Mode & 0o666) //nolint:gosec // hdr.Mode&0o666 is bounded to valid permission bits
 
-	_, err := writeEntrySafely(ctx, root, destRel, destPath, br, nil, true, mode, hdr.ModTime, opts, hdr.Name, "go_tar", log)
+	_, err := writeEntrySafely(ctx, root, destRel, destPath, br, nil, true, mode, hdr.ModTime, opts, hdr.Name, "go_tar", log, nil)
 	return err
 }
 

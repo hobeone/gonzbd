@@ -207,7 +207,7 @@ func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, 
 	// ClassifyRarEngineError), so r is passed through to writeEntrySafely
 	// unwrapped, unlike go_tar/go_sevenzip which wrap their reader in a
 	// boundReader before writing.
-	_, err := writeEntrySafely(ctx, root, destRel, destPath, r, nil, true, mode, fh.ModificationTime, opts, fh.Name, "go_unrar", log)
+	_, err := writeEntrySafely(ctx, root, destRel, destPath, r, nil, true, mode, fh.ModificationTime, opts, fh.Name, "go_unrar", log, nil)
 	return err
 }
 

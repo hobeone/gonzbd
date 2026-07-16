@@ -26,7 +26,7 @@ func TestWriteEntrySafely_Normal(t *testing.T) {
 	src := strings.NewReader("hello world")
 	wrote, err := writeEntrySafely(
 		t.Context(), root, "file.txt", filepath.Join(outDir, "file.txt"),
-		src, nil, true, 0o644, time.Time{}, Options{}, "file.txt", "go_test", slog.Default(),
+		src, nil, true, 0o644, time.Time{}, Options{}, "file.txt", "go_test", slog.Default(), nil,
 	)
 	if err != nil {
 		t.Fatalf("writeEntrySafely: %v", err)
@@ -64,7 +64,7 @@ func TestWriteEntrySafely_SkipExisting(t *testing.T) {
 	src := strings.NewReader("new content")
 	wrote, err := writeEntrySafely(
 		t.Context(), root, "exists.txt", filepath.Join(outDir, "exists.txt"),
-		src, nil, true, 0o644, time.Time{}, Options{OverwriteFiles: false}, "exists.txt", "go_test", slog.Default(),
+		src, nil, true, 0o644, time.Time{}, Options{OverwriteFiles: false}, "exists.txt", "go_test", slog.Default(), nil,
 	)
 	if err != nil {
 		t.Fatalf("writeEntrySafely: %v", err)
@@ -106,7 +106,7 @@ func TestWriteEntrySafely_SkipExisting_NoDrain(t *testing.T) {
 	src := strings.NewReader("new content")
 	wrote, err := writeEntrySafely(
 		t.Context(), root, "exists.txt", filepath.Join(outDir, "exists.txt"),
-		src, nil, false, 0o644, time.Time{}, Options{OverwriteFiles: false}, "exists.txt", "go_test", slog.Default(),
+		src, nil, false, 0o644, time.Time{}, Options{OverwriteFiles: false}, "exists.txt", "go_test", slog.Default(), nil,
 	)
 	if err != nil {
 		t.Fatalf("writeEntrySafely: %v", err)
@@ -152,7 +152,7 @@ func TestWriteEntrySafely_SkipExisting_DrainErrorPropagates(t *testing.T) {
 
 	_, err = writeEntrySafely(
 		t.Context(), root, "exists.txt", filepath.Join(outDir, "exists.txt"),
-		src, nil, true, 0o644, time.Time{}, Options{OverwriteFiles: false}, "exists.txt", "go_test", slog.Default(),
+		src, nil, true, 0o644, time.Time{}, Options{OverwriteFiles: false}, "exists.txt", "go_test", slog.Default(), nil,
 	)
 	if err == nil {
 		t.Fatal("writeEntrySafely: expected an error from the failing drain, got nil")
@@ -188,7 +188,7 @@ func TestWriteEntrySafely_PathEscape(t *testing.T) {
 
 	_, err = writeEntrySafely(
 		t.Context(), root, destRel, destPath,
-		strings.NewReader("EVIL"), nil, true, 0o644, time.Time{}, Options{}, "evil.txt", "go_test", slog.Default(),
+		strings.NewReader("EVIL"), nil, true, 0o644, time.Time{}, Options{}, "evil.txt", "go_test", slog.Default(), nil,
 	)
 	if err == nil {
 		t.Fatal("expected error: os.Root must refuse write through symlinked component")
@@ -215,7 +215,7 @@ func TestWriteEntrySafely_ExtraWriter(t *testing.T) {
 	src := strings.NewReader("mirrored content")
 	wrote, err := writeEntrySafely(
 		t.Context(), root, "mirror.txt", filepath.Join(outDir, "mirror.txt"),
-		src, &mirror, true, 0o644, time.Time{}, Options{}, "mirror.txt", "go_test", slog.Default(),
+		src, &mirror, true, 0o644, time.Time{}, Options{}, "mirror.txt", "go_test", slog.Default(), nil,
 	)
 	if err != nil {
 		t.Fatalf("writeEntrySafely: %v", err)
@@ -243,7 +243,7 @@ func TestWriteEntrySafely_ModeZeroSkipsChmod(t *testing.T) {
 
 	wrote, err := writeEntrySafely(
 		t.Context(), root, "nomode.txt", filepath.Join(outDir, "nomode.txt"),
-		strings.NewReader("x"), nil, true, 0, time.Time{}, Options{}, "nomode.txt", "go_test", slog.Default(),
+		strings.NewReader("x"), nil, true, 0, time.Time{}, Options{}, "nomode.txt", "go_test", slog.Default(), nil,
 	)
 	if err != nil {
 		t.Fatalf("writeEntrySafely: %v", err)
@@ -279,7 +279,7 @@ func TestWriteEntrySafely_ModTimeRestored(t *testing.T) {
 	want := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 	wrote, err := writeEntrySafely(
 		t.Context(), root, "timed.txt", filepath.Join(outDir, "timed.txt"),
-		strings.NewReader("x"), nil, true, 0o644, want, Options{}, "timed.txt", "go_test", slog.Default(),
+		strings.NewReader("x"), nil, true, 0o644, want, Options{}, "timed.txt", "go_test", slog.Default(), nil,
 	)
 	if err != nil {
 		t.Fatalf("writeEntrySafely: %v", err)
@@ -313,7 +313,7 @@ func TestWriteEntrySafely_IgnoreUnrarDates(t *testing.T) {
 	future := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
 	wrote, err := writeEntrySafely(
 		t.Context(), root, "ignoredate.txt", filepath.Join(outDir, "ignoredate.txt"),
-		strings.NewReader("x"), nil, true, 0o644, future, Options{IgnoreUnrarDates: true}, "ignoredate.txt", "go_test", slog.Default(),
+		strings.NewReader("x"), nil, true, 0o644, future, Options{IgnoreUnrarDates: true}, "ignoredate.txt", "go_test", slog.Default(), nil,
 	)
 	if err != nil {
 		t.Fatalf("writeEntrySafely: %v", err)
@@ -348,9 +348,145 @@ func TestWriteEntrySafely_ContextCanceled(t *testing.T) {
 
 	_, err = writeEntrySafely(
 		ctx, root, "cancelled.txt", filepath.Join(outDir, "cancelled.txt"),
-		strings.NewReader("x"), nil, true, 0o644, time.Time{}, Options{}, "cancelled.txt", "go_test", slog.Default(),
+		strings.NewReader("x"), nil, true, 0o644, time.Time{}, Options{}, "cancelled.txt", "go_test", slog.Default(), nil,
 	)
 	if err == nil {
 		t.Fatal("expected an error from a canceled context")
+	}
+}
+
+// partialThenErrReader returns some content successfully on its first Read,
+// then fails on every subsequent Read, simulating a write that fails
+// partway through rather than before any bytes are read.
+type partialThenErrReader struct {
+	data []byte
+	err  error
+	sent bool
+}
+
+func (r *partialThenErrReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		n := copy(p, r.data)
+		return n, nil
+	}
+	return 0, r.err
+}
+
+// TestWriteEntrySafely_WriteFailureLeavesNoPartialFile is the regression
+// guard for issue #81: a write that fails partway through must never leave
+// a partial file visible at destPath. Before the atomic temp+rename publish
+// rework, content was written directly to destPath, so a mid-write failure
+// left whatever had been written so far sitting at the final name.
+func TestWriteEntrySafely_WriteFailureLeavesNoPartialFile(t *testing.T) {
+	t.Parallel()
+
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("os.OpenRoot: %v", err)
+	}
+	defer root.Close() //nolint:errcheck // test cleanup, best-effort
+
+	wantErr := errors.New("simulated write failure")
+	src := &partialThenErrReader{data: []byte("partial content"), err: wantErr}
+
+	_, err = writeEntrySafely(
+		t.Context(), root, "victim.txt", filepath.Join(outDir, "victim.txt"),
+		src, nil, true, 0o644, time.Time{}, Options{}, "victim.txt", "go_test", slog.Default(), nil,
+	)
+	if err == nil {
+		t.Fatal("writeEntrySafely: expected an error from the failing reader")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("writeEntrySafely error = %v, want wrapping %v", err, wantErr)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(outDir, "victim.txt")); !os.IsNotExist(statErr) {
+		t.Errorf("victim.txt exists after write failure; want no file published (stat err: %v)", statErr)
+	}
+
+	// No orphaned temp file should remain either.
+	entries, readErr := os.ReadDir(outDir)
+	if readErr != nil {
+		t.Fatalf("ReadDir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("outDir not empty after write failure: %v", entries)
+	}
+}
+
+// TestWriteEntrySafely_VerifyFailureLeavesNoPublishedFile is the regression
+// guard for issue #82: a verify callback failure (e.g. go_sevenzip's CRC32
+// check) must gate publishing, so the entry never becomes visible at
+// destPath under a name that looks like a successfully extracted file.
+func TestWriteEntrySafely_VerifyFailureLeavesNoPublishedFile(t *testing.T) {
+	t.Parallel()
+
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("os.OpenRoot: %v", err)
+	}
+	defer root.Close() //nolint:errcheck // test cleanup, best-effort
+
+	wantErr := errors.New("simulated checksum mismatch")
+	verify := func() error { return wantErr }
+
+	_, err = writeEntrySafely(
+		t.Context(), root, "corrupt.txt", filepath.Join(outDir, "corrupt.txt"),
+		strings.NewReader("looks fine but isn't"), nil, true, 0o644, time.Time{}, Options{}, "corrupt.txt", "go_test", slog.Default(), verify,
+	)
+	if !errors.Is(err, wantErr) {
+		t.Errorf("writeEntrySafely error = %v, want wrapping %v", err, wantErr)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(outDir, "corrupt.txt")); !os.IsNotExist(statErr) {
+		t.Errorf("corrupt.txt exists after verify failure; want no file published (stat err: %v)", statErr)
+	}
+
+	entries, readErr := os.ReadDir(outDir)
+	if readErr != nil {
+		t.Fatalf("ReadDir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("outDir not empty after verify failure: %v", entries)
+	}
+}
+
+// TestWriteEntrySafely_NoTempFileLeftOnSuccess verifies that a successful
+// write leaves exactly the published file behind — no leftover
+// ".gonzbd-tmp-*" sibling from the atomic-publish temp file.
+func TestWriteEntrySafely_NoTempFileLeftOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	outDir := t.TempDir()
+	root, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("os.OpenRoot: %v", err)
+	}
+	defer root.Close() //nolint:errcheck // test cleanup, best-effort
+
+	wrote, err := writeEntrySafely(
+		t.Context(), root, "file.txt", filepath.Join(outDir, "file.txt"),
+		strings.NewReader("hello world"), nil, true, 0o644, time.Time{}, Options{}, "file.txt", "go_test", slog.Default(), nil,
+	)
+	if err != nil {
+		t.Fatalf("writeEntrySafely: %v", err)
+	}
+	if !wrote {
+		t.Fatal("expected wrote=true")
+	}
+
+	entries, readErr := os.ReadDir(outDir)
+	if readErr != nil {
+		t.Fatalf("ReadDir: %v", readErr)
+	}
+	if len(entries) != 1 || entries[0].Name() != "file.txt" {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("outDir entries = %v, want exactly [\"file.txt\"]", names)
 	}
 }
