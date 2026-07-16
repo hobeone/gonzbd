@@ -193,7 +193,7 @@ func TestStartListeners_CertFailurePreventsHTTPStart(t *testing.T) {
 	}}
 
 	logBuf := &syncBuffer{}
-	log := slog.New(slog.NewTextHandler(logBuf, nil))
+	log := slog.New(slog.NewTextHandler(logBuf, nil)).With("component", "startup-test")
 
 	errCh, gotHTTPS, err := startListeners(httpSrv, httpsSrv, cfg, log)
 	if err == nil {
@@ -234,7 +234,7 @@ func TestStartListeners_CertFailurePreventsHTTPStart(t *testing.T) {
 func TestAwaitShutdownSignal_PropagatesListenerError(t *testing.T) {
 	t.Parallel()
 
-	log := slog.New(slog.DiscardHandler)
+	log := slog.New(slog.DiscardHandler).With("component", "startup-test")
 	wantErr := errors.New("listen tcp :8080: address already in use")
 
 	errCh := make(chan error, 1)
@@ -254,7 +254,7 @@ func TestAwaitShutdownSignal_PropagatesListenerError(t *testing.T) {
 func TestAwaitShutdownSignal_NilOnNormalShutdown(t *testing.T) {
 	t.Parallel()
 
-	log := slog.New(slog.DiscardHandler)
+	log := slog.New(slog.DiscardHandler).With("component", "startup-test")
 	errCh := make(chan error)
 
 	ctx, cancel := context.WithCancel(t.Context())
