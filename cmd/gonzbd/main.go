@@ -305,20 +305,25 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		return err
 	}
 
-	awaitShutdownSignal(ctx, errCh, log)
+	waitErr := awaitShutdownSignal(ctx, errCh, log)
 	shutdownServeMode(httpSrv, httpsSrv, application, meterStatePath, meter, log)
-	return nil
+	return waitErr
 }
 
 // awaitShutdownSignal blocks until either ctx is done (SIGINT/SIGTERM, via
 // signal.NotifyContext) or a listener goroutine reports a failure on errCh,
-// logging which of the two occurred.
-func awaitShutdownSignal(ctx context.Context, errCh <-chan error, log *slog.Logger) {
+// logging which of the two occurred. Returns nil for a normal shutdown
+// signal, or the listener's error so the caller can complete shutdown and
+// still exit non-zero instead of silently swallowing a bind/runtime
+// listener failure.
+func awaitShutdownSignal(ctx context.Context, errCh <-chan error, log *slog.Logger) error {
 	select {
 	case <-ctx.Done():
 		log.Info("shutdown signal received")
+		return nil
 	case err := <-errCh:
 		log.Error("listener failed", "err", err)
+		return err
 	}
 }
 

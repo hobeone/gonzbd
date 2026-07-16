@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -221,5 +223,44 @@ func TestStartListeners_CertFailurePreventsHTTPStart(t *testing.T) {
 	}
 	if logBuf.Contains("http listener starting") {
 		t.Fatal("HTTP listener goroutine started despite cert-provisioning failure")
+	}
+}
+
+// TestAwaitShutdownSignal_PropagatesListenerError is a regression guard: a
+// listener-goroutine failure reported on errCh must surface as
+// awaitShutdownSignal's return value, not be swallowed after logging, so
+// serveMode can exit non-zero on a genuine bind/runtime failure instead of
+// always returning nil.
+func TestAwaitShutdownSignal_PropagatesListenerError(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.DiscardHandler)
+	wantErr := errors.New("listen tcp :8080: address already in use")
+
+	errCh := make(chan error, 1)
+	errCh <- wantErr
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	got := awaitShutdownSignal(ctx, errCh, log)
+	if !errors.Is(got, wantErr) {
+		t.Errorf("awaitShutdownSignal() = %v, want %v", got, wantErr)
+	}
+}
+
+// TestAwaitShutdownSignal_NilOnNormalShutdown proves the companion path: a
+// normal shutdown signal (context cancellation) returns nil, not an error.
+func TestAwaitShutdownSignal_NilOnNormalShutdown(t *testing.T) {
+	t.Parallel()
+
+	log := slog.New(slog.DiscardHandler)
+	errCh := make(chan error)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if got := awaitShutdownSignal(ctx, errCh, log); got != nil {
+		t.Errorf("awaitShutdownSignal() = %v, want nil on normal shutdown", got)
 	}
 }
