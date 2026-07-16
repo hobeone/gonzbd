@@ -147,7 +147,14 @@ func writeEntrySafely(
 				opts.OnLine("Skipping existing: " + entryName)
 			}
 			if drainOnSkip {
-				_, _ = io.Copy(io.Discard, src) //nolint:errcheck // drain stream to skip existing entry
+				// Use contextCopy, not a bare io.Copy, so a bomb-detection
+				// error from a *boundReader-wrapped src, a cancellation, or
+				// a genuine read failure during the drain is surfaced
+				// instead of silently discarded — src may still enforce
+				// safety limits even though this entry's bytes aren't kept.
+				if _, err := contextCopy(ctx, io.Discard, src); err != nil {
+					return false, fmt.Errorf("%s: drain skipped entry %s: %w", errPrefix, destRel, err)
+				}
 			}
 			return false, nil
 		}
