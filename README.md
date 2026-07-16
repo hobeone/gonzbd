@@ -566,10 +566,15 @@ who can reach the proxy gets an unauthenticated admin session.
   can reach it (e.g. bind it to a private interface, put it behind a
   VPN, or add HTTP auth at the proxy).
 - **Proxy on a different host or container (e.g. a Docker bridge
-  network):** add the proxy's IP or CIDR to `general.local_ranges` so
-  the UI works for it without an API key — see the `LocalRanges` field
-  documentation in `internal/config/general.go` for the exact matching
-  rules. Loopback remains trusted either way.
+  network):** first make sure the proxy itself authenticates every
+  client (e.g. HTTP auth, a VPN, or an access-control layer) — adding
+  its IP or CIDR to `general.local_ranges` extends GoNZBD's
+  loopback-level trust to that proxy's traffic, it does not add any
+  authentication of its own. Once the proxy authenticates its clients,
+  add its IP or CIDR to `general.local_ranges` so the UI works for it
+  without an API key — see the `LocalRanges` field documentation in
+  `internal/config/general.go` for the exact matching rules. Loopback
+  remains trusted either way.
 - **`general.verify_xff_header`:** when `true`, GoNZBD additionally
   requires that *every* hop listed in a trusted request's
   `X-Forwarded-For` header also be a trusted address (loopback or
