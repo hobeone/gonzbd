@@ -516,10 +516,11 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 	return nil
 }
 
-// startListeners starts the HTTP listener goroutine, and — when
-// cfg.General.HTTPSPort > 0 — auto-provisions a self-signed cert (via
-// ensureSelfSignedCert) and starts the HTTPS listener goroutine too. Both
-// goroutines report a listener failure (anything but the expected
+// startListeners — when cfg.General.HTTPSPort > 0 — first auto-provisions a
+// self-signed cert (via ensureSelfSignedCert), failing fast before either
+// listener starts if that fails. It then starts the HTTP listener
+// goroutine, and, when HTTPS is enabled, the HTTPS listener goroutine too.
+// Both goroutines report a listener failure (anything but the expected
 // http.ErrServerClosed on graceful Shutdown) onto the returned errCh, sized
 // to 2 so neither goroutine blocks if both fail simultaneously. When HTTPS
 // is disabled, the returned *http.Server is nil — the original httpsSrv
@@ -527,6 +528,17 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 // was never started; the caller should reassign its httpsSrv variable to
 // this return value.
 func startListeners(httpSrv, httpsSrv *http.Server, cfg *config.Config, log *slog.Logger) (chan error, *http.Server, error) {
+	var certFile, keyFile string
+	if cfg.General.HTTPSPort > 0 {
+		certFile = cfg.General.HTTPSCert
+		keyFile = cfg.General.HTTPSKey
+		if err := ensureSelfSignedCert(certFile, keyFile, log); err != nil {
+			return nil, nil, err
+		}
+	} else {
+		httpsSrv = nil
+	}
+
 	errCh := make(chan error, 2)
 	go func() {
 		log.Info("http listener starting", "addr", httpSrv.Addr, "api_key_prefix", keyPrefix(cfg.General.APIKey))
@@ -535,14 +547,8 @@ func startListeners(httpSrv, httpsSrv *http.Server, cfg *config.Config, log *slo
 		}
 	}()
 
-	if cfg.General.HTTPSPort <= 0 {
+	if httpsSrv == nil {
 		return errCh, nil, nil
-	}
-
-	certFile := cfg.General.HTTPSCert
-	keyFile := cfg.General.HTTPSKey
-	if err := ensureSelfSignedCert(certFile, keyFile, log); err != nil {
-		return nil, nil, err
 	}
 
 	go func() {
