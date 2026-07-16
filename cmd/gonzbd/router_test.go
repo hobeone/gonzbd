@@ -28,8 +28,8 @@ func TestComposeRouter_DebugVarsRequiresTrust(t *testing.T) {
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
-	if rr.Code == http.StatusOK {
-		t.Fatalf("/debug/vars returned 200 for an untrusted caller; want non-200")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("/debug/vars returned %d for an untrusted caller; want 404", rr.Code)
 	}
 }
 
