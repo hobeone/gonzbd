@@ -90,10 +90,21 @@ go test ./internal/config/ -run 'TestUI|TestAllFlat'        # Config ↔ UI cont
 go vet ./...                                                # Static analysis
 golangci-lint run ./...                                     # Linting
 gremlins unleash --timeout-coefficient 100 ./internal/queue # Mutation testing on a package
-gremlins unleash --timeout-coefficient 100 --diff origin/main # Mutation testing on local changes only
 ```
 
-> **WARNING:** Running `gremlins` on the entire repository (e.g. `./...` or `./internal/...`) is forbidden. It will run dozens of mutant compiles in parallel, exhausting disk space and completely filling up `/tmp`. Always scope `gremlins` to a single focused package or use the `--diff` flag.
+> **WARNING:** Running `gremlins` on the entire repository (e.g. `./...` or `./internal/...`) is forbidden. It will run dozens of mutant compiles in parallel, exhausting disk space and filling up `/tmp`. Always scope `gremlins` to a single focused package.
+>
+> **KNOWN BUG — `--diff` is broken when scoped to a package** (the only way
+> this repo permits it to be run): gremlins v0.6.0 has a confirmed upstream
+> bug ([go-gremlins/gremlins#278](https://github.com/go-gremlins/gremlins/issues/278))
+> where `--diff <ref>` combined with any package/subdirectory path (or even
+> `cd`-ing into the package and omitting the path) reports every mutant in the
+> changed file as `SKIPPED` (0 killed / 0 lived / 0 not-covered), regardless of
+> what's actually in the diff — a false "clean" result. Whole-package
+> (non-`--diff`) runs are unaffected and produce real kill/live numbers. Do
+> not rely on `--diff` for the mutation gate until this is fixed upstream; see
+> `docs/mutation-testing-playbook.md` § Known limitation for the required
+> workaround.
 
 > **See `docs/TESTING.md` for the full testing guide** — build tags, required
 > tools, per-file descriptions, and a decision guide for which suites to run
@@ -147,7 +158,7 @@ go vet ./...                          # Must pass
 go test -race ./...                   # Unit tests with the race detector
 ./scripts/run_tests.sh                # Full Go + UI suite
 golangci-lint run ./...               # Must pass (no new issues)
-gremlins unleash --timeout-coefficient 100 --diff origin/main # No lived mutants in the diff (mutation proof)
+gremlins unleash --timeout-coefficient 100 ./internal/<pkg> # Whole-package mutation baseline
 ```
 
 `./scripts/run_tests.sh` runs the full Go and UI suites but **without** the race
@@ -157,8 +168,13 @@ The `gremlins` gate enforces mutation-testing proof: every behavioral change in
 the diff must be killed by a test (no surviving/lived mutants). If a mutant
 lives, the test suite does not actually pin that behavior — add or strengthen
 the test rather than weakening the gate. Run it scoped to the changed package
-during development (`gremlins unleash --timeout-coefficient 100 ./internal/<pkg>`)
-and against the diff before commit. **NEVER run gremlins on the entire repository (e.g. `./...`) as it will fill up `/tmp` and exhaust disk space.** See **`docs/mutation-testing-playbook.md`**
+during development and before commit
+(`gremlins unleash --timeout-coefficient 100 ./internal/<pkg>`). **Do not use
+`--diff`** — it is currently broken when scoped to a package (see the KNOWN BUG
+note above); instead, run the whole-package baseline and manually
+cross-reference `LIVED`/`NOT COVERED` line numbers against `git diff
+origin/main -- internal/<pkg>` to attribute them to your change vs.
+pre-existing gaps. **NEVER run gremlins on the entire repository (e.g. `./...`) as it will fill up `/tmp` and exhaust disk space.** See **`docs/mutation-testing-playbook.md`**
 for the repeatable process for triaging `LIVED`/`NOT COVERED` mutants and
 closing the gaps with targeted tests.
 

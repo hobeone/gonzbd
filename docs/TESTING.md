@@ -246,13 +246,22 @@ tools — post-processing stages that require `par2`/`unrar`/`7z` are stubbed.
 ```bash
 # Focused on a single package
 gremlins unleash --timeout-coefficient 100 ./internal/<package>
-
-# Local diff mutation testing
-gremlins unleash --timeout-coefficient 100 --diff origin/main
 ```
 
 > [!WARNING]
-> **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will completely fill up `/tmp` (potentially causing system hangs or build failures). Always scope it to a single focused package or run it on local diffs.
+> **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will fill up `/tmp` (potentially causing system hangs or build failures). Always scope it to a single focused package.
+
+<!-- -->
+
+> [!WARNING]
+> **`--diff` is currently broken when scoped to a package** — a confirmed
+> upstream bug ([go-gremlins/gremlins#278](https://github.com/go-gremlins/gremlins/issues/278))
+> makes it report every mutant as `SKIPPED` instead of evaluating them. Do not
+> use `--diff`; instead run the whole-package command above and manually
+> cross-reference `LIVED`/`NOT COVERED` line numbers against `git diff
+> origin/main -- internal/<package>`. See
+> [docs/mutation-testing-playbook.md](mutation-testing-playbook.md) § Known
+> limitation for the full workaround.
 
 See [docs/mutation-testing-playbook.md](file:///usr/local/google/home/hobe/software/gonzbd/docs/mutation-testing-playbook.md) for the detailed triage guide and playbook.
 
