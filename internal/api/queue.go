@@ -379,6 +379,13 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	// iteration.
 	searchLower := strings.ToLower(search)
 
+	// Snapshot all direct-unpack statuses once per request (OPT-12) instead
+	// of re-locking app.mu (application-wide) once per job in the loop below.
+	var duStatuses map[string]directunpack.Status
+	if s.app != nil {
+		duStatuses = s.app.DirectUnpackStatuses()
+	}
+
 	// Build slots applying filters.
 	slots := make([]queueSlot, 0, len(jobs))
 	for _, j := range jobs {
@@ -397,10 +404,8 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var duStatus *directunpack.Status
-		if s.app != nil {
-			if status, ok := s.app.DirectUnpackStatus(j.ID); ok {
-				duStatus = &status
-			}
+		if status, ok := duStatuses[j.ID]; ok {
+			duStatus = &status
 		}
 		slots = append(slots, buildSlot(j, paused, speed, len(slots), duStatus))
 	}

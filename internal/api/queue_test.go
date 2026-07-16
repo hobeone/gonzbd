@@ -1837,6 +1837,10 @@ func (m mockApp) DirectUnpackStatus(jobID string) (directunpack.Status, bool) {
 	return st, ok
 }
 
+func (m mockApp) DirectUnpackStatuses() map[string]directunpack.Status {
+	return m.statuses
+}
+
 func TestQueueList_WithDirectUnpackStatus(t *testing.T) {
 	t.Parallel()
 	q := queue.New()
@@ -1937,6 +1941,96 @@ func TestQueueList_WithDirectUnpackStatus(t *testing.T) {
 	}
 	if !slotDetail.DirectUnpack.Active {
 		t.Error("expected direct_unpack.active to be true in detail response")
+	}
+}
+
+// callCountingDUApp is a fake App that panics if DirectUnpackStatus (the
+// per-job singular lookup) is ever called, and counts calls to
+// DirectUnpackStatuses (the request-scoped snapshot). It is a regression
+// guard for OPT-12: queueList must snapshot direct-unpack statuses once per
+// request, never once per job.
+type callCountingDUApp struct {
+	apitest.NopApp
+	statuses         map[string]directunpack.Status
+	statusesCallsPtr *int
+}
+
+func (a callCountingDUApp) DirectUnpackStatus(string) (directunpack.Status, bool) {
+	panic("DirectUnpackStatus (per-job) must not be called by queueList; use DirectUnpackStatuses instead (OPT-12)")
+}
+
+func (a callCountingDUApp) DirectUnpackStatuses() map[string]directunpack.Status {
+	*a.statusesCallsPtr++
+	return a.statuses
+}
+
+func TestQueueList_UsesSingleDirectUnpackSnapshot(t *testing.T) {
+	t.Parallel()
+	q := queue.New()
+
+	statuses := map[string]directunpack.Status{
+		"job-1": {Active: true, CurrentSet: "set1"},
+		"job-2": {Active: true, CurrentSet: "set2"},
+		"job-3": {Active: true, CurrentSet: "set3"},
+	}
+
+	calls := 0
+	app := callCountingDUApp{
+		NopApp:           apitest.NopApp{Queue: q},
+		statuses:         statuses,
+		statusesCallsPtr: &calls,
+	}
+
+	s := New(Options{
+		Config:  &config.Config{General: config.GeneralConfig{APIKey: testAPIKey, NZBKey: testNZBKey}},
+		Version: "1.0.0-test",
+		Queue:   q,
+		App:     app,
+	})
+
+	data := makeTestNZB(t)
+	for _, id := range []string{"job-1", "job-2", "job-3"} {
+		parsed, err := nzb.Parse(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("parse test NZB: %v", err)
+		}
+		job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "movie.nzb"}, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatalf("NewJob: %v", err)
+		}
+		job.ID = id
+		if err := q.Add(job); err != nil {
+			t.Fatalf("queue.Add: %v", err)
+		}
+	}
+
+	rr := apiGet(t, s.Handler(), "/api?mode=queue&apikey="+testAPIKey)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rr.Code)
+	}
+
+	var resp struct {
+		Queue struct {
+			Slots []struct {
+				NzoID        string               `json:"nzo_id"`
+				DirectUnpack *directunpack.Status `json:"direct_unpack"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Queue.Slots) != 3 {
+		t.Fatalf("expected 3 slots, got %d", len(resp.Queue.Slots))
+	}
+	for _, slot := range resp.Queue.Slots {
+		if slot.DirectUnpack == nil || !slot.DirectUnpack.Active {
+			t.Errorf("slot %s: expected active direct_unpack status", slot.NzoID)
+		}
+	}
+
+	if calls != 1 {
+		t.Errorf("DirectUnpackStatuses call count = %d; want 1 (queueList must snapshot once per request, not once per job)", calls)
 	}
 }
 
