@@ -113,24 +113,44 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  -f is an alias for --config")
 }
 
+// loadOrCreateConfig loads the YAML config at configPath, creating a default
+// config in memory if the file doesn't exist yet. persist controls whether
+// that generated default is written back to configPath: serve mode persists
+// it so the file exists on disk for the operator to edit; one-shot (--nzb)
+// mode does not bother, since it isn't expected to be re-run against the
+// same path the way the daemon is.
+func loadOrCreateConfig(configPath string, persist bool) (*config.Config, error) {
+	cfg, err := config.Load(configPath)
+	if err == nil {
+		return cfg, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	if persist {
+		slog.Info("config file not found; creating default", "path", configPath)
+	} else {
+		slog.Info("config file not found; using defaults", "path", configPath)
+	}
+	cfg, err = config.Default()
+	if err != nil {
+		return nil, fmt.Errorf("create default config: %w", err)
+	}
+	if persist {
+		if err := cfg.Save(configPath); err != nil {
+			return nil, fmt.Errorf("save default config: %w", err)
+		}
+	}
+	return cfg, nil
+}
+
 // serveMode runs the long-lived daemon: boots the download pipeline, opens
 // the history DB, constructs the API server and web handler, composes them
 // on a single listener, and blocks until SIGINT/SIGTERM.
 func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverride, pidPath string, verbose bool) error {
-	cfg, err := config.Load(configPath)
+	cfg, err := loadOrCreateConfig(configPath, true)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			slog.Info("config file not found; creating default", "path", configPath)
-			cfg, err = config.Default()
-			if err != nil {
-				return fmt.Errorf("create default config: %w", err)
-			}
-			if err := cfg.Save(configPath); err != nil {
-				return fmt.Errorf("save default config: %w", err)
-			}
-		} else {
-			return fmt.Errorf("load config: %w", err)
-		}
+		return err
 	}
 
 	dlDir, adminDir, err := resolveDirs(cfg, downloadDirOverride)
@@ -731,17 +751,9 @@ func resolveLogLevels(cfg *config.Config, cliOverride string) (map[string]slog.L
 }
 
 func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, verbose bool) error {
-	cfg, err := config.Load(configPath)
+	cfg, err := loadOrCreateConfig(configPath, false)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			slog.Info("config file not found; using defaults", "path", configPath)
-			cfg, err = config.Default()
-			if err != nil {
-				return fmt.Errorf("create default config: %w", err)
-			}
-		} else {
-			return fmt.Errorf("load config: %w", err)
-		}
+		return err
 	}
 
 	// One-shot mode: stderr-only logging.
