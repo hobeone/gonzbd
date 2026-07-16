@@ -105,9 +105,21 @@ func newBoundReader(src io.Reader, totalRead *int64, arcSize int64, opts Options
 //
 // extraWriter, if non-nil, receives a copy of every byte written via
 // io.MultiWriter. go_sevenzip is the only caller that uses this, to
-// accumulate a CRC32 hash for its own post-write checksum verification
-// (performed by the caller after this function returns, since only the
-// caller has both the hasher and the archive's recorded digest).
+// accumulate a CRC32 hash for verify (below) to check.
+//
+// The entry is written to a temporary sibling file and only published to
+// destRel via an atomic rename once the write completes and verify (if
+// non-nil) passes — never a direct write to destRel. This closes two gaps a
+// direct write leaves open: a process crash or kill mid-write can no longer
+// leave a partial file visible at destRel (the temp file is orphaned
+// instead, not the published name), and a concurrent reader of outDir (e.g.
+// a directory listing or another extraction pass) can never observe
+// partially-written or failed-verification content under the final name.
+// verify is called after the write completes and the temp file is closed,
+// but before the publishing rename — go_sevenzip uses this to check its
+// accumulated CRC32 against the archive's recorded digest, so a checksum
+// mismatch is caught before the corrupt content is ever visible at destRel,
+// not after. verify may be nil to skip this check (go_tar, go_unrar).
 //
 // drainOnSkip controls whether src is drained (io.Copy to io.Discard) when
 // an existing file is skipped under opts.OverwriteFiles=false. go_tar and
@@ -139,6 +151,7 @@ func writeEntrySafely(
 	opts Options,
 	entryName, errPrefix string,
 	log *slog.Logger,
+	verify func() error,
 ) (bool, error) {
 	if !opts.OverwriteFiles {
 		if _, statErr := root.Stat(destRel); statErr == nil {
@@ -160,11 +173,21 @@ func writeEntrySafely(
 		}
 	}
 
-	out, err := fsutil.RootedOpenFile(root, destRel, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	out, tmpRel, err := fsutil.RootedCreateTemp(root, destRel)
 	if err != nil {
-		return false, fmt.Errorf("%s: create %s: %w", errPrefix, destRel, err)
+		return false, fmt.Errorf("%s: create temp for %s: %w", errPrefix, destRel, err)
 	}
-	defer out.Close() //nolint:errcheck // best-effort close; write errors caught by contextCopy
+	// published is set only once the rename below succeeds. Until then, this
+	// cleans up the unpublished temp file on every return path (error or
+	// panic) — destRel itself is never touched unless the write and verify
+	// both succeeded.
+	var published bool
+	defer func() {
+		if !published {
+			_ = out.Close() // no-op if already closed on the success path
+			_ = root.Remove(tmpRel)
+		}
+	}()
 
 	var dst io.Writer = out
 	if extraWriter != nil {
@@ -182,17 +205,28 @@ func writeEntrySafely(
 		return false, fmt.Errorf("%s: close %s: %w", errPrefix, destRel, err)
 	}
 
+	if verify != nil {
+		if err := verify(); err != nil {
+			return false, err
+		}
+	}
+
 	if mode != 0 {
-		if err := root.Chmod(destRel, mode); err != nil {
+		if err := root.Chmod(tmpRel, mode); err != nil {
 			log.Debug("unpack: failed to set file permissions", "file", destRel, "err", err)
 		}
 	}
 
 	if !opts.IgnoreUnrarDates && !modTime.IsZero() {
-		if err := root.Chtimes(destRel, modTime, modTime); err != nil {
+		if err := root.Chtimes(tmpRel, modTime, modTime); err != nil {
 			log.Debug("unpack: failed to set file timestamps", "file", destRel, "err", err)
 		}
 	}
+
+	if err := root.Rename(tmpRel, destRel); err != nil {
+		return false, fmt.Errorf("%s: publish %s: %w", errPrefix, destRel, err)
+	}
+	published = true
 
 	return true, nil
 }
