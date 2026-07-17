@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"os"
@@ -16,22 +15,19 @@ import (
 // TestPipeline_FlatUnpack verifies that FlatUnpack=true extracts files from
 // a RAR that contains subdirectories into a single flat directory.
 //
-// Fixture: a RAR containing "subdir/nested.txt". With FlatUnpack=false
-// (default), the extracted file would be at completeDir/job/subdir/nested.txt.
+// Fixture: a RAR containing "a/b/c/nested.txt". With FlatUnpack=false
+// (default), the extracted file would be at completeDir/job/a/b/c/nested.txt.
 // With FlatUnpack=true, it should be at completeDir/job/nested.txt.
 func TestPipeline_FlatUnpack(t *testing.T) {
 	t.Parallel()
-	requireTool(t, "rar")
 	requireTool(t, "unrar")
 
-	srcPayload := bytes.Repeat([]byte("flat unpack test content\n"), 100)
+	srcPayload := []byte("nested file content")
 	wantSHA := sha256.Sum256(srcPayload)
 
-	// Create a RAR with files inside a subdirectory.
+	// Use pre-generated nested.rar containing "a/b/c/nested.txt".
 	fixtureDir := t.TempDir()
-	createRarFixtureWithSubdirs(t, fixtureDir, "nested.rar", map[string][]byte{
-		"subdir/nested.txt": srcPayload,
-	})
+	copyFixture(t, "nested.rar", fixtureDir, "nested.rar")
 
 	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
 	srv := newMockServerFromFixtures(t, files)
@@ -45,14 +41,14 @@ func TestPipeline_FlatUnpack(t *testing.T) {
 	addNZBJobPP(t, aFlat, rawNZB, "flat-test", 3)
 	waitForPostProcWithTimeout(t, aFlat, pipelineTimeout)
 
-	// With FlatUnpack the file should be directly in the job dir (no subdir/).
+	// With FlatUnpack the file should be directly in the job dir (no subdirs).
 	flatPath := filepath.Join(completeDirFlat, "flat-test", "nested.txt")
 	verifyFileAtPath(t, flatPath, wantSHA[:])
 
-	// The subdirectory should NOT exist.
-	badSubdir := filepath.Join(completeDirFlat, "flat-test", "subdir")
+	// The top-level subdirectory should NOT exist.
+	badSubdir := filepath.Join(completeDirFlat, "flat-test", "a")
 	if _, err := os.Stat(badSubdir); err == nil {
-		t.Errorf("subdir/ should not exist with FlatUnpack=true, but it does")
+		t.Errorf("a/ should not exist with FlatUnpack=true, but it does")
 	}
 }
 
@@ -60,16 +56,13 @@ func TestPipeline_FlatUnpack(t *testing.T) {
 // (default) preserves subdirectory structure from the archive.
 func TestPipeline_FlatUnpack_Disabled(t *testing.T) {
 	t.Parallel()
-	requireTool(t, "rar")
 	requireTool(t, "unrar")
 
-	srcPayload := bytes.Repeat([]byte("structured unpack test content\n"), 100)
+	srcPayload := []byte("nested file content")
 	wantSHA := sha256.Sum256(srcPayload)
 
 	fixtureDir := t.TempDir()
-	createRarFixtureWithSubdirs(t, fixtureDir, "nested.rar", map[string][]byte{
-		"subdir/nested.txt": srcPayload,
-	})
+	copyFixture(t, "nested.rar", fixtureDir, "nested.rar")
 
 	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
 	srv := newMockServerFromFixtures(t, files)
@@ -83,7 +76,7 @@ func TestPipeline_FlatUnpack_Disabled(t *testing.T) {
 	waitForPostProcWithTimeout(t, a, pipelineTimeout)
 
 	// With FlatUnpack=false, the subdirectory structure should be preserved.
-	structPath := filepath.Join(completeDir, "struct-test", "subdir", "nested.txt")
+	structPath := filepath.Join(completeDir, "struct-test", "a", "b", "c", "nested.txt")
 	verifyFileAtPath(t, structPath, wantSHA[:])
 }
 
@@ -92,17 +85,14 @@ func TestPipeline_FlatUnpack_Disabled(t *testing.T) {
 // break command execution.
 func TestPipeline_NiceWrapping(t *testing.T) {
 	t.Parallel()
-	requireTool(t, "rar")
 	requireTool(t, "unrar")
 	requireTool(t, "nice")
 
-	srcPayload := bytes.Repeat([]byte("nice wrapping test\n"), 100)
+	srcPayload := []byte("nice test content")
 	wantSHA := sha256.Sum256(srcPayload)
 
 	fixtureDir := t.TempDir()
-	createRarFixture(t, fixtureDir, "nice-test.rar", map[string][]byte{
-		"nice-file.txt": srcPayload,
-	})
+	copyFixture(t, "nice-test.rar", fixtureDir, "nice-test.rar")
 
 	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
 	srv := newMockServerFromFixtures(t, files)
@@ -117,7 +107,7 @@ func TestPipeline_NiceWrapping(t *testing.T) {
 
 	// If nice wrapping breaks command execution, the pipeline will fail
 	// and the file won't appear.
-	extractedPath := filepath.Join(completeDir, "nice-test", "nice-file.txt")
+	extractedPath := filepath.Join(completeDir, "nice-test", "nice.txt")
 	verifyFileAtPath(t, extractedPath, wantSHA[:])
 }
 
