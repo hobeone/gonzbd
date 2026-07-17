@@ -467,15 +467,15 @@ func copyFixture(t *testing.T, srcName, destDir, destName string) string {
 	src := filepath.Join("..", "..", "test", "fixtures", "integration", srcName)
 	absSrc, err := filepath.Abs(src)
 	if err != nil {
-		t.Fatalf("absolute path of %s: %v", src, err)
+		t.Fatal(fmt.Errorf("absolute path of %s: %w", src, err))
 	}
 	content, err := os.ReadFile(absSrc)
 	if err != nil {
-		t.Fatalf("read fixture %s: %v", absSrc, err)
+		t.Fatal(fmt.Errorf("read fixture %s: %w", absSrc, err))
 	}
 	dest := filepath.Join(destDir, destName)
 	if err := os.WriteFile(dest, content, 0o600); err != nil {
-		t.Fatalf("write file %s: %v", dest, err)
+		t.Fatal(fmt.Errorf("write file %s: %w", dest, err))
 	}
 	return dest
 }
