@@ -87,6 +87,7 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 			app.mu.Lock()
 			stats := app.downloaderStats
 			app.mu.Unlock()
+			// --- No lock held below this line ---
 			var speed float64
 			var limit int64
 			var servers []downloader.ServerSnapshot

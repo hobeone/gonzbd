@@ -12,14 +12,21 @@ import (
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
-func TestRemoveJob(t *testing.T) {
+// newRemoveJobTestApp builds an Application wired for RemoveJob tests:
+// a fresh download/admin dir pair, an open history repo, and default config.
+func newRemoveJobTestApp(t *testing.T) *Application {
+	t.Helper()
+
 	dir := t.TempDir()
 	downloadDir := filepath.Join(dir, "download")
 	adminDir := filepath.Join(dir, "admin")
 	_ = os.MkdirAll(downloadDir, 0o750)
 	_ = os.MkdirAll(adminDir, 0o750)
 
-	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		t.Fatalf("open history database: %v", err)
+	}
 	repo := history.NewRepository(db)
 	cfg := testConfig(
 		downloadDir,
@@ -31,6 +38,15 @@ func TestRemoveJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New application failed: %v", err)
 	}
+	return a
+}
+
+func TestRemoveJob(t *testing.T) {
+	a := newRemoveJobTestApp(t)
+	var downloadDir string
+	a.config.WithRead(func(c *config.Config) {
+		downloadDir = c.General.DownloadDir
+	})
 
 	parsed := &nzb.NZB{}
 	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "to-delete"}, fsutil.SanitizeOptions{})
@@ -43,7 +59,7 @@ func TestRemoveJob(t *testing.T) {
 	_ = os.WriteFile(dummyFile, []byte("data"), 0o600)
 
 	// 1. Remove with deleteFiles=true
-	err = a.RemoveJob(t.Context(), job.ID, true)
+	err := a.RemoveJob(t.Context(), job.ID, true)
 	if err != nil {
 		t.Fatalf("RemoveJob failed: %v", err)
 	}
@@ -77,24 +93,7 @@ func TestRemoveJob(t *testing.T) {
 // unsynchronized and unconditional (app.downloader.DisconnectAll()), which
 // would have panicked here.
 func TestRemoveJob_NilDownloader(t *testing.T) {
-	dir := t.TempDir()
-	downloadDir := filepath.Join(dir, "download")
-	adminDir := filepath.Join(dir, "admin")
-	_ = os.MkdirAll(downloadDir, 0o750)
-	_ = os.MkdirAll(adminDir, 0o750)
-
-	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
-	repo := history.NewRepository(db)
-	cfg := testConfig(
-		downloadDir,
-		filepath.Join(dir, "complete"),
-		adminDir,
-		config.ServerConfig{Name: "test"},
-	)
-	a, err := New(cfg, repo)
-	if err != nil {
-		t.Fatalf("New application failed: %v", err)
-	}
+	a := newRemoveJobTestApp(t)
 	a.downloader = nil
 
 	parsed := &nzb.NZB{}

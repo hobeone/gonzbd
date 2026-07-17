@@ -570,6 +570,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 		app.mu.Lock()
 		dl := app.downloader
 		app.mu.Unlock()
+		// --- No lock held below this line ---
 		if dl != nil {
 			dl.DisconnectAll()
 		}
@@ -729,6 +730,7 @@ func (app *Application) Shutdown() error {
 	app.mu.Lock()
 	dl := app.downloader
 	app.mu.Unlock()
+	// --- No lock held below this line ---
 	if err := dl.Stop(); err != nil {
 		errs = append(errs, fmt.Errorf("downloader stop: %w", err))
 	}
@@ -1507,6 +1509,7 @@ func (app *Application) handleLowDisk(dir string, freeBytes int64) {
 	app.mu.Lock()
 	dl := app.downloader
 	app.mu.Unlock()
+	// --- No lock held below this line ---
 	if dl != nil {
 		dl.Pause()
 	}

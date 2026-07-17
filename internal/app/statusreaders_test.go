@@ -118,6 +118,7 @@ func TestHandleLowDisk_PausesDownloader(t *testing.T) {
 	fd.mu.Lock()
 	paused := fd.paused
 	fd.mu.Unlock()
+	// --- No lock held below this line ---
 	if !paused {
 		t.Error("handleLowDisk did not pause the downloader")
 	}
