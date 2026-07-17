@@ -49,6 +49,8 @@ func TestPipeline_FlatUnpack(t *testing.T) {
 	badSubdir := filepath.Join(completeDirFlat, "flat-test", "a")
 	if _, err := os.Stat(badSubdir); err == nil {
 		t.Errorf("a/ should not exist with FlatUnpack=true, but it does")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("unexpected stat error: %v", err)
 	}
 }
 
