@@ -254,6 +254,7 @@ type Assembler struct {
 	mu      sync.Mutex
 	started bool
 	stopped bool
+	ctx     context.Context
 
 	// stopCh is closed by Stop to signal the worker to begin draining.
 	// We use a dedicated stop channel rather than closing reqs, because
@@ -326,7 +327,7 @@ func (a *Assembler) CacheUsageBytes() int64 {
 
 // Start launches the worker goroutine. It returns an error if called more than
 // once without an intervening Stop.
-func (a *Assembler) Start(_ context.Context) error {
+func (a *Assembler) Start(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -338,6 +339,7 @@ func (a *Assembler) Start(_ context.Context) error {
 	}
 
 	a.started = true
+	a.ctx = ctx
 	a.wg.Add(1)
 	go a.worker()
 	return nil
@@ -904,6 +906,18 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 	// Collect unique directories to avoid redundant syscalls when many files
 	// share the same directory (the common case).
 	seen := make(map[string]struct{}, len(open))
+
+	parentCtx := a.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+
+	// Create one 5-second timeout context derived from the worker lifecycle
+	// context and reuse it across all directory probes in this scan.
+	const diskCheckTimeout = 5 * time.Second
+	ctx, cancel := context.WithTimeout(parentCtx, diskCheckTimeout)
+	defer cancel()
+
 	for _, f := range open {
 		dir := filepath.Dir(f.info.Path)
 		if _, already := seen[dir]; already {
@@ -911,11 +925,7 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 		}
 		seen[dir] = struct{}{}
 
-		// context.Background(): this is a periodic background check inside
-		// the worker loop, not tied to any request lifecycle, so there is
-		// no natural context to thread through here. Unbounded, matching
-		// this check's behavior before FreeBytes gained a ctx parameter.
-		free, err := FreeBytes(context.Background(), dir)
+		free, err := FreeBytes(ctx, dir)
 		if err != nil {
 			a.log.Warn("disk-space check failed", "dir", dir, "error", err)
 			continue

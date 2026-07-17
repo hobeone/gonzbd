@@ -9,11 +9,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 )
+
+// inFlightProbes tracks directories that currently have an active, pending
+// statfs syscall in a background goroutine.
+var inFlightProbes sync.Map
 
 // FreeBytes returns the number of bytes available to unprivileged processes on
 // the filesystem that contains dir. It uses syscall.Statfs, which is available
@@ -32,12 +38,26 @@ import (
 // eventually returns, or never if the mount never responds) rather than
 // leaving the caller's request goroutine blocked indefinitely.
 func FreeBytes(ctx context.Context, dir string) (int64, error) {
+	if ctx == nil || ctx.Done() == nil {
+		return 0, errors.New("assembler: FreeBytes requires a cancellable context; " +
+			"statfs can block forever on an unreachable mount")
+	}
+
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("assembler: statfs %s: %w", dir, err)
+	}
+
+	if _, loaded := inFlightProbes.LoadOrStore(dir, struct{}{}); loaded {
+		return 0, fmt.Errorf("assembler: statfs %s: check already in flight", dir)
+	}
+
 	type result struct {
 		free int64
 		err  error
 	}
 	ch := make(chan result, 1)
 	go func() {
+		defer inFlightProbes.Delete(dir)
 		var st syscall.Statfs_t
 		if err := syscall.Statfs(dir, &st); err != nil {
 			ch <- result{0, fmt.Errorf("assembler: statfs %s: %w", dir, err)}

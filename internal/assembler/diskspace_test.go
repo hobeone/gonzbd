@@ -2,7 +2,9 @@ package assembler
 
 import (
 	"context"
+	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -50,5 +52,47 @@ func TestWriteSpeedMBPerSec_ContextCanceled(t *testing.T) {
 	_, err := WriteSpeedMBPerSec(ctx, dir, 4*1024*1024)
 	if err == nil {
 		t.Fatal("expected error for already-cancelled context, got nil")
+	}
+}
+
+func TestFreeBytes_ContextValidation(t *testing.T) {
+	_, err := FreeBytes(context.Background(), t.TempDir())
+	if err == nil {
+		t.Fatal("expected error when context.Background() is passed, got nil")
+	}
+	expected := "requires a cancellable context"
+	if !strings.Contains(err.Error(), expected) {
+		t.Errorf("expected error to contain %q, got: %v", expected, err)
+	}
+}
+
+func TestFreeBytes_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := FreeBytes(ctx, t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for already-cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled error, got: %v", err)
+	}
+}
+
+func TestFreeBytes_InFlightCheck(t *testing.T) {
+	dir := t.TempDir()
+	inFlightProbes.Store(dir, struct{}{})
+	defer inFlightProbes.Delete(dir)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	_, err := FreeBytes(ctx, dir)
+	if err == nil {
+		t.Fatal("expected error for in-flight check, got nil")
+	}
+	expected := "check already in flight"
+	if !strings.Contains(err.Error(), expected) {
+		t.Errorf("expected error to contain %q, got: %v", expected, err)
 	}
 }
