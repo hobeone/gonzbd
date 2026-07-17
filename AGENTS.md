@@ -89,7 +89,7 @@ go test -tags=e2e -timeout=10m ./test/e2e/                  # E2E (requires live
 go test ./internal/config/ -run 'TestUI|TestAllFlat'        # Config ↔ UI contract
 go vet ./...                                                # Static analysis
 golangci-lint run ./...                                     # Linting
-gremlins unleash --timeout-coefficient 100 ./internal/queue # Mutation testing on a package
+./scripts/run_gremlins.sh ./internal/queue                  # Mutation testing on a package
 ```
 
 > **WARNING:** Running `gremlins` on the entire repository (e.g. `./...` or `./internal/...`) is forbidden. It will run dozens of mutant compiles in parallel, exhausting disk space and filling up `/tmp`. Always scope `gremlins` to a single focused package.
@@ -158,7 +158,7 @@ go vet ./...                          # Must pass
 go test -race ./...                   # Unit tests with the race detector
 ./scripts/run_tests.sh                # Full Go + UI suite
 golangci-lint run ./...               # Must pass (no new issues)
-gremlins unleash --timeout-coefficient 100 ./internal/<pkg> # Whole-package mutation baseline
+./scripts/run_gremlins.sh ./internal/<pkg> # Whole-package mutation baseline
 ```
 
 `./scripts/run_tests.sh` runs the full Go and UI suites but **without** the race
@@ -169,7 +169,7 @@ the diff must be killed by a test (no surviving/lived mutants). If a mutant
 lives, the test suite does not actually pin that behavior — add or strengthen
 the test rather than weakening the gate. Run it scoped to the changed package
 during development and before commit
-(`gremlins unleash --timeout-coefficient 100 ./internal/<pkg>`). **Do not use
+(`./scripts/run_gremlins.sh ./internal/<pkg>`). **Do not use
 `--diff`** — it is currently broken when scoped to a package (see the KNOWN BUG
 note above); instead, run the whole-package baseline and manually
 cross-reference `LIVED`/`NOT COVERED` line numbers against `git diff
