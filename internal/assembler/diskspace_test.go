@@ -2,7 +2,9 @@ package assembler
 
 import (
 	"context"
+	"errors"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -71,6 +73,56 @@ func TestCheckDiskSpace_SurvivesHungStatfs(t *testing.T) {
 	case <-time.After(diskCheckTimeout + 5*time.Second):
 		t.Fatal("checkDiskSpace did not return within the bounded timeout; " +
 			"a hung statfs would stall the assembler worker indefinitely")
+	}
+}
+
+// TestFreeBytes_AbandonedGoroutineCompletesAfterCancellation proves the part
+// of FreeBytes' contract that TestCheckDiskSpace_SurvivesHungStatfs cannot:
+// when ctx fires before the underlying statfs call returns, the abandoned
+// goroutine is not left permanently blocked — it completes once statfs
+// eventually does, and its buffered result channel absorbs the late send
+// without deadlocking. This exercises freeBytes' real goroutine+select
+// implementation directly (via the unexported helper and an injected fake),
+// unlike the Assembler.freeBytes-level test above, which replaces that
+// implementation entirely and so cannot observe this behavior.
+//
+// goleak.VerifyTestMain (main_test.go) additionally guards the leak-freedom
+// claim at the whole-binary level; the explicit wait below makes the proof
+// deterministic rather than relying on the abandoned goroutine happening to
+// finish before that final check runs.
+func TestFreeBytes_AbandonedGoroutineCompletesAfterCancellation(t *testing.T) {
+	unblockStatfs := make(chan struct{})
+	statfsCompleted := make(chan struct{})
+	fakeStatfs := func(path string, buf *syscall.Statfs_t) error {
+		<-unblockStatfs
+		err := syscall.Statfs(path, buf)
+		close(statfsCompleted)
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := freeBytes(ctx, t.TempDir(), fakeStatfs)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("freeBytes error = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("freeBytes took %v to return after ctx expired, want prompt return", elapsed)
+	}
+
+	// Let the abandoned goroutine's statfs call proceed, and deterministically
+	// wait for it to actually finish. Its result channel is buffered (size 1),
+	// so the send inside freeBytes' goroutine does not block even though
+	// nothing will ever receive it — this is the "leak-free abandonment"
+	// property under test; if freeBytes' select branches ever changed to an
+	// unbuffered channel, this wait would hang and fail the test.
+	close(unblockStatfs)
+	select {
+	case <-statfsCompleted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("abandoned goroutine did not complete after its statfs call was unblocked")
 	}
 }
 

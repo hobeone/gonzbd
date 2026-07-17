@@ -39,6 +39,15 @@ import (
 // goroutine+select design exists to prevent — so that is rejected outright
 // rather than allowed to degenerate into a plain blocking call.
 func FreeBytes(ctx context.Context, dir string) (int64, error) {
+	return freeBytes(ctx, dir, syscall.Statfs)
+}
+
+// freeBytes is FreeBytes' implementation, taking the statfs call as a plain
+// parameter (not shared/global state) so tests can pass a controllable fake
+// to exercise the goroutine-abandonment path directly — e.g. proving the
+// abandoned goroutine really does complete and release its buffered channel
+// once the underlying call eventually returns, rather than leaking forever.
+func freeBytes(ctx context.Context, dir string, statfs func(path string, buf *syscall.Statfs_t) error) (int64, error) {
 	if ctx == nil || ctx.Done() == nil {
 		return 0, errors.New("assembler: FreeBytes requires a cancellable context; " +
 			"statfs can block forever on an unreachable mount")
@@ -50,7 +59,7 @@ func FreeBytes(ctx context.Context, dir string) (int64, error) {
 	ch := make(chan result, 1)
 	go func() {
 		var st syscall.Statfs_t
-		if err := syscall.Statfs(dir, &st); err != nil {
+		if err := statfs(dir, &st); err != nil {
 			ch <- result{0, fmt.Errorf("assembler: statfs %s: %w", dir, err)}
 			return
 		}
