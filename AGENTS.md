@@ -94,6 +94,27 @@ golangci-lint run ./...                                     # Linting
 
 > **WARNING:** Running `gremlins` on the entire repository (e.g. `./...` or `./internal/...`) is forbidden. It will run dozens of mutant compiles in parallel, exhausting disk space and filling up `/tmp`. Always scope `gremlins` to a single focused package.
 >
+> **Always invoke gremlins via `./scripts/run_gremlins.sh <pkg>`, never call
+> `gremlins unleash` directly.** gremlins copies the whole working directory
+> into each worker's isolated build dir and does not respect `.gitignore`
+> while doing so; a bare invocation with the scratch dir anywhere inside the
+> repo (as an earlier version of this script did) causes each worker's copy
+> to recursively sweep up scratch data from prior workers/runs, nesting many
+> levels deep — this produced 168–394GB of disk usage from a single run,
+> independent of worker count, and coincided with kernel OOM kills. The
+> wrapper script fixes this (scratch dir relocated outside the repo, wiped
+> per run) and adds resource limits: a hard memory cap via a `systemd --user`
+> cgroup scope (so OOM kills only this run's own processes, not arbitrary
+> processes system-wide) and a background watchdog enforcing a disk-usage
+> cap and wall-clock timeout. Tunable via `GREMLINS_WORKERS` (default 4),
+> `GREMLINS_MEMORY_MAX` (default 32G), `GREMLINS_DISK_MAX_MB` (default 51200),
+> `GREMLINS_TIMEOUT_SECS` (default 1800), `GREMLINS_DIR` (scratch dir base —
+> must not be inside the repo). Requires `systemd-run` (Linux only, matching
+> this project's platform target); the script refuses to run without it
+> rather than falling back to an unconfined invocation. Mutant-type
+> selection and `timeout-coefficient` are configured project-wide in
+> `.gremlins.yaml` — no need to pass those as flags.
+>
 > **KNOWN BUG — `--diff` is broken when scoped to a package** (the only way
 > this repo permits it to be run): gremlins v0.6.0 has a confirmed upstream
 > bug ([go-gremlins/gremlins#278](https://github.com/go-gremlins/gremlins/issues/278))
@@ -137,6 +158,8 @@ go install golang.org/x/tools/cmd/goimports@latest
 
 # Install gremlins (mutation testing) if not present
 go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+# scripts/run_gremlins.sh also requires systemd-run (systemd --user session)
+# to enforce resource limits — check with: systemctl --user status
 ```
 
 ### After Editing Any `.go` File

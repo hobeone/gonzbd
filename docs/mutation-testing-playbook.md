@@ -16,30 +16,64 @@ mutation testing on X and fix what it finds."
 
 ## 1. Run gremlins
 
+**Always use the wrapper script — never call `gremlins unleash` directly.**
+
 ```bash
-gremlins unleash --timeout-coefficient=40 ./internal/<package>
+./scripts/run_gremlins.sh ./internal/<package>
 ```
+
+`scripts/run_gremlins.sh` exists because a bare `gremlins unleash` copies the
+whole working directory into each worker's isolated build dir without
+respecting `.gitignore`. If that scratch space lives anywhere inside the repo
+tree, each worker's copy recursively sweeps up scratch data from prior
+workers/runs, nesting many levels deep — this produced 168–394GB of disk
+usage from a *single* run, independent of worker count, and coincided with
+kernel OOM kills. The script fixes this by relocating scratch space outside
+the repo (default `~/.cache/gonzbd-gremlins`, wiped before each run) and adds
+real resource limits: a hard memory cap enforced via a `systemd --user`
+cgroup scope (so an OOM kills only this run's own processes, not arbitrary
+processes across the machine) and a background watchdog that stops the run
+if the scratch dir's disk usage or the wall-clock time exceeds a cap.
+Requires `systemd-run` (`systemctl --user status` to check); it refuses to
+run without it rather than silently falling back to an unconfined invocation.
+
+Tunables, all optional (see the script's header comment for the full list):
+`GREMLINS_WORKERS` (default 4 — real parallelism without the unbounded
+footprint of gremlins' default worker count), `GREMLINS_MEMORY_MAX` (default
+`32G`), `GREMLINS_DISK_MAX_MB` (default `51200` = 50GiB), `GREMLINS_TIMEOUT_SECS`
+(default `1800` = 30min), `GREMLINS_DIR` (scratch dir base — must not be
+inside the repo, the script errors out if it is).
+
+Mutant-type selection and `timeout-coefficient` are configured project-wide
+in `.gremlins.yaml` at the repo root, so they don't need to be passed as
+flags (superseding the older `--timeout-coefficient=40` guidance from this
+codebase's project memory — the current `.gremlins.yaml` sets `100`).
 
 **Gotchas:**
 - Pass a single package path, not a `...` wildcard suffix appended to an
   already-specific path — `./internal/par2/...` becomes
   `./internal/par2/.../...` and matches nothing. Use `./internal/par2`.
-- `--timeout-coefficient=40` is required on this codebase's fast suites —
-  without it, every mutant times out (see project memory
-  `gremlins-timeout-coefficient`).
+- Extra `gremlins unleash` flags can be passed through as additional
+  arguments: `./scripts/run_gremlins.sh ./internal/par2 --dry-run`.
 - Run it in the background (`run_in_background: true` if using the Agent
   tools) — even a focused package run produces a long mutant log and you only
   need the tail summary plus the `LIVED`/`NOT COVERED` lines.
-- **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will completely fill up `/tmp` (potentially causing system hangs or build failures). Always scope it to a single focused package.
+- **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will completely fill up `/tmp` (potentially causing system hangs or build failures) even with the wrapper script's protections. Always scope it to a single focused package.
+- If a run is killed by the memory cap or watchdog, the script prints
+  `error: gremlins run was OOM-killed or stopped by the watchdog ...` or
+  `error: gremlins run was stopped by the disk/timeout watchdog ...` — retry
+  with a lower `GREMLINS_WORKERS` (for OOM) or a higher
+  `GREMLINS_DISK_MAX_MB`/`GREMLINS_TIMEOUT_SECS` (for a genuinely large
+  package that needs more room, not a runaway).
 
 ### Large packages (e.g. `internal/app`, 49 files) need `nohup` + polling, not a bare foreground run
 
-A `gremlins unleash` run scoped to a large package (as opposed to `./...`,
-which is forbidden above) can still take longer than a single tool call's
-timeout. This has now happened twice on `internal/app`. Use:
+A run scoped to a large package (as opposed to `./...`, which is forbidden
+above) can still take longer than a single tool call's timeout. This has now
+happened twice on `internal/app`. Use:
 
 ```bash
-nohup gremlins unleash --timeout-coefficient 100 ./internal/app \
+nohup ./scripts/run_gremlins.sh ./internal/app \
   > /tmp/gremlins-app.log 2>&1 &
 echo "PID: $!"
 ```
@@ -225,7 +259,7 @@ every piece's size up front.
 ## 6. Re-run gremlins to measure the delta
 
 ```bash
-gremlins unleash --timeout-coefficient=40 ./internal/<package> 2>&1 | tail -10
+./scripts/run_gremlins.sh ./internal/<package> 2>&1 | tail -10
 ```
 
 Compare `Killed`/`Lived`/`Not covered` and `Test efficacy` against the
@@ -233,7 +267,7 @@ baseline. Then grep for the *specific* lines you targeted to confirm they
 flipped from `LIVED`/`NOT COVERED` to `KILLED`:
 
 ```bash
-gremlins unleash --timeout-coefficient=40 ./internal/<package> 2>&1 \
+./scripts/run_gremlins.sh ./internal/<package> 2>&1 \
   | grep -E "parser.go:(139|159|167|196|197|221|239):"
 ```
 
@@ -270,7 +304,7 @@ Mutation score for internal/par2 improves from 70.2% to 80.8%
 
 ## Quick checklist
 
-- [ ] `gremlins unleash --timeout-coefficient=40 ./internal/<pkg>` (background)
+- [ ] `./scripts/run_gremlins.sh ./internal/<pkg>` (background)
 - [ ] Triage `LIVED`/`NOT COVERED`: mark equivalents, group real gaps by theme
 - [ ] Prioritize whole-path/whole-phase gaps over single-line boundary nits
 - [ ] Write tests matching existing fixture style; bracket boundaries on both sides
