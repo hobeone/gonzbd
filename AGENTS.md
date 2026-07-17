@@ -384,7 +384,14 @@ windows) and document each as intentional.
 
 ## Git Conventions
 
-- **Branch**: single developer — commit directly to `main`. This repo has **no GitHub branch protection** (private repo; protection is a Pro/public-only feature), so no PR is required. For multi-step efforts, do the work in an isolated **git worktree** off `main`, then integrate by fast-forwarding `main` (no PR). Switch to feature branches + PRs only when collaboration begins.
+- **Branch**: **never commit directly to `main`. All work lands via pull request**, including single-commit fixes. This holds even though it is a solo private repo, for two concrete reasons: the PR is the review surface that CodeRabbit and human review comment on, and both `.github/workflows/ci.yml` and `.github/workflows/security.yml` already trigger on `pull_request` — pushing straight to `main` skips review entirely and runs CI only after the fact, when it is too late to be a gate.
+- **This is a convention, not an enforced gate.** There is no GitHub branch protection configured for this repository, so nothing on the server will reject a direct push to `main`. It holds because we follow it. Do not read "the push succeeded" as "the push was allowed."
+- **Never merge or close a PR without explicit user approval** — open it, report the CI result, and stop.
+- **Worktrees**: for multi-step efforts, work in an isolated **git worktree** off `main`, then open a PR from that branch. Note a fresh worktree cannot build until you supply the UI bundle — `ui/dist/*` is gitignored, so `//go:embed all:dist` in `ui/embed.go` fails and `internal/web` reports `[setup failed]`. This is a worktree artifact, not a broken change:
+  ```bash
+  git worktree add /tmp/<lane> -b <lane>
+  cp -r <main-checkout>/ui/dist /tmp/<lane>/ui/dist   # or build the UI
+  ```
 - **One step per commit** (or one logical sub-piece if a step is split).
 - **Never** force-push, rewrite history, or `git reset --hard` without user approval.
 - **Always** run quality gates before committing.
