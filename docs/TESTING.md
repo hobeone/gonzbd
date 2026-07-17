@@ -244,12 +244,27 @@ tools — post-processing stages that require `par2`/`unrar`/`7z` are stubbed.
 
 **Command:**
 ```bash
-# Focused on a single package
-gremlins unleash --timeout-coefficient 100 ./internal/<package>
+# Focused on a single package — always via the wrapper script, never
+# `gremlins unleash` directly (see WARNING below for why).
+./scripts/run_gremlins.sh ./internal/<package>
 ```
 
 > [!WARNING]
-> **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will fill up `/tmp` (potentially causing system hangs or build failures). Always scope it to a single focused package.
+> **Always invoke gremlins via `./scripts/run_gremlins.sh`, never call
+> `gremlins unleash` directly.** gremlins copies the whole working directory
+> into each worker's isolated build dir without respecting `.gitignore`; a
+> bare invocation with its scratch dir anywhere inside the repo caused each
+> worker's copy to recursively sweep up scratch data from prior workers/runs,
+> producing 168–394GB of disk usage from a single run and coinciding with
+> kernel OOM kills. The wrapper relocates scratch space outside the repo and
+> adds a memory cap (via a `systemd --user` cgroup scope) plus a disk-usage/
+> wall-clock watchdog. Tunable via `GREMLINS_WORKERS`, `GREMLINS_MEMORY_MAX`,
+> `GREMLINS_DISK_MAX_MB`, `GREMLINS_TIMEOUT_SECS`, `GREMLINS_DIR` — see the
+> script's header comment. Mutant-type selection and `timeout-coefficient`
+> are configured project-wide in `.gremlins.yaml`, not passed as flags.
+
+> [!WARNING]
+> **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will fill up `/tmp` (potentially causing system hangs or build failures) even with the wrapper script's protections. Always scope it to a single focused package.
 
 <!-- -->
 
@@ -263,7 +278,7 @@ gremlins unleash --timeout-coefficient 100 ./internal/<package>
 > [docs/mutation-testing-playbook.md](mutation-testing-playbook.md) § Known
 > limitation for the full workaround.
 
-See [docs/mutation-testing-playbook.md](file:///usr/local/google/home/hobe/software/gonzbd/docs/mutation-testing-playbook.md) for the detailed triage guide and playbook.
+See [docs/mutation-testing-playbook.md](mutation-testing-playbook.md) for the detailed triage guide and playbook.
 
 ## 8. Decision Guide: Which Tests to Run
 
