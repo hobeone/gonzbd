@@ -37,6 +37,13 @@ const defaultDoneFlushInterval = 250 * time.Millisecond
 // on fast I/O paths; every 16 is a reasonable amortization.
 const diskCheckInterval = 16
 
+// diskCheckTimeout bounds each per-directory FreeBytes call in checkDiskSpace.
+// statfs can block uninterruptibly on a stuck network mount (NFS/SMB); without
+// this bound the single assembler worker — which owns all open file handles
+// and is the only drainer of a.reqs — stalls the whole pipeline for as long as
+// the mount stays wedged.
+const diskCheckTimeout = 5 * time.Second
+
 var (
 	// ErrNotStarted is returned by WriteArticle when Start has not yet been called.
 	ErrNotStarted = errors.New("assembler: not started")
@@ -911,11 +918,15 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 		}
 		seen[dir] = struct{}{}
 
-		// context.Background(): this is a periodic background check inside
-		// the worker loop, not tied to any request lifecycle, so there is
-		// no natural context to thread through here. Unbounded, matching
-		// this check's behavior before FreeBytes gained a ctx parameter.
-		free, err := FreeBytes(context.Background(), dir)
+		// This is a periodic background check inside the worker loop, not
+		// tied to any request lifecycle, so there is no natural context to
+		// thread through here — but it must still be bounded: this worker
+		// owns all open file handles and is the only drainer of a.reqs, so
+		// an uninterruptible statfs on a stuck mount would stall the whole
+		// pipeline. See diskCheckTimeout.
+		ctx, cancel := context.WithTimeout(context.Background(), diskCheckTimeout)
+		free, err := FreeBytes(ctx, dir)
+		cancel()
 		if err != nil {
 			a.log.Warn("disk-space check failed", "dir", dir, "error", err)
 			continue
