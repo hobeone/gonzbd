@@ -151,7 +151,7 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 	// worker outlives the test and goleak fails the package.
 	t.Cleanup(func() {
 		if err := application.Shutdown(); err != nil {
-			t.Logf("Shutdown: %v", err)
+			t.Errorf("Shutdown: %v", err)
 		}
 	})
 
