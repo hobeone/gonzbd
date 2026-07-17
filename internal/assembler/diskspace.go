@@ -16,11 +16,6 @@ import (
 	"time"
 )
 
-// statfs is syscall.Statfs, indirected through a package variable so tests
-// can swap in a hanging/slow implementation to simulate a stuck network
-// mount without needing a real dead NFS/SMB share.
-var statfs = syscall.Statfs
-
 // FreeBytes returns the number of bytes available to unprivileged processes on
 // the filesystem that contains dir. It uses syscall.Statfs, which is available
 // on Linux, macOS, and other Unix-like systems.
@@ -38,13 +33,13 @@ var statfs = syscall.Statfs
 // eventually returns, or never if the mount never responds) rather than
 // leaving the caller's request goroutine blocked indefinitely.
 //
-// ctx must be cancellable (ctx.Done() != nil). A caller passing
+// ctx must be non-nil and cancellable (ctx.Done() != nil). A caller passing
 // context.Background() would silently convert this into an uninterruptible
 // call on the caller's own goroutine — the exact failure this function's
 // goroutine+select design exists to prevent — so that is rejected outright
 // rather than allowed to degenerate into a plain blocking call.
 func FreeBytes(ctx context.Context, dir string) (int64, error) {
-	if ctx.Done() == nil {
+	if ctx == nil || ctx.Done() == nil {
 		return 0, errors.New("assembler: FreeBytes requires a cancellable context; " +
 			"statfs can block forever on an unreachable mount")
 	}
@@ -55,7 +50,7 @@ func FreeBytes(ctx context.Context, dir string) (int64, error) {
 	ch := make(chan result, 1)
 	go func() {
 		var st syscall.Statfs_t
-		if err := statfs(dir, &st); err != nil {
+		if err := syscall.Statfs(dir, &st); err != nil {
 			ch <- result{0, fmt.Errorf("assembler: statfs %s: %w", dir, err)}
 			return
 		}
