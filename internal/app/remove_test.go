@@ -68,3 +68,40 @@ func TestRemoveJob(t *testing.T) {
 		t.Errorf("job directory was deleted but should have been kept (deleteFiles=false)")
 	}
 }
+
+// TestRemoveJob_NilDownloader pins the nil-guard on RemoveJob's final
+// DisconnectAll call. New() always wires a real downloader, so app.downloader
+// is nilled out directly (white-box, same package) after construction to
+// exercise the branch — the same technique TestBuildDownloaderOptions_Defaults
+// uses elsewhere in this package. Before the #98 fix this call was
+// unsynchronized and unconditional (app.downloader.DisconnectAll()), which
+// would have panicked here.
+func TestRemoveJob_NilDownloader(t *testing.T) {
+	dir := t.TempDir()
+	downloadDir := filepath.Join(dir, "download")
+	adminDir := filepath.Join(dir, "admin")
+	_ = os.MkdirAll(downloadDir, 0o750)
+	_ = os.MkdirAll(adminDir, 0o750)
+
+	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	repo := history.NewRepository(db)
+	cfg := testConfig(
+		downloadDir,
+		filepath.Join(dir, "complete"),
+		adminDir,
+		config.ServerConfig{Name: "test"},
+	)
+	a, err := New(cfg, repo)
+	if err != nil {
+		t.Fatalf("New application failed: %v", err)
+	}
+	a.downloader = nil
+
+	parsed := &nzb.NZB{}
+	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "to-delete"}, fsutil.SanitizeOptions{})
+	_ = a.queue.Add(job)
+
+	if err := a.RemoveJob(t.Context(), job.ID, false); err != nil {
+		t.Fatalf("RemoveJob with nil downloader: %v", err)
+	}
+}

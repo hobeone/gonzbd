@@ -567,7 +567,12 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 
 	// Disconnect NNTP servers if no downloadable jobs remain.
 	if !app.queue.HasDownloadableJobs() {
-		app.downloader.DisconnectAll()
+		app.mu.Lock()
+		dl := app.downloader
+		app.mu.Unlock()
+		if dl != nil {
+			dl.DisconnectAll()
+		}
 	}
 	return nil
 }
