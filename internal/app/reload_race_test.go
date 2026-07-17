@@ -34,9 +34,7 @@ func runReloadUnderLoad(t *testing.T, app *Application, d time.Duration) {
 	var wg sync.WaitGroup
 
 	spin := func(fn func()) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				select {
 				case <-stop:
@@ -45,7 +43,7 @@ func runReloadUnderLoad(t *testing.T, app *Application, d time.Duration) {
 					fn()
 				}
 			}
-		}()
+		})
 	}
 
 	// Unlocked readers of app.downloaderStats / app.downloader (the bug).
