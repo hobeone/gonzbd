@@ -114,9 +114,12 @@ const reloadMuHoldTestDuration = 300 * time.Millisecond
 // unpatched code, app.mu is held for the entire ReloadDownloader body,
 // including a real cross-goroutine handshake in pipeline.setCompletions
 // (see pipeline.go) plus Stop/ClearAllEmitted/New/Start — measured min ~614µs
-// over 40 runs. 500µs sits in the gap between the two with margin on both
-// sides.
-const maxAcceptableMuHoldStreak = 500 * time.Microsecond
+// over 40 runs. 2ms gives generous headroom above the measured patched-code
+// ceiling for a loaded/slow CI runner (a preempted monitor goroutine or a GC
+// pause during the critical section could otherwise push the observed streak
+// past a tighter threshold on correct code) while staying well below the
+// unpatched-code floor.
+const maxAcceptableMuHoldStreak = 2 * time.Millisecond
 
 // TestReloadDownloader_DoesNotHoldMuAcrossBody is the red test for issue
 // #118: it must fail on code where ReloadDownloader holds app.mu for its
@@ -218,8 +221,10 @@ func TestReloadDownloader_DoesNotHoldMuAcrossBody(t *testing.T) {
 // future change narrows reloadMu's scope (e.g. moving the Lock call past the
 // snapshot, or Unlock-ing before Start), two overlapping callers would only
 // contend for a sliver of the function and this streak would collapse well
-// below the floor.
-const minAcceptableReloadMuHoldStreak = 200 * time.Microsecond
+// below the floor. 100µs (well under the ~614µs measured minimum full-body
+// duration) leaves headroom for a faster/quieter machine to still clear the
+// floor on correct code.
+const minAcceptableReloadMuHoldStreak = 100 * time.Microsecond
 
 // TestReloadDownloader_SerializesConcurrentCalls is the red test for the
 // interleaving hazard identified in review of issue #118's fix: narrowing

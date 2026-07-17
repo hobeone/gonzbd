@@ -635,6 +635,14 @@ func (app *Application) PostProcComplete() <-chan PostProcComplete { return app.
 // It blocks until all components are running. Call Shutdown to stop.
 // If Start returns an error it may be retried; the application is left in a
 // clean state with started=false so a subsequent Start call is allowed.
+//
+// Invariant: ReloadDownloader must not be called until Start has returned.
+// started flips true (via CompareAndSwap) before this method finishes
+// constructing the pipeline, and a ReloadDownloader call that raced in
+// during that window could Stop the same downloader instance this method is
+// concurrently Starting. This is safe today because the only caller
+// (the config-reload HTTP handler) can't run until the API server starts
+// listening, which happens after Start returns — see cmd/gonzbd/main.go.
 func (app *Application) Start(ctx context.Context) error {
 	if !app.started.CompareAndSwap(false, true) {
 		return ErrAlreadyStarted
@@ -743,9 +751,19 @@ func (app *Application) Shutdown() error {
 		return nil
 	}
 	var errs []error
+	// Barrier on reloadMu: stopped is now true, so any ReloadDownloader call
+	// that arrives after this point sees it and returns immediately without
+	// doing any work. But a reload already past that check when we set
+	// stopped could still be mid-flight, and would otherwise finish after we
+	// tear down below — swapping in a new downloader nobody is left to stop.
+	// Acquiring and releasing reloadMu here waits for any such in-flight
+	// reload to finish before we snapshot app.downloader, so the snapshot
+	// below always reflects the final, settled downloader.
+	app.reloadMu.Lock()
 	app.mu.Lock()
 	dl := app.downloader
 	app.mu.Unlock()
+	app.reloadMu.Unlock()
 	// --- No lock held below this line ---
 	if err := dl.Stop(); err != nil {
 		errs = append(errs, fmt.Errorf("downloader stop: %w", err))
