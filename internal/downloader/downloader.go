@@ -334,6 +334,9 @@ func (d *Downloader) Completions() <-chan *ArticleResult { return d.completions 
 
 // Speed returns the current download speed in bytes per second.
 func (d *Downloader) Speed() float64 {
+	if d.paused.Load() {
+		return 0
+	}
 	return d.meter.BPS("")
 }
 
@@ -615,7 +618,9 @@ func (d *Downloader) ServerStatus() []ServerSnapshot {
 		var totalBytes int64
 		if meterSnap.Servers != nil {
 			if ss, ok := meterSnap.Servers[name]; ok {
-				bps = ss.BPS
+				if !d.paused.Load() {
+					bps = ss.BPS
+				}
 				totalBytes = ss.Total
 			}
 		}
