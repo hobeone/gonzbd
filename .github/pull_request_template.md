@@ -1,5 +1,7 @@
 ## Description
-<!-- Provide a brief summary of the changes and the motivation behind them. -->
+<!-- Provide a brief summary of the changes and the motivation behind them.
+Describe the problem being solved, the approach taken and the material landed
+improvements that this PR brings. -->
 
 ## Checklist
 - [ ] I have run `go vet ./...` and `golangci-lint run ./...`
