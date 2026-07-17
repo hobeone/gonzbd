@@ -94,13 +94,34 @@ func (app *Application) ReloadGeneralOptions(g config.GeneralConfig) {
 
 // ReloadDownloader stops the current downloader and starts a new one with
 // the given server configurations. Used when server settings change at runtime.
+//
+// reloadMu serializes the whole body end-to-end: nothing here calls this
+// concurrently with itself internally, but the API layer (modeSetConfig)
+// invokes it once per HTTP request with no serialization of its own, so two
+// concurrent server-config updates could otherwise interleave their
+// Stop/setCompletions/ClearAllEmitted/Start sequences and leave app.downloader
+// and app.pipeline's completions source wired to two different downloader
+// instances (leaking the loser's goroutines and stalling dispatch on the
+// orphaned one). app.mu is only held within that section to snapshot the old
+// downloader and, at the end, to swap in the new one — stopping the old
+// downloader and building/starting the new one happen without app.mu held,
+// so app.mu-guarded reads (Speed, ServerStatus, PauseDownloads, etc.) are
+// never blocked on downloader shutdown or startup work. See AGENTS.md
+// "never hold a mutex during disk I/O or network calls" and issue #118.
 func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
+	app.reloadMu.Lock()
+	defer app.reloadMu.Unlock()
+
 	app.mu.Lock()
-	defer app.mu.Unlock()
 	if !app.started.Load() || app.stopped.Load() {
+		app.mu.Unlock()
 		return errors.New("app: not running")
 	}
-	_ = app.downloader.Stop()
+	oldDownloader := app.downloader
+	app.mu.Unlock()
+	// --- No lock held below this line ---
+
+	_ = oldDownloader.Stop()
 
 	// Wait for the pipeline to drain all buffered results from the old
 	// downloader's (now-closed) completions channel. setCompletions
@@ -122,8 +143,11 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 	if err := newDownloader.Start(app.ctx); err != nil {
 		return err
 	}
+
+	app.mu.Lock()
 	app.downloader = newDownloader
 	app.downloaderStats = newDownloader
+	app.mu.Unlock()
 	app.pipeline.setCompletions(newDownloader.Completions())
 	return nil
 }
