@@ -32,6 +32,31 @@ gremlins unleash --timeout-coefficient=40 ./internal/<package>
   need the tail summary plus the `LIVED`/`NOT COVERED` lines.
 - **NEVER run `gremlins` on the entire repository** (e.g. `./...` or `./internal/...`). Doing so will trigger parallel builds and mutant execution across dozens of packages, which rapidly consumes disk space and will completely fill up `/tmp` (potentially causing system hangs or build failures). Always scope it to a single focused package.
 
+### Large packages (e.g. `internal/app`, 49 files) need `nohup` + polling, not a bare foreground run
+
+A `gremlins unleash` run scoped to a large package (as opposed to `./...`,
+which is forbidden above) can still take longer than a single tool call's
+timeout. This has now happened twice on `internal/app`. Use:
+
+```bash
+nohup gremlins unleash --timeout-coefficient 100 ./internal/app \
+  > /tmp/gremlins-app.log 2>&1 &
+echo "PID: $!"
+```
+
+then poll (`while kill -0 <PID> 2>/dev/null; do sleep 10; done`) or check back
+later, rather than waiting on it in the foreground. Even the backgrounded run
+can be interrupted by an *outer* timeout (e.g. an agent harness's own
+long-running-command limit) before the whole package finishes — that's fine.
+`gremlins` writes results incrementally, so a log truncated mid-run (look for
+`Shutting down gracefully...` at the tail instead of the final `Killed: N,
+Lived: N, ...` summary line) still contains real `KILLED`/`LIVED`/`NOT
+COVERED` verdicts for every mutant it reached before the cutoff. Grep the
+partial log for the specific line numbers your diff touched
+(`grep -n "app.go:<line>:" gremlins-app.log`) — if those lines were reached,
+the partial run is sufficient proof for the mutation gate on your change; you
+don't need a from-scratch complete run just to get the summary footer.
+
 ### Known limitation: `--diff` is broken when scoped to a package
 
 gremlins v0.6.0 has a confirmed upstream bug
