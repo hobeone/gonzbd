@@ -1,23 +1,125 @@
 #!/bin/bash
-# run_gremlins.sh - Run gremlins mutation testing with optimized environment.
-# Sets custom TMPDIR and GOCACHE to prevent disk space exhaustion in /tmp.
+# run_gremlins.sh - Run gremlins mutation testing with resource limits.
+#
+# Guards against three failure modes observed in practice on this repo:
+#
+#  1. Disk blowup. gremlins copies the whole working directory into each
+#     worker's isolated build dir, and does not respect .gitignore while
+#     doing so. If the scratch directory lives inside the repo tree, each
+#     worker's copy recursively sweeps up scratch data left by prior
+#     workers/runs, nesting many levels deep (observed: 168-394GB from a
+#     single run, entirely self-referential). Scratch space is placed
+#     OUTSIDE the repo tree below, and wiped before each run, so a worker
+#     copy can never fold in previous scratch data.
+#
+#  2. OOM. Many parallel workers each running `go test` can exceed system
+#     RAM. An unconfined run lets the *system* OOM killer pick victims,
+#     which can kill unrelated processes on the machine. The run below is
+#     wrapped in a systemd --user cgroup scope with a hard MemoryMax, so
+#     only this run's own processes are killed on OOM.
+#
+#  3. Runaway/unbounded runs. A background watchdog enforces a wall-clock
+#     timeout and a disk-usage cap on the scratch directory, and stops the
+#     cgroup scope (killing the whole process tree) if either is exceeded.
+#     This is a backstop for causes of runaway resource use other than #1.
+#
+# Tunables (all optional):
+#   GREMLINS_DIR          scratch dir base (default: ~/.cache/gonzbd-gremlins)
+#   GREMLINS_WORKERS       parallel workers (default: 4)
+#   GREMLINS_MEMORY_MAX    hard memory cap for the whole run (default: 32G)
+#   GREMLINS_DISK_MAX_MB   scratch-dir size cap in MiB (default: 51200 = 50GiB)
+#   GREMLINS_TIMEOUT_SECS  wall-clock cap in seconds (default: 1800 = 30min)
 
-set -e
+set -uo pipefail
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 ./internal/<package>"
+    echo "Usage: $0 ./internal/<package> [extra gremlins args...]" >&2
     exit 1
 fi
 
 pkg="$1"
+shift
 
-# Allow overriding the base directory for gremlins storage via GREMLINS_DIR.
-# Default to a local .gremlins/ directory in the workspace root.
-BASE_DIR="${GREMLINS_DIR:-$(git rev-parse --show-toplevel)/.gremlins}"
-export TMPDIR="${BASE_DIR}/tmp"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Scratch space must live outside the repo tree — see failure mode #1 above.
+BASE_DIR="${GREMLINS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/gonzbd-gremlins}"
+case "$BASE_DIR" in
+    "$REPO_ROOT"|"$REPO_ROOT"/*)
+        echo "error: GREMLINS_DIR ($BASE_DIR) must not be inside the repo ($REPO_ROOT)" >&2
+        exit 1
+        ;;
+esac
+
+TMP_DIR="${BASE_DIR}/tmp"
 export GOCACHE="${BASE_DIR}/gocache"
 
-mkdir -p "$TMPDIR" "$GOCACHE"
+# Start each run from a clean scratch dir: leftover worker dirs from a prior
+# (especially crashed) run are the seed for the recursive blowup in failure
+# mode #1, and aren't useful to keep between runs anyway. GOCACHE is left
+# alone — it's content-addressed and safe (and worth keeping) across runs.
+rm -rf "$TMP_DIR"
+mkdir -p "$TMP_DIR" "$GOCACHE"
+export TMPDIR="$TMP_DIR"
 
-echo "Running gremlins on $pkg with GOCACHE=$GOCACHE and TMPDIR=$TMPDIR"
-gremlins unleash "$pkg"
+WORKERS="${GREMLINS_WORKERS:-4}"
+MEMORY_MAX="${GREMLINS_MEMORY_MAX:-32G}"
+DISK_MAX_MB="${GREMLINS_DISK_MAX_MB:-51200}"
+TIMEOUT_SECS="${GREMLINS_TIMEOUT_SECS:-1800}"
+
+if ! command -v systemd-run >/dev/null 2>&1; then
+    echo "error: systemd-run not found - this script requires it to enforce memory/process limits" >&2
+    exit 1
+fi
+
+UNIT_NAME="gonzbd-gremlins-$$"
+
+echo "Running gremlins on $pkg"
+echo "  TMPDIR=$TMPDIR GOCACHE=$GOCACHE"
+echo "  workers=$WORKERS memory-max=$MEMORY_MAX disk-max=${DISK_MAX_MB}MiB timeout=${TIMEOUT_SECS}s"
+echo "  cgroup unit=${UNIT_NAME}.scope"
+
+# Watchdog: stops the cgroup scope (killing the whole process tree) if the
+# scratch dir outgrows DISK_MAX_MB or the run outlives TIMEOUT_SECS. gremlins
+# has no built-in disk-space limit, and MemoryMax alone doesn't bound wall
+# clock or disk, hence this backstop.
+(
+    elapsed=0
+    while true; do
+        sleep 15
+        elapsed=$((elapsed + 15))
+        used_mb=$(du -sm "$TMP_DIR" 2>/dev/null | cut -f1)
+        if [ -n "$used_mb" ] && [ "$used_mb" -gt "$DISK_MAX_MB" ]; then
+            echo "error: gremlins scratch dir exceeded ${DISK_MAX_MB}MiB (at ${used_mb}MiB) - stopping run" >&2
+            systemctl --user stop "${UNIT_NAME}.scope" 2>/dev/null
+            exit 0
+        fi
+        if [ "$elapsed" -ge "$TIMEOUT_SECS" ]; then
+            echo "error: gremlins run exceeded ${TIMEOUT_SECS}s wall clock - stopping run" >&2
+            systemctl --user stop "${UNIT_NAME}.scope" 2>/dev/null
+            exit 0
+        fi
+        # Stop watching once the scope is gone (run finished on its own).
+        systemctl --user is-active --quiet "${UNIT_NAME}.scope" 2>/dev/null || exit 0
+    done
+) &
+watchdog_pid=$!
+
+cleanup() {
+    kill "$watchdog_pid" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+systemd-run --user --scope --unit="$UNIT_NAME" \
+    -p "MemoryMax=${MEMORY_MAX}" \
+    -p "TasksMax=4096" \
+    -- gremlins unleash --workers "$WORKERS" "$pkg" "$@"
+status=$?
+
+if [ "$status" -eq 137 ]; then
+    echo "error: gremlins run was OOM-killed or stopped by the watchdog (memory-max=$MEMORY_MAX) - try a lower GREMLINS_WORKERS" >&2
+elif [ "$status" -eq 143 ]; then
+    echo "error: gremlins run was stopped by the disk/timeout watchdog - see message above for which limit" >&2
+fi
+
+exit "$status"
