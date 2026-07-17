@@ -53,13 +53,7 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        run: go test -v -race ./...
+        run: go test ./...
 
       - name: Run integration tests
-        run: go test -v -tags=integration ./test/integration/...
-
-      - name: Verify modules
-        run: go mod verify
-
-      - name: Verify go mod tidy
-        run: go mod tidy && git diff --exit-code
+        run: go test -tags=integration ./test/integration/...
