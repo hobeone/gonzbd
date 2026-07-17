@@ -2,6 +2,7 @@ package app
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,4 +100,110 @@ func TestReloadUnderLoad_Race(t *testing.T) {
 	})
 
 	runReloadUnderLoad(t, app, raceLoadDuration)
+}
+
+// reloadMuHoldTestDuration is how long TestReloadDownloader_DoesNotHoldMuAcrossBody
+// drives a concurrent ReloadDownloader writer against the app.mu monitor.
+const reloadMuHoldTestDuration = 300 * time.Millisecond
+
+// maxAcceptableMuHoldStreak bounds how long app.mu may ever be continuously
+// held, as observed by a tight TryLock-polling loop running concurrently with
+// ReloadDownloader. On correct code, app.mu is only held for two tiny field
+// operations (an initial started/stopped check + snapshot, and the final
+// downloader/downloaderStats swap) — measured max ~164µs over 40 runs. On
+// unpatched code, app.mu is held for the entire ReloadDownloader body,
+// including a real cross-goroutine handshake in pipeline.setCompletions
+// (see pipeline.go) plus Stop/ClearAllEmitted/New/Start — measured min ~614µs
+// over 40 runs. 500µs sits in the gap between the two with margin on both
+// sides.
+const maxAcceptableMuHoldStreak = 500 * time.Microsecond
+
+// TestReloadDownloader_DoesNotHoldMuAcrossBody is the red test for issue
+// #118: it must fail on code where ReloadDownloader holds app.mu for its
+// entire body (rather than only to snapshot/swap app.downloader).
+//
+// It measures the lock directly via TryLock polling rather than timing a
+// downstream call (e.g. PauseDownloads), which would be confounded by
+// unrelated goroutine-scheduling noise.
+//
+// Run it as:
+//
+//	go test -race -run TestReloadDownloader_DoesNotHoldMuAcrossBody -count=20 ./internal/app/
+func TestReloadDownloader_DoesNotHoldMuAcrossBody(t *testing.T) {
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+	fd := newFakeDownloader()
+
+	app, err := New(cfg, nil, WithDownloader(fd))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := app.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := app.Shutdown(); err != nil {
+			t.Logf("Shutdown: %v", err)
+		}
+	})
+
+	stop := make(chan struct{})
+	var maxHeldStreakNs atomic.Int64
+	var wg sync.WaitGroup
+
+	// Monitor: busy-polls TryLock. Each failure means app.mu was held at
+	// that instant; a run of consecutive failures approximates one
+	// continuous hold. Sampling as fast as possible keeps the
+	// under-measurement error small relative to the multi-millisecond
+	// streak the unpatched code produces.
+	wg.Go(func() {
+		var streakStart time.Time
+		inStreak := false
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if app.mu.TryLock() {
+				app.mu.Unlock()
+				inStreak = false
+				continue
+			}
+			now := time.Now()
+			if !inStreak {
+				streakStart = now
+				inStreak = true
+				continue
+			}
+			d := now.Sub(streakStart)
+			for {
+				prev := maxHeldStreakNs.Load()
+				if int64(d) <= prev {
+					break
+				}
+				if maxHeldStreakNs.CompareAndSwap(prev, int64(d)) {
+					break
+				}
+			}
+		}
+	})
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = app.ReloadDownloader([]config.ServerConfig{})
+			}
+		}
+	})
+
+	time.Sleep(reloadMuHoldTestDuration)
+	close(stop)
+	wg.Wait()
+
+	if got := time.Duration(maxHeldStreakNs.Load()); got > maxAcceptableMuHoldStreak {
+		t.Errorf("max observed app.mu hold streak = %v, want <= %v (ReloadDownloader appears to hold app.mu across Stop/setCompletions/New/Start)",
+			got, maxAcceptableMuHoldStreak)
+	}
 }

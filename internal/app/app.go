@@ -649,12 +649,21 @@ func (app *Application) Start(ctx context.Context) error {
 	// On a cold restart these flags are stale — the old downloader's
 	// in-flight articles are long gone.
 	app.queue.ClearAllEmitted()
-	if err := app.downloader.Start(app.ctx); err != nil {
+	// Snapshot app.downloader under app.mu once and reuse it below. started
+	// flips true (via CompareAndSwap) before this point, so a concurrent
+	// ReloadDownloader call could otherwise race an unguarded read of
+	// app.downloader against its own field swap — the same torn-read class
+	// fixed in #98. See handleLowDisk/Shutdown for the same pattern.
+	app.mu.Lock()
+	dl := app.downloader
+	app.mu.Unlock()
+	// --- No lock held below this line ---
+	if err := dl.Start(app.ctx); err != nil {
 		_ = app.assembler.Stop()
 		return err
 	}
 	if err := app.postProcessor.Start(app.ctx); err != nil {
-		_ = app.downloader.Stop()
+		_ = dl.Stop()
 		_ = app.assembler.Stop()
 		return err
 	}
