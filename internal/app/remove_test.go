@@ -12,14 +12,25 @@ import (
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
-func TestRemoveJob(t *testing.T) {
+// newRemoveJobTestApp builds an Application wired for RemoveJob tests:
+// a fresh download/admin dir pair, an open history repo, and default config.
+func newRemoveJobTestApp(t *testing.T) *Application {
+	t.Helper()
+
 	dir := t.TempDir()
 	downloadDir := filepath.Join(dir, "download")
 	adminDir := filepath.Join(dir, "admin")
-	_ = os.MkdirAll(downloadDir, 0o750)
-	_ = os.MkdirAll(adminDir, 0o750)
+	if err := os.MkdirAll(downloadDir, 0o750); err != nil {
+		t.Fatalf("create download directory: %v", err)
+	}
+	if err := os.MkdirAll(adminDir, 0o750); err != nil {
+		t.Fatalf("create admin directory: %v", err)
+	}
 
-	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		t.Fatalf("open history database: %v", err)
+	}
 	repo := history.NewRepository(db)
 	cfg := testConfig(
 		downloadDir,
@@ -31,6 +42,15 @@ func TestRemoveJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New application failed: %v", err)
 	}
+	return a
+}
+
+func TestRemoveJob(t *testing.T) {
+	a := newRemoveJobTestApp(t)
+	var downloadDir string
+	a.config.WithRead(func(c *config.Config) {
+		downloadDir = c.General.DownloadDir
+	})
 
 	parsed := &nzb.NZB{}
 	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "to-delete"}, fsutil.SanitizeOptions{})
@@ -43,7 +63,7 @@ func TestRemoveJob(t *testing.T) {
 	_ = os.WriteFile(dummyFile, []byte("data"), 0o600)
 
 	// 1. Remove with deleteFiles=true
-	err = a.RemoveJob(t.Context(), job.ID, true)
+	err := a.RemoveJob(t.Context(), job.ID, true)
 	if err != nil {
 		t.Fatalf("RemoveJob failed: %v", err)
 	}
@@ -66,5 +86,25 @@ func TestRemoveJob(t *testing.T) {
 	}
 	if _, err := os.Stat(jobDir2); os.IsNotExist(err) {
 		t.Errorf("job directory was deleted but should have been kept (deleteFiles=false)")
+	}
+}
+
+// TestRemoveJob_NilDownloader pins the nil-guard on RemoveJob's final
+// DisconnectAll call. New() always wires a real downloader, so app.downloader
+// is nilled out directly (white-box, same package) after construction to
+// exercise the branch — the same technique TestBuildDownloaderOptions_Defaults
+// uses elsewhere in this package. Before the #98 fix this call was
+// unsynchronized and unconditional (app.downloader.DisconnectAll()), which
+// would have panicked here.
+func TestRemoveJob_NilDownloader(t *testing.T) {
+	a := newRemoveJobTestApp(t)
+	a.downloader = nil
+
+	parsed := &nzb.NZB{}
+	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "to-delete"}, fsutil.SanitizeOptions{})
+	_ = a.queue.Add(job)
+
+	if err := a.RemoveJob(t.Context(), job.ID, false); err != nil {
+		t.Fatalf("RemoveJob with nil downloader: %v", err)
 	}
 }
