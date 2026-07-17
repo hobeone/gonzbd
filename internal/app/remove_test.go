@@ -20,8 +20,12 @@ func newRemoveJobTestApp(t *testing.T) *Application {
 	dir := t.TempDir()
 	downloadDir := filepath.Join(dir, "download")
 	adminDir := filepath.Join(dir, "admin")
-	_ = os.MkdirAll(downloadDir, 0o750)
-	_ = os.MkdirAll(adminDir, 0o750)
+	if err := os.MkdirAll(downloadDir, 0o750); err != nil {
+		t.Fatalf("create download directory: %v", err)
+	}
+	if err := os.MkdirAll(adminDir, 0o750); err != nil {
+		t.Fatalf("create admin directory: %v", err)
+	}
 
 	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
 	if err != nil {
