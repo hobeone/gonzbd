@@ -207,3 +207,108 @@ func TestReloadDownloader_DoesNotHoldMuAcrossBody(t *testing.T) {
 			got, maxAcceptableMuHoldStreak)
 	}
 }
+
+// minAcceptableReloadMuHoldStreak is the floor for the longest streak
+// app.reloadMu is observed continuously held while two ReloadDownloader
+// callers race for it. ReloadDownloader's own body takes at least a few
+// hundred microseconds end to end (the same setCompletions handshake plus
+// Stop/ClearAllEmitted/New/Start measured in
+// TestReloadDownloader_DoesNotHoldMuAcrossBody), so a healthy reloadMu that
+// wraps the whole function must show a streak at least in that range. If a
+// future change narrows reloadMu's scope (e.g. moving the Lock call past the
+// snapshot, or Unlock-ing before Start), two overlapping callers would only
+// contend for a sliver of the function and this streak would collapse well
+// below the floor.
+const minAcceptableReloadMuHoldStreak = 200 * time.Microsecond
+
+// TestReloadDownloader_SerializesConcurrentCalls is the red test for the
+// interleaving hazard identified in review of issue #118's fix: narrowing
+// app.mu to just the field-swap removed the incidental self-serialization
+// the old whole-body app.mu hold provided. Two concurrent ReloadDownloader
+// callers could otherwise both build and Start a new downloader and race to
+// swap app.downloader / app.pipeline's completions source, leaking the
+// loser's downloader and potentially stalling dispatch. reloadMu restores
+// serialization independently of app.mu.
+//
+// It drives two concurrent ReloadDownloader callers and a reloadMu monitor
+// (TryLock polling, as in TestReloadDownloader_DoesNotHoldMuAcrossBody) and
+// asserts the longest observed continuous hold is long enough to have
+// covered a full reload body — proving reloadMu is not just present but
+// actually wraps the whole function.
+func TestReloadDownloader_SerializesConcurrentCalls(t *testing.T) {
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+	fd := newFakeDownloader()
+
+	app, err := New(cfg, nil, WithDownloader(fd))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := app.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := app.Shutdown(); err != nil {
+			t.Logf("Shutdown: %v", err)
+		}
+	})
+
+	stop := make(chan struct{})
+	var maxHeldStreakNs atomic.Int64
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		var streakStart time.Time
+		inStreak := false
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if app.reloadMu.TryLock() {
+				app.reloadMu.Unlock()
+				inStreak = false
+				continue
+			}
+			now := time.Now()
+			if !inStreak {
+				streakStart = now
+				inStreak = true
+				continue
+			}
+			d := now.Sub(streakStart)
+			for {
+				prev := maxHeldStreakNs.Load()
+				if int64(d) <= prev {
+					break
+				}
+				if maxHeldStreakNs.CompareAndSwap(prev, int64(d)) {
+					break
+				}
+			}
+		}
+	})
+	// Two concurrent writers so there is always a second caller contending
+	// for reloadMu while the first holds it.
+	for range 2 {
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_ = app.ReloadDownloader([]config.ServerConfig{})
+				}
+			}
+		})
+	}
+
+	time.Sleep(reloadMuHoldTestDuration)
+	close(stop)
+	wg.Wait()
+
+	if got := time.Duration(maxHeldStreakNs.Load()); got < minAcceptableReloadMuHoldStreak {
+		t.Errorf("max observed app.reloadMu hold streak = %v, want >= %v (reloadMu does not appear to span ReloadDownloader's full body, so concurrent reloads could interleave)",
+			got, minAcceptableReloadMuHoldStreak)
+	}
+}

@@ -74,9 +74,16 @@ type Application struct {
 	// without synchronization (same pattern as the immutable version field).
 	binaryVersions BinaryVersions
 	mu             sync.Mutex
-	config         *config.Config
-	emitter        EventEmitter
-	meter          *bpsmeter.Meter
+	// reloadMu serializes ReloadDownloader calls end-to-end. It is separate
+	// from mu (which only guards the brief downloader/downloaderStats field
+	// swap) so concurrent reloads queue up instead of interleaving their
+	// Stop/setCompletions/ClearAllEmitted/Start sequences, which would
+	// otherwise risk wiring app.downloader and app.pipeline's completions
+	// source to two different downloader instances.
+	reloadMu sync.Mutex
+	config   *config.Config
+	emitter  EventEmitter
+	meter    *bpsmeter.Meter
 
 	queue            *queue.Queue
 	historyRepo      *history.Repository
