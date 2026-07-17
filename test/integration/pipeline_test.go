@@ -77,9 +77,10 @@ func TestPipeline_Par2RepairThenUnrar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read rar: %v", err)
 	}
-	if len(rarData) > 100 {
-		rarData[100] ^= 0xFF
+	if len(rarData) <= 100 {
+		t.Fatalf("RAR fixture is too small to corrupt at offset 100")
 	}
+	rarData[100] ^= 0xFF
 	if err := os.WriteFile(rarPath, rarData, 0o600); err != nil {
 		t.Fatalf("corrupt rar: %v", err)
 	}
