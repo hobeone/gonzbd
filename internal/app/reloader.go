@@ -476,7 +476,10 @@ func (app *Application) pushDispatchOptions() {
 		topOnly = c.Downloads.TopOnly
 		propDelay = c.Downloads.PropagationDelay
 	})
-	if app.downloader != nil {
-		app.downloader.SetDispatchOptions(maxArtTries, maxArtOpt, topOnly, time.Duration(propDelay)*time.Minute)
+	app.mu.Lock()
+	dl := app.downloader
+	app.mu.Unlock()
+	if dl != nil {
+		dl.SetDispatchOptions(maxArtTries, maxArtOpt, topOnly, time.Duration(propDelay)*time.Minute)
 	}
 }

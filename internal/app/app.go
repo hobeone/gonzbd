@@ -293,12 +293,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		SetWriteCursor:     q.SetFileWriteCursor,
 		MinFreeBytes:       minFreeBytes,
 		WriteCacheBytes:    writeCacheBytes,
-		OnLowDisk: func(dir string, freeBytes int64) {
-			app.downloader.Pause()
-			app.log.Warn("low disk space, downloads paused",
-				"dir", dir,
-				"freeMB", freeBytes/(1024*1024))
-		},
+		OnLowDisk:          app.handleLowDisk,
 		OnFileComplete: func(jobID string, fileIdx int, fileCRC uint32) {
 			fc := FileComplete{JobID: jobID, FileIdx: fileIdx, CRC32: fileCRC}
 			select {
@@ -414,7 +409,9 @@ func (app *Application) Queue() *queue.Queue { return app.queue }
 
 // Speed returns the current aggregate download speed in bytes/sec, or 0
 // when downloading is idle or the downloader stats interface has not been wired yet.
-func (app *Application) Speed() float64 { //nocover: trivial delegate
+func (app *Application) Speed() float64 {
+	app.mu.Lock()
+	defer app.mu.Unlock()
 	if app.downloaderStats == nil {
 		return 0
 	}
@@ -724,7 +721,10 @@ func (app *Application) Shutdown() error {
 		return nil
 	}
 	var errs []error
-	if err := app.downloader.Stop(); err != nil {
+	app.mu.Lock()
+	dl := app.downloader
+	app.mu.Unlock()
+	if err := dl.Stop(); err != nil {
 		errs = append(errs, fmt.Errorf("downloader stop: %w", err))
 	}
 
@@ -1493,10 +1493,27 @@ func (app *Application) UnblockServer(name string) bool {
 	return false
 }
 
+// handleLowDisk is invoked by the assembler worker goroutine when free space
+// on the target directory drops below the configured threshold. It snapshots
+// app.downloader rather than locking across Pause(): holding app.mu across
+// Pause() would invert lock order against ReloadDownloader, which holds
+// app.mu for its entire body including downloader.Stop().
+func (app *Application) handleLowDisk(dir string, freeBytes int64) {
+	app.mu.Lock()
+	dl := app.downloader
+	app.mu.Unlock()
+	if dl != nil {
+		dl.Pause()
+	}
+	app.log.Warn("low disk space, downloads paused",
+		"dir", dir,
+		"freeMB", freeBytes/(1024*1024))
+}
+
 // ServerStatus returns a point-in-time snapshot of all servers,
 // including per-connection article activity. Returns nil when the
 // downloader is not running.
-func (app *Application) ServerStatus() []downloader.ServerSnapshot { //nocover: trivial delegate
+func (app *Application) ServerStatus() []downloader.ServerSnapshot {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 	if app.downloaderStats != nil {
