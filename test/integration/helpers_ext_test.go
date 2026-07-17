@@ -460,3 +460,22 @@ func newMockServerFromFixtures(t *testing.T, files []TestFile) *mocknntp.Server 
 	t.Cleanup(func() { _ = srv.Close() })
 	return srv
 }
+
+// copyFixture copies a pre-generated fixture from test/fixtures/integration/ to destDir.
+func copyFixture(t *testing.T, srcName, destDir, destName string) string {
+	t.Helper()
+	src := filepath.Join("..", "..", "test", "fixtures", "integration", srcName)
+	absSrc, err := filepath.Abs(src)
+	if err != nil {
+		t.Fatalf("absolute path of %s: %v", src, err)
+	}
+	content, err := os.ReadFile(absSrc)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", absSrc, err)
+	}
+	dest := filepath.Join(destDir, destName)
+	if err := os.WriteFile(dest, content, 0o600); err != nil {
+		t.Fatalf("write file %s: %v", dest, err)
+	}
+	return dest
+}
