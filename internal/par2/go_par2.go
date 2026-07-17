@@ -48,17 +48,39 @@ func newDecoderForDir(ctx context.Context, log *slog.Logger, parfile, candidateD
 
 // monitorProgress spawns a background goroutine to format and track progress
 // updates from a channel, calling onUpdate with formatted strings. It returns
-// the progress channel and a done channel to await completion.
-func monitorProgress(label string, onUpdate func(string)) (progress chan par2engine.Progress, done chan struct{}) {
+// the progress channel and a stop func that closes the channel and waits for
+// the goroutine to exit. stop is idempotent (safe to call more than once, e.g.
+// once via defer and once explicitly) so callers can defer it to guarantee
+// the monitor goroutine terminates even if the engine call panics.
+func monitorProgress(label string, onUpdate func(string)) (progress chan par2engine.Progress, stop func()) {
 	progress = make(chan par2engine.Progress, 100)
-	done = make(chan struct{})
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for p := range progress {
 			onUpdate(fmt.Sprintf("[go_par2] %s... %.1f%%", label, p.Percent))
 		}
-		close(done)
 	}()
-	return progress, done
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			close(progress)
+			<-done
+		})
+	}
+	return progress, stop
+}
+
+// runWithProgress runs engineCall with a monitored progress channel and
+// guarantees the monitor goroutine is stopped even if engineCall panics — the
+// defer covers the panic-unwind path that SafeEngineRun's recover takes,
+// which an inline close() after the call does not (see issue #100).
+func runWithProgress(label string, onUpdate func(string), engineCall func(chan par2engine.Progress) error) error {
+	progress, stop := monitorProgress(label, onUpdate)
+	defer stop()
+	err := engineCall(progress)
+	stop()
+	return err
 }
 
 // GoVerify runs a native Go-based PAR2 verification using par2engine.
@@ -90,16 +112,13 @@ func GoVerify(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 		}
 		defer d.Close() //nolint:errcheck // best-effort close
 
-		var verifyProgress chan par2engine.Progress
-		var verifyDone chan struct{}
+		var scanErr error
 		if safeOnLine != nil {
-			verifyProgress, verifyDone = monitorProgress("Verifying", safeOnLine)
-		}
-
-		scanErr := d.VerifyScans(ctx, verifyProgress)
-		if verifyProgress != nil {
-			close(verifyProgress)
-			<-verifyDone
+			scanErr = runWithProgress("Verifying", safeOnLine, func(progress chan par2engine.Progress) error {
+				return d.VerifyScans(ctx, progress)
+			})
+		} else {
+			scanErr = d.VerifyScans(ctx, nil)
 		}
 		if scanErr != nil {
 			res.Status = StatusUnknown
@@ -171,10 +190,9 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 
 		res.CommandLine = fmt.Sprintf("go_par2 repair %s", parfile)
 
-		verifyProgress, verifyDone := monitorProgress("Verifying", accumulate)
-		scanErr := d.VerifyScans(ctx, verifyProgress)
-		close(verifyProgress)
-		<-verifyDone
+		scanErr := runWithProgress("Verifying", accumulate, func(progress chan par2engine.Progress) error {
+			return d.VerifyScans(ctx, progress)
+		})
 		if scanErr != nil {
 			res.Output = output.String()
 			return fmt.Errorf("go_par2: verify scan: %w", scanErr)
@@ -201,10 +219,9 @@ func GoRepair(ctx context.Context, log *slog.Logger, parfile, candidateDir strin
 		accumulate(fmt.Sprintf("[go_par2] Repair required: %d missing blocks, %d parity available",
 			counts.UnusableDataShardCount, counts.UsableParityShardCount))
 
-		repairProgress, repairDone := monitorProgress("Repairing", accumulate)
-		repairErr := d.Repair(ctx, repairProgress)
-		close(repairProgress)
-		<-repairDone
+		repairErr := runWithProgress("Repairing", accumulate, func(progress chan par2engine.Progress) error {
+			return d.Repair(ctx, progress)
+		})
 
 		if repairErr != nil {
 			res.ExitCode = 1

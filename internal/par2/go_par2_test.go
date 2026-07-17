@@ -10,6 +10,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	par2engine "github.com/hobeone/par2engine/par2"
+	"go.uber.org/goleak"
+
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
 // par2FixtureDir returns the path to the shared par2 test fixtures.
@@ -34,6 +39,34 @@ func copyPar2Fixtures(t *testing.T, dir string) string {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
+}
+
+// ---------- monitorProgress / runWithProgress ----------
+
+// TestRunWithProgress_NoLeakOnPanic proves the monitor goroutine spawned by
+// monitorProgress terminates even when the wrapped engine call panics — the
+// exact scenario cmdutil.SafeEngineRun recovers from at every real call site
+// (par2engine panicking on malformed input). Before the fix in issue #100,
+// monitorProgress's done channel was only closed by an inline close() after
+// the call, which is skipped during a panic unwind, stranding the goroutine
+// forever. goleak.Find after the recover is the only thing that catches
+// that: SafeEngineRun's recover converts the panic into a clean error, so no
+// assertion on the returned error would ever notice the leak.
+func TestRunWithProgress_NoLeakOnPanic(t *testing.T) {
+	baseline := goleak.IgnoreCurrent()
+
+	err := cmdutil.SafeEngineRun("test: simulated engine panic", func() error {
+		return runWithProgress("Testing", func(string) {}, func(_ chan par2engine.Progress) error {
+			panic("simulated par2engine panic")
+		})
+	})
+	if err == nil {
+		t.Fatal("SafeEngineRun: expected recovered panic to surface as an error")
+	}
+
+	if leakErr := goleak.Find(baseline); leakErr != nil {
+		t.Errorf("monitor goroutine leaked after engine panic: %v", leakErr)
+	}
 }
 
 // ---------- GoRepair ----------
