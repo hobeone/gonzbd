@@ -84,13 +84,17 @@ func (app *Application) runMetricsPush(ctx context.Context) {
 			return
 		case <-ticker.C:
 			remaining := app.queue.TotalRemainingBytes()
+			app.mu.Lock()
+			stats := app.downloaderStats
+			app.mu.Unlock()
+			// --- No lock held below this line ---
 			var speed float64
 			var limit int64
 			var servers []downloader.ServerSnapshot
-			if app.downloaderStats != nil {
-				speed = app.downloaderStats.Speed()
-				limit = app.downloaderStats.SpeedLimit()
-				servers = app.downloaderStats.ServerStatus()
+			if stats != nil {
+				speed = stats.Speed()
+				limit = stats.SpeedLimit()
+				servers = stats.ServerStatus()
 			}
 			app.emit(Event{
 				Type:          "metrics",

@@ -26,6 +26,7 @@ type fakeDownloader struct {
 	maxArtOpt        int
 	topOnly          bool
 	propagationDelay time.Duration
+	serverStatus     []downloader.ServerSnapshot
 }
 
 func newFakeDownloader() *fakeDownloader {
@@ -72,7 +73,9 @@ func (f *fakeDownloader) UnblockServer(name string) bool {
 }
 
 func (f *fakeDownloader) ServerStatus() []downloader.ServerSnapshot {
-	return nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.serverStatus
 }
 
 func (f *fakeDownloader) Speed() float64 {
