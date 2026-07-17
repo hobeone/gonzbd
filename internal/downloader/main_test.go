@@ -1,0 +1,13 @@
+package downloader
+
+import (
+	"testing"
+
+	"go.uber.org/goleak"
+)
+
+// TestMain fails the package's tests if any goroutine outlives them.
+// See issue #92 for the rationale and issue #100 for the leak that motivated it.
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}

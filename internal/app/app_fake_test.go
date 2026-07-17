@@ -146,6 +146,14 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 	if err := application.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	// Cancelling ctx alone does not stop the assembler worker: Shutdown drains
+	// it explicitly (see Application.Shutdown's ordering). Without this the
+	// worker outlives the test and goleak fails the package.
+	t.Cleanup(func() {
+		if err := application.Shutdown(); err != nil {
+			t.Logf("Shutdown: %v", err)
+		}
+	})
 
 	_ = application.Queue().SetStatus(job.ID, constants.StatusDownloading)
 
