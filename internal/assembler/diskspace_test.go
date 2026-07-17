@@ -7,6 +7,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"go.uber.org/goleak"
 )
 
 func TestFreeBytes_RejectsInvalidContext(t *testing.T) {
@@ -86,18 +88,20 @@ func TestCheckDiskSpace_SurvivesHungStatfs(t *testing.T) {
 // unlike the Assembler.freeBytes-level test above, which replaces that
 // implementation entirely and so cannot observe this behavior.
 //
-// goleak.VerifyTestMain (main_test.go) additionally guards the leak-freedom
-// claim at the whole-binary level; the explicit wait below makes the proof
-// deterministic rather than relying on the abandoned goroutine happening to
-// finish before that final check runs.
+// Waiting on a channel closed from inside the fake statfs function only
+// proves the fake itself returned — not that freeBytes' enclosing goroutine
+// went on to perform its ch <- result send (the actual leak-prone step, if
+// ch were ever changed from buffered to unbuffered). goleak.Find, given a
+// baseline recorded before freeBytes is even called, polls until every
+// goroutine started after that baseline — including the one spawned inside
+// freeBytes — has actually terminated, covering the whole goroutine body.
 func TestFreeBytes_AbandonedGoroutineCompletesAfterCancellation(t *testing.T) {
+	baseline := goleak.IgnoreCurrent()
+
 	unblockStatfs := make(chan struct{})
-	statfsCompleted := make(chan struct{})
 	fakeStatfs := func(path string, buf *syscall.Statfs_t) error {
 		<-unblockStatfs
-		err := syscall.Statfs(path, buf)
-		close(statfsCompleted)
-		return err
+		return syscall.Statfs(path, buf)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -112,17 +116,12 @@ func TestFreeBytes_AbandonedGoroutineCompletesAfterCancellation(t *testing.T) {
 		t.Fatalf("freeBytes took %v to return after ctx expired, want prompt return", elapsed)
 	}
 
-	// Let the abandoned goroutine's statfs call proceed, and deterministically
-	// wait for it to actually finish. Its result channel is buffered (size 1),
-	// so the send inside freeBytes' goroutine does not block even though
-	// nothing will ever receive it — this is the "leak-free abandonment"
-	// property under test; if freeBytes' select branches ever changed to an
-	// unbuffered channel, this wait would hang and fail the test.
+	// Release the abandoned goroutine's statfs call and prove the whole
+	// goroutine — statfs call plus the subsequent buffered channel send —
+	// actually terminates, rather than merely that our fake function returned.
 	close(unblockStatfs)
-	select {
-	case <-statfsCompleted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("abandoned goroutine did not complete after its statfs call was unblocked")
+	if err := goleak.Find(baseline); err != nil {
+		t.Fatalf("abandoned goroutine did not terminate after being unblocked: %v", err)
 	}
 }
 
