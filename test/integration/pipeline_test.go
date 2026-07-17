@@ -26,20 +26,17 @@ const pipelineTimeout = 120 * time.Second
 // and verifies the extracted file ends up in completeDir.
 func TestPipeline_Par2VerifyAndUnrar(t *testing.T) {
 	t.Parallel()
-	requireTool(t, "rar")
 	requireTool(t, "unrar")
 	requireTool(t, "par2")
 
-	// Create a known payload and archive it.
-	srcPayload := bytes.Repeat([]byte("pipeline test content for rar+par2\n"), 100)
+	// Use pre-generated repairme.rar and par2 files.
+	srcPayload := []byte("This is a file that will be corrupted and repaired using par2 volumes.")
 	wantSHA := sha256.Sum256(srcPayload)
 
 	fixtureDir := t.TempDir()
-	createRarFixture(t, fixtureDir, "sample.rar", map[string][]byte{
-		"sample.txt": srcPayload,
-	})
-	// Create par2 set for the rar file.
-	createPar2Fixture(t, fixtureDir, filepath.Join(fixtureDir, "sample.rar"))
+	copyFixture(t, "repairme.rar", fixtureDir, "repairme.rar")
+	copyFixture(t, "recovery.par2", fixtureDir, "recovery.par2")
+	copyFixture(t, "recovery.vol0+2.par2", fixtureDir, "recovery.vol0+2.par2")
 
 	// Read fixture files → TestFile entries → mock NNTP articles.
 	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
@@ -55,7 +52,7 @@ func TestPipeline_Par2VerifyAndUnrar(t *testing.T) {
 	waitForPostProcWithTimeout(t, a, pipelineTimeout)
 
 	// The extracted file should be in the complete directory.
-	extractedPath := filepath.Join(completeDir, "rar-par2-test", "sample.txt")
+	extractedPath := filepath.Join(completeDir, "rar-par2-test", "repairme.txt")
 	verifyFileAtPath(t, extractedPath, wantSHA[:])
 }
 
@@ -64,18 +61,16 @@ func TestPipeline_Par2VerifyAndUnrar(t *testing.T) {
 // it before unrar extracts.
 func TestPipeline_Par2RepairThenUnrar(t *testing.T) {
 	t.Parallel()
-	requireTool(t, "rar")
 	requireTool(t, "unrar")
 	requireTool(t, "par2")
 
-	srcPayload := bytes.Repeat([]byte("repair pipeline test content\n"), 200)
+	srcPayload := []byte("This is a file that will be corrupted and repaired using par2 volumes.")
 	wantSHA := sha256.Sum256(srcPayload)
 
 	fixtureDir := t.TempDir()
-	rarPath := createRarFixture(t, fixtureDir, "repairme.rar", map[string][]byte{
-		"repairme.txt": srcPayload,
-	})
-	createPar2Fixture(t, fixtureDir, rarPath)
+	rarPath := copyFixture(t, "repairme.rar", fixtureDir, "repairme.rar")
+	copyFixture(t, "recovery.par2", fixtureDir, "recovery.par2")
+	copyFixture(t, "recovery.vol0+2.par2", fixtureDir, "recovery.vol0+2.par2")
 
 	// Corrupt a byte in the RAR archive to test repair.
 	rarData, err := os.ReadFile(rarPath) //nolint:gosec // G304: test code
@@ -112,13 +107,11 @@ func TestPipeline_7zExtract(t *testing.T) {
 	t.Parallel()
 	requireTool(t, "7z")
 
-	srcPayload := bytes.Repeat([]byte("7z pipeline test content\n"), 100)
+	srcPayload := []byte("This is a sample text file to compress in 7z format.")
 	wantSHA := sha256.Sum256(srcPayload)
 
 	fixtureDir := t.TempDir()
-	create7zFixture(t, fixtureDir, "sample.7z", map[string][]byte{
-		"sample.txt": srcPayload,
-	})
+	copyFixture(t, "sample.7z", fixtureDir, "sample.7z")
 
 	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
 	srv := newMockServerFromFixtures(t, files)
@@ -140,14 +133,9 @@ func TestPipeline_7zExtract(t *testing.T) {
 // files remain accessible for retry.
 func TestPipeline_MissingTool_Graceful(t *testing.T) {
 	t.Parallel()
-	requireTool(t, "rar")
-
-	srcPayload := bytes.Repeat([]byte("missing tool content\n"), 100)
 
 	fixtureDir := t.TempDir()
-	createRarFixture(t, fixtureDir, "nounrar.rar", map[string][]byte{
-		"nounrar.txt": srcPayload,
-	})
+	copyFixture(t, "nounrar.rar", fixtureDir, "nounrar.rar")
 
 	files := fixtureToTestFiles(t, fixtureDir, 50*1024)
 	srv := newMockServerFromFixtures(t, files)
@@ -239,17 +227,14 @@ func TestPipeline_PlainFile_NoPostProc(t *testing.T) {
 // unrar → final move chain.
 func TestPipeline_PRiVATE_FullPipeline(t *testing.T) {
 	t.Parallel()
-	requireTool(t, "rar")
 	requireTool(t, "unrar")
 
-	srcPayload := bytes.Repeat([]byte("private pipeline content\n"), 100)
+	srcPayload := []byte("This is a fake mkv file representing a show episode.")
 	wantSHA := sha256.Sum256(srcPayload)
 
 	// Create the RAR archive containing our test file.
 	fixtureDir := t.TempDir()
-	createRarFixture(t, fixtureDir, "show.s01e02.rar", map[string][]byte{
-		"show.s01e02.mkv": srcPayload,
-	})
+	copyFixture(t, "show.s01e02.rar", fixtureDir, "show.s01e02.rar")
 
 	// Read fixture → TestFiles with specific filenames matching what the
 	// PRiVATE subject will declare.
@@ -294,7 +279,6 @@ func TestPipeline_PRiVATE_FullPipeline(t *testing.T) {
 // (the fix in commit c2a0eba).
 func TestPipeline_SubdirectoryUnrar(t *testing.T) {
 	t.Parallel()
-	requireTool(t, "rar")
 	requireTool(t, "unrar")
 	requireTool(t, "par2")
 
@@ -311,13 +295,10 @@ func TestPipeline_SubdirectoryUnrar(t *testing.T) {
 		t.Fatalf("mkdir release dir: %v", err)
 	}
 
-	// Create RAR archive inside the subdirectory.
-	rarPath := createRarFixture(t, releaseDir, "movie.rar", map[string][]byte{
-		"movie.mkv": srcPayload,
-	})
-
-	// Create par2 recovery set at the root level, protecting the RAR.
-	createPar2Fixture(t, fixtureDir, rarPath)
+	// Copy pre-generated movie.rar inside the subdirectory, and par2 files at the root.
+	copyFixture(t, filepath.Join("movie_set", "Release-GROUP", "movie.rar"), releaseDir, "movie.rar")
+	copyFixture(t, filepath.Join("movie_set", "recovery.par2"), fixtureDir, "recovery.par2")
+	copyFixture(t, filepath.Join("movie_set", "recovery.vol00+41.par2"), fixtureDir, "recovery.vol00+41.par2")
 
 	// Read fixture recursively — file names will include "Release-GROUP/"
 	// prefix, reproducing the real-world subdirectory structure.
