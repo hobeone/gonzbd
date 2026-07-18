@@ -660,7 +660,8 @@ func TestQuarantineFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	err := quarantineFile(path)
+	l := &Loader{}
+	err := l.quarantineFile(path)
 	if err != nil {
 		t.Fatalf("quarantineFile failed: %v", err)
 	}
@@ -682,7 +683,8 @@ func TestQuarantineFile(t *testing.T) {
 
 func TestQuarantineFile_NotExist(t *testing.T) {
 	t.Parallel()
-	err := quarantineFile("/nonexistent/path/file.json.gz")
+	l := &Loader{}
+	err := l.quarantineFile("/nonexistent/path/file.json.gz")
 	if err == nil {
 		t.Error("expected error when quarantining nonexistent file, got nil")
 	}
@@ -719,7 +721,7 @@ func TestLoad_CorruptIndexQuarantined(t *testing.T) {
 }
 
 func TestLoad_CorruptIndexQuarantineFailure(t *testing.T) {
-	// Sequential test because it mutates global osRename.
+	t.Parallel()
 	dir := t.TempDir()
 
 	idxPath := filepath.Join(dir, "queue.json.gz")
@@ -727,16 +729,14 @@ func TestLoad_CorruptIndexQuarantineFailure(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	// Mock osRename to fail
-	oldRename := osRename
-	osRename = func(oldpath, newpath string) error {
-		return errors.New("mock rename error")
+	// Mock rename to fail via Loader dependency injection
+	l := &Loader{
+		Rename: func(oldpath, newpath string) error {
+			return errors.New("mock rename error")
+		},
 	}
-	defer func() {
-		osRename = oldRename
-	}()
 
-	_, err := Load(dir)
+	_, err := l.Load(dir)
 	if err == nil {
 		t.Fatal("expected error due to quarantine failure, got nil")
 	}
@@ -751,7 +751,7 @@ func TestLoad_CorruptIndexQuarantineFailure(t *testing.T) {
 }
 
 func TestLoad_CorruptJobQuarantineFailure(t *testing.T) {
-	// Sequential test because it mutates global osRename.
+	t.Parallel()
 	dir := t.TempDir()
 
 	q := New()
@@ -767,16 +767,14 @@ func TestLoad_CorruptJobQuarantineFailure(t *testing.T) {
 		t.Fatalf("corrupt job file: %v", err)
 	}
 
-	// Mock osRename to fail
-	oldRename := osRename
-	osRename = func(oldpath, newpath string) error {
-		return errors.New("mock rename error")
+	// Mock rename to fail via Loader dependency injection
+	l := &Loader{
+		Rename: func(oldpath, newpath string) error {
+			return errors.New("mock rename error")
+		},
 	}
-	defer func() {
-		osRename = oldRename
-	}()
 
-	_, err := Load(dir)
+	_, err := l.Load(dir)
 	if err == nil {
 		t.Fatal("expected error due to quarantine failure, got nil")
 	}

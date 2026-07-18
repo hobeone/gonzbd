@@ -108,10 +108,34 @@ func (q *Queue) saveInner(dir string) error {
 	return nil
 }
 
+// Loader reconstructs a Queue from disk with configurable dependencies.
+type Loader struct {
+	// Rename is used to rename corrupt files to .corrupt.
+	// If nil, os.Rename is used.
+	Rename func(oldpath, newpath string) error
+}
+
+func (l *Loader) rename() func(string, string) error {
+	if l.Rename != nil {
+		return l.Rename
+	}
+	return os.Rename
+}
+
+func (l *Loader) quarantineFile(path string) error {
+	dest := path + ".corrupt"
+	return l.rename()(path, dest)
+}
+
 // Load reconstructs a Queue from dir. A missing queue.json.gz is not
 // an error — the daemon is starting fresh and an empty queue is
 // returned. Any other I/O or decode error propagates.
 func Load(dir string) (*Queue, error) {
+	return (&Loader{}).Load(dir)
+}
+
+// Load reconstructs a Queue from dir.
+func (l *Loader) Load(dir string) (*Queue, error) {
 	var idx indexFile
 	idxPath := filepath.Join(dir, "queue.json.gz")
 	err := readGzJSON(idxPath, &idx)
@@ -123,7 +147,7 @@ func Load(dir string) (*Queue, error) {
 			return nil, fmt.Errorf("queue: load index: %w", err)
 		}
 		// For index, we degrade to empty queue but must quarantine first.
-		if qErr := quarantineFile(idxPath); qErr != nil {
+		if qErr := l.quarantineFile(idxPath); qErr != nil {
 			return nil, fmt.Errorf("queue: load index failed and could not quarantine: %w (original error: %w)", qErr, err)
 		}
 		q := New()
@@ -153,7 +177,7 @@ func Load(dir string) (*Queue, error) {
 				return nil, fmt.Errorf("queue: load job %s: %w", id, err)
 			}
 			// Quarantine corrupt job file and continue loading others
-			if qErr := quarantineFile(jobPath); qErr != nil {
+			if qErr := l.quarantineFile(jobPath); qErr != nil {
 				return nil, fmt.Errorf("queue: load job %s failed and could not quarantine: %w (original error: %w)", id, qErr, err)
 			}
 			q.log.Warn("quarantining corrupt job file", "id", id, "path", jobPath, "err", err)
@@ -274,11 +298,4 @@ func readGzJSON(path string, v any) error {
 		return fmt.Errorf("decode: %w", err)
 	}
 	return nil
-}
-
-var osRename = os.Rename
-
-func quarantineFile(path string) error {
-	dest := path + ".corrupt"
-	return osRename(path, dest)
 }
