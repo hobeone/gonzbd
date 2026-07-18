@@ -126,6 +126,19 @@ func Default() (*Config, error) {
 
 // newAPIKey returns a 16-character lowercase hex string drawn from
 // crypto/rand. Caller-facing errors are wrapped with context.
+//
+// 8 bytes (64 bits) is deliberate, not an oversight: SABnzbd's own
+// api_key/nzb_key are 16 lowercase hex chars, enforced here by
+// apiKeyPattern (internal/config/validate.go), and third-party clients
+// (Sonarr, Radarr, NZB360) expect that format. 64 bits is adequate
+// against online brute force (see the "auth" oracle rationale in
+// internal/api/router.go), but it is thin for a credential that is
+// long-lived, appears in URLs, and is exported to every post-processing
+// script as SAB_API_KEY (internal/postproc/script.go) — a compromised
+// script is a full API-key compromise. The session key used for the web
+// UI is a separate, larger 32-byte value (see server.go). Revisit only
+// if the SABnzbd-compat requirement is ever dropped. Accepted risk,
+// tracked as issue #112 (S7).
 func newAPIKey() (string, error) {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {

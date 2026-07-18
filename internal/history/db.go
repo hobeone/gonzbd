@@ -84,6 +84,14 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, fmt.Errorf("history: VACUUM: %w", err)
 	}
 
+	// 25 is deliberate headroom, not a measured figure: actual API
+	// concurrency here is single-digit, and SQLite serializes writers
+	// regardless of pool size (mitigated by busy_timeout(5000) in the
+	// DSN above), so this will not realistically contend. Kept wide
+	// rather than tuned to ~8-10 because there's no evidence tighter
+	// bounds are needed; revisit if profiling shows connection
+	// exhaustion or contention under real load. Accepted risk, tracked
+	// as issue #112 (R6).
 	sqlDB.SetMaxOpenConns(25)
 	sqlDB.SetMaxIdleConns(25)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
