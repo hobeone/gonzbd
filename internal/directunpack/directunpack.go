@@ -125,6 +125,11 @@ func New(log *slog.Logger, jobID, downloadDir, extractDir string, opts Options) 
 }
 
 // Status represents the real-time state of a DirectUnpacker instance.
+//
+// WARNING: every exported field's json tag here is part of the public API
+// response (internal/api serves it directly in queueSlot.DirectUnpack). Do
+// not remove or rename a field without checking internal/api's
+// field-contract test — see issue #96.
 type Status struct {
 	Active           bool              `json:"active"`
 	CurrentSet       string            `json:"current_set,omitempty"`
