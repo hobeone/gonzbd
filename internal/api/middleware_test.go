@@ -531,7 +531,13 @@ func TestCallerLevel_CookieTrustGate(t *testing.T) {
 		// VerifyXFF off was silently ignored and the loopback peer alone
 		// granted LevelAdmin — exactly the zero-credential RCE path. Now it
 		// must fail closed even though the peer itself is trusted.
-		{name: "trusted peer + xff present + verify off fails closed (issue #94)", remoteAddr: "192.168.1.5:5000", xff: "8.8.8.8", ranges: priv, want: 0},
+		{name: "trusted ranged peer + xff present + verify off fails closed", remoteAddr: "192.168.1.5:5000", xff: "8.8.8.8", ranges: priv, want: 0},
+		// The literal real-world scenario from issue #94: a same-host
+		// reverse proxy makes RemoteAddr loopback, which is trusted via
+		// ipTrusted's IsLoopback() shortcut — a different code path than
+		// the ranged-peer case above (that one goes through the
+		// local_ranges containment check instead).
+		{name: "loopback peer + xff present + verify off fails closed (issue #94)", remoteAddr: "127.0.0.1:5000", xff: "8.8.8.8", want: 0},
 		// Forwarded: (RFC 7239) and X-Real-IP through the full middleware
 		// boundary, not just config.IsTrustedRemote's unit tests — proves
 		// AuthConfig.ForwardHeader is actually wired through callerLevel.
