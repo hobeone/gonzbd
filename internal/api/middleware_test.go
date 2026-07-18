@@ -509,12 +509,15 @@ func TestCallerLevel_CookieTrustGate(t *testing.T) {
 	priv := mustPrefixes(t, "192.168.0.0/16")
 
 	tests := []struct {
-		name       string
-		remoteAddr string
-		xff        string
-		ranges     []netip.Prefix
-		verifyXFF  bool
-		want       AccessLevel
+		name          string
+		remoteAddr    string
+		xff           string
+		forwarded     string
+		xRealIP       string
+		ranges        []netip.Prefix
+		verifyXFF     bool
+		forwardHeader config.TrustedForwardHeader
+		want          AccessLevel
 	}{
 		{name: "loopback trusted by default", remoteAddr: "127.0.0.1:5000", want: LevelAdmin},
 		{name: "non-loopback untrusted by default", remoteAddr: "192.168.1.5:5000", want: 0},
@@ -529,16 +532,32 @@ func TestCallerLevel_CookieTrustGate(t *testing.T) {
 		// granted LevelAdmin — exactly the zero-credential RCE path. Now it
 		// must fail closed even though the peer itself is trusted.
 		{name: "trusted peer + xff present + verify off fails closed (issue #94)", remoteAddr: "192.168.1.5:5000", xff: "8.8.8.8", ranges: priv, want: 0},
+		// Forwarded: (RFC 7239) and X-Real-IP through the full middleware
+		// boundary, not just config.IsTrustedRemote's unit tests — proves
+		// AuthConfig.ForwardHeader is actually wired through callerLevel.
+		{name: "verifyXFF forwarded selector: trusted hop", remoteAddr: "192.168.1.5:5000", forwarded: "for=192.168.1.9", ranges: priv, verifyXFF: true, forwardHeader: config.ForwardHeaderForwarded, want: LevelAdmin},
+		{name: "verifyXFF forwarded selector: untrusted hop", remoteAddr: "192.168.1.5:5000", forwarded: "for=8.8.8.8", ranges: priv, verifyXFF: true, forwardHeader: config.ForwardHeaderForwarded, want: 0},
+		{name: "verifyXFF x-real-ip selector: trusted", remoteAddr: "192.168.1.5:5000", xRealIP: "192.168.1.9", ranges: priv, verifyXFF: true, forwardHeader: config.ForwardHeaderXRealIP, want: LevelAdmin},
+		{name: "verifyXFF x-real-ip selector: untrusted", remoteAddr: "192.168.1.5:5000", xRealIP: "8.8.8.8", ranges: priv, verifyXFF: true, forwardHeader: config.ForwardHeaderXRealIP, want: 0},
+		// Header-precedence regression guard at the middleware boundary: a
+		// forged xff must not override an x-real-ip selector.
+		{name: "x-real-ip selector: forged xff ignored, real x-real-ip rejected", remoteAddr: "192.168.1.5:5000", xff: "192.168.1.9", xRealIP: "8.8.8.8", ranges: priv, verifyXFF: true, forwardHeader: config.ForwardHeaderXRealIP, want: 0},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			cfg := AuthConfig{APIKey: testAPIKey, SessionKey: sess, TrustedRanges: tc.ranges, VerifyXFF: tc.verifyXFF}
+			cfg := AuthConfig{APIKey: testAPIKey, SessionKey: sess, TrustedRanges: tc.ranges, VerifyXFF: tc.verifyXFF, ForwardHeader: tc.forwardHeader}
 			r := httptest.NewRequest("GET", "/api", nil)
 			r.Host = "localhost:4289"
 			r.RemoteAddr = tc.remoteAddr
 			if tc.xff != "" {
 				r.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			if tc.forwarded != "" {
+				r.Header.Set("Forwarded", tc.forwarded)
+			}
+			if tc.xRealIP != "" {
+				r.Header.Set("X-Real-IP", tc.xRealIP)
 			}
 			r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: sess})
 			if got := callerLevel(r, cfg); got != tc.want {

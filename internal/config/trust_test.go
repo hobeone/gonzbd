@@ -137,7 +137,28 @@ func TestIsTrustedRemote(t *testing.T) {
 		{name: "verify: forwarded single hop untrusted", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{Forwarded: "for=8.8.8.8"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: false},
 		{name: "verify: forwarded multi-element chain", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{Forwarded: "for=192.168.1.50, for=192.168.1.51"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: true},
 		{name: "verify: forwarded quoted ipv6 with port", remoteAddr: "[fd00::2]:5000", fh: ForwardedHeaders{Forwarded: `for="[fd00::1]:4711"`}, ranges: []string{"fd00::/8"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: true},
-		{name: "verify: forwarded with no for= param has no hops to check, falls back to peer trust", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{Forwarded: "by=192.168.1.1;proto=https"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: true},
+		// Regression guard: a malformed for= value must not be truncated
+		// into a valid-looking (and always-trusted) loopback address.
+		{name: "verify: forwarded malformed ip:port not coerced into trusted loopback", remoteAddr: "192.168.1.1:5000", fh: ForwardedHeaders{Forwarded: "for=127.0.0.1:garbage"}, ranges: []string{"192.168.0.0/16"}, verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: false, wantReasonContains: "unparseable hop"},
+		// Forwarded is present (a proxy signal exists) but has no for= param
+		// to check — this must fail closed, not fall back to peer trust:
+		// the header's presence alone means a proxy may be interposed, and
+		// silently trusting the peer here would reopen the issue #94 gap
+		// for a misconfigured/malformed selected header.
+		{
+			name: "verify: forwarded present with no for= param fails closed (does not silently trust peer)", remoteAddr: "192.168.1.1:5000",
+			fh: ForwardedHeaders{Forwarded: "by=192.168.1.1;proto=https"}, ranges: []string{"192.168.0.0/16"},
+			verifyXFF: true, forwardHeader: ForwardHeaderForwarded, want: false, wantReasonContains: "is absent, empty, or",
+		},
+		// The selected header (x-real-ip) is entirely absent, but a
+		// DIFFERENT header (xff) is present — same fail-closed rule applies,
+		// since xff's presence still signals a proxy may be interposed and
+		// the operator's chosen header isn't giving us anything to verify.
+		{
+			name: "verify: selected header absent but a different one present fails closed", remoteAddr: "192.168.1.1:5000",
+			fh: ForwardedHeaders{XForwardedFor: "192.168.1.50"}, ranges: []string{"192.168.0.0/16"},
+			verifyXFF: true, forwardHeader: ForwardHeaderXRealIP, want: false, wantReasonContains: "is absent, empty, or",
+		},
 
 		// X-Real-IP — single address, no chain. Explicitly selects
 		// ForwardHeaderXRealIP for the same reason as above.
@@ -239,24 +260,24 @@ func TestParseForwardedFor(t *testing.T) {
 		{name: "quoted ipv6 with port", in: `for="[2001:db8:cafe::17]:4711"`, wantHops: []string{"2001:db8:cafe::17"}, wantOK: true},
 		{name: "no for param", in: "by=203.0.113.43;proto=http", wantHops: nil, wantOK: false},
 		{name: "empty", in: "", wantHops: nil, wantOK: false},
-		// Unbracketed IPv4 with a port must have the port stripped (exactly
-		// one ':' in the value).
+		// Unbracketed IPv4 with a port must have the port stripped via
+		// strict netip.ParseAddrPort, not substring truncation.
 		{name: "unbracketed ipv4 with port", in: "for=192.0.2.60:8080", wantHops: []string{"192.0.2.60"}, wantOK: true},
-		// Unbracketed bare IPv6 (no port, no brackets) has 2+ colons, so it
-		// must NOT be treated as "IP:port" — stripping would truncate a
-		// valid address. This distinguishes the port-stripping branch's
-		// exact "]" absent AND exactly-one-colon" condition from either half
-		// being dropped.
+		// Unbracketed bare IPv6 (no port, no brackets) must not be mistaken
+		// for "IP:port" — netip.ParseAddr succeeds on it directly, so it's
+		// never routed through the ParseAddrPort/bracket-stripping paths.
 		{name: "unbracketed bare ipv6 not mistaken for ip:port", in: "for=2001:db8::1", wantHops: []string{"2001:db8::1"}, wantOK: true},
-		// Bracketed IPv6 with no port: "]" is present so the port-stripping
-		// else-if must not even be considered (only the "]" branch fires).
+		// Bracketed IPv6 with no port.
 		{name: "bracketed ipv6 no port", in: "for=[2001:db8::1]", wantHops: []string{"2001:db8::1"}, wantOK: true},
-		// "]" as the very first character exercises the i>=0 boundary at
-		// i==0 for the bracket-stripping branch.
-		{name: "bracket at start of value", in: `for="]"`, wantHops: []string{""}, wantOK: true},
-		// ":" as the very first character (no "]") exercises the i>=0
-		// boundary at i==0 for the port-stripping branch.
-		{name: "colon at start of value", in: "for=:8080", wantHops: []string{""}, wantOK: true},
+		// Malformed values must be returned UNCHANGED (not truncated into a
+		// valid-looking address) so they fail netip.ParseAddr in the caller
+		// — see forwardedAddrOf and the review finding it fixes: truncating
+		// "127.0.0.1:garbage" down to "127.0.0.1" would silently accept it
+		// as trusted, since loopback is always trusted regardless of ranges.
+		{name: "malformed ip:port passed through unchanged", in: "for=127.0.0.1:garbage", wantHops: []string{"127.0.0.1:garbage"}, wantOK: true},
+		{name: "malformed bracket junk passed through unchanged", in: "for=127.0.0.1]junk", wantHops: []string{"127.0.0.1]junk"}, wantOK: true},
+		{name: "bracket as sole character passed through unchanged", in: `for="]"`, wantHops: []string{"]"}, wantOK: true},
+		{name: "colon-prefixed garbage passed through unchanged", in: "for=:8080", wantHops: []string{":8080"}, wantOK: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

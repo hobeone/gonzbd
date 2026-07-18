@@ -50,10 +50,11 @@ general:
   # verify_xff_header). API-key/NZB-key auth is unaffected either way.
   local_ranges: []
 
-  # When true, the X-Forwarded-For / Forwarded / X-Real-IP chain is also
-  # validated: once the direct peer is trusted (loopback or local_ranges),
-  # every forwarded hop must also be trusted or the request is treated as
-  # untrusted. When false (the default) and NO forwarding header is present,
+  # When true, the forwarding header selected by trusted_forward_header
+  # below is also validated: once the direct peer is trusted (loopback or
+  # local_ranges), every forwarded hop in that header must also be trusted
+  # or the request is treated as untrusted. When false (the default) and
+  # NO forwarding header is present,
   # trust is based on the peer address alone, same as before. But if ANY of
   # those headers IS present while this is false, the request now fails
   # closed (rejected) rather than trusting the peer address blindly — a

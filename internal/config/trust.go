@@ -188,18 +188,38 @@ func parseForwardedFor(v string) (hops []string, ok bool) {
 			if !found || !strings.EqualFold(strings.TrimSpace(k), "for") {
 				continue
 			}
-			val = strings.Trim(strings.TrimSpace(val), `"`)
-			val = strings.TrimPrefix(val, "[")
-			if i := strings.LastIndex(val, "]"); i >= 0 {
-				val = val[:i]
-			} else if i := strings.LastIndex(val, ":"); i >= 0 && strings.Count(val, ":") == 1 {
-				val = val[:i]
+			val = strings.TrimSpace(val)
+			if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
+				val = val[1 : len(val)-1]
 			}
-			hops = append(hops, val)
+			hops = append(hops, forwardedAddrOf(val))
 			break
 		}
 	}
 	return hops, len(hops) > 0
+}
+
+// forwardedAddrOf extracts the bare IP from a for= node identifier using
+// strict net/netip parsing (not substring truncation), handling "ip",
+// "ip:port", and bracketed "[ipv6]" / "[ipv6]:port" forms. A value that
+// fails all three parses is returned UNCHANGED, so a malformed for=
+// identifier (e.g. "127.0.0.1:garbage" or "127.0.0.1]junk") reaches the
+// caller's netip.ParseAddr as-is and fails there, rather than being
+// silently truncated into a valid-looking — and, for loopback, always
+// trusted regardless of local_ranges — address.
+func forwardedAddrOf(val string) string {
+	if addr, err := netip.ParseAddr(val); err == nil {
+		return addr.String()
+	}
+	if addrPort, err := netip.ParseAddrPort(val); err == nil {
+		return addrPort.Addr().String()
+	}
+	if len(val) >= 2 && val[0] == '[' && val[len(val)-1] == ']' {
+		if addr, err := netip.ParseAddr(val[1 : len(val)-1]); err == nil {
+			return addr.String()
+		}
+	}
+	return val
 }
 
 // IsTrustedRemote reports whether a request originating from remoteAddr (the
@@ -242,15 +262,29 @@ func IsTrustedRemote(remoteAddr string, fh ForwardedHeaders, ranges []netip.Pref
 			"to trust it explicitly"
 	}
 	if verifyXFF {
-		if hops, present := fh.hops(forwardHeader); present {
-			for _, s := range hops {
-				ip, err := netip.ParseAddr(strings.TrimSpace(s))
-				if err != nil {
-					return false, fmt.Sprintf("forwarding chain contains an unparseable hop %q", s)
-				}
-				if !ipTrusted(ip, ranges) {
-					return false, fmt.Sprintf("forwarding chain hop %s is not within a trusted range", ip)
-				}
+		hops, present := fh.hops(forwardHeader)
+		if !present || len(hops) == 0 {
+			if fh.present() {
+				// A different forwarding header is present even though the
+				// selected one yielded nothing — that still signals a proxy
+				// may be interposed (misconfigured trusted_forward_header,
+				// or the selected header is malformed/blank), so this must
+				// not silently degrade to peer-only trust.
+				return false, fmt.Sprintf(
+					"verify_xff_header is true but the selected header (%s) is absent, empty, or "+
+						"contains no verifiable client address, even though a different forwarding "+
+						"header is present; check trusted_forward_header matches what your proxy sets",
+					forwardHeader.normalized())
+			}
+			return true, ""
+		}
+		for _, s := range hops {
+			ip, err := netip.ParseAddr(strings.TrimSpace(s))
+			if err != nil {
+				return false, fmt.Sprintf("forwarding chain contains an unparseable hop %q", s)
+			}
+			if !ipTrusted(ip, ranges) {
+				return false, fmt.Sprintf("forwarding chain hop %s is not within a trusted range", ip)
 			}
 		}
 	}

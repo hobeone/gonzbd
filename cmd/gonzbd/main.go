@@ -265,7 +265,8 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	// local_range). This is the SEC-1 issuance-side gate; the API auth
 	// middleware enforces the matching acceptance-side gate.
 	trustedFn := func(r *http.Request) bool {
-		trusted := false
+		var trusted bool
+		var reason string
 		cfg.WithRead(func(c *config.Config) {
 			ranges, _ := config.ParseLocalRanges(c.General.LocalRanges)
 			fh := config.ForwardedHeaders{
@@ -273,12 +274,13 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 				Forwarded:     r.Header.Get("Forwarded"),
 				XRealIP:       r.Header.Get("X-Real-IP"),
 			}
-			var reason string
 			trusted, reason = config.IsTrustedRemote(r.RemoteAddr, fh, ranges, c.General.VerifyXFFHeader, c.General.TrustedForwardHeader)
-			if !trusted {
-				log.Warn("refused session cookie / /debug/ access: source not trusted", "remote_addr", r.RemoteAddr, "reason", reason)
-			}
 		})
+		// Logged outside WithRead's lock: log.Warn may block on I/O, and the
+		// config read lock must not be held across it.
+		if !trusted {
+			log.Warn("refused session cookie / /debug/ access: source not trusted", "remote_addr", r.RemoteAddr, "reason", reason)
+		}
 		return trusted
 	}
 	webHandler, err := web.Handler(apiSrv.SessionKey, trustedFn)
