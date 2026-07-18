@@ -523,6 +523,12 @@ func TestCallerLevel_CookieTrustGate(t *testing.T) {
 		{name: "verifyXFF trusted peer + trusted hop", remoteAddr: "192.168.1.5:5000", xff: "192.168.1.9", ranges: priv, verifyXFF: true, want: LevelAdmin},
 		{name: "verifyXFF trusted peer + untrusted hop", remoteAddr: "192.168.1.5:5000", xff: "8.8.8.8", ranges: priv, verifyXFF: true, want: 0},
 		{name: "spoofed xff ignored when verify off", remoteAddr: "8.8.8.8:5000", xff: "127.0.0.1", want: 0},
+		// Issue #94: a same-host reverse proxy makes remoteAddr loopback for
+		// every request. Before the fix, an XFF header present with
+		// VerifyXFF off was silently ignored and the loopback peer alone
+		// granted LevelAdmin — exactly the zero-credential RCE path. Now it
+		// must fail closed even though the peer itself is trusted.
+		{name: "trusted peer + xff present + verify off fails closed (issue #94)", remoteAddr: "192.168.1.5:5000", xff: "8.8.8.8", ranges: priv, want: 0},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

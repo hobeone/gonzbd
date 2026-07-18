@@ -40,15 +40,43 @@ general:
   # your reverse-proxy / Docker network / LAN CIDR to let the UI work for
   # those clients without entering a key. This does NOT affect API-key or
   # NZB-key authentication, which work from any address.
+  #
+  # IMPORTANT if you run gonzbd behind ANY reverse proxy (nginx, Caddy,
+  # Traefik, etc.), even one on the same host: the proxy makes every request
+  # arrive with a loopback/local remote address regardless of who the real
+  # client is. Set local_ranges to the proxy's own address AND set
+  # verify_xff_header: true below — otherwise cookie-based web UI login is
+  # refused for every client once a forwarding header is present (see
+  # verify_xff_header). API-key/NZB-key auth is unaffected either way.
   local_ranges: []
 
-  # When true, the X-Forwarded-For chain is also validated: once the direct
-  # peer is trusted (loopback or local_ranges), every forwarded hop must also
-  # be trusted or the request is treated as untrusted. Leave false (default)
-  # when your reverse proxy performs its own authentication and you trust the
-  # proxy connection itself. The header is never consulted when the direct
-  # peer is untrusted, so it cannot be spoofed by a public client.
+  # When true, the X-Forwarded-For / Forwarded / X-Real-IP chain is also
+  # validated: once the direct peer is trusted (loopback or local_ranges),
+  # every forwarded hop must also be trusted or the request is treated as
+  # untrusted. When false (the default) and NO forwarding header is present,
+  # trust is based on the peer address alone, same as before. But if ANY of
+  # those headers IS present while this is false, the request now fails
+  # closed (rejected) rather than trusting the peer address blindly — a
+  # header's mere presence means a proxy may be interposed, and an unverified
+  # peer address (which the proxy controls) proves nothing about the real
+  # client. This is a deliberate fail-closed default: do not set this to
+  # false as a way to "make cookie auth work" behind a proxy — set it to
+  # true and configure local_ranges to the proxy's address instead. The
+  # header is never consulted when the direct peer is untrusted, so it
+  # cannot be spoofed by a public client.
   verify_xff_header: false
+
+  # Which single forwarding header your reverse proxy actually manages
+  # (sets/overwrites reliably): "x-forwarded-for" (the default when empty),
+  # "forwarded" (RFC 7239), or "x-real-ip". Only used when verify_xff_header
+  # is true. Only this header is ever checked for hop-trust purposes — the
+  # other two are ignored even if present. Setting this correctly matters:
+  # a proxy that reliably overwrites one header may pass another through
+  # from the client completely untouched, and without an explicit choice
+  # here a client could inject a forged value in the header you're NOT
+  # relying on and have it silently win. This mirrors nginx's
+  # real_ip_header directive, which requires the same explicit choice.
+  trusted_forward_header: ""
 
   # Working directory for in-progress downloads. Files here are
   # incomplete and should not be accessed by media scanners.

@@ -165,6 +165,10 @@ func (g *GeneralConfig) validate() error {
 	if _, err := ParseLocalRanges(g.LocalRanges); err != nil {
 		errs = append(errs, fmt.Errorf("local_ranges: %w", err))
 	}
+	if !g.TrustedForwardHeader.Valid() {
+		errs = append(errs, fmt.Errorf("trusted_forward_header: %q is not one of \"\", %q, %q, %q",
+			g.TrustedForwardHeader, ForwardHeaderXFF, ForwardHeaderForwarded, ForwardHeaderXRealIP))
+	}
 	return errors.Join(errs...)
 }
 

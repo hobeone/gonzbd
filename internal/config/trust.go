@@ -65,46 +65,196 @@ func normalizeMappedPrefix(p netip.Prefix) (netip.Prefix, error) {
 	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96), nil
 }
 
+// ForwardedHeaders bundles the client-forwarding headers a reverse proxy may
+// set on a request: X-Forwarded-For (a comma-separated hop chain), Forwarded
+// (RFC 7239; only each element's for= parameter is consulted), and X-Real-IP
+// (a single address, no chain). Any non-empty field is a signal that a proxy
+// sits between the direct peer and the true client — see IsTrustedRemote.
+type ForwardedHeaders struct {
+	XForwardedFor string
+	Forwarded     string
+	XRealIP       string
+}
+
+// present reports whether any forwarding header was set on the request. This
+// is deliberately "any of the three", independent of which one
+// TrustedForwardHeader selects: even an unselected header's mere presence
+// signals a proxy may be interposed, so IsTrustedRemote's fail-closed check
+// (verifyXFF == false) fires regardless of selection.
+func (f ForwardedHeaders) present() bool {
+	return f.XForwardedFor != "" || f.Forwarded != "" || f.XRealIP != ""
+}
+
+// TrustedForwardHeader identifies which single client-forwarding header a
+// deployment's reverse proxy is configured to set or overwrite reliably.
+// Only this header is ever consulted for hop verification when verifyXFF is
+// true — the other two are not considered, even if present, so a client that
+// can inject an unmanaged header (e.g. a proxy that forwards X-Forwarded-For
+// through untouched while only reliably overwriting X-Real-IP) cannot forge
+// a competing, more-permissive chain in the header IsTrustedRemote actually
+// checks. This mirrors nginx's ngx_http_realip_module real_ip_header
+// directive, which requires the same explicit choice for the same reason.
+type TrustedForwardHeader string
+
+const (
+	// ForwardHeaderXFF selects X-Forwarded-For. Also the effective default
+	// when TrustedForwardHeader is empty, preserving this package's
+	// pre-existing (XFF-only) behavior for configs written before this
+	// field existed.
+	ForwardHeaderXFF TrustedForwardHeader = "x-forwarded-for"
+	// ForwardHeaderForwarded selects the RFC 7239 Forwarded header.
+	ForwardHeaderForwarded TrustedForwardHeader = "forwarded"
+	// ForwardHeaderXRealIP selects X-Real-IP.
+	ForwardHeaderXRealIP TrustedForwardHeader = "x-real-ip"
+)
+
+// Valid reports whether h is the empty string (meaning "use the default,
+// X-Forwarded-For") or one of the recognized selectors, compared
+// case-insensitively (header names are conventionally written in mixed
+// case, e.g. "X-Forwarded-For"). Used by config validation to reject typos
+// at load time rather than silently falling back.
+func (h TrustedForwardHeader) Valid() bool {
+	switch TrustedForwardHeader(strings.ToLower(string(h))) {
+	case "", ForwardHeaderXFF, ForwardHeaderForwarded, ForwardHeaderXRealIP:
+		return true
+	default:
+		return false
+	}
+}
+
+// normalized returns the effective selector, lowercased and defaulting empty
+// to ForwardHeaderXFF.
+func (h TrustedForwardHeader) normalized() TrustedForwardHeader {
+	h = TrustedForwardHeader(strings.ToLower(string(h)))
+	if h == "" {
+		return ForwardHeaderXFF
+	}
+	return h
+}
+
+// hops returns the chain of forwarded client addresses to validate when
+// verifyXFF is true, taken ONLY from the header selector identifies — the
+// other two fields are ignored entirely, whether or not they're present; see
+// TrustedForwardHeader. ok is false when the selected header is absent, or
+// (for Forwarded specifically) present but with no for= parameter to
+// extract — in both cases there is nothing to validate, so the caller falls
+// back to trusting the already-confirmed peer alone. A selected header that
+// DOES yield hop strings, but where a hop string itself fails to parse as an
+// IP, is still caught by the caller's netip.ParseAddr check and fails closed.
+func (f ForwardedHeaders) hops(selector TrustedForwardHeader) (hops []string, ok bool) {
+	switch selector.normalized() {
+	case ForwardHeaderForwarded:
+		if f.Forwarded == "" {
+			return nil, false
+		}
+		return parseForwardedFor(f.Forwarded)
+	case ForwardHeaderXRealIP:
+		if f.XRealIP == "" {
+			return nil, false
+		}
+		return []string{strings.TrimSpace(f.XRealIP)}, true
+	default: // ForwardHeaderXFF
+		if f.XForwardedFor == "" {
+			return nil, false
+		}
+		return splitHops(f.XForwardedFor), true
+	}
+}
+
+// splitHops splits a comma-separated X-Forwarded-For value into trimmed,
+// non-empty hop strings.
+func splitHops(v string) []string {
+	var hops []string
+	for part := range strings.SplitSeq(v, ",") {
+		if s := strings.TrimSpace(part); s != "" {
+			hops = append(hops, s)
+		}
+	}
+	return hops
+}
+
+// parseForwardedFor extracts the ordered list of for= node identifiers from
+// an RFC 7239 Forwarded header value, one per comma-separated element
+// (closest-first, mirroring X-Forwarded-For's convention). Handles quoted
+// values and bracketed IPv6 literals with an optional trailing port (e.g.
+// `for="[2001:db8::1]:4711"`). ok is false only when the header has no
+// element with a for= parameter at all — a malformed for= value still
+// produces a hop string that will fail netip.ParseAddr in the caller,
+// keeping the fail-closed behavior for garbled headers.
+func parseForwardedFor(v string) (hops []string, ok bool) {
+	for elem := range strings.SplitSeq(v, ",") {
+		for kv := range strings.SplitSeq(elem, ";") {
+			k, val, found := strings.Cut(strings.TrimSpace(kv), "=")
+			if !found || !strings.EqualFold(strings.TrimSpace(k), "for") {
+				continue
+			}
+			val = strings.Trim(strings.TrimSpace(val), `"`)
+			val = strings.TrimPrefix(val, "[")
+			if i := strings.LastIndex(val, "]"); i >= 0 {
+				val = val[:i]
+			} else if i := strings.LastIndex(val, ":"); i >= 0 && strings.Count(val, ":") == 1 {
+				val = val[:i]
+			}
+			hops = append(hops, val)
+			break
+		}
+	}
+	return hops, len(hops) > 0
+}
+
 // IsTrustedRemote reports whether a request originating from remoteAddr (the
-// host:port form of http.Request.RemoteAddr) carrying the given
-// X-Forwarded-For header value should be treated as a trusted source for
-// issuing and accepting the web session cookie.
+// host:port form of http.Request.RemoteAddr), carrying the given forwarding
+// headers, should be treated as a trusted source for issuing and accepting
+// the web session cookie. On rejection, reason explains why, suitable for an
+// operator-facing log line; reason is empty when trusted is true.
 //
 // A source is trusted only if its direct peer IP is loopback or falls within
-// one of the configured local_ranges. When verifyXFF is true and the peer
-// already qualifies, every hop in the X-Forwarded-For chain must ALSO be
-// trusted; a single untrusted or unparseable hop makes the request untrusted.
+// one of the configured local_ranges. If any forwarding header is present but
+// verifyXFF is false, the request fails closed: the header's mere presence
+// means a proxy may be interposed, and an unverified peer address proves
+// nothing about the real client. When verifyXFF is true and the peer already
+// qualifies, every hop in the forwarding chain must ALSO be trusted; a single
+// untrusted or unparseable hop makes the request untrusted.
 //
-// This mirrors SABnzbd's model: the X-Forwarded-For header is consulted only
-// after the direct peer is already trusted, so a public client that appends a
+// This mirrors SABnzbd's model: forwarding headers are consulted only after
+// the direct peer is already trusted, so a public client that appends a
 // forged "X-Forwarded-For: 127.0.0.1" cannot elevate itself — its peer IP
 // fails the check first. Loopback-only is the default (empty ranges): a
 // non-loopback client receives no admin cookie unless its range is explicitly
 // allowlisted.
-func IsTrustedRemote(remoteAddr, xff string, ranges []netip.Prefix, verifyXFF bool) bool {
+//
+// forwardHeader selects which single header is consulted for hop
+// verification (see TrustedForwardHeader); the other two are never consulted
+// for verification purposes, though any of the three still counts toward
+// the fh.present() fail-closed check above.
+func IsTrustedRemote(remoteAddr string, fh ForwardedHeaders, ranges []netip.Prefix, verifyXFF bool, forwardHeader TrustedForwardHeader) (trusted bool, reason string) {
 	peer, ok := parseHostIP(remoteAddr)
 	if !ok {
-		return false
+		return false, "remote address could not be parsed"
 	}
 	if !ipTrusted(peer, ranges) {
-		return false
+		return false, "peer address is not loopback and not within a configured local_range"
+	}
+	if fh.present() && !verifyXFF {
+		return false, "a forwarding header (X-Forwarded-For, Forwarded, or X-Real-IP) is present but " +
+			"verify_xff_header is false: a reverse proxy may be interposed, so the peer address alone " +
+			"cannot be trusted; set verify_xff_header: true and add the proxy's address to local_ranges " +
+			"to trust it explicitly"
 	}
 	if verifyXFF {
-		for part := range strings.SplitSeq(xff, ",") {
-			s := strings.TrimSpace(part)
-			if s == "" {
-				continue
-			}
-			ip, err := netip.ParseAddr(s)
-			if err != nil {
-				return false
-			}
-			if !ipTrusted(ip, ranges) {
-				return false
+		if hops, present := fh.hops(forwardHeader); present {
+			for _, s := range hops {
+				ip, err := netip.ParseAddr(strings.TrimSpace(s))
+				if err != nil {
+					return false, fmt.Sprintf("forwarding chain contains an unparseable hop %q", s)
+				}
+				if !ipTrusted(ip, ranges) {
+					return false, fmt.Sprintf("forwarding chain hop %s is not within a trusted range", ip)
+				}
 			}
 		}
 	}
-	return true
+	return true, ""
 }
 
 // ipTrusted reports whether ip is loopback or contained in one of ranges.

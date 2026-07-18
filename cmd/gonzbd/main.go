@@ -268,7 +268,16 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		trusted := false
 		cfg.WithRead(func(c *config.Config) {
 			ranges, _ := config.ParseLocalRanges(c.General.LocalRanges)
-			trusted = config.IsTrustedRemote(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), ranges, c.General.VerifyXFFHeader)
+			fh := config.ForwardedHeaders{
+				XForwardedFor: r.Header.Get("X-Forwarded-For"),
+				Forwarded:     r.Header.Get("Forwarded"),
+				XRealIP:       r.Header.Get("X-Real-IP"),
+			}
+			var reason string
+			trusted, reason = config.IsTrustedRemote(r.RemoteAddr, fh, ranges, c.General.VerifyXFFHeader, c.General.TrustedForwardHeader)
+			if !trusted {
+				log.Warn("refused session cookie / /debug/ access: source not trusted", "remote_addr", r.RemoteAddr, "reason", reason)
+			}
 		})
 		return trusted
 	}
