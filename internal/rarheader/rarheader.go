@@ -427,17 +427,24 @@ func parseUnrarVtOutput(output string) (filenames []string, encrypted bool) {
 	return filenames, encrypted
 }
 
+// osOpen is a seam for tests to inject an open failure independent of
+// readMagic's own os.Open call, since callers always readMagic(p)
+// successfully before calling openPastSignature(p, ...) on the same
+// unchanged path -- without this seam, openPastSignature's open-error
+// branch would be unreachable through any real caller.
+var osOpen = os.Open
+
 // openPastSignature opens p and advances past its len(sig)-byte magic
 // signature, returning the file positioned at the first header byte. The
 // caller owns the returned file and must close it.
 func openPastSignature(p string, sig []byte) (*os.File, error) {
 	//nolint:gosec // p is trusted input from internal caller
-	f, err := os.Open(p)
+	f, err := osOpen(p)
 	if err != nil {
 		return nil, fmt.Errorf("rarheader: open %s: %w", p, err)
 	}
 	if _, err := io.CopyN(io.Discard, f, int64(len(sig))); err != nil {
-		_ = f.Close() // cleanup error in defer
+		_ = f.Close() // close on the error path; no defer here since f is returned on success
 		return nil, fmt.Errorf("rarheader: skip signature: %w", err)
 	}
 	return f, nil

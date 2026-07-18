@@ -528,6 +528,46 @@ func TestInspectRar3_TruncatedPackedData(t *testing.T) {
 	}
 }
 
+func TestOpenPastSignature_FileNotFound(t *testing.T) {
+	_, err := openPastSignature("/nonexistent/path/to/file.rar", rar5Sig)
+	if err == nil {
+		t.Error("openPastSignature returned nil error for nonexistent file")
+	}
+}
+
+func TestOpenPastSignature_ShorterThanSignature(t *testing.T) {
+	path := writeTemp(t, "short.rar", rar5Sig[:len(rar5Sig)-1])
+	_, err := openPastSignature(path, rar5Sig)
+	if err == nil {
+		t.Error("openPastSignature returned nil error for file shorter than signature")
+	}
+	if !strings.Contains(err.Error(), "skip signature") {
+		t.Errorf("error = %v, want it to mention 'skip signature'", err)
+	}
+}
+
+// TestRecoverVolumeExtension_OpenPastSignatureFails exercises
+// RecoverVolumeExtension's error path when openPastSignature's open call
+// fails after readMagic already succeeded on the same path. In real usage
+// this can only happen via a TOCTOU race (the file changing between
+// readMagic's and openPastSignature's independent os.Open calls); osOpen
+// is stubbed here to make that branch deterministically reachable instead
+// of leaving it untested.
+func TestRecoverVolumeExtension_OpenPastSignatureFails(t *testing.T) {
+	path := writeTemp(t, "test.rar", rar5Sig) // readMagic succeeds: valid RAR5 signature
+
+	oldOsOpen := osOpen
+	defer func() { osOpen = oldOsOpen }()
+	osOpen = func(string) (*os.File, error) {
+		return nil, errors.New("injected open failure")
+	}
+
+	_, _, err := RecoverVolumeExtension(path)
+	if err == nil {
+		t.Fatal("expected error when openPastSignature's open fails, got nil")
+	}
+}
+
 func TestInspectViaUnrar_Success(t *testing.T) {
 	oldExecCommand := execCommand
 	defer func() { execCommand = oldExecCommand }()
