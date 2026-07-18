@@ -89,7 +89,7 @@ go test -tags=e2e -timeout=10m ./test/e2e/                  # E2E (requires live
 go test ./internal/config/ -run 'TestUI|TestAllFlat'        # Config ↔ UI contract
 go vet ./...                                                # Static analysis
 golangci-lint run ./...                                     # Linting
-./scripts/run_gremlins.sh ./internal/queue                  # Mutation testing on a package
+./scripts/run_gremlins.sh ./internal/queue                  # Mutation testing on a package (periodic, see below — not a per-commit gate)
 ```
 
 > **WARNING:** Running `gremlins` on the entire repository (e.g. `./...` or `./internal/...`) is forbidden. It will run dozens of mutant compiles in parallel, exhausting disk space and filling up `/tmp`. Always scope `gremlins` to a single focused package.
@@ -196,18 +196,34 @@ go vet ./...                          # Must pass
 go test -race ./...                   # Unit tests with the race detector
 ./scripts/run_tests.sh                # Full Go + UI suite
 golangci-lint run ./...               # Must pass (no new issues)
-./scripts/run_gremlins.sh ./internal/<pkg> # Whole-package mutation baseline
 ```
 
 `./scripts/run_tests.sh` runs the full Go and UI suites but **without** the race
 detector, so `go test -race ./...` is a separate, required step.
 
+If any gate fails, fix the underlying issue. **Do not skip, suppress, or bypass
+these checks** to make a commit go through. If a lint rule genuinely needs to be
+disabled for a specific case, add a `//nolint:rulename // reason` comment
+explaining why.
+
+### Mutation Testing (periodic, not a per-commit gate)
+
+`gremlins` is **not** part of the per-commit quality gates above. It runs too
+slowly (whole-package baseline, up to the 30min default timeout) and too
+unreliably (see the KNOWN BUG note above — `--diff` scoped to a package is
+broken upstream, so there is no fast/incremental way to run it) to sit in the
+inner dev loop. Gating every commit on it added friction without a
+proportional increase in confidence for most changes.
+
+Instead, run it:
+- **Before opening a PR** for a package with substantial new branching/error-handling logic, or when you suspect a test is a change-detector rather than a real pin on behavior.
+- **On a schedule** — see the `mutation-testing` workflow in `.github/workflows/`, which runs `run_gremlins.sh` against each `internal/<pkg>` on a rotation so gaps still surface without blocking every commit.
+
 The `gremlins` gate enforces mutation-testing proof: every behavioral change in
 the diff must be killed by a test (no surviving/lived mutants). If a mutant
 lives, the test suite does not actually pin that behavior — add or strengthen
-the test rather than weakening the gate. Run it scoped to the changed package
-during development and before commit
-(`./scripts/run_gremlins.sh ./internal/<pkg>`). **Do not use
+the test rather than weakening the gate. Run it scoped to the package under
+test (`./scripts/run_gremlins.sh ./internal/<pkg>`). **Do not use
 `--diff`** — it is currently broken when scoped to a package (see the KNOWN BUG
 note above); instead, run the whole-package baseline and manually
 cross-reference `LIVED`/`NOT COVERED` line numbers against `git diff
@@ -215,11 +231,6 @@ origin/main -- internal/<pkg>` to attribute them to your change vs.
 pre-existing gaps. **NEVER run gremlins on the entire repository (e.g. `./...`) as it will fill up `/tmp` and exhaust disk space.** See **`docs/mutation-testing-playbook.md`**
 for the repeatable process for triaging `LIVED`/`NOT COVERED` mutants and
 closing the gaps with targeted tests.
-
-If any gate fails, fix the underlying issue. **Do not skip, suppress, or bypass
-these checks** to make a commit go through. If a lint rule genuinely needs to be
-disabled for a specific case, add a `//nolint:rulename // reason` comment
-explaining why.
 
 ### When You Get Stuck
 
