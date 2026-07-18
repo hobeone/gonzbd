@@ -269,8 +269,10 @@ func (s *Server) getAuth() AuthConfig {
 		// loopback-only (nil ranges) rather than trusting everything.
 		auth.TrustedRanges, _ = config.ParseLocalRanges(cfg.General.LocalRanges)
 		auth.VerifyXFF = cfg.General.VerifyXFFHeader
+		auth.ForwardHeader = cfg.General.TrustedForwardHeader
 	})
 	auth.SessionKey = s.sessionKey
+	auth.Logger = s.log
 	return auth
 }
 
