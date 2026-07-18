@@ -12,47 +12,71 @@ import (
 
 // ---------- isCrossOrigin ----------
 
-func TestIsCrossOrigin_NoHeaders(t *testing.T) {
+// TestIsCrossOrigin covers the general isCrossOrigin cases: no headers, Origin
+// header variants (same-host, loopback, external, malformed), Sec-Fetch-Site
+// variants, Referer-only cases, and the fail-closed cookie+state-changing
+// request with no origin headers. Port-sensitivity edge cases for loopback
+// aliases are covered separately in TestIsCrossOrigin_LoopbackPortCases.
+func TestIsCrossOrigin(t *testing.T) {
 	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:4289"
-	if isCrossOrigin(r) {
-		t.Error("no headers should not be cross-origin")
-	}
-}
+	tests := []struct {
+		name     string
+		method   string
+		host     string
+		origin   string
+		secFetch string // Sec-Fetch-Site value
+		referer  string
+		cookie   string // gonzbd_apikey cookie value; empty = no cookie
+		want     bool   // want cross-origin
+	}{
+		// No headers at all: no signal → not cross-origin.
+		{"no headers", "GET", "localhost:4289", "", "", "", "", false},
 
-func TestIsCrossOrigin_SameOrigin(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:4289"
-	r.Header.Set("Origin", "http://localhost:4289")
-	if isCrossOrigin(r) {
-		t.Error("same-host Origin should not be cross-origin")
-	}
-}
+		// Origin header cases.
+		{"same-host Origin", "GET", "localhost:4289", "http://localhost:4289", "", "", "", false},
+		{"loopback IP Origin", "GET", "localhost:4289", "http://127.0.0.1:4289", "", "", "", false},
+		{"external Origin", "GET", "localhost:4289", "http://evil.example.com", "", "", "", true},
+		{"malformed Origin", "GET", "localhost:4289", "://bad", "", "", "", true},
+		// PR #139: matching Origin must not short-circuit when Sec-Fetch-Site
+		// disagrees — both signals must agree the request is same-origin.
+		{"same-host Origin + Sec-Fetch-Site cross-site", "GET", "localhost:4289", "http://localhost:4289", "cross-site", "", "", true},
 
-// TestIsCrossOrigin_SameOriginButSecFetchSiteCrossSite covers the CodeRabbit
-// finding on PR #139: a matching Origin alone must not short-circuit the
-// check when Sec-Fetch-Site disagrees. Both signals must agree the request
-// is same-origin.
-func TestIsCrossOrigin_SameOriginButSecFetchSiteCrossSite(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:4289"
-	r.Header.Set("Origin", "http://localhost:4289")
-	r.Header.Set("Sec-Fetch-Site", "cross-site")
-	if !isCrossOrigin(r) {
-		t.Error("matching Origin with Sec-Fetch-Site: cross-site MUST still be cross-origin")
-	}
-}
+		// Sec-Fetch-Site header cases (no Origin).
+		{"Sec-Fetch-Site cross-site", "GET", "localhost:4289", "", "cross-site", "", "", true},
+		{"Sec-Fetch-Site cross-origin", "GET", "localhost:4289", "", "cross-origin", "", "", true},
+		{"Sec-Fetch-Site same-origin", "GET", "localhost:4289", "", "same-origin", "", "", false},
 
-func TestIsCrossOrigin_LoopbackOrigin(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:4289"
-	r.Header.Set("Origin", "http://127.0.0.1:4289")
-	if isCrossOrigin(r) {
-		t.Error("loopback IP origin should not be cross-origin")
+		// Referer-only cases (no Origin, no Sec-Fetch-Site).
+		{"Referer cross-origin", "GET", "localhost:4289", "", "", "http://evil.com/page", "", true},
+		{"Referer same host", "GET", "localhost:4289", "", "", "http://localhost:4289/config", "", false},
+		{"Referer loopback IP", "GET", "localhost:4289", "", "", "http://127.0.0.1:4289/page", "", false},
+
+		// Fail-closed: cookie-authenticated state-changing POST with no Origin
+		// or Referer MUST be treated as cross-origin (prevents CSRF via omitted
+		// headers).
+		{"cookie POST no origin/referer", "POST", "localhost:4289", "", "", "", "sessionkey", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest(tc.method, "/api?mode=pause", nil)
+			r.Host = tc.host
+			if tc.origin != "" {
+				r.Header.Set("Origin", tc.origin)
+			}
+			if tc.secFetch != "" {
+				r.Header.Set("Sec-Fetch-Site", tc.secFetch)
+			}
+			if tc.referer != "" {
+				r.Header.Set("Referer", tc.referer)
+			}
+			if tc.cookie != "" {
+				r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: tc.cookie})
+			}
+			if got := isCrossOrigin(r); got != tc.want {
+				t.Errorf("isCrossOrigin() = %t, want %t", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -87,86 +111,6 @@ func TestIsCrossOrigin_LoopbackPortCases(t *testing.T) {
 				t.Errorf("isCrossOrigin(Host=%q, Origin=%q) = %t, want %t", tc.host, tc.origin, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestIsCrossOrigin_ExternalOrigin(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:4289"
-	r.Header.Set("Origin", "http://evil.example.com")
-	if !isCrossOrigin(r) {
-		t.Error("external origin MUST be cross-origin")
-	}
-}
-
-func TestIsCrossOrigin_MalformedOrigin(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:4289"
-	r.Header.Set("Origin", "://bad")
-	if !isCrossOrigin(r) {
-		t.Error("malformed origin should be treated as cross-origin")
-	}
-}
-
-func TestIsCrossOrigin_SecFetchSiteCrossSite(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:4289"
-	r.Header.Set("Sec-Fetch-Site", "cross-site")
-	if !isCrossOrigin(r) {
-		t.Error("Sec-Fetch-Site: cross-site MUST be cross-origin")
-	}
-}
-
-func TestIsCrossOrigin_SecFetchSiteCrossOrigin(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:4289"
-	r.Header.Set("Sec-Fetch-Site", "cross-origin")
-	if !isCrossOrigin(r) {
-		t.Error("Sec-Fetch-Site: cross-origin MUST be cross-origin")
-	}
-}
-
-func TestIsCrossOrigin_SecFetchSiteSameOrigin(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:4289"
-	r.Header.Set("Sec-Fetch-Site", "same-origin")
-	if isCrossOrigin(r) {
-		t.Error("Sec-Fetch-Site: same-origin should not be cross-origin")
-	}
-}
-
-func TestIsCrossOrigin_RefererCrossOrigin(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:4289"
-	r.Header.Set("Referer", "http://evil.com/page")
-	if !isCrossOrigin(r) {
-		t.Error("non-local Referer MUST be cross-origin")
-	}
-}
-
-func TestIsCrossOrigin_RefererSameHost(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:4289"
-	r.Header.Set("Referer", "http://localhost:4289/config")
-	if isCrossOrigin(r) {
-		t.Error("same-host Referer should not be cross-origin")
-	}
-}
-
-func TestIsCrossOrigin_RefererLoopback(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "localhost:4289"
-	r.Header.Set("Referer", "http://127.0.0.1:4289/page")
-	if isCrossOrigin(r) {
-		t.Error("loopback Referer should not be cross-origin")
 	}
 }
 
@@ -528,16 +472,6 @@ func TestStatusWriter_DoubleWriteHeader(t *testing.T) {
 	sw.WriteHeader(http.StatusInternalServerError) // second call
 	if sw.status != 201 {
 		t.Errorf("first status should win: got %d, want 201", sw.status)
-	}
-}
-
-func TestIsCrossOrigin_CookieStateChangingEmptyHeaders(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest("POST", "/api?mode=pause", nil)
-	r.Host = "localhost:4289"
-	r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: "sessionkey"})
-	if !isCrossOrigin(r) {
-		t.Error("cookie-authenticated state-changing request with empty Origin and Referer MUST be cross-origin (fail closed)")
 	}
 }
 
