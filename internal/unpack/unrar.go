@@ -203,7 +203,7 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 		opts.OnCommand(cmdLine)
 	}
 
-	cmd, err := cmdutil.BuildSandboxedCommand(ctx, opts.CmdCfg, opts.Sandbox, bin, args...) //nolint:gosec // args are caller-supplied, not shell-expanded
+	cmd, err := cmdutil.BuildSandboxedCommand(ctx, log, opts.CmdCfg, opts.Sandbox, bin, args...) //nolint:gosec // args are caller-supplied, not shell-expanded
 	if err != nil {
 		return Result{CommandLine: cmdLine, Err: err, Reason: FailUnknown, Engine: "unrar"}, err
 	}
