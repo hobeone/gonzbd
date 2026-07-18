@@ -705,6 +705,9 @@ func TestLoad_CorruptIndexQuarantined(t *testing.T) {
 	if q.Len() != 0 {
 		t.Errorf("expected empty queue, got len %d", q.Len())
 	}
+	if q.stateDir != dir {
+		t.Errorf("expected stateDir = %q, got %q", dir, q.stateDir)
+	}
 
 	// Assert index was renamed
 	if _, err := os.Stat(idxPath); !os.IsNotExist(err) {
@@ -789,6 +792,9 @@ func TestLoad_CorruptJobQuarantineFailure(t *testing.T) {
 
 func TestLoad_PermissionError(t *testing.T) {
 	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("permission tests are unreliable when running as root")
+	}
 
 	t.Run("IndexPermissionError", func(t *testing.T) {
 		dir := t.TempDir()

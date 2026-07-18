@@ -127,6 +127,7 @@ func Load(dir string) (*Queue, error) {
 			return nil, fmt.Errorf("queue: load index failed and could not quarantine: %w (original error: %w)", qErr, err)
 		}
 		q := New()
+		q.stateDir = dir
 		q.log.Warn("quarantining corrupt queue index and degrading to empty queue", "path", idxPath, "err", err)
 		return q, nil
 	}
