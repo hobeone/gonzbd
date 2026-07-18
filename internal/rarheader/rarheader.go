@@ -184,20 +184,16 @@ func InspectRar5(p string) (info Info, err error) {
 // compressed RAR3 archive would fail there. Reading PackedSize directly off
 // the header and skipping raw bytes works regardless of compression
 // method, since header inspection never needs the decompressed content.
-// See hobeone/rarengine#14 for the RAR3 decompression gap.
+// See https://github.com/hobeone/rarengine/issues/14 for the RAR3
+// decompression gap.
 func InspectRar3(p string) (info Info, err error) {
 	info.Version = 3
 	err = cmdutil.SafeEngineRun("rarheader: rarengine panic", func() error {
-		//nolint:gosec // p is trusted input from internal caller
-		f, openErr := os.Open(p)
-		if openErr != nil {
-			return openErr
+		f, err := openPastSignature(p, rar3Sig)
+		if err != nil {
+			return err
 		}
 		defer func() { _ = f.Close() }() // cleanup error in defer
-
-		if _, err := io.CopyN(io.Discard, f, int64(len(rar3Sig))); err != nil {
-			return fmt.Errorf("rarheader: skip signature: %w", err)
-		}
 
 		for {
 			h, err := rarengine.ReadRAR3BlockHeader(f)
@@ -263,16 +259,11 @@ func VerifyPassword(mainFilePath, password string) (verified, hasCheckValue bool
 		return false, false, nil
 	}
 
-	//nolint:gosec // mainFilePath is trusted input from internal caller
-	f, err := os.Open(mainFilePath)
+	f, err := openPastSignature(mainFilePath, rar5Sig)
 	if err != nil {
-		return false, false, fmt.Errorf("rarheader: open %s: %w", mainFilePath, err)
+		return false, false, err
 	}
 	defer func() { _ = f.Close() }() // cleanup error in defer
-
-	if _, err := io.CopyN(io.Discard, f, int64(len(rar5Sig))); err != nil {
-		return false, false, fmt.Errorf("rarheader: skip signature: %w", err)
-	}
 
 	return verifyPasswordFromHeaders(f, password)
 }
@@ -348,16 +339,11 @@ func RecoverVolumeExtension(p string) (volumeIndex int, multiVolume bool, err er
 		return 0, false, fmt.Errorf("rarheader: RAR%d volume recovery not supported (RAR5 only)", ver)
 	}
 
-	//nolint:gosec // p is trusted input from internal caller
-	f, err := os.Open(p)
+	f, err := openPastSignature(p, rar5Sig)
 	if err != nil {
-		return 0, false, fmt.Errorf("rarheader: open %s: %w", p, err)
+		return 0, false, err
 	}
 	defer func() { _ = f.Close() }() // cleanup error in defer
-
-	if _, err := io.CopyN(io.Discard, f, int64(len(rar5Sig))); err != nil {
-		return 0, false, fmt.Errorf("rarheader: skip signature: %w", err)
-	}
 
 	h, err := rarengine.ReadBlockHeader(f)
 	if err != nil {
@@ -439,6 +425,22 @@ func parseUnrarVtOutput(output string) (filenames []string, encrypted bool) {
 		}
 	}
 	return filenames, encrypted
+}
+
+// openPastSignature opens p and advances past its len(sig)-byte magic
+// signature, returning the file positioned at the first header byte. The
+// caller owns the returned file and must close it.
+func openPastSignature(p string, sig []byte) (*os.File, error) {
+	//nolint:gosec // p is trusted input from internal caller
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, fmt.Errorf("rarheader: open %s: %w", p, err)
+	}
+	if _, err := io.CopyN(io.Discard, f, int64(len(sig))); err != nil {
+		_ = f.Close() // cleanup error in defer
+		return nil, fmt.Errorf("rarheader: skip signature: %w", err)
+	}
+	return f, nil
 }
 
 // readMagic opens p, reads up to 8 bytes, and returns the RAR version

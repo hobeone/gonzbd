@@ -347,12 +347,13 @@ func TestInspectRar3_Corrupted(t *testing.T) {
 // TestInspectRar3_RealFixtures exercises InspectRar3 against real (not
 // synthetic) RAR3 archives vendored from markokr/rarfile -- see
 // testdata/ATTRIBUTION.md. rar3-comment-plain.rar uses a genuinely
-// compressed method (3) plus archive- and file-level comment blocks
-// (type 0x75, exercised via the default/skip case); rar3-subdirs.rar uses
-// the store method (0) with subdirectories and a Unicode filename. Both
-// prove header-only inspection works regardless of compression method --
-// the gap InspectRar5's StreamDecompressor-based approach would hit for
-// RAR3 (see hobeone/rarengine#14).
+// compressed method (3) plus archive- and file-level comment sub-blocks
+// (type 0x7a, exercised via the default/skip case -- confirmed by
+// instrumented run, not assumed); rar3-subdirs.rar uses the store method
+// (0) with subdirectories and a Unicode filename. Both prove header-only
+// inspection works regardless of compression method -- the gap
+// InspectRar5's StreamDecompressor-based approach would hit for RAR3 (see
+// https://github.com/hobeone/rarengine/issues/14).
 func TestInspectRar3_RealFixtures(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -427,6 +428,103 @@ func TestInspect_RAR3Fixtures_NativePath(t *testing.T) {
 				t.Errorf("Filenames = %v, want %v", info.Filenames, tt.wantFiles)
 			}
 		})
+	}
+}
+
+// buildRAR3FilePayload constructs the fixed-layout portion of a RAR3
+// FILE_HEAD payload (per rarengine's ParseRAR3FileHeader: unpSize, hostOS,
+// fileCrc, fTime, unpVer, method, nameSize, attr) followed by name and,
+// when salt is true, an 8-byte salt/encryption marker.
+func buildRAR3FilePayload(name string, salt bool) []byte {
+	var u4 [4]byte
+	payload := make([]byte, 0, 21+len(name)+8)
+	payload = append(payload, u4[:]...) // unpSize = 0
+	payload = append(payload, 0)        // hostOS
+	payload = append(payload, u4[:]...) // fileCrc = 0
+	payload = append(payload, u4[:]...) // fTime = 0
+	payload = append(payload, 0)        // unpVer (unused)
+	payload = append(payload, 0x30)     // method = store
+	var u2 [2]byte
+	binary.LittleEndian.PutUint16(u2[:], uint16(len(name)))
+	payload = append(payload, u2[:]...) // nameSize
+	payload = append(payload, u4[:]...) // attr = 0
+	payload = append(payload, []byte(name)...)
+	if salt {
+		payload = append(payload, make([]byte, 8)...)
+	}
+	return payload
+}
+
+// buildRAR3FileHeaderBlock constructs a raw, CRC-valid RAR3 block header
+// (as read by rarengine.ReadRAR3BlockHeader) of type FILE_HEAD (0x74),
+// always with the LONG_BLOCK flag set (0x8000) since FILE_HEAD always
+// carries an addSize field. addSize is the header's *declared* packed
+// size, independent of how many payload bytes the caller actually
+// appends after this block -- used to synthesize a truncated-data error.
+func buildRAR3FileHeaderBlock(flags uint16, addSize uint32, payload []byte) []byte {
+	const longBlockFlag = 0x8000
+	blockFlags := flags | longBlockFlag
+	hSize := uint16(11 + len(payload))
+
+	var typeFlagsSize [5]byte
+	typeFlagsSize[0] = rar3HeaderTypeFile
+	binary.LittleEndian.PutUint16(typeFlagsSize[1:3], blockFlags)
+	binary.LittleEndian.PutUint16(typeFlagsSize[3:5], hSize)
+
+	var addSizeBuf [4]byte
+	binary.LittleEndian.PutUint32(addSizeBuf[:], addSize)
+
+	crcBuf := append(append([]byte{}, typeFlagsSize[:]...), addSizeBuf[:]...)
+	crcBuf = append(crcBuf, payload...)
+	crc := uint16(crc32.ChecksumIEEE(crcBuf))
+
+	var out bytes.Buffer
+	var crcField [2]byte
+	binary.LittleEndian.PutUint16(crcField[:], crc)
+	out.Write(crcField[:])
+	out.Write(typeFlagsSize[:])
+	out.Write(addSizeBuf[:])
+	out.Write(payload)
+	return out.Bytes()
+}
+
+// TestInspectRar3_Encrypted proves InspectRar3 sets Info.Encrypted from a
+// file header's salt/password flag (0x0400) -- the one property claim in
+// InspectRar3 that neither real fixture exercises (both are unencrypted).
+func TestInspectRar3_Encrypted(t *testing.T) {
+	const encryptedFlag = 0x0400
+	payload := buildRAR3FilePayload("secret.txt", true)
+	block := buildRAR3FileHeaderBlock(encryptedFlag, 0, payload)
+	data := append(append([]byte{}, rar3Sig...), block...)
+	path := writeTemp(t, "encrypted.rar", data)
+
+	info, err := InspectRar3(path)
+	if err != nil {
+		t.Fatalf("InspectRar3(%s) error: %v", path, err)
+	}
+	if !info.Encrypted {
+		t.Error("Encrypted = false, want true")
+	}
+	if len(info.Filenames) != 1 || info.Filenames[0] != "secret.txt" {
+		t.Errorf("Filenames = %v, want [secret.txt]", info.Filenames)
+	}
+}
+
+// TestInspectRar3_TruncatedPackedData proves InspectRar3 surfaces an error
+// (rather than silently truncating or hanging) when a file header declares
+// more packed data than the stream actually contains.
+func TestInspectRar3_TruncatedPackedData(t *testing.T) {
+	payload := buildRAR3FilePayload("file.txt", false)
+	block := buildRAR3FileHeaderBlock(0, 1000, payload) // claims 1000 packed bytes that don't exist
+	data := append(append([]byte{}, rar3Sig...), block...)
+	path := writeTemp(t, "truncated.rar", data)
+
+	_, err := InspectRar3(path)
+	if err == nil {
+		t.Fatal("expected error for truncated packed data, got nil")
+	}
+	if !strings.Contains(err.Error(), "skip packed data") {
+		t.Errorf("error = %v, want it to mention 'skip packed data'", err)
 	}
 }
 
