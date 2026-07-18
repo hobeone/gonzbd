@@ -139,13 +139,19 @@ func Load(dir string) (*Queue, error) {
 	jobsDir := filepath.Join(dir, "jobs")
 	for _, id := range idx.JobIDs {
 		var job Job
-		if err := readGzJSON(filepath.Join(jobsDir, id+".json.gz"), &job); err != nil {
+		jobPath := filepath.Join(jobsDir, id+".json.gz")
+		if err := readGzJSON(jobPath, &job); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				// Job file was removed but the index wasn't saved before
 				// a crash. Skip the orphaned entry; Prune will clean up.
 				continue
 			}
-			return nil, fmt.Errorf("queue: load job %s: %w", id, err)
+			// Quarantine corrupt job file and continue loading others
+			if qErr := quarantineFile(jobPath); qErr != nil {
+				return nil, fmt.Errorf("queue: load job %s failed and could not quarantine: %w (original error: %w)", id, qErr, err)
+			}
+			q.log.Warn("quarantining corrupt job file", "id", id, "path", jobPath, "err", err)
+			continue
 		}
 		q.jobs = append(q.jobs, &job)
 		q.byID[id] = &job

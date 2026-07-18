@@ -242,22 +242,37 @@ func TestLoad_CorruptJobFile(t *testing.T) {
 	dir := t.TempDir()
 
 	q := New()
-	j := makeJob(t, "corrupt", constants.NormalPriority)
-	_ = q.Add(j)
+	j1 := makeJob(t, "good", constants.NormalPriority)
+	j2 := makeJob(t, "corrupt", constants.NormalPriority)
+	_ = q.Add(j1)
+	_ = q.Add(j2)
 	_ = q.Save(dir)
 
-	// Corrupt the job file.
-	jobPath := filepath.Join(dir, "jobs", j.ID+".json.gz")
+	// Corrupt job-b's file
+	jobPath := filepath.Join(dir, "jobs", j2.ID+".json.gz")
 	if err := os.WriteFile(jobPath, []byte("corrupt data"), 0o644); err != nil {
 		t.Fatalf("corrupt job file: %v", err)
 	}
 
-	_, err := Load(dir)
-	if err == nil {
-		t.Error("expected error for corrupt job file")
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "load job") {
-		t.Errorf("error should mention 'load job': %v", err)
+
+	// Good job should be loaded, corrupt one skipped
+	if loaded.Len() != 1 {
+		t.Errorf("expected 1 job, got %d", loaded.Len())
+	}
+	if _, err := loaded.Get(j1.ID); err != nil {
+		t.Errorf("good job should be loaded: %v", err)
+	}
+
+	// Assert corrupt job file was renamed
+	if _, err := os.Stat(jobPath); !os.IsNotExist(err) {
+		t.Errorf("expected original job file to be gone, got: %v", err)
+	}
+	if _, err := os.Stat(jobPath + ".corrupt"); err != nil {
+		t.Errorf("expected corrupt job file to exist, got: %v", err)
 	}
 }
 
@@ -722,9 +737,52 @@ func TestLoad_CorruptIndexQuarantineFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error due to quarantine failure, got nil")
 	}
+	if !strings.Contains(err.Error(), "failed and could not quarantine") {
+		t.Errorf("expected error to mention quarantine failure, got: %v", err)
+	}
 
 	// Verify the original file is still there
 	if _, err := os.Stat(idxPath); err != nil {
 		t.Errorf("expected original corrupt file to still exist, got: %v", err)
+	}
+}
+
+func TestLoad_CorruptJobQuarantineFailure(t *testing.T) {
+	// Sequential test because it mutates global osRename.
+	dir := t.TempDir()
+
+	q := New()
+	j1 := makeJob(t, "good", constants.NormalPriority)
+	j2 := makeJob(t, "corrupt", constants.NormalPriority)
+	_ = q.Add(j1)
+	_ = q.Add(j2)
+	_ = q.Save(dir)
+
+	// Corrupt job-b's file
+	jobPath := filepath.Join(dir, "jobs", j2.ID+".json.gz")
+	if err := os.WriteFile(jobPath, []byte("corrupt data"), 0o644); err != nil {
+		t.Fatalf("corrupt job file: %v", err)
+	}
+
+	// Mock osRename to fail
+	oldRename := osRename
+	osRename = func(oldpath, newpath string) error {
+		return errors.New("mock rename error")
+	}
+	defer func() {
+		osRename = oldRename
+	}()
+
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("expected error due to quarantine failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed and could not quarantine") {
+		t.Errorf("expected error to mention quarantine failure, got: %v", err)
+	}
+
+	// Verify the original file is still there
+	if _, err := os.Stat(jobPath); err != nil {
+		t.Errorf("expected original corrupt job file to still exist, got: %v", err)
 	}
 }
