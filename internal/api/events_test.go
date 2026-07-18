@@ -399,16 +399,7 @@ func TestBroadcaster_Handle_BufferOverflow(t *testing.T) {
 	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "done") }()
 
 	// Wait for the client to register with the broadcaster.
-	ctxPoll, cancelPoll := context.WithTimeout(ctx, 2*time.Second)
-	for b.NumClients() == 0 {
-		select {
-		case <-ctxPoll.Done():
-			cancelPoll()
-			t.Fatal("timeout waiting for client registration")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
-	cancelPoll()
+	waitClientRegister(t, b)
 
 	// The client deliberately never reads. Broadcast large events until the
 	// OS socket write buffer and the 16-slot send channel both fill; the next
@@ -459,16 +450,7 @@ func TestBroadcaster_HandleClientDisconnect(t *testing.T) {
 	}
 
 	// Wait for connection to be registered.
-	ctxPoll, cancelPoll := context.WithTimeout(ctx, 2*time.Second)
-	for b.NumClients() == 0 {
-		select {
-		case <-ctxPoll.Done():
-			cancelPoll()
-			t.Fatal("timeout waiting for client registration")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
-	cancelPoll()
+	waitClientRegister(t, b)
 
 	b.mu.RLock()
 	clientCount := len(b.clients)
@@ -506,6 +488,38 @@ func (h *recordHandler) len() int {
 	return len(h.records)
 }
 
+func waitDisconnectLog(t *testing.T, rec *recordHandler) {
+	t.Helper()
+	pollStart := time.Now()
+	for {
+		var done bool
+		rec.mu.Lock()
+		for _, r := range rec.records {
+			if r.Message == "WebSocket client disconnected" {
+				done = true
+				break
+			}
+		}
+		rec.mu.Unlock()
+
+		if done || time.Since(pollStart) > time.Second {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func waitClientRegister(t *testing.T, b *Broadcaster) {
+	t.Helper()
+	pollStart := time.Now()
+	for b.NumClients() == 0 {
+		if time.Since(pollStart) > 2*time.Second {
+			t.Fatal("timeout waiting for client registration")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestBroadcaster_DebugLogging(t *testing.T) {
 	t.Parallel()
 
@@ -529,6 +543,73 @@ func TestBroadcaster_DebugLogging(t *testing.T) {
 	b.Broadcast(Event{Type: "with_client"})
 	if got := rec.len(); got != 1 {
 		t.Errorf("expected 1 log record with 1 client, got %d", got)
+	}
+}
+
+func TestClientConnectionDetails(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.DiscardHandler)
+	b := NewBroadcaster(logger)
+
+	tests := []struct {
+		name       string
+		remoteAddr string
+		expectedIP string
+	}{
+		{
+			name:       "IPv4 with port",
+			remoteAddr: "192.168.1.5:54321",
+			expectedIP: "192.168.1.5",
+		},
+		{
+			name:       "IPv6 with port",
+			remoteAddr: "[2001:db8::1]:12345",
+			expectedIP: "2001:db8::1",
+		},
+		{
+			name:       "Bare IP without port",
+			remoteAddr: "10.0.0.1",
+			expectedIP: "10.0.0.1",
+		},
+		{
+			name:       "Empty string fallback",
+			remoteAddr: "",
+			expectedIP: "",
+		},
+		{
+			name:       "Whitespace string fallback",
+			remoteAddr: "   ",
+			expectedIP: "",
+		},
+	}
+
+	// Verify connection ID incrementing
+	c1 := &client{
+		id:   b.nextID.Add(1),
+		send: make(chan []byte, 16),
+	}
+	if c1.id != 1 {
+		t.Errorf("got connection ID %d, want 1", c1.id)
+	}
+
+	c2 := &client{
+		id:   b.nextID.Add(1),
+		send: make(chan []byte, 16),
+	}
+	if c2.id != 2 {
+		t.Errorf("got connection ID %d, want 2", c2.id)
+	}
+
+	// Verify IP extraction
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api/ws", nil)
+			req.RemoteAddr = tc.remoteAddr
+			got := remoteIP(req)
+			if got != tc.expectedIP {
+				t.Errorf("remoteIP(%q) = %q, want %q", tc.remoteAddr, got, tc.expectedIP)
+			}
+		})
 	}
 }
 
@@ -642,6 +723,334 @@ func TestHandleWS(t *testing.T) {
 		if resp != nil && resp.Body != nil {
 			defer func() { _ = resp.Body.Close() }()
 		}
-		_ = conn.Close(websocket.StatusNormalClosure, "done")
+		if err := conn.Close(websocket.StatusNormalClosure, "done"); err != nil {
+			t.Errorf("conn.Close: %v", err)
+		}
 	})
+}
+
+func TestWebSocketLifecycleLogging(t *testing.T) {
+	rec := &recordHandler{}
+	logger := slog.New(rec)
+	b := NewBroadcaster(logger)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.Handle(w, r)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+
+	// Close cleanly from client side
+	if err := conn.Close(websocket.StatusNormalClosure, "clean exit"); err != nil {
+		t.Errorf("conn.Close: %v", err)
+	}
+
+	// Wait for client disconnect to be cleaned up and logged on the server
+	waitDisconnectLog(t, rec)
+
+	// Verify log records
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+
+	var hasConnected, hasDisconnected bool
+	for _, r := range rec.records {
+		if r.Message == "WebSocket client connected" {
+			hasConnected = true
+			var connID uint64
+			var ip string
+			r.Attrs(func(attr slog.Attr) bool {
+				if attr.Key == "connection_id" {
+					connID = attr.Value.Uint64()
+				}
+				if attr.Key == "remote_ip" {
+					ip = attr.Value.String()
+				}
+				return true
+			})
+			if connID == 0 {
+				t.Error("connected log missing connection_id")
+			}
+			if ip == "" {
+				t.Error("connected log missing remote_ip")
+			}
+		}
+		if r.Message == "WebSocket client disconnected" {
+			hasDisconnected = true
+			var connID uint64
+			var ip, reason string
+			var duration time.Duration
+			r.Attrs(func(attr slog.Attr) bool {
+				switch attr.Key {
+				case "connection_id":
+					connID = attr.Value.Uint64()
+				case "remote_ip":
+					ip = attr.Value.String()
+				case "reason":
+					reason = attr.Value.String()
+				case "duration":
+					duration = attr.Value.Duration()
+				}
+				return true
+			})
+			if connID == 0 {
+				t.Error("disconnected log missing connection_id")
+			}
+			if ip == "" {
+				t.Error("disconnected log missing remote_ip")
+			}
+			if reason != "close status 1000 (StatusNormalClosure)" {
+				t.Errorf("disconnected log got unexpected reason: %q", reason)
+			}
+			if duration <= 0 {
+				t.Errorf("disconnected log got invalid duration: %v", duration)
+			}
+		}
+	}
+
+	if !hasConnected {
+		t.Error("missing connected log line")
+	}
+	if !hasDisconnected {
+		t.Error("missing disconnected log line")
+	}
+}
+
+func TestWebSocketLifecycleLogging_BufferOverflow(t *testing.T) {
+	rec := &recordHandler{}
+	logger := slog.New(rec)
+	b := NewBroadcaster(logger)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.Handle(w, r)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+
+	// Wait for client to register
+	waitClientRegister(t, b)
+
+	// Send messages until buffer overflow
+	big := strings.Repeat("x", 4096)
+	for b.NumClients() > 0 {
+		b.Broadcast(Event{Type: "overflow", Line: big})
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	// Now that the broadcaster has detected the overflow and closed the channel,
+	// start reading from the client side to unblock the server's blocked conn.Write.
+	go func() {
+		for {
+			_, _, err := conn.Read(ctx)
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	// Wait for disconnect log to appear (up to 1s) to avoid race condition
+	pollStart := time.Now()
+	for {
+		var done bool
+		rec.mu.Lock()
+		for _, r := range rec.records {
+			if r.Message == "WebSocket client disconnected" {
+				done = true
+				break
+			}
+		}
+		rec.mu.Unlock()
+
+		if done || time.Since(pollStart) > time.Second {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Verify log records
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+
+	var hasBufferFull, hasDisconnected bool
+	var disconnectReason string
+	for _, r := range rec.records {
+		if r.Message == "WebSocket client buffer full, disconnecting" {
+			hasBufferFull = true
+			var connID uint64
+			var ip string
+			r.Attrs(func(attr slog.Attr) bool {
+				if attr.Key == "connection_id" {
+					connID = attr.Value.Uint64()
+				}
+				if attr.Key == "remote_ip" {
+					ip = attr.Value.String()
+				}
+				return true
+			})
+			if connID == 0 {
+				t.Error("buffer full log missing connection_id")
+			}
+			if ip == "" {
+				t.Error("buffer full log missing remote_ip")
+			}
+		}
+		if r.Message == "WebSocket client disconnected" {
+			hasDisconnected = true
+			r.Attrs(func(attr slog.Attr) bool {
+				if attr.Key == "reason" {
+					disconnectReason = attr.Value.String()
+				}
+				return true
+			})
+		}
+	}
+
+	if !hasBufferFull {
+		t.Error("missing buffer full log line")
+	}
+	if !hasDisconnected {
+		t.Error("missing disconnected log line")
+	}
+	if disconnectReason != "buffer overflow" {
+		t.Errorf("unexpected disconnect reason for overflow: got %q, want \"buffer overflow\"", disconnectReason)
+	}
+}
+
+func TestWebSocketLifecycleLogging_AbnormalClose(t *testing.T) {
+	rec := &recordHandler{}
+	logger := slog.New(rec)
+	b := NewBroadcaster(logger)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.Handle(w, r)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+
+	// Close the connection abruptly from client side without a clean websocket close handshake.
+	_ = conn.CloseNow()
+
+	// Wait for client disconnect to be cleaned up and logged on the server
+	waitDisconnectLog(t, rec)
+
+	// Verify log records
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+
+	var hasDisconnected bool
+	var disconnectReason string
+	for _, r := range rec.records {
+		if r.Message == "WebSocket client disconnected" {
+			hasDisconnected = true
+			r.Attrs(func(attr slog.Attr) bool {
+				if attr.Key == "reason" {
+					disconnectReason = attr.Value.String()
+				}
+				return true
+			})
+		}
+	}
+
+	if !hasDisconnected {
+		t.Error("missing disconnected log line")
+	}
+	if disconnectReason != "failed to get reader: failed to read frame header: EOF" {
+		t.Errorf("abnormal disconnect reason got: %q, want: %q", disconnectReason, "failed to get reader: failed to read frame header: EOF")
+	}
+}
+
+func TestWebSocketLifecycleLogging_WriteError(t *testing.T) {
+	rec := &recordHandler{}
+	logger := slog.New(rec)
+	b := NewBroadcaster(logger)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.Handle(w, r)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+
+	// Wait for client to register.
+	waitClientRegister(t, b)
+
+	// Close the connection abruptly from client side.
+	if err := conn.CloseNow(); err != nil {
+		t.Errorf("conn.CloseNow: %v", err)
+	}
+
+	// Immediately broadcast a message. The write loop will try to write it
+	// to the closed connection and hit a write error.
+	b.Broadcast(Event{Type: "test_write_error"})
+
+	// Wait for client disconnect to be cleaned up and logged on the server
+	waitDisconnectLog(t, rec)
+
+	// Verify log records contains write error or EOF
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+
+	var hasDisconnected bool
+	var disconnectReason string
+	for _, r := range rec.records {
+		if r.Message == "WebSocket client disconnected" {
+			hasDisconnected = true
+			r.Attrs(func(attr slog.Attr) bool {
+				if attr.Key == "reason" {
+					disconnectReason = attr.Value.String()
+				}
+				return true
+			})
+		}
+	}
+
+	if !hasDisconnected {
+		t.Error("missing disconnected log line")
+	}
+	if !strings.HasPrefix(disconnectReason, "write error:") && !strings.Contains(disconnectReason, "EOF") {
+		t.Errorf("expected write error or EOF, got: %q", disconnectReason)
+	}
 }
