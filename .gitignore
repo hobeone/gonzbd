@@ -47,3 +47,4 @@ ui/coverage/
 fix_revert_audit_results.txt
 .superpowers/
 .gremlins/
+/.worktrees/
