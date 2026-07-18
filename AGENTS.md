@@ -133,6 +133,15 @@ golangci-lint run ./...                                     # Linting
 
 ## Implementation Workflow
 
+### Interactive Plan & Design Artifacts (Override Skill Defaults)
+
+When using superpowers/workflow skills (like `brainstorming` or `writing-plans` or `work`), **always** write all design documents, specifications, and implementation plans directly to the session artifact directory: `<appDataDir>/brain/<conversation-id>/`.
+- Do NOT write them to repository folders (like `docs/superpowers/` or similar), unless specifically requested by the user.
+- All such artifacts MUST include `ArtifactMetadata` with `RequestFeedback: true` and `UserFacing: true`. This guarantees they are rendered in the interactive review modal, enabling the execution checkpoint/Proceed button.
+- Filename conventions:
+  - Design/Specs: `YYYY-MM-DD-<feature-name>-design.md`
+  - Implementation Plans: `YYYY-MM-DD-<feature-name>-plan.md`
+
 ### Per-Change Commit Cycle
 
 Each logical change is a self-contained unit of work. The workflow is:
