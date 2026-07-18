@@ -257,7 +257,12 @@ func isCrossOrigin(r *http.Request) bool {
 		return true // malformed → treat as cross-origin
 	}
 
-	return !sameOrigin(u.Host, r.Host)
+	// Both Origin and Sec-Fetch-Site must agree the request is same-origin;
+	// checking only one leaves the other spoofable/unchecked path open.
+	if !sameOrigin(u.Host, r.Host) {
+		return true
+	}
+	return isSecFetchSiteCrossOrigin(r.Header.Get("Sec-Fetch-Site"))
 }
 
 // maxFormBytes caps the request body for non-upload form parsing to prevent

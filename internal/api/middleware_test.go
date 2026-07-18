@@ -31,6 +31,21 @@ func TestIsCrossOrigin_SameOrigin(t *testing.T) {
 	}
 }
 
+// TestIsCrossOrigin_SameOriginButSecFetchSiteCrossSite covers the CodeRabbit
+// finding on PR #139: a matching Origin alone must not short-circuit the
+// check when Sec-Fetch-Site disagrees. Both signals must agree the request
+// is same-origin.
+func TestIsCrossOrigin_SameOriginButSecFetchSiteCrossSite(t *testing.T) {
+	t.Parallel()
+	r := httptest.NewRequest("GET", "/api", nil)
+	r.Host = "localhost:4289"
+	r.Header.Set("Origin", "http://localhost:4289")
+	r.Header.Set("Sec-Fetch-Site", "cross-site")
+	if !isCrossOrigin(r) {
+		t.Error("matching Origin with Sec-Fetch-Site: cross-site MUST still be cross-origin")
+	}
+}
+
 func TestIsCrossOrigin_LoopbackOrigin(t *testing.T) {
 	t.Parallel()
 	r := httptest.NewRequest("GET", "/api", nil)
