@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -92,7 +93,7 @@ func (b *Broadcaster) Broadcast(event Event) {
 				// prevents permanent UI desync from silently dropped events.
 				close(c.send)
 				delete(b.clients, c)
-				b.log.Warn("WebSocket client buffer full, disconnecting")
+				b.log.Warn("WebSocket client buffer full, disconnecting", "connection_id", c.id, "remote_ip", c.ip)
 			}
 		}
 		b.mu.Unlock()
@@ -120,17 +121,43 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 		send: make(chan []byte, 16),
 	}
 
+	startTime := time.Now()
+
 	b.mu.Lock()
 	b.clients[c] = struct{}{}
 	b.mu.Unlock()
 
-	b.log.Info("WebSocket client connected", "remote", r.RemoteAddr)
+	b.log.Info("WebSocket client connected", "connection_id", c.id, "remote_ip", c.ip)
+
+	var (
+		closeReason string
+		reasonMu    sync.Mutex
+	)
+	setCloseReason := func(reason string) {
+		reasonMu.Lock()
+		defer reasonMu.Unlock()
+		if closeReason == "" {
+			closeReason = reason
+		}
+	}
 
 	defer func() {
 		b.mu.Lock()
 		delete(b.clients, c)
 		b.mu.Unlock()
-		b.log.Info("WebSocket client disconnected", "remote", r.RemoteAddr)
+
+		reasonMu.Lock()
+		reason := closeReason
+		reasonMu.Unlock()
+		if reason == "" {
+			reason = "unknown"
+		}
+		b.log.Info("WebSocket client disconnected",
+			"connection_id", c.id,
+			"remote_ip", c.ip,
+			"duration", time.Since(startTime),
+			"reason", reason,
+		)
 	}()
 
 	// Read loop (keep-alive/wait for close). Cancels ctx when the
@@ -143,6 +170,11 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 		for {
 			_, _, err := conn.Read(ctx)
 			if err != nil {
+				if status := websocket.CloseStatus(err); status != -1 {
+					setCloseReason(fmt.Sprintf("close status %d (%s)", status, status.String()))
+				} else {
+					setCloseReason(err.Error())
+				}
 				return
 			}
 		}
@@ -158,6 +190,7 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 		select {
 		case msg, ok := <-c.send:
 			if !ok {
+				setCloseReason("buffer overflow")
 				// Channel closed by Broadcast (buffer overflow) —
 				// close connection so UI reconnects.
 				_ = conn.Close(websocket.StatusGoingAway, "buffer overflow") //nolint:errcheck // best-effort close on disconnect
@@ -167,6 +200,7 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 			err := conn.Write(writeCtx, websocket.MessageText, msg)
 			writeCancel()
 			if err != nil {
+				setCloseReason(fmt.Sprintf("write error: %v", err))
 				return
 			}
 		case <-pingTicker.C:
@@ -174,10 +208,12 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 			err := conn.Ping(pingCtx)
 			pingCancel()
 			if err != nil {
+				setCloseReason("ping failed")
 				b.log.Debug("WebSocket ping failed, closing", "err", err)
 				return
 			}
 		case <-ctx.Done():
+			setCloseReason("context canceled")
 			return
 		}
 	}
