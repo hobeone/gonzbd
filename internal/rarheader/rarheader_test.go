@@ -510,6 +510,48 @@ func TestInspectRar3_Encrypted(t *testing.T) {
 	}
 }
 
+// TestInspectRar3_NegativePackedSize proves InspectRar3 rejects a file
+// header whose HIGH_PACK extension (attacker-controlled) sets PackedSize's
+// sign bit, rather than silently no-oping the packed-data skip (io.CopyN
+// and skipForward both treat N<=0 as "nothing to do") and desyncing the
+// stream to read attacker-chosen bytes as the next header.
+func TestInspectRar3_NegativePackedSize(t *testing.T) {
+	const highPackFlag = 0x0100
+	name := "file.txt"
+
+	payloadCap := 4 + 1 + 4 + 4 + 1 + 1 + 2 + 4 + 4 + 4 + len(name)
+	payload := make([]byte, 0, payloadCap)
+	var u4 [4]byte
+	payload = append(payload, u4[:]...) // unpSize = 0
+	payload = append(payload, 0)        // hostOS
+	payload = append(payload, u4[:]...) // fileCrc = 0
+	payload = append(payload, u4[:]...) // fTime = 0
+	payload = append(payload, 0)        // unpVer (unused)
+	payload = append(payload, 0x30)     // method = store
+	var u2 [2]byte
+	binary.LittleEndian.PutUint16(u2[:], uint16(len(name)))
+	payload = append(payload, u2[:]...) // nameSize
+	payload = append(payload, u4[:]...) // attr = 0
+
+	var highPack [4]byte
+	binary.LittleEndian.PutUint32(highPack[:], 0x80000000) // sign bit set
+	payload = append(payload, highPack[:]...)              // highPack
+	payload = append(payload, u4[:]...)                    // highUnp = 0
+	payload = append(payload, []byte(name)...)
+
+	block := buildRAR3FileHeaderBlock(highPackFlag, 0, payload) // addSize=0, so PackedSize = 0 | (highPack<<32) < 0
+	data := append(append([]byte{}, rar3Sig...), block...)
+	path := writeTemp(t, "negsize.rar", data)
+
+	_, err := InspectRar3(path)
+	if err == nil {
+		t.Fatal("expected error for negative packed size, got nil")
+	}
+	if !strings.Contains(err.Error(), "negative packed size") {
+		t.Errorf("error = %v, want it to mention 'negative packed size'", err)
+	}
+}
+
 // TestInspectRar3_TruncatedPackedData proves InspectRar3 surfaces an error
 // (rather than silently truncating or hanging) when a file header declares
 // more packed data than the stream actually contains.
@@ -525,6 +567,34 @@ func TestInspectRar3_TruncatedPackedData(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "skip packed data") {
 		t.Errorf("error = %v, want it to mention 'skip packed data'", err)
+	}
+}
+
+func TestSkipForward(t *testing.T) {
+	tests := []struct {
+		name    string
+		n       int64
+		wantErr bool
+	}{
+		{"zero", 0, false},
+		{"negative treated as no-op", -5, false},
+		{"within bounds", 3, false},
+		{"past EOF", 1000, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTemp(t, "skip.bin", []byte("hello world"))
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			defer func() { _ = f.Close() }()
+
+			err = skipForward(f, tt.n)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("skipForward(f, %d) err = %v, wantErr = %v", tt.n, err, tt.wantErr)
+			}
+		})
 	}
 }
 

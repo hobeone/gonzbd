@@ -216,7 +216,20 @@ func InspectRar3(p string) (info Info, err error) {
 				if fh.Encrypted {
 					info.Encrypted = true
 				}
-				if _, err := io.CopyN(io.Discard, f, fh.PackedSize); err != nil {
+				// fh.PackedSize's high 32 bits come from an attacker-controlled
+				// header field (the RAR3 "large file" HIGH_PACK extension) OR'd
+				// into an int64 -- a crafted value with the sign bit set makes
+				// PackedSize negative. io.CopyN treats N<=0 as "nothing to do"
+				// and returns (0, nil) rather than an error, which would leave
+				// the stream desynced (positioned inside this file's packed
+				// data instead of past it) and let a crafted archive splice in
+				// attacker-chosen bytes as the next header. Reject explicitly
+				// instead of relying on the next header's CRC check to
+				// eventually catch the desync.
+				if fh.PackedSize < 0 {
+					return fmt.Errorf("rarheader: file %q: negative packed size %d", fh.Name, fh.PackedSize)
+				}
+				if err := skipForward(f, fh.PackedSize); err != nil {
 					return fmt.Errorf("rarheader: skip packed data: %w", err)
 				}
 
@@ -224,10 +237,8 @@ func InspectRar3(p string) (info Info, err error) {
 				return nil
 
 			default:
-				if h.DataSize > 0 {
-					if _, err := io.CopyN(io.Discard, f, h.DataSize); err != nil {
-						return fmt.Errorf("rarheader: skip block data: %w", err)
-					}
+				if err := skipForward(f, h.DataSize); err != nil {
+					return fmt.Errorf("rarheader: skip block data: %w", err)
 				}
 			}
 		}
@@ -427,11 +438,49 @@ func parseUnrarVtOutput(output string) (filenames []string, encrypted bool) {
 	return filenames, encrypted
 }
 
+// skipForward advances f by n bytes using Seek rather than reading and
+// discarding n bytes -- this matters because header inspection routinely
+// skips whole (possibly multi-hundred-MB to multi-GB) file payloads it will
+// never read. Seek alone is not sufficient: os.File.Seek past the end of a
+// file succeeds silently (the error only surfaces on a later Read), which
+// would turn a truncated/corrupt archive into a false "clean" inspection
+// instead of the explicit error a corrupt archive should produce. Stat
+// confirms the new position is still within the file before continuing.
+func skipForward(f *os.File, n int64) error {
+	if n <= 0 {
+		return nil
+	}
+	newPos, err := f.Seek(n, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if newPos > fi.Size() {
+		return fmt.Errorf("seek past end of file (pos=%d, size=%d)", newPos, fi.Size())
+	}
+	return nil
+}
+
 // osOpen is a seam for tests to inject an open failure independent of
 // readMagic's own os.Open call, since callers always readMagic(p)
 // successfully before calling openPastSignature(p, ...) on the same
 // unchanged path -- without this seam, openPastSignature's open-error
 // branch would be unreachable through any real caller.
+//
+// Tradeoff: gosec's G304 (tainted-path-open) check pattern-matches literal
+// os.Open/os.OpenFile call expressions, so routing the call through this
+// func-var indirection means gosec no longer flags it at all -- not even
+// as something to suppress. The //nolint:gosec below is now decorative
+// (verified: removing it produces the same 0 lint issues), not an active
+// suppression. This is an accepted, bounded tradeoff, not an oversight:
+// every os.Open(p) callsite in this file already carries an identical
+// "p is trusted input from internal caller" //nolint:gosec justification
+// (readMagic, inspectViaUnrar's use of p) -- the same trust boundary this
+// package already relies on elsewhere, just no longer independently
+// re-verified by the linter at this specific callsite.
 var osOpen = os.Open
 
 // openPastSignature opens p and advances past its len(sig)-byte magic
