@@ -635,3 +635,39 @@ func TestWriteGzJSONRaw_WriteError(t *testing.T) {
 		t.Fatal("expected write error when exceeding RLIMIT_FSIZE, got nil")
 	}
 }
+
+func TestQuarantineFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "testfile.json.gz")
+	if err := os.WriteFile(path, []byte("test data"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := quarantineFile(path)
+	if err != nil {
+		t.Fatalf("quarantineFile failed: %v", err)
+	}
+
+	// Assert original is gone
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("expected original file to be gone, got: %v", err)
+	}
+
+	// Assert corrupt file exists and has correct content
+	corruptPath := path + ".corrupt"
+	data, err := os.ReadFile(corruptPath)
+	if err != nil {
+		t.Errorf("failed to read corrupt file: %v", err)
+	} else if string(data) != "test data" {
+		t.Errorf("corrupt file content = %q, want %q", string(data), "test data")
+	}
+}
+
+func TestQuarantineFile_NotExist(t *testing.T) {
+	t.Parallel()
+	err := quarantineFile("/nonexistent/path/file.json.gz")
+	if err == nil {
+		t.Error("expected error when quarantining nonexistent file, got nil")
+	}
+}

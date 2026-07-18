@@ -255,3 +255,8 @@ func readGzJSON(path string, v any) error {
 	}
 	return nil
 }
+
+func quarantineFile(path string) error {
+	dest := path + ".corrupt"
+	return os.Rename(path, dest)
+}
