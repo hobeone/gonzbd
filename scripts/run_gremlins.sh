@@ -25,8 +25,8 @@
 #
 # Tunables (all optional):
 #   GREMLINS_DIR          scratch dir base (default: ~/.cache/gonzbd-gremlins)
-#   GREMLINS_WORKERS       parallel workers (default: 4)
-#   GREMLINS_MEMORY_MAX    hard memory cap for the whole run (default: 32G)
+#   GREMLINS_WORKERS       parallel workers (default: auto based on CPU/RAM, min 4, max 16)
+#   GREMLINS_MEMORY_MAX    hard memory cap for the whole run (default: 80% of system RAM, fallback 32G)
 #   GREMLINS_DISK_MAX_MB   scratch-dir size cap in MiB (default: 51200 = 50GiB)
 #   GREMLINS_TIMEOUT_SECS  wall-clock cap in seconds (default: 1800 = 30min)
 
@@ -62,8 +62,49 @@ rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR" "$GOCACHE"
 export TMPDIR="$TMP_DIR"
 
-WORKERS="${GREMLINS_WORKERS:-4}"
-MEMORY_MAX="${GREMLINS_MEMORY_MAX:-32G}"
+# Auto-detect default workers and memory cap based on system CPU cores and RAM
+DEFAULT_WORKERS=4
+DEFAULT_MEMORY_MAX="32G"
+
+if command -v nproc >/dev/null 2>&1; then
+    cpu_cores=$(nproc)
+    cpu_workers=$(( cpu_cores / 2 ))
+else
+    cpu_workers=4
+fi
+
+if [ -r /proc/meminfo ]; then
+    mem_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo)
+    mem_gb=$(( mem_kb / 1024 / 1024 ))
+    if [ "$mem_gb" -gt 0 ]; then
+        ram_workers=$(( mem_gb / 4 ))
+        calc_mem_max_gb=$(( mem_gb * 80 / 100 ))
+        if [ "$calc_mem_max_gb" -ge 1 ]; then
+            DEFAULT_MEMORY_MAX="${calc_mem_max_gb}G"
+        fi
+    else
+        ram_workers=4
+    fi
+else
+    ram_workers=4
+fi
+
+if [ "$ram_workers" -lt "$cpu_workers" ]; then
+    auto_workers="$ram_workers"
+else
+    auto_workers="$cpu_workers"
+fi
+
+if [ "$auto_workers" -lt 4 ]; then
+    DEFAULT_WORKERS=4
+elif [ "$auto_workers" -gt 16 ]; then
+    DEFAULT_WORKERS=16
+else
+    DEFAULT_WORKERS="$auto_workers"
+fi
+
+WORKERS="${GREMLINS_WORKERS:-$DEFAULT_WORKERS}"
+MEMORY_MAX="${GREMLINS_MEMORY_MAX:-$DEFAULT_MEMORY_MAX}"
 DISK_MAX_MB="${GREMLINS_DISK_MAX_MB:-51200}"
 TIMEOUT_SECS="${GREMLINS_TIMEOUT_SECS:-1800}"
 

@@ -106,10 +106,16 @@ golangci-lint run ./...                                     # Linting
 > per run) and adds resource limits: a hard memory cap via a `systemd --user`
 > cgroup scope (so OOM kills only this run's own processes, not arbitrary
 > processes system-wide) and a background watchdog enforcing a disk-usage
-> cap and wall-clock timeout. Tunable via `GREMLINS_WORKERS` (default 4),
-> `GREMLINS_MEMORY_MAX` (default 32G), `GREMLINS_DISK_MAX_MB` (default 51200),
+> cap and wall-clock timeout. Tunable via `GREMLINS_WORKERS` (auto-detected
+> based on CPU cores and RAM: `min(nproc/2, total_ram_gb/4)`, clamped 4–16;
+> e.g. 12 workers on 24-core/94GB RAM systems), `GREMLINS_MEMORY_MAX` (auto-detected
+> to 80% of total system RAM, fallback 32G), `GREMLINS_DISK_MAX_MB` (default 51200),
 > `GREMLINS_TIMEOUT_SECS` (default 1800), `GREMLINS_DIR` (scratch dir base —
-> must not be inside the repo). Requires `systemd-run` (Linux only, matching
+> must not be inside the repo). Hardware tuning guidance:
+> - 8 CPU / 16GB RAM: `GREMLINS_WORKERS=4`, `GREMLINS_MEMORY_MAX=12G`
+> - 16 CPU / 32GB RAM: `GREMLINS_WORKERS=8`, `GREMLINS_MEMORY_MAX=24G`
+> - 24+ CPU / 64GB+ RAM: `GREMLINS_WORKERS=12-16`, `GREMLINS_MEMORY_MAX=48G-64G`
+> Requires `systemd-run` (Linux only, matching
 > this project's platform target); the script refuses to run without it
 > rather than falling back to an unconfined invocation. Mutant-type
 > selection and `timeout-coefficient` are configured project-wide in
