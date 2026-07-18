@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -323,6 +324,109 @@ func TestInspect_ValidRAR_Fixtures(t *testing.T) {
 		if len(infoRar5.Filenames) == 0 {
 			t.Errorf("expected filenames in InspectRar5(du_test.part1.rar), got none")
 		}
+	}
+}
+
+func TestInspectRar3_FileNotFound(t *testing.T) {
+	_, err := InspectRar3("/nonexistent/path/to/file.rar")
+	if err == nil {
+		t.Error("InspectRar3 returned nil error for nonexistent file")
+	}
+}
+
+func TestInspectRar3_Corrupted(t *testing.T) {
+	data := append([]byte{}, rar3Sig...)
+	data = append(data, bytes.Repeat([]byte{0xFF}, 1000)...)
+	path := writeTemp(t, "corrupt.rar", data)
+	_, err := InspectRar3(path)
+	if err == nil {
+		t.Error("expected error for corrupted RAR3 file in InspectRar3")
+	}
+}
+
+// TestInspectRar3_RealFixtures exercises InspectRar3 against real (not
+// synthetic) RAR3 archives vendored from markokr/rarfile -- see
+// testdata/ATTRIBUTION.md. rar3-comment-plain.rar uses a genuinely
+// compressed method (3) plus archive- and file-level comment blocks
+// (type 0x75, exercised via the default/skip case); rar3-subdirs.rar uses
+// the store method (0) with subdirectories and a Unicode filename. Both
+// prove header-only inspection works regardless of compression method --
+// the gap InspectRar5's StreamDecompressor-based approach would hit for
+// RAR3 (see hobeone/rarengine#14).
+func TestInspectRar3_RealFixtures(t *testing.T) {
+	tests := []struct {
+		name      string
+		file      string
+		wantFiles []string
+	}{
+		{
+			name:      "compressed, archive and file comments",
+			file:      filepath.Join("testdata", "rar3-comment-plain.rar"),
+			wantFiles: []string{"file1.txt", "file2.txt"},
+		},
+		{
+			// The third entry's on-disk name is "sub/üȵĩöḋè/file.txt", but
+			// its header carries the RAR3 UNICODE flag: the raw name field
+			// is an ASCII fallback name, a NUL separator, then RAR3's own
+			// compact Unicode encoding (not raw UTF-8). rarengine's
+			// ParseRAR3FileHeader does not decode that encoding -- it
+			// returns the raw dual-encoded bytes as-is, which sanitizeName
+			// then mangles into "_file_.txt" (NUL -> "_", then path.Base).
+			// This is a pre-existing rarengine limitation, not something
+			// introduced here; asserting the real (if ugly) output keeps
+			// this test honest about current behavior.
+			name:      "store method, subdirs, unicode name",
+			file:      filepath.Join("testdata", "rar3-subdirs.rar"),
+			wantFiles: []string{"file2.txt", "long fn.txt", "_file_.txt", "file1.txt"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info, err := InspectRar3(tt.file)
+			if err != nil {
+				t.Fatalf("InspectRar3(%s) error: %v", tt.file, err)
+			}
+			if info.Version != 3 {
+				t.Errorf("Version = %d, want 3", info.Version)
+			}
+			if !slices.Equal(info.Filenames, tt.wantFiles) {
+				t.Errorf("Filenames = %v, want %v", info.Filenames, tt.wantFiles)
+			}
+			if info.Encrypted {
+				t.Error("Encrypted = true, want false")
+			}
+		})
+	}
+}
+
+// TestInspect_RAR3Fixtures_NativePath proves Inspect() resolves these real
+// RAR3 archives via InspectRar3 without falling back to unrar: execCommand
+// is stubbed to fail immediately, so if Inspect fell back it would return
+// that failure instead of a successful result.
+func TestInspect_RAR3Fixtures_NativePath(t *testing.T) {
+	oldExecCommand := execCommand
+	defer func() { execCommand = oldExecCommand }()
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("false")
+	}
+
+	tests := []struct {
+		file      string
+		wantFiles []string
+	}{
+		{filepath.Join("testdata", "rar3-comment-plain.rar"), []string{"file1.txt", "file2.txt"}},
+		{filepath.Join("testdata", "rar3-subdirs.rar"), []string{"file2.txt", "long fn.txt", "_file_.txt", "file1.txt"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.file, func(t *testing.T) {
+			info, err := Inspect(tt.file)
+			if err != nil {
+				t.Fatalf("Inspect(%s) error: %v (should have used InspectRar3, not fallen back to stubbed unrar)", tt.file, err)
+			}
+			if !slices.Equal(info.Filenames, tt.wantFiles) {
+				t.Errorf("Filenames = %v, want %v", info.Filenames, tt.wantFiles)
+			}
+		})
 	}
 }
 

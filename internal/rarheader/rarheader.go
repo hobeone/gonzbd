@@ -31,6 +31,14 @@ var (
 	rar5Sig = []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00}
 )
 
+// RAR3 block header types (rarengine has no exported constants for these --
+// they're internal to its own engine_rar3.go, which uses the same raw
+// values).
+const (
+	rar3HeaderTypeFile       = 0x74
+	rar3HeaderTypeTerminator = 0x7b
+)
+
 // ErrNotRAR is returned when a file does not start with a valid RAR signature.
 var ErrNotRAR = errors.New("rarheader: not a RAR archive")
 
@@ -112,6 +120,16 @@ func Inspect(p string) (Info, error) {
 		// Fallback to unrar vt to be absolutely sure.
 	}
 
+	if ver == 3 {
+		info, err := InspectRar3(p)
+		if err == nil {
+			return info, nil
+		}
+		// Same fallback rationale as RAR5 above: encrypted headers (or any
+		// other parse failure) surface as an error here, so fall back to
+		// unrar vt to be absolutely sure.
+	}
+
 	// Fallback to unrar vt for RAR3/4 or if rarengine failed
 	return inspectViaUnrar(p, ver)
 }
@@ -150,6 +168,73 @@ func InspectRar5(p string) (info Info, err error) {
 			}
 		}
 		return nil
+	})
+	return info, err
+}
+
+// InspectRar3 opens the file at path and inspects it as a RAR3/RAR4 archive
+// using the pure Go rarengine library. It reads only block headers -- each
+// file's packed (and possibly compressed) payload is skipped directly on
+// the raw stream via its header-reported PackedSize, never decompressed.
+//
+// This deliberately does not use rarengine.StreamDecompressor (the
+// InspectRar5 approach): that walk skips to the next file by decompressing
+// and discarding the previous file's content, and rarengine's RAR3 engine
+// only implements the store compression method (method 0) -- any real
+// compressed RAR3 archive would fail there. Reading PackedSize directly off
+// the header and skipping raw bytes works regardless of compression
+// method, since header inspection never needs the decompressed content.
+// See hobeone/rarengine#14 for the RAR3 decompression gap.
+func InspectRar3(p string) (info Info, err error) {
+	info.Version = 3
+	err = cmdutil.SafeEngineRun("rarheader: rarengine panic", func() error {
+		//nolint:gosec // p is trusted input from internal caller
+		f, openErr := os.Open(p)
+		if openErr != nil {
+			return openErr
+		}
+		defer func() { _ = f.Close() }() // cleanup error in defer
+
+		if _, err := io.CopyN(io.Discard, f, int64(len(rar3Sig))); err != nil {
+			return fmt.Errorf("rarheader: skip signature: %w", err)
+		}
+
+		for {
+			h, err := rarengine.ReadRAR3BlockHeader(f)
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return nil
+				}
+				return fmt.Errorf("rarheader: read block header: %w", err)
+			}
+
+			switch h.Type {
+			case rar3HeaderTypeFile:
+				fh, err := rarengine.ParseRAR3FileHeader(h)
+				if err != nil {
+					return fmt.Errorf("rarheader: parse file header: %w", err)
+				}
+				if !fh.IsDir {
+					info.Filenames = append(info.Filenames, sanitizeName(fh.Name))
+				}
+				if fh.Encrypted {
+					info.Encrypted = true
+				}
+				if _, err := io.CopyN(io.Discard, f, fh.PackedSize); err != nil {
+					return fmt.Errorf("rarheader: skip packed data: %w", err)
+				}
+
+			case rar3HeaderTypeTerminator:
+				return nil
+
+			default:
+				if h.DataSize > 0 {
+					if _, err := io.CopyN(io.Discard, f, h.DataSize); err != nil {
+						return fmt.Errorf("rarheader: skip block data: %w", err)
+					}
+				}
+			}
+		}
 	})
 	return info, err
 }
