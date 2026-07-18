@@ -3,6 +3,7 @@ package cmdutil
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os/exec"
 )
@@ -47,7 +48,7 @@ func BuildSandboxedCommand(ctx context.Context, log *slog.Logger, priorityCfg Cm
 	sName, sArgs, err := wrapSandbox(sandboxCfg.TargetDir, name, args)
 	if err != nil {
 		if sandboxCfg.Strict {
-			return nil, err
+			return nil, fmt.Errorf("sandbox setup failed: %w", err)
 		}
 		log.Warn("sandbox unavailable, running extractor unsandboxed",
 			"command", name, "error", err)
