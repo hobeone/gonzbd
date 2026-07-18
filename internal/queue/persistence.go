@@ -113,12 +113,20 @@ func (q *Queue) saveInner(dir string) error {
 // returned. Any other I/O or decode error propagates.
 func Load(dir string) (*Queue, error) {
 	var idx indexFile
-	err := readGzJSON(filepath.Join(dir, "queue.json.gz"), &idx)
+	idxPath := filepath.Join(dir, "queue.json.gz")
+	err := readGzJSON(idxPath, &idx)
 	if errors.Is(err, os.ErrNotExist) {
 		return New(), nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("queue: load index: %w", err)
+		// For index, we degrade to empty queue but must quarantine first.
+		// Permission errors are handled in a later task; for now we quarantine all errors.
+		if qErr := quarantineFile(idxPath); qErr != nil {
+			return nil, fmt.Errorf("queue: load index failed and could not quarantine: %w (original error: %w)", qErr, err)
+		}
+		q := New()
+		q.log.Warn("quarantining corrupt queue index and degrading to empty queue", "path", idxPath, "err", err)
+		return q, nil
 	}
 	if idx.Version != persistenceVersion {
 		return nil, fmt.Errorf("queue: unsupported persistence version %d (expected %d)",
@@ -256,7 +264,9 @@ func readGzJSON(path string, v any) error {
 	return nil
 }
 
+var osRename = os.Rename
+
 func quarantineFile(path string) error {
 	dest := path + ".corrupt"
-	return os.Rename(path, dest)
+	return osRename(path, dest)
 }

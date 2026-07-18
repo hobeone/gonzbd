@@ -2,6 +2,7 @@ package queue
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -669,5 +670,61 @@ func TestQuarantineFile_NotExist(t *testing.T) {
 	err := quarantineFile("/nonexistent/path/file.json.gz")
 	if err == nil {
 		t.Error("expected error when quarantining nonexistent file, got nil")
+	}
+}
+
+func TestLoad_CorruptIndexQuarantined(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create a corrupt index file
+	idxPath := filepath.Join(dir, "queue.json.gz")
+	if err := os.WriteFile(idxPath, []byte("corrupt gzip data"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	q, err := Load(dir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if q.Len() != 0 {
+		t.Errorf("expected empty queue, got len %d", q.Len())
+	}
+
+	// Assert index was renamed
+	if _, err := os.Stat(idxPath); !os.IsNotExist(err) {
+		t.Errorf("expected original index to be gone, got: %v", err)
+	}
+	if _, err := os.Stat(idxPath + ".corrupt"); err != nil {
+		t.Errorf("expected corrupt index to exist, got: %v", err)
+	}
+}
+
+func TestLoad_CorruptIndexQuarantineFailure(t *testing.T) {
+	// Sequential test because it mutates global osRename.
+	dir := t.TempDir()
+
+	idxPath := filepath.Join(dir, "queue.json.gz")
+	if err := os.WriteFile(idxPath, []byte("corrupt gzip data"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Mock osRename to fail
+	oldRename := osRename
+	osRename = func(oldpath, newpath string) error {
+		return errors.New("mock rename error")
+	}
+	defer func() {
+		osRename = oldRename
+	}()
+
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("expected error due to quarantine failure, got nil")
+	}
+
+	// Verify the original file is still there
+	if _, err := os.Stat(idxPath); err != nil {
+		t.Errorf("expected original corrupt file to still exist, got: %v", err)
 	}
 }
