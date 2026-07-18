@@ -3,9 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -33,10 +37,29 @@ type Broadcaster struct {
 	mu      sync.RWMutex
 	clients map[*client]struct{}
 	log     *slog.Logger
+	nextID  atomic.Uint64
 }
 
 type client struct {
-	send chan []byte
+	id          uint64
+	ip          string
+	send        chan []byte
+	mu          sync.Mutex
+	closeReason string
+}
+
+func (c *client) setCloseReason(reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closeReason == "" {
+		c.closeReason = reason
+	}
+}
+
+func (c *client) getCloseReason() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeReason
 }
 
 // NewBroadcaster constructs a new event Broadcaster.
@@ -45,6 +68,14 @@ func NewBroadcaster(log *slog.Logger) *Broadcaster {
 		clients: make(map[*client]struct{}),
 		log:     log,
 	}
+}
+
+func remoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return strings.TrimSpace(r.RemoteAddr)
+	}
+	return strings.TrimSpace(host)
 }
 
 // Broadcast sends an event to all connected clients.
@@ -76,9 +107,10 @@ func (b *Broadcaster) Broadcast(event Event) {
 				// Client's buffer is full — close the channel to force the
 				// write loop to exit and the client to reconnect. This
 				// prevents permanent UI desync from silently dropped events.
+				c.setCloseReason("buffer overflow")
 				close(c.send)
 				delete(b.clients, c)
-				b.log.Warn("WebSocket client buffer full, disconnecting")
+				b.log.Warn("WebSocket client buffer full, disconnecting", "connection_id", c.id, "remote_ip", c.ip)
 			}
 		}
 		b.mu.Unlock()
@@ -101,20 +133,34 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close(websocket.StatusInternalError, "closing") //nolint:errcheck // best-effort close on exit
 
 	c := &client{
+		id:   b.nextID.Add(1),
+		ip:   remoteIP(r),
 		send: make(chan []byte, 16),
 	}
+
+	startTime := time.Now()
 
 	b.mu.Lock()
 	b.clients[c] = struct{}{}
 	b.mu.Unlock()
 
-	b.log.Info("WebSocket client connected", "remote", r.RemoteAddr)
+	b.log.Info("WebSocket client connected", "connection_id", c.id, "remote_ip", c.ip)
 
 	defer func() {
 		b.mu.Lock()
 		delete(b.clients, c)
 		b.mu.Unlock()
-		b.log.Info("WebSocket client disconnected", "remote", r.RemoteAddr)
+
+		reason := c.getCloseReason()
+		if reason == "" {
+			reason = "unknown"
+		}
+		b.log.Info("WebSocket client disconnected",
+			"connection_id", c.id,
+			"remote_ip", c.ip,
+			"duration", time.Since(startTime),
+			"reason", reason,
+		)
 	}()
 
 	// Read loop (keep-alive/wait for close). Cancels ctx when the
@@ -127,6 +173,11 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 		for {
 			_, _, err := conn.Read(ctx)
 			if err != nil {
+				if status := websocket.CloseStatus(err); status != -1 {
+					c.setCloseReason(fmt.Sprintf("close status %d (%s)", status, status.String()))
+				} else {
+					c.setCloseReason(err.Error())
+				}
 				return
 			}
 		}
@@ -142,6 +193,7 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 		select {
 		case msg, ok := <-c.send:
 			if !ok {
+				c.setCloseReason("buffer overflow")
 				// Channel closed by Broadcast (buffer overflow) —
 				// close connection so UI reconnects.
 				_ = conn.Close(websocket.StatusGoingAway, "buffer overflow") //nolint:errcheck // best-effort close on disconnect
@@ -151,6 +203,7 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 			err := conn.Write(writeCtx, websocket.MessageText, msg)
 			writeCancel()
 			if err != nil {
+				c.setCloseReason("write error: " + err.Error())
 				return
 			}
 		case <-pingTicker.C:
@@ -158,10 +211,12 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 			err := conn.Ping(pingCtx)
 			pingCancel()
 			if err != nil {
+				c.setCloseReason("ping failed")
 				b.log.Debug("WebSocket ping failed, closing", "err", err)
 				return
 			}
 		case <-ctx.Done():
+			c.setCloseReason("context canceled")
 			return
 		}
 	}
