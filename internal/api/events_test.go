@@ -399,16 +399,7 @@ func TestBroadcaster_Handle_BufferOverflow(t *testing.T) {
 	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "done") }()
 
 	// Wait for the client to register with the broadcaster.
-	ctxPoll, cancelPoll := context.WithTimeout(ctx, 2*time.Second)
-	for b.NumClients() == 0 {
-		select {
-		case <-ctxPoll.Done():
-			cancelPoll()
-			t.Fatal("timeout waiting for client registration")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
-	cancelPoll()
+	waitClientRegister(t, b)
 
 	// The client deliberately never reads. Broadcast large events until the
 	// OS socket write buffer and the 16-slot send channel both fill; the next
@@ -459,16 +450,7 @@ func TestBroadcaster_HandleClientDisconnect(t *testing.T) {
 	}
 
 	// Wait for connection to be registered.
-	ctxPoll, cancelPoll := context.WithTimeout(ctx, 2*time.Second)
-	for b.NumClients() == 0 {
-		select {
-		case <-ctxPoll.Done():
-			cancelPoll()
-			t.Fatal("timeout waiting for client registration")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
-	cancelPoll()
+	waitClientRegister(t, b)
 
 	b.mu.RLock()
 	clientCount := len(b.clients)
@@ -522,6 +504,17 @@ func waitDisconnectLog(t *testing.T, rec *recordHandler) {
 
 		if done || time.Since(pollStart) > time.Second {
 			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func waitClientRegister(t *testing.T, b *Broadcaster) {
+	t.Helper()
+	pollStart := time.Now()
+	for b.NumClients() == 0 {
+		if time.Since(pollStart) > 2*time.Second {
+			t.Fatal("timeout waiting for client registration")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -857,9 +850,7 @@ func TestWebSocketLifecycleLogging_BufferOverflow(t *testing.T) {
 	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 
 	// Wait for client to register
-	for b.NumClients() == 0 {
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitClientRegister(t, b)
 
 	// Send messages until buffer overflow
 	big := strings.Repeat("x", 4096)
@@ -1024,9 +1015,7 @@ func TestWebSocketLifecycleLogging_WriteError(t *testing.T) {
 	}
 
 	// Wait for client to register.
-	for b.NumClients() == 0 {
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitClientRegister(t, b)
 
 	// Close the connection abruptly from client side.
 	if err := conn.CloseNow(); err != nil {
