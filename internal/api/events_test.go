@@ -532,6 +532,32 @@ func TestBroadcaster_DebugLogging(t *testing.T) {
 	}
 }
 
+func TestClientConnectionDetails(t *testing.T) {
+	b := NewBroadcaster(slog.Default())
+	req := httptest.NewRequest("GET", "/api/ws", nil)
+	req.RemoteAddr = "192.168.1.5:54321"
+
+	c := &client{
+		id:   b.nextID.Add(1),
+		ip:   remoteIP(req),
+		send: make(chan []byte, 16),
+	}
+
+	if c.id != 1 {
+		t.Errorf("got connection ID %d, want 1", c.id)
+	}
+	if c.ip != "192.168.1.5" {
+		t.Errorf("got IP %q, want \"192.168.1.5\"", c.ip)
+	}
+
+	reqIPv6 := httptest.NewRequest("GET", "/api/ws", nil)
+	reqIPv6.RemoteAddr = "[2001:db8::1]:12345"
+	ipIPv6 := remoteIP(reqIPv6)
+	if ipIPv6 != "2001:db8::1" {
+		t.Errorf("got IPv6 %q, want \"2001:db8::1\"", ipIPv6)
+	}
+}
+
 // ---------- Server handleWS tests ----------
 
 func TestHandleWS(t *testing.T) {

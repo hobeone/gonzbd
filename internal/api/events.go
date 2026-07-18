@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -33,9 +36,12 @@ type Broadcaster struct {
 	mu      sync.RWMutex
 	clients map[*client]struct{}
 	log     *slog.Logger
+	nextID  atomic.Uint64
 }
 
 type client struct {
+	id   uint64
+	ip   string
 	send chan []byte
 }
 
@@ -45,6 +51,14 @@ func NewBroadcaster(log *slog.Logger) *Broadcaster {
 		clients: make(map[*client]struct{}),
 		log:     log,
 	}
+}
+
+func remoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return strings.TrimSpace(r.RemoteAddr)
+	}
+	return strings.TrimSpace(host)
 }
 
 // Broadcast sends an event to all connected clients.
@@ -101,6 +115,8 @@ func (b *Broadcaster) Handle(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close(websocket.StatusInternalError, "closing") //nolint:errcheck // best-effort close on exit
 
 	c := &client{
+		id:   b.nextID.Add(1),
+		ip:   remoteIP(r),
 		send: make(chan []byte, 16),
 	}
 
