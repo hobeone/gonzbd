@@ -127,9 +127,10 @@ func (l *Loader) quarantineFile(path string) error {
 	return l.rename()(path, dest)
 }
 
-// Load reconstructs a Queue from dir. A missing queue.json.gz is not
-// an error — the daemon is starting fresh and an empty queue is
-// returned. Any other I/O or decode error propagates.
+// Load reconstructs a Queue from dir. A missing or corrupt queue.json.gz is not
+// a fatal error — the daemon will start fresh with an empty queue, and the
+// corrupt index is quarantined. Permission errors and quarantine-failure
+// errors still propagate.
 func Load(dir string) (*Queue, error) {
 	return (&Loader{}).Load(dir)
 }
