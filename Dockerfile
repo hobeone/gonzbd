@@ -137,5 +137,7 @@ EXPOSE 4289
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --spider -q "http://localhost:${GONZBD_PORT}/api?mode=version&output=json" || exit 1
 
+STOPSIGNAL SIGTERM
+
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["gonzbd", "--config", "/config/gonzbd.yaml", "--serve"]

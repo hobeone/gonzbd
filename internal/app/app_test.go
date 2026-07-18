@@ -20,6 +20,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/notifier"
@@ -1721,5 +1722,75 @@ func TestApp_FireCompletionNotificationTimeout(t *testing.T) {
 	remaining := time.Until(gotDeadline)
 	if remaining < 25*time.Second || remaining > 35*time.Second {
 		t.Fatalf("expected notification timeout to be ~30s, got remaining: %v", remaining)
+	}
+}
+
+type dummyDownloader struct{}
+
+func (d *dummyDownloader) Start(ctx context.Context) error               { return nil }
+func (d *dummyDownloader) Stop() error                                   { return nil }
+func (d *dummyDownloader) Completions() <-chan *downloader.ArticleResult { return nil }
+func (d *dummyDownloader) SetSpeedLimit(bytesPerSec int64)               {}
+func (d *dummyDownloader) SetDispatchOptions(maxArtTries, maxArtOpt int, topOnly bool, propagationDelay time.Duration) {
+}
+func (d *dummyDownloader) UnblockServer(name string) bool { return true }
+func (d *dummyDownloader) Pause()                         {}
+func (d *dummyDownloader) Resume()                        {}
+func (d *dummyDownloader) DisconnectAll()                 {}
+
+type wedgedDownloader struct {
+	dummyDownloader
+	stopCh chan struct{}
+}
+
+func (w *wedgedDownloader) Stop() error {
+	if w.stopCh != nil {
+		<-w.stopCh
+		return nil
+	}
+	select {}
+}
+
+func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
+	adminDir := t.TempDir()
+	cfg := testConfig(t.TempDir(), t.TempDir(), adminDir)
+
+	stopCh := make(chan struct{})
+	t.Cleanup(func() { close(stopCh) })
+	dl := &wedgedDownloader{stopCh: stopCh}
+
+	application, err := app.New(cfg, nil, app.WithDownloader(dl))
+	if err != nil {
+		t.Fatalf("build app: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("start app: %v", err)
+	}
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		done <- application.Shutdown()
+	}()
+
+	select {
+	case err := <-done:
+		elapsed := time.Since(start)
+		if elapsed > 25*time.Second {
+			t.Errorf("Shutdown took %v, expected budget ~15s", elapsed)
+		}
+		if err == nil {
+			t.Error("expected shutdown error due to wedged downloader, got nil")
+		}
+		queuePath := filepath.Join(adminDir, "queue", "queue.json.gz")
+		if _, statErr := os.Stat(queuePath); os.IsNotExist(statErr) {
+			t.Errorf("expected queue file to exist at %s, but it was not created", queuePath)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Shutdown hung indefinitely on wedged downloader")
 	}
 }
