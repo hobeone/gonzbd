@@ -158,6 +158,10 @@ type ConnActivity struct {
 }
 
 // ConnSnapshot is the JSON-serialisable view of a single connection.
+//
+// WARNING: every exported field's json tag here is part of the public API
+// response (nested in ServerSnapshot.Connections). Do not remove or rename
+// a field without checking internal/api's field-contract test — see #96.
 type ConnSnapshot struct {
 	Index     int    `json:"index"`
 	ArticleID string `json:"article_id"`
@@ -169,6 +173,11 @@ type ConnSnapshot struct {
 
 // ServerSnapshot is a point-in-time view of a single NNTP server,
 // combining config, health, metrics, and per-connection activity.
+//
+// WARNING: every exported field's json tag here is part of the public API
+// response (internal/api serves it directly, and it crosses the WebSocket
+// in Event.Servers). Do not remove or rename a field without checking
+// internal/api's field-contract test — see issue #96.
 type ServerSnapshot struct {
 	Name           string         `json:"name"`
 	Host           string         `json:"host"`
