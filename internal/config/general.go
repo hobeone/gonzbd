@@ -36,14 +36,31 @@ type GeneralConfig struct {
 	// works from any address.
 	LocalRanges []string `yaml:"local_ranges" json:"local_ranges"`
 	// VerifyXFFHeader, when true, additionally validates the
-	// X-Forwarded-For chain: once the direct peer qualifies as trusted
-	// (loopback or LocalRanges), every forwarded hop must also be trusted
-	// or the request is treated as untrusted. Leave false (default) when
-	// your reverse proxy performs its own authentication and you trust the
-	// proxy connection itself. Enable it if you want GoNZBD to gate on the
-	// real client IP forwarded by a trusted proxy. The header is never
-	// consulted when the direct peer is untrusted, so it cannot be spoofed.
+	// X-Forwarded-For/Forwarded/X-Real-IP chain: once the direct peer
+	// qualifies as trusted (loopback or LocalRanges), every forwarded hop
+	// must also be trusted or the request is treated as untrusted. When
+	// false (the default) and no forwarding header is present, trust is
+	// based on the peer address alone — but if any such header IS present
+	// while this is false, the request fails closed rather than trusting
+	// the (proxy-controlled) peer address blindly: a same-host reverse
+	// proxy makes every request arrive with a loopback remote address
+	// regardless of the real client, so an unverified peer proves nothing
+	// once a forwarding header shows a proxy is interposed. Set this to
+	// true and add the proxy's address to LocalRanges to trust it
+	// explicitly. The header is never consulted when the direct peer is
+	// untrusted, so it cannot be spoofed by a public client.
 	VerifyXFFHeader bool `yaml:"verify_xff_header" json:"verify_xff_header"`
+	// TrustedForwardHeader names the single forwarding header your reverse
+	// proxy actually manages (sets/overwrites reliably), consulted when
+	// VerifyXFFHeader is true: "x-forwarded-for" (default when empty),
+	// "forwarded", or "x-real-ip". Only this header is ever validated for
+	// hop-trust purposes — the other two are ignored even if present. This
+	// matters because a proxy that reliably overwrites one header may pass
+	// another through from the client untouched; without an explicit
+	// selection, a client could inject a forged value in the unmanaged
+	// header and have it override the proxy's real signal. Mirrors nginx's
+	// real_ip_header directive, which requires the same explicit choice.
+	TrustedForwardHeader TrustedForwardHeader `yaml:"trusted_forward_header" json:"trusted_forward_header"`
 
 	// DownloadDir is the work-in-progress directory for incomplete
 	// downloads. Created on startup if it does not exist.

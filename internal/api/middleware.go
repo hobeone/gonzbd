@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/subtle"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -58,6 +59,14 @@ type AuthConfig struct {
 	// VerifyXFF mirrors General.VerifyXFFHeader: when true, every
 	// X-Forwarded-For hop must also be trusted once the peer qualifies.
 	VerifyXFF bool
+	// ForwardHeader mirrors General.TrustedForwardHeader: which single
+	// forwarding header is consulted when VerifyXFF is true.
+	ForwardHeader config.TrustedForwardHeader
+
+	// Logger receives an actionable line whenever the cookie path is
+	// refused because config.IsTrustedRemote rejected the source. Falls
+	// back to slog.Default() when nil, matching api.New's convention.
+	Logger *slog.Logger
 }
 
 // callerLevel determines the highest access level the caller can reach
@@ -80,7 +89,17 @@ func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
 		// (the SEC-1 attack: GET / to grab the cookie, then replay it)
 		// is rejected. Without this, any caller that can reach the port
 		// obtained zero-credential admin.
-		if !config.IsTrustedRemote(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), cfg.TrustedRanges, cfg.VerifyXFF) {
+		fh := config.ForwardedHeaders{
+			XForwardedFor: r.Header.Get("X-Forwarded-For"),
+			Forwarded:     r.Header.Get("Forwarded"),
+			XRealIP:       r.Header.Get("X-Real-IP"),
+		}
+		if trusted, reason := config.IsTrustedRemote(r.RemoteAddr, fh, cfg.TrustedRanges, cfg.VerifyXFF, cfg.ForwardHeader); !trusted {
+			log := cfg.Logger
+			if log == nil {
+				log = slog.Default()
+			}
+			log.Warn("refused session cookie: source not trusted", "remote_addr", r.RemoteAddr, "reason", reason)
 			return 0
 		}
 		// Cookie-sourced keys are validated against the ephemeral
