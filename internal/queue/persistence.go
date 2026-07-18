@@ -119,8 +119,10 @@ func Load(dir string) (*Queue, error) {
 		return New(), nil
 	}
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return nil, fmt.Errorf("queue: load index: %w", err)
+		}
 		// For index, we degrade to empty queue but must quarantine first.
-		// Permission errors are handled in a later task; for now we quarantine all errors.
 		if qErr := quarantineFile(idxPath); qErr != nil {
 			return nil, fmt.Errorf("queue: load index failed and could not quarantine: %w (original error: %w)", qErr, err)
 		}
@@ -145,6 +147,9 @@ func Load(dir string) (*Queue, error) {
 				// Job file was removed but the index wasn't saved before
 				// a crash. Skip the orphaned entry; Prune will clean up.
 				continue
+			}
+			if errors.Is(err, os.ErrPermission) {
+				return nil, fmt.Errorf("queue: load job %s: %w", id, err)
 			}
 			// Quarantine corrupt job file and continue loading others
 			if qErr := quarantineFile(jobPath); qErr != nil {

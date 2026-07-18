@@ -786,3 +786,63 @@ func TestLoad_CorruptJobQuarantineFailure(t *testing.T) {
 		t.Errorf("expected original corrupt job file to still exist, got: %v", err)
 	}
 }
+
+func TestLoad_PermissionError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("IndexPermissionError", func(t *testing.T) {
+		dir := t.TempDir()
+		idxPath := filepath.Join(dir, "queue.json.gz")
+		if err := os.WriteFile(idxPath, []byte("some data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// Make index unreadable
+		if err := os.Chmod(idxPath, 0000); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_ = os.Chmod(idxPath, 0644) // restore for cleanup
+		}()
+
+		_, err := Load(dir)
+		if err == nil {
+			t.Error("expected error for unreadable index")
+		}
+		if !errors.Is(err, os.ErrPermission) {
+			t.Errorf("expected permission error, got: %v", err)
+		}
+		// Verify it was NOT quarantined
+		if _, err := os.Stat(idxPath + ".corrupt"); !os.IsNotExist(err) {
+			t.Error("index should not have been quarantined")
+		}
+	})
+
+	t.Run("JobPermissionError", func(t *testing.T) {
+		dir := t.TempDir()
+		q := New()
+		j := makeJob(t, "perm-job", constants.NormalPriority)
+		_ = q.Add(j)
+		_ = q.Save(dir)
+
+		jobPath := filepath.Join(dir, "jobs", j.ID+".json.gz")
+		// Make job file unreadable
+		if err := os.Chmod(jobPath, 0000); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_ = os.Chmod(jobPath, 0644) // restore for cleanup
+		}()
+
+		_, err := Load(dir)
+		if err == nil {
+			t.Error("expected error for unreadable job file")
+		}
+		if !errors.Is(err, os.ErrPermission) {
+			t.Errorf("expected permission error, got: %v", err)
+		}
+		// Verify it was NOT quarantined
+		if _, err := os.Stat(jobPath + ".corrupt"); !os.IsNotExist(err) {
+			t.Error("job file should not have been quarantined")
+		}
+	})
+}
