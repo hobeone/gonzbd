@@ -160,7 +160,7 @@ ports:
 
 ### Docker Compose reference
 
-The included [`docker-compose.yml`](docker-compose.yml) provides a
+The included [`docker-compose-example.yml`](docker-compose-example.yml) provides a
 fully documented starting point:
 
 ```yaml
@@ -174,6 +174,7 @@ services:
         VERSION: "1.0.0"
     container_name: gonzbd
     restart: unless-stopped
+    stop_grace_period: 75s
 
     ports:
       - "4289:4289"
@@ -199,6 +200,13 @@ services:
       retries: 3
       start_period: 10s
 ```
+
+### Shutdown Grace Period
+
+GoNZBD gracefully drains active NNTP connections and flushes queue state to disk during shutdown.
+- **Docker Compose:** Handled automatically via `stop_grace_period: 75s` in `docker-compose-example.yml`.
+- **`docker run` / `docker create`:** Pass `--stop-timeout 75` when creating containers, or use `-t 75` when stopping/restarting (`docker stop -t 75`).
+- **Systemd:** Set `TimeoutStopSec=75` in your systemd service unit file (under `[Service]`).
 
 ### Configuration for Docker
 

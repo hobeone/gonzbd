@@ -736,6 +736,28 @@ func (app *Application) Start(ctx context.Context) error {
 	return nil
 }
 
+// waitBounded executes wait in a background goroutine and waits up to duration d for it to return.
+// If wait completes within d, it returns wait's error.
+// If duration d elapses first, it logs an error ("shutdown step exceeded budget; abandoning")
+// and returns a step timeout error.
+func waitBounded(name string, d time.Duration, wait func() error, log *slog.Logger) error { //nolint:unparam // d is configurable per step
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- wait()
+	}()
+
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-timer.C:
+		log.Error("shutdown step exceeded budget; abandoning", "step", name, "budget", d)
+		return fmt.Errorf("step %s timed out after %v", name, d)
+	}
+}
+
 // Shutdown stops the downloader, post-processor, and assembler, flushes the
 // cache, and persists the queue to disk. Safe to call multiple times.
 //
@@ -751,6 +773,7 @@ func (app *Application) Shutdown() error {
 		return nil
 	}
 	var errs []error
+
 	// Barrier on reloadMu: stopped is now true, so any ReloadDownloader call
 	// that arrives after this point sees it and returns immediately without
 	// doing any work. But a reload already past that check when we set
@@ -765,7 +788,10 @@ func (app *Application) Shutdown() error {
 	app.mu.Unlock()
 	app.reloadMu.Unlock()
 	// --- No lock held below this line ---
-	if err := dl.Stop(); err != nil {
+
+	const stepTimeout = 15 * time.Second
+
+	if err := waitBounded("downloader", stepTimeout, dl.Stop, app.log); err != nil {
 		errs = append(errs, fmt.Errorf("downloader stop: %w", err))
 	}
 
@@ -779,14 +805,23 @@ func (app *Application) Shutdown() error {
 	}
 	app.mu.Unlock()
 
-	if err := app.assembler.Stop(); err != nil {
+	if err := waitBounded("assembler", stepTimeout, app.assembler.Stop, app.log); err != nil {
 		errs = append(errs, fmt.Errorf("assembler stop: %w", err))
 	}
+
 	app.cancel()
-	app.wg.Wait()
-	if err := app.postProcessor.Stop(); err != nil {
+
+	if err := waitBounded("wg.Wait", stepTimeout, func() error {
+		app.wg.Wait()
+		return nil
+	}, app.log); err != nil {
+		errs = append(errs, fmt.Errorf("wg wait: %w", err))
+	}
+
+	if err := waitBounded("postprocessor", stepTimeout, app.postProcessor.Stop, app.log); err != nil {
 		errs = append(errs, fmt.Errorf("postprocessor stop: %w", err))
 	}
+
 	var adminDir string
 	app.config.WithRead(func(c *config.Config) {
 		adminDir = c.General.AdminDir

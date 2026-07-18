@@ -19,6 +19,7 @@ services:
         VERSION: "1.0.0"
     container_name: gonzbd
     restart: unless-stopped
+    stop_grace_period: 75s
 
     # Port mapping: <host>:<container>
     # Change the left side to use a different host port.
