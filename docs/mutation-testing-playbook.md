@@ -38,9 +38,9 @@ Requires `systemd-run` (`systemctl --user status` to check); it refuses to
 run without it rather than silently falling back to an unconfined invocation.
 
 Tunables, all optional (see the script's header comment for the full list):
-`GREMLINS_WORKERS` (default 4 — real parallelism without the unbounded
-footprint of gremlins' default worker count), `GREMLINS_MEMORY_MAX` (default
-`32G`), `GREMLINS_DISK_MAX_MB` (default `51200` = 50GiB), `GREMLINS_TIMEOUT_SECS`
+`GREMLINS_WORKERS` (auto-detected based on CPU/RAM, clamped 4–16; e.g. 12 workers
+on 24-core/94GB RAM systems), `GREMLINS_MEMORY_MAX` (auto-detected to 80% of system
+RAM, fallback `32G`), `GREMLINS_DISK_MAX_MB` (default `51200` = 50GiB), `GREMLINS_TIMEOUT_SECS`
 (default `1800` = 30min), `GREMLINS_DIR` (scratch dir base — must not be
 inside the repo, the script errors out if it is).
 
