@@ -2,6 +2,7 @@ package queue
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -241,22 +242,37 @@ func TestLoad_CorruptJobFile(t *testing.T) {
 	dir := t.TempDir()
 
 	q := New()
-	j := makeJob(t, "corrupt", constants.NormalPriority)
-	_ = q.Add(j)
+	j1 := makeJob(t, "good", constants.NormalPriority)
+	j2 := makeJob(t, "corrupt", constants.NormalPriority)
+	_ = q.Add(j1)
+	_ = q.Add(j2)
 	_ = q.Save(dir)
 
-	// Corrupt the job file.
-	jobPath := filepath.Join(dir, "jobs", j.ID+".json.gz")
+	// Corrupt job-b's file
+	jobPath := filepath.Join(dir, "jobs", j2.ID+".json.gz")
 	if err := os.WriteFile(jobPath, []byte("corrupt data"), 0o644); err != nil {
 		t.Fatalf("corrupt job file: %v", err)
 	}
 
-	_, err := Load(dir)
-	if err == nil {
-		t.Error("expected error for corrupt job file")
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "load job") {
-		t.Errorf("error should mention 'load job': %v", err)
+
+	// Good job should be loaded, corrupt one skipped
+	if loaded.Len() != 1 {
+		t.Errorf("expected 1 job, got %d", loaded.Len())
+	}
+	if _, err := loaded.Get(j1.ID); err != nil {
+		t.Errorf("good job should be loaded: %v", err)
+	}
+
+	// Assert corrupt job file was renamed
+	if _, err := os.Stat(jobPath); !os.IsNotExist(err) {
+		t.Errorf("expected original job file to be gone, got: %v", err)
+	}
+	if _, err := os.Stat(jobPath + ".corrupt"); err != nil {
+		t.Errorf("expected corrupt job file to exist, got: %v", err)
 	}
 }
 
@@ -634,4 +650,203 @@ func TestWriteGzJSONRaw_WriteError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected write error when exceeding RLIMIT_FSIZE, got nil")
 	}
+}
+
+func TestQuarantineFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "testfile.json.gz")
+	if err := os.WriteFile(path, []byte("test data"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	l := &Loader{}
+	err := l.quarantineFile(path)
+	if err != nil {
+		t.Fatalf("quarantineFile failed: %v", err)
+	}
+
+	// Assert original is gone
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("expected original file to be gone, got: %v", err)
+	}
+
+	// Assert corrupt file exists and has correct content
+	corruptPath := path + ".corrupt"
+	data, err := os.ReadFile(corruptPath)
+	if err != nil {
+		t.Errorf("failed to read corrupt file: %v", err)
+	} else if string(data) != "test data" {
+		t.Errorf("corrupt file content = %q, want %q", string(data), "test data")
+	}
+}
+
+func TestQuarantineFile_NotExist(t *testing.T) {
+	t.Parallel()
+	l := &Loader{}
+	err := l.quarantineFile("/nonexistent/path/file.json.gz")
+	if err == nil {
+		t.Error("expected error when quarantining nonexistent file, got nil")
+	}
+}
+
+func TestLoad_CorruptIndexQuarantined(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create a corrupt index file
+	idxPath := filepath.Join(dir, "queue.json.gz")
+	if err := os.WriteFile(idxPath, []byte("corrupt gzip data"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	q, err := Load(dir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if q.Len() != 0 {
+		t.Errorf("expected empty queue, got len %d", q.Len())
+	}
+	if q.stateDir != dir {
+		t.Errorf("expected stateDir = %q, got %q", dir, q.stateDir)
+	}
+
+	// Assert index was renamed
+	if _, err := os.Stat(idxPath); !os.IsNotExist(err) {
+		t.Errorf("expected original index to be gone, got: %v", err)
+	}
+	if _, err := os.Stat(idxPath + ".corrupt"); err != nil {
+		t.Errorf("expected corrupt index to exist, got: %v", err)
+	}
+}
+
+func TestLoad_CorruptIndexQuarantineFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	idxPath := filepath.Join(dir, "queue.json.gz")
+	if err := os.WriteFile(idxPath, []byte("corrupt gzip data"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Mock rename to fail via Loader dependency injection
+	l := &Loader{
+		Rename: func(oldpath, newpath string) error {
+			return errors.New("mock rename error")
+		},
+	}
+
+	_, err := l.Load(dir)
+	if err == nil {
+		t.Fatal("expected error due to quarantine failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed and could not quarantine") {
+		t.Errorf("expected error to mention quarantine failure, got: %v", err)
+	}
+
+	// Verify the original file is still there
+	if _, err := os.Stat(idxPath); err != nil {
+		t.Errorf("expected original corrupt file to still exist, got: %v", err)
+	}
+}
+
+func TestLoad_CorruptJobQuarantineFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	q := New()
+	j1 := makeJob(t, "good", constants.NormalPriority)
+	j2 := makeJob(t, "corrupt", constants.NormalPriority)
+	_ = q.Add(j1)
+	_ = q.Add(j2)
+	_ = q.Save(dir)
+
+	// Corrupt job-b's file
+	jobPath := filepath.Join(dir, "jobs", j2.ID+".json.gz")
+	if err := os.WriteFile(jobPath, []byte("corrupt data"), 0o644); err != nil {
+		t.Fatalf("corrupt job file: %v", err)
+	}
+
+	// Mock rename to fail via Loader dependency injection
+	l := &Loader{
+		Rename: func(oldpath, newpath string) error {
+			return errors.New("mock rename error")
+		},
+	}
+
+	_, err := l.Load(dir)
+	if err == nil {
+		t.Fatal("expected error due to quarantine failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed and could not quarantine") {
+		t.Errorf("expected error to mention quarantine failure, got: %v", err)
+	}
+
+	// Verify the original file is still there
+	if _, err := os.Stat(jobPath); err != nil {
+		t.Errorf("expected original corrupt job file to still exist, got: %v", err)
+	}
+}
+
+func TestLoad_PermissionError(t *testing.T) {
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("permission tests are unreliable when running as root")
+	}
+
+	t.Run("IndexPermissionError", func(t *testing.T) {
+		dir := t.TempDir()
+		idxPath := filepath.Join(dir, "queue.json.gz")
+		if err := os.WriteFile(idxPath, []byte("some data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// Make index unreadable
+		if err := os.Chmod(idxPath, 0000); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_ = os.Chmod(idxPath, 0644) // restore for cleanup
+		}()
+
+		_, err := Load(dir)
+		if err == nil {
+			t.Error("expected error for unreadable index")
+		}
+		if !errors.Is(err, os.ErrPermission) {
+			t.Errorf("expected permission error, got: %v", err)
+		}
+		// Verify it was NOT quarantined
+		if _, err := os.Stat(idxPath + ".corrupt"); !os.IsNotExist(err) {
+			t.Error("index should not have been quarantined")
+		}
+	})
+
+	t.Run("JobPermissionError", func(t *testing.T) {
+		dir := t.TempDir()
+		q := New()
+		j := makeJob(t, "perm-job", constants.NormalPriority)
+		_ = q.Add(j)
+		_ = q.Save(dir)
+
+		jobPath := filepath.Join(dir, "jobs", j.ID+".json.gz")
+		// Make job file unreadable
+		if err := os.Chmod(jobPath, 0000); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_ = os.Chmod(jobPath, 0644) // restore for cleanup
+		}()
+
+		_, err := Load(dir)
+		if err == nil {
+			t.Error("expected error for unreadable job file")
+		}
+		if !errors.Is(err, os.ErrPermission) {
+			t.Errorf("expected permission error, got: %v", err)
+		}
+		// Verify it was NOT quarantined
+		if _, err := os.Stat(jobPath + ".corrupt"); !os.IsNotExist(err) {
+			t.Error("job file should not have been quarantined")
+		}
+	})
 }
