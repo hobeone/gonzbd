@@ -174,6 +174,7 @@ services:
         VERSION: "1.0.0"
     container_name: gonzbd
     restart: unless-stopped
+    stop_grace_period: 75s
 
     ports:
       - "4289:4289"
@@ -199,6 +200,13 @@ services:
       retries: 3
       start_period: 10s
 ```
+
+### Shutdown Grace Period
+
+GoNZBD gracefully drains active NNTP connections and flushes queue state to disk during shutdown.
+- **Docker Compose:** Handled automatically via `stop_grace_period: 75s` in `docker-compose.yml`.
+- **`docker run`:** Pass `--stop-timeout 75` when stopping or restarting containers (`docker stop -t 75`).
+- **Systemd:** Set `TimeoutStopSec=75` in your systemd service unit file (under `[Service]`).
 
 ### Configuration for Docker
 
