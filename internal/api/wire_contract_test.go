@@ -57,61 +57,72 @@ func assertNoRemovedOrRenamedFields(t *testing.T, typeName string, baseline, cur
 	}
 }
 
-// TestServerSnapshotWireContract guards downloader.ServerSnapshot's public
-// JSON shape (served directly by internal/api and over the WebSocket in
-// Event.Servers) against accidental field removal or renaming. See #96.
-func TestServerSnapshotWireContract(t *testing.T) {
-	baseline := map[string]string{
-		"Name":           "name",
-		"Host":           "host",
-		"Port":           "port",
-		"SSL":            "ssl",
-		"Priority":       "priority",
-		"Pipelining":     "pipelining",
-		"MaxConnections": "max_connections",
-		"ActiveConns":    "active_conns",
-		"Active":         "active",
-		"Enabled":        "enabled",
-		"Optional":       "optional",
-		"Required":       "required",
-		"PenaltyUntil":   "penalty_until",
-		"BPS":            "bps",
-		"TotalBytes":     "total_bytes",
-		"Connections":    "connections",
-	}
-	current := jsonTagsOf(t, downloader.ServerSnapshot{})
-	assertNoRemovedOrRenamedFields(t, "downloader.ServerSnapshot", baseline, current)
-}
-
-// TestDirectUnpackStatusWireContract guards directunpack.Status's public
-// JSON shape (served directly by internal/api via ServerStatus/queueSlot)
-// against accidental field removal or renaming. See #96.
-func TestDirectUnpackStatusWireContract(t *testing.T) {
-	baseline := map[string]string{
-		"Active":           "active",
-		"CurrentSet":       "current_set",
-		"CompletedVolumes": "completed_volumes",
-		"TotalVolumes":     "total_volumes",
-		"SuccessSets":      "success_sets",
-		"FailedSets":       "failed_sets",
-		"FailedReasons":    "failed_reasons",
-	}
-	current := jsonTagsOf(t, directunpack.Status{})
-	assertNoRemovedOrRenamedFields(t, "directunpack.Status", baseline, current)
-}
-
-// TestConnSnapshotWireContract guards downloader.ConnSnapshot's public JSON
-// shape (nested in ServerSnapshot.Connections, same public response) against
+// TestWireContracts guards the public JSON shape of types used directly as
+// API wire types (served by internal/api, some over the WebSocket) against
 // accidental field removal or renaming. See #96.
-func TestConnSnapshotWireContract(t *testing.T) {
-	baseline := map[string]string{
-		"Index":     "index",
-		"ArticleID": "article_id",
-		"Subject":   "subject",
-		"Bytes":     "bytes",
-		"SinceUnix": "since_unix",
-		"Connected": "connected",
+func TestWireContracts(t *testing.T) {
+	tests := []struct {
+		name     string
+		typeName string
+		baseline map[string]string
+		value    any
+	}{
+		{
+			name:     "ServerSnapshot",
+			typeName: "downloader.ServerSnapshot",
+			baseline: map[string]string{
+				"Name":           "name",
+				"Host":           "host",
+				"Port":           "port",
+				"SSL":            "ssl",
+				"Priority":       "priority",
+				"Pipelining":     "pipelining",
+				"MaxConnections": "max_connections",
+				"ActiveConns":    "active_conns",
+				"Active":         "active",
+				"Enabled":        "enabled",
+				"Optional":       "optional",
+				"Required":       "required",
+				"PenaltyUntil":   "penalty_until",
+				"BPS":            "bps",
+				"TotalBytes":     "total_bytes",
+				"Connections":    "connections",
+			},
+			value: downloader.ServerSnapshot{},
+		},
+		{
+			name:     "DirectUnpackStatus",
+			typeName: "directunpack.Status",
+			baseline: map[string]string{
+				"Active":           "active",
+				"CurrentSet":       "current_set",
+				"CompletedVolumes": "completed_volumes",
+				"TotalVolumes":     "total_volumes",
+				"SuccessSets":      "success_sets",
+				"FailedSets":       "failed_sets",
+				"FailedReasons":    "failed_reasons",
+			},
+			value: directunpack.Status{},
+		},
+		{
+			name:     "ConnSnapshot",
+			typeName: "downloader.ConnSnapshot",
+			baseline: map[string]string{
+				"Index":     "index",
+				"ArticleID": "article_id",
+				"Subject":   "subject",
+				"Bytes":     "bytes",
+				"SinceUnix": "since_unix",
+				"Connected": "connected",
+			},
+			value: downloader.ConnSnapshot{},
+		},
 	}
-	current := jsonTagsOf(t, downloader.ConnSnapshot{})
-	assertNoRemovedOrRenamedFields(t, "downloader.ConnSnapshot", baseline, current)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			current := jsonTagsOf(t, tt.value)
+			assertNoRemovedOrRenamedFields(t, tt.typeName, tt.baseline, current)
+		})
+	}
 }
