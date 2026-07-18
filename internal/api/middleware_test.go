@@ -41,13 +41,37 @@ func TestIsCrossOrigin_LoopbackOrigin(t *testing.T) {
 	}
 }
 
-func TestIsCrossOrigin_LocalhostName(t *testing.T) {
+// TestIsCrossOrigin_LoopbackPortCases covers issue #103 (loopback-alias
+// same-origin checks must be port-sensitive) and the code-review follow-up
+// fixing a bracketed-IPv6-with-no-port regression.
+func TestIsCrossOrigin_LoopbackPortCases(t *testing.T) {
 	t.Parallel()
-	r := httptest.NewRequest("GET", "/api", nil)
-	r.Host = "127.0.0.1:4289"
-	r.Header.Set("Origin", "http://localhost:9090")
-	if isCrossOrigin(r) {
-		t.Error("localhost name origin should not be cross-origin")
+	tests := []struct {
+		name   string
+		method string
+		host   string
+		origin string
+		want   bool // want cross-origin
+	}{
+		{"localhost name, different port MUST be cross-origin", "GET", "127.0.0.1:4289", "http://localhost:9090", true},
+		{
+			"attack vector: localhost origin on a different port MUST be cross-origin",
+			"POST", "localhost:8080", "http://localhost:1234", true,
+		},
+		{"same-port IPv6 loopback alias should not be cross-origin", "GET", "localhost:4289", "http://[::1]:4289", false},
+		{"different-port IPv6 loopback alias MUST be cross-origin", "GET", "localhost:4289", "http://[::1]:9090", true},
+		{"bracketed IPv6 loopback, no port on either side, should not be cross-origin", "GET", "localhost", "http://[::1]", false},
+		{"bare hostname, no port on either side, should not be cross-origin", "GET", "localhost", "http://localhost", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(tc.method, "/api", nil)
+			r.Host = tc.host
+			r.Header.Set("Origin", tc.origin)
+			if got := isCrossOrigin(r); got != tc.want {
+				t.Errorf("isCrossOrigin(Host=%q, Origin=%q) = %t, want %t", tc.host, tc.origin, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -144,7 +168,11 @@ func TestIsRefererCrossOrigin(t *testing.T) {
 		{"same host referer", "http://localhost:4289/config", "localhost:4289", false},
 		{"different host referer", "http://evil.com/page", "localhost:4289", true},
 		{"loopback IP referer", "http://127.0.0.1:4289/page", "localhost:4289", false},
-		{"localhost name referer", "http://localhost:9090/page", "127.0.0.1:4289", false},
+		{"localhost name referer", "http://localhost:9090/page", "127.0.0.1:4289", true},
+		{"attack vector: different port, same loopback name", "http://localhost:1234/page", "localhost:8080", true},
+		{"same-port IPv6 loopback referer", "http://[::1]:4289/page", "localhost:4289", false},
+		{"different-port IPv6 loopback referer", "http://[::1]:9090/page", "localhost:4289", true},
+		{"bare hostname no port both sides", "http://localhost/page", "localhost", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
