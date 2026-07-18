@@ -75,7 +75,17 @@ func (s *Server) registerModes() {
 	//   - server_stats  (UI gets this via ui/src/lib/stores/telemetry.svelte.ts)
 	//   - fullstatus, watched_now, disconnect, addlocalfile, addurl
 	s.modes = modeTable{
-		"version":      {handler: s.modeVersion, level: LevelOpen},
+		"version": {handler: s.modeVersion, level: LevelOpen},
+		// "auth" is deliberately LevelOpen (unauthenticated): SABnzbd's
+		// mode=auth lets a caller probe whether a key is the api_key,
+		// the nzb_key, or invalid, with no prior authentication. That
+		// makes it a key-validity oracle in principle, but modeAuth
+		// below uses constant-time comparison and the 64-bit keyspace
+		// (see newAPIKey in internal/config/defaults.go) makes online
+		// brute force impractical. This is required for SABnzbd parity
+		// — third-party clients (Sonarr, Radarr, NZB360) call it to
+		// classify a configured key before using it. Accepted risk,
+		// tracked as issue #112 (S6).
 		"auth":         {handler: s.modeAuth, level: LevelOpen},
 		"queue":        {handler: s.modeQueue, level: LevelProtected},
 		"addfile":      {handler: s.modeAddFile, level: LevelProtected},
@@ -120,7 +130,8 @@ func (s *Server) modeVersion(w http.ResponseWriter, _ *http.Request) {
 
 // modeAuth validates the supplied API key and returns its type.
 // Matches Python's _api_auth behavior: returns "apikey", "nzbkey", or
-// "badkey" depending on what was supplied.
+// "badkey" depending on what was supplied. See the LevelOpen rationale
+// on the "auth" entry in registerModes for why this is safe unauthenticated.
 func (s *Server) modeAuth(w http.ResponseWriter, r *http.Request) {
 	key, _ := apiKeyFromRequest(r)
 	if key == "" {
