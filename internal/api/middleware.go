@@ -159,8 +159,60 @@ func apiKeyFromRequest(r *http.Request) (string, bool) {
 	return "", false
 }
 
-// isRefererCrossOrigin parses referer and returns true if it originates from a
-// non-local host different from currentHost.
+// splitHostPort splits a "host:port" string into its parts, stripping IPv6
+// brackets on the no-port fallback path. Unlike net.SplitHostPort, it
+// tolerates a bare hostname or bracketed IPv6 literal with no port (e.g. a
+// request bound to the default port) by returning the host with an empty
+// port, rather than erroring.
+func splitHostPort(hostport string) (host, port string) {
+	h, p, err := net.SplitHostPort(hostport)
+	if err == nil {
+		return h, p
+	}
+	if len(hostport) >= 2 && hostport[0] == '[' && hostport[len(hostport)-1] == ']' {
+		return hostport[1 : len(hostport)-1], ""
+	}
+	return hostport, ""
+}
+
+// isLoopbackHostname reports whether host is a loopback address (127.0.0.0/8,
+// ::1) or the literal name "localhost".
+func isLoopbackHostname(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// loopbackHostsEquivalent reports whether a and b name the same loopback
+// interface (e.g. "localhost" and "127.0.0.1"), independent of case. Two
+// hosts that merely both happen to be loopback but aren't the same literal
+// host are still treated as equivalent here — port equality (checked by the
+// caller) is what distinguishes a same-instance request from a different
+// server also listening on loopback.
+func loopbackHostsEquivalent(a, b string) bool {
+	if strings.EqualFold(a, b) {
+		return true
+	}
+	return isLoopbackHostname(a) && isLoopbackHostname(b)
+}
+
+// sameOrigin reports whether hostportA and hostportB should be treated as
+// the same origin: either an exact case-insensitive match, or a matching
+// loopback/"localhost" alias on the *same port* — a different port always
+// means a different server, even on loopback. An exact host:port match is
+// subsumed by loopbackHostsEquivalent's own EqualFold fast path, so no
+// separate pre-check is needed. See
+// https://github.com/hobeone/gonzbd/issues/103.
+func sameOrigin(hostportA, hostportB string) bool {
+	aHost, aPort := splitHostPort(hostportA)
+	bHost, bPort := splitHostPort(hostportB)
+	return aPort == bPort && loopbackHostsEquivalent(aHost, bHost)
+}
+
+// isRefererCrossOrigin parses referer and returns true if it originates from
+// a host:port different from currentHost.
 func isRefererCrossOrigin(referer, currentHost string) bool {
 	if referer == "" {
 		return false
@@ -169,18 +221,7 @@ func isRefererCrossOrigin(referer, currentHost string) bool {
 	if err != nil || u.Host == "" {
 		return false
 	}
-	if strings.EqualFold(u.Host, currentHost) {
-		return false
-	}
-	host := u.Hostname()
-	ip := net.ParseIP(host)
-	if ip != nil && ip.IsLoopback() {
-		return false
-	}
-	if strings.EqualFold(host, "localhost") {
-		return false
-	}
-	return true
+	return !sameOrigin(u.Host, currentHost)
 }
 
 // isSecFetchSiteCrossOrigin returns true if sfs indicates a cross-site or
@@ -216,22 +257,12 @@ func isCrossOrigin(r *http.Request) bool {
 		return true // malformed → treat as cross-origin
 	}
 
-	// Same-host check: if Origin matches the request's Host header,
-	// this is a same-origin request regardless of IP (covers LAN access).
-	if strings.EqualFold(u.Host, r.Host) {
-		return false
+	// Both Origin and Sec-Fetch-Site must agree the request is same-origin;
+	// checking only one leaves the other spoofable/unchecked path open.
+	if !sameOrigin(u.Host, r.Host) {
+		return true
 	}
-
-	host := u.Hostname()
-	ip := net.ParseIP(host)
-	if ip != nil && ip.IsLoopback() {
-		return false // localhost origin
-	}
-	// Also allow "localhost" by name (not just IP).
-	if strings.EqualFold(host, "localhost") {
-		return false
-	}
-	return true
+	return isSecFetchSiteCrossOrigin(r.Header.Get("Sec-Fetch-Site"))
 }
 
 // maxFormBytes caps the request body for non-upload form parsing to prevent
