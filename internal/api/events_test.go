@@ -506,6 +506,27 @@ func (h *recordHandler) len() int {
 	return len(h.records)
 }
 
+func waitDisconnectLog(t *testing.T, rec *recordHandler) {
+	t.Helper()
+	pollStart := time.Now()
+	for {
+		var done bool
+		rec.mu.Lock()
+		for _, r := range rec.records {
+			if r.Message == "WebSocket client disconnected" {
+				done = true
+				break
+			}
+		}
+		rec.mu.Unlock()
+
+		if done || time.Since(pollStart) > time.Second {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestBroadcaster_DebugLogging(t *testing.T) {
 	t.Parallel()
 
@@ -533,35 +554,69 @@ func TestBroadcaster_DebugLogging(t *testing.T) {
 }
 
 func TestClientConnectionDetails(t *testing.T) {
-	b := NewBroadcaster(slog.Default())
-	req := httptest.NewRequest("GET", "/api/ws", nil)
-	req.RemoteAddr = "192.168.1.5:54321"
+	t.Parallel()
+	logger := slog.New(slog.DiscardHandler)
+	b := NewBroadcaster(logger)
 
-	c := &client{
+	tests := []struct {
+		name       string
+		remoteAddr string
+		expectedIP string
+	}{
+		{
+			name:       "IPv4 with port",
+			remoteAddr: "192.168.1.5:54321",
+			expectedIP: "192.168.1.5",
+		},
+		{
+			name:       "IPv6 with port",
+			remoteAddr: "[2001:db8::1]:12345",
+			expectedIP: "2001:db8::1",
+		},
+		{
+			name:       "Bare IP without port",
+			remoteAddr: "10.0.0.1",
+			expectedIP: "10.0.0.1",
+		},
+		{
+			name:       "Empty string fallback",
+			remoteAddr: "",
+			expectedIP: "",
+		},
+		{
+			name:       "Whitespace string fallback",
+			remoteAddr: "   ",
+			expectedIP: "",
+		},
+	}
+
+	// Verify connection ID incrementing
+	c1 := &client{
 		id:   b.nextID.Add(1),
-		ip:   remoteIP(req),
 		send: make(chan []byte, 16),
 	}
-
-	if c.id != 1 {
-		t.Errorf("got connection ID %d, want 1", c.id)
-	}
-	if c.ip != "192.168.1.5" {
-		t.Errorf("got IP %q, want \"192.168.1.5\"", c.ip)
+	if c1.id != 1 {
+		t.Errorf("got connection ID %d, want 1", c1.id)
 	}
 
-	reqIPv6 := httptest.NewRequest("GET", "/api/ws", nil)
-	reqIPv6.RemoteAddr = "[2001:db8::1]:12345"
-	ipIPv6 := remoteIP(reqIPv6)
-	if ipIPv6 != "2001:db8::1" {
-		t.Errorf("got IPv6 %q, want \"2001:db8::1\"", ipIPv6)
+	c2 := &client{
+		id:   b.nextID.Add(1),
+		send: make(chan []byte, 16),
+	}
+	if c2.id != 2 {
+		t.Errorf("got connection ID %d, want 2", c2.id)
 	}
 
-	reqNoPort := httptest.NewRequest("GET", "/api/ws", nil)
-	reqNoPort.RemoteAddr = "10.0.0.1"
-	ipNoPort := remoteIP(reqNoPort)
-	if ipNoPort != "10.0.0.1" {
-		t.Errorf("got IP without port %q, want \"10.0.0.1\"", ipNoPort)
+	// Verify IP extraction
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api/ws", nil)
+			req.RemoteAddr = tc.remoteAddr
+			got := remoteIP(req)
+			if got != tc.expectedIP {
+				t.Errorf("remoteIP(%q) = %q, want %q", tc.remoteAddr, got, tc.expectedIP)
+			}
+		})
 	}
 }
 
@@ -675,7 +730,9 @@ func TestHandleWS(t *testing.T) {
 		if resp != nil && resp.Body != nil {
 			defer func() { _ = resp.Body.Close() }()
 		}
-		_ = conn.Close(websocket.StatusNormalClosure, "done")
+		if err := conn.Close(websocket.StatusNormalClosure, "done"); err != nil {
+			t.Errorf("conn.Close: %v", err)
+		}
 	})
 }
 
@@ -702,12 +759,12 @@ func TestWebSocketLifecycleLogging(t *testing.T) {
 	}
 
 	// Close cleanly from client side
-	_ = conn.Close(websocket.StatusNormalClosure, "clean exit")
-
-	// Wait for client disconnect to be cleaned up on the server
-	for b.NumClients() > 0 {
-		time.Sleep(5 * time.Millisecond)
+	if err := conn.Close(websocket.StatusNormalClosure, "clean exit"); err != nil {
+		t.Errorf("conn.Close: %v", err)
 	}
+
+	// Wait for client disconnect to be cleaned up and logged on the server
+	waitDisconnectLog(t, rec)
 
 	// Verify log records
 	rec.mu.Lock()
@@ -885,8 +942,8 @@ func TestWebSocketLifecycleLogging_BufferOverflow(t *testing.T) {
 	if !hasDisconnected {
 		t.Error("missing disconnected log line")
 	}
-	if !strings.Contains(disconnectReason, "buffer overflow") && !strings.Contains(disconnectReason, "write error") && !strings.Contains(disconnectReason, "1001") {
-		t.Errorf("unexpected disconnect reason for overflow: %q", disconnectReason)
+	if disconnectReason != "buffer overflow" {
+		t.Errorf("unexpected disconnect reason for overflow: got %q, want \"buffer overflow\"", disconnectReason)
 	}
 }
 
@@ -915,10 +972,8 @@ func TestWebSocketLifecycleLogging_AbnormalClose(t *testing.T) {
 	// Close the connection abruptly from client side without a clean websocket close handshake.
 	_ = conn.CloseNow()
 
-	// Wait for client disconnect to be cleaned up on the server
-	for b.NumClients() > 0 {
-		time.Sleep(5 * time.Millisecond)
-	}
+	// Wait for client disconnect to be cleaned up and logged on the server
+	waitDisconnectLog(t, rec)
 
 	// Verify log records
 	rec.mu.Lock()
@@ -943,5 +998,70 @@ func TestWebSocketLifecycleLogging_AbnormalClose(t *testing.T) {
 	}
 	if disconnectReason != "failed to get reader: failed to read frame header: EOF" {
 		t.Errorf("abnormal disconnect reason got: %q, want: %q", disconnectReason, "failed to get reader: failed to read frame header: EOF")
+	}
+}
+
+func TestWebSocketLifecycleLogging_WriteError(t *testing.T) {
+	rec := &recordHandler{}
+	logger := slog.New(rec)
+	b := NewBroadcaster(logger)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.Handle(w, r)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+
+	// Wait for client to register.
+	for b.NumClients() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Close the connection abruptly from client side.
+	if err := conn.CloseNow(); err != nil {
+		t.Errorf("conn.CloseNow: %v", err)
+	}
+
+	// Immediately broadcast a message. The write loop will try to write it
+	// to the closed connection and hit a write error.
+	b.Broadcast(Event{Type: "test_write_error"})
+
+	// Wait for client disconnect to be cleaned up and logged on the server
+	waitDisconnectLog(t, rec)
+
+	// Verify log records contains write error or EOF
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+
+	var hasDisconnected bool
+	var disconnectReason string
+	for _, r := range rec.records {
+		if r.Message == "WebSocket client disconnected" {
+			hasDisconnected = true
+			r.Attrs(func(attr slog.Attr) bool {
+				if attr.Key == "reason" {
+					disconnectReason = attr.Value.String()
+				}
+				return true
+			})
+		}
+	}
+
+	if !hasDisconnected {
+		t.Error("missing disconnected log line")
+	}
+	if !strings.HasPrefix(disconnectReason, "write error:") && !strings.Contains(disconnectReason, "EOF") {
+		t.Errorf("expected write error or EOF, got: %q", disconnectReason)
 	}
 }
