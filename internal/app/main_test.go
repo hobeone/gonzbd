@@ -25,5 +25,6 @@ func TestMain(m *testing.M) {
 		// serveMode's deferred cleanup, so these are test-scope only.
 		goleak.IgnoreTopFunction("database/sql.(*DB).connectionOpener"),
 		goleak.IgnoreTopFunction("database/sql.(*DB).connectionCleaner"),
+		goleak.IgnoreTopFunction("github.com/hobeone/gonzbd/internal/app_test.(*wedgedDownloader).Stop"),
 	)
 }
