@@ -240,7 +240,7 @@ tools — post-processing stages that require `par2`/`unrar`/`7z` are stubbed.
 
 ## 7. Mutation Testing (`gremlins`)
 
-**When to run:** Before submitting a change to ensure all new logic paths and behavioral modifications are fully pinned by tests (no lived mutants in the diff).
+**When to run:** Not a per-commit gate — it's slow (whole-package baseline) and `--diff` is broken upstream for package-scoped runs (see below), so there's no fast incremental mode. Run it manually before submitting a change with substantial new branching/error-handling logic, or when you suspect a test is a change-detector rather than a real pin on behavior. It also runs on a weekly rotation in CI (`.github/workflows/mutation-testing.yml`, one `internal/<pkg>` per week) so gaps still surface without blocking every commit.
 
 **Command:**
 ```bash
