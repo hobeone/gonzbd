@@ -1740,17 +1740,26 @@ func (d *dummyDownloader) DisconnectAll()                 {}
 
 type wedgedDownloader struct {
 	dummyDownloader
+	stopCh chan struct{}
 }
 
 func (w *wedgedDownloader) Stop() error {
-	select {} // block forever
+	if w.stopCh != nil {
+		<-w.stopCh
+		return nil
+	}
+	select {}
 }
 
 func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 	adminDir := t.TempDir()
 	cfg := testConfig(t.TempDir(), t.TempDir(), adminDir)
 
-	application, err := app.New(cfg, nil, app.WithDownloader(&wedgedDownloader{}))
+	stopCh := make(chan struct{})
+	t.Cleanup(func() { close(stopCh) })
+	dl := &wedgedDownloader{stopCh: stopCh}
+
+	application, err := app.New(cfg, nil, app.WithDownloader(dl))
 	if err != nil {
 		t.Fatalf("build app: %v", err)
 	}
