@@ -835,13 +835,6 @@ func TestHistoryDelete_RemoveHistoryJobErrorLog(t *testing.T) {
 	}
 }
 
-func TestUnexportedHistoryHelpersAlignmentReference(t *testing.T) {
-	var s Server
-	_ = s.historyDelete
-	_ = s.historyList
-	_ = s.modeHistory
-}
-
 func TestHistoryDelete_ContextCancelledErrors(t *testing.T) {
 	s, _ := testHistoryServer(t)
 	for _, val := range []string{"all", "failed", "completed"} {
