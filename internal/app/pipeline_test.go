@@ -126,14 +126,6 @@ func TestRegisterFile_SeedsInitialWriteCursorFromQueue(t *testing.T) {
 	}
 }
 
-func TestUnexportedPipelineHelpersAlignmentReference(t *testing.T) {
-	var p pipeline
-	_ = p.run
-	_ = p.handleFailureResult
-	_ = p.handleSuccessResult
-	_ = p.resolveFileInfo
-}
-
 func TestPipeline_HandleFailureResult(t *testing.T) {
 	q := queue.New()
 	parsed := &nzb.NZB{Files: []nzb.File{
