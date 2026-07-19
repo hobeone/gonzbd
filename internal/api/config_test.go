@@ -928,14 +928,6 @@ func TestModeSetConfig_Comprehensive(t *testing.T) {
 	})
 }
 
-func TestUnexportedConfigHelpersAlignmentReference(t *testing.T) {
-	var s Server
-	_ = s.configTestServer
-	_ = s.modeGetConfig
-	_ = s.modeConfig
-	_ = s.configSpeedLimit
-}
-
 func TestModeConfig_Speedlimit_NoApp(t *testing.T) {
 	t.Parallel()
 	s := testServer()
