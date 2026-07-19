@@ -99,11 +99,3 @@ func (a *Application) TriggerFireCompletionNotification(entry history.Entry) {
 	a.fireCompletionNotification(entry)
 }
 
-// Dummy references to satisfy scripts/check_test_alignment
-var (
-	_ = (*Application).enqueuePostProc
-	_ = (*Application).maybeDirectUnpack
-	_ = (*Application).persistAndCommit
-	_ = (*Application).handleFileComplete
-	_ = (*Application).fireCompletionNotification
-)
