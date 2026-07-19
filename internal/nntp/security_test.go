@@ -9,70 +9,66 @@ import (
 
 // --- C1: validateMessageID ---
 
-func TestValidateMessageID_RejectsCRLF(t *testing.T) {
-	ids := []string{
-		"abc\r\nQUIT\r\n@news.example.com",
-		"abc\n@news.example.com",
-		"abc\r@news.example.com",
-	}
-	for _, id := range ids {
-		err := validateMessageID(id)
-		if err == nil {
-			t.Errorf("validateMessageID(%q) = nil, want error", id)
-			continue
-		}
-		if !errors.Is(err, ErrInvalidMessageID) {
-			t.Errorf("validateMessageID(%q) = %v, want ErrInvalidMessageID", id, err)
-		}
-	}
-}
+func TestValidateMessageID(t *testing.T) {
+	t.Parallel()
 
-func TestValidateMessageID_RejectsNullByte(t *testing.T) {
-	id := "abc\x00def@news.example.com"
-	err := validateMessageID(id)
-	if err == nil {
-		t.Fatal("validateMessageID with null byte returned nil")
+	tests := []struct {
+		name    string
+		ids     []string
+		wantErr bool
+	}{
+		{
+			name: "crlf injection",
+			ids: []string{
+				"abc\r\nQUIT\r\n@news.example.com",
+				"abc\n@news.example.com",
+				"abc\r@news.example.com",
+			},
+			wantErr: true,
+		},
+		{
+			name:    "null byte",
+			ids:     []string{"abc\x00def@news.example.com"},
+			wantErr: true,
+		},
+		{
+			name:    "empty and brackets",
+			ids:     []string{"", "<>", "<", ">"},
+			wantErr: true,
+		},
+		{
+			name:    "close angle bracket injection",
+			ids:     []string{"abc>QUIT@news.example.com"},
+			wantErr: true,
+		},
+		{
+			name: "valid normal ids",
+			ids: []string{
+				"abc123@news.example.com",
+				"<abc123@news.example.com>",
+				"part1of100.abc@provider.net",
+				"a",
+			},
+			wantErr: false,
+		},
 	}
-	if !errors.Is(err, ErrInvalidMessageID) {
-		t.Fatalf("got %v, want ErrInvalidMessageID", err)
-	}
-}
 
-func TestValidateMessageID_RejectsEmpty(t *testing.T) {
-	for _, id := range []string{"", "<>", "<", ">"} {
-		err := validateMessageID(id)
-		if err == nil {
-			t.Errorf("validateMessageID(%q) = nil, want error", id)
-			continue
-		}
-		if !errors.Is(err, ErrInvalidMessageID) {
-			t.Errorf("validateMessageID(%q) = %v, want ErrInvalidMessageID", id, err)
-		}
-	}
-}
-
-func TestValidateMessageID_RejectsCloseAngle(t *testing.T) {
-	id := "abc>QUIT@news.example.com"
-	err := validateMessageID(id)
-	if err == nil {
-		t.Fatal("validateMessageID with embedded '>' returned nil")
-	}
-	if !errors.Is(err, ErrInvalidMessageID) {
-		t.Fatalf("got %v, want ErrInvalidMessageID", err)
-	}
-}
-
-func TestValidateMessageID_AcceptsNormal(t *testing.T) {
-	ids := []string{
-		"abc123@news.example.com",
-		"<abc123@news.example.com>",
-		"part1of100.abc@provider.net",
-		"a",
-	}
-	for _, id := range ids {
-		if err := validateMessageID(id); err != nil {
-			t.Errorf("validateMessageID(%q) = %v, want nil", id, err)
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, id := range tc.ids {
+				err := validateMessageID(id)
+				if tc.wantErr {
+					if err == nil {
+						t.Errorf("validateMessageID(%q) = nil, want error", id)
+					} else if !errors.Is(err, ErrInvalidMessageID) {
+						t.Errorf("validateMessageID(%q) = %v, want ErrInvalidMessageID", id, err)
+					}
+				} else if err != nil {
+					t.Errorf("validateMessageID(%q) = %v, want nil", id, err)
+				}
+			}
+		})
 	}
 }
 
