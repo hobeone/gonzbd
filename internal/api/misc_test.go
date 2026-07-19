@@ -429,12 +429,6 @@ func TestModeBrowse_NonexistentDir(t *testing.T) {
 	}
 }
 
-func TestUnexportedMiscHelpersAlignmentReference(t *testing.T) {
-	var s Server
-	_ = s.modeBrowse
-	_ = s.modeGetScripts
-}
-
 func TestResolveExistingAncestor(t *testing.T) {
 	t.Parallel()
 
