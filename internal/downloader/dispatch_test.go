@@ -774,12 +774,6 @@ func TestBuildDispatchPlan_EarlyExitWhenServersFull(t *testing.T) {
 	}
 }
 
-func TestUnexportedDownloaderHelpersAlignmentReference(t *testing.T) {
-	var d Downloader
-	_ = d.fetchArticle
-	_ = d.selectServerForArticle
-}
-
 func TestTryDispatch_MaxArtTriesExhausted_MultipleServers(t *testing.T) {
 	t.Parallel()
 
