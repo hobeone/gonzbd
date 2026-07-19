@@ -11,7 +11,7 @@ var (
 	// ErrNotUU is returned when the body does not start with a valid "begin" line.
 	ErrNotUU = errors.New("decoder: not a UU-encoded article")
 
-	// ErrUUMalformed is returned when a UU body line cannot be decoded.
+	// ErrUUMalformed is reserved for malformed UU article decoding errors.
 	ErrUUMalformed = errors.New("decoder: malformed UU article")
 )
 
