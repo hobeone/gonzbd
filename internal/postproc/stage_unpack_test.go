@@ -587,6 +587,18 @@ func TestArchiveTypeName_KnownTypes(t *testing.T) {
 	}
 }
 
+// assertExtractEngine checks that an extractArchive scenario against a
+// nonexistent archive failed and was handled by the expected engine.
+func assertExtractEngine(t *testing.T, scenario, archiveName string, res unpack.Result, err error, wantEngine string) {
+	t.Helper()
+	if err == nil {
+		t.Errorf("%s: expected error for %s", scenario, archiveName)
+	}
+	if res.Engine != wantEngine {
+		t.Errorf("%s: Engine = %q, want %q", scenario, res.Engine, wantEngine)
+	}
+}
+
 func TestUnpackHelpers(t *testing.T) {
 	t.Parallel()
 
@@ -658,32 +670,25 @@ func TestUnpackHelpers(t *testing.T) {
 
 		// Scenario A: Native Go, no fallback
 		resA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, true, true)
-		if errA == nil {
-			t.Error("scenario A: expected error for nonexistent.rar")
-		}
-		if resA.Engine != "go_unrar" {
-			t.Errorf("scenario A: Engine = %q, want go_unrar", resA.Engine)
+		assertExtractEngine(t, "scenario A", "nonexistent.rar", resA, errA, "go_unrar")
+
+		// Scenarios B and C exercise the external unrar path; skip them (not
+		// the whole subtest, so scenario A above still runs) when the
+		// binary isn't available, matching this file's existing convention
+		// (see extractPendingArchives_external_success below).
+		if _, err := exec.LookPath("unrar"); err != nil {
+			t.Skip("unrar binary not found in PATH; skipping external/fallback scenarios")
 		}
 
 		// Scenario B: External only
 		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false}, true, true)
-		if errB == nil {
-			t.Error("scenario B: expected error for nonexistent.rar")
-		}
-		if resB.Engine != "unrar" {
-			t.Errorf("scenario B: Engine = %q, want unrar", resB.Engine)
-		}
+		assertExtractEngine(t, "scenario B", "nonexistent.rar", resB, errB, "unrar")
 
 		// Scenario C: Native Go with external fallback -- should behave like
 		// B (fallback ran and switched engines away from go_unrar), proving
 		// the fallback path actually executed rather than silently no-oping.
 		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true}, true, true)
-		if errC == nil {
-			t.Error("scenario C: expected error for nonexistent.rar")
-		}
-		if resC.Engine != "unrar" {
-			t.Errorf("scenario C: Engine = %q, want unrar (fallback should have run)", resC.Engine)
-		}
+		assertExtractEngine(t, "scenario C", "nonexistent.rar", resC, errC, "unrar")
 	})
 
 	// 4. Test extractArchive 7-Zip scenarios
@@ -697,31 +702,22 @@ func TestUnpackHelpers(t *testing.T) {
 
 		// Scenario A: Native Go, no fallback
 		resA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, true, true)
-		if errA == nil {
-			t.Error("scenario A: expected error for nonexistent.7z")
-		}
-		if resA.Engine != "go_7z" {
-			t.Errorf("scenario A: Engine = %q, want go_7z", resA.Engine)
+		assertExtractEngine(t, "scenario A", "nonexistent.7z", resA, errA, "go_7z")
+
+		// Scenarios B and C exercise the external 7z path; skip them (not
+		// the whole subtest) when no 7z/7zz binary is available.
+		if _, err := unpack.SevenZipBin(unpack.Options{}); err != nil {
+			t.Skip("7-zip binary not found in PATH; skipping external/fallback scenarios")
 		}
 
 		// Scenario B: External only
 		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false}, true, true)
-		if errB == nil {
-			t.Error("scenario B: expected error for nonexistent.7z")
-		}
-		if resB.Engine != "7zip" {
-			t.Errorf("scenario B: Engine = %q, want 7zip", resB.Engine)
-		}
+		assertExtractEngine(t, "scenario B", "nonexistent.7z", resB, errB, "7zip")
 
 		// Scenario C: Native Go with external fallback -- should behave like
 		// B (fallback ran and switched engines away from go_7z).
 		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true}, true, true)
-		if errC == nil {
-			t.Error("scenario C: expected error for nonexistent.7z")
-		}
-		if resC.Engine != "7zip" {
-			t.Errorf("scenario C: Engine = %q, want 7zip (fallback should have run)", resC.Engine)
-		}
+		assertExtractEngine(t, "scenario C", "nonexistent.7z", resC, errC, "7zip")
 	})
 
 	// 5. Test extractArchive (SplitArchive disabled)

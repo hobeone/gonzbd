@@ -665,6 +665,17 @@ func TestRepairHelpers(t *testing.T) {
 			t.Errorf("scenario A: CommandLine = %q, want empty (no external command should have run)", resA.CommandLine)
 		}
 
+		// Scenarios B and C exercise the external par2 path. Use a stub
+		// binary (matching TestDispatchRepairTool_FallbackRunsWhenBinaryPresent's
+		// pattern below) rather than depending on a real "par2" in PATH --
+		// this repo's CI doesn't install par2 for the plain `go test ./...`
+		// job, only for `-tags=integration`.
+		stub := filepath.Join(t.TempDir(), "par2stub")
+		if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+			t.Fatalf("write stub: %v", err)
+		}
+		stubOpts := par2.RunOptions{Command: stub}
+
 		// Scenario B: External only
 		_, _ = dispatchRepairTool(
 			t.Context(),
@@ -672,7 +683,7 @@ func TestRepairHelpers(t *testing.T) {
 			job,
 			"nonexistent.par2",
 			nil,
-			par2.RunOptions{},
+			stubOpts,
 			false, // useGoPar2
 			false, // fallback
 		)
@@ -686,7 +697,7 @@ func TestRepairHelpers(t *testing.T) {
 			job,
 			"nonexistent.par2",
 			nil,
-			par2.RunOptions{},
+			stubOpts,
 			true, // useGoPar2
 			true, // fallback
 		)
