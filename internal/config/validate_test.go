@@ -9,136 +9,136 @@ import (
 
 // ---------- portInRange ----------
 
-func TestPortInRange_ZeroNotAllowed(t *testing.T) {
+func TestPortInRange(t *testing.T) {
 	t.Parallel()
-	if err := portInRange("port", 0, false); err == nil {
-		t.Error("expected error for zero port when allowZero=false")
-	}
-}
 
-func TestPortInRange_ZeroAllowed(t *testing.T) {
-	t.Parallel()
-	if err := portInRange("https_port", 0, true); err != nil {
-		t.Errorf("expected nil for zero port when allowZero=true, got %v", err)
+	tests := []struct {
+		name      string
+		field     string
+		val       int
+		allowZero bool
+		wantErr   bool
+	}{
+		{"zero not allowed", "port", 0, false, true},
+		{"zero allowed", "https_port", 0, true, false},
+		{"min boundary", "port", 1, false, false},
+		{"max boundary", "port", 65535, false, false},
+		{"out of range upper", "port", 65536, false, true},
 	}
-}
 
-func TestPortInRange_MaxBoundary(t *testing.T) {
-	t.Parallel()
-	if err := portInRange("port", 65535, false); err != nil {
-		t.Errorf("65535 should be valid, got %v", err)
-	}
-}
-
-func TestPortInRange_MinBoundary(t *testing.T) {
-	t.Parallel()
-	if err := portInRange("port", 1, false); err != nil {
-		t.Errorf("1 should be valid, got %v", err)
-	}
-}
-
-func TestPortInRange_OutOfRange(t *testing.T) {
-	t.Parallel()
-	if err := portInRange("port", 65536, false); err == nil {
-		t.Error("expected error for port 65536")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := portInRange(tc.field, tc.val, tc.allowZero)
+			if tc.wantErr && err == nil {
+				t.Errorf("portInRange(%q, %d, %v) = nil, want error", tc.field, tc.val, tc.allowZero)
+			} else if !tc.wantErr && err != nil {
+				t.Errorf("portInRange(%q, %d, %v) = %v, want nil", tc.field, tc.val, tc.allowZero, err)
+			}
+		})
 	}
 }
 
 // ---------- positive / nonNegative ----------
 
-func TestPositive_ZeroFails(t *testing.T) {
+func TestNumericBounds(t *testing.T) {
 	t.Parallel()
-	if err := positive("connections", 0); err == nil {
-		t.Error("expected error for positive(0)")
-	}
-}
 
-func TestPositive_OnePasses(t *testing.T) {
-	t.Parallel()
-	if err := positive("connections", 1); err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
+	t.Run("positive", func(t *testing.T) {
+		t.Parallel()
+		if err := positive("connections", 0); err == nil {
+			t.Error("expected error for positive(0)")
+		}
+		if err := positive("connections", 1); err != nil {
+			t.Errorf("unexpected error for positive(1): %v", err)
+		}
+	})
 
-func TestNonNegative_NegativeFails(t *testing.T) {
-	t.Parallel()
-	if err := nonNegative("max_art_opt", -1); err == nil {
-		t.Error("expected error for nonNegative(-1)")
-	}
-}
-
-func TestNonNegative_ZeroPasses(t *testing.T) {
-	t.Parallel()
-	if err := nonNegative("max_art_opt", 0); err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
+	t.Run("nonNegative", func(t *testing.T) {
+		t.Parallel()
+		if err := nonNegative("max_art_opt", -1); err == nil {
+			t.Error("expected error for nonNegative(-1)")
+		}
+		if err := nonNegative("max_art_opt", 0); err != nil {
+			t.Errorf("unexpected error for nonNegative(0): %v", err)
+		}
+	})
 }
 
 // ---------- validateExtraParams ----------
 
-func TestValidateExtraParams_EmptyStringPasses(t *testing.T) {
+func TestValidateExtraParams(t *testing.T) {
 	t.Parallel()
-	if err := validateExtraParams("extra_unrar_params", ""); err != nil {
-		t.Errorf("empty string should pass, got %v", err)
-	}
-}
 
-func TestValidateExtraParams_ValidFlagsPasses(t *testing.T) {
-	t.Parallel()
-	if err := validateExtraParams("extra_par2_params", "-v -q -N4"); err != nil {
-		t.Errorf("all-flag string should pass, got %v", err)
+	tests := []struct {
+		name    string
+		field   string
+		params  string
+		wantErr bool
+	}{
+		{"empty string", "extra_unrar_params", "", false},
+		{"valid flags", "extra_par2_params", "-v -q -N4", false},
+		{"non-flag token", "extra_unrar_params", "-sl100000 badarg", true},
 	}
-}
 
-func TestValidateExtraParams_NonFlagTokenFails(t *testing.T) {
-	t.Parallel()
-	if err := validateExtraParams("extra_unrar_params", "-sl100000 badarg"); err == nil {
-		t.Error("expected error for token without leading '-'")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateExtraParams(tc.field, tc.params)
+			if tc.wantErr && err == nil {
+				t.Errorf("validateExtraParams(%q, %q) = nil, want error", tc.field, tc.params)
+			} else if !tc.wantErr && err != nil {
+				t.Errorf("validateExtraParams(%q, %q) = %v, want nil", tc.field, tc.params, err)
+			}
+		})
 	}
-}
 
-func TestValidateExtraParams_DisallowedUnrarFlagFails(t *testing.T) {
-	t.Parallel()
-	cfg, err := Default()
-	if err != nil {
-		t.Fatalf("Default(): %v", err)
-	}
-	cfg.PostProc.ExtraUnrarParams = "-df"
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for disallowed unrar flag -df")
-	} else if !strings.Contains(err.Error(), "not allowed") {
-		t.Errorf("expected error to mention 'not allowed', got %v", err)
-	}
+	t.Run("disallowed unrar flag in config", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := Default()
+		if err != nil {
+			t.Fatalf("Default(): %v", err)
+		}
+		cfg.PostProc.ExtraUnrarParams = "-df"
+		if err := cfg.Validate(); err == nil {
+			t.Error("expected error for disallowed unrar flag -df")
+		} else if !strings.Contains(err.Error(), "not allowed") {
+			t.Errorf("expected error to mention 'not allowed', got %v", err)
+		}
+	})
 }
 
 // ---------- validateUniqueNames ----------
 
-func TestValidateUniqueNames_EmptyNameFails(t *testing.T) {
+func TestValidateUniqueNames(t *testing.T) {
 	t.Parallel()
-	err := validateUniqueNames("server", []string{"primary", "", "backup"})
-	if err == nil {
-		t.Fatal("expected error for empty name")
-	}
-	if !strings.Contains(err.Error(), "empty") {
-		t.Errorf("error %q should mention empty", err.Error())
-	}
-}
 
-func TestValidateUniqueNames_DuplicateFails(t *testing.T) {
-	t.Parallel()
-	err := validateUniqueNames("server", []string{"news", "news"})
-	if err == nil {
-		t.Fatal("expected error for duplicate name")
+	tests := []struct {
+		name    string
+		items   []string
+		wantErr bool
+		wantSub string
+	}{
+		{"empty name fails", []string{"primary", "", "backup"}, true, "empty"},
+		{"duplicate fails", []string{"news", "news"}, true, "news"},
+		{"unique passes", []string{"primary", "backup"}, false, ""},
 	}
-	if !strings.Contains(err.Error(), "news") {
-		t.Errorf("error %q should mention the duplicate name", err.Error())
-	}
-}
 
-func TestValidateUniqueNames_UniquePass(t *testing.T) {
-	t.Parallel()
-	if err := validateUniqueNames("server", []string{"primary", "backup"}); err != nil {
-		t.Errorf("unique names should pass, got %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateUniqueNames("server", tc.items)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("validateUniqueNames = nil, want error containing %q", tc.wantSub)
+				}
+				if !strings.Contains(err.Error(), tc.wantSub) {
+					t.Errorf("error %q should mention %q", err.Error(), tc.wantSub)
+				}
+			} else if err != nil {
+				t.Errorf("validateUniqueNames = %v, want nil", err)
+			}
+		})
 	}
 }
 
