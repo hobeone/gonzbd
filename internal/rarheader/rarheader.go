@@ -31,6 +31,14 @@ var (
 	rar5Sig = []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00}
 )
 
+// RAR3 block header types (rarengine has no exported constants for these --
+// they're internal to its own engine_rar3.go, which uses the same raw
+// values).
+const (
+	rar3HeaderTypeFile       = 0x74
+	rar3HeaderTypeTerminator = 0x7b
+)
+
 // ErrNotRAR is returned when a file does not start with a valid RAR signature.
 var ErrNotRAR = errors.New("rarheader: not a RAR archive")
 
@@ -112,6 +120,16 @@ func Inspect(p string) (Info, error) {
 		// Fallback to unrar vt to be absolutely sure.
 	}
 
+	if ver == 3 {
+		info, err := InspectRar3(p)
+		if err == nil {
+			return info, nil
+		}
+		// Same fallback rationale as RAR5 above: encrypted headers (or any
+		// other parse failure) surface as an error here, so fall back to
+		// unrar vt to be absolutely sure.
+	}
+
 	// Fallback to unrar vt for RAR3/4 or if rarengine failed
 	return inspectViaUnrar(p, ver)
 }
@@ -154,6 +172,80 @@ func InspectRar5(p string) (info Info, err error) {
 	return info, err
 }
 
+// InspectRar3 opens the file at path and inspects it as a RAR3/RAR4 archive
+// using the pure Go rarengine library. It reads only block headers -- each
+// file's packed (and possibly compressed) payload is skipped directly on
+// the raw stream via its header-reported PackedSize, never decompressed.
+//
+// This deliberately does not use rarengine.StreamDecompressor (the
+// InspectRar5 approach): that walk skips to the next file by decompressing
+// and discarding the previous file's content, and rarengine's RAR3 engine
+// only implements the store compression method (method 0) -- any real
+// compressed RAR3 archive would fail there. Reading PackedSize directly off
+// the header and skipping raw bytes works regardless of compression
+// method, since header inspection never needs the decompressed content.
+// See https://github.com/hobeone/rarengine/issues/14 for the RAR3
+// decompression gap.
+func InspectRar3(p string) (info Info, err error) {
+	info.Version = 3
+	err = cmdutil.SafeEngineRun("rarheader: rarengine panic", func() error {
+		f, err := openPastSignature(p, rar3Sig)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }() // cleanup error in defer
+
+		for {
+			h, err := rarengine.ReadRAR3BlockHeader(f)
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return nil
+				}
+				return fmt.Errorf("rarheader: read block header: %w", err)
+			}
+
+			switch h.Type {
+			case rar3HeaderTypeFile:
+				fh, err := rarengine.ParseRAR3FileHeader(h)
+				if err != nil {
+					return fmt.Errorf("rarheader: parse file header: %w", err)
+				}
+				if !fh.IsDir {
+					info.Filenames = append(info.Filenames, sanitizeName(fh.Name))
+				}
+				if fh.Encrypted {
+					info.Encrypted = true
+				}
+				// fh.PackedSize's high 32 bits come from an attacker-controlled
+				// header field (the RAR3 "large file" HIGH_PACK extension) OR'd
+				// into an int64 -- a crafted value with the sign bit set makes
+				// PackedSize negative. io.CopyN treats N<=0 as "nothing to do"
+				// and returns (0, nil) rather than an error, which would leave
+				// the stream desynced (positioned inside this file's packed
+				// data instead of past it) and let a crafted archive splice in
+				// attacker-chosen bytes as the next header. Reject explicitly
+				// instead of relying on the next header's CRC check to
+				// eventually catch the desync.
+				if fh.PackedSize < 0 {
+					return fmt.Errorf("rarheader: file %q: negative packed size %d", fh.Name, fh.PackedSize)
+				}
+				if err := skipForward(f, fh.PackedSize); err != nil {
+					return fmt.Errorf("rarheader: skip packed data: %w", err)
+				}
+
+			case rar3HeaderTypeTerminator:
+				return nil
+
+			default:
+				if err := skipForward(f, h.DataSize); err != nil {
+					return fmt.Errorf("rarheader: skip block data: %w", err)
+				}
+			}
+		}
+	})
+	return info, err
+}
+
 // VerifyPassword opens the RAR5 archive at mainFilePath and checks whether
 // password matches its embedded password check value, without extracting
 // or decompressing any file content. It inspects, in order:
@@ -178,16 +270,11 @@ func VerifyPassword(mainFilePath, password string) (verified, hasCheckValue bool
 		return false, false, nil
 	}
 
-	//nolint:gosec // mainFilePath is trusted input from internal caller
-	f, err := os.Open(mainFilePath)
+	f, err := openPastSignature(mainFilePath, rar5Sig)
 	if err != nil {
-		return false, false, fmt.Errorf("rarheader: open %s: %w", mainFilePath, err)
+		return false, false, err
 	}
 	defer func() { _ = f.Close() }() // cleanup error in defer
-
-	if _, err := io.CopyN(io.Discard, f, int64(len(rar5Sig))); err != nil {
-		return false, false, fmt.Errorf("rarheader: skip signature: %w", err)
-	}
 
 	return verifyPasswordFromHeaders(f, password)
 }
@@ -263,16 +350,11 @@ func RecoverVolumeExtension(p string) (volumeIndex int, multiVolume bool, err er
 		return 0, false, fmt.Errorf("rarheader: RAR%d volume recovery not supported (RAR5 only)", ver)
 	}
 
-	//nolint:gosec // p is trusted input from internal caller
-	f, err := os.Open(p)
+	f, err := openPastSignature(p, rar5Sig)
 	if err != nil {
-		return 0, false, fmt.Errorf("rarheader: open %s: %w", p, err)
+		return 0, false, err
 	}
 	defer func() { _ = f.Close() }() // cleanup error in defer
-
-	if _, err := io.CopyN(io.Discard, f, int64(len(rar5Sig))); err != nil {
-		return 0, false, fmt.Errorf("rarheader: skip signature: %w", err)
-	}
 
 	h, err := rarengine.ReadBlockHeader(f)
 	if err != nil {
@@ -354,6 +436,67 @@ func parseUnrarVtOutput(output string) (filenames []string, encrypted bool) {
 		}
 	}
 	return filenames, encrypted
+}
+
+// skipForward advances f by n bytes using Seek rather than reading and
+// discarding n bytes -- this matters because header inspection routinely
+// skips whole (possibly multi-hundred-MB to multi-GB) file payloads it will
+// never read. Seek alone is not sufficient: os.File.Seek past the end of a
+// file succeeds silently (the error only surfaces on a later Read), which
+// would turn a truncated/corrupt archive into a false "clean" inspection
+// instead of the explicit error a corrupt archive should produce. Stat
+// confirms the new position is still within the file before continuing.
+func skipForward(f *os.File, n int64) error {
+	if n <= 0 {
+		return nil
+	}
+	newPos, err := f.Seek(n, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if newPos > fi.Size() {
+		return fmt.Errorf("seek past end of file (pos=%d, size=%d)", newPos, fi.Size())
+	}
+	return nil
+}
+
+// osOpen is a seam for tests to inject an open failure independent of
+// readMagic's own os.Open call, since callers always readMagic(p)
+// successfully before calling openPastSignature(p, ...) on the same
+// unchanged path -- without this seam, openPastSignature's open-error
+// branch would be unreachable through any real caller.
+//
+// Tradeoff: gosec's G304 (tainted-path-open) check pattern-matches literal
+// os.Open/os.OpenFile call expressions, so routing the call through this
+// func-var indirection means gosec no longer flags it at all -- not even
+// as something to suppress. The //nolint:gosec below is now decorative
+// (verified: removing it produces the same 0 lint issues), not an active
+// suppression. This is an accepted, bounded tradeoff, not an oversight:
+// every os.Open(p) callsite in this file already carries an identical
+// "p is trusted input from internal caller" //nolint:gosec justification
+// (readMagic, inspectViaUnrar's use of p) -- the same trust boundary this
+// package already relies on elsewhere, just no longer independently
+// re-verified by the linter at this specific callsite.
+var osOpen = os.Open
+
+// openPastSignature opens p and advances past its len(sig)-byte magic
+// signature, returning the file positioned at the first header byte. The
+// caller owns the returned file and must close it.
+func openPastSignature(p string, sig []byte) (*os.File, error) {
+	//nolint:gosec // p is trusted input from internal caller
+	f, err := osOpen(p)
+	if err != nil {
+		return nil, fmt.Errorf("rarheader: open %s: %w", p, err)
+	}
+	if _, err := io.CopyN(io.Discard, f, int64(len(sig))); err != nil {
+		_ = f.Close() // close on the error path; no defer here since f is returned on success
+		return nil, fmt.Errorf("rarheader: skip signature: %w", err)
+	}
+	return f, nil
 }
 
 // readMagic opens p, reads up to 8 bytes, and returns the RAR version
