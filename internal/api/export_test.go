@@ -7,4 +7,3 @@ func (b *Broadcaster) NumClients() int {
 	defer b.mu.RUnlock()
 	return len(b.clients)
 }
-

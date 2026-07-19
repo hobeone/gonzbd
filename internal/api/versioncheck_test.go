@@ -38,10 +38,16 @@ func TestCompareVersions(t *testing.T) {
 }
 
 func TestCompareVersions_InvalidInput(t *testing.T) {
-	// Malformed versions must not panic; exact return value for garbage
-	// input is not asserted beyond "does not panic."
-	_ = compareVersions("not-a-version", "v1.2.0")
-	_ = compareVersions("v1.2.0", "also-not-a-version")
+	// Malformed version components parse as 0, avoiding panic and degrading gracefully.
+	if got := compareVersions("not-a-version", "v1.2.0"); got != -1 {
+		t.Errorf("compareVersions('not-a-version', 'v1.2.0') = %d, want -1", got)
+	}
+	if got := compareVersions("v1.2.0", "also-not-a-version"); got != 1 {
+		t.Errorf("compareVersions('v1.2.0', 'also-not-a-version') = %d, want 1", got)
+	}
+	if got := compareVersions("garbage1", "garbage2"); got != 0 {
+		t.Errorf("compareVersions('garbage1', 'garbage2') = %d, want 0", got)
+	}
 }
 
 // TestModeStatus_CheckUpdate_DevBuildSkipsNetworkCall proves the dev-build
