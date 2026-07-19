@@ -638,6 +638,13 @@ func TestUnpackHelpers(t *testing.T) {
 			DownloadDir: dir,
 		}
 		u.applyPermissions(t.Context(), slog.Default(), job, "755", []unpack.Archive{{}})
+		// The fixture file is created at 0644, and 755 chmod'd onto a
+		// regular file resolves to 0644 too (exec bits stripped), so the
+		// mode is unchanged before/after -- OutputLines is the observable
+		// that actually distinguishes "chmod ran" from "did nothing".
+		if len(job.OutputLines) != 1 || !strings.Contains(job.OutputLines[0], "Applied permissions (755) to 1 file") {
+			t.Errorf("OutputLines = %v; want confirmation of 1 file chmod'd", job.OutputLines)
+		}
 	})
 
 	// 3. Test extractArchive RAR scenarios
@@ -650,13 +657,33 @@ func TestUnpackHelpers(t *testing.T) {
 		a := unpack.Archive{Type: unpack.RarArchive, Name: "nonexistent.rar"}
 
 		// Scenario A: Native Go, no fallback
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, true, true)
+		resA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, true, true)
+		if errA == nil {
+			t.Error("scenario A: expected error for nonexistent.rar")
+		}
+		if resA.Engine != "go_unrar" {
+			t.Errorf("scenario A: Engine = %q, want go_unrar", resA.Engine)
+		}
 
 		// Scenario B: External only
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false}, true, true)
+		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false}, true, true)
+		if errB == nil {
+			t.Error("scenario B: expected error for nonexistent.rar")
+		}
+		if resB.Engine != "unrar" {
+			t.Errorf("scenario B: Engine = %q, want unrar", resB.Engine)
+		}
 
-		// Scenario C: Native Go with external fallback
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true}, true, true)
+		// Scenario C: Native Go with external fallback -- should behave like
+		// B (fallback ran and switched engines away from go_unrar), proving
+		// the fallback path actually executed rather than silently no-oping.
+		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true}, true, true)
+		if errC == nil {
+			t.Error("scenario C: expected error for nonexistent.rar")
+		}
+		if resC.Engine != "unrar" {
+			t.Errorf("scenario C: Engine = %q, want unrar (fallback should have run)", resC.Engine)
+		}
 	})
 
 	// 4. Test extractArchive 7-Zip scenarios
@@ -669,13 +696,32 @@ func TestUnpackHelpers(t *testing.T) {
 		a := unpack.Archive{Type: unpack.SevenZipArchive, Name: "nonexistent.7z"}
 
 		// Scenario A: Native Go, no fallback
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, true, true)
+		resA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, true, true)
+		if errA == nil {
+			t.Error("scenario A: expected error for nonexistent.7z")
+		}
+		if resA.Engine != "go_7z" {
+			t.Errorf("scenario A: Engine = %q, want go_7z", resA.Engine)
+		}
 
 		// Scenario B: External only
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false}, true, true)
+		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false}, true, true)
+		if errB == nil {
+			t.Error("scenario B: expected error for nonexistent.7z")
+		}
+		if resB.Engine != "7zip" {
+			t.Errorf("scenario B: Engine = %q, want 7zip", resB.Engine)
+		}
 
-		// Scenario C: Native Go with external fallback
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true}, true, true)
+		// Scenario C: Native Go with external fallback -- should behave like
+		// B (fallback ran and switched engines away from go_7z).
+		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true}, true, true)
+		if errC == nil {
+			t.Error("scenario C: expected error for nonexistent.7z")
+		}
+		if resC.Engine != "7zip" {
+			t.Errorf("scenario C: Engine = %q, want 7zip (fallback should have run)", resC.Engine)
+		}
 	})
 
 	// 5. Test extractArchive (SplitArchive disabled)
@@ -686,7 +732,13 @@ func TestUnpackHelpers(t *testing.T) {
 			DownloadDir: t.TempDir(),
 		}
 		a := unpack.Archive{Type: unpack.SplitArchive, MainFile: "test.001"}
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{}, false, false)
+		res, err := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{}, false, false)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if res.Engine != "" || res.ExitCode != 0 || res.Err != nil {
+			t.Errorf("expected zero-value Result for disabled join, got %+v", res)
+		}
 	})
 
 	// 6. Test extractPendingArchives (external tool success to cover CommandLine and Output)

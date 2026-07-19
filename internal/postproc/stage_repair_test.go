@@ -648,7 +648,7 @@ func TestRepairHelpers(t *testing.T) {
 		}
 
 		// Scenario A: Native Go, no fallback
-		_, _ = dispatchRepairTool(
+		resA, errA := dispatchRepairTool(
 			t.Context(),
 			slog.Default(),
 			job,
@@ -658,6 +658,12 @@ func TestRepairHelpers(t *testing.T) {
 			true,  // useGoPar2
 			false, // fallback
 		)
+		if errA == nil {
+			t.Error("scenario A: expected native decoder error for nonexistent.par2")
+		}
+		if resA.CommandLine != "" {
+			t.Errorf("scenario A: CommandLine = %q, want empty (no external command should have run)", resA.CommandLine)
+		}
 
 		// Scenario B: External only
 		_, _ = dispatchRepairTool(
@@ -671,8 +677,10 @@ func TestRepairHelpers(t *testing.T) {
 			false, // fallback
 		)
 
-		// Scenario C: Native Go with external fallback
-		_, _ = dispatchRepairTool(
+		// Scenario C: Native Go with external fallback -- should behave like
+		// B (fallback ran the external tool), proving the fallback path
+		// actually executed rather than silently returning A's failure.
+		resC, errC := dispatchRepairTool(
 			t.Context(),
 			slog.Default(),
 			job,
@@ -682,6 +690,12 @@ func TestRepairHelpers(t *testing.T) {
 			true, // useGoPar2
 			true, // fallback
 		)
+		if errC != nil {
+			t.Errorf("scenario C: expected fallback to succeed in returning a result, got err=%v", errC)
+		}
+		if resC.CommandLine == "" {
+			t.Error("scenario C: expected external fallback command to have run")
+		}
 	})
 
 	// 3. Test processPar2Set
@@ -701,6 +715,11 @@ func TestRepairHelpers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("processPar2Set: %v", err)
 		}
+		// Real skip means dispatchRepairTool was never invoked -- a real
+		// invocation would add "[par2]"/"Command:"-prefixed lines.
+		if len(job.OutputLines) != 1 || !strings.Contains(job.OutputLines[0], "no main file") {
+			t.Errorf("OutputLines = %v; want single skip message mentioning no main file", job.OutputLines)
+		}
 
 		// Set already verified should skip.
 		vs.MarkVerified("verified-set", true)
@@ -709,9 +728,18 @@ func TestRepairHelpers(t *testing.T) {
 			MainFile:   "verified-set.par2",
 			ExtraFiles: []string{"verified-set.vol001.par2"},
 		}
+		job.OutputLines = nil
 		err = s.processPar2Set(t.Context(), slog.Default(), job, set2, nil, par2.RunOptions{}, vs, true, false)
 		if err != nil {
 			t.Fatalf("processPar2Set: %v", err)
+		}
+		if len(job.OutputLines) != 1 || !strings.Contains(job.OutputLines[0], "previously verified") {
+			t.Errorf("OutputLines = %v; want single skip message mentioning previously verified", job.OutputLines)
+		}
+		// recordRepairSuccess (which populates ConsumedFiles) must not have
+		// run for an already-verified set.
+		if len(job.ConsumedFiles) != 0 {
+			t.Errorf("ConsumedFiles = %v; want empty (repair tool must not run for verified set)", job.ConsumedFiles)
 		}
 	})
 }

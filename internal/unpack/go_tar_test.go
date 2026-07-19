@@ -784,6 +784,9 @@ func TestGoTar_CumulativeSizeAcrossEntriesTriggersBomb(t *testing.T) {
 	if res.Reason != FailCorrupt {
 		t.Errorf("Reason = %v, want FailCorrupt", res.Reason)
 	}
+	if _, statErr := os.Stat(filepath.Join(outDir, "first.bin")); !os.IsNotExist(statErr) {
+		t.Errorf("expected first.bin to be cleaned up after bomb rejection, stat err = %v", statErr)
+	}
 }
 
 // --- extractTarFile direct-call coverage (boundaries, ratio, negative guards) ---
