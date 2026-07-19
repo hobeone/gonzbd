@@ -5,8 +5,9 @@ import (
 	"path/filepath"
 )
 
-// ExpandPaths traverses the configuration and replaces leading '~' in path
-// fields with the current user's home directory.
+// ExpandPaths traverses the configuration, expands environment variables
+// ($VAR, ${VAR}), and replaces leading '~' in path fields with the current
+// user's home directory.
 func (c *Config) ExpandPaths() {
 	c.General.expandPaths()
 	c.PostProc.expandPaths()

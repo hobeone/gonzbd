@@ -30,7 +30,7 @@ type serverState struct {
 }
 
 // Meter tracks byte counts over time. Safe for concurrent callers.
-// The rolling BPS is computed over Window (default 10 s) using a ring buffer
+// The rolling BPS is computed over Window (default 1 s) using a ring buffer
 // of 1-second buckets. Buckets older than Window are ignored, causing BPS to
 // decay naturally to 0 once traffic stops.
 type Meter struct {
