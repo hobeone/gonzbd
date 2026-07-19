@@ -8,10 +8,3 @@ func (b *Broadcaster) NumClients() int {
 	return len(b.clients)
 }
 
-// Dummy references to satisfy scripts/check_test_alignment
-var (
-	_ = (*Server).queueList
-	_ = (*Server).modeQueue
-	_ = (*Server).modeAddLocalFile
-	_ = buildSlot
-)
