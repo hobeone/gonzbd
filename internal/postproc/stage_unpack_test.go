@@ -589,14 +589,29 @@ func TestArchiveTypeName_KnownTypes(t *testing.T) {
 
 // assertExtractEngine checks that an extractArchive scenario against a
 // nonexistent archive failed and was handled by the expected engine.
-func assertExtractEngine(t *testing.T, scenario, archiveName string, res unpack.Result, err error, wantEngine string) {
+func assertExtractEngine(t *testing.T, scenario string, res unpack.Result, err error, wantEngine string) {
 	t.Helper()
 	if err == nil {
-		t.Errorf("%s: expected error for %s", scenario, archiveName)
+		t.Errorf("%s: expected error", scenario)
 	}
 	if res.Engine != wantEngine {
 		t.Errorf("%s: Engine = %q, want %q", scenario, res.Engine, wantEngine)
 	}
+}
+
+// writeStubBinary writes a minimal executable shell script to a temp file
+// and returns its path. It exits non-zero so callers that dispatch to it
+// (via an *Command override) exercise the real "external tool ran and
+// failed" code path without depending on a real external binary being
+// installed -- this repo's plain `go test ./...` CI job doesn't install
+// unrar/7z/par2 (only `-tags=integration` does).
+func writeStubBinary(t *testing.T) string {
+	t.Helper()
+	stub := filepath.Join(t.TempDir(), "stubtool")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write stub binary: %v", err)
+	}
+	return stub
 }
 
 func TestUnpackHelpers(t *testing.T) {
@@ -670,25 +685,24 @@ func TestUnpackHelpers(t *testing.T) {
 
 		// Scenario A: Native Go, no fallback
 		resA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, true, true)
-		assertExtractEngine(t, "scenario A", "nonexistent.rar", resA, errA, "go_unrar")
+		assertExtractEngine(t, "scenario A", resA, errA, "go_unrar")
 
-		// Scenarios B and C exercise the external unrar path; skip them (not
-		// the whole subtest, so scenario A above still runs) when the
-		// binary isn't available, matching this file's existing convention
-		// (see extractPendingArchives_external_success below).
-		if _, err := exec.LookPath("unrar"); err != nil {
-			t.Skip("unrar binary not found in PATH; skipping external/fallback scenarios")
-		}
+		// Scenarios B and C exercise the external unrar path. Use a stub
+		// binary rather than a skip-guard, so these scenarios always run
+		// instead of silently losing coverage on any runner without a real
+		// unrar installed -- this repo's plain `go test ./...` CI job
+		// doesn't install unrar (only `-tags=integration` does).
+		stub := writeStubBinary(t)
 
 		// Scenario B: External only
-		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false}, true, true)
-		assertExtractEngine(t, "scenario B", "nonexistent.rar", resB, errB, "unrar")
+		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false, UnrarCommand: stub}, true, true)
+		assertExtractEngine(t, "scenario B", resB, errB, "unrar")
 
 		// Scenario C: Native Go with external fallback -- should behave like
 		// B (fallback ran and switched engines away from go_unrar), proving
 		// the fallback path actually executed rather than silently no-oping.
-		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true}, true, true)
-		assertExtractEngine(t, "scenario C", "nonexistent.rar", resC, errC, "unrar")
+		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true, UnrarCommand: stub}, true, true)
+		assertExtractEngine(t, "scenario C", resC, errC, "unrar")
 	})
 
 	// 4. Test extractArchive 7-Zip scenarios
@@ -702,22 +716,20 @@ func TestUnpackHelpers(t *testing.T) {
 
 		// Scenario A: Native Go, no fallback
 		resA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, true, true)
-		assertExtractEngine(t, "scenario A", "nonexistent.7z", resA, errA, "go_7z")
+		assertExtractEngine(t, "scenario A", resA, errA, "go_7z")
 
-		// Scenarios B and C exercise the external 7z path; skip them (not
-		// the whole subtest) when no 7z/7zz binary is available.
-		if _, err := unpack.SevenZipBin(unpack.Options{}); err != nil {
-			t.Skip("7-zip binary not found in PATH; skipping external/fallback scenarios")
-		}
+		// Scenarios B and C exercise the external 7z path. Use a stub binary
+		// (see the RAR subtest above) instead of a skip-guard.
+		stub := writeStubBinary(t)
 
 		// Scenario B: External only
-		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false}, true, true)
-		assertExtractEngine(t, "scenario B", "nonexistent.7z", resB, errB, "7zip")
+		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false, SevenZipCommand: stub}, true, true)
+		assertExtractEngine(t, "scenario B", resB, errB, "7zip")
 
 		// Scenario C: Native Go with external fallback -- should behave like
 		// B (fallback ran and switched engines away from go_7z).
-		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true}, true, true)
-		assertExtractEngine(t, "scenario C", "nonexistent.7z", resC, errC, "7zip")
+		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true, SevenZipCommand: stub}, true, true)
+		assertExtractEngine(t, "scenario C", resC, errC, "7zip")
 	})
 
 	// 5. Test extractArchive (SplitArchive disabled)

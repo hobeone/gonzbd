@@ -670,14 +670,10 @@ func TestRepairHelpers(t *testing.T) {
 		// pattern below) rather than depending on a real "par2" in PATH --
 		// this repo's CI doesn't install par2 for the plain `go test ./...`
 		// job, only for `-tags=integration`.
-		stub := filepath.Join(t.TempDir(), "par2stub")
-		if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-			t.Fatalf("write stub: %v", err)
-		}
-		stubOpts := par2.RunOptions{Command: stub}
+		stubOpts := par2.RunOptions{Command: writeStubBinary(t)}
 
 		// Scenario B: External only
-		_, _ = dispatchRepairTool(
+		resB, errB := dispatchRepairTool(
 			t.Context(),
 			slog.Default(),
 			job,
@@ -687,6 +683,12 @@ func TestRepairHelpers(t *testing.T) {
 			false, // useGoPar2
 			false, // fallback
 		)
+		if errB != nil {
+			t.Errorf("scenario B: expected external tool to return a result (not a decoder error), got err=%v", errB)
+		}
+		if resB.CommandLine == "" {
+			t.Error("scenario B: expected external command to have run")
+		}
 
 		// Scenario C: Native Go with external fallback -- should behave like
 		// B (fallback ran the external tool), proving the fallback path
