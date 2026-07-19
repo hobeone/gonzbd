@@ -98,4 +98,3 @@ func (a *Application) SetActiveDU(val int32) {
 func (a *Application) TriggerFireCompletionNotification(entry history.Entry) {
 	a.fireCompletionNotification(entry)
 }
-
