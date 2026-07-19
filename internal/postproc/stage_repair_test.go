@@ -648,7 +648,7 @@ func TestRepairHelpers(t *testing.T) {
 		}
 
 		// Scenario A: Native Go, no fallback
-		_, _ = dispatchRepairTool(
+		resA, errA := dispatchRepairTool(
 			t.Context(),
 			slog.Default(),
 			job,
@@ -658,30 +658,57 @@ func TestRepairHelpers(t *testing.T) {
 			true,  // useGoPar2
 			false, // fallback
 		)
+		if errA == nil {
+			t.Error("scenario A: expected native decoder error for nonexistent.par2")
+		}
+		if resA.CommandLine != "" {
+			t.Errorf("scenario A: CommandLine = %q, want empty (no external command should have run)", resA.CommandLine)
+		}
+
+		// Scenarios B and C exercise the external par2 path. Use a stub
+		// binary (matching TestDispatchRepairTool_FallbackRunsWhenBinaryPresent's
+		// pattern below) rather than depending on a real "par2" in PATH --
+		// this repo's CI doesn't install par2 for the plain `go test ./...`
+		// job, only for `-tags=integration`.
+		stubOpts := par2.RunOptions{Command: writeStubBinary(t)}
 
 		// Scenario B: External only
-		_, _ = dispatchRepairTool(
+		resB, errB := dispatchRepairTool(
 			t.Context(),
 			slog.Default(),
 			job,
 			"nonexistent.par2",
 			nil,
-			par2.RunOptions{},
+			stubOpts,
 			false, // useGoPar2
 			false, // fallback
 		)
+		if errB != nil {
+			t.Errorf("scenario B: expected external tool to return a result (not a decoder error), got err=%v", errB)
+		}
+		if resB.CommandLine == "" {
+			t.Error("scenario B: expected external command to have run")
+		}
 
-		// Scenario C: Native Go with external fallback
-		_, _ = dispatchRepairTool(
+		// Scenario C: Native Go with external fallback -- should behave like
+		// B (fallback ran the external tool), proving the fallback path
+		// actually executed rather than silently returning A's failure.
+		resC, errC := dispatchRepairTool(
 			t.Context(),
 			slog.Default(),
 			job,
 			"nonexistent.par2",
 			nil,
-			par2.RunOptions{},
+			stubOpts,
 			true, // useGoPar2
 			true, // fallback
 		)
+		if errC != nil {
+			t.Errorf("scenario C: expected fallback to succeed in returning a result, got err=%v", errC)
+		}
+		if resC.CommandLine == "" {
+			t.Error("scenario C: expected external fallback command to have run")
+		}
 	})
 
 	// 3. Test processPar2Set
@@ -701,6 +728,11 @@ func TestRepairHelpers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("processPar2Set: %v", err)
 		}
+		// Real skip means dispatchRepairTool was never invoked -- a real
+		// invocation would add "[par2]"/"Command:"-prefixed lines.
+		if len(job.OutputLines) != 1 || !strings.Contains(job.OutputLines[0], "no main file") {
+			t.Errorf("OutputLines = %v; want single skip message mentioning no main file", job.OutputLines)
+		}
 
 		// Set already verified should skip.
 		vs.MarkVerified("verified-set", true)
@@ -709,9 +741,18 @@ func TestRepairHelpers(t *testing.T) {
 			MainFile:   "verified-set.par2",
 			ExtraFiles: []string{"verified-set.vol001.par2"},
 		}
+		job.OutputLines = nil
 		err = s.processPar2Set(t.Context(), slog.Default(), job, set2, nil, par2.RunOptions{}, vs, true, false)
 		if err != nil {
 			t.Fatalf("processPar2Set: %v", err)
+		}
+		if len(job.OutputLines) != 1 || !strings.Contains(job.OutputLines[0], "previously verified") {
+			t.Errorf("OutputLines = %v; want single skip message mentioning previously verified", job.OutputLines)
+		}
+		// recordRepairSuccess (which populates ConsumedFiles) must not have
+		// run for an already-verified set.
+		if len(job.ConsumedFiles) != 0 {
+			t.Errorf("ConsumedFiles = %v; want empty (repair tool must not run for verified set)", job.ConsumedFiles)
 		}
 	})
 }

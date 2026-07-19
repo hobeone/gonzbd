@@ -587,6 +587,33 @@ func TestArchiveTypeName_KnownTypes(t *testing.T) {
 	}
 }
 
+// assertExtractEngine checks that an extractArchive scenario against a
+// nonexistent archive failed and was handled by the expected engine.
+func assertExtractEngine(t *testing.T, scenario string, res unpack.Result, err error, wantEngine string) {
+	t.Helper()
+	if err == nil {
+		t.Errorf("%s: expected error", scenario)
+	}
+	if res.Engine != wantEngine {
+		t.Errorf("%s: Engine = %q, want %q", scenario, res.Engine, wantEngine)
+	}
+}
+
+// writeStubBinary writes a minimal executable shell script to a temp file
+// and returns its path. It exits non-zero so callers that dispatch to it
+// (via an *Command override) exercise the real "external tool ran and
+// failed" code path without depending on a real external binary being
+// installed -- this repo's plain `go test ./...` CI job doesn't install
+// unrar/7z/par2 (only `-tags=integration` does).
+func writeStubBinary(t *testing.T) string {
+	t.Helper()
+	stub := filepath.Join(t.TempDir(), "stubtool")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write stub binary: %v", err)
+	}
+	return stub
+}
+
 func TestUnpackHelpers(t *testing.T) {
 	t.Parallel()
 
@@ -638,6 +665,13 @@ func TestUnpackHelpers(t *testing.T) {
 			DownloadDir: dir,
 		}
 		u.applyPermissions(t.Context(), slog.Default(), job, "755", []unpack.Archive{{}})
+		// The fixture file is created at 0644, and 755 chmod'd onto a
+		// regular file resolves to 0644 too (exec bits stripped), so the
+		// mode is unchanged before/after -- OutputLines is the observable
+		// that actually distinguishes "chmod ran" from "did nothing".
+		if len(job.OutputLines) != 1 || !strings.Contains(job.OutputLines[0], "Applied permissions (755) to 1 file") {
+			t.Errorf("OutputLines = %v; want confirmation of 1 file chmod'd", job.OutputLines)
+		}
 	})
 
 	// 3. Test extractArchive RAR scenarios
@@ -650,13 +684,25 @@ func TestUnpackHelpers(t *testing.T) {
 		a := unpack.Archive{Type: unpack.RarArchive, Name: "nonexistent.rar"}
 
 		// Scenario A: Native Go, no fallback
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, true, true)
+		resA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: false}, true, true)
+		assertExtractEngine(t, "scenario A", resA, errA, "go_unrar")
+
+		// Scenarios B and C exercise the external unrar path. Use a stub
+		// binary rather than a skip-guard, so these scenarios always run
+		// instead of silently losing coverage on any runner without a real
+		// unrar installed -- this repo's plain `go test ./...` CI job
+		// doesn't install unrar (only `-tags=integration` does).
+		stub := writeStubBinary(t)
 
 		// Scenario B: External only
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false}, true, true)
+		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: false, GoRarFallback: false, UnrarCommand: stub}, true, true)
+		assertExtractEngine(t, "scenario B", resB, errB, "unrar")
 
-		// Scenario C: Native Go with external fallback
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true}, true, true)
+		// Scenario C: Native Go with external fallback -- should behave like
+		// B (fallback ran and switched engines away from go_unrar), proving
+		// the fallback path actually executed rather than silently no-oping.
+		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGoRAR: true, GoRarFallback: true, UnrarCommand: stub}, true, true)
+		assertExtractEngine(t, "scenario C", resC, errC, "unrar")
 	})
 
 	// 4. Test extractArchive 7-Zip scenarios
@@ -669,13 +715,21 @@ func TestUnpackHelpers(t *testing.T) {
 		a := unpack.Archive{Type: unpack.SevenZipArchive, Name: "nonexistent.7z"}
 
 		// Scenario A: Native Go, no fallback
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, true, true)
+		resA, errA := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: false}, true, true)
+		assertExtractEngine(t, "scenario A", resA, errA, "go_7z")
+
+		// Scenarios B and C exercise the external 7z path. Use a stub binary
+		// (see the RAR subtest above) instead of a skip-guard.
+		stub := writeStubBinary(t)
 
 		// Scenario B: External only
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false}, true, true)
+		resB, errB := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: false, Go7zFallback: false, SevenZipCommand: stub}, true, true)
+		assertExtractEngine(t, "scenario B", resB, errB, "7zip")
 
-		// Scenario C: Native Go with external fallback
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true}, true, true)
+		// Scenario C: Native Go with external fallback -- should behave like
+		// B (fallback ran and switched engines away from go_7z).
+		resC, errC := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{UseGo7z: true, Go7zFallback: true, SevenZipCommand: stub}, true, true)
+		assertExtractEngine(t, "scenario C", resC, errC, "7zip")
 	})
 
 	// 5. Test extractArchive (SplitArchive disabled)
@@ -686,7 +740,13 @@ func TestUnpackHelpers(t *testing.T) {
 			DownloadDir: t.TempDir(),
 		}
 		a := unpack.Archive{Type: unpack.SplitArchive, MainFile: "test.001"}
-		_, _ = u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{}, false, false)
+		res, err := u.extractArchive(t.Context(), slog.Default(), job, a, unpack.Options{}, false, false)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if res.Engine != "" || res.ExitCode != 0 || res.Err != nil {
+			t.Errorf("expected zero-value Result for disabled join, got %+v", res)
+		}
 	})
 
 	// 6. Test extractPendingArchives (external tool success to cover CommandLine and Output)

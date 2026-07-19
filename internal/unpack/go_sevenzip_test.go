@@ -258,8 +258,11 @@ func TestGoSevenZip_Empty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GoSevenZip() error: %v", err)
 	}
-	// Empty archives may contain zero files; just ensure no error.
-	t.Logf("Extracted %d files from empty archive", len(res.ExtractedFiles))
+	// empty.7z contains 5 empty directories and 5 zero-byte regular files;
+	// directories don't count toward ExtractedFiles.
+	if len(res.ExtractedFiles) != 5 {
+		t.Errorf("GoSevenZip() extracted %d files, want 5 (empty.7z has 5 zero-byte files + 5 empty dirs)", len(res.ExtractedFiles))
+	}
 }
 
 func TestGoSevenZip_ContextCancellation(t *testing.T) {
@@ -392,9 +395,8 @@ func TestGoSevenZip_NotAnArchive(t *testing.T) {
 	if err == nil {
 		t.Fatal("GoSevenZip() expected error for non-archive file")
 	}
-	// Should classify as not-archive or corrupt.
-	if res.Reason != FailNotArchive && res.Reason != FailCorrupt {
-		t.Logf("GoSevenZip() Reason = %v (error: %v)", res.Reason, err)
+	if res.Reason != FailNotArchive {
+		t.Errorf("GoSevenZip() Reason = %v, want %v", res.Reason, FailNotArchive)
 	}
 }
 
