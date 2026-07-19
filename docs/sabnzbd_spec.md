@@ -680,7 +680,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `ignore_unrar_dates` | bool | false | Ignore timestamps in archives |
 | `overwrite_files` | bool | false | Overwrite existing extracted files |
 | `flat_unpack` | bool | false | Extract all to single folder |
-| `use_go_rar` | bool | true | Use pure-Go rarengine for RAR3/RAR5 extraction (falls back to external unrar for other formats) |
+| `use_go_rar` | bool | true | Use pure-Go rarengine for RAR3/RAR4/RAR5 extraction (falls back to external unrar for PPMd text streams and legacy formats) |
 | `extra_unrar_params` | string | `` | Extra unrar flags (allowlist: -mlp, -om*, -ri*) |
 | `extra_par2_params` | string | `` | Extra par2 flags |
 | `script_can_fail` | bool | false | Non-zero script exit = warning not failure |
