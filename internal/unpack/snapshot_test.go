@@ -58,4 +58,10 @@ func TestSnapshotDirAndDiff(t *testing.T) {
 	if len(diffEmpty) != 0 {
 		t.Errorf("expected empty diff, got %v", diffEmpty)
 	}
+
+	// 5. Reverse diff (files present in earlier snapshot but absent in later)
+	diffReverse := diffSnapshot(snap2, snap1)
+	if len(diffReverse) != 0 {
+		t.Errorf("diffSnapshot(snap2, snap1) = %v, want empty (only new files reported)", diffReverse)
+	}
 }
