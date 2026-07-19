@@ -114,11 +114,6 @@ func TestHandleAPI_CookieAuth_NonPost_StateChangingRestricted_405(t *testing.T) 
 	}
 }
 
-func TestUnexportedRouterHelpersAlignmentReference(t *testing.T) {
-	var s Server
-	_ = s.handleAPI
-}
-
 // TestSEC1_UntrustedCookieRejected is the SEC-1 acceptance-side regression:
 // replaying a VALID session cookie from a non-loopback address (the
 // "GET / to grab the cookie, then replay it" attack) must NOT grant admin.
