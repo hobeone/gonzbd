@@ -302,9 +302,8 @@ func TestGoUnRAR_Corrupt(t *testing.T) {
 	if !onlineCalled {
 		t.Error("expected OnLine to be called on corrupt archive error")
 	}
-	// Should classify as corrupt, not panic.
-	if res.Reason != FailCorrupt && res.Reason != FailNotArchive {
-		t.Errorf("Reason = %v, want FailCorrupt or FailNotArchive", res.Reason)
+	if res.Reason != FailCorrupt {
+		t.Errorf("Reason = %v, want FailCorrupt", res.Reason)
 	}
 }
 
