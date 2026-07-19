@@ -296,8 +296,3 @@ func TestModeStatus_UnblockServer(t *testing.T) {
 		t.Errorf("status = %d; want 404 (not found); body = %s", rr3.Code, rr3.Body.String())
 	}
 }
-
-func TestUnexportedStatusHelpersAlignmentReference(t *testing.T) {
-	var s Server
-	_ = s.modeStatus
-}
