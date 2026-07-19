@@ -158,7 +158,9 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 		}
 	})
 
-	_ = application.Queue().SetStatus(job.ID, constants.StatusDownloading)
+	if err := application.Queue().SetStatus(job.ID, constants.StatusDownloading); err != nil {
+		t.Fatalf("Queue.SetStatus: %v", err)
+	}
 
 	// Push article completion result
 	fd.completions <- &downloader.ArticleResult{
