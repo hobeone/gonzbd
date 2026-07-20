@@ -23,7 +23,7 @@ type UnpackStage struct {
 	// toggle provides the thread-safe SetEnabled/enabled flag.
 	toggle
 	// mu protects BaseOpts, Permissions, PasswordFile, EnableFileJoin, EnableTar, and EnableRecursive.
-	// Can be updated via Set* methods from the API goroutine while a job runs.
+	// These are replaced atomically via Apply from the API goroutine while a job runs.
 	mu sync.RWMutex
 	// BaseOpts holds config-driven extraction options (tool paths, flags).
 	// The job's password is merged at runtime.
@@ -33,7 +33,7 @@ type UnpackStage struct {
 	// execute bits stripped. Empty disables chmod.
 	Permissions string
 
-	// cleanup is set atomically so SetCleanup can be called from any goroutine.
+	// cleanup is set atomically (by Apply) so it can be updated from any goroutine.
 	cleanup atomic.Bool
 	// PasswordFile is the path to a text file with one password per line.
 	// These are appended after per-job passwords during extraction.
@@ -64,138 +64,39 @@ func NewUnpackStageWith(opts unpack.Options, cleanup bool) *UnpackStage {
 	return s
 }
 
-// SetCleanup enables or disables archive file deletion at runtime without
-// requiring a server restart. Thread-safe; may be called from any goroutine.
-func (u *UnpackStage) SetCleanup(enabled bool) { u.cleanup.Store(enabled) }
+// UnpackConfig is the full set of runtime-mutable UnpackStage settings, applied
+// atomically by Apply. It uses the stage's own option types (unpack.Options),
+// keeping internal/postproc free of any dependency on internal/config: the
+// caller (internal/app) owns the config→UnpackConfig translation.
+//
+// It does not include the SetEnabled toggle (pipeline on/off, a separate
+// concern) — that stays on SetEnabled.
+type UnpackConfig struct {
+	// Base is the full extraction option set, including construction-only
+	// fields (HasProblem, Sandbox.Enabled) which the caller carries forward.
+	Base            unpack.Options
+	Permissions     string
+	PasswordFile    string
+	EnableFileJoin  bool
+	EnableTar       bool
+	EnableRecursive bool
+	Cleanup         bool
+}
 
-// SetBaseOpts updates the extraction base options. Thread-safe.
-func (u *UnpackStage) SetBaseOpts(opts unpack.Options) {
+// Apply atomically replaces all runtime-mutable state from c under a single
+// lock. It supersedes the former per-field Set* methods so a reload is one
+// atomic swap rather than many independently-locked writes a running job could
+// interleave with. Thread-safe; takes effect for the next job.
+func (u *UnpackStage) Apply(c UnpackConfig) {
+	u.cleanup.Store(c.Cleanup) // atomic, matching the former SetCleanup
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.BaseOpts = opts
-}
-
-// SetPasswordFile updates the global password file path. Thread-safe.
-func (u *UnpackStage) SetPasswordFile(v string) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.PasswordFile = v
-}
-
-// SetEnableFileJoin enables or disables split file joining. Thread-safe.
-func (u *UnpackStage) SetEnableFileJoin(v bool) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.EnableFileJoin = v
-}
-
-// SetEnableRecursive enables or disables recursive unpacking. Thread-safe.
-func (u *UnpackStage) SetEnableRecursive(v bool) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.EnableRecursive = v
-}
-
-// SetEnableTar enables or disables plain .tar extraction. Thread-safe.
-func (u *UnpackStage) SetEnableTar(v bool) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.EnableTar = v
-}
-
-// SetOverwriteFiles enables or disables overwriting existing files on extraction.
-// Thread-safe; takes effect for the next job.
-func (u *UnpackStage) SetOverwriteFiles(v bool) {
-	u.mu.Lock()
-	u.BaseOpts.OverwriteFiles = v
-	u.mu.Unlock()
-}
-
-// SetFlatUnpack enables or disables flat extraction (ignore archive directories).
-// Thread-safe; takes effect for the next job.
-func (u *UnpackStage) SetFlatUnpack(v bool) {
-	u.mu.Lock()
-	u.BaseOpts.OneFolder = v
-	u.mu.Unlock()
-}
-
-// SetPermissions updates the octal permission string applied after extraction.
-// Thread-safe; takes effect for the next job.
-func (u *UnpackStage) SetPermissions(v string) {
-	u.mu.Lock()
-	u.Permissions = v
-	u.mu.Unlock()
-}
-
-// SetUnrarCommand updates the unrar binary path at runtime. Thread-safe.
-func (u *UnpackStage) SetUnrarCommand(v string) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.BaseOpts.UnrarCommand = v
-}
-
-// SetSevenZipCommand updates the 7z binary path at runtime. Thread-safe.
-func (u *UnpackStage) SetSevenZipCommand(v string) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.BaseOpts.SevenZipCommand = v
-}
-
-// SetUseGoRAR updates built-in RAR extractor toggle at runtime. Thread-safe.
-func (u *UnpackStage) SetUseGoRAR(v bool) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.BaseOpts.UseGoRAR = v
-}
-
-// SetGoRarFallback updates pure-Go fallback settings at runtime. Thread-safe.
-func (u *UnpackStage) SetGoRarFallback(v bool) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.BaseOpts.GoRarFallback = v
-}
-
-// SetUseGo7z updates built-in 7z extractor toggle at runtime. Thread-safe.
-func (u *UnpackStage) SetUseGo7z(v bool) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.BaseOpts.UseGo7z = v
-}
-
-// SetGo7zFallback updates pure-Go 7z fallback settings at runtime. Thread-safe.
-func (u *UnpackStage) SetGo7zFallback(v bool) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.BaseOpts.Go7zFallback = v
-}
-
-// SetNiceAndIonice updates nice and ionice settings at runtime. Thread-safe.
-func (u *UnpackStage) SetNiceAndIonice(nice, ionice string) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.BaseOpts.CmdCfg.Nice = nice
-	u.BaseOpts.CmdCfg.Ionice = ionice
-}
-
-// SetExtraUnrarParams updates unrar extra parameters at runtime. Thread-safe.
-func (u *UnpackStage) SetExtraUnrarParams(args []string) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.BaseOpts.ExtraArgs = args
-}
-
-// SetIgnoreUnrarDates updates ignore archive dates setting at runtime. Thread-safe.
-func (u *UnpackStage) SetIgnoreUnrarDates(v bool) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.BaseOpts.IgnoreUnrarDates = v
-}
-
-// SetStrictSandbox updates strict sandbox setting at runtime. Thread-safe.
-func (u *UnpackStage) SetStrictSandbox(v bool) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.BaseOpts.Sandbox.Strict = v
+	u.BaseOpts = c.Base
+	u.Permissions = c.Permissions
+	u.PasswordFile = c.PasswordFile
+	u.EnableFileJoin = c.EnableFileJoin
+	u.EnableTar = c.EnableTar
+	u.EnableRecursive = c.EnableRecursive
 }
 
 // Name returns the stage identifier.
@@ -229,9 +130,7 @@ func (u *UnpackStage) Run(ctx context.Context, job *Job) error {
 		return nil
 	}
 
-	// Snapshot mutable fields under RLock so a concurrent SetOverwriteFiles /
-	// SetFlatUnpack / SetPermissions / SetPasswordFile / SetEnableFileJoin /
-	// SetEnableTar / SetEnableRecursive call doesn't race.
+	// Snapshot mutable fields under RLock so a concurrent Apply doesn't race.
 	u.mu.RLock()
 	opts := u.BaseOpts
 	permissions := u.Permissions

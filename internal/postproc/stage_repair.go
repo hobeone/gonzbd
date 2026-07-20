@@ -19,9 +19,9 @@ type RepairStage struct {
 	mu sync.RWMutex
 	// Par2Opts configures the par2 binary path and turbo mode.
 	Par2Opts par2.RunOptions
-	// ParseOpts defines safety limits for PAR2 parsing. Applied when stages
-	// are built at startup (and on config reload's stage rebuild); there is
-	// no runtime setter, unlike the par2 binary/turbo options above.
+	// ParseOpts defines safety limits for PAR2 parsing. Applied only at stage
+	// construction; unlike the other fields it is not runtime-mutable (Apply
+	// deliberately leaves it untouched).
 	ParseOpts par2.ParseOptions
 	// UseGoPar2 enables the native par2engine library for verification
 	// and repair. When true and native repair fails, falls back to the
@@ -35,54 +35,30 @@ type RepairStage struct {
 	Log *slog.Logger
 }
 
-// SetPar2Opts updates the par2 options at runtime. Thread-safe.
-func (s *RepairStage) SetPar2Opts(opts par2.RunOptions) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.Par2Opts = opts
+// RepairConfig is the full set of runtime-mutable RepairStage settings, applied
+// atomically by Apply. Like UnpackConfig it uses the stage's own option types
+// (par2.RunOptions), keeping internal/postproc free of internal/config; the
+// caller owns the config→RepairConfig translation.
+//
+// ParseOpts is deliberately absent: it has no runtime setter and is applied
+// only at stage construction, so Apply must not touch it.
+type RepairConfig struct {
+	// Par2 is the full par2 option set, including the construction-only Caps
+	// pointer, which the caller carries forward.
+	Par2           par2.RunOptions
+	UseGoPar2      bool
+	GoPar2Fallback bool
 }
 
-// SetUseGoPar2 enables or disables pure-Go par2 at runtime. Thread-safe.
-func (s *RepairStage) SetUseGoPar2(v bool) {
+// Apply atomically replaces all runtime-mutable state from c under a single
+// lock. It supersedes the former per-field Set* methods. ParseOpts is
+// preserved (construction-only). Thread-safe; takes effect for the next job.
+func (s *RepairStage) Apply(c RepairConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.UseGoPar2 = v
-}
-
-// SetGoPar2Fallback updates fallback settings at runtime. Thread-safe.
-func (s *RepairStage) SetGoPar2Fallback(v bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.GoPar2Fallback = v
-}
-
-// SetPar2Command updates the par2 command path at runtime. Thread-safe.
-func (s *RepairStage) SetPar2Command(v string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.Par2Opts.Command = v
-}
-
-// SetPar2Turbo updates turbo settings at runtime. Thread-safe.
-func (s *RepairStage) SetPar2Turbo(v bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.Par2Opts.Turbo = v
-}
-
-// SetNiceAndIonice updates nice and ionice settings at runtime. Thread-safe.
-func (s *RepairStage) SetNiceAndIonice(nice, ionice string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.Par2Opts.CmdCfg.Nice = nice
-	s.Par2Opts.CmdCfg.Ionice = ionice
-}
-
-// SetExtraPar2Params updates extra parameters at runtime. Thread-safe.
-func (s *RepairStage) SetExtraPar2Params(args []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.Par2Opts.ExtraArgs = args
+	s.Par2Opts = c.Par2
+	s.UseGoPar2 = c.UseGoPar2
+	s.GoPar2Fallback = c.GoPar2Fallback
 }
 
 // NewRepairStage constructs a RepairStage with default settings.
