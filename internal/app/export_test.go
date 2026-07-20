@@ -98,3 +98,15 @@ func (a *Application) SetActiveDU(val int32) {
 func (a *Application) TriggerFireCompletionNotification(entry history.Entry) {
 	a.fireCompletionNotification(entry)
 }
+
+// TriggerOnFileComplete invokes the OnFileComplete callback directly for testing.
+func (a *Application) TriggerOnFileComplete(jobID string, fileIdx int, fileCRC uint32) {
+	if a.onFileComplete != nil {
+		a.onFileComplete(jobID, fileIdx, fileCRC)
+	}
+}
+
+// Context returns the lifecycle context for testing.
+func (a *Application) Context() context.Context {
+	return a.ctx
+}
