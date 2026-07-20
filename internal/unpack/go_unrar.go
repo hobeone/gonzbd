@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -132,7 +131,7 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			return res, fmt.Errorf("go_unrar: read header: %w", err)
 		}
 
-		destRel, sanitizeErr := SanitizeArchivePath(fh.Name, opts.OneFolder)
+		sp, sanitizeErr := NewSanitizedPath(fh.Name, opts.OneFolder)
 		if sanitizeErr != nil {
 			log.Warn("skipping entry with bad path", "raw_name", fh.Name, "err", sanitizeErr)
 			if opts.OnLine != nil {
@@ -142,7 +141,8 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 			continue
 		}
 
-		destPath := filepath.Join(outDir, destRel)
+		destRel := sp.Rel()
+		destPath := sp.Abs(outDir)
 
 		if opts.OneFolder && !opts.OverwriteFiles {
 			destPath = uniquePath(destPath)
@@ -209,41 +209,6 @@ func ExtractEntryRarengine(ctx context.Context, root *os.Root, outDir, destRel, 
 	// boundReader before writing.
 	_, err := writeEntrySafely(ctx, root, destRel, destPath, r, nil, true, mode, fh.ModificationTime, opts, fh.Name, "go_unrar", log, nil)
 	return err
-}
-
-// SanitizeArchivePath cleans an archive entry path for safe extraction.
-// It prevents directory traversal attacks, rejects null bytes, and optionally
-// flattens paths (OneFolder mode).
-func SanitizeArchivePath(name string, oneFolder bool) (string, error) {
-	// Normalize separators.
-	name = strings.ReplaceAll(name, "\\", "/")
-
-	// Reject null bytes.
-	if strings.ContainsRune(name, 0) {
-		return "", fmt.Errorf("archive path contains null byte: %q", name)
-	}
-
-	if oneFolder {
-		name = path.Base(name)
-	} else {
-		// Clean and strip leading traversal components.
-		name = path.Clean(name)
-		name = strings.TrimPrefix(name, "/")
-		// Reject any remaining ".." path component after cleaning.
-		// path.Clean resolves internal ".." (a/../b → b), so ".." can
-		// only survive at the start after cleaning. This broader check
-		// is defense-in-depth against exotic path encodings.
-		for component := range strings.SplitSeq(name, "/") {
-			if component == ".." {
-				return "", fmt.Errorf("archive path escapes output directory: %q", name)
-			}
-		}
-	}
-
-	if name == "" || name == "." {
-		return "", fmt.Errorf("archive path is empty after sanitization")
-	}
-	return name, nil
 }
 
 // volumesForArchive returns the ordered list of volume files belonging to

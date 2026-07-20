@@ -310,6 +310,9 @@ func (q *Queue) Resume(id string) error {
 // The job is removed from its current position and re-inserted at the end
 // of the new priority tier, matching SABnzbd's "priority" API action.
 func (q *Queue) SetPriority(id string, pri constants.Priority) error {
+	if !pri.IsValid() {
+		return fmt.Errorf("queue: invalid priority %d", pri)
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	idx, ok := q.indexOfLocked(id)
@@ -330,6 +333,9 @@ func (q *Queue) SetPriority(id string, pri constants.Priority) error {
 // SetPP changes a job's post-processing level (0–3).
 // Returns ErrNotFound if the job is absent.
 func (q *Queue) SetPP(id string, pp int) error {
+	if pp < 0 || pp > 3 {
+		return fmt.Errorf("queue: invalid post-processing level %d (must be 0-3)", pp)
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	job, ok := q.byID[id]
@@ -857,10 +863,9 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 
 // UndeferRecoveryVolumes clears the Deferred flag on the given file indices of
 // jobID, re-activating their articles for dispatch, and recomputes the pending
-// counters from ground truth. It sets Job.Par2Recovered so the on-demand
 // download-complete gate does not re-fire after the volumes arrive. Indices
-// that are out of range or not deferred are ignored. Returns ErrNotFound if
-// the job is absent.
+// that are not deferred are ignored; out-of-range indices return an error.
+// Returns ErrNotFound if the job is absent.
 //
 // The fileIdxs argument is an explicit set so callers control the policy:
 // Phase 1 passes the full deferred set (Job.DeferredRecoveryIndices); Phase 2
@@ -872,6 +877,11 @@ func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 	job, ok := q.byID[jobID]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	for _, fi := range fileIdxs {
+		if fi < 0 || fi >= len(job.Files) {
+			return fmt.Errorf("queue: fileIdx %d out of range for job %s", fi, jobID)
+		}
 	}
 	q.undeferRecoveryLocked(job, fileIdxs)
 	return nil
