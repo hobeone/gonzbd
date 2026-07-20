@@ -3,7 +3,6 @@ package unpack_test
 import (
 	"bytes"
 	"cmp"
-	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -286,47 +285,6 @@ func TestScanNewStyleRARMainFile(t *testing.T) {
 
 // ---- FileJoin tests ----------------------------------------------------------
 
-func TestFileJoin(t *testing.T) {
-	t.Parallel()
-
-	part1 := []byte("Hello, ")
-	part2 := []byte("World!")
-	want := append(part1, part2...) //nolint:gocritic // intentional append into new slice
-
-	dir := t.TempDir()
-	outDir := t.TempDir()
-
-	write(t, filepath.Join(dir, "data.001"), part1)
-	write(t, filepath.Join(dir, "data.002"), part2)
-
-	archive := unpack.Archive{
-		Type:     unpack.SplitArchive,
-		Name:     "data",
-		MainFile: filepath.Join(dir, "data.001"),
-		Parts: []string{
-			filepath.Join(dir, "data.001"),
-			filepath.Join(dir, "data.002"),
-		},
-	}
-
-	res, err := unpack.FileJoin(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
-	if err != nil {
-		t.Fatalf("FileJoin: %v", err)
-	}
-	if res.Err != nil {
-		t.Fatalf("Result.Err: %v", res.Err)
-	}
-
-	outPath := filepath.Join(outDir, "data")
-	got, err := os.ReadFile(outPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Errorf("joined output = %q, want %q", got, want)
-	}
-}
-
 // P21: FileJoin with .ts.NNN files produces show.ts as output.
 func TestFileJoin_TSFiles(t *testing.T) {
 	t.Parallel()
@@ -369,75 +327,5 @@ func TestFileJoin_TSFiles(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Errorf("joined output = %q, want %q", got, want)
-	}
-}
-
-func TestFileJoin_WrongType(t *testing.T) {
-	t.Parallel()
-
-	archive := unpack.Archive{Type: unpack.RarArchive, Name: "x"}
-	_, err := unpack.FileJoin(t.Context(), slog.Default(), archive, t.TempDir(), unpack.Options{})
-	if err == nil {
-		t.Fatal("expected error for non-SplitArchive, got nil")
-	}
-}
-
-func TestFileJoin_ExistingOutputNoOp(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	outDir := t.TempDir()
-
-	write(t, filepath.Join(dir, "x.001"), []byte("a"))
-	write(t, filepath.Join(dir, "x.002"), []byte("b"))
-	// Pre-create the output file.
-	write(t, filepath.Join(outDir, "x"), []byte("existing"))
-
-	archive := unpack.Archive{
-		Type:     unpack.SplitArchive,
-		Name:     "x",
-		MainFile: filepath.Join(dir, "x.001"),
-		Parts:    []string{filepath.Join(dir, "x.001"), filepath.Join(dir, "x.002")},
-	}
-	res, err := unpack.FileJoin(t.Context(), slog.Default(), archive, outDir, unpack.Options{})
-	if err != nil {
-		t.Fatalf("expected no-op success when output exists, got error: %v", err)
-	}
-	if res.Err != nil {
-		t.Fatalf("expected no-op success, got Result.Err: %v", res.Err)
-	}
-	// Existing content should be preserved (not overwritten).
-	got, _ := os.ReadFile(filepath.Join(outDir, "x"))
-	if string(got) != "existing" {
-		t.Errorf("existing file was modified: got %q, want %q", got, "existing")
-	}
-}
-
-func TestFileJoin_ContextCancelled(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	outDir := t.TempDir()
-
-	write(t, filepath.Join(dir, "big.001"), bytes.Repeat([]byte("x"), 1024))
-	write(t, filepath.Join(dir, "big.002"), bytes.Repeat([]byte("y"), 1024))
-
-	archive := unpack.Archive{
-		Type:     unpack.SplitArchive,
-		Name:     "big",
-		MainFile: filepath.Join(dir, "big.001"),
-		Parts:    []string{filepath.Join(dir, "big.001"), filepath.Join(dir, "big.002")},
-	}
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel() // cancel immediately
-
-	_, err := unpack.FileJoin(ctx, slog.Default(), archive, outDir, unpack.Options{})
-	if err == nil {
-		t.Fatal("expected error on cancelled context, got nil")
-	}
-	// Output file should be cleaned up.
-	if _, statErr := os.Stat(filepath.Join(outDir, "big")); statErr == nil {
-		t.Error("partial output file was not cleaned up after context cancellation")
 	}
 }

@@ -1034,17 +1034,18 @@ func TestAddURL_NoGrabber(t *testing.T) {
 	}
 }
 
-// When the URL is missing, addurl should reject with 400 regardless of
-// whether a Grabber is wired — the parameter validation happens first.
+// When the URL is missing, addurl should reject with 400 specifically —
+// the grabber-wired check happens first, so a Grabber must be wired for
+// this test to reach the URL param check rather than short-circuiting on
+// the nil-grabber path (see TestAddURL_NoGrabber for that path).
 func TestAddURL_MissingURL(t *testing.T) {
 	t.Parallel()
 	s, _ := testQueueServer(t)
+	s.grabber = urlgrabber.New(urlgrabber.Config{AllowPrivateIPs: true}, mockGrabberHandler{id: "nzo_test1"})
+
 	rr := apiGet(t, s.Handler(), "/api?mode=addurl&apikey="+testAPIKey)
-	// With no Grabber, the nil-check fires before the URL check. That's
-	// fine: both are 4xx/5xx and mutually exclusive in prod (if the
-	// grabber is wired, this test path becomes a 400).
-	if rr.Code != http.StatusInternalServerError && rr.Code != http.StatusBadRequest {
-		t.Errorf("status = %d; want 400 or 500", rr.Code)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d; want 400 for missing url", rr.Code)
 	}
 }
 
@@ -1708,14 +1709,6 @@ func TestQueueChangeCat_ListReflectsNewCategory(t *testing.T) {
 	}
 }
 
-// TestQueueSetPaused_ConcurrentMutationRace proves that the pause/resume
-// handlers (queuePauseJobs/queueResumeJobs -> queueSetPaused) do not read
-// mutable *Job fields (job.Name) off a live pointer while the download
-// pipeline concurrently mutates the same job. TRACE-1: before the fix,
-// queueSetPaused called s.queue.Get(id) (which hands back the live *Job)
-// and then read job.Name with no lock held, while a concurrent SetName
-// call mutates job.Name under the queue's write lock. That is a data race
-// caught by `go test -race`. Run with -race to prove/disprove.
 // TestQueuePause_UnknownIDDoesNotPanic exercises the nil branch of
 // queueSetPaused's job-lookup: pausing/resuming an ID with no matching job
 // must be handled gracefully (loop just skips logging), not dereference the
@@ -1735,6 +1728,19 @@ func TestQueuePause_UnknownIDDoesNotPanic(t *testing.T) {
 	}
 }
 
+// TestQueueSetPaused_ConcurrentMutationRace proves that the pause/resume
+// handlers (queuePauseJobs/queueResumeJobs -> queueSetPaused) do not read
+// mutable *Job fields (job.Name) off a live pointer while the download
+// pipeline concurrently mutates the same job. TRACE-1: before the fix,
+// queueSetPaused called s.queue.Get(id) (which hands back the live *Job)
+// and then read job.Name with no lock held, while a concurrent SetName
+// call mutates job.Name under the queue's write lock. That is a data race
+// caught by `go test -race`.
+//
+// RACE-ONLY: this test has no assertion of its own — its only signal is
+// `go test -race` catching the data race above. It relies entirely on the
+// project's mandatory `-race` gate; without it, this test always passes
+// regardless of whether the race exists.
 func TestQueueSetPaused_ConcurrentMutationRace(t *testing.T) {
 	s, q := testQueueServer(t)
 	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
@@ -1780,8 +1786,12 @@ func TestQueueSetPaused_ConcurrentMutationRace(t *testing.T) {
 // before the fix it called s.queue.Get(nzoID) and read those fields
 // unsynchronized after the call returned, while a concurrent SetPP call
 // (simulating another actor mutating job state, e.g. change_opts from a
-// second client) mutates job.PP under the queue's write lock. Run with
-// -race to prove/disprove.
+// second client) mutates job.PP under the queue's write lock.
+//
+// RACE-ONLY: this test has no assertion of its own — its only signal is
+// `go test -race` catching the data race above. It relies entirely on the
+// project's mandatory `-race` gate; without it, this test always passes
+// regardless of whether the race exists.
 func TestQueueChangeCat_ConcurrentMutationRace(t *testing.T) {
 	cats := []config.CategoryConfig{
 		{Name: "Default", PP: 3, Script: "", Priority: int(constants.NormalPriority)},
