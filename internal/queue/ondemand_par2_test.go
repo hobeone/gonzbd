@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -202,9 +203,19 @@ func TestUndeferRecoveryVolumes_Edges(t *testing.T) {
 	if err := q.Add(job); err != nil {
 		t.Fatal(err)
 	}
-	// Out-of-range and non-deferred indices are no-ops: Par2Recovered stays
+	// Out-of-range indices must return an error matching sibling file methods.
+	if err := q.UndeferRecoveryVolumes(job.ID, []int{len(job.Files)}); err == nil {
+		t.Error("expected error for out-of-range fileIdx")
+	} else if !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("error = %v, want 'out of range'", err)
+	}
+	if err := q.UndeferRecoveryVolumes(job.ID, []int{-1}); err == nil {
+		t.Error("expected error for negative fileIdx")
+	}
+
+	// Non-deferred valid indices are no-ops: Par2Recovered stays
 	// false and the volume stays deferred.
-	if err := q.UndeferRecoveryVolumes(job.ID, []int{0, len(job.Files), -1}); err != nil {
+	if err := q.UndeferRecoveryVolumes(job.ID, []int{0}); err != nil {
 		t.Fatal(err)
 	}
 	snap := q.SnapshotJob(job.ID)

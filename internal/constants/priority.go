@@ -64,6 +64,16 @@ const (
 	DefaultPriority Priority = -100
 )
 
+// IsValid reports whether p is one of the defined Priority sentinels.
+func (p Priority) IsValid() bool {
+	switch p {
+	case RepairPriority, ForcePriority, HighPriority, NormalPriority, LowPriority, PausedPriority, StopPriority, DefaultPriority:
+		return true
+	default:
+		return false
+	}
+}
+
 // String returns a human-readable label for the priority. Unknown numeric
 // priorities (including the sentinel DefaultPriority that should have been
 // resolved) return their decimal representation prefixed with "Priority(".

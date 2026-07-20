@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -96,12 +97,23 @@ type Options struct {
 	MinBombThreshold int64
 }
 
-// UnrarBin returns the configured unrar binary, defaulting to "unrar".
-func (o Options) UnrarBin() string {
-	if o.UnrarCommand != "" {
-		return o.UnrarCommand
+// UnrarBinaries is the ordered list of unrar binary names tried during auto-detection.
+var UnrarBinaries = []string{"unrar", "unrar-nonfree"}
+
+// UnrarBin returns the path to the unrar binary to use.
+func UnrarBin(opts Options) (string, error) {
+	if opts.UnrarCommand != "" {
+		return opts.UnrarCommand, nil
 	}
-	return "unrar"
+	if env := os.Getenv("GONZBD_UNRAR_BIN"); env != "" {
+		return env, nil
+	}
+	for _, name := range UnrarBinaries {
+		if path, err := exec.LookPath(name); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("unrar binary not found; install unrar, set GONZBD_UNRAR_BIN, or configure unrar_command")
 }
 
 // Result holds the outcome of an extraction attempt.
@@ -182,7 +194,10 @@ func UnRAR(ctx context.Context, log *slog.Logger, archive Archive, outDir, passw
 
 	args = append(args, archive.MainFile, outDir+"/") // unrar expects a trailing slash on the output directory
 
-	bin := opts.UnrarBin()
+	bin, err := UnrarBin(opts)
+	if err != nil {
+		return Result{}, err
+	}
 
 	// Build a display-safe command line (redact password).
 	cmdLine := formatCmdLine(bin, args, pwFlag)

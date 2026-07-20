@@ -279,7 +279,7 @@ func classifySevenZipError(err error) FailReason {
 // anchored at outDir opened once by the caller. Returns true if the entry was
 // extracted (regular file), or false if it was skipped or a directory.
 func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, root *os.Root, opts Options, arcSize int64, totalRead *int64, log *slog.Logger) (bool, error) {
-	destRel, sanitizeErr := SanitizeArchivePath(f.Name, opts.OneFolder)
+	sp, sanitizeErr := NewSanitizedPath(f.Name, opts.OneFolder)
 	if sanitizeErr != nil {
 		log.Warn("skipping entry with bad path",
 			"raw_name", f.Name, "err", sanitizeErr)
@@ -289,7 +289,8 @@ func extractSevenZipEntry(ctx context.Context, f *sevenzip.File, outDir string, 
 		return false, nil
 	}
 
-	destPath := filepath.Join(outDir, destRel)
+	destRel := sp.Rel()
+	destPath := sp.Abs(outDir)
 
 	// In OneFolder mode, different archive paths can flatten to the
 	// same basename. Auto-rename to avoid silent overwrites, matching

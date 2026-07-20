@@ -319,3 +319,26 @@ func TestUnRAR_SandboxOptions(t *testing.T) {
 		t.Fatalf("expected error when strict sandbox is enabled on non-existent or unsupported binary, got nil (res=%+v)", res)
 	}
 }
+
+func TestUnrarBin(t *testing.T) {
+	t.Run("explicit command override", func(t *testing.T) {
+		got, err := unpack.UnrarBin(unpack.Options{UnrarCommand: "/custom/unrar"})
+		if err != nil || got != "/custom/unrar" {
+			t.Errorf("UnrarBin() = (%q, %v), want (\"/custom/unrar\", nil)", got, err)
+		}
+	})
+	t.Run("env var override", func(t *testing.T) {
+		t.Setenv("GONZBD_UNRAR_BIN", "/env/unrar")
+		got, err := unpack.UnrarBin(unpack.Options{})
+		if err != nil || got != "/env/unrar" {
+			t.Errorf("UnrarBin() = (%q, %v), want (\"/env/unrar\", nil)", got, err)
+		}
+	})
+	t.Run("not found in path", func(t *testing.T) {
+		t.Setenv("PATH", "")
+		_, err := unpack.UnrarBin(unpack.Options{})
+		if err == nil {
+			t.Error("expected error when unrar not in PATH and no override set")
+		}
+	})
+}

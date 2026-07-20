@@ -646,14 +646,15 @@ func (d *DirectUnpacker) extractEntries(ctx context.Context, sd *rarengine.Strea
 			return nil, fmt.Errorf("directunpack: read header: %w", err)
 		}
 
-		destRel, sanitizeErr := unpack.SanitizeArchivePath(fh.Name, d.opts.OneFolder)
+		sp, sanitizeErr := unpack.NewSanitizedPath(fh.Name, d.opts.OneFolder)
 		if sanitizeErr != nil {
 			d.log.Warn("directunpack: skipping entry with bad path", "raw_name", fh.Name, "err", sanitizeErr)
 			_, _ = io.Copy(io.Discard, sd) // drain stream to skip bad entry
 			continue
 		}
 
-		destPath := filepath.Join(d.extractDir, destRel)
+		destRel := sp.Rel()
+		destPath := sp.Abs(d.extractDir)
 		unpackOpts := unpack.Options{
 			OneFolder:        d.opts.OneFolder,
 			OverwriteFiles:   d.opts.OverwriteFiles,

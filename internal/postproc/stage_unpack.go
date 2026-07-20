@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -606,16 +605,12 @@ func extractWithDriver(ctx context.Context, log *slog.Logger, job *Job, a unpack
 //  3. unrar not in PATH → GoUnRAR
 func extractRARArchive(ctx context.Context, log *slog.Logger, job *Job, a unpack.Archive, opts unpack.Options) (unpack.Result, error) {
 	return extractWithDriver(ctx, log, job, a, opts, archiveEngineDriver{
-		toolName:   "unrar",
-		goToolName: "go_unrar",
-		formatName: "RAR",
-		useGo:      opts.UseGoRAR,
-		fallback:   opts.GoRarFallback,
-		findBin: func(o unpack.Options) (string, error) {
-			unrarBin := o.UnrarBin()
-			_, err := exec.LookPath(unrarBin)
-			return unrarBin, err
-		},
+		toolName:    "unrar",
+		goToolName:  "go_unrar",
+		formatName:  "RAR",
+		useGo:       opts.UseGoRAR,
+		fallback:    opts.GoRarFallback,
+		findBin:     unpack.UnrarBin,
 		runExternal: unpack.UnRARWithPasswords,
 		runGo:       unpack.GoUnRARWithPasswords,
 	})
