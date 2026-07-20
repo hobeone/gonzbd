@@ -131,17 +131,17 @@ func (l *Loader) quarantineFile(path string) error {
 // a fatal error — the daemon will start fresh with an empty queue, and the
 // corrupt index is quarantined. Permission errors and quarantine-failure
 // errors still propagate.
-func Load(dir string) (*Queue, error) {
-	return (&Loader{}).Load(dir)
+func Load(dir string, opts ...Option) (*Queue, error) {
+	return (&Loader{}).Load(dir, opts...)
 }
 
 // Load reconstructs a Queue from dir.
-func (l *Loader) Load(dir string) (*Queue, error) {
+func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 	var idx indexFile
 	idxPath := filepath.Join(dir, "queue.json.gz")
 	err := readGzJSON(idxPath, &idx)
 	if errors.Is(err, os.ErrNotExist) {
-		return New(), nil
+		return New(opts...), nil
 	}
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
@@ -151,7 +151,7 @@ func (l *Loader) Load(dir string) (*Queue, error) {
 		if qErr := l.quarantineFile(idxPath); qErr != nil {
 			return nil, fmt.Errorf("queue: load index failed and could not quarantine: %w (original error: %w)", qErr, err)
 		}
-		q := New()
+		q := New(opts...)
 		q.stateDir = dir
 		q.log.Warn("quarantining corrupt queue index and degrading to empty queue", "path", idxPath, "err", err)
 		return q, nil
@@ -161,7 +161,7 @@ func (l *Loader) Load(dir string) (*Queue, error) {
 			idx.Version, persistenceVersion)
 	}
 
-	q := New()
+	q := New(opts...)
 	q.stateDir = dir
 	q.paused = idx.Paused
 	jobsDir := filepath.Join(dir, "jobs")
