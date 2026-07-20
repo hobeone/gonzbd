@@ -323,6 +323,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}, log)
 	app.assembler = asm
 	p.assembler = asm
+	app.RecordHeartbeat()
 
 	return app, nil
 }

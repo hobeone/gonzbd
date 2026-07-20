@@ -2,12 +2,17 @@ package app
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
+
+var _ = (*Application).enqueuePostProc
+var _ = (*pipeline).run
 
 func TestApplication_ArticleCacheBytes_ReturnsZeroInitially(t *testing.T) {
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
@@ -130,5 +135,35 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 	app.RecordHeartbeat()
 	if !app.IsPipelineHealthy(ctx) {
 		t.Error("expected IsPipelineHealthy=true after fresh heartbeat")
+	}
+
+	// Paused queue is considered healthy
+	app.queue.Pause("")
+	if !app.IsPipelineHealthy(ctx) {
+		t.Error("expected IsPipelineHealthy=true when queue is paused")
+	}
+	app.queue.Resume("")
+
+	// App with nil queue is considered healthy when started
+	appNoQueue := &Application{}
+	appNoQueue.started.Store(true)
+	if !appNoQueue.IsPipelineHealthy(ctx) {
+		t.Error("expected IsPipelineHealthy=true for started app with nil queue")
+	}
+
+	// PingDB with real repository
+	histPath := filepath.Join(t.TempDir(), "hist.db")
+	histDB, err := history.Open(ctx, histPath)
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	repo := history.NewRepository(histDB)
+	app.historyRepo = repo
+	if err := app.PingDB(ctx); err != nil {
+		t.Errorf("PingDB with repo: %v", err)
+	}
+	_ = histDB.Close()
+	if err := app.PingDB(ctx); err == nil {
+		t.Error("expected PingDB error after DB close, got nil")
 	}
 }

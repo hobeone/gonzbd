@@ -85,6 +85,7 @@ func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 	}
 	// Paused queue or active post-processing is considered healthy/active.
 	if app.queue.IsPaused() || app.queue.HasPostProcJobs() {
+		app.RecordHeartbeat()
 		return true
 	}
 	// Staleness check applies only when unpaused jobs are actively downloading.
@@ -93,6 +94,9 @@ func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
 		if last > 0 && time.Since(time.Unix(last, 0)) > 2*time.Minute {
 			return false // download pipeline stalled
 		}
+	} else {
+		// Queue is idle: keep heartbeat fresh so download start receives a full grace period.
+		app.RecordHeartbeat()
 	}
 	return true
 }

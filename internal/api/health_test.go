@@ -1,5 +1,6 @@
 package api
 
+// modeHealth tests the mode=health API handler.
 import (
 	"context"
 	"encoding/json"
@@ -12,6 +13,9 @@ import (
 	"github.com/hobeone/gonzbd/internal/api/apitest"
 	"github.com/hobeone/gonzbd/internal/config"
 )
+
+var _ = (*Server).modeHealth
+var _ = (*Server).handleAPI
 
 type spyHealthApp struct {
 	apitest.NopApp

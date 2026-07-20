@@ -696,3 +696,15 @@ func TestOpen_GooseError(t *testing.T) {
 		t.Error("expected error from goose.Up when table already exists, got nil")
 	}
 }
+
+func TestRepository_Ping(t *testing.T) {
+	var nilRepo *Repository
+	if err := nilRepo.Ping(t.Context()); err == nil {
+		t.Error("expected error from nil repository Ping, got nil")
+	}
+
+	_, repo := openTestDB(t)
+	if err := repo.Ping(t.Context()); err != nil {
+		t.Errorf("repo.Ping: %v", err)
+	}
+}

@@ -86,7 +86,7 @@ services:
     # Health check — verifies the API is responding.
     # Uses shell form so $GONZBD_PORT is expanded at runtime.
     healthcheck:
-      test: wget --spider -q http://localhost:$${GONZBD_PORT:-4289}/api?mode=health&output=json
+      test: wget --spider -q "http://localhost:$${GONZBD_PORT:-4289}/api?mode=health&output=json"
       interval: 30s
       timeout: 5s
       retries: 3

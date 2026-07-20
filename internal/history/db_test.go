@@ -102,3 +102,15 @@ func TestDB_Ping(t *testing.T) {
 		}
 	})
 }
+
+func TestDB_Close_Nil(t *testing.T) {
+	var nilDB *DB
+	if err := nilDB.Close(); err != nil {
+		t.Errorf("expected nil error from nil DB Close, got: %v", err)
+	}
+
+	emptyDB := &DB{}
+	if err := emptyDB.Close(); err != nil {
+		t.Errorf("expected nil error from empty DB Close, got: %v", err)
+	}
+}
