@@ -252,14 +252,14 @@ func TestApplication_ReloadPostProcOptions_AppliesStrictSandboxToRunningStage(t 
 	}
 	defer app.Shutdown()
 
-	if got := app.unpackStage.BaseOpts.Sandbox.Strict; got {
-		t.Fatalf("precondition: unpackStage.BaseOpts.Sandbox.Strict = %v, want false", got)
+	if got := app.StageStrictSandbox(); got {
+		t.Fatalf("precondition: StageStrictSandbox() = %v, want false", got)
 	}
 
 	app.ReloadPostProcOptions(config.PostProcConfig{StrictSandbox: true}, "")
 
-	if got := app.unpackStage.BaseOpts.Sandbox.Strict; !got {
-		t.Errorf("after ReloadPostProcOptions(StrictSandbox: true): unpackStage.BaseOpts.Sandbox.Strict = %v, want true", got)
+	if got := app.StageStrictSandbox(); !got {
+		t.Errorf("after ReloadPostProcOptions(StrictSandbox: true): StageStrictSandbox() = %v, want true", got)
 	}
 }
 
