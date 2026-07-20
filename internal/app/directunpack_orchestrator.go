@@ -77,9 +77,13 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	if !exists {
 		var limit int
 		var downloadDirBase string
+		var flatUnpack, overwriteFiles, ignoreUnrarDates bool
 		app.config.WithRead(func(c *config.Config) {
 			limit = c.PostProc.DirectUnpackThreads
 			downloadDirBase = c.General.DownloadDir
+			flatUnpack = c.PostProc.FlatUnpack
+			overwriteFiles = c.PostProc.OverwriteFiles
+			ignoreUnrarDates = c.PostProc.IgnoreUnrarDates
 		})
 		if limit > 0 && o.active >= limit {
 			o.mu.Unlock()
@@ -91,7 +95,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		du = directunpack.New(
 			app.log.With("component", "directunpack", "job", fc.JobID),
 			fc.JobID, downloadDir, downloadDir,
-			o.buildOpts(),
+			o.buildOpts(flatUnpack, overwriteFiles, ignoreUnrarDates),
 		)
 		// Provide all filenames so the DU can compute total volume counts.
 		allNames := make([]string, len(snap.Files))
@@ -124,23 +128,18 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	du.Add(app.ctx, filename, info.Path)
 }
 
-// buildOpts constructs DirectUnpack options from the app config. Formerly
-// Application.buildDirectUnpackOpts.
-func (o *directUnpackOrchestrator) buildOpts() directunpack.Options {
-	app := o.app
-	var flatUnpack, overwriteFiles, ignoreUnrarDates bool
-	app.config.WithRead(func(c *config.Config) {
-		flatUnpack = c.PostProc.FlatUnpack
-		overwriteFiles = c.PostProc.OverwriteFiles
-		ignoreUnrarDates = c.PostProc.IgnoreUnrarDates
-	})
+// buildOpts constructs DirectUnpack options from the given config-derived
+// values. The caller reads them (alongside the concurrency limit and download
+// dir) in a single config.WithRead, so the orchestrator lock isn't held across
+// two separate config reads. Formerly Application.buildDirectUnpackOpts.
+func (o *directUnpackOrchestrator) buildOpts(flatUnpack, overwriteFiles, ignoreUnrarDates bool) directunpack.Options {
 	return directunpack.Options{
 		Password:         "", // per-job passwords are pre-checked; DU skips password jobs
 		OneFolder:        flatUnpack,
 		OverwriteFiles:   overwriteFiles,
 		IgnoreUnrarDates: ignoreUnrarDates,
 		OnStatusChange: func() {
-			app.emit(Event{Type: "queue_updated"})
+			o.app.emit(Event{Type: "queue_updated"})
 		},
 	}
 }

@@ -64,15 +64,14 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 	}
 	if app.historyRepo != nil {
 		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
+		defer dbCancel()
 		if err := app.historyRepo.Add(dbCtx, entry); err != nil {
 			log.Error("failed to add history entry; keeping job in queue for recovery",
 				"job", job.Queue.ID, "err", err)
-			dbCancel()
 			_ = os.Remove(jobPath) // clean up the orphaned payload file
 			app.emit(Event{Type: "queue_updated"})
 			return err
 		}
-		dbCancel()
 	}
 	if err := app.queue.Remove(job.Queue.ID); err != nil {
 		log.Warn("failed to remove job from queue after post-proc", "job", job.Queue.ID, "err", err)
@@ -102,6 +101,7 @@ func (f *jobFinalizer) fireCompletionNotification(entry history.Entry) {
 		title = "Download failed"
 	}
 	notifyCtx, notifyCancel := context.WithTimeout(app.ctx, 30*time.Second)
+	defer notifyCancel()
 	app.notifyDispatcher.Dispatch(notifyCtx, notifier.Event{
 		Type:      evtType,
 		Title:     title,
@@ -109,5 +109,4 @@ func (f *jobFinalizer) fireCompletionNotification(entry history.Entry) {
 		JobName:   entry.Name,
 		Timestamp: time.Now(),
 	})
-	notifyCancel()
 }
