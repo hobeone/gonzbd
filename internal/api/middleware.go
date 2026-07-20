@@ -198,22 +198,55 @@ func loopbackHostsEquivalent(a, b string) bool {
 	return isLoopbackHostname(a) && isLoopbackHostname(b)
 }
 
-// sameOrigin reports whether hostportA and hostportB should be treated as
-// the same origin: either an exact case-insensitive match, or a matching
-// loopback/"localhost" alias on the *same port* — a different port always
-// means a different server, even on loopback. An exact host:port match is
-// subsumed by loopbackHostsEquivalent's own EqualFold fast path, so no
-// separate pre-check is needed. See
-// https://github.com/hobeone/gonzbd/issues/103.
-func sameOrigin(hostportA, hostportB string) bool {
-	aHost, aPort := splitHostPort(hostportA)
-	bHost, bPort := splitHostPort(hostportB)
+// defaultPortForScheme returns the standard HTTP/HTTPS default port ("80" or "443")
+// for a given scheme name, or empty string for unknown/empty schemes.
+func defaultPortForScheme(scheme string) string {
+	switch strings.ToLower(scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
+}
+
+// splitHostPortNormalized splits hostport and fills an elided port with defaultScheme's
+// standard port ("80" for "http", "443" for "https") if no explicit port is present.
+func splitHostPortNormalized(hostport, defaultScheme string) (host, port string) {
+	h, p := splitHostPort(hostport)
+	if p == "" && defaultScheme != "" {
+		p = defaultPortForScheme(defaultScheme)
+	}
+	return h, p
+}
+
+// requestScheme returns "https" if r uses TLS, otherwise "http".
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+// sameOrigin reports whether hostportA (with schemeA) and hostportB (with schemeB)
+// should be treated as the same origin: either an exact case-insensitive match,
+// or a matching loopback/"localhost" alias on the *same port* — a different port
+// always means a different server, even on loopback. Implicit default ports (80/443)
+// are normalized based on scheme. See https://github.com/hobeone/gonzbd/issues/103
+// and https://github.com/hobeone/gonzbd/issues/134.
+func sameOrigin(hostportA, schemeA, hostportB, schemeB string) bool {
+	if schemeA != "" && schemeB != "" && !strings.EqualFold(schemeA, schemeB) {
+		return false
+	}
+	aHost, aPort := splitHostPortNormalized(hostportA, schemeA)
+	bHost, bPort := splitHostPortNormalized(hostportB, schemeB)
 	return aPort == bPort && loopbackHostsEquivalent(aHost, bHost)
 }
 
 // isRefererCrossOrigin parses referer and returns true if it originates from
-// a host:port different from currentHost.
-func isRefererCrossOrigin(referer, currentHost string) bool {
+// a host:port different from r.Host (scheme-aware).
+func isRefererCrossOrigin(referer string, r *http.Request) bool {
 	if referer == "" {
 		return false
 	}
@@ -221,7 +254,7 @@ func isRefererCrossOrigin(referer, currentHost string) bool {
 	if err != nil || u.Host == "" {
 		return false
 	}
-	return !sameOrigin(u.Host, currentHost)
+	return !sameOrigin(u.Host, u.Scheme, r.Host, requestScheme(r))
 }
 
 // isSecFetchSiteCrossOrigin returns true if sfs indicates a cross-site or
@@ -245,7 +278,7 @@ func isCrossOrigin(r *http.Request) bool {
 				return true
 			}
 		}
-		if isRefererCrossOrigin(referer, r.Host) {
+		if isRefererCrossOrigin(referer, r) {
 			return true
 		}
 		return isSecFetchSiteCrossOrigin(r.Header.Get("Sec-Fetch-Site"))
@@ -259,7 +292,7 @@ func isCrossOrigin(r *http.Request) bool {
 
 	// Both Origin and Sec-Fetch-Site must agree the request is same-origin;
 	// checking only one leaves the other spoofable/unchecked path open.
-	if !sameOrigin(u.Host, r.Host) {
+	if !sameOrigin(u.Host, u.Scheme, r.Host, requestScheme(r)) {
 		return true
 	}
 	return isSecFetchSiteCrossOrigin(r.Header.Get("Sec-Fetch-Site"))
