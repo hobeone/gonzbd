@@ -35,6 +35,9 @@ func NewAppriseNotifier(cfg AppriseConfig, client *http.Client) *AppriseNotifier
 // Name returns the notifier identifier.
 func (a *AppriseNotifier) Name() string { return "apprise" }
 
+// Config returns a copy of the notifier's configuration.
+func (a *AppriseNotifier) Config() AppriseConfig { return a.cfg }
+
 // Accepts reports whether this notifier is configured to handle t.
 func (a *AppriseNotifier) Accepts(t EventType) bool {
 	return acceptsAny(a.cfg.EventMask, t)

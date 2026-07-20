@@ -37,6 +37,9 @@ func NewEmailNotifier(cfg EmailConfig) *EmailNotifier {
 // Name returns the notifier identifier.
 func (e *EmailNotifier) Name() string { return "email" }
 
+// Config returns a copy of the notifier's configuration.
+func (e *EmailNotifier) Config() EmailConfig { return e.cfg }
+
 // Accepts reports whether this notifier is configured to handle t.
 func (e *EmailNotifier) Accepts(t EventType) bool {
 	return acceptsAny(e.cfg.EventMask, t)
@@ -46,7 +49,7 @@ func (e *EmailNotifier) Accepts(t EventType) bool {
 // timeouts where the smtp package propagates it; TLS dial uses the deadline
 // derived from the context if set.
 func (e *EmailNotifier) Send(ctx context.Context, ev Event) error {
-	msg := e.FormatMessage(ev)
+	msg := e.formatMessage(ev)
 	addr := fmt.Sprintf("%s:%d", e.cfg.Host, e.cfg.Port)
 
 	var auth smtp.Auth
@@ -150,9 +153,8 @@ func (e *EmailNotifier) finishSend(c *smtp.Client, auth smtp.Auth, msg []byte) e
 	return nil
 }
 
-// FormatMessage builds a minimal RFC 822 message. Exported so tests can
-// verify message structure without requiring a live SMTP server.
-func (e *EmailNotifier) FormatMessage(ev Event) []byte {
+// formatMessage builds a minimal RFC 822 message.
+func (e *EmailNotifier) formatMessage(ev Event) []byte {
 	// Sanitize title to prevent SMTP header injection via \r\n in
 	// NZB/job names (which may come from untrusted user inputs).
 	safeTitle := strings.NewReplacer("\r", "", "\n", "").Replace(ev.Title)

@@ -325,7 +325,7 @@ func TestEmailFormatMessage(t *testing.T) {
 		Body:      "Finished successfully.",
 		Timestamp: ts,
 	}
-	msg := n.FormatMessage(ev)
+	msg := n.FormatMessageForTest(ev)
 	s := string(msg)
 
 	checks := []struct {
