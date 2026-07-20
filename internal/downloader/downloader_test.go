@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -1194,6 +1195,23 @@ func TestDownloader_OnJobHopelessOption(t *testing.T) {
 	d.onJobHopeless("test")
 	if !called {
 		t.Error("expected callback to be invoked")
+	}
+}
+
+func TestResume_CancelsPreviousContext(t *testing.T) {
+	t.Parallel()
+
+	q := queue.New()
+	d := New(q, nil, nil, Options{}, nil)
+	d.Resume() // Initial resume sets pauseCtx
+	d.pauseMu.RLock()
+	oldCtx := d.pauseCtx
+	d.pauseMu.RUnlock()
+
+	d.Resume() // Second resume should cancel oldCtx
+
+	if !errors.Is(oldCtx.Err(), context.Canceled) {
+		t.Errorf("expected previous pauseCtx to be canceled after Resume(), got err = %v", oldCtx.Err())
 	}
 }
 
