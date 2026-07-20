@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/config"
@@ -58,4 +59,44 @@ func (app *Application) DownloadDirFreeBytes(ctx context.Context) (int64, error)
 func (app *Application) TestDownloadDirWriteSpeedMBPerSec(ctx context.Context) (float64, error) {
 	const testSizeBytes = 64 * 1024 * 1024 // 64 MiB
 	return assembler.WriteSpeedMBPerSec(ctx, app.downloadDir(), testSizeBytes)
+}
+
+// RecordHeartbeat records the current unix timestamp as pipeline activity.
+func (app *Application) RecordHeartbeat() {
+	app.lastHeartbeat.Store(time.Now().Unix())
+}
+
+// PingDB verifies history repository database connectivity. Safe when historyRepo is nil.
+func (app *Application) PingDB(ctx context.Context) error {
+	if app.historyRepo == nil {
+		return nil
+	}
+	return app.historyRepo.Ping(ctx)
+}
+
+// IsPipelineHealthy returns true if the application is running and its download/assembly
+// pipeline is active and non-stalled.
+func (app *Application) IsPipelineHealthy(ctx context.Context) bool {
+	if !app.started.Load() || app.stopped.Load() {
+		return false
+	}
+	if app.queue == nil {
+		return true
+	}
+	// Paused queue or active post-processing is considered healthy/active.
+	if app.queue.IsPaused() || app.queue.HasPostProcJobs() {
+		app.RecordHeartbeat()
+		return true
+	}
+	// Staleness check applies only when unpaused jobs are actively downloading.
+	if app.queue.HasDownloadingJobs() {
+		last := app.lastHeartbeat.Load()
+		if last > 0 && time.Since(time.Unix(last, 0)) > 2*time.Minute {
+			return false // download pipeline stalled
+		}
+	} else {
+		// Queue is idle: keep heartbeat fresh so download start receives a full grace period.
+		app.RecordHeartbeat()
+	}
+	return true
 }

@@ -135,7 +135,7 @@ EXPOSE 4289
 # exec-array) so $GONZBD_PORT expands; busybox wget (already in the base
 # image) needs no extra package.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --spider -q "http://localhost:${GONZBD_PORT}/api?mode=version&output=json" || exit 1
+  CMD wget --spider -q "http://localhost:${GONZBD_PORT}/api?mode=health&output=json" || exit 1
 
 STOPSIGNAL SIGTERM
 

@@ -485,3 +485,14 @@ func fromUnix(ts int64) time.Time {
 	}
 	return time.Unix(ts, 0).UTC()
 }
+
+// Ping verifies that the underlying database connection is alive.
+func (r *Repository) Ping(ctx context.Context) error {
+	if r == nil || r.db == nil {
+		return errors.New("history: repository or db connection is nil")
+	}
+	if err := r.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("history: ping: %w", err)
+	}
+	return nil
+}

@@ -127,6 +127,9 @@ type Application struct {
 	// activeDU tracks the number of currently running DirectUnpackers.
 	// Used to enforce DirectUnpackThreads concurrency limit.
 	activeDU atomic.Int32
+
+	// lastHeartbeat stores the unix timestamp of the last active pipeline/download event.
+	lastHeartbeat atomic.Int64
 }
 
 // SetNotifier injects a notification dispatcher for lifecycle events.
@@ -235,6 +238,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		completions: app.downloader.Completions(),
 		downloadDir: dlDir,
 		sanitize:    sanitize,
+		onHeartbeat: app.RecordHeartbeat,
 		onJobHopeless: func(jobID string) {
 			snap := q.SnapshotJob(jobID)
 			if snap == nil {
@@ -319,6 +323,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}, log)
 	app.assembler = asm
 	p.assembler = asm
+	app.RecordHeartbeat()
 
 	return app, nil
 }

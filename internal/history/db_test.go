@@ -79,3 +79,38 @@ func TestOpen(t *testing.T) {
 		}
 	})
 }
+
+func TestDB_Ping(t *testing.T) {
+	t.Run("nil db returns error", func(t *testing.T) {
+		var db *DB
+		if err := db.Ping(context.Background()); err == nil {
+			t.Error("expected error for nil DB, got nil")
+		}
+	})
+
+	t.Run("open db ping succeeds", func(t *testing.T) {
+		dir := t.TempDir()
+		dbPath := filepath.Join(dir, "history.db")
+		db, err := Open(context.Background(), dbPath)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer db.Close()
+
+		if err := db.Ping(context.Background()); err != nil {
+			t.Errorf("Ping on open db failed: %v", err)
+		}
+	})
+}
+
+func TestDB_Close_Nil(t *testing.T) {
+	var nilDB *DB
+	if err := nilDB.Close(); err != nil {
+		t.Errorf("expected nil error from nil DB Close, got: %v", err)
+	}
+
+	emptyDB := &DB{}
+	if err := emptyDB.Close(); err != nil {
+		t.Errorf("expected nil error from empty DB Close, got: %v", err)
+	}
+}

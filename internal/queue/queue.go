@@ -182,6 +182,35 @@ func (q *Queue) HasDownloadableJobs() bool {
 	return false
 }
 
+// HasDownloadingJobs reports whether any unpaused job in the queue is currently
+// actively downloading articles.
+func (q *Queue) HasDownloadingJobs() bool {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	if q.paused {
+		return false
+	}
+	for _, j := range q.jobs {
+		if !j.PostProc && j.Status != constants.StatusPaused {
+			return true
+		}
+	}
+	return false
+}
+
+// HasPostProcJobs reports whether any job in the queue is currently undergoing
+// post-processing (par2 repair, verification, extraction).
+func (q *Queue) HasPostProcJobs() bool {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	for _, j := range q.jobs {
+		if j.PostProc {
+			return true
+		}
+	}
+	return false
+}
+
 // ExistsByName reports whether a job with the given name is present in
 // the queue. Case-sensitive.
 func (q *Queue) ExistsByName(name string) bool {
