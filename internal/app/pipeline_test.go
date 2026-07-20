@@ -17,6 +17,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
 // TestIsRetryableDownloaderError verifies error classification uses the
@@ -173,13 +174,25 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	}
 
 	// 2. Test handleFailureResult with a retryable error
+	if err := q.MarkArticleEmitted(job.ID, "a1@x"); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+	retriesBefore := telemetry.ArticlesRetried.Value()
+
 	resRetryable := &downloader.ArticleResult{
 		JobID:     job.ID,
 		FileIdx:   0,
 		MessageID: "a1@x",
-		Err:       errors.New("connection reset"),
+		Err:       nntp.ErrTransient,
 	}
 	p.handleFailureResult(t.Context(), resRetryable)
+
+	if gotJob, _ := q.Get(job.ID); gotJob != nil && gotJob.Files[0].Articles[0].Emitted {
+		t.Error("expected Emitted to be cleared after retryable failure")
+	}
+	if got := telemetry.ArticlesRetried.Value(); got != retriesBefore+1 {
+		t.Errorf("ArticlesRetried = %d, want %d", got, retriesBefore+1)
+	}
 }
 
 func TestPipeline_HandleSuccessResult(t *testing.T) {
@@ -206,6 +219,11 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 	}
 
 	// Test handleSuccessResult
+	if err := q.MarkArticleEmitted(job.ID, "a1@x"); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+	writtenBefore := telemetry.ArticlesWritten.Value()
+
 	resSuccess := &downloader.ArticleResult{
 		JobID:      job.ID,
 		FileIdx:    0,
@@ -214,4 +232,21 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 		ServerName: "news.server.com",
 	}
 	p.handleSuccessResult(t.Context(), resSuccess)
+
+	gotJob, _ := q.Get(job.ID)
+	if gotJob == nil {
+		t.Fatal("Get returned nil")
+	}
+	if stats := gotJob.ServerStats["news.server.com"]; stats != 9 {
+		t.Errorf("ServerStats[news.server.com] = %d, want 9", stats)
+	}
+	if _, ok := p.fileInfo[fileKey{jobID: job.ID, fileIdx: 0}]; !ok {
+		t.Error("expected fileInfo map to be populated by registerFile")
+	}
+	if gotJob.Files[0].Articles[0].Emitted {
+		t.Error("expected Emitted to be cleared when WriteArticle fails")
+	}
+	if got := telemetry.ArticlesWritten.Value(); got != writtenBefore {
+		t.Errorf("ArticlesWritten = %d, want %d (should not increment when WriteArticle fails)", got, writtenBefore)
+	}
 }
