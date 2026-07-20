@@ -79,7 +79,7 @@ func callerLevel(r *http.Request, cfg AuthConfig) AccessLevel {
 	if fromCookie {
 		// Enforce cross-origin check for defense-in-depth (cookie
 		// SameSite may be insufficient on older browsers).
-		if isCrossOrigin(r) {
+		if isCrossOrigin(r, cfg) {
 			return 0
 		}
 		// Refuse the cookie path for untrusted sources. The SPA only
@@ -221,25 +221,33 @@ func splitHostPortNormalized(hostport, defaultScheme string) (host, port string)
 	return h, p
 }
 
-// requestScheme returns "https" if r uses TLS or carries a forwarding header
-// (X-Forwarded-Proto, X-Forwarded-Scheme, or Forwarded) indicating https;
-// otherwise "http".
-func requestScheme(r *http.Request) string {
+// requestScheme returns "https" if r uses TLS directly. If r.TLS is nil and the
+// request originates from a trusted source (per config.IsTrustedRemote), it
+// also inspects forwarding headers (X-Forwarded-Proto, X-Forwarded-Scheme,
+// Forwarded) for an "https" scheme; otherwise returns "http".
+func requestScheme(r *http.Request, cfg AuthConfig) string {
 	if r.TLS != nil {
 		return "https"
 	}
-	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") ||
-		strings.EqualFold(r.Header.Get("X-Forwarded-Scheme"), "https") {
-		return "https"
+	fh := config.ForwardedHeaders{
+		XForwardedFor: r.Header.Get("X-Forwarded-For"),
+		Forwarded:     r.Header.Get("Forwarded"),
+		XRealIP:       r.Header.Get("X-Real-IP"),
 	}
-	if fwd := r.Header.Get("Forwarded"); fwd != "" {
-		for part := range strings.SplitSeq(fwd, ";") {
-			part = strings.TrimSpace(part)
-			if strings.HasPrefix(strings.ToLower(part), "proto=") {
-				val := strings.TrimPrefix(part, "proto=")
-				val = strings.Trim(val, `"`)
-				if strings.EqualFold(val, "https") {
-					return "https"
+	if trusted, _ := config.IsTrustedRemote(r.RemoteAddr, fh, cfg.TrustedRanges, cfg.VerifyXFF, cfg.ForwardHeader); trusted {
+		if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") ||
+			strings.EqualFold(r.Header.Get("X-Forwarded-Scheme"), "https") {
+			return "https"
+		}
+		if fwd := r.Header.Get("Forwarded"); fwd != "" {
+			for part := range strings.SplitSeq(fwd, ";") {
+				part = strings.TrimSpace(part)
+				if strings.HasPrefix(strings.ToLower(part), "proto=") {
+					val := strings.TrimPrefix(part, "proto=")
+					val = strings.Trim(val, `"`)
+					if strings.EqualFold(val, "https") {
+						return "https"
+					}
 				}
 			}
 		}
@@ -264,7 +272,7 @@ func sameOrigin(hostportA, schemeA, hostportB, schemeB string) bool {
 
 // isRefererCrossOrigin parses referer and returns true if it originates from
 // a host:port different from r.Host (scheme-aware).
-func isRefererCrossOrigin(referer string, r *http.Request) bool {
+func isRefererCrossOrigin(referer string, r *http.Request, cfg AuthConfig) bool {
 	if referer == "" {
 		return false
 	}
@@ -272,7 +280,7 @@ func isRefererCrossOrigin(referer string, r *http.Request) bool {
 	if err != nil || u.Host == "" {
 		return false
 	}
-	return !sameOrigin(u.Host, u.Scheme, r.Host, requestScheme(r))
+	return !sameOrigin(u.Host, u.Scheme, r.Host, requestScheme(r, cfg))
 }
 
 // isSecFetchSiteCrossOrigin returns true if sfs indicates a cross-site or
@@ -285,7 +293,7 @@ func isSecFetchSiteCrossOrigin(sfs string) bool {
 // from a non-local origin. Browsers send Origin on cross-origin requests
 // (POST, PUT, DELETE, and fetch/XHR GET). We use this to reject CSRF
 // attempts — a malicious website cannot forge the Origin header.
-func isCrossOrigin(r *http.Request) bool {
+func isCrossOrigin(r *http.Request, cfg AuthConfig) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		// No Origin header — fall back to Referer and Sec-Fetch-Site.
@@ -296,7 +304,7 @@ func isCrossOrigin(r *http.Request) bool {
 				return true
 			}
 		}
-		if isRefererCrossOrigin(referer, r) {
+		if isRefererCrossOrigin(referer, r, cfg) {
 			return true
 		}
 		return isSecFetchSiteCrossOrigin(r.Header.Get("Sec-Fetch-Site"))
@@ -310,7 +318,7 @@ func isCrossOrigin(r *http.Request) bool {
 
 	// Both Origin and Sec-Fetch-Site must agree the request is same-origin;
 	// checking only one leaves the other spoofable/unchecked path open.
-	if !sameOrigin(u.Host, u.Scheme, r.Host, requestScheme(r)) {
+	if !sameOrigin(u.Host, u.Scheme, r.Host, requestScheme(r, cfg)) {
 		return true
 	}
 	return isSecFetchSiteCrossOrigin(r.Header.Get("Sec-Fetch-Site"))
