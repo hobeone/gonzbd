@@ -48,16 +48,21 @@ func (r FailReason) String() string {
 // returns a FailReason. This matches SABnzbd's unrar output parsing from
 // newsunpack.py (lines 730–860).
 //
+// isUnrarPasswordError checks lowercased unrar output for wrong password indicators.
+func isUnrarPasswordError(lower string) bool {
+	return strings.Contains(lower, "incorrect password") ||
+		strings.Contains(lower, "the specified password is incorrect") ||
+		strings.Contains(lower, "checksum error in the encrypted file") ||
+		// Unrar variants: "Encrypted file:  CRC failed in ..." (variable spacing).
+		(strings.Contains(lower, "encrypted file") && strings.Contains(lower, "crc failed"))
+}
+
 // Only call this when the extraction has already failed (exit code != 0).
 func ClassifyUnrarOutput(output string) FailReason {
 	lower := strings.ToLower(output)
 
 	// Wrong password patterns (most specific — check first).
-	if strings.Contains(lower, "incorrect password") ||
-		strings.Contains(lower, "the specified password is incorrect") ||
-		strings.Contains(lower, "checksum error in the encrypted file") ||
-		// Unrar variants: "Encrypted file:  CRC failed in ..." (variable spacing).
-		(strings.Contains(lower, "encrypted file") && strings.Contains(lower, "crc failed")) {
+	if isUnrarPasswordError(lower) {
 		return FailWrongPassword
 	}
 
