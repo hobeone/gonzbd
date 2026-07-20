@@ -279,16 +279,7 @@ func TestBroadcaster_Handle(t *testing.T) {
 	defer conn.Close(websocket.StatusInternalError, "done")
 
 	// Wait for client to be registered in broadcaster.
-	ctxPoll, cancelPoll := context.WithTimeout(ctx, 2*time.Second)
-	for b.NumClients() == 0 {
-		select {
-		case <-ctxPoll.Done():
-			cancelPoll()
-			t.Fatal("timeout waiting for client registration in broadcaster")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
-	cancelPoll()
+	waitClientRegister(ctx, t, b)
 
 	// Broadcast an event
 	b.Broadcast(Event{Type: "ws_test", Speed: 100})
@@ -404,7 +395,7 @@ func TestBroadcaster_Handle_BufferOverflow(t *testing.T) {
 	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "done") }()
 
 	// Wait for the client to register with the broadcaster.
-	waitClientRegister(t, b)
+	waitClientRegister(ctx, t, b)
 
 	// The client deliberately never reads. Broadcast large events until the
 	// OS socket write buffer and the 16-slot send channel both fill; the next
@@ -455,7 +446,7 @@ func TestBroadcaster_HandleClientDisconnect(t *testing.T) {
 	}
 
 	// Wait for connection to be registered.
-	waitClientRegister(t, b)
+	waitClientRegister(ctx, t, b)
 
 	b.mu.RLock()
 	clientCount := len(b.clients)
@@ -465,19 +456,22 @@ func TestBroadcaster_HandleClientDisconnect(t *testing.T) {
 	}
 
 	// Close from client side
-	_ = conn.Close(websocket.StatusNormalClosure, "done")
+	if err := conn.Close(websocket.StatusNormalClosure, "done"); err != nil {
+		t.Errorf("conn.Close: %v", err)
+	}
 
 	// Wait for handler to detect disconnect and clean up.
 	ctxPoll2, cancelPoll2 := context.WithTimeout(ctx, 2*time.Second)
+	defer cancelPoll2()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
 	for b.NumClients() > 0 {
 		select {
 		case <-ctxPoll2.Done():
-			cancelPoll2()
 			t.Fatal("timeout waiting for client disconnect cleanup")
-		case <-time.After(5 * time.Millisecond):
+		case <-ticker.C:
 		}
 	}
-	cancelPoll2()
 
 	b.mu.RLock()
 	clientCount = len(b.clients)
@@ -493,35 +487,49 @@ func (h *recordHandler) len() int {
 	return len(h.records)
 }
 
-func waitDisconnectLog(t *testing.T, rec *recordHandler) {
+func (h *recordHandler) hasMessage(msg string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if r.Message == msg {
+			return true
+		}
+	}
+	return false
+}
+
+func waitDisconnectLog(ctx context.Context, t *testing.T, rec *recordHandler) {
 	t.Helper()
-	pollStart := time.Now()
+	if rec.hasMessage("WebSocket client disconnected") {
+		return
+	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
 	for {
-		var done bool
-		rec.mu.Lock()
-		for _, r := range rec.records {
-			if r.Message == "WebSocket client disconnected" {
-				done = true
-				break
+		select {
+		case <-ctx.Done():
+			t.Fatal("timeout waiting for client disconnect log")
+		case <-ticker.C:
+			if rec.hasMessage("WebSocket client disconnected") {
+				return
 			}
 		}
-		rec.mu.Unlock()
-
-		if done || time.Since(pollStart) > time.Second {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
 }
 
-func waitClientRegister(t *testing.T, b *Broadcaster) {
+func waitClientRegister(ctx context.Context, t *testing.T, b *Broadcaster) {
 	t.Helper()
-	pollStart := time.Now()
+	if b.NumClients() > 0 {
+		return
+	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
 	for b.NumClients() == 0 {
-		if time.Since(pollStart) > 2*time.Second {
+		select {
+		case <-ctx.Done():
 			t.Fatal("timeout waiting for client registration")
+		case <-ticker.C:
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -677,16 +685,7 @@ func TestHandleWS(t *testing.T) {
 		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "done") }()
 
 		// Wait for connection to be registered on server.
-		ctxPoll, cancelPoll := context.WithTimeout(ctx, 2*time.Second)
-		for s.EventBroadcaster().NumClients() == 0 {
-			select {
-			case <-ctxPoll.Done():
-				cancelPoll()
-				t.Fatal("timeout waiting for client registration")
-			case <-time.After(5 * time.Millisecond):
-			}
-		}
-		cancelPoll()
+		waitClientRegister(ctx, t, s.EventBroadcaster())
 
 		// Broadcast an event and verify client receives it.
 		s.EventBroadcaster().Broadcast(Event{Type: "test_ws_event", Speed: 1234})
@@ -762,7 +761,7 @@ func TestWebSocketLifecycleLogging(t *testing.T) {
 	}
 
 	// Wait for client disconnect to be cleaned up and logged on the server
-	waitDisconnectLog(t, rec)
+	waitDisconnectLog(ctx, t, rec)
 
 	// Verify log records
 	rec.mu.Lock()
@@ -855,13 +854,18 @@ func TestWebSocketLifecycleLogging_BufferOverflow(t *testing.T) {
 	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 
 	// Wait for client to register
-	waitClientRegister(t, b)
+	waitClientRegister(ctx, t, b)
 
 	// Send messages until buffer overflow
 	big := strings.Repeat("x", 4096)
 	for b.NumClients() > 0 {
-		b.Broadcast(Event{Type: "overflow", Line: big})
-		time.Sleep(1 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			t.Fatal("timeout waiting for buffer overflow")
+		default:
+			b.Broadcast(Event{Type: "overflow", Line: big})
+			time.Sleep(1 * time.Millisecond)
+		}
 	}
 
 	// Now that the broadcaster has detected the overflow and closed the channel,
@@ -875,24 +879,8 @@ func TestWebSocketLifecycleLogging_BufferOverflow(t *testing.T) {
 		}
 	}()
 
-	// Wait for disconnect log to appear (up to 1s) to avoid race condition
-	pollStart := time.Now()
-	for {
-		var done bool
-		rec.mu.Lock()
-		for _, r := range rec.records {
-			if r.Message == "WebSocket client disconnected" {
-				done = true
-				break
-			}
-		}
-		rec.mu.Unlock()
-
-		if done || time.Since(pollStart) > time.Second {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// Wait for disconnect log to appear to avoid race condition
+	waitDisconnectLog(ctx, t, rec)
 
 	// Verify log records
 	rec.mu.Lock()
@@ -966,10 +954,12 @@ func TestWebSocketLifecycleLogging_AbnormalClose(t *testing.T) {
 	}
 
 	// Close the connection abruptly from client side without a clean websocket close handshake.
-	_ = conn.CloseNow()
+	if err := conn.CloseNow(); err != nil {
+		t.Errorf("conn.CloseNow: %v", err)
+	}
 
 	// Wait for client disconnect to be cleaned up and logged on the server
-	waitDisconnectLog(t, rec)
+	waitDisconnectLog(ctx, t, rec)
 
 	// Verify log records
 	rec.mu.Lock()
@@ -1020,7 +1010,7 @@ func TestWebSocketLifecycleLogging_WriteError(t *testing.T) {
 	}
 
 	// Wait for client to register.
-	waitClientRegister(t, b)
+	waitClientRegister(ctx, t, b)
 
 	// Close the connection abruptly from client side.
 	if err := conn.CloseNow(); err != nil {
@@ -1032,7 +1022,7 @@ func TestWebSocketLifecycleLogging_WriteError(t *testing.T) {
 	b.Broadcast(Event{Type: "test_write_error"})
 
 	// Wait for client disconnect to be cleaned up and logged on the server
-	waitDisconnectLog(t, rec)
+	waitDisconnectLog(ctx, t, rec)
 
 	// Verify log records contains write error or EOF
 	rec.mu.Lock()
