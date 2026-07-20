@@ -118,13 +118,13 @@ type Application struct {
 	// customStages branch, where the concrete stages are nil and Apply is skipped.
 	probe binaryProbe
 
-	// directUnpackers maps jobID → active DirectUnpacker for jobs being
-	// extracted during download. Protected by mu.
-	directUnpackers map[string]*directunpack.DirectUnpacker
+	// duOrch owns the in-flight DirectUnpackers and their concurrency counter
+	// under its own mutex (see directUnpackOrchestrator). Constructed in New().
+	duOrch *directUnpackOrchestrator
 
-	// activeDU tracks the number of currently running DirectUnpackers.
-	// Used to enforce DirectUnpackThreads concurrency limit.
-	activeDU atomic.Int32
+	// finalizer handles the queue→history transition when a job finishes
+	// post-processing (see jobFinalizer). Constructed in New().
+	finalizer *jobFinalizer
 
 	// lastHeartbeat stores the unix timestamp of the last active pipeline/download event.
 	lastHeartbeat atomic.Int64
@@ -167,9 +167,10 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		internalFileComplete: make(chan FileComplete, 128),
 		jobComplete:          make(chan JobComplete, 8),
 		postProcComplete:     make(chan PostProcComplete, 8),
-		directUnpackers:      make(map[string]*directunpack.DirectUnpacker),
 		ctx:                  context.Background(),
 	}
+	app.duOrch = newDirectUnpackOrchestrator(app)
+	app.finalizer = newJobFinalizer(app)
 	for _, o := range opts {
 		o(app)
 	}
@@ -285,7 +286,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 				Line:  line,
 			})
 		},
-		OnJobDone: app.finalizeJob,
+		OnJobDone: app.finalizer.finalize,
 		Logger:    log,
 	})
 	app.postProcessor = pp
@@ -320,90 +321,6 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.RecordHeartbeat()
 
 	return app, nil
-}
-
-// finalizeJob is called by the post-processor when a job is done (success
-// or failure). It builds a history entry, persists the job payload for
-// retry support, writes to the history DB, removes the job from the
-// active queue, fires WebSocket events, and dispatches notifications.
-//
-// This was extracted from the OnJobDone closure in New() to make the
-// history-entry construction and notification logic independently testable.
-func (app *Application) finalizeJob(job *postproc.Job) {
-	entry := buildHistoryEntry(job)
-	if err := app.persistAndCommit(app.log, entry, job); err != nil {
-		return
-	}
-	app.fireCompletionNotification(entry)
-}
-
-// persistAndCommit saves the job payload to disk, writes the history entry to
-// the database, removes the job from the queue, and broadcasts the finalization
-// events. Returns a non-nil error if persistence failed and the job was kept in
-// the queue for recovery (the error is already logged; callers can simply return).
-func (app *Application) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
-	var adminDir string
-	app.config.WithRead(func(c *config.Config) {
-		adminDir = c.General.AdminDir
-	})
-	histJobsDir := filepath.Join(adminDir, "history", "jobs")
-	if err := os.MkdirAll(histJobsDir, 0o750); err != nil {
-		log.Warn("failed to create history jobs dir", "err", err)
-	}
-	jobPath := filepath.Join(histJobsDir, job.Queue.ID+".json.gz")
-	if err := queue.SaveJob(jobPath, job.Queue); err != nil {
-		log.Error("failed to save final job state; keeping job in queue",
-			"job", job.Queue.ID, "err", err)
-		app.emit(Event{Type: "queue_updated"})
-		return err
-	}
-	if app.historyRepo != nil {
-		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
-		if err := app.historyRepo.Add(dbCtx, entry); err != nil {
-			log.Error("failed to add history entry; keeping job in queue for recovery",
-				"job", job.Queue.ID, "err", err)
-			dbCancel()
-			_ = os.Remove(jobPath) // clean up the orphaned payload file
-			app.emit(Event{Type: "queue_updated"})
-			return err
-		}
-		dbCancel()
-	}
-	if err := app.queue.Remove(job.Queue.ID); err != nil {
-		log.Warn("failed to remove job from queue after post-proc", "job", job.Queue.ID, "err", err)
-	}
-	select {
-	case app.postProcComplete <- PostProcComplete{JobID: job.Queue.ID}:
-	default:
-	}
-	// job_finalized signals a queue→history transition so both stores
-	// refresh from a single trigger and reach the new state together.
-	app.emit(Event{Type: "job_finalized", NzoID: job.Queue.ID})
-	return nil
-}
-
-// fireCompletionNotification sends a push notification for a finished job.
-// Runs with a bounded context so a slow notification sink can't block the
-// postproc worker indefinitely.
-func (app *Application) fireCompletionNotification(entry history.Entry) {
-	if app.notifyDispatcher == nil {
-		return
-	}
-	evtType := notifier.PostProcessingComplete
-	title := "Download completed"
-	if entry.Status == "Failed" {
-		evtType = notifier.PostProcessingFailed
-		title = "Download failed"
-	}
-	notifyCtx, notifyCancel := context.WithTimeout(app.ctx, 30*time.Second)
-	app.notifyDispatcher.Dispatch(notifyCtx, notifier.Event{
-		Type:      evtType,
-		Title:     title,
-		Body:      entry.Name,
-		JobName:   entry.Name,
-		Timestamp: time.Now(),
-	})
-	notifyCancel()
 }
 
 // Queue returns the application's download queue.
@@ -530,13 +447,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 		return fmt.Errorf("job %q not found", id)
 	}
 	// Abort any active DirectUnpacker for this job before removing files.
-	app.mu.Lock()
-	if du, ok := app.directUnpackers[id]; ok {
-		du.Abort()
-		delete(app.directUnpackers, id)
-		app.activeDU.Add(-1)
-	}
-	app.mu.Unlock()
+	app.duOrch.abortJob(id)
 
 	// Cancel in-flight post-processing and assembler file handles before
 	// removing files to prevent the PP from operating on a deleted directory.
@@ -789,13 +700,7 @@ func (app *Application) Shutdown() error {
 
 	// Abort all active DirectUnpackers before stopping the assembler.
 	// This kills unrar subprocesses and cleans up partial extracts.
-	app.mu.Lock()
-	for id, du := range app.directUnpackers {
-		du.Abort()
-		delete(app.directUnpackers, id)
-		app.activeDU.Add(-1)
-	}
-	app.mu.Unlock()
+	app.duOrch.abortAll()
 
 	if err := waitBounded("assembler", stepTimeout, app.assembler.Stop, app.log); err != nil {
 		errs = append(errs, fmt.Errorf("assembler stop: %w", err))
@@ -881,7 +786,7 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 		enableUnrar = c.PostProc.EnableUnrar
 	})
 	if directUnpack && enableUnrar {
-		app.maybeDirectUnpack(fc)
+		app.duOrch.maybeStart(fc)
 	}
 
 	snap := app.queue.SnapshotJob(fc.JobID)
@@ -1030,119 +935,10 @@ func hasFailedArticle(jf *queue.JobFile) bool {
 	return false
 }
 
-// maybeDirectUnpack feeds a completed file to the DirectUnpacker for the
-// job, creating one if this is the first RAR volume for that job.
-func (app *Application) maybeDirectUnpack(fc FileComplete) {
-	snap := app.queue.SnapshotJob(fc.JobID)
-	if snap == nil || snap.PostProc {
-		return
-	}
-	// Skip DU for jobs that don't want unpacking (PP < 2) or have
-	// a password (DU would fail on the password and fall back anyway).
-	if snap.PP < 2 {
-		return
-	}
-	if snap.Password != "" {
-		return
-	}
-	if fc.FileIdx < 0 || fc.FileIdx >= len(snap.Files) {
-		return
-	}
-	jobFile := &snap.Files[fc.FileIdx]
-	filename := jobFile.Subject
-	setname, vol := directunpack.AnalyzeRarFilename(filename)
-	if vol == 0 {
-		return // not a RAR volume
-	}
-
-	// Resolve the on-disk path from the pipeline's file info cache.
-	info, err := app.pipeline.resolveFileInfo(fc.JobID, fc.FileIdx)
-	if err != nil {
-		app.log.Debug("directunpack: cannot resolve file path",
-			"job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
-		return
-	}
-
-	app.mu.Lock()
-	du, exists := app.directUnpackers[fc.JobID]
-	if !exists {
-		var limit int
-		var downloadDirBase string
-		app.config.WithRead(func(c *config.Config) {
-			limit = c.PostProc.DirectUnpackThreads
-			downloadDirBase = c.General.DownloadDir
-		})
-		if limit > 0 && int(app.activeDU.Load()) >= limit {
-			app.mu.Unlock()
-			app.log.Debug("directunpack: skipping, concurrency limit reached",
-				"job", fc.JobID, "active", app.activeDU.Load(), "limit", limit)
-			return
-		}
-		downloadDir := filepath.Join(downloadDirBase, snap.Name)
-		du = directunpack.New(
-			app.log.With("component", "directunpack", "job", fc.JobID),
-			fc.JobID, downloadDir, downloadDir,
-			app.buildDirectUnpackOpts(),
-		)
-		// Provide all filenames so the DU can compute total volume counts.
-		allNames := make([]string, len(snap.Files))
-		for i := range snap.Files {
-			allNames[i] = snap.Files[i].Subject
-		}
-		du.SetAllFilenames(allNames)
-		app.directUnpackers[fc.JobID] = du
-		app.activeDU.Add(1)
-	}
-	app.mu.Unlock()
-
-	// A file can reach "complete" with some of its articles permanently
-	// Failed (the assembler still fires OnFileComplete once every article is
-	// resolved — Done or Failed — so the job isn't stuck waiting on data that
-	// will never arrive; see internal/assembler's handleFatalArticle). The
-	// on-disk RAR volume in that case is the right size but has gaps where
-	// the failed articles' bytes should be. DirectUnpack must not report
-	// success on such a volume — mark the set corrupt before Add() so
-	// extraction aborts (or success is suppressed) instead of silently
-	// trusting incomplete data. par2 repair will fix it from the
-	// recovery blocks; the normal unpack stage re-extracts afterward.
-	if hasFailedArticle(jobFile) {
-		reason := fmt.Sprintf("volume %s had failed/missing download articles", filename)
-		du.MarkCorrupt(setname, reason)
-		app.log.Warn("directunpack: marking set corrupt, volume incomplete",
-			"job", fc.JobID, "set", setname, "file", filename)
-	}
-
-	du.Add(app.ctx, filename, info.Path)
-}
-
-// buildDirectUnpackOpts constructs DirectUnpack options from the app config.
-func (app *Application) buildDirectUnpackOpts() directunpack.Options {
-	var flatUnpack, overwriteFiles, ignoreUnrarDates bool
-	app.config.WithRead(func(c *config.Config) {
-		flatUnpack = c.PostProc.FlatUnpack
-		overwriteFiles = c.PostProc.OverwriteFiles
-		ignoreUnrarDates = c.PostProc.IgnoreUnrarDates
-	})
-	return directunpack.Options{
-		Password:         "", // per-job passwords are pre-checked; DU skips password jobs
-		OneFolder:        flatUnpack,
-		OverwriteFiles:   overwriteFiles,
-		IgnoreUnrarDates: ignoreUnrarDates,
-		OnStatusChange: func() {
-			app.emit(Event{Type: "queue_updated"})
-		},
-	}
-}
-
-// DirectUnpackStatus returns the status of the direct unpacker for the given job.
+// DirectUnpackStatus returns the status of the direct unpacker for the given
+// job. Delegates to the DirectUnpack orchestrator.
 func (app *Application) DirectUnpackStatus(jobID string) (directunpack.Status, bool) {
-	app.mu.Lock()
-	defer app.mu.Unlock()
-	du, ok := app.directUnpackers[jobID]
-	if !ok {
-		return directunpack.Status{}, false
-	}
-	return du.Status(), true
+	return app.duOrch.status(jobID)
 }
 
 // DirectUnpackStatuses returns a snapshot of every active direct-unpacker's
@@ -1150,13 +946,7 @@ func (app *Application) DirectUnpackStatus(jobID string) (directunpack.Status, b
 // by queueList to avoid re-locking the application-wide mutex per job in the
 // listing hot path (OPT-12).
 func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
-	app.mu.Lock()
-	defer app.mu.Unlock()
-	statuses := make(map[string]directunpack.Status, len(app.directUnpackers))
-	for jobID, du := range app.directUnpackers {
-		statuses[jobID] = du.Status()
-	}
-	return statuses
+	return app.duOrch.statuses()
 }
 
 func (app *Application) maybeFinalize(jobID, failMsg string) {
@@ -1295,13 +1085,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// When du != nil, Wait() is executed inside an asynchronous worker
 	// goroutine on app.wg so the completion event consumer (watchCompletions)
 	// never blocks waiting for disk unpacking to finish.
-	app.mu.Lock()
-	du := app.directUnpackers[job.ID]
-	if du != nil {
-		app.activeDU.Add(-1)
-	}
-	delete(app.directUnpackers, job.ID)
-	app.mu.Unlock()
+	du := app.duOrch.collect(job.ID)
 
 	dispatch := func(duResults map[string]directunpack.SuccessSet, duFailures map[string]directunpack.FailedSet, duSkipped map[string]directunpack.SkippedSet) {
 		app.postProcessor.Process(&postproc.Job{
