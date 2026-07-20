@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -73,7 +74,7 @@ func TestIsCrossOrigin(t *testing.T) {
 			if tc.cookie != "" {
 				r.AddCookie(&http.Cookie{Name: "gonzbd_apikey", Value: tc.cookie})
 			}
-			if got := isCrossOrigin(r); got != tc.want {
+			if got := isCrossOrigin(r, AuthConfig{}); got != tc.want {
 				t.Errorf("isCrossOrigin() = %t, want %t", got, tc.want)
 			}
 		})
@@ -107,8 +108,53 @@ func TestIsCrossOrigin_LoopbackPortCases(t *testing.T) {
 			r := httptest.NewRequest(tc.method, "/api", nil)
 			r.Host = tc.host
 			r.Header.Set("Origin", tc.origin)
-			if got := isCrossOrigin(r); got != tc.want {
+			if got := isCrossOrigin(r, AuthConfig{}); got != tc.want {
 				t.Errorf("isCrossOrigin(Host=%q, Origin=%q) = %t, want %t", tc.host, tc.origin, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsCrossOrigin_DefaultPortCases covers issue #134 (implicit default
+// ports 80/443 must be normalized when comparing loopback aliases).
+func TestIsCrossOrigin_DefaultPortCases(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		host       string
+		origin     string
+		isTLS      bool
+		fwdProto   string
+		remoteAddr string
+		want       bool // want cross-origin
+	}{
+		{"explicit port 80 Origin vs implicit port 80 Host", "localhost", "http://localhost:80", false, "", "", false},
+		{"implicit port 80 Origin vs explicit port 80 Host", "localhost:80", "http://localhost", false, "", "", false},
+		{"implicit port 80 loopback IP vs implicit port 80 Host", "localhost", "http://127.0.0.1", false, "", "", false},
+		{"explicit port 443 Origin vs implicit port 443 HTTPS Host", "localhost", "https://localhost:443", true, "", "", false},
+		{"implicit port 443 Origin vs explicit port 443 HTTPS Host", "localhost:443", "https://localhost", true, "", "", false},
+		{"proxy-terminated TLS: trusted loopback peer with X-Forwarded-Proto https", "localhost", "https://localhost", false, "https", "127.0.0.1:12345", false},
+		{"untrusted peer: X-Forwarded-Proto https ignored from non-loopback peer", "localhost", "https://localhost", false, "https", "192.0.2.1:12345", true},
+		{"different port: 8080 Origin vs implicit port 80 Host", "localhost", "http://localhost:8080", false, "", "", true},
+		{"scheme mismatch: http Origin on 443 vs https Host on 443", "localhost", "http://localhost:443", true, "", "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := httptest.NewRequest("POST", "/api", nil)
+			r.Host = tc.host
+			r.Header.Set("Origin", tc.origin)
+			if tc.isTLS {
+				r.TLS = &tls.ConnectionState{}
+			}
+			if tc.fwdProto != "" {
+				r.Header.Set("X-Forwarded-Proto", tc.fwdProto)
+			}
+			if tc.remoteAddr != "" {
+				r.RemoteAddr = tc.remoteAddr
+			}
+			if got := isCrossOrigin(r, AuthConfig{}); got != tc.want {
+				t.Errorf("isCrossOrigin(Host=%q, Origin=%q, TLS=%t, FwdProto=%q, RemoteAddr=%q) = %t, want %t", tc.host, tc.origin, tc.isTLS, tc.fwdProto, tc.remoteAddr, got, tc.want)
 			}
 		})
 	}
@@ -135,9 +181,36 @@ func TestIsRefererCrossOrigin(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isRefererCrossOrigin(tc.referer, tc.currentHost)
+			r := httptest.NewRequest("GET", "/", nil)
+			r.Host = tc.currentHost
+			got := isRefererCrossOrigin(tc.referer, r, AuthConfig{})
 			if got != tc.want {
 				t.Errorf("isRefererCrossOrigin(%q, %q) = %t, want %t", tc.referer, tc.currentHost, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSameOrigin_DefaultPortNormalization(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name               string
+		hostportA, schemeA string
+		hostportB, schemeB string
+		want               bool
+	}{
+		{"http default port 80 explicit vs implicit", "localhost:80", "http", "localhost", "http", true},
+		{"https default port 443 explicit vs implicit", "localhost:443", "https", "localhost", "https", true},
+		{"loopback alias with explicit port 80 vs implicit", "127.0.0.1:80", "http", "localhost", "http", true},
+		{"non-default port 8080 vs explicit 80", "localhost:8080", "http", "localhost:80", "http", false},
+		{"http port 80 vs https port 443", "localhost", "http", "localhost", "https", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sameOrigin(tc.hostportA, tc.schemeA, tc.hostportB, tc.schemeB)
+			if got != tc.want {
+				t.Errorf("sameOrigin(%q, %q, %q, %q) = %t, want %t", tc.hostportA, tc.schemeA, tc.hostportB, tc.schemeB, got, tc.want)
 			}
 		})
 	}
