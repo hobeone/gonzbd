@@ -98,6 +98,7 @@ type Application struct {
 	notifyDispatcher *notifier.Dispatcher
 
 	internalFileComplete chan FileComplete
+	onFileComplete       func(jobID string, fileIdx int, fileCRC uint32)
 
 	wg     sync.WaitGroup
 	ctx    context.Context //nolint:containedctx // ctx is the app's lifecycle context, stored by design
@@ -293,6 +294,25 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	})
 	app.postProcessor = pp
 
+	onFileComplete := func(jobID string, fileIdx int, fileCRC uint32) {
+		fc := FileComplete{JobID: jobID, FileIdx: fileIdx, CRC32: fileCRC}
+		select {
+		case app.fileComplete <- fc:
+		default:
+		}
+		select {
+		case app.internalFileComplete <- fc:
+		default:
+			// Channel full — spawn goroutine on app.wg to ensure delivery.
+			// Ordering constraint: this is safe w.r.t. wg.Add-during-Wait only because OnFileComplete
+			// runs on the assembler worker, which Shutdown joins at step 2 — before app.wg.Wait() at step 4.
+			app.wg.Go(func() {
+				app.internalFileComplete <- fc
+			})
+		}
+	}
+	app.onFileComplete = onFileComplete
+
 	asm := assembler.New(assembler.Options{
 		FileInfo:           p.resolveFileInfo,
 		MarkArticlesDone:   q.MarkArticlesDone,
@@ -301,25 +321,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		MinFreeBytes:       minFreeBytes,
 		WriteCacheBytes:    writeCacheBytes,
 		OnLowDisk:          app.handleLowDisk,
-		OnFileComplete: func(jobID string, fileIdx int, fileCRC uint32) {
-			fc := FileComplete{JobID: jobID, FileIdx: fileIdx, CRC32: fileCRC}
-			select {
-			case app.fileComplete <- fc:
-			default:
-			}
-			select {
-			case app.internalFileComplete <- fc:
-			default:
-				// Channel full — spawn goroutine to ensure delivery.
-				go func() {
-					select {
-					case app.internalFileComplete <- fc:
-					case <-app.ctx.Done():
-						// App shutting down — discard to avoid blocking.
-					}
-				}()
-			}
-		},
+		OnFileComplete:     onFileComplete,
 	}, log)
 	app.assembler = asm
 	p.assembler = asm
