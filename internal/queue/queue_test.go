@@ -185,6 +185,43 @@ func TestAddWithinTierIsFIFO(t *testing.T) {
 	}
 }
 
+func TestQueue_HasDownloadingAndPostProcJobs(t *testing.T) {
+	q := New()
+	if q.HasDownloadingJobs() {
+		t.Error("expected HasDownloadingJobs=false for empty queue")
+	}
+	if q.HasPostProcJobs() {
+		t.Error("expected HasPostProcJobs=false for empty queue")
+	}
+
+	job1 := makeJob(t, "job1", constants.NormalPriority)
+	if err := q.Add(job1); err != nil {
+		t.Fatalf("Add job1: %v", err)
+	}
+
+	if !q.HasDownloadingJobs() {
+		t.Error("expected HasDownloadingJobs=true for active job")
+	}
+	if q.HasPostProcJobs() {
+		t.Error("expected HasPostProcJobs=false for downloading job")
+	}
+
+	// Move job1 to post-processing
+	job1.PostProc = true
+	if q.HasDownloadingJobs() {
+		t.Error("expected HasDownloadingJobs=false when only post-proc job exists")
+	}
+	if !q.HasPostProcJobs() {
+		t.Error("expected HasPostProcJobs=true when post-proc job exists")
+	}
+
+	// Pause queue
+	q.PauseAll()
+	if q.HasDownloadingJobs() {
+		t.Error("expected HasDownloadingJobs=false when queue is paused")
+	}
+}
+
 func TestAddDuplicateIDFails(t *testing.T) {
 	q := New()
 	j := makeJob(t, "j", constants.NormalPriority)

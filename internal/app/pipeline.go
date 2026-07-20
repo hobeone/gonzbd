@@ -92,6 +92,9 @@ type pipeline struct {
 	// (either by byte-level health or early-abort heuristic).
 	onJobHopeless func(jobID string)
 
+	// onHeartbeat is called when an article result is processed.
+	onHeartbeat func()
+
 	// ctx is the context passed to run(); stored so setCompletions can
 	// avoid blocking forever if run() has already exited.
 	ctx context.Context
@@ -200,6 +203,9 @@ func (p *pipeline) setCompletions(ch <-chan *downloader.ArticleResult) {
 // Phase 5's problem.
 func (p *pipeline) handleResult(ctx context.Context, res *downloader.ArticleResult) {
 	telemetry.ArticlesReceived.Add(1)
+	if p.onHeartbeat != nil {
+		p.onHeartbeat()
+	}
 
 	if res.Err != nil {
 		p.handleFailureResult(ctx, res)
