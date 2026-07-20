@@ -116,9 +116,10 @@ func (p *PostProcessor) Start(ctx context.Context) error {
 		return ErrAlreadyStarted
 	}
 	p.started = true
-	p.busyMu.Unlock()
-
 	p.workerCtx, p.workerCancel = context.WithCancel(ctx)
+	p.busyMu.Unlock()
+	// --- No lock held below this line ---
+
 	p.wg.Go(func() {
 		p.run()
 	})
@@ -127,8 +128,12 @@ func (p *PostProcessor) Start(ctx context.Context) error {
 
 // Stop signals the worker to exit and waits until it has.  Idempotent.
 func (p *PostProcessor) Stop() error {
-	if p.workerCancel != nil {
-		p.workerCancel()
+	p.busyMu.Lock()
+	cancel := p.workerCancel
+	p.busyMu.Unlock()
+	// --- No lock held below this line ---
+	if cancel != nil {
+		cancel()
 	}
 	p.wg.Wait()
 	return nil
