@@ -88,3 +88,25 @@ func TestStart_ProcessesJobsAfterGuard(t *testing.T) {
 		t.Errorf("stage called %d times, want 1", stage.CallCount())
 	}
 }
+
+// TestStartStop_Race verifies concurrent Start and Stop calls do not trigger data races on workerCancel.
+func TestStartStop_Race(t *testing.T) {
+	p := New(Options{})
+	ctx := t.Context()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 50 {
+			_ = p.Start(ctx)
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	for range 50 {
+		_ = p.Stop()
+		time.Sleep(time.Millisecond)
+	}
+	<-done
+	_ = p.Stop()
+}
