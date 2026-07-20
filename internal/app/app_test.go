@@ -991,86 +991,43 @@ func TestReloadPostProcOptions(t *testing.T) {
 	}
 	defer application.Shutdown()
 
-	// Initial configuration
-	cfg := &config.Config{}
-	cfg.PostProc.DirectUnpack = true
-	cfg.PostProc.DirectUnpackThreads = 5
-	cfg.PostProc.EnableUnrar = true
-	cfg.PostProc.Enable7zip = true
-	cfg.PostProc.EnableFileJoin = true
-	cfg.PostProc.EnableRecursive = true
-	cfg.PostProc.Par2Turbo = true
-	cfg.PostProc.IgnoreUnrarDates = true
+	// Reload with the hot-reloadable stage settings enabled; assert they reach
+	// the running stages. Config ownership belongs to the API/config layer, so
+	// reload applies pp to the stages and does NOT write config back — this
+	// asserts stage state (via the exported accessors), not config.
+	application.ReloadPostProcOptions(config.PostProcConfig{
+		EnableFileJoin: true,
+		Par2Turbo:      true,
+		UseGoRAR:       true,
+	}, "")
 
-	application.ReloadPostProcOptions(cfg.PostProc, cfg.General.ScriptDir)
+	if !application.StageEnableFileJoin() {
+		t.Error("after reload(true): StageEnableFileJoin() = false, want true")
+	}
+	if !application.StagePar2Turbo() {
+		t.Error("after reload(true): StagePar2Turbo() = false, want true")
+	}
+	if !application.StageUseGoRAR() {
+		t.Error("after reload(true): StageUseGoRAR() = false, want true")
+	}
 
-	currentCfg := application.GetConfig()
-	currentCfg.WithRead(func(c *config.Config) {
-		if !c.PostProc.DirectUnpack {
-			t.Errorf("DirectUnpack = false, want true")
-		}
-		if c.PostProc.DirectUnpackThreads != 5 {
-			t.Errorf("DirectUnpackThreads = %d, want 5", c.PostProc.DirectUnpackThreads)
-		}
-		if !c.PostProc.EnableUnrar {
-			t.Errorf("EnableUnrar = false, want true")
-		}
-		if !c.PostProc.Enable7zip {
-			t.Errorf("Enable7zip = false, want true")
-		}
-		if !c.PostProc.EnableFileJoin {
-			t.Errorf("EnableFileJoin = false, want true")
-		}
-		if !c.PostProc.EnableRecursive {
-			t.Errorf("EnableRecursive = false, want true")
-		}
-		if !c.PostProc.Par2Turbo {
-			t.Errorf("Par2Turbo = false, want true")
-		}
-		if !c.PostProc.IgnoreUnrarDates {
-			t.Errorf("IgnoreUnrarDates = false, want true")
-		}
-	})
+	// Reload again with them disabled; assert the stages track the change
+	// (proving the accessors reflect successive reloads, not a latched value).
+	application.ReloadPostProcOptions(config.PostProcConfig{
+		EnableFileJoin: false,
+		Par2Turbo:      false,
+		UseGoRAR:       false,
+	}, "")
 
-	// Hot-reload config change
-	cfg.PostProc.DirectUnpack = false
-	cfg.PostProc.DirectUnpackThreads = 2
-	cfg.PostProc.EnableUnrar = false
-	cfg.PostProc.Enable7zip = false
-	cfg.PostProc.EnableFileJoin = false
-	cfg.PostProc.EnableRecursive = false
-	cfg.PostProc.Par2Turbo = false
-	cfg.PostProc.IgnoreUnrarDates = false
-
-	application.ReloadPostProcOptions(cfg.PostProc, cfg.General.ScriptDir)
-
-	currentCfg = application.GetConfig()
-	currentCfg.WithRead(func(c *config.Config) {
-		if c.PostProc.DirectUnpack {
-			t.Errorf("DirectUnpack = true, want false")
-		}
-		if c.PostProc.DirectUnpackThreads != 2 {
-			t.Errorf("DirectUnpackThreads = %d, want 2", c.PostProc.DirectUnpackThreads)
-		}
-		if c.PostProc.EnableUnrar {
-			t.Errorf("EnableUnrar = true, want false")
-		}
-		if c.PostProc.Enable7zip {
-			t.Errorf("Enable7zip = true, want false")
-		}
-		if c.PostProc.EnableFileJoin {
-			t.Errorf("EnableFileJoin = true, want false")
-		}
-		if c.PostProc.EnableRecursive {
-			t.Errorf("EnableRecursive = true, want false")
-		}
-		if c.PostProc.Par2Turbo {
-			t.Errorf("Par2Turbo = true, want false")
-		}
-		if c.PostProc.IgnoreUnrarDates {
-			t.Errorf("IgnoreUnrarDates = true, want false")
-		}
-	})
+	if application.StageEnableFileJoin() {
+		t.Error("after reload(false): StageEnableFileJoin() = true, want false")
+	}
+	if application.StagePar2Turbo() {
+		t.Error("after reload(false): StagePar2Turbo() = true, want false")
+	}
+	if application.StageUseGoRAR() {
+		t.Error("after reload(false): StageUseGoRAR() = true, want false")
+	}
 }
 
 func TestApplication_SettersAndOptions(t *testing.T) {
@@ -1089,19 +1046,12 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 		t.Fatalf("app.New: %v", err)
 	}
 
-	// Test setters
-	application.SetDirectUnpack(true)
-	application.SetDirectUnpackThreads(5)
-	application.SetEnableUnrar(true)
-	application.SetEnable7zip(true)
-	application.SetPar2Turbo(true)
-	application.SetIgnoreUnrarDates(true)
-	application.SetSanitizeOptions(fsutil.SanitizeOptions{
-		ReplaceIllegalWith: "-",
-		ReplaceSpacesWith:  "_",
-		StripDiacritics:    true,
-		CleanupList:        []string{".nfo"},
-	})
+	// Test the setters that survived the #109 config-fan-out refactor. The
+	// stage-delegating and config-only setters (SetDirectUnpack, SetEnableUnrar,
+	// SetPar2Turbo, SetSanitizeOptions, …) were removed: those config fields are
+	// now written by the API layer and applied to the stages via the reload
+	// translators (see ReloadPostProcOptions), not by per-field Application
+	// methods.
 	application.SetMinFreeSpace(2048)
 	application.SetMaxArtTries(5)
 	application.SetMaxArtOpt(2)
@@ -1110,39 +1060,16 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 	application.SetDownloadDir(t.TempDir())
 	application.SetCompleteDir(t.TempDir())
 
-	// Verify values
+	// Enable direct-unpack via config directly for the maybeDirectUnpack
+	// coverage below (formerly done via the removed SetDirectUnpack setters).
+	application.GetConfig().With(func(cfg *config.Config) {
+		cfg.PostProc.DirectUnpack = true
+		cfg.PostProc.DirectUnpackThreads = 5
+	})
+
+	// Verify the surviving setters wrote config.
 	c := application.GetConfig()
 	c.WithRead(func(cfg *config.Config) {
-		if !cfg.PostProc.DirectUnpack {
-			t.Error("DirectUnpack not set")
-		}
-		if cfg.PostProc.DirectUnpackThreads != 5 {
-			t.Errorf("DirectUnpackThreads = %d, want 5", cfg.PostProc.DirectUnpackThreads)
-		}
-		if !cfg.PostProc.EnableUnrar {
-			t.Error("EnableUnrar not set")
-		}
-		if !cfg.PostProc.Enable7zip {
-			t.Error("Enable7zip not set")
-		}
-		if !cfg.PostProc.Par2Turbo {
-			t.Error("Par2Turbo not set")
-		}
-		if !cfg.PostProc.IgnoreUnrarDates {
-			t.Error("IgnoreUnrarDates not set")
-		}
-		if cfg.Downloads.ReplaceIllegalWith != "-" {
-			t.Errorf("ReplaceIllegalWith = %q, want -", cfg.Downloads.ReplaceIllegalWith)
-		}
-		if cfg.Downloads.ReplaceSpacesWith != "_" {
-			t.Errorf("ReplaceSpacesWith = %q, want _", cfg.Downloads.ReplaceSpacesWith)
-		}
-		if !cfg.Downloads.StripDiacritics {
-			t.Error("StripDiacritics not set")
-		}
-		if len(cfg.Downloads.CleanupList) != 1 || cfg.Downloads.CleanupList[0] != ".nfo" {
-			t.Errorf("CleanupList = %v, want [.nfo]", cfg.Downloads.CleanupList)
-		}
 		if cfg.Downloads.MinFreeSpace != 2048 {
 			t.Errorf("MinFreeSpace = %d, want 2048", cfg.Downloads.MinFreeSpace)
 		}

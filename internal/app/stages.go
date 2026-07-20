@@ -96,54 +96,32 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	ppLog := log.With("component", "postproc")
 	var stages []postproc.Stage
 
-	var enableQuickCheck, par2Turbo, useGoPar2, goPar2Fallback, enableRarCleanup bool
-	var enableRarVolumeRecovery bool
-	var enableFileJoin, enableTar, enableRecursive, enableUnrar, enable7zip, ignoreSamples bool
+	// pp is a whole-struct snapshot used by the shared config→stage translators
+	// (unpackConfigFromPP / repairConfigFromPP). The remaining locals feed the
+	// one-liner stages and construction-only settings.
+	var pp config.PostProcConfig
+	var enableQuickCheck, enableRarVolumeRecovery, ignoreSamples bool
 	var enableParCleanup, deobfuscateFilenames, folderRename, scriptCanFail bool
-	var par2Command, unrarCommand, sevenzCommand, permissions, passwordFile string
 	var scriptDir, completeDir, apiKey, listenAddr string
 	var nice, ionice, extraPar2Params, extraUnrarParams string
 	var cleanupExtensions []string
-	var flatUnpack, overwriteFiles, ignoreUnrarDates, useGoRAR, goRarFallback, useGo7z, go7zFallback, strictSandbox bool
-
 	var par2ParseOpts par2.ParseOptions
 	cfg.WithRead(func(c *config.Config) {
+		pp = c.PostProc
 		enableQuickCheck = c.PostProc.EnableQuickCheck
-		par2Command = c.PostProc.Par2Command
-		par2Turbo = c.PostProc.Par2Turbo
-		useGoPar2 = c.PostProc.UseGoPar2
-		goPar2Fallback = c.PostProc.GoPar2Fallback
-		enableRarCleanup = c.PostProc.EnableRarCleanup
 		enableRarVolumeRecovery = c.PostProc.EnableRarVolumeRecovery
-		enableFileJoin = c.PostProc.EnableFileJoin
-		enableTar = c.PostProc.EnableTar
-		enableRecursive = c.PostProc.EnableRecursive
-		enableUnrar = c.PostProc.EnableUnrar
-		enable7zip = c.PostProc.Enable7zip
 		ignoreSamples = c.PostProc.IgnoreSamples
 		enableParCleanup = c.PostProc.EnableParCleanup
 		deobfuscateFilenames = c.PostProc.DeobfuscateFilenames
 		folderRename = c.PostProc.FolderRename
 		scriptCanFail = c.PostProc.ScriptCanFail
-		unrarCommand = c.PostProc.UnrarCommand
-		sevenzCommand = c.PostProc.SevenzCommand
-		permissions = c.PostProc.Permissions
-		passwordFile = c.PostProc.PasswordFile
-		scriptDir = c.General.ScriptDir
-		completeDir = c.General.CompleteDir
 		nice = c.PostProc.Nice
 		ionice = c.PostProc.Ionice
 		extraPar2Params = c.PostProc.ExtraPar2Params
 		extraUnrarParams = c.PostProc.ExtraUnrarParams
 		cleanupExtensions = c.PostProc.CleanupExtensions
-		flatUnpack = c.PostProc.FlatUnpack
-		overwriteFiles = c.PostProc.OverwriteFiles
-		ignoreUnrarDates = c.PostProc.IgnoreUnrarDates
-		useGoRAR = c.PostProc.UseGoRAR
-		goRarFallback = c.PostProc.GoRarFallback
-		useGo7z = c.PostProc.UseGo7z
-		go7zFallback = c.PostProc.Go7zFallback
-		strictSandbox = c.PostProc.StrictSandbox
+		scriptDir = c.General.ScriptDir
+		completeDir = c.General.CompleteDir
 
 		par2ParseOpts = par2.ParseOptionsFromConfig(&c.PostProc)
 
@@ -179,20 +157,13 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 		return builtStages{}, fmt.Errorf("extra_unrar_params: %w", err)
 	}
 
-	// Repair stage.
-	repairStage := postproc.NewRepairStageWith(
-		par2.RunOptions{
-			Command:   par2Command,
-			Turbo:     par2Turbo,
-			CmdCfg:    cmdCfg,
-			ExtraArgs: extraPar2Args,
-			Caps:      &probe.Par2Caps,
-		},
-	)
+	// Repair stage. Config-driven options come from the shared translator
+	// (repairConfigFromPP), the same mapping used on hot reload, so the two
+	// paths cannot diverge. ParseOpts is construction-only (no runtime setter).
+	repairStage := postproc.NewRepairStage()
 	repairStage.Log = ppLog
 	repairStage.ParseOpts = par2ParseOpts
-	repairStage.UseGoPar2 = useGoPar2
-	repairStage.GoPar2Fallback = goPar2Fallback
+	repairStage.Apply(repairConfigFromPP(pp, probe, cmdCfg, extraPar2Args))
 	stages = append(stages, repairStage)
 
 	// RAR volume recovery: no-op unless normal filename-based RAR detection
@@ -204,32 +175,13 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	rarVolRecoveryStage.SetEnabled(enableRarVolumeRecovery)
 	stages = append(stages, rarVolRecoveryStage)
 
-	// Unpack stage: always included in pipeline, enabled dynamically.
-	unpackStage := postproc.NewUnpackStageWith(unpack.Options{
-		UnrarCommand:     unrarCommand,
-		SevenZipCommand:  sevenzCommand,
-		OverwriteFiles:   overwriteFiles,
-		IgnoreUnrarDates: ignoreUnrarDates,
-		OneFolder:        flatUnpack,
-		UseGoRAR:         useGoRAR,
-		GoRarFallback:    goRarFallback,
-		UseGo7z:          useGo7z,
-		Go7zFallback:     go7zFallback,
-		HasProblem:       probe.UnrarInfo.HasProblem,
-		CmdCfg:           cmdCfg,
-		Sandbox: cmdutil.SandboxConfig{
-			Enabled: true,
-			Strict:  strictSandbox,
-		},
-		ExtraArgs: extraUnrarArgs,
-	}, enableRarCleanup)
-	unpackStage.Permissions = permissions
-	unpackStage.PasswordFile = passwordFile
-	unpackStage.EnableFileJoin = enableFileJoin
-	unpackStage.EnableTar = enableTar
-	unpackStage.EnableRecursive = enableRecursive
+	// Unpack stage: always included in pipeline, enabled dynamically. Config
+	// via the shared translator (unpackConfigFromPP), the same mapping used on
+	// hot reload.
+	unpackStage := postproc.NewUnpackStage()
 	unpackStage.Log = ppLog
-	unpackStage.SetEnabled(enableUnrar || enable7zip || enableFileJoin || enableTar)
+	unpackStage.Apply(unpackConfigFromPP(pp, probe, cmdCfg, extraUnrarArgs))
+	unpackStage.SetEnabled(pp.EnableUnrar || pp.Enable7zip || pp.EnableFileJoin || pp.EnableTar)
 	stages = append(stages, unpackStage)
 
 	// Sample cleanup runs after unpack so it sees both raw and extracted files.

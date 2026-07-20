@@ -111,6 +111,12 @@ type Application struct {
 
 	customStages []postproc.Stage
 	stages       builtStages
+	// probe holds the external-tool detection results captured once in New().
+	// Immutable after construction. ReloadPostProcOptions reads it to carry the
+	// construction-only option fields (unrar HasProblem, par2 Caps) forward
+	// through the whole-struct stage Apply on reload. Zero value on the
+	// customStages branch, where the concrete stages are nil and Apply is skipped.
+	probe binaryProbe
 
 	// directUnpackers maps jobID → active DirectUnpacker for jobs being
 	// extracted during download. Protected by mu.
@@ -261,6 +267,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		}
 		stageList = built.Stages
 		app.stages = built
+		app.probe = probe
 	}
 	// else: app.customStages was supplied via WithPostProcStages, so
 	// app.stages is left as the zero builtStages{} (all-nil pointers) —
