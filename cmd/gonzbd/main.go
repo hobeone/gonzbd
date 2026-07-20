@@ -294,7 +294,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	httpHandler := composeRouter(apiSrv, webHandler, false, scriptHashes, trustedFn)
 	httpsHandler := composeRouter(apiSrv, webHandler, true, scriptHashes, trustedFn)
 
-	httpSrv, httpsSrv := newServers(cfg, httpHandler, httpsHandler)
+	httpSrv, httpsSrv := newServers(cfg, httpHandler, httpsHandler, log)
 	if listenOverride != "" {
 		httpSrv.Addr = listenOverride
 	}
@@ -578,7 +578,8 @@ func startListeners(httpSrv, httpsSrv *http.Server, cfg *config.Config, log *slo
 
 // newServers constructs the HTTP and HTTPS servers with the configured addresses
 // and handlers.
-func newServers(cfg *config.Config, httpHandler, httpsHandler http.Handler) (httpSrv, httpsSrv *http.Server) {
+func newServers(cfg *config.Config, httpHandler, httpsHandler http.Handler, log *slog.Logger) (httpSrv, httpsSrv *http.Server) {
+	errLog := slog.NewLogLogger(log.Handler(), slog.LevelError)
 	httpAddr := net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.Port))
 	httpSrv = &http.Server{
 		Addr:              httpAddr,
@@ -587,6 +588,7 @@ func newServers(cfg *config.Config, httpHandler, httpsHandler http.Handler) (htt
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		ErrorLog:          errLog,
 	}
 
 	httpsAddr := net.JoinHostPort(cfg.General.Host, strconv.Itoa(cfg.General.HTTPSPort))
@@ -597,6 +599,7 @@ func newServers(cfg *config.Config, httpHandler, httpsHandler http.Handler) (htt
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		ErrorLog:          errLog,
 	}
 
 	return httpSrv, httpsSrv

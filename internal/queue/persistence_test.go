@@ -3,6 +3,7 @@ package queue
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -849,4 +850,17 @@ func TestLoad_PermissionError(t *testing.T) {
 			t.Error("job file should not have been quarantined")
 		}
 	})
+}
+
+func TestLoad_WithLogger(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	l := slog.Default()
+	q, err := Load(dir, WithLogger(l))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if q.log == nil {
+		t.Error("expected logger to be set on reloaded queue, got nil")
+	}
 }

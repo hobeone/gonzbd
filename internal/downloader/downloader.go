@@ -453,12 +453,16 @@ func (d *Downloader) Pause() {
 // pokes the main loop so queued work is re-considered immediately.
 func (d *Downloader) Resume() {
 	d.pauseMu.Lock()
+	if d.pauseCancel != nil {
+		d.pauseCancel()
+	}
 	parent := d.ctx
 	if parent == nil {
 		parent = context.Background()
 	}
 	d.pauseCtx, d.pauseCancel = context.WithCancel(parent)
 	d.pauseMu.Unlock()
+	// --- No lock held below this line ---
 	d.paused.Store(false)
 	d.log.Info("resumed")
 	d.signalDispatch()
