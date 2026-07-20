@@ -114,11 +114,10 @@ func (a *Application) Context() context.Context {
 // --- Stable reload-state accessors ---
 //
 // These read the *effective* runtime value of reload-affected state through
-// whatever field layout Application currently uses. A later refactor is
-// expected to relocate the underlying stage-pointer fields (e.g.
-// a.unpackStage, a.repairStage) into a single held struct; when that happens,
-// only these accessors need to change, not the tests that call them.
-// See issue #109 (dissolve the Application god object).
+// whatever field layout Application currently uses. Step 1 of #109 relocated
+// the stage pointers (e.g. a.stages.Unpack, a.stages.Repair) into a single
+// held builtStages struct; only these accessors needed to change, not the
+// tests that call them. See issue #109 (dissolve the Application god object).
 
 // StageStrictSandbox reports the running UnpackStage's strict-sandbox
 // setting. Returns false if no unpack stage is configured.
@@ -130,40 +129,40 @@ func (a *Application) Context() context.Context {
 // prior to this change. Fine for single-goroutine test assertions taken
 // after the reload call has returned.
 func (a *Application) StageStrictSandbox() bool {
-	if a.unpackStage == nil {
+	if a.stages.Unpack == nil {
 		return false
 	}
-	return a.unpackStage.BaseOpts.Sandbox.Strict
+	return a.stages.Unpack.BaseOpts.Sandbox.Strict
 }
 
 // StageUseGoRAR reports the running UnpackStage's pure-Go RAR extraction
 // toggle. Returns false if no unpack stage is configured. See
 // StageStrictSandbox for the unlocked-read rationale.
 func (a *Application) StageUseGoRAR() bool {
-	if a.unpackStage == nil {
+	if a.stages.Unpack == nil {
 		return false
 	}
-	return a.unpackStage.BaseOpts.UseGoRAR
+	return a.stages.Unpack.BaseOpts.UseGoRAR
 }
 
 // StageEnableFileJoin reports the running UnpackStage's split-file-join
 // toggle. Returns false if no unpack stage is configured. See
 // StageStrictSandbox for the unlocked-read rationale.
 func (a *Application) StageEnableFileJoin() bool {
-	if a.unpackStage == nil {
+	if a.stages.Unpack == nil {
 		return false
 	}
-	return a.unpackStage.EnableFileJoin
+	return a.stages.Unpack.EnableFileJoin
 }
 
 // StagePar2Turbo reports the running RepairStage's par2cmdline-turbo
 // toggle. Returns false if no repair stage is configured. See
 // StageStrictSandbox for the unlocked-read rationale.
 func (a *Application) StagePar2Turbo() bool {
-	if a.repairStage == nil {
+	if a.stages.Repair == nil {
 		return false
 	}
-	return a.repairStage.Par2Opts.Turbo
+	return a.stages.Repair.Par2Opts.Turbo
 }
 
 // AssemblerMinFreeBytes reports the running Assembler's low-disk-space

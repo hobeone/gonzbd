@@ -109,16 +109,8 @@ type Application struct {
 	bandwidthMax  atomic.Int64 // configured bandwidth ceiling in bytes/sec
 	bandwidthPerc atomic.Int32 // configured bandwidth percentage (1-100)
 
-	customStages     []postproc.Stage
-	quickCheckStage  *postproc.QuickCheckStage
-	repairStage      *postproc.RepairStage
-	par2CleanupStage *postproc.Par2CleanupStage
-	unpackStage      *postproc.UnpackStage
-	finalizeStage    *postproc.FinalizeStage
-	scriptStage      *postproc.ScriptStage
-	sampleStage      *postproc.SampleCleanupStage
-	deobfuscateStage *postproc.DeobfuscateStage
-	cleanupStage     *postproc.ExtensionCleanupStage
+	customStages []postproc.Stage
+	stages       builtStages
 
 	// directUnpackers maps jobID → active DirectUnpacker for jobs being
 	// extracted during download. Protected by mu.
@@ -255,8 +247,8 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.pipeline = p
 
-	stages := app.customStages
-	if stages == nil {
+	stageList := app.customStages
+	if stageList == nil {
 		probe := probeBinaries(app.ctx, cfg, log)
 		app.binaryVersions = BinaryVersions{
 			Par2Version:   probe.Par2Caps.Version,
@@ -267,19 +259,14 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		if err != nil {
 			return nil, err
 		}
-		stages = built.Stages
-		app.quickCheckStage = built.QuickCheck
-		app.repairStage = built.Repair
-		app.par2CleanupStage = built.Par2Cleanup
-		app.unpackStage = built.Unpack
-		app.finalizeStage = built.Finalize
-		app.scriptStage = built.Script
-		app.sampleStage = built.SampleCleanup
-		app.deobfuscateStage = built.Deobfuscate
-		app.cleanupStage = built.ExtensionCleanup
+		stageList = built.Stages
+		app.stages = built
 	}
+	// else: app.customStages was supplied via WithPostProcStages, so
+	// app.stages is left as the zero builtStages{} (all-nil pointers) —
+	// behaviourally identical to the pre-refactor nil stage-pointer fields.
 	pp := postproc.New(postproc.Options{
-		Stages: stages,
+		Stages: stageList,
 		StatusUpdater: func(jobID string, status constants.Status) {
 			_ = q.SetStatus(jobID, status)
 		},

@@ -155,16 +155,16 @@ func (app *Application) ReloadDownloader(scs []config.ServerConfig) error {
 // SetQuickCheckEnabled enables or disables the CRC pre-verify pass at runtime
 // without restarting. Takes effect for the next job that enters post-processing.
 func (app *Application) SetQuickCheckEnabled(enabled bool) {
-	if app.quickCheckStage != nil {
-		app.quickCheckStage.SetEnabled(enabled)
+	if app.stages.QuickCheck != nil {
+		app.stages.QuickCheck.SetEnabled(enabled)
 	}
 }
 
 // SetParCleanup enables or disables par2 file deletion for future jobs.
 // Thread-safe; takes effect immediately without restart.
 func (app *Application) SetParCleanup(enabled bool) {
-	if app.par2CleanupStage != nil {
-		app.par2CleanupStage.SetCleanup(enabled)
+	if app.stages.Par2Cleanup != nil {
+		app.stages.Par2Cleanup.SetCleanup(enabled)
 	}
 }
 
@@ -172,126 +172,126 @@ func (app *Application) SetParCleanup(enabled bool) {
 // Thread-safe; takes effect immediately without restart.
 // No-op when no unpack stage is configured (unrar/7z disabled at startup).
 func (app *Application) SetRarCleanup(enabled bool) {
-	if app.unpackStage != nil {
-		app.unpackStage.SetCleanup(enabled)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetCleanup(enabled)
 	}
 }
 
 // SetOverwriteFiles enables or disables overwriting existing files on extraction.
 func (app *Application) SetOverwriteFiles(enabled bool) {
-	if app.unpackStage != nil {
-		app.unpackStage.SetOverwriteFiles(enabled)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetOverwriteFiles(enabled)
 	}
 }
 
 // SetFlatUnpack enables or disables flat (directory-ignoring) extraction.
 func (app *Application) SetFlatUnpack(enabled bool) {
-	if app.unpackStage != nil {
-		app.unpackStage.SetFlatUnpack(enabled)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetFlatUnpack(enabled)
 	}
 }
 
 // SetPermissions updates the octal permission string applied after extraction.
 func (app *Application) SetPermissions(v string) {
-	if app.unpackStage != nil {
-		app.unpackStage.SetPermissions(v)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetPermissions(v)
 	}
 }
 
 // SetFolderRename enables or disables the _UNPACK_/_FAILED_ prefix behavior.
 func (app *Application) SetFolderRename(enabled bool) {
-	if app.finalizeStage != nil {
-		app.finalizeStage.SetFolderRename(enabled)
+	if app.stages.Finalize != nil {
+		app.stages.Finalize.SetFolderRename(enabled)
 	}
 }
 
 // SetScriptCanFail controls whether non-zero script exit codes fail the job.
 func (app *Application) SetScriptCanFail(enabled bool) {
-	if app.scriptStage != nil {
-		app.scriptStage.SetScriptCanFail(enabled)
+	if app.stages.Script != nil {
+		app.stages.Script.SetScriptCanFail(enabled)
 	}
 }
 
 // SetUseGoRAR enables or disables pure-Go RAR extraction at runtime.
 func (app *Application) SetUseGoRAR(v bool) {
-	if app.unpackStage != nil {
-		app.unpackStage.SetUseGoRAR(v)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetUseGoRAR(v)
 	}
 }
 
 // SetUseGo7z enables or disables pure-Go 7-Zip extraction at runtime.
 func (app *Application) SetUseGo7z(v bool) {
-	if app.unpackStage != nil {
-		app.unpackStage.SetUseGo7z(v)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetUseGo7z(v)
 	}
 }
 
 // SetUseGoPar2 enables or disables pure-Go par2 verification/repair at runtime.
 func (app *Application) SetUseGoPar2(v bool) {
-	if app.repairStage != nil {
-		app.repairStage.SetUseGoPar2(v)
+	if app.stages.Repair != nil {
+		app.stages.Repair.SetUseGoPar2(v)
 	}
 }
 
 // SetGoRarFallback enables or disables fallback to unrar binary.
 func (app *Application) SetGoRarFallback(v bool) {
-	if app.unpackStage != nil {
-		app.unpackStage.SetGoRarFallback(v)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetGoRarFallback(v)
 	}
 }
 
 // SetGo7zFallback enables or disables fallback to 7z binary.
 func (app *Application) SetGo7zFallback(v bool) {
-	if app.unpackStage != nil {
-		app.unpackStage.SetGo7zFallback(v)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetGo7zFallback(v)
 	}
 }
 
 // SetGoPar2Fallback enables or disables fallback to par2 binary.
 func (app *Application) SetGoPar2Fallback(v bool) {
-	if app.repairStage != nil {
-		app.repairStage.SetGoPar2Fallback(v)
+	if app.stages.Repair != nil {
+		app.stages.Repair.SetGoPar2Fallback(v)
 	}
 }
 
 // SetNiceAndIonice updates nice and ionice command prefixes for external tools.
 func (app *Application) SetNiceAndIonice(nice, ionice string) {
-	if app.repairStage != nil {
-		app.repairStage.SetNiceAndIonice(nice, ionice)
+	if app.stages.Repair != nil {
+		app.stages.Repair.SetNiceAndIonice(nice, ionice)
 	}
-	if app.unpackStage != nil {
-		app.unpackStage.SetNiceAndIonice(nice, ionice)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetNiceAndIonice(nice, ionice)
 	}
 }
 
 // SetExternalCommands updates the paths to par2, unrar, and 7z binaries.
 func (app *Application) SetExternalCommands(par2Cmd, unrarCmd, sevenzCmd string) {
-	if app.repairStage != nil {
-		app.repairStage.SetPar2Command(par2Cmd)
+	if app.stages.Repair != nil {
+		app.stages.Repair.SetPar2Command(par2Cmd)
 	}
-	if app.unpackStage != nil {
-		app.unpackStage.SetUnrarCommand(unrarCmd)
-		app.unpackStage.SetSevenZipCommand(sevenzCmd)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetUnrarCommand(unrarCmd)
+		app.stages.Unpack.SetSevenZipCommand(sevenzCmd)
 	}
 }
 
 // SetExtraParams parses and applies extra command parameters to unrar and par2.
 func (app *Application) SetExtraParams(unrarParams, par2Params string) {
-	if app.repairStage != nil {
+	if app.stages.Repair != nil {
 		extraPar2Args, err := cmdutil.ParseExtraParams(par2Params)
 		if err == nil {
-			app.repairStage.SetExtraPar2Params(extraPar2Args)
+			app.stages.Repair.SetExtraPar2Params(extraPar2Args)
 		} else {
 			app.log.Warn("Failed to parse extra par2 params", "err", err)
 		}
 	}
-	if app.unpackStage != nil {
+	if app.stages.Unpack != nil {
 		extraUnrarArgs, err := cmdutil.ParseExtraParams(unrarParams)
 		if err == nil {
 			if err := cmdutil.ValidateUnrarParams(extraUnrarArgs); err != nil {
 				app.log.Warn("extra_unrar_params contains non-standard flags", "err", err)
 			}
-			app.unpackStage.SetExtraUnrarParams(extraUnrarArgs)
+			app.stages.Unpack.SetExtraUnrarParams(extraUnrarArgs)
 		} else {
 			app.log.Warn("Failed to parse extra unrar params", "err", err)
 		}
@@ -300,43 +300,43 @@ func (app *Application) SetExtraParams(unrarParams, par2Params string) {
 
 // SetCleanupExtensions updates the file extension cleanup list.
 func (app *Application) SetCleanupExtensions(exts []string) {
-	if app.cleanupStage != nil {
-		app.cleanupStage.SetExtensions(exts)
+	if app.stages.ExtensionCleanup != nil {
+		app.stages.ExtensionCleanup.SetExtensions(exts)
 	}
 }
 
 // SetDeobfuscate enables or disables filename deobfuscation.
 func (app *Application) SetDeobfuscate(enabled bool) {
-	if app.deobfuscateStage != nil {
-		app.deobfuscateStage.SetEnabled(enabled)
+	if app.stages.Deobfuscate != nil {
+		app.stages.Deobfuscate.SetEnabled(enabled)
 	}
 }
 
 // SetIgnoreSamples enables or disables automatic sample cleanup.
 func (app *Application) SetIgnoreSamples(enabled bool) {
-	if app.sampleStage != nil {
-		app.sampleStage.SetEnabled(enabled)
+	if app.stages.SampleCleanup != nil {
+		app.stages.SampleCleanup.SetEnabled(enabled)
 	}
 }
 
 // SetScriptDir updates the user scripts directory.
 func (app *Application) SetScriptDir(dir string) {
-	if app.scriptStage != nil {
-		app.scriptStage.SetScriptDir(dir)
+	if app.stages.Script != nil {
+		app.stages.Script.SetScriptDir(dir)
 	}
 }
 
 // SetUnpackEnabled enables or disables the unpack stage at runtime.
 func (app *Application) SetUnpackEnabled(enabled bool) {
-	if app.unpackStage != nil {
-		app.unpackStage.SetEnabled(enabled)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetEnabled(enabled)
 	}
 }
 
 // SetPasswordFile updates the unpack password file at runtime.
 func (app *Application) SetPasswordFile(v string) {
-	if app.unpackStage != nil {
-		app.unpackStage.SetPasswordFile(v)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetPasswordFile(v)
 	}
 }
 
@@ -345,8 +345,8 @@ func (app *Application) SetEnableFileJoin(v bool) {
 	app.config.With(func(c *config.Config) {
 		c.PostProc.EnableFileJoin = v
 	})
-	if app.unpackStage != nil {
-		app.unpackStage.SetEnableFileJoin(v)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetEnableFileJoin(v)
 	}
 }
 
@@ -355,8 +355,8 @@ func (app *Application) SetEnableTar(v bool) {
 	app.config.With(func(c *config.Config) {
 		c.PostProc.EnableTar = v
 	})
-	if app.unpackStage != nil {
-		app.unpackStage.SetEnableTar(v)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetEnableTar(v)
 	}
 }
 
@@ -365,8 +365,8 @@ func (app *Application) SetEnableRecursive(v bool) {
 	app.config.With(func(c *config.Config) {
 		c.PostProc.EnableRecursive = v
 	})
-	if app.unpackStage != nil {
-		app.unpackStage.SetEnableRecursive(v)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetEnableRecursive(v)
 	}
 }
 
@@ -403,8 +403,8 @@ func (app *Application) SetPar2Turbo(v bool) {
 	app.config.With(func(c *config.Config) {
 		c.PostProc.Par2Turbo = v
 	})
-	if app.repairStage != nil {
-		app.repairStage.SetPar2Turbo(v)
+	if app.stages.Repair != nil {
+		app.stages.Repair.SetPar2Turbo(v)
 	}
 }
 
@@ -413,8 +413,8 @@ func (app *Application) SetIgnoreUnrarDates(v bool) {
 	app.config.With(func(c *config.Config) {
 		c.PostProc.IgnoreUnrarDates = v
 	})
-	if app.unpackStage != nil {
-		app.unpackStage.SetIgnoreUnrarDates(v)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetIgnoreUnrarDates(v)
 	}
 }
 
@@ -428,8 +428,8 @@ func (app *Application) SetStrictSandbox(v bool) {
 	app.config.With(func(c *config.Config) {
 		c.PostProc.StrictSandbox = v
 	})
-	if app.unpackStage != nil {
-		app.unpackStage.SetStrictSandbox(v)
+	if app.stages.Unpack != nil {
+		app.stages.Unpack.SetStrictSandbox(v)
 	}
 }
 
