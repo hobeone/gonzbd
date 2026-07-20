@@ -55,14 +55,30 @@ type Queue struct {
 // skip unnecessary saves.
 func (q *Queue) IsDirty() bool { return q.dirty.Load() }
 
+// Option configures a Queue during construction.
+type Option func(*Queue)
+
+// WithLogger sets a component-scoped logger on the Queue.
+func WithLogger(l *slog.Logger) Option {
+	return func(q *Queue) {
+		if l != nil {
+			q.log = l.With("component", "queue")
+		}
+	}
+}
+
 // New returns an empty, unpaused queue.
-func New() *Queue {
-	return &Queue{
+func New(opts ...Option) *Queue {
+	q := &Queue{
 		byID:       make(map[string]*Job),
 		notifyCh:   make(chan struct{}, 1),
 		log:        slog.Default().With("component", "queue"),
 		removeFile: os.Remove,
 	}
+	for _, o := range opts {
+		o(q)
+	}
+	return q
 }
 
 // Notify returns the downloader wake-up channel. Cap 1; signals

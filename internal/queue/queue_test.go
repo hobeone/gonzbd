@@ -3,6 +3,7 @@ package queue
 import (
 	"bytes"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1508,5 +1509,13 @@ func TestSetFileWriteCursor_Errors(t *testing.T) {
 	_ = q.Add(job)
 	if err := q.SetFileWriteCursor(job.ID, 5, 1); err == nil {
 		t.Error("expected error for out-of-range fileIdx")
+	}
+}
+
+func TestNew_WithLogger(t *testing.T) {
+	l := slog.Default()
+	q := New(WithLogger(l))
+	if q.log == nil {
+		t.Error("expected logger to be set via WithLogger, got nil")
 	}
 }
