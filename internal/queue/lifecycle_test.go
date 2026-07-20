@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -606,7 +607,9 @@ func TestMarkJobStarted(t *testing.T) {
 	now := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	t.Run("sets start time on first call", func(t *testing.T) {
-		q.MarkJobStarted(j.ID, now)
+		if err := q.MarkJobStarted(j.ID, now); err != nil {
+			t.Fatalf("MarkJobStarted: %v", err)
+		}
 		got, _ := q.Get(j.ID)
 		if !got.DownloadStarted.Equal(now) {
 			t.Errorf("DownloadStarted = %v, want %v", got.DownloadStarted, now)
@@ -615,16 +618,19 @@ func TestMarkJobStarted(t *testing.T) {
 
 	t.Run("no-op on subsequent calls", func(t *testing.T) {
 		later := now.Add(time.Hour)
-		q.MarkJobStarted(j.ID, later)
+		if err := q.MarkJobStarted(j.ID, later); err != nil {
+			t.Fatalf("MarkJobStarted: %v", err)
+		}
 		got, _ := q.Get(j.ID)
 		if !got.DownloadStarted.Equal(now) {
 			t.Errorf("DownloadStarted should not change: got %v, want %v", got.DownloadStarted, now)
 		}
 	})
 
-	t.Run("no-op on nonexistent job", func(t *testing.T) {
-		// Should not panic.
-		q.MarkJobStarted("bogus", now)
+	t.Run("error on nonexistent job", func(t *testing.T) {
+		if err := q.MarkJobStarted("bogus", now); !errors.Is(err, ErrNotFound) {
+			t.Errorf("got %v, want ErrNotFound", err)
+		}
 	})
 }
 
@@ -636,9 +642,15 @@ func TestRecordDownload(t *testing.T) {
 	j := makeJob(t, "download-stats", constants.NormalPriority)
 	_ = q.Add(j)
 
-	q.RecordDownload(j.ID, "server-a", 1000)
-	q.RecordDownload(j.ID, "server-b", 2000)
-	q.RecordDownload(j.ID, "server-a", 500)
+	if err := q.RecordDownload(j.ID, "server-a", 1000); err != nil {
+		t.Fatalf("RecordDownload: %v", err)
+	}
+	if err := q.RecordDownload(j.ID, "server-b", 2000); err != nil {
+		t.Fatalf("RecordDownload: %v", err)
+	}
+	if err := q.RecordDownload(j.ID, "server-a", 500); err != nil {
+		t.Fatalf("RecordDownload: %v", err)
+	}
 
 	got, _ := q.Get(j.ID)
 	if got.ServerStats["server-a"] != 1500 {
@@ -648,8 +660,9 @@ func TestRecordDownload(t *testing.T) {
 		t.Errorf("server-b = %d, want 2000", got.ServerStats["server-b"])
 	}
 
-	// No-op on nonexistent job (should not panic).
-	q.RecordDownload("bogus", "server-a", 999)
+	if err := q.RecordDownload("bogus", "server-a", 999); !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
 }
 
 // ---------- IsComplete ----------
@@ -988,8 +1001,12 @@ func TestSaveLoadPreservesArticleState(t *testing.T) {
 	_ = q.MarkArticleDone(j.ID, articleID(0, 0))
 	_, _ = q.MarkArticleFailed(j.ID, articleID(0, 1))
 	_ = q.MarkFileComplete(j.ID, 0)
-	q.RecordDownload(j.ID, "my-server", 42_000)
-	q.MarkJobStarted(j.ID, time.Date(2025, 6, 15, 10, 0, 0, 0, time.UTC))
+	if err := q.RecordDownload(j.ID, "my-server", 42_000); err != nil {
+		t.Fatalf("RecordDownload: %v", err)
+	}
+	if err := q.MarkJobStarted(j.ID, time.Date(2025, 6, 15, 10, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("MarkJobStarted: %v", err)
+	}
 
 	if err := q.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)

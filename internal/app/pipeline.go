@@ -268,8 +268,14 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 
 func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.ArticleResult) {
 	// Record download stats
-	p.queue.MarkJobStarted(res.JobID, time.Now())
-	p.queue.RecordDownload(res.JobID, res.ServerName, len(res.Data))
+	if err := p.queue.MarkJobStarted(res.JobID, time.Now()); err != nil {
+		p.log.Debug("mark job started failed (job likely removed)", "job", res.JobID, "err", err)
+		return
+	}
+	if err := p.queue.RecordDownload(res.JobID, res.ServerName, len(res.Data)); err != nil {
+		p.log.Debug("record download failed (job likely removed)", "job", res.JobID, "err", err)
+		return
+	}
 
 	p.log.Debug("decoded article received",
 		"job", res.JobID, "msgid", res.MessageID,

@@ -472,32 +472,34 @@ func (q *Queue) SetPostProcStarted(id string) (bool, error) {
 
 // MarkJobStarted records the start time of the first download for a job.
 // It is a no-op if the job already has a start time.
-func (q *Queue) MarkJobStarted(id string, t time.Time) {
+func (q *Queue) MarkJobStarted(id string, t time.Time) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	job, ok := q.byID[id]
 	if !ok {
-		return
+		return ErrNotFound
 	}
 	if job.DownloadStarted.IsZero() {
 		job.DownloadStarted = t
 		q.dirty.Store(true)
 	}
+	return nil
 }
 
 // RecordDownload increments the per-server byte count for a job.
-func (q *Queue) RecordDownload(id, server string, bytes int) {
+func (q *Queue) RecordDownload(id, server string, bytes int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	job, ok := q.byID[id]
 	if !ok {
-		return
+		return ErrNotFound
 	}
 	if job.ServerStats == nil {
 		job.ServerStats = make(map[string]int64)
 	}
 	job.ServerStats[server] += int64(bytes)
 	q.dirty.Store(true)
+	return nil
 }
 
 // UnfinishedArticle is the snapshot record yielded by
