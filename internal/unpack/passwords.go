@@ -55,22 +55,7 @@ func rarPreVerify(archive Archive, password string) bool {
 // unrar exit code 2 = "fatal error" which covers wrong passwords.
 // The output message is more reliable than the exit code.
 func isUnrarWrongPassword(exitCode int, output string) bool {
-	// unrar prints various messages for wrong passwords:
-	//   "Incorrect password for ..."
-	//   "Checksum error in the encrypted file"
-	//   "The specified password is incorrect."
-	//   "Encrypted file: CRC failed in ..."
-	lower := strings.ToLower(output)
-	if strings.Contains(lower, "incorrect password") ||
-		strings.Contains(lower, "the specified password is incorrect") ||
-		strings.Contains(lower, "checksum error in the encrypted file") ||
-		strings.Contains(lower, "encrypted file: crc failed") {
-		return true
-	}
-	// Exit code 2 is a generic "fatal error" that often means wrong password
-	// when combined with encrypted archives, but we rely on output parsing
-	// above for precision.
-	return false
+	return isUnrarPasswordError(strings.ToLower(output))
 }
 
 // is7zWrongPassword returns true if the 7z output indicates a wrong
