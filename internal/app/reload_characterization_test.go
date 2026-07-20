@@ -7,11 +7,11 @@ import (
 )
 
 // These tests characterize (pin) the existing behaviour of the Reload*Options
-// family before a planned refactor collapses the 9 concrete stage-pointer
-// fields on Application (app.unpackStage, app.repairStage, ...) into one held
-// struct (issue #109). They assert
+// family from before Step 1 of #109 collapsed the 9 concrete stage-pointer
+// fields on Application (formerly app.unpackStage, app.repairStage, ...) into
+// one held builtStages struct (app.stages). They assert
 // through the stable white-box accessors added in export_test.go rather than
-// through the fields directly, so they survive that relocation unchanged.
+// through the fields directly, so they survived that relocation unchanged.
 //
 // No bug is being fixed here: these tests are expected to pass on current,
 // unmodified code by construction.
