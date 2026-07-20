@@ -1414,7 +1414,7 @@ func TestCleanupContainmentViolation_Direct(t *testing.T) {
 	}
 }
 
-func TestUnpackStage_SetStrictSandbox(t *testing.T) {
+func TestUnpackStage_ApplyStrictSandbox(t *testing.T) {
 	s := NewUnpackStageWith(unpack.Options{
 		Sandbox: cmdutil.SandboxConfig{
 			Enabled: true,
@@ -1422,15 +1422,15 @@ func TestUnpackStage_SetStrictSandbox(t *testing.T) {
 		},
 	}, false)
 
-	s.SetStrictSandbox(false)
+	s.Apply(UnpackConfig{Base: unpack.Options{Sandbox: cmdutil.SandboxConfig{Enabled: true, Strict: false}}})
 	s.mu.RLock()
 	strict := s.BaseOpts.Sandbox.Strict
 	s.mu.RUnlock()
 	if strict {
-		t.Error("expected SetStrictSandbox(false) to update BaseOpts.Sandbox.Strict")
+		t.Error("expected Apply with Strict=false to update BaseOpts.Sandbox.Strict")
 	}
 
-	s.SetStrictSandbox(true)
+	s.Apply(UnpackConfig{Base: unpack.Options{Sandbox: cmdutil.SandboxConfig{Enabled: true, Strict: true}}})
 	job := &Job{DownloadDir: "/tmp/test-sandbox-target", Queue: &queue.Job{}}
 	opts := s.prepareOptions(t.Context(), slog.Default(), job, s.BaseOpts, "")
 	if opts.Sandbox.TargetDir != "/tmp/test-sandbox-target" {
