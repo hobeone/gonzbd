@@ -888,6 +888,22 @@ func TestSetPriority(t *testing.T) {
 	}
 }
 
+func TestSetPriority_InvalidPriority(t *testing.T) {
+	q := New()
+	j := makeJob(t, "pri-invalid", constants.NormalPriority)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	for _, invalidPri := range []constants.Priority{-99, 5, 10} {
+		err := q.SetPriority(j.ID, invalidPri)
+		if err == nil {
+			t.Errorf("SetPriority(%d) should error", invalidPri)
+		} else if !strings.Contains(err.Error(), "invalid priority") {
+			t.Errorf("SetPriority(%d) error = %v, want 'invalid priority'", invalidPri, err)
+		}
+	}
+}
+
 func TestSetPP(t *testing.T) {
 	q := New()
 	j := makeJob(t, "pp-test", constants.NormalPriority)
@@ -921,6 +937,22 @@ func TestSetPP(t *testing.T) {
 		t.Error("SetPP(unknown) should error")
 	} else if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("error = %v, want 'not found'", err)
+	}
+}
+
+func TestSetPP_InvalidLevel(t *testing.T) {
+	q := New()
+	j := makeJob(t, "pp-invalid", constants.NormalPriority)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	for _, invalidPP := range []int{-1, 4, 100} {
+		err := q.SetPP(j.ID, invalidPP)
+		if err == nil {
+			t.Errorf("SetPP(%d) should error", invalidPP)
+		} else if !strings.Contains(err.Error(), "invalid post-processing level") {
+			t.Errorf("SetPP(%d) error = %v, want 'invalid post-processing level'", invalidPP, err)
+		}
 	}
 }
 

@@ -184,6 +184,11 @@ func TestBroadcaster_ConcurrentEvents(t *testing.T) {
 		}
 	})
 
+	// RACE-ONLY: this subtest has no assertion of its own — its only
+	// signal is `go test -race` catching a data race under concurrent
+	// subscribe/unsubscribe/broadcast load. It relies entirely on the
+	// project's mandatory `-race` gate; without it, this subtest always
+	// passes regardless of whether a race exists.
 	t.Run("HighLoadConcurrentBroadcastAndSubscribe", func(t *testing.T) {
 		b := NewBroadcaster(slog.New(slog.DiscardHandler))
 

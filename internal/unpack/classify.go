@@ -57,7 +57,7 @@ func isUnrarPasswordError(lower string) bool {
 		(strings.Contains(lower, "encrypted file") && strings.Contains(lower, "crc failed"))
 }
 
-// ClassifyUnrarOutput inspects unrar command output and maps it to a FailReason.
+// ClassifyUnrarOutput analyzes unrar output to determine the failure reason.
 // Only call this when the extraction has already failed (exit code != 0).
 func ClassifyUnrarOutput(output string) FailReason {
 	lower := strings.ToLower(output)
