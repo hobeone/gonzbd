@@ -1034,17 +1034,18 @@ func TestAddURL_NoGrabber(t *testing.T) {
 	}
 }
 
-// When the URL is missing, addurl should reject with 400 regardless of
-// whether a Grabber is wired — the parameter validation happens first.
+// When the URL is missing, addurl should reject with 400 specifically —
+// the grabber-wired check happens first, so a Grabber must be wired for
+// this test to reach the URL param check rather than short-circuiting on
+// the nil-grabber path (see TestAddURL_NoGrabber for that path).
 func TestAddURL_MissingURL(t *testing.T) {
 	t.Parallel()
 	s, _ := testQueueServer(t)
+	s.grabber = urlgrabber.New(urlgrabber.Config{AllowPrivateIPs: true}, mockGrabberHandler{id: "nzo_test1"})
+
 	rr := apiGet(t, s.Handler(), "/api?mode=addurl&apikey="+testAPIKey)
-	// With no Grabber, the nil-check fires before the URL check. That's
-	// fine: both are 4xx/5xx and mutually exclusive in prod (if the
-	// grabber is wired, this test path becomes a 400).
-	if rr.Code != http.StatusInternalServerError && rr.Code != http.StatusBadRequest {
-		t.Errorf("status = %d; want 400 or 500", rr.Code)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d; want 400 for missing url", rr.Code)
 	}
 }
 
