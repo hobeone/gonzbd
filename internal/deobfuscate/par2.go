@@ -116,7 +116,7 @@ func par2RenameFile(
 
 	// Perform rename; GetUniqueRelPath adds a numeric suffix if the
 	// par2-recorded target already exists on disk.
-	relDst := fsutil.JoinSafe("", "", trueName, opts)
+	relDst := fsutil.SanitizeFilename(trueName, opts)
 	relNewPath := fsutil.GetUniqueRelPath(root, relDst)
 
 	desiredPath := filepath.Join(dir, relDst)
