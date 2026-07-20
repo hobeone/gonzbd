@@ -30,26 +30,24 @@ func (a *Application) GetConfig() *config.Config {
 	return a.config
 }
 
-// TriggerMaybeDirectUnpack calls the unexported maybeDirectUnpack method.
+// TriggerMaybeDirectUnpack drives the DirectUnpack orchestrator's start path.
 func (a *Application) TriggerMaybeDirectUnpack(fc FileComplete) {
-	a.maybeDirectUnpack(fc)
+	a.duOrch.maybeStart(fc)
 }
 
-// TriggerBuildDirectUnpackOpts calls the unexported buildDirectUnpackOpts method.
+// TriggerBuildDirectUnpackOpts calls the orchestrator's option builder.
 func (a *Application) TriggerBuildDirectUnpackOpts() any {
-	return a.buildDirectUnpackOpts()
+	return a.duOrch.buildOpts(false, false, false)
 }
 
-// TriggerPersistAndCommit calls the unexported persistAndCommit method.
+// TriggerPersistAndCommit calls the finalizer's persistAndCommit method.
 func (a *Application) TriggerPersistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
-	return a.persistAndCommit(log, entry, job)
+	return a.finalizer.persistAndCommit(log, entry, job)
 }
 
 // InjectDirectUnpacker injects a direct unpacker for testing.
 func (a *Application) InjectDirectUnpacker(jobID string, du *directunpack.DirectUnpacker) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.directUnpackers[jobID] = du
+	a.duOrch.inject(jobID, du)
 }
 
 // TriggerBuildDownloaderOptions calls the unexported buildDownloaderOptions method.
@@ -89,14 +87,14 @@ func (a *Application) InjectCtx(ctx context.Context) {
 	a.ctx = ctx
 }
 
-// SetActiveDU sets the activeDU count.
+// SetActiveDU sets the DirectUnpack active count.
 func (a *Application) SetActiveDU(val int32) {
-	a.activeDU.Store(val)
+	a.duOrch.setActive(int(val))
 }
 
-// TriggerFireCompletionNotification calls the unexported fireCompletionNotification method.
+// TriggerFireCompletionNotification calls the finalizer's fireCompletionNotification method.
 func (a *Application) TriggerFireCompletionNotification(entry history.Entry) {
-	a.fireCompletionNotification(entry)
+	a.finalizer.fireCompletionNotification(entry)
 }
 
 // TriggerOnFileComplete invokes the OnFileComplete callback directly for testing.
