@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,7 +19,7 @@ func TestNewServersTimeouts(t *testing.T) {
 
 	handler := http.NotFoundHandler()
 
-	httpSrv, httpsSrv := newServers(cfg, handler, handler)
+	httpSrv, httpsSrv := newServers(cfg, handler, handler, slog.Default())
 
 	type serverTestCase struct {
 		name string
@@ -47,6 +48,9 @@ func TestNewServersTimeouts(t *testing.T) {
 			}
 			if tc.srv.IdleTimeout != 120*time.Second {
 				t.Errorf("expected IdleTimeout = 120s, got %v", tc.srv.IdleTimeout)
+			}
+			if tc.srv.ErrorLog == nil {
+				t.Errorf("expected ErrorLog to be set, got nil")
 			}
 		})
 	}
