@@ -389,7 +389,7 @@ func Deobfuscate(ctx context.Context, log *slog.Logger, dir, usefulName string, 
 	renames := allRenames
 
 	// Rename the biggest file.
-	relDst := fsutil.JoinSafe("", "", usefulName+filepath.Ext(bigPath), opts)
+	relDst := fsutil.SanitizeFilename(usefulName+filepath.Ext(bigPath), opts)
 	newBigRel := fsutil.GetUniqueRelPath(root, relDst)
 	newBigPath := filepath.Join(dir, newBigRel)
 	r, err := renameRecorded(log, root, bigRel, newBigRel, bigPath, newBigPath, "", "deobfuscate: renamed")
@@ -452,7 +452,7 @@ func renameSiblings(log *slog.Logger, root *os.Root, dir, usefulName, bigPath st
 			continue
 		}
 		remainingSuffix := strings.TrimPrefix(origP, baseDirFile) + strings.TrimPrefix(p, origP)
-		relDstSib := fsutil.JoinSafe("", "", usefulName+remainingSuffix, opts)
+		relDstSib := fsutil.SanitizeFilename(usefulName+remainingSuffix, opts)
 		newRelSib := fsutil.GetUniqueRelPath(root, relDstSib)
 		newPath := filepath.Join(dir, newRelSib)
 		r, renErr := renameRecorded(log, root, rel, newRelSib, p, newPath, "", "deobfuscate: renamed sibling")
