@@ -942,9 +942,9 @@ func (app *Application) DirectUnpackStatus(jobID string) (directunpack.Status, b
 }
 
 // DirectUnpackStatuses returns a snapshot of every active direct-unpacker's
-// status, keyed by job ID. Takes app.mu once regardless of job count — used
-// by queueList to avoid re-locking the application-wide mutex per job in the
-// listing hot path (OPT-12).
+// status, keyed by job ID. Delegates to the DirectUnpack orchestrator, which
+// takes its own private lock once regardless of job count — used by queueList
+// to avoid re-locking per job in the listing hot path (OPT-12).
 func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
 	return app.duOrch.statuses()
 }
@@ -991,9 +991,9 @@ type directUnpackWaiter interface {
 // returns false so the caller can skip post-processing during shutdown.
 //
 // This exists because a du handed to the async completion goroutine has already
-// been removed from app.directUnpackers, so Shutdown()'s abort loop cannot
-// reach it; without this, a du.Wait() that blocks forever would hang
-// app.wg.Wait() during shutdown.
+// been removed from the orchestrator's unpackers map (via duOrch.collect), so
+// Shutdown()'s abortAll cannot reach it; without this, a du.Wait() that blocks
+// forever would hang app.wg.Wait() during shutdown.
 func awaitDirectUnpackOrAbort(ctx context.Context, du directUnpackWaiter) bool {
 	waited := make(chan struct{})
 	go func() {
@@ -1106,8 +1106,9 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 
 	if du != nil {
 		app.wg.Go(func() {
-			// du has already been removed from app.directUnpackers above, so
-			// Shutdown()'s abort loop can no longer reach it. du.Wait() can
+			// du has already been removed from the orchestrator's unpackers map
+			// above (via duOrch.collect), so Shutdown()'s abortAll can no longer
+			// reach it. du.Wait() can
 			// block indefinitely (e.g. waiting on a RAR volume that never
 			// arrives), which would hang Shutdown() at app.wg.Wait(). Watch the
 			// lifecycle context and Abort() the du on cancellation so Wait()
