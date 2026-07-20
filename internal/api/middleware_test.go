@@ -120,19 +120,21 @@ func TestIsCrossOrigin_LoopbackPortCases(t *testing.T) {
 func TestIsCrossOrigin_DefaultPortCases(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		host   string
-		origin string
-		isTLS  bool
-		want   bool // want cross-origin
+		name     string
+		host     string
+		origin   string
+		isTLS    bool
+		fwdProto string
+		want     bool // want cross-origin
 	}{
-		{"explicit port 80 Origin vs implicit port 80 Host", "localhost", "http://localhost:80", false, false},
-		{"implicit port 80 Origin vs explicit port 80 Host", "localhost:80", "http://localhost", false, false},
-		{"implicit port 80 loopback IP vs implicit port 80 Host", "localhost", "http://127.0.0.1", false, false},
-		{"explicit port 443 Origin vs implicit port 443 HTTPS Host", "localhost", "https://localhost:443", true, false},
-		{"implicit port 443 Origin vs explicit port 443 HTTPS Host", "localhost:443", "https://localhost", true, false},
-		{"different port: 8080 Origin vs implicit port 80 Host", "localhost", "http://localhost:8080", false, true},
-		{"scheme mismatch: http Origin on 443 vs https Host on 443", "localhost", "http://localhost:443", true, true},
+		{"explicit port 80 Origin vs implicit port 80 Host", "localhost", "http://localhost:80", false, "", false},
+		{"implicit port 80 Origin vs explicit port 80 Host", "localhost:80", "http://localhost", false, "", false},
+		{"implicit port 80 loopback IP vs implicit port 80 Host", "localhost", "http://127.0.0.1", false, "", false},
+		{"explicit port 443 Origin vs implicit port 443 HTTPS Host", "localhost", "https://localhost:443", true, "", false},
+		{"implicit port 443 Origin vs explicit port 443 HTTPS Host", "localhost:443", "https://localhost", true, "", false},
+		{"proxy-terminated TLS: X-Forwarded-Proto https vs Origin https", "localhost", "https://localhost", false, "https", false},
+		{"different port: 8080 Origin vs implicit port 80 Host", "localhost", "http://localhost:8080", false, "", true},
+		{"scheme mismatch: http Origin on 443 vs https Host on 443", "localhost", "http://localhost:443", true, "", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -143,8 +145,11 @@ func TestIsCrossOrigin_DefaultPortCases(t *testing.T) {
 			if tc.isTLS {
 				r.TLS = &tls.ConnectionState{}
 			}
+			if tc.fwdProto != "" {
+				r.Header.Set("X-Forwarded-Proto", tc.fwdProto)
+			}
 			if got := isCrossOrigin(r); got != tc.want {
-				t.Errorf("isCrossOrigin(Host=%q, Origin=%q, TLS=%t) = %t, want %t", tc.host, tc.origin, tc.isTLS, got, tc.want)
+				t.Errorf("isCrossOrigin(Host=%q, Origin=%q, TLS=%t, FwdProto=%q) = %t, want %t", tc.host, tc.origin, tc.isTLS, tc.fwdProto, got, tc.want)
 			}
 		})
 	}

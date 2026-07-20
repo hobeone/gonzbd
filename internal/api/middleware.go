@@ -221,10 +221,28 @@ func splitHostPortNormalized(hostport, defaultScheme string) (host, port string)
 	return h, p
 }
 
-// requestScheme returns "https" if r uses TLS, otherwise "http".
+// requestScheme returns "https" if r uses TLS or carries a forwarding header
+// (X-Forwarded-Proto, X-Forwarded-Scheme, or Forwarded) indicating https;
+// otherwise "http".
 func requestScheme(r *http.Request) string {
 	if r.TLS != nil {
 		return "https"
+	}
+	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") ||
+		strings.EqualFold(r.Header.Get("X-Forwarded-Scheme"), "https") {
+		return "https"
+	}
+	if fwd := r.Header.Get("Forwarded"); fwd != "" {
+		for part := range strings.SplitSeq(fwd, ";") {
+			part = strings.TrimSpace(part)
+			if strings.HasPrefix(strings.ToLower(part), "proto=") {
+				val := strings.TrimPrefix(part, "proto=")
+				val = strings.Trim(val, `"`)
+				if strings.EqualFold(val, "https") {
+					return "https"
+				}
+			}
+		}
 	}
 	return "http"
 }
