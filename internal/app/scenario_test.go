@@ -24,7 +24,7 @@ import (
 
 // scenarioHarness wires a full app pipeline over a scripted NNTP fake for
 // end-to-end state-machine tests. It owns tempdirs, a history Repository,
-// an Application, and drains the three completion channels into replayable
+// an Application, and drains the completion channels into replayable
 // logs so assertions do not race the consumer.
 //
 // Lifecycle: newScenarioHarness → Start → (AddSimpleJob / InjectFailure /
@@ -45,10 +45,9 @@ type scenarioHarness struct {
 	cancel context.CancelFunc
 
 	// Event logs: each completion channel is drained into a slice under mu.
-	mu         sync.Mutex
-	fileEvents []app.FileComplete
-	jobEvents  []app.JobComplete
-	ppEvents   []app.PostProcComplete
+	mu        sync.Mutex
+	jobEvents []app.JobComplete
+	ppEvents  []app.PostProcComplete
 
 	drainWG sync.WaitGroup
 
@@ -103,8 +102,7 @@ func (h *scenarioHarness) Start() {
 		h.t.Fatalf("scenario: app.Start: %v", err)
 	}
 
-	h.drainWG.Add(3)
-	go h.drainFiles()
+	h.drainWG.Add(2)
 	go h.drainJobs()
 	go h.drainPostProc()
 }
@@ -236,22 +234,12 @@ func (h *scenarioHarness) QueueContains(jobID string) bool {
 }
 
 // Events returns copies of the recorded completion event slices.
-func (h *scenarioHarness) Events() (files []app.FileComplete, jobs []app.JobComplete, pps []app.PostProcComplete) {
+func (h *scenarioHarness) Events() (jobs []app.JobComplete, pps []app.PostProcComplete) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	files = append(files, h.fileEvents...)
 	jobs = append(jobs, h.jobEvents...)
 	pps = append(pps, h.ppEvents...)
 	return
-}
-
-func (h *scenarioHarness) drainFiles() {
-	defer h.drainWG.Done()
-	for e := range chanToReader(h.ctx, h.app.FileComplete()) {
-		h.mu.Lock()
-		h.fileEvents = append(h.fileEvents, e)
-		h.mu.Unlock()
-	}
 }
 
 func (h *scenarioHarness) drainJobs() {

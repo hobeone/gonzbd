@@ -623,16 +623,7 @@ func TestFullDownloadLifecycle(t *testing.T) {
 		t.Fatalf("Queue.Add: %v", err)
 	}
 
-	// 1. Wait for assembly (FileComplete)
-	select {
-	case <-application.FileComplete():
-		// Assembly finished. We don't check for incomplete file here because
-		// it's a race with the post-processor which moves it immediately.
-	case <-ctx.Done():
-		t.Fatalf("timeout waiting for file completion: %v", ctx.Err())
-	}
-
-	// 2. Wait for Post-Processing (PostProcComplete)
+	// Wait for Post-Processing (PostProcComplete)
 	select {
 	case <-application.PostProcComplete():
 		// Files should be moved to CompleteDir/CategoryDir/JobName

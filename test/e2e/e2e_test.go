@@ -74,10 +74,10 @@ func TestE2E_SelfPost_SingleFile(t *testing.T) {
 	waitForArticle(t, server, firstMID, propagationTimeout)
 
 	a, downloadDir := newE2EApp(t, cfg)
-	addJob(t, a, nzbXML, "e2e-single")
+	job := addJob(t, a, nzbXML, "e2e-single")
 
 	wantSHA := sha256.Sum256(payload)
-	waitAndVerify(t, a, downloadDir, "e2e-single.bin", wantSHA[:], downloadTimeout)
+	waitAndVerify(t, a, job.ID, downloadDir, "e2e-single.bin", wantSHA[:], downloadTimeout)
 }
 
 // TestE2E_SelfPost_MultiPart posts a file split across multiple articles,
@@ -103,10 +103,10 @@ func TestE2E_SelfPost_MultiPart(t *testing.T) {
 	waitForArticle(t, server, firstMID, propagationTimeout)
 
 	a, downloadDir := newE2EApp(t, cfg)
-	addJob(t, a, nzbXML, "e2e-multi")
+	job := addJob(t, a, nzbXML, "e2e-multi")
 
 	wantSHA := sha256.Sum256(payload)
-	waitAndVerify(t, a, downloadDir, "e2e-multi.bin", wantSHA[:], downloadTimeout)
+	waitAndVerify(t, a, job.ID, downloadDir, "e2e-multi.bin", wantSHA[:], downloadTimeout)
 }
 
 // TestE2E_SelfPost_MultiFile posts two separate files, downloads both,
@@ -135,18 +135,8 @@ func TestE2E_SelfPost_MultiFile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), downloadTimeout)
 	defer cancel()
 
-	got := make(map[int]bool)
-	for len(got) < 2 {
-		select {
-		case fc := <-a.FileComplete():
-			if fc.JobID != job.ID {
-				continue
-			}
-			got[fc.FileIdx] = true
-			t.Logf("file %d complete", fc.FileIdx)
-		case <-ctx.Done():
-			t.Fatalf("timeout waiting for file completions; got %d/2", len(got))
-		}
+	if !waitForFilesComplete(t, a, job.ID, []int{0, 1}, downloadTimeout) {
+		t.Fatalf("timeout waiting for file completions")
 	}
 
 	// Wait for job completion (post-processing finished)
@@ -256,20 +246,18 @@ func TestE2E_ProvidedNZB(t *testing.T) {
 	}
 }
 
-// waitAndVerify waits for FileComplete and then PostProcComplete signals, then
-// verifies the assembled file has the expected SHA-256 digest.
-func waitAndVerify(t *testing.T, a *app.Application, downloadDir, filename string, wantSHA []byte, timeout time.Duration) {
+// waitAndVerify waits for the file to be assembled and then for
+// PostProcComplete, then verifies the assembled file has the expected
+// SHA-256 digest.
+func waitAndVerify(t *testing.T, a *app.Application, jobID, downloadDir, filename string, wantSHA []byte, timeout time.Duration) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 
 	// Wait for file completion (assembly)
-	select {
-	case <-a.FileComplete():
-		// fall through
-	case <-ctx.Done():
-		t.Fatalf("timeout (%v) waiting for FileComplete", timeout)
+	if !waitForFilesComplete(t, a, jobID, []int{0}, timeout) {
+		t.Fatalf("timeout (%v) waiting for file completion", timeout)
 	}
 
 	// Wait for job completion (post-processing finished)
@@ -281,6 +269,38 @@ func waitAndVerify(t *testing.T, a *app.Application, downloadDir, filename strin
 	}
 
 	verifyFileOnDisk(t, downloadDir, filename, wantSHA)
+}
+
+// waitForFilesComplete polls until every file at fileIdxs is marked complete
+// on jobID, or the job has left the active queue. On the success path a job
+// only leaves the active queue via maybeFinalize after IsComplete(), so a
+// nil snapshot usually means assembly already resolved. maybeFinalize also
+// has IsComplete()-unguarded callers (e.g. OnJobHopeless, when too much of
+// a multi-file job's data is unrecoverable) that can remove a job before
+// every fileIdx has actually completed — that false positive isn't caught
+// here, but the caller's subsequent SHA-256 verification of each file
+// would still fail, so it doesn't silently pass the test.
+func waitForFilesComplete(t *testing.T, a *app.Application, jobID string, fileIdxs []int, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		snap := a.Queue().SnapshotJob(jobID)
+		if snap == nil {
+			return true
+		}
+		allComplete := true
+		for _, idx := range fileIdxs {
+			if idx >= len(snap.Files) || !snap.Files[idx].Complete {
+				allComplete = false
+				break
+			}
+		}
+		if allComplete {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
 }
 
 // verifyFileOnDisk checks that filename exists under dir and matches the

@@ -25,10 +25,7 @@ func TestScenarioHarness_Smoke(t *testing.T) {
 		t.Errorf("job %s still in active queue after post-proc", job.ID)
 	}
 
-	files, jobs, pps := h.Events()
-	if len(files) == 0 {
-		t.Errorf("no FileComplete events recorded")
-	}
+	jobs, pps := h.Events()
 	if len(jobs) == 0 {
 		t.Errorf("no JobComplete events recorded")
 	}

@@ -86,7 +86,6 @@ func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 	if err := a.Start(ctx); err != nil {
 		t.Fatalf("app.Start: %v", err)
 	}
-	go drainAny(ctx, a.FileComplete())
 	go drainAny(ctx, a.JobComplete())
 	go drainAny(ctx, a.PostProcComplete())
 

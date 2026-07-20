@@ -92,7 +92,6 @@ type Application struct {
 	assembler        *assembler.Assembler
 	postProcessor    *postproc.PostProcessor
 	pipeline         *pipeline
-	fileComplete     chan FileComplete
 	jobComplete      chan JobComplete
 	postProcComplete chan PostProcComplete
 	notifyDispatcher *notifier.Dispatcher
@@ -164,7 +163,6 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		config:               cfg,
 		historyRepo:          repo,
 		emitter:              dummyEmitter{},
-		fileComplete:         make(chan FileComplete, 16),
 		internalFileComplete: make(chan FileComplete, 128),
 		jobComplete:          make(chan JobComplete, 8),
 		postProcComplete:     make(chan PostProcComplete, 8),
@@ -296,10 +294,6 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 
 	onFileComplete := func(jobID string, fileIdx int, fileCRC uint32) {
 		fc := FileComplete{JobID: jobID, FileIdx: fileIdx, CRC32: fileCRC}
-		select {
-		case app.fileComplete <- fc:
-		default:
-		}
 		select {
 		case app.internalFileComplete <- fc:
 		default:
@@ -623,9 +617,6 @@ func (app *Application) GetHistory(ctx context.Context, id string) (*history.Ent
 	}
 	return app.historyRepo.Get(ctx, id)
 }
-
-// FileComplete returns the channel signalled when a file finishes assembly.
-func (app *Application) FileComplete() <-chan FileComplete { return app.fileComplete }
 
 // JobComplete returns the channel signalled when all files in a job are done.
 func (app *Application) JobComplete() <-chan JobComplete { return app.jobComplete }

@@ -88,16 +88,17 @@ func TestEndToEndDownload(t *testing.T) {
 		t.Fatalf("Queue.Add: %v", err)
 	}
 
-	select {
-	case fc := <-application.FileComplete():
-		if fc.JobID != job.ID {
-			t.Fatalf("FileComplete JobID = %s, want %s", fc.JobID, job.ID)
-		}
-		if fc.FileIdx != 0 {
-			t.Fatalf("FileComplete FileIdx = %d, want 0", fc.FileIdx)
-		}
-	case <-ctx.Done():
-		t.Fatalf("timeout waiting for file completion: %v", ctx.Err())
+	// A nil snapshot means the job already left the active queue, which
+	// this fixture only reaches via a successful single-file assembly (no
+	// injected failures here, so maybeFinalize's other, IsComplete()-
+	// unguarded callers — e.g. OnJobHopeless — can't fire) — so nil counts
+	// as "already resolved", not "not found yet". A future variant of this
+	// test that injects article failures would need a stronger check.
+	if !waitUntil(20*time.Second, func() bool {
+		snap := application.Queue().SnapshotJob(job.ID)
+		return snap == nil || snap.Files[0].Complete
+	}) {
+		t.Fatalf("timeout waiting for file completion")
 	}
 
 	// Verify the assembled file matches the original bytes.
