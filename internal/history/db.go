@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"time"
@@ -102,8 +103,22 @@ func Open(ctx context.Context, path string) (*DB, error) {
 // Close releases the underlying database connection pool. It is safe to call
 // Close more than once; subsequent calls return the same error as the first.
 func (d *DB) Close() error {
+	if d == nil || d.db == nil {
+		return nil
+	}
 	if err := d.db.Close(); err != nil {
 		return fmt.Errorf("history: close: %w", err)
+	}
+	return nil
+}
+
+// Ping verifies that the underlying database connection is alive.
+func (d *DB) Ping(ctx context.Context) error {
+	if d == nil || d.db == nil {
+		return errors.New("history: db is nil or closed")
+	}
+	if err := d.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("history: ping: %w", err)
 	}
 	return nil
 }

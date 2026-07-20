@@ -76,6 +76,7 @@ func (s *Server) registerModes() {
 	//   - fullstatus, watched_now, disconnect, addlocalfile, addurl
 	s.modes = modeTable{
 		"version": {handler: s.modeVersion, level: LevelOpen},
+		"health":  {handler: s.modeHealth, level: LevelOpen},
 		// "auth" is deliberately LevelOpen (unauthenticated): SABnzbd's
 		// mode=auth lets a caller probe whether a key is the api_key,
 		// the nzb_key, or invalid, with no prior authentication. That

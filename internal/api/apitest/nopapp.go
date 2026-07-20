@@ -116,3 +116,9 @@ func (n NopApp) DownloadDirFreeBytes(context.Context) (int64, error) { return 0,
 
 // TestDownloadDirWriteSpeedMBPerSec is a stub.
 func (n NopApp) TestDownloadDirWriteSpeedMBPerSec(context.Context) (float64, error) { return 0, nil }
+
+// PingDB is a stub.
+func (n NopApp) PingDB(context.Context) error { return nil }
+
+// IsPipelineHealthy is a stub.
+func (n NopApp) IsPipelineHealthy(context.Context) bool { return true }

@@ -102,6 +102,10 @@ type ApplicationReloader interface {
 	DownloadDirFreeBytes(ctx context.Context) (int64, error)
 	// TestDownloadDirWriteSpeedMBPerSec runs an on-demand disk write-speed test.
 	TestDownloadDirWriteSpeedMBPerSec(ctx context.Context) (float64, error)
+	// PingDB verifies history database connectivity.
+	PingDB(ctx context.Context) error
+	// IsPipelineHealthy returns true if the application and pipeline are non-stalled.
+	IsPipelineHealthy(ctx context.Context) bool
 }
 
 // Server is the HTTP API server. It owns the mode dispatch table and

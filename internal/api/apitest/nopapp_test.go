@@ -51,6 +51,12 @@ func TestNopApp_Contract(t *testing.T) {
 	if speed, err := app.TestDownloadDirWriteSpeedMBPerSec(ctx); speed != 0.0 || err != nil {
 		t.Errorf("TestDownloadDirWriteSpeedMBPerSec() = (%v, %v), want (0.0, nil)", speed, err)
 	}
+	if err := app.PingDB(ctx); err != nil {
+		t.Errorf("PingDB() = %v, want nil", err)
+	}
+	if !app.IsPipelineHealthy(ctx) {
+		t.Error("IsPipelineHealthy() = false, want true")
+	}
 
 	// 2. Safe no-op calls (verify no panic)
 	app.SetSpeedLimit(100)
