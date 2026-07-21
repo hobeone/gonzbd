@@ -813,7 +813,12 @@ func TestDetectRarVersionDirect(t *testing.T) {
 	})
 }
 
-func TestGoUnRAREngine_PanicRecovery(t *testing.T) {
+// TestGoUnRAREngine_NilLoggerPanicRecovery verifies that GoUnRAREngine's
+// cmdutil.SafeEngineRun wrapper recovers from a panic triggered by a caller
+// passing a nil *slog.Logger: goUnRAREngineInternal calls log.With(...)
+// unconditionally, which panics on a nil receiver. This is a caller-contract
+// violation, not a decompression-time fault — no archive content is involved.
+func TestGoUnRAREngine_NilLoggerPanicRecovery(t *testing.T) {
 	archive := Archive{
 		Type:     RarArchive,
 		MainFile: "dummy.rar",
