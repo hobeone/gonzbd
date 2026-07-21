@@ -305,15 +305,28 @@ func ipTrusted(ip netip.Addr, ranges []netip.Prefix) bool {
 	return false
 }
 
+// SplitHostPortTolerant splits a "host:port" string into its host and port parts,
+// stripping outer IPv6 brackets (e.g. "[::1]") if present on the no-port fallback path.
+// Unlike net.SplitHostPort, it tolerates bare hostnames or bracketed IPv6 literals
+// with no port by returning the host with an empty port rather than erroring.
+func SplitHostPortTolerant(hostport string) (host, port string) {
+	hostport = strings.TrimSpace(hostport)
+	h, p, err := net.SplitHostPort(hostport)
+	if err == nil {
+		return strings.TrimSpace(h), strings.TrimSpace(p)
+	}
+	if len(hostport) >= 2 && hostport[0] == '[' && hostport[len(hostport)-1] == ']' {
+		return strings.TrimSpace(hostport[1 : len(hostport)-1]), ""
+	}
+	return hostport, ""
+}
+
 // parseHostIP extracts a netip.Addr from an http.Request.RemoteAddr value.
 // It tolerates both "host:port" and bare-host forms. Returns ok=false when
 // no valid IP can be parsed.
 func parseHostIP(remoteAddr string) (netip.Addr, bool) {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	ip, err := netip.ParseAddr(strings.TrimSpace(host))
+	host, _ := SplitHostPortTolerant(remoteAddr)
+	ip, err := netip.ParseAddr(host)
 	if err != nil {
 		return netip.Addr{}, false
 	}
