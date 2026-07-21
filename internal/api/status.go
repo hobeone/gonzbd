@@ -75,7 +75,7 @@ func (s *Server) statusUnblockServer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.app.UnblockServer(name) {
+	if !s.downloads.UnblockServer(name) {
 		s.respondError(w, http.StatusNotFound, "server not found: "+name)
 		return
 	}
@@ -101,7 +101,7 @@ func (s *Server) modeServerStats(w http.ResponseWriter, r *http.Request) {
 	if !s.requireApp(w) {
 		return
 	}
-	servers := s.app.ServerStatus()
+	servers := s.status.ServerStatus()
 	if servers == nil {
 		servers = []downloader.ServerSnapshot{}
 	}

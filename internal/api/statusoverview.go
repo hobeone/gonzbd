@@ -46,17 +46,17 @@ func (s *Server) modeStatusOverview(w http.ResponseWriter, r *http.Request) {
 	var articleCacheBytes int64
 	var downloadDirFreeBytes int64
 	var bv app.BinaryVersions
-	if s.app != nil {
-		articleCacheBytes = s.app.ArticleCacheBytes()
+	if s.status != nil {
+		articleCacheBytes = s.status.ArticleCacheBytes()
 		ctx, cancel := context.WithTimeout(r.Context(), downloadDirFreeBytesTimeout)
-		free, err := s.app.DownloadDirFreeBytes(ctx)
+		free, err := s.status.DownloadDirFreeBytes(ctx)
 		cancel()
 		if err == nil {
 			downloadDirFreeBytes = free
 		} else {
 			s.log.Warn("status_overview: download dir free bytes", "error", err)
 		}
-		bv = s.app.BinaryVersionsInfo()
+		bv = s.status.BinaryVersionsInfo()
 	}
 
 	general := map[string]any{

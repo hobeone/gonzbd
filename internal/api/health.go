@@ -24,8 +24,8 @@ func (s *Server) modeHealth(w http.ResponseWriter, r *http.Request) {
 			dbOK = false
 			dbMsg = "database unreachable"
 		}
-	} else if s.app != nil {
-		if err := s.app.PingDB(ctx); err != nil {
+	} else if s.status != nil {
+		if err := s.status.PingDB(ctx); err != nil {
 			dbOK = false
 			dbMsg = "database unreachable"
 		}
@@ -33,8 +33,8 @@ func (s *Server) modeHealth(w http.ResponseWriter, r *http.Request) {
 
 	diskOK := true
 	diskMsg := "ok"
-	if s.app != nil {
-		free, err := s.app.DownloadDirFreeBytes(ctx)
+	if s.status != nil {
+		free, err := s.status.DownloadDirFreeBytes(ctx)
 		if err != nil {
 			diskOK = false
 			diskMsg = "download dir stat failed"
@@ -54,8 +54,8 @@ func (s *Server) modeHealth(w http.ResponseWriter, r *http.Request) {
 
 	pipelineOK := true
 	pipelineMsg := "ok"
-	if s.app != nil {
-		if !s.app.IsPipelineHealthy(ctx) {
+	if s.status != nil {
+		if !s.status.IsPipelineHealthy(ctx) {
 			pipelineOK = false
 			pipelineMsg = "pipeline stalled"
 		}

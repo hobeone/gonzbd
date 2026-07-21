@@ -260,7 +260,7 @@ func (s *Server) historyDelete(w http.ResponseWriter, r *http.Request) {
 
 	var deleted int
 	for _, id := range ids {
-		if err := s.app.RemoveHistoryJob(r.Context(), id, deleteFiles); err == nil {
+		if err := s.jobs.RemoveHistoryJob(r.Context(), id, deleteFiles); err == nil {
 			deleted++
 		} else {
 			s.log.WarnContext(r.Context(), "failed to remove job during bulk delete", "id", id, "error", err)
@@ -296,7 +296,7 @@ func (s *Server) historyRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.app.RetryHistoryJob(r.Context(), nzoID); err != nil {
+	if err := s.jobs.RetryHistoryJob(r.Context(), nzoID); err != nil {
 		s.respondError(w, http.StatusInternalServerError, "retry: "+err.Error())
 		return
 	}

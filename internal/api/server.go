@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -10,11 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/directunpack"
-	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/urlgrabber"
@@ -52,60 +48,14 @@ type Options struct {
 	Grabber *urlgrabber.Grabber
 
 	// App is the top-level application instance. Required for hot-reloading
-	// core components like the downloader.
-	App ApplicationReloader
+	// core components like the downloader. It is fanned out into the narrow
+	// role fields on Server (see setAppServices); handlers depend on those
+	// roles, not on the aggregate.
+	App AppServices
 
 	// ShutdownFunc is called by mode=shutdown and mode=restart to initiate
 	// a graceful application exit. When nil, those modes return 501.
 	ShutdownFunc func()
-}
-
-// ApplicationReloader defines the subset of Application methods needed
-// by the API for hot-reloading and job lifecycle management.
-type ApplicationReloader interface {
-	ReloadDownloader(scs []config.ServerConfig) error
-	RetryHistoryJob(ctx context.Context, jobID string) error
-	AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error
-	RemoveJob(ctx context.Context, id string, deleteFiles bool) error
-	RemoveHistoryJob(ctx context.Context, id string, deleteFiles bool) error
-	SetSpeedLimit(bytesPerSec int64)
-	SetBandwidthMax(bytesPerSec int64)
-	SetBandwidthPerc(perc int)
-	SetDownloadDir(dir string)
-	SetCompleteDir(dir string)
-	PauseDownloads()
-	ResumeDownloads()
-	DisconnectAll()
-	ReloadPostProcOptions(pp config.PostProcConfig, scriptDir string)
-	// ReloadDownloadOptions applies all hot-applicable download settings.
-	// Same locking note as ReloadPostProcOptions.
-	ReloadDownloadOptions(d config.DownloadConfig)
-	// ReloadGeneralOptions applies all hot-applicable general settings.
-	// Same locking note as ReloadPostProcOptions.
-	ReloadGeneralOptions(g config.GeneralConfig)
-	UnblockServer(name string) bool
-	ServerStatus() []downloader.ServerSnapshot
-	// Speed returns the current aggregate download speed in bytes/sec.
-	Speed() float64
-	DirectUnpackStatus(jobID string) (directunpack.Status, bool)
-	// DirectUnpackStatuses returns a snapshot of every active direct-unpack
-	// job's status, keyed by job ID. Used by queueList to take the
-	// application-wide mutex once per request instead of once per job
-	// (OPT-12).
-	DirectUnpackStatuses() map[string]directunpack.Status
-	// BinaryVersionsInfo returns resolved external-tool version strings
-	// captured at startup, for the status page.
-	BinaryVersionsInfo() app.BinaryVersions
-	// ArticleCacheBytes returns current write-cache usage, for the status page.
-	ArticleCacheBytes() int64
-	// DownloadDirFreeBytes returns free disk space on the download directory.
-	DownloadDirFreeBytes(ctx context.Context) (int64, error)
-	// TestDownloadDirWriteSpeedMBPerSec runs an on-demand disk write-speed test.
-	TestDownloadDirWriteSpeedMBPerSec(ctx context.Context) (float64, error)
-	// PingDB verifies history database connectivity.
-	PingDB(ctx context.Context) error
-	// IsPipelineHealthy returns true if the application and pipeline are non-stalled.
-	IsPipelineHealthy(ctx context.Context) bool
 }
 
 // Server is the HTTP API server. It owns the mode dispatch table and
@@ -123,8 +73,17 @@ type Server struct {
 	config     *config.Config
 	configPath string
 	grabber    *urlgrabber.Grabber
-	app        ApplicationReloader
-	events     *Broadcaster
+
+	// Role views of the top-level application, all fanned out from a single
+	// Options.App via setAppServices. Because they share one source they are
+	// nil together or non-nil together; a nil-check on any one is equivalent
+	// to the old single-field "app wired?" probe.
+	jobs      JobManager
+	downloads DownloaderControl
+	reload    ConfigReloader
+	status    StatusReporter
+
+	events *Broadcaster
 
 	shutdownFunc func()
 
@@ -162,12 +121,12 @@ func New(opts Options) *Server {
 		config:       opts.Config,
 		configPath:   opts.ConfigPath,
 		grabber:      opts.Grabber,
-		app:          opts.App,
 		shutdownFunc: opts.ShutdownFunc,
 		events:       NewBroadcaster(log),
 		mux:          http.NewServeMux(),
 		sessionKey:   generateSessionKey(),
 	}
+	s.setAppServices(opts.App)
 	s.registerModes()
 
 	// /api handles all API calls via mode= dispatch.
@@ -182,6 +141,19 @@ func New(opts Options) *Server {
 	s.handler = s.loggingMiddleware(s.mux)
 
 	return s
+}
+
+// setAppServices fans a single application aggregate out into the narrow role
+// fields. It is the only place those fields are assigned, which is what makes
+// them provably nil-together / non-nil-together: every handler nil-guard on a
+// single role field is therefore exactly equivalent to the old "app wired?"
+// check. A nil argument clears all four (used by tests exercising the
+// missing-app paths).
+func (s *Server) setAppServices(a AppServices) {
+	s.jobs = a
+	s.downloads = a
+	s.reload = a
+	s.status = a
 }
 
 // Handler returns the server's root HTTP handler. Useful for

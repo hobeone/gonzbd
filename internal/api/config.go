@@ -176,13 +176,13 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Hot-reload core components if their configuration changed.
-	if section == "servers" && s.app != nil {
+	if section == "servers" && s.reload != nil {
 		var servers []config.ServerConfig
 		s.config.WithRead(func(cfg *config.Config) {
 			servers = make([]config.ServerConfig, len(cfg.Servers))
 			copy(servers, cfg.Servers)
 		})
-		if err := s.app.ReloadDownloader(servers); err != nil {
+		if err := s.reload.ReloadDownloader(servers); err != nil {
 			s.log.Error("reload servers", "error", err)
 			// Return 200 because the config was saved, but add a warning.
 			respondJSON(w, http.StatusOK, map[string]any{
@@ -196,7 +196,7 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Hot-apply bandwidth limit changes without requiring a restart.
-	if section == "downloads" && s.app != nil && (keyword == "bandwidth_max" || keyword == "bandwidth_perc") {
+	if section == "downloads" && s.downloads != nil && (keyword == "bandwidth_max" || keyword == "bandwidth_perc") {
 		s.applySpeedLimit()
 	}
 
@@ -233,9 +233,9 @@ func (s *Server) applySpeedLimit() {
 		}
 		bytesPerSec = maxBytes * int64(perc) / 100
 	})
-	s.app.SetSpeedLimit(bytesPerSec)
-	s.app.SetBandwidthMax(maxBytes)
-	s.app.SetBandwidthPerc(perc)
+	s.downloads.SetSpeedLimit(bytesPerSec)
+	s.downloads.SetBandwidthMax(maxBytes)
+	s.downloads.SetBandwidthPerc(perc)
 	s.log.Info("speed limit applied", "bytes_per_sec", bytesPerSec, "bandwidth_max", maxBytes, "bandwidth_perc", perc)
 }
 
@@ -243,7 +243,7 @@ func (s *Server) applySpeedLimit() {
 // Snapshotting the config is done under a read lock, and calling the reloader is done
 // after releasing it to prevent self-deadlock (since sync.RWMutex is not reentrant).
 func (s *Server) reloadSection(section string) {
-	if s.app == nil {
+	if s.reload == nil {
 		return
 	}
 	switch section {
@@ -254,22 +254,22 @@ func (s *Server) reloadSection(section string) {
 			pp = cfg.PostProc
 			scriptDir = cfg.General.ScriptDir
 		})
-		s.app.ReloadPostProcOptions(pp, scriptDir)
+		s.reload.ReloadPostProcOptions(pp, scriptDir)
 	case "downloads":
 		var d config.DownloadConfig
 		s.config.WithRead(func(cfg *config.Config) { d = cfg.Downloads })
-		s.app.ReloadDownloadOptions(d)
+		s.reload.ReloadDownloadOptions(d)
 	case "general":
 		var g config.GeneralConfig
 		s.config.WithRead(func(cfg *config.Config) { g = cfg.General })
-		s.app.ReloadGeneralOptions(g)
+		s.reload.ReloadGeneralOptions(g)
 	}
 }
 
 // applyDirectoryChange handles the runtime directory creation and application for general config changes.
 // Returns a warning string if directory creation failed.
 func (s *Server) applyDirectoryChange(keyword string) string {
-	if s.app == nil {
+	if s.downloads == nil {
 		return ""
 	}
 	var dir string
@@ -285,9 +285,9 @@ func (s *Server) applyDirectoryChange(keyword string) string {
 		return fmt.Sprintf("config saved but could not create %s: %v", dir, err)
 	}
 	if keyword == "download_dir" {
-		s.app.SetDownloadDir(dir)
+		s.downloads.SetDownloadDir(dir)
 	} else {
-		s.app.SetCompleteDir(dir)
+		s.downloads.SetCompleteDir(dir)
 	}
 	s.log.Info("directory updated", "keyword", keyword, "dir", dir)
 	return ""
@@ -325,7 +325,7 @@ func (s *Server) modeConfig(w http.ResponseWriter, r *http.Request) {
 // The limit is applied immediately to the running downloader and also
 // persisted to the config so it survives a restart.
 func (s *Server) configSpeedLimit(w http.ResponseWriter, r *http.Request) {
-	if s.app == nil {
+	if s.downloads == nil {
 		s.respondError(w, http.StatusServiceUnavailable, "application not running")
 		return
 	}
@@ -347,7 +347,7 @@ func (s *Server) configSpeedLimit(w http.ResponseWriter, r *http.Request) {
 		bytesPerSec = int64(parsed)
 	}
 
-	s.app.SetSpeedLimit(bytesPerSec)
+	s.downloads.SetSpeedLimit(bytesPerSec)
 
 	// Persist as the new bandwidth_max so restarts honour the change.
 	if s.config != nil {
