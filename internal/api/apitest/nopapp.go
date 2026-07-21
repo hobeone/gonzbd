@@ -123,3 +123,8 @@ func (n NopApp) PingDB(context.Context) error { return nil }
 
 // IsPipelineHealthy is a stub.
 func (n NopApp) IsPipelineHealthy(context.Context) bool { return true }
+
+// TestNNTPServer is a stub.
+func (n NopApp) TestNNTPServer(context.Context, config.ServerConfig) (app.NNTPTestResult, error) {
+	return app.NNTPTestResult{}, nil
+}

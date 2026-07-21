@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
@@ -179,6 +180,9 @@ func (s *RepairStage) processPar2Set(
 	}
 
 	repairOpts := par2Opts
+	if repairOpts.Sandbox.TargetDir == "" {
+		repairOpts.Sandbox.TargetDir = job.DownloadDir
+	}
 	repairOpts.OnLine = func(line string) {
 		if job.OnOutput != nil {
 			job.OnOutput("par2", line)
@@ -186,6 +190,13 @@ func (s *RepairStage) processPar2Set(
 	}
 	repairOpts.OnCommand = func(cmdLine string) {
 		logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
+	}
+
+	if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
+		job.ParError = true
+		vs.MarkVerified(set.Name, false)
+		logf(ctx, log, job, slog.LevelWarn, "Error: pre-repair containment violation for %q: %v", set.Name, cErr)
+		return fmt.Errorf("repair %q: pre-repair containment check: %w", set.Name, cErr)
 	}
 
 	// Dispatch: native par2engine vs external par2 binary.
@@ -214,6 +225,13 @@ func (s *RepairStage) handleRepairResult(
 	res par2.RepairResult,
 	err error,
 ) error {
+	if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
+		job.ParError = true
+		vs.MarkVerified(set.Name, false)
+		logf(ctx, log, job, slog.LevelWarn, "Error: containment violation after par2 repair %q: %v", set.Name, cErr)
+		return fmt.Errorf("repair %q: containment check: %w", set.Name, cErr)
+	}
+
 	if err != nil {
 		job.ParError = true
 		vs.MarkVerified(set.Name, false)

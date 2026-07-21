@@ -76,6 +76,8 @@ type StatusReporter interface {
 	PingDB(ctx context.Context) error
 	// IsPipelineHealthy returns true if the application and pipeline are non-stalled.
 	IsPipelineHealthy(ctx context.Context) bool
+	// TestNNTPServer dials an NNTP server to verify connectivity and credentials.
+	TestNNTPServer(ctx context.Context, cfg config.ServerConfig) (app.NNTPTestResult, error)
 }
 
 // AppServices is the aggregate of every role the API server needs from the

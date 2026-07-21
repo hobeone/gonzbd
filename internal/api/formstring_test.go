@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/app"
 )
 
 // M14: Verify formValue reads values correctly without triggering
@@ -66,6 +68,7 @@ func TestFormValue_MissingKey(t *testing.T) {
 func TestConfigTestServer_PrivateIPNotRejected(t *testing.T) {
 	t.Parallel()
 	s := testServer()
+	s.setAppServices(&app.Application{})
 
 	// 10.255.255.1 is a private (RFC 1918) address. The handler should
 	// accept it and return a connection-failed result (not a 400 reject).

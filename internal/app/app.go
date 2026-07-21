@@ -25,6 +25,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
@@ -1429,4 +1430,29 @@ func failMsgForJob(job *queue.Job) string {
 // temp+fsync+rename to prevent corruption on crash.
 func writeGzFile(path string, data []byte) error {
 	return fsutil.WriteGzAtomicBytes(path, data)
+}
+
+// NNTPTestResult holds outcome metrics for an on-demand NNTP server test connection.
+type NNTPTestResult struct {
+	Latency                 time.Duration
+	ConnectionLimitExceeded bool
+}
+
+// TestNNTPServer dials an NNTP server to verify connectivity and credentials.
+func (a *Application) TestNNTPServer(ctx context.Context, cfg config.ServerConfig) (NNTPTestResult, error) {
+	start := time.Now()
+	log := slog.Default()
+	if a != nil && a.log != nil {
+		log = a.log.With("component", "nntp_test")
+	}
+	conn, err := nntp.Dial(ctx, cfg, nntp.WithLogger(log))
+	if err != nil {
+		return NNTPTestResult{
+			ConnectionLimitExceeded: errors.Is(err, nntp.ErrServerUnavailable),
+		}, err
+	}
+	_ = conn.Close() //nolint:errcheck // test connection; close error is irrelevant
+	return NNTPTestResult{
+		Latency: time.Since(start),
+	}, nil
 }
