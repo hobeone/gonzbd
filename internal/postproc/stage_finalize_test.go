@@ -1,7 +1,10 @@
 package postproc
 
 import (
+	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -13,7 +16,6 @@ func TestFinalizeHelpers(t *testing.T) {
 	_ = (*FinalizeStage).moveToDest
 	_ = (*FinalizeStage).moveFileByFile
 
-	// 1. Test handleFailure
 	t.Run("handleFailure", func(t *testing.T) {
 		f := NewFinalizeStage()
 		job := &Job{
@@ -25,21 +27,32 @@ func TestFinalizeHelpers(t *testing.T) {
 		}
 	})
 
-	// 2. Test moveToDest (nonexistent paths)
+	// moveToDest and moveFileByFile are tested with source and dest under
+	// the same t.TempDir() parent: a nonexistent source elsewhere on the
+	// filesystem can hit os.Rename's cross-device (EXDEV) branch instead
+	// of ENOENT, silently falling through to moveFileByFile's ReadDir
+	// error instead of exercising moveToDest's own rename-error return.
 	t.Run("moveToDest nonexistent", func(t *testing.T) {
 		f := NewFinalizeStage()
+		base := t.TempDir()
 		job := &Job{
-			DownloadDir: "/nonexistent-src-dir",
+			DownloadDir: filepath.Join(base, "nonexistent-src"),
 		}
-		_ = f.moveToDest(t.Context(), slog.Default(), job, "/nonexistent-dest-dir", false)
+		err := f.moveToDest(t.Context(), slog.Default(), job, filepath.Join(base, "dest"), false)
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("moveToDest with nonexistent source: err = %v, want wrapped os.ErrNotExist", err)
+		}
 	})
 
-	// 3. Test moveFileByFile (nonexistent paths)
 	t.Run("moveFileByFile nonexistent", func(t *testing.T) {
 		f := NewFinalizeStage()
+		base := t.TempDir()
 		job := &Job{
-			DownloadDir: "/nonexistent-src-dir",
+			DownloadDir: filepath.Join(base, "nonexistent-src"),
 		}
-		_ = f.moveFileByFile(t.Context(), slog.Default(), job, "/nonexistent-dest-dir", false)
+		err := f.moveFileByFile(t.Context(), slog.Default(), job, filepath.Join(base, "dest"), false)
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("moveFileByFile with nonexistent source: err = %v, want wrapped os.ErrNotExist", err)
+		}
 	})
 }

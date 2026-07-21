@@ -2453,8 +2453,12 @@ func TestModeQueue_Comprehensive(t *testing.T) {
 		if m["status"] != true {
 			t.Errorf("status = %v; want true", m["status"])
 		}
-		if job.Name != "NewName" {
-			t.Errorf("job.Name = %q; want NewName", job.Name)
+		got, err := q.Get(job.ID)
+		if err != nil {
+			t.Fatalf("q.Get(%s): %v", job.ID, err)
+		}
+		if got.Name != "NewName" {
+			t.Errorf("got.Name = %q; want NewName", got.Name)
 		}
 	})
 
