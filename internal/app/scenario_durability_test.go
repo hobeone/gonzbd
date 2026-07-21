@@ -1,8 +1,8 @@
 package app_test
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"testing"
@@ -142,15 +142,13 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 		t.Fatalf("timeout waiting for job to complete and reach history after unblocking hook")
 	}
 
-	// Verify file on disk using independent hash oracle
+	// Verify file on disk using independent oracle
 	filePath := filepath.Join(downloadDir, "durability-job", snap.Files[0].Filename)
 	diskBytes, err := os.ReadFile(filePath)
 	if err != nil {
 		t.Fatalf("ReadFile on target file failed: %v", err)
 	}
-	expectedHash := sha256.Sum256(rawPayload)
-	actualHash := sha256.Sum256(diskBytes)
-	if expectedHash != actualHash {
-		t.Errorf("hash mismatch: expected %x, got %x", expectedHash, actualHash)
+	if !bytes.Equal(diskBytes, rawPayload) {
+		t.Errorf("content mismatch: got %q, want %q", diskBytes, rawPayload)
 	}
 }

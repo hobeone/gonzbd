@@ -309,10 +309,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 
 	markDone := q.MarkArticlesDone
 	if app.markArticlesDoneHook != nil {
-		hook := app.markArticlesDoneHook
-		markDone = func(jobID string, messageIDs []string) error {
-			return hook(jobID, messageIDs)
-		}
+		markDone = app.markArticlesDoneHook
 	}
 
 	asm := assembler.New(assembler.Options{
@@ -330,6 +327,18 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.RecordHeartbeat()
 
 	return app, nil
+}
+
+// WithCheckpointInterval returns an option that sets the queue persistence interval.
+func WithCheckpointInterval(d time.Duration) func(*Application) {
+	return func(a *Application) { a.checkpointInterval = d }
+}
+
+// WithMarkArticlesDoneHook returns an option that overrides the assembler's
+// batched MarkArticlesDone callback. The provided hook is responsible for
+// persisting the article completion status to the queue.
+func WithMarkArticlesDoneHook(hook func(jobID string, messageIDs []string) error) func(*Application) {
+	return func(a *Application) { a.markArticlesDoneHook = hook }
 }
 
 // Queue returns the application's download queue.
@@ -1257,17 +1266,6 @@ func WithPostProcStages(stages []postproc.Stage) func(*Application) {
 // WithVersion returns an option that sets the application build version.
 func WithVersion(v string) func(*Application) {
 	return func(a *Application) { a.version = v }
-}
-
-// WithCheckpointInterval returns an option that sets the queue persistence interval.
-func WithCheckpointInterval(d time.Duration) func(*Application) {
-	return func(a *Application) { a.checkpointInterval = d }
-}
-
-// WithMarkArticlesDoneHook returns an option that intercepts the assembler's
-// batched MarkArticlesDone queue callback.
-func WithMarkArticlesDoneHook(hook func(jobID string, messageIDs []string) error) func(*Application) {
-	return func(a *Application) { a.markArticlesDoneHook = hook }
 }
 
 // SetSpeedLimit updates the download speed limit. bytesPerSec <= 0 means unlimited.
