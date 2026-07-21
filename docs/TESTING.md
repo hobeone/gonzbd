@@ -280,7 +280,21 @@ tools — post-processing stages that require `par2`/`unrar`/`7z` are stubbed.
 
 See [docs/mutation-testing-playbook.md](mutation-testing-playbook.md) for the detailed triage guide and playbook.
 
-## 8. Decision Guide: Which Tests to Run
+## 8. Avoiding Flaky Tests
+
+To maintain green CI and ensure testing reliability, follow these anti-pattern avoidance rules:
+
+1. **No Absolute Wall-Clock Thresholds:** Never assert that a task finishes in `< Nms` or use tight context timeouts (e.g. `10ms`) as correctness gates. Under parallel testing and CPU contention, scheduling noise easily violates these. Use generous context timeouts (e.g. `5s`) as hang guards only.
+2. **No `time.Sleep` Polling for Assertions:** Instead of sleeping a fixed duration and asserting state, use a polling loop helper (like `waitUntil`) with a generous timeout and small sleep intervals. Better yet, use channels or sync primitives (`sync.WaitGroup`) to wait for events deterministically. *(Exception: negative quiescence assertions — asserting no background mutation occurs over duration T — are an intentional exception where `time.Sleep` is appropriate).*
+3. **ETXTBSY-Safe Mock Executables:** When writing mock executables/scripts to disk for `exec.Command` in tests, writing directly to the path with `os.WriteFile` risks `text file busy` errors if run concurrently. Use the following pattern:
+   - Create a temp file via `os.CreateTemp`
+   - Write the bytes and `f.Chmod(0o755)`
+   - Call `f.Close()`
+   - Rename to final target path using `os.Rename` (atomic rename prevents ETXTBSY races)
+4. **Mutex-Guarded Callback Slices:** Any slice that accumulates logs asynchronously (e.g. `job.OnOutput = func(...) { lines = append(lines, line) }`) must be protected by a `sync.Mutex` to prevent data races under `-race`.
+5. **Drain/Stop Background Workers Before Assertions:** When testing background tasks (e.g. checkpoint tickers), explicitly stop or drain the workers before making final assertions to prevent late asynchronous writes from polluting your state.
+
+## 9. Decision Guide: Which Tests to Run
 
 | Change area | Run |
 |-------------|-----|
