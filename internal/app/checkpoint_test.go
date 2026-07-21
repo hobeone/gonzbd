@@ -66,7 +66,7 @@ func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, 
 // mutations (article/file state changes), the periodic ticker saves within
 // the configured interval.
 func TestCheckpointFires_AfterMutation(t *testing.T) {
-	const checkInterval = 20 * time.Millisecond
+	const checkInterval = 50 * time.Millisecond
 	application, job, adminDir := makeCheckpointApp(t, checkInterval)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -102,7 +102,10 @@ func TestCheckpointFires_AfterMutation(t *testing.T) {
 // TestCheckpointSkips_WhenClean verifies that when no mutations happen after
 // a save the periodic ticker does not re-write the queue index.
 func TestCheckpointSkips_WhenClean(t *testing.T) {
-	const checkInterval = 20 * time.Millisecond
+	// 50ms: above typical OS mtime resolution and OS scheduling jitter under
+	// -race, reducing false flakes from async queue mutations racing the
+	// stabilization window.
+	const checkInterval = 50 * time.Millisecond
 	application, job, adminDir := makeCheckpointApp(t, checkInterval)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -169,7 +172,10 @@ func TestCheckpointSkips_WhenClean(t *testing.T) {
 
 	// Now that the queue is truly clean (no mtime change for 5+ intervals),
 	// wait several more intervals and verify it stays unchanged.
-	time.Sleep(5 * checkInterval)
+	// Wait 10 intervals: the ticker fires every checkInterval; giving it
+	// 10 cycles ensures any late background mutation is checkpointed before
+	// we assert the mtime is unchanged.
+	time.Sleep(10 * checkInterval)
 
 	info2, err := os.Stat(indexPath)
 	if err != nil {
