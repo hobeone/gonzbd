@@ -607,9 +607,25 @@ func assertExtractEngine(t *testing.T, scenario string, res unpack.Result, err e
 // unrar/7z/par2 (only `-tags=integration` does).
 func writeStubBinary(t *testing.T) string {
 	t.Helper()
-	stub := filepath.Join(t.TempDir(), "stubtool")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "stubtool.*.tmp")
+	if err != nil {
+		t.Fatalf("create temp stub binary: %v", err)
+	}
+	if _, err := f.Write([]byte("#!/bin/sh\nexit 1\n")); err != nil {
+		_ = f.Close()
 		t.Fatalf("write stub binary: %v", err)
+	}
+	if err := f.Chmod(0o755); err != nil {
+		_ = f.Close()
+		t.Fatalf("chmod stub binary: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close stub binary: %v", err)
+	}
+	stub := filepath.Join(dir, "stubtool")
+	if err := os.Rename(f.Name(), stub); err != nil {
+		t.Fatalf("rename stub binary: %v", err)
 	}
 	return stub
 }
@@ -835,17 +851,24 @@ func TestUnpackStage_RealtimeLogTransitions(t *testing.T) {
 	job, dir := stageJob(t)
 	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
 
+	var mu sync.Mutex
 	var loggedLines []string
 	job.OnOutput = func(tool, line string) {
+		mu.Lock()
 		loggedLines = append(loggedLines, line)
+		mu.Unlock()
 	}
 
 	if err := enabledUnpackStage().Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
+	mu.Lock()
+	lines := slices.Clone(loggedLines)
+	mu.Unlock()
+
 	var sawStart, sawComplete bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "Using go_unrar for RAR (pure-Go)") {
 			sawStart = true
 		}
@@ -872,9 +895,12 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip(t *testing.T) {
 	job, dir := stageJob(t)
 	copyToDir(t, sevenZipFixture("lzma2.7z"), dir)
 
+	var mu sync.Mutex
 	var loggedLines []string
 	job.OnOutput = func(tool, line string) {
+		mu.Lock()
 		loggedLines = append(loggedLines, line)
+		mu.Unlock()
 	}
 
 	s := NewUnpackStageWith(unpack.Options{UseGo7z: true}, false)
@@ -884,8 +910,12 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
+	mu.Lock()
+	lines := slices.Clone(loggedLines)
+	mu.Unlock()
+
 	var sawStart, sawComplete bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "Using go_7z for 7-Zip (pure-Go)") {
 			sawStart = true
 		}
@@ -914,9 +944,12 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip_Fallback(t *testing.T) {
 		t.Fatalf("rename: %v", err)
 	}
 
+	var mu sync.Mutex
 	var loggedLines []string
 	job.OnOutput = func(tool, line string) {
+		mu.Lock()
 		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
+		mu.Unlock()
 	}
 
 	// We must configure Go7zFallback: true, UseGo7z: true, and ensure SevenZipCommand is set/detectable
@@ -930,8 +963,12 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip_Fallback(t *testing.T) {
 	// We expect this to fail eventually because it's not a real 7z archive.
 	_ = s.Run(t.Context(), job)
 
+	mu.Lock()
+	lines := slices.Clone(loggedLines)
+	mu.Unlock()
+
 	var sawGo7zStart, sawGo7zFailRetry, sawExternal7zCommand bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "[go_7z] Using go_7z for 7-Zip (pure-Go)") {
 			sawGo7zStart = true
 		}
@@ -966,9 +1003,12 @@ func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback(t *testing.T) {
 	// Use a corrupt rar to trigger GoUnRAR failure and fallback to unrar
 	copyToDir(t, unpackFixture("corrupt.rar"), dir)
 
+	var mu sync.Mutex
 	var loggedLines []string
 	job.OnOutput = func(tool, line string) {
+		mu.Lock()
 		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
+		mu.Unlock()
 	}
 
 	s := NewUnpackStageWith(unpack.Options{
@@ -980,8 +1020,12 @@ func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback(t *testing.T) {
 
 	_ = s.Run(t.Context(), job)
 
+	mu.Lock()
+	lines := slices.Clone(loggedLines)
+	mu.Unlock()
+
 	var sawGoRarStart, sawGoRarFailRetry, sawExternalUnrarCommand bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "[go_unrar] Using go_unrar for RAR (pure-Go)") {
 			sawGoRarStart = true
 		}
@@ -1006,11 +1050,26 @@ func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback(t *testing.T) {
 
 func createDummyExecutable(t *testing.T, dir, filename, content string) string {
 	t.Helper()
-	path := filepath.Join(dir, filename)
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+	f, err := os.CreateTemp(dir, filename+".*.tmp")
+	if err != nil {
+		t.Fatalf("create temp dummy executable: %v", err)
+	}
+	if _, err := f.Write([]byte(content)); err != nil {
+		_ = f.Close()
 		t.Fatalf("write dummy executable: %v", err)
 	}
-	return path
+	if err := f.Chmod(0o755); err != nil {
+		_ = f.Close()
+		t.Fatalf("chmod dummy executable: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close dummy executable: %v", err)
+	}
+	target := filepath.Join(dir, filename)
+	if err := os.Rename(f.Name(), target); err != nil {
+		t.Fatalf("rename dummy executable: %v", err)
+	}
+	return target
 }
 
 func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback_Success(t *testing.T) {
@@ -1035,16 +1094,17 @@ if [ -n "$outdir" ] && [ -d "$outdir" ]; then
 fi
 exit 0
 `
-	if err := os.WriteFile(unrarPath, []byte(successScript), 0o755); err != nil {
-		t.Fatalf("WriteFile success script: %v", err)
-	}
+	createDummyExecutable(t, tmpBinDir, "mock-unrar", successScript)
 
 	job, dir := stageJob(t)
 	copyToDir(t, unpackFixture("corrupt.rar"), dir)
 
+	var mu sync.Mutex
 	var loggedLines []string
 	job.OnOutput = func(tool, line string) {
+		mu.Lock()
 		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
+		mu.Unlock()
 	}
 
 	s := NewUnpackStageWith(unpack.Options{
@@ -1062,8 +1122,12 @@ exit 0
 		t.Error("expected job.UnpackError to be false since fallback succeeded")
 	}
 
+	mu.Lock()
+	lines := slices.Clone(loggedLines)
+	mu.Unlock()
+
 	var sawGoRarStart, sawGoRarFailRetry, sawExternalUnrarCommand, sawStdout, sawSuccess bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "[go_unrar] Using go_unrar for RAR (pure-Go)") {
 			sawGoRarStart = true
 		}
@@ -1128,9 +1192,12 @@ exit 0
 		t.Fatalf("rename: %v", err)
 	}
 
+	var mu sync.Mutex
 	var loggedLines []string
 	job.OnOutput = func(tool, line string) {
+		mu.Lock()
 		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
+		mu.Unlock()
 	}
 
 	s := NewUnpackStageWith(unpack.Options{
@@ -1148,8 +1215,12 @@ exit 0
 		t.Error("expected job.UnpackError to be false since fallback succeeded")
 	}
 
+	mu.Lock()
+	lines := slices.Clone(loggedLines)
+	mu.Unlock()
+
 	var sawGo7zStart, sawGo7zFailRetry, sawExternal7zCommand, sawStdout, sawSuccess bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "[go_7z] Using go_7z for 7-Zip (pure-Go)") {
 			sawGo7zStart = true
 		}
@@ -1197,9 +1268,12 @@ exit 0
 	job, dir := stageJob(t)
 	copyToDir(t, sevenZipFixture("lzma2.7z"), dir)
 
+	var mu sync.Mutex
 	var loggedLines []string
 	job.OnOutput = func(tool, line string) {
+		mu.Lock()
 		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
+		mu.Unlock()
 	}
 
 	s := NewUnpackStageWith(unpack.Options{
@@ -1212,8 +1286,12 @@ exit 0
 		t.Fatalf("expected extraction to succeed, got error: %v", err)
 	}
 
+	mu.Lock()
+	lines := slices.Clone(loggedLines)
+	mu.Unlock()
+
 	var sawStart, sawComplete bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "[7z] Unpacking:") {
 			sawStart = true
 		}
@@ -1266,9 +1344,12 @@ exit 0
 	job, dir := stageJob(t)
 	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
 
+	var mu sync.Mutex
 	var loggedLines []string
 	job.OnOutput = func(tool, line string) {
+		mu.Lock()
 		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
+		mu.Unlock()
 	}
 
 	s := NewUnpackStageWith(unpack.Options{
@@ -1281,8 +1362,12 @@ exit 0
 		t.Fatalf("expected extraction to succeed, got error: %v", err)
 	}
 
+	mu.Lock()
+	lines := slices.Clone(loggedLines)
+	mu.Unlock()
+
 	var sawStart, sawComplete bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "[unrar] Unpacking:") {
 			sawStart = true
 		}
@@ -1325,9 +1410,7 @@ ln -s "%s" "$outDir/evil_link"
 touch "$outDir/normal_file.txt"
 exit 0
 `, escapedFile)
-	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0o755); err != nil {
-		t.Fatalf("write fake unrar script: %v", err)
-	}
+	createDummyExecutable(t, t.TempDir(), "fake_unrar.sh", scriptContent)
 
 	s := NewUnpackStageWith(unpack.Options{
 		UseGoRAR:     false,
