@@ -82,7 +82,7 @@ func (s *Server) statusTestDiskSpeed(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), testDiskSpeedTimeout)
 	defer cancel()
 
-	mbPerSec, err := s.app.TestDownloadDirWriteSpeedMBPerSec(ctx)
+	mbPerSec, err := s.status.TestDownloadDirWriteSpeedMBPerSec(ctx)
 	if err != nil {
 		s.log.Warn("test_disk_speed failed", "error", err)
 		respondOK(w, "result", map[string]any{"ok": false, "error": err.Error()})

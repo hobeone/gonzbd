@@ -70,8 +70,8 @@ func (s *Server) modeQueue(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) queuePauseAll(w http.ResponseWriter, _ *http.Request) {
 	s.queue.PauseAll()
-	if s.app != nil {
-		s.app.PauseDownloads()
+	if s.downloads != nil {
+		s.downloads.PauseDownloads()
 	}
 	s.log.Info("downloads paused")
 	respondStatus(w)
@@ -79,8 +79,8 @@ func (s *Server) queuePauseAll(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) queueResumeAll(w http.ResponseWriter, _ *http.Request) {
 	s.queue.ResumeAll()
-	if s.app != nil {
-		s.app.ResumeDownloads()
+	if s.downloads != nil {
+		s.downloads.ResumeDownloads()
 	}
 	s.log.Info("downloads resumed")
 	respondStatus(w)
@@ -399,8 +399,8 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	// Snapshot speed once per request so every slot's ETA is computed
 	// from the same denominator.
 	var speed float64
-	if s.app != nil {
-		speed = s.app.Speed()
+	if s.status != nil {
+		speed = s.status.Speed()
 	}
 
 	// Hoisted out of the loop (OPT-10): lowercase search once per request
@@ -411,8 +411,8 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	// Snapshot all direct-unpack statuses once per request (OPT-12) instead
 	// of re-locking app.mu (application-wide) once per job in the loop below.
 	var duStatuses map[string]directunpack.Status
-	if s.app != nil {
-		duStatuses = s.app.DirectUnpackStatuses()
+	if s.status != nil {
+		duStatuses = s.status.DirectUnpackStatuses()
 	}
 
 	// Build slots applying filters.
@@ -495,13 +495,13 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 
 	paused := s.queue.IsPaused()
 	var speed float64
-	if s.app != nil {
-		speed = s.app.Speed()
+	if s.status != nil {
+		speed = s.status.Speed()
 	}
 
 	var duStatus *directunpack.Status
-	if s.app != nil {
-		if status, ok := s.app.DirectUnpackStatus(job.ID); ok {
+	if s.status != nil {
+		if status, ok := s.status.DirectUnpackStatus(job.ID); ok {
 			duStatus = &status
 		}
 	}
@@ -544,7 +544,7 @@ func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 
 	var removed []string
 	for _, id := range ids {
-		if err := s.app.RemoveJob(r.Context(), id, deleteFiles); err == nil {
+		if err := s.jobs.RemoveJob(r.Context(), id, deleteFiles); err == nil {
 			removed = append(removed, id)
 		} else {
 			s.log.WarnContext(r.Context(), "failed to remove job during bulk delete", "id", id, "error", err)
@@ -939,7 +939,7 @@ func (s *Server) enqueueNZBData(w http.ResponseWriter, r *http.Request, data []b
 		s.respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
 		return
 	}
-	if err := s.app.AddJob(r.Context(), job, data, false); err != nil {
+	if err := s.jobs.AddJob(r.Context(), job, data, false); err != nil {
 		s.respondError(w, http.StatusInternalServerError, "enqueue: "+err.Error())
 		return
 	}

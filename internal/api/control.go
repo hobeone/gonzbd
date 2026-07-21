@@ -11,8 +11,8 @@ func (s *Server) modePause(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.queue.PauseAll()
-	if s.app != nil {
-		s.app.PauseDownloads()
+	if s.downloads != nil {
+		s.downloads.PauseDownloads()
 	}
 	s.log.Info("downloads paused")
 	respondStatus(w)
@@ -25,8 +25,8 @@ func (s *Server) modeResume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.queue.ResumeAll()
-	if s.app != nil {
-		s.app.ResumeDownloads()
+	if s.downloads != nil {
+		s.downloads.ResumeDownloads()
 	}
 	s.log.Info("downloads resumed")
 	respondStatus(w)
@@ -58,7 +58,7 @@ func (s *Server) modeDisconnect(w http.ResponseWriter, r *http.Request) {
 	if !s.requireApp(w) {
 		return
 	}
-	s.app.DisconnectAll()
+	s.downloads.DisconnectAll()
 	s.log.Info("NNTP connections disconnected")
 	respondStatus(w)
 }
