@@ -14,7 +14,7 @@ import (
 // crash-recovery path (no Shutdown call, reload from disk) and requires
 // the A.3 test orchestrator + an injectable fake crash to be meaningful.
 //
-// TODO: flesh out the crash-recovery scenario once A.3's orchestrator lands.
+// Tracked in https://github.com/hobeone/gonzbd/issues/168: full scenario-level crash recovery test.
 func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
-	t.Skip("TODO: implement full crash-recovery scenario after A.3 orchestrator lands (B.4 checkpoint machinery is tested in checkpoint_test.go)")
+	t.Skip("Tracked in https://github.com/hobeone/gonzbd/issues/168: implement full crash-recovery scenario (B.4 checkpoint machinery is tested in checkpoint_test.go)")
 }

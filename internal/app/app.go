@@ -98,6 +98,7 @@ type Application struct {
 
 	internalFileComplete chan FileComplete
 	onFileComplete       func(jobID string, fileIdx int, fileCRC uint32)
+	markArticlesDoneHook func(jobID string, messageIDs []string) error
 
 	wg     sync.WaitGroup
 	ctx    context.Context //nolint:containedctx // ctx is the app's lifecycle context, stored by design
@@ -306,9 +307,17 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.onFileComplete = onFileComplete
 
+	markDone := q.MarkArticlesDone
+	if app.markArticlesDoneHook != nil {
+		hook := app.markArticlesDoneHook
+		markDone = func(jobID string, messageIDs []string) error {
+			return hook(jobID, messageIDs)
+		}
+	}
+
 	asm := assembler.New(assembler.Options{
 		FileInfo:           p.resolveFileInfo,
-		MarkArticlesDone:   q.MarkArticlesDone,
+		MarkArticlesDone:   markDone,
 		MarkArticlesFailed: q.MarkArticlesFailed,
 		SetWriteCursor:     q.SetFileWriteCursor,
 		MinFreeBytes:       minFreeBytes,
@@ -1253,6 +1262,12 @@ func WithVersion(v string) func(*Application) {
 // WithCheckpointInterval returns an option that sets the queue persistence interval.
 func WithCheckpointInterval(d time.Duration) func(*Application) {
 	return func(a *Application) { a.checkpointInterval = d }
+}
+
+// WithMarkArticlesDoneHook returns an option that intercepts the assembler's
+// batched MarkArticlesDone queue callback.
+func WithMarkArticlesDoneHook(hook func(jobID string, messageIDs []string) error) func(*Application) {
+	return func(a *Application) { a.markArticlesDoneHook = hook }
 }
 
 // SetSpeedLimit updates the download speed limit. bytesPerSec <= 0 means unlimited.
