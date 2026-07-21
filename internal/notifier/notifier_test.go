@@ -379,14 +379,14 @@ func TestDispatchConcurrent(t *testing.T) {
 	d := NewDispatcher(logger)
 
 	n1 := &fakeNotifier{
-		name:      "delay100ms",
-		mask:      []EventType{DownloadComplete},
-		sendDelay: 100 * time.Millisecond,
-	}
-	n2 := &fakeNotifier{
 		name:      "delay200ms",
 		mask:      []EventType{DownloadComplete},
 		sendDelay: 200 * time.Millisecond,
+	}
+	n2 := &fakeNotifier{
+		name:      "delay300ms",
+		mask:      []EventType{DownloadComplete},
+		sendDelay: 300 * time.Millisecond,
 	}
 	d.Register(n1)
 	d.Register(n2)
@@ -396,14 +396,15 @@ func TestDispatchConcurrent(t *testing.T) {
 	d.Dispatch(ctx, Event{Type: DownloadComplete, Timestamp: time.Now()})
 	elapsed := time.Since(start)
 
-	// Concurrency floor check: must be at least 150ms to prove concurrent running
-	// (serial would be 100ms + 200ms = 300ms minimum).
-	// Ceiling: allow generous 2s slack for scheduling jitter under -race.
-	if elapsed > 2*time.Second {
-		t.Errorf("dispatch blocked for sum of delays (suggesting serial execution): %v", elapsed)
+	// Concurrency check: n1 takes 200ms, n2 takes 300ms.
+	// Concurrent execution completes in max(200ms, 300ms) = ~300ms.
+	// Serial execution takes 200ms + 300ms = 500ms minimum.
+	// Ceiling of 450ms allows 150ms of -race scheduling slack while detecting serial regression.
+	if elapsed >= 450*time.Millisecond {
+		t.Errorf("dispatch serialized notifiers: elapsed %v (expected < 450ms)", elapsed)
 	}
-	if elapsed < 150*time.Millisecond {
-		t.Errorf("dispatch returned before all finished: %v", elapsed)
+	if elapsed < 200*time.Millisecond {
+		t.Errorf("dispatch returned before all finished: elapsed %v", elapsed)
 	}
 
 	if len(n1.events()) != 1 || len(n2.events()) != 1 {

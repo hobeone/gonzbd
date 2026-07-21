@@ -1274,16 +1274,16 @@ func TestScanner_Run(t *testing.T) {
 		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
 		handler := &MockHandler{failFor: make(map[string]error)}
 
-		// 500ms hang-guard: allows at least one full scan tick on an empty dir.
-		// 20ms was within OS scheduling jitter under -race.
-		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+		// 50ms timeout with 5ms interval: allows 10 scan ticks on an empty dir
+		// without imposing an unnecessary 500ms delay on test suite execution.
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 		defer cancel()
 
 		lh := &testLogHandler{}
 		logger := slog.New(lh)
 		scanner := New(tmpDir, store, handler, nil, logger)
 
-		err := scanner.Run(ctx, 2*time.Millisecond)
+		err := scanner.Run(ctx, 5*time.Millisecond)
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run failed: %v", err)
 		}

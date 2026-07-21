@@ -43,6 +43,7 @@ type recordStage struct {
 	calls     []string                                  // "<stageName>/<jobName>"
 	returnErr error                                     // if non-nil, returned from Run
 	block     chan struct{}                             // if non-nil, Run blocks until this is closed
+	startOnce sync.Once                                 // ensures started channel is closed only once
 	started   chan struct{}                             // if non-nil, closed when Run starts executing
 	runFn     func(ctx context.Context, job *Job) error // if non-nil, called instead of returning returnErr
 }
@@ -53,7 +54,9 @@ func (s *recordStage) Name() string { return s.name }
 
 func (s *recordStage) Run(ctx context.Context, job *Job) error {
 	if s.started != nil {
-		close(s.started)
+		s.startOnce.Do(func() {
+			close(s.started)
+		})
 	}
 	if s.block != nil {
 		select {
