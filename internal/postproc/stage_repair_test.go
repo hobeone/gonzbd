@@ -670,8 +670,6 @@ func TestRepairHelpers(t *testing.T) {
 		// pattern below) rather than depending on a real "par2" in PATH --
 		// this repo's CI doesn't install par2 for the plain `go test ./...`
 		// job, only for `-tags=integration`.
-		stubOpts := par2.RunOptions{Command: writeStubBinary(t)}
-
 		// Scenario B: External only
 		resB, errB := dispatchRepairTool(
 			t.Context(),
@@ -679,7 +677,7 @@ func TestRepairHelpers(t *testing.T) {
 			job,
 			"nonexistent.par2",
 			nil,
-			stubOpts,
+			par2.RunOptions{Command: writeStubBinary(t)},
 			false, // useGoPar2
 			false, // fallback
 		)
@@ -699,7 +697,7 @@ func TestRepairHelpers(t *testing.T) {
 			job,
 			"nonexistent.par2",
 			nil,
-			stubOpts,
+			par2.RunOptions{Command: writeStubBinary(t)},
 			true, // useGoPar2
 			true, // fallback
 		)

@@ -98,6 +98,7 @@ type Application struct {
 
 	internalFileComplete chan FileComplete
 	onFileComplete       func(jobID string, fileIdx int, fileCRC uint32)
+	markArticlesDoneHook func(jobID string, messageIDs []string) error
 
 	wg     sync.WaitGroup
 	ctx    context.Context //nolint:containedctx // ctx is the app's lifecycle context, stored by design
@@ -306,9 +307,14 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.onFileComplete = onFileComplete
 
+	markDone := q.MarkArticlesDone
+	if app.markArticlesDoneHook != nil {
+		markDone = app.markArticlesDoneHook
+	}
+
 	asm := assembler.New(assembler.Options{
 		FileInfo:           p.resolveFileInfo,
-		MarkArticlesDone:   q.MarkArticlesDone,
+		MarkArticlesDone:   markDone,
 		MarkArticlesFailed: q.MarkArticlesFailed,
 		SetWriteCursor:     q.SetFileWriteCursor,
 		MinFreeBytes:       minFreeBytes,
@@ -321,6 +327,18 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.RecordHeartbeat()
 
 	return app, nil
+}
+
+// WithCheckpointInterval returns an option that sets the queue persistence interval.
+func WithCheckpointInterval(d time.Duration) func(*Application) {
+	return func(a *Application) { a.checkpointInterval = d }
+}
+
+// WithMarkArticlesDoneHook returns an option that overrides the assembler's
+// batched MarkArticlesDone callback. The provided hook is responsible for
+// persisting the article completion status to the queue.
+func WithMarkArticlesDoneHook(hook func(jobID string, messageIDs []string) error) func(*Application) {
+	return func(a *Application) { a.markArticlesDoneHook = hook }
 }
 
 // Queue returns the application's download queue.
@@ -1248,11 +1266,6 @@ func WithPostProcStages(stages []postproc.Stage) func(*Application) {
 // WithVersion returns an option that sets the application build version.
 func WithVersion(v string) func(*Application) {
 	return func(a *Application) { a.version = v }
-}
-
-// WithCheckpointInterval returns an option that sets the queue persistence interval.
-func WithCheckpointInterval(d time.Duration) func(*Application) {
-	return func(a *Application) { a.checkpointInterval = d }
 }
 
 // SetSpeedLimit updates the download speed limit. bytesPerSec <= 0 means unlimited.
