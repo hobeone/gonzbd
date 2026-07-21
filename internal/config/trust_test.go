@@ -297,3 +297,59 @@ func TestParseForwardedFor(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitHostPortTolerant(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input    string
+		wantHost string
+		wantPort string
+	}{
+		{"localhost:8080", "localhost", "8080"},
+		{"[::1]:8080", "::1", "8080"},
+		{"127.0.0.1:8080", "127.0.0.1", "8080"},
+		{"localhost", "localhost", ""},
+		{"[::1]", "::1", ""},
+		{"[fe80::1]", "fe80::1", ""},
+		{"  [::1]  ", "::1", ""},
+		{"  localhost  ", "localhost", ""},
+		{"127.0.0.1", "127.0.0.1", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			t.Parallel()
+			gotHost, gotPort := SplitHostPortTolerant(tc.input)
+			if gotHost != tc.wantHost || gotPort != tc.wantPort {
+				t.Errorf("SplitHostPortTolerant(%q) = (%q, %q); want (%q, %q)", tc.input, gotHost, gotPort, tc.wantHost, tc.wantPort)
+			}
+		})
+	}
+}
+
+func TestParseHostIP_BareBracketedIPv6(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input  string
+		wantIP string
+		wantOK bool
+	}{
+		{"[::1]", "::1", true},
+		{"[fe80::1]", "fe80::1", true},
+		{"[::1]:8080", "::1", true},
+		{"127.0.0.1:8080", "127.0.0.1", true},
+		{"127.0.0.1", "127.0.0.1", true},
+		{"invalid", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			t.Parallel()
+			addr, ok := parseHostIP(tc.input)
+			if ok != tc.wantOK {
+				t.Fatalf("parseHostIP(%q) ok = %v; want %v", tc.input, ok, tc.wantOK)
+			}
+			if ok && addr.String() != tc.wantIP {
+				t.Errorf("parseHostIP(%q) addr = %q; want %q", tc.input, addr.String(), tc.wantIP)
+			}
+		})
+	}
+}
