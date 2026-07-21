@@ -1163,6 +1163,104 @@ func TestSetName(t *testing.T) {
 	}
 }
 
+func TestSetName_Sanitization(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		sOpts     fsutil.SanitizeOptions
+		inputName string
+		wantName  string
+	}{
+		{
+			name:      "path traversal",
+			inputName: "../../etc/passwd",
+			wantName:  ".._.._etc_passwd",
+		},
+		{
+			name:      "absolute unix path",
+			inputName: "/tmp/malicious/job",
+			wantName:  "_tmp_malicious_job",
+		},
+		{
+			name:      "absolute windows path",
+			inputName: `C:\Windows\System32`,
+			wantName:  "C__Windows_System32",
+		},
+		{
+			name:      "strip nzb extension",
+			inputName: "My.Movie.nzb",
+			wantName:  "My.Movie",
+		},
+		{
+			name:      "empty name fallback",
+			inputName: "",
+			wantName:  "unknown",
+		},
+		{
+			name:      "all illegal characters fallback",
+			inputName: "///",
+			wantName:  "___",
+		},
+		{
+			name: "custom options regex and illegal replacement",
+			sOpts: fsutil.SanitizeOptions{
+				CleanupRegexps:     fsutil.CompileCleanupList([]string{"^SPAM-"}),
+				ReplaceIllegalWith: "-",
+			},
+			inputName: "SPAM-Movie/Name.nzb",
+			wantName:  "Movie-Name",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			q := New(WithSanitizeOptions(tc.sOpts))
+			j := makeJob(t, "orig", constants.NormalPriority)
+			if err := q.Add(j); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+			if err := q.SetName(j.ID, tc.inputName); err != nil {
+				t.Fatalf("SetName(%q): %v", tc.inputName, err)
+			}
+			got, err := q.Get(j.ID)
+			if err != nil {
+				t.Fatalf("Get(%s) failed: %v", j.ID, err)
+			}
+			if got.Name != tc.wantName {
+				t.Errorf("SetName(%q) resulting Name = %q, want %q", tc.inputName, got.Name, tc.wantName)
+			}
+		})
+	}
+}
+
+func TestSetSanitizeOptions(t *testing.T) {
+	t.Parallel()
+	q := New()
+	j := makeJob(t, "orig", constants.NormalPriority)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Update options at runtime
+	q.SetSanitizeOptions(fsutil.SanitizeOptions{
+		CleanupRegexps:     fsutil.CompileCleanupList([]string{"^PREFIX-"}),
+		ReplaceIllegalWith: "-",
+	})
+
+	if err := q.SetName(j.ID, "PREFIX-Movie/Name.nzb"); err != nil {
+		t.Fatalf("SetName: %v", err)
+	}
+	got, err := q.Get(j.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Name != "Movie-Name" {
+		t.Errorf("Name = %q, want %q", got.Name, "Movie-Name")
+	}
+}
+
 func TestSetScript(t *testing.T) {
 	t.Parallel()
 	q := New()

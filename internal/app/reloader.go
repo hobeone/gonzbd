@@ -95,6 +95,9 @@ func (app *Application) ReloadDownloadOptions(d config.DownloadConfig) {
 	app.SetMaxArtOpt(d.MaxArtOpt)
 	app.SetTopOnly(d.TopOnly)
 	app.SetPropagationDelay(d.PropagationDelay)
+	if app.queue != nil {
+		app.queue.SetSanitizeOptions(d.SanitizeOptions())
+	}
 }
 
 // ReloadGeneralOptions applies all hot-applicable general settings from g
