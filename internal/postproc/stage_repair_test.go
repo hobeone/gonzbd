@@ -756,3 +756,40 @@ func TestRepairHelpers(t *testing.T) {
 		}
 	})
 }
+
+func TestRepairStage_ContainmentViolation(t *testing.T) {
+	t.Parallel()
+
+	job, outDir := stageJob(t)
+	tmpDir := filepath.Dir(outDir)
+
+	// Create a symlink in outDir pointing outside outDir.
+	outsideFile := filepath.Join(tmpDir, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	symlink := filepath.Join(outDir, "bad_link.txt")
+	if err := os.Symlink(outsideFile, symlink); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	s := NewRepairStage()
+	set := par2.Set{
+		Name:       "bad_set",
+		MainFile:   "bad_set.par2",
+		ExtraFiles: []string{"bad_set.vol001.par2"},
+	}
+	vs := NewVerifiedSets(outDir, slog.Default())
+
+	res := par2.RepairResult{Success: true}
+	err := s.handleRepairResult(t.Context(), slog.Default(), job, set, vs, res, nil)
+	if err == nil {
+		t.Fatalf("expected containment violation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "containment check") {
+		t.Errorf("err = %v; want containment check error", err)
+	}
+	if !job.ParError {
+		t.Errorf("job.ParError = false; want true on containment violation")
+	}
+}

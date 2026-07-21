@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
@@ -179,6 +180,9 @@ func (s *RepairStage) processPar2Set(
 	}
 
 	repairOpts := par2Opts
+	if repairOpts.Sandbox.TargetDir == "" {
+		repairOpts.Sandbox.TargetDir = job.DownloadDir
+	}
 	repairOpts.OnLine = func(line string) {
 		if job.OnOutput != nil {
 			job.OnOutput("par2", line)
@@ -219,6 +223,13 @@ func (s *RepairStage) handleRepairResult(
 		vs.MarkVerified(set.Name, false)
 		logf(ctx, log, job, slog.LevelWarn, "Error: par2 repair %q failed: %v", set.Name, err)
 		return fmt.Errorf("repair %q: %w", set.Name, err)
+	}
+
+	if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
+		job.ParError = true
+		vs.MarkVerified(set.Name, false)
+		logf(ctx, log, job, slog.LevelWarn, "Error: containment violation after par2 repair %q: %v", set.Name, cErr)
+		return fmt.Errorf("repair %q: containment check: %w", set.Name, cErr)
 	}
 
 	if !res.Success {

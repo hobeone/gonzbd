@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -119,6 +120,8 @@ type RunOptions struct {
 	// CmdCfg controls nice/ionice process priority wrapping.
 	// Matches SABnzbd's cfg.nice/cfg.ionice.
 	CmdCfg cmdutil.CmdConfig
+	// Sandbox controls bubblewrap sandboxing for par2 execution.
+	Sandbox cmdutil.SandboxConfig
 	// ExtraArgs holds additional user-specified command-line arguments
 	// appended to every par2 invocation. Pre-validated at config load.
 	ExtraArgs []string
@@ -309,6 +312,19 @@ func verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyRe
 	return verifyWith(ctx, RunOptions{}, parfile, extraFiles...)
 }
 
+func sboxForParfile(opts RunOptions, parfile string) cmdutil.SandboxConfig {
+	sbox := opts.Sandbox
+	if sbox.TargetDir == "" {
+		absDir, err := filepath.Abs(filepath.Dir(parfile))
+		if err == nil {
+			sbox.TargetDir = absDir
+		} else {
+			sbox.TargetDir = filepath.Dir(parfile)
+		}
+	}
+	return sbox
+}
+
 // verifyWith is like verify but uses the given RunOptions for binary selection.
 func verifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (VerifyResult, error) {
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
@@ -327,7 +343,7 @@ func verifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 		opts.OnCommand(cmdLine)
 	}
 
-	cmd, err := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	cmd, err := cmdutil.BuildSandboxedCommand(ctx, slog.Default(), opts.CmdCfg, sboxForParfile(opts, parfile), opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	if err != nil {
 		return VerifyResult{CommandLine: cmdLine, Status: StatusUnknown}, fmt.Errorf("par2 verify: %w", err)
 	}
@@ -387,7 +403,7 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 		opts.OnCommand(cmdLine)
 	}
 
-	cmd, err := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	cmd, err := cmdutil.BuildSandboxedCommand(ctx, slog.Default(), opts.CmdCfg, sboxForParfile(opts, parfile), opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	if err != nil {
 		return RepairResult{CommandLine: cmdLine}, fmt.Errorf("par2 repair: %w", err)
 	}

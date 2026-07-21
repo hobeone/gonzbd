@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
-
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
@@ -20,7 +20,7 @@ func TestModeStatus_TestConnection_UnknownServer(t *testing.T) {
 		t.Fatalf("Default(): %v", err)
 	}
 	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
-	s := New(Options{Config: cfg})
+	s := New(Options{Config: cfg, App: &app.Application{}})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status&name=test_connection&value=nonexistent&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -43,7 +43,7 @@ func TestModeStatus_TestConnection_MissingValue(t *testing.T) {
 		t.Fatalf("Default(): %v", err)
 	}
 	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
-	s := New(Options{Config: cfg})
+	s := New(Options{Config: cfg, App: &app.Application{}})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status&name=test_connection&apikey="+testAPIKey)
 	if rr.Code != http.StatusBadRequest {
@@ -64,7 +64,7 @@ func TestModeStatus_TestConnection_UnreachableHost(t *testing.T) {
 			Connections: 1, Timeout: 2,
 		}}
 	})
-	s := New(Options{Config: cfg})
+	s := New(Options{Config: cfg, App: &app.Application{}})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status&name=test_connection&value=s1&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -125,7 +125,7 @@ func TestModeStatus_TestConnection_ServerUnavailableSetsLikelyConnectionLimit(t 
 			Name: "s1", Host: host, Port: port, Connections: 1, Timeout: 5,
 		}}
 	})
-	s := New(Options{Config: cfg})
+	s := New(Options{Config: cfg, App: &app.Application{}})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=status&name=test_connection&value=s1&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -138,6 +138,21 @@ func TestModeStatus_TestConnection_ServerUnavailableSetsLikelyConnectionLimit(t 
 	}
 	if result["likely_connection_limit"] != true {
 		t.Errorf("result.likely_connection_limit = %v; want true for a 502 greeting", result["likely_connection_limit"])
+	}
+}
+
+func TestModeStatus_TestConnection_UnwiredApp(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
+	s := New(Options{Config: cfg})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=status&name=test_connection&value=s1&apikey="+testAPIKey)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500 when App is not set", rr.Code)
 	}
 }
 
