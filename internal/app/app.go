@@ -25,6 +25,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/downloader"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
@@ -98,6 +99,7 @@ type Application struct {
 
 	internalFileComplete chan FileComplete
 	onFileComplete       func(jobID string, fileIdx int, fileCRC uint32)
+	markArticlesDoneHook func(jobID string, messageIDs []string) error
 
 	wg     sync.WaitGroup
 	ctx    context.Context //nolint:containedctx // ctx is the app's lifecycle context, stored by design
@@ -306,9 +308,14 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 	app.onFileComplete = onFileComplete
 
+	markDone := q.MarkArticlesDone
+	if app.markArticlesDoneHook != nil {
+		markDone = app.markArticlesDoneHook
+	}
+
 	asm := assembler.New(assembler.Options{
 		FileInfo:           p.resolveFileInfo,
-		MarkArticlesDone:   q.MarkArticlesDone,
+		MarkArticlesDone:   markDone,
 		MarkArticlesFailed: q.MarkArticlesFailed,
 		SetWriteCursor:     q.SetFileWriteCursor,
 		MinFreeBytes:       minFreeBytes,
@@ -321,6 +328,18 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.RecordHeartbeat()
 
 	return app, nil
+}
+
+// WithCheckpointInterval returns an option that sets the queue persistence interval.
+func WithCheckpointInterval(d time.Duration) func(*Application) {
+	return func(a *Application) { a.checkpointInterval = d }
+}
+
+// WithMarkArticlesDoneHook returns an option that overrides the assembler's
+// batched MarkArticlesDone callback. The provided hook is responsible for
+// persisting the article completion status to the queue.
+func WithMarkArticlesDoneHook(hook func(jobID string, messageIDs []string) error) func(*Application) {
+	return func(a *Application) { a.markArticlesDoneHook = hook }
 }
 
 // Queue returns the application's download queue.
@@ -1250,11 +1269,6 @@ func WithVersion(v string) func(*Application) {
 	return func(a *Application) { a.version = v }
 }
 
-// WithCheckpointInterval returns an option that sets the queue persistence interval.
-func WithCheckpointInterval(d time.Duration) func(*Application) {
-	return func(a *Application) { a.checkpointInterval = d }
-}
-
 // SetSpeedLimit updates the download speed limit. bytesPerSec <= 0 means unlimited.
 func (app *Application) SetSpeedLimit(bytesPerSec int64) {
 	app.mu.Lock()
@@ -1416,4 +1430,29 @@ func failMsgForJob(job *queue.Job) string {
 // temp+fsync+rename to prevent corruption on crash.
 func writeGzFile(path string, data []byte) error {
 	return fsutil.WriteGzAtomicBytes(path, data)
+}
+
+// NNTPTestResult holds outcome metrics for an on-demand NNTP server test connection.
+type NNTPTestResult struct {
+	Latency                 time.Duration
+	ConnectionLimitExceeded bool
+}
+
+// TestNNTPServer dials an NNTP server to verify connectivity and credentials.
+func (a *Application) TestNNTPServer(ctx context.Context, cfg config.ServerConfig) (NNTPTestResult, error) {
+	start := time.Now()
+	log := slog.Default()
+	if a != nil && a.log != nil {
+		log = a.log.With("component", "nntp_test")
+	}
+	conn, err := nntp.Dial(ctx, cfg, nntp.WithLogger(log))
+	if err != nil {
+		return NNTPTestResult{
+			ConnectionLimitExceeded: errors.Is(err, nntp.ErrServerUnavailable),
+		}, err
+	}
+	_ = conn.Close() //nolint:errcheck // test connection; close error is irrelevant
+	return NNTPTestResult{
+		Latency: time.Since(start),
+	}, nil
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -119,6 +120,8 @@ type RunOptions struct {
 	// CmdCfg controls nice/ionice process priority wrapping.
 	// Matches SABnzbd's cfg.nice/cfg.ionice.
 	CmdCfg cmdutil.CmdConfig
+	// Sandbox controls bubblewrap sandboxing for par2 execution.
+	Sandbox cmdutil.SandboxConfig
 	// ExtraArgs holds additional user-specified command-line arguments
 	// appended to every par2 invocation. Pre-validated at config load.
 	ExtraArgs []string
@@ -309,6 +312,35 @@ func verify(ctx context.Context, parfile string, extraFiles ...string) (VerifyRe
 	return verifyWith(ctx, RunOptions{}, parfile, extraFiles...)
 }
 
+// sboxForParfile returns the SandboxConfig for running par2 on parfile.
+// If opts.Sandbox.TargetDir is empty, it defaults TargetDir to the directory containing parfile.
+// If opts.Sandbox.TargetDir is non-empty, it verifies that parfile is contained within TargetDir.
+func sboxForParfile(opts RunOptions, parfile string) (cmdutil.SandboxConfig, error) {
+	sbox := opts.Sandbox
+	absPar, err := filepath.Abs(parfile)
+	if err != nil {
+		return sbox, fmt.Errorf("parfile abs path: %w", err)
+	}
+
+	if sbox.TargetDir == "" {
+		sbox.TargetDir = filepath.Dir(absPar)
+		return sbox, nil
+	}
+
+	absTarget, err := filepath.Abs(sbox.TargetDir)
+	if err != nil {
+		return sbox, fmt.Errorf("target dir abs path: %w", err)
+	}
+	sbox.TargetDir = absTarget
+
+	rel, err := filepath.Rel(absTarget, absPar)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		return sbox, fmt.Errorf("parfile %q escapes sandbox target directory %q", parfile, absTarget)
+	}
+
+	return sbox, nil
+}
+
 // verifyWith is like verify but uses the given RunOptions for binary selection.
 func verifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles ...string) (VerifyResult, error) {
 	streamer := cmdutil.NewLineStreamer(opts.OnLine)
@@ -327,12 +359,16 @@ func verifyWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 		opts.OnCommand(cmdLine)
 	}
 
-	cmd, err := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	sbox, err := sboxForParfile(opts, parfile)
+	if err != nil {
+		return VerifyResult{CommandLine: cmdLine, Status: StatusUnknown}, fmt.Errorf("par2 verify sandbox: %w", err)
+	}
+
+	cmd, err := cmdutil.BuildSandboxedCommand(ctx, slog.Default(), opts.CmdCfg, sbox, opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	if err != nil {
 		return VerifyResult{CommandLine: cmdLine, Status: StatusUnknown}, fmt.Errorf("par2 verify: %w", err)
 	}
 	cmd.Dir = filepath.Dir(parfile)
-
 	cmd.Stdout = streamer
 	cmd.Stderr = streamer
 
@@ -387,7 +423,12 @@ func RepairWith(ctx context.Context, opts RunOptions, parfile string, extraFiles
 		opts.OnCommand(cmdLine)
 	}
 
-	cmd, err := cmdutil.BuildCommand(ctx, opts.CmdCfg, opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
+	sbox, err := sboxForParfile(opts, parfile)
+	if err != nil {
+		return RepairResult{CommandLine: cmdLine}, fmt.Errorf("par2 repair sandbox: %w", err)
+	}
+
+	cmd, err := cmdutil.BuildSandboxedCommand(ctx, slog.Default(), opts.CmdCfg, sbox, opts.Bin(), args...) //nolint:gosec // parfile and extraFiles are caller-supplied, not shell-expanded
 	if err != nil {
 		return RepairResult{CommandLine: cmdLine}, fmt.Errorf("par2 repair: %w", err)
 	}

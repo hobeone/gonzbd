@@ -1712,3 +1712,20 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 		t.Fatal("Shutdown hung indefinitely on wedged downloader")
 	}
 }
+
+func TestApplication_TestNNTPServer(t *testing.T) {
+	t.Parallel()
+	appInst := &app.Application{}
+	cfg := config.ServerConfig{
+		Host:    "127.0.0.1",
+		Port:    1,
+		Timeout: 1,
+	}
+	res, err := appInst.TestNNTPServer(t.Context(), cfg)
+	if err == nil {
+		t.Errorf("expected error connecting to port 1, got nil")
+	}
+	if res.ConnectionLimitExceeded {
+		t.Errorf("res.ConnectionLimitExceeded = true, want false for connection refused")
+	}
+}

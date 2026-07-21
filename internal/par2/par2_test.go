@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/cmdutil"
 )
 
 // hasPar2 returns true and the path to the par2 binary if it is installed.
@@ -282,4 +284,36 @@ func TestVerifyAndRepair(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestRunOptions_SandboxConfig(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	parfile := filepath.Join(tmp, "sample.par2")
+	touch(t, parfile)
+
+	opts := RunOptions{
+		Command: "nonexistent_binary",
+		Sandbox: cmdutil.SandboxConfig{
+			Enabled:   true,
+			TargetDir: tmp,
+		},
+	}
+	sbox, err := sboxForParfile(opts, parfile)
+	if err != nil {
+		t.Fatalf("sboxForParfile failed: %v", err)
+	}
+	if !sbox.Enabled {
+		t.Errorf("sbox.Enabled = false; want true")
+	}
+	if sbox.TargetDir != tmp {
+		t.Errorf("sbox.TargetDir = %q; want %q", sbox.TargetDir, tmp)
+	}
+
+	outsideParfile := filepath.Join(t.TempDir(), "outside.par2")
+	touch(t, outsideParfile)
+	_, err = sboxForParfile(opts, outsideParfile)
+	if err == nil {
+		t.Errorf("expected error for parfile outside TargetDir, got nil")
+	}
 }

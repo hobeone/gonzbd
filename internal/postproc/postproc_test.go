@@ -43,6 +43,8 @@ type recordStage struct {
 	calls     []string                                  // "<stageName>/<jobName>"
 	returnErr error                                     // if non-nil, returned from Run
 	block     chan struct{}                             // if non-nil, Run blocks until this is closed
+	startOnce sync.Once                                 // ensures started channel is closed only once
+	started   chan struct{}                             // if non-nil, closed when Run starts executing
 	runFn     func(ctx context.Context, job *Job) error // if non-nil, called instead of returning returnErr
 }
 
@@ -51,6 +53,11 @@ func newRecordStage(name string) *recordStage { return &recordStage{name: name} 
 func (s *recordStage) Name() string { return s.name }
 
 func (s *recordStage) Run(ctx context.Context, job *Job) error {
+	if s.started != nil {
+		s.startOnce.Do(func() {
+			close(s.started)
+		})
+	}
 	if s.block != nil {
 		select {
 		case <-s.block:
@@ -181,7 +188,8 @@ func (o *orderCapture) Run(_ context.Context, _ *Job) error {
 // returns only after worker exits.
 func TestStopDuringInFlightStage(t *testing.T) {
 	block := make(chan struct{})
-	blocker := &recordStage{name: "blocker", block: block}
+	started := make(chan struct{})
+	blocker := &recordStage{name: "blocker", block: block, started: started}
 
 	p := New(Options{Stages: []Stage{blocker}})
 	if err := p.Start(t.Context()); err != nil {
@@ -192,12 +200,11 @@ func TestStopDuringInFlightStage(t *testing.T) {
 	p.Process(job)
 
 	// Wait until the blocker stage is actually executing.
-	waitUntil(t, func() bool {
-		p.busyMu.Lock()
-		b := p.busy
-		p.busyMu.Unlock()
-		return b
-	}, 2*time.Second, "worker to be busy")
+	select {
+	case <-blocker.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for blocker stage to start")
+	}
 
 	stopDone := make(chan struct{})
 	go func() {
