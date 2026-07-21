@@ -161,7 +161,7 @@ func TestUnRAR_NiceIoniceOptionsFlowThrough(t *testing.T) {
 	})
 	_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), "", opts)
 	if *captured == "" {
-		t.Fatal("OnCommand was not called despite nice/ionice config")
+		t.Fatal("OnCommand was not called when CmdCfg was set")
 	}
 }
 
