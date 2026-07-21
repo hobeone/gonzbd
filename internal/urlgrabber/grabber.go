@@ -106,7 +106,9 @@ func New(cfg Config, h Handler) *Grabber {
 	transport := &http.Transport{
 		// Proxy respects HTTP_PROXY, HTTPS_PROXY, and NO_PROXY environment variables.
 		// Note: When HTTP_PROXY is set, the proxy performs target DNS resolution,
-		// and DialContext IP validation applies to the proxy host endpoint.
+		// and DialContext IP validation applies to the proxy host endpoint. Private IP
+		// filtering in urlgrabber validates connection endpoints, relying on the proxy's
+		// own SSRF policy for target URL resolution.
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)

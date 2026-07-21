@@ -192,6 +192,13 @@ func (s *RepairStage) processPar2Set(
 		logf(ctx, log, job, slog.LevelInfo, "Running: %s", cmdLine)
 	}
 
+	if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
+		job.ParError = true
+		vs.MarkVerified(set.Name, false)
+		logf(ctx, log, job, slog.LevelWarn, "Error: pre-repair containment violation for %q: %v", set.Name, cErr)
+		return fmt.Errorf("repair %q: pre-repair containment check: %w", set.Name, cErr)
+	}
+
 	// Dispatch: native par2engine vs external par2 binary.
 	res, err := dispatchRepairTool(ctx, log, job, main, dataFiles, repairOpts, useGoPar2Val, goPar2FallbackVal)
 
@@ -218,18 +225,18 @@ func (s *RepairStage) handleRepairResult(
 	res par2.RepairResult,
 	err error,
 ) error {
-	if err != nil {
-		job.ParError = true
-		vs.MarkVerified(set.Name, false)
-		logf(ctx, log, job, slog.LevelWarn, "Error: par2 repair %q failed: %v", set.Name, err)
-		return fmt.Errorf("repair %q: %w", set.Name, err)
-	}
-
 	if cErr := fsutil.CheckContainment(job.DownloadDir); cErr != nil {
 		job.ParError = true
 		vs.MarkVerified(set.Name, false)
 		logf(ctx, log, job, slog.LevelWarn, "Error: containment violation after par2 repair %q: %v", set.Name, cErr)
 		return fmt.Errorf("repair %q: containment check: %w", set.Name, cErr)
+	}
+
+	if err != nil {
+		job.ParError = true
+		vs.MarkVerified(set.Name, false)
+		logf(ctx, log, job, slog.LevelWarn, "Error: par2 repair %q failed: %v", set.Name, err)
+		return fmt.Errorf("repair %q: %w", set.Name, err)
 	}
 
 	if !res.Success {

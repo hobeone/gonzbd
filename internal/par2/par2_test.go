@@ -299,11 +299,21 @@ func TestRunOptions_SandboxConfig(t *testing.T) {
 			TargetDir: tmp,
 		},
 	}
-	sbox := sboxForParfile(opts, parfile)
+	sbox, err := sboxForParfile(opts, parfile)
+	if err != nil {
+		t.Fatalf("sboxForParfile failed: %v", err)
+	}
 	if !sbox.Enabled {
 		t.Errorf("sbox.Enabled = false; want true")
 	}
 	if sbox.TargetDir != tmp {
 		t.Errorf("sbox.TargetDir = %q; want %q", sbox.TargetDir, tmp)
+	}
+
+	outsideParfile := filepath.Join(t.TempDir(), "outside.par2")
+	touch(t, outsideParfile)
+	_, err = sboxForParfile(opts, outsideParfile)
+	if err == nil {
+		t.Errorf("expected error for parfile outside TargetDir, got nil")
 	}
 }
