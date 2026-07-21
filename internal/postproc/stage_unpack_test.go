@@ -607,9 +607,25 @@ func assertExtractEngine(t *testing.T, scenario string, res unpack.Result, err e
 // unrar/7z/par2 (only `-tags=integration` does).
 func writeStubBinary(t *testing.T) string {
 	t.Helper()
-	stub := filepath.Join(t.TempDir(), "stubtool")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	dir := t.TempDir()
+	f, err := os.CreateTemp(dir, "stubtool.*.tmp")
+	if err != nil {
+		t.Fatalf("create temp stub binary: %v", err)
+	}
+	if _, err := f.WriteString("#!/bin/sh\nexit 1\n"); err != nil {
+		_ = f.Close()
 		t.Fatalf("write stub binary: %v", err)
+	}
+	if err := f.Chmod(0o755); err != nil {
+		_ = f.Close()
+		t.Fatalf("chmod stub binary: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close stub binary: %v", err)
+	}
+	stub := filepath.Join(dir, "stubtool")
+	if err := os.Rename(f.Name(), stub); err != nil {
+		t.Fatalf("rename stub binary: %v", err)
 	}
 	return stub
 }
@@ -835,17 +851,17 @@ func TestUnpackStage_RealtimeLogTransitions(t *testing.T) {
 	job, dir := stageJob(t)
 	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
 
-	var loggedLines []string
-	job.OnOutput = func(tool, line string) {
-		loggedLines = append(loggedLines, line)
-	}
+	collector := newLogCollector(false)
+	job.OnOutput = collector.Callback()
 
 	if err := enabledUnpackStage().Run(t.Context(), job); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
+	lines := collector.Lines()
+
 	var sawStart, sawComplete bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "Using go_unrar for RAR (pure-Go)") {
 			sawStart = true
 		}
@@ -855,10 +871,10 @@ func TestUnpackStage_RealtimeLogTransitions(t *testing.T) {
 	}
 
 	if !sawStart {
-		t.Errorf("expected start log 'Using go_unrar for RAR (pure-Go)' in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected start log 'Using go_unrar for RAR (pure-Go)' in OnOutput, got: %v", lines)
 	}
 	if !sawComplete {
-		t.Errorf("expected complete log 'go_unrar: unpacking complete' in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected complete log 'go_unrar: unpacking complete' in OnOutput, got: %v", lines)
 	}
 }
 
@@ -872,10 +888,8 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip(t *testing.T) {
 	job, dir := stageJob(t)
 	copyToDir(t, sevenZipFixture("lzma2.7z"), dir)
 
-	var loggedLines []string
-	job.OnOutput = func(tool, line string) {
-		loggedLines = append(loggedLines, line)
-	}
+	collector := newLogCollector(false)
+	job.OnOutput = collector.Callback()
 
 	s := NewUnpackStageWith(unpack.Options{UseGo7z: true}, false)
 	s.SetEnabled(true)
@@ -884,8 +898,10 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
+	lines := collector.Lines()
+
 	var sawStart, sawComplete bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "Using go_7z for 7-Zip (pure-Go)") {
 			sawStart = true
 		}
@@ -895,10 +911,10 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip(t *testing.T) {
 	}
 
 	if !sawStart {
-		t.Errorf("expected start log 'Using go_7z for 7-Zip (pure-Go)' in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected start log 'Using go_7z for 7-Zip (pure-Go)' in OnOutput, got: %v", lines)
 	}
 	if !sawComplete {
-		t.Errorf("expected complete log 'go_7z: unpacking complete' in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected complete log 'go_7z: unpacking complete' in OnOutput, got: %v", lines)
 	}
 }
 
@@ -914,10 +930,8 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip_Fallback(t *testing.T) {
 		t.Fatalf("rename: %v", err)
 	}
 
-	var loggedLines []string
-	job.OnOutput = func(tool, line string) {
-		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
-	}
+	collector := newLogCollector(true)
+	job.OnOutput = collector.Callback()
 
 	// We must configure Go7zFallback: true, UseGo7z: true, and ensure SevenZipCommand is set/detectable
 	s := NewUnpackStageWith(unpack.Options{
@@ -930,8 +944,10 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip_Fallback(t *testing.T) {
 	// We expect this to fail eventually because it's not a real 7z archive.
 	_ = s.Run(t.Context(), job)
 
+	lines := collector.Lines()
+
 	var sawGo7zStart, sawGo7zFailRetry, sawExternal7zCommand bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "[go_7z] Using go_7z for 7-Zip (pure-Go)") {
 			sawGo7zStart = true
 		}
@@ -944,13 +960,13 @@ func TestUnpackStage_RealtimeLogTransitions_SevenZip_Fallback(t *testing.T) {
 	}
 
 	if !sawGo7zStart {
-		t.Errorf("expected start log 'Using go_7z for 7-Zip (pure-Go)' in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected start log 'Using go_7z for 7-Zip (pure-Go)' in OnOutput, got: %v", lines)
 	}
 	if !sawGo7zFailRetry {
-		t.Errorf("expected fallback retry log in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected fallback retry log in OnOutput, got: %v", lines)
 	}
 	if !sawExternal7zCommand {
-		t.Errorf("expected external command log in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected external command log in OnOutput, got: %v", lines)
 	}
 }
 
@@ -966,10 +982,8 @@ func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback(t *testing.T) {
 	// Use a corrupt rar to trigger GoUnRAR failure and fallback to unrar
 	copyToDir(t, unpackFixture("corrupt.rar"), dir)
 
-	var loggedLines []string
-	job.OnOutput = func(tool, line string) {
-		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
-	}
+	collector := newLogCollector(true)
+	job.OnOutput = collector.Callback()
 
 	s := NewUnpackStageWith(unpack.Options{
 		UseGoRAR:      true,
@@ -980,8 +994,10 @@ func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback(t *testing.T) {
 
 	_ = s.Run(t.Context(), job)
 
+	lines := collector.Lines()
+
 	var sawGoRarStart, sawGoRarFailRetry, sawExternalUnrarCommand bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "[go_unrar] Using go_unrar for RAR (pure-Go)") {
 			sawGoRarStart = true
 		}
@@ -994,23 +1010,66 @@ func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback(t *testing.T) {
 	}
 
 	if !sawGoRarStart {
-		t.Errorf("expected start log 'Using go_unrar for RAR (pure-Go)' in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected start log 'Using go_unrar for RAR (pure-Go)' in OnOutput, got: %v", lines)
 	}
 	if !sawGoRarFailRetry {
-		t.Errorf("expected fallback retry log in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected fallback retry log in OnOutput, got: %v", lines)
 	}
 	if !sawExternalUnrarCommand {
-		t.Errorf("expected external command log in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected external command log in OnOutput, got: %v", lines)
 	}
+}
+
+type logCollector struct {
+	mu     sync.Mutex
+	lines  []string
+	prefix bool
+}
+
+func newLogCollector(prefix bool) *logCollector {
+	return &logCollector{prefix: prefix}
+}
+
+func (c *logCollector) Callback() func(tool, line string) {
+	return func(tool, line string) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.prefix {
+			c.lines = append(c.lines, fmt.Sprintf("[%s] %s", tool, line))
+		} else {
+			c.lines = append(c.lines, line)
+		}
+	}
+}
+
+func (c *logCollector) Lines() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.lines)
 }
 
 func createDummyExecutable(t *testing.T, dir, filename, content string) string {
 	t.Helper()
-	path := filepath.Join(dir, filename)
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+	f, err := os.CreateTemp(dir, filename+".*.tmp")
+	if err != nil {
+		t.Fatalf("create temp dummy executable: %v", err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		_ = f.Close()
 		t.Fatalf("write dummy executable: %v", err)
 	}
-	return path
+	if err := f.Chmod(0o755); err != nil {
+		_ = f.Close()
+		t.Fatalf("chmod dummy executable: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close dummy executable: %v", err)
+	}
+	target := filepath.Join(dir, filename)
+	if err := os.Rename(f.Name(), target); err != nil {
+		t.Fatalf("rename dummy executable: %v", err)
+	}
+	return target
 }
 
 func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback_Success(t *testing.T) {
@@ -1035,17 +1094,13 @@ if [ -n "$outdir" ] && [ -d "$outdir" ]; then
 fi
 exit 0
 `
-	if err := os.WriteFile(unrarPath, []byte(successScript), 0o755); err != nil {
-		t.Fatalf("WriteFile success script: %v", err)
-	}
+	createDummyExecutable(t, tmpBinDir, "mock-unrar", successScript)
 
 	job, dir := stageJob(t)
 	copyToDir(t, unpackFixture("corrupt.rar"), dir)
 
-	var loggedLines []string
-	job.OnOutput = func(tool, line string) {
-		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
-	}
+	collector := newLogCollector(true)
+	job.OnOutput = collector.Callback()
 
 	s := NewUnpackStageWith(unpack.Options{
 		UseGoRAR:      true,
@@ -1062,8 +1117,10 @@ exit 0
 		t.Error("expected job.UnpackError to be false since fallback succeeded")
 	}
 
+	lines := collector.Lines()
+
 	var sawGoRarStart, sawGoRarFailRetry, sawExternalUnrarCommand, sawStdout, sawSuccess bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "[go_unrar] Using go_unrar for RAR (pure-Go)") {
 			sawGoRarStart = true
 		}
@@ -1082,19 +1139,19 @@ exit 0
 	}
 
 	if !sawGoRarStart {
-		t.Errorf("missing go_unrar start log: %v", loggedLines)
+		t.Errorf("missing go_unrar start log: %v", lines)
 	}
 	if !sawGoRarFailRetry {
-		t.Errorf("missing fallback retry log: %v", loggedLines)
+		t.Errorf("missing fallback retry log: %v", lines)
 	}
 	if !sawExternalUnrarCommand {
-		t.Errorf("missing external command log: %v", loggedLines)
+		t.Errorf("missing external command log: %v", lines)
 	}
 	if !sawStdout {
-		t.Errorf("missing stdout line: %v", loggedLines)
+		t.Errorf("missing stdout line: %v", lines)
 	}
 	if !sawSuccess {
-		t.Errorf("missing success log: %v", loggedLines)
+		t.Errorf("missing success log: %v", lines)
 	}
 }
 
@@ -1128,10 +1185,8 @@ exit 0
 		t.Fatalf("rename: %v", err)
 	}
 
-	var loggedLines []string
-	job.OnOutput = func(tool, line string) {
-		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
-	}
+	collector := newLogCollector(true)
+	job.OnOutput = collector.Callback()
 
 	s := NewUnpackStageWith(unpack.Options{
 		UseGo7z:         true,
@@ -1148,8 +1203,10 @@ exit 0
 		t.Error("expected job.UnpackError to be false since fallback succeeded")
 	}
 
+	lines := collector.Lines()
+
 	var sawGo7zStart, sawGo7zFailRetry, sawExternal7zCommand, sawStdout, sawSuccess bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "[go_7z] Using go_7z for 7-Zip (pure-Go)") {
 			sawGo7zStart = true
 		}
@@ -1168,19 +1225,19 @@ exit 0
 	}
 
 	if !sawGo7zStart {
-		t.Errorf("expected start log 'Using go_7z for 7-Zip (pure-Go)' in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected start log 'Using go_7z for 7-Zip (pure-Go)' in OnOutput, got: %v", lines)
 	}
 	if !sawGo7zFailRetry {
-		t.Errorf("expected fallback retry log in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected fallback retry log in OnOutput, got: %v", lines)
 	}
 	if !sawExternal7zCommand {
-		t.Errorf("expected external command log in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected external command log in OnOutput, got: %v", lines)
 	}
 	if !sawStdout {
-		t.Errorf("expected stdout line in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected stdout line in OnOutput, got: %v", lines)
 	}
 	if !sawSuccess {
-		t.Errorf("expected success log in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected success log in OnOutput, got: %v", lines)
 	}
 }
 
@@ -1197,10 +1254,8 @@ exit 0
 	job, dir := stageJob(t)
 	copyToDir(t, sevenZipFixture("lzma2.7z"), dir)
 
-	var loggedLines []string
-	job.OnOutput = func(tool, line string) {
-		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
-	}
+	collector := newLogCollector(true)
+	job.OnOutput = collector.Callback()
 
 	s := NewUnpackStageWith(unpack.Options{
 		UseGo7z:         false,
@@ -1212,8 +1267,10 @@ exit 0
 		t.Fatalf("expected extraction to succeed, got error: %v", err)
 	}
 
+	lines := collector.Lines()
+
 	var sawStart, sawComplete bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "[7z] Unpacking:") {
 			sawStart = true
 		}
@@ -1223,10 +1280,10 @@ exit 0
 	}
 
 	if !sawStart {
-		t.Errorf("expected start log 'Unpacking:' in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected start log 'Unpacking:' in OnOutput, got: %v", lines)
 	}
 	if !sawComplete {
-		t.Errorf("expected complete log 'Unpacking complete:' in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected complete log 'Unpacking complete:' in OnOutput, got: %v", lines)
 	}
 }
 
@@ -1266,10 +1323,8 @@ exit 0
 	job, dir := stageJob(t)
 	copyToDir(t, unpackFixture("single_rar5.rar"), dir)
 
-	var loggedLines []string
-	job.OnOutput = func(tool, line string) {
-		loggedLines = append(loggedLines, fmt.Sprintf("[%s] %s", tool, line))
-	}
+	collector := newLogCollector(true)
+	job.OnOutput = collector.Callback()
 
 	s := NewUnpackStageWith(unpack.Options{
 		UseGoRAR:     false,
@@ -1281,8 +1336,10 @@ exit 0
 		t.Fatalf("expected extraction to succeed, got error: %v", err)
 	}
 
+	lines := collector.Lines()
+
 	var sawStart, sawComplete bool
-	for _, l := range loggedLines {
+	for _, l := range lines {
 		if strings.Contains(l, "[unrar] Unpacking:") {
 			sawStart = true
 		}
@@ -1292,10 +1349,10 @@ exit 0
 	}
 
 	if !sawStart {
-		t.Errorf("expected start log 'Unpacking:' in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected start log 'Unpacking:' in OnOutput, got: %v", lines)
 	}
 	if !sawComplete {
-		t.Errorf("expected complete log 'Unpacking complete:' in OnOutput, got: %v", loggedLines)
+		t.Errorf("expected complete log 'Unpacking complete:' in OnOutput, got: %v", lines)
 	}
 }
 
@@ -1325,9 +1382,7 @@ ln -s "%s" "$outDir/evil_link"
 touch "$outDir/normal_file.txt"
 exit 0
 `, escapedFile)
-	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0o755); err != nil {
-		t.Fatalf("write fake unrar script: %v", err)
-	}
+	createDummyExecutable(t, t.TempDir(), "fake_unrar.sh", scriptContent)
 
 	s := NewUnpackStageWith(unpack.Options{
 		UseGoRAR:     false,

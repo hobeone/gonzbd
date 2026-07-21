@@ -1208,8 +1208,11 @@ func TestScanner_Run(t *testing.T) {
 		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
 		handler := &MockHandler{failFor: make(map[string]error)}
 
-		// Set a short timeout context to kill the negation mutant if log complete is not received
-		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		// Generous hang-guard: cancel() is triggered deterministically via the
+		// onRecord callback when "scan complete" is logged. The timeout only
+		// fires if the scanner hangs entirely — it must not race normal execution
+		// under -race or high parallelism.
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 
 		lh := &testLogHandler{
@@ -1271,14 +1274,16 @@ func TestScanner_Run(t *testing.T) {
 		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
 		handler := &MockHandler{failFor: make(map[string]error)}
 
-		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		// 50ms timeout with 5ms interval: allows 10 scan ticks on an empty dir
+		// without imposing an unnecessary 500ms delay on test suite execution.
+		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 		defer cancel()
 
 		lh := &testLogHandler{}
 		logger := slog.New(lh)
 		scanner := New(tmpDir, store, handler, nil, logger)
 
-		err := scanner.Run(ctx, 2*time.Millisecond)
+		err := scanner.Run(ctx, 5*time.Millisecond)
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run failed: %v", err)
 		}
