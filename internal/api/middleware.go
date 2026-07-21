@@ -159,20 +159,10 @@ func apiKeyFromRequest(r *http.Request) (string, bool) {
 	return "", false
 }
 
-// splitHostPort splits a "host:port" string into its parts, stripping IPv6
-// brackets on the no-port fallback path. Unlike net.SplitHostPort, it
-// tolerates a bare hostname or bracketed IPv6 literal with no port (e.g. a
-// request bound to the default port) by returning the host with an empty
-// port, rather than erroring.
+// splitHostPort splits a "host:port" string into its parts.
+// Delegates to config.SplitHostPortTolerant.
 func splitHostPort(hostport string) (host, port string) {
-	h, p, err := net.SplitHostPort(hostport)
-	if err == nil {
-		return h, p
-	}
-	if len(hostport) >= 2 && hostport[0] == '[' && hostport[len(hostport)-1] == ']' {
-		return hostport[1 : len(hostport)-1], ""
-	}
-	return hostport, ""
+	return config.SplitHostPortTolerant(hostport)
 }
 
 // isLoopbackHostname reports whether host is a loopback address (127.0.0.0/8,
