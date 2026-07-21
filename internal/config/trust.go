@@ -313,10 +313,10 @@ func SplitHostPortTolerant(hostport string) (host, port string) {
 	hostport = strings.TrimSpace(hostport)
 	h, p, err := net.SplitHostPort(hostport)
 	if err == nil {
-		return h, p
+		return strings.TrimSpace(h), strings.TrimSpace(p)
 	}
 	if len(hostport) >= 2 && hostport[0] == '[' && hostport[len(hostport)-1] == ']' {
-		return hostport[1 : len(hostport)-1], ""
+		return strings.TrimSpace(hostport[1 : len(hostport)-1]), ""
 	}
 	return hostport, ""
 }

@@ -316,6 +316,12 @@ func TestSplitHostPortTolerant(t *testing.T) {
 		{"  [::1]:8080  ", "::1", "8080"},
 		{"  localhost:8080  ", "localhost", "8080"},
 		{"127.0.0.1", "127.0.0.1", ""},
+		{"[fe80::1%eth0]:8080", "fe80::1%eth0", "8080"},
+		{"[fe80::1%eth0]", "fe80::1%eth0", ""},
+		{"", "", ""},
+		{"[]", "", ""},
+		{" 127.0.0.1 : 8080 ", "127.0.0.1", "8080"},
+		{"[ ::1 ]", "::1", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
