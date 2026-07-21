@@ -142,6 +142,15 @@ Each logical change is a self-contained unit of work. The workflow is:
 Each commit must leave the repository in a working state
 (`go build ./... && go test ./...` passes).
 
+### Code Review Reception Protocol
+
+When receiving code review feedback (from the user, PR comments, or external reviewers):
+
+1. **Pause before editing**: Do NOT jump directly into writing code or applying edits.
+2. **Evaluate & Acknowledge**: Restate each technical requirement or push back with technical reasoning if questionable. Do NOT use performative agreement ("You're absolutely right!", "Great point!").
+3. **GitHub Thread Replies**: For inline review comments on GitHub, reply directly within the inline comment thread (`gh api repos/{owner}/{repo}/pulls/{pr}/comments/{id}/replies`), rather than posting top-level PR comments.
+4. **Incremental Implementation**: Apply and test fixes one item at a time, running quality gates before committing.
+
 ### Tooling Setup
 
 ```bash
