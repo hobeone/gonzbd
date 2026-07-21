@@ -1208,8 +1208,11 @@ func TestScanner_Run(t *testing.T) {
 		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
 		handler := &MockHandler{failFor: make(map[string]error)}
 
-		// Set a short timeout context to kill the negation mutant if log complete is not received
-		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		// Generous hang-guard: cancel() is triggered deterministically via the
+		// onRecord callback when "scan complete" is logged. The timeout only
+		// fires if the scanner hangs entirely — it must not race normal execution
+		// under -race or high parallelism.
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 
 		lh := &testLogHandler{
@@ -1271,7 +1274,9 @@ func TestScanner_Run(t *testing.T) {
 		store, _ := OpenStore(filepath.Join(tmpDir, "state.json"))
 		handler := &MockHandler{failFor: make(map[string]error)}
 
-		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		// 500ms hang-guard: allows at least one full scan tick on an empty dir.
+		// 20ms was within OS scheduling jitter under -race.
+		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 		defer cancel()
 
 		lh := &testLogHandler{}
