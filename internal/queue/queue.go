@@ -13,6 +13,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // ErrNotFound is returned by Queue methods when the given job ID is
@@ -47,6 +48,8 @@ type Queue struct {
 	// dirty is false, avoiding unnecessary I/O on idle queues.
 	dirty atomic.Bool
 
+	sOpts fsutil.SanitizeOptions
+
 	log *slog.Logger
 }
 
@@ -65,6 +68,20 @@ func WithLogger(l *slog.Logger) Option {
 			q.log = l.With("component", "queue")
 		}
 	}
+}
+
+// WithSanitizeOptions sets filesystem sanitization options for job names on the Queue.
+func WithSanitizeOptions(opts fsutil.SanitizeOptions) Option {
+	return func(q *Queue) {
+		q.sOpts = opts
+	}
+}
+
+// SetSanitizeOptions updates filesystem sanitization options at runtime.
+func (q *Queue) SetSanitizeOptions(opts fsutil.SanitizeOptions) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.sOpts = opts
 }
 
 // New returns an empty, unpaused queue.
@@ -392,7 +409,9 @@ func (q *Queue) SetPP(id string, pp int) error {
 	return nil
 }
 
-// SetName changes a job's display name. Returns ErrNotFound if absent.
+// SetName changes a job's display name, applying cleanup and filesystem
+// sanitization rules to ensure the resulting name is safe for filesystem paths.
+// Returns ErrNotFound if absent.
 func (q *Queue) SetName(id, name string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -400,6 +419,9 @@ func (q *Queue) SetName(id, name string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
+	name = stripNZBExt(name)
+	name = fsutil.CleanupName(name, q.sOpts)
+	name = fsutil.SanitizeFolderName(name, q.sOpts)
 	job.Name = name
 	q.dirty.Store(true)
 	return nil

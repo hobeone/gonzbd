@@ -184,7 +184,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 
 	queueStateDir := filepath.Join(adminDir, "queue")
-	q, err := queue.Load(queueStateDir, queue.WithLogger(log))
+	q, err := queue.Load(queueStateDir, queue.WithLogger(log), queue.WithSanitizeOptions(sanitize))
 	if err != nil {
 		return nil, fmt.Errorf("app: load queue: %w", err)
 	}
