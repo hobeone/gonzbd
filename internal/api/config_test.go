@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/api/apitest"
-
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 )
 
@@ -207,6 +207,7 @@ func TestModeConfig_TestServer_MissingHost(t *testing.T) {
 func TestModeConfig_TestServer_UnreachableHost(t *testing.T) {
 	t.Parallel()
 	s := testServer()
+	s.setAppServices(&app.Application{})
 
 	rr := apiGet(t, s.Handler(), "/api?mode=config&name=test_server&host=192.0.2.1&port=119&apikey="+testAPIKey)
 	if rr.Code != http.StatusOK {
@@ -223,6 +224,21 @@ func TestModeConfig_TestServer_UnreachableHost(t *testing.T) {
 	msg, _ := result["message"].(string)
 	if msg == "" {
 		t.Error("message should be non-empty for a failed connection")
+	}
+}
+
+func TestModeConfig_TestServer_UnwiredApp(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("Default(): %v", err)
+	}
+	cfg.With(func(c *config.Config) { c.General.APIKey = testAPIKey })
+	s := New(Options{Config: cfg})
+
+	rr := apiGet(t, s.Handler(), "/api?mode=config&name=test_server&host=127.0.0.1&port=119&apikey="+testAPIKey)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500 when App is not set", rr.Code)
 	}
 }
 

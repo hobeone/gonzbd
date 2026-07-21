@@ -56,6 +56,7 @@ func repairConfigFromPP(pp config.PostProcConfig, probe binaryProbe, cmdCfg cmdu
 			Command:   pp.Par2Command,
 			Turbo:     pp.Par2Turbo,
 			CmdCfg:    cmdCfg,
+			Sandbox:   cmdutil.SandboxConfig{Enabled: true, Strict: pp.StrictSandbox},
 			ExtraArgs: extraPar2Args,
 			Caps:      &probe.Par2Caps,
 		},

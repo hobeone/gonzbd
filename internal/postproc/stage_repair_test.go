@@ -754,3 +754,80 @@ func TestRepairHelpers(t *testing.T) {
 		}
 	})
 }
+
+func TestRepairStage_ContainmentViolation(t *testing.T) {
+	t.Parallel()
+
+	job, outDir := stageJob(t)
+	tmpDir := filepath.Dir(outDir)
+
+	// Create a symlink in outDir pointing outside outDir.
+	outsideFile := filepath.Join(tmpDir, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	symlink := filepath.Join(outDir, "bad_link.txt")
+	if err := os.Symlink(outsideFile, symlink); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	s := NewRepairStage()
+	set := par2.Set{
+		Name:       "bad_set",
+		MainFile:   "bad_set.par2",
+		ExtraFiles: []string{"bad_set.vol001.par2"},
+	}
+	vs := NewVerifiedSets(outDir, slog.Default())
+
+	res := par2.RepairResult{Success: true}
+	err := s.handleRepairResult(t.Context(), slog.Default(), job, set, vs, res, nil)
+	if err == nil {
+		t.Fatalf("expected containment violation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "containment check") {
+		t.Errorf("err = %v; want containment check error", err)
+	}
+	if !job.ParError {
+		t.Errorf("job.ParError = false; want true on containment violation")
+	}
+}
+
+func TestRepairStage_PreRepairContainmentViolation(t *testing.T) {
+	t.Parallel()
+
+	job, outDir := stageJob(t)
+	tmpDir := filepath.Dir(outDir)
+
+	outsideFile := filepath.Join(tmpDir, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	symlink := filepath.Join(outDir, "bad_link.txt")
+	if err := os.Symlink(outsideFile, symlink); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// Place a par2 main file so processPar2Set reaches pre-repair containment check.
+	mainPar := filepath.Join(outDir, "test.par2")
+	if err := os.WriteFile(mainPar, []byte("par2"), 0o644); err != nil {
+		t.Fatalf("write main par2: %v", err)
+	}
+
+	s := NewRepairStage()
+	set := par2.Set{
+		Name:     "bad_set",
+		MainFile: "test.par2",
+	}
+	vs := NewVerifiedSets(outDir, slog.Default())
+
+	err := s.processPar2Set(t.Context(), slog.Default(), job, set, []string{}, par2.RunOptions{}, vs, false, false)
+	if err == nil {
+		t.Fatalf("expected pre-repair containment violation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "pre-repair containment check") {
+		t.Errorf("err = %v; want pre-repair containment check error", err)
+	}
+	if !job.ParError {
+		t.Errorf("job.ParError = false; want true on pre-repair containment violation")
+	}
+}

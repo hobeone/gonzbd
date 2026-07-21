@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/nntp"
 )
 
 // sabSectionAlias maps SABnzbd section names to our internal section names.
@@ -372,7 +371,15 @@ const testServerTimeout = 15 * time.Second
 // request, verifies the greeting and authentication, then closes the
 // connection. The result tells the caller whether the server is reachable
 // and accepts the supplied credentials.
+//
+// Note: Unlike urlgrabber, configTestServer deliberately permits private/RFC1918
+// and loopback IP addresses. Usenet servers may be hosted on private LANs or
+// local test ports.
 func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
+	if !s.requireApp(w) {
+		return
+	}
+
 	host := formValue(r, "host")
 	if host == "" {
 		s.respondError(w, http.StatusBadRequest, "missing host parameter")
@@ -415,7 +422,7 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), testServerTimeout)
 	defer cancel()
 
-	conn, err := nntp.Dial(ctx, cfg, nntp.WithLogger(s.log))
+	_, err := s.status.TestNNTPServer(ctx, cfg)
 	if err != nil {
 
 		s.log.Warn("test_server failed", "host", host, "port", port, "error", err)
@@ -425,7 +432,6 @@ func (s *Server) configTestServer(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	_ = conn.Close() //nolint:errcheck // test connection; close error is irrelevant
 
 	s.log.Info("test_server passed", "host", host, "port", port)
 	respondOK(w, "result", map[string]any{
