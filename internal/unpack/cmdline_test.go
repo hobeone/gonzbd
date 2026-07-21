@@ -143,9 +143,15 @@ func TestUnRAR_ExtraArgs(t *testing.T) {
 	}
 }
 
-// TestUnRAR_NiceIoniceWrapping verifies that CmdCfg.Nice and CmdCfg.Ionice
-// are reflected in the captured command line (the binary changes to nice/ionice).
-func TestUnRAR_NiceIoniceWrapping(t *testing.T) {
+// TestUnRAR_NiceIoniceOptionsFlowThrough verifies that setting CmdCfg.Nice and
+// CmdCfg.Ionice does not break command capture. It does NOT verify that nice/
+// ionice wrapping is applied: formatCmdLine (cmdline.go) is only ever called
+// with (bin, args, redact) — CmdCfg never reaches it — so nice/ionice prefixing
+// happens purely inside exec.Cmd construction and is invisible to the captured
+// string. There is no assertion here that could distinguish "nice/ionice
+// applied" from "CmdCfg ignored"; this only guards against UnRAR erroring or
+// skipping OnCommand when CmdCfg is set.
+func TestUnRAR_NiceIoniceOptionsFlowThrough(t *testing.T) {
 	t.Parallel()
 	opts, captured := captureCmd(unpack.Options{
 		CmdCfg: cmdutil.CmdConfig{
@@ -154,11 +160,6 @@ func TestUnRAR_NiceIoniceWrapping(t *testing.T) {
 		},
 	})
 	_, _ = unpack.UnRAR(t.Context(), slog.Default(), dummyRarArchive(), t.TempDir(), "", opts)
-	// The captured command line from formatCmdLine uses the raw binary (/nonexistent/binary),
-	// not the nice/ionice prefix (that's internal to exec.Cmd). But the binary should
-	// still be present in the captured line — cmdutil wrapping doesn't change the OnCommand
-	// output since formatCmdLine is called with the raw binary name.
-	// This test verifies the Options flow through without error.
 	if *captured == "" {
 		t.Fatal("OnCommand was not called despite nice/ionice config")
 	}
