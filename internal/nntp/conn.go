@@ -396,8 +396,9 @@ func validateCredential(val, label string) error {
 
 // authenticate drives the AUTHINFO USER / AUTHINFO PASS dance
 // synchronously. On success state advances to Authenticated; on
-// failure the sentinel ErrAuthRejected is returned and the Conn is
-// unusable (caller should close).
+// failure ErrInvalidCredential (bad input) or ErrAuthRejected
+// (server 481/482) is returned and the Conn is unusable (caller
+// should close).
 func (c *Conn) authenticate(user, pass string) error {
 	if err := validateCredential(user, "username"); err != nil {
 		return err
