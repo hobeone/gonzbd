@@ -12,16 +12,9 @@ import (
 )
 
 func TestSevenZip_Integration(t *testing.T) {
-	var bin string
-	var err error
-	for _, name := range unpack.SevenZipBinaries {
-		if bin, err = exec.LookPath(name); err == nil {
-			break
-		}
-	}
-	if err != nil || bin == "" {
+	if _, err := unpack.SevenZipBin(unpack.Options{}); err != nil {
 		if os.Getenv("CI") != "" {
-			t.Fatalf("7zz/7z binary not found in PATH in CI environment; required for integration test")
+			t.Fatal("7zz/7z binary not found in PATH in CI environment; required for integration test")
 		}
 		t.Skip("7zz/7z binary not found in PATH; skipping integration test")
 	}

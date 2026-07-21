@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -13,9 +12,9 @@ import (
 )
 
 func TestUnRAR_Integration(t *testing.T) {
-	if _, err := exec.LookPath("unrar"); err != nil {
+	if _, err := unpack.UnrarBin(unpack.Options{}); err != nil {
 		if os.Getenv("CI") != "" {
-			t.Fatalf("unrar binary not found in PATH in CI environment; required for integration test")
+			t.Fatal("unrar binary not found in PATH in CI environment; required for integration test")
 		}
 		t.Skip("unrar binary not found in PATH; skipping integration test")
 	}
