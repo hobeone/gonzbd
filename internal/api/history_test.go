@@ -411,7 +411,7 @@ func TestHistoryRetry(t *testing.T) {
 	t.Run("retry error", func(t *testing.T) {
 		t.Parallel()
 		s, repo := testHistoryServer(t)
-		s.app = retryErrApp{NopApp: apitest.NopApp{History: repo}, err: errors.New("simulated retry failure")}
+		s.setAppServices(retryErrApp{NopApp: apitest.NopApp{History: repo}, err: errors.New("simulated retry failure")})
 
 		rr := apiGet(t, s.Handler(), "/api?mode=history&name=retry&value=job_fail&apikey="+testAPIKey)
 		if rr.Code != http.StatusInternalServerError {

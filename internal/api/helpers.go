@@ -216,7 +216,10 @@ func (s *Server) requireDependencies(w http.ResponseWriter, queue, app, config, 
 		s.respondError(w, http.StatusInternalServerError, "queue not wired")
 		return false
 	}
-	if app && s.app == nil {
+	// The four role fields are co-assigned from one Options.App (see
+	// setAppServices), so any one being nil means the app is unwired. Check a
+	// single canonical role field here — it is equivalent to the old s.app.
+	if app && s.jobs == nil {
 		s.respondError(w, http.StatusInternalServerError, "app not wired")
 		return false
 	}

@@ -144,7 +144,7 @@ func TestModeConfig_Speedlimit_SaveError(t *testing.T) {
 		t.Fatalf("Default(): %v", err)
 	}
 	s := testServerWithConfig(t, cfg)
-	s.app = apitest.NopApp{}
+	s.setAppServices(apitest.NopApp{})
 	s.configPath = "/dev/null/impossible/gonzbd.yaml"
 
 	rr := apiGet(t, s.Handler(), "/api?mode=config&name=speedlimit&value=500&apikey="+testAPIKey)
@@ -574,7 +574,7 @@ func TestInjectSABDefaultsDirect(t *testing.T) {
 	})
 }
 
-var _ ApplicationReloader = (*apitest.NopApp)(nil)
+var _ AppServices = (*apitest.NopApp)(nil)
 
 type setConfigSpyApp struct {
 	apitest.NopApp
@@ -931,7 +931,7 @@ func TestModeSetConfig_Comprehensive(t *testing.T) {
 func TestModeConfig_Speedlimit_NoApp(t *testing.T) {
 	t.Parallel()
 	s := testServer()
-	s.app = nil
+	s.setAppServices(nil)
 	rr := apiGet(t, s.Handler(), "/api?mode=config&name=speedlimit&value=500&apikey="+testAPIKey)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d; want 503", rr.Code)

@@ -12,7 +12,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
-// NopApp is a no-op implementation of ApplicationReloader.
+// NopApp is a no-op implementation of the api.AppServices aggregate (and
+// therefore of every api role interface it embeds).
 // It is intended for use in tests (unit, integration, and UI) to eliminate
 // duplicate mock definitions of the 20+-method interface.
 type NopApp struct {
