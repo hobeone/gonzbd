@@ -14,14 +14,17 @@ import (
 
 func TestUnRAR_Integration(t *testing.T) {
 	if _, err := exec.LookPath("unrar"); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("unrar binary not found in PATH in CI environment; required for integration test")
+		}
 		t.Skip("unrar binary not found in PATH; skipping integration test")
 	}
 
-	// We ship a small pre-generated test.rar in testdata/.
-	// If the file doesn't exist, skip rather than fail.
-	rarPath := "testdata/test.rar"
+	// Use our committed valid RAR5 fixture in testdata/.
+	// Fail loudly if missing since it is a committed repository fixture.
+	rarPath := "testdata/single_rar5.rar"
 	if _, err := os.Stat(rarPath); err != nil {
-		t.Skipf("testdata/test.rar not present (%v); skipping unrar integration test", err)
+		t.Fatalf("testdata/single_rar5.rar not present (%v); fixture required", err)
 	}
 
 	outDir := t.TempDir()

@@ -20,13 +20,17 @@ func TestSevenZip_Integration(t *testing.T) {
 		}
 	}
 	if err != nil || bin == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("7zz/7z binary not found in PATH in CI environment; required for integration test")
+		}
 		t.Skip("7zz/7z binary not found in PATH; skipping integration test")
 	}
 
-	// We ship a small pre-generated test.7z in testdata/.
-	szPath := "testdata/test.7z"
+	// Use our committed valid 7z fixture in testdata/.
+	// Fail loudly if missing since it is a committed repository fixture.
+	szPath := "testdata/sevenzip/copy.7z"
 	if _, err := os.Stat(szPath); err != nil {
-		t.Skipf("testdata/test.7z not present (%v); skipping 7zip integration test", err)
+		t.Fatalf("testdata/sevenzip/copy.7z not present (%v); fixture required", err)
 	}
 
 	outDir := t.TempDir()
