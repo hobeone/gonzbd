@@ -248,9 +248,9 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 	key := a.MessageID
 
 	d.tracker.Lock()
-	defer d.tracker.Unlock()
 
 	if d.tracker.InFlightLocked(key) > 0 {
+		d.tracker.Unlock()
 		return false, nil
 	}
 
@@ -268,6 +268,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 	// a 3-case select per server. A 2-case select (send/default) is
 	// substantially cheaper in runtime.selectgo.
 	if ctx.Err() != nil {
+		d.tracker.Unlock()
 		return false, nil
 	}
 
@@ -277,7 +278,10 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 	// number of servers, declare it permanently failed. This prevents
 	// infinite retry loops on articles that consistently fail on all servers.
 	if opts.maxArtTries > 0 && hasTried && mask.count() >= opts.maxArtTries {
-		d.log.Warn("article exceeded max retries", "msgid", a.MessageID, "job", a.JobID, "tries", mask.count(), "max", opts.maxArtTries)
+		tries := mask.count()
+		d.tracker.Unlock()
+		// --- No lock held below this line ---
+		d.log.Warn("article exceeded max retries", "msgid", a.MessageID, "job", a.JobID, "tries", tries, "max", opts.maxArtTries)
 		return true, req
 	}
 
@@ -290,17 +294,22 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 				mask.set(idx)
 				d.tracker.SetTriedLocked(key, mask)
 				d.tracker.IncrementInFlightLocked(key)
+				d.tracker.Unlock()
 				return true, nil
 			default:
 				// server queue filled between selectServerForArticle and ch <- req
 			}
 		}
+		d.tracker.Unlock()
 		return false, nil
 	}
 	if idx == -1 {
+		d.tracker.Unlock()
+		// --- No lock held below this line ---
 		d.log.Warn("article failed on all servers", "msgid", a.MessageID, "job", a.JobID)
 		return true, req
 	}
+	d.tracker.Unlock()
 	return false, nil
 }
 
@@ -685,6 +694,19 @@ func (d *Downloader) clearTried(jobID, messageID string) { //nolint:unparam // j
 
 // managedConn encapsulates an NNTP connection and the synchronization
 // required to lazily dial, use, and safely tear down the connection.
+//
+// Get deliberately holds mu across the dial itself (nntp.Dial and its
+// surrounding log calls) — an intentional exception to the general "never
+// hold a mutex during I/O" rule (see docs/go-standards.md), not an oversight:
+// mu here doubles as the dial-coalescing lock for this connection slot.
+// Every concurrent caller of Get/Close/DropIfMatches for the SAME
+// managedConn genuinely needs this exact dial to resolve before it can do
+// anything useful (unlike the historical violations this rule targets,
+// where the blocked party had unrelated work to do), and releasing the lock
+// mid-dial would let two goroutines dial concurrently, or let Close() run
+// while a dial is in flight and silently orphan the connection it
+// eventually stores. This is closer to sync.Once's pattern (holding for an
+// initializer's duration) than to the anti-pattern the rule targets.
 type managedConn struct {
 	mu   sync.Mutex
 	conn *nntp.Conn
@@ -703,7 +725,7 @@ func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, worke
 		return nil, errServerPenalized
 	}
 
-	d.log.Debug("dialing", "server", name, "host", srv.Cfg().Host)
+	d.log.Debug("dialing", "server", name, "host", srv.Cfg().Host) //lockio: see managedConn doc comment — mu is also the dial-coalescing lock
 	dialOpts := []nntp.DialOption{
 		nntp.WithLimiter(d.limiter),
 		nntp.WithLogger(d.log),
@@ -712,12 +734,12 @@ func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, worke
 		dialOpts = append(dialOpts, nntp.WithRecorder(d.meter, name))
 	}
 
-	c, err := nntp.Dial(ctx, srv.Cfg(), dialOpts...)
+	c, err := nntp.Dial(ctx, srv.Cfg(), dialOpts...) //lockio: see managedConn doc comment — mu is also the dial-coalescing lock
 	if err != nil {
 		return nil, err
 	}
 
-	d.log.Debug("connected", "server", name, "ssl", c.SSLInfo())
+	d.log.Debug("connected", "server", name, "ssl", c.SSLInfo()) //lockio: see managedConn doc comment — mu is also the dial-coalescing lock
 	m.conn = c
 	d.setConnConnected(workerID, true)
 	return c, nil

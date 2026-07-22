@@ -1293,7 +1293,6 @@ func (app *Application) SetBandwidthPerc(perc int) {
 // enqueue time. The caller is responsible for creating the directory.
 func (app *Application) SetDownloadDir(dir string) {
 	app.mu.Lock()
-	defer app.mu.Unlock()
 	app.config.With(func(c *config.Config) {
 		c.General.DownloadDir = dir
 	})
@@ -1302,6 +1301,8 @@ func (app *Application) SetDownloadDir(dir string) {
 		app.pipeline.downloadDir = dir
 		app.pipeline.mu.Unlock()
 	}
+	app.mu.Unlock()
+	// --- No lock held below this line ---
 	app.log.Info("download dir updated", "dir", dir)
 }
 
@@ -1310,10 +1311,11 @@ func (app *Application) SetDownloadDir(dir string) {
 // enqueue time. The caller is responsible for creating the directory.
 func (app *Application) SetCompleteDir(dir string) {
 	app.mu.Lock()
-	defer app.mu.Unlock()
 	app.config.With(func(c *config.Config) {
 		c.General.CompleteDir = dir
 	})
+	app.mu.Unlock()
+	// --- No lock held below this line ---
 	app.log.Info("complete dir updated", "dir", dir)
 }
 

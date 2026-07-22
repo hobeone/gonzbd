@@ -337,11 +337,11 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	// Double-check under the write lock — another goroutine may have won
 	// the race between RUnlock and Lock.
 	if _, exists := p.fileInfo[key]; exists {
+		p.mu.Unlock()
 		return nil
 	}
 
@@ -372,6 +372,7 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 			fsutil.JoinSafe(jobDir, "", candidate, p.sanitize))
 		resolvedFilename := filepath.Base(path)
 		if err := p.queue.SetFileFilename(jobID, fileIdx, resolvedFilename); err != nil {
+			p.mu.Unlock()
 			return fmt.Errorf("set file filename: %w", err)
 		}
 	}
@@ -381,6 +382,7 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	// number the assembler will actually receive.
 	totalParts, err := p.queue.CountUnfinishedArticles(jobID, fileIdx)
 	if err != nil {
+		p.mu.Unlock()
 		return fmt.Errorf("count unfinished articles: %w", err)
 	}
 
@@ -392,6 +394,8 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	}
 
 	p.fileInfo[key] = info
+	p.mu.Unlock()
+	// --- No lock held below this line ---
 	p.log.Debug("registered file",
 		"job", jobID, "fileidx", fileIdx, "path", info.Path, "parts", info.TotalParts)
 

@@ -254,10 +254,7 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 		d.completedVols[setname] = make(map[int]string)
 	}
 	d.completedVols[setname][vol] = path
-
-	d.log.Info("volume completed",
-		"set", setname, "vol", vol, "path", filepath.Base(path),
-		"total_for_set", d.totalVolumes[setname])
+	totalForSet := d.totalVolumes[setname]
 
 	needStart := false
 	if !d.started {
@@ -276,6 +273,10 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 	}
 
 	d.mu.Unlock()
+	// --- No lock held below this line ---
+	d.log.Info("volume completed",
+		"set", setname, "vol", vol, "path", filepath.Base(path),
+		"total_for_set", totalForSet)
 
 	d.notifyChange()
 
@@ -326,7 +327,6 @@ func (d *DirectUnpacker) Abort() {
 		return
 	}
 	d.killed = true
-	d.log.Info("aborting directunpack", "job", d.jobID)
 
 	// Record failures for the current and any queued sets.
 	if d.curSetname != "" {
@@ -350,6 +350,8 @@ func (d *DirectUnpacker) Abort() {
 		close(d.done)
 	}
 	d.mu.Unlock()
+	// --- No lock held below this line ---
+	d.log.Info("aborting directunpack", "job", d.jobID)
 
 	if !started {
 		return
