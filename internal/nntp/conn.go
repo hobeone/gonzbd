@@ -383,11 +383,29 @@ func (c *Conn) setupHandshakeDeadline(ctx context.Context) (func(), error) {
 	return func() { close(done) }, nil
 }
 
+// validateCredential rejects credentials that contain characters
+// capable of injecting additional NNTP commands via CR/LF or null
+// bytes. This is the credential counterpart to validateMessageID.
+// Empty strings are allowed — some servers accept empty passwords.
+func validateCredential(val, label string) error {
+	if strings.ContainsAny(val, "\r\n\x00") {
+		return fmt.Errorf("%w in %s", ErrInvalidCredential, label)
+	}
+	return nil
+}
+
 // authenticate drives the AUTHINFO USER / AUTHINFO PASS dance
 // synchronously. On success state advances to Authenticated; on
-// failure the sentinel ErrAuthRejected is returned and the Conn is
-// unusable (caller should close).
+// failure ErrInvalidCredential (bad input) or ErrAuthRejected
+// (server 481/482) is returned and the Conn is unusable (caller
+// should close).
 func (c *Conn) authenticate(user, pass string) error {
+	if err := validateCredential(user, "username"); err != nil {
+		return err
+	}
+	if err := validateCredential(pass, "password"); err != nil {
+		return err
+	}
 	if _, err := fmt.Fprintf(c.bw, "AUTHINFO USER %s\r\n", user); err != nil {
 		return fmt.Errorf("nntp: write AUTHINFO USER: %w", err)
 	}
