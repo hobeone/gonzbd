@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -1192,5 +1193,83 @@ func TestFetchArticle_FetchFailureAppliesClampedPenalty(t *testing.T) {
 	}
 	if got <= 0 {
 		t.Errorf("penalty duration = %v, want > 0 for a connection-level fetch failure", got)
+	}
+}
+
+// Verify that when multiple concurrent fetch requests share a single managedConn
+// and a connection hangup/teardown occurs, BadConnections metric is incremented
+// exactly once (by the first notifier) and all in-flight article requests are
+// cleanly unmarked for retry.
+func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
+	t.Parallel()
+
+	ms := newMockNNTP(t)
+	ms.addArticle("hangup1@h", "body1")
+	ms.addArticle("hangup2@h", "body2")
+	ms.hangupOnFetch("hangup1@h")
+	ms.hangupOnFetch("hangup2@h")
+
+	q := queue.New()
+	srv := testServer(t, "s", ms.addr)
+	tracker := newDispatchTracker()
+	d := &Downloader{
+		queue:   q,
+		tracker: tracker,
+		log:     slog.New(slog.DiscardHandler),
+		opts:    Options{NoPenalties: true},
+		limiter: bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	// Mark both articles as tried so we can verify unmarkTried on error.
+	var initialMask serverMask
+	initialMask.set(0)
+	tracker.Lock()
+	tracker.SetTriedLocked("hangup1@h", initialMask)
+	tracker.SetTriedLocked("hangup2@h", initialMask)
+	tracker.Unlock()
+
+	mc := &managedConn{}
+	defer mc.Close(d, "worker1")
+
+	req1 := &articleRequest{jobID: "job1", messageID: "hangup1@h"}
+	req2 := &articleRequest{jobID: "job1", messageID: "hangup2@h"}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req1, "worker1")
+		if ok || body != nil {
+			t.Errorf("goroutine 1: expected fetchArticle failure, got ok=%v body=%v", ok, body)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req2, "worker1")
+		if ok || body != nil {
+			t.Errorf("goroutine 2: expected fetchArticle failure, got ok=%v body=%v", ok, body)
+		}
+	}()
+
+	wg.Wait()
+
+	if srv.BadConnections() != 1 {
+		t.Errorf("BadConnections = %d, want 1 under concurrent teardown race", srv.BadConnections())
+	}
+
+	tracker.Lock()
+	m1, _ := tracker.TryListLocked("hangup1@h")
+	m2, _ := tracker.TryListLocked("hangup2@h")
+	tracker.Unlock()
+
+	if m1.has(0) {
+		t.Errorf("hangup1@h still marked tried for server 0, want unmarked after failure")
+	}
+	if m2.has(0) {
+		t.Errorf("hangup2@h still marked tried for server 0, want unmarked after failure")
 	}
 }
