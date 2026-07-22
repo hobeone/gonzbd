@@ -203,8 +203,13 @@ type PostProcConfig struct {
 
 	// RedactScriptSecrets when true replaces SAB_API_KEY and SAB_PASSWORD
 	// with a placeholder ("**REDACTED**") in the post-processing script
-	// environment. This prevents leaking the permanent administrative API
-	// key to untrusted or poorly-written scripts. Default false preserves
-	// backward compatibility with scripts that rely on these variables.
+	// environment. This is a log-hygiene measure that reduces accidental
+	// secret leakage from scripts that log or transmit their full
+	// environment — it does NOT provide a security boundary (scripts run
+	// as the daemon user and can read gonzbd.yaml from disk).
+	//
+	// WARNING: Scripts that use SAB_API_KEY for API callbacks (e.g.
+	// Sonarr/Radarr import hooks, nzbToMedia) will break with HTTP 401
+	// if this is enabled. Default false preserves backward compatibility.
 	RedactScriptSecrets bool `yaml:"redact_script_secrets" json:"redact_script_secrets"`
 }

@@ -448,7 +448,7 @@ func TestScriptHelperFunctionsDirect(t *testing.T) {
 			Bytes:   1234,
 			NZBName: "test.nzb",
 		}
-		env := buildEnv(in, false)
+		env := buildEnv(in)
 		hasPath := false
 		hasBytes := false
 		hasFilename := false
@@ -478,7 +478,7 @@ func TestScriptHelperFunctionsDirect(t *testing.T) {
 func TestBuildEnv_SecretsExposedByDefault(t *testing.T) {
 	t.Parallel()
 	in := fullInput(t)
-	m := buildEnvMapRedact(in, false)
+	m := buildEnvMap(in)
 
 	if got := m["SAB_API_KEY"]; got != "secret-key" {
 		t.Errorf("SAB_API_KEY = %q, want %q", got, "secret-key")
@@ -491,7 +491,8 @@ func TestBuildEnv_SecretsExposedByDefault(t *testing.T) {
 func TestBuildEnv_SecretsRedacted(t *testing.T) {
 	t.Parallel()
 	in := fullInput(t)
-	m := buildEnvMapRedact(in, true)
+	in.RedactSecrets = true
+	m := buildEnvMap(in)
 
 	if got := m["SAB_API_KEY"]; got != redactedValue {
 		t.Errorf("SAB_API_KEY = %q, want %q", got, redactedValue)

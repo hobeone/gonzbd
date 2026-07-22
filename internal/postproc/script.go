@@ -164,12 +164,13 @@ const redactedValue = "**REDACTED**"
 // parent process environment (so PATH, HOME, etc. are inherited) and appends
 // SAB_* pairs. This matches Python's os.environ.copy() + update pattern.
 //
-// When redact is true, SAB_API_KEY and SAB_PASSWORD are replaced with
-// a placeholder to prevent leaking secrets to untrusted scripts.
-func buildEnv(in ScriptInput, redact bool) []string {
+// When in.RedactSecrets is true, SAB_API_KEY and SAB_PASSWORD are replaced
+// with a placeholder to reduce accidental secret leakage from scripts that
+// log their environment.
+func buildEnv(in ScriptInput) []string {
 	apiKey := in.APIKey
 	password := in.Password
-	if redact {
+	if in.RedactSecrets {
 		apiKey = redactedValue
 		password = redactedValue
 	}
@@ -285,7 +286,7 @@ func RunScript(ctx context.Context, scriptPath string, in ScriptInput) ScriptRes
 	argv := buildArgv(in)
 	//nolint:gosec // G204: script path is operator-configured (cfg.script_dir + entry)
 	cmd := exec.CommandContext(ctx, scriptPath, argv...)
-	cmd.Env = buildEnv(in, in.RedactSecrets)
+	cmd.Env = buildEnv(in)
 	if in.FinalDir != "" {
 		cmd.Dir = in.FinalDir
 	}
@@ -322,7 +323,7 @@ func RunScript(ctx context.Context, scriptPath string, in ScriptInput) ScriptRes
 			// Rebuild the command because exec.Cmd is not reusable after Start.
 			//nolint:gosec // G204: script path is operator-configured
 			cmd = exec.CommandContext(ctx, scriptPath, argv...)
-			cmd.Env = buildEnv(in, in.RedactSecrets)
+			cmd.Env = buildEnv(in)
 			if in.FinalDir != "" {
 				cmd.Dir = in.FinalDir
 			}
@@ -387,14 +388,9 @@ func RunScript(ctx context.Context, scriptPath string, in ScriptInput) ScriptRes
 }
 
 // buildEnvMap returns a map of all SAB_* vars for testing/inspection.
-// Not exported; used by tests.
+// Respects in.RedactSecrets. Not exported; used by tests.
 func buildEnvMap(in ScriptInput) map[string]string {
-	return buildEnvMapRedact(in, false)
-}
-
-// buildEnvMapRedact returns a map of all SAB_* vars with optional redaction.
-func buildEnvMapRedact(in ScriptInput, redact bool) map[string]string {
-	pairs := buildEnv(in, redact)
+	pairs := buildEnv(in)
 	m := make(map[string]string, len(pairs))
 	for _, pair := range pairs {
 		k, v, _ := strings.Cut(pair, "=")
