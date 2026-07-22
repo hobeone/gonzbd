@@ -95,11 +95,13 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		return err
 	}
 	scriptPath := filepath.Join(scriptDir, name)
-	if !fsutil.PathWithin(scriptDir, scriptPath) {
-		err := fmt.Errorf("script path %q traverses outside script_dir %q", name, scriptDir)
+	resolvedPath, err := fsutil.ResolveAndVerifyContainment(scriptDir, scriptPath)
+	if err != nil {
+		err = fmt.Errorf("script path %q traverses outside script_dir %q: %w", name, scriptDir, err)
 		logf(ctx, log, job, slog.LevelWarn, "Error: %v", err)
 		return err
 	}
+	scriptPath = resolvedPath
 
 	// SABnzbd script status codes (§6.5):
 	// 0 = success, 1 = repair failed, 2 = unpack failed, 3 = both failed
