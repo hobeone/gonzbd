@@ -37,6 +37,11 @@ echo -e "\nRunning Go Test Coverage Check..."
 go run scripts/check_coverage/main.go
 echo -e "${GREEN}✓ Go Test Coverage Check Passed${NC}"
 
+# Mutex-held-during-I/O Check (see docs/go-standards.md).
+echo -e "\nRunning Mutex-held-during-I/O Check..."
+go run scripts/check_lock_io/main.go
+echo -e "${GREEN}✓ Mutex-held-during-I/O Check Passed${NC}"
+
 # 2. Go Integration Tests
 echo -e "\n[2/4] Running Go Integration Tests..."
 go test -v -tags=integration ./test/integration/...
