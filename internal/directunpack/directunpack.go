@@ -245,8 +245,11 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 	}
 
 	// First call: build total volume counts from all job filenames.
+	var builtVolumes map[string]int
 	if len(d.totalVolumes) == 0 && len(d.allFilenames) > 0 {
 		d.buildVolumeMap()
+		builtVolumes = make(map[string]int, len(d.totalVolumes))
+		maps.Copy(builtVolumes, d.totalVolumes)
 	}
 
 	// Record this completed volume.
@@ -274,6 +277,12 @@ func (d *DirectUnpacker) Add(ctx context.Context, filename, path string) {
 
 	d.mu.Unlock()
 	// --- No lock held below this line ---
+	if builtVolumes != nil {
+		d.log.Info("volume map built", "sets", len(builtVolumes))
+		for s, maxVol := range builtVolumes {
+			d.log.Debug("volume map entry", "set", s, "max_vol", maxVol)
+		}
+	}
 	d.log.Info("volume completed",
 		"set", setname, "vol", vol, "path", filepath.Base(path),
 		"total_for_set", totalForSet)
@@ -301,7 +310,8 @@ func (d *DirectUnpacker) setQueued(setname string) bool {
 }
 
 // buildVolumeMap populates totalVolumes from allFilenames. Must be called
-// with mu held.
+// with mu held. Pure mutation only — no logging, so callers stay free to log
+// a summary after releasing mu (see Add).
 func (d *DirectUnpacker) buildVolumeMap() {
 	for _, name := range d.allFilenames {
 		setname, vol := AnalyzeRarFilename(name)
@@ -311,10 +321,6 @@ func (d *DirectUnpacker) buildVolumeMap() {
 		if vol > d.totalVolumes[setname] {
 			d.totalVolumes[setname] = vol
 		}
-	}
-	d.log.Info("volume map built", "sets", len(d.totalVolumes))
-	for s, maxVol := range d.totalVolumes {
-		d.log.Debug("volume map entry", "set", s, "max_vol", maxVol)
 	}
 }
 

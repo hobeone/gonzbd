@@ -271,8 +271,19 @@ func collectDeferredLocks(body *ast.BlockStmt) map[string]token.Pos {
 // directly (as opposed to via a nested *ast.BlockStmt field, which
 // ast.Inspect will visit on its own).
 func blockList(n ast.Node) []ast.Stmt {
-	if b, ok := n.(*ast.BlockStmt); ok {
+	switch b := n.(type) {
+	case *ast.BlockStmt:
 		return b.List
+	case *ast.CaseClause:
+		// switch/type-switch case bodies are a raw []ast.Stmt, not wrapped
+		// in a *ast.BlockStmt — without this case, a Lock()+defer Unlock()
+		// pair starting as a case's first statements is invisible here,
+		// even though the deferred unlock still only fires at the
+		// enclosing function's return, same as anywhere else.
+		return b.Body
+	case *ast.CommClause:
+		// select case bodies have the same raw-[]ast.Stmt shape as CaseClause.
+		return b.Body
 	}
 	return nil
 }

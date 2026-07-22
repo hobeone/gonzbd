@@ -160,6 +160,58 @@ func (a *App) Status() string {
 	}
 }
 
+// TestDeferInSwitchCase_ExtendsToFunctionEnd is a regression test for a
+// false negative found during review: a Lock()+defer Unlock() pair starting
+// as a switch case's first statements was invisible to the deferred-lock
+// detector, because case clause bodies are a raw []ast.Stmt, not wrapped in
+// *ast.BlockStmt. The deferred unlock still only fires at the enclosing
+// function's return, so a log call after the switch is still under lock.
+func TestDeferInSwitchCase_ExtendsToFunctionEnd(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func (d *D) run(kind int) {
+	switch kind {
+	case 1:
+		d.mu.Lock()
+		defer d.mu.Unlock()
+	}
+	d.log.Info("after switch, lock still held via defer")
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for log call after a switch-case defer lock, got %d: %v", len(findings), findings)
+	}
+}
+
+// TestDeferInSelectCase_ExtendsToFunctionEnd mirrors
+// TestDeferInSwitchCase_ExtendsToFunctionEnd for the select-statement case
+// (ast.CommClause), the other raw-[]ast.Stmt shape blockList() was fixed to
+// recognize alongside ast.CaseClause.
+func TestDeferInSelectCase_ExtendsToFunctionEnd(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func (d *D) run(ch chan int) {
+	select {
+	case <-ch:
+		d.mu.Lock()
+		defer d.mu.Unlock()
+	}
+	d.log.Info("after select, lock still held via defer")
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for log call after a select-case defer lock, got %d: %v", len(findings), findings)
+	}
+}
+
 // TestEarlyReturnBranch_DoesNotLeak verifies the copy-on-recurse design:
 // an early "unlock, log, return" branch (the repo's own correct idiom) must
 // not cause a false positive on sibling statements after the branch, and a
