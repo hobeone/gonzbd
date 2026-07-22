@@ -17,6 +17,9 @@ func TestScriptStage_PathTraversalRejected(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	scriptDir := filepath.Join(tmpDir, "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	secretScript := filepath.Join(tmpDir, "secret.sh")
 	writeScript(t, secretScript, []byte("#!/bin/sh\nexit 0\n"))
 

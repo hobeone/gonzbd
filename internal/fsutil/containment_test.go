@@ -1,6 +1,7 @@
 package fsutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -216,8 +217,8 @@ func TestResolveAndVerifyContainment_SymlinkEscapes(t *testing.T) {
 	if err == nil {
 		t.Fatal("ResolveAndVerifyContainment should reject symlink escaping baseDir")
 	}
-	if !strings.Contains(err.Error(), "escapes") {
-		t.Errorf("expected 'escapes' in error, got: %v", err)
+	if !errors.Is(err, ErrSymlinkEscape) {
+		t.Errorf("expected ErrSymlinkEscape, got: %v", err)
 	}
 }
 

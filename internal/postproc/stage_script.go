@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -97,7 +98,11 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	scriptPath := filepath.Join(scriptDir, name)
 	resolvedPath, err := fsutil.ResolveAndVerifyContainment(scriptDir, scriptPath)
 	if err != nil {
-		err = fmt.Errorf("script path %q traverses outside script_dir %q: %w", name, scriptDir, err)
+		if errors.Is(err, fs.ErrNotExist) {
+			err = fmt.Errorf("script %q not found in script_dir %q: %w", name, scriptDir, err)
+		} else {
+			err = fmt.Errorf("script path %q traverses outside script_dir %q: %w", name, scriptDir, err)
+		}
 		logf(ctx, log, job, slog.LevelWarn, "Error: %v", err)
 		return err
 	}
