@@ -79,6 +79,7 @@ postproc:
   extra_unrar_params: ""
   extra_par2_params: ""
   script_can_fail: false
+  redact_script_secrets: false
 
 servers:
   - name: primary

@@ -131,6 +131,10 @@ type ScriptInput struct {
 
 	// OnLine is called for each line of subprocess output. May be nil.
 	OnLine func(string)
+
+	// RedactSecrets when true causes SAB_API_KEY and SAB_PASSWORD to be
+	// replaced with a placeholder in the script environment.
+	RedactSecrets bool
 }
 
 // ScriptResult captures the outcome of a script invocation.
@@ -152,10 +156,25 @@ type ScriptResult struct {
 	Err error
 }
 
+// redactedValue is the placeholder used for sensitive env vars when
+// redaction is enabled.
+const redactedValue = "**REDACTED**"
+
 // buildEnv constructs the environment for the script. It starts from the
 // parent process environment (so PATH, HOME, etc. are inherited) and appends
 // SAB_* pairs. This matches Python's os.environ.copy() + update pattern.
+//
+// When in.RedactSecrets is true, SAB_API_KEY and SAB_PASSWORD are replaced
+// with a placeholder to reduce accidental secret leakage from scripts that
+// log their environment.
 func buildEnv(in ScriptInput) []string {
+	apiKey := in.APIKey
+	password := in.Password
+	if in.RedactSecrets {
+		apiKey = redactedValue
+		password = redactedValue
+	}
+
 	base := os.Environ()
 	sab := []string{
 		// From ENV_NZO_FIELDS (Python's field loop):
@@ -181,12 +200,12 @@ func buildEnv(in ScriptInput) []string {
 
 		// From create_env's always-present extra_env_fields:
 		fmt.Sprintf("SAB_VERSION=%s", in.Version),
-		fmt.Sprintf("SAB_API_KEY=%s", in.APIKey),
+		fmt.Sprintf("SAB_API_KEY=%s", apiKey),
 		fmt.Sprintf("SAB_API_URL=%s", in.APIURL),
 
 		// Additional SABnzbd-compatible env vars:
 		fmt.Sprintf("SAB_BYTES_TRIED=%d", in.BytesTried),
-		fmt.Sprintf("SAB_PASSWORD=%s", in.Password),
+		fmt.Sprintf("SAB_PASSWORD=%s", password),
 		fmt.Sprintf("SAB_ENCRYPTED=%d", in.Encrypted),
 		fmt.Sprintf("SAB_PRIORITY=%d", in.Priority),
 		fmt.Sprintf("SAB_REPAIR=%d", in.Repair),
@@ -369,7 +388,7 @@ func RunScript(ctx context.Context, scriptPath string, in ScriptInput) ScriptRes
 }
 
 // buildEnvMap returns a map of all SAB_* vars for testing/inspection.
-// Not exported; used by tests.
+// Respects in.RedactSecrets. Not exported; used by tests.
 func buildEnvMap(in ScriptInput) map[string]string {
 	pairs := buildEnv(in)
 	m := make(map[string]string, len(pairs))

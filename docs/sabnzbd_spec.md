@@ -684,6 +684,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `extra_unrar_params` | string | `` | Extra unrar flags (allowlist: -mlp, -om*, -ri*) |
 | `extra_par2_params` | string | `` | Extra par2 flags |
 | `script_can_fail` | bool | false | Non-zero script exit = warning not failure |
+| `redact_script_secrets` | bool | false | Replace SAB_API_KEY/SAB_PASSWORD with `**REDACTED**` in script env (log-hygiene, not a security boundary) |
 
 ### 9.5 Category Configuration
 

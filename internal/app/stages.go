@@ -235,6 +235,7 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	)
 	scriptStage.Log = ppLog
 	scriptStage.SetScriptCanFail(scriptCanFail)
+	scriptStage.SetRedactSecrets(cfg.PostProc.RedactScriptSecrets)
 	stages = append(stages, scriptStage)
 
 	return builtStages{

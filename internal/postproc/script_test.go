@@ -474,3 +474,37 @@ func TestScriptHelperFunctionsDirect(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildEnv_SecretsExposedByDefault(t *testing.T) {
+	t.Parallel()
+	in := fullInput(t)
+	m := buildEnvMap(in)
+
+	if got := m["SAB_API_KEY"]; got != "secret-key" {
+		t.Errorf("SAB_API_KEY = %q, want %q", got, "secret-key")
+	}
+	if got := m["SAB_PASSWORD"]; got != "secret123" {
+		t.Errorf("SAB_PASSWORD = %q, want %q", got, "secret123")
+	}
+}
+
+func TestBuildEnv_SecretsRedacted(t *testing.T) {
+	t.Parallel()
+	in := fullInput(t)
+	in.RedactSecrets = true
+	m := buildEnvMap(in)
+
+	if got := m["SAB_API_KEY"]; got != redactedValue {
+		t.Errorf("SAB_API_KEY = %q, want %q", got, redactedValue)
+	}
+	if got := m["SAB_PASSWORD"]; got != redactedValue {
+		t.Errorf("SAB_PASSWORD = %q, want %q", got, redactedValue)
+	}
+	// Non-secret vars should still be present.
+	if got := m["SAB_VERSION"]; got != "5.6.0" {
+		t.Errorf("SAB_VERSION = %q, want %q", got, "5.6.0")
+	}
+	if got := m["SAB_API_URL"]; got != "http://localhost:4289/api" {
+		t.Errorf("SAB_API_URL should not be redacted, got %q", got)
+	}
+}
