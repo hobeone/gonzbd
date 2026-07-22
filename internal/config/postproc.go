@@ -200,4 +200,11 @@ type PostProcConfig struct {
 	// informational reasons (e.g. partial failure but still usable) won't
 	// cause the entire job to be marked as failed. Default false.
 	ScriptCanFail bool `yaml:"script_can_fail" json:"script_can_fail"`
+
+	// RedactScriptSecrets when true replaces SAB_API_KEY and SAB_PASSWORD
+	// with a placeholder ("**REDACTED**") in the post-processing script
+	// environment. This prevents leaking the permanent administrative API
+	// key to untrusted or poorly-written scripts. Default false preserves
+	// backward compatibility with scripts that rely on these variables.
+	RedactScriptSecrets bool `yaml:"redact_script_secrets" json:"redact_script_secrets"`
 }

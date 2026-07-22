@@ -37,6 +37,12 @@ type ScriptStage struct {
 	// is an error. Atomic so SetScriptCanFail can be called from any goroutine.
 	scriptCanFail atomic.Bool
 
+	// redactSecrets when true causes SAB_API_KEY and SAB_PASSWORD to be
+	// replaced with a placeholder in the script environment, preventing
+	// secret leakage to untrusted scripts. Default false preserves
+	// backward compatibility. Atomic for runtime toggleability.
+	redactSecrets atomic.Bool
+
 	// Log is the component-scoped logger for this stage.
 	Log *slog.Logger
 }
@@ -44,6 +50,10 @@ type ScriptStage struct {
 // SetScriptCanFail enables or disables treating non-zero script exit codes as
 // warnings at runtime without restart. Thread-safe.
 func (s *ScriptStage) SetScriptCanFail(v bool) { s.scriptCanFail.Store(v) }
+
+// SetRedactSecrets enables or disables masking of SAB_API_KEY and SAB_PASSWORD
+// in the script environment at runtime without restart. Thread-safe.
+func (s *ScriptStage) SetRedactSecrets(v bool) { s.redactSecrets.Store(v) }
 
 // SetScriptDir thread-safely updates the scripts directory path at runtime.
 func (s *ScriptStage) SetScriptDir(dir string) {
@@ -125,20 +135,21 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	logf(ctx, log, job, slog.LevelInfo, "Running: %s", scriptPath)
 
 	in := ScriptInput{
-		FinalDir:    job.DownloadDir,
-		CompleteDir: s.CompleteDir,
-		NZBName:     job.Queue.Filename,
-		JobName:     job.Queue.Name,
-		Category:    job.Queue.Category,
-		Status:      status,
-		PPFlags:     job.Queue.PP,
-		ScriptName:  name,
-		NZOID:       job.Queue.ID,
-		URL:         job.Queue.URL,
-		Version:     s.Version,
-		APIKey:      s.APIKey,
-		APIURL:      s.APIURL,
-		Bytes:       job.Queue.TotalBytes,
+		FinalDir:      job.DownloadDir,
+		CompleteDir:   s.CompleteDir,
+		NZBName:       job.Queue.Filename,
+		JobName:       job.Queue.Name,
+		Category:      job.Queue.Category,
+		Status:        status,
+		PPFlags:       job.Queue.PP,
+		ScriptName:    name,
+		NZOID:         job.Queue.ID,
+		URL:           job.Queue.URL,
+		Version:       s.Version,
+		APIKey:        s.APIKey,
+		APIURL:        s.APIURL,
+		Bytes:         job.Queue.TotalBytes,
+		RedactSecrets: s.redactSecrets.Load(),
 		OnLine: func(line string) {
 			if job.OnOutput != nil {
 				job.OnOutput("script", line)
