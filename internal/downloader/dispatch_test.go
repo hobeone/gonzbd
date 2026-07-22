@@ -1273,3 +1273,73 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 		t.Errorf("hangup2@h still marked tried for server 0, want unmarked after failure")
 	}
 }
+
+// ---------- selectWork priority pre-check ----------
+// https://github.com/hobeone/gonzbd/issues/182
+
+// selectWork must prioritize already-available work over a disconnect
+// signal, even when both are simultaneously ready. Without the
+// non-blocking pre-check, Go's uniform-random select would occasionally
+// pick workDisconnect over a request already sitting in workCh, causing a
+// spurious reconnect. Repeated many times because the race is
+// probabilistic — a single pass can pass "by luck" on broken code.
+func TestSelectWork_PrioritizesReadyWorkOverDisconnect(t *testing.T) {
+	t.Parallel()
+
+	const iterations = 200
+	for i := range iterations {
+		workCh := make(chan *articleRequest, 1)
+		want := &articleRequest{messageID: "msg@h"}
+		workCh <- want
+
+		disconnectCh := make(chan struct{})
+		close(disconnectCh) // simulate DisconnectAll having just fired
+
+		req, decision := selectWork(t.Context(), disconnectCh, workCh)
+		if decision != workReady {
+			t.Fatalf("iteration %d: decision = %v, want workReady (request was already available)", i, decision)
+		}
+		if req != want {
+			t.Fatalf("iteration %d: got wrong request", i)
+		}
+	}
+}
+
+func TestSelectWork_Branches(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cancelled context with no work or disconnect", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		workCh := make(chan *articleRequest)
+		disconnectCh := make(chan struct{})
+		_, decision := selectWork(ctx, disconnectCh, workCh)
+		if decision != workCancelled {
+			t.Errorf("decision = %v, want workCancelled", decision)
+		}
+	})
+
+	t.Run("disconnect signal with no pending work", func(t *testing.T) {
+		t.Parallel()
+		workCh := make(chan *articleRequest)
+		disconnectCh := make(chan struct{})
+		close(disconnectCh)
+		_, decision := selectWork(t.Context(), disconnectCh, workCh)
+		if decision != workDisconnect {
+			t.Errorf("decision = %v, want workDisconnect", decision)
+		}
+	})
+
+	t.Run("work available, disconnect not yet signaled", func(t *testing.T) {
+		t.Parallel()
+		want := &articleRequest{messageID: "msg@h"}
+		workCh := make(chan *articleRequest, 1)
+		workCh <- want
+		disconnectCh := make(chan struct{})
+		req, decision := selectWork(t.Context(), disconnectCh, workCh)
+		if decision != workReady || req != want {
+			t.Errorf("got (%v, %v), want (%v, workReady)", req, decision, want)
+		}
+	})
+}

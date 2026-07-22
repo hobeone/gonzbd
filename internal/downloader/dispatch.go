@@ -410,6 +410,43 @@ func isServerCandidate(cfg *config.ServerConfig, mask serverMask, hasTried bool,
 	return true
 }
 
+// workDecision reports which event connWorker's inner wait resolved to.
+type workDecision int
+
+const (
+	workReady workDecision = iota
+	workDisconnect
+	workCancelled
+)
+
+// selectWork waits for the next event a connWorker should react to. Ready
+// work (or context cancellation) is given priority over a pending
+// disconnect signal via a non-blocking pre-check: DisconnectAll broadcasts
+// by closing disconnectCh, which then stays permanently select-ready, so a
+// plain 3-way select would let Go's uniform-random case selection
+// occasionally pick the stale disconnect over a request that just landed
+// on workCh — closing a connection that was about to be reused. See
+// https://github.com/hobeone/gonzbd/issues/182. The pre-check narrows this
+// window to the (much smaller) gap between the two selects; it cannot
+// close it entirely, since new work can still arrive in that gap.
+func selectWork(ctx context.Context, disconnectCh <-chan struct{}, workCh <-chan *articleRequest) (*articleRequest, workDecision) {
+	select {
+	case <-ctx.Done():
+		return nil, workCancelled
+	case req := <-workCh:
+		return req, workReady
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, workCancelled
+	case <-disconnectCh:
+		return nil, workDisconnect
+	case req := <-workCh:
+		return req, workReady
+	}
+}
+
 // connWorker is one connection-owning goroutine. It lazily dials its
 // *nntp.Conn on the first request and reuses it for subsequent
 // fetches. On a connection-level failure the conn is closed and
@@ -446,10 +483,11 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 		case sem <- struct{}{}:
 			// We have capacity — now wait for work or disconnect signal.
 			disconnectCh := d.disconnectSnapshot()
-			select {
-			case <-ctx.Done():
+			req, decision := selectWork(ctx, disconnectCh, workCh)
+			switch decision {
+			case workCancelled:
 				return
-			case <-disconnectCh:
+			case workDisconnect:
 				// DisconnectAll was called — close idle connection.
 				// Release our semaphore slot and wait for any in-flight
 				// handleRequest goroutines to finish before closing.
@@ -458,7 +496,7 @@ func (d *Downloader) connWorker(ctx context.Context, srv *Server, serverIdx int,
 				d.log.Debug("disconnected from server", "server", name, "worker", workerID, "reason", "idle")
 				mc.Close(d, workerID)
 				// Loop back to wait for new work; will re-dial lazily.
-			case req := <-workCh:
+			case workReady:
 				workerWg.Add(1)
 				go func(req *articleRequest) {
 					defer workerWg.Done()
