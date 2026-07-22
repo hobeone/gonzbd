@@ -72,6 +72,67 @@ func TestValidateMessageID(t *testing.T) {
 	}
 }
 
+// --- C1b: validateCredential ---
+
+func TestValidateCredential(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		values  []string
+		wantErr bool
+	}{
+		{
+			name: "crlf injection in username",
+			values: []string{
+				"user\r\nGROUP secret\r\nARTICLE 1",
+				"user\nQUIT",
+				"user\rPOST",
+			},
+			wantErr: true,
+		},
+		{
+			name:    "null byte",
+			values:  []string{"user\x00admin"},
+			wantErr: true,
+		},
+		{
+			name:    "empty credential is allowed",
+			values:  []string{""},
+			wantErr: false,
+		},
+		{
+			name: "valid credentials",
+			values: []string{
+				"normaluser",
+				"user@example.com",
+				"p@$$w0rd!#%^&*()",
+				"日本語ユーザー",
+				"a",
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, val := range tc.values {
+				err := validateCredential(val, "test")
+				if tc.wantErr {
+					if err == nil {
+						t.Errorf("validateCredential(%q) = nil, want error", val)
+					} else if !errors.Is(err, ErrInvalidCredential) {
+						t.Errorf("validateCredential(%q) = %v, want ErrInvalidCredential", val, err)
+					}
+				} else if err != nil {
+					t.Errorf("validateCredential(%q) = %v, want nil", val, err)
+				}
+			}
+		})
+	}
+}
+
 // --- C2: readResponseLine ---
 
 func TestReadResponseLine_MaxLength(t *testing.T) {

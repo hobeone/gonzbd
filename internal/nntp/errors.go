@@ -47,6 +47,11 @@ var (
 	// characters that could inject NNTP commands (CR, LF, null) or
 	// is empty (FR-NNTP-2).
 	ErrInvalidMessageID = errors.New("nntp: invalid message-ID")
+
+	// ErrInvalidCredential is returned when a username or password
+	// contains characters that could inject NNTP commands (CR, LF,
+	// null) — the credential counterpart to ErrInvalidMessageID.
+	ErrInvalidCredential = errors.New("nntp: credential contains illegal control characters")
 )
 
 // ServerError wraps an unexpected NNTP status code so callers can
