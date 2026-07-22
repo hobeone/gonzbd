@@ -1,6 +1,7 @@
 package fsutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -188,5 +189,89 @@ func TestPathWithin(t *testing.T) {
 				t.Errorf("PathWithin(%q, %q) = %t, want %t", tt.base, tt.target, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveAndVerifyContainment_SymlinkEscapes(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "evil.sh")
+	if err := os.WriteFile(outsideFile, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a symlink inside baseDir that points outside.
+	link := filepath.Join(baseDir, "hook.sh")
+	if err := os.Symlink(outsideFile, link); err != nil {
+		t.Fatal(err)
+	}
+
+	// Lexical PathWithin passes (the symlink path is within baseDir).
+	if !PathWithin(baseDir, link) {
+		t.Fatal("PathWithin should pass for the lexical path")
+	}
+
+	// ResolveAndVerifyContainment should catch the escape.
+	_, err := ResolveAndVerifyContainment(baseDir, link)
+	if err == nil {
+		t.Fatal("ResolveAndVerifyContainment should reject symlink escaping baseDir")
+	}
+	if !errors.Is(err, ErrSymlinkEscape) {
+		t.Errorf("expected ErrSymlinkEscape, got: %v", err)
+	}
+}
+
+func TestResolveAndVerifyContainment_SymlinkWithin(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	target := filepath.Join(baseDir, "real.sh")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	link := filepath.Join(baseDir, "hook.sh")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := ResolveAndVerifyContainment(baseDir, link)
+	if err != nil {
+		t.Fatalf("unexpected error for symlink within base: %v", err)
+	}
+	// resolved should be the canonical path to real.sh
+	if !PathWithin(baseDir, resolved) {
+		t.Errorf("resolved path %q not within base %q", resolved, baseDir)
+	}
+}
+
+func TestResolveAndVerifyContainment_NoSymlink(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	target := filepath.Join(baseDir, "script.sh")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := ResolveAndVerifyContainment(baseDir, target)
+	if err != nil {
+		t.Fatalf("unexpected error for regular file: %v", err)
+	}
+	if !PathWithin(baseDir, resolved) {
+		t.Errorf("resolved path %q not within base %q", resolved, baseDir)
+	}
+}
+
+func TestResolveAndVerifyContainment_BrokenSymlink(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	link := filepath.Join(baseDir, "broken.sh")
+	if err := os.Symlink("/nonexistent/target", link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ResolveAndVerifyContainment(baseDir, link)
+	if err == nil {
+		t.Fatal("expected error for broken symlink, got nil")
 	}
 }

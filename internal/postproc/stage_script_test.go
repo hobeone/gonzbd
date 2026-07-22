@@ -1,6 +1,7 @@
 package postproc
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -16,6 +17,9 @@ func TestScriptStage_PathTraversalRejected(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	scriptDir := filepath.Join(tmpDir, "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	secretScript := filepath.Join(tmpDir, "secret.sh")
 	writeScript(t, secretScript, []byte("#!/bin/sh\nexit 0\n"))
 
@@ -25,6 +29,35 @@ func TestScriptStage_PathTraversalRejected(t *testing.T) {
 	err := stage.Run(t.Context(), job)
 	if err == nil {
 		t.Fatalf("Run with path traversal ../secret.sh expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "traverses outside script_dir") {
+		t.Errorf("expected traversal error message, got %v", err)
+	}
+}
+
+func TestScriptStage_SymlinkEscapeRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test not portable to Windows")
+	}
+	t.Parallel()
+	job, _ := stageJob(t)
+
+	scriptDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideScript := filepath.Join(outsideDir, "evil.sh")
+	writeScript(t, outsideScript, []byte("#!/bin/sh\nexit 0\n"))
+
+	// Create a symlink inside scriptDir that points outside.
+	if err := os.Symlink(outsideScript, filepath.Join(scriptDir, "hook.sh")); err != nil {
+		t.Fatal(err)
+	}
+
+	job.Queue.Script = "hook.sh"
+	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
+
+	err := stage.Run(t.Context(), job)
+	if err == nil {
+		t.Fatal("Run with symlink escaping script_dir expected error, got nil")
 	}
 	if !strings.Contains(err.Error(), "traverses outside script_dir") {
 		t.Errorf("expected traversal error message, got %v", err)

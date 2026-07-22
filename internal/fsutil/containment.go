@@ -83,3 +83,36 @@ func PathWithin(base, target string) bool {
 	}
 	return true
 }
+
+// ResolveAndVerifyContainment resolves symlinks in both baseDir and
+// targetPath, then verifies that the canonical target is within or
+// equal to the canonical base. Returns the resolved target path on
+// success.
+//
+// This is the symlink-aware counterpart to PathWithin — use it when
+// the target path may be (or contain) a symlink that could escape the
+// intended directory. CheckContainment uses this approach for archive
+// extraction; this function exposes it for single-path checks (e.g.
+// script path validation).
+func ResolveAndVerifyContainment(baseDir, targetPath string) (string, error) {
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve base: %w", err)
+	}
+	canonicalBase, err := filepath.EvalSymlinks(absBase)
+	if err != nil {
+		return "", fmt.Errorf("resolve base: %w", err)
+	}
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve target: %w", err)
+	}
+	canonicalTarget, err := filepath.EvalSymlinks(absTarget)
+	if err != nil {
+		return "", fmt.Errorf("resolve target: %w", err)
+	}
+	if !PathWithin(canonicalBase, canonicalTarget) {
+		return "", fmt.Errorf("%w: %q escapes %q", ErrSymlinkEscape, canonicalTarget, canonicalBase)
+	}
+	return canonicalTarget, nil
+}
