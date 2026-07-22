@@ -273,13 +273,26 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 }
 
 func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.ArticleResult) {
+	// Guarantee buffer reclamation on all exit paths. The assembler takes
+	// ownership of res.Data on successful WriteArticle; on every other path
+	// (early returns, write failures) the buffer must be returned to the pool
+	// to avoid GC pressure from leaked sync.Pool buffers.
+	bufferConsumed := false
+	defer func() {
+		if !bufferConsumed && res.Data != nil {
+			decoder.PutBuffer(res.Data)
+		}
+	}()
+
 	// Record download stats
 	if err := p.queue.MarkJobStarted(res.JobID, time.Now()); err != nil {
 		p.log.Debug("mark job started failed (job likely removed)", "job", res.JobID, "err", err)
+		_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
 		return
 	}
 	if err := p.queue.RecordDownload(res.JobID, res.ServerName, len(res.Data)); err != nil {
 		p.log.Debug("record download failed (job likely removed)", "job", res.JobID, "err", err)
+		_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
 		return
 	}
 
@@ -290,6 +303,7 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
 		p.log.Warn("register file failed",
 			"job", res.JobID, "fileidx", res.FileIdx, "err", err)
+		_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
 		return
 	}
 
@@ -306,10 +320,8 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 			"job", res.JobID, "msgid", res.MessageID, "err", writeErr)
 		_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
 	} else if writeErr == nil {
+		bufferConsumed = true // assembler owns the buffer now
 		telemetry.ArticlesWritten.Add(1)
-	}
-	if writeErr != nil && res.Data != nil {
-		decoder.PutBuffer(res.Data)
 	}
 }
 
