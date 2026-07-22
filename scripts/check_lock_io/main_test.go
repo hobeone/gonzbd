@@ -212,6 +212,62 @@ func (d *D) run(ch chan int) {
 	}
 }
 
+// TestLabeledLoop_StillScanned is a regression test for a false negative
+// found during review: recurseNested had no case for *ast.LabeledStmt (used
+// with labeled break/continue, e.g. `retry: for {...}`), so a labeled loop
+// inside a locked span was skipped entirely, along with any I/O call inside
+// it.
+func TestLabeledLoop_StillScanned(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func (d *D) run() {
+	d.mu.Lock()
+retry:
+	for i := 0; i < 3; i++ {
+		if i == 1 {
+			continue retry
+		}
+		d.log.Info("inside labeled loop")
+	}
+	d.mu.Unlock()
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for log call inside a labeled loop under lock, got %d: %v", len(findings), findings)
+	}
+}
+
+// TestClosureLock_DoesNotLeakToOuterScope is a regression test for a false
+// positive found during review: collectDeferredLocks walked into a goroutine
+// literal's body unconditionally, so a Lock()+defer Unlock() pair entirely
+// inside a `go func(){...}()` was incorrectly treated as covering unrelated
+// code later in the enclosing function too.
+func TestClosureLock_DoesNotLeakToOuterScope(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func (t *T) run() {
+	go func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		t.doWork()
+	}()
+
+	os.ReadFile("/tmp/unrelated")
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings — the closure's lock must not leak to the outer function, got %d: %v", len(findings), findings)
+	}
+}
+
 // TestEarlyReturnBranch_DoesNotLeak verifies the copy-on-recurse design:
 // an early "unlock, log, return" branch (the repo's own correct idiom) must
 // not cause a false positive on sibling statements after the branch, and a

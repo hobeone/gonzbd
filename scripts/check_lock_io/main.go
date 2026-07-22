@@ -7,6 +7,13 @@
 // this tool deliberately stays stdlib-only, matching check_coverage and
 // check_test_alignment). A finding can be suppressed with a same-line
 // trailing `//lockio: <reason>` comment, mirroring the //nocover: convention.
+//
+// Scope limitation: each check only analyzes one top-level function body
+// (*ast.FuncDecl) at a time. A closure (goroutine literal, IIFE, callback)
+// is its own separate scope for lock-state purposes and is deliberately not
+// descended into by the manual-lock walker or the deferred-lock collector —
+// so a Lock()/Unlock() pair used entirely within one closure's own body,
+// with an I/O call also entirely within that same closure, is not checked.
 package main
 
 import (
@@ -238,6 +245,16 @@ func checkFuncBody(fset *token.FileSet, path string, body *ast.BlockStmt, commen
 func collectDeferredLocks(body *ast.BlockStmt) map[string]token.Pos {
 	deferredFrom := make(map[string]token.Pos)
 	ast.Inspect(body, func(n ast.Node) bool {
+		// A closure (goroutine literal, IIFE, callback) is its own scope: a
+		// Lock()+defer Unlock() pair inside one only holds for that
+		// closure's own execution, which may run concurrently and has no
+		// textual-position relationship to the enclosing function's other
+		// statements. Without this boundary, a lock deferred inside a `go
+		// func(){...}()` was incorrectly treated as covering unrelated code
+		// later in the outer function too (a false positive).
+		if _, isFuncLit := n.(*ast.FuncLit); isFuncLit {
+			return false
+		}
 		list := blockList(n)
 		if list == nil {
 			return true
@@ -471,6 +488,13 @@ func (w *walker) recurseNested(stmt ast.Stmt, locked map[string]bool) {
 		}
 	case *ast.BlockStmt:
 		w.walkBlock(s.List, cp())
+	case *ast.LabeledStmt:
+		// A labeled statement (e.g. `retry:` before a for/if/switch, used
+		// with labeled break/continue) wraps exactly one nested statement in
+		// its own Stmt field — recurse into it the same as if the label
+		// weren't there, or the label silently makes everything inside it
+		// invisible to this walk.
+		w.recurseNested(s.Stmt, cp())
 	}
 }
 
