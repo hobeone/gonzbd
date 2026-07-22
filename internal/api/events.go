@@ -86,10 +86,7 @@ func (b *Broadcaster) Broadcast(event Event) {
 	}
 
 	b.mu.RLock()
-	if len(b.clients) > 0 {
-		b.log.Debug("WebSocket broadcast", "event", event.Type, "clients", len(b.clients))
-	}
-
+	numClients := len(b.clients)
 	var overflow []*client
 	for c := range b.clients {
 		select {
@@ -99,8 +96,17 @@ func (b *Broadcaster) Broadcast(event Event) {
 		}
 	}
 	b.mu.RUnlock()
+	// --- No lock held below this line ---
+	if numClients > 0 {
+		b.log.Debug("WebSocket broadcast", "event", event.Type, "clients", numClients)
+	}
 
 	if len(overflow) > 0 {
+		type disconnected struct {
+			connID   uint64
+			remoteIP string
+		}
+		var closed []disconnected
 		b.mu.Lock()
 		for _, c := range overflow {
 			if _, exists := b.clients[c]; exists {
@@ -110,10 +116,14 @@ func (b *Broadcaster) Broadcast(event Event) {
 				c.setCloseReason("buffer overflow")
 				close(c.send)
 				delete(b.clients, c)
-				b.log.Warn("WebSocket client buffer full, disconnecting", "connection_id", c.id, "remote_ip", c.ip)
+				closed = append(closed, disconnected{connID: c.id, remoteIP: c.ip})
 			}
 		}
 		b.mu.Unlock()
+		// --- No lock held below this line ---
+		for _, d := range closed {
+			b.log.Warn("WebSocket client buffer full, disconnecting", "connection_id", d.connID, "remote_ip", d.remoteIP)
+		}
 	}
 }
 
