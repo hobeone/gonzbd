@@ -268,6 +268,31 @@ func (t *T) run() {
 	}
 }
 
+// TestSuppressionComment_MultiLineCall is a regression test for a bug found
+// during review: report() checked commentsByLine using only the call's
+// start line, so a //lockio: comment on a multi-line call's last line (the
+// natural place for it, after the closing paren) was never seen.
+func TestSuppressionComment_MultiLineCall(t *testing.T) {
+	path := writeFixture(t, `package fixture
+
+func (d *D) run() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.log.Info(
+		"multi-line call",
+		"key", "value",
+	) //lockio: intentional, suppress this
+}
+`)
+	findings, err := checkFile(path)
+	if err != nil {
+		t.Fatalf("checkFile: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected 0 findings — //lockio: on a multi-line call's last line should suppress, got %d: %v", len(findings), findings)
+	}
+}
+
 // TestEarlyReturnBranch_DoesNotLeak verifies the copy-on-recurse design:
 // an early "unlock, log, return" branch (the repo's own correct idiom) must
 // not cause a false positive on sibling statements after the branch, and a

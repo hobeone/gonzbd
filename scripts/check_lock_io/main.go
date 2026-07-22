@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"flag"
 	"fmt"
 	"go/ast"
@@ -29,7 +30,6 @@ import (
 	"os/exec" //nolint:gosec // dev tool, fixed command args
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 )
 
@@ -121,11 +121,11 @@ func run() int {
 		return 0
 	}
 
-	sort.Slice(findings, func(i, j int) bool {
-		if findings[i].file != findings[j].file {
-			return findings[i].file < findings[j].file
+	slices.SortFunc(findings, func(a, b finding) int {
+		if a.file != b.file {
+			return cmp.Compare(a.file, b.file)
 		}
-		return findings[i].line < findings[j].line
+		return cmp.Compare(a.line, b.line)
 	})
 	for _, f := range findings {
 		fmt.Printf("  ✗ %s:%d: %s\n", f.file, f.line, f.desc)
@@ -441,7 +441,7 @@ func activeReceivers(locked map[string]bool, deferredFrom map[string]token.Pos, 
 			}
 		}
 	}
-	sort.Strings(active)
+	slices.Sort(active)
 	return active
 }
 
@@ -517,7 +517,7 @@ func (w *walker) scanStmtShallow(stmt ast.Stmt, desc string) {
 			return true
 		}
 		if ioDesc, ok := isIOCall(call); ok {
-			w.report(call.Pos(), desc+" ("+ioDesc+")")
+			w.report(call.Pos(), call.End(), desc+" ("+ioDesc+")")
 		}
 		return true
 	})
@@ -532,7 +532,7 @@ func (w *walker) scanForIO(node ast.Node, desc string) {
 			return true
 		}
 		if ioDesc, ok := isIOCall(call); ok {
-			w.report(call.Pos(), desc+" ("+ioDesc+")")
+			w.report(call.Pos(), call.End(), desc+" ("+ioDesc+")")
 		}
 		return true
 	})
@@ -590,10 +590,18 @@ func isIOCall(call *ast.CallExpr) (desc string, ok bool) {
 
 // report records a finding at pos, unless the same line carries a
 // //lockio: suppression comment.
-func (w *walker) report(pos token.Pos, desc string) {
-	line := w.fset.Position(pos).Line
-	if strings.Contains(w.commentsByLine[line], "lockio:") {
-		return
+// report records a finding spanning [start, end), unless any line in that
+// range carries a //lockio: suppression comment. Checking the whole span
+// (not just the start line) matters for a multi-line call — the natural
+// place for a trailing //lockio: comment is after the closing paren, on the
+// call's LAST line, not its first.
+func (w *walker) report(start, end token.Pos, desc string) {
+	startLine := w.fset.Position(start).Line
+	endLine := w.fset.Position(end).Line
+	for line := startLine; line <= endLine; line++ {
+		if strings.Contains(w.commentsByLine[line], "lockio:") {
+			return
+		}
 	}
-	w.findings = append(w.findings, finding{file: w.path, line: line, desc: desc})
+	w.findings = append(w.findings, finding{file: w.path, line: startLine, desc: desc})
 }
