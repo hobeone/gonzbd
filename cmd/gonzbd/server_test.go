@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,5 +170,62 @@ func TestSecurityHeaders(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestShutdownServeMode_ConcurrentListeners(t *testing.T) {
+	httpStarted := make(chan struct{})
+	httpTestSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(httpStarted)
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer httpTestSrv.Close()
+
+	httpsStarted := make(chan struct{})
+	httpsTestSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(httpsStarted)
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer httpsTestSrv.Close()
+
+	// Launch in-flight request to HTTP server.
+	go func() {
+		resp, err := httpTestSrv.Client().Get(httpTestSrv.URL)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-httpStarted
+
+	// Stagger HTTPS request launch by 50ms.
+	time.Sleep(50 * time.Millisecond)
+	go func() {
+		resp, err := httpsTestSrv.Client().Get(httpsTestSrv.URL)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-httpsStarted
+
+	httpSrv := httpTestSrv.Config
+	httpsSrv := httpsTestSrv.Config
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	start := time.Now()
+	// Pass a 200ms timeout context. In parallel with independent contexts, both handlers drain cleanly in parallel (~100ms).
+	shutdownServeMode(httpSrv, httpsSrv, nil, "", nil, logger, 200*time.Millisecond)
+	elapsed := time.Since(start)
+
+	// Verify both listeners drained cleanly with zero logged warnings or context starvation errors.
+	if logOutput := logBuf.String(); strings.Contains(logOutput, "shutdown") {
+		t.Errorf("shutdownServeMode logged shutdown error: %s", logOutput)
+	}
+
+	if elapsed >= 300*time.Millisecond {
+		t.Errorf("shutdownServeMode took %v; want < 300ms", elapsed)
 	}
 }
