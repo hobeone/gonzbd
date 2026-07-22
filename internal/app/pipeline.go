@@ -337,11 +337,11 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	// Double-check under the write lock — another goroutine may have won
 	// the race between RUnlock and Lock.
 	if _, exists := p.fileInfo[key]; exists {
+		p.mu.Unlock()
 		return nil
 	}
 
@@ -357,6 +357,10 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	// the same path via filepath.Join(DownloadDir, job.Name) when scanning
 	// for par2 sets.
 	jobDir := filepath.Join(p.downloadDir, snap.Name)
+	p.mu.Unlock()
+	// --- No lock held below this line ---
+	// jobDir snapshots p.downloadDir; p.sanitize is set once at construction
+	// and never mutated, so both are safe to use unlocked below.
 
 	var path string
 	filename := snap.Files[fileIdx].Filename
@@ -367,13 +371,10 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	} else {
 		// First time resolving this file. GetUniqueFilename appends ".1", ".2" etc.
 		// when the path already exists on disk (e.g. naming collisions).
+		// This is real disk I/O (a Stat loop) and must not run under p.mu.
 		candidate := snap.Files[fileIdx].Subject
 		path = fsutil.GetUniqueFilename(
 			fsutil.JoinSafe(jobDir, "", candidate, p.sanitize))
-		resolvedFilename := filepath.Base(path)
-		if err := p.queue.SetFileFilename(jobID, fileIdx, resolvedFilename); err != nil {
-			return fmt.Errorf("set file filename: %w", err)
-		}
 	}
 
 	// Count only unfinished articles — on resume/retry, already-done
@@ -391,7 +392,26 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		InitialWriteCursor: snap.Files[fileIdx].WriteCursor,
 	}
 
+	p.mu.Lock()
+	// Third check: another goroutine may have raced us and already
+	// registered this file while we were doing unlocked disk I/O above.
+	// GetUniqueFilename only consults on-disk state (never a file this
+	// process creates), so a concurrent winner's resolved path is
+	// identical to ours — deferring to it is correct, not just harmless.
+	if _, exists := p.fileInfo[key]; exists {
+		p.mu.Unlock()
+		return nil
+	}
+	if filename == "" {
+		resolvedFilename := filepath.Base(path)
+		if err := p.queue.SetFileFilename(jobID, fileIdx, resolvedFilename); err != nil {
+			p.mu.Unlock()
+			return fmt.Errorf("set file filename: %w", err)
+		}
+	}
 	p.fileInfo[key] = info
+	p.mu.Unlock()
+	// --- No lock held below this line ---
 	p.log.Debug("registered file",
 		"job", jobID, "fileidx", fileIdx, "path", info.Path, "parts", info.TotalParts)
 

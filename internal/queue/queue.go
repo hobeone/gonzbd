@@ -818,15 +818,16 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 		return nil
 	}
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	job, ok := q.byID[jobID]
 	if !ok {
+		q.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
+	var notFound []string
 	for _, id := range messageIDs {
 		art := job.articleByID(id)
 		if art == nil {
-			q.log.Warn("MarkArticlesDone: article not found", "job", jobID, "msgid", id)
+			notFound = append(notFound, id)
 			continue
 		}
 		if art.Done {
@@ -848,6 +849,11 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 		job.Files[art.FileIdx].BytesDownloaded += int64(art.Bytes)
 	}
 	q.dirty.Store(true)
+	q.mu.Unlock()
+	// --- No lock held below this line ---
+	for _, id := range notFound {
+		q.log.Warn("MarkArticlesDone: article not found", "job", jobID, "msgid", id)
+	}
 	return nil
 }
 
@@ -881,16 +887,17 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 		return nil, nil
 	}
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	job, ok := q.byID[jobID]
 	if !ok {
+		q.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
 	firstTime := make([]string, 0, len(messageIDs))
+	var notFound []string
 	for _, id := range messageIDs {
 		art := job.articleByID(id)
 		if art == nil {
-			q.log.Warn("MarkArticlesFailed: article not found", "job", jobID, "msgid", id)
+			notFound = append(notFound, id)
 			continue
 		}
 		if art.Done {
@@ -909,8 +916,10 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 		job.ArticlesFailed++
 		firstTime = append(firstTime, art.ID)
 	}
+	var failedBytes, par2Bytes int64
+	var releasedPar2 bool
 	if len(firstTime) > 0 {
-		q.log.Warn("articles marked FAILED", "job", jobID, "count", len(firstTime), "failed_bytes", job.FailedBytes, "par2_bytes", job.Par2Bytes)
+		failedBytes, par2Bytes = job.FailedBytes, job.Par2Bytes
 		q.dirty.Store(true)
 		// On-demand par2: a permanent data-article failure proves this job
 		// will need repair. Release the deferred recovery volumes now — while
@@ -920,10 +929,21 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 		if !job.Par2Recovered && job.Par2Files > 0 {
 			if q.undeferRecoveryLocked(job, job.DeferredRecoveryIndices()) {
 				job.Par2ReleaseReason = "permanent article download failure detected on active queue"
-				q.log.Info("on-demand par2: download failure detected, releasing recovery volumes early", "job", jobID)
+				releasedPar2 = true
 			}
 		}
 		q.notifyLocked()
+	}
+	q.mu.Unlock()
+	// --- No lock held below this line ---
+	for _, id := range notFound {
+		q.log.Warn("MarkArticlesFailed: article not found", "job", jobID, "msgid", id)
+	}
+	if len(firstTime) > 0 {
+		q.log.Warn("articles marked FAILED", "job", jobID, "count", len(firstTime), "failed_bytes", failedBytes, "par2_bytes", par2Bytes)
+		if releasedPar2 {
+			q.log.Info("on-demand par2: download failure detected, releasing recovery volumes early", "job", jobID)
+		}
 	}
 	return firstTime, nil
 }

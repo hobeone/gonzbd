@@ -65,12 +65,22 @@ func (v *VerifiedSets) AllVerified() bool {
 // MarkVerified records a set as verified (true) or failed (false) and persists.
 // Logs a warning if the state cannot be saved to disk; the in-memory state
 // is always updated regardless.
+//
+// save()'s disk write intentionally stays under mu (an exception to the
+// general "never hold a mutex during I/O" rule, not an oversight): the only
+// current caller (RepairStage.Run) invokes MarkVerified sequentially, never
+// concurrently, so holding mu for the small marshal+write is cheap in
+// practice. Decoupling the write from mu without also serializing writes in
+// mutation order would risk a lost update — a later mutation's snapshot
+// landing on disk before an earlier one's, if their writes ever raced — so
+// that redesign is deferred until a genuinely concurrent caller exists to
+// justify the added complexity.
 func (v *VerifiedSets) MarkVerified(setName string, ok bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.sets[setName] = ok
-	if err := v.save(); err != nil {
-		v.log.Warn("verified: failed to persist par2 verification state",
+	if err := v.save(); err != nil { //lockio: see doc comment above — save() intentionally stays under mu
+		v.log.Warn("verified: failed to persist par2 verification state", //lockio: see doc comment above
 			"path", v.path, "err", err)
 	}
 }
