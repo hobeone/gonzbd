@@ -1654,3 +1654,40 @@ func TestNew_WithLogger(t *testing.T) {
 		t.Error("expected logger to be set via WithLogger, got nil")
 	}
 }
+
+// TestSetPostProcStarted_DropsArtIndex pins the memory-hygiene invariant: once
+// a job enters post-processing, its messageID->*JobArticle index is released,
+// since the download pipeline (the index's only consumer) is done with the
+// job. articleByID rebuilds it lazily if anything needs it afterward.
+func TestSetPostProcStarted_DropsArtIndex(t *testing.T) {
+	q := New()
+	job := makeJob(t, "postproc-dropidx", constants.NormalPriority)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := q.SetStatus(job.ID, constants.StatusDownloading); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	// Force the index to exist, as a real download would via MarkArticleDone.
+	if got := job.articleByID(job.Files[0].Articles[0].ID); got == nil {
+		t.Fatal("articleByID returned nil for a present article")
+	}
+	if job.artIdx == nil {
+		t.Fatal("precondition: index should be built after articleByID")
+	}
+	if _, err := q.SetPostProcStarted(job.ID); err != nil {
+		t.Fatalf("SetPostProcStarted: %v", err)
+	}
+	if job.artIdx != nil {
+		t.Fatal("artIdx should be dropped once the job enters post-processing")
+	}
+	// Round-trip: articleByID must still work after the drop, rebuilding
+	// the index lazily rather than leaving it permanently gone.
+	id := job.Files[0].Articles[0].ID
+	if got := job.articleByID(id); got == nil || got.ID != id {
+		t.Fatalf("articleByID(%q) after drop = %v, want a match", id, got)
+	}
+	if job.artIdx == nil {
+		t.Fatal("artIdx should be rebuilt after articleByID is called post-drop")
+	}
+}

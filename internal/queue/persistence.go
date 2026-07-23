@@ -186,10 +186,11 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 		}
 		q.jobs = append(q.jobs, &job)
 		q.byID[id] = &job
-		// Initialize transient state (pending counters, artIdx,
-		// FileIdx back-pointers) from the loaded article flags.
-		// These fields are excluded from JSON (json:"-") and must
-		// be recomputed after every deserialisation.
+		// Initialize transient state (pending counters, FileIdx
+		// back-pointers) from the loaded article flags. These fields
+		// are excluded from JSON (json:"-") and must be recomputed
+		// after every deserialisation. artIdx is left unbuilt;
+		// articleByID builds it lazily the next time it is called.
 		job.recomputePending()
 	}
 	q.Prune()

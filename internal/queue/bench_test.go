@@ -132,3 +132,25 @@ func BenchmarkForEachUnfinishedArticle_MostlyComplete(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkAdd_PendingFootprint reports bytes/op and allocs/op for adding
+// header-heavy jobs that are never dispatched. The win from not building
+// artIdx eagerly shows up as reduced allocs/op versus the pre-change
+// baseline. This is a REPORTING benchmark, not a gate.
+func BenchmarkAdd_PendingFootprint(b *testing.B) {
+	parsed := &nzb.NZB{}
+	parsed.Files = make([]nzb.File, 10)
+	for f := range parsed.Files {
+		arts := make([]nzb.Article, 20)
+		for a := range arts {
+			arts[a] = nzb.Article{ID: fmt.Sprintf("art%d-%d@bench.example", f, a), Bytes: 65536, Number: a + 1}
+		}
+		parsed.Files[f] = nzb.File{Subject: fmt.Sprintf("f%d.bin (1/1)", f), Date: time.Now().UTC(), Articles: arts}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		job, _ := NewJob(parsed, AddOptions{Filename: "b.nzb"}, fsutil.SanitizeOptions{})
+		q := New()
+		_ = q.Add(job)
+	}
+}
