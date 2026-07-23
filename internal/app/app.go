@@ -86,11 +86,17 @@ type Application struct {
 	emitter  EventEmitter
 	meter    *bpsmeter.Meter
 
-	queue            *queue.Queue
-	historyRepo      *history.Repository
-	downloader       Downloader
-	downloaderStats  DownloaderStats
-	assembler        *assembler.Assembler
+	queue           *queue.Queue
+	historyRepo     *history.Repository
+	downloader      Downloader
+	downloaderStats DownloaderStats
+	assembler       *assembler.Assembler
+	// diskProbe bounds DownloadDirFreeBytes' statfs calls (from /health and
+	// the status-overview API, both polled per-HTTP-request) to at most one
+	// outstanding probe per directory — independent from assembler's own
+	// diskProbe, since checkDiskSpace and DownloadDirFreeBytes are separate
+	// call paths against the same directory. See assembler.DiskProbe.
+	diskProbe        *assembler.DiskProbe
 	postProcessor    *postproc.PostProcessor
 	pipeline         *pipeline
 	jobComplete      chan JobComplete
@@ -325,6 +331,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}, log)
 	app.assembler = asm
 	p.assembler = asm
+	app.diskProbe = assembler.NewDiskProbe(assembler.DefaultDiskProbeTTL)
 	app.RecordHeartbeat()
 
 	return app, nil
