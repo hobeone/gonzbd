@@ -26,6 +26,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -339,27 +340,56 @@ func awaitShutdownSignal(ctx context.Context, errCh <-chan error, log *slog.Logg
 }
 
 // shutdownServeMode performs serveMode's best-effort graceful shutdown:
-// stop both HTTP(S) listeners (5s budget — enough for in-flight API calls
-// without keeping signal handlers trapped if the pipeline is wedged), stop
-// the application, and persist the bandwidth meter's lifetime totals. Each
-// step is independent and best-effort; a failure in one does not skip the
-// rest, matching the original inline sequence.
+// stop both HTTP(S) listeners concurrently, each with its own 5s timeout
+// budget (enough for in-flight API calls without keeping signal handlers
+// trapped if the pipeline is wedged), stop the application, and persist the
+// bandwidth meter's lifetime totals. Each step is independent and
+// best-effort; a failure in one does not skip the rest.
+//
+// The two listeners intentionally get independent contexts rather than one
+// shared context passed to both Shutdown calls: a shared context lets a
+// slow-draining HTTP listener consume most of the deadline before HTTPS's
+// Shutdown call even starts, leaving HTTPS too little of its own budget.
+// This isn't covered by a timing-based regression test — http.Server.Shutdown
+// is a passive wait keyed off absolute deadlines and each listener's own
+// (already in-flight, request-driven) completion time, not off when Shutdown
+// is invoked, so a black-box test comparing sequential-shared vs
+// concurrent-independent invocation can't observe a difference in outcome or
+// wall-clock time between the two (verified empirically before deciding not
+// to chase this further). The two independent context.WithTimeout calls
+// below are the property to check by reading the code.
 func shutdownServeMode(httpSrv, httpsSrv *http.Server, application *app.Application, meterStatePath string, meter *bpsmeter.Meter, log *slog.Logger) {
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
-	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		log.Warn("http shutdown", "err", err)
+	const shutdownTimeout = 5 * time.Second
+	var wg sync.WaitGroup
+	if httpSrv != nil {
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancel()
+			if err := httpSrv.Shutdown(ctx); err != nil {
+				log.Warn("http shutdown", "err", err)
+			}
+		})
 	}
 	if httpsSrv != nil {
-		if err := httpsSrv.Shutdown(shutdownCtx); err != nil {
-			log.Warn("https shutdown", "err", err)
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancel()
+			if err := httpsSrv.Shutdown(ctx); err != nil {
+				log.Warn("https shutdown", "err", err)
+			}
+		})
+	}
+	wg.Wait()
+
+	if application != nil {
+		if err := application.Shutdown(); err != nil {
+			log.Warn("application shutdown", "err", err)
 		}
 	}
-	if err := application.Shutdown(); err != nil {
-		log.Warn("application shutdown", "err", err)
-	}
-	if err := bpsmeter.SaveState(meterStatePath, meter.Capture()); err != nil {
-		log.Warn("save bpsmeter state", "err", err)
+	if meter != nil && meterStatePath != "" {
+		if err := bpsmeter.SaveState(meterStatePath, meter.Capture()); err != nil {
+			log.Warn("save bpsmeter state", "err", err)
+		}
 	}
 }
 
