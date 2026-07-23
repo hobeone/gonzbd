@@ -255,8 +255,9 @@ func (j *Job) IsEarlyAbort() bool {
 
 // recomputePending recalculates Pending on every file and
 // PendingArticles on the job from the ground truth (article Done/Emitted
-// flags). Called on Load and ClearAllEmitted where batch state changes
-// make incremental tracking impractical. The artIdx is left unbuilt;
+// flags). Called after Add and Load, and after any bulk state change
+// (ClearAllEmitted, DiscardDeferredPar2, undeferRecoveryLocked) where
+// incremental tracking is impractical. The artIdx is left unbuilt;
 // articleByID builds it lazily the next time it is called.
 func (j *Job) recomputePending() {
 	total := 0
