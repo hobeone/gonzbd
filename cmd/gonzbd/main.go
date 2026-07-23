@@ -318,7 +318,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	}
 
 	waitErr := awaitShutdownSignal(ctx, errCh, log)
-	shutdownServeMode(httpSrv, httpsSrv, application, meterStatePath, meter, log, 5*time.Second)
+	shutdownServeMode(httpSrv, httpsSrv, application, meterStatePath, meter, log)
 	return waitErr
 }
 
@@ -340,19 +340,30 @@ func awaitShutdownSignal(ctx context.Context, errCh <-chan error, log *slog.Logg
 }
 
 // shutdownServeMode performs serveMode's best-effort graceful shutdown:
-// stop both HTTP(S) listeners concurrently (timeout budget per listener — defaults to
-// 5s if timeout <= 0; enough for in-flight API calls without keeping signal handlers
-// trapped if the pipeline is wedged), stop the application, and persist the bandwidth
-// meter's lifetime totals. Each step is independent and best-effort; a failure
-// in one does not skip the rest.
-func shutdownServeMode(httpSrv, httpsSrv *http.Server, application *app.Application, meterStatePath string, meter *bpsmeter.Meter, log *slog.Logger, timeout time.Duration) {
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
+// stop both HTTP(S) listeners concurrently, each with its own 5s timeout
+// budget (enough for in-flight API calls without keeping signal handlers
+// trapped if the pipeline is wedged), stop the application, and persist the
+// bandwidth meter's lifetime totals. Each step is independent and
+// best-effort; a failure in one does not skip the rest.
+//
+// The two listeners intentionally get independent contexts rather than one
+// shared context passed to both Shutdown calls: a shared context lets a
+// slow-draining HTTP listener consume most of the deadline before HTTPS's
+// Shutdown call even starts, leaving HTTPS too little of its own budget.
+// This isn't covered by a timing-based regression test — http.Server.Shutdown
+// is a passive wait keyed off absolute deadlines and each listener's own
+// (already in-flight, request-driven) completion time, not off when Shutdown
+// is invoked, so a black-box test comparing sequential-shared vs
+// concurrent-independent invocation can't observe a difference in outcome or
+// wall-clock time between the two (verified empirically before deciding not
+// to chase this further). The two independent context.WithTimeout calls
+// below are the property to check by reading the code.
+func shutdownServeMode(httpSrv, httpsSrv *http.Server, application *app.Application, meterStatePath string, meter *bpsmeter.Meter, log *slog.Logger) {
+	const shutdownTimeout = 5 * time.Second
 	var wg sync.WaitGroup
 	if httpSrv != nil {
 		wg.Go(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 			defer cancel()
 			if err := httpSrv.Shutdown(ctx); err != nil {
 				log.Warn("http shutdown", "err", err)
@@ -361,7 +372,7 @@ func shutdownServeMode(httpSrv, httpsSrv *http.Server, application *app.Applicat
 	}
 	if httpsSrv != nil {
 		wg.Go(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 			defer cancel()
 			if err := httpsSrv.Shutdown(ctx); err != nil {
 				log.Warn("https shutdown", "err", err)
