@@ -447,7 +447,7 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 	}
 
 	// FileIdx back-pointers: every article must point to its correct file.
-	// (FileIdx is json:"-", rebuilt by recomputePending via buildArtIndex)
+	// (FileIdx is json:"-", rebuilt directly by recomputePending's own loop)
 	for fi := range got.Files {
 		for ai := range got.Files[fi].Articles {
 			art := &got.Files[fi].Articles[ai]
@@ -520,7 +520,7 @@ func TestQueue_SaveInner_Direct(t *testing.T) {
 	}
 }
 
-func TestJob_RecomputePendingAndBuildArtIndex_Direct(t *testing.T) {
+func TestJob_RecomputePendingAndLazyArticleByID_Direct(t *testing.T) {
 	job := &Job{
 		ID: "test-job",
 		Files: []JobFile{
@@ -543,7 +543,8 @@ func TestJob_RecomputePendingAndBuildArtIndex_Direct(t *testing.T) {
 		t.Errorf("expected file 0 bytes downloaded 100, got %d", job.Files[0].BytesDownloaded)
 	}
 
-	job.buildArtIndex()
+	// No manual buildArtIndex call: articleByID must build the index lazily
+	// on its own from a job whose index was never touched.
 	art := job.articleByID("art1")
 	if art == nil || art.ID != "art1" {
 		t.Fatal("expected to find art1")

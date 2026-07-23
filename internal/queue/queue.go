@@ -1010,6 +1010,13 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 
 	if discardedBytes > 0 {
 		job.Files = activeFiles
+		// Drop the article index: it may hold entries for the discarded
+		// files' articles with FileIdx values that recomputePending's loop
+		// below will never revisit (they're no longer in job.Files), and
+		// this makes the invariant hold locally instead of relying on the
+		// fact that Deferred articles are never dispatched in the first
+		// place. articleByID rebuilds it lazily against the new job.Files.
+		job.dropArtIndex()
 		job.TotalBytes -= discardedBytes
 		job.RemainingBytes -= discardedBytes
 		if job.RemainingBytes < 0 {

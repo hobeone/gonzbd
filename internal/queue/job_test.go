@@ -369,3 +369,27 @@ func TestAdd_DoesNotBuildArtIndexEagerly(t *testing.T) {
 		t.Fatalf("FileIdx = %d, want 0", job.Files[0].Articles[0].FileIdx)
 	}
 }
+
+// TestJob_DropArtIndex pins dropArtIndex's own behavior directly on *Job,
+// isolated from any Queue method that happens to call it.
+func TestJob_DropArtIndex(t *testing.T) {
+	job, err := NewJob(minimalNZB(), AddOptions{Filename: "rel.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	id := job.Files[0].Articles[0].ID
+	if got := job.articleByID(id); got == nil {
+		t.Fatal("articleByID returned nil for a present article")
+	}
+	if job.artIdx == nil {
+		t.Fatal("precondition: index should be built after articleByID")
+	}
+	job.dropArtIndex()
+	if job.artIdx != nil {
+		t.Fatal("dropArtIndex should nil out the index")
+	}
+	// articleByID must still work afterward, rebuilding from scratch.
+	if got := job.articleByID(id); got == nil || got.ID != id {
+		t.Fatalf("articleByID(%q) after dropArtIndex = %v, want a match", id, got)
+	}
+}

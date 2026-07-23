@@ -1681,4 +1681,13 @@ func TestSetPostProcStarted_DropsArtIndex(t *testing.T) {
 	if job.artIdx != nil {
 		t.Fatal("artIdx should be dropped once the job enters post-processing")
 	}
+	// Round-trip: articleByID must still work after the drop, rebuilding
+	// the index lazily rather than leaving it permanently gone.
+	id := job.Files[0].Articles[0].ID
+	if got := job.articleByID(id); got == nil || got.ID != id {
+		t.Fatalf("articleByID(%q) after drop = %v, want a match", id, got)
+	}
+	if job.artIdx == nil {
+		t.Fatal("artIdx should be rebuilt after articleByID is called post-drop")
+	}
 }
