@@ -58,15 +58,8 @@ func freeBytes(ctx context.Context, dir string, statfs func(path string, buf *sy
 	}
 	ch := make(chan result, 1)
 	go func() {
-		var st syscall.Statfs_t
-		if err := statfs(dir, &st); err != nil {
-			ch <- result{0, fmt.Errorf("assembler: statfs %s: %w", dir, err)}
-			return
-		}
-		// Bavail is the number of blocks available to unprivileged processes (uint64).
-		// Bsize is the fundamental block size in bytes (int64 on Linux).
-		// The product fits in int64 for any sane filesystem size.
-		ch <- result{int64(st.Bavail) * int64(st.Bsize), nil} //nolint:gosec,unconvert // G115: Bavail is filesystem metadata; unconvert: Bsize type varies by OS
+		free, err := statfsFreeBytes(dir, statfs)
+		ch <- result{free, err}
 	}()
 	select {
 	case r := <-ch:
@@ -74,6 +67,21 @@ func freeBytes(ctx context.Context, dir string, statfs func(path string, buf *sy
 	case <-ctx.Done():
 		return 0, fmt.Errorf("assembler: statfs %s: %w", dir, ctx.Err())
 	}
+}
+
+// statfsFreeBytes performs the raw statfs call and computes the available
+// byte count. Shared by freeBytes (a single ctx-bounded call) and DiskProbe
+// (a detached, single-flight probe with no per-caller ctx) so both paths
+// share the same Bavail*Bsize arithmetic and error wrapping.
+func statfsFreeBytes(dir string, statfs func(path string, buf *syscall.Statfs_t) error) (int64, error) {
+	var st syscall.Statfs_t
+	if err := statfs(dir, &st); err != nil {
+		return 0, fmt.Errorf("assembler: statfs %s: %w", dir, err)
+	}
+	// Bavail is the number of blocks available to unprivileged processes (uint64).
+	// Bsize is the fundamental block size in bytes (int64 on Linux).
+	// The product fits in int64 for any sane filesystem size.
+	return int64(st.Bavail) * int64(st.Bsize), nil //nolint:gosec,unconvert // G115: Bavail is filesystem metadata; unconvert: Bsize type varies by OS
 }
 
 // WriteSpeedMBPerSec writes a sizeBytes temp file into dir, times the
