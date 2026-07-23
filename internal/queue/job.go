@@ -199,6 +199,14 @@ func (j *Job) articleByID(messageID string) *JobArticle {
 	return j.artIdx[messageID]
 }
 
+// dropArtIndex releases the messageID→*JobArticle index. Called when a job
+// leaves the active download path (all articles resolved) so a job sitting in
+// post-processing or awaiting checkpoint does not retain the map. articleByID
+// rebuilds it on demand if a later mutation needs it. Must hold the write lock.
+func (j *Job) dropArtIndex() {
+	j.artIdx = nil
+}
+
 // buildArtIndex populates the messageID→*JobArticle index and sets
 // FileIdx on each article for back-reference to the containing file.
 func (j *Job) buildArtIndex() {
@@ -248,8 +256,8 @@ func (j *Job) IsEarlyAbort() bool {
 // recomputePending recalculates Pending on every file and
 // PendingArticles on the job from the ground truth (article Done/Emitted
 // flags). Called on Load and ClearAllEmitted where batch state changes
-// make incremental tracking impractical. Also builds the artIdx if not
-// yet populated.
+// make incremental tracking impractical. The artIdx is left unbuilt;
+// articleByID builds it lazily the next time it is called.
 func (j *Job) recomputePending() {
 	total := 0
 	var resolved, failed int
@@ -289,7 +297,6 @@ func (j *Job) recomputePending() {
 	j.PendingArticles = total
 	j.ArticlesResolved = resolved
 	j.ArticlesFailed = failed
-	j.buildArtIndex()
 }
 
 // JobFile is a single file within a job: its articles, its assembly

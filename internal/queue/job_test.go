@@ -346,3 +346,26 @@ func TestNewJob_CategoryPriorityBoundaryClamping(t *testing.T) {
 		})
 	}
 }
+
+// TestAdd_DoesNotBuildArtIndexEagerly pins the memory-reduction invariant: a
+// freshly queued job that has not yet been touched by the download pipeline
+// must not have allocated the messageID->*JobArticle index. articleByID
+// builds it lazily on first access; recomputePending must not force it early.
+func TestAdd_DoesNotBuildArtIndexEagerly(t *testing.T) {
+	job, err := NewJob(minimalNZB(), AddOptions{Filename: "rel.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	q := New()
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if job.artIdx != nil {
+		t.Fatalf("artIdx was built eagerly at Add; want nil until first articleByID call")
+	}
+	// FileIdx back-pointers must still be correct without the map, since
+	// recomputePending's own loop sets them independently of buildArtIndex.
+	if job.Files[0].Articles[0].FileIdx != 0 {
+		t.Fatalf("FileIdx = %d, want 0", job.Files[0].Articles[0].FileIdx)
+	}
+}

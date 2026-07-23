@@ -296,9 +296,9 @@ func (q *Queue) Add(job *Job) error {
 		return false
 	})
 
-	// Initialize pending counters and article index from the fresh
-	// job's article state (all articles start with Done=false,
-	// Emitted=false so Pending == len(Articles) per file).
+	// Initialize pending counters from the fresh job's article state
+	// (all articles start with Done=false, Emitted=false so
+	// Pending == len(Articles) per file).
 	job.recomputePending()
 
 	q.insertByPriorityLocked(job)
@@ -539,6 +539,7 @@ func (q *Queue) SetPostProcStarted(id string) (bool, error) {
 		return false, err
 	}
 	job.PostProc = true
+	job.dropArtIndex()
 	q.dirty.Store(true)
 	return true, nil
 }
