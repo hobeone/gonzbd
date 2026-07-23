@@ -11,6 +11,19 @@ import (
 	"go.uber.org/goleak"
 )
 
+// assertNoLeakedGoroutines fails t if any goroutine started after baseline
+// (a goleak.IgnoreCurrent() snapshot taken before the code under test ran)
+// is still alive. Shared by tests that deliberately park a fake statfs on a
+// channel to simulate a hung/abandoned probe, then unblock it and must
+// prove the goroutine actually terminates rather than merely that callers
+// stopped waiting on it.
+func assertNoLeakedGoroutines(t *testing.T, baseline goleak.Option) {
+	t.Helper()
+	if err := goleak.Find(baseline); err != nil {
+		t.Fatalf("goroutine did not terminate after being unblocked: %v", err)
+	}
+}
+
 func TestFreeBytes_RejectsInvalidContext(t *testing.T) {
 	tests := []struct {
 		name string
@@ -37,12 +50,18 @@ func TestFreeBytes_RejectsInvalidContext(t *testing.T) {
 // Done() is nil), <-ctx.Done() below blocks forever, so this test must time
 // out waiting for checkDiskSpace to return.
 //
-// a.freeBytes is a per-instance field (not shared/global state), set once
+// a.diskProbe is a per-instance field (not shared/global state), set once
 // before checkDiskSpace ever runs on this Assembler and never reassigned
 // concurrently — the goroutine that calls checkDiskSpace is spawned after
 // the field is set, so Go's happens-before guarantee for goroutine creation
-// covers it without needing any additional synchronization.
+// covers it without needing any additional synchronization. The fake statfs
+// is injected below diskProbe (it has no ctx parameter — DiskProbe's probe
+// goroutine is detached from any single caller's ctx by design), so
+// simulating "hung" means blocking on a channel this test controls, not
+// ctx.Done().
 func TestCheckDiskSpace_SurvivesHungStatfs(t *testing.T) {
+	baseline := goleak.IgnoreCurrent()
+
 	dir := t.TempDir()
 	var lowDiskCalls int
 	opts := Options{
@@ -53,9 +72,10 @@ func TestCheckDiskSpace_SurvivesHungStatfs(t *testing.T) {
 	}
 	a := New(opts, nil)
 	a.SetMinFreeBytes(1) // any positive value enables the check
-	a.freeBytes = func(ctx context.Context, _ string) (int64, error) {
-		<-ctx.Done()
-		return 0, ctx.Err()
+	unblock := make(chan struct{})
+	a.diskProbe.statfs = func(path string, buf *syscall.Statfs_t) error {
+		<-unblock
+		return syscall.Statfs(path, buf)
 	}
 
 	open := map[fileKey]*openFile{
@@ -76,6 +96,12 @@ func TestCheckDiskSpace_SurvivesHungStatfs(t *testing.T) {
 		t.Fatal("checkDiskSpace did not return within the bounded timeout; " +
 			"a hung statfs would stall the assembler worker indefinitely")
 	}
+
+	// Release the abandoned probe goroutine and prove it actually
+	// terminates — this test must not itself leak a permanently-parked
+	// goroutine for the rest of the test binary's life.
+	close(unblock)
+	assertNoLeakedGoroutines(t, baseline)
 }
 
 // TestFreeBytes_AbandonedGoroutineCompletesAfterCancellation proves the part

@@ -248,12 +248,14 @@ type Assembler struct {
 	// saves from the API goroutine don't race with the worker's disk checks.
 	minFreeBytes atomic.Int64
 
-	// freeBytes defaults to the package-level FreeBytes and is only ever
-	// overridden by tests (same-package, set once before Start/checkDiskSpace
-	// is ever invoked on this instance) to simulate a hung statfs without a
-	// real dead mount. Not reassigned in production, so it carries no shared
-	// mutable state across instances or goroutines.
-	freeBytes func(ctx context.Context, dir string) (int64, error)
+	// diskProbe bounds checkDiskSpace's statfs calls to at most one
+	// outstanding probe per directory, with a short TTL cache, so a stuck
+	// NFS/SMB mount leaks at most one goroutine instead of one per
+	// diskCheckInterval writes for as long as the mount stays down. Tests
+	// override its statfs field (same-package, set once before
+	// Start/checkDiskSpace is ever invoked on this instance) to simulate a
+	// hung statfs without a real dead mount.
+	diskProbe *DiskProbe
 
 	// cacheUsedBytes mirrors writeCache.used so it can be read safely from
 	// goroutines other than the worker goroutine (writeCache itself is
@@ -320,7 +322,7 @@ func New(opts Options, log *slog.Logger) *Assembler {
 		pendingDone:   make(map[string][]string),
 		pendingFailed: make(map[string][]string),
 		pendingCursor: make(map[fileKey]int64),
-		freeBytes:     FreeBytes,
+		diskProbe:     NewDiskProbe(DefaultDiskProbeTTL),
 	}
 	a.minFreeBytes.Store(opts.MinFreeBytes)
 	return a
@@ -933,7 +935,7 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 		// an uninterruptible statfs on a stuck mount would stall the whole
 		// pipeline. See diskCheckTimeout.
 		ctx, cancel := context.WithTimeout(context.Background(), diskCheckTimeout)
-		free, err := a.freeBytes(ctx, dir)
+		free, err := a.diskProbe.FreeBytes(ctx, dir)
 		cancel()
 		if err != nil {
 			a.log.Warn("disk-space check failed", "dir", dir, "error", err)

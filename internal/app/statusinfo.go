@@ -49,8 +49,18 @@ func (app *Application) downloadDir() string {
 // ctx: statfs has no timeout of its own and can block indefinitely on a
 // stuck network mount, so a caller-supplied deadline is required to keep
 // a status-page request from hanging.
+//
+// Routed through app.diskProbe (rather than calling assembler.FreeBytes
+// directly) because this is called from /health and the status-overview
+// API on every HTTP request — without deduping, each poll against a stuck
+// mount would abandon its own goroutine forever.
 func (app *Application) DownloadDirFreeBytes(ctx context.Context) (int64, error) {
-	return assembler.FreeBytes(ctx, app.downloadDir())
+	if app.diskProbe == nil {
+		// Defensive fallback for a zero-value Application (not constructed
+		// via New()); production code always goes through the cached path.
+		return assembler.FreeBytes(ctx, app.downloadDir())
+	}
+	return app.diskProbe.FreeBytes(ctx, app.downloadDir())
 }
 
 // TestDownloadDirWriteSpeedMBPerSec runs a bounded disk write-speed test

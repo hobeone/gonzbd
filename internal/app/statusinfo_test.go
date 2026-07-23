@@ -45,6 +45,21 @@ func TestApplication_DownloadDirFreeBytes_ReturnsPositiveForRealDir(t *testing.T
 	}
 }
 
+func TestApplication_DownloadDirFreeBytes_NilDiskProbeFallback(t *testing.T) {
+	dlDir := t.TempDir()
+	appNoProbe := &Application{
+		config: testConfig(dlDir, t.TempDir(), t.TempDir()),
+	}
+
+	free, err := appNoProbe.DownloadDirFreeBytes(t.Context())
+	if err != nil {
+		t.Fatalf("DownloadDirFreeBytes: %v", err)
+	}
+	if free <= 0 {
+		t.Errorf("DownloadDirFreeBytes() = %d, want > 0 for a real temp dir", free)
+	}
+}
+
 func TestApplication_TestDownloadDirWriteSpeedMBPerSec_ReturnsPositive(t *testing.T) {
 	dlDir := t.TempDir()
 	cfg := testConfig(dlDir, t.TempDir(), t.TempDir())
