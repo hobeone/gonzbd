@@ -289,8 +289,9 @@ func waitForFilesComplete(t *testing.T, a *app.Application, jobID string, fileId
 			return true
 		}
 		allComplete := true
+		p := snap.Progress()
 		for _, idx := range fileIdxs {
-			if idx >= len(snap.Files) || !snap.Files[idx].Complete {
+			if idx >= snap.Manifest().NumFiles() || !p.FileComplete(idx) {
 				allComplete = false
 				break
 			}

@@ -836,7 +836,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	if ctx.Err() != nil {
 		return false
 	}
-	if !snap.HasDeferredPar2() || snap.Par2Recovered {
+	if !snap.HasDeferredPar2() || snap.Progress().Par2Recovered() {
 		return false
 	}
 	var downloadDir string
@@ -846,7 +846,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 		parseOpts = par2.ParseOptionsFromConfig(&c.PostProc)
 	})
 	dir := filepath.Join(downloadDir, snap.Name)
-	needsRecovery, reason := par2NeedsRecovery(dir, snap.Files, app.log, parseOpts)
+	needsRecovery, reason := par2NeedsRecovery(dir, snap.Manifest(), snap.Progress(), app.log, parseOpts)
 	if !needsRecovery {
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
 		_ = app.queue.DiscardDeferredPar2(jobID)
@@ -873,7 +873,7 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 // download (NoCRC), or could not be matched (Unverified). When no usable par2
 // index is on disk (e.g. the index itself failed to download), it returns true
 // so the recovery volumes are fetched — the safe, today's-behaviour fallback.
-func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger, parseOpts par2.ParseOptions) (needsRecovery bool, reason string) {
+func par2NeedsRecovery(dir string, m *queue.Manifest, p *queue.JobProgress, log *slog.Logger, parseOpts par2.ParseOptions) (needsRecovery bool, reason string) {
 	sets, err := par2.FindPar2Files(dir, parseOpts)
 	if err != nil || len(sets) == 0 {
 		reason := "no usable par2 index found to verify against"
@@ -884,16 +884,16 @@ func par2NeedsRecovery(dir string, files []queue.JobFile, log *slog.Logger, pars
 			"dir", dir, "err", err)
 		return true, reason
 	}
-	assembled := make([]par2.AssembledFile, len(files))
-	for i, jf := range files {
-		name := jf.Subject
-		if jf.Filename != "" {
-			name = jf.Filename
+	assembled := make([]par2.AssembledFile, m.NumFiles())
+	for fi := range m.NumFiles() {
+		name := m.FileSubject(fi)
+		if fn := p.FileFilename(fi); fn != "" {
+			name = fn
 		}
-		assembled[i] = par2.AssembledFile{
+		assembled[fi] = par2.AssembledFile{
 			FileName: name,
-			CRC32:    jf.AssembledCRC32,
-			FileSize: jf.Bytes,
+			CRC32:    p.FileAssembledCRC32(fi),
+			FileSize: m.FileBytes(fi),
 		}
 	}
 	r := par2.VerifyCRCsWithOptions(assembled, sets, log, parseOpts)
@@ -952,9 +952,10 @@ func (app *Application) drainCompletions(ctx context.Context) {
 // "complete" state — the assembler fires OnFileComplete once every article
 // is Done-or-Failed, leaving gaps in the written file rather than blocking
 // the job forever on data that will never arrive.
-func hasFailedArticle(jf *queue.JobFile) bool {
-	for _, art := range jf.Articles {
-		if art.Failed {
+func hasFailedArticle(m *queue.Manifest, p *queue.JobProgress, fileIdx int) bool {
+	lo, hi := m.FileRange(fileIdx)
+	for i := lo; i < hi; i++ {
+		if p.ArticleFailed(i) {
 			return true
 		}
 	}
@@ -1039,7 +1040,7 @@ func awaitDirectUnpackOrAbort(ctx context.Context, du directUnpackWaiter) bool {
 func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// Mark the download phase as finished so OnJobDone can compute
 	// download duration accurately, excluding post-processing time.
-	job.DownloadFinished = time.Now()
+	job.MarkDownloadFinished(time.Now())
 
 	// Release cached file info for this job; the assembler no longer
 	// needs it, and keeping it around leaks memory across many downloads.
@@ -1059,8 +1060,8 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// Log the handoff from download → postproc. This is the "entering
 	// postproc" bookend; processJob logs the "exiting" bookend.
 	var dlDuration time.Duration
-	if !job.DownloadStarted.IsZero() {
-		dlDuration = job.DownloadFinished.Sub(job.DownloadStarted)
+	if !job.Progress().DownloadStarted().IsZero() {
+		dlDuration = job.Progress().DownloadFinished().Sub(job.Progress().DownloadStarted())
 	}
 	app.log.Info("postproc: job entering pipeline",
 		"job", job.ID,
@@ -1068,8 +1069,8 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 		"category", job.Category,
 		"download_dir", downloadDir,
 		"download_duration", dlDuration.Round(time.Second),
-		"total_bytes", job.TotalBytes,
-		"failed_bytes", job.FailedBytes,
+		"total_bytes", job.Manifest().TotalBytes(),
+		"failed_bytes", job.Progress().FailedBytes(),
 		"fail_msg", failMsg,
 	)
 
@@ -1183,28 +1184,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	if err != nil {
 		return err
 	}
-	job.Status = constants.StatusQueued
-	job.PostProc = false
-	job.DownloadStarted = time.Time{}
-	job.DownloadFinished = time.Time{}
-	job.ServerStats = nil
-	job.FailedBytes = 0
-	for fi := range job.Files {
-		file := &job.Files[fi]
-		anyReset := false
-		for ai := range file.Articles {
-			art := &file.Articles[ai]
-			if art.Failed {
-				art.Done = false
-				art.Failed = false
-				job.RemainingBytes += int64(art.Bytes)
-				anyReset = true
-			}
-		}
-		if anyReset {
-			file.Complete = false
-		}
-	}
+	job.ResetForRetry()
 	if err := app.queue.Add(job); err != nil {
 		return err
 	}
@@ -1400,31 +1380,34 @@ func (app *Application) ServerStatus() []downloader.ServerSnapshot {
 }
 
 func failMsgForJob(job *queue.Job) string {
-	if job.FailedBytes == 0 {
+	failedBytes := job.Progress().FailedBytes()
+	if failedBytes == 0 {
 		return ""
 	}
 
-	failedMB := float64(job.FailedBytes) / (1024 * 1024)
+	failedMB := float64(failedBytes) / (1024 * 1024)
 
 	// If ALL bytes in the job failed, it's hopeless regardless of PAR2.
-	if job.FailedBytes >= job.TotalBytes {
+	if failedBytes >= job.Manifest().TotalBytes() {
 		return fmt.Sprintf(
 			"Aborted: All articles failed (%.1f MB). Job is beyond repair",
 			failedMB,
 		)
 	}
 
+	par2Bytes := job.Manifest().Par2Bytes()
+
 	// If PAR2 files exist and the failure exceeds repair capacity, abort.
-	if job.Par2Bytes > 0 && job.FailedBytes > job.Par2Bytes {
-		par2MB := float64(job.Par2Bytes) / (1024 * 1024)
+	if par2Bytes > 0 && failedBytes > par2Bytes {
+		par2MB := float64(par2Bytes) / (1024 * 1024)
 		return fmt.Sprintf(
 			"Aborted: %.1f MB failed, exceeds repair capacity of %.1f MB (%d par2 files). Job is beyond repair",
-			failedMB, par2MB, job.Par2Files,
+			failedMB, par2MB, job.Manifest().Par2Files(),
 		)
 	}
 
 	// No PAR2 files at all and there are failures — can't repair.
-	if job.Par2Bytes == 0 && job.FailedBytes > 0 {
+	if par2Bytes == 0 && failedBytes > 0 {
 		return fmt.Sprintf(
 			"Aborted: %.1f MB failed with no par2 files available. Job is beyond repair",
 			failedMB,

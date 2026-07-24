@@ -1,7 +1,5 @@
 package queue
 
-import "maps"
-
 // Snapshot returns a point-in-time, deep-copied view of all jobs in the
 // queue. It is intended for testing and consistent-read views (e.g. for
 // API responses).
@@ -19,19 +17,19 @@ func (q *Queue) Snapshot() []*Job {
 	return res
 }
 
+// cloneJob shares manifest by reference (it is immutable after
+// construction — see Manifest's own doc comment) and deep-copies progress
+// via JobProgress.clone(). Getting this backwards would either let
+// snapshots diverge from the live manifest (a correctness bug, since
+// Manifest is meant to be immutable) or pay a full manifest deep-copy on
+// every snapshot for no reason (a performance regression).
 func cloneJob(j *Job) *Job {
 	cp := *j
 
-	// The artIdx map (lazy article-by-ID index) holds pointers into j's
-	// Files slice. We must nil it so the clone rebuilds its own index
-	// lazily, pointing into the clone's own deep-copied Files.
-	cp.artIdx = nil
+	cp.manifest = j.manifest
+	cp.progress = j.progress.clone()
 
 	// Deep copy maps
-	if j.ServerStats != nil {
-		cp.ServerStats = make(map[string]int64, len(j.ServerStats))
-		maps.Copy(cp.ServerStats, j.ServerStats)
-	}
 	if j.Meta != nil {
 		cp.Meta = make(map[string][]string, len(j.Meta))
 		for k, v := range j.Meta {
@@ -45,18 +43,6 @@ func cloneJob(j *Job) *Job {
 	if j.Groups != nil {
 		cp.Groups = make([]string, len(j.Groups))
 		copy(cp.Groups, j.Groups)
-	}
-
-	if j.Files != nil {
-		cp.Files = make([]JobFile, len(j.Files))
-		for i, f := range j.Files {
-			fCp := f
-			if f.Articles != nil {
-				fCp.Articles = make([]JobArticle, len(f.Articles))
-				copy(fCp.Articles, f.Articles)
-			}
-			cp.Files[i] = fCp
-		}
 	}
 
 	return &cp

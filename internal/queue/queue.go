@@ -150,7 +150,7 @@ func (q *Queue) CountUnfinishedArticles(jobID string, fileIdx int) (int, error) 
 	if !ok {
 		return 0, fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	if fileIdx < 0 || fileIdx >= len(job.Files) {
+	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return 0, fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
 	}
 	// Count from the article state directly rather than using
@@ -160,8 +160,9 @@ func (q *Queue) CountUnfinishedArticles(jobID string, fileIdx int) (int, error) 
 	// shouldn't be counted as "unfinished" yet haven't been
 	// durably committed.
 	var count int
-	for ai := range job.Files[fileIdx].Articles {
-		if !job.Files[fileIdx].Articles[ai].Done {
+	lo, hi := job.manifest.FileRange(fileIdx)
+	for i := lo; i < hi; i++ {
+		if !job.progress.done[i] {
 			count++
 		}
 	}
@@ -299,7 +300,7 @@ func (q *Queue) Add(job *Job) error {
 	// Initialize pending counters from the fresh job's article state
 	// (all articles start with Done=false, Emitted=false so
 	// Pending == len(Articles) per file).
-	job.recomputePending()
+	job.progress.recompute(job.manifest)
 
 	q.insertByPriorityLocked(job)
 	q.byID[job.ID] = job
@@ -539,7 +540,7 @@ func (q *Queue) SetPostProcStarted(id string) (bool, error) {
 		return false, err
 	}
 	job.PostProc = true
-	job.dropArtIndex()
+	job.manifest.dropMessageIDIndex()
 	q.dirty.Store(true)
 	return true, nil
 }
@@ -553,8 +554,8 @@ func (q *Queue) MarkJobStarted(id string, t time.Time) error {
 	if !ok {
 		return ErrNotFound
 	}
-	if job.DownloadStarted.IsZero() {
-		job.DownloadStarted = t
+	if job.progress.downloadStarted.IsZero() {
+		job.progress.downloadStarted = t
 		q.dirty.Store(true)
 	}
 	return nil
@@ -568,10 +569,10 @@ func (q *Queue) RecordDownload(id, server string, bytes int) error {
 	if !ok {
 		return ErrNotFound
 	}
-	if job.ServerStats == nil {
-		job.ServerStats = make(map[string]int64)
+	if job.progress.serverStats == nil {
+		job.progress.serverStats = make(map[string]int64)
 	}
-	job.ServerStats[server] += int64(bytes)
+	job.progress.serverStats[server] += int64(bytes)
 	q.dirty.Store(true)
 	return nil
 }
@@ -610,21 +611,21 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 	for _, job := range q.jobs {
 		// Skip jobs already handed to post-processing or fully complete.
 		// Without this, aborted/hopeless jobs continue wasting bandwidth.
-		if job.PostProc || job.PendingArticles == 0 {
+		if job.PostProc || job.progress.pendingArticles == 0 {
 			continue
 		}
-		for fi := range job.Files {
-			file := &job.Files[fi]
+		m := job.manifest
+		for fi := range m.NumFiles() {
 			// Deferred files (on-demand par2 recovery volumes) are held back.
-			// They already have Pending == 0 (set by recomputePending), so the
+			// They already have Pending == 0 (set by recompute), so the
 			// next check skips them too; the explicit guard documents intent
 			// and protects against future counter drift.
-			if file.Complete || file.Pending == 0 || file.Deferred {
+			if job.progress.files[fi].Complete || job.progress.files[fi].Pending == 0 || job.progress.files[fi].Deferred {
 				continue
 			}
-			for ai := range file.Articles {
-				art := &job.Files[fi].Articles[ai]
-				if art.Done || art.Emitted {
+			lo, hi := m.FileRange(fi)
+			for i := lo; i < hi; i++ {
+				if job.progress.done[i] || job.progress.emitted[i] {
 					continue
 				}
 				if !fn(UnfinishedArticle{
@@ -632,11 +633,11 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 					JobStatus:   job.Status,
 					JobAdded:    job.Added,
 					FileIdx:     fi,
-					MessageID:   art.ID,
-					Bytes:       art.Bytes,
-					Subject:     file.Subject,
-					FailedBytes: job.FailedBytes,
-					Par2Bytes:   job.Par2Bytes,
+					MessageID:   m.ArticleID(i),
+					Bytes:       m.ArticleBytes(i),
+					Subject:     m.FileSubject(fi),
+					FailedBytes: job.progress.failedBytes,
+					Par2Bytes:   m.Par2Bytes(),
 				}) {
 					return
 				}
@@ -657,8 +658,9 @@ func (q *Queue) MarkArticleDone(jobID, messageID string) error {
 
 // MarkArticleEmitted flags an article as having a result in flight from the
 // downloader to the assembler. This is a transient, in-memory-only bit
-// (see JobArticle.Emitted): its purpose is to prevent the dispatcher from
-// re-dispatching the same article between the moment the downloader sends
+// (JobProgress's emitted array, never persisted): its purpose is to
+// prevent the dispatcher from re-dispatching the same article between the
+// moment the downloader sends
 // a result on the completions channel and the moment the assembler makes
 // the outcome durable (MarkArticleDone / MarkArticleFailed). On restart
 // the flag is lost, so any article whose bytes weren't fsynced is
@@ -673,15 +675,11 @@ func (q *Queue) MarkArticleEmitted(jobID, messageID string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	art := job.articleByID(messageID)
-	if art == nil {
+	i, ok := job.manifest.articleIndexByID(messageID)
+	if !ok {
 		return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 	}
-	if !art.Emitted && !art.Done {
-		art.Emitted = true
-		job.Files[art.FileIdx].Pending--
-		job.PendingArticles--
-	}
+	job.progress.markEmitted(job.manifest, i)
 	return nil
 }
 
@@ -697,8 +695,8 @@ func (q *Queue) ClearArticleEmitted(jobID, messageID string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	art := job.articleByID(messageID)
-	if art == nil {
+	i, ok := job.manifest.articleIndexByID(messageID)
+	if !ok {
 		return fmt.Errorf("%w: article %s in job %s", ErrNotFound, messageID, jobID)
 	}
 	// Only restore to pending if the article is not already done. An article
@@ -706,13 +704,7 @@ func (q *Queue) ClearArticleEmitted(jobID, messageID string) error {
 	// ClearArticleEmitted (e.g. a late assembler flush after a downloader
 	// reload). In that case the article is finished and must not be counted
 	// as pending.
-	if art.Emitted && !art.Done {
-		art.Emitted = false
-		job.Files[art.FileIdx].Pending++
-		job.PendingArticles++
-	} else if art.Emitted {
-		art.Emitted = false // clear the stale flag without touching counters
-	}
+	job.progress.clearEmitted(job.manifest, i)
 	q.notifyLocked()
 	return nil
 }
@@ -739,26 +731,18 @@ func (q *Queue) ClearAllEmitted() {
 		if job.Status == constants.StatusDownloading {
 			_ = q.setStatusLocked(job, constants.StatusQueued)
 		}
-		for fi := range job.Files {
-			for ai := range job.Files[fi].Articles {
-				art := &job.Files[fi].Articles[ai]
-				art.Emitted = false
-				// Reset articles that were marked Failed during the old
-				// downloader's teardown so they can be retried by the
-				// new downloader. Successfully completed articles
-				// (Done && !Failed) are left untouched.
-				if art.Failed {
-					job.FailedBytes -= int64(art.Bytes)
-					job.RemainingBytes += int64(art.Bytes)
-					art.Done = false
-					art.Failed = false
-				}
-			}
+		m := job.manifest
+		for i := range m.NumArticles() {
+			// Reset articles that were marked Failed during the old
+			// downloader's teardown so they can be retried by the
+			// new downloader. Successfully completed articles
+			// (Done && !Failed) are left untouched.
+			job.progress.resetForReload(m, i)
 		}
 		// Recompute pending counters from ground truth after bulk
 		// state reset. Incremental tracking is fragile here because
 		// both Emitted and Failed flags are being cleared in bulk.
-		job.recomputePending()
+		job.progress.recompute(m)
 	}
 	// Drain any stale notification (e.g. from MarkArticleDone calls during
 	// pipeline drain of the old downloader's buffered results) so our fresh
@@ -776,7 +760,7 @@ func (q *Queue) TotalRemainingBytes() int64 {
 	defer q.mu.RUnlock()
 	var total int64
 	for _, job := range q.byID {
-		total += job.RemainingBytes
+		total += job.progress.remainingBytes
 	}
 	return total
 }
@@ -826,28 +810,17 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 	}
 	var notFound []string
 	for _, id := range messageIDs {
-		art := job.articleByID(id)
-		if art == nil {
+		i, ok := job.manifest.articleIndexByID(id)
+		if !ok {
 			notFound = append(notFound, id)
 			continue
 		}
-		if art.Done {
-			continue
-		}
 		// If the article was Emitted, Pending was already decremented;
-		// if it was still pending (!Emitted), decrement now.
-		if !art.Emitted {
-			job.Files[art.FileIdx].Pending--
-			job.PendingArticles--
-		}
-		art.Done = true
-		art.Emitted = false // clear so ClearArticleEmitted has no effect on a done article
-		job.RemainingBytes -= int64(art.Bytes)
-		job.ArticlesResolved++
-		// Per-file progress: only count successful completions.
-		// MarkArticlesFailed sets Failed before reaching its own block,
-		// so this method's articles are by definition successful.
-		job.Files[art.FileIdx].BytesDownloaded += int64(art.Bytes)
+		// if it was still pending (!Emitted), decrement now. Per-file
+		// progress only counts successful completions: markDone is not
+		// called for articles MarkArticlesFailed has already flagged
+		// Failed, so this method's articles are by definition successful.
+		job.progress.markDone(job.manifest, i)
 	}
 	q.dirty.Store(true)
 	q.mu.Unlock()
@@ -868,10 +841,10 @@ func (q *Queue) SetFileWriteCursor(jobID string, fileIdx int, cursor int64) erro
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	if fileIdx < 0 || fileIdx >= len(job.Files) {
+	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
 	}
-	job.Files[fileIdx].WriteCursor = cursor
+	job.progress.files[fileIdx].WriteCursor = cursor
 	q.dirty.Store(true)
 	return nil
 }
@@ -896,40 +869,28 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 	firstTime := make([]string, 0, len(messageIDs))
 	var notFound []string
 	for _, id := range messageIDs {
-		art := job.articleByID(id)
-		if art == nil {
+		i, ok := job.manifest.articleIndexByID(id)
+		if !ok {
 			notFound = append(notFound, id)
 			continue
 		}
-		if art.Done {
-			continue
+		if job.progress.markFailed(job.manifest, i) {
+			firstTime = append(firstTime, id)
 		}
-		if !art.Emitted {
-			job.Files[art.FileIdx].Pending--
-			job.PendingArticles--
-		}
-		art.Done = true
-		art.Failed = true
-		art.Emitted = false // clear so ClearArticleEmitted has no effect on a done article
-		job.FailedBytes += int64(art.Bytes)
-		job.RemainingBytes -= int64(art.Bytes)
-		job.ArticlesResolved++
-		job.ArticlesFailed++
-		firstTime = append(firstTime, art.ID)
 	}
 	var failedBytes, par2Bytes int64
 	var releasedPar2 bool
 	if len(firstTime) > 0 {
-		failedBytes, par2Bytes = job.FailedBytes, job.Par2Bytes
+		failedBytes, par2Bytes = job.progress.failedBytes, job.manifest.Par2Bytes()
 		q.dirty.Store(true)
 		// On-demand par2: a permanent data-article failure proves this job
 		// will need repair. Release the deferred recovery volumes now — while
 		// the connection is live and the articles are freshest — rather than
 		// waiting for the download-complete verify. Par2Recovered guards it to
 		// fire once; Par2Files>0 skips the scan for jobs without par2.
-		if !job.Par2Recovered && job.Par2Files > 0 {
-			if q.undeferRecoveryLocked(job, job.DeferredRecoveryIndices()) {
-				job.Par2ReleaseReason = "permanent article download failure detected on active queue"
+		if !job.progress.par2Recovered && job.manifest.Par2Files() > 0 {
+			if q.undeferRecoveryLocked(job, job.progress.DeferredRecoveryIndices()) {
+				job.progress.par2ReleaseReason = "permanent article download failure detected on active queue"
 				releasedPar2 = true
 			}
 		}
@@ -967,7 +928,7 @@ func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
 	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= len(job.Files) {
+		if fi < 0 || fi >= job.manifest.NumFiles() {
 			return fmt.Errorf("queue: fileIdx %d out of range for job %s", fi, jobID)
 		}
 	}
@@ -983,13 +944,17 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	job.Par2ReleaseReason = reason
+	job.progress.par2ReleaseReason = reason
 	q.dirty.Store(true)
 	return nil
 }
 
-// DiscardDeferredPar2 removes all deferred par2 files from the job,
-// adjusting TotalBytes and RemainingBytes.
+// DiscardDeferredPar2 removes all deferred par2 files from the job. Since
+// Manifest is immutable and shared by reference across snapshots, this
+// rebuilds a fresh Manifest (with recomputed TotalBytes, but Par2Bytes/
+// Par2Files carried over unchanged) and a re-indexed JobProgress cloned
+// from the old one, rather than editing either in place. A pure no-op
+// (no rebuild, no dirty flag) when there is nothing deferred to discard.
 func (q *Queue) DiscardDeferredPar2(jobID string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -998,31 +963,88 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
 
+	m := job.manifest
 	var activeFiles []JobFile
 	var discardedBytes int64
-	for _, f := range job.Files {
-		if f.Deferred {
-			discardedBytes += f.Bytes
-		} else {
-			activeFiles = append(activeFiles, f)
+	for fi := range m.NumFiles() {
+		if job.progress.files[fi].Deferred {
+			discardedBytes += m.FileBytes(fi)
+			continue
 		}
+		lo, hi := m.FileRange(fi)
+		articles := make([]JobArticle, 0, hi-lo)
+		for i := lo; i < hi; i++ {
+			articles = append(articles, JobArticle{
+				ID:     m.ArticleID(i),
+				Bytes:  m.ArticleBytes(i),
+				Number: m.ArticleNumber(i),
+			})
+		}
+		activeFiles = append(activeFiles, JobFile{
+			Subject:        m.FileSubject(fi),
+			Date:           m.FileDate(fi),
+			Bytes:          m.FileBytes(fi),
+			Articles:       articles,
+			IsPar2Recovery: m.FileIsPar2Recovery(fi),
+		})
 	}
 
 	if discardedBytes > 0 {
-		job.Files = activeFiles
-		// Drop the article index: it may hold entries for the discarded
-		// files' articles with FileIdx values that recomputePending's loop
-		// below will never revisit (they're no longer in job.Files), and
-		// this makes the invariant hold locally instead of relying on the
-		// fact that Deferred articles are never dispatched in the first
-		// place. articleByID rebuilds it lazily against the new job.Files.
-		job.dropArtIndex()
-		job.TotalBytes -= discardedBytes
-		job.RemainingBytes -= discardedBytes
-		if job.RemainingBytes < 0 {
-			job.RemainingBytes = 0
+		// Manifest is shared by reference across every snapshot, so it
+		// cannot be filtered in place — build a fresh one instead. Every
+		// surviving article's global index shifts whenever a removed file
+		// preceded it, so JobProgress's flat arrays must be re-indexed to
+		// match, not merely recomputed.
+		newManifestVal := newManifest(activeFiles)
+		// Par2Bytes/Par2Files are carried over from the old manifest
+		// unchanged, not recomputed against the reduced file set — this
+		// deliberately leaves them stale, still counting the just-removed
+		// recovery volumes.
+		newManifestVal.par2Bytes = m.Par2Bytes()
+		newManifestVal.par2Files = m.Par2Files()
+
+		// Clone-and-adjust the old JobProgress rather than constructing
+		// fresh: a fresh newJobProgress(newManifestVal) would zero every
+		// job-level scalar (ServerStats, DownloadStarted/Finished, ...),
+		// silently discarding progress on a partially-downloaded job.
+		newProgress := job.progress.clone()
+		newDone := make([]bool, 0, newManifestVal.NumArticles())
+		newFailed := make([]bool, 0, newManifestVal.NumArticles())
+		newEmitted := make([]bool, 0, newManifestVal.NumArticles())
+		newFiles := make([]FileProgress, 0, newManifestVal.NumFiles())
+		for fi := range m.NumFiles() {
+			if job.progress.files[fi].Deferred {
+				continue
+			}
+			// A Deferred file's articles are never dispatched
+			// (ForEachUnfinishedArticle skips them), so they are always
+			// Done=false/Failed=false/Emitted=false at discard time —
+			// dropping them loses nothing.
+			lo, hi := m.FileRange(fi)
+			newDone = append(newDone, job.progress.done[lo:hi]...)
+			newFailed = append(newFailed, job.progress.failed[lo:hi]...)
+			newEmitted = append(newEmitted, job.progress.emitted[lo:hi]...)
+			newFiles = append(newFiles, job.progress.files[fi])
 		}
-		job.recomputePending()
+		newProgress.done = newDone
+		newProgress.failed = newFailed
+		newProgress.emitted = newEmitted
+		newProgress.files = newFiles
+		newProgress.remainingBytes -= discardedBytes
+		if newProgress.remainingBytes < 0 {
+			newProgress.remainingBytes = 0
+		}
+		// pendingArticles/articlesResolved/articlesFailed and each file's
+		// Pending/BytesDownloaded are already correct here (deferred files
+		// contribute nothing, so dropping them changes nothing these
+		// counters depend on), but recompute defensively rather than
+		// relying on that invariant staying true — every other bulk-state
+		// path (Add, Load, ClearAllEmitted, undeferRecoveryLocked) does the
+		// same.
+		newProgress.recompute(newManifestVal)
+
+		job.manifest = newManifestVal
+		job.progress = newProgress
 		q.dirty.Store(true)
 	}
 	return nil
@@ -1036,15 +1058,15 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 func (q *Queue) undeferRecoveryLocked(job *Job, fileIdxs []int) bool {
 	changed := false
 	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= len(job.Files) || !job.Files[fi].Deferred {
+		if fi < 0 || fi >= job.manifest.NumFiles() || !job.progress.files[fi].Deferred {
 			continue
 		}
-		job.Files[fi].Deferred = false
+		job.progress.files[fi].Deferred = false
 		changed = true
 	}
 	if changed {
-		job.Par2Recovered = true
-		job.recomputePending()
+		job.progress.par2Recovered = true
+		job.progress.recompute(job.manifest)
 		q.dirty.Store(true)
 		q.notifyLocked()
 	}
@@ -1060,10 +1082,10 @@ func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	if fileIdx < 0 || fileIdx >= len(job.Files) {
+	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
 	}
-	job.Files[fileIdx].Complete = true
+	job.progress.files[fileIdx].Complete = true
 	q.dirty.Store(true)
 	return nil
 }
@@ -1076,10 +1098,10 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	if fileIdx < 0 || fileIdx >= len(job.Files) {
+	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
 	}
-	job.Files[fileIdx].Filename = filename
+	job.progress.files[fileIdx].Filename = filename
 	q.dirty.Store(true)
 	return nil
 }
@@ -1096,10 +1118,10 @@ func (q *Queue) SetFileCRC32(jobID string, fileIdx int, crc uint32) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	if fileIdx < 0 || fileIdx >= len(job.Files) {
+	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
 	}
-	job.Files[fileIdx].AssembledCRC32 = crc
+	job.progress.files[fileIdx].AssembledCRC32 = crc
 	q.dirty.Store(true)
 	return nil
 }

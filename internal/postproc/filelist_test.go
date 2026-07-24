@@ -1,11 +1,14 @@
 package postproc
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -32,9 +35,65 @@ func TestCompletionPct(t *testing.T) {
 	}
 }
 
-// art is a small helper for building articles with a byte count and outcome.
-func art(bytes int, done, failed bool) queue.JobArticle {
-	return queue.JobArticle{Bytes: bytes, Done: done, Failed: failed}
+// artSpec describes one article's outcome for buildQueueJob.
+type artSpec struct {
+	bytes  int
+	done   bool
+	failed bool
+}
+
+// fileSpec describes one file for buildQueueJob. bytes is only needed when
+// articles is empty (e.g. a deferred par2 recovery volume with no dispatched
+// articles); otherwise the file's byte count is the sum of its articles.
+type fileSpec struct {
+	subject  string
+	bytes    int64
+	articles []artSpec
+}
+
+// buildQueueJob builds a real *queue.Job via queue.NewJob and drives it
+// through a live *queue.Queue's mutation methods to reach the described
+// per-article done/failed state — there is exactly one way to get a job
+// into a given state, and this is it.
+func buildQueueJob(t *testing.T, onDemandPar2 bool, specs []fileSpec) (*queue.Queue, *queue.Job) {
+	t.Helper()
+	parsed := &nzb.NZB{}
+	for fi, f := range specs {
+		nf := nzb.File{Subject: f.subject, Bytes: f.bytes}
+		for ai, a := range f.articles {
+			nf.Articles = append(nf.Articles, nzb.Article{
+				ID:     fmt.Sprintf("f%da%d@t", fi, ai),
+				Bytes:  a.bytes,
+				Number: ai + 1,
+			})
+			nf.Bytes += int64(a.bytes)
+		}
+		parsed.Files = append(parsed.Files, nf)
+	}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "t.nzb", OnDemandPar2: onDemandPar2}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	q := queue.New()
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	for fi, f := range specs {
+		for ai, a := range f.articles {
+			id := fmt.Sprintf("f%da%d@t", fi, ai)
+			switch {
+			case a.failed:
+				if _, err := q.MarkArticlesFailed(job.ID, []string{id}); err != nil {
+					t.Fatalf("MarkArticlesFailed: %v", err)
+				}
+			case a.done:
+				if err := q.MarkArticlesDone(job.ID, []string{id}); err != nil {
+					t.Fatalf("MarkArticlesDone: %v", err)
+				}
+			}
+		}
+	}
+	return q, job
 }
 
 func TestBuildFileCompletionLines(t *testing.T) {
@@ -44,16 +103,11 @@ func TestBuildFileCompletionLines(t *testing.T) {
 		// This mirrors the user's scenario: the per-file ⚠ line pinpoints
 		// which file is short, and its missing bytes are the job's failed
 		// bytes (at finalize nothing is still pending).
-		job := &Job{Queue: &queue.Job{
-			Files: []queue.JobFile{
-				{Subject: "movie.mkv", Articles: []queue.JobArticle{
-					art(100, true, false), art(100, true, false),
-				}},
-				{Subject: "extra.rar", Articles: []queue.JobArticle{
-					art(100, true, false), art(100, false, true),
-				}},
-			},
-		}}
+		_, qjob := buildQueueJob(t, false, []fileSpec{
+			{subject: "movie.mkv", articles: []artSpec{{bytes: 100, done: true}, {bytes: 100, done: true}}},
+			{subject: "extra.rar", articles: []artSpec{{bytes: 100, done: true}, {bytes: 100, failed: true}}},
+		})
+		job := &Job{Queue: qjob}
 
 		lines := buildFileCompletionLines(job)
 		joined := strings.Join(lines, "\n")
@@ -73,19 +127,18 @@ func TestBuildFileCompletionLines(t *testing.T) {
 	})
 
 	t.Run("deferred par2 files are marked as not downloaded and omit from incomplete", func(t *testing.T) {
-		job := &Job{Queue: &queue.Job{
-			Files: []queue.JobFile{
-				{Subject: "movie.mkv", Articles: []queue.JobArticle{art(100, true, false)}},
-				{Subject: "extra.par2", IsPar2Recovery: true, Deferred: true, Bytes: 1000},
-			},
-		}}
+		_, qjob := buildQueueJob(t, true, []fileSpec{
+			{subject: "movie.mkv", articles: []artSpec{{bytes: 100, done: true}}},
+			{subject: "extra.vol000+01.par2", bytes: 1000},
+		})
+		job := &Job{Queue: qjob}
 		lines := buildFileCompletionLines(job)
 		joined := strings.Join(lines, "\n")
 
 		if !strings.Contains(joined, "File completion (2 files, all complete):") {
 			t.Errorf("expected all-complete header since deferred is not counted as incomplete; got:\n%s", joined)
 		}
-		if !strings.Contains(joined, "  - extra.par2 — not downloaded") {
+		if !strings.Contains(joined, "  - extra.vol000+01.par2 — not downloaded") {
 			t.Errorf("expected deferred file to be listed as not downloaded; got:\n%s", joined)
 		}
 		if strings.Contains(joined, "⚠") {
@@ -94,12 +147,11 @@ func TestBuildFileCompletionLines(t *testing.T) {
 	})
 
 	t.Run("all complete", func(t *testing.T) {
-		job := &Job{Queue: &queue.Job{
-			Files: []queue.JobFile{
-				{Subject: "a.bin", Articles: []queue.JobArticle{art(50, true, false)}},
-				{Subject: "b.bin", Articles: []queue.JobArticle{art(50, true, false)}},
-			},
-		}}
+		_, qjob := buildQueueJob(t, false, []fileSpec{
+			{subject: "a.bin", articles: []artSpec{{bytes: 50, done: true}}},
+			{subject: "b.bin", articles: []artSpec{{bytes: 50, done: true}}},
+		})
+		job := &Job{Queue: qjob}
 		lines := buildFileCompletionLines(job)
 		joined := strings.Join(lines, "\n")
 		if !strings.Contains(joined, "File completion (2 files, all complete):") {
@@ -111,7 +163,8 @@ func TestBuildFileCompletionLines(t *testing.T) {
 	})
 
 	t.Run("no files yields no lines", func(t *testing.T) {
-		job := &Job{Queue: &queue.Job{}}
+		_, qjob := buildQueueJob(t, false, nil)
+		job := &Job{Queue: qjob}
 		if lines := buildFileCompletionLines(job); lines != nil {
 			t.Errorf("expected nil for empty file list, got %v", lines)
 		}
@@ -121,16 +174,11 @@ func TestBuildFileCompletionLines(t *testing.T) {
 func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 	t.Run("clean: deferred volumes skipped", func(t *testing.T) {
 		dir := t.TempDir()
-		job := &Job{
-			DownloadDir: dir,
-			Queue: &queue.Job{
-				TotalBytes: 1000,
-				Files: []queue.JobFile{
-					{Subject: "release.rar", Articles: []queue.JobArticle{art(500, true, false)}},
-					{Subject: "x.vol000+01.par2", IsPar2Recovery: true, Deferred: true, Bytes: 500},
-				},
-			},
-		}
+		_, qjob := buildQueueJob(t, true, []fileSpec{
+			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
+			{subject: "x.vol000+01.par2", bytes: 500},
+		})
+		job := &Job{DownloadDir: dir, Queue: qjob}
 		got := strings.Join(buildDownloadFileList(job), "\n")
 		if !strings.Contains(got, "✓ Par2: verified clean") {
 			t.Errorf("expected clean par2 line; got:\n%s", got)
@@ -145,18 +193,18 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 
 	t.Run("fetched: repair was needed", func(t *testing.T) {
 		dir := t.TempDir()
-		job := &Job{
-			DownloadDir: dir,
-			Queue: &queue.Job{
-				TotalBytes:        1000,
-				Par2Recovered:     true,
-				Par2ReleaseReason: "repair needed",
-				Files: []queue.JobFile{
-					{Subject: "release.rar", Articles: []queue.JobArticle{art(500, true, false)}},
-					{Subject: "x.vol000+01.par2", IsPar2Recovery: true, Deferred: false, Bytes: 500},
-				},
-			},
+		q, qjob := buildQueueJob(t, true, []fileSpec{
+			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
+			{subject: "x.vol000+01.par2", bytes: 500},
+		})
+		if err := q.UndeferRecoveryVolumes(qjob.ID, []int{1}); err != nil {
+			t.Fatalf("UndeferRecoveryVolumes: %v", err)
 		}
+		if err := q.SetPar2ReleaseReason(qjob.ID, "repair needed"); err != nil {
+			t.Fatalf("SetPar2ReleaseReason: %v", err)
+		}
+		qjob = q.SnapshotJob(qjob.ID)
+		job := &Job{DownloadDir: dir, Queue: qjob}
 		got := strings.Join(buildDownloadFileList(job), "\n")
 		if !strings.Contains(got, "⚠ Par2: fetched") {
 			t.Errorf("expected fetched par2 line; got:\n%s", got)
@@ -168,17 +216,11 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 
 	t.Run("off/normal: no on-demand, no summary line", func(t *testing.T) {
 		dir := t.TempDir()
-		job := &Job{
-			DownloadDir: dir,
-			Queue: &queue.Job{
-				TotalBytes:    1000,
-				Par2Recovered: false,
-				Files: []queue.JobFile{
-					{Subject: "release.rar", Articles: []queue.JobArticle{art(500, true, false)}},
-					{Subject: "x.vol000+01.par2", IsPar2Recovery: true, Deferred: false, Bytes: 500},
-				},
-			},
-		}
+		_, qjob := buildQueueJob(t, false, []fileSpec{
+			{subject: "release.rar", articles: []artSpec{{bytes: 500, done: true}}},
+			{subject: "x.vol000+01.par2", bytes: 500},
+		})
+		job := &Job{DownloadDir: dir, Queue: qjob}
 		got := strings.Join(buildDownloadFileList(job), "\n")
 		if strings.Contains(got, "Par2:") {
 			t.Errorf("expected no Par2 summary line; got:\n%s", got)
@@ -196,21 +238,14 @@ func TestBuildDownloadFileListIncludesCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	job := &Job{
-		DownloadDir: dir,
-		Queue: &queue.Job{
-			TotalBytes:  200,
-			FailedBytes: 100,
-			ServerStats: map[string]int64{
-				"news.server.com": 123,
-			},
-			Files: []queue.JobFile{
-				{Subject: "short.rar", Articles: []queue.JobArticle{
-					art(100, true, false), art(100, false, true),
-				}},
-			},
-		},
+	q, qjob := buildQueueJob(t, false, []fileSpec{
+		{subject: "short.rar", articles: []artSpec{{bytes: 100, done: true}, {bytes: 100, failed: true}}},
+	})
+	if err := q.RecordDownload(qjob.ID, "news.server.com", 123); err != nil {
+		t.Fatalf("RecordDownload: %v", err)
 	}
+	qjob = q.SnapshotJob(qjob.ID)
+	job := &Job{DownloadDir: dir, Queue: qjob}
 	lines := buildDownloadFileList(job)
 	joined := strings.Join(lines, "\n")
 
@@ -255,7 +290,8 @@ func TestBuildDownloadFileListRecursesSubdirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	job := &Job{DownloadDir: dir, Queue: &queue.Job{}}
+	_, qjob := buildQueueJob(t, false, nil)
+	job := &Job{DownloadDir: dir, Queue: qjob}
 	joined := strings.Join(buildDownloadFileList(job), "\n")
 
 	if !strings.Contains(joined, "Files in download directory (2):") {

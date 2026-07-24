@@ -344,8 +344,9 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	if snap == nil {
 		return fmt.Errorf("queue lookup: job %q not found", jobID)
 	}
-	if fileIdx < 0 || fileIdx >= len(snap.Files) {
-		return fmt.Errorf("fileIdx %d out of range for job with %d files", fileIdx, len(snap.Files))
+	m := snap.Manifest()
+	if fileIdx < 0 || fileIdx >= m.NumFiles() {
+		return fmt.Errorf("fileIdx %d out of range for job with %d files", fileIdx, m.NumFiles())
 	}
 
 	p.mu.Lock()
@@ -375,7 +376,7 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	// and never mutated, so both are safe to use unlocked below.
 
 	var path string
-	filename := snap.Files[fileIdx].Filename
+	filename := snap.Progress().FileFilename(fileIdx)
 	if filename != "" {
 		// Use the already-resolved and persisted filename directly, preventing
 		// duplicate renaming across daemon restarts.
@@ -384,7 +385,7 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		// First time resolving this file. GetUniqueFilename appends ".1", ".2" etc.
 		// when the path already exists on disk (e.g. naming collisions).
 		// This is real disk I/O (a Stat loop) and must not run under p.mu.
-		candidate := snap.Files[fileIdx].Subject
+		candidate := m.FileSubject(fileIdx)
 		path = fsutil.GetUniqueFilename(
 			fsutil.JoinSafe(jobDir, "", candidate, p.sanitize))
 	}
@@ -400,8 +401,8 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	info := assembler.FileInfo{
 		Path:               path,
 		TotalParts:         totalParts,
-		ExpectedSize:       snap.Files[fileIdx].Bytes,
-		InitialWriteCursor: snap.Files[fileIdx].WriteCursor,
+		ExpectedSize:       m.FileBytes(fileIdx),
+		InitialWriteCursor: snap.Progress().FileWriteCursor(fileIdx),
 	}
 
 	p.mu.Lock()

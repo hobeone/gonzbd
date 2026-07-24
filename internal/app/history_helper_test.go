@@ -2,34 +2,74 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
+// buildHistoryTestJob builds a real *queue.Job with nArticles articles of
+// 100 bytes each (TotalBytes = nArticles*100), adds it to a fresh queue, and
+// overrides the plain header fields (ID/Name/Filename/Category/Added) —
+// still exported, unaffected by the Manifest/Progress split.
+func buildHistoryTestJob(t *testing.T, id, name string, added time.Time, nArticles int) (*queue.Queue, *queue.Job) {
+	t.Helper()
+	parsed := &nzb.NZB{}
+	for i := range nArticles {
+		parsed.Files = append(parsed.Files, nzb.File{
+			Subject:  fmt.Sprintf("f%d.bin", i),
+			Bytes:    100,
+			Articles: []nzb.Article{{ID: fmt.Sprintf("a%d@t", i), Bytes: 100, Number: 1}},
+		})
+	}
+	qjob, err := queue.NewJob(parsed, queue.AddOptions{Filename: name + ".nzb", Name: name}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	qjob.ID = id
+	qjob.Added = added
+	q := queue.New()
+	if err := q.Add(qjob); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	return q, qjob
+}
+
 func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	now := time.Now()
 
-	// 1. Success case, no repair needed, download time > 0
+	// 1. Success case, no repair needed, download time > 0.
+	// 10 articles x 100 bytes = 1000 total. Fail 1 (100 bytes), complete 8
+	// (800 bytes), leave 1 pending — RemainingBytes ends at 100.
+	q1, job1q := buildHistoryTestJob(t, "jobid1", "test-job-1", now.Add(-2*time.Hour), 10)
+	job1q.Category = "movies"
+	if err := q1.MarkJobStarted(job1q.ID, now.Add(-10*time.Second)); err != nil {
+		t.Fatalf("MarkJobStarted: %v", err)
+	}
+	if _, err := q1.MarkArticlesFailed(job1q.ID, []string{"a0@t"}); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+	doneIDs := make([]string, 8)
+	for i := range doneIDs {
+		doneIDs[i] = fmt.Sprintf("a%d@t", i+1)
+	}
+	if err := q1.MarkArticlesDone(job1q.ID, doneIDs); err != nil {
+		t.Fatalf("MarkArticlesDone: %v", err)
+	}
+	if err := q1.RecordDownload(job1q.ID, "serverA", 1024*1024*5); err != nil { // 5 MB
+		t.Fatalf("RecordDownload: %v", err)
+	}
+	if err := q1.RecordDownload(job1q.ID, "serverB", 1024*1024*15); err != nil { // 15 MB
+		t.Fatalf("RecordDownload: %v", err)
+	}
+	job1q.MarkDownloadFinished(now.Add(-2 * time.Second)) // 8 seconds after start
+
 	job1 := &postproc.Job{
-		Queue: &queue.Job{
-			ID:               "jobid1",
-			Name:             "test-job-1",
-			Filename:         "test-job-1.nzb",
-			Category:         "movies",
-			Added:            now.Add(-2 * time.Hour),
-			DownloadStarted:  now.Add(-10 * time.Second),
-			DownloadFinished: now.Add(-2 * time.Second), // 8 seconds
-			TotalBytes:       1000,
-			FailedBytes:      100,
-			RemainingBytes:   50,
-			ServerStats: map[string]int64{
-				"serverA": 1024 * 1024 * 5,  // 5 MB
-				"serverB": 1024 * 1024 * 15, // 15 MB
-			},
-		},
+		Queue:       job1q,
 		FinalDir:    "/downloads/complete/test-job-1",
 		DownloadDir: "/downloads/incomplete/test-job-1",
 		StageLog: []postproc.StageLogEntry{
@@ -51,9 +91,9 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	if entry1.PostprocTime != 1 {
 		t.Errorf("Expected postproc time 1, got %d", entry1.PostprocTime)
 	}
-	// Downloaded calculation: TotalBytes(1000) - FailedBytes(100) - RemainingBytes(50) = 850
-	if entry1.Downloaded != 850 {
-		t.Errorf("Expected downloaded bytes 850, got %d", entry1.Downloaded)
+	// Downloaded calculation: TotalBytes(1000) - FailedBytes(100) - RemainingBytes(100) = 800
+	if entry1.Downloaded != 800 {
+		t.Errorf("Expected downloaded bytes 800, got %d", entry1.Downloaded)
 	}
 	// Meta: serverA=5.0 MB, serverB=15.0 MB
 	expectedMeta := "serverA=5.0 MB, serverB=15.0 MB"
@@ -66,22 +106,17 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	}
 
 	// 2. Download duration = 0 case -> defaults to 1
-	job2 := &postproc.Job{
-		Queue: &queue.Job{
-			DownloadStarted:  now,
-			DownloadFinished: now, // 0 seconds
-		},
-	}
+	_, job2q := buildHistoryTestJob(t, "jobid2", "test-job-2", now, 1)
+	job2 := &postproc.Job{Queue: job2q}
 	entry2 := buildHistoryEntry(job2)
 	if entry2.DownloadTime != 1 {
 		t.Errorf("Expected download time 1, got %d", entry2.DownloadTime)
 	}
 
 	// 3. Failed job, repair stage present, repair success with lines
+	_, job3q := buildHistoryTestJob(t, "jobid3", "test-job-3", now, 1)
 	job3 := &postproc.Job{
-		Queue: &queue.Job{
-			Name: "test-job-3",
-		},
+		Queue:    job3q,
 		FailMsg:  "some failure message",
 		ParError: true,
 		StageLog: []postproc.StageLogEntry{
@@ -103,8 +138,9 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	}
 
 	// 4. Repair stage failed with error
+	_, job4q := buildHistoryTestJob(t, "jobid4", "test-job-4", now, 1)
 	job4 := &postproc.Job{
-		Queue: &queue.Job{},
+		Queue: job4q,
 		StageLog: []postproc.StageLogEntry{
 			{
 				Stage: "repair",
@@ -118,8 +154,9 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	}
 
 	// 5. Repair stage succeeded, but no lines
+	_, job5q := buildHistoryTestJob(t, "jobid5", "test-job-5", now, 1)
 	job5 := &postproc.Job{
-		Queue: &queue.Job{},
+		Queue: job5q,
 		StageLog: []postproc.StageLogEntry{
 			{
 				Stage: "repair",

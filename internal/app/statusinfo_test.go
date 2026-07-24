@@ -8,7 +8,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 var _ = (*Application).enqueuePostProc
@@ -135,7 +134,8 @@ func TestApplication_IsPipelineHealthy(t *testing.T) {
 	}
 
 	// Test download pipeline stall detection
-	j := &queue.Job{ID: "job1", Status: constants.StatusDownloading}
+	j := newBareQueueJob(t, "job1", "")
+	j.Status = constants.StatusDownloading
 	if err := app.queue.Add(j); err != nil {
 		t.Fatalf("queue Add: %v", err)
 	}

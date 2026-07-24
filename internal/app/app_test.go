@@ -401,16 +401,24 @@ func TestRetryHistoryJob(t *testing.T) {
 	}
 	_ = repo.Add(ctx, entry)
 
-	job := &queue.Job{
-		ID:     jobID,
-		Name:   "retry-test",
-		Status: constants.StatusFailed,
-		Files: []queue.JobFile{{
-			Subject:  "file.bin",
-			Complete: false, // Will be re-completed after articles retry
-			Articles: []queue.JobArticle{{ID: "a@t", Done: true, Failed: true, Bytes: 1024}},
-		}},
-		FailedBytes: 1024,
+	parsedRetry := &nzb.NZB{Files: []nzb.File{
+		{Subject: "file.bin", Bytes: 1024, Articles: []nzb.Article{{ID: "a@t", Bytes: 1024, Number: 1}}},
+	}}
+	job, err := queue.NewJob(parsedRetry, queue.AddOptions{Filename: "retry-test.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	job.ID = jobID
+	job.Name = "retry-test"
+	job.Status = constants.StatusFailed
+	retryQ := queue.New()
+	if err := retryQ.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// file.bin stays incomplete (Complete=false); it is re-completed after
+	// the retried article resolves successfully.
+	if _, err := retryQ.MarkArticlesFailed(job.ID, []string{"a@t"}); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
 	}
 	jobsDir := filepath.Join(adminDir, "history", "jobs")
 	_ = os.MkdirAll(jobsDir, 0o750)

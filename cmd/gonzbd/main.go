@@ -995,7 +995,7 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 	if err != nil {
 		return fmt.Errorf("load NZB: %w", err)
 	}
-	totalFiles := len(job.Files)
+	totalFiles := job.Manifest().NumFiles()
 	if totalFiles == 0 {
 		return fmt.Errorf("NZB %s contains no usable files", nzbPath)
 	}
@@ -1006,7 +1006,7 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 
 	start := time.Now()
 	log.Info("download started",
-		"job", job.Name, "files", totalFiles, "bytes", job.TotalBytes)
+		"job", job.Name, "files", totalFiles, "bytes", job.Manifest().TotalBytes())
 
 	// Wait for the job to reach History (indicates post-processing is complete).
 	log.Info("waiting for job to complete", "job", job.Name, "id", job.ID)
@@ -1032,11 +1032,11 @@ func printSummary(job *queue.Job, hist *history.Entry, duration time.Duration) {
 		fmt.Printf("Error:      %s\n", hist.FailMessage)
 	}
 	fmt.Printf("Location:   %s\n", hist.Path)
-	fmt.Printf("Total Size: %s\n", humanfmt.Bytes(job.TotalBytes))
+	fmt.Printf("Total Size: %s\n", humanfmt.Bytes(job.Manifest().TotalBytes()))
 	fmt.Printf("Duration:   %v\n", duration.Round(time.Second))
 
 	// Network throughput (average)
-	netMBps := float64(job.TotalBytes) / (1024 * 1024) / duration.Seconds()
+	netMBps := float64(job.Manifest().TotalBytes()) / (1024 * 1024) / duration.Seconds()
 	fmt.Printf("Avg Speed:   %.2f MB/s\n", netMBps)
 	fmt.Printf("------------------------\n\n")
 }

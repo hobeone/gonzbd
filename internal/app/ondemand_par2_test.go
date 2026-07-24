@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
@@ -26,22 +29,72 @@ func copyFixturePar2(t *testing.T, dir string) {
 	}
 }
 
+// par2FileSpec describes one file for buildPar2Job: its subject, assembled
+// CRC32 (set post-construction via SetFileCRC32), and byte count.
+type par2FileSpec struct {
+	subject string
+	crc     uint32
+	bytes   int64
+}
+
+// newPar2Job builds a real, not-yet-added *queue.Job via queue.NewJob (with
+// OnDemandPar2 enabled, so any *.volNNN+MM.par2 subject classifies and
+// defers correctly). Callers needing a custom ID must set job.ID before
+// adding it to a queue — Queue.Add indexes by whatever ID is set at Add
+// time, so overriding it afterward silently orphans the original key.
+func newPar2Job(t *testing.T, specs []par2FileSpec) *queue.Job {
+	t.Helper()
+	parsed := &nzb.NZB{}
+	for i, f := range specs {
+		b := f.bytes
+		if b == 0 {
+			b = 1
+		}
+		parsed.Files = append(parsed.Files, nzb.File{
+			Subject:  f.subject,
+			Bytes:    b,
+			Articles: []nzb.Article{{ID: fmt.Sprintf("f%d@t", i), Bytes: int(b), Number: 1}},
+		})
+	}
+	qjob, err := queue.NewJob(parsed, queue.AddOptions{Filename: "t.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	return qjob
+}
+
+// buildPar2Job builds a job via newPar2Job, adds it to a fresh queue, and
+// sets each file's assembled CRC32 through the queue's real mutator.
+func buildPar2Job(t *testing.T, specs []par2FileSpec) (*queue.Queue, *queue.Job) {
+	t.Helper()
+	qjob := newPar2Job(t, specs)
+	q := queue.New()
+	if err := q.Add(qjob); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	for i, f := range specs {
+		if f.crc == 0 {
+			continue
+		}
+		if err := q.SetFileCRC32(qjob.ID, i, f.crc); err != nil {
+			t.Fatalf("SetFileCRC32: %v", err)
+		}
+	}
+	return q, qjob
+}
+
 func TestPar2NeedsRecovery(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
-
-	// A realistic file set: the protected content file plus a deferred
-	// recovery volume (which par2 does not list, so it must not affect the
-	// verdict).
-	deferredVol := queue.JobFile{Subject: "data.vol000+01.par2", IsPar2Recovery: true, Deferred: true}
+	deferredVol := par2FileSpec{subject: "data.vol000+01.par2", bytes: 1}
 
 	t.Run("clean data verifies and skips recovery", func(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir)
-		files := []queue.JobFile{
-			{Subject: "data.bin", AssembledCRC32: 0x1068AFA6, Bytes: 100},
+		_, qjob := buildPar2Job(t, []par2FileSpec{
+			{subject: "data.bin", crc: 0x1068AFA6, bytes: 100},
 			deferredVol,
-		}
-		if got, _ := par2NeedsRecovery(dir, files, log, par2.DefaultParseOptions()); got {
+		})
+		if got, _ := par2NeedsRecovery(dir, qjob.Manifest(), qjob.Progress(), log, par2.DefaultParseOptions()); got {
 			t.Error("clean download must NOT trigger recovery-volume download")
 		}
 	})
@@ -49,8 +102,11 @@ func TestPar2NeedsRecovery(t *testing.T) {
 	t.Run("CRC mismatch triggers recovery", func(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir)
-		files := []queue.JobFile{{Subject: "data.bin", AssembledCRC32: 0xDEADBEEF}, deferredVol}
-		if got, reason := par2NeedsRecovery(dir, files, log, par2.DefaultParseOptions()); !got {
+		_, qjob := buildPar2Job(t, []par2FileSpec{
+			{subject: "data.bin", crc: 0xDEADBEEF, bytes: 100},
+			deferredVol,
+		})
+		if got, reason := par2NeedsRecovery(dir, qjob.Manifest(), qjob.Progress(), log, par2.DefaultParseOptions()); !got {
 			t.Error("corrupt file (CRC mismatch) must trigger recovery")
 		} else if !strings.Contains(reason, "corruption/CRC mismatch") {
 			t.Errorf("expected CRC mismatch reason, got: %q", reason)
@@ -60,8 +116,11 @@ func TestPar2NeedsRecovery(t *testing.T) {
 	t.Run("failed download (no assembled CRC) triggers recovery", func(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir)
-		files := []queue.JobFile{{Subject: "data.bin", AssembledCRC32: 0}, deferredVol}
-		if got, reason := par2NeedsRecovery(dir, files, log, par2.DefaultParseOptions()); !got {
+		_, qjob := buildPar2Job(t, []par2FileSpec{
+			{subject: "data.bin", bytes: 100},
+			deferredVol,
+		})
+		if got, reason := par2NeedsRecovery(dir, qjob.Manifest(), qjob.Progress(), log, par2.DefaultParseOptions()); !got {
 			t.Error("par2-tracked file with no CRC must trigger recovery")
 		} else if !strings.Contains(reason, "failed download") {
 			t.Errorf("expected failed download reason, got: %q", reason)
@@ -70,8 +129,10 @@ func TestPar2NeedsRecovery(t *testing.T) {
 
 	t.Run("missing par2 index falls back to fetching recovery", func(t *testing.T) {
 		dir := t.TempDir() // empty — no par2 index on disk
-		files := []queue.JobFile{{Subject: "data.bin", AssembledCRC32: 0x1068AFA6}}
-		if got, reason := par2NeedsRecovery(dir, files, log, par2.DefaultParseOptions()); !got {
+		_, qjob := buildPar2Job(t, []par2FileSpec{
+			{subject: "data.bin", crc: 0x1068AFA6, bytes: 100},
+		})
+		if got, reason := par2NeedsRecovery(dir, qjob.Manifest(), qjob.Progress(), log, par2.DefaultParseOptions()); !got {
 			t.Error("no usable par2 index must fall back to fetching recovery volumes")
 		} else if !strings.Contains(reason, "no usable par2 index found") {
 			t.Errorf("expected missing index reason, got: %q", reason)
@@ -81,11 +142,11 @@ func TestPar2NeedsRecovery(t *testing.T) {
 	t.Run("non-matching par2 set protects different files (Layout B) skips recovery", func(t *testing.T) {
 		dir := t.TempDir()
 		copyFixturePar2(t, dir) // protects data.bin
-		files := []queue.JobFile{
-			{Subject: "other.bin", AssembledCRC32: 0x99999999, Bytes: 100},
+		_, qjob := buildPar2Job(t, []par2FileSpec{
+			{subject: "other.bin", crc: 0x99999999, bytes: 100},
 			deferredVol,
-		}
-		if got, _ := par2NeedsRecovery(dir, files, log, par2.DefaultParseOptions()); got {
+		})
+		if got, _ := par2NeedsRecovery(dir, qjob.Manifest(), qjob.Progress(), log, par2.DefaultParseOptions()); got {
 			t.Error("par2 protecting different files must NOT trigger recovery-volume download")
 		}
 	})
@@ -95,7 +156,6 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
 	dir := t.TempDir()
 
-	q := queue.New()
 	cfg, err := config.Default()
 	if err != nil {
 		t.Fatalf("config.Default: %v", err)
@@ -103,23 +163,26 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 	cfg.With(func(c *config.Config) {
 		c.General.DownloadDir = dir
 	})
+
+	const jobID = "job-1"
+	qjob := newPar2Job(t, []par2FileSpec{
+		{subject: "data.bin", bytes: 100},
+		{subject: "data.vol000+01.par2", bytes: 100},
+	})
+	qjob.ID = jobID
+	qjob.Name = "job-name"
+	q := queue.New()
+	if err := q.Add(qjob); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := q.SetFileCRC32(jobID, 0, 0x1068AFA6); err != nil {
+		t.Fatalf("SetFileCRC32: %v", err)
+	}
+
 	app := &Application{
 		queue:  q,
 		log:    log,
 		config: cfg,
-	}
-
-	const jobID = "job-1"
-	job := &queue.Job{
-		ID:   jobID,
-		Name: "job-name",
-		Files: []queue.JobFile{
-			{Subject: "data.bin", AssembledCRC32: 0x1068AFA6, Bytes: 100},
-			{Subject: "data.vol000+01.par2", IsPar2Recovery: true, Deferred: true, Bytes: 100},
-		},
-	}
-	if err := q.Add(job); err != nil {
-		t.Fatal(err)
 	}
 
 	t.Run("context cancelled returns false", func(t *testing.T) {
@@ -146,8 +209,9 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 
 		// Verify that the deferred PAR2 files are removed from the queue.
 		snapAfter := q.SnapshotJob(jobID)
-		for _, f := range snapAfter.Files {
-			if f.IsPar2Recovery {
+		m := snapAfter.Manifest()
+		for fi := range m.NumFiles() {
+			if m.FileIsPar2Recovery(fi) {
 				t.Error("deferred par2 recovery files were not discarded from the job")
 			}
 		}
@@ -156,15 +220,16 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 	t.Run("corrupt data undeferes recovery volumes", func(t *testing.T) {
 		// Create a new job with mismatched CRC.
 		const jobCorruptID = "job-corrupt"
-		jobCorrupt := &queue.Job{
-			ID:   jobCorruptID,
-			Name: "job-corrupt-name",
-			Files: []queue.JobFile{
-				{Subject: "data.bin", AssembledCRC32: 0xDEADBEEF, Bytes: 100},
-				{Subject: "data.vol000+01.par2", IsPar2Recovery: true, Deferred: true, Bytes: 100},
-			},
-		}
+		jobCorrupt := newPar2Job(t, []par2FileSpec{
+			{subject: "data.bin", bytes: 100},
+			{subject: "data.vol000+01.par2", bytes: 100},
+		})
+		jobCorrupt.ID = jobCorruptID
+		jobCorrupt.Name = "job-corrupt-name"
 		if err := q.Add(jobCorrupt); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.SetFileCRC32(jobCorruptID, 0, 0xDEADBEEF); err != nil {
 			t.Fatal(err)
 		}
 
@@ -182,11 +247,12 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 
 		// Verify that the deferred recovery volume was undeferred.
 		snapAfter := q.SnapshotJob(jobCorruptID)
+		m, p := snapAfter.Manifest(), snapAfter.Progress()
 		found := false
-		for _, f := range snapAfter.Files {
-			if f.IsPar2Recovery {
+		for fi := range m.NumFiles() {
+			if m.FileIsPar2Recovery(fi) {
 				found = true
-				if f.Deferred {
+				if p.FileDeferred(fi) {
 					t.Error("deferred recovery volume was not undeferred")
 				}
 			}

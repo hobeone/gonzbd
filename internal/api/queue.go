@@ -225,25 +225,27 @@ func stageFromStatus(status constants.Status) string {
 // firstIncompleteFile returns the subject of the first not-yet-complete
 // file in the job, or empty if every file is complete.
 func firstIncompleteFile(j *queue.Job) string {
-	for i := range j.Files {
-		if !j.Files[i].Complete {
-			return j.Files[i].Subject
+	m, p := j.Manifest(), j.Progress()
+	for i := range m.NumFiles() {
+		if !p.FileComplete(i) {
+			return m.FileSubject(i)
 		}
 	}
 	return ""
 }
 
-// fileState classifies a JobFile into a coarse UI state. "downloading"
+// fileState classifies a file into a coarse UI state. "downloading"
 // fires once any article in the file has completed; before that the
 // file is "queued". "failed" wins over "done" when any article failed.
-func fileState(f *queue.JobFile) string {
-	if f.Deferred {
+func fileState(m *queue.Manifest, p *queue.JobProgress, fileIdx int) string {
+	if p.FileDeferred(fileIdx) {
 		return "held"
 	}
-	if f.Complete {
+	if p.FileComplete(fileIdx) {
 		anyFailed := false
-		for ai := range f.Articles {
-			if f.Articles[ai].Failed {
+		lo, hi := m.FileRange(fileIdx)
+		for i := lo; i < hi; i++ {
+			if p.ArticleFailed(i) {
 				anyFailed = true
 				break
 			}
@@ -255,7 +257,7 @@ func fileState(f *queue.JobFile) string {
 	}
 	// Not Complete: any successful article downloads makes us
 	// "downloading"; otherwise still "queued".
-	if f.BytesDownloaded > 0 {
+	if p.FileBytesDownloaded(fileIdx) > 0 {
 		return "downloading"
 	}
 	return "queued"
@@ -264,14 +266,14 @@ func fileState(f *queue.JobFile) string {
 // buildQueueFiles converts a Job's file slice into the API per-file
 // shape for the expansion drawer.
 func buildQueueFiles(j *queue.Job) []queueFile {
-	out := make([]queueFile, 0, len(j.Files))
-	for fi := range j.Files {
-		f := &j.Files[fi]
+	m, p := j.Manifest(), j.Progress()
+	out := make([]queueFile, 0, m.NumFiles())
+	for fi := range m.NumFiles() {
 		out = append(out, queueFile{
-			Name:            f.Subject,
-			Bytes:           f.Bytes,
-			BytesDownloaded: f.BytesDownloaded,
-			State:           fileState(f),
+			Name:            m.FileSubject(fi),
+			Bytes:           m.FileBytes(fi),
+			BytesDownloaded: p.FileBytesDownloaded(fi),
+			State:           fileState(m, p, fi),
 		})
 	}
 	return out
@@ -287,9 +289,13 @@ const noiseFloorBPS = 1024.0 // 1 KiB/s
 // ETA. index is the slot's display index in the listing (0 for the
 // detail endpoint).
 func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *directunpack.Status) queueSlot {
+	m, p := j.Manifest(), j.Progress()
+	totalBytes := m.TotalBytes()
+	remainingBytes := p.RemainingBytes()
+
 	var pct int
-	if j.TotalBytes > 0 {
-		pct = int(100 * (j.TotalBytes - j.RemainingBytes) / j.TotalBytes)
+	if totalBytes > 0 {
+		pct = int(100 * (totalBytes - remainingBytes) / totalBytes)
 	}
 
 	displayStatus := j.Status
@@ -301,8 +307,8 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 	timeleft := "0:00:00"
 	etaStr := "unknown"
 	if !paused && j.Status == constants.StatusDownloading &&
-		speed > noiseFloorBPS && j.RemainingBytes > 0 {
-		etaSeconds = int(float64(j.RemainingBytes) / speed)
+		speed > noiseFloorBPS && remainingBytes > 0 {
+		etaSeconds = int(float64(remainingBytes) / speed)
 		timeleft = formatDuration(etaSeconds)
 		etaStr = timeleft
 	}
@@ -317,26 +323,26 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 		Status:            string(displayStatus),
 		Script:            nonEmpty(j.Script, "none"),
 		Password:          j.Password,
-		Size:              humanfmt.Bytes(j.TotalBytes),
-		SizeLeft:          humanfmt.Bytes(j.RemainingBytes),
-		MB:                toMBString(j.TotalBytes),
-		MBLeft:            toMBString(j.RemainingBytes),
-		Bytes:             j.TotalBytes,
-		RemainingBytes:    j.RemainingBytes,
+		Size:              humanfmt.Bytes(totalBytes),
+		SizeLeft:          humanfmt.Bytes(remainingBytes),
+		MB:                toMBString(totalBytes),
+		MBLeft:            toMBString(remainingBytes),
+		Bytes:             totalBytes,
+		RemainingBytes:    remainingBytes,
 		Percentage:        pct,
 		Timeleft:          timeleft,
 		ETA:               etaStr,
 		PP:                strconv.Itoa(j.PP),
 		Warning:           j.Warning,
-		FailedBytes:       j.FailedBytes,
-		Par2Bytes:         j.Par2Bytes,
-		Par2Files:         j.Par2Files,
+		FailedBytes:       p.FailedBytes(),
+		Par2Bytes:         m.Par2Bytes(),
+		Par2Files:         m.Par2Files(),
 		CurrentStage:      stageFromStatus(displayStatus),
-		ArticlesRemaining: j.PendingArticles,
+		ArticlesRemaining: p.PendingArticles(),
 		ETASeconds:        etaSeconds,
 		CurrentFile:       firstIncompleteFile(j),
 		Par2Held:          j.HasDeferredPar2(),
-		Par2ReleaseReason: j.Par2ReleaseReason,
+		Par2ReleaseReason: p.Par2ReleaseReason(),
 		DirectUnpack:      duStatus,
 	}
 }

@@ -26,19 +26,20 @@ func TestNewJob_OnDemandPar2Classification(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if job.Files[0].IsPar2Recovery {
+		m, p := job.Manifest(), job.Progress()
+		if m.FileIsPar2Recovery(0) {
 			t.Error("content file wrongly classified as recovery volume")
 		}
-		if job.Files[1].IsPar2Recovery {
+		if m.FileIsPar2Recovery(1) {
 			t.Error("par2 index wrongly classified as recovery volume")
 		}
-		if !job.Files[2].IsPar2Recovery {
+		if !m.FileIsPar2Recovery(2) {
 			t.Error("recovery volume not classified as IsPar2Recovery")
 		}
-		if job.Files[0].Deferred || job.Files[1].Deferred {
+		if p.FileDeferred(0) || p.FileDeferred(1) {
 			t.Error("content/index must not be deferred")
 		}
-		if !job.Files[2].Deferred {
+		if !p.FileDeferred(2) {
 			t.Error("recovery volume should be deferred when OnDemandPar2 is on")
 		}
 	})
@@ -48,10 +49,11 @@ func TestNewJob_OnDemandPar2Classification(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !job.Files[2].IsPar2Recovery {
+		m, p := job.Manifest(), job.Progress()
+		if !m.FileIsPar2Recovery(2) {
 			t.Error("recovery volume should still be classified when feature off")
 		}
-		if job.Files[2].Deferred {
+		if p.FileDeferred(2) {
 			t.Error("recovery volume must not be deferred when OnDemandPar2 is off")
 		}
 	})
@@ -70,8 +72,8 @@ func TestOnDemandPar2_PendingAndCompletion(t *testing.T) {
 
 	snap := q.SnapshotJob(job.ID)
 	// Only content + index are pending; the recovery volume is deferred.
-	if snap.PendingArticles != 2 {
-		t.Errorf("PendingArticles=%d, want 2 (recovery volume deferred)", snap.PendingArticles)
+	if snap.Progress().PendingArticles() != 2 {
+		t.Errorf("PendingArticles=%d, want 2 (recovery volume deferred)", snap.Progress().PendingArticles())
 	}
 	if !snap.HasDeferredPar2() {
 		t.Error("HasDeferredPar2 should report the deferred volume")
@@ -132,11 +134,11 @@ func TestUndeferRecoveryVolumes(t *testing.T) {
 	if snap.HasDeferredPar2() {
 		t.Error("no files should remain deferred after un-deferring all")
 	}
-	if !snap.Par2Recovered {
+	if !snap.Progress().Par2Recovered() {
 		t.Error("Par2Recovered should be set after un-deferring")
 	}
-	if snap.PendingArticles != 3 {
-		t.Errorf("PendingArticles=%d, want 3 after un-defer", snap.PendingArticles)
+	if snap.Progress().PendingArticles() != 3 {
+		t.Errorf("PendingArticles=%d, want 3 after un-defer", snap.Progress().PendingArticles())
 	}
 
 	// The recovery article is now dispatchable.
@@ -175,7 +177,7 @@ func TestOnDemandPar2_EarlyUndeferOnFailure(t *testing.T) {
 	if snap.HasDeferredPar2() {
 		t.Error("recovery volume should be released early after a data-article failure")
 	}
-	if !snap.Par2Recovered {
+	if !snap.Progress().Par2Recovered() {
 		t.Error("Par2Recovered should be set after early un-defer")
 	}
 	var found bool
@@ -204,7 +206,7 @@ func TestUndeferRecoveryVolumes_Edges(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Out-of-range indices must return an error matching sibling file methods.
-	if err := q.UndeferRecoveryVolumes(job.ID, []int{len(job.Files)}); err == nil {
+	if err := q.UndeferRecoveryVolumes(job.ID, []int{job.Manifest().NumFiles()}); err == nil {
 		t.Error("expected error for out-of-range fileIdx")
 	} else if !strings.Contains(err.Error(), "out of range") {
 		t.Errorf("error = %v, want 'out of range'", err)
@@ -219,7 +221,7 @@ func TestUndeferRecoveryVolumes_Edges(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap := q.SnapshotJob(job.ID)
-	if snap.Par2Recovered {
+	if snap.Progress().Par2Recovered() {
 		t.Error("Par2Recovered should not be set when nothing was un-deferred")
 	}
 	if !snap.HasDeferredPar2() {
@@ -242,8 +244,8 @@ func TestDiscardDeferredPar2(t *testing.T) {
 		t.Fatal("expected deferred par2 files")
 	}
 
-	initialTotalBytes := snap.TotalBytes
-	deferredBytes := snap.Files[2].Bytes
+	initialTotalBytes := snap.Manifest().TotalBytes()
+	deferredBytes := snap.Manifest().FileBytes(2)
 
 	if err := q.DiscardDeferredPar2("missing"); err == nil {
 		t.Error("expected error for missing job")
@@ -258,15 +260,136 @@ func TestDiscardDeferredPar2(t *testing.T) {
 		t.Error("expected no deferred par2 files after discard")
 	}
 
-	if len(snap.Files) != 2 { // movie.mkv + movie.par2
-		t.Errorf("len(Files) = %d, want 2", len(snap.Files))
+	if snap.Manifest().NumFiles() != 2 { // movie.mkv + movie.par2
+		t.Errorf("NumFiles() = %d, want 2", snap.Manifest().NumFiles())
 	}
 
-	if snap.TotalBytes != initialTotalBytes-deferredBytes {
-		t.Errorf("TotalBytes = %d, want %d", snap.TotalBytes, initialTotalBytes-deferredBytes)
+	if snap.Manifest().TotalBytes() != initialTotalBytes-deferredBytes {
+		t.Errorf("TotalBytes = %d, want %d", snap.Manifest().TotalBytes(), initialTotalBytes-deferredBytes)
 	}
 
-	if snap.RemainingBytes != snap.TotalBytes {
-		t.Errorf("RemainingBytes = %d, want %d", snap.RemainingBytes, snap.TotalBytes)
+	if snap.Progress().RemainingBytes() != snap.Manifest().TotalBytes() {
+		t.Errorf("RemainingBytes = %d, want %d", snap.Progress().RemainingBytes(), snap.Manifest().TotalBytes())
+	}
+}
+
+// TestDiscardDeferredPar2_IndexShiftAndStaleness exercises the case
+// par2NZB()-based fixtures cannot: par2NZB's deferred recovery volume
+// always sorts last (all three files are tier-1/non-RAR, and sortJobFiles
+// is a stable no-op for tier-1), so discarding it never shifts any
+// surviving article's global index. This fixture instead places the
+// deferred file BEFORE a surviving file
+// ([content-1, recovery-volume(deferred), content-2]), and the job is
+// partially downloaded before the discard, so this test can distinguish
+// "carried over and adjusted" from "reset to the new total" — a
+// zero-download job produces the same RemainingBytes either way.
+func TestDiscardDeferredPar2_IndexShiftAndStaleness(t *testing.T) {
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{Subject: "content-1.bin", Bytes: 1000, Articles: []nzb.Article{{ID: "c1@x", Bytes: 1000, Number: 1}}},
+			{Subject: `"content.vol000+01.par2" yEnc`, Bytes: 500, Articles: []nzb.Article{{ID: "v@x", Bytes: 500, Number: 1}}},
+			{Subject: "content-2.bin", Bytes: 1000, Articles: []nzb.Article{{ID: "c2@x", Bytes: 1000, Number: 1}}},
+		},
+	}
+	q := New()
+	job, err := NewJob(parsed, AddOptions{Filename: "shift.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatal(err)
+	}
+
+	// Precondition: sortJobFiles is a stable no-op for tier-1 files, so the
+	// deferred recovery volume stays at index 1, sorting BEFORE content-2.
+	m := job.Manifest()
+	if m.NumFiles() != 3 || !m.FileIsPar2Recovery(1) {
+		t.Fatalf("precondition: expected recovery volume at index 1, got NumFiles=%d, file1IsRecovery=%v",
+			m.NumFiles(), m.FileIsPar2Recovery(1))
+	}
+
+	oldPar2Bytes := m.Par2Bytes()
+	oldPar2Files := m.Par2Files()
+
+	// Partially download the job before discarding: mark content-2's article
+	// done. Its pre-discard global index is 2 (after content-1's 1 article
+	// and the deferred volume's 1 article); post-discard it must shift to 1.
+	if err := q.MarkArticlesDone(job.ID, []string{"c2@x"}); err != nil {
+		t.Fatal(err)
+	}
+	oldRemaining := q.SnapshotJob(job.ID).Progress().RemainingBytes()
+	discardedBytes := m.FileBytes(1)
+
+	if err := q.DiscardDeferredPar2(job.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := q.SnapshotJob(job.ID)
+	newM, newP := snap.Manifest(), snap.Progress()
+
+	if newM.NumFiles() != 2 {
+		t.Fatalf("NumFiles() = %d, want 2", newM.NumFiles())
+	}
+	if newM.FileSubject(0) != "content-1.bin" || newM.FileSubject(1) != "content-2.bin" {
+		t.Fatalf("unexpected surviving file order: %q, %q", newM.FileSubject(0), newM.FileSubject(1))
+	}
+
+	// The shift bug: content-2's article, done pre-discard at global index 2,
+	// must still read Done at its new, shifted global index (1).
+	lo, _ := newM.FileRange(1)
+	if !newP.ArticleDone(lo) {
+		t.Error("content-2's article lost its Done state across the index shift")
+	}
+
+	// Par2Bytes/Par2Files must stay exactly as stale as today's code leaves
+	// them: carried over unchanged, not recomputed against the reduced set.
+	if newM.Par2Bytes() != oldPar2Bytes {
+		t.Errorf("Par2Bytes = %d, want %d (carried over unchanged)", newM.Par2Bytes(), oldPar2Bytes)
+	}
+	if newM.Par2Files() != oldPar2Files {
+		t.Errorf("Par2Files = %d, want %d (carried over unchanged)", newM.Par2Files(), oldPar2Files)
+	}
+
+	// RemainingBytes must be the OLD value minus discardedBytes (clamped to
+	// 0), not TotalBytes() of the reduced manifest — a zero-download job
+	// can't distinguish these, which is why this fixture downloads first.
+	wantRemaining := max(oldRemaining-discardedBytes, 0)
+	if newP.RemainingBytes() != wantRemaining {
+		t.Errorf("RemainingBytes = %d, want %d (old %d - discarded %d)",
+			newP.RemainingBytes(), wantRemaining, oldRemaining, discardedBytes)
+	}
+}
+
+// TestDiscardDeferredPar2_NoOpWhenNothingDeferred pins that discard remains a
+// pure no-op (no manifest/progress swap, no dirty flag) when there is
+// nothing to discard — matching today's code, which gates its entire
+// mutation block on discardedBytes > 0.
+func TestDiscardDeferredPar2_NoOpWhenNothingDeferred(t *testing.T) {
+	q := New()
+	job, err := NewJob(par2NZB(), AddOptions{Filename: "m.nzb", OnDemandPar2: false}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := q.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	if q.IsDirty() {
+		t.Fatal("precondition: queue should not be dirty right after Save")
+	}
+
+	manifestBefore := job.Manifest()
+	if err := q.DiscardDeferredPar2(job.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if q.IsDirty() {
+		t.Error("DiscardDeferredPar2 with nothing deferred must not mark the queue dirty")
+	}
+	if job.Manifest() != manifestBefore {
+		t.Error("DiscardDeferredPar2 with nothing deferred must not replace the manifest pointer")
 	}
 }

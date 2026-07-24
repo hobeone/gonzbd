@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // TestFinalizeStage_PartialMovePreservesSourceDir verifies C7:
@@ -42,11 +40,10 @@ func TestFinalizeStage_PartialMovePreservesSourceDir(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
+	qjob := newQueueJob(t, "partial-move-test", 0)
+	qjob.Name = "partial-move"
 	job := &Job{
-		Queue: &queue.Job{
-			ID:   "partial-move-test",
-			Name: "partial-move",
-		},
+		Queue:       qjob,
 		DownloadDir: srcDir,
 		FinalDir:    finalDir,
 	}
@@ -87,11 +84,10 @@ func TestFinalizeStage_AllFilesMovedCleansSource(t *testing.T) {
 	// Write a dummy file so os.Rename gets ENOTEMPTY.
 	os.WriteFile(filepath.Join(finalDir, "existing.txt"), []byte("x"), 0o644)
 
+	qjob := newQueueJob(t, "full-move-test", 0)
+	qjob.Name = "full-move"
 	job := &Job{
-		Queue: &queue.Job{
-			ID:   "full-move-test",
-			Name: "full-move",
-		},
+		Queue:       qjob,
 		DownloadDir: srcDir,
 		FinalDir:    finalDir,
 	}
@@ -130,11 +126,9 @@ func TestFinalizeStage_PartialMoveErrorContainsAllFailures(t *testing.T) {
 	os.MkdirAll(filepath.Join(finalDir, "file1.txt"), 0o755)
 	os.MkdirAll(filepath.Join(finalDir, "file2.txt"), 0o755)
 
+	qjob := newQueueJob(t, "multi-fail", 0)
 	job := &Job{
-		Queue: &queue.Job{
-			ID:   "multi-fail",
-			Name: "multi-fail",
-		},
+		Queue:       qjob,
 		DownloadDir: srcDir,
 		FinalDir:    finalDir,
 	}

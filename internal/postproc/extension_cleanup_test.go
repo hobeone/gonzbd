@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 func TestExtensionCleanup_RemovesMatchingFiles(t *testing.T) {
@@ -27,7 +25,7 @@ func TestExtensionCleanup_RemovesMatchingFiles(t *testing.T) {
 	}
 
 	stage := NewExtensionCleanupStage([]string{"nfo", "txt", "sfv", "srr"})
-	job := &Job{Queue: &queue.Job{ID: "test"}, DownloadDir: dir}
+	job := &Job{Queue: newQueueJob(t, "test", 0), DownloadDir: dir}
 
 	if err := stage.Run(context.Background(), job); err != nil {
 		t.Fatal(err)
@@ -54,7 +52,7 @@ func TestExtensionCleanup_CaseInsensitive(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "movie.mkv"), []byte("x"), 0o644)
 
 	stage := NewExtensionCleanupStage([]string{"nfo", "txt"})
-	job := &Job{Queue: &queue.Job{ID: "test"}, DownloadDir: dir}
+	job := &Job{Queue: newQueueJob(t, "test", 0), DownloadDir: dir}
 
 	stage.Run(context.Background(), job)
 
@@ -79,7 +77,7 @@ func TestExtensionCleanup_RecursiveWalk(t *testing.T) {
 	os.WriteFile(filepath.Join(subdir, "notes.nfo"), []byte("x"), 0o644)
 
 	stage := NewExtensionCleanupStage([]string{"nfo"})
-	job := &Job{Queue: &queue.Job{ID: "test"}, DownloadDir: dir}
+	job := &Job{Queue: newQueueJob(t, "test", 0), DownloadDir: dir}
 
 	stage.Run(context.Background(), job)
 
@@ -107,7 +105,7 @@ func TestExtensionCleanup_SkipNZB(t *testing.T) {
 
 	// NZB is in the cleanup list, but SkipNZB is true (default).
 	stage := NewExtensionCleanupStage([]string{"nzb", "nfo"})
-	job := &Job{Queue: &queue.Job{ID: "test"}, DownloadDir: dir}
+	job := &Job{Queue: newQueueJob(t, "test", 0), DownloadDir: dir}
 
 	stage.Run(context.Background(), job)
 
@@ -126,7 +124,7 @@ func TestExtensionCleanup_EmptyList(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "info.nfo"), []byte("x"), 0o644)
 
 	stage := NewExtensionCleanupStage([]string{})
-	job := &Job{Queue: &queue.Job{ID: "test"}, DownloadDir: dir}
+	job := &Job{Queue: newQueueJob(t, "test", 0), DownloadDir: dir}
 
 	stage.Run(context.Background(), job)
 
@@ -227,7 +225,7 @@ func TestExtensionCleanup_RestrictsToOwnedFiles(t *testing.T) {
 
 	stage := NewExtensionCleanupStage([]string{"nfo"})
 	job := &Job{
-		Queue:       &queue.Job{ID: "test"},
+		Queue:       newQueueJob(t, "test", 0),
 		DownloadDir: dir,
 		OwnedFiles: map[string]struct{}{
 			ownedPath: {},
