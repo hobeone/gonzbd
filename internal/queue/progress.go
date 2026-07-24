@@ -3,6 +3,7 @@ package queue
 import (
 	"encoding/json"
 	"maps"
+	"slices"
 	"time"
 )
 
@@ -155,14 +156,10 @@ func (p *JobProgress) DeferredRecoveryIndices() []int {
 func (p *JobProgress) clone() *JobProgress {
 	cp := *p
 
-	cp.done = make([]bool, len(p.done))
-	copy(cp.done, p.done)
-	cp.failed = make([]bool, len(p.failed))
-	copy(cp.failed, p.failed)
-	cp.emitted = make([]bool, len(p.emitted))
-	copy(cp.emitted, p.emitted)
-	cp.files = make([]FileProgress, len(p.files))
-	copy(cp.files, p.files)
+	cp.done = slices.Clone(p.done)
+	cp.failed = slices.Clone(p.failed)
+	cp.emitted = slices.Clone(p.emitted)
+	cp.files = slices.Clone(p.files)
 
 	if p.serverStats != nil {
 		cp.serverStats = make(map[string]int64, len(p.serverStats))

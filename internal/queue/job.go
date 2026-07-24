@@ -320,7 +320,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 
 	files := make([]JobFile, 0, len(parsed.Files))
 	for _, pf := range parsed.Files {
-		isPar2 := strings.Contains(strings.ToLower(pf.Subject), ".par2")
+		isPar2 := isPar2File(pf.Subject)
 		// A recovery volume (*.volNNN+MM.par2) carries redundancy; the par2
 		// index file (no volume suffix) carries the per-file checksums we
 		// need for verification and is therefore never deferred.
@@ -386,14 +386,13 @@ func (j *Job) DeferredRecoveryIndices() []int {
 }
 
 // ResetForRetry resets a completed/failed job back to a fresh downloadable
-// state, preserving the Manifest but rebuilding Progress from scratch
-// except for the two details that must survive verbatim: RemainingBytes is
-// re-added only for articles actually reset (not blanket-recomputed to
-// TotalBytes), and a file's Complete flag is cleared only if at least one of
-// its articles was reset. Must be called strictly before Queue.Add — it does
-// not itself rebuild PendingArticles/per-file Pending/ArticlesResolved/
-// ArticlesFailed/BytesDownloaded; Add's own recomputePending-equivalent call
-// does that once the job is actually added.
+// state, preserving the Manifest but selectively resetting the existing
+// Progress in place: RemainingBytes is re-added only for articles actually
+// reset (not blanket-recomputed to TotalBytes), and a file's Complete flag
+// is cleared only if at least one of its articles was reset. Must be called
+// strictly before Queue.Add — it does not itself rebuild PendingArticles/
+// per-file Pending/ArticlesResolved/ArticlesFailed/BytesDownloaded; Add's own
+// recomputePending-equivalent call does that once the job is actually added.
 func (j *Job) ResetForRetry() {
 	j.Status = constants.StatusQueued
 	j.PostProc = false

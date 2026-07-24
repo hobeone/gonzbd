@@ -69,13 +69,20 @@ func newManifest(files []JobFile) *Manifest {
 			m.articleNumber = append(m.articleNumber, a.Number)
 		}
 		m.totalBytes += f.Bytes
-		if strings.Contains(strings.ToLower(f.Subject), ".par2") {
+		if isPar2File(f.Subject) {
 			m.par2Bytes += f.Bytes
 			m.par2Files++
 		}
 	}
 	m.fileArticleOffsets[len(files)] = len(m.articleIDs)
 	return m
+}
+
+// isPar2File reports whether subject names a par2 file (index or recovery
+// volume), shared by newManifest and NewJob so the classification heuristic
+// can't drift between the two.
+func isPar2File(subject string) bool {
+	return strings.Contains(strings.ToLower(subject), ".par2")
 }
 
 // NumFiles returns the number of files in the manifest.

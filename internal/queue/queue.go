@@ -1034,6 +1034,14 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		if newProgress.remainingBytes < 0 {
 			newProgress.remainingBytes = 0
 		}
+		// pendingArticles/articlesResolved/articlesFailed and each file's
+		// Pending/BytesDownloaded are already correct here (deferred files
+		// contribute nothing, so dropping them changes nothing these
+		// counters depend on), but recompute defensively rather than
+		// relying on that invariant staying true — every other bulk-state
+		// path (Add, Load, ClearAllEmitted, undeferRecoveryLocked) does the
+		// same.
+		newProgress.recompute(newManifestVal)
 
 		job.manifest = newManifestVal
 		job.progress = newProgress

@@ -396,3 +396,112 @@ func TestJob_DropArtIndex(t *testing.T) {
 		t.Fatalf("articleIndexByID(%q) after dropMessageIDIndex = (%v, %v), want a match", id, idx, ok)
 	}
 }
+
+// TestResetForRetry_OnlyTouchesFailedArticles pins ResetForRetry's
+// selective-reset contract directly (rather than through app.RetryHistoryJob's
+// indirect coverage) on a three-file job where only some files have failed
+// articles: file 0 fully succeeded, file 1 partially failed, file 2 fully
+// failed. Only the failed articles' done/failed/remainingBytes should be
+// reset, and Complete should be cleared only for files that had a reset.
+func TestResetForRetry_OnlyTouchesFailedArticles(t *testing.T) {
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "f0", Bytes: 300, Articles: []nzb.Article{
+			{ID: "f0a0@t", Bytes: 100, Number: 1},
+			{ID: "f0a1@t", Bytes: 200, Number: 2},
+		}},
+		{Subject: "f1", Bytes: 700, Articles: []nzb.Article{
+			{ID: "f1a0@t", Bytes: 300, Number: 1},
+			{ID: "f1a1@t", Bytes: 400, Number: 2},
+		}},
+		{Subject: "f2", Bytes: 1500, Articles: []nzb.Article{
+			{ID: "f2a0@t", Bytes: 500, Number: 1},
+			{ID: "f2a1@t", Bytes: 1000, Number: 2},
+		}},
+	}}
+	job, err := NewJob(parsed, AddOptions{Filename: "retry-reset.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	q := New()
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// File 0: both articles succeed, file marked complete.
+	if err := q.MarkArticlesDone(job.ID, []string{"f0a0@t", "f0a1@t"}); err != nil {
+		t.Fatalf("MarkArticlesDone(f0): %v", err)
+	}
+	if err := q.MarkFileComplete(job.ID, 0); err != nil {
+		t.Fatalf("MarkFileComplete(0): %v", err)
+	}
+	// File 1: one succeeds, one fails.
+	if err := q.MarkArticlesDone(job.ID, []string{"f1a0@t"}); err != nil {
+		t.Fatalf("MarkArticlesDone(f1): %v", err)
+	}
+	if _, err := q.MarkArticlesFailed(job.ID, []string{"f1a1@t"}); err != nil {
+		t.Fatalf("MarkArticlesFailed(f1): %v", err)
+	}
+	// File 2: both articles fail.
+	if _, err := q.MarkArticlesFailed(job.ID, []string{"f2a0@t", "f2a1@t"}); err != nil {
+		t.Fatalf("MarkArticlesFailed(f2): %v", err)
+	}
+
+	snap := q.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatalf("SnapshotJob(%s) returned nil", job.ID)
+	}
+	remainingBeforeReset := snap.Progress().RemainingBytes()
+
+	snap.ResetForRetry()
+
+	if snap.Status != constants.StatusQueued {
+		t.Errorf("Status = %q, want Queued", snap.Status)
+	}
+
+	// File 0: untouched — both articles were never failed.
+	if !snap.Progress().ArticleDone(0) || snap.Progress().ArticleFailed(0) {
+		t.Errorf("f0a0: done=%v failed=%v, want done=true failed=false (untouched)",
+			snap.Progress().ArticleDone(0), snap.Progress().ArticleFailed(0))
+	}
+	if !snap.Progress().ArticleDone(1) || snap.Progress().ArticleFailed(1) {
+		t.Errorf("f0a1: done=%v failed=%v, want done=true failed=false (untouched)",
+			snap.Progress().ArticleDone(1), snap.Progress().ArticleFailed(1))
+	}
+	if !snap.Progress().FileComplete(0) {
+		t.Error("file 0 Complete was cleared, want it to survive since none of its articles were reset")
+	}
+
+	// File 1: article index 2 (f1a0) untouched, index 3 (f1a1) reset.
+	if !snap.Progress().ArticleDone(2) || snap.Progress().ArticleFailed(2) {
+		t.Errorf("f1a0: done=%v failed=%v, want done=true failed=false (untouched)",
+			snap.Progress().ArticleDone(2), snap.Progress().ArticleFailed(2))
+	}
+	if snap.Progress().ArticleDone(3) || snap.Progress().ArticleFailed(3) {
+		t.Errorf("f1a1: done=%v failed=%v, want done=false failed=false (reset)",
+			snap.Progress().ArticleDone(3), snap.Progress().ArticleFailed(3))
+	}
+	if snap.Progress().FileComplete(1) {
+		t.Error("file 1 Complete should be false after reset")
+	}
+
+	// File 2: both articles reset.
+	if snap.Progress().ArticleDone(4) || snap.Progress().ArticleFailed(4) {
+		t.Errorf("f2a0: done=%v failed=%v, want done=false failed=false (reset)",
+			snap.Progress().ArticleDone(4), snap.Progress().ArticleFailed(4))
+	}
+	if snap.Progress().ArticleDone(5) || snap.Progress().ArticleFailed(5) {
+		t.Errorf("f2a1: done=%v failed=%v, want done=false failed=false (reset)",
+			snap.Progress().ArticleDone(5), snap.Progress().ArticleFailed(5))
+	}
+	if snap.Progress().FileComplete(2) {
+		t.Error("file 2 Complete should be false after reset (was never true anyway)")
+	}
+
+	// RemainingBytes must be re-credited by exactly the reset articles' bytes:
+	// f1a1 (400) + f2a0 (500) + f2a1 (1000) = 1900. f0's succeeded bytes and
+	// f1a0's succeeded bytes must NOT be re-credited.
+	const wantDelta = 400 + 500 + 1000
+	if got := snap.Progress().RemainingBytes() - remainingBeforeReset; got != wantDelta {
+		t.Errorf("RemainingBytes delta = %d, want %d", got, wantDelta)
+	}
+}
