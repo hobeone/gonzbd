@@ -53,9 +53,10 @@ type Scripted struct {
 	ln net.Listener
 	t  testing.TB
 
-	mu       sync.Mutex
-	articles map[string][]byte
-	failures map[string]FailureMode
+	mu          sync.Mutex
+	articles    map[string][]byte
+	failures    map[string]FailureMode
+	fetchCounts map[string]int
 
 	wg        sync.WaitGroup
 	closed    chan struct{}
@@ -70,6 +71,14 @@ type Scripted struct {
 // fired since the server was created.
 func (s *Scripted) StallCount() int64 { return s.stallCount.Load() }
 
+// FetchCount returns the number of times a BODY or ARTICLE command was
+// received for msgID since the server was created.
+func (s *Scripted) FetchCount(msgID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.fetchCounts[msgID]
+}
+
 // New starts a Scripted server bound to 127.0.0.1 on an ephemeral
 // port. Call AddArticle to populate the corpus and ServerConfig to
 // get a config.ServerConfig pointing at it.
@@ -80,11 +89,12 @@ func New(t testing.TB) *Scripted {
 		t.Fatalf("nntptest: listen: %v", err)
 	}
 	s := &Scripted{
-		ln:       ln,
-		t:        t,
-		articles: make(map[string][]byte),
-		failures: make(map[string]FailureMode),
-		closed:   make(chan struct{}),
+		ln:          ln,
+		t:           t,
+		articles:    make(map[string][]byte),
+		failures:    make(map[string]FailureMode),
+		fetchCounts: make(map[string]int),
+		closed:      make(chan struct{}),
 	}
 	t.Cleanup(s.Close)
 	s.wg.Go(s.accept)
@@ -214,6 +224,7 @@ func (s *Scripted) handleBody(w *bufio.Writer, c net.Conn, cmd string) bool {
 	if mode != FailureNone {
 		delete(s.failures, id)
 	}
+	s.fetchCounts[id]++
 	s.mu.Unlock()
 
 	switch mode {

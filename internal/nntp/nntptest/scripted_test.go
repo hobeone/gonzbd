@@ -177,3 +177,38 @@ func TestScripted_MultipleConnectionsServedConcurrently(t *testing.T) {
 		t.Errorf("bodies = %q, %q", b1, b2)
 	}
 }
+
+func TestScripted_FetchCount(t *testing.T) {
+	s := nntptest.New(t)
+	const msgID = "count@host"
+	s.AddArticle(msgID, []byte("payload\n"))
+
+	if got := s.FetchCount(msgID); got != 0 {
+		t.Fatalf("FetchCount before fetch = %d, want 0", got)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	conn, err := nntp.Dial(ctx, s.ServerConfig("test", 1))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	if _, err := conn.Fetch(ctx, msgID); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	if got := s.FetchCount(msgID); got != 1 {
+		t.Fatalf("FetchCount after first fetch = %d, want 1", got)
+	}
+
+	if _, err := conn.Fetch(ctx, msgID); err != nil {
+		t.Fatalf("second Fetch: %v", err)
+	}
+
+	if got := s.FetchCount(msgID); got != 2 {
+		t.Fatalf("FetchCount after second fetch = %d, want 2", got)
+	}
+}

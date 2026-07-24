@@ -697,12 +697,11 @@ func waitBounded(name string, d time.Duration, wait func() error, log *slog.Logg
 //  3. Cancel the context — watchCompletions exits.
 //  4. Wait for background goroutines to finish.
 //  5. Stop the post-processor, save queue.
-func (app *Application) Shutdown() error {
-	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) {
-		return nil
-	}
-	var errs []error
-
+//
+// stopWorkers stops the downloader, aborts active DirectUnpackers, and stops
+// the assembler in exact documented order. Shared between Shutdown and
+// ForceStopWorkers (in export_test.go) to guarantee consistent teardown ordering.
+func (app *Application) stopWorkers(stepTimeout time.Duration, errs *[]error) {
 	// Barrier on reloadMu: stopped is now true, so any ReloadDownloader call
 	// that arrives after this point sees it and returns immediately without
 	// doing any work. But a reload already past that check when we set
@@ -718,19 +717,41 @@ func (app *Application) Shutdown() error {
 	app.reloadMu.Unlock()
 	// --- No lock held below this line ---
 
-	const stepTimeout = 15 * time.Second
-
-	if err := waitBounded("downloader", stepTimeout, dl.Stop, app.log); err != nil {
-		errs = append(errs, fmt.Errorf("downloader stop: %w", err))
+	if dl != nil {
+		if err := waitBounded("downloader", stepTimeout, dl.Stop, app.log); err != nil && errs != nil {
+			*errs = append(*errs, fmt.Errorf("downloader stop: %w", err))
+		}
 	}
 
 	// Abort all active DirectUnpackers before stopping the assembler.
 	// This kills unrar subprocesses and cleans up partial extracts.
 	app.duOrch.abortAll()
 
-	if err := waitBounded("assembler", stepTimeout, app.assembler.Stop, app.log); err != nil {
-		errs = append(errs, fmt.Errorf("assembler stop: %w", err))
+	if app.assembler != nil {
+		if err := waitBounded("assembler", stepTimeout, app.assembler.Stop, app.log); err != nil && errs != nil {
+			*errs = append(*errs, fmt.Errorf("assembler stop: %w", err))
+		}
 	}
+}
+
+// Shutdown stops the downloader, post-processor, and assembler, flushes the
+// cache, and persists the queue to disk. Safe to call multiple times.
+//
+// Ordering matters:
+//  1. Stop the downloader — no new articles are dispatched.
+//  2. Stop the assembler — drains in-flight writes and delivers any remaining
+//     OnFileComplete events to watchCompletions, which is still running.
+//  3. Cancel the context — watchCompletions exits.
+//  4. Wait for background goroutines to finish.
+//  5. Stop the post-processor, save queue.
+func (app *Application) Shutdown() error {
+	if !app.started.Load() || !app.stopped.CompareAndSwap(false, true) {
+		return nil
+	}
+	var errs []error
+	const stepTimeout = 15 * time.Second
+
+	app.stopWorkers(stepTimeout, &errs)
 
 	app.cancel()
 
