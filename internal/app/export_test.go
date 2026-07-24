@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/config"
@@ -177,14 +178,5 @@ func (a *Application) AssemblerMinFreeBytes() int64 {
 // abrupt process termination (hard crash) without calling queue.Save() or
 // creating shutdown ordering hazards.
 func (a *Application) ForceStopWorkers() {
-	a.mu.Lock()
-	dl := a.downloader
-	a.mu.Unlock()
-	if dl != nil {
-		_ = dl.Stop()
-	}
-	a.duOrch.abortAll()
-	if a.assembler != nil {
-		_ = a.assembler.Stop()
-	}
+	a.stopWorkers(15*time.Second, nil)
 }
