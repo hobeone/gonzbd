@@ -127,7 +127,9 @@ func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 	_, cancel := startAppAndDrain(t, a)
 	t.Cleanup(func() {
 		cancel()
-		_ = a.Shutdown()
+		if err := a.Shutdown(); err != nil {
+			t.Errorf("a.Shutdown: %v", err)
+		}
 	})
 
 	waitForHistoryAndQueueCleanup(t, repo, a, jobID)
@@ -196,7 +198,9 @@ func TestRecovery_DuplicateJobInHistory(t *testing.T) {
 	_, cancel := startAppAndDrain(t, a)
 	t.Cleanup(func() {
 		cancel()
-		_ = a.Shutdown()
+		if err := a.Shutdown(); err != nil {
+			t.Errorf("a.Shutdown: %v", err)
+		}
 	})
 
 	if a.Queue().SnapshotJob(jobID) != nil {
@@ -283,7 +287,9 @@ func TestRecovery_CrashBetweenMultiStoreWrites(t *testing.T) {
 	_, cancel := startAppAndDrain(t, a)
 	t.Cleanup(func() {
 		cancel()
-		_ = a.Shutdown()
+		if err := a.Shutdown(); err != nil {
+			t.Errorf("a.Shutdown: %v", err)
+		}
 	})
 
 	waitForHistoryAndQueueCleanup(t, repo, a, transitionJobID)

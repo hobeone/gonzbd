@@ -53,11 +53,13 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 	server.InjectFailure(msgIDs[1], nntptest.FailureStall)
 
 	const checkInterval = 50 * time.Millisecond
+	srvCfg := server.ServerConfig("scenario-checkpoint", conns)
+	srvCfg.Timeout = 60 // Ensure stalled read outlasts crash-and-restart polling window.
 	cfg := testConfig(
 		downloadDir,
 		completeDir,
 		adminDir,
-		server.ServerConfig("scenario-checkpoint", conns),
+		srvCfg,
 	)
 
 	a1, err := app.New(cfg, repo,
@@ -98,12 +100,12 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 		t.Fatal("timed out waiting for checkpoint on disk to capture mid-download state")
 	}
 
-	// Ungracefully stop a1 by cancelling context without calling Shutdown() first.
-	// Note: In an in-process test environment with goleak enabled, we call _ = a1.Shutdown()
-	// AFTER context cancellation solely to clean up assembler/downloader goroutines that
-	// do not exit on context cancellation alone.
+	// Simulate an ungraceful hard crash: stop downloader and assembler workers
+	// first (so in-flight events are delivered while watchCompletions is running),
+	// then cancel the application context. We deliberately do NOT call a1.Shutdown()
+	// so queue.Save() is never invoked, preserving true no-flush hard-crash semantics.
+	a1.ForceStopWorkers()
 	cancel1()
-	_ = a1.Shutdown()
 
 	// Verify on disk: Articles 0 and 2 are durably marked Done, while Article 1 is NOT Done.
 	diskQ, err := queue.Load(filepath.Join(adminDir, "queue"))
@@ -136,7 +138,9 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 	_, cancel2 := startAppAndDrain(t, a2)
 	t.Cleanup(func() {
 		cancel2()
-		_ = a2.Shutdown()
+		if err := a2.Shutdown(); err != nil {
+			t.Errorf("a2.Shutdown: %v", err)
+		}
 	})
 
 	waitForHistoryAndQueueCleanup(t, repo, a2, job.ID)
@@ -234,8 +238,8 @@ func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 	select {
 	case <-enteredChan:
 	case <-time.After(5 * time.Second):
+		a1.ForceStopWorkers()
 		cancel1()
-		_ = a1.Shutdown()
 		t.Fatal("timeout waiting for job to enter crashStage on attempt 1")
 	}
 
@@ -246,11 +250,11 @@ func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 		t.Fatalf("expected stage1Count=1 on attempt 1, got %d", val)
 	}
 
-	// Simulate crash mid-post-processing: cancel context and shutdown while stage1 is blocked.
+	// Simulate an ungraceful hard crash: stop downloader and assembler workers
+	// first, then cancel the application context. We deliberately do NOT call
+	// a1.Shutdown() so queue.Save() is never invoked.
+	a1.ForceStopWorkers()
 	cancel1()
-	if err := a1.Shutdown(); err != nil {
-		t.Fatalf("a1.Shutdown: %v", err)
-	}
 
 	// Verify on-disk queue state after crash: job must still exist and have PostProc == true.
 	diskQ, err := queue.Load(filepath.Join(adminDir, "queue"))
@@ -274,7 +278,9 @@ func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 	_, cancel2 := startAppAndDrain(t, a2)
 	t.Cleanup(func() {
 		cancel2()
-		_ = a2.Shutdown()
+		if err := a2.Shutdown(); err != nil {
+			t.Errorf("a2.Shutdown: %v", err)
+		}
 	})
 
 	waitForHistoryAndQueueCleanup(t, repo, a2, jobID)

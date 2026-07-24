@@ -171,3 +171,20 @@ func (a *Application) AssemblerMinFreeBytes() int64 {
 	}
 	return a.assembler.MinFreeBytes()
 }
+
+// ForceStopWorkers stops the downloader and assembler without flushing the queue
+// or cancelling the application context. Used in scenario tests to simulate an
+// abrupt process termination (hard crash) without calling queue.Save() or
+// creating shutdown ordering hazards.
+func (a *Application) ForceStopWorkers() {
+	a.mu.Lock()
+	dl := a.downloader
+	a.mu.Unlock()
+	if dl != nil {
+		_ = dl.Stop()
+	}
+	a.duOrch.abortAll()
+	if a.assembler != nil {
+		_ = a.assembler.Stop()
+	}
+}
