@@ -17,6 +17,22 @@ import (
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
+func newSeedQueue(t *testing.T, repo *history.Repository, adminDir string) *queue.Queue {
+	t.Helper()
+	store := queue.NewSQLiteStore(repo.DB(), filepath.Join(adminDir, "queue"), repo)
+	return queue.New(queue.WithStore(store))
+}
+
+func loadTestQueue(t *testing.T, repo *history.Repository, adminDir string) *queue.Queue {
+	t.Helper()
+	store := queue.NewSQLiteStore(repo.DB(), filepath.Join(adminDir, "queue"), repo)
+	q, err := queue.Load(filepath.Join(adminDir, "queue"), queue.WithStore(store))
+	if err != nil {
+		t.Fatalf("loadTestQueue: %v", err)
+	}
+	return q
+}
+
 // seedCompletedJob builds a real *queue.Job (one file, one article, 100
 // bytes, fully downloaded and marked complete) via queue.NewJob and adds it
 // to seed — the only way to reach that state, rather than a parallel
@@ -106,7 +122,7 @@ func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 	const jobID = "recover0-00000001"
 
-	seed := queue.New()
+	seed := newSeedQueue(t, repo, adminDir)
 	seedCompletedJob(t, seed, jobID, "recovery", true)
 	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {
 		t.Fatalf("seed.Save: %v", err)
@@ -167,7 +183,7 @@ func TestRecovery_DuplicateJobInHistory(t *testing.T) {
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 	const jobID = "recover0-00000002"
 
-	seed := queue.New()
+	seed := newSeedQueue(t, repo, adminDir)
 	seedCompletedJob(t, seed, jobID, "recovery-dup", false)
 	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {
 		t.Fatalf("seed.Save: %v", err)
@@ -230,7 +246,7 @@ func TestRecovery_CrashBetweenMultiStoreWrites(t *testing.T) {
 		transitionJobID = "recover0-00000004" // Part 2: Crashed during persistAndCommit after job write, before db write
 	)
 
-	seed := queue.New()
+	seed := newSeedQueue(t, repo, adminDir)
 	// Seed transitionJobID as a completed job with PostProc=true.
 	seedCompletedJob(t, seed, transitionJobID, "recovery-transition", true)
 	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {

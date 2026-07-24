@@ -86,7 +86,8 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 		if server.StallCount() < 1 {
 			return false
 		}
-		q, err := queue.Load(filepath.Join(adminDir, "queue"))
+		store := queue.NewSQLiteStore(repo.DB(), filepath.Join(adminDir, "queue"), repo)
+		q, err := queue.Load(filepath.Join(adminDir, "queue"), queue.WithStore(store))
 		if err != nil {
 			return false
 		}
@@ -108,10 +109,7 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 	cancel1()
 
 	// Verify on disk: Articles 0 and 2 are durably marked Done, while Article 1 is NOT Done.
-	diskQ, err := queue.Load(filepath.Join(adminDir, "queue"))
-	if err != nil {
-		t.Fatalf("queue.Load after crash: %v", err)
-	}
+	diskQ := loadTestQueue(t, repo, adminDir)
 	snap := diskQ.SnapshotJob(job.ID)
 	if snap == nil {
 		t.Fatal("job missing from on-disk queue after crash")
@@ -135,13 +133,18 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 		t.Fatalf("app.New 2: %v", err)
 	}
 
-	_, cancel2 := startAppAndDrain(t, a2)
+	ctx2, cancel2 := context.WithCancel(t.Context())
 	t.Cleanup(func() {
 		cancel2()
 		if err := a2.Shutdown(); err != nil {
 			t.Errorf("a2.Shutdown: %v", err)
 		}
 	})
+	if err := a2.Start(ctx2); err != nil {
+		t.Fatalf("a2.Start: %v", err)
+	}
+	go drainAny(ctx2, a2.JobComplete())
+	go drainAny(ctx2, a2.PostProcComplete())
 
 	waitForHistoryAndQueueCleanup(t, repo, a2, job.ID)
 
@@ -163,24 +166,30 @@ type trackingStage struct {
 
 func (s *trackingStage) Name() string { return s.name }
 func (s *trackingStage) Run(_ context.Context, _ *postproc.Job) error {
-	if s.count != nil {
-		atomic.AddInt32(s.count, 1)
-	}
+	atomic.AddInt32(s.count, 1)
 	return nil
 }
 
 type crashStage struct {
-	count   *int32
-	entered chan struct{}
+	name      string
+	count     *int32
+	entered   chan struct{}
+	blockOnce *uint32
 }
 
-func (s *crashStage) Name() string { return "crash-stage" }
+func (s *crashStage) Name() string { return s.name }
 func (s *crashStage) Run(ctx context.Context, _ *postproc.Job) error {
-	attempt := atomic.AddInt32(s.count, 1)
-	if attempt == 1 {
-		if s.entered != nil {
-			s.entered <- struct{}{}
+	atomic.AddInt32(s.count, 1)
+	if atomic.CompareAndSwapUint32(s.blockOnce, 0, 1) {
+		select {
+		case s.entered <- struct{}{}:
+		default:
 		}
+		// Block until the application context is ungracefully cancelled.
+		// In post-processing, returning an error only logs a warning and allows
+		// downstream stages to proceed. By blocking on ctx.Done(), we simulate an
+		// abrupt process kill mid-stage where onJobDone is never reached, leaving
+		// PostProc=true in queue.json.gz for startup recovery.
 		<-ctx.Done()
 		return ctx.Err()
 	}
@@ -205,7 +214,8 @@ func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	seed := queue.New()
+	store := queue.NewSQLiteStore(repo.DB(), filepath.Join(adminDir, "queue"), repo)
+	seed := queue.New(queue.WithStore(store))
 	seedCompletedJob(t, seed, jobID, "recovery-mid-pp", true)
 	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {
 		t.Fatalf("seed.Save: %v", err)
@@ -224,30 +234,34 @@ func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 
 	stages := []postproc.Stage{
 		&trackingStage{name: "stage0", count: &stage0Count},
-		&crashStage{count: &stage1Count, entered: enteredChan},
+		&crashStage{name: "crash-stage", count: &stage1Count, entered: enteredChan, blockOnce: new(uint32)},
 	}
 
-	// Attempt 1: Start application and let job enter post-processing where it blocks.
 	a1, err := app.New(cfg, repo, app.WithPostProcStages(stages))
 	if err != nil {
 		t.Fatalf("app.New a1: %v", err)
 	}
 
-	_, cancel1 := startAppAndDrain(t, a1)
+	ctx1, cancel1 := context.WithCancel(t.Context())
+	if err := a1.Start(ctx1); err != nil {
+		t.Fatalf("a1.Start: %v", err)
+	}
+	go drainAny(ctx1, a1.JobComplete())
+	go drainAny(ctx1, a1.PostProcComplete())
 
+	// Wait until post-processing stage 1 is entered and blocked.
 	select {
 	case <-enteredChan:
-	case <-time.After(5 * time.Second):
-		a1.ForceStopWorkers()
-		cancel1()
-		t.Fatal("timeout waiting for job to enter crashStage on attempt 1")
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for stage 1 entry before crash")
 	}
 
-	if val := atomic.LoadInt32(&stage0Count); val != 1 {
-		t.Fatalf("expected stage0Count=1 on attempt 1, got %d", val)
+	// Verify stage 0 and 1 executed once before crash.
+	if c := atomic.LoadInt32(&stage0Count); c != 1 {
+		t.Errorf("expected stage0 count 1 before crash, got %d", c)
 	}
-	if val := atomic.LoadInt32(&stage1Count); val != 1 {
-		t.Fatalf("expected stage1Count=1 on attempt 1, got %d", val)
+	if c := atomic.LoadInt32(&stage1Count); c != 1 {
+		t.Errorf("expected stage1 count 1 before crash, got %d", c)
 	}
 
 	// Simulate an ungraceful hard crash: stop downloader and assembler workers
@@ -257,10 +271,7 @@ func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 	cancel1()
 
 	// Verify on-disk queue state after crash: job must still exist and have PostProc == true.
-	diskQ, err := queue.Load(filepath.Join(adminDir, "queue"))
-	if err != nil {
-		t.Fatalf("queue.Load: %v", err)
-	}
+	diskQ := loadTestQueue(t, repo, adminDir)
 	snap := diskQ.SnapshotJob(jobID)
 	if snap == nil {
 		t.Fatal("job missing from on-disk queue after crash")

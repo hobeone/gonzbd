@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -49,8 +50,16 @@ type Queue struct {
 	dirty atomic.Bool
 
 	sOpts fsutil.SanitizeOptions
+	store Store
 
 	log *slog.Logger
+}
+
+// Store returns the underlying SQLite persistence store, or nil if using legacy in-memory/JSON storage.
+//
+//nolint:ireturn // Store is intentionally an interface exposing persistence storage
+func (q *Queue) Store() Store {
+	return q.store
 }
 
 // IsDirty reports whether the queue has unsaved mutations. It is safe
@@ -60,6 +69,13 @@ func (q *Queue) IsDirty() bool { return q.dirty.Load() }
 
 // Option configures a Queue during construction.
 type Option func(*Queue)
+
+// WithStore sets the SQLite persistence store on the Queue.
+func WithStore(store Store) Option {
+	return func(q *Queue) {
+		q.store = store
+	}
+}
 
 // WithLogger sets a component-scoped logger on the Queue.
 func WithLogger(l *slog.Logger) Option {
@@ -234,6 +250,12 @@ func (q *Queue) HasPostProcJobs() bool {
 func (q *Queue) ExistsByName(name string) bool {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
+	if q.store != nil {
+		exists, err := q.store.ExistsByName(context.Background(), name)
+		if err == nil {
+			return exists
+		}
+	}
 	for _, j := range q.jobs {
 		if j.Name == name {
 			return true
@@ -247,6 +269,12 @@ func (q *Queue) ExistsByName(name string) bool {
 func (q *Queue) ExistsByMD5(md5 string) bool {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
+	if q.store != nil {
+		exists, err := q.store.ExistsByMD5(context.Background(), md5)
+		if err == nil {
+			return exists
+		}
+	}
 	for _, j := range q.jobs {
 		if j.MD5 == md5 {
 			return true
@@ -302,6 +330,12 @@ func (q *Queue) Add(job *Job) error {
 	// Pending == len(Articles) per file).
 	job.progress.recompute(job.manifest)
 
+	if q.store != nil {
+		if err := q.store.Add(context.Background(), job); err != nil {
+			return err
+		}
+	}
+
 	q.insertByPriorityLocked(job)
 	q.byID[job.ID] = job
 	q.dirty.Store(true)
@@ -311,21 +345,30 @@ func (q *Queue) Add(job *Job) error {
 
 // Remove drops the job from the queue and deletes its persistent state file.
 func (q *Queue) Remove(id string) error {
-	q.mu.Lock()
-	idx, ok := q.indexOfLocked(id)
-	if !ok {
-		q.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	if q.store != nil {
+		if err := q.store.Remove(context.Background(), id); err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
 	}
-	q.removeAtLocked(idx)
-	delete(q.byID, id)
-	// Snapshot the path under the lock; empty string means no persistent state.
 	var jobPath string
-	if q.stateDir != "" {
-		jobPath = filepath.Join(q.stateDir, "jobs", id+".json.gz")
+	err := func() error {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		idx, ok := q.indexOfLocked(id)
+		if !ok {
+			return fmt.Errorf("%w: %s", ErrNotFound, id)
+		}
+		q.removeAtLocked(idx)
+		delete(q.byID, id)
+		if q.stateDir != "" && q.store == nil {
+			jobPath = filepath.Join(q.stateDir, "jobs", id+".json.gz")
+		}
+		q.dirty.Store(true)
+		return nil
+	}()
+	if err != nil {
+		return err
 	}
-	q.dirty.Store(true)
-	q.mu.Unlock()
 
 	// --- No lock held below this line ---
 	if jobPath != "" {
@@ -1146,13 +1189,21 @@ func (q *Queue) ResumeAll() {
 	q.notifyLocked()
 }
 
-// Reorder moves the job with the given ID to newIndex in the queue.
+// Reorder moves a job to newIndex in the queue, shifting other jobs
+// accordingly. It emits a "queue_updated" event and wakes the downloader
+// so priority/order changes take effect immediately.
+//
 // newIndex is clamped to [0, len-1]. Manual reordering may leave the
 // queue no longer strictly priority-sorted; subsequent Add calls
 // still place new jobs by priority, which may interleave with the
 // user's manual ordering. The downloader treats slice order as
 // authoritative either way.
 func (q *Queue) Reorder(id string, newIndex int) error {
+	if q.store != nil {
+		if err := q.store.ShiftSortKey(context.Background(), id, newIndex); err != nil {
+			return err
+		}
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	idx, ok := q.indexOfLocked(id)

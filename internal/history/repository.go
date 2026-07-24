@@ -91,10 +91,18 @@ func NewRepository(d *DB) *Repository {
 	return &Repository{db: d.db}
 }
 
-// Add inserts e into the history table. It returns an error (wrapping a
-// SQLite unique-constraint violation) if an entry with the same nzo_id already
-// exists.
-func (r *Repository) Add(ctx context.Context, e Entry) error {
+// Execer represents a SQL executor (either *sql.DB or *sql.Tx).
+type Execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// DB returns the underlying sql.DB connection pool.
+func (r *Repository) DB() *sql.DB {
+	return r.db
+}
+
+// AddTx inserts e into the history table using an open SQL executor (either a transaction or DB pool).
+func (r *Repository) AddTx(ctx context.Context, exec Execer, e Entry) error {
 	const q = `
 INSERT INTO history
   (completed, name, nzb_name, category, pp, script, report, url, status,
@@ -105,7 +113,7 @@ INSERT INTO history
 VALUES
   (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 
-	_, err := r.db.ExecContext(ctx, q,
+	_, err := exec.ExecContext(ctx, q,
 		toUnix(e.Completed),
 		e.Name, e.NzbName, e.Category, e.PP, e.Script, e.Report,
 		e.URL, e.Status, e.NzoID, e.Storage, e.Path,
@@ -116,9 +124,16 @@ VALUES
 		e.DuplicateKey, e.Archive, toUnix(e.TimeAdded),
 	)
 	if err != nil {
-		return fmt.Errorf("history: add %q: %w", e.NzoID, err)
+		return fmt.Errorf("history: add tx %q: %w", e.NzoID, err)
 	}
 	return nil
+}
+
+// Add inserts e into the history table. It returns an error (wrapping a
+// SQLite unique-constraint violation) if an entry with the same nzo_id already
+// exists.
+func (r *Repository) Add(ctx context.Context, e Entry) error {
+	return r.AddTx(ctx, r.db, e)
 }
 
 // Get fetches the entry with the given nzo_id. It returns ErrNotFound (via

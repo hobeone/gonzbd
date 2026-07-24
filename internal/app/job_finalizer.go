@@ -62,7 +62,17 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 		app.emit(Event{Type: "queue_updated"})
 		return err
 	}
-	if app.historyRepo != nil {
+	if app.queue.Store() != nil {
+		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
+		defer dbCancel()
+		if err := app.queue.Store().MoveToHistory(dbCtx, job.Queue, entry); err != nil {
+			log.Error("failed to add history entry; keeping job in queue for recovery",
+				"job", job.Queue.ID, "err", err)
+			_ = os.Remove(jobPath) // clean up the orphaned payload file
+			app.emit(Event{Type: "queue_updated"})
+			return err
+		}
+	} else if app.historyRepo != nil {
 		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
 		defer dbCancel()
 		if err := app.historyRepo.Add(dbCtx, entry); err != nil {

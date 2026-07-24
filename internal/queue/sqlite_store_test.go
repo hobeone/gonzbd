@@ -1,0 +1,294 @@
+package queue_test
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/nzb"
+	"github.com/hobeone/gonzbd/internal/queue"
+)
+
+func setupTestStore(t *testing.T) (*queue.SQLiteStore, *history.Repository, string) {
+	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "history.db")
+	db, err := history.Open(t.Context(), dbPath)
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	repo := history.NewRepository(db)
+	store := queue.NewSQLiteStore(repo.DB(), dir, repo)
+	return store, repo, dir
+}
+
+func newTestJob(id, name string) *queue.Job {
+	return &queue.Job{
+		ID:       id,
+		Filename: name + ".nzb",
+		Name:     name,
+		Category: "default",
+		Priority: constants.NormalPriority,
+		Status:   constants.StatusQueued,
+		PP:       3,
+		Added:    time.Now().Truncate(time.Second),
+		MD5:      fmt.Sprintf("md5-%s", id),
+		AvgAge:   time.Now().Truncate(time.Second),
+	}
+}
+
+func TestSQLiteStore_CRUD(t *testing.T) {
+	store, _, dir := setupTestStore(t)
+	ctx := t.Context()
+
+	job := newTestJob("job0000000000001", "test-job-1")
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Name != job.Name || got.MD5 != job.MD5 {
+		t.Errorf("Get mismatch: got name=%q md5=%q, want %q, %q", got.Name, got.MD5, job.Name, job.MD5)
+	}
+
+	list, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != job.ID {
+		t.Fatalf("List expected 1 job %q, got %d jobs", job.ID, len(list))
+	}
+
+	job.Name = "updated-name"
+	job.Status = constants.StatusDownloading
+	if err := store.Update(ctx, job); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, _ = store.Get(ctx, job.ID)
+	if got.Name != "updated-name" || got.Status != constants.StatusDownloading {
+		t.Errorf("Update failed: got %q / %q", got.Name, got.Status)
+	}
+
+	if err := store.Remove(ctx, job.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := store.Get(ctx, job.ID); !errors.Is(err, queue.ErrNotFound) {
+		t.Errorf("expected ErrNotFound after Remove, got %v", err)
+	}
+
+	manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
+	if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
+		t.Errorf("manifest file should be removed on job Remove, stat err=%v", err)
+	}
+}
+
+func TestSQLiteStore_MoveToHistory(t *testing.T) {
+	store, repo, dir := setupTestStore(t)
+	ctx := t.Context()
+
+	job := newTestJob("job0000000000002", "test-history-job")
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	entry := history.Entry{
+		NzoID:     job.ID,
+		Name:      job.Name,
+		Category:  job.Category,
+		Status:    string(constants.StatusCompleted),
+		Completed: time.Now(),
+		TimeAdded: job.Added,
+	}
+
+	if err := store.MoveToHistory(ctx, job, entry); err != nil {
+		t.Fatalf("MoveToHistory: %v", err)
+	}
+
+	if _, err := store.Get(ctx, job.ID); !errors.Is(err, queue.ErrNotFound) {
+		t.Errorf("expected job to be deleted from active store, got err=%v", err)
+	}
+
+	histEntry, err := repo.Get(ctx, job.ID)
+	if err != nil || histEntry == nil {
+		t.Fatalf("expected job in history repo, got err=%v", err)
+	}
+	if histEntry.Name != job.Name {
+		t.Errorf("history name=%q, want %q", histEntry.Name, job.Name)
+	}
+
+	manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
+	if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
+		t.Errorf("manifest file should be removed after MoveToHistory, stat err=%v", err)
+	}
+}
+
+func TestSQLiteStore_ShiftSortKey(t *testing.T) {
+	store, _, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	const count = 100
+	for i := range count {
+		id := fmt.Sprintf("job-%04d", i)
+		job := newTestJob(id, fmt.Sprintf("job-%d", i))
+		if err := store.Add(ctx, job); err != nil {
+			t.Fatalf("Add %d: %v", i, err)
+		}
+	}
+
+	list, err := store.List(ctx)
+	if err != nil || len(list) != count {
+		t.Fatalf("List initial: err=%v len=%d", err, len(list))
+	}
+	if list[0].ID != "job-0000" || list[count-1].ID != "job-0099" {
+		t.Fatalf("initial order wrong: first=%s last=%s", list[0].ID, list[count-1].ID)
+	}
+
+	// Shift last item to position 0 (top of queue)
+	if err := store.ShiftSortKey(ctx, "job-0099", 0); err != nil {
+		t.Fatalf("ShiftSortKey to 0: %v", err)
+	}
+
+	list, _ = store.List(ctx)
+	if list[0].ID != "job-0099" || list[1].ID != "job-0000" {
+		t.Errorf("after shift to top: first=%s second=%s", list[0].ID, list[1].ID)
+	}
+
+	// Shift top item back to bottom
+	if err := store.ShiftSortKey(ctx, "job-0099", count-1); err != nil {
+		t.Fatalf("ShiftSortKey to bottom: %v", err)
+	}
+
+	list, _ = store.List(ctx)
+	if list[0].ID != "job-0000" || list[count-1].ID != "job-0099" {
+		t.Errorf("after shift to bottom: first=%s last=%s", list[0].ID, list[count-1].ID)
+	}
+}
+
+func TestSQLiteStore_QueryPlan(t *testing.T) {
+	_, repo, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	checkPlan := func(query string, expectedIndex string) {
+		rows, err := repo.DB().QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, "test")
+		if err != nil {
+			t.Fatalf("EXPLAIN QUERY PLAN %q: %v", query, err)
+		}
+		defer rows.Close()
+
+		var plan strings.Builder
+		for rows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notused, &detail); err == nil {
+				plan.WriteString(detail)
+				plan.WriteString(" ")
+			}
+		}
+		if !strings.Contains(plan.String(), expectedIndex) {
+			t.Errorf("query %q did not use expected index %q, plan: %s", query, expectedIndex, plan.String())
+		}
+	}
+
+	checkPlan("SELECT 1 FROM jobs WHERE name = ?", "idx_jobs_name")
+	checkPlan("SELECT 1 FROM jobs WHERE md5 = ?", "idx_jobs_md5")
+}
+
+func TestSQLiteStore_ManifestAndFiles(t *testing.T) {
+	store, _, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	job := newTestJob("job0000000000003", "manifest-test")
+	files := []nzb.File{
+		{Subject: "file0.bin", Bytes: 100, Articles: []nzb.Article{{ID: "a0@t", Bytes: 100, Number: 1}}},
+		{Subject: "file1.bin", Bytes: 200, Articles: []nzb.Article{{ID: "a1@t", Bytes: 200, Number: 1}}},
+	}
+	parsed := &nzb.NZB{Files: files}
+	fullJob, err := queue.NewJob(parsed, queue.AddOptions{Name: "manifest-test"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	fullJob.ID = job.ID
+
+	if err := store.Add(ctx, fullJob); err != nil {
+		t.Fatalf("Add fullJob: %v", err)
+	}
+
+	got, err := store.Get(ctx, fullJob.ID)
+	if err != nil {
+		t.Fatalf("Get fullJob: %v", err)
+	}
+	if got.Manifest() == nil || got.Manifest().NumFiles() != 2 {
+		t.Fatalf("manifest not restored correctly: %v", got.Manifest())
+	}
+	if got.Progress() == nil {
+		t.Fatal("progress not constructed")
+	}
+}
+
+func TestSQLiteStore_ExistsAndPauseAndPrune(t *testing.T) {
+	store, _, dir := setupTestStore(t)
+	ctx := t.Context()
+
+	if paused, err := store.IsPaused(ctx); err != nil || paused {
+		t.Errorf("expected initial pause state to be false, got paused=%v err=%v", paused, err)
+	}
+	if err := store.SetPaused(ctx, true); err != nil {
+		t.Fatalf("SetPaused(true): %v", err)
+	}
+	if paused, err := store.IsPaused(ctx); err != nil || !paused {
+		t.Errorf("expected pause state to be true, got paused=%v err=%v", paused, err)
+	}
+	if err := store.SetPaused(ctx, false); err != nil {
+		t.Fatalf("SetPaused(false): %v", err)
+	}
+	if paused, err := store.IsPaused(ctx); err != nil || paused {
+		t.Errorf("expected pause state to be false after reset, got paused=%v err=%v", paused, err)
+	}
+
+	job := newTestJob("job-exists-001", "unique-job-name")
+	job.MD5 = "0123456789abcdef0123456789abcdef"
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if exists, err := store.ExistsByName(ctx, "unique-job-name"); err != nil || !exists {
+		t.Errorf("expected ExistsByName to return true for existing job, got exists=%v err=%v", exists, err)
+	}
+	if exists, err := store.ExistsByName(ctx, "nonexistent-name"); err != nil || exists {
+		t.Errorf("expected ExistsByName to return false for nonexistent job, got exists=%v err=%v", exists, err)
+	}
+
+	if exists, err := store.ExistsByMD5(ctx, "0123456789abcdef0123456789abcdef"); err != nil || !exists {
+		t.Errorf("expected ExistsByMD5 to return true for existing md5, got exists=%v err=%v", exists, err)
+	}
+	if exists, err := store.ExistsByMD5(ctx, "11111111111111111111111111111111"); err != nil || exists {
+		t.Errorf("expected ExistsByMD5 to return false for nonexistent md5, got exists=%v err=%v", exists, err)
+	}
+
+	// Test Prune removes orphaned files not matching active jobs in SQLite
+	orphanedManifest := filepath.Join(dir, "manifests", "orphaned-id.json.gz")
+	if err := os.MkdirAll(filepath.Dir(orphanedManifest), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(orphanedManifest, []byte("test"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := store.Prune(ctx); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if _, err := os.Stat(orphanedManifest); !os.IsNotExist(err) {
+		t.Errorf("expected Prune to remove orphaned manifest file, stat err=%v", err)
+	}
+}

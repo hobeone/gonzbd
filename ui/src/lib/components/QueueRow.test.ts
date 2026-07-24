@@ -29,6 +29,7 @@ import { fetchQueueJobDetail } from '$lib/api';
 
 describe('QueueRow', () => {
 	const baseSlot: QueueSlot = {
+		index: 0,
 		nzo_id: '123',
 		name: 'Test.NZB',
 		filename: 'Test.NZB',
