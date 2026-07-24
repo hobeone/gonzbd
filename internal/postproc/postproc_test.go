@@ -16,6 +16,8 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -23,15 +25,31 @@ import (
 // Test helpers
 // ---------------------------------------------------------------------------
 
+// newQueueJob builds a real *queue.Job (with a valid Manifest/Progress) via
+// queue.NewJob, adds it to a fresh queue, and returns it — the one way to
+// get a job into existence, rather than a parallel struct-literal path.
+func newQueueJob(t *testing.T, id string, pp int) *queue.Job {
+	t.Helper()
+	qjob, err := queue.NewJob(&nzb.NZB{}, queue.AddOptions{Filename: id + ".nzb", Name: id, PP: pp}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	// ID is a plain exported field, unaffected by the Manifest/Progress
+	// split — override the randomly-generated one so tests can match jobs
+	// by the readable id they passed in (e.g. p.Cancel(id)).
+	qjob.ID = id
+	q := queue.New()
+	if err := q.Add(qjob); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	return qjob
+}
+
 // makeJob creates a minimal Job backed by a queue.Job for use in tests.
 func makeJob(t *testing.T, name string) *Job {
 	t.Helper()
 	return &Job{
-		Queue: &queue.Job{
-			ID:   name,
-			Name: name,
-			PP:   3, // Repair + Unpack + Delete (production default)
-		},
+		Queue: newQueueJob(t, name, 3), // Repair + Unpack + Delete (production default)
 	}
 }
 
@@ -588,7 +606,7 @@ func TestPPQueueOrdering(t *testing.T) {
 	q := newPPQueue()
 	names := []string{"j1", "j2", "j3"}
 	for _, n := range names {
-		q.Push(&Job{Queue: &queue.Job{ID: n, Name: n}})
+		q.Push(&Job{Queue: newQueueJob(t, n, 0)})
 	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
@@ -607,8 +625,8 @@ func TestPPQueueOrdering(t *testing.T) {
 
 func TestPPQueueCancel(t *testing.T) {
 	q := newPPQueue()
-	q.Push(&Job{Queue: &queue.Job{ID: "a", Name: "a"}})
-	q.Push(&Job{Queue: &queue.Job{ID: "b", Name: "b"}})
+	q.Push(&Job{Queue: newQueueJob(t, "a", 0)})
+	q.Push(&Job{Queue: newQueueJob(t, "b", 0)})
 	if !q.Cancel("a") {
 		t.Error("Cancel('a') = false, want true")
 	}
@@ -704,7 +722,7 @@ func TestPPEnforcement_PP0SkipsRepairAndUnpack(t *testing.T) {
 		OnJobDone: func(_ *Job) { wg.Done() },
 	})
 
-	job := &Job{Queue: &queue.Job{ID: "pp0", Name: "pp0", PP: 0}}
+	job := &Job{Queue: newQueueJob(t, "pp0", 0)}
 	p.Process(job)
 	wg.Wait()
 
@@ -731,7 +749,7 @@ func TestPPEnforcement_PP1SkipsUnpack(t *testing.T) {
 		OnJobDone: func(_ *Job) { wg.Done() },
 	})
 
-	job := &Job{Queue: &queue.Job{ID: "pp1", Name: "pp1", PP: 1}}
+	job := &Job{Queue: newQueueJob(t, "pp1", 1)}
 	p.Process(job)
 	wg.Wait()
 
@@ -764,7 +782,7 @@ func TestPPEnforcement_PP2RunsRepairAndUnpack(t *testing.T) {
 		OnJobDone: func(_ *Job) { wg.Done() },
 	})
 
-	job := &Job{Queue: &queue.Job{ID: "pp2", Name: "pp2", PP: 2}}
+	job := &Job{Queue: newQueueJob(t, "pp2", 2)}
 	p.Process(job)
 	wg.Wait()
 
@@ -804,7 +822,7 @@ func TestPPEnforcement_PP3RunsAll(t *testing.T) {
 		OnJobDone: func(_ *Job) { wg.Done() },
 	})
 
-	job := &Job{Queue: &queue.Job{ID: "pp3", Name: "pp3", PP: 3}}
+	job := &Job{Queue: newQueueJob(t, "pp3", 3)}
 	p.Process(job)
 	wg.Wait()
 
@@ -844,7 +862,7 @@ func TestPPEnforcement_PP0_NonGatedStagesAlwaysRun(t *testing.T) {
 		OnJobDone: func(_ *Job) { wg.Done() },
 	})
 
-	job := &Job{Queue: &queue.Job{ID: "pp0-full", Name: "pp0-full", PP: 0}}
+	job := &Job{Queue: newQueueJob(t, "pp0-full", 0)}
 	p.Process(job)
 	wg.Wait()
 
@@ -1028,7 +1046,7 @@ func TestPreCheck_EmptyDir(t *testing.T) {
 	})
 
 	job := &Job{
-		Queue:       &queue.Job{ID: "empty", Name: "empty", PP: 3},
+		Queue:       newQueueJob(t, "empty", 3),
 		DownloadDir: dir,
 	}
 	p.Process(job)
@@ -1071,7 +1089,7 @@ func TestPreCheck_MissingDir(t *testing.T) {
 	})
 
 	job := &Job{
-		Queue:       &queue.Job{ID: "missing", Name: "missing", PP: 3},
+		Queue:       newQueueJob(t, "missing", 3),
 		DownloadDir: "/nonexistent/path/xyz",
 	}
 	p.Process(job)
@@ -1101,7 +1119,7 @@ func TestPreCheck_UnsetDirSkipsGuard(t *testing.T) {
 	})
 
 	job := &Job{
-		Queue: &queue.Job{ID: "no-dir", Name: "no-dir", PP: 3},
+		Queue: newQueueJob(t, "no-dir", 3),
 		// DownloadDir deliberately empty
 	}
 	p.Process(job)
@@ -1141,7 +1159,7 @@ func TestProcessJob_SeedsOwnedFilesFromDownloadDir(t *testing.T) {
 	})
 
 	job := &Job{
-		Queue:       &queue.Job{ID: "seed", Name: "seed", PP: 3},
+		Queue:       newQueueJob(t, "seed", 3),
 		DownloadDir: dir,
 	}
 	p.Process(job)
@@ -1168,13 +1186,20 @@ func TestPostProc_HelperMethods(t *testing.T) {
 
 	t.Run("buildPreambleLog", func(t *testing.T) {
 		now := time.Now()
+		q := queue.New()
+		qjob, err := queue.NewJob(&nzb.NZB{}, queue.AddOptions{Filename: "job1.nzb", Name: "TestJob"}, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatalf("NewJob: %v", err)
+		}
+		if err := q.Add(qjob); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		if err := q.MarkJobStarted(qjob.ID, now); err != nil {
+			t.Fatalf("MarkJobStarted: %v", err)
+		}
+		qjob.MarkDownloadFinished(now.Add(5 * time.Second))
 		job := &Job{
-			Queue: &queue.Job{
-				ID:               "job1",
-				Name:             "TestJob",
-				DownloadStarted:  now,
-				DownloadFinished: now.Add(5 * time.Second),
-			},
+			Queue:       qjob,
 			DownloadDir: t.TempDir(),
 		}
 
@@ -1227,9 +1252,7 @@ func TestPostProc_HelperMethods(t *testing.T) {
 	t.Run("buildSummaryEntry", func(t *testing.T) {
 		now := time.Now()
 		job := &Job{
-			Queue: &queue.Job{
-				ID: "job1",
-			},
+			Queue: newQueueJob(t, "job1", 0),
 			StageLog: []StageLogEntry{
 				{
 					Stage:   "repair",
@@ -1281,10 +1304,7 @@ func TestPostProc_HelperMethods(t *testing.T) {
 		}
 
 		job := &Job{
-			Queue: &queue.Job{
-				ID: "job1",
-				PP: 0, // PP=0 skips repair
-			},
+			Queue: newQueueJob(t, "job1", 0), // PP=0 skips repair
 		}
 
 		mockStage := &mockPPStage{
@@ -1364,7 +1384,7 @@ func TestPostProc_HelperMethods(t *testing.T) {
 func TestBuildSummaryEntry_EmptyStageLog(t *testing.T) {
 	t.Parallel()
 	job := &Job{
-		Queue:    &queue.Job{ID: "empty-log"},
+		Queue:    newQueueJob(t, "empty-log", 0),
 		StageLog: []StageLogEntry{}, // no stages ran
 	}
 
@@ -1392,7 +1412,7 @@ func TestBuildSummaryEntry_AllSuccess(t *testing.T) {
 	t.Parallel()
 	now := time.Now()
 	job := &Job{
-		Queue:    &queue.Job{ID: "all-ok"},
+		Queue:    newQueueJob(t, "all-ok", 0),
 		FinalDir: "/output/done",
 		StageLog: []StageLogEntry{
 			{Stage: "repair", Started: now, Elapsed: time.Second, Err: nil},

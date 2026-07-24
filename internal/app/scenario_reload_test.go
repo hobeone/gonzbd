@@ -75,11 +75,13 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 	if !h.WaitForPostProc(job.ID, 30*time.Second) {
 		snap := h.app.Queue().SnapshotJob(job.ID)
 		if snap != nil {
-			for i, f := range snap.Files {
-				t.Logf("  file[%d]: complete=%v articles=%d", i, f.Complete, len(f.Articles))
-				for j, a := range f.Articles {
+			m, p := snap.Manifest(), snap.Progress()
+			for fi := range m.NumFiles() {
+				lo, hi := m.FileRange(fi)
+				t.Logf("  file[%d]: complete=%v articles=%d", fi, p.FileComplete(fi), hi-lo)
+				for i := lo; i < hi; i++ {
 					t.Logf("    article[%d]: done=%v failed=%v emitted=%v id=%s",
-						j, a.Done, a.Failed, a.Emitted, a.ID)
+						i-lo, p.ArticleDone(i), p.ArticleFailed(i), p.ArticleEmitted(i), m.ArticleID(i))
 				}
 			}
 		}

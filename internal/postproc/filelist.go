@@ -18,44 +18,45 @@ import (
 //   - article completion stats from the queue
 func buildDownloadFileList(job *Job) []string {
 	var lines []string
+	m := job.Queue.Manifest()
+	p := job.Queue.Progress()
 
 	// On-demand par2 stats: count skipped recovery volumes and bytes saved.
 	var heldVols, recoveryVols int
 	var heldBytes int64
-	for i := range job.Queue.Files {
-		f := &job.Queue.Files[i]
-		if !f.IsPar2Recovery {
+	for fi := range m.NumFiles() {
+		if !m.FileIsPar2Recovery(fi) {
 			continue
 		}
 		recoveryVols++
-		if f.Deferred {
+		if p.FileDeferred(fi) {
 			heldVols++
-			heldBytes += f.Bytes
+			heldBytes += m.FileBytes(fi)
 		}
 	}
 
 	// Download duration header.
 	var dlDuration time.Duration
-	if !job.Queue.DownloadStarted.IsZero() && !job.Queue.DownloadFinished.IsZero() {
-		dlDuration = job.Queue.DownloadFinished.Sub(job.Queue.DownloadStarted)
+	if !p.DownloadStarted().IsZero() && !p.DownloadFinished().IsZero() {
+		dlDuration = p.DownloadFinished().Sub(p.DownloadStarted())
 	}
 
 	if heldBytes > 0 {
 		lines = append(lines, fmt.Sprintf("Downloaded %s (saved %s by not downloading par2 files) in %s",
-			humanfmt.BytesSI(job.Queue.TotalBytes-heldBytes),
+			humanfmt.BytesSI(m.TotalBytes()-heldBytes),
 			humanfmt.BytesSI(heldBytes),
 			humanfmt.Duration(dlDuration)))
 	} else {
 		lines = append(lines, fmt.Sprintf("Downloaded %s in %s",
-			humanfmt.BytesSI(job.Queue.TotalBytes),
+			humanfmt.BytesSI(m.TotalBytes()),
 			humanfmt.Duration(dlDuration)))
 	}
 
 	// Failed/remaining bytes summary.
-	if job.Queue.FailedBytes > 0 {
+	if p.FailedBytes() > 0 {
 		lines = append(lines, fmt.Sprintf("⚠ %s failed (%.1f%%)",
-			humanfmt.BytesSI(job.Queue.FailedBytes),
-			float64(job.Queue.FailedBytes)/float64(job.Queue.TotalBytes)*100))
+			humanfmt.BytesSI(p.FailedBytes()),
+			float64(p.FailedBytes())/float64(m.TotalBytes())*100))
 	}
 
 	switch {
@@ -63,11 +64,11 @@ func buildDownloadFileList(job *Job) []string {
 		// Still deferred at finalize => never downloaded => verified clean.
 		lines = append(lines, fmt.Sprintf("✓ Par2: verified clean from index — %d recovery volume(s) skipped (saved %s)",
 			heldVols, humanfmt.BytesSI(heldBytes)))
-	case recoveryVols > 0 && job.Queue.Par2Recovered:
+	case recoveryVols > 0 && p.Par2Recovered():
 		// Volumes were un-deferred and fetched because repair was needed.
 		reasonStr := ""
-		if job.Queue.Par2ReleaseReason != "" {
-			reasonStr = fmt.Sprintf(" (reason: %s)", job.Queue.Par2ReleaseReason)
+		if p.Par2ReleaseReason() != "" {
+			reasonStr = fmt.Sprintf(" (reason: %s)", p.Par2ReleaseReason())
 		}
 		lines = append(lines, fmt.Sprintf("⚠ Par2: fetched %d recovery volume(s) for repair%s", recoveryVols, reasonStr))
 	}
@@ -94,9 +95,9 @@ func buildDownloadFileList(job *Job) []string {
 	lines = append(lines, treeLines...)
 
 	// Server stats, if available.
-	if len(job.Queue.ServerStats) > 0 {
+	if stats := p.ServerStats(); len(stats) > 0 {
 		var parts []string
-		for srv, bytes := range job.Queue.ServerStats {
+		for srv, bytes := range stats {
 			parts = append(parts, fmt.Sprintf("%s: %s", srv, humanfmt.BytesSI(bytes)))
 		}
 		lines = append(lines, "Servers: "+strings.Join(parts, ", "))
@@ -148,33 +149,35 @@ func buildDirTree(dir, indent string) (lines []string, count int, err error) {
 // repair stage may still recover it; this section reports download
 // completeness only.
 func buildFileCompletionLines(job *Job) []string {
-	files := job.Queue.Files
-	if len(files) == 0 {
+	m := job.Queue.Manifest()
+	p := job.Queue.Progress()
+	numFiles := m.NumFiles()
+	if numFiles == 0 {
 		return nil
 	}
 
 	incomplete := 0
-	fileLines := make([]string, 0, len(files))
-	for fi := range files {
-		f := &files[fi]
-		name := f.Subject
-		if f.Filename != "" {
-			name = f.Filename
+	fileLines := make([]string, 0, numFiles)
+	for fi := range numFiles {
+		name := m.FileSubject(fi)
+		if fn := p.FileFilename(fi); fn != "" {
+			name = fn
 		}
-		if f.Deferred {
+		if p.FileDeferred(fi) {
 			fileLines = append(fileLines, fmt.Sprintf("  - %s — not downloaded", name))
 			continue
 		}
 		var downloaded, total int64
 		anyFailed := false
-		for ai := range f.Articles {
-			a := &f.Articles[ai]
-			total += int64(a.Bytes)
+		lo, hi := m.FileRange(fi)
+		for i := lo; i < hi; i++ {
+			bytes := int64(m.ArticleBytes(i))
+			total += bytes
 			switch {
-			case a.Failed:
+			case p.ArticleFailed(i):
 				anyFailed = true
-			case a.Done:
-				downloaded += int64(a.Bytes)
+			case p.ArticleDone(i):
+				downloaded += bytes
 			}
 		}
 		pct := completionPct(downloaded, total)
@@ -190,9 +193,9 @@ func buildFileCompletionLines(job *Job) []string {
 
 	var header string
 	if incomplete > 0 {
-		header = fmt.Sprintf("File completion (%d of %d incomplete):", incomplete, len(files))
+		header = fmt.Sprintf("File completion (%d of %d incomplete):", incomplete, numFiles)
 	} else {
-		header = fmt.Sprintf("File completion (%d files, all complete):", len(files))
+		header = fmt.Sprintf("File completion (%d files, all complete):", numFiles)
 	}
 	return append([]string{header}, fileLines...)
 }

@@ -234,7 +234,7 @@ func waitForFileComplete(t *testing.T, a *app.Application, jobID string, fileIdx
 		if snap == nil {
 			return true
 		}
-		if fileIdx < len(snap.Files) && snap.Files[fileIdx].Complete {
+		if fileIdx < snap.Manifest().NumFiles() && snap.Progress().FileComplete(fileIdx) {
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)

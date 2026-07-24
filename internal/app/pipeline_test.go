@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -129,13 +130,33 @@ func TestRegisterFile_SeedsInitialWriteCursorFromQueue(t *testing.T) {
 
 func TestPipeline_HandleFailureResult(t *testing.T) {
 	q := queue.New()
+	// a1@x is the article under test (left pending); 9 filler articles are
+	// marked failed and 1 filler article is marked done below to reach
+	// ArticlesResolved=10/ArticlesFailed=9 via real mutations, driving the
+	// same early-abort precondition the test previously set by direct
+	// field assignment.
+	articles := make([]nzb.Article, 0, 11)
+	articles = append(articles, nzb.Article{ID: "a1@x", Bytes: 100, Number: 1})
+	for i := range 9 {
+		articles = append(articles, nzb.Article{ID: fmt.Sprintf("fail%d@x", i), Bytes: 100, Number: i + 2})
+	}
+	articles = append(articles, nzb.Article{ID: "filldone@x", Bytes: 100, Number: 11})
 	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
-			{ID: "a1@x", Bytes: 100, Number: 1},
-		}},
+		{Subject: "movie.mkv", Bytes: 1100, Articles: articles},
 	}}
 	job, _ := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
 	_ = q.Add(job)
+
+	failIDs := make([]string, 0, 9)
+	for i := range 9 {
+		failIDs = append(failIDs, fmt.Sprintf("fail%d@x", i))
+	}
+	if _, err := q.MarkArticlesFailed(job.ID, failIDs); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+	if err := q.MarkArticlesDone(job.ID, []string{"filldone@x"}); err != nil {
+		t.Fatalf("MarkArticlesDone: %v", err)
+	}
 
 	// Create an assembler (not started, so WriteArticle fails with ErrNotStarted)
 	a := assembler.New(assembler.Options{
@@ -152,8 +173,6 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	}
 
 	// 1. Test handleFailureResult with a non-retryable error (triggering early abort)
-	job.ArticlesResolved = 10
-	job.ArticlesFailed = 9
 	hopelessFired := false
 	p.onJobHopeless = func(jobID string) {
 		if jobID == job.ID {
@@ -187,7 +206,7 @@ func TestPipeline_HandleFailureResult(t *testing.T) {
 	}
 	p.handleFailureResult(t.Context(), resRetryable)
 
-	if gotJob, _ := q.Get(job.ID); gotJob != nil && gotJob.Files[0].Articles[0].Emitted {
+	if gotJob, _ := q.Get(job.ID); gotJob != nil && gotJob.Progress().ArticleEmitted(0) {
 		t.Error("expected Emitted to be cleared after retryable failure")
 	}
 	if got := telemetry.ArticlesRetried.Value(); got != retriesBefore+1 {
@@ -237,13 +256,13 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 	if gotJob == nil {
 		t.Fatal("Get returned nil")
 	}
-	if stats := gotJob.ServerStats["news.server.com"]; stats != 9 {
+	if stats := gotJob.Progress().ServerStats()["news.server.com"]; stats != 9 {
 		t.Errorf("ServerStats[news.server.com] = %d, want 9", stats)
 	}
 	if _, ok := p.fileInfo[fileKey{jobID: job.ID, fileIdx: 0}]; !ok {
 		t.Error("expected fileInfo map to be populated by registerFile")
 	}
-	if gotJob.Files[0].Articles[0].Emitted {
+	if gotJob.Progress().ArticleEmitted(0) {
 		t.Error("expected Emitted to be cleared when WriteArticle fails")
 	}
 	if got := telemetry.ArticlesWritten.Value(); got != writtenBefore {

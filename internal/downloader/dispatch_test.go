@@ -379,12 +379,22 @@ func TestBuildDispatchPlan_HopelessJobNotDispatched(t *testing.T) {
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
 	d.queue = queue.New()
-	job := makeJobWithArticles(t, []string{"h@h"})
-	// Simulate a hopeless download: more failed bytes than the par2 set can repair.
-	job.FailedBytes = 1000
-	job.Par2Bytes = 100
+	// Simulate a hopeless download: more failed bytes than the par2 set can
+	// repair. h@h (1000 bytes) is marked failed below; the 100-byte par2
+	// file gives Par2Bytes=100 from real NZB classification.
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "test.bin", Bytes: 1000, Articles: []nzb.Article{{ID: "h@h", Bytes: 1000, Number: 1}}},
+		{Subject: "test.par2", Bytes: 100, Articles: []nzb.Article{{ID: "idx@h", Bytes: 100, Number: 1}}},
+	}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "test.nzb", Priority: constants.NormalPriority}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
 	if err := d.queue.Add(job); err != nil {
 		t.Fatalf("queue.Add: %v", err)
+	}
+	if _, err := d.queue.MarkArticlesFailed(job.ID, []string{"h@h"}); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
 	}
 	opts := defaultOpts(d.servers)
 

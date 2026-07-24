@@ -8,7 +8,9 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/downloader"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -84,7 +86,11 @@ func TestNopApp_Contract(t *testing.T) {
 
 	// 4. Wired Queue and History delegation
 	q := queue.New()
-	j := &queue.Job{ID: "job1", Name: "Test Job"}
+	j, err := queue.NewJob(&nzb.NZB{}, queue.AddOptions{Filename: "job1.nzb", Name: "Test Job"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	j.ID = "job1"
 	if err := q.Add(j); err != nil {
 		t.Fatalf("q.Add failed: %v", err)
 	}

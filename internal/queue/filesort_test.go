@@ -30,9 +30,9 @@ func TestNewJob_SortsNewStyleRarVolumesFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := make([]string, len(job.Files))
-	for i, f := range job.Files {
-		got[i] = f.Subject
+	got := make([]string, job.Manifest().NumFiles())
+	for i := range got {
+		got[i] = job.Manifest().FileSubject(i)
 	}
 	want := []string{
 		"movie.part01.rar",
@@ -61,9 +61,9 @@ func TestNewJob_SortsLegacyRarVolumesFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := make([]string, len(job.Files))
-	for i, f := range job.Files {
-		got[i] = f.Subject
+	got := make([]string, job.Manifest().NumFiles())
+	for i := range got {
+		got[i] = job.Manifest().FileSubject(i)
 	}
 	want := []string{
 		"show.rar", // vol 1
@@ -94,9 +94,9 @@ func TestNewJob_SortsMultipleRarSetsInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := make([]string, len(job.Files))
-	for i, f := range job.Files {
-		got[i] = f.Subject
+	got := make([]string, job.Manifest().NumFiles())
+	for i := range got {
+		got[i] = job.Manifest().FileSubject(i)
 	}
 	// Both sets sorted by vol; sets ordered by setname ("extras" < "movie" alphabetically).
 	want := []string{
@@ -125,9 +125,9 @@ func TestNewJob_NonRarNzbUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := make([]string, len(job.Files))
-	for i, f := range job.Files {
-		got[i] = f.Subject
+	got := make([]string, job.Manifest().NumFiles())
+	for i := range got {
+		got[i] = job.Manifest().FileSubject(i)
 	}
 	want := []string{"readme.nfo", "checksum.sfv"}
 	if !slices.Equal(got, want) {

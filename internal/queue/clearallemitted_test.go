@@ -28,8 +28,8 @@ func TestClearAllEmitted_RestoresFailedArticleBytes(t *testing.T) {
 	}
 
 	snap := q.SnapshotJob("j1")
-	failedBefore := snap.FailedBytes
-	remainingBefore := snap.RemainingBytes
+	failedBefore := snap.Progress().FailedBytes()
+	remainingBefore := snap.Progress().RemainingBytes()
 	if failedBefore == 0 {
 		t.Fatal("precondition: FailedBytes must be > 0 after MarkArticleFailed")
 	}
@@ -37,12 +37,12 @@ func TestClearAllEmitted_RestoresFailedArticleBytes(t *testing.T) {
 	q.ClearAllEmitted()
 
 	snap = q.SnapshotJob("j1")
-	if snap.FailedBytes != 0 {
-		t.Errorf("FailedBytes = %d after ClearAllEmitted; want 0", snap.FailedBytes)
+	if snap.Progress().FailedBytes() != 0 {
+		t.Errorf("FailedBytes = %d after ClearAllEmitted; want 0", snap.Progress().FailedBytes())
 	}
-	if snap.RemainingBytes != remainingBefore+failedBefore {
+	if snap.Progress().RemainingBytes() != remainingBefore+failedBefore {
 		t.Errorf("RemainingBytes = %d; want %d (restored from FailedBytes)",
-			snap.RemainingBytes, remainingBefore+failedBefore)
+			snap.Progress().RemainingBytes(), remainingBefore+failedBefore)
 	}
 }
 
@@ -94,14 +94,14 @@ func TestClearAllEmitted_CompletedArticlesUntouched(t *testing.T) {
 	}
 
 	snap := q.SnapshotJob("j1")
-	remainingBefore := snap.RemainingBytes
+	remainingBefore := snap.Progress().RemainingBytes()
 
 	q.ClearAllEmitted()
 
 	snap = q.SnapshotJob("j1")
-	if snap.RemainingBytes != remainingBefore {
+	if snap.Progress().RemainingBytes() != remainingBefore {
 		t.Errorf("RemainingBytes changed from %d to %d; completed articles must not be affected",
-			remainingBefore, snap.RemainingBytes)
+			remainingBefore, snap.Progress().RemainingBytes())
 	}
 }
 

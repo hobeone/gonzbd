@@ -234,7 +234,7 @@ func TestCheckEarlyAbort(t *testing.T) {
 		_ = q.Add(j)
 		// Fail only 5 articles (below the 10-article sample threshold).
 		for i := range 5 {
-			msgID := j.Files[0].Articles[i].ID
+			msgID := j.Manifest().ArticleID(i)
 			_, _ = q.MarkArticleFailed(j.ID, msgID)
 		}
 		if q.CheckEarlyAbort(j.ID) {
@@ -249,11 +249,11 @@ func TestCheckEarlyAbort(t *testing.T) {
 		_ = q.Add(j)
 		// Fail 9 out of 10 articles → 90% failure rate (above 80% threshold).
 		for i := range 9 {
-			msgID := j.Files[0].Articles[i].ID
+			msgID := j.Manifest().ArticleID(i)
 			_, _ = q.MarkArticleFailed(j.ID, msgID)
 		}
 		// Succeed 1 article to reach 10 resolved.
-		_ = q.MarkArticleDone(j.ID, j.Files[0].Articles[9].ID)
+		_ = q.MarkArticleDone(j.ID, j.Manifest().ArticleID(9))
 
 		if !q.CheckEarlyAbort(j.ID) {
 			t.Error("should return true when failure rate exceeds threshold")
@@ -267,7 +267,7 @@ func TestCheckEarlyAbort(t *testing.T) {
 		_ = q.Add(j)
 		// Fail 10 out of 10 articles → 100% failure rate.
 		for i := range 10 {
-			msgID := j.Files[0].Articles[i].ID
+			msgID := j.Manifest().ArticleID(i)
 			_, _ = q.MarkArticleFailed(j.ID, msgID)
 		}
 
@@ -288,12 +288,12 @@ func TestCheckEarlyAbort(t *testing.T) {
 		_ = q.Add(j)
 		// Fail 7 out of 10 → 70% (below 80% threshold).
 		for i := range 7 {
-			msgID := j.Files[0].Articles[i].ID
+			msgID := j.Manifest().ArticleID(i)
 			_, _ = q.MarkArticleFailed(j.ID, msgID)
 		}
 		// Succeed 3 articles.
 		for i := 7; i < 10; i++ {
-			_ = q.MarkArticleDone(j.ID, j.Files[0].Articles[i].ID)
+			_ = q.MarkArticleDone(j.ID, j.Manifest().ArticleID(i))
 		}
 
 		if q.CheckEarlyAbort(j.ID) {
@@ -320,12 +320,12 @@ func TestSetFileCRC32(t *testing.T) {
 			t.Fatalf("SetFileCRC32: %v", err)
 		}
 		got, _ := q.Get(j.ID)
-		if got.Files[0].AssembledCRC32 != crc {
-			t.Errorf("AssembledCRC32 = 0x%X, want 0x%X", got.Files[0].AssembledCRC32, crc)
+		if got.Progress().FileAssembledCRC32(0) != crc {
+			t.Errorf("AssembledCRC32 = 0x%X, want 0x%X", got.Progress().FileAssembledCRC32(0), crc)
 		}
 		// File 1 should be unaffected.
-		if got.Files[1].AssembledCRC32 != 0 {
-			t.Errorf("File 1 AssembledCRC32 = 0x%X, want 0", got.Files[1].AssembledCRC32)
+		if got.Progress().FileAssembledCRC32(1) != 0 {
+			t.Errorf("File 1 AssembledCRC32 = 0x%X, want 0", got.Progress().FileAssembledCRC32(1))
 		}
 		if !q.IsDirty() {
 			t.Error("SetFileCRC32 should set dirty flag")
@@ -343,8 +343,8 @@ func TestSetFileCRC32(t *testing.T) {
 			t.Fatalf("SetFileCRC32: %v", err)
 		}
 		got, _ := q.Get(j.ID)
-		if got.Files[2].AssembledCRC32 != crc {
-			t.Errorf("AssembledCRC32 = 0x%X, want 0x%X", got.Files[2].AssembledCRC32, crc)
+		if got.Progress().FileAssembledCRC32(2) != crc {
+			t.Errorf("AssembledCRC32 = 0x%X, want 0x%X", got.Progress().FileAssembledCRC32(2), crc)
 		}
 	})
 
@@ -354,7 +354,7 @@ func TestSetFileCRC32(t *testing.T) {
 		j := makeMultiFileJob(t, "crc-oob", 1, 1)
 		_ = q.Add(j)
 
-		if err := q.SetFileCRC32(j.ID, len(j.Files), 0x1234); err == nil {
+		if err := q.SetFileCRC32(j.ID, j.Manifest().NumFiles(), 0x1234); err == nil {
 			t.Error("expected error for out-of-bounds file index")
 		}
 	})
@@ -401,12 +401,12 @@ func TestSetFileFilename(t *testing.T) {
 			t.Fatalf("SetFileFilename: %v", err)
 		}
 		got, _ := q.Get(j.ID)
-		if got.Files[0].Filename != filename {
-			t.Errorf("Filename = %q, want %q", got.Files[0].Filename, filename)
+		if got.Progress().FileFilename(0) != filename {
+			t.Errorf("Filename = %q, want %q", got.Progress().FileFilename(0), filename)
 		}
 		// File 1 should be unaffected.
-		if got.Files[1].Filename != "" {
-			t.Errorf("File 1 Filename = %q, want empty", got.Files[1].Filename)
+		if got.Progress().FileFilename(1) != "" {
+			t.Errorf("File 1 Filename = %q, want empty", got.Progress().FileFilename(1))
 		}
 		if !q.IsDirty() {
 			t.Error("SetFileFilename should set dirty flag")
@@ -419,7 +419,7 @@ func TestSetFileFilename(t *testing.T) {
 		j := makeMultiFileJob(t, "filename-oob", 1, 1)
 		_ = q.Add(j)
 
-		if err := q.SetFileFilename(j.ID, len(j.Files), "bad.mkv"); err == nil {
+		if err := q.SetFileFilename(j.ID, j.Manifest().NumFiles(), "bad.mkv"); err == nil {
 			t.Error("expected error for out-of-bounds file index")
 		}
 	})

@@ -16,35 +16,36 @@ func verifyPending(t *testing.T, q *Queue, label string) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 	for _, job := range q.jobs {
+		m, p := job.manifest, job.progress
 		wantJob := 0
-		for fi := range job.Files {
+		for fi := range m.NumFiles() {
 			wantFile := 0
 			var wantDownloaded int64
 			// Deferred files (on-demand par2) contribute zero pending work by
-			// design — mirror recomputePending's rule in the ground truth.
-			deferred := job.Files[fi].Deferred
-			for ai := range job.Files[fi].Articles {
-				art := &job.Files[fi].Articles[ai]
-				if !deferred && !art.Done && !art.Emitted {
+			// design — mirror recompute's rule in the ground truth.
+			deferred := p.files[fi].Deferred
+			lo, hi := m.FileRange(fi)
+			for i := lo; i < hi; i++ {
+				if !deferred && !p.done[i] && !p.emitted[i] {
 					wantFile++
 				}
-				if art.Done && !art.Failed {
-					wantDownloaded += int64(art.Bytes)
+				if p.done[i] && !p.failed[i] {
+					wantDownloaded += int64(m.ArticleBytes(i))
 				}
 			}
-			if job.Files[fi].Pending != wantFile {
+			if p.files[fi].Pending != wantFile {
 				t.Errorf("%s: job %s file %d: Pending=%d want %d",
-					label, job.ID, fi, job.Files[fi].Pending, wantFile)
+					label, job.ID, fi, p.files[fi].Pending, wantFile)
 			}
-			if job.Files[fi].BytesDownloaded != wantDownloaded {
+			if p.files[fi].BytesDownloaded != wantDownloaded {
 				t.Errorf("%s: job %s file %d: BytesDownloaded=%d want %d",
-					label, job.ID, fi, job.Files[fi].BytesDownloaded, wantDownloaded)
+					label, job.ID, fi, p.files[fi].BytesDownloaded, wantDownloaded)
 			}
 			wantJob += wantFile
 		}
-		if job.PendingArticles != wantJob {
+		if p.pendingArticles != wantJob {
 			t.Errorf("%s: job %s: PendingArticles=%d want %d",
-				label, job.ID, job.PendingArticles, wantJob)
+				label, job.ID, p.pendingArticles, wantJob)
 		}
 	}
 }
@@ -52,11 +53,7 @@ func verifyPending(t *testing.T, q *Queue, label string) {
 // makeTestJob builds a Job with nFiles files, each having nArtsPerFile
 // articles. Article IDs are formatted as "art-{fileIdx}-{artIdx}".
 func makeTestJob(id string, nFiles, nArtsPerFile int) *Job {
-	job := &Job{
-		ID:     id,
-		Name:   id,
-		Status: constants.StatusQueued,
-	}
+	files := make([]JobFile, 0, nFiles)
 	for fi := range nFiles {
 		file := JobFile{Subject: "file"}
 		for ai := range nArtsPerFile {
@@ -64,11 +61,16 @@ func makeTestJob(id string, nFiles, nArtsPerFile int) *Job {
 				ID:    artID(fi, ai),
 				Bytes: 1000,
 			})
-			job.TotalBytes += 1000
-			job.RemainingBytes += 1000
 		}
-		job.Files = append(job.Files, file)
+		files = append(files, file)
 	}
+	job := &Job{
+		ID:     id,
+		Name:   id,
+		Status: constants.StatusQueued,
+	}
+	job.manifest = newManifest(files)
+	job.progress = newJobProgress(job.manifest)
 	return job
 }
 
@@ -83,8 +85,8 @@ func TestPendingCounter_Add(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifyPending(t, q, "after Add")
-	if job.PendingArticles != 6 {
-		t.Errorf("PendingArticles=%d want 6", job.PendingArticles)
+	if job.Progress().PendingArticles() != 6 {
+		t.Errorf("PendingArticles=%d want 6", job.Progress().PendingArticles())
 	}
 }
 
@@ -286,14 +288,14 @@ func TestPendingCounter_PersistenceRoundTrip(t *testing.T) {
 
 	// PendingArticles should be 3 (file 1 has all 3 pending)
 	job := q2.jobs[0]
-	if job.PendingArticles != 3 {
-		t.Errorf("PendingArticles=%d want 3", job.PendingArticles)
+	if job.Progress().PendingArticles() != 3 {
+		t.Errorf("PendingArticles=%d want 3", job.Progress().PendingArticles())
 	}
-	if job.Files[0].Pending != 0 {
-		t.Errorf("file 0 Pending=%d want 0", job.Files[0].Pending)
+	if job.Progress().FilePending(0) != 0 {
+		t.Errorf("file 0 Pending=%d want 0", job.Progress().FilePending(0))
 	}
-	if job.Files[1].Pending != 3 {
-		t.Errorf("file 1 Pending=%d want 3", job.Files[1].Pending)
+	if job.Progress().FilePending(1) != 3 {
+		t.Errorf("file 1 Pending=%d want 3", job.Progress().FilePending(1))
 	}
 }
 
@@ -308,10 +310,10 @@ func TestBytesDownloaded_TrackedByMarkArticlesDone(t *testing.T) {
 	}
 	verifyPending(t, q, "after partial done")
 
-	if got := job.Files[0].BytesDownloaded; got != 2000 {
+	if got := job.Progress().FileBytesDownloaded(0); got != 2000 {
 		t.Errorf("file 0 BytesDownloaded = %d; want 2000 (2×1000)", got)
 	}
-	if got := job.Files[1].BytesDownloaded; got != 0 {
+	if got := job.Progress().FileBytesDownloaded(1); got != 0 {
 		t.Errorf("file 1 BytesDownloaded = %d; want 0 (no completions)", got)
 	}
 
@@ -321,7 +323,7 @@ func TestBytesDownloaded_TrackedByMarkArticlesDone(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifyPending(t, q, "after one failure")
-	if got := job.Files[1].BytesDownloaded; got != 0 {
+	if got := job.Progress().FileBytesDownloaded(1); got != 0 {
 		t.Errorf("file 1 BytesDownloaded = %d; want 0 (failed article excluded)", got)
 	}
 
@@ -329,7 +331,7 @@ func TestBytesDownloaded_TrackedByMarkArticlesDone(t *testing.T) {
 	if err := q.MarkArticlesDone("j1", []string{artID(0, 0)}); err != nil {
 		t.Fatal(err)
 	}
-	if got := job.Files[0].BytesDownloaded; got != 2000 {
+	if got := job.Progress().FileBytesDownloaded(0); got != 2000 {
 		t.Errorf("file 0 BytesDownloaded = %d; want 2000 (idempotent)", got)
 	}
 }
@@ -352,10 +354,10 @@ func TestBytesDownloaded_RecomputeAfterLoad(t *testing.T) {
 	verifyPending(t, q2, "after Load")
 
 	loaded := q2.jobs[0]
-	if got := loaded.Files[0].BytesDownloaded; got != 1000 {
+	if got := loaded.Progress().FileBytesDownloaded(0); got != 1000 {
 		t.Errorf("file 0 BytesDownloaded = %d; want 1000 (recomputed on load)", got)
 	}
-	if got := loaded.Files[1].BytesDownloaded; got != 1000 {
+	if got := loaded.Progress().FileBytesDownloaded(1); got != 1000 {
 		t.Errorf("file 1 BytesDownloaded = %d; want 1000 (recomputed on load)", got)
 	}
 }

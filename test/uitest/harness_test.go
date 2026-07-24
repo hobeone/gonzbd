@@ -30,7 +30,9 @@ import (
 	"github.com/hobeone/gonzbd/internal/api"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/web"
 	"github.com/hobeone/gonzbd/ui"
@@ -181,17 +183,30 @@ func (e *testEnv) navigate(t *testing.T, page playwright.Page, path string) {
 func (e *testEnv) seedQueue(t *testing.T, n int) {
 	t.Helper()
 	for i := range n {
-		job := &queue.Job{
-			ID:             fmt.Sprintf("test-job-%04d", i),
-			Name:           fmt.Sprintf("Test.Download.%d.x264-GROUP", i),
-			Filename:       fmt.Sprintf("test_%d.nzb", i),
-			Category:       "TV",
-			Status:         constants.StatusQueued,
-			TotalBytes:     int64((i + 1) * 100 * 1024 * 1024),
-			RemainingBytes: int64((i + 1) * 50 * 1024 * 1024),
+		// Two equal-sized articles totaling TotalBytes; marking the first
+		// done leaves RemainingBytes at exactly half, matching the
+		// half-downloaded fixture the UI tests expect.
+		half := int64((i + 1) * 50 * 1024 * 1024)
+		parsed := &nzb.NZB{Files: []nzb.File{
+			{Subject: "file.bin", Bytes: half * 2, Articles: []nzb.Article{
+				{ID: fmt.Sprintf("test-job-%04d-a@t", i), Bytes: int(half), Number: 1},
+				{ID: fmt.Sprintf("test-job-%04d-b@t", i), Bytes: int(half), Number: 2},
+			}},
+		}}
+		id := fmt.Sprintf("test-job-%04d", i)
+		job, err := queue.NewJob(parsed, queue.AddOptions{Filename: fmt.Sprintf("test_%d.nzb", i)}, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatalf("NewJob: %v", err)
 		}
+		job.ID = id
+		job.Name = fmt.Sprintf("Test.Download.%d.x264-GROUP", i)
+		job.Category = "TV"
+		job.Status = constants.StatusQueued
 		if err := e.Queue.Add(job); err != nil {
 			t.Fatalf("queue.Add: %v", err)
+		}
+		if err := e.Queue.MarkArticleDone(id, fmt.Sprintf("test-job-%04d-a@t", i)); err != nil {
+			t.Fatalf("MarkArticleDone: %v", err)
 		}
 	}
 }

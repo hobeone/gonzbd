@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
 )
 
 // ---------- LoadJob / SaveJob ----------
@@ -22,12 +24,12 @@ func TestSaveJobLoadJob_RoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "jobs", "testjob.json.gz")
 
 	j := makeMultiFileJob(t, "savejob-roundtrip", 2, 3)
-	j.Files[0].Articles[0].Done = true
-	j.Files[0].Articles[1].Failed = true
-	j.Files[0].Complete = true
-	j.RemainingBytes = 400_000
-	j.FailedBytes = 100_000
-	j.ServerStats = map[string]int64{"srv-a": 50_000}
+	j.progress.done[0] = true
+	j.progress.failed[1] = true
+	j.progress.files[0].Complete = true
+	j.progress.remainingBytes = 400_000
+	j.progress.failedBytes = 100_000
+	j.progress.serverStats = map[string]int64{"srv-a": 50_000}
 
 	if err := SaveJob(path, j); err != nil {
 		t.Fatalf("SaveJob: %v", err)
@@ -44,29 +46,29 @@ func TestSaveJobLoadJob_RoundTrip(t *testing.T) {
 	if loaded.Name != j.Name {
 		t.Errorf("Name = %q, want %q", loaded.Name, j.Name)
 	}
-	if !loaded.Files[0].Articles[0].Done {
+	if !loaded.Progress().ArticleDone(0) {
 		t.Error("article 0,0 should be Done")
 	}
-	if !loaded.Files[0].Articles[1].Failed {
+	if !loaded.Progress().ArticleFailed(1) {
 		t.Error("article 0,1 should be Failed")
 	}
-	if !loaded.Files[0].Complete {
+	if !loaded.Progress().FileComplete(0) {
 		t.Error("file 0 should be Complete")
 	}
-	if loaded.Files[1].Complete {
+	if loaded.Progress().FileComplete(1) {
 		t.Error("file 1 should NOT be Complete")
 	}
-	if loaded.RemainingBytes != 400_000 {
-		t.Errorf("RemainingBytes = %d, want 400000", loaded.RemainingBytes)
+	if loaded.Progress().RemainingBytes() != 400_000 {
+		t.Errorf("RemainingBytes = %d, want 400000", loaded.Progress().RemainingBytes())
 	}
-	if loaded.FailedBytes != 100_000 {
-		t.Errorf("FailedBytes = %d, want 100000", loaded.FailedBytes)
+	if loaded.Progress().FailedBytes() != 100_000 {
+		t.Errorf("FailedBytes = %d, want 100000", loaded.Progress().FailedBytes())
 	}
-	if loaded.ServerStats["srv-a"] != 50_000 {
-		t.Errorf("ServerStats[srv-a] = %d, want 50000", loaded.ServerStats["srv-a"])
+	if loaded.Progress().ServerStats()["srv-a"] != 50_000 {
+		t.Errorf("ServerStats[srv-a] = %d, want 50000", loaded.Progress().ServerStats()["srv-a"])
 	}
 	// Emitted flag must NOT survive serialization.
-	if loaded.Files[0].Articles[0].Emitted {
+	if loaded.Progress().ArticleEmitted(0) {
 		t.Error("Emitted should not survive load")
 	}
 }
@@ -375,16 +377,16 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 	//   art[2]: !Done, !Emitted → Pending
 
 	id := j.ID
-	arts0 := j.Files[0].Articles
-	_ = j.Files[1].Articles // File 1 articles are all left pristine (!Done, !Emitted)
+	m := j.Manifest()
+	// File 0 occupies global article indices [0,3); file 1 is left pristine.
 
-	if err := q.MarkArticlesDone(id, []string{arts0[0].ID}); err != nil {
+	if err := q.MarkArticlesDone(id, []string{m.ArticleID(0)}); err != nil {
 		t.Fatalf("MarkArticlesDone: %v", err)
 	}
-	if _, err := q.MarkArticlesFailed(id, []string{arts0[1].ID}); err != nil {
+	if _, err := q.MarkArticlesFailed(id, []string{m.ArticleID(1)}); err != nil {
 		t.Fatalf("MarkArticlesFailed: %v", err)
 	}
-	if err := q.MarkArticleEmitted(id, arts0[2].ID); err != nil {
+	if err := q.MarkArticleEmitted(id, m.ArticleID(2)); err != nil {
 		t.Fatalf("MarkArticleEmitted: %v", err)
 	}
 
@@ -395,11 +397,11 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 	//           → Pending=1, BytesDownloaded=art[0].Bytes
 	//   File 1: all 3 articles untouched → Pending=3, BytesDownloaded=0
 	//   PendingArticles = 1 + 3 = 4
-	artBytes := int64(j.Files[0].Articles[0].Bytes) // all articles same size
-	wantPendingFile0 := 1                           // arts0[2] emitted→cleared→pending
-	wantPendingFile1 := 3                           // all pristine
-	wantPendingArticles := 4                        // 1 + 3
-	wantBytesDownloaded0 := artBytes                // only arts0[0] (successful Done)
+	artBytes := int64(m.ArticleBytes(0)) // all articles same size
+	wantPendingFile0 := 1                // arts0[2] emitted→cleared→pending
+	wantPendingFile1 := 3                // all pristine
+	wantPendingArticles := 4             // 1 + 3
+	wantBytesDownloaded0 := artBytes     // only arts0[0] (successful Done)
 
 	// Persist.
 	if err := q.Save(dir); err != nil {
@@ -416,46 +418,180 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 		t.Fatal("SnapshotJob returned nil after Load")
 	}
 
+	gm, gp := got.Manifest(), got.Progress()
+
 	// Emitted must always be cleared on load — ClearAllEmitted is called by
-	// app.Start and recomputePending resets the in-memory bit.
-	for fi := range got.Files {
-		for ai := range got.Files[fi].Articles {
-			if got.Files[fi].Articles[ai].Emitted {
-				t.Errorf("Files[%d].Articles[%d].Emitted survived load (should be cleared)", fi, ai)
-			}
+	// app.Start and recompute resets the in-memory bit.
+	for i := range gm.NumArticles() {
+		if gp.ArticleEmitted(i) {
+			t.Errorf("article %d Emitted survived load (should be cleared)", i)
 		}
 	}
 
 	// Transient pending counters must equal the pre-save values.
 	// (The emitted article is now treated as pending since Emitted was cleared.)
-	if got.Files[0].Pending != wantPendingFile0 {
-		t.Errorf("Files[0].Pending: got %d, want %d", got.Files[0].Pending, wantPendingFile0)
+	if gp.FilePending(0) != wantPendingFile0 {
+		t.Errorf("Files[0].Pending: got %d, want %d", gp.FilePending(0), wantPendingFile0)
 	}
-	if got.Files[1].Pending != wantPendingFile1 {
-		t.Errorf("Files[1].Pending: got %d, want %d", got.Files[1].Pending, wantPendingFile1)
+	if gp.FilePending(1) != wantPendingFile1 {
+		t.Errorf("Files[1].Pending: got %d, want %d", gp.FilePending(1), wantPendingFile1)
 	}
-	if got.PendingArticles != wantPendingArticles {
-		t.Errorf("PendingArticles: got %d, want %d", got.PendingArticles, wantPendingArticles)
+	if gp.PendingArticles() != wantPendingArticles {
+		t.Errorf("PendingArticles: got %d, want %d", gp.PendingArticles(), wantPendingArticles)
 	}
 
 	// BytesDownloaded: only successful Done articles (not failed ones).
-	if got.Files[0].BytesDownloaded != wantBytesDownloaded0 {
-		t.Errorf("Files[0].BytesDownloaded: got %d, want %d", got.Files[0].BytesDownloaded, wantBytesDownloaded0)
+	if gp.FileBytesDownloaded(0) != wantBytesDownloaded0 {
+		t.Errorf("Files[0].BytesDownloaded: got %d, want %d", gp.FileBytesDownloaded(0), wantBytesDownloaded0)
 	}
-	if got.Files[1].BytesDownloaded != 0 {
-		t.Errorf("Files[1].BytesDownloaded: got %d, want 0 (no articles done)", got.Files[1].BytesDownloaded)
+	if gp.FileBytesDownloaded(1) != 0 {
+		t.Errorf("Files[1].BytesDownloaded: got %d, want 0 (no articles done)", gp.FileBytesDownloaded(1))
 	}
 
-	// FileIdx back-pointers: every article must point to its correct file.
-	// (FileIdx is json:"-", rebuilt directly by recomputePending's own loop)
-	for fi := range got.Files {
-		for ai := range got.Files[fi].Articles {
-			art := &got.Files[fi].Articles[ai]
-			if art.FileIdx != fi {
-				t.Errorf("Files[%d].Articles[%d].FileIdx = %d, want %d",
-					fi, ai, art.FileIdx, fi)
+	// Every article must resolve back to its correct file via
+	// fileIndexForArticle — now a pure function of FileRange rather than a
+	// cached per-article back-pointer, so this pins FileRange consistency.
+	for fi := range gm.NumFiles() {
+		lo, hi := gm.FileRange(fi)
+		for i := lo; i < hi; i++ {
+			if got := gm.fileIndexForArticle(i); got != fi {
+				t.Errorf("fileIndexForArticle(%d) = %d, want %d", i, got, fi)
 			}
 		}
+	}
+}
+
+// TestPersistenceRoundTrip_AccessorParity is the first-class acceptance
+// criterion for the #205 Manifest/JobProgress split: build a job, drive it
+// through a representative set of mutations (mark articles done/failed,
+// undefer one recovery volume, discard the other still-deferred one),
+// marshal it, unmarshal into a fresh Job (plus the post-unmarshal recompute
+// Load/LoadJob perform), and assert every accessor matches — a correctness
+// round-trip, not a byte-compatibility one. Also confirms messageIDIndex/
+// emitted/the derived counters never appear in the marshaled bytes.
+func TestPersistenceRoundTrip_AccessorParity(t *testing.T) {
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "content1.bin", Bytes: 200, Articles: []nzb.Article{
+			{ID: "c1a@x", Bytes: 100, Number: 1},
+			{ID: "c1b@x", Bytes: 100, Number: 2},
+		}},
+		{Subject: "content2.bin", Bytes: 100, Articles: []nzb.Article{{ID: "c2@x", Bytes: 100, Number: 1}}},
+		{Subject: `"set.par2" yEnc`, Bytes: 50, Articles: []nzb.Article{{ID: "idx@x", Bytes: 50, Number: 1}}},
+		{Subject: `"set.vol000+01.par2" yEnc`, Bytes: 300, Articles: []nzb.Article{{ID: "v1@x", Bytes: 300, Number: 1}}},
+		{Subject: `"set.vol001+02.par2" yEnc`, Bytes: 400, Articles: []nzb.Article{{ID: "v2@x", Bytes: 400, Number: 1}}},
+	}}
+	job, err := NewJob(parsed, AddOptions{Filename: "roundtrip.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	q := New()
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Representative mutation set: done + failed articles, one recovery
+	// volume explicitly undeferred, the other discarded while still
+	// deferred. Order matters: MarkArticlesFailed auto-releases any
+	// still-deferred recovery volumes when Par2Recovered is false, so the
+	// explicit undefer+discard must run first (setting Par2Recovered=true)
+	// to keep the discard path exercised rather than pre-empted.
+	if err := q.MarkArticlesDone(job.ID, []string{"c1a@x"}); err != nil {
+		t.Fatalf("MarkArticlesDone: %v", err)
+	}
+	if err := q.UndeferRecoveryVolumes(job.ID, []int{3}); err != nil { // set.vol000+01.par2
+		t.Fatalf("UndeferRecoveryVolumes: %v", err)
+	}
+	if err := q.DiscardDeferredPar2(job.ID); err != nil { // discards set.vol001+02.par2
+		t.Fatalf("DiscardDeferredPar2: %v", err)
+	}
+	if _, err := q.MarkArticlesFailed(job.ID, []string{"c1b@x"}); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+
+	data, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	// The transient/excluded fields must never appear in the marshaled bytes.
+	raw := string(data)
+	for _, forbidden := range []string{"messageIDIndex", "emitted", "pendingArticles", "articlesResolved", "articlesFailed", "earlyAborted"} {
+		if strings.Contains(raw, forbidden) {
+			t.Errorf("marshaled JSON unexpectedly contains %q:\n%s", forbidden, raw)
+		}
+	}
+
+	var loaded Job
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	// Load/LoadJob call this after UnmarshalJSON; UnmarshalJSON itself
+	// deliberately does not, so replicate that real usage here.
+	loaded.progress.recompute(loaded.manifest)
+
+	m, lm := job.Manifest(), loaded.Manifest()
+	p, lp := job.Progress(), loaded.Progress()
+
+	if lm.NumFiles() != m.NumFiles() {
+		t.Fatalf("NumFiles = %d, want %d", lm.NumFiles(), m.NumFiles())
+	}
+	for fi := range m.NumFiles() {
+		if lm.FileSubject(fi) != m.FileSubject(fi) {
+			t.Errorf("file %d Subject = %q, want %q", fi, lm.FileSubject(fi), m.FileSubject(fi))
+		}
+		if lm.FileBytes(fi) != m.FileBytes(fi) {
+			t.Errorf("file %d Bytes = %d, want %d", fi, lm.FileBytes(fi), m.FileBytes(fi))
+		}
+		if lm.FileIsPar2Recovery(fi) != m.FileIsPar2Recovery(fi) {
+			t.Errorf("file %d IsPar2Recovery = %v, want %v", fi, lm.FileIsPar2Recovery(fi), m.FileIsPar2Recovery(fi))
+		}
+		if lp.FileComplete(fi) != p.FileComplete(fi) {
+			t.Errorf("file %d Complete = %v, want %v", fi, lp.FileComplete(fi), p.FileComplete(fi))
+		}
+		if lp.FileDeferred(fi) != p.FileDeferred(fi) {
+			t.Errorf("file %d Deferred = %v, want %v", fi, lp.FileDeferred(fi), p.FileDeferred(fi))
+		}
+	}
+	if lm.NumArticles() != m.NumArticles() {
+		t.Fatalf("NumArticles = %d, want %d", lm.NumArticles(), m.NumArticles())
+	}
+	for i := range m.NumArticles() {
+		if lm.ArticleID(i) != m.ArticleID(i) {
+			t.Errorf("article %d ID = %q, want %q", i, lm.ArticleID(i), m.ArticleID(i))
+		}
+		if lp.ArticleDone(i) != p.ArticleDone(i) {
+			t.Errorf("article %d Done = %v, want %v", i, lp.ArticleDone(i), p.ArticleDone(i))
+		}
+		if lp.ArticleFailed(i) != p.ArticleFailed(i) {
+			t.Errorf("article %d Failed = %v, want %v", i, lp.ArticleFailed(i), p.ArticleFailed(i))
+		}
+	}
+	if lm.TotalBytes() != m.TotalBytes() {
+		t.Errorf("TotalBytes = %d, want %d", lm.TotalBytes(), m.TotalBytes())
+	}
+	if lm.Par2Bytes() != m.Par2Bytes() {
+		t.Errorf("Par2Bytes = %d, want %d", lm.Par2Bytes(), m.Par2Bytes())
+	}
+	if lm.Par2Files() != m.Par2Files() {
+		t.Errorf("Par2Files = %d, want %d", lm.Par2Files(), m.Par2Files())
+	}
+	if lp.RemainingBytes() != p.RemainingBytes() {
+		t.Errorf("RemainingBytes = %d, want %d", lp.RemainingBytes(), p.RemainingBytes())
+	}
+	if lp.FailedBytes() != p.FailedBytes() {
+		t.Errorf("FailedBytes = %d, want %d", lp.FailedBytes(), p.FailedBytes())
+	}
+	if lp.Par2Recovered() != p.Par2Recovered() {
+		t.Errorf("Par2Recovered = %v, want %v", lp.Par2Recovered(), p.Par2Recovered())
+	}
+	if lp.PendingArticles() != p.PendingArticles() {
+		t.Errorf("PendingArticles = %d, want %d (recomputed)", lp.PendingArticles(), p.PendingArticles())
+	}
+	if lp.ArticlesResolved() != p.ArticlesResolved() {
+		t.Errorf("ArticlesResolved = %d, want %d (recomputed)", lp.ArticlesResolved(), p.ArticlesResolved())
+	}
+	if lp.ArticlesFailed() != p.ArticlesFailed() {
+		t.Errorf("ArticlesFailed = %d, want %d (recomputed)", lp.ArticlesFailed(), p.ArticlesFailed())
 	}
 }
 
@@ -493,18 +629,14 @@ func TestReadWriteGzJSONRaw_Direct(t *testing.T) {
 func TestQueue_SaveInner_Direct(t *testing.T) {
 	tmp := t.TempDir()
 	q := New()
-	job1 := &Job{
-		ID:   "job1",
-		Name: "Job 1",
-		Files: []JobFile{
-			{
-				Subject: "subject1",
-				Articles: []JobArticle{
-					{ID: "art1", Bytes: 100},
-				},
-			},
+	job1 := &Job{ID: "job1", Name: "Job 1"}
+	job1.manifest = newManifest([]JobFile{
+		{
+			Subject:  "subject1",
+			Articles: []JobArticle{{ID: "art1", Bytes: 100}},
 		},
-	}
+	})
+	job1.progress = newJobProgress(job1.manifest)
 	_ = q.Add(job1)
 
 	if err := q.saveInner(tmp); err != nil {
@@ -521,32 +653,32 @@ func TestQueue_SaveInner_Direct(t *testing.T) {
 }
 
 func TestJob_RecomputePendingAndLazyArticleByID_Direct(t *testing.T) {
-	job := &Job{
-		ID: "test-job",
-		Files: []JobFile{
-			{
-				Subject: "file1",
-				Articles: []JobArticle{
-					{ID: "art1", Done: false},
-					{ID: "art2", Done: true, Failed: false, Bytes: 100},
-				},
+	job := &Job{ID: "test-job"}
+	job.manifest = newManifest([]JobFile{
+		{
+			Subject: "file1",
+			Articles: []JobArticle{
+				{ID: "art1"},
+				{ID: "art2", Bytes: 100},
 			},
 		},
+	})
+	job.progress = newJobProgress(job.manifest)
+	job.progress.done[1] = true // art2 done, not failed
+
+	job.progress.recompute(job.manifest)
+
+	if job.progress.files[0].Pending != 1 {
+		t.Errorf("expected file 0 pending 1, got %d", job.progress.files[0].Pending)
+	}
+	if job.progress.files[0].BytesDownloaded != 100 {
+		t.Errorf("expected file 0 bytes downloaded 100, got %d", job.progress.files[0].BytesDownloaded)
 	}
 
-	job.recomputePending()
-
-	if job.Files[0].Pending != 1 {
-		t.Errorf("expected file 0 pending 1, got %d", job.Files[0].Pending)
-	}
-	if job.Files[0].BytesDownloaded != 100 {
-		t.Errorf("expected file 0 bytes downloaded 100, got %d", job.Files[0].BytesDownloaded)
-	}
-
-	// No manual buildArtIndex call: articleByID must build the index lazily
-	// on its own from a job whose index was never touched.
-	art := job.articleByID("art1")
-	if art == nil || art.ID != "art1" {
+	// No manual buildMessageIDIndex call: articleIndexByID must build the
+	// index lazily on its own from a manifest whose index was never touched.
+	idx, ok := job.manifest.articleIndexByID("art1")
+	if !ok || job.manifest.ArticleID(idx) != "art1" {
 		t.Fatal("expected to find art1")
 	}
 }
@@ -557,13 +689,7 @@ func TestLoadJob_RecomputesPending(t *testing.T) {
 	path := filepath.Join(dir, "jobs", "pending.json.gz")
 
 	j := makeMultiFileJob(t, "load-recompute", 1, 3)
-	// Make sure articles are not done or emitted so they are pending
-	j.Files[0].Articles[0].Done = false
-	j.Files[0].Articles[0].Emitted = false
-	j.Files[0].Articles[1].Done = false
-	j.Files[0].Articles[1].Emitted = false
-	j.Files[0].Articles[2].Done = false
-	j.Files[0].Articles[2].Emitted = false
+	// Articles start !Done, !Emitted from NewJob — all pending by default.
 
 	if err := SaveJob(path, j); err != nil {
 		t.Fatalf("SaveJob: %v", err)
@@ -575,11 +701,11 @@ func TestLoadJob_RecomputesPending(t *testing.T) {
 	}
 
 	// Verify that loaded job has recomputed pending counters
-	if loaded.PendingArticles != 3 {
-		t.Errorf("loaded.PendingArticles = %d, want 3", loaded.PendingArticles)
+	if loaded.Progress().PendingArticles() != 3 {
+		t.Errorf("loaded.PendingArticles = %d, want 3", loaded.Progress().PendingArticles())
 	}
-	if loaded.Files[0].Pending != 3 {
-		t.Errorf("loaded.Files[0].Pending = %d, want 3", loaded.Files[0].Pending)
+	if loaded.Progress().FilePending(0) != 3 {
+		t.Errorf("loaded.Files[0].Pending = %d, want 3", loaded.Progress().FilePending(0))
 	}
 }
 

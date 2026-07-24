@@ -8,11 +8,45 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nntp/nntptest"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
+
+// seedCompletedJob builds a real *queue.Job (one file, one article, 100
+// bytes, fully downloaded and marked complete) via queue.NewJob and adds it
+// to seed — the only way to reach that state, rather than a parallel
+// struct-literal construction path.
+func seedCompletedJob(t *testing.T, seed *queue.Queue, id, name string, postProc bool) {
+	t.Helper()
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "recovery.bin", Bytes: 100, Articles: []nzb.Article{{ID: "a@t", Bytes: 100, Number: 1}}},
+	}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: name + ".nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	job.ID = id
+	job.Name = name
+	job.Status = constants.StatusQueued
+	if err := seed.Add(job); err != nil {
+		t.Fatalf("seed.Add: %v", err)
+	}
+	if err := seed.MarkArticlesDone(job.ID, []string{"a@t"}); err != nil {
+		t.Fatalf("MarkArticlesDone: %v", err)
+	}
+	if err := seed.MarkFileComplete(job.ID, 0); err != nil {
+		t.Fatalf("MarkFileComplete: %v", err)
+	}
+	// Set PostProc directly (still a plain exported field), leaving Status
+	// at Queued — this reproduces the exact crash-simulated inconsistency
+	// under test: PostProc=true while Status never transitioned through
+	// SetPostProcStarted (a real crash can strand this exact combination).
+	job.PostProc = postProc
+}
 
 // TestRecovery_PostProcTrueOnRestart verifies that Application.Start
 // finalises a job whose PostProc flag survived a crash.
@@ -38,23 +72,7 @@ func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 	// a throwaway Queue.Add + Queue.Save writes the index and per-job
 	// file in the same layout the live Application produces.
 	seed := queue.New()
-	seeded := &queue.Job{
-		ID:     jobID,
-		Name:   "recovery",
-		Status: constants.StatusQueued,
-		Files: []queue.JobFile{{
-			Subject:  "recovery.bin",
-			Complete: true,
-			Articles: []queue.JobArticle{{ID: "a@t", Done: true, Bytes: 100}},
-			Bytes:    100,
-		}},
-		TotalBytes:     100,
-		RemainingBytes: 0,
-		PostProc:       true,
-	}
-	if err := seed.Add(seeded); err != nil {
-		t.Fatalf("seed.Add: %v", err)
-	}
+	seedCompletedJob(t, seed, jobID, "recovery", true)
 	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {
 		t.Fatalf("seed.Save: %v", err)
 	}
@@ -144,22 +162,7 @@ func TestRecovery_DuplicateJobInHistory(t *testing.T) {
 
 	// Seed active queue with a completed job.
 	seed := queue.New()
-	seeded := &queue.Job{
-		ID:     jobID,
-		Name:   "recovery-dup",
-		Status: constants.StatusQueued,
-		Files: []queue.JobFile{{
-			Subject:  "recovery.bin",
-			Complete: true,
-			Articles: []queue.JobArticle{{ID: "a@t", Done: true, Bytes: 100}},
-			Bytes:    100,
-		}},
-		TotalBytes:     100,
-		RemainingBytes: 0,
-	}
-	if err := seed.Add(seeded); err != nil {
-		t.Fatalf("seed.Add: %v", err)
-	}
+	seedCompletedJob(t, seed, jobID, "recovery-dup", false)
 	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {
 		t.Fatalf("seed.Save: %v", err)
 	}

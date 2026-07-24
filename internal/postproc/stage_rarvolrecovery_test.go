@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
@@ -51,7 +50,7 @@ func TestRarVolumeRecoveryStage_RecoversFullyObfuscatedSet(t *testing.T) {
 	stage.SetEnabled(true)
 	stage.Log = slog.New(slog.DiscardHandler)
 
-	job := &Job{DownloadDir: dir, Queue: &queue.Job{ID: "test"}, OwnedFiles: map[string]struct{}{}}
+	job := &Job{DownloadDir: dir, Queue: newQueueJob(t, "test", 0), OwnedFiles: map[string]struct{}{}}
 	if err := stage.Run(context.Background(), job); err != nil {
 		t.Fatalf("RarVolumeRecoveryStage.Run: %v", err)
 	}
@@ -82,7 +81,7 @@ func TestRarVolumeRecoveryStage_NoOpWhenScanFindsArchives(t *testing.T) {
 	stage.SetEnabled(true)
 	stage.Log = slog.New(slog.DiscardHandler)
 
-	job := &Job{DownloadDir: dir, Queue: &queue.Job{ID: "test"}, OwnedFiles: map[string]struct{}{}}
+	job := &Job{DownloadDir: dir, Queue: newQueueJob(t, "test", 0), OwnedFiles: map[string]struct{}{}}
 	if err := stage.Run(context.Background(), job); err != nil {
 		t.Fatalf("RarVolumeRecoveryStage.Run: %v", err)
 	}
@@ -112,7 +111,7 @@ func TestRarVolumeRecoveryStage_AmbiguousVolumeCollisionSkipsAll(t *testing.T) {
 	stage.SetEnabled(true)
 	stage.Log = slog.New(slog.DiscardHandler)
 
-	job := &Job{DownloadDir: dir, Queue: &queue.Job{ID: "test"}, OwnedFiles: map[string]struct{}{}}
+	job := &Job{DownloadDir: dir, Queue: newQueueJob(t, "test", 0), OwnedFiles: map[string]struct{}{}}
 	if err := stage.Run(context.Background(), job); err != nil {
 		t.Fatalf("RarVolumeRecoveryStage.Run: %v", err)
 	}
@@ -138,7 +137,7 @@ func TestRarVolumeRecoveryStage_DisabledIsNoOp(t *testing.T) {
 	stage.SetEnabled(false)
 	stage.Log = slog.New(slog.DiscardHandler)
 
-	job := &Job{DownloadDir: dir, Queue: &queue.Job{ID: "test"}, OwnedFiles: map[string]struct{}{}}
+	job := &Job{DownloadDir: dir, Queue: newQueueJob(t, "test", 0), OwnedFiles: map[string]struct{}{}}
 	if err := stage.Run(context.Background(), job); err != nil {
 		t.Fatalf("RarVolumeRecoveryStage.Run: %v", err)
 	}

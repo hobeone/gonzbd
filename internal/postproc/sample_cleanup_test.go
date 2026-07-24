@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 func TestIsSample(t *testing.T) {
@@ -49,11 +47,10 @@ func TestIsSample(t *testing.T) {
 func makeTestJob(t *testing.T, name string) *Job {
 	t.Helper()
 	dir := t.TempDir()
+	qjob := newQueueJob(t, "job-"+name, 0)
+	qjob.Name = name
 	return &Job{
-		Queue: &queue.Job{
-			ID:   "job-" + name,
-			Name: name,
-		},
+		Queue:       qjob,
 		DownloadDir: dir,
 	}
 }

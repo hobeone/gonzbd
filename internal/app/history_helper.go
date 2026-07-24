@@ -31,9 +31,12 @@ func downloadCompleteness(totalBytes, failedBytes int64) int64 {
 func buildHistoryEntry(job *postproc.Job) history.Entry {
 	stageLogJSON, _ := json.Marshal(job.StageLog)
 
+	m := job.Queue.Manifest()
+	p := job.Queue.Progress()
+
 	var downloadDuration int64
-	if !job.Queue.DownloadStarted.IsZero() && !job.Queue.DownloadFinished.IsZero() {
-		downloadDuration = int64(job.Queue.DownloadFinished.Sub(job.Queue.DownloadStarted).Seconds())
+	if !p.DownloadStarted().IsZero() && !p.DownloadFinished().IsZero() {
+		downloadDuration = int64(p.DownloadFinished().Sub(p.DownloadStarted()).Seconds())
 	}
 	if downloadDuration == 0 {
 		downloadDuration = 1
@@ -46,18 +49,19 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 
 	// Download health: byte-based rather than article-based because a failed
 	// article is marked both Done and Failed (Done = resolved, not succeeded).
-	completeness := downloadCompleteness(job.Queue.TotalBytes, job.Queue.FailedBytes)
-	downloaded := job.Queue.TotalBytes - job.Queue.FailedBytes - job.Queue.RemainingBytes
+	completeness := downloadCompleteness(m.TotalBytes(), p.FailedBytes())
+	downloaded := m.TotalBytes() - p.FailedBytes() - p.RemainingBytes()
 
 	// Sort server names for deterministic output in history entries.
-	serverNames := make([]string, 0, len(job.Queue.ServerStats))
-	for s := range job.Queue.ServerStats {
+	stats := p.ServerStats()
+	serverNames := make([]string, 0, len(stats))
+	for s := range stats {
 		serverNames = append(serverNames, s)
 	}
 	slices.Sort(serverNames)
 	serverStatsParts := make([]string, 0, len(serverNames))
 	for _, s := range serverNames {
-		b := job.Queue.ServerStats[s]
+		b := stats[s]
 		serverStatsParts = append(serverStatsParts, fmt.Sprintf("%s=%.1f MB", s, float64(b)/(1024*1024)))
 	}
 
@@ -88,7 +92,7 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 		DownloadTime: downloadDuration,
 		PostprocTime: postprocDuration,
 		StageLog:     string(stageLogJSON),
-		Bytes:        job.Queue.TotalBytes,
+		Bytes:        m.TotalBytes(),
 		Downloaded:   downloaded,
 		Completeness: completeness,
 		TimeAdded:    job.Queue.Added,

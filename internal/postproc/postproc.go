@@ -294,12 +294,12 @@ func buildPreambleLog(job *Job) []StageLogEntry {
 	// in the download directory before any stages run. This gives the
 	// history UI a clear view of the starting state for debugging.
 	var dlElapsed time.Duration
-	dlStarted := job.Queue.DownloadStarted
+	dlStarted := job.Queue.Progress().DownloadStarted()
 	if dlStarted.IsZero() {
 		dlStarted = time.Now()
 	}
-	if !job.Queue.DownloadFinished.IsZero() {
-		dlElapsed = job.Queue.DownloadFinished.Sub(dlStarted)
+	if !job.Queue.Progress().DownloadFinished().IsZero() {
+		dlElapsed = job.Queue.Progress().DownloadFinished().Sub(dlStarted)
 	}
 	dlLines := buildDownloadFileList(job)
 	entries := []StageLogEntry{

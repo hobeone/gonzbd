@@ -130,17 +130,17 @@ func TestNewJobCopiesArticleState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
 	}
-	if len(j.Files) != 2 {
-		t.Fatalf("len(Files) = %d, want 2", len(j.Files))
+	if j.Manifest().NumFiles() != 2 {
+		t.Fatalf("NumFiles() = %d, want 2", j.Manifest().NumFiles())
 	}
-	if j.TotalBytes != 2_000_000 || j.RemainingBytes != 2_000_000 {
-		t.Errorf("bytes = (%d, %d), want both 2000000", j.TotalBytes, j.RemainingBytes)
+	if j.Manifest().TotalBytes() != 2_000_000 || j.Progress().RemainingBytes() != 2_000_000 {
+		t.Errorf("bytes = (%d, %d), want both 2000000", j.Manifest().TotalBytes(), j.Progress().RemainingBytes())
 	}
 	if j.Status != constants.StatusQueued {
 		t.Errorf("Status = %q, want Queued", j.Status)
 	}
 	// Mutating the job must not leak into the parser output.
-	j.Files[0].Articles[0].Done = true
+	j.progress.done[0] = true
 	if parsed.Files[0].Articles[0].Bytes != 500_000 {
 		t.Errorf("parser article mutated by job update")
 	}
@@ -409,13 +409,13 @@ func TestMarkFileComplete(t *testing.T) {
 	}
 
 	got, _ := q.Get(j.ID)
-	if !got.Files[0].Complete {
+	if !got.Progress().FileComplete(0) {
 		t.Error("File was not marked complete")
 	}
 
 	// Invalid index
-	if err := q.MarkFileComplete(j.ID, len(j.Files)); err == nil {
-		t.Error("MarkFileComplete(len(j.Files)) should error")
+	if err := q.MarkFileComplete(j.ID, j.Manifest().NumFiles()); err == nil {
+		t.Error("MarkFileComplete(NumFiles()) should error")
 	}
 }
 
@@ -424,8 +424,8 @@ func TestMarkArticleFailed(t *testing.T) {
 	j := makeJob(t, "j", constants.NormalPriority)
 	_ = q.Add(j)
 
-	msgID := j.Files[0].Articles[0].ID
-	initialRemaining := j.RemainingBytes
+	msgID := j.Manifest().ArticleID(0)
+	initialRemaining := j.Progress().RemainingBytes()
 
 	first, err := q.MarkArticleFailed(j.ID, msgID)
 	if err != nil {
@@ -436,12 +436,12 @@ func TestMarkArticleFailed(t *testing.T) {
 	}
 
 	got, _ := q.Get(j.ID)
-	if !got.Files[0].Articles[0].Done {
+	if !got.Progress().ArticleDone(0) {
 		t.Error("article should be marked Done")
 	}
-	wantRemaining := initialRemaining - int64(j.Files[0].Articles[0].Bytes)
-	if got.RemainingBytes != wantRemaining {
-		t.Errorf("RemainingBytes mismatch: got %d, want %d", got.RemainingBytes, wantRemaining)
+	wantRemaining := initialRemaining - int64(j.Manifest().ArticleBytes(0))
+	if got.Progress().RemainingBytes() != wantRemaining {
+		t.Errorf("RemainingBytes mismatch: got %d, want %d", got.Progress().RemainingBytes(), wantRemaining)
 	}
 
 	// Repeat failure should return false
@@ -462,7 +462,7 @@ func TestMarkArticleFailed_ParityWithBatched(t *testing.T) {
 		q := New()
 		j := makeJob(t, "j", constants.NormalPriority)
 		_ = q.Add(j)
-		msgID := j.Files[0].Articles[0].ID
+		msgID := j.Manifest().ArticleID(0)
 		return q, j.ID, msgID
 	}
 
@@ -486,29 +486,29 @@ func TestMarkArticleFailed_ParityWithBatched(t *testing.T) {
 	got1, _ := q1.Get(jid1)
 	got2, _ := q2.Get(jid2)
 
-	if got1.PendingArticles != got2.PendingArticles {
-		t.Errorf("PendingArticles: singular=%d batched=%d", got1.PendingArticles, got2.PendingArticles)
+	if got1.Progress().PendingArticles() != got2.Progress().PendingArticles() {
+		t.Errorf("PendingArticles: singular=%d batched=%d", got1.Progress().PendingArticles(), got2.Progress().PendingArticles())
 	}
-	if got1.FailedBytes != got2.FailedBytes {
-		t.Errorf("FailedBytes: singular=%d batched=%d", got1.FailedBytes, got2.FailedBytes)
+	if got1.Progress().FailedBytes() != got2.Progress().FailedBytes() {
+		t.Errorf("FailedBytes: singular=%d batched=%d", got1.Progress().FailedBytes(), got2.Progress().FailedBytes())
 	}
-	if got1.RemainingBytes != got2.RemainingBytes {
-		t.Errorf("RemainingBytes: singular=%d batched=%d", got1.RemainingBytes, got2.RemainingBytes)
+	if got1.Progress().RemainingBytes() != got2.Progress().RemainingBytes() {
+		t.Errorf("RemainingBytes: singular=%d batched=%d", got1.Progress().RemainingBytes(), got2.Progress().RemainingBytes())
 	}
-	if got1.ArticlesResolved != got2.ArticlesResolved {
-		t.Errorf("ArticlesResolved: singular=%d batched=%d", got1.ArticlesResolved, got2.ArticlesResolved)
+	if got1.Progress().ArticlesResolved() != got2.Progress().ArticlesResolved() {
+		t.Errorf("ArticlesResolved: singular=%d batched=%d", got1.Progress().ArticlesResolved(), got2.Progress().ArticlesResolved())
 	}
-	if got1.ArticlesFailed != got2.ArticlesFailed {
-		t.Errorf("ArticlesFailed: singular=%d batched=%d", got1.ArticlesFailed, got2.ArticlesFailed)
+	if got1.Progress().ArticlesFailed() != got2.Progress().ArticlesFailed() {
+		t.Errorf("ArticlesFailed: singular=%d batched=%d", got1.Progress().ArticlesFailed(), got2.Progress().ArticlesFailed())
 	}
-	art1 := got1.Files[0].Articles[0]
-	art2 := got2.Files[0].Articles[0]
-	if art1.Done != art2.Done || art1.Failed != art2.Failed {
+	done1, failed1 := got1.Progress().ArticleDone(0), got1.Progress().ArticleFailed(0)
+	done2, failed2 := got2.Progress().ArticleDone(0), got2.Progress().ArticleFailed(0)
+	if done1 != done2 || failed1 != failed2 {
 		t.Errorf("article state: singular Done=%v Failed=%v, batched Done=%v Failed=%v",
-			art1.Done, art1.Failed, art2.Done, art2.Failed)
+			done1, failed1, done2, failed2)
 	}
-	if got1.Files[0].Pending != got2.Files[0].Pending {
-		t.Errorf("Files[0].Pending: singular=%d batched=%d", got1.Files[0].Pending, got2.Files[0].Pending)
+	if got1.Progress().FilePending(0) != got2.Progress().FilePending(0) {
+		t.Errorf("Files[0].Pending: singular=%d batched=%d", got1.Progress().FilePending(0), got2.Progress().FilePending(0))
 	}
 }
 
@@ -560,8 +560,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		_ = original.Add(j)
 	}
 	// Mutate a runtime field to verify it round-trips.
-	a.Files[0].Articles[0].Done = true
-	a.RemainingBytes = 500_000
+	a.progress.done[0] = true
+	a.progress.remainingBytes = 500_000
 
 	if err := original.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -585,11 +585,11 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 
 	restored, _ := loaded.Get(a.ID)
-	if !restored.Files[0].Articles[0].Done {
+	if !restored.Progress().ArticleDone(0) {
 		t.Error("article Done not round-tripped")
 	}
-	if restored.RemainingBytes != 500_000 {
-		t.Errorf("RemainingBytes = %d, want 500000", restored.RemainingBytes)
+	if restored.Progress().RemainingBytes() != 500_000 {
+		t.Errorf("RemainingBytes = %d, want 500000", restored.Progress().RemainingBytes())
 	}
 }
 
@@ -712,7 +712,7 @@ func TestIsDirty(t *testing.T) {
 	_ = q.Save(dir)
 
 	// MarkArticleDone sets dirty.
-	msgID := j.Files[0].Articles[0].ID
+	msgID := j.Manifest().ArticleID(0)
 	if err := q.MarkArticleDone(j.ID, msgID); err != nil {
 		t.Fatalf("MarkArticleDone: %v", err)
 	}
@@ -729,7 +729,7 @@ func TestIsDirty(t *testing.T) {
 	}
 
 	// MarkArticleFailed sets dirty.
-	msgID2 := j.Files[0].Articles[1].ID
+	msgID2 := j.Manifest().ArticleID(1)
 	first, err := q.MarkArticleFailed(j.ID, msgID2)
 	if err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
@@ -754,7 +754,7 @@ func TestIsDirty(t *testing.T) {
 	// MarkArticlesDone sets dirty.
 	j2 := makeJob(t, "batch-done", constants.NormalPriority)
 	_ = q.Add(j2)
-	ids2 := []string{j2.Files[0].Articles[0].ID, j2.Files[0].Articles[1].ID}
+	ids2 := []string{j2.Manifest().ArticleID(0), j2.Manifest().ArticleID(1)}
 	if err := q.MarkArticlesDone(j2.ID, ids2); err != nil {
 		t.Fatalf("MarkArticlesDone: %v", err)
 	}
@@ -766,7 +766,7 @@ func TestIsDirty(t *testing.T) {
 	// MarkArticlesFailed sets dirty.
 	j3 := makeJob(t, "batch-fail", constants.NormalPriority)
 	_ = q.Add(j3)
-	ids3 := []string{j3.Files[0].Articles[0].ID}
+	ids3 := []string{j3.Manifest().ArticleID(0)}
 	if _, err := q.MarkArticlesFailed(j3.ID, ids3); err != nil {
 		t.Fatalf("MarkArticlesFailed: %v", err)
 	}
@@ -1300,8 +1300,8 @@ func TestSetPar2ReleaseReason(t *testing.T) {
 		t.Fatalf("SetPar2ReleaseReason: %v", err)
 	}
 	got, _ := q.Get(j.ID)
-	if got.Par2ReleaseReason != "damaged" {
-		t.Errorf("Par2ReleaseReason = %q, want %q", got.Par2ReleaseReason, "damaged")
+	if got.Progress().Par2ReleaseReason() != "damaged" {
+		t.Errorf("Par2ReleaseReason = %q, want %q", got.Progress().Par2ReleaseReason(), "damaged")
 	}
 	if !q.IsDirty() {
 		t.Error("SetPar2ReleaseReason should set dirty")
@@ -1317,7 +1317,11 @@ func TestQueueUnexportedHelpersDirect(t *testing.T) {
 	t.Run("indexOfLocked and removeAtLocked", func(t *testing.T) {
 		q := New()
 		j1 := &Job{ID: "j1", Priority: constants.NormalPriority}
+		j1.manifest = newManifest(nil)
+		j1.progress = newJobProgress(j1.manifest)
 		j2 := &Job{ID: "j2", Priority: constants.NormalPriority}
+		j2.manifest = newManifest(nil)
+		j2.progress = newJobProgress(j2.manifest)
 		_ = q.Add(j1)
 		_ = q.Add(j2)
 
@@ -1542,7 +1546,7 @@ func TestMarkArticlesFailed_SignalsNotify(t *testing.T) {
 	}
 drained:
 
-	msgID := j.Files[0].Articles[0].ID
+	msgID := j.Manifest().ArticleID(0)
 
 	// 1. First-time failure: should signal notify.
 	_, err := q.MarkArticlesFailed(j.ID, []string{msgID})
@@ -1624,8 +1628,8 @@ func TestSetFileWriteCursor(t *testing.T) {
 		t.Fatalf("SetFileWriteCursor: %v", err)
 	}
 	snap := q.SnapshotJob(job.ID)
-	if snap.Files[0].WriteCursor != 4096 {
-		t.Errorf("WriteCursor = %d, want 4096", snap.Files[0].WriteCursor)
+	if snap.Progress().FileWriteCursor(0) != 4096 {
+		t.Errorf("WriteCursor = %d, want 4096", snap.Progress().FileWriteCursor(0))
 	}
 	if !q.IsDirty() {
 		t.Error("queue should be marked dirty after SetFileWriteCursor")
@@ -1656,9 +1660,9 @@ func TestNew_WithLogger(t *testing.T) {
 }
 
 // TestSetPostProcStarted_DropsArtIndex pins the memory-hygiene invariant: once
-// a job enters post-processing, its messageID->*JobArticle index is released,
-// since the download pipeline (the index's only consumer) is done with the
-// job. articleByID rebuilds it lazily if anything needs it afterward.
+// a job enters post-processing, its messageID->index map is released, since
+// the download pipeline (the index's only consumer) is done with the job.
+// articleIndexByID rebuilds it lazily if anything needs it afterward.
 func TestSetPostProcStarted_DropsArtIndex(t *testing.T) {
 	q := New()
 	job := makeJob(t, "postproc-dropidx", constants.NormalPriority)
@@ -1668,26 +1672,27 @@ func TestSetPostProcStarted_DropsArtIndex(t *testing.T) {
 	if err := q.SetStatus(job.ID, constants.StatusDownloading); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
+	id := job.Manifest().ArticleID(0)
 	// Force the index to exist, as a real download would via MarkArticleDone.
-	if got := job.articleByID(job.Files[0].Articles[0].ID); got == nil {
-		t.Fatal("articleByID returned nil for a present article")
+	if _, ok := job.manifest.articleIndexByID(id); !ok {
+		t.Fatal("articleIndexByID returned false for a present article")
 	}
-	if job.artIdx == nil {
-		t.Fatal("precondition: index should be built after articleByID")
+	if job.manifest.messageIDIndex == nil {
+		t.Fatal("precondition: index should be built after articleIndexByID")
 	}
 	if _, err := q.SetPostProcStarted(job.ID); err != nil {
 		t.Fatalf("SetPostProcStarted: %v", err)
 	}
-	if job.artIdx != nil {
-		t.Fatal("artIdx should be dropped once the job enters post-processing")
+	if job.manifest.messageIDIndex != nil {
+		t.Fatal("messageIDIndex should be dropped once the job enters post-processing")
 	}
-	// Round-trip: articleByID must still work after the drop, rebuilding
+	// Round-trip: articleIndexByID must still work after the drop, rebuilding
 	// the index lazily rather than leaving it permanently gone.
-	id := job.Files[0].Articles[0].ID
-	if got := job.articleByID(id); got == nil || got.ID != id {
-		t.Fatalf("articleByID(%q) after drop = %v, want a match", id, got)
+	idx, ok := job.manifest.articleIndexByID(id)
+	if !ok || job.manifest.ArticleID(idx) != id {
+		t.Fatalf("articleIndexByID(%q) after drop = (%v, %v), want a match", id, idx, ok)
 	}
-	if job.artIdx == nil {
-		t.Fatal("artIdx should be rebuilt after articleByID is called post-drop")
+	if job.manifest.messageIDIndex == nil {
+		t.Fatal("messageIDIndex should be rebuilt after articleIndexByID is called post-drop")
 	}
 }

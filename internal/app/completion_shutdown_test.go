@@ -100,9 +100,10 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 	if err != nil || qJob == nil {
 		t.Fatalf("job %s not found in queue: %v", job.ID, err)
 	}
-	for i, f := range qJob.Files {
-		if !f.Complete {
-			t.Errorf("file %d (%s) Complete = false, want true", i, f.Subject)
+	m, p := qJob.Manifest(), qJob.Progress()
+	for fi := range m.NumFiles() {
+		if !p.FileComplete(fi) {
+			t.Errorf("file %d (%s) Complete = false, want true", fi, m.FileSubject(fi))
 		}
 	}
 	if !qJob.IsComplete() {
