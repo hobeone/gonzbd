@@ -54,11 +54,11 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	if snap.Password != "" {
 		return
 	}
-	if fc.FileIdx < 0 || fc.FileIdx >= len(snap.Files) {
+	m := snap.Manifest()
+	if fc.FileIdx < 0 || fc.FileIdx >= m.NumFiles() {
 		return
 	}
-	jobFile := &snap.Files[fc.FileIdx]
-	filename := jobFile.Subject
+	filename := m.FileSubject(fc.FileIdx)
 	setname, vol := directunpack.AnalyzeRarFilename(filename)
 	if vol == 0 {
 		return // not a RAR volume
@@ -98,9 +98,9 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 			o.buildOpts(flatUnpack, overwriteFiles, ignoreUnrarDates),
 		)
 		// Provide all filenames so the DU can compute total volume counts.
-		allNames := make([]string, len(snap.Files))
-		for i := range snap.Files {
-			allNames[i] = snap.Files[i].Subject
+		allNames := make([]string, m.NumFiles())
+		for i := range m.NumFiles() {
+			allNames[i] = m.FileSubject(i)
 		}
 		du.SetAllFilenames(allNames)
 		o.unpackers[fc.JobID] = du
@@ -118,7 +118,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	// success is suppressed) instead of silently trusting incomplete data. par2
 	// repair will fix it from the recovery blocks; the normal unpack stage
 	// re-extracts afterward.
-	if hasFailedArticle(jobFile) {
+	if hasFailedArticle(m, snap.Progress(), fc.FileIdx) {
 		reason := fmt.Sprintf("volume %s had failed/missing download articles", filename)
 		du.MarkCorrupt(setname, reason)
 		app.log.Warn("directunpack: marking set corrupt, volume incomplete",

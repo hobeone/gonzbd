@@ -13,7 +13,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/par2"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // par2Fixture returns the absolute path to a file in the shared par2 fixture
@@ -301,11 +300,10 @@ func TestCleanupPar2Backups_PreservesIfOriginalMissing(t *testing.T) {
 func repairJob(t *testing.T) (*Job, *VerifiedSets) {
 	t.Helper()
 	dir := t.TempDir()
+	qjob := newQueueJob(t, "rjob", 0)
+	qjob.Name = "RepairTest"
 	job := &Job{
-		Queue: &queue.Job{
-			ID:   "rjob",
-			Name: "RepairTest",
-		},
+		Queue:       qjob,
 		DownloadDir: dir,
 	}
 	vs := NewVerifiedSets(dir, nil)
@@ -574,7 +572,7 @@ func TestDispatchRepairTool_FallbackRunsWhenBinaryPresent(t *testing.T) {
 	run := func(command string) bool {
 		var retried bool
 		job := &Job{
-			Queue:       &queue.Job{ID: "testjob"},
+			Queue:       newQueueJob(t, "testjob", 0),
 			DownloadDir: t.TempDir(),
 			OnOutput: func(_ string, line string) {
 				if strings.Contains(line, "retrying with external") {
@@ -643,7 +641,7 @@ func TestRepairHelpers(t *testing.T) {
 	// 2. Test dispatchRepairTool
 	t.Run("dispatchRepairTool", func(t *testing.T) {
 		job := &Job{
-			Queue:       &queue.Job{ID: "testjob"},
+			Queue:       newQueueJob(t, "testjob", 0),
 			DownloadDir: t.TempDir(),
 		}
 
@@ -712,7 +710,7 @@ func TestRepairHelpers(t *testing.T) {
 	// 3. Test processPar2Set
 	t.Run("processPar2Set", func(t *testing.T) {
 		job := &Job{
-			Queue:         &queue.Job{ID: "testjob"},
+			Queue:         newQueueJob(t, "testjob", 0),
 			ConsumedFiles: make(map[string]struct{}),
 			DownloadDir:   t.TempDir(),
 		}

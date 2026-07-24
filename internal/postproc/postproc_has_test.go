@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // ---------- Has ----------
@@ -65,8 +64,8 @@ func TestPPQueue_Len(t *testing.T) {
 	if q.Len() != 0 {
 		t.Errorf("Len on empty = %d", q.Len())
 	}
-	q.Push(&Job{Queue: &queue.Job{ID: "a"}})
-	q.Push(&Job{Queue: &queue.Job{ID: "b"}})
+	q.Push(&Job{Queue: newQueueJob(t, "a", 0)})
+	q.Push(&Job{Queue: newQueueJob(t, "b", 0)})
 	if q.Len() != 2 {
 		t.Errorf("Len after 2 pushes = %d", q.Len())
 	}
@@ -74,7 +73,7 @@ func TestPPQueue_Len(t *testing.T) {
 
 func TestPPQueue_Has(t *testing.T) {
 	q := newPPQueue()
-	q.Push(&Job{Queue: &queue.Job{ID: "x"}})
+	q.Push(&Job{Queue: newQueueJob(t, "x", 0)})
 	if !q.Has("x") {
 		t.Error("Has('x') = false")
 	}
@@ -227,7 +226,7 @@ func TestHistory_CapMaxEntries(t *testing.T) {
 	// addHistory caps at 1000 entries. Process a few extra and verify.
 	p := New(Options{})
 	for range 1005 {
-		p.addHistory(&Job{Queue: &queue.Job{ID: "j"}})
+		p.addHistory(&Job{Queue: newQueueJob(t, "j", 0)})
 	}
 	h := p.History()
 	if len(h) > 1000 {

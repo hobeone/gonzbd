@@ -9,7 +9,6 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/par2"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // writeScript creates an executable script file at path. To avoid the
@@ -53,12 +52,11 @@ func writeScript(t *testing.T, path string, content []byte) {
 func stageJob(t *testing.T) (*Job, string) {
 	t.Helper()
 	dir := t.TempDir()
+	qjob := newQueueJob(t, "test-job-id", 0)
+	qjob.Name = "test.job"
+	qjob.Filename = "test.nzb"
 	return &Job{
-		Queue: &queue.Job{
-			ID:       "test-job-id",
-			Name:     "test.job",
-			Filename: "test.nzb",
-		},
+		Queue:       qjob,
 		DownloadDir: dir,
 	}, dir
 }
@@ -308,11 +306,10 @@ func TestRepairStage_NoCleanupInRepair(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "movie.par2"), []byte("par2 main"), 0o644)
 	os.WriteFile(filepath.Join(dir, "movie.vol000+01.par2"), []byte("par2 vol"), 0o644)
 
+	qjob := newQueueJob(t, "test-par-cleanup", 0)
+	qjob.Name = "movie"
 	job := &Job{
-		Queue: &queue.Job{
-			ID:   "test-par-cleanup",
-			Name: "movie",
-		},
+		Queue:       qjob,
 		DownloadDir: dir,
 	}
 

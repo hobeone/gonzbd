@@ -12,22 +12,19 @@ func TestQueue_Snapshot(t *testing.T) {
 		ID:     "test-job",
 		Name:   "Test Job",
 		Status: constants.StatusQueued,
-		ServerStats: map[string]int64{
-			"server1": 100,
-		},
 		Meta: map[string][]string{
 			"key1": {"val1"},
 		},
 		Groups: []string{"group1"},
-		Files: []JobFile{
-			{
-				Subject: "file1",
-				Articles: []JobArticle{
-					{ID: "art1", Done: false},
-				},
-			},
-		},
 	}
+	job.manifest = newManifest([]JobFile{
+		{
+			Subject:  "file1",
+			Articles: []JobArticle{{ID: "art1"}},
+		},
+	})
+	job.progress = newJobProgress(job.manifest)
+	job.progress.serverStats = map[string]int64{"server1": 100}
 	_ = q.Add(job)
 
 	snap := q.Snapshot()
@@ -47,8 +44,8 @@ func TestQueue_Snapshot(t *testing.T) {
 		t.Error("mutation to snapshot affected original job status")
 	}
 
-	sJob.ServerStats["server1"] = 200
-	if job.ServerStats["server1"] != 100 {
+	sJob.progress.serverStats["server1"] = 200
+	if job.progress.serverStats["server1"] != 100 {
 		t.Error("mutation to snapshot map affected original server stats")
 	}
 
@@ -62,8 +59,8 @@ func TestQueue_Snapshot(t *testing.T) {
 		t.Error("mutation to snapshot slice affected original groups")
 	}
 
-	sJob.Files[0].Articles[0].Done = true
-	if job.Files[0].Articles[0].Done != false {
+	sJob.progress.done[0] = true
+	if job.progress.done[0] {
 		t.Error("mutation to snapshot nested structure affected original article state")
 	}
 }
@@ -71,7 +68,10 @@ func TestQueue_Snapshot(t *testing.T) {
 func TestQueue_SnapshotJob(t *testing.T) {
 	q := New()
 	jobID := "test-id"
-	_ = q.Add(&Job{ID: jobID, Name: "Test"})
+	job := &Job{ID: jobID, Name: "Test"}
+	job.manifest = newManifest(nil)
+	job.progress = newJobProgress(job.manifest)
+	_ = q.Add(job)
 
 	snap := q.SnapshotJob(jobID)
 	if snap == nil {
@@ -86,54 +86,54 @@ func TestQueue_SnapshotJob(t *testing.T) {
 	}
 }
 
-// TestSnapshotJob_ArtIdxIsolation verifies that the lazy article-by-ID
-// index (artIdx) on a cloned job points into the clone's own Files slice,
-// not the original job's. Before the fix, cloneJob shallow-copied artIdx,
-// which held *JobArticle pointers into the original's slice.
+// TestSnapshotJob_ArtIdxIsolation verifies that a cloned job's Progress is an
+// independent deep copy, isolated from the original — Manifest, by contrast,
+// is now legitimately shared by reference (it's immutable after
+// construction), so this test mutates via Progress's own state rather than
+// through a pointer returned by the messageID index, proving isolation on
+// the half of the split that's actually meant to be isolated.
 func TestSnapshotJob_ArtIdxIsolation(t *testing.T) {
 	q := New()
-	job := &Job{
-		ID:   "idx-test",
-		Name: "ArtIdx Isolation",
-		Files: []JobFile{
-			{
-				Subject: "file1",
-				Articles: []JobArticle{
-					{ID: "art-001", Done: false},
-					{ID: "art-002", Done: false},
-				},
+	job := &Job{ID: "idx-test", Name: "ArtIdx Isolation"}
+	job.manifest = newManifest([]JobFile{
+		{
+			Subject: "file1",
+			Articles: []JobArticle{
+				{ID: "art-001"},
+				{ID: "art-002"},
 			},
 		},
-	}
+	})
+	job.progress = newJobProgress(job.manifest)
 	_ = q.Add(job)
 
-	// Force the original to build its artIdx.
-	origArt := job.articleByID("art-001")
-	if origArt == nil {
-		t.Fatal("articleByID returned nil on original job")
+	// Force the original's manifest to build its messageIDIndex.
+	origIdx, ok := job.manifest.articleIndexByID("art-001")
+	if !ok {
+		t.Fatal("articleIndexByID returned false on original job")
 	}
 
-	// Take a snapshot — artIdx must be rebuilt independently.
+	// Take a snapshot — Manifest is shared (immutable, safe to alias), but
+	// Progress must be an independent deep copy.
 	snap := q.SnapshotJob("idx-test")
 	if snap == nil {
 		t.Fatal("SnapshotJob returned nil")
 	}
-
-	// Access an article on the clone via articleByID.
-	cloneArt := snap.articleByID("art-001")
-	if cloneArt == nil {
-		t.Fatal("articleByID returned nil on cloned job")
+	if snap.Manifest() != job.manifest {
+		t.Error("clone's Manifest should be the same shared pointer as the original's")
 	}
 
-	// Mutate the clone's article.
-	cloneArt.Done = true
-
-	// Verify the original is unchanged.
-	if origArt.Done {
-		t.Error("mutation via clone's articleByID affected original job — artIdx was not isolated")
+	cloneIdx, ok := snap.Manifest().articleIndexByID("art-001")
+	if !ok || cloneIdx != origIdx {
+		t.Fatal("articleIndexByID returned inconsistent index on cloned job's shared manifest")
 	}
-	if job.Files[0].Articles[0].Done {
-		t.Error("mutation via clone's articleByID affected original job's Files slice")
+
+	// Mutate the clone's Progress directly.
+	snap.progress.done[cloneIdx] = true
+
+	// Verify the original's Progress is unaffected.
+	if job.progress.done[origIdx] {
+		t.Error("mutation via clone's Progress affected original job's Progress — clone was not isolated")
 	}
 }
 
@@ -143,6 +143,8 @@ func TestCloneJobDirect(t *testing.T) {
 		ID:   "test-id",
 		Name: "Test",
 	}
+	job.manifest = newManifest(nil)
+	job.progress = newJobProgress(job.manifest)
 	cloned := cloneJob(job)
 	if cloned.ID != job.ID {
 		t.Errorf("cloneJob ID mismatch: got %q, want %q", cloned.ID, job.ID)

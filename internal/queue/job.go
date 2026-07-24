@@ -14,8 +14,9 @@
 // (Add, Remove, Reorder, status changes) take the write lock.
 //
 // Jobs returned from List/Get are shared references into the Queue's
-// internal storage. Fields on *Job must only be mutated through Queue
-// methods that hold the write lock; direct mutation by callers is a
+// internal storage. A Job's Manifest is immutable and safe to read
+// without the lock; its Progress must only be mutated through Queue
+// methods that hold the write lock — direct mutation by callers is a
 // data race.
 //
 // # Persistence
@@ -30,6 +31,7 @@ package queue
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -46,179 +48,92 @@ import (
 // Job is a live download job. It starts life when NewJob parses an NZB
 // and ends when the downloader+postproc pipeline moves it to history.
 //
-// Fields are exported so encoding/json can marshal the full structure;
-// callers must NOT mutate them outside the queue's lock.
+// manifest/progress are unexported: external packages reach them only
+// through the read-only Manifest()/Progress() getters, which is what
+// makes handing out those pointers safe (neither type has a mutating
+// exported method).
 type Job struct {
 	// ID is a 16-character lowercase hex string produced from 8 bytes
 	// of crypto/rand output. Stable for the life of the job.
-	ID string `json:"id"`
+	ID string
 
 	// Filename is the original NZB filename as supplied to Add. May be
 	// empty when the caller had no filename (e.g. URL-grabbed NZBs
 	// before the server provided a Content-Disposition).
-	Filename string `json:"filename"`
+	Filename string
 
 	// Name is the display name. Defaults to Filename minus extension;
 	// callers can override via AddOptions.Name.
-	Name string `json:"name"`
+	Name string
 
 	// Password is the archive password extracted from the filename or
 	// supplied by the user. Empty if the job is unencrypted.
-	Password string `json:"password,omitempty"` //nolint:gosec // G117: NZB archive password, not a credential
+	Password string //nolint:gosec // G117: NZB archive password, not a credential
 
 	// URL is the origin URL for URL-grabbed NZBs; empty for uploaded
 	// or watched-dir NZBs.
-	URL string `json:"url,omitempty"`
+	URL string
 
 	// Category is the configured category name this job belongs to.
 	// Resolved against the config's Categories list at download time.
-	Category string `json:"category,omitempty"`
+	Category string
 
 	// Priority is the user-selected priority. Queue ordering is driven
 	// by this field at Add time; see insertByPriority.
-	Priority constants.Priority `json:"priority"`
+	Priority constants.Priority
 
 	// Status is the current lifecycle state. The queue manages
 	// transitions between Queued and Paused; other states are driven
 	// by the downloader and post-proc pipeline.
-	Status constants.Status `json:"status"`
+	Status constants.Status
 
 	// PP is the post-proc level 0-3 (download / +unpack / +repair / +delete).
-	PP int `json:"pp"`
+	PP int
 
 	// Script is the name of an optional user post-proc script.
-	Script string `json:"script,omitempty"`
+	Script string
 
 	// Added is the wall-clock time when the job entered the queue.
-	Added time.Time `json:"added"`
-
-	// DownloadStarted is the wall-clock time when the first article
-	// began downloading. Zero if the job hasn't started yet.
-	DownloadStarted time.Time `json:"download_started"`
-
-	// DownloadFinished is the wall-clock time when the download phase
-	// completed (all articles received). Zero until the download finishes.
-	// Used to calculate download speed excluding post-processing time.
-	DownloadFinished time.Time `json:"download_finished"`
-
-	// ServerStats tracks successfully downloaded bytes per server.
-	// Map: ServerName -> Bytes.
-	ServerStats map[string]int64 `json:"server_stats,omitempty"`
+	Added time.Time
 
 	// Meta carries <meta> tags parsed from the NZB, preserved as a
 	// slice-per-key to match the Python parser's multi-value semantics.
-	Meta map[string][]string `json:"meta,omitempty"`
+	Meta map[string][]string
 
 	// Groups is the de-duplicated union of newsgroups across files.
-	Groups []string `json:"groups,omitempty"`
+	Groups []string
 
 	// MD5 is the hex-encoded MD5 digest of article IDs. Used for
 	// duplicate-job detection against history (Tranche B / Step 1.3).
-	MD5 string `json:"md5"`
+	MD5 string
 
 	// AvgAge is the mean posting date across the job's files, used
 	// to sort the queue by "oldest first" and to trigger propagation
 	// delay (downloads held back until articles have had time to
 	// propagate across Usenet peers).
-	AvgAge time.Time `json:"avg_age"`
-
-	// Files holds the job's files sorted by sortJobFiles (RAR volumes
-	// first in volume order, then others in NZB source order).
-	Files []JobFile `json:"files"`
-
-	// TotalBytes is the byte count the NZB claimed — sum of
-	// Files[].Bytes at Add time. Untrusted (poster-supplied) but
-	// useful for UI and free-space pre-checks.
-	TotalBytes int64 `json:"total_bytes"`
-
-	// RemainingBytes is TotalBytes minus the sum of successfully completed
-	// articles. Decremented as articles download successfully.
-	RemainingBytes int64 `json:"remaining_bytes"`
-
-	// FailedBytes is the sum of articles that failed all retries.
-	// Used by the early health gate to abort hopeless jobs.
-	FailedBytes int64 `json:"failed_bytes"`
-
-	// Par2Bytes is the sum of all articles belonging to par2 files.
-	// Used by the early health gate to determine the maximum repair capacity.
-	Par2Bytes int64 `json:"par2_bytes"`
-
-	// Par2Files is the count of par2 files in the NZB.
-	Par2Files int `json:"par2_files"`
-
-	// Par2Recovered is set once on-demand par2 has un-deferred the recovery
-	// volumes for this job (because CRC verification or a download failure
-	// indicated repair was needed). It guards the download-complete gate
-	// from re-deferring/re-verifying after the volumes arrive. Persisted.
-	Par2Recovered bool `json:"par2_recovered,omitempty"`
-
-	// Par2ReleaseReason explains why deferred recovery volumes were released for
-	// download (e.g. CRC mismatch, missing index, active queue failure).
-	Par2ReleaseReason string `json:"par2_release_reason,omitempty"`
-
-	// PostProc is set to true when the job is handed off to the
-	// post-processor to prevent double-enqueuing.
-	PostProc bool `json:"post_proc,omitempty"`
+	AvgAge time.Time
 
 	// Warning holds a human-readable warning message (e.g. "Duplicate NZB").
 	// Usually accompanied by StatusPaused.
-	Warning string `json:"warning,omitempty"`
+	Warning string
 
-	// PendingArticles is the count of articles across all files that are
-	// not Done and not Emitted. Maintained by queue mutation methods;
-	// recomputed on load. Allows ForEachUnfinishedArticle to skip entire
-	// jobs in O(1) when all articles are complete.
-	PendingArticles int `json:"-"`
+	// PostProc is set to true when the job is handed off to the
+	// post-processor to prevent double-enqueuing.
+	PostProc bool
 
-	// ArticlesResolved counts articles that have completed (success or
-	// failure) since the job started. Used by the early-abort check.
-	ArticlesResolved int `json:"-"`
-
-	// ArticlesFailed counts articles that permanently failed since the
-	// job started. Used by the early-abort check.
-	ArticlesFailed int `json:"-"`
-
-	// EarlyAborted is set to true when the early-abort check fires,
-	// preventing duplicate abort callbacks.
-	EarlyAborted bool `json:"-"`
-
-	// artIdx is a transient, in-memory index from messageID → *JobArticle
-	// for O(1) lookups. Built lazily by articleByID and not serialised
-	// (article slice addresses change on deserialisation anyway).
-	artIdx map[string]*JobArticle `json:"-"`
+	manifest *Manifest
+	progress *JobProgress
 }
 
-// articleByID returns the article with the given messageID, or nil if
-// not found. On first call it lazily builds an index over all articles
-// in the job so subsequent lookups are O(1) instead of O(files×articles).
-// Must be called under the queue's write lock.
-func (j *Job) articleByID(messageID string) *JobArticle {
-	if j.artIdx == nil {
-		j.buildArtIndex()
-	}
-	return j.artIdx[messageID]
-}
+// Manifest returns the job's immutable article/file structure. Safe to
+// call without the queue lock; the returned pointer has no mutating
+// exported method.
+func (j *Job) Manifest() *Manifest { return j.manifest }
 
-// dropArtIndex releases the messageID→*JobArticle index. Called when a job
-// leaves the active download path (all articles resolved) so a job sitting in
-// post-processing or awaiting checkpoint does not retain the map. articleByID
-// rebuilds it on demand if a later mutation needs it. Must hold the write lock.
-func (j *Job) dropArtIndex() {
-	j.artIdx = nil
-}
-
-// buildArtIndex populates the messageID→*JobArticle index and sets
-// FileIdx on each article for back-reference to the containing file.
-func (j *Job) buildArtIndex() {
-	j.artIdx = make(map[string]*JobArticle)
-	for fi := range j.Files {
-		for ai := range j.Files[fi].Articles {
-			art := &j.Files[fi].Articles[ai]
-			art.FileIdx = fi
-			j.artIdx[art.ID] = art
-		}
-	}
-}
+// Progress returns the job's mutable per-article/per-file state. Callers
+// outside internal/queue can only read through it — JobProgress has no
+// mutating exported method, so handing out the pointer is safe.
+func (j *Job) Progress() *JobProgress { return j.progress }
 
 const (
 	// earlyAbortSample is the number of articles that must resolve
@@ -239,140 +154,30 @@ const (
 //
 // Must be called under the queue's write lock.
 func (j *Job) IsEarlyAbort() bool {
-	if j.EarlyAborted {
-		return false // already fired
-	}
-	if j.ArticlesResolved < earlyAbortSample {
-		return false // not enough data yet
-	}
-	rate := float64(j.ArticlesFailed) / float64(j.ArticlesResolved)
-	if rate >= earlyAbortThreshold {
-		j.EarlyAborted = true
-		return true
-	}
-	return false
+	return j.progress.isEarlyAbort()
 }
 
-// recomputePending recalculates Pending on every file and
-// PendingArticles on the job from the ground truth (article Done/Emitted
-// flags). Called after Add and Load, and after any bulk state change
-// (ClearAllEmitted, DiscardDeferredPar2, undeferRecoveryLocked) where
-// incremental tracking is impractical. The artIdx is left unbuilt;
-// articleByID builds it lazily the next time it is called.
-func (j *Job) recomputePending() {
-	total := 0
-	var resolved, failed int
-	for fi := range j.Files {
-		n := 0
-		var downloaded int64
-		// Deferred files (on-demand par2 recovery volumes) are not dispatched,
-		// so they contribute zero pending work — but we still set FileIdx on
-		// their articles so the back-pointer is correct if they are later
-		// un-deferred and dispatched.
-		deferred := j.Files[fi].Deferred
-		for ai := range j.Files[fi].Articles {
-			art := &j.Files[fi].Articles[ai]
-			art.FileIdx = fi
-			if !deferred && !art.Done && !art.Emitted {
-				n++
-			}
-			if art.Done && !art.Failed {
-				downloaded += int64(art.Bytes)
-			}
-			// Seed the early-abort counters (TRACE-3) from ground truth:
-			// these are json:"-" transient fields that reset to zero on
-			// every Load, so without this they "forget" prior
-			// successes/failures and the IsEarlyAbort heuristic re-samples
-			// only the new session's outcomes.
-			if art.Done {
-				resolved++
-				if art.Failed {
-					failed++
-				}
-			}
-		}
-		j.Files[fi].Pending = n
-		j.Files[fi].BytesDownloaded = downloaded
-		total += n
-	}
-	j.PendingArticles = total
-	j.ArticlesResolved = resolved
-	j.ArticlesFailed = failed
-}
-
-// JobFile is a single file within a job: its articles, its assembly
-// state, and the metadata needed to write it out.
+// JobFile is the intermediate, NZB-parsed shape NewJob builds before
+// converting into a Manifest/JobProgress pair. It is not part of Job's
+// runtime state — construction scaffolding only.
 type JobFile struct {
-	Subject string `json:"subject"`
-	// Filename is the final resolved filename as written on disk.
-	// If empty, it has not yet been resolved during a download pass.
-	// Persisted so that restarts do not generate a new unique name.
-	Filename string       `json:"filename,omitempty"`
-	Date     time.Time    `json:"date"`
-	Articles []JobArticle `json:"articles"`
-	Bytes    int64        `json:"bytes"`
-	// Complete is set once all articles have downloaded and the file
-	// has been assembled on disk.
-	Complete bool `json:"complete,omitempty"`
-	// AssembledCRC32 is the CRC32 computed by the assembler over the
-	// fully-written file, derived by combining per-article yEnc CRCs
-	// in offset order. Used by the QuickCheck post-processing stage
-	// to verify file integrity against par2 file hashes without
-	// re-reading the file from disk. Zero if unavailable (e.g. the
-	// file contained UU-encoded or failed articles).
-	AssembledCRC32 uint32 `json:"assembled_crc32,omitempty"`
-	// Pending is the count of articles in this file that are not Done
-	// and not Emitted. Maintained by queue mutation methods; recomputed
-	// on load. Allows ForEachUnfinishedArticle to skip completed files
-	// in O(1). Excluded from JSON since it's derived state.
-	Pending int `json:"-"`
-	// BytesDownloaded is the sum of byte counts for articles that have
-	// completed successfully (Done && !Failed). Maintained incrementally
-	// by mutation methods and recomputed by recomputePending on load.
-	// Drives per-file progress in the UI's queue-row drawer.
-	BytesDownloaded int64 `json:"-"`
-
-	// WriteCursor is the decoded byte offset up to which the assembler's
-	// coalescing cache has contiguously written this file. Persisted as a
-	// resume hint so the cache can restart coalescing from here instead of
-	// stalling at offset 0. Non-load-bearing: what gets (re)written is
-	// governed by article Done flags, so any stale value is safe, merely
-	// suboptimal. See assembler.FileInfo.InitialWriteCursor.
-	WriteCursor int64 `json:"write_cursor,omitempty"`
-
-	// IsPar2Recovery marks a par2 recovery volume (*.volNNN+MM.par2), as
-	// opposed to the par2 index file. Set at add-time. Persisted.
-	IsPar2Recovery bool `json:"is_par2_recovery,omitempty"`
-
+	Subject        string
+	Date           time.Time
+	Articles       []JobArticle
+	Bytes          int64
+	IsPar2Recovery bool
 	// Deferred marks a file whose articles are intentionally held back from
 	// dispatch (on-demand par2: recovery volumes not downloaded until repair
-	// is shown to be needed). Deferred files have Pending == 0, are skipped
-	// by ForEachUnfinishedArticle, and do not block IsComplete. Cleared by
-	// UndeferRecoveryVolumes. Persisted so a restart remembers the hold.
-	Deferred bool `json:"deferred,omitempty"`
+	// is shown to be needed).
+	Deferred bool
 }
 
-// JobArticle is a single NNTP article. The structural fields (ID,
-// Bytes, Number) are fixed at job-creation time; Done flips true when
-// the downloader successfully fetches and decodes the article.
+// JobArticle is the intermediate, NZB-parsed shape of a single article,
+// consumed by newManifest during construction.
 type JobArticle struct {
-	ID     string `json:"id"`
-	Bytes  int    `json:"bytes"`
-	Number int    `json:"number"`
-	Done   bool   `json:"done,omitempty"`
-	// Failed is set to true if the article failed on all servers.
-	Failed bool `json:"failed,omitempty"`
-	// Emitted is a transient, in-memory flag: the downloader has handed
-	// a result (success or permanent failure) to the pipeline, but the
-	// assembler has not yet made the outcome durable (Done/Failed).
-	// Excluded from JSON persistence so a restart re-dispatches articles
-	// whose bytes hadn't reached stable storage before the crash.
-	Emitted bool `json:"-"`
-	// FileIdx is the index of the containing JobFile within Job.Files.
-	// Set by buildArtIndex/recomputePending; used by mutation methods
-	// to update the per-file Pending counter in O(1) without scanning
-	// for the parent file.
-	FileIdx int `json:"-"`
+	ID     string
+	Bytes  int
+	Number int
 }
 
 // AddOptions carries the call-site arguments for NewJob. Zero values
@@ -420,7 +225,8 @@ type AddOptions struct {
 
 // NewJob converts parser output plus caller options into a runtime
 // Job ready to hand to Queue.Add. It allocates a fresh random ID and
-// copies the parsed file/article structure into mutable runtime form.
+// builds the job's Manifest/JobProgress from the parsed file/article
+// structure.
 //
 // Returns an error only if the OS entropy source fails — treat that
 // as fatal; the daemon has no safe fallback.
@@ -512,7 +318,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 		AvgAge:   parsed.AvgAge,
 	}
 
-	job.Files = make([]JobFile, 0, len(parsed.Files))
+	files := make([]JobFile, 0, len(parsed.Files))
 	for _, pf := range parsed.Files {
 		isPar2 := strings.Contains(strings.ToLower(pf.Subject), ".par2")
 		// A recovery volume (*.volNNN+MM.par2) carries redundancy; the par2
@@ -538,15 +344,15 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 				Number: pa.Number,
 			})
 		}
-		job.Files = append(job.Files, jf)
-		job.TotalBytes += pf.Bytes
-		if isPar2 {
-			job.Par2Bytes += pf.Bytes
-			job.Par2Files++
-		}
+		files = append(files, jf)
 	}
-	job.RemainingBytes = job.TotalBytes
-	sortJobFiles(job.Files)
+	sortJobFiles(files)
+
+	job.manifest = newManifest(files)
+	job.progress = newJobProgress(job.manifest)
+	for fi, jf := range files {
+		job.progress.files[fi].Deferred = jf.Deferred
+	}
 	return job, nil
 }
 
@@ -555,11 +361,11 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 // do not block completion — by design they are only fetched if repair is
 // needed, so a job whose non-deferred files are all complete is "downloaded".
 func (j *Job) IsComplete() bool {
-	for i := range j.Files {
-		if j.Files[i].Deferred {
+	for i := range j.manifest.NumFiles() {
+		if j.progress.FileDeferred(i) {
 			continue
 		}
-		if !j.Files[i].Complete {
+		if !j.progress.FileComplete(i) {
 			return false
 		}
 	}
@@ -569,25 +375,146 @@ func (j *Job) IsComplete() bool {
 // HasDeferredPar2 reports whether the job currently has any deferred par2
 // recovery volume. Safe to call on a snapshot (no lock needed).
 func (j *Job) HasDeferredPar2() bool {
-	for i := range j.Files {
-		if j.Files[i].Deferred {
-			return true
-		}
-	}
-	return false
+	return j.progress.HasDeferredPar2()
 }
 
 // DeferredRecoveryIndices returns the file indices of all currently-deferred
 // par2 recovery volumes. Phase 1 un-defers this full set on damage; Phase 2
 // selects a block-covering subset from it. Safe to call on a snapshot.
 func (j *Job) DeferredRecoveryIndices() []int {
-	var idxs []int
-	for i := range j.Files {
-		if j.Files[i].Deferred {
-			idxs = append(idxs, i)
+	return j.progress.DeferredRecoveryIndices()
+}
+
+// ResetForRetry resets a completed/failed job back to a fresh downloadable
+// state, preserving the Manifest but rebuilding Progress from scratch
+// except for the two details that must survive verbatim: RemainingBytes is
+// re-added only for articles actually reset (not blanket-recomputed to
+// TotalBytes), and a file's Complete flag is cleared only if at least one of
+// its articles was reset. Must be called strictly before Queue.Add — it does
+// not itself rebuild PendingArticles/per-file Pending/ArticlesResolved/
+// ArticlesFailed/BytesDownloaded; Add's own recomputePending-equivalent call
+// does that once the job is actually added.
+func (j *Job) ResetForRetry() {
+	j.Status = constants.StatusQueued
+	j.PostProc = false
+	j.progress.downloadStarted = time.Time{}
+	j.progress.downloadFinished = time.Time{}
+	j.progress.serverStats = nil
+	j.progress.failedBytes = 0
+	j.progress.earlyAborted = false
+	j.progress.par2Recovered = false
+	j.progress.par2ReleaseReason = ""
+
+	m := j.manifest
+	for fi := range m.NumFiles() {
+		anyReset := false
+		lo, hi := m.FileRange(fi)
+		for i := lo; i < hi; i++ {
+			if !j.progress.failed[i] {
+				continue
+			}
+			j.progress.done[i] = false
+			j.progress.failed[i] = false
+			j.progress.remainingBytes += int64(m.ArticleBytes(i))
+			anyReset = true
+		}
+		if anyReset {
+			j.progress.files[fi].Complete = false
 		}
 	}
-	return idxs
+}
+
+// MarkDownloadFinished sets the job's download-finished timestamp. Intended
+// for callers that already hold an owned clone (e.g. a Queue.SnapshotJob
+// result) rather than a live queue reference — it performs no queue
+// locking of its own.
+func (j *Job) MarkDownloadFinished(t time.Time) {
+	j.progress.downloadFinished = t
+}
+
+// jobJSON is Job's on-disk shape: header fields plus the two nested
+// documents. Field names here are free to read well: this on-disk format
+// has no wire-compatibility requirement to preserve — the only external
+// compatibility surface is the SABnzbd-compatible HTTP API, which builds
+// its own response DTOs from accessor calls rather than marshaling Job
+// directly.
+type jobJSON struct {
+	ID       string              `json:"id"`
+	Filename string              `json:"filename"`
+	Name     string              `json:"name"`
+	Password string              `json:"password,omitempty"` //nolint:gosec // G117: NZB archive password, not a credential
+	URL      string              `json:"url,omitempty"`
+	Category string              `json:"category,omitempty"`
+	Priority constants.Priority  `json:"priority"`
+	Status   constants.Status    `json:"status"`
+	PP       int                 `json:"pp"`
+	Script   string              `json:"script,omitempty"`
+	Added    time.Time           `json:"added"`
+	MD5      string              `json:"md5"`
+	AvgAge   time.Time           `json:"avg_age"`
+	Groups   []string            `json:"groups,omitempty"`
+	Meta     map[string][]string `json:"meta,omitempty"`
+	Warning  string              `json:"warning,omitempty"`
+	PostProc bool                `json:"post_proc,omitempty"`
+
+	Manifest *Manifest    `json:"manifest"`
+	Progress *JobProgress `json:"progress"`
+}
+
+// MarshalJSON implements json.Marshaler.
+func (j *Job) MarshalJSON() ([]byte, error) {
+	return json.Marshal(jobJSON{ //nolint:gosec // G117: NZB archive password, not a credential
+		ID:       j.ID,
+		Filename: j.Filename,
+		Name:     j.Name,
+		Password: j.Password,
+		URL:      j.URL,
+		Category: j.Category,
+		Priority: j.Priority,
+		Status:   j.Status,
+		PP:       j.PP,
+		Script:   j.Script,
+		Added:    j.Added,
+		MD5:      j.MD5,
+		AvgAge:   j.AvgAge,
+		Groups:   j.Groups,
+		Meta:     j.Meta,
+		Warning:  j.Warning,
+		PostProc: j.PostProc,
+		Manifest: j.manifest,
+		Progress: j.progress,
+	})
+}
+
+// UnmarshalJSON implements json.Unmarshaler. It does not recompute
+// transient counters (PendingArticles/ArticlesResolved/ArticlesFailed) —
+// callers (Load/LoadJob) must call the JobProgress-equivalent recompute
+// afterward, exactly as they do today.
+func (j *Job) UnmarshalJSON(data []byte) error {
+	var jj jobJSON
+	if err := json.Unmarshal(data, &jj); err != nil {
+		return err
+	}
+	j.ID = jj.ID
+	j.Filename = jj.Filename
+	j.Name = jj.Name
+	j.Password = jj.Password
+	j.URL = jj.URL
+	j.Category = jj.Category
+	j.Priority = jj.Priority
+	j.Status = jj.Status
+	j.PP = jj.PP
+	j.Script = jj.Script
+	j.Added = jj.Added
+	j.MD5 = jj.MD5
+	j.AvgAge = jj.AvgAge
+	j.Groups = jj.Groups
+	j.Meta = jj.Meta
+	j.Warning = jj.Warning
+	j.PostProc = jj.PostProc
+	j.manifest = jj.Manifest
+	j.progress = jj.Progress
+	return nil
 }
 
 // deriveName strips directory components and the extension from path.

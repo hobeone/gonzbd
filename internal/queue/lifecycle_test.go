@@ -188,7 +188,7 @@ func TestCountUnfinishedArticles(t *testing.T) {
 	})
 
 	t.Run("error on invalid file index", func(t *testing.T) {
-		_, err := q.CountUnfinishedArticles(j.ID, len(j.Files))
+		_, err := q.CountUnfinishedArticles(j.ID, j.Manifest().NumFiles())
 		if err == nil {
 			t.Error("expected error for out-of-range file index")
 		}
@@ -307,15 +307,11 @@ func TestClearAllEmitted(t *testing.T) {
 	_ = q.Add(j2)
 
 	// Emit every article in both jobs.
-	for fi := range j1.Files {
-		for ai := range j1.Files[fi].Articles {
-			_ = q.MarkArticleEmitted(j1.ID, j1.Files[fi].Articles[ai].ID)
-		}
+	for i := range j1.Manifest().NumArticles() {
+		_ = q.MarkArticleEmitted(j1.ID, j1.Manifest().ArticleID(i))
 	}
-	for fi := range j2.Files {
-		for ai := range j2.Files[fi].Articles {
-			_ = q.MarkArticleEmitted(j2.ID, j2.Files[fi].Articles[ai].ID)
-		}
+	for i := range j2.Manifest().NumArticles() {
+		_ = q.MarkArticleEmitted(j2.ID, j2.Manifest().ArticleID(i))
 	}
 
 	// ForEach should yield nothing: all emitted.
@@ -611,8 +607,8 @@ func TestMarkJobStarted(t *testing.T) {
 			t.Fatalf("MarkJobStarted: %v", err)
 		}
 		got, _ := q.Get(j.ID)
-		if !got.DownloadStarted.Equal(now) {
-			t.Errorf("DownloadStarted = %v, want %v", got.DownloadStarted, now)
+		if !got.Progress().DownloadStarted().Equal(now) {
+			t.Errorf("DownloadStarted = %v, want %v", got.Progress().DownloadStarted(), now)
 		}
 	})
 
@@ -622,8 +618,8 @@ func TestMarkJobStarted(t *testing.T) {
 			t.Fatalf("MarkJobStarted: %v", err)
 		}
 		got, _ := q.Get(j.ID)
-		if !got.DownloadStarted.Equal(now) {
-			t.Errorf("DownloadStarted should not change: got %v, want %v", got.DownloadStarted, now)
+		if !got.Progress().DownloadStarted().Equal(now) {
+			t.Errorf("DownloadStarted should not change: got %v, want %v", got.Progress().DownloadStarted(), now)
 		}
 	})
 
@@ -653,11 +649,11 @@ func TestRecordDownload(t *testing.T) {
 	}
 
 	got, _ := q.Get(j.ID)
-	if got.ServerStats["server-a"] != 1500 {
-		t.Errorf("server-a = %d, want 1500", got.ServerStats["server-a"])
+	if got.Progress().ServerStats()["server-a"] != 1500 {
+		t.Errorf("server-a = %d, want 1500", got.Progress().ServerStats()["server-a"])
 	}
-	if got.ServerStats["server-b"] != 2000 {
-		t.Errorf("server-b = %d, want 2000", got.ServerStats["server-b"])
+	if got.Progress().ServerStats()["server-b"] != 2000 {
+		t.Errorf("server-b = %d, want 2000", got.Progress().ServerStats()["server-b"])
 	}
 
 	if err := q.RecordDownload("bogus", "server-a", 999); !errors.Is(err, ErrNotFound) {
@@ -705,7 +701,7 @@ func TestMarkArticlesDone_Batch(t *testing.T) {
 	q := New()
 	j := makeMultiFileJob(t, "batch-done", 1, 4)
 	_ = q.Add(j)
-	initialRemaining := j.RemainingBytes // 400_000
+	initialRemaining := j.Progress().RemainingBytes() // 400_000
 
 	t.Run("marks multiple articles in one call", func(t *testing.T) {
 		ids := []string{articleID(0, 0), articleID(0, 2)}
@@ -713,31 +709,31 @@ func TestMarkArticlesDone_Batch(t *testing.T) {
 			t.Fatalf("MarkArticlesDone: %v", err)
 		}
 		got, _ := q.Get(j.ID)
-		if !got.Files[0].Articles[0].Done {
+		if !got.Progress().ArticleDone(0) {
 			t.Error("article 0 should be Done")
 		}
-		if got.Files[0].Articles[1].Done {
+		if got.Progress().ArticleDone(1) {
 			t.Error("article 1 should NOT be Done")
 		}
-		if !got.Files[0].Articles[2].Done {
+		if !got.Progress().ArticleDone(2) {
 			t.Error("article 2 should be Done")
 		}
 		wantRemaining := initialRemaining - 200_000 // 2 × 100k
-		if got.RemainingBytes != wantRemaining {
-			t.Errorf("RemainingBytes = %d, want %d", got.RemainingBytes, wantRemaining)
+		if got.Progress().RemainingBytes() != wantRemaining {
+			t.Errorf("RemainingBytes = %d, want %d", got.Progress().RemainingBytes(), wantRemaining)
 		}
 	})
 
 	t.Run("idempotent: re-marking already-done articles doesn't double-decrement", func(t *testing.T) {
 		got, _ := q.Get(j.ID)
-		beforeRemaining := got.RemainingBytes
+		beforeRemaining := got.Progress().RemainingBytes()
 		ids := []string{articleID(0, 0)} // already done
 		if err := q.MarkArticlesDone(j.ID, ids); err != nil {
 			t.Fatalf("MarkArticlesDone: %v", err)
 		}
 		got, _ = q.Get(j.ID)
-		if got.RemainingBytes != beforeRemaining {
-			t.Errorf("RemainingBytes changed on re-mark: %d → %d", beforeRemaining, got.RemainingBytes)
+		if got.Progress().RemainingBytes() != beforeRemaining {
+			t.Errorf("RemainingBytes changed on re-mark: %d → %d", beforeRemaining, got.Progress().RemainingBytes())
 		}
 	})
 
@@ -753,7 +749,7 @@ func TestMarkArticlesDone_Batch(t *testing.T) {
 			t.Fatalf("MarkArticlesDone with unknown IDs: %v", err)
 		}
 		got, _ := q.Get(j.ID)
-		if !got.Files[0].Articles[1].Done {
+		if !got.Progress().ArticleDone(1) {
 			t.Error("valid article should still be marked done")
 		}
 	})
@@ -772,7 +768,7 @@ func TestMarkArticlesFailed_Batch(t *testing.T) {
 	q := New()
 	j := makeMultiFileJob(t, "batch-fail", 1, 4)
 	_ = q.Add(j)
-	initialRemaining := j.RemainingBytes // 400_000
+	initialRemaining := j.Progress().RemainingBytes() // 400_000
 
 	t.Run("returns first-time IDs", func(t *testing.T) {
 		ids := []string{articleID(0, 0), articleID(0, 1)}
@@ -784,12 +780,12 @@ func TestMarkArticlesFailed_Batch(t *testing.T) {
 			t.Errorf("firstTime count = %d, want 2", len(firstTime))
 		}
 		got, _ := q.Get(j.ID)
-		if got.FailedBytes != 200_000 {
-			t.Errorf("FailedBytes = %d, want 200000", got.FailedBytes)
+		if got.Progress().FailedBytes() != 200_000 {
+			t.Errorf("FailedBytes = %d, want 200000", got.Progress().FailedBytes())
 		}
 		wantRemaining := initialRemaining - 200_000
-		if got.RemainingBytes != wantRemaining {
-			t.Errorf("RemainingBytes = %d, want %d", got.RemainingBytes, wantRemaining)
+		if got.Progress().RemainingBytes() != wantRemaining {
+			t.Errorf("RemainingBytes = %d, want %d", got.Progress().RemainingBytes(), wantRemaining)
 		}
 	})
 
@@ -833,10 +829,8 @@ func TestFullArticleLifecycle(t *testing.T) {
 	}
 
 	// Phase 2: Emit all articles (simulating dispatcher sending to workers).
-	for fi := range j.Files {
-		for ai := range j.Files[fi].Articles {
-			_ = q.MarkArticleEmitted(j.ID, j.Files[fi].Articles[ai].ID)
-		}
+	for i := range j.Manifest().NumArticles() {
+		_ = q.MarkArticleEmitted(j.ID, j.Manifest().ArticleID(i))
 	}
 	count = 0
 	q.ForEachUnfinishedArticle(func(_ UnfinishedArticle) bool {
@@ -855,8 +849,8 @@ func TestFullArticleLifecycle(t *testing.T) {
 	if got.IsComplete() {
 		t.Error("should not be complete yet (file 1 pending)")
 	}
-	if got.RemainingBytes != 200_000 {
-		t.Errorf("RemainingBytes = %d, want 200000", got.RemainingBytes)
+	if got.Progress().RemainingBytes() != 200_000 {
+		t.Errorf("RemainingBytes = %d, want 200000", got.Progress().RemainingBytes())
 	}
 
 	// Phase 4: Mark file 1's articles done.
@@ -867,8 +861,8 @@ func TestFullArticleLifecycle(t *testing.T) {
 	if !got.IsComplete() {
 		t.Error("should be complete after all files done")
 	}
-	if got.RemainingBytes != 0 {
-		t.Errorf("RemainingBytes = %d, want 0", got.RemainingBytes)
+	if got.Progress().RemainingBytes() != 0 {
+		t.Errorf("RemainingBytes = %d, want 0", got.Progress().RemainingBytes())
 	}
 }
 
@@ -918,8 +912,8 @@ func TestArticleRetryLifecycle(t *testing.T) {
 	if !got.IsComplete() {
 		t.Error("job should be complete after retry")
 	}
-	if got.RemainingBytes != 0 {
-		t.Errorf("RemainingBytes = %d, want 0", got.RemainingBytes)
+	if got.Progress().RemainingBytes() != 0 {
+		t.Errorf("RemainingBytes = %d, want 0", got.Progress().RemainingBytes())
 	}
 }
 
@@ -951,15 +945,18 @@ func TestConcurrentArticleLifecycle(t *testing.T) {
 	if !got.IsComplete() {
 		t.Error("job should be complete after all goroutines finish")
 	}
-	if got.RemainingBytes != 0 {
-		t.Errorf("RemainingBytes = %d, want 0", got.RemainingBytes)
+	if got.Progress().RemainingBytes() != 0 {
+		t.Errorf("RemainingBytes = %d, want 0", got.Progress().RemainingBytes())
 	}
 
 	// Verify all articles are marked Done.
-	for fi := range got.Files {
-		for ai, art := range got.Files[fi].Articles {
-			if !art.Done {
-				t.Errorf("file %d, article %d not done", fi, ai)
+	m := got.Manifest()
+	p := got.Progress()
+	for fi := range m.NumFiles() {
+		lo, hi := m.FileRange(fi)
+		for i := lo; i < hi; i++ {
+			if !p.ArticleDone(i) {
+				t.Errorf("file %d, article %d not done", fi, i-lo)
 			}
 		}
 	}
@@ -1023,21 +1020,21 @@ func TestSaveLoadPreservesArticleState(t *testing.T) {
 	}
 
 	// Verify article states round-tripped.
-	if !lj.Files[0].Articles[0].Done {
+	if !lj.Progress().ArticleDone(0) {
 		t.Error("article 0,0 should be Done after load")
 	}
-	if !lj.Files[0].Articles[1].Done || !lj.Files[0].Articles[1].Failed {
+	if !lj.Progress().ArticleDone(1) || !lj.Progress().ArticleFailed(1) {
 		t.Error("article 0,1 should be Done+Failed after load")
 	}
-	if lj.Files[0].Articles[2].Done {
+	if lj.Progress().ArticleDone(2) {
 		t.Error("article 0,2 should NOT be Done after load")
 	}
 
 	// Verify file completion.
-	if !lj.Files[0].Complete {
+	if !lj.Progress().FileComplete(0) {
 		t.Error("file 0 should be Complete after load")
 	}
-	if lj.Files[1].Complete {
+	if lj.Progress().FileComplete(1) {
 		t.Error("file 1 should NOT be Complete after load")
 	}
 
@@ -1047,16 +1044,16 @@ func TestSaveLoadPreservesArticleState(t *testing.T) {
 	_ = q.Save(dir)
 	loaded2, _ := Load(dir)
 	lj2, _ := loaded2.Get(j.ID)
-	if lj2.Files[1].Articles[0].Emitted {
+	if lj2.Progress().ArticleEmitted(3) {
 		t.Error("Emitted flag should NOT survive save/load (B.6 invariant)")
 	}
 
 	// Verify byte accounting.
-	if lj.FailedBytes != 100_000 {
-		t.Errorf("FailedBytes = %d, want 100000", lj.FailedBytes)
+	if lj.Progress().FailedBytes() != 100_000 {
+		t.Errorf("FailedBytes = %d, want 100000", lj.Progress().FailedBytes())
 	}
-	if lj.ServerStats["my-server"] != 42_000 {
-		t.Errorf("ServerStats[my-server] = %d, want 42000", lj.ServerStats["my-server"])
+	if lj.Progress().ServerStats()["my-server"] != 42_000 {
+		t.Errorf("ServerStats[my-server] = %d, want 42000", lj.Progress().ServerStats()["my-server"])
 	}
 
 	// Verify CountUnfinishedArticles works correctly after load.

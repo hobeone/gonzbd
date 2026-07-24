@@ -104,11 +104,11 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 	if snap == nil {
 		t.Fatalf("job missing from queue")
 	}
-	if len(snap.Files) == 0 || len(snap.Files[0].Articles) == 0 {
+	if snap.Manifest().NumFiles() == 0 || snap.Manifest().NumArticles() == 0 {
 		t.Fatalf("job files/articles empty")
 	}
 
-	artDoneBeforeHookFinish := snap.Files[0].Articles[0].Done
+	artDoneBeforeHookFinish := snap.Progress().ArticleDone(0)
 	if artDoneBeforeHookFinish {
 		t.Errorf("FAIL: article is marked Done BEFORE MarkArticlesDone completed (downloader called MarkArticleDone prematurely!)")
 	}
@@ -127,7 +127,7 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 	if reloadedSnap == nil {
 		t.Fatalf("reloaded job missing")
 	}
-	if reloadedSnap.Files[0].Articles[0].Done {
+	if reloadedSnap.Progress().ArticleDone(0) {
 		t.Errorf("FAIL: on-disk queue has article marked Done before assembler completed MarkArticlesDone!")
 	}
 
@@ -143,7 +143,7 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 	}
 
 	// Verify file on disk using independent oracle
-	filePath := filepath.Join(downloadDir, "durability-job", snap.Files[0].Filename)
+	filePath := filepath.Join(downloadDir, "durability-job", snap.Progress().FileFilename(0))
 	diskBytes, err := os.ReadFile(filePath)
 	if err != nil {
 		t.Fatalf("ReadFile on target file failed: %v", err)

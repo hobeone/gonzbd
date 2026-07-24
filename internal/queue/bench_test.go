@@ -49,18 +49,8 @@ func buildCorpus(b *testing.B, numJobs, filesPerJob, articlesPerFile int, mostly
 			// Mark 95% of articles as done before adding to queue.
 			total := filesPerJob * articlesPerFile
 			doneCount := (total * 95) / 100
-			marked := 0
-			for fi := range job.Files {
-				for ai := range job.Files[fi].Articles {
-					if marked >= doneCount {
-						break
-					}
-					job.Files[fi].Articles[ai].Done = true
-					marked++
-				}
-				if marked >= doneCount {
-					break
-				}
+			for i := 0; i < doneCount && i < job.manifest.NumArticles(); i++ {
+				job.progress.done[i] = true
 			}
 		}
 

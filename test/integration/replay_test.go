@@ -231,7 +231,7 @@ func replayOneNZB(t *testing.T, nzbPath string) {
 		snap := application.Queue().SnapshotJob(job.ID)
 		if snap != nil {
 			t.Logf("timeout: job status=%s pending=%d remaining=%d",
-				snap.Status, snap.PendingArticles, snap.RemainingBytes)
+				snap.Status, snap.Progress().PendingArticles(), snap.Progress().RemainingBytes())
 		}
 		t.Fatalf("timeout (%v) waiting for job completion", timeout)
 	}

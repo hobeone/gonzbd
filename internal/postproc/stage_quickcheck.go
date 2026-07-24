@@ -76,21 +76,23 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 }
 
 func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, job *Job, sets []par2.Set) {
-	if job.Queue == nil || len(job.Queue.Files) == 0 {
+	if job.Queue == nil || job.Queue.Manifest().NumFiles() == 0 {
 		return
 	}
 	job.QuickCheckRan = true
 
+	m := job.Queue.Manifest()
+	p := job.Queue.Progress()
 	var assembledFiles []par2.AssembledFile
-	for _, jf := range job.Queue.Files {
-		name := jf.Subject
-		if jf.Filename != "" {
-			name = jf.Filename
+	for fi := range m.NumFiles() {
+		name := m.FileSubject(fi)
+		if fn := p.FileFilename(fi); fn != "" {
+			name = fn
 		}
 		assembledFiles = append(assembledFiles, par2.AssembledFile{
 			FileName: name,
-			CRC32:    jf.AssembledCRC32,
-			FileSize: jf.Bytes,
+			CRC32:    p.FileAssembledCRC32(fi),
+			FileSize: m.FileBytes(fi),
 		})
 	}
 

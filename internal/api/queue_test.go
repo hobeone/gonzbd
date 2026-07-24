@@ -568,13 +568,11 @@ func TestQueueDetail_FilesIncludedWhenRequested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if len(jobInternal.Files) != 1 {
-		t.Fatalf("expected 1 file, got %d", len(jobInternal.Files))
+	m := jobInternal.Manifest()
+	if m.NumFiles() != 1 {
+		t.Fatalf("expected 1 file, got %d", m.NumFiles())
 	}
-	doneIDs := []string{
-		jobInternal.Files[0].Articles[0].ID,
-		jobInternal.Files[0].Articles[1].ID,
-	}
+	doneIDs := []string{m.ArticleID(0), m.ArticleID(1)}
 	if err := q.MarkArticlesDone(job.ID, doneIDs); err != nil {
 		t.Fatalf("MarkArticlesDone: %v", err)
 	}
@@ -669,26 +667,55 @@ func TestQueueDetail_FileStateClassification(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		setup func(*queue.JobFile)
+		setup func(t *testing.T, q *queue.Queue, jobID string)
 		want  string
 	}{
-		{"queued", func(*queue.JobFile) {}, "queued"},
-		{"downloading", func(f *queue.JobFile) { f.BytesDownloaded = 100 }, "downloading"},
-		{"done", func(f *queue.JobFile) {
-			f.Complete = true
-			f.BytesDownloaded = 1000
+		{"queued", func(*testing.T, *queue.Queue, string) {}, "queued"},
+		{"downloading", func(t *testing.T, q *queue.Queue, jobID string) {
+			if err := q.MarkArticlesDone(jobID, []string{"a0@t"}); err != nil {
+				t.Fatalf("MarkArticlesDone: %v", err)
+			}
+		}, "downloading"},
+		{"done", func(t *testing.T, q *queue.Queue, jobID string) {
+			if err := q.MarkArticlesDone(jobID, []string{"a0@t", "a1@t"}); err != nil {
+				t.Fatalf("MarkArticlesDone: %v", err)
+			}
+			if err := q.MarkFileComplete(jobID, 0); err != nil {
+				t.Fatalf("MarkFileComplete: %v", err)
+			}
 		}, "done"},
-		{"failed", func(f *queue.JobFile) {
-			f.Complete = true
-			f.Articles = []queue.JobArticle{{ID: "x", Bytes: 100, Done: true, Failed: true}}
+		{"failed", func(t *testing.T, q *queue.Queue, jobID string) {
+			if err := q.MarkArticlesDone(jobID, []string{"a0@t"}); err != nil {
+				t.Fatalf("MarkArticlesDone: %v", err)
+			}
+			if _, err := q.MarkArticlesFailed(jobID, []string{"a1@t"}); err != nil {
+				t.Fatalf("MarkArticlesFailed: %v", err)
+			}
+			if err := q.MarkFileComplete(jobID, 0); err != nil {
+				t.Fatalf("MarkFileComplete: %v", err)
+			}
 		}, "failed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := &queue.JobFile{Bytes: 1000}
-			tt.setup(f)
-			if got := fileState(f); got != tt.want {
+			parsed := &nzb.NZB{Files: []nzb.File{
+				{Subject: "f", Bytes: 1000, Articles: []nzb.Article{
+					{ID: "a0@t", Bytes: 500, Number: 1},
+					{ID: "a1@t", Bytes: 500, Number: 2},
+				}},
+			}}
+			job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "f.nzb"}, fsutil.SanitizeOptions{})
+			if err != nil {
+				t.Fatalf("NewJob: %v", err)
+			}
+			q := queue.New()
+			if err := q.Add(job); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+			tt.setup(t, q, job.ID)
+			snap := q.SnapshotJob(job.ID)
+			if got := fileState(snap.Manifest(), snap.Progress(), 0); got != tt.want {
 				t.Errorf("fileState = %q; want %q", got, tt.want)
 			}
 		})
@@ -2566,10 +2593,21 @@ func TestQueueDelete_RemoveJobErrorLog(t *testing.T) {
 func TestFilterQueueSlots(t *testing.T) {
 	t.Parallel()
 
+	newFilterJob := func(id, name, filename, category string, status constants.Status) *queue.Job {
+		job, err := queue.NewJob(&nzb.NZB{}, queue.AddOptions{Filename: filename}, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatalf("NewJob: %v", err)
+		}
+		job.ID = id
+		job.Name = name
+		job.Category = category
+		job.Status = status
+		return job
+	}
 	jobs := []*queue.Job{
-		{ID: "job1", Name: "Ubuntu ISO", Filename: "ubuntu.nzb", Category: "linux", Status: constants.StatusDownloading},
-		{ID: "job2", Name: "Debian ISO", Filename: "debian.nzb", Category: "linux", Status: constants.StatusPaused},
-		{ID: "job3", Name: "Some Movie", Filename: "movie.nzb", Category: "movies", Status: constants.StatusDownloading},
+		newFilterJob("job1", "Ubuntu ISO", "ubuntu.nzb", "linux", constants.StatusDownloading),
+		newFilterJob("job2", "Debian ISO", "debian.nzb", "linux", constants.StatusPaused),
+		newFilterJob("job3", "Some Movie", "movie.nzb", "movies", constants.StatusDownloading),
 	}
 	duStatuses := map[string]directunpack.Status{
 		"job1": {CurrentSet: "vol01"},

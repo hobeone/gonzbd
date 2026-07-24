@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
@@ -44,20 +46,31 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 
 	started := time.Now().Add(-10 * time.Minute)
 	finished := started.Add(5 * time.Minute)
-	persisted := &queue.Job{
-		ID:               jobID,
-		Name:             "retry-reset",
-		Status:           constants.StatusFailed,
-		DownloadStarted:  started,
-		DownloadFinished: finished,
-		ServerStats:      map[string]int64{"mock": 123456},
-		Files: []queue.JobFile{{
-			Subject:  "file.bin",
-			Complete: false,
-			Articles: []queue.JobArticle{{ID: "a@t", Done: false, Failed: true, Bytes: 1024}},
-		}},
-		FailedBytes: 1024,
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "file.bin", Bytes: 1024, Articles: []nzb.Article{{ID: "a@t", Bytes: 1024, Number: 1}}},
+	}}
+	persisted, err := queue.NewJob(parsed, queue.AddOptions{Filename: "retry-reset.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
 	}
+	persisted.ID = jobID
+	persisted.Name = "retry-reset"
+	persisted.Status = constants.StatusFailed
+	seedQ := queue.New()
+	if err := seedQ.Add(persisted); err != nil {
+		t.Fatalf("seedQ.Add: %v", err)
+	}
+	if err := seedQ.MarkJobStarted(jobID, started); err != nil {
+		t.Fatalf("MarkJobStarted: %v", err)
+	}
+	if err := seedQ.RecordDownload(jobID, "mock", 123456); err != nil {
+		t.Fatalf("RecordDownload: %v", err)
+	}
+	if _, err := seedQ.MarkArticlesFailed(jobID, []string{"a@t"}); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+	persisted.MarkDownloadFinished(finished)
+
 	jobPath := filepath.Join(h.adminDir, "history", "jobs", jobID+".json.gz")
 	if err := queue.SaveJob(jobPath, persisted); err != nil {
 		t.Fatalf("queue.SaveJob: %v", err)
@@ -71,14 +84,14 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	if snap == nil {
 		t.Fatalf("job %s not in queue after retry", jobID)
 	}
-	if !snap.DownloadStarted.IsZero() {
-		t.Errorf("DownloadStarted = %v, want zero", snap.DownloadStarted)
+	if !snap.Progress().DownloadStarted().IsZero() {
+		t.Errorf("DownloadStarted = %v, want zero", snap.Progress().DownloadStarted())
 	}
-	if !snap.DownloadFinished.IsZero() {
-		t.Errorf("DownloadFinished = %v, want zero", snap.DownloadFinished)
+	if !snap.Progress().DownloadFinished().IsZero() {
+		t.Errorf("DownloadFinished = %v, want zero", snap.Progress().DownloadFinished())
 	}
-	if len(snap.ServerStats) != 0 {
-		t.Errorf("ServerStats = %v, want empty", snap.ServerStats)
+	if stats := snap.Progress().ServerStats(); len(stats) != 0 {
+		t.Errorf("ServerStats = %v, want empty", stats)
 	}
 	if snap.Status != constants.StatusQueued {
 		t.Errorf("Status = %q, want Queued", snap.Status)

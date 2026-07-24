@@ -10,8 +10,35 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
+
+// buildQCJob builds a single-file *queue.Job whose file has a resolved
+// filename, byte count, and assembled CRC32 already set — the shape
+// verifyJobCRCs reads via Manifest/Progress accessors.
+func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32) *queue.Job {
+	t.Helper()
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "subject.bin", Bytes: bytes, Articles: []nzb.Article{{ID: id + "-a@t", Bytes: int(bytes), Number: 1}}},
+	}}
+	qjob, err := queue.NewJob(parsed, queue.AddOptions{Filename: id + ".nzb", Name: id}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	q := queue.New()
+	if err := q.Add(qjob); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := q.SetFileFilename(qjob.ID, 0, filename); err != nil {
+		t.Fatalf("SetFileFilename: %v", err)
+	}
+	if err := q.SetFileCRC32(qjob.ID, 0, crc); err != nil {
+		t.Fatalf("SetFileCRC32: %v", err)
+	}
+	return q.SnapshotJob(qjob.ID)
+}
 
 var (
 	typeMain     = [16]byte{'P', 'A', 'R', ' ', '2', '.', '0', 0x00, 'M', 'a', 'i', 'n', 0x00, 0x00, 0x00, 0x00}
@@ -77,7 +104,7 @@ func TestQuickCheckStage_Disabled(t *testing.T) {
 	stage.SetEnabled(false)
 
 	job := &Job{
-		Queue: &queue.Job{ID: "test-disabled"},
+		Queue: newQueueJob(t, "test-disabled", 0),
 	}
 
 	err := stage.Run(t.Context(), job)
@@ -96,7 +123,7 @@ func TestQuickCheckStage_NoPar2(t *testing.T) {
 	stage.SetEnabled(true)
 
 	job := &Job{
-		Queue:       &queue.Job{ID: "test-no-par2"},
+		Queue:       newQueueJob(t, "test-no-par2", 0),
 		DownloadDir: t.TempDir(),
 	}
 
@@ -149,16 +176,7 @@ func TestQuickCheckStage_Run(t *testing.T) {
 	stage.SetEnabled(true)
 
 	job := &Job{
-		Queue: &queue.Job{
-			ID: "job-qc",
-			Files: []queue.JobFile{
-				{
-					Filename:       "original.txt",
-					Bytes:          int64(len(content)),
-					AssembledCRC32: crc32.ChecksumIEEE(content),
-				},
-			},
-		},
+		Queue:       buildQCJob(t, "job-qc", "original.txt", int64(len(content)), crc32.ChecksumIEEE(content)),
 		DownloadDir: tmpDir,
 	}
 
@@ -221,16 +239,7 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 		stage.SetEnabled(true)
 
 		job := &Job{
-			Queue: &queue.Job{
-				ID: "job-qc-err",
-				Files: []queue.JobFile{
-					{
-						Filename:       "original.txt",
-						Bytes:          int64(len(content)),
-						AssembledCRC32: crc32.ChecksumIEEE(content) + 1, // Mismatch!
-					},
-				},
-			},
+			Queue:       buildQCJob(t, "job-qc-err", "original.txt", int64(len(content)), crc32.ChecksumIEEE(content)+1), // Mismatch!
 			DownloadDir: tmpDir,
 		}
 
@@ -284,16 +293,7 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 		stage.SetEnabled(true)
 
 		job := &Job{
-			Queue: &queue.Job{
-				ID: "job-qc-nocrc",
-				Files: []queue.JobFile{
-					{
-						Filename:       "original.txt",
-						Bytes:          int64(len(content)),
-						AssembledCRC32: 0, // No CRC!
-					},
-				},
-			},
+			Queue:       buildQCJob(t, "job-qc-nocrc", "original.txt", int64(len(content)), 0), // No CRC!
 			DownloadDir: tmpDir,
 		}
 
@@ -346,12 +346,7 @@ func TestQuickCheckStage_CRCErrors(t *testing.T) {
 		stage.SetEnabled(true)
 
 		job := &Job{
-			Queue: &queue.Job{
-				ID: "job-qc-unver",
-				Files: []queue.JobFile{
-					{Filename: "unrelated.dat", AssembledCRC32: 0x99999999, Bytes: 999},
-				},
-			},
+			Queue:       buildQCJob(t, "job-qc-unver", "unrelated.dat", 999, 0x99999999),
 			DownloadDir: tmpDir,
 		}
 

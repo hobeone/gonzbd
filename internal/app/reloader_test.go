@@ -9,8 +9,25 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
+
+// newBareQueueJob builds a real, empty-manifest *queue.Job via queue.NewJob,
+// with ID/MD5 set to the caller's chosen values — the plain header fields
+// are unaffected by the Manifest/Progress split, so setting them after
+// construction but before Queue.Add is safe.
+func newBareQueueJob(t *testing.T, id, md5 string) *queue.Job {
+	t.Helper()
+	job, err := queue.NewJob(&nzb.NZB{}, queue.AddOptions{Filename: id + ".nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	job.ID = id
+	job.MD5 = md5
+	return job
+}
 
 func TestApplication_ReloadOptions(t *testing.T) {
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
@@ -290,7 +307,7 @@ func TestDetectDuplicateNZB(t *testing.T) {
 	})
 
 	t.Run("duplicate via MD5 already in queue, not forced", func(t *testing.T) {
-		existing := &queue.Job{ID: "existing-not-forced", MD5: "dup-md5-queue"}
+		existing := newBareQueueJob(t, "existing-not-forced", "dup-md5-queue")
 		if err := a.queue.Add(existing); err != nil {
 			t.Fatalf("queue.Add: %v", err)
 		}
@@ -306,7 +323,7 @@ func TestDetectDuplicateNZB(t *testing.T) {
 	})
 
 	t.Run("duplicate via MD5 already in queue, forced", func(t *testing.T) {
-		existing := &queue.Job{ID: "existing-forced", MD5: "dup-md5-forced"}
+		existing := newBareQueueJob(t, "existing-forced", "dup-md5-forced")
 		if err := a.queue.Add(existing); err != nil {
 			t.Fatalf("queue.Add: %v", err)
 		}

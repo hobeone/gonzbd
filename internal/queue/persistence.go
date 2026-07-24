@@ -186,12 +186,12 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 		}
 		q.jobs = append(q.jobs, &job)
 		q.byID[id] = &job
-		// Initialize transient state (pending counters, FileIdx
-		// back-pointers) from the loaded article flags. These fields
-		// are excluded from JSON (json:"-") and must be recomputed
-		// after every deserialisation. artIdx is left unbuilt;
-		// articleByID builds it lazily the next time it is called.
-		job.recomputePending()
+		// Initialize transient counters (Pending, ArticlesResolved,
+		// ArticlesFailed) from the loaded done/failed/emitted flags. These
+		// are excluded from JSON and must be recomputed after every
+		// deserialisation. messageIDIndex is left unbuilt; articleIndexByID
+		// builds it lazily the next time it is called.
+		job.progress.recompute(job.manifest)
 	}
 	q.Prune()
 	return q, nil
@@ -245,7 +245,7 @@ func LoadJob(path string) (*Job, error) {
 	if err := readGzJSON(path, &job); err != nil {
 		return nil, err
 	}
-	job.recomputePending()
+	job.progress.recompute(job.manifest)
 	return &job, nil
 }
 

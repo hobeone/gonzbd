@@ -149,31 +149,31 @@ func TestNewJob_CategoryFallbackToDefault(t *testing.T) {
 // ---------- IsEarlyAbort ----------
 
 func TestIsEarlyAbort_NotEnoughSamples(t *testing.T) {
-	j := &Job{ArticlesResolved: 5, ArticlesFailed: 5}
+	j := &Job{progress: &JobProgress{articlesResolved: 5, articlesFailed: 5}}
 	if j.IsEarlyAbort() {
 		t.Error("fired with only 5 resolved articles, need 10")
 	}
 }
 
 func TestIsEarlyAbort_HighFailRate(t *testing.T) {
-	j := &Job{ArticlesResolved: 10, ArticlesFailed: 8} // 80%
+	j := &Job{progress: &JobProgress{articlesResolved: 10, articlesFailed: 8}} // 80%
 	if !j.IsEarlyAbort() {
 		t.Error("should fire at 80% failure rate with 10 resolved")
 	}
-	if !j.EarlyAborted {
+	if !j.progress.earlyAborted {
 		t.Error("EarlyAborted flag should be set")
 	}
 }
 
 func TestIsEarlyAbort_UnderThreshold(t *testing.T) {
-	j := &Job{ArticlesResolved: 10, ArticlesFailed: 7} // 70%
+	j := &Job{progress: &JobProgress{articlesResolved: 10, articlesFailed: 7}} // 70%
 	if j.IsEarlyAbort() {
 		t.Error("should not fire at 70% failure rate")
 	}
 }
 
 func TestIsEarlyAbort_OnlyFiresOnce(t *testing.T) {
-	j := &Job{ArticlesResolved: 10, ArticlesFailed: 10}
+	j := &Job{progress: &JobProgress{articlesResolved: 10, articlesFailed: 10}}
 	if !j.IsEarlyAbort() {
 		t.Fatal("first call should fire")
 	}
@@ -183,14 +183,14 @@ func TestIsEarlyAbort_OnlyFiresOnce(t *testing.T) {
 }
 
 func TestIsEarlyAbort_ExactThreshold(t *testing.T) {
-	j := &Job{ArticlesResolved: 10, ArticlesFailed: 8} // exactly 80%
+	j := &Job{progress: &JobProgress{articlesResolved: 10, articlesFailed: 8}} // exactly 80%
 	if !j.IsEarlyAbort() {
 		t.Error("should fire at exactly 80%")
 	}
 }
 
 func TestIsEarlyAbort_AllFailed(t *testing.T) {
-	j := &Job{ArticlesResolved: 10, ArticlesFailed: 10} // 100%
+	j := &Job{progress: &JobProgress{articlesResolved: 10, articlesFailed: 10}} // 100%
 	if !j.IsEarlyAbort() {
 		t.Error("should fire at 100% failure rate")
 	}
@@ -203,29 +203,33 @@ func TestIsEarlyAbort_AllFailed(t *testing.T) {
 // how many articles had already resolved/failed, corrupting the
 // IsEarlyAbort heuristic for jobs resumed mid-download.
 func TestRecomputePending_SeedsEarlyAbortCounters(t *testing.T) {
-	j := &Job{
-		Files: []JobFile{
-			{Articles: []JobArticle{
-				{ID: "a1", Bytes: 100, Done: true},               // resolved, succeeded
-				{ID: "a2", Bytes: 100, Done: true, Failed: true}, // resolved, failed
-				{ID: "a3", Bytes: 100, Done: true, Failed: true}, // resolved, failed
-				{ID: "a4", Bytes: 100},                           // still pending
-			}},
-		},
+	files := []JobFile{
+		{Articles: []JobArticle{
+			{ID: "a1", Bytes: 100},
+			{ID: "a2", Bytes: 100},
+			{ID: "a3", Bytes: 100},
+			{ID: "a4", Bytes: 100}, // still pending
+		}},
 	}
+	j := &Job{manifest: newManifest(files)}
+	j.progress = newJobProgress(j.manifest)
+	j.progress.done[0] = true                             // resolved, succeeded
+	j.progress.done[1], j.progress.failed[1] = true, true // resolved, failed
+	j.progress.done[2], j.progress.failed[2] = true, true // resolved, failed
 	// Simulate the state right after a JSON unmarshal from disk: the
-	// json:"-" transient counters are zero even though the persisted
-	// article flags above record 3 already-resolved articles (2 failed).
-	j.ArticlesResolved = 0
-	j.ArticlesFailed = 0
+	// excluded-from-JSON transient counters are zero even though the
+	// persisted article flags above record 3 already-resolved articles
+	// (2 failed).
+	j.progress.articlesResolved = 0
+	j.progress.articlesFailed = 0
 
-	j.recomputePending()
+	j.progress.recompute(j.manifest)
 
-	if j.ArticlesResolved != 3 {
-		t.Errorf("ArticlesResolved = %d, want 3 (count of Done articles)", j.ArticlesResolved)
+	if j.progress.articlesResolved != 3 {
+		t.Errorf("ArticlesResolved = %d, want 3 (count of Done articles)", j.progress.articlesResolved)
 	}
-	if j.ArticlesFailed != 2 {
-		t.Errorf("ArticlesFailed = %d, want 2 (count of Done&&Failed articles)", j.ArticlesFailed)
+	if j.progress.articlesFailed != 2 {
+		t.Errorf("ArticlesFailed = %d, want 2 (count of Done&&Failed articles)", j.progress.articlesFailed)
 	}
 }
 
@@ -237,18 +241,21 @@ func TestRecomputePending_SeedsEarlyAbortCounters(t *testing.T) {
 func TestRecomputePending_EarlyAbortFiresAfterReload(t *testing.T) {
 	articles := make([]JobArticle, 0, 10)
 	for i := range 10 {
-		art := JobArticle{ID: fmt.Sprintf("a%d", i), Bytes: 100, Done: true}
-		if i < 8 {
-			art.Failed = true
-		}
-		articles = append(articles, art)
+		articles = append(articles, JobArticle{ID: fmt.Sprintf("a%d", i), Bytes: 100})
 	}
-	j := &Job{Files: []JobFile{{Articles: articles}}}
+	j := &Job{manifest: newManifest([]JobFile{{Articles: articles}})}
+	j.progress = newJobProgress(j.manifest)
+	for i := range 10 {
+		j.progress.done[i] = true
+		if i < 8 {
+			j.progress.failed[i] = true
+		}
+	}
 	// Simulate post-unmarshal zeroing of the transient counters.
-	j.ArticlesResolved = 0
-	j.ArticlesFailed = 0
+	j.progress.articlesResolved = 0
+	j.progress.articlesFailed = 0
 
-	j.recomputePending()
+	j.progress.recompute(j.manifest)
 
 	if !j.IsEarlyAbort() {
 		t.Error("IsEarlyAbort should fire immediately after reload: 8/10 failures were already on disk")
@@ -349,8 +356,8 @@ func TestNewJob_CategoryPriorityBoundaryClamping(t *testing.T) {
 
 // TestAdd_DoesNotBuildArtIndexEagerly pins the memory-reduction invariant: a
 // freshly queued job that has not yet been touched by the download pipeline
-// must not have allocated the messageID->*JobArticle index. articleByID
-// builds it lazily on first access; recomputePending must not force it early.
+// must not have allocated the messageID->index map. articleIndexByID builds
+// it lazily on first access; Add's recompute call must not force it early.
 func TestAdd_DoesNotBuildArtIndexEagerly(t *testing.T) {
 	job, err := NewJob(minimalNZB(), AddOptions{Filename: "rel.nzb"}, fsutil.SanitizeOptions{})
 	if err != nil {
@@ -360,36 +367,32 @@ func TestAdd_DoesNotBuildArtIndexEagerly(t *testing.T) {
 	if err := q.Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if job.artIdx != nil {
-		t.Fatalf("artIdx was built eagerly at Add; want nil until first articleByID call")
-	}
-	// FileIdx back-pointers must still be correct without the map, since
-	// recomputePending's own loop sets them independently of buildArtIndex.
-	if job.Files[0].Articles[0].FileIdx != 0 {
-		t.Fatalf("FileIdx = %d, want 0", job.Files[0].Articles[0].FileIdx)
+	if job.manifest.messageIDIndex != nil {
+		t.Fatalf("messageIDIndex was built eagerly at Add; want nil until first articleIndexByID call")
 	}
 }
 
-// TestJob_DropArtIndex pins dropArtIndex's own behavior directly on *Job,
-// isolated from any Queue method that happens to call it.
+// TestJob_DropArtIndex pins dropMessageIDIndex's own behavior directly on
+// *Manifest, isolated from any Queue method that happens to call it.
 func TestJob_DropArtIndex(t *testing.T) {
 	job, err := NewJob(minimalNZB(), AddOptions{Filename: "rel.nzb"}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
 	}
-	id := job.Files[0].Articles[0].ID
-	if got := job.articleByID(id); got == nil {
-		t.Fatal("articleByID returned nil for a present article")
+	id := job.manifest.ArticleID(0)
+	if _, ok := job.manifest.articleIndexByID(id); !ok {
+		t.Fatal("articleIndexByID returned false for a present article")
 	}
-	if job.artIdx == nil {
-		t.Fatal("precondition: index should be built after articleByID")
+	if job.manifest.messageIDIndex == nil {
+		t.Fatal("precondition: index should be built after articleIndexByID")
 	}
-	job.dropArtIndex()
-	if job.artIdx != nil {
-		t.Fatal("dropArtIndex should nil out the index")
+	job.manifest.dropMessageIDIndex()
+	if job.manifest.messageIDIndex != nil {
+		t.Fatal("dropMessageIDIndex should nil out the index")
 	}
-	// articleByID must still work afterward, rebuilding from scratch.
-	if got := job.articleByID(id); got == nil || got.ID != id {
-		t.Fatalf("articleByID(%q) after dropArtIndex = %v, want a match", id, got)
+	// articleIndexByID must still work afterward, rebuilding from scratch.
+	idx, ok := job.manifest.articleIndexByID(id)
+	if !ok || job.manifest.ArticleID(idx) != id {
+		t.Fatalf("articleIndexByID(%q) after dropMessageIDIndex = (%v, %v), want a match", id, idx, ok)
 	}
 }

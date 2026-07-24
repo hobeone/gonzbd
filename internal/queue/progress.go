@@ -1,0 +1,401 @@
+package queue
+
+import (
+	"encoding/json"
+	"maps"
+	"time"
+)
+
+// JobProgress is the mutable per-article and per-file state of a job:
+// which articles are done/failed/emitted, per-file assembly bookkeeping,
+// and job-level counters. Always sized to match its Manifest's
+// NumArticles()/NumFiles(). Deep-copied on every Snapshot/SnapshotJob
+// (unlike Manifest, which is shared).
+type JobProgress struct {
+	done, failed, emitted []bool // flat, global article index; emitted is transient and never persisted
+	files                 []FileProgress
+
+	pendingArticles   int
+	articlesResolved  int
+	articlesFailed    int
+	earlyAborted      bool
+	failedBytes       int64
+	remainingBytes    int64
+	serverStats       map[string]int64
+	downloadStarted   time.Time
+	downloadFinished  time.Time
+	par2Recovered     bool
+	par2ReleaseReason string
+}
+
+// FileProgress is one file's mutable assembly state.
+type FileProgress struct {
+	Complete        bool
+	Deferred        bool
+	Pending         int
+	BytesDownloaded int64
+	WriteCursor     int64
+	Filename        string // resolved on-disk filename; empty until resolved
+	AssembledCRC32  uint32
+}
+
+// newJobProgress returns a zero-value JobProgress sized to m: RemainingBytes
+// starts at m.TotalBytes() and every file's Pending starts at its article
+// count (all articles start undone/unemitted).
+func newJobProgress(m *Manifest) *JobProgress {
+	p := &JobProgress{
+		done:           make([]bool, m.NumArticles()),
+		failed:         make([]bool, m.NumArticles()),
+		emitted:        make([]bool, m.NumArticles()),
+		files:          make([]FileProgress, m.NumFiles()),
+		remainingBytes: m.TotalBytes(),
+	}
+	for fi := range p.files {
+		lo, hi := m.FileRange(fi)
+		p.files[fi].Pending = hi - lo
+	}
+	return p
+}
+
+// ArticleDone reports whether global article index i has resolved (success or failure).
+func (p *JobProgress) ArticleDone(i int) bool { return p.done[i] }
+
+// ArticleFailed reports whether global article index i permanently failed.
+func (p *JobProgress) ArticleFailed(i int) bool { return p.failed[i] }
+
+// ArticleEmitted reports whether global article index i has an in-flight result
+// handed to the assembler but not yet made durable.
+func (p *JobProgress) ArticleEmitted(i int) bool { return p.emitted[i] }
+
+// FileComplete reports whether file fileIdx has been fully assembled on disk.
+func (p *JobProgress) FileComplete(fi int) bool { return p.files[fi].Complete }
+
+// FileDeferred reports whether file fileIdx is currently held back from dispatch.
+func (p *JobProgress) FileDeferred(fi int) bool { return p.files[fi].Deferred }
+
+// FilePending returns the count of not-yet-resolved articles in file fileIdx.
+func (p *JobProgress) FilePending(fi int) int { return p.files[fi].Pending }
+
+// FileBytesDownloaded returns the sum of successfully downloaded article bytes in file fileIdx.
+func (p *JobProgress) FileBytesDownloaded(fi int) int64 { return p.files[fi].BytesDownloaded }
+
+// FileWriteCursor returns the assembler's contiguous write frontier for file fileIdx.
+func (p *JobProgress) FileWriteCursor(fi int) int64 { return p.files[fi].WriteCursor }
+
+// FileFilename returns the resolved on-disk filename for file fileIdx, or empty if unresolved.
+func (p *JobProgress) FileFilename(fi int) string { return p.files[fi].Filename }
+
+// FileAssembledCRC32 returns the assembled CRC32 for file fileIdx, or zero if unavailable.
+func (p *JobProgress) FileAssembledCRC32(fi int) uint32 { return p.files[fi].AssembledCRC32 }
+
+// PendingArticles returns the count of not-yet-resolved articles across all files.
+func (p *JobProgress) PendingArticles() int { return p.pendingArticles }
+
+// ArticlesResolved returns the count of articles that have resolved (success or failure).
+func (p *JobProgress) ArticlesResolved() int { return p.articlesResolved }
+
+// ArticlesFailed returns the count of articles that have permanently failed.
+func (p *JobProgress) ArticlesFailed() int { return p.articlesFailed }
+
+// EarlyAborted reports whether the early-abort heuristic has already fired for this job.
+func (p *JobProgress) EarlyAborted() bool { return p.earlyAborted }
+
+// FailedBytes returns the sum of bytes belonging to permanently failed articles.
+func (p *JobProgress) FailedBytes() int64 { return p.failedBytes }
+
+// RemainingBytes returns TotalBytes minus the bytes of successfully completed articles.
+func (p *JobProgress) RemainingBytes() int64 { return p.remainingBytes }
+
+// ServerStats returns a defensive copy, matching cloneJob's current
+// maps.Copy behavior — callers cannot mutate the job's live map through it.
+func (p *JobProgress) ServerStats() map[string]int64 {
+	if p.serverStats == nil {
+		return nil
+	}
+	cp := make(map[string]int64, len(p.serverStats))
+	maps.Copy(cp, p.serverStats)
+	return cp
+}
+
+// DownloadStarted returns the wall-clock time the first article began downloading, or zero.
+func (p *JobProgress) DownloadStarted() time.Time { return p.downloadStarted }
+
+// DownloadFinished returns the wall-clock time the download phase completed, or zero.
+func (p *JobProgress) DownloadFinished() time.Time { return p.downloadFinished }
+
+// Par2Recovered reports whether on-demand par2 has un-deferred this job's recovery volumes.
+func (p *JobProgress) Par2Recovered() bool { return p.par2Recovered }
+
+// Par2ReleaseReason explains why deferred recovery volumes were released for download.
+func (p *JobProgress) Par2ReleaseReason() string { return p.par2ReleaseReason }
+
+// HasDeferredPar2 reports whether any file is currently deferred.
+func (p *JobProgress) HasDeferredPar2() bool {
+	for i := range p.files {
+		if p.files[i].Deferred {
+			return true
+		}
+	}
+	return false
+}
+
+// DeferredRecoveryIndices returns the file indices of all currently-deferred
+// par2 recovery volumes.
+func (p *JobProgress) DeferredRecoveryIndices() []int {
+	var idxs []int
+	for i := range p.files {
+		if p.files[i].Deferred {
+			idxs = append(idxs, i)
+		}
+	}
+	return idxs
+}
+
+// clone returns a deep copy, used by cloneJob.
+func (p *JobProgress) clone() *JobProgress {
+	cp := *p
+
+	cp.done = make([]bool, len(p.done))
+	copy(cp.done, p.done)
+	cp.failed = make([]bool, len(p.failed))
+	copy(cp.failed, p.failed)
+	cp.emitted = make([]bool, len(p.emitted))
+	copy(cp.emitted, p.emitted)
+	cp.files = make([]FileProgress, len(p.files))
+	copy(cp.files, p.files)
+
+	if p.serverStats != nil {
+		cp.serverStats = make(map[string]int64, len(p.serverStats))
+		maps.Copy(cp.serverStats, p.serverStats)
+	}
+	return &cp
+}
+
+// recompute recalculates each file's Pending and the job-level
+// pendingArticles/articlesResolved/articlesFailed counters from the ground
+// truth (done/failed/emitted flags), against m's file ranges. Called after
+// Add and Load, and after any bulk state change (ClearAllEmitted,
+// DiscardDeferredPar2, undeferRecoveryLocked) where incremental tracking is
+// impractical.
+func (p *JobProgress) recompute(m *Manifest) {
+	total := 0
+	var resolved, failed int
+	for fi := range m.NumFiles() {
+		lo, hi := m.FileRange(fi)
+		n := 0
+		var downloaded int64
+		// Deferred files (on-demand par2 recovery volumes) are not dispatched,
+		// so they contribute zero pending work.
+		deferred := p.files[fi].Deferred
+		for i := lo; i < hi; i++ {
+			if !deferred && !p.done[i] && !p.emitted[i] {
+				n++
+			}
+			if p.done[i] && !p.failed[i] {
+				downloaded += int64(m.ArticleBytes(i))
+			}
+			if p.done[i] {
+				resolved++
+				if p.failed[i] {
+					failed++
+				}
+			}
+		}
+		p.files[fi].Pending = n
+		p.files[fi].BytesDownloaded = downloaded
+		total += n
+	}
+	p.pendingArticles = total
+	p.articlesResolved = resolved
+	p.articlesFailed = failed
+}
+
+// markEmitted flags article i as having a result in flight from the
+// downloader to the assembler. Idempotent: a no-op if the article is
+// already Emitted, Done, or Failed. Returns whether it actually flipped.
+func (p *JobProgress) markEmitted(m *Manifest, i int) bool {
+	if p.emitted[i] || p.done[i] {
+		return false
+	}
+	p.emitted[i] = true
+	fi := m.fileIndexForArticle(i)
+	p.files[fi].Pending--
+	p.pendingArticles--
+	return true
+}
+
+// clearEmitted resets the transient Emitted flag on article i, restoring it
+// to pending unless it has already completed.
+func (p *JobProgress) clearEmitted(m *Manifest, i int) {
+	if p.emitted[i] && !p.done[i] {
+		p.emitted[i] = false
+		fi := m.fileIndexForArticle(i)
+		p.files[fi].Pending++
+		p.pendingArticles++
+	} else if p.emitted[i] {
+		p.emitted[i] = false
+	}
+}
+
+// markDone flips Done on article i and updates counters. Returns false
+// (no-op) if the article was already Done.
+func (p *JobProgress) markDone(m *Manifest, i int) bool {
+	if p.done[i] {
+		return false
+	}
+	fi := m.fileIndexForArticle(i)
+	if !p.emitted[i] {
+		p.files[fi].Pending--
+		p.pendingArticles--
+	}
+	p.done[i] = true
+	p.emitted[i] = false
+	bytes := int64(m.ArticleBytes(i))
+	p.remainingBytes -= bytes
+	p.articlesResolved++
+	p.files[fi].BytesDownloaded += bytes
+	return true
+}
+
+// markFailed flips Done+Failed on article i and updates counters. Returns
+// false (no-op) if the article was already Done.
+func (p *JobProgress) markFailed(m *Manifest, i int) bool {
+	if p.done[i] {
+		return false
+	}
+	fi := m.fileIndexForArticle(i)
+	if !p.emitted[i] {
+		p.files[fi].Pending--
+		p.pendingArticles--
+	}
+	p.done[i] = true
+	p.failed[i] = true
+	p.emitted[i] = false
+	bytes := int64(m.ArticleBytes(i))
+	p.failedBytes += bytes
+	p.remainingBytes -= bytes
+	p.articlesResolved++
+	p.articlesFailed++
+	return true
+}
+
+// resetForReload clears the transient Emitted flag on article i and, if it
+// was Failed, resets it to retryable (Done=false, Failed=false), restoring
+// its bytes to FailedBytes/RemainingBytes. Used by ClearAllEmitted on a
+// downloader reload; recompute must be called afterward to rebuild Pending
+// counters from the resulting ground truth.
+func (p *JobProgress) resetForReload(m *Manifest, i int) {
+	p.emitted[i] = false
+	if p.failed[i] {
+		bytes := int64(m.ArticleBytes(i))
+		p.failedBytes -= bytes
+		p.remainingBytes += bytes
+		p.done[i] = false
+		p.failed[i] = false
+	}
+}
+
+// fileProgressJSON is one file's on-disk shape. Pending and BytesDownloaded
+// are excluded — derived state, recomputed by recompute() after load.
+type fileProgressJSON struct {
+	Complete       bool   `json:"complete,omitempty"`
+	Deferred       bool   `json:"deferred,omitempty"`
+	WriteCursor    int64  `json:"write_cursor,omitempty"`
+	Filename       string `json:"filename,omitempty"`
+	AssembledCRC32 uint32 `json:"assembled_crc32,omitempty"`
+}
+
+// jobProgressJSON is JobProgress's on-disk shape. emitted, pendingArticles,
+// articlesResolved, articlesFailed, and earlyAborted are all deliberately
+// excluded — these are correctness exclusions, not wire-compatibility ones.
+// emitted in particular must never survive a restart: on crash recovery,
+// any article whose bytes hadn't reached stable storage needs to be
+// re-dispatched, and persisting emitted would let it be silently skipped.
+type jobProgressJSON struct {
+	Done   []bool             `json:"done"`
+	Failed []bool             `json:"failed"`
+	Files  []fileProgressJSON `json:"files"`
+
+	FailedBytes       int64            `json:"failed_bytes"`
+	RemainingBytes    int64            `json:"remaining_bytes"`
+	ServerStats       map[string]int64 `json:"server_stats,omitempty"`
+	DownloadStarted   time.Time        `json:"download_started"`
+	DownloadFinished  time.Time        `json:"download_finished"`
+	Par2Recovered     bool             `json:"par2_recovered,omitempty"`
+	Par2ReleaseReason string           `json:"par2_release_reason,omitempty"`
+}
+
+// MarshalJSON implements json.Marshaler.
+func (p *JobProgress) MarshalJSON() ([]byte, error) {
+	files := make([]fileProgressJSON, len(p.files))
+	for fi, f := range p.files {
+		files[fi] = fileProgressJSON{
+			Complete:       f.Complete,
+			Deferred:       f.Deferred,
+			WriteCursor:    f.WriteCursor,
+			Filename:       f.Filename,
+			AssembledCRC32: f.AssembledCRC32,
+		}
+	}
+	return json.Marshal(jobProgressJSON{
+		Done:              p.done,
+		Failed:            p.failed,
+		Files:             files,
+		FailedBytes:       p.failedBytes,
+		RemainingBytes:    p.remainingBytes,
+		ServerStats:       p.serverStats,
+		DownloadStarted:   p.downloadStarted,
+		DownloadFinished:  p.downloadFinished,
+		Par2Recovered:     p.par2Recovered,
+		Par2ReleaseReason: p.par2ReleaseReason,
+	})
+}
+
+// UnmarshalJSON implements json.Unmarshaler. pendingArticles/
+// articlesResolved/articlesFailed are left zero; callers (Load/LoadJob)
+// must call recompute afterward to rebuild them from done/failed/emitted
+// ground truth.
+func (p *JobProgress) UnmarshalJSON(data []byte) error {
+	var pj jobProgressJSON
+	if err := json.Unmarshal(data, &pj); err != nil {
+		return err
+	}
+	p.done = pj.Done
+	p.failed = pj.Failed
+	p.emitted = make([]bool, len(pj.Done))
+	p.files = make([]FileProgress, len(pj.Files))
+	for fi, f := range pj.Files {
+		p.files[fi] = FileProgress{
+			Complete:       f.Complete,
+			Deferred:       f.Deferred,
+			WriteCursor:    f.WriteCursor,
+			Filename:       f.Filename,
+			AssembledCRC32: f.AssembledCRC32,
+		}
+	}
+	p.failedBytes = pj.FailedBytes
+	p.remainingBytes = pj.RemainingBytes
+	p.serverStats = pj.ServerStats
+	p.downloadStarted = pj.DownloadStarted
+	p.downloadFinished = pj.DownloadFinished
+	p.par2Recovered = pj.Par2Recovered
+	p.par2ReleaseReason = pj.Par2ReleaseReason
+	return nil
+}
+
+// isEarlyAbort returns true if the job should be aborted based on the
+// first-article failure rate. See Job.IsEarlyAbort for the heuristic.
+func (p *JobProgress) isEarlyAbort() bool {
+	if p.earlyAborted {
+		return false
+	}
+	if p.articlesResolved < earlyAbortSample {
+		return false
+	}
+	rate := float64(p.articlesFailed) / float64(p.articlesResolved)
+	if rate >= earlyAbortThreshold {
+		p.earlyAborted = true
+		return true
+	}
+	return false
+}
