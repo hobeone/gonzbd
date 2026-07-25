@@ -106,7 +106,8 @@ general:
   log_dir: ""
 
   # Directory for queue state and admin data. Stores the persistent
-  # job queue (JSON+gzip) between restarts. Defaults to
+  # job queue in SQLite (queue.db) and immutable manifests in
+  # manifests/<id>.json.gz between restarts. Defaults to
   # <download_dir>/admin if empty.
   admin_dir: admin
 
@@ -161,6 +162,10 @@ downloads:
   # Maximum retry attempts per article on optional (backup) servers
   # specifically. Must be >= 0.
   max_art_opt: 1
+
+  # Maximum number of jobs downloading or repairing concurrently.
+  # Defaults to 4.
+  max_active_jobs: 4
 
   # When true, only dispatch articles to the highest-priority server.
   # Disables fallback to backup servers entirely.
