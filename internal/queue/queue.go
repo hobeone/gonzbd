@@ -315,6 +315,7 @@ func (q *Queue) Add(job *Job) error {
 	job.progress.recompute(job.manifest)
 
 	if q.store != nil {
+		//lockio: holding q.mu across q.store.Add is intentional to prevent TOCTOU name collisions and guarantee atomic RAM/SQLite state consistency before background downloader dispatch.
 		if err := q.store.Add(context.Background(), job); err != nil {
 			return err
 		}
