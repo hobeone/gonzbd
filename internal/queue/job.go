@@ -135,6 +135,54 @@ func (j *Job) Manifest() *Manifest { return j.manifest }
 // mutating exported method, so handing out the pointer is safe.
 func (j *Job) Progress() *JobProgress { return j.progress }
 
+// JobPhase represents the high-level operational phase of a download job.
+type JobPhase int
+
+// JobPhase enum values.
+const (
+	PhasePending JobPhase = iota
+	PhaseActive
+	PhaseProcessing
+	PhasePaused
+	PhaseTerminal
+)
+
+// Phase returns the JobPhase corresponding to the job's current Status.
+func (j *Job) Phase() JobPhase {
+	switch j.Status {
+	case constants.StatusQueued, constants.StatusPropagating:
+		return PhasePending
+	case constants.StatusDownloading, constants.StatusFetching:
+		return PhaseActive
+	case constants.StatusVerifying, constants.StatusQuickCheck, constants.StatusRepairing,
+		constants.StatusExtracting, constants.StatusMoving, constants.StatusRunning:
+		return PhaseProcessing
+	case constants.StatusPaused:
+		return PhasePaused
+	case constants.StatusCompleted, constants.StatusFailed, constants.StatusDeleted:
+		return PhaseTerminal
+	default:
+		return PhasePending
+	}
+}
+
+func (p JobPhase) String() string {
+	switch p {
+	case PhasePending:
+		return "Pending"
+	case PhaseActive:
+		return "Active"
+	case PhaseProcessing:
+		return "Processing"
+	case PhasePaused:
+		return "Paused"
+	case PhaseTerminal:
+		return "Terminal"
+	default:
+		return "Unknown"
+	}
+}
+
 const (
 	// earlyAbortSample is the number of articles that must resolve
 	// before the early-abort heuristic fires. Too small → false
@@ -361,6 +409,9 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 // do not block completion — by design they are only fetched if repair is
 // needed, so a job whose non-deferred files are all complete is "downloaded".
 func (j *Job) IsComplete() bool {
+	if j.manifest == nil || j.progress == nil {
+		return false
+	}
 	for i := range j.manifest.NumFiles() {
 		if j.progress.FileDeferred(i) {
 			continue
@@ -396,6 +447,9 @@ func (j *Job) DeferredRecoveryIndices() []int {
 func (j *Job) ResetForRetry() {
 	j.Status = constants.StatusQueued
 	j.PostProc = false
+	if j.progress == nil || j.manifest == nil {
+		return
+	}
 	j.progress.downloadStarted = time.Time{}
 	j.progress.downloadFinished = time.Time{}
 	j.progress.serverStats = nil
@@ -421,6 +475,7 @@ func (j *Job) ResetForRetry() {
 			j.progress.files[fi].Complete = false
 		}
 	}
+	j.progress.recompute(j.manifest)
 }
 
 // MarkDownloadFinished sets the job's download-finished timestamp. Intended
@@ -428,7 +483,9 @@ func (j *Job) ResetForRetry() {
 // result) rather than a live queue reference — it performs no queue
 // locking of its own.
 func (j *Job) MarkDownloadFinished(t time.Time) {
-	j.progress.downloadFinished = t
+	if j.progress != nil {
+		j.progress.downloadFinished = t
+	}
 }
 
 // jobJSON is Job's on-disk shape: header fields plus the two nested

@@ -27,7 +27,11 @@ func cloneJob(j *Job) *Job {
 	cp := *j
 
 	cp.manifest = j.manifest
-	cp.progress = j.progress.clone()
+	if j.progress != nil {
+		cp.progress = j.progress.clone()
+	} else {
+		cp.progress = nil
+	}
 
 	// Deep copy maps
 	if j.Meta != nil {

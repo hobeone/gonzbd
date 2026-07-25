@@ -237,6 +237,7 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
 			JobID:     res.JobID,
 			FileIdx:   res.FileIdx,
+			ArtIdx:    res.ArtIdx,
 			MessageID: res.MessageID,
 			FatalErr:  res.Err,
 		})
@@ -245,7 +246,7 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 			p.log.Warn("write fatal article failed, returning to dispatch pool",
 				"job", res.JobID, "msgid", res.MessageID, "err", writeErr)
-			_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
+			_ = p.queue.ClearArticleEmittedByIdx(res.JobID, res.ArtIdx)
 		}
 		telemetry.ArticlesFailed.Add(1)
 
@@ -265,7 +266,7 @@ func (p *pipeline) handleFailureResult(ctx context.Context, res *downloader.Arti
 		// article on the next pass.
 		p.log.Debug("fetch error, returning to dispatch pool",
 			"job", res.JobID, "msgid", res.MessageID, "server", res.ServerName, "err", res.Err)
-		if err := p.queue.ClearArticleEmitted(res.JobID, res.MessageID); err != nil {
+		if err := p.queue.ClearArticleEmittedByIdx(res.JobID, res.ArtIdx); err != nil {
 			p.log.Debug("clear emitted failed, this typically happens when a job has already been stopped", "job", res.JobID, "msgid", res.MessageID, "err", err)
 		}
 		telemetry.ArticlesRetried.Add(1)
@@ -287,12 +288,12 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	// Record download stats
 	if err := p.queue.MarkJobStarted(res.JobID, time.Now()); err != nil {
 		p.log.Debug("mark job started failed (job likely removed)", "job", res.JobID, "err", err)
-		_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
+		_ = p.queue.ClearArticleEmittedByIdx(res.JobID, res.ArtIdx)
 		return
 	}
 	if err := p.queue.RecordDownload(res.JobID, res.ServerName, len(res.Data)); err != nil {
 		p.log.Debug("record download failed (job likely removed)", "job", res.JobID, "err", err)
-		_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
+		_ = p.queue.ClearArticleEmittedByIdx(res.JobID, res.ArtIdx)
 		return
 	}
 
@@ -303,13 +304,14 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	if err := p.registerFile(res.JobID, res.FileIdx); err != nil {
 		p.log.Warn("register file failed",
 			"job", res.JobID, "fileidx", res.FileIdx, "err", err)
-		_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
+		_ = p.queue.ClearArticleEmittedByIdx(res.JobID, res.ArtIdx)
 		return
 	}
 
 	writeErr := p.assembler.WriteArticle(ctx, assembler.WriteRequest{
 		JobID:     res.JobID,
 		FileIdx:   res.FileIdx,
+		ArtIdx:    res.ArtIdx,
 		MessageID: res.MessageID,
 		Offset:    res.Offset,
 		Data:      res.Data,
@@ -318,7 +320,7 @@ func (p *pipeline) handleSuccessResult(ctx context.Context, res *downloader.Arti
 	if writeErr != nil && !errors.Is(writeErr, context.Canceled) {
 		p.log.Warn("write article failed, returning to dispatch pool",
 			"job", res.JobID, "msgid", res.MessageID, "err", writeErr)
-		_ = p.queue.ClearArticleEmitted(res.JobID, res.MessageID)
+		_ = p.queue.ClearArticleEmittedByIdx(res.JobID, res.ArtIdx)
 	} else if writeErr == nil {
 		bufferConsumed = true // assembler owns the buffer now
 		telemetry.ArticlesWritten.Add(1)

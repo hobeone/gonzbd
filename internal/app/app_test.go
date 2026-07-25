@@ -365,7 +365,10 @@ func TestRetryHistoryJob(t *testing.T) {
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
 
-	mock := startMockNNTP(t, map[string][]byte{})
+	rawPayload := makeDeterministic(1024)
+	mock := startMockNNTP(t, map[string][]byte{
+		"a@t": yencEncodePart("file.bin", 1, 1, rawPayload, 1024, 1, 1024),
+	})
 
 	appCfg := testConfig(
 		downloadDir,
@@ -435,6 +438,7 @@ func TestRetryHistoryJob(t *testing.T) {
 	// (before MarkJobStarted/RecordDownload ever run), so the status is
 	// deterministically Queued rather than "maybe further along."
 	application.PauseDownloads()
+	application.Queue().PauseAll()
 	defer application.ResumeDownloads()
 
 	// 2. Trigger Retry
@@ -474,8 +478,9 @@ func TestRetryHistoryJob(t *testing.T) {
 		t.Error("expected history_updated event, got none")
 	}
 
-	// 5. Resume and wait for it to finish to be clean
+	// 5. Resume downloads first, then unpause queue to trigger promotion and dispatch
 	application.ResumeDownloads()
+	application.Queue().ResumeAll()
 	select {
 	case <-application.PostProcComplete():
 	case <-time.After(5 * time.Second):

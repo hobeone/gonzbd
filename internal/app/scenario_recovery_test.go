@@ -19,8 +19,9 @@ import (
 
 func newSeedQueue(t *testing.T, repo *history.Repository, adminDir string) *queue.Queue {
 	t.Helper()
-	store := queue.NewSQLiteStore(repo.DB(), filepath.Join(adminDir, "queue"), repo)
-	return queue.New(queue.WithStore(store))
+	dir := filepath.Join(adminDir, "queue")
+	store := queue.NewSQLiteStore(repo.DB(), dir, repo)
+	return queue.New(queue.WithStore(store), queue.WithStateDir(dir))
 }
 
 func loadTestQueue(t *testing.T, repo *history.Repository, adminDir string) *queue.Queue {
@@ -52,17 +53,22 @@ func seedCompletedJob(t *testing.T, seed *queue.Queue, id, name string, postProc
 	if err := seed.Add(job); err != nil {
 		t.Fatalf("seed.Add: %v", err)
 	}
+	startTime := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	finishTime := time.Now().Truncate(time.Second)
+	_ = seed.MarkJobStarted(job.ID, startTime)
 	if err := seed.MarkArticlesDone(job.ID, []string{"a@t"}); err != nil {
 		t.Fatalf("MarkArticlesDone: %v", err)
 	}
 	if err := seed.MarkFileComplete(job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}
+	_ = seed.MarkDownloadFinished(job.ID, finishTime)
 	// Set PostProc directly (still a plain exported field), leaving Status
 	// at Queued — this reproduces the exact crash-simulated inconsistency
 	// under test: PostProc=true while Status never transitioned through
 	// SetPostProcStarted (a real crash can strand this exact combination).
 	job.PostProc = postProc
+	seed.ResumeAll()
 }
 
 // TestRecovery_PostProcTrueOnRestart verifies that Application.Start
@@ -149,6 +155,14 @@ func TestRecovery_PostProcTrueOnRestart(t *testing.T) {
 	})
 
 	waitForHistoryAndQueueCleanup(t, repo, a, jobID)
+
+	histEntry, err := repo.Get(t.Context(), jobID)
+	if err != nil {
+		t.Fatalf("repo.Get: %v", err)
+	}
+	if histEntry.DownloadTime <= 0 {
+		t.Errorf("DownloadTime = %d, want > 0 after recovery", histEntry.DownloadTime)
+	}
 }
 
 // drainAny reads values from src until ctx is done or src is closed.

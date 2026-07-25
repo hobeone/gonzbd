@@ -214,8 +214,7 @@ func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	store := queue.NewSQLiteStore(repo.DB(), filepath.Join(adminDir, "queue"), repo)
-	seed := queue.New(queue.WithStore(store))
+	seed := newSeedQueue(t, repo, adminDir)
 	seedCompletedJob(t, seed, jobID, "recovery-mid-pp", true)
 	if err := seed.Save(filepath.Join(adminDir, "queue")); err != nil {
 		t.Fatalf("seed.Save: %v", err)

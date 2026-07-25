@@ -8,6 +8,7 @@ import (
 
 func TestQueue_Snapshot(t *testing.T) {
 	q := New()
+	q.PauseAll()
 	job := &Job{
 		ID:     "test-job",
 		Name:   "Test Job",

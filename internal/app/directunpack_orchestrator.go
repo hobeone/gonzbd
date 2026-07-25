@@ -55,7 +55,7 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 		return
 	}
 	m := snap.Manifest()
-	if fc.FileIdx < 0 || fc.FileIdx >= m.NumFiles() {
+	if m == nil || fc.FileIdx < 0 || fc.FileIdx >= m.NumFiles() {
 		return
 	}
 	filename := m.FileSubject(fc.FileIdx)
