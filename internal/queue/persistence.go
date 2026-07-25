@@ -55,7 +55,10 @@ func (q *Queue) Save(dir string) error {
 
 func (q *Queue) saveStore(_ string) error {
 	q.mu.RLock()
-	snapshots := append([]*Job(nil), q.jobs...)
+	snapshots := make([]*Job, 0, len(q.jobs))
+	for _, job := range q.jobs {
+		snapshots = append(snapshots, cloneJob(job))
+	}
 	paused := q.paused
 	q.mu.RUnlock()
 

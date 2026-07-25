@@ -40,6 +40,7 @@ CREATE TABLE job_files (
     bytes_downloaded INTEGER NOT NULL DEFAULT 0,
     filename         TEXT,
     assembled_crc32  INTEGER DEFAULT 0,
+    articles_done    TEXT,
     UNIQUE(job_id, file_index)
 );
 

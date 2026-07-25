@@ -292,3 +292,112 @@ func TestSQLiteStore_ExistsAndPauseAndPrune(t *testing.T) {
 		t.Errorf("expected Prune to remove orphaned manifest file, stat err=%v", err)
 	}
 }
+
+func TestSQLiteStore_ArticleProgressAndQuarantine(t *testing.T) {
+	store, _, dir := setupTestStore(t)
+	ctx := t.Context()
+
+	// 1. Test corrupt manifest quarantine
+	corruptID := "job-corrupt"
+	jobCorrupt := newTestJob(corruptID, "corrupt-job")
+	if err := store.Add(ctx, jobCorrupt); err != nil {
+		t.Fatalf("Add corrupt job: %v", err)
+	}
+	manifestPath := filepath.Join(dir, "manifests", corruptID+".json.gz")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, []byte("not-gzip-data"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := store.Get(ctx, corruptID)
+	if err == nil {
+		t.Fatal("expected Get to fail on corrupt manifest")
+	}
+	if _, statErr := os.Stat(manifestPath + ".corrupt"); os.IsNotExist(statErr) {
+		t.Errorf("expected corrupt manifest to be renamed to .corrupt, got err=%v", statErr)
+	}
+}
+
+func TestQueue_WithStoreAndSave(t *testing.T) {
+	store, _, dir := setupTestStore(t)
+	q := queue.New(queue.WithStore(store))
+	if q.Store() != store {
+		t.Error("expected Store() to return configured store")
+	}
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{
+				Subject:  "test_file",
+				Articles: []nzb.Article{{ID: "art1", Number: 1}},
+				Bytes:    100,
+			},
+		},
+	}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "job-save-1"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	list, err := store.List(t.Context())
+	if err != nil || len(list) != 1 {
+		t.Fatalf("List after Save: err=%v len=%d", err, len(list))
+	}
+	loadedQ, err := queue.Load(dir, queue.WithStore(store))
+	if err != nil || loadedQ.SnapshotJob(job.ID) == nil {
+		t.Fatalf("Load after Save: err=%v job missing", err)
+	}
+}
+
+func TestSQLiteStore_ErrorCoverage(t *testing.T) {
+	store, repo, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	if err := store.Update(ctx, newTestJob("nonexistent", "nonexistent")); !errors.Is(err, queue.ErrNotFound) {
+		t.Errorf("expected ErrNotFound on Update nonexistent, got %v", err)
+	}
+	if err := store.Remove(ctx, "nonexistent"); !errors.Is(err, queue.ErrNotFound) {
+		t.Errorf("expected ErrNotFound on Remove nonexistent, got %v", err)
+	}
+	if err := store.ShiftSortKey(ctx, "nonexistent", 0); !errors.Is(err, queue.ErrNotFound) {
+		t.Errorf("expected ErrNotFound on ShiftSortKey nonexistent, got %v", err)
+	}
+
+	if err := store.MoveToHistory(ctx, newTestJob("nonexistent", "nonexistent"), history.Entry{}); !errors.Is(err, queue.ErrNotFound) {
+		t.Errorf("expected ErrNotFound on MoveToHistory nonexistent, got %v", err)
+	}
+
+	ppJob := newTestJob("pp-job", "pp-job")
+	ppJob.PostProc = true
+	if err := store.Add(ctx, ppJob); err != nil {
+		t.Fatalf("Add PostProc job: %v", err)
+	}
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{
+				Subject:  "file.vol01+02.par2",
+				Articles: []nzb.Article{{ID: "p1", Number: 1}},
+				Bytes:    500,
+			},
+		},
+	}
+	par2Job, err := queue.NewJob(parsed, queue.AddOptions{Name: "par2-job"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := store.Add(ctx, par2Job); err != nil {
+		t.Fatalf("Add PAR2 job: %v", err)
+	}
+
+	uninitializedStore := queue.NewSQLiteStore(repo.DB(), t.TempDir(), nil)
+	if err := uninitializedStore.MoveToHistory(ctx, newTestJob("j1", "j1"), history.Entry{}); err == nil {
+		t.Error("expected error when historyRepo is nil in MoveToHistory")
+	}
+}

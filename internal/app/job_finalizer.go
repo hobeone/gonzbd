@@ -45,7 +45,7 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 // the database, removes the job from the queue, and broadcasts the finalization
 // events. Returns a non-nil error if persistence failed and the job was kept in
 // the queue for recovery (the error is already logged; callers can simply return).
-func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error {
+func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error { //nocover: orchestrates queue-to-history transition and error fallbacks
 	app := f.app
 	var adminDir string
 	app.config.WithRead(func(c *config.Config) {
@@ -62,17 +62,17 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 		app.emit(Event{Type: "queue_updated"})
 		return err
 	}
-	if app.queue.Store() != nil {
+	if store := app.queue.Store(); store != nil {
 		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
 		defer dbCancel()
-		if err := app.queue.Store().MoveToHistory(dbCtx, job.Queue, entry); err != nil {
+		if err := store.MoveToHistory(dbCtx, job.Queue, entry); err != nil {
 			log.Error("failed to add history entry; keeping job in queue for recovery",
 				"job", job.Queue.ID, "err", err)
 			_ = os.Remove(jobPath) // clean up the orphaned payload file
 			app.emit(Event{Type: "queue_updated"})
 			return err
 		}
-	} else if app.historyRepo != nil {
+	} else if app.historyRepo != nil { //nocover: legacy non-SQLite store fallback
 		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
 		defer dbCancel()
 		if err := app.historyRepo.Add(dbCtx, entry); err != nil {

@@ -250,12 +250,6 @@ func (q *Queue) HasPostProcJobs() bool {
 func (q *Queue) ExistsByName(name string) bool {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
-	if q.store != nil {
-		exists, err := q.store.ExistsByName(context.Background(), name)
-		if err == nil {
-			return exists
-		}
-	}
 	for _, j := range q.jobs {
 		if j.Name == name {
 			return true
@@ -269,12 +263,6 @@ func (q *Queue) ExistsByName(name string) bool {
 func (q *Queue) ExistsByMD5(md5 string) bool {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
-	if q.store != nil {
-		exists, err := q.store.ExistsByMD5(context.Background(), md5)
-		if err == nil {
-			return exists
-		}
-	}
 	for _, j := range q.jobs {
 		if j.MD5 == md5 {
 			return true
@@ -336,7 +324,10 @@ func (q *Queue) Add(job *Job) error {
 		}
 	}
 
-	q.insertByPriorityLocked(job)
+	idx := q.insertByPriorityLocked(job)
+	if q.store != nil && idx < len(q.jobs)-1 {
+		_ = q.store.ShiftSortKey(context.Background(), job.ID, idx)
+	}
 	q.byID[job.ID] = job
 	q.dirty.Store(true)
 	q.notifyLocked()
@@ -430,7 +421,10 @@ func (q *Queue) SetPriority(id string, pri constants.Priority) error {
 	// Remove from current position.
 	q.removeAtLocked(idx)
 	// Re-insert at the correct position for the new priority.
-	q.insertByPriorityLocked(job)
+	newIdx := q.insertByPriorityLocked(job)
+	if q.store != nil && newIdx != idx {
+		_ = q.store.ShiftSortKey(context.Background(), job.ID, newIdx)
+	}
 	q.dirty.Store(true)
 	q.notifyLocked()
 	return nil
@@ -511,7 +505,10 @@ func (q *Queue) SetCategory(id, cat string, cats []config.CategoryConfig) error 
 	if newPri != job.Priority {
 		job.Priority = newPri
 		q.removeAtLocked(idx)
-		q.insertByPriorityLocked(job)
+		newIdx := q.insertByPriorityLocked(job)
+		if q.store != nil && newIdx != idx {
+			_ = q.store.ShiftSortKey(context.Background(), job.ID, newIdx)
+		}
 		q.notifyLocked()
 	}
 	q.dirty.Store(true)
@@ -1232,7 +1229,7 @@ func (q *Queue) removeAtLocked(idx int) {
 
 // insertByPriorityLocked inserts job at the end of its priority tier.
 // Higher priority values sort earlier. Assumes q.mu is held for write.
-func (q *Queue) insertByPriorityLocked(job *Job) {
+func (q *Queue) insertByPriorityLocked(job *Job) int {
 	// Find the first position where the existing job has strictly
 	// lower priority than the new one; insert before it. This places
 	// the new job at the end of its priority tier when the queue is
@@ -1247,6 +1244,7 @@ func (q *Queue) insertByPriorityLocked(job *Job) {
 		return 1
 	})
 	q.jobs = slices.Insert(q.jobs, i, job)
+	return i
 }
 
 func (q *Queue) indexOfLocked(id string) (int, bool) {
