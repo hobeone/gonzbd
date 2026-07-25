@@ -303,7 +303,6 @@ func (q *Queue) Add(job *Job) error {
 		return fmt.Errorf("queue: job %q already present", job.ID)
 	}
 
-	// Ensure Name is unique within the queue (authoritative check under lock).
 	job.Name = UniqueName(job.Name, func(name string) bool {
 		for _, existing := range q.jobs {
 			if existing.Name == name {
@@ -313,9 +312,6 @@ func (q *Queue) Add(job *Job) error {
 		return false
 	})
 
-	// Initialize pending counters from the fresh job's article state
-	// (all articles start with Done=false, Emitted=false so
-	// Pending == len(Articles) per file).
 	job.progress.recompute(job.manifest)
 
 	if q.store != nil {
@@ -410,23 +406,30 @@ func (q *Queue) SetPriority(id string, pri constants.Priority) error {
 	if !pri.IsValid() {
 		return fmt.Errorf("queue: invalid priority %d", pri)
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	idx, ok := q.indexOfLocked(id)
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	var newIdx int
+	var shiftNeeded bool
+	err := func() error {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		idx, ok := q.indexOfLocked(id)
+		if !ok {
+			return fmt.Errorf("%w: %s", ErrNotFound, id)
+		}
+		job := q.jobs[idx]
+		job.Priority = pri
+		q.removeAtLocked(idx)
+		newIdx = q.insertByPriorityLocked(job)
+		shiftNeeded = (q.store != nil && newIdx != idx)
+		q.dirty.Store(true)
+		q.notifyLocked()
+		return nil
+	}()
+	if err != nil {
+		return err
 	}
-	job := q.jobs[idx]
-	job.Priority = pri
-	// Remove from current position.
-	q.removeAtLocked(idx)
-	// Re-insert at the correct position for the new priority.
-	newIdx := q.insertByPriorityLocked(job)
-	if q.store != nil && newIdx != idx {
-		_ = q.store.ShiftSortKey(context.Background(), job.ID, newIdx)
+	if shiftNeeded {
+		_ = q.store.ShiftSortKey(context.Background(), id, newIdx)
 	}
-	q.dirty.Store(true)
-	q.notifyLocked()
 	return nil
 }
 
@@ -489,29 +492,37 @@ func (q *Queue) SetScript(id, script string) error {
 // the current one, preserving priority-order invariants. Returns ErrNotFound
 // if the job is absent.
 func (q *Queue) SetCategory(id, cat string, cats []config.CategoryConfig) error {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	idx, ok := q.indexOfLocked(id)
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, id)
-	}
-	job := q.jobs[idx]
-	resolved := config.FindCategory(cats, cat)
-	job.Category = resolved.Name
-	job.PP = resolved.PP
-	job.Script = resolved.Script
-	// Re-slot the job when priority changes — mirrors SetPriority.
-	newPri := constants.Priority(int8(resolved.Priority)) //nolint:gosec // priority values fit in int8
-	if newPri != job.Priority {
-		job.Priority = newPri
-		q.removeAtLocked(idx)
-		newIdx := q.insertByPriorityLocked(job)
-		if q.store != nil && newIdx != idx {
-			_ = q.store.ShiftSortKey(context.Background(), job.ID, newIdx)
+	var newIdx int
+	var shiftNeeded bool
+	err := func() error {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		idx, ok := q.indexOfLocked(id)
+		if !ok {
+			return fmt.Errorf("%w: %s", ErrNotFound, id)
 		}
-		q.notifyLocked()
+		job := q.jobs[idx]
+		resolved := config.FindCategory(cats, cat)
+		job.Category = resolved.Name
+		job.PP = resolved.PP
+		job.Script = resolved.Script
+		newPri := constants.Priority(int8(resolved.Priority)) //nolint:gosec // priority values fit in int8
+		if newPri != job.Priority {
+			job.Priority = newPri
+			q.removeAtLocked(idx)
+			newIdx = q.insertByPriorityLocked(job)
+			shiftNeeded = (q.store != nil && newIdx != idx)
+			q.notifyLocked()
+		}
+		q.dirty.Store(true)
+		return nil
+	}()
+	if err != nil {
+		return err
 	}
-	q.dirty.Store(true)
+	if shiftNeeded {
+		_ = q.store.ShiftSortKey(context.Background(), id, newIdx)
+	}
 	return nil
 }
 

@@ -206,7 +206,17 @@ FROM jobs WHERE id = ?`
 		_ = json.Unmarshal([]byte(metaStr), &job.Meta)
 	}
 
+	var fileCount int
+	_ = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM job_files WHERE job_id = ?", id).Scan(&fileCount)
+
 	manifestPath := filepath.Join(s.dir, "manifests", id+".json.gz")
+	if fileCount > 0 {
+		if _, err := os.Stat(manifestPath); err != nil {
+			_ = s.Remove(ctx, id)
+			return nil, fmt.Errorf("sqlite store manifest missing for %s: %w", id, err)
+		}
+	}
+
 	if _, err := os.Stat(manifestPath); err == nil {
 		var manifest Manifest
 		if err := readGzJSON(manifestPath, &manifest); err != nil {
@@ -309,7 +319,7 @@ WHERE id = ?`
 	}
 
 	if job.Progress() != nil && job.Manifest() != nil {
-		const qF = `UPDATE job_files SET complete = ?, deferred = ?, write_cursor = ?, bytes_downloaded = ?, filename = ?, assembled_crc32 = ? WHERE job_id = ? AND file_index = ?`
+		const qF = `UPDATE job_files SET complete = ?, deferred = ?, write_cursor = ?, bytes_downloaded = ?, filename = ?, assembled_crc32 = ?, articles_done = ? WHERE job_id = ? AND file_index = ?`
 		for i := range job.Manifest().NumFiles() {
 			complete := 0
 			if job.Progress().FileComplete(i) {
@@ -319,8 +329,9 @@ WHERE id = ?`
 			if job.Progress().FileDeferred(i) {
 				deferred = 1
 			}
+			artDoneStr := encodeArticlesDone(job, i)
 			_, _ = s.db.ExecContext(ctx, qF,
-				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i),
+				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr,
 				job.ID, i,
 			)
 		}

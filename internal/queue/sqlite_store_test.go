@@ -401,3 +401,85 @@ func TestSQLiteStore_ErrorCoverage(t *testing.T) {
 		t.Error("expected error when historyRepo is nil in MoveToHistory")
 	}
 }
+
+func TestSQLiteStore_AbsentManifestHandling(t *testing.T) {
+	store, _, dir := setupTestStore(t)
+	ctx := t.Context()
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{
+				Subject:  "absent_file",
+				Articles: []nzb.Article{{ID: "art_absent", Number: 1}},
+				Bytes:    100,
+			},
+		},
+	}
+	jobAbsent, err := queue.NewJob(parsed, queue.AddOptions{Name: "absent-job"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := store.Add(ctx, jobAbsent); err != nil {
+		t.Fatalf("Add absent job: %v", err)
+	}
+
+	manifestPath := filepath.Join(dir, "manifests", jobAbsent.ID+".json.gz")
+	_ = os.Remove(manifestPath)
+
+	_, err = store.Get(ctx, jobAbsent.ID)
+	if err == nil {
+		t.Fatal("expected Get to fail when manifest file is missing")
+	}
+
+	// Verify SQL row was removed to prevent orphaned records
+	if _, err := store.Get(ctx, jobAbsent.ID); !errors.Is(err, queue.ErrNotFound) {
+		t.Errorf("expected ErrNotFound after manifest missing cleanup, got %v", err)
+	}
+}
+
+func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
+	store, _, dir := setupTestStore(t)
+	ctx := t.Context()
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{
+				Subject:  "f1",
+				Articles: []nzb.Article{{ID: "art1", Number: 1}, {ID: "art2", Number: 2}},
+				Bytes:    200,
+			},
+		},
+	}
+	q := queue.New(queue.WithStore(store))
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "art-roundtrip"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Mutate progress (mark article index 1 as done)
+	q.MarkArticlesDone(job.ID, []string{"art2"})
+
+	// Update store (simulating checkpoint)
+	if err := store.Update(ctx, job); err != nil {
+		t.Fatalf("Update store: %v", err)
+	}
+
+	// Reload queue from store
+	loadedQ, err := queue.Load(dir, queue.WithStore(store))
+	if err != nil {
+		t.Fatalf("queue.Load: %v", err)
+	}
+	loadedJob := loadedQ.SnapshotJob(job.ID)
+	if loadedJob == nil {
+		t.Fatal("loaded job missing from queue")
+	}
+	if !loadedJob.Progress().ArticleDone(1) {
+		t.Error("expected article 1 to be marked done after Update checkpoint and reload")
+	}
+	if loadedJob.Progress().ArticleDone(0) {
+		t.Error("expected article 0 to remain not done after Update checkpoint and reload")
+	}
+}
