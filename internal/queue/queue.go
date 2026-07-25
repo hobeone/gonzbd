@@ -1203,14 +1203,20 @@ func (q *Queue) MarkArticlesDoneByIdx(jobID string, artIdxs []int32) error {
 		return nil
 	}
 	nArt := job.manifest.NumArticles()
+	var invalidCount int
 	for _, idx := range artIdxs {
 		i := int(idx)
 		if i >= 0 && i < nArt {
 			job.progress.markDone(job.manifest, i)
+		} else {
+			invalidCount++
 		}
 	}
 	q.dirty.Store(true)
 	q.mu.Unlock()
+	if invalidCount > 0 {
+		q.log.Warn("MarkArticlesDoneByIdx: out-of-bounds article index received", "job", jobID, "invalid_count", invalidCount, "num_articles", nArt)
+	}
 	return nil
 }
 
@@ -1315,12 +1321,15 @@ func (q *Queue) MarkArticlesFailedByIdx(jobID string, artIdxs []int32) ([]int32,
 	}
 	nArt := job.manifest.NumArticles()
 	firstTime := make([]int32, 0, len(artIdxs))
+	var invalidCount int
 	for _, idx := range artIdxs {
 		i := int(idx)
 		if i >= 0 && i < nArt {
 			if job.progress.markFailed(job.manifest, i) {
 				firstTime = append(firstTime, idx)
 			}
+		} else {
+			invalidCount++
 		}
 	}
 	var failedBytes, par2Bytes int64
@@ -1338,6 +1347,9 @@ func (q *Queue) MarkArticlesFailedByIdx(jobID string, artIdxs []int32) ([]int32,
 	}
 	q.mu.Unlock()
 	// --- No lock held below this line ---
+	if invalidCount > 0 {
+		q.log.Warn("MarkArticlesFailedByIdx: out-of-bounds article index received", "job", jobID, "invalid_count", invalidCount, "num_articles", nArt)
+	}
 	if len(firstTime) > 0 {
 		q.log.Warn("articles marked FAILED by idx", "job", jobID, "count", len(firstTime), "failed_bytes", failedBytes, "par2_bytes", par2Bytes)
 		if releasedPar2 {
@@ -1591,13 +1603,16 @@ func (q *Queue) PauseAll() {
 	q.dirty.Store(true)
 }
 
-// ResumeAll clears the queue-wide pause flag and signals the
-// downloader.
+// ResumeAll clears the queue-wide pause flag, signals the downloader,
+// and triggers the promotion loop to activate pending jobs.
 func (q *Queue) ResumeAll() {
 	q.mu.Lock()
 	q.paused = false
 	q.dirty.Store(true)
 	q.notifyLocked()
+	// Lock-ordering invariant: q.mu MUST be unlocked before calling PromoteNext.
+	// PromoteNext performs disk I/O to read gzipped article manifests for newly promoted
+	// active jobs; holding q.mu during disk I/O would block queue status queries.
 	q.mu.Unlock()
 	q.PromoteNext(context.Background())
 }

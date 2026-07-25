@@ -269,14 +269,6 @@ func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
 	if job == nil || job.manifest == nil || job.progress == nil {
 		return nil
 	}
-	var dlStartedUnix, dlFinishedUnix int64
-	_ = s.db.QueryRowContext(ctx, "SELECT download_started, download_finished FROM jobs WHERE id = ?", job.ID).Scan(&dlStartedUnix, &dlFinishedUnix)
-	if dlStartedUnix > 0 {
-		job.progress.downloadStarted = time.Unix(dlStartedUnix, 0).UTC()
-	}
-	if dlFinishedUnix > 0 {
-		job.progress.downloadFinished = time.Unix(dlFinishedUnix, 0).UTC()
-	}
 	const qFiles = `
 SELECT file_index, complete, deferred, write_cursor, bytes_downloaded, assembled_crc32, COALESCE(articles_done, '')
 FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
@@ -290,24 +282,25 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 		var writeCursor, bytesDownloaded int64
 		var crc32Val uint32
 		var artDoneStr string
-		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &bytesDownloaded, &crc32Val, &artDoneStr); err == nil {
-			if idx >= 0 && idx < len(job.progress.files) {
-				fp := &job.progress.files[idx]
-				fp.BytesDownloaded = bytesDownloaded
-				fp.WriteCursor = writeCursor
-				fp.AssembledCRC32 = crc32Val
-				if complete != 0 {
-					fp.Complete = true
-					lo, hi := job.manifest.FileRange(idx)
-					for a := lo; a < hi; a++ {
-						job.progress.markDone(job.manifest, a)
-					}
-				} else if artDoneStr != "" {
-					decodeArticlesDone(artDoneStr, job, idx)
+		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &bytesDownloaded, &crc32Val, &artDoneStr); err != nil {
+			return fmt.Errorf("sqlite store scan job_file for %s: %w", job.ID, err)
+		}
+		if idx >= 0 && idx < len(job.progress.files) {
+			fp := &job.progress.files[idx]
+			fp.BytesDownloaded = bytesDownloaded
+			fp.WriteCursor = writeCursor
+			fp.AssembledCRC32 = crc32Val
+			if complete != 0 {
+				fp.Complete = true
+				lo, hi := job.manifest.FileRange(idx)
+				for a := lo; a < hi; a++ {
+					job.progress.markDone(job.manifest, a)
 				}
-				if deferred != 0 {
-					fp.Deferred = true
-				}
+			} else if artDoneStr != "" {
+				decodeArticlesDone(artDoneStr, job, idx)
+			}
+			if deferred != 0 {
+				fp.Deferred = true
 			}
 		}
 	}

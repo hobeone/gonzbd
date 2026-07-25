@@ -720,25 +720,31 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 }
 
 func (a *Assembler) recordPendingDone(jobID, msgID string, artIdx int32) {
-	if a.pendingDone == nil {
-		a.pendingDone = make(map[string][]string)
+	if a.opts.MarkArticlesDoneByIdx != nil {
+		if a.pendingDoneByIdx == nil {
+			a.pendingDoneByIdx = make(map[string][]int32)
+		}
+		a.pendingDoneByIdx[jobID] = append(a.pendingDoneByIdx[jobID], artIdx)
+	} else if a.opts.MarkArticlesDone != nil {
+		if a.pendingDone == nil {
+			a.pendingDone = make(map[string][]string)
+		}
+		a.pendingDone[jobID] = append(a.pendingDone[jobID], msgID)
 	}
-	if a.pendingDoneByIdx == nil {
-		a.pendingDoneByIdx = make(map[string][]int32)
-	}
-	a.pendingDone[jobID] = append(a.pendingDone[jobID], msgID)
-	a.pendingDoneByIdx[jobID] = append(a.pendingDoneByIdx[jobID], artIdx)
 }
 
 func (a *Assembler) recordPendingFailed(jobID, msgID string, artIdx int32) {
-	if a.pendingFailed == nil {
-		a.pendingFailed = make(map[string][]string)
+	if a.opts.MarkArticlesFailedByIdx != nil {
+		if a.pendingFailedByIdx == nil {
+			a.pendingFailedByIdx = make(map[string][]int32)
+		}
+		a.pendingFailedByIdx[jobID] = append(a.pendingFailedByIdx[jobID], artIdx)
+	} else if a.opts.MarkArticlesFailed != nil {
+		if a.pendingFailed == nil {
+			a.pendingFailed = make(map[string][]string)
+		}
+		a.pendingFailed[jobID] = append(a.pendingFailed[jobID], msgID)
 	}
-	if a.pendingFailedByIdx == nil {
-		a.pendingFailedByIdx = make(map[string][]int32)
-	}
-	a.pendingFailed[jobID] = append(a.pendingFailed[jobID], msgID)
-	a.pendingFailedByIdx[jobID] = append(a.pendingFailedByIdx[jobID], artIdx)
 }
 
 // handleLateDuplicate handles articles arriving for a file that is already marked completed.
