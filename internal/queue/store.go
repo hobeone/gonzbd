@@ -46,4 +46,7 @@ type Store interface {
 
 	// IsPaused reports whether the global queue is paused.
 	IsPaused(ctx context.Context) (bool, error)
+
+	// RestoreJobProgress loads per-file progress counters into job.progress for a resident job.
+	RestoreJobProgress(ctx context.Context, job *Job) error
 }

@@ -59,35 +59,85 @@ func newJobProgress(m *Manifest) *JobProgress {
 }
 
 // ArticleDone reports whether global article index i has resolved (success or failure).
-func (p *JobProgress) ArticleDone(i int) bool { return p.done[i] }
+func (p *JobProgress) ArticleDone(i int) bool {
+	if p == nil || i < 0 || i >= len(p.done) {
+		return false
+	}
+	return p.done[i]
+}
 
 // ArticleFailed reports whether global article index i permanently failed.
-func (p *JobProgress) ArticleFailed(i int) bool { return p.failed[i] }
+func (p *JobProgress) ArticleFailed(i int) bool {
+	if p == nil || i < 0 || i >= len(p.failed) {
+		return false
+	}
+	return p.failed[i]
+}
 
 // ArticleEmitted reports whether global article index i has an in-flight result
 // handed to the assembler but not yet made durable.
-func (p *JobProgress) ArticleEmitted(i int) bool { return p.emitted[i] }
+func (p *JobProgress) ArticleEmitted(i int) bool {
+	if p == nil || i < 0 || i >= len(p.emitted) {
+		return false
+	}
+	return p.emitted[i]
+}
 
 // FileComplete reports whether file fileIdx has been fully assembled on disk.
-func (p *JobProgress) FileComplete(fi int) bool { return p.files[fi].Complete }
+func (p *JobProgress) FileComplete(fi int) bool {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+		return false
+	}
+	return p.files[fi].Complete
+}
 
 // FileDeferred reports whether file fileIdx is currently held back from dispatch.
-func (p *JobProgress) FileDeferred(fi int) bool { return p.files[fi].Deferred }
+func (p *JobProgress) FileDeferred(fi int) bool {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+		return false
+	}
+	return p.files[fi].Deferred
+}
 
 // FilePending returns the count of not-yet-resolved articles in file fileIdx.
-func (p *JobProgress) FilePending(fi int) int { return p.files[fi].Pending }
+func (p *JobProgress) FilePending(fi int) int {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+		return 0
+	}
+	return p.files[fi].Pending
+}
 
 // FileBytesDownloaded returns the sum of successfully downloaded article bytes in file fileIdx.
-func (p *JobProgress) FileBytesDownloaded(fi int) int64 { return p.files[fi].BytesDownloaded }
+func (p *JobProgress) FileBytesDownloaded(fi int) int64 {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+		return 0
+	}
+	return p.files[fi].BytesDownloaded
+}
 
 // FileWriteCursor returns the assembler's contiguous write frontier for file fileIdx.
-func (p *JobProgress) FileWriteCursor(fi int) int64 { return p.files[fi].WriteCursor }
+func (p *JobProgress) FileWriteCursor(fi int) int64 {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+		return 0
+	}
+	return p.files[fi].WriteCursor
+}
 
 // FileFilename returns the resolved on-disk filename for file fileIdx, or empty if unresolved.
-func (p *JobProgress) FileFilename(fi int) string { return p.files[fi].Filename }
+func (p *JobProgress) FileFilename(fi int) string {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+		return ""
+	}
+	return p.files[fi].Filename
+}
 
 // FileAssembledCRC32 returns the assembled CRC32 for file fileIdx, or zero if unavailable.
-func (p *JobProgress) FileAssembledCRC32(fi int) uint32 { return p.files[fi].AssembledCRC32 }
+func (p *JobProgress) FileAssembledCRC32(fi int) uint32 {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+		return 0
+	}
+	return p.files[fi].AssembledCRC32
+}
 
 // PendingArticles returns the count of not-yet-resolved articles across all files.
 func (p *JobProgress) PendingArticles() int { return p.pendingArticles }
@@ -99,18 +149,33 @@ func (p *JobProgress) ArticlesResolved() int { return p.articlesResolved }
 func (p *JobProgress) ArticlesFailed() int { return p.articlesFailed }
 
 // EarlyAborted reports whether the early-abort heuristic has already fired for this job.
-func (p *JobProgress) EarlyAborted() bool { return p.earlyAborted }
+func (p *JobProgress) EarlyAborted() bool {
+	if p == nil {
+		return false
+	}
+	return p.earlyAborted
+}
 
 // FailedBytes returns the sum of bytes belonging to permanently failed articles.
-func (p *JobProgress) FailedBytes() int64 { return p.failedBytes }
+func (p *JobProgress) FailedBytes() int64 {
+	if p == nil {
+		return 0
+	}
+	return p.failedBytes
+}
 
 // RemainingBytes returns TotalBytes minus the bytes of successfully completed articles.
-func (p *JobProgress) RemainingBytes() int64 { return p.remainingBytes }
+func (p *JobProgress) RemainingBytes() int64 {
+	if p == nil {
+		return 0
+	}
+	return p.remainingBytes
+}
 
 // ServerStats returns a defensive copy, matching cloneJob's current
 // maps.Copy behavior — callers cannot mutate the job's live map through it.
 func (p *JobProgress) ServerStats() map[string]int64 {
-	if p.serverStats == nil {
+	if p == nil || p.serverStats == nil {
 		return nil
 	}
 	cp := make(map[string]int64, len(p.serverStats))
@@ -119,19 +184,42 @@ func (p *JobProgress) ServerStats() map[string]int64 {
 }
 
 // DownloadStarted returns the wall-clock time the first article began downloading, or zero.
-func (p *JobProgress) DownloadStarted() time.Time { return p.downloadStarted }
+func (p *JobProgress) DownloadStarted() time.Time {
+	if p == nil {
+		return time.Time{}
+	}
+	return p.downloadStarted
+}
 
 // DownloadFinished returns the wall-clock time the download phase completed, or zero.
-func (p *JobProgress) DownloadFinished() time.Time { return p.downloadFinished }
+func (p *JobProgress) DownloadFinished() time.Time {
+	if p == nil {
+		return time.Time{}
+	}
+	return p.downloadFinished
+}
 
 // Par2Recovered reports whether on-demand par2 has un-deferred this job's recovery volumes.
-func (p *JobProgress) Par2Recovered() bool { return p.par2Recovered }
+func (p *JobProgress) Par2Recovered() bool {
+	if p == nil {
+		return false
+	}
+	return p.par2Recovered
+}
 
 // Par2ReleaseReason explains why deferred recovery volumes were released for download.
-func (p *JobProgress) Par2ReleaseReason() string { return p.par2ReleaseReason }
+func (p *JobProgress) Par2ReleaseReason() string {
+	if p == nil {
+		return ""
+	}
+	return p.par2ReleaseReason
+}
 
 // HasDeferredPar2 reports whether any file is currently deferred.
 func (p *JobProgress) HasDeferredPar2() bool {
+	if p == nil {
+		return false
+	}
 	for i := range p.files {
 		if p.files[i].Deferred {
 			return true
@@ -209,16 +297,15 @@ func (p *JobProgress) recompute(m *Manifest) {
 
 // markEmitted flags article i as having a result in flight from the
 // downloader to the assembler. Idempotent: a no-op if the article is
-// already Emitted, Done, or Failed. Returns whether it actually flipped.
-func (p *JobProgress) markEmitted(m *Manifest, i int) bool {
+// already Emitted, Done, or Failed.
+func (p *JobProgress) markEmitted(m *Manifest, i int) {
 	if p.emitted[i] || p.done[i] {
-		return false
+		return
 	}
 	p.emitted[i] = true
 	fi := m.fileIndexForArticle(i)
 	p.files[fi].Pending--
 	p.pendingArticles--
-	return true
 }
 
 // clearEmitted resets the transient Emitted flag on article i, restoring it

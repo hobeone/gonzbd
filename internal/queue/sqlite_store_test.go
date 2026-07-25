@@ -220,6 +220,7 @@ func TestSQLiteStore_ManifestAndFiles(t *testing.T) {
 		t.Fatalf("NewJob: %v", err)
 	}
 	fullJob.ID = job.ID
+	fullJob.Status = constants.StatusDownloading
 
 	if err := store.Add(ctx, fullJob); err != nil {
 		t.Fatalf("Add fullJob: %v", err)
@@ -300,6 +301,7 @@ func TestSQLiteStore_ArticleProgressAndQuarantine(t *testing.T) {
 	// 1. Test corrupt manifest quarantine
 	corruptID := "job-corrupt"
 	jobCorrupt := newTestJob(corruptID, "corrupt-job")
+	jobCorrupt.Status = constants.StatusDownloading
 	if err := store.Add(ctx, jobCorrupt); err != nil {
 		t.Fatalf("Add corrupt job: %v", err)
 	}
@@ -321,7 +323,7 @@ func TestSQLiteStore_ArticleProgressAndQuarantine(t *testing.T) {
 
 func TestQueue_WithStoreAndSave(t *testing.T) {
 	store, _, dir := setupTestStore(t)
-	q := queue.New(queue.WithStore(store))
+	q := queue.New(queue.WithStore(store), queue.WithStateDir(dir))
 	if q.Store() != store {
 		t.Error("expected Store() to return configured store")
 	}
@@ -450,7 +452,7 @@ func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
 			},
 		},
 	}
-	q := queue.New(queue.WithStore(store))
+	q := queue.New(queue.WithStore(store), queue.WithStateDir(dir))
 	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "art-roundtrip"}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
@@ -481,5 +483,117 @@ func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
 	}
 	if loadedJob.Progress().ArticleDone(0) {
 		t.Error("expected article 0 to remain not done after Update checkpoint and reload")
+	}
+}
+
+func TestSQLiteStore_DownloadTimestampsPersistence(t *testing.T) {
+	store, _, dir := setupTestStore(t)
+	ctx := t.Context()
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{
+				Subject:  "f1",
+				Articles: []nzb.Article{{ID: "art1", Number: 1}},
+				Bytes:    100,
+			},
+		},
+	}
+	q := queue.New(queue.WithStore(store), queue.WithStateDir(dir))
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "ts-persistence"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	startTime := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	if err := q.MarkJobStarted(job.ID, startTime); err != nil {
+		t.Fatalf("MarkJobStarted: %v", err)
+	}
+	started, err := q.SetPostProcStarted(job.ID)
+	if err != nil || !started {
+		t.Fatalf("SetPostProcStarted: started=%v err=%v", started, err)
+	}
+
+	snap := q.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("SnapshotJob returned nil")
+	}
+	if snap.Progress().DownloadStarted().Unix() != startTime.Unix() {
+		t.Errorf("DownloadStarted = %v, want %v", snap.Progress().DownloadStarted(), startTime)
+	}
+	if snap.Progress().DownloadFinished().IsZero() {
+		t.Error("DownloadFinished should not be zero after SetPostProcStarted")
+	}
+
+	// Re-get job directly from store
+	gotStore, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if gotStore.Progress() == nil {
+		t.Fatal("store.Get progress is nil")
+	}
+	if gotStore.Progress().DownloadStarted().Unix() != startTime.Unix() {
+		t.Errorf("store.Get DownloadStarted = %v, want %v", gotStore.Progress().DownloadStarted(), startTime)
+	}
+	if gotStore.Progress().DownloadFinished().Unix() != snap.Progress().DownloadFinished().Unix() {
+		t.Errorf("store.Get DownloadFinished = %v, want %v", gotStore.Progress().DownloadFinished(), snap.Progress().DownloadFinished())
+	}
+
+	// Reload queue from disk
+	loadedQ, err := queue.Load(dir, queue.WithStore(store))
+	if err != nil {
+		t.Fatalf("queue.Load: %v", err)
+	}
+	loadedJob := loadedQ.SnapshotJob(job.ID)
+	if loadedJob == nil {
+		t.Fatal("loaded job missing from queue after reload")
+	}
+	if loadedJob.Progress().DownloadStarted().Unix() != startTime.Unix() {
+		t.Errorf("loaded DownloadStarted = %v, want %v", loadedJob.Progress().DownloadStarted(), startTime)
+	}
+	if loadedJob.Progress().DownloadFinished().Unix() != snap.Progress().DownloadFinished().Unix() {
+		t.Errorf("loaded DownloadFinished = %v, want %v", loadedJob.Progress().DownloadFinished(), snap.Progress().DownloadFinished())
+	}
+}
+
+func TestSQLiteStore_GetNullTextColumns(t *testing.T) {
+	store, repo, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	id := "null-fields-job"
+	const query = `
+INSERT INTO jobs
+  (id, filename, name, password, url, category, priority, status, pp, script,
+   time_added, md5, avg_age, groups, meta, warning, postproc, sort_key,
+   download_started, download_finished)
+VALUES (?, ?, ?, NULL, NULL, NULL, 0, 'FETCHING', 3, NULL, ?, 'md5-null', ?, NULL, NULL, NULL, 0, 0, 0, 0)`
+
+	now := time.Now().Unix()
+	if _, err := repo.DB().ExecContext(ctx, query, id, "null.nzb", "null-job", now, now); err != nil {
+		t.Fatalf("failed to insert job with NULL text columns: %v", err)
+	}
+
+	job, err := store.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("SQLiteStore.Get failed on job with NULL text columns: %v", err)
+	}
+	if job == nil {
+		t.Fatal("SQLiteStore.Get returned nil job")
+	}
+	if job.Password != "" || job.URL != "" || job.Category != "" || job.Script != "" || job.Warning != "" {
+		t.Errorf("expected empty string fields for NULL text columns, got password=%q url=%q category=%q script=%q warning=%q",
+			job.Password, job.URL, job.Category, job.Script, job.Warning)
+	}
+
+	list, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("SQLiteStore.List failed: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != id {
+		t.Fatalf("SQLiteStore.List returned %d jobs, expected 1 job with ID %q", len(list), id)
 	}
 }
