@@ -236,6 +236,8 @@ func (p *JobProgress) clearEmitted(m *Manifest, i int) {
 
 // markDone flips Done on article i and updates counters. Returns false
 // (no-op) if the article was already Done.
+//
+//nolint:unparam // bool return is part of JobProgress API and used in tests
 func (p *JobProgress) markDone(m *Manifest, i int) bool {
 	if p.done[i] {
 		return false

@@ -708,3 +708,10 @@ func TestRepository_Ping(t *testing.T) {
 		t.Errorf("repo.Ping: %v", err)
 	}
 }
+
+func TestRepository_DB(t *testing.T) {
+	_, repo := openTestDB(t)
+	if repo.DB() == nil {
+		t.Error("expected non-nil sql.DB from repo.DB()")
+	}
+}

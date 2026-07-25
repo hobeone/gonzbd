@@ -119,10 +119,7 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 	}
 
 	// Reload queue from disk into a fresh queue instance
-	reloadedQ, err := queue.Load(filepath.Join(adminDir, "queue"))
-	if err != nil {
-		t.Fatalf("queue.Load: %v", err)
-	}
+	reloadedQ := loadTestQueue(t, repo, adminDir)
 	reloadedSnap := reloadedQ.SnapshotJob(job.ID)
 	if reloadedSnap == nil {
 		t.Fatalf("reloaded job missing")
