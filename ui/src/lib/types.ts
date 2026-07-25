@@ -2,6 +2,7 @@
 // Field names use the exact JSON keys from internal/api/*.go structs.
 
 export interface QueueSlot {
+	index: number;
 	nzo_id: string;
 	filename: string;
 	name: string;

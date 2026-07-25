@@ -2,6 +2,7 @@ package queue
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,25 +28,20 @@ type indexFile struct {
 	Paused  bool     `json:"paused,omitempty"`
 }
 
-// Save serialises the queue to dir. Layout:
-//
-//	dir/queue.json.gz         - index (job order + paused flag)
-//	dir/jobs/<id>.json.gz     - one per job
-//
-// Each write is atomic (temp file + fsync + rename). Jobs are written
-// first so that a crash between them and the index leaves recoverable
-// state: the stale index points at jobs that now exist, and
-// unreferenced job files are ignored by Load.
-//
-// The dirty flag is swapped to false before the write begins. Any
-// concurrent mutation that fires after the swap sets dirty=true again,
-// so the next checkpoint will pick it up. If the save itself fails,
-// dirty is set back to true so the next tick retries.
+// Save serialises the queue to dir.
 func (q *Queue) Save(dir string) error {
-	// Swap dirty=false before writing. Any mutation that races this
-	// will set dirty=true again; if the save fails we restore it so
-	// the next checkpoint tick retries rather than skipping.
 	q.dirty.Store(false)
+
+	if q.store != nil {
+		if err := q.saveStore(dir); err != nil {
+			q.dirty.Store(true)
+			return err
+		}
+		q.mu.Lock()
+		q.stateDir = dir
+		q.mu.Unlock()
+		return nil
+	}
 
 	if err := q.saveInner(dir); err != nil {
 		q.dirty.Store(true)
@@ -55,6 +51,25 @@ func (q *Queue) Save(dir string) error {
 	q.stateDir = dir
 	q.mu.Unlock()
 	return nil
+}
+
+func (q *Queue) saveStore(_ string) error {
+	q.mu.RLock()
+	snapshots := make([]*Job, 0, len(q.jobs))
+	for _, job := range q.jobs {
+		snapshots = append(snapshots, cloneJob(job))
+	}
+	paused := q.paused
+	q.mu.RUnlock()
+
+	ctx := context.Background()
+	_ = q.store.SetPaused(ctx, paused)
+	for _, job := range snapshots {
+		if err := q.store.Update(ctx, job); err != nil {
+			return err
+		}
+	}
+	return q.store.Prune(ctx)
 }
 
 func (q *Queue) saveInner(dir string) error {
@@ -137,11 +152,35 @@ func Load(dir string, opts ...Option) (*Queue, error) {
 
 // Load reconstructs a Queue from dir.
 func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
+	q := New(opts...)
+	if q.store != nil {
+		q.stateDir = dir
+		jobs, err := q.store.List(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("queue: load store: %w", err)
+		}
+		paused, _ := q.store.IsPaused(context.Background())
+		func() {
+			q.mu.Lock()
+			defer q.mu.Unlock()
+			for _, job := range jobs {
+				q.jobs = append(q.jobs, job)
+				q.byID[job.ID] = job
+				if job.manifest != nil {
+					job.manifest.buildMessageIDIndex()
+				}
+			}
+			q.paused = paused
+		}()
+		_ = q.store.Prune(context.Background())
+		return q, nil
+	}
+
 	var idx indexFile
 	idxPath := filepath.Join(dir, "queue.json.gz")
 	err := readGzJSON(idxPath, &idx)
 	if errors.Is(err, os.ErrNotExist) {
-		return New(opts...), nil
+		return q, nil
 	}
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
@@ -151,7 +190,7 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 		if qErr := l.quarantineFile(idxPath); qErr != nil {
 			return nil, fmt.Errorf("queue: load index failed and could not quarantine: %w (original error: %w)", qErr, err)
 		}
-		q := New(opts...)
+		q = New(opts...)
 		q.stateDir = dir
 		q.log.Warn("quarantining corrupt queue index and degrading to empty queue", "path", idxPath, "err", err)
 		return q, nil
@@ -161,7 +200,7 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 			idx.Version, persistenceVersion)
 	}
 
-	q := New(opts...)
+	q = New(opts...)
 	q.stateDir = dir
 	q.paused = idx.Paused
 	jobsDir := filepath.Join(dir, "jobs")

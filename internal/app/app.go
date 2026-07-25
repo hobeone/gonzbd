@@ -192,7 +192,13 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 
 	queueStateDir := filepath.Join(adminDir, "queue")
-	q, err := queue.Load(queueStateDir, queue.WithLogger(log), queue.WithSanitizeOptions(sanitize))
+	var qOpts []queue.Option
+	if repo != nil && repo.DB() != nil {
+		store := queue.NewSQLiteStore(repo.DB(), queueStateDir, repo)
+		qOpts = append(qOpts, queue.WithStore(store))
+	}
+	qOpts = append(qOpts, queue.WithLogger(log), queue.WithSanitizeOptions(sanitize))
+	q, err := queue.Load(queueStateDir, qOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("app: load queue: %w", err)
 	}
