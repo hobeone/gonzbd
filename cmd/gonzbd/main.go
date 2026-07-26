@@ -292,8 +292,8 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	if err != nil {
 		return fmt.Errorf("web script hashes: %w", err)
 	}
-	httpHandler := composeRouter(apiSrv, webHandler, false, scriptHashes, trustedFn)
-	httpsHandler := composeRouter(apiSrv, webHandler, true, scriptHashes, trustedFn)
+	httpHandler := composeRouter(apiSrv, webHandler, false, scriptHashes, trustedFn, log)
+	httpsHandler := composeRouter(apiSrv, webHandler, true, scriptHashes, trustedFn, log)
 
 	httpSrv, httpsSrv := newServers(cfg, httpHandler, httpsHandler, log)
 	if listenOverride != "" {
@@ -638,7 +638,13 @@ func newServers(cfg *config.Config, httpHandler, httpsHandler http.Handler, log 
 // composeRouter produces the outer HTTP handler that routes /api requests
 // to the API server, /debug/ to profiling/telemetry handlers (gated to
 // trusted callers only — SEC-4), and everything else to the web UI handler.
-func composeRouter(apiSrv *api.Server, webHandler http.Handler, isHTTPS bool, scriptHashes []string, trustedFn func(*http.Request) bool) http.Handler {
+//
+// apiSrv.Handler() logs its own requests internally (internal/api's
+// loggingMiddleware), so it is mounted as-is here. The web/static-asset
+// handler and /debug/ have no logging of their own, so each is wrapped
+// individually in requestLoggingMiddleware — wrapping the whole mux after
+// composition would double-log every /api request.
+func composeRouter(apiSrv *api.Server, webHandler http.Handler, isHTTPS bool, scriptHashes []string, trustedFn func(*http.Request) bool, log *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api", apiSrv.Handler())
 	mux.Handle("/api/", apiSrv.Handler())
@@ -650,10 +656,69 @@ func composeRouter(apiSrv *api.Server, webHandler http.Handler, isHTTPS bool, sc
 	// own and leaks os.Args (cmdline) + memstats, so an unauthenticated
 	// remote caller must never reach it. pprof is not imported by this
 	// binary, so no profiling endpoints are reachable regardless.
-	mux.Handle("/debug/", trustGate(http.DefaultServeMux, trustedFn))
+	debugHandler := trustGate(http.DefaultServeMux, trustedFn)
+	mux.Handle("/debug/", requestLoggingMiddleware(log.With("component", "debug"), "debug", debugHandler))
 
-	mux.Handle("/", webHandler)
+	mux.Handle("/", requestLoggingMiddleware(log.With("component", "web"), "web", webHandler))
 	return securityHeadersHandler(mux, isHTTPS, contentSecurityPolicy(scriptHashes))
+}
+
+// routerStatusWriter wraps ResponseWriter to capture the status code for
+// requestLoggingMiddleware. Mirrors internal/api's statusWriter; kept
+// separate since it's a different package with no shared logging
+// abstraction, and this one doesn't need the Hijacker passthrough that
+// internal/api's WebSocket route requires.
+type routerStatusWriter struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (w *routerStatusWriter) WriteHeader(code int) {
+	if !w.wroteHeader {
+		w.status = code
+		w.wroteHeader = true
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *routerStatusWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.wroteHeader = true
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// requestLoggingMiddleware logs exactly one line per request handled by
+// next, at a level derived from the final status code (5xx Error, 4xx
+// Warn, else Info) — the same shape as internal/api's per-request log
+// line, for handlers (static assets, /debug/) that have no logging of
+// their own.
+func requestLoggingMiddleware(log *slog.Logger, message string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &routerStatusWriter{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		next.ServeHTTP(sw, r)
+
+		level := slog.LevelInfo
+		switch {
+		case sw.status >= http.StatusInternalServerError:
+			level = slog.LevelError
+		case sw.status >= http.StatusBadRequest:
+			level = slog.LevelWarn
+		}
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		log.Log(r.Context(), level, message,
+			"remote_ip", host,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", sw.status,
+			"duration", time.Since(start),
+		)
+	})
 }
 
 // trustGate wraps h so it only serves requests from callers trustedFn
