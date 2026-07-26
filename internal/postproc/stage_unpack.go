@@ -358,7 +358,7 @@ func (u *UnpackStage) cleanupArchives(ctx context.Context, log *slog.Logger, job
 		var cleaned int
 		for _, a := range allSuccessful {
 			for _, part := range a.Parts {
-				if err := os.Remove(part); err == nil {
+				if err := fsutil.Remove(part); err == nil {
 					line := "Deleted archive file: " + filepath.Base(part)
 					job.OutputLines = append(job.OutputLines, "[unpack] "+line)
 					if job.OnOutput != nil {
@@ -686,11 +686,11 @@ func cleanupContainmentViolation(outDir string, extractedFiles []string, log *sl
 			}
 			continue
 		}
-		// os.Remove unlinks a symlink without following it, so an out-of-bounds
+		// fsutil.Remove unlinks a symlink without following it, so an out-of-bounds
 		// symlink target is left intact. Extracted entries are regular files
 		// (directories are never recorded by the snapshot diff), so Remove
 		// suffices and avoids recursively deleting through a bad path.
-		if rmErr := os.Remove(absPath); rmErr == nil && log != nil {
+		if rmErr := fsutil.Remove(absPath); rmErr == nil && log != nil {
 			log.Warn("containment: removed extracted file after containment check failure", "file", absPath)
 		}
 	}
