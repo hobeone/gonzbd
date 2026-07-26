@@ -91,17 +91,22 @@ func goUnRAREngineInternal(ctx context.Context, log *slog.Logger, archive Archiv
 		return res, fmt.Errorf("go_unrar: discover volumes: %w", err)
 	}
 
+	var openedVols []io.ReadCloser
+	defer func() {
+		for _, v := range openedVols {
+			_ = v.Close() //nolint:errcheck // best-effort close on completion or early exit
+		}
+	}()
+
 	volumesChan := make(chan io.ReadCloser, len(vols))
 	for _, volPath := range vols {
 		vf, err := os.Open(volPath) //nolint:gosec // read-only open of discovered archive volume parts
 		if err != nil {
 			close(volumesChan)
-			for v := range volumesChan {
-				_ = v.Close() //nolint:errcheck // cleanup opened volumes on error path
-			}
 			res.Reason = FailMissingVolume
 			return res, fmt.Errorf("go_unrar: open volume %q: %w", volPath, err)
 		}
+		openedVols = append(openedVols, vf)
 		volumesChan <- vf
 	}
 	close(volumesChan)

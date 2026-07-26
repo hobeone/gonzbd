@@ -464,7 +464,7 @@ func cleanupPar2Backups(dir string, log *slog.Logger) []string {
 			continue
 		}
 		path := filepath.Join(dir, name)
-		if err := os.Remove(path); err != nil {
+		if err := fsutil.Remove(path); err != nil {
 			log.Warn("repair: failed to remove par2 backup", "file", name, "err", err)
 			continue
 		}

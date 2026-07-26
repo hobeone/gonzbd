@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/decoder"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 
 	"github.com/hobeone/gonzbd/internal/crc32util"
 	"github.com/hobeone/gonzbd/internal/telemetry"
@@ -484,6 +485,53 @@ func (a *Assembler) CancelJob(ctx context.Context, jobID string) error {
 	}
 }
 
+// CloseJobHandles sends a control message to the worker goroutine to close all
+// open file handles for the given job without deleting the files from disk,
+// and blocks until the worker has actually done so. This is called when a job
+// enters post-processing or Par2 repair, ensuring no open handles remain that
+// would trigger NFS silly-rename (.nfs*) leaks when post-processing unlinks files.
+func (a *Assembler) CloseJobHandles(ctx context.Context, jobID string) error {
+	a.mu.Lock()
+	if !a.started {
+		a.mu.Unlock()
+		return ErrNotStarted
+	}
+	if a.stopped {
+		a.mu.Unlock()
+		return ErrStopped
+	}
+	a.wg.Add(1)
+	a.mu.Unlock()
+
+	defer a.wg.Done()
+
+	// Control message convention: JobID="" and FileIdx=-2, with the
+	// real job ID in MessageID.
+	ack := make(chan struct{})
+	control := WriteRequest{
+		JobID:     "",
+		FileIdx:   -2,
+		MessageID: jobID,
+		ackCh:     ack,
+	}
+	select {
+	case a.reqs <- control:
+	case <-a.stopCh:
+		return ErrStopped
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	select {
+	case <-ack:
+		return nil
+	case <-a.stopCh:
+		return ErrStopped
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // worker is the single goroutine that owns all file handles and performs disk
 // I/O. It runs until stopCh is closed and the request channel is drained.
 //
@@ -582,7 +630,7 @@ func (a *Assembler) dispatchRequest(
 				continue
 			}
 			_ = f.handle.Close() //nolint:errcheck // best-effort; file is immediately removed
-			if err := os.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
+			if err := fsutil.Remove(f.info.Path); err != nil && !os.IsNotExist(err) {
 				a.log.Warn("failed to remove cancelled file",
 					"path", f.info.Path, "error", err)
 			}
@@ -590,6 +638,26 @@ func (a *Assembler) dispatchRequest(
 			completed[k] = struct{}{}
 			wc.forget(k) // discard cached articles for cancelled file
 		}
+		if req.ackCh != nil {
+			close(req.ackCh)
+		}
+		return 0
+	}
+	if req.JobID == "" && req.FileIdx == -2 {
+		// Control message: close all open file handles for a job without deleting files.
+		targetID := req.MessageID
+		for k, f := range open {
+			if k.jobID != targetID {
+				continue
+			}
+			a.drainCacheForFile(wc, f, k)
+			_ = f.handle.Sync()  //nolint:errcheck // best-effort sync before closing
+			_ = f.handle.Close() //nolint:errcheck // best-effort close
+			delete(open, k)
+			delete(a.pendingCursor, k)
+			completed[k] = struct{}{}
+		}
+		a.flush()
 		if req.ackCh != nil {
 			close(req.ackCh)
 		}
