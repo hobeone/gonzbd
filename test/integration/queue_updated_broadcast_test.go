@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -62,7 +63,8 @@ func TestIntegration_QueueUpdatedBroadcast(t *testing.T) {
 	repo := history.NewRepository(db)
 
 	appCfg := buildAppConfig(srv.Addr(), dir)
-	a, err := app.New(appCfg, repo)
+	broadcaster := api.NewBroadcaster(slog.Default())
+	a, err := app.New(appCfg, repo, app.WithEventEmitter(wsAdapter{broadcaster}))
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
@@ -85,13 +87,13 @@ func TestIntegration_QueueUpdatedBroadcast(t *testing.T) {
 	apiCfg.General.NZBKey = "testnzbkey"
 
 	apiSrv := api.New(api.Options{
-		Version: "integration-test",
-		Queue:   a.Queue(),
-		History: repo,
-		Config:  apiCfg,
-		App:     a,
+		Version:     "integration-test",
+		Queue:       a.Queue(),
+		History:     repo,
+		Config:      apiCfg,
+		App:         a,
+		Broadcaster: broadcaster,
 	})
-	a.SetEmitter(wsAdapter{apiSrv.EventBroadcaster()})
 
 	ts := httptest.NewServer(apiSrv.Handler())
 	t.Cleanup(ts.Close)

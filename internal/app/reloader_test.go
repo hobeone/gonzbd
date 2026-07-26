@@ -225,13 +225,11 @@ func TestApplication_ReloadPostProcOptions_NoDeadlockUnderReadLock(t *testing.T)
 
 func TestApplication_RunMetricsPush(t *testing.T) {
 	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
-	app, err := New(cfg, nil)
+	emitter := &eventCounter{}
+	app, err := New(cfg, nil, WithEventEmitter(emitter))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-
-	emitter := &eventCounter{}
-	app.SetEmitter(emitter)
 
 	// Widen timeout to 3 seconds to avoid race flake with the 1s ticker.
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
