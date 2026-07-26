@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"crypto/tls"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -630,4 +632,45 @@ func mustPrefixes(t *testing.T, entries ...string) []netip.Prefix {
 		t.Fatalf("ParseLocalRanges(%v): %v", entries, err)
 	}
 	return p
+}
+
+// ---------- loggingMiddleware: consolidated single-line logging ----------
+
+// TestLoggingMiddleware_ConsolidatesErrorIntoSingleLine proves that a
+// failing request (401 from a missing API key) produces exactly one log
+// line, at Warn level, carrying both the source IP and the human-readable
+// error message — not a separate "api response warning" line plus a
+// duplicate Info-level "api" line for the same request.
+func TestLoggingMiddleware_ConsolidatesErrorIntoSingleLine(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	s := New(Options{Logger: logger})
+
+	req := httptest.NewRequest(http.MethodGet, "/api?mode=queue", nil)
+	req.RemoteAddr = "203.0.113.7:54321"
+	rr := httptest.NewRecorder()
+
+	s.Handler().ServeHTTP(rr, req)
+
+	out := strings.TrimSpace(buf.String())
+	lines := strings.Split(out, "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly 1 log line, got %d:\n%s", len(lines), out)
+	}
+	line := lines[0]
+
+	if !strings.Contains(line, "level=WARN") {
+		t.Errorf("expected level=WARN, got: %s", line)
+	}
+	if !strings.Contains(line, "203.0.113.7") {
+		t.Errorf("expected source IP 203.0.113.7 in log line, got: %s", line)
+	}
+	if !strings.Contains(line, `error="API key required"`) {
+		t.Errorf("expected error message in log line, got: %s", line)
+	}
+	if !strings.Contains(line, "status=401") {
+		t.Errorf("expected status=401 in log line, got: %s", line)
+	}
 }
