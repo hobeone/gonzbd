@@ -757,8 +757,8 @@ func TestQueueResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if j.Status != constants.StatusQueued {
-		t.Errorf("status = %q; want Queued", j.Status)
+	if j.Status != constants.StatusDownloading {
+		t.Errorf("status = %q; want Downloading", j.Status)
 	}
 }
 
@@ -1487,8 +1487,8 @@ func TestQueueList_PostProcJobsVisible(t *testing.T) {
 			}
 		}
 		if slot.NzoID == normalJob.ID {
-			if slot.Status != "Queued" {
-				t.Errorf("normal slot status = %q; want Queued", slot.Status)
+			if slot.Status != "Downloading" {
+				t.Errorf("normal slot status = %q; want Downloading", slot.Status)
 			}
 		}
 	}

@@ -135,6 +135,57 @@ func (j *Job) Manifest() *Manifest { return j.manifest }
 // mutating exported method, so handing out the pointer is safe.
 func (j *Job) Progress() *JobProgress { return j.progress }
 
+// JobPhase represents the high-level operational phase of a download job.
+type JobPhase int
+
+// JobPhase enum values.
+const (
+	PhasePending JobPhase = iota
+	PhaseActive
+	PhaseProcessing
+	PhasePaused
+	PhaseTerminal
+)
+
+// Phase returns the JobPhase corresponding to the job's current Status.
+func (j *Job) Phase() JobPhase {
+	switch j.Status {
+	case constants.StatusQueued, constants.StatusPropagating:
+		return PhasePending
+	case constants.StatusDownloading, constants.StatusFetching:
+		return PhaseActive
+	case constants.StatusVerifying, constants.StatusQuickCheck, constants.StatusRepairing,
+		constants.StatusExtracting, constants.StatusMoving, constants.StatusRunning:
+		return PhaseProcessing
+	case constants.StatusPaused:
+		return PhasePaused
+	default:
+		return PhasePending
+	}
+}
+
+// IsResident returns true if the phase requires an in-memory resident manifest and progress.
+func (p JobPhase) IsResident() bool {
+	return p == PhaseActive || p == PhaseProcessing
+}
+
+func (p JobPhase) String() string {
+	switch p {
+	case PhasePending:
+		return "Pending"
+	case PhaseActive:
+		return "Active"
+	case PhaseProcessing:
+		return "Processing"
+	case PhasePaused:
+		return "Paused"
+	case PhaseTerminal:
+		return "Terminal"
+	default:
+		return "Unknown"
+	}
+}
+
 const (
 	// earlyAbortSample is the number of articles that must resolve
 	// before the early-abort heuristic fires. Too small → false
@@ -361,6 +412,9 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 // do not block completion — by design they are only fetched if repair is
 // needed, so a job whose non-deferred files are all complete is "downloaded".
 func (j *Job) IsComplete() bool {
+	if j.manifest == nil || j.progress == nil {
+		return false
+	}
 	for i := range j.manifest.NumFiles() {
 		if j.progress.FileDeferred(i) {
 			continue
@@ -375,6 +429,9 @@ func (j *Job) IsComplete() bool {
 // HasDeferredPar2 reports whether the job currently has any deferred par2
 // recovery volume. Safe to call on a snapshot (no lock needed).
 func (j *Job) HasDeferredPar2() bool {
+	if j.progress == nil {
+		return false
+	}
 	return j.progress.HasDeferredPar2()
 }
 
@@ -382,6 +439,9 @@ func (j *Job) HasDeferredPar2() bool {
 // par2 recovery volumes. Phase 1 un-defers this full set on damage; Phase 2
 // selects a block-covering subset from it. Safe to call on a snapshot.
 func (j *Job) DeferredRecoveryIndices() []int {
+	if j.progress == nil {
+		return nil
+	}
 	return j.progress.DeferredRecoveryIndices()
 }
 
@@ -389,13 +449,14 @@ func (j *Job) DeferredRecoveryIndices() []int {
 // state, preserving the Manifest but selectively resetting the existing
 // Progress in place: RemainingBytes is re-added only for articles actually
 // reset (not blanket-recomputed to TotalBytes), and a file's Complete flag
-// is cleared only if at least one of its articles was reset. Must be called
-// strictly before Queue.Add — it does not itself rebuild PendingArticles/
-// per-file Pending/ArticlesResolved/ArticlesFailed/BytesDownloaded; Add's own
-// recomputePending-equivalent call does that once the job is actually added.
+// is cleared only if at least one of its articles was reset. Can be called
+// prior to re-adding or during Queue.Retry.
 func (j *Job) ResetForRetry() {
 	j.Status = constants.StatusQueued
 	j.PostProc = false
+	if j.progress == nil || j.manifest == nil {
+		return
+	}
 	j.progress.downloadStarted = time.Time{}
 	j.progress.downloadFinished = time.Time{}
 	j.progress.serverStats = nil
@@ -421,6 +482,7 @@ func (j *Job) ResetForRetry() {
 			j.progress.files[fi].Complete = false
 		}
 	}
+	j.progress.recompute(j.manifest)
 }
 
 // MarkDownloadFinished sets the job's download-finished timestamp. Intended
@@ -428,7 +490,9 @@ func (j *Job) ResetForRetry() {
 // result) rather than a live queue reference — it performs no queue
 // locking of its own.
 func (j *Job) MarkDownloadFinished(t time.Time) {
-	j.progress.downloadFinished = t
+	if j.progress != nil {
+		j.progress.downloadFinished = t
+	}
 }
 
 // jobJSON is Job's on-disk shape: header fields plus the two nested

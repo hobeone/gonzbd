@@ -1025,6 +1025,13 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 
 // printSummary prints the one-shot mode download summary to stdout.
 func printSummary(job *queue.Job, hist *history.Entry, duration time.Duration) {
+	var totalBytes int64
+	if m := job.Manifest(); m != nil {
+		totalBytes = m.TotalBytes()
+	} else if hist != nil {
+		totalBytes = hist.Bytes
+	}
+
 	fmt.Printf("\n--- Download Summary ---\n")
 	fmt.Printf("Job:        %s\n", job.Name)
 	fmt.Printf("Status:     %s\n", hist.Status)
@@ -1032,11 +1039,11 @@ func printSummary(job *queue.Job, hist *history.Entry, duration time.Duration) {
 		fmt.Printf("Error:      %s\n", hist.FailMessage)
 	}
 	fmt.Printf("Location:   %s\n", hist.Path)
-	fmt.Printf("Total Size: %s\n", humanfmt.Bytes(job.Manifest().TotalBytes()))
+	fmt.Printf("Total Size: %s\n", humanfmt.Bytes(totalBytes))
 	fmt.Printf("Duration:   %v\n", duration.Round(time.Second))
 
 	// Network throughput (average)
-	netMBps := float64(job.Manifest().TotalBytes()) / (1024 * 1024) / duration.Seconds()
+	netMBps := float64(totalBytes) / (1024 * 1024) / duration.Seconds()
 	fmt.Printf("Avg Speed:   %.2f MB/s\n", netMBps)
 	fmt.Printf("------------------------\n\n")
 }

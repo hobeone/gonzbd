@@ -62,6 +62,9 @@ type WriteRequest struct {
 	// file this article belongs to.
 	FileIdx int
 
+	// ArtIdx is the global index of the article within the job's manifest.
+	ArtIdx int32
+
 	// MessageID is the article's NNTP Message-ID. The assembler uses it to
 	// mark the article Done (on success, after fsync) or Failed (on FatalErr)
 	// in the queue. Required.
@@ -153,6 +156,12 @@ type Options struct {
 
 	// MinFreeBytes is the low-disk threshold. Zero disables disk-space checks.
 	MinFreeBytes int64
+
+	// MarkArticlesDoneByIdx is the O(1) index-based batched durability callback.
+	MarkArticlesDoneByIdx func(jobID string, artIdxs []int32) error
+
+	// MarkArticlesFailedByIdx is the O(1) index-based batched failure callback.
+	MarkArticlesFailedByIdx func(jobID string, artIdxs []int32) ([]int32, error)
 
 	// MarkArticlesDone is the batched durability callback: the assembler
 	// accumulates message-IDs of successfully fsynced articles and hands
@@ -290,8 +299,10 @@ type Assembler struct {
 	// pendingDone and pendingFailed are per-job batches accumulated by
 	// the worker goroutine between flushes. Exclusively owned by the
 	// worker — no locking.
-	pendingDone   map[string][]string
-	pendingFailed map[string][]string
+	pendingDone        map[string][]string
+	pendingFailed      map[string][]string
+	pendingDoneByIdx   map[string][]int32
+	pendingFailedByIdx map[string][]int32
 
 	// pendingCursor holds the latest reported write cursor per file, flushed
 	// to Options.SetWriteCursor on the same cadence as pendingDone. Worker-owned.
@@ -314,15 +325,17 @@ func New(opts Options, log *slog.Logger) *Assembler {
 		flushInterval = defaultDoneFlushInterval
 	}
 	a := &Assembler{
-		log:           log.With("component", "assembler"),
-		opts:          opts,
-		reqs:          make(chan WriteRequest, opts.QueueSize),
-		stopCh:        make(chan struct{}),
-		flushInterval: flushInterval,
-		pendingDone:   make(map[string][]string),
-		pendingFailed: make(map[string][]string),
-		pendingCursor: make(map[fileKey]int64),
-		diskProbe:     NewDiskProbe(DefaultDiskProbeTTL),
+		log:                log.With("component", "assembler"),
+		opts:               opts,
+		reqs:               make(chan WriteRequest, opts.QueueSize),
+		stopCh:             make(chan struct{}),
+		flushInterval:      flushInterval,
+		pendingDone:        make(map[string][]string),
+		pendingFailed:      make(map[string][]string),
+		pendingDoneByIdx:   make(map[string][]int32),
+		pendingFailedByIdx: make(map[string][]int32),
+		pendingCursor:      make(map[fileKey]int64),
+		diskProbe:          NewDiskProbe(DefaultDiskProbeTTL),
 	}
 	a.minFreeBytes.Store(opts.MinFreeBytes)
 	return a
@@ -599,21 +612,34 @@ func (a *Assembler) dispatchRequest(
 // disk, and the next completion will retry implicitly (partsWritten
 // tracking is local to the assembler).
 func (a *Assembler) flush() {
-	if len(a.pendingDone) == 0 && len(a.pendingFailed) == 0 && len(a.pendingCursor) == 0 {
+	if len(a.pendingDoneByIdx) == 0 && len(a.pendingFailedByIdx) == 0 &&
+		len(a.pendingDone) == 0 && len(a.pendingFailed) == 0 && len(a.pendingCursor) == 0 {
 		return
 	}
-	if a.opts.MarkArticlesDone != nil {
+	if a.opts.MarkArticlesDoneByIdx != nil {
+		for jobID, artIdxs := range a.pendingDoneByIdx {
+			if err := a.opts.MarkArticlesDoneByIdx(jobID, artIdxs); err != nil {
+				a.log.Debug("batch mark articles done by idx (job already removed)",
+					"job", jobID, "count", len(artIdxs), "error", err)
+			}
+		}
+	} else if a.opts.MarkArticlesDone != nil {
 		for jobID, msgIDs := range a.pendingDone {
 			if err := a.opts.MarkArticlesDone(jobID, msgIDs); err != nil {
-				// "job not found" is benign: the job completed and was
-				// removed from the queue before this flush. The data
-				// is already on disk; the ack is a no-op.
 				a.log.Debug("batch mark articles done (job already removed)",
 					"job", jobID, "count", len(msgIDs), "error", err)
 			}
 		}
 	}
-	if a.opts.MarkArticlesFailed != nil {
+
+	if a.opts.MarkArticlesFailedByIdx != nil {
+		for jobID, artIdxs := range a.pendingFailedByIdx {
+			if _, err := a.opts.MarkArticlesFailedByIdx(jobID, artIdxs); err != nil {
+				a.log.Debug("batch mark articles failed by idx (job already removed)",
+					"job", jobID, "count", len(artIdxs), "error", err)
+			}
+		}
+	} else if a.opts.MarkArticlesFailed != nil {
 		for jobID, msgIDs := range a.pendingFailed {
 			if _, err := a.opts.MarkArticlesFailed(jobID, msgIDs); err != nil {
 				a.log.Debug("batch mark articles failed (job already removed)",
@@ -621,6 +647,7 @@ func (a *Assembler) flush() {
 			}
 		}
 	}
+
 	if a.opts.SetWriteCursor != nil {
 		for k, cur := range a.pendingCursor {
 			if err := a.opts.SetWriteCursor(k.jobID, k.fileIdx, cur); err != nil {
@@ -629,10 +656,10 @@ func (a *Assembler) flush() {
 			}
 		}
 	}
-	// Reset the maps. Reuse the backing allocation where reasonable by
-	// clearing rather than reallocating (Go 1.21+ `clear` semantics).
 	clear(a.pendingDone)
 	clear(a.pendingFailed)
+	clear(a.pendingDoneByIdx)
+	clear(a.pendingFailedByIdx)
 	clear(a.pendingCursor)
 }
 
@@ -692,14 +719,42 @@ func (a *Assembler) processRequest(req WriteRequest, open map[fileKey]*openFile,
 	}
 }
 
+func (a *Assembler) recordPendingDone(jobID, msgID string, artIdx int32) {
+	if a.opts.MarkArticlesDoneByIdx != nil {
+		if a.pendingDoneByIdx == nil {
+			a.pendingDoneByIdx = make(map[string][]int32)
+		}
+		a.pendingDoneByIdx[jobID] = append(a.pendingDoneByIdx[jobID], artIdx)
+	} else if a.opts.MarkArticlesDone != nil {
+		if a.pendingDone == nil {
+			a.pendingDone = make(map[string][]string)
+		}
+		a.pendingDone[jobID] = append(a.pendingDone[jobID], msgID)
+	}
+}
+
+func (a *Assembler) recordPendingFailed(jobID, msgID string, artIdx int32) {
+	if a.opts.MarkArticlesFailedByIdx != nil {
+		if a.pendingFailedByIdx == nil {
+			a.pendingFailedByIdx = make(map[string][]int32)
+		}
+		a.pendingFailedByIdx[jobID] = append(a.pendingFailedByIdx[jobID], artIdx)
+	} else if a.opts.MarkArticlesFailed != nil {
+		if a.pendingFailed == nil {
+			a.pendingFailed = make(map[string][]string)
+		}
+		a.pendingFailed[jobID] = append(a.pendingFailed[jobID], msgID)
+	}
+}
+
 // handleLateDuplicate handles articles arriving for a file that is already marked completed.
 func (a *Assembler) handleLateDuplicate(req WriteRequest) {
 	a.log.Debug("ignoring late article for completed file",
 		"job", req.JobID, "fileidx", req.FileIdx, "msgid", req.MessageID)
 	if req.FatalErr != nil {
-		a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
+		a.recordPendingFailed(req.JobID, req.MessageID, req.ArtIdx)
 	} else {
-		a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
+		a.recordPendingDone(req.JobID, req.MessageID, req.ArtIdx)
 	}
 	if req.Data != nil {
 		decoder.PutBuffer(req.Data)
@@ -774,7 +829,7 @@ func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 	if _, dup := f.seenFailed[req.MessageID]; dup {
 		// Already recorded — re-emit the ack so the queue
 		// receives it even if a prior flush dropped it.
-		a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
+		a.recordPendingFailed(req.JobID, req.MessageID, req.ArtIdx)
 		return false
 	}
 	// Cross-check: if this MessageID was already counted as a success,
@@ -786,7 +841,7 @@ func (a *Assembler) handleFatalArticle(f *openFile, req WriteRequest) bool {
 		}
 	}
 	f.seenFailed[req.MessageID] = struct{}{}
-	a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
+	a.recordPendingFailed(req.JobID, req.MessageID, req.ArtIdx)
 	// If this MessageID was already counted as a success, don't increment
 	// partsWritten again (the failure ack above is still recorded).
 	return !alreadyCounted
@@ -798,7 +853,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writ
 			f.seenDone = make(map[string]struct{})
 		}
 		if _, dup := f.seenDone[req.MessageID]; dup {
-			a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
+			a.recordPendingDone(req.JobID, req.MessageID, req.ArtIdx)
 			if req.Data != nil {
 				decoder.PutBuffer(req.Data)
 			}
@@ -808,7 +863,7 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writ
 			if _, was := f.seenFailed[req.MessageID]; was {
 				a.writeArticleOrBuffer(f, key, req, wc, open)
 				f.seenDone[req.MessageID] = struct{}{}
-				a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
+				a.recordPendingDone(req.JobID, req.MessageID, req.ArtIdx)
 				return false
 			}
 		}
@@ -819,13 +874,13 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writ
 				f.seenFailed = make(map[string]struct{})
 			}
 			f.seenFailed[req.MessageID] = struct{}{}
-			a.pendingFailed[req.JobID] = append(a.pendingFailed[req.JobID], req.MessageID)
+			a.recordPendingFailed(req.JobID, req.MessageID, req.ArtIdx)
 		}
 	} else {
 		if req.MessageID != "" {
 			f.seenDone[req.MessageID] = struct{}{}
 		}
-		a.pendingDone[req.JobID] = append(a.pendingDone[req.JobID], req.MessageID)
+		a.recordPendingDone(req.JobID, req.MessageID, req.ArtIdx)
 		a.recordArticleCRC(f, req)
 	}
 	return true

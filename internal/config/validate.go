@@ -189,6 +189,9 @@ func (d *DownloadConfig) validate() error {
 	if err := nonNegative("max_art_opt", d.MaxArtOpt); err != nil {
 		errs = append(errs, err)
 	}
+	if err := positive("max_active_jobs", d.MaxActiveJobs); err != nil {
+		errs = append(errs, err)
+	}
 	if err := nonNegative("propagation_delay", d.PropagationDelay); err != nil {
 		errs = append(errs, err)
 	}

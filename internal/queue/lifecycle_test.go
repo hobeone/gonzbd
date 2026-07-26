@@ -355,6 +355,7 @@ func TestClearAllEmitted(t *testing.T) {
 func TestForEachUnfinishedArticle(t *testing.T) {
 	t.Parallel()
 	q := New()
+	q.PauseAll()
 	j := makeMultiFileJob(t, "foreach", 2, 3)
 	_ = q.Add(j)
 
@@ -529,6 +530,7 @@ func TestTotalRemainingBytes(t *testing.T) {
 func TestGetJobStatus(t *testing.T) {
 	t.Parallel()
 	q := New()
+	q.PauseAll()
 	j := makeJob(t, "status-check", constants.NormalPriority)
 	_ = q.Add(j)
 

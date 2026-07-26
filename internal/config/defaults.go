@@ -78,6 +78,7 @@ func Default() (*Config, error) {
 			WriteCacheSize:     ByteSize(constants.DefaultWriteCacheBytes),
 			MaxArtTries:        3,
 			MaxArtOpt:          1,
+			MaxActiveJobs:      4,
 			TopOnly:            false,
 			NoPenalties:        false,
 			PreCheck:           false,

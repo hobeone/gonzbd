@@ -131,7 +131,7 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 		// the article as dispatchable (all try-list entries would still
 		// be present, so it would keep re-emitting ErrNoServersLeft in
 		// a tight loop until the assembler finally marked it Failed).
-		if err := d.queue.MarkArticleEmitted(req.jobID, req.messageID); err != nil {
+		if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil {
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 		}
 		d.clearTried(req.jobID, req.messageID)
@@ -260,6 +260,7 @@ func (d *Downloader) tryDispatch(ctx context.Context, a queue.UnfinishedArticle,
 		jobID:     a.JobID,
 		messageID: a.MessageID,
 		fileIdx:   a.FileIdx,
+		artIdx:    a.ArtIdx,
 		bytes:     a.Bytes,
 		subject:   a.Subject,
 	}
@@ -681,7 +682,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	// write. If the process crashes before fsync, Emitted is lost on
 	// restart, so the article is re-dispatched — matching the B.6
 	// invariant that Done means "bytes on stable storage".
-	if err := d.queue.MarkArticleEmitted(req.jobID, req.messageID); err != nil {
+	if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil {
 		d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 	}
 	d.clearTried(req.jobID, req.messageID)
@@ -692,6 +693,7 @@ func (d *Downloader) emitResult(ctx context.Context, req *articleRequest, server
 	res := &ArticleResult{
 		JobID:      req.jobID,
 		FileIdx:    req.fileIdx,
+		ArtIdx:     req.artIdx,
 		MessageID:  req.messageID,
 		Subject:    req.subject,
 		ServerName: server,

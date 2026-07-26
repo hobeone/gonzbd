@@ -97,6 +97,7 @@ func (app *Application) ReloadDownloadOptions(d config.DownloadConfig) {
 	app.SetPropagationDelay(d.PropagationDelay)
 	if app.queue != nil {
 		app.queue.SetSanitizeOptions(d.SanitizeOptions())
+		app.queue.SetMaxActiveJobs(d.MaxActiveJobs)
 	}
 }
 

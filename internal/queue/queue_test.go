@@ -2,6 +2,7 @@ package queue
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -311,6 +312,7 @@ func TestSetStatusEnforcesStateMachine(t *testing.T) {
 
 func TestPauseResumePerJob(t *testing.T) {
 	q := New()
+	q.PauseAll()
 	j := makeJob(t, "j", constants.NormalPriority)
 	_ = q.Add(j)
 	// Drain the add signal before asserting on Resume signal.
@@ -354,7 +356,7 @@ func TestPauseAllResumeAll(t *testing.T) {
 	case <-q.Notify():
 	default:
 	}
-	q.ResumeAll()
+	q.ResumeAll(context.Background())
 	if q.IsPaused() {
 		t.Error("ResumeAll did not clear paused")
 	}
@@ -754,7 +756,8 @@ func TestIsDirty(t *testing.T) {
 	// MarkArticlesDone sets dirty.
 	j2 := makeJob(t, "batch-done", constants.NormalPriority)
 	_ = q.Add(j2)
-	ids2 := []string{j2.Manifest().ArticleID(0), j2.Manifest().ArticleID(1)}
+	gotJ2, _ := q.Get(j2.ID)
+	ids2 := []string{gotJ2.Manifest().ArticleID(0), gotJ2.Manifest().ArticleID(1)}
 	if err := q.MarkArticlesDone(j2.ID, ids2); err != nil {
 		t.Fatalf("MarkArticlesDone: %v", err)
 	}
@@ -766,7 +769,8 @@ func TestIsDirty(t *testing.T) {
 	// MarkArticlesFailed sets dirty.
 	j3 := makeJob(t, "batch-fail", constants.NormalPriority)
 	_ = q.Add(j3)
-	ids3 := []string{j3.Manifest().ArticleID(0)}
+	gotJ3, _ := q.Get(j3.ID)
+	ids3 := []string{gotJ3.Manifest().ArticleID(0)}
 	if _, err := q.MarkArticlesFailed(j3.ID, ids3); err != nil {
 		t.Fatalf("MarkArticlesFailed: %v", err)
 	}
@@ -778,6 +782,7 @@ func TestIsDirty(t *testing.T) {
 func TestDirtyFlagOnMutations(t *testing.T) {
 	dir := t.TempDir()
 	q := New()
+	q.PauseAll()
 
 	// 1. Add
 	j1 := makeJob(t, "job1", constants.NormalPriority)
@@ -836,7 +841,7 @@ func TestDirtyFlagOnMutations(t *testing.T) {
 	_ = q.Save(dir)
 
 	// 7. ResumeAll
-	q.ResumeAll()
+	q.ResumeAll(context.Background())
 	if !q.IsDirty() {
 		t.Error("ResumeAll should set dirty")
 	}

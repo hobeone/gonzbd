@@ -166,7 +166,17 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 			for _, job := range jobs {
 				q.jobs = append(q.jobs, job)
 				q.byID[job.ID] = job
-				if job.manifest != nil {
+				if isResidentStatus(job.Status) && job.manifest == nil {
+					manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
+					var m Manifest
+					if err := readGzJSON(manifestPath, &m); err == nil {
+						m.buildMessageIDIndex()
+						job.manifest = &m
+						job.progress = newJobProgress(&m)
+						_ = q.store.RestoreJobProgress(context.Background(), job)
+						q.activeSet.Add(job)
+					}
+				} else if job.manifest != nil {
 					job.manifest.buildMessageIDIndex()
 				}
 			}

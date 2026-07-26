@@ -77,8 +77,8 @@ func (s *Server) queuePauseAll(w http.ResponseWriter, _ *http.Request) {
 	respondStatus(w)
 }
 
-func (s *Server) queueResumeAll(w http.ResponseWriter, _ *http.Request) {
-	s.queue.ResumeAll()
+func (s *Server) queueResumeAll(w http.ResponseWriter, r *http.Request) {
+	s.queue.ResumeAll(r.Context())
 	if s.downloads != nil {
 		s.downloads.ResumeDownloads()
 	}
@@ -226,6 +226,9 @@ func stageFromStatus(status constants.Status) string {
 // file in the job, or empty if every file is complete.
 func firstIncompleteFile(j *queue.Job) string {
 	m, p := j.Manifest(), j.Progress()
+	if m == nil || p == nil {
+		return ""
+	}
 	for i := range m.NumFiles() {
 		if !p.FileComplete(i) {
 			return m.FileSubject(i)
@@ -267,6 +270,9 @@ func fileState(m *queue.Manifest, p *queue.JobProgress, fileIdx int) string {
 // shape for the expansion drawer.
 func buildQueueFiles(j *queue.Job) []queueFile {
 	m, p := j.Manifest(), j.Progress()
+	if m == nil || p == nil {
+		return []queueFile{}
+	}
 	out := make([]queueFile, 0, m.NumFiles())
 	for fi := range m.NumFiles() {
 		out = append(out, queueFile{
@@ -290,8 +296,13 @@ const noiseFloorBPS = 1024.0 // 1 KiB/s
 // detail endpoint).
 func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *directunpack.Status) queueSlot {
 	m, p := j.Manifest(), j.Progress()
-	totalBytes := m.TotalBytes()
-	remainingBytes := p.RemainingBytes()
+	var totalBytes, remainingBytes int64
+	if m != nil {
+		totalBytes = m.TotalBytes()
+	}
+	if p != nil {
+		remainingBytes = p.RemainingBytes()
+	}
 
 	var pct int
 	if totalBytes > 0 {

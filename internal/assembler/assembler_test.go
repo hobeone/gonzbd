@@ -804,6 +804,9 @@ func TestAssembler_HelperMethods(t *testing.T) {
 			log:           slog.Default(),
 			pendingFailed: make(map[string][]string),
 			pendingDone:   make(map[string][]string),
+			opts: Options{
+				MarkArticlesFailed: func(jobID string, messageIDs []string) ([]string, error) { return nil, nil },
+			},
 		}
 		f := &openFile{
 			seenFailed: make(map[string]struct{}),
@@ -852,6 +855,9 @@ func TestAssembler_HelperMethods(t *testing.T) {
 			log:           slog.Default(),
 			pendingFailed: make(map[string][]string),
 			pendingDone:   make(map[string][]string),
+			opts: Options{
+				MarkArticlesDone: func(jobID string, messageIDs []string) error { return nil },
+			},
 		}
 
 		tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_test_success")
@@ -1127,6 +1133,10 @@ func TestAssembler_HelperMethods(t *testing.T) {
 			log:           slog.Default(),
 			pendingFailed: make(map[string][]string),
 			pendingDone:   make(map[string][]string),
+			opts: Options{
+				MarkArticlesFailed: func(jobID string, messageIDs []string) ([]string, error) { return nil, nil },
+				MarkArticlesDone:   func(jobID string, messageIDs []string) error { return nil },
+			},
 		}
 
 		tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_fail_")
