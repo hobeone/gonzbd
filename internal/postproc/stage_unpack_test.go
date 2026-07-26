@@ -607,17 +607,14 @@ func assertExtractEngine(t *testing.T, scenario string, res unpack.Result, err e
 func writeStubBinary(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	f, err := os.CreateTemp(dir, "stubtool.*.tmp")
+	stub := filepath.Join(dir, "stubtool")
+	f, err := os.OpenFile(stub, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
-		t.Fatalf("create temp stub binary: %v", err)
+		t.Fatalf("create stub binary: %v", err)
 	}
 	if _, err := f.WriteString("#!/bin/sh\nexit 1\n"); err != nil {
 		_ = f.Close()
 		t.Fatalf("write stub binary: %v", err)
-	}
-	if err := f.Chmod(0o755); err != nil {
-		_ = f.Close()
-		t.Fatalf("chmod stub binary: %v", err)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
@@ -625,10 +622,6 @@ func writeStubBinary(t *testing.T) string {
 	}
 	if err := f.Close(); err != nil {
 		t.Fatalf("close stub binary: %v", err)
-	}
-	stub := filepath.Join(dir, "stubtool")
-	if err := os.Rename(f.Name(), stub); err != nil {
-		t.Fatalf("rename stub binary: %v", err)
 	}
 	return stub
 }
@@ -1053,24 +1046,21 @@ func (c *logCollector) Lines() []string {
 
 func createDummyExecutable(t *testing.T, dir, filename, content string) string {
 	t.Helper()
-	f, err := os.CreateTemp(dir, filename+".*.tmp")
+	target := filepath.Join(dir, filename)
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
-		t.Fatalf("create temp dummy executable: %v", err)
+		t.Fatalf("create dummy executable: %v", err)
 	}
 	if _, err := f.WriteString(content); err != nil {
 		_ = f.Close()
 		t.Fatalf("write dummy executable: %v", err)
 	}
-	if err := f.Chmod(0o755); err != nil {
+	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		t.Fatalf("chmod dummy executable: %v", err)
+		t.Fatalf("sync dummy executable: %v", err)
 	}
 	if err := f.Close(); err != nil {
 		t.Fatalf("close dummy executable: %v", err)
-	}
-	target := filepath.Join(dir, filename)
-	if err := os.Rename(f.Name(), target); err != nil {
-		t.Fatalf("rename dummy executable: %v", err)
 	}
 	return target
 }
