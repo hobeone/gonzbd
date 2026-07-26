@@ -670,7 +670,49 @@ func TestLoggingMiddleware_ConsolidatesErrorIntoSingleLine(t *testing.T) {
 	}
 }
 
-// Dummy references to satisfy scripts/check_test_alignment
-var (
-	_ = requestScheme
-)
+func TestRequestScheme(t *testing.T) {
+	t.Parallel()
+
+	cfg := AuthConfig{}
+
+	// Direct TLS
+	reqTLS := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+	reqTLS.TLS = &tls.ConnectionState{}
+	if got := requestScheme(reqTLS, cfg); got != "https" {
+		t.Errorf("requestScheme(TLS) = %q; want %q", got, "https")
+	}
+
+	// Plain HTTP
+	reqHTTP := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+	if got := requestScheme(reqHTTP, cfg); got != "http" {
+		t.Errorf("requestScheme(HTTP) = %q; want %q", got, "http")
+	}
+
+	// Trusted proxy with X-Forwarded-Proto
+	reqXFP := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/", nil)
+	reqXFP.RemoteAddr = "127.0.0.1:12345"
+	reqXFP.Header.Set("X-Forwarded-Proto", "https")
+	if got := requestScheme(reqXFP, cfg); got != "https" {
+		t.Errorf("requestScheme(X-Forwarded-Proto) = %q; want %q", got, "https")
+	}
+
+	// Trusted proxy with Forwarded proto=https
+	reqFwd := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/", nil)
+	reqFwd.RemoteAddr = "127.0.0.1:12345"
+	reqFwd.Header.Set("Forwarded", "for=127.0.0.1;proto=https")
+	cfgFwd := AuthConfig{
+		VerifyXFF:     true,
+		ForwardHeader: config.ForwardHeaderForwarded,
+	}
+	if got := requestScheme(reqFwd, cfgFwd); got != "https" {
+		t.Errorf("requestScheme(Forwarded) = %q; want %q", got, "https")
+	}
+
+	// Untrusted source with X-Forwarded-Proto should be ignored (returns http)
+	reqUntrusted := httptest.NewRequest(http.MethodGet, "http://8.8.8.8/", nil)
+	reqUntrusted.RemoteAddr = "8.8.8.8:12345"
+	reqUntrusted.Header.Set("X-Forwarded-Proto", "https")
+	if got := requestScheme(reqUntrusted, cfg); got != "http" {
+		t.Errorf("requestScheme(Untrusted) = %q; want %q", got, "http")
+	}
+}

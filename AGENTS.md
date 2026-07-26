@@ -190,7 +190,10 @@ golangci-lint run ./...               # Must pass (no new issues)
 detector, so `go test -race ./...` is a separate, required step.
 
 If any gate fails, fix the underlying issue. **Do not skip, suppress, or bypass
-these checks** to make a commit go through. If a lint rule genuinely needs to be
+these checks** to make a commit go through. **Never insert dummy tests or dummy
+variable references (`var _ = helper`) simply to satisfy `check_test_alignment`
+or coverage numbers.** Write real unit tests validating the logic or use `//nocover: <reason>`
+for trivial exempted code (see `docs/go-standards.md`). If a lint rule genuinely needs to be
 disabled for a specific case, add a `//nolint:rulename // reason` comment
 explaining why.
 

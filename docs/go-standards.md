@@ -103,6 +103,17 @@ Functions NOT eligible — these must be tested:
 - Anything with error handling or error wrapping.
 - Anything that mutates shared state.
 
+### Test Alignment & No Dummy References (Mandatory)
+
+The `scripts/check_test_alignment` tool verifies that unexported helpers with cyclomatic complexity ≥ 8 in modified files are covered by direct unit tests in the same package.
+
+**Agents MUST NOT add dummy tests, fake variable assignments (e.g., `var _ = helper` or `_ = (Type{}).method`), or stub references simply to satisfy `check_test_alignment` or artificial coverage metrics.** Dummy references are test gaming and conceal untested logic.
+
+When `check_test_alignment` reports an unexported helper gap, agents MUST choose one of two valid resolutions:
+
+1. **Write Real Unit Tests**: Implement meaningful, thorough unit tests in the package test suite (`_test.go`) that directly exercise the helper, asserting expected returns, boundary conditions, and error branches.
+2. **Exempt Trivial Code (`//nocover:`)**: If the helper is trivially correct by inspection (e.g., no-op stub, simple getter), mark the function declaration line with a `//nocover: <reason>` comment providing a clear justification. The `check_test_alignment` script (matching `check_coverage`) honors `//nocover:` comments and skips exempted functions.
+
 ### Red-Green Discipline (write the failing test first)
 
 **Every bug fix and every regression test MUST be proven to fail on the
