@@ -117,7 +117,7 @@ func checkFile(srcPath string, minComplexity int, hasGaps *bool) error {
 		return err
 	}
 
-	srcBytes, err := os.ReadFile(srcPath)
+	srcBytes, err := os.ReadFile(srcPath) //nolint:gosec // CLI script reading repository source files
 	if err != nil {
 		return err
 	}
