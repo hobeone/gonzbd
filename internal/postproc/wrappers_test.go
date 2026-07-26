@@ -20,29 +20,23 @@ import (
 func writeScript(t *testing.T, path string, content []byte) {
 	t.Helper()
 	dir := filepath.Dir(path)
-	//nolint:gosec // G306: test-only script needs exec bit
-	f, err := os.CreateTemp(dir, ".script-*.tmp")
-	if err != nil {
-		t.Fatalf("create temp script: %v", err)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir script dir: %v", err)
 	}
-	tmpName := f.Name()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		t.Fatalf("create script: %v", err)
+	}
 	if _, err := f.Write(content); err != nil {
-		f.Close()
-		os.Remove(tmpName)
+		_ = f.Close()
 		t.Fatalf("write script: %v", err)
 	}
-	if err := f.Chmod(0o755); err != nil {
-		f.Close()
-		os.Remove(tmpName)
-		t.Fatalf("chmod script: %v", err)
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		t.Fatalf("sync script: %v", err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmpName)
 		t.Fatalf("close script: %v", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		t.Fatalf("rename script: %v", err)
 	}
 }
 
