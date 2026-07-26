@@ -256,10 +256,13 @@ func IsTrustedRemote(remoteAddr string, fh ForwardedHeaders, ranges []netip.Pref
 		return false, "peer address is not loopback and not within a configured local_range"
 	}
 	if fh.present() && !verifyXFF {
-		return false, "a forwarding header (X-Forwarded-For, Forwarded, or X-Real-IP) is present but " +
-			"verify_xff_header is false: a reverse proxy may be interposed, so the peer address alone " +
-			"cannot be trusted; set verify_xff_header: true and add the proxy's address to local_ranges " +
-			"to trust it explicitly"
+		if peer.IsLoopback() {
+			return false, "a forwarding header (X-Forwarded-For, Forwarded, or X-Real-IP) is present but " +
+				"verify_xff_header is false: a same-host reverse proxy may be interposed, so the peer address " +
+				"alone cannot be trusted; set verify_xff_header: true and add the proxy's address to local_ranges " +
+				"to trust it explicitly"
+		}
+		return true, ""
 	}
 	if verifyXFF {
 		hops, present := fh.hops(forwardHeader)

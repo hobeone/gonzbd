@@ -98,25 +98,40 @@ func TestIsTrustedRemote(t *testing.T) {
 		{name: "outside range untrusted", remoteAddr: "172.19.0.5:5000", ranges: []string{"172.18.0.0/16"}, want: false},
 		{name: "private trusted via ipv4-mapped cidr range", remoteAddr: "192.168.1.10:5000", ranges: []string{"::ffff:192.168.0.0/112"}, want: true},
 
-		// A forwarding header present but unverified fails closed, even from
-		// an otherwise-trusted peer — this is the issue #94 fix: a reverse
-		// proxy on the same host makes the peer look loopback/local, so its
-		// mere presence with no verification must not be trusted.
+		// A forwarding header present but unverified fails closed if the peer
+		// is a loopback/same-host proxy (issue #94 fix: loopback is implicitly
+		// trusted, so an unverified peer proves nothing once a forwarding
+		// header shows a proxy is interposed). However, if the peer is a
+		// non-loopback trusted IP (explicitly listed in local_ranges), we trust
+		// the proxy directly and ignore/short-circuit client hop verification
+		// when verifyXFF is off.
 		{name: "spoofed xff from untrusted peer still rejected (peer check first)", remoteAddr: "8.8.8.8:5000", fh: ForwardedHeaders{XForwardedFor: "127.0.0.1"}, want: false},
 		{
-			name: "trusted peer + xff present + verify off -> fails closed", remoteAddr: "192.168.1.10:5000",
+			name: "trusted peer + xff present + verify off -> trusted", remoteAddr: "192.168.1.10:5000",
 			fh: ForwardedHeaders{XForwardedFor: "8.8.8.8"}, ranges: []string{"192.168.0.0/16"},
-			want: false, wantReasonContains: "verify_xff_header is false",
+			want: true,
 		},
 		{
-			name: "trusted peer + forwarded present + verify off -> fails closed", remoteAddr: "192.168.1.10:5000",
+			name: "trusted peer + forwarded present + verify off -> trusted", remoteAddr: "192.168.1.10:5000",
 			fh: ForwardedHeaders{Forwarded: "for=8.8.8.8"}, ranges: []string{"192.168.0.0/16"},
-			want: false, wantReasonContains: "verify_xff_header is false",
+			want: true,
 		},
 		{
-			name: "trusted peer + x-real-ip present + verify off -> fails closed", remoteAddr: "192.168.1.10:5000",
+			name: "trusted peer + x-real-ip present + verify off -> trusted", remoteAddr: "192.168.1.10:5000",
 			fh: ForwardedHeaders{XRealIP: "8.8.8.8"}, ranges: []string{"192.168.0.0/16"},
-			want: false, wantReasonContains: "verify_xff_header is false",
+			want: true,
+		},
+		{
+			name: "loopback peer + xff present + verify off -> fails closed", remoteAddr: "127.0.0.1:5000",
+			fh: ForwardedHeaders{XForwardedFor: "8.8.8.8"}, want: false, wantReasonContains: "verify_xff_header is false",
+		},
+		{
+			name: "loopback peer + forwarded present + verify off -> fails closed", remoteAddr: "127.0.0.1:5000",
+			fh: ForwardedHeaders{Forwarded: "for=8.8.8.8"}, want: false, wantReasonContains: "verify_xff_header is false",
+		},
+		{
+			name: "loopback peer + x-real-ip present + verify off -> fails closed", remoteAddr: "127.0.0.1:5000",
+			fh: ForwardedHeaders{XRealIP: "8.8.8.8"}, want: false, wantReasonContains: "verify_xff_header is false",
 		},
 		{name: "trusted peer + no forwarding header + verify off -> trusted", remoteAddr: "192.168.1.10:5000", ranges: []string{"192.168.0.0/16"}, want: true},
 
