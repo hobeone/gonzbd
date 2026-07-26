@@ -63,8 +63,8 @@ func TestIntegration_QueueUpdatedBroadcast(t *testing.T) {
 	repo := history.NewRepository(db)
 
 	appCfg := buildAppConfig(srv.Addr(), dir)
-	events := api.NewBroadcaster(slog.Default())
-	a, err := app.New(appCfg, repo, app.WithEventEmitter(wsAdapter{events}))
+	broadcaster := api.NewBroadcaster(slog.Default())
+	a, err := app.New(appCfg, repo, app.WithEventEmitter(wsAdapter{broadcaster}))
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestIntegration_QueueUpdatedBroadcast(t *testing.T) {
 		History:     repo,
 		Config:      apiCfg,
 		App:         a,
-		Broadcaster: events,
+		Broadcaster: broadcaster,
 	})
 
 	ts := httptest.NewServer(apiSrv.Handler())
