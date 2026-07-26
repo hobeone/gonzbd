@@ -377,7 +377,37 @@ func TestParseHostIP_BareBracketedIPv6(t *testing.T) {
 	}
 }
 
-// Dummy references to satisfy scripts/check_test_alignment
-var (
-	_ = (ForwardedHeaders{}).hops
-)
+func TestForwardedHeaders_Hops(t *testing.T) {
+	t.Parallel()
+
+	fh := ForwardedHeaders{
+		XForwardedFor: "192.168.1.1, 192.168.1.2",
+		Forwarded:     "for=10.0.0.1, for=10.0.0.2",
+		XRealIP:       "172.16.0.1",
+	}
+
+	// Test X-Forwarded-For selector
+	hopsXFF, ok := fh.hops(ForwardHeaderXFF)
+	if !ok || len(hopsXFF) != 2 || hopsXFF[0] != "192.168.1.1" || hopsXFF[1] != "192.168.1.2" {
+		t.Errorf("hops(ForwardHeaderXFF) = %v, %v; want [192.168.1.1 192.168.1.2], true", hopsXFF, ok)
+	}
+
+	// Test Forwarded selector
+	hopsFwd, ok := fh.hops(ForwardHeaderForwarded)
+	if !ok || len(hopsFwd) != 2 || hopsFwd[0] != "10.0.0.1" || hopsFwd[1] != "10.0.0.2" {
+		t.Errorf("hops(ForwardHeaderForwarded) = %v, %v; want [10.0.0.1 10.0.0.2], true", hopsFwd, ok)
+	}
+
+	// Test X-Real-IP selector
+	hopsReal, ok := fh.hops(ForwardHeaderXRealIP)
+	if !ok || len(hopsReal) != 1 || hopsReal[0] != "172.16.0.1" {
+		t.Errorf("hops(ForwardHeaderXRealIP) = %v, %v; want [172.16.0.1], true", hopsReal, ok)
+	}
+
+	// Test empty header fallback
+	fhEmpty := ForwardedHeaders{}
+	_, okEmpty := fhEmpty.hops(ForwardHeaderXFF)
+	if okEmpty {
+		t.Errorf("hops on empty headers returned ok=true, want ok=false")
+	}
+}

@@ -117,6 +117,12 @@ func checkFile(srcPath string, minComplexity int, hasGaps *bool) error {
 		return err
 	}
 
+	srcBytes, err := os.ReadFile(srcPath)
+	if err != nil {
+		return err
+	}
+	srcLines := strings.Split(string(srcBytes), "\n")
+
 	// Collect unexported functions and methods.
 	var unexported []funcInfo
 	for _, decl := range node.Decls {
@@ -126,6 +132,13 @@ func checkFile(srcPath string, minComplexity int, hasGaps *bool) error {
 		}
 		name := fn.Name.Name
 		if name != "" && unicode.IsLower(rune(name[0])) {
+			startPos := fset.Position(fn.Pos())
+			if startPos.Line > 0 && startPos.Line <= len(srcLines) {
+				line := srcLines[startPos.Line-1]
+				if strings.Contains(line, "//nocover:") || strings.Contains(line, "//noalign:") {
+					continue
+				}
+			}
 			unexported = append(unexported, funcInfo{
 				name:     name,
 				decl:     fn,
