@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // safeDeleteDir recursively removes targetDir, but only through an os.Root
@@ -48,10 +50,10 @@ func safeDeleteDir(targetDir string, baseDirs ...string) error {
 		if err != nil {
 			return err
 		}
-		// RemoveAll is performed relative to the root; the runtime refuses any
+		// RemoveRootAll is performed relative to the root; the runtime refuses any
 		// component that would traverse a symlink or escape the root. Close
 		// explicitly (not via defer) since we return inside the loop.
-		rmErr := root.RemoveAll(rel)
+		rmErr := fsutil.RemoveRootAll(root, rel, absTarget)
 		_ = root.Close() // best-effort; deletion already attempted
 		return rmErr
 	}

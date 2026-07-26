@@ -180,3 +180,8 @@ func (a *Application) AssemblerMinFreeBytes() int64 {
 func (a *Application) ForceStopWorkers() {
 	a.stopWorkers(15*time.Second, nil)
 }
+
+// Assembler returns the internal assembler for testing.
+func (a *Application) Assembler() *assembler.Assembler {
+	return a.assembler
+}

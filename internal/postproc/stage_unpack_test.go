@@ -619,6 +619,10 @@ func writeStubBinary(t *testing.T) string {
 		_ = f.Close()
 		t.Fatalf("chmod stub binary: %v", err)
 	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		t.Fatalf("sync stub binary: %v", err)
+	}
 	if err := f.Close(); err != nil {
 		t.Fatalf("close stub binary: %v", err)
 	}
@@ -1573,4 +1577,45 @@ func TestExtractWithDriver_GoModeAndFallback(t *testing.T) {
 			t.Fatalf("expected engine mocktool, got %s", res.Engine)
 		}
 	})
+}
+
+func TestUnpackStage_CleanupArchives(t *testing.T) {
+	dir := t.TempDir()
+	archiveFile := filepath.Join(dir, "test.rar")
+	if err := os.WriteFile(archiveFile, []byte("rar data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	u := NewUnpackStageWith(unpack.Options{}, true)
+
+	job := &Job{
+		DownloadDir: dir,
+		OutputLines: []string{},
+	}
+	allSuccessful := []unpack.Archive{
+		{
+			Parts: []string{archiveFile},
+		},
+	}
+
+	u.cleanupArchives(t.Context(), slog.Default(), job, allSuccessful)
+
+	if _, err := os.Stat(archiveFile); !os.IsNotExist(err) {
+		t.Errorf("cleanupArchives failed to remove %s", archiveFile)
+	}
+}
+
+func TestCleanupContainmentViolation(t *testing.T) {
+	dir := t.TempDir()
+	validFile := filepath.Join(dir, "valid.txt")
+	if err := os.WriteFile(validFile, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outsideFile := filepath.Join(filepath.Dir(dir), "outside.txt")
+
+	cleanupContainmentViolation(dir, []string{"valid.txt", outsideFile}, slog.Default())
+
+	if _, err := os.Stat(validFile); !os.IsNotExist(err) {
+		t.Errorf("expected valid.txt to be deleted")
+	}
 }

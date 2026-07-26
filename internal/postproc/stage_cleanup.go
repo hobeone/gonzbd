@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // CleanupStage removes unwanted files from the job's output directory after extraction.
@@ -34,7 +36,7 @@ func (c *CleanupStage) Run(ctx context.Context, job *Job) error {
 	}
 
 	adminDir := filepath.Join(job.DownloadDir, "__ADMIN__")
-	if err := os.RemoveAll(adminDir); err != nil {
+	if err := fsutil.RemoveAll(adminDir); err != nil {
 		log.Warn("cleanup: failed to remove admin dir",
 			"dir", adminDir, "err", err)
 		// Non-fatal — the job already succeeded.
