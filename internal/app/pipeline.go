@@ -347,6 +347,9 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		return fmt.Errorf("queue lookup: job %q not found", jobID)
 	}
 	m := snap.Manifest()
+	if m == nil {
+		return fmt.Errorf("queue lookup: manifest for job %q is nil", jobID)
+	}
 	if fileIdx < 0 || fileIdx >= m.NumFiles() {
 		return fmt.Errorf("fileIdx %d out of range for job with %d files", fileIdx, m.NumFiles())
 	}

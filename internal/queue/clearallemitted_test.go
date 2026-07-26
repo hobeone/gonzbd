@@ -46,10 +46,10 @@ func TestClearAllEmitted_RestoresFailedArticleBytes(t *testing.T) {
 	}
 }
 
-// TestClearAllEmitted_StatusDownloadingBecomesQueued verifies that jobs in
-// StatusDownloading are reset to StatusQueued. The old downloader is gone;
-// the new downloader's first dispatch pass transitions back to Downloading.
-func TestClearAllEmitted_StatusDownloadingBecomesQueued(t *testing.T) {
+// TestClearAllEmitted_StatusDownloadingPreserved verifies that jobs in
+// StatusDownloading remain in StatusDownloading after ClearAllEmitted, preserving
+// ActiveSet residency for the new downloader.
+func TestClearAllEmitted_StatusDownloadingPreserved(t *testing.T) {
 	t.Parallel()
 
 	q := New()
@@ -69,8 +69,8 @@ func TestClearAllEmitted_StatusDownloadingBecomesQueued(t *testing.T) {
 	q.ClearAllEmitted()
 
 	snap = q.SnapshotJob("j1")
-	if snap.Status != constants.StatusQueued {
-		t.Errorf("status = %v after ClearAllEmitted; want StatusQueued", snap.Status)
+	if snap.Status != constants.StatusDownloading {
+		t.Errorf("status = %v after ClearAllEmitted; want StatusDownloading", snap.Status)
 	}
 }
 

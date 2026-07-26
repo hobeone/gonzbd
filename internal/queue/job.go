@@ -440,10 +440,8 @@ func (j *Job) DeferredRecoveryIndices() []int {
 // state, preserving the Manifest but selectively resetting the existing
 // Progress in place: RemainingBytes is re-added only for articles actually
 // reset (not blanket-recomputed to TotalBytes), and a file's Complete flag
-// is cleared only if at least one of its articles was reset. Must be called
-// strictly before Queue.Add — it does not itself rebuild PendingArticles/
-// per-file Pending/ArticlesResolved/ArticlesFailed/BytesDownloaded; Add's own
-// recomputePending-equivalent call does that once the job is actually added.
+// is cleared only if at least one of its articles was reset. Can be called
+// prior to re-adding or during Queue.Retry.
 func (j *Job) ResetForRetry() {
 	j.Status = constants.StatusQueued
 	j.PostProc = false

@@ -78,6 +78,9 @@ type Option func(*Queue)
 func WithStore(store Store) Option {
 	return func(q *Queue) {
 		q.store = store
+		if sq, ok := store.(*SQLiteStore); ok && q.stateDir == "" {
+			q.stateDir = sq.Dir()
+		}
 	}
 }
 
@@ -556,7 +559,15 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 
 		// If SQLite store present, restore per-file progress counters
 		if q.store != nil {
-			_ = q.store.RestoreJobProgress(ctx, job)
+			if err := q.store.RestoreJobProgress(ctx, job); err != nil {
+				q.handleClaimFailureLocked(ctx, job, manifestPath, fmt.Errorf("restore progress: %w", err))
+				q.mu.Unlock()
+				q.log.Error("failed to restore job progress during promotion, transitioning to FAILED",
+					"job_id", jobID,
+					"err", err,
+				)
+				continue
+			}
 		}
 
 		if err := q.setStatusLocked(job, constants.StatusDownloading); err != nil {
@@ -767,7 +778,21 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 		q.mu.Unlock()
 		return err
 	}
-	if !isResidentStatus(status) {
+	if isResidentStatus(status) && job.manifest == nil {
+		ctx := context.Background()
+		manifestPath := filepath.Join(q.stateDir, "manifests", id+".json.gz")
+		if q.store != nil || q.stateDir != "" {
+			var m Manifest
+			if err := readGzJSON(manifestPath, &m); err == nil {
+				job.manifest = &m
+				job.progress = newJobProgress(&m)
+				if q.store != nil {
+					_ = q.store.RestoreJobProgress(ctx, job)
+				}
+				q.activeSet.Add(job)
+			}
+		}
+	} else if !isResidentStatus(status) {
 		q.evictJobLocked(job)
 	}
 	q.dirty.Store(true)
@@ -890,6 +915,9 @@ func (q *Queue) RecordDownload(id, server string, bytes int) error {
 	job, ok := q.byID[id]
 	if !ok {
 		return ErrNotFound
+	}
+	if job.progress == nil {
+		return nil
 	}
 	if job.progress.serverStats == nil {
 		job.progress.serverStats = make(map[string]int64)
@@ -1080,12 +1108,6 @@ func (q *Queue) ClearAllEmitted() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for _, job := range q.jobs {
-		// Reset Downloading → Queued: the old downloader is gone, so no
-		// articles are actually in-flight. The new downloader's first
-		// dispatch pass will transition back to Downloading.
-		if job.Status == constants.StatusDownloading {
-			_ = q.setStatusLocked(job, constants.StatusQueued)
-		}
 		m := job.manifest
 		if m != nil && job.progress != nil {
 			for i := range m.NumArticles() {

@@ -505,3 +505,23 @@ func TestResetForRetry_OnlyTouchesFailedArticles(t *testing.T) {
 		t.Errorf("RemainingBytes delta = %d, want %d", got, wantDelta)
 	}
 }
+
+func TestJobPhase_String(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		phase JobPhase
+		want  string
+	}{
+		{PhasePending, "Pending"},
+		{PhaseActive, "Active"},
+		{PhaseProcessing, "Processing"},
+		{PhasePaused, "Paused"},
+		{PhaseTerminal, "Terminal"},
+		{JobPhase(999), "Unknown"},
+	}
+	for _, tc := range tests {
+		if got := tc.phase.String(); got != tc.want {
+			t.Errorf("JobPhase(%d).String() = %q, want %q", tc.phase, got, tc.want)
+		}
+	}
+}

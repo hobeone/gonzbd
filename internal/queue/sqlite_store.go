@@ -33,6 +33,11 @@ func NewSQLiteStore(db *sql.DB, dir string, historyRepo *history.Repository) *SQ
 	}
 }
 
+// Dir returns the persistent root directory managed by the store.
+func (s *SQLiteStore) Dir() string {
+	return s.dir
+}
+
 func (s *SQLiteStore) resequenceTx(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, "SELECT id FROM jobs ORDER BY sort_key ASC, time_added ASC")
 	if err != nil {
@@ -383,10 +388,12 @@ WHERE id = ?`
 				deferred = 1
 			}
 			artDoneStr := encodeArticlesDone(job, i)
-			_, _ = s.db.ExecContext(ctx, qF,
+			if _, err := s.db.ExecContext(ctx, qF,
 				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr,
 				job.ID, i,
-			)
+			); err != nil {
+				return fmt.Errorf("sqlite store update job_file %s index %d: %w", job.ID, i, err)
+			}
 		}
 	}
 
@@ -444,7 +451,9 @@ func (s *SQLiteStore) MoveToHistory(ctx context.Context, job *Job, entry history
 		return fmt.Errorf("sqlite store add history %s: %w", job.ID, err)
 	}
 
-	_, _ = tx.ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", job.ID)
+	if _, err := tx.ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", job.ID); err != nil {
+		return fmt.Errorf("sqlite store delete job_files %s: %w", job.ID, err)
+	}
 	res, err := tx.ExecContext(ctx, "DELETE FROM jobs WHERE id = ?", job.ID)
 	if err != nil {
 		return fmt.Errorf("sqlite store delete active job %s: %w", job.ID, err)

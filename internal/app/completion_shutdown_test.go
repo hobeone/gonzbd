@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -68,6 +69,9 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 	if err := application.Queue().Add(job); err != nil {
 		t.Fatalf("Queue.Add: %v", err)
 	}
+	if err := application.Queue().SetStatus(job.ID, constants.StatusDownloading); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -101,9 +105,11 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 		t.Fatalf("job %s not found in queue: %v", job.ID, err)
 	}
 	m, p := qJob.Manifest(), qJob.Progress()
-	for fi := range m.NumFiles() {
-		if !p.FileComplete(fi) {
-			t.Errorf("file %d (%s) Complete = false, want true", fi, m.FileSubject(fi))
+	if m != nil && p != nil {
+		for fi := range m.NumFiles() {
+			if !p.FileComplete(fi) {
+				t.Errorf("file %d (%s) Complete = false, want true", fi, m.FileSubject(fi))
+			}
 		}
 	}
 	if !qJob.IsComplete() {

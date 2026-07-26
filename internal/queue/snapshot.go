@@ -1,5 +1,26 @@
 package queue
 
+import (
+	"context"
+	"path/filepath"
+)
+
+func (q *Queue) ensureManifestLoadedLocked(j *Job) {
+	if j.manifest != nil || (q.store == nil && q.stateDir == "") {
+		return
+	}
+	manifestPath := filepath.Join(q.stateDir, "manifests", j.ID+".json.gz")
+	var m Manifest
+	if err := readGzJSON(manifestPath, &m); err == nil {
+		m.buildMessageIDIndex()
+		j.manifest = &m
+		j.progress = newJobProgress(&m)
+		if q.store != nil {
+			_ = q.store.RestoreJobProgress(context.Background(), j)
+		}
+	}
+}
+
 // Snapshot returns a point-in-time, deep-copied view of all jobs in the
 // queue. It is intended for testing and consistent-read views (e.g. for
 // API responses).
@@ -7,11 +28,12 @@ package queue
 // The returned slice and the Jobs within it are fresh allocations; mutations
 // to the returned objects do not affect the Queue's internal state.
 func (q *Queue) Snapshot() []*Job {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
 	res := make([]*Job, 0, len(q.jobs))
 	for _, j := range q.jobs {
+		q.ensureManifestLoadedLocked(j)
 		res = append(res, cloneJob(j))
 	}
 	return res
@@ -55,12 +77,13 @@ func cloneJob(j *Job) *Job {
 // SnapshotJob returns a point-in-time, deep-copied view of a single job
 // by ID. Returns nil if the job is not found.
 func (q *Queue) SnapshotJob(id string) *Job {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
 	j, ok := q.byID[id]
 	if !ok {
 		return nil
 	}
+	q.ensureManifestLoadedLocked(j)
 	return cloneJob(j)
 }
