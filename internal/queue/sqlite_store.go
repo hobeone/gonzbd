@@ -33,6 +33,11 @@ func NewSQLiteStore(db *sql.DB, dir string, historyRepo *history.Repository) *SQ
 	}
 }
 
+// Dir returns the persistent root directory managed by the store.
+func (s *SQLiteStore) Dir() string {
+	return s.dir
+}
+
 func (s *SQLiteStore) resequenceTx(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, "SELECT id FROM jobs ORDER BY sort_key ASC, time_added ASC")
 	if err != nil {
@@ -113,11 +118,22 @@ func (s *SQLiteStore) Add(ctx context.Context, job *Job) error {
 	groupsJSON, _ := json.Marshal(job.Groups)
 	metaJSON, _ := json.Marshal(job.Meta)
 
+	var dlStartedUnix, dlFinishedUnix int64
+	if job.Progress() != nil {
+		if !job.Progress().DownloadStarted().IsZero() {
+			dlStartedUnix = job.Progress().DownloadStarted().Unix()
+		}
+		if !job.Progress().DownloadFinished().IsZero() {
+			dlFinishedUnix = job.Progress().DownloadFinished().Unix()
+		}
+	}
+
 	const qJobs = `
 INSERT INTO jobs
   (id, filename, name, password, url, category, priority, status, pp, script,
-   time_added, md5, avg_age, groups, meta, warning, postproc, sort_key)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+   time_added, md5, avg_age, groups, meta, warning, postproc, sort_key,
+   download_started, download_finished)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	postprocInt := 0
 	if job.PostProc {
@@ -128,7 +144,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		job.ID, job.Filename, job.Name, job.Password, job.URL, job.Category,
 		int(job.Priority), string(job.Status), job.PP, job.Script,
 		job.Added.Unix(), job.MD5, job.AvgAge.Unix(), string(groupsJSON), string(metaJSON),
-		job.Warning, postprocInt, sortKey,
+		job.Warning, postprocInt, sortKey, dlStartedUnix, dlFinishedUnix,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite store insert job %s: %w", job.ID, err)
@@ -171,19 +187,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 // Get retrieves an active job by ID, reconstructing it from SQLite and its manifest.
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Job, error) {
 	const qJob = `
-SELECT id, filename, name, password, url, category, priority, status, pp, script,
-       time_added, md5, avg_age, groups, meta, warning, postproc
+SELECT id, filename, name, COALESCE(password, ''), COALESCE(url, ''), COALESCE(category, ''), priority, status, pp, COALESCE(script, ''),
+       time_added, md5, avg_age, COALESCE(groups, ''), COALESCE(meta, ''), COALESCE(warning, ''), postproc,
+       download_started, download_finished
 FROM jobs WHERE id = ?`
 
 	var job Job
 	var groupsStr, metaStr, statusStr string
 	var priorityInt, ppInt, postprocInt int
-	var addedUnix, avgAgeUnix int64
+	var addedUnix, avgAgeUnix, dlStartedUnix, dlFinishedUnix int64
 
 	err := s.db.QueryRowContext(ctx, qJob, id).Scan(
 		&job.ID, &job.Filename, &job.Name, &job.Password, &job.URL, &job.Category,
 		&priorityInt, &statusStr, &ppInt, &job.Script, &addedUnix, &job.MD5, &avgAgeUnix,
 		&groupsStr, &metaStr, &job.Warning, &postprocInt,
+		&dlStartedUnix, &dlFinishedUnix,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -217,53 +235,76 @@ FROM jobs WHERE id = ?`
 		}
 	}
 
-	if _, err := os.Stat(manifestPath); err == nil {
-		var manifest Manifest
-		if err := readGzJSON(manifestPath, &manifest); err != nil {
-			_ = os.Rename(manifestPath, manifestPath+".corrupt")
-			_ = s.Remove(ctx, id)
-			return nil, fmt.Errorf("sqlite store read manifest %s: %w", id, err)
-		}
-		job.manifest = &manifest
-		job.progress = newJobProgress(&manifest)
-
-		const qFiles = `
-SELECT file_index, complete, deferred, write_cursor, bytes_downloaded, assembled_crc32, COALESCE(articles_done, '')
-FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
-		rows, err := s.db.QueryContext(ctx, qFiles, id)
-		if err == nil {
-			defer func() { _ = rows.Close() }()
-			for rows.Next() {
-				var idx, complete, deferred int
-				var writeCursor, bytesDownloaded int64
-				var crc32Val uint32
-				var artDoneStr string
-				if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &bytesDownloaded, &crc32Val, &artDoneStr); err == nil {
-					if idx >= 0 && idx < len(job.progress.files) {
-						fp := &job.progress.files[idx]
-						fp.BytesDownloaded = bytesDownloaded
-						fp.WriteCursor = writeCursor
-						fp.AssembledCRC32 = crc32Val
-						if complete != 0 {
-							fp.Complete = true
-							lo, hi := job.manifest.FileRange(idx)
-							for a := lo; a < hi; a++ {
-								job.progress.markDone(job.manifest, a)
-							}
-						} else if artDoneStr != "" {
-							decodeArticlesDone(artDoneStr, &job, idx)
-						}
-						if deferred != 0 {
-							fp.Deferred = true
-						}
-					}
-				}
+	if isResidentStatus(job.Status) {
+		if _, err := os.Stat(manifestPath); err == nil {
+			var manifest Manifest
+			if err := readGzJSON(manifestPath, &manifest); err != nil {
+				_ = os.Rename(manifestPath, manifestPath+".corrupt")
+				_ = s.Remove(ctx, id)
+				return nil, fmt.Errorf("sqlite store read manifest %s: %w", id, err)
 			}
-			_ = rows.Err()
+			job.manifest = &manifest
+			job.progress = newJobProgress(&manifest)
+			if dlStartedUnix > 0 {
+				job.progress.downloadStarted = time.Unix(dlStartedUnix, 0).UTC()
+			}
+			if dlFinishedUnix > 0 {
+				job.progress.downloadFinished = time.Unix(dlFinishedUnix, 0).UTC()
+			}
+			_ = s.RestoreJobProgress(ctx, &job)
 		}
 	}
 
 	return &job, nil
+}
+
+func isResidentStatus(status constants.Status) bool {
+	j := Job{Status: status}
+	return j.Phase().IsResident()
+}
+
+// RestoreJobProgress loads per-file progress counters from SQLite into job.progress for a resident job.
+func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
+	if job == nil || job.manifest == nil || job.progress == nil {
+		return nil
+	}
+	const qFiles = `
+SELECT file_index, complete, deferred, write_cursor, bytes_downloaded, assembled_crc32, COALESCE(articles_done, '')
+FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
+	rows, err := s.db.QueryContext(ctx, qFiles, job.ID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var idx, complete, deferred int
+		var writeCursor, bytesDownloaded int64
+		var crc32Val uint32
+		var artDoneStr string
+		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &bytesDownloaded, &crc32Val, &artDoneStr); err != nil {
+			return fmt.Errorf("sqlite store scan job_file for %s: %w", job.ID, err)
+		}
+		if idx >= 0 && idx < len(job.progress.files) {
+			fp := &job.progress.files[idx]
+			fp.BytesDownloaded = bytesDownloaded
+			fp.WriteCursor = writeCursor
+			fp.AssembledCRC32 = crc32Val
+			if complete != 0 {
+				fp.Complete = true
+				lo, hi := job.manifest.FileRange(idx)
+				for a := lo; a < hi; a++ {
+					job.progress.markDone(job.manifest, a)
+				}
+			} else if artDoneStr != "" {
+				decodeArticlesDone(artDoneStr, job, idx)
+			}
+			if deferred != 0 {
+				fp.Deferred = true
+			}
+		}
+	}
+	job.progress.recompute(job.manifest)
+	return rows.Err()
 }
 
 // List returns all active jobs ordered by sort_key ASC, time_added ASC.
@@ -299,7 +340,8 @@ func (s *SQLiteStore) List(ctx context.Context) ([]*Job, error) {
 func (s *SQLiteStore) Update(ctx context.Context, job *Job) error {
 	const q = `
 UPDATE jobs SET
-  name = ?, category = ?, priority = ?, status = ?, pp = ?, script = ?, warning = ?, postproc = ?
+  name = ?, category = ?, priority = ?, status = ?, pp = ?, script = ?, warning = ?, postproc = ?,
+  download_started = ?, download_finished = ?
 WHERE id = ?`
 
 	postprocInt := 0
@@ -307,8 +349,18 @@ WHERE id = ?`
 		postprocInt = 1
 	}
 
+	var dlStartedUnix, dlFinishedUnix int64
+	if job.Progress() != nil {
+		if !job.Progress().DownloadStarted().IsZero() {
+			dlStartedUnix = job.Progress().DownloadStarted().Unix()
+		}
+		if !job.Progress().DownloadFinished().IsZero() {
+			dlFinishedUnix = job.Progress().DownloadFinished().Unix()
+		}
+	}
+
 	res, err := s.db.ExecContext(ctx, q,
-		job.Name, job.Category, int(job.Priority), string(job.Status), job.PP, job.Script, job.Warning, postprocInt, job.ID,
+		job.Name, job.Category, int(job.Priority), string(job.Status), job.PP, job.Script, job.Warning, postprocInt, dlStartedUnix, dlFinishedUnix, job.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite store update job %s: %w", job.ID, err)
@@ -330,10 +382,12 @@ WHERE id = ?`
 				deferred = 1
 			}
 			artDoneStr := encodeArticlesDone(job, i)
-			_, _ = s.db.ExecContext(ctx, qF,
+			if _, err := s.db.ExecContext(ctx, qF,
 				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr,
 				job.ID, i,
-			)
+			); err != nil {
+				return fmt.Errorf("sqlite store update job_file %s index %d: %w", job.ID, i, err)
+			}
 		}
 	}
 
@@ -391,7 +445,9 @@ func (s *SQLiteStore) MoveToHistory(ctx context.Context, job *Job, entry history
 		return fmt.Errorf("sqlite store add history %s: %w", job.ID, err)
 	}
 
-	_, _ = tx.ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", job.ID)
+	if _, err := tx.ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", job.ID); err != nil {
+		return fmt.Errorf("sqlite store delete job_files %s: %w", job.ID, err)
+	}
 	res, err := tx.ExecContext(ctx, "DELETE FROM jobs WHERE id = ?", job.ID)
 	if err != nil {
 		return fmt.Errorf("sqlite store delete active job %s: %w", job.ID, err)

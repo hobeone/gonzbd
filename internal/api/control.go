@@ -24,7 +24,7 @@ func (s *Server) modeResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.queue.ResumeAll()
+	s.queue.ResumeAll(r.Context())
 	if s.downloads != nil {
 		s.downloads.ResumeDownloads()
 	}

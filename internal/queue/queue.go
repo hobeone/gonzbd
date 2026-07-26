@@ -15,6 +15,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/history"
 )
 
 // ErrNotFound is returned by Queue methods when the given job ID is
@@ -27,6 +28,7 @@ type Queue struct {
 	mu         sync.RWMutex
 	jobs       []*Job          // ordered: priority-descending at Add time; Reorder may violate
 	byID       map[string]*Job // ID -> *Job for O(1) lookup
+	promoting  map[string]bool // job ID -> true for jobs currently in promotion loop
 	removeFile func(string) error
 
 	stateDir string // Root directory for persistent state (admin/queue)
@@ -53,6 +55,8 @@ type Queue struct {
 	store Store
 
 	log *slog.Logger
+
+	activeSet *ActiveSet
 }
 
 // Store returns the underlying SQLite persistence store, or nil if using legacy in-memory/JSON storage.
@@ -74,6 +78,16 @@ type Option func(*Queue)
 func WithStore(store Store) Option {
 	return func(q *Queue) {
 		q.store = store
+		if sq, ok := store.(*SQLiteStore); ok && q.stateDir == "" {
+			q.stateDir = sq.Dir()
+		}
+	}
+}
+
+// WithStateDir sets the persistent state directory on the Queue.
+func WithStateDir(dir string) Option {
+	return func(q *Queue) {
+		q.stateDir = dir
 	}
 }
 
@@ -93,6 +107,15 @@ func WithSanitizeOptions(opts fsutil.SanitizeOptions) Option {
 	}
 }
 
+// WithMaxActiveJobs sets the maximum number of active jobs on the Queue.
+func WithMaxActiveJobs(maxActive int) Option {
+	return func(q *Queue) {
+		if maxActive > 0 {
+			q.activeSet.SetMaxActive(maxActive)
+		}
+	}
+}
+
 // SetSanitizeOptions updates filesystem sanitization options at runtime.
 func (q *Queue) SetSanitizeOptions(opts fsutil.SanitizeOptions) {
 	q.mu.Lock()
@@ -104,9 +127,11 @@ func (q *Queue) SetSanitizeOptions(opts fsutil.SanitizeOptions) {
 func New(opts ...Option) *Queue {
 	q := &Queue{
 		byID:       make(map[string]*Job),
+		promoting:  make(map[string]bool),
 		notifyCh:   make(chan struct{}, 1),
 		log:        slog.Default().With("component", "queue"),
 		removeFile: os.Remove,
+		activeSet:  NewActiveSet(4),
 	}
 	for _, o := range opts {
 		o(q)
@@ -297,9 +322,16 @@ func UniqueName(base string, exists func(string) bool) string {
 // If a job with the same Name already exists, the new job is renamed
 // by appending .1, .2, etc. to match Python SABnzbd behavior.
 func (q *Queue) Add(job *Job) error {
+	if q.store == nil && q.stateDir != "" && job.manifest != nil {
+		manifestsDir := filepath.Join(q.stateDir, "manifests")
+		_ = os.MkdirAll(manifestsDir, 0o750)
+		manifestPath := filepath.Join(manifestsDir, job.ID+".json.gz")
+		_ = writeGzJSON(manifestPath, job.manifest)
+	}
+
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	if _, exists := q.byID[job.ID]; exists {
+		q.mu.Unlock()
 		return fmt.Errorf("queue: job %q already present", job.ID)
 	}
 
@@ -312,11 +344,14 @@ func (q *Queue) Add(job *Job) error {
 		return false
 	})
 
-	job.progress.recompute(job.manifest)
+	if job.manifest != nil && job.progress != nil {
+		job.progress.recompute(job.manifest)
+	}
 
 	if q.store != nil {
 		//lockio: holding q.mu across q.store.Add is intentional to prevent TOCTOU name collisions and guarantee atomic RAM/SQLite state consistency before background downloader dispatch.
 		if err := q.store.Add(context.Background(), job); err != nil {
+			q.mu.Unlock()
 			return err
 		}
 	}
@@ -326,8 +361,17 @@ func (q *Queue) Add(job *Job) error {
 		_ = q.store.ShiftSortKey(context.Background(), job.ID, idx)
 	}
 	q.byID[job.ID] = job
+
+	if job.Status == constants.StatusQueued && (q.store != nil || q.stateDir != "") {
+		job.manifest = nil
+		job.progress = nil
+	}
+
 	q.dirty.Store(true)
 	q.notifyLocked()
+	q.mu.Unlock()
+
+	q.PromoteNext(context.Background())
 	return nil
 }
 
@@ -346,6 +390,8 @@ func (q *Queue) Remove(id string) error {
 		if !ok {
 			return fmt.Errorf("%w: %s", ErrNotFound, id)
 		}
+		job := q.jobs[idx]
+		q.evictJobLocked(job)
 		q.removeAtLocked(idx)
 		delete(q.byID, id)
 		if q.stateDir != "" && q.store == nil {
@@ -362,6 +408,7 @@ func (q *Queue) Remove(id string) error {
 	if jobPath != "" {
 		_ = q.removeFile(jobPath) // best-effort delete; error is intentionally ignored
 	}
+	q.PromoteNext(context.Background())
 	return nil
 }
 
@@ -369,35 +416,226 @@ func (q *Queue) Remove(id string) error {
 // Status != StatusPaused before dispatching articles.
 func (q *Queue) Pause(id string) error {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	job, ok := q.byID[id]
 	if !ok {
+		q.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	if err := q.setStatusLocked(job, constants.StatusPaused); err != nil {
+		q.mu.Unlock()
 		return err
 	}
+	q.evictJobLocked(job)
 	q.dirty.Store(true)
+	q.mu.Unlock()
+
+	q.PromoteNext(context.Background())
 	return nil
 }
 
 // Resume flips a paused job back to Queued and signals the downloader.
 func (q *Queue) Resume(id string) error {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	job, ok := q.byID[id]
 	if !ok {
+		q.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	if job.Status == constants.StatusPaused {
 		if err := q.setStatusLocked(job, constants.StatusQueued); err != nil {
+			q.mu.Unlock()
 			return err
 		}
 		job.Warning = ""
 	}
 	q.dirty.Store(true)
 	q.notifyLocked()
+	q.mu.Unlock()
+
+	q.PromoteNext(context.Background())
 	return nil
+}
+
+// Retry resets a failed job back to Queued state and triggers promotion.
+func (q *Queue) Retry(id string) error {
+	q.mu.Lock()
+	job, ok := q.byID[id]
+	if !ok {
+		q.mu.Unlock()
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	if job.Status == constants.StatusFailed {
+		if err := q.setStatusLocked(job, constants.StatusQueued); err != nil {
+			q.mu.Unlock()
+			return err
+		}
+		job.Warning = ""
+		job.ResetForRetry()
+	}
+	q.dirty.Store(true)
+	q.notifyLocked()
+	q.mu.Unlock()
+
+	q.PromoteNext(context.Background())
+	return nil
+}
+
+// ActiveSet returns the queue's ActiveSet manager.
+func (q *Queue) ActiveSet() *ActiveSet {
+	return q.activeSet
+}
+
+// SetMaxActiveJobs updates the active job limit and triggers promotion.
+func (q *Queue) SetMaxActiveJobs(maxActive int) {
+	q.activeSet.SetMaxActive(maxActive)
+	q.PromoteNext(context.Background())
+}
+
+// PromoteNext promotes eligible Queued jobs to Downloading until ActiveSet is full.
+// Safe for concurrent calls. Disk I/O during manifest loading is unlocked.
+func (q *Queue) PromoteNext(ctx context.Context) {
+	for {
+		// Step 1: Under lock, check capacity and reserve next candidate queued job.
+		q.mu.Lock()
+		if q.activeSet.Len()+len(q.promoting) >= q.activeSet.MaxActive() {
+			q.mu.Unlock()
+			break
+		}
+
+		candidate := q.findNextQueuedCandidateLocked()
+		if candidate == nil {
+			q.mu.Unlock()
+			break // No more queued jobs ready for promotion
+		}
+
+		jobID := candidate.ID
+		q.promoting[jobID] = true
+		stateDir := q.stateDir
+
+		var cachedManifest *Manifest
+		if candidate.manifest != nil {
+			m := *candidate.manifest
+			cachedManifest = &m
+		}
+		q.mu.Unlock()
+
+		// Step 2: Unlocked Disk I/O to read manifest.
+		manifestPath := filepath.Join(stateDir, "manifests", jobID+".json.gz")
+		var manifest Manifest
+		var readErr error
+		if cachedManifest != nil {
+			manifest = *cachedManifest
+		} else {
+			readErr = readGzJSON(manifestPath, &manifest)
+		}
+
+		// Step 3: Re-acquire lock to handle result.
+		q.mu.Lock()
+		delete(q.promoting, jobID)
+
+		// Re-verify job still exists and is still in StatusQueued
+		job, ok := q.byID[jobID]
+		if !ok || job.Status != constants.StatusQueued {
+			q.mu.Unlock()
+			continue
+		}
+
+		if readErr != nil {
+			q.handleClaimFailureLocked(ctx, job, manifestPath, readErr)
+			q.mu.Unlock()
+			q.log.Error("failed to claim manifest during promotion, transitioning to FAILED",
+				"job_id", jobID,
+				"manifest_path", manifestPath,
+				"err", readErr,
+			)
+			continue // Continue promotion loop for next candidate
+		}
+
+		// Attach manifest & progress if not already resident
+		if job.manifest == nil {
+			manifest.buildMessageIDIndex()
+			job.manifest = &manifest
+			job.progress = newJobProgress(&manifest)
+		}
+
+		// If SQLite store present, restore per-file progress counters
+		if q.store != nil {
+			if err := q.store.RestoreJobProgress(ctx, job); err != nil {
+				q.handleClaimFailureLocked(ctx, job, manifestPath, fmt.Errorf("restore progress: %w", err))
+				q.mu.Unlock()
+				q.log.Error("failed to restore job progress during promotion, transitioning to FAILED",
+					"job_id", jobID,
+					"err", err,
+				)
+				continue
+			}
+		}
+
+		if err := q.setStatusLocked(job, constants.StatusDownloading); err != nil {
+			q.mu.Unlock()
+			q.log.Error("failed to set StatusDownloading during promotion", "job_id", jobID, "err", err)
+			continue
+		}
+
+		q.activeSet.Add(job)
+		if q.store != nil {
+			_ = q.store.Update(ctx, job)
+		}
+		q.dirty.Store(true)
+		q.notifyLocked()
+		q.mu.Unlock()
+	}
+}
+
+func (q *Queue) findNextQueuedCandidateLocked() *Job {
+	if q.paused {
+		return nil
+	}
+	for _, j := range q.jobs {
+		if j.Status == constants.StatusQueued && !j.PostProc && !q.activeSet.IsResident(j.ID) && !q.promoting[j.ID] {
+			return j
+		}
+	}
+	return nil
+}
+
+func (q *Queue) evictJobLocked(job *Job) {
+	if job == nil {
+		return
+	}
+	q.activeSet.Evict(job)
+	if q.store != nil || q.stateDir != "" {
+		job.manifest = nil
+		job.progress = nil
+	}
+}
+
+func (q *Queue) handleClaimFailureLocked(ctx context.Context, job *Job, manifestPath string, claimErr error) {
+	if _, err := os.Stat(manifestPath); err == nil {
+		_ = os.Rename(manifestPath, manifestPath+".corrupt")
+	}
+
+	job.Warning = fmt.Sprintf("Corrupt manifest: %v", claimErr)
+	job.Status = constants.StatusFailed
+
+	if q.store != nil {
+		entry := history.Entry{
+			NzoID:       job.ID,
+			Name:        job.Name,
+			Category:    job.Category,
+			Status:      string(constants.StatusFailed),
+			FailMessage: fmt.Sprintf("Unreadable or corrupt manifest: %v", claimErr),
+			Completed:   time.Now().UTC(),
+		}
+		_ = q.store.MoveToHistory(ctx, job, entry)
+	}
+
+	idx, ok := q.indexOfLocked(job.ID)
+	if ok {
+		q.removeAtLocked(idx)
+	}
+	delete(q.byID, job.ID)
+	q.dirty.Store(true)
 }
 
 // SetPriority changes a job's priority and re-slots it within the queue.
@@ -532,15 +770,36 @@ func (q *Queue) SetCategory(id, cat string, cats []config.CategoryConfig) error 
 // ErrNotFound if the job is absent.
 func (q *Queue) SetStatus(id string, status constants.Status) error {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	job, ok := q.byID[id]
 	if !ok {
+		q.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	if err := q.setStatusLocked(job, status); err != nil {
+		q.mu.Unlock()
 		return err
 	}
+	if isResidentStatus(status) && job.manifest == nil {
+		ctx := context.Background()
+		manifestPath := filepath.Join(q.stateDir, "manifests", id+".json.gz")
+		if q.store != nil || q.stateDir != "" {
+			var m Manifest
+			if err := readGzJSON(manifestPath, &m); err == nil {
+				job.manifest = &m
+				job.progress = newJobProgress(&m)
+				if q.store != nil {
+					_ = q.store.RestoreJobProgress(ctx, job)
+				}
+				q.activeSet.Add(job)
+			}
+		}
+	} else if !isResidentStatus(status) {
+		q.evictJobLocked(job)
+	}
 	q.dirty.Store(true)
+	q.mu.Unlock()
+
+	q.PromoteNext(context.Background())
 	return nil
 }
 
@@ -550,18 +809,26 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 // condition didn't match (no error, just a no-op).
 func (q *Queue) SetStatusIf(id string, newStatus, ifCurrent constants.Status) error {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	job, ok := q.byID[id]
 	if !ok {
+		q.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	if job.Status != ifCurrent {
+		q.mu.Unlock()
 		return nil
 	}
 	if err := q.setStatusLocked(job, newStatus); err != nil {
+		q.mu.Unlock()
 		return err
 	}
+	if !isResidentStatus(newStatus) {
+		q.evictJobLocked(job)
+	}
 	q.dirty.Store(true)
+	q.mu.Unlock()
+
+	q.PromoteNext(context.Background())
 	return nil
 }
 
@@ -592,9 +859,35 @@ func (q *Queue) SetPostProcStarted(id string) (bool, error) {
 		return false, err
 	}
 	job.PostProc = true
-	job.manifest.dropMessageIDIndex()
+	if job.progress != nil && job.progress.downloadFinished.IsZero() {
+		job.progress.downloadFinished = time.Now().UTC()
+	}
+	if q.store != nil {
+		_ = q.store.Update(context.Background(), job)
+	}
+	if job.manifest != nil {
+		job.manifest.dropMessageIDIndex()
+	}
 	q.dirty.Store(true)
 	return true, nil
+}
+
+// MarkDownloadFinished records the download completion time for a job.
+func (q *Queue) MarkDownloadFinished(id string, t time.Time) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[id]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	if job.progress != nil && job.progress.downloadFinished.IsZero() {
+		job.progress.downloadFinished = t
+		if q.store != nil {
+			_ = q.store.Update(context.Background(), job)
+		}
+		q.dirty.Store(true)
+	}
+	return nil
 }
 
 // MarkJobStarted records the start time of the first download for a job.
@@ -604,10 +897,13 @@ func (q *Queue) MarkJobStarted(id string, t time.Time) error {
 	defer q.mu.Unlock()
 	job, ok := q.byID[id]
 	if !ok {
-		return ErrNotFound
+		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	if job.progress.downloadStarted.IsZero() {
+	if job.progress != nil && job.progress.downloadStarted.IsZero() {
 		job.progress.downloadStarted = t
+		if q.store != nil {
+			_ = q.store.Update(context.Background(), job)
+		}
 		q.dirty.Store(true)
 	}
 	return nil
@@ -620,6 +916,9 @@ func (q *Queue) RecordDownload(id, server string, bytes int) error {
 	job, ok := q.byID[id]
 	if !ok {
 		return ErrNotFound
+	}
+	if job.progress == nil {
+		return nil
 	}
 	if job.progress.serverStats == nil {
 		job.progress.serverStats = make(map[string]int64)
@@ -638,6 +937,7 @@ type UnfinishedArticle struct {
 	JobStatus   constants.Status
 	JobAdded    time.Time
 	FileIdx     int
+	ArtIdx      int32 // Global article index within Manifest
 	MessageID   string
 	Bytes       int
 	Subject     string
@@ -661,9 +961,9 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 	for _, job := range q.jobs {
-		// Skip jobs already handed to post-processing or fully complete.
-		// Without this, aborted/hopeless jobs continue wasting bandwidth.
-		if job.PostProc || job.progress.pendingArticles == 0 {
+		// Skip jobs already handed to post-processing or fully complete,
+		// or non-resident jobs without progress.
+		if job.PostProc || job.progress == nil || job.progress.pendingArticles == 0 {
 			continue
 		}
 		m := job.manifest
@@ -685,6 +985,7 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 					JobStatus:   job.Status,
 					JobAdded:    job.Added,
 					FileIdx:     fi,
+					ArtIdx:      int32(i), //nolint:gosec // article index bounded by manifest length
 					MessageID:   m.ArticleID(i),
 					Bytes:       m.ArticleBytes(i),
 					Subject:     m.FileSubject(fi),
@@ -735,6 +1036,21 @@ func (q *Queue) MarkArticleEmitted(jobID, messageID string) error {
 	return nil
 }
 
+// MarkArticleEmittedByIdx flags article artIdx as emitted in O(1) time.
+func (q *Queue) MarkArticleEmittedByIdx(jobID string, artIdx int32) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if job.progress == nil || job.manifest == nil || int(artIdx) < 0 || int(artIdx) >= job.manifest.NumArticles() {
+		return fmt.Errorf("queue: artIdx %d out of range for job %s", artIdx, jobID)
+	}
+	job.progress.markEmitted(job.manifest, int(artIdx))
+	return nil
+}
+
 // ClearArticleEmitted resets the transient Emitted flag on a single article,
 // allowing the dispatcher to re-dispatch it. This is used when the pipeline
 // receives a retryable download error: the article was emitted but did not
@@ -761,6 +1077,22 @@ func (q *Queue) ClearArticleEmitted(jobID, messageID string) error {
 	return nil
 }
 
+// ClearArticleEmittedByIdx resets the transient Emitted flag on article artIdx in O(1) time.
+func (q *Queue) ClearArticleEmittedByIdx(jobID string, artIdx int32) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if job.progress == nil || job.manifest == nil || int(artIdx) < 0 || int(artIdx) >= job.manifest.NumArticles() {
+		return fmt.Errorf("queue: artIdx %d out of range for job %s", artIdx, jobID)
+	}
+	job.progress.clearEmitted(job.manifest, int(artIdx))
+	q.notifyLocked()
+	return nil
+}
+
 // ClearAllEmitted resets transient article state for a downloader reload.
 // This must be called when the downloader is reloaded: articles that were
 // Emitted by the old downloader but never completed (because the old
@@ -777,24 +1109,20 @@ func (q *Queue) ClearAllEmitted() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for _, job := range q.jobs {
-		// Reset Downloading → Queued: the old downloader is gone, so no
-		// articles are actually in-flight. The new downloader's first
-		// dispatch pass will transition back to Downloading.
-		if job.Status == constants.StatusDownloading {
-			_ = q.setStatusLocked(job, constants.StatusQueued)
-		}
 		m := job.manifest
-		for i := range m.NumArticles() {
-			// Reset articles that were marked Failed during the old
-			// downloader's teardown so they can be retried by the
-			// new downloader. Successfully completed articles
-			// (Done && !Failed) are left untouched.
-			job.progress.resetForReload(m, i)
+		if m != nil && job.progress != nil {
+			for i := range m.NumArticles() {
+				// Reset articles that were marked Failed during the old
+				// downloader's teardown so they can be retried by the
+				// new downloader. Successfully completed articles
+				// (Done && !Failed) are left untouched.
+				job.progress.resetForReload(m, i)
+			}
+			// Recompute pending counters from ground truth after bulk
+			// state reset. Incremental tracking is fragile here because
+			// both Emitted and Failed flags are being cleared in bulk.
+			job.progress.recompute(m)
 		}
-		// Recompute pending counters from ground truth after bulk
-		// state reset. Incremental tracking is fragile here because
-		// both Emitted and Failed flags are being cleared in bulk.
-		job.progress.recompute(m)
 	}
 	// Drain any stale notification (e.g. from MarkArticleDone calls during
 	// pipeline drain of the old downloader's buffered results) so our fresh
@@ -812,7 +1140,9 @@ func (q *Queue) TotalRemainingBytes() int64 {
 	defer q.mu.RUnlock()
 	var total int64
 	for _, job := range q.byID {
-		total += job.progress.remainingBytes
+		if job.progress != nil {
+			total += job.progress.remainingBytes
+		}
 	}
 	return total
 }
@@ -861,24 +1191,54 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
 	var notFound []string
-	for _, id := range messageIDs {
-		i, ok := job.manifest.articleIndexByID(id)
-		if !ok {
-			notFound = append(notFound, id)
-			continue
+	if job.manifest != nil && job.progress != nil {
+		for _, id := range messageIDs {
+			i, ok := job.manifest.articleIndexByID(id)
+			if !ok {
+				notFound = append(notFound, id)
+				continue
+			}
+			job.progress.markDone(job.manifest, i)
 		}
-		// If the article was Emitted, Pending was already decremented;
-		// if it was still pending (!Emitted), decrement now. Per-file
-		// progress only counts successful completions: markDone is not
-		// called for articles MarkArticlesFailed has already flagged
-		// Failed, so this method's articles are by definition successful.
-		job.progress.markDone(job.manifest, i)
 	}
 	q.dirty.Store(true)
 	q.mu.Unlock()
 	// --- No lock held below this line ---
 	for _, id := range notFound {
 		q.log.Warn("MarkArticlesDone: article not found", "job", jobID, "msgid", id)
+	}
+	return nil
+}
+
+// MarkArticlesDoneByIdx is the O(1) index-based batched form of MarkArticlesDone.
+func (q *Queue) MarkArticlesDoneByIdx(jobID string, artIdxs []int32) error {
+	if len(artIdxs) == 0 {
+		return nil
+	}
+	q.mu.Lock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		q.mu.Unlock()
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if job.progress == nil || job.manifest == nil {
+		q.mu.Unlock()
+		return nil
+	}
+	nArt := job.manifest.NumArticles()
+	var invalidCount int
+	for _, idx := range artIdxs {
+		i := int(idx)
+		if i >= 0 && i < nArt {
+			job.progress.markDone(job.manifest, i)
+		} else {
+			invalidCount++
+		}
+	}
+	q.dirty.Store(true)
+	q.mu.Unlock()
+	if invalidCount > 0 {
+		q.log.Warn("MarkArticlesDoneByIdx: out-of-bounds article index received", "job", jobID, "invalid_count", invalidCount, "num_articles", nArt)
 	}
 	return nil
 }
@@ -892,6 +1252,9 @@ func (q *Queue) SetFileWriteCursor(jobID string, fileIdx int, cursor int64) erro
 	job, ok := q.byID[jobID]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if job.manifest == nil || job.progress == nil {
+		return nil
 	}
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
@@ -920,14 +1283,16 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 	}
 	firstTime := make([]string, 0, len(messageIDs))
 	var notFound []string
-	for _, id := range messageIDs {
-		i, ok := job.manifest.articleIndexByID(id)
-		if !ok {
-			notFound = append(notFound, id)
-			continue
-		}
-		if job.progress.markFailed(job.manifest, i) {
-			firstTime = append(firstTime, id)
+	if job.manifest != nil && job.progress != nil {
+		for _, id := range messageIDs {
+			i, ok := job.manifest.articleIndexByID(id)
+			if !ok {
+				notFound = append(notFound, id)
+				continue
+			}
+			if job.progress.markFailed(job.manifest, i) {
+				firstTime = append(firstTime, id)
+			}
 		}
 	}
 	var failedBytes, par2Bytes int64
@@ -962,6 +1327,61 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 	return firstTime, nil
 }
 
+// MarkArticlesFailedByIdx is the O(1) index-based batched form of MarkArticlesFailed.
+func (q *Queue) MarkArticlesFailedByIdx(jobID string, artIdxs []int32) ([]int32, error) {
+	if len(artIdxs) == 0 {
+		return nil, nil
+	}
+	q.mu.Lock()
+	job, ok := q.byID[jobID]
+	if !ok {
+		q.mu.Unlock()
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if job.progress == nil || job.manifest == nil {
+		q.mu.Unlock()
+		return nil, nil
+	}
+	nArt := job.manifest.NumArticles()
+	firstTime := make([]int32, 0, len(artIdxs))
+	var invalidCount int
+	for _, idx := range artIdxs {
+		i := int(idx)
+		if i >= 0 && i < nArt {
+			if job.progress.markFailed(job.manifest, i) {
+				firstTime = append(firstTime, idx)
+			}
+		} else {
+			invalidCount++
+		}
+	}
+	var failedBytes, par2Bytes int64
+	var releasedPar2 bool
+	if len(firstTime) > 0 {
+		failedBytes, par2Bytes = job.progress.failedBytes, job.manifest.Par2Bytes()
+		q.dirty.Store(true)
+		if !job.progress.par2Recovered && job.manifest.Par2Files() > 0 {
+			if q.undeferRecoveryLocked(job, job.progress.DeferredRecoveryIndices()) {
+				job.progress.par2ReleaseReason = "permanent article download failure detected on active queue"
+				releasedPar2 = true
+			}
+		}
+		q.notifyLocked()
+	}
+	q.mu.Unlock()
+	// --- No lock held below this line ---
+	if invalidCount > 0 {
+		q.log.Warn("MarkArticlesFailedByIdx: out-of-bounds article index received", "job", jobID, "invalid_count", invalidCount, "num_articles", nArt)
+	}
+	if len(firstTime) > 0 {
+		q.log.Warn("articles marked FAILED by idx", "job", jobID, "count", len(firstTime), "failed_bytes", failedBytes, "par2_bytes", par2Bytes)
+		if releasedPar2 {
+			q.log.Info("on-demand par2: download failure detected, releasing recovery volumes early", "job", jobID)
+		}
+	}
+	return firstTime, nil
+}
+
 // UndeferRecoveryVolumes clears the Deferred flag on the given file indices of
 // jobID, re-activating their articles for dispatch, and recomputes the pending
 // download-complete gate does not re-fire after the volumes arrive. Indices
@@ -978,6 +1398,9 @@ func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 	job, ok := q.byID[jobID]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if job.progress == nil || job.manifest == nil {
+		return nil
 	}
 	for _, fi := range fileIdxs {
 		if fi < 0 || fi >= job.manifest.NumFiles() {
@@ -996,6 +1419,9 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
+	if job.progress == nil || job.manifest == nil {
+		return nil
+	}
 	job.progress.par2ReleaseReason = reason
 	q.dirty.Store(true)
 	return nil
@@ -1013,6 +1439,9 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 	job, ok := q.byID[jobID]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if job.progress == nil || job.manifest == nil {
+		return nil
 	}
 
 	m := job.manifest
@@ -1134,6 +1563,9 @@ func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
+	if job.manifest == nil || job.progress == nil {
+		return nil
+	}
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
 	}
@@ -1149,6 +1581,9 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 	job, ok := q.byID[jobID]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	}
+	if job.manifest == nil || job.progress == nil {
+		return nil
 	}
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
@@ -1170,6 +1605,9 @@ func (q *Queue) SetFileCRC32(jobID string, fileIdx int, crc uint32) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
+	if job.manifest == nil || job.progress == nil {
+		return nil
+	}
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
 	}
@@ -1188,14 +1626,21 @@ func (q *Queue) PauseAll() {
 	q.dirty.Store(true)
 }
 
-// ResumeAll clears the queue-wide pause flag and signals the
-// downloader.
-func (q *Queue) ResumeAll() {
+// ResumeAll clears the queue-wide pause flag, marks the queue dirty,
+// and triggers the promotion loop to activate pending jobs.
+func (q *Queue) ResumeAll(ctx context.Context) {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	q.paused = false
 	q.dirty.Store(true)
 	q.notifyLocked()
+	// Lock-ordering invariant: q.mu MUST be unlocked before calling PromoteNext.
+	// PromoteNext performs disk I/O to read gzipped article manifests for newly promoted
+	// active jobs; holding q.mu during disk I/O would block queue status queries.
+	q.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	q.PromoteNext(ctx)
 }
 
 // Reorder moves a job to newIndex in the queue, shifting other jobs

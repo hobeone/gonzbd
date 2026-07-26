@@ -149,6 +149,7 @@ func (app *Application) SetNotifier(d *notifier.Dispatcher) {
 func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application)) (*Application, error) {
 	var dlDir, completeDir, adminDir string
 	var writeCacheBytes, minFreeBytes int64
+	var maxActiveJobs int
 	var sanitize fsutil.SanitizeOptions
 	var serversConfig []config.ServerConfig
 	cfg.WithRead(func(c *config.Config) {
@@ -157,6 +158,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		adminDir = c.General.AdminDir
 		writeCacheBytes = int64(c.Downloads.WriteCacheSize)
 		minFreeBytes = int64(c.Downloads.MinFreeSpace)
+		maxActiveJobs = c.Downloads.MaxActiveJobs
 		sanitize = c.Downloads.SanitizeOptions()
 		serversConfig = c.Servers
 	})
@@ -196,6 +198,9 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	if repo != nil && repo.DB() != nil {
 		store := queue.NewSQLiteStore(repo.DB(), queueStateDir, repo)
 		qOpts = append(qOpts, queue.WithStore(store))
+	}
+	if maxActiveJobs > 0 {
+		qOpts = append(qOpts, queue.WithMaxActiveJobs(maxActiveJobs))
 	}
 	qOpts = append(qOpts, queue.WithLogger(log), queue.WithSanitizeOptions(sanitize))
 	q, err := queue.Load(queueStateDir, qOpts...)
@@ -321,19 +326,23 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	app.onFileComplete = onFileComplete
 
 	markDone := q.MarkArticlesDone
+	markDoneByIdx := q.MarkArticlesDoneByIdx
 	if app.markArticlesDoneHook != nil {
 		markDone = app.markArticlesDoneHook
+		markDoneByIdx = nil
 	}
 
 	asm := assembler.New(assembler.Options{
-		FileInfo:           p.resolveFileInfo,
-		MarkArticlesDone:   markDone,
-		MarkArticlesFailed: q.MarkArticlesFailed,
-		SetWriteCursor:     q.SetFileWriteCursor,
-		MinFreeBytes:       minFreeBytes,
-		WriteCacheBytes:    writeCacheBytes,
-		OnLowDisk:          app.handleLowDisk,
-		OnFileComplete:     onFileComplete,
+		FileInfo:                p.resolveFileInfo,
+		MarkArticlesDoneByIdx:   markDoneByIdx,
+		MarkArticlesFailedByIdx: q.MarkArticlesFailedByIdx,
+		MarkArticlesDone:        markDone,
+		MarkArticlesFailed:      q.MarkArticlesFailed,
+		SetWriteCursor:          q.SetFileWriteCursor,
+		MinFreeBytes:            minFreeBytes,
+		WriteCacheBytes:         writeCacheBytes,
+		OnLowDisk:               app.handleLowDisk,
+		OnFileComplete:          onFileComplete,
 	}, log)
 	app.assembler = asm
 	p.assembler = asm
@@ -1065,10 +1074,6 @@ func awaitDirectUnpackOrAbort(ctx context.Context, du directUnpackWaiter) bool {
 }
 
 func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
-	// Mark the download phase as finished so OnJobDone can compute
-	// download duration accurately, excluding post-processing time.
-	job.MarkDownloadFinished(time.Now())
-
 	// Release cached file info for this job; the assembler no longer
 	// needs it, and keeping it around leaks memory across many downloads.
 	app.pipeline.forgetJob(job.ID)

@@ -75,6 +75,8 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 	if err := queue.SaveJob(jobPath, persisted); err != nil {
 		t.Fatalf("queue.SaveJob: %v", err)
 	}
+	h.app.PauseDownloads()
+	h.app.Queue().PauseAll()
 
 	if err := h.app.RetryHistoryJob(ctx, jobID); err != nil {
 		t.Fatalf("RetryHistoryJob: %v", err)

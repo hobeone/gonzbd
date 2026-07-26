@@ -36,6 +36,7 @@ downloads:
   min_free_space: 1024M
   max_art_tries: 3
   max_art_opt: 1
+  max_active_jobs: 4
   top_only: false
   no_penalties: false
   pre_check: false

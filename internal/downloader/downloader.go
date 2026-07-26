@@ -44,6 +44,9 @@ type ArticleResult struct {
 	// FileIdx is the index into the owning job's Files slice.
 	FileIdx int
 
+	// ArtIdx is the global index of the article within the job's manifest.
+	ArtIdx int32
+
 	// Subject is the filename or subject from the NZB for this article's file.
 	Subject string
 
@@ -77,6 +80,7 @@ type articleRequest struct {
 	jobID     string
 	messageID string
 	fileIdx   int
+	artIdx    int32
 	bytes     int
 	subject   string
 }

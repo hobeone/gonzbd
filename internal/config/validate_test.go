@@ -302,6 +302,7 @@ func TestDownloadConfig_ValidateDirect(t *testing.T) {
 		BandwidthMax:  100,
 		BandwidthPerc: 50,
 		MaxArtTries:   3,
+		MaxActiveJobs: 4,
 	}
 	if err := d.validate(); err != nil {
 		t.Errorf("expected clean validate, got: %v", err)
@@ -324,6 +325,12 @@ func TestDownloadConfig_ValidateDirect(t *testing.T) {
 	}
 
 	d.MaxArtOpt = 0
+	d.MaxActiveJobs = 0
+	if err := d.validate(); err == nil {
+		t.Error("expected error for non-positive max_active_jobs")
+	}
+
+	d.MaxActiveJobs = 4
 	d.BandwidthMax = -1
 	if err := d.validate(); err == nil {
 		t.Error("expected error for negative bandwidth_max")

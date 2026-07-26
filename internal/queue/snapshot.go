@@ -1,5 +1,10 @@
 package queue
 
+import (
+	"context"
+	"path/filepath"
+)
+
 // Snapshot returns a point-in-time, deep-copied view of all jobs in the
 // queue. It is intended for testing and consistent-read views (e.g. for
 // API responses).
@@ -8,13 +13,37 @@ package queue
 // to the returned objects do not affect the Queue's internal state.
 func (q *Queue) Snapshot() []*Job {
 	q.mu.RLock()
-	defer q.mu.RUnlock()
-
 	res := make([]*Job, 0, len(q.jobs))
+	var toHydrate []*Job
 	for _, j := range q.jobs {
-		res = append(res, cloneJob(j))
+		cp := cloneJob(j)
+		res = append(res, cp)
+		if cp.manifest == nil && (q.store != nil || q.stateDir != "") {
+			toHydrate = append(toHydrate, cp)
+		}
+	}
+	stateDir := q.stateDir
+	store := q.store
+	q.mu.RUnlock()
+
+	// Hydrate non-resident snapshot copies outside the lock
+	for _, cp := range toHydrate {
+		hydrateSnapshot(stateDir, store, cp)
 	}
 	return res
+}
+
+func hydrateSnapshot(stateDir string, store Store, cp *Job) {
+	manifestPath := filepath.Join(stateDir, "manifests", cp.ID+".json.gz")
+	var m Manifest
+	if err := readGzJSON(manifestPath, &m); err == nil {
+		m.buildMessageIDIndex()
+		cp.manifest = &m
+		cp.progress = newJobProgress(&m)
+		if store != nil {
+			_ = store.RestoreJobProgress(context.Background(), cp)
+		}
+	}
 }
 
 // cloneJob shares manifest by reference (it is immutable after
@@ -27,7 +56,11 @@ func cloneJob(j *Job) *Job {
 	cp := *j
 
 	cp.manifest = j.manifest
-	cp.progress = j.progress.clone()
+	if j.progress != nil {
+		cp.progress = j.progress.clone()
+	} else {
+		cp.progress = nil
+	}
 
 	// Deep copy maps
 	if j.Meta != nil {
@@ -52,11 +85,18 @@ func cloneJob(j *Job) *Job {
 // by ID. Returns nil if the job is not found.
 func (q *Queue) SnapshotJob(id string) *Job {
 	q.mu.RLock()
-	defer q.mu.RUnlock()
-
 	j, ok := q.byID[id]
 	if !ok {
+		q.mu.RUnlock()
 		return nil
 	}
-	return cloneJob(j)
+	cp := cloneJob(j)
+	stateDir := q.stateDir
+	store := q.store
+	q.mu.RUnlock()
+
+	if cp.manifest == nil && (store != nil || stateDir != "") {
+		hydrateSnapshot(stateDir, store, cp)
+	}
+	return cp
 }

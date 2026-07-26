@@ -154,6 +154,7 @@ export interface DownloadsConfig {
 	write_cache_size: string;
 	max_art_tries: number;
 	max_art_opt: number;
+	max_active_jobs: number;
 	top_only: boolean;
 	no_penalties: boolean;
 	pre_check: boolean;

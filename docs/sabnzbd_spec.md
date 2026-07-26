@@ -100,7 +100,7 @@ Queue-modifying operations must: acquire `NZBQUEUE_LOCK`, mutate state, call `DO
 3. Initialize logging
 4. Acquire `gonzbd.lock` lock on the admin dir (prevent double-start)
 5. Initialize database (`history.db`)
-6. Load queue from disk (`queue/queue.json.gz` + `queue/jobs/<id>.json.gz`)
+6. Load queue from disk (`queue/queue.db` + `queue/manifests/<id>.json.gz`)
 7. Start BPS meter thread
 8. Start scheduler
 9. Start article cache thread
@@ -284,15 +284,15 @@ Running, QuickCheck, Completed, Failed, Deleted, Idle
 
 ### 4.4 Queue Persistence
 
-- **Format** (SABnzbd): Python pickle + gzip. **GoNZBD**: gzipped JSON.
-- **Filename** (GoNZBD): `queue/queue.json.gz` (index: job order + paused flag) plus one `queue/jobs/<id>.json.gz` per job, under the admin directory. (SABnzbd used a single `queue10.sab`.)
+- **Format** (SABnzbd): Python pickle + gzip. **GoNZBD**: SQLite database (`queue.db`) + gzipped JSON manifests (`queue/manifests/<id>.json.gz`).
+- **Filename** (GoNZBD): `queue/queue.db` (SQLite store: job order, state, metadata) plus one `queue/manifests/<id>.json.gz` manifest per job, under the admin directory. (SABnzbd used a single `queue10.sab`.)
 - **Postproc queue**: in-memory only in GoNZBD (not persisted; in-flight post-processing restarts from scratch after a crash). SABnzbd persisted `postproc2.sab`.
 - **Repair modes** (on startup):
   - Mode 0: Use existing queue as-is
   - Mode 1: Use existing queue, re-add missing work-in-progress folders
   - Mode 2: Discard queue, reconstruct from `incomplete/` directory scan
 
-**Go recommendation**: Serialize queue to JSON or Protocol Buffers. On-disk format must support atomic write (write to temp file, rename).
+**Go recommendation**: Persistence uses SQLite (`queue.db`) for transaction-safe queue state and indexing, and immutable gzipped JSON files (`queue/manifests/<id>.json.gz`) for job article specifications.
 
 ### 4.5 Duplicate Detection
 
@@ -650,6 +650,7 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `write_cache_size` | string | `64M` | Write coalescing buffer size (e.g., `64M`, `0`=disabled) |
 | `max_art_tries` | int | `3` | Max tries per article before marking bad |
 | `max_art_opt` | int | `1` | Max tries on optional servers |
+| `max_active_jobs` | int | `4` | Maximum number of active/processing jobs concurrently |
 | `top_only` | bool | false | Only use top-priority server |
 | `no_penalties` | bool | false | Use minimal penalty times |
 | `pre_check` | bool | false | Pre-check article availability via STAT |
@@ -1261,7 +1262,7 @@ These are the GoNZBD admin files (the SABnzbd originals are noted for reference)
 
 | File (GoNZBD) | Contents | Format | SABnzbd original |
 |------|----------|--------|------------------|
-| `queue/queue.json.gz` + `queue/jobs/<id>.json.gz` | Download queue (index + per-job) | gzipped JSON | `queue10.sab` (pickle+gzip) |
+| `queue/queue.db` + `queue/manifests/<id>.json.gz` | Download queue state + immutable job manifests | SQLite + gzipped JSON | `queue10.sab` (pickle+gzip) |
 | _(none — in-memory only)_ | Post-processing queue | not persisted | `postproc2.sab` |
 | `dirscan.json` | Dir scanner state | JSON | `watched_data2.sab` (pickle+gzip) |
 | `bpsmeter.json` | Bandwidth statistics | JSON | `bpsmeter.sab` (pickle+gzip) |

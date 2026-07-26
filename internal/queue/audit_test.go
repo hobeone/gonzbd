@@ -38,6 +38,7 @@ func TestSetStatusIf(t *testing.T) {
 	t.Run("no-op when current does not match", func(t *testing.T) {
 		t.Parallel()
 		q := New()
+		q.PauseAll()
 		j := makeJob(t, "ssi-mismatch", constants.NormalPriority)
 		_ = q.Add(j)
 		// Save to clear dirty flag.
