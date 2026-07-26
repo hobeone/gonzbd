@@ -386,9 +386,8 @@ func TestRetryHistoryJob(t *testing.T) {
 	repo := history.NewRepository(db)
 	defer db.Close()
 
-	application, _ := app.New(appCfg, repo)
 	emitter := &mockEmitter{}
-	application.SetEmitter(emitter)
+	application, _ := app.New(appCfg, repo, app.WithEventEmitter(emitter))
 
 	ctx, cancel := context.WithCancel(t.Context())
 	_ = application.Start(ctx)

@@ -56,6 +56,10 @@ type Options struct {
 	// ShutdownFunc is called by mode=shutdown and mode=restart to initiate
 	// a graceful application exit. When nil, those modes return 501.
 	ShutdownFunc func()
+
+	// Broadcaster is the WebSocket event broadcaster. When nil, New defaults
+	// to constructing a fresh Broadcaster.
+	Broadcaster *Broadcaster
 }
 
 // Server is the HTTP API server. It owns the mode dispatch table and
@@ -110,6 +114,11 @@ func New(opts Options) *Server {
 	}
 	log = log.With("component", "api")
 
+	events := opts.Broadcaster
+	if events == nil {
+		events = NewBroadcaster(log)
+	}
+
 	s := &Server{
 		version:      opts.Version,
 		commit:       opts.Commit,
@@ -122,7 +131,7 @@ func New(opts Options) *Server {
 		configPath:   opts.ConfigPath,
 		grabber:      opts.Grabber,
 		shutdownFunc: opts.ShutdownFunc,
-		events:       NewBroadcaster(log),
+		events:       events,
 		mux:          http.NewServeMux(),
 		sessionKey:   generateSessionKey(),
 	}

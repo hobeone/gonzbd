@@ -1,7 +1,6 @@
 package app
 
 import (
-	"sync"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -103,12 +102,15 @@ func TestBuildNotifier_ScriptDefaultTimeout(t *testing.T) {
 	}
 }
 
-// ---------- SetEmitter ----------
+// ---------- WithEventEmitter ----------
 
-func TestSetEmitter_NilUseDummy(t *testing.T) {
+func TestWithEventEmitter_NilUseDummy(t *testing.T) {
 	t.Parallel()
-	app := &Application{}
-	app.SetEmitter(nil)
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
+	app, err := New(cfg, nil, WithEventEmitter(nil))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if _, ok := app.emitter.(dummyEmitter); !ok {
 		t.Error("nil emitter should set dummyEmitter")
 	}
@@ -118,48 +120,18 @@ type mockEmitter struct{ called bool }
 
 func (m *mockEmitter) Broadcast(_ Event) { m.called = true }
 
-func TestSetEmitter_Custom(t *testing.T) {
+func TestWithEventEmitter_Custom(t *testing.T) {
 	t.Parallel()
-	app := &Application{}
+	cfg := testConfig(t.TempDir(), t.TempDir(), t.TempDir())
 	e := &mockEmitter{}
-	app.SetEmitter(e)
+	app, err := New(cfg, nil, WithEventEmitter(e))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	app.emitter.Broadcast(Event{})
 	if !e.called {
 		t.Error("custom emitter Broadcast not called")
 	}
-}
-
-// raceEmitter has a no-op Broadcast so the only shared memory the race test
-// exercises is Application.emitter itself — the field emit() must read under
-// app.mu.
-type raceEmitter struct{}
-
-func (raceEmitter) Broadcast(_ Event) {}
-
-// TestEmit_ConcurrentSetEmitterRaceFree runs emit() concurrently with
-// SetEmitter. SetEmitter writes app.emitter under app.mu; emit() must read it
-// under the same lock. An unguarded read is a data race the detector flags.
-// Run with -race (the project's standard concurrency proof).
-func TestEmit_ConcurrentSetEmitterRaceFree(t *testing.T) {
-	app := &Application{}
-	app.SetEmitter(raceEmitter{})
-
-	const iters = 5000
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		for range iters {
-			app.SetEmitter(raceEmitter{})
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		for range iters {
-			app.emit(Event{Type: "queue_updated"})
-		}
-	}()
-	wg.Wait()
 }
 
 // ---------- SetNotifier ----------
