@@ -86,5 +86,5 @@ func (a *ActiveSet) Evict(job *Job) {
 func (a *ActiveSet) Clear() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.resident = make(map[string]*Job)
+	clear(a.resident)
 }

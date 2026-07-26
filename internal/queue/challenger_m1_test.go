@@ -48,7 +48,7 @@ func TestChallenger_ConcurrentPromotionAndPauseResumeLoops(t *testing.T) {
 					q.PromoteNext(context.Background())
 				case 1:
 					q.PauseAll()
-					q.ResumeAll()
+					q.ResumeAll(context.Background())
 				case 2:
 					q.PromoteNext(context.Background())
 				case 3:

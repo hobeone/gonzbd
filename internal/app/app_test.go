@@ -480,7 +480,7 @@ func TestRetryHistoryJob(t *testing.T) {
 
 	// 5. Resume downloads first, then unpause queue to trigger promotion and dispatch
 	application.ResumeDownloads()
-	application.Queue().ResumeAll()
+	application.Queue().ResumeAll(context.Background())
 	select {
 	case <-application.PostProcComplete():
 	case <-time.After(5 * time.Second):

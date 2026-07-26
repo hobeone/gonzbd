@@ -175,12 +175,10 @@ func (p *JobProgress) RemainingBytes() int64 {
 // ServerStats returns a defensive copy, matching cloneJob's current
 // maps.Copy behavior — callers cannot mutate the job's live map through it.
 func (p *JobProgress) ServerStats() map[string]int64 {
-	if p == nil || p.serverStats == nil {
+	if p == nil {
 		return nil
 	}
-	cp := make(map[string]int64, len(p.serverStats))
-	maps.Copy(cp, p.serverStats)
-	return cp
+	return maps.Clone(p.serverStats)
 }
 
 // DownloadStarted returns the wall-clock time the first article began downloading, or zero.
@@ -249,10 +247,7 @@ func (p *JobProgress) clone() *JobProgress {
 	cp.emitted = slices.Clone(p.emitted)
 	cp.files = slices.Clone(p.files)
 
-	if p.serverStats != nil {
-		cp.serverStats = make(map[string]int64, len(p.serverStats))
-		maps.Copy(cp.serverStats, p.serverStats)
-	}
+	cp.serverStats = maps.Clone(p.serverStats)
 	return &cp
 }
 

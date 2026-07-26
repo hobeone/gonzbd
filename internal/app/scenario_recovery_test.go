@@ -68,7 +68,7 @@ func seedCompletedJob(t *testing.T, seed *queue.Queue, id, name string, postProc
 	// under test: PostProc=true while Status never transitioned through
 	// SetPostProcStarted (a real crash can strand this exact combination).
 	job.PostProc = postProc
-	seed.ResumeAll()
+	seed.ResumeAll(context.Background())
 }
 
 // TestRecovery_PostProcTrueOnRestart verifies that Application.Start

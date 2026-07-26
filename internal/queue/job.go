@@ -159,11 +159,14 @@ func (j *Job) Phase() JobPhase {
 		return PhaseProcessing
 	case constants.StatusPaused:
 		return PhasePaused
-	case constants.StatusCompleted, constants.StatusFailed, constants.StatusDeleted:
-		return PhaseTerminal
 	default:
 		return PhasePending
 	}
+}
+
+// IsResident returns true if the phase requires an in-memory resident manifest and progress.
+func (p JobPhase) IsResident() bool {
+	return p == PhaseActive || p == PhaseProcessing
 }
 
 func (p JobPhase) String() string {
@@ -426,6 +429,9 @@ func (j *Job) IsComplete() bool {
 // HasDeferredPar2 reports whether the job currently has any deferred par2
 // recovery volume. Safe to call on a snapshot (no lock needed).
 func (j *Job) HasDeferredPar2() bool {
+	if j.progress == nil {
+		return false
+	}
 	return j.progress.HasDeferredPar2()
 }
 
@@ -433,6 +439,9 @@ func (j *Job) HasDeferredPar2() bool {
 // par2 recovery volumes. Phase 1 un-defers this full set on damage; Phase 2
 // selects a block-covering subset from it. Safe to call on a snapshot.
 func (j *Job) DeferredRecoveryIndices() []int {
+	if j.progress == nil {
+		return nil
+	}
 	return j.progress.DeferredRecoveryIndices()
 }
 

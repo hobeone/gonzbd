@@ -259,14 +259,8 @@ FROM jobs WHERE id = ?`
 }
 
 func isResidentStatus(status constants.Status) bool {
-	switch status {
-	case constants.StatusDownloading, constants.StatusFetching,
-		constants.StatusVerifying, constants.StatusQuickCheck, constants.StatusRepairing,
-		constants.StatusExtracting, constants.StatusMoving, constants.StatusRunning:
-		return true
-	default:
-		return false
-	}
+	j := Job{Status: status}
+	return j.Phase().IsResident()
 }
 
 // RestoreJobProgress loads per-file progress counters from SQLite into job.progress for a resident job.

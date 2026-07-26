@@ -2,6 +2,7 @@ package queue
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -355,7 +356,7 @@ func TestPauseAllResumeAll(t *testing.T) {
 	case <-q.Notify():
 	default:
 	}
-	q.ResumeAll()
+	q.ResumeAll(context.Background())
 	if q.IsPaused() {
 		t.Error("ResumeAll did not clear paused")
 	}
@@ -840,7 +841,7 @@ func TestDirtyFlagOnMutations(t *testing.T) {
 	_ = q.Save(dir)
 
 	// 7. ResumeAll
-	q.ResumeAll()
+	q.ResumeAll(context.Background())
 	if !q.IsDirty() {
 		t.Error("ResumeAll should set dirty")
 	}

@@ -553,6 +553,7 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 
 		// Attach manifest & progress if not already resident
 		if job.manifest == nil {
+			manifest.buildMessageIDIndex()
 			job.manifest = &manifest
 			job.progress = newJobProgress(&manifest)
 		}
@@ -1625,9 +1626,9 @@ func (q *Queue) PauseAll() {
 	q.dirty.Store(true)
 }
 
-// ResumeAll clears the queue-wide pause flag, signals the downloader,
+// ResumeAll clears the queue-wide pause flag, marks the queue dirty,
 // and triggers the promotion loop to activate pending jobs.
-func (q *Queue) ResumeAll() {
+func (q *Queue) ResumeAll(ctx context.Context) {
 	q.mu.Lock()
 	q.paused = false
 	q.dirty.Store(true)
@@ -1636,7 +1637,10 @@ func (q *Queue) ResumeAll() {
 	// PromoteNext performs disk I/O to read gzipped article manifests for newly promoted
 	// active jobs; holding q.mu during disk I/O would block queue status queries.
 	q.mu.Unlock()
-	q.PromoteNext(context.Background())
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	q.PromoteNext(ctx)
 }
 
 // Reorder moves a job to newIndex in the queue, shifting other jobs

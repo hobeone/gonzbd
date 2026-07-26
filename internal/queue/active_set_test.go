@@ -154,7 +154,7 @@ func TestActiveSet_StructuralMemoryBound(t *testing.T) {
 	}
 
 	// Unpaused queue: set maxActive to 4
-	q.ResumeAll()
+	q.ResumeAll(context.Background())
 	q.SetMaxActiveJobs(4)
 
 	if q.ActiveSet().Len() != 4 {
@@ -212,7 +212,7 @@ func TestClaim_CorruptManifest(t *testing.T) {
 	}
 
 	// Resume queue to trigger PromoteNext
-	q.ResumeAll()
+	q.ResumeAll(context.Background())
 	q.PromoteNext(context.Background())
 
 	// corrupt-job should have been quarantined
