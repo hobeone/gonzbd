@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/telemetry"
+	"github.com/hobeone/gonzbd/internal/testutil"
 )
 
 // waitUntil polls cond every 5ms until it returns true or the deadline passes.
@@ -1663,5 +1664,64 @@ func TestAssembler_FlushRunError(t *testing.T) {
 	success := a.flushRun(f, run)
 	if success {
 		t.Errorf("flushRun on closed file: got true, want false")
+	}
+}
+
+func TestAssembler_CloseJobHandles(t *testing.T) {
+	dir := t.TempDir()
+	testutil.AssertNoFDLeaks(t, dir)
+	files := make(map[string]FileInfo)
+	path := registerFile(t, dir, files, "job1", 0, 5)
+
+	a := New(makeOpts(dir, files), nil)
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer a.Stop()
+
+	// Write 1 part so the file is opened and sitting incomplete in open map.
+	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("0000")}
+	if err := a.WriteArticle(t.Context(), req); err != nil {
+		t.Fatalf("WriteArticle: %v", err)
+	}
+
+	// Calling CloseJobHandles must close open file descriptors and remove from open map,
+	// but must NOT delete the file from disk (unlike CancelJob).
+	if err := a.CloseJobHandles(t.Context(), "job1"); err != nil {
+		t.Fatalf("CloseJobHandles: %v", err)
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("file was deleted from disk, should have been preserved: %v", err)
+	}
+
+	// Test stopped state.
+	a.Stop()
+	if err := a.CloseJobHandles(t.Context(), "job1"); !errors.Is(err, ErrStopped) {
+		t.Errorf("stopped CloseJobHandles: got %v, want ErrStopped", err)
+	}
+}
+
+func TestAssembler_CloseJobHandles_Unstarted(t *testing.T) {
+	a := New(makeOpts("", nil), nil)
+	if err := a.CloseJobHandles(t.Context(), "job1"); !errors.Is(err, ErrNotStarted) {
+		t.Errorf("unstarted CloseJobHandles: got %v, want ErrNotStarted", err)
+	}
+}
+
+func TestAssembler_CloseJobHandles_ContextCanceled(t *testing.T) {
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerFile(t, dir, files, "job1", 0, 5)
+	a := New(makeOpts(dir, files), nil)
+	if err := a.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := a.CloseJobHandles(ctx, "job1"); !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
 	}
 }
