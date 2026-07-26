@@ -131,7 +131,7 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 		// the article as dispatchable (all try-list entries would still
 		// be present, so it would keep re-emitting ErrNoServersLeft in
 		// a tight loop until the assembler finally marked it Failed).
-		if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil {
+		if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil && !errors.Is(err, queue.ErrNotFound) {
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 		}
 		d.clearTried(req.jobID, req.messageID)
@@ -666,7 +666,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 		d.log.Warn("decode error", "msgid", req.messageID, "err", err)
 		// Non-CRC decode errors are terminal failures — mark Emitted so
 		// the dispatcher never re-picks this article, then clear the tryList.
-		if markErr := d.queue.MarkArticleEmitted(req.jobID, req.messageID); markErr != nil {
+		if markErr := d.queue.MarkArticleEmitted(req.jobID, req.messageID); markErr != nil && !errors.Is(markErr, queue.ErrNotFound) {
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", markErr)
 		}
 		d.clearTried(req.jobID, req.messageID)
@@ -682,7 +682,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 	// write. If the process crashes before fsync, Emitted is lost on
 	// restart, so the article is re-dispatched — matching the B.6
 	// invariant that Done means "bytes on stable storage".
-	if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil {
+	if err := d.queue.MarkArticleEmittedByIdx(req.jobID, req.artIdx); err != nil && !errors.Is(err, queue.ErrNotFound) {
 		d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 	}
 	d.clearTried(req.jobID, req.messageID)
@@ -780,6 +780,7 @@ func (m *managedConn) Get(ctx context.Context, d *Downloader, srv *Server, worke
 	}
 
 	d.log.Debug("connected", "server", name, "ssl", c.SSLInfo()) //lockio: see managedConn doc comment — mu is also the dial-coalescing lock
+	d.ensureDisconnectChan()
 	m.conn = c
 	d.setConnConnected(workerID, true)
 	return c, nil

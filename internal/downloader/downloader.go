@@ -258,9 +258,11 @@ type Downloader struct {
 	connActivityMu sync.RWMutex
 	connActivity   map[string]*ConnActivity // key: "serverName#connIndex"
 
+	// disconnectMu guards check-and-act lifecycle transitions on disconnectPtr.
+	disconnectMu sync.Mutex
 	// disconnectPtr holds the current disconnect channel. DisconnectAll
-	// closes the current channel (broadcasting to all connWorkers) and
-	// replaces it with a fresh one using atomic load/store.
+	// closes the channel (broadcasting to all connWorkers) and leaves it
+	// closed until ensureDisconnectChan restores an open channel when dialing.
 	disconnectPtr atomic.Pointer[chan struct{}]
 
 	ctx    context.Context //nolint:containedctx // lifecycle context stored for Stop()
@@ -306,8 +308,7 @@ func New(q *queue.Queue, servers []*Server, meter *bpsmeter.Meter, opts Options,
 		topOnly:          opts.TopOnly,
 		propagationDelay: opts.PropagationDelay,
 	}
-	ch := make(chan struct{})
-	d.disconnectPtr.Store(&ch)
+	d.ensureDisconnectChan()
 	for _, srv := range servers {
 		name := srv.Cfg().Name
 		perServer := opts.PerServerQueue
@@ -504,16 +505,45 @@ func (d *Downloader) IsPaused() bool { return d.paused.Load() }
 
 // DisconnectAll signals all connWorker goroutines to close their idle
 // NNTP connections. Workers remain alive and will lazily reconnect when
-// new work arrives. This is a no-op if no connections are open.
+// new work arrives. This is a no-op if no connections are open or if
+// disconnect was already signaled.
 //
 // Used when the download queue empties to free server resources.
 func (d *Downloader) DisconnectAll() {
-	newCh := make(chan struct{})
-	oldCh := d.disconnectPtr.Swap(&newCh)
-	if oldCh != nil {
-		close(*oldCh)
+	d.disconnectMu.Lock()
+	defer d.disconnectMu.Unlock()
+
+	chPtr := d.disconnectPtr.Load()
+	if chPtr != nil {
+		select {
+		case <-*chPtr:
+			// Disconnect signal was already sent and is still active.
+			return
+		default:
+		}
+		close(*chPtr)
+		d.log.Info("disconnect: signaled all connections to close")
 	}
-	d.log.Info("disconnect: signaled all connections to close")
+}
+
+// ensureDisconnectChan restores an open disconnect channel if the current
+// one is nil or closed. Called when a worker dials a new NNTP connection.
+func (d *Downloader) ensureDisconnectChan() {
+	d.disconnectMu.Lock()
+	defer d.disconnectMu.Unlock()
+
+	chPtr := d.disconnectPtr.Load()
+	if chPtr == nil {
+		ch := make(chan struct{})
+		d.disconnectPtr.Store(&ch)
+		return
+	}
+	select {
+	case <-*chPtr:
+		ch := make(chan struct{})
+		d.disconnectPtr.Store(&ch)
+	default:
+	}
 }
 
 // disconnectSnapshot returns the current disconnect channel. Workers
