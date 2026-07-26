@@ -15,10 +15,12 @@ import (
 	"github.com/hobeone/rarengine"
 
 	"github.com/hobeone/gonzbd/internal/rarheader"
+	"github.com/hobeone/gonzbd/internal/testutil"
 )
 
 func TestGoUnRAR_SingleVolume(t *testing.T) {
 	outDir := t.TempDir()
+	testutil.AssertNoFDLeaks(t, outDir)
 	archive := Archive{
 		Type:     RarArchive,
 		Name:     "single_rar5",

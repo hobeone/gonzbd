@@ -1280,6 +1280,14 @@ func TestApplication_EdgeCases(t *testing.T) {
 	})
 	application.TriggerMaybeFinalize(jobCollision.ID, "")
 
+	// 7b. Test maybeFinalize assembler close success branch
+	jobSucc, _ := queue.NewJob(parsed, queue.AddOptions{Name: "succ-job", PP: 3}, fsutil.SanitizeOptions{})
+	_ = application.AddJob(t.Context(), jobSucc, []byte("nzb content"), false)
+	_ = application.Queue().SetStatus(jobSucc.ID, constants.StatusDownloading)
+	_ = application.Assembler().Start(t.Context())
+	application.TriggerMaybeFinalize(jobSucc.ID, "")
+	_ = application.Assembler().Stop()
+
 	// 8. Test maybeDirectUnpack branches
 	// Create a job with RAR volumes
 	parsedRar := &nzb.NZB{
