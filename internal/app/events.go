@@ -51,28 +51,12 @@ type dummyEmitter struct{}
 
 func (d dummyEmitter) Broadcast(_ Event) {} //nocover: no-op interface stub
 
-// emit broadcasts e through the currently-registered emitter. The emitter
-// pointer is read under app.mu so a concurrent SetEmitter (e.g. a test swapping
-// in a fake) cannot race the read; Broadcast is called after releasing the lock
-// so a slow broadcast never blocks other app.mu holders (the "snapshot under
-// lock, release, then act" rule from AGENTS.md). emitter is never nil — it is
-// initialized to dummyEmitter and SetEmitter substitutes dummyEmitter for nil.
+// emit broadcasts e through the currently-registered emitter. Because emitter
+// is assigned strictly during New() and never mutated afterward, reading it
+// requires no mutex synchronization. emitter is never nil — it is initialized
+// to dummyEmitter by default.
 func (app *Application) emit(e Event) {
-	app.mu.Lock()
-	em := app.emitter
-	app.mu.Unlock()
-	em.Broadcast(e)
-}
-
-// SetEmitter injects a broadcaster for real-time events.
-func (app *Application) SetEmitter(e EventEmitter) {
-	app.mu.Lock()
-	defer app.mu.Unlock()
-	if e == nil {
-		app.emitter = dummyEmitter{}
-		return
-	}
-	app.emitter = e
+	app.emitter.Broadcast(e)
 }
 
 func (app *Application) runMetricsPush(ctx context.Context) {

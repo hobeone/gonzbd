@@ -1288,6 +1288,18 @@ func WithVersion(v string) func(*Application) {
 	return func(a *Application) { a.version = v }
 }
 
+// WithEventEmitter returns an option that sets the real-time event broadcaster.
+// If e is nil, the application defaults to a no-op dummy emitter.
+func WithEventEmitter(e EventEmitter) func(*Application) {
+	return func(a *Application) {
+		if e != nil {
+			a.emitter = e
+		} else {
+			a.emitter = dummyEmitter{}
+		}
+	}
+}
+
 // SetSpeedLimit updates the download speed limit. bytesPerSec <= 0 means unlimited.
 func (app *Application) SetSpeedLimit(bytesPerSec int64) {
 	app.mu.Lock()

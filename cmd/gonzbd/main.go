@@ -210,7 +210,8 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	defer func() { _ = histDB.Close() }() //nolint:errcheck // daemon shutdown; close error not actionable
 	histRepo := history.NewRepository(histDB)
 
-	application, err := app.New(cfg, histRepo, app.WithVersion(Version))
+	events := api.NewBroadcaster(log.With("component", "api"))
+	application, err := app.New(cfg, histRepo, app.WithVersion(Version), app.WithEventEmitter(wsAdapter{events}))
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
 	}
@@ -256,7 +257,7 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 		return err
 	}
 
-	apiSrv := buildAPIServer(cfg, configPath, application, histRepo, grabber, cancel, log)
+	apiSrv := buildAPIServer(cfg, configPath, application, histRepo, grabber, cancel, log, events)
 
 	// The web SPA cookie carries the API server's ephemeral session key,
 	// not the permanent General.APIKey — see AuthConfig.SessionKey.
@@ -492,7 +493,7 @@ func ensureSelfSignedCert(certFile, keyFile string, log *slog.Logger) error {
 // into the application's event emitter, and surfaces startup warnings
 // (missing external dependencies, no NNTP servers configured) through both
 // the log and the API server's in-UI warning list.
-func buildAPIServer(cfg *config.Config, configPath string, application *app.Application, histRepo *history.Repository, grabber *urlgrabber.Grabber, cancel context.CancelFunc, log *slog.Logger) *api.Server {
+func buildAPIServer(cfg *config.Config, configPath string, application *app.Application, histRepo *history.Repository, grabber *urlgrabber.Grabber, cancel context.CancelFunc, log *slog.Logger, events *api.Broadcaster) *api.Server {
 	apiSrv := api.New(api.Options{
 		Version:      Version,
 		Commit:       Commit,
@@ -505,11 +506,8 @@ func buildAPIServer(cfg *config.Config, configPath string, application *app.Appl
 		App:          application,
 		ShutdownFunc: cancel,
 		Logger:       log,
+		Broadcaster:  events,
 	})
-
-	// Inject the WebSocket broadcaster from the API server into the
-	// application so it can fire real-time events.
-	application.SetEmitter(wsAdapter{apiSrv.EventBroadcaster()})
 
 	// Check for missing dependencies and surface them via logs and UI warnings.
 	for _, warning := range app.CheckDependencies() {

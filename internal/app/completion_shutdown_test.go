@@ -40,13 +40,11 @@ func TestShutdown_SaturatedCompletionChannel_NoDroppedCompletions(t *testing.T) 
 	repo := history.NewRepository(db)
 
 	fd := newFakeDownloader()
-	application, err := New(cfg, repo, WithDownloader(fd))
+	blockCh := make(chan struct{})
+	application, err := New(cfg, repo, WithDownloader(fd), WithEventEmitter(&blockingEmitter{block: blockCh}))
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
-
-	blockCh := make(chan struct{})
-	application.SetEmitter(&blockingEmitter{block: blockCh})
 
 	const numFiles = 150
 	files := make([]nzb.File, 0, numFiles)
