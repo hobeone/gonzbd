@@ -188,6 +188,7 @@ golangci-lint run ./...               # Must pass (no new issues)
 
 `./scripts/run_tests.sh` runs the full Go and UI suites but **without** the race
 detector, so `go test -race ./...` is a separate, required step.
+Note: Standard `go test ./...` and `go test -race ./...` exclude files with `//go:build integration`. Whenever modifying files in `test/integration/` or changing startup wiring in `cmd/gonzbd/main.go` that integration tests consume, you MUST run `go test -tags=integration ./test/integration/...` locally before committing or pushing.
 
 If any gate fails, fix the underlying issue. **Do not skip, suppress, or bypass
 these checks** to make a commit go through. **Never insert dummy tests or dummy
