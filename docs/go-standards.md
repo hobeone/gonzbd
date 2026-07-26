@@ -227,6 +227,20 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 ### 5. Resource Management
 
+- **Systematic File Handle Leak Prevention (Tracking-Slice & Control-Message Patterns).** Because standard static analysis cannot reliably track file descriptors across asynchronous goroutine boundaries or channels, all file handling MUST follow two architectural patterns:
+  - **Synchronous & Loop Scopes (The Tracking-Slice Pattern):** When opening files within a loop or function (e.g., archive volume discovery or batch processing), never rely on downstream readers or end-of-function statements to close them on early return/error paths. Always accumulate opened handles in a slice with a deferred cleanup block immediately after discovery:
+    ```go
+    var opened []io.ReadCloser
+    defer func() {
+        for _, f := range opened {
+            _ = f.Close() // Best-effort close on completion, early return, or error
+        }
+    }()
+    ```
+  - **State-Machine Scopes (The Control-Message Pattern):** When an engine holds file descriptors open across asynchronous requests (e.g., `assembler.open`), handles must be owned by a *single* worker goroutine. Every state machine lifecycle transition out of active assembly (e.g., completion entering post-processing via `maybeFinalize`, job cancellation, or job failure) MUST invoke a synchronous control message (`CloseJobHandles`, `CancelJob`) that blocks until the worker goroutine explicitly closes and flushes all open file descriptors before subsequent pipeline stages run.
+
+- **Network Filesystem (NFS/SMB) Silly-Rename Deletion Protocol.** On NFS shares, unlinking an open file renames it to a hidden `.nfsXXXX` file instead of removing it, causing subsequent directory removal (`os.RemoveAll`) to fail with `EBUSY` or `ENOTEMPTY`. Never use raw `os.RemoveAll` or `os.Remove` on job output directories, cleanup paths, or temp directories. Always use `fsutil.RemoveAll`, `fsutil.Remove`, or `fsutil.RemoveRootAll`, which implement exponential backoff retries and non-fatal warning detection for lingering silly-rename files.
+
 - **Track and close file descriptors for cancelled jobs.** The assembler holds open file handles per job. When a job is cancelled, `CancelJob` must close all associated FDs via a control message to the worker goroutine, or FDs leak indefinitely.
 
 - **Use tombstone sets to reject late/duplicate messages.** After a file is completed and closed, late duplicate articles can re-open it, leaking FDs. Maintain a `completedFiles` set to reject them.
