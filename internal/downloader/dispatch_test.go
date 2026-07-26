@@ -1353,3 +1353,71 @@ func TestSelectWork_Branches(t *testing.T) {
 		}
 	})
 }
+
+func TestDisconnectAll_IdempotentAndConcurrent(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeSrv("s1", 0, true)
+	d := newDispatchDownloader([]*Server{srv})
+
+	ch1 := d.disconnectSnapshot()
+	d.DisconnectAll()
+
+	select {
+	case <-ch1:
+		// channel closed as expected
+	default:
+		t.Fatal("first DisconnectAll did not close disconnect channel")
+	}
+
+	// Calling DisconnectAll again should preserve the closed channel pointer.
+	ch2 := d.disconnectSnapshot()
+	if ch1 != ch2 {
+		t.Errorf("second DisconnectAll replaced channel pointer: got %v, want %v", ch2, ch1)
+	}
+
+	// Concurrent invocations must be safe and idempotent without panics or races.
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Go(func() {
+			d.DisconnectAll()
+			d.ensureDisconnectChan()
+			d.DisconnectAll()
+		})
+	}
+	wg.Wait()
+
+	// Calling ensureDisconnectChan while closed resets to a new open channel.
+	d.ensureDisconnectChan()
+	ch3 := d.disconnectSnapshot()
+	if ch3 == ch1 {
+		t.Fatal("ensureDisconnectChan did not create a new open channel")
+	}
+	select {
+	case <-ch3:
+		t.Fatal("new disconnect channel is prematurely closed")
+	default:
+		// correct
+	}
+}
+
+func TestMarkArticleEmitted_ErrNotFound(t *testing.T) {
+	t.Parallel()
+
+	q := queue.New()
+	err1 := q.MarkArticleEmitted("nonexistent-job", "msg1@h")
+	if !errors.Is(err1, queue.ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err1)
+	}
+	err2 := q.MarkArticleEmittedByIdx("nonexistent-job", 0)
+	if !errors.Is(err2, queue.ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err2)
+	}
+
+	if err1 != nil && !errors.Is(err1, queue.ErrNotFound) {
+		t.Errorf("expected ErrNotFound to be filtered out, got %v", err1)
+	}
+	if err2 != nil && !errors.Is(err2, queue.ErrNotFound) {
+		t.Errorf("expected ErrNotFound to be filtered out, got %v", err2)
+	}
+}
