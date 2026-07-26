@@ -180,9 +180,10 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 	}
 
 	app := &Application{
-		queue:  q,
-		log:    log,
-		config: cfg,
+		queue:   q,
+		log:     log,
+		config:  cfg,
+		emitter: dummyEmitter{},
 	}
 
 	t.Run("context cancelled returns false", func(t *testing.T) {
@@ -240,7 +241,6 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		copyFixturePar2(t, dirCorrupt)
 
 		snap := q.SnapshotJob(jobCorruptID)
-		app.emitter = dummyEmitter{}
 		if !app.maybeReleaseRecoveryVolumes(t.Context(), jobCorruptID, snap) {
 			t.Error("maybeReleaseRecoveryVolumes must return true when verification fails")
 		}
