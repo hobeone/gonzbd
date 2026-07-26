@@ -47,12 +47,16 @@ func respondStatus(w http.ResponseWriter) {
 //
 //	{"status": false, "error": "<msg>"}
 //
-// code is the HTTP status code (typically 400, 401, 403, or 500).
+// code is the HTTP status code (typically 400, 401, 403, or 500). The
+// message is not logged here: it is stashed on the statusWriter (when w is
+// one, which it always is for requests reaching a handler through
+// loggingMiddleware) so loggingMiddleware can fold it into its single
+// per-request log line rather than this producing a second, duplicate one.
 func (s *Server) respondError(w http.ResponseWriter, code int, msg string) {
-	if code >= 500 {
-		s.log.Error("api response error", "status", code, "error", msg)
-	} else if code != http.StatusOK {
-		s.log.Warn("api response warning", "status", code, "error", msg)
+	if code != http.StatusOK {
+		if sw, ok := w.(*statusWriter); ok {
+			sw.errMsg = msg
+		}
 	}
 	respondJSON(w, code, map[string]any{
 		"status": false,

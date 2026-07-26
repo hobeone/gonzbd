@@ -327,8 +327,27 @@ func isMultipartUpload(r *http.Request) bool {
 		strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data")
 }
 
-// loggingMiddleware records each request at Info level with method, path,
-// status, and duration.
+// levelForStatus maps an HTTP status code to the log level its request
+// summary line should be emitted at: 5xx is a server-side failure (Error),
+// 4xx is a client-rejected request worth flagging (Warn), everything else
+// is routine (Info).
+func levelForStatus(status int) slog.Level {
+	switch {
+	case status >= http.StatusInternalServerError:
+		return slog.LevelError
+	case status >= http.StatusBadRequest:
+		return slog.LevelWarn
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// loggingMiddleware records exactly one line per request, at a level
+// derived from the final status code, with method, path, status, duration,
+// source IP, and (for non-2xx responses) the error message set via
+// respondError. This is the single point of request logging for the API —
+// respondError does not log separately, to avoid a duplicate line per
+// failed request (one from the handler, one from this middleware).
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
@@ -350,6 +369,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		action := r.URL.Query().Get("name")
 
 		attrs := []any{
+			"remote_ip", remoteIP(r),
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", sw.status,
@@ -364,8 +384,11 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		if r.URL.RawQuery != "" {
 			attrs = append(attrs, "query", sanitizeQuery(r.URL.RawQuery))
 		}
+		if sw.errMsg != "" {
+			attrs = append(attrs, "error", sw.errMsg)
+		}
 		//nolint:gosec // G706: slog structured fields are not vulnerable to log injection
-		s.log.Info("api", attrs...)
+		s.log.Log(r.Context(), levelForStatus(sw.status), "api", attrs...)
 	})
 }
 
@@ -420,9 +443,13 @@ func isSecretParamName(lower string) bool {
 }
 
 // statusWriter wraps ResponseWriter to capture the status code for logging.
+// errMsg is set by respondError so loggingMiddleware can fold the
+// human-readable error into its single per-request log line instead of
+// respondError logging a separate one.
 type statusWriter struct {
 	http.ResponseWriter
 	status      int
+	errMsg      string
 	wroteHeader bool
 }
 
