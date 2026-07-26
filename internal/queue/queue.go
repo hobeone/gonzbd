@@ -130,7 +130,7 @@ func New(opts ...Option) *Queue {
 		promoting:  make(map[string]bool),
 		notifyCh:   make(chan struct{}, 1),
 		log:        slog.Default().With("component", "queue"),
-		removeFile: os.Remove,
+		removeFile: fsutil.Remove,
 		activeSet:  NewActiveSet(4),
 	}
 	for _, o := range opts {

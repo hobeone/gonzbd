@@ -160,7 +160,7 @@ func (f *FinalizeStage) moveFileByFile(ctx context.Context, log *slog.Logger, jo
 	}
 
 	// All files moved successfully — clean up the empty source directory.
-	_ = os.RemoveAll(job.DownloadDir)
+	_ = fsutil.RemoveAll(job.DownloadDir)
 	logf(ctx, log, job, slog.LevelInfo, "Removed empty source directory: %s", job.DownloadDir)
 
 	// Update DownloadDir.
@@ -218,7 +218,7 @@ func moveRecursive(ctx context.Context, src, dst string) error {
 		}
 	}
 
-	return os.Remove(src)
+	return fsutil.Remove(src)
 }
 
 // listNonPar2Files returns the full paths of all regular (non-directory)

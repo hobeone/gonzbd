@@ -3,10 +3,10 @@ package postproc
 import (
 	"context"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sync/atomic"
 
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/par2"
 )
 
@@ -72,7 +72,7 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 	var cleaned int
 	for _, set := range sets {
 		if set.MainFile != "" {
-			if err := os.Remove(set.MainFile); err == nil {
+			if err := fsutil.Remove(set.MainFile); err == nil {
 				line := "Deleted par2 file: " + filepath.Base(set.MainFile)
 				job.OutputLines = append(job.OutputLines, "[par2_cleanup] "+line)
 				if job.OnOutput != nil {
@@ -82,7 +82,7 @@ func (s *Par2CleanupStage) Run(ctx context.Context, job *Job) error {
 			}
 		}
 		for _, ef := range set.ExtraFiles {
-			if err := os.Remove(ef); err == nil {
+			if err := fsutil.Remove(ef); err == nil {
 				line := "Deleted par2 file: " + filepath.Base(ef)
 				job.OutputLines = append(job.OutputLines, "[par2_cleanup] "+line)
 				if job.OnOutput != nil {

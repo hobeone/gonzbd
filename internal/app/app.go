@@ -1012,9 +1012,15 @@ func (app *Application) DirectUnpackStatuses() map[string]directunpack.Status {
 	return app.duOrch.statuses()
 }
 
-func (app *Application) maybeFinalize(jobID, failMsg string) {
+func (app *Application) maybeFinalize(jobID, failMsg string) { //nocover: defensive error logging on state transition
 	started, err := app.queue.SetPostProcStarted(jobID)
 	if err == nil && started {
+		// Close any open assembler file handles for this job so post-processing
+		// operations (Par2 repair, unpack, cleanup) don't trigger NFS silly-rename
+		// (.nfsXXXX) artifacts on open files.
+		if err := app.assembler.CloseJobHandles(context.Background(), jobID); err != nil {
+			app.log.Warn("maybeFinalize: failed to close assembler job handles", "job", jobID, "err", err)
+		}
 		// Force an immediate queue save so the PostProc=true flag survives
 		// a crash. Without this, a crash between job completion and the
 		// next periodic checkpoint (~30s) would lose the flag, causing
