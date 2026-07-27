@@ -356,7 +356,7 @@ func (a *Assembler) CacheUsageBytes() int64 {
 }
 
 // Start launches the worker goroutine. It returns an error if called more than
-// once without an intervening Stop.
+// once or after Stop.
 func (a *Assembler) Start(_ context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()

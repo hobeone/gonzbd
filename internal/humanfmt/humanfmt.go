@@ -10,8 +10,8 @@ import (
 // Bytes formats a byte count using binary (power-of-1024) divisors with
 // SABnzbd-compatible suffixes: "B", "KB", "MB", "GB", "TB".
 //
-//	FormatBytes(1536)        → "1.50 KB"
-//	FormatBytes(1073741824)  → "1.00 GB"
+//	Bytes(1536)        → "1.50 KB"
+//	Bytes(1073741824)  → "1.00 GB"
 func Bytes(n int64) string {
 	switch {
 	case n >= 1<<40:

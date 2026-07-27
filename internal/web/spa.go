@@ -11,9 +11,10 @@ import (
 // The dist parameter should be rooted at the build output directory
 // (index.html at the root, hashed assets under _app/).
 //
-// Static files that exist in the FS are served directly. Any path that
-// does not match a real file is served as index.html so that the SPA's
-// client-side router can handle it.
+// Static files that exist in the FS are served directly. Any path without
+// a file extension that does not match a real file is served as index.html
+// so that the SPA's client-side router can handle it. Paths with extensions
+// return 404.
 //
 // When the root "/" is requested, it sets a
 // "gonzbd_apikey" cookie so the client-side JS can hit the /api without

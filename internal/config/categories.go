@@ -12,7 +12,7 @@ import (
 // It exists so that broken or partial configs never silently disable
 // post-processing: returning a zero CategoryConfig{} would set PP=0
 // (download only) and skip Repair/Unpack/Delete, which is almost never
-// what the user intends. PP=3 (Repair + Unpack) matches the value
+// what the user intends. PP=3 (+ Delete sources) matches the value
 // seeded by Default() when a brand-new config is created.
 //
 // Treat the return as immutable; callers must not mutate the returned
@@ -21,7 +21,7 @@ import (
 func BuiltinDefaultCategory() CategoryConfig {
 	return CategoryConfig{
 		Name:     "Default",
-		PP:       3, // Repair + Unpack
+		PP:       3, // + Delete sources
 		Script:   "None",
 		Priority: int(constants.NormalPriority),
 	}

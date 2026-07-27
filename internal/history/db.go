@@ -101,7 +101,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 }
 
 // Close releases the underlying database connection pool. It is safe to call
-// Close more than once; subsequent calls return the same error as the first.
+// Close more than once; subsequent calls return nil.
 func (d *DB) Close() error {
 	if d == nil || d.db == nil {
 		return nil

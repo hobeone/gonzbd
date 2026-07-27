@@ -75,8 +75,7 @@ func (p Priority) IsValid() bool {
 }
 
 // String returns a human-readable label for the priority. Unknown numeric
-// priorities (including the sentinel DefaultPriority that should have been
-// resolved) return their decimal representation prefixed with "Priority(".
+// priorities return their decimal representation prefixed with "Priority(".
 func (p Priority) String() string {
 	switch p {
 	case RepairPriority:

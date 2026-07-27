@@ -469,7 +469,7 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	return nil
 }
 
-// RemoveJob cancels and removes a job from the queue, deleting its download directory.
+// RemoveJob cancels and removes a job from the queue, optionally deleting its download directory.
 func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
 	snap := app.queue.SnapshotJob(id)
 	if snap == nil {

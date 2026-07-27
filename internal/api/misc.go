@@ -84,11 +84,10 @@ func (s *Server) configuredRoots() []string {
 // A lexical prefix match alone cannot detect a symlink under a configured
 // root pointing outside it (e.g. download_dir/escape -> /etc), so once the
 // lexical check passes, this also resolves symlinks on both cleaned and
-// the roots and re-checks containment on the resolved paths. If cleaned
-// (or its immediate parent) doesn't exist yet, symlink resolution is
-// skipped and the lexical match stands: there is nothing on disk yet for a
-// symlink to redirect through, and the caller's subsequent read/open
-// produces its own accurate not-found error.
+// the roots and re-checks containment on the resolved paths. If parts of
+// cleaned do not exist yet, it resolves symlinks for its deepest existing
+// ancestor and rejoins the nonexistent suffix verbatim — since a nonexistent
+// component cannot redirect via symlink, this is sufficient to verify containment.
 func (s *Server) pathWithinConfiguredRoots(cleaned string) bool {
 	roots := s.configuredRoots()
 	if !withinAnyRoot(cleaned, roots) {
