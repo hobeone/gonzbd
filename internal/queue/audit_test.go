@@ -232,11 +232,15 @@ func TestCheckEarlyAbort(t *testing.T) {
 		t.Parallel()
 		q := New()
 		j := makeAbortJob(t, "ea-low", 20)
-		_ = q.Add(j)
+		if err := q.Add(j); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
 		// Fail only 5 articles (below the 10-article sample threshold).
 		for i := range 5 {
 			msgID := j.Manifest().ArticleID(i)
-			_, _ = q.MarkArticleFailed(j.ID, msgID)
+			if _, err := q.MarkArticleFailed(j.ID, msgID); err != nil {
+				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
+			}
 		}
 		if q.CheckEarlyAbort(j.ID) {
 			t.Error("should return false when fewer than earlyAbortSample articles resolved")
@@ -247,14 +251,20 @@ func TestCheckEarlyAbort(t *testing.T) {
 		t.Parallel()
 		q := New()
 		j := makeAbortJob(t, "ea-trigger", 20)
-		_ = q.Add(j)
+		if err := q.Add(j); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
 		// Fail 9 out of 10 articles → 90% failure rate (above 80% threshold).
 		for i := range 9 {
 			msgID := j.Manifest().ArticleID(i)
-			_, _ = q.MarkArticleFailed(j.ID, msgID)
+			if _, err := q.MarkArticleFailed(j.ID, msgID); err != nil {
+				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
+			}
 		}
 		// Succeed 1 article to reach 10 resolved.
-		_ = q.MarkArticleDone(j.ID, j.Manifest().ArticleID(9))
+		if err := q.MarkArticleDone(j.ID, j.Manifest().ArticleID(9)); err != nil {
+			t.Fatalf("MarkArticleDone: %v", err)
+		}
 
 		if !q.CheckEarlyAbort(j.ID) {
 			t.Error("should return true when failure rate exceeds threshold")
@@ -265,11 +275,15 @@ func TestCheckEarlyAbort(t *testing.T) {
 		t.Parallel()
 		q := New()
 		j := makeAbortJob(t, "ea-once", 20)
-		_ = q.Add(j)
+		if err := q.Add(j); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
 		// Fail 10 out of 10 articles → 100% failure rate.
 		for i := range 10 {
 			msgID := j.Manifest().ArticleID(i)
-			_, _ = q.MarkArticleFailed(j.ID, msgID)
+			if _, err := q.MarkArticleFailed(j.ID, msgID); err != nil {
+				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
+			}
 		}
 
 		first := q.CheckEarlyAbort(j.ID)
@@ -286,15 +300,21 @@ func TestCheckEarlyAbort(t *testing.T) {
 		t.Parallel()
 		q := New()
 		j := makeAbortJob(t, "ea-below", 20)
-		_ = q.Add(j)
+		if err := q.Add(j); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
 		// Fail 7 out of 10 → 70% (below 80% threshold).
 		for i := range 7 {
 			msgID := j.Manifest().ArticleID(i)
-			_, _ = q.MarkArticleFailed(j.ID, msgID)
+			if _, err := q.MarkArticleFailed(j.ID, msgID); err != nil {
+				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
+			}
 		}
 		// Succeed 3 articles.
 		for i := 7; i < 10; i++ {
-			_ = q.MarkArticleDone(j.ID, j.Manifest().ArticleID(i))
+			if err := q.MarkArticleDone(j.ID, j.Manifest().ArticleID(i)); err != nil {
+				t.Fatalf("MarkArticleDone(%d): %v", i, err)
+			}
 		}
 
 		if q.CheckEarlyAbort(j.ID) {

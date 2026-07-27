@@ -1596,16 +1596,26 @@ func TestUnpackStage_CleanupArchives(t *testing.T) {
 }
 
 func TestCleanupContainmentViolation(t *testing.T) {
-	dir := t.TempDir()
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "inside")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	validFile := filepath.Join(dir, "valid.txt")
 	if err := os.WriteFile(validFile, []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	outsideFile := filepath.Join(filepath.Dir(dir), "outside.txt")
+	outsideFile := filepath.Join(parent, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("preserve"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	cleanupContainmentViolation(dir, []string{"valid.txt", outsideFile}, slog.Default())
 
 	if _, err := os.Stat(validFile); !os.IsNotExist(err) {
 		t.Errorf("expected valid.txt to be deleted")
+	}
+	if _, err := os.Stat(outsideFile); err != nil {
+		t.Errorf("expected outsideFile to be preserved, got err: %v", err)
 	}
 }
