@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/directunpack"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/humanfmt"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -933,27 +933,17 @@ func (s *Server) enqueueNZBData(w http.ResponseWriter, r *http.Request, data []b
 		return
 	}
 
-	opts := queue.AddOptions{
-		Filename: filename,
-		Name:     formValue(r, "nzbname"),                     //nolint:gosec // body size bounded by MaxBytesReader middleware
+	opts := types.FetchOptions{
+		NzbName:  formValue(r, "nzbname"),                     //nolint:gosec // body size bounded by MaxBytesReader middleware
 		Category: formValue(r, "cat"),                         //nolint:gosec // body size bounded by MaxBytesReader middleware
 		Script:   sanitizeScriptParam(formValue(r, "script")), //nolint:gosec // body size bounded by MaxBytesReader middleware
 		Password: formValue(r, "password"),                    //nolint:gosec // body size bounded by MaxBytesReader middleware
 		PP:       ppParam(r),
 		Priority: priorityParam(r),
-		Logger:   s.log,
 	}
-	sOpts := fsutil.SanitizeOptions{}
-	if s.config != nil {
-		s.config.WithRead(func(cfg *config.Config) {
-			sOpts = cfg.Downloads.SanitizeOptions()
-			opts.Categories = cfg.Categories
-			opts.OnDemandPar2 = cfg.Downloads.OnDemandPar2
-		})
-	}
-	job, err := queue.NewJob(parsed, opts, sOpts)
+	job, err := app.BuildIngestJob(s.config, parsed, filename, opts, s.log)
 	if err != nil {
-		s.respondError(w, http.StatusInternalServerError, "create job: "+err.Error())
+		s.respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err := s.jobs.AddJob(r.Context(), job, data, false); err != nil {
