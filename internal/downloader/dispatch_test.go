@@ -1414,6 +1414,50 @@ func TestFetchArticle_FetchFailureCountsConnError(t *testing.T) {
 	}
 }
 
+// TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry pins the
+// ctx.Err()==nil && fetchCtx.Err()==nil gate around the fetch-failure
+// classify call: a connection-level failure observed while ctx is already
+// cancelled (shutdown/pause) must NOT be counted, or every shutdown would
+// flood PipelineErrors with network_error/conn_closed noise. Passes a
+// pre-cancelled ctx (distinct from the live pauseCtx used for the actual
+// dial/fetch I/O) so the hangup still occurs and reaches the fetch-failure
+// branch, exercising the gate rather than an earlier unrelated early-return.
+func TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry(t *testing.T) {
+	telemetry.Reset()
+
+	ms := newMockNNTP(t)
+	ms.addArticle("hangup@h", "body")
+	ms.hangupOnFetch("hangup@h")
+
+	q := queue.New()
+	srv := testServer(t, "s", ms.addr)
+	d := &Downloader{
+		queue:   q,
+		tracker: newDispatchTracker(),
+		log:     slog.New(slog.DiscardHandler),
+		opts:    Options{NoPenalties: true},
+		limiter: bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate shutdown/pause via the caller-supplied ctx
+
+	req := &articleRequest{jobID: "job1", messageID: "hangup@h"}
+	mc := &managedConn{}
+	defer mc.Close(d, "worker1")
+	if body, ok := d.fetchArticle(cancelledCtx, srv, 0, mc, req, "worker1"); ok || body != nil {
+		t.Fatalf("expected fetchArticle to report a connection-level failure, got ok=%v body=%v", ok, body)
+	}
+
+	for _, class := range []string{"other_connection_error", "network_error", "conn_closed", "timeout"} {
+		if got := pipelineErrorCount(class); got != 0 {
+			t.Errorf("PipelineErrors[%s] = %d, want 0 during shutdown/pause", class, got)
+		}
+	}
+}
+
 // Verify that when multiple concurrent fetch requests share a single managedConn
 // and a connection hangup/teardown occurs, BadConnections metric is incremented
 // exactly once (by the first notifier) and all in-flight article requests are

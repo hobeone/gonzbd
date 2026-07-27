@@ -52,9 +52,13 @@ func PenaltyFor(err error) time.Duration {
 
 // classifyConnError maps a connection-level failure (a dial error, or a
 // Fetch/Stat error other than the 430/ErrNoArticle case already handled
-// elsewhere) to a telemetry.PipelineErrors class label. Mirrors PenaltyFor's
-// sentinel set so the same error is classified consistently for both
-// penalty and diagnostic purposes.
+// elsewhere) to a telemetry.PipelineErrors class label. Its sentinel set
+// overlaps heavily with PenaltyFor's — both classify the same underlying
+// errors — but is not identical: PenaltyFor exists to pick a penalty
+// duration, this exists to name a diagnostic cause, and the two sets can
+// diverge (e.g. ErrInvalidMessageID/ErrInvalidCredential are local
+// input/config defects with no penalty-worthy server behavior, but are
+// still worth naming here).
 func classifyConnError(err error) string {
 	switch {
 	case errors.Is(err, nntp.ErrAuthRejected):
@@ -69,15 +73,22 @@ func classifyConnError(err error) string {
 		return "conn_closed"
 	case errors.Is(err, nntp.ErrInvalidState):
 		return "nntp_invalid_state"
+	case errors.Is(err, nntp.ErrInvalidMessageID):
+		return "invalid_message_id"
+	case errors.Is(err, nntp.ErrInvalidCredential):
+		return "invalid_credential"
 	}
-	if _, ok := errors.AsType[*net.OpError](err); ok {
-		return "network_error"
-	}
+	// Check Timeout() before *net.OpError: net.OpError itself implements
+	// Timeout() bool, so checking OpError first would swallow every real
+	// network timeout into "network_error" and leave "timeout" dead code.
 	if timeoutErr, ok := errors.AsType[interface {
 		error
 		Timeout() bool
 	}](err); ok && timeoutErr.Timeout() {
 		return "timeout"
+	}
+	if _, ok := errors.AsType[*net.OpError](err); ok {
+		return "network_error"
 	}
 	return "other_connection_error"
 }

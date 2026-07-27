@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -309,10 +310,14 @@ func TestClassifyConnError(t *testing.T) {
 		{"ErrAuthRequired", nntp.ErrAuthRequired, "nntp_auth_required"},
 		{"ErrClosed", nntp.ErrClosed, "conn_closed"},
 		{"ErrInvalidState", nntp.ErrInvalidState, "nntp_invalid_state"},
+		{"ErrInvalidMessageID", nntp.ErrInvalidMessageID, "invalid_message_id"},
+		{"ErrInvalidCredential", nntp.ErrInvalidCredential, "invalid_credential"},
 		{"wrapped ErrAuthRejected", &wrappedErr{msg: "outer", inner: nntp.ErrAuthRejected}, "nntp_auth_rejected"},
-		{"net.OpError dial", &net.OpError{Op: "dial", Net: "tcp",
+		{"net.OpError non-timeout (connection refused)", &net.OpError{Op: "dial", Net: "tcp",
 			Err: &net.AddrError{Err: "connection refused", Addr: "localhost:119"}}, "network_error"},
-		{"timeout interface", &classifyConnErrTimeoutErr{}, "timeout"},
+		{"net.OpError wrapping a real timeout", &net.OpError{Op: "dial", Net: "tcp",
+			Err: os.ErrDeadlineExceeded}, "timeout"},
+		{"bare Timeout() interface, not net.OpError", &classifyConnErrTimeoutErr{}, "timeout"},
 		{"unknown error", errors.New("some random error"), "other_connection_error"},
 	}
 
