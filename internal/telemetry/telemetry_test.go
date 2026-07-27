@@ -8,7 +8,7 @@ func TestReset(t *testing.T) {
 	DiskWrites.Add(100)
 	CacheHits.Add(50)
 	FilesCompleted.Add(3)
-	PipelineErrors.Add("nntp_no_article", 7)
+	PipelineErrors.Add(ErrClassNNTPNoArticle, 7)
 
 	Reset()
 
@@ -27,7 +27,7 @@ func TestReset(t *testing.T) {
 	if v := FilesCompleted.Value(); v != 0 {
 		t.Errorf("FilesCompleted = %d after Reset, want 0", v)
 	}
-	if v := PipelineErrors.Get("nntp_no_article"); v != nil {
+	if v := PipelineErrors.Get(ErrClassNNTPNoArticle); v != nil {
 		t.Errorf("PipelineErrors[nntp_no_article] = %v after Reset, want key absent", v)
 	}
 }

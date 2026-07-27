@@ -41,6 +41,48 @@ var (
 	PipelineErrors = expvar.NewMap("pipeline_errors_by_class")
 )
 
+// PipelineErrors class labels — the closed set of values classifiers in
+// internal/downloader and internal/assembler pass to PipelineErrors.Add.
+// Defined here (rather than as literals at each call site) so production
+// code and test assertions can't drift apart via a typo in either side.
+const (
+	ErrClassNNTPNoArticle         = "nntp_no_article"
+	ErrClassNNTPAuthRejected      = "nntp_auth_rejected"
+	ErrClassNNTPServerUnavailable = "nntp_server_unavailable"
+	ErrClassNNTPTransient         = "nntp_transient"
+	ErrClassNNTPAuthRequired      = "nntp_auth_required"
+	ErrClassConnClosed            = "conn_closed"
+	ErrClassNNTPInvalidState      = "nntp_invalid_state"
+	ErrClassInvalidMessageID      = "invalid_message_id"
+	ErrClassInvalidCredential     = "invalid_credential" //nolint:gosec // diagnostic label, not a secret
+	ErrClassNetworkError          = "network_error"
+	ErrClassTimeout               = "timeout"
+	ErrClassOtherConnectionError  = "other_connection_error"
+	ErrClassCRCMismatch           = "crc_mismatch"
+	ErrClassDMCARemoved           = "dmca_removed"
+	ErrClassDecodeBodyTooLarge    = "decode_body_too_large"
+	ErrClassDecodeFailed          = "decode_failed"
+	ErrClassExhaustedAllServers   = "exhausted_all_servers"
+	ErrClassDiskWriteError        = "disk_write_error"
+)
+
+// ErrorCount reads a single class's count from PipelineErrors, returning 0
+// for an absent key. Intended for tests asserting on PipelineErrors state.
+// Callers must not run in a t.Parallel() subtest — PipelineErrors is
+// process-global state and concurrent subtests could race on the same
+// class.
+func ErrorCount(class string) int64 {
+	v := PipelineErrors.Get(class)
+	if v == nil {
+		return 0
+	}
+	iv, ok := v.(*expvar.Int)
+	if !ok {
+		return 0
+	}
+	return iv.Value()
+}
+
 // Assembler counters — incremented by the assembler worker goroutine.
 var (
 	// DiskWrites counts individual WriteAt syscalls to target files.

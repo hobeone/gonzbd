@@ -3,7 +3,6 @@ package downloader
 import (
 	"context"
 	"errors"
-	"expvar"
 	"fmt"
 	"log/slog"
 	"net"
@@ -21,22 +20,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/telemetry"
 )
-
-// pipelineErrorCount reads a single class's count from
-// telemetry.PipelineErrors, returning 0 for an absent key. Tests using this
-// must not call t.Parallel() — PipelineErrors is process-global state and
-// concurrent subtests could race on the same class.
-func pipelineErrorCount(class string) int64 {
-	v := telemetry.PipelineErrors.Get(class)
-	if v == nil {
-		return 0
-	}
-	iv, ok := v.(*expvar.Int)
-	if !ok {
-		return 0
-	}
-	return iv.Value()
-}
 
 // newDispatchDownloader builds a minimal Downloader suitable for white-box
 // tryDispatch / buildDispatchPlan tests. No goroutines are started; workCh
@@ -656,6 +639,7 @@ func BenchmarkDownloader_Dispatch(b *testing.B) {
 
 func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
 
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
@@ -701,7 +685,7 @@ func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 		t.Error("expected tryList to be cleared for the exhausted article")
 	}
 
-	if got := pipelineErrorCount("exhausted_all_servers"); got != 1 {
+	if got := telemetry.ErrorCount(telemetry.ErrClassExhaustedAllServers); got != 1 {
 		t.Errorf("PipelineErrors[exhausted_all_servers] = %d, want 1", got)
 	}
 
@@ -858,6 +842,7 @@ func TestDownloader_DecodePayload_Coverage(t *testing.T) {
 
 func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
 	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
 
 	q := queue.New()
 	d := &Downloader{
@@ -887,7 +872,7 @@ func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
 	default:
 		t.Error("expected result emitted, got none")
 	}
-	if got := pipelineErrorCount("decode_failed"); got != 1 {
+	if got := telemetry.ErrorCount(telemetry.ErrClassDecodeFailed); got != 1 {
 		t.Errorf("PipelineErrors[decode_failed] = %d, want 1", got)
 	}
 
@@ -902,7 +887,7 @@ func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
 	default:
 		t.Error("expected result emitted for CRC mismatch, got none")
 	}
-	if got := pipelineErrorCount("crc_mismatch"); got != 1 {
+	if got := telemetry.ErrorCount(telemetry.ErrClassCRCMismatch); got != 1 {
 		t.Errorf("PipelineErrors[crc_mismatch] = %d, want 1", got)
 	}
 }
@@ -920,10 +905,10 @@ func TestClassifyDecodeError(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"ErrArticleRemoved", ErrArticleRemoved, "dmca_removed"},
-		{"ErrBodyTooLarge", decoder.ErrBodyTooLarge, "decode_body_too_large"},
-		{"joined yenc/uu failure", fmt.Errorf("yenc: %w; uu fallback: %w", decoder.ErrNotYEnc, errors.New("uu malformed")), "decode_failed"},
-		{"unknown error", errors.New("some random error"), "decode_failed"},
+		{"ErrArticleRemoved", ErrArticleRemoved, telemetry.ErrClassDMCARemoved},
+		{"ErrBodyTooLarge", decoder.ErrBodyTooLarge, telemetry.ErrClassDecodeBodyTooLarge},
+		{"joined yenc/uu failure", fmt.Errorf("yenc: %w; uu fallback: %w", decoder.ErrNotYEnc, errors.New("uu malformed")), telemetry.ErrClassDecodeFailed},
+		{"unknown error", errors.New("some random error"), telemetry.ErrClassDecodeFailed},
 	}
 
 	for _, tc := range tests {
@@ -1229,6 +1214,7 @@ func TestFetchArticle_PreCheckSkipsFetchOnMissingArticle(t *testing.T) {
 // process-global state that a concurrent parallel subtest could race on.
 func TestFetchArticle_PreCheckCountsNNTPNoArticle(t *testing.T) {
 	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
 
 	ms := newMockNNTP(t)
 
@@ -1252,7 +1238,7 @@ func TestFetchArticle_PreCheckCountsNNTPNoArticle(t *testing.T) {
 		t.Fatalf("expected fetchArticle to report not-found, got ok=%v body=%v", ok, body)
 	}
 
-	if got := pipelineErrorCount("nntp_no_article"); got != 1 {
+	if got := telemetry.ErrorCount(telemetry.ErrClassNNTPNoArticle); got != 1 {
 		t.Errorf("PipelineErrors[nntp_no_article] = %d, want 1", got)
 	}
 }
@@ -1263,6 +1249,7 @@ func TestFetchArticle_PreCheckCountsNNTPNoArticle(t *testing.T) {
 // STAT-based precheck path. Non-parallel: PipelineErrors is process-global.
 func TestFetchArticle_FetchCountsNNTPNoArticle(t *testing.T) {
 	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
 
 	ms := newMockNNTP(t) // "missing@h" is never added, so BODY returns 430
 
@@ -1285,7 +1272,7 @@ func TestFetchArticle_FetchCountsNNTPNoArticle(t *testing.T) {
 		t.Fatalf("expected fetchArticle to report not-found, got ok=%v body=%v", ok, body)
 	}
 
-	if got := pipelineErrorCount("nntp_no_article"); got != 1 {
+	if got := telemetry.ErrorCount(telemetry.ErrClassNNTPNoArticle); got != 1 {
 		t.Errorf("PipelineErrors[nntp_no_article] = %d, want 1", got)
 	}
 }
@@ -1296,6 +1283,7 @@ func TestFetchArticle_FetchCountsNNTPNoArticle(t *testing.T) {
 // process-global state.
 func TestFetchArticle_DialFailureCountsConnError(t *testing.T) {
 	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
 
 	// A closed listener: every dial attempt fails immediately with a
 	// generic connection-refused *net.OpError.
@@ -1323,7 +1311,7 @@ func TestFetchArticle_DialFailureCountsConnError(t *testing.T) {
 		t.Fatalf("expected fetchArticle to fail against a closed listener")
 	}
 
-	if got := pipelineErrorCount("network_error"); got != 1 {
+	if got := telemetry.ErrorCount(telemetry.ErrClassNetworkError); got != 1 {
 		t.Errorf("PipelineErrors[network_error] = %d, want 1", got)
 	}
 }
@@ -1382,6 +1370,7 @@ func TestFetchArticle_FetchFailureAppliesClampedPenalty(t *testing.T) {
 // process-global-state reason as TestFetchArticle_PreCheckCountsNNTPNoArticle.
 func TestFetchArticle_FetchFailureCountsConnError(t *testing.T) {
 	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
 
 	ms := newMockNNTP(t)
 	ms.addArticle("hangup@h", "body")
@@ -1409,7 +1398,7 @@ func TestFetchArticle_FetchFailureCountsConnError(t *testing.T) {
 	// The mid-stream disconnect surfaces as a generic read failure — not a
 	// *net.OpError or a recognized nntp sentinel — so it lands in the
 	// classifier's catch-all bucket rather than a more specific class.
-	if got := pipelineErrorCount("other_connection_error"); got != 1 {
+	if got := telemetry.ErrorCount(telemetry.ErrClassOtherConnectionError); got != 1 {
 		t.Errorf("PipelineErrors[other_connection_error] = %d, want 1", got)
 	}
 }
@@ -1424,6 +1413,7 @@ func TestFetchArticle_FetchFailureCountsConnError(t *testing.T) {
 // branch, exercising the gate rather than an earlier unrelated early-return.
 func TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry(t *testing.T) {
 	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
 
 	ms := newMockNNTP(t)
 	ms.addArticle("hangup@h", "body")
@@ -1451,8 +1441,13 @@ func TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry(t *testing.T
 		t.Fatalf("expected fetchArticle to report a connection-level failure, got ok=%v body=%v", ok, body)
 	}
 
-	for _, class := range []string{"other_connection_error", "network_error", "conn_closed", "timeout"} {
-		if got := pipelineErrorCount(class); got != 0 {
+	for _, class := range []string{
+		telemetry.ErrClassOtherConnectionError,
+		telemetry.ErrClassNetworkError,
+		telemetry.ErrClassConnClosed,
+		telemetry.ErrClassTimeout,
+	} {
+		if got := telemetry.ErrorCount(class); got != 0 {
 			t.Errorf("PipelineErrors[%s] = %d, want 0 during shutdown/pause", class, got)
 		}
 	}
@@ -1545,6 +1540,7 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 // at 2 here — one per concurrently in-flight article — not deduped to 1.
 func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testing.T) {
 	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
 
 	ms := newMockNNTP(t)
 	ms.addArticle("hangup1@h", "body1")
@@ -1582,7 +1578,7 @@ func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testi
 	}()
 	wg.Wait()
 
-	if got := pipelineErrorCount("other_connection_error"); got != 2 {
+	if got := telemetry.ErrorCount(telemetry.ErrClassOtherConnectionError); got != 2 {
 		t.Errorf("PipelineErrors[other_connection_error] = %d, want 2 (once per affected article, not deduped like BadConnections)", got)
 	}
 }

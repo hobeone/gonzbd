@@ -7,6 +7,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/nntp"
+	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
 // PenaltyFor maps an error returned by an NNTP operation to the
@@ -62,21 +63,21 @@ func PenaltyFor(err error) time.Duration {
 func classifyConnError(err error) string {
 	switch {
 	case errors.Is(err, nntp.ErrAuthRejected):
-		return "nntp_auth_rejected"
+		return telemetry.ErrClassNNTPAuthRejected
 	case errors.Is(err, nntp.ErrServerUnavailable):
-		return "nntp_server_unavailable"
+		return telemetry.ErrClassNNTPServerUnavailable
 	case errors.Is(err, nntp.ErrTransient):
-		return "nntp_transient"
+		return telemetry.ErrClassNNTPTransient
 	case errors.Is(err, nntp.ErrAuthRequired):
-		return "nntp_auth_required"
+		return telemetry.ErrClassNNTPAuthRequired
 	case errors.Is(err, nntp.ErrClosed):
-		return "conn_closed"
+		return telemetry.ErrClassConnClosed
 	case errors.Is(err, nntp.ErrInvalidState):
-		return "nntp_invalid_state"
+		return telemetry.ErrClassNNTPInvalidState
 	case errors.Is(err, nntp.ErrInvalidMessageID):
-		return "invalid_message_id"
+		return telemetry.ErrClassInvalidMessageID
 	case errors.Is(err, nntp.ErrInvalidCredential):
-		return "invalid_credential"
+		return telemetry.ErrClassInvalidCredential
 	}
 	// Check Timeout() before *net.OpError: net.OpError itself implements
 	// Timeout() bool, so checking OpError first would swallow every real
@@ -85,12 +86,12 @@ func classifyConnError(err error) string {
 		error
 		Timeout() bool
 	}](err); ok && timeoutErr.Timeout() {
-		return "timeout"
+		return telemetry.ErrClassTimeout
 	}
 	if _, ok := errors.AsType[*net.OpError](err); ok {
-		return "network_error"
+		return telemetry.ErrClassNetworkError
 	}
-	return "other_connection_error"
+	return telemetry.ErrClassOtherConnectionError
 }
 
 // shouldDeactivateOptional returns true when server s is an optional

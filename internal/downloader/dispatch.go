@@ -136,7 +136,7 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 		}
 		d.clearTried(req.jobID, req.messageID)
-		telemetry.PipelineErrors.Add("exhausted_all_servers", 1)
+		telemetry.PipelineErrors.Add(telemetry.ErrClassExhaustedAllServers, 1)
 		d.emitResult(ctx, req, "", nil, 0, 0, ErrNoServersLeft)
 	}
 
@@ -594,7 +594,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			if errors.Is(statErr, nntp.ErrNoArticle) {
 				d.log.Debug("article not found (precheck)", "server", name, "msgid", req.messageID)
 				srv.RecordGoodConnection()
-				telemetry.PipelineErrors.Add("nntp_no_article", 1)
+				telemetry.PipelineErrors.Add(telemetry.ErrClassNNTPNoArticle, 1)
 				d.emitResult(ctx, req, name, nil, 0, 0, statErr)
 				return nil, false
 			}
@@ -614,7 +614,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			// retained so we won't retry here; connection is
 			// healthy — reuse it.
 			srv.RecordGoodConnection()
-			telemetry.PipelineErrors.Add("nntp_no_article", 1)
+			telemetry.PipelineErrors.Add(telemetry.ErrClassNNTPNoArticle, 1)
 			d.emitResult(ctx, req, name, nil, 0, 0, err)
 			return nil, false
 		}
@@ -669,7 +669,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 			d.log.Warn("CRC mismatch, will try alternate server",
 				"server", name, "msgid", req.messageID)
 			srv.RecordGoodConnection()
-			telemetry.PipelineErrors.Add("crc_mismatch", 1)
+			telemetry.PipelineErrors.Add(telemetry.ErrClassCRCMismatch, 1)
 			d.emitResult(ctx, req, name, nil, 0, 0, err)
 			return
 		}
@@ -829,11 +829,11 @@ func (m *managedConn) DropIfMatches(c *nntp.Conn, d *Downloader, workerID string
 func classifyDecodeError(err error) string {
 	switch {
 	case errors.Is(err, ErrArticleRemoved):
-		return "dmca_removed"
+		return telemetry.ErrClassDMCARemoved
 	case errors.Is(err, decoder.ErrBodyTooLarge):
-		return "decode_body_too_large"
+		return telemetry.ErrClassDecodeBodyTooLarge
 	default:
-		return "decode_failed"
+		return telemetry.ErrClassDecodeFailed
 	}
 }
 

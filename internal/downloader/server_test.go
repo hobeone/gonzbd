@@ -12,6 +12,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/nntp"
+	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
 // newTestServer is a helper that builds a Server with sensible test
@@ -304,21 +305,21 @@ func TestClassifyConnError(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"ErrAuthRejected", nntp.ErrAuthRejected, "nntp_auth_rejected"},
-		{"ErrServerUnavailable", nntp.ErrServerUnavailable, "nntp_server_unavailable"},
-		{"ErrTransient", nntp.ErrTransient, "nntp_transient"},
-		{"ErrAuthRequired", nntp.ErrAuthRequired, "nntp_auth_required"},
-		{"ErrClosed", nntp.ErrClosed, "conn_closed"},
-		{"ErrInvalidState", nntp.ErrInvalidState, "nntp_invalid_state"},
-		{"ErrInvalidMessageID", nntp.ErrInvalidMessageID, "invalid_message_id"},
-		{"ErrInvalidCredential", nntp.ErrInvalidCredential, "invalid_credential"},
-		{"wrapped ErrAuthRejected", &wrappedErr{msg: "outer", inner: nntp.ErrAuthRejected}, "nntp_auth_rejected"},
+		{"ErrAuthRejected", nntp.ErrAuthRejected, telemetry.ErrClassNNTPAuthRejected},
+		{"ErrServerUnavailable", nntp.ErrServerUnavailable, telemetry.ErrClassNNTPServerUnavailable},
+		{"ErrTransient", nntp.ErrTransient, telemetry.ErrClassNNTPTransient},
+		{"ErrAuthRequired", nntp.ErrAuthRequired, telemetry.ErrClassNNTPAuthRequired},
+		{"ErrClosed", nntp.ErrClosed, telemetry.ErrClassConnClosed},
+		{"ErrInvalidState", nntp.ErrInvalidState, telemetry.ErrClassNNTPInvalidState},
+		{"ErrInvalidMessageID", nntp.ErrInvalidMessageID, telemetry.ErrClassInvalidMessageID},
+		{"ErrInvalidCredential", nntp.ErrInvalidCredential, telemetry.ErrClassInvalidCredential},
+		{"wrapped ErrAuthRejected", &wrappedErr{msg: "outer", inner: nntp.ErrAuthRejected}, telemetry.ErrClassNNTPAuthRejected},
 		{"net.OpError non-timeout (connection refused)", &net.OpError{Op: "dial", Net: "tcp",
-			Err: &net.AddrError{Err: "connection refused", Addr: "localhost:119"}}, "network_error"},
+			Err: &net.AddrError{Err: "connection refused", Addr: "localhost:119"}}, telemetry.ErrClassNetworkError},
 		{"net.OpError wrapping a real timeout", &net.OpError{Op: "dial", Net: "tcp",
-			Err: os.ErrDeadlineExceeded}, "timeout"},
-		{"bare Timeout() interface, not net.OpError", &classifyConnErrTimeoutErr{}, "timeout"},
-		{"unknown error", errors.New("some random error"), "other_connection_error"},
+			Err: os.ErrDeadlineExceeded}, telemetry.ErrClassTimeout},
+		{"bare Timeout() interface, not net.OpError", &classifyConnErrTimeoutErr{}, telemetry.ErrClassTimeout},
+		{"unknown error", errors.New("some random error"), telemetry.ErrClassOtherConnectionError},
 	}
 
 	for _, tc := range tests {

@@ -3,7 +3,6 @@ package assembler
 import (
 	"context"
 	"errors"
-	"expvar"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,22 +18,6 @@ import (
 	"github.com/hobeone/gonzbd/internal/telemetry"
 	"github.com/hobeone/gonzbd/internal/testutil"
 )
-
-// pipelineErrorCount reads a single class's count from
-// telemetry.PipelineErrors, returning 0 for an absent key. Tests using this
-// must not call t.Parallel() — PipelineErrors is process-global state and
-// concurrent subtests could race on the same class.
-func pipelineErrorCount(class string) int64 {
-	v := telemetry.PipelineErrors.Get(class)
-	if v == nil {
-		return 0
-	}
-	iv, ok := v.(*expvar.Int)
-	if !ok {
-		return 0
-	}
-	return iv.Value()
-}
 
 // waitUntil polls cond every 5ms until it returns true or the deadline passes.
 func waitUntil(t *testing.T, cond func() bool, deadline time.Duration, msg string) {
@@ -1654,6 +1637,7 @@ var (
 
 func TestAssembler_FlushRunError(t *testing.T) {
 	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
 
 	tmpFile, err := os.CreateTemp("", "assembler-flush-run-err")
 	if err != nil {
@@ -1684,7 +1668,7 @@ func TestAssembler_FlushRunError(t *testing.T) {
 	if success {
 		t.Errorf("flushRun on closed file: got true, want false")
 	}
-	if got := pipelineErrorCount("disk_write_error"); got != 1 {
+	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
 		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
 	}
 }
@@ -1695,6 +1679,7 @@ func TestAssembler_FlushRunError(t *testing.T) {
 // PipelineErrors is process-global state.
 func TestAssembler_WriteArticleOrBufferDiskErrorCountsPipelineError(t *testing.T) {
 	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
 
 	tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_write_or_buffer_err_")
 	if err != nil {
@@ -1712,7 +1697,7 @@ func TestAssembler_WriteArticleOrBufferDiskErrorCountsPipelineError(t *testing.T
 	if got := a.writeArticleOrBuffer(f, key, req, wc, open); got {
 		t.Error("writeArticleOrBuffer on closed file: got true, want false")
 	}
-	if got := pipelineErrorCount("disk_write_error"); got != 1 {
+	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
 		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
 	}
 }
@@ -1723,6 +1708,7 @@ func TestAssembler_WriteArticleOrBufferDiskErrorCountsPipelineError(t *testing.T
 // PipelineErrors is process-global state.
 func TestAssembler_WriteCachedArticlesDiskErrorCountsPipelineError(t *testing.T) {
 	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
 
 	tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_write_cached_err_")
 	if err != nil {
@@ -1736,7 +1722,7 @@ func TestAssembler_WriteCachedArticlesDiskErrorCountsPipelineError(t *testing.T)
 
 	a.writeCachedArticles(f, arts, "drain")
 
-	if got := pipelineErrorCount("disk_write_error"); got != 1 {
+	if got := telemetry.ErrorCount(telemetry.ErrClassDiskWriteError); got != 1 {
 		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
 	}
 }
