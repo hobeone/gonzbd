@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
 // newDispatchDownloader builds a minimal Downloader suitable for white-box
@@ -636,6 +638,9 @@ func BenchmarkDownloader_Dispatch(b *testing.B) {
 }
 
 func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
+	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
+
 	srv := fakeSrv("s1", 0, true)
 	d := newDispatchDownloader([]*Server{srv})
 	q := queue.New()
@@ -678,6 +683,10 @@ func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 	tryListLen, _ := d.tracker.Len()
 	if tryListLen != 0 {
 		t.Error("expected tryList to be cleared for the exhausted article")
+	}
+
+	if got := telemetry.ErrorCount(telemetry.ErrClassExhaustedAllServers); got != 1 {
+		t.Errorf("PipelineErrors[exhausted_all_servers] = %d, want 1", got)
 	}
 
 	// 2. Test plan.hopelessJobs side-effects (with callback)
@@ -832,6 +841,9 @@ func TestDownloader_DecodePayload_Coverage(t *testing.T) {
 }
 
 func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
+	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
+
 	q := queue.New()
 	d := &Downloader{
 		queue:       q,
@@ -860,6 +872,9 @@ func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
 	default:
 		t.Error("expected result emitted, got none")
 	}
+	if got := telemetry.ErrorCount(telemetry.ErrClassDecodeFailed); got != 1 {
+		t.Errorf("PipelineErrors[decode_failed] = %d, want 1", got)
+	}
 
 	// 2. Failure path: CRC mismatch error
 	yencBadCRC := []byte("=ybegin line=128 size=12 part=1 name=t.txt\r\n=ypart begin=1 end=12\r\ntest content\r\n=yend size=12 part=1 pcrc32=12345678\r\n")
@@ -871,6 +886,39 @@ func TestDownloader_ProcessFetchedArticle_Coverage(t *testing.T) {
 		}
 	default:
 		t.Error("expected result emitted for CRC mismatch, got none")
+	}
+	if got := telemetry.ErrorCount(telemetry.ErrClassCRCMismatch); got != 1 {
+		t.Errorf("PipelineErrors[crc_mismatch] = %d, want 1", got)
+	}
+}
+
+// TestClassifyDecodeError verifies the terminal decode-error classifier used
+// at processFetchedArticle's non-CRC branch: DMCA removal and body-too-large
+// survive as distinguishable sentinels, while the yEnc/UU dual-fallback
+// failure (a joined error) falls into a single "decode_failed" catch-all
+// rather than being unreliably sub-split.
+func TestClassifyDecodeError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"ErrArticleRemoved", ErrArticleRemoved, telemetry.ErrClassDMCARemoved},
+		{"ErrBodyTooLarge", decoder.ErrBodyTooLarge, telemetry.ErrClassDecodeBodyTooLarge},
+		{"joined yenc/uu failure", fmt.Errorf("yenc: %w; uu fallback: %w", decoder.ErrNotYEnc, errors.New("uu malformed")), telemetry.ErrClassDecodeFailed},
+		{"unknown error", errors.New("some random error"), telemetry.ErrClassDecodeFailed},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := classifyDecodeError(tc.err)
+			if got != tc.want {
+				t.Errorf("classifyDecodeError(%v) = %q; want %q", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -1159,6 +1207,115 @@ func TestFetchArticle_PreCheckSkipsFetchOnMissingArticle(t *testing.T) {
 	}
 }
 
+// TestFetchArticle_PreCheckCountsNNTPNoArticle is a non-parallel sibling of
+// TestFetchArticle_PreCheckSkipsFetchOnMissingArticle asserting
+// telemetry.PipelineErrors classification. Kept separate (rather than
+// extending the t.Parallel() test above) because PipelineErrors is
+// process-global state that a concurrent parallel subtest could race on.
+func TestFetchArticle_PreCheckCountsNNTPNoArticle(t *testing.T) {
+	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
+
+	ms := newMockNNTP(t)
+
+	q := queue.New()
+	srv := testServer(t, "s", ms.addr)
+	d := &Downloader{
+		queue:       q,
+		tracker:     newDispatchTracker(),
+		log:         slog.New(slog.DiscardHandler),
+		opts:        Options{PreCheck: true},
+		completions: make(chan *ArticleResult, 1),
+		limiter:     bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	req := &articleRequest{jobID: "job1", messageID: "missing@h"}
+	mc := &managedConn{}
+	defer mc.Close(d, "worker1")
+	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
+		t.Fatalf("expected fetchArticle to report not-found, got ok=%v body=%v", ok, body)
+	}
+
+	if got := telemetry.ErrorCount(telemetry.ErrClassNNTPNoArticle); got != 1 {
+		t.Errorf("PipelineErrors[nntp_no_article] = %d, want 1", got)
+	}
+}
+
+// TestFetchArticle_FetchCountsNNTPNoArticle covers the second nntp_no_article
+// classification call site — a 430 from BODY (not STAT) when PreCheck is
+// disabled, distinct from TestFetchArticle_PreCheckCountsNNTPNoArticle's
+// STAT-based precheck path. Non-parallel: PipelineErrors is process-global.
+func TestFetchArticle_FetchCountsNNTPNoArticle(t *testing.T) {
+	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
+
+	ms := newMockNNTP(t) // "missing@h" is never added, so BODY returns 430
+
+	q := queue.New()
+	srv := testServer(t, "s", ms.addr)
+	d := &Downloader{
+		queue:       q,
+		tracker:     newDispatchTracker(),
+		log:         slog.New(slog.DiscardHandler),
+		completions: make(chan *ArticleResult, 1),
+		limiter:     bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	req := &articleRequest{jobID: "job1", messageID: "missing@h"}
+	mc := &managedConn{}
+	defer mc.Close(d, "worker1")
+	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
+		t.Fatalf("expected fetchArticle to report not-found, got ok=%v body=%v", ok, body)
+	}
+
+	if got := telemetry.ErrorCount(telemetry.ErrClassNNTPNoArticle); got != 1 {
+		t.Errorf("PipelineErrors[nntp_no_article] = %d, want 1", got)
+	}
+}
+
+// TestFetchArticle_DialFailureCountsConnError covers the dial-failure
+// classification call site (mc.Get returning an error before any NNTP
+// protocol exchange happens). Non-parallel: PipelineErrors is
+// process-global state.
+func TestFetchArticle_DialFailureCountsConnError(t *testing.T) {
+	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
+
+	// A closed listener: every dial attempt fails immediately with a
+	// generic connection-refused *net.OpError.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	q := queue.New()
+	srv := testServer(t, "dead", addr)
+	d := &Downloader{
+		queue:   q,
+		tracker: newDispatchTracker(),
+		log:     slog.New(slog.DiscardHandler),
+		opts:    Options{NoPenalties: true},
+		limiter: bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	req := &articleRequest{jobID: "job1", messageID: "msg1"}
+	if body, ok := d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1"); ok || body != nil {
+		t.Fatalf("expected fetchArticle to fail against a closed listener")
+	}
+
+	if got := telemetry.ErrorCount(telemetry.ErrClassNetworkError); got != 1 {
+		t.Errorf("PipelineErrors[network_error] = %d, want 1", got)
+	}
+}
+
 // A connection-level failure during Fetch (mid-stream disconnect, distinct
 // from a clean 430 ErrNoArticle) must apply the clamped penalty via the
 // second clampPenalty call site in fetchArticle. Exercises the "fetch
@@ -1203,6 +1360,96 @@ func TestFetchArticle_FetchFailureAppliesClampedPenalty(t *testing.T) {
 	}
 	if got <= 0 {
 		t.Errorf("penalty duration = %v, want > 0 for a connection-level fetch failure", got)
+	}
+}
+
+// TestFetchArticle_FetchFailureCountsConnError is a non-parallel sibling of
+// TestFetchArticle_FetchFailureAppliesClampedPenalty asserting
+// telemetry.PipelineErrors classification for a connection-level fetch
+// failure. Kept separate from the t.Parallel() test above for the same
+// process-global-state reason as TestFetchArticle_PreCheckCountsNNTPNoArticle.
+func TestFetchArticle_FetchFailureCountsConnError(t *testing.T) {
+	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
+
+	ms := newMockNNTP(t)
+	ms.addArticle("hangup@h", "body")
+	ms.hangupOnFetch("hangup@h")
+
+	q := queue.New()
+	srv := testServer(t, "s", ms.addr)
+	d := &Downloader{
+		queue:   q,
+		tracker: newDispatchTracker(),
+		log:     slog.New(slog.DiscardHandler),
+		opts:    Options{NoPenalties: true},
+		limiter: bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	req := &articleRequest{jobID: "job1", messageID: "hangup@h"}
+	mc := &managedConn{}
+	defer mc.Close(d, "worker1")
+	if body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req, "worker1"); ok || body != nil {
+		t.Fatalf("expected fetchArticle to report a connection-level failure, got ok=%v body=%v", ok, body)
+	}
+
+	// The mid-stream disconnect surfaces as a generic read failure — not a
+	// *net.OpError or a recognized nntp sentinel — so it lands in the
+	// classifier's catch-all bucket rather than a more specific class.
+	if got := telemetry.ErrorCount(telemetry.ErrClassOtherConnectionError); got != 1 {
+		t.Errorf("PipelineErrors[other_connection_error] = %d, want 1", got)
+	}
+}
+
+// TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry pins the
+// ctx.Err()==nil && fetchCtx.Err()==nil gate around the fetch-failure
+// classify call: a connection-level failure observed while ctx is already
+// cancelled (shutdown/pause) must NOT be counted, or every shutdown would
+// flood PipelineErrors with network_error/conn_closed noise. Passes a
+// pre-cancelled ctx (distinct from the live pauseCtx used for the actual
+// dial/fetch I/O) so the hangup still occurs and reaches the fetch-failure
+// branch, exercising the gate rather than an earlier unrelated early-return.
+func TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry(t *testing.T) {
+	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
+
+	ms := newMockNNTP(t)
+	ms.addArticle("hangup@h", "body")
+	ms.hangupOnFetch("hangup@h")
+
+	q := queue.New()
+	srv := testServer(t, "s", ms.addr)
+	d := &Downloader{
+		queue:   q,
+		tracker: newDispatchTracker(),
+		log:     slog.New(slog.DiscardHandler),
+		opts:    Options{NoPenalties: true},
+		limiter: bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate shutdown/pause via the caller-supplied ctx
+
+	req := &articleRequest{jobID: "job1", messageID: "hangup@h"}
+	mc := &managedConn{}
+	defer mc.Close(d, "worker1")
+	if body, ok := d.fetchArticle(cancelledCtx, srv, 0, mc, req, "worker1"); ok || body != nil {
+		t.Fatalf("expected fetchArticle to report a connection-level failure, got ok=%v body=%v", ok, body)
+	}
+
+	for _, class := range []string{
+		telemetry.ErrClassOtherConnectionError,
+		telemetry.ErrClassNetworkError,
+		telemetry.ErrClassConnClosed,
+		telemetry.ErrClassTimeout,
+	} {
+		if got := telemetry.ErrorCount(class); got != 0 {
+			t.Errorf("PipelineErrors[%s] = %d, want 0 during shutdown/pause", class, got)
+		}
 	}
 }
 
@@ -1281,6 +1528,58 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 	}
 	if m2.has(0) {
 		t.Errorf("hangup2@h still marked tried for server 0, want unmarked after failure")
+	}
+}
+
+// TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle is a
+// non-parallel sibling of TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric
+// pinning a deliberate counting-semantics difference: BadConnections dedups
+// to 1 per connection-drop event via isFirstNotifier, but
+// telemetry.PipelineErrors counts once per affected article (matching every
+// other classification call site's per-attempt semantics), so it must land
+// at 2 here — one per concurrently in-flight article — not deduped to 1.
+func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testing.T) {
+	telemetry.Reset()
+	t.Cleanup(telemetry.Reset)
+
+	ms := newMockNNTP(t)
+	ms.addArticle("hangup1@h", "body1")
+	ms.addArticle("hangup2@h", "body2")
+	ms.hangupOnFetch("hangup1@h")
+	ms.hangupOnFetch("hangup2@h")
+
+	q := queue.New()
+	srv := testServer(t, "s", ms.addr)
+	d := &Downloader{
+		queue:   q,
+		tracker: newDispatchTracker(),
+		log:     slog.New(slog.DiscardHandler),
+		opts:    Options{NoPenalties: true},
+		limiter: bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	mc := &managedConn{}
+	defer mc.Close(d, "worker1")
+
+	req1 := &articleRequest{jobID: "job1", messageID: "hangup1@h"}
+	req2 := &articleRequest{jobID: "job1", messageID: "hangup2@h"}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		d.fetchArticle(t.Context(), srv, 0, mc, req1, "worker1")
+	}()
+	go func() {
+		defer wg.Done()
+		d.fetchArticle(t.Context(), srv, 0, mc, req2, "worker1")
+	}()
+	wg.Wait()
+
+	if got := telemetry.ErrorCount(telemetry.ErrClassOtherConnectionError); got != 2 {
+		t.Errorf("PipelineErrors[other_connection_error] = %d, want 2 (once per affected article, not deduped like BadConnections)", got)
 	}
 }
 

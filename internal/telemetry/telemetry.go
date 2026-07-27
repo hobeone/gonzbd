@@ -1,8 +1,10 @@
 // Package telemetry provides expvar-based pipeline performance counters.
 //
-// All counters are lock-free (atomic int64) and safe for concurrent
-// increment from multiple goroutines. They are automatically exposed at
-// /debug/vars by the expvar package.
+// The scalar counters below are lock-free (atomic int64) and safe for
+// concurrent increment from multiple goroutines. PipelineErrors is an
+// expvar.Map (internally mutex-guarded rather than atomic, but still
+// documented by the stdlib as safe for concurrent use). All are
+// automatically exposed at /debug/vars by the expvar package.
 //
 // Usage in tests: call Reset() to zero all counters between test runs.
 package telemetry
@@ -25,7 +27,61 @@ var (
 	// ArticlesWritten counts articles successfully enqueued to the
 	// assembler via WriteArticle.
 	ArticlesWritten = expvar.NewInt("pipeline_articles_written")
+
+	// PipelineErrors counts failures by classified cause (e.g.
+	// "nntp_no_article", "crc_mismatch", "disk_write_error"), incremented
+	// at the point of detection in the downloader and assembler packages.
+	//
+	// This counts attempts, not articles: connection-level failures
+	// (auth, dial, transient server errors) are handled entirely within
+	// the downloader's retry/penalty logic and never produce an
+	// ArticleResult, so they only ever appear here, not in
+	// ArticlesFailed/ArticlesRetried above. Its total should not be
+	// compared 1:1 against those flat counters.
+	PipelineErrors = expvar.NewMap("pipeline_errors_by_class")
 )
+
+// PipelineErrors class labels — the closed set of values classifiers in
+// internal/downloader and internal/assembler pass to PipelineErrors.Add.
+// Defined here (rather than as literals at each call site) so production
+// code and test assertions can't drift apart via a typo in either side.
+const (
+	ErrClassNNTPNoArticle         = "nntp_no_article"
+	ErrClassNNTPAuthRejected      = "nntp_auth_rejected"
+	ErrClassNNTPServerUnavailable = "nntp_server_unavailable"
+	ErrClassNNTPTransient         = "nntp_transient"
+	ErrClassNNTPAuthRequired      = "nntp_auth_required"
+	ErrClassConnClosed            = "conn_closed"
+	ErrClassNNTPInvalidState      = "nntp_invalid_state"
+	ErrClassInvalidMessageID      = "invalid_message_id"
+	ErrClassInvalidCredential     = "invalid_credential" //nolint:gosec // diagnostic label, not a secret
+	ErrClassNetworkError          = "network_error"
+	ErrClassTimeout               = "timeout"
+	ErrClassOtherConnectionError  = "other_connection_error"
+	ErrClassCRCMismatch           = "crc_mismatch"
+	ErrClassDMCARemoved           = "dmca_removed"
+	ErrClassDecodeBodyTooLarge    = "decode_body_too_large"
+	ErrClassDecodeFailed          = "decode_failed"
+	ErrClassExhaustedAllServers   = "exhausted_all_servers"
+	ErrClassDiskWriteError        = "disk_write_error"
+)
+
+// ErrorCount reads a single class's count from PipelineErrors, returning 0
+// for an absent key. Intended for tests asserting on PipelineErrors state.
+// Callers must not run in a t.Parallel() subtest — PipelineErrors is
+// process-global state and concurrent subtests could race on the same
+// class.
+func ErrorCount(class string) int64 {
+	v := PipelineErrors.Get(class)
+	if v == nil {
+		return 0
+	}
+	iv, ok := v.(*expvar.Int)
+	if !ok {
+		return 0
+	}
+	return iv.Value()
+}
 
 // Assembler counters — incremented by the assembler worker goroutine.
 var (
@@ -73,4 +129,5 @@ func Reset() {
 	CachePressureFlushes.Set(0)
 	FilesCompleted.Set(0)
 	PreallocCalls.Set(0)
+	PipelineErrors.Init()
 }

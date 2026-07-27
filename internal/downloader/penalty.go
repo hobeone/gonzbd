@@ -2,10 +2,12 @@ package downloader
 
 import (
 	"errors"
+	"net"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/nntp"
+	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
 // PenaltyFor maps an error returned by an NNTP operation to the
@@ -47,6 +49,49 @@ func PenaltyFor(err error) time.Duration {
 	default:
 		return constants.PenaltyUnknown
 	}
+}
+
+// classifyConnError maps a connection-level failure (a dial error, or a
+// Fetch/Stat error other than the 430/ErrNoArticle case already handled
+// elsewhere) to a telemetry.PipelineErrors class label. Its sentinel set
+// overlaps heavily with PenaltyFor's — both classify the same underlying
+// errors — but is not identical: PenaltyFor exists to pick a penalty
+// duration, this exists to name a diagnostic cause, and the two sets can
+// diverge (e.g. ErrInvalidMessageID/ErrInvalidCredential are local
+// input/config defects with no penalty-worthy server behavior, but are
+// still worth naming here).
+func classifyConnError(err error) string {
+	switch {
+	case errors.Is(err, nntp.ErrAuthRejected):
+		return telemetry.ErrClassNNTPAuthRejected
+	case errors.Is(err, nntp.ErrServerUnavailable):
+		return telemetry.ErrClassNNTPServerUnavailable
+	case errors.Is(err, nntp.ErrTransient):
+		return telemetry.ErrClassNNTPTransient
+	case errors.Is(err, nntp.ErrAuthRequired):
+		return telemetry.ErrClassNNTPAuthRequired
+	case errors.Is(err, nntp.ErrClosed):
+		return telemetry.ErrClassConnClosed
+	case errors.Is(err, nntp.ErrInvalidState):
+		return telemetry.ErrClassNNTPInvalidState
+	case errors.Is(err, nntp.ErrInvalidMessageID):
+		return telemetry.ErrClassInvalidMessageID
+	case errors.Is(err, nntp.ErrInvalidCredential):
+		return telemetry.ErrClassInvalidCredential
+	}
+	// Check Timeout() before *net.OpError: net.OpError itself implements
+	// Timeout() bool, so checking OpError first would swallow every real
+	// network timeout into "network_error" and leave "timeout" dead code.
+	if timeoutErr, ok := errors.AsType[interface {
+		error
+		Timeout() bool
+	}](err); ok && timeoutErr.Timeout() {
+		return telemetry.ErrClassTimeout
+	}
+	if _, ok := errors.AsType[*net.OpError](err); ok {
+		return telemetry.ErrClassNetworkError
+	}
+	return telemetry.ErrClassOtherConnectionError
 }
 
 // shouldDeactivateOptional returns true when server s is an optional

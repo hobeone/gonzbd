@@ -3,6 +3,8 @@ package downloader
 import (
 	"context"
 	"errors"
+	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/nntp"
+	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
 // newTestServer is a helper that builds a Server with sensible test
@@ -281,6 +284,54 @@ type wrappedErr struct {
 
 func (e *wrappedErr) Error() string { return e.msg + ": " + e.inner.Error() }
 func (e *wrappedErr) Unwrap() error { return e.inner }
+
+// classifyConnErrTimeoutErr implements net.Error's Timeout() bool interface
+// for testing classifyConnError's fallback branch.
+type classifyConnErrTimeoutErr struct{}
+
+func (e *classifyConnErrTimeoutErr) Error() string   { return "i/o timeout" }
+func (e *classifyConnErrTimeoutErr) Timeout() bool   { return true }
+func (e *classifyConnErrTimeoutErr) Temporary() bool { return true }
+
+// ---------------------------------------------------------------------------
+// classifyConnError mapping
+// ---------------------------------------------------------------------------
+
+func TestClassifyConnError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"ErrAuthRejected", nntp.ErrAuthRejected, telemetry.ErrClassNNTPAuthRejected},
+		{"ErrServerUnavailable", nntp.ErrServerUnavailable, telemetry.ErrClassNNTPServerUnavailable},
+		{"ErrTransient", nntp.ErrTransient, telemetry.ErrClassNNTPTransient},
+		{"ErrAuthRequired", nntp.ErrAuthRequired, telemetry.ErrClassNNTPAuthRequired},
+		{"ErrClosed", nntp.ErrClosed, telemetry.ErrClassConnClosed},
+		{"ErrInvalidState", nntp.ErrInvalidState, telemetry.ErrClassNNTPInvalidState},
+		{"ErrInvalidMessageID", nntp.ErrInvalidMessageID, telemetry.ErrClassInvalidMessageID},
+		{"ErrInvalidCredential", nntp.ErrInvalidCredential, telemetry.ErrClassInvalidCredential},
+		{"wrapped ErrAuthRejected", &wrappedErr{msg: "outer", inner: nntp.ErrAuthRejected}, telemetry.ErrClassNNTPAuthRejected},
+		{"net.OpError non-timeout (connection refused)", &net.OpError{Op: "dial", Net: "tcp",
+			Err: &net.AddrError{Err: "connection refused", Addr: "localhost:119"}}, telemetry.ErrClassNetworkError},
+		{"net.OpError wrapping a real timeout", &net.OpError{Op: "dial", Net: "tcp",
+			Err: os.ErrDeadlineExceeded}, telemetry.ErrClassTimeout},
+		{"bare Timeout() interface, not net.OpError", &classifyConnErrTimeoutErr{}, telemetry.ErrClassTimeout},
+		{"unknown error", errors.New("some random error"), telemetry.ErrClassOtherConnectionError},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := classifyConnError(tc.err)
+			if got != tc.want {
+				t.Errorf("classifyConnError(%v) = %q; want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Resolver tests
