@@ -34,8 +34,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/bpsmeter"
 	"github.com/hobeone/gonzbd/internal/config"
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/dirscanner"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/humanfmt"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -1054,7 +1054,7 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 		}
 	}()
 
-	job, rawNZB, err := loadJob(nzbPath, cfg.Downloads.OnDemandPar2)
+	job, rawNZB, err := loadJob(cfg, nzbPath, log)
 	if err != nil {
 		return fmt.Errorf("load NZB: %w", err)
 	}
@@ -1111,7 +1111,7 @@ func printSummary(job *queue.Job, hist *history.Entry, duration time.Duration) {
 	fmt.Printf("------------------------\n\n")
 }
 
-func loadJob(path string, onDemandPar2 bool) (*queue.Job, []byte, error) {
+func loadJob(cfg *config.Config, path string, log *slog.Logger) (*queue.Job, []byte, error) { //nocover: thin delegator to unit-tested app.BuildIngestJob, covered end-to-end by test/integration/oneshot_test.go
 	data, err := os.ReadFile(path) //nolint:gosec // G304: user-supplied NZB path is the whole point
 	if err != nil {
 		return nil, nil, err
@@ -1121,11 +1121,10 @@ func loadJob(path string, onDemandPar2 bool) (*queue.Job, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	job, err := queue.NewJob(parsed, queue.AddOptions{
-		Filename:     filepath.Base(path),
-		PP:           types.PPInherit,
-		OnDemandPar2: onDemandPar2,
-	}, fsutil.SanitizeOptions{})
+	job, err := app.BuildIngestJob(cfg, parsed, filepath.Base(path), types.FetchOptions{
+		PP:       types.PPInherit,
+		Priority: constants.DefaultPriority,
+	}, log)
 	return job, data, err
 }
 
