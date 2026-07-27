@@ -47,10 +47,7 @@ func newRemoveJobTestApp(t *testing.T) *Application {
 
 func TestRemoveJob(t *testing.T) {
 	a := newRemoveJobTestApp(t)
-	var downloadDir string
-	a.config.WithRead(func(c *config.Config) {
-		downloadDir = c.General.DownloadDir
-	})
+	downloadDir := a.config.GetGeneral().DownloadDir
 
 	parsed := &nzb.NZB{}
 	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "to-delete"}, fsutil.SanitizeOptions{})

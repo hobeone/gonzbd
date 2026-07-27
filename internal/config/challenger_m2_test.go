@@ -116,11 +116,10 @@ func TestMaxActiveJobs_ConcurrentSetAndReadStress(t *testing.T) {
 	for range 10 {
 		wg.Go(func() {
 			for range 100 {
-				cfg.WithRead(func(c *config.Config) {
-					if c.Downloads.MaxActiveJobs <= 0 {
-						t.Errorf("concurrent read saw invalid MaxActiveJobs <= 0: %d", c.Downloads.MaxActiveJobs)
-					}
-				})
+				dl := cfg.GetDownloads()
+				if dl.MaxActiveJobs <= 0 {
+					t.Errorf("concurrent read saw invalid MaxActiveJobs <= 0: %d", dl.MaxActiveJobs)
+				}
 			}
 		})
 	}

@@ -245,17 +245,16 @@ func (s *Server) getAuth() AuthConfig {
 	if s.config == nil {
 		return AuthConfig{}
 	}
+	gen := s.config.GetGeneral()
 	var auth AuthConfig
-	s.config.WithRead(func(cfg *config.Config) {
-		auth.APIKey = cfg.General.APIKey
-		auth.NZBKey = cfg.General.NZBKey
-		// LocalRanges is validated at load time, so a parse error here is
-		// not expected; on the off chance one slips through, fall back to
-		// loopback-only (nil ranges) rather than trusting everything.
-		auth.TrustedRanges, _ = config.ParseLocalRanges(cfg.General.LocalRanges)
-		auth.VerifyXFF = cfg.General.VerifyXFFHeader
-		auth.ForwardHeader = cfg.General.TrustedForwardHeader
-	})
+	auth.APIKey = gen.APIKey
+	auth.NZBKey = gen.NZBKey
+	// LocalRanges is validated at load time, so a parse error here is
+	// not expected; on the off chance one slips through, fall back to
+	// loopback-only (nil ranges) rather than trusting everything.
+	auth.TrustedRanges, _ = config.ParseLocalRanges(gen.LocalRanges)
+	auth.VerifyXFF = gen.VerifyXFFHeader
+	auth.ForwardHeader = gen.TrustedForwardHeader
 	auth.SessionKey = s.sessionKey
 	auth.Logger = s.log
 	return auth

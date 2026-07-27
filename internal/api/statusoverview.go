@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
-	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
@@ -30,17 +29,19 @@ func (s *Server) modeStatusOverview(w http.ResponseWriter, r *http.Request) {
 		minFreeSpace                                          int64
 	)
 	if s.config != nil {
-		s.config.WithRead(func(cfg *config.Config) {
-			downloadDir = cfg.General.DownloadDir
-			completeDir = cfg.General.CompleteDir
-			adminDir = cfg.General.AdminDir
-			scriptDir = cfg.General.ScriptDir
-			logDir = cfg.General.LogDir
-			par2Cmd = cfg.PostProc.Par2Command
-			unrarCmd = cfg.PostProc.UnrarCommand
-			sevenzCmd = cfg.PostProc.SevenzCommand
-			minFreeSpace = int64(cfg.Downloads.MinFreeSpace)
-		})
+		snap := s.config.Snapshot()
+		gen := &snap.General
+		pp := &snap.PostProc
+		dl := &snap.Downloads
+		downloadDir = gen.DownloadDir
+		completeDir = gen.CompleteDir
+		adminDir = gen.AdminDir
+		scriptDir = gen.ScriptDir
+		logDir = gen.LogDir
+		par2Cmd = pp.Par2Command
+		unrarCmd = pp.UnrarCommand
+		sevenzCmd = pp.SevenzCommand
+		minFreeSpace = int64(dl.MinFreeSpace)
 	}
 
 	var articleCacheBytes int64

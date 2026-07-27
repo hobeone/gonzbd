@@ -677,3 +677,95 @@ servers:
 			cfg.Servers[0].Password, "pass$SECRET")
 	}
 }
+
+func TestConfig_ValueGetters_Isolation(t *testing.T) {
+	cfg := &Config{
+		General: GeneralConfig{
+			Host:        "localhost",
+			LocalRanges: []string{"192.168.1.0/24"},
+			LogLevels:   map[string]string{"downloader": "debug"},
+		},
+		Downloads: DownloadConfig{
+			MaxArtTries: 3,
+			CleanupList: []string{"nfo"},
+		},
+		PostProc: PostProcConfig{
+			CleanupExtensions: []string{"txt"},
+		},
+		Servers: []ServerConfig{
+			{Name: "server1", Host: "news.example.com"},
+		},
+		Categories: []CategoryConfig{
+			{Name: "tv"},
+		},
+		Notifications: NotificationConfig{
+			Email: EmailNotificationConfig{To: []string{"admin@example.com"}},
+		},
+	}
+
+	// 1. Test GetGeneral isolation
+	gen := cfg.GetGeneral()
+	gen.Host = "mutated"
+	gen.LocalRanges[0] = "10.0.0.0/8"
+	gen.LogLevels["downloader"] = "error"
+	if cfg.General.Host != "localhost" {
+		t.Errorf("GetGeneral().Host mutated")
+	}
+	if cfg.General.LocalRanges[0] != "192.168.1.0/24" {
+		t.Errorf("GetGeneral().LocalRanges mutated")
+	}
+	if cfg.General.LogLevels["downloader"] != "debug" {
+		t.Errorf("GetGeneral().LogLevels mutated")
+	}
+
+	// 2. Test GetDownloads isolation
+	dl := cfg.GetDownloads()
+	dl.MaxArtTries = 99
+	dl.CleanupList[0] = "mutated"
+	if cfg.Downloads.MaxArtTries != 3 || cfg.Downloads.CleanupList[0] != "nfo" {
+		t.Errorf("GetDownloads() mutated live config")
+	}
+
+	// 3. Test GetPostProc isolation
+	pp := cfg.GetPostProc()
+	pp.CleanupExtensions[0] = "mutated"
+	if cfg.PostProc.CleanupExtensions[0] != "txt" {
+		t.Errorf("GetPostProc() mutated live config")
+	}
+
+	// 4. Test GetServers isolation
+	srvs := cfg.GetServers()
+	srvs[0].Name = "mutated"
+	if cfg.Servers[0].Name != "server1" {
+		t.Errorf("GetServers() mutated live config")
+	}
+
+	// 5. Test GetCategories isolation
+	cats := cfg.GetCategories()
+	cats[0].Name = "mutated"
+	if cfg.Categories[0].Name != "tv" {
+		t.Errorf("GetCategories() mutated live config")
+	}
+
+	// 6. Test GetNotifications isolation
+	notif := cfg.GetNotifications()
+	notif.Email.To[0] = "mutated"
+	if cfg.Notifications.Email.To[0] != "admin@example.com" {
+		t.Errorf("GetNotifications() mutated live config")
+	}
+
+	// 7. Test IngestSnapshot isolation
+	snap := cfg.IngestSnapshot()
+	snap.Downloads.CleanupList[0] = "mutated"
+	snap.Categories[0].Name = "mutated"
+	if cfg.Downloads.CleanupList[0] != "nfo" || cfg.Categories[0].Name != "tv" {
+		t.Errorf("IngestSnapshot() mutated live config")
+	}
+
+	// 8. Test Snapshot isolation
+	full := cfg.Snapshot()
+	full.General.LocalRanges[0] = "mutated"
+	if cfg.General.LocalRanges[0] != "192.168.1.0/24" {
+		t.Errorf("Snapshot() mutated live config")
+	}
+}

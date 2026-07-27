@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
-	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // BinaryVersions holds the resolved version strings for external
@@ -37,11 +36,7 @@ func (app *Application) ArticleCacheBytes() int64 {
 
 // downloadDir returns the currently configured download directory path.
 func (app *Application) downloadDir() string {
-	var dlDir string
-	app.config.WithRead(func(c *config.Config) {
-		dlDir = c.General.DownloadDir
-	})
-	return dlDir
+	return app.config.GetGeneral().DownloadDir
 }
 
 // DownloadDirFreeBytes returns the free bytes available on the

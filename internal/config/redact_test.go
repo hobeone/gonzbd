@@ -56,12 +56,11 @@ func TestConfig_Redacted(t *testing.T) {
 	}
 
 	// The original config must be untouched.
-	cfg.WithRead(func(c *Config) {
-		if c.General.APIKey != "realapikey1234567" {
-			t.Errorf("original General.APIKey was mutated: %q", c.General.APIKey)
-		}
-		if c.Servers[0].Password != "hunter2" {
-			t.Errorf("original Servers[0].Password was mutated: %q", c.Servers[0].Password)
-		}
-	})
+	snap := cfg.Snapshot()
+	if snap.General.APIKey != "realapikey1234567" {
+		t.Errorf("original General.APIKey was mutated: %q", snap.General.APIKey)
+	}
+	if snap.Servers[0].Password != "hunter2" {
+		t.Errorf("original Servers[0].Password was mutated: %q", snap.Servers[0].Password)
+	}
 }

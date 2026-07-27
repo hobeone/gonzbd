@@ -11,15 +11,7 @@ const RedactedPlaceholder = "********"
 // deep-copy — new sensitive fields added to the config structs must be
 // added here explicitly.
 func (c *Config) Redacted() *Config {
-	out := &Config{}
-	c.WithRead(func(cfg *Config) {
-		out.General = cfg.General
-		out.Downloads = cfg.Downloads
-		out.PostProc = cfg.PostProc
-		out.Servers = append([]ServerConfig(nil), cfg.Servers...)
-		out.Categories = append([]CategoryConfig(nil), cfg.Categories...)
-		out.Notifications = cfg.Notifications
-	})
+	out := c.Snapshot()
 
 	if out.General.APIKey != "" {
 		out.General.APIKey = RedactedPlaceholder

@@ -1080,24 +1080,22 @@ func TestApplication_SettersAndOptions(t *testing.T) {
 	})
 
 	// Verify the surviving setters wrote config.
-	c := application.GetConfig()
-	c.WithRead(func(cfg *config.Config) {
-		if cfg.Downloads.MinFreeSpace != 2048 {
-			t.Errorf("MinFreeSpace = %d, want 2048", cfg.Downloads.MinFreeSpace)
-		}
-		if cfg.Downloads.MaxArtTries != 5 {
-			t.Errorf("MaxArtTries = %d, want 5", cfg.Downloads.MaxArtTries)
-		}
-		if cfg.Downloads.MaxArtOpt != 2 {
-			t.Errorf("MaxArtOpt = %d, want 2", cfg.Downloads.MaxArtOpt)
-		}
-		if !cfg.Downloads.TopOnly {
-			t.Error("TopOnly not set")
-		}
-		if cfg.Downloads.PropagationDelay != 10 {
-			t.Errorf("PropagationDelay = %d, want 10", cfg.Downloads.PropagationDelay)
-		}
-	})
+	dlCfg := application.GetConfig().GetDownloads()
+	if dlCfg.MinFreeSpace != 2048 {
+		t.Errorf("MinFreeSpace = %d, want 2048", dlCfg.MinFreeSpace)
+	}
+	if dlCfg.MaxArtTries != 5 {
+		t.Errorf("MaxArtTries = %d, want 5", dlCfg.MaxArtTries)
+	}
+	if dlCfg.MaxArtOpt != 2 {
+		t.Errorf("MaxArtOpt = %d, want 2", dlCfg.MaxArtOpt)
+	}
+	if !dlCfg.TopOnly {
+		t.Error("TopOnly not set")
+	}
+	if dlCfg.PropagationDelay != 10 {
+		t.Errorf("PropagationDelay = %d, want 10", dlCfg.PropagationDelay)
+	}
 
 	// Test maybeDirectUnpack and buildDirectUnpackOpts coverage
 	parsed := &nzb.NZB{
