@@ -1106,6 +1106,7 @@ func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequ
 			"offset", req.Offset,
 			"error", err,
 		)
+		telemetry.PipelineErrors.Add("disk_write_error", 1)
 		if req.Data != nil {
 			decoder.PutBuffer(req.Data)
 		}
@@ -1131,6 +1132,7 @@ func (a *Assembler) flushRun(f *openFile, run *flushRun) bool {
 			"bytes", len(run.data),
 			"error", err,
 		)
+		telemetry.PipelineErrors.Add("disk_write_error", 1)
 		return false
 	}
 	return true
@@ -1157,6 +1159,7 @@ func (a *Assembler) writeCachedArticles(f *openFile, arts []bufferedArticle, rea
 				"offset", art.offset,
 				"error", err,
 			)
+			telemetry.PipelineErrors.Add("disk_write_error", 1)
 		}
 		if art.data != nil {
 			decoder.PutBuffer(art.data)

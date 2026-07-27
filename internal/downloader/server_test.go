@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -281,6 +282,50 @@ type wrappedErr struct {
 
 func (e *wrappedErr) Error() string { return e.msg + ": " + e.inner.Error() }
 func (e *wrappedErr) Unwrap() error { return e.inner }
+
+// classifyConnErrTimeoutErr implements net.Error's Timeout() bool interface
+// for testing classifyConnError's fallback branch.
+type classifyConnErrTimeoutErr struct{}
+
+func (e *classifyConnErrTimeoutErr) Error() string   { return "i/o timeout" }
+func (e *classifyConnErrTimeoutErr) Timeout() bool   { return true }
+func (e *classifyConnErrTimeoutErr) Temporary() bool { return true }
+
+// ---------------------------------------------------------------------------
+// classifyConnError mapping
+// ---------------------------------------------------------------------------
+
+func TestClassifyConnError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"ErrAuthRejected", nntp.ErrAuthRejected, "nntp_auth_rejected"},
+		{"ErrServerUnavailable", nntp.ErrServerUnavailable, "nntp_server_unavailable"},
+		{"ErrTransient", nntp.ErrTransient, "nntp_transient"},
+		{"ErrAuthRequired", nntp.ErrAuthRequired, "nntp_auth_required"},
+		{"ErrClosed", nntp.ErrClosed, "conn_closed"},
+		{"ErrInvalidState", nntp.ErrInvalidState, "nntp_invalid_state"},
+		{"wrapped ErrAuthRejected", &wrappedErr{msg: "outer", inner: nntp.ErrAuthRejected}, "nntp_auth_rejected"},
+		{"net.OpError dial", &net.OpError{Op: "dial", Net: "tcp",
+			Err: &net.AddrError{Err: "connection refused", Addr: "localhost:119"}}, "network_error"},
+		{"timeout interface", &classifyConnErrTimeoutErr{}, "timeout"},
+		{"unknown error", errors.New("some random error"), "other_connection_error"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := classifyConnError(tc.err)
+			if got != tc.want {
+				t.Errorf("classifyConnError(%v) = %q; want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Resolver tests

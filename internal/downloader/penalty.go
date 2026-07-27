@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"errors"
+	"net"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -47,6 +48,38 @@ func PenaltyFor(err error) time.Duration {
 	default:
 		return constants.PenaltyUnknown
 	}
+}
+
+// classifyConnError maps a connection-level failure (a dial error, or a
+// Fetch/Stat error other than the 430/ErrNoArticle case already handled
+// elsewhere) to a telemetry.PipelineErrors class label. Mirrors PenaltyFor's
+// sentinel set so the same error is classified consistently for both
+// penalty and diagnostic purposes.
+func classifyConnError(err error) string {
+	switch {
+	case errors.Is(err, nntp.ErrAuthRejected):
+		return "nntp_auth_rejected"
+	case errors.Is(err, nntp.ErrServerUnavailable):
+		return "nntp_server_unavailable"
+	case errors.Is(err, nntp.ErrTransient):
+		return "nntp_transient"
+	case errors.Is(err, nntp.ErrAuthRequired):
+		return "nntp_auth_required"
+	case errors.Is(err, nntp.ErrClosed):
+		return "conn_closed"
+	case errors.Is(err, nntp.ErrInvalidState):
+		return "nntp_invalid_state"
+	}
+	if _, ok := errors.AsType[*net.OpError](err); ok {
+		return "network_error"
+	}
+	if timeoutErr, ok := errors.AsType[interface {
+		error
+		Timeout() bool
+	}](err); ok && timeoutErr.Timeout() {
+		return "timeout"
+	}
+	return "other_connection_error"
 }
 
 // shouldDeactivateOptional returns true when server s is an optional

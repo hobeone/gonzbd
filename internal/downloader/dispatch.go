@@ -13,6 +13,7 @@ import (
 	"github.com/hobeone/gonzbd/internal/decoder"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/telemetry"
 )
 
 // dispatchPlan holds the results of one iteration over the unfinished
@@ -135,6 +136,7 @@ func (d *Downloader) applyDispatchPlan(ctx context.Context, plan dispatchPlan, o
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", err)
 		}
 		d.clearTried(req.jobID, req.messageID)
+		telemetry.PipelineErrors.Add("exhausted_all_servers", 1)
 		d.emitResult(ctx, req, "", nil, 0, 0, ErrNoServersLeft)
 	}
 
@@ -579,6 +581,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 		}
 		d.log.Warn("dial failed", "server", name, "error", err)
 		srv.RecordBadConnection()
+		telemetry.PipelineErrors.Add(classifyConnError(err), 1)
 		if pen := d.clampPenalty(PenaltyFor(err)); pen > 0 {
 			d.log.Info("penalty applied", "server", name, "duration", pen)
 			srv.ApplyPenalty(pen)
@@ -591,6 +594,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			if errors.Is(statErr, nntp.ErrNoArticle) {
 				d.log.Debug("article not found (precheck)", "server", name, "msgid", req.messageID)
 				srv.RecordGoodConnection()
+				telemetry.PipelineErrors.Add("nntp_no_article", 1)
 				d.emitResult(ctx, req, name, nil, 0, 0, statErr)
 				return nil, false
 			}
@@ -610,6 +614,7 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 			// retained so we won't retry here; connection is
 			// healthy — reuse it.
 			srv.RecordGoodConnection()
+			telemetry.PipelineErrors.Add("nntp_no_article", 1)
 			d.emitResult(ctx, req, name, nil, 0, 0, err)
 			return nil, false
 		}
@@ -619,12 +624,16 @@ func (d *Downloader) fetchArticle(ctx context.Context, srv *Server, serverIdx in
 		isFirstNotifier := mc.DropIfMatches(c, d, workerID)
 
 		// Context cancellation means shutdown or pause — not a server fault.
-		// Don't record bad connections or apply penalties.
-		if ctx.Err() == nil && fetchCtx.Err() == nil && isFirstNotifier {
-			srv.RecordBadConnection()
-			if pen := d.clampPenalty(PenaltyFor(err)); pen > 0 {
-				d.log.Info("penalty applied", "server", name, "duration", pen)
-				srv.ApplyPenalty(pen)
+		// Don't record bad connections, apply penalties, or count this
+		// as a diagnostic error; it's expected noise during shutdown/pause.
+		if ctx.Err() == nil && fetchCtx.Err() == nil {
+			telemetry.PipelineErrors.Add(classifyConnError(err), 1)
+			if isFirstNotifier {
+				srv.RecordBadConnection()
+				if pen := d.clampPenalty(PenaltyFor(err)); pen > 0 {
+					d.log.Info("penalty applied", "server", name, "duration", pen)
+					srv.ApplyPenalty(pen)
+				}
 			}
 		}
 		d.unmarkTried(req.jobID, req.messageID, serverIdx)
@@ -660,6 +669,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 			d.log.Warn("CRC mismatch, will try alternate server",
 				"server", name, "msgid", req.messageID)
 			srv.RecordGoodConnection()
+			telemetry.PipelineErrors.Add("crc_mismatch", 1)
 			d.emitResult(ctx, req, name, nil, 0, 0, err)
 			return
 		}
@@ -670,6 +680,7 @@ func (d *Downloader) processFetchedArticle(ctx context.Context, srv *Server, req
 			d.log.Warn("mark article emitted failed", "job", req.jobID, "msgid", req.messageID, "err", markErr)
 		}
 		d.clearTried(req.jobID, req.messageID)
+		telemetry.PipelineErrors.Add(classifyDecodeError(err), 1)
 		d.emitResult(ctx, req, name, nil, 0, 0, err)
 		return
 	}
@@ -808,6 +819,22 @@ func (m *managedConn) DropIfMatches(c *nntp.Conn, d *Downloader, workerID string
 		return true
 	}
 	return false
+}
+
+// classifyDecodeError maps a terminal (non-CRC-mismatch) decodePayload
+// error to a telemetry.PipelineErrors class label. The yEnc/UU
+// dual-fallback failure is a joined error (see decodePayload) and isn't
+// reliably sub-classifiable further, so it falls into a single
+// "decode_failed" bucket alongside any other unrecognized decode error.
+func classifyDecodeError(err error) string {
+	switch {
+	case errors.Is(err, ErrArticleRemoved):
+		return "dmca_removed"
+	case errors.Is(err, decoder.ErrBodyTooLarge):
+		return "decode_body_too_large"
+	default:
+		return "decode_failed"
+	}
 }
 
 // decodePayload decodes an article body using yEnc first, with a

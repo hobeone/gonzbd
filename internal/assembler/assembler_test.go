@@ -3,6 +3,7 @@ package assembler
 import (
 	"context"
 	"errors"
+	"expvar"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,22 @@ import (
 	"github.com/hobeone/gonzbd/internal/telemetry"
 	"github.com/hobeone/gonzbd/internal/testutil"
 )
+
+// pipelineErrorCount reads a single class's count from
+// telemetry.PipelineErrors, returning 0 for an absent key. Tests using this
+// must not call t.Parallel() — PipelineErrors is process-global state and
+// concurrent subtests could race on the same class.
+func pipelineErrorCount(class string) int64 {
+	v := telemetry.PipelineErrors.Get(class)
+	if v == nil {
+		return 0
+	}
+	iv, ok := v.(*expvar.Int)
+	if !ok {
+		return 0
+	}
+	return iv.Value()
+}
 
 // waitUntil polls cond every 5ms until it returns true or the deadline passes.
 func waitUntil(t *testing.T, cond func() bool, deadline time.Duration, msg string) {
@@ -1636,6 +1653,8 @@ var (
 )
 
 func TestAssembler_FlushRunError(t *testing.T) {
+	telemetry.Reset()
+
 	tmpFile, err := os.CreateTemp("", "assembler-flush-run-err")
 	if err != nil {
 		t.Fatal(err)
@@ -1664,6 +1683,61 @@ func TestAssembler_FlushRunError(t *testing.T) {
 	success := a.flushRun(f, run)
 	if success {
 		t.Errorf("flushRun on closed file: got true, want false")
+	}
+	if got := pipelineErrorCount("disk_write_error"); got != 1 {
+		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
+	}
+}
+
+// TestAssembler_WriteArticleOrBufferDiskErrorCountsPipelineError exercises the
+// direct-write (caching-disabled) branch of writeArticleOrBuffer, asserting
+// telemetry.PipelineErrors classification. Not a t.Parallel() test —
+// PipelineErrors is process-global state.
+func TestAssembler_WriteArticleOrBufferDiskErrorCountsPipelineError(t *testing.T) {
+	telemetry.Reset()
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_write_or_buffer_err_")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpFile.Close() // WriteAt will fail
+
+	a := &Assembler{log: slog.Default()}
+	f := &openFile{handle: tmpFile, info: FileInfo{Path: tmpFile.Name()}}
+	wc := newWriteCache(0) // caching disabled — forces the direct WriteAt branch
+	open := make(map[fileKey]*openFile)
+	key := fileKey{jobID: "job1", fileIdx: 0}
+	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("data")}
+
+	if got := a.writeArticleOrBuffer(f, key, req, wc, open); got {
+		t.Error("writeArticleOrBuffer on closed file: got true, want false")
+	}
+	if got := pipelineErrorCount("disk_write_error"); got != 1 {
+		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
+	}
+}
+
+// TestAssembler_WriteCachedArticlesDiskErrorCountsPipelineError exercises the
+// cache-drain WriteAt path in writeCachedArticles, asserting
+// telemetry.PipelineErrors classification. Not a t.Parallel() test —
+// PipelineErrors is process-global state.
+func TestAssembler_WriteCachedArticlesDiskErrorCountsPipelineError(t *testing.T) {
+	telemetry.Reset()
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "assembler_write_cached_err_")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpFile.Close() // WriteAt will fail
+
+	a := &Assembler{log: slog.Default()}
+	f := &openFile{handle: tmpFile, info: FileInfo{Path: tmpFile.Name()}}
+	arts := []bufferedArticle{{offset: 0, data: []byte("data")}}
+
+	a.writeCachedArticles(f, arts, "drain")
+
+	if got := pipelineErrorCount("disk_write_error"); got != 1 {
+		t.Errorf("PipelineErrors[disk_write_error] = %d, want 1", got)
 	}
 }
 

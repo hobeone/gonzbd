@@ -1,8 +1,10 @@
 // Package telemetry provides expvar-based pipeline performance counters.
 //
-// All counters are lock-free (atomic int64) and safe for concurrent
-// increment from multiple goroutines. They are automatically exposed at
-// /debug/vars by the expvar package.
+// The scalar counters below are lock-free (atomic int64) and safe for
+// concurrent increment from multiple goroutines. PipelineErrors is an
+// expvar.Map (internally mutex-guarded rather than atomic, but still
+// documented by the stdlib as safe for concurrent use). All are
+// automatically exposed at /debug/vars by the expvar package.
 //
 // Usage in tests: call Reset() to zero all counters between test runs.
 package telemetry
@@ -25,6 +27,18 @@ var (
 	// ArticlesWritten counts articles successfully enqueued to the
 	// assembler via WriteArticle.
 	ArticlesWritten = expvar.NewInt("pipeline_articles_written")
+
+	// PipelineErrors counts failures by classified cause (e.g.
+	// "nntp_no_article", "crc_mismatch", "disk_write_error"), incremented
+	// at the point of detection in the downloader and assembler packages.
+	//
+	// This counts attempts, not articles: connection-level failures
+	// (auth, dial, transient server errors) are handled entirely within
+	// the downloader's retry/penalty logic and never produce an
+	// ArticleResult, so they only ever appear here, not in
+	// ArticlesFailed/ArticlesRetried above. Its total should not be
+	// compared 1:1 against those flat counters.
+	PipelineErrors = expvar.NewMap("pipeline_errors_by_class")
 )
 
 // Assembler counters — incremented by the assembler worker goroutine.
@@ -73,4 +87,5 @@ func Reset() {
 	CachePressureFlushes.Set(0)
 	FilesCompleted.Set(0)
 	PreallocCalls.Set(0)
+	PipelineErrors.Init()
 }
