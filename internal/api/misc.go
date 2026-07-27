@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // modeGetCats returns the list of configured categories.
@@ -14,11 +12,9 @@ func (s *Server) modeGetCats(w http.ResponseWriter, r *http.Request) {
 	cats := []string{"*"} // Always include wildcard
 
 	if s.config != nil {
-		s.config.WithRead(func(c *config.Config) {
-			for _, cat := range c.Categories {
-				cats = append(cats, cat.Name)
-			}
-		})
+		for _, cat := range s.config.GetCategories() {
+			cats = append(cats, cat.Name)
+		}
 	}
 
 	respondOK(w, "categories", cats)
@@ -31,9 +27,7 @@ func (s *Server) modeGetScripts(w http.ResponseWriter, r *http.Request) {
 
 	var scriptDir string
 	if s.config != nil {
-		s.config.WithRead(func(c *config.Config) {
-			scriptDir = c.General.ScriptDir
-		})
+		scriptDir = s.config.GetGeneral().ScriptDir
 	}
 
 	if scriptDir != "" {
@@ -67,18 +61,17 @@ func (s *Server) configuredRoots() []string {
 	if s.config == nil {
 		return roots
 	}
-	s.config.WithRead(func(cfg *config.Config) {
-		for _, dir := range []string{
-			cfg.General.DownloadDir,
-			cfg.General.CompleteDir,
-			cfg.General.DirscanDir,
-			cfg.General.ScriptDir,
-		} {
-			if dir != "" {
-				roots = append(roots, filepath.Clean(dir))
-			}
+	gen := s.config.GetGeneral()
+	for _, dir := range []string{
+		gen.DownloadDir,
+		gen.CompleteDir,
+		gen.DirscanDir,
+		gen.ScriptDir,
+	} {
+		if dir != "" {
+			roots = append(roots, filepath.Clean(dir))
 		}
-	})
+	}
 	return roots
 }
 

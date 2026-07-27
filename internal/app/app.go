@@ -147,21 +147,17 @@ func (app *Application) SetNotifier(d *notifier.Dispatcher) {
 
 // New constructs an Application from cfg.
 func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application)) (*Application, error) {
-	var dlDir, completeDir, adminDir string
-	var writeCacheBytes, minFreeBytes int64
-	var maxActiveJobs int
-	var sanitize fsutil.SanitizeOptions
-	var serversConfig []config.ServerConfig
-	cfg.WithRead(func(c *config.Config) {
-		dlDir = c.General.DownloadDir
-		completeDir = c.General.CompleteDir
-		adminDir = c.General.AdminDir
-		writeCacheBytes = int64(c.Downloads.WriteCacheSize)
-		minFreeBytes = int64(c.Downloads.MinFreeSpace)
-		maxActiveJobs = c.Downloads.MaxActiveJobs
-		sanitize = c.Downloads.SanitizeOptions()
-		serversConfig = c.Servers
-	})
+	snap := cfg.Snapshot()
+	gen := &snap.General
+	dl := snap.Downloads
+	dlDir := gen.DownloadDir
+	completeDir := gen.CompleteDir
+	adminDir := gen.AdminDir
+	writeCacheBytes := int64(dl.WriteCacheSize)
+	minFreeBytes := int64(dl.MinFreeSpace)
+	maxActiveJobs := dl.MaxActiveJobs
+	sanitize := dl.SanitizeOptions()
+	serversConfig := snap.Servers
 
 	if dlDir == "" {
 		return nil, errors.New("app: DownloadDir is required")
@@ -233,12 +229,9 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	}
 
 	// Apply initial bandwidth limit from config.
-	var bandwidthMax int64
-	var bandwidthPerc int
-	app.config.WithRead(func(c *config.Config) {
-		bandwidthMax = int64(c.Downloads.BandwidthMax)
-		bandwidthPerc = int(c.Downloads.BandwidthPerc)
-	})
+	dl = app.config.GetDownloads()
+	bandwidthMax := int64(dl.BandwidthMax)
+	bandwidthPerc := int(dl.BandwidthPerc)
 
 	app.bandwidthMax.Store(bandwidthMax)
 	perc := bandwidthPerc
@@ -420,10 +413,7 @@ func (app *Application) detectDuplicateNZB(ctx context.Context, job *queue.Job, 
 // AddJob validates, deduplicates, and enqueues a new download job. If force
 // is false and a duplicate is detected, the job is added in a paused state.
 func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byte, force bool) error {
-	var adminDir string
-	app.config.WithRead(func(c *config.Config) {
-		adminDir = c.General.AdminDir
-	})
+	adminDir := app.config.GetGeneral().AdminDir
 	nzbDir := filepath.Join(adminDir, "nzb")
 	if err := os.MkdirAll(nzbDir, 0o750); err != nil {
 		return fmt.Errorf("app: mkdir admin nzb: %w", err)
@@ -439,13 +429,11 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	// Pick a name not already taken in the queue or on disk. queue.Add
 	// re-checks under its write lock (authoritative), so the small TOCTOU
 	// window here is limited to filesystem collisions which are benign.
-	var downloadDir, completeDir string
-	var categories []config.CategoryConfig
-	app.config.WithRead(func(c *config.Config) {
-		downloadDir = c.General.DownloadDir
-		completeDir = c.General.CompleteDir
-		categories = c.Categories
-	})
+	snap := app.config.Snapshot()
+	gen := &snap.General
+	downloadDir := gen.DownloadDir
+	completeDir := gen.CompleteDir
+	categories := snap.Categories
 	job.Name = queue.UniqueName(job.Name, func(name string) bool {
 		if app.queue.ExistsByName(name) {
 			return true
@@ -508,10 +496,7 @@ func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bo
 	}
 	app.pipeline.forgetJob(id)
 	if deleteFiles {
-		var downloadDir string
-		app.config.WithRead(func(c *config.Config) {
-			downloadDir = c.General.DownloadDir
-		})
+		downloadDir := app.config.GetGeneral().DownloadDir
 		path := filepath.Join(downloadDir, snap.Name)
 		if err := safeDeleteDir(path, downloadDir); err != nil {
 			app.log.Warn("failed to delete job directory", "path", path, "err", err)
@@ -543,11 +528,9 @@ func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteF
 		return fmt.Errorf("app: get history: %w", err)
 	}
 	if deleteFiles && entry.Path != "" {
-		var downloadDir, completeDir string
-		app.config.WithRead(func(c *config.Config) {
-			downloadDir = c.General.DownloadDir
-			completeDir = c.General.CompleteDir
-		})
+		gen := app.config.GetGeneral()
+		downloadDir := gen.DownloadDir
+		completeDir := gen.CompleteDir
 		// A history job's files may live under the complete dir (finished)
 		// or the download dir (failed); allow either, refuse anything else.
 		if err := safeDeleteDir(entry.Path, completeDir, downloadDir); err != nil {
@@ -781,10 +764,7 @@ func (app *Application) Shutdown() error {
 		errs = append(errs, fmt.Errorf("postprocessor stop: %w", err))
 	}
 
-	var adminDir string
-	app.config.WithRead(func(c *config.Config) {
-		adminDir = c.General.AdminDir
-	})
+	adminDir := app.config.GetGeneral().AdminDir
 	if err := app.queue.Save(filepath.Join(adminDir, "queue")); err != nil {
 		errs = append(errs, fmt.Errorf("queue save: %w", err))
 	}
@@ -802,10 +782,7 @@ func (app *Application) runCheckpoint(ctx context.Context, interval time.Duratio
 			if !app.queue.IsDirty() {
 				continue
 			}
-			var adminDir string
-			app.config.WithRead(func(c *config.Config) {
-				adminDir = c.General.AdminDir
-			})
+			adminDir := app.config.GetGeneral().AdminDir
 			_ = app.queue.Save(filepath.Join(adminDir, "queue"))
 		}
 	}
@@ -842,11 +819,9 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 
 	// DirectUnpack: feed completed RAR volumes to the unpacker for
 	// streaming extraction during download.
-	var directUnpack, enableUnrar bool
-	app.config.WithRead(func(c *config.Config) {
-		directUnpack = c.PostProc.DirectUnpack
-		enableUnrar = c.PostProc.EnableUnrar
-	})
+	pp := app.config.GetPostProc()
+	directUnpack := pp.DirectUnpack
+	enableUnrar := pp.EnableUnrar
 	if directUnpack && enableUnrar {
 		app.duOrch.maybeStart(fc)
 	}
@@ -875,12 +850,10 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	if !snap.HasDeferredPar2() || snap.Progress().Par2Recovered() {
 		return false
 	}
-	var downloadDir string
-	var parseOpts par2.ParseOptions
-	app.config.WithRead(func(c *config.Config) {
-		downloadDir = c.General.DownloadDir
-		parseOpts = par2.ParseOptionsFromConfig(&c.PostProc)
-	})
+	cfgSnap := app.config.Snapshot()
+	downloadDir := cfgSnap.General.DownloadDir
+	pp := &cfgSnap.PostProc
+	parseOpts := par2.ParseOptionsFromConfig(pp)
 	dir := filepath.Join(downloadDir, snap.Name)
 	needsRecovery, reason := par2NeedsRecovery(dir, snap.Manifest(), snap.Progress(), app.log, parseOpts)
 	if !needsRecovery {
@@ -1026,10 +999,7 @@ func (app *Application) maybeFinalize(jobID, failMsg string) { //nocover: defens
 		// next periodic checkpoint (~30s) would lose the flag, causing
 		// articles to be re-downloaded on restart instead of entering
 		// post-processing via crash recovery.
-		var adminDir string
-		app.config.WithRead(func(c *config.Config) {
-			adminDir = c.General.AdminDir
-		})
+		adminDir := app.config.GetGeneral().AdminDir
 		if saveErr := app.queue.Save(filepath.Join(adminDir, "queue")); saveErr != nil {
 			app.log.Warn("forced queue save on job completion failed", "job", jobID, "err", saveErr)
 		}
@@ -1084,15 +1054,12 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// needs it, and keeping it around leaks memory across many downloads.
 	app.pipeline.forgetJob(job.ID)
 
-	var downloadDirBase, completeDir string
-	var categories []config.CategoryConfig
-	var sanitize fsutil.SanitizeOptions
-	app.config.WithRead(func(c *config.Config) {
-		downloadDirBase = c.General.DownloadDir
-		completeDir = c.General.CompleteDir
-		categories = c.Categories
-		sanitize = c.Downloads.SanitizeOptions()
-	})
+	snap := app.config.Snapshot()
+	gen := &snap.General
+	downloadDirBase := gen.DownloadDir
+	completeDir := gen.CompleteDir
+	categories := snap.Categories
+	sanitize := snap.Downloads.SanitizeOptions()
 	downloadDir := filepath.Join(downloadDirBase, job.Name)
 
 	// Log the handoff from download → postproc. This is the "entering
@@ -1213,10 +1180,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	if err != nil {
 		return err
 	}
-	var adminDir string
-	app.config.WithRead(func(c *config.Config) {
-		adminDir = c.General.AdminDir
-	})
+	adminDir := app.config.GetGeneral().AdminDir
 	jobPath := filepath.Join(adminDir, "history", "jobs", jobID+".json.gz")
 	job, err := queue.LoadJob(jobPath)
 	if err != nil {
@@ -1241,17 +1205,13 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 // options are applied consistently.
 func (app *Application) buildDownloaderOptions() downloader.Options {
 	q := app.queue
-	var maxArtTries, maxArtOpt int
-	var topOnly, noPenalties, preCheck bool
-	var propDelay int
-	app.config.WithRead(func(c *config.Config) {
-		maxArtTries = c.Downloads.MaxArtTries
-		maxArtOpt = c.Downloads.MaxArtOpt
-		topOnly = c.Downloads.TopOnly
-		noPenalties = c.Downloads.NoPenalties
-		preCheck = c.Downloads.PreCheck
-		propDelay = c.Downloads.PropagationDelay
-	})
+	dl := app.config.GetDownloads()
+	maxArtTries := dl.MaxArtTries
+	maxArtOpt := dl.MaxArtOpt
+	topOnly := dl.TopOnly
+	noPenalties := dl.NoPenalties
+	preCheck := dl.PreCheck
+	propDelay := dl.PropagationDelay
 	return downloader.Options{
 		MaxArtTries:      maxArtTries,
 		MaxArtOpt:        maxArtOpt,

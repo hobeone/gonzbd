@@ -4,8 +4,6 @@ import (
 	"context"
 	"net/http"
 	"time"
-
-	"github.com/hobeone/gonzbd/internal/config"
 )
 
 // healthTimeout bounds DB and disk stat checks so health probes do not hang.
@@ -41,9 +39,7 @@ func (s *Server) modeHealth(w http.ResponseWriter, r *http.Request) {
 		} else {
 			var minFreeBytes int64
 			if s.config != nil {
-				s.config.WithRead(func(c *config.Config) {
-					minFreeBytes = int64(c.Downloads.MinFreeSpace)
-				})
+				minFreeBytes = int64(s.config.GetDownloads().MinFreeSpace)
 			}
 			if minFreeBytes > 0 && free < minFreeBytes {
 				diskOK = false

@@ -162,10 +162,7 @@ func TestModeSetConfig_PersistsToDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(): %v", err)
 	}
-	var dir string
-	loaded.WithRead(func(c *config.Config) {
-		dir = c.General.DownloadDir
-	})
+	dir := loaded.GetGeneral().DownloadDir
 	if dir != "/tmp/persisted" {
 		t.Errorf("persisted download_dir = %q; want /tmp/persisted", dir)
 	}

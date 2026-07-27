@@ -3,7 +3,6 @@ package api
 import (
 	"net/http"
 
-	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/downloader"
 )
 
@@ -20,9 +19,7 @@ func (s *Server) modeFullStatus(w http.ResponseWriter, r *http.Request) {
 	// status.completedir when the config's complete_dir is relative.
 	var completeDir string
 	if s.config != nil {
-		s.config.WithRead(func(cfg *config.Config) {
-			completeDir = cfg.General.CompleteDir
-		})
+		completeDir = s.config.GetGeneral().CompleteDir
 	}
 
 	statusData := map[string]any{

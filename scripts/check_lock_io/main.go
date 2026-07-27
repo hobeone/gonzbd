@@ -71,13 +71,12 @@ var httpIOFuncs = map[string]bool{
 
 // closureLockMethods is the allowlist of methods that hold a lock for the
 // duration of a func-literal argument. Confirmed by exhaustive repo-wide
-// grep to be the only three such methods as of this writing:
-// config.Config.WithRead, config.Config.With, and
+// grep to be the only two such methods as of this writing:
+// config.Config.With, and
 // queue.Queue.ForEachUnfinishedArticle. Adding a new lock-wrapping closure
 // method anywhere in the repo requires updating this list (see
 // docs/go-standards.md).
 var closureLockMethods = map[string]bool{
-	"WithRead":                 true,
 	"With":                     true,
 	"ForEachUnfinishedArticle": true,
 }
@@ -356,7 +355,7 @@ type walker struct {
 	findings       []finding
 }
 
-// walkClosures finds every closure-wrapper call (WithRead/With/
+// walkClosures finds every closure-wrapper call (With/
 // ForEachUnfinishedArticle, or any future addition to closureLockMethods)
 // anywhere in body and treats its sole func-literal argument's entire body
 // as a locked span, regardless of which block it's nested in.
@@ -546,7 +545,7 @@ func isIOCall(call *ast.CallExpr) (desc string, ok bool) {
 		return "", false
 	}
 
-	// A closure-wrapper call itself (e.g. cfg.WithRead(func...)) is not an
+	// A closure-wrapper call itself (e.g. cfg.With(func...)) is not an
 	// I/O call — its body is handled separately by walkClosures.
 	if closureLockMethods[sel.Sel.Name] && len(call.Args) == 1 {
 		if _, isFuncLit := call.Args[0].(*ast.FuncLit); isFuncLit {

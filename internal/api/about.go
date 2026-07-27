@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
@@ -34,17 +33,18 @@ func (s *Server) modeAbout(w http.ResponseWriter, r *http.Request) {
 		sevenzCmd   string
 	)
 	if s.config != nil {
-		s.config.WithRead(func(cfg *config.Config) {
-			downloadDir = cfg.General.DownloadDir
-			completeDir = cfg.General.CompleteDir
-			adminDir = cfg.General.AdminDir
-			logDir = cfg.General.LogDir
-			dirscanDir = cfg.General.DirscanDir
-			scriptDir = cfg.General.ScriptDir
-			par2Cmd = cfg.PostProc.Par2Command
-			unrarCmd = cfg.PostProc.UnrarCommand
-			sevenzCmd = cfg.PostProc.SevenzCommand
-		})
+		snap := s.config.Snapshot()
+		gen := &snap.General
+		pp := &snap.PostProc
+		downloadDir = gen.DownloadDir
+		completeDir = gen.CompleteDir
+		adminDir = gen.AdminDir
+		logDir = gen.LogDir
+		dirscanDir = gen.DirscanDir
+		scriptDir = gen.ScriptDir
+		par2Cmd = pp.Par2Command
+		unrarCmd = pp.UnrarCommand
+		sevenzCmd = pp.SevenzCommand
 	}
 
 	// Fetch public IPv4 and IPv6 concurrently to halve the worst-case

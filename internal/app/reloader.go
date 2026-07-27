@@ -230,15 +230,11 @@ func (app *Application) SetPropagationDelay(minutes int) {
 // and forwards them to the running downloader. Must not be called while
 // holding app.mu.
 func (app *Application) pushDispatchOptions() {
-	var maxArtTries, maxArtOpt int
-	var topOnly bool
-	var propDelay int
-	app.config.WithRead(func(c *config.Config) {
-		maxArtTries = c.Downloads.MaxArtTries
-		maxArtOpt = c.Downloads.MaxArtOpt
-		topOnly = c.Downloads.TopOnly
-		propDelay = c.Downloads.PropagationDelay
-	})
+	dlCfg := app.config.GetDownloads()
+	maxArtTries := dlCfg.MaxArtTries
+	maxArtOpt := dlCfg.MaxArtOpt
+	topOnly := dlCfg.TopOnly
+	propDelay := dlCfg.PropagationDelay
 	app.mu.Lock()
 	dl := app.downloader
 	app.mu.Unlock()
