@@ -982,8 +982,20 @@ func TestWebSocketLifecycleLogging_AbnormalClose(t *testing.T) {
 	if !hasDisconnected {
 		t.Error("missing disconnected log line")
 	}
-	if disconnectReason != "failed to get reader: failed to read frame header: EOF" {
-		t.Errorf("abnormal disconnect reason got: %q, want: %q", disconnectReason, "failed to get reader: failed to read frame header: EOF")
+	// An abrupt client-side close races two independent detectors in
+	// Handle: the read goroutine's conn.Read (which normally surfaces the
+	// frame-level EOF) against the write loop's ctx.Done() case, which
+	// fires directly whenever r.Context() is canceled by net/http's own
+	// connection tracking of the same TCP close. Since conn.Read is itself
+	// bound by that same ctx, either detector can legitimately win
+	// depending on OS/goroutine scheduling — this is not deterministic and
+	// varies under CI load, so both outcomes are accepted.
+	wantReasons := map[string]bool{
+		"failed to get reader: failed to read frame header: EOF": true,
+		"context canceled": true,
+	}
+	if !wantReasons[disconnectReason] {
+		t.Errorf("abnormal disconnect reason got: %q, want one of %v", disconnectReason, wantReasons)
 	}
 }
 
