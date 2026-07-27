@@ -50,3 +50,19 @@ func TestCountersIncrement(t *testing.T) {
 		t.Errorf("DiskWriteBytes = %d, want 3072", v)
 	}
 }
+
+func TestErrorCount(t *testing.T) {
+	Reset()
+	t.Cleanup(Reset)
+
+	if got := ErrorCount(ErrClassCRCMismatch); got != 0 {
+		t.Errorf("ErrorCount(%q) = %d for an absent key, want 0", ErrClassCRCMismatch, got)
+	}
+
+	PipelineErrors.Add(ErrClassCRCMismatch, 1)
+	PipelineErrors.Add(ErrClassCRCMismatch, 1)
+
+	if got := ErrorCount(ErrClassCRCMismatch); got != 2 {
+		t.Errorf("ErrorCount(%q) = %d, want 2", ErrClassCRCMismatch, got)
+	}
+}
