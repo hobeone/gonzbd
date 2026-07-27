@@ -1111,7 +1111,7 @@ func printSummary(job *queue.Job, hist *history.Entry, duration time.Duration) {
 	fmt.Printf("------------------------\n\n")
 }
 
-func loadJob(cfg *config.Config, path string, log *slog.Logger) (*queue.Job, []byte, error) {
+func loadJob(cfg *config.Config, path string, log *slog.Logger) (*queue.Job, []byte, error) { //nocover: thin delegator to unit-tested app.BuildIngestJob, covered end-to-end by test/integration/oneshot_test.go
 	data, err := os.ReadFile(path) //nolint:gosec // G304: user-supplied NZB path is the whole point
 	if err != nil {
 		return nil, nil, err

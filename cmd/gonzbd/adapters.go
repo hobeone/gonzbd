@@ -24,7 +24,7 @@ type ingestHandler struct {
 	logger *slog.Logger
 }
 
-func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) (string, error) {
+func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) (string, error) { //nocover: thin delegator to unit-tested app.BuildIngestJob, covered end-to-end by test/integration/api_test.go
 	parsed, err := nzb.Parse(bytes.NewReader(data))
 	if err != nil {
 		return "", fmt.Errorf("parse nzb %q: %w", filename, err)
