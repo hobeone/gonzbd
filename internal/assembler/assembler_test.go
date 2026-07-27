@@ -1670,8 +1670,19 @@ func TestAssembler_FlushRunError(t *testing.T) {
 func TestAssembler_CloseJobHandles(t *testing.T) {
 	dir := t.TempDir()
 	testutil.AssertNoFDLeaks(t, dir)
+	dir1 := filepath.Join(dir, "sub1")
+	dir2 := filepath.Join(dir, "sub2")
+	if err := os.MkdirAll(dir1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	files := make(map[string]FileInfo)
-	path := registerFile(t, dir, files, "job1", 0, 5)
+	path0 := registerFile(t, dir, files, "job1", 0, 5)
+	path1 := registerFile(t, dir1, files, "job1", 1, 5)
+	path2 := registerFile(t, dir2, files, "job1", 2, 5)
 
 	a := New(makeOpts(dir, files), nil)
 	if err := a.Start(t.Context()); err != nil {
@@ -1679,20 +1690,24 @@ func TestAssembler_CloseJobHandles(t *testing.T) {
 	}
 	defer a.Stop()
 
-	// Write 1 part so the file is opened and sitting incomplete in open map.
-	req := WriteRequest{JobID: "job1", FileIdx: 0, Offset: 0, Data: []byte("0000")}
-	if err := a.WriteArticle(t.Context(), req); err != nil {
-		t.Fatalf("WriteArticle: %v", err)
+	// Write 1 part to each file index so all 3 are opened and sitting incomplete in open map.
+	for idx := range 3 {
+		req := WriteRequest{JobID: "job1", FileIdx: idx, Offset: 0, Data: []byte("0000")}
+		if err := a.WriteArticle(t.Context(), req); err != nil {
+			t.Fatalf("WriteArticle fileIdx=%d: %v", idx, err)
+		}
 	}
 
-	// Calling CloseJobHandles must close open file descriptors and remove from open map,
-	// but must NOT delete the file from disk (unlike CancelJob).
+	// Calling CloseJobHandles must close all 3 open file descriptors and remove from open map,
+	// but must NOT delete the files from disk (unlike CancelJob).
 	if err := a.CloseJobHandles(t.Context(), "job1"); err != nil {
 		t.Fatalf("CloseJobHandles: %v", err)
 	}
 
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("file was deleted from disk, should have been preserved: %v", err)
+	for _, p := range []string{path0, path1, path2} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("file %s was deleted from disk, should have been preserved: %v", p, err)
+		}
 	}
 
 	// Test stopped state.
