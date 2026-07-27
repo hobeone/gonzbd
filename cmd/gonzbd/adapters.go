@@ -11,9 +11,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
-	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
-	"github.com/hobeone/gonzbd/internal/queue"
 	"github.com/hobeone/gonzbd/internal/types"
 )
 
@@ -26,33 +24,16 @@ type ingestHandler struct {
 	logger *slog.Logger
 }
 
-func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) (string, error) {
+func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []byte, opts types.FetchOptions) (string, error) { //nocover: thin delegator to unit-tested app.BuildIngestJob, covered end-to-end by test/integration/api_test.go
 	parsed, err := nzb.Parse(bytes.NewReader(data))
 	if err != nil {
 		return "", fmt.Errorf("parse nzb %q: %w", filename, err)
 	}
 	log := h.logger
-	addOpts := queue.AddOptions{
-		Filename: filename,
-		Name:     opts.NzbName,
-		Category: opts.Category,
-		Password: opts.Password,
-		PP:       opts.PP,
-		Script:   opts.Script,
-		Priority: opts.Priority,
-		Logger:   log,
-	}
-	sOpts := fsutil.SanitizeOptions{}
-	if h.config != nil {
-		h.config.WithRead(func(cfg *config.Config) {
-			sOpts = cfg.Downloads.SanitizeOptions()
-			addOpts.Categories = cfg.Categories
-			addOpts.OnDemandPar2 = cfg.Downloads.OnDemandPar2
-		})
-	}
-	job, err := queue.NewJob(parsed, addOpts, sOpts)
+
+	job, err := app.BuildIngestJob(h.config, parsed, filename, opts, log)
 	if err != nil {
-		return "", fmt.Errorf("create job %q: %w", filename, err)
+		return "", err
 	}
 
 	if err := h.app.AddJob(ctx, job, data, false); err != nil {
