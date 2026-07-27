@@ -96,8 +96,9 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	// pp is a whole-struct snapshot used by the shared config→stage translators
 	// (unpackConfigFromPP / repairConfigFromPP). The remaining locals feed the
 	// one-liner stages and construction-only settings.
-	pp := cfg.GetPostProc()
-	gen := cfg.GetGeneral()
+	snap := cfg.Snapshot()
+	pp := snap.PostProc
+	gen := &snap.General
 	enableQuickCheck := pp.EnableQuickCheck
 	enableRarVolumeRecovery := pp.EnableRarVolumeRecovery
 	ignoreSamples := pp.IgnoreSamples

@@ -239,9 +239,8 @@ func (s *Server) reloadSection(section string) {
 	}
 	switch section {
 	case "postproc":
-		pp := s.config.GetPostProc()
-		gen := s.config.GetGeneral()
-		s.reload.ReloadPostProcOptions(pp, gen.ScriptDir)
+		snap := s.config.Snapshot()
+		s.reload.ReloadPostProcOptions(snap.PostProc, snap.General.ScriptDir)
 	case "downloads":
 		d := s.config.GetDownloads()
 		s.reload.ReloadDownloadOptions(d)

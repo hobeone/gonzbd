@@ -33,8 +33,9 @@ func (s *Server) modeAbout(w http.ResponseWriter, r *http.Request) {
 		sevenzCmd   string
 	)
 	if s.config != nil {
-		gen := s.config.GetGeneral()
-		pp := s.config.GetPostProc()
+		snap := s.config.Snapshot()
+		gen := &snap.General
+		pp := &snap.PostProc
 		downloadDir = gen.DownloadDir
 		completeDir = gen.CompleteDir
 		adminDir = gen.AdminDir

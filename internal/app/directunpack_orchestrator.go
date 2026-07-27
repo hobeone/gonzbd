@@ -73,8 +73,9 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	o.mu.Lock()
 	du, exists := o.unpackers[fc.JobID]
 	if !exists {
-		downloadDirBase := app.config.GetGeneral().DownloadDir
-		pp := app.config.GetPostProc()
+		cfgSnap := app.config.Snapshot()
+		downloadDirBase := cfgSnap.General.DownloadDir
+		pp := &cfgSnap.PostProc
 		limit := pp.DirectUnpackThreads
 		flatUnpack := pp.FlatUnpack
 		overwriteFiles := pp.OverwriteFiles

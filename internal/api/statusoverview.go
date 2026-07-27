@@ -29,9 +29,10 @@ func (s *Server) modeStatusOverview(w http.ResponseWriter, r *http.Request) {
 		minFreeSpace                                          int64
 	)
 	if s.config != nil {
-		gen := s.config.GetGeneral()
-		pp := s.config.GetPostProc()
-		dl := s.config.GetDownloads()
+		snap := s.config.Snapshot()
+		gen := &snap.General
+		pp := &snap.PostProc
+		dl := &snap.Downloads
 		downloadDir = gen.DownloadDir
 		completeDir = gen.CompleteDir
 		adminDir = gen.AdminDir

@@ -147,8 +147,9 @@ func (app *Application) SetNotifier(d *notifier.Dispatcher) {
 
 // New constructs an Application from cfg.
 func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application)) (*Application, error) {
-	gen := cfg.GetGeneral()
-	dl := cfg.GetDownloads()
+	snap := cfg.Snapshot()
+	gen := &snap.General
+	dl := snap.Downloads
 	dlDir := gen.DownloadDir
 	completeDir := gen.CompleteDir
 	adminDir := gen.AdminDir
@@ -156,7 +157,7 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 	minFreeBytes := int64(dl.MinFreeSpace)
 	maxActiveJobs := dl.MaxActiveJobs
 	sanitize := dl.SanitizeOptions()
-	serversConfig := cfg.GetServers()
+	serversConfig := snap.Servers
 
 	if dlDir == "" {
 		return nil, errors.New("app: DownloadDir is required")
@@ -428,10 +429,11 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 	// Pick a name not already taken in the queue or on disk. queue.Add
 	// re-checks under its write lock (authoritative), so the small TOCTOU
 	// window here is limited to filesystem collisions which are benign.
-	gen := app.config.GetGeneral()
+	snap := app.config.Snapshot()
+	gen := &snap.General
 	downloadDir := gen.DownloadDir
 	completeDir := gen.CompleteDir
-	categories := app.config.GetCategories()
+	categories := snap.Categories
 	job.Name = queue.UniqueName(job.Name, func(name string) bool {
 		if app.queue.ExistsByName(name) {
 			return true
@@ -848,9 +850,10 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	if !snap.HasDeferredPar2() || snap.Progress().Par2Recovered() {
 		return false
 	}
-	downloadDir := app.config.GetGeneral().DownloadDir
-	pp := app.config.GetPostProc()
-	parseOpts := par2.ParseOptionsFromConfig(&pp)
+	cfgSnap := app.config.Snapshot()
+	downloadDir := cfgSnap.General.DownloadDir
+	pp := &cfgSnap.PostProc
+	parseOpts := par2.ParseOptionsFromConfig(pp)
 	dir := filepath.Join(downloadDir, snap.Name)
 	needsRecovery, reason := par2NeedsRecovery(dir, snap.Manifest(), snap.Progress(), app.log, parseOpts)
 	if !needsRecovery {
@@ -1051,11 +1054,12 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 	// needs it, and keeping it around leaks memory across many downloads.
 	app.pipeline.forgetJob(job.ID)
 
-	gen := app.config.GetGeneral()
+	snap := app.config.Snapshot()
+	gen := &snap.General
 	downloadDirBase := gen.DownloadDir
 	completeDir := gen.CompleteDir
-	categories := app.config.GetCategories()
-	sanitize := app.config.GetDownloads().SanitizeOptions()
+	categories := snap.Categories
+	sanitize := snap.Downloads.SanitizeOptions()
 	downloadDir := filepath.Join(downloadDirBase, job.Name)
 
 	// Log the handoff from download → postproc. This is the "entering
