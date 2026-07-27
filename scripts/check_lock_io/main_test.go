@@ -18,14 +18,14 @@ func writeFixture(t *testing.T, src string) string {
 }
 
 // TestClosureWrapper_LogOutsideClosure is PR #125's fixed shape: the log
-// call sits after WithRead returns, not inside its closure. Must not be
+// call sits after With returns, not inside its closure. Must not be
 // flagged.
 func TestClosureWrapper_LogOutsideClosure(t *testing.T) {
 	path := writeFixture(t, `package fixture
 
 func trustedFn(cfg *Config, log *Logger) {
 	var trusted bool
-	cfg.WithRead(func(c *Config) {
+	cfg.With(func(c *Config) {
 		trusted = c.Check()
 	})
 	if !trusted {
@@ -43,13 +43,13 @@ func trustedFn(cfg *Config, log *Logger) {
 }
 
 // TestClosureWrapper_LogInsideClosure reconstructs PR #125's original bug:
-// the log call lexically inside the WithRead closure. Must be flagged.
+// the log call lexically inside the With closure. Must be flagged.
 func TestClosureWrapper_LogInsideClosure(t *testing.T) {
 	path := writeFixture(t, `package fixture
 
 func trustedFn(cfg *Config, log *Logger) bool {
 	var trusted bool
-	cfg.WithRead(func(c *Config) {
+	cfg.With(func(c *Config) {
 		trusted = c.Check()
 		if !trusted {
 			log.Warn("refused", "reason", "not trusted")
@@ -63,7 +63,7 @@ func trustedFn(cfg *Config, log *Logger) bool {
 		t.Fatalf("checkFile: %v", err)
 	}
 	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding for log call inside WithRead closure, got %d: %v", len(findings), findings)
+		t.Fatalf("expected 1 finding for log call inside With closure, got %d: %v", len(findings), findings)
 	}
 }
 

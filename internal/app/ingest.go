@@ -34,11 +34,10 @@ func BuildIngestJob(cfg *config.Config, parsed *nzb.NZB, filename string, opts t
 	}
 	var sOpts fsutil.SanitizeOptions
 	if cfg != nil {
-		cfg.WithRead(func(c *config.Config) {
-			sOpts = c.Downloads.SanitizeOptions()
-			addOpts.Categories = c.Categories
-			addOpts.OnDemandPar2 = c.Downloads.OnDemandPar2
-		})
+		snap := cfg.IngestSnapshot()
+		sOpts = snap.Downloads.SanitizeOptions()
+		addOpts.Categories = snap.Categories
+		addOpts.OnDemandPar2 = snap.Downloads.OnDemandPar2
 	}
 
 	job, err := queue.NewJob(parsed, addOpts, sOpts)
