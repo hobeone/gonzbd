@@ -334,17 +334,23 @@ func TestGoUnRAR_NotAnArchive(t *testing.T) {
 }
 
 func TestGoUnRAR_ContextCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately.
-
 	outDir := t.TempDir()
 	archive := Archive{
 		Type:     RarArchive,
 		Name:     "single_rar5",
 		MainFile: filepath.Join("testdata", "single_rar5.rar"),
 	}
+	testutil.AssertNoFDLeaks(t, outDir)
 
-	_, err := GoUnRAR(ctx, slog.Default(), archive, outDir, "", Options{})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	_, err := GoUnRAR(ctx, slog.Default(), archive, outDir, "", Options{
+		OnLine: func(string) {
+			// Trigger cancellation mid-extraction while volume file descriptors are open.
+			cancel()
+		},
+	})
 	if err == nil {
 		t.Fatal("GoUnRAR() expected error for cancelled context")
 	}

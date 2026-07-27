@@ -75,6 +75,30 @@ func makeRaw(size int) []byte {
 	return b
 }
 
+func TestDecodeArticle_StaticVector(t *testing.T) {
+	// Static yEnc vector for payload "ABC" (ASCII 65, 66, 67 -> +42 -> 107 'k', 108 'l', 109 'm').
+	// CRC32(IEEE) of "ABC" is 0xa3830348.
+	input := []byte("=ybegin line=128 size=3 name=static.txt\r\nklm\r\n=yend size=3 crc32=a3830348\r\n")
+
+	art, err := DecodeArticle(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !bytes.Equal(art.Data, []byte("ABC")) {
+		t.Errorf("decoded data = %q, want ABC", art.Data)
+	}
+	if art.CRC != 0xa3830348 {
+		t.Errorf("CRC mismatch: got 0x%08x, want 0xa3830348", art.CRC)
+	}
+
+	// Negative static check: corrupted header CRC must return ErrCRCMismatch.
+	corruptInput := []byte("=ybegin line=128 size=3 name=static.txt\r\nklm\r\n=yend size=3 crc32=deadbeef\r\n")
+	_, err = DecodeArticle(corruptInput)
+	if !errors.Is(err, ErrCRCMismatch) {
+		t.Errorf("expected ErrCRCMismatch for corrupt static CRC, got %v", err)
+	}
+}
+
 func TestDecodeArticle_SinglePart(t *testing.T) {
 	raw := makeRaw(1000)
 	article := yencEncode("test.bin", raw)
@@ -98,9 +122,11 @@ func TestDecodeArticle_SinglePart(t *testing.T) {
 	if art.Filename != "test.bin" {
 		t.Errorf("Filename = %q, want test.bin", art.Filename)
 	}
-	want := crc32.ChecksumIEEE(raw)
-	if art.CRC != want {
-		t.Errorf("CRC mismatch: got 0x%08x, want 0x%08x", art.CRC, want)
+	// Verify against statically computed CRC of makeRaw(1000) rather than tautologically
+	// calling crc32.ChecksumIEEE(raw) which mirrors the encoder.
+	const expectedRaw1000CRC uint32 = 0x74e3fb41
+	if art.CRC != expectedRaw1000CRC {
+		t.Errorf("CRC mismatch: got 0x%08x, want 0x%08x", art.CRC, expectedRaw1000CRC)
 	}
 }
 
@@ -126,9 +152,9 @@ func TestDecodeArticle_MultiPart(t *testing.T) {
 	if art.TotalSize != fileSize {
 		t.Errorf("expected TotalSize=%d, got %d", fileSize, art.TotalSize)
 	}
-	want := crc32.ChecksumIEEE(part)
-	if art.CRC != want {
-		t.Errorf("CRC mismatch: got 0x%08x, want 0x%08x", art.CRC, want)
+	const expectedRaw1000CRC uint32 = 0x74e3fb41
+	if art.CRC != expectedRaw1000CRC {
+		t.Errorf("CRC mismatch: got 0x%08x, want 0x%08x", art.CRC, expectedRaw1000CRC)
 	}
 }
 

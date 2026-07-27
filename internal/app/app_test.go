@@ -53,20 +53,28 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 		},
 	)
 
-	db, _ := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
 	repo := history.NewRepository(db)
 	defer db.Close()
 
-	application, _ := app.New(appCfg, repo)
+	application, err := app.New(appCfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(t.Context())
-	_ = application.Start(ctx)
+	if err := application.Start(ctx); err != nil {
+		t.Fatalf("application.Start: %v", err)
+	}
 	defer cancel()
 	defer application.Shutdown()
 
 	parsed := &nzb.NZB{
 		Files: []nzb.File{{
-			Subject: "test.par2", // Subject implies par2 so we get some Par2Bytes
+			Subject: "test.bin",
 			Articles: []nzb.Article{
 				{ID: "p1@t", Bytes: partSize, Number: 1},
 				{ID: "p2@t", Bytes: partSize, Number: 2},
@@ -74,19 +82,15 @@ func TestDownloadLifecycleJobHopelessMovesToHistory(t *testing.T) {
 			Bytes: fileSize,
 		}},
 	}
-	// Total bytes is 10k. Failed bytes will reach 10k quickly.
-	// If it's a .par2 file, it might not count toward recovery budget in the same way,
-	// but currently NewJob calculates Par2Bytes from .par2 articles.
-	_, _ = queue.NewJob(parsed, queue.AddOptions{Name: "hopeless-test"}, fsutil.SanitizeOptions{})
-	// Force Par2Bytes to be small so it triggers quickly
-	// Actually, let's just make it a normal file and it will have 0 Par2Bytes.
-	// 0 failed bytes > 0 par2 bytes is NOT true.
-	// 1 failed byte > 0 par2 bytes IS true.
-	parsed.Files[0].Subject = "test.bin"
-	job, _ := queue.NewJob(parsed, queue.AddOptions{Name: "hopeless-test"}, fsutil.SanitizeOptions{})
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "hopeless-test"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("queue.NewJob: %v", err)
+	}
 
 	jobID := job.ID
-	_ = application.Queue().Add(job)
+	if err := application.Queue().Add(job); err != nil {
+		t.Fatalf("Queue().Add: %v", err)
+	}
 
 	// Wait for completion (it should move to history as Failed)
 	select {
