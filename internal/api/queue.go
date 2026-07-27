@@ -681,9 +681,7 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 
 	var cats []config.CategoryConfig
 	if s.config != nil {
-		s.config.WithRead(func(cfg *config.Config) {
-			cats = cfg.Categories
-		})
+		cats = s.config.GetCategories()
 	}
 	if err := s.queue.SetCategory(nzoID, cat, cats); err != nil {
 		s.respondError(w, http.StatusNotFound, err.Error())

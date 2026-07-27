@@ -176,11 +176,7 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Hot-reload core components if their configuration changed.
 	if section == "servers" && s.reload != nil {
-		var servers []config.ServerConfig
-		s.config.WithRead(func(cfg *config.Config) {
-			servers = make([]config.ServerConfig, len(cfg.Servers))
-			copy(servers, cfg.Servers)
-		})
+		servers := s.config.GetServers()
 		if err := s.reload.ReloadDownloader(servers); err != nil {
 			s.log.Error("reload servers", "error", err)
 			// Return 200 because the config was saved, but add a warning.
@@ -221,17 +217,13 @@ func (s *Server) modeSetConfig(w http.ResponseWriter, r *http.Request) {
 // applySpeedLimit reads bandwidth_max and bandwidth_perc from the live
 // config and pushes the computed limit to the running downloader.
 func (s *Server) applySpeedLimit() {
-	var bytesPerSec int64
-	var maxBytes int64
-	var perc int
-	s.config.WithRead(func(cfg *config.Config) {
-		maxBytes = int64(cfg.Downloads.BandwidthMax)
-		perc = int(cfg.Downloads.BandwidthPerc)
-		if perc <= 0 || perc > 100 {
-			perc = 100
-		}
-		bytesPerSec = maxBytes * int64(perc) / 100
-	})
+	dl := s.config.GetDownloads()
+	maxBytes := int64(dl.BandwidthMax)
+	perc := int(dl.BandwidthPerc)
+	if perc <= 0 || perc > 100 {
+		perc = 100
+	}
+	bytesPerSec := maxBytes * int64(perc) / 100
 	s.downloads.SetSpeedLimit(bytesPerSec)
 	s.downloads.SetBandwidthMax(maxBytes)
 	s.downloads.SetBandwidthPerc(perc)
@@ -247,20 +239,14 @@ func (s *Server) reloadSection(section string) {
 	}
 	switch section {
 	case "postproc":
-		var pp config.PostProcConfig
-		var scriptDir string
-		s.config.WithRead(func(cfg *config.Config) {
-			pp = cfg.PostProc
-			scriptDir = cfg.General.ScriptDir
-		})
-		s.reload.ReloadPostProcOptions(pp, scriptDir)
+		pp := s.config.GetPostProc()
+		gen := s.config.GetGeneral()
+		s.reload.ReloadPostProcOptions(pp, gen.ScriptDir)
 	case "downloads":
-		var d config.DownloadConfig
-		s.config.WithRead(func(cfg *config.Config) { d = cfg.Downloads })
+		d := s.config.GetDownloads()
 		s.reload.ReloadDownloadOptions(d)
 	case "general":
-		var g config.GeneralConfig
-		s.config.WithRead(func(cfg *config.Config) { g = cfg.General })
+		g := s.config.GetGeneral()
 		s.reload.ReloadGeneralOptions(g)
 	}
 }
@@ -271,14 +257,13 @@ func (s *Server) applyDirectoryChange(keyword string) string {
 	if s.downloads == nil {
 		return ""
 	}
+	gen := s.config.GetGeneral()
 	var dir string
-	s.config.WithRead(func(cfg *config.Config) {
-		if keyword == "download_dir" {
-			dir = cfg.General.DownloadDir
-		} else {
-			dir = cfg.General.CompleteDir
-		}
-	})
+	if keyword == "download_dir" {
+		dir = gen.DownloadDir
+	} else {
+		dir = gen.CompleteDir
+	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		s.log.Error("create directory", "keyword", keyword, "dir", dir, "error", err)
 		return fmt.Sprintf("config saved but could not create %s: %v", dir, err)

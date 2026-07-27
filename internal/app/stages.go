@@ -31,14 +31,11 @@ type binaryProbe struct {
 func probeBinaries(ctx context.Context, cfg *config.Config, log *slog.Logger) binaryProbe {
 	ppLog := log.With("component", "postproc")
 
-	var par2Command, unrarCommand, sevenzCommand string
-	var par2Turbo bool
-	cfg.WithRead(func(c *config.Config) {
-		par2Command = c.PostProc.Par2Command
-		par2Turbo = c.PostProc.Par2Turbo
-		unrarCommand = c.PostProc.UnrarCommand
-		sevenzCommand = c.PostProc.SevenzCommand
-	})
+	pp := cfg.GetPostProc()
+	par2Command := pp.Par2Command
+	par2Turbo := pp.Par2Turbo
+	unrarCommand := pp.UnrarCommand
+	sevenzCommand := pp.SevenzCommand
 
 	par2Caps := par2.DetectCapabilities(ctx, par2Command)
 	if par2Caps.IsTurbo && !par2Turbo {
@@ -99,35 +96,27 @@ func buildStages(cfg *config.Config, version string, log *slog.Logger, probe bin
 	// pp is a whole-struct snapshot used by the shared config→stage translators
 	// (unpackConfigFromPP / repairConfigFromPP). The remaining locals feed the
 	// one-liner stages and construction-only settings.
-	var pp config.PostProcConfig
-	var enableQuickCheck, enableRarVolumeRecovery, ignoreSamples bool
-	var enableParCleanup, deobfuscateFilenames, folderRename, scriptCanFail bool
-	var scriptDir, completeDir, apiKey, listenAddr string
-	var nice, ionice, extraPar2Params, extraUnrarParams string
-	var cleanupExtensions []string
-	var par2ParseOpts par2.ParseOptions
-	cfg.WithRead(func(c *config.Config) {
-		pp = c.PostProc
-		enableQuickCheck = c.PostProc.EnableQuickCheck
-		enableRarVolumeRecovery = c.PostProc.EnableRarVolumeRecovery
-		ignoreSamples = c.PostProc.IgnoreSamples
-		enableParCleanup = c.PostProc.EnableParCleanup
-		deobfuscateFilenames = c.PostProc.DeobfuscateFilenames
-		folderRename = c.PostProc.FolderRename
-		scriptCanFail = c.PostProc.ScriptCanFail
-		nice = c.PostProc.Nice
-		ionice = c.PostProc.Ionice
-		extraPar2Params = c.PostProc.ExtraPar2Params
-		extraUnrarParams = c.PostProc.ExtraUnrarParams
-		cleanupExtensions = c.PostProc.CleanupExtensions
-		scriptDir = c.General.ScriptDir
-		completeDir = c.General.CompleteDir
+	pp := cfg.GetPostProc()
+	gen := cfg.GetGeneral()
+	enableQuickCheck := pp.EnableQuickCheck
+	enableRarVolumeRecovery := pp.EnableRarVolumeRecovery
+	ignoreSamples := pp.IgnoreSamples
+	enableParCleanup := pp.EnableParCleanup
+	deobfuscateFilenames := pp.DeobfuscateFilenames
+	folderRename := pp.FolderRename
+	scriptCanFail := pp.ScriptCanFail
+	nice := pp.Nice
+	ionice := pp.Ionice
+	extraPar2Params := pp.ExtraPar2Params
+	extraUnrarParams := pp.ExtraUnrarParams
+	cleanupExtensions := pp.CleanupExtensions
+	scriptDir := gen.ScriptDir
+	completeDir := gen.CompleteDir
 
-		par2ParseOpts = par2.ParseOptionsFromConfig(&c.PostProc)
+	par2ParseOpts := par2.ParseOptionsFromConfig(&pp)
 
-		apiKey = c.General.APIKey
-		listenAddr = net.JoinHostPort(c.General.Host, strconv.Itoa(c.General.Port))
-	})
+	apiKey := gen.APIKey
+	listenAddr := net.JoinHostPort(gen.Host, strconv.Itoa(gen.Port))
 
 	// Quick-check stage: relocate flat files into par2-expected subdirs
 	// and CRC-verify assembled files before repair runs. The stage is

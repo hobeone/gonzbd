@@ -267,19 +267,14 @@ func serveMode(configPath, listenOverride, downloadDirOverride, logLevelsOverrid
 	// local_range). This is the SEC-1 issuance-side gate; the API auth
 	// middleware enforces the matching acceptance-side gate.
 	trustedFn := func(r *http.Request) bool {
-		var trusted bool
-		var reason string
-		cfg.WithRead(func(c *config.Config) {
-			ranges, _ := config.ParseLocalRanges(c.General.LocalRanges)
-			fh := config.ForwardedHeaders{
-				XForwardedFor: r.Header.Get("X-Forwarded-For"),
-				Forwarded:     r.Header.Get("Forwarded"),
-				XRealIP:       r.Header.Get("X-Real-IP"),
-			}
-			trusted, reason = config.IsTrustedRemote(r.RemoteAddr, fh, ranges, c.General.VerifyXFFHeader, c.General.TrustedForwardHeader)
-		})
-		// Logged outside WithRead's lock: log.Warn may block on I/O, and the
-		// config read lock must not be held across it.
+		gen := cfg.GetGeneral()
+		ranges, _ := config.ParseLocalRanges(gen.LocalRanges)
+		fh := config.ForwardedHeaders{
+			XForwardedFor: r.Header.Get("X-Forwarded-For"),
+			Forwarded:     r.Header.Get("Forwarded"),
+			XRealIP:       r.Header.Get("X-Real-IP"),
+		}
+		trusted, reason := config.IsTrustedRemote(r.RemoteAddr, fh, ranges, gen.VerifyXFFHeader, gen.TrustedForwardHeader)
 		if !trusted {
 			log.Warn("refused session cookie / /debug/ access: source not trusted", "remote_addr", r.RemoteAddr, "reason", reason)
 		}
@@ -541,13 +536,11 @@ func startDirScanner(ctx context.Context, cfg *config.Config, adminDir string, h
 		interval = 5 * time.Second
 	}
 	catFn := func() []string {
-		var names []string
-		cfg.WithRead(func(c *config.Config) {
-			names = make([]string, len(c.Categories))
-			for i, cat := range c.Categories {
-				names[i] = cat.Name
-			}
-		})
+		cats := cfg.GetCategories()
+		names := make([]string, len(cats))
+		for i, cat := range cats {
+			names[i] = cat.Name
+		}
 		return names
 	}
 	sc := dirscanner.New(cfg.General.DirscanDir, store, h, catFn, slog.Default().With("component", "dirscanner"))

@@ -179,7 +179,7 @@ func TestApplication_ReloadOptions(t *testing.T) {
 // a regression of the self-deadlock previously present in
 // internal/api/config.go's modeSetConfig handler, which used to call:
 //
-//	s.config.WithRead(func(cfg *config.Config) { s.app.ReloadPostProcOptions(cfg) })
+//	pp := s.config.GetPostProc(); s.app.ReloadPostProcOptions(pp, ...)
 //
 // ReloadPostProcOptions calls several Set* methods (SetEnableFileJoin,
 // SetEnableRecursive, SetDirectUnpack, etc.) that internally call
@@ -194,7 +194,7 @@ func TestApplication_ReloadOptions(t *testing.T) {
 // ReloadPostProcOptions's signature now takes a value snapshot
 // (config.PostProcConfig) instead of *config.Config, which makes it
 // impossible to pass a still-locked config through to it. This test exercises
-// the correct pattern — snapshot under WithRead, release, then call — and
+// the correct pattern — value getter snapshot, then call — and
 // guards the snapshot's release-before-call ordering with a timeout in case a
 // future change reintroduces the lock-holding call.
 func TestApplication_ReloadPostProcOptions_NoDeadlockUnderReadLock(t *testing.T) {
@@ -206,12 +206,8 @@ func TestApplication_ReloadPostProcOptions_NoDeadlockUnderReadLock(t *testing.T)
 
 	done := make(chan struct{})
 	go func() {
-		var pp config.PostProcConfig
-		var scriptDir string
-		cfg.WithRead(func(c *config.Config) {
-			pp = c.PostProc
-			scriptDir = c.General.ScriptDir
-		})
+		pp := cfg.GetPostProc()
+		scriptDir := cfg.GetGeneral().ScriptDir
 		app.ReloadPostProcOptions(pp, scriptDir)
 		close(done)
 	}()

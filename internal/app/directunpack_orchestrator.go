@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/directunpack"
 )
 
@@ -38,8 +37,7 @@ func newDirectUnpackOrchestrator(app *Application) *directUnpackOrchestrator {
 }
 
 // maybeStart starts (or feeds) a DirectUnpacker for a completed file when the
-// job is eligible for extraction-while-downloading. Formerly
-// Application.maybeDirectUnpack.
+// job is eligible for extraction-while-downloading.
 func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	app := o.app
 	snap := app.queue.SnapshotJob(fc.JobID)
@@ -75,16 +73,12 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	o.mu.Lock()
 	du, exists := o.unpackers[fc.JobID]
 	if !exists {
-		var limit int
-		var downloadDirBase string
-		var flatUnpack, overwriteFiles, ignoreUnrarDates bool
-		app.config.WithRead(func(c *config.Config) {
-			limit = c.PostProc.DirectUnpackThreads
-			downloadDirBase = c.General.DownloadDir
-			flatUnpack = c.PostProc.FlatUnpack
-			overwriteFiles = c.PostProc.OverwriteFiles
-			ignoreUnrarDates = c.PostProc.IgnoreUnrarDates
-		})
+		downloadDirBase := app.config.GetGeneral().DownloadDir
+		pp := app.config.GetPostProc()
+		limit := pp.DirectUnpackThreads
+		flatUnpack := pp.FlatUnpack
+		overwriteFiles := pp.OverwriteFiles
+		ignoreUnrarDates := pp.IgnoreUnrarDates
 		if limit > 0 && o.active >= limit {
 			o.mu.Unlock()
 			app.log.Debug("directunpack: skipping, concurrency limit reached",
@@ -130,8 +124,8 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 
 // buildOpts constructs DirectUnpack options from the given config-derived
 // values. The caller reads them (alongside the concurrency limit and download
-// dir) in a single config.WithRead, so the orchestrator lock isn't held across
-// two separate config reads. Formerly Application.buildDirectUnpackOpts.
+// dir) from value getters, so the orchestrator lock isn't held across
+// two separate config reads.
 func (o *directUnpackOrchestrator) buildOpts(flatUnpack, overwriteFiles, ignoreUnrarDates bool) directunpack.Options {
 	return directunpack.Options{
 		Password:         "", // per-job passwords are pre-checked; DU skips password jobs

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/postproc"
@@ -31,7 +30,7 @@ func newJobFinalizer(app *Application) *jobFinalizer {
 }
 
 // finalize is called by the post-processor (OnJobDone) when a job is done
-// (success or failure). Formerly Application.finalizeJob.
+// (success or failure).
 func (f *jobFinalizer) finalize(job *postproc.Job) {
 	app := f.app
 	entry := buildHistoryEntry(job)
@@ -47,10 +46,7 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 // the queue for recovery (the error is already logged; callers can simply return).
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error { //nocover: orchestrates queue-to-history transition and error fallbacks
 	app := f.app
-	var adminDir string
-	app.config.WithRead(func(c *config.Config) {
-		adminDir = c.General.AdminDir
-	})
+	adminDir := app.config.GetGeneral().AdminDir
 	histJobsDir := filepath.Join(adminDir, "history", "jobs")
 	if err := os.MkdirAll(histJobsDir, 0o750); err != nil {
 		log.Warn("failed to create history jobs dir", "err", err)

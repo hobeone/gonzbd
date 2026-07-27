@@ -30,7 +30,6 @@ func (h *ingestHandler) HandleNZB(ctx context.Context, filename string, data []b
 		return "", fmt.Errorf("parse nzb %q: %w", filename, err)
 	}
 	log := h.logger
-
 	job, err := app.BuildIngestJob(h.config, parsed, filename, opts, log)
 	if err != nil {
 		return "", err

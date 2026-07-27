@@ -36,15 +36,13 @@ func (s *Server) statusTestConnection(w http.ResponseWriter, r *http.Request) {
 
 	var target *config.ServerConfig
 	if s.config != nil {
-		s.config.WithRead(func(cfg *config.Config) {
-			for i := range cfg.Servers {
-				if cfg.Servers[i].Name == name {
-					sc := cfg.Servers[i]
-					target = &sc
-					return
-				}
+		for _, srv := range s.config.GetServers() {
+			if srv.Name == name {
+				sc := srv
+				target = &sc
+				break
 			}
-		})
+		}
 	}
 	if target == nil {
 		respondOK(w, "result", map[string]any{"ok": false, "error": "server not found: " + name})
