@@ -51,6 +51,19 @@ var (
 // bypass the NNTP layer are still protected from OOM via this cap.
 const maxDecodeSize = 10 * 1024 * 1024 // 10 MB
 
+// maxPartOffset caps the `=ypart begin=` value a server may claim. The header
+// is attacker-controlled and parsed as an unbounded int64, so without a cap a
+// single hostile article can drive the assembler's WriteAt to an arbitrary
+// offset. maxDecodeSize bounds the *payload*; this bounds the *offset*.
+//
+// 1 << 48 (256 TiB) is far above any legitimate Usenet file — a 50 GB posting
+// has offsets around 5e10, six orders of magnitude below this — so it rejects
+// MaxInt64-shaped garbage without second-guessing real file sizes. The
+// authoritative bound is the assembler's per-file ExpectedSize check; this
+// exists so malformed input fails at parse with a clear error instead of deep
+// in the write path.
+const maxPartOffset = 1 << 48
+
 // yencHeader holds the fields parsed from a =ybegin / =ypart line pair.
 type yencHeader struct {
 	size   int64 // total file size (from =ybegin)
@@ -396,14 +409,30 @@ func parseHeader(body []byte) (yencHeader, int, error) {
 		}
 		ypartLine := body[ybeginEnd+1 : ybeginEnd+1+ypartEnd]
 		var beginVal int64
+		var beginBad bool
 		parseKeyValues(ypartLine, func(k, v string) {
 			if k == "begin" {
 				n, err := strconv.ParseInt(v, 10, 64)
-				if err == nil {
-					beginVal = n
+				if err != nil {
+					// Non-numeric, or outside int64. Flag it rather than
+					// leaving beginVal at zero, which would silently coerce
+					// garbage to offset 0 and slip past the bounds check.
+					beginBad = true
+					return
 				}
+				beginVal = n
 			}
 		})
+		// Reject implausible offsets here rather than letting them reach the
+		// assembler's WriteAt (see maxPartOffset).
+		//
+		// begin=0 is deliberately tolerated. yEnc begin is 1-based, so a
+		// poster emitting 0 most plausibly means "offset 0" — already the
+		// result below. Rejecting it would buy spec-purity at the cost of
+		// failing real articles.
+		if beginBad || beginVal < 0 || beginVal > maxPartOffset {
+			return yencHeader{}, 0, errMalformed
+		}
 		// =ypart begin= is 1-based; convert to 0-based offset.
 		if beginVal > 0 {
 			hdr.offset = beginVal - 1
