@@ -488,6 +488,41 @@ func TestSanitizeQuery_PreservesNonSecretParams(t *testing.T) {
 	}
 }
 
+func TestSanitizeQuery_NoParams(t *testing.T) {
+	t.Parallel()
+	got := sanitizeQuery("")
+	if got != "" {
+		t.Errorf("sanitizeQuery(\"\") = %q, want empty string", got)
+	}
+}
+
+func TestSanitizeQuery_MultipleSecretsInOneQuery(t *testing.T) {
+	t.Parallel()
+	got := sanitizeQuery("mode=addurl&apikey=secret1&nzbkey=secret2&password=secret3&output=json")
+	for _, secret := range []string{"secret1", "secret2", "secret3"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("sanitizeQuery(%q) leaked %q: got %q", "mode=addurl&apikey=secret1&nzbkey=secret2&password=secret3&output=json", secret, got)
+		}
+	}
+	if !strings.Contains(got, "mode=addurl") || !strings.Contains(got, "output=json") {
+		t.Errorf("sanitizeQuery over-redacted non-secret params: %q", got)
+	}
+}
+
+func TestSanitizeQuery_EmptySecretValuePreserved(t *testing.T) {
+	t.Parallel()
+	// A secret-named param present with an empty value should not cause a
+	// panic or a spurious non-empty redaction marker to appear where the
+	// operator supplied nothing.
+	got := sanitizeQuery("mode=queue&apikey=")
+	if !strings.Contains(got, "mode=queue") {
+		t.Errorf("sanitizeQuery dropped non-secret param: %q", got)
+	}
+	if strings.Contains(got, "apikey=") && !strings.Contains(got, "apikey=%2A%2A%2A") {
+		t.Errorf("sanitizeQuery left an unredacted empty apikey param: %q", got)
+	}
+}
+
 // ---------- isMultipartUpload ----------
 
 func TestIsMultipartUpload_True(t *testing.T) {
