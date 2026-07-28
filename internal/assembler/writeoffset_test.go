@@ -138,3 +138,63 @@ func TestWriteOffset_OutOfRangeRejected(t *testing.T) {
 		})
 	}
 }
+
+// A rejected write leaves the file missing data, so the whole-file CRC must be
+// reported as unavailable (zero) rather than computed from the parts that did
+// land. FileInfo.ExpectedSize's doc and the crcValid field both specify that a
+// failed article invalidates the file CRC.
+//
+// Without this, quickcheck reports the file as "CRC mismatch — corrupted"
+// rather than "download had failures, CRC unavailable". Repair runs either way
+// (both feed stage_quickcheck's `unverifiable` count), so this is a diagnostic
+// correctness issue rather than a data-loss one — but the two states are
+// materially different stories for an operator.
+func TestWriteOffset_RejectedWriteInvalidatesFileCRC(t *testing.T) {
+	const expectedSize = 4096
+
+	dir := t.TempDir()
+	files := make(map[string]FileInfo)
+	registerSizedFile(t, dir, files, "job1", 0, 2, expectedSize)
+
+	var mu sync.Mutex
+	var gotCRC uint32
+	var completions int
+
+	opts := makeOpts(dir, files)
+	opts.DoneFlushInterval = -1
+	opts.OnFileComplete = func(_ string, _ int, fileCRC uint32) {
+		mu.Lock()
+		defer mu.Unlock()
+		completions++
+		gotCRC = fileCRC
+	}
+	opts.MarkArticlesFailed = func(_ string, ids []string) ([]string, error) { return ids, nil }
+	opts.MarkArticlesDone = func(string, []string) error { return nil }
+
+	a := startAssembler(t, opts)
+
+	// Part 0 lands normally and contributes a CRC.
+	_ = a.WriteArticle(t.Context(), WriteRequest{
+		JobID: "job1", FileIdx: 0, Offset: 0,
+		Data: []byte("GOODDATA"), MessageID: "part0", CRC: 0xDEADBEEF,
+	})
+	// Part 1 is rejected for an out-of-range offset.
+	_ = a.WriteArticle(t.Context(), WriteRequest{
+		JobID: "job1", FileIdx: 0, Offset: expectedSize * 100,
+		Data: []byte("HOSTILE!"), MessageID: "part1", CRC: 0xCAFEBABE,
+	})
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if completions == 0 {
+		t.Fatal("file never completed — the test is not reaching finalizeFile")
+	}
+	if gotCRC != 0 {
+		t.Errorf("file CRC = %#08x, want 0: part 1 was rejected, so the file is "+
+			"missing data and its CRC must be reported as unavailable rather than "+
+			"computed from the surviving parts", gotCRC)
+	}
+}

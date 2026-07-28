@@ -938,6 +938,16 @@ func (a *Assembler) handleSuccessArticle(f *openFile, req WriteRequest, wc *writ
 		}
 	}
 	if !a.writeArticleOrBuffer(f, key, req, wc, open) {
+		// The file is now missing this part's bytes, so a whole-file CRC
+		// combined from the parts that did land would describe a byte range
+		// the file does not have. Report it as unavailable instead: quickcheck
+		// then classifies the file as NoCRC ("download had failures") rather
+		// than Mismatched ("corrupted"). Both route to par2 repair, but only
+		// one of them is true.
+		//
+		// This also covers the retry path above: once any part has failed the
+		// file CRC stays invalid, even if a later attempt writes successfully.
+		f.crcValid = false
 		if req.MessageID != "" {
 			if f.seenFailed == nil {
 				f.seenFailed = make(map[string]struct{})
