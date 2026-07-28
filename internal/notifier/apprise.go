@@ -7,7 +7,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
+
+// defaultAppriseTimeout bounds requests to the Apprise API when the caller
+// doesn't supply a client with its own timeout. Dispatcher.Dispatch has no
+// per-notifier deadline of its own, so an unbounded client.Timeout (the
+// zero-value default on http.DefaultClient) would let a hung Apprise
+// endpoint block dispatch indefinitely.
+const defaultAppriseTimeout = 15 * time.Second
 
 // AppriseConfig holds connection settings for an Apprise API endpoint.
 type AppriseConfig struct {
@@ -24,10 +32,13 @@ type AppriseNotifier struct {
 	client *http.Client
 }
 
-// NewAppriseNotifier creates an AppriseNotifier. If client is nil, http.DefaultClient is used.
+// NewAppriseNotifier creates an AppriseNotifier. If client is nil, or has no
+// timeout configured (client.Timeout == 0, as on http.DefaultClient), a
+// client with a defaultAppriseTimeout timeout is used instead so a hung
+// Apprise endpoint cannot block Dispatcher.Dispatch indefinitely.
 func NewAppriseNotifier(cfg AppriseConfig, client *http.Client) *AppriseNotifier {
-	if client == nil {
-		client = http.DefaultClient
+	if client == nil || client.Timeout == 0 {
+		client = &http.Client{Timeout: defaultAppriseTimeout}
 	}
 	return &AppriseNotifier{cfg: cfg, client: client}
 }

@@ -836,3 +836,62 @@ func TestAppriseStatus300(t *testing.T) {
 		t.Fatal("expected error for 300 status code, got nil")
 	}
 }
+
+// TestAppriseNotifier_ClientTimeoutPreventsHang proves that a hung Apprise
+// endpoint returns an error rather than blocking Send indefinitely. It
+// injects a client with a short timeout (rather than waiting out the real
+// defaultAppriseTimeout) to keep the test fast.
+func TestAppriseNotifier_ClientTimeoutPreventsHang(t *testing.T) {
+	t.Parallel()
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		<-block // never respond until the test unblocks it
+	}))
+	// httptest.Server.Close blocks until outstanding requests complete, so
+	// the handler must be unblocked (close(block)) before Close is called —
+	// hence a single Cleanup rather than a separate defer, which would run
+	// first and deadlock waiting on the still-blocked handler.
+	t.Cleanup(func() {
+		close(block)
+		srv.Close()
+	})
+
+	client := &http.Client{Timeout: 50 * time.Millisecond}
+	n := NewAppriseNotifier(AppriseConfig{
+		URL:       srv.URL,
+		EventMask: []EventType{Warning},
+	}, client)
+
+	start := time.Now()
+	err := n.Send(t.Context(), Event{Type: Warning, Timestamp: time.Now()})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected Send to fail once the client timeout elapses, got nil error")
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("Send took too long (%v); expected it to fail promptly at the client timeout", elapsed)
+	}
+}
+
+// TestAppriseNotifier_DefaultTimeoutAppliedWhenClientTimeoutZero proves that
+// a caller-supplied client with Timeout == 0 (e.g. constructed with
+// &http.Client{} rather than http.DefaultClient) is also replaced with the
+// bounded default, not just a nil client.
+func TestAppriseNotifier_DefaultTimeoutAppliedWhenClientTimeoutZero(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := NewAppriseNotifier(AppriseConfig{
+		URL:       srv.URL,
+		EventMask: []EventType{Warning},
+	}, &http.Client{}) // Timeout: 0, same hazard as http.DefaultClient
+
+	err := n.Send(t.Context(), Event{Type: Warning, Timestamp: time.Now()})
+	if err != nil {
+		t.Fatalf("expected success once the zero-timeout client is replaced, got: %v", err)
+	}
+}
