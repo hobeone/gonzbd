@@ -16,7 +16,10 @@ import (
 )
 
 type fakeDownloader struct {
-	mu               sync.Mutex
+	mu sync.Mutex
+	// startErr, when non-nil, is returned by Start instead of starting.
+	// Lets tests drive Application.Start's failure paths.
+	startErr         error
 	started          bool
 	speedLimit       int64
 	speed            float64
@@ -38,6 +41,9 @@ func newFakeDownloader() *fakeDownloader {
 func (f *fakeDownloader) Start(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.startErr != nil {
+		return f.startErr
+	}
 	f.started = true
 	return nil
 }

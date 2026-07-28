@@ -578,11 +578,24 @@ func (app *Application) Start(ctx context.Context) error {
 	// function is cancelled by setting succeeded=true before returning nil.
 	succeeded := false
 	defer func() {
-		if !succeeded {
-			app.started.Store(false)
+		if succeeded {
+			return
 		}
+		// Release the context created below. Shutdown cannot do it: its
+		// started guard returns early once this defer clears the flag, so
+		// on every error return nothing else would ever call cancel. Since
+		// Start is documented as retryable and a retry overwrites
+		// app.cancel, skipping this would leak a context node on the parent
+		// per failed attempt, with no way to reach the discarded func.
+		if app.cancel != nil {
+			app.cancel()
+		}
+		app.started.Store(false)
 	}()
 
+	//nolint:gosec // G118: cancel is stored on the struct rather than a local,
+	// so gosec cannot see the calls. It is invoked by Shutdown on the success
+	// path and by the failure defer above on every error return.
 	app.ctx, app.cancel = context.WithCancel(ctx)
 	if err := app.assembler.Start(app.ctx); err != nil {
 		return err
