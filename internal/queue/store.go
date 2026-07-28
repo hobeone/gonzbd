@@ -21,6 +21,10 @@ type Store interface {
 	// Update modifies an existing active job's metadata.
 	Update(ctx context.Context, job *Job) error
 
+	// UpdateBatch atomically persists a slice of modified jobs in a single
+	// underlying storage transaction.
+	UpdateBatch(ctx context.Context, jobs []*Job) error
+
 	// Remove deletes an active job and its child job_files records.
 	Remove(ctx context.Context, id string) error
 

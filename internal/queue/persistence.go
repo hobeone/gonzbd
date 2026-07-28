@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
@@ -62,14 +63,19 @@ func (q *Queue) saveStore(_ string) error {
 	paused := q.paused
 	q.mu.RUnlock()
 
-	ctx := context.Background()
-	_ = q.store.SetPaused(ctx, paused)
-	for _, job := range snapshots {
-		if err := q.store.Update(ctx, job); err != nil {
-			return err
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := q.store.SetPaused(ctx, paused); err != nil {
+		return fmt.Errorf("queue: save paused state: %w", err)
 	}
-	return q.store.Prune(ctx)
+	if err := q.store.UpdateBatch(ctx, snapshots); err != nil {
+		return fmt.Errorf("queue: save jobs: %w", err)
+	}
+	if err := q.store.Prune(ctx); err != nil {
+		return fmt.Errorf("queue: prune store: %w", err)
+	}
+	return nil
 }
 
 func (q *Queue) saveInner(dir string) error {

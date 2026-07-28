@@ -357,6 +357,79 @@ func TestQueue_WithStoreAndSave(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_UpdateBatch(t *testing.T) {
+	store, _, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	job1 := newTestJob("job-batch-001", "batch-job-1")
+	job2 := newTestJob("job-batch-002", "batch-job-2")
+	if err := store.Add(ctx, job1); err != nil {
+		t.Fatalf("Add job1: %v", err)
+	}
+	if err := store.Add(ctx, job2); err != nil {
+		t.Fatalf("Add job2: %v", err)
+	}
+
+	job1.Name = "batch-job-1-updated"
+	job1.Status = constants.StatusDownloading
+	job2.Name = "batch-job-2-updated"
+	job2.Status = constants.StatusDownloading
+
+	if err := store.UpdateBatch(ctx, []*queue.Job{job1, job2}); err != nil {
+		t.Fatalf("UpdateBatch: %v", err)
+	}
+
+	got1, err := store.Get(ctx, job1.ID)
+	if err != nil {
+		t.Fatalf("Get job1: %v", err)
+	}
+	if got1.Name != "batch-job-1-updated" || got1.Status != constants.StatusDownloading {
+		t.Errorf("job1 not persisted by UpdateBatch: got name=%q status=%q", got1.Name, got1.Status)
+	}
+	got2, err := store.Get(ctx, job2.ID)
+	if err != nil {
+		t.Fatalf("Get job2: %v", err)
+	}
+	if got2.Name != "batch-job-2-updated" || got2.Status != constants.StatusDownloading {
+		t.Errorf("job2 not persisted by UpdateBatch: got name=%q status=%q", got2.Name, got2.Status)
+	}
+}
+
+func TestSQLiteStore_UpdateBatchRollsBackAllOnFailure(t *testing.T) {
+	store, _, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	job1 := newTestJob("job-batch-rb-001", "rollback-job-1")
+	job2 := newTestJob("job-batch-rb-002", "rollback-job-2")
+	if err := store.Add(ctx, job1); err != nil {
+		t.Fatalf("Add job1: %v", err)
+	}
+	if err := store.Add(ctx, job2); err != nil {
+		t.Fatalf("Add job2: %v", err)
+	}
+
+	// job1 is a valid update that should succeed on its own; the batch also
+	// includes a job that was never Add()ed, so its UPDATE affects zero rows
+	// and updateTx returns ErrNotFound partway through the transaction. The
+	// whole batch — including the otherwise-valid job1 update — must roll
+	// back, proving there is no partial write.
+	job1.Name = "rollback-job-1-updated"
+	missingJob := newTestJob("job-batch-rb-missing", "never-added")
+
+	err := store.UpdateBatch(ctx, []*queue.Job{job1, missingJob})
+	if !errors.Is(err, queue.ErrNotFound) {
+		t.Fatalf("expected UpdateBatch to fail with ErrNotFound, got %v", err)
+	}
+
+	got1, getErr := store.Get(ctx, job1.ID)
+	if getErr != nil {
+		t.Fatalf("Get job1: %v", getErr)
+	}
+	if got1.Name != "rollback-job-1" {
+		t.Errorf("expected job1 update to be rolled back, got name=%q (want original %q)", got1.Name, "rollback-job-1")
+	}
+}
+
 func TestSQLiteStore_ErrorCoverage(t *testing.T) {
 	store, repo, _ := setupTestStore(t)
 	ctx := t.Context()

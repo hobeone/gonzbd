@@ -336,8 +336,17 @@ func (s *SQLiteStore) List(ctx context.Context) ([]*Job, error) {
 	return jobs, nil
 }
 
-// Update modifies an existing active job's live metadata in SQLite.
-func (s *SQLiteStore) Update(ctx context.Context, job *Job) error {
+// sqlExecer is satisfied by both *sql.DB and *sql.Tx, letting updateTx run
+// either as a standalone statement (Update) or inside a caller-managed
+// transaction (UpdateBatch).
+type sqlExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// updateTx performs the jobs/job_files UPDATE statements for a single job
+// against execer. Shared by Update (single-statement) and UpdateBatch
+// (one shared transaction) so the SQL lives in exactly one place.
+func (s *SQLiteStore) updateTx(ctx context.Context, execer sqlExecer, job *Job) error {
 	const q = `
 UPDATE jobs SET
   name = ?, category = ?, priority = ?, status = ?, pp = ?, script = ?, warning = ?, postproc = ?,
@@ -359,7 +368,7 @@ WHERE id = ?`
 		}
 	}
 
-	res, err := s.db.ExecContext(ctx, q,
+	res, err := execer.ExecContext(ctx, q,
 		job.Name, job.Category, int(job.Priority), string(job.Status), job.PP, job.Script, job.Warning, postprocInt, dlStartedUnix, dlFinishedUnix, job.ID,
 	)
 	if err != nil {
@@ -382,7 +391,7 @@ WHERE id = ?`
 				deferred = 1
 			}
 			artDoneStr := encodeArticlesDone(job, i)
-			if _, err := s.db.ExecContext(ctx, qF,
+			if _, err := execer.ExecContext(ctx, qF,
 				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr,
 				job.ID, i,
 			); err != nil {
@@ -391,6 +400,36 @@ WHERE id = ?`
 		}
 	}
 
+	return nil
+}
+
+// Update modifies an existing active job's live metadata in SQLite.
+func (s *SQLiteStore) Update(ctx context.Context, job *Job) error {
+	return s.updateTx(ctx, s.db, job)
+}
+
+// UpdateBatch atomically persists jobs in a single SQLite transaction: either
+// all updates are committed or, on any failure, none are.
+func (s *SQLiteStore) UpdateBatch(ctx context.Context, jobs []*Job) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite store begin tx updatebatch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, job := range jobs {
+		if err := s.updateTx(ctx, tx, job); err != nil {
+			return fmt.Errorf("sqlite store updatebatch %s: %w", job.ID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite store commit updatebatch: %w", err)
+	}
 	return nil
 }
 
