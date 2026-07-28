@@ -541,8 +541,9 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 		}
 
 		if readErr != nil {
-			q.handleClaimFailureLocked(ctx, job, manifestPath, readErr)
+			cf := q.prepareClaimFailureLocked(job, manifestPath, readErr)
 			q.mu.Unlock()
+			q.finishClaimFailure(ctx, cf)
 			q.log.Error("failed to claim manifest during promotion, transitioning to FAILED",
 				"job_id", jobID,
 				"manifest_path", manifestPath,
@@ -558,11 +559,18 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 			job.progress = newJobProgress(&manifest)
 		}
 
-		// If SQLite store present, restore per-file progress counters
+		// If SQLite store present, restore per-file progress counters.
+		//
+		// This SELECT runs under q.mu because RestoreJobProgress mutates
+		// job.progress in place; hoisting it needs a detached load plus an
+		// attach under lock. Deliberate and tracked as a follow-up. The
+		// trailing marker is inert today -- check_lock_io has no detector for
+		// Store or database/sql calls -- but is in place for when it gains one.
 		if q.store != nil {
-			if err := q.store.RestoreJobProgress(ctx, job); err != nil {
-				q.handleClaimFailureLocked(ctx, job, manifestPath, fmt.Errorf("restore progress: %w", err))
+			if err := q.store.RestoreJobProgress(ctx, job); err != nil { //lockio: mutates job.progress in place; hoist tracked as follow-up
+				cf := q.prepareClaimFailureLocked(job, manifestPath, fmt.Errorf("restore progress: %w", err))
 				q.mu.Unlock()
+				q.finishClaimFailure(ctx, cf)
 				q.log.Error("failed to restore job progress during promotion, transitioning to FAILED",
 					"job_id", jobID,
 					"err", err,
@@ -578,8 +586,11 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 		}
 
 		q.activeSet.Add(job)
+		// Runs under q.mu so the RAM and SQLite views of the Downloading
+		// transition cannot diverge. Tracked as a follow-up alongside
+		// RestoreJobProgress above; see the note there about the marker.
 		if q.store != nil {
-			_ = q.store.Update(ctx, job)
+			_ = q.store.Update(ctx, job) //lockio: keeps RAM and SQLite views of the transition consistent
 		}
 		q.dirty.Store(true)
 		q.notifyLocked()
@@ -610,16 +621,35 @@ func (q *Queue) evictJobLocked(job *Job) {
 	}
 }
 
-func (q *Queue) handleClaimFailureLocked(ctx context.Context, job *Job, manifestPath string, claimErr error) {
-	if _, err := os.Stat(manifestPath); err == nil {
-		_ = os.Rename(manifestPath, manifestPath+".corrupt")
-	}
+// claimFailure carries the I/O a failed manifest claim still owes once the
+// queue lock has been released. Every field is captured under q.mu, so
+// finishClaimFailure reads no shared queue state.
+type claimFailure struct {
+	job          *Job
+	entry        history.Entry
+	manifestPath string
+	// store is nil when the queue has no SQLite store configured.
+	store Store
+}
 
+// prepareClaimFailureLocked marks a job failed and evicts it from the in-RAM
+// queue. It deliberately performs no disk or database I/O: the caller must
+// release q.mu and then hand the returned value to finishClaimFailure.
+//
+// Splitting it this way keeps a SQLite transaction (Store.MoveToHistory spans
+// the active-job and history tables) off the global queue mutex, which the
+// downloader's dispatch loop contends on every pass.
+func (q *Queue) prepareClaimFailureLocked(job *Job, manifestPath string, claimErr error) claimFailure {
 	job.Warning = fmt.Sprintf("Corrupt manifest: %v", claimErr)
 	job.Status = constants.StatusFailed
 
+	cf := claimFailure{
+		job:          job,
+		manifestPath: manifestPath,
+		store:        q.store,
+	}
 	if q.store != nil {
-		entry := history.Entry{
+		cf.entry = history.Entry{
 			NzoID:       job.ID,
 			Name:        job.Name,
 			Category:    job.Category,
@@ -627,7 +657,6 @@ func (q *Queue) handleClaimFailureLocked(ctx context.Context, job *Job, manifest
 			FailMessage: fmt.Sprintf("Unreadable or corrupt manifest: %v", claimErr),
 			Completed:   time.Now().UTC(),
 		}
-		_ = q.store.MoveToHistory(ctx, job, entry)
 	}
 
 	idx, ok := q.indexOfLocked(job.ID)
@@ -636,6 +665,37 @@ func (q *Queue) handleClaimFailureLocked(ctx context.Context, job *Job, manifest
 	}
 	delete(q.byID, job.ID)
 	q.dirty.Store(true)
+	return cf
+}
+
+// finishClaimFailure performs the disk and database I/O for a failed claim.
+// It must be called with q.mu released.
+//
+// Recovery is best-effort: the job has already been evicted from the in-RAM
+// queue, so there is nothing to roll back and no caller in a position to act
+// on a returned error. The failures are logged rather than discarded, because
+// each one leaves observable divergence — a stale .corrupt rename, or a job
+// still sitting in SQLite as Queued while absent from RAM — that is otherwise
+// invisible until the next startup reconciles it.
+func (q *Queue) finishClaimFailure(ctx context.Context, cf claimFailure) {
+	if _, err := os.Stat(cf.manifestPath); err == nil {
+		if err := os.Rename(cf.manifestPath, cf.manifestPath+".corrupt"); err != nil {
+			q.log.Warn("could not set aside corrupt manifest",
+				"job_id", cf.job.ID,
+				"manifest_path", cf.manifestPath,
+				"err", err,
+			)
+		}
+	}
+	if cf.store != nil {
+		if err := cf.store.MoveToHistory(ctx, cf.job, cf.entry); err != nil {
+			q.log.Error("could not move failed job to history; it is evicted from "+
+				"the queue but may remain in the store until startup reconciles it",
+				"job_id", cf.job.ID,
+				"err", err,
+			)
+		}
+	}
 }
 
 // SetPriority changes a job's priority and re-slots it within the queue.
