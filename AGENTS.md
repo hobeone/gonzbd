@@ -204,8 +204,8 @@ explaining why.
 slow and, with `--diff` broken upstream when scoped to a package, has no fast
 incremental mode. Run it before opening a PR for a package with substantial
 new branching/error-handling logic, or when you suspect a test is a
-change-detector rather than a real pin on behavior; it also runs on a
-rotation via the `mutation-testing` GitHub Actions workflow. **See
+change-detector rather than a real pin on behavior. There is no CI
+automation for it — it is entirely manual. **See
 `docs/mutation-testing-playbook.md`** for the full process, including how to
 attribute `LIVED`/`NOT COVERED` mutants to your change vs. pre-existing gaps.
 

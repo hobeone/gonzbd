@@ -16,6 +16,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          # check_test_alignment and check_coverage diff against
+          # origin/main...HEAD; with the default fetch-depth of 1 that ref
+          # does not resolve and both tools silently degrade to no-ops.
+          fetch-depth: 0
+
+      - name: Fetch main for diff-scoped gates
+        run: git fetch origin main:refs/remotes/origin/main
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -50,8 +58,30 @@ jobs:
       - name: Install archive tools (unrar, rar, par2, p7zip)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends unrar rar par2 p7zip-full
 
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          # .golangci.yml is a version:"2" config, so this needs a v2 binary.
+          # It must also be built with Go >= the go.mod version, or it fails to
+          # load the config at all (a startup error, not a lint finding).
+          version: v2.11.4
+
+      - name: Mutex-held-during-I/O check
+        run: go run scripts/check_lock_io/main.go
+
+      - name: Test alignment check
+        run: go run scripts/check_test_alignment/main.go --min-complexity=8
+
       - name: Run tests
-        run: go test ./...
+        run: go test -race ./...
 
       - name: Run integration tests
         run: go test -tags=integration ./test/integration/...
+
+      # Runs `go test -coverprofile` per changed package, so it is the slowest
+      # gate — keep it last so cheaper checks fail first.
+      - name: Coverage check
+        run: go run scripts/check_coverage/main.go
