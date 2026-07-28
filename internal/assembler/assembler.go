@@ -3,6 +3,7 @@ package assembler
 import (
 	"cmp"
 	"context"
+	"math"
 
 	"errors"
 	"log/slog"
@@ -1070,15 +1071,77 @@ func (a *Assembler) checkDiskSpace(open map[fileKey]*openFile) {
 	}
 }
 
+// offsetSlackDivisor bounds how far past FileInfo.ExpectedSize a write may
+// land before it is rejected. ExpectedSize is the NZB's declared *encoded*
+// byte count, which already runs ~2% above the decoded size (see
+// preallocateFile), so a legitimate decoded write never exceeds it. NZB
+// `bytes` attributes are advisory though, so allow ExpectedSize/8 (12.5%)
+// of slack rather than treating it as an exact bound.
+const offsetSlackDivisor = 8
+
+// offsetInRange reports whether a write request's target range is plausible
+// for the file it claims to belong to.
+//
+// req.Offset originates from the yEnc `=ypart begin=` header, which is parsed
+// as an unbounded int64 from the article body returned by the NNTP server. It
+// is therefore attacker-controlled: without this check, a hostile or
+// compromised server can return a single article whose offset makes WriteAt
+// produce a file of arbitrary apparent size (finalizeFile then truncates to
+// that inflated high-water mark, committing it).
+func (a *Assembler) offsetInRange(f *openFile, req WriteRequest) bool {
+	reject := func(reason string) bool {
+		a.log.Warn("rejecting out-of-range article write offset",
+			"path", f.info.Path,
+			"offset", req.Offset,
+			"bytes", len(req.Data),
+			"expected_size", f.info.ExpectedSize,
+			"reason", reason,
+		)
+		telemetry.PipelineErrors.Add(telemetry.ErrClassDiskWriteError, 1)
+		return false
+	}
+
+	if req.Offset < 0 {
+		return reject("negative offset")
+	}
+
+	end := req.Offset + int64(len(req.Data))
+	if end < req.Offset {
+		return reject("offset+length overflows int64")
+	}
+
+	// ExpectedSize == 0 means the NZB did not declare a size; the overflow
+	// and negative checks above are all we can enforce.
+	if f.info.ExpectedSize <= 0 {
+		return true
+	}
+	// Guard the slack arithmetic itself against a degenerate ExpectedSize.
+	if f.info.ExpectedSize > math.MaxInt64-(f.info.ExpectedSize/offsetSlackDivisor) {
+		return true
+	}
+	if limit := f.info.ExpectedSize + f.info.ExpectedSize/offsetSlackDivisor; end > limit {
+		return reject("write extends past declared file size")
+	}
+	return true
+}
+
 // writeArticleOrBuffer either buffers the article in the write cache (if
 // enabled and coalescing is active) or writes it directly to disk. Returns
-// true if the data was successfully written or buffered, false on I/O error.
+// true if the data was successfully written or buffered, false on I/O error
+// or a rejected (out-of-range) write offset.
 //
 // When caching is enabled, the article is buffered in memory. After each
 // buffer insertion, contiguous runs are checked and flushed as a single
 // coalesced WriteAt. Under memory pressure (>90% of limit), the file with
 // the most buffered data is force-flushed.
 func (a *Assembler) writeArticleOrBuffer(f *openFile, key fileKey, req WriteRequest, wc *writeCache, open map[fileKey]*openFile) bool {
+	if !a.offsetInRange(f, req) {
+		if req.Data != nil {
+			decoder.PutBuffer(req.Data)
+		}
+		return false
+	}
+
 	// Track the high-water mark of decoded bytes so we can truncate
 	// the file to its true size at completion (see processRequest).
 	if end := req.Offset + int64(len(req.Data)); end > f.maxWritten {
