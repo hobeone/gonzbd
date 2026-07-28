@@ -117,21 +117,36 @@ func (p *PostProcessor) Start(ctx context.Context) error {
 	}
 	p.started = true
 	p.workerCtx, p.workerCancel = context.WithCancel(ctx)
-	p.busyMu.Unlock()
-	// --- No lock held below this line ---
-
+	// The wg.Add inside wg.Go stays within this critical section on purpose.
+	// sync.WaitGroup requires that an Add starting from a zero counter
+	// happens-before any Wait; performing it here, under the same mutex that
+	// publishes started, gives Stop one guarded observation to gate its Wait
+	// on. Spawning under the lock is safe: the goroutine may block briefly on
+	// busyMu inside run, and Start releases it immediately below.
 	p.wg.Go(func() {
 		p.run()
 	})
+	p.busyMu.Unlock()
 	return nil
 }
 
-// Stop signals the worker to exit and waits until it has.  Idempotent.
+// Stop signals the worker to exit and waits until it has.  Idempotent, and
+// safe to call before Start.
 func (p *PostProcessor) Stop() error {
 	p.busyMu.Lock()
+	started := p.started
 	cancel := p.workerCancel
 	p.busyMu.Unlock()
 	// --- No lock held below this line ---
+	if !started {
+		// No worker has ever been started, so no wg.Add has happened. Waiting
+		// now would race a concurrent Start's Add against a zero counter --
+		// exactly the WaitGroup misuse this guard exists to prevent. Observing
+		// started under busyMu is what establishes the ordering: if it is
+		// true, Start's critical section (including its Add) already
+		// completed.
+		return nil
+	}
 	if cancel != nil {
 		cancel()
 	}
