@@ -8,6 +8,7 @@
 	import { fetchQueueJobDetail, fetchCategories, fetchScripts, postAction } from '$lib/api';
 	import { subscribeWS } from '$lib/stores/websocket.svelte';
 	import { cn, formatSize as formatBytes, formatETA } from '$lib/utils';
+	import { ChevronRight, Edit2, AlertTriangle, Play, Pause, Trash2 } from '@lucide/svelte';
 
 	const PP_LABELS: Record<string, string> = {
 		'0': 'Download',
@@ -341,7 +342,7 @@
 >
 	<td class="px-5 py-3.5 max-w-[200px] sm:max-w-xs md:max-w-sm lg:max-w-md xl:max-w-lg">
 		<div class="flex items-center gap-2">
-			<span class="material-symbols-outlined text-lg text-m3-on-surface-variant/80 transition-transform duration-200 {expanded ? 'rotate-90' : ''} select-none">chevron_right</span>
+			<ChevronRight class="size-4 text-muted-foreground transition-transform duration-200 {expanded ? 'rotate-90' : ''} select-none" />
 			<div class="min-w-0 flex-1">
 				{#if renaming}
 					<div
@@ -355,34 +356,34 @@
 							bind:value={renameValue}
 							onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') commitRename(); else if (e.key === 'Escape') cancelRename(); }}
 							onblur={commitRename}
-							class="w-full rounded-lg border border-m3-primary bg-m3-surface px-2 py-1 text-sm font-semibold text-m3-on-surface focus:outline-none outline-none shadow-sm"
+							class="w-full rounded-lg border border-primary bg-card px-2 py-1 text-sm font-semibold text-foreground focus:outline-none outline-none shadow-sm"
 							autofocus
 						/>
 					</div>
 				{:else}
 					<div class="flex items-center gap-1.5">
-						<div class="font-semibold truncate text-sm" title={slot.name || slot.filename}>
+						<div class="font-semibold truncate text-sm text-foreground" title={slot.name || slot.filename}>
 							{slot.name || slot.filename}
 						</div>
 						<button
 							onclick={(e: MouseEvent) => { e.stopPropagation(); startRename(); }}
-							class="shrink-0 text-m3-on-surface-variant/60 hover:text-m3-primary transition-opacity flex items-center"
+							class="shrink-0 text-muted-foreground/60 hover:text-primary transition-colors flex items-center"
 							title="Rename"
 						>
-							<span class="material-symbols-outlined text-base">edit</span>
+							<Edit2 class="size-3.5" />
 						</button>
 					</div>
 				{/if}
 				{#if isDownloading && slot.current_file}
 					<div
-						class="text-xs text-m3-on-surface-variant/80 truncate font-mono mt-0.5"
+						class="text-xs text-muted-foreground truncate font-mono mt-0.5"
 						title={slot.current_file}
 					>
 						↓ {slot.current_file}
 					</div>
 				{:else if isPostProc && outputLines.length > 0}
 					<div
-						class="text-xs text-m3-on-surface-variant/80 truncate font-mono mt-0.5"
+						class="text-xs text-muted-foreground truncate font-mono mt-0.5"
 						title={outputLines[outputLines.length - 1]}
 					>
 						⚙ {outputLines[outputLines.length - 1]}
@@ -390,18 +391,18 @@
 				{/if}
 			</div>
 			{#if slot.warning}
-				<div class="flex items-center text-amber-600 shrink-0 max-w-[100px]" title={slot.warning}>
-					<span class="material-symbols-outlined text-sm leading-none shrink-0">warning</span>
+				<div class="flex items-center text-amber-500 shrink-0 max-w-[100px]" title={slot.warning}>
+					<AlertTriangle class="size-3.5 leading-none shrink-0" />
 					<span class="ml-1 text-xs font-bold truncate">{slot.warning}</span>
 				</div>
 			{/if}
 			{#if hasFailed}
-				<span class="shrink-0 text-xs font-bold text-destructive" title="Failed download bytes">
+				<span class="shrink-0 text-xs font-bold font-mono text-destructive" title="Failed download bytes">
 					✗ {formatBytes(slot.failed_bytes)}
 				</span>
 			{/if}
 			{#if slot.par2_held}
-				<Badge variant="outline" class="shrink-0 text-xs text-m3-on-surface-variant border-m3-outline/35" title="Par2 recovery volumes are downloaded only if repair is needed">
+				<Badge variant="outline" class="shrink-0 text-[10px] text-muted-foreground border-border/60" title="Par2 recovery volumes are downloaded only if repair is needed">
 					par2 on-demand
 				</Badge>
 			{/if}
@@ -412,22 +413,22 @@
 			<Progress
 				value={percentage}
 				max={100}
-				class={cn('h-1.5 flex-1 bg-m3-surface-variant/40', isActive && 'animate-pulse')}
+				class={cn('h-1.5 flex-1 bg-muted', isActive && 'animate-pulse')}
 			/>
-			<span class="text-xs font-mono text-m3-on-surface-variant/80 w-9 text-right font-semibold">{slot.percentage}%</span>
+			<span class="text-xs font-mono tabular-nums text-muted-foreground w-9 text-right font-semibold">{slot.percentage}%</span>
 		</div>
 	</td>
-	<td class="px-5 py-3.5 text-sm font-medium whitespace-nowrap">{slot.size}</td>
-	<td class="px-5 py-3.5 text-sm font-medium whitespace-nowrap">
+	<td class="px-5 py-3.5 text-xs font-mono font-medium whitespace-nowrap tabular-nums">{slot.size}</td>
+	<td class="px-5 py-3.5 text-xs font-mono font-medium whitespace-nowrap tabular-nums">
 		{slot.sizeleft}
 		{#if etaText && isDownloading}
-			<span class="ml-1 text-xs text-m3-on-surface-variant/80 font-semibold" title="Estimated time remaining">
+			<span class="ml-1 text-xs text-muted-foreground font-semibold" title="Estimated time remaining">
 				· {etaText}
 			</span>
 		{/if}
 	</td>
 	<td class="px-5 py-3.5">
-		<Badge variant={isPaused ? 'outline' : isPostProc ? 'secondary' : 'default'} class="text-xs font-semibold px-2 py-0.5 rounded-full">
+		<Badge variant={isPaused ? 'outline' : isPostProc ? 'secondary' : 'default'} class="text-[11px] font-semibold px-2 py-0.5 rounded-full">
 			{slot.status}
 		</Badge>
 	</td>
@@ -440,7 +441,7 @@
 			<select
 				onchange={changeCat}
 				onfocus={ensureCategoriesLoaded}
-				class="h-7 rounded-lg border border-m3-outline bg-transparent px-1.5 text-xs font-semibold text-m3-on-surface focus:outline-none focus:ring-1 focus:ring-m3-primary cursor-pointer max-w-[120px]"
+				class="h-7 rounded-lg border border-border bg-transparent px-1.5 text-xs font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer max-w-[120px]"
 				title="Category (switching inherits PP, script, and priority)"
 			>
 				{#if categories.length === 0}
@@ -461,16 +462,16 @@
 				size="icon-xs"
 				onclick={(e: MouseEvent) => { e.stopPropagation(); togglePause(); }}
 				disabled={acting}
-				class="rounded-full text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface transition-colors"
+				class="rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
 				title={isPaused ? 'Resume' : 'Pause'}
 			>
 				{#if isPaused}
-					<span class="material-symbols-outlined text-lg leading-none">play_arrow</span>
+					<Play class="size-3.5 fill-current" />
 				{:else}
-					<span class="material-symbols-outlined text-lg leading-none">pause</span>
+					<Pause class="size-3.5 fill-current" />
 				{/if}
 			</Button>
- 
+
 			<Button
 				variant="ghost"
 				size="icon-xs"
@@ -479,7 +480,7 @@
 				class="rounded-full text-destructive hover:bg-destructive/10 transition-colors"
 				title="Delete"
 			>
-				<span class="material-symbols-outlined text-lg leading-none">delete</span>
+				<Trash2 class="size-3.5" />
 			</Button>
 		</div>
 	</td>

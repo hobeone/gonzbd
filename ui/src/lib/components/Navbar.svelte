@@ -4,6 +4,19 @@
 	import { registerShortcuts } from '$lib/shortcuts.svelte';
 	import { getTheme, cycleTheme } from '$lib/stores/theme.svelte';
 	import { onMount } from 'svelte';
+	import {
+		ArrowDownCircle,
+		Play,
+		Pause,
+		Sun,
+		Moon,
+		Monitor,
+		Activity,
+		Info,
+		Server,
+		Settings,
+		Plus
+	} from '@lucide/svelte';
 	import AddNzbDialog from './AddNzbDialog.svelte';
 	import SettingsDialog from './SettingsDialog.svelte';
 	import ServerStatusPanel from './ServerStatusPanel.svelte';
@@ -48,96 +61,105 @@
 	});
 </script>
 
-<nav class="border-b border-m3-outline/20 bg-m3-surface text-m3-on-surface">
+<header class="sticky top-0 z-40 border-b border-border/50 bg-card/85 backdrop-blur-md transition-colors">
 	<div class="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4">
-		<h1 class="text-xl font-medium tracking-tight text-m3-primary flex items-center gap-2 select-none">
-			<span class="material-symbols-outlined text-2xl font-bold">download_for_offline</span>
-      <a href="https://www.github.com/hobeone/gonzbd" target="_blank" rel="noopener noreferrer">GoNZBD</a>
+		<h1 class="text-xl font-bold tracking-tight text-foreground flex items-center gap-2 select-none">
+			<ArrowDownCircle class="size-6 text-primary" />
+			<a
+				href="https://www.github.com/hobeone/gonzbd"
+				target="_blank"
+				rel="noopener noreferrer"
+				class="hover:opacity-85 transition-opacity"
+			>
+				GoNZBD
+			</a>
 		</h1>
 
 		<Button
 			variant="ghost"
-			class="nav-chip"
+			class="ml-2 gap-2 rounded-full bg-muted/60 px-4 py-2 text-xs font-bold text-foreground hover:bg-primary/15 hover:text-primary active:scale-[0.98] transition-all select-none"
 			onclick={togglePause}
 			disabled={toggling}
 		>
 			{#if paused}
-				<span class="material-symbols-outlined text-lg leading-none">play_arrow</span>
+				<Play class="size-4 fill-current" />
 				Resume
 			{:else}
-				<span class="material-symbols-outlined text-lg leading-none">pause</span>
+				<Pause class="size-4 fill-current" />
 				Pause
 			{/if}
 		</Button>
 
 		<div class="flex-1"></div>
 
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			class="text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface rounded-full transition-all"
-			onclick={cycleTheme}
-			title="Theme: {theme} (press D to cycle)"
-		>
-			{#if theme === 'light'}
-				<span class="material-symbols-outlined text-lg">light_mode</span>
-			{:else if theme === 'dark'}
-				<span class="material-symbols-outlined text-lg">dark_mode</span>
-			{:else}
-				<span class="material-symbols-outlined text-lg">settings_suggest</span>
-			{/if}
-		</Button>
+		<div class="flex items-center gap-1">
+			<Button
+				variant="ghost"
+				size="icon"
+				class="size-9 rounded-full text-muted-foreground hover:bg-muted/80 hover:text-foreground active:scale-95 transition-all"
+				onclick={cycleTheme}
+				title="Theme: {theme} (press D to cycle)"
+			>
+				{#if theme === 'light'}
+					<Sun class="size-4" />
+				{:else if theme === 'dark'}
+					<Moon class="size-4" />
+				{:else}
+					<Monitor class="size-4" />
+				{/if}
+			</Button>
+
+			<Button
+				variant="ghost"
+				size="icon"
+				class="size-9 rounded-full text-muted-foreground hover:bg-muted/80 hover:text-foreground active:scale-95 transition-all"
+				href="/status"
+				title="Status"
+			>
+				<Activity class="size-4" />
+			</Button>
+
+			<Button
+				variant="ghost"
+				size="icon"
+				class="size-9 rounded-full text-muted-foreground hover:bg-muted/80 hover:text-foreground active:scale-95 transition-all"
+				onclick={() => (aboutOpen = true)}
+				title="About GoNZBD"
+			>
+				<Info class="size-4" />
+			</Button>
+
+			<Button
+				variant="ghost"
+				size="icon"
+				class="size-9 rounded-full text-muted-foreground hover:bg-muted/80 hover:text-foreground active:scale-95 transition-all"
+				onclick={() => (serverStatusOpen = true)}
+				title="Server Status"
+			>
+				<Server class="size-4" />
+			</Button>
+
+			<Button
+				variant="ghost"
+				size="icon"
+				class="size-9 rounded-full text-muted-foreground hover:bg-muted/80 hover:text-foreground active:scale-95 transition-all"
+				onclick={() => (settingsOpen = true)}
+				title="Settings"
+			>
+				<Settings class="size-4" />
+			</Button>
+		</div>
 
 		<Button
-			variant="ghost"
-			size="icon-sm"
-			class="text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface rounded-full transition-all"
-			href="/status"
-			title="Status"
-		>
-			<span class="material-symbols-outlined text-lg">monitor_heart</span>
-		</Button>
-
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			class="text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface rounded-full transition-all"
-			onclick={() => (aboutOpen = true)}
-			title="About GoNZBD"
-		>
-			<span class="material-symbols-outlined text-lg">info</span>
-		</Button>
-
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			class="text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface rounded-full transition-all"
-			onclick={() => (serverStatusOpen = true)}
-			title="Server Status"
-		>
-			<span class="material-symbols-outlined text-lg">dns</span>
-		</Button>
-
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			class="text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface rounded-full transition-all"
-			onclick={() => (settingsOpen = true)}
-			title="Settings"
-		>
-			<span class="material-symbols-outlined text-lg">settings</span>
-		</Button>
-
-		<Button
-			variant="ghost"
-			class="nav-chip bg-m3-primary-container text-m3-on-primary-container hover:bg-m3-primary/20 hover:text-m3-primary"
+			variant="default"
+			class="gap-1.5 rounded-full bg-primary px-4 py-2 text-xs font-bold text-primary-foreground shadow-sm hover:bg-primary/90 hover:shadow active:scale-[0.98] transition-all"
 			onclick={() => (addDialogOpen = true)}
 		>
-			<span class="material-symbols-outlined text-lg leading-none font-bold">add</span>
+			<Plus class="size-4 stroke-[3]" />
 			Add NZB
 		</Button>
 	</div>
-</nav>
+</header>
 
 <AddNzbDialog bind:open={addDialogOpen} />
 <SettingsDialog bind:open={settingsOpen} />

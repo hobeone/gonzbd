@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Dialog } from 'bits-ui';
 	import { getShortcuts, type ShortcutDef } from '$lib/shortcuts.svelte';
+	import { Keyboard } from '@lucide/svelte';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -45,13 +46,13 @@
 
 <Dialog.Root bind:open>
 	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs" />
+		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs" />
 		<Dialog.Content
-			class="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-m3-outline/20 bg-m3-surface text-m3-on-surface shadow-m3-3 outline-none"
+			class="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card text-card-foreground shadow-2xl outline-none animate-in fade-in zoom-in-95"
 		>
-			<div class="border-b border-m3-outline/10 px-6 py-4">
-				<Dialog.Title class="flex items-center gap-2.5 text-lg font-semibold tracking-tight">
-					<span class="material-symbols-outlined text-m3-primary text-xl">keyboard</span>
+			<div class="border-b border-border/40 px-6 py-4">
+				<Dialog.Title class="flex items-center gap-2.5 text-base font-bold tracking-tight text-foreground">
+					<Keyboard class="size-5 text-primary" />
 					Keyboard Shortcuts
 				</Dialog.Title>
 			</div>

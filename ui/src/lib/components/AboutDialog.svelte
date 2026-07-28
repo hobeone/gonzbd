@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Dialog } from 'bits-ui';
 	import { fetchJSON } from '$lib/api';
+	import { Info } from '@lucide/svelte';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -121,7 +122,7 @@
 			<!-- Header -->
 			<div class="border-b border-m3-outline/10 px-6 py-4">
 				<Dialog.Title class="flex items-center gap-2.5 text-lg font-semibold tracking-tight text-m3-on-surface">
-					<span class="material-symbols-outlined text-m3-primary text-2xl">info</span>
+					<Info class="text-m3-primary size-6" />
 					About GoNZBD
 				</Dialog.Title>
 			</div>

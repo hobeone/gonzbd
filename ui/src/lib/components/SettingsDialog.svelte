@@ -2,6 +2,7 @@
 	import { Dialog } from 'bits-ui';
 	import { Button } from '$lib/components/ui/button';
 	import { setConfig, postAction, fetchConfig } from '$lib/api';
+	import { Settings as SettingsIcon, AlertCircle, X } from '@lucide/svelte';
 	import GeneralSection from './config/GeneralSection.svelte';
 	import DownloadsSection from './config/DownloadsSection.svelte';
 	import PostProcSection from './config/PostProcSection.svelte';
@@ -194,16 +195,16 @@
 		<Dialog.Content class="fixed left-1/2 top-1/2 z-50 flex h-[85vh] w-full max-w-4xl -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl border border-m3-outline/20 bg-m3-surface text-m3-on-surface shadow-m3-3 outline-none">
 			<!-- Sidebar -->
 			<aside class="w-64 shrink-0 border-r border-m3-outline/10 bg-m3-surface-variant/30 p-5">
-				<Dialog.Title class="px-2 text-lg font-semibold tracking-tight text-m3-on-surface flex items-center gap-2 select-none">
-					<span class="material-symbols-outlined text-m3-primary text-xl">settings</span>
+				<Dialog.Title class="px-2 text-base font-bold tracking-tight text-foreground flex items-center gap-2 select-none">
+					<SettingsIcon class="size-5 text-primary" />
 					Settings
 				</Dialog.Title>
 				<nav class="mt-6 space-y-1">
 					{#each sections as section (section.id)}
 						<button
 							onclick={() => (activeSection = section.id)}
-							class="w-full rounded-full px-4 py-2.5 text-left text-sm font-semibold tracking-wide transition-all
-							{activeSection === section.id ? 'bg-m3-primary-container text-m3-on-primary-container' : 'text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface'}"
+							class="w-full rounded-full px-4 py-2 text-left text-xs font-bold tracking-wide transition-all
+							{activeSection === section.id ? 'bg-primary text-primary-foreground shadow-xs' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}"
 						>
 							{section.label}
 						</button>
@@ -215,13 +216,13 @@
 			<div class="flex flex-1 flex-col overflow-hidden">
 				<div class="flex-1 overflow-y-auto p-8">
 					{#if error}
-						<div class="mb-6 flex items-center justify-between rounded-2xl border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive font-semibold">
+						<div class="mb-6 flex items-center justify-between rounded-2xl border border-destructive/30 bg-destructive/10 p-4 text-xs text-destructive font-semibold">
 							<div class="flex items-center gap-2">
-								<span class="material-symbols-outlined text-lg leading-none">error</span>
+								<AlertCircle class="size-4 shrink-0" />
 								<span>{error}</span>
 							</div>
 							<button onclick={() => (error = null)} class="text-destructive hover:opacity-80" aria-label="Dismiss error">
-								<span class="material-symbols-outlined text-lg leading-none">close</span>
+								<X class="size-4 shrink-0" />
 							</button>
 						</div>
 					{/if}

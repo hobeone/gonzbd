@@ -3,6 +3,7 @@
 	import { getServerStats } from '$lib/stores/queue.svelte';
 	import type { ServerSnapshot, ConnSnapshot, ServerConfig } from '$lib/types';
 	import { formatSize as formatBytes, formatSpeed as formatBps } from '$lib/utils';
+	import { Server, X, ChevronDown, Settings, AlertTriangle } from '@lucide/svelte';
 	import ServerEditDialog from './config/ServerEditDialog.svelte';
 
 	let {
@@ -126,17 +127,17 @@
 		class="fixed top-0 right-0 z-50 flex h-full w-full max-w-lg flex-col border-l border-m3-outline/10 bg-m3-surface text-m3-on-surface rounded-l-3xl shadow-m3-3 outline-none"
 	>
 		<!-- Header -->
-		<div class="flex items-center justify-between border-b border-m3-outline/10 px-6 py-4">
+		<div class="flex items-center justify-between border-b border-border/40 px-6 py-4">
 			<div class="flex items-center gap-3">
-				<span class="material-symbols-outlined text-m3-primary text-xl">dns</span>
-				<h2 class="text-base font-semibold tracking-tight">Server Status</h2>
+				<Server class="size-5 text-primary" />
+				<h2 class="text-base font-bold tracking-tight text-foreground">Server Status</h2>
 			</div>
 			<button
 				onclick={() => (open = false)}
 				aria-label="Close"
-				class="rounded-full p-1.5 text-m3-on-surface-variant hover:bg-m3-surface-variant/50 hover:text-m3-on-surface transition-colors"
+				class="rounded-full p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
 			>
-				<span class="material-symbols-outlined text-lg leading-none">close</span>
+				<X class="size-4" />
 			</button>
 		</div>
 
@@ -216,7 +217,7 @@
 							</div>
 
 							<!-- Expand arrow -->
-							<span class="material-symbols-outlined text-lg text-m3-on-surface-variant/80 transition-transform duration-200 {isExpanded ? 'rotate-180' : ''}">expand_more</span>
+							<ChevronDown class="size-4 text-muted-foreground transition-transform duration-200 {isExpanded ? 'rotate-180' : ''}" />
 						</button>
 
 						<!-- Settings (gear) button -->
@@ -225,24 +226,24 @@
 							disabled={editLoadingFor === server.name}
 							title="Server settings"
 							aria-label="Edit {server.name} settings"
-							class="flex flex-shrink-0 items-center justify-center px-4 text-m3-on-surface-variant/70 hover:text-m3-primary transition-colors disabled:opacity-50"
+							class="flex flex-shrink-0 items-center justify-center px-4 text-muted-foreground hover:text-primary transition-colors disabled:opacity-50"
 						>
 							{#if editLoadingFor === server.name}
-								<svg class="size-4 animate-spin text-m3-primary" viewBox="0 0 24 24" fill="none">
+								<svg class="size-4 animate-spin text-primary" viewBox="0 0 24 24" fill="none">
 									<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
 									<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
 								</svg>
 							{:else}
-								<span class="material-symbols-outlined text-lg leading-none">settings</span>
+								<Settings class="size-4" />
 							{/if}
 						</button>
 					</div>
 
 					<!-- Speed proportion bar -->
 					{#if server.enabled && aggrBps > 0}
-						<div class="h-[3px] bg-m3-outline/10">
+						<div class="h-[3px] bg-border/40">
 							<div
-								class="h-full bg-m3-primary transition-all duration-300"
+								class="h-full bg-primary transition-all duration-300"
 								style="width: {Math.max(speedPct, 1)}%"
 							></div>
 						</div>
@@ -250,26 +251,26 @@
 
 					<!-- Expanded details -->
 					{#if isExpanded}
-						<div class="border-t border-m3-outline/10 bg-m3-surface-variant/20">
+						<div class="border-t border-border/40 bg-muted/20">
 							<!-- Stats -->
 							<div class="grid grid-cols-2 gap-x-4 gap-y-1.5 px-4 py-3 text-xs">
 								<div>
-									<span class="text-m3-on-surface-variant/80 font-medium">Total Downloaded:</span>
-									<span class="ml-1 font-semibold text-m3-on-surface">{formatBytes(server.total_bytes)}</span>
+									<span class="text-muted-foreground font-medium">Total Downloaded:</span>
+									<span class="ml-1 font-mono font-semibold text-foreground">{formatBytes(server.total_bytes)}</span>
 								</div>
 								<div>
-									<span class="text-m3-on-surface-variant/80 font-medium">Pipelining:</span>
-									<span class="ml-1 font-semibold text-m3-on-surface">{server.pipelining || 1}</span>
+									<span class="text-muted-foreground font-medium">Pipelining:</span>
+									<span class="ml-1 font-mono font-semibold text-foreground">{server.pipelining || 1}</span>
 								</div>
 							</div>
 
 							{#if penalty}
-								<div class="mx-4 mb-3 flex items-center gap-2 rounded-2xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs">
-									<span class="material-symbols-outlined text-amber-500 text-sm">warning</span>
-									<span class="font-semibold text-amber-700 dark:text-amber-300">Penalized — {penalty} remaining</span>
+								<div class="mx-4 mb-3 flex items-center gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+									<AlertTriangle class="size-3.5 text-amber-500" />
+									<span class="font-semibold text-amber-600 dark:text-amber-400">Penalized — {penalty} remaining</span>
 									<button
 										onclick={() => unblockServer(server.name)}
-										class="ml-auto rounded-full bg-amber-500 text-m3-surface px-2.5 py-0.5 text-[10px] font-bold hover:bg-amber-400"
+										class="ml-auto rounded-full bg-amber-500 text-white px-2.5 py-0.5 text-[10px] font-bold hover:bg-amber-400"
 										title="Clear penalty and retry immediately"
 									>
 										Unblock

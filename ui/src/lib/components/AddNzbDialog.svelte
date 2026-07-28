@@ -4,6 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { uploadNzb, postAction, fetchCategories } from '$lib/api';
+	import { FileUp } from '@lucide/svelte';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -149,7 +150,7 @@
 						class="flex cursor-pointer flex-col items-center justify-center rounded-3xl border-2 border-dashed p-8 transition-colors
 						{dragging ? 'border-m3-primary bg-m3-primary/10' : 'border-m3-outline/40 hover:border-m3-primary/70 bg-transparent'}"
 					>
-						<span class="material-symbols-outlined text-4xl text-m3-on-surface-variant/70 mb-2">upload_file</span>
+						<FileUp class="size-10 text-muted-foreground/80 mb-2" />
 						{#if files && files.length > 0}
 							<span class="block w-full max-w-[200px] sm:max-w-xs text-sm font-medium text-m3-on-surface truncate text-center" title={files[0].name}>{files[0].name}</span>
 							<span class="mt-1 text-xs text-m3-on-surface-variant/85">{(files[0].size / 1024).toFixed(1)} KB</span>
