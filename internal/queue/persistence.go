@@ -66,11 +66,22 @@ func (q *Queue) saveStore(_ string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := q.store.SetPaused(ctx, paused); err != nil {
-		return fmt.Errorf("queue: save paused state: %w", err)
+	// Persist the jobs before the paused flag: the jobs are the data worth
+	// saving, so a failure to write one bool must not cost us the whole
+	// queue. Both are attempted regardless, and their errors joined, rather
+	// than letting the first failure short-circuit the second write.
+	jobsErr := q.store.UpdateBatch(ctx, snapshots)
+	if jobsErr != nil {
+		jobsErr = fmt.Errorf("queue: save jobs: %w", jobsErr)
 	}
-	if err := q.store.UpdateBatch(ctx, snapshots); err != nil {
-		return fmt.Errorf("queue: save jobs: %w", err)
+	pausedErr := q.store.SetPaused(ctx, paused)
+	if pausedErr != nil {
+		pausedErr = fmt.Errorf("queue: save paused state: %w", pausedErr)
+	}
+	if err := errors.Join(jobsErr, pausedErr); err != nil {
+		// Skip Prune: it deletes rows absent from the live set, which is
+		// only safe to trust once the live set has been written.
+		return err
 	}
 	if err := q.store.Prune(ctx); err != nil {
 		return fmt.Errorf("queue: prune store: %w", err)
