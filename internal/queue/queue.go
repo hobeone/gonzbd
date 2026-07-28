@@ -671,15 +671,30 @@ func (q *Queue) prepareClaimFailureLocked(job *Job, manifestPath string, claimEr
 // finishClaimFailure performs the disk and database I/O for a failed claim.
 // It must be called with q.mu released.
 //
-// Errors are best-effort by design, matching the previous behaviour: the job
-// has already been evicted from the in-RAM queue, and a failed MoveToHistory
-// leaves a row the next startup reconciles.
+// Recovery is best-effort: the job has already been evicted from the in-RAM
+// queue, so there is nothing to roll back and no caller in a position to act
+// on a returned error. The failures are logged rather than discarded, because
+// each one leaves observable divergence — a stale .corrupt rename, or a job
+// still sitting in SQLite as Queued while absent from RAM — that is otherwise
+// invisible until the next startup reconciles it.
 func (q *Queue) finishClaimFailure(ctx context.Context, cf claimFailure) {
 	if _, err := os.Stat(cf.manifestPath); err == nil {
-		_ = os.Rename(cf.manifestPath, cf.manifestPath+".corrupt")
+		if err := os.Rename(cf.manifestPath, cf.manifestPath+".corrupt"); err != nil {
+			q.log.Warn("could not set aside corrupt manifest",
+				"job_id", cf.job.ID,
+				"manifest_path", cf.manifestPath,
+				"err", err,
+			)
+		}
 	}
 	if cf.store != nil {
-		_ = cf.store.MoveToHistory(ctx, cf.job, cf.entry)
+		if err := cf.store.MoveToHistory(ctx, cf.job, cf.entry); err != nil {
+			q.log.Error("could not move failed job to history; it is evicted from "+
+				"the queue but may remain in the store until startup reconciles it",
+				"job_id", cf.job.ID,
+				"err", err,
+			)
+		}
 	}
 }
 

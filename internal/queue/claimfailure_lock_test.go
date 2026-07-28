@@ -2,6 +2,8 @@ package queue
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 
@@ -19,6 +21,9 @@ type lockProbeStore struct {
 	Store
 
 	q *Queue
+
+	// moveErr, when non-nil, is returned by MoveToHistory.
+	moveErr error
 
 	mu               sync.Mutex
 	moveCalled       bool
@@ -41,7 +46,7 @@ func (s *lockProbeStore) MoveToHistory(context.Context, *Job, history.Entry) err
 	} else {
 		s.lockHeldDuringIO = true
 	}
-	return nil
+	return s.moveErr
 }
 
 // MoveToHistory opens a SQLite transaction spanning the active-job and history
@@ -106,5 +111,83 @@ func TestClaimFailure_RemovesJobFromQueue(t *testing.T) {
 	}
 	if n := q.Len(); n != 0 {
 		t.Errorf("queue length = %d, want 0", n)
+	}
+}
+
+// recordingHandler captures emitted log records for assertion.
+type recordingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler            { return h }
+
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+
+// hasErrAttr reports whether any record carries an "err" attribute matching
+// target.
+//
+// Asserting on the specific error matters: PromoteNext already logs the
+// claim failure itself at error level, so a bare "was anything logged at
+// error level" check passes whether or not the store error is reported.
+func (h *recordingHandler) hasErrAttr(target error) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		found := false
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key != "err" {
+				return true
+			}
+			if err, ok := a.Value.Any().(error); ok && errors.Is(err, target) {
+				found = true
+				return false
+			}
+			return true
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+// A failed MoveToHistory leaves the job evicted from RAM but potentially still
+// present in the store as Queued. Nothing can roll that back and no caller is
+// positioned to act on the error, but the divergence must not be silent -- it
+// is invisible until the next startup reconciles it.
+func TestClaimFailure_LogsMoveToHistoryError(t *testing.T) {
+	rec := &recordingHandler{}
+	q := New(WithStateDir(t.TempDir()), WithLogger(slog.New(rec)))
+	moveErr := errors.New("database is locked")
+	probe := &lockProbeStore{q: q, moveErr: moveErr}
+	q.store = probe
+
+	job := &Job{
+		ID:     "job-corrupt",
+		Name:   "corrupt-manifest",
+		Status: constants.StatusQueued,
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	probe.mu.Lock()
+	called := probe.moveCalled
+	probe.mu.Unlock()
+	if !called {
+		t.Fatal("MoveToHistory was never called — the test is not exercising the failure path")
+	}
+
+	if !rec.hasErrAttr(moveErr) {
+		t.Error("the MoveToHistory error was not logged: a job evicted from RAM " +
+			"while still persisted as Queued is a silent store divergence")
 	}
 }
