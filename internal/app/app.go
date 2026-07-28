@@ -583,6 +583,9 @@ func (app *Application) Start(ctx context.Context) error {
 		}
 	}()
 
+	//nolint:gosec // G118 false positive: cancel is stored on the struct and
+	// invoked by Shutdown (see app.cancel() below); gosec cannot track cancel
+	// funcs held in a field rather than a local.
 	app.ctx, app.cancel = context.WithCancel(ctx)
 	if err := app.assembler.Start(app.ctx); err != nil {
 		return err
