@@ -43,7 +43,7 @@ func WriteExecutable(t testing.TB, path, content string) string {
 
 	var err error
 	withoutConcurrentFork(func() {
-		err = writeAndClose(path, content)
+		err = writeAndClose(path, content, os.OpenFile)
 	})
 	if err != nil {
 		t.Fatalf("WriteExecutable %q: %v", path, err)
@@ -51,17 +51,18 @@ func WriteExecutable(t testing.TB, path, content string) string {
 	return path
 }
 
-// osOpenFile is a seam so tests can drive writeAndClose's write-failure
-// branch, which is otherwise unreachable on a healthy filesystem.
-var osOpenFile = os.OpenFile
+// openFunc matches the signature of os.OpenFile. writeAndClose takes one
+// as a parameter rather than reading a package-level variable, so that
+// tests can drive its failure branches without mutating shared state that
+// a parallel test could observe mid-flight.
+type openFunc func(name string, flag int, perm os.FileMode) (*os.File, error)
 
-// writeAndClose creates path with mode 0o755, writes content, and closes
-// it. It performs no fork or exec of its own: it runs while ForkLock is
-// held for reading, and sync.RWMutex is not reentrant, so forking here
+// writeAndClose creates path with mode 0o755 via open, writes content, and
+// closes it. It performs no fork or exec of its own: it runs while ForkLock
+// is held for reading, and sync.RWMutex is not reentrant, so forking here
 // would deadlock against the fork's own write-lock acquisition.
-func writeAndClose(path, content string) error {
-	//nolint:gosec // G304: test-controlled path, and the 0o755 mode is the point -- callers exec this file
-	f, err := osOpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+func writeAndClose(path, content string, open openFunc) error {
+	f, err := open(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
 		return err
 	}

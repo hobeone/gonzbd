@@ -73,7 +73,7 @@ func TestWriteAndClose_OpenError(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	err := writeAndClose(dirAsTarget, "#!/bin/sh\n")
+	err := writeAndClose(dirAsTarget, "#!/bin/sh\n", os.OpenFile)
 	if err == nil {
 		t.Fatal("writeAndClose on a directory returned nil, want an error")
 	}
@@ -83,25 +83,23 @@ func TestWriteAndClose_OpenError(t *testing.T) {
 }
 
 // TestWriteAndClose_WriteError covers the write-failure branch, which a
-// healthy filesystem will not produce on its own, via the osOpenFile
-// seam. It deliberately does not call t.Parallel(): it mutates that
-// package-level seam, and Go runs serial tests to completion before
-// resuming any parallel ones, so this cannot overlap the stress test.
+// healthy filesystem will not produce on its own. The opener is passed in
+// per call, so nothing is shared and the test is safe to parallelise.
 func TestWriteAndClose_WriteError(t *testing.T) {
+	t.Parallel()
+
 	path := filepath.Join(t.TempDir(), "stub.sh")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatalf("pre-create: %v", err)
 	}
 
-	orig := osOpenFile
-	t.Cleanup(func() { osOpenFile = orig })
 	// A read-only descriptor makes the write fail with EBADF while
 	// leaving the close path reachable.
-	osOpenFile = func(name string, _ int, _ os.FileMode) (*os.File, error) {
+	readOnly := func(name string, _ int, _ os.FileMode) (*os.File, error) {
 		return os.Open(name) //nolint:gosec // G304: test-controlled path under t.TempDir()
 	}
 
-	err := writeAndClose(path, "#!/bin/sh\n")
+	err := writeAndClose(path, "#!/bin/sh\n", readOnly)
 	if err == nil {
 		t.Fatal("writeAndClose with a read-only descriptor returned nil, want an error")
 	}
