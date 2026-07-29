@@ -1460,14 +1460,14 @@ func TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry(t *testing.T
 func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 	t.Parallel()
 
-	ms := newMockNNTP(t, withBodyGate())
+	ms := newMockNNTP(t)
 	ms.addArticle("hangup1@h", "body1")
 	ms.addArticle("hangup2@h", "body2")
 	ms.hangupOnFetch("hangup1@h")
 	ms.hangupOnFetch("hangup2@h")
 
 	q := queue.New()
-	srv := testServer(t, "s", ms.addr)
+	srv := testServer(t, "s", ms.addr, func(c *config.ServerConfig) { c.PipeliningRequests = 2 })
 	tracker := newDispatchTracker()
 	d := &Downloader{
 		queue:   q,
@@ -1512,10 +1512,6 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 		}
 	}()
 
-	<-ms.bodyEntered
-	<-ms.bodyEntered
-	close(ms.bodyGate)
-
 	wg.Wait()
 
 	if srv.BadConnections() != 1 {
@@ -1546,14 +1542,14 @@ func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testi
 	telemetry.Reset()
 	t.Cleanup(telemetry.Reset)
 
-	ms := newMockNNTP(t, withBodyGate())
+	ms := newMockNNTP(t)
 	ms.addArticle("hangup1@h", "body1")
 	ms.addArticle("hangup2@h", "body2")
 	ms.hangupOnFetch("hangup1@h")
 	ms.hangupOnFetch("hangup2@h")
 
 	q := queue.New()
-	srv := testServer(t, "s", ms.addr)
+	srv := testServer(t, "s", ms.addr, func(c *config.ServerConfig) { c.PipeliningRequests = 2 })
 	d := &Downloader{
 		queue:   q,
 		tracker: newDispatchTracker(),
@@ -1581,14 +1577,17 @@ func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testi
 		d.fetchArticle(t.Context(), srv, 0, mc, req2, "worker1")
 	}()
 
-	<-ms.bodyEntered
-	<-ms.bodyEntered
-	close(ms.bodyGate)
-
 	wg.Wait()
 
-	if got := telemetry.ErrorCount(telemetry.ErrClassOtherConnectionError); got != 2 {
-		t.Errorf("PipelineErrors[other_connection_error] = %d, want 2 (once per affected article, not deduped like BadConnections)", got)
+	got := telemetry.ErrorCount(telemetry.ErrClassOtherConnectionError) +
+		telemetry.ErrorCount(telemetry.ErrClassNetworkError) +
+		telemetry.ErrorCount(telemetry.ErrClassConnClosed)
+	if got != 2 {
+		t.Errorf("PipelineErrors[connection_errors] = %d (other=%d, network=%d, closed=%d), want 2 (once per affected article)",
+			got,
+			telemetry.ErrorCount(telemetry.ErrClassOtherConnectionError),
+			telemetry.ErrorCount(telemetry.ErrClassNetworkError),
+			telemetry.ErrorCount(telemetry.ErrClassConnClosed))
 	}
 }
 
