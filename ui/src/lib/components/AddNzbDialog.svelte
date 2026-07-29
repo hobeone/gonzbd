@@ -1,13 +1,13 @@
 <script lang="ts">
-	import { Dialog } from 'bits-ui';
-	import { Tabs } from 'bits-ui';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { uploadNzb, postAction, fetchCategories } from '$lib/api';
+	import FileUp from '@lucide/svelte/icons/file-up';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
-	let activeTab = $state('file');
+	let activeTab = $state<'file' | 'url'>('file');
 	let url = $state('');
 	let category = $state('*');
 	let password = $state('');
@@ -19,8 +19,8 @@
 
 	$effect(() => {
 		if (open) {
+			reset();
 			fetchCategories().then((cats) => {
-				// Don't re-add * if it's already there from backend
 				const filtered = cats.filter(c => c !== '*');
 				categories = ['*', ...filtered];
 			});
@@ -89,73 +89,75 @@
 	}
 </script>
 
-<Dialog.Root bind:open onOpenChange={(o) => { if (o) reset(); }}>
-	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs" />
-		<Dialog.Content
-			class="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-m3-outline/20 bg-m3-surface p-6 shadow-m3-3 text-m3-on-surface outline-none"
-			ondrop={handleDrop}
-			ondragover={handleDragOver}
-			ondragleave={() => (dragging = false)}
-		>
-			<Dialog.Title class="text-lg font-semibold tracking-tight">Add NZB</Dialog.Title>
-			<Dialog.Description class="mt-1 text-sm text-m3-on-surface-variant/80">
-				Upload an NZB file or paste a URL.
-			</Dialog.Description>
+<Modal bind:open ariaLabel="Add NZB" class="w-full max-w-md bg-card text-foreground p-6 border border-border">
+	<div
+		role="region"
+		aria-label="NZB Upload Target"
+		ondrop={handleDrop}
+		ondragover={handleDragOver}
+		ondragleave={() => (dragging = false)}
+	>
+		<h2 class="text-lg font-semibold tracking-tight text-foreground">Add NZB</h2>
+		<p class="mt-1 text-sm text-muted-foreground">
+			Upload an NZB file or paste a URL.
+		</p>
 
-			<Tabs.Root bind:value={activeTab} class="mt-4">
-				<Tabs.List class="flex gap-1 border-b border-m3-outline/10">
-					<Tabs.Trigger
-						value="file"
-						class="border-b-2 px-4 py-2 text-sm font-semibold tracking-wide transition-all data-[state=active]:border-m3-primary data-[state=active]:text-m3-primary data-[state=inactive]:border-transparent data-[state=inactive]:text-m3-on-surface-variant/75"
-					>
-						File
-					</Tabs.Trigger>
-					<Tabs.Trigger
-						value="url"
-						class="border-b-2 px-4 py-2 text-sm font-semibold tracking-wide transition-all data-[state=active]:border-m3-primary data-[state=active]:text-m3-primary data-[state=inactive]:border-transparent data-[state=inactive]:text-m3-on-surface-variant/75"
-					>
-						URL
-					</Tabs.Trigger>
-				</Tabs.List>
+		<div class="mt-4">
+			<div class="flex gap-1 border-b border-border/60">
+				<button
+					type="button"
+					onclick={() => (activeTab = 'file')}
+					class="border-b-2 px-4 py-2 text-sm font-semibold tracking-wide transition-all {activeTab === 'file' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground'}"
+				>
+					File
+				</button>
+				<button
+					type="button"
+					onclick={() => (activeTab = 'url')}
+					class="border-b-2 px-4 py-2 text-sm font-semibold tracking-wide transition-all {activeTab === 'url' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground'}"
+				>
+					URL
+				</button>
+			</div>
 
-				<div class="mt-4 grid grid-cols-2 gap-4">
-					<div class="space-y-1.5">
-						<label for="category" class="text-xs font-semibold text-m3-on-surface-variant">Category</label>
-						<select
-							id="category"
-							bind:value={category}
-							class="flex h-9 w-full rounded-lg border border-m3-outline bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus:border-m3-primary focus:outline-none focus:ring-1 focus:ring-m3-primary disabled:cursor-not-allowed disabled:opacity-50"
-						>
-							{#each categories as cat (cat)}
-								<option value={cat}>{cat}</option>
-							{/each}
-						</select>
-					</div>
-					<div class="space-y-1.5">
-						<label for="password" class="text-xs font-semibold text-m3-on-surface-variant">Password</label>
-						<Input
-							id="password"
-							type="text"
-							placeholder="Optional"
-							bind:value={password}
-							class="h-9"
-						/>
-					</div>
+			<div class="mt-4 grid grid-cols-2 gap-4">
+				<div class="space-y-1.5">
+					<label for="category" class="text-xs font-semibold text-muted-foreground">Category</label>
+					<select
+						id="category"
+						bind:value={category}
+						class="flex h-9 w-full rounded-lg border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
+					>
+						{#each categories as cat (cat)}
+							<option value={cat}>{cat}</option>
+						{/each}
+					</select>
 				</div>
+				<div class="space-y-1.5">
+					<label for="password" class="text-xs font-semibold text-muted-foreground">Password</label>
+					<Input
+						id="password"
+						type="text"
+						placeholder="Optional"
+						bind:value={password}
+						class="h-9"
+					/>
+				</div>
+			</div>
 
-				<Tabs.Content value="file" class="mt-4">
+			{#if activeTab === 'file'}
+				<div class="mt-4">
 					<label
 						class="flex cursor-pointer flex-col items-center justify-center rounded-3xl border-2 border-dashed p-8 transition-colors
-						{dragging ? 'border-m3-primary bg-m3-primary/10' : 'border-m3-outline/40 hover:border-m3-primary/70 bg-transparent'}"
+						{dragging ? 'border-primary bg-primary/10' : 'border-border/60 hover:border-primary/70 bg-transparent'}"
 					>
-						<span class="material-symbols-outlined text-4xl text-m3-on-surface-variant/70 mb-2">upload_file</span>
+						<FileUp class="size-10 text-muted-foreground/80 mb-2" />
 						{#if files && files.length > 0}
-							<span class="block w-full max-w-[200px] sm:max-w-xs text-sm font-medium text-m3-on-surface truncate text-center" title={files[0].name}>{files[0].name}</span>
-							<span class="mt-1 text-xs text-m3-on-surface-variant/85">{(files[0].size / 1024).toFixed(1)} KB</span>
+							<span class="block w-full max-w-[200px] sm:max-w-xs text-sm font-medium text-foreground truncate text-center" title={files[0].name}>{files[0].name}</span>
+							<span class="mt-1 text-xs text-muted-foreground">{(files[0].size / 1024).toFixed(1)} KB</span>
 						{:else}
-							<span class="text-sm text-m3-on-surface-variant text-center font-medium">Drop NZB file here or click to browse</span>
-							<span class="mt-1 text-xs text-m3-on-surface-variant/70">.nzb or .nzb.gz files</span>
+							<span class="text-sm text-muted-foreground text-center font-medium">Drop NZB file here or click to browse</span>
+							<span class="mt-1 text-xs text-muted-foreground/70">.nzb or .nzb.gz files</span>
 						{/if}
 						<input
 							type="file"
@@ -165,37 +167,37 @@
 						/>
 					</label>
 					<Button
-						class="mt-4 w-full bg-m3-primary text-m3-on-primary hover:bg-m3-primary/90"
+						class="mt-4 w-full bg-primary text-primary-foreground hover:bg-primary/90"
 						onclick={submitFile}
 						disabled={submitting || !files || files.length === 0}
 					>
 						{submitting ? 'Uploading...' : 'Upload'}
 					</Button>
-				</Tabs.Content>
-
-				<Tabs.Content value="url" class="mt-4">
+				</div>
+			{:else}
+				<div class="mt-4">
 					<input
 						type="url"
 						bind:value={url}
 						placeholder="https://example.com/file.nzb"
-						class="w-full rounded-lg border border-m3-outline px-3 py-2 text-sm bg-transparent focus:border-m3-primary focus:outline-none focus:ring-1 focus:ring-m3-primary text-m3-on-surface placeholder-m3-on-surface-variant/50"
+						class="w-full rounded-lg border border-input px-3 py-2 text-sm bg-transparent focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary text-foreground placeholder-muted-foreground/50"
 						onkeydown={(e) => e.key === 'Enter' && submitUrl()}
 					/>
 					<Button
-						class="mt-4 w-full bg-m3-primary text-m3-on-primary hover:bg-m3-primary/90"
+						class="mt-4 w-full bg-primary text-primary-foreground hover:bg-primary/90"
 						onclick={submitUrl}
 						disabled={submitting || !url.trim()}
 					>
 						{submitting ? 'Fetching...' : 'Fetch'}
 					</Button>
-				</Tabs.Content>
-			</Tabs.Root>
-
-			{#if result}
-				<p class="mt-3 text-sm {result.ok ? 'text-green-600 dark:text-green-400' : 'text-destructive'} font-semibold">
-					{result.message}
-				</p>
+				</div>
 			{/if}
-		</Dialog.Content>
-	</Dialog.Portal>
-</Dialog.Root>
+		</div>
+
+		{#if result}
+			<p class="mt-3 text-sm {result.ok ? 'text-green-600 dark:text-green-400' : 'text-destructive'} font-semibold">
+				{result.message}
+			</p>
+		{/if}
+	</div>
+</Modal>

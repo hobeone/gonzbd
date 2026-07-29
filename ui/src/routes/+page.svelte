@@ -54,30 +54,30 @@
 
 <svelte:window onkeydown={handleGlobalShortcut} />
 
-<div class="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-950">
+<div class="flex min-h-screen flex-col bg-background text-foreground antialiased selection:bg-primary/20 selection:text-primary">
 	<Navbar paused={isPaused()} onpausetoggle={() => {}} />
 	<StatusBar />
 	<ConnectionOverlay />
 
-	<div class="mx-auto w-full max-w-7xl flex-1 space-y-6 px-4 pt-4 pb-8">
+	<main class="mx-auto w-full max-w-7xl flex-1 space-y-8 px-4 pt-6 pb-12">
 		<WarningsBanner />
 
-		<section>
-			<div class="mb-3 flex items-center gap-3">
-				<h2 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Queue</h2>
-				<div class="h-px flex-1 bg-gray-200 dark:bg-gray-700"></div>
+		<section class="space-y-3">
+			<div class="flex items-center gap-3">
+				<h2 class="text-xs font-bold uppercase tracking-wider text-muted-foreground/80">Queue</h2>
+				<div class="h-px flex-1 bg-border/40"></div>
 			</div>
 			<QueueTable />
 		</section>
 
-		<section>
-			<div class="mb-3 flex items-center gap-3">
-				<h2 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">History</h2>
-				<div class="h-px flex-1 bg-gray-200 dark:bg-gray-700"></div>
+		<section class="space-y-3">
+			<div class="flex items-center gap-3">
+				<h2 class="text-xs font-bold uppercase tracking-wider text-muted-foreground/80">History</h2>
+				<div class="h-px flex-1 bg-border/40"></div>
 			</div>
 			<HistoryTable />
 		</section>
-	</div>
+	</main>
 </div>
 
 <Toast />

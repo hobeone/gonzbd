@@ -10,17 +10,11 @@ vi.mock('$lib/api', () => ({
 
 describe('AddNzbDialog', () => {
 	beforeEach(() => {
-		vi.useFakeTimers();
 		vi.clearAllMocks();
 	});
 
 	afterEach(() => {
-		// Flush the 24ms body-scroll-lock cleanup timer that bits-ui
-		// Dialog schedules on destroy. Without this, the timer fires
-		// after JSDOM teardown → "document is not defined".
 		cleanup();
-		vi.runAllTimers();
-		vi.useRealTimers();
 	});
 
 	it('renders dialog title when open', () => {

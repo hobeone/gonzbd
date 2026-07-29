@@ -11,9 +11,11 @@
 		getQueueSearch,
 		setQueueSearch
 	} from '$lib/stores/queue.svelte';
-	import { Dialog } from 'bits-ui';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
+	import Search from '@lucide/svelte/icons/search';
+	import Loader2 from '@lucide/svelte/icons/loader-2';
 	import QueueRow from './QueueRow.svelte';
 	import Pagination from './Pagination.svelte';
 	import type { QueueSlot } from '$lib/types';
@@ -63,34 +65,37 @@
 	});
 </script>
 
-<div class="mb-4">
+<div class="mb-4 flex items-center justify-between gap-4">
 	<div class="relative w-full max-w-sm">
-		<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-lg text-m3-on-surface-variant">search</span>
+		<Search class="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
 		<Input
 			type="search"
 			placeholder="Search queue..."
-			class="pl-9 h-10 rounded-full border-m3-outline focus-visible:ring-m3-primary"
+			class="pl-9 h-9 text-xs rounded-full border-border bg-card focus-visible:ring-primary"
 			bind:value={localSearch}
 		/>
 	</div>
 </div>
 
 {#if getError()}
-	<div class="rounded-2xl border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive font-semibold">
+	<div class="rounded-2xl border border-destructive/30 bg-destructive/10 p-4 text-xs font-semibold text-destructive">
 		API error: {getError()}
 	</div>
 {:else if slots().length === 0}
-	<div class="rounded-3xl border border-m3-outline/20 bg-m3-surface p-8 text-center text-m3-on-surface-variant/80 font-medium">
+	<div class="flex h-12 items-center justify-center rounded-2xl border border-border/60 bg-card/60 px-4 text-xs font-medium text-muted-foreground">
 		{#if getQueue() === null}
-			Loading...
+			<div class="flex items-center gap-2">
+				<Loader2 class="size-4 animate-spin text-muted-foreground" />
+				<span>Loading download queue...</span>
+			</div>
 		{:else}
-			Queue is empty
+			<span>Queue is empty</span>
 		{/if}
 	</div>
 {:else}
-	<div class="overflow-x-auto rounded-3xl border border-m3-outline/20 bg-m3-surface shadow-m3-1">
+	<div class="overflow-x-auto rounded-2xl border border-border/60 bg-card shadow-sm">
 		<table class="w-full text-left">
-			<thead class="border-b border-m3-outline/10 bg-m3-surface-variant/20 text-[11px] font-bold uppercase tracking-wider text-m3-on-surface-variant">
+			<thead class="border-b border-border/40 bg-muted/30 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
 				<tr>
 					<th class="px-5 py-3.5">Name</th>
 					<th class="px-5 py-3.5">Progress</th>
@@ -101,7 +106,7 @@
 					<th class="px-5 py-3.5 text-right">Actions</th>
 				</tr>
 			</thead>
-			<tbody>
+			<tbody class="divide-y divide-border/30">
 				{#each slots() as slot (slot.nzo_id)}
 					<QueueRow {slot} onremove={() => openDelete(slot)} />
 				{/each}
@@ -117,38 +122,39 @@
 	/>
 {/if}
 
-<Dialog.Root bind:open={showDeleteConfirm}>
-	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs" />
-		<Dialog.Content
-			class="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-m3-outline/20 bg-m3-surface text-m3-on-surface p-6 shadow-m3-3 outline-none animate-in fade-in zoom-in-95"
+<Modal bind:open={showDeleteConfirm} ariaLabel="Confirm Delete Job" class="w-full max-w-sm bg-card text-foreground p-6 border border-border">
+	<h2 class="text-base font-semibold text-foreground">Delete Job</h2>
+	<p class="mt-2 text-xs text-muted-foreground">
+		Are you sure you want to delete <span class="font-medium text-foreground">{deleteTarget?.name || deleteTarget?.filename}</span>?
+	</p>
+	<div class="mt-4 flex items-center gap-2">
+		<input
+			type="checkbox"
+			id="delete-files-queue"
+			bind:checked={deleteFiles}
+			class="size-4 rounded border-border text-primary focus:ring-primary"
+		/>
+		<label for="delete-files-queue" class="text-xs font-medium text-foreground cursor-pointer">
+			Also delete downloaded files from disk
+		</label>
+	</div>
+	<div class="mt-5 flex justify-end gap-2">
+		<Button
+			variant="outline"
+			size="sm"
+			class="rounded-xl border-border bg-card text-xs font-medium text-foreground hover:bg-muted"
+			onclick={() => (showDeleteConfirm = false)}
 		>
-			<div class="mb-4">
-				<Dialog.Title class="text-lg font-semibold tracking-tight text-m3-on-surface">Delete Job</Dialog.Title>
-				<Dialog.Description class="mt-2 text-sm text-m3-on-surface-variant/80">
-					Are you sure you want to delete <span class="inline-block max-w-[200px] sm:max-w-xs align-bottom font-bold text-m3-on-surface truncate" title={deleteTarget?.name || deleteTarget?.filename}
-						>{deleteTarget?.name || deleteTarget?.filename}</span
-					>?
-				</Dialog.Description>
-			</div>
-
-			<div class="py-4">
-				<label class="flex cursor-pointer items-center gap-2.5 text-sm text-m3-on-surface font-medium select-none">
-					<input
-						type="checkbox"
-						bind:checked={deleteFiles}
-						class="size-4 rounded-md border-m3-outline text-m3-primary focus:ring-m3-primary accent-m3-primary cursor-pointer"
-					/>
-					<span>Also delete downloaded files from disk</span>
-				</label>
-			</div>
-
-			<div class="mt-6 flex justify-end gap-3">
-				<Button variant="outline" class="rounded-full px-5 border-m3-outline text-m3-on-surface hover:bg-m3-surface-variant/50" onclick={() => (showDeleteConfirm = false)}>Cancel</Button>
-				<Button variant="destructive" class="rounded-full px-5 bg-destructive text-destructive-foreground hover:bg-destructive/90" onclick={remove} disabled={acting}>
-					{acting ? 'Deleting...' : 'Delete Job'}
-				</Button>
-			</div>
-		</Dialog.Content>
-	</Dialog.Portal>
-</Dialog.Root>
+			Cancel
+		</Button>
+		<Button
+			variant="destructive"
+			size="sm"
+			class="rounded-xl text-xs font-medium bg-red-600 hover:bg-red-700 text-white dark:bg-red-600 dark:hover:bg-red-700"
+			onclick={remove}
+			disabled={acting}
+		>
+			{acting ? 'Deleting...' : 'Delete Job'}
+		</Button>
+	</div>
+</Modal>

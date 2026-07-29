@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Dialog } from 'bits-ui';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Badge } from '$lib/components/ui/badge';
@@ -124,139 +124,134 @@
 	}
 </script>
 
-<Dialog.Root bind:open>
-	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 z-[60] bg-black/50" />
-		<Dialog.Content class="fixed left-1/2 top-1/2 z-[70] w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white dark:bg-gray-900 p-6 shadow-xl">
-			<Dialog.Title class="text-lg font-semibold">
-				{server ? 'Edit Server' : 'Add Server'}
-			</Dialog.Title>
-			
-			<div class="mt-4 grid grid-cols-2 gap-4">
-				<div class="col-span-2 space-y-1.5">
-					<label for="server-name" class="text-sm font-medium">Server Name</label>
-					<Input id="server-name" bind:value={draft.name} placeholder="e.g. NewsgroupDirect" />
-				</div>
+<Modal bind:open ariaLabel={server ? "Edit Server" : "Add Server"} class="w-full max-w-lg bg-card text-foreground p-6 border border-border">
+	<h2 class="text-lg font-semibold">
+		{server ? 'Edit Server' : 'Add Server'}
+	</h2>
+	
+	<div class="mt-4 grid grid-cols-2 gap-4">
+		<div class="col-span-2 space-y-1.5">
+			<label for="server-name" class="text-sm font-medium">Server Name</label>
+			<Input id="server-name" bind:value={draft.name} placeholder="e.g. NewsgroupDirect" />
+		</div>
 
-				<div class="space-y-1.5">
-					<label for="server-host" class="text-sm font-medium">Host</label>
-					<Input id="server-host" bind:value={draft.host} placeholder="news.example.com" />
-				</div>
+		<div class="space-y-1.5">
+			<label for="server-host" class="text-sm font-medium">Host</label>
+			<Input id="server-host" bind:value={draft.host} placeholder="news.example.com" />
+		</div>
 
-				<div class="space-y-1.5">
-					<label for="server-port" class="text-sm font-medium">Port</label>
-					<Input id="server-port" type="number" bind:value={draft.port} />
-				</div>
+		<div class="space-y-1.5">
+			<label for="server-port" class="text-sm font-medium">Port</label>
+			<Input id="server-port" type="number" bind:value={draft.port} />
+		</div>
 
-				<div class="space-y-1.5">
-					<label for="server-username" class="text-sm font-medium">Username</label>
-					<Input id="server-username" bind:value={draft.username} />
-				</div>
+		<div class="space-y-1.5">
+			<label for="server-username" class="text-sm font-medium">Username</label>
+			<Input id="server-username" bind:value={draft.username} />
+		</div>
 
-				<div class="space-y-1.5">
-					<label for="server-password" class="text-sm font-medium">Password</label>
-					<Input id="server-password" type="password" bind:value={draft.password} />
-				</div>
+		<div class="space-y-1.5">
+			<label for="server-password" class="text-sm font-medium">Password</label>
+			<Input id="server-password" type="password" bind:value={draft.password} />
+		</div>
 
-				<div class="space-y-1.5">
-					<label for="server-connections" class="text-sm font-medium">Connections</label>
-					<Input id="server-connections" type="number" bind:value={draft.connections} min="1" max="100" />
-				</div>
+		<div class="space-y-1.5">
+			<label for="server-connections" class="text-sm font-medium">Connections</label>
+			<Input id="server-connections" type="number" bind:value={draft.connections} min="1" max="100" />
+		</div>
 
-				<div class="space-y-1.5">
-					<label for="server-pipelining" class="text-sm font-medium">Pipeline Depth</label>
-					<Input id="server-pipelining" type="number" bind:value={draft.pipelining_requests} min="1" max="10" />
-					<p class="text-xs text-gray-500 dark:text-gray-400">Commands in-flight per connection</p>
-				</div>
+		<div class="space-y-1.5">
+			<label for="server-pipelining" class="text-sm font-medium">Pipeline Depth</label>
+			<Input id="server-pipelining" type="number" bind:value={draft.pipelining_requests} min="1" max="10" />
+			<p class="text-xs text-muted-foreground">Commands in-flight per connection</p>
+		</div>
 
-				<div class="space-y-1.5">
-					<label for="server-priority" class="text-sm font-medium">Priority</label>
-					<Input id="server-priority" type="number" bind:value={draft.priority} min="0" />
-				</div>
+		<div class="space-y-1.5">
+			<label for="server-priority" class="text-sm font-medium">Priority</label>
+			<Input id="server-priority" type="number" bind:value={draft.priority} min="0" />
+		</div>
 
-				<div class="col-span-2 flex items-center gap-6 py-2">
-					<label class="flex items-center gap-2 text-sm font-medium cursor-pointer">
-						<input type="checkbox" bind:checked={draft.ssl} class="rounded border-gray-300 dark:border-gray-600" />
-						SSL / TLS
-					</label>
-					<label class="flex items-center gap-2 text-sm font-medium cursor-pointer">
-						<input type="checkbox" bind:checked={draft.enable} class="rounded border-gray-300 dark:border-gray-600" />
-						Enabled
-					</label>
-				</div>
+		<div class="col-span-2 flex items-center gap-6 py-2">
+			<label class="flex items-center gap-2 text-sm font-medium cursor-pointer">
+				<input type="checkbox" bind:checked={draft.ssl} class="rounded border-border" />
+				SSL / TLS
+			</label>
+			<label class="flex items-center gap-2 text-sm font-medium cursor-pointer">
+				<input type="checkbox" bind:checked={draft.enable} class="rounded border-border" />
+				Enabled
+			</label>
+		</div>
 
-				<div class="col-span-2 space-y-1.5">
-					<div class="text-sm font-medium">Role</div>
-					<div class="flex items-center gap-6 text-sm">
-						<label class="flex items-center gap-2 cursor-pointer">
-							<input
-								type="radio"
-								name="server-role"
-								value="primary"
-								checked={roleOf(draft) === 'primary'}
-								onchange={() => setRole('primary')}
-							/>
-							Primary
-						</label>
-						<label class="flex items-center gap-2 cursor-pointer">
-							<input
-								type="radio"
-								name="server-role"
-								value="backup"
-								checked={roleOf(draft) === 'backup'}
-								onchange={() => setRole('backup')}
-							/>
-							Backup
-						</label>
-						<label class="flex items-center gap-2 cursor-pointer">
-							<input
-								type="radio"
-								name="server-role"
-								value="required"
-								checked={roleOf(draft) === 'required'}
-								onchange={() => setRole('required')}
-							/>
-							Required
-						</label>
-					</div>
-					<p class="text-xs text-gray-500 dark:text-gray-400">
-						Backup servers can be auto-disabled when failure rate is high. Required servers are never auto-disabled.
-					</p>
-				</div>
+		<div class="col-span-2 space-y-1.5">
+			<div class="text-sm font-medium">Role</div>
+			<div class="flex items-center gap-6 text-sm">
+				<label class="flex items-center gap-2 cursor-pointer">
+					<input
+						type="radio"
+						name="server-role"
+						value="primary"
+						checked={roleOf(draft) === 'primary'}
+						onchange={() => setRole('primary')}
+					/>
+					Primary
+				</label>
+				<label class="flex items-center gap-2 cursor-pointer">
+					<input
+						type="radio"
+						name="server-role"
+						value="backup"
+						checked={roleOf(draft) === 'backup'}
+						onchange={() => setRole('backup')}
+					/>
+					Backup
+				</label>
+				<label class="flex items-center gap-2 cursor-pointer">
+					<input
+						type="radio"
+						name="server-role"
+						value="required"
+						checked={roleOf(draft) === 'required'}
+						onchange={() => setRole('required')}
+					/>
+					Required
+				</label>
 			</div>
+			<p class="text-xs text-muted-foreground">
+				Backup servers can be auto-disabled when failure rate is high. Required servers are never auto-disabled.
+			</p>
+		</div>
+	</div>
 
-			{#if testResult}
-				<div class="mt-4 rounded-md p-3 text-sm {testResult.ok ? 'bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300' : 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300'}">
-					{testResult.message}
-				</div>
-			{/if}
+	{#if testResult}
+		<div class="mt-4 rounded-md p-3 text-sm {testResult.ok ? 'bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300' : 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300'}">
+			{testResult.message}
+		</div>
+	{/if}
 
-			{#if confirmingDelete}
-				<div class="mt-6 flex items-center justify-between rounded-md bg-red-50 dark:bg-red-950 px-3 py-2">
-					<span class="text-sm text-red-700 dark:text-red-300">Delete <strong>{originalName}</strong>?</span>
-					<div class="flex gap-2">
-						<Button variant="ghost" size="xs" onclick={() => (confirmingDelete = false)}>No</Button>
-						<Button variant="destructive" size="xs" onclick={handleDelete}>Yes, delete</Button>
-					</div>
-				</div>
-			{/if}
-
-			<div class="mt-4 flex items-center">
-				<div class="flex-1">
-					<Button variant="outline" onclick={testServer} disabled={testing || !draft.host}>
-						{testing ? 'Testing...' : 'Test Server'}
-					</Button>
-				</div>
-
-				{#if server && ondelete && !confirmingDelete}
-					<Button variant="ghost" size="sm" class="text-red-600 dark:text-red-400" onclick={() => (confirmingDelete = true)}>Delete</Button>
-				{/if}
-
-				<div class="flex flex-1 justify-end gap-3">
-					<Button variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-					<Button onclick={handleSave} disabled={!draft.host || !draft.name}>Save</Button>
-				</div>
+	{#if confirmingDelete}
+		<div class="mt-6 flex items-center justify-between rounded-md bg-destructive/10 px-3 py-2">
+			<span class="text-sm text-destructive font-medium">Delete <strong>{originalName}</strong>?</span>
+			<div class="flex gap-2">
+				<Button variant="ghost" size="xs" onclick={() => (confirmingDelete = false)}>No</Button>
+				<Button variant="destructive" size="xs" onclick={handleDelete}>Yes, delete</Button>
 			</div>
-		</Dialog.Content>
-	</Dialog.Portal>
-</Dialog.Root>
+		</div>
+	{/if}
+
+	<div class="mt-4 flex items-center">
+		<div class="flex-1">
+			<Button variant="outline" onclick={testServer} disabled={testing || !draft.host}>
+				{testing ? 'Testing...' : 'Test Server'}
+			</Button>
+		</div>
+
+		{#if server && ondelete && !confirmingDelete}
+			<Button variant="ghost" size="sm" class="text-destructive" onclick={() => (confirmingDelete = true)}>Delete</Button>
+		{/if}
+
+		<div class="flex flex-1 justify-end gap-3">
+			<Button variant="ghost" onclick={() => (open = false)}>Cancel</Button>
+			<Button onclick={handleSave} disabled={!draft.host || !draft.name}>Save</Button>
+		</div>
+	</div>
+</Modal>

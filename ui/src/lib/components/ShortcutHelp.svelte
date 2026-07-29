@@ -1,20 +1,16 @@
 <script lang="ts">
-	import { Dialog } from 'bits-ui';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { getShortcuts, type ShortcutDef } from '$lib/shortcuts.svelte';
+	import Keyboard from '@lucide/svelte/icons/keyboard';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
 	let shortcuts = $derived(getShortcuts());
 
-	/**
-	 * Format a shortcut key for display.
-	 * Maps raw KeyboardEvent.key values to user-friendly labels.
-	 */
 	function formatKey(def: ShortcutDef): string {
 		const parts: string[] = [];
 
 		if (def.mod === 'ctrl') {
-			// Show platform-appropriate modifier
 			const isMac =
 				typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent);
 			parts.push(isMac ? '⌘' : 'Ctrl');
@@ -26,7 +22,6 @@
 			parts.push('Shift');
 		}
 
-		// Map special keys to readable labels
 		const keyLabels: Record<string, string> = {
 			' ': 'Space',
 			Escape: 'Esc',
@@ -43,55 +38,48 @@
 	}
 </script>
 
-<Dialog.Root bind:open>
-	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs" />
-		<Dialog.Content
-			class="fixed left-1/2 top-1/2 z-50 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-m3-outline/20 bg-m3-surface text-m3-on-surface shadow-m3-3 outline-none"
+<Modal bind:open ariaLabel="Keyboard Shortcuts" class="w-full max-w-sm bg-card text-foreground border border-border">
+	<div class="border-b border-border/60 px-6 py-4">
+		<h2 class="flex items-center gap-2.5 text-base font-bold tracking-tight text-foreground">
+			<Keyboard class="size-5 text-primary" />
+			Keyboard Shortcuts
+		</h2>
+	</div>
+
+	<div class="px-6 py-4">
+		<table class="w-full">
+			<tbody>
+				{#each shortcuts as shortcut (shortcut.key + (shortcut.mod ?? ''))}
+					<tr class="group">
+						<td class="py-1.5 pr-4">
+							<kbd
+								class="inline-flex min-w-[2rem] items-center justify-center rounded-lg border border-border bg-muted/60 px-2 py-0.5 font-mono text-xs font-semibold text-foreground"
+							>
+								{formatKey(shortcut)}
+							</kbd>
+						</td>
+						<td
+							class="py-1.5 text-sm text-muted-foreground"
+						>
+							{shortcut.description}
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	</div>
+
+	<div
+		class="border-t border-border/60 px-6 py-4 text-center text-xs text-muted-foreground font-medium"
+	>
+		Press <kbd
+			class="rounded-md border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px]"
+			>?</kbd
 		>
-			<div class="border-b border-m3-outline/10 px-6 py-4">
-				<Dialog.Title class="flex items-center gap-2.5 text-lg font-semibold tracking-tight">
-					<span class="material-symbols-outlined text-m3-primary text-xl">keyboard</span>
-					Keyboard Shortcuts
-				</Dialog.Title>
-			</div>
-
-			<div class="px-6 py-4">
-				<table class="w-full">
-					<tbody>
-						{#each shortcuts as shortcut (shortcut.key + (shortcut.mod ?? ''))}
-							<tr class="group">
-								<td class="py-1.5 pr-4">
-									<kbd
-										class="inline-flex min-w-[2rem] items-center justify-center rounded-lg border border-m3-outline bg-m3-surface-variant px-2 py-0.5 font-mono text-xs font-semibold text-m3-on-surface-variant"
-									>
-										{formatKey(shortcut)}
-									</kbd>
-								</td>
-								<td
-									class="py-1.5 text-sm text-m3-on-surface-variant"
-								>
-									{shortcut.description}
-								</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</div>
-
-			<div
-				class="border-t border-m3-outline/10 px-6 py-4 text-center text-xs text-m3-on-surface-variant/70 font-medium"
-			>
-				Press <kbd
-					class="rounded-md border border-m3-outline bg-m3-surface-variant px-1.5 py-0.5 font-mono text-[10px]"
-					>?</kbd
-				>
-				or
-				<kbd
-					class="rounded-md border border-m3-outline bg-m3-surface-variant px-1.5 py-0.5 font-mono text-[10px]"
-					>Esc</kbd
-				> to close
-			</div>
-		</Dialog.Content>
-	</Dialog.Portal>
-</Dialog.Root>
+		or
+		<kbd
+			class="rounded-md border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px]"
+			>Esc</kbd
+		> to close
+	</div>
+</Modal>

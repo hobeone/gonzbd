@@ -11,6 +11,8 @@
 		isPaused
 	} from '$lib/stores/queue.svelte';
 	import { formatSpeed, formatSize } from '$lib/utils';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import Settings from '@lucide/svelte/icons/settings';
 	import SpeedGraph from './SpeedGraph.svelte';
 
 	let speed = $derived(getSpeedBytesPerSec());
@@ -100,43 +102,43 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<div data-testid="status-bar" class="border-t border-m3-outline/20 bg-m3-surface text-m3-on-surface">
-	<div class="mx-auto flex max-w-7xl items-center gap-4 px-4 py-2 text-sm text-m3-on-surface-variant">
-		<div class="flex items-center gap-2">
+<div data-testid="status-bar" class="border-b border-border/50 bg-card text-foreground">
+	<div class="mx-auto flex max-w-7xl items-center gap-4 px-4 py-2 text-xs font-medium text-muted-foreground">
+		<div class="flex items-center gap-2.5">
 			<SpeedGraph data={history} />
 			<!-- Speed display (read-only) -->
-			<span class="font-mono font-medium text-m3-on-surface">{formatSpeed(speed)}</span>
+			<span class="font-mono tabular-nums font-semibold text-foreground">{formatSpeed(speed)}</span>
 			<!-- Clickable limit label -->
 			<div class="relative" bind:this={popoverEl}>
 				<button
 					onclick={togglePopover}
-					class="group flex items-center gap-1.5 rounded-full bg-m3-surface-variant/50 px-3 py-1 text-xs font-semibold text-m3-on-surface-variant transition-colors hover:bg-m3-surface-variant/80 hover:text-m3-on-surface"
+					class="group flex items-center gap-1.5 rounded-full bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-all hover:bg-muted hover:text-foreground"
 					title="Click to set speed limit"
 				>
-					<span class="opacity-80">Limit:</span>
-					<span class="font-bold {bandwidthMax > 0 && bandwidthPerc < 100 ? 'text-amber-600 dark:text-amber-400' : 'text-m3-on-surface'}">{limitLabel}</span>
-					<span class="material-symbols-outlined text-[16px] text-m3-on-surface-variant opacity-0 transition-opacity group-hover:opacity-100 leading-none">arrow_drop_down</span>
+					<span class="opacity-75">Limit:</span>
+					<span class="font-mono font-bold {bandwidthMax > 0 && bandwidthPerc < 100 ? 'text-amber-500' : 'text-foreground'}">{limitLabel}</span>
+					<ChevronDown class="size-3.5 text-muted-foreground transition-transform duration-200 group-hover:translate-y-0.5" />
 				</button>
 
 				{#if showPopover}
 					<div
-						class="absolute top-full left-0 z-50 mt-2 w-72 rounded-3xl border border-m3-outline/20 bg-m3-surface p-4 shadow-m3-2 text-m3-on-surface"
+						class="absolute top-full left-0 z-50 mt-2 w-72 rounded-2xl border border-border bg-white dark:bg-[#111827] p-4 shadow-2xl text-foreground opacity-100 animate-in fade-in zoom-in-95"
 						role="dialog"
 						aria-label="Bandwidth limit"
 					>
 						{#if bandwidthMax > 0}
 							<!-- Header -->
-							<div class="border-b border-m3-outline/10 pb-2.5 mb-2.5">
-								<p class="text-xs font-semibold uppercase tracking-wide text-m3-on-surface-variant">Bandwidth Limit</p>
-								<p class="mt-0.5 text-xs text-m3-on-surface-variant/75">Max: {maxFormatted.value} {maxFormatted.unit}</p>
+							<div class="border-b border-border/60 pb-2.5 mb-2.5">
+								<p class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Bandwidth Limit</p>
+								<p class="mt-0.5 text-xs text-muted-foreground/80 font-mono">Max: {maxFormatted.value} {maxFormatted.unit}</p>
 							</div>
 
 							<!-- Slider -->
 							<div class="py-1">
 								<!-- Live value display -->
 								<div class="mb-3 flex items-baseline justify-between">
-									<span class="text-2xl font-bold tabular-nums text-m3-on-surface">{displayPerc}%</span>
-									<span class="text-sm font-medium text-m3-on-surface-variant">{effectiveFormatted.value} {effectiveFormatted.unit}</span>
+									<span class="text-2xl font-mono font-bold tabular-nums text-foreground">{displayPerc}%</span>
+									<span class="text-xs font-mono font-semibold text-muted-foreground">{effectiveFormatted.value} {effectiveFormatted.unit}</span>
 								</div>
 
 								<!-- Range input -->
@@ -148,12 +150,12 @@
 									value={isDragging ? sliderValue : bandwidthPerc}
 									oninput={onSliderInput}
 									onchange={onSliderChange}
-									class="slider w-full"
+									class="slider w-full cursor-pointer"
 									aria-label="Bandwidth percentage"
 								/>
 
 								<!-- Scale markers -->
-								<div class="mt-1 flex justify-between text-[10px] text-m3-on-surface-variant/70">
+								<div class="mt-1 flex justify-between text-[10px] font-mono text-muted-foreground/70">
 									<span>1%</span>
 									<span>25%</span>
 									<span>50%</span>
@@ -164,11 +166,11 @@
 						{:else}
 							<!-- No bandwidth limit configured -->
 							<div class="py-4 text-center">
-								<div class="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-m3-surface-variant">
-									<span class="material-symbols-outlined text-m3-on-surface-variant text-xl">settings</span>
+								<div class="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-muted">
+									<Settings class="size-5 text-muted-foreground" />
 								</div>
-								<p class="text-sm font-medium text-m3-on-surface">No bandwidth limit set</p>
-								<p class="mt-1 text-xs text-m3-on-surface-variant/70">
+								<p class="text-sm font-semibold text-foreground">No bandwidth limit set</p>
+								<p class="mt-1 text-xs text-muted-foreground">
 									Set a limit in Settings → Downloads
 								</p>
 							</div>
@@ -177,14 +179,14 @@
 				{/if}
 			</div>
 		</div>
-		<div class="h-4 w-px bg-m3-outline/20"></div>
-		<span class="text-m3-on-surface-variant">{itemCount} item{itemCount !== 1 ? 's' : ''}</span>
-		<div class="h-4 w-px bg-m3-outline/20"></div>
-		<span class="text-m3-on-surface-variant">{formatSize(remaining)} left</span>
-		<div class="h-4 w-px bg-m3-outline/20"></div>
-		<span class="text-m3-on-surface-variant">ETA: {eta}</span>
+		<div class="h-3.5 w-px bg-border/60"></div>
+		<span class="font-mono tabular-nums">{itemCount} item{itemCount !== 1 ? 's' : ''}</span>
+		<div class="h-3.5 w-px bg-border/60"></div>
+		<span class="font-mono tabular-nums">{formatSize(remaining)} left</span>
+		<div class="h-3.5 w-px bg-border/60"></div>
+		<span class="font-mono tabular-nums">ETA: {eta}</span>
 		{#if paused}
-			<span class="ml-auto font-semibold tracking-wider text-xs bg-amber-500/10 text-amber-500 px-2 py-0.5 rounded-full select-none">PAUSED</span>
+			<span class="ml-auto font-bold tracking-wider text-[10px] uppercase bg-amber-500/15 text-amber-500 border border-amber-500/30 px-2.5 py-0.5 rounded-full select-none">PAUSED</span>
 		{/if}
 	</div>
 </div>

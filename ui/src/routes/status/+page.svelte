@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import HelpCircle from '@lucide/svelte/icons/help-circle';
 	import Navbar from '$lib/components/Navbar.svelte';
 	import {
 		fetchStatusOverview,
@@ -226,11 +227,10 @@
 				<dd class="font-mono text-m3-on-surface">{overview.general.sevenzip.path || 'not found'} {overview.general.sevenzip.version}</dd>
 				<dt class="flex items-center gap-1 text-m3-on-surface/60">
 					Update
-					<span
-						class="material-symbols-outlined cursor-help text-sm text-m3-on-surface/40"
+					<HelpCircle
+						class="size-3.5 cursor-help text-muted-foreground/60"
 						title="Compares this build's version against the latest published GitHub Release for hobeone/gonzbd. Requires a version baked in at build time (git describe or -ldflags -X main.Version=...) and outbound network access to api.github.com; otherwise this shows 'unknown' with an explanation."
-						>help</span
-					>
+					/>
 				</dt>
 				<dd>
 					{#if updateCheckLoading}
