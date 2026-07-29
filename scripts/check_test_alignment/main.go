@@ -7,18 +7,18 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/hobeone/gonzbd/scripts/gitscope"
 )
 
 func main() {
@@ -43,25 +43,19 @@ func main() {
 			os.Exit(1)
 		}
 	} else {
-		// Get modified Go files via git
-		cmd := exec.Command("git", "diff", "--name-only", "origin/main...HEAD")
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			// Fallback to checking uncommitted changes if origin/main check fails
-			cmd = exec.Command("git", "diff", "--name-only", "HEAD~1")
-			stdout.Reset()
-			_ = cmd.Run()
+		// Changed Go files: committed range plus uncommitted work, so the
+		// gate gives signal before a commit rather than reporting a vacuous
+		// pass. See scripts/gitscope.
+		files, err := gitscope.Files()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error resolving changed files: %v\n", err)
+			os.Exit(1)
 		}
-
-		files := strings.SplitSeq(stdout.String(), "\n")
-		for f := range files {
-			f = strings.TrimSpace(f)
+		for _, f := range files {
 			if !strings.HasPrefix(f, "internal/") || !strings.HasSuffix(f, ".go") || strings.HasSuffix(f, "_test.go") {
 				continue
 			}
-			// Make sure file exists
+			// Deleted files remain in the diff; skip what is no longer on disk.
 			if _, err := os.Stat(f); err == nil {
 				targetFiles = append(targetFiles, f)
 			}
