@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -280,4 +281,28 @@ func screenshotOnFailure(t *testing.T, page playwright.Page) {
 			}
 		}
 	})
+}
+
+// createTestNZBFile writes a minimal valid NZB file to t.TempDir() and returns its absolute path.
+func createTestNZBFile(t *testing.T, filename, fileSubject string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, filename)
+	content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb-1.1.dtd">
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+ <file poster="poster@example.com" date="1600000000" subject="%s">
+  <groups>
+   <group>alt.binaries.test</group>
+  </groups>
+  <segments>
+   <segment bytes="1024" number="1">art-%s-1@example.com</segment>
+  </segments>
+ </file>
+</nzb>`, fileSubject, filename)
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile NZB: %v", err)
+	}
+	return path
 }

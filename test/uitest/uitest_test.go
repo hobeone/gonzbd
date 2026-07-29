@@ -96,8 +96,8 @@ func TestQueuePauseResume(t *testing.T) {
 	screenshotOnFailure(t, page)
 	env.navigate(t, page, "/")
 
-	// Scope to the navbar to avoid matching per-job pause buttons.
-	nav := page.Locator("nav")
+	// Scope to the navbar header to avoid matching per-job pause buttons.
+	nav := page.Locator("header")
 
 	// Find and click the Pause button inside the navbar.
 	pauseBtn := nav.GetByRole("button", playwright.LocatorGetByRoleOptions{Name: "Pause"})
@@ -919,6 +919,134 @@ func TestSPASetsAPIKeyCookie(t *testing.T) {
 	}
 	if !found {
 		t.Error("gonzbd_apikey cookie not set by SPA handler")
+	}
+}
+
+func TestAddNZBViaUI(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	nzbPath := createTestNZBFile(t, "sample_add.nzb", "Sample.Add.NZB.Movie.x264-GROUP")
+
+	addBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Add NZB"})
+	if err := addBtn.Click(); err != nil {
+		t.Fatalf("click Add NZB button: %v", err)
+	}
+
+	modalHeader := page.GetByText("Upload an NZB file or paste a URL.")
+	if err := modalHeader.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("Add NZB modal header not visible: %v", err)
+	}
+
+	fileInput := page.Locator("input[type=file]")
+	if err := fileInput.SetInputFiles(nzbPath); err != nil {
+		t.Fatalf("SetInputFiles: %v", err)
+	}
+
+	uploadBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Upload"})
+	if err := uploadBtn.Click(); err != nil {
+		t.Fatalf("click Upload: %v", err)
+	}
+
+	jobRow := page.GetByText("sample_add.nzb")
+	if err := jobRow.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("uploaded NZB job not visible in queue: %v", err)
+	}
+}
+
+func TestDuplicateNZBWarningAndInteractivity(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+
+	env.seedQueue(t, 1)
+
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	seededJob := page.GetByText("Test.Download.0.x264-GROUP")
+	if err := seededJob.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("seeded job not visible: %v", err)
+	}
+
+	nzbPath := createTestNZBFile(t, "dup_test.nzb", "Duplicate.Subject.x264-GROUP")
+	addBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Add NZB"})
+	if err := addBtn.Click(); err != nil {
+		t.Fatalf("click Add NZB: %v", err)
+	}
+
+	fileInput := page.Locator("input[type=file]")
+	if err := fileInput.SetInputFiles(nzbPath); err != nil {
+		t.Fatalf("SetInputFiles: %v", err)
+	}
+
+	uploadBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Upload"})
+	if err := uploadBtn.Click(); err != nil {
+		t.Fatalf("click Upload: %v", err)
+	}
+
+	if err := page.GetByText("dup_test.nzb").First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("dup_test.nzb not visible: %v", err)
+	}
+
+	modalHeader := page.GetByText("Upload an NZB file or paste a URL.")
+
+	if err := addBtn.Click(); err != nil {
+		t.Fatalf("click Add NZB second time: %v", err)
+	}
+	if err := fileInput.SetInputFiles(nzbPath); err != nil {
+		t.Fatalf("SetInputFiles duplicate: %v", err)
+	}
+	if err := uploadBtn.Click(); err != nil {
+		t.Fatalf("click Upload duplicate: %v", err)
+	}
+
+	if err := modalHeader.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateHidden,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("modal did not close after duplicate upload: %v", err)
+	}
+
+	if _, err := page.Reload(playwright.PageReloadOptions{
+		WaitUntil: playwright.WaitUntilStateNetworkidle,
+	}); err != nil {
+		t.Fatalf("reload page after duplicate upload: %v", err)
+	}
+
+	dupWarning := page.GetByText("Duplicate NZBs found:")
+	if err := dupWarning.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("duplicate warning banner not visible: %v", err)
+	}
+
+	if err := seededJob.Click(); err != nil {
+		t.Fatalf("click seeded job row (testing pointer events): %v", err)
+	}
+
+	if err := page.GetByText("Par2 Recovery").First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("seeded job detail drawer did not expand: %v", err)
 	}
 }
 
