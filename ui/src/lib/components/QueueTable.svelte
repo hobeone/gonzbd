@@ -122,7 +122,7 @@
 	/>
 {/if}
 
-<Modal bind:open={showDeleteConfirm} ariaLabel="Confirm Delete Job" class="w-full max-w-sm bg-card text-foreground p-6 border border-border">
+<Modal bind:open={showDeleteConfirm} ariaLabel="Confirm Delete Job" class="w-full max-w-sm p-6">
 	<h2 class="text-base font-semibold text-foreground">Delete Job</h2>
 	<p class="mt-2 text-xs text-muted-foreground">
 		Are you sure you want to delete <span class="font-medium text-foreground">{deleteTarget?.name || deleteTarget?.filename}</span>?

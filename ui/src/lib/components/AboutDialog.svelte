@@ -113,7 +113,7 @@
 	});
 </script>
 
-<Modal bind:open ariaLabel="About GoNZBD" class="w-full max-w-md bg-card text-foreground border border-border">
+<Modal bind:open ariaLabel="About GoNZBD" class="w-full max-w-md">
 	<!-- Header -->
 	<div class="border-b border-border/60 px-6 py-4">
 		<h2 class="flex items-center gap-2.5 text-lg font-semibold tracking-tight text-foreground">

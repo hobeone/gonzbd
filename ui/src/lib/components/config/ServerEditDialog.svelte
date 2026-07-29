@@ -124,7 +124,7 @@
 	}
 </script>
 
-<Modal bind:open ariaLabel={server ? "Edit Server" : "Add Server"} class="w-full max-w-lg bg-card text-foreground p-6 border border-border">
+<Modal bind:open ariaLabel={server ? "Edit Server" : "Add Server"} class="w-full max-w-lg p-6">
 	<h2 class="text-lg font-semibold">
 		{server ? 'Edit Server' : 'Add Server'}
 	</h2>

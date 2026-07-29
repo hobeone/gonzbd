@@ -89,7 +89,7 @@
 	}
 </script>
 
-<Modal bind:open ariaLabel="Add NZB" class="w-full max-w-md bg-card text-foreground p-6 border border-border">
+<Modal bind:open ariaLabel="Add NZB" class="w-full max-w-md p-6">
 	<div
 		role="region"
 		aria-label="NZB Upload Target"

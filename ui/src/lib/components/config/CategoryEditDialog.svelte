@@ -73,7 +73,7 @@
 	}
 </script>
 
-<Modal bind:open ariaLabel={category ? "Edit Category" : "Add Category"} class="w-full max-w-md bg-card text-foreground p-6 border border-border">
+<Modal bind:open ariaLabel={category ? "Edit Category" : "Add Category"} class="w-full max-w-md p-6">
 	<h2 class="text-lg font-semibold">
 		{category ? 'Edit Category' : 'Add Category'}
 	</h2>

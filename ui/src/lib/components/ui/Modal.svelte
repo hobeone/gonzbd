@@ -38,7 +38,7 @@
 		aria-label={ariaLabel}
 		onclose={handleClose}
 		onclick={handleBackdropClick}
-		class="backdrop:bg-black/60 backdrop:backdrop-blur-sm bg-transparent p-0 outline-none m-auto shadow-2xl rounded-2xl border-0 {className}"
+		class="backdrop:bg-black/75 backdrop:backdrop-blur-md bg-white dark:bg-[#111827] text-foreground p-0 outline-none m-auto shadow-2xl rounded-2xl border border-border dark:border-slate-700/80 ring-1 ring-black/5 dark:ring-white/10 opacity-100 {className}"
 	>
 		{@render children?.()}
 	</dialog>
