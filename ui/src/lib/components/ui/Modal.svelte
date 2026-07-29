@@ -3,10 +3,12 @@
 
 	let {
 		open = $bindable(false),
+		ariaLabel,
 		children,
 		class: className = ''
 	}: {
 		open?: boolean;
+		ariaLabel?: string;
 		children?: Snippet;
 		class?: string;
 	} = $props();
@@ -33,6 +35,7 @@
 {#if open}
 	<dialog
 		bind:this={dialogEl}
+		aria-label={ariaLabel}
 		onclose={handleClose}
 		onclick={handleBackdropClick}
 		class="backdrop:bg-black/60 backdrop:backdrop-blur-sm bg-transparent p-0 outline-none max-w-none max-h-none m-auto shadow-2xl rounded-2xl border-0 {className}"

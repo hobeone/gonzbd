@@ -191,7 +191,7 @@
 	}
 </script>
 
-<Modal bind:open class="flex h-[85vh] w-full max-w-4xl overflow-hidden rounded-3xl border border-border bg-card text-foreground">
+<Modal bind:open ariaLabel="Settings" class="flex h-[85vh] w-full max-w-4xl overflow-hidden rounded-3xl border border-border bg-card text-foreground">
 	<!-- Sidebar -->
 	<aside class="w-64 shrink-0 border-r border-border/60 bg-muted/20 p-5">
 		<h2 class="px-2 text-base font-bold tracking-tight text-foreground flex items-center gap-2 select-none">

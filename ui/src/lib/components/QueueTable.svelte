@@ -18,7 +18,6 @@
 	import Loader2 from '@lucide/svelte/icons/loader-2';
 	import QueueRow from './QueueRow.svelte';
 	import Pagination from './Pagination.svelte';
-	import AddNzbDialog from './AddNzbDialog.svelte';
 	import type { QueueSlot } from '$lib/types';
 
 	function slots() {
@@ -33,7 +32,6 @@
 	let showDeleteConfirm = $state(false);
 	let deleteFiles = $state(false);
 	let acting = $state(false);
-	let addDialogOpen = $state(false);
 
 	function openDelete(slot: QueueSlot) {
 		deleteTarget = slot;
@@ -124,9 +122,7 @@
 	/>
 {/if}
 
-<AddNzbDialog bind:open={addDialogOpen} />
-
-<Modal bind:open={showDeleteConfirm} class="w-full max-w-sm bg-card text-foreground p-6 border border-border">
+<Modal bind:open={showDeleteConfirm} ariaLabel="Confirm Delete Job" class="w-full max-w-sm bg-card text-foreground p-6 border border-border">
 	<h2 class="text-base font-semibold text-foreground">Delete Job</h2>
 	<p class="mt-2 text-xs text-muted-foreground">
 		Are you sure you want to delete <span class="font-medium text-foreground">{deleteTarget?.name || deleteTarget?.filename}</span>?
@@ -154,7 +150,7 @@
 		<Button
 			variant="destructive"
 			size="sm"
-			class="rounded-xl text-xs font-medium"
+			class="rounded-xl text-xs font-medium bg-red-600 hover:bg-red-700 text-white dark:bg-red-600 dark:hover:bg-red-700"
 			onclick={remove}
 			disabled={acting}
 		>
