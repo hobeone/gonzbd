@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Dialog } from 'bits-ui';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { setConfig, postAction, fetchConfig } from '$lib/api';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
@@ -191,129 +191,125 @@
 	}
 </script>
 
-<Dialog.Root bind:open>
-	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs" />
-		<Dialog.Content class="fixed left-1/2 top-1/2 z-50 flex h-[85vh] w-full max-w-4xl -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl border border-m3-outline/20 bg-m3-surface text-m3-on-surface shadow-m3-3 outline-none">
-			<!-- Sidebar -->
-			<aside class="w-64 shrink-0 border-r border-m3-outline/10 bg-m3-surface-variant/30 p-5">
-				<Dialog.Title class="px-2 text-base font-bold tracking-tight text-foreground flex items-center gap-2 select-none">
-					<SettingsIcon class="size-5 text-primary" />
-					Settings
-				</Dialog.Title>
-				<nav class="mt-6 space-y-1">
-					{#each sections as section (section.id)}
-						<button
-							onclick={() => (activeSection = section.id)}
-							class="w-full rounded-full px-4 py-2 text-left text-xs font-bold tracking-wide transition-all
-							{activeSection === section.id ? 'bg-primary text-primary-foreground shadow-xs' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}"
-						>
-							{section.label}
-						</button>
-					{/each}
-				</nav>
-			</aside>
+<Modal bind:open class="flex h-[85vh] w-full max-w-4xl overflow-hidden rounded-3xl border border-border bg-card text-foreground">
+	<!-- Sidebar -->
+	<aside class="w-64 shrink-0 border-r border-border/60 bg-muted/20 p-5">
+		<h2 class="px-2 text-base font-bold tracking-tight text-foreground flex items-center gap-2 select-none">
+			<SettingsIcon class="size-5 text-primary" />
+			Settings
+		</h2>
+		<nav class="mt-6 space-y-1">
+			{#each sections as section (section.id)}
+				<button
+					onclick={() => (activeSection = section.id)}
+					class="w-full rounded-full px-4 py-2 text-left text-xs font-bold tracking-wide transition-all
+					{activeSection === section.id ? 'bg-primary text-primary-foreground shadow-xs' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}"
+				>
+					{section.label}
+				</button>
+			{/each}
+		</nav>
+	</aside>
 
-			<!-- Main Content -->
-			<div class="flex flex-1 flex-col overflow-hidden">
-				<div class="flex-1 overflow-y-auto p-8">
-					{#if error}
-						<div class="mb-6 flex items-center justify-between rounded-2xl border border-destructive/30 bg-destructive/10 p-4 text-xs text-destructive font-semibold">
-							<div class="flex items-center gap-2">
-								<AlertCircle class="size-4 shrink-0" />
-								<span>{error}</span>
-							</div>
-							<button onclick={() => (error = null)} class="text-destructive hover:opacity-80" aria-label="Dismiss error">
-								<X class="size-4 shrink-0" />
-							</button>
-						</div>
-					{/if}
-
-					{#if loading}
-						<div class="flex h-32 flex-col gap-3 items-center justify-center text-sm text-m3-on-surface-variant/80">
-							<svg
-								class="size-8 animate-spin text-m3-primary"
-								xmlns="http://www.w3.org/2000/svg"
-								fill="none"
-								viewBox="0 0 24 24"
-							>
-								<circle
-									class="opacity-25"
-									cx="12"
-									cy="12"
-									r="10"
-									stroke="currentColor"
-									stroke-width="4"
-								></circle>
-								<path
-									class="opacity-75"
-									fill="currentColor"
-									d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-								></path>
-							</svg>
-							<span>Loading configuration...</span>
-						</div>
-					{:else if configData}
-						{#if activeSection === 'general'}
-							<GeneralSection {configData} onFieldUpdate={handleFieldUpdate} />
-						{:else if activeSection === 'downloads'}
-							<DownloadsSection {configData} onFieldUpdate={handleFieldUpdate} />
-						{:else if activeSection === 'postproc'}
-							<PostProcSection {configData} onFieldUpdate={handleFieldUpdate} />
-						{:else if activeSection === 'servers'}
-							<ServersSection
-								{configData}
-								onAddServer={() => { selectedServer = null; serverEditOpen = true; }}
-								onEditServer={(s) => { selectedServer = s; serverEditOpen = true; }}
-								onTestServer={testServer}
-								onToggleServer={toggleServer}
-							/>
-						{:else if activeSection === 'categories'}
-							<CategoriesSection
-								{configData}
-								onAddCategory={() => { selectedCategory = null; categoryEditOpen = true; }}
-								onEditCategory={(c) => { selectedCategory = c; categoryEditOpen = true; }}
-								onDeleteCategory={deleteCategory}
-							/>
-						{/if}
-					{/if}
+	<!-- Main Content -->
+	<div class="flex flex-1 flex-col overflow-hidden">
+		<div class="flex-1 overflow-y-auto p-8">
+			{#if error}
+				<div class="mb-6 flex items-center justify-between rounded-2xl border border-destructive/30 bg-destructive/10 p-4 text-xs text-destructive font-semibold">
+					<div class="flex items-center gap-2">
+						<AlertCircle class="size-4 shrink-0" />
+						<span>{error}</span>
+					</div>
+					<button onclick={() => (error = null)} class="text-destructive hover:opacity-80" aria-label="Dismiss error">
+						<X class="size-4 shrink-0" />
+					</button>
 				</div>
+			{/if}
 
-				<!-- Footer -->
-				<footer class="flex items-center justify-between border-t border-m3-outline/10 bg-m3-surface-variant/20 px-8 py-4">
-					<div class="text-xs text-m3-on-surface-variant">
-						{#if saving}
-							<span class="flex items-center gap-2 font-medium">
-								<svg class="h-4 w-4 animate-spin text-m3-primary" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-								Saving changes...
-							</span>
-						{:else if dirtyFields.length > 0}
-							<span class="font-bold text-amber-600 dark:text-amber-400">{dirtyFields.length} unsaved changes</span>
-						{:else}
-							All changes are synced with the server.
-						{/if}
-					</div>
-					<div class="flex gap-3">
-						{#if dirtyFields.length > 0}
-							<Button variant="ghost" class="rounded-full px-5" onclick={discardChanges} disabled={saving}>Discard</Button>
-							<Button class="bg-m3-primary text-m3-on-primary hover:bg-m3-primary/90 rounded-full px-5" onclick={saveAll} disabled={saving}>Save Changes</Button>
-						{/if}
-						<Button
-							variant="outline"
-							class="rounded-full px-5 border-m3-outline text-m3-on-surface hover:bg-m3-surface-variant/50"
-							onclick={() => {
-								if (dirtyFields.length > 0 && !confirm('You have unsaved changes. Close anyway?')) return;
-								open = false;
-							}}
-						>
-							Close
-						</Button>
-					</div>
-				</footer>
+			{#if loading}
+				<div class="flex h-32 flex-col gap-3 items-center justify-center text-sm text-muted-foreground">
+					<svg
+						class="size-8 animate-spin text-primary"
+						xmlns="http://www.w3.org/2000/svg"
+						fill="none"
+						viewBox="0 0 24 24"
+					>
+						<circle
+							class="opacity-25"
+							cx="12"
+							cy="12"
+							r="10"
+							stroke="currentColor"
+							stroke-width="4"
+						></circle>
+						<path
+							class="opacity-75"
+							fill="currentColor"
+							d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+						></path>
+					</svg>
+					<span>Loading configuration...</span>
+				</div>
+			{:else if configData}
+				{#if activeSection === 'general'}
+					<GeneralSection {configData} onFieldUpdate={handleFieldUpdate} />
+				{:else if activeSection === 'downloads'}
+					<DownloadsSection {configData} onFieldUpdate={handleFieldUpdate} />
+				{:else if activeSection === 'postproc'}
+					<PostProcSection {configData} onFieldUpdate={handleFieldUpdate} />
+				{:else if activeSection === 'servers'}
+					<ServersSection
+						{configData}
+						onAddServer={() => { selectedServer = null; serverEditOpen = true; }}
+						onEditServer={(s: ServerConfig) => { selectedServer = s; serverEditOpen = true; }}
+						onTestServer={testServer}
+						onToggleServer={toggleServer}
+					/>
+				{:else if activeSection === 'categories'}
+					<CategoriesSection
+						{configData}
+						onAddCategory={() => { selectedCategory = null; categoryEditOpen = true; }}
+						onEditCategory={(c: CategoryConfig) => { selectedCategory = c; categoryEditOpen = true; }}
+						onDeleteCategory={deleteCategory}
+					/>
+				{/if}
+			{/if}
+		</div>
+
+		<!-- Footer -->
+		<footer class="flex items-center justify-between border-t border-border/60 bg-muted/20 px-8 py-4">
+			<div class="text-xs font-semibold text-muted-foreground">
+				{#if dirtyFields.length > 0}
+					<span class="text-amber-600 dark:text-amber-400 font-bold">{dirtyFields.length} unsaved change{dirtyFields.length > 1 ? 's' : ''}</span>
+				{:else}
+					<span>All changes saved</span>
+				{/if}
 			</div>
-		</Dialog.Content>
-	</Dialog.Portal>
-</Dialog.Root>
+
+			<div class="flex items-center gap-3">
+				{#if dirtyFields.length > 0}
+					<Button
+						class="rounded-full px-6 bg-primary text-primary-foreground hover:bg-primary/90"
+						onclick={saveAll}
+						disabled={saving}
+					>
+						{saving ? 'Saving...' : 'Save Changes'}
+					</Button>
+				{/if}
+				<Button
+					variant="outline"
+					class="rounded-full px-5 border-border text-foreground hover:bg-muted"
+					onclick={() => {
+						if (dirtyFields.length > 0 && !confirm('You have unsaved changes. Close anyway?')) return;
+						open = false;
+					}}
+				>
+					Close
+				</Button>
+			</div>
+		</footer>
+	</div>
+</Modal>
 
 <ServerEditDialog
 	bind:open={serverEditOpen}

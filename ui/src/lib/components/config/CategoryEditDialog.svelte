@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Dialog } from 'bits-ui';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import type { CategoryConfig } from '$lib/types';
@@ -48,7 +48,6 @@
 		}
 	});
 
-	// PP bitmask helpers
 	let repair = $state(true);
 	let unpack = $state(true);
 	let del = $state(true);
@@ -74,68 +73,63 @@
 	}
 </script>
 
-<Dialog.Root bind:open>
-	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 z-[60] bg-black/50" />
-		<Dialog.Content class="fixed left-1/2 top-1/2 z-[70] w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-white dark:bg-gray-900 p-6 shadow-xl">
-			<Dialog.Title class="text-lg font-semibold">
-				{category ? 'Edit Category' : 'Add Category'}
-			</Dialog.Title>
+<Modal bind:open class="w-full max-w-md bg-card text-foreground p-6 border border-border">
+	<h2 class="text-lg font-semibold">
+		{category ? 'Edit Category' : 'Add Category'}
+	</h2>
 
-			<div class="mt-4 space-y-4">
-				<div class="space-y-1.5">
-					<label for="cat-name" class="text-sm font-medium">Category Name</label>
-					<Input id="cat-name" bind:value={draft.name} placeholder="e.g. tv" disabled={isReservedCategory} />
-				</div>
+	<div class="mt-4 space-y-4">
+		<div class="space-y-1.5">
+			<label for="cat-name" class="text-sm font-medium">Category Name</label>
+			<Input id="cat-name" bind:value={draft.name} placeholder="e.g. tv" disabled={isReservedCategory} />
+		</div>
 
-				<div class="space-y-1.5">
-					<label for="cat-dir" class="text-sm font-medium">Folder / Path</label>
-					<Input id="cat-dir" bind:value={draft.dir} placeholder="Relative to complete_dir" />
-				</div>
+		<div class="space-y-1.5">
+			<label for="cat-dir" class="text-sm font-medium">Folder / Path</label>
+			<Input id="cat-dir" bind:value={draft.dir} placeholder="Relative to complete_dir" />
+		</div>
 
-				<div class="space-y-1.5">
-					<label for="cat-script" class="text-sm font-medium">Script</label>
-					<select id="cat-script" bind:value={draft.script} class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
-						{#each scripts as s (s)}
-							<option value={s}>{s}</option>
-						{/each}
-					</select>
-				</div>
+		<div class="space-y-1.5">
+			<label for="cat-script" class="text-sm font-medium">Script</label>
+			<select id="cat-script" bind:value={draft.script} class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+				{#each scripts as s (s)}
+					<option value={s}>{s}</option>
+				{/each}
+			</select>
+		</div>
 
-				<div class="space-y-2">
-					<span class="text-sm font-medium">Post-Processing</span>
-					<div class="flex flex-wrap gap-4 rounded-md border p-3">
-						<label class="flex items-center gap-2 text-sm cursor-pointer">
-							<input type="checkbox" bind:checked={repair} onchange={updatePP} class="rounded border-gray-300 dark:border-gray-600" />
-							Repair
-						</label>
-						<label class="flex items-center gap-2 text-sm cursor-pointer">
-							<input type="checkbox" bind:checked={unpack} onchange={updatePP} class="rounded border-gray-300 dark:border-gray-600" />
-							Unpack
-						</label>
-						<label class="flex items-center gap-2 text-sm cursor-pointer">
-							<input type="checkbox" bind:checked={del} onchange={updatePP} class="rounded border-gray-300 dark:border-gray-600" />
-							Delete
-						</label>
-					</div>
-				</div>
-
-				<div class="space-y-1.5">
-					<label for="cat-priority" class="text-sm font-medium">Default Priority</label>
-					<select id="cat-priority" bind:value={draft.priority} class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
-						<option value={-100}>Default</option>
-						<option value={2}>Force</option>
-						<option value={1}>High</option>
-						<option value={0}>Normal</option>
-						<option value={-1}>Low</option>
-					</select>
-				</div>
+		<div class="space-y-2">
+			<span class="text-sm font-medium">Post-Processing</span>
+			<div class="flex flex-wrap gap-4 rounded-md border p-3">
+				<label class="flex items-center gap-2 text-sm cursor-pointer">
+					<input type="checkbox" bind:checked={repair} onchange={updatePP} class="rounded border-border" />
+					Repair
+				</label>
+				<label class="flex items-center gap-2 text-sm cursor-pointer">
+					<input type="checkbox" bind:checked={unpack} onchange={updatePP} class="rounded border-border" />
+					Unpack
+				</label>
+				<label class="flex items-center gap-2 text-sm cursor-pointer">
+					<input type="checkbox" bind:checked={del} onchange={updatePP} class="rounded border-border" />
+					Delete
+				</label>
 			</div>
+		</div>
 
-			<div class="mt-6 flex justify-end gap-3">
-				<Button variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-				<Button onclick={handleSave} disabled={!draft.name}>Save</Button>
-			</div>
-		</Dialog.Content>
-	</Dialog.Portal>
-</Dialog.Root>
+		<div class="space-y-1.5">
+			<label for="cat-priority" class="text-sm font-medium">Default Priority</label>
+			<select id="cat-priority" bind:value={draft.priority} class="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+				<option value={-100}>Default</option>
+				<option value={2}>Force</option>
+				<option value={1}>High</option>
+				<option value={0}>Normal</option>
+				<option value={-1}>Low</option>
+			</select>
+		</div>
+	</div>
+
+	<div class="mt-6 flex justify-end gap-3">
+		<Button variant="ghost" onclick={() => (open = false)}>Cancel</Button>
+		<Button onclick={handleSave} disabled={!draft.name}>Save</Button>
+	</div>
+</Modal>

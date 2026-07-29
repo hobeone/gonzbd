@@ -13,7 +13,7 @@
 		getHistorySearch,
 		setHistorySearch
 	} from '$lib/stores/history.svelte';
-	import { Dialog } from 'bits-ui';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import Search from '@lucide/svelte/icons/search';
@@ -141,38 +141,39 @@
 	/>
 {/if}
 
-<Dialog.Root bind:open={showDeleteConfirm}>
-	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs" />
-		<Dialog.Content
-			class="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card text-card-foreground p-6 shadow-2xl outline-none animate-in fade-in zoom-in-95"
+<Modal bind:open={showDeleteConfirm} class="w-full max-w-sm bg-card text-foreground p-6 border border-border">
+	<h2 class="text-base font-semibold text-foreground">Delete History Item</h2>
+	<p class="mt-2 text-xs text-muted-foreground">
+		Are you sure you want to delete <span class="font-medium text-foreground">{deleteTarget?.name}</span> from history?
+	</p>
+	<div class="mt-4 flex items-center gap-2">
+		<input
+			type="checkbox"
+			id="delete-files-history"
+			bind:checked={deleteFiles}
+			class="size-4 rounded border-border text-primary focus:ring-primary"
+		/>
+		<label for="delete-files-history" class="text-xs font-medium text-foreground cursor-pointer">
+			Also delete downloaded files from disk
+		</label>
+	</div>
+	<div class="mt-5 flex justify-end gap-2">
+		<Button
+			variant="outline"
+			size="sm"
+			class="rounded-xl border-border bg-card text-xs font-medium text-foreground hover:bg-muted"
+			onclick={() => (showDeleteConfirm = false)}
 		>
-			<div class="mb-4">
-				<Dialog.Title class="text-base font-bold tracking-tight text-foreground">Delete History Item</Dialog.Title>
-				<Dialog.Description class="mt-2 text-xs text-muted-foreground leading-relaxed">
-					Are you sure you want to delete <span class="inline-block max-w-[200px] sm:max-w-xs align-bottom font-bold text-foreground truncate" title={deleteTarget?.name}
-						>{deleteTarget?.name}</span
-					> from history?
-				</Dialog.Description>
-			</div>
-
-			<div class="py-3">
-				<label class="flex cursor-pointer items-center gap-2.5 text-xs text-foreground font-medium select-none">
-					<input
-						type="checkbox"
-						bind:checked={deleteFiles}
-						class="size-4 rounded border-border text-primary focus:ring-primary cursor-pointer accent-primary"
-					/>
-					<span>Also delete downloaded files from disk</span>
-				</label>
-			</div>
-
-			<div class="mt-6 flex justify-end gap-2.5">
-				<Button variant="outline" size="sm" class="rounded-full px-4 border-border text-foreground hover:bg-muted" onclick={() => (showDeleteConfirm = false)}>Cancel</Button>
-				<Button variant="destructive" size="sm" class="rounded-full px-4 bg-destructive text-destructive-foreground hover:bg-destructive/90" onclick={remove} disabled={acting}>
-					{acting ? 'Deleting...' : 'Delete Item'}
-				</Button>
-			</div>
-		</Dialog.Content>
-	</Dialog.Portal>
-</Dialog.Root>
+			Cancel
+		</Button>
+		<Button
+			variant="destructive"
+			size="sm"
+			class="rounded-xl text-xs font-medium"
+			onclick={remove}
+			disabled={acting}
+		>
+			{acting ? 'Deleting...' : 'Delete Item'}
+		</Button>
+	</div>
+</Modal>
