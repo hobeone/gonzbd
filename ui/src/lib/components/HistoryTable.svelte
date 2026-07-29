@@ -16,7 +16,9 @@
 	import { Dialog } from 'bits-ui';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
-	import { Search, History, Loader2 } from '@lucide/svelte';
+	import Search from '@lucide/svelte/icons/search';
+	import History from '@lucide/svelte/icons/history';
+	import Loader2 from '@lucide/svelte/icons/loader-2';
 	import HistoryRow from './HistoryRow.svelte';
 	import Pagination from './Pagination.svelte';
 	import type { HistorySlot } from '$lib/types';

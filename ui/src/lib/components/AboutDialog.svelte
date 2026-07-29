@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Dialog } from 'bits-ui';
 	import { fetchJSON } from '$lib/api';
-	import { Info } from '@lucide/svelte';
+	import Info from '@lucide/svelte/icons/info';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 

@@ -3,7 +3,11 @@
 	import { getServerStats } from '$lib/stores/queue.svelte';
 	import type { ServerSnapshot, ConnSnapshot, ServerConfig } from '$lib/types';
 	import { formatSize as formatBytes, formatSpeed as formatBps } from '$lib/utils';
-	import { Server, X, ChevronDown, Settings, AlertTriangle } from '@lucide/svelte';
+	import Server from '@lucide/svelte/icons/server';
+	import X from '@lucide/svelte/icons/x';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import Settings from '@lucide/svelte/icons/settings';
+	import AlertTriangle from '@lucide/svelte/icons/alert-triangle';
 	import ServerEditDialog from './config/ServerEditDialog.svelte';
 
 	let {

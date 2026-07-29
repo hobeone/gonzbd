@@ -4,7 +4,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { uploadNzb, postAction, fetchCategories } from '$lib/api';
-	import { FileUp } from '@lucide/svelte';
+	import FileUp from '@lucide/svelte/icons/file-up';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Dialog } from 'bits-ui';
 	import { getShortcuts, type ShortcutDef } from '$lib/shortcuts.svelte';
-	import { Keyboard } from '@lucide/svelte';
+	import Keyboard from '@lucide/svelte/icons/keyboard';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 

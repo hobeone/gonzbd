@@ -8,7 +8,12 @@
 	import { fetchQueueJobDetail, fetchCategories, fetchScripts, postAction } from '$lib/api';
 	import { subscribeWS } from '$lib/stores/websocket.svelte';
 	import { cn, formatSize as formatBytes, formatETA } from '$lib/utils';
-	import { ChevronRight, Edit2, AlertTriangle, Play, Pause, Trash2 } from '@lucide/svelte';
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
+	import Edit2 from '@lucide/svelte/icons/edit-2';
+	import AlertTriangle from '@lucide/svelte/icons/alert-triangle';
+	import Play from '@lucide/svelte/icons/play';
+	import Pause from '@lucide/svelte/icons/pause';
+	import Trash2 from '@lucide/svelte/icons/trash-2';
 
 	const PP_LABELS: Record<string, string> = {
 		'0': 'Download',

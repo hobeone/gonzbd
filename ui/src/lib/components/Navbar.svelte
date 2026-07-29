@@ -4,19 +4,17 @@
 	import { registerShortcuts } from '$lib/shortcuts.svelte';
 	import { getTheme, cycleTheme } from '$lib/stores/theme.svelte';
 	import { onMount } from 'svelte';
-	import {
-		ArrowDownCircle,
-		Play,
-		Pause,
-		Sun,
-		Moon,
-		Monitor,
-		Activity,
-		Info,
-		Server,
-		Settings,
-		Plus
-	} from '@lucide/svelte';
+	import ArrowDownCircle from '@lucide/svelte/icons/arrow-down-circle';
+	import Play from '@lucide/svelte/icons/play';
+	import Pause from '@lucide/svelte/icons/pause';
+	import Sun from '@lucide/svelte/icons/sun';
+	import Moon from '@lucide/svelte/icons/moon';
+	import Monitor from '@lucide/svelte/icons/monitor';
+	import Activity from '@lucide/svelte/icons/activity';
+	import Info from '@lucide/svelte/icons/info';
+	import Server from '@lucide/svelte/icons/server';
+	import Settings from '@lucide/svelte/icons/settings';
+	import Plus from '@lucide/svelte/icons/plus';
 	import AddNzbDialog from './AddNzbDialog.svelte';
 	import SettingsDialog from './SettingsDialog.svelte';
 	import ServerStatusPanel from './ServerStatusPanel.svelte';

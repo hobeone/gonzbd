@@ -2,7 +2,9 @@
 	import { Dialog } from 'bits-ui';
 	import { Button } from '$lib/components/ui/button';
 	import { setConfig, postAction, fetchConfig } from '$lib/api';
-	import { Settings as SettingsIcon, AlertCircle, X } from '@lucide/svelte';
+	import SettingsIcon from '@lucide/svelte/icons/settings';
+	import AlertCircle from '@lucide/svelte/icons/alert-circle';
+	import X from '@lucide/svelte/icons/x';
 	import GeneralSection from './config/GeneralSection.svelte';
 	import DownloadsSection from './config/DownloadsSection.svelte';
 	import PostProcSection from './config/PostProcSection.svelte';

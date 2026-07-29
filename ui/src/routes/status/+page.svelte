@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { HelpCircle } from '@lucide/svelte';
+	import HelpCircle from '@lucide/svelte/icons/help-circle';
 	import Navbar from '$lib/components/Navbar.svelte';
 	import {
 		fetchStatusOverview,

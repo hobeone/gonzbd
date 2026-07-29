@@ -11,7 +11,8 @@
 		isPaused
 	} from '$lib/stores/queue.svelte';
 	import { formatSpeed, formatSize } from '$lib/utils';
-	import { ChevronDown, Settings } from '@lucide/svelte';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import Settings from '@lucide/svelte/icons/settings';
 	import SpeedGraph from './SpeedGraph.svelte';
 
 	let speed = $derived(getSpeedBytesPerSec());

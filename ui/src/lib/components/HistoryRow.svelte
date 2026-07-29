@@ -4,7 +4,9 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { retryHistoryJob } from '$lib/stores/history.svelte';
 	import { showToast } from '$lib/stores/warnings.svelte';
-	import { ChevronRight, RotateCcw, Trash2 } from '@lucide/svelte';
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
+	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+	import Trash2 from '@lucide/svelte/icons/trash-2';
 
 	let { slot, onremove }: { slot: HistorySlot; onremove: () => void } = $props();
 

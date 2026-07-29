@@ -14,7 +14,10 @@
 	import { Dialog } from 'bits-ui';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
-	import { Search, Inbox, Plus, Loader2 } from '@lucide/svelte';
+	import Search from '@lucide/svelte/icons/search';
+	import Inbox from '@lucide/svelte/icons/inbox';
+	import Plus from '@lucide/svelte/icons/plus';
+	import Loader2 from '@lucide/svelte/icons/loader-2';
 	import QueueRow from './QueueRow.svelte';
 	import Pagination from './Pagination.svelte';
 	import AddNzbDialog from './AddNzbDialog.svelte';
