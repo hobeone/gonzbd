@@ -102,7 +102,7 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<div data-testid="status-bar" class="border-b border-border/40 bg-card/40 backdrop-blur-sm text-foreground">
+<div data-testid="status-bar" class="border-b border-border/50 bg-card text-foreground">
 	<div class="mx-auto flex max-w-7xl items-center gap-4 px-4 py-2 text-xs font-medium text-muted-foreground">
 		<div class="flex items-center gap-2.5">
 			<SpeedGraph data={history} />
@@ -122,7 +122,7 @@
 
 				{#if showPopover}
 					<div
-						class="absolute top-full left-0 z-50 mt-2 w-72 rounded-2xl border border-border bg-card p-4 shadow-xl text-card-foreground animate-in fade-in zoom-in-95"
+						class="absolute top-full left-0 z-50 mt-2 w-72 rounded-2xl border border-border bg-white dark:bg-[#111827] p-4 shadow-2xl text-foreground opacity-100 animate-in fade-in zoom-in-95"
 						role="dialog"
 						aria-label="Bandwidth limit"
 					>
