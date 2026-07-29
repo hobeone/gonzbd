@@ -63,27 +63,26 @@ func TestStart_CancelsContextOnFailure(t *testing.T) {
 	}
 }
 
-// Start must remain retryable after a failure, and a retry must not be
-// prevented by the cancellation added for the leak fix.
-func TestStart_RetryableAfterFailure(t *testing.T) {
+// A failed Start must leave the object clean rather than half-armed: started
+// back to false, so nothing downstream that gates on it (Shutdown,
+// ReloadDownloader, StatusInfo) mistakes a failed startup for a live one.
+//
+// This deliberately does not assert that a second Start succeeds. Start is not
+// retryable — see its doc comment — and no caller retries; both production
+// call sites surface the error and exit. An earlier version of this test did
+// assert retry, which happened to pass only because the injected failure lands
+// at the downloader, upstream of PostProcessor.Start. A failure after that
+// point cannot be retried at all, since postproc has no reset for its own
+// started flag.
+func TestStart_LeavesCleanStateAfterFailure(t *testing.T) {
 	application := newFailingStartApp(t, errors.New("downloader boom"))
 
 	if err := application.Start(t.Context()); err == nil {
 		t.Fatal("first Start unexpectedly succeeded")
 	}
 	if application.started.Load() {
-		t.Error("started should be reset to false after a failed Start")
-	}
-
-	// A second attempt must not be rejected with ErrAlreadyStarted, and must
-	// install a fresh, live context rather than reusing the cancelled one.
-	failedCtx := application.ctx
-	err := application.Start(t.Context())
-	if errors.Is(err, ErrAlreadyStarted) {
-		t.Fatal("Start is documented as retryable but returned ErrAlreadyStarted")
-	}
-	if application.ctx == failedCtx {
-		t.Error("retry reused the cancelled context from the failed attempt")
+		t.Error("started should be reset to false after a failed Start, or a " +
+			"failed startup looks live to every caller that gates on it")
 	}
 }
 
