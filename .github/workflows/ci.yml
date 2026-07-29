@@ -62,7 +62,7 @@ jobs:
         run: go vet ./...
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           # .golangci.yml is a version:"2" config, so this needs a v2 binary.
           # It must also be built with Go >= the go.mod version, or it fails to
