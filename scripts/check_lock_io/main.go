@@ -17,7 +17,6 @@
 package main
 
 import (
-	"bytes"
 	"cmp"
 	"flag"
 	"fmt"
@@ -27,10 +26,11 @@ import (
 	"go/types"
 	"maps"
 	"os"
-	"os/exec" //nolint:gosec // dev tool, fixed command args
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/hobeone/gonzbd/scripts/gitscope"
 )
 
 // loggerMethods are *slog.Logger-shaped method names. Matched by name alone
@@ -135,7 +135,8 @@ func run() int {
 
 // gatherTargetFiles returns the non-test .go files to check: every file
 // under internal/ and cmd/ in --all mode, or just the files touched in the
-// current diff (origin/main...HEAD, falling back to HEAD~1) otherwise.
+// current change scope otherwise -- the committed range plus uncommitted
+// work, so the gate gives signal before a commit (see scripts/gitscope).
 func gatherTargetFiles(all bool) ([]string, error) {
 	if all {
 		var files []string
@@ -156,20 +157,14 @@ func gatherTargetFiles(all bool) ([]string, error) {
 		return files, nil
 	}
 
-	cmd := exec.Command("git", "diff", "--name-only", "origin/main...HEAD")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		cmd = exec.Command("git", "diff", "--name-only", "HEAD~1")
-		stdout.Reset()
-		cmd.Stdout = &stdout
-		_ = cmd.Run()
+	changed, err := gitscope.Files()
+	if err != nil {
+		return nil, err
 	}
 
 	var files []string
-	for f := range strings.SplitSeq(stdout.String(), "\n") {
-		f = strings.TrimSpace(f)
-		if f == "" || !strings.HasSuffix(f, ".go") || strings.HasSuffix(f, "_test.go") {
+	for _, f := range changed {
+		if !strings.HasSuffix(f, ".go") || strings.HasSuffix(f, "_test.go") {
 			continue
 		}
 		if !strings.HasPrefix(f, "internal/") && !strings.HasPrefix(f, "cmd/") {

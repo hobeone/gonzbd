@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/hobeone/gonzbd/scripts/gitscope"
 )
 
 type FunctionRange struct {
@@ -193,21 +195,15 @@ func runPkgCoverage(pkgDir string, coverData map[string]float64) error {
 }
 
 func getChangedLines() (map[string]map[int]bool, error) {
-	// Try diffing against origin/main first, fallback to HEAD~1
-	cmd := exec.Command("git", "diff", "-U0", "origin/main...HEAD") //nolint:gosec // dev tool, fixed command args
-	var out, errOut bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errOut
-	if err := cmd.Run(); err != nil {
-		cmd = exec.Command("git", "diff", "-U0", "HEAD~1") //nolint:gosec // dev tool, fixed command args
-		out.Reset()
-		if err := cmd.Run(); err != nil {
-			return nil, err
-		}
+	// Committed range plus uncommitted work, so the gate gives signal before
+	// a commit rather than reporting a vacuous pass. See scripts/gitscope.
+	diff, err := gitscope.Diff()
+	if err != nil {
+		return nil, err
 	}
 
 	changedFiles := make(map[string]map[int]bool)
-	scanner := bufio.NewScanner(&out)
+	scanner := bufio.NewScanner(strings.NewReader(diff))
 	var currentFile string
 
 	for scanner.Scan() {
