@@ -1460,7 +1460,7 @@ func TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry(t *testing.T
 func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 	t.Parallel()
 
-	ms := newMockNNTP(t)
+	ms := newMockNNTP(t, withBodyGate())
 	ms.addArticle("hangup1@h", "body1")
 	ms.addArticle("hangup2@h", "body2")
 	ms.hangupOnFetch("hangup1@h")
@@ -1512,6 +1512,10 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 		}
 	}()
 
+	<-ms.bodyEntered
+	<-ms.bodyEntered
+	close(ms.bodyGate)
+
 	wg.Wait()
 
 	if srv.BadConnections() != 1 {
@@ -1542,7 +1546,7 @@ func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testi
 	telemetry.Reset()
 	t.Cleanup(telemetry.Reset)
 
-	ms := newMockNNTP(t)
+	ms := newMockNNTP(t, withBodyGate())
 	ms.addArticle("hangup1@h", "body1")
 	ms.addArticle("hangup2@h", "body2")
 	ms.hangupOnFetch("hangup1@h")
@@ -1576,6 +1580,11 @@ func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testi
 		defer wg.Done()
 		d.fetchArticle(t.Context(), srv, 0, mc, req2, "worker1")
 	}()
+
+	<-ms.bodyEntered
+	<-ms.bodyEntered
+	close(ms.bodyGate)
+
 	wg.Wait()
 
 	if got := telemetry.ErrorCount(telemetry.ErrClassOtherConnectionError); got != 2 {
