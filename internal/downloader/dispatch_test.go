@@ -1460,7 +1460,7 @@ func TestFetchArticle_FetchFailureDuringShutdownSuppressesTelemetry(t *testing.T
 func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 	t.Parallel()
 
-	ms := newMockNNTP(t)
+	ms := newMockNNTP(t, withBodyGate())
 	ms.addArticle("hangup1@h", "body1")
 	ms.addArticle("hangup2@h", "body2")
 	ms.hangupOnFetch("hangup1@h")
@@ -1493,11 +1493,13 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 	req1 := &articleRequest{jobID: "job1", messageID: "hangup1@h"}
 	req2 := &articleRequest{jobID: "job1", messageID: "hangup2@h"}
 
+	started := make(chan struct{}, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
+		started <- struct{}{}
 		body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req1, "worker1")
 		if ok || body != nil {
 			t.Errorf("goroutine 1: expected fetchArticle failure, got ok=%v body=%v", ok, body)
@@ -1506,11 +1508,22 @@ func TestFetchArticle_ConcurrentTeardown_SingleBadConnMetric(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
+		started <- struct{}{}
 		body, ok := d.fetchArticle(t.Context(), srv, 0, mc, req2, "worker1")
 		if ok || body != nil {
 			t.Errorf("goroutine 2: expected fetchArticle failure, got ok=%v body=%v", ok, body)
 		}
 	}()
+
+	<-started
+	<-started
+
+	select {
+	case <-ms.bodyEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for BODY request to reach mock server")
+	}
+	close(ms.bodyGate)
 
 	wg.Wait()
 
@@ -1542,7 +1555,7 @@ func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testi
 	telemetry.Reset()
 	t.Cleanup(telemetry.Reset)
 
-	ms := newMockNNTP(t)
+	ms := newMockNNTP(t, withBodyGate())
 	ms.addArticle("hangup1@h", "body1")
 	ms.addArticle("hangup2@h", "body2")
 	ms.hangupOnFetch("hangup1@h")
@@ -1566,16 +1579,29 @@ func TestFetchArticle_ConcurrentTeardown_PipelineErrorsCountsPerArticle(t *testi
 	req1 := &articleRequest{jobID: "job1", messageID: "hangup1@h"}
 	req2 := &articleRequest{jobID: "job1", messageID: "hangup2@h"}
 
+	started := make(chan struct{}, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		started <- struct{}{}
 		d.fetchArticle(t.Context(), srv, 0, mc, req1, "worker1")
 	}()
 	go func() {
 		defer wg.Done()
+		started <- struct{}{}
 		d.fetchArticle(t.Context(), srv, 0, mc, req2, "worker1")
 	}()
+
+	<-started
+	<-started
+
+	select {
+	case <-ms.bodyEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for BODY request to reach mock server")
+	}
+	close(ms.bodyGate)
 
 	wg.Wait()
 
