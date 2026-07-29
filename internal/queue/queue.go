@@ -348,9 +348,12 @@ func (q *Queue) Add(job *Job) error {
 		job.progress.recompute(job.manifest)
 	}
 
+	// Holding q.mu across the store writes below is intentional: it prevents
+	// a TOCTOU name collision between the uniqueness check above and the
+	// insert, and keeps the RAM and SQLite views consistent before the
+	// downloader can dispatch against a half-inserted job.
 	if q.store != nil {
-		//lockio: holding q.mu across q.store.Add is intentional to prevent TOCTOU name collisions and guarantee atomic RAM/SQLite state consistency before background downloader dispatch.
-		if err := q.store.Add(context.Background(), job); err != nil {
+		if err := q.store.Add(context.Background(), job); err != nil { //lockio: TOCTOU-free insert; see comment above
 			q.mu.Unlock()
 			return err
 		}
@@ -358,7 +361,7 @@ func (q *Queue) Add(job *Job) error {
 
 	idx := q.insertByPriorityLocked(job)
 	if q.store != nil && idx < len(q.jobs)-1 {
-		_ = q.store.ShiftSortKey(context.Background(), job.ID, idx)
+		_ = q.store.ShiftSortKey(context.Background(), job.ID, idx) //lockio: same insert critical section as store.Add above
 	}
 	q.byID[job.ID] = job
 
@@ -848,7 +851,7 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 				job.manifest = &m
 				job.progress = newJobProgress(&m)
 				if q.store != nil {
-					_ = q.store.RestoreJobProgress(ctx, job)
+					_ = q.store.RestoreJobProgress(ctx, job) //lockio: restores progress in place; hoist tracked in #229
 				}
 				q.activeSet.Add(job)
 			}
@@ -923,7 +926,7 @@ func (q *Queue) SetPostProcStarted(id string) (bool, error) {
 		job.progress.downloadFinished = time.Now().UTC()
 	}
 	if q.store != nil {
-		_ = q.store.Update(context.Background(), job)
+		_ = q.store.Update(context.Background(), job) //lockio: keeps RAM and SQLite views of the PostProc transition consistent; tracked in #229
 	}
 	if job.manifest != nil {
 		job.manifest.dropMessageIDIndex()
@@ -943,7 +946,7 @@ func (q *Queue) MarkDownloadFinished(id string, t time.Time) error {
 	if job.progress != nil && job.progress.downloadFinished.IsZero() {
 		job.progress.downloadFinished = t
 		if q.store != nil {
-			_ = q.store.Update(context.Background(), job)
+			_ = q.store.Update(context.Background(), job) //lockio: keeps RAM and SQLite views of the finish timestamp consistent; tracked in #229
 		}
 		q.dirty.Store(true)
 	}
@@ -962,7 +965,7 @@ func (q *Queue) MarkJobStarted(id string, t time.Time) error {
 	if job.progress != nil && job.progress.downloadStarted.IsZero() {
 		job.progress.downloadStarted = t
 		if q.store != nil {
-			_ = q.store.Update(context.Background(), job)
+			_ = q.store.Update(context.Background(), job) //lockio: keeps RAM and SQLite views of the start timestamp consistent; tracked in #229
 		}
 		q.dirty.Store(true)
 	}
