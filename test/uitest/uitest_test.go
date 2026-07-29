@@ -33,8 +33,8 @@ func TestPageLoads(t *testing.T) {
 	}
 	t.Logf("page title: %q", title)
 
-	// Navbar should be visible.
-	navbar := page.Locator("nav")
+	// Navbar header should be visible.
+	navbar := page.Locator("header")
 	if err := navbar.First().WaitFor(playwright.LocatorWaitForOptions{
 		State: playwright.WaitForSelectorStateVisible,
 	}); err != nil {
