@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -28,14 +30,52 @@ func (r *recordingTB) Helper() {}
 
 func (r *recordingTB) Fatalf(format string, args ...any) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.errs = append(r.errs, fmt.Sprintf(format, args...))
+	r.mu.Unlock()
+
+	// Mirror Fatalf's control flow rather than returning, which would let
+	// WriteExecutable fall through to "return path" for a file it never
+	// wrote -- the caller would then exec a missing file and report a
+	// phantom exec failure instead of this write failure. Goexit is legal
+	// here because the failure is recorded above rather than routed
+	// through testing's FailNow, and sync.WaitGroup.Go documents that it
+	// still decrements when f "completed ... abruptly using goexit".
+	runtime.Goexit()
 }
 
 func (r *recordingTB) failures() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.errs...)
+}
+
+// TestRecordingTB_FatalfRecordsAndAborts pins the two properties the
+// stress test below relies on: a WriteExecutable failure inside a worker
+// goroutine is recorded, and it stops that worker instead of continuing
+// with a path that was never written. Without the runtime.Goexit, the
+// "unreachable" marker would be appended and the worker would go on to
+// exec a nonexistent file.
+func TestRecordingTB_FatalfRecordsAndAborts(t *testing.T) {
+	t.Parallel()
+
+	rec := &recordingTB{TB: t}
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		// /proc/<x> is not creatable, so MkdirAll fails and
+		// WriteExecutable calls Fatalf on our stub.
+		WriteExecutable(rec, "/proc/gonzbd-not-creatable/stub.sh", "#!/bin/sh\n")
+		rec.Fatalf("unreachable: Fatalf returned instead of aborting the goroutine")
+	})
+	wg.Wait() // must not hang: wg.Go still calls Done after a Goexit.
+
+	got := rec.failures()
+	if len(got) != 1 {
+		t.Fatalf("recorded %d failures, want exactly 1: %q", len(got), got)
+	}
+	if !strings.Contains(got[0], "mkdir") {
+		t.Errorf("recorded failure = %q, want the mkdir failure", got[0])
+	}
 }
 
 // TestWriteExecutable_NoETXTBSYUnderConcurrentForks is the regression
