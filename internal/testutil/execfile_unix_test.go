@@ -5,6 +5,7 @@ package testutil
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -75,6 +76,32 @@ func TestRecordingTB_FatalfRecordsAndAborts(t *testing.T) {
 	}
 	if !strings.Contains(got[0], "mkdir") {
 		t.Errorf("recorded failure = %q, want the mkdir failure", got[0])
+	}
+}
+
+// TestWriteExecutable_ModeIsUmaskIndependent pins the documented 0o755
+// mode against the process umask. OpenFile's perm argument is masked by
+// the umask, so under umask 0o027 the file would come out 0o750, and
+// under a umask carrying an execute bit it would come out non-executable
+// -- silently defeating the point of the helper. CI happens to run with a
+// permissive umask, so this sets a restrictive one explicitly rather than
+// trusting the ambient value.
+//
+// No t.Parallel(): syscall.Umask is process-wide. Go runs serial tests to
+// completion before releasing any parallel ones, and the Cleanup restores
+// the old value before that barrier opens.
+func TestWriteExecutable_ModeIsUmaskIndependent(t *testing.T) {
+	old := syscall.Umask(0o027)
+	t.Cleanup(func() { syscall.Umask(old) })
+
+	path := WriteExecutable(t, filepath.Join(t.TempDir(), "stub.sh"), "#!/bin/sh\n")
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o755 {
+		t.Errorf("perm = %04o under umask 0027, want 0755", perm)
 	}
 }
 

@@ -82,6 +82,29 @@ func TestWriteAndClose_OpenError(t *testing.T) {
 	}
 }
 
+// TestWriteAndClose_ChmodError covers the chmod-failure branch. An
+// already-closed descriptor fails Chmod with os.ErrClosed before the write
+// is attempted.
+func TestWriteAndClose_ChmodError(t *testing.T) {
+	t.Parallel()
+
+	closed := func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		f, err := os.OpenFile(name, flag, perm) //nolint:gosec // G304: test-controlled path under t.TempDir()
+		if err != nil {
+			return nil, err
+		}
+		return f, f.Close()
+	}
+
+	err := writeAndClose(filepath.Join(t.TempDir(), "stub.sh"), "#!/bin/sh\n", closed)
+	if err == nil {
+		t.Fatal("writeAndClose with a closed descriptor returned nil, want an error")
+	}
+	if !errors.Is(err, os.ErrClosed) {
+		t.Errorf("err = %v, want os.ErrClosed", err)
+	}
+}
+
 // TestWriteAndClose_WriteError covers the write-failure branch, which a
 // healthy filesystem will not produce on its own. The opener is passed in
 // per call, so nothing is shared and the test is safe to parallelise.
