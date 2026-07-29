@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -24,6 +23,7 @@ import (
 	"log/slog"
 
 	. "github.com/hobeone/gonzbd/internal/notifier"
+	"github.com/hobeone/gonzbd/internal/testutil"
 )
 
 func newTestLogger(t *testing.T) *slog.Logger {
@@ -242,13 +242,13 @@ func TestAppriseNonOKStatus(t *testing.T) {
 
 // ----- Script -----
 
+// writeScript writes an executable shell script into dir and returns its
+// path. Tests here run in parallel and exec these scripts, so the write
+// goes through testutil.WriteExecutable to avoid the ETXTBSY flake
+// described there (issue #239).
 func writeScript(t *testing.T, dir, name, content string) string {
 	t.Helper()
-	p := filepath.Join(dir, name)
-	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+content), 0o755); err != nil {
-		t.Fatalf("writeScript: %v", err)
-	}
-	return p
+	return testutil.WriteExecutable(t, filepath.Join(dir, name), "#!/bin/sh\n"+content)
 }
 
 func TestScriptSuccess(t *testing.T) {
