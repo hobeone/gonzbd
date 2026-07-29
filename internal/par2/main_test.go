@@ -1,6 +1,7 @@
 package par2
 
 import (
+	"log/slog"
 	"testing"
 
 	"go.uber.org/goleak"
@@ -18,5 +19,6 @@ import (
 // Leak detection is the only thing that catches that: the job still fails
 // cleanly, so no assertion on the returned error would ever notice.
 func TestMain(m *testing.M) {
+	slog.SetDefault(slog.New(slog.DiscardHandler))
 	goleak.VerifyTestMain(m)
 }
