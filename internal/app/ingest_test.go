@@ -128,3 +128,20 @@ func TestBuildIngestJob_NilConfig(t *testing.T) {
 		t.Errorf("PP = %d, want 3 (builtin default category fallback)", job.PP)
 	}
 }
+
+func TestBuildIngestJob_PausedPriority(t *testing.T) {
+	t.Parallel()
+
+	job, err := BuildIngestJob(nil, multiVolumeNZB(), "movie.nzb", types.FetchOptions{
+		Priority: constants.PausedPriority,
+	}, nil)
+	if err != nil {
+		t.Fatalf("BuildIngestJob: %v", err)
+	}
+	if job.Priority != constants.PausedPriority {
+		t.Errorf("Priority = %v, want %v", job.Priority, constants.PausedPriority)
+	}
+	if job.Status != constants.StatusPaused {
+		t.Errorf("Status = %v, want %v", job.Status, constants.StatusPaused)
+	}
+}

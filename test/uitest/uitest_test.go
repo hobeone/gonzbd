@@ -964,6 +964,77 @@ func TestAddNZBViaUI(t *testing.T) {
 	}
 }
 
+func TestAddNZBWithPriorityAndPaused(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	page := env.newPage(t)
+	screenshotOnFailure(t, page)
+	env.navigate(t, page, "/")
+
+	nzbPath := createTestNZBFile(t, "add_paused.nzb", "Add.Paused.NZB.Movie.x264-GROUP")
+
+	addBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Add NZB"})
+	if err := addBtn.Click(); err != nil {
+		t.Fatalf("click Add NZB button: %v", err)
+	}
+
+	modalHeader := page.GetByText("Upload an NZB file or paste a URL.")
+	if err := modalHeader.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("Add NZB modal header not visible: %v", err)
+	}
+
+	prioritySelect := page.Locator("#priority")
+	prioVal, err := prioritySelect.InputValue()
+	if err != nil {
+		t.Fatalf("read priority select value: %v", err)
+	}
+	if prioVal != "-100" {
+		t.Errorf("priority select default = %q, want %q", prioVal, "-100")
+	}
+
+	pausedCheckbox := page.Locator("#paused")
+	if err := pausedCheckbox.Check(); err != nil {
+		t.Fatalf("check paused checkbox: %v", err)
+	}
+
+	prioVal, err = prioritySelect.InputValue()
+	if err != nil {
+		t.Fatalf("read priority select value after checking paused: %v", err)
+	}
+	if prioVal != "-2" {
+		t.Errorf("priority select value after check = %q, want %q (-2)", prioVal, "-2")
+	}
+
+	fileInput := page.Locator("input[type=file]")
+	if err := fileInput.SetInputFiles(nzbPath); err != nil {
+		t.Fatalf("SetInputFiles: %v", err)
+	}
+
+	uploadBtn := page.GetByRole("button", playwright.PageGetByRoleOptions{Name: "Upload"})
+	if err := uploadBtn.Click(); err != nil {
+		t.Fatalf("click Upload: %v", err)
+	}
+
+	jobRow := page.GetByText("add_paused.nzb")
+	if err := jobRow.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("uploaded NZB job not visible in queue: %v", err)
+	}
+
+	pausedBadge := page.Locator("td").Filter(playwright.LocatorFilterOptions{HasText: "Paused"})
+	if err := pausedBadge.First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(5000),
+	}); err != nil {
+		t.Fatalf("job status Paused badge not visible: %v", err)
+	}
+}
+
 func TestDuplicateNZBWarningAndInteractivity(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t)
