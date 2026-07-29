@@ -69,6 +69,43 @@ var httpIOFuncs = map[string]bool{
 	"Get": true, "Post": true, "PostForm": true, "Head": true,
 }
 
+// sqlReceivers are the identifiers this repo binds to a *sql.DB or *sql.Tx.
+// Confirmed by inspection rather than guessed: every database call site in
+// internal/ reaches the handle as `db.X(...)`, `tx.X(...)`, `s.db.X(...)` or
+// `r.db.X(...)`. Any method on one of these is a database round trip, so the
+// method name is not restricted — Query, Exec, Begin, Commit and Close are
+// all I/O.
+//
+// This is the gap that let a SQLite transaction run under the global queue
+// mutex go unreported (#227): the tool had no notion of database calls at all.
+var sqlReceivers = map[string]bool{
+	"db": true, "tx": true,
+}
+
+// storeMethods are persistence operations on a `store` receiver. Unlike
+// db/tx, `store` is not unambiguous — internal/dirscanner uses it for an
+// in-memory path map — so matching is restricted to a method set rather than
+// any call. The names come from the queue.Store interface
+// (internal/queue/store.go), which is backed by SQLite, plus dirscanner's
+// Save, which writes to disk.
+//
+// Get/Set/Delete are deliberately excluded: they are the in-memory
+// operations on dirscanner's store and too generic to attribute.
+var storeMethods = map[string]bool{
+	"Add": true, "List": true, "Update": true, "UpdateBatch": true,
+	"Remove": true, "MoveToHistory": true, "ExistsByName": true,
+	"ExistsByMD5": true, "ShiftSortKey": true, "Prune": true,
+	"SetPaused": true, "IsPaused": true, "RestoreJobProgress": true,
+	"Save": true,
+}
+
+// lockedSuffix is the naming convention this repo uses for "the caller must
+// already hold the lock". It is what makes one level of call-graph
+// resolution cheap and high-precision: a call to a *Locked function from
+// inside a locked span is, by construction, still inside that span, so its
+// body is worth scanning even though it lives in a separate FuncDecl.
+const lockedSuffix = "Locked"
+
 // closureLockMethods is the allowlist of methods that hold a lock for the
 // duration of a func-literal argument. Confirmed by exhaustive repo-wide
 // grep to be the only two such methods as of this writing:
@@ -179,6 +216,55 @@ func gatherTargetFiles(all bool) ([]string, error) {
 
 // checkFile parses one Go source file and returns every mutex-held-during-
 // I/O finding in it, filtered by //lockio: suppression comments.
+// lockedFuncCache memoises the per-package map of *Locked declarations so a
+// package with many changed files is parsed once rather than once per file.
+var lockedFuncCache = map[string]map[string]*ast.FuncDecl{}
+
+// lockedFuncsInPackage returns every *Locked function and method declared in
+// dir, keyed by name.
+//
+// Package scope rather than file scope is required, not merely tidier:
+// internal/downloader/tracker.go declares TryListLocked, SetTriedLocked,
+// InFlightLocked and IncrementInFlightLocked, all of which are called from
+// dispatch.go. A file-scoped map would silently miss every one.
+//
+// Names are assumed unique within a package. That holds for the *Locked
+// convention in this repo, and a collision would at worst scan the wrong
+// body of two similarly-named helpers — a false positive a //lockio: marker
+// can settle, not a missed violation.
+func lockedFuncsInPackage(dir string) map[string]*ast.FuncDecl {
+	if cached, ok := lockedFuncCache[dir]; ok {
+		return cached
+	}
+	funcs := map[string]*ast.FuncDecl{}
+	entries, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err == nil {
+		for _, f := range entries {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			// A separate FileSet per package member is fine: only the body
+			// nodes are used, and positions are resolved against the caller's
+			// own file when reporting.
+			parsed, perr := parser.ParseFile(token.NewFileSet(), f, nil, 0)
+			if perr != nil {
+				continue
+			}
+			for _, decl := range parsed.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				if strings.HasSuffix(fn.Name.Name, lockedSuffix) {
+					funcs[fn.Name.Name] = fn
+				}
+			}
+		}
+	}
+	lockedFuncCache[dir] = funcs
+	return funcs
+}
+
 func checkFile(path string) ([]finding, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
@@ -194,13 +280,17 @@ func checkFile(path string) ([]finding, error) {
 		}
 	}
 
+	// One level of call-graph resolution: a call to a *Locked helper from
+	// inside a locked span keeps the lock held for that helper's body too.
+	lockedFuncs := lockedFuncsInPackage(filepath.Dir(path))
+
 	var findings []finding
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
-		findings = append(findings, checkFuncBody(fset, path, fn.Body, commentsByLine)...)
+		findings = append(findings, checkFuncBody(fset, path, fn.Body, commentsByLine, lockedFuncs)...)
 	}
 	return findings, nil
 }
@@ -216,7 +306,7 @@ func checkFile(path string) ([]finding, error) {
 // does not leak back to affect sibling statements after the branch, which
 // is what lets an early "unlock, log, return" pattern (the repo's own
 // correct idiom) pass cleanly instead of producing a false positive.
-func checkFuncBody(fset *token.FileSet, path string, body *ast.BlockStmt, commentsByLine map[int]string) []finding {
+func checkFuncBody(fset *token.FileSet, path string, body *ast.BlockStmt, commentsByLine map[int]string, lockedFuncs map[string]*ast.FuncDecl) []finding {
 	deferredFrom := collectDeferredLocks(body)
 
 	w := &walker{
@@ -224,6 +314,7 @@ func checkFuncBody(fset *token.FileSet, path string, body *ast.BlockStmt, commen
 		path:           path,
 		commentsByLine: commentsByLine,
 		deferredFrom:   deferredFrom,
+		lockedFuncs:    lockedFuncs,
 	}
 	w.walkClosures(body)
 	w.walkBlock(body.List, map[string]bool{})
@@ -347,7 +438,10 @@ type walker struct {
 	path           string
 	commentsByLine map[int]string
 	deferredFrom   map[string]token.Pos
-	findings       []finding
+	// lockedFuncs maps *Locked declarations in this package by name, for the
+	// one-level call-graph descent (see scanCall).
+	lockedFuncs map[string]*ast.FuncDecl
+	findings    []finding
 }
 
 // walkClosures finds every closure-wrapper call (With/
@@ -510,9 +604,7 @@ func (w *walker) scanStmtShallow(stmt ast.Stmt, desc string) {
 		if !ok {
 			return true
 		}
-		if ioDesc, ok := isIOCall(call); ok {
-			w.report(call.Pos(), call.End(), desc+" ("+ioDesc+")")
-		}
+		w.scanCall(call, desc)
 		return true
 	})
 }
@@ -525,15 +617,83 @@ func (w *walker) scanForIO(node ast.Node, desc string) {
 		if !ok {
 			return true
 		}
-		if ioDesc, ok := isIOCall(call); ok {
-			w.report(call.Pos(), call.End(), desc+" ("+ioDesc+")")
-		}
+		w.scanCall(call, desc)
 		return true
 	})
 }
 
-// isIOCall reports whether call is a logging, disk-I/O, or network call,
-// along with a short description for the finding message.
+// scanCall reports call if it is itself I/O, and otherwise descends one level
+// into it when it targets a *Locked helper in the same package.
+//
+// The descent is what closes the blind spot behind a callee: a lock taken in
+// the caller with the I/O one frame down was invisible to a walk that only
+// ever looked at a single FuncDecl body. Findings are reported at the *call
+// site*, not inside the callee, because that is where the lock is held, where
+// the fix belongs, and where a //lockio: marker can be written.
+//
+// Depth is deliberately one. A *Locked helper calling another one is rare
+// here, and unbounded descent would trade the tool's cheap, predictable
+// behaviour for recursion cycles and a far larger false-positive surface.
+func (w *walker) scanCall(call *ast.CallExpr, desc string) {
+	if ioDesc, ok := isIOCall(call); ok {
+		w.report(call.Pos(), call.End(), desc+" ("+ioDesc+")")
+		return
+	}
+
+	name := calleeName(call)
+	if !strings.HasSuffix(name, lockedSuffix) {
+		return
+	}
+	callee, ok := w.lockedFuncs[name]
+	if !ok || callee.Body == nil {
+		return
+	}
+
+	ast.Inspect(callee.Body, func(n ast.Node) bool {
+		inner, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		ioDesc, ok := isIOCall(inner)
+		if !ok {
+			return true
+		}
+		// Positions inside the callee belong to a different FileSet (and
+		// possibly a different file), so anchor the finding to the call site
+		// and name the callee in the description instead.
+		w.report(call.Pos(), call.End(),
+			fmt.Sprintf("%s (via %s: %s)", desc, name, ioDesc))
+		return true
+	})
+}
+
+// receiverName returns the identifier immediately left of a selector's
+// method: "db" for both `db.Query` and `s.db.Query`. Returns "" for shapes
+// with no such identifier (an index expression, a call result, and so on).
+func receiverName(x ast.Expr) string {
+	switch v := x.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.SelectorExpr:
+		return v.Sel.Name
+	}
+	return ""
+}
+
+// calleeName returns the called function's own name, ignoring any receiver:
+// "fooLocked" for `fooLocked()`, `q.fooLocked()` and `d.tracker.fooLocked()`.
+func calleeName(call *ast.CallExpr) string {
+	switch f := call.Fun.(type) {
+	case *ast.Ident:
+		return f.Name
+	case *ast.SelectorExpr:
+		return f.Sel.Name
+	}
+	return ""
+}
+
+// isIOCall reports whether call is a logging, disk-I/O, network, or
+// persistence call, along with a short description for the finding message.
 func isIOCall(call *ast.CallExpr) (desc string, ok bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
@@ -555,6 +715,17 @@ func isIOCall(call *ast.CallExpr) (desc string, ok bool) {
 	// common unrelated method.
 	if loggerMethods[sel.Sel.Name] && len(call.Args) >= 1 {
 		return "slog-style logging call: " + sel.Sel.Name + "(...)", true
+	}
+
+	// Persistence calls reach their handle either bare (`db.Query(...)`) or
+	// through one field hop (`s.db.Query(...)`), so match on the identifier
+	// immediately left of the method rather than requiring a bare package
+	// ident the way the stdlib cases below do.
+	switch recv := receiverName(sel.X); {
+	case sqlReceivers[recv]:
+		return "database/sql call: " + recv + "." + sel.Sel.Name + "(...)", true
+	case recv == "store" && storeMethods[sel.Sel.Name]:
+		return "persistence call: store." + sel.Sel.Name + "(...)", true
 	}
 
 	pkgIdent, ok := sel.X.(*ast.Ident)
