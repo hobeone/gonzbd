@@ -18,6 +18,11 @@ import (
 	"github.com/hobeone/gonzbd/internal/nzb"
 )
 
+func TestMain(m *testing.M) {
+	slog.SetDefault(slog.New(slog.DiscardHandler))
+	os.Exit(m.Run())
+}
+
 // makeParsed builds a minimal nzb.NZB suitable for NewJob.
 func makeParsed(t *testing.T, nFiles int) *nzb.NZB {
 	t.Helper()
