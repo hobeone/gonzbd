@@ -560,8 +560,17 @@ func (app *Application) PostProcComplete() <-chan PostProcComplete { return app.
 
 // Start launches the download pipeline, assembler, and background goroutines.
 // It blocks until all components are running. Call Shutdown to stop.
-// If Start returns an error it may be retried; the application is left in a
-// clean state with started=false so a subsequent Start call is allowed.
+//
+// Start is not retryable. On error the caller must surface it and exit; both
+// production callers do (cmd/gonzbd/main.go, serve and one-shot modes), and a
+// supervisor restarting the process gets a fresh Application anyway. Retrying
+// in place would not work regardless: PostProcessor.Start has already flipped
+// its own started flag by the time the later steps can fail, and it has no
+// reset, so a second attempt fails with postproc.ErrAlreadyStarted.
+//
+// started is still reset to false on the failure path below, so the object is
+// left in a clean rather than half-armed state — but that is hygiene, not a
+// supported retry contract.
 //
 // Invariant: ReloadDownloader must not be called until Start has returned.
 // started flips true (via CompareAndSwap) before this method finishes
@@ -574,19 +583,24 @@ func (app *Application) Start(ctx context.Context) error {
 	if !app.started.CompareAndSwap(false, true) {
 		return ErrAlreadyStarted
 	}
-	// Reset started on any failure so the caller can retry. The deferred
-	// function is cancelled by setting succeeded=true before returning nil.
+	// Leave the object in a clean rather than half-armed state on failure
+	// (see the note on retryability above). The deferred function is disarmed
+	// by setting succeeded=true before returning nil.
 	succeeded := false
 	defer func() {
 		if succeeded {
 			return
 		}
 		// Release the context created below. Shutdown cannot do it: its
-		// started guard returns early once this defer clears the flag, so
-		// on every error return nothing else would ever call cancel. Since
-		// Start is documented as retryable and a retry overwrites
-		// app.cancel, skipping this would leak a context node on the parent
-		// per failed attempt, with no way to reach the discarded func.
+		// started guard returns early once this defer clears the flag, so on
+		// every error return nothing else would ever call cancel.
+		//
+		// This matters most for the late failure paths. By the time the
+		// waitBounded steps can fail, four long-lived goroutines are already
+		// running against app.ctx — pipeline.run, watchCompletions,
+		// runCheckpoint and runMetricsPush. Without this cancel they would run
+		// forever, and nothing would join them either, since app.wg.Wait lives
+		// only in Shutdown.
 		if app.cancel != nil {
 			app.cancel()
 		}
