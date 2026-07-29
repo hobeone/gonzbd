@@ -147,4 +147,7 @@
     background-color: #1A1C22;
     color: #E2E2E9;
   }
+  dialog:not([open]) {
+    display: none !important;
+  }
 }
