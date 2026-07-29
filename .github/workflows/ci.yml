@@ -67,7 +67,7 @@ jobs:
           # .golangci.yml is a version:"2" config, so this needs a v2 binary.
           # It must also be built with Go >= the go.mod version, or it fails to
           # load the config at all (a startup error, not a lint finding).
-          version: v2.11.4
+          version: v2.12.2
 
       - name: Mutex-held-during-I/O check
         run: go run scripts/check_lock_io/main.go
