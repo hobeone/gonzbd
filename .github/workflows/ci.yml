@@ -23,7 +23,12 @@ jobs:
           fetch-depth: 0
 
       - name: Fetch main for diff-scoped gates
-        run: git fetch origin main:refs/remotes/origin/main
+        # The refspec must be fully qualified. With an unqualified source
+        # ("main:refs/..."), a fetcher configured with fetch.prune=true prunes
+        # refs/remotes/origin/main instead of updating it, so the diff-scoped
+        # gates silently fall back to HEAD~1. Runners do not set fetch.prune,
+        # but developers commonly do, and the two must not diverge.
+        run: git fetch origin +refs/heads/main:refs/remotes/origin/main
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
