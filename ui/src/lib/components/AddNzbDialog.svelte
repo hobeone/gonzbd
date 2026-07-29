@@ -3,6 +3,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { uploadNzb, postAction, fetchCategories } from '$lib/api';
+	import { refreshQueue } from '$lib/stores/queue.svelte';
 	import FileUp from '@lucide/svelte/icons/file-up';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
@@ -11,6 +12,8 @@
 	let url = $state('');
 	let category = $state('*');
 	let password = $state('');
+	let priority = $state('-100');
+	let paused = $state(false);
 	let categories = $state.raw<string[]>(['*']);
 	let files = $state<FileList | null>(null);
 	let dragging = $state(false);
@@ -32,9 +35,31 @@
 		files = null;
 		category = '*';
 		password = '';
+		priority = '-100';
+		paused = false;
 		dragging = false;
 		submitting = false;
 		result = null;
+	}
+
+	function handlePriorityChange(e: Event) {
+		const val = (e.target as HTMLSelectElement).value;
+		priority = val;
+		if (val === '-2') {
+			paused = true;
+		} else if (paused) {
+			paused = false;
+		}
+	}
+
+	function handlePausedChange(e: Event) {
+		const checked = (e.target as HTMLInputElement).checked;
+		paused = checked;
+		if (checked) {
+			priority = '-2';
+		} else if (priority === '-2') {
+			priority = '-100';
+		}
 	}
 
 	async function submitFile() {
@@ -45,9 +70,12 @@
 			const params: Record<string, string> = {};
 			if (category !== '*') params.cat = category;
 			if (password) params.password = password;
+			const finalPriority = paused ? '-2' : priority;
+			if (finalPriority !== '-100') params.priority = finalPriority;
 
 			await uploadNzb(files[0], params);
 			open = false;
+			refreshQueue();
 		} catch (e) {
 			result = { ok: false, message: e instanceof Error ? e.message : String(e) };
 		} finally {
@@ -64,9 +92,12 @@
 			const params: Record<string, string> = { name: trimmed };
 			if (category !== '*') params.cat = category;
 			if (password) params.password = password;
+			const finalPriority = paused ? '-2' : priority;
+			if (finalPriority !== '-100') params.priority = finalPriority;
 
 			await postAction('addurl', params);
 			open = false;
+			refreshQueue();
 		} catch (e) {
 			result = { ok: false, message: e instanceof Error ? e.message : String(e) };
 		} finally {
@@ -134,6 +165,25 @@
 					</select>
 				</div>
 				<div class="space-y-1.5">
+					<label for="priority" class="text-xs font-semibold text-muted-foreground">Priority</label>
+					<select
+						id="priority"
+						value={priority}
+						onchange={handlePriorityChange}
+						class="flex h-9 w-full rounded-lg border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
+					>
+						<option value="-100">Default</option>
+						<option value="2">Force</option>
+						<option value="1">High</option>
+						<option value="0">Normal</option>
+						<option value="-1">Low</option>
+						<option value="-2">Paused</option>
+					</select>
+				</div>
+			</div>
+
+			<div class="mt-4 grid grid-cols-2 gap-4 items-center">
+				<div class="space-y-1.5">
 					<label for="password" class="text-xs font-semibold text-muted-foreground">Password</label>
 					<Input
 						id="password"
@@ -142,6 +192,18 @@
 						bind:value={password}
 						class="h-9"
 					/>
+				</div>
+				<div class="pt-5">
+					<label class="flex items-center gap-2 cursor-pointer text-sm font-medium text-foreground select-none">
+						<input
+							type="checkbox"
+							id="paused"
+							checked={paused}
+							onchange={handlePausedChange}
+							class="size-4 rounded border-input bg-transparent text-primary focus:ring-primary"
+						/>
+						<span>Add Paused</span>
+					</label>
 				</div>
 			</div>
 

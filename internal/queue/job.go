@@ -351,6 +351,11 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 		)
 	}
 
+	status := constants.StatusQueued
+	if priority == constants.PausedPriority {
+		status = constants.StatusPaused
+	}
+
 	job := &Job{
 		ID:       id,
 		Filename: opts.Filename,
@@ -359,7 +364,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 		URL:      opts.URL,
 		Category: opts.Category,
 		Priority: priority,
-		Status:   constants.StatusQueued,
+		Status:   status,
 		PP:       pp,
 		Script:   script,
 		Added:    time.Now().UTC(),

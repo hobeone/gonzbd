@@ -58,6 +58,69 @@ describe('AddNzbDialog', () => {
 		expect(screen.getByText('.nzb or .nzb.gz files')).toBeInTheDocument();
 	});
 
+	it('renders priority select with default -100 (Default)', () => {
+		render(AddNzbDialog, { props: { open: true } });
+		const prioritySelect = screen.getByLabelText('Priority') as HTMLSelectElement;
+		expect(prioritySelect).toBeInTheDocument();
+		expect(prioritySelect.value).toBe('-100');
+	});
+
+	it('renders Add Paused checkbox with default unchecked', () => {
+		render(AddNzbDialog, { props: { open: true } });
+		const pausedCheckbox = screen.getByLabelText('Add Paused') as HTMLInputElement;
+		expect(pausedCheckbox).toBeInTheDocument();
+		expect(pausedCheckbox.checked).toBe(false);
+	});
+
+	it('synchronizes Priority select and Add Paused checkbox', async () => {
+		const { fireEvent } = await import('@testing-library/svelte');
+		render(AddNzbDialog, { props: { open: true } });
+
+		const prioritySelect = screen.getByLabelText('Priority') as HTMLSelectElement;
+		const pausedCheckbox = screen.getByLabelText('Add Paused') as HTMLInputElement;
+
+		// Select Paused (-2) in Priority select
+		await fireEvent.change(prioritySelect, { target: { value: '-2' } });
+		expect(pausedCheckbox.checked).toBe(true);
+
+		// Select High (1) in Priority select
+		await fireEvent.change(prioritySelect, { target: { value: '1' } });
+		expect(pausedCheckbox.checked).toBe(false);
+
+		// Check Add Paused checkbox
+		await fireEvent.click(pausedCheckbox);
+		expect(prioritySelect.value).toBe('-2');
+
+		// Uncheck Add Paused checkbox
+		await fireEvent.click(pausedCheckbox);
+		expect(prioritySelect.value).toBe('-100');
+	});
+
+	it('passes priority parameter on URL submit when priority or paused is selected', async () => {
+		const { fireEvent } = await import('@testing-library/svelte');
+		const { postAction } = await import('$lib/api');
+
+		render(AddNzbDialog, { props: { open: true } });
+
+		// Switch to URL tab
+		const urlTab = screen.getByText('URL');
+		await fireEvent.click(urlTab);
+
+		const urlInput = screen.getByPlaceholderText('https://example.com/file.nzb');
+		await fireEvent.input(urlInput, { target: { value: 'https://example.com/test.nzb' } });
+
+		const pausedCheckbox = screen.getByLabelText('Add Paused');
+		await fireEvent.click(pausedCheckbox);
+
+		const fetchBtn = screen.getByText('Fetch');
+		await fireEvent.click(fetchBtn);
+
+		expect(postAction).toHaveBeenCalledWith('addurl', {
+			name: 'https://example.com/test.nzb',
+			priority: '-2'
+		});
+	});
+
 	it('does not render dialog content when closed', () => {
 		render(AddNzbDialog, { props: { open: false } });
 		expect(screen.queryByText('Add NZB')).not.toBeInTheDocument();
