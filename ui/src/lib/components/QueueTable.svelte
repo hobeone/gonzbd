@@ -15,8 +15,6 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import Search from '@lucide/svelte/icons/search';
-	import Inbox from '@lucide/svelte/icons/inbox';
-	import Plus from '@lucide/svelte/icons/plus';
 	import Loader2 from '@lucide/svelte/icons/loader-2';
 	import QueueRow from './QueueRow.svelte';
 	import Pagination from './Pagination.svelte';
@@ -86,25 +84,14 @@
 		API error: {getError()}
 	</div>
 {:else if slots().length === 0}
-	<div class="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/80 bg-card/50 p-10 text-center transition-colors">
+	<div class="flex h-12 items-center justify-center rounded-2xl border border-border/60 bg-card/60 px-4 text-xs font-medium text-muted-foreground">
 		{#if getQueue() === null}
-			<Loader2 class="size-7 animate-spin text-muted-foreground" />
-			<p class="mt-3 text-xs font-medium text-muted-foreground">Loading download queue...</p>
-		{:else}
-			<div class="flex size-12 items-center justify-center rounded-full bg-muted/60 text-muted-foreground">
-				<Inbox class="size-6" />
+			<div class="flex items-center gap-2">
+				<Loader2 class="size-4 animate-spin text-muted-foreground" />
+				<span>Loading download queue...</span>
 			</div>
-			<h3 class="mt-3 text-sm font-bold text-foreground">Queue is empty</h3>
-			<p class="mt-1 text-xs text-muted-foreground max-w-xs">No active downloads in progress. Add an NZB file or URL to start downloading.</p>
-			<Button
-				variant="outline"
-				size="sm"
-				class="mt-4 gap-1.5 rounded-full border-border bg-card px-4 py-1.5 text-xs font-bold text-foreground hover:bg-muted"
-				onclick={() => (addDialogOpen = true)}
-			>
-				<Plus class="size-3.5" />
-				Add NZB
-			</Button>
+		{:else}
+			<span>Queue is empty</span>
 		{/if}
 	</div>
 {:else}

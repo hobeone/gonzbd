@@ -17,7 +17,6 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import Search from '@lucide/svelte/icons/search';
-	import History from '@lucide/svelte/icons/history';
 	import Loader2 from '@lucide/svelte/icons/loader-2';
 	import HistoryRow from './HistoryRow.svelte';
 	import Pagination from './Pagination.svelte';
@@ -103,16 +102,14 @@
 		API error: {getHistoryError()}
 	</div>
 {:else if slots().length === 0}
-	<div class="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/80 bg-card/50 p-10 text-center transition-colors">
+	<div class="flex h-12 items-center justify-center rounded-2xl border border-border/60 bg-card/60 px-4 text-xs font-medium text-muted-foreground">
 		{#if getHistory() === null}
-			<Loader2 class="size-7 animate-spin text-muted-foreground" />
-			<p class="mt-3 text-xs font-medium text-muted-foreground">Loading download history...</p>
-		{:else}
-			<div class="flex size-12 items-center justify-center rounded-full bg-muted/60 text-muted-foreground">
-				<History class="size-6" />
+			<div class="flex items-center gap-2">
+				<Loader2 class="size-4 animate-spin text-muted-foreground" />
+				<span>Loading download history...</span>
 			</div>
-			<h3 class="mt-3 text-sm font-bold text-foreground">History is empty</h3>
-			<p class="mt-1 text-xs text-muted-foreground max-w-xs">No completed or past downloads found.</p>
+		{:else}
+			<span>History is empty</span>
 		{/if}
 	</div>
 {:else}
