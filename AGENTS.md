@@ -74,7 +74,7 @@ design-level change.
 | Doc | Read before | Covers |
 |-----|-------------|--------|
 | [`docs/go-standards.md`](docs/go-standards.md) | Creating, editing, or refactoring any `.go` file | Idioms, anti-patterns, concurrency/persistence architecture, library selection, testing standards, the Go backend lessons-learned catalog |
-| [`docs/svelte-gotchas.md`](docs/svelte-gotchas.md) | Creating, editing, or refactoring any `.svelte`/`.svelte.ts` file | Svelte 5 reactivity gotchas (module-level `$state`, `bits-ui` dialogs, child component update patterns) |
+| [`docs/svelte-gotchas.md`](docs/svelte-gotchas.md) | Creating, editing, or refactoring any `.svelte`/`.svelte.ts` file | Svelte 5 reactivity gotchas (module-level `$state`, native `<dialog>`/`Modal.svelte` patterns, child component update patterns) |
 | [`docs/config-contract.md`](docs/config-contract.md) | Adding/renaming/removing a config field or a Svelte config `keyword=` prop | Keeping `gonzbd.yaml` comments, `docs/sabnzbd_spec.md` §9.x, and the config↔UI contract test in sync |
 | [`docs/mutation-testing-playbook.md`](docs/mutation-testing-playbook.md) | Running `gremlins` | The `run_gremlins.sh` wrapper, tuning, triaging `LIVED`/`NOT COVERED` mutants, the `--diff` known-bug workaround |
 
@@ -322,5 +322,5 @@ When in doubt about whether a Python behavior is essential or accidental, ask.
 
 Moved to [`docs/svelte-gotchas.md`](docs/svelte-gotchas.md) — read it before
 touching any `.svelte`/`.svelte.ts` file. Covers module-level `$state`
-reactivity, `bits-ui` dialog patterns, and child-component update
-conventions.
+reactivity, native `<dialog>`/`Modal.svelte` patterns, and child-component
+update conventions.

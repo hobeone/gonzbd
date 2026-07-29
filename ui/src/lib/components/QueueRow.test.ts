@@ -63,7 +63,7 @@ describe('QueueRow', () => {
 		// Percentage text
 		expect(screen.getByText('50.5%')).toBeInTheDocument();
 		
-		// Progress bar (shadcn Progress uses bits-ui primitive which has progress role)
+		// Progress bar (Progress renders a plain div with role="progressbar")
 		const progress = screen.getByRole('progressbar');
 		expect(progress).toBeInTheDocument();
 		expect(progress.getAttribute('aria-valuenow')).toBe('50.5');

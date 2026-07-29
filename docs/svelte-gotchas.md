@@ -39,9 +39,39 @@ export async function load() {
 > Note: this gotcha is about **module-level** `$state`. Class-field `$state`
 > inside a store class (e.g. `BasePollStore`) works correctly.
 
-## `bits-ui` `onOpenChange` vs `bind:open`
+## Dialogs: react to the `open` prop, not to open-change callbacks
 
-When a parent component controls a Dialog's open state via `bind:open`, the `onOpenChange` callback on `Dialog.Root` only fires when the dialog *itself* initiates a state change (clicking overlay/close). It does **not** fire when the parent sets the bound prop. Use a `$effect` watching the `open` prop instead.
+All dialogs go through `ui/src/lib/components/ui/Modal.svelte`, a thin wrapper
+over the native `<dialog>` element. Parents control it with `bind:open`.
+
+To run logic when a dialog opens (resetting a form, fetching categories), watch
+the `open` prop with a `$effect` — do **not** reach for an open-change callback:
+
+```svelte
+$effect(() => {
+    if (open) reset();
+});
+```
+
+This rule predates `Modal.svelte`: the previous `bits-ui` `Dialog.Root` fired
+`onOpenChange` only when the dialog *itself* initiated the change (overlay or
+close-button click) and stayed silent when the parent set the bound prop, which
+made callback-based logic silently miss parent-driven opens. `Modal.svelte` has
+no such callback at all, so the `$effect` pattern is now the only option.
+
+Two things `Modal.svelte` relies on that are easy to break when editing it:
+
+- The `$effect` guards on `!dialogEl.open` before calling `showModal()` —
+  calling `showModal()` on an already-open dialog throws.
+- Both dismissal paths must write back to the bound prop, or the dialog can
+  never be reopened: the native `close` event covers <kbd>Esc</kbd> and
+  programmatic `close()`, and a click handler comparing `e.target === dialogEl`
+  covers backdrop clicks (clicks on `::backdrop` report the dialog as target).
+
+Closed dialogs are unmounted via `{#if open}` and additionally hidden by
+`dialog:not([open]) { display: none !important; }` in `app.css`, because a
+mounted-but-closed `<dialog>` still hit-tests and swallows clicks meant for the
+page underneath.
 
 ## Child component updates
 

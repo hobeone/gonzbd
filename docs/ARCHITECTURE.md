@@ -211,5 +211,5 @@ The GoNZBD binary serves both the functional API and the modern web UI from a si
 
 When contributing to the UI, keep the following hard-won lessons in mind:
 1. **Reactivity**: Do not use module-level $state in .svelte.ts stores for data that drives conditional rendering. Keep $state inside components for reliable re-renders during async operations.
-2. **Dialogs**: bits-ui Dialog components may not fire onOpenChange when their state is bound from a parent. Use $effect to watch the open prop instead.
+2. **Dialogs**: all dialogs use `ui/src/lib/components/ui/Modal.svelte`, a wrapper over the native `<dialog>` element, controlled by the parent via `bind:open`. Run open-time logic with a $effect watching the open prop; there is no open-change callback. See `docs/svelte-gotchas.md`.
 3. **Data Flow**: Child components should use onupdate callbacks rather than importing store functions directly to maintain explicit data flow.
