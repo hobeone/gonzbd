@@ -141,7 +141,7 @@
 	/>
 {/if}
 
-<Modal bind:open={showDeleteConfirm} ariaLabel="Confirm Delete History Item" class="w-full max-w-sm bg-card text-foreground p-6 border border-border">
+<Modal bind:open={showDeleteConfirm} ariaLabel="Confirm Delete History Item" class="w-full max-w-sm p-6">
 	<h2 class="text-base font-semibold text-foreground">Delete History Item</h2>
 	<p class="mt-2 text-xs text-muted-foreground">
 		Are you sure you want to delete <span class="font-medium text-foreground">{deleteTarget?.name}</span> from history?

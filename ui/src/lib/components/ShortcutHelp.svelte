@@ -38,7 +38,7 @@
 	}
 </script>
 
-<Modal bind:open ariaLabel="Keyboard Shortcuts" class="w-full max-w-sm bg-card text-foreground border border-border">
+<Modal bind:open ariaLabel="Keyboard Shortcuts" class="w-full max-w-sm">
 	<div class="border-b border-border/60 px-6 py-4">
 		<h2 class="flex items-center gap-2.5 text-base font-bold tracking-tight text-foreground">
 			<Keyboard class="size-5 text-primary" />
