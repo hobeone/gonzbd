@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/testutil"
 )
 
 // skipIfNoShell skips the test when /bin/sh is not available (e.g. Windows).
@@ -25,15 +27,11 @@ func skipIfNoShell(t *testing.T) {
 }
 
 // makeScript writes a shell script with the given body to dir and returns its path.
-// The script is marked executable.
+// The script is marked executable. It goes through testutil.WriteExecutable
+// because these scripts are exec'd by parallel tests (issue #239).
 func makeScript(t *testing.T, dir, name, body string) string {
 	t.Helper()
-	path := filepath.Join(dir, name)
-	content := "#!/bin/sh\n" + body + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
-		t.Fatalf("makeScript: %v", err)
-	}
-	return path
+	return testutil.WriteExecutable(t, filepath.Join(dir, name), "#!/bin/sh\n"+body+"\n")
 }
 
 // fullInput returns a ScriptInput with all fields populated for test assertions.
