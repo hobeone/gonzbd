@@ -18,6 +18,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/cmdutil"
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/testutil"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
@@ -606,24 +607,7 @@ func assertExtractEngine(t *testing.T, scenario string, res unpack.Result, err e
 // unrar/7z/par2 (only `-tags=integration` does).
 func writeStubBinary(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	stub := filepath.Join(dir, "stubtool")
-	f, err := os.OpenFile(stub, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-	if err != nil {
-		t.Fatalf("create stub binary: %v", err)
-	}
-	if _, err := f.WriteString("#!/bin/sh\nexit 1\n"); err != nil {
-		_ = f.Close()
-		t.Fatalf("write stub binary: %v", err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		t.Fatalf("sync stub binary: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close stub binary: %v", err)
-	}
-	return stub
+	return testutil.WriteExecutable(t, filepath.Join(t.TempDir(), "stubtool"), "#!/bin/sh\nexit 1\n")
 }
 
 func TestUnpackHelpers(t *testing.T) {
@@ -1044,25 +1028,13 @@ func (c *logCollector) Lines() []string {
 	return slices.Clone(c.lines)
 }
 
+// createDummyExecutable writes an executable mock binary into dir and
+// returns its path. Tests in this package run in parallel and exec these
+// mocks, so the write must go through testutil.WriteExecutable to avoid
+// the ETXTBSY flake described there (issue #239, golang/go#22315).
 func createDummyExecutable(t *testing.T, dir, filename, content string) string {
 	t.Helper()
-	target := filepath.Join(dir, filename)
-	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-	if err != nil {
-		t.Fatalf("create dummy executable: %v", err)
-	}
-	if _, err := f.WriteString(content); err != nil {
-		_ = f.Close()
-		t.Fatalf("write dummy executable: %v", err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		t.Fatalf("sync dummy executable: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close dummy executable: %v", err)
-	}
-	return target
+	return testutil.WriteExecutable(t, filepath.Join(dir, filename), content)
 }
 
 func TestUnpackStage_RealtimeLogTransitions_Rar_Fallback_Success(t *testing.T) {

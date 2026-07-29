@@ -7,32 +7,21 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/testutil"
 	"github.com/hobeone/gonzbd/internal/unpack"
 )
 
-// writeScript creates an executable script file at path. Uses the
-// atomic temp-file + rename pattern to avoid ETXTBSY under race.
+// writeScript creates an executable script file at path, creating parent
+// directories as needed.
+//
+// The previous comment here claimed an "atomic temp-file + rename
+// pattern to avoid ETXTBSY under race"; the code did no rename, and a
+// rename would not have helped -- it preserves the inode, which is what
+// execve checks for write descriptors. testutil.WriteExecutable closes
+// the real window; see there and issue #239.
 func writeScript(t *testing.T, path string, content []byte) {
 	t.Helper()
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir script dir: %v", err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-	if err != nil {
-		t.Fatalf("create script: %v", err)
-	}
-	if _, err := f.Write(content); err != nil {
-		_ = f.Close()
-		t.Fatalf("write script: %v", err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		t.Fatalf("sync script: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close script: %v", err)
-	}
+	testutil.WriteExecutable(t, path, string(content))
 }
 
 // TestUnRAR_CannotCreateAutoFix verifies (N4) that when unrar output

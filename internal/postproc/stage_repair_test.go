@@ -13,6 +13,7 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/par2"
+	"github.com/hobeone/gonzbd/internal/testutil"
 )
 
 // par2Fixture returns the absolute path to a file in the shared par2 fixture
@@ -564,10 +565,7 @@ func TestDispatchRepairTool_FallbackRunsWhenBinaryPresent(t *testing.T) {
 	// Stub "par2" binary: resolvable + executable, exits non-zero so the
 	// external run yields a benign failure. We assert on the branch taken,
 	// not the result.
-	stub := filepath.Join(t.TempDir(), "par2stub")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatalf("write stub: %v", err)
-	}
+	stub := testutil.WriteExecutable(t, filepath.Join(t.TempDir(), "par2stub"), "#!/bin/sh\nexit 1\n")
 
 	run := func(command string) bool {
 		var retried bool

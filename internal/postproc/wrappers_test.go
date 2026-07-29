@@ -9,35 +9,20 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
 	"github.com/hobeone/gonzbd/internal/par2"
+	"github.com/hobeone/gonzbd/internal/testutil"
 )
 
-// writeScript creates an executable script file at path. To avoid the
-// transient ETXTBSY ("text file busy") error that occurs when fork/exec
-// races with a recently-written file (particularly under the race
-// detector), we write to a temporary file in the same directory and
-// then rename it into place. The exec target was never open for
-// writing in this process, so the kernel cannot return ETXTBSY.
+// writeScript creates an executable script file at path, creating parent
+// directories as needed.
+//
+// This previously documented a temp-file + rename pattern that the code
+// did not implement (the rename was dropped in #219) and that would not
+// have helped in any case: rename preserves the inode, so a write
+// descriptor still blocks execve on it. testutil.WriteExecutable closes
+// the actual window -- see there and issue #239.
 func writeScript(t *testing.T, path string, content []byte) {
 	t.Helper()
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir script dir: %v", err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-	if err != nil {
-		t.Fatalf("create script: %v", err)
-	}
-	if _, err := f.Write(content); err != nil {
-		_ = f.Close()
-		t.Fatalf("write script: %v", err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		t.Fatalf("sync script: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close script: %v", err)
-	}
+	testutil.WriteExecutable(t, path, string(content))
 }
 
 // stageJob builds a *Job with a fresh tmp DownloadDir and a minimal

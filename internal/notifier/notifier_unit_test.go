@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/hobeone/gonzbd/internal/testutil"
 )
 
 // ---------- EventType.String ----------
@@ -314,13 +316,17 @@ func TestScriptNotifier_ETXTBSY_Exhausted(t *testing.T) {
 	}
 }
 
+// writeScript writes an executable shell script into dir and returns its
+// path, via testutil.WriteExecutable so that parallel tests in this
+// binary cannot leak a write descriptor into each other's exec (issue
+// #239).
+//
+// Note that TestScriptNotifier_ETXTBSY below deliberately re-opens the
+// returned path for writing afterwards: that test exists to exercise the
+// production retry loop in script.go and wants the error.
 func writeScript(t *testing.T, dir, name, content string) string {
 	t.Helper()
-	p := filepath.Join(dir, name)
-	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+content), 0755); err != nil {
-		t.Fatalf("writeScript: %v", err)
-	}
-	return p
+	return testutil.WriteExecutable(t, filepath.Join(dir, name), "#!/bin/sh\n"+content)
 }
 
 func TestScriptNotifier_ETXTBSY(t *testing.T) {
