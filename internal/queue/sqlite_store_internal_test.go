@@ -1,9 +1,11 @@
 package queue
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -46,6 +48,68 @@ func TestSQLiteStore_EncodeDecodeArticlesDone(t *testing.T) {
 	decodeArticlesDone("", jobArt2, 0)
 	decodeArticlesDone("00", nil, 0)
 	decodeArticlesDone("00", jobArt2, 99)
+}
+
+func TestSQLiteStore_UpdateTx(t *testing.T) {
+	dir := t.TempDir()
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+	store := NewSQLiteStore(repo.DB(), dir, repo)
+
+	ctx := t.Context()
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{Subject: "file0.bin", Bytes: 100, Articles: []nzb.Article{{ID: "a0@t", Bytes: 100, Number: 1}}},
+		},
+	}
+	job, err := NewJob(parsed, AddOptions{Name: "updatetx-job"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	job.Status = constants.StatusDownloading
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	job.Name = "updatetx-job-renamed"
+	job.progress.files[0].Complete = true
+	job.progress.files[0].BytesDownloaded = 100
+	job.progress.files[0].WriteCursor = 100
+	job.progress.files[0].Filename = "file0.bin"
+	job.progress.files[0].AssembledCRC32 = 0xdeadbeef
+
+	if err := store.updateTx(ctx, store.db, job); err != nil {
+		t.Fatalf("updateTx: %v", err)
+	}
+
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Name != "updatetx-job-renamed" {
+		t.Errorf("job name not persisted by updateTx: got %q", got.Name)
+	}
+	if !got.Progress().FileComplete(0) {
+		t.Error("file completion not persisted by updateTx")
+	}
+	if got.Progress().FileBytesDownloaded(0) != 100 || got.Progress().FileWriteCursor(0) != 100 {
+		t.Errorf("file byte counters not persisted by updateTx: bytesDownloaded=%d writeCursor=%d",
+			got.Progress().FileBytesDownloaded(0), got.Progress().FileWriteCursor(0))
+	}
+
+	// updateTx on a job that was never Add()ed affects zero rows in the jobs
+	// UPDATE and must surface that as ErrNotFound rather than silently no-op.
+	missing, err := NewJob(parsed, AddOptions{Name: "never-added"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob missing: %v", err)
+	}
+	if err := store.updateTx(ctx, store.db, missing); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for never-added job, got %v", err)
+	}
 }
 
 func TestSQLiteStore_ResequenceTx(t *testing.T) {

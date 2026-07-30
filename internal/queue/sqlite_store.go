@@ -225,7 +225,10 @@ FROM jobs WHERE id = ?`
 	}
 
 	var fileCount int
-	_ = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM job_files WHERE job_id = ?", id).Scan(&fileCount)
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM job_files WHERE job_id = ?", id).Scan(&fileCount); err != nil {
+		_ = s.Remove(ctx, id)
+		return nil, fmt.Errorf("sqlite store count files for %s: %w", id, err)
+	}
 
 	manifestPath := filepath.Join(s.dir, "manifests", id+".json.gz")
 	if fileCount > 0 {
