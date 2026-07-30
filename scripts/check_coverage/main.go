@@ -142,7 +142,12 @@ func runPkgCoverage(pkgDir string, coverData map[string]float64) error {
 		return nil
 	}
 
-	coverProfile := filepath.Join(os.TempDir(), "gonzbd_cover.out")
+	tmpFile, err := os.CreateTemp("", "gonzbd_cover_*.out")
+	if err != nil {
+		return fmt.Errorf("creating temp cover profile for package %s: %w", pkgDir, err)
+	}
+	coverProfile := tmpFile.Name()
+	_ = tmpFile.Close()
 	defer func() { _ = os.Remove(coverProfile) }() // best-effort cleanup before return
 
 	cmd := exec.Command("go", "test", "-coverprofile="+coverProfile, "./"+pkgDir) //nolint:gosec // dev tool, fixed command args
@@ -156,8 +161,7 @@ func runPkgCoverage(pkgDir string, coverData map[string]float64) error {
 	var out bytes.Buffer
 	funcCmd.Stdout = &out
 	if err := funcCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error running go tool cover on %s: %v\n", pkgDir, err)
-		return nil
+		return fmt.Errorf("running go tool cover on %s: %w", pkgDir, err)
 	}
 
 	scanner := bufio.NewScanner(&out)
