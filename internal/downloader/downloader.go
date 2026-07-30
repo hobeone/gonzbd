@@ -511,17 +511,20 @@ func (d *Downloader) IsPaused() bool { return d.paused.Load() }
 // Used when the download queue empties to free server resources.
 func (d *Downloader) DisconnectAll() {
 	d.disconnectMu.Lock()
-	defer d.disconnectMu.Unlock()
-
+	signaled := false
 	chPtr := d.disconnectPtr.Load()
 	if chPtr != nil {
 		select {
 		case <-*chPtr:
 			// Disconnect signal was already sent and is still active.
-			return
 		default:
+			close(*chPtr)
+			signaled = true
 		}
-		close(*chPtr)
+	}
+	d.disconnectMu.Unlock()
+
+	if signaled {
 		d.log.Info("disconnect: signaled all connections to close")
 	}
 }
