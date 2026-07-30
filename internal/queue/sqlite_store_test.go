@@ -512,6 +512,24 @@ func TestSQLiteStore_AbsentManifestHandling(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_GetFailsClosedOnFileCountQueryError(t *testing.T) {
+	store, repo, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	job := newTestJob("count-query-error", "count-query-error")
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if _, err := repo.DB().ExecContext(ctx, "DROP TABLE job_files"); err != nil {
+		t.Fatalf("DROP TABLE job_files: %v", err)
+	}
+
+	if _, err := store.Get(ctx, job.ID); err == nil {
+		t.Fatal("expected Get to fail when the file-count query errors, got nil error")
+	}
+}
+
 func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
 	store, _, dir := setupTestStore(t)
 	ctx := t.Context()
