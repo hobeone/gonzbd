@@ -15,7 +15,10 @@ echo "Starting Full Test Suite: sabnzbd-go"
 echo "===================================================="
 
 echo -e "\n[0/4] Building UI files for Go to embed..."
-cd ui && bun run build && cd ..
+if ! (cd ui && bun run build); then
+    echo "UI build failed" >&2
+    exit 1
+fi
 
 # 1. Go Unit Tests
 echo -e "\n[1/4] Running Go Unit Tests..."
