@@ -967,6 +967,63 @@ func TestDownloader_FetchArticle_Coverage(t *testing.T) {
 	}
 }
 
+// TestFetchArticle_PausedJobEvictedMidFlight drives the per-job pause branch
+// the way production reaches it: an article already in flight when the user
+// pauses a downloading job.
+//
+// The sibling test above pauses by assigning job.Status directly on a queue
+// built with a bare New(), so the job stays hydrated and the branch never
+// touches a released Manifest. Going through Queue.Pause on a queue with a
+// state directory is what makes the difference — Pause sets StatusPaused and
+// releases Manifest/JobProgress inside one critical section, so by the time
+// fetchArticle observes StatusPaused the fields are already nil. Clearing the
+// emitted flag then dereferenced them and killed the daemon.
+func TestFetchArticle_PausedJobEvictedMidFlight(t *testing.T) {
+	t.Parallel()
+
+	// A state directory is required: Queue.Pause only releases Manifest and
+	// JobProgress when a store or state directory is configured, so with a
+	// bare New() this test would pass without exercising anything.
+	q := queue.New(queue.WithStateDir(t.TempDir()))
+	srv := testServer(t, "s", "127.0.0.1:1")
+	d := &Downloader{
+		queue:   q,
+		tracker: newDispatchTracker(),
+		log:     slog.New(slog.DiscardHandler),
+		limiter: bpsmeter.NewLimiter(0),
+	}
+	d.pauseCtx, d.pauseCancel = context.WithCancel(context.Background())
+	defer d.pauseCancel()
+
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "movie.mkv", Bytes: 300, Articles: []nzb.Article{
+			{ID: "inflight@h", Bytes: 100, Number: 1},
+		}},
+	}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	q.PromoteNext(context.Background())
+
+	// The article is dispatched and in flight before the pause lands.
+	if err := q.MarkArticleEmitted(job.ID, "inflight@h"); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+	if err := q.Pause(job.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	req := &articleRequest{jobID: job.ID, fileIdx: 0, messageID: "inflight@h"}
+	body, ok := d.fetchArticle(t.Context(), srv, 0, &managedConn{}, req, "worker1")
+	if ok || body != nil {
+		t.Errorf("fetchArticle = (%v, %v), want (nil, false) for a paused job", body, ok)
+	}
+}
+
 // ---------- OPT-3: no_penalties / max_art_opt / pre_check ----------
 
 // clampPenalty in isolation, bracketing constants.PenaltyShort on both

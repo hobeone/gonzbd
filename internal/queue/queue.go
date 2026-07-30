@@ -22,6 +22,18 @@ import (
 // not present.
 var ErrNotFound = errors.New("queue: job not found")
 
+// ErrJobNotResident is returned by Queue methods when the job exists but its
+// Manifest and JobProgress are not currently in memory. This is an ordinary
+// condition, not a failure: Add de-hydrates every StatusQueued job when a
+// store or state directory is configured, and PromoteNext re-hydrates a job
+// when it is promoted to active. Callers that only act on resident jobs should
+// treat it the way they treat ErrNotFound.
+//
+// Kept distinct from ErrNotFound so a caller can tell "no such job" from "job
+// is not currently resident". The downloader suppresses both when logging, but
+// collapsing them into one sentinel would also mask genuine lookup failures.
+var ErrJobNotResident = errors.New("queue: job not resident")
+
 // Queue owns the ordered list of active jobs plus the notify channel
 // the downloader waits on.
 type Queue struct {
@@ -180,16 +192,62 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 	return job.Status, nil
 }
 
+// residentJob returns the job for id only if its Manifest and JobProgress are
+// currently in memory. Callers must already hold q.mu — either lock, since
+// this only reads.
+//
+// New and modified methods that dereference job.manifest or job.progress
+// should obtain their job through this rather than indexing q.byID directly.
+// A job present in q.byID is not necessarily hydrated: Add releases both
+// fields for StatusQueued jobs, and evictJobLocked releases them when a job
+// leaves the active set, in both cases leaving the job in the map.
+//
+// Note this is the direction of travel, not yet a property of the whole file.
+// Several existing methods still index q.byID and nil-guard inline, silently
+// no-opping for a non-resident job instead of reporting it; converting them is
+// tracked separately as a follow-up to issue #258.
+//
+// Safety rests on manifest and progress always being either both nil or both
+// non-nil — not merely on both being assigned. That is what lets a caller skip
+// its work when this returns ErrJobNotResident: the progress it would have
+// mutated is about to be discarded and rebuilt from stored state by
+// PromoteNext, so the skipped mutation is moot rather than lost. A
+// half-hydrated job (manifest nil, progress live) would invalidate that
+// reasoning silently.
+//
+// Job.UnmarshalJSON (job.go:583-584) assigns the two from independent JSON
+// keys and upholds the invariant only because MarshalJSON (job.go:551-552)
+// can emit no mixed pair — a round-trip guarantee rather than a call-site
+// one. Keep those two in sync.
+func (q *Queue) residentJob(id string) (*Job, error) {
+	job, ok := q.byID[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	if job.manifest == nil || job.progress == nil {
+		return nil, fmt.Errorf("%w: %s", ErrJobNotResident, id)
+	}
+	return job, nil
+}
+
 // CountUnfinishedArticles returns the number of articles in the given file
 // that are not yet Done. Used by the pipeline to set TotalParts for the
 // assembler correctly on resume/retry — only undone articles will be
 // dispatched, so TotalParts must match that count.
+//
+// Returns ErrNotFound if the job is absent, or ErrJobNotResident if it exists
+// but is not currently hydrated. Callers must not read the returned count when
+// err is non-nil: a zero would be indistinguishable from "this file is fully
+// downloaded".
 func (q *Queue) CountUnfinishedArticles(jobID string, fileIdx int) (int, error) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return 0, fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	// Report non-residency as an error rather than a zero count: callers read
+	// a successful 0 as "this file has nothing left to download", which for a
+	// merely de-hydrated job is wrong and silent.
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return 0, err
 	}
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return 0, fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
@@ -1083,13 +1141,14 @@ func (q *Queue) MarkArticleDone(jobID, messageID string) error {
 // re-downloaded — that's the B.6 durability invariant.
 //
 // Idempotent: setting Emitted on an article that is already Emitted, Done,
-// or Failed is a no-op. Returns ErrNotFound if the job/article is absent.
+// or Failed is a no-op. Returns ErrNotFound if the job/article is absent, or
+// ErrJobNotResident if the job exists but is not currently hydrated.
 func (q *Queue) MarkArticleEmitted(jobID, messageID string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
 	i, ok := job.manifest.articleIndexByID(messageID)
 	if !ok {
@@ -1103,11 +1162,14 @@ func (q *Queue) MarkArticleEmitted(jobID, messageID string) error {
 func (q *Queue) MarkArticleEmittedByIdx(jobID string, artIdx int32) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	// Non-residency and a genuine bounds violation were previously reported
+	// with the same "out of range" message, which misdiagnoses a de-hydrated
+	// job as a caller bug. Keep them separate.
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
-	if job.progress == nil || job.manifest == nil || int(artIdx) < 0 || int(artIdx) >= job.manifest.NumArticles() {
+	if int(artIdx) < 0 || int(artIdx) >= job.manifest.NumArticles() {
 		return fmt.Errorf("queue: artIdx %d out of range for job %s", artIdx, jobID)
 	}
 	job.progress.markEmitted(job.manifest, int(artIdx))
@@ -1122,9 +1184,13 @@ func (q *Queue) MarkArticleEmittedByIdx(jobID string, artIdx int32) error {
 func (q *Queue) ClearArticleEmitted(jobID, messageID string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	// Skipping this for a non-resident job is safe: emitted is transient and
+	// excluded from persistence, and the progress holding it is discarded on
+	// eviction, so PromoteNext rebuilds it all-false from stored state and the
+	// article is offered again.
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
 	i, ok := job.manifest.articleIndexByID(messageID)
 	if !ok {
@@ -1140,15 +1206,19 @@ func (q *Queue) ClearArticleEmitted(jobID, messageID string) error {
 	return nil
 }
 
-// ClearArticleEmittedByIdx resets the transient Emitted flag on article artIdx in O(1) time.
+// ClearArticleEmittedByIdx resets the transient Emitted flag on article artIdx
+// in O(1) time. Returns ErrNotFound if the job is absent, ErrJobNotResident if
+// it exists but is not currently hydrated, and a plain error only for a genuine
+// out-of-range artIdx.
 func (q *Queue) ClearArticleEmittedByIdx(jobID string, artIdx int32) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+	// As in MarkArticleEmittedByIdx: a non-resident job is not a bounds error.
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
-	if job.progress == nil || job.manifest == nil || int(artIdx) < 0 || int(artIdx) >= job.manifest.NumArticles() {
+	if int(artIdx) < 0 || int(artIdx) >= job.manifest.NumArticles() {
 		return fmt.Errorf("queue: artIdx %d out of range for job %s", artIdx, jobID)
 	}
 	job.progress.clearEmitted(job.manifest, int(artIdx))
@@ -1216,8 +1286,11 @@ func (q *Queue) TotalRemainingBytes() int64 {
 func (q *Queue) CheckEarlyAbort(jobID string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
+	// A non-resident job has no live JobProgress, so there is no failure rate
+	// to evaluate and nothing to abort. Match the not-found answer rather than
+	// inventing a third outcome for a method with no error channel.
+	job, err := q.residentJob(jobID)
+	if err != nil {
 		return false
 	}
 	return job.IsEarlyAbort()
