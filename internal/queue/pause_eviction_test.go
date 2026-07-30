@@ -1,0 +1,247 @@
+package queue
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"testing"
+
+	"github.com/hobeone/gonzbd/internal/history"
+)
+
+// A job that is present in q.byID but whose Manifest and JobProgress have been
+// released is "non-resident". That state is ordinary, not exceptional: Add
+// de-hydrates every StatusQueued job when a store or state directory is
+// configured, and Pause reaches the same state for a job that is already
+// downloading. Every exported Queue method that dereferences those fields must
+// therefore tolerate it rather than panic — the daemon's worker goroutines
+// carry no recover(), so a nil dereference here terminates the process.
+//
+// These tests pin that contract. They require a state directory: evictJobLocked
+// only nils the fields when q.store != nil || q.stateDir != "", so a queue built
+// with a bare New() keeps them populated and the tests would pass vacuously
+// against unfixed code.
+
+// newEvictedJobQueue returns a queue holding one paused, non-resident job with
+// a single article already marked emitted, plus that job's ID.
+func newEvictedJobQueue(t *testing.T) (*Queue, string) {
+	t.Helper()
+
+	q := New(WithStateDir(t.TempDir()))
+	job := makeMultiFileJob(t, "evicted", 1, 2)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := q.MarkArticleEmitted(job.ID, articleID(0, 0)); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+	if err := q.Pause(job.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	// Guard the fixture itself: if Pause stopped de-hydrating, every assertion
+	// below would pass for the wrong reason.
+	q.mu.RLock()
+	resident := q.byID[job.ID].manifest != nil || q.byID[job.ID].progress != nil
+	q.mu.RUnlock()
+	if resident {
+		t.Fatal("fixture is not exercising the bug: job still resident after Pause")
+	}
+
+	return q, job.ID
+}
+
+// TestNonResidentJobMethodsDoNotPanic covers every exported Queue method known
+// to dereference job.manifest or job.progress. Before the fix, the four
+// by-message-ID and count/abort entry points panicked here.
+func TestNonResidentJobMethodsDoNotPanic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// call invokes the method and returns the error it reported, or nil
+		// for methods with no error channel.
+		call func(t *testing.T, q *Queue, jobID string) error
+		// wantNotResident is true when the method reports non-residency via
+		// ErrJobNotResident rather than through a non-error return.
+		wantNotResident bool
+	}{
+		{
+			name: "ClearArticleEmitted",
+			call: func(_ *testing.T, q *Queue, jobID string) error {
+				return q.ClearArticleEmitted(jobID, articleID(0, 0))
+			},
+			wantNotResident: true,
+		},
+		{
+			name: "MarkArticleEmitted",
+			call: func(_ *testing.T, q *Queue, jobID string) error {
+				return q.MarkArticleEmitted(jobID, articleID(0, 1))
+			},
+			wantNotResident: true,
+		},
+		{
+			name: "CountUnfinishedArticles",
+			call: func(t *testing.T, q *Queue, jobID string) error {
+				n, err := q.CountUnfinishedArticles(jobID, 0)
+				// The count must not be reported as a successful zero: the
+				// caller in the app pipeline fails closed on the error, and a
+				// silent 0 would be read as "this file is fully downloaded".
+				if err == nil {
+					t.Errorf("want error for non-resident job, got count=%d, err=nil", n)
+				}
+				return err
+			},
+			wantNotResident: true,
+		},
+		{
+			name: "ClearArticleEmittedByIdx",
+			call: func(_ *testing.T, q *Queue, jobID string) error {
+				return q.ClearArticleEmittedByIdx(jobID, 0)
+			},
+			wantNotResident: true,
+		},
+		{
+			name: "MarkArticleEmittedByIdx",
+			call: func(_ *testing.T, q *Queue, jobID string) error {
+				return q.MarkArticleEmittedByIdx(jobID, 0)
+			},
+			wantNotResident: true,
+		},
+		{
+			name: "CheckEarlyAbort",
+			call: func(t *testing.T, q *Queue, jobID string) error {
+				// No error channel. A non-resident job has no live JobProgress,
+				// so there is no failure rate to evaluate and nothing to abort.
+				if q.CheckEarlyAbort(jobID) {
+					t.Error("CheckEarlyAbort = true for a non-resident job, want false")
+				}
+				return nil
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			q, jobID := newEvictedJobQueue(t)
+
+			err := tc.call(t, q, jobID)
+
+			if !tc.wantNotResident {
+				return
+			}
+			if !errors.Is(err, ErrJobNotResident) {
+				t.Errorf("error = %v, want ErrJobNotResident", err)
+			}
+			// Non-residency must stay distinguishable from a missing job:
+			// three downloader sites suppress ErrNotFound for log hygiene, and
+			// collapsing the two would also silence genuine lookup failures.
+			if errors.Is(err, ErrNotFound) {
+				t.Errorf("error = %v, must not also satisfy ErrNotFound", err)
+			}
+		})
+	}
+}
+
+// TestNonResidentJobMissingIsStillNotFound pins the other side of that
+// distinction: a job that genuinely is not in the queue reports ErrNotFound,
+// not ErrJobNotResident.
+func TestNonResidentJobMissingIsStillNotFound(t *testing.T) {
+	t.Parallel()
+
+	q := New(WithStateDir(t.TempDir()))
+
+	err := q.ClearArticleEmitted("no-such-job", articleID(0, 0))
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("error = %v, want ErrNotFound", err)
+	}
+	if errors.Is(err, ErrJobNotResident) {
+		t.Errorf("error = %v, must not report a missing job as non-resident", err)
+	}
+}
+
+// newStoreBackedPausedJob builds a store-backed queue holding one paused,
+// non-resident job whose first article was marked emitted before the pause,
+// and returns the queue, the job ID, and every article ID in the job.
+//
+// A store is required, not merely a state directory: without one, PromoteNext
+// rehydrates via newJobProgress, which populates per-file counters but leaves
+// job-level pendingArticles at zero, and ForEachUnfinishedArticle then skips
+// the job entirely — which would make the caller's assertion unreachable
+// rather than true.
+//
+// setupTestStore lives in package queue_test and is unreachable from here, so
+// the store is constructed directly.
+func newStoreBackedPausedJob(t *testing.T) (*Queue, string, []string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	repo := history.NewRepository(db)
+	q := New(WithStore(NewSQLiteStore(repo.DB(), dir, repo)))
+
+	job := makeMultiFileJob(t, "resume", 1, 3)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// Add de-hydrates a StatusQueued job; PromoteNext brings it back so the
+	// article can be marked emitted against live progress.
+	q.PromoteNext(context.Background())
+
+	if err := q.MarkArticleEmitted(job.ID, articleID(0, 0)); err != nil {
+		t.Fatalf("MarkArticleEmitted: %v", err)
+	}
+	if err := q.Pause(job.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	articles := make([]string, 0, 3)
+	for ai := range 3 {
+		articles = append(articles, articleID(0, ai))
+	}
+	return q, job.ID, articles
+}
+
+// TestPausedJobArticlesRedispatchedAfterResume is why skipping the work on a
+// non-resident job is safe rather than a silent regression. The emitted bit
+// that ClearArticleEmitted would have cleared is transient: it is excluded
+// from persistence, and Pause discards the whole JobProgress, so PromoteNext
+// rebuilds it from stored ground truth on the way back in. Every article must
+// therefore be offered again after Resume even though the clear never ran.
+//
+// This pins the transience property itself, not the guard — a future change
+// that started persisting emitted would break here rather than silently
+// stranding articles.
+func TestPausedJobArticlesRedispatchedAfterResume(t *testing.T) {
+	t.Parallel()
+
+	q, jobID, articles := newStoreBackedPausedJob(t)
+
+	if err := q.Resume(jobID); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	q.PromoteNext(context.Background())
+
+	offered := map[string]bool{}
+	q.ForEachUnfinishedArticle(func(a UnfinishedArticle) bool {
+		if a.JobID == jobID {
+			offered[a.MessageID] = true
+		}
+		return true
+	})
+
+	for _, id := range articles {
+		if !offered[id] {
+			t.Errorf("article %s was not re-offered after resume; the emitted bit survived", id)
+		}
+	}
+	if len(offered) != len(articles) {
+		t.Errorf("offered %d articles, want %d", len(offered), len(articles))
+	}
+}
