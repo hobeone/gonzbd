@@ -36,6 +36,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -107,6 +108,12 @@ type Job struct {
 	// duplicate-job detection against history (Tranche B / Step 1.3).
 	MD5 string
 
+	// TotalBytes holds the total size in bytes of all files in the job.
+	TotalBytes int64
+
+	// RemainingBytesCached holds the cached remaining bytes for non-resident jobs.
+	RemainingBytesCached int64
+
 	// AvgAge is the mean posting date across the job's files, used
 	// to sort the queue by "oldest first" and to trigger propagation
 	// delay (downloads held back until articles have had time to
@@ -121,19 +128,53 @@ type Job struct {
 	// post-processor to prevent double-enqueuing.
 	PostProc bool
 
+	mu       *sync.RWMutex
 	manifest *Manifest
 	progress *JobProgress
+}
+
+func (j *Job) getMu() *sync.RWMutex {
+	if j.mu == nil {
+		j.mu = new(sync.RWMutex)
+	}
+	return j.mu
 }
 
 // Manifest returns the job's immutable article/file structure. Safe to
 // call without the queue lock; the returned pointer has no mutating
 // exported method.
-func (j *Job) Manifest() *Manifest { return j.manifest }
+func (j *Job) Manifest() *Manifest {
+	mu := j.getMu()
+	mu.RLock()
+	defer mu.RUnlock()
+	return j.manifest
+}
 
 // Progress returns the job's mutable per-article/per-file state. Callers
 // outside internal/queue can only read through it — JobProgress has no
 // mutating exported method, so handing out the pointer is safe.
-func (j *Job) Progress() *JobProgress { return j.progress }
+func (j *Job) Progress() *JobProgress {
+	mu := j.getMu()
+	mu.RLock()
+	defer mu.RUnlock()
+	return j.progress
+}
+
+// SetManifest safely updates the job's manifest pointer.
+func (j *Job) SetManifest(m *Manifest) {
+	mu := j.getMu()
+	mu.Lock()
+	defer mu.Unlock()
+	j.manifest = m
+}
+
+// SetProgress safely updates the job's progress pointer.
+func (j *Job) SetProgress(p *JobProgress) {
+	mu := j.getMu()
+	mu.Lock()
+	defer mu.Unlock()
+	j.progress = p
+}
 
 // JobPhase represents the high-level operational phase of a download job.
 type JobPhase int

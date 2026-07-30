@@ -129,6 +129,14 @@ func (q *Queue) saveInner(dir string) error {
 		}
 	}
 
+	manifestsDir := filepath.Join(dir, "manifests")
+	_ = os.MkdirAll(manifestsDir, 0o750)
+	for _, job := range q.jobs {
+		if job.manifest != nil {
+			_ = writeGzJSON(filepath.Join(manifestsDir, job.ID+".json.gz"), job.manifest)
+		}
+	}
+
 	idx := indexFile{
 		Version: persistenceVersion,
 		JobIDs:  jobIDs,
@@ -257,7 +265,9 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 		// are excluded from JSON and must be recomputed after every
 		// deserialisation. messageIDIndex is left unbuilt; articleIndexByID
 		// builds it lazily the next time it is called.
-		job.progress.recompute(job.manifest)
+		if job.progress != nil && job.manifest != nil {
+			job.progress.recompute(job.manifest)
+		}
 	}
 	q.Prune()
 	return q, nil

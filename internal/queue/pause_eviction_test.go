@@ -3,9 +3,14 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
 )
 
@@ -105,6 +110,57 @@ func TestNonResidentJobMethodsDoNotPanic(t *testing.T) {
 			name: "MarkArticleEmittedByIdx",
 			call: func(_ *testing.T, q *Queue, jobID string) error {
 				return q.MarkArticleEmittedByIdx(jobID, 0)
+			},
+			wantNotResident: true,
+		},
+		{
+			name: "RecordDownload",
+			call: func(_ *testing.T, q *Queue, jobID string) error {
+				return q.RecordDownload(jobID, "news.example.com", 1024)
+			},
+			wantNotResident: true,
+		},
+		{
+			name: "MarkArticlesDone",
+			call: func(_ *testing.T, q *Queue, jobID string) error {
+				return q.MarkArticlesDone(jobID, []string{articleID(0, 0)})
+			},
+			wantNotResident: true,
+		},
+		{
+			name: "MarkArticlesDoneByIdx",
+			call: func(_ *testing.T, q *Queue, jobID string) error {
+				return q.MarkArticlesDoneByIdx(jobID, []int32{0})
+			},
+			wantNotResident: true,
+		},
+		{
+			name: "MarkArticlesFailed",
+			call: func(_ *testing.T, q *Queue, jobID string) error {
+				_, err := q.MarkArticlesFailed(jobID, []string{articleID(0, 0)})
+				return err
+			},
+			wantNotResident: true,
+		},
+		{
+			name: "MarkArticlesFailedByIdx",
+			call: func(_ *testing.T, q *Queue, jobID string) error {
+				_, err := q.MarkArticlesFailedByIdx(jobID, []int32{0})
+				return err
+			},
+			wantNotResident: true,
+		},
+		{
+			name: "UndeferRecoveryVolumes",
+			call: func(_ *testing.T, q *Queue, jobID string) error {
+				return q.UndeferRecoveryVolumes(jobID, []int{0})
+			},
+			wantNotResident: true,
+		},
+		{
+			name: "SetFileCRC32",
+			call: func(_ *testing.T, q *Queue, jobID string) error {
+				return q.SetFileCRC32(jobID, 0, 0x12345678)
 			},
 			wantNotResident: true,
 		},
@@ -243,5 +299,241 @@ func TestPausedJobArticlesRedispatchedAfterResume(t *testing.T) {
 	}
 	if len(offered) != len(articles) {
 		t.Errorf("offered %d articles, want %d", len(offered), len(articles))
+	}
+}
+
+// TestRetry_NonResidentJobResetsFailedArticles pins the fix for issue #260:
+// when a job is in StatusFailed and de-hydrated, calling Queue.Retry must
+// hydrate the job, reset its failed articles in memory and in SQLite, and
+// re-offer them for download upon promotion.
+func TestRetry_NonResidentJobResetsFailedArticles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	repo := history.NewRepository(db)
+	q := New(WithStore(NewSQLiteStore(repo.DB(), dir, repo)))
+
+	job := makeMultiFileJob(t, "retry-test", 1, 2)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	q.PromoteNext(context.Background())
+
+	// Mark article 0 as failed.
+	failedArtID := articleID(0, 0)
+	if _, err := q.MarkArticlesFailed(job.ID, []string{failedArtID}); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+
+	// Transition to StatusFailed and evict so it becomes de-hydrated.
+	if err := q.SetStatus(job.ID, constants.StatusFailed); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	q.mu.Lock()
+	q.evictJobLocked(job)
+	q.mu.Unlock()
+
+	// Verify precondition: job is de-hydrated.
+	q.mu.RLock()
+	resident := q.byID[job.ID].manifest != nil || q.byID[job.ID].progress != nil
+	q.mu.RUnlock()
+	if resident {
+		t.Fatal("fixture error: job is still resident after eviction")
+	}
+
+	// Now call Retry. Before #260 fix, ResetForRetry no-opped on nil progress,
+	// leaving the failed article un-reset and un-dispatchable.
+	if err := q.Retry(job.ID); err != nil {
+		t.Fatalf("Retry: %v", err)
+	}
+
+	offered := map[string]bool{}
+	q.ForEachUnfinishedArticle(func(a UnfinishedArticle) bool {
+		if a.JobID == job.ID {
+			offered[a.MessageID] = true
+		}
+		return true
+	})
+
+	if !offered[failedArtID] {
+		t.Errorf("failed article %s was not re-offered after Retry on non-resident job", failedArtID)
+	}
+}
+
+// TestTotalRemainingBytes_IncludesNonResidentJobs pins the fix for issue #262:
+// TotalRemainingBytes must include remaining bytes for de-hydrated (queued or
+// paused) jobs, not skip them when job.progress == nil.
+func TestTotalRemainingBytes_IncludesNonResidentJobs(t *testing.T) {
+	t.Parallel()
+
+	q := New(WithStateDir(t.TempDir()))
+
+	var expectedTotal int64
+	for i := range 4 {
+		job := makeMultiFileJob(t, fmt.Sprintf("job-%d", i), 1, 2)
+		expectedTotal += job.manifest.TotalBytes()
+		if err := q.Add(job); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		_ = q.Pause(job.ID)
+	}
+
+	// Because q has a stateDir, Add releases manifest & progress for Queued jobs.
+	// Verify that all jobs are de-hydrated.
+	q.mu.RLock()
+	for _, job := range q.byID {
+		if job.progress != nil || job.manifest != nil {
+			t.Fatalf("fixture error: job %s is resident", job.ID)
+		}
+	}
+	q.mu.RUnlock()
+
+	got := q.TotalRemainingBytes()
+	if got != expectedTotal {
+		t.Errorf("TotalRemainingBytes() = %d, want %d for 4 non-resident jobs", got, expectedTotal)
+	}
+}
+
+// TestJobManifest_ConcurrentEvictionNoRace pins the fix for issue #263:
+// calling Job.Manifest() concurrently with queue eviction/pause must not
+// trigger a data race or panic.
+func TestJobManifest_ConcurrentEvictionNoRace(t *testing.T) {
+	t.Parallel()
+
+	q := New(WithStateDir(t.TempDir()))
+	job := makeMultiFileJob(t, "race-test", 1, 2)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 150*time.Millisecond)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for ctx.Err() == nil {
+			_ = job.Manifest()
+			_ = job.Progress()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for ctx.Err() == nil {
+			q.PromoteNext(context.Background())
+			_ = q.Pause(job.ID)
+			_ = q.Resume(job.ID)
+		}
+	}()
+
+	wg.Wait()
+}
+
+// TestSetStatus_ResidentHydrationFailureReportsError pins the fix for issue #264:
+// when SetStatus transitions a job to a resident status, if hydration fails,
+// it must return an error and not leave the job resident with nil fields.
+func TestSetStatus_ResidentHydrationFailureReportsError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	q := New(WithStateDir(dir))
+	job := makeMultiFileJob(t, "status-test", 1, 2)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	_ = q.Pause(job.ID)
+
+	// Remove manifest from state dir so hydration will fail.
+	manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatalf("os.Remove: %v", err)
+	}
+
+	err := q.SetStatus(job.ID, constants.StatusDownloading)
+	if err == nil {
+		t.Error("SetStatus(Downloading) = nil, want error when manifest is unreadable")
+	}
+}
+
+// TestSetStatusIf_HydratesResidentJob pins the SetStatusIf fix for issue #264:
+// SetStatusIf must hydrate a job when transitioning to a resident status.
+func TestSetStatusIf_HydratesResidentJob(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	q := New(WithStateDir(dir))
+	job := makeMultiFileJob(t, "statusif-test", 1, 2)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	_ = q.Pause(job.ID)
+
+	// Verify job is de-hydrated after Pause.
+	if job.Manifest() != nil || job.Progress() != nil {
+		t.Fatal("fixture error: job should be non-resident after Pause")
+	}
+
+	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusPaused); err != nil {
+		t.Fatalf("SetStatusIf: %v", err)
+	}
+	if job.Manifest() == nil || job.Progress() == nil {
+		t.Error("SetStatusIf left job de-hydrated on resident status Downloading")
+	}
+}
+
+// TestNilManifestAccessorsDoNotPanic pins the fix for issue #265:
+// calling Manifest accessors on a nil *Manifest receiver must return zero
+// values rather than panic with SIGSEGV.
+func TestNilManifestAccessorsDoNotPanic(t *testing.T) {
+	t.Parallel()
+
+	var m *Manifest
+	if got := m.NumFiles(); got != 0 {
+		t.Errorf("NumFiles() = %d, want 0", got)
+	}
+	if got := m.FileSubject(0); got != "" {
+		t.Errorf("FileSubject(0) = %q, want empty", got)
+	}
+	if got := m.FileDate(0); !got.IsZero() {
+		t.Errorf("FileDate(0) = %v, want zero time", got)
+	}
+	if got := m.FileBytes(0); got != 0 {
+		t.Errorf("FileBytes(0) = %d, want 0", got)
+	}
+	if got := m.FileIsPar2Recovery(0); got {
+		t.Errorf("FileIsPar2Recovery(0) = true, want false")
+	}
+	if lo, hi := m.FileRange(0); lo != 0 || hi != 0 {
+		t.Errorf("FileRange(0) = (%d, %d), want (0, 0)", lo, hi)
+	}
+	if got := m.NumArticles(); got != 0 {
+		t.Errorf("NumArticles() = %d, want 0", got)
+	}
+	if got := m.ArticleID(0); got != "" {
+		t.Errorf("ArticleID(0) = %q, want empty", got)
+	}
+	if got := m.ArticleBytes(0); got != 0 {
+		t.Errorf("ArticleBytes(0) = %d, want 0", got)
+	}
+	if got := m.ArticleNumber(0); got != 0 {
+		t.Errorf("ArticleNumber(0) = %d, want 0", got)
+	}
+	if got := m.TotalBytes(); got != 0 {
+		t.Errorf("TotalBytes() = %d, want 0", got)
+	}
+	if got := m.Par2Bytes(); got != 0 {
+		t.Errorf("Par2Bytes() = %d, want 0", got)
+	}
+	if got := m.Par2Files(); got != 0 {
+		t.Errorf("Par2Files() = %d, want 0", got)
 	}
 }

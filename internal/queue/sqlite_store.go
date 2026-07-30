@@ -225,10 +225,13 @@ FROM jobs WHERE id = ?`
 	}
 
 	var fileCount int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM job_files WHERE job_id = ?", id).Scan(&fileCount); err != nil {
+	var totalBytes, bytesDownloaded int64
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*), COALESCE(SUM(bytes), 0), COALESCE(SUM(bytes_downloaded), 0) FROM job_files WHERE job_id = ?", id).Scan(&fileCount, &totalBytes, &bytesDownloaded); err != nil {
 		_ = s.Remove(ctx, id)
 		return nil, fmt.Errorf("sqlite store count files for %s: %w", id, err)
 	}
+	job.TotalBytes = totalBytes
+	job.RemainingBytesCached = totalBytes - bytesDownloaded
 
 	manifestPath := filepath.Join(s.dir, "manifests", id+".json.gz")
 	if fileCount > 0 {

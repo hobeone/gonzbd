@@ -86,23 +86,51 @@ func isPar2File(subject string) bool {
 }
 
 // NumFiles returns the number of files in the manifest.
-func (m *Manifest) NumFiles() int { return len(m.files) }
+func (m *Manifest) NumFiles() int {
+	if m == nil {
+		return 0
+	}
+	return len(m.files)
+}
 
 // FileSubject returns the NZB subject line for file fileIdx.
-func (m *Manifest) FileSubject(fileIdx int) string { return m.files[fileIdx].subject }
+func (m *Manifest) FileSubject(fileIdx int) string {
+	if m == nil || fileIdx < 0 || fileIdx >= len(m.files) {
+		return ""
+	}
+	return m.files[fileIdx].subject
+}
 
 // FileDate returns the posting date for file fileIdx.
-func (m *Manifest) FileDate(fileIdx int) time.Time { return m.files[fileIdx].date }
+func (m *Manifest) FileDate(fileIdx int) time.Time {
+	if m == nil || fileIdx < 0 || fileIdx >= len(m.files) {
+		return time.Time{}
+	}
+	return m.files[fileIdx].date
+}
 
 // FileBytes returns the NZB-claimed byte count for file fileIdx.
-func (m *Manifest) FileBytes(fileIdx int) int64 { return m.files[fileIdx].bytes }
+func (m *Manifest) FileBytes(fileIdx int) int64 {
+	if m == nil || fileIdx < 0 || fileIdx >= len(m.files) {
+		return 0
+	}
+	return m.files[fileIdx].bytes
+}
 
 // FileIsPar2Recovery reports whether file fileIdx is a par2 recovery volume.
-func (m *Manifest) FileIsPar2Recovery(fileIdx int) bool { return m.files[fileIdx].isPar2Recovery }
+func (m *Manifest) FileIsPar2Recovery(fileIdx int) bool {
+	if m == nil || fileIdx < 0 || fileIdx >= len(m.files) {
+		return false
+	}
+	return m.files[fileIdx].isPar2Recovery
+}
 
 // FileRange returns the [lo, hi) global article index range owned by
 // file fileIdx.
 func (m *Manifest) FileRange(fileIdx int) (lo, hi int) {
+	if m == nil || fileIdx < 0 || fileIdx+1 >= len(m.fileArticleOffsets) {
+		return 0, 0
+	}
 	return m.fileArticleOffsets[fileIdx], m.fileArticleOffsets[fileIdx+1]
 }
 
@@ -112,6 +140,9 @@ func (m *Manifest) FileRange(fileIdx int) (lo, hi int) {
 // always cheaply recomputable from the manifest and caching it would risk
 // drifting out of sync with fileArticleOffsets after a rebuild.
 func (m *Manifest) fileIndexForArticle(i int) int {
+	if m == nil || len(m.fileArticleOffsets) < 2 {
+		return 0
+	}
 	// fileArticleOffsets[fi+1] is the first index NOT owned by file fi, so
 	// the first fi where offsets[fi+1] > i is the owning file.
 	return sort.Search(len(m.fileArticleOffsets)-1, func(fi int) bool {
@@ -120,30 +151,68 @@ func (m *Manifest) fileIndexForArticle(i int) int {
 }
 
 // NumArticles returns the total number of articles across all files.
-func (m *Manifest) NumArticles() int { return len(m.articleIDs) }
+func (m *Manifest) NumArticles() int {
+	if m == nil {
+		return 0
+	}
+	return len(m.articleIDs)
+}
 
 // ArticleID returns the messageID of global article index i.
-func (m *Manifest) ArticleID(i int) string { return m.articleIDs[i] }
+func (m *Manifest) ArticleID(i int) string {
+	if m == nil || i < 0 || i >= len(m.articleIDs) {
+		return ""
+	}
+	return m.articleIDs[i]
+}
 
 // ArticleBytes returns the byte count of global article index i.
-func (m *Manifest) ArticleBytes(i int) int { return m.articleBytes[i] }
+func (m *Manifest) ArticleBytes(i int) int {
+	if m == nil || i < 0 || i >= len(m.articleBytes) {
+		return 0
+	}
+	return m.articleBytes[i]
+}
 
 // ArticleNumber returns the part number of global article index i.
-func (m *Manifest) ArticleNumber(i int) int { return m.articleNumber[i] }
+func (m *Manifest) ArticleNumber(i int) int {
+	if m == nil || i < 0 || i >= len(m.articleNumber) {
+		return 0
+	}
+	return m.articleNumber[i]
+}
 
 // TotalBytes returns the sum of all files' claimed byte counts.
-func (m *Manifest) TotalBytes() int64 { return m.totalBytes }
+func (m *Manifest) TotalBytes() int64 {
+	if m == nil {
+		return 0
+	}
+	return m.totalBytes
+}
 
 // Par2Bytes returns the sum of all par2 files' byte counts.
-func (m *Manifest) Par2Bytes() int64 { return m.par2Bytes }
+func (m *Manifest) Par2Bytes() int64 {
+	if m == nil {
+		return 0
+	}
+	return m.par2Bytes
+}
 
 // Par2Files returns the count of par2 files.
-func (m *Manifest) Par2Files() int { return m.par2Files }
+func (m *Manifest) Par2Files() int {
+	if m == nil {
+		return 0
+	}
+	return m.par2Files
+}
 
 // articleIndexByID returns the global article index for messageID, or
 // (0, false) if not found. Lazily builds messageIDIndex on first call.
 // Must be called with the owning Queue's write lock held.
 func (m *Manifest) articleIndexByID(messageID string) (int, bool) {
+	if m == nil {
+		return 0, false
+	}
 	if m.messageIDIndex == nil {
 		m.buildMessageIDIndex()
 	}

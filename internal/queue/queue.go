@@ -230,6 +230,36 @@ func (q *Queue) residentJob(id string) (*Job, error) {
 	return job, nil
 }
 
+// hydrateJobLocked loads the job's manifest and progress into memory from disk and SQLite
+// if they are not already resident. Caller must hold q.mu.
+func (q *Queue) hydrateJobLocked(ctx context.Context, job *Job) error {
+	if job == nil {
+		return ErrNotFound
+	}
+	if job.manifest != nil && job.progress != nil {
+		return nil
+	}
+	if q.stateDir == "" {
+		return ErrJobNotResident
+	}
+	var manifest Manifest
+	manifestPath := filepath.Join(q.stateDir, "manifests", job.ID+".json.gz")
+	if err := readGzJSON(manifestPath, &manifest); err != nil {
+		return fmt.Errorf("read manifest %s: %w", job.ID, err)
+	}
+	manifest.buildMessageIDIndex()
+	job.SetManifest(&manifest)
+	job.SetProgress(newJobProgress(&manifest))
+	if q.store != nil {
+		if err := q.store.RestoreJobProgress(ctx, job); err != nil {
+			job.SetManifest(nil)
+			job.SetProgress(nil)
+			return fmt.Errorf("restore progress %s: %w", job.ID, err)
+		}
+	}
+	return nil
+}
+
 // CountUnfinishedArticles returns the number of articles in the given file
 // that are not yet Done. Used by the pipeline to set TotalParts for the
 // assembler correctly on resume/retry — only undone articles will be
@@ -402,6 +432,10 @@ func (q *Queue) Add(job *Job) error {
 		return false
 	})
 
+	if job.manifest != nil {
+		job.TotalBytes = job.manifest.TotalBytes()
+		job.RemainingBytesCached = job.TotalBytes
+	}
 	if job.manifest != nil && job.progress != nil {
 		job.progress.recompute(job.manifest)
 	}
@@ -424,8 +458,8 @@ func (q *Queue) Add(job *Job) error {
 	q.byID[job.ID] = job
 
 	if job.Status == constants.StatusQueued && (q.store != nil || q.stateDir != "") {
-		job.manifest = nil
-		job.progress = nil
+		job.SetManifest(nil)
+		job.SetProgress(nil)
 	}
 
 	q.dirty.Store(true)
@@ -526,12 +560,19 @@ func (q *Queue) Retry(id string) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	if job.Status == constants.StatusFailed {
+		if err := q.hydrateJobLocked(context.Background(), job); err != nil {
+			q.mu.Unlock()
+			return fmt.Errorf("retry hydrate %s: %w", id, err)
+		}
 		if err := q.setStatusLocked(job, constants.StatusQueued); err != nil {
 			q.mu.Unlock()
 			return err
 		}
 		job.Warning = ""
 		job.ResetForRetry()
+		if q.store != nil {
+			_ = q.store.Update(context.Background(), job)
+		}
 	}
 	q.dirty.Store(true)
 	q.notifyLocked()
@@ -616,8 +657,8 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 		// Attach manifest & progress if not already resident
 		if job.manifest == nil {
 			manifest.buildMessageIDIndex()
-			job.manifest = &manifest
-			job.progress = newJobProgress(&manifest)
+			job.SetManifest(&manifest)
+			job.SetProgress(newJobProgress(&manifest))
 		}
 
 		// If SQLite store present, restore per-file progress counters.
@@ -638,6 +679,8 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 				)
 				continue
 			}
+		} else if job.manifest != nil && job.progress != nil {
+			job.progress.recompute(job.manifest)
 		}
 
 		if err := q.setStatusLocked(job, constants.StatusDownloading); err != nil {
@@ -676,9 +719,15 @@ func (q *Queue) evictJobLocked(job *Job) {
 		return
 	}
 	q.activeSet.Evict(job)
+	if job.manifest != nil {
+		job.TotalBytes = job.manifest.TotalBytes()
+	}
+	if job.progress != nil {
+		job.RemainingBytesCached = job.progress.remainingBytes
+	}
 	if q.store != nil || q.stateDir != "" {
-		job.manifest = nil
-		job.progress = nil
+		job.SetManifest(nil)
+		job.SetProgress(nil)
 	}
 }
 
@@ -901,19 +950,11 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 		return err
 	}
 	if isResidentStatus(status) && job.manifest == nil {
-		ctx := context.Background()
-		manifestPath := filepath.Join(q.stateDir, "manifests", id+".json.gz")
-		if q.store != nil || q.stateDir != "" {
-			var m Manifest
-			if err := readGzJSON(manifestPath, &m); err == nil {
-				job.manifest = &m
-				job.progress = newJobProgress(&m)
-				if q.store != nil {
-					_ = q.store.RestoreJobProgress(ctx, job) //lockio: restores progress in place; hoist tracked in #229
-				}
-				q.activeSet.Add(job)
-			}
+		if err := q.hydrateJobLocked(context.Background(), job); err != nil {
+			q.mu.Unlock()
+			return fmt.Errorf("set status hydrate %s: %w", id, err)
 		}
+		q.activeSet.Add(job)
 	} else if !isResidentStatus(status) {
 		q.evictJobLocked(job)
 	}
@@ -943,7 +984,13 @@ func (q *Queue) SetStatusIf(id string, newStatus, ifCurrent constants.Status) er
 		q.mu.Unlock()
 		return err
 	}
-	if !isResidentStatus(newStatus) {
+	if isResidentStatus(newStatus) && job.manifest == nil {
+		if err := q.hydrateJobLocked(context.Background(), job); err != nil {
+			q.mu.Unlock()
+			return fmt.Errorf("set status if hydrate %s: %w", id, err)
+		}
+		q.activeSet.Add(job)
+	} else if !isResidentStatus(newStatus) {
 		q.evictJobLocked(job)
 	}
 	q.dirty.Store(true)
@@ -1034,12 +1081,9 @@ func (q *Queue) MarkJobStarted(id string, t time.Time) error {
 func (q *Queue) RecordDownload(id, server string, bytes int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[id]
-	if !ok {
-		return ErrNotFound
-	}
-	if job.progress == nil {
-		return nil
+	job, err := q.residentJob(id)
+	if err != nil {
+		return err
 	}
 	if job.progress.serverStats == nil {
 		job.progress.serverStats = make(map[string]int64)
@@ -1275,6 +1319,8 @@ func (q *Queue) TotalRemainingBytes() int64 {
 	for _, job := range q.byID {
 		if job.progress != nil {
 			total += job.progress.remainingBytes
+		} else {
+			total += job.RemainingBytesCached
 		}
 	}
 	return total
@@ -1321,21 +1367,19 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 		return nil
 	}
 	q.mu.Lock()
-	job, ok := q.byID[jobID]
-	if !ok {
+	job, err := q.residentJob(jobID)
+	if err != nil {
 		q.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+		return err
 	}
 	var notFound []string
-	if job.manifest != nil && job.progress != nil {
-		for _, id := range messageIDs {
-			i, ok := job.manifest.articleIndexByID(id)
-			if !ok {
-				notFound = append(notFound, id)
-				continue
-			}
-			job.progress.markDone(job.manifest, i)
+	for _, id := range messageIDs {
+		i, ok := job.manifest.articleIndexByID(id)
+		if !ok {
+			notFound = append(notFound, id)
+			continue
 		}
+		job.progress.markDone(job.manifest, i)
 	}
 	q.dirty.Store(true)
 	q.mu.Unlock()
@@ -1352,14 +1396,10 @@ func (q *Queue) MarkArticlesDoneByIdx(jobID string, artIdxs []int32) error {
 		return nil
 	}
 	q.mu.Lock()
-	job, ok := q.byID[jobID]
-	if !ok {
+	job, err := q.residentJob(jobID)
+	if err != nil {
 		q.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.progress == nil || job.manifest == nil {
-		q.mu.Unlock()
-		return nil
+		return err
 	}
 	nArt := job.manifest.NumArticles()
 	var invalidCount int
@@ -1412,23 +1452,21 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 		return nil, nil
 	}
 	q.mu.Lock()
-	job, ok := q.byID[jobID]
-	if !ok {
+	job, err := q.residentJob(jobID)
+	if err != nil {
 		q.mu.Unlock()
-		return nil, fmt.Errorf("%w: %s", ErrNotFound, jobID)
+		return nil, err
 	}
 	firstTime := make([]string, 0, len(messageIDs))
 	var notFound []string
-	if job.manifest != nil && job.progress != nil {
-		for _, id := range messageIDs {
-			i, ok := job.manifest.articleIndexByID(id)
-			if !ok {
-				notFound = append(notFound, id)
-				continue
-			}
-			if job.progress.markFailed(job.manifest, i) {
-				firstTime = append(firstTime, id)
-			}
+	for _, id := range messageIDs {
+		i, ok := job.manifest.articleIndexByID(id)
+		if !ok {
+			notFound = append(notFound, id)
+			continue
+		}
+		if job.progress.markFailed(job.manifest, i) {
+			firstTime = append(firstTime, id)
 		}
 	}
 	var failedBytes, par2Bytes int64
@@ -1469,14 +1507,10 @@ func (q *Queue) MarkArticlesFailedByIdx(jobID string, artIdxs []int32) ([]int32,
 		return nil, nil
 	}
 	q.mu.Lock()
-	job, ok := q.byID[jobID]
-	if !ok {
+	job, err := q.residentJob(jobID)
+	if err != nil {
 		q.mu.Unlock()
-		return nil, fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.progress == nil || job.manifest == nil {
-		q.mu.Unlock()
-		return nil, nil
+		return nil, err
 	}
 	nArt := job.manifest.NumArticles()
 	firstTime := make([]int32, 0, len(artIdxs))
@@ -1531,12 +1565,9 @@ func (q *Queue) MarkArticlesFailedByIdx(jobID string, artIdxs []int32) ([]int32,
 func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.progress == nil || job.manifest == nil {
-		return nil
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
 	for _, fi := range fileIdxs {
 		if fi < 0 || fi >= job.manifest.NumFiles() {
@@ -1551,12 +1582,9 @@ func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.progress == nil || job.manifest == nil {
-		return nil
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
 	job.progress.par2ReleaseReason = reason
 	q.dirty.Store(true)
@@ -1737,12 +1765,9 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 func (q *Queue) SetFileCRC32(jobID string, fileIdx int, crc uint32) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.manifest == nil || job.progress == nil {
-		return nil
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
