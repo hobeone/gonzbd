@@ -523,6 +523,7 @@ func (d *Downloader) DisconnectAll() {
 		}
 	}
 	d.disconnectMu.Unlock()
+	// --- No lock held below this line ---
 
 	if signaled {
 		d.log.Info("disconnect: signaled all connections to close")
