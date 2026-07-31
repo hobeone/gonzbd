@@ -252,42 +252,7 @@ func NewTestAppSeparateDirs(t *testing.T, mockAddr string, opts AppTestOpts) (a 
 // Fixture creation helpers
 // ---------------------------------------------------------------------------
 
-// createRarFixture creates a RAR archive in dir containing the given files.
-// Returns the path to the created .rar file. Skips if rar is not available.
-func createRarFixture(t *testing.T, dir, archiveName string, files map[string][]byte) string {
-	t.Helper()
-	requireTool(t, "rar")
 
-	// Write source files.
-	for name, data := range files {
-		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, data, 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-	}
-
-	archivePath := filepath.Join(dir, archiveName)
-	args := []string{"a", "-ep", "-m0", archivePath}
-	for name := range files {
-		args = append(args, filepath.Join(dir, name))
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	//nolint:gosec // G204: test code with controlled inputs
-	cmd := exec.CommandContext(ctx, "rar", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("rar create %s: %v\noutput: %s", archiveName, err, out)
-	}
-
-	// Delete source files so only the archive remains.
-	for name := range files {
-		os.Remove(filepath.Join(dir, name))
-	}
-
-	return archivePath
-}
 
 // createPar2Fixture creates a par2 recovery set for the named files in dir.
 // Returns the path to the main .par2 file. Skips if par2 is not available.

@@ -19,7 +19,7 @@ echo -e "\nChecking prerequisites..."
 MISSING=0
 
 echo "Required tools:"
-for cmd in go bun golangci-lint govulncheck par2 unrar rar 7z; do
+for cmd in go bun golangci-lint govulncheck par2 unrar 7z; do
     if cmd_path=$(command -v "$cmd" 2>/dev/null); then
         echo "  - $cmd: $cmd_path"
     else

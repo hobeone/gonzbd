@@ -3,13 +3,10 @@
 package integration
 
 import (
-	"context"
 	"crypto/sha256"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // TestPipeline_FlatUnpack verifies that FlatUnpack=true extracts files from
@@ -113,56 +110,3 @@ func TestPipeline_NiceWrapping(t *testing.T) {
 	verifyFileAtPath(t, extractedPath, wantSHA[:])
 }
 
-// ---------------------------------------------------------------------------
-// Fixture helper: RAR with subdirectory structure
-// ---------------------------------------------------------------------------
-
-// createRarFixtureWithSubdirs creates a RAR archive that preserves relative
-// paths (subdirectories). Unlike createRarFixture which uses -ep (strip path),
-// this uses the default path mode so the archive retains directory structure.
-func createRarFixtureWithSubdirs(t *testing.T, dir, archiveName string, files map[string][]byte) string {
-	t.Helper()
-	requireTool(t, "rar")
-
-	// Write source files, creating subdirectories as needed.
-	var relPaths []string
-	for name, data := range files {
-		p := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
-			t.Fatalf("mkdir %s: %v", filepath.Dir(p), err)
-		}
-		if err := os.WriteFile(p, data, 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-		relPaths = append(relPaths, name)
-	}
-
-	archivePath := filepath.Join(dir, archiveName)
-	// Use -m0 (store, no compression) and -r (recursive) but NOT -ep,
-	// so subdirectory structure is preserved in the archive.
-	args := []string{"a", "-m0", archivePath}
-	args = append(args, relPaths...)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	//nolint:gosec // G204: test code with controlled inputs
-	cmd := exec.CommandContext(ctx, "rar", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("rar create %s: %v\noutput: %s", archiveName, err, out)
-	}
-
-	// Delete source files so only the archive remains.
-	for name := range files {
-		os.RemoveAll(filepath.Join(dir, filepath.SplitList(name)[0]))
-	}
-	// Clean up any subdirectories.
-	for name := range files {
-		parts := filepath.Dir(name)
-		if parts != "." {
-			os.RemoveAll(filepath.Join(dir, parts))
-		}
-	}
-
-	return archivePath
-}
