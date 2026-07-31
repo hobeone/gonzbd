@@ -476,6 +476,18 @@ func (q *Queue) Remove(id string) error {
 	if jobPath != "" {
 		_ = q.removeFile(jobPath) // best-effort delete; error is intentionally ignored
 	}
+	// Unlink the manifest/progress artifacts only now that id has left
+	// q.byID (evictJobLocked + delete above already ran under q.mu). Doing
+	// this earlier — or under q.mu, which check_lock_io flags as I/O — would
+	// reopen the exact race this ordering exists to close: Queue.Snapshot
+	// clones a job under RLock and hydrates it from disk after releasing the
+	// lock, so an unlink that races ahead of the job's removal from q.byID
+	// can catch a snapshot mid-hydration.
+	if q.store != nil {
+		if err := q.store.DeleteJobArtifacts(context.Background(), id); err != nil {
+			q.log.Warn("failed to delete job artifacts after remove", "job_id", id, "err", err)
+		}
+	}
 	q.PromoteNext(context.Background())
 	return nil
 }
