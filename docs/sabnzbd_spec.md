@@ -100,7 +100,7 @@ Queue-modifying operations must: acquire `NZBQUEUE_LOCK`, mutate state, call `DO
 3. Initialize logging
 4. Acquire `gonzbd.lock` lock on the admin dir (prevent double-start)
 5. Initialize database (`history.db`)
-6. Load queue from disk (`queue/queue.db` + `queue/manifests/<id>.json.gz`)
+6. Load queue from disk (`history.db` + `queue/manifests/<id>.json.gz`)
 7. Start BPS meter thread
 8. Start scheduler
 9. Start article cache thread
@@ -284,15 +284,15 @@ Running, QuickCheck, Completed, Failed, Deleted, Idle
 
 ### 4.4 Queue Persistence
 
-- **Format** (SABnzbd): Python pickle + gzip. **GoNZBD**: SQLite database (`queue.db`) + gzipped JSON manifests (`queue/manifests/<id>.json.gz`).
-- **Filename** (GoNZBD): `queue/queue.db` (SQLite store: job order, state, metadata) plus one `queue/manifests/<id>.json.gz` manifest per job, under the admin directory. (SABnzbd used a single `queue10.sab`.)
+- **Format** (SABnzbd): Python pickle + gzip. **GoNZBD**: SQLite database (`history.db`) + gzipped JSON manifests (`queue/manifests/<id>.json.gz`).
+- **Filename** (GoNZBD): `history.db` (SQLite store: job order, state, metadata, in the `jobs`, `job_files` and `queue_meta` tables) plus one `queue/manifests/<id>.json.gz` manifest per job, both under the admin directory. Queue state shares a single database file with history rather than having one of its own. (SABnzbd used a single `queue10.sab`.)
 - **Postproc queue**: in-memory only in GoNZBD (not persisted; in-flight post-processing restarts from scratch after a crash). SABnzbd persisted `postproc2.sab`.
 - **Repair modes** (on startup):
   - Mode 0: Use existing queue as-is
   - Mode 1: Use existing queue, re-add missing work-in-progress folders
   - Mode 2: Discard queue, reconstruct from `incomplete/` directory scan
 
-**Go recommendation**: Persistence uses SQLite (`queue.db`) for transaction-safe queue state and indexing, and immutable gzipped JSON files (`queue/manifests/<id>.json.gz`) for job article specifications.
+**Go recommendation**: Persistence uses SQLite (`history.db`) for transaction-safe queue state and indexing, and immutable gzipped JSON files (`queue/manifests/<id>.json.gz`) for job article specifications.
 
 ### 4.5 Duplicate Detection
 
@@ -1262,7 +1262,7 @@ These are the GoNZBD admin files (the SABnzbd originals are noted for reference)
 
 | File (GoNZBD) | Contents | Format | SABnzbd original |
 |------|----------|--------|------------------|
-| `queue/queue.db` + `queue/manifests/<id>.json.gz` | Download queue state + immutable job manifests | SQLite + gzipped JSON | `queue10.sab` (pickle+gzip) |
+| `history.db` + `queue/manifests/<id>.json.gz` | Download queue state + immutable job manifests | SQLite + gzipped JSON | `queue10.sab` (pickle+gzip) |
 | _(none — in-memory only)_ | Post-processing queue | not persisted | `postproc2.sab` |
 | `dirscan.json` | Dir scanner state | JSON | `watched_data2.sab` (pickle+gzip) |
 | `bpsmeter.json` | Bandwidth statistics | JSON | `bpsmeter.sab` (pickle+gzip) |
