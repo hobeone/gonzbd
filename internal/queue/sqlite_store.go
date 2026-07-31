@@ -62,6 +62,14 @@ func (s *SQLiteStore) resequenceTx(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
+// encodeArticlesDone packs file fileIdx's per-article done+failed state into
+// a hex bitmap for job_files.articles_done. The encoding is two
+// equal-length bitmaps concatenated — [done bits][failed bits], each
+// ceil(N/8) bytes for N articles in the file — so a failed article (done &&
+// failed) round-trips distinctly from a plain successful one (done &&
+// !failed). This widens the historical done-only format (see
+// decodeArticlesDone for the backward-compat read path); the column stays
+// an opaque hex string with no schema change.
 func encodeArticlesDone(job *Job, fileIdx int) string {
 	if job == nil || job.Progress() == nil || job.Manifest() == nil || fileIdx < 0 || fileIdx >= job.Manifest().NumFiles() {
 		return ""
@@ -72,15 +80,35 @@ func encodeArticlesDone(job *Job, fileIdx int) string {
 	}
 	n := hi - lo
 	numBytes := (n + 7) / 8
-	buf := make([]byte, numBytes)
+	buf := make([]byte, numBytes*2)
 	for i := range n {
 		if job.Progress().ArticleDone(lo + i) {
 			buf[i/8] |= 1 << (i % 8)
+		}
+		if job.Progress().ArticleFailed(lo + i) {
+			buf[numBytes+i/8] |= 1 << (i % 8)
 		}
 	}
 	return hex.EncodeToString(buf)
 }
 
+// decodeArticlesDone restores file fileIdx's per-article done/failed state
+// from a hex bitmap written by encodeArticlesDone. Three input shapes are
+// handled:
+//
+//   - len == 2*numBytes: the current format — [done bits][failed bits].
+//     An article with its failed bit set is restored via markFailed; a
+//     plain done article via markDone. Never both, since markFailed
+//     early-returns once done[i] is already true.
+//   - len == numBytes: a legacy (pre-widening) value containing only done
+//     bits. Every done article is restored via markDone; failed[] stays
+//     all false, exactly matching the old behavior (this is the required
+//     backward-compat path — old rows have no failed-bit information to
+//     recover).
+//   - anything else: corrupt input. Falls through to the same lenient,
+//     bounds-checked read the legacy decoder always used (treat the whole
+//     buffer as a done-only bitmap, ignoring bits past its end) rather than
+//     erroring — preserving prior behavior for corrupt data.
 func decodeArticlesDone(s string, job *Job, fileIdx int) {
 	if job == nil || job.Progress() == nil || job.Manifest() == nil || fileIdx < 0 || fileIdx >= job.Manifest().NumFiles() || s == "" {
 		return
@@ -94,8 +122,22 @@ func decodeArticlesDone(s string, job *Job, fileIdx int) {
 		return
 	}
 	n := hi - lo
+	numBytes := (n + 7) / 8
+
+	doneBuf := buf
+	var failedBuf []byte
+	if len(buf) == numBytes*2 {
+		doneBuf = buf[:numBytes]
+		failedBuf = buf[numBytes:]
+	}
+
 	for i := range n {
-		if i/8 < len(buf) && (buf[i/8]&(1<<(i%8))) != 0 {
+		failedBit := failedBuf != nil && i/8 < len(failedBuf) && (failedBuf[i/8]&(1<<(i%8))) != 0
+		doneBit := i/8 < len(doneBuf) && (doneBuf[i/8]&(1<<(i%8))) != 0
+		switch {
+		case failedBit:
+			job.progress.markFailed(job.manifest, lo+i)
+		case doneBit:
 			job.progress.markDone(job.manifest, lo+i)
 		}
 	}

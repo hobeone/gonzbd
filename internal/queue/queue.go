@@ -525,6 +525,30 @@ func (q *Queue) Resume(id string) error {
 }
 
 // Retry resets a failed job back to Queued state and triggers promotion.
+//
+// A failed job is ordinarily non-resident (StatusFailed is not a resident
+// status; SetStatus's transition into it evicted manifest/progress — see
+// evictJobLocked). Job.ResetForRetry needs live Progress to distinguish
+// "failed, retry me" from "done, keep me": it only resets an article whose
+// failed[] bit is set, and that flag only exists once the job is hydrated.
+// So Retry hydrates the job itself first — via hydrateJobLocked, not
+// hydrateResidentLocked, since StatusQueued is not a resident status and
+// hydrateResidentLocked's activeSet.Add would wrongly mark a merely-queued
+// job as active before PromoteNext has actually dispatched it.
+//
+// hydrateJobLocked runs before setStatusLocked so a hydration failure (a
+// missing/corrupt manifest) leaves job.Status untouched and returns an
+// error, matching the fail-closed contract SetStatus/SetStatusIf already
+// uphold for issue #264 — Retry must not silently no-op or partially mutate
+// the job.
+//
+// Once reset, the corrected progress is persisted to the store before
+// PromoteNext runs (still under q.mu, matching the two lockio precedents in
+// PromoteNext below). PromoteNext unconditionally calls
+// Store.RestoreJobProgress for every job it promotes, including one that is
+// already resident, so skipping this write would let PromoteNext re-read the
+// stale on-disk articles_done and silently undo the reset one layer down
+// (the exact failure mode issue #260 describes).
 func (q *Queue) Retry(id string) error {
 	q.mu.Lock()
 	job, ok := q.byID[id]
@@ -533,12 +557,19 @@ func (q *Queue) Retry(id string) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	if job.Status == constants.StatusFailed {
+		if err := q.hydrateJobLocked(job, id); err != nil { //lockio: reads manifest + calls store.RestoreJobProgress; see hydrateJobLocked doc, tracked in #229
+			q.mu.Unlock()
+			return fmt.Errorf("queue: retry job %s: %w", id, err)
+		}
 		if err := q.setStatusLocked(job, constants.StatusQueued); err != nil {
 			q.mu.Unlock()
 			return err
 		}
 		job.Warning = ""
 		job.ResetForRetry()
+		if q.store != nil {
+			_ = q.store.Update(context.Background(), job) //lockio: persists the reset articles_done before PromoteNext's unconditional RestoreJobProgress can re-read the stale row
+		}
 	}
 	q.dirty.Store(true)
 	q.notifyLocked()
@@ -918,20 +949,47 @@ func (q *Queue) hydrateResidentLocked(job *Job, id string, status, prevStatus co
 	if !isResidentStatus(status) || job.manifest != nil {
 		return nil
 	}
+	if err := q.hydrateJobLocked(job, id); err != nil {
+		job.Status = prevStatus
+		return fmt.Errorf("queue: hydrate job %s for status %s: %w", id, status, err)
+	}
+	q.activeSet.Add(job)
+	return nil
+}
+
+// hydrateJobLocked loads job's manifest and (if a store is configured)
+// per-file progress counters from persistence into memory, when the job is
+// currently non-resident (job.manifest == nil). Must be called with q.mu
+// held for write.
+//
+// Unlike hydrateResidentLocked, this does not touch job.Status and does not
+// add the job to the ActiveSet — it is the shared, status-agnostic
+// hydration primitive. hydrateResidentLocked layers status-transition
+// semantics (activeSet.Add, reverting job.Status on failure) on top of it
+// for callers moving a job into a resident status; Retry uses this directly
+// because it needs a hydrated job while transitioning into StatusQueued,
+// which is not a resident status and must not be added to the ActiveSet
+// before PromoteNext actually dispatches it.
+//
+// No-ops (returns nil) when the job is already hydrated or when the queue
+// has no persistence configured (in that configuration jobs are never
+// de-hydrated in the first place).
+func (q *Queue) hydrateJobLocked(job *Job, id string) error {
+	if job.manifest != nil {
+		return nil
+	}
 	if q.store == nil && q.stateDir == "" {
 		return nil
 	}
 	manifestPath := filepath.Join(q.stateDir, "manifests", id+".json.gz")
 	var m Manifest
 	if err := readGzJSON(manifestPath, &m); err != nil {
-		job.Status = prevStatus
-		return fmt.Errorf("queue: hydrate job %s for status %s: %w", id, status, err)
+		return fmt.Errorf("queue: hydrate job %s: %w", id, err)
 	}
 	job.setResidency(&m, newJobProgress(&m))
 	if q.store != nil {
 		_ = q.store.RestoreJobProgress(context.Background(), job) //lockio: restores progress in place; hoist tracked in #229
 	}
-	q.activeSet.Add(job)
 	return nil
 }
 
