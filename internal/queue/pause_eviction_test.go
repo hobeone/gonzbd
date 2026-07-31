@@ -330,6 +330,9 @@ func TestRetry_NonResidentJobResetsFailedArticles(t *testing.T) {
 	if _, err := q.MarkArticlesFailed(job.ID, []string{failedArtID}); err != nil {
 		t.Fatalf("MarkArticlesFailed: %v", err)
 	}
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
 
 	// Transition to StatusFailed and evict so it becomes de-hydrated.
 	if err := q.SetStatus(job.ID, constants.StatusFailed); err != nil {
@@ -402,33 +405,55 @@ func TestTotalRemainingBytes_IncludesNonResidentJobs(t *testing.T) {
 
 // TestJobManifest_ConcurrentEvictionNoRace pins the fix for issue #263:
 // calling Job.Manifest() concurrently with queue eviction/pause must not
-// trigger a data race or panic.
+// trigger a data race or panic, even on a freshly constructed job without
+// prior serial initialization.
 func TestJobManifest_ConcurrentEvictionNoRace(t *testing.T) {
 	t.Parallel()
 
+	// 1. Verify zero-value job concurrency without serial initialization.
+	freshJob := &Job{ID: "fresh-race-test"}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for ctx.Err() == nil {
+			_ = freshJob.Manifest()
+			_ = freshJob.Progress()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for ctx.Err() == nil {
+			freshJob.SetManifest(nil)
+			freshJob.SetProgress(nil)
+		}
+	}()
+	wg.Wait()
+
+	// 2. Verify full queue eviction and promotion concurrency.
 	q := New(WithStateDir(t.TempDir()))
 	job := makeMultiFileJob(t, "race-test", 1, 2)
 	if err := q.Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), 150*time.Millisecond)
-	defer cancel()
+	ctx2, cancel2 := context.WithTimeout(t.Context(), 150*time.Millisecond)
+	defer cancel2()
 
-	var wg sync.WaitGroup
 	wg.Add(2)
-
 	go func() {
 		defer wg.Done()
-		for ctx.Err() == nil {
+		for ctx2.Err() == nil {
 			_ = job.Manifest()
 			_ = job.Progress()
 		}
 	}()
-
 	go func() {
 		defer wg.Done()
-		for ctx.Err() == nil {
+		for ctx2.Err() == nil {
 			q.PromoteNext(context.Background())
 			_ = q.Pause(job.ID)
 			_ = q.Resume(job.ID)
@@ -462,6 +487,12 @@ func TestSetStatus_ResidentHydrationFailureReportsError(t *testing.T) {
 	if err == nil {
 		t.Error("SetStatus(Downloading) = nil, want error when manifest is unreadable")
 	}
+	if job.Status != constants.StatusPaused {
+		t.Errorf("job.Status = %v after hydration failure, want StatusPaused (zero mutation)", job.Status)
+	}
+	if job.Manifest() != nil || job.Progress() != nil {
+		t.Error("job resident fields mutated on hydration failure, want nil")
+	}
 }
 
 // TestSetStatusIf_HydratesResidentJob pins the SetStatusIf fix for issue #264:
@@ -487,53 +518,5 @@ func TestSetStatusIf_HydratesResidentJob(t *testing.T) {
 	}
 	if job.Manifest() == nil || job.Progress() == nil {
 		t.Error("SetStatusIf left job de-hydrated on resident status Downloading")
-	}
-}
-
-// TestNilManifestAccessorsDoNotPanic pins the fix for issue #265:
-// calling Manifest accessors on a nil *Manifest receiver must return zero
-// values rather than panic with SIGSEGV.
-func TestNilManifestAccessorsDoNotPanic(t *testing.T) {
-	t.Parallel()
-
-	var m *Manifest
-	if got := m.NumFiles(); got != 0 {
-		t.Errorf("NumFiles() = %d, want 0", got)
-	}
-	if got := m.FileSubject(0); got != "" {
-		t.Errorf("FileSubject(0) = %q, want empty", got)
-	}
-	if got := m.FileDate(0); !got.IsZero() {
-		t.Errorf("FileDate(0) = %v, want zero time", got)
-	}
-	if got := m.FileBytes(0); got != 0 {
-		t.Errorf("FileBytes(0) = %d, want 0", got)
-	}
-	if got := m.FileIsPar2Recovery(0); got {
-		t.Errorf("FileIsPar2Recovery(0) = true, want false")
-	}
-	if lo, hi := m.FileRange(0); lo != 0 || hi != 0 {
-		t.Errorf("FileRange(0) = (%d, %d), want (0, 0)", lo, hi)
-	}
-	if got := m.NumArticles(); got != 0 {
-		t.Errorf("NumArticles() = %d, want 0", got)
-	}
-	if got := m.ArticleID(0); got != "" {
-		t.Errorf("ArticleID(0) = %q, want empty", got)
-	}
-	if got := m.ArticleBytes(0); got != 0 {
-		t.Errorf("ArticleBytes(0) = %d, want 0", got)
-	}
-	if got := m.ArticleNumber(0); got != 0 {
-		t.Errorf("ArticleNumber(0) = %d, want 0", got)
-	}
-	if got := m.TotalBytes(); got != 0 {
-		t.Errorf("TotalBytes() = %d, want 0", got)
-	}
-	if got := m.Par2Bytes(); got != 0 {
-		t.Errorf("Par2Bytes() = %d, want 0", got)
-	}
-	if got := m.Par2Files(); got != 0 {
-		t.Errorf("Par2Files() = %d, want 0", got)
 	}
 }

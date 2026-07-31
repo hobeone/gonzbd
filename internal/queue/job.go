@@ -128,25 +128,17 @@ type Job struct {
 	// post-processor to prevent double-enqueuing.
 	PostProc bool
 
-	mu       *sync.RWMutex
+	mu       sync.RWMutex
 	manifest *Manifest
 	progress *JobProgress
-}
-
-func (j *Job) getMu() *sync.RWMutex {
-	if j.mu == nil {
-		j.mu = new(sync.RWMutex)
-	}
-	return j.mu
 }
 
 // Manifest returns the job's immutable article/file structure. Safe to
 // call without the queue lock; the returned pointer has no mutating
 // exported method.
 func (j *Job) Manifest() *Manifest {
-	mu := j.getMu()
-	mu.RLock()
-	defer mu.RUnlock()
+	j.mu.RLock()
+	defer j.mu.RUnlock()
 	return j.manifest
 }
 
@@ -154,25 +146,22 @@ func (j *Job) Manifest() *Manifest {
 // outside internal/queue can only read through it — JobProgress has no
 // mutating exported method, so handing out the pointer is safe.
 func (j *Job) Progress() *JobProgress {
-	mu := j.getMu()
-	mu.RLock()
-	defer mu.RUnlock()
+	j.mu.RLock()
+	defer j.mu.RUnlock()
 	return j.progress
 }
 
 // SetManifest safely updates the job's manifest pointer.
 func (j *Job) SetManifest(m *Manifest) {
-	mu := j.getMu()
-	mu.Lock()
-	defer mu.Unlock()
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	j.manifest = m
 }
 
 // SetProgress safely updates the job's progress pointer.
 func (j *Job) SetProgress(p *JobProgress) {
-	mu := j.getMu()
-	mu.Lock()
-	defer mu.Unlock()
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	j.progress = p
 }
 

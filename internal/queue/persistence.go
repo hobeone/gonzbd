@@ -96,8 +96,9 @@ func (q *Queue) saveInner(dir string) error {
 	// checkpointing — potentially seconds on large queues.
 	q.mu.RLock()
 	type jobSnapshot struct {
-		id   string
-		data []byte
+		id       string
+		data     []byte
+		manifest *Manifest
 	}
 	snapshots := make([]jobSnapshot, 0, len(q.jobs))
 	jobIDs := make([]string, len(q.jobs))
@@ -112,7 +113,7 @@ func (q *Queue) saveInner(dir string) error {
 			q.mu.RUnlock()
 			return fmt.Errorf("queue: marshal job %s: %w", job.ID, err)
 		}
-		snapshots = append(snapshots, jobSnapshot{id: job.ID, data: data})
+		snapshots = append(snapshots, jobSnapshot{id: job.ID, data: data, manifest: job.manifest})
 	}
 	q.mu.RUnlock()
 
@@ -130,10 +131,14 @@ func (q *Queue) saveInner(dir string) error {
 	}
 
 	manifestsDir := filepath.Join(dir, "manifests")
-	_ = os.MkdirAll(manifestsDir, 0o750)
-	for _, job := range q.jobs {
-		if job.manifest != nil {
-			_ = writeGzJSON(filepath.Join(manifestsDir, job.ID+".json.gz"), job.manifest)
+	if err := os.MkdirAll(manifestsDir, 0o750); err != nil {
+		return fmt.Errorf("queue: mkdir manifests %q: %w", manifestsDir, err)
+	}
+	for _, snap := range snapshots {
+		if snap.manifest != nil {
+			if err := writeGzJSON(filepath.Join(manifestsDir, snap.id+".json.gz"), snap.manifest); err != nil {
+				return fmt.Errorf("queue: save manifest %s: %w", snap.id, err)
+			}
 		}
 	}
 

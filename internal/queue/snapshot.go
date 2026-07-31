@@ -53,9 +53,26 @@ func hydrateSnapshot(stateDir string, store Store, cp *Job) {
 // Manifest is meant to be immutable) or pay a full manifest deep-copy on
 // every snapshot for no reason (a performance regression).
 func cloneJob(j *Job) *Job {
-	cp := *j
-
-	cp.manifest = j.manifest
+	cp := Job{
+		ID:                   j.ID,
+		Filename:             j.Filename,
+		Name:                 j.Name,
+		Password:             j.Password,
+		URL:                  j.URL,
+		Category:             j.Category,
+		Priority:             j.Priority,
+		Status:               j.Status,
+		PP:                   j.PP,
+		Script:               j.Script,
+		Added:                j.Added,
+		MD5:                  j.MD5,
+		AvgAge:               j.AvgAge,
+		Warning:              j.Warning,
+		PostProc:             j.PostProc,
+		TotalBytes:           j.TotalBytes,
+		RemainingBytesCached: j.RemainingBytesCached,
+		manifest:             j.manifest,
+	}
 	if j.progress != nil {
 		cp.progress = j.progress.clone()
 	} else {

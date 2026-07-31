@@ -101,6 +101,42 @@ func decodeArticlesDone(s string, job *Job, fileIdx int) {
 	}
 }
 
+func encodeArticlesFailed(job *Job, fileIdx int) string {
+	lo, hi := job.Manifest().FileRange(fileIdx)
+	if hi <= lo {
+		return ""
+	}
+	n := hi - lo
+	numBytes := (n + 7) / 8
+	buf := make([]byte, numBytes)
+	for i := range n {
+		if job.Progress().ArticleFailed(lo + i) {
+			buf[i/8] |= 1 << (i % 8)
+		}
+	}
+	return hex.EncodeToString(buf)
+}
+
+func decodeArticlesFailed(s string, job *Job, fileIdx int) {
+	if job == nil || job.Progress() == nil || job.Manifest() == nil || fileIdx < 0 || fileIdx >= job.Manifest().NumFiles() || s == "" {
+		return
+	}
+	buf, err := hex.DecodeString(s)
+	if err != nil {
+		return
+	}
+	lo, hi := job.Manifest().FileRange(fileIdx)
+	if hi <= lo {
+		return
+	}
+	n := hi - lo
+	for i := range n {
+		if i/8 < len(buf) && (buf[i/8]&(1<<(i%8))) != 0 {
+			job.progress.markFailed(job.manifest, lo+i)
+		}
+	}
+}
+
 // Add inserts a new active job into the store and writes its manifest to disk.
 func (s *SQLiteStore) Add(ctx context.Context, job *Job) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -153,16 +189,17 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if job.Manifest() != nil {
 		const qFiles = `
 INSERT INTO job_files
-  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, articles_failed)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		for i := range job.Manifest().NumFiles() {
 			isPar2 := 0
 			if job.Manifest().FileIsPar2Recovery(i) {
 				isPar2 = 1
 			}
 			artDoneStr := encodeArticlesDone(job, i)
+			artFailedStr := encodeArticlesFailed(job, i)
 			_, err = tx.ExecContext(ctx, qFiles,
-				job.ID, i, job.Manifest().FileSubject(i), job.Manifest().FileDate(i).Unix(), job.Manifest().FileBytes(i), isPar2, 0, 0, 0, 0, "", 0, artDoneStr,
+				job.ID, i, job.Manifest().FileSubject(i), job.Manifest().FileDate(i).Unix(), job.Manifest().FileBytes(i), isPar2, 0, 0, 0, 0, "", 0, artDoneStr, artFailedStr,
 			)
 			if err != nil {
 				return fmt.Errorf("sqlite store insert job_file %s/%d: %w", job.ID, i, err)
@@ -275,7 +312,7 @@ func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
 		return nil
 	}
 	const qFiles = `
-SELECT file_index, complete, deferred, write_cursor, bytes_downloaded, assembled_crc32, COALESCE(articles_done, '')
+SELECT file_index, complete, deferred, write_cursor, bytes_downloaded, assembled_crc32, COALESCE(articles_done, ''), COALESCE(articles_failed, '')
 FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	rows, err := s.db.QueryContext(ctx, qFiles, job.ID)
 	if err != nil {
@@ -286,8 +323,8 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 		var idx, complete, deferred int
 		var writeCursor, bytesDownloaded int64
 		var crc32Val uint32
-		var artDoneStr string
-		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &bytesDownloaded, &crc32Val, &artDoneStr); err != nil {
+		var artDoneStr, artFailedStr string
+		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &bytesDownloaded, &crc32Val, &artDoneStr, &artFailedStr); err != nil {
 			return fmt.Errorf("sqlite store scan job_file for %s: %w", job.ID, err)
 		}
 		if idx >= 0 && idx < len(job.progress.files) {
@@ -301,8 +338,13 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 				for a := lo; a < hi; a++ {
 					job.progress.markDone(job.manifest, a)
 				}
-			} else if artDoneStr != "" {
-				decodeArticlesDone(artDoneStr, job, idx)
+			} else {
+				if artFailedStr != "" {
+					decodeArticlesFailed(artFailedStr, job, idx)
+				}
+				if artDoneStr != "" {
+					decodeArticlesDone(artDoneStr, job, idx)
+				}
 			}
 			if deferred != 0 {
 				fp.Deferred = true
@@ -386,7 +428,7 @@ WHERE id = ?`
 	}
 
 	if job.Progress() != nil && job.Manifest() != nil {
-		const qF = `UPDATE job_files SET complete = ?, deferred = ?, write_cursor = ?, bytes_downloaded = ?, filename = ?, assembled_crc32 = ?, articles_done = ? WHERE job_id = ? AND file_index = ?`
+		const qF = `UPDATE job_files SET complete = ?, deferred = ?, write_cursor = ?, bytes_downloaded = ?, filename = ?, assembled_crc32 = ?, articles_done = ?, articles_failed = ? WHERE job_id = ? AND file_index = ?`
 		for i := range job.Manifest().NumFiles() {
 			complete := 0
 			if job.Progress().FileComplete(i) {
@@ -397,8 +439,9 @@ WHERE id = ?`
 				deferred = 1
 			}
 			artDoneStr := encodeArticlesDone(job, i)
+			artFailedStr := encodeArticlesFailed(job, i)
 			if _, err := execer.ExecContext(ctx, qF,
-				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr,
+				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr, artFailedStr,
 				job.ID, i,
 			); err != nil {
 				return fmt.Errorf("sqlite store update job_file %s index %d: %w", job.ID, i, err)

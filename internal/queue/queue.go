@@ -232,11 +232,13 @@ func (q *Queue) residentJob(id string) (*Job, error) {
 
 // hydrateJobLocked loads the job's manifest and progress into memory from disk and SQLite
 // if they are not already resident. Caller must hold q.mu.
+//
+// This executes disk and SQLite I/O under q.mu because hydration must atomically
+// transition a job from de-hydrated to resident before any caller can observe
+// partial state. Hoisting this outside q.mu requires a two-phase unlock/load/relock
+// pattern tracked as a future optimization.
 func (q *Queue) hydrateJobLocked(ctx context.Context, job *Job) error {
-	if job == nil {
-		return ErrNotFound
-	}
-	if job.manifest != nil && job.progress != nil {
+	if job == nil || (job.manifest != nil && job.progress != nil) {
 		return nil
 	}
 	if q.stateDir == "" {
@@ -244,14 +246,14 @@ func (q *Queue) hydrateJobLocked(ctx context.Context, job *Job) error {
 	}
 	var manifest Manifest
 	manifestPath := filepath.Join(q.stateDir, "manifests", job.ID+".json.gz")
-	if err := readGzJSON(manifestPath, &manifest); err != nil {
+	if err := readGzJSON(manifestPath, &manifest); err != nil { //lockio: disk I/O under lock required for atomic hydration
 		return fmt.Errorf("read manifest %s: %w", job.ID, err)
 	}
 	manifest.buildMessageIDIndex()
 	job.SetManifest(&manifest)
 	job.SetProgress(newJobProgress(&manifest))
 	if q.store != nil {
-		if err := q.store.RestoreJobProgress(ctx, job); err != nil {
+		if err := q.store.RestoreJobProgress(ctx, job); err != nil { //lockio: SQLite I/O under lock required for atomic hydration
 			job.SetManifest(nil)
 			job.SetProgress(nil)
 			return fmt.Errorf("restore progress %s: %w", job.ID, err)
@@ -571,6 +573,8 @@ func (q *Queue) Retry(id string) error {
 		job.Warning = ""
 		job.ResetForRetry()
 		if q.store != nil {
+			// Best-effort immediate persistence of reset progress counters;
+			// periodic checkpointing will retry if this fails.
 			_ = q.store.Update(context.Background(), job)
 		}
 	}
@@ -945,17 +949,19 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 		q.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	if err := q.setStatusLocked(job, status); err != nil {
-		q.mu.Unlock()
-		return err
-	}
 	if isResidentStatus(status) && job.manifest == nil {
 		if err := q.hydrateJobLocked(context.Background(), job); err != nil {
 			q.mu.Unlock()
 			return fmt.Errorf("set status hydrate %s: %w", id, err)
 		}
+	}
+	if err := q.setStatusLocked(job, status); err != nil {
+		q.mu.Unlock()
+		return err
+	}
+	if isResidentStatus(status) {
 		q.activeSet.Add(job)
-	} else if !isResidentStatus(status) {
+	} else {
 		q.evictJobLocked(job)
 	}
 	q.dirty.Store(true)
@@ -980,17 +986,19 @@ func (q *Queue) SetStatusIf(id string, newStatus, ifCurrent constants.Status) er
 		q.mu.Unlock()
 		return nil
 	}
-	if err := q.setStatusLocked(job, newStatus); err != nil {
-		q.mu.Unlock()
-		return err
-	}
 	if isResidentStatus(newStatus) && job.manifest == nil {
 		if err := q.hydrateJobLocked(context.Background(), job); err != nil {
 			q.mu.Unlock()
 			return fmt.Errorf("set status if hydrate %s: %w", id, err)
 		}
+	}
+	if err := q.setStatusLocked(job, newStatus); err != nil {
+		q.mu.Unlock()
+		return err
+	}
+	if isResidentStatus(newStatus) {
 		q.activeSet.Add(job)
-	} else if !isResidentStatus(newStatus) {
+	} else {
 		q.evictJobLocked(job)
 	}
 	q.dirty.Store(true)
