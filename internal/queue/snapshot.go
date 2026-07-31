@@ -90,6 +90,16 @@ func cloneJob(j *Job) *Job {
 	if progress := j.Progress(); progress != nil {
 		cp.progress = progress.clone()
 	}
+	// cp.lastKnownRemainingBytes is deliberately left at its zero value,
+	// not copied from j. A clone with cp.manifest == nil already gets its
+	// manifest/progress independently reconstructed from disk by
+	// hydrateSnapshot (see Snapshot/SnapshotJob below) whenever a state
+	// directory or store is configured, which is a live re-read rather
+	// than a cached approximation. Outside that path (e.g. saveStore's use
+	// of cloneJob) the clone is only ever serialized via job_files/store
+	// rows, which don't have a column for this field, so there is nothing
+	// for a stale copy to serve.
+	cp.lastKnownRemainingBytes = 0
 
 	// Deep copy maps
 	if j.Meta != nil {

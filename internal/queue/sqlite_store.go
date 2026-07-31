@@ -310,6 +310,42 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	return rows.Err()
 }
 
+// RemainingBytesByJob returns each job's remaining bytes (bytes minus
+// bytes_downloaded, summed per job_id) across job_files. Unlike
+// RestoreJobProgress, this needs no resident manifest/progress: it reads
+// straight from the persisted per-file counters, which is what makes it
+// usable to reconstruct Job.lastKnownRemainingBytes for non-resident jobs
+// during Loader.Load.
+func (s *SQLiteStore) RemainingBytesByJob(ctx context.Context) (map[string]int64, error) {
+	const q = `SELECT job_id, SUM(bytes - bytes_downloaded) FROM job_files GROUP BY job_id`
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite store remaining bytes by job: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make(map[string]int64)
+	for rows.Next() {
+		var jobID string
+		var remaining int64
+		if err := rows.Scan(&jobID, &remaining); err != nil {
+			return nil, fmt.Errorf("sqlite store scan remaining bytes: %w", err)
+		}
+		if remaining < 0 {
+			// Shouldn't happen (bytes_downloaded can't exceed a file's byte
+			// count in normal operation), but a negative "remaining" figure
+			// would be nonsensical to report to the UI, so clamp rather
+			// than propagate it.
+			remaining = 0
+		}
+		result[jobID] = remaining
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite store remaining bytes by job: %w", err)
+	}
+	return result, nil
+}
+
 // List returns all active jobs ordered by sort_key ASC, time_added ASC.
 func (s *SQLiteStore) List(ctx context.Context) ([]*Job, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT id FROM jobs ORDER BY sort_key ASC, time_added ASC")

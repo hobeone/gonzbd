@@ -53,4 +53,11 @@ type Store interface {
 
 	// RestoreJobProgress loads per-file progress counters into job.progress for a resident job.
 	RestoreJobProgress(ctx context.Context, job *Job) error
+
+	// RemainingBytesByJob returns each job's remaining bytes (manifest bytes
+	// minus bytes already downloaded), summed per job_id across job_files.
+	// Used to reconstruct Job.lastKnownRemainingBytes for jobs that come
+	// back from Loader.Load non-resident, since those jobs have no live
+	// JobProgress to read remainingBytes from.
+	RemainingBytesByJob(ctx context.Context) (map[string]int64, error)
 }

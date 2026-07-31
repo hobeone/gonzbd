@@ -155,6 +155,27 @@ type Job struct {
 	residencyMu sync.RWMutex
 	manifest    *Manifest
 	progress    *JobProgress
+
+	// lastKnownRemainingBytes caches progress.remainingBytes at the moment
+	// progress is dropped (setResidency(nil, nil) in Queue.Add/evictJobLocked)
+	// or, on restart, is reconstructed from the store (see
+	// Store.RemainingBytesByJob). It is a cache of a value normally derived
+	// from JobProgress, not an independent source of truth: it is
+	// meaningful only while progress == nil, and Queue.TotalRemainingBytes
+	// must always prefer live progress.remainingBytes when the job is
+	// resident. It is NOT persisted (no json tag / accessor) — it is
+	// re-derived from job_files on every Loader.Load instead, the same way
+	// JobProgress itself is re-derived rather than trusted byte-for-byte
+	// across a restart.
+	//
+	// Guarded by q.mu, not residencyMu: every write site (Add,
+	// evictJobLocked) already holds q.mu for the surrounding setResidency
+	// call, and the only reader (TotalRemainingBytes) already takes
+	// q.mu.RLock() to range over q.byID. residencyMu only protects the
+	// manifest/progress *pointer pair*; this field is neither of those
+	// pointers, so adding it to that lock's scope would protect nothing
+	// extra while implying (incorrectly) that it can be read outside q.mu.
+	lastKnownRemainingBytes int64
 }
 
 // Manifest returns the job's immutable article/file structure. Safe to call

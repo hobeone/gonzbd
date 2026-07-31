@@ -177,6 +177,16 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 			return nil, fmt.Errorf("queue: load store: %w", err)
 		}
 		paused, _ := q.store.IsPaused(context.Background())
+		// Queried before q.mu.Lock(): Store calls are treated as I/O by
+		// scripts/check_lock_io, and must not run inside the critical
+		// section below. Fail closed (propagate the error) rather than
+		// silently leaving every non-resident job's remaining-bytes cache
+		// at its zero value, matching the fail-closed precedent set for
+		// the manifest file-count query in SQLiteStore.Get (#254).
+		remainingByJob, err := q.store.RemainingBytesByJob(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("queue: load remaining bytes: %w", err)
+		}
 		func() {
 			q.mu.Lock()
 			defer q.mu.Unlock()
@@ -194,6 +204,14 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 					}
 				} else if job.manifest != nil {
 					job.manifest.buildMessageIDIndex()
+				}
+				// Jobs that end up non-resident above (StatusQueued, or a
+				// failed manifest claim) have no live JobProgress to read
+				// remainingBytes from; populate the cache from the store's
+				// job_files totals instead so TotalRemainingBytes sees a
+				// real figure rather than silently treating them as 0.
+				if job.manifest == nil {
+					job.lastKnownRemainingBytes = remainingByJob[job.ID]
 				}
 			}
 			q.paused = paused

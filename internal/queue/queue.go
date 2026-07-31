@@ -424,6 +424,14 @@ func (q *Queue) Add(job *Job) error {
 	q.byID[job.ID] = job
 
 	if job.Status == constants.StatusQueued && (q.store != nil || q.stateDir != "") {
+		// job.progress is always non-nil here: NewJob builds it directly
+		// (job.go) and Add is the first place a freshly built job can lose
+		// residency, so there is no earlier drop to have already captured
+		// from. Guard on nil anyway rather than assuming, since a caller
+		// could in principle hand Add a Job built by some other path.
+		if job.progress != nil {
+			job.lastKnownRemainingBytes = job.progress.remainingBytes
+		}
 		job.setResidency(nil, nil)
 	}
 
@@ -675,6 +683,9 @@ func (q *Queue) evictJobLocked(job *Job) {
 	}
 	q.activeSet.Evict(job)
 	if q.store != nil || q.stateDir != "" {
+		if job.progress != nil {
+			job.lastKnownRemainingBytes = job.progress.remainingBytes
+		}
 		job.setResidency(nil, nil)
 	}
 }
@@ -1305,7 +1316,12 @@ func (q *Queue) ClearAllEmitted() {
 	q.notifyLocked()
 }
 
-// TotalRemainingBytes returns the sum of RemainingBytes across all jobs.
+// TotalRemainingBytes returns the sum of RemainingBytes across all jobs,
+// including jobs that are not currently resident (only maxActive jobs are
+// hydrated at once; every other StatusQueued job has a nil progress — see
+// Job.lastKnownRemainingBytes). Live progress always wins when a job is
+// resident; the cached figure is used only as a fallback, so promotion/
+// eviction races can never make this prefer a stale number over a live one.
 func (q *Queue) TotalRemainingBytes() int64 {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
@@ -1313,6 +1329,8 @@ func (q *Queue) TotalRemainingBytes() int64 {
 	for _, job := range q.byID {
 		if job.progress != nil {
 			total += job.progress.remainingBytes
+		} else {
+			total += job.lastKnownRemainingBytes
 		}
 	}
 	return total
