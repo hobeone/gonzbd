@@ -14,10 +14,15 @@
 // (Add, Remove, Reorder, status changes) take the write lock.
 //
 // Jobs returned from List/Get are shared references into the Queue's
-// internal storage. A Job's Manifest is immutable and safe to read
-// without the lock; its Progress must only be mutated through Queue
-// methods that hold the write lock — direct mutation by callers is a
-// data race.
+// internal storage. Job.Manifest() and Job.Progress() are safe to call
+// without the queue lock — each takes the Job's own residency lock to
+// synchronize against lazy eviction/hydration reassigning which
+// Manifest/JobProgress the Job currently points to. That lock does NOT
+// extend to the returned objects' contents: a Manifest is immutable after
+// construction so nothing more is needed, but a JobProgress's fields are
+// mutated in place and must only be changed through Queue methods that
+// hold the write lock — direct mutation by callers, or reading through the
+// pointer while such a mutation is in flight, is a data race.
 //
 // # Persistence
 //
@@ -36,6 +41,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -49,9 +55,12 @@ import (
 // and ends when the downloader+postproc pipeline moves it to history.
 //
 // manifest/progress are unexported: external packages reach them only
-// through the read-only Manifest()/Progress() getters, which is what
-// makes handing out those pointers safe (neither type has a mutating
-// exported method).
+// through the Manifest()/Progress() getters, which take residencyMu to
+// synchronize the pointer read against concurrent reassignment (see
+// residencyMu's doc comment). Neither Manifest nor JobProgress has a
+// mutating exported method, so external packages cannot introduce new
+// races on top of that — but see Progress()'s doc comment for what is
+// still unguarded.
 type Job struct {
 	// ID is a 16-character lowercase hex string produced from 8 bytes
 	// of crypto/rand output. Stable for the life of the job.
@@ -121,19 +130,105 @@ type Job struct {
 	// post-processor to prevent double-enqueuing.
 	PostProc bool
 
-	manifest *Manifest
-	progress *JobProgress
+	// residencyMu guards only the manifest/progress *pointer fields* below —
+	// not their contents. Queue.Get/List hand out *Job pointers that alias
+	// queue storage, and lazy eviction (evictJobLocked) and lazy
+	// hydration/promotion reassign these pointers under q.mu without the
+	// caller's involvement. A caller holding an aliased pointer but not
+	// q.mu — the documented, intended way to use Manifest()/Progress() —
+	// would otherwise race those reassignments (issue #263).
+	//
+	// It is a sync.RWMutex value, not a *sync.RWMutex, so every
+	// construction path (struct literals, a zero-value `var job Job`,
+	// json.Unmarshal) gets a ready-to-use mutex for free with no
+	// initializer to forget. A prior attempt at this fix used a lazily
+	// initialized *sync.RWMutex ("if j.mu == nil { j.mu = new(...) }"),
+	// which is itself an unsynchronized data race on first concurrent use
+	// and was rejected — see PR history for #263.
+	//
+	// This does NOT protect JobProgress's fields, which are mutated in
+	// place under q.mu by design (see the package doc comment); a reader
+	// holding only residencyMu can still observe a torn read of, e.g.,
+	// job.progress.done mid-update. Only the pointer swap itself — "which
+	// Manifest/JobProgress does this Job currently point to" — is
+	// synchronized.
+	residencyMu sync.RWMutex
+	manifest    *Manifest
+	progress    *JobProgress
+
+	// lastKnownRemainingBytes caches progress.remainingBytes at the moment
+	// progress is dropped (setResidency(nil, nil) in Queue.Add/evictJobLocked)
+	// or, on restart, is reconstructed from the store (see
+	// Store.RemainingBytesByJob). It is a cache of a value normally derived
+	// from JobProgress, not an independent source of truth: it is
+	// meaningful only while progress == nil, and Queue.TotalRemainingBytes
+	// must always prefer live progress.remainingBytes when the job is
+	// resident. It is NOT persisted (no json tag / accessor) — it is
+	// re-derived from job_files on every Loader.Load instead, the same way
+	// JobProgress itself is re-derived rather than trusted byte-for-byte
+	// across a restart.
+	//
+	// Guarded by q.mu, not residencyMu: every write site (Add,
+	// evictJobLocked) already holds q.mu for the surrounding setResidency
+	// call, and the only reader (TotalRemainingBytes) already takes
+	// q.mu.RLock() to range over q.byID. residencyMu only protects the
+	// manifest/progress *pointer pair*; this field is neither of those
+	// pointers, so adding it to that lock's scope would protect nothing
+	// extra while implying (incorrectly) that it can be read outside q.mu.
+	lastKnownRemainingBytes int64
 }
 
-// Manifest returns the job's immutable article/file structure. Safe to
-// call without the queue lock; the returned pointer has no mutating
-// exported method.
-func (j *Job) Manifest() *Manifest { return j.manifest }
+// Manifest returns the job's immutable article/file structure. Safe to call
+// without the queue lock: it takes the job's own residency lock to
+// synchronize against concurrent eviction/hydration/promotion, which
+// reassign this pointer under q.mu. The returned Manifest's contents are
+// immutable after construction, so nothing further needs guarding once the
+// pointer itself is safely read.
+func (j *Job) Manifest() *Manifest {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.manifest
+}
 
-// Progress returns the job's mutable per-article/per-file state. Callers
-// outside internal/queue can only read through it — JobProgress has no
-// mutating exported method, so handing out the pointer is safe.
-func (j *Job) Progress() *JobProgress { return j.progress }
+// Progress returns the job's mutable per-article/per-file state. Safe to
+// call without the queue lock for the same reason as Manifest: the
+// residency lock only guards which *JobProgress this Job currently points
+// to, not the JobProgress's contents. Those fields are mutated in place by
+// Queue methods holding q.mu (see the package doc comment) and are NOT
+// synchronized by this call — a caller reading through the returned
+// pointer concurrently with such a mutation still observes a data race on
+// the individual fields. JobProgress exposes no mutating exported method,
+// so external packages cannot introduce new mutation races of their own,
+// but they can still race the package's internal ones by reading at the
+// wrong time.
+func (j *Job) Progress() *JobProgress {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.progress
+}
+
+// setResidency atomically swaps the manifest/progress pointer pair. Queue
+// package code that reassigns these fields on a Job already aliased into
+// q.jobs/q.byID (eviction, promotion, hydration, retry-discard) must go
+// through this rather than raw field assignment, so a concurrent
+// Manifest()/Progress() caller outside q.mu never observes one field
+// updated and the other stale.
+//
+// Unexported deliberately: it is an internal pointer-swap primitive for
+// code that already holds q.mu, not a public mutation API. Adding an
+// exported SetManifest/SetProgress would contradict this package's doc
+// comment, which requires all Progress mutation to go through Queue
+// methods holding the write lock.
+//
+// Not used by NewJob or UnmarshalJSON: those construct a Job that is not
+// yet reachable by any other goroutine, so there is nothing to
+// synchronize against.
+func (j *Job) setResidency(m *Manifest, p *JobProgress) {
+	j.residencyMu.Lock()
+	j.manifest = m
+	j.progress = p
+	j.residencyMu.Unlock()
+}
 
 // JobPhase represents the high-level operational phase of a download job.
 type JobPhase int

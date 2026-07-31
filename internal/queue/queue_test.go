@@ -781,7 +781,13 @@ func TestIsDirty(t *testing.T) {
 
 func TestDirtyFlagOnMutations(t *testing.T) {
 	dir := t.TempDir()
-	q := New()
+	// WithStateDir(dir) up front (rather than a bare New() plus a later
+	// Save(dir) that only assigns q.stateDir retroactively) so Add persists
+	// job1's manifest to <dir>/manifests/ immediately. Without it, step 4's
+	// SetStatus(Downloading) needs to re-hydrate a manifest that was never
+	// actually written to disk and (correctly, since #264) fails instead of
+	// silently leaving the job Downloading with nil manifest/progress.
+	q := New(WithStateDir(dir))
 	q.PauseAll()
 
 	// 1. Add

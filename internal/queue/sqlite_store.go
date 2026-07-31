@@ -62,6 +62,14 @@ func (s *SQLiteStore) resequenceTx(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
+// encodeArticlesDone packs file fileIdx's per-article done+failed state into
+// a hex bitmap for job_files.articles_done. The encoding is two
+// equal-length bitmaps concatenated — [done bits][failed bits], each
+// ceil(N/8) bytes for N articles in the file — so a failed article (done &&
+// failed) round-trips distinctly from a plain successful one (done &&
+// !failed). This widens the historical done-only format (see
+// decodeArticlesDone for the backward-compat read path); the column stays
+// an opaque hex string with no schema change.
 func encodeArticlesDone(job *Job, fileIdx int) string {
 	if job == nil || job.Progress() == nil || job.Manifest() == nil || fileIdx < 0 || fileIdx >= job.Manifest().NumFiles() {
 		return ""
@@ -72,15 +80,35 @@ func encodeArticlesDone(job *Job, fileIdx int) string {
 	}
 	n := hi - lo
 	numBytes := (n + 7) / 8
-	buf := make([]byte, numBytes)
+	buf := make([]byte, numBytes*2)
 	for i := range n {
 		if job.Progress().ArticleDone(lo + i) {
 			buf[i/8] |= 1 << (i % 8)
+		}
+		if job.Progress().ArticleFailed(lo + i) {
+			buf[numBytes+i/8] |= 1 << (i % 8)
 		}
 	}
 	return hex.EncodeToString(buf)
 }
 
+// decodeArticlesDone restores file fileIdx's per-article done/failed state
+// from a hex bitmap written by encodeArticlesDone. Three input shapes are
+// handled:
+//
+//   - len == 2*numBytes: the current format — [done bits][failed bits].
+//     An article with its failed bit set is restored via markFailed; a
+//     plain done article via markDone. Never both, since markFailed
+//     early-returns once done[i] is already true.
+//   - len == numBytes: a legacy (pre-widening) value containing only done
+//     bits. Every done article is restored via markDone; failed[] stays
+//     all false, exactly matching the old behavior (this is the required
+//     backward-compat path — old rows have no failed-bit information to
+//     recover).
+//   - anything else: corrupt input. Falls through to the same lenient,
+//     bounds-checked read the legacy decoder always used (treat the whole
+//     buffer as a done-only bitmap, ignoring bits past its end) rather than
+//     erroring — preserving prior behavior for corrupt data.
 func decodeArticlesDone(s string, job *Job, fileIdx int) {
 	if job == nil || job.Progress() == nil || job.Manifest() == nil || fileIdx < 0 || fileIdx >= job.Manifest().NumFiles() || s == "" {
 		return
@@ -94,8 +122,22 @@ func decodeArticlesDone(s string, job *Job, fileIdx int) {
 		return
 	}
 	n := hi - lo
+	numBytes := (n + 7) / 8
+
+	doneBuf := buf
+	var failedBuf []byte
+	if len(buf) == numBytes*2 {
+		doneBuf = buf[:numBytes]
+		failedBuf = buf[numBytes:]
+	}
+
 	for i := range n {
-		if i/8 < len(buf) && (buf[i/8]&(1<<(i%8))) != 0 {
+		failedBit := failedBuf != nil && i/8 < len(failedBuf) && (failedBuf[i/8]&(1<<(i%8))) != 0
+		doneBit := i/8 < len(doneBuf) && (doneBuf[i/8]&(1<<(i%8))) != 0
+		switch {
+		case failedBit:
+			job.progress.markFailed(job.manifest, lo+i)
+		case doneBit:
 			job.progress.markDone(job.manifest, lo+i)
 		}
 	}
@@ -308,6 +350,42 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	}
 	job.progress.recompute(job.manifest)
 	return rows.Err()
+}
+
+// RemainingBytesByJob returns each job's remaining bytes (bytes minus
+// bytes_downloaded, summed per job_id) across job_files. Unlike
+// RestoreJobProgress, this needs no resident manifest/progress: it reads
+// straight from the persisted per-file counters, which is what makes it
+// usable to reconstruct Job.lastKnownRemainingBytes for non-resident jobs
+// during Loader.Load.
+func (s *SQLiteStore) RemainingBytesByJob(ctx context.Context) (map[string]int64, error) {
+	const q = `SELECT job_id, SUM(bytes - bytes_downloaded) FROM job_files GROUP BY job_id`
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite store remaining bytes by job: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make(map[string]int64)
+	for rows.Next() {
+		var jobID string
+		var remaining int64
+		if err := rows.Scan(&jobID, &remaining); err != nil {
+			return nil, fmt.Errorf("sqlite store scan remaining bytes: %w", err)
+		}
+		if remaining < 0 {
+			// Shouldn't happen (bytes_downloaded can't exceed a file's byte
+			// count in normal operation), but a negative "remaining" figure
+			// would be nonsensical to report to the UI, so clamp rather
+			// than propagate it.
+			remaining = 0
+		}
+		result[jobID] = remaining
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite store remaining bytes by job: %w", err)
+	}
+	return result, nil
 }
 
 // List returns all active jobs ordered by sort_key ASC, time_added ASC.

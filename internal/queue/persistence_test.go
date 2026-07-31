@@ -648,7 +648,7 @@ func TestQueue_SaveInner_Direct(t *testing.T) {
 		t.Fatalf("failed to read job: %v", err)
 	}
 	if loadedJob.ID != "job1" {
-		t.Errorf("loaded job mismatch: %+v", loadedJob)
+		t.Errorf("loaded job mismatch: %+v", &loadedJob)
 	}
 }
 

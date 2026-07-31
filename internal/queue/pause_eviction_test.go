@@ -3,9 +3,12 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
 )
 
@@ -243,5 +246,135 @@ func TestPausedJobArticlesRedispatchedAfterResume(t *testing.T) {
 	}
 	if len(offered) != len(articles) {
 		t.Errorf("offered %d articles, want %d", len(offered), len(articles))
+	}
+}
+
+// newEvictedJobQueueWithDir is newEvictedJobQueue but also returns the state
+// directory, so a test can reach in and corrupt the on-disk manifest to force
+// a hydration failure on the way back to a resident status (issue #264).
+func newEvictedJobQueueWithDir(t *testing.T) (q *Queue, jobID, dir string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	q = New(WithStateDir(dir))
+	job := makeMultiFileJob(t, "evicted", 1, 2)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := q.Pause(job.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	q.mu.RLock()
+	resident := q.byID[job.ID].manifest != nil || q.byID[job.ID].progress != nil
+	q.mu.RUnlock()
+	if resident {
+		t.Fatal("fixture is not exercising the bug: job still resident after Pause")
+	}
+
+	return q, job.ID, dir
+}
+
+// TestSetStatusHydrationFailureLeavesStatusUnchanged pins issue #264: SetStatus
+// moving a de-hydrated job to a resident status (StatusDownloading) must not
+// leave the job at that status with nil manifest/progress when the on-disk
+// manifest can't be read. Before the fix, the hydration read was wrapped in
+// `if err := readGzJSON(...); err == nil { ... }` with no else branch, so a
+// failed read silently left job.Status at the new resident status anyway.
+func TestSetStatusHydrationFailureLeavesStatusUnchanged(t *testing.T) {
+	t.Parallel()
+
+	q, jobID, dir := newEvictedJobQueueWithDir(t)
+
+	manifestPath := filepath.Join(dir, "manifests", jobID+".json.gz")
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatalf("removing manifest fixture: %v", err)
+	}
+
+	err := q.SetStatus(jobID, constants.StatusDownloading)
+	if err == nil {
+		t.Fatal("SetStatus: want error when manifest hydration fails, got nil")
+	}
+
+	q.mu.RLock()
+	job := q.byID[jobID]
+	status := job.Status
+	manifest := job.manifest
+	progress := job.progress
+	q.mu.RUnlock()
+
+	if status != constants.StatusPaused {
+		t.Errorf("job.Status = %s, want %s (unchanged from before the failed call)", status, constants.StatusPaused)
+	}
+	if manifest != nil || progress != nil {
+		t.Errorf("job left partially hydrated: manifest=%v progress=%v, want both nil", manifest, progress)
+	}
+}
+
+// TestSetStatusIfHydrationFailureLeavesStatusUnchanged is
+// TestSetStatusHydrationFailureLeavesStatusUnchanged for SetStatusIf, which
+// (unlike SetStatus) had no hydration branch at all before the fix and so
+// left the job resident-but-nil unconditionally on this path. This is the
+// path internal/downloader/dispatch.go uses to move Queued jobs to
+// Downloading.
+//
+// The fixture needs a Queued-but-non-resident job. Pause doesn't produce one
+// (Paused, not Queued), and Resume immediately re-hydrates via PromoteNext.
+// Instead this fills the default 4-slot ActiveSet with resident jobs so a
+// 5th job added afterward is promotion-eligible in status but never actually
+// promoted/hydrated — Add() de-hydrates every new Queued job up front when a
+// state dir is configured, exactly the state PromoteNext leaves jobs in
+// while they wait for a slot to free up.
+func TestSetStatusIfHydrationFailureLeavesStatusUnchanged(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	q := New(WithStateDir(dir))
+	for i := range 4 {
+		filler := makeMultiFileJob(t, fmt.Sprintf("filler%d", i), 1, 1)
+		if err := q.Add(filler); err != nil {
+			t.Fatalf("Add filler %d: %v", i, err)
+		}
+	}
+
+	job := makeMultiFileJob(t, "overflow", 1, 1)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add overflow job: %v", err)
+	}
+	jobID := job.ID
+
+	q.mu.RLock()
+	queued := q.byID[jobID].Status == constants.StatusQueued
+	resident := q.byID[jobID].manifest != nil || q.byID[jobID].progress != nil
+	q.mu.RUnlock()
+	if !queued {
+		t.Fatalf("fixture is not exercising the bug: overflow job status = %s, want Queued", q.byID[jobID].Status)
+	}
+	if resident {
+		t.Fatal("fixture is not exercising the bug: overflow job is resident (ActiveSet not actually full)")
+	}
+
+	manifestPath := filepath.Join(dir, "manifests", jobID+".json.gz")
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatalf("removing manifest fixture: %v", err)
+	}
+
+	err := q.SetStatusIf(jobID, constants.StatusDownloading, constants.StatusQueued)
+	if err == nil {
+		t.Fatal("SetStatusIf: want error when manifest hydration fails, got nil")
+	}
+
+	q.mu.RLock()
+	got := q.byID[jobID]
+	status := got.Status
+	manifest := got.manifest
+	progress := got.progress
+	q.mu.RUnlock()
+
+	if status != constants.StatusQueued {
+		t.Errorf("job.Status = %s, want %s (unchanged from before the failed call)", status, constants.StatusQueued)
+	}
+	if manifest != nil || progress != nil {
+		t.Errorf("job left partially hydrated: manifest=%v progress=%v, want both nil", manifest, progress)
 	}
 }
