@@ -60,4 +60,27 @@ type Store interface {
 	// back from Loader.Load non-resident, since those jobs have no live
 	// JobProgress to read remainingBytes from.
 	RemainingBytesByJob(ctx context.Context) (map[string]int64, error)
+
+	// DeleteJobArtifacts removes the on-disk manifest and progress files for
+	// job id (manifests/<id>.json.gz and progress/<id>.json.gz). A missing
+	// file is not an error.
+	//
+	// Callers must only invoke this after id has already left the queue's
+	// in-memory index (q.byID) and its row(s) in the jobs/job_files tables —
+	// never before or concurrently with that removal. Doing so earlier is
+	// exactly the race this method exists to avoid: Queue.Snapshot clones a
+	// job under q.mu.RLock, releases the lock, and only then hydrates its
+	// manifest/progress from disk outside the lock. If the on-disk artifacts
+	// are unlinked while the job is still reachable through q.byID, a
+	// concurrent Snapshot can observe the job present but its manifest
+	// already gone.
+	//
+	// Returns an error (rather than swallowing it internally) so callers and
+	// tests can observe a failed unlink instead of the method silently doing
+	// nothing. That said, deletion here is best-effort cleanup: the durable
+	// truth of "does this job still exist" is the jobs/job_files rows and
+	// q.byID, not these blobs, so callers are expected to log a returned
+	// error and continue rather than fail the surrounding operation on it —
+	// see Queue.Remove's use of this method.
+	DeleteJobArtifacts(ctx context.Context, id string) error
 }

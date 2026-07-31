@@ -88,9 +88,30 @@ func TestSQLiteStore_CRUD(t *testing.T) {
 		t.Errorf("expected ErrNotFound after Remove, got %v", err)
 	}
 
+	// store.Remove is DB-only; unlinking artifacts is DeleteJobArtifacts'
+	// job, so that it can run after the job has left the queue. Write the
+	// manifest first — newTestJob has no Manifest, so store.Add never created
+	// one and this assertion would otherwise hold no matter which method did
+	// the deleting. TestSQLiteStore_MoveToHistory pins the same split on the
+	// completion path.
 	manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
+		t.Fatalf("mkdir manifests: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, []byte("manifest placeholder"), 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := store.Remove(ctx, job.ID); err != nil && !errors.Is(err, queue.ErrNotFound) {
+		t.Fatalf("second Remove: %v", err)
+	}
+	if _, err := os.Stat(manifestPath); err != nil {
+		t.Errorf("manifest must survive store.Remove, stat err=%v", err)
+	}
+	if err := store.DeleteJobArtifacts(ctx, job.ID); err != nil {
+		t.Fatalf("DeleteJobArtifacts: %v", err)
+	}
 	if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
-		t.Errorf("manifest file should be removed on job Remove, stat err=%v", err)
+		t.Errorf("manifest should be removed by DeleteJobArtifacts, stat err=%v", err)
 	}
 }
 
@@ -112,6 +133,19 @@ func TestSQLiteStore_MoveToHistory(t *testing.T) {
 		TimeAdded: job.Added,
 	}
 
+	// Create the manifest explicitly. newTestJob carries no Manifest, so
+	// store.Add never wrote one, which left the assertion at the end of this
+	// test trivially satisfied: it checked that a file which had never
+	// existed did not exist. Its contents are irrelevant here — this test is
+	// about when the file is unlinked, not what is in it.
+	manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
+		t.Fatalf("mkdir manifests: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, []byte("manifest placeholder"), 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
 	if err := store.MoveToHistory(ctx, job, entry); err != nil {
 		t.Fatalf("MoveToHistory: %v", err)
 	}
@@ -128,9 +162,20 @@ func TestSQLiteStore_MoveToHistory(t *testing.T) {
 		t.Errorf("history name=%q, want %q", histEntry.Name, job.Name)
 	}
 
-	manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
+	// MoveToHistory is now DB-only. The unlink moved to DeleteJobArtifacts so
+	// it can run after the job has left the queue's byID map: Queue.Snapshot
+	// clones under the read lock and hydrates from disk after releasing it,
+	// so unlinking while the job is still reachable lets a snapshot catch a
+	// job whose manifest has already gone.
+	if _, err := os.Stat(manifestPath); err != nil {
+		t.Errorf("manifest must survive MoveToHistory, stat err=%v", err)
+	}
+
+	if err := store.DeleteJobArtifacts(ctx, job.ID); err != nil {
+		t.Fatalf("DeleteJobArtifacts: %v", err)
+	}
 	if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
-		t.Errorf("manifest file should be removed after MoveToHistory, stat err=%v", err)
+		t.Errorf("manifest should be removed by DeleteJobArtifacts, stat err=%v", err)
 	}
 }
 
@@ -768,5 +813,47 @@ VALUES (?, ?, ?, NULL, NULL, NULL, 0, 'FETCHING', 3, NULL, ?, 'md5-null', ?, NUL
 	}
 	if len(list) != 1 || list[0].ID != id {
 		t.Fatalf("SQLiteStore.List returned %d jobs, expected 1 job with ID %q", len(list), id)
+	}
+}
+
+// TestSQLiteStore_DeleteJobArtifactsReportsRemovalFailures covers the error
+// paths. A missing artifact is deliberately not an error — deletion is
+// best-effort cleanup and a job may never have had one — so the only way to
+// make os.Remove fail with something reportable is to put a non-empty
+// directory where the file belongs. Both artifacts are blocked so the joined
+// error is shown to carry each failure rather than only the first.
+func TestSQLiteStore_DeleteJobArtifactsReportsRemovalFailures(t *testing.T) {
+	store, _, dir := setupTestStore(t)
+
+	const id = "job0000000000009"
+	for _, sub := range []string{"manifests", "progress"} {
+		blocker := filepath.Join(dir, sub, id+".json.gz")
+		if err := os.MkdirAll(blocker, 0o750); err != nil {
+			t.Fatalf("mkdir blocker %s: %v", sub, err)
+		}
+		if err := os.WriteFile(filepath.Join(blocker, "occupied"), []byte("x"), 0o600); err != nil {
+			t.Fatalf("write blocker child %s: %v", sub, err)
+		}
+	}
+
+	err := store.DeleteJobArtifacts(t.Context(), id)
+	if err == nil {
+		t.Fatal("DeleteJobArtifacts: want error when the artifacts cannot be removed, got nil")
+	}
+	for _, want := range []string{"remove manifest", "remove progress"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q; both failures must be reported", err, want)
+		}
+	}
+}
+
+// TestSQLiteStore_DeleteJobArtifactsMissingIsNotAnError pins the other half:
+// a job whose artifacts were never written, or were already cleaned up, must
+// not make removal fail. Queue.Remove calls this unconditionally.
+func TestSQLiteStore_DeleteJobArtifactsMissingIsNotAnError(t *testing.T) {
+	store, _, _ := setupTestStore(t)
+
+	if err := store.DeleteJobArtifacts(t.Context(), "job0000000000010"); err != nil {
+		t.Errorf("DeleteJobArtifacts on absent artifacts = %v, want nil", err)
 	}
 }
