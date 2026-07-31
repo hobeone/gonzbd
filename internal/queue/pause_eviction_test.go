@@ -520,3 +520,53 @@ func TestSetStatusIf_HydratesResidentJob(t *testing.T) {
 		t.Error("SetStatusIf left job de-hydrated on resident status Downloading")
 	}
 }
+
+// TestEncodeArticlesFailed_NilAndBoundsGuards verifies that encodeArticlesFailed
+// and encodeArticlesDone return empty string without panicking when called on
+// nil receivers or out-of-bounds file indices.
+func TestEncodeArticlesFailed_NilAndBoundsGuards(t *testing.T) {
+	t.Parallel()
+
+	if got := encodeArticlesFailed(nil, 0); got != "" {
+		t.Errorf("encodeArticlesFailed(nil, 0) = %q, want empty", got)
+	}
+	if got := encodeArticlesDone(nil, 0); got != "" {
+		t.Errorf("encodeArticlesDone(nil, 0) = %q, want empty", got)
+	}
+
+	job := &Job{ID: "bounds-test"}
+	if got := encodeArticlesFailed(job, 0); got != "" {
+		t.Errorf("encodeArticlesFailed(unhydrated, 0) = %q, want empty", got)
+	}
+}
+
+// TestSetStatus_IllegalTransitionDoesNotHydrate verifies that requesting an
+// illegal status transition on a de-hydrated job fails fast without hydrating
+// the job in memory.
+func TestSetStatus_IllegalTransitionDoesNotHydrate(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	q := New(WithStateDir(dir))
+	job := makeMultiFileJob(t, "illegal-trans-test", 1, 2)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	_ = q.Pause(job.ID)
+
+	// Precondition: job is de-hydrated in StatusPaused.
+	if job.Manifest() != nil || job.Progress() != nil {
+		t.Fatal("fixture error: job should be non-resident after Pause")
+	}
+
+	// Request illegal transition: StatusPaused -> StatusCompleted.
+	err := q.SetStatus(job.ID, constants.StatusCompleted)
+	if !errors.Is(err, ErrIllegalStatusTransition) {
+		t.Errorf("SetStatus(Paused -> Completed) err = %v, want ErrIllegalStatusTransition", err)
+	}
+
+	// Verify job remains de-hydrated with zero hydration I/O.
+	if job.Manifest() != nil || job.Progress() != nil {
+		t.Error("job was unnecessarily hydrated on illegal status transition")
+	}
+}

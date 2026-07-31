@@ -102,6 +102,9 @@ func decodeArticlesDone(s string, job *Job, fileIdx int) {
 }
 
 func encodeArticlesFailed(job *Job, fileIdx int) string {
+	if job == nil || job.Progress() == nil || job.Manifest() == nil || fileIdx < 0 || fileIdx >= job.Manifest().NumFiles() {
+		return ""
+	}
 	lo, hi := job.Manifest().FileRange(fileIdx)
 	if hi <= lo {
 		return ""

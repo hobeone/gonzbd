@@ -949,6 +949,10 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 		q.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
+	if !canTransitionStatus(job.Status, status) {
+		q.mu.Unlock()
+		return illegalTransition(job.Status, status)
+	}
 	if isResidentStatus(status) && job.manifest == nil {
 		if err := q.hydrateJobLocked(context.Background(), job); err != nil {
 			q.mu.Unlock()
@@ -985,6 +989,10 @@ func (q *Queue) SetStatusIf(id string, newStatus, ifCurrent constants.Status) er
 	if job.Status != ifCurrent {
 		q.mu.Unlock()
 		return nil
+	}
+	if !canTransitionStatus(job.Status, newStatus) {
+		q.mu.Unlock()
+		return illegalTransition(job.Status, newStatus)
 	}
 	if isResidentStatus(newStatus) && job.manifest == nil {
 		if err := q.hydrateJobLocked(context.Background(), job); err != nil {
@@ -1696,8 +1704,8 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		// same.
 		newProgress.recompute(newManifestVal)
 
-		job.manifest = newManifestVal
-		job.progress = newProgress
+		job.SetManifest(newManifestVal)
+		job.SetProgress(newProgress)
 		q.dirty.Store(true)
 	}
 	return nil

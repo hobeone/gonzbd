@@ -561,6 +561,8 @@ type jobJSON struct {
 
 // MarshalJSON implements json.Marshaler.
 func (j *Job) MarshalJSON() ([]byte, error) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
 	return json.Marshal(jobJSON{ //nolint:gosec // G117: NZB archive password, not a credential
 		ID:       j.ID,
 		Filename: j.Filename,
