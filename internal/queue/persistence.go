@@ -188,8 +188,7 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 					var m Manifest
 					if err := readGzJSON(manifestPath, &m); err == nil {
 						m.buildMessageIDIndex()
-						job.manifest = &m
-						job.progress = newJobProgress(&m)
+						job.setResidency(&m, newJobProgress(&m))
 						_ = q.store.RestoreJobProgress(context.Background(), job)
 						q.activeSet.Add(job)
 					}

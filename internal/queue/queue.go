@@ -424,8 +424,7 @@ func (q *Queue) Add(job *Job) error {
 	q.byID[job.ID] = job
 
 	if job.Status == constants.StatusQueued && (q.store != nil || q.stateDir != "") {
-		job.manifest = nil
-		job.progress = nil
+		job.setResidency(nil, nil)
 	}
 
 	q.dirty.Store(true)
@@ -616,8 +615,7 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 		// Attach manifest & progress if not already resident
 		if job.manifest == nil {
 			manifest.buildMessageIDIndex()
-			job.manifest = &manifest
-			job.progress = newJobProgress(&manifest)
+			job.setResidency(&manifest, newJobProgress(&manifest))
 		}
 
 		// If SQLite store present, restore per-file progress counters.
@@ -677,8 +675,7 @@ func (q *Queue) evictJobLocked(job *Job) {
 	}
 	q.activeSet.Evict(job)
 	if q.store != nil || q.stateDir != "" {
-		job.manifest = nil
-		job.progress = nil
+		job.setResidency(nil, nil)
 	}
 }
 
@@ -919,8 +916,7 @@ func (q *Queue) hydrateResidentLocked(job *Job, id string, status, prevStatus co
 		job.Status = prevStatus
 		return fmt.Errorf("queue: hydrate job %s for status %s: %w", id, status, err)
 	}
-	job.manifest = &m
-	job.progress = newJobProgress(&m)
+	job.setResidency(&m, newJobProgress(&m))
 	if q.store != nil {
 		_ = q.store.RestoreJobProgress(context.Background(), job) //lockio: restores progress in place; hoist tracked in #229
 	}
@@ -1702,8 +1698,7 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		// same.
 		newProgress.recompute(newManifestVal)
 
-		job.manifest = newManifestVal
-		job.progress = newProgress
+		job.setResidency(newManifestVal, newProgress)
 		q.dirty.Store(true)
 	}
 	return nil

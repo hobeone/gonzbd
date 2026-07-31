@@ -33,13 +33,19 @@ func (q *Queue) Snapshot() []*Job {
 	return res
 }
 
+// hydrateSnapshot loads cp's manifest/progress from disk. cp is always a
+// freshly cloneJob-allocated Job that has not yet been returned to any
+// caller and is never inserted into q.jobs/q.byID, so it has no concurrent
+// readers at this point — a raw field-level residency lock via
+// setResidency isn't required for correctness here. It's used anyway so
+// there is exactly one way to assign the manifest/progress pair in this
+// package, rather than two.
 func hydrateSnapshot(stateDir string, store Store, cp *Job) {
 	manifestPath := filepath.Join(stateDir, "manifests", cp.ID+".json.gz")
 	var m Manifest
 	if err := readGzJSON(manifestPath, &m); err == nil {
 		m.buildMessageIDIndex()
-		cp.manifest = &m
-		cp.progress = newJobProgress(&m)
+		cp.setResidency(&m, newJobProgress(&m))
 		if store != nil {
 			_ = store.RestoreJobProgress(context.Background(), cp)
 		}
@@ -52,14 +58,37 @@ func hydrateSnapshot(stateDir string, store Store, cp *Job) {
 // snapshots diverge from the live manifest (a correctness bug, since
 // Manifest is meant to be immutable) or pay a full manifest deep-copy on
 // every snapshot for no reason (a performance regression).
+//
+// This copies j's exported fields one at a time rather than `cp := *j`
+// deliberately: Job now embeds a sync.RWMutex value (residencyMu), and a
+// whole-struct copy would copy that mutex's state too — a go vet copylocks
+// violation, and semantically wrong besides, since cp needs its own,
+// independent, unlocked mutex rather than a snapshot of j's. Declaring cp
+// as a struct literal leaves residencyMu at its zero value, which is
+// exactly right: ready to use, uncontended, and unrelated to j's.
 func cloneJob(j *Job) *Job {
-	cp := *j
+	cp := &Job{
+		ID:       j.ID,
+		Filename: j.Filename,
+		Name:     j.Name,
+		Password: j.Password,
+		URL:      j.URL,
+		Category: j.Category,
+		Priority: j.Priority,
+		Status:   j.Status,
+		PP:       j.PP,
+		Script:   j.Script,
+		Added:    j.Added,
+		MD5:      j.MD5,
+		AvgAge:   j.AvgAge,
+		Warning:  j.Warning,
+		PostProc: j.PostProc,
+	}
 
-	cp.manifest = j.manifest
-	if j.progress != nil {
-		cp.progress = j.progress.clone()
-	} else {
-		cp.progress = nil
+	manifest := j.Manifest()
+	cp.manifest = manifest
+	if progress := j.Progress(); progress != nil {
+		cp.progress = progress.clone()
 	}
 
 	// Deep copy maps
@@ -78,7 +107,7 @@ func cloneJob(j *Job) *Job {
 		copy(cp.Groups, j.Groups)
 	}
 
-	return &cp
+	return cp
 }
 
 // SnapshotJob returns a point-in-time, deep-copied view of a single job
