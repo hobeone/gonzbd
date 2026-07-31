@@ -76,6 +76,7 @@ design-level change.
 | [`docs/go-standards.md`](docs/go-standards.md) | Creating, editing, or refactoring any `.go` file | Idioms, anti-patterns, concurrency/persistence architecture, library selection, testing standards, the Go backend lessons-learned catalog |
 | [`docs/svelte-gotchas.md`](docs/svelte-gotchas.md) | Creating, editing, or refactoring any `.svelte`/`.svelte.ts` file | Svelte 5 reactivity gotchas (module-level `$state`, native `<dialog>`/`Modal.svelte` patterns, child component update patterns) |
 | [`docs/config-contract.md`](docs/config-contract.md) | Adding/renaming/removing a config field or a Svelte config `keyword=` prop | Keeping `gonzbd.yaml` comments, `docs/sabnzbd_spec.md` §9.x, and the config↔UI contract test in sync |
+| [`docs/queue-lifecycle.md`](docs/queue-lifecycle.md) | Touching job residency, the `ActiveSet`, the promotion loop, or `Manifest`/`JobProgress` access | Which state a job always has, the header/progress/manifest tiers, which operations may fail and which must not, the memory budget, and why the invariant is compiler-enforced rather than tested |
 | [`docs/mutation-testing-playbook.md`](docs/mutation-testing-playbook.md) | Running `gremlins` | The `run_gremlins.sh` wrapper, tuning, triaging `LIVED`/`NOT COVERED` mutants, the `--diff` known-bug workaround |
 
 ## Building and Running
