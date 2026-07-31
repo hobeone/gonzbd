@@ -561,6 +561,7 @@ func (q *Queue) Retry(id string) error {
 			q.mu.Unlock()
 			return fmt.Errorf("queue: retry job %s: %w", id, err)
 		}
+		prevStatus, prevWarning := job.Status, job.Warning
 		if err := q.setStatusLocked(job, constants.StatusQueued); err != nil {
 			q.mu.Unlock()
 			return err
@@ -568,7 +569,20 @@ func (q *Queue) Retry(id string) error {
 		job.Warning = ""
 		job.ResetForRetry()
 		if q.store != nil {
-			_ = q.store.Update(context.Background(), job) //lockio: persists the reset articles_done before PromoteNext's unconditional RestoreJobProgress can re-read the stale row
+			if err := q.store.Update(context.Background(), job); err != nil { //lockio: persists the reset articles_done before PromoteNext's unconditional RestoreJobProgress can re-read the stale row
+				// The write is load-bearing, so its failure cannot be
+				// discarded: PromoteNext would re-read the stale row and undo
+				// the reset, leaving Retry to report success on a job that is
+				// still failed and undispatchable — the exact defect #260
+				// describes. Roll the job back instead. Dropping residency is
+				// what makes the rollback complete: ResetForRetry has already
+				// mutated this JobProgress, and the store row, which was never
+				// written, remains the authority to re-hydrate from.
+				job.Status, job.Warning = prevStatus, prevWarning
+				q.evictJobLocked(job)
+				q.mu.Unlock()
+				return fmt.Errorf("queue: retry job %s: persist reset: %w", id, err)
+			}
 		}
 	}
 	q.dirty.Store(true)
@@ -988,7 +1002,17 @@ func (q *Queue) hydrateJobLocked(job *Job, id string) error {
 	}
 	job.setResidency(&m, newJobProgress(&m))
 	if q.store != nil {
-		_ = q.store.RestoreJobProgress(context.Background(), job) //lockio: restores progress in place; hoist tracked in #229
+		if err := q.store.RestoreJobProgress(context.Background(), job); err != nil { //lockio: restores progress in place; hoist tracked in #229
+			// newJobProgress built an all-zero JobProgress that RestoreJobProgress
+			// was meant to fill in from the stored counters. Keeping it on a
+			// failed restore would present a part-downloaded job as having
+			// downloaded nothing, and Retry persists what it hydrates, so the
+			// empty progress would then be written back over the real one.
+			// Drop residency and report the failure; PromoteNext already fails
+			// closed on this same call.
+			job.setResidency(nil, nil)
+			return fmt.Errorf("queue: restore progress for job %s: %w", id, err)
+		}
 	}
 	return nil
 }

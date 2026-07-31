@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"path/filepath"
+	"slices"
 )
 
 // Snapshot returns a point-in-time, deep-copied view of all jobs in the
@@ -101,21 +102,17 @@ func cloneJob(j *Job) *Job {
 	// for a stale copy to serve.
 	cp.lastKnownRemainingBytes = 0
 
-	// Deep copy maps
+	// Deep copy maps. maps.Clone would be shallow — the value slices would
+	// stay shared with j — so the values are cloned individually.
 	if j.Meta != nil {
 		cp.Meta = make(map[string][]string, len(j.Meta))
 		for k, v := range j.Meta {
-			vCp := make([]string, len(v))
-			copy(vCp, v)
-			cp.Meta[k] = vCp
+			cp.Meta[k] = slices.Clone(v)
 		}
 	}
 
-	// Deep copy slices
-	if j.Groups != nil {
-		cp.Groups = make([]string, len(j.Groups))
-		copy(cp.Groups, j.Groups)
-	}
+	// slices.Clone preserves nil, so this needs no nil guard.
+	cp.Groups = slices.Clone(j.Groups)
 
 	return cp
 }

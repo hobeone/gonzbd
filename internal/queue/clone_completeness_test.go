@@ -103,3 +103,25 @@ func fillDistinctive(fv reflect.Value, idx int) bool {
 		return false
 	}
 }
+
+// TestCloneJobDropsRemainingBytesCache pins the one unexported field
+// cloneJob deliberately does not carry across.
+//
+// The exported fields are covered above, and the manifest/progress pair is
+// covered by TestSnapshotJob_ArtIdxIsolation (manifest shared by reference,
+// progress deep-copied). lastKnownRemainingBytes is neither: it is a cache
+// that is only meaningful while progress is nil, and a snapshot clone gets
+// its residency reconstructed from disk by hydrateSnapshot rather than from
+// a cached figure. Copying it would hand the clone a number with no live
+// state behind it, so the omission is intentional and worth pinning — a
+// future reader "fixing" the apparent oversight should fail here.
+func TestCloneJobDropsRemainingBytesCache(t *testing.T) {
+	t.Parallel()
+
+	job := &Job{ID: "cache-drop", Name: "cache drop"}
+	job.lastKnownRemainingBytes = 4242
+
+	if got := cloneJob(job).lastKnownRemainingBytes; got != 0 {
+		t.Errorf("clone carried lastKnownRemainingBytes = %d, want 0", got)
+	}
+}
