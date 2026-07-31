@@ -886,9 +886,53 @@ func (q *Queue) SetCategory(id, cat string, cats []config.CategoryConfig) error 
 	return nil
 }
 
+// hydrateResidentLocked re-hydrates job's manifest and progress when a
+// transition moves it into a resident status while it is still de-hydrated
+// (job.manifest == nil). Must be called with q.mu held for write, after
+// job.Status has already been set to status by setStatusLocked; prevStatus
+// is the status job held immediately before that call, used to revert on
+// failure. No-ops (returns nil, no mutation) when status is not a resident
+// status, when the job is already hydrated, or when the queue has no
+// persistence configured (in that configuration jobs are never de-hydrated
+// in the first place, so manifest is never nil here).
+//
+// On failure it reverts job.Status to prevStatus rather than routing through
+// prepareClaimFailureLocked/finishClaimFailure (issue #264's suggested
+// direction): that machinery additionally evicts the job from the queue and
+// moves it to history, a bigger and more destructive transition than what a
+// caller requesting e.g. StatusDownloading asked for, and it would leave
+// job.Status at Failed rather than unchanged — breaking the "no partial
+// mutation on error" contract SetStatus/SetStatusIf must uphold. Reverting
+// and surfacing the error instead means the requested transition simply
+// doesn't happen, while still upholding residentJob's invariant that
+// manifest and progress are always either both nil or both non-nil.
+func (q *Queue) hydrateResidentLocked(job *Job, id string, status, prevStatus constants.Status) error {
+	if !isResidentStatus(status) || job.manifest != nil {
+		return nil
+	}
+	if q.store == nil && q.stateDir == "" {
+		return nil
+	}
+	manifestPath := filepath.Join(q.stateDir, "manifests", id+".json.gz")
+	var m Manifest
+	if err := readGzJSON(manifestPath, &m); err != nil {
+		job.Status = prevStatus
+		return fmt.Errorf("queue: hydrate job %s for status %s: %w", id, status, err)
+	}
+	job.manifest = &m
+	job.progress = newJobProgress(&m)
+	if q.store != nil {
+		_ = q.store.RestoreJobProgress(context.Background(), job) //lockio: restores progress in place; hoist tracked in #229
+	}
+	q.activeSet.Add(job)
+	return nil
+}
+
 // SetStatus updates the status of the job with the given ID. Returns
 // ErrIllegalStatusTransition if the requested transition is not allowed,
-// ErrNotFound if the job is absent.
+// ErrNotFound if the job is absent, or a wrapped error if the transition
+// requires re-hydrating the job (see hydrateResidentLocked) and that fails —
+// in which case job.Status is left exactly as it was before the call.
 func (q *Queue) SetStatus(id string, status constants.Status) error {
 	q.mu.Lock()
 	job, ok := q.byID[id]
@@ -896,25 +940,16 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 		q.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
+	prevStatus := job.Status
 	if err := q.setStatusLocked(job, status); err != nil {
 		q.mu.Unlock()
 		return err
 	}
-	if isResidentStatus(status) && job.manifest == nil {
-		ctx := context.Background()
-		manifestPath := filepath.Join(q.stateDir, "manifests", id+".json.gz")
-		if q.store != nil || q.stateDir != "" {
-			var m Manifest
-			if err := readGzJSON(manifestPath, &m); err == nil {
-				job.manifest = &m
-				job.progress = newJobProgress(&m)
-				if q.store != nil {
-					_ = q.store.RestoreJobProgress(ctx, job) //lockio: restores progress in place; hoist tracked in #229
-				}
-				q.activeSet.Add(job)
-			}
-		}
-	} else if !isResidentStatus(status) {
+	if err := q.hydrateResidentLocked(job, id, status, prevStatus); err != nil { //lockio: reads manifest + calls store.RestoreJobProgress; see hydrateResidentLocked doc, tracked in #229
+		q.mu.Unlock()
+		return err
+	}
+	if !isResidentStatus(status) {
 		q.evictJobLocked(job)
 	}
 	q.dirty.Store(true)
@@ -927,7 +962,9 @@ func (q *Queue) SetStatus(id string, status constants.Status) error {
 // SetStatusIf conditionally updates a job's status. The status is only
 // changed if the current status matches ifCurrent AND the edge is legal.
 // Returns ErrNotFound if the job is absent; returns nil even if the
-// condition didn't match (no error, just a no-op).
+// condition didn't match (no error, just a no-op). Like SetStatus, returns a
+// wrapped error and leaves job.Status untouched if re-hydration is required
+// and fails (see hydrateResidentLocked).
 func (q *Queue) SetStatusIf(id string, newStatus, ifCurrent constants.Status) error {
 	q.mu.Lock()
 	job, ok := q.byID[id]
@@ -939,7 +976,12 @@ func (q *Queue) SetStatusIf(id string, newStatus, ifCurrent constants.Status) er
 		q.mu.Unlock()
 		return nil
 	}
+	prevStatus := job.Status
 	if err := q.setStatusLocked(job, newStatus); err != nil {
+		q.mu.Unlock()
+		return err
+	}
+	if err := q.hydrateResidentLocked(job, id, newStatus, prevStatus); err != nil { //lockio: reads manifest + calls store.RestoreJobProgress; see hydrateResidentLocked doc, tracked in #229
 		q.mu.Unlock()
 		return err
 	}
