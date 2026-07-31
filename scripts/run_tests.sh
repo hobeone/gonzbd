@@ -14,41 +14,54 @@ echo "===================================================="
 echo "Starting Full Test Suite: sabnzbd-go"
 echo "===================================================="
 
-# 0. UI Validation & Build
-if [ -d "ui" ]; then
-    echo -e "\n[0/6] Checking and Building UI..."
-    (
-        cd ui
-        if [ -d "node_modules" ]; then
-            echo "Running UI Type-Check..."
-            bun run check
-        fi
-        echo "Building UI..."
-        bun run build
-    )
-    echo -e "${GREEN}✓ UI Build & Type-Check Passed${NC}"
-else
-    echo -e "\n[0/6] Skipping UI Build (ui/ directory not found)"
+# Check prerequisites
+echo -e "\nChecking prerequisites..."
+MISSING=0
+
+for cmd in go bun golangci-lint govulncheck; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo -e "${RED}ERROR: Required tool '$cmd' is missing from PATH.${NC}" >&2
+        MISSING=1
+    fi
+done
+
+if [ ! -d "ui" ]; then
+    echo -e "${RED}ERROR: Required directory 'ui/' is missing.${NC}" >&2
+    MISSING=1
 fi
+
+if [ ! -d "ui/node_modules" ]; then
+    echo -e "${RED}ERROR: 'ui/node_modules/' is missing. Run 'bun install' in ui/.${NC}" >&2
+    MISSING=1
+fi
+
+if [ "$MISSING" -ne 0 ]; then
+    echo -e "${RED}Prerequisites check failed. Aborting test suite.${NC}" >&2
+    exit 1
+fi
+echo -e "${GREEN}✓ All prerequisites met${NC}"
+
+# 0. UI Validation & Build
+echo -e "\n[0/6] Checking and Building UI..."
+(
+    cd ui
+    echo "Running UI Type-Check..."
+    bun run check
+    echo "Building UI..."
+    bun run build
+)
+echo -e "${GREEN}✓ UI Build & Type-Check Passed${NC}"
 
 # 1. Static Analysis & Linters
 echo -e "\n[1/6] Running Static Analysis & Linters..."
 echo "Running go vet..."
 go vet ./...
 
-if command -v golangci-lint >/dev/null 2>&1; then
-    echo "Running golangci-lint..."
-    golangci-lint run ./...
-else
-    echo "golangci-lint not found in PATH, skipping"
-fi
+echo "Running golangci-lint..."
+golangci-lint run ./...
 
-if command -v govulncheck >/dev/null 2>&1; then
-    echo "Running govulncheck..."
-    govulncheck ./...
-else
-    echo "govulncheck not found in PATH, skipping"
-fi
+echo "Running govulncheck..."
+govulncheck ./...
 echo -e "${GREEN}✓ Static Analysis & Linters Passed${NC}"
 
 # 2. Go Unit Tests (with Race Detector)
@@ -82,30 +95,20 @@ go test -v -tags=integration ./test/integration/...
 echo -e "${GREEN}✓ Go Integration Tests Passed${NC}"
 
 # 4. UI Component Tests
-if [ -d "ui" ]; then
-    echo -e "\n[4/6] Running UI Component Tests..."
+echo -e "\n[4/6] Running UI Component Tests..."
+(
     cd ui
-    if [ -d "node_modules" ]; then
-        bun run test
-    else
-        echo "node_modules not found in ui/, skipping UI tests (run 'bun install' in ui/ to enable)"
-    fi
-    cd ..
-    echo -e "${GREEN}✓ UI Component Tests Passed${NC}"
-else
-    echo -e "\n[4/6] Skipping UI Component Tests (ui/ directory not found)"
-fi
+    bun run test
+)
+echo -e "${GREEN}✓ UI Component Tests Passed${NC}"
 
 # 5. UI E2E Tests (requires built UI + Playwright browsers)
-if [ -f "ui/dist/index.html" ]; then
-    echo -e "\n[5/6] Running UI E2E Tests..."
-    go test -tags=uitest -v ./test/uitest/...
-    echo -e "${GREEN}✓ UI E2E Tests Passed${NC}"
-else
-    echo -e "\n[5/6] Skipping UI E2E Tests (run 'cd ui && bun run build' first)"
-fi
+echo -e "\n[5/6] Running UI E2E Tests..."
+go test -tags=uitest -v ./test/uitest/...
+echo -e "${GREEN}✓ UI E2E Tests Passed${NC}"
 
 echo -e "\n${GREEN}===================================================="
 echo "ALL TESTS PASSED SUCCESSFULLY"
 echo -e "====================================================${NC}"
+
 
