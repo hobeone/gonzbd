@@ -27,7 +27,10 @@ func TestClearAllEmitted_RestoresFailedArticleBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	snap := q.SnapshotJob("j1")
+	snap, err := q.SnapshotJob("j1")
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	failedBefore := snap.Progress().FailedBytes()
 	remainingBefore := snap.Progress().RemainingBytes()
 	if failedBefore == 0 {
@@ -36,7 +39,10 @@ func TestClearAllEmitted_RestoresFailedArticleBytes(t *testing.T) {
 
 	q.ClearAllEmitted()
 
-	snap = q.SnapshotJob("j1")
+	snap, err = q.SnapshotJob("j1")
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	if snap.Progress().FailedBytes() != 0 {
 		t.Errorf("FailedBytes = %d after ClearAllEmitted; want 0", snap.Progress().FailedBytes())
 	}
@@ -61,14 +67,20 @@ func TestClearAllEmitted_StatusDownloadingPreserved(t *testing.T) {
 		t.Fatalf("SetStatus: %v", err)
 	}
 
-	snap := q.SnapshotJob("j1")
+	snap, err := q.SnapshotJob("j1")
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	if snap.Status != constants.StatusDownloading {
 		t.Fatalf("precondition: status = %v, want StatusDownloading", snap.Status)
 	}
 
 	q.ClearAllEmitted()
 
-	snap = q.SnapshotJob("j1")
+	snap, err = q.SnapshotJob("j1")
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	if snap.Status != constants.StatusDownloading {
 		t.Errorf("status = %v after ClearAllEmitted; want StatusDownloading", snap.Status)
 	}
@@ -93,12 +105,18 @@ func TestClearAllEmitted_CompletedArticlesUntouched(t *testing.T) {
 		}
 	}
 
-	snap := q.SnapshotJob("j1")
+	snap, err := q.SnapshotJob("j1")
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	remainingBefore := snap.Progress().RemainingBytes()
 
 	q.ClearAllEmitted()
 
-	snap = q.SnapshotJob("j1")
+	snap, err = q.SnapshotJob("j1")
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	if snap.Progress().RemainingBytes() != remainingBefore {
 		t.Errorf("RemainingBytes changed from %d to %d; completed articles must not be affected",
 			remainingBefore, snap.Progress().RemainingBytes())

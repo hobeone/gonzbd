@@ -190,7 +190,10 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		cancelledCtx, cancel := context.WithCancel(t.Context())
 		cancel()
 
-		snap := q.SnapshotJob(jobID)
+		snap, err := q.SnapshotJob(jobID)
+		if err != nil {
+			t.Fatalf("SnapshotJob: %v", err)
+		}
 		if app.maybeReleaseRecoveryVolumes(cancelledCtx, jobID, snap) {
 			t.Error("maybeReleaseRecoveryVolumes must return false when context is cancelled")
 		}
@@ -203,13 +206,19 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		}
 		copyFixturePar2(t, dirClean)
 
-		snap := q.SnapshotJob(jobID)
+		snap, err := q.SnapshotJob(jobID)
+		if err != nil {
+			t.Fatalf("SnapshotJob: %v", err)
+		}
 		if app.maybeReleaseRecoveryVolumes(t.Context(), jobID, snap) {
 			t.Error("maybeReleaseRecoveryVolumes must return false when verification is clean")
 		}
 
 		// Verify that the deferred PAR2 files are removed from the queue.
-		snapAfter := q.SnapshotJob(jobID)
+		snapAfter, err := q.SnapshotJob(jobID)
+		if err != nil {
+			t.Fatalf("SnapshotJob: %v", err)
+		}
 		m := snapAfter.Manifest()
 		for fi := range m.NumFiles() {
 			if m.FileIsPar2Recovery(fi) {
@@ -240,13 +249,19 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		}
 		copyFixturePar2(t, dirCorrupt)
 
-		snap := q.SnapshotJob(jobCorruptID)
+		snap, err := q.SnapshotJob(jobCorruptID)
+		if err != nil {
+			t.Fatalf("SnapshotJob: %v", err)
+		}
 		if !app.maybeReleaseRecoveryVolumes(t.Context(), jobCorruptID, snap) {
 			t.Error("maybeReleaseRecoveryVolumes must return true when verification fails")
 		}
 
 		// Verify that the deferred recovery volume was undeferred.
-		snapAfter := q.SnapshotJob(jobCorruptID)
+		snapAfter, err := q.SnapshotJob(jobCorruptID)
+		if err != nil {
+			t.Fatalf("SnapshotJob: %v", err)
+		}
 		m, p := snapAfter.Manifest(), snapAfter.Progress()
 		found := false
 		for fi := range m.NumFiles() {

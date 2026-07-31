@@ -1,11 +1,13 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
 
 	"github.com/hobeone/gonzbd/internal/directunpack"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // directUnpackOrchestrator owns the set of in-flight DirectUnpackers and the
@@ -40,8 +42,18 @@ func newDirectUnpackOrchestrator(app *Application) *directUnpackOrchestrator {
 // job is eligible for extraction-while-downloading.
 func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	app := o.app
-	snap := app.queue.SnapshotJob(fc.JobID)
-	if snap == nil || snap.PostProc {
+	snap, err := app.queue.SnapshotJob(fc.JobID)
+	if err != nil {
+		if !errors.Is(err, queue.ErrNotFound) {
+			// The job exists but its stored state is damaged. DirectUnpack
+			// is a best-effort optimization (the standard post-proc path
+			// still runs), so log loudly and skip rather than aborting
+			// the completion handler over it.
+			app.log.Error("directunpack: job snapshot failed", "job", fc.JobID, "err", err)
+		}
+		return
+	}
+	if snap.PostProc {
 		return
 	}
 	// Skip DU for jobs that don't want unpacking (PP < 2) or have a password

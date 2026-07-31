@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -410,7 +411,11 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 	catFilter := formValue(r, "cat")
 	statusFilter := formValue(r, "status")
 
-	jobs := s.queue.Snapshot()
+	jobs, err := s.queue.Snapshot()
+	if err != nil {
+		s.respondError(w, http.StatusInternalServerError, "queue snapshot: "+err.Error())
+		return
+	}
 	paused := s.queue.IsPaused()
 
 	// Snapshot speed once per request so every slot's ETA is computed
@@ -496,17 +501,23 @@ func (s *Server) queueList(w http.ResponseWriter, r *http.Request) {
 // frontend can reuse the same parser; Slots will contain exactly one
 // entry (or zero if the job has been removed).
 func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID string) {
-	job := s.queue.SnapshotJob(nzoID)
-	if job == nil {
-		respondJSON(w, http.StatusOK, queueResponse{
-			Status: true,
-			Queue: queueDetail{
-				Status:    "Idle",
-				Paused:    s.queue.IsPaused(),
-				NoOfSlots: 0,
-				Slots:     []queueSlot{},
-			},
-		})
+	job, err := s.queue.SnapshotJob(nzoID)
+	if err != nil {
+		if errors.Is(err, queue.ErrNotFound) {
+			respondJSON(w, http.StatusOK, queueResponse{
+				Status: true,
+				Queue: queueDetail{
+					Status:    "Idle",
+					Paused:    s.queue.IsPaused(),
+					NoOfSlots: 0,
+					Slots:     []queueSlot{},
+				},
+			})
+			return
+		}
+		// Job exists but its stored state is damaged — distinct, louder
+		// outcome from routine absence (see SnapshotJob's doc comment).
+		s.respondError(w, http.StatusInternalServerError, "queue snapshot job "+nzoID+": "+err.Error())
 		return
 	}
 
@@ -540,7 +551,27 @@ func (s *Server) queueJobDetail(w http.ResponseWriter, _ *http.Request, nzoID st
 // queueDelete removes specific jobs by ID (CSV in value=) or all jobs if value=all.
 // If delete_files=1 is present, also deletes partial downloads from disk.
 //
+// allQueuedJobIDs returns the IDs of every job currently in the queue.
+//
+// Snapshot fails closed, so a queue holding a job whose stored state cannot be
+// read yields no list at all rather than a short one. That matters here:
+// queueDelete("all") would otherwise silently delete a subset while reporting
+// success, leaving behind precisely the damaged job the caller was trying to
+// clear.
+//
 //nolint:gosec // G120: body already limited by loggingMiddleware's MaxBytesReader
+func (s *Server) allQueuedJobIDs() ([]string, error) {
+	jobs, err := s.queue.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(jobs))
+	for _, j := range jobs {
+		ids = append(ids, j.ID)
+	}
+	return ids, nil
+}
+
 func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 	value, ok := s.requireParam(w, r, "value", "")
 	if !ok {
@@ -550,9 +581,12 @@ func (s *Server) queueDelete(w http.ResponseWriter, r *http.Request) {
 	var ids []string
 
 	if value == "all" {
-		for _, j := range s.queue.Snapshot() {
-			ids = append(ids, j.ID)
+		all, err := s.allQueuedJobIDs()
+		if err != nil {
+			s.respondError(w, http.StatusInternalServerError, "queue snapshot: "+err.Error())
+			return
 		}
+		ids = all
 	} else {
 		ids = splitCSV(value)
 	}
@@ -609,8 +643,20 @@ func (s *Server) queueSetPaused(w http.ResponseWriter, r *http.Request, action f
 		// from queue.Get: the download pipeline mutates job.Name
 		// concurrently, and reading it off the live pointer here would
 		// be an unsynchronized data race (TRACE-1).
-		if job := s.queue.SnapshotJob(id); job != nil {
+		job, err := s.queue.SnapshotJob(id)
+		switch {
+		case err == nil:
 			s.log.Info("job "+verb, "job", id, "name", job.Name)
+		case errors.Is(err, queue.ErrNotFound):
+			// Not found is expected here: action(id) above is itself
+			// lenient about missing IDs, so this is just skipped logging,
+			// not an error.
+		default:
+			// The job exists but its stored state is damaged. This must
+			// not fall into the not-found case above — that would hide a
+			// real hydration failure behind the routine "ID not found"
+			// path this bulk endpoint already tolerates.
+			s.log.Error("snapshot job for logging failed", "job", id, "error", err)
 		}
 	}
 	respondStatus(w)
@@ -691,7 +737,14 @@ func (s *Server) queueChangeCat(w http.ResponseWriter, r *http.Request) {
 	// queue.Get: the download pipeline mutates these fields concurrently,
 	// and reading them off the live pointer here would be an
 	// unsynchronized data race (TRACE-1).
-	job := s.queue.SnapshotJob(nzoID)
+	job, err := s.queue.SnapshotJob(nzoID)
+	if err != nil && !errors.Is(err, queue.ErrNotFound) {
+		// The job exists but its stored state is damaged. respondCategoryChanged
+		// treats a nil job as "missing detail, still 200" (see its doc
+		// comment) which is correct for not-found but would mask a real
+		// hydration failure the same way; log it distinctly instead.
+		s.log.Error("snapshot job after category change failed", "job", nzoID, "error", err)
+	}
 	s.respondCategoryChanged(w, nzoID, job)
 }
 

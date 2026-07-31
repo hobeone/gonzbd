@@ -1336,6 +1336,99 @@ func TestApplication_EdgeCases(t *testing.T) {
 	application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: jobRar.ID, FileIdx: 0})
 }
 
+// TestApplication_MaybeDirectUnpack_Gating pins maybeStart's eligibility
+// gates and its "create and feed a DirectUnpacker" happy path using the
+// exported DirectUnpackStatus accessor as the observable outcome, rather
+// than just calling the trigger with no assertion (see the unasserted
+// "Trigger..." calls in TestApplication_EdgeCases above, which exercise
+// these same lines but don't verify what they did).
+func TestApplication_MaybeDirectUnpack_Gating(t *testing.T) {
+	dl := t.TempDir()
+	comp := t.TempDir()
+	admin := t.TempDir()
+	cfg := testConfig(dl, comp, admin)
+
+	db, err := history.Open(t.Context(), filepath.Join(admin, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	defer db.Close()
+	repo := history.NewRepository(db)
+
+	application, err := app.New(cfg, repo)
+	if err != nil {
+		t.Fatalf("app.New: %v", err)
+	}
+
+	rarNZB := &nzb.NZB{Files: []nzb.File{
+		{Subject: "movie.part1.rar", Bytes: 100},
+		{Subject: "movie.part2.rar", Bytes: 100},
+	}}
+
+	t.Run("PP below 2 never creates a DirectUnpacker", func(t *testing.T) {
+		job, err := queue.NewJob(rarNZB, queue.AddOptions{Name: "low-pp"}, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		job.PP = 1
+		if err := application.Queue().Add(job); err != nil {
+			t.Fatal(err)
+		}
+		// Satisfy every other gate (ctx, resolvable file path) so that if the
+		// PP check were ever removed, execution would fall through all the
+		// way to a real DirectUnpacker being created -- making this test
+		// actually pin the PP<2 guard instead of merely re-testing whatever
+		// gate happens to fire first.
+		application.InjectCtx(t.Context())
+		application.InjectPipelineFileInfo(job.ID, 0, filepath.Join(dl, job.Name, "movie.part1.rar"))
+		application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID, FileIdx: 0})
+		if _, ok := application.DirectUnpackStatus(job.ID); ok {
+			t.Error("expected no DirectUnpacker to be created for a PP<2 job")
+		}
+	})
+
+	t.Run("password set never creates a DirectUnpacker", func(t *testing.T) {
+		job, err := queue.NewJob(rarNZB, queue.AddOptions{Name: "with-password"}, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		job.PP = 3
+		job.Password = "secret"
+		if err := application.Queue().Add(job); err != nil {
+			t.Fatal(err)
+		}
+		// Same rationale as above: satisfy every other gate so the password
+		// check is the one thing standing between this call and a real
+		// DirectUnpacker.
+		application.InjectCtx(t.Context())
+		application.InjectPipelineFileInfo(job.ID, 0, filepath.Join(dl, job.Name, "movie.part1.rar"))
+		application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID, FileIdx: 0})
+		if _, ok := application.DirectUnpackStatus(job.ID); ok {
+			t.Error("expected no DirectUnpacker to be created for a password-protected job")
+		}
+	})
+
+	t.Run("eligible job creates a DirectUnpacker and feeds the first volume", func(t *testing.T) {
+		job, err := queue.NewJob(rarNZB, queue.AddOptions{Name: "eligible"}, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		job.PP = 3
+		if err := application.Queue().Add(job); err != nil {
+			t.Fatal(err)
+		}
+		application.InjectCtx(t.Context())
+		volPath := filepath.Join(dl, job.Name, "movie.part1.rar")
+		application.InjectPipelineFileInfo(job.ID, 0, volPath)
+
+		application.TriggerMaybeDirectUnpack(app.FileComplete{JobID: job.ID, FileIdx: 0})
+
+		if _, ok := application.DirectUnpackStatus(job.ID); !ok {
+			t.Fatal("expected a DirectUnpacker to have been created and registered for an eligible RAR job")
+		}
+	})
+}
+
 func TestApplication_PersistAndCommitError(t *testing.T) {
 	dl := t.TempDir()
 	comp := t.TempDir()

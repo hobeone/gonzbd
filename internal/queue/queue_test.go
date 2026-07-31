@@ -1638,7 +1638,10 @@ func TestSetFileWriteCursor(t *testing.T) {
 	if err := q.SetFileWriteCursor(job.ID, 0, 4096); err != nil {
 		t.Fatalf("SetFileWriteCursor: %v", err)
 	}
-	snap := q.SnapshotJob(job.ID)
+	snap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	if snap.Progress().FileWriteCursor(0) != 4096 {
 		t.Errorf("WriteCursor = %d, want 4096", snap.Progress().FileWriteCursor(0))
 	}

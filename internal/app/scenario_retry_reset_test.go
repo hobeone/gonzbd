@@ -82,9 +82,9 @@ func TestRetry_ResetsDownloadStats(t *testing.T) {
 		t.Fatalf("RetryHistoryJob: %v", err)
 	}
 
-	snap := h.app.Queue().SnapshotJob(jobID)
-	if snap == nil {
-		t.Fatalf("job %s not in queue after retry", jobID)
+	snap, err := h.app.Queue().SnapshotJob(jobID)
+	if err != nil {
+		t.Fatalf("job %s not in queue after retry: %v", jobID, err)
 	}
 	if !snap.Progress().DownloadStarted().IsZero() {
 		t.Errorf("DownloadStarted = %v, want zero", snap.Progress().DownloadStarted())

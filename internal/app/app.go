@@ -251,8 +251,16 @@ func New(cfg *config.Config, repo *history.Repository, opts ...func(*Application
 		sanitize:    sanitize,
 		onHeartbeat: app.RecordHeartbeat,
 		onJobHopeless: func(jobID string) {
-			snap := q.SnapshotJob(jobID)
-			if snap == nil {
+			snap, err := q.SnapshotJob(jobID)
+			if err != nil {
+				if !errors.Is(err, queue.ErrNotFound) {
+					// The job exists but its stored state is damaged;
+					// log distinctly since falling into the same
+					// silent-return path as "not found" would hide a
+					// real hydration failure on a job we know is
+					// hopeless.
+					log.Error("onJobHopeless: job snapshot failed", "job", jobID, "error", err)
+				}
 				return
 			}
 			msg := failMsgForJob(snap)
@@ -471,9 +479,12 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 
 // RemoveJob cancels and removes a job from the queue, optionally deleting its download directory.
 func (app *Application) RemoveJob(ctx context.Context, id string, deleteFiles bool) error {
-	snap := app.queue.SnapshotJob(id)
-	if snap == nil {
-		return fmt.Errorf("job %q not found", id)
+	snap, err := app.queue.SnapshotJob(id)
+	if err != nil {
+		if errors.Is(err, queue.ErrNotFound) {
+			return fmt.Errorf("job %q not found", id)
+		}
+		return fmt.Errorf("app: remove job %q: snapshot: %w", id, err)
 	}
 	// Abort any active DirectUnpacker for this job before removing files.
 	app.duOrch.abortJob(id)
@@ -647,7 +658,15 @@ func (app *Application) Start(ctx context.Context) error {
 	app.wg.Go(func() { app.runMetricsPush(app.ctx) })
 	app.log.Info("application started")
 
-	for _, snap := range app.queue.Snapshot() {
+	startupSnapshot, err := app.queue.Snapshot()
+	if err != nil {
+		// Crash-recovery scan below depends on seeing every job; a job we
+		// cannot hydrate here is one Start cannot safely reason about
+		// (e.g. deciding whether it needs post-proc requeueing), so fail
+		// startup rather than silently skip it.
+		return fmt.Errorf("app: start: queue snapshot: %w", err)
+	}
+	for _, snap := range startupSnapshot {
 		if !snap.IsComplete() {
 			continue
 		}
@@ -676,8 +695,17 @@ func (app *Application) Start(ctx context.Context) error {
 			if app.postProcessor.Has(snap.ID) {
 				continue
 			}
-			jobSnap := app.queue.SnapshotJob(snap.ID)
-			if jobSnap == nil {
+			jobSnap, err := app.queue.SnapshotJob(snap.ID)
+			if err != nil {
+				if errors.Is(err, queue.ErrNotFound) {
+					continue
+				}
+				// The job exists but its stored state is damaged. Log
+				// loudly and skip this job rather than aborting the whole
+				// startup scan over one damaged job, and rather than
+				// silently falling into the same "job vanished" path as
+				// ErrNotFound above.
+				app.log.Error("startup crash recovery: job snapshot failed", "jobID", snap.ID, "err", err)
 				continue
 			}
 			app.enqueuePostProc(jobSnap, failMsg)
@@ -853,8 +881,17 @@ func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete)
 		app.duOrch.maybeStart(fc)
 	}
 
-	snap := app.queue.SnapshotJob(fc.JobID)
-	if snap != nil && snap.IsComplete() {
+	snap, err := app.queue.SnapshotJob(fc.JobID)
+	if err != nil {
+		if !errors.Is(err, queue.ErrNotFound) {
+			// The job exists but its stored state is damaged; log loudly
+			// rather than silently skipping finalization the same way a
+			// routine "job removed mid-download" would.
+			app.log.Error("completion handler: job snapshot failed", "job", fc.JobID, "err", err)
+		}
+		return
+	}
+	if snap.IsComplete() {
 		if app.maybeReleaseRecoveryVolumes(ctx, fc.JobID, snap) {
 			return // downloader will fetch recovery volumes
 		}
@@ -1034,9 +1071,16 @@ func (app *Application) maybeFinalize(jobID, failMsg string) { //nocover: defens
 		// queue's live pointer. The PP may hold this for minutes during
 		// repair/unpack; if the API mutates the queue's copy (Pause,
 		// Resume), the snapshot is unaffected, preventing data races.
-		snap := app.queue.SnapshotJob(jobID)
-		if snap == nil {
-			app.log.Warn("maybeFinalize: job disappeared", "job", jobID)
+		snap, err := app.queue.SnapshotJob(jobID)
+		if err != nil {
+			if errors.Is(err, queue.ErrNotFound) {
+				app.log.Warn("maybeFinalize: job disappeared", "job", jobID)
+			} else {
+				// The job exists but its stored state is damaged: distinct
+				// and louder than "disappeared" since post-processing
+				// cannot proceed on a job we cannot hydrate.
+				app.log.Error("maybeFinalize: job snapshot failed", "job", jobID, "error", err)
+			}
 			return
 		}
 		app.enqueuePostProc(snap, failMsg)
@@ -1220,11 +1264,32 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	_, _ = app.historyRepo.Delete(ctx, jobID)
 	app.emit(Event{Type: "queue_updated"})
 	app.emit(Event{Type: "history_updated"})
-	snap := app.queue.SnapshotJob(jobID)
-	if snap != nil && snap.IsComplete() {
+	app.finalizeIfCompleteAfterRetry(jobID)
+	return nil
+}
+
+// finalizeIfCompleteAfterRetry re-snapshots jobID after RetryHistoryJob has
+// already re-added it to the queue, and finalizes it if the retry somehow
+// produced an already-complete job (e.g. every article was still cached on
+// disk). Split out of RetryHistoryJob so the snapshot-error handling below
+// can be exercised directly in tests without re-deriving the whole
+// load-job/history-delete sequence around it.
+func (app *Application) finalizeIfCompleteAfterRetry(jobID string) {
+	snap, err := app.queue.SnapshotJob(jobID)
+	if err != nil {
+		if !errors.Is(err, queue.ErrNotFound) {
+			// The job exists but its stored state is damaged. The retry
+			// itself already succeeded (job re-added to the queue above),
+			// so this is only a missed opportunistic finalize-check; log
+			// loudly rather than silently skipping it like a routine
+			// "job vanished" would.
+			app.log.Error("retry history job: snapshot failed", "job", jobID, "err", err)
+		}
+		return
+	}
+	if snap.IsComplete() {
 		app.maybeFinalize(jobID, failMsgForJob(snap))
 	}
-	return nil
 }
 
 // buildDownloaderOptions constructs a downloader.Options from the current
@@ -1247,8 +1312,11 @@ func (app *Application) buildDownloaderOptions() downloader.Options {
 		PreCheck:         preCheck,
 		PropagationDelay: time.Duration(propDelay) * time.Minute,
 		OnJobHopeless: func(jobID string) {
-			snap := q.SnapshotJob(jobID)
-			if snap == nil {
+			snap, err := q.SnapshotJob(jobID)
+			if err != nil {
+				if !errors.Is(err, queue.ErrNotFound) {
+					app.log.Error("OnJobHopeless: job snapshot failed", "job", jobID, "err", err)
+				}
 				return
 			}
 			app.maybeFinalize(jobID, failMsgForJob(snap))

@@ -70,7 +70,10 @@ func TestOnDemandPar2_PendingAndCompletion(t *testing.T) {
 	}
 	verifyPending(t, q, "after add")
 
-	snap := q.SnapshotJob(job.ID)
+	snap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	// Only content + index are pending; the recovery volume is deferred.
 	if snap.Progress().PendingArticles() != 2 {
 		t.Errorf("PendingArticles=%d, want 2 (recovery volume deferred)", snap.Progress().PendingArticles())
@@ -109,7 +112,9 @@ func TestOnDemandPar2_PendingAndCompletion(t *testing.T) {
 	if err := q.MarkFileComplete(job.ID, 1); err != nil {
 		t.Fatal(err)
 	}
-	if snap := q.SnapshotJob(job.ID); !snap.IsComplete() {
+	if snap, err := q.SnapshotJob(job.ID); err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	} else if !snap.IsComplete() {
 		t.Error("IsComplete should be true when only deferred files remain")
 	}
 }
@@ -124,13 +129,20 @@ func TestUndeferRecoveryVolumes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idxs := q.SnapshotJob(job.ID).DeferredRecoveryIndices()
+	snapForIdxs, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
+	idxs := snapForIdxs.DeferredRecoveryIndices()
 	if err := q.UndeferRecoveryVolumes(job.ID, idxs); err != nil {
 		t.Fatal(err)
 	}
 	verifyPending(t, q, "after undefer")
 
-	snap := q.SnapshotJob(job.ID)
+	snap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	if snap.HasDeferredPar2() {
 		t.Error("no files should remain deferred after un-deferring all")
 	}
@@ -163,7 +175,11 @@ func TestOnDemandPar2_EarlyUndeferOnFailure(t *testing.T) {
 	if err := q.Add(job); err != nil {
 		t.Fatal(err)
 	}
-	if !q.SnapshotJob(job.ID).HasDeferredPar2() {
+	precheckSnap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
+	if !precheckSnap.HasDeferredPar2() {
 		t.Fatal("precondition: recovery volume should start deferred")
 	}
 
@@ -173,7 +189,10 @@ func TestOnDemandPar2_EarlyUndeferOnFailure(t *testing.T) {
 	}
 	verifyPending(t, q, "after data-article failure")
 
-	snap := q.SnapshotJob(job.ID)
+	snap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	if snap.HasDeferredPar2() {
 		t.Error("recovery volume should be released early after a data-article failure")
 	}
@@ -220,7 +239,10 @@ func TestUndeferRecoveryVolumes_Edges(t *testing.T) {
 	if err := q.UndeferRecoveryVolumes(job.ID, []int{0}); err != nil {
 		t.Fatal(err)
 	}
-	snap := q.SnapshotJob(job.ID)
+	snap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	if snap.Progress().Par2Recovered() {
 		t.Error("Par2Recovered should not be set when nothing was un-deferred")
 	}
@@ -239,7 +261,10 @@ func TestDiscardDeferredPar2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	snap := q.SnapshotJob(job.ID)
+	snap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	if !snap.HasDeferredPar2() {
 		t.Fatal("expected deferred par2 files")
 	}
@@ -255,7 +280,10 @@ func TestDiscardDeferredPar2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	snap = q.SnapshotJob(job.ID)
+	snap, err = q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	if snap.HasDeferredPar2() {
 		t.Error("expected no deferred par2 files after discard")
 	}
@@ -317,14 +345,21 @@ func TestDiscardDeferredPar2_IndexShiftAndStaleness(t *testing.T) {
 	if err := q.MarkArticlesDone(job.ID, []string{"c2@x"}); err != nil {
 		t.Fatal(err)
 	}
-	oldRemaining := q.SnapshotJob(job.ID).Progress().RemainingBytes()
+	oldRemainingSnap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
+	oldRemaining := oldRemainingSnap.Progress().RemainingBytes()
 	discardedBytes := m.FileBytes(1)
 
 	if err := q.DiscardDeferredPar2(job.ID); err != nil {
 		t.Fatal(err)
 	}
 
-	snap := q.SnapshotJob(job.ID)
+	snap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	newM, newP := snap.Manifest(), snap.Progress()
 
 	if newM.NumFiles() != 2 {

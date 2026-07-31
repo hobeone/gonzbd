@@ -92,9 +92,9 @@ func TestChallenger_M3_SQLiteTimestampPersistenceAndDaemonRestart(t *testing.T) 
 	}
 	t2Post := time.Now().Add(time.Second).Truncate(time.Second).UTC()
 
-	snapPre := q.SnapshotJob(job.ID)
-	if snapPre == nil {
-		t.Fatal("SnapshotJob returned nil")
+	snapPre, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
 	}
 	if !snapPre.PostProc {
 		t.Error("expected snapPre.PostProc == true")
@@ -149,9 +149,9 @@ func TestChallenger_M3_SQLiteTimestampPersistenceAndDaemonRestart(t *testing.T) 
 		t.Fatalf("queue.Load: %v", err)
 	}
 
-	reloadedSnap := q2.SnapshotJob(job.ID)
-	if reloadedSnap == nil {
-		t.Fatalf("job %s missing after queue restart", job.ID)
+	reloadedSnap, err := q2.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("job %s missing after queue restart: %v", job.ID, err)
 	}
 	if !reloadedSnap.PostProc {
 		t.Error("expected reloadedSnap.PostProc == true after restart")
@@ -214,17 +214,19 @@ func TestChallenger_M3_ConcurrentQueueMutationAndSnapshotRaces(t *testing.T) {
 				case 2:
 					_ = q.MarkJobStarted(id, now)
 				case 3:
-					snap := q.SnapshotJob(id)
-					if snap != nil && snap.Progress() != nil {
+					snap, snapErr := q.SnapshotJob(id)
+					if snapErr == nil && snap.Progress() != nil {
 						_ = snap.Progress().DownloadStarted()
 						_ = snap.Progress().DownloadFinished()
 						_ = snap.IsComplete()
 					}
 				case 4:
-					snaps := q.Snapshot()
-					for _, s := range snaps {
-						if s != nil && s.Progress() != nil {
-							_ = s.Progress().DownloadStarted()
+					snaps, snapErr := q.Snapshot()
+					if snapErr == nil {
+						for _, s := range snaps {
+							if s != nil && s.Progress() != nil {
+								_ = s.Progress().DownloadStarted()
+							}
 						}
 					}
 				case 5:
@@ -250,9 +252,9 @@ func TestChallenger_M3_SnapshotMutationIsolation(t *testing.T) {
 	_ = q.MarkJobStarted(job.ID, t1)
 	_, _ = q.SetPostProcStarted(job.ID)
 
-	snap := q.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("SnapshotJob returned nil")
+	snap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
 	}
 
 	// Mutate the snapshot clone directly (e.g. legacy/buggy code trying to alter snapshot)
@@ -262,7 +264,10 @@ func TestChallenger_M3_SnapshotMutationIsolation(t *testing.T) {
 	snap.Status = constants.StatusFailed
 
 	// Fetch fresh snapshot from Queue
-	freshSnap := q.SnapshotJob(job.ID)
+	freshSnap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	if freshSnap.PostProc != true {
 		t.Errorf("Live queue PostProc was mutated by snapshot edit! got %v, want true", freshSnap.PostProc)
 	}

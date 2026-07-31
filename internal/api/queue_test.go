@@ -714,7 +714,10 @@ func TestQueueDetail_FileStateClassification(t *testing.T) {
 				t.Fatalf("Add: %v", err)
 			}
 			tt.setup(t, q, job.ID)
-			snap := q.SnapshotJob(job.ID)
+			snap, err := q.SnapshotJob(job.ID)
+			if err != nil {
+				t.Fatalf("SnapshotJob: %v", err)
+			}
 			if got := fileState(snap.Manifest(), snap.Progress(), 0); got != tt.want {
 				t.Errorf("fileState = %q; want %q", got, tt.want)
 			}
@@ -2161,7 +2164,10 @@ func TestQueueAddLocalFile_Sanitization(t *testing.T) {
 	if q.Len() != 1 {
 		t.Fatalf("queue len = %d; want 1", q.Len())
 	}
-	jobs := q.Snapshot()
+	jobs, err := q.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
 	if jobs[0].Script != "passwd" {
 		t.Errorf("Script = %q; want passwd", jobs[0].Script)
 	}
@@ -2667,6 +2673,186 @@ func TestFilterQueueSlots(t *testing.T) {
 		slots := filterQueueSlots(jobs, "movies", string(constants.StatusPaused), "", false, 0, duStatuses)
 		if len(slots) != 0 {
 			t.Fatalf("filterQueueSlots(category=movies, status=Paused) = %+v, want empty", slots)
+		}
+	})
+}
+
+// TestBuildSlot_MapsJobFields calls buildSlot directly and pins the mapping
+// for a job that is NOT in the simplest state: it is Downloading but the
+// queue-wide pause flag is set (exercising the Paused status/stage override),
+// it has PP/Password/Script/Warning set, and it has a failed article
+// (exercising FailedBytes) and a direct-unpack status attached.
+func TestBuildSlot_MapsJobFields(t *testing.T) {
+	t.Parallel()
+	q := queue.New()
+	job := addLargeTestJob(t, q, 10) // single file, 10 x 1 MiB segments = 10 MiB
+	job.PP = 3
+	job.Password = "hunter2"
+	job.Script = "post.py"
+	job.Warning = "low disk space"
+
+	if err := q.SetStatusIf(job.ID, constants.StatusDownloading, constants.StatusQueued); err != nil {
+		t.Fatalf("SetStatusIf: %v", err)
+	}
+	if _, err := q.MarkArticlesFailed(job.ID, []string{"big-article-001@example.com"}); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+
+	live, err := q.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	const speed = 1024.0 * 1024.0 // 1 MiB/s; well above the noise floor
+	duStatus := &directunpack.Status{CurrentSet: "vol01"}
+
+	slot := buildSlot(live, true /* queue-wide paused */, speed, 2, duStatus)
+
+	if slot.NzoID != job.ID {
+		t.Errorf("NzoID = %q, want %q", slot.NzoID, job.ID)
+	}
+	if slot.Index != 2 {
+		t.Errorf("Index = %d, want 2", slot.Index)
+	}
+	if slot.Status != string(constants.StatusPaused) {
+		t.Errorf("Status = %q, want %q (paused override of Downloading)", slot.Status, constants.StatusPaused)
+	}
+	if slot.CurrentStage != "paused" {
+		t.Errorf("CurrentStage = %q, want %q", slot.CurrentStage, "paused")
+	}
+	if slot.PP != "3" {
+		t.Errorf("PP = %q, want %q", slot.PP, "3")
+	}
+	if slot.Password != "hunter2" {
+		t.Errorf("Password = %q, want %q", slot.Password, "hunter2")
+	}
+	if slot.Script != "post.py" {
+		t.Errorf("Script = %q, want %q", slot.Script, "post.py")
+	}
+	if slot.Warning != "low disk space" {
+		t.Errorf("Warning = %q, want %q", slot.Warning, "low disk space")
+	}
+	if slot.FailedBytes == 0 {
+		t.Error("FailedBytes = 0, want > 0 after MarkArticlesFailed")
+	}
+	if slot.Bytes != 10*1024*1024 {
+		t.Errorf("Bytes = %d, want %d", slot.Bytes, 10*1024*1024)
+	}
+	// The queue-wide pause override must suppress ETA computation even
+	// though speed and remaining bytes would otherwise produce one.
+	if slot.ETASeconds != 0 {
+		t.Errorf("ETASeconds = %d, want 0 when paused", slot.ETASeconds)
+	}
+	if slot.Timeleft != "0:00:00" {
+		t.Errorf("Timeleft = %q, want %q when paused", slot.Timeleft, "0:00:00")
+	}
+	if slot.ETA != "unknown" {
+		t.Errorf("ETA = %q, want %q when paused", slot.ETA, "unknown")
+	}
+	if slot.DirectUnpack == nil || slot.DirectUnpack.CurrentSet != "vol01" {
+		t.Errorf("DirectUnpack = %+v, want CurrentSet=vol01", slot.DirectUnpack)
+	}
+}
+
+// TestQueueList_Direct_PaginationAndPausedFlag calls s.queueList directly
+// (not through the mode= dispatcher) and pins the paging parameters and the
+// queue-wide paused flag in the response envelope. Field names are asserted
+// via explicit json tags on an anonymous struct — this is the SABnzbd-
+// compatible shape third-party clients (Sonarr, Radarr) parse.
+func TestQueueList_Direct_PaginationAndPausedFlag(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	addTestJob(t, q, queue.AddOptions{Filename: "a.nzb"})
+	jobB := addTestJob(t, q, queue.AddOptions{Filename: "b.nzb"})
+	addTestJob(t, q, queue.AddOptions{Filename: "c.nzb"})
+	q.PauseAll()
+
+	req := httptest.NewRequest(http.MethodGet, "/api?start=1&limit=1", nil)
+	rr := httptest.NewRecorder()
+	s.queueList(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Status bool `json:"status"`
+		Queue  struct {
+			Paused         bool `json:"paused"`
+			Start          int  `json:"start"`
+			Limit          int  `json:"limit"`
+			NoOfSlots      int  `json:"noofslots"`
+			NoOfSlotsTotal int  `json:"noofslots_total"`
+			Slots          []struct {
+				NzoID string `json:"nzo_id"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Status {
+		t.Error("status = false, want true")
+	}
+	if !resp.Queue.Paused {
+		t.Error("paused = false, want true (q.PauseAll was called)")
+	}
+	if resp.Queue.Start != 1 {
+		t.Errorf("start = %d, want 1", resp.Queue.Start)
+	}
+	if resp.Queue.Limit != 1 {
+		t.Errorf("limit = %d, want 1", resp.Queue.Limit)
+	}
+	if resp.Queue.NoOfSlotsTotal != 3 {
+		t.Errorf("noofslots_total = %d, want 3 (all jobs, unpaginated)", resp.Queue.NoOfSlotsTotal)
+	}
+	if resp.Queue.NoOfSlots != 1 {
+		t.Errorf("noofslots = %d, want 1 (paginated page size)", resp.Queue.NoOfSlots)
+	}
+	if len(resp.Queue.Slots) != 1 {
+		t.Fatalf("len(slots) = %d, want 1", len(resp.Queue.Slots))
+	}
+	// start=1 must skip the first job (a.nzb) and return the second (b.nzb) —
+	// asserting the count alone wouldn't catch a broken/no-op start offset,
+	// since limit=1 would still truncate to one slot either way.
+	if resp.Queue.Slots[0].NzoID != jobB.ID {
+		t.Errorf("slots[0].nzo_id = %q, want %q (job b, the start=1 offset)", resp.Queue.Slots[0].NzoID, jobB.ID)
+	}
+}
+
+// TestModeAddLocalFile_Direct calls s.modeAddLocalFile directly (not through
+// the mode= dispatcher), covering the happy path (a valid absolute path
+// under a configured root gets parsed and enqueued) and its failure mode
+// for bad input (a relative path is rejected before any filesystem access).
+func TestModeAddLocalFile_Direct(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s, q := testQueueServerWithRoot(t, dir)
+
+	t.Run("happy path enqueues job", func(t *testing.T) {
+		nzbPath := filepath.Join(dir, "direct.nzb")
+		if err := os.WriteFile(nzbPath, makeTestNZB(t), 0o600); err != nil {
+			t.Fatalf("write NZB: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/api?name="+nzbPath, nil)
+		rr := httptest.NewRecorder()
+		s.modeAddLocalFile(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+		}
+		if q.Len() != 1 {
+			t.Errorf("queue len = %d; want 1", q.Len())
+		}
+	})
+
+	t.Run("relative path rejected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api?name=relative.nzb", nil)
+		rr := httptest.NewRecorder()
+		s.modeAddLocalFile(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("status = %d; want 400 for relative path (body: %s)", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "absolute") {
+			t.Errorf("expected 'absolute' in error body; got: %s", rr.Body.String())
 		}
 	})
 }

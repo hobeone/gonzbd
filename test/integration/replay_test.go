@@ -228,10 +228,11 @@ func replayOneNZB(t *testing.T, nzbPath string) {
 		t.Logf("job completed: %s", ppc.JobID)
 	case <-ctx.Done():
 		// Log what we know about the job state.
-		snap := application.Queue().SnapshotJob(job.ID)
-		if snap != nil {
+		if snap, snapErr := application.Queue().SnapshotJob(job.ID); snapErr == nil {
 			t.Logf("timeout: job status=%s pending=%d remaining=%d",
 				snap.Status, snap.Progress().PendingArticles(), snap.Progress().RemainingBytes())
+		} else {
+			t.Logf("timeout: SnapshotJob(%s) failed: %v", job.ID, snapErr)
 		}
 		t.Fatalf("timeout (%v) waiting for job completion", timeout)
 	}

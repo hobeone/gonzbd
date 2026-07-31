@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"slices"
 )
@@ -12,7 +13,7 @@ import (
 //
 // The returned slice and the Jobs within it are fresh allocations; mutations
 // to the returned objects do not affect the Queue's internal state.
-func (q *Queue) Snapshot() []*Job {
+func (q *Queue) Snapshot() ([]*Job, error) {
 	q.mu.RLock()
 	res := make([]*Job, 0, len(q.jobs))
 	var toHydrate []*Job
@@ -27,11 +28,17 @@ func (q *Queue) Snapshot() []*Job {
 	store := q.store
 	q.mu.RUnlock()
 
-	// Hydrate non-resident snapshot copies outside the lock
+	// Hydrate non-resident snapshot copies outside the lock. Fails closed
+	// rather than returning the jobs that did load: a partial list is
+	// indistinguishable from a complete one to a caller that ignores the
+	// error, and the job that failed is precisely the one an operator needs
+	// to see in order to act on it.
 	for _, cp := range toHydrate {
-		hydrateSnapshot(stateDir, store, cp)
+		if err := hydrateSnapshot(stateDir, store, cp); err != nil {
+			return nil, fmt.Errorf("queue: snapshot: %w", err)
+		}
 	}
-	return res
+	return res, nil
 }
 
 // hydrateSnapshot loads cp's manifest/progress from disk. cp is always a
@@ -41,16 +48,33 @@ func (q *Queue) Snapshot() []*Job {
 // setResidency isn't required for correctness here. It's used anyway so
 // there is exactly one way to assign the manifest/progress pair in this
 // package, rather than two.
-func hydrateSnapshot(stateDir string, store Store, cp *Job) {
+//
+// Returns an error rather than leaving cp non-resident on failure. Both
+// fields staying nil is indistinguishable from a job that legitimately has no
+// manifest, so a silent failure here reaches the caller as empty state — zero
+// bytes, no files — and reads as fact. A job reachable in the queue always has
+// its manifest on disk now that artifact deletion happens after the job leaves
+// byID, so reaching either error means something outside the queue's control
+// has damaged it.
+func hydrateSnapshot(stateDir string, store Store, cp *Job) error {
 	manifestPath := filepath.Join(stateDir, "manifests", cp.ID+".json.gz")
 	var m Manifest
-	if err := readGzJSON(manifestPath, &m); err == nil {
-		m.buildMessageIDIndex()
-		cp.setResidency(&m, newJobProgress(&m))
-		if store != nil {
-			_ = store.RestoreJobProgress(context.Background(), cp)
+	if err := readGzJSON(manifestPath, &m); err != nil {
+		return fmt.Errorf("read manifest for job %s: %w", cp.ID, err)
+	}
+	m.buildMessageIDIndex()
+	cp.setResidency(&m, newJobProgress(&m))
+	if store != nil {
+		// Treated as fatal for the same reason Queue.hydrateJobLocked treats
+		// it as fatal: newJobProgress built an all-zero JobProgress for this
+		// call to fill in, so continuing past a failure hands back a
+		// part-downloaded job that reports no progress at all.
+		if err := store.RestoreJobProgress(context.Background(), cp); err != nil {
+			cp.setResidency(nil, nil)
+			return fmt.Errorf("restore progress for job %s: %w", cp.ID, err)
 		}
 	}
+	return nil
 }
 
 // cloneJob shares manifest by reference (it is immutable after
@@ -117,14 +141,15 @@ func cloneJob(j *Job) *Job {
 	return cp
 }
 
-// SnapshotJob returns a point-in-time, deep-copied view of a single job
-// by ID. Returns nil if the job is not found.
-func (q *Queue) SnapshotJob(id string) *Job {
+// SnapshotJob returns a point-in-time, deep-copied view of a single job by
+// ID. Reports ErrNotFound when no such job exists, and a distinct error when
+// the job exists but its stored state could not be loaded.
+func (q *Queue) SnapshotJob(id string) (*Job, error) {
 	q.mu.RLock()
 	j, ok := q.byID[id]
 	if !ok {
 		q.mu.RUnlock()
-		return nil
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	cp := cloneJob(j)
 	stateDir := q.stateDir
@@ -132,7 +157,13 @@ func (q *Queue) SnapshotJob(id string) *Job {
 	q.mu.RUnlock()
 
 	if cp.manifest == nil && (store != nil || stateDir != "") {
-		hydrateSnapshot(stateDir, store, cp)
+		// Deliberately not ErrNotFound: the job exists, its stored state is
+		// damaged. Callers distinguish the two — a missing job is a 404, a
+		// corrupt one is not, and collapsing them would report corruption as
+		// routine absence.
+		if err := hydrateSnapshot(stateDir, store, cp); err != nil {
+			return nil, fmt.Errorf("queue: snapshot job %s: %w", id, err)
+		}
 	}
-	return cp
+	return cp, nil
 }

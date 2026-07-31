@@ -74,7 +74,9 @@ func TestDispatchPass_ExhaustedEmitsDoNotBlockQueueWriters(t *testing.T) {
 
 	// Sanity: job is now paused (or at least Pause observed a consistent
 	// state). Read after the goroutine returns.
-	if snap := q.SnapshotJob(job.ID); snap != nil && snap.Status != constants.StatusPaused {
+	if snap, err := q.SnapshotJob(job.ID); err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	} else if snap.Status != constants.StatusPaused {
 		t.Logf("job status after Pause: %v", snap.Status)
 	}
 }

@@ -397,8 +397,11 @@ func TestQueue_WithStoreAndSave(t *testing.T) {
 		t.Fatalf("List after Save: err=%v len=%d", err, len(list))
 	}
 	loadedQ, err := queue.Load(dir, queue.WithStore(store))
-	if err != nil || loadedQ.SnapshotJob(job.ID) == nil {
-		t.Fatalf("Load after Save: err=%v job missing", err)
+	if err != nil {
+		t.Fatalf("Load after Save: %v", err)
+	}
+	if _, err := loadedQ.SnapshotJob(job.ID); err != nil {
+		t.Fatalf("SnapshotJob after Load: %v", err)
 	}
 }
 
@@ -692,9 +695,9 @@ func TestSQLiteStore_UpdateArticleProgressRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queue.Load: %v", err)
 	}
-	loadedJob := loadedQ.SnapshotJob(job.ID)
-	if loadedJob == nil {
-		t.Fatal("loaded job missing from queue")
+	loadedJob, err := loadedQ.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("loaded job missing from queue: %v", err)
 	}
 	if !loadedJob.Progress().ArticleDone(1) {
 		t.Error("expected article 1 to be marked done after Update checkpoint and reload")
@@ -735,9 +738,9 @@ func TestSQLiteStore_DownloadTimestampsPersistence(t *testing.T) {
 		t.Fatalf("SetPostProcStarted: started=%v err=%v", started, err)
 	}
 
-	snap := q.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("SnapshotJob returned nil")
+	snap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
 	}
 	if snap.Progress().DownloadStarted().Unix() != startTime.Unix() {
 		t.Errorf("DownloadStarted = %v, want %v", snap.Progress().DownloadStarted(), startTime)
@@ -766,9 +769,9 @@ func TestSQLiteStore_DownloadTimestampsPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queue.Load: %v", err)
 	}
-	loadedJob := loadedQ.SnapshotJob(job.ID)
-	if loadedJob == nil {
-		t.Fatal("loaded job missing from queue after reload")
+	loadedJob, err := loadedQ.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("loaded job missing from queue after reload: %v", err)
 	}
 	if loadedJob.Progress().DownloadStarted().Unix() != startTime.Unix() {
 		t.Errorf("loaded DownloadStarted = %v, want %v", loadedJob.Progress().DownloadStarted(), startTime)

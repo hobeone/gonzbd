@@ -5,6 +5,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -169,8 +170,8 @@ func TestIntegration_StateMachineChaos(t *testing.T) {
 	// Invariants assertions
 	// 1. Every added job reaches history (checked above)
 	// 2. No job stays in the queue with PostProc=true for > 60s
-	if application.Queue().SnapshotJob(job.ID) != nil {
-		t.Errorf("job still in queue after completion")
+	if _, err := application.Queue().SnapshotJob(job.ID); !errors.Is(err, queue.ErrNotFound) {
+		t.Errorf("job still in queue after completion (err=%v)", err)
 	}
 
 	// 3. ServerStats verification

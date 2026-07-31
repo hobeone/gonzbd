@@ -342,9 +342,9 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 		return nil
 	}
 
-	snap := p.queue.SnapshotJob(jobID)
-	if snap == nil {
-		return fmt.Errorf("queue lookup: job %q not found", jobID)
+	snap, err := p.queue.SnapshotJob(jobID)
+	if err != nil {
+		return fmt.Errorf("queue lookup: job %q: %w", jobID, err)
 	}
 	m := snap.Manifest()
 	if m == nil {

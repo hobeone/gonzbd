@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -117,9 +118,13 @@ func waitForHistoryAndQueueCleanup(t *testing.T, repo *history.Repository, a *ap
 		t.Fatalf("timeout waiting for job %s to reach history after recovery", jobID)
 	}
 	if !waitUntil(2*time.Second, func() bool {
-		return a.Queue().SnapshotJob(jobID) == nil
+		_, err := a.Queue().SnapshotJob(jobID)
+		return errors.Is(err, queue.ErrNotFound)
 	}) {
-		snap := a.Queue().SnapshotJob(jobID)
+		snap, err := a.Queue().SnapshotJob(jobID)
+		if err != nil {
+			t.Fatalf("job %s snapshot failed after recovery: %v", jobID, err)
+		}
 		t.Fatalf("job %s still in active queue after recovery (status=%q)", jobID, snap.Status)
 	}
 }
@@ -233,8 +238,8 @@ func TestRecovery_DuplicateJobInHistory(t *testing.T) {
 		}
 	})
 
-	if a.Queue().SnapshotJob(jobID) != nil {
-		t.Errorf("job %s was not removed from queue on startup despite being in history", jobID)
+	if _, err := a.Queue().SnapshotJob(jobID); !errors.Is(err, queue.ErrNotFound) {
+		t.Errorf("job %s was not removed from queue on startup despite being in history (err=%v)", jobID, err)
 	}
 }
 
@@ -290,7 +295,11 @@ func TestRecovery_CrashBetweenMultiStoreWrites(t *testing.T) {
 		t.Fatalf("MkdirAll histJobsDir: %v", err)
 	}
 	histJobPath := filepath.Join(histJobsDir, transitionJobID+".json.gz")
-	if err := queue.SaveJob(histJobPath, seed.SnapshotJob(transitionJobID)); err != nil {
+	transitionSnap, err := seed.SnapshotJob(transitionJobID)
+	if err != nil {
+		t.Fatalf("SnapshotJob transitionJobID: %v", err)
+	}
+	if err := queue.SaveJob(histJobPath, transitionSnap); err != nil {
 		t.Fatalf("SaveJob history: %v", err)
 	}
 
@@ -310,8 +319,8 @@ func TestRecovery_CrashBetweenMultiStoreWrites(t *testing.T) {
 	if _, err := os.Stat(orphanPath); !os.IsNotExist(err) {
 		t.Errorf("orphaned job file %q should have been pruned by Load, stat err = %v", orphanPath, err)
 	}
-	if snap := a.Queue().SnapshotJob(crashedJobID); snap != nil {
-		t.Errorf("orphaned job %s should not exist in loaded queue", crashedJobID)
+	if _, err := a.Queue().SnapshotJob(crashedJobID); !errors.Is(err, queue.ErrNotFound) {
+		t.Errorf("orphaned job %s should not exist in loaded queue (err=%v)", crashedJobID, err)
 	}
 
 	_, cancel := startAppAndDrain(t, a)

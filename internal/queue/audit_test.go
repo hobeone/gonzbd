@@ -469,9 +469,9 @@ func TestSnapshotJob_Audit(t *testing.T) {
 		j := makeJob(t, "snap-exist", constants.NormalPriority)
 		_ = q.Add(j)
 
-		snap := q.SnapshotJob(j.ID)
-		if snap == nil {
-			t.Fatal("SnapshotJob returned nil for existing job")
+		snap, err := q.SnapshotJob(j.ID)
+		if err != nil {
+			t.Fatalf("SnapshotJob returned error for existing job: %v", err)
 		}
 		if snap.ID != j.ID {
 			t.Errorf("ID = %q, want %q", snap.ID, j.ID)
@@ -487,11 +487,12 @@ func TestSnapshotJob_Audit(t *testing.T) {
 		}
 	})
 
-	t.Run("returns nil for nonexistent job", func(t *testing.T) {
+	t.Run("returns ErrNotFound for nonexistent job", func(t *testing.T) {
 		t.Parallel()
 		q := New()
-		if snap := q.SnapshotJob("nonexistent"); snap != nil {
-			t.Errorf("expected nil, got %+v", snap)
+		snap, err := q.SnapshotJob("nonexistent")
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("expected ErrNotFound, got snap=%+v err=%v", snap, err)
 		}
 	})
 }

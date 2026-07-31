@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -273,20 +274,25 @@ func waitAndVerify(t *testing.T, a *app.Application, jobID, downloadDir, filenam
 
 // waitForFilesComplete polls until every file at fileIdxs is marked complete
 // on jobID, or the job has left the active queue. On the success path a job
-// only leaves the active queue via maybeFinalize after IsComplete(), so a
-// nil snapshot usually means assembly already resolved. maybeFinalize also
-// has IsComplete()-unguarded callers (e.g. OnJobHopeless, when too much of
-// a multi-file job's data is unrecoverable) that can remove a job before
+// only leaves the active queue via maybeFinalize after IsComplete(), so an
+// ErrNotFound snapshot usually means assembly already resolved. maybeFinalize
+// also has IsComplete()-unguarded callers (e.g. OnJobHopeless, when too much
+// of a multi-file job's data is unrecoverable) that can remove a job before
 // every fileIdx has actually completed — that false positive isn't caught
 // here, but the caller's subsequent SHA-256 verification of each file
-// would still fail, so it doesn't silently pass the test.
+// would still fail, so it doesn't silently pass the test. A non-ErrNotFound
+// error (hydration failure) is a real bug and is surfaced via t.Fatalf
+// rather than folded into the "already resolved" branch.
 func waitForFilesComplete(t *testing.T, a *app.Application, jobID string, fileIdxs []int, timeout time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		snap := a.Queue().SnapshotJob(jobID)
-		if snap == nil {
-			return true
+		snap, err := a.Queue().SnapshotJob(jobID)
+		if err != nil {
+			if errors.Is(err, queue.ErrNotFound) {
+				return true
+			}
+			t.Fatalf("SnapshotJob(%s): %v", jobID, err)
 		}
 		allComplete := true
 		p := snap.Progress()

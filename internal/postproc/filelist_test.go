@@ -203,7 +203,10 @@ func TestBuildDownloadFileList_Par2Summary(t *testing.T) {
 		if err := q.SetPar2ReleaseReason(qjob.ID, "repair needed"); err != nil {
 			t.Fatalf("SetPar2ReleaseReason: %v", err)
 		}
-		qjob = q.SnapshotJob(qjob.ID)
+		qjob, err := q.SnapshotJob(qjob.ID)
+		if err != nil {
+			t.Fatalf("SnapshotJob: %v", err)
+		}
 		job := &Job{DownloadDir: dir, Queue: qjob}
 		got := strings.Join(buildDownloadFileList(job), "\n")
 		if !strings.Contains(got, "⚠ Par2: fetched") {
@@ -244,7 +247,10 @@ func TestBuildDownloadFileListIncludesCompletion(t *testing.T) {
 	if err := q.RecordDownload(qjob.ID, "news.server.com", 123); err != nil {
 		t.Fatalf("RecordDownload: %v", err)
 	}
-	qjob = q.SnapshotJob(qjob.ID)
+	qjob, err := q.SnapshotJob(qjob.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
 	job := &Job{DownloadDir: dir, Queue: qjob}
 	lines := buildDownloadFileList(job)
 	joined := strings.Join(lines, "\n")

@@ -184,10 +184,11 @@ func TestApplication_FakeDownloaderFlow(t *testing.T) {
 	select {
 	case <-application.PostProcComplete():
 	case <-time.After(5 * time.Second):
-		snap := application.Queue().SnapshotJob(job.ID)
-		if snap != nil {
+		if snap, snapErr := application.Queue().SnapshotJob(job.ID); snapErr == nil {
 			t.Logf("Job in queue: Status=%v, PostProc=%v, IsComplete=%v",
 				snap.Status, snap.PostProc, snap.IsComplete())
+		} else {
+			t.Logf("SnapshotJob failed while diagnosing timeout: %v", snapErr)
 		}
 		t.Fatal("timed out waiting for PostProcComplete")
 	}

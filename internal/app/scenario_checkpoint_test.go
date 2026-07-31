@@ -91,8 +91,8 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		snap := q.SnapshotJob(job.ID)
-		if snap == nil {
+		snap, snapErr := q.SnapshotJob(job.ID)
+		if snapErr != nil {
 			return false
 		}
 		p := snap.Progress()
@@ -110,9 +110,9 @@ func TestCheckpoint_SurvivesCrashMidDownload(t *testing.T) {
 
 	// Verify on disk: Articles 0 and 2 are durably marked Done, while Article 1 is NOT Done.
 	diskQ := loadTestQueue(t, repo, adminDir)
-	snap := diskQ.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatal("job missing from on-disk queue after crash")
+	snap, err := diskQ.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("job missing from on-disk queue after crash: %v", err)
 	}
 	if !snap.Progress().ArticleDone(0) {
 		t.Fatal("expected Article 0 to be durably marked Done on disk after crash")
@@ -271,9 +271,9 @@ func TestCheckpoint_SurvivesCrashMidPostProc(t *testing.T) {
 
 	// Verify on-disk queue state after crash: job must still exist and have PostProc == true.
 	diskQ := loadTestQueue(t, repo, adminDir)
-	snap := diskQ.SnapshotJob(jobID)
-	if snap == nil {
-		t.Fatal("job missing from on-disk queue after crash")
+	snap, err := diskQ.SnapshotJob(jobID)
+	if err != nil {
+		t.Fatalf("job missing from on-disk queue after crash: %v", err)
 	}
 	if !snap.PostProc {
 		t.Fatal("expected PostProc=true on disk after crash, got false")

@@ -446,9 +446,9 @@ func TestResetForRetry_OnlyTouchesFailedArticles(t *testing.T) {
 		t.Fatalf("MarkArticlesFailed(f2): %v", err)
 	}
 
-	snap := q.SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatalf("SnapshotJob(%s) returned nil", job.ID)
+	snap, err := q.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob(%s): %v", job.ID, err)
 	}
 	remainingBeforeReset := snap.Progress().RemainingBytes()
 

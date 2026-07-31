@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -210,7 +211,10 @@ func TestDownload_MissingArticle(t *testing.T) {
 		t.Fatalf("job did not reach history")
 	}
 
-	snap := a.Queue().Snapshot()
+	snap, err := a.Queue().Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
 	for _, j := range snap {
 		if j.Name == "missing-article" {
 			t.Errorf("job %s still in queue after completion", j.ID)
@@ -220,19 +224,24 @@ func TestDownload_MissingArticle(t *testing.T) {
 
 // waitForFileComplete polls until Files[fileIdx] is marked complete on
 // jobID, or the job has left the active queue. On the success path a job
-// only leaves the active queue via maybeFinalize after IsComplete(), so a
-// nil snapshot usually means assembly already resolved. maybeFinalize also
-// has IsComplete()-unguarded callers (e.g. OnJobHopeless) that could in
+// only leaves the active queue via maybeFinalize after IsComplete(), so an
+// ErrNotFound snapshot usually means assembly already resolved. maybeFinalize
+// also has IsComplete()-unguarded callers (e.g. OnJobHopeless) that could in
 // principle remove a job before fileIdx completed; callers relying on this
 // helper for a scenario where that path is reachable should verify the
-// file's actual on-disk/content outcome afterward as a backstop.
+// file's actual on-disk/content outcome afterward as a backstop. A
+// non-ErrNotFound error (hydration failure) is a real bug and is surfaced
+// via t.Fatalf rather than folded into the "already resolved" branch.
 func waitForFileComplete(t *testing.T, a *app.Application, jobID string, fileIdx int, timeout time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		snap := a.Queue().SnapshotJob(jobID)
-		if snap == nil {
-			return true
+		snap, err := a.Queue().SnapshotJob(jobID)
+		if err != nil {
+			if errors.Is(err, queue.ErrNotFound) {
+				return true
+			}
+			t.Fatalf("SnapshotJob(%s): %v", jobID, err)
 		}
 		if fileIdx < snap.Manifest().NumFiles() && snap.Progress().FileComplete(fileIdx) {
 			return true
@@ -254,8 +263,12 @@ func waitForHistory(t *testing.T, a *app.Application, name string, timeout time.
 		// trust the app's OnJobDone logic which we verified in unit tests.
 		// Or better: the scenarioHarness in statemachine_test.go has this.
 		// Integration tests here are a bit more raw.
+		jobs, err := a.Queue().Snapshot()
+		if err != nil {
+			t.Fatalf("Snapshot: %v", err)
+		}
 		found := false
-		for _, j := range a.Queue().Snapshot() {
+		for _, j := range jobs {
 			if j.Name == name {
 				found = true
 				break

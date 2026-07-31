@@ -73,8 +73,10 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 
 	// Wait for the job to complete.
 	if !h.WaitForPostProc(job.ID, 30*time.Second) {
-		snap := h.app.Queue().SnapshotJob(job.ID)
-		if snap != nil {
+		snap, snapErr := h.app.Queue().SnapshotJob(job.ID)
+		if snapErr != nil {
+			t.Logf("SnapshotJob failed while diagnosing timeout: %v", snapErr)
+		} else {
 			m, p := snap.Manifest(), snap.Progress()
 			if m != nil && p != nil {
 				for fi := range m.NumFiles() {

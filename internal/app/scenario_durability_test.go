@@ -100,9 +100,9 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 
 	// 2. While paused inside the assembler hook (before MarkArticlesDone runs):
 	// Assert that article in active queue is NOT marked Done yet under B.6
-	snap := a.Queue().SnapshotJob(job.ID)
-	if snap == nil {
-		t.Fatalf("job missing from queue")
+	snap, err := a.Queue().SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("job missing from queue: %v", err)
 	}
 	if snap.Manifest().NumFiles() == 0 || snap.Manifest().NumArticles() == 0 {
 		t.Fatalf("job files/articles empty")
@@ -120,9 +120,9 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 
 	// Reload queue from disk into a fresh queue instance
 	reloadedQ := loadTestQueue(t, repo, adminDir)
-	reloadedSnap := reloadedQ.SnapshotJob(job.ID)
-	if reloadedSnap == nil {
-		t.Fatalf("reloaded job missing")
+	reloadedSnap, err := reloadedQ.SnapshotJob(job.ID)
+	if err != nil {
+		t.Fatalf("reloaded job missing: %v", err)
 	}
 	if reloadedSnap.Progress().ArticleDone(0) {
 		t.Errorf("FAIL: on-disk queue has article marked Done before assembler completed MarkArticlesDone!")

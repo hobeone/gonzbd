@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -230,7 +231,10 @@ func (h *scenarioHarness) waitFor(timeout time.Duration, cond func() bool) bool 
 
 // QueueContains reports whether jobID is currently in the active queue.
 func (h *scenarioHarness) QueueContains(jobID string) bool {
-	return h.app.Queue().SnapshotJob(jobID) != nil
+	// A hydration failure still means the job is present in the queue (the
+	// byID lookup succeeded); only ErrNotFound means it is not contained.
+	_, err := h.app.Queue().SnapshotJob(jobID)
+	return !errors.Is(err, queue.ErrNotFound)
 }
 
 // Events returns copies of the recorded completion event slices.

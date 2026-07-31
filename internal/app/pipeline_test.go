@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -125,6 +127,117 @@ func TestRegisterFile_SeedsInitialWriteCursorFromQueue(t *testing.T) {
 	info := p.fileInfo[fileKey{jobID: job.ID, fileIdx: 0}]
 	if info.InitialWriteCursor != 4096 {
 		t.Errorf("InitialWriteCursor = %d, want 4096", info.InitialWriteCursor)
+	}
+}
+
+// TestRegisterFile_MissingJobReturnsError pins that registerFile propagates
+// SnapshotJob's error (rather than a bare bool/nil check) when the job is not
+// in the queue at all — the "queue lookup" error path introduced when
+// SnapshotJob started returning (*Job, error) instead of a nilable *Job.
+func TestRegisterFile_MissingJobReturnsError(t *testing.T) {
+	p := &pipeline{
+		log:         slog.Default(),
+		queue:       queue.New(),
+		downloadDir: t.TempDir(),
+		fileInfo:    make(map[fileKey]assembler.FileInfo),
+	}
+	err := p.registerFile("no-such-job", 0)
+	if err == nil {
+		t.Fatal("registerFile: want error for missing job, got nil")
+	}
+	if !errors.Is(err, queue.ErrNotFound) {
+		t.Errorf("registerFile error = %v, want it to wrap queue.ErrNotFound", err)
+	}
+}
+
+// TestRegisterFile_FileIdxOutOfRangeReturnsError pins that registerFile
+// validates fileIdx against the manifest's file count before doing any
+// disk I/O, rather than trusting the caller (the downloader/decoder derive
+// fileIdx from wire data, so an out-of-range index is reachable from a
+// malformed or adversarial ArticleResult).
+func TestRegisterFile_FileIdxOutOfRangeReturnsError(t *testing.T) {
+	q := queue.New()
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "movie.mkv", Bytes: 100, Articles: []nzb.Article{
+			{ID: "a1@x", Bytes: 100, Number: 1},
+		}},
+	}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &pipeline{
+		log:         slog.Default(),
+		queue:       q,
+		downloadDir: t.TempDir(),
+		fileInfo:    make(map[fileKey]assembler.FileInfo),
+	}
+	// Job has exactly 1 file (index 0); index 5 is out of range.
+	err = p.registerFile(job.ID, 5)
+	if err == nil {
+		t.Fatal("registerFile: want error for out-of-range fileIdx, got nil")
+	}
+	if !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("registerFile error = %q, want it to mention \"out of range\"", err.Error())
+	}
+}
+
+// TestRegisterFile_ReusesPersistedFilename pins that once a file's filename
+// has been resolved and persisted (JobProgress.FileFilename is non-empty —
+// the resume/restart case), registerFile builds the path directly from it
+// rather than re-running fsutil.GetUniqueFilename's on-disk collision scan.
+// This matters because re-running collision avoidance on every restart would
+// rename a partially-downloaded file out from under itself (movie.mkv.1,
+// .2, ...) even though nothing actually collides but the file being resumed.
+func TestRegisterFile_ReusesPersistedFilename(t *testing.T) {
+	q := queue.New()
+	parsed := &nzb.NZB{Files: []nzb.File{
+		{Subject: "movie.mkv", Bytes: 100, Articles: []nzb.Article{
+			{ID: "a1@x", Bytes: 100, Number: 1},
+		}},
+	}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Filename: "m.nzb"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SetFileFilename(job.ID, 0, "movie.mkv"); err != nil {
+		t.Fatal(err)
+	}
+
+	downloadDir := t.TempDir()
+	jobDir := filepath.Join(downloadDir, job.Name)
+	if err := os.MkdirAll(jobDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-create a file at the target path. If registerFile used
+	// GetUniqueFilename's collision-avoidance path (the "first resolution"
+	// branch) instead of honoring the persisted filename directly, it would
+	// append ".1" to dodge this exact collision. The reused-filename path
+	// must ignore on-disk collisions and use the persisted name verbatim.
+	targetPath := filepath.Join(jobDir, "movie.mkv")
+	if err := os.WriteFile(targetPath, []byte("existing partial data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &pipeline{
+		log:         slog.Default(),
+		queue:       q,
+		downloadDir: downloadDir,
+		fileInfo:    make(map[fileKey]assembler.FileInfo),
+	}
+	if err := p.registerFile(job.ID, 0); err != nil {
+		t.Fatalf("registerFile: %v", err)
+	}
+	info := p.fileInfo[fileKey{jobID: job.ID, fileIdx: 0}]
+	if info.Path != targetPath {
+		t.Errorf("Path = %q, want %q (persisted filename honored verbatim, no .1 suffix)", info.Path, targetPath)
 	}
 }
 

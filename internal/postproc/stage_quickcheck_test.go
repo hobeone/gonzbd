@@ -37,7 +37,11 @@ func buildQCJob(t *testing.T, id, filename string, bytes int64, crc uint32) *que
 	if err := q.SetFileCRC32(qjob.ID, 0, crc); err != nil {
 		t.Fatalf("SetFileCRC32: %v", err)
 	}
-	return q.SnapshotJob(qjob.ID)
+	snap, err := q.SnapshotJob(qjob.ID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
+	}
+	return snap
 }
 
 var (

@@ -413,9 +413,9 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	got := q2.SnapshotJob(id)
-	if got == nil {
-		t.Fatal("SnapshotJob returned nil after Load")
+	got, err := q2.SnapshotJob(id)
+	if err != nil {
+		t.Fatalf("SnapshotJob after Load: %v", err)
 	}
 
 	gm, gp := got.Manifest(), got.Progress()

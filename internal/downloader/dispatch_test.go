@@ -713,9 +713,9 @@ func TestDownloader_ApplyDispatchPlan_SideEffects(t *testing.T) {
 		},
 	}
 	d.applyDispatchPlan(context.Background(), plan, dispatchOpts{}) // no callback
-	snap := q.SnapshotJob(job.ID)
-	if snap == nil || snap.Status != constants.StatusPaused {
-		t.Errorf("expected job status to be Paused, got %+v", snap)
+	snap, err := q.SnapshotJob(job.ID)
+	if err != nil || snap.Status != constants.StatusPaused {
+		t.Errorf("expected job status to be Paused, got snap=%+v err=%v", snap, err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -28,7 +29,10 @@ func TestQueue_Snapshot(t *testing.T) {
 	job.progress.serverStats = map[string]int64{"server1": 100}
 	_ = q.Add(job)
 
-	snap := q.Snapshot()
+	snap, err := q.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
 	if len(snap) != 1 {
 		t.Fatalf("snapshot length = %d, want 1", len(snap))
 	}
@@ -74,16 +78,16 @@ func TestQueue_SnapshotJob(t *testing.T) {
 	job.progress = newJobProgress(job.manifest)
 	_ = q.Add(job)
 
-	snap := q.SnapshotJob(jobID)
-	if snap == nil {
-		t.Fatal("SnapshotJob returned nil")
+	snap, err := q.SnapshotJob(jobID)
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
 	}
 	if snap.ID != jobID {
 		t.Errorf("snapshot ID = %q, want %q", snap.ID, jobID)
 	}
 
-	if q.SnapshotJob("non-existent") != nil {
-		t.Error("SnapshotJob returned non-nil for non-existent ID")
+	if _, err := q.SnapshotJob("non-existent"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SnapshotJob for non-existent ID: got err=%v, want ErrNotFound", err)
 	}
 }
 
@@ -116,9 +120,9 @@ func TestSnapshotJob_ArtIdxIsolation(t *testing.T) {
 
 	// Take a snapshot — Manifest is shared (immutable, safe to alias), but
 	// Progress must be an independent deep copy.
-	snap := q.SnapshotJob("idx-test")
-	if snap == nil {
-		t.Fatal("SnapshotJob returned nil")
+	snap, err := q.SnapshotJob("idx-test")
+	if err != nil {
+		t.Fatalf("SnapshotJob: %v", err)
 	}
 	if snap.Manifest() != job.manifest {
 		t.Error("clone's Manifest should be the same shared pointer as the original's")
