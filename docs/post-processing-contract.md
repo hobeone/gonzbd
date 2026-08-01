@@ -17,7 +17,7 @@ documentation error.
 
 Post-processing transforms downloaded assemblies into final destination files. It
 handles complex, non-deterministic operations: verification, PAR2 recovery block
-calculations, archive decompression (RAR, 7z, ZIP, TAR), deobfuscation, file
+calculations, archive decompression (RAR, 7z, TAR, split join), deobfuscate, file
 renaming, and execution of arbitrary user-defined scripts.
 
 Multi-stage post-processing introduces subtle failure modes:
@@ -59,10 +59,10 @@ The complete post-processing pipeline consists of 12 registered stages configure
 ```
 [ 1. quickcheck ] ──► [ 2. repair ] ──► [ 3. rar_volume_recovery ] ──► [ 4. unpack ]
                                                                              │
-[ 8. deobfuscate ] ◄── [ 7. par2_cleanup ] ◄── [ 6. par2_rename ] ◄── [ 5. sample_cleanup ]
+[ 8. deobfuscate ] ◄── [ 7. par2_cleanup ] ◄── [ 6. recover_par2_names ] ◄── [ 5. sample_cleanup ]
        │
        ▼
-[ 9. extension_cleanup ] ──► [ 10. finalize ] ──► [ 11. cleanup_admin ] ──► [ 12. script ]
+[ 9. extension_cleanup ] ──► [ 10. finalize ] ──► [ 11. cleanup ] ──► [ 12. script ]
 ```
 
 ### Stage Responsibilities & Self-Gating Matrix
@@ -74,17 +74,17 @@ or modify its behavior:
 | Stage Name | Responsibilities | Skip / Gating Condition | Key Flags Updated |
 |---|---|---|---|
 | **`quickcheck`** | Relocates flat files into expected subdirs; verifies file CRC32s against par2 headers without executing `par2`. | Skipped if disabled or `PP < 1`. | Sets `QuickCheckRan`, `QuickCheckPassed`. |
-| **`repair`** | Executes `par2 verify` / `par2 repair` if files are missing or corrupted. | Skipped if `PP < 1` OR `QuickCheckPassed == true`. | Sets `ParError`, `NeedRequeue`, `RequeueBlocksNeeded`. |
-| **`rar_volume_recovery`** | Renames obfuscated volume files (e.g. `abc.001` → `abc.part01.rar`) if standard filename parsing found no RAR sets. | Skipped if disabled or standard RAR sets already detected. | Renames volume files in `DownloadDir`. |
-| **`unpack`** | Decompresses archives (RAR, 7z, ZIP, TAR, split join). Respects `DirectUnpackSets` to skip already-extracted archives. | Skipped if `PP < 2` OR (`ParError == true` && `!unpack_on_failure`). | Sets `UnpackError`. |
-| **`sample_cleanup`** | Deletes sample video files (e.g. `sample-movie.mkv`) below configured size threshold. | Skipped if disabled in config. | Unlinks sample files from `OwnedFiles`. |
-| **`par2_rename`** | Restores original filenames using PAR2 "is a match for" header maps (`Par2Renames`). | Runs unconditionally after unpack. | Renames files in `DownloadDir` & `OwnedFiles`. |
-| **`par2_cleanup`** | Deletes `.par2` files after repair, unpack, and rename stages have finished. | Skipped if `ParError` or `UnpackError` set (preserves par2 for manual repair). | Unlinks `.par2` files. |
-| **`deobfuscate`** | Detects obfuscated file names and restores clean titles from job metadata. | Skipped if disabled in config. | Renames files in `DownloadDir` & `OwnedFiles`. |
-| **`extension_cleanup`** | Deletes unwanted file extensions (`.sfv`, `.nzb`, `.nfo`, etc.) based on user config. | Skipped if cleanup list empty. | Unlinks matching extensions from `OwnedFiles`. |
-| **`finalize`** | Moves processed files from `DownloadDir` to `FinalDir` (`CompleteDir/job_name`). | Always runs unless pre-check aborted job. | Populates `FinalDir`, sets status to `StatusMoving`. |
-| **`cleanup_admin`** | Deletes internal sidecar directories (`__ADMIN__`) from the output path. | Always runs. | Removes `__ADMIN__` directory. |
-| **`script`** | Executes user-defined post-processing script with full environment and positional args. | Skipped if no script configured for job/category. | Captures script exit code and stdout/stderr log. |
+| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted. | Skipped if `PP < 1`, `QuickCheckPassed == true`, OR DirectUnpack extracted all archives without errors during download. | Sets `ParError`, `NeedRequeue`, `RequeueBlocksNeeded`, and `Par2Renames`. |
+| **`rar_volume_recovery`** | Renames obfuscated volume files (e.g. `abc.001` → `abc.part001.rar`) using RAR5 header volume sequencing if standard filename parsing found no RAR sets. | Skipped if disabled, standard RAR sets already detected, or volume indexing is ambiguous. | Renames volume files in `DownloadDir` & `OwnedFiles`. |
+| **`unpack`** | Decompresses archives (`RAR`, `7z`, `TAR`, `split join`) up to `maxUnpackDepth = 3` recursive passes using native pure-Go engines (`go_rar`, `go_7z`, `go_tar`, `filejoin`) with optional external CLI fallbacks (`unrar`, `7z`). Respects `DirectUnpackSets` to skip already-extracted archives. | Skipped if `PP < 2` OR `ParError == true` (skips extraction unconditionally on repair failure). | Sets `UnpackError`. |
+| **`sample_cleanup`** | Deletes sample video and proof files matching `(?i)(^|[\W_])(sample|proof)`. Includes a false-positive guard where all files match the pattern. | Skipped if disabled in config or if every file in the directory matches the sample pattern. | Unlinks sample files from `OwnedFiles`. |
+| **`recover_par2_names`** | Restores original filenames by scanning `.par2` files on disk for 16KB MD5 hashes via `deobfuscate.Par2Rename`. | Runs unconditionally after unpack. | Renames files in `DownloadDir` & `OwnedFiles`. |
+| **`par2_cleanup`** | Deletes `.par2` files and orphaned `.1`, `.2`, etc. backup files created during `par2 repair` after repair, unpack, and rename stages have finished. | Skipped if `ParError` or `UnpackError` set (preserves par2 files for manual repair). | Unlinks `.par2` and `.1`/`.2` backup files. |
+| **`deobfuscate`** | Detects obfuscated file names and restores clean titles from job metadata. Also performs subtitle alignment (`.srt` renamed to match dominant video). | Skipped if disabled in config. | Renames files and subtitles in `DownloadDir` & `OwnedFiles`. |
+| **`extension_cleanup`** | Deletes unwanted file extensions (`.sfv`, `.nfo`, etc.) based on user config. Explicitly protects `.nzb` files (`SkipNZB = true`) and files in `ConsumedFiles`. Removes newly empty subdirectories. | Skipped if cleanup list empty. | Unlinks matching extensions from `OwnedFiles`. |
+| **`finalize`** | Moves processed files from `DownloadDir` to `FinalDir` (`CompleteDir/job_name`). When `job.ParError || job.UnpackError || job.FailMsg != ""`, skips moving to `FinalDir` and instead prepends `_FAILED_` to `DownloadDir` in place (when `folder_rename: true`), leaving files in incomplete download area for retry. | Always runs unless pre-check aborted job. | Populates `FinalDir` or renames `DownloadDir` with `_FAILED_` prefix; sets status to `StatusMoving`. |
+| **`cleanup`** | Deletes internal sidecar directories (`__ADMIN__`) from the output path. | Skipped if `ParError`, `UnpackError`, or `FailMsg != ""` is set (preserves sidecar data for debugging/retry). | Removes `__ADMIN__` directory. |
+| **`script`** | Executes user-defined post-processing script with full environment (`SAB_*` vars, including Go-specific `SAB_FINAL_PROCESSING_DIR`) and 8 positional args ($1–$8). Supports `RedactSecrets` (`SAB_API_KEY`/`SAB_PASSWORD` masked as `**REDACTED**`) and `ScriptCanFail` (non-zero exit logged as warning instead of error). | Skipped if no script configured for job/category. | Captures script exit code and stdout/stderr log (capped at 512 KiB). |
 
 ## Post-Processing (PP) Level Enforcement
 
@@ -98,6 +98,16 @@ SABnzbd post-processing levels are cumulative integer masks on `job.Queue.PP`:
 `shouldSkipForPP(stageName, pp)` enforces these bounds centrally. Stages like
 `deobfuscate`, `sample_cleanup`, `finalize`, and `script` always run regardless of PP level.
 
+## Native Engine Dispatch & External Fallback
+
+`gonzbd` executes verification, repair, and archive decompression using native Go libraries by default:
+- **`go_par2`**: Native Reed-Solomon verification and repair engine (`UseGoPar2`).
+- **`go_rar`**: Pure-Go RAR5 extraction engine (`UseGoRAR`).
+- **`go_7z`**: Pure-Go 7-Zip extraction engine (`UseGo7z`).
+- **`go_tar` / `filejoin`**: Native TAR extraction and split file joining.
+
+External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as automatic fallbacks only when native execution reports inconclusive errors or fails (`GoPar2Fallback`, `GoRarFallback`, `Go7zFallback`) or when native engines are explicitly disabled in configuration.
+
 ## Core Pipeline Invariants
 
 1. **Non-aborting stage loop**: A stage returning a non-nil error records the error
@@ -108,10 +118,7 @@ SABnzbd post-processing levels are cumulative integer masks on `job.Queue.PP`:
    check failed) or `job.DownloadDir` is empty/missing, all processing stages are
    skipped. A synthetic `pre-check` entry is appended to `StageLog` and the job
    completes directly to history.
-3. **QuickCheck bypass guarantee**: If `QuickCheckPassed` is `true`, `repair`
-   bypasses `par2` execution. This eliminates multi-minute disk reads for 95%+ of
-   healthy downloads. `QuickCheckRan` ensures `repair` is only bypassed when
-   QuickCheck actually ran and passed, not when it was disabled.
+3. **Verification bypass guarantees**: If `QuickCheckPassed` is `true`, or if DirectUnpack successfully extracted all archives during download without errors and QuickCheck found no checksum mismatch, `repair` bypasses `par2` execution. This eliminates multi-minute disk reads for healthy downloads. `QuickCheckRan` ensures `repair` is only bypassed when QuickCheck actually ran and verified clean.
 4. **`OwnedFiles` isolation (#3462)**: `processJob` snapshots `OwnedFiles` from
    `DownloadDir` before any stage runs. Unpack and rename stages register newly
    created files into `OwnedFiles`. Cleanup stages (`extension_cleanup`,
@@ -122,19 +129,17 @@ SABnzbd post-processing levels are cumulative integer masks on `job.Queue.PP`:
    `script <complete_dir> <nzb_name> <job_name> <report_name> <category> <group> <status> <failure_url>`
    and environment variables: `SAB_COMPLETE_DIR`, `SAB_FILENAME`, `SAB_FINAL_NAME`,
    `SAB_CAT`, `SAB_GROUP`, `SAB_PP_STATUS`, `SAB_PP`, `SAB_SCRIPT`, `SAB_VERSION`,
-   `SAB_API_KEY`, etc.
+   `SAB_API_KEY`, `SAB_FINAL_PROCESSING_DIR`, etc. Scripts support `RedactSecrets` (masking `SAB_API_KEY`/`SAB_PASSWORD` as `**REDACTED**`) and `ScriptCanFail` (treating non-zero exit codes as warnings).
 6. **Log output cap**: Tool output lines (par2, unrar, script stdout) captured in
    `OutputLines` and `StageLogEntry.Lines` are capped at `MaxLogBytes = 512 KiB`
    per script execution to prevent memory exhaustion from verbose tools.
 
 ## Failure & Degradation Rules
 
-- **PAR2 Repair Failure (`ParError = true`)**: `unpack` is skipped unless
-  `unpack_on_failure` is enabled. `finalize` appends `_FAILED_` to `FinalDir`
-  so failed downloads are isolated from clean completions.
+- **PAR2 Repair Failure (`ParError = true`)**: `unpack` is skipped unconditionally when `ParError = true`. `finalize` skips moving files to `FinalDir` and instead prepends `_FAILED_` to `DownloadDir` (when `folder_rename: true`), leaving files in the incomplete download directory so retries can find them.
 - **Unpack Failure (`UnpackError = true`)**: Extraction errors (bad password,
-  corrupt archive) set `UnpackError = true`. Original archive files are
-  preserved for manual recovery.
+  corrupt archive) set `UnpackError = true`. Original archive files and `.par2` recovery files are
+  preserved in `DownloadDir` for manual recovery.
 - **Re-queue Information (`NeedRequeue = true`)**: If `par2` requires additional
   blocks, `NeedRequeue` and `RequeueBlocksNeeded` are recorded on `Job` for
   history/UI reporting. Downstream stages continue running so the job reaches
