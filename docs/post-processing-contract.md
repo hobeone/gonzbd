@@ -147,10 +147,22 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
 
 ## Status
 
-Landed:
+### Landed
 - Single worker goroutine with `ppQueue` FIFO scheduling and safe cancellation (`Cancel`).
-- Complete 12-stage pipeline with strict stage self-gating and cumulative PP-level enforcement.
-- `QuickCheckRan` / `QuickCheckPassed` bypass logic.
-- `OwnedFiles` snapshotting and cleanup isolation (#3462).
-- Python-compatible 8-arg positional and `SAB_*` environment contract for user scripts with 512 KiB log caps.
+- Complete 12-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
+- `QuickCheckRan` / `QuickCheckPassed` bypass logic & DirectUnpack zero-failure verification bypass.
+- `OwnedFiles` snapshotting and cleanup isolation (#3462) with in-place rename tracking (`markRenamed`).
+- Python-compatible 8-arg positional and `SAB_*` environment contract for user scripts with 512 KiB log caps, `RedactSecrets`, and `ScriptCanFail` runtime toggleability.
+- Native Go engine dispatch (`go_par2`, `go_rar`, `go_7z`, `go_tar`, `filejoin`) with external CLI fallbacks.
 - Synthetic `download`, `direct unpack`, and `summary` StageLog cards for history UI rendering.
+
+### Open Gaps (Target Invariants Not Yet Built)
+- **`NeedRequeue` Automatic Promotion (`internal/app`)**: `NeedRequeue` is set by
+  the repair stage but nothing in `internal/app` reads it — it is currently dead
+  state. No job finalizer inspects it or promotes un-downloaded `.par2` volumes.
+  Target: implement automatic `.par2` promotion and `StatusDownloading` transition,
+  falling back to `Status = "Failed"` when no recovery blocks remain.
+- **`ScriptCanFail == false` Authoritative Failure (`internal/postproc`)**: When a
+  user script exits non-zero and `ScriptCanFail` is false, `ScriptStage.Run()` sets
+  `StageLogEntry.Err` but does not set `job.FailMsg`, so `buildSummaryEntry` records
+  `Status = "Completed"`. Fix: PR #275.
