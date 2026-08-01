@@ -391,6 +391,26 @@ func UniqueName(base string, exists func(string) bool) string {
 // If a job with the same Name already exists, the new job is renamed
 // by appending .1, .2, etc. to match Python SABnzbd behavior.
 func (q *Queue) Add(job *Job) error {
+	// Enforce the residency invariant at the single entry point that puts a
+	// job into q.byID, rather than re-checking job.progress == nil at every
+	// read site downstream (e.g. TotalRemainingBytes, called from
+	// runMetricsPush — a 1Hz ticker goroutine with no recover()). Every
+	// production caller (NewJob, LoadJob followed by Add) already sets
+	// progress; a nil here means a caller bypassed both, e.g. a bare
+	// &Job{Status: StatusQueued} representing a job not yet hydrated from
+	// disk — a shape some claim-failure tests use deliberately to exercise
+	// PromoteNext's own hydration-failure path. Repair rather than reject:
+	// size progress from the manifest if one is already attached, or to
+	// zero articles if not (the same "nothing known yet" shape
+	// hydrateJobLocked expects to overwrite once it actually reads the
+	// manifest). Either way, no job with nil progress reaches q.byID.
+	if job.progress == nil {
+		m := job.manifest
+		if m == nil {
+			m = &Manifest{}
+		}
+		job.progress = newJobProgress(m)
+	}
 	if q.store == nil && q.stateDir != "" && job.manifest != nil {
 		manifestsDir := filepath.Join(q.stateDir, "manifests")
 		_ = os.MkdirAll(manifestsDir, 0o750)
@@ -1847,6 +1867,17 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 				idx++
 			}
 			newFiles = append(newFiles, job.progress.files[fi])
+		}
+		// idx is expected to land exactly on newManifestVal.NumArticles():
+		// both loops above walk the identical Deferred predicate in the
+		// identical file order, so every surviving article should get
+		// exactly one slot. That equality is not self-enforcing, though —
+		// bitset.Set silently no-ops out of range (see bitset.go), so a
+		// future divergence between the two loops would corrupt done/
+		// failed/emitted by silently dropping or misplacing bits instead of
+		// failing loudly. Check it explicitly rather than trust it.
+		if idx != newManifestVal.NumArticles() {
+			panic(fmt.Sprintf("queue: DiscardDeferredPar2 copied %d articles but the rebuilt manifest has %d — the surviving-file walk and the manifest's Deferred filtering have diverged", idx, newManifestVal.NumArticles()))
 		}
 		newProgress.done = newDone
 		newProgress.failed = newFailed
