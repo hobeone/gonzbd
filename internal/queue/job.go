@@ -207,6 +207,25 @@ func (j *Job) setScalarsFromManifest(m *Manifest) {
 	j.par2Files = m.Par2Files()
 }
 
+// setAggregateScalarsFromFiles sets totalBytes/numFiles/numArticles from
+// values aggregated over job_files (SUM(bytes), COUNT(*), SUM(article_count))
+// rather than from a resident Manifest. Used by SQLiteStore.Get/List for a
+// job that is non-resident and has never been promoted/snapshotted
+// in-process — the case Task 3 left as a documented gap, where these
+// scalars would otherwise silently read as zero.
+//
+// par2Bytes/par2Files are deliberately left untouched (zero): job_files'
+// is_par2_recovery flags only recovery volumes, while the manifest's
+// Par2Bytes/Par2Files also count the par2 index file, so the two are not
+// equivalent and reconstructing the par2 pair from is_par2_recovery would
+// silently produce an undercount rather than the value the manifest would
+// have produced.
+func (j *Job) setAggregateScalarsFromFiles(totalBytes int64, numFiles, numArticles int) {
+	j.totalBytes = totalBytes
+	j.numFiles = numFiles
+	j.numArticles = numArticles
+}
+
 // TotalBytes returns the job's total size in bytes. Total: never requires a
 // resident manifest.
 func (j *Job) TotalBytes() int64 { return j.totalBytes }

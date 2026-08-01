@@ -118,9 +118,18 @@ func TestSnapshotJob_QueuedAfterRestart_ScalarsNotZero(t *testing.T) {
 // site the Task 3 review flagged: PromoteNext attaches a manifest to a
 // restored, non-resident StatusQueued job (job.manifest == nil) when
 // promoting it to StatusDownloading, using its own manifest read rather than
-// hydrateJobLocked's. Before the fix, that attach path never backfilled the
-// five scalars, so a job promoted after a restart reported zero size for the
-// rest of its in-memory life — including while actively downloading.
+// hydrateJobLocked's. Before the Task 3 fix, that attach path never
+// backfilled the five scalars, so a job promoted after a restart reported
+// zero size for the rest of its in-memory life — including while actively
+// downloading.
+//
+// Task 4 additionally closed the sibling gap this test used to rely on as a
+// fixture guard: SQLiteStore.Get now reconstructs TotalBytes/NumFiles/
+// NumArticles for a non-resident job straight from job_files (bytes,
+// COUNT(*), article_count), so a restored StatusQueued job is no longer
+// zero even before PromoteNext runs. What's left worth pinning here is that
+// PromoteNext's own manifest attach doesn't regress that value once the job
+// goes resident.
 func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
@@ -143,9 +152,9 @@ func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	// Reload — jobB comes back via SQLiteStore.Get with zero scalars, since
-	// Get only loads a manifest for resident statuses and jobB is
-	// StatusQueued.
+	// Reload — jobB comes back via SQLiteStore.Get non-resident (StatusQueued,
+	// no manifest attached), but with TotalBytes/NumFiles/NumArticles already
+	// reconstructed from job_files (the Task 4 gap closure), not zero.
 	q2, err := Load(dir, WithStore(store), WithMaxActiveJobs(1))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -160,8 +169,8 @@ func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 		t.Fatalf("fixture guard: jobB status=%v manifest!=nil=%v after reload, want StatusQueued/nil manifest",
 			restored.Status, restored.manifest != nil)
 	}
-	if got := restored.TotalBytes(); got != 0 {
-		t.Fatalf("fixture guard: jobB.TotalBytes() = %d before promotion, want 0 (nothing to test)", got)
+	if got := restored.TotalBytes(); got != wantBytes {
+		t.Fatalf("fixture guard: jobB.TotalBytes() = %d before promotion, want %d (job_files reconstruction, see Task 4)", got, wantBytes)
 	}
 
 	// Free up the active slot and promote: this drives PromoteNext, the

@@ -97,7 +97,8 @@ var storeMethods = map[string]bool{
 	"ExistsByMD5": true, "ShiftSortKey": true, "Prune": true,
 	"SetPaused": true, "IsPaused": true, "RestoreJobProgress": true,
 	"RemainingBytesByJob": true, "DeleteJobArtifacts": true,
-	"Save": true,
+	"ArticleCountsByFile": true,
+	"Save":                true,
 }
 
 // lockedSuffix is the naming convention this repo uses for "the caller must

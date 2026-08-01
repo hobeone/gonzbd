@@ -195,16 +195,17 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if job.Manifest() != nil {
 		const qFiles = `
 INSERT INTO job_files
-  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, article_count)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		for i := range job.Manifest().NumFiles() {
 			isPar2 := 0
 			if job.Manifest().FileIsPar2Recovery(i) {
 				isPar2 = 1
 			}
 			artDoneStr := encodeArticlesDone(job, i)
+			lo, hi := job.Manifest().FileRange(i)
 			_, err = tx.ExecContext(ctx, qFiles,
-				job.ID, i, job.Manifest().FileSubject(i), job.Manifest().FileDate(i).Unix(), job.Manifest().FileBytes(i), isPar2, 0, 0, 0, 0, "", 0, artDoneStr,
+				job.ID, i, job.Manifest().FileSubject(i), job.Manifest().FileDate(i).Unix(), job.Manifest().FileBytes(i), isPar2, 0, 0, 0, 0, "", 0, artDoneStr, hi-lo,
 			)
 			if err != nil {
 				return fmt.Errorf("sqlite store insert job_file %s/%d: %w", job.ID, i, err)
@@ -301,6 +302,23 @@ FROM jobs WHERE id = ?`
 		}
 	}
 
+	// job.manifest is nil here for a non-resident job (or a resident one
+	// whose manifest file is missing, though that case already errored
+	// above when fileCount > 0). Without a resident manifest,
+	// TotalBytes/NumFiles/NumArticles would otherwise read as zero — a
+	// gap left open by Task 3 — so reconstruct the three of the five
+	// scalars that job_files can answer on its own. par2Bytes/par2Files
+	// stay zero; see setAggregateScalarsFromFiles for why they cannot be
+	// safely reconstructed from is_par2_recovery.
+	if job.manifest == nil && fileCount > 0 {
+		var totalBytes int64
+		var numFiles, numArticles int
+		const qAgg = `SELECT COALESCE(SUM(bytes), 0), COUNT(*), COALESCE(SUM(article_count), 0) FROM job_files WHERE job_id = ?`
+		if err := s.db.QueryRowContext(ctx, qAgg, id).Scan(&totalBytes, &numFiles, &numArticles); err == nil {
+			job.setAggregateScalarsFromFiles(totalBytes, numFiles, numArticles)
+		}
+	}
+
 	return &job, nil
 }
 
@@ -351,6 +369,35 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	}
 	job.progress.recompute(job.manifest)
 	return rows.Err()
+}
+
+// ArticleCountsByFile returns each file's article count, indexed by
+// file_index. Used to size JobProgress at restart without loading the
+// job's manifest.
+//
+// A zero count means the row predates the article_count column; the caller
+// must fall back to reading the manifest for that job rather than sizing
+// progress to zero.
+func (s *SQLiteStore) ArticleCountsByFile(ctx context.Context, jobID string) ([]int, error) {
+	const q = `SELECT file_index, article_count FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
+	rows, err := s.db.QueryContext(ctx, q, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite store article counts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []int
+	for rows.Next() {
+		var idx, count int
+		if err := rows.Scan(&idx, &count); err != nil {
+			return nil, fmt.Errorf("sqlite store scan article count: %w", err)
+		}
+		out = append(out, count)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite store article counts: %w", err)
+	}
+	return out, nil
 }
 
 // RemainingBytesByJob returns each job's remaining bytes (bytes minus
@@ -462,7 +509,11 @@ WHERE id = ?`
 	}
 
 	if job.Progress() != nil && job.Manifest() != nil {
-		const qF = `UPDATE job_files SET complete = ?, deferred = ?, write_cursor = ?, bytes_downloaded = ?, filename = ?, assembled_crc32 = ?, articles_done = ? WHERE job_id = ? AND file_index = ?`
+		// article_count is included here (not just in Add's INSERT) so that a
+		// row written before this column existed — where it defaults to 0 —
+		// gets backfilled the next time the job is updated while resident and
+		// its manifest is available, rather than staying 0 forever.
+		const qF = `UPDATE job_files SET complete = ?, deferred = ?, write_cursor = ?, bytes_downloaded = ?, filename = ?, assembled_crc32 = ?, articles_done = ?, article_count = ? WHERE job_id = ? AND file_index = ?`
 		for i := range job.Manifest().NumFiles() {
 			complete := 0
 			if job.Progress().FileComplete(i) {
@@ -473,8 +524,9 @@ WHERE id = ?`
 				deferred = 1
 			}
 			artDoneStr := encodeArticlesDone(job, i)
+			lo, hi := job.Manifest().FileRange(i)
 			if _, err := execer.ExecContext(ctx, qF,
-				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr,
+				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr, hi-lo,
 				job.ID, i,
 			); err != nil {
 				return fmt.Errorf("sqlite store update job_file %s index %d: %w", job.ID, i, err)

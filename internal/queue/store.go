@@ -54,6 +54,12 @@ type Store interface {
 	// RestoreJobProgress loads per-file progress counters into job.progress for a resident job.
 	RestoreJobProgress(ctx context.Context, job *Job) error
 
+	// ArticleCountsByFile returns each file's article count, indexed by
+	// file_index. A zero count means the row predates the article_count
+	// column, so the caller must fall back to the job's manifest for that
+	// job rather than sizing progress to zero.
+	ArticleCountsByFile(ctx context.Context, jobID string) ([]int, error)
+
 	// RemainingBytesByJob returns each job's remaining bytes (manifest bytes
 	// minus bytes already downloaded), summed per job_id across job_files.
 	// Used to reconstruct Job.lastKnownRemainingBytes for jobs that come
