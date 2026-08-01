@@ -2,6 +2,7 @@ package queue
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"time"
@@ -260,6 +261,20 @@ func (p *JobProgress) clone() *JobProgress {
 // DiscardDeferredPar2, undeferRecoveryLocked) where incremental tracking is
 // impractical.
 func (p *JobProgress) recompute(m *Manifest) {
+	// JobProgress and Manifest are persisted as independent JSON documents
+	// (Job.UnmarshalJSON assigns both from separate keys with nothing
+	// reconciling their lengths) and independent SQLite rows. A size
+	// mismatch here means every article-indexed write below — markDone's
+	// bitset.Set, byte accounting, pendingArticles/remainingBytes — would
+	// otherwise either silently no-op (bitset.Set/Clear are deliberately
+	// lenient, see bitset.go) or run against the wrong article entirely,
+	// leaving byte accounting permanently and silently wrong. Panic rather
+	// than let that drift start: this mirrors the file dimension of the
+	// same mismatch, which already panics loudly via the p.files[fi] index
+	// below when m has more files than p was sized for.
+	if p.done.Len() != m.NumArticles() {
+		panic(fmt.Sprintf("queue: JobProgress/Manifest article count mismatch: progress sized for %d articles, manifest has %d — they were loaded or constructed independently and never reconciled", p.done.Len(), m.NumArticles()))
+	}
 	total := 0
 	var resolved, failed int
 	for fi := range m.NumFiles() {
