@@ -40,9 +40,9 @@ func setupResidencyTestStoreWithDB(t *testing.T) (*SQLiteStore, string, *sql.DB)
 
 // TestTotalRemainingBytes_NonResidentJobsCounted reproduces issue #262: with
 // more queued jobs than maxActive, every job beyond the active set is
-// non-resident (job.progress == nil, per Queue.Add's de-hydration), and
-// TotalRemainingBytes used to skip every one of them instead of falling back
-// to a cached figure.
+// non-resident (job.manifest == nil, per Queue.Add's de-hydration; progress
+// stays live — docs/queue-lifecycle.md), and TotalRemainingBytes used to
+// skip every one of them instead of reading their live progress.
 func TestTotalRemainingBytes_NonResidentJobsCounted(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))

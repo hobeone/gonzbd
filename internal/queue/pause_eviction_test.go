@@ -61,6 +61,19 @@ func newEvictedJobQueue(t *testing.T) (*Queue, string) {
 // TestNonResidentJobMethodsDoNotPanic covers every exported Queue method known
 // to dereference job.manifest or job.progress. Before the fix, the four
 // by-message-ID and count/abort entry points panicked here.
+//
+// ForEachUnfinishedArticle belongs in this table for a different reason than
+// the others: it never panicked on the ordinary bare-New()/no-persistence
+// fixture, but once JobProgress became permanently resident
+// (docs/queue-lifecycle.md) its guard — `job.progress == nil`, equivalent to
+// manifest non-residency back when eviction dropped both together — stopped
+// protecting the job.manifest.NumFiles() call a few lines below it. A queue
+// package test alone would not have caught that regression (internal/queue
+// and internal/downloader both still pass with the bad guard restored); it
+// only surfaces as a nil-manifest panic in internal/app's buildDispatchPlan,
+// in a downloader goroutine with no recover(). This table is what pins it at
+// the source instead of relying on a cross-package integration test to catch
+// a re-introduction.
 func TestNonResidentJobMethodsDoNotPanic(t *testing.T) {
 	t.Parallel()
 
@@ -123,6 +136,22 @@ func TestNonResidentJobMethodsDoNotPanic(t *testing.T) {
 				if q.CheckEarlyAbort(jobID) {
 					t.Error("CheckEarlyAbort = true for a non-resident job, want false")
 				}
+				return nil
+			},
+		},
+		{
+			name: "ForEachUnfinishedArticle",
+			call: func(t *testing.T, q *Queue, jobID string) error {
+				// No error channel. A non-resident job (manifest nil, progress
+				// non-nil) must be skipped before the manifest is ever
+				// dereferenced, and must yield no articles — there is no
+				// manifest to walk them against.
+				q.ForEachUnfinishedArticle(func(a UnfinishedArticle) bool {
+					if a.JobID == jobID {
+						t.Errorf("non-resident job %s yielded unfinished article %s, want none", jobID, a.MessageID)
+					}
+					return true
+				})
 				return nil
 			},
 		},

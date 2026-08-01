@@ -2,6 +2,8 @@ package queue
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -135,5 +137,58 @@ func TestLoad_LegacyArticleCountFallback(t *testing.T) {
 	if n := got.progress.done.Len(); n != 4 {
 		t.Errorf("progress sized to %d articles, want 4 — the legacy fallback "+
 			"should have read the manifest instead of trusting the zero count", n)
+	}
+}
+
+// TestLoad_LegacyArticleCountFallbackCorruptManifestDegrades pins the CRITICAL
+// fix: a corrupt manifest on a legacy-row job must not fail Load. Before this
+// fix, the fallback's readGzJSON error propagated straight out of Load, and
+// since Application.New calls queue.Load at startup, a single damaged
+// manifest — the exact condition every row is in during the upgrade window
+// that first exercises this path — took down the daemon's boot. Recovery
+// paths must degrade, not die (docs/queue-lifecycle.md): the pre-existing
+// behavior of surfacing a corrupt manifest as a claim failure later, at
+// PromoteNext, must be preserved instead.
+func TestLoad_LegacyArticleCountFallbackCorruptManifestDegrades(t *testing.T) {
+	store, dir, db := setupResidencyTestStoreWithDB(t)
+
+	// Same maxActive=1/two-job shape as TestLoad_LegacyArticleCountFallback,
+	// so the target job stays Queued/non-resident and actually exercises the
+	// fallback rather than being sized by store.Get's normal resident path.
+	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
+	active := makeMultiFileJob(t, "legacy-corrupt-active", 1, 1)
+	if err := q.Add(active); err != nil {
+		t.Fatalf("Add active: %v", err)
+	}
+	job := makeMultiFileJob(t, "legacy-corrupt-row", 1, 4)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if _, err := db.ExecContext(t.Context(), "UPDATE job_files SET article_count = 0 WHERE job_id = ?", job.ID); err != nil {
+		t.Fatalf("zero article_count: %v", err)
+	}
+
+	manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
+	if err := os.WriteFile(manifestPath, []byte("NOT_A_VALID_GZIP_FILE"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("corrupt manifest fixture: %v", err)
+	}
+
+	q2, err := Load(dir, WithStore(store), WithMaxActiveJobs(1))
+	if err != nil {
+		t.Fatalf("Load: want no error from a corrupt manifest on a legacy-row job, got: %v", err)
+	}
+
+	q2.mu.RLock()
+	got, ok := q2.byID[job.ID]
+	q2.mu.RUnlock()
+	if !ok {
+		t.Fatalf("job %s missing after reload", job.ID)
+	}
+	if got.progress == nil {
+		t.Error("progress is nil — a degraded fallback must still leave progress non-nil")
 	}
 }

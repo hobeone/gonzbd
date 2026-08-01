@@ -268,17 +268,31 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 				// article_count column. The manifest is the only remaining
 				// source of per-file article counts — read it once here
 				// rather than leaving progress permanently under-sized.
+				//
+				// A failed read must degrade, not fail Load: this is boot
+				// (Application.Start -> queue.Load), and one damaged manifest
+				// must never prevent the daemon from starting — the same
+				// rule that keeps the resident-hydration branch below
+				// degrading on `if err == nil { ... }` rather than
+				// propagating. Falling through with the zero counts sizes
+				// this one job's progress to zero articles until the normal
+				// claim path (PromoteNext) either hydrates the real manifest
+				// or fails the job closed the way a corrupt manifest already
+				// does for every other job — exactly the pre-Task-5 outcome,
+				// not a new failure mode.
 				manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
 				var m Manifest
 				if err := readGzJSON(manifestPath, &m); err != nil {
-					return nil, fmt.Errorf("queue: legacy article-count fallback for job %s: %w", job.ID, err)
+					q.log.Warn("legacy article-count fallback: could not read manifest, sizing progress to zero articles",
+						"job_id", job.ID, "err", err)
+				} else {
+					counts = make([]int, m.NumFiles())
+					for fi := range counts {
+						lo, hi := m.FileRange(fi)
+						counts[fi] = hi - lo
+					}
+					q.log.Info("upgraded legacy job_files row missing article_count", "job_id", job.ID)
 				}
-				counts = make([]int, m.NumFiles())
-				for fi := range counts {
-					lo, hi := m.FileRange(fi)
-					counts[fi] = hi - lo
-				}
-				q.log.Info("upgraded legacy job_files row missing article_count", "job_id", job.ID)
 			}
 			job.progress = newJobProgressSized(counts, remainingByJob[job.ID])
 		}

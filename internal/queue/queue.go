@@ -192,33 +192,44 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 	return job.Status, nil
 }
 
-// residentJob returns the job for id only if its Manifest and JobProgress are
-// currently in memory. Callers must already hold q.mu — either lock, since
-// this only reads.
+// residentJob returns the job for id only if its Manifest is currently in
+// memory. Callers must already hold q.mu — either lock, since this only
+// reads.
 //
-// New and modified methods that dereference job.manifest or job.progress
-// should obtain their job through this rather than indexing q.byID directly.
-// A job present in q.byID is not necessarily hydrated: Add releases both
-// fields for StatusQueued jobs, and evictJobLocked releases them when a job
-// leaves the active set, in both cases leaving the job in the map.
+// New and modified methods that dereference job.manifest should obtain their
+// job through this rather than indexing q.byID directly. A job present in
+// q.byID is not necessarily hydrated: Add releases the manifest for
+// StatusQueued jobs, and evictJobLocked releases it when a job leaves the
+// active set, in both cases leaving the job in the map.
 //
 // Note this is the direction of travel, not yet a property of the whole file.
 // Several existing methods still index q.byID and nil-guard inline, silently
 // no-opping for a non-resident job instead of reporting it; converting them is
 // tracked separately as a follow-up to issue #258.
 //
-// Safety rests on manifest and progress always being either both nil or both
-// non-nil — not merely on both being assigned. That is what lets a caller skip
-// its work when this returns ErrJobNotResident: the progress it would have
-// mutated is about to be discarded and rebuilt from stored state by
-// PromoteNext, so the skipped mutation is moot rather than lost. A
-// half-hydrated job (manifest nil, progress live) would invalidate that
-// reasoning silently.
+// Manifest is the only residency signal now: JobProgress is permanently
+// resident (docs/queue-lifecycle.md) and never nil for a job in q.byID, so a
+// non-resident job is manifest-nil/progress-live, not both-nil — that state
+// is the ordinary steady state for every StatusQueued/StatusPaused job, not
+// a half-hydration hazard. Skipping work on ErrJobNotResident is still safe,
+// for a reason that no longer depends on progress's presence: every caller
+// through this gate needs the manifest itself to resolve what it was asked
+// to mutate (a message ID or article index only means something against a
+// resident Manifest), so there is no correct mutation to perform without one.
+// And should a caller somehow bypass that, whatever it wrote would not
+// survive anyway — the moment the job returns to resident, hydrateJobLocked
+// unconditionally rebuilds JobProgress from the manifest plus
+// Store.RestoreJobProgress's persisted counters, discarding whatever was
+// live beforehand. The skipped mutation is moot because promotion
+// supersedes it, not because progress was about to vanish.
 //
-// Job.UnmarshalJSON (job.go:583-584) assigns the two from independent JSON
-// keys and upholds the invariant only because MarshalJSON (job.go:551-552)
-// can emit no mixed pair — a round-trip guarantee rather than a call-site
-// one. Keep those two in sync.
+// The job.progress == nil clause below is not load-bearing for any known
+// caller — no code path leaves a job in q.byID with nil progress — but it
+// stays as defense in depth: everything downstream of this gate assumes
+// job.progress is safe to dereference, and every worker goroutine that could
+// hit a violation carries no recover(), so the cost of keeping a redundant
+// check is a single comparison against the cost of a process crash if that
+// invariant is ever broken elsewhere.
 func (q *Queue) residentJob(id string) (*Job, error) {
 	job, ok := q.byID[id]
 	if !ok {

@@ -417,8 +417,8 @@ func (s *SQLiteStore) ArticleCountsByFile(ctx context.Context, jobID string) ([]
 // bytes_downloaded, summed per job_id) across job_files. Unlike
 // RestoreJobProgress, this needs no resident manifest/progress: it reads
 // straight from the persisted per-file counters, which is what makes it
-// usable to reconstruct Job.lastKnownRemainingBytes for non-resident jobs
-// during Loader.Load.
+// usable to seed JobProgress.remainingBytes for non-resident jobs during
+// Loader.Load.
 func (s *SQLiteStore) RemainingBytesByJob(ctx context.Context) (map[string]int64, error) {
 	const q = `SELECT job_id, SUM(bytes - bytes_downloaded) FROM job_files GROUP BY job_id`
 	rows, err := s.db.QueryContext(ctx, q)
