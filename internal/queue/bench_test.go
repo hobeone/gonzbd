@@ -50,7 +50,7 @@ func buildCorpus(b *testing.B, numJobs, filesPerJob, articlesPerFile int, mostly
 			total := filesPerJob * articlesPerFile
 			doneCount := (total * 95) / 100
 			for i := 0; i < doneCount && i < job.manifest.NumArticles(); i++ {
-				job.progress.done[i] = true
+				job.progress.done.Set(i)
 			}
 		}
 

@@ -13,7 +13,9 @@ import (
 // NumArticles()/NumFiles(). Deep-copied on every Snapshot/SnapshotJob
 // (unlike Manifest, which is shared).
 type JobProgress struct {
-	done, failed, emitted []bool // flat, global article index; emitted is transient and never persisted
+	// Flat, global article index. emitted is transient and never persisted.
+	// Bitsets rather than []bool: see bitset.go for the memory argument.
+	done, failed, emitted bitset
 	files                 []FileProgress
 
 	pendingArticles   int
@@ -45,9 +47,9 @@ type FileProgress struct {
 // count (all articles start undone/unemitted).
 func newJobProgress(m *Manifest) *JobProgress {
 	p := &JobProgress{
-		done:           make([]bool, m.NumArticles()),
-		failed:         make([]bool, m.NumArticles()),
-		emitted:        make([]bool, m.NumArticles()),
+		done:           newBitset(m.NumArticles()),
+		failed:         newBitset(m.NumArticles()),
+		emitted:        newBitset(m.NumArticles()),
 		files:          make([]FileProgress, m.NumFiles()),
 		remainingBytes: m.TotalBytes(),
 	}
@@ -60,27 +62,27 @@ func newJobProgress(m *Manifest) *JobProgress {
 
 // ArticleDone reports whether global article index i has resolved (success or failure).
 func (p *JobProgress) ArticleDone(i int) bool {
-	if p == nil || i < 0 || i >= len(p.done) {
+	if p == nil || i < 0 || i >= p.done.Len() {
 		return false
 	}
-	return p.done[i]
+	return p.done.Get(i)
 }
 
 // ArticleFailed reports whether global article index i permanently failed.
 func (p *JobProgress) ArticleFailed(i int) bool {
-	if p == nil || i < 0 || i >= len(p.failed) {
+	if p == nil || i < 0 || i >= p.failed.Len() {
 		return false
 	}
-	return p.failed[i]
+	return p.failed.Get(i)
 }
 
 // ArticleEmitted reports whether global article index i has an in-flight result
 // handed to the assembler but not yet made durable.
 func (p *JobProgress) ArticleEmitted(i int) bool {
-	if p == nil || i < 0 || i >= len(p.emitted) {
+	if p == nil || i < 0 || i >= p.emitted.Len() {
 		return false
 	}
-	return p.emitted[i]
+	return p.emitted.Get(i)
 }
 
 // FileComplete reports whether file fileIdx has been fully assembled on disk.
@@ -242,9 +244,9 @@ func (p *JobProgress) DeferredRecoveryIndices() []int {
 func (p *JobProgress) clone() *JobProgress {
 	cp := *p
 
-	cp.done = slices.Clone(p.done)
-	cp.failed = slices.Clone(p.failed)
-	cp.emitted = slices.Clone(p.emitted)
+	cp.done = p.done.Clone()
+	cp.failed = p.failed.Clone()
+	cp.emitted = p.emitted.Clone()
 	cp.files = slices.Clone(p.files)
 
 	cp.serverStats = maps.Clone(p.serverStats)
@@ -268,15 +270,15 @@ func (p *JobProgress) recompute(m *Manifest) {
 		// so they contribute zero pending work.
 		deferred := p.files[fi].Deferred
 		for i := lo; i < hi; i++ {
-			if !deferred && !p.done[i] && !p.emitted[i] {
+			if !deferred && !p.done.Get(i) && !p.emitted.Get(i) {
 				n++
 			}
-			if p.done[i] && !p.failed[i] {
+			if p.done.Get(i) && !p.failed.Get(i) {
 				downloaded += int64(m.ArticleBytes(i))
 			}
-			if p.done[i] {
+			if p.done.Get(i) {
 				resolved++
-				if p.failed[i] {
+				if p.failed.Get(i) {
 					failed++
 				}
 			}
@@ -294,10 +296,10 @@ func (p *JobProgress) recompute(m *Manifest) {
 // downloader to the assembler. Idempotent: a no-op if the article is
 // already Emitted, Done, or Failed.
 func (p *JobProgress) markEmitted(m *Manifest, i int) {
-	if p.emitted[i] || p.done[i] {
+	if p.emitted.Get(i) || p.done.Get(i) {
 		return
 	}
-	p.emitted[i] = true
+	p.emitted.Set(i)
 	fi := m.fileIndexForArticle(i)
 	p.files[fi].Pending--
 	p.pendingArticles--
@@ -306,13 +308,13 @@ func (p *JobProgress) markEmitted(m *Manifest, i int) {
 // clearEmitted resets the transient Emitted flag on article i, restoring it
 // to pending unless it has already completed.
 func (p *JobProgress) clearEmitted(m *Manifest, i int) {
-	if p.emitted[i] && !p.done[i] {
-		p.emitted[i] = false
+	if p.emitted.Get(i) && !p.done.Get(i) {
+		p.emitted.Clear(i)
 		fi := m.fileIndexForArticle(i)
 		p.files[fi].Pending++
 		p.pendingArticles++
-	} else if p.emitted[i] {
-		p.emitted[i] = false
+	} else if p.emitted.Get(i) {
+		p.emitted.Clear(i)
 	}
 }
 
@@ -321,16 +323,16 @@ func (p *JobProgress) clearEmitted(m *Manifest, i int) {
 //
 //nolint:unparam // bool return is part of JobProgress API and used in tests
 func (p *JobProgress) markDone(m *Manifest, i int) bool {
-	if p.done[i] {
+	if p.done.Get(i) {
 		return false
 	}
 	fi := m.fileIndexForArticle(i)
-	if !p.emitted[i] {
+	if !p.emitted.Get(i) {
 		p.files[fi].Pending--
 		p.pendingArticles--
 	}
-	p.done[i] = true
-	p.emitted[i] = false
+	p.done.Set(i)
+	p.emitted.Clear(i)
 	bytes := int64(m.ArticleBytes(i))
 	p.remainingBytes -= bytes
 	p.articlesResolved++
@@ -341,17 +343,17 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 // markFailed flips Done+Failed on article i and updates counters. Returns
 // false (no-op) if the article was already Done.
 func (p *JobProgress) markFailed(m *Manifest, i int) bool {
-	if p.done[i] {
+	if p.done.Get(i) {
 		return false
 	}
 	fi := m.fileIndexForArticle(i)
-	if !p.emitted[i] {
+	if !p.emitted.Get(i) {
 		p.files[fi].Pending--
 		p.pendingArticles--
 	}
-	p.done[i] = true
-	p.failed[i] = true
-	p.emitted[i] = false
+	p.done.Set(i)
+	p.failed.Set(i)
+	p.emitted.Clear(i)
 	bytes := int64(m.ArticleBytes(i))
 	p.failedBytes += bytes
 	p.remainingBytes -= bytes
@@ -366,13 +368,13 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 // downloader reload; recompute must be called afterward to rebuild Pending
 // counters from the resulting ground truth.
 func (p *JobProgress) resetForReload(m *Manifest, i int) {
-	p.emitted[i] = false
-	if p.failed[i] {
+	p.emitted.Clear(i)
+	if p.failed.Get(i) {
 		bytes := int64(m.ArticleBytes(i))
 		p.failedBytes -= bytes
 		p.remainingBytes += bytes
-		p.done[i] = false
-		p.failed[i] = false
+		p.done.Clear(i)
+		p.failed.Clear(i)
 	}
 }
 
@@ -419,8 +421,8 @@ func (p *JobProgress) MarshalJSON() ([]byte, error) {
 		}
 	}
 	return json.Marshal(jobProgressJSON{
-		Done:              p.done,
-		Failed:            p.failed,
+		Done:              p.done.ToBools(),
+		Failed:            p.failed.ToBools(),
 		Files:             files,
 		FailedBytes:       p.failedBytes,
 		RemainingBytes:    p.remainingBytes,
@@ -441,9 +443,9 @@ func (p *JobProgress) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &pj); err != nil {
 		return err
 	}
-	p.done = pj.Done
-	p.failed = pj.Failed
-	p.emitted = make([]bool, len(pj.Done))
+	p.done = bitsetFromBools(pj.Done)
+	p.failed = bitsetFromBools(pj.Failed)
+	p.emitted = newBitset(len(pj.Done))
 	p.files = make([]FileProgress, len(pj.Files))
 	for fi, f := range pj.Files {
 		p.files[fi] = FileProgress{

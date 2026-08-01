@@ -570,11 +570,11 @@ func (j *Job) ResetForRetry() {
 		anyReset := false
 		lo, hi := m.FileRange(fi)
 		for i := lo; i < hi; i++ {
-			if !j.progress.failed[i] {
+			if !j.progress.failed.Get(i) {
 				continue
 			}
-			j.progress.done[i] = false
-			j.progress.failed[i] = false
+			j.progress.done.Clear(i)
+			j.progress.failed.Clear(i)
 			j.progress.remainingBytes += int64(m.ArticleBytes(i))
 			anyReset = true
 		}

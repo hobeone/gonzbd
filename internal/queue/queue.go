@@ -261,7 +261,7 @@ func (q *Queue) CountUnfinishedArticles(jobID string, fileIdx int) (int, error) 
 	var count int
 	lo, hi := job.manifest.FileRange(fileIdx)
 	for i := lo; i < hi; i++ {
-		if !job.progress.done[i] {
+		if !job.progress.done.Get(i) {
 			count++
 		}
 	}
@@ -1241,7 +1241,7 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 			}
 			lo, hi := m.FileRange(fi)
 			for i := lo; i < hi; i++ {
-				if job.progress.done[i] || job.progress.emitted[i] {
+				if job.progress.done.Get(i) || job.progress.emitted.Get(i) {
 					continue
 				}
 				if !fn(UnfinishedArticle{
@@ -1775,10 +1775,14 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		// job-level scalar (ServerStats, DownloadStarted/Finished, ...),
 		// silently discarding progress on a partially-downloaded job.
 		newProgress := job.progress.clone()
-		newDone := make([]bool, 0, newManifestVal.NumArticles())
-		newFailed := make([]bool, 0, newManifestVal.NumArticles())
-		newEmitted := make([]bool, 0, newManifestVal.NumArticles())
+		// bitset has no slice/append primitive (see bitset.go), so surviving
+		// articles are copied bit-by-bit into pre-sized bitsets via a running
+		// index, rather than the []bool append-of-range this replaces.
+		newDone := newBitset(newManifestVal.NumArticles())
+		newFailed := newBitset(newManifestVal.NumArticles())
+		newEmitted := newBitset(newManifestVal.NumArticles())
 		newFiles := make([]FileProgress, 0, newManifestVal.NumFiles())
+		idx := 0
 		for fi := range m.NumFiles() {
 			if job.progress.files[fi].Deferred {
 				continue
@@ -1788,9 +1792,18 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 			// Done=false/Failed=false/Emitted=false at discard time —
 			// dropping them loses nothing.
 			lo, hi := m.FileRange(fi)
-			newDone = append(newDone, job.progress.done[lo:hi]...)
-			newFailed = append(newFailed, job.progress.failed[lo:hi]...)
-			newEmitted = append(newEmitted, job.progress.emitted[lo:hi]...)
+			for i := lo; i < hi; i++ {
+				if job.progress.done.Get(i) {
+					newDone.Set(idx)
+				}
+				if job.progress.failed.Get(i) {
+					newFailed.Set(idx)
+				}
+				if job.progress.emitted.Get(i) {
+					newEmitted.Set(idx)
+				}
+				idx++
+			}
 			newFiles = append(newFiles, job.progress.files[fi])
 		}
 		newProgress.done = newDone

@@ -141,7 +141,7 @@ func TestNewJobCopiesArticleState(t *testing.T) {
 		t.Errorf("Status = %q, want Queued", j.Status)
 	}
 	// Mutating the job must not leak into the parser output.
-	j.progress.done[0] = true
+	j.progress.done.Set(0)
 	if parsed.Files[0].Articles[0].Bytes != 500_000 {
 		t.Errorf("parser article mutated by job update")
 	}
@@ -562,7 +562,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		_ = original.Add(j)
 	}
 	// Mutate a runtime field to verify it round-trips.
-	a.progress.done[0] = true
+	a.progress.done.Set(0)
 	a.progress.remainingBytes = 500_000
 
 	if err := original.Save(dir); err != nil {

@@ -24,8 +24,8 @@ func TestSaveJobLoadJob_RoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "jobs", "testjob.json.gz")
 
 	j := makeMultiFileJob(t, "savejob-roundtrip", 2, 3)
-	j.progress.done[0] = true
-	j.progress.failed[1] = true
+	j.progress.done.Set(0)
+	j.progress.failed.Set(1)
 	j.progress.files[0].Complete = true
 	j.progress.remainingBytes = 400_000
 	j.progress.failedBytes = 100_000
@@ -664,7 +664,7 @@ func TestJob_RecomputePendingAndLazyArticleByID_Direct(t *testing.T) {
 		},
 	})
 	job.progress = newJobProgress(job.manifest)
-	job.progress.done[1] = true // art2 done, not failed
+	job.progress.done.Set(1) // art2 done, not failed
 
 	job.progress.recompute(job.manifest)
 

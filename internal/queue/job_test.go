@@ -213,9 +213,11 @@ func TestRecomputePending_SeedsEarlyAbortCounters(t *testing.T) {
 	}
 	j := &Job{manifest: newManifest(files)}
 	j.progress = newJobProgress(j.manifest)
-	j.progress.done[0] = true                             // resolved, succeeded
-	j.progress.done[1], j.progress.failed[1] = true, true // resolved, failed
-	j.progress.done[2], j.progress.failed[2] = true, true // resolved, failed
+	j.progress.done.Set(0) // resolved, succeeded
+	j.progress.done.Set(1)
+	j.progress.failed.Set(1) // resolved, failed
+	j.progress.done.Set(2)
+	j.progress.failed.Set(2) // resolved, failed
 	// Simulate the state right after a JSON unmarshal from disk: the
 	// excluded-from-JSON transient counters are zero even though the
 	// persisted article flags above record 3 already-resolved articles
@@ -246,9 +248,9 @@ func TestRecomputePending_EarlyAbortFiresAfterReload(t *testing.T) {
 	j := &Job{manifest: newManifest([]JobFile{{Articles: articles}})}
 	j.progress = newJobProgress(j.manifest)
 	for i := range 10 {
-		j.progress.done[i] = true
+		j.progress.done.Set(i)
 		if i < 8 {
-			j.progress.failed[i] = true
+			j.progress.failed.Set(i)
 		}
 	}
 	// Simulate post-unmarshal zeroing of the transient counters.
