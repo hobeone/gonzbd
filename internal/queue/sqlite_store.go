@@ -429,6 +429,13 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]int,
 		if err := rows.Scan(&jobID, &idx, &count); err != nil {
 			return nil, fmt.Errorf("sqlite store scan article count: %w", err)
 		}
+		if idx < 0 {
+			// file_index is only ever written from a loop index, so this is
+			// DB-corruption-only, but RestoreJobProgress guards the same
+			// column with idx >= 0 a few lines up — match it here too rather
+			// than let a corrupt row panic the boot path below.
+			continue
+		}
 		counts := result[jobID]
 		if idx >= len(counts) {
 			grown := make([]int, idx+1)
@@ -450,13 +457,32 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]int,
 // run once per job, not on every boot. counts is indexed by file_index, the
 // same shape ArticleCountsByJob returns.
 //
+// All-or-nothing: a mid-loop failure must not leave some files healed and
+// others still zero. articleCountsAreLegacy treats a row as legacy only if
+// every count is zero, so a partially-healed row would stop being detected
+// as legacy on the next Load while still having zeroed-out files — silently
+// and permanently under-sizing progress for those files, which is worse
+// than not healing at all. Wrapping the writes in a transaction is what
+// makes the "will retry on next load" promise in Loader.Load's warning
+// actually true.
+//
 // Must be called without q.mu held: this is I/O (scripts/check_lock_io).
 func (s *SQLiteStore) BackfillArticleCounts(ctx context.Context, jobID string, counts []int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite store begin tx backfill article counts for job %s: %w", jobID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	const q = `UPDATE job_files SET article_count = ? WHERE job_id = ? AND file_index = ?`
 	for fi, c := range counts {
-		if _, err := s.db.ExecContext(ctx, q, c, jobID, fi); err != nil {
+		if _, err := tx.ExecContext(ctx, q, c, jobID, fi); err != nil {
 			return fmt.Errorf("sqlite store backfill article count for job %s file %d: %w", jobID, fi, err)
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite store commit backfill article counts for job %s: %w", jobID, err)
 	}
 	return nil
 }

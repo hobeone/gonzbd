@@ -295,15 +295,19 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 						lo, hi := m.FileRange(fi)
 						counts[fi] = hi - lo
 					}
-					q.log.Info("upgraded legacy job_files row missing article_count", "job_id", job.ID)
 					// Write the recovered counts back so this fallback runs
 					// once per job, not on every boot. Best-effort: a failed
 					// write leaves the row legacy and simply repeats the
 					// (already-degraded) fallback next time — it must not
-					// turn a successful load into a failed one.
+					// turn a successful load into a failed one. Only log
+					// "upgraded" once the write actually lands — logging it
+					// unconditionally would claim success on the same boot
+					// the very next line reports the persist as failed.
 					if err := q.store.BackfillArticleCounts(context.Background(), job.ID, counts); err != nil {
-						q.log.Warn("legacy article-count fallback: failed to persist recovered counts, will retry on next load",
+						q.log.Warn("legacy article-count fallback: recovered counts from manifest but failed to persist them, will retry on next load",
 							"job_id", job.ID, "err", err)
+					} else {
+						q.log.Info("upgraded legacy job_files row missing article_count", "job_id", job.ID)
 					}
 				}
 			}

@@ -280,3 +280,122 @@ func TestLoad_LegacyArticleCountFallbackCorruptManifestDegrades(t *testing.T) {
 		t.Error("progress is nil — a degraded fallback must still leave progress non-nil")
 	}
 }
+
+// TestLoad_LegacyArticleCountBackfillIsAtomicOnFailure pins the coordinator's
+// re-review finding on the legacy-fallback fix above: BackfillArticleCounts
+// issued one UPDATE per file with no transaction, so a mid-loop failure left
+// the row half-healed — some files' article_count real, others still 0.
+// That is worse than not healing at all: articleCountsAreLegacy only
+// requires ALL counts to be zero, so a half-healed row stops being detected
+// as legacy on the next Load while some files are still zero — silently and
+// permanently under-sizing progress for exactly those files.
+//
+// Forces the second file's backfill UPDATE to fail via a SQL trigger (the
+// only way to make a real mid-transaction statement fail against the actual
+// job_files row, so the assertions below observe the real table state, not
+// a mocked one) and asserts: the row is left with BOTH files still at
+// article_count=0 (not file 0 healed / file 1 legacy), and a second Load
+// still detects it as legacy and re-reads the manifest correctly.
+func TestLoad_LegacyArticleCountBackfillIsAtomicOnFailure(t *testing.T) {
+	store, dir, db := setupResidencyTestStoreWithDB(t)
+
+	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
+	active := makeMultiFileJob(t, "atomic-backfill-active", 1, 1)
+	if err := q.Add(active); err != nil {
+		t.Fatalf("Add active: %v", err)
+	}
+	// 2 files x 3 articles: the backfill loop must touch file_index 0 then 1,
+	// giving the trigger below a first (successful) statement to roll back.
+	job := makeMultiFileJob(t, "atomic-backfill-row", 2, 3)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if _, err := db.ExecContext(t.Context(), "UPDATE job_files SET article_count = 0 WHERE job_id = ?", job.ID); err != nil {
+		t.Fatalf("zero article_count: %v", err)
+	}
+
+	const trigger = `
+CREATE TRIGGER force_backfill_failure
+BEFORE UPDATE OF article_count ON job_files
+WHEN NEW.file_index = 1
+BEGIN
+	SELECT RAISE(ABORT, 'forced failure for TestLoad_LegacyArticleCountBackfillIsAtomicOnFailure');
+END;`
+	if _, err := db.ExecContext(t.Context(), trigger); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	q2, err := Load(dir, WithStore(store), WithMaxActiveJobs(1))
+	if err != nil {
+		t.Fatalf("Load: %v (a failed backfill write must not fail the whole boot)", err)
+	}
+
+	q2.mu.RLock()
+	got, ok := q2.byID[job.ID]
+	q2.mu.RUnlock()
+	if !ok {
+		t.Fatalf("job %s missing after reload", job.ID)
+	}
+	if got.progress == nil {
+		t.Fatal("progress is nil after a failed backfill")
+	}
+	if n := got.progress.done.Len(); n != 6 {
+		t.Errorf("progress sized to %d articles, want 6 — the manifest fallback itself "+
+			"must still succeed even though persisting its result failed", n)
+	}
+
+	rows, err := db.QueryContext(t.Context(), "SELECT file_index, article_count FROM job_files WHERE job_id = ? ORDER BY file_index ASC", job.ID)
+	if err != nil {
+		t.Fatalf("query job_files: %v", err)
+	}
+	defer rows.Close()
+	seen := 0
+	for rows.Next() {
+		var idx, count int
+		if err := rows.Scan(&idx, &count); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		seen++
+		if count != 0 {
+			t.Errorf("file_index %d: article_count = %d, want 0 — a failed backfill must leave "+
+				"EVERY file's count untouched, not heal some and leave others legacy", idx, count)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if seen != 2 {
+		t.Fatalf("saw %d job_files rows, want 2 — fixture guard", seen)
+	}
+
+	if logged := logBuf.String(); !strings.Contains(logged, "failed to persist") {
+		t.Errorf("expected a warning about the failed persist, got log output: %q", logged)
+	}
+
+	// The row must still be legacy: a second Load must re-detect it and
+	// re-read the manifest successfully, exactly as the failed persist's
+	// warning promised ("will retry on next load").
+	q3, err := Load(dir, WithStore(store), WithMaxActiveJobs(1))
+	if err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	q3.mu.RLock()
+	got3, ok := q3.byID[job.ID]
+	q3.mu.RUnlock()
+	if !ok {
+		t.Fatalf("job %s missing after second reload", job.ID)
+	}
+	if n := got3.progress.done.Len(); n != 6 {
+		t.Errorf("second Load: progress sized to %d articles, want 6 — a still-legacy row "+
+			"must still be caught and re-read from the manifest", n)
+	}
+}
