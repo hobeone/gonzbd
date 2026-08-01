@@ -406,6 +406,14 @@ func (q *Queue) Add(job *Job) error {
 		job.progress.recompute(job.manifest)
 	}
 
+	if m := job.manifest; m != nil {
+		job.totalBytes = m.TotalBytes()
+		job.numFiles = m.NumFiles()
+		job.numArticles = m.NumArticles()
+		job.par2Bytes = m.Par2Bytes()
+		job.par2Files = m.Par2Files()
+	}
+
 	// Holding q.mu across the store writes below is intentional: it prevents
 	// a TOCTOU name collision between the uniqueness check above and the
 	// insert, and keeps the RAM and SQLite views consistent before the
@@ -1013,6 +1021,17 @@ func (q *Queue) hydrateJobLocked(job *Job, id string) error {
 		return fmt.Errorf("queue: hydrate job %s: %w", id, err)
 	}
 	job.setResidency(&m, newJobProgress(&m))
+	// A job restored via SQLiteStore.Get/Loader.Load while non-resident
+	// (StatusQueued/StatusPaused) never had these scalars populated — they
+	// are only set on the resident-status branch of those paths. Backfill
+	// them here from the manifest this call already loaded, rather than
+	// leaving them zero for the rest of the job's in-memory lifetime; this
+	// adds no extra I/O since the manifest read above already happened.
+	job.totalBytes = m.TotalBytes()
+	job.numFiles = m.NumFiles()
+	job.numArticles = m.NumArticles()
+	job.par2Bytes = m.Par2Bytes()
+	job.par2Files = m.Par2Files()
 	if q.store != nil {
 		if err := q.store.RestoreJobProgress(context.Background(), job); err != nil { //lockio: restores progress in place; hoist tracked in #229
 			// newJobProgress built an all-zero JobProgress that RestoreJobProgress

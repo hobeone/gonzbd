@@ -199,6 +199,11 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 					if err := readGzJSON(manifestPath, &m); err == nil {
 						m.buildMessageIDIndex()
 						job.setResidency(&m, newJobProgress(&m))
+						job.totalBytes = m.TotalBytes()
+						job.numFiles = m.NumFiles()
+						job.numArticles = m.NumArticles()
+						job.par2Bytes = m.Par2Bytes()
+						job.par2Files = m.Par2Files()
 						_ = q.store.RestoreJobProgress(context.Background(), job)
 						q.activeSet.Add(job)
 					}
@@ -269,6 +274,13 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 		}
 		q.jobs = append(q.jobs, &job)
 		q.byID[id] = &job
+		if m := job.manifest; m != nil {
+			job.totalBytes = m.TotalBytes()
+			job.numFiles = m.NumFiles()
+			job.numArticles = m.NumArticles()
+			job.par2Bytes = m.Par2Bytes()
+			job.par2Files = m.Par2Files()
+		}
 		// Initialize transient counters (Pending, ArticlesResolved,
 		// ArticlesFailed) from the loaded done/failed/emitted flags. These
 		// are excluded from JSON and must be recomputed after every

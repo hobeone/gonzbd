@@ -84,6 +84,16 @@ func cloneJob(j *Job) *Job {
 		AvgAge:   j.AvgAge,
 		Warning:  j.Warning,
 		PostProc: j.PostProc,
+
+		// Manifest-derived scalars are immutable once set and, unlike
+		// lastKnownRemainingBytes, do not depend on residency — they must
+		// be carried verbatim so a snapshot's TotalBytes/NumFiles/etc. never
+		// requires hydration.
+		totalBytes:  j.totalBytes,
+		numFiles:    j.numFiles,
+		numArticles: j.numArticles,
+		par2Bytes:   j.par2Bytes,
+		par2Files:   j.par2Files,
 	}
 
 	manifest := j.Manifest()

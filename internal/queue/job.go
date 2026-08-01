@@ -176,7 +176,34 @@ type Job struct {
 	// pointers, so adding it to that lock's scope would protect nothing
 	// extra while implying (incorrectly) that it can be read outside q.mu.
 	lastKnownRemainingBytes int64
+
+	// Manifest-derived scalars, computed once at Add and immutable
+	// thereafter. They live here rather than behind the manifest so that
+	// reporting paths never need a resident manifest — see
+	// docs/queue-lifecycle.md. Guarded by q.mu like the rest of the job's
+	// fields; they are written once at Add and only read afterwards.
+	totalBytes  int64
+	numFiles    int
+	numArticles int
+	par2Bytes   int64
+	par2Files   int
 }
+
+// TotalBytes returns the job's total size in bytes. Total: never requires a
+// resident manifest.
+func (j *Job) TotalBytes() int64 { return j.totalBytes }
+
+// NumFiles returns the job's file count. Total.
+func (j *Job) NumFiles() int { return j.numFiles }
+
+// NumArticles returns the job's article count. Total.
+func (j *Job) NumArticles() int { return j.numArticles }
+
+// Par2Bytes returns the total size of the job's par2 files. Total.
+func (j *Job) Par2Bytes() int64 { return j.par2Bytes }
+
+// Par2Files returns the job's par2 file count. Total.
+func (j *Job) Par2Files() int { return j.par2Files }
 
 // Manifest returns the job's immutable article/file structure. Safe to call
 // without the queue lock: it takes the job's own residency lock to

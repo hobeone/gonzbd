@@ -527,3 +527,15 @@ func TestJobPhase_String(t *testing.T) {
 		}
 	}
 }
+
+// TestJobDeferredRecoveryIndices_NilProgress pins the de-hydrated-job branch
+// of Job.DeferredRecoveryIndices: a job with no resident progress (e.g. a
+// snapshot of a de-hydrated queued job) must report no deferred indices
+// rather than panicking on a nil progress dereference.
+func TestJobDeferredRecoveryIndices_NilProgress(t *testing.T) {
+	t.Parallel()
+	job := &Job{ID: "no-progress"}
+	if got := job.DeferredRecoveryIndices(); got != nil {
+		t.Errorf("DeferredRecoveryIndices() with nil progress = %v, want nil", got)
+	}
+}

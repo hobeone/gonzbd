@@ -125,3 +125,38 @@ func TestCloneJobDropsRemainingBytesCache(t *testing.T) {
 		t.Errorf("clone carried lastKnownRemainingBytes = %d, want 0", got)
 	}
 }
+
+// TestCloneJobCarriesManifestScalars pins the opposite property from
+// TestCloneJobDropsRemainingBytesCache: the five manifest-derived scalars
+// (totalBytes, numFiles, numArticles, par2Bytes, par2Files) are unexported,
+// so TestCloneJobCopiesEveryExportedField's reflective sweep does not see
+// them. They must still be copied — unlike lastKnownRemainingBytes, they are
+// immutable and residency-independent, and a reporting path relies on them
+// surviving a snapshot without hydration.
+func TestCloneJobCarriesManifestScalars(t *testing.T) {
+	t.Parallel()
+
+	job := &Job{ID: "scalars-carry", Name: "scalars carry"}
+	job.totalBytes = 111
+	job.numFiles = 2
+	job.numArticles = 3
+	job.par2Bytes = 44
+	job.par2Files = 1
+
+	cp := cloneJob(job)
+	if got := cp.TotalBytes(); got != 111 {
+		t.Errorf("cloneJob dropped totalBytes: got %d, want 111", got)
+	}
+	if got := cp.NumFiles(); got != 2 {
+		t.Errorf("cloneJob dropped numFiles: got %d, want 2", got)
+	}
+	if got := cp.NumArticles(); got != 3 {
+		t.Errorf("cloneJob dropped numArticles: got %d, want 3", got)
+	}
+	if got := cp.Par2Bytes(); got != 44 {
+		t.Errorf("cloneJob dropped par2Bytes: got %d, want 44", got)
+	}
+	if got := cp.Par2Files(); got != 1 {
+		t.Errorf("cloneJob dropped par2Files: got %d, want 1", got)
+	}
+}
