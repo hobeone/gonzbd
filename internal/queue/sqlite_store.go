@@ -289,11 +289,7 @@ FROM jobs WHERE id = ?`
 				return nil, fmt.Errorf("sqlite store read manifest %s: %w", id, err)
 			}
 			job.manifest = &manifest
-			job.totalBytes = manifest.TotalBytes()
-			job.numFiles = manifest.NumFiles()
-			job.numArticles = manifest.NumArticles()
-			job.par2Bytes = manifest.Par2Bytes()
-			job.par2Files = manifest.Par2Files()
+			job.setScalarsFromManifest(&manifest)
 			job.progress = newJobProgress(&manifest)
 			if dlStartedUnix > 0 {
 				job.progress.downloadStarted = time.Unix(dlStartedUnix, 0).UTC()

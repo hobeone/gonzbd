@@ -407,11 +407,7 @@ func (q *Queue) Add(job *Job) error {
 	}
 
 	if m := job.manifest; m != nil {
-		job.totalBytes = m.TotalBytes()
-		job.numFiles = m.NumFiles()
-		job.numArticles = m.NumArticles()
-		job.par2Bytes = m.Par2Bytes()
-		job.par2Files = m.Par2Files()
+		job.setScalarsFromManifest(m)
 	}
 
 	// Holding q.mu across the store writes below is intentional: it prevents
@@ -689,6 +685,11 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 		if job.manifest == nil {
 			manifest.buildMessageIDIndex()
 			job.setResidency(&manifest, newJobProgress(&manifest))
+			// A job promoted here after a restart (StatusQueued, restored via
+			// SQLiteStore.Get/Loader.Load without a manifest) never had these
+			// scalars populated. Backfill from the manifest just read above —
+			// no extra I/O, it already happened in Step 2.
+			job.setScalarsFromManifest(&manifest)
 		}
 
 		// If SQLite store present, restore per-file progress counters.
@@ -1027,11 +1028,7 @@ func (q *Queue) hydrateJobLocked(job *Job, id string) error {
 	// them here from the manifest this call already loaded, rather than
 	// leaving them zero for the rest of the job's in-memory lifetime; this
 	// adds no extra I/O since the manifest read above already happened.
-	job.totalBytes = m.TotalBytes()
-	job.numFiles = m.NumFiles()
-	job.numArticles = m.NumArticles()
-	job.par2Bytes = m.Par2Bytes()
-	job.par2Files = m.Par2Files()
+	job.setScalarsFromManifest(&m)
 	if q.store != nil {
 		if err := q.store.RestoreJobProgress(context.Background(), job); err != nil { //lockio: restores progress in place; hoist tracked in #229
 			// newJobProgress built an all-zero JobProgress that RestoreJobProgress
@@ -1843,6 +1840,13 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		newProgress.recompute(newManifestVal)
 
 		job.setResidency(newManifestVal, newProgress)
+		// The rebuilt manifest has fewer files/articles/bytes than the one
+		// the job's scalars were last synced from (the whole point of this
+		// discard) — par2Bytes/par2Files are carried over unchanged above,
+		// but totalBytes/numFiles/numArticles shrink, so the cached scalars
+		// must be re-synced or TotalBytes()/NumFiles()/NumArticles() would
+		// keep reporting the pre-discard totals forever.
+		job.setScalarsFromManifest(newManifestVal)
 		q.dirty.Store(true)
 	}
 	return nil

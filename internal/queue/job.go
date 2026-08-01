@@ -177,16 +177,34 @@ type Job struct {
 	// extra while implying (incorrectly) that it can be read outside q.mu.
 	lastKnownRemainingBytes int64
 
-	// Manifest-derived scalars, computed once at Add and immutable
-	// thereafter. They live here rather than behind the manifest so that
-	// reporting paths never need a resident manifest — see
-	// docs/queue-lifecycle.md. Guarded by q.mu like the rest of the job's
-	// fields; they are written once at Add and only read afterwards.
+	// Manifest-derived scalars, set from the manifest at Add and again
+	// anywhere else a manifest is attached to or rebuilt on this Job (see
+	// setScalarsFromManifest), so that reporting paths never need a
+	// resident manifest — see docs/queue-lifecycle.md. For the overwhelming
+	// majority of a job's life these values never change, since the
+	// manifest itself is immutable after parse; DiscardDeferredPar2 is the
+	// one exception, rebuilding the manifest to drop discarded recovery
+	// volumes, and re-syncs these fields when it does. Guarded by q.mu like
+	// the rest of the job's fields.
 	totalBytes  int64
 	numFiles    int
 	numArticles int
 	par2Bytes   int64
 	par2Files   int
+}
+
+// setScalarsFromManifest copies m's five totals onto j. Centralizing this
+// assignment matters: a review of this feature (Task 3) caught two sites —
+// hydrateSnapshot and PromoteNext — that attached a manifest to a Job
+// without it, leaving totalBytes/numFiles/numArticles/par2Bytes/par2Files at
+// zero despite a manifest being in hand. Every site that assigns j.manifest
+// (directly or via setResidency) or rebuilds it in place must call this too.
+func (j *Job) setScalarsFromManifest(m *Manifest) {
+	j.totalBytes = m.TotalBytes()
+	j.numFiles = m.NumFiles()
+	j.numArticles = m.NumArticles()
+	j.par2Bytes = m.Par2Bytes()
+	j.par2Files = m.Par2Files()
 }
 
 // TotalBytes returns the job's total size in bytes. Total: never requires a
@@ -528,6 +546,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 
 	job.manifest = newManifest(files)
 	job.progress = newJobProgress(job.manifest)
+	job.setScalarsFromManifest(job.manifest)
 	for fi, jf := range files {
 		job.progress.files[fi].Deferred = jf.Deferred
 	}

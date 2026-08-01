@@ -47,6 +47,14 @@ func hydrateSnapshot(stateDir string, store Store, cp *Job) {
 	if err := readGzJSON(manifestPath, &m); err == nil {
 		m.buildMessageIDIndex()
 		cp.setResidency(&m, newJobProgress(&m))
+		// cp came from cloneJob with cp.manifest == nil, meaning the source
+		// Job's scalars were never populated (the restore path that produced
+		// it — e.g. SQLiteStore.Get for a StatusQueued/StatusPaused job —
+		// only loads a manifest for resident statuses). Backfill them from
+		// the manifest this call just read, the same way hydrateJobLocked
+		// does for its own non-resident restore case: no extra I/O, the read
+		// already happened above.
+		cp.setScalarsFromManifest(&m)
 		if store != nil {
 			_ = store.RestoreJobProgress(context.Background(), cp)
 		}

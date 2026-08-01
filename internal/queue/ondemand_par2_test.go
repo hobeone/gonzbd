@@ -358,6 +358,30 @@ func TestDiscardDeferredPar2_IndexShiftAndStaleness(t *testing.T) {
 		t.Errorf("RemainingBytes = %d, want %d (old %d - discarded %d)",
 			newP.RemainingBytes(), wantRemaining, oldRemaining, discardedBytes)
 	}
+
+	// The job-level scalar cache (TotalBytes/NumFiles/NumArticles) must be
+	// re-synced to the rebuilt, smaller manifest, not left at the pre-discard
+	// totals: DiscardDeferredPar2 is the one operation that legitimately
+	// changes a job's manifest after Add, and a caller reading the cached
+	// scalars (the entire point of promoting them onto Job) must never see a
+	// value the live manifest has already moved past. Par2Bytes/Par2Files are
+	// asserted equal to the deliberately-stale manifest values above, not
+	// recomputed independently.
+	if got := snap.TotalBytes(); got != newM.TotalBytes() {
+		t.Errorf("Job.TotalBytes() = %d, want %d (synced to rebuilt manifest)", got, newM.TotalBytes())
+	}
+	if got := snap.NumFiles(); got != newM.NumFiles() {
+		t.Errorf("Job.NumFiles() = %d, want %d (synced to rebuilt manifest)", got, newM.NumFiles())
+	}
+	if got := snap.NumArticles(); got != newM.NumArticles() {
+		t.Errorf("Job.NumArticles() = %d, want %d (synced to rebuilt manifest)", got, newM.NumArticles())
+	}
+	if got := snap.Par2Bytes(); got != oldPar2Bytes {
+		t.Errorf("Job.Par2Bytes() = %d, want %d (carried over unchanged)", got, oldPar2Bytes)
+	}
+	if got := snap.Par2Files(); got != oldPar2Files {
+		t.Errorf("Job.Par2Files() = %d, want %d (carried over unchanged)", got, oldPar2Files)
+	}
 }
 
 // TestDiscardDeferredPar2_NoOpWhenNothingDeferred pins that discard remains a
