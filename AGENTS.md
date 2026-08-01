@@ -4,18 +4,6 @@ This is the canonical guidance file for any AI agent (Claude Code, Gemini, etc.)
 working in this repository. `CLAUDE.md` and `GEMINI.md` are symlinks to this
 file. It must be read and followed for every session.
 
-> These instructions are project-specific. They override default agent behavior
-> but defer to the user's explicit instructions and to the global
-> `~/.claude/CLAUDE.md` (which defines, among other things, the global
-> Conventional Commits policy).
-
-> **⮕ Active multi-session work:** the v2→v1 porting effort is coordinated in
-> [`docs/superpowers/plans/PORT-HANDOFF.md`](docs/superpowers/plans/PORT-HANDOFF.md).
-> If you are resuming/continuing that work, **read it first** and follow its
-> resume protocol. Progress is tracked by the checkboxes in the plan
-> (`docs/superpowers/plans/2026-06-15-port-v2-improvements-to-v1.md`) and by git
-> history — not by any in-session TODO list.
-
 ## Project Context
 
 GoNZBD is a high-performance Go reimplementation of [SABnzbd](https://sabnzbd.org),
@@ -124,8 +112,6 @@ golangci-lint run ./...                                     # Linting
 
 ### Interactive Plan & Design Artifacts (Override Skill Defaults)
 
-When using superpowers/workflow skills (like `brainstorming` or `writing-plans` or `work`), **always** write all design documents, specifications, and implementation plans directly to the session artifact directory: `<appDataDir>/brain/<conversation-id>/`.
-- Do NOT write them to repository folders (like `docs/superpowers/` or similar), unless specifically requested by the user.
 - All such artifacts MUST include `ArtifactMetadata` with `RequestFeedback: true` and `UserFacing: true`. This guarantees they are rendered in the interactive review modal, enabling the execution checkpoint/Proceed button.
 - Filename conventions:
   - Design/Specs: `YYYY-MM-DD-<feature-name>-design.md`
