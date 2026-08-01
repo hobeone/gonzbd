@@ -1,9 +1,11 @@
 package queue
 
 import (
-	"context"
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,10 +61,9 @@ func TestProgressResidentAcrossEvictionAndRestart(t *testing.T) {
 				"allocated without the real article count", id, got)
 		}
 	}
-	_ = context.Background()
 }
 
-// TestArticleCountsAreLegacy exercises all three shapes ArticleCountsByFile
+// TestArticleCountsAreLegacy exercises all three shapes ArticleCountsByJob
 // can return: a genuinely empty job (no files, not legacy — there is no
 // manifest to fall back to), a legacy row predating Task 4's article_count
 // column (every count zero), and a normal populated row.
@@ -137,6 +138,93 @@ func TestLoad_LegacyArticleCountFallback(t *testing.T) {
 	if n := got.progress.done.Len(); n != 4 {
 		t.Errorf("progress sized to %d articles, want 4 — the legacy fallback "+
 			"should have read the manifest instead of trusting the zero count", n)
+	}
+}
+
+// TestLoad_LegacyArticleCountFallbackHealsOnce pins finding 3 from the final
+// whole-branch review: the legacy fallback above must write the recovered
+// counts back to job_files, so it runs once per job rather than on every
+// boot.
+//
+// Proof strategy: after the first Load heals the row, corrupt (not delete)
+// the on-disk manifest content — Get's admission check only os.Stats a
+// resident job's manifest path (unaffected by corrupt content), but the
+// legacy fallback's readGzJSON would fail loudly and log a warning if it ran
+// again. So on a second Load: no error, progress sized correctly from
+// article_count alone, and — the key assertion — no "could not read
+// manifest" warning, proving the fallback did not re-read the manifest at
+// all.
+func TestLoad_LegacyArticleCountFallbackHealsOnce(t *testing.T) {
+	store, dir, db := setupResidencyTestStoreWithDB(t)
+
+	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
+	active := makeMultiFileJob(t, "heals-once-active", 1, 1)
+	if err := q.Add(active); err != nil {
+		t.Fatalf("Add active: %v", err)
+	}
+	job := makeMultiFileJob(t, "heals-once-row", 1, 4)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if _, err := db.ExecContext(t.Context(), "UPDATE job_files SET article_count = 0 WHERE job_id = ?", job.ID); err != nil {
+		t.Fatalf("zero article_count: %v", err)
+	}
+
+	// First Load: exercises the fallback and (per the fix under test) writes
+	// the recovered counts back to job_files.
+	if _, err := Load(dir, WithStore(store), WithMaxActiveJobs(1)); err != nil {
+		t.Fatalf("first Load: %v", err)
+	}
+
+	// Confirm the row actually healed: article_count must no longer be the
+	// legacy all-zero shape.
+	var count int
+	if err := db.QueryRowContext(t.Context(), "SELECT article_count FROM job_files WHERE job_id = ?", job.ID).Scan(&count); err != nil {
+		t.Fatalf("query article_count after first Load: %v", err)
+	}
+	if count != 4 {
+		t.Fatalf("article_count after first Load = %d, want 4 — the fallback did not "+
+			"persist the recovered count back to job_files", count)
+	}
+
+	// Corrupt (not delete) the manifest the fallback used the first time.
+	// The file must still exist for Get's unconditional admission check, but
+	// any attempt to actually parse it as gzip/JSON must fail.
+	manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
+	if err := os.WriteFile(manifestPath, []byte("NOT_A_VALID_GZIP_FILE"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("corrupt manifest fixture: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	q3, err := Load(dir, WithStore(store), WithMaxActiveJobs(1))
+	if err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	q3.mu.RLock()
+	got3, ok := q3.byID[job.ID]
+	q3.mu.RUnlock()
+	if !ok {
+		t.Fatalf("job %s missing after second reload", job.ID)
+	}
+	if got3.progress == nil {
+		t.Fatal("progress is nil on second Load")
+	}
+	if n := got3.progress.done.Len(); n != 4 {
+		t.Errorf("second Load: progress sized to %d articles, want 4 — the healed "+
+			"job_files row should have made this correct without ever parsing "+
+			"the (now corrupt) manifest", n)
+	}
+	if logged := logBuf.String(); strings.Contains(logged, "could not read manifest") {
+		t.Errorf("second Load logged a manifest-read failure, meaning it re-ran the legacy "+
+			"fallback instead of trusting the healed article_count: %q", logged)
 	}
 }
 

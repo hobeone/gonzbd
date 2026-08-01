@@ -253,16 +253,20 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 		// for all of them, not just the subset the loop below re-hydrates.
 		//
 		// Also queried before q.mu.Lock(), for the same check_lock_io
-		// reason as RemainingBytesByJob above: ArticleCountsByFile and the
-		// legacy manifest-fallback read are both I/O.
+		// reason as RemainingBytesByJob above: ArticleCountsByJob and the
+		// legacy manifest-fallback read/backfill are all I/O. One grouped
+		// query for every job rather than one query per job — the same
+		// shape RemainingBytesByJob already uses — so a large queued
+		// backlog costs one round trip, not N.
+		countsByJob, err := q.store.ArticleCountsByJob(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("queue: load article counts: %w", err)
+		}
 		for _, job := range jobs {
 			if job.progress != nil {
 				continue
 			}
-			counts, err := q.store.ArticleCountsByFile(context.Background(), job.ID)
-			if err != nil {
-				return nil, fmt.Errorf("queue: load article counts for job %s: %w", job.ID, err)
-			}
+			counts := countsByJob[job.ID]
 			if articleCountsAreLegacy(counts) {
 				// Every count is zero: this job_files row predates Task 4's
 				// article_count column. The manifest is the only remaining
@@ -292,6 +296,15 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 						counts[fi] = hi - lo
 					}
 					q.log.Info("upgraded legacy job_files row missing article_count", "job_id", job.ID)
+					// Write the recovered counts back so this fallback runs
+					// once per job, not on every boot. Best-effort: a failed
+					// write leaves the row legacy and simply repeats the
+					// (already-degraded) fallback next time — it must not
+					// turn a successful load into a failed one.
+					if err := q.store.BackfillArticleCounts(context.Background(), job.ID, counts); err != nil {
+						q.log.Warn("legacy article-count fallback: failed to persist recovered counts, will retry on next load",
+							"job_id", job.ID, "err", err)
+					}
 				}
 			}
 			job.progress = newJobProgressSized(counts, remainingByJob[job.ID])

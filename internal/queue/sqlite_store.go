@@ -328,6 +328,21 @@ FROM jobs WHERE id = ?`
 			slog.Default().Error("sqlite store: aggregate scalars from job_files failed, reporting scalars stay zero",
 				"job_id", id, "err", err)
 		} else {
+			if numArticles == 0 && numFiles > 0 {
+				// Same legacy shape Loader.Load detects per-file with
+				// articleCountsAreLegacy, here as a single SUM: migration 004
+				// backfills article_count to 0 for every pre-existing row, so
+				// SUM(article_count) reads as a confident zero when the truth
+				// is "unknown", not "zero articles in every file". Unlike
+				// Load, there is no manifest read to fall back to here —
+				// reading it on every non-resident Get is exactly the cost
+				// Task 4 exists to avoid — so this can only be logged, not
+				// corrected in place. NumArticles() below stays 0, which is
+				// harmless while no caller consumes it, but must not be
+				// mistaken for a verified count once one does.
+				slog.Default().Warn("sqlite store: job_files predates the article_count column; NumArticles is unknown, not a verified zero",
+					"job_id", id)
+			}
 			job.setAggregateScalarsFromFiles(totalBytes, numFiles, numArticles)
 		}
 	}
@@ -384,33 +399,66 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	return rows.Err()
 }
 
-// ArticleCountsByFile returns each file's article count, indexed by
-// file_index. Used to size JobProgress at restart without loading the
-// job's manifest.
+// ArticleCountsByJob returns every job's per-file article counts in a single
+// grouped query, indexed by file_index within each job. Used to size
+// JobProgress at restart without loading each job's manifest individually —
+// collapsed from a per-job query (the RestoreJobProgress-adjacent shape
+// RemainingBytesByJob already uses) so that a large queued backlog costs one
+// round trip instead of N.
 //
-// A zero count means the row predates the article_count column; the caller
-// must fall back to reading the manifest for that job rather than sizing
-// progress to zero.
-func (s *SQLiteStore) ArticleCountsByFile(ctx context.Context, jobID string) ([]int, error) {
-	const q = `SELECT file_index, article_count FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
-	rows, err := s.db.QueryContext(ctx, q, jobID)
+// A job whose counts are all zero predates the article_count column; the
+// caller must fall back to reading the manifest for that job rather than
+// sizing progress to zero (see articleCountsAreLegacy).
+//
+// Counts are placed by file_index rather than by scan order, so a job whose
+// job_files rows have non-contiguous indices (e.g. after a partial delete)
+// still gets each count attributed to the right file instead of shifted by
+// position.
+func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]int, error) {
+	const q = `SELECT job_id, file_index, article_count FROM job_files ORDER BY job_id ASC, file_index ASC`
+	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite store article counts: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []int
+	result := make(map[string][]int)
 	for rows.Next() {
+		var jobID string
 		var idx, count int
-		if err := rows.Scan(&idx, &count); err != nil {
+		if err := rows.Scan(&jobID, &idx, &count); err != nil {
 			return nil, fmt.Errorf("sqlite store scan article count: %w", err)
 		}
-		out = append(out, count)
+		counts := result[jobID]
+		if idx >= len(counts) {
+			grown := make([]int, idx+1)
+			copy(grown, counts)
+			counts = grown
+		}
+		counts[idx] = count
+		result[jobID] = counts
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite store article counts: %w", err)
 	}
-	return out, nil
+	return result, nil
+}
+
+// BackfillArticleCounts writes recovered per-file article counts back to a
+// legacy job_files row (one predating the article_count column, so every
+// count is currently 0) so the manifest fallback in Loader.Load only has to
+// run once per job, not on every boot. counts is indexed by file_index, the
+// same shape ArticleCountsByJob returns.
+//
+// Must be called without q.mu held: this is I/O (scripts/check_lock_io).
+func (s *SQLiteStore) BackfillArticleCounts(ctx context.Context, jobID string, counts []int) error {
+	const q = `UPDATE job_files SET article_count = ? WHERE job_id = ? AND file_index = ?`
+	for fi, c := range counts {
+		if _, err := s.db.ExecContext(ctx, q, c, jobID, fi); err != nil {
+			return fmt.Errorf("sqlite store backfill article count for job %s file %d: %w", jobID, fi, err)
+		}
+	}
+	return nil
 }
 
 // RemainingBytesByJob returns each job's remaining bytes (bytes minus

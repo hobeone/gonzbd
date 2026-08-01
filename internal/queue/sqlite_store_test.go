@@ -999,10 +999,11 @@ func TestSQLiteStore_ArticleCountRoundTrips(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	got, err := store.ArticleCountsByFile(ctx, job.ID)
+	byJob, err := store.ArticleCountsByJob(ctx)
 	if err != nil {
-		t.Fatalf("ArticleCountsByFile: %v", err)
+		t.Fatalf("ArticleCountsByJob: %v", err)
 	}
+	got := byJob[job.ID]
 	want := []int{5, 5}
 	if len(got) != len(want) {
 		t.Fatalf("got %d files, want %d", len(got), len(want))
@@ -1011,6 +1012,43 @@ func TestSQLiteStore_ArticleCountRoundTrips(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("file %d: article_count = %d, want %d", i, got[i], want[i])
 		}
+	}
+}
+
+// TestSQLiteStore_ArticleCountsByJobNonContiguousIndices pins finding 6: a
+// job whose job_files rows have non-contiguous file_index values (as after a
+// partial delete) must have each count attributed by its actual file_index,
+// not by scan-order position.
+func TestSQLiteStore_ArticleCountsByJobNonContiguousIndices(t *testing.T) {
+	store, repo, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	job := newTestJobWithManifest(t, "job0000000000021", "gapped", 3, 2)
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// Simulate a partial delete: file_index 1 is gone, leaving 0 and 2.
+	if _, err := repo.DB().ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ? AND file_index = 1", job.ID); err != nil {
+		t.Fatalf("delete file_index 1: %v", err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, "UPDATE job_files SET article_count = 9 WHERE job_id = ? AND file_index = 2", job.ID); err != nil {
+		t.Fatalf("set article_count for file_index 2: %v", err)
+	}
+
+	byJob, err := store.ArticleCountsByJob(ctx)
+	if err != nil {
+		t.Fatalf("ArticleCountsByJob: %v", err)
+	}
+	got := byJob[job.ID]
+	if len(got) != 3 {
+		t.Fatalf("got %d entries, want 3 (sized to the highest file_index + 1)", len(got))
+	}
+	if got[0] != 2 {
+		t.Errorf("file_index 0: article_count = %d, want 2", got[0])
+	}
+	if got[2] != 9 {
+		t.Errorf("file_index 2: article_count = %d, want 9 (must be attributed by "+
+			"file_index, not scan-order position)", got[2])
 	}
 }
 
@@ -1134,5 +1172,47 @@ func TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt(t *testing
 	logged := logBuf.String()
 	if !strings.Contains(logged, "aggregate scalars") || !strings.Contains(logged, job.ID) {
 		t.Errorf("expected the aggregate query error to be logged (mentioning the job id), got log output: %q", logged)
+	}
+}
+
+// TestSQLiteStore_GetWarnsOnLegacyArticleCountAggregate pins finding 4 from
+// the final whole-branch review: SUM(article_count) reads as a confident 0
+// for a job_files row that predates the article_count column (migration 004
+// backfills it to 0, not the real per-file counts), the same shape
+// articleCountsAreLegacy detects per-file in Loader.Load. Get had no
+// equivalent detection, so it silently asserted NumArticles()==0 as though
+// verified. Get cannot correct the number in place (that would require
+// reading the manifest, defeating Task 4's point), but it must say so loudly
+// via the log rather than staying silent.
+func TestSQLiteStore_GetWarnsOnLegacyArticleCountAggregate(t *testing.T) {
+	store, repo, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	job := newTestJobWithManifest(t, "legacy-agg-job", "legacy-agg", 2, 3)
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, "UPDATE job_files SET article_count = 0 WHERE job_id = ?", job.ID); err != nil {
+		t.Fatalf("zero article_count: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.NumArticles() != 0 {
+		t.Errorf("NumArticles() = %d, want 0 (there is no manifest read here to recover the real count)", got.NumArticles())
+	}
+	if got.NumFiles() != 2 {
+		t.Fatalf("NumFiles() = %d, want 2 — fixture guard, this test needs numFiles > 0 to exercise the legacy shape", got.NumFiles())
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "article_count") || !strings.Contains(logged, "unknown") || !strings.Contains(logged, job.ID) {
+		t.Errorf("expected a warning about the legacy article_count shape mentioning the job id, got log output: %q", logged)
 	}
 }
