@@ -119,6 +119,67 @@ func TestScriptStage_CaseInsensitiveNoneAndDefault(t *testing.T) {
 	}
 }
 
+// TestScriptStage_CanFailFalse_SetsFailMsg verifies that when
+// ScriptCanFail is false (default) and the script exits non-zero,
+// job.FailMsg is set so buildSummaryEntry records Status="Failed".
+// Without this, a failed script produces a "Completed" history entry.
+func TestScriptStage_CanFailFalse_SetsFailMsg(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test not portable to Windows")
+	}
+	t.Parallel()
+	job, _ := stageJob(t)
+
+	scriptDir := t.TempDir()
+	scriptPath := filepath.Join(scriptDir, "fail.sh")
+	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 7\n"))
+
+	job.Queue.Script = "fail.sh"
+	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
+	// ScriptCanFail defaults to false — do not call SetScriptCanFail.
+
+	err := stage.Run(t.Context(), job)
+	if err == nil {
+		t.Fatal("expected non-nil error for non-zero script exit with ScriptCanFail=false")
+	}
+
+	// The critical assertion: FailMsg must be populated so that
+	// buildSummaryEntry sees it and records Status="Failed".
+	if job.FailMsg == "" {
+		t.Error("job.FailMsg should be set when ScriptCanFail=false and script exits non-zero")
+	}
+	if !strings.Contains(job.FailMsg, "fail.sh") {
+		t.Errorf("job.FailMsg should mention script name, got %q", job.FailMsg)
+	}
+}
+
+// TestScriptStage_CanFailTrue_NoFailMsg verifies that when
+// ScriptCanFail is true and the script exits non-zero, job.FailMsg
+// is NOT set (the failure is swallowed as a warning).
+func TestScriptStage_CanFailTrue_NoFailMsg(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script test not portable to Windows")
+	}
+	t.Parallel()
+	job, _ := stageJob(t)
+
+	scriptDir := t.TempDir()
+	scriptPath := filepath.Join(scriptDir, "fail.sh")
+	writeScript(t, scriptPath, []byte("#!/bin/sh\nexit 3\n"))
+
+	job.Queue.Script = "fail.sh"
+	stage := NewScriptStage(scriptDir, "/tmp/complete", "test", "", "")
+	stage.SetScriptCanFail(true)
+
+	err := stage.Run(t.Context(), job)
+	if err != nil {
+		t.Fatalf("expected nil error with ScriptCanFail=true, got %v", err)
+	}
+	if job.FailMsg != "" {
+		t.Errorf("job.FailMsg should be empty with ScriptCanFail=true, got %q", job.FailMsg)
+	}
+}
+
 func TestScriptStage_ValidScriptAllowed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script test not portable to Windows")

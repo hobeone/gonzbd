@@ -176,6 +176,7 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 				logf(ctx, log, job, slog.LevelInfo, "script_can_fail=true: ignoring non-zero exit")
 				return nil
 			}
+			job.FailMsg = fmt.Sprintf("Script %s failed (exit=%d)", name, res.ExitCode)
 			return fmt.Errorf("script %q exited %d", name, res.ExitCode)
 		}
 		logf(ctx, log, job, slog.LevelWarn, "Error: script %q failed: %v", name, res.Err)
