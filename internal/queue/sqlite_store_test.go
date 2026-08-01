@@ -1,8 +1,10 @@
 package queue_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1087,5 +1089,50 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	}
 	if got.Par2Files() != 0 {
 		t.Errorf("Par2Files = %d, want 0 (not reconstructable from is_par2_recovery)", got.Par2Files())
+	}
+}
+
+// TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt pins the
+// fix for the review finding on the non-resident scalar reconstruction
+// added just above: a failure in the job_files aggregate query (SUM(bytes),
+// COUNT(*), SUM(article_count)) must not vanish. Unlike the file-count
+// query nine lines above it in Get (which fails the whole call, per commit
+// cc26bb09 — that result gates job admission), this query only feeds three
+// reporting scalars for a job that is otherwise valid and fully loaded, so
+// Get still succeeds and returns the job with those three at zero (its
+// pre-Task-4 behavior) — but the error must be logged, not dropped.
+//
+// article_count is dropped from job_files (rather than dropping the whole
+// table) so that the file-count query above still succeeds and the
+// resident-manifest branch is unaffected — isolating the failure to
+// exactly the aggregate query under test.
+func TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt(t *testing.T) {
+	store, repo, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	job := newTestJobWithManifest(t, "agg-scalar-error-job", "agg-scalar-error", 1, 1)
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, "ALTER TABLE job_files DROP COLUMN article_count"); err != nil {
+		t.Fatalf("drop article_count column: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v, want Get to still succeed (a reporting-value failure must not fail job retrieval)", err)
+	}
+	if got.TotalBytes() != 0 || got.NumFiles() != 0 || got.NumArticles() != 0 {
+		t.Errorf("got TotalBytes=%d NumFiles=%d NumArticles=%d, want all zero when the aggregate query itself errors",
+			got.TotalBytes(), got.NumFiles(), got.NumArticles())
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "aggregate scalars") || !strings.Contains(logged, job.ID) {
+		t.Errorf("expected the aggregate query error to be logged (mentioning the job id), got log output: %q", logged)
 	}
 }

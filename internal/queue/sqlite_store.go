@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -310,11 +311,23 @@ FROM jobs WHERE id = ?`
 	// scalars that job_files can answer on its own. par2Bytes/par2Files
 	// stay zero; see setAggregateScalarsFromFiles for why they cannot be
 	// safely reconstructed from is_par2_recovery.
+	//
+	// A query failure here is logged rather than failing Get outright: the
+	// file-count query above fails closed because its result gates whether
+	// the caller gets a job back at all (admission), but this query only
+	// feeds three reporting scalars for a job that is otherwise valid and
+	// already fully loaded. Returning the job with those three at zero (its
+	// pre-Task-4 behavior) is preferable to losing the job entirely over a
+	// transient SQLite error on an already-slow, non-resident read path —
+	// but the error must not vanish silently, so it goes to the log.
 	if job.manifest == nil && fileCount > 0 {
 		var totalBytes int64
 		var numFiles, numArticles int
 		const qAgg = `SELECT COALESCE(SUM(bytes), 0), COUNT(*), COALESCE(SUM(article_count), 0) FROM job_files WHERE job_id = ?`
-		if err := s.db.QueryRowContext(ctx, qAgg, id).Scan(&totalBytes, &numFiles, &numArticles); err == nil {
+		if err := s.db.QueryRowContext(ctx, qAgg, id).Scan(&totalBytes, &numFiles, &numArticles); err != nil {
+			slog.Default().Error("sqlite store: aggregate scalars from job_files failed, reporting scalars stay zero",
+				"job_id", id, "err", err)
+		} else {
 			job.setAggregateScalarsFromFiles(totalBytes, numFiles, numArticles)
 		}
 	}
