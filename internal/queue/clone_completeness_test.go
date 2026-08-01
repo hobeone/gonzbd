@@ -104,30 +104,11 @@ func fillDistinctive(fv reflect.Value, idx int) bool {
 	}
 }
 
-// TestCloneJobDropsRemainingBytesCache pins the one unexported field
-// cloneJob deliberately does not carry across.
-//
-// The exported fields are covered above, and the manifest/progress pair is
-// covered by TestSnapshotJob_ArtIdxIsolation (manifest shared by reference,
-// progress deep-copied). lastKnownRemainingBytes is neither: it is a cache
-// that is only meaningful while progress is nil, and a snapshot clone gets
-// its residency reconstructed from disk by hydrateSnapshot rather than from
-// a cached figure. Copying it would hand the clone a number with no live
-// state behind it, so the omission is intentional and worth pinning — a
-// future reader "fixing" the apparent oversight should fail here.
-func TestCloneJobDropsRemainingBytesCache(t *testing.T) {
-	t.Parallel()
-
-	job := &Job{ID: "cache-drop", Name: "cache drop"}
-	job.lastKnownRemainingBytes = 4242
-
-	if got := cloneJob(job).lastKnownRemainingBytes; got != 0 {
-		t.Errorf("clone carried lastKnownRemainingBytes = %d, want 0", got)
-	}
-}
-
-// TestCloneJobCarriesManifestScalars pins the opposite property from
-// TestCloneJobDropsRemainingBytesCache: the five manifest-derived scalars
+// TestCloneJobCarriesManifestScalars pins the opposite property from what
+// used to be TestCloneJobDropsRemainingBytesCache (removed: it pinned
+// cloneJob's deliberate omission of the now-deleted lastKnownRemainingBytes
+// field, a property that no longer exists once progress is permanently
+// resident — see docs/queue-lifecycle.md). The five manifest-derived scalars
 // (totalBytes, numFiles, numArticles, par2Bytes, par2Files) are unexported,
 // so TestCloneJobCopiesEveryExportedField's reflective sweep does not see
 // them. They must still be copied — unlike lastKnownRemainingBytes, they are

@@ -62,9 +62,9 @@ type Store interface {
 
 	// RemainingBytesByJob returns each job's remaining bytes (manifest bytes
 	// minus bytes already downloaded), summed per job_id across job_files.
-	// Used to reconstruct Job.lastKnownRemainingBytes for jobs that come
-	// back from Loader.Load non-resident, since those jobs have no live
-	// JobProgress to read remainingBytes from.
+	// Used by Loader.Load to seed JobProgress.remainingBytes for jobs that
+	// come back from the store non-resident (no manifest, so no per-article
+	// byte breakdown is available to compute this the normal way).
 	RemainingBytesByJob(ctx context.Context) (map[string]int64, error)
 
 	// DeleteJobArtifacts removes the on-disk manifest and progress files for

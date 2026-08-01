@@ -140,6 +140,62 @@ func (q *Queue) saveInner(dir string) error {
 	return nil
 }
 
+// newJobProgressSized builds a JobProgress sized to fileArticleCounts (one
+// element per file, its article count) without requiring a resident
+// Manifest — see Store.ArticleCountsByFile. Used by Loader.Load to give a
+// non-resident job (StatusQueued/StatusPaused at restart) a real JobProgress
+// instead of leaving it nil.
+//
+// Every article starts undone/unfailed/unemitted: this sizes progress for
+// reporting, it does not restore true per-article state, which needs the
+// manifest. That restoration already happens correctly whenever the job is
+// actually promoted back to resident — hydrateJobLocked builds a fresh
+// newJobProgress(&m) and calls Store.RestoreJobProgress against it — so this
+// placeholder only has to survive until then.
+//
+// remainingBytes is the caller's own byte-accurate figure (from
+// Store.RemainingBytesByJob) rather than the job's full total, so a job
+// paused mid-download is not misreported as having downloaded nothing
+// merely because it restarted non-resident.
+func newJobProgressSized(fileArticleCounts []int, remainingBytes int64) *JobProgress {
+	total := 0
+	for _, c := range fileArticleCounts {
+		total += c
+	}
+	p := &JobProgress{
+		done:            newBitset(total),
+		failed:          newBitset(total),
+		emitted:         newBitset(total),
+		files:           make([]FileProgress, len(fileArticleCounts)),
+		remainingBytes:  remainingBytes,
+		pendingArticles: total,
+	}
+	for fi, c := range fileArticleCounts {
+		p.files[fi].Pending = c
+	}
+	return p
+}
+
+// articleCountsAreLegacy reports whether counts came from a job_files row
+// that predates the article_count column (Task 2026-07-31/#267 Task 4): the
+// column defaults every existing row to zero, so a non-empty slice that is
+// all zeros means "never populated" rather than "genuinely zero articles in
+// every file". A job with truly no files at all comes back from
+// ArticleCountsByFile as an empty (nil) slice — no rows to scan — which this
+// deliberately treats as not legacy: there is nothing to fall back to a
+// manifest for.
+func articleCountsAreLegacy(counts []int) bool {
+	if len(counts) == 0 {
+		return false
+	}
+	for _, c := range counts {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // Loader reconstructs a Queue from disk with configurable dependencies.
 type Loader struct {
 	// Rename is used to rename corrupt files to .corrupt.
@@ -180,12 +236,51 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 		// Queried before q.mu.Lock(): Store calls are treated as I/O by
 		// scripts/check_lock_io, and must not run inside the critical
 		// section below. Fail closed (propagate the error) rather than
-		// silently leaving every non-resident job's remaining-bytes cache
-		// at its zero value, matching the fail-closed precedent set for
-		// the manifest file-count query in SQLiteStore.Get (#254).
+		// silently leaving every non-resident job's remaining bytes at
+		// zero, matching the fail-closed precedent set for the manifest
+		// file-count query in SQLiteStore.Get (#254).
 		remainingByJob, err := q.store.RemainingBytesByJob(context.Background())
 		if err != nil {
 			return nil, fmt.Errorf("queue: load remaining bytes: %w", err)
+		}
+		// Size JobProgress for every job store.Get left non-resident
+		// (progress == nil): Get only restores progress for a
+		// resident-status job whose manifest file is present on disk, so
+		// every StatusQueued/StatusPaused job — and a resident-status job
+		// whose manifest is missing — comes back from List() without one.
+		// The invariant this task establishes is job.progress != nil for
+		// every job in q.byID (docs/queue-lifecycle.md), so this must run
+		// for all of them, not just the subset the loop below re-hydrates.
+		//
+		// Also queried before q.mu.Lock(), for the same check_lock_io
+		// reason as RemainingBytesByJob above: ArticleCountsByFile and the
+		// legacy manifest-fallback read are both I/O.
+		for _, job := range jobs {
+			if job.progress != nil {
+				continue
+			}
+			counts, err := q.store.ArticleCountsByFile(context.Background(), job.ID)
+			if err != nil {
+				return nil, fmt.Errorf("queue: load article counts for job %s: %w", job.ID, err)
+			}
+			if articleCountsAreLegacy(counts) {
+				// Every count is zero: this job_files row predates Task 4's
+				// article_count column. The manifest is the only remaining
+				// source of per-file article counts — read it once here
+				// rather than leaving progress permanently under-sized.
+				manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
+				var m Manifest
+				if err := readGzJSON(manifestPath, &m); err != nil {
+					return nil, fmt.Errorf("queue: legacy article-count fallback for job %s: %w", job.ID, err)
+				}
+				counts = make([]int, m.NumFiles())
+				for fi := range counts {
+					lo, hi := m.FileRange(fi)
+					counts[fi] = hi - lo
+				}
+				q.log.Info("upgraded legacy job_files row missing article_count", "job_id", job.ID)
+			}
+			job.progress = newJobProgressSized(counts, remainingByJob[job.ID])
 		}
 		func() {
 			q.mu.Lock()
@@ -205,14 +300,6 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 					}
 				} else if job.manifest != nil {
 					job.manifest.buildMessageIDIndex()
-				}
-				// Jobs that end up non-resident above (StatusQueued, or a
-				// failed manifest claim) have no live JobProgress to read
-				// remainingBytes from; populate the cache from the store's
-				// job_files totals instead so TotalRemainingBytes sees a
-				// real figure rather than silently treating them as 0.
-				if job.manifest == nil {
-					job.lastKnownRemainingBytes = remainingByJob[job.ID]
 				}
 			}
 			q.paused = paused

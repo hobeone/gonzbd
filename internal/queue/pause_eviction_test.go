@@ -12,18 +12,20 @@ import (
 	"github.com/hobeone/gonzbd/internal/history"
 )
 
-// A job that is present in q.byID but whose Manifest and JobProgress have been
-// released is "non-resident". That state is ordinary, not exceptional: Add
-// de-hydrates every StatusQueued job when a store or state directory is
-// configured, and Pause reaches the same state for a job that is already
-// downloading. Every exported Queue method that dereferences those fields must
-// therefore tolerate it rather than panic — the daemon's worker goroutines
-// carry no recover(), so a nil dereference here terminates the process.
+// A job that is present in q.byID but whose Manifest has been released is
+// "non-resident". JobProgress is never released (see
+// docs/queue-lifecycle.md) — only the Manifest is evictable. That state is
+// ordinary, not exceptional: Add de-hydrates every StatusQueued job when a
+// store or state directory is configured, and Pause reaches the same state
+// for a job that is already downloading. Every exported Queue method that
+// dereferences the manifest must therefore tolerate its absence rather than
+// panic — the daemon's worker goroutines carry no recover(), so a nil
+// dereference here terminates the process.
 //
 // These tests pin that contract. They require a state directory: evictJobLocked
-// only nils the fields when q.store != nil || q.stateDir != "", so a queue built
-// with a bare New() keeps them populated and the tests would pass vacuously
-// against unfixed code.
+// only nils the manifest when q.store != nil || q.stateDir != "", so a queue
+// built with a bare New() keeps it populated and the tests would pass
+// vacuously against unfixed code.
 
 // newEvictedJobQueue returns a queue holding one paused, non-resident job with
 // a single article already marked emitted, plus that job's ID.
@@ -43,9 +45,11 @@ func newEvictedJobQueue(t *testing.T) (*Queue, string) {
 	}
 
 	// Guard the fixture itself: if Pause stopped de-hydrating, every assertion
-	// below would pass for the wrong reason.
+	// below would pass for the wrong reason. Progress is deliberately not
+	// part of this check — it is never released (docs/queue-lifecycle.md),
+	// so only the manifest is a residency signal.
 	q.mu.RLock()
-	resident := q.byID[job.ID].manifest != nil || q.byID[job.ID].progress != nil
+	resident := q.byID[job.ID].manifest != nil
 	q.mu.RUnlock()
 	if resident {
 		t.Fatal("fixture is not exercising the bug: job still resident after Pause")
@@ -266,7 +270,7 @@ func newEvictedJobQueueWithDir(t *testing.T) (q *Queue, jobID, dir string) {
 	}
 
 	q.mu.RLock()
-	resident := q.byID[job.ID].manifest != nil || q.byID[job.ID].progress != nil
+	resident := q.byID[job.ID].manifest != nil
 	q.mu.RUnlock()
 	if resident {
 		t.Fatal("fixture is not exercising the bug: job still resident after Pause")
@@ -277,10 +281,15 @@ func newEvictedJobQueueWithDir(t *testing.T) (q *Queue, jobID, dir string) {
 
 // TestSetStatusHydrationFailureLeavesStatusUnchanged pins issue #264: SetStatus
 // moving a de-hydrated job to a resident status (StatusDownloading) must not
-// leave the job at that status with nil manifest/progress when the on-disk
-// manifest can't be read. Before the fix, the hydration read was wrapped in
+// leave the job at that status with nil manifest when the on-disk manifest
+// can't be read. Before the fix, the hydration read was wrapped in
 // `if err := readGzJSON(...); err == nil { ... }` with no else branch, so a
 // failed read silently left job.Status at the new resident status anyway.
+//
+// Progress is asserted present rather than nil: hydrateJobLocked's manifest
+// read fails before it ever touches job.progress, so the pre-existing,
+// always-resident progress (docs/queue-lifecycle.md) is untouched by this
+// failure, not dropped.
 func TestSetStatusHydrationFailureLeavesStatusUnchanged(t *testing.T) {
 	t.Parallel()
 
@@ -306,8 +315,11 @@ func TestSetStatusHydrationFailureLeavesStatusUnchanged(t *testing.T) {
 	if status != constants.StatusPaused {
 		t.Errorf("job.Status = %s, want %s (unchanged from before the failed call)", status, constants.StatusPaused)
 	}
-	if manifest != nil || progress != nil {
-		t.Errorf("job left partially hydrated: manifest=%v progress=%v, want both nil", manifest, progress)
+	if manifest != nil {
+		t.Errorf("job left partially hydrated: manifest=%v, want nil", manifest)
+	}
+	if progress == nil {
+		t.Error("job progress must never be nil, even after a failed hydration attempt")
 	}
 }
 
@@ -345,7 +357,7 @@ func TestSetStatusIfHydrationFailureLeavesStatusUnchanged(t *testing.T) {
 
 	q.mu.RLock()
 	queued := q.byID[jobID].Status == constants.StatusQueued
-	resident := q.byID[jobID].manifest != nil || q.byID[jobID].progress != nil
+	resident := q.byID[jobID].manifest != nil
 	q.mu.RUnlock()
 	if !queued {
 		t.Fatalf("fixture is not exercising the bug: overflow job status = %s, want Queued", q.byID[jobID].Status)
@@ -374,7 +386,10 @@ func TestSetStatusIfHydrationFailureLeavesStatusUnchanged(t *testing.T) {
 	if status != constants.StatusQueued {
 		t.Errorf("job.Status = %s, want %s (unchanged from before the failed call)", status, constants.StatusQueued)
 	}
-	if manifest != nil || progress != nil {
-		t.Errorf("job left partially hydrated: manifest=%v progress=%v, want both nil", manifest, progress)
+	if manifest != nil {
+		t.Errorf("job left partially hydrated: manifest=%v, want nil", manifest)
+	}
+	if progress == nil {
+		t.Error("job progress must never be nil, even after a failed hydration attempt")
 	}
 }

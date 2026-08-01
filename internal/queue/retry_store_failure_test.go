@@ -65,8 +65,11 @@ func newFailedNonResidentJob(t *testing.T) (*Queue, *failingStore, *Job) {
 	}
 	job.Warning = "download failed"
 
-	if job.Manifest() != nil || job.Progress() != nil {
+	if job.Manifest() != nil {
 		t.Fatal("fixture guard: job should be non-resident after StatusFailed")
+	}
+	if job.Progress() == nil {
+		t.Fatal("fixture guard: progress must never be nil")
 	}
 	return q, fs, job
 }
@@ -79,6 +82,15 @@ func newFailedNonResidentJob(t *testing.T) (*Queue, *failingStore, *Job) {
 // defect #260 is about, so a failed write must roll the job back and say so.
 func TestRetryPersistFailureRollsBackJob(t *testing.T) {
 	q, fs, job := newFailedNonResidentJob(t)
+
+	// Capture the accurate, persisted progress before Retry's ResetForRetry
+	// mutates it in place, so the rollback assertions below can confirm it
+	// was restored rather than left at the optimistic reset.
+	before := job.Progress()
+	wantResolved := before.ArticlesResolved()
+	wantFailed := before.ArticlesFailed()
+	wantFailedBytes := before.FailedBytes()
+	wantRemaining := before.RemainingBytes()
 
 	fs.failUpdate = true
 	err := q.Retry(job.ID)
@@ -96,11 +108,31 @@ func TestRetryPersistFailureRollsBackJob(t *testing.T) {
 	if job.Warning != "download failed" {
 		t.Errorf("Warning = %q, want it restored", job.Warning)
 	}
-	// Residency must be dropped: ResetForRetry already mutated this
-	// JobProgress, and the un-written store row is the authority to
-	// re-hydrate from.
-	if job.Manifest() != nil || job.Progress() != nil {
-		t.Error("job is still resident, so the mutated progress survived the rollback")
+	// The manifest must still be evicted (rollback does not promote the
+	// job). Progress is never nil (docs/queue-lifecycle.md); what matters
+	// is that ResetForRetry's in-place mutation did not survive the
+	// rollback — the un-written store row still reflects the pre-mutation
+	// values, so a resident-but-mutated JobProgress would let
+	// TotalRemainingBytes and friends report numbers nothing on disk backs
+	// up.
+	if job.Manifest() != nil {
+		t.Error("job is resident after a rolled-back Retry, want the manifest still evicted")
+	}
+	p := job.Progress()
+	if p == nil {
+		t.Fatal("progress must never be nil")
+	}
+	if got := p.ArticlesResolved(); got != wantResolved {
+		t.Errorf("ArticlesResolved = %d, want %d (pre-mutation value; ResetForRetry's reset must not survive the rollback)", got, wantResolved)
+	}
+	if got := p.ArticlesFailed(); got != wantFailed {
+		t.Errorf("ArticlesFailed = %d, want %d (pre-mutation value)", got, wantFailed)
+	}
+	if got := p.FailedBytes(); got != wantFailedBytes {
+		t.Errorf("FailedBytes = %d, want %d (pre-mutation value)", got, wantFailedBytes)
+	}
+	if got := p.RemainingBytes(); got != wantRemaining {
+		t.Errorf("RemainingBytes = %d, want %d (pre-mutation value)", got, wantRemaining)
 	}
 
 	// The rollback must leave a retry still possible once the store recovers.
@@ -128,6 +160,10 @@ func TestRetryPersistFailureRollsBackJob(t *testing.T) {
 // that empty progress would be written back over the real record.
 func TestHydrateRestoreFailureLeavesJobNonResident(t *testing.T) {
 	q, fs, job := newFailedNonResidentJob(t)
+	// ResetForRetry never runs in this scenario: hydrateJobLocked's
+	// RestoreJobProgress failure makes Retry return before reaching it, so
+	// this is the exact progress that must survive the failed attempt.
+	before := job.Progress()
 
 	fs.failRestore = true
 	err := q.Retry(job.ID)
@@ -141,8 +177,16 @@ func TestHydrateRestoreFailureLeavesJobNonResident(t *testing.T) {
 	if job.Status != constants.StatusFailed {
 		t.Errorf("Status = %s, want %s", job.Status, constants.StatusFailed)
 	}
-	if job.Manifest() != nil || job.Progress() != nil {
-		t.Error("job is resident with progress that was never restored")
+	if job.Manifest() != nil {
+		t.Error("job is resident (manifest not evicted) after a failed hydration attempt")
+	}
+	// Progress must never be nil (docs/queue-lifecycle.md). What actually
+	// needs preventing is the fabricated all-zero JobProgress that
+	// hydrateJobLocked builds before RestoreJobProgress gets a chance to
+	// fill it in — that one must not survive in progress's place; the
+	// pre-existing, accurate one must.
+	if got := job.Progress(); got != before {
+		t.Error("job progress was replaced with the fresh, never-restored JobProgress instead of the prior one")
 	}
 
 	// The real record must be intact: once the store recovers, the completed
