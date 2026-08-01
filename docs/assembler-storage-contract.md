@@ -1,0 +1,307 @@
+# Assembler & Streaming Storage Contract
+
+This document is the contract for `internal/assembler` and
+`internal/directunpack`: how article segments are stitched into complete files,
+disk write caching and pre-allocation, CRC combination, streaming unpack, and
+disk space safety guarantees.
+
+`docs/ARCHITECTURE.md` describes the assembler's position in the download
+pipeline. This document defines its operational invariants and structural
+guarantees.
+
+**This states the contract in the present tense, including parts not yet built.**
+That is deliberate — it is the target the code is held to, not a report on the
+code as it stands. The Status section below records exactly what has landed.
+Where the two disagree, the code is wrong and the gap is a bug, not a
+documentation error.
+
+## Why this exists
+
+The assembler converts non-sequential yEnc decoded article chunks arriving from
+the downloader into structured target files on stable storage. At 1Gbps+
+download speeds, naive I/O creates several classes of failure:
+
+- **Syscall overhead**: Thousands of 128KB `pwrite` calls per second overwhelm
+  the page cache. Write coalescing batches contiguous articles into single
+  `WriteAt` calls, reducing syscall count by 8–16×.
+- **Queue lock contention**: Marking each article `Done` individually acquires
+  the queue's write lock once per article — thousands of times per second.
+  Batching into periodic flushes (default 250ms) collapses this to ~4 lock
+  acquisitions/sec.
+- **Wedged network mounts**: Unbounded `statfs` calls on stuck NFS/SMB mounts
+  freeze the single assembler worker. Bounded probes (`diskCheckTimeout = 5s`)
+  with the `DiskProbe` at-most-one-in-flight pattern prevent this.
+- **Pre-allocation / truncation mismatch**: NZB declares *encoded* sizes (~2%
+  larger than decoded). Pre-allocation at that size, then writing decoded data,
+  leaves trailing zero bytes that par2 reports as damage. The assembler
+  truncates to `maxWritten` at file completion to fix this.
+
+## The storage & assembly tiers
+
+| Tier | Component | Primary Responsibility | Synchronization |
+|---|---|---|---|
+| **Ingest** | `WriteArticle` / `CancelJob` / `CloseJobHandles` | Enqueue `WriteRequest` items into bounded channel (`reqs`, cap 2048). Control messages for cancel/close-handles. | Channel send with `select` on `stopCh` and `ctx.Done()`. `wg.Add(1)` tracks every in-flight sender so `Stop()` can drain cleanly. |
+| **Worker** | `worker` goroutine | Owns all file handles. Dispatches requests, manages open-file map, drives write cache, executes periodic flush, checks disk space. | Single goroutine — zero lock contention on file handles, write cache, or pending batches. |
+| **Write cache** | `writeCache` (writecache.go) | Buffers decoded articles in memory, coalesces contiguous runs into single `WriteAt` calls, tracks per-file write cursor for resume. | Owned exclusively by the worker goroutine. No locks. |
+| **Batch flush** | `flush()` on worker | Accumulates `pendingDone` / `pendingFailed` / `pendingCursor` maps and flushes to queue callbacks in groups. | Worker-owned maps. Flushed on: file completion, ticker (250ms), and `Stop()`. |
+| **DirectUnpack** | `internal/directunpack` | Streams RAR extraction (via `rarengine`) as volumes complete during download. Reads whole-file volumes after assembly, not partial article data. | Mutex (`mu`) guards volume tracking and kill state. Blocking `volumeReady` channel coordinates volume availability. |
+
+## File assembly lifecycle
+
+Every target file progresses through these stages on the single worker
+goroutine. The lifecycle is managed by the `open` map (in-progress), the
+`completed` tombstone set (finished), and the `cancelledJobs` set (aborted):
+
+```
+First WriteRequest  ──►  openTargetFile()  ──►  Assembling (WriteAt / cache)
+for this (job, file)     │                              │
+                         ├── MkdirAll + OpenFile        ├── writeArticleOrBuffer
+                         ├── preallocateFile            ├── recordArticleCRC
+                         └── initCursor (write cache)   ├── handleFatalArticle (failed articles)
+                                                        └── partsWritten++
+                                                                │
+                                               partsWritten >= TotalParts
+                                                                │
+                                                                ▼
+                                                   finalizeFile()
+                                                   │
+                                                   ├── drainCacheForFile
+                                                   ├── Truncate(maxWritten)
+                                                   ├── Sync() (fsync)
+                                                   ├── Close()
+                                                   ├── flush() (Done/Failed batches)
+                                                   ├── compute file CRC32
+                                                   └── OnFileComplete callback
+```
+
+## Mandatory invariants
+
+1. **Single-worker ownership**: File handles (`os.File`), the `open` map,
+   `completed` tombstone set, `cancelledJobs` set, write cache, and all
+   `pending*` batch maps are owned exclusively by the `worker` goroutine. No
+   external goroutine may read or mutate them. `WriteArticle` communicates
+   solely via channel send.
+
+2. **Durability order**: `flush()` is called inside `finalizeFile` *before* the
+   `OnFileComplete` callback fires. This guarantees `MarkArticlesDone` /
+   `MarkArticlesDoneByIdx` reaches the queue before any downstream code
+   (e.g. `watchCompletions`) can observe `IsComplete() == true` and trigger
+   job-completion logic. The ordering is:
+   `pwrite → Truncate → Sync → Close → flush(Done/Failed) → OnFileComplete`.
+
+   **Important nuance**: `Sync()` (fsync) is called once per *file completion*,
+   not once per article. Individual article `WriteAt` calls are not individually
+   fsynced — they rely on the OS page cache until the file completes. This means
+   a crash mid-download loses unfsynced articles; the `Emitted`-is-transient
+   invariant (see `nntp-downloader-contract.md` §5) handles this by re-fetching
+   them on restart.
+
+3. **Batch flush cadence**: `pendingDone` / `pendingFailed` / `pendingCursor`
+   maps are flushed to queue callbacks on three triggers:
+   - **File completion** (`finalizeFile` → `flush()`).
+   - **Periodic ticker** (default 250ms, `defaultDoneFlushInterval`).
+   - **Shutdown** (final `flush()` after drain loop in `worker()`).
+
+   Errors from `MarkArticlesDone` / `MarkArticlesFailed` are logged and
+   swallowed — the queue mutation is best-effort once bytes are on disk, since
+   partsWritten tracking is local to the assembler.
+
+4. **Disk-space pre-flight timeouts**: `checkDiskSpace` runs every 16
+   `WriteRequest` items (`diskCheckInterval`). Each per-directory `FreeBytes`
+   call uses `context.WithTimeout(5s)`. The `DiskProbe` ensures at most one
+   outstanding `statfs` goroutine per directory — repeated calls for a stuck
+   mount return the cached result or the timeout error, preventing goroutine
+   accumulation. Stale entries are evicted after 10 minutes
+   (`diskProbeEvictAfter`).
+
+5. **CRC32 incremental combination**: Per-article CRC32 values (from yEnc
+   headers) are accumulated with their byte offsets in `crcParts`. At file
+   completion, parts are sorted by offset and combined via
+   `crc32util.Combine(crc_a, crc_b, len_b)` to produce a whole-file CRC32
+   without re-reading the file from disk. If any article had CRC=0 (UU-encoded,
+   failed, or write error), `crcValid` is set false and the file CRC is reported
+   as 0.
+
+6. **Offset bounds checking**: `offsetInRange` rejects `WriteRequest` items
+   whose offset is negative, whose offset+length overflows int64, or whose write
+   extends past `ExpectedSize + ExpectedSize/8` (12.5% slack). This prevents a
+   hostile NNTP server from inflating the file's apparent size via a crafted
+   yEnc `=ypart begin=` header. Rejected writes return false, triggering
+   `recordPendingFailed` + `PutBuffer`.
+
+## Pre-allocation contract
+
+File pre-allocation reduces per-write filesystem metadata overhead and
+fragmentation. The implementation is platform-specific:
+
+| Platform | Mechanism | Failure behavior |
+|---|---|---|
+| **Linux** | `fallocate(2)` — reserves contiguous extents without zeroing | Falls back to `ftruncate` (sparse file) on `ENOTSUP`/`EOPNOTSUPP` (NFS, tmpfs, older FUSE) |
+| **Non-Linux** (macOS, etc.) | `ftruncate` — creates a sparse file on supporting filesystems (APFS, HFS+, ext4, xfs, btrfs) | May allocate real blocks on non-sparse filesystems; acceptable since the file will be filled |
+
+Pre-allocation uses `ExpectedSize` from the NZB, which is the *encoded* size
+(~2% larger than decoded). At file completion, `finalizeFile` calls
+`Truncate(maxWritten)` to trim to the actual decoded size. Without this
+truncation, trailing zero bytes cause par2 to report the file as damaged despite
+100% download health.
+
+`SupportsSparse()` in `sparse.go` probes whether the target filesystem supports
+sparse files by creating a temporary file, truncating it to 1 MiB, and checking
+`st_blocks * 512 < apparent_size`.
+
+## Write coalescing cache
+
+When `Options.WriteCacheBytes > 0`, the write cache buffers decoded articles in
+memory and coalesces contiguous runs into larger `WriteAt` calls:
+
+- **Buffering**: Each article is stored in `fileBuf.articles[offset]`, keyed by
+  byte offset. Total memory is tracked in `writeCache.used`.
+- **Contiguous flush**: After each `buffer()`, `flushContiguous()` scans from
+  the file's `writeCursor` for a contiguous run ≥ 512KB
+  (`contiguousRunSize`). If found, the run is coalesced into `scratchBuf`
+  (reusable, avoids heap allocation) and written as a single `WriteAt`. The
+  cursor advances past the flushed range.
+- **Pressure relief**: When `used > 90% of limit` (`pressure()`), the file
+  with the most buffered data is force-flushed (`forceFlushLargest`) regardless
+  of contiguity. Articles are written individually, sorted by offset.
+- **File completion drain**: `drainCacheForFile()` flushes all remaining cached
+  articles before `Truncate` + `Sync` + `Close`.
+- **Shutdown drain**: `flushWriteCache()` drains all files on `Stop()`.
+- **Resume cursor**: `initCursor(key, InitialWriteCursor)` seeds the write
+  cursor from the persisted resume point so coalescing doesn't stall waiting
+  for offset-0 articles that were already written before a restart.
+  `pendingCursor` is flushed alongside `pendingDone` on the same cadence.
+
+When `WriteCacheBytes == 0` (default), caching is disabled. Each article is
+written directly via `WriteAt`. Decoder buffers are returned to `sync.Pool`
+(`decoder.PutBuffer`) immediately after the write.
+
+## Duplicate and late-article handling
+
+The assembler handles duplicates at multiple levels:
+
+- **Per-file `seenDone` / `seenFailed` maps**: Deduplicate by MessageID within
+  the worker. A duplicate success re-records `pendingDone` (in case a prior
+  flush dropped it) but does NOT increment `partsWritten`. A duplicate failure
+  similarly re-records `pendingFailed` without incrementing.
+- **Cross-state dedup**: If a MessageID was previously counted as a success and
+  now arrives as a failure (or vice versa), the write/ack is recorded but
+  `partsWritten` is not incremented again.
+- **Late articles (completed tombstone)**: Articles arriving for a file already
+  in the `completed` set are handled by `handleLateDuplicate`: the Done/Failed
+  ack is recorded (so the queue sees it) and the data is returned to the pool.
+  No disk write occurs.
+
+## Control messages
+
+The assembler supports two control message types, distinguished by sentinel
+field values on `WriteRequest`:
+
+| Control | Encoding | Worker behavior |
+|---|---|---|
+| **CancelJob** | `JobID=""`, `FileIdx=-1`, `MessageID=jobID` | Closes and *deletes* all open files for the job. Adds job to `cancelledJobs` tombstone. Discards all cached articles via `wc.forget()`. Closes `ackCh` to unblock the caller. |
+| **CloseJobHandles** | `JobID=""`, `FileIdx=-2`, `MessageID=jobID` | Drains write cache for each file, `Sync()`s and `Close()`s handles *without deleting*. Adds files to `completed` tombstone. Flushes pending Done/Failed. Closes `ackCh`. Used when a job enters post-processing or par2 repair. |
+
+Both control messages are synchronous from the caller's perspective — the caller
+blocks on `ackCh` until the worker has fully processed the message.
+
+## DirectUnpack streaming contract
+
+DirectUnpack is a *volume-level* streaming extractor, not an article-level one.
+It reads fully assembled RAR volume files from disk. It does NOT read partial
+articles or sparse file regions. The coordination model:
+
+1. **Volume completion signal**: The assembler's `OnFileComplete` callback
+   calls `DirectUnpacker.Add(filename, path)` when a RAR volume file has been
+   fully written, fsynced, and closed. The volume is complete and stable on
+   disk at this point.
+
+2. **Volume waiting**: `waitForVolume()` blocks on the `volumeReady` channel
+   until the requested volume number appears in `completedVols`. If the set is
+   marked corrupt (`corruptSets`), it returns an error immediately.
+
+3. **Sequential volume feeding**: `startVolumeFeed()` spawns a goroutine that
+   opens completed volumes in order (vol 1, 2, 3, ...) and sends their
+   `*os.File` handles to `rarengine.StreamDecompressor` via a channel. The
+   decompressor reads each volume sequentially.
+
+4. **Corrupt volume handling**: `MarkCorrupt(setname, reason)` is called by the
+   queue when a volume was assembled from a download with missing/failed articles.
+   Once marked, the set can never be reported as successfully extracted:
+   - `waitForVolume` checks `corruptSets` on each wake and returns an error.
+   - `extractSet` checks `corruptSets` after extraction completes (backstop for
+     volumes that arrived before the corruption was detected).
+
+5. **Non-RAR handling**: `extractSet` checks the first volume's magic bytes
+   via `rarheader.Version()`. Non-RAR3/RAR5 archives are recorded as
+   `SkippedSet` (not failed) — the normal unpack stage's external `unrar`
+   handles them.
+
+6. **Format support**: DirectUnpack uses `rarengine` (pure Go RAR3/RAR5
+   decompressor). Other archive formats, legacy RAR2, and non-RAR files
+   identified by filename are handled by the post-processing unpack stage.
+
+7. **Abort/kill**: `Abort()` sets `killed=true`, records failures for current
+   and queued sets, clears success results, and signals the reader goroutine
+   via `volumeReady`. If `run()` was never started, `Abort()` closes the `done`
+   channel directly.
+
+## Memory & allocation budget
+
+| Component | Bound / Strategy |
+|---|---|
+| **Write channel (`reqs`)** | Capacity = 2048 requests (`defaultQueueSize`). Under 128KB articles: ~256MB worst-case buffered data. Backpressures downloader when disk I/O is slow. |
+| **Write cache** | Bounded by `Options.WriteCacheBytes`. Pressure relief at 90% occupancy. Zero when caching is disabled (default). |
+| **Contiguous flush threshold** | 512KB (`contiguousRunSize`). Runs below this stay buffered. |
+| **Coalescing scratch buffer** | Single reusable `[]byte` (`scratchBuf`) per `writeCache` instance. Grows to the largest flush and is reused across flushes. |
+| **Pending Done/Failed batches** | Unbounded maps, flushed every 250ms or on file completion. In practice bounded by download speed × flush interval. |
+| **Decoder buffer returns** | Every `req.Data` is returned to `decoder.PutBuffer` (sync.Pool) after write or on error/discard. Failure to return leaks pool entries. |
+| **Disk probe cache** | One `probeState` per unique directory. Stale entries evicted after 10 minutes. At most one outstanding `statfs` goroutine per directory. |
+
+## Failure & degradation rules
+
+- **Disk full (`OnLowDisk`)**: When free space drops below `MinFreeBytes`, the
+  `OnLowDisk` callback is invoked. The assembler does NOT pause itself — the
+  callback is responsible for pausing the job or the download. The assembler
+  continues processing requests in the channel.
+
+- **Write error (`pwrite` failure)**: The article is recorded as failed
+  (`recordPendingFailed`), its data is returned to the pool, `crcValid` is set
+  false, and `partsWritten` is still incremented. The file completes with
+  damaged-file semantics (CRC=0), routing to par2 repair.
+
+- **FileInfo resolution failure**: If `opts.FileInfo()` returns an error, the
+  article's data is returned to the pool and the request is silently discarded.
+  The file is never opened and never appears in `open`.
+
+- **CancelJob**: Closes and deletes open files. Adds job to `cancelledJobs`
+  tombstone so subsequent articles for that job are silently discarded (data
+  returned to pool). The `ackCh` synchronization ensures the caller can safely
+  delete the job directory immediately after `CancelJob` returns — no open
+  handles remain.
+
+- **Shutdown (`Stop`)**: Closes `stopCh`, waits for all in-flight `WriteArticle`
+  and `CancelJob` goroutines to finish (`wg.Wait`). The worker drains remaining
+  channel items, flushes the write cache, performs a final `flush()`, and closes
+  all open files. Partial files (partsWritten < TotalParts) are closed without
+  firing `OnFileComplete`.
+
+## Status
+
+Landed:
+- Single-worker goroutine with bounded write queue (2048).
+- Batched Done/Failed flushes with 250ms ticker and file-completion flush.
+- OS-specific pre-allocation (`fallocate` on Linux, `ftruncate` elsewhere) with
+  decoded-size truncation at completion.
+- Write coalescing cache with contiguous flush (512KB threshold), 90% pressure
+  relief, and resume cursor persistence.
+- Per-article CRC32 accumulation and offset-ordered `crc32util.Combine` at file
+  completion.
+- Offset bounds checking against NZB-declared size with 12.5% slack.
+- Timeout-bounded disk probe with at-most-one-in-flight per directory and stale
+  entry eviction.
+- CancelJob and CloseJobHandles control messages with synchronous ack.
+- DirectUnpack volume-level streaming via `rarengine` with corrupt-volume gating
+  and non-RAR skip semantics.
+- Per-file duplicate dedup via `seenDone`/`seenFailed` maps and cross-state
+  dedup.
