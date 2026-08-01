@@ -102,17 +102,30 @@ for this (job, file)     │                              │
    - **Periodic ticker** (default 250ms, `defaultDoneFlushInterval`).
    - **Shutdown** (final `flush()` after drain loop in `worker()`).
 
-   Errors from `MarkArticlesDone` / `MarkArticlesFailed` are logged and
-   swallowed — the queue mutation is best-effort once bytes are on disk, since
-   partsWritten tracking is local to the assembler.
+   `flush()` prefers O(1) index-based callbacks (`MarkArticlesDoneByIdx` /
+   `MarkArticlesFailedByIdx`) when set, falling back to string-based
+   `MarkArticlesDone` / `MarkArticlesFailed` only when the `ByIdx` callbacks
+   are nil. The `ByIdx` path is the production path; the string-based path
+   exists for tests and backward compatibility.
+
+   Errors from either callback tier are logged and swallowed — the queue
+   mutation is best-effort once bytes are on disk, since partsWritten tracking
+   is local to the assembler.
 
 4. **Disk-space pre-flight timeouts**: `checkDiskSpace` runs every 16
-   `WriteRequest` items (`diskCheckInterval`). Each per-directory `FreeBytes`
-   call uses `context.WithTimeout(5s)`. The `DiskProbe` ensures at most one
-   outstanding `statfs` goroutine per directory — repeated calls for a stuck
-   mount return the cached result or the timeout error, preventing goroutine
-   accumulation. Stale entries are evicted after 10 minutes
-   (`diskProbeEvictAfter`).
+   `WriteRequest` items (`diskCheckInterval`). Two distinct timeouts bound
+   disk probe latency:
+   - **Caller timeout** (`diskCheckTimeout = 5s`): Each per-directory
+     `FreeBytes` call uses `context.WithTimeout(5s)` to bound how long the
+     worker blocks waiting for a result.
+   - **Cache TTL** (`DefaultDiskProbeTTL = 5s`): `DiskProbe` caches a
+     completed `statfs` result for this duration before launching a new probe.
+     These values happen to match today but serve independent purposes.
+
+   The `DiskProbe` ensures at most one outstanding `statfs` goroutine per
+   directory — repeated calls for a stuck mount return the cached result or the
+   timeout error, preventing goroutine accumulation. Stale entries are evicted
+   after 10 minutes (`diskProbeEvictAfter`).
 
 5. **CRC32 incremental combination**: Per-article CRC32 values (from yEnc
    headers) are accumulated with their byte offsets in `crcParts`. At file
@@ -147,7 +160,9 @@ truncation, trailing zero bytes cause par2 to report the file as damaged despite
 
 `SupportsSparse()` in `sparse.go` probes whether the target filesystem supports
 sparse files by creating a temporary file, truncating it to 1 MiB, and checking
-`st_blocks * 512 < apparent_size`.
+`st_blocks * 512 < apparent_size`. This is an **informational probe** used at
+startup for logging — it does not gate pre-allocation behavior. The assembler
+always attempts `fallocate`/`ftruncate` regardless of the probe result.
 
 ## Write coalescing cache
 
@@ -232,10 +247,10 @@ articles or sparse file regions. The coordination model:
    - `extractSet` checks `corruptSets` after extraction completes (backstop for
      volumes that arrived before the corruption was detected).
 
-5. **Non-RAR handling**: `extractSet` checks the first volume's magic bytes
-   via `rarheader.Version()`. Non-RAR3/RAR5 archives are recorded as
-   `SkippedSet` (not failed) — the normal unpack stage's external `unrar`
-   handles them.
+5. **Non-RAR handling**: `extractSet` calls `rarheader.Version()` on the first
+   volume's magic bytes. Any error — including I/O errors, not just format
+   mismatches — results in `errNotRAR` and the set is recorded as `SkippedSet`
+   (not failed). The normal unpack stage's external `unrar` handles these.
 
 6. **Format support**: DirectUnpack uses `rarengine` (pure Go RAR3/RAR5
    decompressor). Other archive formats, legacy RAR2, and non-RAR files
@@ -245,6 +260,11 @@ articles or sparse file regions. The coordination model:
    and queued sets, clears success results, and signals the reader goroutine
    via `volumeReady`. If `run()` was never started, `Abort()` closes the `done`
    channel directly.
+
+8. **Path traversal safety**: `extractEntries` opens an `os.Root` anchored at
+   `extractDir` and writes all entries through it. This prevents archive
+   entries with `..` components, absolute paths, or symlinked path components
+   from escaping the extraction directory.
 
 ## Memory & allocation budget
 
@@ -274,6 +294,15 @@ articles or sparse file regions. The coordination model:
   article's data is returned to the pool and the request is silently discarded.
   The file is never opened and never appears in `open`.
 
+- **Directory creation failure (`MkdirAll`)**: If `openTargetFile` cannot create
+  the parent directory, the article's data is returned to the pool and the
+  request is silently discarded. Same semantics as FileInfo failure.
+
+- **File open failure (`OpenFile`)**: If `openTargetFile` cannot create or open
+  the target file (e.g. permission denied, stale NFS handle), the article's data
+  is returned to the pool and the request is silently discarded. Same semantics
+  as FileInfo failure.
+
 - **CancelJob**: Closes and deletes open files. Adds job to `cancelledJobs`
   tombstone so subsequent articles for that job are silently discarded (data
   returned to pool). The `ackCh` synchronization ensures the caller can safely
@@ -288,9 +317,10 @@ articles or sparse file regions. The coordination model:
 
 ## Status
 
-Landed:
+### Landed
 - Single-worker goroutine with bounded write queue (2048).
-- Batched Done/Failed flushes with 250ms ticker and file-completion flush.
+- Batched Done/Failed flushes with 250ms ticker and file-completion flush,
+  preferring O(1) index-based `ByIdx` callbacks over string-based variants.
 - OS-specific pre-allocation (`fallocate` on Linux, `ftruncate` elsewhere) with
   decoded-size truncation at completion.
 - Write coalescing cache with contiguous flush (512KB threshold), 90% pressure
@@ -298,10 +328,13 @@ Landed:
 - Per-article CRC32 accumulation and offset-ordered `crc32util.Combine` at file
   completion.
 - Offset bounds checking against NZB-declared size with 12.5% slack.
-- Timeout-bounded disk probe with at-most-one-in-flight per directory and stale
-  entry eviction.
+- Timeout-bounded disk probe with at-most-one-in-flight per directory, cache TTL,
+  and stale entry eviction.
 - CancelJob and CloseJobHandles control messages with synchronous ack.
-- DirectUnpack volume-level streaming via `rarengine` with corrupt-volume gating
-  and non-RAR skip semantics.
+- DirectUnpack volume-level streaming via `rarengine` with corrupt-volume gating,
+  non-RAR skip semantics, and `os.OpenRoot`-based path traversal safety.
 - Per-file duplicate dedup via `seenDone`/`seenFailed` maps and cross-state
   dedup.
+
+### Open Gaps
+No open gaps. All contract invariants are implemented and tested.
