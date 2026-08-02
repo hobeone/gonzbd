@@ -91,14 +91,20 @@ var sqlReceivers = map[string]bool{
 //
 // Get/Set/Delete are deliberately excluded: they are the in-memory
 // operations on dirscanner's store and too generic to attribute.
+//
+// A name here that does not match a real method disables its check
+// silently — the detector just never matches, and the gate still reports
+// success. TestStoreMethodsMatchStoreInterface pins this table against
+// queue.Store in both directions; record any new omission in that test's
+// storeMethodExclusions with a reason rather than leaving it unlisted.
 var storeMethods = map[string]bool{
 	"Add": true, "List": true, "Update": true, "UpdateBatch": true,
 	"Remove": true, "MoveToHistory": true, "ExistsByName": true,
 	"ExistsByMD5": true, "ShiftSortKey": true, "Prune": true,
 	"SetPaused": true, "IsPaused": true, "RestoreJobProgress": true,
 	"RemainingBytesByJob": true, "DeleteJobArtifacts": true,
-	"ArticleCountsByFile": true,
-	"Save":                true,
+	"ArticleCountsByJob": true, "BackfillArticleCounts": true,
+	"Save": true,
 }
 
 // lockedSuffix is the naming convention this repo uses for "the caller must

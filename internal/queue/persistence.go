@@ -142,7 +142,7 @@ func (q *Queue) saveInner(dir string) error {
 
 // newJobProgressSized builds a JobProgress sized to fileArticleCounts (one
 // element per file, its article count) without requiring a resident
-// Manifest — see Store.ArticleCountsByFile. Used by Loader.Load to give a
+// Manifest — see Store.ArticleCountsByJob. Used by Loader.Load to give a
 // non-resident job (StatusQueued/StatusPaused at restart) a real JobProgress
 // instead of leaving it nil.
 //
@@ -181,7 +181,7 @@ func newJobProgressSized(fileArticleCounts []int, remainingBytes int64) *JobProg
 // column defaults every existing row to zero, so a non-empty slice that is
 // all zeros means "never populated" rather than "genuinely zero articles in
 // every file". A job with truly no files at all comes back from
-// ArticleCountsByFile as an empty (nil) slice — no rows to scan — which this
+// ArticleCountsByJob as an empty (nil) slice — no rows to scan — which this
 // deliberately treats as not legacy: there is nothing to fall back to a
 // manifest for.
 func articleCountsAreLegacy(counts []int) bool {
