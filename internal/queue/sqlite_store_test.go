@@ -1057,10 +1057,18 @@ func TestSQLiteStore_ArticleCountsByJobNonContiguousIndices(t *testing.T) {
 // manifest) must still read real TotalBytes/NumFiles/NumArticles from
 // job_files, now that article_count makes NumArticles reconstructable too.
 // Zero would be indistinguishable from a genuinely empty job, which is why
-// this matters. The par2 pair is a known, documented exception: job_files'
-// is_par2_recovery only flags recovery volumes, while the manifest's
-// Par2Bytes/Par2Files also include the par2 index file, so they must stay
-// zero here rather than silently reporting an undercount.
+// this matters.
+//
+// The par2 pair used to be a documented exception here, asserted as zero,
+// because job_files' is_par2_recovery only flags recovery volumes while the
+// manifest's Par2Bytes/Par2Files also include the par2 index file — so
+// aggregating the flag undercounts. That reasoning still holds and is why
+// they are not reconstructed from job_files. They now round-trip through
+// dedicated jobs.par2_bytes/par2_files columns instead (migration 005),
+// which is the only way to make them honest for a non-resident job. The
+// assertion below flipped from "must be zero" to "must match the manifest"
+// deliberately; it is the same property being checked, against a source
+// that can actually answer it.
 func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	store, _, _ := setupTestStore(t)
 	ctx := t.Context()
@@ -1095,7 +1103,8 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	wantNumFiles := job.NumFiles()
 	wantNumArticles := job.NumArticles()
 	wantPar2Files := job.Par2Files()
-	if wantPar2Files == 0 {
+	wantPar2Bytes := job.Par2Bytes()
+	if wantPar2Files == 0 || wantPar2Bytes == 0 {
 		t.Fatal("test fixture must contain at least one par2 file for this to be a meaningful check")
 	}
 
@@ -1119,14 +1128,15 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	if got.NumArticles() != wantNumArticles {
 		t.Errorf("NumArticles = %d, want %d", got.NumArticles(), wantNumArticles)
 	}
-	// Documented limitation, not a bug: is_par2_recovery cannot stand in for
-	// the manifest's par2 classification (it excludes the index file), so
-	// these two must remain zero rather than report a silently wrong value.
-	if got.Par2Bytes() != 0 {
-		t.Errorf("Par2Bytes = %d, want 0 (not reconstructable from is_par2_recovery)", got.Par2Bytes())
+	// From jobs.par2_bytes/par2_files, not from aggregating is_par2_recovery
+	// — see this test's doc comment. A zero here would be the old behaviour
+	// leaking back, and would render as "no par2 files" on a queued job in
+	// the API.
+	if got.Par2Bytes() != wantPar2Bytes {
+		t.Errorf("Par2Bytes = %d, want %d", got.Par2Bytes(), wantPar2Bytes)
 	}
-	if got.Par2Files() != 0 {
-		t.Errorf("Par2Files = %d, want 0 (not reconstructable from is_par2_recovery)", got.Par2Files())
+	if got.Par2Files() != wantPar2Files {
+		t.Errorf("Par2Files = %d, want %d", got.Par2Files(), wantPar2Files)
 	}
 }
 

@@ -175,8 +175,8 @@ func (s *SQLiteStore) Add(ctx context.Context, job *Job) error {
 INSERT INTO jobs
   (id, filename, name, password, url, category, priority, status, pp, script,
    time_added, md5, avg_age, groups, meta, warning, postproc, sort_key,
-   download_started, download_finished)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+   download_started, download_finished, par2_bytes, par2_files)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	postprocInt := 0
 	if job.PostProc {
@@ -188,6 +188,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		int(job.Priority), string(job.Status), job.PP, job.Script,
 		job.Added.Unix(), job.MD5, job.AvgAge.Unix(), string(groupsJSON), string(metaJSON),
 		job.Warning, postprocInt, sortKey, dlStartedUnix, dlFinishedUnix,
+		// From the promoted scalars rather than job.Manifest(): they are set
+		// at Add and stay correct while the manifest is evicted, so this
+		// writes the right values even for a job persisted while non-resident.
+		job.Par2Bytes(), job.Par2Files(),
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite store insert job %s: %w", job.ID, err)
@@ -233,19 +237,19 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Job, error) {
 	const qJob = `
 SELECT id, filename, name, COALESCE(password, ''), COALESCE(url, ''), COALESCE(category, ''), priority, status, pp, COALESCE(script, ''),
        time_added, md5, avg_age, COALESCE(groups, ''), COALESCE(meta, ''), COALESCE(warning, ''), postproc,
-       download_started, download_finished
+       download_started, download_finished, par2_bytes, par2_files
 FROM jobs WHERE id = ?`
 
 	var job Job
 	var groupsStr, metaStr, statusStr string
-	var priorityInt, ppInt, postprocInt int
-	var addedUnix, avgAgeUnix, dlStartedUnix, dlFinishedUnix int64
+	var priorityInt, ppInt, postprocInt, par2Files int
+	var addedUnix, avgAgeUnix, dlStartedUnix, dlFinishedUnix, par2Bytes int64
 
 	err := s.db.QueryRowContext(ctx, qJob, id).Scan(
 		&job.ID, &job.Filename, &job.Name, &job.Password, &job.URL, &job.Category,
 		&priorityInt, &statusStr, &ppInt, &job.Script, &addedUnix, &job.MD5, &avgAgeUnix,
 		&groupsStr, &metaStr, &job.Warning, &postprocInt,
-		&dlStartedUnix, &dlFinishedUnix,
+		&dlStartedUnix, &dlFinishedUnix, &par2Bytes, &par2Files,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -320,6 +324,14 @@ FROM jobs WHERE id = ?`
 	// pre-Task-4 behavior) is preferable to losing the job entirely over a
 	// transient SQLite error on an already-slow, non-resident read path —
 	// but the error must not vanish silently, so it goes to the log.
+	// par2 comes from the job row, not from job_files, and is set
+	// independently of the aggregate query below so a failure there cannot
+	// take it down with the other three. A resident job already has the
+	// authoritative values from setScalarsFromManifest above.
+	if job.manifest == nil {
+		job.setPar2ScalarsFromStore(par2Bytes, par2Files)
+	}
+
 	if job.manifest == nil && fileCount > 0 {
 		var totalBytes int64
 		var numFiles, numArticles int

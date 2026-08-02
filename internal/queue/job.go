@@ -208,18 +208,36 @@ func (j *Job) setScalarsFromManifest(m *Manifest) {
 // in-process — the case Task 3 left as a documented gap, where these
 // scalars would otherwise silently read as zero.
 //
-// par2Bytes/par2Files are deliberately left untouched (zero): job_files'
+// par2Bytes/par2Files are deliberately left untouched: job_files'
 // is_par2_recovery flags only recovery volumes, while the manifest's
 // Par2Bytes/Par2Files also count the par2 index file, so the two are not
 // equivalent and reconstructing the par2 pair from is_par2_recovery would
 // silently produce an undercount rather than the value the manifest would
-// have produced.
+// have produced. They come from the jobs row instead — see
+// setPar2ScalarsFromStore.
 func (j *Job) setAggregateScalarsFromFiles(totalBytes int64, numFiles, numArticles int) {
 	j.residencyMu.Lock()
 	defer j.residencyMu.Unlock()
 	j.totalBytes = totalBytes
 	j.numFiles = numFiles
 	j.numArticles = numArticles
+}
+
+// setPar2ScalarsFromStore sets par2Bytes/par2Files from the jobs row, for a
+// job SQLiteStore.Get loaded without a resident manifest. It is the par2
+// counterpart to setAggregateScalarsFromFiles: those three scalars can be
+// aggregated out of job_files, these two cannot (see that method), so they
+// get columns of their own.
+//
+// A pre-migration-005 row reads zero here, which is indistinguishable from a
+// job that genuinely has no par2 files. That resolves itself on the job's
+// next write — Add rewrites the row from the promoted scalars — and on
+// promotion, where setScalarsFromManifest overwrites both from the manifest.
+func (j *Job) setPar2ScalarsFromStore(par2Bytes int64, par2Files int) {
+	j.residencyMu.Lock()
+	defer j.residencyMu.Unlock()
+	j.par2Bytes = par2Bytes
+	j.par2Files = par2Files
 }
 
 // TotalBytes returns the job's total size in bytes. Total: never requires a
