@@ -32,11 +32,39 @@ import (
 //
 // The fallback is also correct for the very first commit on a branch, where
 // HEAD~1 exists but origin/main may not have been fetched.
+//
+// Used only by Files, which collects paths. Diff needs baseCommit instead —
+// see its doc comment for why a range is the wrong shape there.
 func baseRange() string {
 	if err := exec.Command("git", "rev-parse", "--verify", "--quiet", "origin/main").Run(); err == nil {
 		return "origin/main...HEAD"
 	}
 	return "HEAD~1"
+}
+
+// baseCommit returns a single commit to diff the working tree against, so
+// that every hunk Diff emits is numbered against the working tree.
+//
+// This is deliberately a commit and not a range. `git diff A...B` compares
+// the merge base to B, and when B is HEAD that means the committed snapshot
+// rather than the files on disk. Diffing the working tree against the merge
+// base directly answers the question the gates actually ask — "what does this
+// branch change, as it stands right now" — in one pass and one coordinate
+// system.
+//
+// The fallback chain degrades rather than failing: an unfetched origin/main
+// falls back to HEAD~1, and a single-commit repo to HEAD, which still catches
+// uncommitted work.
+func baseCommit() string {
+	if out, err := git("merge-base", "origin/main", "HEAD"); err == nil {
+		if sha := strings.TrimSpace(out); sha != "" {
+			return sha
+		}
+	}
+	if _, err := git("rev-parse", "--verify", "--quiet", "HEAD~1"); err == nil {
+		return "HEAD~1"
+	}
+	return "HEAD"
 }
 
 // git runs a git command and returns stdout. A non-zero exit is reported
@@ -99,18 +127,22 @@ func Files() ([]string, error) {
 // the whole file. That keeps them visible to a plain unified-diff parser
 // without the caller special-casing them.
 //
-// Because the committed range and the working-tree diff are numbered against
-// different snapshots, an uncommitted edit that shifts lines can leave both
-// sets of numbers in the output. The result is a superset of the truly
-// changed lines, which is the safe direction for a gate: it over-includes
-// rather than letting a changed line escape scrutiny.
+// Every hunk is numbered against the working tree, because that is the file a
+// consumer parses when it maps line numbers back to functions.
+//
+// This used to concatenate the committed range with the working-tree diff.
+// Those are numbered against different snapshots, so an uncommitted edit that
+// changed a file's line count shifted every committed hunk below it onto
+// whatever now occupied those numbers. That was documented here as a safe
+// superset that could only over-include; it was not. A function changed by a
+// commit and then displaced by an uncommitted edit above it fell out of the
+// set entirely, and the gate reported success — see
+// TestDiff_CommittedHunksUseWorkingTreeLineNumbers, which pins both the
+// false positive and the false negative.
 func Diff() (string, error) {
 	var b strings.Builder
 
-	if out, err := git("diff", "-U0", baseRange()); err == nil {
-		b.WriteString(out)
-	}
-	if out, err := git("diff", "-U0", "HEAD"); err == nil {
+	if out, err := git("diff", "-U0", baseCommit()); err == nil {
 		b.WriteString(out)
 	}
 
