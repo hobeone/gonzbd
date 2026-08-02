@@ -1155,6 +1155,16 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 // resident-manifest branch is unaffected — isolating the failure to
 // exactly the aggregate query under test.
 func TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt(t *testing.T) {
+	// Swap the default logger before the store is built, not after: the store
+	// captures a component-scoped logger once in NewSQLiteStore rather than
+	// reaching for slog.Default() at each call site, so a swap performed
+	// afterwards would capture nothing and this test would report a missing
+	// log entry that was in fact written.
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	store, repo, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -1165,11 +1175,6 @@ func TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt(t *testing
 	if _, err := repo.DB().ExecContext(ctx, "ALTER TABLE job_files DROP COLUMN article_count"); err != nil {
 		t.Fatalf("drop article_count column: %v", err)
 	}
-
-	var logBuf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	got, err := store.Get(ctx, job.ID)
 	if err != nil {

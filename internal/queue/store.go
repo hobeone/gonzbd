@@ -55,10 +55,9 @@ type Store interface {
 	RestoreJobProgress(ctx context.Context, job *Job) error
 
 	// ArticleCountsByJob returns every job's per-file article counts in a
-	// single grouped query, indexed by file_index within each job. A job
-	// whose counts are all zero predates the article_count column, so the
-	// caller must fall back to that job's manifest rather than sizing
-	// progress to zero.
+	// single grouped query, indexed by file_index within each job. Used by
+	// Loader.Load to size a non-resident job's JobProgress without reading
+	// its manifest.
 	ArticleCountsByJob(ctx context.Context) (map[string][]int, error)
 
 	// RemainingBytesByJob returns each job's remaining bytes (manifest bytes

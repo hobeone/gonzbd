@@ -175,7 +175,7 @@ func TestSQLiteStore_EncodeDecodeArticlesDone_RoundTripsFailedBit(t *testing.T) 
 	}
 
 	job2 := makeMultiFileJob(t, "roundtrip-failed-2", 1, 2)
-	decodeArticlesDone(encoded, job2, 0)
+	decodeTestStore(t).decodeArticlesDone(encoded, job2, 0)
 
 	if !job2.Progress().ArticleDone(0) || job2.Progress().ArticleFailed(0) {
 		t.Error("article 0 should decode as done, not failed")
@@ -207,7 +207,7 @@ func TestSQLiteStore_DecodeArticlesDone_WrongLengthRestoresNothing(t *testing.T)
 	half := full[:len(full)/2]
 
 	job := makeMultiFileJob(t, "wrong-length", 1, 2)
-	decodeArticlesDone(half, job, 0)
+	decodeTestStore(t).decodeArticlesDone(half, job, 0)
 
 	if job.Progress().ArticleDone(0) || job.Progress().ArticleDone(1) {
 		t.Errorf("a half-length bitmap restored article state (done: %v, %v); a length mismatch means the value is not this file's, so no prefix of it is trustworthy",
@@ -217,7 +217,7 @@ func TestSQLiteStore_DecodeArticlesDone_WrongLengthRestoresNothing(t *testing.T)
 	// The full-length value still decodes, so the guard is not simply
 	// rejecting everything.
 	job2 := makeMultiFileJob(t, "wrong-length-ok", 1, 2)
-	decodeArticlesDone(full, job2, 0)
+	decodeTestStore(t).decodeArticlesDone(full, job2, 0)
 	if !job2.Progress().ArticleDone(0) || !job2.Progress().ArticleDone(1) {
 		t.Error("full-length bitmap failed to decode; the length guard is too strict")
 	}

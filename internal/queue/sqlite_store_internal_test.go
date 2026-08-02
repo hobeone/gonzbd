@@ -2,6 +2,7 @@ package queue
 
 import (
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"testing"
 
@@ -32,7 +33,7 @@ func TestSQLiteStore_EncodeDecodeArticlesDone(t *testing.T) {
 	}
 
 	jobArt2, _ := NewJob(parsed, AddOptions{Name: "job-arts-2"}, fsutil.SanitizeOptions{})
-	decodeArticlesDone(encoded, jobArt2, 0)
+	decodeTestStore(t).decodeArticlesDone(encoded, jobArt2, 0)
 	if !jobArt2.Progress().ArticleDone(1) || jobArt2.Progress().ArticleDone(0) || jobArt2.Progress().ArticleDone(2) {
 		t.Errorf("decodeArticlesDone failed to restore article bitmap: %v", jobArt2.progress.done)
 	}
@@ -44,10 +45,10 @@ func TestSQLiteStore_EncodeDecodeArticlesDone(t *testing.T) {
 	if encodeArticlesDone(jobArt, 99) != "" {
 		t.Error("expected empty string for out-of-bounds fileIdx in encodeArticlesDone")
 	}
-	decodeArticlesDone("invalid-hex-string!!!", jobArt2, 0)
-	decodeArticlesDone("", jobArt2, 0)
-	decodeArticlesDone("00", nil, 0)
-	decodeArticlesDone("00", jobArt2, 99)
+	decodeTestStore(t).decodeArticlesDone("invalid-hex-string!!!", jobArt2, 0)
+	decodeTestStore(t).decodeArticlesDone("", jobArt2, 0)
+	decodeTestStore(t).decodeArticlesDone("00", nil, 0)
+	decodeTestStore(t).decodeArticlesDone("00", jobArt2, 99)
 }
 
 func TestSQLiteStore_UpdateTx(t *testing.T) {
@@ -153,4 +154,12 @@ func TestSQLiteStore_ResequenceTx(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
+}
+
+// decodeTestStore returns a store carrying only a logger. decodeArticlesDone
+// reads no database state, so the rest of SQLiteStore is not needed to
+// exercise it.
+func decodeTestStore(t *testing.T) *SQLiteStore {
+	t.Helper()
+	return &SQLiteStore{log: slog.Default()}
 }

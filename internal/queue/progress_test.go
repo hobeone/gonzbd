@@ -93,6 +93,8 @@ func TestJobProgress_ExportedReadersAreNilSafe(t *testing.T) {
 		"FileFilename":        func() { _ = p.FileFilename(0) },
 		"FileAssembledCRC32":  func() { _ = p.FileAssembledCRC32(0) },
 		"PendingArticles":     func() { _ = p.PendingArticles() },
+		"ArticlesResolved":    func() { _ = p.ArticlesResolved() },
+		"ArticlesFailed":      func() { _ = p.ArticlesFailed() },
 		"EarlyAborted":        func() { _ = p.EarlyAborted() },
 		"FailedBytes":         func() { _ = p.FailedBytes() },
 		"RemainingBytes":      func() { _ = p.RemainingBytes() },

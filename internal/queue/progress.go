@@ -151,10 +151,20 @@ func (p *JobProgress) PendingArticles() int {
 }
 
 // ArticlesResolved returns the count of articles that have resolved (success or failure).
-func (p *JobProgress) ArticlesResolved() int { return p.articlesResolved }
+func (p *JobProgress) ArticlesResolved() int {
+	if p == nil {
+		return 0
+	}
+	return p.articlesResolved
+}
 
 // ArticlesFailed returns the count of articles that have permanently failed.
-func (p *JobProgress) ArticlesFailed() int { return p.articlesFailed }
+func (p *JobProgress) ArticlesFailed() int {
+	if p == nil {
+		return 0
+	}
+	return p.articlesFailed
+}
 
 // EarlyAborted reports whether the early-abort heuristic has already fired for this job.
 func (p *JobProgress) EarlyAborted() bool {

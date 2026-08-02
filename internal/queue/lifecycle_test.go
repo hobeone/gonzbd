@@ -737,14 +737,33 @@ func TestIsComplete_WithoutResidentManifest(t *testing.T) {
 	}
 }
 
-// A job whose progress was never built cannot report completion either way,
-// and must not claim to be complete — an empty file loop would.
-func TestIsComplete_NoProgressIsNotComplete(t *testing.T) {
+// A job with no file state cannot report completion either way, and must not
+// claim to be complete — an empty loop would satisfy the check vacuously.
+//
+// This matters because Application startup finalizes every job that reports
+// complete. A job row with no job_files rows gets progress sized from an
+// empty count slice, so a vacuous true would move an unfinished job into
+// history at boot with nothing logged.
+func TestIsComplete_AbsentFileStateIsNotComplete(t *testing.T) {
 	t.Parallel()
-	j := &Job{ID: "no-progress"}
-	if j.IsComplete() {
-		t.Error("IsComplete() = true for a job with no progress; absence of state is not completion")
-	}
+
+	t.Run("no progress at all", func(t *testing.T) {
+		j := &Job{ID: "no-progress"}
+		if j.IsComplete() {
+			t.Error("IsComplete() = true for a job with no progress; absence of state is not completion")
+		}
+	})
+
+	t.Run("progress sized to zero files", func(t *testing.T) {
+		j := &Job{ID: "zero-files"}
+		j.progress = newJobProgressSized(nil, 0)
+		if j.progress == nil || len(j.progress.files) != 0 {
+			t.Fatal("fixture guard: expected non-nil progress carrying no file state")
+		}
+		if j.IsComplete() {
+			t.Error("IsComplete() = true for a job carrying no file state; startup would finalize it into history")
+		}
+	})
 }
 
 // ---------- MarkArticlesDone (batch) ----------

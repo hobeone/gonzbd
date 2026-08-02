@@ -23,6 +23,10 @@ type SQLiteStore struct {
 	db          *sql.DB
 	dir         string
 	historyRepo *history.Repository
+	// log is captured once at construction and component-scoped, matching
+	// Queue's own logger. docs/go-standards.md forbids reaching for a
+	// package-level global at each call site.
+	log *slog.Logger
 }
 
 // NewSQLiteStore constructs a SQLiteStore backed by db and storing manifests inside dir.
@@ -31,6 +35,7 @@ func NewSQLiteStore(db *sql.DB, dir string, historyRepo *history.Repository) *SQ
 		db:          db,
 		dir:         dir,
 		historyRepo: historyRepo,
+		log:         slog.Default().With("component", "queue.store"),
 	}
 }
 
@@ -103,11 +108,11 @@ func encodeArticlesDone(job *Job, fileIdx int) string {
 // file's article count, so a mismatch means the value did not come from
 // encodeArticlesDone for this file, and guessing which prefix is the done
 // bitmap would restore the wrong articles rather than none.
-func decodeArticlesDone(s string, job *Job, fileIdx int) {
-	if job == nil || job.Progress() == nil || job.Manifest() == nil || fileIdx < 0 || fileIdx >= job.Manifest().NumFiles() || s == "" {
+func (s *SQLiteStore) decodeArticlesDone(encoded string, job *Job, fileIdx int) {
+	if job == nil || job.Progress() == nil || job.Manifest() == nil || fileIdx < 0 || fileIdx >= job.Manifest().NumFiles() || encoded == "" {
 		return
 	}
-	buf, err := hex.DecodeString(s)
+	buf, err := hex.DecodeString(encoded)
 	if err != nil {
 		return
 	}
@@ -118,7 +123,7 @@ func decodeArticlesDone(s string, job *Job, fileIdx int) {
 	n := hi - lo
 	numBytes := (n + 7) / 8
 	if len(buf) != numBytes*2 {
-		slog.Default().Warn("sqlite store: articles_done bitmap has an unexpected length, per-article state not restored",
+		s.log.Warn("articles_done bitmap has an unexpected length, per-article state not restored",
 			"job_id", job.ID, "file_index", fileIdx, "want_bytes", numBytes*2, "got_bytes", len(buf))
 		return
 	}
@@ -327,7 +332,7 @@ FROM jobs WHERE id = ?`
 		var numFiles, numArticles int
 		const qAgg = `SELECT COALESCE(SUM(bytes), 0), COUNT(*), COALESCE(SUM(article_count), 0) FROM job_files WHERE job_id = ?`
 		if err := s.db.QueryRowContext(ctx, qAgg, id).Scan(&totalBytes, &numFiles, &numArticles); err != nil {
-			slog.Default().Error("sqlite store: aggregate scalars from job_files failed, reporting scalars stay zero",
+			s.log.Error("aggregate scalars from job_files failed, reporting scalars stay zero",
 				"job_id", id, "err", err)
 		} else {
 			job.setAggregateScalarsFromFiles(totalBytes, numFiles, numArticles)
@@ -375,7 +380,7 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 					job.progress.markDone(job.manifest, a)
 				}
 			} else if artDoneStr != "" {
-				decodeArticlesDone(artDoneStr, job, idx)
+				s.decodeArticlesDone(artDoneStr, job, idx)
 			}
 			if deferred != 0 {
 				fp.Deferred = true
@@ -392,10 +397,6 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 // collapsed from a per-job query (the RestoreJobProgress-adjacent shape
 // RemainingBytesByJob already uses) so that a large queued backlog costs one
 // round trip instead of N.
-//
-// A job whose counts are all zero predates the article_count column; the
-// caller must fall back to reading the manifest for that job rather than
-// sizing progress to zero.
 //
 // Counts are placed by file_index rather than by scan order, so a job whose
 // job_files rows have non-contiguous indices (e.g. after a partial delete)

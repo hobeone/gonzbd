@@ -611,7 +611,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 // needed, so a job whose non-deferred files are all complete is "downloaded".
 func (j *Job) IsComplete() bool {
 	p := j.Progress()
-	if p == nil {
+	if p == nil || len(p.files) == 0 {
 		return false
 	}
 	// Walk JobProgress's own file slice rather than the manifest's file
@@ -623,6 +623,15 @@ func (j *Job) IsComplete() bool {
 	// The slice rather than the promoted NumFiles scalar: the loop indexes
 	// into p.files, so bounding it by p.files' own length keeps the count
 	// and the data it indexes from ever disagreeing.
+	//
+	// An empty slice is not completion. A job whose progress carries no file
+	// state — a row with no job_files, which Loader.Load sizes from an empty
+	// count slice — would otherwise satisfy the loop vacuously and be
+	// reported complete, and startup finalizes every job that reports
+	// complete. Returning false leaves it visible in the queue instead of
+	// silently swept into history. Before progress became the source of
+	// truth this was masked for a non-resident job, which had a nil manifest
+	// and so returned false for a different reason.
 	for i := range len(p.files) {
 		if p.FileDeferred(i) {
 			continue
