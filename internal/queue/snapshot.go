@@ -2,6 +2,8 @@ package queue
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"path/filepath"
 	"slices"
 )
@@ -39,23 +41,31 @@ func (q *Queue) Snapshot() []*Job {
 // setResidency isn't required for correctness here. It's used anyway so
 // there is exactly one way to assign the manifest/progress pair in this
 // package, rather than two.
-func hydrateSnapshot(stateDir string, store Store, cp *Job) {
+func hydrateSnapshot(log *slog.Logger, stateDir string, store Store, cp *Job) {
 	manifestPath := filepath.Join(stateDir, "manifests", cp.ID+".json.gz")
 	var m Manifest
-	if err := readGzJSON(manifestPath, &m); err == nil {
-		m.buildMessageIDIndex()
-		cp.setResidency(&m, newJobProgress(&m))
-		// cp came from cloneJob with cp.manifest == nil, meaning the source
-		// Job's scalars were never populated (the restore path that produced
-		// it — e.g. SQLiteStore.Get for a StatusQueued/StatusPaused job —
-		// only loads a manifest for resident statuses). Backfill them from
-		// the manifest this call just read, the same way hydrateJobLocked
-		// does for its own non-resident restore case: no extra I/O, the read
-		// already happened above.
-		cp.setScalarsFromManifest(&m)
-		if store != nil {
-			_ = store.RestoreJobProgress(context.Background(), cp)
-		}
+	if err := readGzJSON(manifestPath, &m); err != nil {
+		// Record and log rather than returning a nil manifest silently. A
+		// job that cannot load its manifest is not the same as one that was
+		// evicted, and every consumer downstream sees only the pointer —
+		// so the distinction has to travel with the job.
+		cp.setHydrateErr(fmt.Errorf("read manifest %s: %w", manifestPath, err))
+		log.Error("snapshot: manifest unreadable, job cannot be hydrated",
+			"job_id", cp.ID, "path", manifestPath, "err", err)
+		return
+	}
+	m.buildMessageIDIndex()
+	cp.setResidency(&m, newJobProgress(&m))
+	// cp came from cloneJob with cp.manifest == nil, meaning the source
+	// Job's scalars were never populated (the restore path that produced
+	// it — e.g. SQLiteStore.Get for a StatusQueued/StatusPaused job —
+	// only loads a manifest for resident statuses). Backfill them from
+	// the manifest this call just read, the same way hydrateJobLocked
+	// does for its own non-resident restore case: no extra I/O, the read
+	// already happened above.
+	cp.setScalarsFromManifest(&m)
+	if store != nil {
+		_ = store.RestoreJobProgress(context.Background(), cp)
 	}
 }
 
@@ -101,6 +111,12 @@ func cloneJob(j *Job) *Job {
 		par2Files:   j.par2Files,
 	}
 
+	// Carried so a clone of a job whose hydration failed still reports why,
+	// rather than looking merely evicted.
+	j.residencyMu.RLock()
+	cp.hydrateErr = j.hydrateErr
+	j.residencyMu.RUnlock()
+
 	manifest := j.Manifest()
 	cp.manifest = manifest
 	if progress := j.Progress(); progress != nil {
@@ -134,10 +150,11 @@ func (q *Queue) SnapshotJob(id string) *Job {
 	cp := cloneJob(j)
 	stateDir := q.stateDir
 	store := q.store
+	log := q.log
 	q.mu.RUnlock()
 
 	if cp.manifest == nil && (store != nil || stateDir != "") {
-		hydrateSnapshot(stateDir, store, cp)
+		hydrateSnapshot(log, stateDir, store, cp)
 	}
 	return cp
 }

@@ -178,6 +178,18 @@ type Job struct {
 	numArticles int
 	par2Bytes   int64
 	par2Files   int
+
+	// hydrateErr records why an attempt to load this job's manifest from
+	// disk failed, and is nil when no attempt failed. Guarded by
+	// residencyMu alongside the pointers it explains.
+	//
+	// Without it, "manifest is nil" has two meanings a consumer cannot tell
+	// apart: the job was evicted, which is routine, or its manifest file is
+	// unreadable, which is data loss. hydrateSnapshot used to leave the
+	// second looking exactly like the first — silently — so the paths that
+	// dereference a manifest degraded or panicked on corruption without
+	// anyone learning it had happened.
+	hydrateErr error
 }
 
 // setScalarsFromManifest copies m's five totals onto j. Centralizing this
@@ -320,10 +332,22 @@ func (j *Job) Progress() *JobProgress {
 // Not used by NewJob or UnmarshalJSON: those construct a Job that is not
 // yet reachable by any other goroutine, so there is nothing to
 // synchronize against.
+// setHydrateErr records why loading this job's manifest failed. Clearing it
+// on success is deliberate: a later successful hydration means the earlier
+// failure no longer describes the job.
+func (j *Job) setHydrateErr(err error) {
+	j.residencyMu.Lock()
+	defer j.residencyMu.Unlock()
+	j.hydrateErr = err
+}
+
 func (j *Job) setResidency(m *Manifest, p *JobProgress) {
 	j.residencyMu.Lock()
 	j.manifest = m
 	j.progress = p
+	if m != nil {
+		j.hydrateErr = nil
+	}
 	j.residencyMu.Unlock()
 }
 
