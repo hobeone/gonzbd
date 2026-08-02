@@ -163,8 +163,16 @@ type Job struct {
 	// majority of a job's life these values never change, since the
 	// manifest itself is immutable after parse; DiscardDeferredPar2 is the
 	// one exception, rebuilding the manifest to drop discarded recovery
-	// volumes, and re-syncs these fields when it does. Guarded by q.mu like
-	// the rest of the job's fields.
+	// volumes, and re-syncs these fields when it does.
+	//
+	// Guarded by residencyMu, not by q.mu. The getters below are exported
+	// and documented as never needing a resident manifest, which invites
+	// the same lock-free external use Manifest()/Progress() document as
+	// safe — and an external caller cannot take q.mu. Writes go through
+	// setScalarsFromManifest/setAggregateScalarsFromFiles, which take the
+	// write lock; both are always called with q.mu held and never with
+	// residencyMu already held, so the q.mu -> residencyMu order matches
+	// setResidency's and cannot self-deadlock.
 	totalBytes  int64
 	numFiles    int
 	numArticles int
@@ -179,11 +187,18 @@ type Job struct {
 // zero despite a manifest being in hand. Every site that assigns j.manifest
 // (directly or via setResidency) or rebuilds it in place must call this too.
 func (j *Job) setScalarsFromManifest(m *Manifest) {
-	j.totalBytes = m.TotalBytes()
-	j.numFiles = m.NumFiles()
-	j.numArticles = m.NumArticles()
-	j.par2Bytes = m.Par2Bytes()
-	j.par2Files = m.Par2Files()
+	// Read m's totals before taking the lock: m is immutable after parse,
+	// and this keeps the critical section to the five assignments.
+	totalBytes, numFiles := m.TotalBytes(), m.NumFiles()
+	numArticles, par2Bytes, par2Files := m.NumArticles(), m.Par2Bytes(), m.Par2Files()
+
+	j.residencyMu.Lock()
+	defer j.residencyMu.Unlock()
+	j.totalBytes = totalBytes
+	j.numFiles = numFiles
+	j.numArticles = numArticles
+	j.par2Bytes = par2Bytes
+	j.par2Files = par2Files
 }
 
 // setAggregateScalarsFromFiles sets totalBytes/numFiles/numArticles from
@@ -200,26 +215,52 @@ func (j *Job) setScalarsFromManifest(m *Manifest) {
 // silently produce an undercount rather than the value the manifest would
 // have produced.
 func (j *Job) setAggregateScalarsFromFiles(totalBytes int64, numFiles, numArticles int) {
+	j.residencyMu.Lock()
+	defer j.residencyMu.Unlock()
 	j.totalBytes = totalBytes
 	j.numFiles = numFiles
 	j.numArticles = numArticles
 }
 
 // TotalBytes returns the job's total size in bytes. Total: never requires a
-// resident manifest.
-func (j *Job) TotalBytes() int64 { return j.totalBytes }
+// resident manifest. Safe to call without the queue lock — like
+// Manifest()/Progress(), it takes the job's own residency lock, so a
+// promotion or a DiscardDeferredPar2 manifest rebuild running concurrently
+// under q.mu cannot race it.
+func (j *Job) TotalBytes() int64 {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.totalBytes
+}
 
-// NumFiles returns the job's file count. Total.
-func (j *Job) NumFiles() int { return j.numFiles }
+// NumFiles returns the job's file count. Total; lock-free-safe, see TotalBytes.
+func (j *Job) NumFiles() int {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.numFiles
+}
 
-// NumArticles returns the job's article count. Total.
-func (j *Job) NumArticles() int { return j.numArticles }
+// NumArticles returns the job's article count. Total; lock-free-safe, see TotalBytes.
+func (j *Job) NumArticles() int {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.numArticles
+}
 
-// Par2Bytes returns the total size of the job's par2 files. Total.
-func (j *Job) Par2Bytes() int64 { return j.par2Bytes }
+// Par2Bytes returns the total size of the job's par2 files. Total;
+// lock-free-safe, see TotalBytes.
+func (j *Job) Par2Bytes() int64 {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.par2Bytes
+}
 
-// Par2Files returns the job's par2 file count. Total.
-func (j *Job) Par2Files() int { return j.par2Files }
+// Par2Files returns the job's par2 file count. Total; lock-free-safe, see TotalBytes.
+func (j *Job) Par2Files() int {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.par2Files
+}
 
 // Manifest returns the job's immutable article/file structure. Safe to call
 // without the queue lock: it takes the job's own residency lock to
