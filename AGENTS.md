@@ -188,6 +188,36 @@ for trivial exempted code (see `docs/go-standards.md`). If a lint rule genuinely
 disabled for a specific case, add a `//nolint:rulename // reason` comment
 explaining why.
 
+### Gate Semantics — what a failure means, and what a pass does not
+
+The three custom gates pick their targets from the git diff (see
+`scripts/gitscope`), but each then examines a **wider unit than the lines you
+changed**. A gate can therefore fail on code you did not write. That is
+working as intended, not a misfire, and it is not a regression you
+introduced — diagnose before assuming your change caused it.
+
+| Gate | Scope of a reported finding | Consequence |
+|------|-----------------------------|-------------|
+| `check_coverage` | Any function containing at least one changed line, measured **whole-function** against the 80% bar | Touching one line of a large, thinly covered function puts all of its branches on the bar. Extracting a helper counts as touching every call site. |
+| `check_test_alignment` | Every unexported helper in a **touched file**, not just changed ones | A one-line fix to a hot file (`sqlite_store.go`, `app.go`) can surface a long-standing untested helper. There is no diff-scoped mode. |
+| `check_lock_io` | A locked span plus **one** level of call-graph descent into a callee | I/O under a lock at callee depth >= 2 is invisible to the tool. A clean run is not proof; check callees by hand when narrowing or widening a lock. |
+
+Three rules follow:
+
+- **Never satisfy a gate by weakening it.** No dummy references, no test that
+  asserts nothing, no `//nocover:` on code with real branching. If the finding
+  is genuinely pre-existing debt in a file you merely touched, the fix is a
+  real test for it — say so in the commit body so the scope is legible to a
+  reviewer.
+- **A green gate bounds nothing beyond its scope above.** State what was
+  actually checked rather than that the gates passed.
+- **Distrust `check_coverage` attribution while you have uncommitted changes**
+  that shift a file's line count (issue #280). `gitscope.Diff()` unions the
+  committed and working-tree diffs, whose hunk headers are numbered against
+  different files, so committed hunks can land on the wrong function — in
+  both directions. If a reported function looks untouched by your change,
+  commit and re-run before writing a test for it.
+
 ### Mutation Testing (periodic, not a per-commit gate)
 
 `gremlins` is **not** part of the per-commit quality gates above — it's too
