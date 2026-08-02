@@ -290,8 +290,15 @@ func waitForFilesComplete(t *testing.T, a *app.Application, jobID string, fileId
 		}
 		allComplete := true
 		p := snap.Progress()
+		// Poll loop: a manifest that is not yet available means not yet
+		// complete, so retry rather than fail.
+		m, mErr := snap.Manifest()
+		if mErr != nil {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
 		for _, idx := range fileIdxs {
-			if idx >= snap.Manifest().NumFiles() || !p.FileComplete(idx) {
+			if idx >= m.NumFiles() || !p.FileComplete(idx) {
 				allComplete = false
 				break
 			}

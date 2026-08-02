@@ -568,7 +568,7 @@ func TestQueueDetail_FilesIncludedWhenRequested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	m := jobInternal.Manifest()
+	m := mustManifest(t, jobInternal)
 	if m.NumFiles() != 1 {
 		t.Fatalf("expected 1 file, got %d", m.NumFiles())
 	}
@@ -715,7 +715,7 @@ func TestQueueDetail_FileStateClassification(t *testing.T) {
 			}
 			tt.setup(t, q, job.ID)
 			snap := q.SnapshotJob(job.ID)
-			if got := fileState(snap.Manifest(), snap.Progress(), 0); got != tt.want {
+			if got := fileState(mustManifest(t, snap), snap.Progress(), 0); got != tt.want {
 				t.Errorf("fileState = %q; want %q", got, tt.want)
 			}
 		})

@@ -26,7 +26,7 @@ func TestSQLiteStore_EncodeDecodeArticlesDone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
 	}
-	jobArt.Progress().markDone(jobArt.Manifest(), 1) // Mark article index 1 as done
+	jobArt.Progress().markDone(mustManifest(t, jobArt), 1) // Mark article index 1 as done
 	encoded := encodeArticlesDone(jobArt, 0)
 	if encoded == "" {
 		t.Fatal("expected non-empty encoded articles done string")

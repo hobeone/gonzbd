@@ -65,7 +65,7 @@ func newFailedNonResidentJob(t *testing.T) (*Queue, *failingStore, *Job) {
 	}
 	job.Warning = "download failed"
 
-	if job.Manifest() != nil {
+	if manifestResident(job) {
 		t.Fatal("fixture guard: job should be non-resident after StatusFailed")
 	}
 	if job.Progress() == nil {
@@ -115,7 +115,7 @@ func TestRetryPersistFailureRollsBackJob(t *testing.T) {
 	// values, so a resident-but-mutated JobProgress would let
 	// TotalRemainingBytes and friends report numbers nothing on disk backs
 	// up.
-	if job.Manifest() != nil {
+	if manifestResident(job) {
 		t.Error("job is resident after a rolled-back Retry, want the manifest still evicted")
 	}
 	p := job.Progress()
@@ -177,7 +177,7 @@ func TestHydrateRestoreFailureLeavesJobNonResident(t *testing.T) {
 	if job.Status != constants.StatusFailed {
 		t.Errorf("Status = %s, want %s", job.Status, constants.StatusFailed)
 	}
-	if job.Manifest() != nil {
+	if manifestResident(job) {
 		t.Error("job is resident (manifest not evicted) after a failed hydration attempt")
 	}
 	// Progress must never be nil (docs/queue-lifecycle.md). What actually

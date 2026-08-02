@@ -18,8 +18,18 @@ import (
 //   - article completion stats from the queue
 func buildDownloadFileList(job *Job) []string {
 	var lines []string
-	m := job.Queue.Manifest()
 	p := job.Queue.Progress()
+
+	// The listing is a per-file report, so it needs the manifest's file
+	// table and there is no scalar substitute. Degrade rather than fail:
+	// this builds the history record's "download" stage lines, which is
+	// reporting — the download itself is unaffected. Say so in the record
+	// instead of returning a silently empty listing, since an empty file
+	// list and a job that downloaded nothing look identical to a reader.
+	m, mErr := job.Queue.Manifest()
+	if mErr != nil {
+		return []string{fmt.Sprintf("File listing unavailable: %v", mErr)}
+	}
 
 	// On-demand par2 stats: count skipped recovery volumes and bytes saved.
 	var heldVols, recoveryVols int
@@ -149,7 +159,12 @@ func buildDirTree(dir, indent string) (lines []string, count int, err error) {
 // repair stage may still recover it; this section reports download
 // completeness only.
 func buildFileCompletionLines(job *Job) []string {
-	m := job.Queue.Manifest()
+	// Same reasoning as buildDownloadFileList, which has already reported
+	// the cause in the record by the time this runs — no second notice.
+	m, mErr := job.Queue.Manifest()
+	if mErr != nil {
+		return nil
+	}
 	p := job.Queue.Progress()
 	numFiles := m.NumFiles()
 	if numFiles == 0 {

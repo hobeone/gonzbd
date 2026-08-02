@@ -52,8 +52,8 @@ func (o *directUnpackOrchestrator) maybeStart(fc FileComplete) {
 	if snap.Password != "" {
 		return
 	}
-	m := snap.Manifest()
-	if m == nil || fc.FileIdx < 0 || fc.FileIdx >= m.NumFiles() {
+	m, mErr := snap.Manifest()
+	if mErr != nil || fc.FileIdx < 0 || fc.FileIdx >= m.NumFiles() {
 		return
 	}
 	filename := m.FileSubject(fc.FileIdx)

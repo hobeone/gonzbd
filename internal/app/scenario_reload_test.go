@@ -75,7 +75,7 @@ func TestReload_NoArticleLossInFlight(t *testing.T) {
 	if !h.WaitForPostProc(job.ID, 30*time.Second) {
 		snap := h.app.Queue().SnapshotJob(job.ID)
 		if snap != nil {
-			m, p := snap.Manifest(), snap.Progress()
+			m, p := mustManifest(t, snap), snap.Progress()
 			if m != nil && p != nil {
 				for fi := range m.NumFiles() {
 					lo, hi := m.FileRange(fi)

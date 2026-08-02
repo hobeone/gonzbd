@@ -317,8 +317,8 @@ func TestSQLiteStore_ManifestAndFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get fullJob: %v", err)
 	}
-	if got.Manifest() == nil || got.Manifest().NumFiles() != 2 {
-		t.Fatalf("manifest not restored correctly: %v", got.Manifest())
+	if !manifestResident(got) || mustManifest(t, got).NumFiles() != 2 {
+		t.Fatalf("manifest not restored correctly: %v", mustManifest(t, got))
 	}
 	if got.Progress() == nil {
 		t.Fatal("progress not constructed")
@@ -1116,7 +1116,7 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Manifest() != nil {
+	if manifestResident(got) {
 		t.Fatal("expected non-resident job to come back with no resident manifest")
 	}
 	if got.TotalBytes() != wantTotalBytes {

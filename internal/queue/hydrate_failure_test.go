@@ -47,7 +47,7 @@ func TestSnapshotJob_CorruptManifestIsReportedNotSilent(t *testing.T) {
 	if snap == nil {
 		t.Fatal("SnapshotJob returned nil")
 	}
-	if snap.Manifest() != nil {
+	if manifestResident(snap) {
 		t.Fatal("fixture guard: manifest hydrated despite being corrupt")
 	}
 
@@ -78,7 +78,7 @@ func TestSnapshotJob_SuccessfulHydrationIsQuiet(t *testing.T) {
 	}
 
 	snap := q.SnapshotJob(job.ID)
-	if snap == nil || snap.Manifest() == nil {
+	if snap == nil || !manifestResident(snap) {
 		t.Fatal("fixture guard: expected a successfully hydrated snapshot")
 	}
 	if snap.hydrateErr != nil {

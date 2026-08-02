@@ -131,11 +131,11 @@ func TestNewJobCopiesArticleState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
 	}
-	if j.Manifest().NumFiles() != 2 {
-		t.Fatalf("NumFiles() = %d, want 2", j.Manifest().NumFiles())
+	if mustManifest(t, j).NumFiles() != 2 {
+		t.Fatalf("NumFiles() = %d, want 2", mustManifest(t, j).NumFiles())
 	}
-	if j.Manifest().TotalBytes() != 2_000_000 || j.Progress().RemainingBytes() != 2_000_000 {
-		t.Errorf("bytes = (%d, %d), want both 2000000", j.Manifest().TotalBytes(), j.Progress().RemainingBytes())
+	if mustManifest(t, j).TotalBytes() != 2_000_000 || j.Progress().RemainingBytes() != 2_000_000 {
+		t.Errorf("bytes = (%d, %d), want both 2000000", mustManifest(t, j).TotalBytes(), j.Progress().RemainingBytes())
 	}
 	if j.Status != constants.StatusQueued {
 		t.Errorf("Status = %q, want Queued", j.Status)
@@ -459,7 +459,7 @@ func TestMarkFileComplete(t *testing.T) {
 	}
 
 	// Invalid index
-	if err := q.MarkFileComplete(j.ID, j.Manifest().NumFiles()); err == nil {
+	if err := q.MarkFileComplete(j.ID, mustManifest(t, j).NumFiles()); err == nil {
 		t.Error("MarkFileComplete(NumFiles()) should error")
 	}
 }
@@ -469,7 +469,7 @@ func TestMarkArticleFailed(t *testing.T) {
 	j := makeJob(t, "j", constants.NormalPriority)
 	_ = q.Add(j)
 
-	msgID := j.Manifest().ArticleID(0)
+	msgID := mustManifest(t, j).ArticleID(0)
 	initialRemaining := j.Progress().RemainingBytes()
 
 	first, err := q.MarkArticleFailed(j.ID, msgID)
@@ -484,7 +484,7 @@ func TestMarkArticleFailed(t *testing.T) {
 	if !got.Progress().ArticleDone(0) {
 		t.Error("article should be marked Done")
 	}
-	wantRemaining := initialRemaining - int64(j.Manifest().ArticleBytes(0))
+	wantRemaining := initialRemaining - int64(mustManifest(t, j).ArticleBytes(0))
 	if got.Progress().RemainingBytes() != wantRemaining {
 		t.Errorf("RemainingBytes mismatch: got %d, want %d", got.Progress().RemainingBytes(), wantRemaining)
 	}
@@ -507,7 +507,7 @@ func TestMarkArticleFailed_ParityWithBatched(t *testing.T) {
 		q := New()
 		j := makeJob(t, "j", constants.NormalPriority)
 		_ = q.Add(j)
-		msgID := j.Manifest().ArticleID(0)
+		msgID := mustManifest(t, j).ArticleID(0)
 		return q, j.ID, msgID
 	}
 
@@ -757,7 +757,7 @@ func TestIsDirty(t *testing.T) {
 	_ = q.Save(dir)
 
 	// MarkArticleDone sets dirty.
-	msgID := j.Manifest().ArticleID(0)
+	msgID := mustManifest(t, j).ArticleID(0)
 	if err := q.MarkArticleDone(j.ID, msgID); err != nil {
 		t.Fatalf("MarkArticleDone: %v", err)
 	}
@@ -774,7 +774,7 @@ func TestIsDirty(t *testing.T) {
 	}
 
 	// MarkArticleFailed sets dirty.
-	msgID2 := j.Manifest().ArticleID(1)
+	msgID2 := mustManifest(t, j).ArticleID(1)
 	first, err := q.MarkArticleFailed(j.ID, msgID2)
 	if err != nil {
 		t.Fatalf("MarkArticleFailed: %v", err)
@@ -800,7 +800,7 @@ func TestIsDirty(t *testing.T) {
 	j2 := makeJob(t, "batch-done", constants.NormalPriority)
 	_ = q.Add(j2)
 	gotJ2, _ := q.Get(j2.ID)
-	ids2 := []string{gotJ2.Manifest().ArticleID(0), gotJ2.Manifest().ArticleID(1)}
+	ids2 := []string{mustManifest(t, gotJ2).ArticleID(0), mustManifest(t, gotJ2).ArticleID(1)}
 	if err := q.MarkArticlesDone(j2.ID, ids2); err != nil {
 		t.Fatalf("MarkArticlesDone: %v", err)
 	}
@@ -813,7 +813,7 @@ func TestIsDirty(t *testing.T) {
 	j3 := makeJob(t, "batch-fail", constants.NormalPriority)
 	_ = q.Add(j3)
 	gotJ3, _ := q.Get(j3.ID)
-	ids3 := []string{gotJ3.Manifest().ArticleID(0)}
+	ids3 := []string{mustManifest(t, gotJ3).ArticleID(0)}
 	if _, err := q.MarkArticlesFailed(j3.ID, ids3); err != nil {
 		t.Fatalf("MarkArticlesFailed: %v", err)
 	}
@@ -1600,7 +1600,7 @@ func TestMarkArticlesFailed_SignalsNotify(t *testing.T) {
 	}
 drained:
 
-	msgID := j.Manifest().ArticleID(0)
+	msgID := mustManifest(t, j).ArticleID(0)
 
 	// 1. First-time failure: should signal notify.
 	_, err := q.MarkArticlesFailed(j.ID, []string{msgID})
@@ -1726,7 +1726,7 @@ func TestSetPostProcStarted_DropsArtIndex(t *testing.T) {
 	if err := q.SetStatus(job.ID, constants.StatusDownloading); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
-	id := job.Manifest().ArticleID(0)
+	id := mustManifest(t, job).ArticleID(0)
 	// Force the index to exist, as a real download would via MarkArticleDone.
 	if _, ok := job.manifest.articleIndexByID(id); !ok {
 		t.Fatal("articleIndexByID returned false for a present article")

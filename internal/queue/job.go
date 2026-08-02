@@ -287,16 +287,42 @@ func (j *Job) Par2Files() int {
 	return j.par2Files
 }
 
-// Manifest returns the job's immutable article/file structure. Safe to call
-// without the queue lock: it takes the job's own residency lock to
-// synchronize against concurrent eviction/hydration/promotion, which
-// reassign this pointer under q.mu. The returned Manifest's contents are
-// immutable after construction, so nothing further needs guarding once the
-// pointer itself is safely read.
-func (j *Job) Manifest() *Manifest {
+// Manifest returns the job's immutable article/file structure, or an error
+// explaining why it is unavailable. Safe to call without the queue lock: it
+// takes the job's own residency lock to synchronize against concurrent
+// eviction/hydration/promotion, which reassign this pointer under q.mu. The
+// returned Manifest's contents are immutable after construction, so nothing
+// further needs guarding once the pointer itself is safely read.
+//
+// It returns an error rather than a nil pointer so that depending on an
+// evictable manifest is a compile error until the absent case is handled.
+// Residency is a value the caller cannot see and does not control, and a
+// silent nil produced eight defects across #258 and #260-#265 — including
+// one whose dereference was a call away from the site that looked wrong.
+//
+// The two failures are distinct and callers usually want to treat them
+// differently:
+//
+//   - ErrJobNotResident — the manifest was evicted. Ordinary: every queued
+//     and paused job is in this state once the active set is full.
+//   - anything else — the manifest could not be read from disk. That is
+//     data loss, recorded by hydrateSnapshot, and should not be handled as
+//     routine absence.
+//
+// Use errors.Is(err, ErrJobNotResident) to tell them apart. The five
+// promoted scalars (TotalBytes, NumFiles, NumArticles, Par2Bytes,
+// Par2Files) and Progress() never fail, so reporting paths should use those
+// rather than reaching for a manifest they do not need.
+func (j *Job) Manifest() (*Manifest, error) {
 	j.residencyMu.RLock()
 	defer j.residencyMu.RUnlock()
-	return j.manifest
+	if j.manifest != nil {
+		return j.manifest, nil
+	}
+	if j.hydrateErr != nil {
+		return nil, j.hydrateErr
+	}
+	return nil, fmt.Errorf("%w: %s", ErrJobNotResident, j.ID)
 }
 
 // Progress returns the job's mutable per-article/per-file state. Safe to

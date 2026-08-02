@@ -882,7 +882,26 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	pp := &cfgSnap.PostProc
 	parseOpts := par2.ParseOptionsFromConfig(pp)
 	dir := filepath.Join(downloadDir, snap.Name)
-	needsRecovery, reason := par2NeedsRecovery(dir, snap.Manifest(), snap.Progress(), app.log, parseOpts)
+
+	// An unreadable manifest means the CRC comparison cannot be made, and
+	// returning false here would finalize the job with its recovery volumes
+	// still deferred — shipping a download that may need a repair nothing
+	// checked for. Assume repair is needed instead: fetching volumes a clean
+	// job did not require costs bandwidth, whereas skipping them for a
+	// damaged one costs the download.
+	//
+	// Currently unreachable and therefore untested: the early return above
+	// requires HasDeferredPar2, and #287 shows the deferral is discarded by
+	// both SQLiteStore.Add and hydrateSnapshot, so no job reaches here with
+	// volumes still deferred. Written to be correct when that is fixed
+	// rather than left as the nil dereference it replaced.
+	needsRecovery, reason := true, "manifest unreadable, cannot verify integrity"
+	if m, mErr := snap.Manifest(); mErr != nil {
+		app.log.Warn("on-demand par2: cannot verify without the manifest, fetching recovery volumes anyway",
+			"job", jobID, "err", mErr)
+	} else {
+		needsRecovery, reason = par2NeedsRecovery(dir, m, snap.Progress(), app.log, parseOpts)
+	}
 	if !needsRecovery {
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
 		_ = app.queue.DiscardDeferredPar2(jobID)

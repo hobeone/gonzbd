@@ -225,8 +225,9 @@ func stageFromStatus(status constants.Status) string {
 // firstIncompleteFile returns the subject of the first not-yet-complete
 // file in the job, or empty if every file is complete.
 func firstIncompleteFile(j *queue.Job) string {
-	m, p := j.Manifest(), j.Progress()
-	if m == nil || p == nil {
+	m, err := j.Manifest()
+	p := j.Progress()
+	if err != nil || p == nil {
 		return ""
 	}
 	for i := range m.NumFiles() {
@@ -269,8 +270,9 @@ func fileState(m *queue.Manifest, p *queue.JobProgress, fileIdx int) string {
 // buildQueueFiles converts a Job's file slice into the API per-file
 // shape for the expansion drawer.
 func buildQueueFiles(j *queue.Job) []queueFile {
-	m, p := j.Manifest(), j.Progress()
-	if m == nil || p == nil {
+	m, err := j.Manifest()
+	p := j.Progress()
+	if err != nil || p == nil {
 		return []queueFile{}
 	}
 	out := make([]queueFile, 0, m.NumFiles())

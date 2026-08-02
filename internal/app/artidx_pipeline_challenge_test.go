@@ -66,7 +66,7 @@ func TestPipeline_MultiFile_ArtIdx_EndToEnd(t *testing.T) {
 		t.Fatalf("q.Get failed: %v", err)
 	}
 
-	m := gotJob.Manifest()
+	m := mustManifest(t, gotJob)
 	if m.NumArticles() != 9 {
 		t.Fatalf("Expected 9 total articles, got %d", m.NumArticles())
 	}

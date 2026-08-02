@@ -377,7 +377,7 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 	//   art[2]: !Done, !Emitted → Pending
 
 	id := j.ID
-	m := j.Manifest()
+	m := mustManifest(t, j)
 	// File 0 occupies global article indices [0,3); file 1 is left pristine.
 
 	if err := q.MarkArticlesDone(id, []string{m.ArticleID(0)}); err != nil {
@@ -418,7 +418,7 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 		t.Fatal("SnapshotJob returned nil after Load")
 	}
 
-	gm, gp := got.Manifest(), got.Progress()
+	gm, gp := mustManifest(t, got), got.Progress()
 
 	// Emitted must always be cleared on load — ClearAllEmitted is called by
 	// app.Start and recompute resets the in-memory bit.
@@ -529,7 +529,7 @@ func TestPersistenceRoundTrip_AccessorParity(t *testing.T) {
 	// deliberately does not, so replicate that real usage here.
 	loaded.progress.recompute(loaded.manifest)
 
-	m, lm := job.Manifest(), loaded.Manifest()
+	m, lm := mustManifest(t, job), mustManifest(t, &loaded)
 	p, lp := job.Progress(), loaded.Progress()
 
 	if lm.NumFiles() != m.NumFiles() {

@@ -237,7 +237,7 @@ func TestCheckEarlyAbort(t *testing.T) {
 		}
 		// Fail only 5 articles (below the 10-article sample threshold).
 		for i := range 5 {
-			msgID := j.Manifest().ArticleID(i)
+			msgID := mustManifest(t, j).ArticleID(i)
 			if _, err := q.MarkArticleFailed(j.ID, msgID); err != nil {
 				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
 			}
@@ -256,13 +256,13 @@ func TestCheckEarlyAbort(t *testing.T) {
 		}
 		// Fail 9 out of 10 articles → 90% failure rate (above 80% threshold).
 		for i := range 9 {
-			msgID := j.Manifest().ArticleID(i)
+			msgID := mustManifest(t, j).ArticleID(i)
 			if _, err := q.MarkArticleFailed(j.ID, msgID); err != nil {
 				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
 			}
 		}
 		// Succeed 1 article to reach 10 resolved.
-		if err := q.MarkArticleDone(j.ID, j.Manifest().ArticleID(9)); err != nil {
+		if err := q.MarkArticleDone(j.ID, mustManifest(t, j).ArticleID(9)); err != nil {
 			t.Fatalf("MarkArticleDone: %v", err)
 		}
 
@@ -280,7 +280,7 @@ func TestCheckEarlyAbort(t *testing.T) {
 		}
 		// Fail 10 out of 10 articles → 100% failure rate.
 		for i := range 10 {
-			msgID := j.Manifest().ArticleID(i)
+			msgID := mustManifest(t, j).ArticleID(i)
 			if _, err := q.MarkArticleFailed(j.ID, msgID); err != nil {
 				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
 			}
@@ -305,14 +305,14 @@ func TestCheckEarlyAbort(t *testing.T) {
 		}
 		// Fail 7 out of 10 → 70% (below 80% threshold).
 		for i := range 7 {
-			msgID := j.Manifest().ArticleID(i)
+			msgID := mustManifest(t, j).ArticleID(i)
 			if _, err := q.MarkArticleFailed(j.ID, msgID); err != nil {
 				t.Fatalf("MarkArticleFailed(%d): %v", i, err)
 			}
 		}
 		// Succeed 3 articles.
 		for i := 7; i < 10; i++ {
-			if err := q.MarkArticleDone(j.ID, j.Manifest().ArticleID(i)); err != nil {
+			if err := q.MarkArticleDone(j.ID, mustManifest(t, j).ArticleID(i)); err != nil {
 				t.Fatalf("MarkArticleDone(%d): %v", i, err)
 			}
 		}
@@ -375,7 +375,7 @@ func TestSetFileCRC32(t *testing.T) {
 		j := makeMultiFileJob(t, "crc-oob", 1, 1)
 		_ = q.Add(j)
 
-		if err := q.SetFileCRC32(j.ID, j.Manifest().NumFiles(), 0x1234); err == nil {
+		if err := q.SetFileCRC32(j.ID, mustManifest(t, j).NumFiles(), 0x1234); err == nil {
 			t.Error("expected error for out-of-bounds file index")
 		}
 	})
@@ -440,7 +440,7 @@ func TestSetFileFilename(t *testing.T) {
 		j := makeMultiFileJob(t, "filename-oob", 1, 1)
 		_ = q.Add(j)
 
-		if err := q.SetFileFilename(j.ID, j.Manifest().NumFiles(), "bad.mkv"); err == nil {
+		if err := q.SetFileFilename(j.ID, mustManifest(t, j).NumFiles(), "bad.mkv"); err == nil {
 			t.Error("expected error for out-of-bounds file index")
 		}
 	})

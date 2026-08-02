@@ -8,8 +8,12 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/history"
 
 	"github.com/hobeone/gonzbd/internal/assembler"
 	"github.com/hobeone/gonzbd/internal/decoder"
@@ -268,4 +272,85 @@ func TestPipeline_HandleSuccessResult(t *testing.T) {
 	if got := telemetry.ArticlesWritten.Value(); got != writtenBefore {
 		t.Errorf("ArticlesWritten = %d, want %d (should not increment when WriteArticle fails)", got, writtenBefore)
 	}
+}
+
+// registerFile resolves a job's file into the assembler's FileInfo map, and
+// every way that can fail returns an error the caller acts on. None of those
+// branches had coverage; the manifest one is new, and it is the reason the
+// others are worth pinning at the same time — a nil manifest used to reach
+// here as a bare pointer and the check that caught it was a nil comparison
+// nothing forced anyone to write.
+func TestRegisterFile_ErrorPaths(t *testing.T) {
+	t.Parallel()
+
+	newPipeline := func(q *queue.Queue) *pipeline {
+		return &pipeline{
+			log:         slog.Default(),
+			queue:       q,
+			downloadDir: t.TempDir(),
+			fileInfo:    make(map[fileKey]assembler.FileInfo),
+		}
+	}
+
+	t.Run("job not in the queue", func(t *testing.T) {
+		t.Parallel()
+		p := newPipeline(queue.New())
+		err := p.registerFile("no-such-job", 0)
+		if err == nil || !strings.Contains(err.Error(), "not found") {
+			t.Errorf("registerFile = %v, want a not-found error", err)
+		}
+	})
+
+	t.Run("manifest unavailable", func(t *testing.T) {
+		t.Parallel()
+		// A store-backed queue so pausing evicts the manifest for real, then
+		// delete it from disk so the snapshot's hydration attempt fails too.
+		dir := t.TempDir()
+		db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
+		if err != nil {
+			t.Fatalf("history.Open: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		repo := history.NewRepository(db)
+		q := queue.New(queue.WithStore(queue.NewSQLiteStore(repo.DB(), dir, repo)),
+			queue.WithStateDir(dir))
+
+		job := newBareQueueJob(t, "reg-nomanifest", "md5-reg-nomanifest")
+		if err := q.Add(job); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		if err := q.Pause(job.ID); err != nil {
+			t.Fatalf("Pause: %v", err)
+		}
+		if err := os.RemoveAll(filepath.Join(dir, "manifests")); err != nil {
+			t.Fatalf("remove manifests: %v", err)
+		}
+
+		p := newPipeline(q)
+		err = p.registerFile(job.ID, 0)
+		if err == nil {
+			t.Fatal("registerFile returned nil with no manifest; the assembler would be handed a zero-valued FileInfo")
+		}
+		if !strings.Contains(err.Error(), "manifest") {
+			t.Errorf("registerFile = %v, want the error to name the manifest as the cause", err)
+		}
+	})
+
+	t.Run("file index out of range", func(t *testing.T) {
+		t.Parallel()
+		q := queue.New()
+		job := newBareQueueJob(t, "reg-range", "md5-reg-range")
+		if err := q.Add(job); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		m := mustManifest(t, job)
+
+		for _, idx := range []int{-1, m.NumFiles()} {
+			p := newPipeline(q)
+			err := p.registerFile(job.ID, idx)
+			if err == nil || !strings.Contains(err.Error(), "out of range") {
+				t.Errorf("registerFile(%d) = %v, want an out-of-range error", idx, err)
+			}
+		}
+	})
 }

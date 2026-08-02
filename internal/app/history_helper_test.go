@@ -203,8 +203,8 @@ func TestBuildHistoryEntry_SizeSurvivesEviction(t *testing.T) {
 	if err := q.Pause(qjob.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	if qjob.Manifest() != nil {
-		t.Fatal("fixture guard: manifest still resident after Pause, nothing is being tested")
+	if _, err := qjob.Manifest(); !errors.Is(err, queue.ErrJobNotResident) {
+		t.Fatalf("fixture guard: want ErrJobNotResident after Pause, got %v — nothing is being tested", err)
 	}
 
 	evicted := buildHistoryEntry(pj)
