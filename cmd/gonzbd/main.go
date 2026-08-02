@@ -1051,7 +1051,7 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 	if err != nil {
 		return fmt.Errorf("load NZB: %w", err)
 	}
-	totalFiles := job.Manifest().NumFiles()
+	totalFiles := job.NumFiles()
 	if totalFiles == 0 {
 		return fmt.Errorf("NZB %s contains no usable files", nzbPath)
 	}
@@ -1062,7 +1062,7 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 
 	start := time.Now()
 	log.Info("download started",
-		"job", job.Name, "files", totalFiles, "bytes", job.Manifest().TotalBytes())
+		"job", job.Name, "files", totalFiles, "bytes", job.TotalBytes())
 
 	// Wait for the job to reach History (indicates post-processing is complete).
 	log.Info("waiting for job to complete", "job", job.Name, "id", job.ID)
@@ -1081,10 +1081,10 @@ func run(configPath, nzbPath, downloadDirOverride, logLevelsOverride string, ver
 
 // printSummary prints the one-shot mode download summary to stdout.
 func printSummary(job *queue.Job, hist *history.Entry, duration time.Duration) {
-	var totalBytes int64
-	if m := job.Manifest(); m != nil {
-		totalBytes = m.TotalBytes()
-	} else if hist != nil {
+	// The promoted scalar, which needs no resident manifest. The history
+	// fallback stays for a job that never carried one at all.
+	totalBytes := job.TotalBytes()
+	if totalBytes == 0 && hist != nil {
 		totalBytes = hist.Bytes
 	}
 

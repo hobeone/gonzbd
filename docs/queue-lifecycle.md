@@ -160,11 +160,16 @@ In the manifest tier a vanished job makes the operation moot: `ErrNotFound`.
 
 ## Enforcement
 
-- `Job.Manifest()` and `Job.Progress()` do not exist. Manifest access is
-  through a handle obtained from a call that can fail, so every dependence on
-  an evictable manifest is a compile error until it is resolved. The compiler
-  enumerates the work; a hand audit does not — #267 records separate passes
-  over the same code finding different subsets.
+- `Job.Manifest()` returns `(*Manifest, error)`. Every dependence on an
+  evictable manifest is then a compile error until it is resolved: the
+  compiler enumerates the work, where a hand audit does not — #267 records
+  separate passes over the same code finding different subsets.
+- **`Job.Progress()` stays infallible.** An earlier draft of this section
+  said both accessors should stop existing. That contradicted the tier
+  model directly below it: progress is always resident, so a fallible
+  `Progress()` would force error handling at every reporting site for a
+  condition that cannot occur, and would bury the manifest sites where
+  absence is real. Only the evictable tier is fallible.
 - The terminal summary type has no per-article accessors.
 - `JobProgress` needs no nil guard anywhere, because it cannot be absent.
 - `TestActiveSet_StructuralMemoryBound` asserts a count (`ActiveSet.Len() == 4`),
@@ -181,12 +186,19 @@ Staged so each step is independently landable:
 1. Bitsets for `done`/`failed`/`emitted`, behind the existing accessors.
 2. Promote the five manifest scalars; make `JobProgress` always resident; add
    the `article_count` column.
-3. Introduce the manifest handle; delete `Job.Manifest()`/`Job.Progress()`;
-   migrate `internal/api`, `internal/app`, `internal/postproc` and `cmd/`.
+3. Convert every caller that reaches through the manifest only to read a
+   promoted scalar, then make `Job.Manifest()` fallible and migrate what is
+   left across `internal/api`, `internal/app`, `internal/postproc` and
+   `cmd/`.
 4. Terminal compaction and its summary type.
 5. Retire the parts of #261 this dissolves.
 
-Step 3 is the only one that cannot be partial. Steps 1 and 2 are additive.
+Only the second half of step 3 cannot be partial, and the first half exists
+to shrink it: of the call sites outside `internal/queue`, roughly half were
+reading `TotalBytes`/`NumFiles`/`Par2Bytes` through a manifest they did not
+otherwise need. Converting those first leaves the atomic change touching
+only the sites that genuinely need per-file structure. Steps 1 and 2 are
+additive.
 
 Already landed: artifact unlinking now happens only after a job leaves `byID`
 (PR #271), which removes the window in which a job in the queue could have no

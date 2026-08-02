@@ -31,8 +31,8 @@ func downloadCompleteness(totalBytes, failedBytes int64) int64 {
 func buildHistoryEntry(job *postproc.Job) history.Entry {
 	stageLogJSON, _ := json.Marshal(job.StageLog)
 
-	m := job.Queue.Manifest()
 	p := job.Queue.Progress()
+	totalBytes := job.Queue.TotalBytes()
 
 	var downloadDuration int64
 	if !p.DownloadStarted().IsZero() && !p.DownloadFinished().IsZero() {
@@ -49,8 +49,8 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 
 	// Download health: byte-based rather than article-based because a failed
 	// article is marked both Done and Failed (Done = resolved, not succeeded).
-	completeness := downloadCompleteness(m.TotalBytes(), p.FailedBytes())
-	downloaded := m.TotalBytes() - p.FailedBytes() - p.RemainingBytes()
+	completeness := downloadCompleteness(totalBytes, p.FailedBytes())
+	downloaded := totalBytes - p.FailedBytes() - p.RemainingBytes()
 
 	// Sort server names for deterministic output in history entries.
 	stats := p.ServerStats()
@@ -92,7 +92,7 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 		DownloadTime: downloadDuration,
 		PostprocTime: postprocDuration,
 		StageLog:     string(stageLogJSON),
-		Bytes:        m.TotalBytes(),
+		Bytes:        totalBytes,
 		Downloaded:   downloaded,
 		Completeness: completeness,
 		TimeAdded:    job.Queue.Added,

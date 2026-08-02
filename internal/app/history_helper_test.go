@@ -3,10 +3,12 @@ package app
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
@@ -168,5 +170,46 @@ func TestBuildHistoryEntry_Comprehensive(t *testing.T) {
 	entry5 := buildHistoryEntry(job5)
 	if entry5.URLInfo != "Repair OK" {
 		t.Errorf("Expected URLInfo %q, got %q", "Repair OK", entry5.URLInfo)
+	}
+}
+
+// buildHistoryEntry reports the job's size, and takes it from the promoted
+// TotalBytes scalar rather than reaching through the manifest. The entry it
+// produces is what the history UI renders and what duplicate detection later
+// matches against, so the value must be the same whether or not the manifest
+// is still resident — this is the only place a divergence between the scalar
+// and the manifest would surface as a wrong number the user keeps.
+func TestBuildHistoryEntry_SizeSurvivesEviction(t *testing.T) {
+	_, qjob := buildHistoryTestJob(t, "hist-evict", "evicted", time.Now(), 4)
+	pj := &postproc.Job{Queue: qjob}
+
+	resident := buildHistoryEntry(pj)
+	if resident.Bytes != 400 {
+		t.Fatalf("fixture guard: Bytes = %d while resident, want 400", resident.Bytes)
+	}
+
+	// A store is required for the queue to evict on pause.
+	dir := t.TempDir()
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+	q := queue.New(queue.WithStore(queue.NewSQLiteStore(repo.DB(), dir, repo)), queue.WithStateDir(dir))
+	if err := q.Add(qjob); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := q.Pause(qjob.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if qjob.Manifest() != nil {
+		t.Fatal("fixture guard: manifest still resident after Pause, nothing is being tested")
+	}
+
+	evicted := buildHistoryEntry(pj)
+	if evicted.Bytes != resident.Bytes {
+		t.Errorf("Bytes = %d after eviction, want %d — the recorded size must not depend on manifest residency",
+			evicted.Bytes, resident.Bytes)
 	}
 }
