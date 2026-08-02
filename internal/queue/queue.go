@@ -1487,7 +1487,13 @@ func (q *Queue) TotalRemainingBytes() int64 {
 	defer q.mu.RUnlock()
 	var total int64
 	for _, job := range q.byID {
-		total += job.progress.remainingBytes
+		// The nil-safe accessor rather than the raw field, for the reason
+		// residentJob's own guard gives: the sole production caller is
+		// runMetricsPush, a 1 Hz ticker goroutine with no recover(), so a
+		// nil progress here is process death within a second. The invariant
+		// holds today — Add repairs a nil-progress job at the entry point —
+		// but this costs one comparison to not depend on it.
+		total += job.Progress().RemainingBytes()
 	}
 	return total
 }

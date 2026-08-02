@@ -151,3 +151,93 @@ func TestCloneJobDirect(t *testing.T) {
 		t.Errorf("cloneJob ID mismatch: got %q, want %q", cloned.ID, job.ID)
 	}
 }
+
+// Snapshot must not hydrate. It backs the queue listing, which is polled
+// continuously and contains every queued and paused job — all non-resident
+// once the active set is full — so a manifest read per job here is a disk
+// read per job per poll. It also opened a window where a job removed
+// between the clone and the read produced an error for an operation that
+// had already succeeded.
+//
+// The reporting values a listing needs survive without it: the promoted
+// scalars and JobProgress are resident for the life of the job. Callers
+// that genuinely need file-level detail use SnapshotJob, which still
+// hydrates for that one job.
+func TestSnapshot_DoesNotHydrateNonResidentJobs(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
+
+	// Fill the single active slot so the job under test stays non-resident.
+	filler := makeMultiFileJob(t, "snap-filler", 1, 1)
+	if err := q.Add(filler); err != nil {
+		t.Fatalf("Add filler: %v", err)
+	}
+	job := makeMultiFileJobWithPar2(t, "snap-nonresident", 2, 3)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	wantBytes, wantPar2 := job.TotalBytes(), job.Par2Bytes()
+
+	q.mu.RLock()
+	live := q.byID[job.ID]
+	nonResident := live.manifest == nil
+	q.mu.RUnlock()
+	if !nonResident {
+		t.Fatal("fixture guard: job is resident, nothing is being tested")
+	}
+
+	var got *Job
+	for _, cp := range q.Snapshot() {
+		if cp.ID == job.ID {
+			got = cp
+		}
+	}
+	if got == nil {
+		t.Fatal("job missing from Snapshot")
+	}
+
+	if got.Manifest() != nil {
+		t.Error("Snapshot hydrated a non-resident job; that is a disk read per job on every queue poll")
+	}
+	// ...and the values a listing actually renders are still right.
+	if got.TotalBytes() != wantBytes {
+		t.Errorf("TotalBytes = %d, want %d", got.TotalBytes(), wantBytes)
+	}
+	if got.Par2Bytes() != wantPar2 {
+		t.Errorf("Par2Bytes = %d, want %d", got.Par2Bytes(), wantPar2)
+	}
+	if got.Progress() == nil {
+		t.Error("Progress is nil in a snapshot copy; reporting needs it and it is meant to be always resident")
+	}
+}
+
+// SnapshotJob is the counterpart: one job, on demand, where file-level
+// detail is the point and a single read is affordable.
+func TestSnapshotJob_StillHydrates(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
+
+	filler := makeMultiFileJob(t, "snapjob-filler", 1, 1)
+	if err := q.Add(filler); err != nil {
+		t.Fatalf("Add filler: %v", err)
+	}
+	job := makeMultiFileJob(t, "snapjob-nonresident", 2, 3)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	q.mu.RLock()
+	nonResident := q.byID[job.ID].manifest == nil
+	q.mu.RUnlock()
+	if !nonResident {
+		t.Fatal("fixture guard: job is resident, nothing is being tested")
+	}
+
+	snap := q.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("SnapshotJob returned nil")
+	}
+	if snap.Manifest() == nil {
+		t.Error("SnapshotJob did not hydrate; per-file detail (queueJobDetail, the postproc paths) depends on it")
+	}
+}
