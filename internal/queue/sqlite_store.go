@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -195,16 +196,17 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if job.Manifest() != nil {
 		const qFiles = `
 INSERT INTO job_files
-  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, article_count)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		for i := range job.Manifest().NumFiles() {
 			isPar2 := 0
 			if job.Manifest().FileIsPar2Recovery(i) {
 				isPar2 = 1
 			}
 			artDoneStr := encodeArticlesDone(job, i)
+			lo, hi := job.Manifest().FileRange(i)
 			_, err = tx.ExecContext(ctx, qFiles,
-				job.ID, i, job.Manifest().FileSubject(i), job.Manifest().FileDate(i).Unix(), job.Manifest().FileBytes(i), isPar2, 0, 0, 0, 0, "", 0, artDoneStr,
+				job.ID, i, job.Manifest().FileSubject(i), job.Manifest().FileDate(i).Unix(), job.Manifest().FileBytes(i), isPar2, 0, 0, 0, 0, "", 0, artDoneStr, hi-lo,
 			)
 			if err != nil {
 				return fmt.Errorf("sqlite store insert job_file %s/%d: %w", job.ID, i, err)
@@ -289,6 +291,7 @@ FROM jobs WHERE id = ?`
 				return nil, fmt.Errorf("sqlite store read manifest %s: %w", id, err)
 			}
 			job.manifest = &manifest
+			job.setScalarsFromManifest(&manifest)
 			job.progress = newJobProgress(&manifest)
 			if dlStartedUnix > 0 {
 				job.progress.downloadStarted = time.Unix(dlStartedUnix, 0).UTC()
@@ -297,6 +300,50 @@ FROM jobs WHERE id = ?`
 				job.progress.downloadFinished = time.Unix(dlFinishedUnix, 0).UTC()
 			}
 			_ = s.RestoreJobProgress(ctx, &job)
+		}
+	}
+
+	// job.manifest is nil here for a non-resident job (or a resident one
+	// whose manifest file is missing, though that case already errored
+	// above when fileCount > 0). Without a resident manifest,
+	// TotalBytes/NumFiles/NumArticles would otherwise read as zero — a
+	// gap left open by Task 3 — so reconstruct the three of the five
+	// scalars that job_files can answer on its own. par2Bytes/par2Files
+	// stay zero; see setAggregateScalarsFromFiles for why they cannot be
+	// safely reconstructed from is_par2_recovery.
+	//
+	// A query failure here is logged rather than failing Get outright: the
+	// file-count query above fails closed because its result gates whether
+	// the caller gets a job back at all (admission), but this query only
+	// feeds three reporting scalars for a job that is otherwise valid and
+	// already fully loaded. Returning the job with those three at zero (its
+	// pre-Task-4 behavior) is preferable to losing the job entirely over a
+	// transient SQLite error on an already-slow, non-resident read path —
+	// but the error must not vanish silently, so it goes to the log.
+	if job.manifest == nil && fileCount > 0 {
+		var totalBytes int64
+		var numFiles, numArticles int
+		const qAgg = `SELECT COALESCE(SUM(bytes), 0), COUNT(*), COALESCE(SUM(article_count), 0) FROM job_files WHERE job_id = ?`
+		if err := s.db.QueryRowContext(ctx, qAgg, id).Scan(&totalBytes, &numFiles, &numArticles); err != nil {
+			slog.Default().Error("sqlite store: aggregate scalars from job_files failed, reporting scalars stay zero",
+				"job_id", id, "err", err)
+		} else {
+			if numArticles == 0 && numFiles > 0 {
+				// Same legacy shape Loader.Load detects per-file with
+				// articleCountsAreLegacy, here as a single SUM: migration 004
+				// backfills article_count to 0 for every pre-existing row, so
+				// SUM(article_count) reads as a confident zero when the truth
+				// is "unknown", not "zero articles in every file". Unlike
+				// Load, there is no manifest read to fall back to here —
+				// reading it on every non-resident Get is exactly the cost
+				// Task 4 exists to avoid — so this can only be logged, not
+				// corrected in place. NumArticles() below stays 0, which is
+				// harmless while no caller consumes it, but must not be
+				// mistaken for a verified count once one does.
+				slog.Default().Warn("sqlite store: job_files predates the article_count column; NumArticles is unknown, not a verified zero",
+					"job_id", id)
+			}
+			job.setAggregateScalarsFromFiles(totalBytes, numFiles, numArticles)
 		}
 	}
 
@@ -352,12 +399,100 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	return rows.Err()
 }
 
+// ArticleCountsByJob returns every job's per-file article counts in a single
+// grouped query, indexed by file_index within each job. Used to size
+// JobProgress at restart without loading each job's manifest individually —
+// collapsed from a per-job query (the RestoreJobProgress-adjacent shape
+// RemainingBytesByJob already uses) so that a large queued backlog costs one
+// round trip instead of N.
+//
+// A job whose counts are all zero predates the article_count column; the
+// caller must fall back to reading the manifest for that job rather than
+// sizing progress to zero (see articleCountsAreLegacy).
+//
+// Counts are placed by file_index rather than by scan order, so a job whose
+// job_files rows have non-contiguous indices (e.g. after a partial delete)
+// still gets each count attributed to the right file instead of shifted by
+// position.
+func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]int, error) {
+	const q = `SELECT job_id, file_index, article_count FROM job_files ORDER BY job_id ASC, file_index ASC`
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite store article counts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make(map[string][]int)
+	for rows.Next() {
+		var jobID string
+		var idx, count int
+		if err := rows.Scan(&jobID, &idx, &count); err != nil {
+			return nil, fmt.Errorf("sqlite store scan article count: %w", err)
+		}
+		if idx < 0 {
+			// file_index is only ever written from a loop index, so this is
+			// DB-corruption-only, but RestoreJobProgress guards the same
+			// column with idx >= 0 a few lines up — match it here too rather
+			// than let a corrupt row panic the boot path below.
+			continue
+		}
+		counts := result[jobID]
+		if idx >= len(counts) {
+			grown := make([]int, idx+1)
+			copy(grown, counts)
+			counts = grown
+		}
+		counts[idx] = count
+		result[jobID] = counts
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite store article counts: %w", err)
+	}
+	return result, nil
+}
+
+// BackfillArticleCounts writes recovered per-file article counts back to a
+// legacy job_files row (one predating the article_count column, so every
+// count is currently 0) so the manifest fallback in Loader.Load only has to
+// run once per job, not on every boot. counts is indexed by file_index, the
+// same shape ArticleCountsByJob returns.
+//
+// All-or-nothing: a mid-loop failure must not leave some files healed and
+// others still zero. articleCountsAreLegacy treats a row as legacy only if
+// every count is zero, so a partially-healed row would stop being detected
+// as legacy on the next Load while still having zeroed-out files — silently
+// and permanently under-sizing progress for those files, which is worse
+// than not healing at all. Wrapping the writes in a transaction is what
+// makes the "will retry on next load" promise in Loader.Load's warning
+// actually true.
+//
+// Must be called without q.mu held: this is I/O (scripts/check_lock_io).
+func (s *SQLiteStore) BackfillArticleCounts(ctx context.Context, jobID string, counts []int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite store begin tx backfill article counts for job %s: %w", jobID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	const q = `UPDATE job_files SET article_count = ? WHERE job_id = ? AND file_index = ?`
+	for fi, c := range counts {
+		if _, err := tx.ExecContext(ctx, q, c, jobID, fi); err != nil {
+			return fmt.Errorf("sqlite store backfill article count for job %s file %d: %w", jobID, fi, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite store commit backfill article counts for job %s: %w", jobID, err)
+	}
+	return nil
+}
+
 // RemainingBytesByJob returns each job's remaining bytes (bytes minus
 // bytes_downloaded, summed per job_id) across job_files. Unlike
 // RestoreJobProgress, this needs no resident manifest/progress: it reads
 // straight from the persisted per-file counters, which is what makes it
-// usable to reconstruct Job.lastKnownRemainingBytes for non-resident jobs
-// during Loader.Load.
+// usable to seed JobProgress.remainingBytes for non-resident jobs during
+// Loader.Load.
 func (s *SQLiteStore) RemainingBytesByJob(ctx context.Context) (map[string]int64, error) {
 	const q = `SELECT job_id, SUM(bytes - bytes_downloaded) FROM job_files GROUP BY job_id`
 	rows, err := s.db.QueryContext(ctx, q)
@@ -461,7 +596,11 @@ WHERE id = ?`
 	}
 
 	if job.Progress() != nil && job.Manifest() != nil {
-		const qF = `UPDATE job_files SET complete = ?, deferred = ?, write_cursor = ?, bytes_downloaded = ?, filename = ?, assembled_crc32 = ?, articles_done = ? WHERE job_id = ? AND file_index = ?`
+		// article_count is included here (not just in Add's INSERT) so that a
+		// row written before this column existed — where it defaults to 0 —
+		// gets backfilled the next time the job is updated while resident and
+		// its manifest is available, rather than staying 0 forever.
+		const qF = `UPDATE job_files SET complete = ?, deferred = ?, write_cursor = ?, bytes_downloaded = ?, filename = ?, assembled_crc32 = ?, articles_done = ?, article_count = ? WHERE job_id = ? AND file_index = ?`
 		for i := range job.Manifest().NumFiles() {
 			complete := 0
 			if job.Progress().FileComplete(i) {
@@ -472,8 +611,9 @@ WHERE id = ?`
 				deferred = 1
 			}
 			artDoneStr := encodeArticlesDone(job, i)
+			lo, hi := job.Manifest().FileRange(i)
 			if _, err := execer.ExecContext(ctx, qF,
-				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr,
+				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr, hi-lo,
 				job.ID, i,
 			); err != nil {
 				return fmt.Errorf("sqlite store update job_file %s index %d: %w", job.ID, i, err)

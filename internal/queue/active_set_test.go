@@ -71,15 +71,22 @@ func TestActiveSet_ResidencyProperty(t *testing.T) {
 		hasProgress := job.Progress() != nil
 		inActiveSet := q.ActiveSet().IsResident(job.ID)
 
+		// Progress is always resident regardless of phase — see
+		// docs/queue-lifecycle.md — so it is asserted unconditionally here,
+		// not folded into the phase-dependent residency check below.
+		if !hasProgress {
+			t.Errorf("[%s] progress must never be nil, got nil", phaseName)
+		}
+
 		if expectedResident {
-			if !hasManifest || !hasProgress || !inActiveSet {
-				t.Errorf("[%s] RESIDENCY VIOLATION: expected (manifest!=nil, progress!=nil, inActiveSet=true), got (hasManifest=%v, hasProgress=%v, inActiveSet=%v)",
-					phaseName, hasManifest, hasProgress, inActiveSet)
+			if !hasManifest || !inActiveSet {
+				t.Errorf("[%s] RESIDENCY VIOLATION: expected (manifest!=nil, inActiveSet=true), got (hasManifest=%v, inActiveSet=%v)",
+					phaseName, hasManifest, inActiveSet)
 			}
 		} else {
-			if hasManifest || hasProgress || inActiveSet {
-				t.Errorf("[%s] NON-RESIDENCY VIOLATION: expected (manifest==nil, progress==nil, inActiveSet=false), got (hasManifest=%v, hasProgress=%v, inActiveSet=%v)",
-					phaseName, hasManifest, hasProgress, inActiveSet)
+			if hasManifest || inActiveSet {
+				t.Errorf("[%s] NON-RESIDENCY VIOLATION: expected (manifest==nil, inActiveSet=false), got (hasManifest=%v, inActiveSet=%v)",
+					phaseName, hasManifest, inActiveSet)
 			}
 		}
 	}
@@ -120,8 +127,14 @@ func TestActiveSet_ResidencyProperty(t *testing.T) {
 	if err := q.SetStatus(job2.ID, constants.StatusFailed); err != nil {
 		t.Fatalf("SetStatus Failed failed: %v", err)
 	}
-	if q.ActiveSet().IsResident("job2") || job2.Manifest() != nil || job2.Progress() != nil {
+	// job2.Progress() is deliberately not checked here: it is never nil
+	// (docs/queue-lifecycle.md), so it carries no residency signal — only
+	// the manifest and ActiveSet membership do.
+	if q.ActiveSet().IsResident("job2") || job2.Manifest() != nil {
 		t.Errorf("6a. Failed job2 expected non-resident")
+	}
+	if job2.Progress() == nil {
+		t.Errorf("6a. Failed job2 progress must never be nil")
 	}
 
 	if err := q.Retry(job2.ID); err != nil {
@@ -165,16 +178,17 @@ func TestActiveSet_StructuralMemoryBound(t *testing.T) {
 	nonResidentCount := 0
 
 	for _, j := range q.List() {
+		// Progress is always resident regardless of manifest residency (see
+		// docs/queue-lifecycle.md), so it is checked once here rather than
+		// per branch below, and its presence is no longer part of what
+		// distinguishes resident from non-resident.
+		if j.Progress() == nil {
+			t.Errorf("Job %s has nil progress, want it always resident", j.ID)
+		}
 		if j.Manifest() != nil {
 			residentCount++
-			if j.Progress() == nil {
-				t.Errorf("Job %s has manifest but nil progress", j.ID)
-			}
 		} else {
 			nonResidentCount++
-			if j.Progress() != nil {
-				t.Errorf("Job %s has nil manifest but non-nil progress", j.ID)
-			}
 		}
 	}
 

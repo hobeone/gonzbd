@@ -26,10 +26,10 @@ func verifyPending(t *testing.T, q *Queue, label string) {
 			deferred := p.files[fi].Deferred
 			lo, hi := m.FileRange(fi)
 			for i := lo; i < hi; i++ {
-				if !deferred && !p.done[i] && !p.emitted[i] {
+				if !deferred && !p.done.Get(i) && !p.emitted.Get(i) {
 					wantFile++
 				}
-				if p.done[i] && !p.failed[i] {
+				if p.done.Get(i) && !p.failed.Get(i) {
 					wantDownloaded += int64(m.ArticleBytes(i))
 				}
 			}

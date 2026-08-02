@@ -156,26 +156,110 @@ type Job struct {
 	manifest    *Manifest
 	progress    *JobProgress
 
-	// lastKnownRemainingBytes caches progress.remainingBytes at the moment
-	// progress is dropped (setResidency(nil, nil) in Queue.Add/evictJobLocked)
-	// or, on restart, is reconstructed from the store (see
-	// Store.RemainingBytesByJob). It is a cache of a value normally derived
-	// from JobProgress, not an independent source of truth: it is
-	// meaningful only while progress == nil, and Queue.TotalRemainingBytes
-	// must always prefer live progress.remainingBytes when the job is
-	// resident. It is NOT persisted (no json tag / accessor) — it is
-	// re-derived from job_files on every Loader.Load instead, the same way
-	// JobProgress itself is re-derived rather than trusted byte-for-byte
-	// across a restart.
+	// Manifest-derived scalars, set from the manifest at Add and again
+	// anywhere else a manifest is attached to or rebuilt on this Job (see
+	// setScalarsFromManifest), so that reporting paths never need a
+	// resident manifest — see docs/queue-lifecycle.md. For the overwhelming
+	// majority of a job's life these values never change, since the
+	// manifest itself is immutable after parse; DiscardDeferredPar2 is the
+	// one exception, rebuilding the manifest to drop discarded recovery
+	// volumes, and re-syncs these fields when it does.
 	//
-	// Guarded by q.mu, not residencyMu: every write site (Add,
-	// evictJobLocked) already holds q.mu for the surrounding setResidency
-	// call, and the only reader (TotalRemainingBytes) already takes
-	// q.mu.RLock() to range over q.byID. residencyMu only protects the
-	// manifest/progress *pointer pair*; this field is neither of those
-	// pointers, so adding it to that lock's scope would protect nothing
-	// extra while implying (incorrectly) that it can be read outside q.mu.
-	lastKnownRemainingBytes int64
+	// Guarded by residencyMu, not by q.mu. The getters below are exported
+	// and documented as never needing a resident manifest, which invites
+	// the same lock-free external use Manifest()/Progress() document as
+	// safe — and an external caller cannot take q.mu. Writes go through
+	// setScalarsFromManifest/setAggregateScalarsFromFiles, which take the
+	// write lock; both are always called with q.mu held and never with
+	// residencyMu already held, so the q.mu -> residencyMu order matches
+	// setResidency's and cannot self-deadlock.
+	totalBytes  int64
+	numFiles    int
+	numArticles int
+	par2Bytes   int64
+	par2Files   int
+}
+
+// setScalarsFromManifest copies m's five totals onto j. Centralizing this
+// assignment matters: a review of this feature (Task 3) caught two sites —
+// hydrateSnapshot and PromoteNext — that attached a manifest to a Job
+// without it, leaving totalBytes/numFiles/numArticles/par2Bytes/par2Files at
+// zero despite a manifest being in hand. Every site that assigns j.manifest
+// (directly or via setResidency) or rebuilds it in place must call this too.
+func (j *Job) setScalarsFromManifest(m *Manifest) {
+	// Read m's totals before taking the lock: m is immutable after parse,
+	// and this keeps the critical section to the five assignments.
+	totalBytes, numFiles := m.TotalBytes(), m.NumFiles()
+	numArticles, par2Bytes, par2Files := m.NumArticles(), m.Par2Bytes(), m.Par2Files()
+
+	j.residencyMu.Lock()
+	defer j.residencyMu.Unlock()
+	j.totalBytes = totalBytes
+	j.numFiles = numFiles
+	j.numArticles = numArticles
+	j.par2Bytes = par2Bytes
+	j.par2Files = par2Files
+}
+
+// setAggregateScalarsFromFiles sets totalBytes/numFiles/numArticles from
+// values aggregated over job_files (SUM(bytes), COUNT(*), SUM(article_count))
+// rather than from a resident Manifest. Used by SQLiteStore.Get/List for a
+// job that is non-resident and has never been promoted/snapshotted
+// in-process — the case Task 3 left as a documented gap, where these
+// scalars would otherwise silently read as zero.
+//
+// par2Bytes/par2Files are deliberately left untouched (zero): job_files'
+// is_par2_recovery flags only recovery volumes, while the manifest's
+// Par2Bytes/Par2Files also count the par2 index file, so the two are not
+// equivalent and reconstructing the par2 pair from is_par2_recovery would
+// silently produce an undercount rather than the value the manifest would
+// have produced.
+func (j *Job) setAggregateScalarsFromFiles(totalBytes int64, numFiles, numArticles int) {
+	j.residencyMu.Lock()
+	defer j.residencyMu.Unlock()
+	j.totalBytes = totalBytes
+	j.numFiles = numFiles
+	j.numArticles = numArticles
+}
+
+// TotalBytes returns the job's total size in bytes. Total: never requires a
+// resident manifest. Safe to call without the queue lock — like
+// Manifest()/Progress(), it takes the job's own residency lock, so a
+// promotion or a DiscardDeferredPar2 manifest rebuild running concurrently
+// under q.mu cannot race it.
+func (j *Job) TotalBytes() int64 {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.totalBytes
+}
+
+// NumFiles returns the job's file count. Total; lock-free-safe, see TotalBytes.
+func (j *Job) NumFiles() int {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.numFiles
+}
+
+// NumArticles returns the job's article count. Total; lock-free-safe, see TotalBytes.
+func (j *Job) NumArticles() int {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.numArticles
+}
+
+// Par2Bytes returns the total size of the job's par2 files. Total;
+// lock-free-safe, see TotalBytes.
+func (j *Job) Par2Bytes() int64 {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.par2Bytes
+}
+
+// Par2Files returns the job's par2 file count. Total; lock-free-safe, see TotalBytes.
+func (j *Job) Par2Files() int {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.par2Files
 }
 
 // Manifest returns the job's immutable article/file structure. Safe to call
@@ -501,6 +585,7 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 
 	job.manifest = newManifest(files)
 	job.progress = newJobProgress(job.manifest)
+	job.setScalarsFromManifest(job.manifest)
 	for fi, jf := range files {
 		job.progress.files[fi].Deferred = jf.Deferred
 	}
@@ -570,11 +655,11 @@ func (j *Job) ResetForRetry() {
 		anyReset := false
 		lo, hi := m.FileRange(fi)
 		for i := lo; i < hi; i++ {
-			if !j.progress.failed[i] {
+			if !j.progress.failed.Get(i) {
 				continue
 			}
-			j.progress.done[i] = false
-			j.progress.failed[i] = false
+			j.progress.done.Clear(i)
+			j.progress.failed.Clear(i)
 			j.progress.remainingBytes += int64(m.ArticleBytes(i))
 			anyReset = true
 		}

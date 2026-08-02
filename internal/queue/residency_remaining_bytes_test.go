@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -15,6 +16,15 @@ import (
 // challenger_m3_test.go does.
 func setupResidencyTestStore(t *testing.T) (*SQLiteStore, string) {
 	t.Helper()
+	store, dir, _ := setupResidencyTestStoreWithDB(t)
+	return store, dir
+}
+
+// setupResidencyTestStoreWithDB is setupResidencyTestStore but also returns
+// the raw *sql.DB, for tests that need to reach into job_files directly
+// (e.g. simulating a pre-Task-4 row by zeroing article_count).
+func setupResidencyTestStoreWithDB(t *testing.T) (*SQLiteStore, string, *sql.DB) {
+	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "history.db")
 	db, err := history.Open(t.Context(), dbPath)
@@ -25,14 +35,14 @@ func setupResidencyTestStore(t *testing.T) (*SQLiteStore, string) {
 
 	repo := history.NewRepository(db)
 	store := NewSQLiteStore(repo.DB(), dir, repo)
-	return store, dir
+	return store, dir, repo.DB()
 }
 
 // TestTotalRemainingBytes_NonResidentJobsCounted reproduces issue #262: with
 // more queued jobs than maxActive, every job beyond the active set is
-// non-resident (job.progress == nil, per Queue.Add's de-hydration), and
-// TotalRemainingBytes used to skip every one of them instead of falling back
-// to a cached figure.
+// non-resident (job.manifest == nil, per Queue.Add's de-hydration; progress
+// stays live — docs/queue-lifecycle.md), and TotalRemainingBytes used to
+// skip every one of them instead of reading their live progress.
 func TestTotalRemainingBytes_NonResidentJobsCounted(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
@@ -50,12 +60,15 @@ func TestTotalRemainingBytes_NonResidentJobsCounted(t *testing.T) {
 
 	// Guard the fixture: with maxActive=1, exactly one job should have been
 	// promoted to resident/Downloading; the rest must be non-resident
-	// StatusQueued, or this test would pass vacuously.
+	// StatusQueued, or this test would pass vacuously. Manifest is the only
+	// residency signal checked here — progress is never released
+	// (docs/queue-lifecycle.md), so its presence would make every job look
+	// "resident" regardless of manifest state.
 	q.mu.RLock()
 	var resident, nonResident int
 	for _, id := range jobIDs {
 		j := q.byID[id]
-		if j.manifest != nil || j.progress != nil {
+		if j.manifest != nil {
 			resident++
 		} else {
 			nonResident++

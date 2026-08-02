@@ -55,8 +55,14 @@ func TestRetry_StoreBackedNonResident_PreservesSuccessAndRetriesFailed(t *testin
 
 	// Fixture guard: the job must actually be non-resident here, or this
 	// test silently stops exercising the bug (issue #260's core scenario).
-	if job.Manifest() != nil || job.Progress() != nil {
+	// Manifest is the residency signal; progress is never released
+	// (docs/queue-lifecycle.md), so it is checked separately below rather
+	// than folded into this guard.
+	if job.Manifest() != nil {
 		t.Fatal("fixture guard: job should be non-resident after transitioning to StatusFailed")
+	}
+	if job.Progress() == nil {
+		t.Fatal("fixture guard: progress must never be nil")
 	}
 
 	if err := q.Retry(job.ID); err != nil {

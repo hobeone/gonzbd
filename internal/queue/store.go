@@ -54,11 +54,23 @@ type Store interface {
 	// RestoreJobProgress loads per-file progress counters into job.progress for a resident job.
 	RestoreJobProgress(ctx context.Context, job *Job) error
 
+	// ArticleCountsByJob returns every job's per-file article counts in a
+	// single grouped query, indexed by file_index within each job. A job
+	// whose counts are all zero predates the article_count column, so the
+	// caller must fall back to that job's manifest rather than sizing
+	// progress to zero.
+	ArticleCountsByJob(ctx context.Context) (map[string][]int, error)
+
+	// BackfillArticleCounts writes recovered per-file article counts back to
+	// a legacy job_files row so future loads don't repeat the manifest
+	// fallback. Must be called without q.mu held.
+	BackfillArticleCounts(ctx context.Context, jobID string, counts []int) error
+
 	// RemainingBytesByJob returns each job's remaining bytes (manifest bytes
 	// minus bytes already downloaded), summed per job_id across job_files.
-	// Used to reconstruct Job.lastKnownRemainingBytes for jobs that come
-	// back from Loader.Load non-resident, since those jobs have no live
-	// JobProgress to read remainingBytes from.
+	// Used by Loader.Load to seed JobProgress.remainingBytes for jobs that
+	// come back from the store non-resident (no manifest, so no per-article
+	// byte breakdown is available to compute this the normal way).
 	RemainingBytesByJob(ctx context.Context) (map[string]int64, error)
 
 	// DeleteJobArtifacts removes the on-disk manifest and progress files for

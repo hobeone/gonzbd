@@ -1,8 +1,10 @@
 package queue_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +46,46 @@ func newTestJob(id, name string) *queue.Job {
 		MD5:      fmt.Sprintf("md5-%s", id),
 		AvgAge:   time.Now().Truncate(time.Second),
 	}
+}
+
+// newTestJobWithManifest builds a job with a real manifest of nFiles files,
+// each with nArticles articles — unlike newTestJob, which builds a
+// manifest-less job and so cannot exercise any manifest-derived persistence
+// (article_count, scalars, etc.). Constructed through queue.NewJob because
+// this is the external queue_test package and cannot reach Job's unexported
+// fields directly.
+func newTestJobWithManifest(t *testing.T, id, name string, nFiles, nArticles int) *queue.Job {
+	t.Helper()
+	parsed := &nzb.NZB{
+		Meta:   map[string][]string{"title": {name}},
+		Groups: []string{"alt.binaries.test"},
+		AvgAge: time.Unix(1700000000, 0),
+	}
+	for fi := range nFiles {
+		f := nzb.File{
+			Subject: fmt.Sprintf("%s - file %d", name, fi),
+			Date:    time.Unix(1700000000, 0),
+		}
+		for ai := range nArticles {
+			art := nzb.Article{
+				ID:     fmt.Sprintf("f%da%d@test", fi, ai),
+				Bytes:  100_000,
+				Number: ai + 1,
+			}
+			f.Articles = append(f.Articles, art)
+			f.Bytes += int64(art.Bytes)
+		}
+		parsed.Files = append(parsed.Files, f)
+	}
+	job, err := queue.NewJob(parsed, queue.AddOptions{
+		Filename: name + ".nzb",
+		Priority: constants.NormalPriority,
+	}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	job.ID = id
+	return job
 }
 
 func TestSQLiteStore_CRUD(t *testing.T) {
@@ -475,6 +517,93 @@ func TestSQLiteStore_UpdateBatchRollsBackAllOnFailure(t *testing.T) {
 	}
 }
 
+// TestSQLiteStore_AddErrorPaths exercises Add's error-handling branches that
+// TestSQLiteStore_CRUD's happy path never reaches: a closed connection pool
+// (BeginTx failure), a duplicate primary key (the jobs INSERT failure), a
+// pre-existing conflicting job_files row (the job_files INSERT failure), and
+// a resident job with a non-zero download-finished timestamp (the
+// download_finished branch, which newTestJob's fresh jobs never hit).
+func TestSQLiteStore_AddErrorPaths(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("begin tx fails on a closed pool", func(t *testing.T) {
+		store, repo, _ := setupTestStore(t)
+		if err := repo.DB().Close(); err != nil {
+			t.Fatalf("close db: %v", err)
+		}
+		err := store.Add(ctx, newTestJob("closed-pool-job", "closed-pool-job"))
+		if err == nil || !strings.Contains(err.Error(), "begin tx add") {
+			t.Fatalf("Add on closed pool = %v, want error containing %q", err, "begin tx add")
+		}
+	})
+
+	t.Run("duplicate job id fails the jobs insert", func(t *testing.T) {
+		store, _, _ := setupTestStore(t)
+		job := newTestJob("dup-job-id", "dup-job-id")
+		if err := store.Add(ctx, job); err != nil {
+			t.Fatalf("first Add: %v", err)
+		}
+		err := store.Add(ctx, newTestJob("dup-job-id", "dup-job-id-again"))
+		if err == nil || !strings.Contains(err.Error(), "insert job") {
+			t.Fatalf("Add with duplicate id = %v, want error containing %q", err, "insert job")
+		}
+	})
+
+	t.Run("conflicting job_files row fails the job_files insert", func(t *testing.T) {
+		store, repo, _ := setupTestStore(t)
+		job := newTestJobWithManifest(t, "conflicting-files-job", "conflicting-files", 1, 1)
+		// Add succeeds once, creating the jobs row and its one job_files
+		// row. A dedicated connection then disables foreign-key enforcement
+		// (SQLite refuses to toggle this pragma inside a transaction, so it
+		// must run standalone) and deletes only the jobs row, leaving the
+		// job_files row orphaned instead of cascading. Re-adding the same
+		// job re-inserts the jobs row fine, but its insert for file 0 now
+		// collides with the orphaned row on UNIQUE(job_id, file_index).
+		if err := store.Add(ctx, job); err != nil {
+			t.Fatalf("seed Add: %v", err)
+		}
+		conn, err := repo.DB().Conn(ctx)
+		if err != nil {
+			t.Fatalf("acquire conn: %v", err)
+		}
+		defer func() { _ = conn.Close() }()
+		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+			t.Fatalf("disable foreign keys: %v", err)
+		}
+		if _, err := conn.ExecContext(ctx, "DELETE FROM jobs WHERE id = ?", job.ID); err != nil {
+			t.Fatalf("delete jobs row directly: %v", err)
+		}
+		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+			t.Fatalf("re-enable foreign keys: %v", err)
+		}
+
+		err = store.Add(ctx, job)
+		if err == nil || !strings.Contains(err.Error(), "insert job_file") {
+			t.Fatalf("Add with conflicting job_files row = %v, want error containing %q", err, "insert job_file")
+		}
+	})
+
+	t.Run("download-finished timestamp is persisted", func(t *testing.T) {
+		store, repo, _ := setupTestStore(t)
+		job := newTestJobWithManifest(t, "dl-finished-job", "dl-finished", 1, 1)
+		want := time.Unix(1700001000, 0).UTC()
+		job.MarkDownloadFinished(want)
+		if err := store.Add(ctx, job); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		// job.Status defaults to non-resident (StatusQueued), so Get won't
+		// attach a manifest/progress to read the timestamp back from; assert
+		// against the raw column via a direct query instead.
+		var dlFinishedUnix int64
+		if err := repo.DB().QueryRowContext(ctx, "SELECT download_finished FROM jobs WHERE id = ?", job.ID).Scan(&dlFinishedUnix); err != nil {
+			t.Fatalf("query download_finished: %v", err)
+		}
+		if dlFinishedUnix != want.Unix() {
+			t.Errorf("download_finished = %d, want %d", dlFinishedUnix, want.Unix())
+		}
+	})
+}
+
 func TestSQLiteStore_ErrorCoverage(t *testing.T) {
 	store, repo, _ := setupTestStore(t)
 	ctx := t.Context()
@@ -855,5 +984,235 @@ func TestSQLiteStore_DeleteJobArtifactsMissingIsNotAnError(t *testing.T) {
 
 	if err := store.DeleteJobArtifacts(t.Context(), "job0000000000010"); err != nil {
 		t.Errorf("DeleteJobArtifacts on absent artifacts = %v, want nil", err)
+	}
+}
+
+// article_count is what lets progress be sized at restart without loading
+// manifests. A job written by an older build has 0, which must be
+// distinguishable from a real count so the caller can fall back.
+func TestSQLiteStore_ArticleCountRoundTrips(t *testing.T) {
+	store, _, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	job := newTestJobWithManifest(t, "job0000000000020", "article-count", 2, 5)
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	byJob, err := store.ArticleCountsByJob(ctx)
+	if err != nil {
+		t.Fatalf("ArticleCountsByJob: %v", err)
+	}
+	got := byJob[job.ID]
+	want := []int{5, 5}
+	if len(got) != len(want) {
+		t.Fatalf("got %d files, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("file %d: article_count = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+// TestSQLiteStore_ArticleCountsByJobNonContiguousIndices pins finding 6: a
+// job whose job_files rows have non-contiguous file_index values (as after a
+// partial delete) must have each count attributed by its actual file_index,
+// not by scan-order position.
+func TestSQLiteStore_ArticleCountsByJobNonContiguousIndices(t *testing.T) {
+	store, repo, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	job := newTestJobWithManifest(t, "job0000000000021", "gapped", 3, 2)
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// Simulate a partial delete: file_index 1 is gone, leaving 0 and 2.
+	if _, err := repo.DB().ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ? AND file_index = 1", job.ID); err != nil {
+		t.Fatalf("delete file_index 1: %v", err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, "UPDATE job_files SET article_count = 9 WHERE job_id = ? AND file_index = 2", job.ID); err != nil {
+		t.Fatalf("set article_count for file_index 2: %v", err)
+	}
+
+	byJob, err := store.ArticleCountsByJob(ctx)
+	if err != nil {
+		t.Fatalf("ArticleCountsByJob: %v", err)
+	}
+	got := byJob[job.ID]
+	if len(got) != 3 {
+		t.Fatalf("got %d entries, want 3 (sized to the highest file_index + 1)", len(got))
+	}
+	if got[0] != 2 {
+		t.Errorf("file_index 0: article_count = %d, want 2", got[0])
+	}
+	if got[2] != 9 {
+		t.Errorf("file_index 2: article_count = %d, want 9 (must be attributed by "+
+			"file_index, not scan-order position)", got[2])
+	}
+}
+
+// TestSQLiteStore_GetNonResidentScalarsFromJobFiles pins the Task 3 gap
+// closure: a job whose status is non-resident (never promoted, no live
+// manifest) must still read real TotalBytes/NumFiles/NumArticles from
+// job_files, now that article_count makes NumArticles reconstructable too.
+// Zero would be indistinguishable from a genuinely empty job, which is why
+// this matters. The par2 pair is a known, documented exception: job_files'
+// is_par2_recovery only flags recovery volumes, while the manifest's
+// Par2Bytes/Par2Files also include the par2 index file, so they must stay
+// zero here rather than silently reporting an undercount.
+func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
+	store, _, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	parsed := &nzb.NZB{
+		Files: []nzb.File{
+			{
+				Subject:  "regular-file",
+				Date:     time.Unix(1700000000, 0),
+				Bytes:    300,
+				Articles: []nzb.Article{{ID: "a1", Bytes: 100, Number: 1}, {ID: "a2", Bytes: 100, Number: 2}, {ID: "a3", Bytes: 100, Number: 3}},
+			},
+			{
+				// A par2 recovery volume: counted by the manifest's
+				// Par2Bytes/Par2Files (via the ".par2" subject match) but also
+				// the only kind of file is_par2_recovery flags in job_files.
+				Subject:  "file.vol01+02.par2",
+				Date:     time.Unix(1700000000, 0),
+				Bytes:    50,
+				Articles: []nzb.Article{{ID: "a4", Bytes: 50, Number: 1}},
+			},
+		},
+	}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "non-resident-scalars"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if job.Status != constants.StatusQueued {
+		t.Fatalf("expected a fresh job to be non-resident (StatusQueued), got %v", job.Status)
+	}
+	wantTotalBytes := job.TotalBytes()
+	wantNumFiles := job.NumFiles()
+	wantNumArticles := job.NumArticles()
+	wantPar2Files := job.Par2Files()
+	if wantPar2Files == 0 {
+		t.Fatal("test fixture must contain at least one par2 file for this to be a meaningful check")
+	}
+
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Manifest() != nil {
+		t.Fatal("expected non-resident job to come back with no resident manifest")
+	}
+	if got.TotalBytes() != wantTotalBytes {
+		t.Errorf("TotalBytes = %d, want %d", got.TotalBytes(), wantTotalBytes)
+	}
+	if got.NumFiles() != wantNumFiles {
+		t.Errorf("NumFiles = %d, want %d", got.NumFiles(), wantNumFiles)
+	}
+	if got.NumArticles() != wantNumArticles {
+		t.Errorf("NumArticles = %d, want %d", got.NumArticles(), wantNumArticles)
+	}
+	// Documented limitation, not a bug: is_par2_recovery cannot stand in for
+	// the manifest's par2 classification (it excludes the index file), so
+	// these two must remain zero rather than report a silently wrong value.
+	if got.Par2Bytes() != 0 {
+		t.Errorf("Par2Bytes = %d, want 0 (not reconstructable from is_par2_recovery)", got.Par2Bytes())
+	}
+	if got.Par2Files() != 0 {
+		t.Errorf("Par2Files = %d, want 0 (not reconstructable from is_par2_recovery)", got.Par2Files())
+	}
+}
+
+// TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt pins the
+// fix for the review finding on the non-resident scalar reconstruction
+// added just above: a failure in the job_files aggregate query (SUM(bytes),
+// COUNT(*), SUM(article_count)) must not vanish. Unlike the file-count
+// query nine lines above it in Get (which fails the whole call, per commit
+// cc26bb09 — that result gates job admission), this query only feeds three
+// reporting scalars for a job that is otherwise valid and fully loaded, so
+// Get still succeeds and returns the job with those three at zero (its
+// pre-Task-4 behavior) — but the error must be logged, not dropped.
+//
+// article_count is dropped from job_files (rather than dropping the whole
+// table) so that the file-count query above still succeeds and the
+// resident-manifest branch is unaffected — isolating the failure to
+// exactly the aggregate query under test.
+func TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt(t *testing.T) {
+	store, repo, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	job := newTestJobWithManifest(t, "agg-scalar-error-job", "agg-scalar-error", 1, 1)
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, "ALTER TABLE job_files DROP COLUMN article_count"); err != nil {
+		t.Fatalf("drop article_count column: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v, want Get to still succeed (a reporting-value failure must not fail job retrieval)", err)
+	}
+	if got.TotalBytes() != 0 || got.NumFiles() != 0 || got.NumArticles() != 0 {
+		t.Errorf("got TotalBytes=%d NumFiles=%d NumArticles=%d, want all zero when the aggregate query itself errors",
+			got.TotalBytes(), got.NumFiles(), got.NumArticles())
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "aggregate scalars") || !strings.Contains(logged, job.ID) {
+		t.Errorf("expected the aggregate query error to be logged (mentioning the job id), got log output: %q", logged)
+	}
+}
+
+// TestSQLiteStore_GetWarnsOnLegacyArticleCountAggregate pins finding 4 from
+// the final whole-branch review: SUM(article_count) reads as a confident 0
+// for a job_files row that predates the article_count column (migration 004
+// backfills it to 0, not the real per-file counts), the same shape
+// articleCountsAreLegacy detects per-file in Loader.Load. Get had no
+// equivalent detection, so it silently asserted NumArticles()==0 as though
+// verified. Get cannot correct the number in place (that would require
+// reading the manifest, defeating Task 4's point), but it must say so loudly
+// via the log rather than staying silent.
+func TestSQLiteStore_GetWarnsOnLegacyArticleCountAggregate(t *testing.T) {
+	store, repo, _ := setupTestStore(t)
+	ctx := t.Context()
+
+	job := newTestJobWithManifest(t, "legacy-agg-job", "legacy-agg", 2, 3)
+	if err := store.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, "UPDATE job_files SET article_count = 0 WHERE job_id = ?", job.ID); err != nil {
+		t.Fatalf("zero article_count: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.NumArticles() != 0 {
+		t.Errorf("NumArticles() = %d, want 0 (there is no manifest read here to recover the real count)", got.NumArticles())
+	}
+	if got.NumFiles() != 2 {
+		t.Fatalf("NumFiles() = %d, want 2 — fixture guard, this test needs numFiles > 0 to exercise the legacy shape", got.NumFiles())
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "article_count") || !strings.Contains(logged, "unknown") || !strings.Contains(logged, job.ID) {
+		t.Errorf("expected a warning about the legacy article_count shape mentioning the job id, got log output: %q", logged)
 	}
 }

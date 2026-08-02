@@ -192,33 +192,44 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 	return job.Status, nil
 }
 
-// residentJob returns the job for id only if its Manifest and JobProgress are
-// currently in memory. Callers must already hold q.mu — either lock, since
-// this only reads.
+// residentJob returns the job for id only if its Manifest is currently in
+// memory. Callers must already hold q.mu — either lock, since this only
+// reads.
 //
-// New and modified methods that dereference job.manifest or job.progress
-// should obtain their job through this rather than indexing q.byID directly.
-// A job present in q.byID is not necessarily hydrated: Add releases both
-// fields for StatusQueued jobs, and evictJobLocked releases them when a job
-// leaves the active set, in both cases leaving the job in the map.
+// New and modified methods that dereference job.manifest should obtain their
+// job through this rather than indexing q.byID directly. A job present in
+// q.byID is not necessarily hydrated: Add releases the manifest for
+// StatusQueued jobs, and evictJobLocked releases it when a job leaves the
+// active set, in both cases leaving the job in the map.
 //
 // Note this is the direction of travel, not yet a property of the whole file.
 // Several existing methods still index q.byID and nil-guard inline, silently
 // no-opping for a non-resident job instead of reporting it; converting them is
 // tracked separately as a follow-up to issue #258.
 //
-// Safety rests on manifest and progress always being either both nil or both
-// non-nil — not merely on both being assigned. That is what lets a caller skip
-// its work when this returns ErrJobNotResident: the progress it would have
-// mutated is about to be discarded and rebuilt from stored state by
-// PromoteNext, so the skipped mutation is moot rather than lost. A
-// half-hydrated job (manifest nil, progress live) would invalidate that
-// reasoning silently.
+// Manifest is the only residency signal now: JobProgress is permanently
+// resident (docs/queue-lifecycle.md) and never nil for a job in q.byID, so a
+// non-resident job is manifest-nil/progress-live, not both-nil — that state
+// is the ordinary steady state for every StatusQueued/StatusPaused job, not
+// a half-hydration hazard. Skipping work on ErrJobNotResident is still safe,
+// for a reason that no longer depends on progress's presence: every caller
+// through this gate needs the manifest itself to resolve what it was asked
+// to mutate (a message ID or article index only means something against a
+// resident Manifest), so there is no correct mutation to perform without one.
+// And should a caller somehow bypass that, whatever it wrote would not
+// survive anyway — the moment the job returns to resident, hydrateJobLocked
+// unconditionally rebuilds JobProgress from the manifest plus
+// Store.RestoreJobProgress's persisted counters, discarding whatever was
+// live beforehand. The skipped mutation is moot because promotion
+// supersedes it, not because progress was about to vanish.
 //
-// Job.UnmarshalJSON (job.go:583-584) assigns the two from independent JSON
-// keys and upholds the invariant only because MarshalJSON (job.go:551-552)
-// can emit no mixed pair — a round-trip guarantee rather than a call-site
-// one. Keep those two in sync.
+// The job.progress == nil clause below is not load-bearing for any known
+// caller — no code path leaves a job in q.byID with nil progress — but it
+// stays as defense in depth: everything downstream of this gate assumes
+// job.progress is safe to dereference, and every worker goroutine that could
+// hit a violation carries no recover(), so the cost of keeping a redundant
+// check is a single comparison against the cost of a process crash if that
+// invariant is ever broken elsewhere.
 func (q *Queue) residentJob(id string) (*Job, error) {
 	job, ok := q.byID[id]
 	if !ok {
@@ -261,7 +272,7 @@ func (q *Queue) CountUnfinishedArticles(jobID string, fileIdx int) (int, error) 
 	var count int
 	lo, hi := job.manifest.FileRange(fileIdx)
 	for i := lo; i < hi; i++ {
-		if !job.progress.done[i] {
+		if !job.progress.done.Get(i) {
 			count++
 		}
 	}
@@ -380,6 +391,26 @@ func UniqueName(base string, exists func(string) bool) string {
 // If a job with the same Name already exists, the new job is renamed
 // by appending .1, .2, etc. to match Python SABnzbd behavior.
 func (q *Queue) Add(job *Job) error {
+	// Enforce the residency invariant at the single entry point that puts a
+	// job into q.byID, rather than re-checking job.progress == nil at every
+	// read site downstream (e.g. TotalRemainingBytes, called from
+	// runMetricsPush — a 1Hz ticker goroutine with no recover()). Every
+	// production caller (NewJob, LoadJob followed by Add) already sets
+	// progress; a nil here means a caller bypassed both, e.g. a bare
+	// &Job{Status: StatusQueued} representing a job not yet hydrated from
+	// disk — a shape some claim-failure tests use deliberately to exercise
+	// PromoteNext's own hydration-failure path. Repair rather than reject:
+	// size progress from the manifest if one is already attached, or to
+	// zero articles if not (the same "nothing known yet" shape
+	// hydrateJobLocked expects to overwrite once it actually reads the
+	// manifest). Either way, no job with nil progress reaches q.byID.
+	if job.progress == nil {
+		m := job.manifest
+		if m == nil {
+			m = &Manifest{}
+		}
+		job.progress = newJobProgress(m)
+	}
 	if q.store == nil && q.stateDir != "" && job.manifest != nil {
 		manifestsDir := filepath.Join(q.stateDir, "manifests")
 		_ = os.MkdirAll(manifestsDir, 0o750)
@@ -406,6 +437,10 @@ func (q *Queue) Add(job *Job) error {
 		job.progress.recompute(job.manifest)
 	}
 
+	if m := job.manifest; m != nil {
+		job.setScalarsFromManifest(m)
+	}
+
 	// Holding q.mu across the store writes below is intentional: it prevents
 	// a TOCTOU name collision between the uniqueness check above and the
 	// insert, and keeps the RAM and SQLite views consistent before the
@@ -424,15 +459,11 @@ func (q *Queue) Add(job *Job) error {
 	q.byID[job.ID] = job
 
 	if job.Status == constants.StatusQueued && (q.store != nil || q.stateDir != "") {
-		// job.progress is always non-nil here: NewJob builds it directly
-		// (job.go) and Add is the first place a freshly built job can lose
-		// residency, so there is no earlier drop to have already captured
-		// from. Guard on nil anyway rather than assuming, since a caller
-		// could in principle hand Add a Job built by some other path.
-		if job.progress != nil {
-			job.lastKnownRemainingBytes = job.progress.remainingBytes
-		}
-		job.setResidency(nil, nil)
+		// Release only the manifest. Progress stays resident — see
+		// docs/queue-lifecycle.md: JobProgress is cheap (bitsets) relative to
+		// the manifest and every reporting path depends on it never being
+		// absent.
+		job.setResidency(nil, job.progress)
 	}
 
 	q.dirty.Store(true)
@@ -574,6 +605,11 @@ func (q *Queue) Retry(id string) error {
 			return fmt.Errorf("queue: retry job %s: %w", id, err)
 		}
 		prevStatus, prevWarning := job.Status, job.Warning
+		// Snapshot progress before ResetForRetry mutates it in place. If the
+		// persist below fails, the store row is untouched by that mutation,
+		// so this snapshot — not the mutated live object — is what the
+		// rolled-back job must show; see the rollback comment below.
+		prevProgress := job.progress.clone()
 		if err := q.setStatusLocked(job, constants.StatusQueued); err != nil {
 			q.mu.Unlock()
 			return err
@@ -586,11 +622,17 @@ func (q *Queue) Retry(id string) error {
 				// discarded: PromoteNext would re-read the stale row and undo
 				// the reset, leaving Retry to report success on a job that is
 				// still failed and undispatchable — the exact defect #260
-				// describes. Roll the job back instead. Dropping residency is
-				// what makes the rollback complete: ResetForRetry has already
-				// mutated this JobProgress, and the store row, which was never
-				// written, remains the authority to re-hydrate from.
+				// describes. Roll the job back instead.
+				//
+				// Progress must never be nil (docs/queue-lifecycle.md), so the
+				// rollback restores prevProgress rather than dropping
+				// residency to nil as it used to. The un-written store row
+				// still reflects prevProgress, not ResetForRetry's optimistic
+				// reset, so keeping the mutated live object resident would
+				// let TotalRemainingBytes and friends report numbers nothing
+				// on disk backs up.
 				job.Status, job.Warning = prevStatus, prevWarning
+				job.setResidency(job.manifest, prevProgress)
 				q.evictJobLocked(job)
 				q.mu.Unlock()
 				return fmt.Errorf("queue: retry job %s: persist reset: %w", id, err)
@@ -681,6 +723,11 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 		if job.manifest == nil {
 			manifest.buildMessageIDIndex()
 			job.setResidency(&manifest, newJobProgress(&manifest))
+			// A job promoted here after a restart (StatusQueued, restored via
+			// SQLiteStore.Get/Loader.Load without a manifest) never had these
+			// scalars populated. Backfill from the manifest just read above —
+			// no extra I/O, it already happened in Step 2.
+			job.setScalarsFromManifest(&manifest)
 		}
 
 		// If SQLite store present, restore per-file progress counters.
@@ -740,10 +787,9 @@ func (q *Queue) evictJobLocked(job *Job) {
 	}
 	q.activeSet.Evict(job)
 	if q.store != nil || q.stateDir != "" {
-		if job.progress != nil {
-			job.lastKnownRemainingBytes = job.progress.remainingBytes
-		}
-		job.setResidency(nil, nil)
+		// Release only the manifest; progress stays resident (see Add's
+		// matching comment and docs/queue-lifecycle.md).
+		job.setResidency(nil, job.progress)
 	}
 }
 
@@ -1012,7 +1058,19 @@ func (q *Queue) hydrateJobLocked(job *Job, id string) error {
 	if err := readGzJSON(manifestPath, &m); err != nil {
 		return fmt.Errorf("queue: hydrate job %s: %w", id, err)
 	}
+	// Preserve the progress that was live before this hydration attempt
+	// (per docs/queue-lifecycle.md it is never nil) so a failed
+	// RestoreJobProgress below has something accurate to fall back to
+	// instead of nil.
+	priorProgress := job.progress
 	job.setResidency(&m, newJobProgress(&m))
+	// A job restored via SQLiteStore.Get/Loader.Load while non-resident
+	// (StatusQueued/StatusPaused) never had these scalars populated — they
+	// are only set on the resident-status branch of those paths. Backfill
+	// them here from the manifest this call already loaded, rather than
+	// leaving them zero for the rest of the job's in-memory lifetime; this
+	// adds no extra I/O since the manifest read above already happened.
+	job.setScalarsFromManifest(&m)
 	if q.store != nil {
 		if err := q.store.RestoreJobProgress(context.Background(), job); err != nil { //lockio: restores progress in place; hoist tracked in #229
 			// newJobProgress built an all-zero JobProgress that RestoreJobProgress
@@ -1020,9 +1078,12 @@ func (q *Queue) hydrateJobLocked(job *Job, id string) error {
 			// failed restore would present a part-downloaded job as having
 			// downloaded nothing, and Retry persists what it hydrates, so the
 			// empty progress would then be written back over the real one.
-			// Drop residency and report the failure; PromoteNext already fails
-			// closed on this same call.
-			job.setResidency(nil, nil)
+			// Drop the manifest and report the failure — PromoteNext already
+			// fails closed on this same call — but restore priorProgress
+			// rather than nil: progress must never be absent, and
+			// priorProgress is the one value here that is actually backed by
+			// what's on disk.
+			job.setResidency(nil, priorProgress)
 			return fmt.Errorf("queue: restore progress for job %s: %w", id, err)
 		}
 	}
@@ -1225,9 +1286,15 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 	for _, job := range q.jobs {
-		// Skip jobs already handed to post-processing or fully complete,
-		// or non-resident jobs without progress.
-		if job.PostProc || job.progress == nil || job.progress.pendingArticles == 0 {
+		// Skip jobs already handed to post-processing or fully complete, or
+		// non-resident jobs (no manifest to walk articles against). This
+		// used to gate on job.progress == nil, which was equivalent to
+		// manifest non-residency back when eviction dropped both together;
+		// now that progress is always resident (docs/queue-lifecycle.md),
+		// gating on progress here would let a non-resident job (nil
+		// manifest, non-nil progress) through to the m.NumFiles() call
+		// below and panic.
+		if job.PostProc || job.manifest == nil || job.progress.pendingArticles == 0 {
 			continue
 		}
 		m := job.manifest
@@ -1241,7 +1308,7 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 			}
 			lo, hi := m.FileRange(fi)
 			for i := lo; i < hi; i++ {
-				if job.progress.done[i] || job.progress.emitted[i] {
+				if job.progress.done.Get(i) || job.progress.emitted.Get(i) {
 					continue
 				}
 				if !fn(UnfinishedArticle{
@@ -1411,21 +1478,16 @@ func (q *Queue) ClearAllEmitted() {
 }
 
 // TotalRemainingBytes returns the sum of RemainingBytes across all jobs,
-// including jobs that are not currently resident (only maxActive jobs are
-// hydrated at once; every other StatusQueued job has a nil progress — see
-// Job.lastKnownRemainingBytes). Live progress always wins when a job is
-// resident; the cached figure is used only as a fallback, so promotion/
-// eviction races can never make this prefer a stale number over a live one.
+// including jobs that are not currently resident (only maxActive jobs have a
+// resident Manifest at once). JobProgress is always resident regardless of
+// manifest residency — see docs/queue-lifecycle.md — so every job's
+// remainingBytes is a live read, never a cached fallback.
 func (q *Queue) TotalRemainingBytes() int64 {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 	var total int64
 	for _, job := range q.byID {
-		if job.progress != nil {
-			total += job.progress.remainingBytes
-		} else {
-			total += job.lastKnownRemainingBytes
-		}
+		total += job.progress.remainingBytes
 	}
 	return total
 }
@@ -1775,10 +1837,14 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		// job-level scalar (ServerStats, DownloadStarted/Finished, ...),
 		// silently discarding progress on a partially-downloaded job.
 		newProgress := job.progress.clone()
-		newDone := make([]bool, 0, newManifestVal.NumArticles())
-		newFailed := make([]bool, 0, newManifestVal.NumArticles())
-		newEmitted := make([]bool, 0, newManifestVal.NumArticles())
+		// bitset has no slice/append primitive (see bitset.go), so surviving
+		// articles are copied bit-by-bit into pre-sized bitsets via a running
+		// index, rather than the []bool append-of-range this replaces.
+		newDone := newBitset(newManifestVal.NumArticles())
+		newFailed := newBitset(newManifestVal.NumArticles())
+		newEmitted := newBitset(newManifestVal.NumArticles())
 		newFiles := make([]FileProgress, 0, newManifestVal.NumFiles())
+		idx := 0
 		for fi := range m.NumFiles() {
 			if job.progress.files[fi].Deferred {
 				continue
@@ -1788,10 +1854,30 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 			// Done=false/Failed=false/Emitted=false at discard time —
 			// dropping them loses nothing.
 			lo, hi := m.FileRange(fi)
-			newDone = append(newDone, job.progress.done[lo:hi]...)
-			newFailed = append(newFailed, job.progress.failed[lo:hi]...)
-			newEmitted = append(newEmitted, job.progress.emitted[lo:hi]...)
+			for i := lo; i < hi; i++ {
+				if job.progress.done.Get(i) {
+					newDone.Set(idx)
+				}
+				if job.progress.failed.Get(i) {
+					newFailed.Set(idx)
+				}
+				if job.progress.emitted.Get(i) {
+					newEmitted.Set(idx)
+				}
+				idx++
+			}
 			newFiles = append(newFiles, job.progress.files[fi])
+		}
+		// idx is expected to land exactly on newManifestVal.NumArticles():
+		// both loops above walk the identical Deferred predicate in the
+		// identical file order, so every surviving article should get
+		// exactly one slot. That equality is not self-enforcing, though —
+		// bitset.Set silently no-ops out of range (see bitset.go), so a
+		// future divergence between the two loops would corrupt done/
+		// failed/emitted by silently dropping or misplacing bits instead of
+		// failing loudly. Check it explicitly rather than trust it.
+		if idx != newManifestVal.NumArticles() {
+			panic(fmt.Sprintf("queue: DiscardDeferredPar2 copied %d articles but the rebuilt manifest has %d — the surviving-file walk and the manifest's Deferred filtering have diverged", idx, newManifestVal.NumArticles()))
 		}
 		newProgress.done = newDone
 		newProgress.failed = newFailed
@@ -1811,6 +1897,13 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		newProgress.recompute(newManifestVal)
 
 		job.setResidency(newManifestVal, newProgress)
+		// The rebuilt manifest has fewer files/articles/bytes than the one
+		// the job's scalars were last synced from (the whole point of this
+		// discard) — par2Bytes/par2Files are carried over unchanged above,
+		// but totalBytes/numFiles/numArticles shrink, so the cached scalars
+		// must be re-synced or TotalBytes()/NumFiles()/NumArticles() would
+		// keep reporting the pre-discard totals forever.
+		job.setScalarsFromManifest(newManifestVal)
 		q.dirty.Store(true)
 	}
 	return nil

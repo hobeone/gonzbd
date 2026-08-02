@@ -141,7 +141,7 @@ func TestNewJobCopiesArticleState(t *testing.T) {
 		t.Errorf("Status = %q, want Queued", j.Status)
 	}
 	// Mutating the job must not leak into the parser output.
-	j.progress.done[0] = true
+	j.progress.done.Set(0)
 	if parsed.Files[0].Articles[0].Bytes != 500_000 {
 		t.Errorf("parser article mutated by job update")
 	}
@@ -233,6 +233,49 @@ func TestAddDuplicateIDFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "already present") {
 		t.Errorf("duplicate Add error = %v, want 'already present'", err)
 	}
+}
+
+// TestAddRepairsNilProgress pins finding 1 from the final whole-branch
+// review: JobProgress must never be nil for a job in q.byID (see
+// docs/queue-lifecycle.md) — TotalRemainingBytes, called every second from
+// runMetricsPush, dereferences job.progress unconditionally and that
+// goroutine has no recover(). Add is exported and validates nothing on its
+// own, so a caller handing it a bare &Job{} must not be able to plant a
+// nil-progress job. Add must repair it instead of admitting it — rejecting
+// outright would break the claim-failure tests that deliberately construct
+// an unhydrated &Job{Status: StatusQueued} to exercise PromoteNext's own
+// hydration-failure path (see claimfailure_lock_test.go).
+func TestAddRepairsNilProgress(t *testing.T) {
+	t.Run("no manifest", func(t *testing.T) {
+		q := New()
+		job := &Job{ID: "bare-job", Name: "bare", Status: constants.StatusQueued}
+		if err := q.Add(job); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		if job.progress == nil {
+			t.Fatal("job.progress is nil after Add — the residency invariant was not enforced")
+		}
+		if n := job.progress.done.Len(); n != 0 {
+			t.Errorf("progress sized to %d articles, want 0 (no manifest to size it from)", n)
+		}
+	})
+
+	t.Run("manifest present", func(t *testing.T) {
+		q := New()
+		job := &Job{ID: "bare-job-with-manifest", Name: "bare-with-manifest", Status: constants.StatusQueued}
+		job.manifest = newManifest([]JobFile{{Articles: []JobArticle{
+			{ID: "a1", Bytes: 100}, {ID: "a2", Bytes: 100},
+		}}})
+		if err := q.Add(job); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		if job.progress == nil {
+			t.Fatal("job.progress is nil after Add — the residency invariant was not enforced")
+		}
+		if n := job.progress.done.Len(); n != 2 {
+			t.Errorf("progress sized to %d articles, want 2 (sized from the attached manifest)", n)
+		}
+	})
 }
 
 func TestRemove(t *testing.T) {
@@ -562,7 +605,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		_ = original.Add(j)
 	}
 	// Mutate a runtime field to verify it round-trips.
-	a.progress.done[0] = true
+	a.progress.done.Set(0)
 	a.progress.remainingBytes = 500_000
 
 	if err := original.Save(dir); err != nil {

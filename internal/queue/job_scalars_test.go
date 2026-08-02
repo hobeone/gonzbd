@@ -1,0 +1,276 @@
+package queue
+
+import (
+	"testing"
+	"time"
+
+	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
+)
+
+// makeMultiFileJobWithPar2 is makeMultiFileJob (lifecycle_test.go) plus one
+// par2 recovery-volume file, so a test can assert on Par2Bytes/Par2Files —
+// the two manifest scalars that SQLiteStore.Get's non-resident-job
+// reconstruction (Task 4) deliberately leaves at zero, which is what makes
+// them able to distinguish "read from a resident manifest" from "read from
+// the job_files reconstruction" in a way TotalBytes/NumFiles/NumArticles no
+// longer can.
+func makeMultiFileJobWithPar2(t *testing.T, name string, nFiles, nArticles int) *Job {
+	t.Helper()
+	parsed := &nzb.NZB{
+		Meta:   map[string][]string{"title": {name}},
+		Groups: []string{"alt.binaries.test"},
+		AvgAge: time.Unix(1700000000, 0),
+	}
+	for fi := range nFiles {
+		f := nzb.File{
+			Subject: name + " - file " + string(rune('A'+fi)),
+			Date:    time.Unix(1700000000, 0),
+		}
+		for ai := range nArticles {
+			art := nzb.Article{
+				ID:     articleID(fi, ai),
+				Bytes:  100_000,
+				Number: ai + 1,
+			}
+			f.Articles = append(f.Articles, art)
+			f.Bytes += int64(art.Bytes)
+		}
+		parsed.Files = append(parsed.Files, f)
+	}
+	parsed.Files = append(parsed.Files, nzb.File{
+		Subject:  name + ".vol01+02.par2",
+		Date:     time.Unix(1700000000, 0),
+		Bytes:    50_000,
+		Articles: []nzb.Article{{ID: "par2-" + name + "@test", Bytes: 50_000, Number: 1}},
+	})
+	job, err := NewJob(parsed, AddOptions{
+		Filename: name + ".nzb",
+		Priority: constants.NormalPriority,
+	}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	return job
+}
+
+// The five manifest scalars must be readable from a job whose manifest has
+// been evicted. That is the entire point of promoting them: a reporting
+// path must never need a manifest.
+func TestJobScalarsSurviveEviction(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
+
+	job := makeMultiFileJob(t, "scalars", 2, 3) // 2 files, 3 articles each
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	wantBytes := job.TotalBytes()
+	if wantBytes == 0 {
+		t.Fatal("fixture is useless: TotalBytes is zero while resident")
+	}
+
+	if err := q.Pause(job.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	q.mu.RLock()
+	resident := q.byID[job.ID].manifest != nil
+	q.mu.RUnlock()
+	if resident {
+		t.Fatal("fixture guard: job still resident after Pause, nothing is being tested")
+	}
+
+	if got := job.TotalBytes(); got != wantBytes {
+		t.Errorf("TotalBytes after eviction = %d, want %d", got, wantBytes)
+	}
+	if got := job.NumFiles(); got != 2 {
+		t.Errorf("NumFiles after eviction = %d, want 2", got)
+	}
+	if got := job.NumArticles(); got != 6 {
+		t.Errorf("NumArticles after eviction = %d, want 6", got)
+	}
+}
+
+// TestSnapshotJob_QueuedAfterRestart_ScalarsNotZero reproduces the gap named
+// in the Task 3 review: a StatusQueued job restored via SQLiteStore.Get
+// (through Loader.Load's store-backed branch) never has its manifest loaded
+// by Get — that only happens for resident-status jobs — so the in-memory Job
+// that comes back from a restart has zero scalars. Queue.SnapshotJob then
+// clones that job and calls hydrateSnapshot, which reads the manifest from
+// disk for other reasons (building progress) but, before this fix, never
+// used it to backfill the five scalars. The result: an API response built
+// from SnapshotJob reports zero size for a queued job that survived a
+// restart, even though the manifest was in hand the whole time.
+func TestSnapshotJob_QueuedAfterRestart_ScalarsNotZero(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
+
+	// Occupy the single active slot so the job under test stays queued and
+	// non-resident even before the restart.
+	filler := makeMultiFileJob(t, "filler-active", 1, 1)
+	if err := q.Add(filler); err != nil {
+		t.Fatalf("Add filler: %v", err)
+	}
+
+	job := makeMultiFileJob(t, "queued-scalars", 2, 3) // 2 files, 3 articles each
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	wantBytes := job.TotalBytes()
+	if wantBytes == 0 {
+		t.Fatal("fixture is useless: TotalBytes is zero before restart")
+	}
+
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Reload a fresh Queue from the same store/dir — the real restart path.
+	// q2 is a brand-new Queue with an empty byID; every job comes back via
+	// store.List()/SQLiteStore.Get rather than any in-memory carry-over.
+	q2, err := Load(dir, WithStore(store), WithMaxActiveJobs(1))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	q2.mu.RLock()
+	restored, ok := q2.byID[job.ID]
+	q2.mu.RUnlock()
+	if !ok {
+		t.Fatalf("job %s missing after reload", job.ID)
+	}
+	if restored.Status != constants.StatusQueued {
+		t.Fatalf("fixture guard: job status after reload = %v, want StatusQueued", restored.Status)
+	}
+	if restored.manifest != nil {
+		t.Fatal("fixture guard: job resident after reload, nothing is being tested")
+	}
+
+	snap := q2.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("SnapshotJob returned nil")
+	}
+	if got := snap.TotalBytes(); got != wantBytes {
+		t.Errorf("SnapshotJob(...).TotalBytes() = %d, want %d", got, wantBytes)
+	}
+	if got := snap.NumFiles(); got != 2 {
+		t.Errorf("SnapshotJob(...).NumFiles() = %d, want 2", got)
+	}
+	if got := snap.NumArticles(); got != 6 {
+		t.Errorf("SnapshotJob(...).NumArticles() = %d, want 6", got)
+	}
+}
+
+// TestPromoteNext_RestoredJobScalarsSynced covers the second zero-scalar
+// site the Task 3 review flagged: PromoteNext attaches a manifest to a
+// restored, non-resident StatusQueued job (job.manifest == nil) when
+// promoting it to StatusDownloading, using its own manifest read rather than
+// hydrateJobLocked's. Before the Task 3 fix, that attach path never
+// backfilled the five scalars, so a job promoted after a restart reported
+// zero size for the rest of its in-memory life — including while actively
+// downloading.
+//
+// Task 4 additionally closed the sibling gap this test used to rely on as a
+// fixture guard: SQLiteStore.Get now reconstructs TotalBytes/NumFiles/
+// NumArticles for a non-resident job straight from job_files (bytes,
+// COUNT(*), article_count), so a restored StatusQueued job is no longer
+// zero even before PromoteNext runs. That reconstruction deliberately
+// leaves Par2Bytes/Par2Files at zero (job_files' is_par2_recovery cannot
+// stand in for the manifest's par2 classification — see SQLiteStore.Get),
+// which is what makes them the one property left that can still tell "read
+// from job_files" apart from "read from the resident manifest
+// setScalarsFromManifest attaches at promotion". Using a par2-bearing
+// fixture and asserting on Par2Bytes/Par2Files (zero before promotion,
+// correct after) is what actually pins PromoteNext's own backfill call —
+// TotalBytes/NumFiles/NumArticles alone would pass even if that call were
+// deleted, since Get already supplies the right values for those three.
+func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
+
+	// Occupy the single active slot so jobB stays queued and non-resident.
+	filler := makeMultiFileJob(t, "promote-filler", 1, 1)
+	if err := q.Add(filler); err != nil {
+		t.Fatalf("Add filler: %v", err)
+	}
+	jobB := makeMultiFileJobWithPar2(t, "promote-scalars", 2, 3) // 2 regular files (3 articles each) + 1 par2 recovery volume
+	if err := q.Add(jobB); err != nil {
+		t.Fatalf("Add jobB: %v", err)
+	}
+	wantBytes := jobB.TotalBytes()
+	wantPar2Bytes := jobB.Par2Bytes()
+	wantPar2Files := jobB.Par2Files()
+	if wantBytes == 0 {
+		t.Fatal("fixture is useless: TotalBytes is zero before restart")
+	}
+	if wantPar2Files == 0 || wantPar2Bytes == 0 {
+		t.Fatal("fixture is useless: Par2Files/Par2Bytes are zero before restart")
+	}
+
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Reload — jobB comes back via SQLiteStore.Get non-resident (StatusQueued,
+	// no manifest attached), but with TotalBytes/NumFiles/NumArticles already
+	// reconstructed from job_files (the Task 4 gap closure), not zero.
+	// Par2Bytes/Par2Files are NOT reconstructable that way (job_files'
+	// is_par2_recovery excludes the par2 index file the manifest counts), so
+	// they must still read zero here.
+	q2, err := Load(dir, WithStore(store), WithMaxActiveJobs(1))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	q2.mu.RLock()
+	restored, ok := q2.byID[jobB.ID]
+	q2.mu.RUnlock()
+	if !ok {
+		t.Fatalf("jobB missing after reload")
+	}
+	if restored.Status != constants.StatusQueued || restored.manifest != nil {
+		t.Fatalf("fixture guard: jobB status=%v manifest!=nil=%v after reload, want StatusQueued/nil manifest",
+			restored.Status, restored.manifest != nil)
+	}
+	if got := restored.TotalBytes(); got != wantBytes {
+		t.Fatalf("fixture guard: jobB.TotalBytes() = %d before promotion, want %d (job_files reconstruction, see Task 4)", got, wantBytes)
+	}
+	if got := restored.Par2Bytes(); got != 0 {
+		t.Fatalf("fixture guard: jobB.Par2Bytes() = %d before promotion, want 0 (not reconstructable from job_files, see Task 4)", got)
+	}
+	if got := restored.Par2Files(); got != 0 {
+		t.Fatalf("fixture guard: jobB.Par2Files() = %d before promotion, want 0 (not reconstructable from job_files, see Task 4)", got)
+	}
+
+	// Free up the active slot and promote: this drives PromoteNext, the
+	// exact path under test.
+	q2.SetMaxActiveJobs(2)
+
+	q2.mu.RLock()
+	promoted := q2.byID[jobB.ID]
+	q2.mu.RUnlock()
+	if promoted.Status != constants.StatusDownloading {
+		t.Fatalf("fixture guard: jobB.Status = %v after SetMaxActiveJobs, want StatusDownloading (not promoted)", promoted.Status)
+	}
+
+	if got := promoted.TotalBytes(); got != wantBytes {
+		t.Errorf("TotalBytes after promotion = %d, want %d", got, wantBytes)
+	}
+	if got := promoted.NumFiles(); got != 3 {
+		t.Errorf("NumFiles after promotion = %d, want 3", got)
+	}
+	if got := promoted.NumArticles(); got != 7 {
+		t.Errorf("NumArticles after promotion = %d, want 7", got)
+	}
+	// The property that actually distinguishes "PromoteNext backfilled from
+	// its manifest read" from "Get's job_files reconstruction carried
+	// over": Par2Bytes/Par2Files must go from 0 to their real manifest
+	// values only once the job is resident again.
+	if got := promoted.Par2Bytes(); got != wantPar2Bytes {
+		t.Errorf("Par2Bytes after promotion = %d, want %d", got, wantPar2Bytes)
+	}
+	if got := promoted.Par2Files(); got != wantPar2Files {
+		t.Errorf("Par2Files after promotion = %d, want %d", got, wantPar2Files)
+	}
+}

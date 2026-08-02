@@ -72,3 +72,72 @@ func TestJobManifestProgressResidencyRace(t *testing.T) {
 	stop.Store(true)
 	wg.Wait()
 }
+
+// TestJobScalarGettersRace pins the same property for the five
+// manifest-derived scalar getters that Manifest()/Progress() already have.
+// They are exported, they sit beside those two, and their doc comments
+// ("never requires a resident manifest") invite exactly the lock-free
+// external use those two document as safe — but the fields behind them are
+// written by setScalarsFromManifest, which runs under q.mu on every
+// promotion, on hydrateSnapshot, and on DiscardDeferredPar2's manifest
+// rebuild. A caller outside this package cannot take q.mu, so without a
+// per-Job lock the documented usage is a data race.
+//
+// No non-test caller reads these getters today — every consumer still goes
+// through job.Manifest().TotalBytes() — so this races nothing in the
+// current tree. That is precisely why it needs pinning now: wiring the
+// consumers over to them is planned follow-up work, and it would introduce
+// the race silently, with the race detector green until the first
+// concurrent poll happened to land inside a promotion.
+//
+// Same fixture as above: Pause/Resume flips residency, and the promotion
+// half of that loop re-runs setScalarsFromManifest each time.
+func TestJobScalarGettersRace(t *testing.T) {
+	dir := t.TempDir()
+	q := New(WithStateDir(dir))
+
+	job := makeMultiFileJob(t, "scalar-getter-race", 2, 4)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	got, err := q.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != job {
+		t.Fatal("fixture assumption violated: Get did not return the same *Job pointer passed to Add")
+	}
+
+	// Guard against the fixture going vacuous: if the scalars were never
+	// populated, a reader racing a writer that only ever assigns zero over
+	// zero could still pass by accident.
+	if got.TotalBytes() == 0 || got.NumArticles() == 0 {
+		t.Fatalf("fixture assumption violated: scalars unset before the race (totalBytes=%d numArticles=%d)",
+			got.TotalBytes(), got.NumArticles())
+	}
+
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		for !stop.Load() {
+			_ = got.TotalBytes()
+			_ = got.NumFiles()
+			_ = got.NumArticles()
+			_ = got.Par2Bytes()
+			_ = got.Par2Files()
+		}
+	})
+
+	for range 200 {
+		if err := q.Pause(job.ID); err != nil {
+			t.Fatalf("Pause: %v", err)
+		}
+		if err := q.Resume(job.ID); err != nil {
+			t.Fatalf("Resume: %v", err)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+}

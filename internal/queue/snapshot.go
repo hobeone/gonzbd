@@ -47,6 +47,14 @@ func hydrateSnapshot(stateDir string, store Store, cp *Job) {
 	if err := readGzJSON(manifestPath, &m); err == nil {
 		m.buildMessageIDIndex()
 		cp.setResidency(&m, newJobProgress(&m))
+		// cp came from cloneJob with cp.manifest == nil, meaning the source
+		// Job's scalars were never populated (the restore path that produced
+		// it — e.g. SQLiteStore.Get for a StatusQueued/StatusPaused job —
+		// only loads a manifest for resident statuses). Backfill them from
+		// the manifest this call just read, the same way hydrateJobLocked
+		// does for its own non-resident restore case: no extra I/O, the read
+		// already happened above.
+		cp.setScalarsFromManifest(&m)
 		if store != nil {
 			_ = store.RestoreJobProgress(context.Background(), cp)
 		}
@@ -84,6 +92,15 @@ func cloneJob(j *Job) *Job {
 		AvgAge:   j.AvgAge,
 		Warning:  j.Warning,
 		PostProc: j.PostProc,
+
+		// Manifest-derived scalars are immutable once set and do not depend
+		// on residency — they must be carried verbatim so a snapshot's
+		// TotalBytes/NumFiles/etc. never requires hydration.
+		totalBytes:  j.totalBytes,
+		numFiles:    j.numFiles,
+		numArticles: j.numArticles,
+		par2Bytes:   j.par2Bytes,
+		par2Files:   j.par2Files,
 	}
 
 	manifest := j.Manifest()
@@ -91,16 +108,6 @@ func cloneJob(j *Job) *Job {
 	if progress := j.Progress(); progress != nil {
 		cp.progress = progress.clone()
 	}
-	// cp.lastKnownRemainingBytes is deliberately left at its zero value,
-	// not copied from j. A clone with cp.manifest == nil already gets its
-	// manifest/progress independently reconstructed from disk by
-	// hydrateSnapshot (see Snapshot/SnapshotJob below) whenever a state
-	// directory or store is configured, which is a live re-read rather
-	// than a cached approximation. Outside that path (e.g. saveStore's use
-	// of cloneJob) the clone is only ever serialized via job_files/store
-	// rows, which don't have a column for this field, so there is nothing
-	// for a stale copy to serve.
-	cp.lastKnownRemainingBytes = 0
 
 	// Deep copy maps. maps.Clone would be shallow — the value slices would
 	// stay shared with j — so the values are cloned individually.

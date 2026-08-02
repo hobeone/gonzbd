@@ -60,8 +60,8 @@ func TestQueue_Snapshot(t *testing.T) {
 		t.Error("mutation to snapshot slice affected original groups")
 	}
 
-	sJob.progress.done[0] = true
-	if job.progress.done[0] {
+	sJob.progress.done.Set(0)
+	if job.progress.done.Get(0) {
 		t.Error("mutation to snapshot nested structure affected original article state")
 	}
 }
@@ -130,10 +130,10 @@ func TestSnapshotJob_ArtIdxIsolation(t *testing.T) {
 	}
 
 	// Mutate the clone's Progress directly.
-	snap.progress.done[cloneIdx] = true
+	snap.progress.done.Set(cloneIdx)
 
 	// Verify the original's Progress is unaffected.
-	if job.progress.done[origIdx] {
+	if job.progress.done.Get(origIdx) {
 		t.Error("mutation via clone's Progress affected original job's Progress — clone was not isolated")
 	}
 }
