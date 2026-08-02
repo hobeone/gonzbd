@@ -406,6 +406,16 @@ func (d *DirectUnpacker) Results() map[string]SuccessSet {
 	return out
 }
 
+// CorruptSets returns a copy of the sets marked corrupt and the reason for
+// each. A set is marked when a volume completed with permanently failed
+// articles, so its on-disk bytes have gaps; extraction consults this before
+// trusting a volume. Mirrors Results/Failures/Skipped.
+func (d *DirectUnpacker) CorruptSets() map[string]string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return maps.Clone(d.corruptSets)
+}
+
 // Failures returns a copy of the failed sets. The caller should check
 // this after Wait() returns alongside Results().
 func (d *DirectUnpacker) Failures() map[string]FailedSet {

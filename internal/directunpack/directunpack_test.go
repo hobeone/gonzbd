@@ -1131,3 +1131,28 @@ func TestStartVolumeFeed_ContextCancelledDuringSend(t *testing.T) {
 	for range volumesChan {
 	}
 }
+
+// CorruptSets reports which sets were marked corrupt and why. Extraction
+// consults the same map before trusting a volume, so a caller that cannot
+// read it has no way to tell a suppressed extraction from one that never
+// had data — which is exactly what the orchestrator needs to assert on.
+func TestCorruptSets(t *testing.T) {
+	du := New(slog.New(slog.DiscardHandler), "job", t.TempDir(), t.TempDir(), Options{})
+
+	if got := du.CorruptSets(); len(got) != 0 {
+		t.Errorf("CorruptSets() = %v on a fresh unpacker, want empty", got)
+	}
+
+	du.MarkCorrupt("movie", "volume 2 had failed articles")
+	got := du.CorruptSets()
+	if reason, ok := got["movie"]; !ok || reason != "volume 2 had failed articles" {
+		t.Errorf(`CorruptSets()["movie"] = (%q, %v), want the recorded reason`, reason, ok)
+	}
+
+	// A copy, like Results/Failures/Skipped: mutating the returned map must
+	// not reach into the unpacker's own state.
+	got["injected"] = "should not persist"
+	if _, leaked := du.CorruptSets()["injected"]; leaked {
+		t.Error("CorruptSets returned the live map; a caller can mark sets corrupt by mutating it")
+	}
+}
