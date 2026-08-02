@@ -111,16 +111,25 @@ func cloneJob(j *Job) *Job {
 		par2Files:   j.par2Files,
 	}
 
-	// Read the residency fields together under one lock. hydrateErr is
-	// carried so a clone of a job whose hydration failed still reports why,
-	// rather than reverting to looking merely evicted; the manifest pointer
-	// is taken directly rather than through Manifest() because a nil here is
-	// simply "not resident", which cloneJob copies verbatim.
+	// Read all three residency fields under one lock. hydrateErr is carried
+	// so a clone of a job whose hydration failed still reports why, rather
+	// than reverting to looking merely evicted; the manifest and progress
+	// pointers are taken directly rather than through Manifest()/Progress()
+	// both because a nil manifest here is simply "not resident" (which
+	// cloneJob copies verbatim) and because those getters take the lock
+	// separately. setResidency swaps the manifest/progress pair atomically
+	// precisely so no reader sees one updated and the other stale; taking
+	// two locks here would reintroduce that window, pairing a pre-swap
+	// manifest with a post-swap progress. The clone itself happens after the
+	// unlock: it reads JobProgress *contents*, which residencyMu does not
+	// guard (q.mu does — see Progress's doc comment), so holding the
+	// residency lock across it would widen the critical section for nothing.
 	j.residencyMu.RLock()
 	cp.hydrateErr = j.hydrateErr
 	cp.manifest = j.manifest
+	progress := j.progress
 	j.residencyMu.RUnlock()
-	if progress := j.Progress(); progress != nil {
+	if progress != nil {
 		cp.progress = progress.clone()
 	}
 
