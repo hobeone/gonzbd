@@ -696,6 +696,57 @@ func TestIsComplete(t *testing.T) {
 	})
 }
 
+// TestIsComplete_WithoutResidentManifest pins that completion is answerable
+// from resident state alone.
+//
+// IsComplete used to return false whenever the manifest was nil, which reads
+// as "not complete" and is indistinguishable from a real answer. Application
+// startup walks Queue.Snapshot() and finalizes every job reporting complete,
+// so a non-resident completed job would be silently skipped and left in the
+// queue forever — a wrong answer, not a failure anyone would see.
+//
+// The file dimension comes from JobProgress's own files slice rather than the
+// promoted NumFiles scalar deliberately: a pre-migration row can leave
+// NumFiles at a legacy zero, and an empty loop would report a job complete
+// when the truth is that its file count is unknown.
+func TestIsComplete_WithoutResidentManifest(t *testing.T) {
+	t.Parallel()
+	q := New()
+	j := makeMultiFileJob(t, "complete-no-manifest", 2, 2)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	for fi := range 2 {
+		if err := q.MarkFileComplete(j.ID, fi); err != nil {
+			t.Fatalf("MarkFileComplete(%d): %v", fi, err)
+		}
+	}
+	if !j.IsComplete() {
+		t.Fatal("fixture guard: job is not complete while resident, nothing is being tested")
+	}
+
+	// Evict the manifest, exactly as leaving the active set does, keeping
+	// progress resident.
+	j.setResidency(nil, j.progress)
+	if j.Manifest() != nil {
+		t.Fatal("fixture guard: manifest still resident after eviction")
+	}
+
+	if !j.IsComplete() {
+		t.Error("IsComplete() = false for a completed job whose manifest was evicted; startup finalization would skip it")
+	}
+}
+
+// A job whose progress was never built cannot report completion either way,
+// and must not claim to be complete — an empty file loop would.
+func TestIsComplete_NoProgressIsNotComplete(t *testing.T) {
+	t.Parallel()
+	j := &Job{ID: "no-progress"}
+	if j.IsComplete() {
+		t.Error("IsComplete() = true for a job with no progress; absence of state is not completion")
+	}
+}
+
 // ---------- MarkArticlesDone (batch) ----------
 
 func TestMarkArticlesDone_Batch(t *testing.T) {

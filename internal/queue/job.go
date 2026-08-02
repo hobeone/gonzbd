@@ -615,14 +615,26 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 // do not block completion — by design they are only fetched if repair is
 // needed, so a job whose non-deferred files are all complete is "downloaded".
 func (j *Job) IsComplete() bool {
-	if j.manifest == nil || j.progress == nil {
+	p := j.Progress()
+	if p == nil {
 		return false
 	}
-	for i := range j.manifest.NumFiles() {
-		if j.progress.FileDeferred(i) {
+	// Walk JobProgress's own file slice rather than the manifest's file
+	// count. Progress is always resident, so completion is answerable for an
+	// evicted job — this used to return false whenever the manifest was nil,
+	// which is indistinguishable from a genuine "not complete" and made
+	// startup finalization skip completed non-resident jobs outright.
+	//
+	// Not the promoted NumFiles scalar either: a row written before
+	// migration 005 can leave it at a legacy zero, and a loop over zero
+	// files would report the job complete when its file count is merely
+	// unknown. len(p.files) is sized when progress is built and cannot be
+	// legacy-zero while progress exists.
+	for i := range len(p.files) {
+		if p.FileDeferred(i) {
 			continue
 		}
-		if !j.progress.FileComplete(i) {
+		if !p.FileComplete(i) {
 			return false
 		}
 	}
