@@ -43,13 +43,19 @@ func (q *Queue) Snapshot() []*Job {
 // package, rather than two.
 func hydrateSnapshot(log *slog.Logger, stateDir string, store Store, cp *Job) {
 	manifestPath := filepath.Join(stateDir, "manifests", cp.ID+".json.gz")
+	// cloneJob already copied the source job's progress, which is accurate
+	// and always resident. Hold on to it: setResidency below replaces it
+	// with an all-zero JobProgress for the store to fill in, and both
+	// failure paths need to put the accurate one back rather than return
+	// the placeholder.
+	priorProgress := cp.progress
 	var m Manifest
 	if err := readGzJSON(manifestPath, &m); err != nil {
 		// Record and log rather than returning a nil manifest silently. A
 		// job that cannot load its manifest is not the same as one that was
 		// evicted, and every consumer downstream sees only the pointer —
 		// so the distinction has to travel with the job.
-		cp.setHydrateErr(fmt.Errorf("read manifest %s: %w", manifestPath, err))
+		cp.setHydrateFailure(priorProgress, fmt.Errorf("read manifest %s: %w", manifestPath, err))
 		log.Error("snapshot: manifest unreadable, job cannot be hydrated",
 			"job_id", cp.ID, "path", manifestPath, "err", err)
 		return
@@ -65,7 +71,20 @@ func hydrateSnapshot(log *slog.Logger, stateDir string, store Store, cp *Job) {
 	// already happened above.
 	cp.setScalarsFromManifest(&m)
 	if store != nil {
-		_ = store.RestoreJobProgress(context.Background(), cp)
+		if err := store.RestoreJobProgress(context.Background(), cp); err != nil {
+			// setResidency above has already swapped in the all-zero
+			// JobProgress this call was meant to fill from the stored
+			// counters. Returning it would present a part-downloaded job as
+			// having downloaded nothing — to the par2 recovery check, the
+			// pipeline's registerFile, DirectUnpack and the API per-file
+			// listing at once, none of which can tell a zeroed progress from
+			// a genuine one. Fail closed exactly as hydrateJobLocked does on
+			// this same call, restoring the accurate progress; the scalars
+			// stay, since the manifest they came from was read successfully.
+			cp.setHydrateFailure(priorProgress, fmt.Errorf("restore progress for job %s: %w", cp.ID, err))
+			log.Error("snapshot: progress restore failed, job cannot be hydrated",
+				"job_id", cp.ID, "err", err)
+		}
 	}
 }
 

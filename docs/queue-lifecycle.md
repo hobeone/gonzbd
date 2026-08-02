@@ -202,7 +202,9 @@ additive.
 
 Already landed: artifact unlinking now happens only after a job leaves `byID`
 (PR #271), which removes the window in which a job in the queue could have no
-manifest on disk.
+manifest on disk. Steps 1, 2 and 3 are done — `Job.Manifest()` now returns
+`(*Manifest, error)`, so reaching through an evictable manifest without
+handling its absence is a compile error. Steps 4 and 5 remain.
 
 ## What this dissolves
 

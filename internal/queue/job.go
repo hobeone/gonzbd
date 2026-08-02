@@ -305,9 +305,10 @@ func (j *Job) Par2Files() int {
 //
 //   - ErrJobNotResident — the manifest was evicted. Ordinary: every queued
 //     and paused job is in this state once the active set is full.
-//   - anything else — the manifest could not be read from disk. That is
-//     data loss, recorded by hydrateSnapshot, and should not be handled as
-//     routine absence.
+//   - anything else — the manifest could not be loaded. That is data loss,
+//     recorded by both hydration paths (hydrateSnapshot for snapshot clones,
+//     hydrateJobLocked for the live queue entry), and should not be handled
+//     as routine absence.
 //
 // Use errors.Is(err, ErrJobNotResident) to tell them apart. The five
 // promoted scalars (TotalBytes, NumFiles, NumArticles, Par2Bytes,
@@ -358,15 +359,6 @@ func (j *Job) Progress() *JobProgress {
 // Not used by NewJob or UnmarshalJSON: those construct a Job that is not
 // yet reachable by any other goroutine, so there is nothing to
 // synchronize against.
-// setHydrateErr records why loading this job's manifest failed. Clearing it
-// on success is deliberate: a later successful hydration means the earlier
-// failure no longer describes the job.
-func (j *Job) setHydrateErr(err error) {
-	j.residencyMu.Lock()
-	defer j.residencyMu.Unlock()
-	j.hydrateErr = err
-}
-
 func (j *Job) setResidency(m *Manifest, p *JobProgress) {
 	j.residencyMu.Lock()
 	j.manifest = m
@@ -375,6 +367,29 @@ func (j *Job) setResidency(m *Manifest, p *JobProgress) {
 		j.hydrateErr = nil
 	}
 	j.residencyMu.Unlock()
+}
+
+// setHydrateFailure is setResidency's counterpart for a hydration attempt
+// that failed: it clears the manifest, installs p as the job's progress, and
+// records err as the reason, all under one write lock. The three go together
+// for the same reason setResidency's pair does — a concurrent Manifest()
+// caller must not observe the cleared manifest before the reason that
+// explains it, or it would report routine eviction for data loss.
+//
+// p is the progress to leave behind and must not be nil: progress is always
+// resident (docs/queue-lifecycle.md), so a failed hydration restores whatever
+// was accurate before the attempt rather than the all-zero JobProgress that
+// was built for the store to fill in.
+//
+// The error is not cleared here; a later successful hydration clears it via
+// setResidency, because succeeding means the earlier failure no longer
+// describes the job.
+func (j *Job) setHydrateFailure(p *JobProgress, err error) {
+	j.residencyMu.Lock()
+	defer j.residencyMu.Unlock()
+	j.manifest = nil
+	j.progress = p
+	j.hydrateErr = err
 }
 
 // JobPhase represents the high-level operational phase of a download job.

@@ -1054,15 +1054,22 @@ func (q *Queue) hydrateJobLocked(job *Job, id string) error {
 		return nil
 	}
 	manifestPath := filepath.Join(q.stateDir, "manifests", id+".json.gz")
-	var m Manifest
-	if err := readGzJSON(manifestPath, &m); err != nil {
-		return fmt.Errorf("queue: hydrate job %s: %w", id, err)
-	}
 	// Preserve the progress that was live before this hydration attempt
-	// (per docs/queue-lifecycle.md it is never nil) so a failed
+	// (per docs/queue-lifecycle.md it is never nil) so a failed read or
 	// RestoreJobProgress below has something accurate to fall back to
 	// instead of nil.
 	priorProgress := job.progress
+	var m Manifest
+	if err := readGzJSON(manifestPath, &m); err != nil {
+		// Record why on the job itself, not only in the returned error.
+		// The caller learns of this failure, but every later Manifest()
+		// call on this same live q.jobs entry would otherwise report the
+		// generic ErrJobNotResident — indistinguishable from the routine
+		// eviction that every queued and paused job is already in.
+		hydrateErr := fmt.Errorf("queue: hydrate job %s: %w", id, err)
+		job.setHydrateFailure(priorProgress, hydrateErr)
+		return hydrateErr
+	}
 	job.setResidency(&m, newJobProgress(&m))
 	// A job restored via SQLiteStore.Get/Loader.Load while non-resident
 	// (StatusQueued/StatusPaused) never had these scalars populated — they
@@ -1082,9 +1089,11 @@ func (q *Queue) hydrateJobLocked(job *Job, id string) error {
 			// fails closed on this same call — but restore priorProgress
 			// rather than nil: progress must never be absent, and
 			// priorProgress is the one value here that is actually backed by
-			// what's on disk.
-			job.setResidency(nil, priorProgress)
-			return fmt.Errorf("queue: restore progress for job %s: %w", id, err)
+			// what's on disk. Record the reason on the job for the same
+			// reason as the read branch above.
+			hydrateErr := fmt.Errorf("queue: restore progress for job %s: %w", id, err)
+			job.setHydrateFailure(priorProgress, hydrateErr)
+			return hydrateErr
 		}
 	}
 	return nil
