@@ -148,7 +148,7 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 		Version:       s.Version,
 		APIKey:        s.APIKey,
 		APIURL:        s.APIURL,
-		Bytes:         job.Queue.Manifest().TotalBytes(),
+		Bytes:         job.Queue.TotalBytes(),
 		RedactSecrets: s.redactSecrets.Load(),
 		OnLine: func(line string) {
 			if job.OnOutput != nil {

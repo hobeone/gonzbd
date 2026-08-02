@@ -76,7 +76,7 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 }
 
 func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, job *Job, sets []par2.Set) {
-	if job.Queue == nil || job.Queue.Manifest().NumFiles() == 0 {
+	if job.Queue == nil || job.Queue.NumFiles() == 0 {
 		return
 	}
 	job.QuickCheckRan = true
