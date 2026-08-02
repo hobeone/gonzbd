@@ -11,11 +11,9 @@ import (
 
 // makeMultiFileJobWithPar2 is makeMultiFileJob (lifecycle_test.go) plus one
 // par2 recovery-volume file, so a test can assert on Par2Bytes/Par2Files —
-// the two manifest scalars that SQLiteStore.Get's non-resident-job
-// reconstruction (Task 4) deliberately leaves at zero, which is what makes
-// them able to distinguish "read from a resident manifest" from "read from
-// the job_files reconstruction" in a way TotalBytes/NumFiles/NumArticles no
-// longer can.
+// the two manifest scalars that cannot be aggregated out of job_files, and so
+// travel through their own jobs.par2_bytes/par2_files columns (migration
+// 005) rather than through SQLiteStore.Get's job_files reconstruction.
 func makeMultiFileJobWithPar2(t *testing.T, name string, nFiles, nArticles int) *Job {
 	t.Helper()
 	parsed := &nzb.NZB{
@@ -176,16 +174,19 @@ func TestSnapshotJob_QueuedAfterRestart_ScalarsNotZero(t *testing.T) {
 // fixture guard: SQLiteStore.Get now reconstructs TotalBytes/NumFiles/
 // NumArticles for a non-resident job straight from job_files (bytes,
 // COUNT(*), article_count), so a restored StatusQueued job is no longer
-// zero even before PromoteNext runs. That reconstruction deliberately
-// leaves Par2Bytes/Par2Files at zero (job_files' is_par2_recovery cannot
-// stand in for the manifest's par2 classification — see SQLiteStore.Get),
-// which is what makes them the one property left that can still tell "read
-// from job_files" apart from "read from the resident manifest
-// setScalarsFromManifest attaches at promotion". Using a par2-bearing
-// fixture and asserting on Par2Bytes/Par2Files (zero before promotion,
-// correct after) is what actually pins PromoteNext's own backfill call —
-// TotalBytes/NumFiles/NumArticles alone would pass even if that call were
-// deleted, since Get already supplies the right values for those three.
+// zero even before PromoteNext runs. Par2Bytes/Par2Files are the one pair
+// left that can tell "restored from the store" apart from "read from the
+// resident manifest setScalarsFromManifest attaches at promotion", so
+// asserting on them — zero before promotion, correct after — is what
+// actually pins PromoteNext's own backfill call. TotalBytes/NumFiles/
+// NumArticles alone would pass even if that call were deleted, since Get
+// already supplies the right values for those three.
+//
+// Par2 now round-trips through its own columns, so a normally-saved job
+// comes back with them already correct and that distinction disappears. The
+// test zeroes the columns before reloading to recreate the unsynced state,
+// which is the only thing left that PromoteNext's backfill can be observed
+// changing. Deleting that step silently defeats this test.
 func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
@@ -213,12 +214,26 @@ func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
+	// Zero the par2 columns so the reloaded job arrives unsynced.
+	//
+	// This keeps the test's discriminator alive. Its whole design rests on
+	// par2 being the one pair that reads zero for a non-resident job and
+	// correct once a manifest is attached — that gap is what proves
+	// PromoteNext calls setScalarsFromManifest, since the other three scalars
+	// are already right from job_files and would pass even if the call were
+	// deleted. Now that par2 round-trips through its own columns, a job saved
+	// and reloaded normally comes back with them already correct, and the gap
+	// closes. Recreating it here restores the discriminator: par2 must be
+	// wrong before promotion and right after, or the backfill is unobservable.
+	if _, err := store.db.ExecContext(t.Context(),
+		"UPDATE jobs SET par2_bytes = 0, par2_files = 0 WHERE id = ?", jobB.ID); err != nil {
+		t.Fatalf("blank par2 columns: %v", err)
+	}
+
 	// Reload — jobB comes back via SQLiteStore.Get non-resident (StatusQueued,
 	// no manifest attached), but with TotalBytes/NumFiles/NumArticles already
 	// reconstructed from job_files (the Task 4 gap closure), not zero.
-	// Par2Bytes/Par2Files are NOT reconstructable that way (job_files'
-	// is_par2_recovery excludes the par2 index file the manifest counts), so
-	// they must still read zero here.
+	// Par2Bytes/Par2Files read zero because of the zeroing above.
 	q2, err := Load(dir, WithStore(store), WithMaxActiveJobs(1))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -237,10 +252,10 @@ func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 		t.Fatalf("fixture guard: jobB.TotalBytes() = %d before promotion, want %d (job_files reconstruction, see Task 4)", got, wantBytes)
 	}
 	if got := restored.Par2Bytes(); got != 0 {
-		t.Fatalf("fixture guard: jobB.Par2Bytes() = %d before promotion, want 0 (not reconstructable from job_files, see Task 4)", got)
+		t.Fatalf("fixture guard: jobB.Par2Bytes() = %d before promotion, want 0 (zeroed above so the backfill is observable)", got)
 	}
 	if got := restored.Par2Files(); got != 0 {
-		t.Fatalf("fixture guard: jobB.Par2Files() = %d before promotion, want 0 (not reconstructable from job_files, see Task 4)", got)
+		t.Fatalf("fixture guard: jobB.Par2Files() = %d before promotion, want 0 (zeroed above so the backfill is observable)", got)
 	}
 
 	// Free up the active slot and promote: this drives PromoteNext, the

@@ -143,13 +143,28 @@ func (p *JobProgress) FileAssembledCRC32(fi int) uint32 {
 }
 
 // PendingArticles returns the count of not-yet-resolved articles across all files.
-func (p *JobProgress) PendingArticles() int { return p.pendingArticles }
+func (p *JobProgress) PendingArticles() int {
+	if p == nil {
+		return 0
+	}
+	return p.pendingArticles
+}
 
 // ArticlesResolved returns the count of articles that have resolved (success or failure).
-func (p *JobProgress) ArticlesResolved() int { return p.articlesResolved }
+func (p *JobProgress) ArticlesResolved() int {
+	if p == nil {
+		return 0
+	}
+	return p.articlesResolved
+}
 
 // ArticlesFailed returns the count of articles that have permanently failed.
-func (p *JobProgress) ArticlesFailed() int { return p.articlesFailed }
+func (p *JobProgress) ArticlesFailed() int {
+	if p == nil {
+		return 0
+	}
+	return p.articlesFailed
+}
 
 // EarlyAborted reports whether the early-abort heuristic has already fired for this job.
 func (p *JobProgress) EarlyAborted() bool {

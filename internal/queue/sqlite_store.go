@@ -23,6 +23,10 @@ type SQLiteStore struct {
 	db          *sql.DB
 	dir         string
 	historyRepo *history.Repository
+	// log is captured once at construction and component-scoped, matching
+	// Queue's own logger. docs/go-standards.md forbids reaching for a
+	// package-level global at each call site.
+	log *slog.Logger
 }
 
 // NewSQLiteStore constructs a SQLiteStore backed by db and storing manifests inside dir.
@@ -31,6 +35,7 @@ func NewSQLiteStore(db *sql.DB, dir string, historyRepo *history.Repository) *SQ
 		db:          db,
 		dir:         dir,
 		historyRepo: historyRepo,
+		log:         slog.Default().With("component", "queue.store"),
 	}
 }
 
@@ -94,27 +99,20 @@ func encodeArticlesDone(job *Job, fileIdx int) string {
 }
 
 // decodeArticlesDone restores file fileIdx's per-article done/failed state
-// from a hex bitmap written by encodeArticlesDone. Three input shapes are
-// handled:
+// from a hex bitmap written by encodeArticlesDone: [done bits][failed bits],
+// each ceil(N/8) bytes. An article with its failed bit set is restored via
+// markFailed, a plain done article via markDone — never both, since
+// markFailed early-returns once done[i] is already true.
 //
-//   - len == 2*numBytes: the current format — [done bits][failed bits].
-//     An article with its failed bit set is restored via markFailed; a
-//     plain done article via markDone. Never both, since markFailed
-//     early-returns once done[i] is already true.
-//   - len == numBytes: a legacy (pre-widening) value containing only done
-//     bits. Every done article is restored via markDone; failed[] stays
-//     all false, exactly matching the old behavior (this is the required
-//     backward-compat path — old rows have no failed-bit information to
-//     recover).
-//   - anything else: corrupt input. Falls through to the same lenient,
-//     bounds-checked read the legacy decoder always used (treat the whole
-//     buffer as a done-only bitmap, ignoring bits past its end) rather than
-//     erroring — preserving prior behavior for corrupt data.
-func decodeArticlesDone(s string, job *Job, fileIdx int) {
-	if job == nil || job.Progress() == nil || job.Manifest() == nil || fileIdx < 0 || fileIdx >= job.Manifest().NumFiles() || s == "" {
+// Any other length is corrupt and restores nothing. Sizes are fixed by the
+// file's article count, so a mismatch means the value did not come from
+// encodeArticlesDone for this file, and guessing which prefix is the done
+// bitmap would restore the wrong articles rather than none.
+func (s *SQLiteStore) decodeArticlesDone(encoded string, job *Job, fileIdx int) {
+	if job == nil || job.Progress() == nil || job.Manifest() == nil || fileIdx < 0 || fileIdx >= job.Manifest().NumFiles() || encoded == "" {
 		return
 	}
-	buf, err := hex.DecodeString(s)
+	buf, err := hex.DecodeString(encoded)
 	if err != nil {
 		return
 	}
@@ -124,21 +122,18 @@ func decodeArticlesDone(s string, job *Job, fileIdx int) {
 	}
 	n := hi - lo
 	numBytes := (n + 7) / 8
-
-	doneBuf := buf
-	var failedBuf []byte
-	if len(buf) == numBytes*2 {
-		doneBuf = buf[:numBytes]
-		failedBuf = buf[numBytes:]
+	if len(buf) != numBytes*2 {
+		s.log.Warn("articles_done bitmap has an unexpected length, per-article state not restored",
+			"job_id", job.ID, "file_index", fileIdx, "want_bytes", numBytes*2, "got_bytes", len(buf))
+		return
 	}
+	doneBuf, failedBuf := buf[:numBytes], buf[numBytes:]
 
 	for i := range n {
-		failedBit := failedBuf != nil && i/8 < len(failedBuf) && (failedBuf[i/8]&(1<<(i%8))) != 0
-		doneBit := i/8 < len(doneBuf) && (doneBuf[i/8]&(1<<(i%8))) != 0
 		switch {
-		case failedBit:
+		case failedBuf[i/8]&(1<<(i%8)) != 0:
 			job.progress.markFailed(job.manifest, lo+i)
-		case doneBit:
+		case doneBuf[i/8]&(1<<(i%8)) != 0:
 			job.progress.markDone(job.manifest, lo+i)
 		}
 	}
@@ -175,8 +170,8 @@ func (s *SQLiteStore) Add(ctx context.Context, job *Job) error {
 INSERT INTO jobs
   (id, filename, name, password, url, category, priority, status, pp, script,
    time_added, md5, avg_age, groups, meta, warning, postproc, sort_key,
-   download_started, download_finished)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+   download_started, download_finished, par2_bytes, par2_files)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	postprocInt := 0
 	if job.PostProc {
@@ -188,6 +183,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		int(job.Priority), string(job.Status), job.PP, job.Script,
 		job.Added.Unix(), job.MD5, job.AvgAge.Unix(), string(groupsJSON), string(metaJSON),
 		job.Warning, postprocInt, sortKey, dlStartedUnix, dlFinishedUnix,
+		// From the promoted scalars rather than job.Manifest(): they are set
+		// at Add and stay correct while the manifest is evicted, so this
+		// writes the right values even for a job persisted while non-resident.
+		job.Par2Bytes(), job.Par2Files(),
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite store insert job %s: %w", job.ID, err)
@@ -233,19 +232,19 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Job, error) {
 	const qJob = `
 SELECT id, filename, name, COALESCE(password, ''), COALESCE(url, ''), COALESCE(category, ''), priority, status, pp, COALESCE(script, ''),
        time_added, md5, avg_age, COALESCE(groups, ''), COALESCE(meta, ''), COALESCE(warning, ''), postproc,
-       download_started, download_finished
+       download_started, download_finished, par2_bytes, par2_files
 FROM jobs WHERE id = ?`
 
 	var job Job
 	var groupsStr, metaStr, statusStr string
-	var priorityInt, ppInt, postprocInt int
-	var addedUnix, avgAgeUnix, dlStartedUnix, dlFinishedUnix int64
+	var priorityInt, ppInt, postprocInt, par2Files int
+	var addedUnix, avgAgeUnix, dlStartedUnix, dlFinishedUnix, par2Bytes int64
 
 	err := s.db.QueryRowContext(ctx, qJob, id).Scan(
 		&job.ID, &job.Filename, &job.Name, &job.Password, &job.URL, &job.Category,
 		&priorityInt, &statusStr, &ppInt, &job.Script, &addedUnix, &job.MD5, &avgAgeUnix,
 		&groupsStr, &metaStr, &job.Warning, &postprocInt,
-		&dlStartedUnix, &dlFinishedUnix,
+		&dlStartedUnix, &dlFinishedUnix, &par2Bytes, &par2Files,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -320,29 +319,22 @@ FROM jobs WHERE id = ?`
 	// pre-Task-4 behavior) is preferable to losing the job entirely over a
 	// transient SQLite error on an already-slow, non-resident read path —
 	// but the error must not vanish silently, so it goes to the log.
+	// par2 comes from the job row, not from job_files, and is set
+	// independently of the aggregate query below so a failure there cannot
+	// take it down with the other three. A resident job already has the
+	// authoritative values from setScalarsFromManifest above.
+	if job.manifest == nil {
+		job.setPar2ScalarsFromStore(par2Bytes, par2Files)
+	}
+
 	if job.manifest == nil && fileCount > 0 {
 		var totalBytes int64
 		var numFiles, numArticles int
 		const qAgg = `SELECT COALESCE(SUM(bytes), 0), COUNT(*), COALESCE(SUM(article_count), 0) FROM job_files WHERE job_id = ?`
 		if err := s.db.QueryRowContext(ctx, qAgg, id).Scan(&totalBytes, &numFiles, &numArticles); err != nil {
-			slog.Default().Error("sqlite store: aggregate scalars from job_files failed, reporting scalars stay zero",
+			s.log.Error("aggregate scalars from job_files failed, reporting scalars stay zero",
 				"job_id", id, "err", err)
 		} else {
-			if numArticles == 0 && numFiles > 0 {
-				// Same legacy shape Loader.Load detects per-file with
-				// articleCountsAreLegacy, here as a single SUM: migration 004
-				// backfills article_count to 0 for every pre-existing row, so
-				// SUM(article_count) reads as a confident zero when the truth
-				// is "unknown", not "zero articles in every file". Unlike
-				// Load, there is no manifest read to fall back to here —
-				// reading it on every non-resident Get is exactly the cost
-				// Task 4 exists to avoid — so this can only be logged, not
-				// corrected in place. NumArticles() below stays 0, which is
-				// harmless while no caller consumes it, but must not be
-				// mistaken for a verified count once one does.
-				slog.Default().Warn("sqlite store: job_files predates the article_count column; NumArticles is unknown, not a verified zero",
-					"job_id", id)
-			}
 			job.setAggregateScalarsFromFiles(totalBytes, numFiles, numArticles)
 		}
 	}
@@ -388,7 +380,7 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 					job.progress.markDone(job.manifest, a)
 				}
 			} else if artDoneStr != "" {
-				decodeArticlesDone(artDoneStr, job, idx)
+				s.decodeArticlesDone(artDoneStr, job, idx)
 			}
 			if deferred != 0 {
 				fp.Deferred = true
@@ -405,10 +397,6 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 // collapsed from a per-job query (the RestoreJobProgress-adjacent shape
 // RemainingBytesByJob already uses) so that a large queued backlog costs one
 // round trip instead of N.
-//
-// A job whose counts are all zero predates the article_count column; the
-// caller must fall back to reading the manifest for that job rather than
-// sizing progress to zero (see articleCountsAreLegacy).
 //
 // Counts are placed by file_index rather than by scan order, so a job whose
 // job_files rows have non-contiguous indices (e.g. after a partial delete)
@@ -449,42 +437,6 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]int,
 		return nil, fmt.Errorf("sqlite store article counts: %w", err)
 	}
 	return result, nil
-}
-
-// BackfillArticleCounts writes recovered per-file article counts back to a
-// legacy job_files row (one predating the article_count column, so every
-// count is currently 0) so the manifest fallback in Loader.Load only has to
-// run once per job, not on every boot. counts is indexed by file_index, the
-// same shape ArticleCountsByJob returns.
-//
-// All-or-nothing: a mid-loop failure must not leave some files healed and
-// others still zero. articleCountsAreLegacy treats a row as legacy only if
-// every count is zero, so a partially-healed row would stop being detected
-// as legacy on the next Load while still having zeroed-out files — silently
-// and permanently under-sizing progress for those files, which is worse
-// than not healing at all. Wrapping the writes in a transaction is what
-// makes the "will retry on next load" promise in Loader.Load's warning
-// actually true.
-//
-// Must be called without q.mu held: this is I/O (scripts/check_lock_io).
-func (s *SQLiteStore) BackfillArticleCounts(ctx context.Context, jobID string, counts []int) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite store begin tx backfill article counts for job %s: %w", jobID, err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	const q = `UPDATE job_files SET article_count = ? WHERE job_id = ? AND file_index = ?`
-	for fi, c := range counts {
-		if _, err := tx.ExecContext(ctx, q, c, jobID, fi); err != nil {
-			return fmt.Errorf("sqlite store backfill article count for job %s file %d: %w", jobID, fi, err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("sqlite store commit backfill article counts for job %s: %w", jobID, err)
-	}
-	return nil
 }
 
 // RemainingBytesByJob returns each job's remaining bytes (bytes minus

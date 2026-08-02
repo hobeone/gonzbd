@@ -22,8 +22,7 @@ var storeMethodExclusions = map[string]string{
 // never matches that call, so the gate silently stops covering it and still
 // reports success. That is what happened to ArticleCountsByJob, which was
 // registered as "ArticleCountsByFile" and therefore went unchecked from the
-// day it was added, alongside BackfillArticleCounts which was never
-// registered at all. A green run of a gate that has quietly narrowed its own
+// day it was added. A green run of a gate that has quietly narrowed its own
 // scope is worse than a red one.
 //
 // Both directions matter, so both are checked: an unregistered method is an

@@ -295,14 +295,15 @@ const noiseFloorBPS = 1024.0 // 1 KiB/s
 // ETA. index is the slot's display index in the listing (0 for the
 // detail endpoint).
 func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *directunpack.Status) queueSlot {
-	m, p := j.Manifest(), j.Progress()
-	var totalBytes, remainingBytes int64
-	if m != nil {
-		totalBytes = m.TotalBytes()
-	}
-	if p != nil {
-		remainingBytes = p.RemainingBytes()
-	}
+	// No manifest access: every value below comes from the job's promoted
+	// scalars or from JobProgress, both of which are resident for the life
+	// of the job. A queue listing is polled continuously and includes every
+	// queued and paused job, all of which have had their manifests evicted,
+	// so needing one here meant either a disk read per job per poll or a nil
+	// deref — this used to do both.
+	p := j.Progress()
+	totalBytes := j.TotalBytes()
+	remainingBytes := p.RemainingBytes()
 
 	var pct int
 	if totalBytes > 0 {
@@ -346,8 +347,8 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 		PP:                strconv.Itoa(j.PP),
 		Warning:           j.Warning,
 		FailedBytes:       p.FailedBytes(),
-		Par2Bytes:         m.Par2Bytes(),
-		Par2Files:         m.Par2Files(),
+		Par2Bytes:         j.Par2Bytes(),
+		Par2Files:         j.Par2Files(),
 		CurrentStage:      stageFromStatus(displayStatus),
 		ArticlesRemaining: p.PendingArticles(),
 		ETASeconds:        etaSeconds,

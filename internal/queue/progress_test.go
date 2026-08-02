@@ -64,3 +64,66 @@ func TestRecomputePanicsOnArticleCountMismatch(t *testing.T) {
 	}()
 	p.recompute(m)
 }
+
+// Every exported JobProgress reader is nil-safe, and callers rely on it
+// rather than guarding at each site: buildSlot renders a queue slot straight
+// from these, and Queue.TotalRemainingBytes sums RemainingBytes across the
+// whole queue from a 1 Hz ticker goroutine that carries no recover().
+//
+// The guards are individually one comparison and collectively the reason a
+// nil progress degrades to zeros instead of killing the process. Nothing
+// exercised the nil branch before, so each guard could have been deleted
+// with every test still green.
+func TestJobProgress_ExportedReadersAreNilSafe(t *testing.T) {
+	t.Parallel()
+	var p *JobProgress
+
+	// Each call must return the zero value rather than panicking. The
+	// assertions are deliberately shallow — the property under test is "does
+	// not panic on a nil receiver", not what the zero value happens to be.
+	checks := map[string]func(){
+		"ArticleDone":         func() { _ = p.ArticleDone(0) },
+		"ArticleFailed":       func() { _ = p.ArticleFailed(0) },
+		"ArticleEmitted":      func() { _ = p.ArticleEmitted(0) },
+		"FileComplete":        func() { _ = p.FileComplete(0) },
+		"FileDeferred":        func() { _ = p.FileDeferred(0) },
+		"FilePending":         func() { _ = p.FilePending(0) },
+		"FileBytesDownloaded": func() { _ = p.FileBytesDownloaded(0) },
+		"FileWriteCursor":     func() { _ = p.FileWriteCursor(0) },
+		"FileFilename":        func() { _ = p.FileFilename(0) },
+		"FileAssembledCRC32":  func() { _ = p.FileAssembledCRC32(0) },
+		"PendingArticles":     func() { _ = p.PendingArticles() },
+		"ArticlesResolved":    func() { _ = p.ArticlesResolved() },
+		"ArticlesFailed":      func() { _ = p.ArticlesFailed() },
+		"EarlyAborted":        func() { _ = p.EarlyAborted() },
+		"FailedBytes":         func() { _ = p.FailedBytes() },
+		"RemainingBytes":      func() { _ = p.RemainingBytes() },
+		"ServerStats":         func() { _ = p.ServerStats() },
+		"DownloadStarted":     func() { _ = p.DownloadStarted() },
+		"DownloadFinished":    func() { _ = p.DownloadFinished() },
+		"Par2Recovered":       func() { _ = p.Par2Recovered() },
+		"Par2ReleaseReason":   func() { _ = p.Par2ReleaseReason() },
+		"HasDeferredPar2":     func() { _ = p.HasDeferredPar2() },
+	}
+
+	for name, call := range checks {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("%s() panicked on a nil receiver: %v", name, r)
+				}
+			}()
+			call()
+		})
+	}
+
+	// Spot-check the two the reporting paths actually sum and render, so a
+	// guard that returned something other than the zero value would not slip
+	// through the panic-only checks above.
+	if got := p.RemainingBytes(); got != 0 {
+		t.Errorf("RemainingBytes() on nil = %d, want 0", got)
+	}
+	if got := p.PendingArticles(); got != 0 {
+		t.Errorf("PendingArticles() on nil = %d, want 0", got)
+	}
+}

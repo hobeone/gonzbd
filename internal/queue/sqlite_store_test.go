@@ -1057,10 +1057,18 @@ func TestSQLiteStore_ArticleCountsByJobNonContiguousIndices(t *testing.T) {
 // manifest) must still read real TotalBytes/NumFiles/NumArticles from
 // job_files, now that article_count makes NumArticles reconstructable too.
 // Zero would be indistinguishable from a genuinely empty job, which is why
-// this matters. The par2 pair is a known, documented exception: job_files'
-// is_par2_recovery only flags recovery volumes, while the manifest's
-// Par2Bytes/Par2Files also include the par2 index file, so they must stay
-// zero here rather than silently reporting an undercount.
+// this matters.
+//
+// The par2 pair used to be a documented exception here, asserted as zero,
+// because job_files' is_par2_recovery only flags recovery volumes while the
+// manifest's Par2Bytes/Par2Files also include the par2 index file — so
+// aggregating the flag undercounts. That reasoning still holds and is why
+// they are not reconstructed from job_files. They now round-trip through
+// dedicated jobs.par2_bytes/par2_files columns instead (migration 005),
+// which is the only way to make them honest for a non-resident job. The
+// assertion below flipped from "must be zero" to "must match the manifest"
+// deliberately; it is the same property being checked, against a source
+// that can actually answer it.
 func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	store, _, _ := setupTestStore(t)
 	ctx := t.Context()
@@ -1095,7 +1103,8 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	wantNumFiles := job.NumFiles()
 	wantNumArticles := job.NumArticles()
 	wantPar2Files := job.Par2Files()
-	if wantPar2Files == 0 {
+	wantPar2Bytes := job.Par2Bytes()
+	if wantPar2Files == 0 || wantPar2Bytes == 0 {
 		t.Fatal("test fixture must contain at least one par2 file for this to be a meaningful check")
 	}
 
@@ -1119,14 +1128,15 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 	if got.NumArticles() != wantNumArticles {
 		t.Errorf("NumArticles = %d, want %d", got.NumArticles(), wantNumArticles)
 	}
-	// Documented limitation, not a bug: is_par2_recovery cannot stand in for
-	// the manifest's par2 classification (it excludes the index file), so
-	// these two must remain zero rather than report a silently wrong value.
-	if got.Par2Bytes() != 0 {
-		t.Errorf("Par2Bytes = %d, want 0 (not reconstructable from is_par2_recovery)", got.Par2Bytes())
+	// From jobs.par2_bytes/par2_files, not from aggregating is_par2_recovery
+	// — see this test's doc comment. A zero here would be the old behaviour
+	// leaking back, and would render as "no par2 files" on a queued job in
+	// the API.
+	if got.Par2Bytes() != wantPar2Bytes {
+		t.Errorf("Par2Bytes = %d, want %d", got.Par2Bytes(), wantPar2Bytes)
 	}
-	if got.Par2Files() != 0 {
-		t.Errorf("Par2Files = %d, want 0 (not reconstructable from is_par2_recovery)", got.Par2Files())
+	if got.Par2Files() != wantPar2Files {
+		t.Errorf("Par2Files = %d, want %d", got.Par2Files(), wantPar2Files)
 	}
 }
 
@@ -1145,6 +1155,16 @@ func TestSQLiteStore_GetNonResidentScalarsFromJobFiles(t *testing.T) {
 // resident-manifest branch is unaffected — isolating the failure to
 // exactly the aggregate query under test.
 func TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt(t *testing.T) {
+	// Swap the default logger before the store is built, not after: the store
+	// captures a component-scoped logger once in NewSQLiteStore rather than
+	// reaching for slog.Default() at each call site, so a swap performed
+	// afterwards would capture nothing and this test would report a missing
+	// log entry that was in fact written.
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	store, repo, _ := setupTestStore(t)
 	ctx := t.Context()
 
@@ -1155,11 +1175,6 @@ func TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt(t *testing
 	if _, err := repo.DB().ExecContext(ctx, "ALTER TABLE job_files DROP COLUMN article_count"); err != nil {
 		t.Fatalf("drop article_count column: %v", err)
 	}
-
-	var logBuf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	got, err := store.Get(ctx, job.ID)
 	if err != nil {
@@ -1172,47 +1187,5 @@ func TestSQLiteStore_GetLogsAggregateScalarErrorInsteadOfSwallowingIt(t *testing
 	logged := logBuf.String()
 	if !strings.Contains(logged, "aggregate scalars") || !strings.Contains(logged, job.ID) {
 		t.Errorf("expected the aggregate query error to be logged (mentioning the job id), got log output: %q", logged)
-	}
-}
-
-// TestSQLiteStore_GetWarnsOnLegacyArticleCountAggregate pins finding 4 from
-// the final whole-branch review: SUM(article_count) reads as a confident 0
-// for a job_files row that predates the article_count column (migration 004
-// backfills it to 0, not the real per-file counts), the same shape
-// articleCountsAreLegacy detects per-file in Loader.Load. Get had no
-// equivalent detection, so it silently asserted NumArticles()==0 as though
-// verified. Get cannot correct the number in place (that would require
-// reading the manifest, defeating Task 4's point), but it must say so loudly
-// via the log rather than staying silent.
-func TestSQLiteStore_GetWarnsOnLegacyArticleCountAggregate(t *testing.T) {
-	store, repo, _ := setupTestStore(t)
-	ctx := t.Context()
-
-	job := newTestJobWithManifest(t, "legacy-agg-job", "legacy-agg", 2, 3)
-	if err := store.Add(ctx, job); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if _, err := repo.DB().ExecContext(ctx, "UPDATE job_files SET article_count = 0 WHERE job_id = ?", job.ID); err != nil {
-		t.Fatalf("zero article_count: %v", err)
-	}
-
-	var logBuf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-
-	got, err := store.Get(ctx, job.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if got.NumArticles() != 0 {
-		t.Errorf("NumArticles() = %d, want 0 (there is no manifest read here to recover the real count)", got.NumArticles())
-	}
-	if got.NumFiles() != 2 {
-		t.Fatalf("NumFiles() = %d, want 2 — fixture guard, this test needs numFiles > 0 to exercise the legacy shape", got.NumFiles())
-	}
-	logged := logBuf.String()
-	if !strings.Contains(logged, "article_count") || !strings.Contains(logged, "unknown") || !strings.Contains(logged, job.ID) {
-		t.Errorf("expected a warning about the legacy article_count shape mentioning the job id, got log output: %q", logged)
 	}
 }

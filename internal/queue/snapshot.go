@@ -12,24 +12,22 @@ import (
 //
 // The returned slice and the Jobs within it are fresh allocations; mutations
 // to the returned objects do not affect the Queue's internal state.
+//
+// Snapshot does not hydrate. A non-resident job comes back with a nil
+// manifest and its promoted scalars and JobProgress intact, which is
+// everything the whole-queue callers need: the API queue listing, the
+// delete-all enumeration, and startup's completed-job sweep. Hydrating here
+// meant a disk read per non-resident job on every poll of a listing that is
+// polled continuously, and it opened the window where a job removed between
+// the clone and the read yields an error for an operation that had already
+// succeeded. Use SnapshotJob when one job's file-level detail is genuinely
+// required; it still hydrates, once, for that job.
 func (q *Queue) Snapshot() []*Job {
 	q.mu.RLock()
+	defer q.mu.RUnlock()
 	res := make([]*Job, 0, len(q.jobs))
-	var toHydrate []*Job
 	for _, j := range q.jobs {
-		cp := cloneJob(j)
-		res = append(res, cp)
-		if cp.manifest == nil && (q.store != nil || q.stateDir != "") {
-			toHydrate = append(toHydrate, cp)
-		}
-	}
-	stateDir := q.stateDir
-	store := q.store
-	q.mu.RUnlock()
-
-	// Hydrate non-resident snapshot copies outside the lock
-	for _, cp := range toHydrate {
-		hydrateSnapshot(stateDir, store, cp)
+		res = append(res, cloneJob(j))
 	}
 	return res
 }

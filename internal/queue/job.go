@@ -208,18 +208,31 @@ func (j *Job) setScalarsFromManifest(m *Manifest) {
 // in-process — the case Task 3 left as a documented gap, where these
 // scalars would otherwise silently read as zero.
 //
-// par2Bytes/par2Files are deliberately left untouched (zero): job_files'
+// par2Bytes/par2Files are deliberately left untouched: job_files'
 // is_par2_recovery flags only recovery volumes, while the manifest's
 // Par2Bytes/Par2Files also count the par2 index file, so the two are not
 // equivalent and reconstructing the par2 pair from is_par2_recovery would
 // silently produce an undercount rather than the value the manifest would
-// have produced.
+// have produced. They come from the jobs row instead — see
+// setPar2ScalarsFromStore.
 func (j *Job) setAggregateScalarsFromFiles(totalBytes int64, numFiles, numArticles int) {
 	j.residencyMu.Lock()
 	defer j.residencyMu.Unlock()
 	j.totalBytes = totalBytes
 	j.numFiles = numFiles
 	j.numArticles = numArticles
+}
+
+// setPar2ScalarsFromStore sets par2Bytes/par2Files from the jobs row, for a
+// job SQLiteStore.Get loaded without a resident manifest. It is the par2
+// counterpart to setAggregateScalarsFromFiles: those three scalars can be
+// aggregated out of job_files, these two cannot (see that method), so they
+// get columns of their own.
+func (j *Job) setPar2ScalarsFromStore(par2Bytes int64, par2Files int) {
+	j.residencyMu.Lock()
+	defer j.residencyMu.Unlock()
+	j.par2Bytes = par2Bytes
+	j.par2Files = par2Files
 }
 
 // TotalBytes returns the job's total size in bytes. Total: never requires a
@@ -597,14 +610,33 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 // do not block completion — by design they are only fetched if repair is
 // needed, so a job whose non-deferred files are all complete is "downloaded".
 func (j *Job) IsComplete() bool {
-	if j.manifest == nil || j.progress == nil {
+	p := j.Progress()
+	if p == nil || len(p.files) == 0 {
 		return false
 	}
-	for i := range j.manifest.NumFiles() {
-		if j.progress.FileDeferred(i) {
+	// Walk JobProgress's own file slice rather than the manifest's file
+	// count. Progress is always resident, so completion is answerable for an
+	// evicted job — this used to return false whenever the manifest was nil,
+	// which is indistinguishable from a genuine "not complete" and made
+	// startup finalization skip completed non-resident jobs outright.
+	//
+	// The slice rather than the promoted NumFiles scalar: the loop indexes
+	// into p.files, so bounding it by p.files' own length keeps the count
+	// and the data it indexes from ever disagreeing.
+	//
+	// An empty slice is not completion. A job whose progress carries no file
+	// state — a row with no job_files, which Loader.Load sizes from an empty
+	// count slice — would otherwise satisfy the loop vacuously and be
+	// reported complete, and startup finalizes every job that reports
+	// complete. Returning false leaves it visible in the queue instead of
+	// silently swept into history. Before progress became the source of
+	// truth this was masked for a non-resident job, which had a nil manifest
+	// and so returned false for a different reason.
+	for i := range len(p.files) {
+		if p.FileDeferred(i) {
 			continue
 		}
-		if !j.progress.FileComplete(i) {
+		if !p.FileComplete(i) {
 			return false
 		}
 	}

@@ -1101,7 +1101,7 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 		"category", job.Category,
 		"download_dir", downloadDir,
 		"download_duration", dlDuration.Round(time.Second),
-		"total_bytes", job.Manifest().TotalBytes(),
+		"total_bytes", job.TotalBytes(),
 		"failed_bytes", job.Progress().FailedBytes(),
 		"fail_msg", failMsg,
 	)
@@ -1424,22 +1424,25 @@ func failMsgForJob(job *queue.Job) string {
 
 	failedMB := float64(failedBytes) / (1024 * 1024)
 
+	// Promoted scalars, not job.Manifest(): this runs from the startup
+	// recovery walk over Queue.Snapshot(), where a job may have no resident
+	// manifest and every one of these would nil-deref.
 	// If ALL bytes in the job failed, it's hopeless regardless of PAR2.
-	if failedBytes >= job.Manifest().TotalBytes() {
+	if failedBytes >= job.TotalBytes() {
 		return fmt.Sprintf(
 			"Aborted: All articles failed (%.1f MB). Job is beyond repair",
 			failedMB,
 		)
 	}
 
-	par2Bytes := job.Manifest().Par2Bytes()
+	par2Bytes := job.Par2Bytes()
 
 	// If PAR2 files exist and the failure exceeds repair capacity, abort.
 	if par2Bytes > 0 && failedBytes > par2Bytes {
 		par2MB := float64(par2Bytes) / (1024 * 1024)
 		return fmt.Sprintf(
 			"Aborted: %.1f MB failed, exceeds repair capacity of %.1f MB (%d par2 files). Job is beyond repair",
-			failedMB, par2MB, job.Manifest().Par2Files(),
+			failedMB, par2MB, job.Par2Files(),
 		)
 	}
 

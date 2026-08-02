@@ -696,6 +696,76 @@ func TestIsComplete(t *testing.T) {
 	})
 }
 
+// TestIsComplete_WithoutResidentManifest pins that completion is answerable
+// from resident state alone.
+//
+// IsComplete used to return false whenever the manifest was nil, which reads
+// as "not complete" and is indistinguishable from a real answer. Application
+// startup walks Queue.Snapshot() and finalizes every job reporting complete,
+// so a non-resident completed job would be silently skipped and left in the
+// queue forever — a wrong answer, not a failure anyone would see.
+//
+// The file dimension comes from JobProgress's own files slice rather than
+// the promoted NumFiles scalar: the loop indexes into that slice, so
+// bounding it by the slice's own length keeps the count and the data it
+// indexes from ever disagreeing.
+func TestIsComplete_WithoutResidentManifest(t *testing.T) {
+	t.Parallel()
+	q := New()
+	j := makeMultiFileJob(t, "complete-no-manifest", 2, 2)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	for fi := range 2 {
+		if err := q.MarkFileComplete(j.ID, fi); err != nil {
+			t.Fatalf("MarkFileComplete(%d): %v", fi, err)
+		}
+	}
+	if !j.IsComplete() {
+		t.Fatal("fixture guard: job is not complete while resident, nothing is being tested")
+	}
+
+	// Evict the manifest, exactly as leaving the active set does, keeping
+	// progress resident.
+	j.setResidency(nil, j.progress)
+	if j.Manifest() != nil {
+		t.Fatal("fixture guard: manifest still resident after eviction")
+	}
+
+	if !j.IsComplete() {
+		t.Error("IsComplete() = false for a completed job whose manifest was evicted; startup finalization would skip it")
+	}
+}
+
+// A job with no file state cannot report completion either way, and must not
+// claim to be complete — an empty loop would satisfy the check vacuously.
+//
+// This matters because Application startup finalizes every job that reports
+// complete. A job row with no job_files rows gets progress sized from an
+// empty count slice, so a vacuous true would move an unfinished job into
+// history at boot with nothing logged.
+func TestIsComplete_AbsentFileStateIsNotComplete(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no progress at all", func(t *testing.T) {
+		j := &Job{ID: "no-progress"}
+		if j.IsComplete() {
+			t.Error("IsComplete() = true for a job with no progress; absence of state is not completion")
+		}
+	})
+
+	t.Run("progress sized to zero files", func(t *testing.T) {
+		j := &Job{ID: "zero-files"}
+		j.progress = newJobProgressSized(nil, 0)
+		if j.progress == nil || len(j.progress.files) != 0 {
+			t.Fatal("fixture guard: expected non-nil progress carrying no file state")
+		}
+		if j.IsComplete() {
+			t.Error("IsComplete() = true for a job carrying no file state; startup would finalize it into history")
+		}
+	})
+}
+
 // ---------- MarkArticlesDone (batch) ----------
 
 func TestMarkArticlesDone_Batch(t *testing.T) {
