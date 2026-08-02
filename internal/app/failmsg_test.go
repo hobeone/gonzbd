@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -147,8 +148,8 @@ func TestFailMsgForJob_WithoutResidentManifest(t *testing.T) {
 	if err := q.Pause(job.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	if job.Manifest() != nil {
-		t.Fatal("fixture guard: manifest still resident after Pause, the eviction path is not being exercised")
+	if _, err := job.Manifest(); !errors.Is(err, queue.ErrJobNotResident) {
+		t.Fatalf("fixture guard: want ErrJobNotResident after Pause, got %v — the eviction path is not being exercised", err)
 	}
 
 	if got := failMsgForJob(job); got != want {

@@ -104,7 +104,7 @@ func TestDurability_DoneMeansOnDisk(t *testing.T) {
 	if snap == nil {
 		t.Fatalf("job missing from queue")
 	}
-	if snap.Manifest().NumFiles() == 0 || snap.Manifest().NumArticles() == 0 {
+	if mustManifest(t, snap).NumFiles() == 0 || mustManifest(t, snap).NumArticles() == 0 {
 		t.Fatalf("job files/articles empty")
 	}
 

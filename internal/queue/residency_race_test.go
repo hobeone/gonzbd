@@ -50,7 +50,7 @@ func TestJobManifestProgressResidencyRace(t *testing.T) {
 	// allowed to do. Runs until the writer below signals it is done.
 	wg.Go(func() {
 		for !stop.Load() {
-			_ = got.Manifest()
+			_, _ = got.Manifest()
 			_ = got.Progress()
 		}
 	})

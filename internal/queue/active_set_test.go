@@ -67,7 +67,7 @@ func TestActiveSet_ResidencyProperty(t *testing.T) {
 			t.Errorf("[%s] expected resident phase=%v, got phase=%v (%s)", phaseName, expectedResident, isResidentPhase, phase)
 		}
 
-		hasManifest := job.Manifest() != nil
+		hasManifest := manifestResident(job)
 		hasProgress := job.Progress() != nil
 		inActiveSet := q.ActiveSet().IsResident(job.ID)
 
@@ -130,7 +130,7 @@ func TestActiveSet_ResidencyProperty(t *testing.T) {
 	// job2.Progress() is deliberately not checked here: it is never nil
 	// (docs/queue-lifecycle.md), so it carries no residency signal — only
 	// the manifest and ActiveSet membership do.
-	if q.ActiveSet().IsResident("job2") || job2.Manifest() != nil {
+	if q.ActiveSet().IsResident("job2") || manifestResident(job2) {
 		t.Errorf("6a. Failed job2 expected non-resident")
 	}
 	if job2.Progress() == nil {
@@ -140,7 +140,7 @@ func TestActiveSet_ResidencyProperty(t *testing.T) {
 	if err := q.Retry(job2.ID); err != nil {
 		t.Fatalf("Retry failed: %v", err)
 	}
-	if !q.ActiveSet().IsResident("job2") || job2.Manifest() == nil || job2.Progress() == nil {
+	if !q.ActiveSet().IsResident("job2") || !manifestResident(job2) || job2.Progress() == nil {
 		t.Errorf("6b. Retried job2 expected resident")
 	}
 }
@@ -185,7 +185,7 @@ func TestActiveSet_StructuralMemoryBound(t *testing.T) {
 		if j.Progress() == nil {
 			t.Errorf("Job %s has nil progress, want it always resident", j.ID)
 		}
-		if j.Manifest() != nil {
+		if manifestResident(j) {
 			residentCount++
 		} else {
 			nonResidentCount++

@@ -120,11 +120,11 @@ func TestSnapshotJob_ArtIdxIsolation(t *testing.T) {
 	if snap == nil {
 		t.Fatal("SnapshotJob returned nil")
 	}
-	if snap.Manifest() != job.manifest {
+	if mustManifest(t, snap) != job.manifest {
 		t.Error("clone's Manifest should be the same shared pointer as the original's")
 	}
 
-	cloneIdx, ok := snap.Manifest().articleIndexByID("art-001")
+	cloneIdx, ok := mustManifest(t, snap).articleIndexByID("art-001")
 	if !ok || cloneIdx != origIdx {
 		t.Fatal("articleIndexByID returned inconsistent index on cloned job's shared manifest")
 	}
@@ -196,7 +196,7 @@ func TestSnapshot_DoesNotHydrateNonResidentJobs(t *testing.T) {
 		t.Fatal("job missing from Snapshot")
 	}
 
-	if got.Manifest() != nil {
+	if manifestResident(got) {
 		t.Error("Snapshot hydrated a non-resident job; that is a disk read per job on every queue poll")
 	}
 	// ...and the values a listing actually renders are still right.
@@ -237,7 +237,7 @@ func TestSnapshotJob_StillHydrates(t *testing.T) {
 	if snap == nil {
 		t.Fatal("SnapshotJob returned nil")
 	}
-	if snap.Manifest() == nil {
+	if !manifestResident(snap) {
 		t.Error("SnapshotJob did not hydrate; per-file detail (queueJobDetail, the postproc paths) depends on it")
 	}
 }

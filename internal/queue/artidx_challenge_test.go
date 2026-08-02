@@ -22,10 +22,10 @@ func TestArtIdx_EdgeCases(t *testing.T) {
 	}
 
 	gotJob, err := q.Get(job.ID)
-	if err != nil || gotJob == nil || gotJob.Manifest() == nil {
+	if err != nil || gotJob == nil || !manifestResident(gotJob) {
 		t.Fatalf("Get job failed: %v", err)
 	}
-	nArt := gotJob.Manifest().NumArticles()
+	nArt := mustManifest(t, gotJob).NumArticles()
 	if nArt < 2 {
 		t.Fatalf("Expected at least 2 articles in test manifest, got %d", nArt)
 	}
@@ -121,7 +121,7 @@ func TestArtIdx_ConcurrentStress(t *testing.T) {
 	}
 
 	gotJob, _ := q.Get(job.ID)
-	nArt := gotJob.Manifest().NumArticles()
+	nArt := mustManifest(t, gotJob).NumArticles()
 
 	var wg sync.WaitGroup
 	numWorkers := 20

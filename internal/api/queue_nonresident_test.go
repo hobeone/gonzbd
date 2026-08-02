@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -43,8 +44,10 @@ func newEvictedJob(t *testing.T) *queue.Job {
 	if err := q.Pause(job.ID); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	if job.Manifest() != nil {
-		t.Fatal("fixture guard: manifest still resident after Pause, nothing is being tested")
+	// Absence is the property under test here, so this asserts on the error
+	// rather than going through mustManifest, which would fatal on it.
+	if _, err := job.Manifest(); !errors.Is(err, queue.ErrJobNotResident) {
+		t.Fatalf("fixture guard: want ErrJobNotResident after Pause, got %v — nothing is being tested", err)
 	}
 	return job
 }

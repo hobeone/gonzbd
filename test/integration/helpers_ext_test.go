@@ -252,8 +252,6 @@ func NewTestAppSeparateDirs(t *testing.T, mockAddr string, opts AppTestOpts) (a 
 // Fixture creation helpers
 // ---------------------------------------------------------------------------
 
-
-
 // createPar2Fixture creates a par2 recovery set for the named files in dir.
 // Returns the path to the main .par2 file. Skips if par2 is not available.
 func createPar2Fixture(t *testing.T, dir string, filenames ...string) string {

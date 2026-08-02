@@ -26,7 +26,7 @@ func TestNewJob_OnDemandPar2Classification(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		m, p := job.Manifest(), job.Progress()
+		m, p := mustManifest(t, job), job.Progress()
 		if m.FileIsPar2Recovery(0) {
 			t.Error("content file wrongly classified as recovery volume")
 		}
@@ -49,7 +49,7 @@ func TestNewJob_OnDemandPar2Classification(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		m, p := job.Manifest(), job.Progress()
+		m, p := mustManifest(t, job), job.Progress()
 		if !m.FileIsPar2Recovery(2) {
 			t.Error("recovery volume should still be classified when feature off")
 		}
@@ -206,7 +206,7 @@ func TestUndeferRecoveryVolumes_Edges(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Out-of-range indices must return an error matching sibling file methods.
-	if err := q.UndeferRecoveryVolumes(job.ID, []int{job.Manifest().NumFiles()}); err == nil {
+	if err := q.UndeferRecoveryVolumes(job.ID, []int{mustManifest(t, job).NumFiles()}); err == nil {
 		t.Error("expected error for out-of-range fileIdx")
 	} else if !strings.Contains(err.Error(), "out of range") {
 		t.Errorf("error = %v, want 'out of range'", err)
@@ -244,8 +244,8 @@ func TestDiscardDeferredPar2(t *testing.T) {
 		t.Fatal("expected deferred par2 files")
 	}
 
-	initialTotalBytes := snap.Manifest().TotalBytes()
-	deferredBytes := snap.Manifest().FileBytes(2)
+	initialTotalBytes := mustManifest(t, snap).TotalBytes()
+	deferredBytes := mustManifest(t, snap).FileBytes(2)
 
 	if err := q.DiscardDeferredPar2("missing"); err == nil {
 		t.Error("expected error for missing job")
@@ -260,16 +260,16 @@ func TestDiscardDeferredPar2(t *testing.T) {
 		t.Error("expected no deferred par2 files after discard")
 	}
 
-	if snap.Manifest().NumFiles() != 2 { // movie.mkv + movie.par2
-		t.Errorf("NumFiles() = %d, want 2", snap.Manifest().NumFiles())
+	if mustManifest(t, snap).NumFiles() != 2 { // movie.mkv + movie.par2
+		t.Errorf("NumFiles() = %d, want 2", mustManifest(t, snap).NumFiles())
 	}
 
-	if snap.Manifest().TotalBytes() != initialTotalBytes-deferredBytes {
-		t.Errorf("TotalBytes = %d, want %d", snap.Manifest().TotalBytes(), initialTotalBytes-deferredBytes)
+	if mustManifest(t, snap).TotalBytes() != initialTotalBytes-deferredBytes {
+		t.Errorf("TotalBytes = %d, want %d", mustManifest(t, snap).TotalBytes(), initialTotalBytes-deferredBytes)
 	}
 
-	if snap.Progress().RemainingBytes() != snap.Manifest().TotalBytes() {
-		t.Errorf("RemainingBytes = %d, want %d", snap.Progress().RemainingBytes(), snap.Manifest().TotalBytes())
+	if snap.Progress().RemainingBytes() != mustManifest(t, snap).TotalBytes() {
+		t.Errorf("RemainingBytes = %d, want %d", snap.Progress().RemainingBytes(), mustManifest(t, snap).TotalBytes())
 	}
 }
 
@@ -302,7 +302,7 @@ func TestDiscardDeferredPar2_IndexShiftAndStaleness(t *testing.T) {
 
 	// Precondition: sortJobFiles is a stable no-op for tier-1 files, so the
 	// deferred recovery volume stays at index 1, sorting BEFORE content-2.
-	m := job.Manifest()
+	m := mustManifest(t, job)
 	if m.NumFiles() != 3 || !m.FileIsPar2Recovery(1) {
 		t.Fatalf("precondition: expected recovery volume at index 1, got NumFiles=%d, file1IsRecovery=%v",
 			m.NumFiles(), m.FileIsPar2Recovery(1))
@@ -325,7 +325,7 @@ func TestDiscardDeferredPar2_IndexShiftAndStaleness(t *testing.T) {
 	}
 
 	snap := q.SnapshotJob(job.ID)
-	newM, newP := snap.Manifest(), snap.Progress()
+	newM, newP := mustManifest(t, snap), snap.Progress()
 
 	if newM.NumFiles() != 2 {
 		t.Fatalf("NumFiles() = %d, want 2", newM.NumFiles())
@@ -405,7 +405,7 @@ func TestDiscardDeferredPar2_NoOpWhenNothingDeferred(t *testing.T) {
 		t.Fatal("precondition: queue should not be dirty right after Save")
 	}
 
-	manifestBefore := job.Manifest()
+	manifestBefore := mustManifest(t, job)
 	if err := q.DiscardDeferredPar2(job.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +413,7 @@ func TestDiscardDeferredPar2_NoOpWhenNothingDeferred(t *testing.T) {
 	if q.IsDirty() {
 		t.Error("DiscardDeferredPar2 with nothing deferred must not mark the queue dirty")
 	}
-	if job.Manifest() != manifestBefore {
+	if mustManifest(t, job) != manifestBefore {
 		t.Error("DiscardDeferredPar2 with nothing deferred must not replace the manifest pointer")
 	}
 }

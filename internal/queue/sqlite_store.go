@@ -77,10 +77,14 @@ func (s *SQLiteStore) resequenceTx(ctx context.Context, tx *sql.Tx) error {
 // decodeArticlesDone for the backward-compat read path); the column stays
 // an opaque hex string with no schema change.
 func encodeArticlesDone(job *Job, fileIdx int) string {
-	if job == nil || job.Progress() == nil || job.Manifest() == nil || fileIdx < 0 || fileIdx >= job.Manifest().NumFiles() {
+	if job == nil || job.Progress() == nil {
 		return ""
 	}
-	lo, hi := job.Manifest().FileRange(fileIdx)
+	m, err := job.Manifest()
+	if err != nil || fileIdx < 0 || fileIdx >= m.NumFiles() {
+		return ""
+	}
+	lo, hi := m.FileRange(fileIdx)
 	if hi <= lo {
 		return ""
 	}
@@ -109,14 +113,18 @@ func encodeArticlesDone(job *Job, fileIdx int) string {
 // encodeArticlesDone for this file, and guessing which prefix is the done
 // bitmap would restore the wrong articles rather than none.
 func (s *SQLiteStore) decodeArticlesDone(encoded string, job *Job, fileIdx int) {
-	if job == nil || job.Progress() == nil || job.Manifest() == nil || fileIdx < 0 || fileIdx >= job.Manifest().NumFiles() || encoded == "" {
+	if job == nil || job.Progress() == nil || encoded == "" {
+		return
+	}
+	m, mErr := job.Manifest()
+	if mErr != nil || fileIdx < 0 || fileIdx >= m.NumFiles() {
 		return
 	}
 	buf, err := hex.DecodeString(encoded)
 	if err != nil {
 		return
 	}
-	lo, hi := job.Manifest().FileRange(fileIdx)
+	lo, hi := m.FileRange(fileIdx)
 	if hi <= lo {
 		return
 	}
@@ -192,20 +200,20 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		return fmt.Errorf("sqlite store insert job %s: %w", job.ID, err)
 	}
 
-	if job.Manifest() != nil {
+	if m, mErr := job.Manifest(); mErr == nil {
 		const qFiles = `
 INSERT INTO job_files
   (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, article_count)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-		for i := range job.Manifest().NumFiles() {
+		for i := range m.NumFiles() {
 			isPar2 := 0
-			if job.Manifest().FileIsPar2Recovery(i) {
+			if m.FileIsPar2Recovery(i) {
 				isPar2 = 1
 			}
 			artDoneStr := encodeArticlesDone(job, i)
-			lo, hi := job.Manifest().FileRange(i)
+			lo, hi := m.FileRange(i)
 			_, err = tx.ExecContext(ctx, qFiles,
-				job.ID, i, job.Manifest().FileSubject(i), job.Manifest().FileDate(i).Unix(), job.Manifest().FileBytes(i), isPar2, 0, 0, 0, 0, "", 0, artDoneStr, hi-lo,
+				job.ID, i, m.FileSubject(i), m.FileDate(i).Unix(), m.FileBytes(i), isPar2, 0, 0, 0, 0, "", 0, artDoneStr, hi-lo,
 			)
 			if err != nil {
 				return fmt.Errorf("sqlite store insert job_file %s/%d: %w", job.ID, i, err)
@@ -216,7 +224,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
 			return fmt.Errorf("sqlite store mkdir manifests: %w", err)
 		}
-		if err := writeGzJSON(manifestPath, job.Manifest()); err != nil {
+		if err := writeGzJSON(manifestPath, m); err != nil {
 			return fmt.Errorf("sqlite store write manifest %s: %w", job.ID, err)
 		}
 	}
@@ -547,13 +555,13 @@ WHERE id = ?`
 		return ErrNotFound
 	}
 
-	if job.Progress() != nil && job.Manifest() != nil {
+	if m, mErr := job.Manifest(); job.Progress() != nil && mErr == nil {
 		// article_count is included here (not just in Add's INSERT) so that a
 		// row written before this column existed — where it defaults to 0 —
 		// gets backfilled the next time the job is updated while resident and
 		// its manifest is available, rather than staying 0 forever.
 		const qF = `UPDATE job_files SET complete = ?, deferred = ?, write_cursor = ?, bytes_downloaded = ?, filename = ?, assembled_crc32 = ?, articles_done = ?, article_count = ? WHERE job_id = ? AND file_index = ?`
-		for i := range job.Manifest().NumFiles() {
+		for i := range m.NumFiles() {
 			complete := 0
 			if job.Progress().FileComplete(i) {
 				complete = 1
@@ -563,7 +571,7 @@ WHERE id = ?`
 				deferred = 1
 			}
 			artDoneStr := encodeArticlesDone(job, i)
-			lo, hi := job.Manifest().FileRange(i)
+			lo, hi := m.FileRange(i)
 			if _, err := execer.ExecContext(ctx, qF,
 				complete, deferred, job.Progress().FileWriteCursor(i), job.Progress().FileBytesDownloaded(i), job.Progress().FileFilename(i), job.Progress().FileAssembledCRC32(i), artDoneStr, hi-lo,
 				job.ID, i,

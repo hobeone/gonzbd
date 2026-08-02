@@ -188,7 +188,7 @@ func TestCountUnfinishedArticles(t *testing.T) {
 	})
 
 	t.Run("error on invalid file index", func(t *testing.T) {
-		_, err := q.CountUnfinishedArticles(j.ID, j.Manifest().NumFiles())
+		_, err := q.CountUnfinishedArticles(j.ID, mustManifest(t, j).NumFiles())
 		if err == nil {
 			t.Error("expected error for out-of-range file index")
 		}
@@ -307,11 +307,11 @@ func TestClearAllEmitted(t *testing.T) {
 	_ = q.Add(j2)
 
 	// Emit every article in both jobs.
-	for i := range j1.Manifest().NumArticles() {
-		_ = q.MarkArticleEmitted(j1.ID, j1.Manifest().ArticleID(i))
+	for i := range mustManifest(t, j1).NumArticles() {
+		_ = q.MarkArticleEmitted(j1.ID, mustManifest(t, j1).ArticleID(i))
 	}
-	for i := range j2.Manifest().NumArticles() {
-		_ = q.MarkArticleEmitted(j2.ID, j2.Manifest().ArticleID(i))
+	for i := range mustManifest(t, j2).NumArticles() {
+		_ = q.MarkArticleEmitted(j2.ID, mustManifest(t, j2).ArticleID(i))
 	}
 
 	// ForEach should yield nothing: all emitted.
@@ -728,7 +728,7 @@ func TestIsComplete_WithoutResidentManifest(t *testing.T) {
 	// Evict the manifest, exactly as leaving the active set does, keeping
 	// progress resident.
 	j.setResidency(nil, j.progress)
-	if j.Manifest() != nil {
+	if manifestResident(j) {
 		t.Fatal("fixture guard: manifest still resident after eviction")
 	}
 
@@ -901,8 +901,8 @@ func TestFullArticleLifecycle(t *testing.T) {
 	}
 
 	// Phase 2: Emit all articles (simulating dispatcher sending to workers).
-	for i := range j.Manifest().NumArticles() {
-		_ = q.MarkArticleEmitted(j.ID, j.Manifest().ArticleID(i))
+	for i := range mustManifest(t, j).NumArticles() {
+		_ = q.MarkArticleEmitted(j.ID, mustManifest(t, j).ArticleID(i))
 	}
 	count = 0
 	q.ForEachUnfinishedArticle(func(_ UnfinishedArticle) bool {
@@ -1022,7 +1022,7 @@ func TestConcurrentArticleLifecycle(t *testing.T) {
 	}
 
 	// Verify all articles are marked Done.
-	m := got.Manifest()
+	m := mustManifest(t, got)
 	p := got.Progress()
 	for fi := range m.NumFiles() {
 		lo, hi := m.FileRange(fi)

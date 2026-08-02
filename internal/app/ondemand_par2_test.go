@@ -94,7 +94,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 			{subject: "data.bin", crc: 0x1068AFA6, bytes: 100},
 			deferredVol,
 		})
-		if got, _ := par2NeedsRecovery(dir, qjob.Manifest(), qjob.Progress(), log, par2.DefaultParseOptions()); got {
+		if got, _ := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions()); got {
 			t.Error("clean download must NOT trigger recovery-volume download")
 		}
 	})
@@ -106,7 +106,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 			{subject: "data.bin", crc: 0xDEADBEEF, bytes: 100},
 			deferredVol,
 		})
-		if got, reason := par2NeedsRecovery(dir, qjob.Manifest(), qjob.Progress(), log, par2.DefaultParseOptions()); !got {
+		if got, reason := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions()); !got {
 			t.Error("corrupt file (CRC mismatch) must trigger recovery")
 		} else if !strings.Contains(reason, "corruption/CRC mismatch") {
 			t.Errorf("expected CRC mismatch reason, got: %q", reason)
@@ -120,7 +120,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 			{subject: "data.bin", bytes: 100},
 			deferredVol,
 		})
-		if got, reason := par2NeedsRecovery(dir, qjob.Manifest(), qjob.Progress(), log, par2.DefaultParseOptions()); !got {
+		if got, reason := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions()); !got {
 			t.Error("par2-tracked file with no CRC must trigger recovery")
 		} else if !strings.Contains(reason, "failed download") {
 			t.Errorf("expected failed download reason, got: %q", reason)
@@ -132,7 +132,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 		_, qjob := buildPar2Job(t, []par2FileSpec{
 			{subject: "data.bin", crc: 0x1068AFA6, bytes: 100},
 		})
-		if got, reason := par2NeedsRecovery(dir, qjob.Manifest(), qjob.Progress(), log, par2.DefaultParseOptions()); !got {
+		if got, reason := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions()); !got {
 			t.Error("no usable par2 index must fall back to fetching recovery volumes")
 		} else if !strings.Contains(reason, "no usable par2 index found") {
 			t.Errorf("expected missing index reason, got: %q", reason)
@@ -146,7 +146,7 @@ func TestPar2NeedsRecovery(t *testing.T) {
 			{subject: "other.bin", crc: 0x99999999, bytes: 100},
 			deferredVol,
 		})
-		if got, _ := par2NeedsRecovery(dir, qjob.Manifest(), qjob.Progress(), log, par2.DefaultParseOptions()); got {
+		if got, _ := par2NeedsRecovery(dir, mustManifest(t, qjob), qjob.Progress(), log, par2.DefaultParseOptions()); got {
 			t.Error("par2 protecting different files must NOT trigger recovery-volume download")
 		}
 	})
@@ -210,7 +210,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 
 		// Verify that the deferred PAR2 files are removed from the queue.
 		snapAfter := q.SnapshotJob(jobID)
-		m := snapAfter.Manifest()
+		m := mustManifest(t, snapAfter)
 		for fi := range m.NumFiles() {
 			if m.FileIsPar2Recovery(fi) {
 				t.Error("deferred par2 recovery files were not discarded from the job")
@@ -247,7 +247,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 
 		// Verify that the deferred recovery volume was undeferred.
 		snapAfter := q.SnapshotJob(jobCorruptID)
-		m, p := snapAfter.Manifest(), snapAfter.Progress()
+		m, p := mustManifest(t, snapAfter), snapAfter.Progress()
 		found := false
 		for fi := range m.NumFiles() {
 			if m.FileIsPar2Recovery(fi) {

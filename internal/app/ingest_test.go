@@ -52,14 +52,14 @@ func TestBuildIngestJob_HappyPath(t *testing.T) {
 	if job.Filename != "movie.nzb" {
 		t.Errorf("Filename = %q, want %q", job.Filename, "movie.nzb")
 	}
-	if job.Manifest().NumFiles() != 3 {
-		t.Errorf("NumFiles = %d, want 3", job.Manifest().NumFiles())
+	if mustManifest(t, job).NumFiles() != 3 {
+		t.Errorf("NumFiles = %d, want 3", mustManifest(t, job).NumFiles())
 	}
-	if job.Manifest().TotalBytes() != 500 {
-		t.Errorf("TotalBytes = %d, want 500", job.Manifest().TotalBytes())
+	if mustManifest(t, job).TotalBytes() != 500 {
+		t.Errorf("TotalBytes = %d, want 500", mustManifest(t, job).TotalBytes())
 	}
-	if job.Manifest().Par2Bytes() != 100 {
-		t.Errorf("Par2Bytes = %d, want 100", job.Manifest().Par2Bytes())
+	if mustManifest(t, job).Par2Bytes() != 100 {
+		t.Errorf("Par2Bytes = %d, want 100", mustManifest(t, job).Par2Bytes())
 	}
 }
 

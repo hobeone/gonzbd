@@ -178,6 +178,18 @@ type Job struct {
 	numArticles int
 	par2Bytes   int64
 	par2Files   int
+
+	// hydrateErr records why an attempt to load this job's manifest from
+	// disk failed, and is nil when no attempt failed. Guarded by
+	// residencyMu alongside the pointers it explains.
+	//
+	// Without it, "manifest is nil" has two meanings a consumer cannot tell
+	// apart: the job was evicted, which is routine, or its manifest file is
+	// unreadable, which is data loss. hydrateSnapshot used to leave the
+	// second looking exactly like the first — silently — so the paths that
+	// dereference a manifest degraded or panicked on corruption without
+	// anyone learning it had happened.
+	hydrateErr error
 }
 
 // setScalarsFromManifest copies m's five totals onto j. Centralizing this
@@ -275,16 +287,43 @@ func (j *Job) Par2Files() int {
 	return j.par2Files
 }
 
-// Manifest returns the job's immutable article/file structure. Safe to call
-// without the queue lock: it takes the job's own residency lock to
-// synchronize against concurrent eviction/hydration/promotion, which
-// reassign this pointer under q.mu. The returned Manifest's contents are
-// immutable after construction, so nothing further needs guarding once the
-// pointer itself is safely read.
-func (j *Job) Manifest() *Manifest {
+// Manifest returns the job's immutable article/file structure, or an error
+// explaining why it is unavailable. Safe to call without the queue lock: it
+// takes the job's own residency lock to synchronize against concurrent
+// eviction/hydration/promotion, which reassign this pointer under q.mu. The
+// returned Manifest's contents are immutable after construction, so nothing
+// further needs guarding once the pointer itself is safely read.
+//
+// It returns an error rather than a nil pointer so that depending on an
+// evictable manifest is a compile error until the absent case is handled.
+// Residency is a value the caller cannot see and does not control, and a
+// silent nil produced eight defects across #258 and #260-#265 — including
+// one whose dereference was a call away from the site that looked wrong.
+//
+// The two failures are distinct and callers usually want to treat them
+// differently:
+//
+//   - ErrJobNotResident — the manifest was evicted. Ordinary: every queued
+//     and paused job is in this state once the active set is full.
+//   - anything else — the manifest could not be loaded. That is data loss,
+//     recorded by both hydration paths (hydrateSnapshot for snapshot clones,
+//     hydrateJobLocked for the live queue entry), and should not be handled
+//     as routine absence.
+//
+// Use errors.Is(err, ErrJobNotResident) to tell them apart. The five
+// promoted scalars (TotalBytes, NumFiles, NumArticles, Par2Bytes,
+// Par2Files) and Progress() never fail, so reporting paths should use those
+// rather than reaching for a manifest they do not need.
+func (j *Job) Manifest() (*Manifest, error) {
 	j.residencyMu.RLock()
 	defer j.residencyMu.RUnlock()
-	return j.manifest
+	if j.manifest != nil {
+		return j.manifest, nil
+	}
+	if j.hydrateErr != nil {
+		return nil, j.hydrateErr
+	}
+	return nil, fmt.Errorf("%w: %s", ErrJobNotResident, j.ID)
 }
 
 // Progress returns the job's mutable per-article/per-file state. Safe to
@@ -324,7 +363,33 @@ func (j *Job) setResidency(m *Manifest, p *JobProgress) {
 	j.residencyMu.Lock()
 	j.manifest = m
 	j.progress = p
+	if m != nil {
+		j.hydrateErr = nil
+	}
 	j.residencyMu.Unlock()
+}
+
+// setHydrateFailure is setResidency's counterpart for a hydration attempt
+// that failed: it clears the manifest, installs p as the job's progress, and
+// records err as the reason, all under one write lock. The three go together
+// for the same reason setResidency's pair does — a concurrent Manifest()
+// caller must not observe the cleared manifest before the reason that
+// explains it, or it would report routine eviction for data loss.
+//
+// p is the progress to leave behind and must not be nil: progress is always
+// resident (docs/queue-lifecycle.md), so a failed hydration restores whatever
+// was accurate before the attempt rather than the all-zero JobProgress that
+// was built for the store to fill in.
+//
+// The error is not cleared here; a later successful hydration clears it via
+// setResidency, because succeeding means the earlier failure no longer
+// describes the job.
+func (j *Job) setHydrateFailure(p *JobProgress, err error) {
+	j.residencyMu.Lock()
+	defer j.residencyMu.Unlock()
+	j.manifest = nil
+	j.progress = p
+	j.hydrateErr = err
 }
 
 // JobPhase represents the high-level operational phase of a download job.

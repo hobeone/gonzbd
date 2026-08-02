@@ -234,7 +234,10 @@ func waitForFileComplete(t *testing.T, a *app.Application, jobID string, fileIdx
 		if snap == nil {
 			return true
 		}
-		if fileIdx < snap.Manifest().NumFiles() && snap.Progress().FileComplete(fileIdx) {
+		// A manifest that is not available yet means not yet complete, so
+		// keep polling rather than treating it as a failure.
+		if m, mErr := snap.Manifest(); mErr == nil &&
+			fileIdx < m.NumFiles() && snap.Progress().FileComplete(fileIdx) {
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)

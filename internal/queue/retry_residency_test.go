@@ -27,7 +27,7 @@ func TestRetry_StoreBackedNonResident_PreservesSuccessAndRetriesFailed(t *testin
 	if err := q.Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if job.Manifest() == nil {
+	if !manifestResident(job) {
 		t.Fatal("fixture guard: job should be resident (promoted to Downloading) immediately after Add")
 	}
 
@@ -57,7 +57,7 @@ func TestRetry_StoreBackedNonResident_PreservesSuccessAndRetriesFailed(t *testin
 	// Manifest is the residency signal; progress is never released
 	// (docs/queue-lifecycle.md), so it is checked separately below rather
 	// than folded into this guard.
-	if job.Manifest() != nil {
+	if manifestResident(job) {
 		t.Fatal("fixture guard: job should be non-resident after transitioning to StatusFailed")
 	}
 	if job.Progress() == nil {
@@ -71,7 +71,7 @@ func TestRetry_StoreBackedNonResident_PreservesSuccessAndRetriesFailed(t *testin
 	// Retry calls PromoteNext internally; assert on the END state, after
 	// promotion has run -- this is what catches the "second trap"
 	// (PromoteNext's unconditional RestoreJobProgress undoing the reset).
-	if job.Manifest() == nil || job.Progress() == nil {
+	if !manifestResident(job) || job.Progress() == nil {
 		t.Fatal("expected job to be resident again after Retry promotes it")
 	}
 	if job.Status != constants.StatusDownloading {
@@ -135,7 +135,7 @@ func TestRetry_HydrationFailureLeavesStatusUnchanged(t *testing.T) {
 	if err := q.SetStatus(job.ID, constants.StatusFailed); err != nil {
 		t.Fatalf("SetStatus(Failed): %v", err)
 	}
-	if job.Manifest() != nil {
+	if manifestResident(job) {
 		t.Fatal("fixture guard: job should be non-resident after StatusFailed")
 	}
 
@@ -152,7 +152,7 @@ func TestRetry_HydrationFailureLeavesStatusUnchanged(t *testing.T) {
 	if job.Status != constants.StatusFailed {
 		t.Errorf("job.Status = %s, want unchanged StatusFailed after failed hydration", job.Status)
 	}
-	if job.Manifest() != nil {
+	if manifestResident(job) {
 		t.Error("job should remain non-resident after failed hydration")
 	}
 }
@@ -164,7 +164,7 @@ func TestRetry_HydrationFailureLeavesStatusUnchanged(t *testing.T) {
 // done+failed bits collapsed to a plain "done" bit by the old encoder).
 func TestSQLiteStore_EncodeDecodeArticlesDone_RoundTripsFailedBit(t *testing.T) {
 	job := makeMultiFileJob(t, "roundtrip-failed", 1, 2)
-	job.Progress().markDone(job.Manifest(), 0)
+	job.Progress().markDone(mustManifest(t, job), 0)
 	if !job.progress.markFailed(job.manifest, 1) {
 		t.Fatal("markFailed should report a first-time transition")
 	}
@@ -196,8 +196,8 @@ func TestSQLiteStore_EncodeDecodeArticlesDone_RoundTripsFailedBit(t *testing.T) 
 // encodeArticlesDone for this file and no prefix of it can be trusted.
 func TestSQLiteStore_DecodeArticlesDone_WrongLengthRestoresNothing(t *testing.T) {
 	source := makeMultiFileJob(t, "wrong-length-src", 1, 2)
-	source.Progress().markDone(source.Manifest(), 0)
-	source.Progress().markDone(source.Manifest(), 1)
+	source.Progress().markDone(mustManifest(t, source), 0)
+	source.Progress().markDone(mustManifest(t, source), 1)
 	full := encodeArticlesDone(source, 0)
 	if full == "" {
 		t.Fatal("fixture guard: empty encoding")
@@ -272,7 +272,7 @@ func TestRetry_RestartRoundTrip_PreservesFailedSet(t *testing.T) {
 	if !ok {
 		t.Fatalf("job %s missing after Load", job.ID)
 	}
-	if loadedJob.Manifest() != nil {
+	if manifestResident(loadedJob) {
 		t.Fatal("fixture guard: reloaded Failed job should be non-resident")
 	}
 

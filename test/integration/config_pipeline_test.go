@@ -109,4 +109,3 @@ func TestPipeline_NiceWrapping(t *testing.T) {
 	extractedPath := filepath.Join(completeDir, "nice-test", "nice.txt")
 	verifyFileAtPath(t, extractedPath, wantSHA[:])
 }
-

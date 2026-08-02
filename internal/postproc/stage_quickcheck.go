@@ -71,17 +71,27 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] No files needed subdirectory relocation")
 	}
 
-	q.verifyJobCRCs(ctx, log, job, sets)
-	return nil
+	return q.verifyJobCRCs(ctx, log, job, sets)
 }
 
-func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, job *Job, sets []par2.Set) {
+func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, job *Job, sets []par2.Set) error {
 	if job.Queue == nil || job.Queue.NumFiles() == 0 {
-		return
+		return nil
+	}
+
+	// Unlike the file listing, this must not degrade quietly. Verification
+	// that did not run is indistinguishable from verification that passed
+	// once QuickCheckRan is set, so a job whose manifest is unreadable would
+	// be reported as CRC-verified having been checked against nothing.
+	// Returning an error records the failure in the stage log and surfaces
+	// it in the history entry; the runner deliberately does not abort the
+	// pipeline on a stage error, so par2 repair still gets its turn.
+	m, mErr := job.Queue.Manifest()
+	if mErr != nil {
+		return fmt.Errorf("quickcheck: cannot verify CRCs without the manifest: %w", mErr)
 	}
 	job.QuickCheckRan = true
 
-	m := job.Queue.Manifest()
 	p := job.Queue.Progress()
 	var assembledFiles []par2.AssembledFile
 	for fi := range m.NumFiles() {
@@ -155,6 +165,7 @@ func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, j
 	default:
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] No CRC data available — par2 repair will run")
 	}
+	return nil
 }
 
 // RepairStage runs par2 verify+repair against every par2 set it finds in
