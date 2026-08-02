@@ -61,11 +61,6 @@ type Store interface {
 	// progress to zero.
 	ArticleCountsByJob(ctx context.Context) (map[string][]int, error)
 
-	// BackfillArticleCounts writes recovered per-file article counts back to
-	// a legacy job_files row so future loads don't repeat the manifest
-	// fallback. Must be called without q.mu held.
-	BackfillArticleCounts(ctx context.Context, jobID string, counts []int) error
-
 	// RemainingBytesByJob returns each job's remaining bytes (manifest bytes
 	// minus bytes already downloaded), summed per job_id across job_files.
 	// Used by Loader.Load to seed JobProgress.remainingBytes for jobs that

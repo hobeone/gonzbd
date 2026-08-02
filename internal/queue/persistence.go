@@ -176,26 +176,6 @@ func newJobProgressSized(fileArticleCounts []int, remainingBytes int64) *JobProg
 	return p
 }
 
-// articleCountsAreLegacy reports whether counts came from a job_files row
-// that predates the article_count column (Task 2026-07-31/#267 Task 4): the
-// column defaults every existing row to zero, so a non-empty slice that is
-// all zeros means "never populated" rather than "genuinely zero articles in
-// every file". A job with truly no files at all comes back from
-// ArticleCountsByJob as an empty (nil) slice — no rows to scan — which this
-// deliberately treats as not legacy: there is nothing to fall back to a
-// manifest for.
-func articleCountsAreLegacy(counts []int) bool {
-	if len(counts) == 0 {
-		return false
-	}
-	for _, c := range counts {
-		if c != 0 {
-			return false
-		}
-	}
-	return true
-}
-
 // Loader reconstructs a Queue from disk with configurable dependencies.
 type Loader struct {
 	// Rename is used to rename corrupt files to .corrupt.
@@ -253,11 +233,10 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 		// for all of them, not just the subset the loop below re-hydrates.
 		//
 		// Also queried before q.mu.Lock(), for the same check_lock_io
-		// reason as RemainingBytesByJob above: ArticleCountsByJob and the
-		// legacy manifest-fallback read/backfill are all I/O. One grouped
-		// query for every job rather than one query per job — the same
-		// shape RemainingBytesByJob already uses — so a large queued
-		// backlog costs one round trip, not N.
+		// reason as RemainingBytesByJob above. One grouped query for every
+		// job rather than one query per job — the same shape
+		// RemainingBytesByJob already uses — so a large queued backlog costs
+		// one round trip, not N.
 		countsByJob, err := q.store.ArticleCountsByJob(context.Background())
 		if err != nil {
 			return nil, fmt.Errorf("queue: load article counts: %w", err)
@@ -266,52 +245,7 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 			if job.progress != nil {
 				continue
 			}
-			counts := countsByJob[job.ID]
-			if articleCountsAreLegacy(counts) {
-				// Every count is zero: this job_files row predates Task 4's
-				// article_count column. The manifest is the only remaining
-				// source of per-file article counts — read it once here
-				// rather than leaving progress permanently under-sized.
-				//
-				// A failed read must degrade, not fail Load: this is boot
-				// (Application.Start -> queue.Load), and one damaged manifest
-				// must never prevent the daemon from starting — the same
-				// rule that keeps the resident-hydration branch below
-				// degrading on `if err == nil { ... }` rather than
-				// propagating. Falling through with the zero counts sizes
-				// this one job's progress to zero articles until the normal
-				// claim path (PromoteNext) either hydrates the real manifest
-				// or fails the job closed the way a corrupt manifest already
-				// does for every other job — exactly the pre-Task-5 outcome,
-				// not a new failure mode.
-				manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
-				var m Manifest
-				if err := readGzJSON(manifestPath, &m); err != nil {
-					q.log.Warn("legacy article-count fallback: could not read manifest, sizing progress to zero articles",
-						"job_id", job.ID, "err", err)
-				} else {
-					counts = make([]int, m.NumFiles())
-					for fi := range counts {
-						lo, hi := m.FileRange(fi)
-						counts[fi] = hi - lo
-					}
-					// Write the recovered counts back so this fallback runs
-					// once per job, not on every boot. Best-effort: a failed
-					// write leaves the row legacy and simply repeats the
-					// (already-degraded) fallback next time — it must not
-					// turn a successful load into a failed one. Only log
-					// "upgraded" once the write actually lands — logging it
-					// unconditionally would claim success on the same boot
-					// the very next line reports the persist as failed.
-					if err := q.store.BackfillArticleCounts(context.Background(), job.ID, counts); err != nil {
-						q.log.Warn("legacy article-count fallback: recovered counts from manifest but failed to persist them, will retry on next load",
-							"job_id", job.ID, "err", err)
-					} else {
-						q.log.Info("upgraded legacy job_files row missing article_count", "job_id", job.ID)
-					}
-				}
-			}
-			job.progress = newJobProgressSized(counts, remainingByJob[job.ID])
+			job.progress = newJobProgressSized(countsByJob[job.ID], remainingByJob[job.ID])
 		}
 		func() {
 			q.mu.Lock()

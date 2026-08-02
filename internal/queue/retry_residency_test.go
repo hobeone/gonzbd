@@ -1,7 +1,6 @@
 package queue
 
 import (
-	"encoding/hex"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -158,27 +157,6 @@ func TestRetry_HydrationFailureLeavesStatusUnchanged(t *testing.T) {
 	}
 }
 
-// TestSQLiteStore_DecodeArticlesDone_LegacyHalfLength pins backward
-// compatibility: a pre-widening, done-only bitmap (half the length of the
-// current [done][failed] format) must still decode as a plain done article
-// with failed left false, exactly as before this change.
-func TestSQLiteStore_DecodeArticlesDone_LegacyHalfLength(t *testing.T) {
-	job := makeMultiFileJob(t, "legacy-decode", 1, 3)
-	// 3 articles -> numBytes = 1. Legacy encoding: article 1 done, others not.
-	legacy := hex.EncodeToString([]byte{0b010})
-	decodeArticlesDone(legacy, job, 0)
-
-	if !job.Progress().ArticleDone(1) {
-		t.Error("expected article 1 done under legacy half-length decode")
-	}
-	if job.Progress().ArticleDone(0) || job.Progress().ArticleDone(2) {
-		t.Error("only article 1 should be done under legacy half-length decode")
-	}
-	if job.Progress().ArticleFailed(0) || job.Progress().ArticleFailed(1) || job.Progress().ArticleFailed(2) {
-		t.Error("legacy half-length bitmap carries no failed information; failed[] must stay all false")
-	}
-}
-
 // TestSQLiteStore_EncodeDecodeArticlesDone_RoundTripsFailedBit is the direct
 // unit-level pin for the encode/decode widening: a failed article must
 // round-trip distinctly from a plain done article through the SQLite
@@ -204,6 +182,44 @@ func TestSQLiteStore_EncodeDecodeArticlesDone_RoundTripsFailedBit(t *testing.T) 
 	}
 	if !job2.Progress().ArticleDone(1) || !job2.Progress().ArticleFailed(1) {
 		t.Error("article 1 should decode as done AND failed -- this is the bit the old encoder dropped")
+	}
+}
+
+// A bitmap whose length does not match the file's article count restores
+// nothing.
+//
+// The decoder used to accept a short buffer as a legacy done-only bitmap and
+// read whatever bits fit, which meant a truncated or foreign value silently
+// restored a partial, wrong done-set — bytes accounted against articles that
+// were never fetched. With only one encoding left, the sizes are fixed by
+// the article count, so a mismatch means the value did not come from
+// encodeArticlesDone for this file and no prefix of it can be trusted.
+func TestSQLiteStore_DecodeArticlesDone_WrongLengthRestoresNothing(t *testing.T) {
+	source := makeMultiFileJob(t, "wrong-length-src", 1, 2)
+	source.Progress().markDone(source.Manifest(), 0)
+	source.Progress().markDone(source.Manifest(), 1)
+	full := encodeArticlesDone(source, 0)
+	if full == "" {
+		t.Fatal("fixture guard: empty encoding")
+	}
+
+	// Halve it: the exact shape the old legacy branch would have accepted.
+	half := full[:len(full)/2]
+
+	job := makeMultiFileJob(t, "wrong-length", 1, 2)
+	decodeArticlesDone(half, job, 0)
+
+	if job.Progress().ArticleDone(0) || job.Progress().ArticleDone(1) {
+		t.Errorf("a half-length bitmap restored article state (done: %v, %v); a length mismatch means the value is not this file's, so no prefix of it is trustworthy",
+			job.Progress().ArticleDone(0), job.Progress().ArticleDone(1))
+	}
+
+	// The full-length value still decodes, so the guard is not simply
+	// rejecting everything.
+	job2 := makeMultiFileJob(t, "wrong-length-ok", 1, 2)
+	decodeArticlesDone(full, job2, 0)
+	if !job2.Progress().ArticleDone(0) || !job2.Progress().ArticleDone(1) {
+		t.Error("full-length bitmap failed to decode; the length guard is too strict")
 	}
 }
 

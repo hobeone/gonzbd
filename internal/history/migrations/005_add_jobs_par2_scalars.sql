@@ -8,10 +8,6 @@
 -- par2 index file, so aggregating the flag undercounts rather than matching.
 -- That is why Job.setAggregateScalarsFromFiles deliberately leaves the pair
 -- at zero, and why they need storage of their own.
---
--- Existing rows default to 0, which is indistinguishable from a job that
--- genuinely has no par2 files. SQLiteStore backfills a row from its manifest
--- on the first write after upgrade; until then a legacy job reports no par2.
 ALTER TABLE jobs ADD COLUMN par2_bytes INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE jobs ADD COLUMN par2_files INTEGER NOT NULL DEFAULT 0;
 -- +goose StatementEnd

@@ -182,12 +182,11 @@ func TestSnapshotJob_QueuedAfterRestart_ScalarsNotZero(t *testing.T) {
 // NumArticles alone would pass even if that call were deleted, since Get
 // already supplies the right values for those three.
 //
-// Migration 005 gave par2 its own columns, so a normally-saved job now comes
-// back with them already correct and that distinction disappears. The test
-// blanks the columns before reloading to model a row written before the
-// migration, which both restores the discriminator and covers the upgrade
-// path: a legacy row must still end up with real par2 values after
-// promotion. Deleting the blanking step silently defeats this test.
+// Par2 now round-trips through its own columns, so a normally-saved job
+// comes back with them already correct and that distinction disappears. The
+// test zeroes the columns before reloading to recreate the unsynced state,
+// which is the only thing left that PromoteNext's backfill can be observed
+// changing. Deleting that step silently defeats this test.
 func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
@@ -215,8 +214,7 @@ func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	// Blank the par2 columns to make jobB's row look like one written before
-	// migration 005 added them.
+	// Zero the par2 columns so the reloaded job arrives unsynced.
 	//
 	// This keeps the test's discriminator alive. Its whole design rests on
 	// par2 being the one pair that reads zero for a non-resident job and
@@ -225,10 +223,8 @@ func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 	// are already right from job_files and would pass even if the call were
 	// deleted. Now that par2 round-trips through its own columns, a job saved
 	// and reloaded normally comes back with them already correct, and the gap
-	// closes. Reintroducing it deliberately, as the legacy row it models,
-	// restores the discriminator and covers the upgrade path at the same
-	// time: a row predating the columns must still end up with real par2
-	// values once the job is promoted.
+	// closes. Recreating it here restores the discriminator: par2 must be
+	// wrong before promotion and right after, or the backfill is unobservable.
 	if _, err := store.db.ExecContext(t.Context(),
 		"UPDATE jobs SET par2_bytes = 0, par2_files = 0 WHERE id = ?", jobB.ID); err != nil {
 		t.Fatalf("blank par2 columns: %v", err)
@@ -237,8 +233,7 @@ func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 	// Reload — jobB comes back via SQLiteStore.Get non-resident (StatusQueued,
 	// no manifest attached), but with TotalBytes/NumFiles/NumArticles already
 	// reconstructed from job_files (the Task 4 gap closure), not zero.
-	// Par2Bytes/Par2Files read zero because of the blanking above, standing in
-	// for a pre-migration-005 row.
+	// Par2Bytes/Par2Files read zero because of the zeroing above.
 	q2, err := Load(dir, WithStore(store), WithMaxActiveJobs(1))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -257,10 +252,10 @@ func TestPromoteNext_RestoredJobScalarsSynced(t *testing.T) {
 		t.Fatalf("fixture guard: jobB.TotalBytes() = %d before promotion, want %d (job_files reconstruction, see Task 4)", got, wantBytes)
 	}
 	if got := restored.Par2Bytes(); got != 0 {
-		t.Fatalf("fixture guard: jobB.Par2Bytes() = %d before promotion, want 0 (blanked above to model a pre-migration-005 row)", got)
+		t.Fatalf("fixture guard: jobB.Par2Bytes() = %d before promotion, want 0 (zeroed above so the backfill is observable)", got)
 	}
 	if got := restored.Par2Files(); got != 0 {
-		t.Fatalf("fixture guard: jobB.Par2Files() = %d before promotion, want 0 (blanked above to model a pre-migration-005 row)", got)
+		t.Fatalf("fixture guard: jobB.Par2Files() = %d before promotion, want 0 (zeroed above so the backfill is observable)", got)
 	}
 
 	// Free up the active slot and promote: this drives PromoteNext, the

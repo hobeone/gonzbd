@@ -228,11 +228,6 @@ func (j *Job) setAggregateScalarsFromFiles(totalBytes int64, numFiles, numArticl
 // counterpart to setAggregateScalarsFromFiles: those three scalars can be
 // aggregated out of job_files, these two cannot (see that method), so they
 // get columns of their own.
-//
-// A pre-migration-005 row reads zero here, which is indistinguishable from a
-// job that genuinely has no par2 files. That resolves itself on the job's
-// next write — Add rewrites the row from the promoted scalars — and on
-// promotion, where setScalarsFromManifest overwrites both from the manifest.
 func (j *Job) setPar2ScalarsFromStore(par2Bytes int64, par2Files int) {
 	j.residencyMu.Lock()
 	defer j.residencyMu.Unlock()
@@ -625,11 +620,9 @@ func (j *Job) IsComplete() bool {
 	// which is indistinguishable from a genuine "not complete" and made
 	// startup finalization skip completed non-resident jobs outright.
 	//
-	// Not the promoted NumFiles scalar either: a row written before
-	// migration 005 can leave it at a legacy zero, and a loop over zero
-	// files would report the job complete when its file count is merely
-	// unknown. len(p.files) is sized when progress is built and cannot be
-	// legacy-zero while progress exists.
+	// The slice rather than the promoted NumFiles scalar: the loop indexes
+	// into p.files, so bounding it by p.files' own length keeps the count
+	// and the data it indexes from ever disagreeing.
 	for i := range len(p.files) {
 		if p.FileDeferred(i) {
 			continue

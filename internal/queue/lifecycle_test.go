@@ -705,10 +705,10 @@ func TestIsComplete(t *testing.T) {
 // so a non-resident completed job would be silently skipped and left in the
 // queue forever — a wrong answer, not a failure anyone would see.
 //
-// The file dimension comes from JobProgress's own files slice rather than the
-// promoted NumFiles scalar deliberately: a pre-migration row can leave
-// NumFiles at a legacy zero, and an empty loop would report a job complete
-// when the truth is that its file count is unknown.
+// The file dimension comes from JobProgress's own files slice rather than
+// the promoted NumFiles scalar: the loop indexes into that slice, so
+// bounding it by the slice's own length keeps the count and the data it
+// indexes from ever disagreeing.
 func TestIsComplete_WithoutResidentManifest(t *testing.T) {
 	t.Parallel()
 	q := New()
