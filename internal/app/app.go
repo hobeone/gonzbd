@@ -550,10 +550,34 @@ func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteF
 			app.log.Warn("failed to delete history job directory", "path", entry.Path, "err", err)
 		}
 	}
-	if _, err := app.historyRepo.Delete(ctx, id); err != nil {
+	if err := app.deleteHistoryEntry(ctx, entry); err != nil {
 		return err
 	}
 	app.emit(Event{Type: "history_updated"})
+	return nil
+}
+
+// deleteHistoryEntry removes a history entry and the NZB backup it owns.
+//
+// The retained per-file progress is cleaned up inside Repository.Delete, in
+// the same transaction as the row. The backup cannot be: it is a file, and
+// the history package has no business touching the admin directory. So this
+// is the app-level choke point that every history deletion must route
+// through — the SQL half closes by construction, this half by convention.
+//
+// A missing or unnamed backup is not an error. Entries written before the
+// name was recorded have none, and the download itself never depended on it.
+func (app *Application) deleteHistoryEntry(ctx context.Context, entry *history.Entry) error {
+	if entry.NZBBackup != "" {
+		backupPath := filepath.Join(app.config.GetGeneral().AdminDir, "nzb", filepath.Base(entry.NZBBackup))
+		if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+			app.log.Warn("failed to remove NZB backup for deleted history entry",
+				"path", backupPath, "err", err)
+		}
+	}
+	if _, err := app.historyRepo.Delete(ctx, entry.NzoID); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1297,6 +1321,12 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	if err := app.queue.Add(job); err != nil {
 		return err
 	}
+	// Deliberately Delete rather than deleteHistoryEntry: the job is going
+	// back into the queue under the same ID and the same NZBBackup, and if
+	// it fails again it will finalize into a new history entry naming that
+	// same file. Removing the backup here would make the second failure
+	// unretryable. The retained per-file progress does go, because Add has
+	// just written fresh job_files rows that supersede it.
 	_, _ = app.historyRepo.Delete(ctx, jobID)
 	app.emit(Event{Type: "queue_updated"})
 	app.emit(Event{Type: "history_updated"})

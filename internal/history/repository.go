@@ -331,6 +331,17 @@ func (r *Repository) Delete(ctx context.Context, nzoIDs ...string) (int, error) 
 			args[j] = id
 		}
 
+		// Retained per-file progress is owned by the history entry but has
+		// no foreign key to cascade from, because the jobs row it used to
+		// hang off is deleted at MoveToHistory. Removing it here rather
+		// than at Delete's call sites is what keeps it from accumulating:
+		// every deletion path, present and future, gets the cleanup without
+		// having to remember it, in the same transaction as the row itself.
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM history_job_files WHERE job_id IN ("+placeholders+")", args...); err != nil { //nolint:gosec // placeholders is only "?,?,?" — no user data
+			return 0, fmt.Errorf("history: delete retained job files: %w", err)
+		}
+
 		res, err := tx.ExecContext(ctx,
 			"DELETE FROM history WHERE nzo_id IN ("+placeholders+")", args...) //nolint:gosec // placeholders is only "?,?,?" — no user data
 		if err != nil {

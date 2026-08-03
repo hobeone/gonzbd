@@ -684,6 +684,24 @@ func (s *SQLiteStore) MoveToHistory(ctx context.Context, job *Job, entry history
 		return fmt.Errorf("sqlite store add history %s: %w", job.ID, err)
 	}
 
+	// A failed job keeps its per-file progress so a retry can refetch only
+	// the articles that did not make it — including the case where every
+	// article is present and only post-processing failed, which must not
+	// re-download anything. A completed job has nothing to retry, and
+	// retaining for every job is what made the payload format this replaces
+	// grow without bound. Same transaction as the delete below, so the rows
+	// are either carried over or not written at all.
+	if entry.Status == string(constants.StatusFailed) {
+		const qRetain = `
+INSERT INTO history_job_files
+  (job_id, file_index, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, article_count)
+SELECT job_id, file_index, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, article_count
+FROM job_files WHERE job_id = ?`
+		if _, err := tx.ExecContext(ctx, qRetain, job.ID); err != nil {
+			return fmt.Errorf("sqlite store retain job_files %s: %w", job.ID, err)
+		}
+	}
+
 	if _, err := tx.ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", job.ID); err != nil {
 		return fmt.Errorf("sqlite store delete job_files %s: %w", job.ID, err)
 	}
@@ -702,6 +720,60 @@ func (s *SQLiteStore) MoveToHistory(ctx context.Context, job *Job, entry history
 	}
 
 	return nil
+}
+
+// RetainedFile is one file's download progress, kept for a failed job so a
+// retry can skip the articles that already succeeded.
+//
+// ArticleCount is not part of that progress. It is the alignment check: a
+// retry rebuilds the manifest by re-parsing the NZB, and ArticlesDone is a
+// bitmap indexed against the manifest that produced it. Applying it to a
+// manifest with a different shape would mark the wrong articles done and
+// silently skip real downloads, so the counts must match before the overlay
+// is used.
+type RetainedFile struct {
+	FileIndex       int
+	Complete        bool
+	Deferred        bool
+	WriteCursor     int64
+	BytesDownloaded int64
+	Filename        string
+	AssembledCRC32  uint32
+	ArticlesDone    string
+	ArticleCount    int
+}
+
+// HistoryFileProgress returns the per-file progress retained for a failed
+// history job, ordered by file index. An empty slice means nothing was
+// retained — the job succeeded, its entry predates retention, or its rows
+// were already deleted — and is not an error.
+func (s *SQLiteStore) HistoryFileProgress(ctx context.Context, jobID string) ([]RetainedFile, error) {
+	const q = `
+SELECT file_index, complete, deferred, write_cursor, bytes_downloaded,
+       COALESCE(filename, ''), COALESCE(assembled_crc32, 0), COALESCE(articles_done, ''), article_count
+FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
+	rows, err := s.db.QueryContext(ctx, q, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite store history file progress %s: %w", jobID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []RetainedFile
+	for rows.Next() {
+		var f RetainedFile
+		var complete, deferred int
+		if err := rows.Scan(&f.FileIndex, &complete, &deferred, &f.WriteCursor,
+			&f.BytesDownloaded, &f.Filename, &f.AssembledCRC32, &f.ArticlesDone, &f.ArticleCount); err != nil {
+			return nil, fmt.Errorf("sqlite store scan history_job_file %s: %w", jobID, err)
+		}
+		f.Complete = complete != 0
+		f.Deferred = deferred != 0
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite store history file progress rows %s: %w", jobID, err)
+	}
+	return out, nil
 }
 
 // DeleteJobArtifacts removes the on-disk manifest and progress files for job
