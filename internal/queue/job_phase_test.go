@@ -41,16 +41,29 @@ func TestJobPhase_TerminalStaysNonResident(t *testing.T) {
 	}
 }
 
-// The phase of every status the queue can actually put a job into is a
-// deliberate choice, not a fall-through. Grabbing and Checking are excluded:
-// they are SABnzbd-compatibility vocabulary the API reports (see
-// stageFromStatus) and have no entry in the transition table, so no job ever
-// holds them.
-func TestJobPhase_EveryReachableStatusIsMappedDeliberately(t *testing.T) {
+// Every status's phase is a deliberate choice, not a fall-through.
+//
+// The loop is driven by constants.AllStatuses(), not by the want map below.
+// Iterating the map instead — as the first version of this test did — cannot
+// catch the defect it exists to catch: a status missing from Phase()'s switch
+// is missing from the map too, so the loop never visits it and the test
+// passes while the status silently takes the default arm. The chain that
+// makes this real runs one step further back: constants'
+// TestAllStatuses_Exhaustive parses the const block and fails if a declared
+// status is absent from AllStatuses(), so a new status cannot hide from this
+// loop either.
+//
+// Grabbing and Checking map to PhasePending as an explicit entry rather than
+// by omission. They are SABnzbd-compatibility vocabulary the API reports (see
+// stageFromStatus) that no code path assigns to a job, but "unused" is not a
+// reason to leave a status unconsidered.
+func TestJobPhase_EveryStatusIsMappedDeliberately(t *testing.T) {
 	want := map[constants.Status]JobPhase{
 		constants.StatusIdle:        PhasePending,
 		constants.StatusQueued:      PhasePending,
 		constants.StatusPropagating: PhasePending,
+		constants.StatusGrabbing:    PhasePending,
+		constants.StatusChecking:    PhasePending,
 		constants.StatusFetching:    PhaseActive,
 		constants.StatusDownloading: PhaseActive,
 		constants.StatusPaused:      PhasePaused,
@@ -64,7 +77,13 @@ func TestJobPhase_EveryReachableStatusIsMappedDeliberately(t *testing.T) {
 		constants.StatusFailed:      PhaseTerminal,
 		constants.StatusDeleted:     PhaseTerminal,
 	}
-	for status, wantPhase := range want {
+
+	for _, status := range constants.AllStatuses() {
+		wantPhase, considered := want[status]
+		if !considered {
+			t.Errorf("status %s has no expected phase here; decide its phase in Job.Phase() and record it in this map rather than letting it inherit PhasePending from the default arm", status)
+			continue
+		}
 		j := &Job{Status: status}
 		if got := j.Phase(); got != wantPhase {
 			t.Errorf("Phase() for %s = %v, want %v", status, got, wantPhase)

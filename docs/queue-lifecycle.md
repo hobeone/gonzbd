@@ -139,14 +139,20 @@ a 20k-article job (100 files × 200):
 
 | | per job | per article |
 |---|---|---|
-| `Manifest` — already evicted on terminal entry | 1,371,928 B | 68.6 B |
-| `JobProgress` — bitsets, files, scalars | 14,243 B | 0.712 B |
-| `JobProgress` with the article bitsets dropped | 8,265 B | 0.413 B |
+| `Manifest` — already evicted on terminal entry | 1,371,918 B | 68.6 B |
+| The three per-article bitsets — all compaction can drop | 7,512 B | 0.376 B |
 
-Compaction would therefore reclaim **~6 KB per parked terminal job**: roughly
-175 parked 20k-article failures per megabyte, against a manifest that is 229×
-larger and already gone. The cost that motivated this section is not there any
+Compaction would therefore reclaim **7.5 KB per parked terminal job**: roughly
+140 parked 20k-article failures per megabyte, against a manifest 183× larger
+that is already gone. The cost that motivated this section is not there any
 more.
+
+`TestTerminalJobRetention_Measured` produces both figures and asserts the
+ratio, so this decision can be re-derived rather than inherited. It computes
+the bitset figure exactly from the backing arrays instead of sampling the
+heap — at 7.5 KB the saving sits below the allocator noise from building a
+1.4 MB manifest, and `-benchmem` cannot see it at all, since the bitsets are
+allocated whether or not they are later dropped.
 
 The cheap version is also unavailable. `ArticleDone(i)` returns `false` for an
 out-of-range index, so simply dropping the bitsets would make a compacted job
@@ -154,7 +160,7 @@ report every article as not-done — silently, and plausibly. That is the
 silent-nil class this whole contract exists to remove, so compaction would
 require the full type-level treatment: a summary type with no per-article
 accessors, threaded through every package that reads progress. A cross-package
-API break for 6 KB a job is not a trade worth making.
+API break for 7.5 KB a job is not a trade worth making.
 
 Note that the rehydration half already exists and is exercised: `Retry` →
 `hydrateJobLocked` → `RestoreJobProgress` → `decodeArticlesDone` restores both
@@ -217,7 +223,7 @@ Staged so each step is independently landable:
    left across `internal/api`, `internal/app`, `internal/postproc` and
    `cmd/`.
 4. ~~Terminal compaction and its summary type.~~ Measured and declined — see
-   "Terminal jobs". Steps 1 and 2 reduced the saving to ~6 KB per parked job.
+   "Terminal jobs". Steps 1 and 2 reduced the saving to 7.5 KB per parked job.
 5. Retire the parts of #261 this dissolves.
 
 Only the second half of step 3 cannot be partial, and the first half exists

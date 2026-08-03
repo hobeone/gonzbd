@@ -414,10 +414,15 @@ const (
 // unnoticed; but a parked failure and a job awaiting dispatch are different
 // states and anything branching on the phase would have conflated them.
 //
-// StatusGrabbing and StatusChecking are deliberately absent. They are
+// StatusGrabbing and StatusChecking fall to PhasePending. They are
 // SABnzbd-compatibility vocabulary that the API reports (see
-// stageFromStatus) but that no job ever holds: neither appears in status.go's
-// transition table, so nothing can move a job into them.
+// stageFromStatus) and that no code path currently assigns to a job. Note
+// that this is a fact about the callers, not an invariant the type enforces:
+// status.go's transition table constrains SetStatus/SetStatusIf, but the load
+// paths bypass it — SQLiteStore.Get and Job.UnmarshalJSON both assign Status
+// straight from a persisted string without validating it. Nothing writes
+// those two strings today, so the pending mapping is never exercised; it is
+// the safe answer if that ever changes.
 func (j *Job) Phase() JobPhase {
 	switch j.Status {
 	case constants.StatusQueued, constants.StatusPropagating:
