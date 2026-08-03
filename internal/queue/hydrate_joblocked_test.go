@@ -3,6 +3,8 @@ package queue
 import (
 	"errors"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // describesSameJobAs is the precondition guarding every pairing of a live
@@ -91,7 +93,7 @@ func TestHydrateJobLocked(t *testing.T) {
 		if manifestResident(job) {
 			t.Fatal("fixture guard: job is resident, nothing to hydrate")
 		}
-		if err := writeGzJSONRaw(dir+"/manifests/"+job.ID+".json.gz", []byte("not gzip json")); err != nil {
+		if err := fsutil.WriteGzAtomicBytes(dir+"/manifests/"+job.ID+".json.gz", []byte("not gzip json")); err != nil {
 			t.Fatalf("corrupt manifest: %v", err)
 		}
 		before := job.Progress()

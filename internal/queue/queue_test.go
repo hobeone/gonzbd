@@ -1,7 +1,6 @@
 package queue
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -593,10 +592,14 @@ func TestNotifyFiresOnAdd(t *testing.T) {
 	}
 }
 
+// The whole-queue round trip: ordering, the paused flag and per-job progress
+// all surviving Save and Load. This ran store-less until #266, which is to
+// say against the JSON engine that no production path could reach; it is now
+// store-backed, which is the configuration the daemon actually restarts in.
 func TestSaveLoadRoundTrip(t *testing.T) {
-	dir := t.TempDir()
+	store, dir := setupResidencyTestStore(t)
 
-	original := New()
+	original := New(WithStore(store), WithStateDir(dir))
 	original.PauseAll()
 	a := makeJob(t, "a", constants.HighPriority)
 	b := makeJob(t, "b", constants.NormalPriority)
@@ -604,15 +607,18 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	for _, j := range []*Job{a, b, c} {
 		_ = original.Add(j)
 	}
-	// Mutate a runtime field to verify it round-trips.
-	a.progress.done.Set(0)
-	a.progress.remainingBytes = 500_000
+	// Per-job article state is deliberately not asserted here. With a store
+	// every queued job is non-resident, so setting it would mean promoting a
+	// job first and testing something this case is not about. Its round trip
+	// is covered directly by TestSaveLoadPreservesArticleState,
+	// TestPendingCounter_PersistenceRoundTrip and
+	// TestBytesDownloaded_RecomputeAfterLoad.
 
 	if err := original.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	loaded, err := Load(dir)
+	loaded, err := Load(dir, WithStore(store), WithStateDir(dir))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -629,12 +635,17 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Errorf("order after load: %v, want %v", gotOrder, wantOrder)
 	}
 
-	restored, _ := loaded.Get(a.ID)
-	if !restored.Progress().ArticleDone(0) {
-		t.Error("article Done not round-tripped")
-	}
-	if restored.Progress().RemainingBytes() != 500_000 {
-		t.Errorf("RemainingBytes = %d, want 500000", restored.Progress().RemainingBytes())
+	// Every job must come back with progress: it is always resident, so a
+	// restart that produced a nil one would break the invariant every
+	// reporting path depends on.
+	for _, id := range wantOrder {
+		restored, err := loaded.Get(id)
+		if err != nil {
+			t.Fatalf("Get(%s) after load: %v", id, err)
+		}
+		if restored.Progress() == nil {
+			t.Errorf("job %s came back from the store with no progress", id)
+		}
 	}
 }
 
@@ -646,57 +657,6 @@ func TestLoadMissingReturnsEmptyQueue(t *testing.T) {
 	}
 	if q.Len() != 0 {
 		t.Errorf("Len = %d, want 0", q.Len())
-	}
-}
-
-func TestSaveAtomicReplacesIndex(t *testing.T) {
-	dir := t.TempDir()
-	q := New()
-	_ = q.Add(makeJob(t, "a", constants.NormalPriority))
-	if err := q.Save(dir); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	first, err := os.ReadFile(filepath.Join(dir, "queue.json.gz"))
-	if err != nil {
-		t.Fatalf("read first: %v", err)
-	}
-
-	// Add another job and save again; the index must change.
-	_ = q.Add(makeJob(t, "b", constants.NormalPriority))
-	if err := q.Save(dir); err != nil {
-		t.Fatalf("Save 2: %v", err)
-	}
-	second, err := os.ReadFile(filepath.Join(dir, "queue.json.gz"))
-	if err != nil {
-		t.Fatalf("read second: %v", err)
-	}
-	if bytes.Equal(first, second) {
-		t.Error("second save produced identical bytes")
-	}
-
-	// No leftover temp files.
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
-	for _, e := range entries {
-		if strings.Contains(e.Name(), ".tmp.") {
-			t.Errorf("leftover temp file: %s", e.Name())
-		}
-	}
-}
-
-func TestLoadRejectsFutureVersion(t *testing.T) {
-	dir := t.TempDir()
-	// Hand-craft an index with an unsupported version.
-	if err := writeGzJSON(filepath.Join(dir, "queue.json.gz"), &indexFile{
-		Version: 999,
-	}); err != nil {
-		t.Fatalf("seed bad index: %v", err)
-	}
-	_, err := Load(dir)
-	if err == nil || !strings.Contains(err.Error(), "version") {
-		t.Errorf("Load future-version error = %v, want version error", err)
 	}
 }
 

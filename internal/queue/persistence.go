@@ -9,27 +9,20 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
-// persistenceVersion identifies the on-disk format. Bump when a
-// backwards-incompatible change lands; Load refuses unknown versions
-// rather than silently misinterpreting them.
-const persistenceVersion = 1
-
-// indexFile is the top-level queue.json.gz document. It holds only
-// the information needed to order jobs on reload plus the queue-wide
-// pause flag; per-job state lives in jobs/<id>.json.gz.
-type indexFile struct {
-	Version int      `json:"version"`
-	JobIDs  []string `json:"job_ids"`
-	Paused  bool     `json:"paused,omitempty"`
-}
-
-// Save serialises the queue to dir.
+// Save persists the queue through its Store and records dir as the state
+// directory (where manifests live).
+//
+// A Queue with no Store has no persistence at all, and Save is a no-op for
+// it beyond recording dir. That is the configuration's defined meaning, not
+// a silently skipped write: New() without WithStore builds an in-memory
+// queue, the same condition hydrateJobLocked and Add already treat as "no
+// persistence configured". Every production entry point supplies a Store
+// (see Load).
 func (q *Queue) Save(dir string) error {
 	q.dirty.Store(false)
 
@@ -38,15 +31,6 @@ func (q *Queue) Save(dir string) error {
 			q.dirty.Store(true)
 			return err
 		}
-		q.mu.Lock()
-		q.stateDir = dir
-		q.mu.Unlock()
-		return nil
-	}
-
-	if err := q.saveInner(dir); err != nil {
-		q.dirty.Store(true)
-		return err
 	}
 	q.mu.Lock()
 	q.stateDir = dir
@@ -89,57 +73,6 @@ func (q *Queue) saveStore(_ string) error {
 	return nil
 }
 
-func (q *Queue) saveInner(dir string) error {
-	// Snapshot job data under RLock, then release before disk I/O.
-	// Holding the lock during writeGzJSON would block the entire
-	// pipeline (MarkArticleDone, Add, etc.) for the duration of
-	// checkpointing — potentially seconds on large queues.
-	q.mu.RLock()
-	type jobSnapshot struct {
-		id   string
-		data []byte
-	}
-	snapshots := make([]jobSnapshot, 0, len(q.jobs))
-	jobIDs := make([]string, len(q.jobs))
-	paused := q.paused
-
-	for i, job := range q.jobs {
-		jobIDs[i] = job.ID
-		// Marshal to JSON under the lock so we capture a consistent
-		// view. The actual disk I/O happens after unlock.
-		data, err := json.Marshal(job) //nolint:gosec // G117: Job.Password is an archive password, not a credential
-		if err != nil {
-			q.mu.RUnlock()
-			return fmt.Errorf("queue: marshal job %s: %w", job.ID, err)
-		}
-		snapshots = append(snapshots, jobSnapshot{id: job.ID, data: data})
-	}
-	q.mu.RUnlock()
-
-	// --- No lock held below this line ---
-
-	jobsDir := filepath.Join(dir, "jobs")
-	if err := os.MkdirAll(jobsDir, 0o750); err != nil {
-		return fmt.Errorf("queue: mkdir %q: %w", jobsDir, err)
-	}
-
-	for _, snap := range snapshots {
-		if err := writeGzJSONRaw(filepath.Join(jobsDir, snap.id+".json.gz"), snap.data); err != nil {
-			return fmt.Errorf("queue: save job %s: %w", snap.id, err)
-		}
-	}
-
-	idx := indexFile{
-		Version: persistenceVersion,
-		JobIDs:  jobIDs,
-		Paused:  paused,
-	}
-	if err := writeGzJSON(filepath.Join(dir, "queue.json.gz"), &idx); err != nil {
-		return fmt.Errorf("queue: save index: %w", err)
-	}
-	return nil
-}
-
 // newJobProgressSized builds a JobProgress sized to fileArticleCounts (one
 // element per file, its article count) without requiring a resident
 // Manifest — see Store.ArticleCountsByJob. Used by Loader.Load to give a
@@ -176,35 +109,15 @@ func newJobProgressSized(fileArticleCounts []int, remainingBytes int64) *JobProg
 	return p
 }
 
-// Loader reconstructs a Queue from disk with configurable dependencies.
-type Loader struct {
-	// Rename is used to rename corrupt files to .corrupt.
-	// If nil, os.Rename is used.
-	Rename func(oldpath, newpath string) error
-}
-
-func (l *Loader) rename() func(string, string) error {
-	if l.Rename != nil {
-		return l.Rename
-	}
-	return os.Rename
-}
-
-func (l *Loader) quarantineFile(path string) error {
-	dest := path + ".corrupt"
-	return l.rename()(path, dest)
-}
-
-// Load reconstructs a Queue from dir. A missing or corrupt queue.json.gz is not
-// a fatal error — the daemon will start fresh with an empty queue, and the
-// corrupt index is quarantined. Permission errors and quarantine-failure
-// errors still propagate.
+// Load reconstructs a Queue from dir, reading its jobs through the Store
+// supplied via WithStore and their manifests from dir/manifests.
+//
+// A Queue built without a Store loads nothing: there is nowhere to load it
+// from. Until #266 this fell through to a second, whole-queue gzip-JSON
+// engine that no production path could reach — both entry points always
+// construct a Store — and that carried two live defects of its own. It has
+// been removed rather than repaired.
 func Load(dir string, opts ...Option) (*Queue, error) {
-	return (&Loader{}).Load(dir, opts...)
-}
-
-// Load reconstructs a Queue from dir.
-func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 	q := New(opts...)
 	if q.store != nil {
 		q.stateDir = dir
@@ -253,17 +166,16 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 			for _, job := range jobs {
 				q.jobs = append(q.jobs, job)
 				q.byID[job.ID] = job
-				if isResidentStatus(job.Status) && job.manifest == nil {
-					manifestPath := filepath.Join(dir, "manifests", job.ID+".json.gz")
-					var m Manifest
-					if err := readGzJSON(manifestPath, &m); err == nil {
-						m.buildMessageIDIndex()
-						job.setResidency(&m, newJobProgress(&m))
-						job.setScalarsFromManifest(&m)
-						_ = q.store.RestoreJobProgress(context.Background(), job)
-						q.activeSet.Add(job)
-					}
-				} else if job.manifest != nil {
+				// A resident-status job arrives from the store already
+				// hydrated, or not at all: SQLiteStore.Get reads
+				// manifests/<id>.json.gz whenever that file exists, from the
+				// same directory this function was handed. There used to be a
+				// re-read fallback here for the manifest == nil case, but it
+				// could never do anything — manifest == nil means Get found
+				// no file, so re-reading the identical path fails too. It was
+				// removed with the rest of the unreachable persistence code
+				// in #266.
+				if job.manifest != nil {
 					job.manifest.buildMessageIDIndex()
 				}
 			}
@@ -273,109 +185,10 @@ func (l *Loader) Load(dir string, opts ...Option) (*Queue, error) {
 		return q, nil
 	}
 
-	var idx indexFile
-	idxPath := filepath.Join(dir, "queue.json.gz")
-	err := readGzJSON(idxPath, &idx)
-	if errors.Is(err, os.ErrNotExist) {
-		return q, nil
-	}
-	if err != nil {
-		if errors.Is(err, os.ErrPermission) {
-			return nil, fmt.Errorf("queue: load index: %w", err)
-		}
-		// For index, we degrade to empty queue but must quarantine first.
-		if qErr := l.quarantineFile(idxPath); qErr != nil {
-			return nil, fmt.Errorf("queue: load index failed and could not quarantine: %w (original error: %w)", qErr, err)
-		}
-		q = New(opts...)
-		q.stateDir = dir
-		q.log.Warn("quarantining corrupt queue index and degrading to empty queue", "path", idxPath, "err", err)
-		return q, nil
-	}
-	if idx.Version != persistenceVersion {
-		return nil, fmt.Errorf("queue: unsupported persistence version %d (expected %d)",
-			idx.Version, persistenceVersion)
-	}
-
-	q = New(opts...)
+	// No Store: nothing to load. Returning the empty queue is the whole
+	// behaviour, not a fallback — see this function's doc comment.
 	q.stateDir = dir
-	q.paused = idx.Paused
-	jobsDir := filepath.Join(dir, "jobs")
-	for _, id := range idx.JobIDs {
-		var job Job
-		jobPath := filepath.Join(jobsDir, id+".json.gz")
-		if err := readGzJSON(jobPath, &job); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				// Job file was removed but the index wasn't saved before
-				// a crash. Skip the orphaned entry; Prune will clean up.
-				continue
-			}
-			if errors.Is(err, os.ErrPermission) {
-				return nil, fmt.Errorf("queue: load job %s: %w", id, err)
-			}
-			// Quarantine corrupt job file and continue loading others
-			if qErr := l.quarantineFile(jobPath); qErr != nil {
-				return nil, fmt.Errorf("queue: load job %s failed and could not quarantine: %w (original error: %w)", id, qErr, err)
-			}
-			q.log.Warn("quarantining corrupt job file", "id", id, "path", jobPath, "err", err)
-			continue
-		}
-		q.jobs = append(q.jobs, &job)
-		q.byID[id] = &job
-		if m := job.manifest; m != nil {
-			job.setScalarsFromManifest(m)
-		}
-		// Initialize transient counters (Pending, ArticlesResolved,
-		// ArticlesFailed) from the loaded done/failed/emitted flags. These
-		// are excluded from JSON and must be recomputed after every
-		// deserialisation. messageIDIndex is left unbuilt; articleIndexByID
-		// builds it lazily the next time it is called.
-		job.progress.recompute(job.manifest)
-	}
-	q.Prune()
 	return q, nil
-}
-
-// Prune removes orphaned job files in stateDir/jobs/ that are no longer present
-// in the queue's index. It also cleans up crash-orphaned temporary files left
-// by writeGzJSONRaw's atomic write pattern (temp+fsync+rename).
-func (q *Queue) Prune() {
-	if q.stateDir == "" {
-		return
-	}
-	jobsDir := filepath.Join(q.stateDir, "jobs")
-	entries, err := os.ReadDir(jobsDir)
-	if err != nil {
-		return
-	}
-
-	// Collect orphan paths under the lock, then release before disk I/O.
-	var toRemove []string
-	q.mu.RLock()
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		// Clean up crash-orphaned temp files from atomic writes.
-		if strings.Contains(name, ".tmp") {
-			toRemove = append(toRemove, filepath.Join(jobsDir, name))
-			continue
-		}
-		if !strings.HasSuffix(name, ".json.gz") {
-			continue
-		}
-		id := strings.TrimSuffix(name, ".json.gz")
-		if _, ok := q.byID[id]; !ok {
-			toRemove = append(toRemove, filepath.Join(jobsDir, name))
-		}
-	}
-	q.mu.RUnlock()
-
-	for _, p := range toRemove {
-		q.log.Info("pruning orphaned job state", "path", p)
-		_ = os.Remove(p) // best-effort pruning of orphaned job file
-	}
 }
 
 // LoadJob reconstructs a single Job from a .json.gz file at path.
@@ -407,12 +220,6 @@ func writeGzJSON(path string, v any) error {
 		}
 		return nil
 	})
-}
-
-// writeGzJSONRaw writes pre-marshalled JSON bytes to a gzipped file at path.
-// Used when JSON marshalling happens separately (e.g. under a lock) from disk I/O.
-func writeGzJSONRaw(path string, data []byte) error {
-	return fsutil.WriteGzAtomicBytes(path, data)
 }
 
 // readGzJSON opens path, gunzips, and decodes JSON into v. Returns

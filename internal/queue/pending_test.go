@@ -5,6 +5,8 @@ import (
 	"math/rand/v2"
 	"testing"
 
+	"path/filepath"
+
 	"github.com/hobeone/gonzbd/internal/constants"
 )
 
@@ -275,19 +277,19 @@ func TestPendingCounter_PersistenceRoundTrip(t *testing.T) {
 	_ = q.MarkArticleDone("j1", artID(0, 2))
 	verifyPending(t, q, "before save")
 
-	if err := q.Save(dir); err != nil {
+	// Round-trip through SaveJob/LoadJob, the per-job document path the
+	// history-retry flow uses. This was q.Save(dir) plus Load(dir) against a
+	// store-less queue, which reached the whole-queue JSON engine removed in
+	// #266; the property under test — pending counters recomputed from the
+	// persisted done flags — belongs to LoadJob and is unchanged.
+	jobPath := filepath.Join(dir, "jobs", "j1.json.gz")
+	if err := SaveJob(jobPath, q.jobs[0]); err != nil {
 		t.Fatal(err)
 	}
-
-	// Load from disk — pending counters should be recomputed
-	q2, err := Load(dir)
+	job, err := LoadJob(jobPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	verifyPending(t, q2, "after Load")
-
-	// PendingArticles should be 3 (file 1 has all 3 pending)
-	job := q2.jobs[0]
 	if job.Progress().PendingArticles() != 3 {
 		t.Errorf("PendingArticles=%d want 3", job.Progress().PendingArticles())
 	}
@@ -343,17 +345,18 @@ func TestBytesDownloaded_RecomputeAfterLoad(t *testing.T) {
 	_ = q.Add(job)
 	_ = q.MarkArticlesDone("j1", []string{artID(0, 0), artID(1, 0)})
 
-	if err := q.Save(dir); err != nil {
+	// SaveJob/LoadJob rather than a store-less Save/Load round-trip, which
+	// went through the whole-queue JSON engine removed in #266. The property
+	// — per-file BytesDownloaded recomputed from the persisted done flags on
+	// deserialisation — is LoadJob's and is unchanged.
+	jobPath := filepath.Join(dir, "jobs", "j1.json.gz")
+	if err := SaveJob(jobPath, job); err != nil {
 		t.Fatal(err)
 	}
-
-	q2, err := Load(dir)
+	loaded, err := LoadJob(jobPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	verifyPending(t, q2, "after Load")
-
-	loaded := q2.jobs[0]
 	if got := loaded.Progress().FileBytesDownloaded(0); got != 1000 {
 		t.Errorf("file 0 BytesDownloaded = %d; want 1000 (recomputed on load)", got)
 	}

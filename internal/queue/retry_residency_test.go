@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // TestRetry_StoreBackedNonResident_PreservesSuccessAndRetriesFailed pins
@@ -141,7 +143,7 @@ func TestRetry_HydrationFailureLeavesStatusUnchanged(t *testing.T) {
 
 	// Corrupt the manifest file so hydration fails.
 	manifestPath := dir + "/manifests/" + job.ID + ".json.gz"
-	if err := writeGzJSONRaw(manifestPath, []byte("not valid gzip json")); err != nil {
+	if err := fsutil.WriteGzAtomicBytes(manifestPath, []byte("not valid gzip json")); err != nil {
 		t.Fatalf("corrupt manifest: %v", err)
 	}
 
@@ -263,7 +265,7 @@ func TestRetry_RestartRoundTrip_PreservesFailedSet(t *testing.T) {
 		t.Fatalf("Save (post-failure): %v", err)
 	}
 
-	loaded, err := (&Loader{}).Load(dir, WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
+	loaded, err := Load(dir, WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

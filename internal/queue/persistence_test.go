@@ -2,13 +2,10 @@ package queue
 
 import (
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -136,148 +133,7 @@ func TestSaveJobLoadJob_Overwrite(t *testing.T) {
 
 // ---------- Prune ----------
 
-func TestPrune_RemovesOrphans(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	q := New()
-	j := makeJob(t, "keeper", constants.NormalPriority)
-	_ = q.Add(j)
-
-	if err := q.Save(dir); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	// Create orphaned job files that aren't in the index.
-	jobsDir := filepath.Join(dir, "jobs")
-	orphanPath := filepath.Join(jobsDir, "orphan-id.json.gz")
-	if err := os.WriteFile(orphanPath, []byte("junk"), 0o644); err != nil {
-		t.Fatalf("create orphan: %v", err)
-	}
-
-	// Create a crash-orphaned temp file.
-	tmpPath := filepath.Join(jobsDir, "somefile.json.gz.tmp.12345")
-	if err := os.WriteFile(tmpPath, []byte("temp"), 0o644); err != nil {
-		t.Fatalf("create tmp: %v", err)
-	}
-
-	// Load and prune.
-	loaded, err := Load(dir)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	// Prune is called by Load, so orphans should already be gone.
-	if _, err := os.Stat(orphanPath); !os.IsNotExist(err) {
-		t.Errorf("orphan should have been pruned, err = %v", err)
-	}
-	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
-		t.Errorf("temp file should have been pruned, err = %v", err)
-	}
-
-	// The valid job should still be loaded.
-	if loaded.Len() != 1 {
-		t.Errorf("Len = %d, want 1", loaded.Len())
-	}
-}
-
-func TestPrune_PreservesNonJobFiles(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	q := New()
-	j := makeJob(t, "valid", constants.NormalPriority)
-	_ = q.Add(j)
-	_ = q.Save(dir)
-
-	// Create a non-.json.gz file — should NOT be pruned.
-	jobsDir := filepath.Join(dir, "jobs")
-	otherFile := filepath.Join(jobsDir, "readme.txt")
-	if err := os.WriteFile(otherFile, []byte("hello"), 0o644); err != nil {
-		t.Fatalf("create other: %v", err)
-	}
-
-	loaded, _ := Load(dir)
-	_ = loaded // trigger Prune
-
-	if _, err := os.Stat(otherFile); err != nil {
-		t.Errorf("non-job file should be preserved: %v", err)
-	}
-}
-
-func TestPrune_NoStateDir(t *testing.T) {
-	t.Parallel()
-	q := New()
-	// Prune with empty stateDir should be a no-op (no panic).
-	q.Prune()
-}
-
 // ---------- Load edge cases ----------
-
-func TestLoad_SkipsOrphanedIndexEntry(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	// Save a queue with two jobs.
-	q := New()
-	a := makeJob(t, "job-a", constants.NormalPriority)
-	b := makeJob(t, "job-b", constants.NormalPriority)
-	_ = q.Add(a)
-	_ = q.Add(b)
-	_ = q.Save(dir)
-
-	// Delete job-b's file to simulate a crash.
-	os.Remove(filepath.Join(dir, "jobs", b.ID+".json.gz"))
-
-	// Load should skip the missing job without error.
-	loaded, err := Load(dir)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if loaded.Len() != 1 {
-		t.Errorf("Len = %d, want 1 (orphaned entry skipped)", loaded.Len())
-	}
-	if _, err := loaded.Get(a.ID); err != nil {
-		t.Errorf("surviving job should be loadable: %v", err)
-	}
-}
-
-func TestLoad_CorruptJobFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	q := New()
-	j1 := makeJob(t, "good", constants.NormalPriority)
-	j2 := makeJob(t, "corrupt", constants.NormalPriority)
-	_ = q.Add(j1)
-	_ = q.Add(j2)
-	_ = q.Save(dir)
-
-	// Corrupt job-b's file
-	jobPath := filepath.Join(dir, "jobs", j2.ID+".json.gz")
-	if err := os.WriteFile(jobPath, []byte("corrupt data"), 0o644); err != nil {
-		t.Fatalf("corrupt job file: %v", err)
-	}
-
-	loaded, err := Load(dir)
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-
-	// Good job should be loaded, corrupt one skipped
-	if loaded.Len() != 1 {
-		t.Errorf("expected 1 job, got %d", loaded.Len())
-	}
-	if _, err := loaded.Get(j1.ID); err != nil {
-		t.Errorf("good job should be loaded: %v", err)
-	}
-
-	// Assert corrupt job file was renamed
-	if _, err := os.Stat(jobPath); !os.IsNotExist(err) {
-		t.Errorf("expected original job file to be gone, got: %v", err)
-	}
-	if _, err := os.Stat(jobPath + ".corrupt"); err != nil {
-		t.Errorf("expected corrupt job file to exist, got: %v", err)
-	}
-}
 
 // ---------- Save dirty-flag semantics ----------
 
@@ -299,17 +155,35 @@ func TestSave_ClearsDirtyOnSuccess(t *testing.T) {
 }
 
 func TestSave_RestoresDirtyOnError(t *testing.T) {
-	t.Parallel()
-	q := New()
-	_ = q.Add(makeJob(t, "dirty-restore", constants.NormalPriority))
+	// A failing Store, not an unwritable directory: since #266 a Queue with
+	// no Store has nothing to persist and Save cannot fail, so the error
+	// path only exists for the store-backed configuration production uses.
+	// The property is unchanged — a Save that did not land must leave the
+	// queue dirty, or the next checkpoint will skip it and the write is lost
+	// for good.
+	real, dir := setupResidencyTestStore(t)
+	fs := &failingStore{Store: real}
+	q := New(WithStore(fs), WithStateDir(dir))
+	if err := q.Add(makeJob(t, "dirty-restore", constants.NormalPriority)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 
-	// Save to a nonexistent directory to trigger an error.
-	err := q.Save("/nonexistent/path/that/does/not/exist")
-	if err == nil {
-		t.Fatal("expected Save error for nonexistent directory")
+	fs.failUpdateBatch = true
+	if err := q.Save(dir); err == nil {
+		t.Fatal("expected Save to report the store failure")
 	}
 	if !q.IsDirty() {
-		t.Error("dirty flag should be restored after failed Save")
+		t.Error("dirty flag should be restored after a failed Save; leaving it clear means the next checkpoint skips this state entirely")
+	}
+
+	// And it clears again once the store recovers, or the queue would
+	// checkpoint on every tick forever.
+	fs.failUpdateBatch = false
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save after recovery: %v", err)
+	}
+	if q.IsDirty() {
+		t.Error("dirty flag still set after a successful Save")
 	}
 }
 
@@ -403,19 +277,19 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 	wantPendingArticles := 4             // 1 + 3
 	wantBytesDownloaded0 := artBytes     // only arts0[0] (successful Done)
 
-	// Persist.
-	if err := q.Save(dir); err != nil {
-		t.Fatalf("Save: %v", err)
+	// Persist and reload through SaveJob/LoadJob, which is the per-job
+	// document path the history-retry flow uses. It was q.Save(dir) plus
+	// Load(dir) against a store-less queue, which reached the whole-queue
+	// JSON engine removed in #266; the property under test — transient
+	// counters recomputed and emitted cleared after deserialisation — is
+	// LoadJob's, and is unchanged.
+	jobPath := filepath.Join(dir, "jobs", id+".json.gz")
+	if err := SaveJob(jobPath, j); err != nil {
+		t.Fatalf("SaveJob: %v", err)
 	}
-
-	// Reload.
-	q2, err := Load(dir)
+	got, err := LoadJob(jobPath)
 	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	got := q2.SnapshotJob(id)
-	if got == nil {
-		t.Fatal("SnapshotJob returned nil after Load")
+		t.Fatalf("LoadJob: %v", err)
 	}
 
 	gm, gp := mustManifest(t, got), got.Progress()
@@ -597,61 +471,6 @@ func TestPersistenceRoundTrip_AccessorParity(t *testing.T) {
 
 // ---------- Direct Persistence/Job Helpers ----------
 
-func TestReadWriteGzJSONRaw_Direct(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "test.json.gz")
-
-	type dummy struct {
-		Name string `json:"name"`
-		Val  int    `json:"val"`
-	}
-	original := dummy{Name: "hello", Val: 42}
-
-	data, jsonErr := json.Marshal(original)
-	if jsonErr != nil {
-		t.Fatal(jsonErr)
-	}
-
-	if err := writeGzJSONRaw(path, data); err != nil {
-		t.Fatalf("writeGzJSONRaw failed: %v", err)
-	}
-
-	var loaded dummy
-	if err := readGzJSON(path, &loaded); err != nil {
-		t.Fatalf("readGzJSON failed: %v", err)
-	}
-
-	if loaded != original {
-		t.Errorf("loaded %+v, want %+v", loaded, original)
-	}
-}
-
-func TestQueue_SaveInner_Direct(t *testing.T) {
-	tmp := t.TempDir()
-	q := New()
-	job1 := &Job{ID: "job1", Name: "Job 1"}
-	job1.manifest = newManifest([]JobFile{
-		{
-			Subject:  "subject1",
-			Articles: []JobArticle{{ID: "art1", Bytes: 100}},
-		},
-	})
-	job1.progress = newJobProgress(job1.manifest)
-	_ = q.Add(job1)
-
-	if err := q.saveInner(tmp); err != nil {
-		t.Fatalf("saveInner failed: %v", err)
-	}
-
-	var loadedJob Job
-	if err := readGzJSON(filepath.Join(tmp, "jobs", "job1.json.gz"), &loadedJob); err != nil {
-		t.Fatalf("failed to read job: %v", err)
-	}
-	if loadedJob.ID != "job1" {
-		t.Errorf("loaded job mismatch: %+v", &loadedJob)
-	}
-}
-
 func TestJob_RecomputePendingAndLazyArticleByID_Direct(t *testing.T) {
 	job := &Job{ID: "test-job"}
 	job.manifest = newManifest([]JobFile{
@@ -712,7 +531,7 @@ func TestLoadJob_RecomputesPending(t *testing.T) {
 func TestSave_SetsStateDir(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	q := New()
+	q := New(WithStateDir(dir))
 	j := makeJob(t, "backup-cleanup", constants.NormalPriority)
 	if err := q.Add(j); err != nil {
 		t.Fatal(err)
@@ -722,18 +541,20 @@ func TestSave_SetsStateDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	jobPath := filepath.Join(dir, "jobs", j.ID+".json.gz")
-	if _, err := os.Stat(jobPath); err != nil {
-		t.Fatalf("expected job backup file to exist at %s, got err: %v", jobPath, err)
+	// Save records the state directory, which is where manifests are read
+	// from and is the only thing it persists for a store-less queue.
+	q.mu.RLock()
+	got := q.stateDir
+	q.mu.RUnlock()
+	if got != dir {
+		t.Errorf("stateDir = %q after Save, want %q", got, dir)
 	}
 
-	if err := q.Remove(j.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := os.Stat(jobPath); !os.IsNotExist(err) {
-		t.Errorf("expected job backup file to be deleted, but it still exists (err: %v)", err)
-	}
+	// This used to go on to assert that Save wrote jobs/<id>.json.gz and that
+	// Remove deleted it. Both belonged to the whole-queue JSON engine removed
+	// in #266. Manifest unlinking on Remove is store-gated, so it is not the
+	// equivalent property for a store-less queue and is covered where it
+	// actually happens rather than asserted speculatively here.
 }
 
 func TestWriteGzJSON_EncodeError(t *testing.T) {
@@ -747,238 +568,6 @@ func TestWriteGzJSON_EncodeError(t *testing.T) {
 	}
 }
 
-func TestWriteGzJSONRaw_WriteError(t *testing.T) {
-	// Do NOT call t.Parallel() because Setrlimit mutates process-global state.
-	var oldRlim syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &oldRlim); err != nil {
-		t.Skipf("Getrlimit not supported: %v", err)
-	}
-
-	signal.Ignore(syscall.SIGXFSZ)
-	defer signal.Reset(syscall.SIGXFSZ)
-
-	newRlim := syscall.Rlimit{Cur: 10, Max: oldRlim.Max}
-	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &newRlim); err != nil {
-		t.Skipf("Setrlimit not supported: %v", err)
-	}
-	defer func() {
-		_ = syscall.Setrlimit(syscall.RLIMIT_FSIZE, &oldRlim)
-	}()
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "fsize_err.json.gz")
-	// Writing a large incompressible payload exceeds the 10-byte file size limit during gz.Write, causing it to fail.
-	data := make([]byte, 500_000)
-	val := uint32(1)
-	for i := range data {
-		val = val*1103515245 + 12345
-		data[i] = byte(val >> 16)
-	}
-	err := writeGzJSONRaw(path, data)
-	if err == nil {
-		t.Fatal("expected write error when exceeding RLIMIT_FSIZE, got nil")
-	}
-}
-
-func TestQuarantineFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "testfile.json.gz")
-	if err := os.WriteFile(path, []byte("test data"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	l := &Loader{}
-	err := l.quarantineFile(path)
-	if err != nil {
-		t.Fatalf("quarantineFile failed: %v", err)
-	}
-
-	// Assert original is gone
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("expected original file to be gone, got: %v", err)
-	}
-
-	// Assert corrupt file exists and has correct content
-	corruptPath := path + ".corrupt"
-	data, err := os.ReadFile(corruptPath)
-	if err != nil {
-		t.Errorf("failed to read corrupt file: %v", err)
-	} else if string(data) != "test data" {
-		t.Errorf("corrupt file content = %q, want %q", string(data), "test data")
-	}
-}
-
-func TestQuarantineFile_NotExist(t *testing.T) {
-	t.Parallel()
-	l := &Loader{}
-	err := l.quarantineFile("/nonexistent/path/file.json.gz")
-	if err == nil {
-		t.Error("expected error when quarantining nonexistent file, got nil")
-	}
-}
-
-func TestLoad_CorruptIndexQuarantined(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	// Create a corrupt index file
-	idxPath := filepath.Join(dir, "queue.json.gz")
-	if err := os.WriteFile(idxPath, []byte("corrupt gzip data"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	q, err := Load(dir)
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if q.Len() != 0 {
-		t.Errorf("expected empty queue, got len %d", q.Len())
-	}
-	if q.stateDir != dir {
-		t.Errorf("expected stateDir = %q, got %q", dir, q.stateDir)
-	}
-
-	// Assert index was renamed
-	if _, err := os.Stat(idxPath); !os.IsNotExist(err) {
-		t.Errorf("expected original index to be gone, got: %v", err)
-	}
-	if _, err := os.Stat(idxPath + ".corrupt"); err != nil {
-		t.Errorf("expected corrupt index to exist, got: %v", err)
-	}
-}
-
-func TestLoad_CorruptIndexQuarantineFailure(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	idxPath := filepath.Join(dir, "queue.json.gz")
-	if err := os.WriteFile(idxPath, []byte("corrupt gzip data"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	// Mock rename to fail via Loader dependency injection
-	l := &Loader{
-		Rename: func(oldpath, newpath string) error {
-			return errors.New("mock rename error")
-		},
-	}
-
-	_, err := l.Load(dir)
-	if err == nil {
-		t.Fatal("expected error due to quarantine failure, got nil")
-	}
-	if !strings.Contains(err.Error(), "failed and could not quarantine") {
-		t.Errorf("expected error to mention quarantine failure, got: %v", err)
-	}
-
-	// Verify the original file is still there
-	if _, err := os.Stat(idxPath); err != nil {
-		t.Errorf("expected original corrupt file to still exist, got: %v", err)
-	}
-}
-
-func TestLoad_CorruptJobQuarantineFailure(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	q := New()
-	j1 := makeJob(t, "good", constants.NormalPriority)
-	j2 := makeJob(t, "corrupt", constants.NormalPriority)
-	_ = q.Add(j1)
-	_ = q.Add(j2)
-	_ = q.Save(dir)
-
-	// Corrupt job-b's file
-	jobPath := filepath.Join(dir, "jobs", j2.ID+".json.gz")
-	if err := os.WriteFile(jobPath, []byte("corrupt data"), 0o644); err != nil {
-		t.Fatalf("corrupt job file: %v", err)
-	}
-
-	// Mock rename to fail via Loader dependency injection
-	l := &Loader{
-		Rename: func(oldpath, newpath string) error {
-			return errors.New("mock rename error")
-		},
-	}
-
-	_, err := l.Load(dir)
-	if err == nil {
-		t.Fatal("expected error due to quarantine failure, got nil")
-	}
-	if !strings.Contains(err.Error(), "failed and could not quarantine") {
-		t.Errorf("expected error to mention quarantine failure, got: %v", err)
-	}
-
-	// Verify the original file is still there
-	if _, err := os.Stat(jobPath); err != nil {
-		t.Errorf("expected original corrupt job file to still exist, got: %v", err)
-	}
-}
-
-func TestLoad_PermissionError(t *testing.T) {
-	t.Parallel()
-	if os.Getuid() == 0 {
-		t.Skip("permission tests are unreliable when running as root")
-	}
-
-	t.Run("IndexPermissionError", func(t *testing.T) {
-		dir := t.TempDir()
-		idxPath := filepath.Join(dir, "queue.json.gz")
-		if err := os.WriteFile(idxPath, []byte("some data"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		// Make index unreadable
-		if err := os.Chmod(idxPath, 0000); err != nil {
-			t.Fatal(err)
-		}
-		defer func() {
-			_ = os.Chmod(idxPath, 0644) // restore for cleanup
-		}()
-
-		_, err := Load(dir)
-		if err == nil {
-			t.Error("expected error for unreadable index")
-		}
-		if !errors.Is(err, os.ErrPermission) {
-			t.Errorf("expected permission error, got: %v", err)
-		}
-		// Verify it was NOT quarantined
-		if _, err := os.Stat(idxPath + ".corrupt"); !os.IsNotExist(err) {
-			t.Error("index should not have been quarantined")
-		}
-	})
-
-	t.Run("JobPermissionError", func(t *testing.T) {
-		dir := t.TempDir()
-		q := New()
-		j := makeJob(t, "perm-job", constants.NormalPriority)
-		_ = q.Add(j)
-		_ = q.Save(dir)
-
-		jobPath := filepath.Join(dir, "jobs", j.ID+".json.gz")
-		// Make job file unreadable
-		if err := os.Chmod(jobPath, 0000); err != nil {
-			t.Fatal(err)
-		}
-		defer func() {
-			_ = os.Chmod(jobPath, 0644) // restore for cleanup
-		}()
-
-		_, err := Load(dir)
-		if err == nil {
-			t.Error("expected error for unreadable job file")
-		}
-		if !errors.Is(err, os.ErrPermission) {
-			t.Errorf("expected permission error, got: %v", err)
-		}
-		// Verify it was NOT quarantined
-		if _, err := os.Stat(jobPath + ".corrupt"); !os.IsNotExist(err) {
-			t.Error("job file should not have been quarantined")
-		}
-	})
-}
-
 func TestLoad_WithLogger(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -989,5 +578,77 @@ func TestLoad_WithLogger(t *testing.T) {
 	}
 	if q.log == nil {
 		t.Error("expected logger to be set on reloaded queue, got nil")
+	}
+}
+
+// Load's restart path for a job that was active when the daemon stopped: the
+// store hands it back with its manifest already read and its per-article
+// progress restored, so the daemon resumes the download instead of starting
+// it over.
+func TestLoad_RehydratesResidentJob(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+
+	seed := New(WithStore(store), WithStateDir(dir))
+	job := makeMultiFileJob(t, "load-resident", 1, 2)
+	if err := seed.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := seed.SetStatus(job.ID, constants.StatusDownloading); err != nil {
+		t.Fatalf("SetStatus(Downloading): %v", err)
+	}
+	if err := seed.MarkArticlesDone(job.ID, []string{articleID(0, 0)}); err != nil {
+		t.Fatalf("MarkArticlesDone: %v", err)
+	}
+	// Save while resident: SQLiteStore.Update's per-file flush is guarded on
+	// the manifest being readable, so a save after eviction never writes
+	// articles_done.
+	if err := seed.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load(dir, WithStore(store), WithStateDir(dir))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got, err := loaded.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get after Load: %v", err)
+	}
+	if !manifestResident(got) {
+		t.Fatal("a job that was downloading came back non-resident; it cannot be dispatched")
+	}
+	if !got.Progress().ArticleDone(0) {
+		t.Error("the already-downloaded article came back undone, so the restart would re-fetch it")
+	}
+	m, err := got.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest after Load: %v", err)
+	}
+	if _, ok := m.articleIndexByID(articleID(0, 1)); !ok {
+		t.Error("the message-ID index was not built, so article lookups by ID will miss")
+	}
+}
+
+// Load fails closed when the store cannot answer. Every one of these queries
+// feeds progress sizing or byte accounting for the whole queue, so degrading
+// to a partial answer would put the daemon back in the silent-wrong-numbers
+// state the residency work removed.
+func TestLoad_StoreQueryFailuresPropagate(t *testing.T) {
+	real, dir := setupResidencyTestStore(t)
+	for _, tc := range []struct {
+		name string
+		set  func(*failingStore)
+	}{
+		{"List", func(f *failingStore) { f.failList = true }},
+		{"RemainingBytesByJob", func(f *failingStore) { f.failRemainingBytes = true }},
+		{"ArticleCountsByJob", func(f *failingStore) { f.failArticleCounts = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := &failingStore{Store: real}
+			tc.set(fs)
+			if _, err := Load(dir, WithStore(fs), WithStateDir(dir)); err == nil {
+				t.Errorf("Load returned nil after %s failed; the queue would come up with silently wrong state", tc.name)
+			}
+		})
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"path/filepath"
+
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/nzb"
@@ -1077,18 +1079,17 @@ func TestSaveLoadPreservesArticleState(t *testing.T) {
 		t.Fatalf("MarkJobStarted: %v", err)
 	}
 
-	if err := q.Save(dir); err != nil {
-		t.Fatalf("Save: %v", err)
+	// SaveJob/LoadJob rather than a store-less Save/Load round-trip: that
+	// path went through the whole-queue JSON engine removed in #266. What is
+	// under test is one job's state surviving serialisation, which is
+	// exactly what the per-job document does.
+	jobPath := filepath.Join(dir, "jobs", j.ID+".json.gz")
+	if err := SaveJob(jobPath, j); err != nil {
+		t.Fatalf("SaveJob: %v", err)
 	}
-
-	loaded, err := Load(dir)
+	lj, err := LoadJob(jobPath)
 	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	lj, err := loaded.Get(j.ID)
-	if err != nil {
-		t.Fatalf("Get after load: %v", err)
+		t.Fatalf("LoadJob: %v", err)
 	}
 
 	// Verify article states round-tripped.
@@ -1113,9 +1114,14 @@ func TestSaveLoadPreservesArticleState(t *testing.T) {
 	// Verify Emitted flag is NOT persisted (per B.6 invariant).
 	// We emit an article, save, load — Emitted should be false.
 	_ = q.MarkArticleEmitted(j.ID, articleID(1, 0))
-	_ = q.Save(dir)
-	loaded2, _ := Load(dir)
-	lj2, _ := loaded2.Get(j.ID)
+	emitPath := filepath.Join(dir, "jobs", j.ID+"-emitted.json.gz")
+	if err := SaveJob(emitPath, j); err != nil {
+		t.Fatalf("SaveJob after emit: %v", err)
+	}
+	lj2, err := LoadJob(emitPath)
+	if err != nil {
+		t.Fatalf("LoadJob after emit: %v", err)
+	}
 	if lj2.Progress().ArticleEmitted(3) {
 		t.Error("Emitted flag should NOT survive save/load (B.6 invariant)")
 	}
@@ -1128,8 +1134,14 @@ func TestSaveLoadPreservesArticleState(t *testing.T) {
 		t.Errorf("ServerStats[my-server] = %d, want 42000", lj.Progress().ServerStats()["my-server"])
 	}
 
-	// Verify CountUnfinishedArticles works correctly after load.
-	count, err := loaded.CountUnfinishedArticles(j.ID, 0)
+	// Verify CountUnfinishedArticles works correctly after load. It is a
+	// Queue method, so the reloaded job goes into a fresh queue first —
+	// which is also what the history-retry path does with LoadJob's result.
+	reloaded := New()
+	if err := reloaded.Add(lj); err != nil {
+		t.Fatalf("Add reloaded job: %v", err)
+	}
+	count, err := reloaded.CountUnfinishedArticles(j.ID, 0)
 	if err != nil {
 		t.Fatalf("CountUnfinishedArticles after load: %v", err)
 	}
