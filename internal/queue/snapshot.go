@@ -61,7 +61,45 @@ func hydrateSnapshot(log *slog.Logger, stateDir string, store Store, cp *Job) {
 		return
 	}
 	m.buildMessageIDIndex()
-	cp.setResidency(&m, newJobProgress(&m))
+	// Attach the manifest to the progress the clone already carries; do not
+	// build a fresh one.
+	//
+	// Replacing it with newJobProgress was correct while a non-resident job
+	// had nil progress — there was nothing to discard. #276 made JobProgress
+	// permanently resident, so cloneJob now hands this an accurate deep copy
+	// and rebuilding threw it away (#287). Deferred was the field that made
+	// it visible: on-demand par2 holds recovery volumes back in progress
+	// alone, and every snapshot reported them as not deferred, so
+	// maybeReleaseRecoveryVolumes saw nothing to release. The line did not
+	// change; its precondition did.
+	//
+	// RestoreJobProgress below still runs, and still matters: SQLiteStore.Get
+	// fills progress from the store only for resident statuses, so a job
+	// restored at boot in StatusQueued/StatusPaused arrives here with progress
+	// that has never seen the stored counters. It sets the completion and
+	// deferral flags and marks articles done without clearing anything, and
+	// assigns the three per-file byte counters outright; since this only runs
+	// for a non-resident job, which by definition is not downloading, those
+	// counters are not moving underneath it.
+	//
+	// The pair has to describe the same job, though. The manifest just read
+	// from disk can be older than the progress in memory — DiscardDeferredPar2
+	// shrinks both in memory and never rewrites the file — and handing a
+	// mismatched pair to RestoreJobProgress panics inside recompute, on a
+	// background goroutine with no recover. Report it instead: a manifest that
+	// disagrees with the job's own progress is not this job's manifest, and
+	// serving it would mean reporting files the job no longer has.
+	if !priorProgress.describesSameJobAs(&m) {
+		cp.setHydrateFailure(priorProgress, fmt.Errorf(
+			"%w: stored manifest for job %s describes %d files/%d articles but its progress holds %d/%d",
+			ErrManifestStale, cp.ID, m.NumFiles(), m.NumArticles(),
+			len(priorProgress.files), priorProgress.done.Len()))
+		log.Error("snapshot: stored manifest no longer matches the job's progress, refusing to pair them",
+			"job_id", cp.ID, "path", manifestPath,
+			"manifest_files", m.NumFiles(), "progress_files", len(priorProgress.files))
+		return
+	}
+	cp.setResidency(&m, priorProgress)
 	// cp came from cloneJob with cp.manifest == nil, meaning the source
 	// Job's scalars were never populated (the restore path that produced
 	// it — e.g. SQLiteStore.Get for a StatusQueued/StatusPaused job —

@@ -34,6 +34,24 @@ var ErrNotFound = errors.New("queue: job not found")
 // collapsing them into one sentinel would also mask genuine lookup failures.
 var ErrJobNotResident = errors.New("queue: job not resident")
 
+// ErrManifestStale is returned when the manifest stored on disk contradicts
+// the job's own JobProgress — different file or article counts — so the two
+// cannot be paired.
+//
+// It has one known cause. DiscardDeferredPar2 rebuilds a smaller manifest and
+// progress in memory when on-demand par2 verification comes back clean, and
+// never rewrites the .json.gz (see Manifest's doc comment). Once the shrunk
+// manifest is evicted, the file left behind still describes the pre-discard
+// job. Hydration used to sidestep this by rebuilding progress from whatever
+// it read; now that it preserves the live progress, the disagreement is
+// visible and has to be reported. Handing the pair to JobProgress.recompute
+// instead panics by design, and hydration runs on background goroutines that
+// carry no recover.
+//
+// Distinct from ErrJobNotResident because it is not ordinary: the job's
+// persisted state is internally inconsistent and re-reading will not fix it.
+var ErrManifestStale = errors.New("queue: stored manifest does not match the job's progress")
+
 // Queue owns the ordered list of active jobs plus the notify channel
 // the downloader waits on.
 type Queue struct {
@@ -1080,7 +1098,28 @@ func (q *Queue) hydrateJobLocked(job *Job, id string) error {
 		job.setHydrateFailure(priorProgress, hydrateErr)
 		return hydrateErr
 	}
-	job.setResidency(&m, newJobProgress(&m))
+	// Keep the progress the job already carries rather than rebuilding it,
+	// for the same reason as hydrateSnapshot: since #276 a non-resident job's
+	// JobProgress is live and accurate, and rebuilding discarded whatever
+	// only memory knew — on-demand par2's deferral among it (#287). With a
+	// store this was masked, because RestoreJobProgress below re-read the
+	// deferred column; without one it was the original bug on the live job.
+	//
+	// The same staleness hazard applies, so the same guard does. A manifest
+	// read from disk can predate a DiscardDeferredPar2 that shrank the
+	// in-memory pair, and pairing them panics inside recompute. Fail closed
+	// rather than crash: this path already fails closed for an unreadable
+	// manifest, and a manifest that contradicts the job is no more usable
+	// than one that will not parse.
+	if !priorProgress.describesSameJobAs(&m) {
+		hydrateErr := fmt.Errorf(
+			"%w: stored manifest for job %s describes %d files/%d articles but its progress holds %d/%d",
+			ErrManifestStale, id, m.NumFiles(), m.NumArticles(),
+			len(priorProgress.files), priorProgress.done.Len())
+		job.setHydrateFailure(priorProgress, hydrateErr)
+		return hydrateErr
+	}
+	job.setResidency(&m, priorProgress)
 	// A job restored via SQLiteStore.Get/Loader.Load while non-resident
 	// (StatusQueued/StatusPaused) never had these scalars populated — they
 	// are only set on the resident-status branch of those paths. Backfill
