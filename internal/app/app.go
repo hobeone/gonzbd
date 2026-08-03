@@ -830,16 +830,40 @@ func (app *Application) watchCompletions(ctx context.Context) {
 }
 
 // handleFileComplete processes a single file completion event.
+// logQueueWriteFailure reports a failed per-file queue write at a level that
+// matches what the failure means.
+//
+// A job that was removed, or whose manifest was evicted, between the
+// assembler producing this event and the queue receiving it is ordinary — the
+// queue methods report it as ErrNotFound/ErrJobNotResident precisely so a
+// caller can recognise it rather than having it arrive as a silent nil (#261).
+// Those get Debug. Anything else is a write that should have landed and did
+// not, and gets Warn.
+func (app *Application) logQueueWriteFailure(op, jobID string, fileIdx int, err error) {
+	if errors.Is(err, queue.ErrNotFound) || errors.Is(err, queue.ErrJobNotResident) {
+		app.log.Debug(op+" skipped, job no longer resident in the queue",
+			"job", jobID, "fileidx", fileIdx, "err", err)
+		return
+	}
+	app.log.Warn(op+" failed", "job", jobID, "fileidx", fileIdx, "err", err)
+}
+
 func (app *Application) handleFileComplete(ctx context.Context, fc FileComplete) {
 	// Store the assembled CRC32 on the queue's JobFile so it survives
 	// serialization and is available during post-processing QuickCheck.
 	if fc.CRC32 != 0 {
 		if err := app.queue.SetFileCRC32(fc.JobID, fc.FileIdx, fc.CRC32); err != nil {
-			app.log.Warn("set file CRC32 failed",
-				"job", fc.JobID, "fileidx", fc.FileIdx, "err", err)
+			// A job removed or evicted between assembly and here is ordinary
+			// and not worth a warning; anything else means the CRC is lost
+			// and QuickCheck will have less to verify against.
+			app.logQueueWriteFailure("set file CRC32", fc.JobID, fc.FileIdx, err)
 		}
 	}
 	if err := app.queue.MarkFileComplete(fc.JobID, fc.FileIdx); err != nil {
+		// Returning bare here was itself the shape #261 describes: the file
+		// never gets marked complete, no event is emitted, and nothing says
+		// why.
+		app.logQueueWriteFailure("mark file complete", fc.JobID, fc.FileIdx, err)
 		return
 	}
 	app.emit(Event{Type: "queue_updated"})
@@ -904,10 +928,20 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	}
 	if !needsRecovery {
 		app.log.Info("on-demand par2: verified clean, skipping recovery volumes", "job", jobID)
-		_ = app.queue.DiscardDeferredPar2(jobID)
+		// Discarding this error used to be harmless only because the method
+		// could not report the case that matters: a non-resident job silently
+		// returned nil. Now that it says so, say so back — the volumes stay
+		// deferred and the job finalizes holding files it was told to drop.
+		if err := app.queue.DiscardDeferredPar2(jobID); err != nil {
+			app.log.Warn("on-demand par2: could not discard deferred volumes; they stay held",
+				"job", jobID, "err", err)
+		}
 		return false
 	}
-	_ = app.queue.SetPar2ReleaseReason(jobID, reason)
+	if err := app.queue.SetPar2ReleaseReason(jobID, reason); err != nil {
+		app.log.Warn("on-demand par2: could not record the release reason",
+			"job", jobID, "err", err)
+	}
 	idxs := snap.DeferredRecoveryIndices()
 	if err := app.queue.UndeferRecoveryVolumes(jobID, idxs); err != nil {
 		app.log.Warn("on-demand par2: un-defer failed; finalizing without recovery volumes",

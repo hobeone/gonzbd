@@ -2,9 +2,9 @@ package queue
 
 import (
 	"fmt"
-	"runtime"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -17,7 +17,6 @@ const (
 	retentionPerFile     = 200
 	retentionArticles    = retentionFiles * retentionPerFile
 	retentionArticleSize = 750_000
-	retentionSamples     = 8
 )
 
 // TestTerminalJobRetention_Measured is the evidence for declining terminal
@@ -25,19 +24,30 @@ const (
 // terminal job retains, and exists so the figures in that document can be
 // re-derived rather than taken on trust.
 //
-// The two figures are measured by different means, deliberately.
+// Both figures are computed from the backing arrays rather than sampled from
+// the heap, which took two attempts to get right and is the reason this
+// comment is long.
 //
-// The compaction saving is computed exactly from the bitsets' backing arrays.
-// Heap sampling cannot resolve it: at ~7 KB it sits below the allocator noise
-// left by building a 1.4 MB manifest, and an earlier draft of this test
-// reported a *negative* retained size for the compacted case and still passed,
-// because the assertion subtracted one noisy figure from another. Allocation
-// profiling cannot resolve it either — `-benchmem` counts the bitsets whether
-// or not they are later dropped, so compacted and uncompacted report an
-// identical B/op while differing in exactly the way that matters.
+// `-benchmem` cannot answer the question at all: the per-article bitsets are
+// allocated whether or not they are later dropped, so a compacted and an
+// uncompacted JobProgress report an identical B/op while differing in exactly
+// the way that matters. So the first draft sampled retained heap via
+// runtime.MemStats. That draft reported a *negative* retained size for the
+// compacted case and still passed, because the assertion subtracted one noisy
+// figure from another and got a positive number — at 7.5 KB the saving sits
+// under the allocator noise from building a 1.4 MB manifest.
 //
-// The manifest is measured by heap sampling, which is reliable at its scale
-// (repeat runs land within a fraction of a percent).
+// The second draft computed the bitsets exactly and sampled only the
+// manifest, on the theory that 1.4 MB is far enough above the noise floor.
+// That held when the test ran alone and failed inside the full package run,
+// where other tests' parallel goroutines allocate concurrently and the
+// HeapAlloc delta came back at a quarter of the true size. A measurement that
+// depends on what else is running is not a measurement.
+//
+// Both are now derived from the structures themselves: exact, order-
+// independent, and identical on every run. The lesson is that heap sampling
+// answers "how much did the heap move", which is only the same question as
+// "how much does this retain" when nothing else is happening.
 //
 // The assertion is the premise, not a byte threshold. A threshold would fail
 // on unrelated struct changes and train people to update the number rather
@@ -45,56 +55,65 @@ const (
 // manifest a terminal job has *already* released dwarfs everything compaction
 // could reclaim. That is what should break if the premise stops holding.
 func TestTerminalJobRetention_Measured(t *testing.T) {
+	t.Parallel()
+
 	m := buildRetentionManifest(t)
 	p := newJobProgress(m)
 
-	manifestBytes := retainedManifestBytes(t)
+	manifestBytes := manifestRetained(m)
 	bitsetBytes := bitsetRetained(p.done) + bitsetRetained(p.failed) + bitsetRetained(p.emitted)
 
-	t.Logf("%-42s %10.0f B/job  %7.3f B/article", "Manifest (evicted on terminal entry)",
-		manifestBytes, manifestBytes/float64(retentionArticles))
+	t.Logf("%-42s %10d B/job  %7.3f B/article", "Manifest (evicted on terminal entry)",
+		manifestBytes, float64(manifestBytes)/float64(retentionArticles))
 	t.Logf("%-42s %10d B/job  %7.3f B/article", "per-article bitsets (what compaction drops)",
 		bitsetBytes, float64(bitsetBytes)/float64(retentionArticles))
 	t.Logf("compaction would reclaim %d B per parked job: %.0f parked jobs per MB, against a manifest %.0fx larger that is already gone",
-		bitsetBytes, (1<<20)/float64(bitsetBytes), manifestBytes/float64(bitsetBytes))
+		bitsetBytes, (1<<20)/float64(bitsetBytes), float64(manifestBytes)/float64(bitsetBytes))
 
 	if bitsetBytes <= 0 {
 		t.Fatalf("per-article bitsets retain %d B; the measurement is broken, not the design", bitsetBytes)
 	}
 	// docs/queue-lifecycle.md declines terminal compaction on the premise
 	// that the already-evicted manifest is the dominant cost by orders of
-	// magnitude. 50x is well below the ~183x measured, so this fails on a
+	// magnitude. 50x is well below the measured ratio, so this fails on a
 	// real shift rather than on drift.
-	if ratio := manifestBytes / float64(bitsetBytes); ratio < 50 {
-		t.Errorf("manifest retains only %.0fx what compaction would reclaim (%.0f B vs %d B); docs/queue-lifecycle.md declines terminal compaction on the premise that this ratio is large, so revisit the decision rather than inheriting it",
+	if ratio := float64(manifestBytes) / float64(bitsetBytes); ratio < 50 {
+		t.Errorf("manifest retains only %.0fx what compaction would reclaim (%d B vs %d B); docs/queue-lifecycle.md declines terminal compaction on the premise that this ratio is large, so revisit the decision rather than inheriting it",
 			ratio, manifestBytes, bitsetBytes)
 	}
 }
 
-// bitsetRetained returns the bytes a bitset's backing array holds. Exact:
-// words is []uint64, so capacity times eight, plus nothing else that scales
-// with article count.
+// bitsetRetained returns the bytes a bitset's backing array holds. words is
+// []uint64, so capacity times eight; nothing else in the struct scales with
+// article count.
 func bitsetRetained(b bitset) int { return cap(b.words) * 8 }
 
-// retainedManifestBytes reports the heap still held per manifest after a GC,
-// averaged over retentionSamples live copies. Forcing a collection at both
-// ends and averaging keeps allocator noise off a figure this large; it is
-// indicative rather than exact, which is why the assertion above is a ratio
-// with an order of magnitude of headroom.
-func retainedManifestBytes(t *testing.T) float64 {
-	t.Helper()
-	keep := make([]*Manifest, 0, retentionSamples)
-	runtime.GC()
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
-	for range retentionSamples {
-		keep = append(keep, buildRetentionManifest(t))
+// manifestRetained returns the bytes a Manifest's backing arrays hold: the
+// three parallel per-article arrays plus the article ID string data, the
+// per-file slice and its subject strings, and the offsets prefix sum. It
+// counts the slice payloads rather than the struct, which is the part that
+// scales with the job and the part terminal eviction reclaims.
+//
+// messageIDIndex is excluded: it is built lazily and dropped by
+// dropMessageIDIndex, so a parked job does not hold it. Counting it would
+// overstate the very figure this test is used to defend.
+func manifestRetained(m *Manifest) int {
+	const (
+		stringHeader = int(unsafe.Sizeof(""))
+		intSize      = int(unsafe.Sizeof(int(0)))
+	)
+	total := cap(m.articleBytes)*intSize +
+		cap(m.articleNumber)*intSize +
+		cap(m.fileArticleOffsets)*intSize +
+		cap(m.articleIDs)*stringHeader +
+		cap(m.files)*int(unsafe.Sizeof(manifestFile{}))
+	for _, id := range m.articleIDs {
+		total += len(id)
 	}
-	runtime.GC()
-	runtime.ReadMemStats(&after)
-	delta := float64(after.HeapAlloc) - float64(before.HeapAlloc)
-	runtime.KeepAlive(keep)
-	return delta / retentionSamples
+	for i := range m.files {
+		total += len(m.files[i].subject)
+	}
+	return total
 }
 
 func buildRetentionManifest(t *testing.T) *Manifest {

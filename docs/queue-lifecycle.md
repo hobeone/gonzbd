@@ -139,11 +139,11 @@ a 20k-article job (100 files × 200):
 
 | | per job | per article |
 |---|---|---|
-| `Manifest` — already evicted on terminal entry | 1,371,918 B | 68.6 B |
+| `Manifest` — already evicted on terminal entry | 1,356,394 B | 67.8 B |
 | The three per-article bitsets — all compaction can drop | 7,512 B | 0.376 B |
 
 Compaction would therefore reclaim **7.5 KB per parked terminal job**: roughly
-140 parked 20k-article failures per megabyte, against a manifest 183× larger
+140 parked 20k-article failures per megabyte, against a manifest 181× larger
 that is already gone. The cost that motivated this section is not there any
 more.
 
@@ -224,7 +224,7 @@ Staged so each step is independently landable:
    `cmd/`.
 4. ~~Terminal compaction and its summary type.~~ Measured and declined — see
    "Terminal jobs". Steps 1 and 2 reduced the saving to 7.5 KB per parked job.
-5. Retire the parts of #261 this dissolves.
+5. ~~Retire the parts of #261 this dissolves.~~ Done — see below.
 
 Only the second half of step 3 cannot be partial, and the first half exists
 to shrink it: of the call sites outside `internal/queue`, roughly half were
@@ -238,15 +238,51 @@ Already landed: artifact unlinking now happens only after a job leaves `byID`
 manifest on disk. Steps 1, 2 and 3 are done — `Job.Manifest()` now returns
 `(*Manifest, error)`, so reaching through an evictable manifest without
 handling its absence is a compile error. Step 4 was measured and declined.
-Step 5 remains.
+Step 5 is done. All five steps are therefore closed, and this document
+describes the code as it stands rather than a target it is held to.
 
 ## What this dissolves
 
 Recorded so these are not re-investigated as open questions:
 
-- **#261** (methods returning nil while silently skipping) largely disappears.
-  Most of its methods are header- or progress-tier, where skipping is not
-  possible. Only the genuinely manifest-bearing few need a sentinel.
+- **#261** (methods returning nil while silently skipping) is resolved, and it
+  split along the tier boundary exactly as predicted. Of the seventeen entries
+  it listed, ten were manifest-tier and now route through `residentJob`,
+  returning `ErrJobNotResident` where they used to return `nil`. The other
+  seven are progress-tier and needed no gate at all — for two of them the
+  guard was not merely redundant but wrong: `SetPar2ReleaseReason` demanded a
+  manifest it never reads, so the reason a job's par2 volumes were released
+  was silently discarded for precisely the non-resident jobs the on-demand
+  par2 path acts on.
+
+  `Job.ResetForRetry` is not on #261's list but has the same shape; it is
+  documented in place, since both callers hydrate first and an error return
+  would change an exported signature for an unreachable branch.
+
+  Four of the ten were nearly missed. `MarkArticlesDone`, `MarkArticleDone`,
+  `MarkArticlesFailed` and `MarkArticleFailed` write the guard inverted —
+  `if job.manifest != nil && job.progress != nil { ...whole body... }` — so a
+  search for `== nil` does not find them, and `MarkDownloadFinished` and
+  `MarkJobStarted` hide their dead progress guard the same way. This is the
+  third time a hand search over this surface has returned a different subset
+  (#267 records the first two), which is why the invariant is now enforced by
+  `TestManifestAccessIsGated` rather than by reading: it walks the package AST
+  and fails any `*Queue` method that dereferences `job.manifest` without going
+  through `residentJob`. Its exemption list is written to shrink — a new
+  method is a failure until someone gates it or records why it does not need
+  to be.
+
+  The rule that falls out, and that `residentJob`'s doc comment now states:
+  **gate on residency if and only if the method needs the manifest.** Adding a
+  residency check to a progress-tier method is the same defect wearing
+  caution's clothes — it refuses work the method is always able to do.
+
+  Callers were the other half. `errors.Is(err, ErrJobNotResident)` is now
+  something production code branches on rather than only tests: a job removed
+  or evicted mid-flight is ordinary and logs at Debug, while anything else
+  keeps its Warn. Two discarded errors in the on-demand par2 path
+  (`_ = DiscardDeferredPar2`, `_ = SetPar2ReleaseReason`) were only harmless
+  while the methods could not report the case that mattered.
 - **#262** (`TotalRemainingBytes` under-reports) cannot recur: it reads
   progress, which is always resident.
 - **#263** (data race on `Job.Manifest()`) cannot recur: handles hold immutable
