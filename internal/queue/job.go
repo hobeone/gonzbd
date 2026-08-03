@@ -405,6 +405,19 @@ const (
 )
 
 // Phase returns the JobPhase corresponding to the job's current Status.
+//
+// The terminal arm is listed explicitly rather than left to the default.
+// Without it PhaseTerminal was unreachable — declared, given a String() arm
+// and written into docs/queue-lifecycle.md's contract, while every
+// completed, failed and deleted job reported PhasePending. Both phases are
+// non-resident, so nothing observably misbehaved, which is why it went
+// unnoticed; but a parked failure and a job awaiting dispatch are different
+// states and anything branching on the phase would have conflated them.
+//
+// StatusGrabbing and StatusChecking are deliberately absent. They are
+// SABnzbd-compatibility vocabulary that the API reports (see
+// stageFromStatus) but that no job ever holds: neither appears in status.go's
+// transition table, so nothing can move a job into them.
 func (j *Job) Phase() JobPhase {
 	switch j.Status {
 	case constants.StatusQueued, constants.StatusPropagating:
@@ -416,6 +429,8 @@ func (j *Job) Phase() JobPhase {
 		return PhaseProcessing
 	case constants.StatusPaused:
 		return PhasePaused
+	case constants.StatusCompleted, constants.StatusFailed, constants.StatusDeleted:
+		return PhaseTerminal
 	default:
 		return PhasePending
 	}
