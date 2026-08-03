@@ -55,13 +55,6 @@ func (a *ActiveSet) IsResident(id string) bool {
 	return ok
 }
 
-// GetResident returns the resident job pointer for id, or nil if non-resident.
-func (a *ActiveSet) GetResident(id string) *Job {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.resident[id]
-}
-
 // Add registers a job into the active set after its manifest/progress are loaded.
 func (a *ActiveSet) Add(job *Job) {
 	if job == nil {
