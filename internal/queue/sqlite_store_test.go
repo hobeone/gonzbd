@@ -946,33 +946,32 @@ VALUES (?, ?, ?, NULL, NULL, NULL, 0, 'FETCHING', 3, NULL, ?, 'md5-null', ?, NUL
 }
 
 // TestSQLiteStore_DeleteJobArtifactsReportsRemovalFailures covers the error
-// paths. A missing artifact is deliberately not an error — deletion is
+// path. A missing artifact is deliberately not an error — deletion is
 // best-effort cleanup and a job may never have had one — so the only way to
 // make os.Remove fail with something reportable is to put a non-empty
-// directory where the file belongs. Both artifacts are blocked so the joined
-// error is shown to carry each failure rather than only the first.
+// directory where the file belongs.
+//
+// The manifest is the only artifact now. progress/<id>.json.gz was removed
+// here too, but nothing ever wrote it: it was left over from a pre-SQLite
+// layout and went with the payload format in #298.
 func TestSQLiteStore_DeleteJobArtifactsReportsRemovalFailures(t *testing.T) {
 	store, _, dir := setupTestStore(t)
 
 	const id = "job0000000000009"
-	for _, sub := range []string{"manifests", "progress"} {
-		blocker := filepath.Join(dir, sub, id+".json.gz")
-		if err := os.MkdirAll(blocker, 0o750); err != nil {
-			t.Fatalf("mkdir blocker %s: %v", sub, err)
-		}
-		if err := os.WriteFile(filepath.Join(blocker, "occupied"), []byte("x"), 0o600); err != nil {
-			t.Fatalf("write blocker child %s: %v", sub, err)
-		}
+	blocker := filepath.Join(dir, "manifests", id+".json.gz")
+	if err := os.MkdirAll(blocker, 0o750); err != nil {
+		t.Fatalf("mkdir blocker: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(blocker, "occupied"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker child: %v", err)
 	}
 
 	err := store.DeleteJobArtifacts(t.Context(), id)
 	if err == nil {
-		t.Fatal("DeleteJobArtifacts: want error when the artifacts cannot be removed, got nil")
+		t.Fatal("DeleteJobArtifacts: want error when the manifest cannot be removed, got nil")
 	}
-	for _, want := range []string{"remove manifest", "remove progress"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not mention %q; both failures must be reported", err, want)
-		}
+	if !strings.Contains(err.Error(), "remove manifest") {
+		t.Errorf("error %q does not mention %q", err, "remove manifest")
 	}
 }
 

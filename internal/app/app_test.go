@@ -304,11 +304,18 @@ func TestDownloadLifecycleWithHistoryAndPersistence(t *testing.T) {
 			t.Errorf("history entry status = %q, want %q", entry.Status, "Completed")
 		}
 
-		// Verify job state file exists for retry
-		jobPath := filepath.Join(adminDir, "history", "jobs", jobID+".json.gz")
-		if _, err := os.Stat(jobPath); err != nil {
-			t.Errorf("expected job state file at %s, but got error: %v", jobPath, err)
+		// A completed job leaves no retry state behind. The serialized job
+		// payload that used to be written here for every job, successful or
+		// not, and never deleted, is gone (#298); a completed job cannot be
+		// retried, so nothing replaces it.
+		if _, err := os.Stat(filepath.Join(adminDir, "history", "jobs")); !os.IsNotExist(err) {
+			t.Errorf("history/jobs still exists after a completed job, stat err = %v", err)
 		}
+
+		// The NZB backup is deliberately not asserted here: this test
+		// enqueues through Queue().Add rather than AddJob, so no backup is
+		// written. TestAddJob_RecordsNZBBackupName covers the write and
+		// TestRemoveHistoryJob_DeletesNZBBackup the cleanup.
 
 		cancel()
 		if err := application.Shutdown(); err != nil {

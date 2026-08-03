@@ -3,20 +3,22 @@ package app
 import (
 	"context"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/notifier"
 	"github.com/hobeone/gonzbd/internal/postproc"
-	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // jobFinalizer handles the queue→history transition when the post-processor
-// finishes a job: build the history entry, persist the job payload for retry,
-// write history, remove the job from the active queue, and fire the completion
-// notification. Extracted from Application (#109 Step 3).
+// finishes a job: build the history entry, write history, remove the job from
+// the active queue, and fire the completion notification. Extracted from
+// Application (#109 Step 3).
+//
+// It no longer serialises the job. Retry state used to be a gzipped copy of
+// the whole Job written here for every job, successful or not, and never
+// deleted; it is now the NZB backup plus the per-file progress MoveToHistory
+// retains for failed jobs only.
 //
 // It holds *Application only for read-only, construction-immutable dependencies
 // (config, historyRepo, queue, postProcComplete, ctx, log, emit,
@@ -40,31 +42,17 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 	f.fireCompletionNotification(entry)
 }
 
-// persistAndCommit saves the job payload to disk, writes the history entry to
-// the database, removes the job from the queue, and broadcasts the finalization
-// events. Returns a non-nil error if persistence failed and the job was kept in
+// persistAndCommit writes the history entry to the database, removes the job
+// from the queue, and broadcasts the finalization events. Returns a non-nil error if persistence failed and the job was kept in
 // the queue for recovery (the error is already logged; callers can simply return).
 func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, job *postproc.Job) error { //nocover: orchestrates queue-to-history transition and error fallbacks
 	app := f.app
-	adminDir := app.config.GetGeneral().AdminDir
-	histJobsDir := filepath.Join(adminDir, "history", "jobs")
-	if err := os.MkdirAll(histJobsDir, 0o750); err != nil {
-		log.Warn("failed to create history jobs dir", "err", err)
-	}
-	jobPath := filepath.Join(histJobsDir, job.Queue.ID+".json.gz")
-	if err := queue.SaveJob(jobPath, job.Queue); err != nil {
-		log.Error("failed to save final job state; keeping job in queue",
-			"job", job.Queue.ID, "err", err)
-		app.emit(Event{Type: "queue_updated"})
-		return err
-	}
 	if store := app.queue.Store(); store != nil {
 		dbCtx, dbCancel := context.WithTimeout(app.ctx, 5*time.Second)
 		defer dbCancel()
 		if err := store.MoveToHistory(dbCtx, job.Queue, entry); err != nil {
 			log.Error("failed to add history entry; keeping job in queue for recovery",
 				"job", job.Queue.ID, "err", err)
-			_ = os.Remove(jobPath) // clean up the orphaned payload file
 			app.emit(Event{Type: "queue_updated"})
 			return err
 		}
@@ -74,7 +62,6 @@ func (f *jobFinalizer) persistAndCommit(log *slog.Logger, entry history.Entry, j
 		if err := app.historyRepo.Add(dbCtx, entry); err != nil {
 			log.Error("failed to add history entry; keeping job in queue for recovery",
 				"job", job.Queue.ID, "err", err)
-			_ = os.Remove(jobPath) // clean up the orphaned payload file
 			app.emit(Event{Type: "queue_updated"})
 			return err
 		}

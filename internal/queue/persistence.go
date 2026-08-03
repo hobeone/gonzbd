@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/fsutil"
@@ -197,25 +196,6 @@ func Load(dir string, opts ...Option) (*Queue, error) {
 	// behaviour, not a fallback — see this function's doc comment.
 	q.stateDir = dir
 	return q, nil
-}
-
-// LoadJob reconstructs a single Job from a .json.gz file at path.
-func LoadJob(path string) (*Job, error) {
-	var job Job
-	if err := readGzJSON(path, &job); err != nil {
-		return nil, err
-	}
-	job.progress.recompute(job.manifest)
-	return &job, nil
-}
-
-// SaveJob serialises a single Job to a .json.gz file at path.
-func SaveJob(path string, job *Job) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("queue: mkdir %q: %w", dir, err)
-	}
-	return writeGzJSON(path, job)
 }
 
 // writeGzJSON encodes v as gzipped JSON and atomically publishes it at path.

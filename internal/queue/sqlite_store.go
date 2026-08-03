@@ -857,18 +857,14 @@ func retainedMatchesManifest(retained []RetainedFile, m *Manifest) bool {
 	return true
 }
 
-// DeleteJobArtifacts removes the on-disk manifest and progress files for job
-// id. See the Store interface doc comment for the ordering requirement this
-// depends on and why deletion is best-effort.
+// DeleteJobArtifacts removes the on-disk manifest for job id. See the Store
+// interface doc comment for the ordering requirement this depends on and why
+// deletion is best-effort.
 func (s *SQLiteStore) DeleteJobArtifacts(_ context.Context, id string) error {
-	var errs []error
 	if err := os.Remove(filepath.Join(s.dir, "manifests", id+".json.gz")); err != nil && !os.IsNotExist(err) {
-		errs = append(errs, fmt.Errorf("remove manifest: %w", err))
+		return fmt.Errorf("remove manifest: %w", err)
 	}
-	if err := os.Remove(filepath.Join(s.dir, "progress", id+".json.gz")); err != nil && !os.IsNotExist(err) {
-		errs = append(errs, fmt.Errorf("remove progress: %w", err))
-	}
-	return errors.Join(errs...)
+	return nil
 }
 
 // ExistsByName checks if an active job with the given name exists using an index.
@@ -980,7 +976,6 @@ func (s *SQLiteStore) Prune(ctx context.Context) error {
 	}
 
 	cleanDir("manifests")
-	cleanDir("progress")
 	cleanDir("jobs")
 	_ = os.Remove(filepath.Join(s.dir, "queue.json.gz"))
 	return nil

@@ -238,26 +238,23 @@ func TestRecovery_DuplicateJobInHistory(t *testing.T) {
 	}
 }
 
-// TestRecovery_CrashBetweenMultiStoreWrites verifies crash recovery across multi-store
-// write boundaries both in queue persistence (queue.Save) and during job finalization
-// (persistAndCommit queue→history transition).
+// TestRecovery_CrashBetweenMultiStoreWrites verifies that a stale job
+// document left in queue/jobs/ by the removed whole-queue JSON engine is
+// pruned on startup, and that a job caught mid-transition to history
+// re-completes without duplicating its entry.
 //
-// 1) Queue multi-store save crash: In queue.Save, jobs/<id>.json.gz files are written
-// first and queue.json.gz second. If a crash occurs after writing jobs/<new_id>.json.gz
-// but before updating queue.json.gz, calling queue.Load (via app.New) ignores the
-// unreferenced job file and Prune() removes it, leaving the queue state consistent.
-//
-// 2) Finalization multi-store save crash: During persistAndCommit, history/jobs/<id>.json.gz
-// is written first and historyRepo.Add(entry) is called second. If a crash occurs after
-// writing history/jobs/<id>.json.gz but before historyRepo.Add, restarting app re-enqueues
-// the job for post-processing and successfully re-completes the transition without data
-// corruption or duplicate entries.
+// It used to cover a second crash window as well: persistAndCommit wrote
+// history/jobs/<id>.json.gz before historyRepo.Add, so a crash between the
+// two left an orphaned payload. #298 removed that write — MoveToHistory is
+// now the first mutation persistAndCommit makes, and it is a single
+// transaction — so the window is closed by construction and there is nothing
+// left to simulate.
 func TestRecovery_CrashBetweenMultiStoreWrites(t *testing.T) {
 	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
 	const (
-		crashedJobID    = "recover0-00000003" // Part 1: Orphaned in queue/jobs, unreferenced in queue.json.gz
-		transitionJobID = "recover0-00000004" // Part 2: Crashed during persistAndCommit after job write, before db write
+		crashedJobID    = "recover0-00000003" // Orphaned in queue/jobs by the removed JSON engine
+		transitionJobID = "recover0-00000004" // Caught mid-transition to history
 	)
 
 	seed := newSeedQueue(t, repo, adminDir)
@@ -267,31 +264,16 @@ func TestRecovery_CrashBetweenMultiStoreWrites(t *testing.T) {
 		t.Fatalf("seed.Save: %v", err)
 	}
 
-	// Part 1 Simulate crash in queue.Save: Write crashedJobID directly to queue/jobs/<id>.json.gz
-	// without adding it to queue.json.gz index.
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "orphan.bin", Bytes: 100, Articles: []nzb.Article{{ID: "o@t", Bytes: 100, Number: 1}}},
-	}}
-	orphanJob, err := queue.NewJob(parsed, queue.AddOptions{Filename: "orphan.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	orphanJob.ID = crashedJobID
-	orphanJob.Name = "orphan-job"
+	// Leave a job document in queue/jobs/ that no live job claims. Pruning
+	// is by filename against the active job set, so the contents are
+	// irrelevant — which is just as well, since nothing writes this format
+	// any more.
 	orphanPath := filepath.Join(adminDir, "queue", "jobs", crashedJobID+".json.gz")
-	if err := queue.SaveJob(orphanPath, orphanJob); err != nil {
-		t.Fatalf("SaveJob orphan: %v", err)
+	if err := os.MkdirAll(filepath.Dir(orphanPath), 0o750); err != nil {
+		t.Fatalf("MkdirAll queue/jobs: %v", err)
 	}
-
-	// Part 2 Simulate crash in persistAndCommit: Write history/jobs/<id>.json.gz
-	// before historyRepo.Add has run.
-	histJobsDir := filepath.Join(adminDir, "history", "jobs")
-	if err := os.MkdirAll(histJobsDir, 0o750); err != nil {
-		t.Fatalf("MkdirAll histJobsDir: %v", err)
-	}
-	histJobPath := filepath.Join(histJobsDir, transitionJobID+".json.gz")
-	if err := queue.SaveJob(histJobPath, seed.SnapshotJob(transitionJobID)); err != nil {
-		t.Fatalf("SaveJob history: %v", err)
+	if err := os.WriteFile(orphanPath, []byte("stale job document"), 0o600); err != nil {
+		t.Fatalf("write orphan: %v", err)
 	}
 
 	cfg := testConfig(
@@ -323,15 +305,6 @@ func TestRecovery_CrashBetweenMultiStoreWrites(t *testing.T) {
 	})
 
 	waitForHistoryAndQueueCleanup(t, repo, a, transitionJobID)
-
-	// Verify history payload file is intact and valid (no data corruption).
-	loadedHistJob, err := queue.LoadJob(histJobPath)
-	if err != nil {
-		t.Fatalf("LoadJob on history payload failed: %v", err)
-	}
-	if loadedHistJob.ID != transitionJobID {
-		t.Errorf("loaded history job ID = %q, want %q", loadedHistJob.ID, transitionJobID)
-	}
 
 	// Verify no duplicate history entries were created.
 	entries, err := repo.Search(t.Context(), history.SearchOptions{})

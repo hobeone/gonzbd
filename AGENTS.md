@@ -21,8 +21,8 @@ implementation lives at `../sabnzbd/`.
     - **Configuration:** YAML (`gopkg.in/yaml.v3`)
     - **Persistence:** SQLite (`modernc.org/sqlite`, pure Go) for both history
       and queue state; gzip-JSON only for per-job manifests
-      (`manifests/<id>.json.gz`) and the history job payload
-      (`history/jobs/<id>.json.gz`).
+      (`manifests/<id>.json.gz`) and the NZB backups a retry re-parses
+      (`nzb/<filename>.gz`).
     - **Logging:** Structured logging via `log/slog`.
     - **Concurrency:** Idiomatic goroutines + channels; `sync.RWMutex` for
       shared state.
