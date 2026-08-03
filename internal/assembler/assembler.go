@@ -688,14 +688,14 @@ func (a *Assembler) flush() {
 	if a.opts.MarkArticlesDoneByIdx != nil {
 		for jobID, artIdxs := range a.pendingDoneByIdx {
 			if err := a.opts.MarkArticlesDoneByIdx(jobID, artIdxs); err != nil {
-				a.log.Debug("batch mark articles done by idx (job already removed)",
+				a.log.Debug("batch mark articles done by idx skipped (job removed or not resident)",
 					"job", jobID, "count", len(artIdxs), "error", err)
 			}
 		}
 	} else if a.opts.MarkArticlesDone != nil {
 		for jobID, msgIDs := range a.pendingDone {
 			if err := a.opts.MarkArticlesDone(jobID, msgIDs); err != nil {
-				a.log.Debug("batch mark articles done (job already removed)",
+				a.log.Debug("batch mark articles done skipped (job removed or not resident)",
 					"job", jobID, "count", len(msgIDs), "error", err)
 			}
 		}
@@ -704,14 +704,14 @@ func (a *Assembler) flush() {
 	if a.opts.MarkArticlesFailedByIdx != nil {
 		for jobID, artIdxs := range a.pendingFailedByIdx {
 			if _, err := a.opts.MarkArticlesFailedByIdx(jobID, artIdxs); err != nil {
-				a.log.Debug("batch mark articles failed by idx (job already removed)",
+				a.log.Debug("batch mark articles failed by idx skipped (job removed or not resident)",
 					"job", jobID, "count", len(artIdxs), "error", err)
 			}
 		}
 	} else if a.opts.MarkArticlesFailed != nil {
 		for jobID, msgIDs := range a.pendingFailed {
 			if _, err := a.opts.MarkArticlesFailed(jobID, msgIDs); err != nil {
-				a.log.Debug("batch mark articles failed (job already removed)",
+				a.log.Debug("batch mark articles failed skipped (job removed or not resident)",
 					"job", jobID, "count", len(msgIDs), "error", err)
 			}
 		}

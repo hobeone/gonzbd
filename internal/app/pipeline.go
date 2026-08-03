@@ -422,7 +422,12 @@ func (p *pipeline) registerFile(jobID string, fileIdx int) error {
 	}
 	if filename == "" {
 		resolvedFilename := filepath.Base(path)
-		if err := p.queue.SetFileFilename(jobID, fileIdx, resolvedFilename); err != nil {
+		// A job removed or evicted between the write and this registration is
+		// ordinary, and failing registerFile over it would turn a benign race
+		// into a pipeline error. Every other cause is a real failure to record
+		// the resolved on-disk name and still aborts.
+		if err := p.queue.SetFileFilename(jobID, fileIdx, resolvedFilename); err != nil &&
+			!errors.Is(err, queue.ErrNotFound) && !errors.Is(err, queue.ErrJobNotResident) {
 			p.mu.Unlock()
 			return fmt.Errorf("set file filename: %w", err)
 		}

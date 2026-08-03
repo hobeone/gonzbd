@@ -202,10 +202,13 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 // StatusQueued jobs, and evictJobLocked releases it when a job leaves the
 // active set, in both cases leaving the job in the map.
 //
-// Note this is the direction of travel, not yet a property of the whole file.
-// Several existing methods still index q.byID and nil-guard inline, silently
-// no-opping for a non-resident job instead of reporting it; converting them is
-// tracked separately as a follow-up to issue #258.
+// This is now a property of the whole file, not just the direction of
+// travel: every manifest-tier mutation routes through here, so none of them
+// can report success for work it did not do (#261). The progress-tier
+// methods deliberately do not — JobProgress is permanently resident, so
+// gating them on residency would refuse work they are always able to perform.
+// Adding a residency check to a method that reads only progress is a bug in
+// the same family, not caution.
 //
 // Manifest is the only residency signal now: JobProgress is permanently
 // resident (docs/queue-lifecycle.md) and never nil for a job in q.byID, so a
@@ -1251,9 +1254,10 @@ func (q *Queue) RecordDownload(id, server string, bytes int) error {
 	if !ok {
 		return ErrNotFound
 	}
-	if job.progress == nil {
-		return nil
-	}
+	// No residency guard: per-server byte counts live on JobProgress, which
+	// is permanently resident, and Add repairs any job entering q.byID with
+	// nil progress. Downloaded bytes must be recorded whether or not the
+	// manifest happens to be in memory.
 	if job.progress.serverStats == nil {
 		job.progress.serverStats = make(map[string]int64)
 	}
@@ -1579,14 +1583,10 @@ func (q *Queue) MarkArticlesDoneByIdx(jobID string, artIdxs []int32) error {
 		return nil
 	}
 	q.mu.Lock()
-	job, ok := q.byID[jobID]
-	if !ok {
+	job, err := q.residentJob(jobID)
+	if err != nil {
 		q.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.progress == nil || job.manifest == nil {
-		q.mu.Unlock()
-		return nil
+		return err
 	}
 	nArt := job.manifest.NumArticles()
 	var invalidCount int
@@ -1612,12 +1612,9 @@ func (q *Queue) MarkArticlesDoneByIdx(jobID string, artIdxs []int32) error {
 func (q *Queue) SetFileWriteCursor(jobID string, fileIdx int, cursor int64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.manifest == nil || job.progress == nil {
-		return nil
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
@@ -1696,14 +1693,10 @@ func (q *Queue) MarkArticlesFailedByIdx(jobID string, artIdxs []int32) ([]int32,
 		return nil, nil
 	}
 	q.mu.Lock()
-	job, ok := q.byID[jobID]
-	if !ok {
+	job, err := q.residentJob(jobID)
+	if err != nil {
 		q.mu.Unlock()
-		return nil, fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.progress == nil || job.manifest == nil {
-		q.mu.Unlock()
-		return nil, nil
+		return nil, err
 	}
 	nArt := job.manifest.NumArticles()
 	firstTime := make([]int32, 0, len(artIdxs))
@@ -1758,12 +1751,9 @@ func (q *Queue) MarkArticlesFailedByIdx(jobID string, artIdxs []int32) ([]int32,
 func (q *Queue) UndeferRecoveryVolumes(jobID string, fileIdxs []int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.progress == nil || job.manifest == nil {
-		return nil
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
 	for _, fi := range fileIdxs {
 		if fi < 0 || fi >= job.manifest.NumFiles() {
@@ -1782,9 +1772,12 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
-	if job.progress == nil || job.manifest == nil {
-		return nil
-	}
+	// Progress tier: the reason is a plain string on JobProgress, which is
+	// permanently resident, so this neither needs the manifest nor can fail
+	// on residency. It used to require both and return nil when either was
+	// absent, which meant the reason for releasing a job's par2 volumes was
+	// silently dropped for exactly the non-resident jobs the on-demand par2
+	// path operates on.
 	job.progress.par2ReleaseReason = reason
 	q.dirty.Store(true)
 	return nil
@@ -1799,12 +1792,9 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 func (q *Queue) DiscardDeferredPar2(jobID string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.progress == nil || job.manifest == nil {
-		return nil
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
 
 	m := job.manifest
@@ -1952,12 +1942,9 @@ func (q *Queue) undeferRecoveryLocked(job *Job, fileIdxs []int) bool {
 func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.manifest == nil || job.progress == nil {
-		return nil
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
@@ -1971,12 +1958,9 @@ func (q *Queue) MarkFileComplete(jobID string, fileIdx int) error {
 func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.manifest == nil || job.progress == nil {
-		return nil
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)
@@ -1994,12 +1978,9 @@ func (q *Queue) SetFileFilename(jobID string, fileIdx int, filename string) erro
 func (q *Queue) SetFileCRC32(jobID string, fileIdx int, crc uint32) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, ok := q.byID[jobID]
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
-	}
-	if job.manifest == nil || job.progress == nil {
-		return nil
+	job, err := q.residentJob(jobID)
+	if err != nil {
+		return err
 	}
 	if fileIdx < 0 || fileIdx >= job.manifest.NumFiles() {
 		return fmt.Errorf("queue: fileIdx %d out of range for job %s", fileIdx, jobID)

@@ -139,11 +139,11 @@ a 20k-article job (100 files × 200):
 
 | | per job | per article |
 |---|---|---|
-| `Manifest` — already evicted on terminal entry | 1,371,918 B | 68.6 B |
+| `Manifest` — already evicted on terminal entry | 1,356,394 B | 67.8 B |
 | The three per-article bitsets — all compaction can drop | 7,512 B | 0.376 B |
 
 Compaction would therefore reclaim **7.5 KB per parked terminal job**: roughly
-140 parked 20k-article failures per megabyte, against a manifest 183× larger
+140 parked 20k-article failures per megabyte, against a manifest 181× larger
 that is already gone. The cost that motivated this section is not there any
 more.
 
@@ -224,7 +224,7 @@ Staged so each step is independently landable:
    `cmd/`.
 4. ~~Terminal compaction and its summary type.~~ Measured and declined — see
    "Terminal jobs". Steps 1 and 2 reduced the saving to 7.5 KB per parked job.
-5. Retire the parts of #261 this dissolves.
+5. ~~Retire the parts of #261 this dissolves.~~ Done — see below.
 
 Only the second half of step 3 cannot be partial, and the first half exists
 to shrink it: of the call sites outside `internal/queue`, roughly half were
@@ -244,9 +244,31 @@ Step 5 remains.
 
 Recorded so these are not re-investigated as open questions:
 
-- **#261** (methods returning nil while silently skipping) largely disappears.
-  Most of its methods are header- or progress-tier, where skipping is not
-  possible. Only the genuinely manifest-bearing few need a sentinel.
+- **#261** (methods returning nil while silently skipping) is resolved, and it
+  split along the tier boundary exactly as predicted — though not in the
+  proportion predicted. Of the seventeen methods it listed, eight were
+  manifest-tier and now route through `residentJob`, returning
+  `ErrJobNotResident` where they used to return `nil`. Six had already been
+  converted with the sentinel itself. Two were progress-tier, where the guard
+  was not merely redundant but wrong: `SetPar2ReleaseReason` demanded a
+  manifest it never reads, so the reason a job's par2 volumes were released
+  was silently discarded for precisely the non-resident jobs the on-demand
+  par2 path acts on. The remaining one, `Job.ResetForRetry`, is documented in
+  place: both callers hydrate first, so its guard cannot execute, and giving
+  it an error return would change an exported signature for an unreachable
+  branch.
+
+  The rule that falls out, and that `residentJob`'s doc comment now states:
+  **gate on residency if and only if the method needs the manifest.** Adding a
+  residency check to a progress-tier method is the same defect wearing
+  caution's clothes — it refuses work the method is always able to do.
+
+  Callers were the other half. `errors.Is(err, ErrJobNotResident)` is now
+  something production code branches on rather than only tests: a job removed
+  or evicted mid-flight is ordinary and logs at Debug, while anything else
+  keeps its Warn. Two discarded errors in the on-demand par2 path
+  (`_ = DiscardDeferredPar2`, `_ = SetPar2ReleaseReason`) were only harmless
+  while the methods could not report the case that mattered.
 - **#262** (`TotalRemainingBytes` under-reports) cannot recur: it reads
   progress, which is always resident.
 - **#263** (data race on `Job.Manifest()`) cannot recur: handles hold immutable

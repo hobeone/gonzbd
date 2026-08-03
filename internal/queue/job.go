@@ -756,6 +756,16 @@ func (j *Job) DeferredRecoveryIndices() []int {
 func (j *Job) ResetForRetry() {
 	j.Status = constants.StatusQueued
 	j.PostProc = false
+	// This early return is the one silent skip #261 catalogued that is left
+	// unconverted, because it is unreachable and the alternative costs more
+	// than it buys. Both callers guarantee a hydrated job: Queue.Retry runs
+	// hydrateJobLocked first and fails closed on error, and the history-retry
+	// path builds the job with queue.LoadJob, which reads manifest and
+	// progress together. Giving this an error return to report a state
+	// neither caller can produce would change an exported signature for a
+	// branch that cannot execute. If a third caller ever arrives, it must
+	// hydrate first — the reset is defined in terms of which articles failed,
+	// and that is only knowable against a live manifest.
 	if j.progress == nil || j.manifest == nil {
 		return
 	}
