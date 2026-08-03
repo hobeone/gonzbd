@@ -10,6 +10,52 @@ import (
 	"github.com/hobeone/gonzbd/internal/constants"
 )
 
+// TestIntegration_DuplicateDetection covers the three duplicate triggers:
+// same filename, same MD5 under a different filename, and the NZB backup each
+// one leaves behind.
+//
+// PAST FLAKE — read this before assuming a failure here is your change.
+//
+// This test spent part of #298 failing at ~14% (13 runs in 90) with
+// "database is locked" out of app.AddJob → sqlite store insert job, both as
+// plain SQLITE_BUSY (5) and BUSY_SNAPSHOT (517). It is fixed, but the shape
+// is worth keeping written down, because this test is unusually good at
+// provoking it and will be the first to fail if it comes back.
+//
+// What it was. SQLiteStore.Add opened a deferred transaction, read
+// SELECT MAX(sort_key), and then wrote. Under WAL that has to upgrade to the
+// write lock, and if another connection holds it SQLite returns
+// SQLITE_BUSY immediately rather than invoking the busy handler — waiting
+// while already holding a read snapshot could deadlock. So busy_timeout(5000)
+// in internal/history/db.go never applied to it, and the only recourse was
+// to restart the transaction. Add also wrote the manifest file, and its
+// fsync, inside that transaction, which held the write lock for as long as
+// the disk took.
+//
+// Why here. The first job below downloads, fails, and finalizes through
+// MoveToHistory while jobs two and three are being added — a genuine
+// concurrent commit, not test scaffolding. #298 then gave every add an NZB
+// backup write, whose fsync widened the gap between Add's read and its
+// write enough to lose the race regularly. Nothing about the failure was
+// specific to duplicate detection; this test just has three sequential adds
+// racing a live pipeline.
+//
+// What fixed it, in order of how much each mattered: _txlock=immediate in
+// internal/history/db.go, which takes the write lock at BEGIN so there is no
+// upgrade to contend on and busy_timeout finally applies; Add writing the
+// manifest before the transaction opens rather than holding the write lock
+// across its fsync; and SQLiteStore.withWriteTx restarting a contended
+// transaction, which bounds what is left.
+//
+// Retrying alone was not enough — measured 4 failures in 48 concurrent adds
+// with ten attempts before the DSN change. Measured 0 in 40 runs afterwards,
+// from 13 in 90 before, with internal/queue's
+// TestSQLiteStore_AddSurvivesConcurrentCommits pinning the property.
+//
+// If it returns: reproduce it standalone in a loop rather than trusting a
+// single run — an early read of this as "only under full-suite load" came
+// from a lucky streak of isolated passes and was wrong. Then check whether
+// a new read-then-write transaction has been added without withWriteTx.
 func TestIntegration_DuplicateDetection(t *testing.T) {
 	srv := newMockServer(t, nil)
 	// We need a stable directory to check the admin/nzb folder

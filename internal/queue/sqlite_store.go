@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"modernc.org/sqlite"
+
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
 )
@@ -42,6 +44,98 @@ func NewSQLiteStore(db *sql.DB, dir string, historyRepo *history.Repository) *SQ
 // Dir returns the persistent root directory managed by the store.
 func (s *SQLiteStore) Dir() string {
 	return s.dir
+}
+
+// busyRetries bounds how many times a write transaction is restarted after
+// SQLite reports contention, and busyBackoffCap bounds how long the pause
+// between attempts can grow. Worst case is roughly 250ms of waiting before
+// giving up.
+//
+// The competing writer is another goroutine in this process committing a
+// transaction, not a queue of remote clients, so a handful of attempts is
+// ample: what is being waited on is one commit, not a backlog.
+const (
+	busyRetries    = 10
+	busyBackoffCap = 64 * time.Millisecond
+)
+
+// isBusyErr reports whether err is a SQLITE_BUSY or SQLITE_LOCKED result,
+// including the extended codes (BUSY_SNAPSHOT is 517, i.e. 5 | 2<<8), which
+// is why the primary code is masked out rather than compared whole.
+//
+// These are the only errors worth restarting a transaction for. Everything
+// else — constraint violations, I/O errors, a closed database — means the
+// same transaction would fail the same way again.
+func isBusyErr(err error) bool {
+	var serr *sqlite.Error
+	if !errors.As(err, &serr) {
+		return false
+	}
+	switch serr.Code() & 0xff {
+	case 5, 6: // SQLITE_BUSY, SQLITE_LOCKED
+		return true
+	default:
+		return false
+	}
+}
+
+// withWriteTx runs fn inside a transaction, restarting it when SQLite
+// reports contention.
+//
+// This exists because busy_timeout does not cover the case that matters
+// here. A deferred transaction that reads and then writes has to upgrade to
+// the write lock, and if another connection holds it SQLite returns
+// SQLITE_BUSY *immediately* rather than invoking the busy handler — waiting
+// while already holding a read snapshot could deadlock. The caller's only
+// recourse is to abandon the transaction and start again against a fresh
+// snapshot, which is what this does.
+//
+// fn must not assume it runs once. It is handed a new *sql.Tx per attempt
+// and any work it did in a failed attempt is rolled back before the next.
+func (s *SQLiteStore) withWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	var err error
+	for attempt := range busyRetries {
+		if attempt > 0 {
+			// Exponential pause so the holder can commit, capped so a
+			// pathologically busy database does not turn a bounded retry
+			// into a long stall.
+			backoff := min(time.Millisecond<<(attempt-1), busyBackoffCap)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		var tx *sql.Tx
+		tx, err = s.db.BeginTx(ctx, nil)
+		if err != nil {
+			// With _txlock=immediate the write lock is taken here, so this
+			// is where contention now shows up — the whole point of the
+			// DSN setting. Retrying only the body would leave the retry
+			// budget pointed at a case that can no longer happen.
+			if isBusyErr(err) {
+				err = fmt.Errorf("sqlite store begin tx: %w", err)
+				continue
+			}
+			return fmt.Errorf("sqlite store begin tx: %w", err)
+		}
+		err = fn(tx)
+		if err == nil {
+			err = tx.Commit()
+		}
+		// Safe after a successful Commit: Rollback then returns ErrTxDone,
+		// which is exactly the "already finished" signal, not a failure.
+		_ = tx.Rollback()
+
+		if err == nil {
+			return nil
+		}
+		if !isBusyErr(err) {
+			return err
+		}
+	}
+	return fmt.Errorf("sqlite store: gave up after %d attempts: %w", busyRetries, err)
 }
 
 func (s *SQLiteStore) resequenceTx(ctx context.Context, tx *sql.Tx) error {
@@ -149,12 +243,37 @@ func (s *SQLiteStore) decodeArticlesDone(encoded string, job *Job, fileIdx int) 
 
 // Add inserts a new active job into the store and writes its manifest to disk.
 func (s *SQLiteStore) Add(ctx context.Context, job *Job) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite store begin tx add: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	m, mErr := job.Manifest()
+	hasManifest := mErr == nil
 
+	// The manifest goes to disk before the transaction opens, not inside it.
+	// Writing it inside meant holding SQLite's write lock across an fsync,
+	// which is the single widest window a competing writer can collide with.
+	//
+	// Before rather than after, so a failure is clean: no row is inserted at
+	// all. The reverse ordering would leave a row whose manifest is missing.
+	// A crash between the two leaves an orphan manifest instead, which Prune
+	// already sweeps against the active job set.
+	if hasManifest {
+		manifestPath := filepath.Join(s.dir, "manifests", job.ID+".json.gz")
+		if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
+			return fmt.Errorf("sqlite store mkdir manifests: %w", err)
+		}
+		if err := writeGzJSON(manifestPath, m); err != nil {
+			return fmt.Errorf("sqlite store write manifest %s: %w", job.ID, err)
+		}
+	}
+
+	return s.withWriteTx(ctx, func(tx *sql.Tx) error {
+		return s.addTx(ctx, tx, job, m, hasManifest)
+	})
+}
+
+// addTx is Add's transactional half, split out so withWriteTx can run it
+// again on a fresh transaction after contention. It must stay free of
+// side effects outside the transaction — the manifest write is deliberately
+// its caller's job.
+func (s *SQLiteStore) addTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manifest, hasManifest bool) error {
 	var sortKey int
 	row := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(sort_key), -1) + 1 FROM jobs")
 	if err := row.Scan(&sortKey); err != nil {
@@ -186,7 +305,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		postprocInt = 1
 	}
 
-	_, err = tx.ExecContext(ctx, qJobs,
+	_, err := tx.ExecContext(ctx, qJobs,
 		job.ID, job.Filename, job.Name, job.Password, job.URL, job.Category,
 		int(job.Priority), string(job.Status), job.PP, job.Script,
 		job.Added.Unix(), job.MD5, job.AvgAge.Unix(), string(groupsJSON), string(metaJSON),
@@ -201,7 +320,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		return fmt.Errorf("sqlite store insert job %s: %w", job.ID, err)
 	}
 
-	if m, mErr := job.Manifest(); mErr == nil {
+	if hasManifest {
 		const qFiles = `
 INSERT INTO job_files
   (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, article_count)
@@ -239,17 +358,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			}
 		}
 
-		manifestPath := filepath.Join(s.dir, "manifests", job.ID+".json.gz")
-		if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
-			return fmt.Errorf("sqlite store mkdir manifests: %w", err)
-		}
-		if err := writeGzJSON(manifestPath, m); err != nil {
-			return fmt.Errorf("sqlite store write manifest %s: %w", job.ID, err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("sqlite store commit add %s: %w", job.ID, err)
 	}
 	return nil
 }
@@ -889,12 +997,14 @@ func (s *SQLiteStore) ExistsByMD5(ctx context.Context, md5 string) (bool, error)
 
 // ShiftSortKey reorders a job to a new integer 0-based index position.
 func (s *SQLiteStore) ShiftSortKey(ctx context.Context, id string, newIndex int) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite store begin tx shift: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	// Reads the whole ordering, then rewrites it: the same read-then-write
+	// upgrade as Add, and so the same need to restart on contention.
+	return s.withWriteTx(ctx, func(tx *sql.Tx) error {
+		return s.shiftSortKeyTx(ctx, tx, id, newIndex)
+	})
+}
 
+func (s *SQLiteStore) shiftSortKeyTx(ctx context.Context, tx *sql.Tx, id string, newIndex int) error {
 	rows, err := tx.QueryContext(ctx, "SELECT id FROM jobs ORDER BY sort_key ASC, time_added ASC")
 	if err != nil {
 		return fmt.Errorf("sqlite store shift query: %w", err)
@@ -934,10 +1044,6 @@ func (s *SQLiteStore) ShiftSortKey(ctx context.Context, id string, newIndex int)
 		if _, err := tx.ExecContext(ctx, "UPDATE jobs SET sort_key = ? WHERE id = ?", i, jobID); err != nil {
 			return fmt.Errorf("sqlite store shift update %s: %w", jobID, err)
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("sqlite store commit shift %s: %w", id, err)
 	}
 	return nil
 }

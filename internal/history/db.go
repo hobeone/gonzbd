@@ -41,7 +41,24 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// so they apply to every connection in the pool, not just one random
 	// checkout. journal_mode=WAL is database-scoped (persists on disk)
 	// and only needs to run once via Exec.
-	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	// _txlock=immediate makes every BeginTx issue BEGIN IMMEDIATE, taking
+	// the write lock up front instead of upgrading to it on the first write.
+	//
+	// Without it, a transaction that reads before it writes — Add's
+	// SELECT MAX(sort_key) then INSERT is the canonical one — has to upgrade
+	// mid-transaction, and SQLite answers a contended upgrade with
+	// SQLITE_BUSY (or BUSY_SNAPSHOT) *immediately* rather than invoking the
+	// busy handler: waiting while already holding a read snapshot could
+	// deadlock. That put busy_timeout below out of reach for exactly the
+	// case it was configured for, and made a job finalizing concurrently
+	// with a job being added fail the add outright.
+	//
+	// Taking the lock at BEGIN removes the upgrade, so contention becomes an
+	// ordinary wait that busy_timeout covers. The cost is that write
+	// transactions serialize from their first statement rather than their
+	// first write, which SQLite does anyway — it permits one writer at a
+	// time regardless.
+	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_txlock=immediate"
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("history: open %q: %w", path, err)

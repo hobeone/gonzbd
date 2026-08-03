@@ -531,9 +531,12 @@ func TestSQLiteStore_AddErrorPaths(t *testing.T) {
 		if err := repo.DB().Close(); err != nil {
 			t.Fatalf("close db: %v", err)
 		}
+		// "begin tx" rather than "begin tx add": opening the transaction
+		// moved into withWriteTx, which is shared by every write path that
+		// has to restart on contention.
 		err := store.Add(ctx, newTestJob("closed-pool-job", "closed-pool-job"))
-		if err == nil || !strings.Contains(err.Error(), "begin tx add") {
-			t.Fatalf("Add on closed pool = %v, want error containing %q", err, "begin tx add")
+		if err == nil || !strings.Contains(err.Error(), "begin tx") {
+			t.Fatalf("Add on closed pool = %v, want error containing %q", err, "begin tx")
 		}
 	})
 
