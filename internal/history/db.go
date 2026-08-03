@@ -66,6 +66,11 @@ func Open(ctx context.Context, path string) (*DB, error) {
 
 	// Bound the pool — SQLite serializes writes anyway, and keeping
 	// many idle connections just wastes file descriptors.
+	//
+	// This is not the steady-state value: it is raised to 25 at the end of
+	// this function, so 4 governs only the startup below (ping, WAL,
+	// migrations, VACUUM). See #302 — the two bounds arrived in separate
+	// commits and it is unresolved whether the staging is deliberate.
 	sqlDB.SetMaxOpenConns(4)
 
 	if err := sqlDB.PingContext(ctx); err != nil {
@@ -103,13 +108,26 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	}
 
 	// 25 is deliberate headroom, not a measured figure: actual API
-	// concurrency here is single-digit, and SQLite serializes writers
-	// regardless of pool size (mitigated by busy_timeout(5000) in the
-	// DSN above), so this will not realistically contend. Kept wide
-	// rather than tuned to ~8-10 because there's no evidence tighter
-	// bounds are needed; revisit if profiling shows connection
-	// exhaustion or contention under real load. Accepted risk, tracked
-	// as issue #112 (R6).
+	// concurrency here is single-digit, and SQLite permits one writer at a
+	// time regardless of pool size, so a wider pool buys queueing rather
+	// than parallelism. Kept wide rather than tuned to ~8-10 because there
+	// is no evidence tighter bounds are needed; revisit if profiling shows
+	// connection exhaustion or contention under real load.
+	//
+	// This used to argue that contention was "mitigated by busy_timeout(5000)
+	// in the DSN above", and record the residual as an accepted risk under
+	// #112. Both parts have gone stale. #112 is closed, and the mitigation
+	// had a hole: busy_timeout only governs waits the busy handler runs, and
+	// a deferred transaction upgrading from read to write never reached it —
+	// SQLite fails a contended upgrade immediately rather than risk a
+	// deadlock. That is what made concurrent adds fail outright, and it is
+	// fixed above by _txlock=immediate, which takes the write lock at BEGIN
+	// so contention is an ordinary wait that busy_timeout does cover.
+	//
+	// Note the pool is bounded twice in this function: 4 near the top, which
+	// governs startup through the migrations and VACUUM, and 25 here for
+	// everything after. Whether that staging is intended is unresolved —
+	// see #302.
 	sqlDB.SetMaxOpenConns(25)
 	sqlDB.SetMaxIdleConns(25)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
