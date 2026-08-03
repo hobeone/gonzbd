@@ -128,15 +128,46 @@ It parks in `byID` until the operator acts. Holding full per-article state for
 every parked failure is therefore an unbounded, silent cost.
 
 A job in a terminal phase is not dispatching, so its per-article arrays are dead
-weight; only the summary counters and per-file state are read. On entry to a
-terminal phase the arrays are dropped. Retry rehydrates them from the persisted
-`articles_done` bitmap — which is what the #260 widening made possible, so that
-work is this feature's enabler rather than incidental to it.
+weight; only the summary counters and per-file state are read. The plan was to
+drop those arrays on entry to a terminal phase and rehydrate them from the
+persisted `articles_done` bitmap on retry.
 
-**Compaction must be a type distinction, not a hidden nil.** A terminal job
-hands out a summary type with no per-article accessors, so asking a compacted
-job for article state is a compile error. Implemented any other way it
-reintroduces exactly the axis this contract removes.
+**Measured, and declined.** The argument above was written when
+`done`/`failed`/`emitted` were three `[]bool` and before eviction on terminal
+entry was dependable. Steps 1 and 2 removed most of what it was reclaiming. For
+a 20k-article job (100 files × 200):
+
+| | per job | per article |
+|---|---|---|
+| `Manifest` — already evicted on terminal entry | 1,371,918 B | 68.6 B |
+| The three per-article bitsets — all compaction can drop | 7,512 B | 0.376 B |
+
+Compaction would therefore reclaim **7.5 KB per parked terminal job**: roughly
+140 parked 20k-article failures per megabyte, against a manifest 183× larger
+that is already gone. The cost that motivated this section is not there any
+more.
+
+`TestTerminalJobRetention_Measured` produces both figures and asserts the
+ratio, so this decision can be re-derived rather than inherited. It computes
+the bitset figure exactly from the backing arrays instead of sampling the
+heap — at 7.5 KB the saving sits below the allocator noise from building a
+1.4 MB manifest, and `-benchmem` cannot see it at all, since the bitsets are
+allocated whether or not they are later dropped.
+
+The cheap version is also unavailable. `ArticleDone(i)` returns `false` for an
+out-of-range index, so simply dropping the bitsets would make a compacted job
+report every article as not-done — silently, and plausibly. That is the
+silent-nil class this whole contract exists to remove, so compaction would
+require the full type-level treatment: a summary type with no per-article
+accessors, threaded through every package that reads progress. A cross-package
+API break for 7.5 KB a job is not a trade worth making.
+
+Note that the rehydration half already exists and is exercised: `Retry` →
+`hydrateJobLocked` → `RestoreJobProgress` → `decodeArticlesDone` restores both
+`done` and `failed` from the persisted bitmap (the #260 widening), and
+`SQLiteStore.Update`'s per-file flush is guarded on the manifest being
+readable, so a terminal job's stored bitmap survives eviction untouched. If the
+memory figures ever change, only the dropping and the type remain to build.
 
 ## Failing versus degrading
 
@@ -170,7 +201,8 @@ In the manifest tier a vanished job makes the operation moot: `ErrNotFound`.
   `Progress()` would force error handling at every reporting site for a
   condition that cannot occur, and would bury the manifest sites where
   absence is real. Only the evictable tier is fallible.
-- The terminal summary type has no per-article accessors.
+- ~~The terminal summary type has no per-article accessors.~~ Retired with
+  terminal compaction; see the measurement under "Terminal jobs".
 - `JobProgress` needs no nil guard anywhere, because it cannot be absent.
 - `TestActiveSet_StructuralMemoryBound` asserts a count (`ActiveSet.Len() == 4`),
   not memory. With bitsets there are concrete per-article targets, so it should
@@ -190,7 +222,8 @@ Staged so each step is independently landable:
    promoted scalar, then make `Job.Manifest()` fallible and migrate what is
    left across `internal/api`, `internal/app`, `internal/postproc` and
    `cmd/`.
-4. Terminal compaction and its summary type.
+4. ~~Terminal compaction and its summary type.~~ Measured and declined — see
+   "Terminal jobs". Steps 1 and 2 reduced the saving to 7.5 KB per parked job.
 5. Retire the parts of #261 this dissolves.
 
 Only the second half of step 3 cannot be partial, and the first half exists
@@ -204,7 +237,8 @@ Already landed: artifact unlinking now happens only after a job leaves `byID`
 (PR #271), which removes the window in which a job in the queue could have no
 manifest on disk. Steps 1, 2 and 3 are done — `Job.Manifest()` now returns
 `(*Manifest, error)`, so reaching through an evictable manifest without
-handling its absence is a compile error. Steps 4 and 5 remain.
+handling its absence is a compile error. Step 4 was measured and declined.
+Step 5 remains.
 
 ## What this dissolves
 

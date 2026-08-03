@@ -43,3 +43,37 @@ const (
 	// StatusDeleted: job has been deleted and is being removed.
 	StatusDeleted Status = "Deleted"
 )
+
+// AllStatuses returns every Status constant declared above, in declaration
+// order. It is the single list callers and tests enumerate over, so that
+// adding a status means updating one place rather than every hand-written
+// copy of the enum.
+//
+// This is still written by hand — Go cannot enumerate a const block at
+// runtime — but it is not trusted to be complete. TestAllStatuses_Exhaustive
+// parses this file's const block and fails if a declared Status is missing
+// here, which is what makes downstream exhaustiveness checks (queue's
+// TestJobPhase_EveryStatusIsMappedDeliberately) meaningful: without that
+// backstop a new status would be absent from this list too, and every loop
+// over it would skip the one status nobody had considered.
+func AllStatuses() []Status {
+	return []Status{
+		StatusIdle,
+		StatusQueued,
+		StatusGrabbing,
+		StatusFetching,
+		StatusDownloading,
+		StatusPaused,
+		StatusPropagating,
+		StatusChecking,
+		StatusQuickCheck,
+		StatusVerifying,
+		StatusRepairing,
+		StatusExtracting,
+		StatusMoving,
+		StatusRunning,
+		StatusCompleted,
+		StatusFailed,
+		StatusDeleted,
+	}
+}

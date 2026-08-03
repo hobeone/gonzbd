@@ -257,25 +257,10 @@ func TestPersistenceNames(t *testing.T) {
 func TestStatus_NoDuplicates(t *testing.T) {
 	t.Parallel()
 
-	allStatuses := []Status{
-		StatusIdle,
-		StatusQueued,
-		StatusGrabbing,
-		StatusFetching,
-		StatusDownloading,
-		StatusPaused,
-		StatusPropagating,
-		StatusChecking,
-		StatusQuickCheck,
-		StatusVerifying,
-		StatusRepairing,
-		StatusExtracting,
-		StatusMoving,
-		StatusRunning,
-		StatusCompleted,
-		StatusFailed,
-		StatusDeleted,
-	}
+	// Driven by AllStatuses() rather than a local copy of the enum, so a
+	// newly declared status is checked here too. TestAllStatuses_Exhaustive
+	// keeps that list honest against the const block.
+	allStatuses := AllStatuses()
 
 	seen := make(map[Status]bool, len(allStatuses))
 	for _, s := range allStatuses {
