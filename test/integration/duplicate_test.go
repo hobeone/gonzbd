@@ -46,22 +46,43 @@ func TestIntegration_DuplicateDetection(t *testing.T) {
 		t.Errorf("duplicate job warning = %q, want 'Duplicate NZB'", job2.Warning)
 	}
 
-	// Verify NO new copy was created for the duplicate (job2.Name would be duplicate.1)
-	secondBackupPath := filepath.Join(nzbBackupDir, job2.Name+".nzb.gz")
-	if _, err := os.Stat(secondBackupPath); err == nil {
-		t.Errorf("unexpected backup created for duplicate: %s", secondBackupPath)
+	// A duplicate now gets a backup of its own, under a suffixed name.
+	//
+	// This reverses the earlier behaviour of skipping the write. The backup
+	// is the only surviving copy of the article message-IDs once a job's
+	// manifest is unlinked at finalization, so a job without one cannot be
+	// retried — and a non-forced duplicate is enqueued paused, meaning the
+	// operator can resume it, download it, and have it fail. The original
+	// file is left intact rather than overwritten, because admin/nzb/ is
+	// browsed by hand for the name a job was submitted under.
+	if job2.NZBBackup == "" {
+		t.Error("duplicate job recorded no NZB backup, so it cannot be retried if resumed")
+	}
+	if job2.NZBBackup == "duplicate.nzb.gz" {
+		t.Error("duplicate job reused the first job's backup name; the original would be overwritten")
+	}
+	if _, err := os.Stat(filepath.Join(nzbBackupDir, job2.NZBBackup)); err != nil {
+		t.Errorf("duplicate job's backup %q missing: %v", job2.NZBBackup, err)
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Errorf("first job's backup was clobbered by the duplicate: %v", err)
 	}
 
-	// 4. Add same NZB again with DIFFERENT filename (MD5 trigger)
-	// It should still be detected as a duplicate and NOT saved.
+	// 4. Add same NZB again with DIFFERENT filename (MD5 trigger).
+	// Still detected as a duplicate, still paused.
 	job3 := addNZBJob(t, a, rawNZB, "duplicate-renamed")
 	if job3.Status != constants.StatusPaused {
 		t.Errorf("MD5 duplicate job status = %q, want Paused", job3.Status)
 	}
 
-	thirdBackupPath := filepath.Join(nzbBackupDir, "duplicate-renamed.nzb.gz")
-	if _, err := os.Stat(thirdBackupPath); err == nil {
-		t.Errorf("unexpected backup created for MD5 duplicate: %s", thirdBackupPath)
+	// Same reasoning as above: paused, but resumable, so it needs a backup.
+	// This one takes its own filename with no suffix, since nothing else
+	// claims it.
+	if job3.NZBBackup != "duplicate-renamed.nzb.gz" {
+		t.Errorf("MD5 duplicate NZBBackup = %q, want %q", job3.NZBBackup, "duplicate-renamed.nzb.gz")
+	}
+	if _, err := os.Stat(filepath.Join(nzbBackupDir, "duplicate-renamed.nzb.gz")); err != nil {
+		t.Errorf("MD5 duplicate's backup missing: %v", err)
 	}
 }
 
