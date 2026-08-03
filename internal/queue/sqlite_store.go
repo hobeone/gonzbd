@@ -205,15 +205,33 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 INSERT INTO job_files
   (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, article_count)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		p := job.Progress()
 		for i := range m.NumFiles() {
 			isPar2 := 0
 			if m.FileIsPar2Recovery(i) {
 				isPar2 = 1
 			}
+			// complete and deferred come from the job, not from literal
+			// zeros. Hard-coding them discarded on-demand par2's whole
+			// effect (#287): NewJob defers each recovery volume in
+			// JobProgress, this INSERT wrote deferred = 0, and the first
+			// promotion read that back over the live flag — so a feature
+			// whose entire purpose is to not download those volumes
+			// downloaded them, in every configuration with a store.
+			complete, deferred := 0, 0
+			if p.FileComplete(i) {
+				complete = 1
+			}
+			if p.FileDeferred(i) {
+				deferred = 1
+			}
 			artDoneStr := encodeArticlesDone(job, i)
 			lo, hi := m.FileRange(i)
 			_, err = tx.ExecContext(ctx, qFiles,
-				job.ID, i, m.FileSubject(i), m.FileDate(i).Unix(), m.FileBytes(i), isPar2, 0, 0, 0, 0, "", 0, artDoneStr, hi-lo,
+				job.ID, i, m.FileSubject(i), m.FileDate(i).Unix(), m.FileBytes(i), isPar2,
+				complete, deferred,
+				p.FileWriteCursor(i), p.FileBytesDownloaded(i), p.FileFilename(i), p.FileAssembledCRC32(i),
+				artDoneStr, hi-lo,
 			)
 			if err != nil {
 				return fmt.Errorf("sqlite store insert job_file %s/%d: %w", job.ID, i, err)

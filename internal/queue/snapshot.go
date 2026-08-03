@@ -61,7 +61,26 @@ func hydrateSnapshot(log *slog.Logger, stateDir string, store Store, cp *Job) {
 		return
 	}
 	m.buildMessageIDIndex()
-	cp.setResidency(&m, newJobProgress(&m))
+	// Attach the manifest to the progress the clone already carries; do not
+	// build a fresh one.
+	//
+	// Replacing it with newJobProgress was correct while a non-resident job
+	// had nil progress — there was nothing to discard. #276 made JobProgress
+	// permanently resident, so cloneJob now hands this an accurate deep copy
+	// and rebuilding threw it away (#287). Deferred was the field that made
+	// it visible: on-demand par2 holds recovery volumes back in progress
+	// alone, and every snapshot reported them as not deferred, so
+	// maybeReleaseRecoveryVolumes saw nothing to release. The line did not
+	// change; its precondition did.
+	//
+	// RestoreJobProgress below still runs, and still matters: SQLiteStore.Get
+	// fills progress from the store only for resident statuses, so a job
+	// restored at boot in StatusQueued/StatusPaused arrives here with progress
+	// that has never seen the stored counters. Merging into the live copy
+	// rather than into a blank one is what makes both cases right — it only
+	// ever sets flags and marks articles done, so the stored state adds to
+	// what memory already knows instead of replacing it.
+	cp.setResidency(&m, priorProgress)
 	// cp came from cloneJob with cp.manifest == nil, meaning the source
 	// Job's scalars were never populated (the restore path that produced
 	// it — e.g. SQLiteStore.Get for a StatusQueued/StatusPaused job —
