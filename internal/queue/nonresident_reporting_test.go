@@ -42,6 +42,20 @@ func TestNonResident_ManifestTierReportsRatherThanSkips(t *testing.T) {
 		name string
 		call func(q *Queue, id string) error
 	}{
+		{"MarkArticlesDone", func(q *Queue, id string) error {
+			return q.MarkArticlesDone(id, []string{articleID(0, 0)})
+		}},
+		{"MarkArticleDone", func(q *Queue, id string) error {
+			return q.MarkArticleDone(id, articleID(0, 0))
+		}},
+		{"MarkArticlesFailed", func(q *Queue, id string) error {
+			_, err := q.MarkArticlesFailed(id, []string{articleID(0, 0)})
+			return err
+		}},
+		{"MarkArticleFailed", func(q *Queue, id string) error {
+			_, err := q.MarkArticleFailed(id, articleID(0, 0))
+			return err
+		}},
 		{"MarkArticlesDoneByIdx", func(q *Queue, id string) error {
 			return q.MarkArticlesDoneByIdx(id, []int32{0})
 		}},

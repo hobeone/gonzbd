@@ -204,11 +204,18 @@ func (q *Queue) GetJobStatus(id string) (constants.Status, error) {
 //
 // This is now a property of the whole file, not just the direction of
 // travel: every manifest-tier mutation routes through here, so none of them
-// can report success for work it did not do (#261). The progress-tier
-// methods deliberately do not — JobProgress is permanently resident, so
-// gating them on residency would refuse work they are always able to perform.
-// Adding a residency check to a method that reads only progress is a bug in
-// the same family, not caution.
+// can report success for work it did not do (#261). That is enforced rather
+// than asserted — TestManifestAccessIsGated walks the package AST and fails
+// any *Queue method that dereferences job.manifest without calling this,
+// because hand searches over this surface have three times now returned a
+// different subset of it.
+//
+// The progress-tier methods deliberately do not route through here.
+// JobProgress is permanently resident, so gating them on residency would
+// refuse work they are always able to perform. Adding a residency check to a
+// method that reads only progress is a bug in the same family, not caution:
+// SetPar2ReleaseReason had one, and it silently dropped the reason a job's
+// par2 volumes were released for every non-resident job.
 //
 // Manifest is the only residency signal now: JobProgress is permanently
 // resident (docs/queue-lifecycle.md) and never nil for a job in q.byID, so a
@@ -1196,7 +1203,7 @@ func (q *Queue) SetPostProcStarted(id string) (bool, error) {
 		return false, err
 	}
 	job.PostProc = true
-	if job.progress != nil && job.progress.downloadFinished.IsZero() {
+	if job.progress.downloadFinished.IsZero() {
 		job.progress.downloadFinished = time.Now().UTC()
 	}
 	if q.store != nil {
@@ -1217,7 +1224,10 @@ func (q *Queue) MarkDownloadFinished(id string, t time.Time) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	if job.progress != nil && job.progress.downloadFinished.IsZero() {
+	// Progress tier: no residency guard. The IsZero test is a business
+	// condition (first finish wins), not a check for absence — progress is
+	// permanently resident.
+	if job.progress.downloadFinished.IsZero() {
 		job.progress.downloadFinished = t
 		if q.store != nil {
 			_ = q.store.Update(context.Background(), job) //lockio: keeps RAM and SQLite views of the finish timestamp consistent; tracked in #229
@@ -1236,7 +1246,9 @@ func (q *Queue) MarkJobStarted(id string, t time.Time) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	if job.progress != nil && job.progress.downloadStarted.IsZero() {
+	// Progress tier: see MarkDownloadFinished. IsZero is "first start wins",
+	// not a residency check.
+	if job.progress.downloadStarted.IsZero() {
 		job.progress.downloadStarted = t
 		if q.store != nil {
 			_ = q.store.Update(context.Background(), job) //lockio: keeps RAM and SQLite views of the start timestamp consistent; tracked in #229
@@ -1552,21 +1564,19 @@ func (q *Queue) MarkArticlesDone(jobID string, messageIDs []string) error {
 		return nil
 	}
 	q.mu.Lock()
-	job, ok := q.byID[jobID]
-	if !ok {
+	job, err := q.residentJob(jobID)
+	if err != nil {
 		q.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
+		return err
 	}
 	var notFound []string
-	if job.manifest != nil && job.progress != nil {
-		for _, id := range messageIDs {
-			i, ok := job.manifest.articleIndexByID(id)
-			if !ok {
-				notFound = append(notFound, id)
-				continue
-			}
-			job.progress.markDone(job.manifest, i)
+	for _, id := range messageIDs {
+		i, ok := job.manifest.articleIndexByID(id)
+		if !ok {
+			notFound = append(notFound, id)
+			continue
 		}
+		job.progress.markDone(job.manifest, i)
 	}
 	q.dirty.Store(true)
 	q.mu.Unlock()
@@ -1636,23 +1646,21 @@ func (q *Queue) MarkArticlesFailed(jobID string, messageIDs []string) ([]string,
 		return nil, nil
 	}
 	q.mu.Lock()
-	job, ok := q.byID[jobID]
-	if !ok {
+	job, err := q.residentJob(jobID)
+	if err != nil {
 		q.mu.Unlock()
-		return nil, fmt.Errorf("%w: %s", ErrNotFound, jobID)
+		return nil, err
 	}
 	firstTime := make([]string, 0, len(messageIDs))
 	var notFound []string
-	if job.manifest != nil && job.progress != nil {
-		for _, id := range messageIDs {
-			i, ok := job.manifest.articleIndexByID(id)
-			if !ok {
-				notFound = append(notFound, id)
-				continue
-			}
-			if job.progress.markFailed(job.manifest, i) {
-				firstTime = append(firstTime, id)
-			}
+	for _, id := range messageIDs {
+		i, ok := job.manifest.articleIndexByID(id)
+		if !ok {
+			notFound = append(notFound, id)
+			continue
+		}
+		if job.progress.markFailed(job.manifest, i) {
+			firstTime = append(firstTime, id)
 		}
 	}
 	var failedBytes, par2Bytes int64

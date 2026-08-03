@@ -238,25 +238,39 @@ Already landed: artifact unlinking now happens only after a job leaves `byID`
 manifest on disk. Steps 1, 2 and 3 are done — `Job.Manifest()` now returns
 `(*Manifest, error)`, so reaching through an evictable manifest without
 handling its absence is a compile error. Step 4 was measured and declined.
-Step 5 remains.
+Step 5 is done. All five steps are therefore closed, and this document
+describes the code as it stands rather than a target it is held to.
 
 ## What this dissolves
 
 Recorded so these are not re-investigated as open questions:
 
 - **#261** (methods returning nil while silently skipping) is resolved, and it
-  split along the tier boundary exactly as predicted — though not in the
-  proportion predicted. Of the seventeen methods it listed, eight were
-  manifest-tier and now route through `residentJob`, returning
-  `ErrJobNotResident` where they used to return `nil`. Six had already been
-  converted with the sentinel itself. Two were progress-tier, where the guard
-  was not merely redundant but wrong: `SetPar2ReleaseReason` demanded a
+  split along the tier boundary exactly as predicted. Of the seventeen entries
+  it listed, ten were manifest-tier and now route through `residentJob`,
+  returning `ErrJobNotResident` where they used to return `nil`. The other
+  seven are progress-tier and needed no gate at all — for two of them the
+  guard was not merely redundant but wrong: `SetPar2ReleaseReason` demanded a
   manifest it never reads, so the reason a job's par2 volumes were released
   was silently discarded for precisely the non-resident jobs the on-demand
-  par2 path acts on. The remaining one, `Job.ResetForRetry`, is documented in
-  place: both callers hydrate first, so its guard cannot execute, and giving
-  it an error return would change an exported signature for an unreachable
-  branch.
+  par2 path acts on.
+
+  `Job.ResetForRetry` is not on #261's list but has the same shape; it is
+  documented in place, since both callers hydrate first and an error return
+  would change an exported signature for an unreachable branch.
+
+  Four of the ten were nearly missed. `MarkArticlesDone`, `MarkArticleDone`,
+  `MarkArticlesFailed` and `MarkArticleFailed` write the guard inverted —
+  `if job.manifest != nil && job.progress != nil { ...whole body... }` — so a
+  search for `== nil` does not find them, and `MarkDownloadFinished` and
+  `MarkJobStarted` hide their dead progress guard the same way. This is the
+  third time a hand search over this surface has returned a different subset
+  (#267 records the first two), which is why the invariant is now enforced by
+  `TestManifestAccessIsGated` rather than by reading: it walks the package AST
+  and fails any `*Queue` method that dereferences `job.manifest` without going
+  through `residentJob`. Its exemption list is written to shrink — a new
+  method is a failure until someone gates it or records why it does not need
+  to be.
 
   The rule that falls out, and that `residentJob`'s doc comment now states:
   **gate on residency if and only if the method needs the manifest.** Adding a

@@ -720,7 +720,7 @@ func (a *Assembler) flush() {
 	if a.opts.SetWriteCursor != nil {
 		for k, cur := range a.pendingCursor {
 			if err := a.opts.SetWriteCursor(k.jobID, k.fileIdx, cur); err != nil {
-				a.log.Debug("set write cursor (job already removed)",
+				a.log.Debug("set write cursor skipped (job removed or not resident)",
 					"job", k.jobID, "fileidx", k.fileIdx, "error", err)
 			}
 		}
