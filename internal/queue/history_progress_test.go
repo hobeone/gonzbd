@@ -9,9 +9,8 @@ import (
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
-// moveToHistoryWithStatus adds a job with a manifest, marks one article of
-// file 0 done so the retained bitmap is non-trivial, and moves it to history
-// under the given status.
+// moveToHistoryWithStatus adds a job with a 2-file, 3-article-per-file
+// manifest and moves it to history under the given status.
 func moveToHistoryWithStatus(t *testing.T, status constants.Status) (*queue.SQLiteStore, *history.Repository, *queue.Job) {
 	t.Helper()
 	store, repo, _ := setupTestStore(t)

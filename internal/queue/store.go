@@ -54,6 +54,13 @@ type Store interface {
 	// RestoreJobProgress loads per-file progress counters into job.progress for a resident job.
 	RestoreJobProgress(ctx context.Context, job *Job) error
 
+	// RestoreRetryProgress overlays a failed job's retained per-file
+	// progress onto a job rebuilt from its NZB, reporting whether the
+	// overlay was applied. Nothing retained, or a rebuilt manifest whose
+	// shape does not match the retained bitmap, yields false with a nil
+	// error and means "download from scratch".
+	RestoreRetryProgress(ctx context.Context, job *Job) (bool, error)
+
 	// ArticleCountsByJob returns every job's per-file article counts in a
 	// single grouped query, indexed by file_index within each job. Used by
 	// Load to size a non-resident job's JobProgress without reading

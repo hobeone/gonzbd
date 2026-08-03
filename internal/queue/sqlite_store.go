@@ -776,6 +776,87 @@ FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
 	return out, nil
 }
 
+// RestoreRetryProgress overlays a failed job's retained per-file progress
+// onto a job rebuilt by re-parsing its NZB, so the retry refetches only the
+// articles that did not succeed. It reports whether the overlay was applied.
+//
+// Not applied is an ordinary outcome, not an error: nothing was retained
+// (the job completed, or its entry predates retention), or the rebuilt
+// manifest does not match the shape the bitmap was written against. Both
+// mean "download this job from scratch", which is correct if wasteful.
+//
+// The alignment check exists because articles_done is indexed positionally
+// against the manifest that produced it. Re-parsing the same NZB bytes is
+// deterministic and yields the same shape, so a mismatch means the recorded
+// backup is not the NZB this job was built from. Applying the bitmap anyway
+// would mark the wrong articles done — and a done article is never
+// requested, so the job would finish "successfully" with missing data. The
+// cost of refusing is bounded and visible; the cost of applying is silent
+// corruption.
+func (s *SQLiteStore) RestoreRetryProgress(ctx context.Context, job *Job) (bool, error) {
+	if job == nil || job.progress == nil || job.manifest == nil {
+		return false, nil
+	}
+	retained, err := s.HistoryFileProgress(ctx, job.ID)
+	if err != nil {
+		return false, err
+	}
+	if len(retained) == 0 {
+		return false, nil
+	}
+	if !retainedMatchesManifest(retained, job.manifest) {
+		s.log.Warn("retained progress does not match the re-parsed NZB, retrying from scratch",
+			"job_id", job.ID, "retained_files", len(retained), "manifest_files", job.manifest.NumFiles())
+		return false, nil
+	}
+
+	for _, f := range retained {
+		fp := &job.progress.files[f.FileIndex]
+		fp.BytesDownloaded = f.BytesDownloaded
+		fp.WriteCursor = f.WriteCursor
+		fp.AssembledCRC32 = f.AssembledCRC32
+		// Unlike RestoreJobProgress, the resolved on-disk filename is
+		// carried over. A retry can go straight back into post-processing
+		// without a download pass (every article already resolved), and
+		// postproc's file list and QuickCheck read this name.
+		fp.Filename = f.Filename
+		if f.Complete {
+			fp.Complete = true
+			lo, hi := job.manifest.FileRange(f.FileIndex)
+			for a := lo; a < hi; a++ {
+				job.progress.markDone(job.manifest, a)
+			}
+		} else if f.ArticlesDone != "" {
+			s.decodeArticlesDone(f.ArticlesDone, job, f.FileIndex)
+		}
+		if f.Deferred {
+			fp.Deferred = true
+		}
+	}
+	job.progress.recompute(job.manifest)
+	return true, nil
+}
+
+// retainedMatchesManifest reports whether retained describes exactly the
+// files m has, in the same order and with the same article counts. See
+// RestoreRetryProgress for why anything less is refused rather than
+// best-effort merged.
+func retainedMatchesManifest(retained []RetainedFile, m *Manifest) bool {
+	if len(retained) != m.NumFiles() {
+		return false
+	}
+	for i, f := range retained {
+		if f.FileIndex != i {
+			return false
+		}
+		lo, hi := m.FileRange(i)
+		if f.ArticleCount != hi-lo {
+			return false
+		}
+	}
+	return true
+}
+
 // DeleteJobArtifacts removes the on-disk manifest and progress files for job
 // id. See the Store interface doc comment for the ordering requirement this
 // depends on and why deletion is best-effort.

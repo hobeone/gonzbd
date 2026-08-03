@@ -371,7 +371,8 @@ func TestRetryHistoryJob(t *testing.T) {
 
 	rawPayload := makeDeterministic(1024)
 	mock := startMockNNTP(t, map[string][]byte{
-		"a@t": yencEncodePart("file.bin", 1, 1, rawPayload, 1024, 1, 1024),
+		// retryNZB names its segments a1@t, a2@t, ...
+		"a1@t": yencEncodePart("file.bin", 1, 1, rawPayload, 1024, 1, 1024),
 	})
 
 	appCfg := testConfig(
@@ -398,42 +399,20 @@ func TestRetryHistoryJob(t *testing.T) {
 	defer cancel()
 	defer application.Shutdown()
 
-	// 1. Manually create a "failed" history entry and its job file
+	// 1. Manually create a "failed" history entry and the NZB backup it
+	// names. Retry rebuilds the job by re-parsing that NZB — the article
+	// message-IDs live nowhere else once a job finalizes — so the backup
+	// standing in for what AddJob would have written is the whole setup.
 	jobID := "deadbeef12345678"
+	writeGzNZB(t, adminDir, "retry-test.nzb.gz", retryNZB(1))
 	entry := history.Entry{
-		NzoID:  jobID,
-		Name:   "retry-test",
-		Status: "Failed",
+		NzoID:     jobID,
+		Name:      "retry-test",
+		NzbName:   "retry-test.nzb",
+		NZBBackup: "retry-test.nzb.gz",
+		Status:    string(constants.StatusFailed),
 	}
 	_ = repo.Add(ctx, entry)
-
-	parsedRetry := &nzb.NZB{Files: []nzb.File{
-		{Subject: "file.bin", Bytes: 1024, Articles: []nzb.Article{{ID: "a@t", Bytes: 1024, Number: 1}}},
-	}}
-	job, err := queue.NewJob(parsedRetry, queue.AddOptions{Filename: "retry-test.nzb"}, fsutil.SanitizeOptions{})
-	if err != nil {
-		t.Fatalf("NewJob: %v", err)
-	}
-	job.ID = jobID
-	job.Name = "retry-test"
-	job.Status = constants.StatusFailed
-	retryQ := queue.New()
-	if err := retryQ.Add(job); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	// file.bin stays incomplete (Complete=false); it is re-completed after
-	// the retried article resolves successfully.
-	if _, err := retryQ.MarkArticlesFailed(job.ID, []string{"a@t"}); err != nil {
-		t.Fatalf("MarkArticlesFailed: %v", err)
-	}
-	jobsDir := filepath.Join(adminDir, "history", "jobs")
-	_ = os.MkdirAll(jobsDir, 0o750)
-
-	// Save the job directly to the history jobs directory (where
-	// OnJobDone now writes).
-	if err := queue.SaveJob(filepath.Join(jobsDir, jobID+".json.gz"), job); err != nil {
-		t.Fatalf("queue.SaveJob: %v", err)
-	}
 
 	// Pause downloads so the retried job sits at Queued long enough to
 	// inspect without racing the downloader/post-processor pipeline. This
