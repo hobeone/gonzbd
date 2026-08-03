@@ -55,11 +55,10 @@ var ErrManifestStale = errors.New("queue: stored manifest does not match the job
 // Queue owns the ordered list of active jobs plus the notify channel
 // the downloader waits on.
 type Queue struct {
-	mu         sync.RWMutex
-	jobs       []*Job          // ordered: priority-descending at Add time; Reorder may violate
-	byID       map[string]*Job // ID -> *Job for O(1) lookup
-	promoting  map[string]bool // job ID -> true for jobs currently in promotion loop
-	removeFile func(string) error
+	mu        sync.RWMutex
+	jobs      []*Job          // ordered: priority-descending at Add time; Reorder may violate
+	byID      map[string]*Job // ID -> *Job for O(1) lookup
+	promoting map[string]bool // job ID -> true for jobs currently in promotion loop
 
 	stateDir string // Root directory for persistent state (admin/queue)
 
@@ -156,12 +155,11 @@ func (q *Queue) SetSanitizeOptions(opts fsutil.SanitizeOptions) {
 // New returns an empty, unpaused queue.
 func New(opts ...Option) *Queue {
 	q := &Queue{
-		byID:       make(map[string]*Job),
-		promoting:  make(map[string]bool),
-		notifyCh:   make(chan struct{}, 1),
-		log:        slog.Default().With("component", "queue"),
-		removeFile: fsutil.Remove,
-		activeSet:  NewActiveSet(4),
+		byID:      make(map[string]*Job),
+		promoting: make(map[string]bool),
+		notifyCh:  make(chan struct{}, 1),
+		log:       slog.Default().With("component", "queue"),
+		activeSet: NewActiveSet(4),
 	}
 	for _, o := range opts {
 		o(q)
@@ -509,7 +507,6 @@ func (q *Queue) Remove(id string) error {
 			return err
 		}
 	}
-	var jobPath string
 	err := func() error {
 		q.mu.Lock()
 		defer q.mu.Unlock()
@@ -521,9 +518,6 @@ func (q *Queue) Remove(id string) error {
 		q.evictJobLocked(job)
 		q.removeAtLocked(idx)
 		delete(q.byID, id)
-		if q.stateDir != "" && q.store == nil {
-			jobPath = filepath.Join(q.stateDir, "jobs", id+".json.gz")
-		}
 		q.dirty.Store(true)
 		return nil
 	}()
@@ -532,9 +526,6 @@ func (q *Queue) Remove(id string) error {
 	}
 
 	// --- No lock held below this line ---
-	if jobPath != "" {
-		_ = q.removeFile(jobPath) // best-effort delete; error is intentionally ignored
-	}
 	// Unlink the manifest/progress artifacts only now that id has left
 	// q.byID (evictJobLocked + delete above already ran under q.mu). Doing
 	// this earlier — or under q.mu, which check_lock_io flags as I/O — would
@@ -752,7 +743,7 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 			manifest.buildMessageIDIndex()
 			job.setResidency(&manifest, newJobProgress(&manifest))
 			// A job promoted here after a restart (StatusQueued, restored via
-			// SQLiteStore.Get/Loader.Load without a manifest) never had these
+			// SQLiteStore.Get/Load without a manifest) never had these
 			// scalars populated. Backfill from the manifest just read above —
 			// no extra I/O, it already happened in Step 2.
 			job.setScalarsFromManifest(&manifest)
@@ -1120,7 +1111,7 @@ func (q *Queue) hydrateJobLocked(job *Job, id string) error {
 		return hydrateErr
 	}
 	job.setResidency(&m, priorProgress)
-	// A job restored via SQLiteStore.Get/Loader.Load while non-resident
+	// A job restored via SQLiteStore.Get/Load while non-resident
 	// (StatusQueued/StatusPaused) never had these scalars populated — they
 	// are only set on the resident-status branch of those paths. Backfill
 	// them here from the manifest this call already loaded, rather than

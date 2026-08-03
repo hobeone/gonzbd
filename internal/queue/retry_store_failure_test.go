@@ -24,6 +24,14 @@ type failingStore struct {
 	failList           bool
 	failRemainingBytes bool
 	failArticleCounts  bool
+	failIsPaused       bool
+}
+
+func (f *failingStore) IsPaused(ctx context.Context) (bool, error) {
+	if f.failIsPaused {
+		return false, errInjected
+	}
+	return f.Store.IsPaused(ctx)
 }
 
 func (f *failingStore) List(ctx context.Context) ([]*Job, error) {

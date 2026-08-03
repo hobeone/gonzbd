@@ -75,7 +75,7 @@ func (q *Queue) saveStore(_ string) error {
 
 // newJobProgressSized builds a JobProgress sized to fileArticleCounts (one
 // element per file, its article count) without requiring a resident
-// Manifest — see Store.ArticleCountsByJob. Used by Loader.Load to give a
+// Manifest — see Store.ArticleCountsByJob. Used by Load to give a
 // non-resident job (StatusQueued/StatusPaused at restart) a real JobProgress
 // instead of leaving it nil.
 //
@@ -125,7 +125,15 @@ func Load(dir string, opts ...Option) (*Queue, error) {
 		if err != nil {
 			return nil, fmt.Errorf("queue: load store: %w", err)
 		}
-		paused, _ := q.store.IsPaused(context.Background())
+		// Fail closed, matching the two queries below and the reasoning in
+		// their comment. Discarding this error silently reset the queue-wide
+		// pause flag to false on startup, so a store hiccup could resume a
+		// queue the operator had deliberately paused. A fresh database is not
+		// an error case: IsPaused returns (false, nil) when the row is absent.
+		paused, err := q.store.IsPaused(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("queue: load paused state: %w", err)
+		}
 		// Queried before q.mu.Lock(): Store calls are treated as I/O by
 		// scripts/check_lock_io, and must not run inside the critical
 		// section below. Fail closed (propagate the error) rather than

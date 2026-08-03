@@ -56,13 +56,13 @@ type Store interface {
 
 	// ArticleCountsByJob returns every job's per-file article counts in a
 	// single grouped query, indexed by file_index within each job. Used by
-	// Loader.Load to size a non-resident job's JobProgress without reading
+	// Load to size a non-resident job's JobProgress without reading
 	// its manifest.
 	ArticleCountsByJob(ctx context.Context) (map[string][]int, error)
 
 	// RemainingBytesByJob returns each job's remaining bytes (manifest bytes
 	// minus bytes already downloaded), summed per job_id across job_files.
-	// Used by Loader.Load to seed JobProgress.remainingBytes for jobs that
+	// Used by Load to seed JobProgress.remainingBytes for jobs that
 	// come back from the store non-resident (no manifest, so no per-article
 	// byte breakdown is available to compute this the normal way).
 	RemainingBytesByJob(ctx context.Context) (map[string]int64, error)
