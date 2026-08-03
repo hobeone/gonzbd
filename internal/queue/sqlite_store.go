@@ -178,8 +178,8 @@ func (s *SQLiteStore) Add(ctx context.Context, job *Job) error {
 INSERT INTO jobs
   (id, filename, name, password, url, category, priority, status, pp, script,
    time_added, md5, avg_age, groups, meta, warning, postproc, sort_key,
-   download_started, download_finished, par2_bytes, par2_files)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+   download_started, download_finished, par2_bytes, par2_files, nzb_backup)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	postprocInt := 0
 	if job.PostProc {
@@ -195,6 +195,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		// at Add and stay correct while the manifest is evicted, so this
 		// writes the right values even for a job persisted while non-resident.
 		job.Par2Bytes(), job.Par2Files(),
+		job.NZBBackup,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite store insert job %s: %w", job.ID, err)
@@ -258,7 +259,8 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Job, error) {
 	const qJob = `
 SELECT id, filename, name, COALESCE(password, ''), COALESCE(url, ''), COALESCE(category, ''), priority, status, pp, COALESCE(script, ''),
        time_added, md5, avg_age, COALESCE(groups, ''), COALESCE(meta, ''), COALESCE(warning, ''), postproc,
-       download_started, download_finished, par2_bytes, par2_files
+       download_started, download_finished, par2_bytes, par2_files,
+       COALESCE(nzb_backup, '')
 FROM jobs WHERE id = ?`
 
 	var job Job
@@ -271,6 +273,7 @@ FROM jobs WHERE id = ?`
 		&priorityInt, &statusStr, &ppInt, &job.Script, &addedUnix, &job.MD5, &avgAgeUnix,
 		&groupsStr, &metaStr, &job.Warning, &postprocInt,
 		&dlStartedUnix, &dlFinishedUnix, &par2Bytes, &par2Files,
+		&job.NZBBackup,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

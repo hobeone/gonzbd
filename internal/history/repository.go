@@ -25,8 +25,23 @@ type Entry struct {
 	// Completed holds the unix timestamp of when the job finished.
 	Completed time.Time
 
-	Name         string
-	NzbName      string
+	Name    string
+	NzbName string
+
+	// NZBBackup is the basename of the gzipped NZB backup under admin/nzb/
+	// that this job was written to at add time. Retry re-parses it to
+	// recover the article message-IDs, which survive nowhere else once the
+	// job's manifest is unlinked at finalization.
+	//
+	// Deliberately separate from NzbName: that field holds the submitted
+	// filename and is a compatibility surface (the mode=history response,
+	// the UI history row, the post-processing script's second positional
+	// argument, and the search predicate), while the backup's own name
+	// takes a .1/.2 suffix when a forced duplicate add would otherwise
+	// overwrite an existing backup. Empty for entries written before the
+	// backup became load-bearing.
+	NZBBackup string
+
 	Category     string
 	PP           string
 	Script       string
@@ -109,9 +124,9 @@ INSERT INTO history
    nzo_id, storage, path, script_log, script_line, download_time,
    postproc_time, stage_log, downloaded, completeness, fail_message,
    url_info, bytes, meta, series, md5sum, password, duplicate_key,
-   archive, time_added)
+   archive, time_added, nzb_backup)
 VALUES
-  (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 
 	_, err := exec.ExecContext(ctx, q,
 		toUnix(e.Completed),
@@ -121,7 +136,7 @@ VALUES
 		e.DownloadTime, e.PostprocTime, e.StageLog,
 		e.Downloaded, e.Completeness, e.FailMessage, e.URLInfo,
 		e.Bytes, e.Meta, e.Series, e.MD5Sum, e.Password,
-		e.DuplicateKey, e.Archive, toUnix(e.TimeAdded),
+		e.DuplicateKey, e.Archive, toUnix(e.TimeAdded), e.NZBBackup,
 	)
 	if err != nil {
 		return fmt.Errorf("history: add tx %q: %w", e.NzoID, err)
@@ -410,7 +425,8 @@ func (r *Repository) Prune(ctx context.Context, retainDays, retainFailedDays int
 const allColumns = `id, completed, name, nzb_name, category, pp, script, report,
 url, status, nzo_id, storage, path, script_log, script_line, download_time,
 postproc_time, stage_log, downloaded, completeness, fail_message, url_info,
-bytes, meta, series, md5sum, password, duplicate_key, archive, time_added`
+bytes, meta, series, md5sum, password, duplicate_key, archive, time_added,
+nzb_backup`
 
 // scanner abstracts over *sql.Row and *sql.Rows so scanEntry works for both.
 type scanner interface {
@@ -436,7 +452,7 @@ func scanEntry(s scanner) (*Entry, error) {
 		completed, timeAdded                                                 sql.NullInt64
 		name, nzbName, category, pp, script, report, urlField, status, nzoID sql.NullString
 		storage, path, scriptLine, stageLog, failMessage, urlInfo            sql.NullString
-		meta, series, md5sum, password, duplicateKey                         sql.NullString
+		meta, series, md5sum, password, duplicateKey, nzbBackup              sql.NullString
 		downloadTime, postprocTime, downloaded, completeness                 sql.NullInt64
 		bytesVal, archive                                                    sql.NullInt64
 	)
@@ -448,7 +464,7 @@ func scanEntry(s scanner) (*Entry, error) {
 		&downloadTime, &postprocTime, &stageLog,
 		&downloaded, &completeness, &failMessage, &urlInfo,
 		&bytesVal, &meta, &series, &md5sum, &password,
-		&duplicateKey, &archive, &timeAdded,
+		&duplicateKey, &archive, &timeAdded, &nzbBackup,
 	)
 	if err != nil {
 		return nil, err
@@ -481,6 +497,7 @@ func scanEntry(s scanner) (*Entry, error) {
 	e.Password = password.String
 	e.DuplicateKey = duplicateKey.String
 	e.Archive = archive.Int64
+	e.NZBBackup = nzbBackup.String
 	return &e, nil
 }
 

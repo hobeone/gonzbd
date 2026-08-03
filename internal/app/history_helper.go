@@ -84,6 +84,7 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 		Completed:    time.Now(),
 		Name:         job.Queue.Name,
 		NzbName:      job.Queue.Filename,
+		NZBBackup:    job.Queue.NZBBackup,
 		Category:     job.Queue.Category,
 		Status:       "Completed",
 		NzoID:        job.Queue.ID,

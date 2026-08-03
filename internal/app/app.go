@@ -454,10 +454,23 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 		}
 		return false
 	})
-	if !isDuplicate && job.Filename != "" {
-		backupPath := filepath.Join(nzbDir, filepath.Base(job.Filename)+".gz")
-		if err := writeGzFile(backupPath, rawNZB); err != nil {
-			app.log.Warn("failed to write gzipped NZB backup", "path", backupPath, "err", err)
+	// Write the backup for every job that enters the queue, duplicate or
+	// not. It used to be skipped for duplicates, which meant a forced
+	// re-add downloaded normally and finalized with no NZB on disk — and
+	// since the backup is the only surviving copy of the article
+	// message-IDs once the manifest is unlinked, that job was silently
+	// unretryable. A non-forced duplicate is enqueued paused and can still
+	// be resumed, so it needs one too.
+	if job.Filename != "" && len(rawNZB) > 0 {
+		name, err := writeNZBBackup(nzbDir, job.Filename, rawNZB)
+		if err != nil {
+			// Not fatal: the download itself does not need the backup.
+			// job.NZBBackup stays empty and RetryHistoryJob reports the
+			// absence rather than failing obscurely later.
+			app.log.Warn("failed to write gzipped NZB backup; job will not be retryable",
+				"filename", job.Filename, "err", err)
+		} else {
+			job.NZBBackup = name
 		}
 	}
 	addStatus := job.Status // snapshot before q.Add notifies the dispatcher
@@ -1529,6 +1542,30 @@ func failMsgForJob(job *queue.Job) string {
 // temp+fsync+rename to prevent corruption on crash.
 func writeGzFile(path string, data []byte) error {
 	return fsutil.WriteGzAtomicBytes(path, data)
+}
+
+// writeNZBBackup stores rawNZB gzipped under nzbDir and returns the basename
+// it used, which the caller records on the job so a retry can find it again.
+//
+// The file keeps the name the NZB was submitted under, because admin/nzb/ is
+// browsed by hand to find an NZB to re-add or inspect. When that name is
+// already taken — only reachable via a forced duplicate add — it takes the
+// same ".1"/".2" suffix queue.UniqueName gives colliding job names, rather
+// than overwriting and losing the earlier NZB.
+//
+// The stat-then-write window is the same benign TOCTOU AddJob already accepts
+// for job names: this daemon is single-instance, and a lost race costs one
+// overwritten backup rather than any queue state.
+func writeNZBBackup(nzbDir, filename string, rawNZB []byte) (string, error) {
+	base := filepath.Base(filename)
+	name := queue.UniqueName(base, func(candidate string) bool {
+		_, err := os.Stat(filepath.Join(nzbDir, candidate+".gz"))
+		return err == nil
+	}) + ".gz"
+	if err := writeGzFile(filepath.Join(nzbDir, name), rawNZB); err != nil {
+		return "", err
+	}
+	return name, nil
 }
 
 // NNTPTestResult holds outcome metrics for an on-demand NNTP server test connection.
