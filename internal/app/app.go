@@ -914,11 +914,25 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	// job did not require costs bandwidth, whereas skipping them for a
 	// damaged one costs the download.
 	//
-	// Currently unreachable and therefore untested: the early return above
-	// requires HasDeferredPar2, and #287 shows the deferral is discarded by
-	// both SQLiteStore.Add and hydrateSnapshot, so no job reaches here with
-	// volumes still deferred. Written to be correct when that is fixed
-	// rather than left as the nil dereference it replaced.
+	// Reachable and covered since #287 was fixed — the deferral now survives
+	// into the snapshot, and a failed hydration keeps the job's real progress
+	// — but the intent above cannot currently be carried out, so read the
+	// rest of this function with that in mind.
+	//
+	// An unreadable manifest is only observable for a non-resident job: a
+	// resident one holds its manifest in memory and never re-reads the file.
+	// UndeferRecoveryVolumes is manifest-tier, so the very non-residency that
+	// exposes the unreadable manifest also makes the un-defer below fail with
+	// ErrJobNotResident, and the function returns false regardless. The
+	// warning here is therefore the only effect this branch has: the job
+	// finalizes without its recovery volumes either way, which is the outcome
+	// the comment above argues against.
+	//
+	// Fixing that means deciding what a job with an unreadable manifest
+	// should do at all — most likely fail rather than finalize — which is a
+	// larger question than this branch. Tracked in #294; see
+	// TestMaybeReleaseRecoveryVolumes_UnreadableManifest, which pins the
+	// behaviour as it actually is rather than as intended.
 	needsRecovery, reason := true, "manifest unreadable, cannot verify integrity"
 	if m, mErr := snap.Manifest(); mErr != nil {
 		app.log.Warn("on-demand par2: cannot verify without the manifest, fetching recovery volumes anyway",

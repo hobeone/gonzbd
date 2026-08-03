@@ -1,9 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/config"
@@ -149,5 +151,105 @@ func TestMaybeReleaseRecoveryVolumes_WithStore_CorruptData(t *testing.T) {
 	}
 	if reason := after.Progress().Par2ReleaseReason(); reason == "" {
 		t.Error("the volumes were released without recording why")
+	}
+}
+
+// The unreadable-manifest branch, which #289 added and had to annotate as
+// unreachable: the HasDeferredPar2 early return fired first, because #287
+// discarded the deferral before any job got here.
+//
+// Two changes made it reachable. The deferral now survives into the snapshot,
+// and a hydration failure now preserves the job's real progress instead of
+// replacing it — so a job can arrive with its volumes still deferred and its
+// manifest unreadable at once. That combination is the branch: the CRC
+// comparison cannot be made, and finalizing would ship a download that may
+// need a repair nothing checked for.
+func TestMaybeReleaseRecoveryVolumes_UnreadableManifest(t *testing.T) {
+	downloadDir := t.TempDir()
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("config.Default: %v", err)
+	}
+	cfg.With(func(c *config.Config) { c.General.DownloadDir = downloadDir })
+
+	const jobID = "store-par2-unreadable"
+	stateDir := t.TempDir()
+	db, err := history.Open(t.Context(), filepath.Join(stateDir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+	q := queue.New(
+		queue.WithStore(queue.NewSQLiteStore(repo.DB(), stateDir, repo)),
+		queue.WithStateDir(stateDir),
+		queue.WithMaxActiveJobs(1),
+	)
+
+	// Fill the active slot so the job under test stays non-resident and
+	// SnapshotJob has to hydrate it from the manifest we are about to break.
+	filler := newPar2Job(t, []par2FileSpec{{subject: "filler.bin", bytes: 10}})
+	filler.ID = "filler"
+	filler.Name = "filler-name"
+	if err := q.Add(filler); err != nil {
+		t.Fatalf("Add filler: %v", err)
+	}
+	qjob := newPar2Job(t, []par2FileSpec{
+		{subject: "data.bin", bytes: 100},
+		{subject: "data.vol000+01.par2", bytes: 100},
+	})
+	qjob.ID = jobID
+	qjob.Name = "store-par2-unreadable-name"
+	if err := q.Add(qjob); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	manifestPath := filepath.Join(stateDir, "manifests", jobID+".json.gz")
+	if _, statErr := os.Stat(manifestPath); statErr != nil {
+		t.Fatalf("fixture guard: no manifest written at %s: %v", manifestPath, statErr)
+	}
+	if err := os.WriteFile(manifestPath, []byte("not gzip json"), 0o600); err != nil {
+		t.Fatalf("corrupt manifest: %v", err)
+	}
+
+	snap := q.SnapshotJob(jobID)
+	if snap == nil {
+		t.Fatal("SnapshotJob returned nil")
+	}
+	if _, mErr := snap.Manifest(); mErr == nil {
+		t.Fatal("fixture guard: the manifest read succeeded despite being corrupt")
+	}
+	if !snap.HasDeferredPar2() {
+		t.Fatal("fixture guard: the deferral did not survive the failed hydration, so the early return fires and this branch is still unreachable")
+	}
+
+	var logBuf bytes.Buffer
+	app := &Application{
+		queue:   q,
+		log:     slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		config:  cfg,
+		emitter: dummyEmitter{},
+	}
+
+	// It reaches the branch and says so, but cannot carry the intent out.
+	// An unreadable manifest is only observable for a non-resident job — a
+	// resident one has its manifest in memory and never re-reads the file —
+	// and UndeferRecoveryVolumes is manifest-tier, so the same non-residency
+	// that produced the unreadable manifest also blocks the un-defer. The
+	// function warns twice and finalizes without the recovery volumes.
+	//
+	// Asserting what happens rather than what was intended: the intent is
+	// structurally unreachable here, tracked separately. A test written to
+	// the comment's aspiration would have to be made to pass by changing the
+	// assertion, which is how a test stops meaning anything.
+	if got := app.maybeReleaseRecoveryVolumes(t.Context(), jobID, snap); got {
+		t.Errorf("maybeReleaseRecoveryVolumes = true, want false: the un-defer cannot succeed while the job is non-resident, so reporting that volumes are being fetched would be a lie")
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "cannot verify without the manifest") {
+		t.Errorf("the unverifiable manifest was not reported:\n%s", logged)
+	}
+	if !strings.Contains(logged, "un-defer failed") {
+		t.Errorf("the failed un-defer was not reported, so finalizing without recovery volumes happens silently:\n%s", logged)
 	}
 }

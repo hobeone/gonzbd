@@ -256,6 +256,24 @@ func (p *JobProgress) DeferredRecoveryIndices() []int {
 	return idxs
 }
 
+// describesSameJobAs reports whether p was sized for a manifest of m's
+// shape. It is the precondition every pairing of a live JobProgress with a
+// freshly read Manifest has to satisfy, and recompute panics when it does
+// not hold.
+//
+// The two can genuinely disagree. DiscardDeferredPar2 rebuilds a smaller
+// manifest and progress in memory and never rewrites the manifest on disk
+// (see Manifest's doc comment), so once the in-memory manifest is evicted,
+// the file left on disk describes the job as it was before the discard.
+// Re-reading it and pairing it with the surviving, smaller progress is not a
+// recoverable state: the manifest is simply not this job's any more.
+func (p *JobProgress) describesSameJobAs(m *Manifest) bool {
+	if p == nil || m == nil {
+		return false
+	}
+	return p.done.Len() == m.NumArticles() && len(p.files) == m.NumFiles()
+}
+
 // clone returns a deep copy, used by cloneJob.
 func (p *JobProgress) clone() *JobProgress {
 	cp := *p
