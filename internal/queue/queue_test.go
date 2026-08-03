@@ -1,12 +1,9 @@
 package queue
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -593,10 +590,14 @@ func TestNotifyFiresOnAdd(t *testing.T) {
 	}
 }
 
+// The whole-queue round trip: ordering, the paused flag and per-job progress
+// all surviving Save and Load. This ran store-less until #266, which is to
+// say against the JSON engine that no production path could reach; it is now
+// store-backed, which is the configuration the daemon actually restarts in.
 func TestSaveLoadRoundTrip(t *testing.T) {
-	dir := t.TempDir()
+	store, dir := setupResidencyTestStore(t)
 
-	original := New()
+	original := New(WithStore(store), WithStateDir(dir))
 	original.PauseAll()
 	a := makeJob(t, "a", constants.HighPriority)
 	b := makeJob(t, "b", constants.NormalPriority)
@@ -604,15 +605,18 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	for _, j := range []*Job{a, b, c} {
 		_ = original.Add(j)
 	}
-	// Mutate a runtime field to verify it round-trips.
-	a.progress.done.Set(0)
-	a.progress.remainingBytes = 500_000
+	// Per-job article state is deliberately not asserted here. With a store
+	// every queued job is non-resident, so setting it would mean promoting a
+	// job first and testing something this case is not about. Its round trip
+	// is covered directly by TestSaveLoadPreservesArticleState,
+	// TestPendingCounter_PersistenceRoundTrip and
+	// TestBytesDownloaded_RecomputeAfterLoad.
 
 	if err := original.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	loaded, err := Load(dir)
+	loaded, err := Load(dir, WithStore(store), WithStateDir(dir))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -629,12 +633,17 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Errorf("order after load: %v, want %v", gotOrder, wantOrder)
 	}
 
-	restored, _ := loaded.Get(a.ID)
-	if !restored.Progress().ArticleDone(0) {
-		t.Error("article Done not round-tripped")
-	}
-	if restored.Progress().RemainingBytes() != 500_000 {
-		t.Errorf("RemainingBytes = %d, want 500000", restored.Progress().RemainingBytes())
+	// Every job must come back with progress: it is always resident, so a
+	// restart that produced a nil one would break the invariant every
+	// reporting path depends on.
+	for _, id := range wantOrder {
+		restored, err := loaded.Get(id)
+		if err != nil {
+			t.Fatalf("Get(%s) after load: %v", id, err)
+		}
+		if restored.Progress() == nil {
+			t.Errorf("job %s came back from the store with no progress", id)
+		}
 	}
 }
 
@@ -646,57 +655,6 @@ func TestLoadMissingReturnsEmptyQueue(t *testing.T) {
 	}
 	if q.Len() != 0 {
 		t.Errorf("Len = %d, want 0", q.Len())
-	}
-}
-
-func TestSaveAtomicReplacesIndex(t *testing.T) {
-	dir := t.TempDir()
-	q := New()
-	_ = q.Add(makeJob(t, "a", constants.NormalPriority))
-	if err := q.Save(dir); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	first, err := os.ReadFile(filepath.Join(dir, "queue.json.gz"))
-	if err != nil {
-		t.Fatalf("read first: %v", err)
-	}
-
-	// Add another job and save again; the index must change.
-	_ = q.Add(makeJob(t, "b", constants.NormalPriority))
-	if err := q.Save(dir); err != nil {
-		t.Fatalf("Save 2: %v", err)
-	}
-	second, err := os.ReadFile(filepath.Join(dir, "queue.json.gz"))
-	if err != nil {
-		t.Fatalf("read second: %v", err)
-	}
-	if bytes.Equal(first, second) {
-		t.Error("second save produced identical bytes")
-	}
-
-	// No leftover temp files.
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
-	for _, e := range entries {
-		if strings.Contains(e.Name(), ".tmp.") {
-			t.Errorf("leftover temp file: %s", e.Name())
-		}
-	}
-}
-
-func TestLoadRejectsFutureVersion(t *testing.T) {
-	dir := t.TempDir()
-	// Hand-craft an index with an unsupported version.
-	if err := writeGzJSON(filepath.Join(dir, "queue.json.gz"), &indexFile{
-		Version: 999,
-	}); err != nil {
-		t.Fatalf("seed bad index: %v", err)
-	}
-	_, err := Load(dir)
-	if err == nil || !strings.Contains(err.Error(), "version") {
-		t.Errorf("Load future-version error = %v, want version error", err)
 	}
 }
 
@@ -1431,75 +1389,42 @@ func TestQueueUnexportedHelpersDirect(t *testing.T) {
 	})
 }
 
-func TestRemove_DeletesDiskFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	// Create the jobs directory inside dir
-	if err := os.MkdirAll(filepath.Join(dir, "jobs"), 0755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-
-	q := New()
-	q.stateDir = dir // pass stateDir
-	job := makeJob(t, "a", constants.NormalPriority)
-	_ = q.Add(job)
-
-	// Create a mock state file
-	jobPath := filepath.Join(dir, "jobs", job.ID+".json.gz")
-	if err := os.WriteFile(jobPath, []byte("mock data"), 0644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	// Verify file exists
-	if _, err := os.Stat(jobPath); err != nil {
-		t.Fatalf("mock file does not exist: %v", err)
-	}
-
-	// Remove the job
-	if err := q.Remove(job.ID); err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
-
-	// Verify file is deleted
-	if _, err := os.Stat(jobPath); !os.IsNotExist(err) {
-		t.Fatalf("expected job file to be deleted, got err: %v", err)
-	}
+// blockingArtifactStore blocks inside DeleteJobArtifacts until released, so a
+// test can observe whether Remove still holds q.mu at that point.
+type blockingArtifactStore struct {
+	Store
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
 }
 
-// TestRemove_NoIOUnderLock proves that Remove releases q.mu before calling
-// removeFile. On the old code (lock held during delete), the read method
-// called from the main goroutine blocks until Remove returns, causing the
-// test to time out. After the fix the read returns immediately.
+func (b *blockingArtifactStore) DeleteJobArtifacts(ctx context.Context, id string) error {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	return b.Store.DeleteJobArtifacts(ctx, id)
+}
+
+// TestRemove_NoIOUnderLock proves Remove releases q.mu before doing filesystem
+// work. If the lock were still held, the Len() below would block until Remove
+// returned and the test would time out.
+//
+// It used to hook removeFile, which deleted stateDir/jobs/<id>.json.gz — a
+// file only the JSON engine ever wrote, so both the hook and the call went
+// with it in #266. DeleteJobArtifacts is the unlink that remains, and it sits
+// under the same ordering comment for the same reason: Snapshot clones a job
+// under RLock and hydrates it after unlocking, so an unlink racing ahead of
+// the job's removal from byID can catch a snapshot mid-hydration.
 func TestRemove_NoIOUnderLock(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "jobs"), 0755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
+	real, dir := setupResidencyTestStore(t)
+	bs := &blockingArtifactStore{
+		Store:   real,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
 	}
-
-	q := New()
-	q.stateDir = dir
+	q := New(WithStore(bs), WithStateDir(dir))
 	job := makeJob(t, "lock-test", constants.NormalPriority)
-	_ = q.Add(job)
-
-	// Create a placeholder state file so removeFile has something to call.
-	jobPath := filepath.Join(dir, "jobs", job.ID+".json.gz")
-	if err := os.WriteFile(jobPath, []byte("placeholder"), 0644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	// Save the original removeFile hook.
-	origRemoveFile := q.removeFile
-
-	// started: closed when the hook begins executing (lock should be free by then).
-	// release: closed by main goroutine to unblock the hook.
-	started := make(chan struct{})
-	release := make(chan struct{})
-
-	q.removeFile = func(name string) error {
-		close(started) // signal that we are inside the delete (lock must be released)
-		<-release      // block until the main goroutine confirms the lock is free
-		return origRemoveFile(name)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
 	}
 
 	removeDone := make(chan struct{})
@@ -1510,36 +1435,25 @@ func TestRemove_NoIOUnderLock(t *testing.T) {
 		}
 	}()
 
-	// Wait until the hook has started (i.e. Remove has at least reached the delete call).
 	select {
-	case <-started:
+	case <-bs.started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for removeFile hook to start")
+		t.Fatal("timed out waiting for DeleteJobArtifacts to start")
 	}
 
-	// If the lock is still held here, q.Len() will block until Remove returns.
-	// With the fix the lock is already released, so Len() returns promptly.
 	lenDone := make(chan int, 1)
 	go func() { lenDone <- q.Len() }()
-
 	select {
 	case n := <-lenDone:
-		// Lock was not held — correct. Job was already removed from the in-memory
-		// slice, so Len() should be 0.
 		if n != 0 {
-			t.Errorf("Len() = %d after Remove (pre-delete), want 0", n)
+			t.Errorf("Len() = %d during the unlink, want 0: the job should already be out of byID", n)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("q.Len() blocked — Remove is holding q.mu during disk I/O (bug not fixed)")
+		t.Fatal("Len() blocked while Remove was unlinking artifacts: q.mu is still held during I/O")
 	}
 
-	// Release the hook so Remove can finish.
-	close(release)
-	select {
-	case <-removeDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Remove goroutine did not finish after release")
-	}
+	close(bs.release)
+	<-removeDone
 }
 
 func TestMarkArticlesFailed_EmptyBatch(t *testing.T) {

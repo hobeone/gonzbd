@@ -2,14 +2,13 @@ package app_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/app"
 	"github.com/hobeone/gonzbd/internal/config"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/queue"
 )
@@ -17,11 +16,12 @@ import (
 // makeCheckpointApp builds a minimal Application whose queue has one
 // article-bearing job. The checkpoint interval is set to interval so
 // tests don't need to wait 30 s.
-func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, *queue.Job, string) {
+func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, *queue.Job, *history.Repository) {
 	t.Helper()
-	downloadDir := t.TempDir()
-	completeDir := t.TempDir()
-	adminDir := t.TempDir()
+	// Store-backed, matching production: app.New only builds a queue Store
+	// when it is given a live repo, and the store-less path it used to take
+	// ran the whole-queue JSON engine removed in #266.
+	adminDir, downloadDir, completeDir, repo := setupTestDirsAndRepo(t)
 
 	// Use empty mock so all articles return 430 — the job fails fast and
 	// leaves a clean queue for checkpoint assertions.
@@ -39,7 +39,7 @@ func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, 
 		},
 	)
 
-	application, err := app.New(cfg, nil, app.WithCheckpointInterval(interval))
+	application, err := app.New(cfg, repo, app.WithCheckpointInterval(interval))
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
@@ -59,7 +59,7 @@ func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, 
 		t.Fatalf("queue.NewJob: %v", err)
 	}
 
-	return application, job, adminDir
+	return application, job, repo
 }
 
 // TestCheckpointFires_AfterMutation verifies that when the queue has unsaved
@@ -67,7 +67,7 @@ func makeCheckpointApp(t *testing.T, interval time.Duration) (*app.Application, 
 // the configured interval.
 func TestCheckpointFires_AfterMutation(t *testing.T) {
 	const checkInterval = 50 * time.Millisecond
-	application, job, adminDir := makeCheckpointApp(t, checkInterval)
+	application, job, _ := makeCheckpointApp(t, checkInterval)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -81,32 +81,34 @@ func TestCheckpointFires_AfterMutation(t *testing.T) {
 		t.Fatalf("Queue.Add: %v", err)
 	}
 
-	// Dirty the queue manually (MarkArticleDone is one of the five mutators).
-	if err := application.Queue().MarkArticleDone(job.ID, "chk1@t"); err != nil {
-		t.Fatalf("MarkArticleDone: %v", err)
+	// Dirty the queue. RecordDownload is progress-tier, so it works whether
+	// or not the job happens to have been promoted to resident yet —
+	// MarkArticleDone would race PromoteNext and fail with ErrJobNotResident.
+	if err := application.Queue().RecordDownload(job.ID, "mock", 512); err != nil {
+		t.Fatalf("RecordDownload: %v", err)
 	}
 
-	// The queue index file should appear within a few intervals.
-	indexPath := filepath.Join(adminDir, "queue", "queue.json.gz")
-	deadline := time.Now().Add(10 * checkInterval)
+	// Watch the dirty flag rather than the filesystem. runCheckpoint saves
+	// only when the queue is dirty, and Save clears the flag, so a
+	// dirty→clean transition is the checkpoint firing — exactly, with no
+	// dependence on mtime resolution or on which file the store happens to
+	// write. The queue index this used to stat was the JSON engine's, removed
+	// in #266.
+	deadline := time.Now().Add(20 * checkInterval)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(indexPath); err == nil {
-			// File exists — checkpoint fired.
-			return
+		if !application.Queue().IsDirty() {
+			return // checkpoint fired and the save landed
 		}
 		time.Sleep(checkInterval / 2)
 	}
-	t.Errorf("queue index file %s was not written within %v of a mutation", indexPath, deadline)
+	t.Errorf("the queue was still dirty %v after a mutation; no checkpoint ran", 20*checkInterval)
 }
 
 // TestCheckpointSkips_WhenClean verifies that when no mutations happen after
 // a save the periodic ticker does not re-write the queue index.
 func TestCheckpointSkips_WhenClean(t *testing.T) {
-	// 50ms: above typical OS mtime resolution and OS scheduling jitter under
-	// -race, reducing false flakes from async queue mutations racing the
-	// stabilization window.
 	const checkInterval = 50 * time.Millisecond
-	application, job, adminDir := makeCheckpointApp(t, checkInterval)
+	application, job, repo := makeCheckpointApp(t, checkInterval)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -115,74 +117,59 @@ func TestCheckpointSkips_WhenClean(t *testing.T) {
 	}
 	defer application.Shutdown() //nolint:errcheck
 
-	// Add the job so there's something to save.
+	// Pause before adding: makeCheckpointApp's mock 430s every article, so an
+	// unpaused job fails and leaves the queue for history — taking with it
+	// the row this test needs to watch.
+	application.Queue().PauseAll()
 	if err := application.Queue().Add(job); err != nil {
 		t.Fatalf("Queue.Add: %v", err)
 	}
-
-	// Dirty and force a save so we have a baseline mtime.
-	if err := application.Queue().MarkArticleDone(job.ID, "chk1@t"); err != nil {
-		t.Fatalf("MarkArticleDone: %v", err)
+	// RecordDownload rather than MarkArticleDone: a paused job is
+	// non-resident, and the manifest-tier mutators correctly refuse it
+	// (#261). Per-server byte counts live in progress, which is always
+	// resident, so this dirties the queue in any residency state.
+	if err := application.Queue().RecordDownload(job.ID, "mock", 512); err != nil {
+		t.Fatalf("RecordDownload: %v", err)
 	}
 
-	indexPath := filepath.Join(adminDir, "queue", "queue.json.gz")
-
-	// Wait for the first checkpoint to land.
-	deadline := time.Now().Add(10 * checkInterval)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(indexPath); err == nil {
-			break
+	// Wait for quiescence. The download pipeline is still failing articles
+	// in the background, each of which legitimately dirties the queue, so
+	// "clean" means clean and staying clean — five consecutive observations.
+	// This replaces a stabilization loop over the index file's mtime; the
+	// index belonged to the JSON engine removed in #266, and the dirty flag
+	// is the exact signal the checkpoint itself reads.
+	quiesceDeadline := time.Now().Add(5 * time.Second)
+	clean := 0
+	for time.Now().Before(quiesceDeadline) && clean < 5 {
+		if application.Queue().IsDirty() {
+			clean = 0
+		} else {
+			clean++
 		}
-		time.Sleep(checkInterval / 2)
-	}
-	if _, err := os.Stat(indexPath); err != nil {
-		t.Fatalf("baseline checkpoint never wrote %s: %v", indexPath, err)
-	}
-
-	// Wait for the mtime to stabilize. The download pipeline runs
-	// asynchronously and may mark articles as failed (dirtying the queue)
-	// after our manual MarkArticleDone. We wait until the mtime hasn't
-	// changed for several checkpoint intervals, confirming all async
-	// mutations have been checkpointed and the queue is truly clean.
-	var stableMtime time.Time
-	stabilizeDeadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(stabilizeDeadline) {
-		info, err := os.Stat(indexPath)
-		if err != nil {
-			t.Fatalf("stat during stabilize: %v", err)
-		}
-		if info.ModTime().Equal(stableMtime) {
-			// mtime unchanged — might be stable. Check again after
-			// several intervals.
-			time.Sleep(5 * checkInterval)
-			info2, err := os.Stat(indexPath)
-			if err != nil {
-				t.Fatalf("stat after stabilize wait: %v", err)
-			}
-			if info2.ModTime().Equal(stableMtime) {
-				break // Stable!
-			}
-		}
-		stableMtime = info.ModTime()
 		time.Sleep(checkInterval)
 	}
-	if stableMtime.IsZero() {
-		t.Fatal("mtime never stabilized")
+	if clean < 5 {
+		t.Fatal("the queue never went quiet, so a skipped checkpoint cannot be distinguished from a busy one")
 	}
 
-	// Now that the queue is truly clean (no mtime change for 5+ intervals),
-	// wait several more intervals and verify it stays unchanged.
-	// Wait 10 intervals: the ticker fires every checkInterval; giving it
-	// 10 cycles ensures any late background mutation is checkpointed before
-	// we assert the mtime is unchanged.
+	// Plant a value only a checkpoint would overwrite. Save's UpdateBatch
+	// rewrites every job row, so if the ticker saves while the queue is
+	// clean the sentinel disappears — an exact write-detector, where the old
+	// test could only compare mtimes and hope.
+	const sentinel = "sentinel-must-survive-a-clean-tick"
+	if _, err := repo.DB().ExecContext(t.Context(),
+		`UPDATE jobs SET name = ? WHERE id = ?`, sentinel, job.ID); err != nil {
+		t.Fatalf("plant sentinel: %v", err)
+	}
+
 	time.Sleep(10 * checkInterval)
 
-	info2, err := os.Stat(indexPath)
-	if err != nil {
-		t.Fatalf("stat after clean wait: %v", err)
+	var got string
+	if err := repo.DB().QueryRowContext(t.Context(),
+		`SELECT name FROM jobs WHERE id = ?`, job.ID).Scan(&got); err != nil {
+		t.Fatalf("read sentinel: %v", err)
 	}
-	if !info2.ModTime().Equal(stableMtime) {
-		t.Errorf("queue index was re-written on a clean queue: mtime changed from %v to %v",
-			stableMtime, info2.ModTime())
+	if got != sentinel {
+		t.Errorf("the job row was rewritten on a clean queue (name = %q, want the sentinel); runCheckpoint is saving every tick instead of only when dirty", got)
 	}
 }

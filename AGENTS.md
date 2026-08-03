@@ -19,8 +19,10 @@ implementation lives at `../sabnzbd/`.
 - **Main technologies:**
     - **Language:** Go 1.26.4+
     - **Configuration:** YAML (`gopkg.in/yaml.v3`)
-    - **Persistence:** SQLite (`modernc.org/sqlite`, pure Go) for history;
-      JSON+gzip for queue state.
+    - **Persistence:** SQLite (`modernc.org/sqlite`, pure Go) for both history
+      and queue state; gzip-JSON only for per-job manifests
+      (`manifests/<id>.json.gz`) and the history job payload
+      (`history/jobs/<id>.json.gz`).
     - **Logging:** Structured logging via `log/slog`.
     - **Concurrency:** Idiomatic goroutines + channels; `sync.RWMutex` for
       shared state.

@@ -26,11 +26,18 @@
 //
 // # Persistence
 //
-// Save writes queue.json.gz (the index) plus one jobs/<id>.json.gz per
-// job, each via the same atomic temp+fsync+rename pattern used by the
-// config package. Load reverses the process. The on-disk format is
-// versioned (see persistenceVersion) and intentionally readable with
-// `zcat … | jq`.
+// Queue state lives in SQLite, through the Store supplied by WithStore:
+// Save writes every job via Store.UpdateBatch and Load reads them back with
+// Store.List. A job's immutable article structure is the exception — it is
+// too large to want in a row and never changes after parse — so it is
+// written once to manifests/<id>.json.gz, gzipped JSON via the same atomic
+// temp+fsync+rename pattern the config package uses, and still readable
+// with `zcat … | jq`.
+//
+// A Queue built without a Store persists nothing; it is an in-memory queue.
+// Until #266 that configuration fell through to a second, whole-queue
+// gzip-JSON engine (queue.json.gz plus jobs/<id>.json.gz) that no
+// production path could reach. It has been removed.
 package queue
 
 import (
@@ -710,7 +717,7 @@ func (j *Job) IsComplete() bool {
 	// and the data it indexes from ever disagreeing.
 	//
 	// An empty slice is not completion. A job whose progress carries no file
-	// state — a row with no job_files, which Loader.Load sizes from an empty
+	// state — a row with no job_files, which Load sizes from an empty
 	// count slice — would otherwise satisfy the loop vacuously and be
 	// reported complete, and startup finalizes every job that reports
 	// complete. Returning false leaves it visible in the queue instead of

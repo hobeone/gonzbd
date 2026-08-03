@@ -495,6 +495,15 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
+	// Store-backed: app.New builds a queue Store only when given a live
+	// repo, and the store-less path went through the JSON engine removed in
+	// #266. A restart is exactly what the store exists to survive.
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
 
 	mock := startMockNNTP(t, map[string][]byte{})
 
@@ -512,7 +521,7 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 
 	// 1. Start app, add a job, and stop app (triggering save)
 	{
-		application, err := app.New(appCfg, nil)
+		application, err := app.New(appCfg, repo)
 		if err != nil {
 			t.Fatalf("app.New (1): %v", err)
 		}
@@ -546,7 +555,7 @@ func TestQueuePersistenceAcrossRestart(t *testing.T) {
 
 	// 2. Start new app instance and check if job is still there
 	{
-		application, err := app.New(appCfg, nil)
+		application, err := app.New(appCfg, repo)
 		if err != nil {
 			t.Fatalf("app.New (2): %v", err)
 		}
@@ -580,6 +589,12 @@ func TestFullDownloadLifecycle(t *testing.T) {
 	downloadDir := t.TempDir()
 	completeDir := t.TempDir()
 	adminDir := t.TempDir()
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
 
 	cfg := testConfig(
 		downloadDir,
@@ -601,7 +616,7 @@ func TestFullDownloadLifecycle(t *testing.T) {
 			{Name: "movies", Dir: "Movies"},
 		}
 	})
-	application, err := app.New(cfg, nil)
+	application, err := app.New(cfg, repo)
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}
@@ -1694,12 +1709,18 @@ func (w *wedgedDownloader) Stop() error {
 func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 	adminDir := t.TempDir()
 	cfg := testConfig(t.TempDir(), t.TempDir(), adminDir)
+	db, err := history.Open(t.Context(), filepath.Join(adminDir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
 
 	stopCh := make(chan struct{})
 	t.Cleanup(func() { close(stopCh) })
 	dl := &wedgedDownloader{stopCh: stopCh}
 
-	application, err := app.New(cfg, nil, app.WithDownloader(dl))
+	application, err := app.New(cfg, repo, app.WithDownloader(dl))
 	if err != nil {
 		t.Fatalf("build app: %v", err)
 	}
@@ -1709,6 +1730,23 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 
 	if err := application.Start(ctx); err != nil {
 		t.Fatalf("start app: %v", err)
+	}
+
+	// Give the queue something to lose. The old assertion only checked that
+	// an index file existed, which the JSON engine wrote even for an empty
+	// queue; with a real job the test says something stronger — a wedged
+	// component must not cost the queue its state.
+	parsed := &nzb.NZB{Files: []nzb.File{{
+		Subject:  "wedged.bin",
+		Articles: []nzb.Article{{ID: "wedge@t", Bytes: 100, Number: 1}},
+		Bytes:    100,
+	}}}
+	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "wedged-test"}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("queue.NewJob: %v", err)
+	}
+	if err := application.Queue().Add(job); err != nil {
+		t.Fatalf("Queue.Add: %v", err)
 	}
 
 	done := make(chan error, 1)
@@ -1726,9 +1764,15 @@ func TestApplication_Shutdown_WedgedComponent(t *testing.T) {
 		if err == nil {
 			t.Error("expected shutdown error due to wedged downloader, got nil")
 		}
-		queuePath := filepath.Join(adminDir, "queue", "queue.json.gz")
-		if _, statErr := os.Stat(queuePath); os.IsNotExist(statErr) {
-			t.Errorf("expected queue file to exist at %s, but it was not created", queuePath)
+		// The queue must have been persisted despite the wedged downloader.
+		// Reload it the way a restart would, through the store.
+		store := queue.NewSQLiteStore(repo.DB(), filepath.Join(adminDir, "queue"), repo)
+		reloaded, loadErr := queue.Load(filepath.Join(adminDir, "queue"), queue.WithStore(store))
+		if loadErr != nil {
+			t.Fatalf("reload queue after shutdown: %v", loadErr)
+		}
+		if _, getErr := reloaded.Get(job.ID); getErr != nil {
+			t.Errorf("job %s did not survive shutdown with a wedged component: %v", job.ID, getErr)
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("Shutdown hung indefinitely on wedged downloader")

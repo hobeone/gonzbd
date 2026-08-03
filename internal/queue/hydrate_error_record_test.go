@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // hydrateJobLocked is the other production path that loads a manifest off
@@ -35,7 +37,7 @@ func TestHydrateJobLocked_CorruptManifestRecordsWhy(t *testing.T) {
 	if manifestResident(job) {
 		t.Fatal("fixture guard: job is resident, hydration will not be attempted")
 	}
-	if err := writeGzJSONRaw(dir+"/manifests/"+job.ID+".json.gz", []byte("not gzip json")); err != nil {
+	if err := fsutil.WriteGzAtomicBytes(dir+"/manifests/"+job.ID+".json.gz", []byte("not gzip json")); err != nil {
 		t.Fatalf("corrupt manifest: %v", err)
 	}
 

@@ -18,8 +18,48 @@ var errInjected = errors.New("injected store failure")
 // resulting behavior to the method it is about.
 type failingStore struct {
 	Store
-	failUpdate  bool
-	failRestore bool
+	failUpdate         bool
+	failRestore        bool
+	failUpdateBatch    bool
+	failList           bool
+	failRemainingBytes bool
+	failArticleCounts  bool
+	failIsPaused       bool
+}
+
+func (f *failingStore) IsPaused(ctx context.Context) (bool, error) {
+	if f.failIsPaused {
+		return false, errInjected
+	}
+	return f.Store.IsPaused(ctx)
+}
+
+func (f *failingStore) List(ctx context.Context) ([]*Job, error) {
+	if f.failList {
+		return nil, errInjected
+	}
+	return f.Store.List(ctx)
+}
+
+func (f *failingStore) RemainingBytesByJob(ctx context.Context) (map[string]int64, error) {
+	if f.failRemainingBytes {
+		return nil, errInjected
+	}
+	return f.Store.RemainingBytesByJob(ctx)
+}
+
+func (f *failingStore) ArticleCountsByJob(ctx context.Context) (map[string][]int, error) {
+	if f.failArticleCounts {
+		return nil, errInjected
+	}
+	return f.Store.ArticleCountsByJob(ctx)
+}
+
+func (f *failingStore) UpdateBatch(ctx context.Context, jobs []*Job) error {
+	if f.failUpdateBatch {
+		return errInjected
+	}
+	return f.Store.UpdateBatch(ctx, jobs)
 }
 
 func (f *failingStore) Update(ctx context.Context, job *Job) error {

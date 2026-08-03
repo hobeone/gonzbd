@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/hobeone/gonzbd/internal/fsutil"
 )
 
 // A manifest that cannot be read is corruption, and must not look the same
@@ -39,7 +41,7 @@ func TestSnapshotJob_CorruptManifestIsReportedNotSilent(t *testing.T) {
 	if !nonResident {
 		t.Fatal("fixture guard: job is resident, hydration will not be attempted")
 	}
-	if err := writeGzJSONRaw(dir+"/manifests/"+job.ID+".json.gz", []byte("not gzip json")); err != nil {
+	if err := fsutil.WriteGzAtomicBytes(dir+"/manifests/"+job.ID+".json.gz", []byte("not gzip json")); err != nil {
 		t.Fatalf("corrupt manifest: %v", err)
 	}
 
