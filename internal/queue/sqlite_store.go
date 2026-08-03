@@ -14,8 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"modernc.org/sqlite"
-
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/history"
 )
@@ -46,96 +44,41 @@ func (s *SQLiteStore) Dir() string {
 	return s.dir
 }
 
-// busyRetries bounds how many times a write transaction is restarted after
-// SQLite reports contention, and busyBackoffCap bounds how long the pause
-// between attempts can grow. Worst case is roughly 250ms of waiting before
-// giving up.
+// withWriteTx runs fn inside a write transaction, committing on success and
+// rolling back on any error.
 //
-// The competing writer is another goroutine in this process committing a
-// transaction, not a queue of remote clients, so a handful of attempts is
-// ample: what is being waited on is one commit, not a backlog.
-const (
-	busyRetries    = 10
-	busyBackoffCap = 64 * time.Millisecond
-)
-
-// isBusyErr reports whether err is a SQLITE_BUSY or SQLITE_LOCKED result,
-// including the extended codes (BUSY_SNAPSHOT is 517, i.e. 5 | 2<<8), which
-// is why the primary code is masked out rather than compared whole.
+// It deliberately does not retry. An earlier version did, on the theory that
+// a contended transaction should be restarted, and that was wrong twice over
+// once _txlock=immediate landed in internal/history/db.go:
 //
-// These are the only errors worth restarting a transaction for. Everything
-// else — constraint violations, I/O errors, a closed database — means the
-// same transaction would fail the same way again.
-func isBusyErr(err error) bool {
-	var serr *sqlite.Error
-	if !errors.As(err, &serr) {
-		return false
-	}
-	switch serr.Code() & 0xff {
-	case 5, 6: // SQLITE_BUSY, SQLITE_LOCKED
-		return true
-	default:
-		return false
-	}
-}
-
-// withWriteTx runs fn inside a transaction, restarting it when SQLite
-// reports contention.
+//   - It buys nothing. Taking the write lock at BEGIN means contention is an
+//     ordinary wait that busy_timeout(5000) already performs, so a failure
+//     here is a transaction that waited five seconds and still lost. Measured
+//     against an unthrottled competing writer, a single attempt succeeds as
+//     reliably as ten (0 failures in 20 runs of
+//     TestSQLiteStore_AddSurvivesConcurrentCommits either way).
+//   - It costs a great deal. Contention now surfaces at BeginTx, which blocks
+//     for the full busy_timeout rather than failing fast — measured at 5.01s —
+//     so retrying multiplied the wait rather than avoiding it: ten attempts
+//     took 48.8s to fail. Queue.Add calls store.Add and store.ShiftSortKey
+//     back to back inside q.mu, so that stall would have frozen every other
+//     queue operation for the duration.
 //
-// This exists because busy_timeout does not cover the case that matters
-// here. A deferred transaction that reads and then writes has to upgrade to
-// the write lock, and if another connection holds it SQLite returns
-// SQLITE_BUSY *immediately* rather than invoking the busy handler — waiting
-// while already holding a read snapshot could deadlock. The caller's only
-// recourse is to abandon the transaction and start again against a fresh
-// snapshot, which is what this does.
-//
-// fn must not assume it runs once. It is handed a new *sql.Tx per attempt
-// and any work it did in a failed attempt is rolled back before the next.
+// The bounded five-second wait busy_timeout provides is the whole retry
+// policy, and it lives in one place rather than being multiplied here.
 func (s *SQLiteStore) withWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	var err error
-	for attempt := range busyRetries {
-		if attempt > 0 {
-			// Exponential pause so the holder can commit, capped so a
-			// pathologically busy database does not turn a bounded retry
-			// into a long stall.
-			backoff := min(time.Millisecond<<(attempt-1), busyBackoffCap)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff):
-			}
-		}
-
-		var tx *sql.Tx
-		tx, err = s.db.BeginTx(ctx, nil)
-		if err != nil {
-			// With _txlock=immediate the write lock is taken here, so this
-			// is where contention now shows up — the whole point of the
-			// DSN setting. Retrying only the body would leave the retry
-			// budget pointed at a case that can no longer happen.
-			if isBusyErr(err) {
-				err = fmt.Errorf("sqlite store begin tx: %w", err)
-				continue
-			}
-			return fmt.Errorf("sqlite store begin tx: %w", err)
-		}
-		err = fn(tx)
-		if err == nil {
-			err = tx.Commit()
-		}
-		// Safe after a successful Commit: Rollback then returns ErrTxDone,
-		// which is exactly the "already finished" signal, not a failure.
-		_ = tx.Rollback()
-
-		if err == nil {
-			return nil
-		}
-		if !isBusyErr(err) {
-			return err
-		}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite store begin tx: %w", err)
 	}
-	return fmt.Errorf("sqlite store: gave up after %d attempts: %w", busyRetries, err)
+	err = fn(tx)
+	if err == nil {
+		err = tx.Commit()
+	}
+	// Safe after a successful Commit: Rollback then returns ErrTxDone,
+	// which is exactly the "already finished" signal, not a failure.
+	_ = tx.Rollback()
+	return err
 }
 
 func (s *SQLiteStore) resequenceTx(ctx context.Context, tx *sql.Tx) error {

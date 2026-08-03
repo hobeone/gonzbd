@@ -40,17 +40,20 @@ import (
 // specific to duplicate detection; this test just has three sequential adds
 // racing a live pipeline.
 //
-// What fixed it, in order of how much each mattered: _txlock=immediate in
-// internal/history/db.go, which takes the write lock at BEGIN so there is no
-// upgrade to contend on and busy_timeout finally applies; Add writing the
-// manifest before the transaction opens rather than holding the write lock
-// across its fsync; and SQLiteStore.withWriteTx restarting a contended
-// transaction, which bounds what is left.
+// What fixed it: _txlock=immediate in internal/history/db.go, which takes
+// the write lock at BEGIN so there is no upgrade to contend on and
+// busy_timeout finally applies, plus Add writing the manifest before the
+// transaction opens rather than holding the write lock across its fsync.
+// Measured 0 in 40 runs afterwards, from 13 in 90 before, with
+// internal/queue's TestSQLiteStore_AddSurvivesConcurrentCommits pinning the
+// property directly.
 //
-// Retrying alone was not enough — measured 4 failures in 48 concurrent adds
-// with ten attempts before the DSN change. Measured 0 in 40 runs afterwards,
-// from 13 in 90 before, with internal/queue's
-// TestSQLiteStore_AddSurvivesConcurrentCommits pinning the property.
+// A retry loop was tried and removed. It was not merely redundant once the
+// DSN change landed but actively harmful: contention moved to BeginTx, which
+// blocks for the full busy_timeout (5.01s measured) rather than failing
+// fast, so retrying multiplied the wait instead of avoiding it — 48.8s for
+// ten attempts, all of it under q.mu, which Queue.Add holds across both
+// store.Add and store.ShiftSortKey. See withWriteTx's doc comment.
 //
 // If it returns: reproduce it standalone in a loop rather than trusting a
 // single run — an early read of this as "only under full-suite load" came

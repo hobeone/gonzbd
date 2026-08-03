@@ -74,9 +74,12 @@ type Store interface {
 	// byte breakdown is available to compute this the normal way).
 	RemainingBytesByJob(ctx context.Context) (map[string]int64, error)
 
-	// DeleteJobArtifacts removes the on-disk manifest and progress files for
-	// job id (manifests/<id>.json.gz and progress/<id>.json.gz). A missing
-	// file is not an error.
+	// DeleteJobArtifacts removes the on-disk manifest for job id
+	// (manifests/<id>.json.gz). A missing file is not an error.
+	//
+	// It also removed progress/<id>.json.gz until #298. Nothing ever wrote
+	// that file — it was left over from a pre-SQLite layout — so the removal
+	// changed no behaviour.
 	//
 	// Callers must only invoke this after id has already left the queue's
 	// in-memory index (q.byID) and its row(s) in the jobs/job_files tables —

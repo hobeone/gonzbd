@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/history"
@@ -48,15 +47,15 @@ func TestWithWriteTx_CommitsOnSuccess(t *testing.T) {
 	}
 }
 
-// TestWithWriteTx_RollsBackAndDoesNotRetryOnOtherErrors pins the two halves
-// of the failure path: fn's work is discarded, and the helper does not run it
-// again.
+// TestWithWriteTx_RollsBackAndRunsOnce pins the two halves of the failure
+// path: fn's work is discarded, and it is not run again.
 //
-// Retrying anything other than contention would be wrong twice over — the
-// same transaction would fail the same way, and a caller returning a sentinel
-// like ErrNotFound would have its non-idempotent work replayed on the way to
-// the same answer.
-func TestWithWriteTx_RollsBackAndDoesNotRetryOnOtherErrors(t *testing.T) {
+// The "once" half is the load-bearing one. An earlier version retried
+// contended transactions, which under _txlock=immediate multiplied a
+// five-second busy_timeout wait by the attempt count while Queue.Add held
+// q.mu — 48.8s measured. busy_timeout is the whole retry policy now, and
+// this pins that nothing has quietly reintroduced a loop on top of it.
+func TestWithWriteTx_RollsBackAndRunsOnce(t *testing.T) {
 	store, _ := newWriteTxStore(t)
 	sentinel := errors.New("caller's own failure")
 
@@ -73,7 +72,7 @@ func TestWithWriteTx_RollsBackAndDoesNotRetryOnOtherErrors(t *testing.T) {
 		t.Fatalf("withWriteTx = %v, want the caller's error unwrapped", err)
 	}
 	if attempts != 1 {
-		t.Errorf("fn ran %d times for a non-contention error, want 1", attempts)
+		t.Errorf("fn ran %d times, want 1; withWriteTx must not retry", attempts)
 	}
 
 	var n int
@@ -108,7 +107,7 @@ func TestWithWriteTx_ReportsBeginFailure(t *testing.T) {
 }
 
 // TestWithWriteTx_HonoursContextCancellation pins that a cancelled context
-// stops the helper rather than working through its retry budget.
+// stops the helper rather than opening a transaction.
 func TestWithWriteTx_HonoursContextCancellation(t *testing.T) {
 	store, _ := newWriteTxStore(t)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -116,35 +115,6 @@ func TestWithWriteTx_HonoursContextCancellation(t *testing.T) {
 
 	if err := store.withWriteTx(ctx, func(*sql.Tx) error { return nil }); err == nil {
 		t.Fatal("withWriteTx succeeded with a cancelled context")
-	}
-}
-
-// TestIsBusyErr pins the classification that decides whether a transaction is
-// worth restarting. A false positive replays work that will fail again; a
-// false negative surfaces a transient lock to the user as a hard failure.
-func TestIsBusyErr(t *testing.T) {
-	if isBusyErr(nil) {
-		t.Error("nil classified as busy")
-	}
-	if isBusyErr(errors.New("database is locked")) {
-		t.Error("a plain error with a busy-looking message classified as busy; " +
-			"classification must come from the result code, not the text")
-	}
-
-	// A real driver error that is emphatically not contention.
-	store, _ := newWriteTxStore(t)
-	ctx := t.Context()
-	if _, err := store.db.ExecContext(ctx,
-		"INSERT INTO queue_meta (key, value) VALUES ('dup', 'a')"); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	_, dupErr := store.db.ExecContext(ctx,
-		"INSERT INTO queue_meta (key, value) VALUES ('dup', 'b')")
-	if dupErr == nil {
-		t.Fatal("expected a primary-key violation")
-	}
-	if isBusyErr(dupErr) {
-		t.Errorf("constraint violation %v classified as busy; it would be retried forever", dupErr)
 	}
 }
 
@@ -241,71 +211,5 @@ func TestShiftSortKeyTx_ReordersAndReportsMissing(t *testing.T) {
 	})
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("shift of an unknown job = %v, want ErrNotFound", err)
-	}
-}
-
-// TestWithWriteTx_RetriesThenGivesUpOnRealContention pins the retry loop
-// itself against a genuine SQLITE_BUSY rather than a synthesised one — the
-// driver's error type has no exported constructor, so the only honest way to
-// produce one is to actually contend for the write lock.
-//
-// A second pool with a 1ms busy_timeout stands in for a slow one with the
-// production 5s: the classification and the retry budget are the same, only
-// the wait is short enough to run in a test.
-func TestWithWriteTx_RetriesThenGivesUpOnRealContention(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "history.db")
-
-	// Create the schema through the normal path.
-	seed, err := history.Open(t.Context(), path)
-	if err != nil {
-		t.Fatalf("history.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = seed.Close() })
-
-	// A holder that takes the write lock and keeps it for the duration.
-	holder, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_txlock=immediate")
-	if err != nil {
-		t.Fatalf("open holder: %v", err)
-	}
-	t.Cleanup(func() { _ = holder.Close() })
-	holdTx, err := holder.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatalf("begin holder tx: %v", err)
-	}
-	if _, err := holdTx.ExecContext(t.Context(),
-		"INSERT INTO queue_meta (key, value) VALUES ('held', '1')"); err != nil {
-		t.Fatalf("holder write: %v", err)
-	}
-	defer func() { _ = holdTx.Rollback() }()
-
-	// The contender, impatient enough to fail fast.
-	contender, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(1)&_txlock=immediate")
-	if err != nil {
-		t.Fatalf("open contender: %v", err)
-	}
-	t.Cleanup(func() { _ = contender.Close() })
-	store := NewSQLiteStore(contender, dir, nil)
-
-	attempts := 0
-	err = store.withWriteTx(t.Context(), func(tx *sql.Tx) error {
-		attempts++
-		_, execErr := tx.ExecContext(t.Context(),
-			"INSERT INTO queue_meta (key, value) VALUES ('contended', '1')")
-		return execErr
-	})
-	if err == nil {
-		t.Fatal("withWriteTx succeeded while another connection held the write lock")
-	}
-	if !strings.Contains(err.Error(), "gave up after") {
-		t.Errorf("error %q does not report exhausting the retry budget", err)
-	}
-	// attempts stays 0 here and that is correct: with _txlock=immediate the
-	// write lock is taken at BEGIN, so a contended transaction never reaches
-	// its body. What must be retried is the BEGIN itself, which the "gave up
-	// after" wrapper above is the evidence for — an unretried BeginTx failure
-	// returns the driver error bare.
-	if attempts != 0 {
-		t.Errorf("fn ran %d time(s) although the transaction never opened", attempts)
 	}
 }

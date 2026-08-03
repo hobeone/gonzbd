@@ -776,8 +776,11 @@ func (j *Job) ResetForRetry() {
 	// unconverted, because it is unreachable and the alternative costs more
 	// than it buys. Both callers guarantee a hydrated job: Queue.Retry runs
 	// hydrateJobLocked first and fails closed on error, and the history-retry
-	// path builds the job with queue.LoadJob, which reads manifest and
-	// progress together. Giving this an error return to report a state
+	// path (app.rebuildJobFromNZB) builds the job with NewJob, which assigns
+	// manifest and progress together on its only success path — see the
+	// newManifest/newJobProgress pair in NewJob. It used to build it with
+	// queue.LoadJob, removed in #298; the guarantee survived the change of
+	// constructor. Giving this an error return to report a state
 	// neither caller can produce would change an exported signature for a
 	// branch that cannot execute. If a third caller ever arrives, it must
 	// hydrate first — the reset is defined in terms of which articles failed,
@@ -880,9 +883,14 @@ func (j *Job) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON implements json.Unmarshaler. It does not recompute
-// transient counters (PendingArticles/ArticlesResolved/ArticlesFailed) —
-// callers (Load/LoadJob) must call the JobProgress-equivalent recompute
-// afterward, exactly as they do today.
+// transient counters (PendingArticles/ArticlesResolved/ArticlesFailed); a
+// caller must invoke the JobProgress-equivalent recompute afterward.
+//
+// There is no production caller. Job's JSON form existed for the history
+// retry payload, whose reader (queue.LoadJob) went in #298; the only thing
+// exercising it now is TestPersistenceRoundTrip_AccessorParity. Tracked as
+// dead code in #304 rather than removed here, because the honest fix is to
+// move that test's assertions onto the store rather than delete them.
 func (j *Job) UnmarshalJSON(data []byte) error {
 	var jj jobJSON
 	if err := json.Unmarshal(data, &jj); err != nil {

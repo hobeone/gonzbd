@@ -421,7 +421,7 @@ func (q *Queue) Add(job *Job) error {
 	// job into q.byID, rather than re-checking job.progress == nil at every
 	// read site downstream (e.g. TotalRemainingBytes, called from
 	// runMetricsPush — a 1Hz ticker goroutine with no recover()). Every
-	// production caller (NewJob, LoadJob followed by Add) already sets
+	// production caller (NewJob followed by Add) already sets
 	// progress; a nil here means a caller bypassed both, e.g. a bare
 	// &Job{Status: StatusQueued} representing a job not yet hydrated from
 	// disk — a shape some claim-failure tests use deliberately to exercise
