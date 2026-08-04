@@ -132,6 +132,15 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    read had its CRCs verified by nothing at all — quickcheck bailed, and repair
    skipped on DirectUnpack's say-so. `QuickCheckOutcome` makes the two
    nameable and the switch in `stage_repair.go` exhaustive.
+
+   `Inconclusive` is also the **default** the quickcheck stage adopts as soon
+   as it knows par2 sets exist, narrowing to `Clean` or `Damaged` only on
+   paths that actually verified something (#314). This inverts which state is
+   free: the zero value used to be the permissive one, so any early `return`
+   that forgot to assign handed repair consent to skip par2 — and one did, the
+   guard in `verifyJobCRCs` for a job whose manifest describes no files. With
+   the default inverted, a future early return fails safe by construction
+   rather than by review catching it.
 4. **`OwnedFiles` isolation (#3462)**: `processJob` snapshots `OwnedFiles` from
    `DownloadDir` before any stage runs. Unpack and rename stages register newly
    created files into `OwnedFiles`. Cleanup stages (`extension_cleanup`,

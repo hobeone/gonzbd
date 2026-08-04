@@ -68,11 +68,15 @@ func TestBuildDownloadFileList_AbsentManifestExplainsItself(t *testing.T) {
 //
 // The outcome is the load-bearing part. The error goes into the stage log and
 // the history entry, but the repair stage never sees it — it reads
-// job.QuickCheck. Leaving that at its zero value would say "nothing to check
-// here", which is what let DirectUnpack's success skip par2 for a job nothing
-// had verified (#294).
+// job.QuickCheck. Reporting "nothing to check here" is what let DirectUnpack's
+// success skip par2 for a job nothing had verified (#294).
+//
+// Run sets Inconclusive before calling this, once it knows par2 sets exist
+// (#314), so what this asserts is that the unreadable-manifest path leaves
+// that standing rather than narrowing to a verdict it did not earn.
 func TestVerifyJobCRCs_AbsentManifestErrorsRatherThanClaimingVerified(t *testing.T) {
 	job := evictedJob(t)
+	job.QuickCheck = QuickCheckInconclusive
 	q := &QuickCheckStage{}
 
 	err := q.verifyJobCRCs(context.Background(), slog.Default(), job, []par2.Set{})

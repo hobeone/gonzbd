@@ -58,15 +58,26 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 		return nil
 	}
 
+	// Past this line the job has par2 sets, so QuickCheckNotRun — "there was
+	// nothing to verify" — is no longer a true thing to leave behind. Claim
+	// nothing by default and narrow to Clean or Damaged only where the work
+	// was actually done (#314).
+	//
+	// This inverts which state is free. The zero value used to be the
+	// permissive one, so every early return that forgot to assign handed the
+	// repair stage consent to skip par2 — and one did: verifyJobCRCs' opening
+	// guard, reachable only from here, so only ever for a job that has par2
+	// sets. Now the conservative state is the one you get for free and the
+	// permissive ones require saying so, which makes the next early return
+	// added below fail safe by construction rather than by review.
+	job.QuickCheck = QuickCheckInconclusive
+
 	logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Found %d par2 set(s), checking for subdirectory entries", len(sets))
 
 	renames, err := par2.QuickCheckWithOptions(job.DownloadDir, sets, log, q.ParseOpts)
 	if err != nil {
-		// Par2 sets exist — the scan above found them — and nothing has
-		// verified them, so this is inconclusive rather than nothing-to-do.
-		job.QuickCheck = QuickCheckInconclusive
 		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Error: %v", err)
-		return nil // non-fatal
+		return nil // non-fatal; the outcome set above already says why
 	}
 
 	if len(renames) > 0 {
@@ -83,7 +94,15 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 }
 
 func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, job *Job, sets []par2.Set) error {
+	// No manifest, or one describing no files, so there are no expected CRCs
+	// to compare the par2 sets against. The caller has already established
+	// that sets is non-empty — it returns at len(sets) == 0 — so this leaves
+	// QuickCheckInconclusive, set there. It used to leave the zero value,
+	// which told the repair stage this job had nothing worth verifying while
+	// its par2 sets went unchecked (#314).
 	if job.Queue == nil || job.Queue.NumFiles() == 0 {
+		logf(ctx, log, job, slog.LevelWarn,
+			"[quickcheck] No manifest files to verify against, though %d par2 set(s) are present — par2 repair will run", len(sets))
 		return nil
 	}
 
@@ -94,15 +113,14 @@ func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, j
 	// runner deliberately does not abort the pipeline on a stage error, so
 	// par2 repair still gets its turn.
 	//
-	// Recording Inconclusive is what makes that last clause true. The error
-	// return alone protects this stage's own claim, but the repair stage
+	// Leaving Inconclusive in place is what makes that last clause true. The
+	// error return alone protects this stage's own claim, but the repair stage
 	// reads the outcome, not the error — and under the old boolean pair
 	// "could not verify" was indistinguishable from "had nothing to verify",
 	// so DirectUnpack's success would skip par2 for a job nothing had
 	// checked (#294).
 	m, mErr := job.Queue.Manifest()
 	if mErr != nil {
-		job.QuickCheck = QuickCheckInconclusive
 		return fmt.Errorf("quickcheck: cannot verify CRCs without the manifest: %w", mErr)
 	}
 
@@ -179,10 +197,10 @@ func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, j
 			crcResult.Matched)
 	default:
 		// Par2 sets were found but no assembled CRC was available to compare
-		// against any of them, so nothing was actually verified. Inconclusive
-		// rather than NotRun, and it keeps the pre-enum behaviour: the old
-		// pair recorded Ran-and-not-Passed here, which forced repair.
-		job.QuickCheck = QuickCheckInconclusive
+		// against any of them, so nothing was actually verified. Stays at the
+		// Inconclusive the caller set, which also keeps the pre-enum
+		// behaviour: the old pair recorded Ran-and-not-Passed here, forcing
+		// repair.
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] No CRC data available — par2 repair will run")
 	}
 	return nil

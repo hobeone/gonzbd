@@ -50,14 +50,17 @@ const (
 	// precisely why this must not be treated as QuickCheckNotRun: par2 sets
 	// may well exist and nothing has checked them.
 	//
-	// Four distinct things produce it, and only one involves the manifest —
-	// do not go looking for a manifest problem first:
+	// It is also the default the stage adopts the moment it knows par2 sets
+	// exist, narrowing to Clean or Damaged only where verification actually
+	// happened (#314). So the causes are "anything that did not earn a
+	// verdict", and only one of them involves the manifest — do not go
+	// looking for a manifest problem first:
 	//   - the par2 scan itself failed, so whether the job has par2 sets is
-	//     unknown;
+	//     unknown (the one case set before the default applies);
 	//   - par2 sets were found but QuickCheckWithOptions errored before
 	//     verifying any of them;
-	//   - the job's manifest was unreadable, so there were no expected CRCs
-	//     to compare against;
+	//   - the job's manifest was unreadable or described no files, so there
+	//     were no expected CRCs to compare against;
 	//   - par2 sets were found and no assembled CRC was available for any of
 	//     them, so the comparison had nothing on either side.
 	QuickCheckInconclusive
