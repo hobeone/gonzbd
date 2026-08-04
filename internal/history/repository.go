@@ -381,55 +381,61 @@ func (r *Repository) MarkCompleted(ctx context.Context, nzoID string) error {
 	return nil
 }
 
-// Prune deletes history entries that have aged past the retention thresholds.
-// retainDays applies to all non-failed entries; retainFailedDays applies only
-// to entries whose status is 'Failed'. A value of 0 for either parameter means
-// "keep forever" (spec §11.4). The deleted count covers both categories.
-func (r *Repository) Prune(ctx context.Context, retainDays, retainFailedDays int) (int, error) {
-	if retainDays == 0 && retainFailedDays == 0 {
-		return 0, nil
+// ExpiredEntries returns the entries that have aged past the retention
+// thresholds, oldest first. retainDays applies to every non-failed entry;
+// retainFailedDays applies only to entries whose status is 'Failed'. A value
+// of 0 for either means "keep forever" (spec §11.4), and 0 for both returns
+// nothing without touching the database.
+//
+// This deliberately selects rather than deletes. An entry owns two things
+// besides its row — its history_job_files progress and its admin/nzb backup —
+// and only the caller can release the second, because it is a file and this
+// package has no business in the admin directory. Handing the entries back
+// lets one deletion path release all three, instead of a pruner that quietly
+// orphans two of them (#303).
+func (r *Repository) ExpiredEntries(ctx context.Context, retainDays, retainFailedDays int) ([]Entry, error) {
+	if retainDays <= 0 && retainFailedDays <= 0 {
+		return nil, nil
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("history: prune begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // superseded by Commit error
-
-	total := 0
-
+	// Static SQL with the thresholds bound as parameters, rather than a
+	// WHERE clause assembled from string fragments: a disabled threshold
+	// switches its half off through the flag instead of by omitting text.
+	nonFailedOn, failedOn := 0, 0
+	var nonFailedCutoff, failedCutoff int64
 	if retainDays > 0 {
-		cutoff := time.Now().AddDate(0, 0, -retainDays).Unix()
-		res, err := tx.ExecContext(ctx,
-			"DELETE FROM history WHERE status != 'Failed' AND completed < ?", cutoff)
-		if err != nil {
-			return 0, fmt.Errorf("history: prune non-failed: %w", err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return 0, fmt.Errorf("history: prune non-failed rows affected: %w", err)
-		}
-		total += int(n)
+		nonFailedOn = 1
+		nonFailedCutoff = time.Now().AddDate(0, 0, -retainDays).Unix()
 	}
-
 	if retainFailedDays > 0 {
-		cutoff := time.Now().AddDate(0, 0, -retainFailedDays).Unix()
-		res, err := tx.ExecContext(ctx,
-			"DELETE FROM history WHERE status = 'Failed' AND completed < ?", cutoff)
-		if err != nil {
-			return 0, fmt.Errorf("history: prune failed: %w", err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return 0, fmt.Errorf("history: prune failed rows affected: %w", err)
-		}
-		total += int(n)
+		failedOn = 1
+		failedCutoff = time.Now().AddDate(0, 0, -retainFailedDays).Unix()
 	}
 
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("history: prune commit: %w", err)
+	const q = `SELECT ` + allColumns + `
+FROM history
+WHERE (? = 1 AND status != 'Failed' AND completed < ?)
+   OR (? = 1 AND status =  'Failed' AND completed < ?)
+ORDER BY completed ASC`
+
+	rows, err := r.db.QueryContext(ctx, q, nonFailedOn, nonFailedCutoff, failedOn, failedCutoff)
+	if err != nil {
+		return nil, fmt.Errorf("history: expired entries: %w", err)
 	}
-	return total, nil
+	defer rows.Close() //nolint:errcheck // read-only result set
+
+	var out []Entry
+	for rows.Next() {
+		e, scanErr := scanEntry(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("history: expired entries scan: %w", scanErr)
+		}
+		out = append(out, *e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("history: expired entries rows: %w", err)
+	}
+	return out, nil
 }
 
 // allColumns is the canonical SELECT column list, ordered to match scanEntry.

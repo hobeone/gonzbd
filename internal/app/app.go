@@ -554,35 +554,73 @@ func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteF
 			app.log.Warn("failed to delete history job directory", "path", entry.Path, "err", err)
 		}
 	}
-	if err := app.deleteHistoryEntry(ctx, entry); err != nil {
+	if _, err := app.deleteHistoryEntries(ctx, []history.Entry{*entry}); err != nil {
 		return err
 	}
 	app.emit(Event{Type: "history_updated"})
 	return nil
 }
 
-// deleteHistoryEntry removes a history entry and the NZB backup it owns.
+// deleteHistoryEntries removes history entries and the NZB backups they own.
 //
 // The retained per-file progress is cleaned up inside Repository.Delete, in
-// the same transaction as the row. The backup cannot be: it is a file, and
-// the history package has no business touching the admin directory. So this
-// is the app-level choke point that every history deletion must route
+// the same transaction as the rows. The backups cannot be: they are files,
+// and the history package has no business touching the admin directory. So
+// this is the app-level choke point that every history deletion must route
 // through — the SQL half closes by construction, this half by convention.
 //
 // A missing or unnamed backup is not an error. Entries written before the
 // name was recorded have none, and the download itself never depended on it.
-func (app *Application) deleteHistoryEntry(ctx context.Context, entry *history.Entry) error {
-	if entry.NZBBackup != "" {
-		backupPath := filepath.Join(app.config.GetGeneral().AdminDir, "nzb", filepath.Base(entry.NZBBackup))
-		if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
-			app.log.Warn("failed to remove NZB backup for deleted history entry",
-				"path", backupPath, "err", err)
+// Neither is it a reason to keep the entry: a stranded file must not outvote
+// an operator asking for the row to go.
+func (app *Application) deleteHistoryEntries(ctx context.Context, entries []history.Entry) (int, error) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
+	nzbDir := filepath.Join(app.config.GetGeneral().AdminDir, "nzb")
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.NZBBackup != "" {
+			backupPath := filepath.Join(nzbDir, filepath.Base(entry.NZBBackup))
+			if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+				app.log.Warn("failed to remove NZB backup for deleted history entry",
+					"path", backupPath, "err", err)
+			}
 		}
+		ids = append(ids, entry.NzoID)
 	}
-	if _, err := app.historyRepo.Delete(ctx, entry.NzoID); err != nil {
-		return err
+	return app.historyRepo.Delete(ctx, ids...)
+}
+
+// PruneHistory removes history entries past the configured retention
+// thresholds, returning how many went.
+//
+// Both thresholds at zero — the default — makes this a no-op that does not
+// touch the database. Selecting the entries first and then deleting them
+// through deleteHistoryEntries is what keeps retention from orphaning the
+// artifacts an entry owns (#303); the pruner it replaces issued its own
+// DELETE and released neither.
+func (app *Application) PruneHistory(ctx context.Context) (int, error) {
+	if app.historyRepo == nil {
+		return 0, nil
 	}
-	return nil
+	gen := app.config.GetGeneral()
+	expired, err := app.historyRepo.ExpiredEntries(ctx, gen.HistoryRetentionDays, gen.HistoryFailedRetentionDays)
+	if err != nil {
+		return 0, fmt.Errorf("app: history retention: %w", err)
+	}
+	if len(expired) == 0 {
+		return 0, nil
+	}
+	n, err := app.deleteHistoryEntries(ctx, expired)
+	if err != nil {
+		return 0, fmt.Errorf("app: history retention delete: %w", err)
+	}
+	app.log.Info("history retention removed expired entries",
+		"count", n, "retain_days", gen.HistoryRetentionDays,
+		"retain_failed_days", gen.HistoryFailedRetentionDays)
+	app.emit(Event{Type: "history_updated"})
+	return n, nil
 }
 
 // GetHistory retrieves a single history entry by ID.
@@ -686,6 +724,17 @@ func (app *Application) Start(ctx context.Context) error {
 	}
 	app.wg.Go(func() { app.runCheckpoint(app.ctx, interval) })
 	app.wg.Go(func() { app.runMetricsPush(app.ctx) })
+
+	// Sweep expired history once at startup. The other trigger is job
+	// finalization, matching upstream (sabnzbd/postproc.py calls
+	// auto_history_purge there), which means a daemon that finishes nothing
+	// never prunes — this covers the instance that sat idle over the
+	// threshold and was then restarted. Deliberately not on the checkpoint
+	// ticker: that fires every 30 seconds, against a policy measured in days.
+	if _, err := app.PruneHistory(app.ctx); err != nil {
+		app.log.Warn("history retention sweep failed at startup", "err", err)
+	}
+
 	app.log.Info("application started")
 
 	for _, snap := range app.queue.Snapshot() {

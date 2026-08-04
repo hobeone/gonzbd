@@ -40,6 +40,14 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 		return
 	}
 	f.fireCompletionNotification(entry)
+
+	// Apply retention now that history has one more entry in it. Best
+	// effort: a job that finished successfully must not be reported as
+	// failed because an unrelated old entry could not be swept.
+	if _, err := app.PruneHistory(app.ctx); err != nil {
+		app.log.Warn("history retention sweep failed after finalize",
+			"job", job.Queue.ID, "err", err)
+	}
 }
 
 // persistAndCommit writes the history entry to the database, removes the job
