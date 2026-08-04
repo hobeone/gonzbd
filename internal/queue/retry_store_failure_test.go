@@ -25,6 +25,14 @@ type failingStore struct {
 	failRemainingBytes bool
 	failArticleCounts  bool
 	failIsPaused       bool
+	failReplaceMani    bool
+}
+
+func (f *failingStore) ReplaceManifest(ctx context.Context, job *Job) error {
+	if f.failReplaceMani {
+		return errInjected
+	}
+	return f.Store.ReplaceManifest(ctx, job)
 }
 
 func (f *failingStore) IsPaused(ctx context.Context) (bool, error) {

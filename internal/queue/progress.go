@@ -262,11 +262,12 @@ func (p *JobProgress) DeferredRecoveryIndices() []int {
 // not hold.
 //
 // The two can genuinely disagree. DiscardDeferredPar2 rebuilds a smaller
-// manifest and progress in memory and never rewrites the manifest on disk
-// (see Manifest's doc comment), so once the in-memory manifest is evicted,
-// the file left on disk describes the job as it was before the discard.
-// Re-reading it and pairing it with the surviving, smaller progress is not a
-// recoverable state: the manifest is simply not this job's any more.
+// manifest and progress in memory, and persists both through
+// Store.ReplaceManifest — a blob write plus a transaction that cannot be made
+// atomic together (see ErrManifestStale). A crash between them leaves the file
+// on disk describing the job as it was before the discard. Re-reading it and
+// pairing it with the surviving, smaller progress is not a recoverable state:
+// the manifest is simply not this job's any more.
 func (p *JobProgress) describesSameJobAs(m *Manifest) bool {
 	if p == nil || m == nil {
 		return false

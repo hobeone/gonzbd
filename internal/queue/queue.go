@@ -38,15 +38,23 @@ var ErrJobNotResident = errors.New("queue: job not resident")
 // the job's own JobProgress — different file or article counts — so the two
 // cannot be paired.
 //
-// It has one known cause. DiscardDeferredPar2 rebuilds a smaller manifest and
-// progress in memory when on-demand par2 verification comes back clean, and
-// never rewrites the .json.gz (see Manifest's doc comment). Once the shrunk
-// manifest is evicted, the file left behind still describes the pre-discard
-// job. Hydration used to sidestep this by rebuilding progress from whatever
-// it read; now that it preserves the live progress, the disagreement is
-// visible and has to be reported. Handing the pair to JobProgress.recompute
-// instead panics by design, and hydration runs on background goroutines that
-// carry no recover.
+// Reporting it rather than tolerating it is not optional: handing a
+// mismatched pair to JobProgress.recompute panics by design, and hydration
+// runs on background goroutines that carry no recover. Hydration used to
+// sidestep the question by rebuilding progress from whatever it read; now
+// that it preserves the live progress, the disagreement is visible.
+//
+// It had one ordinary cause until #294. DiscardDeferredPar2 rebuilt a smaller
+// manifest and progress in memory when on-demand par2 verification came back
+// clean, and never rewrote the .json.gz, so every discard left the file on
+// disk describing the pre-discard job. It now persists the rebuilt manifest
+// and job_files rows together.
+//
+// What remains is a torn write. Store.ReplaceManifest writes a blob and
+// commits a transaction, and no ordering makes those two atomic across the
+// filesystem and SQLite — a crash between them leaves the same mismatch, now
+// bounded by one fsync plus one small transaction rather than arising on
+// every discard.
 //
 // Distinct from ErrJobNotResident because it is not ordinary: the job's
 // persisted state is internally inconsistent and re-reading will not fix it.
@@ -1947,7 +1955,30 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		// must be re-synced or TotalBytes()/NumFiles()/NumArticles() would
 		// keep reporting the pre-discard totals forever.
 		job.setScalarsFromManifest(newManifestVal)
+		// Set before the store write, not after: the in-memory job has already
+		// changed at this point, so it is dirty whether or not persisting it
+		// succeeds.
 		q.dirty.Store(true)
+
+		// Persist the rebuilt shape before releasing the lock (#294). Holding
+		// q.mu across the store write is the same trade Add makes and is
+		// justified the same way: the in-memory job and the persisted one must
+		// never be observable at different file sets. Releasing the lock first
+		// would open a window where a concurrent Snapshot reads the shrunk
+		// progress, hydrates the un-rewritten manifest, and gets ErrManifestStale
+		// — reintroducing the bug for as long as the window lasts.
+		//
+		// A failure here is reported rather than swallowed, and the in-memory
+		// rebuild above is deliberately left in place: it is correct, it is what
+		// every reader in this process will see, and rolling it back would
+		// re-defer volumes the caller has already verified as unnecessary. The
+		// cost of the failure is that a restart resurrects them, which is the
+		// pre-#294 behaviour and no worse than it.
+		if q.store != nil {
+			if err := q.store.ReplaceManifest(context.Background(), job); err != nil { //lockio: the in-memory and persisted file sets must not diverge; see comment above
+				return fmt.Errorf("queue: persist discarded par2 for job %s: %w", jobID, err)
+			}
+		}
 	}
 	return nil
 }

@@ -83,10 +83,11 @@ func hydrateSnapshot(log *slog.Logger, stateDir string, store Store, cp *Job) {
 	// counters are not moving underneath it.
 	//
 	// The pair has to describe the same job, though. The manifest just read
-	// from disk can be older than the progress in memory — DiscardDeferredPar2
-	// shrinks both in memory and never rewrites the file — and handing a
-	// mismatched pair to RestoreJobProgress panics inside recompute, on a
-	// background goroutine with no recover. Report it instead: a manifest that
+	// from disk can be older than the progress in memory — a torn
+	// Store.ReplaceManifest, whose blob write and transaction cannot be made
+	// atomic together (see ErrManifestStale) — and handing a mismatched pair
+	// to RestoreJobProgress panics inside recompute, on a background goroutine
+	// with no recover. Report it instead: a manifest that
 	// disagrees with the job's own progress is not this job's manifest, and
 	// serving it would mean reporting files the job no longer has.
 	if !priorProgress.describesSameJobAs(&m) {
