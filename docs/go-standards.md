@@ -189,6 +189,8 @@ These rules are distilled from real bugs found across dozens of audit and harden
 
 - **All disk writes must be atomic: temp file → fsync → rename.** `os.WriteFile` truncates before writing; concurrent readers see partial/corrupt data. Use `os.CreateTemp` → write → `Sync()` → `Close()` → `os.Rename`. This pattern was missing in cache, queue, and dirscanner state — all required the same fix.
 
+- **An invariant enforced by a runtime handle is not enforced across a restart.** Type-level and pointer-level guarantees — a fallible accessor, an immutable handle, an in-memory "this is stale" flag — hold only for the lifetime of the values carrying them. When state is split across two stores that cannot be written atomically (a blob plus a SQL table, two files, a file plus a remote), the load path needs a *content-derived* restatement of the invariant: a shape comparison, a generation counter, a checksum. Put the check inside the single function that reads the pair, so every caller inherits it. Two queue bugs came from an in-memory guard that read as though it covered the invariant while the load path had none (#294, #310) — and in that case the in-memory guard could not even have fired on the load path, because it compared two values the loader had just derived from each other. Ask whether the guard you have would fire where you are not looking.
+
 - **Use `os.CreateTemp` for unique temp files, never a hardcoded `.tmp` suffix.** Concurrent writes to `path + ".tmp"` corrupt state files. Dirscanner state had this bug.
 
 - **Close the source file before `os.Remove` in cross-device move.** `defer in.Close()` runs after `os.Remove(src)`, which fails on some platforms because the file handle is still open.

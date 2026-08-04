@@ -193,14 +193,14 @@ In the manifest tier a vanished job makes the operation moot: `ErrNotFound`.
 together.** The manifest blob and the `job_files` rows describe the same file
 set, and the staleness guard pairs the blob against in-memory progress, so
 writing one without the other is a defect on both counts: the pair disagrees
-in this process, and the two on-disk artifacts agree with each other at the
-*wrong* shape, which nothing detects. `DiscardDeferredPar2` is the only such
-mutation after `Add`, and it goes through `Store.ReplaceManifest`, which
-rewrites every row rather than deleting the discarded ones — dropping a file
-renumbers every `file_index` after it. The two writes cannot be made atomic
-across the filesystem and SQLite; a crash between them yields
-`ErrManifestStale` on the hydration paths, which is bounded and reported
-rather than permanent and silent (#294).
+in this process, and the two on-disk artifacts describe different shapes.
+`DiscardDeferredPar2` is the only such mutation after `Add`, and it goes
+through `Store.ReplaceManifest`, which rewrites every row rather than deleting
+the discarded ones — dropping a file renumbers every `file_index` after it.
+
+The two writes cannot be made atomic across the filesystem and SQLite, so the
+disagreement has to be *detected* rather than prevented, and it is detected
+differently on each side of a restart (#294).
 
 **Nothing may write `job_files` by `file_index` while the rows are known not
 to describe the job's manifest.** `SQLiteStore.updateTx` — the third writer of
@@ -237,13 +237,68 @@ again, and the snapshot predates its ever being raised — so
 job's and marks any it has outrun. That job simply skips one checkpoint; the
 next clone is current.
 
-**The boot path does not carry this guard.** `SQLiteStore.Get` sizes progress
-from the manifest it reads and fills it by `file_index` from the rows, with no
-`describesSameJobAs` — that check lives in `hydrateSnapshot` and
-`hydrateJobLocked` only. A crash inside `ReplaceManifest`, between the blob
-write and the transaction, therefore survives as a silent splice with no
-in-memory flag left to catch it. What such a mismatch should do at boot is
-#278's question.
+**Across a restart the flag is gone**, and the stored row indices are the only
+surviving evidence. `Store.RestoreJobProgress` range-checks every stored
+`file_index` against the manifest it just read and reports `ErrManifestStale`
+when a row falls outside it — the restatement the boot path previously lacked,
+which is the half of #278 this pair needs. `SQLiteStore.Get` then loads the
+job non-resident rather than resident on a manifest its rows contradict, and
+`Queue.Load` sizes its progress from `job_files`. Both stored artifacts then
+describe the pre-discard shape and agree with each other again: the discard is
+lost, which is the accepted degradation, rather than silently applied to the
+wrong files.
+Neither guard is `describesSameJobAs`, and it cannot serve here: it compares a
+live `JobProgress` against a manifest read from disk, which is the right check
+on `hydrateJobLocked` and `hydrateSnapshot`, where the progress predates the
+read. On the restart path the progress was just built *from* that manifest, so
+it agrees by construction and the comparison can never fire (#294, #310).
+
+## Across a restart
+
+Every mechanism this contract relies on is scoped to one process:
+
+| Mechanism | Enforced by | Survives a restart |
+|---|---|---|
+| `Job.Manifest()` returns `(*Manifest, error)` | the compiler | no |
+| `Job.Progress()` infallible; no nil guard needed | the compiler | no |
+| "a handle cannot be invalidated by eviction" | pointer immutability | no |
+| `TestManifestAccessIsGated` | an AST walk over the package | no — it audits source, not stored state |
+| `manifestRowsStale` | an in-memory field | no — deliberately not persisted |
+
+That is not a defect in any of them. It is what "enforced by the compiler"
+means: the guarantee holds for as long as the values do. But it has a
+consequence worth stating once, because two bugs have now come out of leaving
+it implicit (#294, #310):
+
+> **An invariant held by a runtime handle is enforced only for that handle's
+> lifetime. At a process boundary the handle is gone and only bytes remain, so
+> the invariant needs a restatement that is derived from content — a shape
+> comparison, a generation counter, a checksum — and a place on the load path
+> that checks it.**
+
+The failure mode is specific and worth recognising by shape. Code that pairs
+two independently-persisted artifacts tends to acquire an in-memory guard
+first, because that is where the disagreement is first observed. The guard
+then reads as though it covers the invariant, and the load path — which
+observes the same disagreement, later and with less information — is never
+given one. Whether the in-memory guard would even *fire* on the load path is
+the question to ask, and for `describesSameJobAs` the answer was no.
+
+What follows for this package:
+
+- **The pairs that must be checked on load are the manifest blob against the
+  `job_files` rows.** Nothing else in the queue is split across two stores.
+- **`Store.RestoreJobProgress` is where that check lives**, so every caller
+  gets it by construction rather than by remembering. `TestJobFilesReadsCheckRowShape`
+  fails any new reader of `job_files` that neither range-checks its indices nor
+  records why a renumber cannot affect it.
+- **A load-path disagreement degrades, it does not fail.** `List` drops a job
+  whose `Get` returns an error, so reporting one would delete the job rather
+  than report it — against "a damaged job must remain removable" above. The
+  job loads non-resident instead, which every caller already handles.
+- **Reporting scalars are reconstructed from `job_files`, not from the
+  manifest**, for exactly this reason: the rows are the artifact that survives
+  with its own shape intact.
 
 ## Enforcement
 
@@ -266,6 +321,12 @@ in-memory flag left to catch it. What such a mismatch should do at boot is
   drifted unmeasured.
 - Keep the residency property test, but extend it across the operation set
   rather than one job's transitions. Its current shape is why it caught nothing.
+- `TestJobFilesReadsCheckRowShape` walks the package AST and fails any function
+  that reads `job_files` without range-checking the stored indices against the
+  stored manifest. Its exemption list carries the reason each reader is immune
+  to a renumber — aggregates and bulk copies are, anything binding a row to a
+  file by position is not — and is written to shrink, the same polarity as
+  `TestManifestAccessIsGated` and for the same reason.
 
 ## Status
 

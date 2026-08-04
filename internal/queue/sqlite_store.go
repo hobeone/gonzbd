@@ -271,8 +271,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // insertJobFilesTx writes one job_files row per file in m, taking every
 // per-file value from job's progress. It assumes no rows exist for job.ID yet:
-// file_index is the primary key, so callers replacing an existing set must
-// delete it first.
+// job_files carries UNIQUE(job_id, file_index), so callers replacing an
+// existing set must delete it first. (The primary key is the surrogate
+// `id INTEGER PRIMARY KEY AUTOINCREMENT`; it is the unique index, not the
+// key, that rejects the second insert.)
 //
 // Shared by addTx and ReplaceManifest rather than duplicated. Those are the
 // only two writers of this table's full row shape, and they must agree: a
@@ -431,7 +433,25 @@ FROM jobs WHERE id = ?`
 			if dlFinishedUnix > 0 {
 				job.progress.downloadFinished = time.Unix(dlFinishedUnix, 0).UTC()
 			}
-			_ = s.RestoreJobProgress(ctx, &job)
+			if err := s.RestoreJobProgress(ctx, &job); err != nil {
+				// Refusing the pair means refusing residency, not refusing
+				// the job: List drops a job whose Get errors, and a damaged
+				// job must stay in the queue to be removable or retryable.
+				// Leaving it non-resident hands it to the branch below,
+				// which rebuilds its reporting scalars from job_files, and
+				// to Queue.Load, which sizes its progress from the same
+				// rows. Both stored artifacts then describe the pre-discard
+				// shape and agree with each other again — the state a
+				// restart was always documented to reach.
+				//
+				// The alternative is what this replaces: keeping a manifest
+				// the rows contradict, with per-file state bound to the
+				// wrong files, silently and permanently.
+				s.log.Error("stored manifest and job_files disagree, loading the job without a manifest",
+					"job_id", id, "err", err)
+				job.manifest = nil
+				job.progress = nil
+			}
 		}
 	}
 
@@ -501,53 +521,68 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &bytesDownloaded, &crc32Val, &artDoneStr); err != nil {
 			return fmt.Errorf("sqlite store scan job_file for %s: %w", job.ID, err)
 		}
-		if idx >= 0 && idx < len(job.progress.files) {
-			fp := &job.progress.files[idx]
-			fp.BytesDownloaded = bytesDownloaded
-			fp.WriteCursor = writeCursor
-			fp.AssembledCRC32 = crc32Val
-			// articles_done is the only source of per-article state;
-			// Complete is just a flag alongside it.
+		if idx < 0 || idx >= len(job.progress.files) {
+			// The stored rows and the stored manifest describe different
+			// file sets. Skipping the row silently is what let the rest of
+			// them splice: dropping a file renumbers every file_index after
+			// it, so the in-range rows are no longer describing the files
+			// they land on (#310).
 			//
-			// Complete used to short-circuit the decode and mark every
-			// article of the file done. That is wrong because Complete means
-			// "the assembler is finished with this file", not "every article
-			// arrived" — internal/app/pipeline.go hands a permanently failed
-			// article to the assembler, which closes the file with a gap in
-			// it. So a restart rewrote failed articles as successful ones,
-			// and since JobProgress.recompute derives failedBytes from those
-			// bits the job came back reporting full health while a retry
-			// found nothing to refetch (#300).
-			//
-			// There is deliberately no fallback for an empty bitmap.
-			// Defaulting to "all done" is the same override in miniature,
-			// and in the safe direction an unknown article is one to fetch
-			// again, not one to skip.
-			//
-			// Nor is one needed. encodeArticlesDone returns "" on four
-			// branches — nil job, nil Progress, a Manifest() error, and a
-			// zero-article file — but the first three cannot occur, because
-			// neither write path calls it without residency: addTx encodes
-			// under `if hasManifest`, and updateTx under
-			// `job.Progress() != nil && mErr == nil`. Those guards, not
-			// anything inside the encoder, are what establish the invariant.
-			// The fourth is real and harmless: a file with no articles has
-			// nothing for the removed loop to have marked.
-			//
-			// One coupling did go with the old branch. Force-marking every
-			// article done meant recompute always derived Pending == 0 for a
-			// complete file; recompute never consults Complete, so that no
-			// longer holds. It is cosmetic — ForEachUnfinishedArticle skips
-			// on Complete before reading Pending, and IsComplete drives
-			// post-processing off the flags — but do not assume the
-			// implication still exists.
-			s.decodeArticlesDone(artDoneStr, job, idx)
-			if complete != 0 {
-				fp.Complete = true
-			}
-			if deferred != 0 {
-				fp.Deferred = true
-			}
+			// This is the only place the disagreement is visible. The
+			// in-process guard, JobProgress.describesSameJobAs, compares a
+			// live progress against a manifest read from disk; on the paths
+			// that reach here after a restart the progress was just built
+			// from that same manifest, so it agrees by construction and the
+			// guard cannot fire. Only the row indices carry the mismatch.
+			return fmt.Errorf(
+				"%w: stored job_files for job %s hold file_index %d but its stored manifest describes %d files",
+				ErrManifestStale, job.ID, idx, len(job.progress.files))
+		}
+		fp := &job.progress.files[idx]
+		fp.BytesDownloaded = bytesDownloaded
+		fp.WriteCursor = writeCursor
+		fp.AssembledCRC32 = crc32Val
+		// articles_done is the only source of per-article state;
+		// Complete is just a flag alongside it.
+		//
+		// Complete used to short-circuit the decode and mark every
+		// article of the file done. That is wrong because Complete means
+		// "the assembler is finished with this file", not "every article
+		// arrived" — internal/app/pipeline.go hands a permanently failed
+		// article to the assembler, which closes the file with a gap in
+		// it. So a restart rewrote failed articles as successful ones,
+		// and since JobProgress.recompute derives failedBytes from those
+		// bits the job came back reporting full health while a retry
+		// found nothing to refetch (#300).
+		//
+		// There is deliberately no fallback for an empty bitmap.
+		// Defaulting to "all done" is the same override in miniature,
+		// and in the safe direction an unknown article is one to fetch
+		// again, not one to skip.
+		//
+		// Nor is one needed. encodeArticlesDone returns "" on four
+		// branches — nil job, nil Progress, a Manifest() error, and a
+		// zero-article file — but the first three cannot occur, because
+		// neither write path calls it without residency: addTx encodes
+		// under `if hasManifest`, and updateTx under
+		// `job.Progress() != nil && mErr == nil`. Those guards, not
+		// anything inside the encoder, are what establish the invariant.
+		// The fourth is real and harmless: a file with no articles has
+		// nothing for the removed loop to have marked.
+		//
+		// One coupling did go with the old branch. Force-marking every
+		// article done meant recompute always derived Pending == 0 for a
+		// complete file; recompute never consults Complete, so that no
+		// longer holds. It is cosmetic — ForEachUnfinishedArticle skips
+		// on Complete before reading Pending, and IsComplete drives
+		// post-processing off the flags — but do not assume the
+		// implication still exists.
+		s.decodeArticlesDone(artDoneStr, job, idx)
+		if complete != 0 {
+			fp.Complete = true
+		}
+		if deferred != 0 {
+			fp.Deferred = true
 		}
 	}
 	job.progress.recompute(job.manifest)
