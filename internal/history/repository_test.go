@@ -505,10 +505,7 @@ func TestPruneRespectsRetainDays(t *testing.T) {
 		}
 	}
 
-	n, err := repo.Prune(ctx, 5, 0) // retain 5 days of non-failed
-	if err != nil {
-		t.Fatalf("Prune: %v", err)
-	}
+	n := pruneVia(t, repo, 5, 0) // retain 5 days of non-failed
 	if n != 1 {
 		t.Errorf("pruned = %d, want 1", n)
 	}
@@ -540,10 +537,7 @@ func TestPruneRespectsRetainFailedDays(t *testing.T) {
 	}
 
 	// 0 retainDays = keep non-failed forever; 7 retainFailedDays = purge old failed.
-	n, err := repo.Prune(ctx, 0, 7)
-	if err != nil {
-		t.Fatalf("Prune: %v", err)
-	}
+	n := pruneVia(t, repo, 0, 7)
 	if n != 1 {
 		t.Errorf("pruned = %d, want 1", n)
 	}
@@ -569,10 +563,7 @@ func TestPruneZeroZeroIsNoop(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	n, err := repo.Prune(ctx, 0, 0)
-	if err != nil {
-		t.Fatalf("Prune: %v", err)
-	}
+	n := pruneVia(t, repo, 0, 0)
 	if n != 0 {
 		t.Errorf("pruned = %d, want 0 (both zero = keep forever)", n)
 	}

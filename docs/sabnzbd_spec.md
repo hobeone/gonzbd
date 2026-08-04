@@ -638,6 +638,8 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `log_level` | string | `info` | Minimum log level (debug, info, warn, error) |
 | `log_levels` | map | | Per-component log level overrides (e.g., `api: warn`, `nntp: error`, `downloader: debug`). Valid levels: debug, info, warn, error, off. Components not listed inherit `log_level`. |
 | `admin_dir` | path | | Admin/state file directory |
+| `history_retention_days` | int | `0` | Days to keep a finished job in history; 0 = keep forever. See §11.4 |
+| `history_failed_retention_days` | int | `0` | Same threshold for failed jobs, so a failure can outlive a success; 0 = keep forever. See §11.4 |
 | `language` | string | `en` | UI language |
 
 ### 9.3 Download Settings
@@ -1033,9 +1035,22 @@ CREATE INDEX idx_history_archive_completed ON history(archive, completed DESC);
 
 ### 11.4 Pruning
 
-- History auto-purge: configurable `history_retention` (days; 0 = keep forever)
-- Failed jobs: separately configurable `history_failed_retention`
+- History auto-purge: configurable `general.history_retention_days`
+  (0 = keep forever)
+- Failed jobs: separately configurable `general.history_failed_retention_days`
+  (0 = keep forever), so a failure can outlive a success
+- Deleting an entry releases what it owns: its `history_job_files` rows and
+  its `admin/nzb/<name>.gz` backup. A pruned job can no longer be retried.
+- The sweep runs at startup and after each job finalizes. Both thresholds at
+  0 makes it a no-op.
 - VACUUM run on startup to reclaim space
+
+The names differ from SABnzbd's `history_retention_option` /
+`history_retention_number`, and so does the model: upstream selects among
+`all` / `number-*` / `days-*` / `all-*` modes, applies them to completed jobs
+only, and offers an archive-instead-of-delete variant. gonzbd keeps two day
+thresholds split by outcome. The upstream keys are still emitted in the
+`mode=get_config` misc section for client compatibility, but are not read.
 
 ---
 

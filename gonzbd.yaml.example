@@ -111,6 +111,21 @@ general:
   # <download_dir>/admin if empty.
   admin_dir: admin
 
+  # How long a finished job stays in history, in days. 0 keeps it
+  # forever (the default).
+  #
+  # Deleting a history entry also releases what it owns: the per-file
+  # download progress retained for failed jobs, and the gzipped NZB
+  # under admin/nzb/. A pruned job can therefore no longer be retried.
+  #
+  # The sweep runs at startup and after each job finishes.
+  history_retention_days: 0
+
+  # The same threshold for jobs that failed, kept separate so a failure
+  # can outlive a success — it is the outcome you are most likely to
+  # want to inspect or retry later. 0 keeps failed jobs forever.
+  history_failed_retention_days: 0
+
   # Global minimum log level: debug, info, warn, error. Default: info.
   log_level: info
 

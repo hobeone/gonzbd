@@ -46,10 +46,7 @@ func TestPrune_MixedAgesAndStatuses(t *testing.T) {
 		}
 	}
 
-	pruned, err := repo.Prune(ctx, 7, 14)
-	if err != nil {
-		t.Fatalf("Prune: %v", err)
-	}
+	pruned := pruneVia(t, repo, 7, 14)
 
 	wantPruned := 0
 	for _, tc := range entries {
@@ -99,10 +96,7 @@ func TestPrune_OnlyNonFailedRetention(t *testing.T) {
 		}
 	}
 
-	pruned, err := repo.Prune(ctx, 30, 0)
-	if err != nil {
-		t.Fatalf("Prune: %v", err)
-	}
+	pruned := pruneVia(t, repo, 30, 0)
 	if pruned != 1 {
 		t.Errorf("pruned = %d, want 1", pruned)
 	}
@@ -135,10 +129,7 @@ func TestPrune_OnlyFailedRetention(t *testing.T) {
 		}
 	}
 
-	pruned, err := repo.Prune(ctx, 0, 30)
-	if err != nil {
-		t.Fatalf("Prune: %v", err)
-	}
+	pruned := pruneVia(t, repo, 0, 30)
 	if pruned != 1 {
 		t.Errorf("pruned = %d, want 1", pruned)
 	}

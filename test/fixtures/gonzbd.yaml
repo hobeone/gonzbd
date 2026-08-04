@@ -23,6 +23,13 @@ general:
   script_dir: scripts
   log_dir: logs
   admin_dir: admin
+  # Days to keep a finished job in history; 0 keeps it forever. Deleting a
+  # history entry also releases its retained per-file progress and its NZB
+  # backup under admin/nzb/, so a pruned job can no longer be retried.
+  history_retention_days: 0
+  # Same threshold for jobs that failed, kept separate so a failure can
+  # outlive a success. 0 keeps failed jobs forever.
+  history_failed_retention_days: 0
   log_level: info
   log_levels:
     api: warn

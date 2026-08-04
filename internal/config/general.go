@@ -78,6 +78,20 @@ type GeneralConfig struct {
 	LogDir string `yaml:"log_dir" json:"log_dir"`
 	// AdminDir holds queue / state files.
 	AdminDir string `yaml:"admin_dir" json:"admin_dir"`
+
+	// HistoryRetentionDays is how long a finished job stays in history,
+	// in days. 0 keeps it forever (spec §11.4).
+	//
+	// Deleting a history entry also releases what it owns: its retained
+	// per-file progress and its NZB backup under admin/nzb/. Setting this
+	// therefore discards the ability to retry those jobs.
+	HistoryRetentionDays int `yaml:"history_retention_days" json:"history_retention_days"`
+
+	// HistoryFailedRetentionDays is the same threshold for jobs that
+	// failed, kept separate so a failure can outlive a success — it is the
+	// outcome an operator is most likely to want to inspect or retry later.
+	// 0 keeps failed jobs forever.
+	HistoryFailedRetentionDays int `yaml:"history_failed_retention_days" json:"history_failed_retention_days"`
 	// LogLevel is the minimum log level: "debug", "info", "warn", or "error".
 	// Empty string defaults to "info".
 	LogLevel string `yaml:"log_level" json:"log_level"`
