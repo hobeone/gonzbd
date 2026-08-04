@@ -453,14 +453,44 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			fp.BytesDownloaded = bytesDownloaded
 			fp.WriteCursor = writeCursor
 			fp.AssembledCRC32 = crc32Val
+			// articles_done is the only source of per-article state;
+			// Complete is just a flag alongside it.
+			//
+			// Complete used to short-circuit the decode and mark every
+			// article of the file done. That is wrong because Complete means
+			// "the assembler is finished with this file", not "every article
+			// arrived" — internal/app/pipeline.go hands a permanently failed
+			// article to the assembler, which closes the file with a gap in
+			// it. So a restart rewrote failed articles as successful ones,
+			// and since JobProgress.recompute derives failedBytes from those
+			// bits the job came back reporting full health while a retry
+			// found nothing to refetch (#300).
+			//
+			// There is deliberately no fallback for an empty bitmap.
+			// Defaulting to "all done" is the same override in miniature,
+			// and in the safe direction an unknown article is one to fetch
+			// again, not one to skip.
+			//
+			// Nor is one needed. encodeArticlesDone returns "" on four
+			// branches — nil job, nil Progress, a Manifest() error, and a
+			// zero-article file — but the first three cannot occur, because
+			// neither write path calls it without residency: addTx encodes
+			// under `if hasManifest`, and updateTx under
+			// `job.Progress() != nil && mErr == nil`. Those guards, not
+			// anything inside the encoder, are what establish the invariant.
+			// The fourth is real and harmless: a file with no articles has
+			// nothing for the removed loop to have marked.
+			//
+			// One coupling did go with the old branch. Force-marking every
+			// article done meant recompute always derived Pending == 0 for a
+			// complete file; recompute never consults Complete, so that no
+			// longer holds. It is cosmetic — ForEachUnfinishedArticle skips
+			// on Complete before reading Pending, and IsComplete drives
+			// post-processing off the flags — but do not assume the
+			// implication still exists.
+			s.decodeArticlesDone(artDoneStr, job, idx)
 			if complete != 0 {
 				fp.Complete = true
-				lo, hi := job.manifest.FileRange(idx)
-				for a := lo; a < hi; a++ {
-					job.progress.markDone(job.manifest, a)
-				}
-			} else if artDoneStr != "" {
-				s.decodeArticlesDone(artDoneStr, job, idx)
 			}
 			if deferred != 0 {
 				fp.Deferred = true
@@ -871,14 +901,15 @@ func (s *SQLiteStore) RestoreRetryProgress(ctx context.Context, job *Job) (bool,
 		// without a download pass (every article already resolved), and
 		// postproc's file list and QuickCheck read this name.
 		fp.Filename = f.Filename
+		// Same precedence as RestoreJobProgress, and for a sharper reason.
+		// ResetForRetry clears exactly the articles whose failed bit is set,
+		// so a complete file restored as all-done-none-failed leaves it with
+		// nothing to reset: the rebuilt job looks fully downloaded and goes
+		// straight back to post-processing, where it fails identically.
+		// Retry would appear to run and change nothing (#300).
+		s.decodeArticlesDone(f.ArticlesDone, job, f.FileIndex)
 		if f.Complete {
 			fp.Complete = true
-			lo, hi := job.manifest.FileRange(f.FileIndex)
-			for a := lo; a < hi; a++ {
-				job.progress.markDone(job.manifest, a)
-			}
-		} else if f.ArticlesDone != "" {
-			s.decodeArticlesDone(f.ArticlesDone, job, f.FileIndex)
 		}
 		if f.Deferred {
 			fp.Deferred = true
