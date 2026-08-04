@@ -145,6 +145,12 @@ func (g *GeneralConfig) validate() error {
 	if !apiKeyPattern.MatchString(g.NZBKey) {
 		errs = append(errs, fmt.Errorf("nzb_key: must be 16 lowercase hex characters; regenerate via `gonzbd init`"))
 	}
+	if err := nonNegative("history_retention_days", g.HistoryRetentionDays); err != nil {
+		errs = append(errs, err)
+	}
+	if err := nonNegative("history_failed_retention_days", g.HistoryFailedRetentionDays); err != nil {
+		errs = append(errs, err)
+	}
 	if strings.TrimSpace(g.DownloadDir) == "" {
 		errs = append(errs, fmt.Errorf("download_dir: %w", errEmpty))
 	}
