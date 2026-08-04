@@ -90,28 +90,35 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 	log = log.With("component", "repair", "job", job.Queue.ID)
 
 	// If Direct Unpack successfully extracted the archives during download,
-	// we can skip PAR2 repair entirely — but only when QuickCheck either
-	// didn't run (disabled, or no par2 sets to check) or ran and confirmed
-	// everything verified clean. If QuickCheck ran and flagged a problem
-	// (unverifiable or mismatched CRCs), repair must run regardless of what
-	// DirectUnpack reported: DirectUnpack only knows whether rarengine could
+	// we can skip PAR2 repair entirely — but only when QuickCheck has no
+	// outstanding doubt. DirectUnpack only knows whether rarengine could
 	// mechanically walk the archive's entries, not whether the source data
 	// was complete and correct (see directunpack.DirectUnpacker.MarkCorrupt
-	// for the matching defense on the DirectUnpack side).
-	quickCheckFoundProblem := job.QuickCheckRan && !job.QuickCheckPassed
-	if len(job.DirectUnpackSets) > 0 && len(job.DirectUnpackFailures) == 0 && len(job.DirectUnpackSkipped) == 0 &&
-		!quickCheckFoundProblem {
-		logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: Direct Unpack successfully extracted all archives during download")
-		return nil
-	}
-
-	// If QuickCheck already confirmed all files have matching CRCs, skip
-	// the expensive par2 verify+repair subprocess. This saves 10-30s per
-	// healthy job. Par2 cleanup is handled by the separate par2_cleanup
-	// stage that runs after unpack.
-	if job.QuickCheckPassed {
+	// for the matching defense on the DirectUnpack side), so it may stand in
+	// for verification only where there is no verification to be had.
+	//
+	// QuickCheckInconclusive is the case this switch exists to keep separate
+	// from QuickCheckNotRun. Both mean QuickCheck reported no damage, and
+	// only one of them means QuickCheck looked (#294).
+	directUnpackClean := len(job.DirectUnpackSets) > 0 &&
+		len(job.DirectUnpackFailures) == 0 && len(job.DirectUnpackSkipped) == 0
+	switch job.QuickCheck {
+	case QuickCheckNotRun:
+		if directUnpackClean {
+			logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: Direct Unpack successfully extracted all archives during download")
+			return nil
+		}
+	case QuickCheckClean:
+		// Verification already confirmed every par2-tracked CRC, so the
+		// expensive par2 verify+repair subprocess buys nothing. Saves 10-30s
+		// per healthy job; par2 cleanup is the separate par2_cleanup stage
+		// that runs after unpack.
 		logf(ctx, log, job, slog.LevelInfo, "[repair] Skipped: QuickCheck already verified all file CRCs")
 		return nil
+	case QuickCheckDamaged, QuickCheckInconclusive:
+		// Repair runs. Damaged has a verdict to act on; Inconclusive has
+		// none, which is the reason to look rather than a reason not to.
+		logf(ctx, log, job, slog.LevelInfo, "[repair] Running: QuickCheck reported %s", job.QuickCheck)
 	}
 
 	logf(ctx, log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)

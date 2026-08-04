@@ -58,11 +58,11 @@ func TestRepairStage_EmptyDir(t *testing.T) {
 	}
 }
 
-// P22: RepairStage.Run skips par2 when QuickCheckPassed is set.
+// P22: RepairStage.Run skips par2 when QuickCheck came back clean.
 func TestRepairStage_SkippedWhenQuickCheckPassed(t *testing.T) {
 	t.Parallel()
 	job, _ := stageJob(t)
-	job.QuickCheckPassed = true
+	job.QuickCheck = QuickCheckClean
 
 	// Create a par2 file so the stage has something to find, but should skip.
 	os.WriteFile(filepath.Join(job.DownloadDir, "movie.par2"), []byte("fake"), 0o644)
@@ -73,7 +73,7 @@ func TestRepairStage_SkippedWhenQuickCheckPassed(t *testing.T) {
 	}
 	// The stage should skip — no ParError should be set.
 	if job.ParError {
-		t.Error("ParError should be false when QuickCheckPassed")
+		t.Error("ParError should be false when QuickCheck came back clean")
 	}
 	// Verify the skip was logged in OutputLines.
 	found := false

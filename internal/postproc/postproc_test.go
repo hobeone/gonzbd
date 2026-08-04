@@ -926,14 +926,14 @@ func TestShouldSkipForPP(t *testing.T) {
 	}
 }
 
-// TestQuickCheckPassedSkipsRepair verifies that when QuickCheckPassed is set
+// TestQuickCheckPassedSkipsRepair verifies that when QuickCheck comes back clean
 // by the quickcheck stage, the repair stage is skipped in the pipeline.
 func TestQuickCheckPassedSkipsRepair(t *testing.T) {
 	t.Parallel()
 	quickcheck := newRecordStage("quickcheck")
 	quickcheck.runFn = func(_ context.Context, job *Job) error {
 		// Simulate QuickCheck setting the flag.
-		job.QuickCheckPassed = true
+		job.QuickCheck = QuickCheckClean
 		return nil
 	}
 	repair := newRecordStage("repair")
@@ -963,16 +963,16 @@ func TestQuickCheckPassedSkipsRepair(t *testing.T) {
 		t.Fatalf("quickcheck ran %d times, want 1", quickcheck.CallCount())
 	}
 	// The repair stage still runs through the pipeline; it's the real
-	// RepairStage.Run that checks QuickCheckPassed. Our mock just records.
+	// RepairStage.Run that checks job.QuickCheck. Our mock just records.
 	if repair.CallCount() != 1 {
 		t.Fatalf("repair ran %d times, want 1", repair.CallCount())
 	}
 	if finalize.CallCount() != 1 {
 		t.Fatalf("finalize ran %d times, want 1", finalize.CallCount())
 	}
-	// The QuickCheckPassed flag should be set on the job.
-	if !job.QuickCheckPassed {
-		t.Error("QuickCheckPassed should be true after quickcheck stage")
+	// The outcome should be recorded on the job.
+	if job.QuickCheck != QuickCheckClean {
+		t.Errorf("QuickCheck = %s after the quickcheck stage, want clean", job.QuickCheck)
 	}
 }
 

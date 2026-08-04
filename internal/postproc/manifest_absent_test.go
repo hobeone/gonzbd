@@ -62,9 +62,15 @@ func TestBuildDownloadFileList_AbsentManifestExplainsItself(t *testing.T) {
 	}
 }
 
-// Quickcheck must not report a job as CRC-verified when it verified
-// nothing. QuickCheckRan is what downstream reads, so the failure has to
-// stop before that flag is set.
+// Quickcheck must not report a job as CRC-verified when it verified nothing,
+// and must say so in the field downstream reads rather than only in the error
+// it returns.
+//
+// The outcome is the load-bearing part. The error goes into the stage log and
+// the history entry, but the repair stage never sees it — it reads
+// job.QuickCheck. Leaving that at its zero value would say "nothing to check
+// here", which is what let DirectUnpack's success skip par2 for a job nothing
+// had verified (#294).
 func TestVerifyJobCRCs_AbsentManifestErrorsRatherThanClaimingVerified(t *testing.T) {
 	job := evictedJob(t)
 	q := &QuickCheckStage{}
@@ -74,10 +80,7 @@ func TestVerifyJobCRCs_AbsentManifestErrorsRatherThanClaimingVerified(t *testing
 	if err == nil {
 		t.Fatal("verifyJobCRCs returned nil with no manifest; the stage log would record a clean pass over nothing")
 	}
-	if job.QuickCheckRan {
-		t.Error("QuickCheckRan was set despite no verification happening — downstream cannot tell this apart from a real check")
-	}
-	if job.QuickCheckPassed {
-		t.Error("QuickCheckPassed was set despite no verification happening")
+	if job.QuickCheck != QuickCheckInconclusive {
+		t.Errorf("QuickCheck = %s, want inconclusive: downstream cannot tell a verification that could not run from one that had nothing to run on", job.QuickCheck)
 	}
 }
