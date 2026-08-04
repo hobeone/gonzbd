@@ -577,6 +577,13 @@ func (app *Application) deleteHistoryEntries(ctx context.Context, entries []hist
 	if len(entries) == 0 {
 		return 0, nil
 	}
+	// Backups are unlinked before the rows go, not after.
+	//
+	// Neither order is atomic, so pick the failure that is visible. This
+	// way a failed transaction leaves entries whose backup is missing, and
+	// retrying one reports "open NZB backup" and says which file. The
+	// reverse leaves files no row refers to — an unowned leak with nothing
+	// to notice it, which is the shape #298 spent a whole PR removing.
 	nzbDir := filepath.Join(app.config.GetGeneral().AdminDir, "nzb")
 	ids := make([]string, 0, len(entries))
 	for _, entry := range entries {

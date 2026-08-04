@@ -44,7 +44,17 @@ func (f *jobFinalizer) finalize(job *postproc.Job) {
 	// Apply retention now that history has one more entry in it. Best
 	// effort: a job that finished successfully must not be reported as
 	// failed because an unrelated old entry could not be swept.
-	if _, err := app.PruneHistory(app.ctx); err != nil {
+	//
+	// Bounded like the other database work in this function, and for a
+	// sharper reason: this runs on every job completion, and the query
+	// behind it filters on (status, completed) with no covering index —
+	// idx_history_archive_completed leads on archive. The backlog only has
+	// to be scanned, not deleted, after the first sweep clears it, but an
+	// unbounded context would let a slow scan hold up finalization
+	// indefinitely.
+	pruneCtx, pruneCancel := context.WithTimeout(app.ctx, 30*time.Second)
+	defer pruneCancel()
+	if _, err := app.PruneHistory(pruneCtx); err != nil {
 		app.log.Warn("history retention sweep failed after finalize",
 			"job", job.Queue.ID, "err", err)
 	}
