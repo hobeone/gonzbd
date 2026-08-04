@@ -126,6 +126,58 @@ func TestRepairStage_InconclusiveQuickCheckOverridesDirectUnpackSuccess(t *testi
 	}
 }
 
+// A job that is both DirectUnpack-clean and QuickCheck-clean skips repair by
+// the QuickCheck route, and says so.
+//
+// Both conditions independently justify the skip, so the gating is the same
+// either way — but the reason lands in OutputLines, then StageLog, then the
+// history entry a user reads. The old code evaluated the DirectUnpack
+// shortcut first and reported it; the switch matches QuickCheckClean first
+// and reports that instead.
+//
+// Reporting QuickCheck is the better of the two. It is the stronger claim:
+// every par2-tracked CRC was compared and matched. DirectUnpack only means
+// rarengine could mechanically walk the archive's entries, which is why it
+// cannot stand in for verification anywhere else in this stage. Naming the
+// weaker reason when the stronger one holds tells the user less than the run
+// actually established.
+//
+// Pinned because nothing else covers the overlap: every other test in the
+// suite sets one condition or the other, never both.
+func TestRepairStage_CleanQuickCheckIsTheReportedSkipReason(t *testing.T) {
+	t.Parallel()
+
+	job, dir := stageJob(t)
+	copyPar2Fixtures(t, dir)
+
+	job.DirectUnpackSets = map[string]directunpack.SuccessSet{
+		"ok": {RarParts: []string{"data.bin"}, ExtractedFiles: []string{"data.out"}},
+	}
+	job.QuickCheck = QuickCheckClean
+
+	stage := &RepairStage{
+		UseGoPar2: true,
+		Log:       slog.New(slog.DiscardHandler),
+	}
+	if err := stage.Run(t.Context(), job); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	const want = "[repair] Skipped: QuickCheck already verified all file CRCs"
+	found := false
+	for _, line := range job.OutputLines {
+		if line == want {
+			found = true
+		}
+		if line == "[repair] Skipped: Direct Unpack successfully extracted all archives during download" {
+			t.Errorf("the skip was attributed to DirectUnpack though QuickCheck verified every CRC; the history entry understates what was checked")
+		}
+	}
+	if !found {
+		t.Errorf("no skip reason recorded; output: %v", job.OutputLines)
+	}
+}
+
 // The shortcut must still fire when QuickCheck genuinely had nothing to do —
 // disabled, or no par2 sets to check against. That is the case it was built
 // for, and narrowing it to nothing would cost every DirectUnpack job an

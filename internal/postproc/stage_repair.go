@@ -119,6 +119,13 @@ func (s *RepairStage) Run(ctx context.Context, job *Job) error {
 		// Repair runs. Damaged has a verdict to act on; Inconclusive has
 		// none, which is the reason to look rather than a reason not to.
 		logf(ctx, log, job, slog.LevelInfo, "[repair] Running: QuickCheck reported %s", job.QuickCheck)
+	default:
+		// An outcome added to the enum and not handled above. Running repair
+		// is the fail-safe reading, and saying so is the point: a silent
+		// fall-through would look identical to a deliberate decision.
+		// TestRepairStage_HandlesEveryQuickCheckOutcome is what makes this
+		// arm unreachable in practice.
+		logf(ctx, log, job, slog.LevelWarn, "[repair] Running: unhandled QuickCheck outcome %s", job.QuickCheck)
 	}
 
 	logf(ctx, log, job, slog.LevelInfo, "Scanning for par2 files in %s", job.DownloadDir)

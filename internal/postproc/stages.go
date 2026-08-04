@@ -46,12 +46,41 @@ const (
 	QuickCheckDamaged
 
 	// QuickCheckInconclusive means verification was attempted and could not
-	// complete — the job's manifest was unreadable, so there were no
-	// expected CRCs to compare against. No claim is being made about the
-	// data either way, which is precisely why this must not be treated as
-	// QuickCheckNotRun: par2 sets exist and nothing has checked them.
+	// complete. No claim is being made about the data either way, which is
+	// precisely why this must not be treated as QuickCheckNotRun: par2 sets
+	// may well exist and nothing has checked them.
+	//
+	// Four distinct things produce it, and only one involves the manifest —
+	// do not go looking for a manifest problem first:
+	//   - the par2 scan itself failed, so whether the job has par2 sets is
+	//     unknown;
+	//   - par2 sets were found but QuickCheckWithOptions errored before
+	//     verifying any of them;
+	//   - the job's manifest was unreadable, so there were no expected CRCs
+	//     to compare against;
+	//   - par2 sets were found and no assembled CRC was available for any of
+	//     them, so the comparison had nothing on either side.
 	QuickCheckInconclusive
 )
+
+// AllQuickCheckOutcomes returns every declared outcome, so a test can assert
+// that a switch over them handles each one rather than falling through
+// silently. Kept in declaration order.
+//
+// It is hand-written, which on its own would make it a second copy of the
+// enum carrying the same defect: a value added to the const block but not
+// here is invisible to every loop over it, and every exhaustiveness test
+// built on it passes vacuously. TestAllQuickCheckOutcomes_Exhaustive closes
+// that loop by parsing the const block itself, the same way
+// constants.AllStatuses is pinned (#291).
+func AllQuickCheckOutcomes() []QuickCheckOutcome {
+	return []QuickCheckOutcome{
+		QuickCheckNotRun,
+		QuickCheckClean,
+		QuickCheckDamaged,
+		QuickCheckInconclusive,
+	}
+}
 
 // String makes the outcome legible in logs and test failures rather than
 // printing a bare integer.
