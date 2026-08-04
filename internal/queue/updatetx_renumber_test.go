@@ -139,36 +139,154 @@ func TestCheckpoint_ReconcilesOnceTheRewriteSucceeds(t *testing.T) {
 	}
 }
 
-// clearManifestRowsStaleIf must refuse a rewrite that no longer describes the
-// job. The retry runs outside the queue lock on a clone, so between the clone
-// and the clear another discard can rebuild the live manifest — and that
-// discard's own success or failure owns the flag from then on. Clearing it
-// here would report rows as reconciled against a file set the job no longer
-// has.
-func TestClearManifestRowsStaleIf_RefusesAStaleRewrite(t *testing.T) {
+// retryManifestRewrites' own branches, driven directly rather than through
+// Save, which only ever reaches the success path.
+func TestRetryManifestRewrites(t *testing.T) {
+	t.Run("skips a job that is not flagged", func(t *testing.T) {
+		real, dir, db := setupResidencyTestStoreWithDB(t)
+		fs := &failingStore{Store: real}
+		q := New(WithStore(fs), WithStateDir(dir))
+		job := makeMultiFileJob(t, "retry-unflagged", 2, 1)
+		if err := q.Add(job); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		before := readJobFiles(t, db, job.ID)
+
+		// A failing store proves the call never reached it.
+		fs.failReplaceMani = true
+		q.retryManifestRewrites(t.Context(), []*Job{cloneJob(job)})
+
+		if got := readJobFiles(t, db, job.ID); len(got) != len(before) {
+			t.Errorf("rows changed for an unflagged job: %d -> %d", len(before), len(got))
+		}
+		if job.ManifestRowsStale() {
+			t.Error("an unflagged job came back flagged")
+		}
+	})
+
+	t.Run("leaves a non-resident job flagged", func(t *testing.T) {
+		real, dir, _ := setupResidencyTestStoreWithDB(t)
+		q := New(WithStore(real), WithStateDir(dir), WithMaxActiveJobs(1))
+		filler := makeMultiFileJob(t, "retry-filler", 1, 1)
+		if err := q.Add(filler); err != nil {
+			t.Fatalf("Add filler: %v", err)
+		}
+		job := makeMultiFileJob(t, "retry-nonresident", 2, 1)
+		if err := q.Add(job); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		if manifestResident(job) {
+			t.Fatal("fixture guard: the job is resident, so this exercises the wrong branch")
+		}
+		job.setManifestRowsStale(true)
+
+		q.retryManifestRewrites(t.Context(), []*Job{cloneJob(job)})
+
+		// No manifest means no file set to write the rows from. Leaving the
+		// rows untouched is the point; clearing the flag would claim they had
+		// been reconciled against a shape this process cannot see.
+		if !job.ManifestRowsStale() {
+			t.Error("the flag was cleared for a job whose manifest could not be read")
+		}
+	})
+
+	t.Run("leaves the flag raised when the rewrite fails", func(t *testing.T) {
+		real, dir, _ := setupResidencyTestStoreWithDB(t)
+		fs := &failingStore{Store: real}
+		q := New(WithStore(fs), WithStateDir(dir))
+		job := makeMultiFileJob(t, "retry-fails", 2, 1)
+		if err := q.Add(job); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		job.setManifestRowsStale(true)
+
+		fs.failReplaceMani = true
+		q.retryManifestRewrites(t.Context(), []*Job{cloneJob(job)})
+
+		if !job.ManifestRowsStale() {
+			t.Error("the flag was cleared by a rewrite that failed; the next checkpoint would resume writing job_files by a renumbered index")
+		}
+	})
+
+	t.Run("clears the flag on the live job when the rewrite lands", func(t *testing.T) {
+		real, dir, _ := setupResidencyTestStoreWithDB(t)
+		q := New(WithStore(real), WithStateDir(dir))
+		job := makeMultiFileJob(t, "retry-succeeds", 2, 1)
+		if err := q.Add(job); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		job.setManifestRowsStale(true)
+
+		q.retryManifestRewrites(t.Context(), []*Job{cloneJob(job)})
+
+		// The live job, not the clone: clearing only the snapshot would leave
+		// updateTx skipping this job's rows for the rest of the process.
+		if job.ManifestRowsStale() {
+			t.Error("the live job is still flagged after a successful rewrite")
+		}
+	})
+}
+
+// clearManifestRowsStaleIfGen must refuse a rewrite whose file set the job no
+// longer has, and accept one that merely raced ordinary residency churn.
+//
+// The retry runs outside the queue lock on a clone, so two different things
+// can happen in between and they need opposite answers. A second discard
+// rebuilds the file set and raises the flag for its own attempt — that
+// attempt owns it, and a rewrite of the file set it replaced must not clear
+// it. Eviction changes nothing about which files the job has, so a rewrite
+// that raced it is still valid.
+//
+// Keying this on manifest pointer identity got the second case wrong: eviction
+// nils the pointer and rehydration installs a freshly deserialized one, so a
+// job that churned through the active set would refuse every later clear and
+// keep manifestRowsStale raised for the life of the process. updateTx would
+// then skip its job_files half forever, so the job's per-file progress would
+// stop persisting incrementally.
+func TestClearManifestRowsStaleIfGen(t *testing.T) {
 	t.Parallel()
 
-	job := &Job{ID: "guard"}
-	first := &Manifest{}
-	job.setResidency(first, newJobProgress(first))
-	job.setManifestRowsStale(true)
+	newFlaggedJob := func() (*Job, uint64) {
+		j := &Job{ID: "guard"}
+		m := &Manifest{}
+		j.setResidency(m, newJobProgress(m))
+		j.setManifestRowsStale(true)
+		return j, j.FileSetGen()
+	}
 
-	// A discard rebuilds the manifest after the clone was taken.
-	second := &Manifest{}
-	job.setResidency(second, newJobProgress(second))
+	t.Run("a rebuilt file set refuses the clear", func(t *testing.T) {
+		t.Parallel()
+		job, gen := newFlaggedJob()
+		job.bumpFileSetGen() // a second discard
 
-	if job.clearManifestRowsStaleIf(first) {
-		t.Error("a rewrite of the superseded manifest cleared the flag")
-	}
-	if !job.ManifestRowsStale() {
-		t.Error("the flag was cleared for a file set the job no longer has")
-	}
-	if !job.clearManifestRowsStaleIf(second) {
-		t.Error("a rewrite of the current manifest did not clear the flag")
-	}
-	if job.ManifestRowsStale() {
-		t.Error("the flag survived a rewrite of the job's own manifest")
-	}
+		if job.clearManifestRowsStaleIfGen(gen) {
+			t.Error("a rewrite of the superseded file set cleared the flag")
+		}
+		if !job.ManifestRowsStale() {
+			t.Error("the flag was cleared for a file set the job no longer has")
+		}
+		if !job.clearManifestRowsStaleIfGen(job.FileSetGen()) {
+			t.Error("a rewrite of the current file set did not clear the flag")
+		}
+	})
+
+	t.Run("eviction and rehydration do not refuse the clear", func(t *testing.T) {
+		t.Parallel()
+		job, gen := newFlaggedJob()
+
+		// Ordinary residency churn: the job leaves the active set and comes
+		// back with a manifest deserialized afresh from disk.
+		job.setResidency(nil, job.progress)
+		rehydrated := &Manifest{}
+		job.setResidency(rehydrated, newJobProgress(rehydrated))
+
+		if !job.clearManifestRowsStaleIfGen(gen) {
+			t.Fatal("eviction invalidated a rewrite that was still valid; the job's per-file state would never persist incrementally again")
+		}
+		if job.ManifestRowsStale() {
+			t.Error("the flag survived a valid rewrite")
+		}
+	})
 }
 
 // TestCheckpoint_AfterAFailedDiscardDoesNotSpliceRows reproduces #310.

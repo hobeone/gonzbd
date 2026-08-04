@@ -1987,6 +1987,10 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		// ReplaceManifest leaves it raised too — the states this guards
 		// against are exactly the ones where control does not come back
 		// here cleanly.
+		// Bump before the store write, so a rewrite already in flight for
+		// the previous file set cannot clear the flag this one is about to
+		// raise.
+		job.bumpFileSetGen()
 		if q.store != nil {
 			job.setManifestRowsStale(true)
 			if err := q.store.ReplaceManifest(context.Background(), job); err != nil { //lockio: the in-memory and persisted file sets must not diverge; see comment above

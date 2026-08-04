@@ -212,14 +212,37 @@ type Job struct {
 	// file's progress onto its pre-discard neighbour's row, silently, on
 	// every checkpoint tick until the process restarts (#310).
 	//
-	// Not persisted, and it does not need to be: a restart reloads both the
-	// manifest and the rows from disk, where they still agree with each
-	// other at the pre-discard shape. The disagreement exists only in a
-	// process that has performed the discard.
+	// Not persisted. That is a limitation, not a safety property: it holds
+	// only when the failure left both on-disk artifacts at the pre-discard
+	// shape, where they still agree with each other. ReplaceManifest writes
+	// the manifest blob before opening the transaction that rewrites
+	// job_files, and a crash in that window leaves the new blob beside the
+	// old rows with no in-memory flag to survive it. SQLiteStore.Get then
+	// sizes progress from the new manifest and fills it by file_index from
+	// the old rows, with no describesSameJobAs check — that guard runs on
+	// hydrateSnapshot and hydrateJobLocked, not the boot path — so the
+	// splice becomes permanent and undetected. The window predates this
+	// flag and is not closed by it; see #310's discussion and #278.
 	//
-	// Guarded by residencyMu, alongside the manifest pointer whose identity
-	// gives the flag its meaning.
+	// Guarded by residencyMu, alongside fileSetGen.
 	manifestRowsStale bool
+
+	// fileSetGen counts the times this job's file set has been rebuilt.
+	// Only DiscardDeferredPar2 bumps it — nothing else changes which files a
+	// job has after Add.
+	//
+	// It exists so a rewrite that completed outside the queue lock can tell
+	// whether it still speaks for the job. Pointer identity on the manifest
+	// cannot: eviction sets the pointer to nil and rehydration installs a
+	// freshly deserialized *Manifest, so a job that merely churned through
+	// the active set would refuse every subsequent clear and leave
+	// manifestRowsStale raised for the rest of the process — freezing its
+	// per-file persistence. Eviction does not change a job's file set, so it
+	// must not invalidate a rewrite; a second discard does, and does bump
+	// this.
+	//
+	// Guarded by residencyMu.
+	fileSetGen uint64
 
 	// hydrateErr records why an attempt to load this job's manifest from
 	// disk failed, and is nil when no attempt failed. Guarded by
@@ -406,18 +429,40 @@ func (j *Job) setManifestRowsStale(stale bool) {
 	j.manifestRowsStale = stale
 }
 
-// clearManifestRowsStaleIf clears the flag only while j still points at
-// persisted — the manifest whose rows were just written.
-//
-// The check is what makes clearing safe from outside the queue lock. A
-// snapshot shares its source job's manifest by reference (cloneJob), so
-// pointer equality holds exactly while no discard has rebuilt the manifest
-// since the clone was taken. If one has, its own failure or success owns the
-// flag and this stale write must not speak for it.
-func (j *Job) clearManifestRowsStaleIf(persisted *Manifest) bool {
+// FileSetGen returns how many times this job's file set has been rebuilt.
+// Paired with clearManifestRowsStaleIfGen to make a rewrite that ran outside
+// the queue lock verifiable after the fact.
+func (j *Job) FileSetGen() uint64 {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.fileSetGen
+}
+
+// bumpFileSetGen records that j's file set has been rebuilt, invalidating any
+// in-flight rewrite of the previous one.
+func (j *Job) bumpFileSetGen() {
 	j.residencyMu.Lock()
 	defer j.residencyMu.Unlock()
-	if j.manifest != persisted {
+	j.fileSetGen++
+}
+
+// clearManifestRowsStaleIfGen clears the flag only while j's file set is
+// still the one whose rows were written — gen is the generation the writer
+// observed before starting.
+//
+// The check is what makes clearing safe from outside the queue lock. A
+// discard that rebuilt the file set since then raises the flag for its own
+// attempt and owns it from that point; a rewrite of the file set it replaced
+// must not answer for it.
+//
+// Deliberately not keyed on the manifest pointer, which was this check's
+// first form and was wrong: eviction nils the pointer and rehydration
+// installs a new one, so ordinary residency churn between the write and the
+// clear would refuse it forever. Eviction does not change a job's files.
+func (j *Job) clearManifestRowsStaleIfGen(gen uint64) bool {
+	j.residencyMu.Lock()
+	defer j.residencyMu.Unlock()
+	if j.fileSetGen != gen {
 		return false
 	}
 	j.manifestRowsStale = false

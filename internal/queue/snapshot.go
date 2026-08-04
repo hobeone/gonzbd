@@ -190,6 +190,7 @@ func cloneJob(j *Job) *Job {
 	// handed, and a clone that lost the flag would let updateTx write
 	// job_files by index against rows that do not match (#310).
 	cp.manifestRowsStale = j.manifestRowsStale
+	cp.fileSetGen = j.fileSetGen
 	progress := j.progress
 	j.residencyMu.RUnlock()
 	if progress != nil {

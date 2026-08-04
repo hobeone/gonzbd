@@ -59,8 +59,8 @@ func (q *Queue) retryManifestRewrites(ctx context.Context, snapshots []*Job) {
 		if !snap.ManifestRowsStale() {
 			continue
 		}
-		m, mErr := snap.Manifest()
-		if mErr != nil {
+		gen := snap.FileSetGen()
+		if _, mErr := snap.Manifest(); mErr != nil {
 			// Non-resident, so there is no manifest to write the rows from.
 			// Leave it flagged: the rows stay untouched rather than being
 			// written from a file set this process cannot see.
@@ -77,7 +77,7 @@ func (q *Queue) retryManifestRewrites(ctx context.Context, snapshots []*Job) {
 		q.mu.RLock()
 		live, ok := q.byID[snap.ID]
 		q.mu.RUnlock()
-		if ok && live.clearManifestRowsStaleIf(m) {
+		if ok && live.clearManifestRowsStaleIfGen(gen) {
 			q.log.Info("job_files reconciled with the job's manifest", "job_id", snap.ID)
 		}
 	}
