@@ -470,6 +470,24 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			// Defaulting to "all done" is the same override in miniature,
 			// and in the safe direction an unknown article is one to fetch
 			// again, not one to skip.
+			//
+			// Nor is one needed. encodeArticlesDone returns "" on four
+			// branches — nil job, nil Progress, a Manifest() error, and a
+			// zero-article file — but the first three cannot occur, because
+			// neither write path calls it without residency: addTx encodes
+			// under `if hasManifest`, and updateTx under
+			// `job.Progress() != nil && mErr == nil`. Those guards, not
+			// anything inside the encoder, are what establish the invariant.
+			// The fourth is real and harmless: a file with no articles has
+			// nothing for the removed loop to have marked.
+			//
+			// One coupling did go with the old branch. Force-marking every
+			// article done meant recompute always derived Pending == 0 for a
+			// complete file; recompute never consults Complete, so that no
+			// longer holds. It is cosmetic — ForEachUnfinishedArticle skips
+			// on Complete before reading Pending, and IsComplete drives
+			// post-processing off the flags — but do not assume the
+			// implication still exists.
 			s.decodeArticlesDone(artDoneStr, job, idx)
 			if complete != 0 {
 				fp.Complete = true
