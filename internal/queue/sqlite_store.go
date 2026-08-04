@@ -320,8 +320,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 }
 
 // ReplaceManifest rewrites job's stored manifest and replaces its job_files
-// rows to match, for the one mutation that changes a job's file set after Add:
-// DiscardDeferredPar2.
+// rows to match. Two callers, with different synchronization — see
+// Store.ReplaceManifest's doc comment: DiscardDeferredPar2 under q.mu, and
+// Queue.reconcileJobFiles outside it to retry a discard that could not
+// persist.
 //
 // Every row is rewritten rather than the discarded ones deleted. Dropping a
 // file renumbers every file_index after it, so a targeted DELETE would leave
@@ -708,7 +710,21 @@ WHERE id = ?`
 		return ErrNotFound
 	}
 
-	if m, mErr := job.Manifest(); job.Progress() != nil && mErr == nil {
+	// The job_files half is keyed by file_index and takes every value from
+	// the live manifest, so it is correct only while the stored rows describe
+	// the same file set. When the job says they do not, writing anything by
+	// index puts one file's progress on another file's row — worse than
+	// writing nothing, because the rows are the durable copy and nothing
+	// downstream can tell a spliced row from a real one (#310).
+	//
+	// Skipping leaves the rows at their last consistent shape. Queue.saveStore
+	// retries the wholesale rewrite that reconciles them; until it succeeds,
+	// this job's per-file counters simply do not advance on disk, which costs
+	// re-downloading some articles after a crash and costs no correctness.
+	if job.ManifestRowsStale() {
+		s.log.Warn("skipping job_files update: the stored rows no longer describe this job's manifest",
+			"job_id", job.ID)
+	} else if m, mErr := job.Manifest(); job.Progress() != nil && mErr == nil {
 		// article_count is included here (not just in Add's INSERT) so that a
 		// row written before this column existed — where it defaults to 0 —
 		// gets backfilled the next time the job is updated while resident and

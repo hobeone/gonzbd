@@ -199,8 +199,51 @@ mutation after `Add`, and it goes through `Store.ReplaceManifest`, which
 rewrites every row rather than deleting the discarded ones — dropping a file
 renumbers every `file_index` after it. The two writes cannot be made atomic
 across the filesystem and SQLite; a crash between them yields
-`ErrManifestStale`, which is bounded and reported rather than permanent and
-silent (#294).
+`ErrManifestStale` on the hydration paths, which is bounded and reported
+rather than permanent and silent (#294).
+
+**Nothing may write `job_files` by `file_index` while the rows are known not
+to describe the job's manifest.** `SQLiteStore.updateTx` — the third writer of
+that table, after `addTx` and `ReplaceManifest` — takes each value from the
+live manifest and never rewrites the identity columns, so under a
+disagreement it splices one file's progress onto another file's row. A
+`ReplaceManifest` that fails leaves exactly that disagreement, because the
+discard is deliberately not rolled back.
+
+`Job.manifestRowsStale` records it, guarded by `residencyMu` alongside
+`fileSetGen`. `DiscardDeferredPar2` raises it before attempting the rewrite —
+before, so a panic or partial write leaves it raised too — and lowers it on
+success. `updateTx` skips its `job_files` half while it is raised, and
+`Queue.saveStore` retries the wholesale rewrite each checkpoint until one
+lands. This is the one self-heal in the manifest tier: everywhere else a
+disagreement is reported and the job fails, but here the in-memory state is
+correct and only the persisted copy is behind (#310).
+
+`fileSetGen` is what makes this verifiable after the fact. It counts file-set
+rebuilds and only `DiscardDeferredPar2` bumps it, so a rewrite that completed
+outside `q.mu` can tell a second discard (which invalidates it) from ordinary
+eviction and rehydration (which does not). Keying that check on the manifest
+pointer instead is wrong: eviction nils the pointer and rehydration installs a
+new one, so residency churn alone would leave the flag raised for the life of
+the process.
+
+**A snapshot may write `job_files` by index only while the job still has the
+file set it was cloned from.** `saveStore` clones under `q.mu.RLock`, releases,
+and only then writes, so a discard landing in that window renumbers the rows
+the snapshot is about to address by their old indices. `manifestRowsStale`
+cannot catch this alone — on the discard's success path the flag is lowered
+again, and the snapshot predates its ever being raised — so
+`reconcileJobFiles` compares each snapshot's `fileSetGen` against the live
+job's and marks any it has outrun. That job simply skips one checkpoint; the
+next clone is current.
+
+**The boot path does not carry this guard.** `SQLiteStore.Get` sizes progress
+from the manifest it reads and fills it by `file_index` from the rows, with no
+`describesSameJobAs` — that check lives in `hydrateSnapshot` and
+`hydrateJobLocked` only. A crash inside `ReplaceManifest`, between the blob
+write and the transaction, therefore survives as a silent splice with no
+in-memory flag left to catch it. What such a mismatch should do at boot is
+#278's question.
 
 ## Enforcement
 

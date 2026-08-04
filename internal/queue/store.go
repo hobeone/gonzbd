@@ -29,15 +29,25 @@ type Store interface {
 	Remove(ctx context.Context, id string) error
 
 	// ReplaceManifest rewrites job's stored manifest and replaces its
-	// job_files rows to match the new file set. It is for the one mutation
-	// that changes a job's files after Add — DiscardDeferredPar2 — and
-	// requires job to be resident, since the manifest being written is the
-	// one it holds.
+	// job_files rows to match the new file set. It requires job to be
+	// resident, since the manifest being written is the one it holds.
 	//
 	// The two writes are one operation on purpose. Doing either alone is
 	// what #294 was: the manifest and the rows must always describe the
 	// same file set, and dropping a file renumbers every file_index after
 	// it, so both have to move together.
+	//
+	// Two callers, with different synchronization. DiscardDeferredPar2 — the
+	// one mutation that changes a job's files after Add — calls it under
+	// q.mu, so the in-memory and persisted file sets are never observable
+	// apart. Queue.reconcileJobFiles calls it outside q.mu on a
+	// snapshot, to reconcile a job the first call left unpersisted (#310);
+	// it accepts a wider window because there is already a disagreement to
+	// close rather than one to prevent.
+	//
+	// The two cannot race on one job: DiscardDeferredPar2 self-gates on
+	// having deferred files to discard, which is false once the first call
+	// has stripped them.
 	ReplaceManifest(ctx context.Context, job *Job) error
 
 	// MoveToHistory atomically inserts an entry into the history store and deletes

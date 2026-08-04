@@ -1969,15 +1969,34 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		// — reintroducing the bug for as long as the window lasts.
 		//
 		// A failure here is reported rather than swallowed, and the in-memory
-		// rebuild above is deliberately left in place: it is correct, it is what
-		// every reader in this process will see, and rolling it back would
-		// re-defer volumes the caller has already verified as unnecessary. The
-		// cost of the failure is that a restart resurrects them, which is the
-		// pre-#294 behaviour and no worse than it.
+		// rebuild above is deliberately left in place: it is correct, it is
+		// what every reader in this process will see, and rolling it back
+		// would re-defer volumes the caller has already verified as
+		// unnecessary.
+		//
+		// What that leaves behind is not benign, and an earlier version of
+		// this comment claimed it was — that a restart merely resurrects the
+		// volumes, no worse than the pre-#294 behaviour. It is worse: the
+		// rows still describe the pre-discard file set while the manifest
+		// describes the new one, and updateTx writes job_files by
+		// file_index, so every checkpoint tick would splice each surviving
+		// file's progress onto its pre-discard neighbour's row (#310).
+		//
+		// Flag the job instead. The flag is raised before the attempt, not
+		// after a failure, so a panic or a partially-applied write inside
+		// ReplaceManifest leaves it raised too — the states this guards
+		// against are exactly the ones where control does not come back
+		// here cleanly.
+		// Bump before the store write, so a rewrite already in flight for
+		// the previous file set cannot clear the flag this one is about to
+		// raise.
+		job.bumpFileSetGen()
 		if q.store != nil {
+			job.setManifestRowsStale(true)
 			if err := q.store.ReplaceManifest(context.Background(), job); err != nil { //lockio: the in-memory and persisted file sets must not diverge; see comment above
 				return fmt.Errorf("queue: persist discarded par2 for job %s: %w", jobID, err)
 			}
+			job.setManifestRowsStale(false)
 		}
 	}
 	return nil
