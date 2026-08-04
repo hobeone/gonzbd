@@ -1014,35 +1014,30 @@ func (app *Application) maybeReleaseRecoveryVolumes(ctx context.Context, jobID s
 	parseOpts := par2.ParseOptionsFromConfig(pp)
 	dir := filepath.Join(downloadDir, snap.Name)
 
-	// An unreadable manifest means the CRC comparison cannot be made, and
-	// returning false here would finalize the job with its recovery volumes
-	// still deferred — shipping a download that may need a repair nothing
-	// checked for. Assume repair is needed instead: fetching volumes a clean
-	// job did not require costs bandwidth, whereas skipping them for a
-	// damaged one costs the download.
+	// An unreadable manifest means the CRC comparison cannot be made here, so
+	// this job finalizes with its recovery volumes still deferred. That is
+	// the outcome, not a fallback that failed: an unreadable manifest is only
+	// observable for a non-resident job — a resident one holds its manifest
+	// in memory and never re-reads the file — and UndeferRecoveryVolumes is
+	// manifest-tier, so the very non-residency that exposes the unreadable
+	// manifest also makes the un-defer below fail. Hydrating first does not
+	// help; the manifest is what could not be read.
 	//
-	// Reachable and covered since #287 was fixed — the deferral now survives
-	// into the snapshot, and a failed hydration keeps the job's real progress
-	// — but the intent above cannot currently be carried out, so read the
-	// rest of this function with that in mind.
+	// This is survivable because verification is not skipped, only moved.
+	// Post-processing's quickcheck stage hits the same unreadable manifest
+	// and records QuickCheckInconclusive rather than staying silent, which
+	// forces the repair stage to run a full par2 verify against the index
+	// files already on disk (#294). The missing recovery volumes mean par2
+	// can detect damage but not repair it, so a corrupt job is reported
+	// rather than shipped.
 	//
-	// An unreadable manifest is only observable for a non-resident job: a
-	// resident one holds its manifest in memory and never re-reads the file.
-	// UndeferRecoveryVolumes is manifest-tier, so the very non-residency that
-	// exposes the unreadable manifest also makes the un-defer below fail with
-	// ErrJobNotResident, and the function returns false regardless. The
-	// warning here is therefore the only effect this branch has: the job
-	// finalizes without its recovery volumes either way, which is the outcome
-	// the comment above argues against.
-	//
-	// Fixing that means deciding what a job with an unreadable manifest
-	// should do at all — most likely fail rather than finalize — which is a
-	// larger question than this branch. Tracked in #294; see
-	// TestMaybeReleaseRecoveryVolumes_UnreadableManifest, which pins the
-	// behaviour as it actually is rather than as intended.
+	// The branch used to argue the opposite — that finalizing meant shipping
+	// "a repair nothing checked for" — and set out to fetch the volumes
+	// anyway. It could never do that, and the premise was wrong besides.
+	// See TestMaybeReleaseRecoveryVolumes_UnreadableManifest.
 	needsRecovery, reason := true, "manifest unreadable, cannot verify integrity"
 	if m, mErr := snap.Manifest(); mErr != nil {
-		app.log.Warn("on-demand par2: cannot verify without the manifest, fetching recovery volumes anyway",
+		app.log.Warn("on-demand par2: cannot verify without the manifest; post-processing will run a full par2 verify instead",
 			"job", jobID, "err", mErr)
 	} else {
 		needsRecovery, reason = par2NeedsRecovery(dir, m, snap.Progress(), app.log, parseOpts)

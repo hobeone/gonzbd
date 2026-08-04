@@ -45,6 +45,11 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 
 	sets, err := par2.FindPar2Files(job.DownloadDir, q.ParseOpts)
 	if err != nil {
+		// Inconclusive, not NotRun: the scan failed, so whether this job has
+		// par2 sets is unknown. Claiming there was nothing to check would let
+		// the repair stage's DirectUnpack shortcut skip par2 on the strength
+		// of a question that was never answered.
+		job.QuickCheck = QuickCheckInconclusive
 		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Failed to find par2 files: %v", err)
 		return nil // non-fatal
 	}
@@ -53,12 +58,26 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 		return nil
 	}
 
+	// Past this line the job has par2 sets, so QuickCheckNotRun — "there was
+	// nothing to verify" — is no longer a true thing to leave behind. Claim
+	// nothing by default and narrow to Clean or Damaged only where the work
+	// was actually done (#314).
+	//
+	// This inverts which state is free. The zero value used to be the
+	// permissive one, so every early return that forgot to assign handed the
+	// repair stage consent to skip par2 — and one did: verifyJobCRCs' opening
+	// guard, reachable only from here, so only ever for a job that has par2
+	// sets. Now the conservative state is the one you get for free and the
+	// permissive ones require saying so, which makes the next early return
+	// added below fail safe by construction rather than by review.
+	job.QuickCheck = QuickCheckInconclusive
+
 	logf(ctx, log, job, slog.LevelInfo, "[quickcheck] Found %d par2 set(s), checking for subdirectory entries", len(sets))
 
 	renames, err := par2.QuickCheckWithOptions(job.DownloadDir, sets, log, q.ParseOpts)
 	if err != nil {
 		logf(ctx, log, job, slog.LevelWarn, "[quickcheck] Error: %v", err)
-		return nil // non-fatal
+		return nil // non-fatal; the outcome set above already says why
 	}
 
 	if len(renames) > 0 {
@@ -75,22 +94,35 @@ func (q *QuickCheckStage) Run(ctx context.Context, job *Job) error {
 }
 
 func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, job *Job, sets []par2.Set) error {
+	// No manifest, or one describing no files, so there are no expected CRCs
+	// to compare the par2 sets against. The caller has already established
+	// that sets is non-empty — it returns at len(sets) == 0 — so this leaves
+	// QuickCheckInconclusive, set there. It used to leave the zero value,
+	// which told the repair stage this job had nothing worth verifying while
+	// its par2 sets went unchecked (#314).
 	if job.Queue == nil || job.Queue.NumFiles() == 0 {
+		logf(ctx, log, job, slog.LevelWarn,
+			"[quickcheck] No manifest files to verify against, though %d par2 set(s) are present — par2 repair will run", len(sets))
 		return nil
 	}
 
-	// Unlike the file listing, this must not degrade quietly. Verification
-	// that did not run is indistinguishable from verification that passed
-	// once QuickCheckRan is set, so a job whose manifest is unreadable would
-	// be reported as CRC-verified having been checked against nothing.
-	// Returning an error records the failure in the stage log and surfaces
-	// it in the history entry; the runner deliberately does not abort the
-	// pipeline on a stage error, so par2 repair still gets its turn.
+	// Unlike the file listing, this must not degrade quietly: a job whose
+	// manifest is unreadable would otherwise be reported as CRC-verified
+	// having been checked against nothing. Returning an error records the
+	// failure in the stage log and surfaces it in the history entry; the
+	// runner deliberately does not abort the pipeline on a stage error, so
+	// par2 repair still gets its turn.
+	//
+	// Leaving Inconclusive in place is what makes that last clause true. The
+	// error return alone protects this stage's own claim, but the repair stage
+	// reads the outcome, not the error — and under the old boolean pair
+	// "could not verify" was indistinguishable from "had nothing to verify",
+	// so DirectUnpack's success would skip par2 for a job nothing had
+	// checked (#294).
 	m, mErr := job.Queue.Manifest()
 	if mErr != nil {
 		return fmt.Errorf("quickcheck: cannot verify CRCs without the manifest: %w", mErr)
 	}
-	job.QuickCheckRan = true
 
 	p := job.Queue.Progress()
 	var assembledFiles []par2.AssembledFile
@@ -154,15 +186,21 @@ func (q *QuickCheckStage) verifyJobCRCs(ctx context.Context, log *slog.Logger, j
 
 	switch {
 	case unverifiable > 0:
+		job.QuickCheck = QuickCheckDamaged
 		logf(ctx, log, job, slog.LevelInfo,
 			"[quickcheck] %d/%d par2-tracked files verified OK, %d file(s) need par2 verification — repair stage will run",
 			crcResult.Matched, crcResult.Matched+unverifiable, unverifiable)
 	case crcResult.Checked > 0:
+		job.QuickCheck = QuickCheckClean
 		logf(ctx, log, job, slog.LevelInfo,
 			"[quickcheck] All %d par2-tracked files verified OK — skipping par2 repair",
 			crcResult.Matched)
-		job.QuickCheckPassed = true
 	default:
+		// Par2 sets were found but no assembled CRC was available to compare
+		// against any of them, so nothing was actually verified. Stays at the
+		// Inconclusive the caller set, which also keeps the pre-enum
+		// behaviour: the old pair recorded Ran-and-not-Passed here, forcing
+		// repair.
 		logf(ctx, log, job, slog.LevelInfo, "[quickcheck] No CRC data available — par2 repair will run")
 	}
 	return nil

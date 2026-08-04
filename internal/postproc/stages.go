@@ -14,6 +14,94 @@ import (
 	"github.com/hobeone/gonzbd/internal/queue"
 )
 
+// QuickCheckOutcome is what the quickcheck stage was able to determine about
+// a job's file CRCs. It replaces the QuickCheckRan/QuickCheckPassed pair,
+// which could not express its fourth combination and so collapsed two
+// unrelated states into one.
+//
+// The distinction that matters is between "I found nothing wrong" and "I have
+// nothing to say". Both used to read as !QuickCheckRan, and the repair
+// stage's DirectUnpack shortcut treats a silent quickcheck as consent —
+// skipping par2 entirely for a job whose CRCs nothing had verified. Making
+// the states exhaustive means a reader has to name which one it means, so
+// that collapse cannot be rebuilt by accident.
+type QuickCheckOutcome int
+
+const (
+	// QuickCheckNotRun means nothing was attempted, because the stage was
+	// disabled or found no par2 sets to check against. There is nothing to
+	// verify, so DirectUnpack's own signal is the only one available and
+	// the repair shortcut may rely on it.
+	QuickCheckNotRun QuickCheckOutcome = iota
+
+	// QuickCheckClean means every par2-tracked file's CRC32 matched. Repair can
+	// skip the expensive par2 subprocess outright — verification already
+	// confirmed integrity.
+	QuickCheckClean
+
+	// QuickCheckDamaged means verification ran and found unverifiable or
+	// mismatched files. Repair must run regardless of what DirectUnpack
+	// reported, which only knows that rarengine could mechanically walk the
+	// archive's entries.
+	QuickCheckDamaged
+
+	// QuickCheckInconclusive means verification was attempted and could not
+	// complete. No claim is being made about the data either way, which is
+	// precisely why this must not be treated as QuickCheckNotRun: par2 sets
+	// may well exist and nothing has checked them.
+	//
+	// It is also the default the stage adopts the moment it knows par2 sets
+	// exist, narrowing to Clean or Damaged only where verification actually
+	// happened (#314). So the causes are "anything that did not earn a
+	// verdict", and only one of them involves the manifest — do not go
+	// looking for a manifest problem first:
+	//   - the par2 scan itself failed, so whether the job has par2 sets is
+	//     unknown (the one case set before the default applies);
+	//   - par2 sets were found but QuickCheckWithOptions errored before
+	//     verifying any of them;
+	//   - the job's manifest was unreadable or described no files, so there
+	//     were no expected CRCs to compare against;
+	//   - par2 sets were found and no assembled CRC was available for any of
+	//     them, so the comparison had nothing on either side.
+	QuickCheckInconclusive
+)
+
+// AllQuickCheckOutcomes returns every declared outcome, so a test can assert
+// that a switch over them handles each one rather than falling through
+// silently. Kept in declaration order.
+//
+// It is hand-written, which on its own would make it a second copy of the
+// enum carrying the same defect: a value added to the const block but not
+// here is invisible to every loop over it, and every exhaustiveness test
+// built on it passes vacuously. TestAllQuickCheckOutcomes_Exhaustive closes
+// that loop by parsing the const block itself, the same way
+// constants.AllStatuses is pinned (#291).
+func AllQuickCheckOutcomes() []QuickCheckOutcome {
+	return []QuickCheckOutcome{
+		QuickCheckNotRun,
+		QuickCheckClean,
+		QuickCheckDamaged,
+		QuickCheckInconclusive,
+	}
+}
+
+// String makes the outcome legible in logs and test failures rather than
+// printing a bare integer.
+func (o QuickCheckOutcome) String() string {
+	switch o {
+	case QuickCheckNotRun:
+		return "not-run"
+	case QuickCheckClean:
+		return "clean"
+	case QuickCheckDamaged:
+		return "damaged"
+	case QuickCheckInconclusive:
+		return "inconclusive"
+	default:
+		return "unknown"
+	}
+}
+
 // Stage is the interface every post-processing stage must implement.
 // Stages are registered once at construction time and run in that order
 // for every job. Stage errors are recorded but the pipeline continues; each
@@ -68,22 +156,9 @@ type Job struct {
 	ParError    bool
 	UnpackError bool
 
-	// QuickCheckPassed is set by the quickcheck stage when ALL par2-tracked
-	// files have matching CRC32 values. When true, the repair stage skips
-	// the expensive par2 subprocess since verification already confirmed
-	// file integrity.
-	QuickCheckPassed bool
-
-	// QuickCheckRan is set by the quickcheck stage whenever it actually
-	// performed CRC verification (i.e. it was enabled and found par2 sets to
-	// check against) — regardless of the outcome. Distinguishes "quickcheck
-	// ran and found a problem" (QuickCheckRan && !QuickCheckPassed — repair
-	// must run) from "quickcheck never ran" (!QuickCheckRan — DirectUnpack's
-	// own success/failure is the only available signal). Without this
-	// distinction, the repair stage's DirectUnpack-success shortcut cannot
-	// tell those two cases apart and may skip repair despite quickcheck
-	// having explicitly flagged unverifiable or corrupted files.
-	QuickCheckRan bool
+	// QuickCheck is what the quickcheck stage was able to determine about
+	// this job's file CRCs. See QuickCheckOutcome.
+	QuickCheck QuickCheckOutcome
 
 	// NeedRequeue is set by the repair stage when par2 reports that the
 	// job needs additional recovery blocks ("You need N more blocks") or

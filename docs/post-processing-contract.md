@@ -68,13 +68,13 @@ The complete post-processing pipeline consists of 12 registered stages configure
 ### Stage Responsibilities & Self-Gating Matrix
 
 Stages do NOT abort the loop on error. Each stage checks job flags (`ParError`,
-`UnpackError`, `QuickCheckPassed`, PP level) to decide whether to execute, skip,
+`UnpackError`, `QuickCheck`, PP level) to decide whether to execute, skip,
 or modify its behavior:
 
 | Stage Name | Responsibilities | Skip / Gating Condition | Key Flags Updated |
 |---|---|---|---|
-| **`quickcheck`** | Relocates flat files into expected subdirs; verifies file CRC32s against par2 headers without executing `par2`. | Skipped if disabled or `PP < 1`. | Sets `QuickCheckRan`, `QuickCheckPassed`. |
-| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted. | Skipped if `PP < 1`, `QuickCheckPassed == true`, OR DirectUnpack extracted all archives without errors during download. | Sets `ParError`, `NeedRequeue`, `RequeueBlocksNeeded`, and `Par2Renames`. |
+| **`quickcheck`** | Relocates flat files into expected subdirs; verifies file CRC32s against par2 headers without executing `par2`. | Skipped if disabled or `PP < 1`. | Sets `QuickCheck` to one of `NotRun` / `Clean` / `Damaged` / `Inconclusive`. |
+| **`repair`** | Executes native Go `go_par2` engine or external `par2` verify/repair if files are missing or corrupted. | Skipped if `PP < 1`, `QuickCheck == Clean`, OR DirectUnpack extracted all archives without errors **and** `QuickCheck == NotRun`. | Sets `ParError`, `NeedRequeue`, `RequeueBlocksNeeded`, and `Par2Renames`. |
 | **`rar_volume_recovery`** | Renames obfuscated volume files (e.g. `abc.001` → `abc.part001.rar`) using RAR5 header volume sequencing if standard filename parsing found no RAR sets. | Skipped if disabled, standard RAR sets already detected, or volume indexing is ambiguous. | Renames volume files in `DownloadDir` & `OwnedFiles`. |
 | **`unpack`** | Decompresses archives (`RAR`, `7z`, `TAR`, `split join`) up to `maxUnpackDepth = 3` recursive passes using native pure-Go engines (`go_rar`, `go_7z`, `go_tar`, `filejoin`) with optional external CLI fallbacks (`unrar`, `7z`). Respects `DirectUnpackSets` to skip already-extracted archives. | Skipped if `PP < 2` OR `ParError == true` (skips extraction unconditionally on repair failure). | Sets `UnpackError`. |
 | **`sample_cleanup`** | Deletes sample video and proof files matching `(?i)(^|[\W_])(sample|proof)`. Includes a false-positive guard where all files match the pattern. | Skipped if disabled in config or if every file in the directory matches the sample pattern. | Unlinks sample files from `OwnedFiles`. |
@@ -118,7 +118,29 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
    check failed) or `job.DownloadDir` is empty/missing, all processing stages are
    skipped. A synthetic `pre-check` entry is appended to `StageLog` and the job
    completes directly to history.
-3. **Verification bypass guarantees**: If `QuickCheckPassed` is `true`, or if DirectUnpack successfully extracted all archives during download without errors and QuickCheck found no checksum mismatch, `repair` bypasses `par2` execution. This eliminates multi-minute disk reads for healthy downloads. `QuickCheckRan` ensures `repair` is only bypassed when QuickCheck actually ran and verified clean.
+3. **Verification bypass guarantees**: `repair` bypasses `par2` execution when
+   `QuickCheck == Clean` (verification already confirmed every CRC), or when
+   DirectUnpack extracted all archives without errors **and** `QuickCheck ==
+   NotRun`. This eliminates multi-minute disk reads for healthy downloads.
+
+   The second clause requires exactly `NotRun` — the stage was disabled or
+   found no par2 sets, so there is no verification to be had and DirectUnpack's
+   signal is the only one available. `Inconclusive` (quickcheck was attempted
+   and could not complete, e.g. the job's manifest was unreadable) must not
+   bypass: par2 sets exist and nothing has checked them. Both states were
+   encoded as `!QuickCheckRan` until #294, so a job whose manifest could not be
+   read had its CRCs verified by nothing at all — quickcheck bailed, and repair
+   skipped on DirectUnpack's say-so. `QuickCheckOutcome` makes the two
+   nameable and the switch in `stage_repair.go` exhaustive.
+
+   `Inconclusive` is also the **default** the quickcheck stage adopts as soon
+   as it knows par2 sets exist, narrowing to `Clean` or `Damaged` only on
+   paths that actually verified something (#314). This inverts which state is
+   free: the zero value used to be the permissive one, so any early `return`
+   that forgot to assign handed repair consent to skip par2 — and one did, the
+   guard in `verifyJobCRCs` for a job whose manifest describes no files. With
+   the default inverted, a future early return fails safe by construction
+   rather than by review catching it.
 4. **`OwnedFiles` isolation (#3462)**: `processJob` snapshots `OwnedFiles` from
    `DownloadDir` before any stage runs. Unpack and rename stages register newly
    created files into `OwnedFiles`. Cleanup stages (`extension_cleanup`,
@@ -150,7 +172,7 @@ External command-line binaries (`par2`, `unrar`, `7z`, `7zz`) are invoked as aut
 ### Landed
 - Single worker goroutine with `ppQueue` FIFO scheduling and safe cancellation (`Cancel`).
 - Complete 12-stage pipeline with strict stage self-gating and cumulative PP-level enforcement (`shouldSkipForPP`).
-- `QuickCheckRan` / `QuickCheckPassed` bypass logic & DirectUnpack zero-failure verification bypass.
+- `QuickCheckOutcome` (`NotRun`/`Clean`/`Damaged`/`Inconclusive`) bypass logic & DirectUnpack zero-failure verification bypass.
 - `OwnedFiles` snapshotting and cleanup isolation (#3462) with in-place rename tracking (`markRenamed`).
 - Python-compatible 8-arg positional and `SAB_*` environment contract for user scripts with 512 KiB log caps, `RedactSecrets`, and `ScriptCanFail` runtime toggleability.
 - Native Go engine dispatch (`go_par2`, `go_rar`, `go_7z`, `go_tar`, `filejoin`) with external CLI fallbacks.
