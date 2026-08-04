@@ -241,12 +241,20 @@ next clone is current.
 surviving evidence. `Store.RestoreJobProgress` range-checks every stored
 `file_index` against the manifest it just read and reports `ErrManifestStale`
 when a row falls outside it — the restatement the boot path previously lacked,
-which is the half of #278 this pair needs. `SQLiteStore.Get` then loads the
-job non-resident rather than resident on a manifest its rows contradict, and
-`Queue.Load` sizes its progress from `job_files`. Both stored artifacts then
-describe the pre-discard shape and agree with each other again: the discard is
-lost, which is the accepted degradation, rather than silently applied to the
-wrong files.
+which is the half of #278 this pair needs. `SQLiteStore.Get` then *finishes the
+interrupted write* rather than degrading: the blob is the newer artifact by
+construction, so it rewrites `job_files` from it, carrying each surviving
+file's progress across by **subject**. The index is what the renumber
+invalidated; the subject is the identity that survives it. Only if that rewrite
+itself fails does the job load non-resident, with `Queue.Load` sizing its
+progress from `job_files`.
+
+Degrading is not the fallback of choice, because it is not free: a job torn
+mid-discard is at `StatusDownloading`, and a non-resident job at that status is
+skipped by `ForEachUnfinishedArticle` and never selected by
+`findNextQueuedCandidateLocked`. Nothing normalises the status at startup, so
+it would report "Downloading" and dispatch nothing for the life of the process.
+
 Neither guard is `describesSameJobAs`, and it cannot serve here: it compares a
 live `JobProgress` against a manifest read from disk, which is the right check
 on `hydrateJobLocked` and `hydrateSnapshot`, where the progress predates the
@@ -263,7 +271,7 @@ Every mechanism this contract relies on is scoped to one process:
 | `Job.Progress()` infallible; no nil guard needed | the compiler | no |
 | "a handle cannot be invalidated by eviction" | pointer immutability | no |
 | `TestManifestAccessIsGated` | an AST walk over the package | no — it audits source, not stored state |
-| `manifestRowsStale` | an in-memory field | no — deliberately not persisted |
+| `manifestRowsStale` (#315) | an in-memory field | no — deliberately not persisted |
 
 That is not a defect in any of them. It is what "enforced by the compiler"
 means: the guarantee holds for as long as the values do. But it has a
@@ -292,10 +300,22 @@ What follows for this package:
   gets it by construction rather than by remembering. `TestJobFilesReadsCheckRowShape`
   fails any new reader of `job_files` that neither range-checks its indices nor
   records why a renumber cannot affect it.
-- **A load-path disagreement degrades, it does not fail.** `List` drops a job
-  whose `Get` returns an error, so reporting one would delete the job rather
-  than report it — against "a damaged job must remain removable" above. The
-  job loads non-resident instead, which every caller already handles.
+- **A load-path disagreement is repaired, not merely reported.** Degrading the
+  job to non-resident is not a safe fallback here: `ReplaceManifest` is only
+  reached from `DiscardDeferredPar2`, which runs mid-download, so the crash
+  leaves the job at `StatusDownloading` — and a `Downloading` job with no
+  manifest is invisible to both `ForEachUnfinishedArticle` (which skips a nil
+  manifest) and `PromoteNext` (which only considers `StatusQueued`). Nothing
+  normalises status at startup, so it would sit there dispatching nothing for
+  the life of the process. Reporting the error instead is worse still: `List`
+  drops a job whose `Get` fails, against "a damaged job must remain removable"
+  above. Only reconciliation leaves the job usable.
+- **Reconciliation preserves progress, or it is not worth doing.** Rebuilding
+  rows from the manifest alone would zero `articles_done` for every surviving
+  file and re-download a job that may have been nearly complete. If
+  reconciliation itself fails there is no recovery left, and only then does the
+  job load non-resident — with `hydrateErr` set, so "could not be made usable"
+  stays distinguishable from routine eviction.
 - **Reporting scalars are reconstructed from `job_files`, not from the
   manifest**, for exactly this reason: the rows are the artifact that survives
   with its own shape intact.

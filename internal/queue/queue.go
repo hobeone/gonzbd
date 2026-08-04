@@ -766,7 +766,20 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 		// Store or database/sql calls -- but is in place for when it gains one.
 		if q.store != nil {
 			if err := q.store.RestoreJobProgress(ctx, job); err != nil { //lockio: mutates job.progress in place; hoist tracked as follow-up
-				cf := q.prepareClaimFailureLocked(job, manifestPath, fmt.Errorf("restore progress: %w", err))
+				// ErrManifestStale means the stored rows and the stored
+				// manifest describe different file sets, not that the
+				// manifest is unreadable. Setting it aside as ".corrupt"
+				// would be a lie about a file that parses, and would destroy
+				// the newer of the two artifacts — the one reconciliation
+				// works from. SQLiteStore.Get reconciles a torn pair at load,
+				// so reaching here means the tear appeared after load; fail
+				// the job, but truthfully and without the rename.
+				setAside := manifestPath
+				claimErr := fmt.Errorf("restore progress: %w", err)
+				if errors.Is(err, ErrManifestStale) {
+					setAside = ""
+				}
+				cf := q.prepareClaimFailureLocked(job, setAside, claimErr)
 				q.mu.Unlock()
 				q.finishClaimFailure(ctx, cf)
 				q.log.Error("failed to restore job progress during promotion, transitioning to FAILED",
@@ -839,7 +852,17 @@ type claimFailure struct {
 // the active-job and history tables) off the global queue mutex, which the
 // downloader's dispatch loop contends on every pass.
 func (q *Queue) prepareClaimFailureLocked(job *Job, manifestPath string, claimErr error) claimFailure {
-	job.Warning = fmt.Sprintf("Corrupt manifest: %v", claimErr)
+	// "Corrupt" is a claim about the file, and it is wrong for a manifest
+	// that parses but disagrees with the stored rows. Both messages reach the
+	// operator — Warning in the queue, FailMessage in history — so the two
+	// causes have to read differently or the wrong one gets investigated.
+	reason := "Corrupt manifest"
+	failMessage := "Unreadable or corrupt manifest"
+	if errors.Is(claimErr, ErrManifestStale) {
+		reason = "Stored manifest and file rows disagree"
+		failMessage = "Stored manifest and file rows describe different file sets"
+	}
+	job.Warning = fmt.Sprintf("%s: %v", reason, claimErr)
 	job.Status = constants.StatusFailed
 
 	cf := claimFailure{
@@ -853,7 +876,7 @@ func (q *Queue) prepareClaimFailureLocked(job *Job, manifestPath string, claimEr
 			Name:        job.Name,
 			Category:    job.Category,
 			Status:      string(constants.StatusFailed),
-			FailMessage: fmt.Sprintf("Unreadable or corrupt manifest: %v", claimErr),
+			FailMessage: fmt.Sprintf("%s: %v", failMessage, claimErr),
 			Completed:   time.Now().UTC(),
 		}
 	}

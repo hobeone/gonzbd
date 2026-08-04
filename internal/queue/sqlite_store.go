@@ -336,10 +336,18 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 // Add gives: writing it inside means holding SQLite's write lock across an
 // fsync, the widest window a competing writer can collide with. Neither
 // ordering is atomic across the two media, so a crash between them leaves the
-// blob and the rows describing different shapes. That is detected — the
-// staleness guard in hydrateSnapshot/hydrateJobLocked compares the two — and
-// it is bounded by one fsync plus one small transaction, where the state this
-// replaces was a permanent disagreement on every discard.
+// blob and the rows describing different shapes, bounded by one fsync plus one
+// small transaction where the state this replaces was a permanent
+// disagreement on every discard.
+//
+// That window is closed on the way back in, not here. The staleness guard in
+// hydrateSnapshot/hydrateJobLocked does not close it: those compare a live
+// JobProgress against a manifest read from disk, and on the restart path the
+// progress was built from that same manifest, so they agree by construction.
+// The disagreement is between the two stored artifacts, and only the row
+// indices carry it — RestoreJobProgress range-checks them and reports
+// ErrManifestStale, and SQLiteStore.Get finishes this interrupted write via
+// reconcileJobFiles (#310).
 func (s *SQLiteStore) ReplaceManifest(ctx context.Context, job *Job) error {
 	m, err := job.Manifest()
 	if err != nil {
@@ -433,24 +441,41 @@ FROM jobs WHERE id = ?`
 			if dlFinishedUnix > 0 {
 				job.progress.downloadFinished = time.Unix(dlFinishedUnix, 0).UTC()
 			}
-			if err := s.RestoreJobProgress(ctx, &job); err != nil {
-				// Refusing the pair means refusing residency, not refusing
-				// the job: List drops a job whose Get errors, and a damaged
-				// job must stay in the queue to be removable or retryable.
-				// Leaving it non-resident hands it to the branch below,
-				// which rebuilds its reporting scalars from job_files, and
-				// to Queue.Load, which sizes its progress from the same
-				// rows. Both stored artifacts then describe the pre-discard
-				// shape and agree with each other again — the state a
-				// restart was always documented to reach.
+			if err := s.RestoreJobProgress(ctx, &job); errors.Is(err, ErrManifestStale) {
+				// A ReplaceManifest that did not finish. Complete it here
+				// rather than degrade: this is the load path, it holds the
+				// manifest the rows should have been written from, and it
+				// runs once at startup where a write is affordable.
 				//
-				// The alternative is what this replaces: keeping a manifest
-				// the rows contradict, with per-file state bound to the
-				// wrong files, silently and permanently.
-				s.log.Error("stored manifest and job_files disagree, loading the job without a manifest",
+				// Degrading instead would strand the job. ReplaceManifest is
+				// only reached from DiscardDeferredPar2, which runs
+				// mid-download, so the crash leaves the job at
+				// StatusDownloading — and a Downloading job with no manifest
+				// is invisible to ForEachUnfinishedArticle (which skips a nil
+				// manifest) and to PromoteNext (which only considers
+				// StatusQueued). Nothing normalises the status at startup, so
+				// it would sit at "Downloading", dispatching nothing, for the
+				// life of the process.
+				s.log.Warn("stored manifest and job_files describe different file sets, finishing the interrupted rewrite",
 					"job_id", id, "err", err)
-				job.manifest = nil
-				job.progress = nil
+				if rErr := s.reconcileJobFiles(ctx, &job); rErr != nil {
+					// Reconciliation is the recovery; without it there is
+					// none. Refuse residency rather than keep a manifest the
+					// rows contradict, and record why — hydrateErr is what
+					// separates "evicted, routine" from "could not be made
+					// usable", which is the distinction a stranded job
+					// otherwise hides.
+					s.log.Error("could not reconcile stored manifest with job_files; loading the job without a manifest",
+						"job_id", id, "err", rErr)
+					// nil progress, not the one built from the manifest
+					// being dropped: Queue.Load treats nil as "size this
+					// from job_files", which is the artifact that survives
+					// with its own shape intact. setHydrateFailure clears
+					// the manifest itself.
+					job.setHydrateFailure(nil, fmt.Errorf("queue: reconcile job %s: %w", id, rErr))
+				}
+			} else if err != nil {
+				s.log.Error("could not restore job progress", "job_id", id, "err", err)
 			}
 		}
 	}
@@ -505,23 +530,20 @@ func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
 	if job == nil || job.manifest == nil || job.progress == nil {
 		return nil
 	}
-	const qFiles = `
-SELECT file_index, complete, deferred, write_cursor, bytes_downloaded, assembled_crc32, COALESCE(articles_done, '')
-FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
-	rows, err := s.db.QueryContext(ctx, qFiles, job.ID)
+	stored, err := s.storedFileRows(ctx, job.ID)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var idx, complete, deferred int
-		var writeCursor, bytesDownloaded int64
-		var crc32Val uint32
-		var artDoneStr string
-		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &bytesDownloaded, &crc32Val, &artDoneStr); err != nil {
-			return fmt.Errorf("sqlite store scan job_file for %s: %w", job.ID, err)
-		}
-		if idx < 0 || idx >= len(job.progress.files) {
+	// Validate the whole set before applying any of it. Rows arrive in
+	// file_index order, so applying as we scan would leave the first N files
+	// overwritten and recompute never run when row N+1 turns out to be the
+	// one that disagrees — progress half-belonging to two different file
+	// sets, with its aggregates matching neither. Both callers that pass a
+	// live JobProgress hand that same object back on failure as the
+	// disk-backed value to fall back to, so a partial apply corrupts the
+	// fallback rather than preserving it.
+	for _, r := range stored {
+		if r.idx < 0 || r.idx >= len(job.progress.files) {
 			// The stored rows and the stored manifest describe different
 			// file sets. Skipping the row silently is what let the rest of
 			// them splice: dropping a file renumbers every file_index after
@@ -536,12 +558,15 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			// guard cannot fire. Only the row indices carry the mismatch.
 			return fmt.Errorf(
 				"%w: stored job_files for job %s hold file_index %d but its stored manifest describes %d files",
-				ErrManifestStale, job.ID, idx, len(job.progress.files))
+				ErrManifestStale, job.ID, r.idx, len(job.progress.files))
 		}
-		fp := &job.progress.files[idx]
-		fp.BytesDownloaded = bytesDownloaded
-		fp.WriteCursor = writeCursor
-		fp.AssembledCRC32 = crc32Val
+	}
+
+	for _, r := range stored {
+		fp := &job.progress.files[r.idx]
+		fp.BytesDownloaded = r.bytesDownloaded
+		fp.WriteCursor = r.writeCursor
+		fp.AssembledCRC32 = r.assembledCRC32
 		// articles_done is the only source of per-article state;
 		// Complete is just a flag alongside it.
 		//
@@ -577,16 +602,58 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 		// on Complete before reading Pending, and IsComplete drives
 		// post-processing off the flags — but do not assume the
 		// implication still exists.
-		s.decodeArticlesDone(artDoneStr, job, idx)
-		if complete != 0 {
+		s.decodeArticlesDone(r.articlesDone, job, r.idx)
+		if r.complete {
 			fp.Complete = true
 		}
-		if deferred != 0 {
+		if r.deferred {
 			fp.Deferred = true
 		}
 	}
 	job.progress.recompute(job.manifest)
-	return rows.Err()
+	return nil
+}
+
+// storedFileRow is one job_files row, in the shape the restore and reconcile
+// paths both need. subject is the file's identity: it is the only column that
+// survives a renumber, so it is what maps a pre-discard row onto the file it
+// still describes.
+type storedFileRow struct {
+	idx             int
+	subject         string
+	complete        bool
+	deferred        bool
+	writeCursor     int64
+	bytesDownloaded int64
+	assembledCRC32  uint32
+	filename        string
+	articlesDone    string
+}
+
+// storedFileRows reads every job_files row for jobID, in file_index order.
+func (s *SQLiteStore) storedFileRows(ctx context.Context, jobID string) ([]storedFileRow, error) {
+	const q = `
+SELECT file_index, subject, complete, deferred, write_cursor, bytes_downloaded, assembled_crc32, filename, COALESCE(articles_done, '')
+FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
+	rows, err := s.db.QueryContext(ctx, q, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []storedFileRow
+	for rows.Next() {
+		var r storedFileRow
+		var complete, deferred int
+		if err := rows.Scan(&r.idx, &r.subject, &complete, &deferred,
+			&r.writeCursor, &r.bytesDownloaded, &r.assembledCRC32, &r.filename, &r.articlesDone); err != nil {
+			return nil, fmt.Errorf("sqlite store scan job_file for %s: %w", jobID, err)
+		}
+		r.complete = complete != 0
+		r.deferred = deferred != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // ArticleCountsByJob returns every job's per-file article counts in a single
@@ -1185,4 +1252,66 @@ func (s *SQLiteStore) IsPaused(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return val == "true", nil
+}
+
+// reconcileJobFiles finishes the write Store.ReplaceManifest was interrupted
+// partway through, for a job whose stored rows and stored manifest describe
+// different file sets.
+//
+// The blob is the newer artifact by construction: ReplaceManifest writes it
+// before opening the transaction that rewrites job_files, and it is the only
+// operation that changes a job's file set after Add. So when the two
+// disagree, the manifest is the shape the discard intended and the rows are
+// what did not get there.
+//
+// Rows are carried across by subject, not by index. The index is exactly what
+// a renumber invalidates — that is the whole defect (#310) — while the subject
+// identifies the file no matter where it moved. Matching on it preserves the
+// per-file progress of every surviving file; rebuilding from the manifest
+// alone would zero articles_done for all of them and re-download a job that
+// was most of the way finished.
+//
+// A row with no match in the manifest is a file the discard dropped, and is
+// not carried. job must be resident: the manifest being reconciled against is
+// the one it holds.
+func (s *SQLiteStore) reconcileJobFiles(ctx context.Context, job *Job) error {
+	m, err := job.Manifest()
+	if err != nil {
+		return fmt.Errorf("sqlite store reconcile job_files %s: %w", job.ID, err)
+	}
+	stored, err := s.storedFileRows(ctx, job.ID)
+	if err != nil {
+		return fmt.Errorf("sqlite store reconcile job_files %s: %w", job.ID, err)
+	}
+	bySubject := make(map[string]storedFileRow, len(stored))
+	for _, r := range stored {
+		bySubject[r.subject] = r
+	}
+
+	// Rebuild progress at the manifest's indices first, then let
+	// insertJobFilesTx write the rows from it. Going through the same writer
+	// addTx and ReplaceManifest use is what keeps the three in agreement
+	// about a row's full shape (#287).
+	for i := range m.NumFiles() {
+		r, ok := bySubject[m.FileSubject(i)]
+		if !ok {
+			continue
+		}
+		fp := &job.progress.files[i]
+		fp.BytesDownloaded = r.bytesDownloaded
+		fp.WriteCursor = r.writeCursor
+		fp.AssembledCRC32 = r.assembledCRC32
+		fp.Filename = r.filename
+		fp.Complete = r.complete
+		fp.Deferred = r.deferred
+		s.decodeArticlesDone(r.articlesDone, job, i)
+	}
+	job.progress.recompute(m)
+
+	return s.withWriteTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", job.ID); err != nil {
+			return fmt.Errorf("sqlite store reconcile delete job_files %s: %w", job.ID, err)
+		}
+		return insertJobFilesTx(ctx, tx, job, m)
+	})
 }

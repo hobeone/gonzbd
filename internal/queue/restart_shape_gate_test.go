@@ -24,7 +24,7 @@ import (
 // care which file a row belongs to; anything that indexes progress.files by a
 // stored file_index does not.
 var rowShapeExempt = map[string]string{
-	"Get":                 "reads COUNT(*) and SUM aggregates only; both survive a renumber, and it delegates the per-file read to RestoreJobProgress",
+	"storedFileRows":      "returns rows verbatim and binds nothing; every caller either validates the indices (RestoreJobProgress) or remaps by subject (reconcileJobFiles)",
 	"ArticleCountsByJob":  "places counts by file_index into a map keyed the same way, so a renumber shifts the map identically rather than mismatching it",
 	"RemainingBytesByJob": "sums bytes per job_id; no per-file binding",
 	"MoveToHistory":       "copies rows wholesale into history_job_files, preserving whatever shape they have",
@@ -77,7 +77,7 @@ func TestJobFilesReadsCheckRowShape(t *testing.T) {
 				seenExempt[fn.Name.Name] = true
 				continue
 			}
-			t.Errorf("%s reads job_files without checking the stored rows against the stored manifest, so a file_index left over from a torn ReplaceManifest binds to the wrong file (#310).\n"+
+			t.Errorf("%s reads job_files without any reference to ErrManifestStale, so nothing here considers whether the stored rows still match the stored manifest, so a file_index left over from a torn ReplaceManifest binds to the wrong file (#310).\n"+
 				"    Range-check the index and return ErrManifestStale, or add it to rowShapeExempt with the reason a renumber cannot affect it.\n"+
 				"    at %s", fn.Name.Name, fset.Position(fn.Pos()))
 		}
@@ -104,6 +104,15 @@ func TestJobFilesReadsCheckRowShape(t *testing.T) {
 // dynamically is a change worth failing on rather than accommodating.
 // "FROM history_job_files" does not contain "FROM job_files", so the history
 // table's own readers are excluded without a special case.
+//
+// What this does not catch, stated so the gate is not mistaken for more than
+// it is: it keys on the query site, so a function that binds rows obtained
+// from a helper is invisible to it (which is why storedFileRows carries the
+// obligation forward in its exemption reason rather than being waved
+// through); a `JOIN job_files` would not match; and any mention of
+// ErrManifestStale counts as a check, so it proves the author considered the
+// disagreement, not that they handled it correctly. It is a tripwire against
+// a new reader appearing unexamined, not a proof of correctness.
 func jobFilesRead(body *ast.BlockStmt) (reads, guarded bool) {
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch node := n.(type) {
