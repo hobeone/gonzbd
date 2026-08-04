@@ -186,6 +186,10 @@ func cloneJob(j *Job) *Job {
 	j.residencyMu.RLock()
 	cp.hydrateErr = j.hydrateErr
 	cp.manifest = j.manifest
+	// Carried, not recomputed: the store consults this on the snapshot it is
+	// handed, and a clone that lost the flag would let updateTx write
+	// job_files by index against rows that do not match (#310).
+	cp.manifestRowsStale = j.manifestRowsStale
 	progress := j.progress
 	j.residencyMu.RUnlock()
 	if progress != nil {

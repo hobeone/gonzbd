@@ -195,6 +195,32 @@ type Job struct {
 	par2Bytes   int64
 	par2Files   int
 
+	// manifestRowsStale records that this job's persisted job_files rows no
+	// longer describe its in-memory manifest, so nothing may write them by
+	// file_index until a wholesale rewrite reconciles the two.
+	//
+	// One thing sets it: a DiscardDeferredPar2 whose Store.ReplaceManifest
+	// failed. The discard shrinks the file set in memory and is deliberately
+	// not rolled back, so the rows keep the pre-discard shape while the
+	// manifest has the new one — and dropping a non-final file renumbers
+	// every index after it, so row N now belongs to a different file than
+	// manifest entry N.
+	//
+	// SQLiteStore.updateTx writes job_files with UPDATE ... WHERE
+	// file_index = ?, taking each value from the live manifest and never
+	// touching the identity columns. Under that disagreement it splices one
+	// file's progress onto its pre-discard neighbour's row, silently, on
+	// every checkpoint tick until the process restarts (#310).
+	//
+	// Not persisted, and it does not need to be: a restart reloads both the
+	// manifest and the rows from disk, where they still agree with each
+	// other at the pre-discard shape. The disagreement exists only in a
+	// process that has performed the discard.
+	//
+	// Guarded by residencyMu, alongside the manifest pointer whose identity
+	// gives the flag its meaning.
+	manifestRowsStale bool
+
 	// hydrateErr records why an attempt to load this job's manifest from
 	// disk failed, and is nil when no attempt failed. Guarded by
 	// residencyMu alongside the pointers it explains.
@@ -357,6 +383,45 @@ func (j *Job) Progress() *JobProgress {
 	j.residencyMu.RLock()
 	defer j.residencyMu.RUnlock()
 	return j.progress
+}
+
+// ManifestRowsStale reports whether this job's persisted job_files rows are
+// known not to describe its current manifest. See the field's doc comment.
+//
+// Exported so the store can consult a snapshot it was handed. A false here is
+// not proof the two agree — nothing verifies that — only that no failure this
+// process saw made them disagree.
+func (j *Job) ManifestRowsStale() bool {
+	j.residencyMu.RLock()
+	defer j.residencyMu.RUnlock()
+	return j.manifestRowsStale
+}
+
+// setManifestRowsStale records or clears the disagreement. Clearing it is a
+// claim that every job_files row for this job has just been rewritten from
+// the current manifest, which only Store.ReplaceManifest does.
+func (j *Job) setManifestRowsStale(stale bool) {
+	j.residencyMu.Lock()
+	defer j.residencyMu.Unlock()
+	j.manifestRowsStale = stale
+}
+
+// clearManifestRowsStaleIf clears the flag only while j still points at
+// persisted — the manifest whose rows were just written.
+//
+// The check is what makes clearing safe from outside the queue lock. A
+// snapshot shares its source job's manifest by reference (cloneJob), so
+// pointer equality holds exactly while no discard has rebuilt the manifest
+// since the clone was taken. If one has, its own failure or success owns the
+// flag and this stale write must not speak for it.
+func (j *Job) clearManifestRowsStaleIf(persisted *Manifest) bool {
+	j.residencyMu.Lock()
+	defer j.residencyMu.Unlock()
+	if j.manifest != persisted {
+		return false
+	}
+	j.manifestRowsStale = false
+	return true
 }
 
 // setResidency atomically swaps the manifest/progress pointer pair. Queue

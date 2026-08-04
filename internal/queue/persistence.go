@@ -37,6 +37,52 @@ func (q *Queue) Save(dir string) error {
 	return nil
 }
 
+// retryManifestRewrites rewrites the job_files rows of every snapshot whose
+// stored rows are known not to describe its manifest, clearing the flag on the
+// live job when the rewrite lands.
+//
+// Runs on the snapshots, outside q.mu, so a slow rewrite does not hold the
+// lock the dispatcher contends on. Writing a snapshot is safe for the reason
+// UpdateBatch already relies on: it is a point-in-time clone taken under the
+// read lock, so it is internally consistent even if the live job has moved on.
+//
+// Clearing the live flag is the part that needs care, and
+// clearManifestRowsStaleIf handles it: it clears only while the live job still points
+// at the manifest that was just written. A discard that rebuilt the manifest
+// between the clone and now owns the flag, and this rewrite — of a file set
+// that is no longer the job's — must not answer for it.
+//
+// Best effort. A failure leaves the flag raised and the next checkpoint tries
+// again, which is the whole point of recording it rather than acting once.
+func (q *Queue) retryManifestRewrites(ctx context.Context, snapshots []*Job) {
+	for _, snap := range snapshots {
+		if !snap.ManifestRowsStale() {
+			continue
+		}
+		m, mErr := snap.Manifest()
+		if mErr != nil {
+			// Non-resident, so there is no manifest to write the rows from.
+			// Leave it flagged: the rows stay untouched rather than being
+			// written from a file set this process cannot see.
+			q.log.Warn("cannot reconcile job_files: the job is not resident",
+				"job_id", snap.ID, "err", mErr)
+			continue
+		}
+		if err := q.store.ReplaceManifest(ctx, snap); err != nil {
+			q.log.Warn("could not reconcile job_files with the job's manifest; per-file state stays frozen until this succeeds",
+				"job_id", snap.ID, "err", err)
+			continue
+		}
+		snap.setManifestRowsStale(false)
+		q.mu.RLock()
+		live, ok := q.byID[snap.ID]
+		q.mu.RUnlock()
+		if ok && live.clearManifestRowsStaleIf(m) {
+			q.log.Info("job_files reconciled with the job's manifest", "job_id", snap.ID)
+		}
+	}
+}
+
 func (q *Queue) saveStore(_ string) error {
 	q.mu.RLock()
 	snapshots := make([]*Job, 0, len(q.jobs))
@@ -48,6 +94,12 @@ func (q *Queue) saveStore(_ string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// Before the ordinary per-job update, reconcile any job whose stored rows
+	// no longer describe its manifest. updateTx skips the job_files half for
+	// those, so without this they would never be written again for the life
+	// of the process (#310).
+	q.retryManifestRewrites(ctx, snapshots)
 
 	// Persist the jobs before the paused flag: the jobs are the data worth
 	// saving, so a failure to write one bool must not cost us the whole
