@@ -2,6 +2,7 @@ package queue
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,32 +11,35 @@ import (
 
 	"github.com/hobeone/gonzbd/internal/constants"
 	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nzb"
 )
 
-// ---------- LoadJob / SaveJob ----------
+// ---------- Store round trip ----------
 
-func TestSaveJobLoadJob_RoundTrip(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "jobs", "testjob.json.gz")
-
-	j := makeMultiFileJob(t, "savejob-roundtrip", 2, 3)
+// TestJobStateSurvivesStoreRoundTrip pins that a job's per-article and
+// per-file state survives being written down and read back.
+//
+// The channel is the SQLite store, not a serialized job document: SaveJob and
+// LoadJob existed only for the history retry payload, which #298 replaced
+// with the NZB backup plus retained per-file progress.
+//
+// Server stats are deliberately not asserted. They are job-level and the
+// store has never persisted them — the payload carried them only as far as
+// the history entry's Meta string, which buildHistoryEntry still writes.
+func TestJobStateSurvivesStoreRoundTrip(t *testing.T) {
+	// File 0 carries the per-article states; file 1 carries the complete
+	// flag. Keeping them on separate files is deliberate: a complete file's
+	// failed bits are dropped on restore (#300), so seeding both on one
+	// file would make this test assert that pre-existing bug rather than
+	// the round trip.
+	j := makeMultiFileJob(t, "store-roundtrip", 2, 3)
 	j.progress.done.Set(0)
+	j.progress.done.Set(1)
 	j.progress.failed.Set(1)
-	j.progress.files[0].Complete = true
-	j.progress.remainingBytes = 400_000
-	j.progress.failedBytes = 100_000
-	j.progress.serverStats = map[string]int64{"srv-a": 50_000}
+	j.progress.files[1].Complete = true
 
-	if err := SaveJob(path, j); err != nil {
-		t.Fatalf("SaveJob: %v", err)
-	}
-
-	loaded, err := LoadJob(path)
-	if err != nil {
-		t.Fatalf("LoadJob: %v", err)
-	}
+	loaded := storeRoundTrip(t, j)
 
 	if loaded.ID != j.ID {
 		t.Errorf("ID = %q, want %q", loaded.ID, j.ID)
@@ -49,85 +53,17 @@ func TestSaveJobLoadJob_RoundTrip(t *testing.T) {
 	if !loaded.Progress().ArticleFailed(1) {
 		t.Error("article 0,1 should be Failed")
 	}
-	if !loaded.Progress().FileComplete(0) {
-		t.Error("file 0 should be Complete")
+	if loaded.Progress().FileComplete(0) {
+		t.Error("file 0 should NOT be Complete")
 	}
-	if loaded.Progress().FileComplete(1) {
-		t.Error("file 1 should NOT be Complete")
+	if !loaded.Progress().FileComplete(1) {
+		t.Error("file 1 should be Complete")
 	}
-	if loaded.Progress().RemainingBytes() != 400_000 {
-		t.Errorf("RemainingBytes = %d, want 400000", loaded.Progress().RemainingBytes())
-	}
-	if loaded.Progress().FailedBytes() != 100_000 {
-		t.Errorf("FailedBytes = %d, want 100000", loaded.Progress().FailedBytes())
-	}
-	if loaded.Progress().ServerStats()["srv-a"] != 50_000 {
-		t.Errorf("ServerStats[srv-a] = %d, want 50000", loaded.Progress().ServerStats()["srv-a"])
-	}
-	// Emitted flag must NOT survive serialization.
+	// Emitted is transient by design (B.6): it is excluded from persistence
+	// so a restart re-offers articles that were dispatched but never
+	// resolved.
 	if loaded.Progress().ArticleEmitted(0) {
-		t.Error("Emitted should not survive load")
-	}
-}
-
-func TestSaveJob_CreatesDirectory(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nested", "deep", "job.json.gz")
-
-	j := makeJob(t, "mkdirs", constants.NormalPriority)
-	if err := SaveJob(path, j); err != nil {
-		t.Fatalf("SaveJob: %v", err)
-	}
-
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("file should exist at %s: %v", path, err)
-	}
-}
-
-func TestLoadJob_NotExist(t *testing.T) {
-	t.Parallel()
-	_, err := LoadJob("/nonexistent/path/job.json.gz")
-	if err == nil {
-		t.Error("expected error for nonexistent file")
-	}
-}
-
-func TestLoadJob_CorruptGzip(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "corrupt.json.gz")
-	if err := os.WriteFile(path, []byte("not gzip data"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	_, err := LoadJob(path)
-	if err == nil {
-		t.Error("expected error for corrupt gzip")
-	}
-}
-
-func TestSaveJobLoadJob_Overwrite(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "overwrite.json.gz")
-
-	j1 := makeJob(t, "first", constants.NormalPriority)
-	if err := SaveJob(path, j1); err != nil {
-		t.Fatalf("SaveJob 1: %v", err)
-	}
-
-	j2 := makeJob(t, "second", constants.HighPriority)
-	if err := SaveJob(path, j2); err != nil {
-		t.Fatalf("SaveJob 2: %v", err)
-	}
-
-	loaded, err := LoadJob(path)
-	if err != nil {
-		t.Fatalf("LoadJob: %v", err)
-	}
-	if loaded.ID != j2.ID {
-		t.Errorf("loaded job should be the second one (overwritten)")
+		t.Error("Emitted should not survive a round trip")
 	}
 }
 
@@ -189,22 +125,28 @@ func TestSave_RestoresDirtyOnError(t *testing.T) {
 
 // ---------- Save/Load no-leftover temp files ----------
 
-func TestSaveJob_NoLeftoverTempFiles(t *testing.T) {
-	t.Parallel()
+// TestManifestWrite_NoLeftoverTempFiles pins that repeated manifest writes
+// leave no temp files behind. The manifest is now the only gzipped JSON the
+// store writes, so it is where the atomic temp+fsync+rename pattern has to
+// hold.
+func TestManifestWrite_NoLeftoverTempFiles(t *testing.T) {
 	dir := t.TempDir()
-	jobsDir := filepath.Join(dir, "jobs")
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+	store := NewSQLiteStore(repo.DB(), dir, repo)
 
-	j := makeMultiFileJob(t, "clean", 1, 2)
-	path := filepath.Join(jobsDir, j.ID+".json.gz")
-
-	// Save multiple times.
 	for i := range 5 {
-		if err := SaveJob(path, j); err != nil {
-			t.Fatalf("SaveJob %d: %v", i, err)
+		j := makeMultiFileJob(t, fmt.Sprintf("clean-%d", i), 1, 2)
+		if err := store.Add(t.Context(), j); err != nil {
+			t.Fatalf("Add %d: %v", i, err)
 		}
 	}
 
-	entries, err := os.ReadDir(jobsDir)
+	entries, err := os.ReadDir(filepath.Join(dir, "manifests"))
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
 	}
@@ -277,20 +219,12 @@ func TestQueueSaveLoad_TransientCountersRecomputed(t *testing.T) {
 	wantPendingArticles := 4             // 1 + 3
 	wantBytesDownloaded0 := artBytes     // only arts0[0] (successful Done)
 
-	// Persist and reload through SaveJob/LoadJob, which is the per-job
-	// document path the history-retry flow uses. It was q.Save(dir) plus
-	// Load(dir) against a store-less queue, which reached the whole-queue
-	// JSON engine removed in #266; the property under test — transient
-	// counters recomputed and emitted cleared after deserialisation — is
-	// LoadJob's, and is unchanged.
-	jobPath := filepath.Join(dir, "jobs", id+".json.gz")
-	if err := SaveJob(jobPath, j); err != nil {
-		t.Fatalf("SaveJob: %v", err)
-	}
-	got, err := LoadJob(jobPath)
-	if err != nil {
-		t.Fatalf("LoadJob: %v", err)
-	}
+	// Persist and reload through the store, which is now the only thing
+	// that writes a live job down: the whole-queue JSON engine went in #266
+	// and the per-job document went in #298. The property under test —
+	// transient counters recomputed and emitted cleared on load — is
+	// unchanged by either.
+	got := storeRoundTrip(t, j)
 
 	gm, gp := mustManifest(t, got), got.Progress()
 
@@ -502,24 +436,15 @@ func TestJob_RecomputePendingAndLazyArticleByID_Direct(t *testing.T) {
 	}
 }
 
-func TestLoadJob_RecomputesPending(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "jobs", "pending.json.gz")
-
+// TestStoreRoundTrip_RecomputesPending pins that the transient pending
+// counters are rebuilt on load. They are excluded from persistence, so a job
+// that came back with them at zero would never dispatch.
+func TestStoreRoundTrip_RecomputesPending(t *testing.T) {
 	j := makeMultiFileJob(t, "load-recompute", 1, 3)
 	// Articles start !Done, !Emitted from NewJob — all pending by default.
 
-	if err := SaveJob(path, j); err != nil {
-		t.Fatalf("SaveJob: %v", err)
-	}
+	loaded := storeRoundTrip(t, j)
 
-	loaded, err := LoadJob(path)
-	if err != nil {
-		t.Fatalf("LoadJob: %v", err)
-	}
-
-	// Verify that loaded job has recomputed pending counters
 	if loaded.Progress().PendingArticles() != 3 {
 		t.Errorf("loaded.PendingArticles = %d, want 3", loaded.Progress().PendingArticles())
 	}

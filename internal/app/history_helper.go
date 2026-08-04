@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,10 +82,19 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 	}
 
 	entry := history.Entry{
-		Completed:    time.Now(),
-		Name:         job.Queue.Name,
-		NzbName:      job.Queue.Filename,
-		Category:     job.Queue.Category,
+		Completed: time.Now(),
+		Name:      job.Queue.Name,
+		NzbName:   job.Queue.Filename,
+		NZBBackup: job.Queue.NZBBackup,
+		Category:  job.Queue.Category,
+		// The pp/script/password columns have existed since the initial
+		// migration but were never populated. Retry rebuilds a job from its
+		// NZB, which carries none of these, so without them a retried job
+		// silently drops to its category defaults — and an encrypted
+		// archive fails to unpack for want of a password we had.
+		PP:           strconv.Itoa(job.Queue.PP),
+		Script:       job.Queue.Script,
+		Password:     job.Queue.Password,
 		Status:       "Completed",
 		NzoID:        job.Queue.ID,
 		Storage:      job.FinalDir,

@@ -5,8 +5,6 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"path/filepath"
-
 	"github.com/hobeone/gonzbd/internal/constants"
 )
 
@@ -267,8 +265,6 @@ func TestPendingCounter_ForEachSkipsCompletedJobs(t *testing.T) {
 }
 
 func TestPendingCounter_PersistenceRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-
 	// Create queue, add job, mark some articles, save
 	q := New()
 	_ = q.Add(makeTestJob("j1", 2, 3))
@@ -277,19 +273,11 @@ func TestPendingCounter_PersistenceRoundTrip(t *testing.T) {
 	_ = q.MarkArticleDone("j1", artID(0, 2))
 	verifyPending(t, q, "before save")
 
-	// Round-trip through SaveJob/LoadJob, the per-job document path the
-	// history-retry flow uses. This was q.Save(dir) plus Load(dir) against a
-	// store-less queue, which reached the whole-queue JSON engine removed in
-	// #266; the property under test — pending counters recomputed from the
-	// persisted done flags — belongs to LoadJob and is unchanged.
-	jobPath := filepath.Join(dir, "jobs", "j1.json.gz")
-	if err := SaveJob(jobPath, q.jobs[0]); err != nil {
-		t.Fatal(err)
-	}
-	job, err := LoadJob(jobPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Round-trip through the store — the only path that writes a live job
+	// down since #266 removed the whole-queue engine and #298 the per-job
+	// document. The property under test, pending counters rebuilt from the
+	// persisted done flags, is unchanged by either.
+	job := storeRoundTrip(t, q.jobs[0])
 	if job.Progress().PendingArticles() != 3 {
 		t.Errorf("PendingArticles=%d want 3", job.Progress().PendingArticles())
 	}
@@ -339,24 +327,15 @@ func TestBytesDownloaded_TrackedByMarkArticlesDone(t *testing.T) {
 }
 
 func TestBytesDownloaded_RecomputeAfterLoad(t *testing.T) {
-	dir := t.TempDir()
 	q := New()
 	job := makeTestJob("j1", 2, 2)
 	_ = q.Add(job)
 	_ = q.MarkArticlesDone("j1", []string{artID(0, 0), artID(1, 0)})
 
-	// SaveJob/LoadJob rather than a store-less Save/Load round-trip, which
-	// went through the whole-queue JSON engine removed in #266. The property
-	// — per-file BytesDownloaded recomputed from the persisted done flags on
-	// deserialisation — is LoadJob's and is unchanged.
-	jobPath := filepath.Join(dir, "jobs", "j1.json.gz")
-	if err := SaveJob(jobPath, job); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := LoadJob(jobPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Through the store, for the same reason as above. The property —
+	// per-file BytesDownloaded rebuilt from the persisted done flags — is
+	// unchanged.
+	loaded := storeRoundTrip(t, job)
 	if got := loaded.Progress().FileBytesDownloaded(0); got != 1000 {
 		t.Errorf("file 0 BytesDownloaded = %d; want 1000 (recomputed on load)", got)
 	}

@@ -44,6 +44,43 @@ func (s *SQLiteStore) Dir() string {
 	return s.dir
 }
 
+// withWriteTx runs fn inside a write transaction, committing on success and
+// rolling back on any error.
+//
+// It deliberately does not retry. An earlier version did, on the theory that
+// a contended transaction should be restarted, and that was wrong twice over
+// once _txlock=immediate landed in internal/history/db.go:
+//
+//   - It buys nothing. Taking the write lock at BEGIN means contention is an
+//     ordinary wait that busy_timeout(5000) already performs, so a failure
+//     here is a transaction that waited five seconds and still lost. Measured
+//     against an unthrottled competing writer, a single attempt succeeds as
+//     reliably as ten (0 failures in 20 runs of
+//     TestSQLiteStore_AddSurvivesConcurrentCommits either way).
+//   - It costs a great deal. Contention now surfaces at BeginTx, which blocks
+//     for the full busy_timeout rather than failing fast — measured at 5.01s —
+//     so retrying multiplied the wait rather than avoiding it: ten attempts
+//     took 48.8s to fail. Queue.Add calls store.Add and store.ShiftSortKey
+//     back to back inside q.mu, so that stall would have frozen every other
+//     queue operation for the duration.
+//
+// The bounded five-second wait busy_timeout provides is the whole retry
+// policy, and it lives in one place rather than being multiplied here.
+func (s *SQLiteStore) withWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite store begin tx: %w", err)
+	}
+	err = fn(tx)
+	if err == nil {
+		err = tx.Commit()
+	}
+	// Safe after a successful Commit: Rollback then returns ErrTxDone,
+	// which is exactly the "already finished" signal, not a failure.
+	_ = tx.Rollback()
+	return err
+}
+
 func (s *SQLiteStore) resequenceTx(ctx context.Context, tx *sql.Tx) error {
 	rows, err := tx.QueryContext(ctx, "SELECT id FROM jobs ORDER BY sort_key ASC, time_added ASC")
 	if err != nil {
@@ -149,12 +186,37 @@ func (s *SQLiteStore) decodeArticlesDone(encoded string, job *Job, fileIdx int) 
 
 // Add inserts a new active job into the store and writes its manifest to disk.
 func (s *SQLiteStore) Add(ctx context.Context, job *Job) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite store begin tx add: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	m, mErr := job.Manifest()
+	hasManifest := mErr == nil
 
+	// The manifest goes to disk before the transaction opens, not inside it.
+	// Writing it inside meant holding SQLite's write lock across an fsync,
+	// which is the single widest window a competing writer can collide with.
+	//
+	// Before rather than after, so a failure is clean: no row is inserted at
+	// all. The reverse ordering would leave a row whose manifest is missing.
+	// A crash between the two leaves an orphan manifest instead, which Prune
+	// already sweeps against the active job set.
+	if hasManifest {
+		manifestPath := filepath.Join(s.dir, "manifests", job.ID+".json.gz")
+		if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
+			return fmt.Errorf("sqlite store mkdir manifests: %w", err)
+		}
+		if err := writeGzJSON(manifestPath, m); err != nil {
+			return fmt.Errorf("sqlite store write manifest %s: %w", job.ID, err)
+		}
+	}
+
+	return s.withWriteTx(ctx, func(tx *sql.Tx) error {
+		return s.addTx(ctx, tx, job, m, hasManifest)
+	})
+}
+
+// addTx is Add's transactional half, split out so withWriteTx can run it
+// again on a fresh transaction after contention. It must stay free of
+// side effects outside the transaction — the manifest write is deliberately
+// its caller's job.
+func (s *SQLiteStore) addTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manifest, hasManifest bool) error {
 	var sortKey int
 	row := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(sort_key), -1) + 1 FROM jobs")
 	if err := row.Scan(&sortKey); err != nil {
@@ -178,15 +240,15 @@ func (s *SQLiteStore) Add(ctx context.Context, job *Job) error {
 INSERT INTO jobs
   (id, filename, name, password, url, category, priority, status, pp, script,
    time_added, md5, avg_age, groups, meta, warning, postproc, sort_key,
-   download_started, download_finished, par2_bytes, par2_files)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+   download_started, download_finished, par2_bytes, par2_files, nzb_backup)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	postprocInt := 0
 	if job.PostProc {
 		postprocInt = 1
 	}
 
-	_, err = tx.ExecContext(ctx, qJobs,
+	_, err := tx.ExecContext(ctx, qJobs,
 		job.ID, job.Filename, job.Name, job.Password, job.URL, job.Category,
 		int(job.Priority), string(job.Status), job.PP, job.Script,
 		job.Added.Unix(), job.MD5, job.AvgAge.Unix(), string(groupsJSON), string(metaJSON),
@@ -195,12 +257,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		// at Add and stay correct while the manifest is evicted, so this
 		// writes the right values even for a job persisted while non-resident.
 		job.Par2Bytes(), job.Par2Files(),
+		job.NZBBackup,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite store insert job %s: %w", job.ID, err)
 	}
 
-	if m, mErr := job.Manifest(); mErr == nil {
+	if hasManifest {
 		const qFiles = `
 INSERT INTO job_files
   (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, article_count)
@@ -238,17 +301,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			}
 		}
 
-		manifestPath := filepath.Join(s.dir, "manifests", job.ID+".json.gz")
-		if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
-			return fmt.Errorf("sqlite store mkdir manifests: %w", err)
-		}
-		if err := writeGzJSON(manifestPath, m); err != nil {
-			return fmt.Errorf("sqlite store write manifest %s: %w", job.ID, err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("sqlite store commit add %s: %w", job.ID, err)
 	}
 	return nil
 }
@@ -258,7 +310,8 @@ func (s *SQLiteStore) Get(ctx context.Context, id string) (*Job, error) {
 	const qJob = `
 SELECT id, filename, name, COALESCE(password, ''), COALESCE(url, ''), COALESCE(category, ''), priority, status, pp, COALESCE(script, ''),
        time_added, md5, avg_age, COALESCE(groups, ''), COALESCE(meta, ''), COALESCE(warning, ''), postproc,
-       download_started, download_finished, par2_bytes, par2_files
+       download_started, download_finished, par2_bytes, par2_files,
+       COALESCE(nzb_backup, '')
 FROM jobs WHERE id = ?`
 
 	var job Job
@@ -271,6 +324,7 @@ FROM jobs WHERE id = ?`
 		&priorityInt, &statusStr, &ppInt, &job.Script, &addedUnix, &job.MD5, &avgAgeUnix,
 		&groupsStr, &metaStr, &job.Warning, &postprocInt,
 		&dlStartedUnix, &dlFinishedUnix, &par2Bytes, &par2Files,
+		&job.NZBBackup,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -681,6 +735,24 @@ func (s *SQLiteStore) MoveToHistory(ctx context.Context, job *Job, entry history
 		return fmt.Errorf("sqlite store add history %s: %w", job.ID, err)
 	}
 
+	// A failed job keeps its per-file progress so a retry can refetch only
+	// the articles that did not make it — including the case where every
+	// article is present and only post-processing failed, which must not
+	// re-download anything. A completed job has nothing to retry, and
+	// retaining for every job is what made the payload format this replaces
+	// grow without bound. Same transaction as the delete below, so the rows
+	// are either carried over or not written at all.
+	if entry.Status == string(constants.StatusFailed) {
+		const qRetain = `
+INSERT INTO history_job_files
+  (job_id, file_index, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, article_count)
+SELECT job_id, file_index, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, article_count
+FROM job_files WHERE job_id = ?`
+		if _, err := tx.ExecContext(ctx, qRetain, job.ID); err != nil {
+			return fmt.Errorf("sqlite store retain job_files %s: %w", job.ID, err)
+		}
+	}
+
 	if _, err := tx.ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", job.ID); err != nil {
 		return fmt.Errorf("sqlite store delete job_files %s: %w", job.ID, err)
 	}
@@ -701,18 +773,149 @@ func (s *SQLiteStore) MoveToHistory(ctx context.Context, job *Job, entry history
 	return nil
 }
 
-// DeleteJobArtifacts removes the on-disk manifest and progress files for job
-// id. See the Store interface doc comment for the ordering requirement this
-// depends on and why deletion is best-effort.
+// RetainedFile is one file's download progress, kept for a failed job so a
+// retry can skip the articles that already succeeded.
+//
+// ArticleCount is not part of that progress. It is the alignment check: a
+// retry rebuilds the manifest by re-parsing the NZB, and ArticlesDone is a
+// bitmap indexed against the manifest that produced it. Applying it to a
+// manifest with a different shape would mark the wrong articles done and
+// silently skip real downloads, so the counts must match before the overlay
+// is used.
+type RetainedFile struct {
+	FileIndex       int
+	Complete        bool
+	Deferred        bool
+	WriteCursor     int64
+	BytesDownloaded int64
+	Filename        string
+	AssembledCRC32  uint32
+	ArticlesDone    string
+	ArticleCount    int
+}
+
+// HistoryFileProgress returns the per-file progress retained for a failed
+// history job, ordered by file index. An empty slice means nothing was
+// retained — the job succeeded, its entry predates retention, or its rows
+// were already deleted — and is not an error.
+func (s *SQLiteStore) HistoryFileProgress(ctx context.Context, jobID string) ([]RetainedFile, error) {
+	const q = `
+SELECT file_index, complete, deferred, write_cursor, bytes_downloaded,
+       COALESCE(filename, ''), COALESCE(assembled_crc32, 0), COALESCE(articles_done, ''), article_count
+FROM history_job_files WHERE job_id = ? ORDER BY file_index ASC`
+	rows, err := s.db.QueryContext(ctx, q, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite store history file progress %s: %w", jobID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []RetainedFile
+	for rows.Next() {
+		var f RetainedFile
+		var complete, deferred int
+		if err := rows.Scan(&f.FileIndex, &complete, &deferred, &f.WriteCursor,
+			&f.BytesDownloaded, &f.Filename, &f.AssembledCRC32, &f.ArticlesDone, &f.ArticleCount); err != nil {
+			return nil, fmt.Errorf("sqlite store scan history_job_file %s: %w", jobID, err)
+		}
+		f.Complete = complete != 0
+		f.Deferred = deferred != 0
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite store history file progress rows %s: %w", jobID, err)
+	}
+	return out, nil
+}
+
+// RestoreRetryProgress overlays a failed job's retained per-file progress
+// onto a job rebuilt by re-parsing its NZB, so the retry refetches only the
+// articles that did not succeed. It reports whether the overlay was applied.
+//
+// Not applied is an ordinary outcome, not an error: nothing was retained
+// (the job completed, or its entry predates retention), or the rebuilt
+// manifest does not match the shape the bitmap was written against. Both
+// mean "download this job from scratch", which is correct if wasteful.
+//
+// The alignment check exists because articles_done is indexed positionally
+// against the manifest that produced it. Re-parsing the same NZB bytes is
+// deterministic and yields the same shape, so a mismatch means the recorded
+// backup is not the NZB this job was built from. Applying the bitmap anyway
+// would mark the wrong articles done — and a done article is never
+// requested, so the job would finish "successfully" with missing data. The
+// cost of refusing is bounded and visible; the cost of applying is silent
+// corruption.
+func (s *SQLiteStore) RestoreRetryProgress(ctx context.Context, job *Job) (bool, error) {
+	if job == nil || job.progress == nil || job.manifest == nil {
+		return false, nil
+	}
+	retained, err := s.HistoryFileProgress(ctx, job.ID)
+	if err != nil {
+		return false, err
+	}
+	if len(retained) == 0 {
+		return false, nil
+	}
+	if !retainedMatchesManifest(retained, job.manifest) {
+		s.log.Warn("retained progress does not match the re-parsed NZB, retrying from scratch",
+			"job_id", job.ID, "retained_files", len(retained), "manifest_files", job.manifest.NumFiles())
+		return false, nil
+	}
+
+	for _, f := range retained {
+		fp := &job.progress.files[f.FileIndex]
+		fp.BytesDownloaded = f.BytesDownloaded
+		fp.WriteCursor = f.WriteCursor
+		fp.AssembledCRC32 = f.AssembledCRC32
+		// Unlike RestoreJobProgress, the resolved on-disk filename is
+		// carried over. A retry can go straight back into post-processing
+		// without a download pass (every article already resolved), and
+		// postproc's file list and QuickCheck read this name.
+		fp.Filename = f.Filename
+		if f.Complete {
+			fp.Complete = true
+			lo, hi := job.manifest.FileRange(f.FileIndex)
+			for a := lo; a < hi; a++ {
+				job.progress.markDone(job.manifest, a)
+			}
+		} else if f.ArticlesDone != "" {
+			s.decodeArticlesDone(f.ArticlesDone, job, f.FileIndex)
+		}
+		if f.Deferred {
+			fp.Deferred = true
+		}
+	}
+	job.progress.recompute(job.manifest)
+	return true, nil
+}
+
+// retainedMatchesManifest reports whether retained describes exactly the
+// files m has, in the same order and with the same article counts. See
+// RestoreRetryProgress for why anything less is refused rather than
+// best-effort merged.
+func retainedMatchesManifest(retained []RetainedFile, m *Manifest) bool {
+	if len(retained) != m.NumFiles() {
+		return false
+	}
+	for i, f := range retained {
+		if f.FileIndex != i {
+			return false
+		}
+		lo, hi := m.FileRange(i)
+		if f.ArticleCount != hi-lo {
+			return false
+		}
+	}
+	return true
+}
+
+// DeleteJobArtifacts removes the on-disk manifest for job id. See the Store
+// interface doc comment for the ordering requirement this depends on and why
+// deletion is best-effort.
 func (s *SQLiteStore) DeleteJobArtifacts(_ context.Context, id string) error {
-	var errs []error
 	if err := os.Remove(filepath.Join(s.dir, "manifests", id+".json.gz")); err != nil && !os.IsNotExist(err) {
-		errs = append(errs, fmt.Errorf("remove manifest: %w", err))
+		return fmt.Errorf("remove manifest: %w", err)
 	}
-	if err := os.Remove(filepath.Join(s.dir, "progress", id+".json.gz")); err != nil && !os.IsNotExist(err) {
-		errs = append(errs, fmt.Errorf("remove progress: %w", err))
-	}
-	return errors.Join(errs...)
+	return nil
 }
 
 // ExistsByName checks if an active job with the given name exists using an index.
@@ -737,12 +940,14 @@ func (s *SQLiteStore) ExistsByMD5(ctx context.Context, md5 string) (bool, error)
 
 // ShiftSortKey reorders a job to a new integer 0-based index position.
 func (s *SQLiteStore) ShiftSortKey(ctx context.Context, id string, newIndex int) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite store begin tx shift: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	// Reads the whole ordering, then rewrites it: the same read-then-write
+	// upgrade as Add, and so the same need to restart on contention.
+	return s.withWriteTx(ctx, func(tx *sql.Tx) error {
+		return s.shiftSortKeyTx(ctx, tx, id, newIndex)
+	})
+}
 
+func (s *SQLiteStore) shiftSortKeyTx(ctx context.Context, tx *sql.Tx, id string, newIndex int) error {
 	rows, err := tx.QueryContext(ctx, "SELECT id FROM jobs ORDER BY sort_key ASC, time_added ASC")
 	if err != nil {
 		return fmt.Errorf("sqlite store shift query: %w", err)
@@ -783,10 +988,6 @@ func (s *SQLiteStore) ShiftSortKey(ctx context.Context, id string, newIndex int)
 			return fmt.Errorf("sqlite store shift update %s: %w", jobID, err)
 		}
 	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("sqlite store commit shift %s: %w", id, err)
-	}
 	return nil
 }
 
@@ -824,7 +1025,6 @@ func (s *SQLiteStore) Prune(ctx context.Context) error {
 	}
 
 	cleanDir("manifests")
-	cleanDir("progress")
 	cleanDir("jobs")
 	_ = os.Remove(filepath.Join(s.dir, "queue.json.gz"))
 	return nil

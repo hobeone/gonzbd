@@ -6,12 +6,14 @@
 package app
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,9 +29,11 @@ import (
 	"github.com/hobeone/gonzbd/internal/history"
 	"github.com/hobeone/gonzbd/internal/nntp"
 	"github.com/hobeone/gonzbd/internal/notifier"
+	"github.com/hobeone/gonzbd/internal/nzb"
 	"github.com/hobeone/gonzbd/internal/par2"
 	"github.com/hobeone/gonzbd/internal/postproc"
 	"github.com/hobeone/gonzbd/internal/queue"
+	"github.com/hobeone/gonzbd/internal/types"
 )
 
 // ErrAlreadyStarted is returned by Start on the second call to a live
@@ -454,10 +458,23 @@ func (app *Application) AddJob(ctx context.Context, job *queue.Job, rawNZB []byt
 		}
 		return false
 	})
-	if !isDuplicate && job.Filename != "" {
-		backupPath := filepath.Join(nzbDir, filepath.Base(job.Filename)+".gz")
-		if err := writeGzFile(backupPath, rawNZB); err != nil {
-			app.log.Warn("failed to write gzipped NZB backup", "path", backupPath, "err", err)
+	// Write the backup for every job that enters the queue, duplicate or
+	// not. It used to be skipped for duplicates, which meant a forced
+	// re-add downloaded normally and finalized with no NZB on disk — and
+	// since the backup is the only surviving copy of the article
+	// message-IDs once the manifest is unlinked, that job was silently
+	// unretryable. A non-forced duplicate is enqueued paused and can still
+	// be resumed, so it needs one too.
+	if job.Filename != "" && len(rawNZB) > 0 {
+		name, err := writeNZBBackup(nzbDir, job.Filename, rawNZB)
+		if err != nil {
+			// Not fatal: the download itself does not need the backup.
+			// job.NZBBackup stays empty and RetryHistoryJob reports the
+			// absence rather than failing obscurely later.
+			app.log.Warn("failed to write gzipped NZB backup; job will not be retryable",
+				"filename", job.Filename, "err", err)
+		} else {
+			job.NZBBackup = name
 		}
 	}
 	addStatus := job.Status // snapshot before q.Add notifies the dispatcher
@@ -537,10 +554,34 @@ func (app *Application) RemoveHistoryJob(ctx context.Context, id string, deleteF
 			app.log.Warn("failed to delete history job directory", "path", entry.Path, "err", err)
 		}
 	}
-	if _, err := app.historyRepo.Delete(ctx, id); err != nil {
+	if err := app.deleteHistoryEntry(ctx, entry); err != nil {
 		return err
 	}
 	app.emit(Event{Type: "history_updated"})
+	return nil
+}
+
+// deleteHistoryEntry removes a history entry and the NZB backup it owns.
+//
+// The retained per-file progress is cleaned up inside Repository.Delete, in
+// the same transaction as the row. The backup cannot be: it is a file, and
+// the history package has no business touching the admin directory. So this
+// is the app-level choke point that every history deletion must route
+// through — the SQL half closes by construction, this half by convention.
+//
+// A missing or unnamed backup is not an error. Entries written before the
+// name was recorded have none, and the download itself never depended on it.
+func (app *Application) deleteHistoryEntry(ctx context.Context, entry *history.Entry) error {
+	if entry.NZBBackup != "" {
+		backupPath := filepath.Join(app.config.GetGeneral().AdminDir, "nzb", filepath.Base(entry.NZBBackup))
+		if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+			app.log.Warn("failed to remove NZB backup for deleted history entry",
+				"path", backupPath, "err", err)
+		}
+	}
+	if _, err := app.historyRepo.Delete(ctx, entry.NzoID); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1267,23 +1308,114 @@ func (app *Application) enqueuePostProc(job *queue.Job, failMsg string) {
 // SetQuickCheckEnabled enables or disables the CRC pre-verify pass at runtime
 // without restarting. Takes effect for the next job that enters post-processing.
 
-// RetryHistoryJob re-enqueues a completed/failed history job for re-download.
-// Failed articles are reset; the history entry is deleted on success.
+// rebuildJobFromNZB reconstructs a queue.Job for a history entry by
+// re-parsing the gzipped NZB backup recorded on it.
+//
+// This is where the article message-IDs come back. They are not in SQLite —
+// job_files holds per-file metadata and a per-article bitmap, never the
+// <id@host> strings a BODY command needs — and the job's manifest was
+// unlinked when it finalized. The NZB is the only remaining copy, which is
+// why the backup's name is recorded on the entry.
+//
+// The rebuilt job takes the entry's ID so its retained progress, its
+// incomplete directory, and any later history entry all still line up.
+func (app *Application) rebuildJobFromNZB(entry *history.Entry) (*queue.Job, error) {
+	if entry.NZBBackup == "" {
+		return nil, fmt.Errorf("app: retry %s: no NZB backup was recorded for this job", entry.NzoID)
+	}
+	adminDir := app.config.GetGeneral().AdminDir
+	// filepath.Base defends against a stored value containing separators;
+	// the column is written by us but is not a trust boundary we control
+	// once the database is on disk.
+	path := filepath.Join(adminDir, "nzb", filepath.Base(entry.NZBBackup))
+
+	f, err := os.Open(path) //nolint:gosec // path is adminDir-rooted with the basename taken above
+	if err != nil {
+		return nil, fmt.Errorf("app: retry %s: open NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, fmt.Errorf("app: retry %s: read NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
+	}
+	defer func() { _ = gz.Close() }()
+
+	parsed, err := nzb.Parse(gz)
+	if err != nil {
+		return nil, fmt.Errorf("app: retry %s: parse NZB backup %q: %w", entry.NzoID, entry.NZBBackup, err)
+	}
+
+	pp := types.PPInherit
+	if entry.PP != "" {
+		if n, convErr := strconv.Atoi(entry.PP); convErr == nil {
+			pp = n
+		}
+	}
+	job, err := BuildIngestJob(app.config, parsed, entry.NzbName, types.FetchOptions{
+		NzbName:  entry.Name,
+		Category: entry.Category,
+		Script:   entry.Script,
+		Password: entry.Password,
+		PP:       pp,
+	}, app.log)
+	if err != nil {
+		return nil, fmt.Errorf("app: retry %s: %w", entry.NzoID, err)
+	}
+	job.ID = entry.NzoID
+	job.NZBBackup = entry.NZBBackup
+	return job, nil
+}
+
+// RetryHistoryJob re-enqueues a failed history job for re-download.
+//
+// The job is rebuilt by re-parsing the NZB recorded on its history entry —
+// the only place the article message-IDs survive once the manifest is
+// unlinked at finalization — and then overlaid with the per-file progress
+// retained for failed jobs, so only the articles that did not succeed are
+// refetched. Where every article already resolved and only post-processing
+// failed, the overlay is what sends the job straight back to post-processing
+// instead of re-downloading it in full.
+//
+// Only failed entries are retryable, matching SABnzbd, whose
+// get_incomplete_path returns a path only for status = Failed. A completed
+// job has nothing to retry.
+//
+// The history entry is deleted on success.
 func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error {
-	_, err := app.historyRepo.Get(ctx, jobID)
+	entry, err := app.historyRepo.Get(ctx, jobID)
 	if err != nil {
 		return err
 	}
-	adminDir := app.config.GetGeneral().AdminDir
-	jobPath := filepath.Join(adminDir, "history", "jobs", jobID+".json.gz")
-	job, err := queue.LoadJob(jobPath)
+	if entry.Status != string(constants.StatusFailed) {
+		return fmt.Errorf("app: retry %s: only failed jobs can be retried, this one is %q",
+			jobID, entry.Status)
+	}
+
+	job, err := app.rebuildJobFromNZB(entry)
 	if err != nil {
 		return err
+	}
+	if store := app.queue.Store(); store != nil {
+		applied, rErr := store.RestoreRetryProgress(ctx, job)
+		if rErr != nil {
+			return fmt.Errorf("app: retry %s: restore retained progress: %w", jobID, rErr)
+		}
+		if !applied {
+			app.log.Info("no usable retained progress for retry; downloading from scratch",
+				"job", jobID)
+		}
 	}
 	job.ResetForRetry()
 	if err := app.queue.Add(job); err != nil {
 		return err
 	}
+	// Deliberately Delete rather than deleteHistoryEntry: the job is going
+	// back into the queue under the same ID and the same NZBBackup, and if
+	// it fails again it will finalize into a new history entry naming that
+	// same file. Removing the backup here would make the second failure
+	// unretryable. The retained per-file progress does go, because Add has
+	// just written fresh job_files rows that supersede it.
 	_, _ = app.historyRepo.Delete(ctx, jobID)
 	app.emit(Event{Type: "queue_updated"})
 	app.emit(Event{Type: "history_updated"})
@@ -1529,6 +1661,30 @@ func failMsgForJob(job *queue.Job) string {
 // temp+fsync+rename to prevent corruption on crash.
 func writeGzFile(path string, data []byte) error {
 	return fsutil.WriteGzAtomicBytes(path, data)
+}
+
+// writeNZBBackup stores rawNZB gzipped under nzbDir and returns the basename
+// it used, which the caller records on the job so a retry can find it again.
+//
+// The file keeps the name the NZB was submitted under, because admin/nzb/ is
+// browsed by hand to find an NZB to re-add or inspect. When that name is
+// already taken — only reachable via a forced duplicate add — it takes the
+// same ".1"/".2" suffix queue.UniqueName gives colliding job names, rather
+// than overwriting and losing the earlier NZB.
+//
+// The stat-then-write window is the same benign TOCTOU AddJob already accepts
+// for job names: this daemon is single-instance, and a lost race costs one
+// overwritten backup rather than any queue state.
+func writeNZBBackup(nzbDir, filename string, rawNZB []byte) (string, error) {
+	base := filepath.Base(filename)
+	name := queue.UniqueName(base, func(candidate string) bool {
+		_, err := os.Stat(filepath.Join(nzbDir, candidate+".gz"))
+		return err == nil
+	}) + ".gz"
+	if err := writeGzFile(filepath.Join(nzbDir, name), rawNZB); err != nil {
+		return "", err
+	}
+	return name, nil
 }
 
 // NNTPTestResult holds outcome metrics for an on-demand NNTP server test connection.

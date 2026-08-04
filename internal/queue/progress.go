@@ -483,9 +483,10 @@ func (p *JobProgress) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON implements json.Unmarshaler. pendingArticles/
-// articlesResolved/articlesFailed are left zero; callers (Load/LoadJob)
-// must call recompute afterward to rebuild them from done/failed/emitted
-// ground truth.
+// articlesResolved/articlesFailed are left zero; a caller must invoke
+// recompute afterward to rebuild them from done/failed/emitted ground
+// truth. Reached only through Job.UnmarshalJSON, which since #298 has no
+// production caller of its own.
 func (p *JobProgress) UnmarshalJSON(data []byte) error {
 	var pj jobProgressJSON
 	if err := json.Unmarshal(data, &pj); err != nil {

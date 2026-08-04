@@ -142,21 +142,22 @@ func hydrateSnapshot(log *slog.Logger, stateDir string, store Store, cp *Job) {
 // exactly right: ready to use, uncontended, and unrelated to j's.
 func cloneJob(j *Job) *Job {
 	cp := &Job{
-		ID:       j.ID,
-		Filename: j.Filename,
-		Name:     j.Name,
-		Password: j.Password,
-		URL:      j.URL,
-		Category: j.Category,
-		Priority: j.Priority,
-		Status:   j.Status,
-		PP:       j.PP,
-		Script:   j.Script,
-		Added:    j.Added,
-		MD5:      j.MD5,
-		AvgAge:   j.AvgAge,
-		Warning:  j.Warning,
-		PostProc: j.PostProc,
+		ID:        j.ID,
+		Filename:  j.Filename,
+		NZBBackup: j.NZBBackup,
+		Name:      j.Name,
+		Password:  j.Password,
+		URL:       j.URL,
+		Category:  j.Category,
+		Priority:  j.Priority,
+		Status:    j.Status,
+		PP:        j.PP,
+		Script:    j.Script,
+		Added:     j.Added,
+		MD5:       j.MD5,
+		AvgAge:    j.AvgAge,
+		Warning:   j.Warning,
+		PostProc:  j.PostProc,
 
 		// Manifest-derived scalars are immutable once set and do not depend
 		// on residency — they must be carried verbatim so a snapshot's

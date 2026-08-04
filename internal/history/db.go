@@ -41,7 +41,24 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// so they apply to every connection in the pool, not just one random
 	// checkout. journal_mode=WAL is database-scoped (persists on disk)
 	// and only needs to run once via Exec.
-	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
+	// _txlock=immediate makes every BeginTx issue BEGIN IMMEDIATE, taking
+	// the write lock up front instead of upgrading to it on the first write.
+	//
+	// Without it, a transaction that reads before it writes — Add's
+	// SELECT MAX(sort_key) then INSERT is the canonical one — has to upgrade
+	// mid-transaction, and SQLite answers a contended upgrade with
+	// SQLITE_BUSY (or BUSY_SNAPSHOT) *immediately* rather than invoking the
+	// busy handler: waiting while already holding a read snapshot could
+	// deadlock. That put busy_timeout below out of reach for exactly the
+	// case it was configured for, and made a job finalizing concurrently
+	// with a job being added fail the add outright.
+	//
+	// Taking the lock at BEGIN removes the upgrade, so contention becomes an
+	// ordinary wait that busy_timeout covers. The cost is that write
+	// transactions serialize from their first statement rather than their
+	// first write, which SQLite does anyway — it permits one writer at a
+	// time regardless.
+	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_txlock=immediate"
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("history: open %q: %w", path, err)
@@ -49,6 +66,11 @@ func Open(ctx context.Context, path string) (*DB, error) {
 
 	// Bound the pool — SQLite serializes writes anyway, and keeping
 	// many idle connections just wastes file descriptors.
+	//
+	// This is not the steady-state value: it is raised to 25 at the end of
+	// this function, so 4 governs only the startup below (ping, WAL,
+	// migrations, VACUUM). See #302 — the two bounds arrived in separate
+	// commits and it is unresolved whether the staging is deliberate.
 	sqlDB.SetMaxOpenConns(4)
 
 	if err := sqlDB.PingContext(ctx); err != nil {
@@ -86,13 +108,26 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	}
 
 	// 25 is deliberate headroom, not a measured figure: actual API
-	// concurrency here is single-digit, and SQLite serializes writers
-	// regardless of pool size (mitigated by busy_timeout(5000) in the
-	// DSN above), so this will not realistically contend. Kept wide
-	// rather than tuned to ~8-10 because there's no evidence tighter
-	// bounds are needed; revisit if profiling shows connection
-	// exhaustion or contention under real load. Accepted risk, tracked
-	// as issue #112 (R6).
+	// concurrency here is single-digit, and SQLite permits one writer at a
+	// time regardless of pool size, so a wider pool buys queueing rather
+	// than parallelism. Kept wide rather than tuned to ~8-10 because there
+	// is no evidence tighter bounds are needed; revisit if profiling shows
+	// connection exhaustion or contention under real load.
+	//
+	// This used to argue that contention was "mitigated by busy_timeout(5000)
+	// in the DSN above", and record the residual as an accepted risk under
+	// #112. Both parts have gone stale. #112 is closed, and the mitigation
+	// had a hole: busy_timeout only governs waits the busy handler runs, and
+	// a deferred transaction upgrading from read to write never reached it —
+	// SQLite fails a contended upgrade immediately rather than risk a
+	// deadlock. That is what made concurrent adds fail outright, and it is
+	// fixed above by _txlock=immediate, which takes the write lock at BEGIN
+	// so contention is an ordinary wait that busy_timeout does cover.
+	//
+	// Note the pool is bounded twice in this function: 4 near the top, which
+	// governs startup through the migrations and VACUUM, and 25 here for
+	// everything after. Whether that staging is intended is unresolved —
+	// see #302.
 	sqlDB.SetMaxOpenConns(25)
 	sqlDB.SetMaxIdleConns(25)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)

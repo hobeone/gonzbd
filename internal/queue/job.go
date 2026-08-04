@@ -78,6 +78,15 @@ type Job struct {
 	// before the server provided a Content-Disposition).
 	Filename string
 
+	// NZBBackup is the basename of the gzipped NZB this job was backed up
+	// to under admin/nzb/. Usually Filename + ".gz", but a forced duplicate
+	// add takes a ".1"/".2" suffix rather than overwrite an existing
+	// backup, so the two can diverge. Retry re-parses this file to recover
+	// the article message-IDs, which live nowhere else once the job's
+	// manifest is unlinked at finalization. Empty for jobs added before
+	// the backup became load-bearing, or when the add supplied no filename.
+	NZBBackup string
+
 	// Name is the display name. Defaults to Filename minus extension;
 	// callers can override via AddOptions.Name.
 	Name string
@@ -767,8 +776,11 @@ func (j *Job) ResetForRetry() {
 	// unconverted, because it is unreachable and the alternative costs more
 	// than it buys. Both callers guarantee a hydrated job: Queue.Retry runs
 	// hydrateJobLocked first and fails closed on error, and the history-retry
-	// path builds the job with queue.LoadJob, which reads manifest and
-	// progress together. Giving this an error return to report a state
+	// path (app.rebuildJobFromNZB) builds the job with NewJob, which assigns
+	// manifest and progress together on its only success path — see the
+	// newManifest/newJobProgress pair in NewJob. It used to build it with
+	// queue.LoadJob, removed in #298; the guarantee survived the change of
+	// constructor. Giving this an error return to report a state
 	// neither caller can produce would change an exported signature for a
 	// branch that cannot execute. If a third caller ever arrives, it must
 	// hydrate first — the reset is defined in terms of which articles failed,
@@ -821,23 +833,24 @@ func (j *Job) MarkDownloadFinished(t time.Time) {
 // its own response DTOs from accessor calls rather than marshaling Job
 // directly.
 type jobJSON struct {
-	ID       string              `json:"id"`
-	Filename string              `json:"filename"`
-	Name     string              `json:"name"`
-	Password string              `json:"password,omitempty"` //nolint:gosec // G117: NZB archive password, not a credential
-	URL      string              `json:"url,omitempty"`
-	Category string              `json:"category,omitempty"`
-	Priority constants.Priority  `json:"priority"`
-	Status   constants.Status    `json:"status"`
-	PP       int                 `json:"pp"`
-	Script   string              `json:"script,omitempty"`
-	Added    time.Time           `json:"added"`
-	MD5      string              `json:"md5"`
-	AvgAge   time.Time           `json:"avg_age"`
-	Groups   []string            `json:"groups,omitempty"`
-	Meta     map[string][]string `json:"meta,omitempty"`
-	Warning  string              `json:"warning,omitempty"`
-	PostProc bool                `json:"post_proc,omitempty"`
+	ID        string              `json:"id"`
+	Filename  string              `json:"filename"`
+	NZBBackup string              `json:"nzb_backup,omitempty"`
+	Name      string              `json:"name"`
+	Password  string              `json:"password,omitempty"` //nolint:gosec // G117: NZB archive password, not a credential
+	URL       string              `json:"url,omitempty"`
+	Category  string              `json:"category,omitempty"`
+	Priority  constants.Priority  `json:"priority"`
+	Status    constants.Status    `json:"status"`
+	PP        int                 `json:"pp"`
+	Script    string              `json:"script,omitempty"`
+	Added     time.Time           `json:"added"`
+	MD5       string              `json:"md5"`
+	AvgAge    time.Time           `json:"avg_age"`
+	Groups    []string            `json:"groups,omitempty"`
+	Meta      map[string][]string `json:"meta,omitempty"`
+	Warning   string              `json:"warning,omitempty"`
+	PostProc  bool                `json:"post_proc,omitempty"`
 
 	Manifest *Manifest    `json:"manifest"`
 	Progress *JobProgress `json:"progress"`
@@ -846,32 +859,38 @@ type jobJSON struct {
 // MarshalJSON implements json.Marshaler.
 func (j *Job) MarshalJSON() ([]byte, error) {
 	return json.Marshal(jobJSON{ //nolint:gosec // G117: NZB archive password, not a credential
-		ID:       j.ID,
-		Filename: j.Filename,
-		Name:     j.Name,
-		Password: j.Password,
-		URL:      j.URL,
-		Category: j.Category,
-		Priority: j.Priority,
-		Status:   j.Status,
-		PP:       j.PP,
-		Script:   j.Script,
-		Added:    j.Added,
-		MD5:      j.MD5,
-		AvgAge:   j.AvgAge,
-		Groups:   j.Groups,
-		Meta:     j.Meta,
-		Warning:  j.Warning,
-		PostProc: j.PostProc,
-		Manifest: j.manifest,
-		Progress: j.progress,
+		ID:        j.ID,
+		Filename:  j.Filename,
+		NZBBackup: j.NZBBackup,
+		Name:      j.Name,
+		Password:  j.Password,
+		URL:       j.URL,
+		Category:  j.Category,
+		Priority:  j.Priority,
+		Status:    j.Status,
+		PP:        j.PP,
+		Script:    j.Script,
+		Added:     j.Added,
+		MD5:       j.MD5,
+		AvgAge:    j.AvgAge,
+		Groups:    j.Groups,
+		Meta:      j.Meta,
+		Warning:   j.Warning,
+		PostProc:  j.PostProc,
+		Manifest:  j.manifest,
+		Progress:  j.progress,
 	})
 }
 
 // UnmarshalJSON implements json.Unmarshaler. It does not recompute
-// transient counters (PendingArticles/ArticlesResolved/ArticlesFailed) —
-// callers (Load/LoadJob) must call the JobProgress-equivalent recompute
-// afterward, exactly as they do today.
+// transient counters (PendingArticles/ArticlesResolved/ArticlesFailed); a
+// caller must invoke the JobProgress-equivalent recompute afterward.
+//
+// There is no production caller. Job's JSON form existed for the history
+// retry payload, whose reader (queue.LoadJob) went in #298; the only thing
+// exercising it now is TestPersistenceRoundTrip_AccessorParity. Tracked as
+// dead code in #304 rather than removed here, because the honest fix is to
+// move that test's assertions onto the store rather than delete them.
 func (j *Job) UnmarshalJSON(data []byte) error {
 	var jj jobJSON
 	if err := json.Unmarshal(data, &jj); err != nil {
@@ -879,6 +898,7 @@ func (j *Job) UnmarshalJSON(data []byte) error {
 	}
 	j.ID = jj.ID
 	j.Filename = jj.Filename
+	j.NZBBackup = jj.NZBBackup
 	j.Name = jj.Name
 	j.Password = jj.Password
 	j.URL = jj.URL
