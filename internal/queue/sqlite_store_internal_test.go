@@ -77,6 +77,14 @@ func TestSQLiteStore_UpdateTx(t *testing.T) {
 	}
 
 	job.Name = "updatetx-job-renamed"
+	// Resolve the article, not just the file. A file cannot be complete
+	// with none of its articles resolved, and asserting BytesDownloaded
+	// below only means anything against a coherent state: recompute derives
+	// that counter from the done/failed bitmaps on load and discards
+	// whatever the column held, so before #300 this assertion was really
+	// testing the complete-flag override that used to mark every article
+	// done regardless of the bitmap.
+	job.progress.markDone(job.manifest, 0)
 	job.progress.files[0].Complete = true
 	job.progress.files[0].BytesDownloaded = 100
 	job.progress.files[0].WriteCursor = 100
