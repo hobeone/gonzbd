@@ -139,9 +139,9 @@ func TestCheckpoint_ReconcilesOnceTheRewriteSucceeds(t *testing.T) {
 	}
 }
 
-// retryManifestRewrites' own branches, driven directly rather than through
+// reconcileJobFiles' own branches, driven directly rather than through
 // Save, which only ever reaches the success path.
-func TestRetryManifestRewrites(t *testing.T) {
+func TestReconcileJobFiles(t *testing.T) {
 	t.Run("skips a job that is not flagged", func(t *testing.T) {
 		real, dir, db := setupResidencyTestStoreWithDB(t)
 		fs := &failingStore{Store: real}
@@ -154,13 +154,44 @@ func TestRetryManifestRewrites(t *testing.T) {
 
 		// A failing store proves the call never reached it.
 		fs.failReplaceMani = true
-		q.retryManifestRewrites(t.Context(), []*Job{cloneJob(job)})
+		q.reconcileJobFiles(t.Context(), []*Job{cloneJob(job)})
 
 		if got := readJobFiles(t, db, job.ID); len(got) != len(before) {
 			t.Errorf("rows changed for an unflagged job: %d -> %d", len(before), len(got))
 		}
 		if job.ManifestRowsStale() {
 			t.Error("an unflagged job came back flagged")
+		}
+	})
+
+	t.Run("marks a snapshot the job has outrun", func(t *testing.T) {
+		real, dir, _ := setupResidencyTestStoreWithDB(t)
+		q := New(WithStore(real), WithStateDir(dir))
+		job, err := NewJob(renumberNZB(), AddOptions{Filename: "outrun.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+		if err != nil {
+			t.Fatalf("NewJob: %v", err)
+		}
+		if err := q.Add(job); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		snap := cloneJob(job)
+
+		// A discard renumbers the rows after the clone was taken. It succeeds,
+		// so it leaves no flag behind for the snapshot to inherit.
+		if err := q.DiscardDeferredPar2(job.ID); err != nil {
+			t.Fatalf("DiscardDeferredPar2: %v", err)
+		}
+		if snap.ManifestRowsStale() {
+			t.Fatal("fixture guard: the snapshot is already flagged, so this proves nothing")
+		}
+
+		q.reconcileJobFiles(t.Context(), []*Job{snap})
+
+		if !snap.ManifestRowsStale() {
+			t.Error("a snapshot whose file set the job has rebuilt was left writable; updateTx would address the renumbered rows by their old indices")
+		}
+		if job.ManifestRowsStale() {
+			t.Error("the live job was flagged; its own rows are current and its per-file state must keep persisting")
 		}
 	})
 
@@ -180,7 +211,7 @@ func TestRetryManifestRewrites(t *testing.T) {
 		}
 		job.setManifestRowsStale(true)
 
-		q.retryManifestRewrites(t.Context(), []*Job{cloneJob(job)})
+		q.reconcileJobFiles(t.Context(), []*Job{cloneJob(job)})
 
 		// No manifest means no file set to write the rows from. Leaving the
 		// rows untouched is the point; clearing the flag would claim they had
@@ -201,7 +232,7 @@ func TestRetryManifestRewrites(t *testing.T) {
 		job.setManifestRowsStale(true)
 
 		fs.failReplaceMani = true
-		q.retryManifestRewrites(t.Context(), []*Job{cloneJob(job)})
+		q.reconcileJobFiles(t.Context(), []*Job{cloneJob(job)})
 
 		if !job.ManifestRowsStale() {
 			t.Error("the flag was cleared by a rewrite that failed; the next checkpoint would resume writing job_files by a renumbered index")
@@ -217,7 +248,7 @@ func TestRetryManifestRewrites(t *testing.T) {
 		}
 		job.setManifestRowsStale(true)
 
-		q.retryManifestRewrites(t.Context(), []*Job{cloneJob(job)})
+		q.reconcileJobFiles(t.Context(), []*Job{cloneJob(job)})
 
 		// The live job, not the clone: clearing only the snapshot would leave
 		// updateTx skipping this job's rows for the rest of the process.
@@ -350,6 +381,54 @@ func TestCheckpoint_AfterAFailedDiscardDoesNotSpliceRows(t *testing.T) {
 		if f.articlesDone != "" && f.articlesDone != "0000" {
 			t.Errorf("row %d (%q) has articles_done=%q; a deferred volume is never dispatched, so this is another file's progress written onto its row",
 				f.idx, f.subject, f.articlesDone)
+		}
+	}
+}
+
+// A snapshot cloned before a successful discard must not write job_files by
+// index afterwards. saveStore clones under q.mu.RLock, releases, and only then
+// calls UpdateBatch; a discard landing in that window renumbers the rows the
+// snapshot is about to write by their old indices.
+//
+// manifestRowsStale cannot catch this on its own: the discard succeeded, so it
+// lowered the flag, and the snapshot was cloned before it was ever raised.
+func TestUpdateBatch_StaleSnapshotAfterASuccessfulDiscard(t *testing.T) {
+	store, dir, db := setupResidencyTestStoreWithDB(t)
+	q := New(WithStore(store), WithStateDir(dir))
+
+	job, err := NewJob(renumberNZB(), AddOptions{Filename: "stale-snap.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := q.MarkArticlesDone(job.ID, []string{"c2@x"}); err != nil {
+		t.Fatalf("MarkArticlesDone: %v", err)
+	}
+
+	// The clone saveStore takes, before the discard.
+	snap := cloneJob(job)
+	if snap.ManifestRowsStale() {
+		t.Fatal("fixture guard: the snapshot is already flagged, so this proves nothing about the success path")
+	}
+
+	// The discard lands, rewriting the rows to the new two-file shape.
+	if err := q.DiscardDeferredPar2(job.ID); err != nil {
+		t.Fatalf("DiscardDeferredPar2: %v", err)
+	}
+
+	// The rest of saveStore, in its own order, with the now-stale snapshot.
+	// reconcileJobFiles is what has to notice; UpdateBatch on its own cannot,
+	// since a snapshot carries no way to tell it is out of date.
+	q.reconcileJobFiles(t.Context(), []*Job{snap})
+	if err := store.UpdateBatch(t.Context(), []*Job{snap}); err != nil {
+		t.Fatalf("UpdateBatch: %v", err)
+	}
+
+	for _, f := range readJobFiles(t, db, job.ID) {
+		if f.subject == "content-2.bin" && f.deferred {
+			t.Errorf("row %d (%q) was marked deferred by a snapshot that predates the discard", f.idx, f.subject)
 		}
 	}
 }

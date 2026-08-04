@@ -219,13 +219,23 @@ lands. This is the one self-heal in the manifest tier: everywhere else a
 disagreement is reported and the job fails, but here the in-memory state is
 correct and only the persisted copy is behind (#310).
 
-`fileSetGen` is what makes the retry verifiable after the fact. It counts
-file-set rebuilds and only `DiscardDeferredPar2` bumps it, so a rewrite that
-completed outside `q.mu` can tell a second discard (which invalidates it)
-from ordinary eviction and rehydration (which does not). Keying that check on
-the manifest pointer instead is wrong: eviction nils the pointer and
-rehydration installs a new one, so residency churn alone would leave the flag
-raised for the life of the process.
+`fileSetGen` is what makes this verifiable after the fact. It counts file-set
+rebuilds and only `DiscardDeferredPar2` bumps it, so a rewrite that completed
+outside `q.mu` can tell a second discard (which invalidates it) from ordinary
+eviction and rehydration (which does not). Keying that check on the manifest
+pointer instead is wrong: eviction nils the pointer and rehydration installs a
+new one, so residency churn alone would leave the flag raised for the life of
+the process.
+
+**A snapshot may write `job_files` by index only while the job still has the
+file set it was cloned from.** `saveStore` clones under `q.mu.RLock`, releases,
+and only then writes, so a discard landing in that window renumbers the rows
+the snapshot is about to address by their old indices. `manifestRowsStale`
+cannot catch this alone — on the discard's success path the flag is lowered
+again, and the snapshot predates its ever being raised — so
+`reconcileJobFiles` compares each snapshot's `fileSetGen` against the live
+job's and marks any it has outrun. That job simply skips one checkpoint; the
+next clone is current.
 
 **The boot path does not carry this guard.** `SQLiteStore.Get` sizes progress
 from the manifest it reads and fills it by `file_index` from the rows, with no

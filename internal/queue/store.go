@@ -40,7 +40,7 @@ type Store interface {
 	// Two callers, with different synchronization. DiscardDeferredPar2 — the
 	// one mutation that changes a job's files after Add — calls it under
 	// q.mu, so the in-memory and persisted file sets are never observable
-	// apart. Queue.retryManifestRewrites calls it outside q.mu on a
+	// apart. Queue.reconcileJobFiles calls it outside q.mu on a
 	// snapshot, to reconcile a job the first call left unpersisted (#310);
 	// it accepts a wider window because there is already a disagreement to
 	// close rather than one to prevent.

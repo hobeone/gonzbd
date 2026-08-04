@@ -37,9 +37,23 @@ func (q *Queue) Save(dir string) error {
 	return nil
 }
 
-// retryManifestRewrites rewrites the job_files rows of every snapshot whose
-// stored rows are known not to describe its manifest, clearing the flag on the
-// live job when the rewrite lands.
+// reconcileJobFiles prepares snapshots for the job_files half of UpdateBatch.
+// It does two things, both keyed on the same reading of Job.fileSetGen, and
+// both about the fact that a snapshot's file_index values only address the
+// stored rows while the job still has the file set the clone was taken from.
+//
+//  1. A snapshot the live job has outrun — its file set rebuilt by a discard
+//     since the clone — is marked stale so updateTx skips its job_files half.
+//     saveStore clones under q.mu.RLock and releases before writing, so a
+//     discard landing in that window renumbers the rows the snapshot is about
+//     to write by their old indices. manifestRowsStale cannot catch this on
+//     its own: on the discard's success path the flag is lowered again, and
+//     the snapshot predates its ever being raised.
+//
+//  2. A snapshot still describing the job's current file set, but flagged
+//     because its discard could not persist, gets the wholesale rewrite
+//     retried. Without that the rows would stay frozen for the life of the
+//     process, since updateTx skips them while the flag is raised.
 //
 // Runs on the snapshots, outside q.mu, so a slow rewrite does not hold the
 // lock the dispatcher contends on. Writing a snapshot is safe for the reason
@@ -47,19 +61,32 @@ func (q *Queue) Save(dir string) error {
 // read lock, so it is internally consistent even if the live job has moved on.
 //
 // Clearing the live flag is the part that needs care, and
-// clearManifestRowsStaleIf handles it: it clears only while the live job still points
-// at the manifest that was just written. A discard that rebuilt the manifest
-// between the clone and now owns the flag, and this rewrite — of a file set
-// that is no longer the job's — must not answer for it.
+// clearManifestRowsStaleIfGen handles it: it clears only while the job's file
+// set is still the one whose rows were written. A discard that rebuilt it
+// between the clone and now raises the flag for its own attempt and owns it
+// from that point.
 //
 // Best effort. A failure leaves the flag raised and the next checkpoint tries
 // again, which is the whole point of recording it rather than acting once.
-func (q *Queue) retryManifestRewrites(ctx context.Context, snapshots []*Job) {
+func (q *Queue) reconcileJobFiles(ctx context.Context, snapshots []*Job) {
 	for _, snap := range snapshots {
+		gen := snap.FileSetGen()
+		q.mu.RLock()
+		live, ok := q.byID[snap.ID]
+		q.mu.RUnlock()
+
+		if ok && live.FileSetGen() != gen {
+			// Case 1. Nothing to write from: this snapshot describes a file
+			// set the job no longer has. The next checkpoint clones afresh.
+			snap.setManifestRowsStale(true)
+			q.log.Debug("skipping job_files update: the job's file set changed after this snapshot was taken",
+				"job_id", snap.ID)
+			continue
+		}
 		if !snap.ManifestRowsStale() {
 			continue
 		}
-		gen := snap.FileSetGen()
+		// Case 2.
 		if _, mErr := snap.Manifest(); mErr != nil {
 			// Non-resident, so there is no manifest to write the rows from.
 			// Leave it flagged: the rows stay untouched rather than being
@@ -74,9 +101,6 @@ func (q *Queue) retryManifestRewrites(ctx context.Context, snapshots []*Job) {
 			continue
 		}
 		snap.setManifestRowsStale(false)
-		q.mu.RLock()
-		live, ok := q.byID[snap.ID]
-		q.mu.RUnlock()
 		if ok && live.clearManifestRowsStaleIfGen(gen) {
 			q.log.Info("job_files reconciled with the job's manifest", "job_id", snap.ID)
 		}
@@ -95,11 +119,10 @@ func (q *Queue) saveStore(_ string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Before the ordinary per-job update, reconcile any job whose stored rows
-	// no longer describe its manifest. updateTx skips the job_files half for
-	// those, so without this they would never be written again for the life
-	// of the process (#310).
-	q.retryManifestRewrites(ctx, snapshots)
+	// Before the ordinary per-job update, settle which snapshots may write
+	// job_files by index at all, and retry the wholesale rewrite for any job
+	// whose rows a failed discard left behind (#310).
+	q.reconcileJobFiles(ctx, snapshots)
 
 	// Persist the jobs before the paused flag: the jobs are the data worth
 	// saving, so a failure to write one bool must not cost us the whole

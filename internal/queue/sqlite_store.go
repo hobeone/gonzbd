@@ -320,8 +320,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 }
 
 // ReplaceManifest rewrites job's stored manifest and replaces its job_files
-// rows to match, for the one mutation that changes a job's file set after Add:
-// DiscardDeferredPar2.
+// rows to match. Two callers, with different synchronization — see
+// Store.ReplaceManifest's doc comment: DiscardDeferredPar2 under q.mu, and
+// Queue.reconcileJobFiles outside it to retry a discard that could not
+// persist.
 //
 // Every row is rewritten rather than the discarded ones deleted. Dropping a
 // file renumbers every file_index after it, so a targeted DELETE would leave
