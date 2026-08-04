@@ -28,6 +28,18 @@ type Store interface {
 	// Remove deletes an active job and its child job_files records.
 	Remove(ctx context.Context, id string) error
 
+	// ReplaceManifest rewrites job's stored manifest and replaces its
+	// job_files rows to match the new file set. It is for the one mutation
+	// that changes a job's files after Add — DiscardDeferredPar2 — and
+	// requires job to be resident, since the manifest being written is the
+	// one it holds.
+	//
+	// The two writes are one operation on purpose. Doing either alone is
+	// what #294 was: the manifest and the rows must always describe the
+	// same file set, and dropping a file renumbers every file_index after
+	// it, so both have to move together.
+	ReplaceManifest(ctx context.Context, job *Job) error
+
 	// MoveToHistory atomically inserts an entry into the history store and deletes
 	// the active job and its job_files within a single database transaction.
 	MoveToHistory(ctx context.Context, job *Job, entry history.Entry) error

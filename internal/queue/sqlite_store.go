@@ -264,45 +264,96 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	}
 
 	if hasManifest {
-		const qFiles = `
+		return insertJobFilesTx(ctx, tx, job, m)
+	}
+	return nil
+}
+
+// insertJobFilesTx writes one job_files row per file in m, taking every
+// per-file value from job's progress. It assumes no rows exist for job.ID yet:
+// file_index is the primary key, so callers replacing an existing set must
+// delete it first.
+//
+// Shared by addTx and ReplaceManifest rather than duplicated. Those are the
+// only two writers of this table's full row shape, and they must agree: a
+// column one of them forgets is a column that silently reverts whenever the
+// other runs. #287 was exactly that failure with `deferred` hard-coded to
+// zero in the sole writer of the day.
+func insertJobFilesTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manifest) error {
+	const qFiles = `
 INSERT INTO job_files
   (job_id, file_index, subject, date, bytes, is_par2_recovery, complete, deferred, write_cursor, bytes_downloaded, filename, assembled_crc32, articles_done, article_count)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-		p := job.Progress()
-		for i := range m.NumFiles() {
-			isPar2 := 0
-			if m.FileIsPar2Recovery(i) {
-				isPar2 = 1
-			}
-			// complete and deferred come from the job, not from literal
-			// zeros. Hard-coding them discarded on-demand par2's whole
-			// effect (#287): NewJob defers each recovery volume in
-			// JobProgress, this INSERT wrote deferred = 0, and the first
-			// promotion read that back over the live flag — so a feature
-			// whose entire purpose is to not download those volumes
-			// downloaded them, in every configuration with a store.
-			complete, deferred := 0, 0
-			if p.FileComplete(i) {
-				complete = 1
-			}
-			if p.FileDeferred(i) {
-				deferred = 1
-			}
-			artDoneStr := encodeArticlesDone(job, i)
-			lo, hi := m.FileRange(i)
-			_, err = tx.ExecContext(ctx, qFiles,
-				job.ID, i, m.FileSubject(i), m.FileDate(i).Unix(), m.FileBytes(i), isPar2,
-				complete, deferred,
-				p.FileWriteCursor(i), p.FileBytesDownloaded(i), p.FileFilename(i), p.FileAssembledCRC32(i),
-				artDoneStr, hi-lo,
-			)
-			if err != nil {
-				return fmt.Errorf("sqlite store insert job_file %s/%d: %w", job.ID, i, err)
-			}
+	p := job.Progress()
+	for i := range m.NumFiles() {
+		isPar2 := 0
+		if m.FileIsPar2Recovery(i) {
+			isPar2 = 1
 		}
-
+		// complete and deferred come from the job, not from literal
+		// zeros. Hard-coding them discarded on-demand par2's whole
+		// effect (#287): NewJob defers each recovery volume in
+		// JobProgress, this INSERT wrote deferred = 0, and the first
+		// promotion read that back over the live flag — so a feature
+		// whose entire purpose is to not download those volumes
+		// downloaded them, in every configuration with a store.
+		complete, deferred := 0, 0
+		if p.FileComplete(i) {
+			complete = 1
+		}
+		if p.FileDeferred(i) {
+			deferred = 1
+		}
+		artDoneStr := encodeArticlesDone(job, i)
+		lo, hi := m.FileRange(i)
+		_, err := tx.ExecContext(ctx, qFiles,
+			job.ID, i, m.FileSubject(i), m.FileDate(i).Unix(), m.FileBytes(i), isPar2,
+			complete, deferred,
+			p.FileWriteCursor(i), p.FileBytesDownloaded(i), p.FileFilename(i), p.FileAssembledCRC32(i),
+			artDoneStr, hi-lo,
+		)
+		if err != nil {
+			return fmt.Errorf("sqlite store insert job_file %s/%d: %w", job.ID, i, err)
+		}
 	}
 	return nil
+}
+
+// ReplaceManifest rewrites job's stored manifest and replaces its job_files
+// rows to match, for the one mutation that changes a job's file set after Add:
+// DiscardDeferredPar2.
+//
+// Every row is rewritten rather than the discarded ones deleted. Dropping a
+// file renumbers every file_index after it, so a targeted DELETE would leave
+// the survivors' stored progress attached to the wrong articles — a quieter
+// bug than the one this fixes.
+//
+// The manifest blob is written before the transaction opens, for the reason
+// Add gives: writing it inside means holding SQLite's write lock across an
+// fsync, the widest window a competing writer can collide with. Neither
+// ordering is atomic across the two media, so a crash between them leaves the
+// blob and the rows describing different shapes. That is detected — the
+// staleness guard in hydrateSnapshot/hydrateJobLocked compares the two — and
+// it is bounded by one fsync plus one small transaction, where the state this
+// replaces was a permanent disagreement on every discard.
+func (s *SQLiteStore) ReplaceManifest(ctx context.Context, job *Job) error {
+	m, err := job.Manifest()
+	if err != nil {
+		return fmt.Errorf("sqlite store replace manifest %s: %w", job.ID, err)
+	}
+	manifestPath := filepath.Join(s.dir, "manifests", job.ID+".json.gz")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
+		return fmt.Errorf("sqlite store mkdir manifests: %w", err)
+	}
+	if err := writeGzJSON(manifestPath, m); err != nil {
+		return fmt.Errorf("sqlite store write manifest %s: %w", job.ID, err)
+	}
+	return s.withWriteTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", job.ID); err != nil {
+			return fmt.Errorf("sqlite store delete job_files %s: %w", job.ID, err)
+		}
+		return insertJobFilesTx(ctx, tx, job, m)
+	})
 }
 
 // Get retrieves an active job by ID, reconstructing it from SQLite and its manifest.

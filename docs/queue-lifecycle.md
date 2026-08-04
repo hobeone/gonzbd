@@ -189,6 +189,19 @@ unrelated jobs.
 only ever needed because reporting paths hydrated from disk. They no longer do.
 In the manifest tier a vanished job makes the operation moot: `ErrNotFound`.
 
+**A mutation that changes a job's file set must move both persisted artifacts
+together.** The manifest blob and the `job_files` rows describe the same file
+set, and the staleness guard pairs the blob against in-memory progress, so
+writing one without the other is a defect on both counts: the pair disagrees
+in this process, and the two on-disk artifacts agree with each other at the
+*wrong* shape, which nothing detects. `DiscardDeferredPar2` is the only such
+mutation after `Add`, and it goes through `Store.ReplaceManifest`, which
+rewrites every row rather than deleting the discarded ones — dropping a file
+renumbers every `file_index` after it. The two writes cannot be made atomic
+across the filesystem and SQLite; a crash between them yields
+`ErrManifestStale`, which is bounded and reported rather than permanent and
+silent (#294).
+
 ## Enforcement
 
 - `Job.Manifest()` returns `(*Manifest, error)`. Every dependence on an

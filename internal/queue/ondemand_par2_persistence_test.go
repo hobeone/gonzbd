@@ -2,6 +2,7 @@ package queue
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -120,19 +121,39 @@ func TestOnDemandPar2_SnapshotKeepsDeferralWithoutAStore(t *testing.T) {
 	}
 }
 
-// A stale on-disk manifest must be reported, never paired with the job's
-// progress.
+// tearManifestWrite simulates a ReplaceManifest that committed its
+// transaction but never landed its blob: the rows and the job's in-memory
+// progress describe the shrunk file set, the file on disk still describes the
+// pre-discard one.
 //
-// DiscardDeferredPar2 shrinks the manifest and progress in memory when
-// verification comes back clean, and does not rewrite the .json.gz. Once the
-// shrunk manifest is evicted, the file on disk still describes the
-// pre-discard job. Preserving the live progress through hydration — which is
-// what fixes #287 — makes that disagreement reachable, and handing the pair
-// to recompute panics by design, on a background goroutine with no recover.
-func TestStaleManifest_AfterDiscardIsReportedNotPanicked(t *testing.T) {
+// This is the fixture the two tests below need, and it has to be built by
+// hand. It used to come free from DiscardDeferredPar2, which shrank the job in
+// memory and never rewrote the .json.gz — the tests took the defect as their
+// setup. #294 fixed that, so the discard is no longer a way to produce a stale
+// pair, and using it here would only assert that the fix works (which
+// discard_persistence_test.go does directly).
+//
+// The guard still has a job. ReplaceManifest writes a file and commits a
+// transaction, and no ordering makes those two atomic, so a crash between them
+// leaves exactly this disagreement. Reaching it now takes a torn write rather
+// than an ordinary code path, which is the point of the fix — not a reason to
+// stop pinning what happens when it occurs.
+func tearManifestWrite(t *testing.T, dir string, job *Job, stale *Manifest) {
+	t.Helper()
+	path := filepath.Join(dir, "manifests", job.ID+".json.gz")
+	if err := writeGzJSON(path, stale); err != nil {
+		t.Fatalf("writeGzJSON(stale manifest): %v", err)
+	}
+}
+
+// discardThenTear runs a discard (which now persists correctly) and then tears
+// the manifest write back to the pre-discard shape, returning the queue and
+// the job with disk and memory disagreeing.
+func discardThenTear(t *testing.T, name string) (*Queue, *Job) {
+	t.Helper()
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
-	job := addOnDemandPar2Job(t, q, "stale-discard")
+	job := addOnDemandPar2Job(t, q, name)
 
 	before, err := job.Manifest()
 	if err != nil {
@@ -150,9 +171,22 @@ func TestStaleManifest_AfterDiscardIsReportedNotPanicked(t *testing.T) {
 		t.Fatalf("fixture guard: discard did not shrink the manifest (%d -> %d), so nothing below diverges",
 			beforeFiles, after.NumFiles())
 	}
+	tearManifestWrite(t, dir, job, before)
+	return q, job
+}
+
+// A stale on-disk manifest must be reported, never paired with the job's
+// progress. Handing a mismatched pair to recompute panics by design, on a
+// background goroutine with no recover.
+func TestStaleManifest_TornWriteIsReportedNotPanicked(t *testing.T) {
+	q, job := discardThenTear(t, "stale-discard")
+	after, err := job.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
 
 	// Evicting drops the shrunk manifest and keeps the shrunk progress; the
-	// larger pre-discard manifest is still the one on disk.
+	// larger torn-write manifest is the only one left on disk.
 	if err := q.SetStatus(job.ID, constants.StatusPaused); err != nil {
 		t.Fatalf("SetStatus(Paused): %v", err)
 	}
@@ -182,13 +216,8 @@ func TestStaleManifest_AfterDiscardIsReportedNotPanicked(t *testing.T) {
 // live q.jobs entry rather than a clone. Promotion must fail closed, not
 // crash the process.
 func TestStaleManifest_HydrateJobLockedFailsClosed(t *testing.T) {
-	store, dir := setupResidencyTestStore(t)
-	q := New(WithStore(store), WithStateDir(dir))
-	job := addOnDemandPar2Job(t, q, "stale-hydrate")
+	q, job := discardThenTear(t, "stale-hydrate")
 
-	if err := q.DiscardDeferredPar2(job.ID); err != nil {
-		t.Fatalf("DiscardDeferredPar2: %v", err)
-	}
 	if err := q.SetStatus(job.ID, constants.StatusPaused); err != nil {
 		t.Fatalf("SetStatus(Paused): %v", err)
 	}

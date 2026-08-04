@@ -190,9 +190,11 @@ type manifestJSONFile struct {
 
 // manifestJSON is Manifest's on-disk shape. messageIDIndex is deliberately
 // excluded — it is rebuilt lazily on demand rather than persisted.
-// Par2Bytes/Par2Files are persisted as-is rather than recomputed on load,
-// so a manifest left stale by DiscardDeferredPar2 stays stale across a
-// save/load cycle too.
+// Par2Bytes/Par2Files are persisted as-is rather than recomputed on load, so
+// the deliberate staleness DiscardDeferredPar2 leaves in that pair — it
+// carries the pre-discard totals over unchanged — survives a save/load cycle
+// too. The file set itself no longer does: since #294 the discard rewrites
+// this file, so only these two scalars still describe the larger job.
 type manifestJSON struct {
 	Files      []manifestJSONFile `json:"files"`
 	TotalBytes int64              `json:"total_bytes"`
