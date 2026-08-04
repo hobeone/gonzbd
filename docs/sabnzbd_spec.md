@@ -638,6 +638,8 @@ Key design: Configuration parameters are typed Go structs with validators. Confi
 | `log_level` | string | `info` | Minimum log level (debug, info, warn, error) |
 | `log_levels` | map | | Per-component log level overrides (e.g., `api: warn`, `nntp: error`, `downloader: debug`). Valid levels: debug, info, warn, error, off. Components not listed inherit `log_level`. |
 | `admin_dir` | path | | Admin/state file directory |
+| `history_retention_days` | int | `0` | Days to keep a finished job in history; 0 = keep forever. See §11.4 |
+| `history_failed_retention_days` | int | `0` | Same threshold for failed jobs, so a failure can outlive a success; 0 = keep forever. See §11.4 |
 | `language` | string | `en` | UI language |
 
 ### 9.3 Download Settings

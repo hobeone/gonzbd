@@ -725,16 +725,6 @@ func (app *Application) Start(ctx context.Context) error {
 	app.wg.Go(func() { app.runCheckpoint(app.ctx, interval) })
 	app.wg.Go(func() { app.runMetricsPush(app.ctx) })
 
-	// Sweep expired history once at startup. The other trigger is job
-	// finalization, matching upstream (sabnzbd/postproc.py calls
-	// auto_history_purge there), which means a daemon that finishes nothing
-	// never prunes — this covers the instance that sat idle over the
-	// threshold and was then restarted. Deliberately not on the checkpoint
-	// ticker: that fires every 30 seconds, against a policy measured in days.
-	if _, err := app.PruneHistory(app.ctx); err != nil {
-		app.log.Warn("history retention sweep failed at startup", "err", err)
-	}
-
 	app.log.Info("application started")
 
 	for _, snap := range app.queue.Snapshot() {
@@ -774,6 +764,26 @@ func (app *Application) Start(ctx context.Context) error {
 			continue
 		}
 		app.maybeFinalize(snap.ID, failMsg)
+	}
+
+	// Sweep expired history, after the reconciliation above and not before.
+	//
+	// That loop identifies a crash between the history commit and
+	// Queue.Remove by looking a still-queued completed job up in history,
+	// and the entry is the only evidence the job already finished. Pruning
+	// first can delete it out from under the lookup, which turns into
+	// ErrNotFound and sends the job to maybeFinalize to be post-processed
+	// and filed a second time. The trigger is ordinary: a crash, a daemon
+	// down past the threshold, a restart.
+	//
+	// A startup sweep is needed at all because the other trigger is job
+	// finalization, matching upstream (sabnzbd/postproc.py calls
+	// auto_history_purge there) — so a daemon that finishes nothing never
+	// prunes, and the instance that sat idle over the threshold would keep
+	// its expired history forever. Deliberately not on the checkpoint
+	// ticker: that fires every 30 seconds against a policy measured in days.
+	if _, err := app.PruneHistory(app.ctx); err != nil {
+		app.log.Warn("history retention sweep failed at startup", "err", err)
 	}
 
 	succeeded = true
@@ -1459,7 +1469,7 @@ func (app *Application) RetryHistoryJob(ctx context.Context, jobID string) error
 	if err := app.queue.Add(job); err != nil {
 		return err
 	}
-	// Deliberately Delete rather than deleteHistoryEntry: the job is going
+	// Deliberately Delete rather than deleteHistoryEntries: the job is going
 	// back into the queue under the same ID and the same NZBBackup, and if
 	// it fails again it will finalize into a new history entry naming that
 	// same file. Removing the backup here would make the second failure
