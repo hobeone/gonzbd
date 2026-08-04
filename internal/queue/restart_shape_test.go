@@ -2,10 +2,15 @@ package queue
 
 import (
 	"errors"
+	"maps"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
+	"github.com/hobeone/gonzbd/internal/nzb"
 )
 
 // The crash window Store.ReplaceManifest cannot close: it writes the rebuilt
@@ -239,5 +244,190 @@ func TestRestoreJobProgress_ReportsARowIndexPastTheManifest(t *testing.T) {
 	}
 	if !errors.Is(err, ErrManifestStale) {
 		t.Errorf("error %v is not ErrManifestStale, so callers cannot distinguish it from an I/O failure", err)
+	}
+}
+
+// makeDupSubjectJob builds a job whose files at dupA and dupB share a subject.
+// Nothing in the pipeline prevents this: the schema constrains only
+// UNIQUE(job_id, file_index), and neither the NZB parser nor NewJob rejects a
+// repeated subject line.
+func makeDupSubjectJob(t *testing.T, name string, nFiles, dupA, dupB int) *Job {
+	t.Helper()
+	parsed := &nzb.NZB{
+		Meta:   map[string][]string{"title": {name}},
+		Groups: []string{"alt.binaries.test"},
+		AvgAge: time.Unix(1700000000, 0),
+	}
+	for fi := range nFiles {
+		subject := name + " - file " + string(rune('A'+fi))
+		if fi == dupA || fi == dupB {
+			subject = name + " - shared subject"
+		}
+		f := nzb.File{Subject: subject, Date: time.Unix(1700000000, 0)}
+		for ai := range 2 {
+			art := nzb.Article{ID: articleID(fi, ai), Bytes: 100_000, Number: ai + 1}
+			f.Articles = append(f.Articles, art)
+			f.Bytes += int64(art.Bytes)
+		}
+		parsed.Files = append(parsed.Files, f)
+	}
+	job, err := NewJob(parsed, AddOptions{
+		Filename: name + ".nzb",
+		Priority: constants.NormalPriority,
+	}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	return job
+}
+
+// Reconciliation matches rows to manifest files by subject, and subjects are
+// not unique. Two files sharing one must not both receive the same row: that
+// is the #310 splice reappearing on the recovery path, and unlike #310 it is
+// written straight back through insertJobFilesTx, so it is durable.
+//
+// The safe reading of an ambiguous subject is "no information": carry nothing
+// for it and let those files re-download. Every unambiguous file still carries.
+func TestReconcile_DoesNotCarryAcrossADuplicateSubject(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+
+	// Files 0 and 2 share a subject; 1 and 3 are unique. Dropping file 1
+	// renumbers the rest, so index-matching is already off the table.
+	job := makeDupSubjectJob(t, "dup-subject", 4, 0, 2)
+	job.Status = constants.StatusDownloading
+	if err := store.Add(t.Context(), job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	m, err := job.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest: %v", err)
+	}
+	uniqueSubject := m.FileSubject(3)
+	tearManifestWrite(t, dir, job, manifestWithout(m, 1))
+
+	// Distinct, recognisable state on the second of the two duplicate rows.
+	// If it collapses, it lands on a file it does not describe.
+	if _, err := store.db.ExecContext(t.Context(),
+		`UPDATE job_files SET filename = ?, write_cursor = ?, complete = 1
+		 WHERE job_id = ? AND file_index = 2`,
+		"from-index-2.bin", int64(9999), job.ID); err != nil {
+		t.Fatalf("seed duplicate row: %v", err)
+	}
+	// A unique subject that must still carry, proving the guard is scoped to
+	// the ambiguity rather than disabling the carry wholesale.
+	if _, err := store.db.ExecContext(t.Context(),
+		`UPDATE job_files SET filename = ?, write_cursor = ? WHERE job_id = ? AND subject = ?`,
+		"unique.bin", int64(512), job.ID, uniqueSubject); err != nil {
+		t.Fatalf("seed unique row: %v", err)
+	}
+
+	loaded, err := store.Get(t.Context(), job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if loaded.manifest == nil {
+		t.Fatal("job came back non-resident; an ambiguous subject must not strand the job")
+	}
+
+	for i := range loaded.manifest.NumFiles() {
+		subject := loaded.manifest.FileSubject(i)
+		if subject == uniqueSubject {
+			if got := loaded.progress.FileFilename(i); got != "unique.bin" {
+				t.Errorf("unambiguous file %d lost its carry: filename %q, want %q", i, got, "unique.bin")
+			}
+			continue
+		}
+		// Every remaining file shares the duplicated subject.
+		if got := loaded.progress.FileFilename(i); got == "from-index-2.bin" {
+			t.Errorf("file %d (%q) received the row from file_index 2; a duplicate subject spliced one file's state onto another",
+				i, subject)
+		}
+		if loaded.progress.FileComplete(i) {
+			t.Errorf("file %d (%q) was marked complete from an ambiguous row", i, subject)
+		}
+	}
+}
+
+// carryableRows is the rule the repair applies, tested directly because Get
+// cannot construct every case that reaches it: within the interrupted-rewrite
+// window the manifest is a subset of the rows, so a subject naming two
+// manifest files always names two rows too and the row count alone would
+// reject it. That subset property is a fact about the one caller, not part of
+// the rule, so the manifest side is pinned here rather than left to it.
+func TestCarryableRows_KeepsOnlyUnambiguousSubjects(t *testing.T) {
+	rows := func(subjects ...string) []storedFileRow {
+		out := make([]storedFileRow, 0, len(subjects))
+		for i, s := range subjects {
+			out = append(out, storedFileRow{idx: i, subject: s, filename: s + ".bin"})
+		}
+		return out
+	}
+	manifestOf := func(t *testing.T, subjects ...string) *Manifest {
+		t.Helper()
+		files := make([]JobFile, 0, len(subjects))
+		for _, s := range subjects {
+			files = append(files, JobFile{
+				Subject:  s,
+				Bytes:    100,
+				Articles: []JobArticle{{ID: s + "@test", Bytes: 100, Number: 1}},
+			})
+		}
+		return newManifest(files)
+	}
+
+	tests := []struct {
+		name          string
+		rows          []storedFileRow
+		manifest      []string
+		want          []string // subjects expected to be carryable
+		wantAmbiguous int      // rejected as ambiguous, not merely dropped
+	}{
+		{
+			name:     "all unique carries everything the manifest still has",
+			rows:     rows("a", "b", "c"),
+			manifest: []string{"a", "c"},
+			want:     []string{"a", "c"},
+			// "b" was dropped by the discard, which is routine, not ambiguous.
+			wantAmbiguous: 0,
+		},
+		{
+			name:          "a subject on two rows is ambiguous",
+			rows:          rows("dup", "b", "dup"),
+			manifest:      []string{"dup", "dup"},
+			want:          []string{},
+			wantAmbiguous: 2,
+		},
+		{
+			name:          "a subject on two manifest files is ambiguous even from a single row",
+			rows:          rows("dup", "b"),
+			manifest:      []string{"dup", "dup", "b"},
+			want:          []string{"b"},
+			wantAmbiguous: 1,
+		},
+		{
+			name:     "a row the manifest dropped is not carryable",
+			rows:     rows("a", "gone"),
+			manifest: []string{"a"},
+			want:     []string{"a"},
+			// A dropped row must not be reported as an ambiguity.
+			wantAmbiguous: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ambiguous := carryableRows(tc.rows, manifestOf(t, tc.manifest...))
+			if ambiguous != tc.wantAmbiguous {
+				t.Errorf("reported %d ambiguous rows, want %d", ambiguous, tc.wantAmbiguous)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("carried %d subjects %v, want %d %v", len(got), slices.Sorted(maps.Keys(got)), len(tc.want), tc.want)
+			}
+			for _, s := range tc.want {
+				if _, ok := got[s]; !ok {
+					t.Errorf("subject %q was not carried", s)
+				}
+			}
+		})
 	}
 }

@@ -276,11 +276,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 // `id INTEGER PRIMARY KEY AUTOINCREMENT`; it is the unique index, not the
 // key, that rejects the second insert.)
 //
-// Shared by addTx and ReplaceManifest rather than duplicated. Those are the
-// only two writers of this table's full row shape, and they must agree: a
-// column one of them forgets is a column that silently reverts whenever the
-// other runs. #287 was exactly that failure with `deferred` hard-coded to
-// zero in the sole writer of the day.
+// Shared by addTx, ReplaceManifest and finishInterruptedRewrite rather than
+// duplicated. Those three are the only writers of this table's full row
+// shape, and they must agree: a column one of them forgets is a column that
+// silently reverts whenever another runs. #287 was exactly that failure with
+// `deferred` hard-coded to zero in the sole writer of the day. Routing the
+// repair path through here too is what keeps that count at one implementation
+// rather than three.
 func insertJobFilesTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manifest) error {
 	const qFiles = `
 INSERT INTO job_files
@@ -347,7 +349,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 // The disagreement is between the two stored artifacts, and only the row
 // indices carry it — RestoreJobProgress range-checks them and reports
 // ErrManifestStale, and SQLiteStore.Get finishes this interrupted write via
-// reconcileJobFiles (#310).
+// finishInterruptedRewrite (#310).
 func (s *SQLiteStore) ReplaceManifest(ctx context.Context, job *Job) error {
 	m, err := job.Manifest()
 	if err != nil {
@@ -458,7 +460,7 @@ FROM jobs WHERE id = ?`
 				// life of the process.
 				s.log.Warn("stored manifest and job_files describe different file sets, finishing the interrupted rewrite",
 					"job_id", id, "err", err)
-				if rErr := s.reconcileJobFiles(ctx, &job); rErr != nil {
+				if rErr := s.finishInterruptedRewrite(ctx, &job); rErr != nil {
 					// Reconciliation is the recovery; without it there is
 					// none. Refuse residency rather than keep a manifest the
 					// rows contradict, and record why — hydrateErr is what
@@ -1254,7 +1256,7 @@ func (s *SQLiteStore) IsPaused(ctx context.Context) (bool, error) {
 	return val == "true", nil
 }
 
-// reconcileJobFiles finishes the write Store.ReplaceManifest was interrupted
+// finishInterruptedRewrite finishes the write Store.ReplaceManifest was interrupted
 // partway through, for a job whose stored rows and stored manifest describe
 // different file sets.
 //
@@ -1274,18 +1276,74 @@ func (s *SQLiteStore) IsPaused(ctx context.Context) (bool, error) {
 // A row with no match in the manifest is a file the discard dropped, and is
 // not carried. job must be resident: the manifest being reconciled against is
 // the one it holds.
-func (s *SQLiteStore) reconcileJobFiles(ctx context.Context, job *Job) error {
+//
+// Subjects are not unique. Nothing enforces it — not the NZB parser, not
+// NewJob, and not the schema, which constrains only UNIQUE(job_id,
+// file_index) — so a subject naming more than one row or more than one
+// manifest file identifies nothing. Carrying it anyway would hand one file's
+// articles_done to another and write it back through insertJobFilesTx,
+// reintroducing the #310 splice on the path meant to repair it, and durably.
+// An ambiguous subject is therefore read as no information: those files carry
+// nothing and re-download. Every unambiguous file still carries, so the cost
+// is bounded to the files that are actually ambiguous.
+//
+// The name says "the interrupted rewrite", not "reconcile": Queue has its own
+// reconcileJobFiles (#315) for outrunning snapshots, a different problem.
+//
+// carryableRows indexes stored by subject, keeping only the subjects that
+// identify exactly one row and exactly one file in m, and reports how many
+// rows were rejected as ambiguous rather than merely dropped.
+//
+// The two rejection reasons are not the same event and must not be reported
+// as one. A subject with no file in m is a file the discard removed: expected,
+// routine, silent. A subject naming two rows or two files is a genuine
+// ambiguity: the repair cannot tell which file the state belongs to, so it
+// carries none of it and says so.
+//
+// Both sides are counted. In the window this repair runs in the manifest is a
+// subset of the rows — ReplaceManifest only ever drops files — so a subject on
+// two manifest files is always on two rows too, and the row count alone would
+// reject it. The manifest count still earns its place twice over: it is what
+// separates a dropped file from a duplicated one, and it states the rule
+// without depending on that subset property continuing to hold.
+func carryableRows(stored []storedFileRow, m *Manifest) (carryable map[string]storedFileRow, ambiguousRows int) {
+	rowsPerSubject := make(map[string]int, len(stored))
+	for _, r := range stored {
+		rowsPerSubject[r.subject]++
+	}
+	filesPerSubject := make(map[string]int, m.NumFiles())
+	for i := range m.NumFiles() {
+		filesPerSubject[m.FileSubject(i)]++
+	}
+	bySubject := make(map[string]storedFileRow, len(stored))
+	ambiguous := 0
+	for _, r := range stored {
+		switch {
+		case rowsPerSubject[r.subject] == 1 && filesPerSubject[r.subject] == 1:
+			bySubject[r.subject] = r
+		case filesPerSubject[r.subject] == 0:
+			// Dropped by the discard. Nothing to carry it onto.
+		default:
+			ambiguous++
+		}
+	}
+	return bySubject, ambiguous
+}
+
+func (s *SQLiteStore) finishInterruptedRewrite(ctx context.Context, job *Job) error {
 	m, err := job.Manifest()
 	if err != nil {
-		return fmt.Errorf("sqlite store reconcile job_files %s: %w", job.ID, err)
+		return fmt.Errorf("sqlite store finish interrupted rewrite %s: %w", job.ID, err)
 	}
 	stored, err := s.storedFileRows(ctx, job.ID)
 	if err != nil {
-		return fmt.Errorf("sqlite store reconcile job_files %s: %w", job.ID, err)
+		return fmt.Errorf("sqlite store finish interrupted rewrite %s: %w", job.ID, err)
 	}
-	bySubject := make(map[string]storedFileRow, len(stored))
-	for _, r := range stored {
-		bySubject[r.subject] = r
+
+	bySubject, ambiguous := carryableRows(stored, m)
+	if ambiguous > 0 {
+		s.log.Warn("some stored job_files rows have subjects that do not identify a single file; their progress is not carried and those files will re-download",
+			"job_id", job.ID, "ambiguous_rows", ambiguous, "carried_rows", len(bySubject))
 	}
 
 	// Rebuild progress at the manifest's indices first, then let
@@ -1310,7 +1368,7 @@ func (s *SQLiteStore) reconcileJobFiles(ctx context.Context, job *Job) error {
 
 	return s.withWriteTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", job.ID); err != nil {
-			return fmt.Errorf("sqlite store reconcile delete job_files %s: %w", job.ID, err)
+			return fmt.Errorf("sqlite store finish interrupted rewrite: delete job_files %s: %w", job.ID, err)
 		}
 		return insertJobFilesTx(ctx, tx, job, m)
 	})

@@ -502,10 +502,17 @@ func (j *Job) setResidency(m *Manifest, p *JobProgress) {
 // caller must not observe the cleared manifest before the reason that
 // explains it, or it would report routine eviction for data loss.
 //
-// p is the progress to leave behind and must not be nil: progress is always
-// resident (docs/queue-lifecycle.md), so a failed hydration restores whatever
-// was accurate before the attempt rather than the all-zero JobProgress that
-// was built for the store to fill in.
+// p is the progress to leave behind: progress is always resident
+// (docs/queue-lifecycle.md), so a failed hydration restores whatever was
+// accurate before the attempt rather than the all-zero JobProgress that was
+// built for the store to fill in.
+//
+// The one caller permitted to pass nil is SQLiteStore.Get, on the load path,
+// where there is no "before the attempt" to restore — the job is being built.
+// nil is the signal Queue.Load reads as "size this from job_files", and Load
+// installs the result before the job reaches q.byID, so no other goroutine can
+// observe the gap. Anywhere else nil would leave a live job without progress
+// and break the always-resident guarantee outright.
 //
 // The error is not cleared here; a later successful hydration clears it via
 // setResidency, because succeeding means the earlier failure no longer

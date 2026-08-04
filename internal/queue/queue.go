@@ -770,10 +770,21 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 				// manifest describe different file sets, not that the
 				// manifest is unreadable. Setting it aside as ".corrupt"
 				// would be a lie about a file that parses, and would destroy
-				// the newer of the two artifacts — the one reconciliation
-				// works from. SQLiteStore.Get reconciles a torn pair at load,
-				// so reaching here means the tear appeared after load; fail
-				// the job, but truthfully and without the rename.
+				// the newer of the two artifacts — the one the repair works
+				// from.
+				//
+				// SQLiteStore.Get repairs a torn pair at load, but reaching
+				// here does not mean the tear postdates the load: a
+				// ReplaceManifest that fails on a transient DB error tears
+				// the pair in this process, with no crash, because
+				// DiscardDeferredPar2 deliberately keeps its in-memory
+				// rebuild. #315 bounds that window to about one checkpoint,
+				// after which saveStore's retry rewrites the rows.
+				//
+				// The repair is not run here on purpose: it opens a write
+				// transaction, and this path holds q.mu. Failing the job is
+				// the cheaper wrong answer for a window that closes itself —
+				// but fail it truthfully, and without the rename.
 				setAside := manifestPath
 				claimErr := fmt.Errorf("restore progress: %w", err)
 				if errors.Is(err, ErrManifestStale) {

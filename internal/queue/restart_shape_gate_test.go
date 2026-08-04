@@ -24,7 +24,7 @@ import (
 // care which file a row belongs to; anything that indexes progress.files by a
 // stored file_index does not.
 var rowShapeExempt = map[string]string{
-	"storedFileRows":      "returns rows verbatim and binds nothing; every caller either validates the indices (RestoreJobProgress) or remaps by subject (reconcileJobFiles)",
+	"storedFileRows":      "returns rows verbatim and binds nothing; every caller either validates the indices (RestoreJobProgress) or remaps by subject (finishInterruptedRewrite)",
 	"ArticleCountsByJob":  "places counts by file_index into a map keyed the same way, so a renumber shifts the map identically rather than mismatching it",
 	"RemainingBytesByJob": "sums bytes per job_id; no per-file binding",
 	"MoveToHistory":       "copies rows wholesale into history_job_files, preserving whatever shape they have",

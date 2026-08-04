@@ -298,8 +298,10 @@ What follows for this package:
   `job_files` rows.** Nothing else in the queue is split across two stores.
 - **`Store.RestoreJobProgress` is where that check lives**, so every caller
   gets it by construction rather than by remembering. `TestJobFilesReadsCheckRowShape`
-  fails any new reader of `job_files` that neither range-checks its indices nor
-  records why a renumber cannot affect it.
+  fails any new reader of `job_files` that neither mentions `ErrManifestStale`
+  nor records why a renumber cannot affect it. It checks that the author
+  considered the disagreement, not that they handled it correctly — a grep
+  standing in for a proof, which is the most an AST walk can offer here.
 - **A load-path disagreement is repaired, not merely reported.** Degrading the
   job to non-resident is not a safe fallback here: `ReplaceManifest` is only
   reached from `DiscardDeferredPar2`, which runs mid-download, so the crash
@@ -342,8 +344,7 @@ What follows for this package:
 - Keep the residency property test, but extend it across the operation set
   rather than one job's transitions. Its current shape is why it caught nothing.
 - `TestJobFilesReadsCheckRowShape` walks the package AST and fails any function
-  that reads `job_files` without range-checking the stored indices against the
-  stored manifest. Its exemption list carries the reason each reader is immune
+  that reads `job_files` without mentioning `ErrManifestStale`. Its exemption list carries the reason each reader is immune
   to a renumber — aggregates and bulk copies are, anything binding a row to a
   file by position is not — and is written to shrink, the same polarity as
   `TestManifestAccessIsGated` and for the same reason.
