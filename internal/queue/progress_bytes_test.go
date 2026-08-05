@@ -512,6 +512,83 @@ func TestExpectedBytes_FreshOnDemandJobReportsZeroProgress(t *testing.T) {
 	}
 }
 
+// TestRemainingBytes_IdenticalResidentAndNonResident is the acceptance
+// property this refactor exists to establish: RemainingBytes, ExpectedBytes,
+// and FailedBytes must report the same figure for the same job whether or
+// not its manifest is resident. Every earlier attempt at deriving remaining
+// bytes failed exactly this check.
+//
+// The fixture mixes all three kinds of file state that could make the two
+// construction paths diverge: file 0 is partially downloaded (exercises
+// BytesDownloaded), file 1 has a permanently failed article (exercises
+// FailedBytes), and file 2 is deferred (exercises the Deferred exclusion
+// shared by all three figures). A job that stayed fully fresh, or that never
+// failed or deferred anything, would let the two paths agree by accident;
+// this fixture does not let that happen.
+//
+// The non-resident side is built exactly the way Load reconstructs a job
+// that restarts beyond maxActive: newJobProgressSized fed directly from
+// Store.ArticleCountsByJob, with no hand-adjustment of any field afterward.
+// A test that poked BytesDownloaded/FailedBytes itself would prove nothing
+// about production — this reads back only what the store actually persisted.
+func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	q := New(WithStore(store), WithStateDir(dir))
+	job := makeMultiFileJob(t, "residency-parity", 3, 2)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// File 0: partially downloaded so the figure is not simply the total.
+	if err := q.MarkArticlesDone(job.ID, []string{articleID(0, 0)}); err != nil {
+		t.Fatalf("MarkArticlesDone: %v", err)
+	}
+	// File 1: one article permanently failed.
+	if _, err := q.MarkArticlesFailed(job.ID, []string{articleID(1, 0)}); err != nil {
+		t.Fatalf("MarkArticlesFailed: %v", err)
+	}
+	// File 2: deferred, untouched otherwise.
+	job.progress.files[2].Deferred = true
+
+	if err := store.Update(t.Context(), job); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	resident := job.Progress()
+
+	// Guard the fixture: if any of these three effects is missing, the
+	// equivalence checked below would pass vacuously.
+	if resident.FileBytesDownloaded(0) == 0 {
+		t.Fatal("fixture produced no downloaded bytes; the test would pass vacuously")
+	}
+	if resident.FailedBytes() == 0 {
+		t.Fatal("fixture produced no failed bytes; the test would pass vacuously")
+	}
+	if !resident.FileDeferred(2) {
+		t.Fatal("fixture not exercising a deferred file")
+	}
+
+	residentRemaining := resident.RemainingBytes()
+	residentExpected := resident.ExpectedBytes()
+	residentFailed := resident.FailedBytes()
+
+	metas, err := store.ArticleCountsByJob(t.Context())
+	if err != nil {
+		t.Fatalf("ArticleCountsByJob: %v", err)
+	}
+	nonResident := newJobProgressSized(metas[job.ID])
+
+	if got, want := nonResident.RemainingBytes(), residentRemaining; got != want {
+		t.Errorf("non-resident RemainingBytes = %d, resident = %d", got, want)
+	}
+	if got, want := nonResident.ExpectedBytes(), residentExpected; got != want {
+		t.Errorf("non-resident ExpectedBytes = %d, resident = %d", got, want)
+	}
+	if got, want := nonResident.FailedBytes(), residentFailed; got != want {
+		t.Errorf("non-resident FailedBytes = %d, resident = %d", got, want)
+	}
+}
+
 func TestDerivedRemaining_ExcludesDeferredFiles(t *testing.T) {
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 3000}}},

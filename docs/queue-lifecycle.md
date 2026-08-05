@@ -54,6 +54,12 @@ The tiering below is not an imposed taxonomy; it is that boundary made explicit.
 
 Writes need article byte counts and the file↔article mapping. Reads do not.
 
+Remaining bytes is derived, not stored. It sums the undownloaded part of every
+file that is neither complete nor deferred, from `FileProgress` alone, so it
+holds at any residency and needs no adjustment when a file's state changes.
+`FileProgress.Bytes` exists to make that derivation independent of the
+evictable manifest.
+
 External packages read five manifest-derived scalars — `TotalBytes`,
 `NumFiles`, `NumArticles`, `Par2Bytes`, `Par2Files`. These are computed once at
 `Add` and never change, so they live in the always-resident tier rather than
