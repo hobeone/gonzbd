@@ -178,6 +178,45 @@ func TestSaveStore_JobsErrorPropagates(t *testing.T) {
 	if strings.Contains(err.Error(), "prune store") {
 		t.Error("Prune ran (or its error surfaced) despite the jobs write failing; Prune must be skipped until the live set is durable")
 	}
+	// The string check above only pins Prune's *error* not surfacing, which
+	// stays true whenever Prune runs and simply succeeds. The actual safety
+	// property is that Prune must not run at all on this path — it deletes
+	// rows absent from the live set, so running it after a failed jobs write
+	// is destructive even if Prune itself reports no error. Assert the call
+	// count directly.
+	if fs.pruneCalls != 0 {
+		t.Errorf("Prune called %d times, want 0 — it must not run when the jobs write failed", fs.pruneCalls)
+	}
+}
+
+// TestSaveStore_BothWritesFailAreJoined pins that saveStore attempts BOTH
+// the jobs write and SetPaused even when the first fails, joining their
+// errors rather than returning early after the jobs write — the two writes
+// are independent per the errors.Join in saveStore, and a caller diagnosing
+// a checkpoint failure needs to see both problems, not just the first one
+// hit.
+func TestSaveStore_BothWritesFailAreJoined(t *testing.T) {
+	real, dir := setupResidencyTestStore(t)
+	fs := &failingStore{Store: real, failUpdateBatch: true, failSetPaused: true}
+	q := New(WithStore(fs), WithStateDir(dir))
+	j := makeMultiFileJob(t, "savestore-both-err", 1, 2)
+	if err := q.Add(j); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	err := q.saveStore(dir)
+	if err == nil {
+		t.Fatal("saveStore: want error when both UpdateBatch and SetPaused fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "save jobs") {
+		t.Errorf("error = %v, want it to mention saving jobs", err)
+	}
+	if !strings.Contains(err.Error(), "save paused state") {
+		t.Errorf("error = %v, want it to mention saving paused state", err)
+	}
+	if fs.pruneCalls != 0 {
+		t.Errorf("Prune called %d times, want 0 — both writes failed, so the live set is not durable", fs.pruneCalls)
+	}
 }
 
 // TestSaveStore_PausedErrorPropagates pins that a failed SetPaused is

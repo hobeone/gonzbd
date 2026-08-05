@@ -349,6 +349,30 @@ func TestQueueSetPaused_Direct(t *testing.T) {
 	})
 }
 
+func TestQueuePauseJobs_Direct(t *testing.T) {
+	t.Parallel()
+	s, q := testQueueServer(t)
+	job := addTestJob(t, q, queue.AddOptions{Filename: "job.nzb"})
+
+	// A nonexistent ID is included alongside a real one, mirroring
+	// queueSetPaused's lenient bulk semantics (not-found IDs are silently
+	// ignored rather than failing the whole request).
+	req := httptest.NewRequest(http.MethodGet, "/?value="+job.ID+",nonexistent", nil)
+	rr := httptest.NewRecorder()
+	s.queuePauseJobs(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	updated, err := q.Get(job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if updated.Status != constants.StatusPaused {
+		t.Errorf("Status = %q; want %q", updated.Status, constants.StatusPaused)
+	}
+}
+
 func TestQueueResumeJobs_Direct(t *testing.T) {
 	t.Parallel()
 	s, q := testQueueServer(t)

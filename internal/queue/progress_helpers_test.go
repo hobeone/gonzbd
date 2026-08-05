@@ -103,6 +103,82 @@ func TestMarkEmittedClearEmitted_Pair(t *testing.T) {
 	}
 }
 
+// ---------- resetForReload ----------
+
+// TestResetForReload_FailedArticle pins the branch that matters: an article
+// that had permanently failed is reset to retryable — Done and Failed both
+// cleared, and its bytes unwound from both the per-file FailedBytes-style
+// total (via markFailed's bookkeeping) and remainingBytes. Emitted must also
+// be cleared, matching the not-failed path.
+func TestResetForReload_FailedArticle(t *testing.T) {
+	m := newManifest([]JobFile{{Articles: []JobArticle{
+		{ID: "a0", Bytes: 100},
+		{ID: "a1", Bytes: 100},
+	}}})
+	p := newJobProgress(m)
+	p.markFailed(m, 0)
+	p.emitted.Set(0) // simulate a reload racing an in-flight (re-)dispatch
+
+	failedBytesBefore := p.failedBytes
+	remainingBefore := p.remainingBytes
+	if failedBytesBefore == 0 {
+		t.Fatal("fixture: markFailed should have recorded failed bytes")
+	}
+
+	p.resetForReload(m, 0)
+
+	if p.emitted.Get(0) {
+		t.Error("Emitted was not cleared")
+	}
+	if p.done.Get(0) {
+		t.Error("Done was not cleared on a reset failed article")
+	}
+	if p.failed.Get(0) {
+		t.Error("Failed was not cleared on a reset failed article")
+	}
+	wantFailedBytes := failedBytesBefore - int64(m.ArticleBytes(0))
+	if p.failedBytes != wantFailedBytes {
+		t.Errorf("failedBytes = %d, want %d (unwound by article 0's bytes)", p.failedBytes, wantFailedBytes)
+	}
+	wantRemaining := remainingBefore + int64(m.ArticleBytes(0))
+	if p.remainingBytes != wantRemaining {
+		t.Errorf("remainingBytes = %d, want %d (restored by article 0's bytes)", p.remainingBytes, wantRemaining)
+	}
+}
+
+// TestResetForReload_NotFailedArticle pins the other side: an article that
+// was never Failed only has its transient Emitted flag cleared — Done,
+// failedBytes, and remainingBytes must be untouched, including for a Done
+// (successfully completed) article, which must not be reopened by a reload.
+func TestResetForReload_NotFailedArticle(t *testing.T) {
+	m := newManifest([]JobFile{{Articles: []JobArticle{
+		{ID: "a0", Bytes: 100},
+		{ID: "a1", Bytes: 100},
+	}}})
+	p := newJobProgress(m)
+	p.markDone(m, 0) // successfully completed, not failed
+	p.emitted.Set(0)
+
+	failedBytesBefore := p.failedBytes
+	remainingBefore := p.remainingBytes
+	doneBefore := p.done.Get(0)
+
+	p.resetForReload(m, 0)
+
+	if p.emitted.Get(0) {
+		t.Error("Emitted was not cleared")
+	}
+	if p.done.Get(0) != doneBefore {
+		t.Errorf("Done changed on a reset non-failed article: got %v, want unchanged %v", p.done.Get(0), doneBefore)
+	}
+	if p.failedBytes != failedBytesBefore {
+		t.Errorf("failedBytes changed on a reset non-failed article: got %d, want unchanged %d", p.failedBytes, failedBytesBefore)
+	}
+	if p.remainingBytes != remainingBefore {
+		t.Errorf("remainingBytes changed on a reset non-failed article: got %d, want unchanged %d", p.remainingBytes, remainingBefore)
+	}
+}
+
 // ---------- clone ----------
 
 // TestJobProgressClone_DeepCopy pins that clone produces an independent

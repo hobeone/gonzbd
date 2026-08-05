@@ -28,6 +28,7 @@ type failingStore struct {
 	failReplaceMani    bool
 	failSetPaused      bool
 	failPrune          bool
+	pruneCalls         int
 }
 
 func (f *failingStore) SetPaused(ctx context.Context, paused bool) error {
@@ -38,6 +39,7 @@ func (f *failingStore) SetPaused(ctx context.Context, paused bool) error {
 }
 
 func (f *failingStore) Prune(ctx context.Context) error {
+	f.pruneCalls++
 	if f.failPrune {
 		return errInjected
 	}

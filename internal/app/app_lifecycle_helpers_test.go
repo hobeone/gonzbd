@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -278,12 +279,24 @@ func TestRunCheckpoint_ExitsOnContextCancel(t *testing.T) {
 // watchCompletions dispatch loop.
 func newWatchCompletionsTestApp(t *testing.T) (*Application, *queue.Job) {
 	t.Helper()
+	return newWatchCompletionsTestAppN(t, 2)
+}
+
+// newWatchCompletionsTestAppN is newWatchCompletionsTestApp generalized to
+// nFiles independent single-article files, none of which ever completes the
+// job as a whole (there is always at least one other file left pending).
+func newWatchCompletionsTestAppN(t *testing.T, nFiles int) (*Application, *queue.Job) {
+	t.Helper()
 	application, _, _ := newLifecycleTestApp(t)
 
-	parsed := &nzb.NZB{Files: []nzb.File{
-		{Subject: "one.bin", Bytes: 100, Articles: []nzb.Article{{ID: "one@t", Bytes: 100, Number: 1}}},
-		{Subject: "two.bin", Bytes: 100, Articles: []nzb.Article{{ID: "two@t", Bytes: 100, Number: 1}}},
-	}}
+	parsed := &nzb.NZB{}
+	for i := range nFiles {
+		parsed.Files = append(parsed.Files, nzb.File{
+			Subject:  fmt.Sprintf("file-%d.bin", i),
+			Bytes:    100,
+			Articles: []nzb.Article{{ID: fmt.Sprintf("art-%d@t", i), Bytes: 100, Number: 1}},
+		})
+	}
 	job, err := queue.NewJob(parsed, queue.AddOptions{Name: "watch-completions-job"}, fsutil.SanitizeOptions{})
 	if err != nil {
 		t.Fatalf("NewJob: %v", err)
@@ -344,16 +357,31 @@ func TestWatchCompletions_DispatchesToHandleFileComplete(t *testing.T) {
 }
 
 // TestWatchCompletions_DrainsPendingOnContextCancel pins the shutdown
-// contract documented on Shutdown/handleFileComplete: an event already
-// queued when ctx is cancelled must still be applied via drainCompletions
-// before the goroutine returns, not dropped.
+// contract documented on Shutdown/handleFileComplete: events already queued
+// when ctx is cancelled must still be applied via drainCompletions before
+// the goroutine returns, not dropped.
+//
+// A single buffered event is not a reliable detector of this: with ctx
+// already Done, Go's select over {ctx.Done(), the buffered channel} picks
+// each ready case roughly uniformly at random, so the fc branch alone (the
+// ordinary dispatch path, not drainCompletions) applies the event about a
+// third of the time even with drainCompletions deleted — the reviewer
+// measured 20/30 and 17/30 "false passes" against that mutant across two
+// batches. Queuing several events on distinct file indices before
+// cancelling closes that gap: every one of them has to survive, whichever
+// path (or mix of paths) applies them, and the chance a mutant with
+// drainCompletions removed still applies all of them by the fc branch
+// winning the race every single time falls off as 2^-n.
 func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
-	application, job := newWatchCompletionsTestApp(t)
+	const nEvents = 6
+	application, job := newWatchCompletionsTestAppN(t, nEvents)
 
 	ctx, cancel := context.WithCancel(t.Context())
-	// Buffer the event and cancel before the loop ever starts, so the first
-	// iteration's select sees both the pending event and ctx.Done ready.
-	application.internalFileComplete <- FileComplete{JobID: job.ID, FileIdx: 0}
+	// Buffer all the events and cancel before the loop ever starts, so the
+	// first iteration's select sees ctx.Done and a full backlog ready.
+	for i := range nEvents {
+		application.internalFileComplete <- FileComplete{JobID: job.ID, FileIdx: i}
+	}
 	cancel()
 
 	done := make(chan struct{})
@@ -368,7 +396,11 @@ func TestWatchCompletions_DrainsPendingOnContextCancel(t *testing.T) {
 		t.Fatal("watchCompletions did not return after context cancellation")
 	}
 
-	if !job.Progress().FileComplete(0) {
-		t.Error("pending completion was dropped instead of drained on shutdown")
+	// The goroutine has already returned, so reading the job's progress
+	// directly (rather than through SnapshotJob) is race-free here.
+	for i := range nEvents {
+		if !job.Progress().FileComplete(i) {
+			t.Errorf("file %d: pending completion was dropped instead of drained on shutdown", i)
+		}
 	}
 }
