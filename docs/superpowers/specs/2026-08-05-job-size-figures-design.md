@@ -74,6 +74,42 @@ Cost is an O(files) walk on reporting reads in place of an O(1) field read. File
 number in the hundreds; articles, which are untouched by this, number in the tens
 of thousands.
 
+## Derived expectation
+
+Remaining is not enough on its own. Every consumer that turns it into a
+percentage or a downloaded total pairs it with a size, and the identity
+
+```
+downloaded = size - failed - remaining
+```
+
+closes only when `size` and `remaining` share an exclusion set. Remaining
+excludes `Complete` and `Deferred`; the size it is paired with must exclude
+`Deferred` alone, because a completed file is still part of what the job set
+out to fetch.
+
+```
+expected = sum over files where !Deferred && !Discarded of Bytes
+```
+
+This is the figure line 140 calls the job's advertised expectation. It is
+derived on the same walk and the same predicate as remaining, so the two
+cannot drift.
+
+`Job.TotalBytes()` remains the immutable whole-manifest total and keeps its
+logging and post-processing display callers. The consumers that must move to
+the expectation are the ones that combine a size with remaining or with
+failed bytes: the queue API's percentage and size-left, the history record's
+downloaded figure, and the total-failure check.
+
+**Correction to step 1's original claim.** Step 1 was specified as invisible
+to users. It is not, on its own: excluding deferred volumes from remaining
+while leaving the paired size whole made a freshly added on-demand-par2 job
+report non-zero progress, and made history over-report downloaded bytes for
+a job finalized before its volumes were discarded. The expectation above is
+what makes step 1 invisible as intended, so it belongs in step 1 rather than
+step 2.
+
 ## Components
 
 | Component | Change |
@@ -118,7 +154,7 @@ one that pins the property the design exists to guarantee.
 
 ## Sequencing
 
-1. `FileProgress.Bytes` and derived remaining. Deletes the seed, the decrements and the discard fixup. No reported figure changes.
+1. `FileProgress.Bytes` and derived remaining. Deletes the seed, the decrements and the discard fixup. Adds the derived expectation below, without which this step *does* change reported figures — see the correction under Derived expectation.
 2. `content_bytes` / `recovery_bytes` / `recovery_files`, with the migration, the API change and the UI change.
 3. The `Discarded` flag, excluded from `DeferredRecoveryIndices` so a late failure cannot resurrect volumes already ruled unnecessary.
 4. `DiscardDeferredPar2` marks instead of rebuilding; the article-bitset copy loop, its panic guard, and the row rewrite in `ReplaceManifest` are deleted.
