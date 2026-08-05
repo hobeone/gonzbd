@@ -133,6 +133,15 @@ func (p *JobProgress) FileBytesDownloaded(fi int) int64 {
 	return p.files[fi].BytesDownloaded
 }
 
+// FileFailedBytes returns the sum of bytes belonging to permanently failed
+// articles in file fileIdx.
+func (p *JobProgress) FileFailedBytes(fi int) int64 {
+	if p == nil || fi < 0 || fi >= len(p.files) {
+		return 0
+	}
+	return p.files[fi].FailedBytes
+}
+
 // FileWriteCursor returns the assembler's contiguous write frontier for file fileIdx.
 func (p *JobProgress) FileWriteCursor(fi int) int64 {
 	if p == nil || fi < 0 || fi >= len(p.files) {

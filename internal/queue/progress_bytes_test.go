@@ -1,6 +1,9 @@
 package queue
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestNewJobProgress_CarriesPerFileBytes(t *testing.T) {
 	m := newManifest([]JobFile{
@@ -218,5 +221,36 @@ func TestRestoreJobProgress_CarriesPerFileBytes(t *testing.T) {
 		if got, want := restored.progress.files[fi].Bytes, m.FileBytes(fi); got != want {
 			t.Errorf("restored files[%d].Bytes = %d, want %d", fi, got, want)
 		}
+	}
+}
+
+func TestFailedBytes_SurvivesRestartNonResident(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	job := makeMultiFileJob(t, "failed-bytes-residency", 2, 2)
+	m, err := job.Manifest()
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	job.Progress().markFailed(m, 0)
+	job.Progress().markDone(m, 1)
+	wantFailed := job.Progress().FailedBytes()
+	wantRemaining := job.Progress().RemainingBytes()
+	if wantFailed == 0 {
+		t.Fatal("fixture produced no failed bytes; the test would pass vacuously")
+	}
+	if err := store.Add(context.Background(), job); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	reloaded, err := Load(dir, WithStore(store))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := reloaded.byID[job.ID].Progress()
+	if got.FailedBytes() != wantFailed {
+		t.Errorf("FailedBytes across restart: got %d, want %d", got.FailedBytes(), wantFailed)
+	}
+	if got.RemainingBytes() != wantRemaining {
+		t.Errorf("RemainingBytes across restart: got %d, want %d", got.RemainingBytes(), wantRemaining)
 	}
 }

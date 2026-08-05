@@ -168,30 +168,46 @@ func (q *Queue) saveStore(_ string) error {
 // manifest. That restoration already happens whenever the job is promoted
 // back to resident.
 //
-// Per-file Bytes/BytesDownloaded/Complete/Deferred are carried so
+// Per-file Bytes/BytesDownloaded/FailedBytes/Complete/Deferred are carried so
 // RemainingBytes derives correctly for a job that restarted non-resident.
 // They replace the pre-summed figure this used to take from
 // Store.RemainingBytesByJob.
 //
 // remainingBytes (still the maintained field at this point in the
 // refactor — see docs/superpowers/plans/2026-08-05-derived-remaining-bytes.md
-// Task 3, which deletes it) is seeded here as the sum of Bytes-BytesDownloaded
-// over files that are neither Complete nor Deferred, matching exactly what
-// the later derivation (derivedRemainingBytes) computes for the same
-// reconstructed state — so this seed is not a divergent shortcut, it is the
-// same number arrived at early. Leaving it unseeded (0) would report zero
-// remaining for every non-resident job after a restart regardless of real
-// progress, which regressed TestTotalRemainingBytes_RestartReconstructsNonResident
+// Task 3, which deletes it) is seeded here as the sum of
+// Bytes-BytesDownloaded-FailedBytes over files that are neither Complete nor
+// Deferred, matching exactly what the later derivation
+// (derivedRemainingBytes) computes for the same reconstructed state — so
+// this seed is not a divergent shortcut, it is the same number arrived at
+// early. Leaving it unseeded (0) would report zero remaining for every
+// non-resident job after a restart regardless of real progress, which
+// regressed TestTotalRemainingBytes_RestartReconstructsNonResident
 // (residency_remaining_bytes_test.go).
+//
+// The per-article bitmaps genuinely do start clear here — every article
+// starts undone/unfailed/unemitted, since restoring true per-article state
+// needs the manifest and only happens once the job is promoted back to
+// resident. But the per-file and job-level failed *byte* totals are not
+// left to that later restoration: they are seeded from job_files.failed_bytes
+// right here, because RemainingBytes/FailedBytes reporting depends on them
+// before the job is ever promoted, and a restarted non-resident job with
+// permanently failed articles would otherwise silently over-report
+// remaining bytes by exactly the failed total until promotion. This closes
+// the residency drift where the same job reported different RemainingBytes
+// and FailedBytes depending on whether it had been promoted yet — a gap
+// the deleted Store.RemainingBytesByJob had too, so it is not a regression
+// introduced by this refactor.
 func newJobProgressSized(files []FileMeta) *JobProgress {
 	total := 0
-	var remainingBytes int64
+	var remainingBytes, failedBytes int64
 	for _, f := range files {
 		total += f.ArticleCount
+		failedBytes += f.FailedBytes
 		if f.Complete || f.Deferred {
 			continue
 		}
-		if left := f.Bytes - f.BytesDownloaded; left > 0 {
+		if left := f.Bytes - f.BytesDownloaded - f.FailedBytes; left > 0 {
 			remainingBytes += left
 		}
 	}
@@ -202,10 +218,12 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		files:           make([]FileProgress, len(files)),
 		pendingArticles: total,
 		remainingBytes:  remainingBytes,
+		failedBytes:     failedBytes,
 	}
 	for fi, f := range files {
 		p.files[fi].Pending = f.ArticleCount
 		p.files[fi].BytesDownloaded = f.BytesDownloaded
+		p.files[fi].FailedBytes = f.FailedBytes
 		p.files[fi].Complete = f.Complete
 		p.files[fi].Deferred = f.Deferred
 		p.files[fi].Bytes = f.Bytes

@@ -8,16 +8,21 @@ import (
 
 // FileMeta is the per-file shape Load needs to size a non-resident job's
 // progress without a manifest. It carries everything RemainingBytes reads
-// — Bytes, BytesDownloaded, Complete, and Deferred — alongside the article
-// count for the bitsets, so a job reports the same remaining figure
-// whether it is reconstructed resident (via the manifest) or non-resident
-// (via this type).
+// — Bytes, BytesDownloaded, FailedBytes, Complete, and Deferred — alongside
+// the article count for the bitsets, so a job reports the same remaining
+// figure whether it is reconstructed resident (via the manifest) or
+// non-resident (via this type).
 type FileMeta struct {
 	ArticleCount    int
 	Bytes           int64
 	BytesDownloaded int64
-	Complete        bool
-	Deferred        bool
+	// FailedBytes is the sum of bytes belonging to this file's permanently
+	// failed articles, restored from job_files.failed_bytes — see
+	// FileProgress.FailedBytes for why a non-resident job needs this
+	// carried explicitly rather than recomputed from article bitmaps.
+	FailedBytes int64
+	Complete    bool
+	Deferred    bool
 }
 
 // Store defines the persistence and ordering interface for active download queue jobs.
@@ -98,10 +103,10 @@ type Store interface {
 	RestoreRetryProgress(ctx context.Context, job *Job) (bool, error)
 
 	// ArticleCountsByJob returns every job's per-file FileMeta — article
-	// count, byte size, bytes already downloaded, and whether the file is
-	// complete or deferred — in a single grouped query, indexed by
-	// file_index within each job. Used by Load to size a non-resident
-	// job's JobProgress without reading its manifest.
+	// count, byte size, bytes already downloaded, failed bytes, and
+	// whether the file is complete or deferred — in a single grouped
+	// query, indexed by file_index within each job. Used by Load to size
+	// a non-resident job's JobProgress without reading its manifest.
 	ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error)
 
 	// DeleteJobArtifacts removes the on-disk manifest for job id
