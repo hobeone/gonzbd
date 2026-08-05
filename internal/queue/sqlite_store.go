@@ -567,7 +567,7 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 // still gets each count attributed to the right file instead of shifted by
 // position.
 func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error) {
-	const q = `SELECT job_id, file_index, article_count, bytes FROM job_files ORDER BY job_id ASC, file_index ASC`
+	const q = `SELECT job_id, file_index, article_count, bytes, bytes_downloaded, complete, deferred FROM job_files ORDER BY job_id ASC, file_index ASC`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite store article counts: %w", err)
@@ -578,8 +578,9 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]File
 	for rows.Next() {
 		var jobID string
 		var idx, count int
-		var fileBytes int64
-		if err := rows.Scan(&jobID, &idx, &count, &fileBytes); err != nil {
+		var fileBytes, bytesDownloaded int64
+		var complete, deferred int
+		if err := rows.Scan(&jobID, &idx, &count, &fileBytes, &bytesDownloaded, &complete, &deferred); err != nil {
 			return nil, fmt.Errorf("sqlite store scan article count: %w", err)
 		}
 		if idx < 0 {
@@ -595,7 +596,13 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]File
 			copy(grown, counts)
 			counts = grown
 		}
-		counts[idx] = FileMeta{ArticleCount: count, Bytes: fileBytes}
+		counts[idx] = FileMeta{
+			ArticleCount:    count,
+			Bytes:           fileBytes,
+			BytesDownloaded: bytesDownloaded,
+			Complete:        complete != 0,
+			Deferred:        deferred != 0,
+		}
 		result[jobID] = counts
 	}
 	if err := rows.Err(); err != nil {

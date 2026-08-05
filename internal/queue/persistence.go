@@ -168,28 +168,32 @@ func (q *Queue) saveStore(_ string) error {
 // manifest. That restoration already happens whenever the job is promoted
 // back to resident.
 //
-// Per-file Bytes is carried so RemainingBytes derives correctly for a job
-// that restarted non-resident. It replaces the pre-summed figure this used
-// to take from Store.RemainingBytesByJob.
+// Per-file Bytes/BytesDownloaded/Complete/Deferred are carried so
+// RemainingBytes derives correctly for a job that restarted non-resident.
+// They replace the pre-summed figure this used to take from
+// Store.RemainingBytesByJob.
 //
 // remainingBytes (still the maintained field at this point in the
 // refactor — see docs/superpowers/plans/2026-08-05-derived-remaining-bytes.md
-// Task 3) is seeded to the sum of files' Bytes rather than left at its zero
-// value. FileMeta carries no per-file bytes_downloaded, so this cannot
-// account for a job that had partial progress before going non-resident;
-// that is an accepted, pre-existing limit of this restart path — RestoreJobProgress
-// only runs once a job is promoted back to resident — not a regression this
-// function should introduce on its own by reporting zero remaining for a job
-// that has not started at all. Deleting Store.RemainingBytesByJob without
-// this seed made TestTotalRemainingBytes_RestartReconstructsNonResident
-// (residency_remaining_bytes_test.go) report 0 remaining for untouched
-// jobs restored after a restart.
+// Task 3, which deletes it) is seeded here as the sum of Bytes-BytesDownloaded
+// over files that are neither Complete nor Deferred, matching exactly what
+// the later derivation (derivedRemainingBytes) computes for the same
+// reconstructed state — so this seed is not a divergent shortcut, it is the
+// same number arrived at early. Leaving it unseeded (0) would report zero
+// remaining for every non-resident job after a restart regardless of real
+// progress, which regressed TestTotalRemainingBytes_RestartReconstructsNonResident
+// (residency_remaining_bytes_test.go).
 func newJobProgressSized(files []FileMeta) *JobProgress {
 	total := 0
-	var totalBytes int64
+	var remainingBytes int64
 	for _, f := range files {
 		total += f.ArticleCount
-		totalBytes += f.Bytes
+		if f.Complete || f.Deferred {
+			continue
+		}
+		if left := f.Bytes - f.BytesDownloaded; left > 0 {
+			remainingBytes += left
+		}
 	}
 	p := &JobProgress{
 		done:            newBitset(total),
@@ -197,10 +201,13 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		emitted:         newBitset(total),
 		files:           make([]FileProgress, len(files)),
 		pendingArticles: total,
-		remainingBytes:  totalBytes,
+		remainingBytes:  remainingBytes,
 	}
 	for fi, f := range files {
 		p.files[fi].Pending = f.ArticleCount
+		p.files[fi].BytesDownloaded = f.BytesDownloaded
+		p.files[fi].Complete = f.Complete
+		p.files[fi].Deferred = f.Deferred
 		p.files[fi].Bytes = f.Bytes
 	}
 	return p
