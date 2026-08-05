@@ -791,9 +791,11 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 			Articles:       make([]JobArticle, 0, len(pf.Articles)),
 			IsPar2Recovery: isRecovery,
 			// On-demand par2: hold recovery volumes back until repair is
-			// shown to be needed. RemainingBytes still counts them (they are
-			// part of the NZB) so the queue-progress denominator is unchanged;
-			// they simply aren't dispatched while Deferred.
+			// shown to be needed. RemainingBytes excludes a Deferred file
+			// entirely (see derivedRemainingBytes) — they simply aren't
+			// dispatched while Deferred, and un-deferring or discarding one
+			// later needs no adjustment anywhere, since the next read
+			// reflects the change.
 			Deferred: isRecovery && opts.OnDemandPar2,
 		}
 		for _, pa := range pf.Articles {
@@ -875,10 +877,12 @@ func (j *Job) DeferredRecoveryIndices() []int {
 
 // ResetForRetry resets a completed/failed job back to a fresh downloadable
 // state, preserving the Manifest but selectively resetting the existing
-// Progress in place: RemainingBytes is re-added only for articles actually
-// reset (not blanket-recomputed to TotalBytes), and a file's Complete flag
-// is cleared only if at least one of its articles was reset. Can be called
-// prior to re-adding or during Queue.Retry.
+// Progress in place: only articles that were actually Failed are cleared
+// back to retryable (not a blanket reset to a fresh job's state), and a
+// file's Complete flag is cleared only if at least one of its articles was
+// reset. RemainingBytes needs no adjustment of its own — it derives from
+// the same done/failed ground truth this clears, so the next read reflects
+// it. Can be called prior to re-adding or during Queue.Retry.
 func (j *Job) ResetForRetry() {
 	j.Status = constants.StatusQueued
 	j.PostProc = false
@@ -916,7 +920,6 @@ func (j *Job) ResetForRetry() {
 			}
 			j.progress.done.Clear(i)
 			j.progress.failed.Clear(i)
-			j.progress.remainingBytes += int64(m.ArticleBytes(i))
 			anyReset = true
 		}
 		if anyReset {

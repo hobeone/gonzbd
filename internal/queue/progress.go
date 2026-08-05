@@ -24,7 +24,6 @@ type JobProgress struct {
 	articlesFailed    int
 	earlyAborted      bool
 	failedBytes       int64
-	remainingBytes    int64
 	serverStats       map[string]int64
 	downloadStarted   time.Time
 	downloadFinished  time.Time
@@ -77,9 +76,10 @@ func fileMetaFromManifest(m *Manifest) []FileMeta {
 	return files
 }
 
-// newJobProgress returns a zero-value JobProgress sized to m: RemainingBytes
-// starts at m.TotalBytes() and every file's Pending starts at its article
-// count (all articles start undone/unemitted). It projects m into
+// newJobProgress returns a zero-value JobProgress sized to m: every file's
+// Pending starts at its article count (all articles start undone/unemitted),
+// so RemainingBytes() — derived from per-file state, see
+// derivedRemainingBytes — starts at m.TotalBytes(). It projects m into
 // []FileMeta and delegates to newJobProgressSized, so resident and
 // non-resident construction are literally the same code and cannot drift
 // apart the way the two used to (see TestFailedBytes_NotDoubledByHydration
@@ -221,12 +221,14 @@ func (p *JobProgress) FailedBytes() int64 {
 	return p.failedBytes
 }
 
-// RemainingBytes returns TotalBytes minus the bytes of successfully completed articles.
+// RemainingBytes returns what is still to fetch, computed from per-file
+// state rather than read from a maintained counter — see
+// derivedRemainingBytes.
 func (p *JobProgress) RemainingBytes() int64 {
 	if p == nil {
 		return 0
 	}
-	return p.remainingBytes
+	return p.derivedRemainingBytes()
 }
 
 // derivedRemainingBytes computes what is still to fetch from per-file state
@@ -379,7 +381,7 @@ func (p *JobProgress) recompute(m *Manifest) {
 	// (Job.UnmarshalJSON assigns both from separate keys with nothing
 	// reconciling their lengths) and independent SQLite rows. A size
 	// mismatch here means every article-indexed write below — markDone's
-	// bitset.Set, byte accounting, pendingArticles/remainingBytes — would
+	// bitset.Set, byte accounting, pendingArticles — would
 	// otherwise either silently no-op (bitset.Set/Clear are deliberately
 	// lenient, see bitset.go) or run against the wrong article entirely,
 	// leaving byte accounting permanently and silently wrong. Panic rather
@@ -417,6 +419,14 @@ func (p *JobProgress) recompute(m *Manifest) {
 		p.files[fi].Pending = n
 		p.files[fi].BytesDownloaded = downloaded
 		p.files[fi].FailedBytes = fileFailed
+		// Bytes is deliberately not part of jobProgressJSON (see
+		// fileProgressJSON) — it is ground truth already held by the
+		// manifest, so it is restored here rather than carried over the
+		// wire a second time. Without this, a JobProgress rebuilt via
+		// UnmarshalJSON+recompute would leave every file's Bytes at its
+		// zero value and derivedRemainingBytes would report everything as
+		// already fetched.
+		p.files[fi].Bytes = m.FileBytes(fi)
 		failedBytesTotal += fileFailed
 		total += n
 	}
@@ -468,7 +478,6 @@ func (p *JobProgress) markDone(m *Manifest, i int) bool {
 	p.done.Set(i)
 	p.emitted.Clear(i)
 	bytes := int64(m.ArticleBytes(i))
-	p.remainingBytes -= bytes
 	p.articlesResolved++
 	p.files[fi].BytesDownloaded += bytes
 	return true
@@ -491,7 +500,6 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 	bytes := int64(m.ArticleBytes(i))
 	p.failedBytes += bytes
 	p.files[fi].FailedBytes += bytes
-	p.remainingBytes -= bytes
 	p.articlesResolved++
 	p.articlesFailed++
 	return true
@@ -499,9 +507,13 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 
 // resetForReload clears the transient Emitted flag on article i and, if it
 // was Failed, resets it to retryable (Done=false, Failed=false), restoring
-// its bytes to FailedBytes/RemainingBytes. Used by ClearAllEmitted on a
-// downloader reload; recompute must be called afterward to rebuild Pending
-// counters from the resulting ground truth.
+// its bytes to FailedBytes. RemainingBytes needs no restoring of its own:
+// it derives from BytesDownloaded/FailedBytes on read, and an article that
+// was never downloaded leaves BytesDownloaded untouched, so undoing
+// FailedBytes here is what makes the article's bytes reappear as
+// remaining. Used by ClearAllEmitted on a downloader reload; recompute
+// must be called afterward to rebuild Pending counters from the resulting
+// ground truth.
 func (p *JobProgress) resetForReload(m *Manifest, i int) {
 	p.emitted.Clear(i)
 	if p.failed.Get(i) {
@@ -509,7 +521,6 @@ func (p *JobProgress) resetForReload(m *Manifest, i int) {
 		bytes := int64(m.ArticleBytes(i))
 		p.failedBytes -= bytes
 		p.files[fi].FailedBytes -= bytes
-		p.remainingBytes += bytes
 		p.done.Clear(i)
 		p.failed.Clear(i)
 	}
@@ -537,7 +548,6 @@ type jobProgressJSON struct {
 	Files  []fileProgressJSON `json:"files"`
 
 	FailedBytes       int64            `json:"failed_bytes"`
-	RemainingBytes    int64            `json:"remaining_bytes"`
 	ServerStats       map[string]int64 `json:"server_stats,omitempty"`
 	DownloadStarted   time.Time        `json:"download_started"`
 	DownloadFinished  time.Time        `json:"download_finished"`
@@ -562,7 +572,6 @@ func (p *JobProgress) MarshalJSON() ([]byte, error) {
 		Failed:            p.failed.ToBools(),
 		Files:             files,
 		FailedBytes:       p.failedBytes,
-		RemainingBytes:    p.remainingBytes,
 		ServerStats:       p.serverStats,
 		DownloadStarted:   p.downloadStarted,
 		DownloadFinished:  p.downloadFinished,
@@ -595,7 +604,6 @@ func (p *JobProgress) UnmarshalJSON(data []byte) error {
 		}
 	}
 	p.failedBytes = pj.FailedBytes
-	p.remainingBytes = pj.RemainingBytes
 	p.serverStats = pj.ServerStats
 	p.downloadStarted = pj.DownloadStarted
 	p.downloadFinished = pj.DownloadFinished

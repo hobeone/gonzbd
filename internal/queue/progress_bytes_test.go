@@ -327,8 +327,8 @@ func TestNewJobProgress_MatchesSizedConstruction(t *testing.T) {
 	if got, want := len(p.files), m.NumFiles(); got != want {
 		t.Errorf("files sized %d, want %d", got, want)
 	}
-	if got, want := p.remainingBytes, m.TotalBytes(); got != want {
-		t.Errorf("remainingBytes = %d, want m.TotalBytes() = %d", got, want)
+	if got, want := p.RemainingBytes(), m.TotalBytes(); got != want {
+		t.Errorf("RemainingBytes() = %d, want m.TotalBytes() = %d", got, want)
 	}
 	for fi := range p.files {
 		lo, hi := m.FileRange(fi)
@@ -402,31 +402,46 @@ func TestFailedBytes_SurvivesRestartNonResident(t *testing.T) {
 	}
 }
 
-func TestDerivedRemaining_AgreesWithMaintainedCounter(t *testing.T) {
+// TestDerivedRemaining_MatchesHandComputedValues pins RemainingBytes()
+// (derivedRemainingBytes) against expected values computed by hand from the
+// fixture at each stage, now that there is no maintained counter left to
+// compare against. Fixture: file a.rar = 3000 bytes (a1=1500, a2=1500),
+// file b.rar = 2000 bytes (b1=2000); total = 5000.
+//
+//   - fresh: nothing resolved. remaining = 3000 + 2000 = 5000.
+//   - one article done: a1 (1500) downloaded.
+//     remaining = (3000-1500) + 2000 = 1500 + 2000 = 3500.
+//   - first file complete: a2 (1500) also downloaded, and a.rar's Complete
+//     flag is set, excluding it entirely regardless of its own byte math
+//     (which would otherwise be 3000-1500-1500=0 anyway).
+//     remaining = 0 (a.rar excluded) + 2000 (b.rar untouched) = 2000.
+//   - second file failed: b1 (2000) fails, adding 2000 to b.rar's
+//     FailedBytes. remaining = 0 (a.rar excluded) + (2000-0-2000) = 0.
+func TestDerivedRemaining_MatchesHandComputedValues(t *testing.T) {
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 1500}, {ID: "a2", Bytes: 1500}}},
 		{Subject: "b.rar", Bytes: 2000, Articles: []JobArticle{{ID: "b1", Bytes: 2000}}},
 	})
 	p := newJobProgress(m)
 
-	check := func(stage string) {
+	check := func(stage string, want int64) {
 		t.Helper()
-		if got, want := p.derivedRemainingBytes(), p.remainingBytes; got != want {
-			t.Errorf("%s: derived = %d, maintained = %d", stage, got, want)
+		if got := p.RemainingBytes(); got != want {
+			t.Errorf("%s: RemainingBytes() = %d, want %d", stage, got, want)
 		}
 	}
 
-	check("fresh")
+	check("fresh", 5000)
 
 	p.markDone(m, 0)
-	check("one article done")
+	check("one article done", 3500)
 
 	p.markDone(m, 1)
 	p.files[0].Complete = true
-	check("first file complete")
+	check("first file complete", 2000)
 
 	p.markFailed(m, 2)
-	check("second file failed")
+	check("second file failed", 0)
 }
 
 func TestDerivedRemaining_ExcludesDeferredFiles(t *testing.T) {
