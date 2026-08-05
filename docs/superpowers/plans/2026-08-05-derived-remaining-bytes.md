@@ -12,7 +12,8 @@
 
 - Step 1 of the sequencing in `docs/superpowers/specs/2026-08-05-job-size-figures-design.md`. **No reported figure may change.** `content_bytes`/`recovery_bytes` and the API change are step 2; the `Discarded` flag is step 3.
 - The derivation in this step excludes `Complete` and `Deferred` only. `Discarded` does not exist yet.
-- **No schema migration.** `job_files.bytes` already exists and is already written by `insertJobFilesTx`.
+- **One schema migration, in Task 2 only.** `job_files.bytes` already existed; `job_files.failed_bytes` is added by `internal/history/migrations/008_add_job_files_failed_bytes.sql`. This overrides the original no-migration constraint — the user authorised it explicitly after Task 3's agreement test proved the derivation cannot be correct without per-file failed bytes. Never edit an existing migration file. No other task may add one.
+- **No backwards compatibility is required.** Landing this work in production takes a full reset and reinstall, so migrations need not preserve existing rows' semantics beyond what the `DEFAULT` gives.
 - After editing any `.go` file: `goimports -w <file>`, `go fix ./...`, `go build ./...`.
 - Gates before each commit: `go vet ./...`, `go test -race ./internal/queue/...`, `golangci-lint run ./...`.
 - Conventional Commits, scope `queue`. Co-author trailer: `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
@@ -26,7 +27,8 @@
 
 | File | Responsibility in this change |
 |---|---|
-| `internal/queue/progress.go` | `FileProgress.Bytes`; the derived `RemainingBytes()`; deletion of the counter and its mutations |
+| `internal/history/migrations/008_add_job_files_failed_bytes.sql` | Adds `job_files.failed_bytes` so failed bytes are reconstructible without a manifest |
+| `internal/queue/progress.go` | `FileProgress.Bytes`; `FileProgress.FailedBytes`; the derived `RemainingBytes()`; deletion of the counter and its mutations |
 | `internal/queue/persistence.go` | `newJobProgressSized` takes per-file bytes instead of a pre-summed total |
 | `internal/queue/sqlite_store.go` | `RestoreJobProgress` reads `bytes`; `ArticleCountsByJob` carries bytes; `RemainingBytesByJob` deleted |
 | `internal/queue/store.go` | `Store` interface: `ArticleCountsByJob` shape change, `RemainingBytesByJob` removed |
@@ -272,7 +274,7 @@ In `Load`, drop the `remainingByJob` lookup and its `RemainingBytesByJob` call, 
 job.progress = newJobProgressSized(countsByJob[job.ID])
 ```
 
-Note the `remainingBytes` field is still set elsewhere at this point — it is removed in Task 3.
+Note the `remainingBytes` field is still set elsewhere at this point — it is removed in Task 4.
 
 - [ ] **Step 12: Run the package suite**
 
@@ -305,16 +307,317 @@ EOF
 
 ---
 
-### Task 2: Prove a derived value agrees with the maintained one
+### Task 2: Carry per-file failed bytes
 
-Adds the derivation next to the existing counter and pins that they agree. This is the safety net for Task 3's deletion: if the derivation is wrong, this fails before the counter is gone.
+The maintained counter means *unresolved* bytes: `markFailed` decrements `remainingBytes` and adds to the job-level `failedBytes`, but never touches `files[fi].BytesDownloaded` — correctly, since a permanently failed article was never downloaded. A derivation of the form `Bytes - BytesDownloaded` therefore over-reports remaining by exactly the failed bytes, and `internal/app/history_helper.go:54` computes `downloaded := totalBytes - FailedBytes() - RemainingBytes()`, an identity that only closes if remaining already excludes them.
+
+Failed bytes are recomputable per file from the article bitmaps when a manifest is resident, but not otherwise. This task adds the per-file figure and a column to persist it, so the derivation in Task 3 works at either residency. That also closes a live pre-existing drift: `newJobProgressSized` seeds a restarted non-resident job with `sum(Bytes - BytesDownloaded)` and leaves `failedBytes` at 0, so today the same job reports different `RemainingBytes()` and `FailedBytes()` depending on residency until it is promoted. The deleted `RemainingBytesByJob` had the identical gap (`SUM(bytes - bytes_downloaded)`), so this is not a regression from Task 1.
+
+**Files:**
+- Create: `internal/history/migrations/008_add_job_files_failed_bytes.sql`
+- Modify: `internal/queue/progress.go` (`FileProgress.FailedBytes`, `markFailed`, `resetForReload`, `recompute`)
+- Modify: `internal/queue/store.go` (`FileMeta.FailedBytes`)
+- Modify: `internal/queue/sqlite_store.go` (`insertJobFilesTx`, `updateTx`, `RestoreJobProgress`, `ArticleCountsByJob`)
+- Modify: `internal/queue/persistence.go` (`newJobProgressSized` seeds per-file and job-level failed bytes)
+- Test: `internal/queue/progress_bytes_test.go`
+
+**Interfaces:**
+- Consumes: `FileProgress.Bytes` and `FileMeta` from Task 1
+- Produces: `FileProgress.FailedBytes int64`, `FileMeta.FailedBytes int64`. Task 3's derivation subtracts `FailedBytes` per file.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `internal/queue/progress_bytes_test.go` (`package queue`):
+
+```go
+func TestMarkFailed_AccumulatesPerFileFailedBytes(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 1500}, {ID: "a2", Bytes: 1500}}},
+		{Subject: "b.rar", Bytes: 2000, Articles: []JobArticle{{ID: "b1", Bytes: 2000}}},
+	})
+	p := newJobProgress(m)
+
+	p.markDone(m, 0)
+	p.markFailed(m, 1)
+	p.markFailed(m, 2)
+
+	if got, want := p.files[0].FailedBytes, int64(1500); got != want {
+		t.Errorf("file 0 FailedBytes = %d, want %d", got, want)
+	}
+	if got, want := p.files[1].FailedBytes, int64(2000); got != want {
+		t.Errorf("file 1 FailedBytes = %d, want %d", got, want)
+	}
+	if got, want := p.files[0].BytesDownloaded, int64(1500); got != want {
+		t.Errorf("failed bytes leaked into BytesDownloaded: got %d, want %d", got, want)
+	}
+	// Per-file failed bytes must sum to the job-level counter, or the two
+	// disagree the moment Task 3 derives remaining from the per-file side.
+	if got, want := p.files[0].FailedBytes+p.files[1].FailedBytes, p.failedBytes; got != want {
+		t.Errorf("per-file sum = %d, job-level failedBytes = %d", got, want)
+	}
+}
+
+func TestResetForReload_ReturnsFailedBytesToTheFile(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 3000}}},
+	})
+	p := newJobProgress(m)
+
+	p.markFailed(m, 0)
+	if got, want := p.files[0].FailedBytes, int64(3000); got != want {
+		t.Fatalf("FailedBytes after markFailed = %d, want %d", got, want)
+	}
+
+	p.resetForReload(m, 0)
+	if got, want := p.files[0].FailedBytes, int64(0); got != want {
+		t.Errorf("FailedBytes after resetForReload = %d, want %d", got, want)
+	}
+	if got, want := p.failedBytes, int64(0); got != want {
+		t.Errorf("job-level failedBytes after resetForReload = %d, want %d", got, want)
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./internal/queue/ -run 'TestMarkFailed_AccumulatesPerFileFailedBytes|TestResetForReload_ReturnsFailedBytesToTheFile' -v`
+Expected: FAIL to compile — `p.files[0].FailedBytes undefined (type FileProgress has no field or method FailedBytes)`.
+
+- [ ] **Step 3: Add the field**
+
+In `internal/queue/progress.go`, in `FileProgress`, directly after `BytesDownloaded`:
+
+```go
+	// FailedBytes is the sum of bytes belonging to this file's permanently
+	// failed articles. Carried per file, not just job-wide, so remaining
+	// derives from progress alone at any residency: a failed article was
+	// never downloaded, so BytesDownloaded does not account for it, and
+	// without this the derivation would report its bytes as still to fetch
+	// forever. Recomputable from the article bitmaps when a manifest is
+	// resident; persisted in job_files.failed_bytes for when it is not.
+	FailedBytes int64
+```
+
+- [ ] **Step 4: Maintain it in `markFailed`**
+
+In `markFailed`, alongside the existing `p.failedBytes += bytes`:
+
+```go
+	p.failedBytes += bytes
+	p.files[fi].FailedBytes += bytes
+```
+
+- [ ] **Step 5: Unwind it in `resetForReload`**
+
+In `resetForReload`, inside the `if p.failed.Get(i)` block, alongside `p.failedBytes -= bytes`:
+
+```go
+		p.failedBytes -= bytes
+		p.files[fi].FailedBytes -= bytes
+```
+
+`resetForReload` does not currently compute `fi`. Add `fi := m.fileIndexForArticle(i)` inside the `if` block, next to the existing `bytes := int64(m.ArticleBytes(i))`.
+
+- [ ] **Step 6: Rebuild it in `recompute`**
+
+`recompute` rebuilds per-file counters from the bitmaps and is the authority after a restart that restores `articles_done`. It already accumulates `downloaded`; add `failedBytes` beside it.
+
+In the per-file loop, declare it next to `downloaded`:
+
+```go
+		var downloaded, fileFailed int64
+```
+
+In the article loop, extend the existing failed branch:
+
+```go
+			if p.done.Get(i) {
+				resolved++
+				if p.failed.Get(i) {
+					failed++
+					fileFailed += int64(m.ArticleBytes(i))
+				}
+			}
+```
+
+And after the loop, next to the existing assignment:
+
+```go
+		p.files[fi].BytesDownloaded = downloaded
+		p.files[fi].FailedBytes = fileFailed
+```
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run: `go test ./internal/queue/ -run 'TestMarkFailed_AccumulatesPerFileFailedBytes|TestResetForReload_ReturnsFailedBytesToTheFile' -v`
+Expected: PASS
+
+- [ ] **Step 8: Commit the in-memory half**
+
+```bash
+goimports -w internal/queue/ && go build ./... && go vet ./... && go test -race -count=1 ./internal/queue/...
+git add internal/queue/progress.go internal/queue/progress_bytes_test.go
+git commit -m "$(cat <<'EOF'
+feat(queue): track failed bytes per file, not only per job
+
+markFailed decremented the job-wide remainingBytes and added to the
+job-wide failedBytes, but left no per-file trace. A failed article is
+resolved without ever being downloaded, so BytesDownloaded does not
+account for it and a per-file derivation of remaining would report its
+bytes as outstanding forever.
+
+Carries the figure on FileProgress, maintained by markFailed and
+resetForReload and rebuilt by recompute from the article bitmaps.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+- [ ] **Step 9: Add the migration**
+
+Create `internal/history/migrations/008_add_job_files_failed_bytes.sql`. Never edit an existing migration file.
+
+```sql
+-- +goose Up
+-- +goose StatementBegin
+ALTER TABLE job_files ADD COLUMN failed_bytes INTEGER NOT NULL DEFAULT 0;
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+ALTER TABLE job_files DROP COLUMN failed_bytes;
+-- +goose StatementEnd
+```
+
+- [ ] **Step 10: Write the column on both paths**
+
+In `internal/queue/sqlite_store.go`, `insertJobFilesTx`: add `failed_bytes` to the INSERT's column list and a placeholder to its `VALUES`, then pass `p.FileFailedBytes(i)` in the same position. Add the accessor to `progress.go` beside `FileBytesDownloaded`, guarding the index the same way it does:
+
+```go
+// FileFailedBytes returns the sum of bytes belonging to permanently failed
+// articles in file fileIdx.
+func (p *JobProgress) FileFailedBytes(fi int) int64 {
+	if fi < 0 || fi >= len(p.files) {
+		return 0
+	}
+	return p.files[fi].FailedBytes
+}
+```
+
+Match the exact bounds-guard and doc-comment shape of the existing `FileBytesDownloaded` — read it first rather than copying the block above verbatim.
+
+In `updateTx`, extend `qF` to `SET ..., failed_bytes = ?` and pass `job.Progress().FileFailedBytes(i)` in the matching argument position. Keep the argument order aligned with the column order; a mismatch here writes one column's value into another and no test will name the swap.
+
+- [ ] **Step 11: Read the column on both paths**
+
+In `RestoreJobProgress`, add `failed_bytes` to the `SELECT` list, scan it into a new `failedBytes int64`, and assign `fp.FailedBytes = failedBytes`. Place it adjacent to `bytes_downloaded` in both the column list and the scan targets so the two stay visually paired.
+
+In `ArticleCountsByJob`, add `failed_bytes` to the `SELECT`, scan it, and set it on the constructed `FileMeta`. Add the field to `FileMeta` in `internal/queue/store.go`:
+
+```go
+	FailedBytes int64
+```
+
+Update `FileMeta`'s doc comment and the `Store.ArticleCountsByJob` interface comment to name the new field, the same way Task 1 did for `BytesDownloaded`/`Complete`/`Deferred`.
+
+- [ ] **Step 12: Close the residency drift in `newJobProgressSized`**
+
+`newJobProgressSized` currently leaves `p.failedBytes` at 0 and omits failed bytes from its `remainingBytes` seed, so a restarted non-resident job disagrees with the same job resident. Carry the per-file figure through and sum it into the job-level counter.
+
+In the accumulation loop, add the sum:
+
+```go
+	total := 0
+	var remainingBytes, failedBytes int64
+	for _, f := range files {
+		total += f.ArticleCount
+		failedBytes += f.FailedBytes
+		if f.Complete || f.Deferred {
+			continue
+		}
+		if left := f.Bytes - f.BytesDownloaded - f.FailedBytes; left > 0 {
+			remainingBytes += left
+		}
+	}
+```
+
+Set `failedBytes: failedBytes` in the `&JobProgress{...}` literal, and `p.files[fi].FailedBytes = f.FailedBytes` in the per-file loop.
+
+Then update the function's doc comment: the paragraph explaining that the seed matches what `derivedRemainingBytes` computes must now say it subtracts failed bytes too, and the paragraph claiming articles start "undone/unfailed/unemitted" must note that while the per-article bitmaps do start clear, the per-file and job-level failed *byte* totals are restored from `job_files.failed_bytes`, because reporting depends on them before the job is ever promoted.
+
+- [ ] **Step 13: Write the residency-equivalence test for failed bytes**
+
+```go
+func TestFailedBytes_SurvivesRestartNonResident(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	job := makeMultiFileJob(t, "failed-bytes-residency", 2, 2)
+	m, err := job.Manifest()
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	job.Progress().markFailed(m, 0)
+	job.Progress().markDone(m, 1)
+	wantFailed := job.Progress().FailedBytes()
+	wantRemaining := job.Progress().RemainingBytes()
+	if wantFailed == 0 {
+		t.Fatal("fixture produced no failed bytes; the test would pass vacuously")
+	}
+	if err := store.Add(context.Background(), job); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	reloaded, err := Load(dir, WithStore(store))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := reloaded.byID[job.ID].Progress()
+	if got.FailedBytes() != wantFailed {
+		t.Errorf("FailedBytes across restart: got %d, want %d", got.FailedBytes(), wantFailed)
+	}
+	if got.RemainingBytes() != wantRemaining {
+		t.Errorf("RemainingBytes across restart: got %d, want %d", got.RemainingBytes(), wantRemaining)
+	}
+}
+```
+
+`setupResidencyTestStore` and `makeMultiFileJob` are the existing fixtures named in Global Constraints — do not add a new one. If this test needs the job to be non-resident on reload, follow the pattern `residency_remaining_bytes_test.go` already uses to force that; read it before writing, and adapt the status handling to match. If the fixture's status leaves the job resident, the test proves nothing — say so in your report rather than leaving it silently vacuous.
+
+- [ ] **Step 14: Run the full package and commit**
+
+```bash
+goimports -w internal/queue/ && go build ./... && go vet ./... && go test -race -count=1 ./internal/queue/... && golangci-lint run ./internal/queue/...
+git add internal/history/migrations/008_add_job_files_failed_bytes.sql internal/queue/
+git commit -m "$(cat <<'EOF'
+feat(queue): persist per-file failed bytes and fix the residency drift
+
+Adds job_files.failed_bytes so a job's failed byte total is
+reconstructible without a resident manifest, and carries it through
+insertJobFilesTx, updateTx, RestoreJobProgress, and ArticleCountsByJob.
+
+newJobProgressSized previously seeded a restarted non-resident job with
+sum(bytes - bytes_downloaded) and left failedBytes at zero, so the same
+job reported different RemainingBytes and FailedBytes depending on
+whether it had been promoted yet. The deleted RemainingBytesByJob had
+the same gap, so this is a pre-existing defect rather than a regression.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 3: Prove a derived value agrees with the maintained one
+
+Adds the derivation next to the existing counter and pins that they agree. This is the safety net for Task 4's deletion: if the derivation is wrong, this fails before the counter is gone.
 
 **Files:**
 - Modify: `internal/queue/progress.go` (add `derivedRemainingBytes`)
 - Test: `internal/queue/progress_bytes_test.go`
 
 **Interfaces:**
-- Consumes: `FileProgress.Bytes` from Task 1
+- Consumes: `FileProgress.Bytes` from Task 1; `FileProgress.FailedBytes` from Task 2
 - Produces: `func (p *JobProgress) derivedRemainingBytes() int64`
 
 - [ ] **Step 1: Write the failing test**
@@ -339,16 +642,13 @@ func TestDerivedRemaining_AgreesWithMaintainedCounter(t *testing.T) {
 	check("fresh")
 
 	p.markDone(m, 0)
-	p.files[0].BytesDownloaded += int64(m.ArticleBytes(0))
 	check("one article done")
 
 	p.markDone(m, 1)
-	p.files[0].BytesDownloaded += int64(m.ArticleBytes(1))
 	p.files[0].Complete = true
 	check("first file complete")
 
 	p.markFailed(m, 2)
-	p.files[1].BytesDownloaded += int64(m.ArticleBytes(2))
 	check("second file failed")
 }
 ```
@@ -367,7 +667,14 @@ In `internal/queue/progress.go`, next to `RemainingBytes`:
 ```go
 // derivedRemainingBytes computes what is still to fetch from per-file state
 // rather than from a maintained counter: every file that is neither complete
-// nor deferred contributes the part of it not yet downloaded.
+// nor deferred contributes the part of it neither downloaded nor permanently
+// failed.
+//
+// Failed bytes are subtracted because the counter this replaces means
+// unresolved bytes, not un-downloaded ones: markFailed decrements it without
+// ever adding to BytesDownloaded. internal/app/history_helper.go computes
+// downloaded as totalBytes - FailedBytes() - RemainingBytes(), an identity
+// that only closes under that meaning.
 //
 // Deferred files contribute nothing because their articles are never
 // dispatched, so a deferral or an un-deferral needs no adjustment anywhere —
@@ -383,7 +690,7 @@ func (p *JobProgress) derivedRemainingBytes() int64 {
 		if f.Complete || f.Deferred {
 			continue
 		}
-		if left := f.Bytes - f.BytesDownloaded; left > 0 {
+		if left := f.Bytes - f.BytesDownloaded - f.FailedBytes; left > 0 {
 			remaining += left
 		}
 	}
@@ -423,7 +730,7 @@ func TestDerivedRemaining_ExcludesDeferredFiles(t *testing.T) {
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `go test ./internal/queue/ -run TestDerivedRemaining_ExcludesDeferredFiles -v`
-Expected: PASS. It exercises no new production code — it pins that un-deferring needs no fixup call, which is the property Task 3 relies on.
+Expected: PASS. It exercises no new production code — it pins that un-deferring needs no fixup call, which is the property Task 4 relies on.
 
 - [ ] **Step 7: Commit**
 
@@ -447,7 +754,7 @@ EOF
 
 ---
 
-### Task 3: Delete the maintained counter
+### Task 4: Delete the maintained counter
 
 **Files:**
 - Modify: `internal/queue/progress.go` (field, seed, decrements, `resetForReload`, `RemainingBytes`, JSON shape)
@@ -455,7 +762,7 @@ EOF
 - Modify: `internal/queue/queue.go` (`DiscardDeferredPar2`)
 
 **Interfaces:**
-- Consumes: `derivedRemainingBytes` from Task 2
+- Consumes: `derivedRemainingBytes` from Task 3
 - Produces: `RemainingBytes()` unchanged in signature, now derived
 
 - [ ] **Step 1: Point the accessor at the derivation**
@@ -538,7 +845,7 @@ EOF
 
 ---
 
-### Task 4: Pin the residency-equivalence property, and document it
+### Task 5: Pin the residency-equivalence property, and document it
 
 The acceptance criterion. Every previous framing of this work failed on a figure meaning different things depending on residency; this asserts it cannot.
 
@@ -586,7 +893,7 @@ This belongs in `progress_bytes_test.go`, not `residency_remaining_bytes_test.go
 - [ ] **Step 2: Run the test**
 
 Run: `go test ./internal/queue/ -run TestRemainingBytes_IdenticalResidentAndNonResident -v`
-Expected: PASS. It should pass on the first run — Tasks 1–3 established the property, and this pins it against regression. If it fails, the two paths populate `FileProgress.Bytes` differently and that is a defect in Task 1, not in this test.
+Expected: PASS. It should pass on the first run — Tasks 1–4 established the property, and this pins it against regression. If it fails, the two paths populate `FileProgress.Bytes` differently and that is a defect in Task 1, not in this test.
 
 - [ ] **Step 3: Update the lifecycle contract**
 
