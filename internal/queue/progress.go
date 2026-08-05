@@ -313,11 +313,20 @@ func (p *JobProgress) clone() *JobProgress {
 }
 
 // recompute recalculates each file's Pending and the job-level
-// pendingArticles/articlesResolved/articlesFailed counters from the ground
-// truth (done/failed/emitted flags), against m's file ranges. Called after
-// Add and Load, and after any bulk state change (ClearAllEmitted,
-// DiscardDeferredPar2, undeferRecoveryLocked) where incremental tracking is
-// impractical.
+// pendingArticles/articlesResolved/articlesFailed/failedBytes counters from
+// the ground truth (done/failed/emitted flags), against m's file ranges.
+// Called after Add and Load, and after any bulk state change
+// (ClearAllEmitted, DiscardDeferredPar2, undeferRecoveryLocked) where
+// incremental tracking is impractical.
+//
+// recompute is authoritative for the job-level failedBytes wherever a
+// manifest is resident: RestoreJobProgress replays per-article state
+// through markFailed on top of a progress that newJobProgressSized may
+// already have seeded from job_files, so without a single owner the seed
+// and the replay stack (see TestFailedBytes_NotDoubledByHydration).
+// Incremental maintenance by markFailed/resetForReload is what carries the
+// value between recomputes, while no manifest is resident to recompute
+// against.
 func (p *JobProgress) recompute(m *Manifest) {
 	// JobProgress and Manifest are persisted as independent JSON documents
 	// (Job.UnmarshalJSON assigns both from separate keys with nothing
@@ -335,6 +344,7 @@ func (p *JobProgress) recompute(m *Manifest) {
 	}
 	total := 0
 	var resolved, failed int
+	var failedBytesTotal int64
 	for fi := range m.NumFiles() {
 		lo, hi := m.FileRange(fi)
 		n := 0
@@ -360,11 +370,13 @@ func (p *JobProgress) recompute(m *Manifest) {
 		p.files[fi].Pending = n
 		p.files[fi].BytesDownloaded = downloaded
 		p.files[fi].FailedBytes = fileFailed
+		failedBytesTotal += fileFailed
 		total += n
 	}
 	p.pendingArticles = total
 	p.articlesResolved = resolved
 	p.articlesFailed = failed
+	p.failedBytes = failedBytesTotal
 }
 
 // markEmitted flags article i as having a result in flight from the

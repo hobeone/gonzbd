@@ -224,6 +224,70 @@ func TestRestoreJobProgress_CarriesPerFileBytes(t *testing.T) {
 	}
 }
 
+// TestFailedBytes_NotDoubledByHydration pins the Task 2 review defect:
+// newJobProgressSized seeds job-level failedBytes from job_files while a
+// job is non-resident, and RestoreJobProgress then replays per-article
+// state through markFailed on top of that seed rather than onto a fresh
+// JobProgress, so the two stack.
+//
+// The reloaded job comes back non-resident (StatusQueued, per
+// makeMultiFileJob's default), so job.manifest == nil and
+// RestoreJobProgress would no-op per its guard. The manifest captured
+// before Add is attached directly to the unexported field to force the
+// hydration path, matching how other tests in this package (e.g.
+// snapshot_test.go, pending_test.go) reach into Job's unexported fields.
+func TestFailedBytes_NotDoubledByHydration(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	job := makeMultiFileJob(t, "failed-bytes-hydrate", 2, 2)
+	m, err := job.Manifest()
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	job.Progress().markFailed(m, 0)
+	job.Progress().markDone(m, 1)
+	want := job.Progress().FailedBytes()
+	if want == 0 {
+		t.Fatal("fixture produced no failed bytes; the test would pass vacuously")
+	}
+	if err := store.Add(context.Background(), job); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	reloaded, err := Load(dir, WithStore(store))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	rj := reloaded.byID[job.ID]
+	// Seeded from job_files while non-resident.
+	if got := rj.Progress().FailedBytes(); got != want {
+		t.Fatalf("non-resident FailedBytes = %d, want %d", got, want)
+	}
+	// RestoreJobProgress requires job.manifest != nil and job.progress !=
+	// nil or it returns early; the reloaded job is non-resident, so attach
+	// the manifest captured before Add to force the replay this test
+	// targets.
+	if rj.manifest != nil {
+		t.Fatal("fixture not exercising the bug: reloaded job already resident")
+	}
+	rj.manifest = m
+	// Hydrating replays per-article state on top of that seed. The total
+	// must not move: it is the same job, only more of it is in memory.
+	if err := store.RestoreJobProgress(context.Background(), rj); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got := rj.Progress().FailedBytes(); got != want {
+		t.Errorf("FailedBytes after hydration = %d, want %d (seed and replay stacked)", got, want)
+	}
+	// The per-file values must still sum to the job-level total.
+	var sum int64
+	for fi := range rj.Progress().files {
+		sum += rj.Progress().files[fi].FailedBytes
+	}
+	if sum != want {
+		t.Errorf("per-file FailedBytes sum = %d, job-level = %d", sum, want)
+	}
+}
+
 func TestFailedBytes_SurvivesRestartNonResident(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	job := makeMultiFileJob(t, "failed-bytes-residency", 2, 2)
