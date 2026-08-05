@@ -189,14 +189,25 @@ Expected: PASS
 In `internal/queue/store.go`, add the type above the `Store` interface and change the method:
 
 ```go
-// FileMeta is the per-file shape Load needs to size a non-resident job's
-// progress without a manifest: the article count for the bitsets, and the
-// byte count for RemainingBytes.
+// FileMeta is the per-file shape Load needs to rebuild a non-resident job's
+// progress without a manifest. It carries everything RemainingBytes reads,
+// so a job reports the same figure resident or not: the article count sizes
+// the bitsets, and the rest reconstructs the per-file state the derivation
+// consults.
 type FileMeta struct {
-	ArticleCount int
-	Bytes        int64
+	ArticleCount    int
+	Bytes           int64
+	BytesDownloaded int64
+	Complete        bool
+	Deferred        bool
 }
 ```
+
+Carrying only `ArticleCount` and `Bytes` is not enough. `RemainingBytesByJob`,
+which this replaces, computed `SUM(bytes - bytes_downloaded)`; dropping the
+subtrahend makes a job paused mid-download report as having downloaded nothing
+after a restart. `Complete` and `Deferred` are needed for the same reason once
+the derivation consults them.
 
 ```go
 	ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error)
@@ -207,10 +218,10 @@ Delete the `RemainingBytesByJob` method from the interface and its doc comment.
 In `internal/queue/sqlite_store.go`, change the query and the accumulation:
 
 ```go
-const q = `SELECT job_id, file_index, article_count, bytes FROM job_files ORDER BY job_id ASC, file_index ASC`
+const q = `SELECT job_id, file_index, article_count, bytes, bytes_downloaded, complete, deferred FROM job_files ORDER BY job_id ASC, file_index ASC`
 ```
 
-Scan `bytes` alongside `article_count` and append `FileMeta{ArticleCount: count, Bytes: fileBytes}` where it previously appended `count`. Keep the existing non-contiguous-index handling exactly as it is — only the element type changes.
+Scan the new columns alongside `article_count` and append a fully-populated `FileMeta` where it previously appended `count`. `complete` and `deferred` are stored as INTEGER, so scan them into `int` and convert with `!= 0`. Keep the existing non-contiguous-index handling exactly as it is — only the element type changes.
 
 Delete `RemainingBytesByJob` entirely.
 
@@ -247,6 +258,9 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 	for fi, f := range files {
 		p.files[fi].Pending = f.ArticleCount
 		p.files[fi].Bytes = f.Bytes
+		p.files[fi].BytesDownloaded = f.BytesDownloaded
+		p.files[fi].Complete = f.Complete
+		p.files[fi].Deferred = f.Deferred
 	}
 	return p
 }
@@ -555,13 +569,17 @@ func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
 		t.Fatalf("ArticleCountsByJob: %v", err)
 	}
 	nonResident := newJobProgressSized(metas[job.ID])
-	nonResident.files[0].BytesDownloaded = job.progress.files[0].BytesDownloaded
 
 	if got, want := nonResident.RemainingBytes(), resident; got != want {
 		t.Errorf("non-resident = %d, resident = %d", got, want)
 	}
 }
 ```
+
+The non-resident progress is **not** adjusted by hand. It must reconstruct
+everything from what `ArticleCountsByJob` returns, exactly as `Load` does — a
+test that sets `BytesDownloaded` itself proves nothing about production, and an
+earlier draft of this plan did precisely that.
 
 This belongs in `progress_bytes_test.go`, not `residency_remaining_bytes_test.go`. That file's two existing tests — `TestTotalRemainingBytes_NonResidentJobsCounted` and `TestTotalRemainingBytes_RestartReconstructsNonResident` — assert that non-resident jobs are *counted at all* (#262). This asserts the stronger property that one job reports the *same* figure either way. Related, not duplicative; leave both.
 
