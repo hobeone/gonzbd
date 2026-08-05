@@ -280,6 +280,20 @@ func (p *JobProgress) derivedRemainingBytes() int64 {
 // docs/superpowers/specs/2026-08-05-job-size-figures-design.md, which
 // records that a job's advertised expectation moving as par2 decisions are
 // made is a deliberate consequence.
+//
+// A deferred file contributes zero to all three of ExpectedBytes,
+// RemainingBytes, and FailedBytes — which is what lets
+// downloaded=expected-failed-remaining close. The third leg holds only
+// because Deferred is never toggled on a file that already has resolved
+// articles: markFailed adds to the job-level failedBytes and to the
+// file's own FailedBytes unconditionally, with no check of Deferred, and
+// newJobProgressSized/recompute sum failedBytes over every file including
+// deferred ones. Today no caller defers a file after any of its articles
+// have been dispatched, so a deferred file's FailedBytes is always zero in
+// practice — but that is an invariant of the callers, not of this
+// function. A future change that starts deferring a partially-downloaded
+// file needs to either exclude it from failedBytes accounting too, or
+// accept that the identity above stops closing for that file.
 func (p *JobProgress) ExpectedBytes() int64 {
 	if p == nil {
 		return 0

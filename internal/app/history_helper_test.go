@@ -216,8 +216,10 @@ func TestBuildHistoryEntry_SizeSurvivesEviction(t *testing.T) {
 
 // TestBuildHistoryEntry_DownloadedExcludesDeferredPar2 pins the Task 6 fix:
 // a job finalized while an on-demand-par2 recovery volume is still
-// (deferred, undispatched) in its manifest must record Downloaded as only
-// the content actually fetched, not the deferred volume's bytes too.
+// (deferred, undispatched) in its manifest must record both Bytes and
+// Downloaded as only the content actually fetched, not the deferred
+// volume's bytes too — the two fields have to describe the same file set,
+// since the UI derives a "failed" figure as Bytes-Downloaded.
 //
 // Not built through buildHistoryTestJob: that helper's queue.AddOptions has
 // no OnDemandPar2, and OnDemandPar2 is what makes NewJob mark a recovery
@@ -268,12 +270,20 @@ func TestBuildHistoryEntry_DownloadedExcludesDeferredPar2(t *testing.T) {
 
 	// Only the content file's 400 bytes were ever fetched; the deferred
 	// 1000-byte recovery volume was never dispatched. Under the old
-	// pairing (totalBytes = job.Queue.TotalBytes(), the whole-manifest
-	// total of 1400) this would have reported Downloaded = 1400 — the
-	// deferred volume's bytes counted as downloaded even though nothing
-	// was ever fetched for it.
+	// pairing (Bytes = job.Queue.TotalBytes(), the whole-manifest total of
+	// 1400, while Downloaded already moved to the expectation) this would
+	// have reported Bytes = 1400, Downloaded = 400 — and
+	// HistoryRow.svelte's "X of Y received (Y-X failed)" line would have
+	// rendered "400 of 1400 (1000 failed)" for a job in which nothing
+	// failed. Bytes must describe the same file set as Downloaded.
+	if got, want := entry.Bytes, int64(400); got != want {
+		t.Errorf("Bytes = %d, want %d (deferred recovery volume must not count toward the advertised size)", got, want)
+	}
 	if got, want := entry.Downloaded, int64(400); got != want {
 		t.Errorf("Downloaded = %d, want %d (deferred recovery volume must not count as downloaded)", got, want)
+	}
+	if got, want := entry.Bytes-entry.Downloaded, int64(0); got != want {
+		t.Errorf("Bytes-Downloaded (the UI's \"failed\" figure) = %d, want %d — nothing failed", got, want)
 	}
 	if got, want := entry.Completeness, int64(100); got != want {
 		t.Errorf("Completeness = %d, want %d", got, want)

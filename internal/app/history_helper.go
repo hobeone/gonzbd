@@ -33,16 +33,22 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 	stageLogJSON, _ := json.Marshal(job.StageLog)
 
 	p := job.Queue.Progress()
-	// totalBytes is the whole-manifest total, including any deferred
-	// recovery volumes: it is the job's full advertised size for the
-	// history record's Bytes field, matching Job.TotalBytes()'s other
-	// logging/post-processing callers.
-	totalBytes := job.Queue.TotalBytes()
 	// expectedBytes shares its walk and predicate with RemainingBytes and
 	// FailedBytes (both exclude Deferred files), so completeness and the
 	// downloaded identity below combine figures from the same universe —
-	// see ExpectedBytes's doc comment for why pairing it with totalBytes
-	// instead would misreport both for a job with deferred par2 volumes.
+	// see ExpectedBytes's doc comment for why pairing either with
+	// job.Queue.TotalBytes() instead would misreport them for a job with
+	// deferred par2 volumes.
+	//
+	// entry.Bytes also uses expectedBytes rather than TotalBytes(), even
+	// though Bytes is not part of the downloaded identity: the UI renders
+	// "Downloaded of Bytes (Bytes-Downloaded failed)" as one sentence (see
+	// HistoryRow.svelte), so Bytes has to describe the same file set as
+	// Downloaded or that arithmetic reports bytes as failed that were only
+	// ever deferred, never dispatched, never failed. A job finalized while
+	// maybeReleaseRecoveryVolumes has left a deferred volume in the
+	// manifest (see the non-resident DiscardDeferredPar2 case documented
+	// at app.go:1057) is exactly the case this would otherwise misreport.
 	expectedBytes := p.ExpectedBytes()
 
 	var downloadDuration int64
@@ -112,7 +118,7 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 		DownloadTime: downloadDuration,
 		PostprocTime: postprocDuration,
 		StageLog:     string(stageLogJSON),
-		Bytes:        totalBytes,
+		Bytes:        expectedBytes,
 		Downloaded:   downloaded,
 		Completeness: completeness,
 		TimeAdded:    job.Queue.Added,
