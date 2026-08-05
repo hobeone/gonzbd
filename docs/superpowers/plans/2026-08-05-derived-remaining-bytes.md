@@ -34,6 +34,8 @@
 | `internal/queue/store.go` | `Store` interface: `ArticleCountsByJob` shape change, `RemainingBytesByJob` removed |
 | `internal/queue/job.go` | `ResetForRetry` stops re-adding bytes |
 | `internal/queue/queue.go` | `DiscardDeferredPar2` stops adjusting the counter |
+| `internal/api/queue.go` | Percentage and size pair with the expectation, not the manifest total |
+| `internal/app/history_helper.go` | The downloaded identity uses the expectation |
 | `docs/queue-lifecycle.md` | Records that remaining is derived, not maintained |
 
 ---
@@ -1122,7 +1124,231 @@ EOF
 
 ---
 
-### Task 6: Pin the residency-equivalence property, and document it
+### Task 6: Pair remaining with an expectation that shares its exclusion set
+
+Task 5 made `RemainingBytes()` exclude `Deferred` files. The sizes it is paired with did not change, so two consumers now combine figures drawn from different universes:
+
+- `internal/api/queue.go:311` computes `pct = 100*(totalBytes-remainingBytes)/totalBytes` with `totalBytes = Job.TotalBytes()`, the whole-manifest total. A freshly added on-demand-par2 job with 10 GB of content and 1 GB of deferred recovery now reports 9% complete before a byte is fetched, and `SizeLeft` disagrees with `Size` by the deferred amount.
+- `internal/app/history_helper.go:54` computes `downloaded := totalBytes - FailedBytes() - RemainingBytes()`. For a job finalized while deferred volumes are still in its manifest — a failed job, an early abort, or the logged-error branch at `internal/app/app.go:1057` — this records the deferred bytes as downloaded when they were never fetched.
+
+The fix is the expectation figure in `docs/superpowers/specs/2026-08-05-job-size-figures-design.md` § Derived expectation: a size derived on the same walk and the same predicate as remaining, excluding `Deferred` alone.
+
+```
+expected  = sum over files where !Deferred            of Bytes
+remaining = sum over files where !Deferred && !Complete of (Bytes - BytesDownloaded - FailedBytes)
+```
+
+`downloaded = expected - failed - remaining` then closes for every file kind: an incomplete file yields `Bytes - F - (Bytes-D-F) = D`; a complete file with failures yields `Bytes - F - 0`; a deferred file contributes zero to all three.
+
+`Job.TotalBytes()` is unchanged and keeps its logging and post-processing callers. Only consumers that combine a size with remaining or failed bytes move.
+
+**Files:**
+- Modify: `internal/queue/progress.go` (`ExpectedBytes`)
+- Modify: `internal/api/queue.go` (percentage and size)
+- Modify: `internal/app/history_helper.go` (the downloaded identity)
+- Modify: `internal/app/app.go` (the total-failure check)
+- Test: `internal/queue/progress_bytes_test.go`, `internal/app/history_helper_test.go`
+
+**Interfaces:**
+- Consumes: `FileProgress.Bytes`, `FileProgress.Deferred`, `derivedRemainingBytes` from earlier tasks
+- Produces: `func (p *JobProgress) ExpectedBytes() int64` — exported, since `internal/api` and `internal/app` call it
+
+- [ ] **Step 1: Write the failing identity test**
+
+Append to `internal/queue/progress_bytes_test.go` (`package queue`):
+
+```go
+// TestExpectedBytes_ClosesTheDownloadedIdentity pins the property every
+// consumer of these figures depends on: downloaded = expected - failed -
+// remaining, for each kind of file a job can hold at once.
+func TestExpectedBytes_ClosesTheDownloadedIdentity(t *testing.T) {
+	m := newManifest([]JobFile{
+		// Fully downloaded and complete.
+		{Subject: "done.rar", Bytes: 2000, Articles: []JobArticle{{ID: "d1", Bytes: 2000}}},
+		// Half downloaded, still going.
+		{Subject: "partial.rar", Bytes: 2000, Articles: []JobArticle{{ID: "p1", Bytes: 1000}, {ID: "p2", Bytes: 1000}}},
+		// One article permanently failed.
+		{Subject: "failed.rar", Bytes: 1000, Articles: []JobArticle{{ID: "f1", Bytes: 1000}}},
+		// Deferred recovery volume: never dispatched.
+		{Subject: "x.vol000+01.par2", Bytes: 500, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 500}}},
+	})
+	p := newJobProgress(m)
+	p.files[3].Deferred = true
+
+	p.markDone(m, 0)
+	p.files[0].Complete = true
+	p.markDone(m, 1)
+	p.markFailed(m, 3)
+
+	// expected excludes only the deferred volume: 2000+2000+1000 = 5000.
+	if got, want := p.ExpectedBytes(), int64(5000); got != want {
+		t.Errorf("ExpectedBytes() = %d, want %d (deferred volume must not count)", got, want)
+	}
+	// remaining: done contributes 0 (Complete), partial 2000-1000 = 1000,
+	// failed 1000-0-1000 = 0, deferred 0.
+	if got, want := p.RemainingBytes(), int64(1000); got != want {
+		t.Errorf("RemainingBytes() = %d, want %d", got, want)
+	}
+	if got, want := p.FailedBytes(), int64(1000); got != want {
+		t.Errorf("FailedBytes() = %d, want %d", got, want)
+	}
+	// The identity every consumer relies on. Bytes actually fetched:
+	// 2000 (done) + 1000 (partial's first article) = 3000.
+	downloaded := p.ExpectedBytes() - p.FailedBytes() - p.RemainingBytes()
+	if want := int64(3000); downloaded != want {
+		t.Errorf("downloaded identity = %d, want %d", downloaded, want)
+	}
+}
+
+// TestExpectedBytes_FreshOnDemandJobReportsZeroProgress pins the
+// user-visible symptom directly: the percentage a queue row shows for a job
+// whose recovery volumes are deferred and whose content is untouched.
+func TestExpectedBytes_FreshOnDemandJobReportsZeroProgress(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "content.rar", Bytes: 10_000, Articles: []JobArticle{{ID: "c1", Bytes: 10_000}}},
+		{Subject: "content.vol000+01.par2", Bytes: 1_000, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 1_000}}},
+	})
+	p := newJobProgress(m)
+	p.files[1].Deferred = true
+
+	expected, remaining := p.ExpectedBytes(), p.RemainingBytes()
+	if expected != remaining {
+		t.Errorf("nothing downloaded but expected (%d) != remaining (%d); a queue row would show non-zero progress", expected, remaining)
+	}
+
+	// Un-deferring must move both together, with no fixup call.
+	p.files[1].Deferred = false
+	if got, want := p.ExpectedBytes(), int64(11_000); got != want {
+		t.Errorf("ExpectedBytes() after un-defer = %d, want %d", got, want)
+	}
+	if p.ExpectedBytes() != p.RemainingBytes() {
+		t.Errorf("after un-defer, expected (%d) != remaining (%d)", p.ExpectedBytes(), p.RemainingBytes())
+	}
+}
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `go test ./internal/queue/ -run TestExpectedBytes -v`
+Expected: FAIL to compile — `p.ExpectedBytes undefined`.
+
+- [ ] **Step 3: Add the accessor**
+
+In `internal/queue/progress.go`, directly after `derivedRemainingBytes`:
+
+```go
+// ExpectedBytes returns the size of what this job is expected to fetch:
+// every file that has not been deferred, whether or not it has been
+// downloaded yet.
+//
+// This is the size that must be paired with RemainingBytes. The two share
+// a walk and a predicate on purpose — a consumer computing a percentage or
+// a downloaded total from figures with different exclusion sets gets a
+// number that is wrong in a way no test of either figure alone would
+// catch. RemainingBytes additionally skips Complete files, because they
+// have nothing left to fetch; ExpectedBytes counts them, because they are
+// part of what the job set out to fetch.
+//
+// It is therefore NOT Job.TotalBytes(), which is the immutable
+// whole-manifest total and still includes deferred recovery volumes. See
+// docs/superpowers/specs/2026-08-05-job-size-figures-design.md, which
+// records that a job's advertised expectation moving as par2 decisions are
+// made is a deliberate consequence.
+func (p *JobProgress) ExpectedBytes() int64 {
+	if p == nil {
+		return 0
+	}
+	var expected int64
+	for fi := range p.files {
+		if p.files[fi].Deferred {
+			continue
+		}
+		expected += p.files[fi].Bytes
+	}
+	return expected
+}
+```
+
+Match the nil-guard shape of the neighbouring exported readers — read `RemainingBytes` first and follow it rather than copying the block above blindly.
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `go test ./internal/queue/ -run TestExpectedBytes -v`
+Expected: PASS
+
+- [ ] **Step 5: Point the queue API at the expectation**
+
+In `internal/api/queue.go`, in the function containing line 307: replace `totalBytes := j.TotalBytes()` with the expectation from progress, keeping `p` as the source so a non-resident job still works:
+
+```go
+	totalBytes := p.ExpectedBytes()
+```
+
+Read the surrounding function first. `totalBytes` feeds the percentage, `Size`, `SizeLeft`, `MBLeft` and the slot's byte fields; all of them should now describe the same universe as `remainingBytes`. If any use of `totalBytes` in that function should keep meaning the whole manifest, leave that one on `j.TotalBytes()` and say which and why in your report.
+
+- [ ] **Step 6: Point the history record at it**
+
+In `internal/app/history_helper.go`, the function using `totalBytes := job.Queue.TotalBytes()` at line 36 and `downloaded := totalBytes - p.FailedBytes() - p.RemainingBytes()` at line 54.
+
+Change the size to `p.ExpectedBytes()` so the identity closes. Read the whole function first: if `totalBytes` is also used for a field that should report the job's full advertised size rather than what it expected to fetch, keep that one on the manifest total and use a separate variable for the identity. Report which fields you put on which figure and why.
+
+- [ ] **Step 7: Fix the total-failure check**
+
+`internal/app/app.go:1697` is `if failedBytes >= job.TotalBytes()`. With deferred recovery in the manifest, failed content can never reach the whole-manifest total, so this check cannot fire for an on-demand-par2 job whose content all failed. Change it to compare against the job progress's `ExpectedBytes()`.
+
+Read the surrounding function to confirm progress is reachable there and that this reading of the check's intent is right. If it is not — if the check genuinely means "failed everything including what we chose not to fetch" — leave it and say so in your report with your reasoning.
+
+- [ ] **Step 8: Add the history regression test**
+
+In `internal/app/history_helper_test.go`, following whatever construction the existing tests in that file use — read them first and match, do not invent a fixture:
+
+Add a test for a job finalized with a deferred recovery volume still present, asserting the recorded downloaded byte count equals only what was actually fetched. Size it so the deferred volume's bytes would visibly inflate the figure if the identity used the whole-manifest total, and say in a comment what the number would have been under the old pairing.
+
+If that file has no usable construction path for a job with progress, put the test in the package that does and say where and why in your report.
+
+- [ ] **Step 9: Full gates**
+
+```bash
+goimports -w internal/ && go fix ./... && go build ./... && go vet ./...
+go test -race -count=1 ./...
+golangci-lint run ./...
+go run ./scripts/check_test_alignment
+go run ./scripts/check_coverage
+go run ./scripts/check_lock_io
+```
+
+`check_coverage` and `check_lock_io` must be clean. For `check_test_alignment`, only these seven known pre-existing entries may remain: `saveStore`, `readGzJSON`, `clearEmitted`, `isEarlyAbort`, `markEmitted`, `clone`, `insertJobFilesTx`.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add internal/
+git commit -m "$(cat <<'EOF'
+fix(queue): pair remaining bytes with a size that excludes deferred volumes
+
+Deriving remaining made it skip deferred recovery volumes, but the sizes
+it is paired with still covered the whole manifest, so consumers combined
+figures from different universes. A freshly added on-demand-par2 job
+reported non-zero progress before anything was fetched, and a job
+finalized before its volumes were discarded recorded those volumes as
+downloaded bytes.
+
+ExpectedBytes derives the job's advertised expectation on the same walk
+and predicate as remaining, excluding deferred files alone: a complete
+file still counts toward what the job set out to fetch, so the identity
+downloaded = expected - failed - remaining closes for every file kind.
+
+Job.TotalBytes stays the immutable whole-manifest total and keeps its
+logging and post-processing callers.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 7: Pin the residency-equivalence property, and document it
 
 The acceptance criterion. Every previous framing of this work failed on a figure meaning different things depending on residency; this asserts it cannot.
 
@@ -1170,7 +1396,7 @@ This belongs in `progress_bytes_test.go`, not `residency_remaining_bytes_test.go
 - [ ] **Step 2: Run the test**
 
 Run: `go test ./internal/queue/ -run TestRemainingBytes_IdenticalResidentAndNonResident -v`
-Expected: PASS. It should pass on the first run — Tasks 1–5 established the property, and this pins it against regression. If it fails, the two paths populate `FileProgress.Bytes` differently and that is a defect in Task 1, not in this test.
+Expected: PASS. It should pass on the first run — Tasks 1–6 established the property, and this pins it against regression. If it fails, the two paths populate `FileProgress.Bytes` differently and that is a defect in Task 1, not in this test.
 
 - [ ] **Step 3: Update the lifecycle contract**
 
