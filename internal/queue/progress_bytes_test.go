@@ -147,6 +147,53 @@ func TestNewJobProgressSized_ClampsRemainingPerFileNotPerJob(t *testing.T) {
 	}
 }
 
+func TestMarkFailed_AccumulatesPerFileFailedBytes(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 1500}, {ID: "a2", Bytes: 1500}}},
+		{Subject: "b.rar", Bytes: 2000, Articles: []JobArticle{{ID: "b1", Bytes: 2000}}},
+	})
+	p := newJobProgress(m)
+
+	p.markDone(m, 0)
+	p.markFailed(m, 1)
+	p.markFailed(m, 2)
+
+	if got, want := p.files[0].FailedBytes, int64(1500); got != want {
+		t.Errorf("file 0 FailedBytes = %d, want %d", got, want)
+	}
+	if got, want := p.files[1].FailedBytes, int64(2000); got != want {
+		t.Errorf("file 1 FailedBytes = %d, want %d", got, want)
+	}
+	if got, want := p.files[0].BytesDownloaded, int64(1500); got != want {
+		t.Errorf("failed bytes leaked into BytesDownloaded: got %d, want %d", got, want)
+	}
+	// Per-file failed bytes must sum to the job-level counter, or the two
+	// disagree the moment Task 3 derives remaining from the per-file side.
+	if got, want := p.files[0].FailedBytes+p.files[1].FailedBytes, p.failedBytes; got != want {
+		t.Errorf("per-file sum = %d, job-level failedBytes = %d", got, want)
+	}
+}
+
+func TestResetForReload_ReturnsFailedBytesToTheFile(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 3000}}},
+	})
+	p := newJobProgress(m)
+
+	p.markFailed(m, 0)
+	if got, want := p.files[0].FailedBytes, int64(3000); got != want {
+		t.Fatalf("FailedBytes after markFailed = %d, want %d", got, want)
+	}
+
+	p.resetForReload(m, 0)
+	if got, want := p.files[0].FailedBytes, int64(0); got != want {
+		t.Errorf("FailedBytes after resetForReload = %d, want %d", got, want)
+	}
+	if got, want := p.failedBytes, int64(0); got != want {
+		t.Errorf("job-level failedBytes after resetForReload = %d, want %d", got, want)
+	}
+}
+
 func TestRestoreJobProgress_CarriesPerFileBytes(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))

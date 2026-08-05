@@ -44,9 +44,17 @@ type FileProgress struct {
 	// from the manifest.
 	Bytes           int64
 	BytesDownloaded int64
-	WriteCursor     int64
-	Filename        string // resolved on-disk filename; empty until resolved
-	AssembledCRC32  uint32
+	// FailedBytes is the sum of bytes belonging to this file's permanently
+	// failed articles. Carried per file, not just job-wide, so remaining
+	// derives from progress alone at any residency: a failed article was
+	// never downloaded, so BytesDownloaded does not account for it, and
+	// without this the derivation would report its bytes as still to fetch
+	// forever. Recomputable from the article bitmaps when a manifest is
+	// resident; persisted in job_files.failed_bytes for when it is not.
+	FailedBytes    int64
+	WriteCursor    int64
+	Filename       string // resolved on-disk filename; empty until resolved
+	AssembledCRC32 uint32
 }
 
 // newJobProgress returns a zero-value JobProgress sized to m: RemainingBytes
@@ -321,7 +329,7 @@ func (p *JobProgress) recompute(m *Manifest) {
 	for fi := range m.NumFiles() {
 		lo, hi := m.FileRange(fi)
 		n := 0
-		var downloaded int64
+		var downloaded, fileFailed int64
 		// Deferred files (on-demand par2 recovery volumes) are not dispatched,
 		// so they contribute zero pending work.
 		deferred := p.files[fi].Deferred
@@ -336,11 +344,13 @@ func (p *JobProgress) recompute(m *Manifest) {
 				resolved++
 				if p.failed.Get(i) {
 					failed++
+					fileFailed += int64(m.ArticleBytes(i))
 				}
 			}
 		}
 		p.files[fi].Pending = n
 		p.files[fi].BytesDownloaded = downloaded
+		p.files[fi].FailedBytes = fileFailed
 		total += n
 	}
 	p.pendingArticles = total
@@ -412,6 +422,7 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 	p.emitted.Clear(i)
 	bytes := int64(m.ArticleBytes(i))
 	p.failedBytes += bytes
+	p.files[fi].FailedBytes += bytes
 	p.remainingBytes -= bytes
 	p.articlesResolved++
 	p.articlesFailed++
@@ -426,8 +437,10 @@ func (p *JobProgress) markFailed(m *Manifest, i int) bool {
 func (p *JobProgress) resetForReload(m *Manifest, i int) {
 	p.emitted.Clear(i)
 	if p.failed.Get(i) {
+		fi := m.fileIndexForArticle(i)
 		bytes := int64(m.ArticleBytes(i))
 		p.failedBytes -= bytes
+		p.files[fi].FailedBytes -= bytes
 		p.remainingBytes += bytes
 		p.done.Clear(i)
 		p.failed.Clear(i)
