@@ -555,17 +555,18 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	return rows.Err()
 }
 
-// ArticleCountsByJob returns every job's per-file article counts in a single
-// grouped query, indexed by file_index within each job. Used to size
-// JobProgress at restart without loading each job's manifest individually —
-// collapsed from a per-job query (the RestoreJobProgress-adjacent shape
-// RemainingBytesByJob already uses) so that a large queued backlog costs one
-// round trip instead of N.
+// ArticleCountsByJob returns every job's per-file FileMeta — article count,
+// byte size, bytes already downloaded, and complete/deferred state — in a
+// single grouped query, indexed by file_index within each job. Used to size
+// JobProgress at restart without loading each job's manifest individually,
+// and to give newJobProgressSized everything it needs to reconstruct a
+// non-resident job's RemainingBytes, so a large queued backlog costs one
+// round trip instead of one query per job.
 //
-// Counts are placed by file_index rather than by scan order, so a job whose
-// job_files rows have non-contiguous indices (e.g. after a partial delete)
-// still gets each count attributed to the right file instead of shifted by
-// position.
+// Entries are placed by file_index rather than by scan order, so a job
+// whose job_files rows have non-contiguous indices (e.g. after a partial
+// delete) still gets each entry attributed to the right file instead of
+// shifted by position.
 func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error) {
 	const q = `SELECT job_id, file_index, article_count, bytes, bytes_downloaded, complete, deferred FROM job_files ORDER BY job_id ASC, file_index ASC`
 	rows, err := s.db.QueryContext(ctx, q)

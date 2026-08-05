@@ -97,10 +97,11 @@ type Store interface {
 	// error and means "download from scratch".
 	RestoreRetryProgress(ctx context.Context, job *Job) (bool, error)
 
-	// ArticleCountsByJob returns every job's per-file article counts and
-	// byte sizes in a single grouped query, indexed by file_index within
-	// each job. Used by Load to size a non-resident job's JobProgress
-	// without reading its manifest.
+	// ArticleCountsByJob returns every job's per-file FileMeta — article
+	// count, byte size, bytes already downloaded, and whether the file is
+	// complete or deferred — in a single grouped query, indexed by
+	// file_index within each job. Used by Load to size a non-resident
+	// job's JobProgress without reading its manifest.
 	ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error)
 
 	// DeleteJobArtifacts removes the on-disk manifest for job id

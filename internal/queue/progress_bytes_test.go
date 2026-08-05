@@ -95,6 +95,58 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 	}
 }
 
+// TestNewJobProgressSized_ClampsRemainingPerFileNotPerJob pins that an
+// over-downloaded file's clamp is applied per file, not netted against the
+// rest of the job's files.
+//
+// The deleted Store.RemainingBytesByJob computed SUM(bytes-bytes_downloaded)
+// per job and clamped the job-wide total at 0 — TestSQLiteStore_RemainingBytesByJob
+// (now also deleted) pinned exactly that for a single over-downloaded file.
+// newJobProgressSized clamps per file instead: a file whose
+// bytes_downloaded exceeds its bytes contributes zero, independent of any
+// other file's shortfall. This is a deliberate semantics change, not an
+// accidental coverage drop — it is exactly what the FileProgress-derived
+// RemainingBytes (plan Task 2/3) computes for the same state, and aligning
+// the seed with it now is the point of this refactor. For a job with one
+// file over-downloaded by 50 and another under-downloaded by 30, the old
+// job-total clamp would have reported 0 (50-30=20 short of the total, but
+// the negative from file 0 ate into file 1's real remainder); the per-file
+// clamp reports 30, because file 0 independently contributes 0 rather than
+// -50.
+func TestNewJobProgressSized_ClampsRemainingPerFileNotPerJob(t *testing.T) {
+	store, dir, db := setupResidencyTestStoreWithDB(t)
+	q := New(WithStore(store), WithStateDir(dir))
+	job := makeMultiFileJob(t, "clamp-per-file", 2, 1)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// file 0 (100_000 bytes): over-downloaded by 50 — must contribute 0,
+	// never a negative "remaining".
+	if _, err := db.ExecContext(t.Context(),
+		"UPDATE job_files SET bytes_downloaded = ? WHERE job_id = ? AND file_index = 0",
+		100_050, job.ID); err != nil {
+		t.Fatalf("UPDATE file 0 bytes_downloaded: %v", err)
+	}
+	// file 1 (100_000 bytes): genuinely under-downloaded by 30.
+	if _, err := db.ExecContext(t.Context(),
+		"UPDATE job_files SET bytes_downloaded = ? WHERE job_id = ? AND file_index = 1",
+		99_970, job.ID); err != nil {
+		t.Fatalf("UPDATE file 1 bytes_downloaded: %v", err)
+	}
+
+	metas, err := store.ArticleCountsByJob(t.Context())
+	if err != nil {
+		t.Fatalf("ArticleCountsByJob: %v", err)
+	}
+	sized := newJobProgressSized(metas[job.ID])
+
+	if got, want := sized.RemainingBytes(), int64(30); got != want {
+		t.Errorf("RemainingBytes() = %d, want %d (file 0's over-download must clamp to 0 per file, "+
+			"not net against file 1's real 30-byte shortfall)", got, want)
+	}
+}
+
 func TestRestoreJobProgress_CarriesPerFileBytes(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
