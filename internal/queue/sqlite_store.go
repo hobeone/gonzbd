@@ -1306,7 +1306,14 @@ func (s *SQLiteStore) IsPaused(ctx context.Context) (bool, error) {
 // reject it. The manifest count still earns its place twice over: it is what
 // separates a dropped file from a duplicated one, and it states the rule
 // without depending on that subset property continuing to hold.
-func carryableRows(stored []storedFileRow, m *Manifest) (carryable map[string]storedFileRow, ambiguousRows int) {
+// Both counts are reported because they measure different things and the
+// operator needs the second. ambiguousRows counts rows whose subject is
+// unusable; uncarriedFiles counts the manifest files that consequently start
+// from zero. They diverge whenever the duplication is lopsided — one row
+// against two manifest files is a single ambiguous row but two files that
+// re-download — so reporting the row count alone would understate the cost in
+// exactly the direction that matters.
+func carryableRows(stored []storedFileRow, m *Manifest) (carryable map[string]storedFileRow, ambiguousRows, uncarriedFiles int) {
 	rowsPerSubject := make(map[string]int, len(stored))
 	for _, r := range stored {
 		rowsPerSubject[r.subject]++
@@ -1315,19 +1322,31 @@ func carryableRows(stored []storedFileRow, m *Manifest) (carryable map[string]st
 	for i := range m.NumFiles() {
 		filesPerSubject[m.FileSubject(i)]++
 	}
+	usable := func(subject string) bool {
+		return rowsPerSubject[subject] == 1 && filesPerSubject[subject] == 1
+	}
+
 	bySubject := make(map[string]storedFileRow, len(stored))
-	ambiguous := 0
 	for _, r := range stored {
 		switch {
-		case rowsPerSubject[r.subject] == 1 && filesPerSubject[r.subject] == 1:
+		case usable(r.subject):
 			bySubject[r.subject] = r
 		case filesPerSubject[r.subject] == 0:
 			// Dropped by the discard. Nothing to carry it onto.
 		default:
-			ambiguous++
+			ambiguousRows++
 		}
 	}
-	return bySubject, ambiguous
+	// Counted over the manifest, not the rows: a file with no row at all is
+	// new to this shape and starts from zero for an unremarkable reason, so
+	// only files whose subject exists but cannot be resolved are counted.
+	for i := range m.NumFiles() {
+		subject := m.FileSubject(i)
+		if !usable(subject) && rowsPerSubject[subject] > 0 {
+			uncarriedFiles++
+		}
+	}
+	return bySubject, ambiguousRows, uncarriedFiles
 }
 
 func (s *SQLiteStore) finishInterruptedRewrite(ctx context.Context, job *Job) error {
@@ -1340,10 +1359,13 @@ func (s *SQLiteStore) finishInterruptedRewrite(ctx context.Context, job *Job) er
 		return fmt.Errorf("sqlite store finish interrupted rewrite %s: %w", job.ID, err)
 	}
 
-	bySubject, ambiguous := carryableRows(stored, m)
-	if ambiguous > 0 {
+	bySubject, ambiguousRows, uncarriedFiles := carryableRows(stored, m)
+	if ambiguousRows > 0 {
 		s.log.Warn("some stored job_files rows have subjects that do not identify a single file; their progress is not carried and those files will re-download",
-			"job_id", job.ID, "ambiguous_rows", ambiguous, "carried_rows", len(bySubject))
+			"job_id", job.ID,
+			"ambiguous_rows", ambiguousRows,
+			"uncarried_files", uncarriedFiles,
+			"carried_rows", len(bySubject))
 	}
 
 	// Rebuild progress at the manifest's indices first, then let

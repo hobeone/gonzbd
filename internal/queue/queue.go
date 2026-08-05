@@ -778,13 +778,20 @@ func (q *Queue) PromoteNext(ctx context.Context) {
 				// ReplaceManifest that fails on a transient DB error tears
 				// the pair in this process, with no crash, because
 				// DiscardDeferredPar2 deliberately keeps its in-memory
-				// rebuild. #315 bounds that window to about one checkpoint,
-				// after which saveStore's retry rewrites the rows.
+				// rebuild.
 				//
-				// The repair is not run here on purpose: it opens a write
-				// transaction, and this path holds q.mu. Failing the job is
-				// the cheaper wrong answer for a window that closes itself —
-				// but fail it truthfully, and without the rename.
+				// #315's checkpoint retry bounds that window to about one
+				// tick, but only while the job stays resident:
+				// Queue.reconcileJobFiles abandons the retry when it is not
+				// (persistence.go), and no site clears manifestRowsStale
+				// without residency. Pause evicts unconditionally, so a pause
+				// before the checkpoint leaves the flag raised and lands
+				// here. The window does not always close itself — #320.
+				//
+				// The repair is not run here: it opens a write transaction
+				// and this path holds q.mu. Failing the job is at least
+				// visible, where stranding it would not be — but fail it
+				// truthfully, and without the rename.
 				setAside := manifestPath
 				claimErr := fmt.Errorf("restore progress: %w", err)
 				if errors.Is(err, ErrManifestStale) {

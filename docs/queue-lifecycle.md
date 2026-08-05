@@ -249,6 +249,16 @@ invalidated; the subject is the identity that survives it. Only if that rewrite
 itself fails does the job load non-resident, with `Queue.Load` sizing its
 progress from `job_files`.
 
+**The carry is by subject only where the subject identifies one file.** Nothing
+enforces that it does — not the NZB parser, not `NewJob`, and not the schema,
+which constrains `UNIQUE(job_id, file_index)` alone. A subject naming more than
+one row, or more than one manifest file, identifies nothing, and carrying it
+anyway would hand one file's `articles_done` to another and make it durable —
+the renumber splice reappearing on the path meant to repair it. An ambiguous
+subject is therefore read as *no information*: those files carry nothing and
+re-download, while every unambiguous file still carries. The cost is bounded to
+the files that are actually ambiguous rather than to the job.
+
 Degrading is not the fallback of choice, because it is not free: a job torn
 mid-discard is at `StatusDownloading`, and a non-resident job at that status is
 skipped by `ForEachUnfinishedArticle` and never selected by
@@ -312,12 +322,15 @@ What follows for this package:
   the life of the process. Reporting the error instead is worse still: `List`
   drops a job whose `Get` fails, against "a damaged job must remain removable"
   above. Only reconciliation leaves the job usable.
-- **Reconciliation preserves progress, or it is not worth doing.** Rebuilding
-  rows from the manifest alone would zero `articles_done` for every surviving
-  file and re-download a job that may have been nearly complete. If
-  reconciliation itself fails there is no recovery left, and only then does the
-  job load non-resident — with `hydrateErr` set, so "could not be made usable"
-  stays distinguishable from routine eviction.
+- **Reconciliation preserves progress wherever it can identify it, or it is not
+  worth doing.** Rebuilding rows from the manifest alone would zero
+  `articles_done` for every surviving file and re-download a job that may have
+  been nearly complete. The exception is an ambiguous subject, above: there the
+  progress cannot be attributed to a file at all, so those files — and only
+  those — are rebuilt zeroed. If reconciliation itself fails there is no
+  recovery left, and only then does the job load non-resident — with
+  `hydrateErr` set, so "could not be made usable" stays distinguishable from
+  routine eviction.
 - **Reporting scalars are reconstructed from `job_files`, not from the
   manifest**, for exactly this reason: the rows are the artifact that survives
   with its own shape intact.

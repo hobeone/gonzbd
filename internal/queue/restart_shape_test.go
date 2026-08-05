@@ -380,7 +380,8 @@ func TestCarryableRows_KeepsOnlyUnambiguousSubjects(t *testing.T) {
 		rows          []storedFileRow
 		manifest      []string
 		want          []string // subjects expected to be carryable
-		wantAmbiguous int      // rejected as ambiguous, not merely dropped
+		wantAmbiguous int      // rows rejected as ambiguous, not merely dropped
+		wantUncarried int      // manifest files that consequently start from zero
 	}{
 		{
 			name:     "all unique carries everything the manifest still has",
@@ -389,6 +390,7 @@ func TestCarryableRows_KeepsOnlyUnambiguousSubjects(t *testing.T) {
 			want:     []string{"a", "c"},
 			// "b" was dropped by the discard, which is routine, not ambiguous.
 			wantAmbiguous: 0,
+			wantUncarried: 0,
 		},
 		{
 			name:          "a subject on two rows is ambiguous",
@@ -396,6 +398,7 @@ func TestCarryableRows_KeepsOnlyUnambiguousSubjects(t *testing.T) {
 			manifest:      []string{"dup", "dup"},
 			want:          []string{},
 			wantAmbiguous: 2,
+			wantUncarried: 2,
 		},
 		{
 			name:          "a subject on two manifest files is ambiguous even from a single row",
@@ -403,6 +406,21 @@ func TestCarryableRows_KeepsOnlyUnambiguousSubjects(t *testing.T) {
 			manifest:      []string{"dup", "dup", "b"},
 			want:          []string{"b"},
 			wantAmbiguous: 1,
+			// The lopsided case: one ambiguous row, but two files pay for it.
+			// Reporting the row count alone would understate the cost.
+			wantUncarried: 2,
+		},
+		{
+			// A manifest file with no row is not an ambiguity: it has no
+			// stored progress to fail to attribute. Counting it would report
+			// damage for a file that simply starts from zero.
+			name:     "a manifest file with no row at all is not counted as uncarried",
+			rows:     rows("a"),
+			manifest: []string{"a", "never-stored"},
+			want:     []string{"a"},
+
+			wantAmbiguous: 0,
+			wantUncarried: 0,
 		},
 		{
 			name:     "a row the manifest dropped is not carryable",
@@ -411,14 +429,18 @@ func TestCarryableRows_KeepsOnlyUnambiguousSubjects(t *testing.T) {
 			want:     []string{"a"},
 			// A dropped row must not be reported as an ambiguity.
 			wantAmbiguous: 0,
+			wantUncarried: 0,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ambiguous := carryableRows(tc.rows, manifestOf(t, tc.manifest...))
-			if ambiguous != tc.wantAmbiguous {
-				t.Errorf("reported %d ambiguous rows, want %d", ambiguous, tc.wantAmbiguous)
+			got, ambiguousRows, uncarriedFiles := carryableRows(tc.rows, manifestOf(t, tc.manifest...))
+			if ambiguousRows != tc.wantAmbiguous {
+				t.Errorf("reported %d ambiguous rows, want %d", ambiguousRows, tc.wantAmbiguous)
+			}
+			if uncarriedFiles != tc.wantUncarried {
+				t.Errorf("reported %d uncarried files, want %d", uncarriedFiles, tc.wantUncarried)
 			}
 			if len(got) != len(tc.want) {
 				t.Fatalf("carried %d subjects %v, want %d %v", len(got), slices.Sorted(maps.Keys(got)), len(tc.want), tc.want)
