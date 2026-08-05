@@ -177,6 +177,30 @@ func TestMarkFailed_AccumulatesPerFileFailedBytes(t *testing.T) {
 	}
 }
 
+// TestFileFailedBytes_GuardBranches exercises FileFailedBytes's bounds
+// guard directly through the exported accessor — TestMarkFailed_
+// AccumulatesPerFileFailedBytes above only ever reads p.files[fi].
+// FailedBytes, the unexported field, so the accessor's out-of-range branch
+// (shared shape with FileBytesDownloaded's guard) had never actually run.
+// The nil-receiver branch is covered separately by
+// TestJobProgress_ExportedReadersAreNilSafe.
+func TestFileFailedBytes_GuardBranches(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "a.rar", Bytes: 1500, Articles: []JobArticle{{ID: "a1", Bytes: 1500}}},
+	})
+	p := newJobProgress(m)
+	p.markFailed(m, 0)
+
+	for _, fi := range []int{-1, len(p.files), len(p.files) + 10} {
+		if got := p.FileFailedBytes(fi); got != 0 {
+			t.Errorf("FileFailedBytes(%d) = %d, want 0 out of range", fi, got)
+		}
+	}
+	if got, want := p.FileFailedBytes(0), int64(1500); got != want {
+		t.Errorf("FileFailedBytes(0) = %d, want %d", got, want)
+	}
+}
+
 func TestResetForReload_ReturnsFailedBytesToTheFile(t *testing.T) {
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 3000}}},
@@ -230,12 +254,13 @@ func TestRestoreJobProgress_CarriesPerFileBytes(t *testing.T) {
 // state through markFailed on top of that seed rather than onto a fresh
 // JobProgress, so the two stack.
 //
-// The reloaded job comes back non-resident (StatusQueued, per
-// makeMultiFileJob's default), so job.manifest == nil and
-// RestoreJobProgress would no-op per its guard. The manifest captured
-// before Add is attached directly to the unexported field to force the
-// hydration path, matching how other tests in this package (e.g.
-// snapshot_test.go, pending_test.go) reach into Job's unexported fields.
+// Driven through Queue.SnapshotJob rather than an unexported-field write:
+// the reloaded job comes back non-resident (StatusQueued, per
+// makeMultiFileJob's default) with progress already seeded from job_files,
+// and SnapshotJob's hydrateSnapshot is the real production path that reads
+// the manifest back off disk and calls Store.RestoreJobProgress against
+// that same seeded progress — precisely the seed-plus-replay this test
+// targets, reached through a public entry point.
 func TestFailedBytes_NotDoubledByHydration(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	job := makeMultiFileJob(t, "failed-bytes-hydrate", 2, 2)
@@ -257,31 +282,27 @@ func TestFailedBytes_NotDoubledByHydration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	rj := reloaded.byID[job.ID]
 	// Seeded from job_files while non-resident.
-	if got := rj.Progress().FailedBytes(); got != want {
+	if got := reloaded.byID[job.ID].Progress().FailedBytes(); got != want {
 		t.Fatalf("non-resident FailedBytes = %d, want %d", got, want)
 	}
-	// RestoreJobProgress requires job.manifest != nil and job.progress !=
-	// nil or it returns early; the reloaded job is non-resident, so attach
-	// the manifest captured before Add to force the replay this test
-	// targets.
-	if rj.manifest != nil {
-		t.Fatal("fixture not exercising the bug: reloaded job already resident")
-	}
-	rj.manifest = m
+
 	// Hydrating replays per-article state on top of that seed. The total
 	// must not move: it is the same job, only more of it is in memory.
-	if err := store.RestoreJobProgress(context.Background(), rj); err != nil {
-		t.Fatalf("restore: %v", err)
+	snap := reloaded.SnapshotJob(job.ID)
+	if snap == nil {
+		t.Fatal("SnapshotJob returned nil")
 	}
-	if got := rj.Progress().FailedBytes(); got != want {
+	if snap.manifest == nil {
+		t.Fatal("fixture not exercising the bug: SnapshotJob did not hydrate a manifest")
+	}
+	if got := snap.Progress().FailedBytes(); got != want {
 		t.Errorf("FailedBytes after hydration = %d, want %d (seed and replay stacked)", got, want)
 	}
 	// The per-file values must still sum to the job-level total.
 	var sum int64
-	for fi := range rj.Progress().files {
-		sum += rj.Progress().files[fi].FailedBytes
+	for fi := range snap.Progress().files {
+		sum += snap.Progress().files[fi].FailedBytes
 	}
 	if sum != want {
 		t.Errorf("per-file FailedBytes sum = %d, job-level = %d", sum, want)
@@ -316,6 +337,36 @@ func TestNewJobProgress_MatchesSizedConstruction(t *testing.T) {
 		}
 		if got, want := p.files[fi].Bytes, m.FileBytes(fi); got != want {
 			t.Errorf("file %d Bytes = %d, want %d", fi, got, want)
+		}
+	}
+
+	// Pin the projection itself, not only newJobProgress's downstream use of
+	// it: fileMetaFromManifest must carry the right ArticleCount/Bytes per
+	// file, and everything else must read zero for a fresh manifest — no
+	// articles are downloaded, failed, complete, or deferred yet.
+	metas := fileMetaFromManifest(m)
+	if got, want := len(metas), m.NumFiles(); got != want {
+		t.Fatalf("fileMetaFromManifest returned %d entries, want %d", got, want)
+	}
+	for fi, fm := range metas {
+		lo, hi := m.FileRange(fi)
+		if got, want := fm.ArticleCount, hi-lo; got != want {
+			t.Errorf("fileMetaFromManifest[%d].ArticleCount = %d, want %d", fi, got, want)
+		}
+		if got, want := fm.Bytes, m.FileBytes(fi); got != want {
+			t.Errorf("fileMetaFromManifest[%d].Bytes = %d, want %d", fi, got, want)
+		}
+		if fm.BytesDownloaded != 0 {
+			t.Errorf("fileMetaFromManifest[%d].BytesDownloaded = %d, want 0", fi, fm.BytesDownloaded)
+		}
+		if fm.FailedBytes != 0 {
+			t.Errorf("fileMetaFromManifest[%d].FailedBytes = %d, want 0", fi, fm.FailedBytes)
+		}
+		if fm.Complete {
+			t.Errorf("fileMetaFromManifest[%d].Complete = true, want false", fi)
+		}
+		if fm.Deferred {
+			t.Errorf("fileMetaFromManifest[%d].Deferred = true, want false", fi)
 		}
 	}
 }
