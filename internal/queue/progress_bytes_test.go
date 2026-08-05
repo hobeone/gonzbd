@@ -288,6 +288,38 @@ func TestFailedBytes_NotDoubledByHydration(t *testing.T) {
 	}
 }
 
+// TestNewJobProgress_MatchesSizedConstruction characterises newJobProgress's
+// existing behaviour before it is refactored to delegate to
+// newJobProgressSized via fileMetaFromManifest, so the delegation in the
+// next step is provably behaviour-preserving.
+func TestNewJobProgress_MatchesSizedConstruction(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 1500}, {ID: "a2", Bytes: 1500}}},
+		{Subject: "b.rar", Bytes: 2000, Articles: []JobArticle{{ID: "b1", Bytes: 2000}}},
+		{Subject: "c.vol000+01.par2", Bytes: 800, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 800}}},
+	})
+	p := newJobProgress(m)
+
+	if got, want := p.done.Len(), m.NumArticles(); got != want {
+		t.Errorf("done bitset sized %d, want %d", got, want)
+	}
+	if got, want := len(p.files), m.NumFiles(); got != want {
+		t.Errorf("files sized %d, want %d", got, want)
+	}
+	if got, want := p.remainingBytes, m.TotalBytes(); got != want {
+		t.Errorf("remainingBytes = %d, want m.TotalBytes() = %d", got, want)
+	}
+	for fi := range p.files {
+		lo, hi := m.FileRange(fi)
+		if got, want := p.files[fi].Pending, hi-lo; got != want {
+			t.Errorf("file %d Pending = %d, want %d", fi, got, want)
+		}
+		if got, want := p.files[fi].Bytes, m.FileBytes(fi); got != want {
+			t.Errorf("file %d Bytes = %d, want %d", fi, got, want)
+		}
+	}
+}
+
 func TestFailedBytes_SurvivesRestartNonResident(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	job := makeMultiFileJob(t, "failed-bytes-residency", 2, 2)

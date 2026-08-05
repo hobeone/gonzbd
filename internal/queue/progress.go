@@ -57,23 +57,38 @@ type FileProgress struct {
 	AssembledCRC32 uint32
 }
 
+// fileMetaFromManifest projects m into the same per-file shape
+// Store.ArticleCountsByJob returns, so newJobProgress and
+// newJobProgressSized are one code path rather than two that must be kept
+// in agreement by hand. A fresh job has nothing downloaded, nothing
+// failed, and no file complete or deferred, so every field but the sizes
+// is zero.
+//
+// The projection is lossless for what JobProgress needs: Manifest.TotalBytes
+// is the sum of every file's bytes, and Manifest.NumArticles is the sum of
+// every file's article count, so the totals newJobProgressSized derives
+// match the ones newJobProgress used to take from the manifest directly.
+func fileMetaFromManifest(m *Manifest) []FileMeta {
+	files := make([]FileMeta, m.NumFiles())
+	for fi := range files {
+		lo, hi := m.FileRange(fi)
+		files[fi] = FileMeta{ArticleCount: hi - lo, Bytes: m.FileBytes(fi)}
+	}
+	return files
+}
+
 // newJobProgress returns a zero-value JobProgress sized to m: RemainingBytes
 // starts at m.TotalBytes() and every file's Pending starts at its article
-// count (all articles start undone/unemitted).
+// count (all articles start undone/unemitted). It projects m into
+// []FileMeta and delegates to newJobProgressSized, so resident and
+// non-resident construction are literally the same code and cannot drift
+// apart the way the two used to (see TestFailedBytes_NotDoubledByHydration
+// for what that drift cost). One side effect of delegating: pendingArticles
+// is now set to m.NumArticles() here too, where it used to be left at 0
+// until the first recompute — see the caller-visibility check this was
+// verified against.
 func newJobProgress(m *Manifest) *JobProgress {
-	p := &JobProgress{
-		done:           newBitset(m.NumArticles()),
-		failed:         newBitset(m.NumArticles()),
-		emitted:        newBitset(m.NumArticles()),
-		files:          make([]FileProgress, m.NumFiles()),
-		remainingBytes: m.TotalBytes(),
-	}
-	for fi := range p.files {
-		lo, hi := m.FileRange(fi)
-		p.files[fi].Pending = hi - lo
-		p.files[fi].Bytes = m.FileBytes(fi)
-	}
-	return p
+	return newJobProgressSized(fileMetaFromManifest(m))
 }
 
 // ArticleDone reports whether global article index i has resolved (success or failure).
