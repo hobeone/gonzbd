@@ -1007,7 +1007,8 @@ EOF
 ### Task 5: Delete the maintained counter
 
 **Files:**
-- Modify: `internal/queue/progress.go` (field, seed, decrements, `resetForReload`, `RemainingBytes`, JSON shape)
+- Modify: `internal/queue/progress.go` (field, decrements, `resetForReload`, `RemainingBytes`, JSON shape)
+- Modify: `internal/queue/persistence.go` (`newJobProgressSized` stops seeding the counter)
 - Modify: `internal/queue/job.go` (`ResetForRetry`)
 - Modify: `internal/queue/queue.go` (`DiscardDeferredPar2`)
 
@@ -1028,12 +1029,38 @@ Expected: PASS, with the counter still present and still maintained. A failure h
 
 Remove, in `internal/queue/progress.go`:
 - the `remainingBytes int64` field from `JobProgress`
-- `remainingBytes: m.TotalBytes()` from `newJobProgress`
 - `p.remainingBytes -= bytes` in `markDone`
 - `p.remainingBytes -= bytes` in `markFailed`
 - `p.remainingBytes += bytes` in `resetForReload`
 - `RemainingBytes: p.remainingBytes` from `MarshalJSON` and the `RemainingBytes` field from `jobProgressJSON`
 - `p.remainingBytes = pj.RemainingBytes` from `UnmarshalJSON`
+
+`newJobProgress` no longer has a seed of its own to delete — Task 3 made it
+delegate to `newJobProgressSized`. The seed now lives in one place, and
+removing it is what finally collapses the duplicated formula: until this
+step, `newJobProgressSized` open-codes the same expression
+`derivedRemainingBytes` computes, and the two agreeing has been maintained
+by hand.
+
+Remove, in `internal/queue/persistence.go`, `newJobProgressSized`:
+- `remainingBytes` from the `var remainingBytes, failedBytes int64` declaration
+- the `if left := f.Bytes - f.BytesDownloaded - f.FailedBytes; left > 0 { remainingBytes += left }` block
+- `remainingBytes:  remainingBytes,` from the `&JobProgress{...}` literal
+
+Keep the `Complete || Deferred` skip only if `failedBytes` still needs it —
+read the loop and decide; `failedBytes` must accumulate over **every** file,
+including complete and deferred ones, so the `continue` must not skip it.
+Getting this wrong silently under-reports failed bytes for any job with a
+complete or deferred file, and no existing test covers that combination.
+
+Then rewrite the function's doc comment. Several paragraphs describe seeding
+`remainingBytes` and why the seed matches the derivation; those become false.
+What stays true and must be said: the per-file figures are carried so
+`RemainingBytes` derives correctly at any residency, and `failedBytes` is
+summed here because reporting depends on it before promotion.
+
+Also fix `newJobProgress`'s doc comment, which still says `RemainingBytes`
+starts at `m.TotalBytes()`.
 
 Remove, in `internal/queue/job.go`, `ResetForRetry`:
 - `j.progress.remainingBytes += int64(m.ArticleBytes(i))`
