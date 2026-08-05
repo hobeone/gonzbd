@@ -29,7 +29,7 @@
 |---|---|
 | `internal/history/migrations/008_add_job_files_failed_bytes.sql` | Adds `job_files.failed_bytes` so failed bytes are reconstructible without a manifest |
 | `internal/queue/progress.go` | `FileProgress.Bytes`; `FileProgress.FailedBytes`; the derived `RemainingBytes()`; deletion of the counter and its mutations |
-| `internal/queue/persistence.go` | `newJobProgressSized` takes per-file bytes instead of a pre-summed total |
+| `internal/queue/persistence.go` | `newJobProgressSized` takes per-file bytes instead of a pre-summed total; becomes the single JobProgress constructor |
 | `internal/queue/sqlite_store.go` | `RestoreJobProgress` reads `bytes`; `ArticleCountsByJob` carries bytes; `RemainingBytesByJob` deleted |
 | `internal/queue/store.go` | `Store` interface: `ArticleCountsByJob` shape change, `RemainingBytesByJob` removed |
 | `internal/queue/job.go` | `ResetForRetry` stops re-adding bytes |
@@ -274,7 +274,7 @@ In `Load`, drop the `remainingByJob` lookup and its `RemainingBytesByJob` call, 
 job.progress = newJobProgressSized(countsByJob[job.ID])
 ```
 
-Note the `remainingBytes` field is still set elsewhere at this point — it is removed in Task 4.
+Note the `remainingBytes` field is still set elsewhere at this point — it is removed in Task 5.
 
 - [ ] **Step 12: Run the package suite**
 
@@ -608,16 +608,266 @@ EOF
 
 ---
 
-### Task 3: Prove a derived value agrees with the maintained one
+### Task 3: Give the job-level byte aggregates a single owner
 
-Adds the derivation next to the existing counter and pins that they agree. This is the safety net for Task 4's deletion: if the derivation is wrong, this fails before the counter is gone.
+Task 2's review found a Critical defect that this task fixes, and removes the mechanism that produced it.
+
+`newJobProgressSized` seeds job-level `failedBytes`. Every hydration path then calls `Store.RestoreJobProgress`, which replays per-article state through `decodeArticlesDone` → `markFailed` (`sqlite_store.go:180`), and `markFailed` does `p.failedBytes += bytes`. The replay runs on top of the seeded value rather than a fresh one, so the two stack: a job with 100,000 failed bytes reports 200,000 after `Load` → `SnapshotJob`. `recompute` runs at the end of `RestoreJobProgress` and repairs the *per-file* `FailedBytes`, but never the job-level total.
+
+`queue.go:1131` already states the contract the seeding broke: "newJobProgress built an all-zero JobProgress that RestoreJobProgress [fills]". The fix is to give the aggregate an owner rather than two writers, and to stop the two constructors from being able to diverge at all.
+
+Two changes, in this order:
+
+1. **`recompute` owns job-level `failedBytes`.** It already owns `pendingArticles`, `articlesResolved`, and `articlesFailed`, and it already computes the per-file failed total. Assigning the job-level field from the same loop makes it authoritative wherever a manifest exists, and makes seed-plus-replay stacking impossible on every path at once.
+
+2. **One constructor.** `newJobProgress(m)` projects the manifest into `[]FileMeta` and delegates to `newJobProgressSized`, so resident and non-resident construction is literally the same code.
+
+**`remainingBytes` is deliberately NOT given to `recompute`.** It has the same double-subtraction, but it is pre-existing (the seed has always been re-subtracted by the replay), and recomputing it from per-file `Bytes` rather than from article bytes could shift the reported figure for a resident job whose file size differs from the sum of its article sizes — which would violate this plan's "no reported figure may change" constraint in order to fix a bug that predates it. Task 5 deletes the field, and the derived replacement reads per-file state `recompute` already owns. Do not add it here.
+
+**Files:**
+- Modify: `internal/queue/progress.go` (`recompute`, `newJobProgress`, new `fileMetaFromManifest`)
+- Test: `internal/queue/progress_bytes_test.go`
+
+**Interfaces:**
+- Consumes: `FileProgress.FailedBytes` and `FileMeta.FailedBytes` from Task 2
+- Produces: `fileMetaFromManifest(m *Manifest) []FileMeta`. `newJobProgress` keeps its signature `func newJobProgress(m *Manifest) *JobProgress` — callers are unaffected.
+
+- [ ] **Step 1: Write the failing regression test**
+
+This is the defect Task 2 shipped. It must fail before the fix.
+
+```go
+func TestFailedBytes_NotDoubledByHydration(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	job := makeMultiFileJob(t, "failed-bytes-hydrate", 2, 2)
+	m, err := job.Manifest()
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	job.Progress().markFailed(m, 0)
+	job.Progress().markDone(m, 1)
+	want := job.Progress().FailedBytes()
+	if want == 0 {
+		t.Fatal("fixture produced no failed bytes; the test would pass vacuously")
+	}
+	if err := store.Add(context.Background(), job); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	reloaded, err := Load(dir, WithStore(store))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	rj := reloaded.byID[job.ID]
+	// Seeded from job_files while non-resident.
+	if got := rj.Progress().FailedBytes(); got != want {
+		t.Fatalf("non-resident FailedBytes = %d, want %d", got, want)
+	}
+	// Hydrating replays per-article state on top of that seed. The total
+	// must not move: it is the same job, only more of it is in memory.
+	if err := store.RestoreJobProgress(context.Background(), rj); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got := rj.Progress().FailedBytes(); got != want {
+		t.Errorf("FailedBytes after hydration = %d, want %d (seed and replay stacked)", got, want)
+	}
+	// The per-file values must still sum to the job-level total.
+	var sum int64
+	for fi := range rj.Progress().files {
+		sum += rj.Progress().files[fi].FailedBytes
+	}
+	if sum != want {
+		t.Errorf("per-file FailedBytes sum = %d, job-level = %d", sum, want)
+	}
+}
+```
+
+`RestoreJobProgress` needs `job.manifest != nil` and `job.progress != nil` or it returns early without doing anything — which would make this test vacuous. Verify the reloaded job satisfies both before the call; if it does not, hydrate it the way `residency_remaining_bytes_test.go` does and say in your report which route you used.
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `go test ./internal/queue/ -run TestFailedBytes_NotDoubledByHydration -v`
+Expected: FAIL at "FailedBytes after hydration", reporting exactly double the wanted value.
+
+If it instead fails at the *non-resident* assertion, or passes outright, stop and report — the reproduction does not match the diagnosis and the rest of this task is built on that diagnosis.
+
+- [ ] **Step 3: Give `recompute` the job-level total**
+
+In `internal/queue/progress.go`, `recompute` already accumulates `fileFailed` per file. Accumulate a job-wide total alongside the existing `resolved`/`failed` counters and assign it after the loop, next to the existing assignments:
+
+```go
+	p.pendingArticles = total
+	p.articlesResolved = resolved
+	p.articlesFailed = failed
+	p.failedBytes = failedBytesTotal
+```
+
+Declare `failedBytesTotal` beside `resolved`/`failed` at the top of the function and add `failedBytesTotal += fileFailed` immediately after the existing `p.files[fi].FailedBytes = fileFailed`.
+
+Extend `recompute`'s doc comment to record that it is authoritative for the job-level `failedBytes` wherever a manifest exists, and that incremental maintenance by `markFailed`/`resetForReload` is what carries the value between recomputes. State the reason: `RestoreJobProgress` replays articles on top of an already-seeded progress, so without a single owner the seed and the replay stack.
+
+- [ ] **Step 4: Run the regression test to verify it passes**
+
+Run: `go test ./internal/queue/ -run TestFailedBytes_NotDoubledByHydration -v`
+Expected: PASS
+
+- [ ] **Step 5: Run the whole package**
+
+Run: `go test -race -count=1 ./internal/queue/...`
+Expected: PASS. If a test that previously passed now fails, it was depending on the doubled value — report which, with its assertion, before changing it. Do not adjust an existing assertion to match new behaviour without saying so explicitly in your report.
+
+- [ ] **Step 6: Commit**
+
+```bash
+goimports -w internal/queue/ && go build ./... && go vet ./... && golangci-lint run ./internal/queue/...
+git add internal/queue/progress.go internal/queue/progress_bytes_test.go
+git commit -m "$(cat <<'EOF'
+fix(queue): give job-level failedBytes a single owner
+
+newJobProgressSized seeds failedBytes for a non-resident job, and
+RestoreJobProgress then replays per-article state through markFailed on
+top of that seed rather than onto a fresh JobProgress, so the two
+stacked: a job with permanently failed articles reported double its
+failed bytes once hydrated.
+
+recompute already owns pendingArticles, articlesResolved and
+articlesFailed, and already derives the per-file failed total from the
+article bitmaps. Making it own the job-level total too closes the
+double-count on every hydration path at once.
+
+remainingBytes has the same shape of defect but is left alone: it
+predates this work, and recomputing it from per-file bytes could move a
+reported figure. It is deleted outright two commits from now.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+- [ ] **Step 7: Write the constructor-equivalence test**
+
+Pins that projecting a manifest through `FileMeta` loses nothing, so the two constructors cannot diverge.
+
+```go
+func TestNewJobProgress_MatchesSizedConstruction(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 1500}, {ID: "a2", Bytes: 1500}}},
+		{Subject: "b.rar", Bytes: 2000, Articles: []JobArticle{{ID: "b1", Bytes: 2000}}},
+		{Subject: "c.vol000+01.par2", Bytes: 800, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 800}}},
+	})
+	p := newJobProgress(m)
+
+	if got, want := p.done.Len(), m.NumArticles(); got != want {
+		t.Errorf("done bitset sized %d, want %d", got, want)
+	}
+	if got, want := len(p.files), m.NumFiles(); got != want {
+		t.Errorf("files sized %d, want %d", got, want)
+	}
+	if got, want := p.remainingBytes, m.TotalBytes(); got != want {
+		t.Errorf("remainingBytes = %d, want m.TotalBytes() = %d", got, want)
+	}
+	for fi := range p.files {
+		lo, hi := m.FileRange(fi)
+		if got, want := p.files[fi].Pending, hi-lo; got != want {
+			t.Errorf("file %d Pending = %d, want %d", fi, got, want)
+		}
+		if got, want := p.files[fi].Bytes, m.FileBytes(fi); got != want {
+			t.Errorf("file %d Bytes = %d, want %d", fi, got, want)
+		}
+	}
+}
+```
+
+- [ ] **Step 8: Run it — it must pass against the CURRENT `newJobProgress`**
+
+Run: `go test ./internal/queue/ -run TestNewJobProgress_MatchesSizedConstruction -v`
+Expected: PASS, before you touch `newJobProgress`. This test characterises existing behaviour so the refactor in the next step is provably behaviour-preserving. If it fails now, stop and report — the properties do not hold and the delegation is not safe.
+
+- [ ] **Step 9: Delegate to the one constructor**
+
+Add, next to `newJobProgress`:
+
+```go
+// fileMetaFromManifest projects m into the same per-file shape
+// Store.ArticleCountsByJob returns, so newJobProgress and
+// newJobProgressSized are one code path rather than two that must be kept
+// in agreement by hand. A fresh job has nothing downloaded, nothing
+// failed, and no file complete or deferred, so every field but the sizes
+// is zero.
+//
+// The projection is lossless for what JobProgress needs: Manifest.TotalBytes
+// is the sum of every file's bytes, and Manifest.NumArticles is the sum of
+// every file's article count, so the totals newJobProgressSized derives
+// match the ones newJobProgress used to take from the manifest directly.
+func fileMetaFromManifest(m *Manifest) []FileMeta {
+	files := make([]FileMeta, m.NumFiles())
+	for fi := range files {
+		lo, hi := m.FileRange(fi)
+		files[fi] = FileMeta{ArticleCount: hi - lo, Bytes: m.FileBytes(fi)}
+	}
+	return files
+}
+```
+
+Then replace `newJobProgress`'s body with:
+
+```go
+func newJobProgress(m *Manifest) *JobProgress {
+	return newJobProgressSized(fileMetaFromManifest(m))
+}
+```
+
+Keep its doc comment accurate: it no longer builds the struct itself, and it now sets `pendingArticles` — see the next step.
+
+- [ ] **Step 10: Check the one behavioural delta, and report it**
+
+The old `newJobProgress` left `pendingArticles` at 0 while setting each file's `Pending`; `newJobProgressSized` sets `pendingArticles` to the article total. After delegation, `newJobProgress` sets it too.
+
+That looks like a latent inconsistency being corrected rather than a regression, but **verify it rather than assuming**: `PendingArticles()` is reachable from reporting code. Establish whether any path reads it between `newJobProgress` and the first `recompute` — `recompute` sets it from ground truth, so the delta only matters in that window. Report what you found. If any reported figure changes for a caller, stop and report rather than proceeding: this plan forbids that.
+
+- [ ] **Step 11: Run everything**
+
+```bash
+go build ./... && go vet ./... && go test -race -count=1 ./... && golangci-lint run ./...
+```
+Expected: all PASS. Run the full repo, not just `internal/queue` — `newJobProgress` is reachable from other packages.
+
+- [ ] **Step 12: Commit**
+
+```bash
+git add internal/queue/progress.go internal/queue/progress_bytes_test.go
+git commit -m "$(cat <<'EOF'
+refactor(queue): build JobProgress through one constructor
+
+newJobProgress and newJobProgressSized built the same struct from two
+sources and had to be kept in agreement by hand. Three defects in this
+refactor came from that pair drifting: a dropped bytes_downloaded term,
+a derivation blind to failed bytes, and a seed that double-counted
+against the replay layered on top of it.
+
+newJobProgress now projects the manifest into the same []FileMeta the
+store returns and delegates. The projection is lossless: TotalBytes is
+the sum of per-file bytes and NumArticles the sum of per-file article
+counts, both pinned by a characterisation test written against the old
+constructor before the change.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 4: Prove a derived value agrees with the maintained one
+
+Adds the derivation next to the existing counter and pins that they agree. This is the safety net for Task 5's deletion: if the derivation is wrong, this fails before the counter is gone.
 
 **Files:**
 - Modify: `internal/queue/progress.go` (add `derivedRemainingBytes`)
 - Test: `internal/queue/progress_bytes_test.go`
 
 **Interfaces:**
-- Consumes: `FileProgress.Bytes` from Task 1; `FileProgress.FailedBytes` from Task 2
+- Consumes: `FileProgress.Bytes` from Task 1; `FileProgress.FailedBytes` from Task 2, single-owner aggregates from Task 3
 - Produces: `func (p *JobProgress) derivedRemainingBytes() int64`
 
 - [ ] **Step 1: Write the failing test**
@@ -730,7 +980,7 @@ func TestDerivedRemaining_ExcludesDeferredFiles(t *testing.T) {
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `go test ./internal/queue/ -run TestDerivedRemaining_ExcludesDeferredFiles -v`
-Expected: PASS. It exercises no new production code — it pins that un-deferring needs no fixup call, which is the property Task 4 relies on.
+Expected: PASS. It exercises no new production code — it pins that un-deferring needs no fixup call, which is the property Task 5 relies on.
 
 - [ ] **Step 7: Commit**
 
@@ -754,7 +1004,7 @@ EOF
 
 ---
 
-### Task 4: Delete the maintained counter
+### Task 5: Delete the maintained counter
 
 **Files:**
 - Modify: `internal/queue/progress.go` (field, seed, decrements, `resetForReload`, `RemainingBytes`, JSON shape)
@@ -762,7 +1012,7 @@ EOF
 - Modify: `internal/queue/queue.go` (`DiscardDeferredPar2`)
 
 **Interfaces:**
-- Consumes: `derivedRemainingBytes` from Task 3
+- Consumes: `derivedRemainingBytes` from Task 4
 - Produces: `RemainingBytes()` unchanged in signature, now derived
 
 - [ ] **Step 1: Point the accessor at the derivation**
@@ -845,7 +1095,7 @@ EOF
 
 ---
 
-### Task 5: Pin the residency-equivalence property, and document it
+### Task 6: Pin the residency-equivalence property, and document it
 
 The acceptance criterion. Every previous framing of this work failed on a figure meaning different things depending on residency; this asserts it cannot.
 
@@ -893,7 +1143,7 @@ This belongs in `progress_bytes_test.go`, not `residency_remaining_bytes_test.go
 - [ ] **Step 2: Run the test**
 
 Run: `go test ./internal/queue/ -run TestRemainingBytes_IdenticalResidentAndNonResident -v`
-Expected: PASS. It should pass on the first run — Tasks 1–4 established the property, and this pins it against regression. If it fails, the two paths populate `FileProgress.Bytes` differently and that is a defect in Task 1, not in this test.
+Expected: PASS. It should pass on the first run — Tasks 1–5 established the property, and this pins it against regression. If it fails, the two paths populate `FileProgress.Bytes` differently and that is a defect in Task 1, not in this test.
 
 - [ ] **Step 3: Update the lifecycle contract**
 
