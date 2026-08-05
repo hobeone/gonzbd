@@ -90,8 +90,8 @@ func TestTotalRemainingBytes_NonResidentJobsCounted(t *testing.T) {
 // articles on a resident job, flushes to the store via Save, reloads a fresh
 // Queue from the same directory via Loader.Load, and asserts
 // TotalRemainingBytes is correct for the jobs that come back non-resident —
-// without a real flush-and-reload, this test would not exercise
-// Store.RemainingBytesByJob at all.
+// without a real flush-and-reload, this test would not exercise the
+// newJobProgressSized/ArticleCountsByJob path non-resident jobs use at all.
 func TestTotalRemainingBytes_RestartReconstructsNonResident(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))

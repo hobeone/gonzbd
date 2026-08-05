@@ -54,16 +54,24 @@ becomes derived rather than maintained:
 
 ```
 remaining = sum over files where !Complete && !Deferred && !Discarded
-            of (Bytes - BytesDownloaded)
+            of (Bytes - BytesDownloaded - FailedBytes)
 ```
 
 `Discarded` does not exist until step 3 of the sequencing below. Step 1's
 derivation excludes `Complete` and `Deferred` only; the third term is added when
 the flag lands, and needs no other change to the derivation.
 
-`FileProgress` gains a `Bytes` field, restored from the `job_files.bytes` column
-that already exists, so the derivation runs from progress alone at any residency
-— one implementation, no residency split.
+`FailedBytes` is subtracted per file because the counter this replaces meant
+unresolved bytes, not un-downloaded ones: a failed article was never counted as
+downloaded, but it also stopped being "remaining" in any useful sense. Each
+file's contribution is clamped at zero, since a file whose failed and
+downloaded bytes together reach its size has nothing further to contribute.
+
+`FileProgress` gains `Bytes` and `FailedBytes` fields. `Bytes` is restored from
+the `job_files.bytes` column that already exists; `FailedBytes` is new, backed
+by the `job_files.failed_bytes` column added in migration
+`008_add_job_files_failed_bytes.sql`. Together they let the derivation run from
+progress alone at any residency — one implementation, no residency split.
 
 This deletes the `remainingBytes` field, its per-article decrements in
 `markDone` and `markFailed`, and `DiscardDeferredPar2`'s
@@ -116,7 +124,7 @@ step 2.
 |---|---|
 | `Manifest` | `contentBytes`, `recoveryBytes`, `recoveryFiles` computed in `newManifest` via `isPar2Recovery` |
 | `Job` | promoted scalars replacing `totalBytes` / `par2Bytes` / `par2Files` |
-| `FileProgress` | gains `Bytes int64` |
+| `FileProgress` | gains `Bytes int64` and `FailedBytes int64`; the latter backed by `job_files.failed_bytes` (migration `008_add_job_files_failed_bytes.sql`) |
 | `jobs` table | migration replacing `par2_bytes` / `par2_files` with `content_bytes` / `recovery_bytes` / `recovery_files` |
 | queue API | `par2_bytes` / `par2_files` become `recovery_bytes` / `recovery_files`; `total_bytes` is replaced by the two figures |
 | Svelte UI | reads the new fields; its repairability heuristic becomes more accurate as a consequence |

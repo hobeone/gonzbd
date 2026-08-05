@@ -130,13 +130,13 @@ func newOnDemandPar2Job(t *testing.T) (*queue.Queue, *queue.Job) {
 	return q, job
 }
 
-// TestBuildSlot_FreshOnDemandPar2JobReportsZeroPercent pins the Task 6 bug
-// directly at the API layer, above ExpectedBytes's own unit tests: a queue
-// row for a freshly added on-demand-par2 job must show 0% and Size ==
-// SizeLeft, not a false head start from the deferred recovery volume's
-// bytes. TestBuildSlot_NonResidentJob above cannot catch a regression here —
-// its fixture has no deferred files, so Job.TotalBytes() and
-// p.ExpectedBytes() agree for it either way.
+// TestBuildSlot_FreshOnDemandPar2JobReportsZeroPercent pins the
+// deferred-par2 progress bug directly at the API layer, above ExpectedBytes's
+// own unit tests: a queue row for a freshly added on-demand-par2 job must
+// show 0% and Size == SizeLeft, not a false head start from the deferred
+// recovery volume's bytes. TestBuildSlot_NonResidentJob above cannot catch a
+// regression here — its fixture has no deferred files, so Job.TotalBytes()
+// and p.ExpectedBytes() agree for it either way.
 func TestBuildSlot_FreshOnDemandPar2JobReportsZeroPercent(t *testing.T) {
 	t.Parallel()
 	_, job := newOnDemandPar2Job(t)

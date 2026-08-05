@@ -239,7 +239,7 @@ func (p *JobProgress) RemainingBytes() int64 {
 // Failed bytes are subtracted because the counter this replaces means
 // unresolved bytes, not un-downloaded ones: markFailed decrements it without
 // ever adding to BytesDownloaded. internal/app/history_helper.go computes
-// downloaded as totalBytes - FailedBytes() - RemainingBytes(), an identity
+// downloaded as expectedBytes - FailedBytes() - RemainingBytes(), an identity
 // that only closes under that meaning.
 //
 // Deferred files contribute nothing because their articles are never

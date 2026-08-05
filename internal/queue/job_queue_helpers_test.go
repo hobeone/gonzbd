@@ -11,13 +11,17 @@ import (
 	"github.com/hobeone/gonzbd/internal/history"
 )
 
-// This file exists to close check_test_alignment gaps that Task 5 of the
-// derived-remaining-bytes refactor surfaced by touching job.go and queue.go
-// for the first time in this branch (see docs/go-standards.md's gate
-// semantics: touching any line of a file exposes every untested unexported
-// helper in it, not just the changed lines). None of these helpers were
-// changed by that refactor — they are pre-existing, and each test below
-// exercises real behavior directly rather than a placeholder reference.
+// This file exists to close check_test_alignment gaps that touching job.go
+// and queue.go surfaced during the derived-remaining-bytes refactor (see
+// docs/go-standards.md's gate semantics: touching any line of a file exposes
+// every untested unexported helper in it, not just the changed lines). None
+// of these helpers were changed by that refactor — they are pre-existing,
+// and each test below exercises real behavior directly rather than a
+// placeholder reference.
+//
+// Several tests below call a `…Locked` helper without holding q.mu first;
+// that is deliberate — these are single-goroutine tests with no concurrent
+// access to race against, not a demonstration of safe unlocked use.
 
 // TestSetScalarsFromManifest_CopiesFiveTotals pins setScalarsFromManifest's
 // entire contract: it copies exactly the five manifest totals onto the job,

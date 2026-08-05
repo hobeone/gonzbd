@@ -278,8 +278,7 @@ func fileState(m *queue.Manifest, p *queue.JobProgress, fileIdx int) string {
 // job may yet need, and hiding it from the drawer would make repair
 // decisions (which volumes exist, which are held back) invisible where a
 // user would look for them. The queueFile shape has no field marking a
-// file Deferred to reconcile the two views correctly — that's the
-// Discarded-flag-shaped work of a later step, not this one.
+// file Deferred to reconcile the two views correctly — tracked as #325.
 func buildQueueFiles(j *queue.Job) []queueFile {
 	m, err := j.Manifest()
 	p := j.Progress()

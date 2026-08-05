@@ -505,7 +505,7 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 			fp := &job.progress.files[idx]
 			fp.Bytes = fileBytes
 			fp.BytesDownloaded = bytesDownloaded
-			fp.FailedBytes = failedBytes
+			fp.FailedBytes = failedBytes // recompute below is the owner; this keeps the assignments to fp uniform
 			fp.WriteCursor = writeCursor
 			fp.AssembledCRC32 = crc32Val
 			// articles_done is the only source of per-article state;

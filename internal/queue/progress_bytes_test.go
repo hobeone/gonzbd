@@ -82,17 +82,16 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 		t.Errorf("file 2 BytesDownloaded = %d, want %d", got, want)
 	}
 
-	// sized.RemainingBytes() reads the still-maintained field, seeded in
-	// newJobProgressSized as sum(Bytes-BytesDownloaded) over files that are
-	// neither Complete nor Deferred — file 0 (complete) and file 2
+	// sized.RemainingBytes() runs the same derivation as the resident job's
+	// RemainingBytes(): sum(Bytes-BytesDownloaded-FailedBytes) over files
+	// that are neither Complete nor Deferred — file 0 (complete) and file 2
 	// (deferred) contribute nothing, file 1 contributes its undownloaded
-	// half. This is deliberately not compared against the resident job's
-	// own RemainingBytes(): the maintained counter on job.progress does not
-	// yet exclude deferred files (that exclusion is what Task 2/3 of the
-	// plan add), so the two are expected to disagree whenever a file is
-	// deferred. The residency-parity property for the no-deferral case is
-	// pinned separately by TestRemainingBytes_IdenticalResidentAndNonResident
-	// once the derivation lands (plan Task 4).
+	// half. This test does not also assert against
+	// job.progress.RemainingBytes() here; that residency-parity property —
+	// resident and non-resident agreeing on the same fixture, including a
+	// deferred file — is pinned separately by
+	// TestRemainingBytes_IdenticalResidentAndNonResident, which is where a
+	// regression in either derivation would be caught.
 	if got, want := sized.RemainingBytes(), int64(100_000); got != want {
 		t.Errorf("sized.RemainingBytes() = %d, want %d (file1's undownloaded half only)", got, want)
 	}
@@ -109,8 +108,8 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 // bytes_downloaded exceeds its bytes contributes zero, independent of any
 // other file's shortfall. This is a deliberate semantics change, not an
 // accidental coverage drop — it is exactly what the FileProgress-derived
-// RemainingBytes (plan Task 2/3) computes for the same state, and aligning
-// the seed with it now is the point of this refactor. For a job with one
+// RemainingBytes computes for the same state, and aligning the seed with
+// it is the point of this refactor. For a job with one
 // file over-downloaded by 50 and another under-downloaded by 30, the old
 // job-total clamp would have reported 0 (50-30=20 short of the total, but
 // the negative from file 0 ate into file 1's real remainder); the per-file
@@ -170,8 +169,9 @@ func TestMarkFailed_AccumulatesPerFileFailedBytes(t *testing.T) {
 	if got, want := p.files[0].BytesDownloaded, int64(1500); got != want {
 		t.Errorf("failed bytes leaked into BytesDownloaded: got %d, want %d", got, want)
 	}
-	// Per-file failed bytes must sum to the job-level counter, or the two
-	// disagree the moment Task 3 derives remaining from the per-file side.
+	// Per-file failed bytes must sum to the job-level counter, since
+	// derivedRemainingBytes derives remaining from the per-file side and
+	// the two would silently disagree otherwise.
 	if got, want := p.files[0].FailedBytes+p.files[1].FailedBytes, p.failedBytes; got != want {
 		t.Errorf("per-file sum = %d, job-level failedBytes = %d", got, want)
 	}
@@ -248,9 +248,9 @@ func TestRestoreJobProgress_CarriesPerFileBytes(t *testing.T) {
 	}
 }
 
-// TestFailedBytes_NotDoubledByHydration pins the Task 2 review defect:
-// newJobProgressSized seeds job-level failedBytes from job_files while a
-// job is non-resident, and RestoreJobProgress then replays per-article
+// TestFailedBytes_NotDoubledByHydration pins a hydration defect a review
+// caught: newJobProgressSized seeds job-level failedBytes from job_files
+// while a job is non-resident, and RestoreJobProgress then replays per-article
 // state through markFailed on top of that seed rather than onto a fresh
 // JobProgress, so the two stack.
 //

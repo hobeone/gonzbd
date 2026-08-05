@@ -214,12 +214,12 @@ func TestBuildHistoryEntry_SizeSurvivesEviction(t *testing.T) {
 	}
 }
 
-// TestBuildHistoryEntry_DownloadedExcludesDeferredPar2 pins the Task 6 fix:
-// a job finalized while an on-demand-par2 recovery volume is still
-// (deferred, undispatched) in its manifest must record both Bytes and
-// Downloaded as only the content actually fetched, not the deferred
-// volume's bytes too — the two fields have to describe the same file set,
-// since the UI derives a "failed" figure as Bytes-Downloaded.
+// TestBuildHistoryEntry_DownloadedExcludesDeferredPar2 pins the
+// deferred-par2 fix: a job finalized while an on-demand-par2 recovery
+// volume is still (deferred, undispatched) in its manifest must record both
+// Bytes and Downloaded as only the content actually fetched, not the
+// deferred volume's bytes too — the two fields have to describe the same
+// file set, since the UI derives a "failed" figure as Bytes-Downloaded.
 //
 // Not built through buildHistoryTestJob: that helper's queue.AddOptions has
 // no OnDemandPar2, and OnDemandPar2 is what makes NewJob mark a recovery
