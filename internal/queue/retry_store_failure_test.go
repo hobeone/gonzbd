@@ -26,6 +26,22 @@ type failingStore struct {
 	failArticleCounts  bool
 	failIsPaused       bool
 	failReplaceMani    bool
+	failSetPaused      bool
+	failPrune          bool
+}
+
+func (f *failingStore) SetPaused(ctx context.Context, paused bool) error {
+	if f.failSetPaused {
+		return errInjected
+	}
+	return f.Store.SetPaused(ctx, paused)
+}
+
+func (f *failingStore) Prune(ctx context.Context) error {
+	if f.failPrune {
+		return errInjected
+	}
+	return f.Store.Prune(ctx)
 }
 
 func (f *failingStore) ReplaceManifest(ctx context.Context, job *Job) error {
