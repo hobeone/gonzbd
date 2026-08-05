@@ -63,8 +63,8 @@ evictable manifest.
 External packages read five manifest-derived scalars — `TotalBytes`,
 `NumFiles`, `NumArticles`, `Par2Bytes`, `Par2Files`. These are computed once at
 `Add` and never change, so they live in the always-resident tier rather than
-behind a fallible handle. This generalizes what `lastKnownRemainingBytes`
-already does as a one-off: a reporting path must never need a manifest.
+behind a fallible handle. This generalizes the same rule remaining bytes
+already follows above: a reporting path must never need a manifest.
 
 The consequence is the point of the whole design: **every reporting path, and
 all current external call sites, become infallible.** Only the downloader and

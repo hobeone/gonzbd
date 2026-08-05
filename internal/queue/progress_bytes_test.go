@@ -518,13 +518,17 @@ func TestExpectedBytes_FreshOnDemandJobReportsZeroProgress(t *testing.T) {
 // not its manifest is resident. Every earlier attempt at deriving remaining
 // bytes failed exactly this check.
 //
-// The fixture mixes all three kinds of file state that could make the two
+// The fixture mixes all four kinds of file state that could make the two
 // construction paths diverge: file 0 is partially downloaded (exercises
 // BytesDownloaded), file 1 has a permanently failed article (exercises
-// FailedBytes), and file 2 is deferred (exercises the Deferred exclusion
-// shared by all three figures). A job that stayed fully fresh, or that never
-// failed or deferred anything, would let the two paths agree by accident;
-// this fixture does not let that happen.
+// FailedBytes), file 2 is deferred (exercises the Deferred exclusion shared
+// by all three figures), and file 3 is fully downloaded and marked Complete
+// (exercises the Complete exclusion RemainingBytes applies but ExpectedBytes
+// does not — derivedRemainingBytes reads five FileProgress fields in total,
+// and a fixture missing any one of them would let a construction path that
+// dropped that field's copy pass unnoticed). A job that stayed fully fresh,
+// or that never exercised one of the four, would let the two paths agree by
+// accident; this fixture does not let that happen.
 //
 // The non-resident side is built exactly the way Load reconstructs a job
 // that restarts beyond maxActive: newJobProgressSized fed directly from
@@ -534,7 +538,7 @@ func TestExpectedBytes_FreshOnDemandJobReportsZeroProgress(t *testing.T) {
 func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
-	job := makeMultiFileJob(t, "residency-parity", 3, 2)
+	job := makeMultiFileJob(t, "residency-parity", 4, 2)
 	if err := q.Add(job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -549,6 +553,21 @@ func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
 	}
 	// File 2: deferred, untouched otherwise.
 	job.progress.files[2].Deferred = true
+	// File 3: only partially downloaded, then marked complete directly (the
+	// production path MarkFileComplete allows — assembly can finish, e.g. via
+	// repair, without every article having gone through the download path).
+	// Marking it complete while bytes are still outstanding is deliberate: if
+	// the two sides disagreed about Complete, file 3's leftover bytes would
+	// show up as nonzero remaining on whichever side dropped the flag. A file
+	// that was fully downloaded before being marked complete would already
+	// read zero remaining bytes either way, and the Complete copy could be
+	// silently dropped without this test noticing.
+	if err := q.MarkArticlesDone(job.ID, []string{articleID(3, 0)}); err != nil {
+		t.Fatalf("MarkArticlesDone file 3: %v", err)
+	}
+	if err := q.MarkFileComplete(job.ID, 3); err != nil {
+		t.Fatalf("MarkFileComplete: %v", err)
+	}
 
 	if err := store.Update(t.Context(), job); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -556,7 +575,7 @@ func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
 
 	resident := job.Progress()
 
-	// Guard the fixture: if any of these three effects is missing, the
+	// Guard the fixture: if any of these four effects is missing, the
 	// equivalence checked below would pass vacuously.
 	if resident.FileBytesDownloaded(0) == 0 {
 		t.Fatal("fixture produced no downloaded bytes; the test would pass vacuously")
@@ -566,6 +585,9 @@ func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
 	}
 	if !resident.FileDeferred(2) {
 		t.Fatal("fixture not exercising a deferred file")
+	}
+	if !resident.FileComplete(3) {
+		t.Fatal("fixture not exercising a complete file")
 	}
 
 	residentRemaining := resident.RemainingBytes()
