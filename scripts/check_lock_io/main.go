@@ -103,8 +103,8 @@ var storeMethods = map[string]bool{
 	"ExistsByMD5": true, "ShiftSortKey": true, "Prune": true,
 	"SetPaused": true, "IsPaused": true, "RestoreJobProgress": true,
 	"RestoreRetryProgress": true,
-	"RemainingBytesByJob":  true, "DeleteJobArtifacts": true,
-	"ArticleCountsByJob": true, "ReplaceManifest": true,
+	"DeleteJobArtifacts":   true,
+	"ArticleCountsByJob":   true, "ReplaceManifest": true,
 	"Save": true,
 }
 

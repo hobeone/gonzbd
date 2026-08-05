@@ -34,9 +34,15 @@ type JobProgress struct {
 
 // FileProgress is one file's mutable assembly state.
 type FileProgress struct {
-	Complete        bool
-	Deferred        bool
-	Pending         int
+	Complete bool
+	Deferred bool
+	Pending  int
+	// Bytes is the file's NZB-claimed size. Carried on progress rather than
+	// read from the manifest so RemainingBytes derives from progress alone,
+	// at any residency. Written from the manifest when resident and from
+	// job_files.bytes when not; the two agree because the column is written
+	// from the manifest.
+	Bytes           int64
 	BytesDownloaded int64
 	WriteCursor     int64
 	Filename        string // resolved on-disk filename; empty until resolved
@@ -57,6 +63,7 @@ func newJobProgress(m *Manifest) *JobProgress {
 	for fi := range p.files {
 		lo, hi := m.FileRange(fi)
 		p.files[fi].Pending = hi - lo
+		p.files[fi].Bytes = m.FileBytes(fi)
 	}
 	return p
 }

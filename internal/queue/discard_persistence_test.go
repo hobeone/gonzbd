@@ -223,9 +223,9 @@ func TestDiscardDeferredPar2_ReplacesJobFilesRows(t *testing.T) {
 	// progress with another file's articles.
 	for i := range m.NumFiles() {
 		lo, hi := m.FileRange(i)
-		if got[i] != hi-lo {
+		if got[i].ArticleCount != hi-lo {
 			t.Errorf("job_files[%d].article_count = %d, want %d: rows were not renumbered against the rebuilt manifest",
-				i, got[i], hi-lo)
+				i, got[i].ArticleCount, hi-lo)
 		}
 	}
 

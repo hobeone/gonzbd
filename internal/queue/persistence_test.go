@@ -828,7 +828,6 @@ func TestLoad_StoreQueryFailuresPropagate(t *testing.T) {
 	}{
 		{"List", func(f *failingStore) { f.failList = true }},
 		{"IsPaused", func(f *failingStore) { f.failIsPaused = true }},
-		{"RemainingBytesByJob", func(f *failingStore) { f.failRemainingBytes = true }},
 		{"ArticleCountsByJob", func(f *failingStore) { f.failArticleCounts = true }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

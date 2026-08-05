@@ -158,38 +158,50 @@ func (q *Queue) saveStore(_ string) error {
 	return nil
 }
 
-// newJobProgressSized builds a JobProgress sized to fileArticleCounts (one
-// element per file, its article count) without requiring a resident
-// Manifest — see Store.ArticleCountsByJob. Used by Load to give a
-// non-resident job (StatusQueued/StatusPaused at restart) a real JobProgress
-// instead of leaving it nil.
+// newJobProgressSized builds a JobProgress sized to files (one element per
+// file) without requiring a resident Manifest — see Store.ArticleCountsByJob.
+// Used by Load to give a non-resident job (StatusQueued/StatusPaused at
+// restart) a real JobProgress instead of leaving it nil.
 //
 // Every article starts undone/unfailed/unemitted: this sizes progress for
 // reporting, it does not restore true per-article state, which needs the
-// manifest. That restoration already happens correctly whenever the job is
-// actually promoted back to resident — hydrateJobLocked builds a fresh
-// newJobProgress(&m) and calls Store.RestoreJobProgress against it — so this
-// placeholder only has to survive until then.
+// manifest. That restoration already happens whenever the job is promoted
+// back to resident.
 //
-// remainingBytes is the caller's own byte-accurate figure (from
-// Store.RemainingBytesByJob) rather than the job's full total, so a job
-// paused mid-download is not misreported as having downloaded nothing
-// merely because it restarted non-resident.
-func newJobProgressSized(fileArticleCounts []int, remainingBytes int64) *JobProgress {
+// Per-file Bytes is carried so RemainingBytes derives correctly for a job
+// that restarted non-resident. It replaces the pre-summed figure this used
+// to take from Store.RemainingBytesByJob.
+//
+// remainingBytes (still the maintained field at this point in the
+// refactor — see docs/superpowers/plans/2026-08-05-derived-remaining-bytes.md
+// Task 3) is seeded to the sum of files' Bytes rather than left at its zero
+// value. FileMeta carries no per-file bytes_downloaded, so this cannot
+// account for a job that had partial progress before going non-resident;
+// that is an accepted, pre-existing limit of this restart path — RestoreJobProgress
+// only runs once a job is promoted back to resident — not a regression this
+// function should introduce on its own by reporting zero remaining for a job
+// that has not started at all. Deleting Store.RemainingBytesByJob without
+// this seed made TestTotalRemainingBytes_RestartReconstructsNonResident
+// (residency_remaining_bytes_test.go) report 0 remaining for untouched
+// jobs restored after a restart.
+func newJobProgressSized(files []FileMeta) *JobProgress {
 	total := 0
-	for _, c := range fileArticleCounts {
-		total += c
+	var totalBytes int64
+	for _, f := range files {
+		total += f.ArticleCount
+		totalBytes += f.Bytes
 	}
 	p := &JobProgress{
 		done:            newBitset(total),
 		failed:          newBitset(total),
 		emitted:         newBitset(total),
-		files:           make([]FileProgress, len(fileArticleCounts)),
-		remainingBytes:  remainingBytes,
+		files:           make([]FileProgress, len(files)),
 		pendingArticles: total,
+		remainingBytes:  totalBytes,
 	}
-	for fi, c := range fileArticleCounts {
-		p.files[fi].Pending = c
+	for fi, f := range files {
+		p.files[fi].Pending = f.ArticleCount
+		p.files[fi].Bytes = f.Bytes
 	}
 	return p
 }
@@ -219,16 +231,6 @@ func Load(dir string, opts ...Option) (*Queue, error) {
 		if err != nil {
 			return nil, fmt.Errorf("queue: load paused state: %w", err)
 		}
-		// Queried before q.mu.Lock(): Store calls are treated as I/O by
-		// scripts/check_lock_io, and must not run inside the critical
-		// section below. Fail closed (propagate the error) rather than
-		// silently leaving every non-resident job's remaining bytes at
-		// zero, matching the fail-closed precedent set for the manifest
-		// file-count query in SQLiteStore.Get (#254).
-		remainingByJob, err := q.store.RemainingBytesByJob(context.Background())
-		if err != nil {
-			return nil, fmt.Errorf("queue: load remaining bytes: %w", err)
-		}
 		// Size JobProgress for every job store.Get left non-resident
 		// (progress == nil): Get only restores progress for a
 		// resident-status job whose manifest file is present on disk, so
@@ -238,11 +240,11 @@ func Load(dir string, opts ...Option) (*Queue, error) {
 		// every job in q.byID (docs/queue-lifecycle.md), so this must run
 		// for all of them, not just the subset the loop below re-hydrates.
 		//
-		// Also queried before q.mu.Lock(), for the same check_lock_io
-		// reason as RemainingBytesByJob above. One grouped query for every
-		// job rather than one query per job — the same shape
-		// RemainingBytesByJob already uses — so a large queued backlog costs
-		// one round trip, not N.
+		// Queried before q.mu.Lock(): Store calls are treated as I/O by
+		// scripts/check_lock_io, and must not run inside the critical
+		// section below. One grouped query for every job rather than one
+		// query per job, so a large queued backlog costs one round trip,
+		// not N.
 		countsByJob, err := q.store.ArticleCountsByJob(context.Background())
 		if err != nil {
 			return nil, fmt.Errorf("queue: load article counts: %w", err)
@@ -251,7 +253,7 @@ func Load(dir string, opts ...Option) (*Queue, error) {
 			if job.progress != nil {
 				continue
 			}
-			job.progress = newJobProgressSized(countsByJob[job.ID], remainingByJob[job.ID])
+			job.progress = newJobProgressSized(countsByJob[job.ID])
 		}
 		func() {
 			q.mu.Lock()

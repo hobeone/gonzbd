@@ -486,7 +486,7 @@ func (s *SQLiteStore) RestoreJobProgress(ctx context.Context, job *Job) error {
 		return nil
 	}
 	const qFiles = `
-SELECT file_index, complete, deferred, write_cursor, bytes_downloaded, assembled_crc32, COALESCE(articles_done, '')
+SELECT file_index, complete, deferred, write_cursor, bytes, bytes_downloaded, assembled_crc32, COALESCE(articles_done, '')
 FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	rows, err := s.db.QueryContext(ctx, qFiles, job.ID)
 	if err != nil {
@@ -495,14 +495,15 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var idx, complete, deferred int
-		var writeCursor, bytesDownloaded int64
+		var writeCursor, fileBytes, bytesDownloaded int64
 		var crc32Val uint32
 		var artDoneStr string
-		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &bytesDownloaded, &crc32Val, &artDoneStr); err != nil {
+		if err := rows.Scan(&idx, &complete, &deferred, &writeCursor, &fileBytes, &bytesDownloaded, &crc32Val, &artDoneStr); err != nil {
 			return fmt.Errorf("sqlite store scan job_file for %s: %w", job.ID, err)
 		}
 		if idx >= 0 && idx < len(job.progress.files) {
 			fp := &job.progress.files[idx]
+			fp.Bytes = fileBytes
 			fp.BytesDownloaded = bytesDownloaded
 			fp.WriteCursor = writeCursor
 			fp.AssembledCRC32 = crc32Val
@@ -565,19 +566,20 @@ FROM job_files WHERE job_id = ? ORDER BY file_index ASC`
 // job_files rows have non-contiguous indices (e.g. after a partial delete)
 // still gets each count attributed to the right file instead of shifted by
 // position.
-func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]int, error) {
-	const q = `SELECT job_id, file_index, article_count FROM job_files ORDER BY job_id ASC, file_index ASC`
+func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error) {
+	const q = `SELECT job_id, file_index, article_count, bytes FROM job_files ORDER BY job_id ASC, file_index ASC`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite store article counts: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	result := make(map[string][]int)
+	result := make(map[string][]FileMeta)
 	for rows.Next() {
 		var jobID string
 		var idx, count int
-		if err := rows.Scan(&jobID, &idx, &count); err != nil {
+		var fileBytes int64
+		if err := rows.Scan(&jobID, &idx, &count, &fileBytes); err != nil {
 			return nil, fmt.Errorf("sqlite store scan article count: %w", err)
 		}
 		if idx < 0 {
@@ -589,51 +591,15 @@ func (s *SQLiteStore) ArticleCountsByJob(ctx context.Context) (map[string][]int,
 		}
 		counts := result[jobID]
 		if idx >= len(counts) {
-			grown := make([]int, idx+1)
+			grown := make([]FileMeta, idx+1)
 			copy(grown, counts)
 			counts = grown
 		}
-		counts[idx] = count
+		counts[idx] = FileMeta{ArticleCount: count, Bytes: fileBytes}
 		result[jobID] = counts
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite store article counts: %w", err)
-	}
-	return result, nil
-}
-
-// RemainingBytesByJob returns each job's remaining bytes (bytes minus
-// bytes_downloaded, summed per job_id) across job_files. Unlike
-// RestoreJobProgress, this needs no resident manifest/progress: it reads
-// straight from the persisted per-file counters, which is what makes it
-// usable to seed JobProgress.remainingBytes for non-resident jobs during
-// Load.
-func (s *SQLiteStore) RemainingBytesByJob(ctx context.Context) (map[string]int64, error) {
-	const q = `SELECT job_id, SUM(bytes - bytes_downloaded) FROM job_files GROUP BY job_id`
-	rows, err := s.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite store remaining bytes by job: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	result := make(map[string]int64)
-	for rows.Next() {
-		var jobID string
-		var remaining int64
-		if err := rows.Scan(&jobID, &remaining); err != nil {
-			return nil, fmt.Errorf("sqlite store scan remaining bytes: %w", err)
-		}
-		if remaining < 0 {
-			// Shouldn't happen (bytes_downloaded can't exceed a file's byte
-			// count in normal operation), but a negative "remaining" figure
-			// would be nonsensical to report to the UI, so clamp rather
-			// than propagate it.
-			remaining = 0
-		}
-		result[jobID] = remaining
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqlite store remaining bytes by job: %w", err)
 	}
 	return result, nil
 }

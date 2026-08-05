@@ -6,6 +6,14 @@ import (
 	"github.com/hobeone/gonzbd/internal/history"
 )
 
+// FileMeta is the per-file shape Load needs to size a non-resident job's
+// progress without a manifest: the article count for the bitsets, and the
+// byte count for RemainingBytes.
+type FileMeta struct {
+	ArticleCount int
+	Bytes        int64
+}
+
 // Store defines the persistence and ordering interface for active download queue jobs.
 // It manages live job rows in SQLite while immutable article manifests reside on disk.
 type Store interface {
@@ -83,18 +91,11 @@ type Store interface {
 	// error and means "download from scratch".
 	RestoreRetryProgress(ctx context.Context, job *Job) (bool, error)
 
-	// ArticleCountsByJob returns every job's per-file article counts in a
-	// single grouped query, indexed by file_index within each job. Used by
-	// Load to size a non-resident job's JobProgress without reading
-	// its manifest.
-	ArticleCountsByJob(ctx context.Context) (map[string][]int, error)
-
-	// RemainingBytesByJob returns each job's remaining bytes (manifest bytes
-	// minus bytes already downloaded), summed per job_id across job_files.
-	// Used by Load to seed JobProgress.remainingBytes for jobs that
-	// come back from the store non-resident (no manifest, so no per-article
-	// byte breakdown is available to compute this the normal way).
-	RemainingBytesByJob(ctx context.Context) (map[string]int64, error)
+	// ArticleCountsByJob returns every job's per-file article counts and
+	// byte sizes in a single grouped query, indexed by file_index within
+	// each job. Used by Load to size a non-resident job's JobProgress
+	// without reading its manifest.
+	ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error)
 
 	// DeleteJobArtifacts removes the on-disk manifest for job id
 	// (manifests/<id>.json.gz). A missing file is not an error.
