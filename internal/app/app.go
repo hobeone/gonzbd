@@ -1692,9 +1692,14 @@ func failMsgForJob(job *queue.Job) string {
 
 	// Promoted scalars, not job.Manifest(): this runs from the startup
 	// recovery walk over Queue.Snapshot(), where a job may have no resident
-	// manifest and every one of these would nil-deref.
-	// If ALL bytes in the job failed, it's hopeless regardless of PAR2.
-	if failedBytes >= job.TotalBytes() {
+	// manifest and every one of these would nil-deref. ExpectedBytes reads
+	// from JobProgress alone, same as FailedBytes, so it is safe here too.
+	// If ALL bytes the job set out to fetch failed, it's hopeless regardless
+	// of PAR2 — job.TotalBytes() would also count deferred recovery volumes
+	// that were never dispatched and so can never appear in failedBytes,
+	// making this comparison impossible to satisfy for an on-demand-par2 job
+	// whose content entirely failed.
+	if failedBytes >= job.Progress().ExpectedBytes() {
 		return fmt.Sprintf(
 			"Aborted: All articles failed (%.1f MB). Job is beyond repair",
 			failedMB,

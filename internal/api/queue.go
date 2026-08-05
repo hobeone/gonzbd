@@ -304,7 +304,7 @@ func buildSlot(j *queue.Job, paused bool, speed float64, index int, duStatus *di
 	// so needing one here meant either a disk read per job per poll or a nil
 	// deref — this used to do both.
 	p := j.Progress()
-	totalBytes := j.TotalBytes()
+	totalBytes := p.ExpectedBytes()
 	remainingBytes := p.RemainingBytes()
 
 	var pct int

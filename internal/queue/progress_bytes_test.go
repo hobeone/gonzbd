@@ -444,6 +444,74 @@ func TestDerivedRemaining_MatchesHandComputedValues(t *testing.T) {
 	check("second file failed", 0)
 }
 
+// TestExpectedBytes_ClosesTheDownloadedIdentity pins the property every
+// consumer of these figures depends on: downloaded = expected - failed -
+// remaining, for each kind of file a job can hold at once.
+func TestExpectedBytes_ClosesTheDownloadedIdentity(t *testing.T) {
+	m := newManifest([]JobFile{
+		// Fully downloaded and complete.
+		{Subject: "done.rar", Bytes: 2000, Articles: []JobArticle{{ID: "d1", Bytes: 2000}}},
+		// Half downloaded, still going.
+		{Subject: "partial.rar", Bytes: 2000, Articles: []JobArticle{{ID: "p1", Bytes: 1000}, {ID: "p2", Bytes: 1000}}},
+		// One article permanently failed.
+		{Subject: "failed.rar", Bytes: 1000, Articles: []JobArticle{{ID: "f1", Bytes: 1000}}},
+		// Deferred recovery volume: never dispatched.
+		{Subject: "x.vol000+01.par2", Bytes: 500, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 500}}},
+	})
+	p := newJobProgress(m)
+	p.files[3].Deferred = true
+
+	p.markDone(m, 0)
+	p.files[0].Complete = true
+	p.markDone(m, 1)
+	p.markFailed(m, 3)
+
+	// expected excludes only the deferred volume: 2000+2000+1000 = 5000.
+	if got, want := p.ExpectedBytes(), int64(5000); got != want {
+		t.Errorf("ExpectedBytes() = %d, want %d (deferred volume must not count)", got, want)
+	}
+	// remaining: done contributes 0 (Complete), partial 2000-1000 = 1000,
+	// failed 1000-0-1000 = 0, deferred 0.
+	if got, want := p.RemainingBytes(), int64(1000); got != want {
+		t.Errorf("RemainingBytes() = %d, want %d", got, want)
+	}
+	if got, want := p.FailedBytes(), int64(1000); got != want {
+		t.Errorf("FailedBytes() = %d, want %d", got, want)
+	}
+	// The identity every consumer relies on. Bytes actually fetched:
+	// 2000 (done) + 1000 (partial's first article) = 3000.
+	downloaded := p.ExpectedBytes() - p.FailedBytes() - p.RemainingBytes()
+	if want := int64(3000); downloaded != want {
+		t.Errorf("downloaded identity = %d, want %d", downloaded, want)
+	}
+}
+
+// TestExpectedBytes_FreshOnDemandJobReportsZeroProgress pins the
+// user-visible symptom directly: the percentage a queue row shows for a job
+// whose recovery volumes are deferred and whose content is untouched.
+func TestExpectedBytes_FreshOnDemandJobReportsZeroProgress(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "content.rar", Bytes: 10_000, Articles: []JobArticle{{ID: "c1", Bytes: 10_000}}},
+		{Subject: "content.vol000+01.par2", Bytes: 1_000, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 1_000}}},
+	})
+	p := newJobProgress(m)
+	p.files[1].Deferred = true
+
+	expected, remaining := p.ExpectedBytes(), p.RemainingBytes()
+	if expected != remaining {
+		t.Errorf("nothing downloaded but expected (%d) != remaining (%d); a queue row would show non-zero progress", expected, remaining)
+	}
+
+	// Un-deferring must move both together, with no fixup call.
+	p.files[1].Deferred = false
+	if got, want := p.ExpectedBytes(), int64(11_000); got != want {
+		t.Errorf("ExpectedBytes() after un-defer = %d, want %d", got, want)
+	}
+	if p.ExpectedBytes() != p.RemainingBytes() {
+		t.Errorf("after un-defer, expected (%d) != remaining (%d)", p.ExpectedBytes(), p.RemainingBytes())
+	}
+}
+
 func TestDerivedRemaining_ExcludesDeferredFiles(t *testing.T) {
 	m := newManifest([]JobFile{
 		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 3000}}},

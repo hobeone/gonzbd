@@ -33,7 +33,17 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 	stageLogJSON, _ := json.Marshal(job.StageLog)
 
 	p := job.Queue.Progress()
+	// totalBytes is the whole-manifest total, including any deferred
+	// recovery volumes: it is the job's full advertised size for the
+	// history record's Bytes field, matching Job.TotalBytes()'s other
+	// logging/post-processing callers.
 	totalBytes := job.Queue.TotalBytes()
+	// expectedBytes shares its walk and predicate with RemainingBytes and
+	// FailedBytes (both exclude Deferred files), so completeness and the
+	// downloaded identity below combine figures from the same universe —
+	// see ExpectedBytes's doc comment for why pairing it with totalBytes
+	// instead would misreport both for a job with deferred par2 volumes.
+	expectedBytes := p.ExpectedBytes()
 
 	var downloadDuration int64
 	if !p.DownloadStarted().IsZero() && !p.DownloadFinished().IsZero() {
@@ -50,8 +60,8 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 
 	// Download health: byte-based rather than article-based because a failed
 	// article is marked both Done and Failed (Done = resolved, not succeeded).
-	completeness := downloadCompleteness(totalBytes, p.FailedBytes())
-	downloaded := totalBytes - p.FailedBytes() - p.RemainingBytes()
+	completeness := downloadCompleteness(expectedBytes, p.FailedBytes())
+	downloaded := expectedBytes - p.FailedBytes() - p.RemainingBytes()
 
 	// Sort server names for deterministic output in history entries.
 	stats := p.ServerStats()

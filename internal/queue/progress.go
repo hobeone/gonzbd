@@ -263,6 +263,37 @@ func (p *JobProgress) derivedRemainingBytes() int64 {
 	return remaining
 }
 
+// ExpectedBytes returns the size of what this job is expected to fetch:
+// every file that has not been deferred, whether or not it has been
+// downloaded yet.
+//
+// This is the size that must be paired with RemainingBytes. The two share
+// a walk and a predicate on purpose — a consumer computing a percentage or
+// a downloaded total from figures with different exclusion sets gets a
+// number that is wrong in a way no test of either figure alone would
+// catch. RemainingBytes additionally skips Complete files, because they
+// have nothing left to fetch; ExpectedBytes counts them, because they are
+// part of what the job set out to fetch.
+//
+// It is therefore NOT Job.TotalBytes(), which is the immutable
+// whole-manifest total and still includes deferred recovery volumes. See
+// docs/superpowers/specs/2026-08-05-job-size-figures-design.md, which
+// records that a job's advertised expectation moving as par2 decisions are
+// made is a deliberate consequence.
+func (p *JobProgress) ExpectedBytes() int64 {
+	if p == nil {
+		return 0
+	}
+	var expected int64
+	for fi := range p.files {
+		if p.files[fi].Deferred {
+			continue
+		}
+		expected += p.files[fi].Bytes
+	}
+	return expected
+}
+
 // ServerStats returns a defensive copy, matching cloneJob's current
 // maps.Copy behavior — callers cannot mutate the job's live map through it.
 func (p *JobProgress) ServerStats() map[string]int64 {
