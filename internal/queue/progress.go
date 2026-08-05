@@ -229,6 +229,38 @@ func (p *JobProgress) RemainingBytes() int64 {
 	return p.remainingBytes
 }
 
+// derivedRemainingBytes computes what is still to fetch from per-file state
+// rather than from a maintained counter: every file that is neither complete
+// nor deferred contributes the part of it neither downloaded nor permanently
+// failed.
+//
+// Failed bytes are subtracted because the counter this replaces means
+// unresolved bytes, not un-downloaded ones: markFailed decrements it without
+// ever adding to BytesDownloaded. internal/app/history_helper.go computes
+// downloaded as totalBytes - FailedBytes() - RemainingBytes(), an identity
+// that only closes under that meaning.
+//
+// Deferred files contribute nothing because their articles are never
+// dispatched, so a deferral or an un-deferral needs no adjustment anywhere —
+// the next read reflects it. That is the whole point of deriving rather than
+// maintaining.
+//
+// O(files), and files number in the hundreds where articles number in the
+// tens of thousands. Called on reporting reads, not on the download path.
+func (p *JobProgress) derivedRemainingBytes() int64 {
+	var remaining int64
+	for fi := range p.files {
+		f := &p.files[fi]
+		if f.Complete || f.Deferred {
+			continue
+		}
+		if left := f.Bytes - f.BytesDownloaded - f.FailedBytes; left > 0 {
+			remaining += left
+		}
+	}
+	return remaining
+}
+
 // ServerStats returns a defensive copy, matching cloneJob's current
 // maps.Copy behavior — callers cannot mutate the job's live map through it.
 func (p *JobProgress) ServerStats() map[string]int64 {

@@ -401,3 +401,48 @@ func TestFailedBytes_SurvivesRestartNonResident(t *testing.T) {
 		t.Errorf("RemainingBytes across restart: got %d, want %d", got.RemainingBytes(), wantRemaining)
 	}
 }
+
+func TestDerivedRemaining_AgreesWithMaintainedCounter(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 1500}, {ID: "a2", Bytes: 1500}}},
+		{Subject: "b.rar", Bytes: 2000, Articles: []JobArticle{{ID: "b1", Bytes: 2000}}},
+	})
+	p := newJobProgress(m)
+
+	check := func(stage string) {
+		t.Helper()
+		if got, want := p.derivedRemainingBytes(), p.remainingBytes; got != want {
+			t.Errorf("%s: derived = %d, maintained = %d", stage, got, want)
+		}
+	}
+
+	check("fresh")
+
+	p.markDone(m, 0)
+	check("one article done")
+
+	p.markDone(m, 1)
+	p.files[0].Complete = true
+	check("first file complete")
+
+	p.markFailed(m, 2)
+	check("second file failed")
+}
+
+func TestDerivedRemaining_ExcludesDeferredFiles(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "a.rar", Bytes: 3000, Articles: []JobArticle{{ID: "a1", Bytes: 3000}}},
+		{Subject: "a.vol000+01.par2", Bytes: 800, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 800}}},
+	})
+	p := newJobProgress(m)
+	p.files[1].Deferred = true
+
+	if got, want := p.derivedRemainingBytes(), int64(3000); got != want {
+		t.Errorf("deferred volume counted: got %d, want %d", got, want)
+	}
+
+	p.files[1].Deferred = false
+	if got, want := p.derivedRemainingBytes(), int64(3800); got != want {
+		t.Errorf("un-deferred volume not counted: got %d, want %d", got, want)
+	}
+}
