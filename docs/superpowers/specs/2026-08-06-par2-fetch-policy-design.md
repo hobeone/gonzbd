@@ -304,7 +304,17 @@ has.
   from the downgrade, since an uncarried field fails silently at
   `FetchAlways`.
 - `file_index` is stable across a discard, asserted resident and non-resident.
-- Round trip: policy survives checkpoint, restart, and promotion.
+- Round trip: policy survives checkpoint, restart, and promotion — for a
+  discard taken while the job is resident. **A discard taken while the job is
+  non-resident does not survive promotion**, and the round-trip test pins that
+  loss rather than asserting against it. `PromoteNext` rebuilds `JobProgress`
+  with `newJobProgress` when the manifest is nil, discarding the in-memory
+  `FetchNever`, and `RestoreJobProgress` then assigns the stale row's value
+  back over it. This is bounded and self-correcting — the file returns to
+  `FetchIfNeeded`, so `HasDeferredPar2()` is true again and the next
+  verification re-discards it — at a cost of one redundant CRC pass, with no
+  re-download and no data loss. Making it survive needs a
+  residency-independent per-file write path, which does not exist.
 
 ## Consequences accepted
 
