@@ -205,61 +205,48 @@ unrelated jobs.
 only ever needed because reporting paths hydrated from disk. They no longer do.
 In the manifest tier a vanished job makes the operation moot: `ErrNotFound`.
 
-**A mutation that changes a job's file set must move both persisted artifacts
-together.** The manifest blob and the `job_files` rows describe the same file
-set, and the staleness guard pairs the blob against in-memory progress, so
-writing one without the other is a defect on both counts: the pair disagrees
-in this process, and the two on-disk artifacts agree with each other at the
-*wrong* shape, which nothing detects. `DiscardDeferredPar2` is the only such
-mutation after `Add`, and it goes through `Store.ReplaceManifest`, which
-rewrites every row rather than deleting the discarded ones — dropping a file
-renumbers every `file_index` after it. The two writes cannot be made atomic
-across the filesystem and SQLite; a crash between them yields
-`ErrManifestStale` on the hydration paths, which is bounded and reported
-rather than permanent and silent (#294).
+**A job's file set is fixed at `Add`.** The manifest blob and the `job_files`
+rows are both written once, from the same `[]JobFile`, and neither changes
+shape again for the life of the job. `file_index` is therefore stable for the
+job's entire life: nothing after `Add` removes a file, so nothing after `Add`
+renumbers one.
 
-**Nothing may write `job_files` by `file_index` while the rows are known not
-to describe the job's manifest.** `SQLiteStore.updateTx` — the third writer of
-that table, after `addTx` and `ReplaceManifest` — takes each value from the
-live manifest and never rewrites the identity columns, so under a
-disagreement it splices one file's progress onto another file's row. A
-`ReplaceManifest` that fails leaves exactly that disagreement, because the
-discard is deliberately not rolled back.
+`DiscardDeferredPar2` is the only operation that changes a job's download
+intent after `Add`, and it does not touch the file set to do it. A recovery
+volume that is never downloaded — because on-demand par2 verification came
+back clean — keeps its `job_files` row exactly where it was; only its
+`fetch_policy` column moves, from `FetchIfNeeded` to `FetchNever`, through the
+ordinary per-file write in `SQLiteStore.updateTx`. That write is unconditional
+for a resident job. For a non-resident job it is not: `updateTx` gates its
+whole `job_files` loop on `job.Manifest()` succeeding, so a discard on an
+evicted job updates `JobProgress` in memory immediately but leaves the
+persisted `fetch_policy` at its prior value until the job is promoted back to
+resident and a checkpoint runs.
 
-`Job.manifestRowsStale` records it, guarded by `residencyMu` alongside
-`fileSetGen`. `DiscardDeferredPar2` raises it before attempting the rewrite —
-before, so a panic or partial write leaves it raised too — and lowers it on
-success. `updateTx` skips its `job_files` half while it is raised, and
-`Queue.saveStore` retries the wholesale rewrite each checkpoint until one
-lands. This is the one self-heal in the manifest tier: everywhere else a
-disagreement is reported and the job fails, but here the in-memory state is
-correct and only the persisted copy is behind (#310).
+This removed a whole tier of machinery that used to exist to survive the
+opposite design: `Store.ReplaceManifest`, which rewrote the manifest blob and
+every `job_files` row together whenever a discard shrank the file set;
+`Job.manifestRowsStale` and `Job.fileSetGen`, which tracked whether the
+persisted rows still matched a file set that could change out from under
+them; and `Queue.reconcileJobFiles`, which retried a `ReplaceManifest` a prior
+checkpoint had failed to land. All of it existed because dropping a file
+renumbered every `file_index` after it — the root of #294, #308, #310, #315
+and #317. None of it has a reachable caller once the file set cannot change,
+so all of it is gone.
 
-`fileSetGen` is what makes this verifiable after the fact. It counts file-set
-rebuilds and only `DiscardDeferredPar2` bumps it, so a rewrite that completed
-outside `q.mu` can tell a second discard (which invalidates it) from ordinary
-eviction and rehydration (which does not). Keying that check on the manifest
-pointer instead is wrong: eviction nils the pointer and rehydration installs a
-new one, so residency churn alone would leave the flag raised for the life of
-the process.
-
-**A snapshot may write `job_files` by index only while the job still has the
-file set it was cloned from.** `saveStore` clones under `q.mu.RLock`, releases,
-and only then writes, so a discard landing in that window renumbers the rows
-the snapshot is about to address by their old indices. `manifestRowsStale`
-cannot catch this alone — on the discard's success path the flag is lowered
-again, and the snapshot predates its ever being raised — so
-`reconcileJobFiles` compares each snapshot's `fileSetGen` against the live
-job's and marks any it has outrun. That job simply skips one checkpoint; the
-next clone is current.
-
-**The boot path does not carry this guard.** `SQLiteStore.Get` sizes progress
-from the manifest it reads and fills it by `file_index` from the rows, with no
-`describesSameJobAs` — that check lives in `hydrateSnapshot` and
-`hydrateJobLocked` only. A crash inside `ReplaceManifest`, between the blob
-write and the transaction, therefore survives as a silent splice with no
-in-memory flag left to catch it. What such a mismatch should do at boot is
-#278's question.
+**What remains is on-disk corruption, not a torn write.** `ErrManifestStale`
+and `describesSameJobAs` still guard the one thing they always guarded: a
+`Manifest`/`JobProgress` size mismatch would panic inside `recompute` on a
+background goroutine with no `recover`, so it is reported instead of
+tolerated. Their cause changed, not their purpose. Before this task the
+mismatch had an ordinary cause — a `ReplaceManifest` whose blob write and
+transaction could not be made atomic, so a crash between them left the file on
+disk describing the pre-discard job. No write path this process performs can
+produce that any more: the manifest blob is written once, before `Add` opens
+its transaction, so a crash between them leaves an orphan manifest and no job
+row rather than a disagreeing pair. A mismatch that reaches the guard now is a
+truncated or damaged manifest blob, or a `job_files` set altered out of band —
+still worth detecting, still better reported than panicked on.
 
 ## Enforcement
 

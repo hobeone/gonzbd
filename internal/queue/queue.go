@@ -40,24 +40,21 @@ var ErrJobNotResident = errors.New("queue: job not resident")
 //
 // Reporting it rather than tolerating it is not optional: handing a
 // mismatched pair to JobProgress.recompute panics by design, and hydration
-// runs on background goroutines that carry no recover. Hydration used to
-// sidestep the question by rebuilding progress from whatever it read; now
-// that it preserves the live progress, the disagreement is visible.
+// runs on background goroutines that carry no recover.
 //
-// It had one ordinary cause until #294. DiscardDeferredPar2 rebuilt a smaller
-// manifest and progress in memory when on-demand par2 verification came back
-// clean, and never rewrote the .json.gz, so every discard left the file on
-// disk describing the pre-discard job. It now persists the rebuilt manifest
-// and job_files rows together.
+// No write path this process performs can produce the mismatch any more. It
+// had one ordinary cause until #294 — DiscardDeferredPar2 rebuilding a
+// smaller manifest without rewriting the blob — and one residual cause after
+// that, a torn Store.ReplaceManifest whose blob write and transaction could
+// not be made atomic. Both are gone: the file set is now immutable after Add,
+// which writes the blob before opening the transaction, so a crash between
+// them leaves an orphan manifest and no job row rather than a disagreeing
+// pair.
 //
-// What remains is a torn write. Store.ReplaceManifest writes a blob and
-// commits a transaction, and no ordering makes those two atomic across the
-// filesystem and SQLite — a crash between them leaves the same mismatch, now
-// bounded by one fsync plus one small transaction rather than arising on
-// every discard.
-//
-// Distinct from ErrJobNotResident because it is not ordinary: the job's
-// persisted state is internally inconsistent and re-reading will not fix it.
+// What remains is on-disk corruption: a truncated or damaged manifest blob,
+// or job_files rows removed out of band. That is worth continuing to detect.
+// The alternative is not "no error" but a panic on a goroutine with no
+// recover, which is strictly worse for the same underlying state.
 var ErrManifestStale = errors.New("queue: stored manifest does not match the job's progress")
 
 // Queue owns the ordered list of active jobs plus the notify channel
@@ -1842,9 +1839,14 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 // already exclude a file that is not being fetched, so there is nothing left
 // for it to correct.
 //
-// No store write of its own. Nothing about the file set changed, so the
-// ordinary checkpoint writes the new policy through updateTx like any other
-// per-file state, and the operation cannot partially apply.
+// No store write of its own. For a resident job the ordinary checkpoint
+// writes the new policy through updateTx like any other per-file state, and
+// the operation cannot partially apply. For a non-resident job it cannot:
+// updateTx gates its whole job_files loop on job.Manifest() succeeding, and
+// an evicted job has none, so a discard there stays in-memory-only on
+// JobProgress — the persisted job_files.fetch_policy for that job's rows is
+// unchanged — until the job is promoted back to resident and a checkpoint
+// runs.
 //
 // Progress tier, like SetPar2ReleaseReason immediately above: the fetch
 // policy lives on JobProgress, which is permanently resident, so this

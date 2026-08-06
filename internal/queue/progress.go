@@ -422,13 +422,14 @@ func (p *JobProgress) DeferredRecoveryIndices() []int {
 // freshly read Manifest has to satisfy, and recompute panics when it does
 // not hold.
 //
-// The two can genuinely disagree. DiscardDeferredPar2 rebuilds a smaller
-// manifest and progress in memory, and persists both through
-// Store.ReplaceManifest — a blob write plus a transaction that cannot be made
-// atomic together (see ErrManifestStale). A crash between them leaves the file
-// on disk describing the job as it was before the discard. Re-reading it and
-// pairing it with the surviving, smaller progress is not a recoverable state:
-// the manifest is simply not this job's any more.
+// The two can disagree only through corruption now. DiscardDeferredPar2 used
+// to rebuild a smaller manifest and persist it through Store.ReplaceManifest,
+// a blob write plus a transaction that could not be made atomic together, so
+// a crash between them left the file on disk describing the pre-discard job.
+// The file set is immutable after Add as of the fetch-policy change, and
+// ReplaceManifest is gone. A mismatch that reaches here is a damaged blob or
+// a job_files set altered out of band — still not a recoverable state, and
+// still better reported than panicked on.
 func (p *JobProgress) describesSameJobAs(m *Manifest) bool {
 	if p == nil || m == nil {
 		return false
@@ -453,8 +454,8 @@ func (p *JobProgress) clone() *JobProgress {
 // pendingArticles/articlesResolved/articlesFailed/failedBytes counters from
 // the ground truth (done/failed/emitted flags), against m's file ranges.
 // Called after Add and Load, and after any bulk state change
-// (ClearAllEmitted, DiscardDeferredPar2, undeferRecoveryLocked) where
-// incremental tracking is impractical.
+// (ClearAllEmitted, undeferRecoveryLocked) where incremental tracking is
+// impractical.
 //
 // recompute is authoritative for the job-level failedBytes wherever a
 // manifest is resident: RestoreJobProgress replays per-article state

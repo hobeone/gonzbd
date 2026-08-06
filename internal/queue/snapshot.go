@@ -82,14 +82,14 @@ func hydrateSnapshot(log *slog.Logger, stateDir string, store Store, cp *Job) {
 	// for a non-resident job, which by definition is not downloading, those
 	// counters are not moving underneath it.
 	//
-	// The pair has to describe the same job, though. The manifest just read
-	// from disk can be older than the progress in memory — a torn
-	// Store.ReplaceManifest, whose blob write and transaction cannot be made
-	// atomic together (see ErrManifestStale) — and handing a mismatched pair
-	// to RestoreJobProgress panics inside recompute, on a background goroutine
-	// with no recover. Report it instead: a manifest that
-	// disagrees with the job's own progress is not this job's manifest, and
-	// serving it would mean reporting files the job no longer has.
+	// The pair has to describe the same job, though. See ErrManifestStale for
+	// what can still make the manifest just read from disk disagree with the
+	// progress in memory — on-disk corruption now, not a torn write — and
+	// handing a mismatched pair to RestoreJobProgress panics inside recompute,
+	// on a background goroutine with no recover. Report it instead: a
+	// manifest that disagrees with the job's own progress is not this job's
+	// manifest, and serving it would mean reporting files the job no longer
+	// has.
 	if !priorProgress.describesSameJobAs(&m) {
 		cp.setHydrateFailure(priorProgress, fmt.Errorf(
 			"%w: stored manifest for job %s describes %d files/%d articles but its progress holds %d/%d",
@@ -186,11 +186,6 @@ func cloneJob(j *Job) *Job {
 	j.residencyMu.RLock()
 	cp.hydrateErr = j.hydrateErr
 	cp.manifest = j.manifest
-	// Carried, not recomputed: the store consults this on the snapshot it is
-	// handed, and a clone that lost the flag would let updateTx write
-	// job_files by index against rows that do not match (#310).
-	cp.manifestRowsStale = j.manifestRowsStale
-	cp.fileSetGen = j.fileSetGen
 	progress := j.progress
 	j.residencyMu.RUnlock()
 	if progress != nil {

@@ -274,11 +274,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 // file_index is the primary key, so callers replacing an existing set must
 // delete it first.
 //
-// Shared by addTx and ReplaceManifest rather than duplicated. Those are the
-// only two writers of this table's full row shape, and they must agree: a
-// column one of them forgets is a column that silently reverts whenever the
-// other runs. #287 was exactly that failure with `deferred` hard-coded to
-// zero in the sole writer of the day.
+// Shared by addTx and nothing else now — it was written to be shared with
+// ReplaceManifest, which no longer exists because the file set is immutable
+// after Add. Kept as a function because the row shape is worth naming in one
+// place: a column a writer forgets is a column that silently reverts, which
+// is what #287 was.
 func insertJobFilesTx(ctx context.Context, tx *sql.Tx, job *Job, m *Manifest) error {
 	const qFiles = `
 INSERT INTO job_files
@@ -313,45 +313,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		}
 	}
 	return nil
-}
-
-// ReplaceManifest rewrites job's stored manifest and replaces its job_files
-// rows to match. Two callers, with different synchronization — see
-// Store.ReplaceManifest's doc comment: DiscardDeferredPar2 under q.mu, and
-// Queue.reconcileJobFiles outside it to retry a discard that could not
-// persist.
-//
-// Every row is rewritten rather than the discarded ones deleted. Dropping a
-// file renumbers every file_index after it, so a targeted DELETE would leave
-// the survivors' stored progress attached to the wrong articles — a quieter
-// bug than the one this fixes.
-//
-// The manifest blob is written before the transaction opens, for the reason
-// Add gives: writing it inside means holding SQLite's write lock across an
-// fsync, the widest window a competing writer can collide with. Neither
-// ordering is atomic across the two media, so a crash between them leaves the
-// blob and the rows describing different shapes. That is detected — the
-// staleness guard in hydrateSnapshot/hydrateJobLocked compares the two — and
-// it is bounded by one fsync plus one small transaction, where the state this
-// replaces was a permanent disagreement on every discard.
-func (s *SQLiteStore) ReplaceManifest(ctx context.Context, job *Job) error {
-	m, err := job.Manifest()
-	if err != nil {
-		return fmt.Errorf("sqlite store replace manifest %s: %w", job.ID, err)
-	}
-	manifestPath := filepath.Join(s.dir, "manifests", job.ID+".json.gz")
-	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
-		return fmt.Errorf("sqlite store mkdir manifests: %w", err)
-	}
-	if err := writeGzJSON(manifestPath, m); err != nil {
-		return fmt.Errorf("sqlite store write manifest %s: %w", job.ID, err)
-	}
-	return s.withWriteTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM job_files WHERE job_id = ?", job.ID); err != nil {
-			return fmt.Errorf("sqlite store delete job_files %s: %w", job.ID, err)
-		}
-		return insertJobFilesTx(ctx, tx, job, m)
-	})
 }
 
 // Get retrieves an active job by ID, reconstructing it from SQLite and its manifest.
@@ -689,21 +650,7 @@ WHERE id = ?`
 		return ErrNotFound
 	}
 
-	// The job_files half is keyed by file_index and takes every value from
-	// the live manifest, so it is correct only while the stored rows describe
-	// the same file set. When the job says they do not, writing anything by
-	// index puts one file's progress on another file's row — worse than
-	// writing nothing, because the rows are the durable copy and nothing
-	// downstream can tell a spliced row from a real one (#310).
-	//
-	// Skipping leaves the rows at their last consistent shape. Queue.saveStore
-	// retries the wholesale rewrite that reconciles them; until it succeeds,
-	// this job's per-file counters simply do not advance on disk, which costs
-	// re-downloading some articles after a crash and costs no correctness.
-	if job.ManifestRowsStale() {
-		s.log.Warn("skipping job_files update: the stored rows no longer describe this job's manifest",
-			"job_id", job.ID)
-	} else if m, mErr := job.Manifest(); job.Progress() != nil && mErr == nil {
+	if m, mErr := job.Manifest(); job.Progress() != nil && mErr == nil {
 		// article_count is included here (not just in Add's INSERT) so that a
 		// row written before this column existed — where it defaults to 0 —
 		// gets backfilled the next time the job is updated while resident and
