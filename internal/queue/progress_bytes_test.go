@@ -667,9 +667,13 @@ func TestSizeFigures_SharedAndDivergentPredicates(t *testing.T) {
 	if want := int64(500); remaining != want {
 		t.Errorf("remaining = %d, want %d", remaining, want)
 	}
-	// The complete file is the case that separates the two predicates: drop
-	// the Complete skip from remaining and it would read 500; drop Complete
-	// from expected and expected would read 1600.
+	// The complete file is what separates the two figures here: drop it from
+	// expected and expected would read 1600, while remaining is unmoved. It
+	// does NOT separate them in the other direction — its single article is
+	// downloaded, so its residual is already zero and the Complete skip in
+	// the remaining half is inert against this fixture. That half is pinned
+	// by TestSizeFigures_RemainingSkipsCompleteFileWithUnresolvedArticles,
+	// which needs a state this one cannot express.
 	if expected-remaining != 2100 {
 		t.Errorf("expected-remaining = %d, want 2100", expected-remaining)
 	}
@@ -687,5 +691,46 @@ func TestSizeFigures_SharedAndDivergentPredicates(t *testing.T) {
 	// fetched are partial.rar's 500 plus complete.rar's 1000.
 	if downloaded := expected - p.FailedBytes() - remaining; downloaded != 1500 {
 		t.Errorf("downloaded identity = %d, want 1500", downloaded)
+	}
+}
+
+// TestSizeFigures_RemainingSkipsCompleteFileWithUnresolvedArticles pins the
+// half of the divergent predicate that arithmetic alone does not reach.
+//
+// For a complete file, `Bytes - BytesDownloaded - FailedBytes` is normally
+// already zero — every article is resolved, and the parser normalizes
+// JobFile.Bytes to the exact sum of its articles' bytes. Against such a file
+// the Complete skip changes nothing, so a fixture built from one cannot tell
+// whether the skip is there.
+//
+// The skip earns its place in the state below: Complete set while an article
+// is still unresolved. That is not a state internal/queue prevents — it is
+// prevented one package over, by the assembler flushing its pending Done and
+// Failed acks *before* firing OnFileComplete, precisely so nothing observes a
+// complete file whose articles have not been marked yet (see
+// internal/assembler/assembler.go, handleCompletedFile). A guard whose
+// precondition is held by an ordering barrier in another package is exactly
+// the kind that needs a test here: the barrier can be refactored by someone
+// who never reads this file.
+//
+// Without the skip, remaining would report 500 bytes still to fetch for a
+// file the job has already finished with, and the queue would never reach
+// zero remaining.
+func TestSizeFigures_RemainingSkipsCompleteFileWithUnresolvedArticles(t *testing.T) {
+	m := newManifest([]JobFile{
+		{Subject: "done.rar", Bytes: 1000, Articles: []JobArticle{{ID: "d1", Bytes: 500}, {ID: "d2", Bytes: 500}}},
+	})
+	p := newJobProgress(m)
+
+	// One article resolved, one not, and the file marked complete anyway.
+	p.markDone(m, 0)
+	p.files[0].Complete = true
+
+	expected, remaining := p.sizeFigures()
+	if want := int64(1000); expected != want {
+		t.Errorf("expected = %d, want %d (a complete file is still part of what the job set out to fetch)", expected, want)
+	}
+	if want := int64(0); remaining != want {
+		t.Errorf("remaining = %d, want %d (a complete file has nothing left to fetch, whatever its articles say)", remaining, want)
 	}
 }
