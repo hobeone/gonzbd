@@ -94,10 +94,21 @@ move a file between the three values.
 tables that have the column: `job_files` (added in migration 002) and
 `history_job_files` (007).
 
-No backfill and no dual-read path. #318 records that there is no
-backwards-compatibility requirement — landing this work requires a full reset
-and reinstall — and `FetchAlways` is the correct default for every row
-regardless.
+No dual-read path. #318 records that there is no backwards-compatibility
+requirement — landing this work requires a full reset and reinstall.
+
+The migration does backfill, in one `UPDATE` per table mapping `deferred = 1`
+to `FetchIfNeeded`. An earlier draft of this section claimed `FetchAlways` was
+the correct default for every row regardless; that holds only for rows that
+were not deferred. For a held volume `FetchAlways` means *download it*, which
+is the outcome the feature exists to avoid. The reset requirement makes the
+difference unobservable in practice, but a migration that is correct on its own
+terms rather than dependent on an out-of-band instruction costs one line per
+table.
+
+`Down` is lossy: `FetchNever` collapses to `deferred = 0`. That is acceptable
+because `Down` is a development affordance and the verdict is re-derived by
+re-verification.
 
 The `Manifest` is untouched. Fetch policy is progress state; the manifest has
 never had a concept of deferral, and giving it one would recreate the
@@ -176,7 +187,22 @@ unreferenced with it:
 | `Job.manifestRowsStale` and `updateTx`'s skip (`sqlite_store.go:709`) | #310, landed in #315 |
 | `Job.fileSetGen`, `clearManifestRowsStaleIfGen` | a stale rewrite clearing a newer flag |
 | `Queue.reconcileJobFiles` (`persistence.go:41-104`) | retrying the rewrite each checkpoint |
-| `ErrManifestStale`, `describesSameJobAs`'s panic branch | the un-atomic blob-plus-transaction pair |
+
+**`ErrManifestStale` and `describesSameJobAs` are kept.** An earlier draft of
+this table listed them for removal as part of the un-atomic
+blob-plus-transaction pair. They are not renumber containment: they convert a
+`Manifest`/`JobProgress` size mismatch into a reported error instead of a panic
+on a background goroutine with no `recover`, and that value is independent of
+what caused the mismatch.
+
+What the teardown removes is their last *reachable* cause. `Add` writes the
+manifest blob before opening its transaction, so a crash between the two leaves
+an orphan manifest and no job row — not a disagreeing pair — and with
+`ReplaceManifest` gone no write path this process performs can produce one.
+What remains is on-disk corruption: a truncated blob, or `job_files` rows
+altered out of band. Deleting the guard would not remove that state, only the
+report of it. Both doc comments must be rewritten, since each currently
+explains itself entirely in terms of the discard.
 
 **#320 and #321 close as subsumed.** Both are defects inside this layer: #320
 is a `manifestRowsStale` that has no residency-independent clear, so an evicted
