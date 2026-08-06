@@ -47,8 +47,9 @@ func buildHistoryEntry(job *postproc.Job) history.Entry {
 	// Downloaded or that arithmetic reports bytes as failed that were only
 	// ever deferred, never dispatched, never failed. A job finalized while
 	// maybeReleaseRecoveryVolumes has left a deferred volume in the
-	// manifest (see the non-resident DiscardDeferredPar2 case documented
-	// at app.go:1057) is exactly the case this would otherwise misreport.
+	// manifest (see the unreadable-manifest case documented at app.go:1017,
+	// where verification cannot run and the volume stays deferred) is
+	// exactly the case this would otherwise misreport.
 	expectedBytes := p.ExpectedBytes()
 
 	var downloadDuration int64

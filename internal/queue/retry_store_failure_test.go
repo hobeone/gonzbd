@@ -24,7 +24,6 @@ type failingStore struct {
 	failList          bool
 	failArticleCounts bool
 	failIsPaused      bool
-	failReplaceMani   bool
 	failSetPaused     bool
 	failPrune         bool
 	pruneCalls        int
@@ -43,13 +42,6 @@ func (f *failingStore) Prune(ctx context.Context) error {
 		return errInjected
 	}
 	return f.Store.Prune(ctx)
-}
-
-func (f *failingStore) ReplaceManifest(ctx context.Context, job *Job) error {
-	if f.failReplaceMani {
-		return errInjected
-	}
-	return f.Store.ReplaceManifest(ctx, job)
 }
 
 func (f *failingStore) IsPaused(ctx context.Context) (bool, error) {

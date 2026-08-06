@@ -17,7 +17,7 @@ func deferredCount(job *Job) int {
 	}
 	n := 0
 	for i := range len(p.files) {
-		if p.FileDeferred(i) {
+		if p.FileFetchPolicy(i) != FetchAlways {
 			n++
 		}
 	}
@@ -121,22 +121,22 @@ func TestOnDemandPar2_SnapshotKeepsDeferralWithoutAStore(t *testing.T) {
 	}
 }
 
-// tearManifestWrite simulates a ReplaceManifest that committed its
-// transaction but never landed its blob: the rows and the job's in-memory
-// progress describe the shrunk file set, the file on disk still describes the
-// pre-discard one.
+// tearManifestWrite writes stale as job's on-disk manifest directly, standing
+// in for the on-disk corruption ErrManifestStale now exists to detect — the
+// rows and the job's in-memory progress describe one file set, the file on
+// disk describes another.
 //
-// This is the fixture the two tests below need, and it has to be built by
-// hand. It used to come free from DiscardDeferredPar2, which shrank the job in
-// memory and never rewrote the .json.gz — the tests took the defect as their
-// setup. #294 fixed that, so the discard is no longer a way to produce a stale
-// pair, and using it here would only assert that the fix works (which
-// discard_persistence_test.go does directly).
-//
-// The guard still has a job. ReplaceManifest writes a file and commits a
-// transaction, and no ordering makes those two atomic, so a crash between them
-// leaves exactly this disagreement. Reaching it now takes a torn write rather
-// than an ordinary code path, which is the point of the fix — not a reason to
+// This is the fixture buildTornManifest needs, and it has to be built by
+// hand: #294 made a discard's own rebuild-and-persist atomic in the sense
+// that mattered then (never left the pair disagreeing on its own success
+// path), and the manifest-rewrite containment layer this used to describe —
+// Store.ReplaceManifest, whose blob write and transaction could not be made
+// atomic — is gone outright (see ErrManifestStale's doc comment). There is
+// no longer any operation in this package, torn or otherwise, that produces
+// the disagreement as a documented side effect; a version skew or any other
+// corruption of the on-disk manifest blob is what remains. The guard still
+// has a job, though: reaching it now takes a direct write rather than an
+// ordinary code path, which is a consequence of the fix, not a reason to
 // stop pinning what happens when it occurs.
 func tearManifestWrite(t *testing.T, dir string, job *Job, stale *Manifest) {
 	t.Helper()
@@ -146,32 +146,38 @@ func tearManifestWrite(t *testing.T, dir string, job *Job, stale *Manifest) {
 	}
 }
 
-// discardThenTear runs a discard (which now persists correctly) and then tears
-// the manifest write back to the pre-discard shape, returning the queue and
-// the job with disk and memory disagreeing.
-func discardThenTear(t *testing.T, name string) (*Queue, *Job) {
+// buildTornManifest builds the state the staleness guard exists for: the
+// on-disk manifest describes a different file set than the job's progress.
+//
+// This used to be produced by discardThenTear, riding on DiscardDeferredPar2
+// rebuilding and shrinking the manifest and then tearing the write back to
+// the pre-discard shape. This task removes that rebuild outright — a discard
+// can no longer produce a mismatched pair at all, by design (see
+// DiscardDeferredPar2's doc comment) — so the guard's own fixture needs a
+// generic way to reach the disagreement it exists to catch. The guard does
+// not care how the two came to disagree — a version skew, a corrupted or
+// torn write from something other than a discard — only that they do, so a
+// single-file stub manifest reproduces its precondition without discard
+// anywhere in the picture.
+func buildTornManifest(t *testing.T, name string) (*Queue, *Job) {
 	t.Helper()
 	store, dir := setupResidencyTestStore(t)
 	q := New(WithStore(store), WithStateDir(dir))
-	job := addOnDemandPar2Job(t, q, name)
+	job := makeMultiFileJob(t, name, 3, 1)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 
-	before, err := job.Manifest()
+	live, err := job.Manifest()
 	if err != nil {
 		t.Fatalf("Manifest: %v", err)
 	}
-	beforeFiles := before.NumFiles()
-	if err := q.DiscardDeferredPar2(job.ID); err != nil {
-		t.Fatalf("DiscardDeferredPar2: %v", err)
-	}
-	after, err := job.Manifest()
-	if err != nil {
-		t.Fatalf("Manifest after discard: %v", err)
-	}
-	if after.NumFiles() >= beforeFiles {
-		t.Fatalf("fixture guard: discard did not shrink the manifest (%d -> %d), so nothing below diverges",
-			beforeFiles, after.NumFiles())
-	}
-	tearManifestWrite(t, dir, job, before)
+	stale := newManifest([]JobFile{{
+		Subject:  live.FileSubject(0),
+		Bytes:    live.FileBytes(0),
+		Articles: []JobArticle{{ID: live.ArticleID(0), Bytes: live.ArticleBytes(0)}},
+	}})
+	tearManifestWrite(t, dir, job, stale)
 	return q, job
 }
 
@@ -179,14 +185,15 @@ func discardThenTear(t *testing.T, name string) (*Queue, *Job) {
 // progress. Handing a mismatched pair to recompute panics by design, on a
 // background goroutine with no recover.
 func TestStaleManifest_TornWriteIsReportedNotPanicked(t *testing.T) {
-	q, job := discardThenTear(t, "stale-discard")
+	q, job := buildTornManifest(t, "stale-discard")
 	after, err := job.Manifest()
 	if err != nil {
 		t.Fatalf("Manifest: %v", err)
 	}
 
-	// Evicting drops the shrunk manifest and keeps the shrunk progress; the
-	// larger torn-write manifest is the only one left on disk.
+	// Evicting drops the live manifest and keeps the real progress; the
+	// smaller torn-write manifest written directly to disk is the only one
+	// left to read back.
 	if err := q.SetStatus(job.ID, constants.StatusPaused); err != nil {
 		t.Fatalf("SetStatus(Paused): %v", err)
 	}
@@ -216,7 +223,7 @@ func TestStaleManifest_TornWriteIsReportedNotPanicked(t *testing.T) {
 // live q.jobs entry rather than a clone. Promotion must fail closed, not
 // crash the process.
 func TestStaleManifest_HydrateJobLockedFailsClosed(t *testing.T) {
-	q, job := discardThenTear(t, "stale-hydrate")
+	q, job := buildTornManifest(t, "stale-hydrate")
 
 	if err := q.SetStatus(job.ID, constants.StatusPaused); err != nil {
 		t.Fatalf("SetStatus(Paused): %v", err)

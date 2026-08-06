@@ -92,10 +92,21 @@ func TestMaybeReleaseRecoveryVolumes_WithStore(t *testing.T) {
 	}
 	after := q.SnapshotJob(jobID)
 	m := mustManifest(t, after)
+	sawRecovery := false
 	for fi := range m.NumFiles() {
-		if m.FileIsPar2Recovery(fi) {
-			t.Error("the deferred recovery volume is still on the job after a clean verification")
+		if !m.FileIsPar2Recovery(fi) {
+			continue
 		}
+		sawRecovery = true
+		// DiscardDeferredPar2 no longer removes the file from the manifest
+		// (see its doc comment in internal/queue/queue.go); it marks the
+		// volume FetchNever and leaves it in place.
+		if got := after.Progress().FileFetchPolicy(fi); got != queue.FetchNever {
+			t.Errorf("recovery file %d policy = %d, want FetchNever after a clean verification", fi, got)
+		}
+	}
+	if !sawRecovery {
+		t.Fatal("fixture guard: expected a par2 recovery file to still be present in the manifest")
 	}
 }
 

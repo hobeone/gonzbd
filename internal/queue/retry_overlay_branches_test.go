@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
+	"github.com/hobeone/gonzbd/internal/fsutil"
 	"github.com/hobeone/gonzbd/internal/history"
 )
 
@@ -96,7 +97,7 @@ func TestRestoreRetryProgress_RestoresCompleteAndDeferredFiles(t *testing.T) {
 	if err := q.MarkFileComplete(job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}
-	job.progress.files[1].Deferred = true
+	job.progress.files[1].Fetch = FetchIfNeeded
 	job.progress.files[0].Filename = "assembled.bin"
 	if err := q.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -123,11 +124,167 @@ func TestRestoreRetryProgress_RestoresCompleteAndDeferredFiles(t *testing.T) {
 	if !p.ArticleDone(0) || !p.ArticleDone(1) {
 		t.Error("a complete file's articles should all come back done")
 	}
-	if !p.FileDeferred(1) {
+	if p.FileFetchPolicy(1) != FetchIfNeeded {
 		t.Error("file 1 lost its Deferred flag; on-demand par2 would fetch it anyway")
 	}
 	if p.FileFilename(0) != "assembled.bin" {
 		t.Errorf("FileFilename(0) = %q, want the resolved name carried over", p.FileFilename(0))
+	}
+}
+
+// TestRestoreRetryProgress_DoesNotClearAHoldTheRebuiltJobJustSet pins the
+// divergence RestoreJobProgress's unconditional-assign shape cannot use
+// here: NewJob rebuilding the retried job from the re-parsed NZB has
+// already set FetchIfNeeded on every recovery volume when OnDemandPar2 is
+// on, but the row this overlay reads can legitimately say FetchAlways — a
+// prior run's undeferRecoveryLocked release, persisted before the job
+// failed and moved to history. Unlike RestoreJobProgress (whose progress
+// was itself sized from the same rows via ArticleCountsByJob, so row and
+// memory cannot disagree there), row and memory can disagree here, and the
+// row must not win: a retry that adopted FetchAlways from a stale row would
+// silently clear a hold the rebuild just decided on, skipping the CRC
+// release path entirely and pulling the volume's bytes into every reported
+// figure for a job that never actually needed it downloaded.
+func TestRestoreRetryProgress_DoesNotClearAHoldTheRebuiltJobJustSet(t *testing.T) {
+	dir := t.TempDir()
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+	store := NewSQLiteStore(repo.DB(), dir, repo)
+	q := New(WithStore(store))
+
+	// par2NZB (see ondemand_par2_test.go): file 0 content, file 1 par2 index,
+	// file 2 recovery volume.
+	job, err := NewJob(par2NZB(), AddOptions{Filename: "divergence.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if job.progress.files[2].Fetch != FetchIfNeeded {
+		t.Fatalf("fixture guard: recovery volume not held after Add")
+	}
+
+	// Simulate a prior run that released the volume (e.g. a permanent
+	// article failure via undeferRecoveryLocked) and persisted that release
+	// before the job later failed and moved to history.
+	job.progress.files[2].Fetch = FetchAlways
+	if err := store.Update(t.Context(), job); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if err := store.MoveToHistory(t.Context(), job, history.Entry{
+		NzoID: job.ID, Name: job.Name, Status: string(constants.StatusFailed),
+	}); err != nil {
+		t.Fatalf("MoveToHistory: %v", err)
+	}
+
+	// Retry rebuilds the job from the NZB. With OnDemandPar2 still on, NewJob
+	// holds the recovery volume again before the overlay ever runs.
+	rebuilt, err := NewJob(par2NZB(), AddOptions{Filename: "divergence.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob (rebuilt): %v", err)
+	}
+	rebuilt.ID = job.ID
+	if rebuilt.progress.files[2].Fetch != FetchIfNeeded {
+		t.Fatalf("fixture guard: rebuilt job did not hold the recovery volume")
+	}
+
+	applied, err := store.RestoreRetryProgress(t.Context(), rebuilt)
+	if err != nil {
+		t.Fatalf("RestoreRetryProgress: %v", err)
+	}
+	if !applied {
+		t.Fatal("overlay refused for a matching manifest")
+	}
+	if got := rebuilt.Progress().FileFetchPolicy(2); got != FetchIfNeeded {
+		t.Errorf("FileFetchPolicy(2) = %v, want FetchIfNeeded — the overlay cleared a hold the rebuild just set, from a stale FetchAlways row", got)
+	}
+}
+
+// TestRestoreRetryProgress_DowngradesRetainedFetchNever pins the other half
+// of the overlay's fetch-policy handling, complementing
+// TestRestoreRetryProgress_DoesNotClearAHoldTheRebuiltJobJustSet: a row that
+// says FetchNever (the oracle discarded the volume on the run that failed)
+// must land back on FetchIfNeeded, the same downgrade ResetForRetry applies
+// to a live job — the retry is about to re-fetch different content, so the
+// old verdict cannot be trusted.
+//
+// The rebuild runs with OnDemandPar2 off, so NewJob's own fresh default for
+// the recovery volume is FetchAlways, not FetchIfNeeded. That is deliberate:
+// if the overlay's FetchNever branch were dropped, fp would silently keep
+// NewJob's FetchAlways default and this test would not notice the loss —
+// only forcing fp away from what the overlay must supply makes the branch
+// load-bearing rather than incidentally covered.
+//
+// That fixture also means a user who turns on-demand par2 off and retries a
+// job whose volumes were discarded under the old setting gets them held
+// (FetchIfNeeded) rather than downloaded outright — disagreeing with the
+// config the retry was just rebuilt from. This is accepted rather than
+// treated as a bug this task should fix: it is safe because
+// maybeReleaseRecoveryVolumes gates on HasDeferredPar2() state, not on the
+// OnDemandPar2 config flag, so a held volume still gets a fresh ruling and
+// is never stranded — it is at most an extra decision, never lost data.
+func TestRestoreRetryProgress_DowngradesRetainedFetchNever(t *testing.T) {
+	dir := t.TempDir()
+	db, err := history.Open(t.Context(), filepath.Join(dir, "history.db"))
+	if err != nil {
+		t.Fatalf("history.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	repo := history.NewRepository(db)
+	store := NewSQLiteStore(repo.DB(), dir, repo)
+	q := New(WithStore(store))
+
+	// par2NZB (see ondemand_par2_test.go): file 0 content, file 1 par2 index,
+	// file 2 recovery volume.
+	job, err := NewJob(par2NZB(), AddOptions{Filename: "discard.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob: %v", err)
+	}
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if job.progress.files[2].Fetch != FetchIfNeeded {
+		t.Fatalf("fixture guard: recovery volume not held after Add")
+	}
+
+	// Simulate the oracle ruling the volume unnecessary before the job later
+	// failed (on an unrelated file) and moved to history.
+	job.progress.files[2].Fetch = FetchNever
+	if err := store.Update(t.Context(), job); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if err := store.MoveToHistory(t.Context(), job, history.Entry{
+		NzoID: job.ID, Name: job.Name, Status: string(constants.StatusFailed),
+	}); err != nil {
+		t.Fatalf("MoveToHistory: %v", err)
+	}
+
+	// Retry rebuilds the job with on-demand par2 now off, so NewJob leaves
+	// the recovery volume at its zero-value FetchAlways rather than holding
+	// it — isolating the overlay's own downgrade from NewJob's.
+	rebuilt, err := NewJob(par2NZB(), AddOptions{Filename: "discard.nzb", OnDemandPar2: false}, fsutil.SanitizeOptions{})
+	if err != nil {
+		t.Fatalf("NewJob (rebuilt): %v", err)
+	}
+	rebuilt.ID = job.ID
+	if rebuilt.progress.files[2].Fetch != FetchAlways {
+		t.Fatalf("fixture guard: rebuilt job did not default the recovery volume to FetchAlways")
+	}
+
+	applied, err := store.RestoreRetryProgress(t.Context(), rebuilt)
+	if err != nil {
+		t.Fatalf("RestoreRetryProgress: %v", err)
+	}
+	if !applied {
+		t.Fatal("overlay refused for a matching manifest")
+	}
+	if got := rebuilt.Progress().FileFetchPolicy(2); got != FetchIfNeeded {
+		t.Errorf("FileFetchPolicy(2) = %v, want FetchIfNeeded — a discarded verdict must be re-derived, not left as FetchAlways nor stuck at FetchNever", got)
 	}
 }
 

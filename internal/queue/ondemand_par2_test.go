@@ -36,10 +36,10 @@ func TestNewJob_OnDemandPar2Classification(t *testing.T) {
 		if !m.FileIsPar2Recovery(2) {
 			t.Error("recovery volume not classified as IsPar2Recovery")
 		}
-		if p.FileDeferred(0) || p.FileDeferred(1) {
+		if p.FileFetchPolicy(0) != FetchAlways || p.FileFetchPolicy(1) != FetchAlways {
 			t.Error("content/index must not be deferred")
 		}
-		if !p.FileDeferred(2) {
+		if p.FileFetchPolicy(2) != FetchIfNeeded {
 			t.Error("recovery volume should be deferred when OnDemandPar2 is on")
 		}
 	})
@@ -53,7 +53,7 @@ func TestNewJob_OnDemandPar2Classification(t *testing.T) {
 		if !m.FileIsPar2Recovery(2) {
 			t.Error("recovery volume should still be classified when feature off")
 		}
-		if p.FileDeferred(2) {
+		if p.FileFetchPolicy(2) != FetchAlways {
 			t.Error("recovery volume must not be deferred when OnDemandPar2 is off")
 		}
 	})
@@ -229,6 +229,13 @@ func TestUndeferRecoveryVolumes_Edges(t *testing.T) {
 	}
 }
 
+// TestDiscardDeferredPar2 used to assert that the manifest shrank by exactly
+// the deferred recovery volume's bytes, and that RemainingBytes then equaled
+// the shrunk TotalBytes. This task removes the shrink itself: the file set
+// and TotalBytes are now immutable across a discard, so the replacement
+// assertions are the opposite — the file set does not move, and both derived
+// size figures (which already exclude a non-fetched file, deferred or
+// discarded alike) do not move either.
 func TestDiscardDeferredPar2(t *testing.T) {
 	q := New()
 	job, err := NewJob(par2NZB(), AddOptions{Filename: "m.nzb", OnDemandPar2: true}, fsutil.SanitizeOptions{})
@@ -245,7 +252,7 @@ func TestDiscardDeferredPar2(t *testing.T) {
 	}
 
 	initialTotalBytes := mustManifest(t, snap).TotalBytes()
-	deferredBytes := mustManifest(t, snap).FileBytes(2)
+	initialRemaining := snap.Progress().RemainingBytes()
 
 	if err := q.DiscardDeferredPar2("missing"); err == nil {
 		t.Error("expected error for missing job")
@@ -257,33 +264,36 @@ func TestDiscardDeferredPar2(t *testing.T) {
 
 	snap = q.SnapshotJob(job.ID)
 	if snap.HasDeferredPar2() {
-		t.Error("expected no deferred par2 files after discard")
+		t.Error("expected no deferred (FetchIfNeeded) par2 files after discard")
 	}
 
-	if mustManifest(t, snap).NumFiles() != 2 { // movie.mkv + movie.par2
-		t.Errorf("NumFiles() = %d, want 2", mustManifest(t, snap).NumFiles())
+	if got := mustManifest(t, snap).NumFiles(); got != 3 {
+		t.Errorf("NumFiles() = %d, want 3 — the file set must not shrink", got)
+	}
+	if got := snap.Progress().FileFetchPolicy(2); got != FetchNever {
+		t.Errorf("file 2 policy = %d, want FetchNever", got)
 	}
 
-	if mustManifest(t, snap).TotalBytes() != initialTotalBytes-deferredBytes {
-		t.Errorf("TotalBytes = %d, want %d", mustManifest(t, snap).TotalBytes(), initialTotalBytes-deferredBytes)
+	if got := mustManifest(t, snap).TotalBytes(); got != initialTotalBytes {
+		t.Errorf("TotalBytes = %d, want %d — the immutable total must not shrink", got, initialTotalBytes)
 	}
-
-	if snap.Progress().RemainingBytes() != mustManifest(t, snap).TotalBytes() {
-		t.Errorf("RemainingBytes = %d, want %d", snap.Progress().RemainingBytes(), mustManifest(t, snap).TotalBytes())
+	if got := snap.Progress().RemainingBytes(); got != initialRemaining {
+		t.Errorf("RemainingBytes = %d, want %d — moving FetchIfNeeded to FetchNever changes nothing it counted", got, initialRemaining)
 	}
 }
 
-// TestDiscardDeferredPar2_IndexShiftAndStaleness exercises the case
-// par2NZB()-based fixtures cannot: par2NZB's deferred recovery volume
-// always sorts last (all three files are tier-1/non-RAR, and sortJobFiles
-// is a stable no-op for tier-1), so discarding it never shifts any
-// surviving article's global index. This fixture instead places the
-// deferred file BEFORE a surviving file
-// ([content-1, recovery-volume(deferred), content-2]), and the job is
-// partially downloaded before the discard, so this test can distinguish
-// "carried over and adjusted" from "reset to the new total" — a
-// zero-download job produces the same RemainingBytes either way.
-func TestDiscardDeferredPar2_IndexShiftAndStaleness(t *testing.T) {
+// TestDiscardDeferredPar2_NoIndexShift replaces
+// TestDiscardDeferredPar2_IndexShiftAndStaleness. The original exercised the
+// case par2NZB()-based fixtures cannot: a deferred file positioned BEFORE a
+// surviving one, downloaded partially first, so a rebuild-and-renumber bug
+// (carried-over-and-adjusted vs. silently-reset) would be visible in the
+// surviving file's global article index. This task removes the renumbering
+// machinery outright, so the property worth pinning is now the opposite one:
+// nothing shifts. Global article indices, per-file bytes, and the job's
+// cached scalars (synced once at Add and never re-synced by a discard, since
+// DiscardDeferredPar2 no longer calls setScalarsFromManifest) all stay
+// exactly where they were.
+func TestDiscardDeferredPar2_NoIndexShift(t *testing.T) {
 	parsed := &nzb.NZB{
 		Files: []nzb.File{
 			{Subject: "content-1.bin", Bytes: 1000, Articles: []nzb.Article{{ID: "c1@x", Bytes: 1000, Number: 1}}},
@@ -308,12 +318,13 @@ func TestDiscardDeferredPar2_IndexShiftAndStaleness(t *testing.T) {
 			m.NumFiles(), m.FileIsPar2Recovery(1))
 	}
 
+	oldTotalBytes := m.TotalBytes()
 	oldPar2Bytes := m.Par2Bytes()
 	oldPar2Files := m.Par2Files()
 
 	// Partially download the job before discarding: mark content-2's article
-	// done. Its pre-discard global index is 2 (after content-1's 1 article
-	// and the deferred volume's 1 article); post-discard it must shift to 1.
+	// done at its global index 2 (after content-1's 1 article and the
+	// deferred volume's 1 article).
 	if err := q.MarkArticlesDone(job.ID, []string{"c2@x"}); err != nil {
 		t.Fatal(err)
 	}
@@ -326,61 +337,60 @@ func TestDiscardDeferredPar2_IndexShiftAndStaleness(t *testing.T) {
 	snap := q.SnapshotJob(job.ID)
 	newM, newP := mustManifest(t, snap), snap.Progress()
 
-	if newM.NumFiles() != 2 {
-		t.Fatalf("NumFiles() = %d, want 2", newM.NumFiles())
+	if newM.NumFiles() != 3 {
+		t.Fatalf("NumFiles() = %d, want 3 — the file set must not shrink", newM.NumFiles())
 	}
-	if newM.FileSubject(0) != "content-1.bin" || newM.FileSubject(1) != "content-2.bin" {
-		t.Fatalf("unexpected surviving file order: %q, %q", newM.FileSubject(0), newM.FileSubject(1))
+	if newM.FileSubject(0) != "content-1.bin" || newM.FileSubject(2) != "content-2.bin" {
+		t.Fatalf("unexpected file order: %q, %q, %q", newM.FileSubject(0), newM.FileSubject(1), newM.FileSubject(2))
 	}
 
-	// The shift bug: content-2's article, done pre-discard at global index 2,
-	// must still read Done at its new, shifted global index (1).
-	lo, _ := newM.FileRange(1)
+	// content-2's article, done pre-discard at global index 2, must still
+	// read Done at index 2 — nothing shifts, so there is no new index to
+	// check it at.
+	lo, _ := newM.FileRange(2)
 	if !newP.ArticleDone(lo) {
-		t.Error("content-2's article lost its Done state across the index shift")
+		t.Error("content-2's article lost its Done state across the discard")
+	}
+	if got := newP.FileFetchPolicy(1); got != FetchNever {
+		t.Errorf("file 1 policy = %d, want FetchNever", got)
 	}
 
-	// Par2Bytes/Par2Files must stay exactly as stale as today's code leaves
-	// them: carried over unchanged, not recomputed against the reduced set.
+	// Par2Bytes/Par2Files are untouched — there was never a rebuild to carry
+	// them across.
 	if newM.Par2Bytes() != oldPar2Bytes {
-		t.Errorf("Par2Bytes = %d, want %d (carried over unchanged)", newM.Par2Bytes(), oldPar2Bytes)
+		t.Errorf("Par2Bytes = %d, want %d (unchanged)", newM.Par2Bytes(), oldPar2Bytes)
 	}
 	if newM.Par2Files() != oldPar2Files {
-		t.Errorf("Par2Files = %d, want %d (carried over unchanged)", newM.Par2Files(), oldPar2Files)
+		t.Errorf("Par2Files = %d, want %d (unchanged)", newM.Par2Files(), oldPar2Files)
 	}
 
-	// RemainingBytes must be unchanged by the discard, not TotalBytes() of
-	// the reduced manifest — a zero-download job can't distinguish these,
-	// which is why this fixture downloads first. Deferred files already
-	// contribute nothing to RemainingBytes (derivedRemainingBytes skips
-	// them), so removing one changes nothing that was ever counted.
+	// RemainingBytes must be unchanged by the discard: deferred files already
+	// contribute nothing to it (derivedRemainingBytes skips anything that is
+	// not FetchAlways), so moving FetchIfNeeded to FetchNever changes nothing
+	// that was ever counted.
 	if newP.RemainingBytes() != oldRemaining {
-		t.Errorf("RemainingBytes = %d, want %d (unchanged: deferred bytes were never counted)",
+		t.Errorf("RemainingBytes = %d, want %d (unchanged: deferred/never-fetched bytes were never counted)",
 			newP.RemainingBytes(), oldRemaining)
 	}
 
-	// The job-level scalar cache (TotalBytes/NumFiles/NumArticles) must be
-	// re-synced to the rebuilt, smaller manifest, not left at the pre-discard
-	// totals: DiscardDeferredPar2 is the one operation that legitimately
-	// changes a job's manifest after Add, and a caller reading the cached
-	// scalars (the entire point of promoting them onto Job) must never see a
-	// value the live manifest has already moved past. Par2Bytes/Par2Files are
-	// asserted equal to the deliberately-stale manifest values above, not
-	// recomputed independently.
-	if got := snap.TotalBytes(); got != newM.TotalBytes() {
-		t.Errorf("Job.TotalBytes() = %d, want %d (synced to rebuilt manifest)", got, newM.TotalBytes())
+	// The job-level scalar cache is synced once at Add, and
+	// DiscardDeferredPar2 no longer calls setScalarsFromManifest — it has no
+	// rebuilt manifest to sync from — so it must still agree with the
+	// untouched manifest, not have moved to some new value.
+	if got := snap.TotalBytes(); got != oldTotalBytes {
+		t.Errorf("Job.TotalBytes() = %d, want %d (unchanged)", got, oldTotalBytes)
 	}
 	if got := snap.NumFiles(); got != newM.NumFiles() {
-		t.Errorf("Job.NumFiles() = %d, want %d (synced to rebuilt manifest)", got, newM.NumFiles())
+		t.Errorf("Job.NumFiles() = %d, want %d", got, newM.NumFiles())
 	}
 	if got := snap.NumArticles(); got != newM.NumArticles() {
-		t.Errorf("Job.NumArticles() = %d, want %d (synced to rebuilt manifest)", got, newM.NumArticles())
+		t.Errorf("Job.NumArticles() = %d, want %d", got, newM.NumArticles())
 	}
 	if got := snap.Par2Bytes(); got != oldPar2Bytes {
-		t.Errorf("Job.Par2Bytes() = %d, want %d (carried over unchanged)", got, oldPar2Bytes)
+		t.Errorf("Job.Par2Bytes() = %d, want %d (unchanged)", got, oldPar2Bytes)
 	}
 	if got := snap.Par2Files(); got != oldPar2Files {
-		t.Errorf("Job.Par2Files() = %d, want %d (carried over unchanged)", got, oldPar2Files)
+		t.Errorf("Job.Par2Files() = %d, want %d (unchanged)", got, oldPar2Files)
 	}
 }
 

@@ -40,24 +40,32 @@ var ErrJobNotResident = errors.New("queue: job not resident")
 //
 // Reporting it rather than tolerating it is not optional: handing a
 // mismatched pair to JobProgress.recompute panics by design, and hydration
-// runs on background goroutines that carry no recover. Hydration used to
-// sidestep the question by rebuilding progress from whatever it read; now
-// that it preserves the live progress, the disagreement is visible.
+// runs on background goroutines that carry no recover.
 //
-// It had one ordinary cause until #294. DiscardDeferredPar2 rebuilt a smaller
-// manifest and progress in memory when on-demand par2 verification came back
-// clean, and never rewrote the .json.gz, so every discard left the file on
-// disk describing the pre-discard job. It now persists the rebuilt manifest
-// and job_files rows together.
+// No write path this process performs can produce the mismatch any more. It
+// had one ordinary cause until #294 — DiscardDeferredPar2 rebuilding a
+// smaller manifest without rewriting the blob — and one residual cause after
+// that, a torn Store.ReplaceManifest whose blob write and transaction could
+// not be made atomic. Both are gone: the file set is now immutable after Add,
+// which writes the blob before opening the transaction, so a crash between
+// them leaves an orphan manifest and no job row rather than a disagreeing
+// pair.
 //
-// What remains is a torn write. Store.ReplaceManifest writes a blob and
-// commits a transaction, and no ordering makes those two atomic across the
-// filesystem and SQLite — a crash between them leaves the same mismatch, now
-// bounded by one fsync plus one small transaction rather than arising on
-// every discard.
+// What this guard actually checks is manifest-versus-progress size
+// agreement — NumFiles/NumArticles against len(progress.files)/done.Len() —
+// so what it can detect is a truncated or damaged manifest blob. It cannot
+// detect job_files rows altered out of band: RestoreJobProgress fills
+// progress.files by file_index under a bounds check and never resizes it,
+// so rows deleted or renumbered outside this process pass this guard
+// silently and land per-article state on the wrong file's slot instead of
+// raising this error. Reporting the mismatches this can see is still worth
+// doing; the alternative is not "no error" but a panic on a goroutine with
+// no recover, which is strictly worse for the same underlying state.
 //
-// Distinct from ErrJobNotResident because it is not ordinary: the job's
-// persisted state is internally inconsistent and re-reading will not fix it.
+// The boot path (SQLiteStore.Get) carries no guard at all — it sizes
+// progress from the manifest it reads and fills it by file_index with no
+// describesSameJobAs check, so a manifest/job_files disagreement at startup
+// is undetected either way. What to do about that is #278, open.
 var ErrManifestStale = errors.New("queue: stored manifest does not match the job's progress")
 
 // Queue owns the ordered list of active jobs plus the notify channel
@@ -1102,14 +1110,18 @@ func (q *Queue) hydrateJobLocked(job *Job, id string) error {
 	// JobProgress is live and accurate, and rebuilding discarded whatever
 	// only memory knew — on-demand par2's deferral among it (#287). With a
 	// store this was masked, because RestoreJobProgress below re-read the
-	// deferred column; without one it was the original bug on the live job.
+	// fetch_policy column; without one it was the original bug on the live
+	// job.
 	//
 	// The same staleness hazard applies, so the same guard does. A manifest
-	// read from disk can predate a DiscardDeferredPar2 that shrank the
-	// in-memory pair, and pairing them panics inside recompute. Fail closed
-	// rather than crash: this path already fails closed for an unreadable
-	// manifest, and a manifest that contradicts the job is no more usable
-	// than one that will not parse.
+	// read from disk can predate a manifest write that has since gone
+	// missing or been truncated, and pairing a mismatched manifest/progress
+	// pair panics inside recompute. Fail closed rather than crash: this path
+	// already fails closed for an unreadable manifest, and a manifest that
+	// contradicts the job is no more usable than one that will not parse.
+	// DiscardDeferredPar2 no longer shrinks anything — a discard moves a
+	// file's fetch_policy in place and never touches the file set (see its
+	// doc comment) — so it is not a source of this mismatch any more.
 	if !priorProgress.describesSameJobAs(&m) {
 		hydrateErr := fmt.Errorf(
 			"%w: stored manifest for job %s describes %d files/%d articles but its progress holds %d/%d",
@@ -1362,11 +1374,11 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 		}
 		m := job.manifest
 		for fi := range m.NumFiles() {
-			// Deferred files (on-demand par2 recovery volumes) are held back.
-			// They already have Pending == 0 (set by recompute), so the
-			// next check skips them too; the explicit guard documents intent
-			// and protects against future counter drift.
-			if job.progress.files[fi].Complete || job.progress.files[fi].Pending == 0 || job.progress.files[fi].Deferred {
+			// Files that are not being fetched (on-demand par2 recovery
+			// volumes, held or discarded) already have Pending == 0 from
+			// recompute, so the next check skips them too; the explicit
+			// guard documents intent and protects against counter drift.
+			if job.progress.files[fi].Complete || job.progress.files[fi].Pending == 0 || job.progress.files[fi].Fetch != FetchAlways {
 				continue
 			}
 			lo, hi := m.FileRange(fi)
@@ -1830,175 +1842,63 @@ func (q *Queue) SetPar2ReleaseReason(jobID, reason string) error {
 	return nil
 }
 
-// DiscardDeferredPar2 removes all deferred par2 files from the job. Since
-// Manifest is immutable and shared by reference across snapshots, this
-// rebuilds a fresh Manifest (with recomputed TotalBytes, but Par2Bytes/
-// Par2Files carried over unchanged) and a re-indexed JobProgress cloned
-// from the old one, rather than editing either in place. A pure no-op
-// (no rebuild, no dirty flag) when there is nothing deferred to discard.
+// DiscardDeferredPar2 records that every recovery volume still awaiting the
+// CRC verdict will never be downloaded. The file set does not change: the
+// manifest entries and job_files rows stay exactly where they are, and only
+// the fetch policy moves.
+//
+// This used to rebuild the manifest without those files. Removing a non-final
+// file renumbers every file_index after it, and job_files rows are keyed by
+// that index, which is the root of #294, #308, #310, #315 and #317. The only
+// purpose removal ever served was accounting, and both derived size figures
+// already exclude a file that is not being fetched, so there is nothing left
+// for it to correct.
+//
+// No store write of its own. For a resident job the ordinary checkpoint
+// writes the new policy through updateTx like any other per-file state, and
+// the operation cannot partially apply. For a non-resident job it cannot:
+// updateTx gates its whole job_files loop on job.Manifest() succeeding, and
+// an evicted job has none, so a discard there stays in-memory-only on
+// JobProgress — the persisted job_files.fetch_policy for that job's rows is
+// unchanged.
+//
+// That mark is then lost, not merely deferred, the next time the job is
+// promoted: PromoteNext rebuilds JobProgress from scratch with
+// newJobProgress when job.manifest is nil (see queue.go's promotion loop),
+// discarding the in-memory FetchNever, and RestoreJobProgress then assigns
+// the stale FetchIfNeeded straight from the row. There is no
+// residency-independent per-file write path to make the mark survive
+// promotion; building one is out of scope here. This is bounded and
+// self-correcting rather than a data-loss bug: HasDeferredPar2 is true again
+// once the mark is lost, so maybeReleaseRecoveryVolumes re-runs the CRC pass
+// on the next completion event and re-discards. The cost is one redundant
+// verification pass — no re-download, no data loss.
+//
+// Progress tier, like SetPar2ReleaseReason immediately above: the fetch
+// policy lives on JobProgress, which is permanently resident, so this
+// neither needs the manifest nor can fail on residency. It used to require
+// the manifest (to walk and rebuild it) and so returned ErrJobNotResident
+// for a job whose manifest had been evicted for exceeding MaxActiveJobs —
+// silently leaving that job's recovery volumes FetchIfNeeded, forcing
+// maybeReleaseRecoveryVolumes to redo full CRC verification on every later
+// completion event instead of trusting a verdict it already reached.
 func (q *Queue) DiscardDeferredPar2(jobID string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	job, err := q.residentJob(jobID)
-	if err != nil {
-		return err
+	job, ok := q.byID[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, jobID)
 	}
 
-	m := job.manifest
-	var activeFiles []JobFile
-	var discardedBytes int64
-	for fi := range m.NumFiles() {
-		if job.progress.files[fi].Deferred {
-			discardedBytes += m.FileBytes(fi)
-			continue
+	changed := false
+	for fi := range len(job.progress.files) {
+		if job.progress.files[fi].Fetch == FetchIfNeeded {
+			job.progress.files[fi].Fetch = FetchNever
+			changed = true
 		}
-		lo, hi := m.FileRange(fi)
-		articles := make([]JobArticle, 0, hi-lo)
-		for i := lo; i < hi; i++ {
-			articles = append(articles, JobArticle{
-				ID:     m.ArticleID(i),
-				Bytes:  m.ArticleBytes(i),
-				Number: m.ArticleNumber(i),
-			})
-		}
-		activeFiles = append(activeFiles, JobFile{
-			Subject:        m.FileSubject(fi),
-			Date:           m.FileDate(fi),
-			Bytes:          m.FileBytes(fi),
-			Articles:       articles,
-			IsPar2Recovery: m.FileIsPar2Recovery(fi),
-		})
 	}
-
-	if discardedBytes > 0 {
-		// Manifest is shared by reference across every snapshot, so it
-		// cannot be filtered in place — build a fresh one instead. Every
-		// surviving article's global index shifts whenever a removed file
-		// preceded it, so JobProgress's flat arrays must be re-indexed to
-		// match, not merely recomputed.
-		newManifestVal := newManifest(activeFiles)
-		// Par2Bytes/Par2Files are carried over from the old manifest
-		// unchanged, not recomputed against the reduced file set — this
-		// deliberately leaves them stale, still counting the just-removed
-		// recovery volumes.
-		newManifestVal.par2Bytes = m.Par2Bytes()
-		newManifestVal.par2Files = m.Par2Files()
-
-		// Clone-and-adjust the old JobProgress rather than constructing
-		// fresh: a fresh newJobProgress(newManifestVal) would zero every
-		// job-level scalar (ServerStats, DownloadStarted/Finished, ...),
-		// silently discarding progress on a partially-downloaded job.
-		newProgress := job.progress.clone()
-		// bitset has no slice/append primitive (see bitset.go), so surviving
-		// articles are copied bit-by-bit into pre-sized bitsets via a running
-		// index, rather than the []bool append-of-range this replaces.
-		newDone := newBitset(newManifestVal.NumArticles())
-		newFailed := newBitset(newManifestVal.NumArticles())
-		newEmitted := newBitset(newManifestVal.NumArticles())
-		newFiles := make([]FileProgress, 0, newManifestVal.NumFiles())
-		idx := 0
-		for fi := range m.NumFiles() {
-			if job.progress.files[fi].Deferred {
-				continue
-			}
-			// A Deferred file's articles are never dispatched
-			// (ForEachUnfinishedArticle skips them), so they are always
-			// Done=false/Failed=false/Emitted=false at discard time —
-			// dropping them loses nothing.
-			lo, hi := m.FileRange(fi)
-			for i := lo; i < hi; i++ {
-				if job.progress.done.Get(i) {
-					newDone.Set(idx)
-				}
-				if job.progress.failed.Get(i) {
-					newFailed.Set(idx)
-				}
-				if job.progress.emitted.Get(i) {
-					newEmitted.Set(idx)
-				}
-				idx++
-			}
-			newFiles = append(newFiles, job.progress.files[fi])
-		}
-		// idx is expected to land exactly on newManifestVal.NumArticles():
-		// both loops above walk the identical Deferred predicate in the
-		// identical file order, so every surviving article should get
-		// exactly one slot. That equality is not self-enforcing, though —
-		// bitset.Set silently no-ops out of range (see bitset.go), so a
-		// future divergence between the two loops would corrupt done/
-		// failed/emitted by silently dropping or misplacing bits instead of
-		// failing loudly. Check it explicitly rather than trust it.
-		if idx != newManifestVal.NumArticles() {
-			panic(fmt.Sprintf("queue: DiscardDeferredPar2 copied %d articles but the rebuilt manifest has %d — the surviving-file walk and the manifest's Deferred filtering have diverged", idx, newManifestVal.NumArticles()))
-		}
-		newProgress.done = newDone
-		newProgress.failed = newFailed
-		newProgress.emitted = newEmitted
-		newProgress.files = newFiles
-		// RemainingBytes needs no fixup of its own: derivedRemainingBytes
-		// already excludes a Deferred file's bytes on every read, so
-		// discarding one changes nothing it ever counted.
-		//
-		// pendingArticles/articlesResolved/articlesFailed and each file's
-		// Pending/BytesDownloaded are already correct here (deferred files
-		// contribute nothing, so dropping them changes nothing these
-		// counters depend on), but recompute defensively rather than
-		// relying on that invariant staying true — every other bulk-state
-		// path (Add, Load, ClearAllEmitted, undeferRecoveryLocked) does the
-		// same.
-		newProgress.recompute(newManifestVal)
-
-		job.setResidency(newManifestVal, newProgress)
-		// The rebuilt manifest has fewer files/articles/bytes than the one
-		// the job's scalars were last synced from (the whole point of this
-		// discard) — par2Bytes/par2Files are carried over unchanged above,
-		// but totalBytes/numFiles/numArticles shrink, so the cached scalars
-		// must be re-synced or TotalBytes()/NumFiles()/NumArticles() would
-		// keep reporting the pre-discard totals forever.
-		job.setScalarsFromManifest(newManifestVal)
-		// Set before the store write, not after: the in-memory job has already
-		// changed at this point, so it is dirty whether or not persisting it
-		// succeeds.
+	if changed {
 		q.dirty.Store(true)
-
-		// Persist the rebuilt shape before releasing the lock (#294). Holding
-		// q.mu across the store write is the same trade Add makes and is
-		// justified the same way: the in-memory job and the persisted one must
-		// never be observable at different file sets. Releasing the lock first
-		// would open a window where a concurrent Snapshot reads the shrunk
-		// progress, hydrates the un-rewritten manifest, and gets ErrManifestStale
-		// — reintroducing the bug for as long as the window lasts.
-		//
-		// A failure here is reported rather than swallowed, and the in-memory
-		// rebuild above is deliberately left in place: it is correct, it is
-		// what every reader in this process will see, and rolling it back
-		// would re-defer volumes the caller has already verified as
-		// unnecessary.
-		//
-		// What that leaves behind is not benign, and an earlier version of
-		// this comment claimed it was — that a restart merely resurrects the
-		// volumes, no worse than the pre-#294 behaviour. It is worse: the
-		// rows still describe the pre-discard file set while the manifest
-		// describes the new one, and updateTx writes job_files by
-		// file_index, so every checkpoint tick would splice each surviving
-		// file's progress onto its pre-discard neighbour's row (#310).
-		//
-		// Flag the job instead. The flag is raised before the attempt, not
-		// after a failure, so a panic or a partially-applied write inside
-		// ReplaceManifest leaves it raised too — the states this guards
-		// against are exactly the ones where control does not come back
-		// here cleanly.
-		// Bump before the store write, so a rewrite already in flight for
-		// the previous file set cannot clear the flag this one is about to
-		// raise.
-		job.bumpFileSetGen()
-		if q.store != nil {
-			job.setManifestRowsStale(true)
-			if err := q.store.ReplaceManifest(context.Background(), job); err != nil { //lockio: the in-memory and persisted file sets must not diverge; see comment above
-				return fmt.Errorf("queue: persist discarded par2 for job %s: %w", jobID, err)
-			}
-			job.setManifestRowsStale(false)
-		}
 	}
 	return nil
 }
@@ -2014,10 +1914,10 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 func (q *Queue) undeferRecoveryLocked(job *Job, fileIdxs []int) bool {
 	changed := false
 	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= job.manifest.NumFiles() || !job.progress.files[fi].Deferred {
+		if fi < 0 || fi >= job.manifest.NumFiles() || job.progress.files[fi].Fetch != FetchIfNeeded {
 			continue
 		}
-		job.progress.files[fi].Deferred = false
+		job.progress.files[fi].Fetch = FetchAlways
 		changed = true
 	}
 	if changed {

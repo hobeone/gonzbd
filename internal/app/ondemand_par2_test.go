@@ -208,13 +208,25 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 			t.Error("maybeReleaseRecoveryVolumes must return false when verification is clean")
 		}
 
-		// Verify that the deferred PAR2 files are removed from the queue.
+		// Verify that the recovery volume is marked FetchNever rather than
+		// removed from the job: DiscardDeferredPar2 no longer changes the
+		// file set (see its doc comment in internal/queue/queue.go), so the
+		// recovery volume is still in the manifest, just no longer awaiting
+		// the CRC verdict.
 		snapAfter := q.SnapshotJob(jobID)
 		m := mustManifest(t, snapAfter)
+		sawRecovery := false
 		for fi := range m.NumFiles() {
-			if m.FileIsPar2Recovery(fi) {
-				t.Error("deferred par2 recovery files were not discarded from the job")
+			if !m.FileIsPar2Recovery(fi) {
+				continue
 			}
+			sawRecovery = true
+			if got := snapAfter.Progress().FileFetchPolicy(fi); got != queue.FetchNever {
+				t.Errorf("recovery file %d policy = %d, want FetchNever after a clean verification discarded it", fi, got)
+			}
+		}
+		if !sawRecovery {
+			t.Fatal("fixture guard: expected a par2 recovery file to still be present in the manifest")
 		}
 	})
 
@@ -252,7 +264,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		for fi := range m.NumFiles() {
 			if m.FileIsPar2Recovery(fi) {
 				found = true
-				if p.FileDeferred(fi) {
+				if p.FileFetchPolicy(fi) != queue.FetchAlways {
 					t.Error("deferred recovery volume was not undeferred")
 				}
 			}

@@ -31,11 +31,59 @@ type JobProgress struct {
 	par2ReleaseReason string
 }
 
+// FetchPolicy records whether the job intends to download a file. It
+// replaces a Deferred bool so that "held pending a verdict" and "proven
+// unnecessary" cannot both be true, and so that every read site has to say
+// which of the two it means.
+type FetchPolicy uint8
+
+const (
+	// FetchAlways is every content file, the par2 index, and any recovery
+	// volume the job has decided to fetch after all. It is the zero value
+	// because it is the ordinary case for every file in a job.
+	FetchAlways FetchPolicy = iota
+	// FetchIfNeeded is a par2 recovery volume held back until the CRC
+	// oracle rules on whether repair is needed.
+	FetchIfNeeded
+	// FetchNever is a recovery volume the oracle proved unnecessary. Its
+	// manifest entry and job_files row stay; only the intent changes.
+	FetchNever
+)
+
+// AllFetchPolicies lists every declared policy so a test can walk them and
+// assert that a switch over them handles each one rather than falling through
+// silently. Kept in declaration order.
+//
+// This enum is read through two predicates that mean different things —
+// `!= FetchAlways` for dispatch, completion and byte accounting, and
+// `== FetchIfNeeded` for HasDeferredPar2 and DeferredRecoveryIndices, which
+// gate CRC re-verification and whether a late failure may re-arm a volume. A
+// fourth value would need a decision at each of those sites, and the failure
+// mode of missing one is silence: a policy matching neither predicate is
+// excluded from every aggregate and invisible to the un-defer path, so its
+// file is never fetched and never blocks completion.
+//
+// It is hand-written, which on its own would make it a second copy of the
+// enum carrying the same defect: a value added to the const block but not
+// here is invisible to every loop over it, and every exhaustiveness test
+// built on it passes vacuously. TestAllFetchPolicies_Exhaustive closes that
+// loop by parsing the const block itself, the same way
+// postproc.AllQuickCheckOutcomes (#313) and constants.AllStatuses (#291) are
+// pinned.
+func AllFetchPolicies() []FetchPolicy {
+	return []FetchPolicy{
+		FetchAlways,
+		FetchIfNeeded,
+		FetchNever,
+	}
+}
+
 // FileProgress is one file's mutable assembly state.
 type FileProgress struct {
 	Complete bool
-	Deferred bool
-	Pending  int
+	// Fetch records whether this file will be downloaded. See FetchPolicy.
+	Fetch   FetchPolicy
+	Pending int
 	// Bytes is the file's NZB-claimed size. Carried on progress rather than
 	// read from the manifest so RemainingBytes derives from progress alone,
 	// at any residency. Written from the manifest when resident and from
@@ -124,12 +172,14 @@ func (p *JobProgress) FileComplete(fi int) bool {
 	return p.files[fi].Complete
 }
 
-// FileDeferred reports whether file fileIdx is currently held back from dispatch.
-func (p *JobProgress) FileDeferred(fi int) bool {
+// FileFetchPolicy reports whether file fi will be downloaded, and if not,
+// why. Out-of-range and nil receivers report FetchAlways, matching the
+// permissive convention of the accessors either side of it.
+func (p *JobProgress) FileFetchPolicy(fi int) FetchPolicy {
 	if p == nil || fi < 0 || fi >= len(p.files) {
-		return false
+		return FetchAlways
 	}
-	return p.files[fi].Deferred
+	return p.files[fi].Fetch
 }
 
 // FilePending returns the count of not-yet-resolved articles in file fileIdx.
@@ -242,10 +292,11 @@ func (p *JobProgress) RemainingBytes() int64 {
 // downloaded as expectedBytes - FailedBytes() - RemainingBytes(), an identity
 // that only closes under that meaning.
 //
-// Deferred files contribute nothing because their articles are never
-// dispatched, so a deferral or an un-deferral needs no adjustment anywhere —
-// the next read reflects it. That is the whole point of deriving rather than
-// maintaining.
+// Files the job is not fetching contribute nothing because their articles are
+// never dispatched — both FetchIfNeeded and FetchNever, since neither is being
+// downloaded. Holding, releasing or discarding a volume therefore needs no
+// adjustment anywhere; the next read reflects it. That is the whole point of
+// deriving rather than maintaining.
 //
 // O(files), and files number in the hundreds where articles number in the
 // tens of thousands. Called on reporting reads, not on the download path.
@@ -258,7 +309,8 @@ func (p *JobProgress) derivedRemainingBytes() int64 {
 // agree: what the job expects to fetch, and how much of it is left.
 //
 // One walk rather than two because the exclusion sets are not independent.
-// Both skip Deferred; only remaining also skips Complete, because a complete
+// Both skip anything the job is not fetching (Fetch != FetchAlways, so both
+// FetchIfNeeded and FetchNever); only remaining also skips Complete, because a complete
 // file has nothing left to fetch while still being part of what the job set
 // out to fetch. Computed apart, that relationship is a convention two
 // functions have to keep by hand — and a consumer pairing figures whose
@@ -275,7 +327,7 @@ func (p *JobProgress) sizeFigures() (expected, remaining int64) {
 	}
 	for fi := range p.files {
 		f := &p.files[fi]
-		if f.Deferred {
+		if f.Fetch != FetchAlways {
 			continue
 		}
 		expected += f.Bytes
@@ -361,25 +413,34 @@ func (p *JobProgress) Par2ReleaseReason() string {
 	return p.par2ReleaseReason
 }
 
-// HasDeferredPar2 reports whether any file is currently deferred.
+// HasDeferredPar2 reports whether any file is still held pending the CRC
+// verdict. Deliberately FetchIfNeeded only: a discarded volume is not held,
+// it is decided, and reporting it as held would re-run the full CRC
+// verification on every subsequent completion event.
 func (p *JobProgress) HasDeferredPar2() bool {
 	if p == nil {
 		return false
 	}
 	for i := range p.files {
-		if p.files[i].Deferred {
+		if p.files[i].Fetch == FetchIfNeeded {
 			return true
 		}
 	}
 	return false
 }
 
-// DeferredRecoveryIndices returns the file indices of all currently-deferred
-// par2 recovery volumes.
+// DeferredRecoveryIndices returns the file indices of recovery volumes still
+// held pending the verdict.
+//
+// FetchIfNeeded only, and that exclusion is load-bearing rather than tidy.
+// undeferRecoveryLocked walks this list on any first-time permanent article
+// failure while the job is not yet par2-recovered. If a discarded volume
+// appeared here, one late failure would re-activate exactly the volumes the
+// CRC oracle proved unnecessary — undoing on-demand par2 entirely.
 func (p *JobProgress) DeferredRecoveryIndices() []int {
 	var idxs []int
 	for i := range p.files {
-		if p.files[i].Deferred {
+		if p.files[i].Fetch == FetchIfNeeded {
 			idxs = append(idxs, i)
 		}
 	}
@@ -391,13 +452,17 @@ func (p *JobProgress) DeferredRecoveryIndices() []int {
 // freshly read Manifest has to satisfy, and recompute panics when it does
 // not hold.
 //
-// The two can genuinely disagree. DiscardDeferredPar2 rebuilds a smaller
-// manifest and progress in memory, and persists both through
-// Store.ReplaceManifest — a blob write plus a transaction that cannot be made
-// atomic together (see ErrManifestStale). A crash between them leaves the file
-// on disk describing the job as it was before the discard. Re-reading it and
-// pairing it with the surviving, smaller progress is not a recoverable state:
-// the manifest is simply not this job's any more.
+// This compares sizes only — NumFiles/NumArticles against
+// len(p.files)/p.done.Len() — so it detects a manifest blob whose shape
+// disagrees with progress, which used to happen through a torn
+// Store.ReplaceManifest write and now happens only through on-disk
+// corruption (the file set is immutable after Add, and ReplaceManifest is
+// gone). It does NOT detect job_files rows altered out of band:
+// SQLiteStore.RestoreJobProgress fills progress.files by file_index without
+// resizing it, so a row deleted or renumbered outside this process still
+// satisfies this size check and silently attaches its state to the wrong
+// file. See ErrManifestStale for the boot-path gap (#278), which this
+// guard does not cover either.
 func (p *JobProgress) describesSameJobAs(m *Manifest) bool {
 	if p == nil || m == nil {
 		return false
@@ -422,8 +487,8 @@ func (p *JobProgress) clone() *JobProgress {
 // pendingArticles/articlesResolved/articlesFailed/failedBytes counters from
 // the ground truth (done/failed/emitted flags), against m's file ranges.
 // Called after Add and Load, and after any bulk state change
-// (ClearAllEmitted, DiscardDeferredPar2, undeferRecoveryLocked) where
-// incremental tracking is impractical.
+// (ClearAllEmitted, undeferRecoveryLocked) where incremental tracking is
+// impractical.
 //
 // recompute is authoritative for the job-level failedBytes wherever a
 // manifest is resident: RestoreJobProgress replays per-article state
@@ -455,11 +520,12 @@ func (p *JobProgress) recompute(m *Manifest) {
 		lo, hi := m.FileRange(fi)
 		n := 0
 		var downloaded, fileFailed int64
-		// Deferred files (on-demand par2 recovery volumes) are not dispatched,
-		// so they contribute zero pending work.
-		deferred := p.files[fi].Deferred
+		// Files that are not being fetched (on-demand par2 recovery volumes,
+		// held or discarded) are never dispatched, so they contribute zero
+		// pending work.
+		fetching := p.files[fi].Fetch == FetchAlways
 		for i := lo; i < hi; i++ {
-			if !deferred && !p.done.Get(i) && !p.emitted.Get(i) {
+			if fetching && !p.done.Get(i) && !p.emitted.Get(i) {
 				n++
 			}
 			if p.done.Get(i) && !p.failed.Get(i) {
@@ -586,11 +652,11 @@ func (p *JobProgress) resetForReload(m *Manifest, i int) {
 // fileProgressJSON is one file's on-disk shape. Pending and BytesDownloaded
 // are excluded — derived state, recomputed by recompute() after load.
 type fileProgressJSON struct {
-	Complete       bool   `json:"complete,omitempty"`
-	Deferred       bool   `json:"deferred,omitempty"`
-	WriteCursor    int64  `json:"write_cursor,omitempty"`
-	Filename       string `json:"filename,omitempty"`
-	AssembledCRC32 uint32 `json:"assembled_crc32,omitempty"`
+	Complete       bool        `json:"complete,omitempty"`
+	Fetch          FetchPolicy `json:"fetch_policy,omitempty"`
+	WriteCursor    int64       `json:"write_cursor,omitempty"`
+	Filename       string      `json:"filename,omitempty"`
+	AssembledCRC32 uint32      `json:"assembled_crc32,omitempty"`
 }
 
 // jobProgressJSON is JobProgress's on-disk shape. emitted, pendingArticles,
@@ -618,7 +684,7 @@ func (p *JobProgress) MarshalJSON() ([]byte, error) {
 	for fi, f := range p.files {
 		files[fi] = fileProgressJSON{
 			Complete:       f.Complete,
-			Deferred:       f.Deferred,
+			Fetch:          f.Fetch,
 			WriteCursor:    f.WriteCursor,
 			Filename:       f.Filename,
 			AssembledCRC32: f.AssembledCRC32,
@@ -654,7 +720,7 @@ func (p *JobProgress) UnmarshalJSON(data []byte) error {
 	for fi, f := range pj.Files {
 		p.files[fi] = FileProgress{
 			Complete:       f.Complete,
-			Deferred:       f.Deferred,
+			Fetch:          f.Fetch,
 			WriteCursor:    f.WriteCursor,
 			Filename:       f.Filename,
 			AssembledCRC32: f.AssembledCRC32,

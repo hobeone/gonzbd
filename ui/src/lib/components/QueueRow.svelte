@@ -278,12 +278,13 @@
 		return Math.min(100, Math.round((f.bytes_downloaded / f.bytes) * 100));
 	}
 
-	function fileStateColor(state: string): string {
+	function fileStateClasses(state: string): string {
 		switch (state) {
 			case 'done': return 'text-emerald-600 dark:text-emerald-400';
 			case 'failed': return 'text-red-600 dark:text-red-400';
 			case 'downloading': return 'text-blue-600 dark:text-blue-400';
 			case 'held': return 'text-slate-500 dark:text-slate-400';
+			case 'skipped': return 'text-slate-500 dark:text-slate-400 italic';
 			default: return 'text-gray-500 dark:text-gray-400';
 		}
 	}
@@ -711,7 +712,7 @@
 												<span class="font-mono text-m3-on-surface-variant/80 w-9 text-right font-semibold">{filePct(f)}%</span>
 											</div>
 										</td>
-										<td class={cn('py-1.5 capitalize font-semibold text-xs', fileStateColor(f.state))}>{f.state}</td>
+										<td class={cn('py-1.5 capitalize font-semibold text-xs', fileStateClasses(f.state))}>{f.state}</td>
 									</tr>
 								{/each}
 							</tbody>

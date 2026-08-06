@@ -173,13 +173,11 @@ type Job struct {
 	progress    *JobProgress
 
 	// Manifest-derived scalars, set from the manifest at Add and again
-	// anywhere else a manifest is attached to or rebuilt on this Job (see
+	// anywhere else a manifest is attached to on this Job (see
 	// setScalarsFromManifest), so that reporting paths never need a
-	// resident manifest — see docs/queue-lifecycle.md. For the overwhelming
-	// majority of a job's life these values never change, since the
-	// manifest itself is immutable after parse; DiscardDeferredPar2 is the
-	// one exception, rebuilding the manifest to drop discarded recovery
-	// volumes, and re-syncs these fields when it does.
+	// resident manifest — see docs/queue-lifecycle.md. These values never
+	// change for the life of a job: the manifest is immutable after parse,
+	// and the file set it describes is immutable after Add.
 	//
 	// Guarded by residencyMu, not by q.mu. The getters below are exported
 	// and documented as never needing a resident manifest, which invites
@@ -194,55 +192,6 @@ type Job struct {
 	numArticles int
 	par2Bytes   int64
 	par2Files   int
-
-	// manifestRowsStale records that this job's persisted job_files rows no
-	// longer describe its in-memory manifest, so nothing may write them by
-	// file_index until a wholesale rewrite reconciles the two.
-	//
-	// One thing sets it: a DiscardDeferredPar2 whose Store.ReplaceManifest
-	// failed. The discard shrinks the file set in memory and is deliberately
-	// not rolled back, so the rows keep the pre-discard shape while the
-	// manifest has the new one — and dropping a non-final file renumbers
-	// every index after it, so row N now belongs to a different file than
-	// manifest entry N.
-	//
-	// SQLiteStore.updateTx writes job_files with UPDATE ... WHERE
-	// file_index = ?, taking each value from the live manifest and never
-	// touching the identity columns. Under that disagreement it splices one
-	// file's progress onto its pre-discard neighbour's row, silently, on
-	// every checkpoint tick until the process restarts (#310).
-	//
-	// Not persisted. That is a limitation, not a safety property: it holds
-	// only when the failure left both on-disk artifacts at the pre-discard
-	// shape, where they still agree with each other. ReplaceManifest writes
-	// the manifest blob before opening the transaction that rewrites
-	// job_files, and a crash in that window leaves the new blob beside the
-	// old rows with no in-memory flag to survive it. SQLiteStore.Get then
-	// sizes progress from the new manifest and fills it by file_index from
-	// the old rows, with no describesSameJobAs check — that guard runs on
-	// hydrateSnapshot and hydrateJobLocked, not the boot path — so the
-	// splice becomes permanent and undetected. The window predates this
-	// flag and is not closed by it; see #310's discussion and #278.
-	//
-	// Guarded by residencyMu, alongside fileSetGen.
-	manifestRowsStale bool
-
-	// fileSetGen counts the times this job's file set has been rebuilt.
-	// Only DiscardDeferredPar2 bumps it — nothing else changes which files a
-	// job has after Add.
-	//
-	// It exists so a rewrite that completed outside the queue lock can tell
-	// whether it still speaks for the job. Pointer identity on the manifest
-	// cannot: eviction sets the pointer to nil and rehydration installs a
-	// freshly deserialized *Manifest, so a job that merely churned through
-	// the active set would refuse every subsequent clear and leave
-	// manifestRowsStale raised for the rest of the process — freezing its
-	// per-file persistence. Eviction does not change a job's file set, so it
-	// must not invalidate a rewrite; a second discard does, and does bump
-	// this.
-	//
-	// Guarded by residencyMu.
-	fileSetGen uint64
 
 	// hydrateErr records why an attempt to load this job's manifest from
 	// disk failed, and is nil when no attempt failed. Guarded by
@@ -315,8 +264,7 @@ func (j *Job) setPar2ScalarsFromStore(par2Bytes int64, par2Files int) {
 // TotalBytes returns the job's total size in bytes. Total: never requires a
 // resident manifest. Safe to call without the queue lock — like
 // Manifest()/Progress(), it takes the job's own residency lock, so a
-// promotion or a DiscardDeferredPar2 manifest rebuild running concurrently
-// under q.mu cannot race it.
+// promotion or eviction running concurrently under q.mu cannot race it.
 func (j *Job) TotalBytes() int64 {
 	j.residencyMu.RLock()
 	defer j.residencyMu.RUnlock()
@@ -406,67 +354,6 @@ func (j *Job) Progress() *JobProgress {
 	j.residencyMu.RLock()
 	defer j.residencyMu.RUnlock()
 	return j.progress
-}
-
-// ManifestRowsStale reports whether this job's persisted job_files rows are
-// known not to describe its current manifest. See the field's doc comment.
-//
-// Exported so the store can consult a snapshot it was handed. A false here is
-// not proof the two agree — nothing verifies that — only that no failure this
-// process saw made them disagree.
-func (j *Job) ManifestRowsStale() bool {
-	j.residencyMu.RLock()
-	defer j.residencyMu.RUnlock()
-	return j.manifestRowsStale
-}
-
-// setManifestRowsStale records or clears the disagreement. Clearing it is a
-// claim that every job_files row for this job has just been rewritten from
-// the current manifest, which only Store.ReplaceManifest does.
-func (j *Job) setManifestRowsStale(stale bool) {
-	j.residencyMu.Lock()
-	defer j.residencyMu.Unlock()
-	j.manifestRowsStale = stale
-}
-
-// FileSetGen returns how many times this job's file set has been rebuilt.
-// Paired with clearManifestRowsStaleIfGen to make a rewrite that ran outside
-// the queue lock verifiable after the fact.
-func (j *Job) FileSetGen() uint64 {
-	j.residencyMu.RLock()
-	defer j.residencyMu.RUnlock()
-	return j.fileSetGen
-}
-
-// bumpFileSetGen records that j's file set has been rebuilt, invalidating any
-// in-flight rewrite of the previous one.
-func (j *Job) bumpFileSetGen() {
-	j.residencyMu.Lock()
-	defer j.residencyMu.Unlock()
-	j.fileSetGen++
-}
-
-// clearManifestRowsStaleIfGen clears the flag only while j's file set is
-// still the one whose rows were written — gen is the generation the writer
-// observed before starting.
-//
-// The check is what makes clearing safe from outside the queue lock. A
-// discard that rebuilt the file set since then raises the flag for its own
-// attempt and owns it from that point; a rewrite of the file set it replaced
-// must not answer for it.
-//
-// Deliberately not keyed on the manifest pointer, which was this check's
-// first form and was wrong: eviction nils the pointer and rehydration
-// installs a new one, so ordinary residency churn between the write and the
-// clear would refuse it forever. Eviction does not change a job's files.
-func (j *Job) clearManifestRowsStaleIfGen(gen uint64) bool {
-	j.residencyMu.Lock()
-	defer j.residencyMu.Unlock()
-	if j.fileSetGen != gen {
-		return false
-	}
-	j.manifestRowsStale = false
-	return true
 }
 
 // setResidency atomically swaps the manifest/progress pointer pair. Queue
@@ -813,7 +700,9 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 	job.progress = newJobProgress(job.manifest)
 	job.setScalarsFromManifest(job.manifest)
 	for fi, jf := range files {
-		job.progress.files[fi].Deferred = jf.Deferred
+		if jf.Deferred {
+			job.progress.files[fi].Fetch = FetchIfNeeded
+		}
 	}
 	return job, nil
 }
@@ -846,7 +735,7 @@ func (j *Job) IsComplete() bool {
 	// truth this was masked for a non-resident job, which had a nil manifest
 	// and so returned false for a different reason.
 	for i := range len(p.files) {
-		if p.FileDeferred(i) {
+		if p.FileFetchPolicy(i) != FetchAlways {
 			continue
 		}
 		if !p.FileComplete(i) {
@@ -863,6 +752,32 @@ func (j *Job) HasDeferredPar2() bool {
 		return false
 	}
 	return j.progress.HasDeferredPar2()
+}
+
+// UsesOnDemandPar2 reports whether any file is being withheld from download
+// under a non-default fetch policy — either awaiting the CRC verdict
+// (FetchIfNeeded) or already ruled unnecessary (FetchNever). It does not
+// itself check IsPar2Recovery: every production call site that ever moves a
+// file off FetchAlways does so only for a par2 recovery volume, so today the
+// two conditions coincide. If a non-recovery file is ever given a
+// non-default policy, this method — and the "par2 on-demand" badge it
+// drives — would need the explicit IsPar2Recovery check added back.
+//
+// Distinct from HasDeferredPar2, which is FetchIfNeeded only because it gates
+// re-verification. This drives the "par2 on-demand" badge, which describes
+// what the job is doing rather than what it is waiting on: reported as
+// HasDeferredPar2, the badge would disappear at the moment the feature
+// succeeds.
+func (j *Job) UsesOnDemandPar2() bool {
+	if j.progress == nil {
+		return false
+	}
+	for i := range j.progress.files {
+		if j.progress.files[i].Fetch != FetchAlways {
+			return true
+		}
+	}
+	return false
 }
 
 // DeferredRecoveryIndices returns the file indices of all currently-deferred
@@ -924,6 +839,15 @@ func (j *Job) ResetForRetry() {
 		}
 		if anyReset {
 			j.progress.files[fi].Complete = false
+		}
+		// A retry re-derives the par2 verdict rather than inheriting it. The
+		// clean verdict was computed against the contents this retry is about
+		// to change, so the volumes go back to awaiting a decision.
+		//
+		// Downgrade, not reset: FetchAlways would re-download every recovery
+		// volume the oracle already ruled unnecessary, which is #323.
+		if j.progress.files[fi].Fetch == FetchNever {
+			j.progress.files[fi].Fetch = FetchIfNeeded
 		}
 	}
 	j.progress.recompute(j.manifest)

@@ -1,6 +1,8 @@
 package queue
 
 import (
+	"bytes"
+	"log/slog"
 	"testing"
 
 	"github.com/hobeone/gonzbd/internal/constants"
@@ -208,6 +210,68 @@ func TestSnapshot_DoesNotHydrateNonResidentJobs(t *testing.T) {
 	}
 	if got.Progress() == nil {
 		t.Error("Progress is nil in a snapshot copy; reporting needs it and it is meant to be always resident")
+	}
+}
+
+// TestHydrateSnapshot_AttachesManifestAndProgress calls hydrateSnapshot
+// directly rather than through SnapshotJob, pinning the function's own
+// contract: given a freshly cloned, non-resident Job, it attaches the
+// on-disk manifest and leaves the clone's already-accurate JobProgress in
+// place rather than rebuilding it (see the function's doc comment on why
+// replacing it with a fresh newJobProgress was wrong — #287).
+func TestHydrateSnapshot_AttachesManifestAndProgress(t *testing.T) {
+	store, dir := setupResidencyTestStore(t)
+	q := New(WithStore(store), WithStateDir(dir), WithMaxActiveJobs(1))
+
+	// Fill the single active slot first so job below starts non-resident.
+	filler := makeMultiFileJob(t, "hydrate-direct-filler", 1, 1)
+	if err := q.Add(filler); err != nil {
+		t.Fatalf("Add filler: %v", err)
+	}
+	job := makeMultiFileJob(t, "hydrate-direct", 2, 2)
+	if err := q.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// A sentinel value written through the progress tier, which — unlike
+	// MarkArticlesDone — neither needs the manifest nor can fail on
+	// residency (see SetPar2ReleaseReason's doc comment). It marks the
+	// exact JobProgress object that must survive hydration unrebuilt.
+	if err := q.SetPar2ReleaseReason(job.ID, "sentinel"); err != nil {
+		t.Fatalf("SetPar2ReleaseReason: %v", err)
+	}
+	if err := q.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	q.mu.RLock()
+	live := q.byID[job.ID]
+	if live.manifest != nil {
+		q.mu.RUnlock()
+		t.Fatal("fixture guard: job is resident, hydrateSnapshot has nothing to load")
+	}
+	cp := cloneJob(live)
+	q.mu.RUnlock()
+	priorProgress := cp.progress
+	if priorProgress == nil {
+		t.Fatal("fixture guard: clone must carry the job's real progress, not nil")
+	}
+
+	var logBuf bytes.Buffer
+	hydrateSnapshot(slog.New(slog.NewTextHandler(&logBuf, nil)), dir, store, cp)
+
+	if !manifestResident(cp) {
+		t.Fatalf("hydrateSnapshot did not attach a manifest; log: %q", logBuf.String())
+	}
+	if cp.hydrateErr != nil {
+		t.Errorf("hydrateErr = %v, want nil on a clean hydration", cp.hydrateErr)
+	}
+	// The clone's own accurate progress must survive, not a freshly built
+	// one: rebuilding it would discard the sentinel set above (#287).
+	if cp.progress != priorProgress {
+		t.Error("hydrateSnapshot replaced the clone's progress instead of attaching the manifest to the one it already had")
+	}
+	if got := cp.progress.Par2ReleaseReason(); got != "sentinel" {
+		t.Errorf("Par2ReleaseReason = %q after hydration, want the sentinel to survive", got)
 	}
 }
 

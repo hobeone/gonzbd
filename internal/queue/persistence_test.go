@@ -618,8 +618,8 @@ func TestPersistenceRoundTrip_AccessorParity(t *testing.T) {
 		if lp.FileComplete(fi) != p.FileComplete(fi) {
 			t.Errorf("file %d Complete = %v, want %v", fi, lp.FileComplete(fi), p.FileComplete(fi))
 		}
-		if lp.FileDeferred(fi) != p.FileDeferred(fi) {
-			t.Errorf("file %d Deferred = %v, want %v", fi, lp.FileDeferred(fi), p.FileDeferred(fi))
+		if lp.FileFetchPolicy(fi) != p.FileFetchPolicy(fi) {
+			t.Errorf("file %d FetchPolicy = %v, want %v", fi, lp.FileFetchPolicy(fi), p.FileFetchPolicy(fi))
 		}
 	}
 	if lm.NumArticles() != m.NumArticles() {

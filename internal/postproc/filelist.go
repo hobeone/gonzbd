@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/humanfmt"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // buildDownloadFileList creates the lines for the synthetic "download"
@@ -39,7 +40,7 @@ func buildDownloadFileList(job *Job) []string {
 			continue
 		}
 		recoveryVols++
-		if p.FileDeferred(fi) {
+		if p.FileFetchPolicy(fi) != queue.FetchAlways {
 			heldVols++
 			heldBytes += m.FileBytes(fi)
 		}
@@ -71,7 +72,11 @@ func buildDownloadFileList(job *Job) []string {
 
 	switch {
 	case heldVols > 0:
-		// Still deferred at finalize => never downloaded => verified clean.
+		// Still withheld at finalize => never downloaded => verified clean.
+		// On the clean path these are FetchNever by now, the verdict having
+		// landed; a job finalized before the verdict leaves them
+		// FetchIfNeeded. Either way the bytes were not fetched, which is
+		// what this line reports, so heldVols counts both.
 		lines = append(lines, fmt.Sprintf("✓ Par2: verified clean from index — %d recovery volume(s) skipped (saved %s)",
 			heldVols, humanfmt.BytesSI(heldBytes)))
 	case recoveryVols > 0 && p.Par2Recovered():
@@ -178,7 +183,7 @@ func buildFileCompletionLines(job *Job) []string {
 		if fn := p.FileFilename(fi); fn != "" {
 			name = fn
 		}
-		if p.FileDeferred(fi) {
+		if p.FileFetchPolicy(fi) != queue.FetchAlways {
 			fileLines = append(fileLines, fmt.Sprintf("  - %s — not downloaded", name))
 			continue
 		}

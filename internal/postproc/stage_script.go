@@ -135,20 +135,28 @@ func (s *ScriptStage) Run(ctx context.Context, job *Job) error {
 	logf(ctx, log, job, slog.LevelInfo, "Running: %s", scriptPath)
 
 	in := ScriptInput{
-		FinalDir:      job.DownloadDir,
-		CompleteDir:   s.CompleteDir,
-		NZBName:       job.Queue.Filename,
-		JobName:       job.Queue.Name,
-		Category:      job.Queue.Category,
-		Status:        status,
-		PPFlags:       job.Queue.PP,
-		ScriptName:    name,
-		NZOID:         job.Queue.ID,
-		URL:           job.Queue.URL,
-		Version:       s.Version,
-		APIKey:        s.APIKey,
-		APIURL:        s.APIURL,
-		Bytes:         job.Queue.TotalBytes(),
+		FinalDir:    job.DownloadDir,
+		CompleteDir: s.CompleteDir,
+		NZBName:     job.Queue.Filename,
+		JobName:     job.Queue.Name,
+		Category:    job.Queue.Category,
+		Status:      status,
+		PPFlags:     job.Queue.PP,
+		ScriptName:  name,
+		NZOID:       job.Queue.ID,
+		URL:         job.Queue.URL,
+		Version:     s.Version,
+		APIKey:      s.APIKey,
+		APIURL:      s.APIURL,
+		// ExpectedBytes, not TotalBytes(): TotalBytes() is the immutable
+		// whole-manifest total and still includes a discarded (FetchNever)
+		// or still-deferred (FetchIfNeeded) recovery volume that will never
+		// reach disk. ExpectedBytes excludes both, matching what
+		// buildHistoryEntry reports for the same job (see
+		// internal/app/history_helper.go) — a script reading SAB_BYTES for
+		// an on-demand-par2 job that verified clean must see what was
+		// actually fetched, not the pre-discard total.
+		Bytes:         job.Queue.Progress().ExpectedBytes(),
 		RedactSecrets: s.redactSecrets.Load(),
 		OnLine: func(line string) {
 			if job.OnOutput != nil {

@@ -8,7 +8,7 @@ import (
 
 // FileMeta is the per-file shape Load needs to size a non-resident job's
 // progress without a manifest. It carries everything RemainingBytes reads
-// — Bytes, BytesDownloaded, FailedBytes, Complete, and Deferred — alongside
+// — Bytes, BytesDownloaded, FailedBytes, Complete, and Fetch — alongside
 // the article count for the bitsets, so a job reports the same remaining
 // figure whether it is reconstructed resident (via the manifest) or
 // non-resident (via this type).
@@ -22,7 +22,9 @@ type FileMeta struct {
 	// carried explicitly rather than recomputed from article bitmaps.
 	FailedBytes int64
 	Complete    bool
-	Deferred    bool
+	// Fetch is the file's download intent, restored from
+	// job_files.fetch_policy. See FetchPolicy.
+	Fetch FetchPolicy
 }
 
 // Store defines the persistence and ordering interface for active download queue jobs.
@@ -46,28 +48,6 @@ type Store interface {
 
 	// Remove deletes an active job and its child job_files records.
 	Remove(ctx context.Context, id string) error
-
-	// ReplaceManifest rewrites job's stored manifest and replaces its
-	// job_files rows to match the new file set. It requires job to be
-	// resident, since the manifest being written is the one it holds.
-	//
-	// The two writes are one operation on purpose. Doing either alone is
-	// what #294 was: the manifest and the rows must always describe the
-	// same file set, and dropping a file renumbers every file_index after
-	// it, so both have to move together.
-	//
-	// Two callers, with different synchronization. DiscardDeferredPar2 — the
-	// one mutation that changes a job's files after Add — calls it under
-	// q.mu, so the in-memory and persisted file sets are never observable
-	// apart. Queue.reconcileJobFiles calls it outside q.mu on a
-	// snapshot, to reconcile a job the first call left unpersisted (#310);
-	// it accepts a wider window because there is already a disagreement to
-	// close rather than one to prevent.
-	//
-	// The two cannot race on one job: DiscardDeferredPar2 self-gates on
-	// having deferred files to discard, which is false once the first call
-	// has stripped them.
-	ReplaceManifest(ctx context.Context, job *Job) error
 
 	// MoveToHistory atomically inserts an entry into the history store and deletes
 	// the active job and its job_files within a single database transaction.
@@ -103,8 +83,8 @@ type Store interface {
 	RestoreRetryProgress(ctx context.Context, job *Job) (bool, error)
 
 	// ArticleCountsByJob returns every job's per-file FileMeta — article
-	// count, byte size, bytes already downloaded, failed bytes, and
-	// whether the file is complete or deferred — in a single grouped
+	// count, byte size, bytes already downloaded, failed bytes, whether
+	// the file is complete, and its FetchPolicy — in a single grouped
 	// query, indexed by file_index within each job. Used by Load to size
 	// a non-resident job's JobProgress without reading its manifest.
 	ArticleCountsByJob(ctx context.Context) (map[string][]FileMeta, error)

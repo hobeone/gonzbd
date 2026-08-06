@@ -37,76 +37,6 @@ func (q *Queue) Save(dir string) error {
 	return nil
 }
 
-// reconcileJobFiles prepares snapshots for the job_files half of UpdateBatch.
-// It does two things, both keyed on the same reading of Job.fileSetGen, and
-// both about the fact that a snapshot's file_index values only address the
-// stored rows while the job still has the file set the clone was taken from.
-//
-//  1. A snapshot the live job has outrun — its file set rebuilt by a discard
-//     since the clone — is marked stale so updateTx skips its job_files half.
-//     saveStore clones under q.mu.RLock and releases before writing, so a
-//     discard landing in that window renumbers the rows the snapshot is about
-//     to write by their old indices. manifestRowsStale cannot catch this on
-//     its own: on the discard's success path the flag is lowered again, and
-//     the snapshot predates its ever being raised.
-//
-//  2. A snapshot still describing the job's current file set, but flagged
-//     because its discard could not persist, gets the wholesale rewrite
-//     retried. Without that the rows would stay frozen for the life of the
-//     process, since updateTx skips them while the flag is raised.
-//
-// Runs on the snapshots, outside q.mu, so a slow rewrite does not hold the
-// lock the dispatcher contends on. Writing a snapshot is safe for the reason
-// UpdateBatch already relies on: it is a point-in-time clone taken under the
-// read lock, so it is internally consistent even if the live job has moved on.
-//
-// Clearing the live flag is the part that needs care, and
-// clearManifestRowsStaleIfGen handles it: it clears only while the job's file
-// set is still the one whose rows were written. A discard that rebuilt it
-// between the clone and now raises the flag for its own attempt and owns it
-// from that point.
-//
-// Best effort. A failure leaves the flag raised and the next checkpoint tries
-// again, which is the whole point of recording it rather than acting once.
-func (q *Queue) reconcileJobFiles(ctx context.Context, snapshots []*Job) {
-	for _, snap := range snapshots {
-		gen := snap.FileSetGen()
-		q.mu.RLock()
-		live, ok := q.byID[snap.ID]
-		q.mu.RUnlock()
-
-		if ok && live.FileSetGen() != gen {
-			// Case 1. Nothing to write from: this snapshot describes a file
-			// set the job no longer has. The next checkpoint clones afresh.
-			snap.setManifestRowsStale(true)
-			q.log.Debug("skipping job_files update: the job's file set changed after this snapshot was taken",
-				"job_id", snap.ID)
-			continue
-		}
-		if !snap.ManifestRowsStale() {
-			continue
-		}
-		// Case 2.
-		if _, mErr := snap.Manifest(); mErr != nil {
-			// Non-resident, so there is no manifest to write the rows from.
-			// Leave it flagged: the rows stay untouched rather than being
-			// written from a file set this process cannot see.
-			q.log.Warn("cannot reconcile job_files: the job is not resident",
-				"job_id", snap.ID, "err", mErr)
-			continue
-		}
-		if err := q.store.ReplaceManifest(ctx, snap); err != nil {
-			q.log.Warn("could not reconcile job_files with the job's manifest; per-file state stays frozen until this succeeds",
-				"job_id", snap.ID, "err", err)
-			continue
-		}
-		snap.setManifestRowsStale(false)
-		if ok && live.clearManifestRowsStaleIfGen(gen) {
-			q.log.Info("job_files reconciled with the job's manifest", "job_id", snap.ID)
-		}
-	}
-}
-
 func (q *Queue) saveStore(_ string) error {
 	q.mu.RLock()
 	snapshots := make([]*Job, 0, len(q.jobs))
@@ -118,11 +48,6 @@ func (q *Queue) saveStore(_ string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	// Before the ordinary per-job update, settle which snapshots may write
-	// job_files by index at all, and retry the wholesale rewrite for any job
-	// whose rows a failed discard left behind (#310).
-	q.reconcileJobFiles(ctx, snapshots)
 
 	// Persist the jobs before the paused flag: the jobs are the data worth
 	// saving, so a failure to write one bool must not cost us the whole
@@ -168,13 +93,13 @@ func (q *Queue) saveStore(_ string) error {
 // manifest. That restoration already happens whenever the job is promoted
 // back to resident.
 //
-// Per-file Bytes/BytesDownloaded/FailedBytes/Complete/Deferred are carried so
+// Per-file Bytes/BytesDownloaded/FailedBytes/Complete/Fetch are carried so
 // RemainingBytes (see derivedRemainingBytes) derives correctly for a job at
 // any residency, including a job that restarted non-resident. They replace
 // the pre-summed figure this used to take from Store.RemainingBytesByJob.
 //
 // failedBytes is summed here, over every file including Complete and
-// Deferred ones, because FailedBytes reporting depends on it before the job
+// held/discarded ones, because FailedBytes reporting depends on it before the job
 // is ever promoted back to resident: a restarted non-resident job with
 // permanently failed articles would otherwise silently report zero failed
 // bytes until promotion. This closes the residency drift where the same job
@@ -206,7 +131,7 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		p.files[fi].BytesDownloaded = f.BytesDownloaded
 		p.files[fi].FailedBytes = f.FailedBytes
 		p.files[fi].Complete = f.Complete
-		p.files[fi].Deferred = f.Deferred
+		p.files[fi].Fetch = f.Fetch
 		p.files[fi].Bytes = f.Bytes
 	}
 	return p
