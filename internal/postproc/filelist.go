@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hobeone/gonzbd/internal/humanfmt"
+	"github.com/hobeone/gonzbd/internal/queue"
 )
 
 // buildDownloadFileList creates the lines for the synthetic "download"
@@ -39,7 +40,7 @@ func buildDownloadFileList(job *Job) []string {
 			continue
 		}
 		recoveryVols++
-		if p.FileDeferred(fi) {
+		if p.FileFetchPolicy(fi) != queue.FetchAlways {
 			heldVols++
 			heldBytes += m.FileBytes(fi)
 		}
@@ -178,7 +179,7 @@ func buildFileCompletionLines(job *Job) []string {
 		if fn := p.FileFilename(fi); fn != "" {
 			name = fn
 		}
-		if p.FileDeferred(fi) {
+		if p.FileFetchPolicy(fi) != queue.FetchAlways {
 			fileLines = append(fileLines, fmt.Sprintf("  - %s — not downloaded", name))
 			continue
 		}

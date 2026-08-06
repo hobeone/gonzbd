@@ -96,7 +96,7 @@ func TestRestoreRetryProgress_RestoresCompleteAndDeferredFiles(t *testing.T) {
 	if err := q.MarkFileComplete(job.ID, 0); err != nil {
 		t.Fatalf("MarkFileComplete: %v", err)
 	}
-	job.progress.files[1].Deferred = true
+	job.progress.files[1].Fetch = FetchIfNeeded
 	job.progress.files[0].Filename = "assembled.bin"
 	if err := q.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -123,7 +123,7 @@ func TestRestoreRetryProgress_RestoresCompleteAndDeferredFiles(t *testing.T) {
 	if !p.ArticleDone(0) || !p.ArticleDone(1) {
 		t.Error("a complete file's articles should all come back done")
 	}
-	if !p.FileDeferred(1) {
+	if p.FileFetchPolicy(1) != FetchIfNeeded {
 		t.Error("file 1 lost its Deferred flag; on-demand par2 would fetch it anyway")
 	}
 	if p.FileFilename(0) != "assembled.bin" {

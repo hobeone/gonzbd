@@ -36,10 +36,10 @@ func TestNewJob_OnDemandPar2Classification(t *testing.T) {
 		if !m.FileIsPar2Recovery(2) {
 			t.Error("recovery volume not classified as IsPar2Recovery")
 		}
-		if p.FileDeferred(0) || p.FileDeferred(1) {
+		if p.FileFetchPolicy(0) != FetchAlways || p.FileFetchPolicy(1) != FetchAlways {
 			t.Error("content/index must not be deferred")
 		}
-		if !p.FileDeferred(2) {
+		if p.FileFetchPolicy(2) != FetchIfNeeded {
 			t.Error("recovery volume should be deferred when OnDemandPar2 is on")
 		}
 	})
@@ -53,7 +53,7 @@ func TestNewJob_OnDemandPar2Classification(t *testing.T) {
 		if !m.FileIsPar2Recovery(2) {
 			t.Error("recovery volume should still be classified when feature off")
 		}
-		if p.FileDeferred(2) {
+		if p.FileFetchPolicy(2) != FetchAlways {
 			t.Error("recovery volume must not be deferred when OnDemandPar2 is off")
 		}
 	})

@@ -22,7 +22,7 @@ type storedFile struct {
 func readJobFiles(t *testing.T, db *sql.DB, jobID string) []storedFile {
 	t.Helper()
 	rows, err := db.QueryContext(t.Context(),
-		`SELECT file_index, subject, is_par2_recovery, complete, deferred, COALESCE(articles_done, '')
+		`SELECT file_index, subject, is_par2_recovery, complete, fetch_policy, COALESCE(articles_done, '')
 		 FROM job_files WHERE job_id = ? ORDER BY file_index`, jobID)
 	if err != nil {
 		t.Fatalf("query job_files: %v", err)
@@ -32,11 +32,11 @@ func readJobFiles(t *testing.T, db *sql.DB, jobID string) []storedFile {
 	var out []storedFile
 	for rows.Next() {
 		var f storedFile
-		var isPar2, complete, deferred int
-		if err := rows.Scan(&f.idx, &f.subject, &isPar2, &complete, &deferred, &f.articlesDone); err != nil {
+		var isPar2, complete, fetch int
+		if err := rows.Scan(&f.idx, &f.subject, &isPar2, &complete, &fetch, &f.articlesDone); err != nil {
 			t.Fatalf("scan job_files: %v", err)
 		}
-		f.isPar2, f.complete, f.deferred = isPar2 == 1, complete == 1, deferred == 1
+		f.isPar2, f.complete, f.deferred = isPar2 == 1, complete == 1, FetchPolicy(fetch) != FetchAlways
 		out = append(out, f)
 	}
 	if err := rows.Err(); err != nil {

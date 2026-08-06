@@ -1362,11 +1362,11 @@ func (q *Queue) ForEachUnfinishedArticle(fn func(UnfinishedArticle) bool) {
 		}
 		m := job.manifest
 		for fi := range m.NumFiles() {
-			// Deferred files (on-demand par2 recovery volumes) are held back.
-			// They already have Pending == 0 (set by recompute), so the
-			// next check skips them too; the explicit guard documents intent
-			// and protects against future counter drift.
-			if job.progress.files[fi].Complete || job.progress.files[fi].Pending == 0 || job.progress.files[fi].Deferred {
+			// Files that are not being fetched (on-demand par2 recovery
+			// volumes, held or discarded) already have Pending == 0 from
+			// recompute, so the next check skips them too; the explicit
+			// guard documents intent and protects against counter drift.
+			if job.progress.files[fi].Complete || job.progress.files[fi].Pending == 0 || job.progress.files[fi].Fetch != FetchAlways {
 				continue
 			}
 			lo, hi := m.FileRange(fi)
@@ -1848,7 +1848,12 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 	var activeFiles []JobFile
 	var discardedBytes int64
 	for fi := range m.NumFiles() {
-		if job.progress.files[fi].Deferred {
+		// FetchIfNeeded only, matching the other policy-specific guards
+		// (HasDeferredPar2, DeferredRecoveryIndices, undeferRecoveryLocked):
+		// this discards volumes still awaiting the CRC verdict. A FetchNever
+		// volume is already decided and is Task 2's concern (marking rather
+		// than rebuilding), not this one's.
+		if job.progress.files[fi].Fetch == FetchIfNeeded {
 			discardedBytes += m.FileBytes(fi)
 			continue
 		}
@@ -1898,7 +1903,7 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 		newFiles := make([]FileProgress, 0, newManifestVal.NumFiles())
 		idx := 0
 		for fi := range m.NumFiles() {
-			if job.progress.files[fi].Deferred {
+			if job.progress.files[fi].Fetch == FetchIfNeeded {
 				continue
 			}
 			// A Deferred file's articles are never dispatched
@@ -2014,10 +2019,10 @@ func (q *Queue) DiscardDeferredPar2(jobID string) error {
 func (q *Queue) undeferRecoveryLocked(job *Job, fileIdxs []int) bool {
 	changed := false
 	for _, fi := range fileIdxs {
-		if fi < 0 || fi >= job.manifest.NumFiles() || !job.progress.files[fi].Deferred {
+		if fi < 0 || fi >= job.manifest.NumFiles() || job.progress.files[fi].Fetch != FetchIfNeeded {
 			continue
 		}
-		job.progress.files[fi].Deferred = false
+		job.progress.files[fi].Fetch = FetchAlways
 		changed = true
 	}
 	if changed {

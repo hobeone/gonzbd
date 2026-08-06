@@ -813,7 +813,9 @@ func NewJob(parsed *nzb.NZB, opts AddOptions, sOpts fsutil.SanitizeOptions) (*Jo
 	job.progress = newJobProgress(job.manifest)
 	job.setScalarsFromManifest(job.manifest)
 	for fi, jf := range files {
-		job.progress.files[fi].Deferred = jf.Deferred
+		if jf.Deferred {
+			job.progress.files[fi].Fetch = FetchIfNeeded
+		}
 	}
 	return job, nil
 }
@@ -846,7 +848,7 @@ func (j *Job) IsComplete() bool {
 	// truth this was masked for a non-resident job, which had a nil manifest
 	// and so returned false for a different reason.
 	for i := range len(p.files) {
-		if p.FileDeferred(i) {
+		if p.FileFetchPolicy(i) != FetchAlways {
 			continue
 		}
 		if !p.FileComplete(i) {

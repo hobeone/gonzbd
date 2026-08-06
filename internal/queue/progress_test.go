@@ -86,7 +86,7 @@ func TestJobProgress_ExportedReadersAreNilSafe(t *testing.T) {
 		"ArticleFailed":       func() { _ = p.ArticleFailed(0) },
 		"ArticleEmitted":      func() { _ = p.ArticleEmitted(0) },
 		"FileComplete":        func() { _ = p.FileComplete(0) },
-		"FileDeferred":        func() { _ = p.FileDeferred(0) },
+		"FileFetchPolicy":     func() { _ = p.FileFetchPolicy(0) },
 		"FilePending":         func() { _ = p.FilePending(0) },
 		"FileBytesDownloaded": func() { _ = p.FileBytesDownloaded(0) },
 		"FileFailedBytes":     func() { _ = p.FileFailedBytes(0) },

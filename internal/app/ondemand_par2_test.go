@@ -252,7 +252,7 @@ func TestMaybeReleaseRecoveryVolumes(t *testing.T) {
 		for fi := range m.NumFiles() {
 			if m.FileIsPar2Recovery(fi) {
 				found = true
-				if p.FileDeferred(fi) {
+				if p.FileFetchPolicy(fi) != queue.FetchAlways {
 					t.Error("deferred recovery volume was not undeferred")
 				}
 			}

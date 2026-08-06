@@ -31,11 +31,31 @@ type JobProgress struct {
 	par2ReleaseReason string
 }
 
+// FetchPolicy records whether the job intends to download a file. It
+// replaces a Deferred bool so that "held pending a verdict" and "proven
+// unnecessary" cannot both be true, and so that every read site has to say
+// which of the two it means.
+type FetchPolicy uint8
+
+const (
+	// FetchAlways is every content file, the par2 index, and any recovery
+	// volume the job has decided to fetch after all. It is the zero value
+	// because it is the ordinary case for every file in a job.
+	FetchAlways FetchPolicy = iota
+	// FetchIfNeeded is a par2 recovery volume held back until the CRC
+	// oracle rules on whether repair is needed.
+	FetchIfNeeded
+	// FetchNever is a recovery volume the oracle proved unnecessary. Its
+	// manifest entry and job_files row stay; only the intent changes.
+	FetchNever
+)
+
 // FileProgress is one file's mutable assembly state.
 type FileProgress struct {
 	Complete bool
-	Deferred bool
-	Pending  int
+	// Fetch records whether this file will be downloaded. See FetchPolicy.
+	Fetch   FetchPolicy
+	Pending int
 	// Bytes is the file's NZB-claimed size. Carried on progress rather than
 	// read from the manifest so RemainingBytes derives from progress alone,
 	// at any residency. Written from the manifest when resident and from
@@ -124,12 +144,14 @@ func (p *JobProgress) FileComplete(fi int) bool {
 	return p.files[fi].Complete
 }
 
-// FileDeferred reports whether file fileIdx is currently held back from dispatch.
-func (p *JobProgress) FileDeferred(fi int) bool {
+// FileFetchPolicy reports whether file fi will be downloaded, and if not,
+// why. Out-of-range and nil receivers report FetchAlways, matching the
+// permissive convention of the accessors either side of it.
+func (p *JobProgress) FileFetchPolicy(fi int) FetchPolicy {
 	if p == nil || fi < 0 || fi >= len(p.files) {
-		return false
+		return FetchAlways
 	}
-	return p.files[fi].Deferred
+	return p.files[fi].Fetch
 }
 
 // FilePending returns the count of not-yet-resolved articles in file fileIdx.
@@ -275,7 +297,7 @@ func (p *JobProgress) sizeFigures() (expected, remaining int64) {
 	}
 	for fi := range p.files {
 		f := &p.files[fi]
-		if f.Deferred {
+		if f.Fetch != FetchAlways {
 			continue
 		}
 		expected += f.Bytes
@@ -361,25 +383,34 @@ func (p *JobProgress) Par2ReleaseReason() string {
 	return p.par2ReleaseReason
 }
 
-// HasDeferredPar2 reports whether any file is currently deferred.
+// HasDeferredPar2 reports whether any file is still held pending the CRC
+// verdict. Deliberately FetchIfNeeded only: a discarded volume is not held,
+// it is decided, and reporting it as held would re-run the full CRC
+// verification on every subsequent completion event.
 func (p *JobProgress) HasDeferredPar2() bool {
 	if p == nil {
 		return false
 	}
 	for i := range p.files {
-		if p.files[i].Deferred {
+		if p.files[i].Fetch == FetchIfNeeded {
 			return true
 		}
 	}
 	return false
 }
 
-// DeferredRecoveryIndices returns the file indices of all currently-deferred
-// par2 recovery volumes.
+// DeferredRecoveryIndices returns the file indices of recovery volumes still
+// held pending the verdict.
+//
+// FetchIfNeeded only, and that exclusion is load-bearing rather than tidy.
+// undeferRecoveryLocked walks this list on any first-time permanent article
+// failure while the job is not yet par2-recovered. If a discarded volume
+// appeared here, one late failure would re-activate exactly the volumes the
+// CRC oracle proved unnecessary — undoing on-demand par2 entirely.
 func (p *JobProgress) DeferredRecoveryIndices() []int {
 	var idxs []int
 	for i := range p.files {
-		if p.files[i].Deferred {
+		if p.files[i].Fetch == FetchIfNeeded {
 			idxs = append(idxs, i)
 		}
 	}
@@ -455,11 +486,12 @@ func (p *JobProgress) recompute(m *Manifest) {
 		lo, hi := m.FileRange(fi)
 		n := 0
 		var downloaded, fileFailed int64
-		// Deferred files (on-demand par2 recovery volumes) are not dispatched,
-		// so they contribute zero pending work.
-		deferred := p.files[fi].Deferred
+		// Files that are not being fetched (on-demand par2 recovery volumes,
+		// held or discarded) are never dispatched, so they contribute zero
+		// pending work.
+		fetching := p.files[fi].Fetch == FetchAlways
 		for i := lo; i < hi; i++ {
-			if !deferred && !p.done.Get(i) && !p.emitted.Get(i) {
+			if fetching && !p.done.Get(i) && !p.emitted.Get(i) {
 				n++
 			}
 			if p.done.Get(i) && !p.failed.Get(i) {
@@ -586,11 +618,11 @@ func (p *JobProgress) resetForReload(m *Manifest, i int) {
 // fileProgressJSON is one file's on-disk shape. Pending and BytesDownloaded
 // are excluded — derived state, recomputed by recompute() after load.
 type fileProgressJSON struct {
-	Complete       bool   `json:"complete,omitempty"`
-	Deferred       bool   `json:"deferred,omitempty"`
-	WriteCursor    int64  `json:"write_cursor,omitempty"`
-	Filename       string `json:"filename,omitempty"`
-	AssembledCRC32 uint32 `json:"assembled_crc32,omitempty"`
+	Complete       bool        `json:"complete,omitempty"`
+	Fetch          FetchPolicy `json:"fetch_policy,omitempty"`
+	WriteCursor    int64       `json:"write_cursor,omitempty"`
+	Filename       string      `json:"filename,omitempty"`
+	AssembledCRC32 uint32      `json:"assembled_crc32,omitempty"`
 }
 
 // jobProgressJSON is JobProgress's on-disk shape. emitted, pendingArticles,
@@ -618,7 +650,7 @@ func (p *JobProgress) MarshalJSON() ([]byte, error) {
 	for fi, f := range p.files {
 		files[fi] = fileProgressJSON{
 			Complete:       f.Complete,
-			Deferred:       f.Deferred,
+			Fetch:          f.Fetch,
 			WriteCursor:    f.WriteCursor,
 			Filename:       f.Filename,
 			AssembledCRC32: f.AssembledCRC32,
@@ -654,7 +686,7 @@ func (p *JobProgress) UnmarshalJSON(data []byte) error {
 	for fi, f := range pj.Files {
 		p.files[fi] = FileProgress{
 			Complete:       f.Complete,
-			Deferred:       f.Deferred,
+			Fetch:          f.Fetch,
 			WriteCursor:    f.WriteCursor,
 			Filename:       f.Filename,
 			AssembledCRC32: f.AssembledCRC32,

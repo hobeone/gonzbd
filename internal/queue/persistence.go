@@ -168,13 +168,13 @@ func (q *Queue) saveStore(_ string) error {
 // manifest. That restoration already happens whenever the job is promoted
 // back to resident.
 //
-// Per-file Bytes/BytesDownloaded/FailedBytes/Complete/Deferred are carried so
+// Per-file Bytes/BytesDownloaded/FailedBytes/Complete/Fetch are carried so
 // RemainingBytes (see derivedRemainingBytes) derives correctly for a job at
 // any residency, including a job that restarted non-resident. They replace
 // the pre-summed figure this used to take from Store.RemainingBytesByJob.
 //
 // failedBytes is summed here, over every file including Complete and
-// Deferred ones, because FailedBytes reporting depends on it before the job
+// held/discarded ones, because FailedBytes reporting depends on it before the job
 // is ever promoted back to resident: a restarted non-resident job with
 // permanently failed articles would otherwise silently report zero failed
 // bytes until promotion. This closes the residency drift where the same job
@@ -206,7 +206,7 @@ func newJobProgressSized(files []FileMeta) *JobProgress {
 		p.files[fi].BytesDownloaded = f.BytesDownloaded
 		p.files[fi].FailedBytes = f.FailedBytes
 		p.files[fi].Complete = f.Complete
-		p.files[fi].Deferred = f.Deferred
+		p.files[fi].Fetch = f.Fetch
 		p.files[fi].Bytes = f.Bytes
 	}
 	return p

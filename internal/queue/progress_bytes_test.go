@@ -51,7 +51,7 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 	}
 
 	// File 2: deferred, untouched otherwise.
-	job.progress.files[2].Deferred = true
+	job.progress.files[2].Fetch = FetchIfNeeded
 
 	if err := store.Update(t.Context(), job); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -75,8 +75,8 @@ func TestNewJobProgressSized_RoundTripsPerFileState(t *testing.T) {
 	if got, want := sized.files[1].BytesDownloaded, job.progress.files[1].BytesDownloaded; got != want {
 		t.Errorf("file 1 BytesDownloaded = %d, want %d", got, want)
 	}
-	if got, want := sized.files[2].Deferred, true; got != want {
-		t.Errorf("file 2 Deferred = %v, want %v", got, want)
+	if got, want := sized.files[2].Fetch, FetchIfNeeded; got != want {
+		t.Errorf("file 2 Fetch = %v, want %v", got, want)
 	}
 	if got, want := sized.files[2].BytesDownloaded, int64(0); got != want {
 		t.Errorf("file 2 BytesDownloaded = %d, want %d", got, want)
@@ -365,8 +365,8 @@ func TestNewJobProgress_MatchesSizedConstruction(t *testing.T) {
 		if fm.Complete {
 			t.Errorf("fileMetaFromManifest[%d].Complete = true, want false", fi)
 		}
-		if fm.Deferred {
-			t.Errorf("fileMetaFromManifest[%d].Deferred = true, want false", fi)
+		if fm.Fetch != FetchAlways {
+			t.Errorf("fileMetaFromManifest[%d].Fetch = %v, want FetchAlways", fi, fm.Fetch)
 		}
 	}
 }
@@ -459,7 +459,7 @@ func TestExpectedBytes_ClosesTheDownloadedIdentity(t *testing.T) {
 		{Subject: "x.vol000+01.par2", Bytes: 500, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 500}}},
 	})
 	p := newJobProgress(m)
-	p.files[3].Deferred = true
+	p.files[3].Fetch = FetchIfNeeded
 
 	p.markDone(m, 0)
 	p.files[0].Complete = true
@@ -495,7 +495,7 @@ func TestExpectedBytes_FreshOnDemandJobReportsZeroProgress(t *testing.T) {
 		{Subject: "content.vol000+01.par2", Bytes: 1_000, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 1_000}}},
 	})
 	p := newJobProgress(m)
-	p.files[1].Deferred = true
+	p.files[1].Fetch = FetchIfNeeded
 
 	expected, remaining := p.ExpectedBytes(), p.RemainingBytes()
 	if expected != remaining {
@@ -503,7 +503,7 @@ func TestExpectedBytes_FreshOnDemandJobReportsZeroProgress(t *testing.T) {
 	}
 
 	// Un-deferring must move both together, with no fixup call.
-	p.files[1].Deferred = false
+	p.files[1].Fetch = FetchAlways
 	if got, want := p.ExpectedBytes(), int64(11_000); got != want {
 		t.Errorf("ExpectedBytes() after un-defer = %d, want %d", got, want)
 	}
@@ -552,7 +552,7 @@ func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
 		t.Fatalf("MarkArticlesFailed: %v", err)
 	}
 	// File 2: deferred, untouched otherwise.
-	job.progress.files[2].Deferred = true
+	job.progress.files[2].Fetch = FetchIfNeeded
 	// File 3: only partially downloaded, then marked complete directly (the
 	// production path MarkFileComplete allows — assembly can finish, e.g. via
 	// repair, without every article having gone through the download path).
@@ -583,7 +583,7 @@ func TestRemainingBytes_IdenticalResidentAndNonResident(t *testing.T) {
 	if resident.FailedBytes() == 0 {
 		t.Fatal("fixture produced no failed bytes; the test would pass vacuously")
 	}
-	if !resident.FileDeferred(2) {
+	if resident.FileFetchPolicy(2) != FetchIfNeeded {
 		t.Fatal("fixture not exercising a deferred file")
 	}
 	if !resident.FileComplete(3) {
@@ -617,13 +617,13 @@ func TestDerivedRemaining_ExcludesDeferredFiles(t *testing.T) {
 		{Subject: "a.vol000+01.par2", Bytes: 800, IsPar2Recovery: true, Articles: []JobArticle{{ID: "v1", Bytes: 800}}},
 	})
 	p := newJobProgress(m)
-	p.files[1].Deferred = true
+	p.files[1].Fetch = FetchIfNeeded
 
 	if got, want := p.derivedRemainingBytes(), int64(3000); got != want {
 		t.Errorf("deferred volume counted: got %d, want %d", got, want)
 	}
 
-	p.files[1].Deferred = false
+	p.files[1].Fetch = FetchAlways
 	if got, want := p.derivedRemainingBytes(), int64(3800); got != want {
 		t.Errorf("un-deferred volume not counted: got %d, want %d", got, want)
 	}
@@ -654,7 +654,7 @@ func TestSizeFigures_SharedAndDivergentPredicates(t *testing.T) {
 	p.markDone(m, 0) // partial.rar: half of it
 	p.markDone(m, 2) // complete.rar: all of it
 	p.files[1].Complete = true
-	p.files[2].Deferred = true
+	p.files[2].Fetch = FetchIfNeeded
 	p.markFailed(m, 4) // failed.rar
 
 	expected, remaining := p.sizeFigures()

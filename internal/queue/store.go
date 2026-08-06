@@ -8,7 +8,7 @@ import (
 
 // FileMeta is the per-file shape Load needs to size a non-resident job's
 // progress without a manifest. It carries everything RemainingBytes reads
-// — Bytes, BytesDownloaded, FailedBytes, Complete, and Deferred — alongside
+// — Bytes, BytesDownloaded, FailedBytes, Complete, and Fetch — alongside
 // the article count for the bitsets, so a job reports the same remaining
 // figure whether it is reconstructed resident (via the manifest) or
 // non-resident (via this type).
@@ -22,7 +22,9 @@ type FileMeta struct {
 	// carried explicitly rather than recomputed from article bitmaps.
 	FailedBytes int64
 	Complete    bool
-	Deferred    bool
+	// Fetch is the file's download intent, restored from
+	// job_files.fetch_policy. See FetchPolicy.
+	Fetch FetchPolicy
 }
 
 // Store defines the persistence and ordering interface for active download queue jobs.

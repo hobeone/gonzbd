@@ -40,7 +40,7 @@ func TestInsertJobFilesTx_WritesEveryPerFileColumn(t *testing.T) {
 	p.files[0].AssembledCRC32 = 0xDEADBEEF
 	p.files[0].Filename = "resolved-name.rar"
 	p.files[0].Complete = true
-	p.files[1].Deferred = true
+	p.files[1].Fetch = FetchIfNeeded
 
 	// Add creates the jobs row (job_files.job_id references it) and a first
 	// set of job_files rows. Clear those and call insertJobFilesTx directly:
@@ -67,7 +67,7 @@ func TestInsertJobFilesTx_WritesEveryPerFileColumn(t *testing.T) {
 	}
 
 	type row struct {
-		complete, deferred           int
+		complete, fetch              int
 		writeCursor, bytes           int64
 		bytesDownloaded, failedBytes int64
 		filename                     string
@@ -78,10 +78,10 @@ func TestInsertJobFilesTx_WritesEveryPerFileColumn(t *testing.T) {
 		t.Helper()
 		var r row
 		err := db.QueryRowContext(t.Context(), `
-SELECT complete, deferred, write_cursor, bytes, bytes_downloaded, failed_bytes,
+SELECT complete, fetch_policy, write_cursor, bytes, bytes_downloaded, failed_bytes,
        COALESCE(filename, ''), assembled_crc32, article_count
 FROM job_files WHERE job_id = ? AND file_index = ?`, job.ID, idx).
-			Scan(&r.complete, &r.deferred, &r.writeCursor, &r.bytes,
+			Scan(&r.complete, &r.fetch, &r.writeCursor, &r.bytes,
 				&r.bytesDownloaded, &r.failedBytes, &r.filename, &r.crc32, &r.articleCount)
 		if err != nil {
 			t.Fatalf("read row %d: %v", idx, err)
@@ -93,8 +93,8 @@ FROM job_files WHERE job_id = ? AND file_index = ?`, job.ID, idx).
 	if got0.complete != 1 {
 		t.Errorf("file 0 complete = %d, want 1", got0.complete)
 	}
-	if got0.deferred != 0 {
-		t.Errorf("file 0 deferred = %d, want 0", got0.deferred)
+	if got0.fetch != int(FetchAlways) {
+		t.Errorf("file 0 fetch_policy = %d, want %d", got0.fetch, FetchAlways)
 	}
 	if got0.writeCursor != 4242 {
 		t.Errorf("file 0 write_cursor = %d, want 4242", got0.writeCursor)
@@ -125,8 +125,8 @@ FROM job_files WHERE job_id = ? AND file_index = ?`, job.ID, idx).
 
 	// File 1 is the contrast: deferred, nothing downloaded, no resolved name.
 	got1 := read(1)
-	if got1.deferred != 1 {
-		t.Errorf("file 1 deferred = %d, want 1 (a deferred volume written as 0 is #287)", got1.deferred)
+	if got1.fetch != int(FetchIfNeeded) {
+		t.Errorf("file 1 fetch_policy = %d, want %d (a deferred volume written as 0 is #287)", got1.fetch, FetchIfNeeded)
 	}
 	if got1.complete != 0 {
 		t.Errorf("file 1 complete = %d, want 0", got1.complete)

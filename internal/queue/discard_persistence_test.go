@@ -74,7 +74,7 @@ func TestDiscardDeferredPar2_RewritesTheStoredManifest(t *testing.T) {
 			m.NumFiles(), wantFiles)
 	}
 	for i := range m.NumFiles() {
-		if snap.Progress().FileDeferred(i) {
+		if snap.Progress().FileFetchPolicy(i) != FetchAlways {
 			t.Errorf("file %d is still deferred after the discard", i)
 		}
 	}

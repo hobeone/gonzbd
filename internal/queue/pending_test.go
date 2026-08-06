@@ -21,12 +21,12 @@ func verifyPending(t *testing.T, q *Queue, label string) {
 		for fi := range m.NumFiles() {
 			wantFile := 0
 			var wantDownloaded int64
-			// Deferred files (on-demand par2) contribute zero pending work by
-			// design — mirror recompute's rule in the ground truth.
-			deferred := p.files[fi].Deferred
+			// Files not being fetched (on-demand par2) contribute zero pending
+			// work by design — mirror recompute's rule in the ground truth.
+			fetching := p.files[fi].Fetch == FetchAlways
 			lo, hi := m.FileRange(fi)
 			for i := lo; i < hi; i++ {
-				if !deferred && !p.done.Get(i) && !p.emitted.Get(i) {
+				if fetching && !p.done.Get(i) && !p.emitted.Get(i) {
 					wantFile++
 				}
 				if p.done.Get(i) && !p.failed.Get(i) {

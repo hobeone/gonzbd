@@ -326,7 +326,7 @@ func TestUndeferRecoveryLocked_ClearsDeferredAndRecomputes(t *testing.T) {
 	job := &Job{ID: "j1", Status: constants.StatusDownloading}
 	job.manifest = m
 	job.progress = newJobProgress(m)
-	job.progress.files[1].Deferred = true
+	job.progress.files[1].Fetch = FetchIfNeeded
 	job.progress.recompute(m)
 
 	q := New()
@@ -345,7 +345,7 @@ func TestUndeferRecoveryLocked_ClearsDeferredAndRecomputes(t *testing.T) {
 	if !changed {
 		t.Fatal("undeferRecoveryLocked reported no change for a genuinely deferred index")
 	}
-	if job.progress.FileDeferred(1) {
+	if job.progress.FileFetchPolicy(1) != FetchAlways {
 		t.Error("file 1 still Deferred after undeferRecoveryLocked")
 	}
 	if !job.progress.Par2Recovered() {

@@ -231,6 +231,12 @@ func firstIncompleteFile(j *queue.Job) string {
 		return ""
 	}
 	for i := range m.NumFiles() {
+		// A file the job is not fetching is never Complete, so without this
+		// skip a held or discarded recovery volume becomes the reported
+		// current file for the rest of the job's life.
+		if p.FileFetchPolicy(i) != queue.FetchAlways {
+			continue
+		}
 		if !p.FileComplete(i) {
 			return m.FileSubject(i)
 		}
@@ -242,7 +248,7 @@ func firstIncompleteFile(j *queue.Job) string {
 // fires once any article in the file has completed; before that the
 // file is "queued". "failed" wins over "done" when any article failed.
 func fileState(m *queue.Manifest, p *queue.JobProgress, fileIdx int) string {
-	if p.FileDeferred(fileIdx) {
+	if p.FileFetchPolicy(fileIdx) != queue.FetchAlways {
 		return "held"
 	}
 	if p.FileComplete(fileIdx) {

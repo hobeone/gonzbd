@@ -17,7 +17,7 @@ func deferredCount(job *Job) int {
 	}
 	n := 0
 	for i := range len(p.files) {
-		if p.FileDeferred(i) {
+		if p.FileFetchPolicy(i) != FetchAlways {
 			n++
 		}
 	}
