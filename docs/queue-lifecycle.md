@@ -234,19 +234,33 @@ renumbered every `file_index` after it — the root of #294, #308, #310, #315
 and #317. None of it has a reachable caller once the file set cannot change,
 so all of it is gone.
 
-**What remains is on-disk corruption, not a torn write.** `ErrManifestStale`
-and `describesSameJobAs` still guard the one thing they always guarded: a
-`Manifest`/`JobProgress` size mismatch would panic inside `recompute` on a
-background goroutine with no `recover`, so it is reported instead of
-tolerated. Their cause changed, not their purpose. Before this task the
-mismatch had an ordinary cause — a `ReplaceManifest` whose blob write and
-transaction could not be made atomic, so a crash between them left the file on
-disk describing the pre-discard job. No write path this process performs can
-produce that any more: the manifest blob is written once, before `Add` opens
-its transaction, so a crash between them leaves an orphan manifest and no job
-row rather than a disagreeing pair. A mismatch that reaches the guard now is a
-truncated or damaged manifest blob, or a `job_files` set altered out of band —
-still worth detecting, still better reported than panicked on.
+**What remains is on-disk corruption, not a torn write — and the guard only
+covers size agreement.** `ErrManifestStale` and `describesSameJobAs` still
+guard the one thing they always guarded: a `Manifest`/`JobProgress` size
+mismatch would panic inside `recompute` on a background goroutine with no
+`recover`, so it is reported instead of tolerated. Their cause changed, not
+their purpose. Before this task the mismatch had an ordinary cause — a
+`ReplaceManifest` whose blob write and transaction could not be made atomic,
+so a crash between them left the file on disk describing the pre-discard job.
+No write path this process performs can produce that any more: the manifest
+blob is written once, before `Add` opens its transaction, so a crash between
+them leaves an orphan manifest and no job row rather than a disagreeing pair.
+A mismatch that reaches the guard now is a truncated or damaged manifest
+blob — that is what `describesSameJobAs` actually compares, `NumFiles`/
+`NumArticles` against `len(progress.files)`/`done.Len()`.
+
+It is **not** what detects `job_files` rows altered out of band.
+`SQLiteStore.RestoreJobProgress` fills `progress.files` by `file_index` under
+a bounds check and never resizes it, so rows deleted or renumbered outside
+this process still satisfy the size check and silently attach one file's
+per-article state to another file's slot — no `ErrManifestStale`, no log.
+
+**The boot path carries no guard at all.** `SQLiteStore.Get` sizes progress
+from the manifest it reads and fills it by `file_index` from the rows, with no
+`describesSameJobAs` call — that check runs only in `hydrateSnapshot` and
+`hydrateJobLocked`. A manifest/`job_files` disagreement at startup is
+therefore undetected either way. What such a mismatch should do at boot is
+#278's question, still open.
 
 ## Enforcement
 

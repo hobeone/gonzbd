@@ -46,7 +46,8 @@ func TestInsertJobFilesTx_WritesEveryPerFileColumn(t *testing.T) {
 	// set of job_files rows. Clear those and call insertJobFilesTx directly:
 	// it documents that it assumes no rows exist for the job yet, since
 	// file_index is the key, so this is both the direct call the test needs
-	// and the precondition its other caller (ReplaceManifest) must honour.
+	// and the precondition addTx (its only caller now that ReplaceManifest
+	// is gone) already honours.
 	if err := store.Add(t.Context(), job); err != nil {
 		t.Fatalf("Add: %v", err)
 	}

@@ -199,10 +199,18 @@ What the teardown removes is their last *reachable* cause. `Add` writes the
 manifest blob before opening its transaction, so a crash between the two leaves
 an orphan manifest and no job row — not a disagreeing pair — and with
 `ReplaceManifest` gone no write path this process performs can produce one.
-What remains is on-disk corruption: a truncated blob, or `job_files` rows
-altered out of band. Deleting the guard would not remove that state, only the
+What remains is on-disk corruption: a truncated or damaged manifest blob.
+That is the only thing the guard actually detects — `describesSameJobAs`
+compares sizes only (`NumFiles`/`NumArticles` against
+`len(progress.files)`/`done.Len()`) — so it does NOT cover `job_files` rows
+altered out of band: `RestoreJobProgress` fills `progress.files` by
+`file_index` without resizing it, so an out-of-band row change still passes
+the size check and silently mispairs per-article state. The boot path
+(`SQLiteStore.Get`) carries no guard at all, a gap tracked by #278, which is
+still open. Deleting the guard would not remove the corruption case, only the
 report of it. Both doc comments must be rewritten, since each currently
-explains itself entirely in terms of the discard.
+explains itself entirely in terms of the discard, and must not claim
+detection of the out-of-band case the guard cannot actually see.
 
 **#320 and #321 close as subsumed.** Both are defects inside this layer: #320
 is a `manifestRowsStale` that has no residency-independent clear, so an evicted

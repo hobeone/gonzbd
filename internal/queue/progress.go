@@ -422,14 +422,17 @@ func (p *JobProgress) DeferredRecoveryIndices() []int {
 // freshly read Manifest has to satisfy, and recompute panics when it does
 // not hold.
 //
-// The two can disagree only through corruption now. DiscardDeferredPar2 used
-// to rebuild a smaller manifest and persist it through Store.ReplaceManifest,
-// a blob write plus a transaction that could not be made atomic together, so
-// a crash between them left the file on disk describing the pre-discard job.
-// The file set is immutable after Add as of the fetch-policy change, and
-// ReplaceManifest is gone. A mismatch that reaches here is a damaged blob or
-// a job_files set altered out of band — still not a recoverable state, and
-// still better reported than panicked on.
+// This compares sizes only — NumFiles/NumArticles against
+// len(p.files)/p.done.Len() — so it detects a manifest blob whose shape
+// disagrees with progress, which used to happen through a torn
+// Store.ReplaceManifest write and now happens only through on-disk
+// corruption (the file set is immutable after Add, and ReplaceManifest is
+// gone). It does NOT detect job_files rows altered out of band:
+// SQLiteStore.RestoreJobProgress fills progress.files by file_index without
+// resizing it, so a row deleted or renumbered outside this process still
+// satisfies this size check and silently attaches its state to the wrong
+// file. See ErrManifestStale for the boot-path gap (#278), which this
+// guard does not cover either.
 func (p *JobProgress) describesSameJobAs(m *Manifest) bool {
 	if p == nil || m == nil {
 		return false

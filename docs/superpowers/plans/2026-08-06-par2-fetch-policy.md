@@ -1122,24 +1122,38 @@ In `internal/queue/queue.go`, replace `ErrManifestStale`'s doc comment:
 // them leaves an orphan manifest and no job row rather than a disagreeing
 // pair.
 //
-// What remains is on-disk corruption: a truncated or damaged manifest blob,
-// or job_files rows removed out of band. That is worth continuing to detect.
-// The alternative is not "no error" but a panic on a goroutine with no
-// recover, which is strictly worse for the same underlying state.
+// What this guard actually checks is manifest-versus-progress size
+// agreement — NumFiles/NumArticles against len(progress.files)/done.Len() —
+// so what it can detect is a truncated or damaged manifest blob. It cannot
+// detect job_files rows altered out of band: RestoreJobProgress fills
+// progress.files by file_index under a bounds check and never resizes it,
+// so rows deleted or renumbered outside this process pass this guard
+// silently and land per-article state on the wrong file's slot instead of
+// raising this error. Reporting the mismatches this can see is still worth
+// doing; the alternative is not "no error" but a panic on a goroutine with
+// no recover, which is strictly worse for the same underlying state.
+//
+// The boot path (SQLiteStore.Get) carries no guard at all — it sizes
+// progress from the manifest it reads and fills it by file_index with no
+// describesSameJobAs check, so a manifest/job_files disagreement at startup
+// is undetected either way. What to do about that is #278, open.
 var ErrManifestStale = errors.New("queue: stored manifest does not match the job's progress")
 ```
 
 In `internal/queue/progress.go`, replace `describesSameJobAs`'s doc comment paragraph beginning "The two can genuinely disagree":
 
 ```go
-// The two can disagree only through corruption now. DiscardDeferredPar2 used
-// to rebuild a smaller manifest and persist it through Store.ReplaceManifest,
-// a blob write plus a transaction that could not be made atomic together, so
-// a crash between them left the file on disk describing the pre-discard job.
-// The file set is immutable after Add as of the fetch-policy change, and
-// ReplaceManifest is gone. A mismatch that reaches here is a damaged blob or
-// a job_files set altered out of band — still not a recoverable state, and
-// still better reported than panicked on.
+// This compares sizes only — NumFiles/NumArticles against
+// len(p.files)/p.done.Len() — so it detects a manifest blob whose shape
+// disagrees with progress, which used to happen through a torn
+// Store.ReplaceManifest write and now happens only through on-disk
+// corruption (the file set is immutable after Add, and ReplaceManifest is
+// gone). It does NOT detect job_files rows altered out of band:
+// SQLiteStore.RestoreJobProgress fills progress.files by file_index without
+// resizing it, so a row deleted or renumbered outside this process still
+// satisfies this size check and silently attaches its state to the wrong
+// file. See ErrManifestStale for the boot-path gap (#278), which this
+// guard does not cover either.
 ```
 
 - [ ] **Step 6: Verify nothing is left**

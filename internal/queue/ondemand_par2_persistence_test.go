@@ -122,22 +122,22 @@ func TestOnDemandPar2_SnapshotKeepsDeferralWithoutAStore(t *testing.T) {
 }
 
 // tearManifestWrite writes stale as job's on-disk manifest directly, standing
-// in for a ReplaceManifest that committed its transaction but never landed
-// its blob — the rows and the job's in-memory progress describe one file
-// set, the file on disk describes another.
+// in for the on-disk corruption ErrManifestStale now exists to detect — the
+// rows and the job's in-memory progress describe one file set, the file on
+// disk describes another.
 //
 // This is the fixture buildTornManifest needs, and it has to be built by
 // hand: #294 made a discard's own rebuild-and-persist atomic in the sense
-// that matters here (never leaves the pair disagreeing on its own success
-// path), and this task removes the rebuild outright, so there is no longer
-// any operation in this package that produces the disagreement as a
-// documented side effect. The guard still has a job, though: ReplaceManifest
-// writes a file and commits a transaction, and no ordering makes those two
-// atomic, so a crash between them leaves exactly this disagreement — or a
-// version skew, or any other corruption of the on-disk copy. Reaching it now
-// takes a direct write rather than an ordinary code path, which is a
-// consequence of the fix, not a reason to stop pinning what happens when it
-// occurs.
+// that mattered then (never left the pair disagreeing on its own success
+// path), and the manifest-rewrite containment layer this used to describe —
+// Store.ReplaceManifest, whose blob write and transaction could not be made
+// atomic — is gone outright (see ErrManifestStale's doc comment). There is
+// no longer any operation in this package, torn or otherwise, that produces
+// the disagreement as a documented side effect; a version skew or any other
+// corruption of the on-disk manifest blob is what remains. The guard still
+// has a job, though: reaching it now takes a direct write rather than an
+// ordinary code path, which is a consequence of the fix, not a reason to
+// stop pinning what happens when it occurs.
 func tearManifestWrite(t *testing.T, dir string, job *Job, stale *Manifest) {
 	t.Helper()
 	path := filepath.Join(dir, "manifests", job.ID+".json.gz")

@@ -51,10 +51,21 @@ var ErrJobNotResident = errors.New("queue: job not resident")
 // them leaves an orphan manifest and no job row rather than a disagreeing
 // pair.
 //
-// What remains is on-disk corruption: a truncated or damaged manifest blob,
-// or job_files rows removed out of band. That is worth continuing to detect.
-// The alternative is not "no error" but a panic on a goroutine with no
-// recover, which is strictly worse for the same underlying state.
+// What this guard actually checks is manifest-versus-progress size
+// agreement — NumFiles/NumArticles against len(progress.files)/done.Len() —
+// so what it can detect is a truncated or damaged manifest blob. It cannot
+// detect job_files rows altered out of band: RestoreJobProgress fills
+// progress.files by file_index under a bounds check and never resizes it,
+// so rows deleted or renumbered outside this process pass this guard
+// silently and land per-article state on the wrong file's slot instead of
+// raising this error. Reporting the mismatches this can see is still worth
+// doing; the alternative is not "no error" but a panic on a goroutine with
+// no recover, which is strictly worse for the same underlying state.
+//
+// The boot path (SQLiteStore.Get) carries no guard at all — it sizes
+// progress from the manifest it reads and fills it by file_index with no
+// describesSameJobAs check, so a manifest/job_files disagreement at startup
+// is undetected either way. What to do about that is #278, open.
 var ErrManifestStale = errors.New("queue: stored manifest does not match the job's progress")
 
 // Queue owns the ordered list of active jobs plus the notify channel
